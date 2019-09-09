@@ -1,0 +1,17 @@
+#!./test_parser
+
+int main()
+{
+    uint32_t a = 0;
+    uint32_t c = 100000000;
+
+    while ( c )
+    {
+	--c;
+	++a;
+    }
+
+    puti(a);
+
+    return 0;
+}

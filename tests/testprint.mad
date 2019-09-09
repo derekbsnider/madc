@@ -1,0 +1,16 @@
+#!./test_parser
+
+void print(string s)
+{
+//    printstr(s);
+    puts(s);
+}
+
+int main()
+{
+    string hello = "Hello, World!";
+
+    print(hello);
+
+    return 0;
+}

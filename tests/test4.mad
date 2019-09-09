@@ -1,0 +1,37 @@
+#!./test_parser
+
+void print(string s)
+{
+    puts(s);
+}
+
+void printi(int i)
+{
+    puti(i);
+}
+
+
+int main()
+{
+    string hello = "Hello, World!";
+    int i = 123;
+
+    print(hello);
+    print("hi");
+    puts("test");
+
+    printstr(hello);
+    printstr("HEY");
+
+    puts(0);
+    printstr(0);
+    putchar('h');
+    putchar('e');
+    putchar('y');
+    putchar(32);
+    printi(i);
+
+    printstr(version);
+
+    return 0;
+}

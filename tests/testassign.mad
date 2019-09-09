@@ -1,0 +1,12 @@
+#!./test_parser
+
+int main()
+{
+    uint32_t i = 456;
+    uint32_t j;
+
+    j = i;
+    puti(j);
+
+    return 0;
+}

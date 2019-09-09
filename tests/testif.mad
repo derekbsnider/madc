@@ -1,0 +1,50 @@
+#!./test_parser
+
+string test = "this is a test";
+
+int ret1()
+{
+    return 1;
+}
+
+int ret0()
+{
+    return 0;
+}
+
+int main()
+{
+    uint32_t a = 0;
+    uint32_t b = 0;
+
+    if ( a )
+	puti(1);
+    else
+    if ( b )
+	puti(2);
+    else
+	puti(3);
+
+    if ( 1 )
+	printstr("if 1 true");
+    else
+	printstr("if 1 false");
+    if ( 0 )
+	printstr("if 0 true");
+    else
+	printstr("if 0 false");
+
+    if ( ret1() )
+	printstr("ret1() true");
+    else
+	printstr("ret1() false");
+
+    if ( ret0() )
+	printstr("ret0() true");
+    else
+	printstr("ret0() false");
+
+    printstr(test);
+
+    return 0;
+}

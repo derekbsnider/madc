@@ -1,0 +1,17 @@
+#!./test_parser
+
+int main()
+{
+    uint32_t i = 456;
+    uint32_t j;
+
+    printstr("123: ");
+    puti(123);
+    printstr("i: ");
+    puti(i);
+    j = i;
+    printstr("j: ");
+    puti(j);
+
+    return 0;
+}

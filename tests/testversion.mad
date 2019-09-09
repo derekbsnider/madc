@@ -1,0 +1,8 @@
+#!./test_parser
+
+int main()
+{
+    printstr(version);
+
+    return 0;
+}

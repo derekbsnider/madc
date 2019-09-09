@@ -1,0 +1,15 @@
+#!./test_parser
+
+int main()
+{
+    uint32_t c;
+    uint32_t a = 0;
+
+    for ( c = 10; c; --c )
+    {
+	++a;
+	puti(a);
+    }
+
+    return 0;
+}

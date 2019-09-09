@@ -1,0 +1,15 @@
+#!./test_parser
+
+string hello;
+string bye = "Goodbye, cruel World!";
+
+hello = "Hello, World!";
+
+int main()
+{
+    string hey = "hey";
+
+    puts(hello);
+    hello = "hi";
+    puts(hello);
+}
