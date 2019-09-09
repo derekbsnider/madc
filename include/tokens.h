@@ -38,7 +38,6 @@ enum class TokenID {
 };
 
 
-
 class TokenBase
 {
 protected:
@@ -62,7 +61,7 @@ public:
     virtual TokenType type() const { return TokenType::ttBase; }
     virtual TokenID   id()   const { return TokenID::tkBase; }
     virtual asmjit::x86::Gp &getreg(Program &);
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // whitespace
@@ -119,7 +118,7 @@ public:
     virtual TokenType type() const { return TokenType::ttOperator; }
     virtual TokenID   id()   const { return TokenID::tkOperator; }
     virtual inline int operate() const { return 0; } // used for internal debugging
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)
     {
 	DBG(std::cout << "TokenOperator::compile() called on operator: " << _token << std::endl);
 	throw "!!! TokenOperator::compile() !!!";
@@ -145,7 +144,7 @@ public:
     virtual TokenBase *clone() { TokenMultiOp *to = new TokenMultiOp(); to->left = left; to->right = right; return to; }
     virtual TokenType type() const { return TokenType::ttMultiOp; }
     virtual TokenID   id()   const { return TokenID::tkMultiOp; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)  { throw "!!! TokenMultiOp::compile() !!!"; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)  { throw "!!! TokenMultiOp::compile() !!!"; }
     virtual inline int precedence() const { return 16; }
 };
 
@@ -157,7 +156,7 @@ public:
     virtual TokenBase *clone() { TokenAdd *to = new TokenAdd(); to->left = left; to->right = right; return to; }
     virtual inline int precedence() const { return 4; }
     virtual TokenID id() const { return TokenID::tkAdd; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     inline int operate() const
     {
 	DBG(std::cout << "operate: " << left->get() << '+' << right->get() << std::endl);
@@ -183,7 +182,7 @@ public:
     virtual TokenBase *clone() { TokenSub *to = new TokenSub(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkSub; }
     virtual inline int precedence() const { return 4; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     inline int operate() const
     {
 	DBG(std::cout << "operate: " << left->get() << '-' << right->get() << std::endl);
@@ -199,7 +198,7 @@ public:
     virtual TokenBase *clone() { TokenMul *to = new TokenMul(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkMul; }
     virtual inline int precedence() const { return 3; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     inline int operate() const
     {
 	DBG(std::cout << "operate: " << left->get() << '*' << right->get() << std::endl);
@@ -215,7 +214,7 @@ public:
     virtual TokenBase *clone() { TokenDiv *to = new TokenDiv(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkDiv; }
     virtual inline int precedence() const { return 3; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     inline int operate() const
     {
 	DBG(std::cout << "operate: " << left->get() << '/' << right->get() << std::endl);
@@ -231,7 +230,7 @@ public:
     virtual TokenBase *clone() { TokenMod *to = new TokenMod(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkMod; }
     virtual inline int precedence() const { return 3; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     inline int operate() const
     {
 	DBG(std::cout << "operate: " << left->get() << '%' << right->get() << std::endl);
@@ -246,7 +245,7 @@ public:
     TokenInc() : TokenMultiOp("++") {}
     virtual TokenBase *clone() { TokenInc *to = new TokenInc(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkInc; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual inline int precedence() const { return 2; }
     virtual int argc() const { return 1; }
     inline int operate() const
@@ -264,7 +263,7 @@ public:
     TokenDec() : TokenMultiOp("--") {}
     virtual TokenBase *clone() { TokenDec *to = new TokenDec(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkDec; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual inline int precedence() const { return 2; }
     virtual int argc() const { return 1; }
     inline int operate() const
@@ -282,7 +281,7 @@ public:
     TokenAssign() : TokenOperator('=') {}
     virtual TokenBase *clone() { TokenAssign *to = new TokenAssign(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkAssign; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual inline int precedence() const { return 14; }
     int operate() const;
 };
@@ -509,7 +508,7 @@ public:
     virtual TokenID id() const { return TokenID::tkEquals; }
     virtual TokenBase *clone() { return new TokenEquals(); }
     virtual inline int precedence() const { return 7; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // comparison operator === (exactly equal to)
@@ -530,7 +529,7 @@ public:
     virtual TokenID id() const { return TokenID::tkNotEq; }
     virtual TokenBase *clone() { return new TokenNotEq(); }
     virtual inline int precedence() const { return 7; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // comparison operator < (less than)
@@ -677,7 +676,7 @@ public:
     virtual TokenID   id()   const { return TokenID::tkInt; }
     virtual TokenBase *clone()     { return new TokenInt(_token); }
     virtual asmjit::x86::Gp &getreg(Program &);
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // string based tokens
@@ -730,7 +729,7 @@ public:
 //  virtual TokenBase *clone(){ return new TokenKeyword(str); }
     virtual TokenBase *clone(){ return this; }
     virtual TokenKeyword *parse(Program &) { return NULL; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)  { throw "!!! TokenKeyword::compile() !!!"; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)  { throw "!!! TokenKeyword::compile() !!!"; }
 };
 
 /*
@@ -786,7 +785,7 @@ public:
     TokenBase *elsestmt;
     TokenIF() : TokenKeyword("if") { condition = statement = elsestmt = NULL; }
     TokenIF *parse(Program &);
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual TokenID id() const { return TokenID::tkIF; }
     virtual TokenBase *clone() { return new TokenIF(); }
 };
@@ -797,7 +796,7 @@ public:
     TokenBase *returns;
     TokenRETURN() : TokenKeyword("return") { returns = NULL; }
     TokenRETURN *parse(Program &);
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual TokenID id() const { return TokenID::tkRETURN; }
     virtual TokenBase *clone() { return new TokenRETURN(); }
 };
@@ -809,7 +808,7 @@ public:
     TokenBase *condition;
     TokenDO() : TokenKeyword("do") { statement = condition = NULL; }
     TokenDO *parse(Program &);
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual TokenID id() const { return TokenID::tkDO; }
     virtual TokenBase *clone() { return new TokenDO(); }
 };
@@ -821,7 +820,7 @@ public:
     TokenBase *statement;
     TokenWHILE() : TokenKeyword("while") { condition = statement = NULL; }
     TokenWHILE *parse(Program &);
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual TokenID id() const { return TokenID::tkWHILE; }
     virtual TokenBase *clone() { return new TokenWHILE(); }
 };
@@ -835,7 +834,7 @@ public:
     TokenBase *statement;
     TokenFOR() : TokenKeyword("for") { initialize = condition = increment = statement = NULL; }
     TokenFOR *parse(Program &);
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual TokenID id() const { return TokenID::tkFOR; }
     virtual TokenBase *clone() { return new TokenFOR(); }
 };
