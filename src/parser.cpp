@@ -301,6 +301,13 @@ void Program::add_functions()
     addFunction("endl",		datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
 }
 
+// define some global variables
+void Program::add_globals()
+{
+    addGlobal(ddSTRING,  "version", 1, (void *)"v0.0.1");
+    addGlobal(ddOSTREAM, "cout", 1, std::cout.rdbuf());
+    addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
+}
 
 void Program::_parser_init()
 {
@@ -314,6 +321,7 @@ void Program::_parser_init()
     code.attach(&cc);
 
     add_functions();
+    add_globals();
     _braces = 0;
 }
 
@@ -451,7 +459,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 
     for ( uint32_t i = 1; i < params.size(); ++i )
     {
-	switch(DataDef::rawtype(params[i]))
+	switch(params[i]) // DataDef::rawtype(params[i])
 	{
 	    default:	 	      dd = &ddVOID;	break;
 	    case DataType::dtCHAR:    dd = &ddCHAR;	break;
@@ -792,7 +800,8 @@ parseexpswitchtop:
 		throw "Got call function!";
 		break;
 	    case TokenType::ttChar:
-		cerr << "Token type char? value " << tb->get() << endl;
+	        DBG(cout << "Pushing char: " << (int)tb->get() << " onto exStack" << endl);
+		exStack.push(tb);
 		break;
 	    default:
 		DBG(std::cerr << "parseExpression() primary switch throwing token" << std::endl);

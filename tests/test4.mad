@@ -23,8 +23,8 @@ int main()
     printstr(hello);
     printstr("HEY");
 
-    puts(0);
-    printstr(0);
+//    puts(0);
+//    printstr(0);
     putchar('h');
     putchar('e');
     putchar('y');
