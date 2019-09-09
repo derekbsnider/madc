@@ -105,15 +105,6 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2)
     }
 }
 
-
-// define some global variables
-void Program::add_globals()
-{
-    addGlobal(ddSTRING,  "version", 1, (void *)"v0.0.1");
-    addGlobal(ddOSTREAM, "cout", 1, std::cout.rdbuf());
-    addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
-}
-
 void Program::_compiler_init()
 {
 #if 0
@@ -127,7 +118,6 @@ void Program::_compiler_init()
     code.attach(&cc);
 #endif
     add_string_methods();
-    add_globals();
 }
 
 bool Program::_compiler_finalize()
@@ -268,7 +258,10 @@ void TokenCallFunc::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, a
 		tv = dynamic_cast<TokenVar *>(tn);
 		// TODO: replace all this with a ptype->is_compatible(tv->var.type)
 		if ( ptype->is_numeric() && !tv->var.type->is_numeric() )
+		{
+		    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)tv->var.type->type() << endl);
 		    throw "Expecting numeric argument";
+		}
 		if ( ptype->is_string() && !tv->var.type->is_string() )
 		    throw "Expecting string argument";
 		if ( ptype->is_object() )
