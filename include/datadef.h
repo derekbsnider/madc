@@ -210,6 +210,7 @@ typedef DataDefCLASS DDClass;
 
 // data definitions of default base types
 class DataDefVOID:      public DataDef { public: DataDefVOID() :   DataDef("void", 0,     DataType::dtVOID) {} };
+class DataDefVOIDref:   public DataDef { public: DataDefVOIDref(): DataDef("void&", 0,    DataType::dtVOIDref) {} };
 class DataDefBOOL:      public DataDef { public: DataDefBOOL() :   DataDef("bool", 1,     DataType::dtBOOL) {} };
 class DataDefCHAR:      public DataDef { public: DataDefCHAR() :   DataDef("char", 1,     DataType::dtCHAR) {} };
 class DataDefINT:       public DataDef { public: DataDefINT()  :   DataDef("int",  8,     DataType::dtINT) {} };
@@ -226,6 +227,7 @@ class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
 class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtSTRING) {} };
+class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} };
 class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostream", sizeof(std::ostream), DataType::dtOSTREAM) {} };
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
@@ -242,6 +244,7 @@ class DataDefTEST:      public DDClass { public: DataDefTEST():
 #endif
 
 extern DataDefVOID ddVOID;
+extern DataDefVOIDref ddVOIDref;
 extern DataDefBOOL ddBOOL;
 extern DataDefCHAR ddCHAR;
 extern DataDefINT ddINT;
@@ -258,6 +261,7 @@ extern DataDefUINT64 ddUINT64;
 extern DataDefFLOAT ddFLOAT;
 extern DataDefDOUBLE ddDOUBLE;
 extern DataDefSTRING ddSTRING;
+extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
 extern DataDefOSTREAM ddOSTREAM;
 extern DataDefSSTREAM ddSSTREAM;
