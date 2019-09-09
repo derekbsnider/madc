@@ -6,7 +6,7 @@ int main()
     int a = 1;
 
     if ( a )
-	return 0;
+	printstr("a is true");
 
     printstr(hello);
 

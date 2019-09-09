@@ -189,23 +189,27 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_tru
     TokenVar *tv;
 
     // set return type
-    /**/ if ( &func->returns == &ddSTRING ) { funcsig.setRetT<void *>();       }
-    else if ( &func->returns == &ddCHAR   ) { funcsig.setRetT<char>();         }
-    else if ( &func->returns == &ddBOOL   ) { funcsig.setRetT<bool>();         }
-    else if ( &func->returns == &ddINT    ) { funcsig.setRetT<int>();          }
-    else if ( &func->returns == &ddINT8   ) { funcsig.setRetT<int8_t>();       }
-    else if ( &func->returns == &ddINT16  ) { funcsig.setRetT<int16_t>();      }
-    else if ( &func->returns == &ddINT24  ) { funcsig.setRetT<int16_t>();      }
-    else if ( &func->returns == &ddINT32  ) { funcsig.setRetT<int32_t>();      }
-    else if ( &func->returns == &ddINT64  ) { funcsig.setRetT<int64_t>();      }
-    else if ( &func->returns == &ddUINT8  ) { funcsig.setRetT<uint8_t>();      }
-    else if ( &func->returns == &ddUINT16 ) { funcsig.setRetT<uint16_t>();     }
-    else if ( &func->returns == &ddUINT24 ) { funcsig.setRetT<uint16_t>();     }
-    else if ( &func->returns == &ddUINT32 ) { funcsig.setRetT<uint32_t>();     }
-    else if ( &func->returns == &ddUINT64 ) { funcsig.setRetT<uint64_t>();     }
-    else if ( &func->returns == &ddLPSTR )  { funcsig.setRetT<const char *>(); }
-    else if ( &func->returns == &ddVOID )   { funcsig.setRetT<void>();         }
-    else       /* default condition */      { funcsig.setRetT<void *>();       }
+    switch(func->returns.type())
+    {
+	case DataType::dtSTRING:	funcsig.setRetT<void *>();		break;
+	case DataType::dtCHAR:		funcsig.setRetT<char>();		break;
+	case DataType::dtBOOL:		funcsig.setRetT<bool>();		break;
+//	case DataType::dtINT:		funcsig.setRetT<int>();			break;
+	case DataType::dtINT16:		funcsig.setRetT<int16_t>();		break;
+	case DataType::dtINT24:		funcsig.setRetT<int16_t>();		break;
+	case DataType::dtINT32:		funcsig.setRetT<int32_t>();		break;
+	case DataType::dtINT64:		funcsig.setRetT<int64_t>();		break;
+	case DataType::dtUINT8:		funcsig.setRetT<uint8_t>();		break;
+	case DataType::dtUINT16:	funcsig.setRetT<uint16_t>();		break;
+	case DataType::dtUINT24:	funcsig.setRetT<uint16_t>();		break;
+	case DataType::dtUINT32:	funcsig.setRetT<uint32_t>();		break;
+	case DataType::dtUINT64:	funcsig.setRetT<uint64_t>();		break;
+	case DataType::dtCHARptr:	funcsig.setRetT<const char *>();	break;
+	case DataType::dtVOID:		funcsig.setRetT<void>();		break;
+	default:			funcsig.setRetT<void *>();		break;
+    }
+    if ( !ret )
+	getreg(pgm); // assign _reg if not provided
 
 #if OBJECT_SUPPORT
     // pass along object ("this") as first argument if appropriate
@@ -306,8 +310,7 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_tru
 	    case TokenType::ttCallFunc:
 		DBG(std::cout << "TokenCallFunc::compile() adding call to (ttCallFunc): " << method->returns.name << '(' << tn->val() << ')' << std::endl);
 		{
-		    x86::Gp p = pgm.cc.newGpq();
-		    tn->compile(pgm, &p);
+		    x86::Gp &p = tn->compile(pgm);
 		    params.push_back(p);
 		}
 		funcsig.addArgT<int>();
@@ -342,6 +345,11 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_tru
 	return *ret;
     }
 #endif
+    else
+    if ( func->returns.type() != DataType::dtVOID )
+    {
+	call->setRet(0, _reg);
+    }
 
     return _reg;
 }
@@ -837,7 +845,7 @@ x86::Gp &TokenCallFunc::getreg(Program &pgm)
 	case DataType::dtUINT64:  _reg = pgm.cc.newGpq(var.name.c_str());    break;
 	default:		  _reg = pgm.cc.newIntPtr(var.name.c_str()); break;
     } // switch
-    compile(pgm, &_reg);
+//  compile(pgm, &_reg);
     return _reg;
 }
 
