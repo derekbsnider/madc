@@ -884,7 +884,7 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
 		    x86::Mem stack = cc.newStack(sizeof(std::string), 4);
 		    x86::Gp reg = cc.newIntPtr(var->name.c_str());
 		    cc.lea(reg, stack);
-		    DBG(std::cout << "TokenCpnd::getreg(" << var->name << ") calling string_construct[" << (uint64_t)string_construct << ']' << std::endl);
+		    DBG(std::cout << "TokenCpnd::getreg(" << var->name << ") stack var calling string_construct[" << (uint64_t)string_construct << ']' << std::endl);
 		    FuncCallNode *call = cc.call(imm(string_construct), FuncSignatureT<void *, void *>(CallConv::kIdHost));
 		    call->setArg(0, reg);
 		    register_map[var] = reg;
@@ -909,8 +909,17 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
 		}
 		break;
 	    default:
+		if ( var->type->reftype() == RefType::rtReference
+		||   var->type->reftype() == RefType::rtPointer )
+		{
+		    x86::Gp reg = cc.newIntPtr(var->name.c_str());
+		    register_map[var] = reg;
+		    break;
+		}
 		std::cerr << "unsupported type: " << (int)var->type->type() << std::endl;
+		std::cerr << "reftype: " << (int)var->type->reftype() << std::endl;
 		throw "TokenCpnd()::getreg() unsupported type on stack";
+		
 	} // switch
     }
     else

@@ -1,6 +1,6 @@
 #!../bin/madc
 
-void print(string s)
+void print(string &s)
 {
     printstr(s);
 //    puts(s);
@@ -10,7 +10,7 @@ int main()
 {
     string hello = "Hello, World!";
 
-    printstr(hello);
+//    printstr(hello);
     print(hello);
 
     return 0;

@@ -25,6 +25,7 @@ using namespace std;
 using namespace asmjit;
 
 DataDefVOID ddVOID;
+DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;
 DataDefCHAR ddCHAR;
 DataDefINT ddINT;
@@ -41,6 +42,7 @@ DataDefUINT64 ddUINT64;
 DataDefFLOAT ddFLOAT;
 DataDefDOUBLE ddDOUBLE;
 DataDefSTRING ddSTRING;
+DataDefSTRINGref ddSTRINGref;
 DataDefOSTREAM ddOSTREAM;
 DataDefSSTREAM ddSSTREAM;
 DataDefLPSTR ddLPSTR;
@@ -1112,10 +1114,11 @@ grabnt:
 
 	nt = nextToken();
 
-	if ( nt->id() == TokenID::tkLand )
+	if ( nt->id() == TokenID::tkBand )
 	{
 	    rtype = RefType::rtReference;
-	    DBG(std::cout << "parseFunction() ignoring reference token" << std::endl);
+	    DBG(std::cout << "parseFunction() setting reference token " << std::endl);
+//	    pb->definition.setRef(RefType::rtReference);
 	    goto grabnt;
 	}
 	if ( nt->id() == TokenID::tkStar )
@@ -1142,7 +1145,10 @@ grabnt:
 	    if ( !func->findParameter(pid) )
 	    {
 		ids.push_back(pid);
-		func->parameters.push_back(&pb->definition);
+		if ( rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING )
+		    func->parameters.push_back(&ddSTRINGref);
+		else
+		    func->parameters.push_back(&pb->definition);
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
 		    << dd.size << " name: " << pid << " ptr: " << var << std::endl);
 	    }
