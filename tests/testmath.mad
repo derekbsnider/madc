@@ -1,0 +1,22 @@
+#!../bin/madc
+
+int main()
+{
+    int y = 0;
+
+    y = 10-1;
+    puti(y);
+
+    y = 5-5;
+    puti(y);
+    y = 5-10;
+    puti(y);
+    y = 5*5;
+    puti(y);
+    y = 20/4;
+    puti(y);
+    y = 12 % 5;
+    puti(y);
+
+    return 0;
+}

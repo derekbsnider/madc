@@ -1,6 +1,6 @@
 #!../bin/madc
 
-int test(int x)
+int add5(int x)
 {
     return x+5;
 }
@@ -9,8 +9,12 @@ int main()
 {
     int y = 1;
 
-    y = test(test(5));
+    puti(y);
 
+    y = add5(5);
+    puti(y);
+
+    y = add5(add5(5));
     puti(y);
 
     return 0;

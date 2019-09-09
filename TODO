@@ -1,2 +1,8 @@
 - support for struct/class/union/typedef
 - get operator overloading to re-support ostream <<
+- make datatypes not depend on existence of static objects
+- get showerror working again, maybe use a string buffer?
+- consider getting rid of using istream for lexer
+- should we force references for non-numeric parameters?
+- should we get rid of the readline stuff for now?
+- make madc a library (libmadc.so) that madc binary uses
