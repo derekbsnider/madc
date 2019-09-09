@@ -1,15 +1,16 @@
-#!./test_parser
+#!../bin/madc
 
 void print(string s)
 {
-//    printstr(s);
-    puts(s);
+    printstr(s);
+//    puts(s);
 }
 
 int main()
 {
     string hello = "Hello, World!";
 
+    printstr(hello);
     print(hello);
 
     return 0;

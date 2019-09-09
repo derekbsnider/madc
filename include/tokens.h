@@ -19,13 +19,20 @@ enum class TokenType {
 };
 
 enum class TokenID {
+// 0	  1	   2	  3	 4	5	6	  7	    8	   9	   9		 10	11
   tkBase, tkSpace, tkTab, tkEOL, tkREM, tkHash, tkAssign, tkEquals, tk3Eq, tkPlus, tkAdd=tkPlus, tkInc, tkSub,
+// 11		12	13	13		14	14		15	16	17	18	19
   tkDash=tkSub, tkDec, tkMul, tkStar=tkMul, tkSlash, tkDiv=tkSlash, tkBslsh, tkOpBrc, tkClBrc, tkOpBrk, tkClBrk,
+// 20	   21	    22	   23	   24	   25	  26	 27	28	29	29		30
   tkOpSqr, tkClSqr, tkNot, tkBand, tkLand, tkBor, tkLor, tkXor, tkMod, tkQmark, tkTerQ=tkQmark, tkColon,
+// 30		  31	32	33	 34	35	 36	  37	   38	 39	40	41	42
   tkTerC=tkColon, tkNS, tkSemi, tkComma, tkDot, tkDeRef, tkQuote, tkApost, tkGT, tkLT, tkBSL, tkBSR, tkAddEq,
+// 43	   44	    45		46	47	48	49	  50	51	52	53	54	55
   tkBSLEq, tkBSREq, tkBandEq, tkBnot, tkBorEq, tkDivEq, tkFuncOp, tkGE, tkLE, tkLnot, tkModEq, tkMulEq, tk3Way,
+// 56	   57		58	59	60	61	62	63	64		65	66
   tkNotEq, tkSubEq, tkXorEq, tkIdent, tkInt, tkChar, tkStr, tkOperator, tkDeclare, tkArrayOp, tkMultiOp,
 // keywords
+// 67	68	69	70	71	72	73	74	75	76	77	78
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER
 };
@@ -112,7 +119,11 @@ public:
     virtual TokenType type() const { return TokenType::ttOperator; }
     virtual TokenID   id()   const { return TokenID::tkOperator; }
     virtual inline int operate() const { return 0; } // used for internal debugging
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)  { throw "!!! TokenOperator::compile() !!!"; }
+    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)
+    {
+	DBG(std::cout << "TokenOperator::compile() called on operator: " << _token << std::endl);
+	throw "!!! TokenOperator::compile() !!!";
+    }
     virtual inline int precedence() const { return 15; } // C Operator Precedence, default to 15 (lowest)
     virtual inline bool operator>=(const TokenOperator &op) // used to compare precedence
     {
@@ -146,6 +157,7 @@ public:
     virtual TokenBase *clone() { TokenAdd *to = new TokenAdd(); to->left = left; to->right = right; return to; }
     virtual inline int precedence() const { return 4; }
     virtual TokenID id() const { return TokenID::tkAdd; }
+    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     inline int operate() const
     {
 	DBG(std::cout << "operate: " << left->get() << '+' << right->get() << std::endl);

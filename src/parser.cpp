@@ -532,6 +532,7 @@ void Program::popCompound()
 
 void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exStack)
 {
+    DBG(cout << "popOperator() size: " << opStack.size() << " TOP" << endl);
     TokenOperator *to;
 
     switch(opStack.top()->type())
@@ -539,6 +540,7 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    to = (TokenOperator *)opStack.top();
+	    DBG(cout << "popOperator() got operator: " << (char)to->get() << endl);
 	    if ( to->argc() > 0 )
 	    {
 		if ( !to->right )
@@ -568,7 +570,7 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	    exStack.push(to);
 	    break;
 	case TokenType::ttCallFunc:
-	    DBG(cout << "popOperator() got ttCallFunc :)" << endl);
+	    DBG(cout << "popOperator() got ttCallFunc" << endl);
 	    exStack.push(opStack.top());
 	    opStack.pop();
 	    break;
@@ -576,6 +578,7 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	    DBG(cerr << "popOperator() throwing opStack.top()" << endl);
 	    throw opStack.top();
     } // end switch
+    DBG(cout << "popOperator() size: " << opStack.size() << " END" << endl);
 }
 
 
@@ -586,19 +589,22 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 {
     TokenBase *tb;
 
-    DBG(std::cout << "Program::parseCallFunc(" << tc->var.name << ')' << std::endl);
+    DBG(std::cout << tc->line << ':' << tc->column << ":Program::parseCallFunc(" << tc->var.name << ')' << std::endl);
+#if 0
     tb = nextToken();
     if ( tb->id() != TokenID::tkOpBrk )
     {
 	DBG(std::cout << "Program::parseCallFunc() no parameters" << std::endl);
 	return tb;
     }
-
+#endif
     int brackets = 1;
     int paramcnt = 0;
 
     while ( brackets )
     {
+	tb = peekToken();
+	if ( tb->id() == TokenID::tkSemi )  { return tb; }
 	tb = nextToken();
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	if ( tb->id() == TokenID::tkComma )
@@ -608,7 +614,12 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    continue;
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
-	tc->parameters.push_back(parseExpression(tb, true));
+	DBG(cout << "parseCallFunc() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
+	if ( !(tb=parseExpression(tb, true)) ) { break; }
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
+	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
+	tc->parameters.push_back(tb);
     }
     // (need check for optional parameters)
     if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
@@ -634,9 +645,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
     bool done;
     int brackets = 0;
 
-    DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << ") start" << (conditional ? " conditional" : "") << std::endl);
+    DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
 
-    for ( done = false; !done && tb; tb = nextToken() )
+//    for ( done = false; !done && tb; tb = peekToken() )
+    while ( !done && tb )
     {
 parseexpswitchtop:
 	switch(tb->type())
@@ -734,10 +746,18 @@ parseexpswitchtop:
 	    case TokenType::ttIdentifier:
 		if ( tb->type() == TokenType::ttIdentifier
 		&& !(var=findVariable(((TokenIdent *)tb)->str)) )
+		{
+		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);
 		    throw (TokenIdent *)tb;
+		}
 		if ( var->type->is_function() )
 		{
+		    if ( peekToken()->id() != TokenID::tkOpBrk )
+			throw "Expecting (";
+		    tb = nextToken();
 		    TokenCallFunc *tc = new TokenCallFunc(*var);
+		    tc->line = tb->line;
+		    tc->column = tb->column;
 		    // delete tb?
 		    tb = parseCallFunc(tc);
 		    DBG(cout << "Pushing found function call: " << var->name << "() onto opStack" << endl);
@@ -745,7 +765,8 @@ parseexpswitchtop:
 		    DBG(cout << "parseCallFunc returned with token " << (char)tb->get() << endl);
 		    // I'm not sure why I need to do this TODO: figure this out
 		    if ( tb->id() == TokenID::tkSemi )
-			goto parseexpswitchtop;
+			done = true;
+//			goto parseexpswitchtop;
 		    break;
 		}
 		if ( var->type->is_numeric() )
@@ -772,10 +793,17 @@ parseexpswitchtop:
 		cerr << "Token type char? value " << tb->get() << endl;
 		break;
 	    default:
-		DBG(std::cerr << "parseExpression throwing token" << std::endl);
+		DBG(std::cerr << "parseExpression() primary switch throwing token" << std::endl);
 		throw tb;
 	}
 	if ( done ) { break; /* prevent eating next token */ }
+	tb = peekToken();
+	if ( tb->id() == TokenID::tkClBrk && !brackets )
+	{
+	    DBG(cout << "Hit ), no prior brackets, might be end of function?" << endl);
+	    break;
+	}
+	tb = nextToken();
     }
 
     if ( !opStack.empty() )
@@ -871,21 +899,27 @@ TokenFOR *TokenFOR::parse(Program &pgm)
 
     tn = pgm.nextToken();
     DBG(cout << "TokenFOR::parse() initialize: calling parseStatement(" << (char)tn->get() << ')' << endl);
-    initialize = pgm.parseStatement(tn);
-
+    if ( !(initialize = pgm.parseStatement(tn)) )
+	throw "Failed to parse initialize";
     tn = pgm.nextToken();
     DBG(cout << "TokenFOR::parse() condition: calling parseExpression(" << (char)tn->get() << ')' << endl);
-    condition = pgm.parseExpression(tn, true);
+    if ( !(condition = pgm.parseExpression(tn, true)) )
+	throw "Failed to parse expression";
 
     tn = pgm.nextToken();
     DBG(cout << "TokenFOR::parse() increment: calling parseStatement(" << (char)tn->get() << ')' << endl);
-    increment = pgm.parseStatement(tn);
-
-    // check for ")"?
+    if ( !(increment = pgm.parseStatement(tn)) )
+	throw "Failed to parse increment";
 
     tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkClBrk )
+	throw "Expecting )";
+
+    tn = pgm.nextToken();
+
     DBG(cout << "TokenFOR::parse() statement(s): calling parseStatement(" << (char)tn->get() << ')' << endl);
-    statement = pgm.parseStatement(tn);
+    if ( !(statement = pgm.parseStatement(tn)) )
+	throw "Failed to parse statement";
 
     DBG(std::cout << "TokenFOR::parse() END" << std::endl);
 

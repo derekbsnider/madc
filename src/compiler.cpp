@@ -248,6 +248,12 @@ void TokenCallFunc::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, a
     if ( argc() > func->parameters.size() )
     {
 	std::cerr << "ERROR: TokenCallFunc::compile() method " << var.name << " called with too many parameters" << std::endl;
+	std::cerr << "argc(): " << argc() << " func->parameters.size(): " << func->parameters.size() << std::endl;
+	for ( int i = 0; i < argc(); ++i )
+	{
+	    tn = parameters[i];
+	    std::cerr << "arg[" << i << "] type() = " << (int)tn->type() << " id() = " << (int)tn->id() << std::endl;
+	}
 	throw "TokenCallFunc::compile() called with too many parameters";
     }
 
@@ -316,6 +322,15 @@ void TokenCallFunc::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, a
 		    params.push_back(p);
 		}
 		funcsig.addArgT<char>();
+		break;
+	    case TokenType::ttCallFunc:
+		DBG(std::cout << "TokenCallFunc::compile() adding call to (ttCallFunc): " << method->returns.name << '(' << tn->val() << ')' << std::endl);
+		{
+		    x86::Gp p = pgm.cc.newGpq();
+		    tn->compile(pgm, &p);
+		    params.push_back(p);
+		}
+		funcsig.addArgT<int>();
 		break;
 	    default:
 		std::cerr << "TokenCallFunc::compile() parameter #" << i << " is type " << (int)tn->type() << std::endl;
@@ -1012,6 +1027,24 @@ void Program::compileKeyword(TokenKeyword *tk)
 }
 #endif
 
+
+// add two integers
+void TokenAdd::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
+{
+    DBG(cout << "TokenAdd::Compile() TOP" << endl);
+    if ( !left )
+	throw "!= missing lval operand";
+    if ( !right )
+	throw "!= missing rval operand";
+    if ( !ret )
+	throw "!= missing ret pointer";
+    x86::Gp rreg = pgm.cc.newGpq();
+    _reg = pgm.cc.newGpq();
+    left->compile(pgm, &_reg, l_true, l_false);
+    right->compile(pgm, &rreg, l_true, l_false);
+    pgm.cc.add(_reg, rreg);
+}
+
 void TokenNotEq::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
 {
     DBG(cout << "TokenNotEq::Compile() TOP" << endl);
@@ -1108,7 +1141,7 @@ void TokenIF::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit:
     Label iftail = pgm.cc.newLabel();	// label for tail of if
     Label thendo = pgm.cc.newLabel();	// label for then condition
     Label elsedo = pgm.cc.newLabel();	// label for else condition
-    x86::Gp reg  = pgm.cc.newGpb();	// register for test condition
+    x86::Gp reg  = pgm.cc.newGpq();	// register for test condition
     TokenVar *tv;
 
     if ( !statement ) { throw "if missing statement"; }
@@ -1138,7 +1171,7 @@ void TokenDO::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit:
     Label dotop  = pgm.cc.newLabel();	// label for top of loop
     Label dodo   = pgm.cc.newLabel();	// label for loop action
     Label dotail = pgm.cc.newLabel();	// label for tail of loop
-    x86::Gp reg  = pgm.cc.newGpb();	// register to test condition
+    x86::Gp reg  = pgm.cc.newGpq();	// register to test condition
 
     pgm.cc.bind(dotop);			// label the top of the loop
     DBG(cout << "TokenDO::compile() calling statement->compile(pgm)" << endl);
@@ -1162,7 +1195,7 @@ void TokenWHILE::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmj
     Label whiletop  = pgm.cc.newLabel();	// label for top of loop
     Label whiledo   = pgm.cc.newLabel();	// label for loop action
     Label whiletail = pgm.cc.newLabel();	// label for tail of loop
-    x86::Gp reg     = pgm.cc.newGpb();		// register to test condition
+    x86::Gp reg     = pgm.cc.newGpq();		// register to test condition
 
     pgm.cc.bind(whiletop);			// label the top of the loop
     condition->compile(pgm, &reg, &whiledo, &whiletail);
@@ -1184,7 +1217,7 @@ void TokenFOR::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit
     Label fortop  = pgm.cc.newLabel();		// label for top of loop
     Label fordo   = pgm.cc.newLabel();		// label for loop action
     Label fortail = pgm.cc.newLabel();		// label for tail of loop
-    x86::Gp reg   = pgm.cc.newGpb();		// register to test condition
+    x86::Gp reg   = pgm.cc.newGpq();		// register to test condition
 
     initialize->compile(pgm); 			// execute loop's initializer statement
     pgm.cc.bind(fortop);			// label the top of the loop
