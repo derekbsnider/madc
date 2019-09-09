@@ -1,0 +1,14 @@
+#!./test_parser
+
+int main()
+{
+    string hello = "Hello, World!";
+    int a = 1;
+
+    if ( a )
+	return 0;
+
+    printstr(hello);
+
+    return 0;
+}

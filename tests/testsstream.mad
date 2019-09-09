@@ -1,0 +1,32 @@
+#!./test_parser
+
+int gimmie5()
+{
+    return 5;
+}
+
+int main()
+{
+    stringstream ss;
+    string hello = "Hello, World!";
+    string bye = "Goodbye, cruel World!";
+    uint32_t i = 456;
+    uint32_t j;
+
+    puti(i);
+    puti(123);
+
+    j = gimmie5();
+    puti(j);
+
+    ss << hello << " ... " << bye;
+    ss << " i: " << i;
+    ss << " 123: " << 123;
+    printstream(ss);
+
+    cout << "This is a test to cout: " << gimmie5() << endl;
+//    endl(cout);
+//    printstr("...");
+
+    return 0;
+}

@@ -1,0 +1,68 @@
+#!./test_parser
+
+string hello;
+string bye = "Goodbye, cruel World!";
+
+hello = "Hello, World!";
+
+
+void print(string &s)
+{
+    puts("***");
+    puts(s);
+    puts("***");
+}
+
+void test()
+{
+    puts("test");
+}
+
+void test2()
+{
+    string hey = "hey";
+
+    puts(hey);
+    puts(hello);
+    puts("Hey there");
+    hello = "hi";
+    puts(hello);
+    hello = bye;
+    puts(hello);
+
+    print(hello);
+}
+
+
+int main()
+{
+//  uint32_t i = 100000000;
+    uint32_t i = 10000;
+    uint32_t j = 10000;
+    uint32_t x = 0;
+
+    puts(i);
+    puts("start");
+
+    i = 10000;
+    x = 0;
+
+    while ( i )
+    {
+	--i;
+	j = 10000;
+	while ( j )
+	{
+	    --j;
+	    ++x;
+	}
+    }
+
+    puti(x);
+
+    test2();
+
+    return 0;
+}
+
+//test2("test");

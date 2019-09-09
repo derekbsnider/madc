@@ -1,0 +1,15 @@
+int test(int x)
+{
+    return x+5;
+}
+
+int main()
+{
+    int y;
+
+    y = test(test(5));
+
+    puti(y);
+
+    return 0;
+}

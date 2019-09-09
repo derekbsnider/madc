@@ -1,0 +1,8 @@
+#!./test_parser
+
+int main()
+{
+    cout << "Test";
+    printstr(".");
+    return 0;
+}
