@@ -349,13 +349,14 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_tru
 x86::Gp& TokenCpnd::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
 {
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") TOP" << endl);
+    x86::Gp *regp = &_reg;
     for ( vector<TokenStmt *>::iterator vti = statements.begin(); vti != statements.end(); ++vti )
     {
-	(*vti)->compile(pgm);
+	regp = &(*vti)->compile(pgm, ret, l_true, l_false);
     }
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") END" << endl);
 
-    return _reg;
+    return *regp;
 }
 
 // compile the "program" token, which contains all initilization / non-function statements
@@ -390,7 +391,7 @@ x86::Gp& TokenProgram::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true
 
 x86::Gp& TokenBase::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
 {
-    DBG(cout << "TokenStmt::compile(" << (void *)this << " type: " << (int)type() << ") TOP" << endl);
+    DBG(cout << "TokenStmt::compile(" << (void *)this << " type: " << (int)type() << (ret ? " ret=true" : "") << ") TOP" << endl);
     switch(type())
     {
 	case TokenType::ttOperator:
@@ -700,7 +701,6 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true,
 	throw "Assignment with no lval";
     if ( !right )
 	throw "Assignment with no rval";
-
     if ( left->type() != TokenType::ttVariable )
 	throw "Assignment on a non-variable lval";
 
@@ -775,8 +775,10 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true,
 	case TokenType::ttMultiOp:
 	    {
 		// temp for right side
-		x86::Gp rreg = pgm.cc.newGpq();
-		right->compile(pgm, &rreg, l_true, l_false);
+//		x86::Gp rreg = pgm.cc.newGpq();
+//		right->compile(pgm, &rreg, l_true, l_false);
+//		pgm.safemov(lreg, rreg);
+		x86::Gp &rreg = right->compile(pgm, NULL, l_true, l_false);
 		pgm.safemov(lreg, rreg);
 		break;
 	    }
@@ -1043,11 +1045,7 @@ x86::Gp& TokenAdd::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, as
 	throw "!= missing lval operand";
     if ( !right )
 	throw "!= missing rval operand";
-    if ( !ret )
-	throw "!= missing ret pointer";
-//    _reg = pgm.cc.newGpq();
     x86::Gp &lreg = left->compile(pgm, NULL, l_true, l_false);
-//    x86::Gp rreg = pgm.cc.newGpq();
     x86::Gp &rreg = right->compile(pgm, NULL, l_true, l_false);
     DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(_reg, rreg)"));
     pgm.cc.add(lreg, rreg);
@@ -1069,19 +1067,17 @@ x86::Gp& TokenSub::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, as
 	throw "!= missing lval operand";
     if ( !right )
 	throw "!= missing rval operand";
-    x86::Gp rreg = pgm.cc.newGpq();
-    _reg = pgm.cc.newGpq();
-    left->compile(pgm, &_reg, l_true, l_false);
-    right->compile(pgm, &rreg, l_true, l_false);
-    DBG(pgm.cc.comment("TokenSub::compile() pgm.cc.sub(_reg, rreg)"));
-    pgm.cc.sub(_reg, rreg);
+    x86::Gp &lreg = left->compile(pgm, NULL, l_true, l_false);
+    x86::Gp &rreg = right->compile(pgm, NULL, l_true, l_false);
+    DBG(pgm.cc.comment("TokenSub::compile() pgm.cc.sub(lreg, rreg)"));
+    pgm.cc.sub(lreg, rreg);
     if ( ret )
     {
-	DBG(pgm.cc.comment("TokenSub::compile() pgm.safemov(*ret, _reg)"));
-	pgm.safemov(*ret, _reg);
+	DBG(pgm.cc.comment("TokenSub::compile() pgm.safemov(*ret, lreg)"));
+	pgm.safemov(*ret, lreg);
     }
 
-    return _reg;
+    return lreg;
 }
 
 // multiply two integers
@@ -1092,21 +1088,19 @@ x86::Gp& TokenMul::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, as
 	throw "!= missing lval operand";
     if ( !right )
 	throw "!= missing rval operand";
-    x86::Gp rreg = pgm.cc.newGpq();
-    _reg = pgm.cc.newGpq();
-    left->compile(pgm, &_reg, l_true, l_false);
-    right->compile(pgm, &rreg, l_true, l_false);
-    DBG(pgm.cc.comment("TokenMul::compile() pgm.cc.imul(_reg, rreg)"));
-    pgm.cc.imul(_reg, rreg);
+    x86::Gp &lreg = left->compile(pgm, NULL, l_true, l_false);
+    x86::Gp &rreg = right->compile(pgm, NULL, l_true, l_false);
+    DBG(pgm.cc.comment("TokenMul::compile() pgm.cc.imul(lreg, rreg)"));
+    pgm.cc.imul(lreg, rreg);
 
     if ( ret )
     {
-	DBG(pgm.cc.comment("TokenMul::compile() pgm.safemov(*ret, _reg)"));
-	pgm.safemov(*ret, _reg);
+	DBG(pgm.cc.comment("TokenMul::compile() pgm.safemov(*ret, lreg)"));
+	pgm.safemov(*ret, lreg);
 	return *ret;
     }
 
-    return _reg;
+    return lreg;
 }
 
 // divide two integers
@@ -1118,23 +1112,21 @@ x86::Gp& TokenDiv::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, as
     if ( !right )
 	throw "!= missing rval operand";
 
-    x86::Gp rreg = pgm.cc.newGpq();
     x86::Gp remainder = pgm.cc.newInt64("TokenDiv::remainder");
-    _reg = pgm.cc.newGpq();
-    left->compile(pgm, &_reg, l_true, l_false);
-    right->compile(pgm, &rreg, l_true, l_false);
+    x86::Gp &lreg = left->compile(pgm, NULL, l_true, l_false);
+    x86::Gp &rreg = right->compile(pgm, NULL, l_true, l_false);
     pgm.cc.xor_(remainder, remainder);
-    DBG(pgm.cc.comment("TokenDiv::compile() pgm.cc.div(remainder, _reg, rreg)"));
-    pgm.cc.idiv(remainder,_reg, rreg);
+    DBG(pgm.cc.comment("TokenDiv::compile() pgm.cc.div(remainder, lreg, rreg)"));
+    pgm.cc.idiv(remainder, lreg, rreg);
 
     if ( ret )
     {
-	DBG(pgm.cc.comment("TokenDiv::compile() pgm.safemov(*ret, _reg)"));
-	pgm.safemov(*ret, _reg);
+	DBG(pgm.cc.comment("TokenDiv::compile() pgm.safemov(*ret, lreg)"));
+	pgm.safemov(*ret, lreg);
 	return *ret;
     }
 
-    return _reg;
+    return lreg;
 }
 
 // modulus
@@ -1145,18 +1137,20 @@ x86::Gp& TokenMod::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, as
 	throw "!= missing lval operand";
     if ( !right )
 	throw "!= missing rval operand";
-    if ( !ret )
-	throw "!= missing ret pointer";
-    x86::Gp rreg = pgm.cc.newGpq();
-    x86::Gp remainder = pgm.cc.newInt64("TokenMod::remainder");
-    _reg = pgm.cc.newGpq();
-    left->compile(pgm, &_reg, l_true, l_false);
-    right->compile(pgm, &rreg, l_true, l_false);
+    x86::Gp remainder = pgm.cc.newInt64("TokenDiv::remainder");
+    x86::Gp &lreg = left->compile(pgm, NULL, l_true, l_false);
+    x86::Gp &rreg = right->compile(pgm, NULL, l_true, l_false);
     pgm.cc.xor_(remainder, remainder);
-    DBG(pgm.cc.comment("TokenMod::compile() pgm.cc.div(remainder, _reg, rreg)"));
-    pgm.cc.idiv(remainder,_reg, rreg);
-    DBG(pgm.cc.comment("TokenMod::compile() pgm.safemov(*ret, remainder)"));
-    pgm.safemov(*ret, remainder);
+    DBG(pgm.cc.comment("TokenMod::compile() pgm.cc.div(remainder, lreg, rreg)"));
+    pgm.cc.idiv(remainder, lreg, rreg);
+    if ( ret )
+    {
+	DBG(pgm.cc.comment("TokenMod::compile() pgm.safemov(*ret, remainder)"));
+	pgm.safemov(*ret, remainder);
+	return *ret;
+    }
+    _reg = pgm.cc.newGpq();
+    pgm.safemov(_reg, remainder);
 
     return _reg;
 }
