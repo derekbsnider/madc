@@ -83,7 +83,7 @@ public:
     void putreg(asmjit::x86::Compiler &, Variable *);
     void cleanup(asmjit::x86::Compiler &);
     void clear_regmap() { register_map.clear(); }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
     Variable *findVariable(std::string &);
@@ -95,7 +95,7 @@ public:
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual int argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     using TokenCpnd::getreg;
 };
 
@@ -105,7 +105,7 @@ public:
     TokenBase *initialize;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 class TokenCallFunc: public TokenVar
@@ -119,7 +119,7 @@ public:
     virtual int argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::x86::Gp &getreg(Program &);
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 class TokenProgram: public TokenCpnd
@@ -131,7 +131,7 @@ public:
     size_t bytes;
     TokenProgram() : TokenCpnd() { lines = 0; bytes = 0; is = NULL; }
     virtual TokenType type() const { return TokenType::ttProgram; }
-    virtual void compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 
