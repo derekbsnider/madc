@@ -1,4 +1,4 @@
-#!./test_parser
+#!../bin/madc
 /*
 string hello;
 string bye = "Goodbye, cruel World!";

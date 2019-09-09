@@ -1,3 +1,5 @@
+#!../bin/madc
+
 int test(int x)
 {
     return x+5;
@@ -5,7 +7,7 @@ int test(int x)
 
 int main()
 {
-    int y;
+    int y = 1;
 
     y = test(test(5));
 

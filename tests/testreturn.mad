@@ -1,4 +1,4 @@
-#!./test_parser
+#!../bin/madc
 
 int increment(int i)
 {
