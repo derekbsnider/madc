@@ -1,11 +1,22 @@
-C_FLAGS = -ggdb -std=c++11
-#C_FLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
+CXX=g++
+CXXFLAGS=-ggdb -std=c++11
+#CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
+HFILES	= madc.h tokens.h datadef.h
+OFILES	= lexer.o parser.o compiler.o madc.o
+INCDIR	= ../include
+BINDIR	= ../bin
+LIBDIR	= ../lib
+OBJDIR	= ../obj
+DEFINES	= -I$(INCDIR)
+LIBS	= -lreadline -lasmjit
+DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES))
+OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 
 all:
-	make test_parser
+	make ../bin/madc
 
-test_parser: lexer.o parser.o compiler.o test_parser.o
-	g++ lexer.o parser.o compiler.o test_parser.o -o test_parser -lreadline -lasmjit
+../bin/madc: $(OBJECTS)
+	$(CXX) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
 
-.cpp.o:
-	g++ -c $(C_FLAGS) $<
+$(OBJDIR)/%.o: %.cpp $(DEPENDS)
+	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) $<
