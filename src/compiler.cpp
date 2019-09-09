@@ -92,6 +92,8 @@ void streamout_intptr(std::ostream &os, int *i)
     os << *i;
 }
 
+// simple for now, should have different versions for signed vs unsigned
+// small to big vs big to small, etc
 void Program::safemov(x86::Gp &r1, x86::Gp &r2)
 {
     switch(r1.type())
@@ -107,7 +109,6 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2)
 
 void Program::_compiler_init()
 {
-#if 0
     static FileLogger logger(stdout);
 
     logger.setFlags(FormatOptions::kFlagDebugRA | FormatOptions::kFlagMachineCode | FormatOptions::kFlagDebugPasses);
@@ -115,9 +116,8 @@ void Program::_compiler_init()
     code.reset();
     code.init(jit.codeInfo());
     code.setLogger(&logger);
+    code.addEmitterOptions(BaseEmitter::kOptionStrictValidation);
     code.attach(&cc);
-#endif
-    add_string_methods();
 }
 
 bool Program::_compiler_finalize()
@@ -134,26 +134,13 @@ bool Program::_compiler_finalize()
 	std::cerr << "Code generation failed!" << std::endl;
 	return false;
     }
-#if 0
-    variable_map_iter vmi;
-    Variable *var;
-    Method *method;
-    FuncNode *fnd;
-
-    for ( vmi = variable_map.begin(); vmi != variable_map.end(); ++vmi )
-    {
-	var = vmi->second;
-	if ( var->type->basetype() == BaseType::btFunct
-	&&   (method=(Method *)var->data) && !method->x86code
-	&&   (fnd=((FuncDef *)(method->returns.type))->funcnode) )
-	    method->x86code = (uint8_t *)root_fn + code.labelOffset(fnd->label());
-    }
-#else
     variable_vec_iter vvi;
     Variable *var;
     Method *method;
     FuncNode *fnd;
 
+    // find all global variables which are functions, have no x86code assigned
+    // and have a funcnode label, so that we can properly set our function pointer
     for ( vvi = tkProgram->variables.begin(); vvi != tkProgram->variables.end(); ++vvi )
     {
 	var = *vvi;
@@ -162,7 +149,7 @@ bool Program::_compiler_finalize()
 	&&   (fnd=((FuncDef *)(method->returns.type))->funcnode) )
 	    method->x86code = (uint8_t *)root_fn + code.labelOffset(fnd->label());
     }
-#endif
+
     return true;
 }
 
@@ -335,6 +322,7 @@ void TokenCallFunc::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, a
 	DBG(std::cout << "TokenCallFunc::compile(cc.call(" << (uint64_t)method->x86code << ')' << std::endl);
 
     // now we should have all we need to call the function
+    DBG(pgm.cc.comment(var.name.c_str()));
     FuncCallNode *call = fnd ? pgm.cc.call(fnd->label(), funcsig) : pgm.cc.call(imm(method->x86code), funcsig);
     std::vector<x86::Gp>::iterator gvi;
     _argc = 0;
@@ -717,6 +705,12 @@ void TokenAssign::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asm
 
     tvl = dynamic_cast<TokenVar *>(left);
     DBG(cout << "TokenAssign::compile() assignment to " << tvl->var.name << endl);
+
+    // get left register
+    x86::Gp &lreg = tvl->getreg(pgm);
+    // temp for right side
+    x86::Gp rreg = pgm.cc.newGpq();
+
     switch(right->type())
     {
 	case TokenType::ttVariable:
@@ -746,6 +740,7 @@ void TokenAssign::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asm
 
 		x86::Gp &lreg = tvl->getreg(pgm); // pgm.tkFunction->getreg(pgm.cc, &tvl->var);
 		x86::Gp &rreg = tvr->getreg(pgm); //pgm.tkFunction->getreg(pgm.cc, &tvr->var);
+		DBG(pgm.cc.comment("string_assign"));
 		FuncCallNode* call = pgm.cc.call(imm(string_assign), FuncSignatureT<void, const char*, const char *>(CallConv::kIdHost));
 		call->setArg(0, lreg);
 		call->setArg(1, rreg);
@@ -780,6 +775,17 @@ void TokenAssign::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asm
 		break;
 	    }
 	    throw "Return type not compatible";
+	case TokenType::ttOperator:
+	case TokenType::ttMultiOp:
+	    {
+		// get left register
+		x86::Gp &lreg = tvl->getreg(pgm);
+		// temp for right side
+		x86::Gp rreg = pgm.cc.newGpq();
+		right->compile(pgm, &rreg, l_true, l_false);
+		pgm.safemov(lreg, rreg);
+		break;
+	    }
 	default:
 	    throw "Unimplemented assignment";
     } // switch
@@ -878,6 +884,7 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
 		    x86::Gp reg = cc.newIntPtr(var->name.c_str());
 		    cc.lea(reg, stack);
 		    DBG(std::cout << "TokenCpnd::getreg(" << var->name << ") stack var calling string_construct[" << (uint64_t)string_construct << ']' << std::endl);
+		    DBG(cc.comment("string_construct"));
 		    FuncCallNode *call = cc.call(imm(string_construct), FuncSignatureT<void *, void *>(CallConv::kIdHost));
 		    call->setArg(0, reg);
 		    register_map[var] = reg;
@@ -888,6 +895,7 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
 		    x86::Mem stack = cc.newStack(sizeof(std::stringstream), 4);
 		    x86::Gp reg = cc.newIntPtr(var->name.c_str());
 		    cc.lea(reg, stack);
+		    DBG(cc.comment("stringstream_construct"));
 		    FuncCallNode *call = cc.call(imm(stringstream_construct), FuncSignatureT<void *, void *>(CallConv::kIdHost));
 		    call->setArg(0, reg);
 		    register_map[var] = reg;
@@ -1044,7 +1052,94 @@ void TokenAdd::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit
     _reg = pgm.cc.newGpq();
     left->compile(pgm, &_reg, l_true, l_false);
     right->compile(pgm, &rreg, l_true, l_false);
+    DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(_reg, rreg)"));
     pgm.cc.add(_reg, rreg);
+    DBG(pgm.cc.comment("TokenAdd::compile() pgm.safemov(*ret, _reg)"));
+    pgm.safemov(*ret, _reg);
+}
+
+// subtract two integers
+void TokenSub::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
+{
+    DBG(cout << "TokenSub::Compile() TOP" << endl);
+    if ( !left )
+	throw "!= missing lval operand";
+    if ( !right )
+	throw "!= missing rval operand";
+    if ( !ret )
+	throw "!= missing ret pointer";
+    x86::Gp rreg = pgm.cc.newGpq();
+    _reg = pgm.cc.newGpq();
+    left->compile(pgm, &_reg, l_true, l_false);
+    right->compile(pgm, &rreg, l_true, l_false);
+    DBG(pgm.cc.comment("TokenSub::compile() pgm.cc.sub(_reg, rreg)"));
+    pgm.cc.sub(_reg, rreg);
+    DBG(pgm.cc.comment("TokenSub::compile() pgm.safemov(*ret, _reg)"));
+    pgm.safemov(*ret, _reg);
+}
+
+// multiply two integers
+void TokenMul::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
+{
+    DBG(cout << "TokenMul::Compile() TOP" << endl);
+    if ( !left )
+	throw "!= missing lval operand";
+    if ( !right )
+	throw "!= missing rval operand";
+    if ( !ret )
+	throw "!= missing ret pointer";
+    x86::Gp rreg = pgm.cc.newGpq();
+    _reg = pgm.cc.newGpq();
+    left->compile(pgm, &_reg, l_true, l_false);
+    right->compile(pgm, &rreg, l_true, l_false);
+    DBG(pgm.cc.comment("TokenMul::compile() pgm.cc.imul(_reg, rreg)"));
+    pgm.cc.imul(_reg, rreg);
+    DBG(pgm.cc.comment("TokenMul::compile() pgm.safemov(*ret, _reg)"));
+    pgm.safemov(*ret, _reg);
+}
+
+// divide two integers
+void TokenDiv::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
+{
+    DBG(cout << "TokenDiv::Compile() TOP" << endl);
+    if ( !left )
+	throw "!= missing lval operand";
+    if ( !right )
+	throw "!= missing rval operand";
+    if ( !ret )
+	throw "!= missing ret pointer";
+    x86::Gp rreg = pgm.cc.newGpd();
+    x86::Gp remainder = pgm.cc.newInt32("TokenDiv::remainder");
+    _reg = pgm.cc.newGpd();
+    left->compile(pgm, &_reg, l_true, l_false);
+    right->compile(pgm, &rreg, l_true, l_false);
+    pgm.cc.xor_(remainder, remainder);
+    DBG(pgm.cc.comment("TokenDiv::compile() pgm.cc.div(remainder, _reg, rreg)"));
+    pgm.cc.idiv(remainder,_reg, rreg);
+    DBG(pgm.cc.comment("TokenDiv::compile() pgm.safemov(*ret, _reg)"));
+    pgm.safemov(*ret, _reg);
+}
+
+// modulus
+void TokenMod::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
+{
+    DBG(cout << "TokenMod::Compile() TOP" << endl);
+    if ( !left )
+	throw "!= missing lval operand";
+    if ( !right )
+	throw "!= missing rval operand";
+    if ( !ret )
+	throw "!= missing ret pointer";
+    x86::Gp rreg = pgm.cc.newGpd();
+    x86::Gp remainder = pgm.cc.newInt32("TokenMod::remainder");
+    _reg = pgm.cc.newGpd();
+    left->compile(pgm, &_reg, l_true, l_false);
+    right->compile(pgm, &rreg, l_true, l_false);
+    pgm.cc.xor_(remainder, remainder);
+    DBG(pgm.cc.comment("TokenMod::compile() pgm.cc.div(remainder, _reg, rreg)"));
+    pgm.cc.idiv(remainder,_reg, rreg);
+    DBG(pgm.cc.comment("TokenMod::compile() pgm.safemov(*ret, remainder)"));
+    pgm.safemov(*ret, remainder);
 }
 
 void TokenNotEq::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit::Label *l_false)
@@ -1085,7 +1180,9 @@ void TokenVar::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit
 {
     if ( ret )
     {
+	DBG(pgm.cc.comment("TokenVar::compile() reg = getreg()"));
 	x86::Gp &reg = getreg(pgm);
+	DBG(pgm.cc.comment("TokenVar::compile() safemov(*ret, reg)"));
 	pgm.safemov(*ret, reg);
     }
 }
@@ -1094,9 +1191,23 @@ void TokenInt::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmjit
 {
     if ( ret )
     {
-	x86::Gp &reg = getreg(pgm);
-	pgm.safemov(*ret, reg);
+	DBG(pgm.cc.comment("TokenInt::compile() mov(*ret, value)"));
+	pgm.cc.mov(*ret, _token);
     }
+/*
+    if ( ret )
+    {
+	pgm.cc.comment("TokenInt::compile() reg = getreg()");
+	x86::Gp &reg = getreg(pgm);
+	if ( &reg == ret )
+	    pgm.cc.comment("TokenInt::compile() reg == *ret");
+	else
+	{
+	    pgm.cc.comment("TokenInt::compile() safemov(*ret, reg)");
+	    pgm.safemov(*ret, reg);
+	}
+    }
+*/
 }
 
 // compile a return statement
@@ -1112,28 +1223,6 @@ void TokenRETURN::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asm
 	return;
     }
     pgm.cc.ret();
-/*
-    switch(returns->type())
-    {
-	case TokenType::ttInteger:
-	    {
-		TokenInt *tir = dynamic_cast<TokenInt *>(returns);
-		x86::Gp &rreg = tir->getreg(pgm);
-		pgm.cc.ret(rreg);
-	    }
-	    break;
-	case TokenType::ttVariable:
-	    {
-		TokenVar *tvr = dynamic_cast<TokenVar *>(returns);
-		x86::Gp &rreg = tvr->getreg(pgm); // pgm.tkFunction->getreg(pgm.cc, &tvr->var);
-		pgm.cc.ret(rreg);
-	    }
-	    break;
-	default:
-	    pgm.cc.ret();
-	    break;
-    }
-*/
 }
 
 // compile an if statement
@@ -1197,11 +1286,21 @@ void TokenWHILE::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asmj
     Label whiletop  = pgm.cc.newLabel();	// label for top of loop
     Label whiledo   = pgm.cc.newLabel();	// label for loop action
     Label whiletail = pgm.cc.newLabel();	// label for tail of loop
-    x86::Gp reg     = pgm.cc.newGpq();		// register to test condition
 
     pgm.cc.bind(whiletop);			// label the top of the loop
-    condition->compile(pgm, &reg, &whiledo, &whiletail);
-    pgm.cc.test(reg, reg);			// compare to zero
+    
+    // shortcut optimization
+    if ( condition->type() == TokenType::ttVariable )
+    {
+	x86::Gp &reg = condition->getreg(pgm);	// get register
+	pgm.cc.test(reg, reg);			// compare to zero
+    }
+    else
+    {
+	x86::Gp reg     = pgm.cc.newGpq();	// register to test condition
+	condition->compile(pgm, &reg, &whiledo, &whiletail);
+	pgm.cc.test(reg, reg);			// compare to zero
+    }
     pgm.cc.je(whiletail);			// jump to end
 
     DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm)" << endl);

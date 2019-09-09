@@ -311,16 +311,8 @@ void Program::add_globals()
 
 void Program::_parser_init()
 {
-    static FileLogger logger(stdout);
-
-    logger.setFlags(FormatOptions::kFlagDebugRA | FormatOptions::kFlagMachineCode | FormatOptions::kFlagDebugPasses);
-
-    code.reset();
-    code.init(jit.codeInfo());
-    code.setLogger(&logger);
-    code.attach(&cc);
-
     add_functions();
+    add_string_methods();
     add_globals();
     _braces = 0;
 }
@@ -776,7 +768,6 @@ parseexpswitchtop:
 		    // I'm not sure why I need to do this TODO: figure this out
 		    if ( tb->id() == TokenID::tkSemi )
 			done = true;
-//			goto parseexpswitchtop;
 		    break;
 		}
 		if ( var->type->is_numeric() )
