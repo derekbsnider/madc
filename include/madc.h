@@ -240,7 +240,10 @@ public:
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
 
     // perform cc.mov with size casting
-    void safemov(asmjit::x86::Gp &r1, asmjit::x86::Gp &r2);
+    inline void safemov(asmjit::x86::Gp &, asmjit::x86::Gp &);
+
+    // perform cc.cmp with size casting
+    inline void safecmp(asmjit::x86::Gp &, asmjit::x86::Gp &);
 
     // compile code
     bool compile();
