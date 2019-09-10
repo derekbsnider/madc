@@ -1,0 +1,11 @@
+#!../bin/madc
+
+int main()
+{
+    uint32_t b = 0;
+
+    if ( b == 0 )
+	puti(b);
+
+    return 0;
+}

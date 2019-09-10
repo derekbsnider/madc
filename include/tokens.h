@@ -113,11 +113,12 @@ public:
     TokenOperator() : TokenBase() { left = NULL; right = NULL; }
     TokenOperator(int t) : TokenBase(t) { left = NULL; right = NULL; }
     virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; return to; }
-    virtual int val() const { if (left && right) return operate(); return 0; }
+    virtual int val() const { /*if (left && right) return operate();*/ return 0; }
     virtual int argc() const { return 2; }
     virtual TokenType type() const { return TokenType::ttOperator; }
     virtual TokenID   id()   const { return TokenID::tkOperator; }
     virtual inline int operate() const { return 0; } // used for internal debugging
+    virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL)
     {
 	DBG(std::cout << "TokenOperator::compile() called on operator: " << _token << std::endl);
@@ -413,6 +414,7 @@ public:
     TokenBnot() : TokenOperator('~') {}
     virtual TokenID id() const { return TokenID::tkBnot; }
     virtual TokenBase *clone() { return new TokenBnot(); }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual inline int precedence() const { return 2; }
     virtual int argc() const { return 1; }
 };
@@ -424,6 +426,7 @@ public:
     TokenLnot() : TokenOperator('!') {}
     virtual TokenID id() const { return TokenID::tkLnot; }
     virtual TokenBase *clone() { return new TokenLnot(); }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
     virtual inline int precedence() const { return 2; }
     virtual int argc() const { return 1; }
 };
@@ -577,6 +580,7 @@ public:
 };
 
 // comparison operator <=> (three-way greater than, less than or equal to)
+// evaluates to either -1 (<), 0 (=), or 1 (>)
 class Token3Way: public TokenMultiOp
 {
 public:
@@ -584,6 +588,7 @@ public:
     virtual TokenID id() const { return TokenID::tk3Way; }
     virtual TokenBase *clone() { return new Token3Way(); }
     virtual inline int precedence() const { return 6; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // bitwise shift left <<

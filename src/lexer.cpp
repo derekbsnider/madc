@@ -303,6 +303,7 @@ TokenBase *Program::_getToken(istream &ss)
 	case ')': return new TokenClBrk;
 	case '[': return new TokenOpSqr;
 	case ']': return new TokenClSqr;
+	case '~': return new TokenBnot;
 	case '!': if (ss.peek() != '=') return new TokenLnot;		// !
 	    get(ss); return new TokenNotEq;				// !=
 	case '&':

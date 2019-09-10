@@ -1,0 +1,18 @@
+#!../bin/madc
+
+int main()
+{
+    int y = 0;
+
+    y = !1;
+    puti(y);
+    y = !0;
+    puti(y);
+
+    y = ~1;
+    puti(y);
+    y = ~0;
+    puti(y);
+
+    return 0;
+}
