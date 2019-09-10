@@ -540,6 +540,7 @@ public:
     virtual TokenID id() const { return TokenID::tkLT; }
     virtual TokenBase *clone() { return new TokenLT(); }
     virtual inline int precedence() const { return 6; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // comparison operator < (greater than)
@@ -550,6 +551,7 @@ public:
     virtual TokenID id() const { return TokenID::tkGT; }
     virtual TokenBase *clone() { return new TokenGT(); }
     virtual inline int precedence() const { return 6; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // comparison operator <= (less than or equal to)
@@ -560,6 +562,7 @@ public:
     virtual TokenID id() const { return TokenID::tkLE; }
     virtual TokenBase *clone() { return new TokenLE(); }
     virtual inline int precedence() const { return 6; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // comparison operator <= (greater than or equal to)
@@ -570,6 +573,7 @@ public:
     virtual TokenID id() const { return TokenID::tkGE; }
     virtual TokenBase *clone() { return new TokenGE(); }
     virtual inline int precedence() const { return 6; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // comparison operator <=> (three-way greater than, less than or equal to)
@@ -589,6 +593,7 @@ class TokenBSL: public TokenMultiOp
     virtual TokenID id() const { return TokenID::tkBSL; }
     virtual TokenBase *clone() { return new TokenBSL(); }
     virtual inline int precedence() const { return 5; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // bitwise shift right >>
@@ -598,6 +603,7 @@ class TokenBSR: public TokenMultiOp
     virtual TokenID id() const { return TokenID::tkBSR; }
     virtual TokenBase *clone() { return new TokenBSR(); }
     virtual inline int precedence() const { return 5; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // namespace operator ::
