@@ -439,6 +439,7 @@ public:
     virtual TokenID id() const { return TokenID::tkBand; }
     virtual TokenBase *clone() { return new TokenBand(); }
     virtual inline int precedence() const { return 8; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // logical and operator &&
@@ -449,6 +450,7 @@ public:
     virtual TokenID id() const { return TokenID::tkLand; }
     virtual TokenBase *clone() { return new TokenLand(); }
     virtual inline int precedence() const { return 11; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // bitwise or operator | (inclusive or)
@@ -459,6 +461,7 @@ public:
     virtual TokenID id() const { return TokenID::tkBor; }
     virtual TokenBase *clone() { return new TokenBor(); }
     virtual inline int precedence() const { return 10; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // logical or operator ||
@@ -469,6 +472,7 @@ public:
     virtual TokenID id() const { return TokenID::tkLor; }
     virtual TokenBase *clone() { return new TokenLor(); }
     virtual inline int precedence() const { return 12; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // bitwise xor operator ^ (exclusive or)
@@ -479,6 +483,7 @@ public:
     virtual TokenID id() const { return TokenID::tkXor; }
     virtual TokenBase *clone() { return new TokenXor(); }
     virtual inline int precedence() const { return 9; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
 };
 
 // ternary operator ? (if)
