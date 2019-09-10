@@ -1,0 +1,13 @@
+#!../bin/madc
+
+int main()
+{
+    int y = 0;
+
+    y = 100 << 1;
+    puti(y);
+    y = 10 << 2;
+    puti(y);
+
+    return 0;
+}

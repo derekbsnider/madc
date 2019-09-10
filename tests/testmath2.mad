@@ -1,0 +1,16 @@
+#!../bin/madc
+
+int main()
+{
+    int x = 0;
+    int y = 15;
+    int z = 5;
+
+    x = y % z;
+
+    puti(x);
+    puti(y);
+    puti(z);
+
+    return 0;
+}

@@ -23,5 +23,10 @@ int main()
     y = 100 << 1;
     puti(y);
 
+    y = !1;
+    puti(y);
+    y = ~1;
+    puti(y);
+
     return 0;
 }
