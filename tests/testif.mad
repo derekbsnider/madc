@@ -44,6 +44,24 @@ int main()
     else
 	printstr("ret0() false");
 
+    a = 5;
+    if ( a < 6 )
+	printstr("a < 6 is true");
+    else
+	printstr("a < 6 is false");
+    if ( a > 4 )
+	printstr("a > 4 is true");
+    else
+	printstr("a > 4 is false");
+    if ( a <= 5 )
+	printstr("a <= 5 is true");
+    else
+	printstr("a <= 5 is false");
+    if ( a >= 5 )
+	printstr("a >= 5 is true");
+    else
+	printstr("a >= 5 is false");
+
     printstr(test);
 
     return 0;

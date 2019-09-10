@@ -20,5 +20,8 @@ int main()
     y = 12 % 5;
     puti(y);
 
+    y = 100 << 1;
+    puti(y);
+
     return 0;
 }

@@ -72,7 +72,7 @@ public:
     Method *method;
     TokenCpnd *parent;
     TokenCpnd *child;
-    asmjit::x86::Gp _reg;
+//  asmjit::x86::Gp _reg;
     std::vector<Variable *> variables;
     std::vector<TokenStmt *> statements;
     std::map<Variable *, asmjit::x86::Gp> register_map;
@@ -111,7 +111,7 @@ public:
 class TokenCallFunc: public TokenVar
 {
 protected:
-    asmjit::x86::Gp _reg;
+//  asmjit::x86::Gp _reg;
 public:
     std::vector<TokenBase *> parameters;
     TokenCallFunc(Variable &v) : TokenVar(v) {}
