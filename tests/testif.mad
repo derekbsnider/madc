@@ -14,8 +14,8 @@ int ret0()
 
 int main()
 {
-    uint32_t a = 0;
-    uint32_t b = 0;
+    uint8_t a = 0;
+    uint8_t b = 0;
 
     if ( a )
 	puti(1);
@@ -45,6 +45,8 @@ int main()
 	printstr("ret0() false");
 
     a = 5;
+    printstr("a = ");
+    puti(a);
     if ( a < 6 )
 	printstr("a < 6 is true");
     else

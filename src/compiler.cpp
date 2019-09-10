@@ -107,6 +107,14 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2)
     }
 }
 
+void Program::safecmp(x86::Gp &lval, x86::Gp &rval)
+{
+    if ( lval.size() != rval.size() )
+	cc.cmp(lval.r64(), rval.r64());
+    else
+	cc.cmp(lval, rval);
+}
+
 void Program::_compiler_init()
 {
     static FileLogger logger(stdout);
@@ -116,8 +124,8 @@ void Program::_compiler_init()
     code.reset();
     code.init(jit.codeInfo());
     code.setLogger(&logger);
-//  this seemed to break shl
-    code.addEmitterOptions(BaseEmitter::kOptionStrictValidation);
+//  this seems to break things at times
+//  code.addEmitterOptions(BaseEmitter::kOptionStrictValidation);
     code.attach(&cc);
 }
 
@@ -1235,8 +1243,9 @@ x86::Gp& TokenEquals::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true,
     x86::Gp &reg  = getreg(pgm); // get clean register
     x86::Gp &lval = left->compile(pgm, NULL, l_true, l_false);
     x86::Gp &rval = right->compile(pgm, NULL, l_true, l_false);
-    DBG(pgm.cc.comment("TokenEquals::compile() pgm.cc.cmp(lval, rval)"));
-    pgm.cc.cmp(lval, rval);
+    DBG(cout << "TokenEquals: lval.size() " << lval.size() << " rval.size() " << rval.size() << endl);
+    DBG(pgm.cc.comment("TokenEquals::compile() pgm.safecmp(lval, rval)"));
+    pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenEquals::compile() pgm.cc.sete(reg)"));
     pgm.cc.sete(reg.r8());
     return reg;
@@ -1251,8 +1260,8 @@ x86::Gp& TokenNotEq::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, 
     x86::Gp &reg  = getreg(pgm); // get clean register
     x86::Gp &lval = left->compile(pgm, NULL, l_true, l_false);
     x86::Gp &rval = right->compile(pgm, NULL, l_true, l_false);
-    DBG(pgm.cc.comment("TokenNotEq::compile() pgm.cc.cmp(lval, rval)"));
-    pgm.cc.cmp(lval, rval);
+    DBG(pgm.cc.comment("TokenNotEq::compile() pgm.safecmp(lval, rval)"));
+    pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenNotEq::compile() pgm.cc.setne(reg)"));
     pgm.cc.setne(reg.r8());
     return reg;
@@ -1264,11 +1273,14 @@ x86::Gp& TokenLT::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asm
     DBG(cout << "TokenLT::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
+    DBG(pgm.cc.comment("TokenLT::compile() reg = getreg(pgm)"));
     x86::Gp &reg  = getreg(pgm); // get clean register
+    DBG(pgm.cc.comment("TokenLT::compile() lval = left->compile(pgm)"));
     x86::Gp &lval = left->compile(pgm, NULL, l_true, l_false);
+    DBG(pgm.cc.comment("TokenLT::compile() rval = right->compile(pgm)"));
     x86::Gp &rval = right->compile(pgm, NULL, l_true, l_false);
-    DBG(pgm.cc.comment("TokenLT::compile() pgm.cc.cmp(lval, rval)"));
-    pgm.cc.cmp(lval, rval);
+    DBG(pgm.cc.comment("TokenLT::compile() pgm.safecmp(lval, rval)"));
+    pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenLT::compile() pgm.cc.setl(reg)"));
     pgm.cc.setl(reg.r8());
     return reg;
@@ -1283,8 +1295,8 @@ x86::Gp& TokenLE::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asm
     x86::Gp &reg  = getreg(pgm); // get clean register
     x86::Gp &lval = left->compile(pgm, NULL, l_true, l_false);
     x86::Gp &rval = right->compile(pgm, NULL, l_true, l_false);
-    DBG(pgm.cc.comment("TokenLE::compile() pgm.cc.cmp(lval, rval)"));
-    pgm.cc.cmp(lval, rval);
+    DBG(pgm.cc.comment("TokenLE::compile() pgm.safecmp(lval, rval)"));
+    pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenLE::compile() pgm.cc.setle(_reg)"));
     pgm.cc.setle(reg.r8());
     return reg;
@@ -1299,8 +1311,8 @@ x86::Gp& TokenGT::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asm
     x86::Gp &reg  = getreg(pgm); // get clean register
     x86::Gp &lval = left->compile(pgm, NULL, l_true, l_false);
     x86::Gp &rval = right->compile(pgm, NULL, l_true, l_false);
-    DBG(pgm.cc.comment("TokenGT::compile() pgm.cc.cmp(lval, rval)"));
-    pgm.cc.cmp(lval, rval);
+    DBG(pgm.cc.comment("TokenGT::compile() pgm.safecmp(lval, rval)"));
+    pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenGT::compile() pgm.cc.setg(reg)"));
     pgm.cc.setg(reg.r8());
     return reg;
@@ -1315,8 +1327,8 @@ x86::Gp& TokenGE::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, asm
     x86::Gp &reg  = getreg(pgm); // get clean register
     x86::Gp &lval = left->compile(pgm, NULL, l_true, l_false);
     x86::Gp &rval = right->compile(pgm, NULL, l_true, l_false);
-    DBG(pgm.cc.comment("TokenGE::compile() pgm.cc.cmp(lval, rval)"));
-    pgm.cc.cmp(lval, rval);
+    DBG(pgm.cc.comment("TokenGE::compile() pgm.safecmp(lval, rval)"));
+    pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenGE::compile() pgm.cc.setge(reg)"));
     pgm.cc.setge(reg.r8());
     return reg;
@@ -1334,8 +1346,8 @@ x86::Gp& Token3Way::compile(Program &pgm, x86::Gp *ret, asmjit::Label *l_true, a
     x86::Gp &reg  = getreg(pgm); // get clean register
     x86::Gp &lval = left->compile(pgm, NULL, l_true, l_false);
     x86::Gp &rval = right->compile(pgm, NULL, l_true, l_false);
-    DBG(pgm.cc.comment("Token3Way::compile() pgm.cc.cmp(lval, rval)"));
-    pgm.cc.cmp(lval, rval);
+    DBG(pgm.cc.comment("Token3Way::compile() pgm.safecmp(lval, rval)"));
+    pgm.safecmp(lval, rval);
 
     pgm.cc.setg(reg.r8());	// set _reg to 1 if >
     pgm.cc.jg(done);		// if >, jump to done
