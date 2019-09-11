@@ -753,6 +753,28 @@ parseexpswitchtop:
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);
 		    throw (TokenIdent *)tb;
 		}
+#if 1
+		if ( var->type->is_function() )
+		{
+		    TokenCallFunc *tc = new TokenCallFunc(*var);
+		    tb = nextToken();
+		    tc->line = tb->line;
+		    tc->column = tb->column;
+		    // if bracket, parse params
+		    if ( tb->id() == TokenID::tkOpBrk )
+		    {
+			// delete tb?
+			tb = parseCallFunc(tc);
+			DBG(cout << "parseCallFunc returned with token " << (char)tb->get() << endl);
+		    }
+		    DBG(cout << "Pushing found function call: " << var->name << "() onto opStack" << endl);
+		    opStack.push(tc);
+		    // I'm not sure why I need to do this TODO: figure this out
+		    if ( tb->id() == TokenID::tkSemi )
+			done = true;
+		    break;
+		}
+#else
 		if ( var->type->is_function() )
 		{
 		    if ( peekToken()->id() != TokenID::tkOpBrk )
@@ -771,6 +793,7 @@ parseexpswitchtop:
 			done = true;
 		    break;
 		}
+#endif
 		if ( var->type->is_numeric() )
 		    DBG(cout << "Pushing found variable: " << var->name << '=' << (int)var->get<int>() << " onto exStack" << endl);
 		else
