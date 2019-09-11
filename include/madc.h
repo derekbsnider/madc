@@ -6,8 +6,6 @@
 //////////////////////////////////////////////////////////////////////////
 #define __MADC_H 1
 
-//#include <asmjit/asmjit.h>
-
 class Method;
 
 class FuncDef: public DataDef
@@ -72,18 +70,16 @@ public:
     Method *method;
     TokenCpnd *parent;
     TokenCpnd *child;
-//  asmjit::x86::Gp _reg;
     std::vector<Variable *> variables;
     std::vector<TokenStmt *> statements;
     std::map<Variable *, asmjit::x86::Gp> register_map;
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
-//  asmjit::x86::Gp &getreg(Program &, TokenBase *);
     asmjit::x86::Gp &getreg(asmjit::x86::Compiler &, Variable *);
     void putreg(asmjit::x86::Compiler &, Variable *);
     void cleanup(asmjit::x86::Compiler &);
     void clear_regmap() { register_map.clear(); }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
     Variable *findVariable(std::string &);
@@ -95,7 +91,7 @@ public:
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual int argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
     using TokenCpnd::getreg;
 };
 
@@ -105,13 +101,11 @@ public:
     TokenBase *initialize;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
 };
 
 class TokenCallFunc: public TokenVar
 {
-protected:
-//  asmjit::x86::Gp _reg;
 public:
     std::vector<TokenBase *> parameters;
     TokenCallFunc(Variable &v) : TokenVar(v) {}
@@ -119,7 +113,7 @@ public:
     virtual int argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
 };
 
 class TokenProgram: public TokenCpnd
@@ -131,7 +125,7 @@ public:
     size_t bytes;
     TokenProgram() : TokenCpnd() { lines = 0; bytes = 0; is = NULL; }
     virtual TokenType type() const { return TokenType::ttProgram; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL, asmjit::Label *l_true=NULL, asmjit::Label *l_false=NULL);
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
 };
 
 
@@ -162,6 +156,9 @@ typedef std::vector<Variable *>::iterator variable_vec_iter;
 //typedef std::vector<CodeBlock *>::iterator codeblock_vec_iter;
 typedef std::vector<TokenBase *>::iterator tokenbase_vec_iter;
 
+typedef std::pair<asmjit::Label *, asmjit::Label *> l_shortcut_t;
+typedef std::stack<l_shortcut_t> shortstack_t;
+
 // program class, keep things somewhat contained
 class Program
 {
@@ -186,6 +183,8 @@ public:
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::queue<TokenBase *> tokens;	// parsed token queue
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
+    std::stack<l_shortcut_t> loopstack;	// stack to manage break/continue for loops
+    std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
 
