@@ -2,7 +2,9 @@
 
 int main()
 {
-    cout << "Test";
-    printstr(".");
+    string msg = "Test";
+    cout << msg << endl(cout);
+    printstr("This is a test");
+    cout << "This is a test" << endl(cout);
     return 0;
 }
