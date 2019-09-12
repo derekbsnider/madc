@@ -1,6 +1,8 @@
 #include <stdio.h>
+#if 0
 #include <readline/readline.h>
 #include <readline/history.h>
+#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
