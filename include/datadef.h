@@ -52,6 +52,7 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfALLOC	=  256, // data pointer was allocated by us
 			  vfSTACKSET	=  512, // we reserved stack space
 			  vfMODIFIED	= 1024, // variable was modified
+			  vfCONSTANT	= 2048, // variable is a constant
 			} varflag_t;
 
 #define rtNone(x) 0
@@ -302,7 +303,9 @@ public:
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
     inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
-    bool is_global() { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
+    inline void makeconstant() { flags |= vfCONSTANT; }
+    inline bool is_global()   { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
+    inline bool is_constant() { if ( (flags & vfCONSTANT) ) return true; return false; }
     bool set(int c)
     {
 	if ( !data ) { return false; }
