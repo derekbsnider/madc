@@ -1,5 +1,5 @@
 CXX=g++
-CXXFLAGS=-ggdb -std=c++11
+CXXFLAGS=-O3 -std=c++11
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h tokens.h datadef.h
 OFILES	= lexer.o parser.o compiler.o madc.o
@@ -8,7 +8,8 @@ BINDIR	= ../bin
 LIBDIR	= ../lib
 OBJDIR	= ../obj
 DEFINES	= -I$(INCDIR)
-LIBS	= -lreadline -lasmjit
+#LIBS	= -lreadline -lasmjit
+LIBS	= -lasmjit
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES))
 OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 
