@@ -76,6 +76,7 @@ public:
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::x86::Gp &getreg(asmjit::x86::Compiler &, Variable *);
+    void movreg(asmjit::x86::Compiler &, asmjit::x86::Gp &, Variable *);
     void putreg(asmjit::x86::Compiler &, Variable *);
     void cleanup(asmjit::x86::Compiler &);
     void clear_regmap() { register_map.clear(); }
@@ -174,6 +175,8 @@ protected:
 
     int _line, _column, _braces;
     std::streampos _pos;
+    TokenBase *_prv_token;
+    TokenBase *_cur_token;
 public:
     keyword_map_t  keyword_map;
     basetype_map_t basetype_map;
@@ -218,14 +221,16 @@ public:
 
     // accessing token queue
     inline TokenBase *peekToken() { if (tokens.empty()) return NULL; return tokens.front(); }
+    inline TokenBase *prevToken() { return _prv_token; }
     inline TokenBase *nextToken()
     {
 	if ( tokens.empty() )
 	    throw "Unexpected end of data";
-	TokenBase *ret = tokens.front();
+        _prv_token = _cur_token;
+	_cur_token = tokens.front();
 //	DBG(cout << "nextToken(" << (int)ret->type() << ", " << (int)ret->id() << ')' << endl);
 	tokens.pop();
-	return ret;
+	return _cur_token;
     }
     // parse tokens into AST
     bool parse(TokenProgram *);

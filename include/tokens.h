@@ -23,17 +23,18 @@ enum class TokenID {
   tkBase, tkSpace, tkTab, tkEOL, tkREM, tkHash, tkAssign, tkEquals, tk3Eq, tkPlus, tkAdd=tkPlus, tkInc, tkSub,
 // 11		12	13	13		14	14		15	16	17	18	19
   tkDash=tkSub, tkDec, tkMul, tkStar=tkMul, tkSlash, tkDiv=tkSlash, tkBslsh, tkOpBrc, tkClBrc, tkOpBrk, tkClBrk,
-// 20	   21	    22	   23	   24	   25	  26	 27	28	29	29		30
-  tkOpSqr, tkClSqr, tkNot, tkBand, tkLand, tkBor, tkLor, tkXor, tkMod, tkQmark, tkTerQ=tkQmark, tkColon,
-// 30		  31	32	33	 34	35	 36	  37	   38	 39	40	41	42
+// 20	   21	    22	   23	   24	   25	  26	 27	28	29	29		30	31
+  tkOpSqr, tkClSqr, tkNeg, tkNot, tkBand, tkLand, tkBor, tkLor, tkXor, tkMod, tkQmark, tkTerQ=tkQmark, tkColon,
+// 31		  32	33	34	 35	36	 37	  38	   39	 40	41	42	43
   tkTerC=tkColon, tkNS, tkSemi, tkComma, tkDot, tkDeRef, tkQuote, tkApost, tkGT, tkLT, tkBSL, tkBSR, tkAddEq,
-// 43	   44	    45		46	47	48	49	  50	51	52	53	54	55
+// 44	   45	    46		47	48	49	50	  51	52	53	54	55	56
   tkBSLEq, tkBSREq, tkBandEq, tkBnot, tkBorEq, tkDivEq, tkFuncOp, tkGE, tkLE, tkLnot, tkModEq, tkMulEq, tk3Way,
-// 56	   57		58	59	60	61	62	63	64		65	66
+// 57	   58		59	60	61	62	63	64	65		66	67
   tkNotEq, tkSubEq, tkXorEq, tkIdent, tkInt, tkChar, tkStr, tkOperator, tkDeclare, tkArrayOp, tkMultiOp,
 // keywords
-// 67	68	69	70	71	72	73	74	75	76	77	78
+// 68	69	70	71	72	73	74	75	76	77	78	79
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
+// 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER
 };
 
@@ -56,6 +57,7 @@ public:
     TokenBase(int t) { _token = t;    }
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int c)  { /*DBG(cout << "TokenBase::set(" << c << ')' << endl);*/ _token = c;    }
+    virtual bool is_operator() { return false; }
     virtual int inc() { return 0; }
     virtual int dec() { return 0; }
     virtual int get() const  { return _token; }
@@ -119,6 +121,7 @@ public:
     virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; return to; }
     virtual int val() const { /*if (left && right) return operate();*/ return 0; }
     virtual int argc() const { return 2; }
+    virtual bool is_operator() { return true; }
     virtual inline TokenType type()     const { return TokenType::ttOperator;     }
     virtual inline TokenID   id()       const { return TokenID::tkOperator;       }
     virtual inline TokenAssoc assoc()   const { return TokenAssoc::taLeftToRight; }
@@ -195,6 +198,24 @@ public:
     {
 	DBG(std::cout << "operate: " << left->get() << '-' << right->get() << std::endl);
 	return left->val() - right->val();
+    }
+};
+
+// negative operator - (unary minus)
+class TokenNeg: public TokenOperator
+{
+public:
+    TokenNeg() : TokenOperator('-') {}
+    virtual TokenBase *clone() { TokenNeg *to = new TokenNeg(); to->left = left; to->right = right; return to; }
+    virtual TokenID id() const { return TokenID::tkNeg; }
+    virtual inline int precedence() const { return 2; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
+    virtual int argc() const { return 1; }
+    inline int operate() const
+    {
+	DBG(std::cout << "operate: " << '-' << right->get() << std::endl);
+	return - right->val();
     }
 };
 

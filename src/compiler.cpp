@@ -76,13 +76,19 @@ void string_assign(std::string &o, std::string &n)
 
 void streamout_string(std::ostream &os, std::string &s)
 {
-    DBG(std::cout << "streamout_string: << " << s << std::endl);
+//  DBG(std::cout << "streamout_string: << " << s << std::endl);
     os << s;
 }
 
 void streamout_int(std::ostream &os, int i)
 {
-    DBG(std::cout << "streamout_int: << " << i << std::endl);
+//  DBG(std::cout << "streamout_int: << " << i << std::endl);
+    os << i;
+}
+
+template<typename T> void streamout_numeric(std::ostream &os, T i)
+{
+//  DBG(std::cout << "streamout_int: << " << i << std::endl);
     os << i;
 }
 
@@ -219,7 +225,10 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
 	default:			funcsig.setRetT<void *>();		break;
     }
     if ( !ret )
+    {
+	DBG(pgm.cc.comment("TokenCallFunc::compile() getreg() to assign _reg"));
 	getreg(pgm); // assign _reg if not provided
+    }
 
 #if OBJECT_SUPPORT
     // pass along object ("this") as first argument if appropriate
@@ -273,6 +282,7 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
 		    if ( ptype->rawtype() != tv->var.type->rawtype() )
 			throw "Object type mismatch";
 		}
+		DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(tv->getreg(pgm))"));
 		params.push_back(tv->getreg(pgm)); // params.push_back(pgm.tkFunction->getreg(pgm.cc, &tv->var));
 		// could probably use a tv->var.addArgT(funcsig) method
 		switch(tv->var.type->type())
@@ -842,6 +852,7 @@ x86::Gp &TokenInt::getreg(Program &pgm)
 // variable needs special handling
 x86::Gp &TokenVar::getreg(Program &pgm)
 {
+    DBG(pgm.cc.comment("TokenVar::getreg()"));
     return pgm.tkFunction->getreg(pgm.cc, &var);
 }
 
@@ -873,34 +884,44 @@ x86::Gp &TokenCallFunc::getreg(Program &pgm)
     return _reg;
 }
 
+void TokenCpnd::movreg(x86::Compiler &cc, x86::Gp &reg, Variable *var)
+{
+    DBG(cc.comment("TokenCpnd::movreg() cc.mov(reg, var->data)"));
+    DBG(cc.comment(var->name.c_str()));
+    switch(var->type->type())
+    {
+	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)var->data));  break;
+	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)var->data));  break;
+	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)var->data)); break;
+	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)var->data));  break;
+	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)var->data));  break;
+	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)var->data)); break;
+	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)var->data));  break;
+	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)var->data));  break;
+	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)var->data));  break;
+	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)var->data)); break;
+	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)var->data)); break;
+	default:		  cc.mov(reg, asmjit::imm(var->data));			     break;
+    } // switch
+}
+
 // Manage registers for use on local as well as global variables
 x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
 {
-    std::map<Variable *, asmjit::x86::Gp>::iterator rmi;
+    std::map<Variable *, x86::Gp>::iterator rmi;
+
+    DBG(cc.comment("TokenCpnd::getreg() on"));
+    DBG(cc.comment(var->name.c_str()));
 
     if ( (rmi=register_map.find(var)) != register_map.end() )
     {
 	DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::getreg(" << var->name << ") found" << std::endl);
 	// copy global variable to register -- needs to happen every time we need to access a global
-	if ( var->is_global() && var->data )
+	if ( var->is_global() && var->data && !var->is_constant() )
 	{
-	    DBG(cc.comment("TokenCpnd::getreg(global) cc.mov(reg, var->data)"));
-	    switch(var->type->type())
-	    {
-		case DataType::dtCHAR:    cc.mov(rmi->second, asmjit::x86::byte_ptr((uintptr_t)var->data));  break;
-		case DataType::dtBOOL:    cc.mov(rmi->second, asmjit::x86::byte_ptr((uintptr_t)var->data));  break;
-		case DataType::dtINT64:   cc.mov(rmi->second, asmjit::x86::qword_ptr((uintptr_t)var->data)); break;
-		case DataType::dtINT16:   cc.mov(rmi->second, asmjit::x86::word_ptr((uintptr_t)var->data));  break;
-		case DataType::dtINT24:   cc.mov(rmi->second, asmjit::x86::word_ptr((uintptr_t)var->data));  break;
-		case DataType::dtINT32:   cc.mov(rmi->second, asmjit::x86::dword_ptr((uintptr_t)var->data)); break;
-		case DataType::dtUINT8:   cc.mov(rmi->second, asmjit::x86::byte_ptr((uintptr_t)var->data));  break;
-		case DataType::dtUINT16:  cc.mov(rmi->second, asmjit::x86::word_ptr((uintptr_t)var->data));  break;
-		case DataType::dtUINT24:  cc.mov(rmi->second, asmjit::x86::word_ptr((uintptr_t)var->data));  break;
-		case DataType::dtUINT32:  cc.mov(rmi->second, asmjit::x86::dword_ptr((uintptr_t)var->data)); break;
-		case DataType::dtUINT64:  cc.mov(rmi->second, asmjit::x86::qword_ptr((uintptr_t)var->data)); break;
-		default:		  cc.mov(rmi->second, asmjit::imm(var->data));			     break;
-	    } // switch
-	}
+	    DBG(cc.comment("TokenCpnd::getreg() variable found, var->is_global() && var->data && !var->is_constant()"));
+	    movreg(cc, rmi->second, var);
+        }
 	return rmi->second;
     }
 
@@ -956,6 +977,7 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
     }
     else
     {
+        // assign new register for duration of function
 	switch(var->type->type())
 	{
 	    case DataType::dtCHAR:    register_map[var] = cc.newGpb(var->name.c_str());    break;
@@ -971,10 +993,18 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
 	    case DataType::dtUINT64:  register_map[var] = cc.newGpq(var->name.c_str());    break;
 	    default:		      register_map[var] = cc.newIntPtr(var->name.c_str()); break;
 	} // switch
+	if ( (rmi=register_map.find(var)) == register_map.end() )
+	    throw "TokenCpnd::getreg() failure";
+	DBG(cc.comment("TokenCpnd::getreg() variable reg init, calling movreg on"));
+	DBG(cc.comment(var->name.c_str()));
+	if ( !(var->flags & vfSTACK) )
+	    movreg(cc, rmi->second, var); // first initialization of non-stack register (regset)
     }
     var->flags |= vfREGSET;
 
-    return getreg(cc, var);
+    if ( rmi == register_map.end() && (rmi=register_map.find(var)) == register_map.end() )
+	throw "TokenCpnd::getreg() failure";
+    return rmi->second;
 }
 
 
@@ -1108,6 +1138,22 @@ x86::Gp& TokenSub::compile(Program &pgm, x86::Gp *ret)
     return _reg;
 }
 
+// make number negative
+x86::Gp& TokenNeg::compile(Program &pgm, x86::Gp *ret)
+{
+    DBG(cout << "TokenNeg::Compile() TOP" << endl);
+    if ( !right ) { throw "!= missing rval operand"; }
+    if ( ret )    { throw "TokenNeg::compile() ret is set"; }
+    x86::Gp &rval = right->compile(pgm, NULL);
+    DBG(pgm.cc.comment("TokenNeg::compile() pgm.safemov(_reg, lval)"));
+    _reg = pgm.cc.newGpq();
+    pgm.safemov(_reg, rval);
+    DBG(pgm.cc.comment("TokenNeg::compile() pgm.cc.neg(_reg, rval)"));
+    pgm.cc.neg(_reg);
+
+    return _reg;
+}
+
 // multiply two integers
 x86::Gp& TokenMul::compile(Program &pgm, x86::Gp *ret)
 {
@@ -1178,6 +1224,7 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
     {
 	TokenCallFunc *tcr;
 	TokenVar *tvl = dynamic_cast<TokenVar *>(left);
+	DBG(pgm.cc.comment("TokenBSL::compile() (ostream &)tvl->getreg(pgm)"));
 	x86::Gp &lval = tvl->getreg(pgm); // get ostream register
 	TokenVar *tvr;
 
@@ -1191,20 +1238,41 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		    tvr = dynamic_cast<TokenVar *>(right);
 		    if ( tvr->var.type->is_numeric() )
 		    {
+			x86::Gp &rval = tvr->getreg(pgm);
 			DBG(cout << "TokenBSL::compile() right->var.type->is_numeric()" << endl);
-			pgm.cc.comment("pgm.cc.call(streamout_int)");
-			FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
+			DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
+			FuncCallNode *call;
+                        switch(tvr->var.type->type())
+                        {
+			    case DataType::dtCHAR:	call = pgm.cc.call(imm(streamout_numeric<char>), FuncSignatureT<void, void *, char>(CallConv::kIdHost));		break;
+			    case DataType::dtBOOL:	call = pgm.cc.call(imm(streamout_numeric<bool>), FuncSignatureT<void, void *, bool>(CallConv::kIdHost));		break;
+			    case DataType::dtINT16:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
+			    case DataType::dtINT24:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
+			    case DataType::dtINT32:	call = pgm.cc.call(imm(streamout_numeric<int32_t>), FuncSignatureT<void, void *, int32_t>(CallConv::kIdHost));		break;
+			    case DataType::dtINT64:	call = pgm.cc.call(imm(streamout_numeric<int64_t>), FuncSignatureT<void, void *, int64_t>(CallConv::kIdHost));		break;
+			    case DataType::dtUINT8:	call = pgm.cc.call(imm(streamout_numeric<uint8_t>), FuncSignatureT<void, void *, uint8_t>(CallConv::kIdHost));		break;
+			    case DataType::dtUINT16:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
+			    case DataType::dtUINT24:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
+			    case DataType::dtUINT32:	call = pgm.cc.call(imm(streamout_numeric<uint32_t>), FuncSignatureT<void, void *, uint32_t>(CallConv::kIdHost));	break;
+			    case DataType::dtUINT64:	call = pgm.cc.call(imm(streamout_numeric<uint64_t>), FuncSignatureT<void, void *, uint64_t>(CallConv::kIdHost));	break;
+			    default: throw "TokenBSL::compile() unsupported numeric type";
+                        }
+			// FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 			call->setArg(0, lval);
-			call->setArg(1, tvr->getreg(pgm));
+			call->setArg(1, rval);
 			break;
 		    }
 		    if ( tvr->var.type->is_string() )
 		    {
+			x86::Gp &rval = tvr->getreg(pgm);
 			DBG(cout << "TokenBSL::compile() right->var.type->is_string()" << endl);
-			pgm.cc.comment("pgm.cc.call(streamout_string)");
+			DBG(pgm.cc.comment("TokenBSL::compile() right->var.type->is_string()"));
+			DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
 			FuncCallNode* call = pgm.cc.call(imm(streamout_string), FuncSignatureT<void, void *, void *>(CallConv::kIdHost));
+			DBG(pgm.cc.comment("call->setArg(0, lval)"));
 			call->setArg(0, lval);
-			call->setArg(1, tvr->getreg(pgm));
+			DBG(pgm.cc.comment("call->setArg(1, tvr->getreg(pgm))"));
+			call->setArg(1, rval); // call->setArg(1, tvr->getreg(pgm));
 			break;
 		    }
 		}
@@ -1212,10 +1280,11 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 	    case TokenType::ttInteger:
 		DBG(cout << "TokenBSL::compile() right->type() == ttInteger" << endl);
 		{
+		    x86::Gp &rval = dynamic_cast<TokenInt *>(right)->getreg(pgm);
 		    pgm.cc.comment("pgm.cc.call(streamout_int)");
 		    FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 		    call->setArg(0, lval);
-		    call->setArg(1, dynamic_cast<TokenInt *>(right)->getreg(pgm));
+		    call->setArg(1, rval);
 		}
 		break;
 	    case TokenType::ttCallFunc:
@@ -1225,8 +1294,9 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		    if ( tcr->returns()->has_ostream() ) // i.e. endl
 		    {
 			// TODO: should use tcr->compile() with object param
-			pgm.cc.comment("pgm.cc.call(tcr->method->x86code)");
+			DBG(pgm.cc.comment("pgm.cc.call(tcr->method->x86code) [endl?]"));
 			FuncCallNode* call = pgm.cc.call(imm( ((Method *)tcr->var.data)->x86code ), FuncSignatureT<void, void *>(CallConv::kIdHost));
+			DBG(pgm.cc.comment("call->setArg(0, lval)"));
 			call->setArg(0, lval);
 			break;
 		    }
@@ -1235,7 +1305,7 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 			DBG(cout << "TokenBSL::compile() tcr->returns()->is_numeric()" << endl);
 			_reg = pgm.cc.newGpq();
 			tcr->compile(pgm, &_reg);
-			pgm.cc.comment("pgm.cc.call(streamout_int)");
+			DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
 			FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 			call->setArg(0, lval);
 			call->setArg(1, _reg);
@@ -1264,7 +1334,7 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		    x86::Gp &rval = right->compile(pgm);
 		    FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 		    call->setArg(0, lval);
-		    call->setArg(1, right->compile(pgm));
+		    call->setArg(1, rval);
 		    break;
 		}
 	} // end switch

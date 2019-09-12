@@ -375,6 +375,7 @@ Variable *Program::addLiteral(std::string &s)
 	return var;
 
     var = new Variable(id, ddSTRING, 1, NULL, true);
+    var->makeconstant();
     std::string &str = *(std::string *)var->data;
     str = s;
     tkProgram->variables.push_back(var);
@@ -543,7 +544,7 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	case TokenType::ttMultiOp:
 	    to = (TokenOperator *)opStack.top();
 	    if ( to->type() == TokenType::ttOperator )
-		DBG(cout << "popOperator() got operator: " << (char)to->get() << endl);
+		DBG(cout << "popOperator() got operator: " << (char)to->get() << " id() " << (int)to->id() << endl);
 	    else
 		DBG(cout << "popOperator() got operator: " << ((TokenMultiOp *)to)->str << endl);
 	    if ( to->argc() > 0 )
@@ -704,9 +705,22 @@ parseexpswitchtop:
 		    }
 		    break;
 		}
+		// see if we need to convert TokenNeg to TokenSub
+		if ( tb->id() == TokenID::tkNeg && prevToken()
+		&&  (prevToken()->id() == TokenID::tkClBrk || !prevToken()->is_operator()) )
+		{
+		    DBG(std::cout << "parseExpression() converting TokenNeg to TokenSub, prevToken id: " << (int)prevToken()->id() << " prevToken->is_operator: " << (prevToken()->is_operator() ? "true" : "false") << std::endl);
+		    TokenSub *ts = new TokenSub();
+
+		    ts->file = tb->file;
+		    ts->line = tb->line;
+		    ts->column = tb->column;
+		    // should we delete tb ?
+		    tb = ts;
+		}
 		if ( tb->id() == TokenID::tkDec || tb->id() == TokenID::tkInc )
 		{
-		    DBG(cout << "Got operator: " << (char)tb->get() << (char)tb->get() << endl);
+		    DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << (char)tb->get() << endl);
 		    if ( exStack.empty() )
 		    {
 			to = (TokenOperator *)tb; // ->clone();
@@ -720,7 +734,7 @@ parseexpswitchtop:
 		    }
 		    break;
 		}
-		DBG(cout << "Got operator: " << (char)tb->get() << endl);
+		DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << " id() " << (int)tb->id() << endl);
 		to = (TokenOperator *)tb; // ->clone();
 		// whiile: there is a function at the top of the operator stack)
 		// or (there is an operator at the top of the operator stack with greater precedence)

@@ -135,6 +135,8 @@ void Program::_tokenizer_init()
 {
     tkProgram = NULL;
     tkFunction = NULL;
+    _cur_token = NULL;
+    _prv_token = NULL;
     add_keywords();
     add_basetypes();
 }
@@ -255,7 +257,7 @@ TokenBase *Program::_getToken(istream &ss)
 	    if (ss.peek() == '-') { get(ss); return new TokenDec;   }   // --
 	    if (ss.peek() == '=') { get(ss); return new TokenSubEq; }   // -=
 	    if (ss.peek() == '>') { get(ss); return new TokenDeRef; }   // ->
-	    return new TokenSub;					// -
+	    return new TokenNeg;					// -
 	case '*': if (ss.peek() != '=') return new TokenMul;		// *
 	     get(ss); return new TokenMulEq;				// *=
 	case '/':
