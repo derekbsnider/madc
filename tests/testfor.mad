@@ -7,6 +7,11 @@ int main()
 
     for ( c = 10; c; --c )
     {
+	if ( a == 5 )
+	{
+	    printstr("a == 5");
+	    break;
+	}
 	++a;
 	puti(a);
     }

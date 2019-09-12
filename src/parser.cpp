@@ -15,7 +15,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) x
+#define DBG(x)
 #include <asmjit/asmjit.h>
 #include "tokens.h"
 #include "datadef.h"
@@ -274,13 +274,15 @@ void printstarred(std::string &s)
 void printstring(std::string *str)
 {
     if ( !str ) { std::cerr << "ERROR: printstr: NULL!" << std::endl; return; }
-    std::cout << "printstr(" << (uint64_t)str << "): " << *str << std::endl;
+    DBG(std::cout << "printstr(" << (uint64_t)str << "): " << *str << std::endl);
+    cout << *str << endl;
 }
 
 void printstream(std::stringstream *os)
 {
     if ( !os ) { std::cerr << "ERROR: printstream: NULL!" << std::endl; return; }
-    std::cout << "printstream: " << os->str() << std::endl;
+    DBG(std::cout << "printstream: " << os->str() << std::endl);
+    cout << os->str() << endl;
 }
 
 // needed to add getline
@@ -743,7 +745,7 @@ parseexpswitchtop:
 		// (Note: we don't put functions in the stack right now)
 		while ( !opStack.empty() && opStack.top()->id() != TokenID::tkOpBrk
 		&&      (opStack.top()->type() == TokenType::ttCallFunc
-		||      ( opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to) )) )
+		||      (opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to))) )
 		{
 		    DBG(cout << "Operator(" << (char)opStack.top()->get() << ") has precedence over operator(" << (char)to->get() << ')' << endl);
 		    popOperator(opStack, exStack);

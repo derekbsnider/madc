@@ -15,7 +15,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) x
+#define DBG(x)
 #include <asmjit/asmjit.h>
 #include "tokens.h"
 #include "datadef.h"
