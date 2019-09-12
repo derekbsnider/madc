@@ -741,8 +741,9 @@ parseexpswitchtop:
 		// or (the operator at the top of the operator stack has equal precedence and is left associative))
 		// and (the operator at the top of the operator stack is not a left parenthesis):
 		// (Note: we don't put functions in the stack right now)
-		while ( !opStack.empty() && opStack.top()->get() != '('
-		&&    (*((TokenOperator *)opStack.top()) > *to /*|| opStack.top()->type() == TokenType::ttCallFunc*/) )
+		while ( !opStack.empty() && opStack.top()->id() != TokenID::tkOpBrk
+		&&      (opStack.top()->type() == TokenType::ttCallFunc
+		||      ( opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to) )) )
 		{
 		    DBG(cout << "Operator(" << (char)opStack.top()->get() << ") has precedence over operator(" << (char)to->get() << ')' << endl);
 		    popOperator(opStack, exStack);
