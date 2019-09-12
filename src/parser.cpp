@@ -542,7 +542,10 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    to = (TokenOperator *)opStack.top();
-	    DBG(cout << "popOperator() got operator: " << (char)to->get() << endl);
+	    if ( to->type() == TokenType::ttOperator )
+		DBG(cout << "popOperator() got operator: " << (char)to->get() << endl);
+	    else
+		DBG(cout << "popOperator() got operator: " << ((TokenMultiOp *)to)->str << endl);
 	    if ( to->argc() > 0 )
 	    {
 		if ( !to->right )
@@ -725,7 +728,7 @@ parseexpswitchtop:
 		// and (the operator at the top of the operator stack is not a left parenthesis):
 		// (Note: we don't put functions in the stack right now)
 		while ( !opStack.empty() && opStack.top()->get() != '('
-		&&    (*((TokenOperator *)opStack.top()) >= *to /*|| opStack.top()->type() == TokenType::ttCallFunc*/) )
+		&&    (*((TokenOperator *)opStack.top()) > *to /*|| opStack.top()->type() == TokenType::ttCallFunc*/) )
 		{
 		    DBG(cout << "Operator(" << (char)opStack.top()->get() << ") has precedence over operator(" << (char)to->get() << ')' << endl);
 		    popOperator(opStack, exStack);

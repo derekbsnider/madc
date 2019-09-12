@@ -37,6 +37,9 @@ enum class TokenID {
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER
 };
 
+enum class TokenAssoc {
+    taNone, taLeftToRight, taRightToLeft
+};
 
 class TokenBase
 {
@@ -58,8 +61,9 @@ public:
     virtual int get() const  { return _token; }
     virtual int val() const  { return 0; }
     virtual int argc() const { return 0; }
-    virtual TokenType type() const { return TokenType::ttBase; }
-    virtual TokenID   id()   const { return TokenID::tkBase; }
+    virtual TokenType  type()  const { return TokenType::ttBase; }
+    virtual TokenID    id()    const { return TokenID::tkBase; }
+    virtual TokenAssoc associativity() const { return TokenAssoc::taNone; }
     virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
 };
@@ -115,8 +119,10 @@ public:
     virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; return to; }
     virtual int val() const { /*if (left && right) return operate();*/ return 0; }
     virtual int argc() const { return 2; }
-    virtual TokenType type() const { return TokenType::ttOperator; }
-    virtual TokenID   id()   const { return TokenID::tkOperator; }
+    virtual inline TokenType type()     const { return TokenType::ttOperator;     }
+    virtual inline TokenID   id()       const { return TokenID::tkOperator;       }
+    virtual inline TokenAssoc assoc()   const { return TokenAssoc::taLeftToRight; }
+    virtual inline int precedence() const { return 15; } // C Operator Precedence, default to 15 (lowest)
     virtual inline int operate() const { return 0; } // used for internal debugging
     virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL)
@@ -124,13 +130,14 @@ public:
 	DBG(std::cout << "TokenOperator::compile() called on operator: " << _token << std::endl);
 	throw "!!! TokenOperator::compile() !!!";
     }
-    virtual inline int precedence() const { return 15; } // C Operator Precedence, default to 15 (lowest)
-    virtual inline bool operator>=(const TokenOperator &op) // used to compare precedence
+    virtual inline bool operator>(const TokenOperator &op) // used to compare precedence
     {
-	DBG(std::cout << "TokenOperator(" << (char)_token << ") comparing precedence(" << precedence() << ") >= to TokenOperator(" << (char)op.get() << ") precedence(" << op.precedence() << ")" << std::endl);
-	if ( _token == op.get() )
-	    return true;
-	return precedence() <= op.precedence(); // lower is "higher"
+	DBG(std::cout << "TokenOperator(" << (char)_token << ") comparing precedence(" << precedence() << ") > to TokenOperator(" << (char)op.get() << ") precedence(" << op.precedence() << ")" << std::endl);
+	// if pecedence is the same, then associativity takes precedence
+	// RightToLeft has "higher" precedence than LeftToRight
+	if ( precedence() == op.precedence() )
+	    return associativity() > op.associativity();
+	return precedence() < op.precedence(); // lower number is "higher" precedence
     }
 };
 
@@ -247,7 +254,8 @@ public:
     virtual TokenBase *clone() { TokenInc *to = new TokenInc(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkInc; }
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
-    virtual inline int precedence() const { return 2; }
+    virtual inline int precedence()   const { return 2; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual int argc() const { return 1; }
     inline int operate() const
     {
@@ -265,7 +273,8 @@ public:
     virtual TokenBase *clone() { TokenDec *to = new TokenDec(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkDec; }
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
-    virtual inline int precedence() const { return 2; }
+    virtual inline int precedence()   const { return 2; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual int argc() const { return 1; }
     inline int operate() const
     {
@@ -283,7 +292,8 @@ public:
     virtual TokenBase *clone() { TokenAssign *to = new TokenAssign(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkAssign; }
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     int operate() const;
 };
 
@@ -294,7 +304,8 @@ public:
     TokenAddEq() : TokenMultiOp("+=") {}
     virtual TokenID id() const { return TokenID::tkAddEq; }
     virtual TokenBase *clone() { return new TokenAddEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator -= (assignment by difference)
@@ -304,7 +315,8 @@ public:
     TokenSubEq() : TokenMultiOp("-=") {}
     virtual TokenID id() const { return TokenID::tkSubEq; }
     virtual TokenBase *clone() { return new TokenSubEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator *= (assignment by product)
@@ -314,7 +326,8 @@ public:
     TokenMulEq() : TokenMultiOp("*=") {}
     virtual TokenID id() const { return TokenID::tkMulEq; }
     virtual TokenBase *clone() { return new TokenMulEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator /= (assignment by quotient)
@@ -324,7 +337,8 @@ public:
     TokenDivEq() : TokenMultiOp("/=") {}
     virtual TokenID id() const { return TokenID::tkDivEq; }
     virtual TokenBase *clone() { return new TokenDivEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator %= (assignment by remainder)
@@ -334,7 +348,8 @@ public:
     TokenModEq() : TokenMultiOp("%=") {}
     virtual TokenID id() const { return TokenID::tkModEq; }
     virtual TokenBase *clone() { return new TokenModEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator <<= (assignment by bitwise left shift)
@@ -344,7 +359,8 @@ public:
     TokenBSLEq() : TokenMultiOp("<<=") {}
     virtual TokenID id() const { return TokenID::tkBSLEq; }
     virtual TokenBase *clone() { return new TokenBSLEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator >>= (assignment by bitwise right shift)
@@ -354,7 +370,8 @@ public:
     TokenBSREq() : TokenMultiOp(">>=") {}
     virtual TokenID id() const { return TokenID::tkBSREq; }
     virtual TokenBase *clone() { return new TokenBSREq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator &= (assignment by bitwise and)
@@ -364,7 +381,8 @@ public:
     TokenBandEq() : TokenMultiOp("&=") {}
     virtual TokenID id() const { return TokenID::tkBandEq; }
     virtual TokenBase *clone() { return new TokenBandEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator |= (assignment by bitwise or)
@@ -374,7 +392,8 @@ public:
     TokenBorEq() : TokenMultiOp("|=") {}
     virtual TokenID id() const { return TokenID::tkBorEq; }
     virtual TokenBase *clone() { return new TokenBorEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // assignment operator ^= (assignment by bitwise xor)
@@ -384,7 +403,8 @@ public:
     TokenXorEq() : TokenMultiOp("^=") {}
     virtual TokenID id() const { return TokenID::tkXorEq; }
     virtual TokenBase *clone() { return new TokenXorEq(); }
-    virtual inline int precedence() const { return 14; }
+    virtual inline int precedence()   const { return 14; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
 
 // overload function operator ()
@@ -415,7 +435,8 @@ public:
     virtual TokenID id() const { return TokenID::tkBnot; }
     virtual TokenBase *clone() { return new TokenBnot(); }
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
-    virtual inline int precedence() const { return 2; }
+    virtual inline int precedence()   const { return 2; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual int argc() const { return 1; }
 };
 
@@ -427,7 +448,8 @@ public:
     virtual TokenID id() const { return TokenID::tkLnot; }
     virtual TokenBase *clone() { return new TokenLnot(); }
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
-    virtual inline int precedence() const { return 2; }
+    virtual inline int precedence()   const { return 2; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual int argc() const { return 1; }
 };
 
@@ -493,7 +515,8 @@ public:
     TokenTerQ() : TokenOperator('?') {}
     virtual TokenID id() const { return TokenID::tkTerQ; }
     virtual TokenBase *clone() { return new TokenTerQ(); }
-    virtual inline int precedence() const { return 13; }
+    virtual inline int precedence()   const { return 13; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual int argc() const { return 1; }
 };
 
@@ -504,7 +527,8 @@ public:
     TokenTerC() : TokenOperator(':') {}
     virtual TokenID id() const { return TokenID::tkTerC; }
     virtual TokenBase *clone() { return new TokenTerC(); }
-    virtual inline int precedence() const { return 13; }
+    virtual inline int precedence()   const { return 13; }
+    virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual int argc() const { return 1; }
 };
 

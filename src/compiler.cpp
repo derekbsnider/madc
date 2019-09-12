@@ -1243,6 +1243,21 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		    }
 		    break;
 		}
+	    case TokenType::ttMultiOp:
+		DBG(cout << "TokenBSL::compile() right->type() == ttMultiOp" << endl);
+		// converge streams
+		if ( right->id() == TokenID::tkBSL )
+		{
+		    DBG(cout << "TokenBSL::compile() converging right BSL(<<) to left ostream" << endl);
+		    TokenBSL tmpsin;
+		    TokenBSL *rsin = static_cast<TokenBSL *>(right);
+		    tmpsin.left = left;
+		    tmpsin.right = rsin->left;
+		    tmpsin.compile(pgm);
+		    tmpsin.right = rsin->right;
+		    tmpsin.compile(pgm);
+		    break;
+		}
 	    default:
 		DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type()  << endl);
 		{
@@ -1254,17 +1269,28 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		}
 	} // end switch
 
+	DBG(cout << "TokenBSL::Compile() END" << endl);
 	return lval; // return ostream
     }
 
+    DBG(cout << "TokenBSL::compile() left->type() == " << (int)left->type()  << endl);
+    DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type()  << endl);
+
+    if ( left->type() == TokenType::ttVariable && !dynamic_cast<TokenVar *>(left)->var.type->is_numeric() )
+	throw "lval is non-numeric";
+    if ( right->type() == TokenType::ttVariable && !dynamic_cast<TokenVar *>(right)->var.type->is_numeric() )
+	throw "rval is non-numeric";
+
     x86::Gp &lval = left->compile(pgm);
     x86::Gp &rval = right->compile(pgm);
+    DBG(cout << "TokenBSL::compile() lval.type() " << lval.type() << " rval.type() " << rval.type() << endl);
     DBG(pgm.cc.comment("TokenBSL::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, lval);
     DBG(pgm.cc.comment("TokenBSL::compile() pgm.cc.shl(_reg, rval.r8())"));
     pgm.cc.shl(_reg, rval.r8());
 
+    DBG(cout << "TokenBSL::Compile() END" << endl);
     return _reg;
 }
 
