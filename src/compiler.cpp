@@ -15,7 +15,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) x
+#define DBG(x)
 #include <asmjit/asmjit.h>
 #include "tokens.h"
 #include "datadef.h"
@@ -124,13 +124,13 @@ void Program::safecmp(x86::Gp &lval, x86::Gp &rval)
 
 void Program::_compiler_init()
 {
-    static FileLogger logger(stdout);
+    DBG(static FileLogger logger(stdout));
 
-    logger.setFlags(FormatOptions::kFlagDebugRA | FormatOptions::kFlagMachineCode | FormatOptions::kFlagDebugPasses);
+    DBG(logger.setFlags(FormatOptions::kFlagDebugRA | FormatOptions::kFlagMachineCode | FormatOptions::kFlagDebugPasses));
 
     code.reset();
     code.init(jit.codeInfo());
-    code.setLogger(&logger);
+    DBG(code.setLogger(&logger));
 //  this seems to break things at times
 //  code.addEmitterOptions(BaseEmitter::kOptionStrictValidation);
     code.attach(&cc);

@@ -17,7 +17,7 @@
 #include <queue>
 #include <stack>
 #include <asmjit/asmjit.h>
-#define DBG(x) x
+#define DBG(x)
 #include "tokens.h"
 #include "datadef.h"
 #include "madc.h"

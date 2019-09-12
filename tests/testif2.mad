@@ -2,18 +2,12 @@
 
 int main()
 {
-    uint32_t b = 5;
+    uint32_t b = 1;
 
-    puti(b);
-    if ( b < 6 )
-	printstr("b < 6");
-    else
-	printstr("b !< 6");
-    puti(b);
-
-/*
-    if ( b == 0 )
+    if ( b >= 0 )
 	puti(b);
-*/
+    else
+	printstr("b ! >= 0");
+
     return 0;
 }

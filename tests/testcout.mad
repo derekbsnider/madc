@@ -2,9 +2,8 @@
 
 int main()
 {
-    string msg = "Test";
-    cout << msg << endl(cout);
-    printstr("This is a test");
-    cout << "This is a test" << endl(cout);
+    int64_t x = 1;
+
+    cout << "This is a test, x = " << -x << endl;
     return 0;
 }
