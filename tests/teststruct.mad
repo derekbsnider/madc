@@ -4,8 +4,12 @@ int main()
 {
     struct teststruct test;
 
-    test.id = 2;
-    cout << test.id << endl;
+    test.name = "Joe Blow";
+//    test.id  = 2;
+//    test.age = 100;
+    cout << "test.name: " << test.name << endl;
+//    cout << "test.id:   " << test.id << endl;
+//    cout << "test.age:  " << test.age << endl;
 
     return 0;
 }

@@ -176,7 +176,9 @@ public:
 	default:		  return cc.newIntPtr(n);
 	}
     }
-    virtual void putreg(asmjit::x86::Compiler &cc, void *ptr, asmjit::x86::Gp reg)
+    // move a register value into memory location pointed to by a pointer
+    // mov([mem], reg)
+    virtual void movrval2mptr(asmjit::x86::Compiler &cc, void *ptr, asmjit::x86::Gp reg)
     {
 	switch((DataType)_type)
 	{
@@ -194,7 +196,9 @@ public:
 	default: DBG(std::cerr << "DataDef::putreg() unsupported numeric type " << _type << std::endl); break;
 	}
     }
-    virtual void putreg(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, asmjit::x86::Gp reg)
+    // move a register value into a memory location pointed to by a register
+    // mov([reg1], reg2)
+    virtual void movrval2rptr(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, asmjit::x86::Gp reg)
     {
 	switch((DataType)_type)
 	{
@@ -209,10 +213,34 @@ public:
 	case DataType::dtUINT24:  cc.mov(asmjit::x86::word_ptr(ptr),  reg); break;
 	case DataType::dtUINT32:  cc.mov(asmjit::x86::dword_ptr(ptr), reg); break;
 	case DataType::dtUINT64:  cc.mov(asmjit::x86::qword_ptr(ptr), reg); break;
-	default:		  cc.mov(asmjit::x86::ptr(ptr), reg); break; // DBG(std::cerr << "DataDef::putreg() unsupported numeric type " << _type << std::endl); break;
+	default:		  cc.mov(asmjit::x86::ptr(ptr), reg);       break;
+	// DBG(std::cerr << "DataDef::movrval2rptr() unsupported numeric type " << _type << std::endl); break;
 	}
     }
-    virtual void movreg(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
+    // move a numeric value into a memory location pointed to by a register
+    // mov([reg1], int)
+    virtual void movint2rptr(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, int rval)
+    {
+	switch((DataType)_type)
+	{
+	case DataType::dtCHAR:    cc.mov(asmjit::x86::byte_ptr(ptr),  rval); break;
+	case DataType::dtBOOL:    cc.mov(asmjit::x86::byte_ptr(ptr),  rval); break;
+	case DataType::dtINT64:   cc.mov(asmjit::x86::qword_ptr(ptr), rval); break;
+	case DataType::dtINT16:   cc.mov(asmjit::x86::word_ptr(ptr),  rval); break;
+	case DataType::dtINT24:   cc.mov(asmjit::x86::word_ptr(ptr),  rval); break;
+	case DataType::dtINT32:   cc.mov(asmjit::x86::dword_ptr(ptr), rval); break;
+	case DataType::dtUINT8:   cc.mov(asmjit::x86::byte_ptr(ptr),  rval); break;
+	case DataType::dtUINT16:  cc.mov(asmjit::x86::word_ptr(ptr),  rval); break;
+	case DataType::dtUINT24:  cc.mov(asmjit::x86::word_ptr(ptr),  rval); break;
+	case DataType::dtUINT32:  cc.mov(asmjit::x86::dword_ptr(ptr), rval); break;
+	case DataType::dtUINT64:  cc.mov(asmjit::x86::qword_ptr(ptr), rval); break;
+	default:		  cc.mov(asmjit::x86::ptr(ptr), rval);       break;
+	// DBG(std::cerr << "DataDef::movint2rptr() unsupported numeric type " << _type << std::endl); break;
+	}
+    }
+    // move memory pointed by a pointer into a register
+    // mov(reg, [mem])
+    virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
     {
 	switch((DataType)_type)
 	{
@@ -230,7 +258,8 @@ public:
 	default:		  cc.mov(reg, asmjit::imm(ptr));		       break;
 	} // switch
     }
-    virtual void movreg(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, asmjit::x86::Gp &ptr)
+    // move memory pointed to by a register into a register
+    virtual void movrptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, asmjit::x86::Gp &ptr)
     {
 	switch((DataType)_type)
 	{
@@ -246,6 +275,25 @@ public:
 	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr(ptr)); break;
 	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr)); break;
 	default:		  cc.mov(reg, asmjit::x86::ptr(ptr));            break;
+	} // switch
+    }
+    // move memory pointed to by a register and an offset, into a register
+    virtual void movrptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, asmjit::x86::Gp &ptr, size_t ofs)
+    {
+	switch((DataType)_type)
+	{
+	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs)); break;
+	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr(ptr, ofs)); break;
+	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr(ptr, ofs)); break;
+	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs)); break;
+	default:		  cc.mov(reg, asmjit::x86::ptr(ptr, ofs));       break;
 	} // switch
     }
 };

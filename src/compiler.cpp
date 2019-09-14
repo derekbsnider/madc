@@ -20,7 +20,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x)
+#define DBG(x) x
 #include <asmjit/asmjit.h>
 #include "tokens.h"
 #include "datadef.h"
@@ -105,7 +105,8 @@ void streamout_intptr(std::ostream &os, int *i)
 }
 
 // simple for now, should have different versions for signed vs unsigned
-// small to big vs big to small, etc
+// small to big vs big to small, etc, as we need to ensure that moving
+// small to big doesn't leave unwanted data in the other part of the register
 void Program::safemov(x86::Gp &r1, x86::Gp &r2)
 {
     switch(r1.type())
@@ -119,6 +120,7 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2)
     }
 }
 
+// compare two registers even if they are different sizes
 void Program::safecmp(x86::Gp &lval, x86::Gp &rval)
 {
     if ( lval.size() != rval.size() )
@@ -744,6 +746,9 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 	tvl = dynamic_cast<TokenVar *>(left);
 	ltype = tvl->var.type;
 	DBG(cout << "TokenAssign::compile() assignment to " << tvl->var.name << endl);
+	DBG(pgm.cc.comment("TokenAssign::compile() assignment to:"));
+	DBG(pgm.cc.comment(tvl->var.name.c_str()));
+	DBG(pgm.cc.comment("TokenAssign::compile() regp = tvl->getreg(pgm)"));
 	regp = &tvl->getreg(pgm);
     }
     else
@@ -761,6 +766,7 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 	ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->m_offset(tidn->str);
 	x86::Gp &lval = tvl->getreg(pgm);
 	x86::Mem m = x86::ptr(lval, ofs);
+	// _reg points to our data for this member
 	_reg = pgm.cc.newIntPtr(tvl->var.name.c_str());
 	pgm.cc.lea(_reg, m);
 	regp = &_reg;
@@ -787,10 +793,13 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 	    if ( ltype->is_numeric() && tvr->var.type->is_numeric() )
 	    {
 		DBG(cout << "TokenAssign::compile() numeric to numeric" << endl);
+		DBG(pgm.cc.comment("TokenAssign::compile() rreg = tvr->getreg(pgm)"));
 		x86::Gp &rreg = tvr->getreg(pgm);
-		pgm.cc.comment("TokenAssign::compile() numeric to numeric");
+		DBG(pgm.cc.comment("TokenAssign::compile() numeric to numeric"));
+		DBG(pgm.cc.comment("TokenAssign::compile() pgm.safemov(lreg, rreg)"));
 		pgm.safemov(lreg, rreg);
 		tvl->var.modified();
+		DBG(pgm.cc.comment("TokenAssign::compile() pgm.putreg(pgm)"));
 		tvl->putreg(pgm);
 		break;
 	    }
@@ -820,7 +829,8 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 		DBG(cout << "TokenAssign::compile() numeric pgm.cc.mov(" << tvl->var.name << ".reg, " << right->val() << ')' << endl);
 		DBG(pgm.cc.comment("TokenAssign::compile() numeric pgm.cc.mov(lreg, right->val)"));
 		if ( tdot )
-		    pgm.cc.mov(qword_ptr(lreg), right->val());
+		    ltype->movint2rptr(pgm.cc, lreg, right->val());
+//		    pgm.cc.mov(qword_ptr(lreg), right->val());
 		else
 		    pgm.cc.mov(lreg, right->val());
 		tvl->var.modified();
@@ -929,9 +939,9 @@ x86::Gp &TokenCallFunc::getreg(Program &pgm)
 
 void TokenCpnd::movreg(x86::Compiler &cc, x86::Gp &reg, Variable *var)
 {
-    DBG(cc.comment("TokenCpnd::movreg() cc.mov(reg, var->data)"));
+    DBG(cc.comment("TokenCpnd::movreg() calling movmptr2rval(cc, reg, var->data)"));
     DBG(cc.comment(var->name.c_str()));
-    var->type->movreg(cc, reg, var->data);
+    var->type->movmptr2rval(cc, reg, var->data);
 /*
     switch(var->type->type())
     {
@@ -1033,6 +1043,7 @@ x86::Gp &TokenCpnd::getvreg(x86::Compiler &cc, Variable *var)
     }
     else
     {
+	DBG(cc.comment("TokenCpnd::getreg() calling var->type->newreg()"));
 	register_map[var] = var->type->newreg(cc, var->name.c_str());
 /*
         // assign new register for duration of function
@@ -1058,6 +1069,13 @@ x86::Gp &TokenCpnd::getvreg(x86::Compiler &cc, Variable *var)
 	DBG(cc.comment(var->name.c_str()));
 	if ( !(var->flags & vfSTACK) )
 	    movreg(cc, rmi->second, var); // first initialization of non-stack register (regset)
+	else
+	// if it's a numeric stack register, we set it to zero, for the full size of the register
+	// because subsequent operations (assignments, etc), may only access less significant
+        // parts depending on the integer size, also, if we don't touch it here, we may not keep
+        // access to this specific register for this variable
+	if ( var->type->is_numeric() )
+	    cc.xor_(rmi->second.r64(), rmi->second.r64());
     }
     var->flags |= vfREGSET;
 
@@ -1085,21 +1103,8 @@ void TokenCpnd::putreg(asmjit::x86::Compiler &cc, Variable *var)
     // every time we modify a numeric global variable
     DBG(std::cout << "TokenCpnd::putreg[" << (uint64_t)this << "](" << var->name << ") calling cc->mov(data, reg)" << std::endl);
     DBG(cc.comment("TokenCpnd::putreg() calling cc.mov(var->data, reg)"));
-    switch(var->type->type())
-    {
-	case DataType::dtCHAR:    cc.mov(asmjit::x86::byte_ptr((uintptr_t)var->data),  rmi->second); break;
-	case DataType::dtBOOL:    cc.mov(asmjit::x86::byte_ptr((uintptr_t)var->data),  rmi->second); break;
-	case DataType::dtINT64:   cc.mov(asmjit::x86::qword_ptr((uintptr_t)var->data), rmi->second); break;
-	case DataType::dtINT16:   cc.mov(asmjit::x86::word_ptr((uintptr_t)var->data),  rmi->second); break;
-	case DataType::dtINT24:   cc.mov(asmjit::x86::word_ptr((uintptr_t)var->data),  rmi->second); break;
-	case DataType::dtINT32:   cc.mov(asmjit::x86::dword_ptr((uintptr_t)var->data), rmi->second); break;
-	case DataType::dtUINT8:   cc.mov(asmjit::x86::byte_ptr((uintptr_t)var->data),  rmi->second); break;
-	case DataType::dtUINT16:  cc.mov(asmjit::x86::word_ptr((uintptr_t)var->data),  rmi->second); break;
-	case DataType::dtUINT24:  cc.mov(asmjit::x86::word_ptr((uintptr_t)var->data),  rmi->second); break;
-	case DataType::dtUINT32:  cc.mov(asmjit::x86::dword_ptr((uintptr_t)var->data), rmi->second); break;
-	case DataType::dtUINT64:  cc.mov(asmjit::x86::qword_ptr((uintptr_t)var->data), rmi->second); break;
-	default: DBG(std::cerr << "TokenCpnd::putreg() unsupported numeric type " << (int)var->type->type() << std::endl); break;
-    }
+    var->type->movrval2mptr(cc, var->data, rmi->second);
+
     var->flags &= ~vfMODIFIED;
 }
 
@@ -1391,6 +1396,7 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type()  << endl);
 		{
 		    x86::Gp &rval = right->compile(pgm);
+		    DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
 		    FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 		    call->setArg(0, lval);
 		    call->setArg(1, rval);
@@ -1734,12 +1740,23 @@ x86::Gp& TokenDot::compile(Program &pgm, x86::Gp *ret)
     // get left register
     DBG(pgm.cc.comment("TokenDot::compile() tvl->getreg(pgm)"));
     x86::Gp &lval = tvl->getreg(pgm);
-    DBG(pgm.cc.comment("TokenDot::compile() _reg = pgm.cc.newGpq()"));
     DataDef *ltype = ((DataDefSTRUCT *)tvl->var.type)->m_type(tvr->str);
-    _reg = ltype->newreg(pgm.cc, tvr->str.c_str()); //pgm.cc.newGpq(); // hard coded to int for now
+    DBG(pgm.cc.comment("TokenDot::compile() _reg= ltype->newreg(tvr->str)"));
+    // get new register of appropriate size
+    _reg = ltype->newreg(pgm.cc, tvr->str.c_str());
+    // if it's numeric, clear out the full register
+    if ( ltype->is_numeric() )
+    {
+	DBG(pgm.cc.comment("TokenDot::compile() xor_(_reg.r64(), _reg.r64())"));
+	pgm.cc.xor_(_reg.r64(), _reg.r64());
+    }
+//  DBG(pgm.cc.comment("TokenDot::compile() _reg = pgm.cc.newGpq()"));
+//  pgm.cc.newGpq(); // hard coded to int for now
 
-    DBG(pgm.cc.comment("TokenDot::compile() pgm.cc.mov(_reg, m)"));
-    pgm.cc.mov(_reg, x86::qword_ptr(lval, ofs));
+//  DBG(pgm.cc.comment("TokenDot::compile() pgm.cc.mov(_reg, m)"));
+//  pgm.cc.mov(_reg, x86::qword_ptr(lval, ofs));
+    DBG(pgm.cc.comment("TokenDot::compile() ltype->movrptr2rval(_reg, lval, ofs)"));
+    ltype->movrptr2rval(pgm.cc, _reg, lval, ofs);
 
     return _reg;
 }
