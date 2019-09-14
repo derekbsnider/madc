@@ -77,6 +77,7 @@ void EatSpaces(istream &is)
         is.get();
 }
 
+
 int TokenAssign::operate() const
 {
     DBG(std::cout << "TokenAssign" << std::endl);
@@ -595,7 +596,6 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
     DBG(cout << "popOperator() size: " << opStack.size() << " END" << endl);
 }
 
-
 // parse a function call and it's parameters
 // parameters are individually parsed by parseExpression
 // returns ending token
@@ -877,7 +877,6 @@ parseexpswitchtop:
     return exStack.empty() ? NULL : exStack.top();
 }
 
-
 // parse a structure definition
 //
 // forms:
@@ -956,11 +955,16 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     return this;
 }
 
+#undef DBG
+#define DBG(x)
 TokenBase *TokenIF::parse(Program &pgm)
 {
     TokenBase *tn;
 
+//    cout << endl;
+
     DBG(std::cout << std::endl << "TokenIF::parse()" << std::endl);
+
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkOpBrk )
     {
@@ -992,6 +996,8 @@ TokenBase *TokenIF::parse(Program &pgm)
 
     return this;
 }
+#undef DBG
+#define DBG(x)
 
 TokenBase *TokenFOR::parse(Program &pgm)
 {
