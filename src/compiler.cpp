@@ -1,3 +1,8 @@
+//////////////////////////////////////////////////////////////////////////
+//									//
+// madc "compiler" methods to compile the AST into x86 code		//
+//									//
+//////////////////////////////////////////////////////////////////////////
 #include <stdio.h>
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -433,8 +438,8 @@ x86::Gp& TokenBase::compile(Program &pgm, x86::Gp *ret)
 	    break;
 	case TokenType::ttKeyword:
 	    return dynamic_cast<TokenKeyword *>(this)->compile(pgm, ret);
-	case TokenType::ttBaseType:
-	    DBG(cout << "TokenStmt::compile() TokenBaseType(" << ((TokenBaseType *)this)->definition.name << ')' << endl);
+	case TokenType::ttDataType:
+	    DBG(cout << "TokenStmt::compile() TokenDataType(" << ((TokenDataType *)this)->definition.name << ')' << endl);
 	    break;
 	case TokenType::ttInteger:
 	    DBG(cout << "TokenStmt::compile() TokenInt(" << val() << ')' << endl);
@@ -724,78 +729,113 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
     DBG(cout << "TokenAssign::compile() TOP" << endl);
     TokenVar *tvl, *tvr;
     TokenCallFunc *tcr;
+    TokenIdent *tidn;
+    TokenDot *tdot = NULL;
+    x86::Gp *regp;
+    DataDef *ltype;
 
     if ( !left )
 	throw "Assignment with no lval";
     if ( !right )
 	throw "Assignment with no rval";
-    if ( left->type() != TokenType::ttVariable )
-	throw "Assignment on a non-variable lval";
 
-    tvl = dynamic_cast<TokenVar *>(left);
-    DBG(cout << "TokenAssign::compile() assignment to " << tvl->var.name << endl);
+    if ( left->type() == TokenType::ttVariable )
+    {
+	tvl = dynamic_cast<TokenVar *>(left);
+	ltype = tvl->var.type;
+	DBG(cout << "TokenAssign::compile() assignment to " << tvl->var.name << endl);
+	regp = &tvl->getreg(pgm);
+    }
+    else
+    if ( left->id() == TokenID::tkDot && ((TokenDot *)left)->left
+    &&  ((TokenDot *)left)->left->type() == TokenType::ttVariable
+    &&  ((TokenDot *)left)->right && ((TokenDot *)left)->right->type() == TokenType::ttIdentifier )
+    {
+	tdot = (TokenDot *)left;
+	tidn = ((TokenIdent *)tdot->right);
+	tvl = dynamic_cast<TokenVar *>(tdot->left);
+	if ( !tvl->var.type->is_struct() && !tvl->var.type->is_object() )
+	    throw "Expecting class or structure";
+	if ( !(ltype=((DataDefSTRUCT *)tvl->var.type)->type(tidn->str)) )
+	    throw "Unidentifier member";
+	ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->offset(tidn->str);
+	x86::Gp &lval = tvl->getreg(pgm);
+	x86::Mem m = x86::ptr(lval, ofs);
+	_reg = pgm.cc.newIntPtr(tvl->var.name.c_str());
+	pgm.cc.lea(_reg, m);
+	regp = &_reg;
+//	regp = &tdot->compile(pgm);
+    }
+    else
+    {
+	throw "Assignment on a non-variable lval";
+    }
 
     // get left register
-    x86::Gp &lreg = tvl->getreg(pgm);
+    x86::Gp &lreg = *regp;
 
     switch(right->type())
     {
 	case TokenType::ttVariable:
 	    tvr = dynamic_cast<TokenVar *>(right);
 	    DBG(cout << "TokenAssign::compile() assignment from " << tvr->var.name << endl);
-	    if ( &tvl->var == &tvr->var )
+	    if ( &tvl->var == &tvr->var && !tdot )
 	    {
 		DBG(cout << "TokenAssign::compile() assigning variable to itself? nothing to do!" << endl);
 		break;
 	    }
-	    if ( tvl->var.type->is_numeric() && tvr->var.type->is_numeric() )
+	    if ( ltype->is_numeric() && tvr->var.type->is_numeric() )
 	    {
 		DBG(cout << "TokenAssign::compile() numeric to numeric" << endl);
-		x86::Gp &rreg = tvr->getreg(pgm); //pgm.tkFunction->getreg(pgm.cc, &tvr->var);
+		x86::Gp &rreg = tvr->getreg(pgm);
+		pgm.cc.comment("TokenAssign::compile() numeric to numeric");
 		pgm.safemov(lreg, rreg);
 		tvl->var.modified();
-		tvl->putreg(pgm); //pgm.tkFunction->putreg(pgm.cc, &tvl->var);
+		tvl->putreg(pgm);
 		break;
 	    }
-	    if ( tvl->var.type->is_string() && tvr->var.type->is_string() )
+	    if ( ltype->is_string() && tvr->var.type->is_string() )
 	    {
 		DBG(cout << "TokenAssign::compile() string to string" << endl);
 		DBG(cout << "TokenAssign::compile() will call " << tvl->var.name << '('
 		    << (tvl->var.data ? ((string *)(tvl->var.data))->c_str() : "") << ").assign[" << (uint64_t)string_assign << "](" << tvr->var.name
 		    << '(' << (tvr->var.data ? ((string *)(tvr->var.data))->c_str() : "") << ')' << endl);
 
-		x86::Gp &rreg = tvr->getreg(pgm); //pgm.tkFunction->getreg(pgm.cc, &tvr->var);
+		x86::Gp &rreg = tvr->getreg(pgm);
 		DBG(pgm.cc.comment("string_assign"));
 		FuncCallNode* call = pgm.cc.call(imm(string_assign), FuncSignatureT<void, const char*, const char *>(CallConv::kIdHost));
 		call->setArg(0, lreg);
 		call->setArg(1, rreg);
 		tvl->var.modified();
-		tvl->putreg(pgm); // pgm.tkFunction->putreg(pgm.cc, &tvl->var);
+		tvl->putreg(pgm);
 		break;
 	    }
-	    if ( tvl->var.type->type() != tvr->var.type->type() )
+	    if ( ltype->type() != tvr->var.type->type() )
 		throw "Variable types do not match";
 	    else
 		throw "Unimplemented assignment";
 	case TokenType::ttInteger:
-	    if ( tvl->var.type->is_numeric() )
+	    if ( ltype->is_numeric() )
 	    {
-		DBG(cout << "TokenAssign::compile() pgm.cc.mov(" << tvl->var.name << ".reg, " << right->val() << ')' << endl);
-		DBG(pgm.cc.comment("TokenAssign::compile() pgm.cc.mov(lreg, right->val)"));
-		pgm.cc.mov(lreg, right->val());
+		DBG(cout << "TokenAssign::compile() numeric pgm.cc.mov(" << tvl->var.name << ".reg, " << right->val() << ')' << endl);
+		DBG(pgm.cc.comment("TokenAssign::compile() numeric pgm.cc.mov(lreg, right->val)"));
+		if ( tdot )
+		    pgm.cc.mov(qword_ptr(lreg), right->val());
+		else
+		    pgm.cc.mov(lreg, right->val());
 		tvl->var.modified();
-		tvl->putreg(pgm); // pgm.tkFunction->putreg(pgm.cc, &tvl->var);
+		tvl->putreg(pgm);
 		break;
 	    }
 	    throw "Variable non-numeric";
 	case TokenType::ttCallFunc:
 	    tcr = dynamic_cast<TokenCallFunc *>(right);
-	    if ( (tvl->var.type->is_numeric() && tcr->returns()->is_numeric())
-	    ||   (tvl->var.type == tcr->returns()) )
+	    if ( (ltype->is_numeric() && tcr->returns()->is_numeric())
+	    ||   (ltype == tcr->returns()) )
 	    {
 		tcr->compile(pgm, &lreg);
 		tvl->var.modified();
-		tvl->putreg(pgm); // pgm.tkFunction->putreg(pgm.cc, &tvl->var);
+		tvl->putreg(pgm);
 		break;
 	    }
 	    throw "Return type not compatible";
@@ -969,6 +1009,16 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
 		    register_map[var] = reg;
 		    break;
 		}
+		if ( var->type->basetype() == BaseType::btStruct
+		||   var->type->basetype() == BaseType::btClass )
+		{
+		    x86::Mem stack = cc.newStack(var->type->size, 4);
+		    x86::Gp reg = cc.newIntPtr(var->name.c_str());
+		    cc.lea(reg, stack);
+//		    cc.mov(qword_ptr(reg, sizeof(string)), 0);
+		    register_map[var] = reg;
+		    break;
+		}
 		std::cerr << "unsupported type: " << (int)var->type->type() << std::endl;
 		std::cerr << "reftype: " << (int)var->type->reftype() << std::endl;
 		throw "TokenCpnd()::getreg() unsupported type on stack";
@@ -1025,7 +1075,7 @@ void TokenCpnd::putreg(asmjit::x86::Compiler &cc, Variable *var)
     // copy register to global variable -- needs to happen
     // every time we modify a numeric global variable
     DBG(std::cout << "TokenCpnd::putreg[" << (uint64_t)this << "](" << var->name << ") calling cc->mov(data, reg)" << std::endl);
-    cc.comment("TokenCpnd::putreg() calling cc.mov(var->data, reg)");
+    DBG(cc.comment("TokenCpnd::putreg() calling cc.mov(var->data, reg)"));
     switch(var->type->type())
     {
 	case DataType::dtCHAR:    cc.mov(asmjit::x86::byte_ptr((uintptr_t)var->data),  rmi->second); break;
@@ -1281,7 +1331,7 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		DBG(cout << "TokenBSL::compile() right->type() == ttInteger" << endl);
 		{
 		    x86::Gp &rval = dynamic_cast<TokenInt *>(right)->getreg(pgm);
-		    pgm.cc.comment("pgm.cc.call(streamout_int)");
+		    DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
 		    FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 		    call->setArg(0, lval);
 		    call->setArg(1, rval);
@@ -1652,6 +1702,40 @@ x86::Gp& Token3Way::compile(Program &pgm, x86::Gp *ret)
 }
 
 
+// access structure/class member: struct.member
+x86::Gp& TokenDot::compile(Program &pgm, x86::Gp *ret)
+{
+    DBG(cout << "TokenDot::Compile() TOP" << endl);
+    if ( !left )  { throw "!= missing lval operand"; }
+    if ( !right ) { throw "!= missing rval operand"; }
+    if ( left->type() != TokenType::ttVariable )
+	throw "Accessing on a non-variable lval";
+    if ( right->type() != TokenType::ttIdentifier )
+	throw "Was expecting rval to be identifier";
+
+    TokenVar *tvl = dynamic_cast<TokenVar *>(left);
+    if ( !tvl->var.type->is_struct() && !tvl->var.type->is_object() )
+	throw "Expecting class or structure";
+    TokenIdent *tvr = static_cast<TokenIdent *>(right);
+    DBG(cout << "TokenDot::compile() accessing " << tvl->var.name << '.' << tvr->str << endl);
+    // get offset
+    ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->offset(tvr->str);
+    if ( ofs == -1 )
+	throw "Unidentified member";
+    // get left register
+    DBG(pgm.cc.comment("TokenDot::compile() tvl->getreg(pgm)"));
+    x86::Gp &lval = tvl->getreg(pgm);
+    DBG(pgm.cc.comment("TokenDot::compile() _reg = pgm.cc.newGpq()"));
+    _reg = pgm.cc.newGpq(); // hard coded to int for now
+
+    DBG(pgm.cc.comment("TokenDot::compile() pgm.cc.mov(_reg, m)"));
+    pgm.cc.mov(_reg, x86::qword_ptr(lval, ofs));
+
+    return _reg;
+}
+
+
+
 
 // load variable into register
 x86::Gp& TokenVar::compile(Program &pgm, x86::Gp *ret)
@@ -1669,6 +1753,7 @@ x86::Gp& TokenVar::compile(Program &pgm, x86::Gp *ret)
     return reg;
 }
 
+// load integer into register
 x86::Gp& TokenInt::compile(Program &pgm, x86::Gp *ret)
 {
     if ( ret )

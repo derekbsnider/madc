@@ -13,7 +13,7 @@ enum class TokenType {
 //	0	1	 2	3	4	  5		6	  7
 	ttBase, ttSpace, ttTab, ttEOL, ttComment, ttOperator, ttMultiOp, ttSymbol,
 //	8		9	  10	 11	    12	    13		14	    15
-	ttIdentifier, ttString, ttChar, ttInteger, ttReal, ttKeyword, ttBaseType, ttVariable,
+	ttIdentifier, ttString, ttChar, ttInteger, ttReal, ttKeyword, ttDataType, ttVariable,
 //	16		17	  18		19	  20		21
 	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram
 };
@@ -683,7 +683,15 @@ public:
 };
 
 // dot operator . (structure/union/class access)
-class TokenDot:   public TokenPrimary  { public: TokenDot()    :  TokenPrimary('.') {} virtual TokenID id() const { return TokenID::tkDot; }    virtual TokenBase *clone() { return new TokenDot(); } };
+class TokenDot: public TokenPrimary
+{
+public:
+    TokenDot() : TokenPrimary('.') {}
+    virtual TokenID id() const { return TokenID::tkDot; }
+    virtual TokenBase *clone() { return new TokenDot(); }
+    virtual inline int precedence() const { return 1; }
+    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
+};
 
 // command operator , (perform first, second and return second result)
 class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator(',') {} virtual TokenID id() const { return TokenID::tkComma; }  virtual TokenBase *clone() { return new TokenComma(); } };
@@ -789,7 +797,7 @@ public:
     virtual TokenType type() const { return TokenType::ttKeyword; }
 //  virtual TokenBase *clone(){ return new TokenKeyword(str); }
     virtual TokenBase *clone(){ return this; }
-    virtual TokenKeyword *parse(Program &) { return NULL; }
+    virtual TokenBase *parse(Program &) { return NULL; }
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL)  { throw "!!! TokenKeyword::compile() !!!"; }
 };
 
@@ -815,17 +823,25 @@ true         try         typeid         typename
 using        virtual     wchar_t
 */
 
-class TokenELSE:     public TokenKeyword { public: TokenELSE()     : TokenKeyword("else") {}     virtual TokenID id() const { return TokenID::tkELSE;     } virtual TokenBase *clone() { return new TokenELSE();    } };
-class TokenGOTO:     public TokenKeyword { public: TokenGOTO()     : TokenKeyword("goto") {}     virtual TokenID id() const { return TokenID::tkGOTO;     } virtual TokenBase *clone() { return new TokenGOTO();    } };
-class TokenCASE:     public TokenKeyword { public: TokenCASE()     : TokenKeyword("case") {}     virtual TokenID id() const { return TokenID::tkCASE;     } virtual TokenBase *clone() { return new TokenCASE();    } };
-class TokenTRY:      public TokenKeyword { public: TokenTRY()      : TokenKeyword("try") {}      virtual TokenID id() const { return TokenID::tkTRY;      } virtual TokenBase *clone() { return new TokenTRY();     } };
-class TokenCATCH:    public TokenKeyword { public: TokenCATCH()    : TokenKeyword("catch") {}    virtual TokenID id() const { return TokenID::tkCATCH;    } virtual TokenBase *clone() { return new TokenCATCH();   } };
-class TokenTHROW:    public TokenKeyword { public: TokenTHROW()    : TokenKeyword("throw") {}    virtual TokenID id() const { return TokenID::tkTHROW;    } virtual TokenBase *clone() { return new TokenTHROW();   } };
-class TokenSWITCH:   public TokenKeyword { public: TokenSWITCH()   : TokenKeyword("switch") {}   virtual TokenID id() const { return TokenID::tkSWITCH;   } virtual TokenBase *clone() { return new TokenSWITCH();  } };
-class TokenCLASS:    public TokenKeyword { public: TokenCLASS()    : TokenKeyword("class") {}    virtual TokenID id() const { return TokenID::tkCLASS;    } virtual TokenBase *clone() { return new TokenCLASS();   } };
-class TokenSTRUCT:   public TokenKeyword { public: TokenSTRUCT()   : TokenKeyword("struct") {}   virtual TokenID id() const { return TokenID::tkSTRUCT;   } virtual TokenBase *clone() { return new TokenSTRUCT();  } };
-class TokenDEFAULT:  public TokenKeyword { public: TokenDEFAULT()  : TokenKeyword("default") {}  virtual TokenID id() const { return TokenID::tkDEFAULT;  } virtual TokenBase *clone() { return new TokenDEFAULT(); } };
-class TokenTYPEDEF:  public TokenKeyword { public: TokenTYPEDEF()  : TokenKeyword("typedef") {}  virtual TokenID id() const { return TokenID::tkTYPEDEF;  } virtual TokenBase *clone() { return new TokenTYPEDEF(); } };
+class TokenELSE:     public TokenKeyword { public: TokenELSE()     : TokenKeyword("else") {}     virtual TokenID id() const { return TokenID::tkELSE;     } virtual TokenBase *clone() { return (TokenBase*)new TokenELSE();    } };
+class TokenGOTO:     public TokenKeyword { public: TokenGOTO()     : TokenKeyword("goto") {}     virtual TokenID id() const { return TokenID::tkGOTO;     } virtual TokenBase *clone() { return (TokenBase*)new TokenGOTO();    } };
+class TokenCASE:     public TokenKeyword { public: TokenCASE()     : TokenKeyword("case") {}     virtual TokenID id() const { return TokenID::tkCASE;     } virtual TokenBase *clone() { return (TokenBase*)new TokenCASE();    } };
+class TokenTRY:      public TokenKeyword { public: TokenTRY()      : TokenKeyword("try") {}      virtual TokenID id() const { return TokenID::tkTRY;      } virtual TokenBase *clone() { return (TokenBase*)new TokenTRY();     } };
+class TokenCATCH:    public TokenKeyword { public: TokenCATCH()    : TokenKeyword("catch") {}    virtual TokenID id() const { return TokenID::tkCATCH;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCATCH();   } };
+class TokenTHROW:    public TokenKeyword { public: TokenTHROW()    : TokenKeyword("throw") {}    virtual TokenID id() const { return TokenID::tkTHROW;    } virtual TokenBase *clone() { return (TokenBase*)new TokenTHROW();   } };
+class TokenSWITCH:   public TokenKeyword { public: TokenSWITCH()   : TokenKeyword("switch") {}   virtual TokenID id() const { return TokenID::tkSWITCH;   } virtual TokenBase *clone() { return (TokenBase*)new TokenSWITCH();  } };
+class TokenCLASS:    public TokenKeyword { public: TokenCLASS()    : TokenKeyword("class") {}    virtual TokenID id() const { return TokenID::tkCLASS;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCLASS();   } };
+class TokenDEFAULT:  public TokenKeyword { public: TokenDEFAULT()  : TokenKeyword("default") {}  virtual TokenID id() const { return TokenID::tkDEFAULT;  } virtual TokenBase *clone() { return (TokenBase*)new TokenDEFAULT(); } };
+class TokenTYPEDEF:  public TokenKeyword { public: TokenTYPEDEF()  : TokenKeyword("typedef") {}  virtual TokenID id() const { return TokenID::tkTYPEDEF;  } virtual TokenBase *clone() { return (TokenBase*)new TokenTYPEDEF(); } };
+
+class TokenSTRUCT: public TokenKeyword
+{
+public:
+    TokenSTRUCT() : TokenKeyword("struct") {}
+    virtual TokenID id() const { return TokenID::tkSTRUCT; }
+    virtual TokenBase *clone() { return new TokenSTRUCT(); }
+    virtual TokenBase *parse(Program &pgm);
+};
 
 class TokenBREAK: public TokenKeyword
 {
@@ -833,7 +849,7 @@ public:
     TokenBREAK() : TokenKeyword("break") {}
     virtual TokenID id() const { return TokenID::tkBREAK; }
     virtual TokenBase *clone() { return new TokenBREAK(); }
-    virtual TokenBREAK *parse(Program &pgm) { return this; }
+    virtual TokenBase *parse(Program &pgm) { return this; }
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
 };
 
@@ -843,7 +859,7 @@ public:
     TokenCONT() : TokenKeyword("continue") {}
     virtual TokenID id() const { return TokenID::tkCONT;  }
     virtual TokenBase *clone() { return new TokenCONT();  }
-    virtual TokenCONT *parse(Program &pgm) { return this; }
+    virtual TokenBase *parse(Program &pgm) { return this; }
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
 };
 
@@ -854,7 +870,7 @@ public:
     TokenOPEROVER() : TokenKeyword("operator") {}
     virtual TokenID id() const { return TokenID::tkOPEROVER; }
     virtual TokenBase *clone() { return new TokenOPEROVER(); }
-    TokenOPEROVER *parse(Program &);
+    virtual TokenBase *parse(Program &);
 };
 
 class TokenIF: public TokenKeyword
@@ -864,7 +880,7 @@ public:
     TokenBase *statement;
     TokenBase *elsestmt;
     TokenIF() : TokenKeyword("if") { condition = statement = elsestmt = NULL; }
-    TokenIF *parse(Program &);
+    virtual TokenBase *parse(Program &);
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
     virtual TokenID id() const { return TokenID::tkIF; }
     virtual TokenBase *clone() { return new TokenIF(); }
@@ -875,7 +891,7 @@ class TokenRETURN: public TokenKeyword
 public:
     TokenBase *returns;
     TokenRETURN() : TokenKeyword("return") { returns = NULL; }
-    TokenRETURN *parse(Program &);
+    virtual TokenBase *parse(Program &);
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
     virtual TokenID id() const { return TokenID::tkRETURN; }
     virtual TokenBase *clone() { return new TokenRETURN(); }
@@ -887,7 +903,7 @@ public:
     TokenBase *statement;
     TokenBase *condition;
     TokenDO() : TokenKeyword("do") { statement = condition = NULL; }
-    TokenDO *parse(Program &);
+    virtual TokenBase *parse(Program &);
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
     virtual TokenID id() const { return TokenID::tkDO; }
     virtual TokenBase *clone() { return new TokenDO(); }
@@ -899,7 +915,7 @@ public:
     TokenBase *condition;
     TokenBase *statement;
     TokenWHILE() : TokenKeyword("while") { condition = statement = NULL; }
-    TokenWHILE *parse(Program &);
+    virtual TokenBase *parse(Program &);
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
     virtual TokenID id() const { return TokenID::tkWHILE; }
     virtual TokenBase *clone() { return new TokenWHILE(); }
@@ -913,7 +929,7 @@ public:
     TokenBase *increment;
     TokenBase *statement;
     TokenFOR() : TokenKeyword("for") { initialize = condition = increment = statement = NULL; }
-    TokenFOR *parse(Program &);
+    virtual TokenBase *parse(Program &);
     virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
     virtual TokenID id() const { return TokenID::tkFOR; }
     virtual TokenBase *clone() { return new TokenFOR(); }

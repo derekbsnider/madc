@@ -1,8 +1,4 @@
 #include <stdio.h>
-#if 0
-#include <readline/readline.h>
-#include <readline/history.h>
-#endif
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -41,12 +37,9 @@ double time_diff(struct timeval x , struct timeval y)
 int main(int argc, char **argv)
 {
     stringstream ss;
-//  const char *line;
     Program prog;
     TokenProgram *tp;
 
-//  prog.add_keywords();
-//  prog.add_basetypes();
     prog.colors = true;
 
     if ( argc >= 2 )
@@ -73,22 +66,7 @@ int main(int argc, char **argv)
 
 	return 0;
     }
-    std::cout << "Usage: test_parser <file.c3>" << std::endl;
-#if 0
-    for ( ;; )
-    {
-        line = readline("> ");
-        if ( !strcasecmp(line, "quit") )
-	    break;
-        if ( !strcasecmp(line, "run") )
-        {
-	    prog.run();
-	    continue;
-        }
-	ss.clear();
-	ss.str(line);
-	prog.parse(ss);
-    }
-#endif
+    std::cout << "Usage: madc <file.mad>" << std::endl;
+
     return 0;
 }
