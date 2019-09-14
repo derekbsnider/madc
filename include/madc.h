@@ -75,7 +75,7 @@ public:
     std::map<Variable *, asmjit::x86::Gp> register_map;
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
-    asmjit::x86::Gp &getreg(asmjit::x86::Compiler &, Variable *);
+    asmjit::x86::Gp &getvreg(asmjit::x86::Compiler &, Variable *);
     void movreg(asmjit::x86::Compiler &, asmjit::x86::Gp &, Variable *);
     void putreg(asmjit::x86::Compiler &, Variable *);
     void cleanup(asmjit::x86::Compiler &);

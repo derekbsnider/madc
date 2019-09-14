@@ -552,7 +552,7 @@ x86::Gp& TokenFunc::compile(Program &pgm, x86::Gp *ret)
 	for ( variable_vec_iter vvi = method.parameters.begin(); vvi != method.parameters.end(); ++vvi )
 	{
 	    DBG(std::cout << "TokenFunc::compile(): cc.setArg(" << argc << ", " << (*vvi)->name << ')' << std::endl);
-	    x86::Gp &reg = getreg(pgm.cc, (*vvi));
+	    x86::Gp &reg = getvreg(pgm.cc, (*vvi));
 	    pgm.cc.setArg(argc++, reg);
 	    (*vvi)->flags |= vfREGSET;
 	}
@@ -756,9 +756,9 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 	tvl = dynamic_cast<TokenVar *>(tdot->left);
 	if ( !tvl->var.type->is_struct() && !tvl->var.type->is_object() )
 	    throw "Expecting class or structure";
-	if ( !(ltype=((DataDefSTRUCT *)tvl->var.type)->type(tidn->str)) )
+	if ( !(ltype=((DataDefSTRUCT *)tvl->var.type)->m_type(tidn->str)) )
 	    throw "Unidentifier member";
-	ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->offset(tidn->str);
+	ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->m_offset(tidn->str);
 	x86::Gp &lval = tvl->getreg(pgm);
 	x86::Mem m = x86::ptr(lval, ofs);
 	_reg = pgm.cc.newIntPtr(tvl->var.name.c_str());
@@ -893,7 +893,7 @@ x86::Gp &TokenInt::getreg(Program &pgm)
 x86::Gp &TokenVar::getreg(Program &pgm)
 {
     DBG(pgm.cc.comment("TokenVar::getreg()"));
-    return pgm.tkFunction->getreg(pgm.cc, &var);
+    return pgm.tkFunction->getvreg(pgm.cc, &var);
 }
 
 // variable also needs to be able to write the register back to variable
@@ -952,7 +952,7 @@ void TokenCpnd::movreg(x86::Compiler &cc, x86::Gp &reg, Variable *var)
 }
 
 // Manage registers for use on local as well as global variables
-x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
+x86::Gp &TokenCpnd::getvreg(x86::Compiler &cc, Variable *var)
 {
     std::map<Variable *, x86::Gp>::iterator rmi;
 
@@ -1728,14 +1728,14 @@ x86::Gp& TokenDot::compile(Program &pgm, x86::Gp *ret)
     TokenIdent *tvr = static_cast<TokenIdent *>(right);
     DBG(cout << "TokenDot::compile() accessing " << tvl->var.name << '.' << tvr->str << endl);
     // get offset
-    ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->offset(tvr->str);
+    ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->m_offset(tvr->str);
     if ( ofs == -1 )
 	throw "Unidentified member";
     // get left register
     DBG(pgm.cc.comment("TokenDot::compile() tvl->getreg(pgm)"));
     x86::Gp &lval = tvl->getreg(pgm);
     DBG(pgm.cc.comment("TokenDot::compile() _reg = pgm.cc.newGpq()"));
-    DataDef *ltype = ((DataDefSTRUCT *)tvl->var.type)->type(tvr->str);
+    DataDef *ltype = ((DataDefSTRUCT *)tvl->var.type)->m_type(tvr->str);
     _reg = ltype->newreg(pgm.cc, tvr->str.c_str()); //pgm.cc.newGpq(); // hard coded to int for now
 
     DBG(pgm.cc.comment("TokenDot::compile() pgm.cc.mov(_reg, m)"));

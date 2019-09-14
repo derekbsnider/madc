@@ -290,7 +290,7 @@ public:
 	size += dd.size * cnt;
 	members.emplace_back(n, &dd);
     }
-    ssize_t offset(std::string &member)
+    ssize_t m_offset(std::string &member)
     {
 	ssize_t ofs = 0;
 	std::vector<memberpair_t>::iterator dvpi;
@@ -304,7 +304,7 @@ public:
 	}
 	return -1;
     }
-    DataDef *type(std::string &member)
+    DataDef *m_type(std::string &member)
     {
 	std::vector<memberpair_t>::iterator dvpi;
 	DBG(std::cout << "DataDefSTRUCT::type(" << member << ')' << std::endl);
