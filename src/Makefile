@@ -1,5 +1,5 @@
 CXX=g++
-CXXFLAGS=-O3 -std=c++11
+CXXFLAGS=-std=c++11
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h tokens.h datadef.h
 OFILES	= lexer.o parser.o compiler.o madc.o
@@ -15,6 +15,8 @@ OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 
 all:
 	make ../bin/madc
+clean:
+	rm $(OBJECTS)
 
 ../bin/madc: $(OBJECTS)
 	$(CXX) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
