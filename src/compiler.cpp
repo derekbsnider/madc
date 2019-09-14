@@ -905,6 +905,8 @@ void TokenVar::putreg(Program &pgm)
 // function needs similar handling to variable
 x86::Gp &TokenCallFunc::getreg(Program &pgm)
 {
+    _reg = returns()->newreg(pgm.cc, var.name.c_str());
+#if 0
     switch(returns()->type())
     {
 	case DataType::dtCHAR:    _reg = pgm.cc.newGpb(var.name.c_str());    break;
@@ -921,6 +923,7 @@ x86::Gp &TokenCallFunc::getreg(Program &pgm)
 	default:		  _reg = pgm.cc.newIntPtr(var.name.c_str()); break;
     } // switch
 //  compile(pgm, &_reg);
+#endif
     return _reg;
 }
 
@@ -928,6 +931,8 @@ void TokenCpnd::movreg(x86::Compiler &cc, x86::Gp &reg, Variable *var)
 {
     DBG(cc.comment("TokenCpnd::movreg() cc.mov(reg, var->data)"));
     DBG(cc.comment(var->name.c_str()));
+    var->type->movreg(cc, reg, var->data);
+/*
     switch(var->type->type())
     {
 	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)var->data));  break;
@@ -943,6 +948,7 @@ void TokenCpnd::movreg(x86::Compiler &cc, x86::Gp &reg, Variable *var)
 	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)var->data)); break;
 	default:		  cc.mov(reg, asmjit::imm(var->data));			     break;
     } // switch
+*/
 }
 
 // Manage registers for use on local as well as global variables
@@ -1027,6 +1033,8 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
     }
     else
     {
+	register_map[var] = var->type->newreg(cc, var->name.c_str());
+/*
         // assign new register for duration of function
 	switch(var->type->type())
 	{
@@ -1043,6 +1051,7 @@ x86::Gp &TokenCpnd::getreg(x86::Compiler &cc, Variable *var)
 	    case DataType::dtUINT64:  register_map[var] = cc.newGpq(var->name.c_str());    break;
 	    default:		      register_map[var] = cc.newIntPtr(var->name.c_str()); break;
 	} // switch
+*/
 	if ( (rmi=register_map.find(var)) == register_map.end() )
 	    throw "TokenCpnd::getreg() failure";
 	DBG(cc.comment("TokenCpnd::getreg() variable reg init, calling movreg on"));
@@ -1726,7 +1735,8 @@ x86::Gp& TokenDot::compile(Program &pgm, x86::Gp *ret)
     DBG(pgm.cc.comment("TokenDot::compile() tvl->getreg(pgm)"));
     x86::Gp &lval = tvl->getreg(pgm);
     DBG(pgm.cc.comment("TokenDot::compile() _reg = pgm.cc.newGpq()"));
-    _reg = pgm.cc.newGpq(); // hard coded to int for now
+    DataDef *ltype = ((DataDefSTRUCT *)tvl->var.type)->type(tvr->str);
+    _reg = ltype->newreg(pgm.cc, tvr->str.c_str()); //pgm.cc.newGpq(); // hard coded to int for now
 
     DBG(pgm.cc.comment("TokenDot::compile() pgm.cc.mov(_reg, m)"));
     pgm.cc.mov(_reg, x86::qword_ptr(lval, ofs));
