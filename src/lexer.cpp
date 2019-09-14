@@ -1,3 +1,9 @@
+//////////////////////////////////////////////////////////////////////////
+//									//
+// madc lexer methods to tokenize a source file into tokens		//
+//									//
+//////////////////////////////////////////////////////////////////////////
+
 #include <stdio.h>
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -24,70 +30,7 @@
 using namespace std;
 using namespace asmjit;
 
-#if 1
-TokenHash   tkHash;
-TokenAssign tkAssign;
-TokenEquals tkEquals;
-TokenAdd    tkPlus;
-TokenInc    tkInc;
-TokenSub    tkDash;
-TokenDec    tkDec;
-TokenMul    tkStar;
-TokenDiv    tkSlash;
-TokenBslsh  tkBslsh;
-TokenOpBrc  tkOpBrc;
-TokenClBrc  tkClBrc;
-TokenOpBrk  tkOpBrk;
-TokenClBrk  tkClBrk;
-TokenOpSqr  tkOpSqr;
-TokenClSqr  tkClSqr;
-TokenLnot   tkLnot;
-TokenBand   tkBand;
-TokenLand   tkLand;
-TokenBor    tkBor;
-TokenLor    tkLor;
-TokenXor    tkXor;
-TokenMod    tkMod;
-TokenTerQ   tkTerQ;
-TokenTerC   tkTerC;
-TokenNS     tkNS;
-TokenSemi   tkSemi;
-TokenComma  tkComma;
-TokenDot    tkDot;
-TokenQuote  tkQuote;
-TokenApost  tkApost;
-TokenLT     tkLT;
-TokenGT     tkGT;
-TokenLE     tkLE;
-TokenGE     tkGE;
-TokenAddEq  tkAddEq;
-TokenSubEq  tkSubEq;
-TokenDeRef  tkDeRef;
-TokenMulEq  tkMulEq;
-TokenDivEq  tkDivEq;
-TokenNotEq  tkNotEq;
-TokenModEq  tkModEq;
-TokenXorEq  tkXorEq;
-TokenBorEq  tkBorEq;
-TokenBandEq tkBandEq;
-Token3Way   tk3Way;
-Token3Eq    tk3Eq;
-TokenBSL    tkBSL;
-TokenBSR    tkBSR;
-TokenBSLEq  tkBSLEq;
-TokenBSREq  tkBSREq;
-
-// misc tokens
-TokenIdent tkIdent;
-TokenInt   tkInt;
-TokenChar  tkChar;
-TokenStr   tkStr;
-TokenREM   tkREM;
-TokenSpace tkSpace;
-TokenTab   tkTab;
-TokenEOL   tkEOL;
-
-// keywords
+// keyword tokens
 TokenDO		tkDO;
 TokenIF		tkIF;
 TokenFOR	tkFOR;
@@ -108,7 +51,7 @@ TokenDEFAULT	tkDEFAULT;
 TokenTYPEDEF	tkTYPEDEF;
 TokenOPEROVER	tkOPEROVER;
 
-// basic types
+// basic type tokens
 TokenVOID	tkVOID;
 TokenBOOL	tkBOOL;
 TokenCHAR	tkCHAR;
@@ -128,7 +71,6 @@ TokenDOUBLE	tkDOUBLE;
 TokenSTRING	tkSTRING;
 TokenSSTREAM	tkSSTREAM;
 TokenLPSTR	tkLPSTR;
-#endif
 
 
 void Program::_tokenizer_init()
@@ -138,10 +80,11 @@ void Program::_tokenizer_init()
     _cur_token = NULL;
     _prv_token = NULL;
     add_keywords();
-    add_basetypes();
+    add_datatypes();
+    struct_map["teststruct"] = &ddTESTSTRUCT;
 }
 
-// add language keywords
+// add static tokens for language keywords
 void Program::add_keywords()
 {
     keyword_map[tkDO.str] = &tkDO;
@@ -165,28 +108,28 @@ void Program::add_keywords()
     keyword_map[tkOPEROVER.str] = &tkOPEROVER;
 }
 
-// add tokens for language base types
-void Program::add_basetypes()
+// add static tokens for base data types
+void Program::add_datatypes()
 {
-    basetype_map[tkVOID.str] = &tkVOID;
-    basetype_map[tkBOOL.str] = &tkBOOL;
-    basetype_map[tkCHAR.str] = &tkCHAR;
-    basetype_map[tkINT.str] = &tkINT;
-    basetype_map[tkINT8.str] = &tkINT8;
-    basetype_map[tkINT16.str] = &tkINT16;
-    basetype_map[tkINT24.str] = &tkINT24;
-    basetype_map[tkINT32.str] = &tkINT32;
-    basetype_map[tkINT64.str] = &tkINT64;
-    basetype_map[tkUINT8.str] = &tkUINT8;
-    basetype_map[tkUINT16.str] = &tkUINT16;
-    basetype_map[tkUINT24.str] = &tkUINT24;
-    basetype_map[tkUINT32.str] = &tkUINT32;
-    basetype_map[tkUINT64.str] = &tkUINT64;
-    basetype_map[tkFLOAT.str] = &tkFLOAT;
-    basetype_map[tkDOUBLE.str] = &tkDOUBLE;
-    basetype_map[tkSTRING.str] = &tkSTRING;
-    basetype_map[tkSSTREAM.str] = &tkSSTREAM;
-    basetype_map[tkLPSTR.str] = &tkLPSTR;
+    datatype_map[tkVOID.str] = &tkVOID;
+    datatype_map[tkBOOL.str] = &tkBOOL;
+    datatype_map[tkCHAR.str] = &tkCHAR;
+    datatype_map[tkINT.str] = &tkINT;
+    datatype_map[tkINT8.str] = &tkINT8;
+    datatype_map[tkINT16.str] = &tkINT16;
+    datatype_map[tkINT24.str] = &tkINT24;
+    datatype_map[tkINT32.str] = &tkINT32;
+    datatype_map[tkINT64.str] = &tkINT64;
+    datatype_map[tkUINT8.str] = &tkUINT8;
+    datatype_map[tkUINT16.str] = &tkUINT16;
+    datatype_map[tkUINT24.str] = &tkUINT24;
+    datatype_map[tkUINT32.str] = &tkUINT32;
+    datatype_map[tkUINT64.str] = &tkUINT64;
+    datatype_map[tkFLOAT.str] = &tkFLOAT;
+    datatype_map[tkDOUBLE.str] = &tkDOUBLE;
+    datatype_map[tkSTRING.str] = &tkSTRING;
+    datatype_map[tkSSTREAM.str] = &tkSSTREAM;
+    datatype_map[tkLPSTR.str] = &tkLPSTR;
 }
 
 
@@ -197,7 +140,7 @@ void Program::add_basetypes()
 TokenBase *Program::_getToken(istream &ss)
 {
     keyword_map_iter kmi;
-    basetype_map_iter bmi;
+    datatype_map_iter bmi;
     string word;
     int ch, cnt;
 
@@ -394,7 +337,7 @@ TokenBase *Program::_getToken(istream &ss)
 		    word += get(ss);
 		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
 		    return kmi->second->clone();
-		if ( (bmi=basetype_map.find(word)) != basetype_map.end() )
+		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
 		    return bmi->second->clone();
 		return new TokenIdent(word);
 	    }
@@ -549,7 +492,7 @@ void Program::printt(TokenBase *tb)
 	    std::cout << ((TokenIdent *)tb)->str;
 	    if ( colors ) { std::cout << "\e[m"; }
 	    break;
-	case TokenType::ttBaseType:
+	case TokenType::ttDataType:
 	    if ( colors )
 		std::cout << "\e[1;37m";
 	    else

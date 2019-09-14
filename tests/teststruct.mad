@@ -1,0 +1,11 @@
+#!../bin/madc
+
+int main()
+{
+    struct teststruct test;
+
+    test.id = 2;
+    cout << test.id << endl;
+
+    return 0;
+}

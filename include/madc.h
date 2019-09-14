@@ -1,7 +1,7 @@
 #ifndef __MADC_H
 //////////////////////////////////////////////////////////////////////////
 //									//
-// madc main header file						//
+// madc main header file			2019 Derek Snider	//
 //									//
 //////////////////////////////////////////////////////////////////////////
 #define __MADC_H 1
@@ -135,14 +135,14 @@ typedef void (*fVOIDFUNC)(void);
 
 // maps
 typedef std::map<std::string, TokenKeyword *> keyword_map_t;
-typedef std::map<std::string, TokenBaseType *> basetype_map_t;
+typedef std::map<std::string, TokenDataType *> datatype_map_t;
 typedef std::map<std::string, DataDef *> datadef_map_t;
 typedef std::map<std::string, FuncDef *> funcdef_map_t;
 typedef std::map<std::string, Variable *> variable_map_t;
 
 // map-iterators
 typedef std::map<std::string, TokenKeyword *>::iterator keyword_map_iter;
-typedef std::map<std::string, TokenBaseType *>::iterator basetype_map_iter;
+typedef std::map<std::string, TokenDataType *>::iterator datatype_map_iter;
 typedef std::map<std::string, DataDef *>::iterator datadef_map_iter;
 typedef std::map<std::string, FuncDef *>::iterator funcdef_map_iter;
 typedef std::map<std::string, Variable *>::iterator variable_map_iter;
@@ -178,11 +178,12 @@ protected:
     TokenBase *_prv_token;
     TokenBase *_cur_token;
 public:
-    keyword_map_t  keyword_map;
-    basetype_map_t basetype_map;
-    datadef_map_t  datadef_map;
-    funcdef_map_t  funcdef_map;
-    variable_map_t literal_map;
+    keyword_map_t  keyword_map;		// reserved keywords
+    datatype_map_t datatype_map;	// TokenDataType map
+    datadef_map_t  datadef_map;		// data definitions defined by typedef or class
+    datadef_map_t  struct_map;		// data definitions defined by struct
+    funcdef_map_t  funcdef_map;		// function definitions
+    variable_map_t literal_map;		// string literals
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::queue<TokenBase *> tokens;	// parsed token queue
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
@@ -198,7 +199,7 @@ public:
     fVOIDFUNC root_fn;
 
     void add_keywords();
-    void add_basetypes();
+    void add_datatypes();
     void add_string_methods();
     void add_functions();
     void add_globals();
@@ -240,7 +241,7 @@ public:
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
-    TokenBase *parseDeclaration(TokenBaseType *);
+    TokenBase *parseDeclaration(TokenDataType *);
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
 
     // perform cc.mov with size casting

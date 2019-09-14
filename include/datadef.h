@@ -53,6 +53,8 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfSTACKSET	=  512, // we reserved stack space
 			  vfMODIFIED	= 1024, // variable was modified
 			  vfCONSTANT	= 2048, // variable is a constant
+			  vfPRIVATE	= 4096, // variable is a private class member
+			  vfPROTECTED	= 8192, // variable is a protected class member
 			} varflag_t;
 
 #define rtNone(x) 0
@@ -157,54 +159,86 @@ public:
     }
 };
 
-// base type tokens
-class TokenBaseType: public TokenIdent
+// Date Type tokens
+class TokenDataType: public TokenIdent
 {
 public:
     DataDef &definition;
-    TokenBaseType(const char *k, DataDef &d) : TokenIdent(k), definition(d) {}
-    virtual TokenType type() const { return TokenType::ttBaseType; }
-    virtual TokenBase *clone() { return new TokenBaseType(str.c_str(), definition); }
+    TokenDataType(const char *k, DataDef &d) : TokenIdent(k), definition(d) {}
+    virtual TokenType type() const { return TokenType::ttDataType; }
+    virtual TokenBase *clone() { return new TokenDataType(str.c_str(), definition); }
 };
 
+typedef std::pair<std::string, DataDef *> memberpair_t;
 
 class Variable; // forward dec
 
 class DataDefSTRUCT: public DataDef
 {
 public:
-    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
+    std::vector<memberpair_t> members;
+
+//    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
+    DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED) : DataDef(n, s, d) {}
+    DataDefSTRUCT(std::string n, std::vector<memberpair_t> m) : DataDef(n, 0, DataType::dtRESERVED)
+    {
+	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);
+	std::vector<memberpair_t>::iterator dvpi;
+	for ( dvpi = m.begin(); dvpi != m.end(); ++dvpi )
+	    addMember(dvpi->first, *dvpi->second, 1);
+	DBG(std::cout << "DataDefSTRUCT(" << n << ") members.size() " << members.size() << std::endl);
+    }
+    virtual ~DataDefSTRUCT()
+    {
+    }
     virtual BaseType basetype() const { return BaseType::btStruct; }
-    std::vector<Variable *> members;
+    void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
+    void addMember(std::string n, DataDef &dd, size_t cnt)
+    {
+	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ')' << std::endl);
+	size += dd.size * cnt;
+	members.emplace_back(n, &dd);
+    }
+    ssize_t offset(std::string &member)
+    {
+	ssize_t ofs = 0;
+	std::vector<memberpair_t>::iterator dvpi;
+	DBG(std::cout << "DataDefSTRUCT::offset(" << member << ')' << std::endl);
+	for ( dvpi = members.begin(); dvpi != members.end(); ++dvpi )
+	{
+	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << dvpi->first << std::endl);
+	    if ( !member.compare(dvpi->first) )
+		return ofs;
+	    ofs += dvpi->second->size;
+	}
+	return -1;
+    }
+    DataDef *type(std::string &member)
+    {
+	std::vector<memberpair_t>::iterator dvpi;
+	DBG(std::cout << "DataDefSTRUCT::type(" << member << ')' << std::endl);
+	for ( dvpi = members.begin(); dvpi != members.end(); ++dvpi )
+	{
+	    DBG(std::cout << "DataDefSTRUCT::type(" << member << ") looking at " << dvpi->first << std::endl);
+	    if ( !member.compare(dvpi->first) )
+	    {
+		DBG(std::cout << "DataDefSTRUCT::type() returning value " << (uint64_t)dvpi->second << std::endl);
+		return dvpi->second;;
+	    }
+	}
+	DBG(std::cout << "DataDefSTRUCT::type() returning NULL" << std::endl);
+	return NULL;
+    }
 };
 
-class DataDefCLASS: public DataDef
+class DataDefCLASS: public DataDefSTRUCT
 {
 public:
-    DataDefCLASS(std::string n, size_t s, DataType d) : DataDef(n, s, d) {}
-    DataDefCLASS(std::string n, DataType d, std::vector<DataDef> m) : DataDef(n, 0, d)
-    {
-	std::vector<DataDef>::iterator dvi;
-	for ( dvi = m.begin(); dvi != m.end(); ++dvi )
-	    addMember(*dvi);
-    }
-    virtual ~DataDefCLASS()
-    {
-	std::vector<DataDef *>::iterator dvi;
-	for ( dvi = members.begin(); dvi != members.end(); ++dvi )
-	    delete *dvi;
-    }
-    virtual BaseType basetype() const { return BaseType::btClass; }
-    std::vector<DataDef *> members;
     std::vector<Variable *> methods;
     std::vector<Variable *> staticconst;
-    void addMember(DataDef &dd) { addMember(dd.name, dd.size, dd.type()); }
-    void addMember(std::string n, size_t s, DataType d)
-    {
-	DataDef *dd = new DataDef(n, s, d);
-	size += s;
-	members.push_back(dd);
-    }
+
+    DataDefCLASS(std::string n, size_t s, DataType d) : DataDefSTRUCT(n, s, d) {}
+    virtual BaseType basetype() const { return BaseType::btClass; }
 };
 
 typedef DataDefCLASS DDClass;
@@ -233,16 +267,6 @@ class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostr
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
 
-#if 0
-class DataDefTEST:      public DDClass { public: DataDefTEST():
-	DDClass("testclass", DataType::dtRESERVED,
-	{
-		{"name", sizeof(std::string), DataType::dtSTRING},
-		{"age",  sizeof(uint8_t), DataType::dtUINT8},
-		{"sex",  sizeof(uint8_t), DataType::dtUINT8}
-	}) {}
-};
-#endif
 
 extern DataDefVOID ddVOID;
 extern DataDefVOIDref ddVOIDref;
@@ -267,27 +291,47 @@ extern DataDefLPSTR ddLPSTR;
 extern DataDefOSTREAM ddOSTREAM;
 extern DataDefSSTREAM ddSSTREAM;
 
-// token definitions of default base types
-class TokenVOID:      public TokenBaseType { public: TokenVOID() :  TokenBaseType("void", ddVOID) {} };
-class TokenBOOL:      public TokenBaseType { public: TokenBOOL() :  TokenBaseType("bool", ddBOOL) {} };
-class TokenCHAR:      public TokenBaseType { public: TokenCHAR() :  TokenBaseType("char", ddCHAR) {} };
-class TokenINT:       public TokenBaseType { public: TokenINT()  :  TokenBaseType("int", ddINT) {} };
-class TokenINT8:      public TokenBaseType { public: TokenINT8() :  TokenBaseType("int8_t", ddINT8) {} };
-class TokenINT16:     public TokenBaseType { public: TokenINT16():  TokenBaseType("int16_t", ddINT16) {} };
-class TokenINT24:     public TokenBaseType { public: TokenINT24():  TokenBaseType("int24_t", ddINT24) {} };
-class TokenINT32:     public TokenBaseType { public: TokenINT32():  TokenBaseType("int32_t", ddINT32) {} };
-class TokenINT64:     public TokenBaseType { public: TokenINT64():  TokenBaseType("int64_t", ddINT64) {} };
-class TokenUINT8:     public TokenBaseType { public: TokenUINT8() : TokenBaseType("uint8_t", ddUINT8) {} };
-class TokenUINT16:    public TokenBaseType { public: TokenUINT16(): TokenBaseType("uint16_t", ddUINT16) {} };
-class TokenUINT24:    public TokenBaseType { public: TokenUINT24(): TokenBaseType("uint24_t", ddUINT24) {} };
-class TokenUINT32:    public TokenBaseType { public: TokenUINT32(): TokenBaseType("uint32_t", ddUINT32) {} };
-class TokenUINT64:    public TokenBaseType { public: TokenUINT64(): TokenBaseType("uint64_t", ddUINT64) {} };
-class TokenFLOAT:     public TokenBaseType { public: TokenFLOAT() : TokenBaseType("float", ddFLOAT) {} };
-class TokenDOUBLE:    public TokenBaseType { public: TokenDOUBLE(): TokenBaseType("double", ddDOUBLE) {} };
-class TokenSTRING:    public TokenBaseType { public: TokenSTRING(): TokenBaseType("string", ddSTRING) {} };
-class TokenOSTREAM:   public TokenBaseType { public: TokenOSTREAM(): TokenBaseType("ostream", ddOSTREAM) {} };
-class TokenSSTREAM:   public TokenBaseType { public: TokenSSTREAM(): TokenBaseType("stringstream", ddSSTREAM) {} };
-class TokenLPSTR:     public TokenBaseType { public: TokenLPSTR():  TokenBaseType("LPSTR", ddLPSTR) {} };
+#if 1
+class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
+	DataDefSTRUCT("teststruct",
+	{
+		{"name", &ddSTRING},
+		{"id", &ddINT},
+		{"age",  &ddUINT8},
+		{"sex",  &ddUINT8}
+	}) {}
+};
+
+extern DataDefTEST ddTESTSTRUCT;
+#endif
+
+
+// token definitions of integral data types
+class TokenVOID:      public TokenDataType { public: TokenVOID() :  TokenDataType("void", ddVOID) {} };
+class TokenBOOL:      public TokenDataType { public: TokenBOOL() :  TokenDataType("bool", ddBOOL) {} };
+class TokenCHAR:      public TokenDataType { public: TokenCHAR() :  TokenDataType("char", ddCHAR) {} };
+class TokenINT:       public TokenDataType { public: TokenINT()  :  TokenDataType("int", ddINT) {} };
+class TokenINT8:      public TokenDataType { public: TokenINT8() :  TokenDataType("int8_t", ddINT8) {} };
+class TokenINT16:     public TokenDataType { public: TokenINT16():  TokenDataType("int16_t", ddINT16) {} };
+class TokenINT24:     public TokenDataType { public: TokenINT24():  TokenDataType("int24_t", ddINT24) {} };
+class TokenINT32:     public TokenDataType { public: TokenINT32():  TokenDataType("int32_t", ddINT32) {} };
+class TokenINT64:     public TokenDataType { public: TokenINT64():  TokenDataType("int64_t", ddINT64) {} };
+class TokenUINT8:     public TokenDataType { public: TokenUINT8() : TokenDataType("uint8_t", ddUINT8) {} };
+class TokenUINT16:    public TokenDataType { public: TokenUINT16(): TokenDataType("uint16_t", ddUINT16) {} };
+class TokenUINT24:    public TokenDataType { public: TokenUINT24(): TokenDataType("uint24_t", ddUINT24) {} };
+class TokenUINT32:    public TokenDataType { public: TokenUINT32(): TokenDataType("uint32_t", ddUINT32) {} };
+class TokenUINT64:    public TokenDataType { public: TokenUINT64(): TokenDataType("uint64_t", ddUINT64) {} };
+class TokenFLOAT:     public TokenDataType { public: TokenFLOAT() : TokenDataType("float", ddFLOAT) {} };
+class TokenDOUBLE:    public TokenDataType { public: TokenDOUBLE(): TokenDataType("double", ddDOUBLE) {} };
+
+// char *
+class TokenLPSTR:     public TokenDataType { public: TokenLPSTR():  TokenDataType("LPSTR", ddLPSTR) {} };
+
+// some basic c++ types
+class TokenSTRING:    public TokenDataType { public: TokenSTRING(): TokenDataType("string", ddSTRING) {} };
+class TokenOSTREAM:   public TokenDataType { public: TokenOSTREAM():TokenDataType("ostream", ddOSTREAM) {} };
+class TokenSSTREAM:   public TokenDataType { public: TokenSSTREAM():TokenDataType("stringstream", ddSSTREAM) {} };
+
 
 // Variable "container" class to keep track of everything about a variable,
 // primary only used during parsing/compiling

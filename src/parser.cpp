@@ -1,3 +1,9 @@
+//////////////////////////////////////////////////////////////////////////
+//									//
+// madc parser methods to parse the tokens into an AST			//
+//									//
+//////////////////////////////////////////////////////////////////////////
+
 #include <stdio.h>
 #include <readline/readline.h>
 #include <readline/history.h>
@@ -46,6 +52,7 @@ DataDefSTRINGref ddSTRINGref;
 DataDefOSTREAM ddOSTREAM;
 DataDefSSTREAM ddSSTREAM;
 DataDefLPSTR ddLPSTR;
+DataDefTEST ddTESTSTRUCT;
 
 
 void printuint32(uint32_t &i)
@@ -78,7 +85,6 @@ int TokenAssign::operate() const
 	std::cerr << "TokenAssign::operate() left side not variable" << std::endl;
 	return 0;
     }
-//  DBG(std::cout << "TokenAssign: " << ((TokenVar *)left)->var.name << "=" << right->val() << std::endl);
     DBG(std::cout << "TokenAssign: " << dynamic_cast<TokenVar *>(left)->var.name << "=" << right->val() << std::endl);
     left->set(right->val());
     return right->val();
@@ -648,7 +654,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
     TokenOperator *to;
     stack<TokenBase *> exStack;
     stack<TokenBase *> opStack;
-    TokenBaseType *bt;
+    TokenDataType *bt;
     Variable *var;
     bool done;
     int brackets = 0;
@@ -753,8 +759,8 @@ parseexpswitchtop:
 		DBG(cout << "Pushing " << (char)tb->get() << " onto opStack" << endl);
 		opStack.push(to);
 		break;
-            case TokenType::ttBaseType:
-		bt = (TokenBaseType *)tb;
+            case TokenType::ttDataType:
+		bt = (TokenDataType *)tb;
 		tb = nextToken();
 		if ( tb->type() != TokenType::ttIdentifier ) { throw "Expecting identifier"; }
 		var = addVariable(code, bt->definition, ((TokenIdent *)tb)->str);
@@ -767,8 +773,13 @@ parseexpswitchtop:
 		exStack.push(new TokenVar(*var));
 		break;
 	    case TokenType::ttIdentifier:
-		if ( tb->type() == TokenType::ttIdentifier
-		&& !(var=findVariable(((TokenIdent *)tb)->str)) )
+	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
+		{
+		    DBG(cerr << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
+		    exStack.push(tb);
+		    break;
+		}
+		if ( !(var=findVariable(((TokenIdent *)tb)->str)) )
 		{
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);
 		    throw (TokenIdent *)tb;
@@ -854,20 +865,10 @@ parseexpswitchtop:
 
     if ( !opStack.empty() )
 	DBG(cout << "Emptying operator stack" << endl);
+
     while ( !opStack.empty() )
-    {
 	popOperator(opStack, exStack);
-#if 0
-	tb = opStack.top();
-	if ( tb->type() == TokenType::ttCallFunc )
-	{
-//	    throw "Got call function :)";
-	    DBG(cout << "parseExpression() got call function :)" << endl);
-	}
-	exStack.push(tb);
-	opStack.pop();
-#endif
-    }
+
     DBG(cout << "parseExpression() exStack size: " << exStack.size() << endl);
     DBG(if ( !exStack.empty() ) std::cout << " exStack.top()->type() = " << (int)exStack.top()->type() << endl);
 
@@ -877,7 +878,68 @@ parseexpswitchtop:
 }
 
 
-TokenRETURN *TokenRETURN::parse(Program &pgm)
+// parse a structure definition
+//
+// forms:
+// struct tag { type member; ... };
+// struct { type member; } variable;
+// struct tag { type member; } variable;
+// struct tag variable;
+// typedef struct tag alias;
+// typedef struct tag { type member; } alias;
+// typedef struct { type member; } alias;
+TokenBase *TokenSTRUCT::parse(Program &pgm)
+{
+    TokenIdent *tag = NULL, *alias = NULL;
+    TokenBase *tn;
+    TokenDataType *tdt;
+    bool do_typedef = pgm.prevToken()->id() == TokenID::tkTYPEDEF ? true : false;
+    datatype_map_iter bmi; // TokenDataType map
+    datadef_map_iter dmi;  // DataDef map
+
+    DBG(std::cout << std::endl << "TokenSTRUCT::parse() top" << std::endl);
+    if ( !(tn=pgm.peekToken()) )
+	throw "Unexpected end of input";
+
+    if ( tn->type() == TokenType::ttIdentifier )
+    {
+	tag = (TokenIdent *)tn;
+	DBG(cout << "TokenSTRUCT::parse() got tag " << tag->str << endl);
+	tn = pgm.nextToken();
+    }
+
+    // if no brace, then this structure type must already be defined
+    // and we are either doing a typedef, or a variable declaration
+    if ( tn->id() != TokenID::tkOpBrc )
+    {
+	if ( !tag ) { throw "Expecting { or identifier"; }
+	if ( (dmi=pgm.struct_map.find(tag->str)) == pgm.struct_map.end() )
+	    throw "Unknown identifier";
+	// typedef struct tag alias
+	if ( do_typedef )
+	{
+	    if ( tn->type() != TokenType::ttIdentifier )
+		throw "Expecting identifier";
+	    alias = (TokenIdent *)pgm.nextToken();
+	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
+		throw "Identifier already defined";
+	    tdt = new TokenDataType(alias->str.c_str(), *dmi->second);
+	    pgm.datatype_map[alias->str] = tdt;
+	    return this;
+	}
+
+	string tname("struct ");
+	tname.append(tag->str);
+	tdt = new TokenDataType(tname.c_str(), *dmi->second);
+	return pgm.parseDeclaration(tdt);
+    }
+
+    // otherwise we are defining a structure
+
+    return this;
+}
+
+TokenBase *TokenRETURN::parse(Program &pgm)
 {
     TokenBase *tn;
 
@@ -894,7 +956,7 @@ TokenRETURN *TokenRETURN::parse(Program &pgm)
     return this;
 }
 
-TokenIF *TokenIF::parse(Program &pgm)
+TokenBase *TokenIF::parse(Program &pgm)
 {
     TokenBase *tn;
 
@@ -931,7 +993,7 @@ TokenIF *TokenIF::parse(Program &pgm)
     return this;
 }
 
-TokenFOR *TokenFOR::parse(Program &pgm)
+TokenBase *TokenFOR::parse(Program &pgm)
 {
     TokenBase *tn;
 
@@ -972,7 +1034,7 @@ TokenFOR *TokenFOR::parse(Program &pgm)
     return this;
 }
 
-TokenWHILE *TokenWHILE::parse(Program &pgm)
+TokenBase *TokenWHILE::parse(Program &pgm)
 {
     TokenBase *tn;
 
@@ -993,7 +1055,7 @@ TokenWHILE *TokenWHILE::parse(Program &pgm)
     return this;
 }
 
-TokenDO *TokenDO::parse(Program &pgm)
+TokenBase *TokenDO::parse(Program &pgm)
 {
     TokenBase *tn;
 
@@ -1021,13 +1083,13 @@ TokenDO *TokenDO::parse(Program &pgm)
 }
 
 // parse operator overload
-TokenOPEROVER *TokenOPEROVER::parse(Program &pgm)
+TokenBase *TokenOPEROVER::parse(Program &pgm)
 {
     TokenBase *tn;
     DBG(std::cout << std::endl << "TokenOPEROVER::parse()" << std::endl);
     tn = pgm.nextToken();
     // overload type conversion
-    if ( tn->type() == TokenType::ttBaseType )
+    if ( tn->type() == TokenType::ttDataType )
     {
     }
     // overloading operator
@@ -1125,7 +1187,7 @@ void Program::parseFunction(DataDef &dd, std::string &id)
     Variable *var;
 
     vector<std::string> ids;  // vector of variable names
-    TokenBaseType *pb;        // parameter basetype
+    TokenDataType *pb;        // parameter basetype
     std::string pid;          // parameter id
     RefType rtype = RefType::rtNone;
 
@@ -1144,12 +1206,12 @@ void Program::parseFunction(DataDef &dd, std::string &id)
     // look for parameters
     while ( (nt=nextToken()) && nt->id() != TokenID::tkClBrk )
     {
-	if ( nt->type() != TokenType::ttBaseType )
+	if ( nt->type() != TokenType::ttDataType )
 	{
 	    DBG(std::cerr << "parseFunction() params: failed to obtain basetype" << std::endl);
 	    throw "Failed to find type when parsing function parameters";
 	}
-	pb = (TokenBaseType *)nt;
+	pb = (TokenDataType *)nt;
 	rtype = RefType::rtValue;
 grabnt:
 	// grab the next token
@@ -1282,7 +1344,7 @@ grabnt:
 }
 
 // parse either a variable declaration, or a function declaration
-TokenBase *Program::parseDeclaration(TokenBaseType *tb)
+TokenBase *Program::parseDeclaration(TokenDataType *tb)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
     TokenBase *nt; // next token;
@@ -1359,9 +1421,9 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 
 	// if we start with a type (i.e. int), then this could
 	// either be a function or a variable declaration
-	case TokenType::ttBaseType:
+	case TokenType::ttDataType:
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseDeclaration" << std::endl);
-	    return parseDeclaration((TokenBaseType *)tb);
+	    return parseDeclaration((TokenDataType *)tb);
 //	    break;
 
 	case TokenType::ttSymbol:
@@ -1404,7 +1466,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	case TokenType::ttInteger:
 	case TokenType::ttReal:
 	case TokenType::ttKeyword:
-	case TokenType::ttBaseType:
+	case TokenType::ttDataType:
 */
 	default:
 	    throw tb;
