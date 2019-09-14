@@ -656,7 +656,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
     stack<TokenBase *> opStack;
     TokenDataType *bt;
     Variable *var;
-    bool done;
+    bool done = false;
     int brackets = 0;
 
     DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
@@ -664,7 +664,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 //    for ( done = false; !done && tb; tb = peekToken() )
     while ( !done && tb )
     {
-parseexpswitchtop:
+//parseexpswitchtop:
 	switch(tb->type())
 	{
 	    case TokenType::ttInteger:

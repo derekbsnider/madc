@@ -55,6 +55,7 @@ public:
     std::streampos pos;
     TokenBase()      { _token = 0;    }
     TokenBase(int t) { _token = t;    }
+    virtual ~TokenBase() {}
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int c)  { /*DBG(cout << "TokenBase::set(" << c << ')' << endl);*/ _token = c;    }
     virtual bool is_operator() { return false; }
