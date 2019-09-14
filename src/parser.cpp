@@ -955,13 +955,9 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     return this;
 }
 
-#undef DBG
-#define DBG(x)
 TokenBase *TokenIF::parse(Program &pgm)
 {
     TokenBase *tn;
-
-//    cout << endl;
 
     DBG(std::cout << std::endl << "TokenIF::parse()" << std::endl);
 
@@ -996,8 +992,6 @@ TokenBase *TokenIF::parse(Program &pgm)
 
     return this;
 }
-#undef DBG
-#define DBG(x)
 
 TokenBase *TokenFOR::parse(Program &pgm)
 {
