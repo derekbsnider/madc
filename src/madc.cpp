@@ -16,8 +16,9 @@
 #include <stack>
 #include <asmjit/asmjit.h>
 #define DBG(x)
-#include "tokens.h"
 #include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
 #include "madc.h"
 
 using namespace std;

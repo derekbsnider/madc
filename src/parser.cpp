@@ -23,8 +23,9 @@
 #include <stack>
 #define DBG(x)
 #include <asmjit/asmjit.h>
-#include "tokens.h"
 #include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
@@ -1313,6 +1314,7 @@ grabnt:
 	d = *dvi;
 	DBG(cout << "parseFunction() adding parameter variable " << ids[i] << endl);
 	v = new Variable(ids[i++], *d, 1, NULL, false);
+	v->flags |= vfPARAM;
 	method->parameters.push_back(v);
     }
 
