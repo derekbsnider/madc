@@ -80,7 +80,7 @@ public:
     void putreg(asmjit::x86::Compiler &, Variable *);
     void cleanup(asmjit::x86::Compiler &);
     void clear_regmap() { register_map.clear(); }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret);
+    virtual asmjit::x86::Gp &compile(Program &, regdefp_t regdp);
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
     Variable *findVariable(std::string &);
@@ -92,7 +92,7 @@ public:
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual int argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret);
+    virtual asmjit::x86::Gp &compile(Program &, regdefp_t regdp);
     using TokenCpnd::getreg;
 };
 
@@ -102,7 +102,7 @@ public:
     TokenBase *initialize;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret);
+    virtual asmjit::x86::Gp &compile(Program &, regdefp_t regdp);
 };
 
 class TokenCallFunc: public TokenVar
@@ -114,7 +114,7 @@ public:
     virtual int argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret);
+    virtual asmjit::x86::Gp &compile(Program &, regdefp_t regdp);
 };
 
 class TokenProgram: public TokenCpnd
@@ -126,7 +126,7 @@ public:
     size_t bytes;
     TokenProgram() : TokenCpnd() { lines = 0; bytes = 0; is = NULL; }
     virtual TokenType type() const { return TokenType::ttProgram; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret);
+    virtual asmjit::x86::Gp &compile(Program &, regdefp_t regdp);
 };
 
 
