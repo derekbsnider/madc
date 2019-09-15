@@ -1,7 +1,7 @@
 CXX=g++
 CXXFLAGS=-O3 -std=c++11 -Wall
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
-HFILES	= madc.h tokens.h datadef.h
+HFILES	= madc.h datadef.h tokens.h datatokens.h
 OFILES	= lexer.o parser.o compiler.o madc.o
 INCDIR	= ../include
 BINDIR	= ../bin
