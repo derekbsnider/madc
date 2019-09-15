@@ -704,7 +704,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    --brackets;
 		    DBG(cout << "Got ), clearing opStack until (" << endl);
 		    while ( !opStack.empty() && opStack.top()->get() != '(' )
+		    {
+			opStack.top()->setFlag(tfBRACKETED);
 			popOperator(opStack, exStack);
+		    }
 		    if ( !opStack.empty() )
 			opStack.pop(); // pop off '('
 		    if ( conditional && !brackets )

@@ -1393,7 +1393,7 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 	    case TokenType::ttMultiOp:
 		DBG(cout << "TokenBSL::compile() right->type() == ttMultiOp" << endl);
 		// converge streams
-		if ( right->id() == TokenID::tkBSL )
+		if ( right->id() == TokenID::tkBSL && !right->is_bracketed() )
 		{
 		    DBG(cout << "TokenBSL::compile() converging right BSL(<<) to left ostream" << endl);
 		    TokenBSL tmpsin;
