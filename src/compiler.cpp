@@ -177,7 +177,7 @@ bool Program::_compiler_finalize()
     return true;
 }
 
-x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") TOP" << endl);
 
@@ -232,10 +232,11 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
 	case DataType::dtVOID:		funcsig.setRetT<void>();		break;
 	default:			funcsig.setRetT<void *>();		break;
     }
-    if ( !ret )
+    if ( !regdp.first )
     {
 	DBG(pgm.cc.comment("TokenCallFunc::compile() getreg() to assign _reg"));
 	getreg(pgm); // assign _reg if not provided
+	regdp.first = &_reg;
     }
 
 #if OBJECT_SUPPORT
@@ -338,7 +339,7 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
 	    case TokenType::ttCallFunc:
 		DBG(std::cout << "TokenCallFunc::compile() adding call to (ttCallFunc): " << method->returns.name << '(' << tn->val() << ')' << std::endl);
 		{
-		    x86::Gp &p = tn->compile(pgm, NULL);
+		    x86::Gp &p = tn->compile(pgm, regdp);
 		    params.push_back(p);
 		}
 		funcsig.addArgT<int>();
@@ -367,10 +368,10 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
     DBG(std::cout << "TokenCallFunc::compile() END" << std::endl);
 #if 1
     // handle return value
-    if ( ret )
+    if ( regdp.first )
     {
-	call->setRet(0, *ret);
-	return *ret;
+	call->setRet(0, *regdp.first);
+	return *regdp.first;
     }
     else
 #endif
@@ -382,13 +383,13 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
     return _reg;
 }
 
-x86::Gp& TokenCpnd::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenCpnd::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") TOP" << endl);
     x86::Gp *regp = &_reg;
     for ( vector<TokenStmt *>::iterator vti = statements.begin(); vti != statements.end(); ++vti )
     {
-	regp = &(*vti)->compile(pgm, ret);
+	regp = &(*vti)->compile(pgm, regdp);
     }
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") END" << endl);
 
@@ -396,7 +397,7 @@ x86::Gp& TokenCpnd::compile(Program &pgm, x86::Gp *ret)
 }
 
 // compile the "program" token, which contains all initilization / non-function statements
-x86::Gp& TokenProgram::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenProgram::compile(Program &pgm, regdefp_t regdp)
 {
     if ( this != pgm.tkProgram ) { throw "this != tkProgram"; }
     DBG(cout << "TokenProgram::compile(" << (uint64_t)this << ") TOP" << endl);
@@ -411,7 +412,7 @@ x86::Gp& TokenProgram::compile(Program &pgm, x86::Gp *ret)
 
     for ( vector<TokenStmt *>::iterator si = statements.begin(); si != statements.end(); ++si )
     {
-	/*_reg =*/ (*si)->compile(pgm, NULL);
+	/*_reg =*/ (*si)->compile(pgm, regdp);
     }
 
     pgm.tkFunction->cleanup(pgm.cc);	// cleanup stack
@@ -425,44 +426,44 @@ x86::Gp& TokenProgram::compile(Program &pgm, x86::Gp *ret)
     return _reg;
 }
 
-x86::Gp& TokenBase::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenBase::compile(Program &pgm, regdefp_t regdp)
 {
-    DBG(cout << "TokenStmt::compile(" << (void *)this << " type: " << (int)type() << (ret ? " ret=true" : "") << ") TOP" << endl);
+    DBG(cout << "TokenStmt::compile(" << (void *)this << " type: " << (int)type() << (regdp.first ? " ret=true" : "") << ") TOP" << endl);
     switch(type())
     {
 	case TokenType::ttOperator:
 	    DBG(cout << "TokenOperator::compile(" << (char)get() << ')' << endl);
-	    return dynamic_cast<TokenOperator *>(this)->compile(pgm, ret);
+	    return dynamic_cast<TokenOperator *>(this)->compile(pgm, regdp);
 	case TokenType::ttMultiOp:
 	    DBG(cout << "TokenMultiOp::compile()" << endl);
-	    return dynamic_cast<TokenMultiOp *>(this)->compile(pgm, ret);
+	    return dynamic_cast<TokenMultiOp *>(this)->compile(pgm, regdp);
 	case TokenType::ttIdentifier:
 	    DBG(cout << "TokenStmt::compile() TokenIdent(" << ((TokenIdent *)this)->str << ')' << endl);
 	    break;
 	case TokenType::ttKeyword:
-	    return dynamic_cast<TokenKeyword *>(this)->compile(pgm, ret);
+	    return dynamic_cast<TokenKeyword *>(this)->compile(pgm, regdp);
 	case TokenType::ttDataType:
 	    DBG(cout << "TokenStmt::compile() TokenDataType(" << ((TokenDataType *)this)->definition.name << ')' << endl);
 	    break;
 	case TokenType::ttInteger:
 	    DBG(cout << "TokenStmt::compile() TokenInt(" << val() << ')' << endl);
-	    return dynamic_cast<TokenInt *>(this)->compile(pgm, ret);
+	    return dynamic_cast<TokenInt *>(this)->compile(pgm, regdp);
 	case TokenType::ttVariable:
 	    DBG(cout << "TokenStmt::compile() TokenVar(" << dynamic_cast<TokenVar *>(this)->var.name << ')' << endl);
-	    return dynamic_cast<TokenVar *>(this)->compile(pgm, ret);
+	    return dynamic_cast<TokenVar *>(this)->compile(pgm, regdp);
 	case TokenType::ttCallFunc:
-	    return dynamic_cast<TokenCallFunc *>(this)->compile(pgm, ret);
+	    return dynamic_cast<TokenCallFunc *>(this)->compile(pgm, regdp);
 	case TokenType::ttDeclare:
-	    return dynamic_cast<TokenDecl *>(this)->compile(pgm, NULL);
+	    return dynamic_cast<TokenDecl *>(this)->compile(pgm, regdp);
 	case TokenType::ttFunction:
-	    return dynamic_cast<TokenFunc *>(this)->compile(pgm, NULL);
+	    return dynamic_cast<TokenFunc *>(this)->compile(pgm, regdp);
 	case TokenType::ttStatement:
 	    // ttStatement should not be used anywhere
 	    throw "TokenStmt::compile() tb->type() == TokenType::ttStatement";
 	case TokenType::ttCompound:
-	    return dynamic_cast<TokenCpnd *>(this)->compile(pgm, ret);
+	    return dynamic_cast<TokenCpnd *>(this)->compile(pgm, regdp);
 	case TokenType::ttProgram:
-	    return dynamic_cast<TokenProgram *>(this)->compile(pgm, NULL);
+	    return dynamic_cast<TokenProgram *>(this)->compile(pgm, regdp);
 	case TokenType::ttSymbol:
 	    if ( id() == TokenID::tkSemi )
 	    {
@@ -477,19 +478,19 @@ x86::Gp& TokenBase::compile(Program &pgm, x86::Gp *ret)
     return _reg;
 }
 
-x86::Gp& TokenDecl::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenDecl::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenDecl::compile(" << var.name << ") TOP" << endl);
 
     if ( initialize )
-	initialize->compile(pgm, NULL);
+	initialize->compile(pgm, regdp);
 
     DBG(cout << "TokenDecl::compile(" << var.name << ") END" << endl);
 
     return _reg;
 }
 
-x86::Gp& TokenFunc::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenFunc::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenFunc::compile(" << var.name << '[' << (uint64_t)this << "]) TOP" << endl);
     if ( !var.data ) { throw "TokenFunc::compile: method is NULL"; }
@@ -572,7 +573,7 @@ x86::Gp& TokenFunc::compile(Program &pgm, x86::Gp *ret)
 
     for ( vector<TokenStmt *>::iterator si = statements.begin(); si != statements.end(); ++si )
     {
-	(*si)->compile(pgm, NULL);
+	(*si)->compile(pgm, regdp);
     }
 
     cleanup(pgm.cc);	// cleanup stack
@@ -591,6 +592,7 @@ x86::Gp& TokenFunc::compile(Program &pgm, x86::Gp *ret)
 bool Program::compile()
 {
     TokenBase *tb;
+    regdefp_t regdp;
 
     DBG(cout << endl << endl << "Program::compile() start" << endl << endl);
     _compiler_init();
@@ -602,7 +604,7 @@ bool Program::compile()
 	    tb = ast.front();
 	    DBG(cout << "Program::compile(" << (void *)tb << ')' << endl);
 	    ast.pop();
-	    tb->compile(*this, NULL);
+	    tb->compile(*this, regdp);
 	}
     }
     catch(const char *err_msg)
@@ -665,7 +667,7 @@ void Program::execute()
 }
 
 // compile the increment operator
-x86::Gp& TokenInc::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenInc::compile(Program &pgm, regdefp_t regdp)
 {
     TokenVar *tv;
 
@@ -696,7 +698,7 @@ x86::Gp& TokenInc::compile(Program &pgm, x86::Gp *ret)
 }
 
 // compile the decrement operator
-x86::Gp& TokenDec::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenDec::compile(Program &pgm, regdefp_t regdp)
 {
     TokenVar *tv;
 
@@ -727,7 +729,7 @@ x86::Gp& TokenDec::compile(Program &pgm, x86::Gp *ret)
 }
 
 // assignment left = right
-x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenAssign::compile() TOP" << endl);
     TokenVar *tvl, *tvr;
@@ -771,7 +773,7 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 	_reg = pgm.cc.newIntPtr(tvl->var.name.c_str());
 	pgm.cc.lea(_reg, m);
 	regp = &_reg;
-//	regp = &tdot->compile(pgm, NULL);
+//	regp = &tdot->compile(pgm, regdp);
     }
     else
     {
@@ -845,7 +847,8 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 	    ||   (ltype == tcr->returns()) )
 	    {
 		DBG(pgm.cc.comment("TokenAssign::compile() calling tcr->compile(pgm, ret{lreg})"));
-		tcr->compile(pgm, &lreg);
+		regdp.first = &lreg;
+		tcr->compile(pgm, regdp);
 		tvl->var.modified();
 		DBG(pgm.cc.comment("TokenAssign::compile() calling tvl->putreg(pgm)"));
 		tvl->putreg(pgm);
@@ -859,7 +862,7 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 //		x86::Gp rreg = pgm.cc.newGpq();
 //		right->compile(pgm, &rreg);
 //		pgm.safemov(lreg, rreg);
-		x86::Gp &rreg = right->compile(pgm, NULL);
+		x86::Gp &rreg = right->compile(pgm, regdp);
 		pgm.safemov(lreg, rreg);
 		break;
 	    }
@@ -1173,20 +1176,20 @@ void Program::compileKeyword(TokenKeyword *tk)
 
 // add two integers
 
-x86::Gp& TokenAdd::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenAdd::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
-    if ( ret )
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
+    if ( regdp.first )
     {
-	pgm.safemov(*ret, lval);
+	pgm.safemov(*regdp.first, lval);
 	DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(*ret, rval)"));
-	pgm.cc.add(*ret, rval.r64());
+	pgm.cc.add(*regdp.first, rval.r64());
 
-	return *ret;
+	return *regdp.first;
     }
     _reg = pgm.cc.newGpq();
 //  pgm.cc.xor_(_reg, _reg);
@@ -1199,13 +1202,13 @@ x86::Gp& TokenAdd::compile(Program &pgm, x86::Gp *ret)
 }
 
 // subtract two integers
-x86::Gp& TokenSub::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenSub::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenSub::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenSub::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, lval);
@@ -1216,11 +1219,11 @@ x86::Gp& TokenSub::compile(Program &pgm, x86::Gp *ret)
 }
 
 // make number negative
-x86::Gp& TokenNeg::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenNeg::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenNeg::Compile() TOP" << endl);
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenNeg::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, rval);
@@ -1231,13 +1234,13 @@ x86::Gp& TokenNeg::compile(Program &pgm, x86::Gp *ret)
 }
 
 // multiply two integers
-x86::Gp& TokenMul::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenMul::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenMul::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenMul::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, lval);
@@ -1248,15 +1251,15 @@ x86::Gp& TokenMul::compile(Program &pgm, x86::Gp *ret)
 }
 
 // divide two integers
-x86::Gp& TokenDiv::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenDiv::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenDiv::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; } 
     if ( !right ) { throw "!= missing rval operand"; }
 
     x86::Gp remainder = pgm.cc.newInt64("TokenDiv::remainder");
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     pgm.cc.xor_(remainder, remainder);
     _reg = pgm.cc.newGpq();
     DBG(pgm.cc.comment("TokenDiv::compile() pgm.safemov(_reg, lval)"));
@@ -1268,15 +1271,15 @@ x86::Gp& TokenDiv::compile(Program &pgm, x86::Gp *ret)
 }
 
 // modulus
-x86::Gp& TokenMod::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenMod::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenMod::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &remainder = (_reg = pgm.cc.newInt64("remainder"));
     x86::Gp quotent = pgm.cc.newInt64("quotent");
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     pgm.safemov(quotent, lval);
     pgm.cc.xor_(remainder, remainder);
     DBG(pgm.cc.comment("TokenMod::compile() pgm.cc.idiv(remainder, lreg, rval)"));
@@ -1290,7 +1293,7 @@ x86::Gp& TokenMod::compile(Program &pgm, x86::Gp *ret)
 /////////////////////////////////////////////////////////////////////////////
 
 // bit shift left
-x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenBSL::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1381,7 +1384,8 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		    {
 			DBG(cout << "TokenBSL::compile() tcr->returns()->is_numeric()" << endl);
 			_reg = pgm.cc.newGpq();
-			tcr->compile(pgm, &_reg);
+			regdp.first = &_reg;
+			tcr->compile(pgm, regdp);
 			DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
 			FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 			call->setArg(0, lval);
@@ -1400,15 +1404,15 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		    TokenBSL *rsin = static_cast<TokenBSL *>(right);
 		    tmpsin.left = left;
 		    tmpsin.right = rsin->left;
-		    tmpsin.compile(pgm, NULL);
+		    tmpsin.compile(pgm, regdp);
 		    tmpsin.right = rsin->right;
-		    tmpsin.compile(pgm, NULL);
+		    tmpsin.compile(pgm, regdp);
 		    break;
 		}
 	    default:
 		DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type()  << endl);
 		{
-		    x86::Gp &rval = right->compile(pgm, NULL);
+		    x86::Gp &rval = right->compile(pgm, regdp);
 		    DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
 		    FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 		    call->setArg(0, lval);
@@ -1429,8 +1433,8 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
     if ( right->type() == TokenType::ttVariable && !dynamic_cast<TokenVar *>(right)->var.type->is_numeric() )
 	throw "rval is non-numeric";
 
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(cout << "TokenBSL::compile() lval.type() " << lval.type() << " rval.type() " << rval.type() << endl);
     DBG(pgm.cc.comment("TokenBSL::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
@@ -1443,13 +1447,13 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 }
 
 // bit shift right
-x86::Gp& TokenBSR::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenBSR::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenBSR::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenBSR::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, lval);
@@ -1460,13 +1464,13 @@ x86::Gp& TokenBSR::compile(Program &pgm, x86::Gp *ret)
 }
 
 // bitwise or |
-x86::Gp& TokenBor::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenBor::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenBor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenBor::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, lval);
@@ -1477,13 +1481,13 @@ x86::Gp& TokenBor::compile(Program &pgm, x86::Gp *ret)
 }
 
 // bitwise xor ^
-x86::Gp& TokenXor::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenXor::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenXor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenXor::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, lval);
@@ -1494,13 +1498,13 @@ x86::Gp& TokenXor::compile(Program &pgm, x86::Gp *ret)
 }
 
 // bitwise and &
-x86::Gp& TokenBand::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenBand::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenBand::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenBand::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, lval);
@@ -1512,12 +1516,12 @@ x86::Gp& TokenBand::compile(Program &pgm, x86::Gp *ret)
 
 
 // bitwise not ~
-x86::Gp& TokenBnot::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenBnot::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenBnot::Compile() TOP" << endl);
     if ( left )   { throw "Bitwise not has lval!"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &rreg = right->compile(pgm, NULL);
+    x86::Gp &rreg = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenBnot::compile() pgm.safemov(*ret, rreg)"));
     _reg = pgm.cc.newGpq();
     pgm.safemov(_reg, rreg);
@@ -1531,13 +1535,13 @@ x86::Gp& TokenBnot::compile(Program &pgm, x86::Gp *ret)
 /////////////////////////////////////////////////////////////////////////////
 
 // logical not !
-x86::Gp& TokenLnot::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenLnot::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenLnot::Compile() TOP" << endl);
     if ( left )   { throw "Logical not has lval!"; }
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &reg  = getreg(pgm); // get clean register
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &rval = right->compile(pgm, regdp);
     pgm.cc.test(rval, rval); // test rval is 0
     DBG(pgm.cc.comment("TokenLnot::compile() pgm.cc.sete(_reg)"));
     pgm.cc.sete(reg.r8());   // if rval == 0, ret = 1
@@ -1548,15 +1552,15 @@ x86::Gp& TokenLnot::compile(Program &pgm, x86::Gp *ret)
 //
 // Pseudocode: if (lval) return 1;  if (rval) return 1;  return 0;
 //
-x86::Gp& TokenLor::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenLor::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenLor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     Label done = pgm.cc.newLabel();	// label to skip further tests
     x86::Gp &reg  = getreg(pgm);	// get clean register
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenLor::compile() pgm.cc.test(lval, lval)"));
     pgm.cc.test(lval, lval);		// test lval is 0
     DBG(pgm.cc.comment("TokenLor::compile() pgm.cc.sete(_reg)"));
@@ -1573,15 +1577,15 @@ x86::Gp& TokenLor::compile(Program &pgm, x86::Gp *ret)
 //
 // Pseudocode: if (!lval) return 0;  if (!rval) return 0;  return 1;
 //
-x86::Gp& TokenLand::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenLand::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenLand::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     Label done = pgm.cc.newLabel();	// label to skip further tests
     x86::Gp &reg  = getreg(pgm);	// get clean register
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenLand::compile() pgm.cc.test(lval, lval)"));
     pgm.cc.test(lval, lval);		// test lval is 0
     DBG(pgm.cc.comment("TokenLand::compile() pgm.cc.sete(_reg)"));
@@ -1601,14 +1605,14 @@ x86::Gp& TokenLand::compile(Program &pgm, x86::Gp *ret)
 
 
 // Equal to: ==
-x86::Gp& TokenEquals::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenEquals::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenEquals::Compile() TOP" << endl);
     if ( !left )  { throw "= missing lval operand"; }
     if ( !right ) { throw "= missing rval operand"; } 
     x86::Gp &reg  = getreg(pgm); // get clean register
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(cout << "TokenEquals: lval.size() " << lval.size() << " rval.size() " << rval.size() << endl);
     DBG(pgm.cc.comment("TokenEquals::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);
@@ -1618,14 +1622,14 @@ x86::Gp& TokenEquals::compile(Program &pgm, x86::Gp *ret)
 }
 
 // Not equal to: !=
-x86::Gp& TokenNotEq::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenNotEq::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenNotEq::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &reg  = getreg(pgm); // get clean register
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenNotEq::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenNotEq::compile() pgm.cc.setne(reg)"));
@@ -1634,17 +1638,17 @@ x86::Gp& TokenNotEq::compile(Program &pgm, x86::Gp *ret)
 }
 
 // Less than: <
-x86::Gp& TokenLT::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenLT::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenLT::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     DBG(pgm.cc.comment("TokenLT::compile() reg = getreg(pgm)"));
     x86::Gp &reg  = getreg(pgm); // get clean register
-    DBG(pgm.cc.comment("TokenLT::compile() lval = left->compile(pgm, NULL)"));
-    x86::Gp &lval = left->compile(pgm, NULL);
-    DBG(pgm.cc.comment("TokenLT::compile() rval = right->compile(pgm, NULL)"));
-    x86::Gp &rval = right->compile(pgm, NULL);
+    DBG(pgm.cc.comment("TokenLT::compile() lval = left->compile(pgm, regdp)"));
+    x86::Gp &lval = left->compile(pgm, regdp);
+    DBG(pgm.cc.comment("TokenLT::compile() rval = right->compile(pgm, regdp)"));
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenLT::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenLT::compile() pgm.cc.setl(reg)"));
@@ -1653,14 +1657,14 @@ x86::Gp& TokenLT::compile(Program &pgm, x86::Gp *ret)
 }
 
 // Less than or equal to: <=
-x86::Gp& TokenLE::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenLE::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenLE::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &reg  = getreg(pgm); // get clean register
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenLE::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenLE::compile() pgm.cc.setle(_reg)"));
@@ -1669,14 +1673,14 @@ x86::Gp& TokenLE::compile(Program &pgm, x86::Gp *ret)
 }
 
 // Greater than: >
-x86::Gp& TokenGT::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenGT::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenGT::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &reg  = getreg(pgm); // get clean register
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenGT::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenGT::compile() pgm.cc.setg(reg)"));
@@ -1685,14 +1689,14 @@ x86::Gp& TokenGT::compile(Program &pgm, x86::Gp *ret)
 }
 
 // Greater than or equal to: >=
-x86::Gp& TokenGE::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenGE::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenGE::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &reg  = getreg(pgm); // get clean register
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenGE::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);
     DBG(pgm.cc.comment("TokenGE::compile() pgm.cc.setge(reg)"));
@@ -1702,7 +1706,7 @@ x86::Gp& TokenGE::compile(Program &pgm, x86::Gp *ret)
 
 
 // Greater than gives 1, less than gives -1, equal to gives 0 (<=>)
-x86::Gp& Token3Way::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& Token3Way::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "Token3Way::Compile() TOP" << endl);
     Label done = pgm.cc.newLabel();	// label to skip further tests
@@ -1710,8 +1714,8 @@ x86::Gp& Token3Way::compile(Program &pgm, x86::Gp *ret)
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &reg  = getreg(pgm); // get clean register
-    x86::Gp &lval = left->compile(pgm, NULL);
-    x86::Gp &rval = right->compile(pgm, NULL);
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("Token3Way::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);
 
@@ -1728,7 +1732,7 @@ x86::Gp& Token3Way::compile(Program &pgm, x86::Gp *ret)
 
 
 // access structure/class member: struct.member
-x86::Gp& TokenDot::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenDot::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenDot::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1775,29 +1779,29 @@ x86::Gp& TokenDot::compile(Program &pgm, x86::Gp *ret)
 
 
 // load variable into register
-x86::Gp& TokenVar::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenVar::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(pgm.cc.comment("TokenVar::compile() reg = getreg()"));
     x86::Gp &reg = getreg(pgm);
 
-    if ( ret )
+    if ( regdp.first )
     {
 	DBG(pgm.cc.comment("TokenVar::compile() safemov(*ret, reg)"));
-	pgm.safemov(*ret, reg);
-	return *ret;
+	pgm.safemov(*regdp.first, reg);
+	return *regdp.first;
     }
 
     return reg;
 }
 
 // load integer into register
-x86::Gp& TokenInt::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenInt::compile(Program &pgm, regdefp_t regdp)
 {
-    if ( ret )
+    if ( regdp.first )
     {
 	DBG(pgm.cc.comment("TokenInt::compile() cc.mov(*ret, value)"));
-	pgm.cc.mov(*ret, _token);
-	return *ret;
+	pgm.cc.mov(*regdp.first, _token);
+	return *regdp.first;
     }
     DBG(cout << "TokenInt::compile[" << (uint64_t)this << "]() value: " << (int)_token << endl);
     return getreg(pgm);
@@ -1824,13 +1828,13 @@ x86::Gp& TokenInt::compile(Program &pgm, x86::Gp *ret)
 }
 
 // compile a return statement
-x86::Gp& TokenRETURN::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenRETURN::compile(Program &pgm, regdefp_t regdp)
 {
     pgm.tkFunction->cleanup(pgm.cc);
 
     if ( returns )
     {
-	x86::Gp &reg = returns->compile(pgm, NULL);
+	x86::Gp &reg = returns->compile(pgm, regdp);
 	pgm.cc.ret(reg);
 	return reg;
     }
@@ -1840,7 +1844,7 @@ x86::Gp& TokenRETURN::compile(Program &pgm, x86::Gp *ret)
 }
 
 // compile a break statement
-x86::Gp& TokenBREAK::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenBREAK::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(cout << "TokenBREAK::compile(pgm)");
     if ( !pgm.loopstack.empty() )
@@ -1852,7 +1856,7 @@ x86::Gp& TokenBREAK::compile(Program &pgm, x86::Gp *ret)
 }
 
 // compile a continue statement
-x86::Gp& TokenCONT::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenCONT::compile(Program &pgm, regdefp_t regdp)
 {
     if ( !pgm.loopstack.empty() )
     {
@@ -1863,7 +1867,7 @@ x86::Gp& TokenCONT::compile(Program &pgm, x86::Gp *ret)
 }
 
 // compile an if statement
-x86::Gp& TokenIF::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenIF::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(std::cout << "TokenIF::compile() TOP" << std::endl);
     Label iftail = pgm.cc.newLabel();	// label for tail of if
@@ -1875,21 +1879,21 @@ x86::Gp& TokenIF::compile(Program &pgm, x86::Gp *ret)
     pgm.ifstack.push(make_pair(&thendo, elsestmt ? &elsedo : &iftail));
     // perform condition check, false goes either to elsedo or iftail
     DBG(pgm.cc.comment("TokenIF::compile() reg = condition->compile()"));
-    x86::Gp &reg = condition->compile(pgm, NULL);
+    x86::Gp &reg = condition->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenIF::compile() pgm.cc.test(reg, reg)"));
     pgm.cc.test(reg, reg);			// compare to zero
     DBG(pgm.cc.comment("TokenIF::compile() pgm.cc.je(else/tail)"));
     pgm.cc.je(elsestmt ? elsedo : iftail);	// jump appropriately
 
-    DBG(cout << "TokenIF::compile() calling statement->compile(pgm, NULL)" << endl);
+    DBG(cout << "TokenIF::compile() calling statement->compile(pgm, regdp)" << endl);
     pgm.cc.bind(thendo);
-    statement->compile(pgm, NULL); // execute if statement(s) if condition met
+    statement->compile(pgm, regdp); // execute if statement(s) if condition met
     if ( elsestmt )			// do we have an else?
     {
 	pgm.cc.jmp(iftail);		// jump to tail after executing if statements
 	pgm.cc.bind(elsedo);		// bind elsedo label
-	DBG(cout << "TokenIF::compile() calling elsestmt->compile(pgm, NULL)" << endl);
-	elsestmt->compile(pgm, NULL); 	// execute else condition
+	DBG(cout << "TokenIF::compile() calling elsestmt->compile(pgm, regdp)" << endl);
+	elsestmt->compile(pgm, regdp); 	// execute else condition
     }
     pgm.cc.bind(iftail);		// bind if tail
 
@@ -1899,7 +1903,7 @@ x86::Gp& TokenIF::compile(Program &pgm, x86::Gp *ret)
     return reg;
 }
 
-x86::Gp& TokenDO::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenDO::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(std::cout << "TokenDO::compile() TOP" << std::endl);
     Label dotop  = pgm.cc.newLabel();	// label for top of loop
@@ -1908,9 +1912,9 @@ x86::Gp& TokenDO::compile(Program &pgm, x86::Gp *ret)
 
     pgm.loopstack.push(make_pair(&dotop, &dotail)); // push labels onto loopstack
     pgm.cc.bind(dotop);			// label the top of the loop
-    DBG(cout << "TokenDO::compile() calling statement->compile(pgm, NULL)" << endl);
-    statement->compile(pgm, NULL); 	// execute loop's statement(s)
-    x86::Gp &reg = condition->compile(pgm, NULL); // get condition result
+    DBG(cout << "TokenDO::compile() calling statement->compile(pgm, regdp)" << endl);
+    statement->compile(pgm, regdp); 	// execute loop's statement(s)
+    x86::Gp &reg = condition->compile(pgm, regdp); // get condition result
     pgm.cc.test(reg, reg);		// compare to zero
     pgm.cc.je(dotail);			// jump to end
 
@@ -1926,7 +1930,7 @@ x86::Gp& TokenDO::compile(Program &pgm, x86::Gp *ret)
 
 // while ( condition ) statement;
 // TODO: need way to support break and continue
-x86::Gp& TokenWHILE::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenWHILE::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(std::cout << "TokenWHILE::compile() TOP" << std::endl);
     Label whiletop  = pgm.cc.newLabel();	// label for top of loop
@@ -1935,13 +1939,13 @@ x86::Gp& TokenWHILE::compile(Program &pgm, x86::Gp *ret)
 
     pgm.loopstack.push(make_pair(&whiletop, &whiletail)); // push labels onto loopstack
     pgm.cc.bind(whiletop);			// label the top of the loop
-    x86::Gp &reg = condition->compile(pgm, NULL);// get condition result
+    x86::Gp &reg = condition->compile(pgm, regdp);// get condition result
     pgm.cc.test(reg, reg);			// compare to zero
     pgm.cc.je(whiletail);			// if zero, jump to end
 
-    DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm, NULL)" << endl);
+    DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm, regdp)" << endl);
     pgm.cc.bind(whiledo);			// bind action label
-    statement->compile(pgm, NULL); 		// execute loop's statement(s)
+    statement->compile(pgm, regdp); 		// execute loop's statement(s)
     pgm.cc.jmp(whiletop);			// jump back to top
     pgm.cc.bind(whiletail);			// bind while tail
 
@@ -1951,7 +1955,7 @@ x86::Gp& TokenWHILE::compile(Program &pgm, x86::Gp *ret)
     return reg;
 }
 
-x86::Gp& TokenFOR::compile(Program &pgm, x86::Gp *ret)
+x86::Gp& TokenFOR::compile(Program &pgm, regdefp_t regdp)
 {
     DBG(std::cout << "TokenFOR::compile() TOP" << std::endl);
     Label fortop  = pgm.cc.newLabel();		// label for top of loop
@@ -1959,16 +1963,16 @@ x86::Gp& TokenFOR::compile(Program &pgm, x86::Gp *ret)
     Label fortail = pgm.cc.newLabel();		// label for tail of loop
 
     pgm.loopstack.push(make_pair(&forcont, &fortail)); // push labels onto loopstack
-    initialize->compile(pgm, NULL); 		// execute loop's initializer statement
+    initialize->compile(pgm, regdp); 		// execute loop's initializer statement
     pgm.cc.bind(fortop);			// label the top of the loop
-    x86::Gp &reg = condition->compile(pgm, NULL); // get condition result
+    x86::Gp &reg = condition->compile(pgm, regdp); // get condition result
     pgm.cc.test(reg, reg);			// compare to zero
     pgm.cc.je(fortail);				// jump to end
 
-    DBG(cout << "TokenFOR::compile() calling statement->compile(pgm, NULL)" << endl);
-    statement->compile(pgm, NULL); 		// execute loop's statement(s)
+    DBG(cout << "TokenFOR::compile() calling statement->compile(pgm, regdp)" << endl);
+    statement->compile(pgm, regdp); 		// execute loop's statement(s)
     pgm.cc.bind(forcont);			// bind continue label
-    increment->compile(pgm, NULL); 		// execute loop's increment statement
+    increment->compile(pgm, regdp); 		// execute loop's increment statement
     pgm.cc.jmp(fortop);				// jump back to top
     pgm.cc.bind(fortail);			// bind for tail
 
