@@ -22,8 +22,9 @@
 #include <stack>
 #define DBG(x) x
 #include <asmjit/asmjit.h>
-#include "tokens.h"
 #include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
@@ -337,7 +338,7 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
 	    case TokenType::ttCallFunc:
 		DBG(std::cout << "TokenCallFunc::compile() adding call to (ttCallFunc): " << method->returns.name << '(' << tn->val() << ')' << std::endl);
 		{
-		    x86::Gp &p = tn->compile(pgm);
+		    x86::Gp &p = tn->compile(pgm, NULL);
 		    params.push_back(p);
 		}
 		funcsig.addArgT<int>();
@@ -371,8 +372,8 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, x86::Gp *ret)
 	call->setRet(0, *ret);
 	return *ret;
     }
-#endif
     else
+#endif
     if ( func->returns.type() != DataType::dtVOID )
     {
 	call->setRet(0, _reg);
@@ -410,7 +411,7 @@ x86::Gp& TokenProgram::compile(Program &pgm, x86::Gp *ret)
 
     for ( vector<TokenStmt *>::iterator si = statements.begin(); si != statements.end(); ++si )
     {
-	(*si)->compile(pgm);
+	/*_reg =*/ (*si)->compile(pgm, NULL);
     }
 
     pgm.tkFunction->cleanup(pgm.cc);	// cleanup stack
@@ -452,16 +453,16 @@ x86::Gp& TokenBase::compile(Program &pgm, x86::Gp *ret)
 	case TokenType::ttCallFunc:
 	    return dynamic_cast<TokenCallFunc *>(this)->compile(pgm, ret);
 	case TokenType::ttDeclare:
-	    return dynamic_cast<TokenDecl *>(this)->compile(pgm);
+	    return dynamic_cast<TokenDecl *>(this)->compile(pgm, NULL);
 	case TokenType::ttFunction:
-	    return dynamic_cast<TokenFunc *>(this)->compile(pgm);
+	    return dynamic_cast<TokenFunc *>(this)->compile(pgm, NULL);
 	case TokenType::ttStatement:
 	    // ttStatement should not be used anywhere
 	    throw "TokenStmt::compile() tb->type() == TokenType::ttStatement";
 	case TokenType::ttCompound:
 	    return dynamic_cast<TokenCpnd *>(this)->compile(pgm, ret);
 	case TokenType::ttProgram:
-	    return dynamic_cast<TokenProgram *>(this)->compile(pgm);
+	    return dynamic_cast<TokenProgram *>(this)->compile(pgm, NULL);
 	case TokenType::ttSymbol:
 	    if ( id() == TokenID::tkSemi )
 	    {
@@ -481,7 +482,7 @@ x86::Gp& TokenDecl::compile(Program &pgm, x86::Gp *ret)
     DBG(cout << "TokenDecl::compile(" << var.name << ") TOP" << endl);
 
     if ( initialize )
-	initialize->compile(pgm);
+	initialize->compile(pgm, NULL);
 
     DBG(cout << "TokenDecl::compile(" << var.name << ") END" << endl);
 
@@ -571,7 +572,7 @@ x86::Gp& TokenFunc::compile(Program &pgm, x86::Gp *ret)
 
     for ( vector<TokenStmt *>::iterator si = statements.begin(); si != statements.end(); ++si )
     {
-	(*si)->compile(pgm);
+	(*si)->compile(pgm, NULL);
     }
 
     cleanup(pgm.cc);	// cleanup stack
@@ -601,7 +602,7 @@ bool Program::compile()
 	    tb = ast.front();
 	    DBG(cout << "Program::compile(" << (void *)tb << ')' << endl);
 	    ast.pop();
-	    tb->compile(*this);
+	    tb->compile(*this, NULL);
 	}
     }
     catch(const char *err_msg)
@@ -770,7 +771,7 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 	_reg = pgm.cc.newIntPtr(tvl->var.name.c_str());
 	pgm.cc.lea(_reg, m);
 	regp = &_reg;
-//	regp = &tdot->compile(pgm);
+//	regp = &tdot->compile(pgm, NULL);
     }
     else
     {
@@ -843,8 +844,10 @@ x86::Gp& TokenAssign::compile(Program &pgm, x86::Gp *ret)
 	    if ( (ltype->is_numeric() && tcr->returns()->is_numeric())
 	    ||   (ltype == tcr->returns()) )
 	    {
+		DBG(pgm.cc.comment("TokenAssign::compile() calling tcr->compile(pgm, ret{lreg})"));
 		tcr->compile(pgm, &lreg);
 		tvl->var.modified();
+		DBG(pgm.cc.comment("TokenAssign::compile() calling tvl->putreg(pgm)"));
 		tvl->putreg(pgm);
 		break;
 	    }
@@ -1070,6 +1073,7 @@ x86::Gp &TokenCpnd::getvreg(x86::Compiler &cc, Variable *var)
 	if ( !(var->flags & vfSTACK) )
 	    movreg(cc, rmi->second, var); // first initialization of non-stack register (regset)
 	else
+	if ( !(var->flags & vfPARAM) )
 	// if it's a numeric stack register, we set it to zero, for the full size of the register
 	// because subsequent operations (assignments, etc), may only access less significant
         // parts depending on the integer size, also, if we don't touch it here, we may not keep
@@ -1168,6 +1172,7 @@ void Program::compileKeyword(TokenKeyword *tk)
 /////////////////////////////////////////////////////////////////////////////
 
 // add two integers
+
 x86::Gp& TokenAdd::compile(Program &pgm, x86::Gp *ret)
 {
     DBG(cout << "TokenAdd::Compile() TOP" << endl);
@@ -1175,7 +1180,16 @@ x86::Gp& TokenAdd::compile(Program &pgm, x86::Gp *ret)
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &lval = left->compile(pgm, NULL);
     x86::Gp &rval = right->compile(pgm, NULL);
+    if ( ret )
+    {
+	pgm.safemov(*ret, lval);
+	DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(*ret, rval)"));
+	pgm.cc.add(*ret, rval.r64());
+
+	return *ret;
+    }
     _reg = pgm.cc.newGpq();
+//  pgm.cc.xor_(_reg, _reg);
     DBG(pgm.cc.comment("TokenAdd::compile() pgm.safemov(_reg, lval)"));
     pgm.safemov(_reg, lval);
     DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(_reg, rval)"));
@@ -1190,7 +1204,6 @@ x86::Gp& TokenSub::compile(Program &pgm, x86::Gp *ret)
     DBG(cout << "TokenSub::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( ret )    { throw "TokenSub::compile() ret is set"; }
     x86::Gp &lval = left->compile(pgm, NULL);
     x86::Gp &rval = right->compile(pgm, NULL);
     DBG(pgm.cc.comment("TokenSub::compile() pgm.safemov(_reg, lval)"));
@@ -1207,7 +1220,6 @@ x86::Gp& TokenNeg::compile(Program &pgm, x86::Gp *ret)
 {
     DBG(cout << "TokenNeg::Compile() TOP" << endl);
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( ret )    { throw "TokenNeg::compile() ret is set"; }
     x86::Gp &rval = right->compile(pgm, NULL);
     DBG(pgm.cc.comment("TokenNeg::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
@@ -1251,6 +1263,7 @@ x86::Gp& TokenDiv::compile(Program &pgm, x86::Gp *ret)
     pgm.safemov(_reg, lval);
     DBG(pgm.cc.comment("TokenDiv::compile() pgm.cc.div(remainder, _reg, rval)"));
     pgm.cc.idiv(remainder, _reg, rval.r64());
+
     return _reg;
 }
 
@@ -1387,15 +1400,15 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
 		    TokenBSL *rsin = static_cast<TokenBSL *>(right);
 		    tmpsin.left = left;
 		    tmpsin.right = rsin->left;
-		    tmpsin.compile(pgm);
+		    tmpsin.compile(pgm, NULL);
 		    tmpsin.right = rsin->right;
-		    tmpsin.compile(pgm);
+		    tmpsin.compile(pgm, NULL);
 		    break;
 		}
 	    default:
 		DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type()  << endl);
 		{
-		    x86::Gp &rval = right->compile(pgm);
+		    x86::Gp &rval = right->compile(pgm, NULL);
 		    DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
 		    FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
 		    call->setArg(0, lval);
@@ -1416,8 +1429,8 @@ x86::Gp& TokenBSL::compile(Program &pgm, x86::Gp *ret)
     if ( right->type() == TokenType::ttVariable && !dynamic_cast<TokenVar *>(right)->var.type->is_numeric() )
 	throw "rval is non-numeric";
 
-    x86::Gp &lval = left->compile(pgm);
-    x86::Gp &rval = right->compile(pgm);
+    x86::Gp &lval = left->compile(pgm, NULL);
+    x86::Gp &rval = right->compile(pgm, NULL);
     DBG(cout << "TokenBSL::compile() lval.type() " << lval.type() << " rval.type() " << rval.type() << endl);
     DBG(pgm.cc.comment("TokenBSL::compile() pgm.safemov(_reg, lval)"));
     _reg = pgm.cc.newGpq();
@@ -1505,12 +1518,12 @@ x86::Gp& TokenBnot::compile(Program &pgm, x86::Gp *ret)
     if ( left )   { throw "Bitwise not has lval!"; }
     if ( !right ) { throw "!= missing rval operand"; }
     x86::Gp &rreg = right->compile(pgm, NULL);
-    if ( !ret )   { _reg = pgm.cc.newGpq(); ret = &_reg; }
     DBG(pgm.cc.comment("TokenBnot::compile() pgm.safemov(*ret, rreg)"));
-    pgm.safemov(*ret, rreg);
+    _reg = pgm.cc.newGpq();
+    pgm.safemov(_reg, rreg);
     DBG(pgm.cc.comment("TokenBnot::compile() pgm.cc.not_(*ret)"));
-    pgm.cc.not_(*ret);
-    return *ret;
+    pgm.cc.not_(_reg);
+    return _reg;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1523,7 +1536,6 @@ x86::Gp& TokenLnot::compile(Program &pgm, x86::Gp *ret)
     DBG(cout << "TokenLnot::Compile() TOP" << endl);
     if ( left )   { throw "Logical not has lval!"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( ret )    { throw "TokenLnot::compile() ret is set"; }
     x86::Gp &reg  = getreg(pgm); // get clean register
     x86::Gp &rval = right->compile(pgm, NULL);
     pgm.cc.test(rval, rval); // test rval is 0
@@ -1541,7 +1553,6 @@ x86::Gp& TokenLor::compile(Program &pgm, x86::Gp *ret)
     DBG(cout << "TokenLor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( ret )    { throw "TokenLor::compile() ret is set"; }
     Label done = pgm.cc.newLabel();	// label to skip further tests
     x86::Gp &reg  = getreg(pgm);	// get clean register
     x86::Gp &lval = left->compile(pgm, NULL);
@@ -1567,7 +1578,6 @@ x86::Gp& TokenLand::compile(Program &pgm, x86::Gp *ret)
     DBG(cout << "TokenLand::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( ret )    { throw "TokenLand::compile() ret is set"; }
     Label done = pgm.cc.newLabel();	// label to skip further tests
     x86::Gp &reg  = getreg(pgm);	// get clean register
     x86::Gp &lval = left->compile(pgm, NULL);
@@ -1631,9 +1641,9 @@ x86::Gp& TokenLT::compile(Program &pgm, x86::Gp *ret)
     if ( !right ) { throw "!= missing rval operand"; }
     DBG(pgm.cc.comment("TokenLT::compile() reg = getreg(pgm)"));
     x86::Gp &reg  = getreg(pgm); // get clean register
-    DBG(pgm.cc.comment("TokenLT::compile() lval = left->compile(pgm)"));
+    DBG(pgm.cc.comment("TokenLT::compile() lval = left->compile(pgm, NULL)"));
     x86::Gp &lval = left->compile(pgm, NULL);
-    DBG(pgm.cc.comment("TokenLT::compile() rval = right->compile(pgm)"));
+    DBG(pgm.cc.comment("TokenLT::compile() rval = right->compile(pgm, NULL)"));
     x86::Gp &rval = right->compile(pgm, NULL);
     DBG(pgm.cc.comment("TokenLT::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);
@@ -1865,21 +1875,21 @@ x86::Gp& TokenIF::compile(Program &pgm, x86::Gp *ret)
     pgm.ifstack.push(make_pair(&thendo, elsestmt ? &elsedo : &iftail));
     // perform condition check, false goes either to elsedo or iftail
     DBG(pgm.cc.comment("TokenIF::compile() reg = condition->compile()"));
-    x86::Gp &reg = condition->compile(pgm);
+    x86::Gp &reg = condition->compile(pgm, NULL);
     DBG(pgm.cc.comment("TokenIF::compile() pgm.cc.test(reg, reg)"));
     pgm.cc.test(reg, reg);			// compare to zero
     DBG(pgm.cc.comment("TokenIF::compile() pgm.cc.je(else/tail)"));
     pgm.cc.je(elsestmt ? elsedo : iftail);	// jump appropriately
 
-    DBG(cout << "TokenIF::compile() calling statement->compile(pgm)" << endl);
+    DBG(cout << "TokenIF::compile() calling statement->compile(pgm, NULL)" << endl);
     pgm.cc.bind(thendo);
-    statement->compile(pgm); // execute if statement(s) if condition met
+    statement->compile(pgm, NULL); // execute if statement(s) if condition met
     if ( elsestmt )			// do we have an else?
     {
 	pgm.cc.jmp(iftail);		// jump to tail after executing if statements
 	pgm.cc.bind(elsedo);		// bind elsedo label
-	DBG(cout << "TokenIF::compile() calling elsestmt->compile(pgm)" << endl);
-	elsestmt->compile(pgm); 	// execute else condition
+	DBG(cout << "TokenIF::compile() calling elsestmt->compile(pgm, NULL)" << endl);
+	elsestmt->compile(pgm, NULL); 	// execute else condition
     }
     pgm.cc.bind(iftail);		// bind if tail
 
@@ -1898,9 +1908,9 @@ x86::Gp& TokenDO::compile(Program &pgm, x86::Gp *ret)
 
     pgm.loopstack.push(make_pair(&dotop, &dotail)); // push labels onto loopstack
     pgm.cc.bind(dotop);			// label the top of the loop
-    DBG(cout << "TokenDO::compile() calling statement->compile(pgm)" << endl);
-    statement->compile(pgm); 		// execute loop's statement(s)
-    x86::Gp &reg = condition->compile(pgm); // get condition result
+    DBG(cout << "TokenDO::compile() calling statement->compile(pgm, NULL)" << endl);
+    statement->compile(pgm, NULL); 	// execute loop's statement(s)
+    x86::Gp &reg = condition->compile(pgm, NULL); // get condition result
     pgm.cc.test(reg, reg);		// compare to zero
     pgm.cc.je(dotail);			// jump to end
 
@@ -1925,13 +1935,13 @@ x86::Gp& TokenWHILE::compile(Program &pgm, x86::Gp *ret)
 
     pgm.loopstack.push(make_pair(&whiletop, &whiletail)); // push labels onto loopstack
     pgm.cc.bind(whiletop);			// label the top of the loop
-    x86::Gp &reg = condition->compile(pgm);	// get condition result
+    x86::Gp &reg = condition->compile(pgm, NULL);// get condition result
     pgm.cc.test(reg, reg);			// compare to zero
     pgm.cc.je(whiletail);			// if zero, jump to end
 
-    DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm)" << endl);
+    DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm, NULL)" << endl);
     pgm.cc.bind(whiledo);			// bind action label
-    statement->compile(pgm); 			// execute loop's statement(s)
+    statement->compile(pgm, NULL); 		// execute loop's statement(s)
     pgm.cc.jmp(whiletop);			// jump back to top
     pgm.cc.bind(whiletail);			// bind while tail
 
@@ -1949,16 +1959,16 @@ x86::Gp& TokenFOR::compile(Program &pgm, x86::Gp *ret)
     Label fortail = pgm.cc.newLabel();		// label for tail of loop
 
     pgm.loopstack.push(make_pair(&forcont, &fortail)); // push labels onto loopstack
-    initialize->compile(pgm); 			// execute loop's initializer statement
+    initialize->compile(pgm, NULL); 		// execute loop's initializer statement
     pgm.cc.bind(fortop);			// label the top of the loop
-    x86::Gp &reg = condition->compile(pgm);	// get condition result
+    x86::Gp &reg = condition->compile(pgm, NULL); // get condition result
     pgm.cc.test(reg, reg);			// compare to zero
     pgm.cc.je(fortail);				// jump to end
 
-    DBG(cout << "TokenFOR::compile() calling statement->compile(pgm)" << endl);
-    statement->compile(pgm); 			// execute loop's statement(s)
+    DBG(cout << "TokenFOR::compile() calling statement->compile(pgm, NULL)" << endl);
+    statement->compile(pgm, NULL); 		// execute loop's statement(s)
     pgm.cc.bind(forcont);			// bind continue label
-    increment->compile(pgm); 			// execute loop's increment statement
+    increment->compile(pgm, NULL); 		// execute loop's increment statement
     pgm.cc.jmp(fortop);				// jump back to top
     pgm.cc.bind(fortail);			// bind for tail
 
