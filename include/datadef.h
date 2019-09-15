@@ -47,7 +47,7 @@ enum class DataType : uint16_t {
 typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfSTACK	=    2, // stack vs heap
 			  vfSTATIC	=    4, // static variable
-			  vfPARAM	=    4, // parameter variable
+			  vfPARAM	=    8, // parameter variable
 			  vfREGSET	=   64, // GpReg set
 			  vfXREGSET	=  128, // extra reg is set (used for string.c_str)
 			  vfALLOC	=  256, // data pointer was allocated by us

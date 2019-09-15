@@ -45,24 +45,34 @@ enum class TokenAssoc {
     taNone, taLeftToRight, taRightToLeft
 };
 
+
+// Token flags
+typedef enum : uint16_t { tfBRACKETED	=    1,
+			  tfOVERLOADED  =    2,
+			} tokflag_t;
+
 class TokenBase
 {
 protected:
     int _token;
     DataDef *_datatype;
     asmjit::x86::Gp _reg;
+    uint16_t _flags;
 public:
     const char *file;
     TokenBase *parent;
     int line;
     int column;
     std::streampos pos;
-    TokenBase()      { _token = 0; _datatype = &ddVOID; }
-    TokenBase(int t) { _token = t; _datatype = &ddVOID; }
+    TokenBase()      { _token = 0; _datatype = &ddVOID; _flags = 0; }
+    TokenBase(int t) { _token = t; _datatype = &ddVOID; _flags = 0; }
     virtual ~TokenBase() {}
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int c)  { /*DBG(cout << "TokenBase::set(" << c << ')' << endl);*/ _token = c;    }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
+    virtual void setFlag(tokflag_t f) { _flags |= f; }
+    virtual bool is_bracketed()  { return (_flags & tfBRACKETED) ? true : false;  }
+    virtual bool is_overloaded() { return (_flags & tfOVERLOADED) ? true : false; }
     virtual bool is_operator() { return false; }
     virtual int inc() { return 0; }
     virtual int dec() { return 0; }
