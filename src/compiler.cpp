@@ -269,85 +269,51 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     for ( int i = 0; i < argc(); ++i )
     {
+	regdefp_t funcrdp;
 	ptype = func->parameters[i];
 	tn = parameters[i];
 
-	switch(tn->type())
+	funcrdp.second = ptype;
+	_reg = ptype->newreg(pgm.cc, method->parameters[i]->name.c_str());
+	funcrdp.first = &_reg;	
+	x86::Gp &tnreg = tn->compile(pgm, funcrdp);
+	if ( !funcrdp.second )
+	    throw "Failed to detemine type of rval";
+	if ( ptype->is_numeric() && !funcrdp.second->is_numeric() )
 	{
-	    case TokenType::ttVariable:
-		tv = dynamic_cast<TokenVar *>(tn);
-		// TODO: replace all this with a ptype->is_compatible(tv->var.type)
-		if ( ptype->is_numeric() && !tv->var.type->is_numeric() )
-		{
-		    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)tv->var.type->type() << endl);
-		    throw "Expecting numeric argument";
-		}
-		if ( ptype->is_string() && !tv->var.type->is_string() )
-		    throw "Expecting string argument";
-		if ( ptype->is_object() )
-		{
-		    if ( !tv->var.type->is_object() )
-			throw "Expecting object argument";
-		    // check for has_ostream / has_istream
-		    if ( ptype->rawtype() != tv->var.type->rawtype() )
-			throw "Object type mismatch";
-		}
-		DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(tv->getreg(pgm))"));
-		params.push_back(tv->getreg(pgm)); // params.push_back(pgm.tkFunction->getreg(pgm.cc, &tv->var));
-		// could probably use a tv->var.addArgT(funcsig) method
-		switch(tv->var.type->type())
-		{
-		    case DataType::dtCHAR:	funcsig.addArgT<char>();	break;
-		    case DataType::dtBOOL:	funcsig.addArgT<bool>();	break;
-//		    case DataType::dtINT:	funcsig.addArgT<int>();		break;
-//		    case DataType::dtINT8:	funcsig.addArgT<int8_t>();	break;
-		    case DataType::dtINT16:	funcsig.addArgT<int16_t>();	break;
-		    case DataType::dtINT24:	funcsig.addArgT<int16_t>();	break;
-		    case DataType::dtINT32:	funcsig.addArgT<int32_t>();	break;
-		    case DataType::dtINT64:	funcsig.addArgT<int64_t>();	break;
-		    case DataType::dtUINT8:	funcsig.addArgT<uint8_t>();	break;
-		    case DataType::dtUINT16:	funcsig.addArgT<uint16_t>();	break;
-		    case DataType::dtUINT24:	funcsig.addArgT<uint16_t>();	break;
-		    case DataType::dtUINT32:	funcsig.addArgT<uint32_t>();	break;
-		    case DataType::dtUINT64:	funcsig.addArgT<uint64_t>();	break;
-		    case DataType::dtCHARptr:	funcsig.addArgT<const char *>();break;
-		    default:			funcsig.addArgT<void *>();	break;
-		} // switch
-		break;
-	    case TokenType::ttInteger: // integer literal
-		if ( ptype->type() > DataType::dtRESERVED )
-		{
-		    std::cerr << "ERROR: TokenCallFunc::compile() method " << var.name << " argument " << i << " was expecting type: " << ptype->name << " not integer" << std::endl;
-		    throw "Not expecting numeric argument";
-		}
-		DBG(std::cout << "TokenCallFunc::compile() adding call to (ttInteger): " << method->returns.name << '(' << tn->val() << ')' << std::endl);
-		{
-		    x86::Gp p = pgm.cc.newGpq();
-		    pgm.cc.mov(p, tn->val());
-		    params.push_back(p);
-		}
-		funcsig.addArgT<int>();
-		break;
-	    case TokenType::ttChar: // literal char
-		DBG(std::cout << "TokenCallFunc::compile() adding call to (ttChar): " << method->returns.name << '(' << tn->val() << ')' << std::endl);
-		{
-		    x86::Gp p = pgm.cc.newGpb();
-		    pgm.cc.mov(p, tn->val());
-		    params.push_back(p);
-		}
-		funcsig.addArgT<char>();
-		break;
-	    case TokenType::ttCallFunc:
-		DBG(std::cout << "TokenCallFunc::compile() adding call to (ttCallFunc): " << method->returns.name << '(' << tn->val() << ')' << std::endl);
-		{
-		    x86::Gp &p = tn->compile(pgm, regdp);
-		    params.push_back(p);
-		}
-		funcsig.addArgT<int>();
-		break;
-	    default:
-		std::cerr << "TokenCallFunc::compile() parameter #" << i << " is type " << (int)tn->type() << std::endl;
-		throw "Unsupported type";
+	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
+	    throw "Expecting numeric argument";
+	}
+	if ( ptype->is_string() && !funcrdp.second->is_string() )
+	    throw "Expecting string argument";
+	if ( ptype->is_object() )
+	{
+	    if ( !funcrdp.second->is_object() )
+		throw "Expecting object argument";
+	    // check for has_ostream / has_istream
+	    if ( ptype->rawtype() != funcrdp.second->rawtype() )
+		throw "Object type mismatch";
+	}
+	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(tv->getreg(pgm))"));
+	params.push_back(tnreg); // params.push_back(pgm.tkFunction->getreg(pgm.cc, &tv->var));
+	// could probably use a tv->var.addArgT(funcsig) method
+	switch(funcrdp.second->type())
+	{
+	    case DataType::dtCHAR:	funcsig.addArgT<char>();	break;
+	    case DataType::dtBOOL:	funcsig.addArgT<bool>();	break;
+//	    case DataType::dtINT:	funcsig.addArgT<int>();		break;
+//	    case DataType::dtINT8:	funcsig.addArgT<int8_t>();	break;
+	    case DataType::dtINT16:	funcsig.addArgT<int16_t>();	break;
+	    case DataType::dtINT24:	funcsig.addArgT<int16_t>();	break;
+	    case DataType::dtINT32:	funcsig.addArgT<int32_t>();	break;
+	    case DataType::dtINT64:	funcsig.addArgT<int64_t>();	break;
+	    case DataType::dtUINT8:	funcsig.addArgT<uint8_t>();	break;
+	    case DataType::dtUINT16:	funcsig.addArgT<uint16_t>();	break;
+	    case DataType::dtUINT24:	funcsig.addArgT<uint16_t>();	break;
+	    case DataType::dtUINT32:	funcsig.addArgT<uint32_t>();	break;
+	    case DataType::dtUINT64:	funcsig.addArgT<uint64_t>();	break;
+	    case DataType::dtCHARptr:	funcsig.addArgT<const char *>();break;
+	    default:			funcsig.addArgT<void *>();	break;
 	} // switch
     }
 
@@ -1271,69 +1237,33 @@ void Program::compileKeyword(TokenKeyword *tk)
 /////////////////////////////////////////////////////////////////////////////
 
 // add two integers
-#if 1
 x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenAdd::Compile() TOP" << endl);
-    if ( !left )  { throw "!= missing lval operand"; }
-    if ( !right ) { throw "!= missing rval operand"; }
+    DBG(cout << "TokenAdd::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
+    if ( !left )  { throw "+ missing lval operand"; }
+    if ( !right ) { throw "+ missing rval operand"; }
     // do we have a register?
-    if ( regdp.first )
-    {
-	x86::Gp &lval = left->compile(pgm, regdp); // get lval into register
-	if ( !regdp.second )
+    if ( !regdp.first ) { throw "+ missing register"; }
+
+    DBG(cout << "TokenAdd::compile() left->compile()" << endl);
+    x86::Gp &lval = left->compile(pgm, regdp); // get lval into register
+    if ( !regdp.second )
 	    throw "TokenAdd::compile() left->compile didn't set datatype";
-	x86::Gp _reg = regdp.second->newreg(pgm.cc); // use tmp for right side
-	regdp.first = &_reg;
-	x86::Gp &rval = right->compile(pgm, regdp);
-	pgm.cc.add(lval, rval);
-	regdp.first = &lval;
-	return *regdp.first;
-    }
-
-    x86::Gp &lval = left->compile(pgm, regdp);
+    _reg = regdp.second->newreg(pgm.cc, "TokenAdd._reg"); // use tmp for right side
+    regdp.first = &_reg;
+    DBG(cout << "TokenAdd::compile() right->compile()" << endl);
     x86::Gp &rval = right->compile(pgm, regdp);
-    _reg = pgm.cc.newGpq();
-//  pgm.cc.xor_(_reg, _reg);
-    DBG(pgm.cc.comment("TokenAdd::compile() pgm.safemov(_reg, lval)"));
-    pgm.safemov(_reg, lval);
-    DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(_reg, rval)"));
-    pgm.cc.add(_reg, rval.r64());
-
-    return _reg;
+    pgm.cc.add(lval, rval);
+    regdp.first = &lval;
+    return *regdp.first;
 }
-#else
-x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(cout << "TokenAdd::Compile() TOP" << endl);
-    if ( !left )  { throw "!= missing lval operand"; }
-    if ( !right ) { throw "!= missing rval operand"; }
-    x86::Gp &lval = left->compile(pgm, regdp);
-    x86::Gp &rval = right->compile(pgm, regdp);
-    if ( regdp.first )
-    {
-	pgm.safemov(*regdp.first, lval);
-	DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(*ret, rval)"));
-	pgm.cc.add(*regdp.first, rval.r64());
 
-	return *regdp.first;
-    }
-    _reg = pgm.cc.newGpq();
-//  pgm.cc.xor_(_reg, _reg);
-    DBG(pgm.cc.comment("TokenAdd::compile() pgm.safemov(_reg, lval)"));
-    pgm.safemov(_reg, lval);
-    DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(_reg, rval)"));
-    pgm.cc.add(_reg, rval.r64());
-
-    return _reg;
-}
-#endif
 // subtract two integers
 x86::Gp& TokenSub::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenSub::Compile() TOP" << endl);
-    if ( !left )  { throw "!= missing lval operand"; }
-    if ( !right ) { throw "!= missing rval operand"; }
+    if ( !left )  { throw "- missing lval operand"; }
+    if ( !right ) { throw "- missing rval operand"; }
     x86::Gp &lval = left->compile(pgm, regdp);
     x86::Gp &rval = right->compile(pgm, regdp);
     DBG(pgm.cc.comment("TokenSub::compile() pgm.safemov(_reg, lval)"));
