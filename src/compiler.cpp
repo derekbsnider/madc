@@ -661,7 +661,7 @@ void Program::execute()
 	return;
     }
     DBG(std::cout << std::endl << "Program::execute() starts" << std::endl);    
-    DBG(std::cout << "Program::execute() calling main()" << std::endl << std::endl);
+    DBG(std::cout << "Program::execute() calling main()[" << std::hex << ((uint64_t)main_fn) << ']' << std::endl << std::endl);
     main_fn();
     DBG(std::cout << std::endl << "Program::execute() main() returns" << std::endl);
     DBG(std::cout << "Program::execute() ends" << std::endl);    
@@ -775,8 +775,8 @@ x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     &&  ((TokenDot *)left)->left->type() == TokenType::ttVariable
     &&  ((TokenDot *)left)->right && ((TokenDot *)left)->right->type() == TokenType::ttIdentifier )
     {
-	TokenIdent *tidn = ((TokenIdent *)tdot->right);
 	tdot = (TokenDot *)left;
+	TokenIdent *tidn = ((TokenIdent *)tdot->right);
 	tvl = dynamic_cast<TokenVar *>(tdot->left);
 	if ( !tvl->var.type->is_struct() && !tvl->var.type->is_object() )
 	    throw "Expecting class or structure";
@@ -943,6 +943,7 @@ x86::Gp &TokenMember::getreg(Program &pgm)
     DBG(pgm.cc.comment("TokenMember::getreg()"));
     x86::Gp &oreg = pgm.tkFunction->getvreg(pgm.cc, &object);
     _reg = var.type->newreg(pgm.cc, var.name.c_str());
+#if 0
     if ( var.type->is_numeric() )
     {
 	DBG(pgm.cc.comment("TokenMember::getreg() xor_(_reg.r64(), _reg.r64())"));
@@ -951,6 +952,7 @@ x86::Gp &TokenMember::getreg(Program &pgm)
 	var.type->movrptr2rval(pgm.cc, _reg, oreg, offset);
     }
     else
+#endif
     // otherwise we're using a pointer/reference (for now)
     {
 	DBG(pgm.cc.comment("TokenMember::getreg() mov(_reg, oreg)"));
