@@ -78,11 +78,12 @@ void string_assign(std::string &o, std::string &n)
 {
     DBG(cout << "string_assign(" << o << '['<< (uint64_t)&o << "], " << n << '[' << (uint64_t)&n << "])" << endl);
     o.assign(n);
+    DBG(cout << "string_assign(" << o << '['<< (uint64_t)&o << "])" << endl);
 }
 
 void streamout_string(std::ostream &os, std::string &s)
 {
-//  DBG(std::cout << "streamout_string: << " << s << std::endl);
+//  DBG(std::cout << "streamout_string: << " << (uint64_t)&s << std::endl);
     os << s;
 }
 
@@ -177,7 +178,7 @@ bool Program::_compiler_finalize()
     return true;
 }
 
-x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") TOP" << endl);
 
@@ -383,7 +384,7 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t regdp)
     return _reg;
 }
 
-x86::Gp& TokenCpnd::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenCpnd::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") TOP" << endl);
     x86::Gp *regp = &_reg;
@@ -397,7 +398,7 @@ x86::Gp& TokenCpnd::compile(Program &pgm, regdefp_t regdp)
 }
 
 // compile the "program" token, which contains all initilization / non-function statements
-x86::Gp& TokenProgram::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenProgram::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( this != pgm.tkProgram ) { throw "this != tkProgram"; }
     DBG(cout << "TokenProgram::compile(" << (uint64_t)this << ") TOP" << endl);
@@ -426,7 +427,7 @@ x86::Gp& TokenProgram::compile(Program &pgm, regdefp_t regdp)
     return _reg;
 }
 
-x86::Gp& TokenBase::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenBase::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenStmt::compile(" << (void *)this << " type: " << (int)type() << (regdp.first ? " ret=true" : "") << ") TOP" << endl);
     switch(type())
@@ -478,7 +479,7 @@ x86::Gp& TokenBase::compile(Program &pgm, regdefp_t regdp)
     return _reg;
 }
 
-x86::Gp& TokenDecl::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDecl::compile(" << var.name << ") TOP" << endl);
 
@@ -490,7 +491,7 @@ x86::Gp& TokenDecl::compile(Program &pgm, regdefp_t regdp)
     return _reg;
 }
 
-x86::Gp& TokenFunc::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenFunc::compile(" << var.name << '[' << (uint64_t)this << "]) TOP" << endl);
     if ( !var.data ) { throw "TokenFunc::compile: method is NULL"; }
@@ -667,7 +668,7 @@ void Program::execute()
 }
 
 // compile the increment operator
-x86::Gp& TokenInc::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenInc::compile(Program &pgm, regdefp_t &regdp)
 {
     TokenVar *tv;
 
@@ -698,7 +699,7 @@ x86::Gp& TokenInc::compile(Program &pgm, regdefp_t regdp)
 }
 
 // compile the decrement operator
-x86::Gp& TokenDec::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenDec::compile(Program &pgm, regdefp_t &regdp)
 {
     TokenVar *tv;
 
@@ -729,7 +730,7 @@ x86::Gp& TokenDec::compile(Program &pgm, regdefp_t regdp)
 }
 
 // assignment left = right
-x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenAssign::compile() TOP" << endl);
     TokenVar *tvl, *tvr;
@@ -843,6 +844,7 @@ x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t regdp)
 	    throw "Variable non-numeric";
 	case TokenType::ttCallFunc:
 	    tcr = dynamic_cast<TokenCallFunc *>(right);
+	    DBG(cout << "TokenAssign::compile() TokenCallFunc(" << tcr->var.name << ')' << endl);
 	    if ( (ltype->is_numeric() && tcr->returns()->is_numeric())
 	    ||   (ltype == tcr->returns()) )
 	    {
@@ -854,6 +856,7 @@ x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t regdp)
 		tvl->putreg(pgm);
 		break;
 	    }
+	    cerr << "TokenAssign::compile() ltype->type(): " << (int)ltype->type() << " tcr->returns(): " << (int)tcr->returns()->type() << endl;
 	    throw "Return type not compatible";
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
@@ -1176,7 +1179,7 @@ void Program::compileKeyword(TokenKeyword *tk)
 
 // add two integers
 
-x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenAdd::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1202,7 +1205,7 @@ x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t regdp)
 }
 
 // subtract two integers
-x86::Gp& TokenSub::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenSub::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenSub::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1219,7 +1222,7 @@ x86::Gp& TokenSub::compile(Program &pgm, regdefp_t regdp)
 }
 
 // make number negative
-x86::Gp& TokenNeg::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenNeg::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenNeg::Compile() TOP" << endl);
     if ( !right ) { throw "!= missing rval operand"; }
@@ -1234,7 +1237,7 @@ x86::Gp& TokenNeg::compile(Program &pgm, regdefp_t regdp)
 }
 
 // multiply two integers
-x86::Gp& TokenMul::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenMul::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenMul::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1251,7 +1254,7 @@ x86::Gp& TokenMul::compile(Program &pgm, regdefp_t regdp)
 }
 
 // divide two integers
-x86::Gp& TokenDiv::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenDiv::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDiv::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; } 
@@ -1271,7 +1274,7 @@ x86::Gp& TokenDiv::compile(Program &pgm, regdefp_t regdp)
 }
 
 // modulus
-x86::Gp& TokenMod::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenMod::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenMod::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1293,7 +1296,7 @@ x86::Gp& TokenMod::compile(Program &pgm, regdefp_t regdp)
 /////////////////////////////////////////////////////////////////////////////
 
 // bit shift left
-x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenBSL::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1410,11 +1413,20 @@ x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t regdp)
 		    break;
 		}
 	    default:
-		DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type()  << endl);
+		DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type() << endl);
 		{
+		    FuncCallNode *call;
 		    x86::Gp &rval = right->compile(pgm, regdp);
-		    DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
-		    FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
+		    if ( regdp.second && regdp.second->is_string() )
+		    {
+			DBG(pgm.cc.comment("TokenBSL::compile() default regdp.second->is_string() pgm.cc.call(streamout_string)"));
+			call = pgm.cc.call(imm(streamout_string), FuncSignatureT<void, void *, void *>(CallConv::kIdHost));
+		    }
+		    else
+		    {
+			DBG(pgm.cc.comment("TokenBSL::compile() default pgm.cc.call(streamout_int)"));
+			call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
+		    }
 		    call->setArg(0, lval);
 		    call->setArg(1, rval);
 		    break;
@@ -1447,7 +1459,7 @@ x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t regdp)
 }
 
 // bit shift right
-x86::Gp& TokenBSR::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenBSR::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1464,7 +1476,7 @@ x86::Gp& TokenBSR::compile(Program &pgm, regdefp_t regdp)
 }
 
 // bitwise or |
-x86::Gp& TokenBor::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenBor::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenBor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1481,7 +1493,7 @@ x86::Gp& TokenBor::compile(Program &pgm, regdefp_t regdp)
 }
 
 // bitwise xor ^
-x86::Gp& TokenXor::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenXor::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenXor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1498,7 +1510,7 @@ x86::Gp& TokenXor::compile(Program &pgm, regdefp_t regdp)
 }
 
 // bitwise and &
-x86::Gp& TokenBand::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenBand::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenBand::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1516,7 +1528,7 @@ x86::Gp& TokenBand::compile(Program &pgm, regdefp_t regdp)
 
 
 // bitwise not ~
-x86::Gp& TokenBnot::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenBnot::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenBnot::Compile() TOP" << endl);
     if ( left )   { throw "Bitwise not has lval!"; }
@@ -1535,7 +1547,7 @@ x86::Gp& TokenBnot::compile(Program &pgm, regdefp_t regdp)
 /////////////////////////////////////////////////////////////////////////////
 
 // logical not !
-x86::Gp& TokenLnot::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenLnot::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenLnot::Compile() TOP" << endl);
     if ( left )   { throw "Logical not has lval!"; }
@@ -1552,7 +1564,7 @@ x86::Gp& TokenLnot::compile(Program &pgm, regdefp_t regdp)
 //
 // Pseudocode: if (lval) return 1;  if (rval) return 1;  return 0;
 //
-x86::Gp& TokenLor::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenLor::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenLor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1577,7 +1589,7 @@ x86::Gp& TokenLor::compile(Program &pgm, regdefp_t regdp)
 //
 // Pseudocode: if (!lval) return 0;  if (!rval) return 0;  return 1;
 //
-x86::Gp& TokenLand::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenLand::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenLand::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1605,7 +1617,7 @@ x86::Gp& TokenLand::compile(Program &pgm, regdefp_t regdp)
 
 
 // Equal to: ==
-x86::Gp& TokenEquals::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenEquals::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenEquals::Compile() TOP" << endl);
     if ( !left )  { throw "= missing lval operand"; }
@@ -1622,7 +1634,7 @@ x86::Gp& TokenEquals::compile(Program &pgm, regdefp_t regdp)
 }
 
 // Not equal to: !=
-x86::Gp& TokenNotEq::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenNotEq::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenNotEq::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1638,7 +1650,7 @@ x86::Gp& TokenNotEq::compile(Program &pgm, regdefp_t regdp)
 }
 
 // Less than: <
-x86::Gp& TokenLT::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenLT::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenLT::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1657,7 +1669,7 @@ x86::Gp& TokenLT::compile(Program &pgm, regdefp_t regdp)
 }
 
 // Less than or equal to: <=
-x86::Gp& TokenLE::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenLE::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenLE::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1673,7 +1685,7 @@ x86::Gp& TokenLE::compile(Program &pgm, regdefp_t regdp)
 }
 
 // Greater than: >
-x86::Gp& TokenGT::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenGT::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenGT::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1689,7 +1701,7 @@ x86::Gp& TokenGT::compile(Program &pgm, regdefp_t regdp)
 }
 
 // Greater than or equal to: >=
-x86::Gp& TokenGE::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenGE::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenGE::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1706,7 +1718,7 @@ x86::Gp& TokenGE::compile(Program &pgm, regdefp_t regdp)
 
 
 // Greater than gives 1, less than gives -1, equal to gives 0 (<=>)
-x86::Gp& Token3Way::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& Token3Way::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "Token3Way::Compile() TOP" << endl);
     Label done = pgm.cc.newLabel();	// label to skip further tests
@@ -1732,7 +1744,7 @@ x86::Gp& Token3Way::compile(Program &pgm, regdefp_t regdp)
 
 
 // access structure/class member: struct.member
-x86::Gp& TokenDot::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenDot::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDot::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
@@ -1754,24 +1766,30 @@ x86::Gp& TokenDot::compile(Program &pgm, regdefp_t regdp)
     // get left register
     DBG(pgm.cc.comment("TokenDot::compile() tvl->getreg(pgm)"));
     x86::Gp &lval = tvl->getreg(pgm);
-    DataDef *ltype = ((DataDefSTRUCT *)tvl->var.type)->m_type(tvr->str);
-    DBG(pgm.cc.comment("TokenDot::compile() _reg= ltype->newreg(tvr->str)"));
+    DataDef *mtype = ((DataDefSTRUCT *)tvl->var.type)->m_type(tvr->str);
+    DBG(pgm.cc.comment("TokenDot::compile() _reg= mtype->newreg(tvr->str)"));
     // get new register of appropriate size
-    _reg = ltype->newreg(pgm.cc, tvr->str.c_str());
-    // if it's numeric, clear out the full register
-    if ( ltype->is_numeric() )
+    _reg = mtype->newreg(pgm.cc, tvr->str.c_str());
+    // if it's numeric, clear out the full register, then copy the data over
+    if ( mtype->is_numeric() )
     {
 	DBG(pgm.cc.comment("TokenDot::compile() xor_(_reg.r64(), _reg.r64())"));
 	pgm.cc.xor_(_reg.r64(), _reg.r64());
+	DBG(pgm.cc.comment("TokenDot::compile() mtype->movrptr2rval(_reg, lval, ofs)"));
+	mtype->movrptr2rval(pgm.cc, _reg, lval, ofs);
     }
-//  DBG(pgm.cc.comment("TokenDot::compile() _reg = pgm.cc.newGpq()"));
-//  pgm.cc.newGpq(); // hard coded to int for now
+    else
+    // otherwise we're using a pointer/reference (for now)
+    {
+	DBG(pgm.cc.comment("TokenDot::compile() mov(_reg, lval)"));
+	pgm.cc.mov(_reg, lval);
+	pgm.cc.add(_reg, (uint64_t)ofs);
+    }
 
-//  DBG(pgm.cc.comment("TokenDot::compile() pgm.cc.mov(_reg, m)"));
-//  pgm.cc.mov(_reg, x86::qword_ptr(lval, ofs));
-    DBG(pgm.cc.comment("TokenDot::compile() ltype->movrptr2rval(_reg, lval, ofs)"));
-    ltype->movrptr2rval(pgm.cc, _reg, lval, ofs);
-
+    regdp.first  = &_reg;
+    regdp.second = mtype;
+    DBG(pgm.cc.comment("TokenDot::compile() mtype->name:"));
+    DBG(pgm.cc.comment(mtype->name.c_str()));
     return _reg;
 }
 
@@ -1779,10 +1797,13 @@ x86::Gp& TokenDot::compile(Program &pgm, regdefp_t regdp)
 
 
 // load variable into register
-x86::Gp& TokenVar::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenVar::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(pgm.cc.comment("TokenVar::compile() reg = getreg()"));
     x86::Gp &reg = getreg(pgm);
+
+    if ( !regdp.second )
+	regdp.second = _datatype;
 
     if ( regdp.first )
     {
@@ -1795,7 +1816,7 @@ x86::Gp& TokenVar::compile(Program &pgm, regdefp_t regdp)
 }
 
 // load integer into register
-x86::Gp& TokenInt::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenInt::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( regdp.first )
     {
@@ -1828,7 +1849,7 @@ x86::Gp& TokenInt::compile(Program &pgm, regdefp_t regdp)
 }
 
 // compile a return statement
-x86::Gp& TokenRETURN::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 {
     pgm.tkFunction->cleanup(pgm.cc);
 
@@ -1844,7 +1865,7 @@ x86::Gp& TokenRETURN::compile(Program &pgm, regdefp_t regdp)
 }
 
 // compile a break statement
-x86::Gp& TokenBREAK::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenBREAK::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenBREAK::compile(pgm)");
     if ( !pgm.loopstack.empty() )
@@ -1856,7 +1877,7 @@ x86::Gp& TokenBREAK::compile(Program &pgm, regdefp_t regdp)
 }
 
 // compile a continue statement
-x86::Gp& TokenCONT::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenCONT::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !pgm.loopstack.empty() )
     {
@@ -1867,7 +1888,7 @@ x86::Gp& TokenCONT::compile(Program &pgm, regdefp_t regdp)
 }
 
 // compile an if statement
-x86::Gp& TokenIF::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenIF::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(std::cout << "TokenIF::compile() TOP" << std::endl);
     Label iftail = pgm.cc.newLabel();	// label for tail of if
@@ -1903,7 +1924,7 @@ x86::Gp& TokenIF::compile(Program &pgm, regdefp_t regdp)
     return reg;
 }
 
-x86::Gp& TokenDO::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenDO::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(std::cout << "TokenDO::compile() TOP" << std::endl);
     Label dotop  = pgm.cc.newLabel();	// label for top of loop
@@ -1930,7 +1951,7 @@ x86::Gp& TokenDO::compile(Program &pgm, regdefp_t regdp)
 
 // while ( condition ) statement;
 // TODO: need way to support break and continue
-x86::Gp& TokenWHILE::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenWHILE::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(std::cout << "TokenWHILE::compile() TOP" << std::endl);
     Label whiletop  = pgm.cc.newLabel();	// label for top of loop
@@ -1955,7 +1976,7 @@ x86::Gp& TokenWHILE::compile(Program &pgm, regdefp_t regdp)
     return reg;
 }
 
-x86::Gp& TokenFOR::compile(Program &pgm, regdefp_t regdp)
+x86::Gp& TokenFOR::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(std::cout << "TokenFOR::compile() TOP" << std::endl);
     Label fortop  = pgm.cc.newLabel();		// label for top of loop
