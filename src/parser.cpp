@@ -788,7 +788,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 	    case TokenType::ttIdentifier:
 	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
 		{
-#if 1
+#if 0
 		    DBG(cout << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
 		    exStack.push(tb);
 #else
@@ -939,7 +939,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     TokenIdent *tag = NULL, *alias = NULL;
     TokenBase *tn;
     TokenDataType *tdt;
-    bool do_typedef = pgm.prevToken()->id() == TokenID::tkTYPEDEF ? true : false;
+    bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF ? true : false : false;
     datatype_map_iter bmi; // TokenDataType map
     datadef_map_iter dmi;  // DataDef map
 
