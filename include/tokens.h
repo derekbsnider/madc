@@ -17,8 +17,8 @@ enum class TokenType {
 	ttBase, ttSpace, ttTab, ttEOL, ttComment, ttOperator, ttMultiOp, ttSymbol,
 //	8		9	  10	 11	    12	    13		14	    15
 	ttIdentifier, ttString, ttChar, ttInteger, ttReal, ttKeyword, ttDataType, ttVariable,
-//	16		17	  18		19	  20		21
-	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram
+//	16		17	  18		19	  20		21	22	 23
+	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram, ttMember, ttCallMethod
 };
 
 enum class TokenID {

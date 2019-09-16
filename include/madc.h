@@ -117,6 +117,30 @@ public:
     virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
 };
 
+class TokenMember: public TokenVar
+{
+public:
+    Variable &object;
+    size_t offset;
+    TokenMember(Variable &o, Variable &m, size_t ofs) : TokenVar(m), object(o), offset(ofs) { _datatype = m.type; }
+    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual asmjit::x86::Gp &getreg(Program &);
+    virtual void putreg(Program &);
+    virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+};
+
+class TokenCallMethod: public TokenMember
+{
+public:
+    std::vector<TokenBase *> parameters;
+    TokenCallMethod(Variable &o, Variable &m) : TokenMember(o, m, 0) { _datatype = returns(); }
+    virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
+    virtual int argc() const { return parameters.size(); }
+    virtual TokenType type() const { return TokenType::ttCallMethod; }
+//  virtual asmjit::x86::Gp &getreg(Program &);
+//  virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+};
+
 class TokenProgram: public TokenCpnd
 {
 public:
