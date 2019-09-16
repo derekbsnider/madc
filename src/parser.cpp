@@ -788,8 +788,42 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 	    case TokenType::ttIdentifier:
 	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
 		{
-		    DBG(cerr << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
+#if 1
+		    DBG(cout << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
 		    exStack.push(tb);
+#else
+		    if ( exStack.empty() )
+			throw "expected expression";
+		    if ( exStack.top()->type() != TokenType::ttVariable )
+			throw "member reference is not a structure or union";
+		    TokenVar *tv = dynamic_cast<TokenVar *>(exStack.top());
+		    if ( !tv->var.type->is_struct() && !tv->var.type->is_object() )
+			throw "member reference is not a structure or union";
+		    var = NULL;
+		    string id = ((TokenIdent *)tb)->str;
+		    if ( tv->var.type->is_object() && (var=((DataDefCLASS *)tv->var.type)->findMethod(id)) )
+		    {
+			cout << "Found " << tv->var.name << "::" << var->name << endl;
+			throw "parseExpression() found method :)";
+		    }
+		    // get offset
+		    ssize_t ofs = ((DataDefSTRUCT *)tv->var.type)->m_offset(id);
+		    if ( ofs == -1 )
+			throw "Unidentified member";
+		    DataDef *mtype = ((DataDefSTRUCT *)tv->var.type)->m_type(id);
+		    // create new variable
+		    var = new Variable(id, *mtype, 1, NULL, false);
+		    var->flags = tv->var.flags;
+		    if ( tv->var.data )
+			var->data = (void *)((char *)tv->var.data + ofs);
+		    // remove object TokenVar from exStack
+		    exStack.pop();
+		    // replace with TokenMember
+		    exStack.push(new TokenMember(tv->var, *var, ofs));
+		    // remove TokenDot from opStack
+		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			opStack.pop();
+#endif
 		    break;
 		}
 		if ( !(var=findVariable(((TokenIdent *)tb)->str)) )

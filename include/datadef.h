@@ -427,7 +427,7 @@ class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
 	DataDefSTRUCT("teststruct",
 	{
 		{"name", &ddSTRING},
-		{"id", &ddINT},
+		{"id",   &ddINT},
 		{"age",  &ddUINT8},
 		{"sex",  &ddUINT8}
 	}) {}

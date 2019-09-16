@@ -735,7 +735,6 @@ x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenAssign::compile() TOP" << endl);
     TokenVar *tvl, *tvr;
     TokenCallFunc *tcr;
-    TokenIdent *tidn;
     TokenDot *tdot = NULL;
     x86::Gp *regp;
     DataDef *ltype;
@@ -755,13 +754,29 @@ x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenAssign::compile() regp = tvl->getreg(pgm)"));
 	regp = &tvl->getreg(pgm);
     }
+#if 1
+    else
+    if ( left->type() == TokenType::ttMember )
+    {
+	TokenMember *tvm = dynamic_cast<TokenMember *>(left);
+	ltype = tvm->var.type;
+	DBG(cout << "TokenAssign::compile() assignment to " << tvm->object.name << '.' << tvm->var.name << endl);
+	DBG(pgm.cc.comment("TokenAssign::compile() assignment to:"));
+	DBG(pgm.cc.comment(tvm->var.name.c_str()));
+	DBG(pgm.cc.comment("TokenAssign::compile() regp = tvl->getreg(pgm)"));
+	tvl = dynamic_cast<TokenVar *>(tvm);
+	regp = &tvm->getreg(pgm);
+	tdot = (TokenDot *)1;
+    }
+#endif
+#if 1
     else
     if ( left->id() == TokenID::tkDot && ((TokenDot *)left)->left
     &&  ((TokenDot *)left)->left->type() == TokenType::ttVariable
     &&  ((TokenDot *)left)->right && ((TokenDot *)left)->right->type() == TokenType::ttIdentifier )
     {
+	TokenIdent *tidn = ((TokenIdent *)tdot->right);
 	tdot = (TokenDot *)left;
-	tidn = ((TokenIdent *)tdot->right);
 	tvl = dynamic_cast<TokenVar *>(tdot->left);
 	if ( !tvl->var.type->is_struct() && !tvl->var.type->is_object() )
 	    throw "Expecting class or structure";
@@ -776,6 +791,7 @@ x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	regp = &_reg;
 //	regp = &tdot->compile(pgm, regdp);
     }
+#endif
     else
     {
 	throw "Assignment on a non-variable lval";
@@ -918,6 +934,36 @@ x86::Gp &TokenVar::getreg(Program &pgm)
 // variable also needs to be able to write the register back to variable
 void TokenVar::putreg(Program &pgm)
 {
+    pgm.tkFunction->putreg(pgm.cc, &var);
+}
+
+// member needs special handling
+x86::Gp &TokenMember::getreg(Program &pgm)
+{
+    DBG(pgm.cc.comment("TokenMember::getreg()"));
+    x86::Gp &oreg = pgm.tkFunction->getvreg(pgm.cc, &object);
+    _reg = var.type->newreg(pgm.cc, var.name.c_str());
+    if ( var.type->is_numeric() )
+    {
+	DBG(pgm.cc.comment("TokenMember::getreg() xor_(_reg.r64(), _reg.r64())"));
+	pgm.cc.xor_(_reg.r64(), _reg.r64());
+	DBG(pgm.cc.comment("TokenMember::getreg() mtype->movrptr2rval(_reg, oreg, ofs)"));
+	var.type->movrptr2rval(pgm.cc, _reg, oreg, offset);
+    }
+    else
+    // otherwise we're using a pointer/reference (for now)
+    {
+	DBG(pgm.cc.comment("TokenMember::getreg() mov(_reg, oreg)"));
+	pgm.cc.mov(_reg, oreg);
+	pgm.cc.add(_reg, (uint64_t)offset);
+    }
+    return _reg;
+}
+
+// member also needs to be able to write the register back to variable
+void TokenMember::putreg(Program &pgm)
+{
+    DBG(pgm.cc.comment("TokenMember::putreg()"));
     pgm.tkFunction->putreg(pgm.cc, &var);
 }
 
@@ -1312,6 +1358,7 @@ x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	TokenVar *tvr;
 
 	DBG(cout << "TokenBSL::compile() lval(" << tvl->var.name << ")->has_ostream()" << endl);
+	regdp.second = NULL; // clear for now so that we don't overshadow the type
 
 	switch(right->type())
 	{
@@ -1417,7 +1464,9 @@ x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 		{
 		    FuncCallNode *call;
 		    x86::Gp &rval = right->compile(pgm, regdp);
-		    if ( regdp.second && regdp.second->is_string() )
+		    if ( !regdp.second )
+			throw "TokenBSL::compile() regp.second is NULL";
+		    if ( regdp.second->is_string() )
 		    {
 			DBG(pgm.cc.comment("TokenBSL::compile() default regdp.second->is_string() pgm.cc.call(streamout_string)"));
 			call = pgm.cc.call(imm(streamout_string), FuncSignatureT<void, void *, void *>(CallConv::kIdHost));
@@ -1425,7 +1474,22 @@ x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 		    else
 		    {
 			DBG(pgm.cc.comment("TokenBSL::compile() default pgm.cc.call(streamout_int)"));
-			call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
+//			call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
+                        switch(regdp.second->type())
+                        {
+			    case DataType::dtCHAR:	call = pgm.cc.call(imm(streamout_numeric<char>), FuncSignatureT<void, void *, char>(CallConv::kIdHost));		break;
+			    case DataType::dtBOOL:	call = pgm.cc.call(imm(streamout_numeric<bool>), FuncSignatureT<void, void *, bool>(CallConv::kIdHost));		break;
+			    case DataType::dtINT16:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
+			    case DataType::dtINT24:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
+			    case DataType::dtINT32:	call = pgm.cc.call(imm(streamout_numeric<int32_t>), FuncSignatureT<void, void *, int32_t>(CallConv::kIdHost));		break;
+			    case DataType::dtINT64:	call = pgm.cc.call(imm(streamout_numeric<int64_t>), FuncSignatureT<void, void *, int64_t>(CallConv::kIdHost));		break;
+			    case DataType::dtUINT8:	call = pgm.cc.call(imm(streamout_numeric<uint8_t>), FuncSignatureT<void, void *, uint8_t>(CallConv::kIdHost));		break;
+			    case DataType::dtUINT16:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
+			    case DataType::dtUINT24:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
+			    case DataType::dtUINT32:	call = pgm.cc.call(imm(streamout_numeric<uint32_t>), FuncSignatureT<void, void *, uint32_t>(CallConv::kIdHost));	break;
+			    case DataType::dtUINT64:	call = pgm.cc.call(imm(streamout_numeric<uint64_t>), FuncSignatureT<void, void *, uint64_t>(CallConv::kIdHost));	break;
+			    default: throw "TokenBSL::compile() unsupported numeric type";
+                        }
 		    }
 		    call->setArg(0, lval);
 		    call->setArg(1, rval);
@@ -1815,6 +1879,25 @@ x86::Gp& TokenVar::compile(Program &pgm, regdefp_t &regdp)
     if ( regdp.first )
     {
 	DBG(pgm.cc.comment("TokenVar::compile() safemov(*ret, reg)"));
+	pgm.safemov(*regdp.first, reg);
+	return *regdp.first;
+    }
+
+    return reg;
+}
+
+// load variable into register
+x86::Gp& TokenMember::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenMember::compile() reg = getreg()"));
+    x86::Gp &reg = getreg(pgm);
+
+    if ( !regdp.second )
+	regdp.second = _datatype;
+
+    if ( regdp.first )
+    {
+	DBG(pgm.cc.comment("TokenMember::compile() safemov(*ret, reg)"));
 	pgm.safemov(*regdp.first, reg);
 	return *regdp.first;
     }
