@@ -797,9 +797,53 @@ x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	throw "Assignment on a non-variable lval";
     }
 
+    regdp.second = ltype; // set type
+
     // get left register
     x86::Gp &lreg = *regp;
+    regdp.first = &lreg;
+    x86::Gp &rreg = right->compile(pgm, regdp);
 
+    if ( !regdp.second )
+	throw "TokenAssign: no rval type";
+    if (  ltype->is_numeric() && !regdp.second->is_numeric() )
+	throw "Expecting rval to be numeric";
+    if ( !ltype->is_numeric() &&  regdp.second->is_numeric() )
+	throw "Not expecting rval to be numeric";
+    if ( ltype->is_string() && !regdp.second->is_string() )
+	throw "Expecting rval to be string";
+
+    if ( ltype->is_numeric() )
+    {
+	DBG(cout << "TokenAssign::compile() numeric to numeric" << endl);
+	DBG(pgm.cc.comment("TokenAssign::compile() numeric to numeric"));
+	DBG(pgm.cc.comment("TokenAssign::compile() pgm.safemov(lreg, rreg)"));
+	pgm.safemov(lreg, rreg);
+	tvl->var.modified();
+	DBG(pgm.cc.comment("TokenAssign::compile() pgm.putreg(pgm)"));
+	tvl->putreg(pgm);
+    }
+    else
+    if ( ltype->is_string() )
+    {
+	DBG(cout << "TokenAssign::compile() string to string" << endl);
+/*
+	DBG(cout << "TokenAssign::compile() will call " << tvl->var.name << '('
+	    << (tvl->var.data ? ((string *)(tvl->var.data))->c_str() : "") << ").assign[" << (uint64_t)string_assign << "](" << tvr->var.name
+	    << '(' << (tvr->var.data ? ((string *)(tvr->var.data))->c_str() : "") << ')' << endl);
+*/
+	DBG(pgm.cc.comment("string_assign"));
+	FuncCallNode* call = pgm.cc.call(imm(string_assign), FuncSignatureT<void, const char*, const char *>(CallConv::kIdHost));
+	call->setArg(0, lreg);
+	call->setArg(1, rreg);
+	tvl->var.modified();
+	tvl->putreg(pgm);
+    }
+    else
+	throw "Unsupported assignment";
+
+
+#if 0
     switch(right->type())
     {
 	case TokenType::ttVariable:
@@ -888,6 +932,7 @@ x86::Gp& TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	default:
 	    throw "Unimplemented assignment";
     } // switch
+#endif
 
     DBG(cout << "TokenAssign::compile() END" << endl);
 
@@ -1226,7 +1271,38 @@ void Program::compileKeyword(TokenKeyword *tk)
 /////////////////////////////////////////////////////////////////////////////
 
 // add two integers
+#if 1
+x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(cout << "TokenAdd::Compile() TOP" << endl);
+    if ( !left )  { throw "!= missing lval operand"; }
+    if ( !right ) { throw "!= missing rval operand"; }
+    // do we have a register?
+    if ( regdp.first )
+    {
+	x86::Gp &lval = left->compile(pgm, regdp); // get lval into register
+	if ( !regdp.second )
+	    throw "TokenAdd::compile() left->compile didn't set datatype";
+	x86::Gp _reg = regdp.second->newreg(pgm.cc); // use tmp for right side
+	regdp.first = &_reg;
+	x86::Gp &rval = right->compile(pgm, regdp);
+	pgm.cc.add(lval, rval);
+	regdp.first = &lval;
+	return *regdp.first;
+    }
 
+    x86::Gp &lval = left->compile(pgm, regdp);
+    x86::Gp &rval = right->compile(pgm, regdp);
+    _reg = pgm.cc.newGpq();
+//  pgm.cc.xor_(_reg, _reg);
+    DBG(pgm.cc.comment("TokenAdd::compile() pgm.safemov(_reg, lval)"));
+    pgm.safemov(_reg, lval);
+    DBG(pgm.cc.comment("TokenAdd::compile() pgm.cc.add(_reg, rval)"));
+    pgm.cc.add(_reg, rval.r64());
+
+    return _reg;
+}
+#else
 x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenAdd::Compile() TOP" << endl);
@@ -1251,7 +1327,7 @@ x86::Gp& TokenAdd::compile(Program &pgm, regdefp_t &regdp)
 
     return _reg;
 }
-
+#endif
 // subtract two integers
 x86::Gp& TokenSub::compile(Program &pgm, regdefp_t &regdp)
 {
@@ -1910,6 +1986,8 @@ x86::Gp& TokenMember::compile(Program &pgm, regdefp_t &regdp)
 // load integer into register
 x86::Gp& TokenInt::compile(Program &pgm, regdefp_t &regdp)
 {
+    if ( !regdp.second )
+	regdp.second = _datatype;
     if ( regdp.first )
     {
 	DBG(pgm.cc.comment("TokenInt::compile() cc.mov(*ret, value)"));
@@ -1917,6 +1995,7 @@ x86::Gp& TokenInt::compile(Program &pgm, regdefp_t &regdp)
 	return *regdp.first;
     }
     DBG(cout << "TokenInt::compile[" << (uint64_t)this << "]() value: " << (int)_token << endl);
+    regdp.first = &_reg;
     return getreg(pgm);
 /*
     DBG(pgm.cc.comment("TokenInt::compile() mov(_reg, value)"));
