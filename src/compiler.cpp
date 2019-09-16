@@ -1758,7 +1758,14 @@ x86::Gp& TokenDot::compile(Program &pgm, regdefp_t &regdp)
     if ( !tvl->var.type->is_struct() && !tvl->var.type->is_object() )
 	throw "Expecting class or structure";
     TokenIdent *tvr = static_cast<TokenIdent *>(right);
+    Variable *classmethod = NULL;
     DBG(cout << "TokenDot::compile() accessing " << tvl->var.name << '.' << tvr->str << endl);
+    // if class, try for member
+    if ( tvl->var.type->is_object() && (classmethod=((DataDefCLASS *)tvl->var.type)->findMethod(tvr->str)) )
+    {
+	cout << "Found " << tvl->var.name << "::" << classmethod->name << endl;
+	throw "TokenDot::compile() found method :)";
+    }
     // get offset
     ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->m_offset(tvr->str);
     if ( ofs == -1 )

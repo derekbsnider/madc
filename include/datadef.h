@@ -369,6 +369,7 @@ public:
 
     DataDefCLASS(std::string n, size_t s, DataType d) : DataDefSTRUCT(n, s, d) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
+    Variable *findMethod(std::string &s);
 };
 
 typedef DataDefCLASS DDClass;
