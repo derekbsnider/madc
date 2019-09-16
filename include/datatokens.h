@@ -166,7 +166,7 @@ public:
     virtual void set(int c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
     virtual asmjit::x86::Gp &getreg(Program &);
     virtual void putreg(Program &);
-    virtual asmjit::x86::Gp &compile(Program &, regdefp_t regdp);
+    virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
 };
 
 #endif // __TOKENDATA_H
