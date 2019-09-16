@@ -173,6 +173,15 @@ Variable::~Variable()
     } // switch
 }
 
+Variable *DataDefCLASS::findMethod(std::string &s)
+{
+    for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
+	if ( !s.compare((*vvi)->name) )
+	    return *vvi;
+
+    return NULL;
+}
+
 DataDef *FuncDef::findParameter(std::string &s)
 {
     DBG(cout << "FuncDef[" << name << "]::findParameter(" << s << ')' << endl);
