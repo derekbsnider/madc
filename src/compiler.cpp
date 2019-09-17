@@ -235,20 +235,25 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	regdp.first = &_reg;
     }
 
-#if OBJECT_SUPPORT
+//#if OBJECT_SUPPORT
     // pass along object ("this") as first argument if appropriate
-    if ( obj && func->parameters.size() )
+    if ( regdp.objreg && func->parameters.size() )
     {
 	ptype = func->parameters[0];
-	if ( ptype->is_object() )
+	// we need to add support for reference types
+	if ( 1 /*ptype->is_object()*/ )
 	{
 	    funcsig.addArgT<void *>();
-	    params.push_back(obj->getreg(pgm)); // params.push_back(tkFunction->getreg(pgm.cc, obj));
+	    params.push_back(*regdp.objreg);
+	    DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(*regdp.objreg"));
 	}
 	else
+	{
 	    DBG(std::cout << "TokenCallFunc::compile() got obj param, but param[0] is not an object: " << (int)ptype->type() << std::endl);
+	    DBG(pgm.cc.comment("TokenCallFunc::compile() got obj param, but param[0] is not an object"));
+	}
     }
-#endif
+//#endif
 
     if ( argc() > func->parameters.size() )
     {
@@ -268,6 +273,7 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	ptype = func->parameters[i];
 	tn = parameters[i];
 
+	funcrdp.objreg = NULL; // should this be regdp.object?
 	funcrdp.second = ptype;
 	_reg = ptype->newreg(pgm.cc);
 	funcrdp.first = &_reg;	
@@ -341,6 +347,7 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( func->returns.type() != DataType::dtVOID )
     {
 	call->setRet(0, _reg);
+	regdp.first = &_reg;
     }
 
     return _reg;
@@ -555,7 +562,7 @@ x86::Gp& TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 bool Program::compile()
 {
     TokenBase *tb;
-    regdefp_t regdp;
+    regdefp_t regdp = {NULL, NULL, NULL};
 
     DBG(cout << endl << endl << "Program::compile() start" << endl << endl);
     _compiler_init();
@@ -1371,7 +1378,11 @@ x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	}
 
 	// handle ostreaming
-	regdp.second = NULL; // clear for now so that we don't overshadow the type
+//	regdp.first  = &lval; // pass along the ostream?
+//	regdp.second = tvl->var.type;
+	regdp.first = NULL;
+	regdp.second = NULL;
+	regdp.objreg = &lval;
 	x86::Gp &rval = right->compile(pgm, regdp); // compile right side
 
 	if ( !regdp.second ) { throw "unable to determine rval type"; }

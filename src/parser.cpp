@@ -466,7 +466,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     func = new FuncDef(*dd);
     if ( !isMethod )
 	funcdef_map[id] = func;
-    DBG(std::cout << "addFunction() Added new function declaration name: " << id << " numparams: " << params.size()-1  << " x86code: " << (uint64_t)extfunc << std::endl);
+    DBG(std::cout << "addFunction() Added new function declaration name: " << id << " numparams: " << params.size()-1  << " x86code: " << (uint64_t)extfunc << " returns " << dd->name << std::endl);
 
     // func->parameters.push_back(&pb->definition);
 
