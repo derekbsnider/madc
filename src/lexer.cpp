@@ -21,7 +21,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x)
+#define DBG(x) x
 #include <asmjit/asmjit.h>
 #include "datadef.h"
 #include "tokens.h"
@@ -512,7 +512,7 @@ void Program::showerror(istream &is)
 {
     char *env_columns = getenv("COLUMNS");
     string line;
-    int term_columns;
+    size_t term_columns;
 
     if ( env_columns )
 	term_columns = atoi(env_columns);

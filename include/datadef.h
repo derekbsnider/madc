@@ -163,18 +163,18 @@ public:
     {
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    return cc.newGpb(n);
-	case DataType::dtBOOL:    return cc.newGpb(n);
-	case DataType::dtINT64:   return cc.newGpq(n);
-	case DataType::dtINT16:   return cc.newGpw(n);
-	case DataType::dtINT24:   return cc.newGpw(n);
-	case DataType::dtINT32:   return cc.newGpd(n);
-	case DataType::dtUINT8:   return cc.newGpb(n);
-	case DataType::dtUINT16:  return cc.newGpw(n);
-	case DataType::dtUINT24:  return cc.newGpw(n);
-	case DataType::dtUINT32:  return cc.newGpd(n);
-	case DataType::dtUINT64:  return cc.newGpq(n);
-	default:		  return cc.newIntPtr(n);
+	case DataType::dtCHAR:    return n ? cc.newGpb(n) : cc.newGpb();
+	case DataType::dtBOOL:    return n ? cc.newGpb(n) : cc.newGpb();
+	case DataType::dtINT64:   return n ? cc.newGpq(n) : cc.newGpq();
+	case DataType::dtINT16:   return n ? cc.newGpw(n) : cc.newGpw();
+	case DataType::dtINT24:   return n ? cc.newGpw(n) : cc.newGpw();
+	case DataType::dtINT32:   return n ? cc.newGpd(n) : cc.newGpd();
+	case DataType::dtUINT8:   return n ? cc.newGpb(n) : cc.newGpb();
+	case DataType::dtUINT16:  return n ? cc.newGpw(n) : cc.newGpw();
+	case DataType::dtUINT24:  return n ? cc.newGpw(n) : cc.newGpw();
+	case DataType::dtUINT32:  return n ? cc.newGpd(n) : cc.newGpd();
+	case DataType::dtUINT64:  return n ? cc.newGpq(n) : cc.newGpq();
+	default:		  return n ? cc.newIntPtr(n) : cc.newIntPtr();
 	}
     }
     // move a register value into memory location pointed to by a pointer

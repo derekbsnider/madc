@@ -78,7 +78,7 @@ public:
     virtual int dec() { return 0; }
     virtual int get() const  { return _token; }
     virtual int val() const  { return 0; }
-    virtual int argc() const { return 0; }
+    virtual size_t argc() const { return 0; }
     virtual TokenType  type()  const { return TokenType::ttBase; }
     virtual TokenID    id()    const { return TokenID::tkBase; }
     virtual TokenAssoc associativity() const { return TokenAssoc::taNone; }
@@ -136,7 +136,7 @@ public:
     TokenOperator(int t) : TokenBase(t) { left = NULL; right = NULL; _datatype = &ddINT; }
     virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; return to; }
     virtual int val() const { /*if (left && right) return operate();*/ return 0; }
-    virtual int argc() const { return 2; }
+    virtual size_t argc() const { return 2; }
     virtual bool is_operator() { return true; }
     virtual inline TokenType type()     const { return TokenType::ttOperator;     }
     virtual inline TokenID   id()       const { return TokenID::tkOperator;       }
@@ -227,7 +227,7 @@ public:
     virtual inline int precedence() const { return 2; }
     virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual int argc() const { return 1; }
+    virtual size_t argc() const { return 1; }
     inline int operate() const
     {
 	DBG(std::cout << "operate: " << '-' << right->get() << std::endl);
@@ -293,7 +293,7 @@ public:
     virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual int argc() const { return 1; }
+    virtual size_t argc() const { return 1; }
     inline int operate() const
     {
 	if ( left )  { return left->inc(); }
@@ -312,7 +312,7 @@ public:
     virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual int argc() const { return 1; }
+    virtual size_t argc() const { return 1; }
     inline int operate() const
     {
 	if ( left )  { return left->dec(); }
@@ -474,7 +474,7 @@ public:
     virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual int argc() const { return 1; }
+    virtual size_t argc() const { return 1; }
 };
 
 // logical not operator !
@@ -487,7 +487,7 @@ public:
     virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual int argc() const { return 1; }
+    virtual size_t argc() const { return 1; }
 };
 
 // bitwise and operator &
@@ -554,7 +554,7 @@ public:
     virtual TokenBase *clone() { return new TokenTerQ(); }
     virtual inline int precedence()   const { return 13; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual int argc() const { return 1; }
+    virtual size_t argc() const { return 1; }
 };
 
 // ternary operator : (else)
@@ -566,7 +566,7 @@ public:
     virtual TokenBase *clone() { return new TokenTerC(); }
     virtual inline int precedence()   const { return 13; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    virtual int argc() const { return 1; }
+    virtual size_t argc() const { return 1; }
 };
 
 // comparison operator == (equal to)
