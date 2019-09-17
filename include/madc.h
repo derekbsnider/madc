@@ -90,7 +90,7 @@ class TokenFunc: public TokenVar, public TokenCpnd
 {
 public:
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
-    virtual int argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
+    virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
     virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
     using TokenCpnd::getreg;
@@ -111,7 +111,7 @@ public:
     std::vector<TokenBase *> parameters;
     TokenCallFunc(Variable &v) : TokenVar(v) {}
     virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
-    virtual int argc() const { return parameters.size(); }
+    virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
@@ -135,7 +135,7 @@ public:
     std::vector<TokenBase *> parameters;
     TokenCallMethod(Variable &o, Variable &m) : TokenMember(o, m, 0) { _datatype = returns(); }
     virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
-    virtual int argc() const { return parameters.size(); }
+    virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallMethod; }
 //  virtual asmjit::x86::Gp &getreg(Program &);
 //  virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);

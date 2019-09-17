@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -21,7 +22,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x)
+#define DBG(x) x
 #include <asmjit/asmjit.h>
 #include "datadef.h"
 #include "tokens.h"
@@ -606,6 +607,50 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
     DBG(cout << "popOperator() size: " << opStack.size() << " END" << endl);
 }
 
+#if 0
+// parse a function call and it's parameters
+// parameters are individually parsed by parseExpression
+// returns ending token
+TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
+{
+    TokenBase *tb;
+
+    DBG(std::cout << tc->line << ':' << tc->column << ":Program::parseCallFunc(" << tc->var.name << ')' << std::endl);
+    int brackets = 1;
+    size_t paramcnt = 0;
+
+    if ( !(tb=peekToken()) )
+	throw "Unexpected end of input";
+    while ( brackets && tb->id() != TokenID::tkSemi )
+    {
+	tb = nextToken();
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	if ( tb->id() == TokenID::tkComma )
+	{
+	    if ( ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
+		throw "Too many parameters";
+	    continue;
+	}
+	if ( tb->id() == TokenID::tkSemi ) { DBG(cout << "Got ;" << endl); break; }
+	DBG(cout << "parseCallFunc() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
+	if ( !(tb=parseExpression(tb, true)) ) { DBG(cout << "parseExp return NULL" << endl); break; }
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
+	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "]) brackets: " << brackets << endl);
+	tc->parameters.push_back(tb);
+    }
+    if ( tb->id() == TokenID::tkSemi )
+	DBG(cout << "parseCallFunc() while ended on semicolon" << endl);
+    // (need check for optional parameters)
+    if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
+    {
+	DBG(std::cout << "parseCallFunc(" << tc->var.name << "): argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << " (paramcnt: " << paramcnt << ") brackets: " << brackets << std::endl);
+	throw "Incorrect number of parameters";
+    }
+
+    return tb;
+}
+#else
 // parse a function call and it's parameters
 // parameters are individually parsed by parseExpression
 // returns ending token
@@ -623,7 +668,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     }
 #endif
     int brackets = 1;
-    int paramcnt = 0;
+    size_t paramcnt = 0;
 
     while ( brackets )
     {
@@ -654,6 +699,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 
     return tb;
 }
+#endif
 
 // parse one complete expression
 // for expression: x = 5, sum(5, 5), ++x, etc
@@ -671,10 +717,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 
     DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
 
-//    for ( done = false; !done && tb; tb = peekToken() )
     while ( !done && tb )
     {
-//parseexpswitchtop:
 	switch(tb->type())
 	{
 	    case TokenType::ttInteger:
@@ -695,6 +739,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		break;
 	    case TokenType::ttMultiOp:
 	    case TokenType::ttOperator:
+	    	if ( tb->id() == TokenID::tkComma )
+		{
+		    DBG(cout << "parseExpression: found comma" << endl);
+		    done = true;
+		    break;
+		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
 		    ++brackets;
@@ -1303,7 +1353,7 @@ grabnt:
 		else
 		    func->parameters.push_back(&pb->definition);
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
-		    << dd.size << " name: " << pid << " ptr: " << var << std::endl);
+		    << dd.size << " name: " << pid << " ptr: " << &dd << std::endl);
 	    }
 	    else
 	    {
