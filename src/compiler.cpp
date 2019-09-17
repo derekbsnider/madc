@@ -83,7 +83,7 @@ void string_assign(std::string &o, std::string &n)
 
 void streamout_string(std::ostream &os, std::string &s)
 {
-//  DBG(std::cout << "streamout_string: << " << (uint64_t)&s << std::endl);
+    DBG(std::cout << "streamout_string: << " << (uint64_t)&s << std::endl);
     os << s;
 }
 
@@ -196,14 +196,6 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     // grab the FuncNode object
     if ( !(fnd=((FuncDef *)(method->returns.type))->funcnode) && !method->x86code )
 	throw "TokenCallFunc::compile() method has neither FuncNode nor x86code";
-#if 0
-    // simplify if no arguments
-    if ( !argc() )
-    {
-	pgm.cc.call(fnd->label(), FuncSignatureT<void, void>(CallConv::kIdHost));
-	return;
-    }
-#endif
 
     // build arguments
     FuncDef *func = (FuncDef *)method->returns.type;
@@ -212,7 +204,9 @@ x86::Gp& TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DataDef *ptype;
     uint32_t _argc;
     TokenBase *tn;
-//  TokenVar *tv;
+
+    if ( !regdp.second )
+	regdp.second = &func->returns;
 
     // set return type
     switch(func->returns.type())
@@ -1353,155 +1347,90 @@ x86::Gp& TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     // hard coding some basic ostream support for now, will use operator overloading later
     if ( left->type() == TokenType::ttVariable && dynamic_cast<TokenVar *>(left)->var.type->has_ostream() )
     {
-	TokenCallFunc *tcr;
 	TokenVar *tvl = dynamic_cast<TokenVar *>(left);
 	DBG(pgm.cc.comment("TokenBSL::compile() (ostream &)tvl->getreg(pgm)"));
 	x86::Gp &lval = tvl->getreg(pgm); // get ostream register
-	TokenVar *tvr;
 
 	DBG(cout << "TokenBSL::compile() lval(" << tvl->var.name << ")->has_ostream()" << endl);
-	regdp.second = NULL; // clear for now so that we don't overshadow the type
 
-	switch(right->type())
+	// converge streams
+	if ( right->id() == TokenID::tkBSL && !right->is_bracketed() )
 	{
-	    case TokenType::ttVariable:
-		DBG(cout << "TokenBSL::compile() right->type() == ttVariable" << endl);
-		{
-		    tvr = dynamic_cast<TokenVar *>(right);
-		    if ( tvr->var.type->is_numeric() )
-		    {
-			x86::Gp &rval = tvr->getreg(pgm);
-			DBG(cout << "TokenBSL::compile() right->var.type->is_numeric()" << endl);
-			DBG(pgm.cc.comment("pgm.cc.call(streamout_numeric)"));
-			FuncCallNode *call;
-                        switch(tvr->var.type->type())
-                        {
-			    case DataType::dtCHAR:	call = pgm.cc.call(imm(streamout_numeric<char>), FuncSignatureT<void, void *, char>(CallConv::kIdHost));		break;
-			    case DataType::dtBOOL:	call = pgm.cc.call(imm(streamout_numeric<bool>), FuncSignatureT<void, void *, bool>(CallConv::kIdHost));		break;
-			    case DataType::dtINT16:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
-			    case DataType::dtINT24:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
-			    case DataType::dtINT32:	call = pgm.cc.call(imm(streamout_numeric<int32_t>), FuncSignatureT<void, void *, int32_t>(CallConv::kIdHost));		break;
-			    case DataType::dtINT64:	call = pgm.cc.call(imm(streamout_numeric<int64_t>), FuncSignatureT<void, void *, int64_t>(CallConv::kIdHost));		break;
-			    case DataType::dtUINT8:	call = pgm.cc.call(imm(streamout_numeric<uint8_t>), FuncSignatureT<void, void *, uint8_t>(CallConv::kIdHost));		break;
-			    case DataType::dtUINT16:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
-			    case DataType::dtUINT24:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
-			    case DataType::dtUINT32:	call = pgm.cc.call(imm(streamout_numeric<uint32_t>), FuncSignatureT<void, void *, uint32_t>(CallConv::kIdHost));	break;
-			    case DataType::dtUINT64:	call = pgm.cc.call(imm(streamout_numeric<uint64_t>), FuncSignatureT<void, void *, uint64_t>(CallConv::kIdHost));	break;
-			    default: throw "TokenBSL::compile() unsupported numeric type";
-                        }
-			// FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
-			call->setArg(0, lval);
-			call->setArg(1, rval);
-			break;
-		    }
-		    if ( tvr->var.type->is_string() )
-		    {
-			x86::Gp &rval = tvr->getreg(pgm);
-			DBG(cout << "TokenBSL::compile() right->var.type->is_string()" << endl);
-			DBG(pgm.cc.comment("TokenBSL::compile() right->var.type->is_string()"));
-			DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
-			FuncCallNode* call = pgm.cc.call(imm(streamout_string), FuncSignatureT<void, void *, void *>(CallConv::kIdHost));
-			DBG(pgm.cc.comment("call->setArg(0, lval)"));
-			call->setArg(0, lval);
-			DBG(pgm.cc.comment("call->setArg(1, tvr->getreg(pgm))"));
-			call->setArg(1, rval); // call->setArg(1, tvr->getreg(pgm));
-			break;
-		    }
-		}
-		break;
-	    case TokenType::ttInteger:
-		DBG(cout << "TokenBSL::compile() right->type() == ttInteger" << endl);
-		{
-		    x86::Gp &rval = dynamic_cast<TokenInt *>(right)->getreg(pgm);
-		    DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
-		    FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
-		    call->setArg(0, lval);
-		    call->setArg(1, rval);
-		}
-		break;
-	    case TokenType::ttCallFunc:
-		DBG(cout << "TokenBSL::compile() right->type() == ttCallFunc" << endl);
-		{
-		    tcr = dynamic_cast<TokenCallFunc *>(right);
-		    if ( tcr->returns()->has_ostream() ) // i.e. endl
-		    {
-			// TODO: should use tcr->compile() with object param
-			DBG(pgm.cc.comment("pgm.cc.call(tcr->method->x86code) [endl?]"));
-			FuncCallNode* call = pgm.cc.call(imm( ((Method *)tcr->var.data)->x86code ), FuncSignatureT<void, void *>(CallConv::kIdHost));
-			DBG(pgm.cc.comment("call->setArg(0, lval)"));
-			call->setArg(0, lval);
-			break;
-		    }
-		    if ( tcr->returns()->is_numeric() )
-		    {
-			DBG(cout << "TokenBSL::compile() tcr->returns()->is_numeric()" << endl);
-			_reg = pgm.cc.newGpq();
-			regdp.first = &_reg;
-			tcr->compile(pgm, regdp);
-			DBG(pgm.cc.comment("pgm.cc.call(streamout_int)"));
-			FuncCallNode* call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
-			call->setArg(0, lval);
-			call->setArg(1, _reg);
-			break;
-		    }
-		    break;
-		}
-	    case TokenType::ttMultiOp:
-		DBG(cout << "TokenBSL::compile() right->type() == ttMultiOp" << endl);
-		// converge streams
-		if ( right->id() == TokenID::tkBSL && !right->is_bracketed() )
-		{
-		    DBG(cout << "TokenBSL::compile() converging right BSL(<<) to left ostream" << endl);
-		    TokenBSL tmpsin;
-		    TokenBSL *rsin = static_cast<TokenBSL *>(right);
-		    tmpsin.left = left;
-		    tmpsin.right = rsin->left;
-		    tmpsin.compile(pgm, regdp);
-		    tmpsin.right = rsin->right;
-		    tmpsin.compile(pgm, regdp);
-		    break;
-		}
-	    default:
-		DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type() << endl);
-		{
-		    FuncCallNode *call;
-		    x86::Gp &rval = right->compile(pgm, regdp);
-		    if ( !regdp.second )
-			throw "TokenBSL::compile() regp.second is NULL";
-		    if ( regdp.second->is_string() )
-		    {
-			DBG(pgm.cc.comment("TokenBSL::compile() default regdp.second->is_string() pgm.cc.call(streamout_string)"));
-			call = pgm.cc.call(imm(streamout_string), FuncSignatureT<void, void *, void *>(CallConv::kIdHost));
-		    }
-		    else
-		    {
-			DBG(pgm.cc.comment("TokenBSL::compile() default pgm.cc.call(streamout_numeric)"));
-//			call = pgm.cc.call(imm(streamout_int), FuncSignatureT<void, void *, int>(CallConv::kIdHost));
-                        switch(regdp.second->type())
-                        {
-			    case DataType::dtCHAR:	call = pgm.cc.call(imm(streamout_numeric<char>), FuncSignatureT<void, void *, char>(CallConv::kIdHost));		break;
-			    case DataType::dtBOOL:	call = pgm.cc.call(imm(streamout_numeric<bool>), FuncSignatureT<void, void *, bool>(CallConv::kIdHost));		break;
-			    case DataType::dtINT16:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
-			    case DataType::dtINT24:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
-			    case DataType::dtINT32:	call = pgm.cc.call(imm(streamout_numeric<int32_t>), FuncSignatureT<void, void *, int32_t>(CallConv::kIdHost));		break;
-			    case DataType::dtINT64:	call = pgm.cc.call(imm(streamout_numeric<int64_t>), FuncSignatureT<void, void *, int64_t>(CallConv::kIdHost));		break;
-			    case DataType::dtUINT8:	call = pgm.cc.call(imm(streamout_numeric<uint8_t>), FuncSignatureT<void, void *, uint8_t>(CallConv::kIdHost));		break;
-			    case DataType::dtUINT16:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
-			    case DataType::dtUINT24:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
-			    case DataType::dtUINT32:	call = pgm.cc.call(imm(streamout_numeric<uint32_t>), FuncSignatureT<void, void *, uint32_t>(CallConv::kIdHost));	break;
-			    case DataType::dtUINT64:	call = pgm.cc.call(imm(streamout_numeric<uint64_t>), FuncSignatureT<void, void *, uint64_t>(CallConv::kIdHost));	break;
-			    default: throw "TokenBSL::compile() unsupported numeric type";
-                        }
-		    }
-		    call->setArg(0, lval);
-		    call->setArg(1, rval);
-		    break;
-		}
-	} // end switch
+	    DBG(cout << "TokenBSL::compile() converging right BSL(<<) to left ostream" << endl);
+	    TokenBSL tmpsin;
+	    TokenBSL *rsin = static_cast<TokenBSL *>(right);
+	    tmpsin.left = left;
+	    tmpsin.right = rsin->left;
+	    tmpsin.compile(pgm, regdp);
+	    tmpsin.right = rsin->right;
+	    tmpsin.compile(pgm, regdp);
+	    DBG(cout << "TokenBSL::Compile() END" << endl);
+	    regdp.first = &lval;
+	    regdp.second = tvl->var.type;
+	    return *regdp.first; // return ostream
+	}
+
+	// handle ostreaming
+	regdp.second = NULL; // clear for now so that we don't overshadow the type
+	x86::Gp &rval = right->compile(pgm, regdp); // compile right side
+
+	if ( !regdp.second ) { throw "unable to determine rval type"; }
+
+	// returns ostream? do nothing, it's already done
+	if ( regdp.second->has_ostream() )
+	{
+	    DBG(cout << "TokenBSL::compile() regdp.second->is_numeric()" << endl);
+	}
+	else
+	if ( regdp.second->is_numeric() )
+	{
+	    DBG(cout << "TokenBSL::compile() regdp.second->is_numeric()" << endl);
+	    DBG(pgm.cc.comment("pgm.cc.call(streamout_numeric)"));
+	    FuncCallNode *call;
+	    switch(regdp.second->type())
+	    {
+		case DataType::dtCHAR:	call = pgm.cc.call(imm(streamout_numeric<char>), FuncSignatureT<void, void *, char>(CallConv::kIdHost));		break;
+		case DataType::dtBOOL:	call = pgm.cc.call(imm(streamout_numeric<bool>), FuncSignatureT<void, void *, bool>(CallConv::kIdHost));		break;
+		case DataType::dtINT16:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
+		case DataType::dtINT24:	call = pgm.cc.call(imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConv::kIdHost));		break;
+		case DataType::dtINT32:	call = pgm.cc.call(imm(streamout_numeric<int32_t>), FuncSignatureT<void, void *, int32_t>(CallConv::kIdHost));		break;
+		case DataType::dtINT64:	call = pgm.cc.call(imm(streamout_numeric<int64_t>), FuncSignatureT<void, void *, int64_t>(CallConv::kIdHost));		break;
+		case DataType::dtUINT8:	call = pgm.cc.call(imm(streamout_numeric<uint8_t>), FuncSignatureT<void, void *, uint8_t>(CallConv::kIdHost));		break;
+		case DataType::dtUINT16:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
+		case DataType::dtUINT24:	call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));	break;
+		case DataType::dtUINT32:	call = pgm.cc.call(imm(streamout_numeric<uint32_t>), FuncSignatureT<void, void *, uint32_t>(CallConv::kIdHost));	break;
+		case DataType::dtUINT64:	call = pgm.cc.call(imm(streamout_numeric<uint64_t>), FuncSignatureT<void, void *, uint64_t>(CallConv::kIdHost));	break;
+		default: throw "TokenBSL::compile() unsupported numeric type";
+	    }
+	    call->setArg(0, lval);
+	    call->setArg(1, rval);
+	}
+	else
+	if ( regdp.second->is_string() )
+	{
+	    DBG(cout << "TokenBSL::compile() regdp.second->is_string()" << endl);
+	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_string()"));
+	    DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
+	    FuncCallNode* call = pgm.cc.call(imm(streamout_string), FuncSignatureT<void, void *, void *>(CallConv::kIdHost));
+	    DBG(pgm.cc.comment("call->setArg(0, lval)"));
+	    call->setArg(0, lval);
+	    DBG(pgm.cc.comment("call->setArg(1, rval"));
+	    call->setArg(1, rval); // call->setArg(1, tvr->getreg(pgm));
+	}
+	else
+	{
+	    cerr << "TokenBSL::compile() regdp.second.name: " << regdp.second->name << " regdp.second->type() " << (int)regdp.second->type() << endl;
+	    throw "TokenBSL::compile unsupported dataype";
+	}
 
 	DBG(cout << "TokenBSL::Compile() END" << endl);
-	return lval; // return ostream
+	regdp.first = &lval;
+	regdp.second = tvl->var.type;
+
+	return *regdp.first; // return ostream
     }
+
+    // handle left bitshift
 
     DBG(cout << "TokenBSL::compile() left->type() == " << (int)left->type()  << endl);
     DBG(cout << "TokenBSL::compile() right->type() == " << (int)right->type()  << endl);
@@ -1916,7 +1845,11 @@ x86::Gp& TokenMember::compile(Program &pgm, regdefp_t &regdp)
 x86::Gp& TokenInt::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !regdp.second )
+    {
+	if ( !_datatype ) { throw "TokenInt has NULL _datatype"; }
 	regdp.second = _datatype;
+	DBG(pgm.cc.comment("TokenInt::compile() setting _datatypet to int"));
+    }
     if ( regdp.first )
     {
 	DBG(pgm.cc.comment("TokenInt::compile() cc.mov(*ret, value)"));
