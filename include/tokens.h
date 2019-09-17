@@ -10,7 +10,8 @@
 class Program;
 //class DataDef;
 
-typedef std::pair<asmjit::x86::Gp *, DataDef *> regdefp_t;
+//typedef std::pair<asmjit::x86::Gp *, DataDef *> regdefp_t;
+typedef struct { asmjit::x86::Gp *first; DataDef *second; asmjit::x86::Gp *objreg; } regdefp_t;
 
 enum class TokenType { 
 //	0	1	 2	3	4	  5		6	  7
