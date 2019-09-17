@@ -1266,7 +1266,7 @@ x86::Gp& TokenNeg::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenNeg::Compile() TOP" << endl);
     if ( !right ) { throw "- missing rval operand"; }
-    if ( !regdp.first ) { throw "- missing register"; }
+//  if ( !regdp.first )
     /*x86::Gp &rval =*/ right->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenNeg::compile() right->compile didn't set datatype"; }
     DBG(pgm.cc.comment("TokenNeg::compile() pgm.cc.neg(regdp.first)"));
