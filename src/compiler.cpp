@@ -368,6 +368,13 @@ void Program::safemul(Operand &op1, Operand &op2)
 	cc.imul(op1.as<x86::Gp>(), op2.as<x86::Gp>());
 }
 
+#if 0
+void printint(int i)
+{
+    cout << "printint: " << i << endl;
+}
+#endif
+
 // perform cc.div with size casting
 void Program::safediv(Operand &op1, Operand &op2, Operand &op3)
 {
@@ -377,6 +384,15 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3)
 	throw "safediv() middle operand is not a Gp register";
     if ( !op3.isReg() || !op3.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	throw "safediv() right operand is not a Gp register";
+#if 0
+    FuncCallNode* call;
+    call = cc.call(imm(printint), FuncSignatureT<void, int>(CallConv::kIdHost));
+    call->setArg(0, op1.as<x86::Gp>());
+    call = cc.call(imm(printint), FuncSignatureT<void, int>(CallConv::kIdHost));
+    call->setArg(0, op2.as<x86::Gp>());
+    call = cc.call(imm(printint), FuncSignatureT<void, int>(CallConv::kIdHost));
+    call->setArg(0, op3.as<x86::Gp>());
+#endif
     DBG(cc.comment("safediv() cc.idiv(op1, op2, op3)"));
     cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), op3.as<x86::Gp>().r64());
 }
@@ -425,9 +441,15 @@ void Program::safexor(Operand &op1, Operand &op2)
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupGp)) )
 	throw "safexor() right operand is not a Gp register or immediate value";
     if ( op2.isImm() )
+    {
+	cc.comment("cc.xor_(gp, imm)");
 	cc.xor_(op1.as<x86::Gp>(), op2.as<Imm>());
+    }
     else
-	cc.xor_(op1.as<x86::Gp>(), op2.as<x86::Gp>().r8());
+    {
+	cc.comment("cc.xor_(gp, gp)");
+	cc.xor_(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+    }
 }
 
 // perform cc.not_ with size casting
@@ -1729,14 +1751,18 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "/ missing rval operand"; }
 //  if ( !regdp.first ) { throw "/ missing register"; }
     Operand remainder = pgm.cc.newInt64("TokenDiv::remainder");
+    DBG(pgm.cc.comment("TokenDiv::compile() left->compile()"));
     Operand &dividend = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenDiv::compile() left->compile didn't set datatype"; }
+    DBG(pgm.cc.comment("TokenDiv::compile() regdp.second->newreg(divisor)"));
     _reg = regdp.second->newreg(pgm.cc, "divisor"); // use tmp for right side
     regdp.first = &_reg;
     DBG(cout << "TokenDiv::compile() right->compile()" << endl);
+    DBG(pgm.cc.comment("TokenDiv::compile() right->compile()"));
     Operand &divisor = right->compile(pgm, regdp);
+    DBG(pgm.cc.comment("TokenDiv::compile() safexor()"));
     pgm.safexor(remainder, remainder);
-    DBG(pgm.cc.comment("TokenDiv::compile() pgm.cc.div(remainder, _reg, rval)"));
+    DBG(pgm.cc.comment("TokenDiv::compile() pgm.safediv(remainder, _reg, rval)"));
     pgm.safediv(remainder, dividend, divisor);
     regdp.first = &dividend;
     return *regdp.first;
