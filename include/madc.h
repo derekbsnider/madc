@@ -269,72 +269,72 @@ public:
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
 
     // perform cc.mov with size casting
-    inline void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    inline void safemov(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    inline void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &);
-    inline void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    inline void safemov(asmjit::x86::Xmm &, asmjit::Imm &);
-    inline void safemov(asmjit::Operand &,  asmjit::Operand &);
-    inline void safemov(asmjit::Operand &,  int);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    void safemov(asmjit::x86::Xmm &, asmjit::Imm &);
+    void safemov(asmjit::Operand &,  asmjit::Operand &);
+    void safemov(asmjit::Operand &,  int);
 
     // perform cc.add with size casting
-    inline void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    inline void safeadd(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    inline void safeadd(asmjit::x86::Xmm &, asmjit::x86::Gp &);
-    inline void safeadd(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    inline void safeadd(asmjit::x86::Xmm &, asmjit::Imm &);
-    inline void safeadd(asmjit::Operand &,  asmjit::Operand &);
-    inline void safeadd(asmjit::Operand &,  int);
+    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    void safeadd(asmjit::x86::Xmm &, asmjit::Imm &);
+    void safeadd(asmjit::Operand &,  asmjit::Operand &);
+    void safeadd(asmjit::Operand &,  int);
 
     // perform cc.sub with size casting
-    inline void safesub(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    inline void safesub(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    inline void safesub(asmjit::x86::Xmm &, asmjit::x86::Gp &);
-    inline void safesub(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    inline void safesub(asmjit::x86::Xmm &, asmjit::Imm &);
-    inline void safesub(asmjit::Operand &,  asmjit::Operand &);
-    inline void safesub(asmjit::Operand &,  int);
+    void safesub(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    void safesub(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    void safesub(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    void safesub(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    void safesub(asmjit::x86::Xmm &, asmjit::Imm &);
+    void safesub(asmjit::Operand &,  asmjit::Operand &);
+    void safesub(asmjit::Operand &,  int);
 
     // perform cc.mul with size casting
-    inline void safemul(asmjit::Operand &,  asmjit::Operand &);
+    void safemul(asmjit::Operand &,  asmjit::Operand &);
     // perform cc.div with size casting
-    inline void safediv(asmjit::Operand &,  asmjit::Operand &,  asmjit::Operand &);
+    void safediv(asmjit::Operand &,  asmjit::Operand &,  asmjit::Operand &);
     // perform cc.shl with size casting
-    inline void safeshl(asmjit::Operand &,  asmjit::Operand &);
+    void safeshl(asmjit::Operand &,  asmjit::Operand &);
     // perform cc.shr with size casting
-    inline void safeshr(asmjit::Operand &,  asmjit::Operand &);
+    void safeshr(asmjit::Operand &,  asmjit::Operand &);
     // perform cc.or_ with size casting
-    inline void safeor(asmjit::Operand &,   asmjit::Operand &);
+    void safeor(asmjit::Operand &,   asmjit::Operand &);
     // perform cc.and_ with size casting
-    inline void safeand(asmjit::Operand &,  asmjit::Operand &);
+    void safeand(asmjit::Operand &,  asmjit::Operand &);
     // perform cc.xor_ with size casting
-    inline void safexor(asmjit::Operand &,  asmjit::Operand &);
+    void safexor(asmjit::Operand &,  asmjit::Operand &);
     // perform cc.not_ with size casting
-    inline void safenot(asmjit::Operand &);
+    void safenot(asmjit::Operand &);
 
     // negate the operand
-    inline void safeneg(asmjit::Operand &);
+    void safeneg(asmjit::Operand &);
 
     // return the operand
-    inline void saferet(asmjit::Operand &);
+    void saferet(asmjit::Operand &);
 
     // perform cc.test with size casting
-    inline void safetest(asmjit::Operand &, asmjit::Operand &);
+    void safetest(asmjit::Operand &, asmjit::Operand &);
 
     // perform cc.setCC with size casting
-    inline void safesete(asmjit::Operand &);
-    inline void safesetg(asmjit::Operand &);
-    inline void safesetge(asmjit::Operand &);
-    inline void safesetl(asmjit::Operand &);
-    inline void safesetle(asmjit::Operand &);
-    inline void safesetne(asmjit::Operand &);
+    void safesete(asmjit::Operand &);
+    void safesetg(asmjit::Operand &);
+    void safesetge(asmjit::Operand &);
+    void safesetl(asmjit::Operand &);
+    void safesetle(asmjit::Operand &);
+    void safesetne(asmjit::Operand &);
 
     // perform cc.cmp with size casting
-    inline void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    inline void safecmp(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    inline void safecmp(asmjit::x86::Xmm &, asmjit::x86::Gp &);
-    inline void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    inline void safecmp(asmjit::Operand &,  asmjit::Operand &);
+    void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    void safecmp(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    void safecmp(asmjit::Operand &,  asmjit::Operand &);
 
     // compile code
     bool compile();
