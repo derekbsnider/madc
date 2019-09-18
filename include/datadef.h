@@ -84,6 +84,22 @@ public:
 	    return true;
 	return false;
     }
+    virtual bool is_integer()
+    {
+	if ( basetype() != BaseType::btSimple )
+	    return false;
+	if ( _type > 0 && _type < (uint16_t)DataType::dtFLOAT )
+	    return true;
+	return false;
+    }
+    virtual bool is_real()
+    {
+	if ( basetype() != BaseType::btSimple )
+	    return false;
+	if ( _type >= (uint16_t)DataType::dtFLOAT && _type < (uint16_t)DataType::dtRESERVED )
+	    return true;
+	return false;
+    }
     virtual bool is_function()
     {
 	if ( basetype() == BaseType::btFunct )

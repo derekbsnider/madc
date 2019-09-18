@@ -722,8 +722,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 	switch(tb->type())
 	{
 	    case TokenType::ttInteger:
-	        DBG(cout << "Pushing number: " << (int)tb->get() << " onto exStack" << endl);
+	        DBG(cout << "Pushing integer: " << (int)tb->get() << " onto exStack" << endl);
 		exStack.push(tb); // exStack.push(tb->clone());
+		break;
+	    case TokenType::ttReal:
+	        DBG(cout << "Pushing number: " << ((TokenReal *)tb)->dval() << " onto exStack" << endl);
+		exStack.push(tb);
 		break;
 	    case TokenType::ttSymbol:
 	    	if ( tb->id() == TokenID::tkSemi )
@@ -922,16 +926,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    break;
 		}
 #endif
-		if ( var->type->is_numeric() )
+		if ( var->type->is_integer() )
 		    DBG(cout << "Pushing found variable: " << var->name << '=' << (int)var->get<int>() << " onto exStack" << endl);
+		else
+		if ( var->type->is_real() )
+		    DBG(cout << "Pushing found variable: " << var->name << '=' << (double)var->get<double>() << " onto exStack" << endl);
 		else
 		    DBG(cout << "Pushing found variable: " << var->name << " onto exStack" << endl);
 		exStack.push(new TokenVar(*var));
 		break;
 	    case TokenType::ttVariable:
 		var = &dynamic_cast<TokenVar *>(tb)->var;
-		if ( var->type->is_numeric() )
+		if ( var->type->is_integer() )
 		    DBG(cout << "Pushing direct variable: " << var->name << '=' << (int)var->get<int>() << " onto exStack" << endl);
+		else
+		if ( var->type->is_real() )
+		    DBG(cout << "Pushing direct variable: " << var->name << '=' << (double)var->get<double>() << " onto exStack" << endl);
 		else
 		    DBG(cout << "Pushing direct variable: " << var->name << " onto exStack" << endl);
 		exStack.push(tb);
@@ -1635,6 +1645,11 @@ bool Program::parse(TokenProgram *tp)
 	cerr << ANSI_WHITE << tp->source << ':' << _line << ':' << _column
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
 	showerror(*tp->is);
+	if ( tb->type() == TokenType::ttReal )
+	{
+	    cerr << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
+	    printf("%.14lf\n", ((TokenReal *)tb)->dval());
+	}
 	return false;
     }
 
