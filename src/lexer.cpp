@@ -327,7 +327,18 @@ TokenBase *Program::_getToken(istream &ss)
 		    v *= 10;
 		    v += get(ss) & 0xf;
 		}
-		return new TokenInt(v);
+		// no decimal means integer
+		if ( ss.peek() != '.' )		
+		    return new TokenInt(v);
+		// handle floating point
+		get(ss); // eat .
+		double num = v, divisor = 10;
+		while ( ss.good() && isdigit(ss.peek()) )
+		{
+		    num += (get(ss) & 0xf) / divisor;
+		    divisor *= 10;
+		}
+		return new TokenReal(num);
 	    }
 	    if ( ch == '_' || isalnum(ch) )
 	    {

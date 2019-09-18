@@ -80,7 +80,7 @@ public:
     void putreg(asmjit::x86::Compiler &, Variable *);
     void cleanup(asmjit::x86::Compiler &);
     void clear_regmap() { register_map.clear(); }
-    virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
     Variable *findVariable(std::string &);
@@ -92,7 +92,7 @@ public:
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
-    virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     using TokenCpnd::getreg;
 };
 
@@ -102,7 +102,7 @@ public:
     TokenBase *initialize;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
-    virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenCallFunc: public TokenVar
@@ -114,7 +114,7 @@ public:
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenMember: public TokenVar
@@ -126,7 +126,7 @@ public:
     virtual TokenType type() const { return TokenType::ttMember; }
     virtual asmjit::x86::Gp &getreg(Program &);
     virtual void putreg(Program &);
-    virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenCallMethod: public TokenMember
@@ -138,7 +138,7 @@ public:
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallMethod; }
 //  virtual asmjit::x86::Gp &getreg(Program &);
-//  virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+//  virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenProgram: public TokenCpnd
@@ -150,7 +150,7 @@ public:
     size_t bytes;
     TokenProgram() : TokenCpnd() { lines = 0; bytes = 0; is = NULL; }
     virtual TokenType type() const { return TokenType::ttProgram; }
-    virtual asmjit::x86::Gp &compile(Program &, regdefp_t &regdp);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 
@@ -269,10 +269,72 @@ public:
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
 
     // perform cc.mov with size casting
-    inline void safemov(asmjit::x86::Gp &, asmjit::x86::Gp &);
+    inline void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    inline void safemov(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    inline void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    inline void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    inline void safemov(asmjit::x86::Xmm &, asmjit::Imm &);
+    inline void safemov(asmjit::Operand &,  asmjit::Operand &);
+    inline void safemov(asmjit::Operand &,  int);
+
+    // perform cc.add with size casting
+    inline void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    inline void safeadd(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    inline void safeadd(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    inline void safeadd(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    inline void safeadd(asmjit::x86::Xmm &, asmjit::Imm &);
+    inline void safeadd(asmjit::Operand &,  asmjit::Operand &);
+    inline void safeadd(asmjit::Operand &,  int);
+
+    // perform cc.sub with size casting
+    inline void safesub(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    inline void safesub(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    inline void safesub(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    inline void safesub(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    inline void safesub(asmjit::x86::Xmm &, asmjit::Imm &);
+    inline void safesub(asmjit::Operand &,  asmjit::Operand &);
+    inline void safesub(asmjit::Operand &,  int);
+
+    // perform cc.mul with size casting
+    inline void safemul(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.div with size casting
+    inline void safediv(asmjit::Operand &,  asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.shl with size casting
+    inline void safeshl(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.shr with size casting
+    inline void safeshr(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.or_ with size casting
+    inline void safeor(asmjit::Operand &,   asmjit::Operand &);
+    // perform cc.and_ with size casting
+    inline void safeand(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.xor_ with size casting
+    inline void safexor(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.not_ with size casting
+    inline void safenot(asmjit::Operand &);
+
+    // negate the operand
+    inline void safeneg(asmjit::Operand &);
+
+    // return the operand
+    inline void saferet(asmjit::Operand &);
+
+    // perform cc.test with size casting
+    inline void safetest(asmjit::Operand &, asmjit::Operand &);
+
+    // perform cc.setCC with size casting
+    inline void safesete(asmjit::Operand &);
+    inline void safesetg(asmjit::Operand &);
+    inline void safesetge(asmjit::Operand &);
+    inline void safesetl(asmjit::Operand &);
+    inline void safesetle(asmjit::Operand &);
+    inline void safesetne(asmjit::Operand &);
 
     // perform cc.cmp with size casting
-    inline void safecmp(asmjit::x86::Gp &, asmjit::x86::Gp &);
+    inline void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    inline void safecmp(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    inline void safecmp(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    inline void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    inline void safecmp(asmjit::Operand &,  asmjit::Operand &);
 
     // compile code
     bool compile();
