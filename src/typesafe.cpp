@@ -432,10 +432,11 @@ void Program::saferet(Operand &op)
 // perform a test on two operands
 void Program::safetest(Operand &op1, Operand &op2)
 {
+    DBG(cout << "Program::safetest(" << op1.opType() << ", " << op2.opType() << ')' << endl);
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safetest() left operand is not a Gp register";
+	throw "safetest(op1, op2) left operand is not a Gp register";
     if ( !op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safetest() right operand is not a Gp register";
+	throw "safetest(op1, op2) right operand is not a Gp register";
     cc.test(op1.as<x86::Gp>(), op2.as<x86::Gp>());
 }
 
