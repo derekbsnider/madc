@@ -35,6 +35,7 @@ using namespace asmjit;
 // small to big doesn't leave unwanted data in the other part of the register
 void Program::safemov(x86::Gp &r1, x86::Gp &r2)
 {
+    DBG(cc.comment("safemov(Gp, Gp)"));
     switch(r1.type())
     {
 	case BaseReg::kTypeGp8Lo: cc.mov(r1, r2.r8Lo());  break;
@@ -56,6 +57,7 @@ void Program::safemov(x86::Xmm &r1, x86::Gp &r2)
 }
 void Program::safemov(x86::Xmm &r1, x86::Xmm &r2)
 {
+   DBG(cc.comment("safemov(Xmm, Xmm)"));
    cc.movsd(r1, r2);
 }
 void Program::safemov(x86::Xmm &r1, Imm &r2)
@@ -65,13 +67,22 @@ void Program::safemov(x86::Xmm &r1, Imm &r2)
 
 void Program::safemov(Operand &op1, int i)
 {
+    DBG(cc.comment("safemov(Operand, int)"));
     Operand op2 = imm(i);
+    safemov(op1, op2);
+}
+
+void Program::safemov(Operand &op1, double d)
+{
+    DBG(cc.comment("safemov(Operand, double)"));
+    Operand op2 = imm(d);
     safemov(op1, op2);
 }
 
 // should handle all necessary conversions...
 void Program::safemov(Operand &op1, Operand &op2)
 {
+    DBG(cc.comment("safemov(Operand, Operand)"));
     if ( !op1.isReg() ) { throw "safemov() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safemov() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
@@ -390,6 +401,13 @@ void Program::saferet(Operand &op)
 	    cc.ret(op.as<x86::Gp>());
 	else
 	    throw "saferet() operand is not a supported register type";
+    }
+    else
+    if ( op.isImm() )
+    {
+	x86::Gp reg = cc.newGpq();
+	cc.mov(reg, op.as<Imm>().i64());
+	cc.ret(reg);
     }
     else
 	throw "saferet() unsupported operand";

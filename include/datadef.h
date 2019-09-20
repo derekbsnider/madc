@@ -75,6 +75,15 @@ public:
     DataDef() { size = 0; _type = 0; }
     DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; }
     virtual ~DataDef() {}
+    virtual bool is_compatible(DataDef &d)
+    {
+	if ( &d == this
+	||   rawtype() == d.rawtype()
+	||  (is_numeric() && d.is_numeric()) )
+	    return true;
+
+	return false;
+    }
     virtual bool is_string() { if (rawtype() == DataType::dtSTRING) return true; return false; }
     virtual bool is_numeric()
     {
@@ -175,7 +184,7 @@ public:
 	if ( rt == RefType::rtPointer )   { _type += 10000; return; }
     }
     // get a new register for the datatype
-    virtual asmjit::x86::Gp newreg(asmjit::x86::Compiler &cc, const char *n=NULL)
+    virtual asmjit::Operand newreg(asmjit::x86::Compiler &cc, const char *n=NULL)
     {
 	switch((DataType)_type)
 	{
@@ -190,6 +199,9 @@ public:
 	case DataType::dtUINT24:  return n ? cc.newGpw(n) : cc.newGpw();
 	case DataType::dtUINT32:  return n ? cc.newGpd(n) : cc.newGpd();
 	case DataType::dtUINT64:  return n ? cc.newGpq(n) : cc.newGpq();
+	case DataType::dtFLOAT:   return n ? cc.newXmm(n) : cc.newXmm();
+	case DataType::dtDOUBLE:  return n ? cc.newXmm(n) : cc.newXmm();
+	case DataType::dtLDOUBLE: return n ? cc.newXmm(n) : cc.newXmm();
 	default:		  return n ? cc.newIntPtr(n) : cc.newIntPtr();
 	}
     }
@@ -210,6 +222,9 @@ public:
 	case DataType::dtUINT24:  cc.mov(asmjit::x86::word_ptr((uintptr_t)ptr),  reg); break;
 	case DataType::dtUINT32:  cc.mov(asmjit::x86::dword_ptr((uintptr_t)ptr), reg); break;
 	case DataType::dtUINT64:  cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); break;
+	case DataType::dtFLOAT:   cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); break;
+	case DataType::dtDOUBLE:  cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); break;
+	case DataType::dtLDOUBLE: cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); break;
 	default: DBG(std::cerr << "DataDef::putreg() unsupported numeric type " << _type << std::endl); break;
 	}
     }
@@ -255,7 +270,7 @@ public:
 	// DBG(std::cerr << "DataDef::movint2rptr() unsupported numeric type " << _type << std::endl); break;
 	}
     }
-    // move memory pointed by a pointer into a register
+    // move memory pointed by a pointer into a Gp register
     // mov(reg, [mem])
     virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
     {
@@ -272,7 +287,33 @@ public:
 	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
 	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
 	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtFLOAT:   cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtDOUBLE:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtLDOUBLE: cc.mov(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
 	default:		  cc.mov(reg, asmjit::imm(ptr));		       break;
+	} // switch
+    }
+    // move memory pointed by a pointer into an Xmm register
+    // mov(reg, [mem])
+    virtual void movmptr2xval(asmjit::x86::Compiler &cc, asmjit::x86::Xmm &reg, void *ptr)
+    {
+	switch((DataType)_type)
+	{
+	case DataType::dtCHAR:    cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
+	case DataType::dtBOOL:    cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
+	case DataType::dtINT64:   cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtINT16:   cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
+	case DataType::dtINT24:   cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
+	case DataType::dtINT32:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtUINT8:   cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
+	case DataType::dtUINT16:  cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
+	case DataType::dtUINT24:  cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
+	case DataType::dtUINT32:  cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtUINT64:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtFLOAT:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtDOUBLE:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtLDOUBLE: cc.movsd(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
+	default:		  cc.movsd(reg, (uintptr_t)ptr);		         break;
 	} // switch
     }
     // move memory pointed to by a register into a register

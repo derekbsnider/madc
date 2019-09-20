@@ -164,8 +164,9 @@ public:
     virtual int get() const { return var.get<int>(); }
     virtual int val() const { return var.get<int>(); }
     virtual void set(int c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
-    virtual asmjit::x86::Gp &getreg(Program &);
     virtual void putreg(Program &);
+//  virtual asmjit::x86::Gp &getreg(Program &);
+    virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
