@@ -113,7 +113,6 @@ public:
     virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
-//  virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
@@ -125,7 +124,7 @@ public:
     size_t offset;
     TokenMember(Variable &o, Variable &m, size_t ofs) : TokenVar(m), object(o), offset(ofs) { _datatype = m.type; }
     virtual TokenType type() const { return TokenType::ttMember; }
-//  virtual asmjit::x86::Gp &getreg(Program &);
+    virtual bool is_real() { return _datatype->is_real(); }
     virtual void putreg(Program &);
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
@@ -139,7 +138,7 @@ public:
     virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallMethod; }
-//  virtual asmjit::x86::Gp &getreg(Program &);
+    virtual bool is_real() { return _datatype->is_real(); }
 //  virtual asmjit::Operand &operand(Program &);
 //  virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };

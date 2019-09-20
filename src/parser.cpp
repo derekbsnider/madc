@@ -80,7 +80,7 @@ void EatSpaces(istream &is)
 }
 
 
-int TokenAssign::operate() const
+int TokenAssign::ioperate() const
 {
     DBG(std::cout << "TokenAssign" << std::endl);
     if ( left->type() != TokenType::ttVariable )
@@ -88,9 +88,9 @@ int TokenAssign::operate() const
 	std::cerr << "TokenAssign::operate() left side not variable" << std::endl;
 	return 0;
     }
-    DBG(std::cout << "TokenAssign: " << dynamic_cast<TokenVar *>(left)->var.name << "=" << right->val() << std::endl);
-    left->set(right->val());
-    return right->val();
+    DBG(std::cout << "TokenAssign: " << dynamic_cast<TokenVar *>(left)->var.name << "=" << right->ival() << std::endl);
+    left->set(right->ival());
+    return right->ival();
 }
 
 
@@ -287,7 +287,7 @@ void printinteger(int i)
 // some debugging functions
 void printdouble(double d)
 {
-    std::cout << d << std::endl;
+    std::cout << std::setprecision(16) << d << std::endl;
 }
 
 void printstarred(std::string &s)
@@ -492,6 +492,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    case DataType::dtUINT64:  dd = &ddUINT64;	break;
 	    case DataType::dtSTRING:  dd = &ddSTRING;	break;
 	    case DataType::dtOSTREAM: dd = &ddOSTREAM;  break;
+	    case DataType::dtFLOAT:   dd = &ddFLOAT;    break;
+	    case DataType::dtDOUBLE:  dd = &ddDOUBLE;   break;
 	    case rtPtr(DataType::dtCHAR): dd = &ddLPSTR;break;
 	}
 
@@ -583,7 +585,7 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 			DBG(cerr << "got operator, but exStack is empty!" << endl);
 			throw "Missing operand";
 		    }
-		    to->right = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->right->val() << endl);
+		    to->right = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->right->ival() << endl);
 		}
 		if ( to->argc() > 1 )
 		{
@@ -594,11 +596,11 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 			    DBG(cerr << "got operator, but exStack is empty!" << endl);
 			    throw "Missing operand";
 			}
-			to->left = exStack.top(); exStack.pop();  DBG(cout << "popped " << to->left->val() << endl);
+			to->left = exStack.top(); exStack.pop();  DBG(cout << "popped " << to->left->ival() << endl);
 		    }
 		}
 	    }
-	    DBG(cout << "Popping " << (char)to->get() << "[" << (to->left ? to->left->val() : 0) << ", " << (to->right ? to->right->val() : 0) << "] from opStack and onto exStack" << endl);
+	    DBG(cout << "Popping " << (char)to->get() << "[" << (to->left ? to->left->ival() : 0) << ", " << (to->right ? to->right->ival() : 0) << "] from opStack and onto exStack" << endl);
 	    opStack.pop();
 	    exStack.push(to);
 	    break;
@@ -811,7 +813,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    else
 		    {
 			to = (TokenOperator *)tb; // ->clone();
-			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->val() << endl);
+			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->ival() << endl);
 			exStack.push(to);
 		    }
 		    break;

@@ -67,6 +67,13 @@ void Program::safemov(x86::Xmm &r1, Imm &r2)
 
 void Program::safemov(Operand &op1, int i)
 {
+    if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Mem _const = cc.newDoubleConst(ConstPool::kScopeLocal, (double)i);
+	DBG(cc.comment("safemov(Xmm, ConstPool)"));
+	cc.movsd(op1.as<x86::Xmm>(), _const);
+	return;
+    }
     DBG(cc.comment("safemov(Operand, int)"));
     Operand op2 = imm(i);
     safemov(op1, op2);
@@ -74,8 +81,15 @@ void Program::safemov(Operand &op1, int i)
 
 void Program::safemov(Operand &op1, double d)
 {
-    DBG(cc.comment("safemov(Operand, double)"));
-    Operand op2 = imm(d);
+    if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Mem _const = cc.newDoubleConst(ConstPool::kScopeLocal, d);
+	DBG(cc.comment("safemov(Xmm, ConstPool)"));
+	cc.movsd(op1.as<x86::Xmm>(), _const);
+	return;
+    }
+    DBG(cc.comment("safemov(Operand, (int)double)"));
+    Operand op2 = imm((int)d);
     safemov(op1, op2);
 }
 
@@ -87,11 +101,11 @@ void Program::safemov(Operand &op1, Operand &op2)
     if ( !op2.isReg() && !op2.isImm() ) { throw "safemov() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
-	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Gp>());
-	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
 	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	else
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Gp>());
 	else
 	if ( op2.isImm() )
 	    safemov(op1.as<x86::Xmm>(), op2.as<Imm>());
@@ -101,11 +115,11 @@ void Program::safemov(Operand &op1, Operand &op2)
     else
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
     {
-	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	    safemov(op1.as<x86::Gp>(), op2.as<x86::Gp>());
-	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
 	    safemov(op1.as<x86::Gp>(), op2.as<x86::Xmm>());
+	else
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	    safemov(op1.as<x86::Gp>(), op2.as<x86::Gp>());
 	else
 	if ( op2.isImm() )
 	    cc.mov(op1.as<x86::Gp>(), op2.as<Imm>());
