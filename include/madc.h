@@ -72,14 +72,14 @@ public:
     TokenCpnd *child;
     std::vector<Variable *> variables;
     std::vector<TokenStmt *> statements;
-    std::map<Variable *, asmjit::x86::Gp> register_map;
+    std::map<Variable *, asmjit::Operand> operand_map;
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
-    asmjit::x86::Gp &getvreg(asmjit::x86::Compiler &, Variable *);
-    void movreg(asmjit::x86::Compiler &, asmjit::x86::Gp &, Variable *);
+    asmjit::Operand &voperand(Program &, Variable *);
+    void movreg(asmjit::x86::Compiler &, asmjit::Operand &, Variable *);
     void putreg(asmjit::x86::Compiler &, Variable *);
     void cleanup(asmjit::x86::Compiler &);
-    void clear_regmap() { register_map.clear(); }
+    void clear_operand_map() { operand_map.clear(); }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
@@ -93,7 +93,7 @@ public:
     virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    using TokenCpnd::getreg;
+//  using TokenCpnd::getreg;
 };
 
 class TokenDecl: public TokenVar
@@ -113,7 +113,8 @@ public:
     virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
-    virtual asmjit::x86::Gp &getreg(Program &);
+//  virtual asmjit::x86::Gp &getreg(Program &);
+    virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -124,8 +125,9 @@ public:
     size_t offset;
     TokenMember(Variable &o, Variable &m, size_t ofs) : TokenVar(m), object(o), offset(ofs) { _datatype = m.type; }
     virtual TokenType type() const { return TokenType::ttMember; }
-    virtual asmjit::x86::Gp &getreg(Program &);
+//  virtual asmjit::x86::Gp &getreg(Program &);
     virtual void putreg(Program &);
+    virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -138,6 +140,7 @@ public:
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallMethod; }
 //  virtual asmjit::x86::Gp &getreg(Program &);
+//  virtual asmjit::Operand &operand(Program &);
 //  virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -275,7 +278,9 @@ public:
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
     void safemov(asmjit::x86::Xmm &, asmjit::Imm &);
     void safemov(asmjit::Operand &,  asmjit::Operand &);
+    // only int and double are standard numeric token types
     void safemov(asmjit::Operand &,  int);
+    void safemov(asmjit::Operand &,  double);
 
     // perform cc.add with size casting
     void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &);

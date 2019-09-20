@@ -11,7 +11,7 @@ class Program;
 //class DataDef;
 
 //typedef std::pair<asmjit::x86::Gp *, DataDef *> regdefp_t;
-typedef struct { asmjit::Operand *first; DataDef *second; asmjit::x86::Gp *objreg; } regdefp_t;
+typedef struct { asmjit::Operand *first; DataDef *second; asmjit::Operand *object; } regdefp_t;
 
 enum class TokenType { 
 //	0	1	 2	3	4	  5		6	  7
@@ -58,6 +58,7 @@ protected:
     int _token;
     DataDef *_datatype;
     asmjit::x86::Gp _reg;
+    asmjit::Operand _operand;
     uint16_t _flags;
 public:
     const char *file;
@@ -83,7 +84,8 @@ public:
     virtual TokenType  type()  const { return TokenType::ttBase; }
     virtual TokenID    id()    const { return TokenID::tkBase; }
     virtual TokenAssoc associativity() const { return TokenAssoc::taNone; }
-    virtual asmjit::x86::Gp &getreg(Program &);
+//  virtual asmjit::x86::Gp &getreg(Program &);
+    virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -148,6 +150,7 @@ public:
     virtual inline int operate() const { return 0; } // used for internal debugging
     virtual void setregdp(Program &, regdefp_t &);
     virtual asmjit::x86::Gp &getreg(Program &);
+    virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp)
     {
 	DBG(std::cout << "TokenOperator::compile() called on operator: " << _token << std::endl);
@@ -765,14 +768,15 @@ public:
     virtual TokenID   id()   const { return TokenID::tkInt; }
     virtual TokenBase *clone()     { return new TokenInt(_token); }
     virtual void setDataType(DataDef *d) { if (d && d->is_integer()) _datatype = d; }
-    virtual asmjit::x86::Gp &getreg(Program &);
+//  virtual asmjit::x86::Gp &getreg(Program &);
+    virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenReal: public TokenBase
 {
 protected:
-    asmjit::x86::Xmm _xmm;
+//  asmjit::x86::Xmm _xmm;
     double _val;
 public:
     TokenReal() : TokenBase()         { _val = 0; _datatype = &ddDOUBLE; }
@@ -783,8 +787,8 @@ public:
     virtual TokenID   id()   const    { return TokenID::tkReal;   }
     virtual TokenBase *clone()        { return new TokenReal(_val); }
     virtual void setDataType(DataDef *d) { if (d && d->is_real()) _datatype = d; }
-    virtual asmjit::x86::Gp &getreg(Program &) { throw "TokenReal::getreg(): Use TokenReal::getxmm()!"; }
-    virtual asmjit::x86::Xmm &getxmm(Program &);
+//  virtual asmjit::x86::Gp &getreg(Program &) { throw "TokenReal::getreg(): Use TokenReal::operand()!"; }
+    virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
