@@ -49,7 +49,14 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2)
 
 void Program::safemov(x86::Gp &r1, x86::Xmm &r2)
 {
-   throw "safemov() unable to move xmm to gp";
+    switch(r1.type())
+    {
+	case BaseReg::kTypeGp8Lo: cc.cvtsd2si(r1.r32(), r2);	break;
+	case BaseReg::kTypeGp8Hi: cc.cvtsd2si(r1.r32(), r2);	break;
+	case BaseReg::kTypeGp32:  cc.cvtsd2si(r1, r2);		break;
+	case BaseReg::kTypeGp64:  cc.cvtsd2si(r1, r2);		break;
+	default: throw "Program::safemov() cannot match register types";
+    }
 }
 void Program::safemov(x86::Xmm &r1, x86::Gp &r2)
 {
@@ -59,6 +66,16 @@ void Program::safemov(x86::Xmm &r1, x86::Xmm &r2)
 {
    DBG(cc.comment("safemov(Xmm, Xmm)"));
    cc.movsd(r1, r2);
+}
+void Program::safemov(x86::Xmm &r1, x86::Mem &r2)
+{
+   DBG(cc.comment("safemov(Xmm, Mem)"));
+   cc.movsd(r1, r2);
+}
+void Program::safemov(x86::Gp &r1, x86::Mem &r2)
+{
+   DBG(cc.comment("safemov(Gp, Mem)"));
+   cc.mov(r1, r2);
 }
 void Program::safemov(x86::Xmm &r1, Imm &r2)
 {
@@ -98,14 +115,18 @@ void Program::safemov(Operand &op1, Operand &op2)
 {
     DBG(cc.comment("safemov(Operand, Operand)"));
     if ( !op1.isReg() ) { throw "safemov() lval is not a register"; }
-    if ( !op2.isReg() && !op2.isImm() ) { throw "safemov() rval is not register or immediate"; }
+    if ( !op2.isReg() && !op2.isImm() && !op2.isMem() ) { throw "safemov() rval is not register, memory, or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
+	DBG(cc.comment("safemov(Operand=Xmm, Operand)"));
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
 	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Gp>());
+	else
+	if ( op2.isMem() )
+	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Mem>());
 	else
 	if ( op2.isImm() )
 	    safemov(op1.as<x86::Xmm>(), op2.as<Imm>());
@@ -115,6 +136,7 @@ void Program::safemov(Operand &op1, Operand &op2)
     else
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
     {
+	DBG(cc.comment("safemov(Operand=Gp, Operand)"));
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
 	    safemov(op1.as<x86::Gp>(), op2.as<x86::Xmm>());
 	else
@@ -174,7 +196,7 @@ void Program::safeadd(Operand &op1, int i)
 // should handle all necessary conversions...
 void Program::safeadd(Operand &op1, Operand &op2)
 {
-    if ( !op1.isReg() ) { throw "safeadd() lval is not a register"; }
+    if ( !op1.isReg() ) { cerr << op1.opType() << endl; throw "safeadd() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safeadd() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {

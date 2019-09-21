@@ -169,7 +169,8 @@ bool Program::_compiler_finalize()
 Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") TOP" << endl);
-    DBG(pgm.cc.comment("TokenCallFunc start"));
+    DBG(pgm.cc.comment("TokenCallFunc start for "));
+    DBG(pgm.cc.comment(var.name.c_str()));
 
     if ( !var.type->is_function() )
 	throw "TokenCallFunc::compile() called on non-function";
@@ -237,7 +238,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    funcsig.addArgT<void *>();
 	    params.push_back(*regdp.object);
-	    DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(*regdp.object"));
+	    DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(*regdp.object)"));
 	}
 	else
 	{
@@ -289,6 +290,12 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		throw "Object type mismatch";
 	}
 	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(tnreg)"));
+	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+	    pgm.cc.comment("tnreg is Xmm");
+	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	    pgm.cc.comment("tnreg is Gp");
+	if ( tnreg.isImm() )
+	    pgm.cc.comment("tnreg is Imm");
 	params.push_back(tnreg); // params.push_back(pgm.tkFunction->getreg(pgm.cc, &tv->var));
 	// could probably use a tv->var.addArgT(funcsig) method
 	DBG(pgm.cc.comment(ptype->name.c_str() /*funcrdp.second->name.c_str()*/));
@@ -370,6 +377,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	else
 	if ( regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	    call->setRet(0, regdp.first->as<x86::Gp>());
+	DBG(pgm.cc.comment("TokenCallFunc::compile() END"));
 	return *regdp.first;
     }
     else
@@ -382,6 +390,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    call->setRet(0, _operand.as<x86::Gp>());
 	regdp.first = &_operand;
     }
+    DBG(pgm.cc.comment("TokenCallFunc::compile() END"));
 
 
     return _operand;
@@ -1090,7 +1099,8 @@ Operand &TokenReal::operand(Program &pgm)
 {
     _const = pgm.cc.newDoubleConst(ConstPool::kScopeLocal, _val);
     _operand = pgm.cc.newXmm();
-    DBG(pgm.cc.comment("TokenReal::operand() calling movsd(_operand.as<x86::Xmm>(), x86::qword_ptr((uintptr_t)&_val))"));
+    DBG(pgm.cc.comment("TokenReal::operand() calling movsd(_operand.as<x86::Xmm>(), _const)"));
+    DBG(cout << "TokenReal::operand() calling movsd(_operand.as<x86::Xmm>(), _const[" << _val << "])" << endl);
     pgm.cc.movsd(_operand.as<x86::Xmm>(), _const); //x86::qword_ptr((uintptr_t)&d_testval)); // x86::qword_ptr((uintptr_t)&_val));
     return _operand;
 }
@@ -1401,7 +1411,7 @@ void TokenOperator::setregdp(Program &pgm, regdefp_t &regdp)
 	    regdp.second = &ddDOUBLE;
 	if ( regdp.first )
 	    return;
-	_operand = pgm.cc.newXmm("_xmm");
+	_operand = pgm.cc.newXmm("setregdp_xmm");
 	regdp.first = &_operand;
 	return;
     }
@@ -1411,26 +1421,21 @@ void TokenOperator::setregdp(Program &pgm, regdefp_t &regdp)
 	    regdp.second = &ddINT;
 	if ( regdp.first )
 	    return;
-	_operand = pgm.cc.newGpq("_reg");
+	_operand = pgm.cc.newGpq("setregdp_reg");
 	regdp.first = &_operand;
 	return;
     }
 }
 
+// set regdp.second (type)
 void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
 {
-    if ( left->type() == TokenType::ttReal || right->type() == TokenType::ttReal )
-    {
-	if ( !regdp.second )
-	    regdp.second = &ddDOUBLE;
+    if ( regdp.second )
 	return;
-    }
-    if ( left->type() == TokenType::ttInteger || right->type() == TokenType::ttInteger )
-    {
-	if ( !regdp.second )
-	    regdp.second = &ddINT;
-	return;
-    }
+    if ( (left && left->is_real()) || (right && right->is_real()) )
+	regdp.second = &ddDOUBLE;
+    else
+	regdp.second = &ddINT;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1466,8 +1471,7 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
     ||   (left  && left->is_real())
     ||   (right && right->is_real()) )
     {
-	if ( !regdp.second )
-	    regdp.second = &ddDOUBLE;
+	if ( !regdp.second ) { regdp.second = &ddDOUBLE; }
 	if ( !regdp.first )
 	{
 	    _operand = pgm.cc.newXmm("_operand_Xmm_");
@@ -1476,8 +1480,7 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
 	pgm.safemov(*regdp.first, foperate());
 	return *regdp.first;
     }
-    if ( !regdp.second )
-	regdp.second = &ddINT;
+    if ( !regdp.second ) { regdp.second = &ddINT; }
     if ( !regdp.first )
     {
 	_operand = pgm.cc.newGpq("_operand_Gpq_");
@@ -1514,44 +1517,21 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenAdd::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "+ missing lval operand"; }
     if ( !right ) { throw "+ missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-
-    if ( left->type() == TokenType::ttInteger )
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
     {
-	settype(pgm, regdp);
-	Operand &rval = right->compile(pgm, regdp);
-	Operand lval = regdp.second->newreg(pgm.cc);
-	pgm.safemov(lval, left->ival());
-	pgm.safeadd(lval, rval);
-	regdp.first = &lval;
-	return *regdp.first;
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
     }
-    if ( right->type() == TokenType::ttInteger )
-    {
-	settype(pgm, regdp);
-	DBG(pgm.cc.comment("TokenAdd::compile() right->type() integer"));
-	DBG(pgm.cc.comment("TokenAdd::compile() left->compile"));
-	Operand &lval = left->compile(pgm, regdp);
-	Operand rval = regdp.second->newreg(pgm.cc);
-	DBG(pgm.cc.comment("safemov(reval, right->val)"));
-	pgm.safemov(rval, right->ival());
-	DBG(pgm.cc.comment("TokenAdd::compile() safeadd(lval, rval)"));
-	pgm.safeadd(lval, rval);
-	regdp.first = &lval;
-	return *regdp.first;
-    }
-
-    setregdp(pgm, regdp);
-    DBG(cout << "TokenAdd::compile() left->compile()" << endl);
-    Operand &lval = left->compile(pgm, regdp); // get lval into register
-    if ( !regdp.second ) { throw "TokenAdd::compile() left->compile didn't set datatype"; }
-    _operand = regdp.second->newreg(pgm.cc, "TokenAdd._reg"); // use tmp for right side
-    regdp.first = &_operand;
-    DBG(cout << "TokenAdd::compile() right->compile()" << endl);
-    Operand &rval = right->compile(pgm, regdp);
-    pgm.safeadd(lval, rval);
-    regdp.first = &lval;
-    return *regdp.first;
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    pgm.safeadd(lval, rval);				 // type safe addition
+    regdp.first = &lval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
 
 // subtract two integers
@@ -1560,17 +1540,21 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenSub::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "- missing lval operand"; }
     if ( !right ) { throw "- missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-    DBG(cout << "TokenSub::compile() left->compile()" << endl);
-    Operand &lval = left->compile(pgm, regdp); // get lval into register
-    if ( !regdp.second ) { throw "TokenSub::compile() left->compile didn't set datatype"; }
-    _operand = regdp.second->newreg(pgm.cc, "TokenSub._reg"); // use tmp for right side
-    regdp.first = &_operand;
-    DBG(cout << "TokenSub::compile() right->compile()" << endl);
-    Operand &rval = right->compile(pgm, regdp);
-    pgm.safesub(lval, rval);
-    regdp.first = &lval;
-    return *regdp.first;
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    pgm.safesub(lval, rval);				 // type safe subtraction
+    regdp.first = &lval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
 
 // make number negative
@@ -1578,13 +1562,17 @@ Operand &TokenNeg::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenNeg::Compile() TOP" << endl);
     if ( !right ) { throw "- missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-//  if ( !regdp.first )
-    /*Operand &rval =*/ right->compile(pgm, regdp);
-    if ( !regdp.second ) { throw "TokenNeg::compile() right->compile didn't set datatype"; }
-    DBG(pgm.cc.comment("TokenNeg::compile() pgm.cc.neg(regdp.first)"));
-    pgm.safeneg(*regdp.first);
-    return *regdp.first;
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
+    if ( !regdp.second ) { throw "TokenNeg::compile() right->compile cleared datatype"; }
+    pgm.safeneg(rval);					 // type safe negation
+    regdp.first = &rval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
 
 // multiply two integers
@@ -1593,17 +1581,22 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenMul::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "* missing lval operand"; }
     if ( !right ) { throw "* missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-    DBG(cout << "TokenMul::compile() left->compile()" << endl);
-    Operand &lval = left->compile(pgm, regdp); // get lval into register
-    if ( !regdp.second ) { throw "TokenMul::compile() left->compile didn't set datatype"; }
-    _operand = regdp.second->newreg(pgm.cc, "TokenMul._reg"); // use tmp for right side
-    regdp.first = &_operand;
-    DBG(cout << "TokenMul::compile() right->compile()" << endl);
-    Operand &rval = right->compile(pgm, regdp);
-    pgm.safemul(lval, rval);
-    regdp.first = &lval;
-    return *regdp.first;
+    if ( can_optimize() )  {return optimize(pgm, regdp);} 
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    pgm.safemul(lval, rval);				 // type safe multiplication
+    regdp.first = &lval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
 
 // divide two integers
@@ -1612,7 +1605,7 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenDiv::Compile() TOP" << endl);
     if ( !left )  { throw "/ missing lval operand"; } 
     if ( !right ) { throw "/ missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() )  {return optimize(pgm, regdp);} 
     Operand remainder = pgm.cc.newInt64("TokenDiv::remainder");
     DBG(pgm.cc.comment("TokenDiv::compile() left->compile()"));
     Operand &dividend = left->compile(pgm, regdp);
@@ -1637,7 +1630,7 @@ Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenMod::Compile() TOP" << endl);
     if ( !left )  { throw "% missing lval operand"; }
     if ( !right ) { throw "% missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() )  {return optimize(pgm, regdp);} 
 
     if ( !regdp.first ) // { throw "% missing register"; }
     {
@@ -1674,7 +1667,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenBSL::Compile() TOP" << endl);
     if ( !left )  { throw "<< missing lval operand"; }
     if ( !right ) { throw "<< missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() )  {return optimize(pgm, regdp);} 
 
     // hard coding some basic ostream support for now, will use operator overloading later
     if ( left->type() == TokenType::ttVariable && dynamic_cast<TokenVar *>(left)->var.type->has_ostream() )
@@ -1748,10 +1741,16 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 		default: throw "TokenBSL::compile() unsupported numeric type";
 	    }
 	    if ( lval.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+	    {
+		DBG(pgm.cc.comment("call->setArg(0, lval.as<x86::Xmm>())"));
 		call->setArg(0, lval.as<x86::Xmm>());
+	    }
 	    else
 	    if ( lval.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	    {
+		DBG(pgm.cc.comment("call->setArg(0, lval.as<x86::Gp>())"));
 		call->setArg(0, lval.as<x86::Gp>());
+	    }
 	    else
 		throw "TokenBSL::compile() lval unsupported register type";
 #if 1
@@ -1819,18 +1818,21 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	throw "rval is non-numeric";
 //  if ( !regdp.first ) { throw "<< missing register"; }
 
-    Operand &lval = left->compile(pgm, regdp);
-    if ( !regdp.second ) { throw "TokenBSL::compile() left->compile didn't set datatype"; }
-    _operand = regdp.second->newreg(pgm.cc, "TokenBSL._reg"); // use tmp for right side
-    regdp.first = &_operand;
-    DBG(cout << "TokenBSL::compile() right->compile()" << endl);
-    Operand &rval = right->compile(pgm, regdp);
-    DBG(pgm.cc.comment("TokenBSL::compile() pgm.cc.shl(lval, rval.r8())"));
-    pgm.safeshl(lval, rval);
-
-    DBG(cout << "TokenBSL::Compile() END" << endl);
-    regdp.first = &lval;
-    return *regdp.first;
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenBSL::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    pgm.safeshl(lval, rval);				 // type safe shift left
+    regdp.first = &lval;				 // restore regdp.first
+    DBG(cout << "TokenBSL::Compile() END" << endl);	 // (debugging message)
+    return *regdp.first;				 // return result operand
 }
 
 // bit shift right
@@ -1839,16 +1841,21 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenBSR::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-    Operand &lval = left->compile(pgm, regdp);
-    Operand &rval = right->compile(pgm, regdp);
-    DBG(pgm.cc.comment("TokenBSR::compile() pgm.safemov(_reg, lval)"));
-    _reg = pgm.cc.newGpq();
-    pgm.safemov(_reg, lval);
-    DBG(pgm.cc.comment("TokenBSR::compile() pgm.cc.shr(_reg, rreg.r8())"));
-    pgm.safeshr(_reg, rval);
-
-    return _reg;
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenBSR::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    pgm.safeshr(lval, rval);				 // type safe shift right
+    regdp.first = &lval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
 
 // bitwise or |
@@ -1857,16 +1864,21 @@ Operand &TokenBor::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenBor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-    Operand &lval = left->compile(pgm, regdp);
-    Operand &rval = right->compile(pgm, regdp);
-    DBG(pgm.cc.comment("TokenBor::compile() pgm.safemov(_reg, lval)"));
-    _reg = pgm.cc.newGpq();
-    pgm.safemov(_reg, lval);
-    DBG(pgm.cc.comment("TokenBor::compile() pgm.cc.or_(_reg, rval)"));
-    pgm.safeor(_reg, rval);
-
-    return _reg;
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenBor::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    pgm.safeor(lval, rval);				 // type safe binary or
+    regdp.first = &lval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
 
 // bitwise xor ^
@@ -1875,16 +1887,21 @@ Operand &TokenXor::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenXor::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-    Operand &lval = left->compile(pgm, regdp);
-    Operand &rval = right->compile(pgm, regdp);
-    DBG(pgm.cc.comment("TokenXor::compile() pgm.safemov(_reg, lval)"));
-    _reg = pgm.cc.newGpq();
-    pgm.safemov(_reg, lval);
-    DBG(pgm.cc.comment("TokenXor::compile() pgm.cc.xor_(_reg, rval)"));
-    pgm.safexor(_reg, rval);
-
-    return _reg;
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenXor::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    pgm.safexor(lval, rval);				 // type safe exclusive or
+    regdp.first = &lval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
 
 // bitwise and &
@@ -1893,18 +1910,22 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenBand::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-    Operand &lval = left->compile(pgm, regdp);
-    Operand &rval = right->compile(pgm, regdp);
-    DBG(pgm.cc.comment("TokenBand::compile() pgm.safemov(_reg, lval)"));
-    _reg = pgm.cc.newGpq();
-    pgm.safemov(_reg, lval);
-    DBG(pgm.cc.comment("TokenBand::compile() pgm.cc.and_(_reg, rval)"));
-    pgm.safeand(_reg, rval);
-
-    return _reg;
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenBand::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    pgm.safeand(lval, rval);				 // type safe binary and
+    regdp.first = &lval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
-
 
 // bitwise not ~
 Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
@@ -1912,13 +1933,26 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenBnot::Compile() TOP" << endl);
     if ( left )   { throw "Bitwise not has lval!"; }
     if ( !right ) { throw "~ missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-//  if ( !regdp.first ) { throw "~ missing register"; }
-    /*Operand &rval =*/ right->compile(pgm, regdp);
-    if ( !regdp.second ) { throw "TokenBnot::compile() right->compile didn't set datatype"; }
-    DBG(pgm.cc.comment("TokenBnot::compile() pgm.cc.not_(regdp.first)"));
-    pgm.safenot(*regdp.first);
-    return *regdp.first;
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
+    if ( !regdp.second ) { throw "TokenBnot::compile() right->compile cleared datatype"; }
+    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Gp tmp = pgm.cc.newGpq();
+	pgm.cc.cvtsd2si(tmp, rval.as<x86::Xmm>());
+	pgm.cc.not_(tmp);
+	pgm.cc.cvtsi2sd(rval.as<x86::Xmm>(), tmp);
+    }
+    else
+	pgm.cc.not_(rval.as<x86::Gp>());		 // not of rval
+    regdp.first = &rval;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1931,10 +1965,15 @@ Operand &TokenLnot::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenLnot::Compile() TOP" << endl);
     if ( left )   { throw "! unexpected lval!"; }
     if ( !right ) { throw "! missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
-//  if ( !regdp.first ) { throw "! missing register"; }
-    Operand &rval = right->compile(pgm, regdp);
-    if ( !regdp.second ) { throw "TokenLnot::compile() right->compile didn't set datatype"; }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
+    if ( !regdp.second ) { throw "TokenLnot::compile() right->compile cleared datatype"; }
     DBG(cout << "TokenLnot::compile() pgm.safetest(rval, rval)" << endl);
     DBG(pgm.cc.comment("TokenLnot::compile() pgm.safetest(rval, rval)"));
     pgm.safetest(rval, rval); // test rval is 0
@@ -1952,7 +1991,7 @@ Operand &TokenLor::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenLor::Compile() TOP" << endl);
     if ( !left )  { throw "|| missing lval operand"; }
     if ( !right ) { throw "|| missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     Label done = pgm.cc.newLabel();	// label to skip further tests
     x86::Gp &reg  = getreg(pgm);	// get clean register
     Operand &lval = left->compile(pgm, regdp);
@@ -1980,7 +2019,7 @@ Operand &TokenLand::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenLand::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     Label done = pgm.cc.newLabel();	// label to skip further tests
     x86::Gp &reg  = getreg(pgm);	// get clean register
     Operand &lval = left->compile(pgm, regdp);
@@ -2010,7 +2049,7 @@ Operand &TokenEquals::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenEquals::Compile() TOP" << endl);
     if ( !left )  { throw "= missing lval operand"; }
     if ( !right ) { throw "= missing rval operand"; } 
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     x86::Gp &reg  = getreg(pgm); // get clean register for test
     Operand &lval = left->compile(pgm, regdp); // get left operand
     regdp.first = NULL; // clear operand parameter
@@ -2029,7 +2068,7 @@ Operand &TokenNotEq::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenNotEq::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     x86::Gp &reg  = getreg(pgm); // get clean register for test
     Operand &lval = left->compile(pgm, regdp); // get left operand
     regdp.first = NULL; // clear operand parameter
@@ -2047,7 +2086,7 @@ Operand &TokenLT::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenLT::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     DBG(pgm.cc.comment("TokenLT::compile() reg = operand(pgm)"));
     x86::Gp &reg  = getreg(pgm); // get clean register for test
     DBG(pgm.cc.comment("TokenLT::compile() lval = left->compile(pgm, regdp)"));
@@ -2069,7 +2108,7 @@ Operand &TokenLE::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenLE::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     x86::Gp &reg  = getreg(pgm); // get clean register for test
     Operand &lval = left->compile(pgm, regdp);
     regdp.first = NULL; // clear operand parameter
@@ -2087,6 +2126,7 @@ Operand &TokenGT::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenGT::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     x86::Gp &reg  = getreg(pgm); // get clean register for test
     Operand &lval = left->compile(pgm, regdp);
     regdp.first = NULL; // clear operand parameter
@@ -2104,7 +2144,7 @@ Operand &TokenGE::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenGE::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     x86::Gp &reg  = getreg(pgm); // get clean register for test
     Operand &lval = left->compile(pgm, regdp);
     regdp.first = NULL; // clear operand parameter
@@ -2125,7 +2165,7 @@ Operand &Token3Way::compile(Program &pgm, regdefp_t &regdp)
     Label sign = pgm.cc.newLabel();	// label to negate _reg (make negative)
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     x86::Gp &reg  = getreg(pgm); // get clean register for test
     Operand &lval = left->compile(pgm, regdp);
     regdp.first = NULL; // clear operand parameter
@@ -2259,14 +2299,18 @@ Operand &TokenReal::compile(Program &pgm, regdefp_t &regdp)
 	regdp.second = _datatype;
 	DBG(pgm.cc.comment("TokenReal::compile() setting _datatype to double"));
     }
-    _operand = operand(pgm);
     if ( regdp.first )
     {
-	DBG(pgm.cc.comment("TokenReal::compile() calling safemov(*regdp.first, _operand)"));
-	pgm.safemov(*regdp.first, _operand);
+	_const = pgm.cc.newDoubleConst(ConstPool::kScopeLocal, _val);
+	DBG(pgm.cc.comment("TokenReal::compile() calling safemov(*regdp.first, _const)"));
+	DBG(cout << "TokenReal::compile() calling safemov(*regdp.first, _const[" << _val << "])" << endl);
+	pgm.safemov(*regdp.first, _const);
     }
     else
+    {
+	_operand = operand(pgm);
 	regdp.first = &_operand;
+    }
     return *regdp.first;
 }
 
