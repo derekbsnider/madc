@@ -273,8 +273,10 @@ public:
     // perform cc.mov with size casting
     void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &);
     void safemov(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Mem &);
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &);
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Mem &);
     void safemov(asmjit::x86::Xmm &, asmjit::Imm &);
     void safemov(asmjit::Operand &,  asmjit::Operand &);
     // only int and double are standard numeric token types
