@@ -394,20 +394,90 @@ void Program::safeshr(Operand &op1, Operand &op2)
 // perform cc.or_ with size casting
 void Program::safeor(Operand &op1, Operand &op2)
 {
+    if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	if ( !op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+	    throw "safeor() can only or Xmm with Xmm";
+	cc.orpd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	return;
+    }
+    if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupGp)) )
+	throw "safeor() right operand is not a Gp register or immediate value";
+    if ( op1.isMem() )
+    {
+	if ( op2.isImm() )
+	    cc.or_(op1.as<x86::Mem>(), op2.as<Imm>());
+	else
+	    cc.or_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
+    }
+    if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	throw "safeor() left operand is not a Gp register";
+    if ( op2.isImm() )
+    {
+	cc.comment("cc.or_(gp, imm)");
+	cc.or_(op1.as<x86::Gp>(), op2.as<Imm>());
+    }
+    else
+    {
+	cc.comment("cc.or_(gp, gp)");
+	cc.or_(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+    }
 }
 
 // perform cc.and_ with size casting
 void Program::safeand(Operand &op1, Operand &op2)
 {
+    if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	if ( !op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+	    throw "safeand() can only and Xmm with Xmm";
+	cc.andpd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	return;
+    }
+    if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupGp)) )
+	throw "safeand() right operand is not a Gp register and immediate value";
+    if ( op1.isMem() )
+    {
+	if ( op2.isImm() )
+	    cc.and_(op1.as<x86::Mem>(), op2.as<Imm>());
+	else
+	    cc.and_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
+    }
+    if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	throw "safeand() left operand is not a Gp register";
+    if ( op2.isImm() )
+    {
+	cc.comment("cc.and_(gp, imm)");
+	cc.and_(op1.as<x86::Gp>(), op2.as<Imm>());
+    }
+    else
+    {
+	cc.comment("cc.and_(gp, gp)");
+	cc.and_(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+    }
 }
 
 // perform cc.xor_ with size casting
 void Program::safexor(Operand &op1, Operand &op2)
 {
-    if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safexor() left operand is not a Gp register";
+    if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	if ( !op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+	    throw "safexor() can only xor Xmm with Xmm";
+	cc.xorpd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	return;
+    }
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupGp)) )
 	throw "safexor() right operand is not a Gp register or immediate value";
+    if ( op1.isMem() )
+    {
+	if ( op2.isImm() )
+	    cc.xor_(op1.as<x86::Mem>(), op2.as<Imm>());
+	else
+	    cc.xor_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
+    }
+    if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	throw "safexor() left operand is not a Gp register";
     if ( op2.isImm() )
     {
 	cc.comment("cc.xor_(gp, imm)");
@@ -423,6 +493,21 @@ void Program::safexor(Operand &op1, Operand &op2)
 // perform cc.not_ with size casting
 void Program::safenot(Operand &op)
 {
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Gp tmp = cc.newGpq();
+	cc.cvtsd2si(tmp, op.as<x86::Xmm>());
+	cc.not_(tmp);
+	cc.cvtsi2sd(op.as<x86::Xmm>(), tmp);
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.not_(op.as<x86::Gp>());
+    else
+    if ( op.isMem() )
+	cc.not_(op.as<x86::Mem>());
+    else
+	throw "safenot() operand not register";
 }
 
 void Program::saferet(Operand &op)
