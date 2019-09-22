@@ -639,9 +639,21 @@ void Program::safesetle(Operand &op)
 
 void Program::safesetne(Operand &op)
 {
-    if ( !op.isReg() || !op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safesetne() operand is not a Gp register";
-    cc.setne(op.as<x86::Gp>().r8());
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Gp tmp = cc.newGpq();
+	DBG(cc.comment("cc.xor_(tmp, tmp)"));
+	cc.xor_(tmp, tmp);
+	DBG(cc.comment("cc.setne(tmp.r8())"));
+	cc.setne(tmp.r8());
+	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
+	cc.cvtsi2sd(op.as<x86::Xmm>(), tmp);
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.setne(op.as<x86::Gp>().r8());
+    else
+	throw "safesetne() operand not supported";
 }
 
 
