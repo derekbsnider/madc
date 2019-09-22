@@ -409,6 +409,7 @@ void Program::safeor(Operand &op1, Operand &op2)
 	    cc.or_(op1.as<x86::Mem>(), op2.as<Imm>());
 	else
 	    cc.or_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
+	return;
     }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	throw "safeor() left operand is not a Gp register";
@@ -442,6 +443,7 @@ void Program::safeand(Operand &op1, Operand &op2)
 	    cc.and_(op1.as<x86::Mem>(), op2.as<Imm>());
 	else
 	    cc.and_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
+	return;
     }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	throw "safeand() left operand is not a Gp register";
@@ -475,6 +477,7 @@ void Program::safexor(Operand &op1, Operand &op2)
 	    cc.xor_(op1.as<x86::Mem>(), op2.as<Imm>());
 	else
 	    cc.xor_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
+	return;
     }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	throw "safexor() left operand is not a Gp register";
@@ -535,16 +538,68 @@ void Program::saferet(Operand &op)
 }
 
 
+// tests an operand for being equal to zero
+void Program::testzero(Operand &op)
+{
+    if ( op.isMem() )
+	cc.cmp(op.as<x86::Mem>(), 0);
+    else
+    if ( op.isReg() )
+    {
+	if ( op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+	{
+	    x86::Xmm tmp = cc.newXmm("testzero_tmp");
+	    cc.xorpd(tmp, tmp);
+	    cc.ucomisd(op.as<x86::Xmm>(), tmp);
+	}
+	else
+	if ( op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	    cc.test(op.as<x86::Gp>(), op.as<x86::Gp>());
+	else
+	    throw "testzero(op) unsupported register";
+    }
+    else
+	throw "testzero(op) invalid operand";
+}
 
 // perform a test on two operands
 void Program::safetest(Operand &op1, Operand &op2)
 {
     DBG(cout << "Program::safetest(" << op1.opType() << ", " << op2.opType() << ')' << endl);
+    if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+	{
+	    DBG(cc.comment("cc.vtestpd(Xmm, Xmm)"));
+	    cc.vtestpd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	}
+	else
+	if ( op2.isMem() )
+	{
+	    DBG(cc.comment("cc.vtestpd(Xmm, Mem)"));
+	    cc.vtestpd(op1.as<x86::Xmm>(), op2.as<x86::Mem>());
+	}
+	else
+	    throw "safetest(Xmm, op2) is not compatible type (must be Xmm or Mem)";
+	return;
+    }
+    if ( !op1.isReg() )
+	throw "safetest(op1, op2) left operand is not a register";
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safetest(op1, op2) left operand is not a Gp register";
-    if ( !op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safetest(op1, op2) right operand is not a Gp register";
-    cc.test(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+	throw "safetest(op1, op2) left operand is not a supported register";
+    if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
+	DBG(cc.comment("cc.test(Gp, Gp)"));
+	cc.test(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+    }
+    else
+    if ( op2.isImm() )
+    {
+	DBG(cc.comment("cc.test(Gp, Imm)"));
+	cc.test(op1.as<x86::Gp>(), op2.as<Imm>());
+    }
+    else
+	throw "safetest(Gp, op2) is not compatible type (must be Gp or Imm)";
 }
 
 void Program::safesete(Operand &op)
@@ -610,7 +665,8 @@ void Program::safecmp(x86::Xmm &r1, x86::Gp &r2)
 }
 void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2)
 {
-   cc.cmpsd(r1, r2, 0);
+   cc.ucomisd(r1, r2);
+//   cc.cmpsd(r1, r2, 0);
 }
 
 void Program::safecmp(Operand &op1, Operand &op2)
