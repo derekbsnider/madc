@@ -134,6 +134,7 @@ bool Program::_compiler_finalize()
 	std::cerr << "Code generation failed!" << std::endl;
 	switch(err)
 	{
+	    case kErrorNoCodeGenerated: std::cerr << "No code generated" << std::endl; break;
 	    case kErrorInvalidSection: std::cerr << "Invalid section" << std::endl; break;
 	    case kErrorTooManySections: std::cerr << "Too many sections" << std::endl; break;
 	    case kErrorInvalidSectionName: std::cerr << "Invalid section name" << std::endl; break;
@@ -910,135 +911,6 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     return *regdp.first;
 }
 
-#if 0
-// assignment left = right
-Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(cout << "TokenAssign::compile() TOP" << endl);
-    TokenVar *tvl; //, *tvr;
-//  TokenCallFunc *tcr;
-    TokenDot *tdot = NULL;
-    x86::Gp *regp;
-    DataDef *ltype;
-
-    if ( !left )
-	throw "Assignment with no lval";
-    if ( !right )
-	throw "Assignment with no rval";
-
-    DBG(pgm.cc.comment("TokenAssign start"));
-
-    if ( left->type() == TokenType::ttVariable )
-    {
-	tvl = dynamic_cast<TokenVar *>(left);
-	ltype = tvl->var.type;
-	DBG(cout << "TokenAssign::compile() assignment to " << tvl->var.name << endl);
-	DBG(pgm.cc.comment("TokenAssign::compile() assignment to:"));
-	DBG(pgm.cc.comment(tvl->var.name.c_str()));
-	DBG(pgm.cc.comment("TokenAssign::compile() regp = tvl->getreg(pgm)"));
-	regp = &tvl->getreg(pgm);
-    }
-#if 1
-    else
-    if ( left->type() == TokenType::ttMember )
-    {
-	TokenMember *tvm = dynamic_cast<TokenMember *>(left);
-	ltype = tvm->var.type;
-	DBG(cout << "TokenAssign::compile() assignment to " << tvm->object.name << '.' << tvm->var.name << endl);
-	DBG(pgm.cc.comment("TokenAssign::compile() assignment to:"));
-	DBG(pgm.cc.comment(tvm->var.name.c_str()));
-	DBG(pgm.cc.comment("TokenAssign::compile() regp = tvl->getreg(pgm)"));
-	tvl = dynamic_cast<TokenVar *>(tvm);
-	regp = &tvm->getreg(pgm);
-	tdot = (TokenDot *)1;
-    }
-#endif
-#if 1
-    else
-    if ( left->id() == TokenID::tkDot && ((TokenDot *)left)->left
-    &&  ((TokenDot *)left)->left->type() == TokenType::ttVariable
-    &&  ((TokenDot *)left)->right && ((TokenDot *)left)->right->type() == TokenType::ttIdentifier )
-    {
-	tdot = (TokenDot *)left;
-	TokenIdent *tidn = ((TokenIdent *)tdot->right);
-	tvl = dynamic_cast<TokenVar *>(tdot->left);
-	if ( !tvl->var.type->is_struct() && !tvl->var.type->is_object() )
-	    throw "Expecting class or structure";
-	if ( !(ltype=((DataDefSTRUCT *)tvl->var.type)->m_type(tidn->str)) )
-	    throw "Unidentifier member";
-	ssize_t ofs = ((DataDefSTRUCT *)tvl->var.type)->m_offset(tidn->str);
-	x86::Gp &lval = tvl->getreg(pgm);
-	x86::Mem m = x86::ptr(lval, ofs);
-	// _reg points to our data for this member
-	_reg = pgm.cc.newIntPtr(tvl->var.name.c_str());
-	pgm.cc.lea(_reg, m);
-	regp = &_reg;
-//	regp = &tdot->compile(pgm, regdp);
-    }
-#endif
-    else
-    {
-	throw "Assignment on a non-variable lval";
-    }
-
-    regdp.second = ltype; // set type
-
-    // get left register
-    x86::Gp &lreg = *regp;
-    regdp.first = &lreg;
-    /* x86::Gp &rreg =*/ right->compile(pgm, regdp);
-
-    if ( !regdp.second )
-	throw "TokenAssign: no rval type";
-    if (  ltype->is_numeric() && !regdp.second->is_numeric() )
-	throw "Expecting rval to be numeric";
-    if ( !ltype->is_integer() &&  regdp.second->is_integer() )
-	throw "Not expecting rval to be numeric";
-    if ( ltype->is_string() && !regdp.second->is_string() )
-	throw "Expecting rval to be string";
-
-    if ( ltype->is_integer() )
-    {
-	DBG(cout << "TokenAssign::compile() integer to integer" << endl);
-	DBG(pgm.cc.comment("TokenAssign::compile() integer to integer"));
-	tvl->var.modified();
-	tvl->putreg(pgm);
-    }
-    else
-    if ( ltype->is_string() )
-    {
-	DBG(cout << "TokenAssign::compile() string to string" << endl);
-/*
-	DBG(cout << "TokenAssign::compile() will call " << tvl->var.name << '('
-	    << (tvl->var.data ? ((string *)(tvl->var.data))->c_str() : "") << ").assign[" << (uint64_t)string_assign << "](" << tvr->var.name
-	    << '(' << (tvr->var.data ? ((string *)(tvr->var.data))->c_str() : "") << ')' << endl);
-*/
-/*	DBG(pgm.cc.comment("string_assign"));
-	FuncCallNode* call = pgm.cc.call(imm(string_assign), FuncSignatureT<void, const char*, const char *>(CallConv::kIdHost));
-	call->setArg(0, lreg);
-	call->setArg(1, rreg);
-*/
-	tvl->var.modified();
-	tvl->putreg(pgm);
-    }
-    else
-	throw "Unsupported assignment";
-
-    DBG(cout << "TokenAssign::compile() END" << endl);
-
-    return lreg;
-}
-#endif
-
-#if 0
-// base defaults to 8bit register
-x86::Gp &TokenBase::getreg(Program &pgm)
-{
-    _reg = pgm.cc.newGpb();
-    pgm.cc.mov(_reg, _token);
-    return _reg;
-}
-#endif
 
 // operator gets 64bit set to 0
 x86::Gp &TokenOperator::getreg(Program &pgm)
@@ -1073,21 +945,6 @@ Operand &TokenBase::operand(Program &pgm)
     return _operand;
 }
 
-#if 0
-// integer gets 64bit
-x86::Gp &TokenInt::getreg(Program &pgm)
-{
-    if ( _reg.type() != BaseReg::kTypeGp64 )
-    {
-	DBG(cout << "TokenInt::getreg() _reg.type() = " << (int)_reg.type() << " != " << (int)BaseReg::kTypeGp64 << endl);
-	DBG(pgm.cc.comment("TokenInt::getreg() type() = 0, _reg = newGpq()"));
-	_reg = pgm.cc.newGpq();
-    }
-    DBG(pgm.cc.comment("TokenInt::getreg() mov(_reg, _token)"));
-    pgm.cc.mov(_reg, _token);
-    return _reg;
-}
-#endif
 
 Operand &TokenInt::operand(Program &pgm)
 {
@@ -1104,14 +961,6 @@ Operand &TokenReal::operand(Program &pgm)
     pgm.cc.movsd(_operand.as<x86::Xmm>(), _const); //x86::qword_ptr((uintptr_t)&d_testval)); // x86::qword_ptr((uintptr_t)&_val));
     return _operand;
 }
-
-#if 0
-x86::Gp &TokenVar::getreg(Program &pgm)
-{
-    DBG(pgm.cc.comment("TokenVar::getreg()"));
-    return pgm.tkFunction->voperand(pgm, &var);
-}
-#endif
 
 // variable needs special handling
 Operand &TokenVar::operand(Program &pgm)
@@ -1737,9 +1586,11 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 		case DataType::dtUINT32:call = pgm.cc.call(imm(streamout_numeric<uint32_t>), FuncSignatureT<void, void *, uint32_t>(CallConv::kIdHost));break;
 		case DataType::dtUINT64:call = pgm.cc.call(imm(streamout_numeric<uint64_t>), FuncSignatureT<void, void *, uint64_t>(CallConv::kIdHost));break;
 		case DataType::dtFLOAT: call = pgm.cc.call(imm(streamout_numeric<float>),  FuncSignatureT<void, void *, float>(CallConv::kIdHost));	break;
-		case DataType::dtDOUBLE:call = pgm.cc.call(imm(streamout_numeric<double>), FuncSignatureT<void, void *, double>(CallConv::kIdHost));	break;
+		case DataType::dtDOUBLE: DBG(pgm.cc.comment("pgm.cc.call(imm(streamout_numeric<double>), FuncSignatureT<void, void *, double>(CallConv::kIdHost))"));
+		call = pgm.cc.call(imm(streamout_numeric<double>), FuncSignatureT<void, void *, double>(CallConv::kIdHost));	break;
 		default: throw "TokenBSL::compile() unsupported numeric type";
 	    }
+	    DBG(pgm.cc.comment("about to setArg(0)"));
 	    if ( lval.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
 	    {
 		DBG(pgm.cc.comment("call->setArg(0, lval.as<x86::Xmm>())"));
@@ -1954,7 +1805,7 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
 // logical not !
 Operand &TokenLnot::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenLnot::Compile() TOP" << endl);
+    DBG(cout << "TokenLnot::Compile(" << (regdp.first ? "first" : "") << ") TOP" << endl);
     if ( left )   { throw "! unexpected lval!"; }
     if ( !right ) { throw "! missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
@@ -1968,11 +1819,39 @@ Operand &TokenLnot::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second ) { throw "TokenLnot::compile() right->compile cleared datatype"; }
     DBG(cout << "TokenLnot::compile() pgm.safetest(rval, rval)" << endl);
     DBG(pgm.cc.comment("TokenLnot::compile() pgm.safetest(rval, rval)"));
-    pgm.safetest(rval, rval); // test rval is 0
+    pgm.testzero(rval);					 // test rval is 0
     DBG(pgm.cc.comment("TokenLnot::compile() pgm.cc.sete(regdp.first)"));
     pgm.safesete(*regdp.first);
     return *regdp.first;
 }
+
+#if 0
+// logical or ||
+//
+// Pseudocode: if (lval) return 1;  if (rval) return 1;  return 0;
+//
+Operand &TokenLor::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(cout << "TokenLor::Compile(" << (regdp.first ? "first" : "") << ") TOP" << endl);
+    if ( !left )  { throw "|| missing lval operand"; }
+    if ( !right ) { throw "|| missing rval operand"; }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    Label done = pgm.cc.newLabel();			 // label to skip further tests
+    _operand = pgm.cc.newGpb();				 // register for test
+    x86::Gp &reg  = _operand.as<x86::Gp>();		 // typecast as reference
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side as lval
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
+    pgm.safetest(lval, lval);				 // test lval is 0
+    pgm.cc.setne(reg.r8()); 				 // if lval != 0, ret = 1
+    pgm.cc.jne(done);					 // if lval != 0, jump to done
+    pgm.safetest(rval, rval);				 // test rval is 0
+    pgm.cc.setne(reg.r8());				 // if rval != 0, ret = 1
+    pgm.cc.bind(done);					 // done is here
+    return _operand;					 // return result operand
+}
+#else
 
 // logical or ||
 //
@@ -1981,26 +1860,58 @@ Operand &TokenLnot::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenLor::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenLor::Compile() TOP" << endl);
+    DBG(pgm.cc.comment("TokenLor::compile() TOP"));
     if ( !left )  { throw "|| missing lval operand"; }
     if ( !right ) { throw "|| missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    Label done = pgm.cc.newLabel();	// label to skip further tests
-    x86::Gp &reg  = getreg(pgm);	// get clean register
-    Operand &lval = left->compile(pgm, regdp);
-    Operand &rval = right->compile(pgm, regdp);
-    DBG(cout << "TokenLor::compile() pgm.safetest(lval, lval)" << endl);
-    DBG(pgm.cc.comment("TokenLor::compile() pgm.safetest(lval, lval)"));
-    pgm.safetest(lval, lval);		// test lval is 0
-    DBG(pgm.cc.comment("TokenLor::compile() pgm.cc.sete(_reg)"));
-    pgm.cc.setne(reg.r8()); 		// if lval != 0, ret = 1
-    pgm.cc.jne(done);			// if lval != 0, jump to done
-    DBG(pgm.cc.comment("TokenLor::compile() pgm.safetest(rval, rval)"));
-    pgm.safetest(rval, rval);		// test rval is 0
-    DBG(pgm.cc.comment("TokenLor::compile() pgm.cc.sete(_reg)"));
-    pgm.cc.setne(reg.r8());		// if rval != 0, ret = 1
-    pgm.cc.bind(done);			// done is here
-    return reg;				// return register
+    Label done = pgm.cc.newLabel();			 // label to skip further tests
+
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	DBG(pgm.cc.comment("TokenLor _operand = newreg"));
+	DBG(cout << "TokenLor _operand = newreg" << endl);
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    else
+    {
+	DBG(pgm.cc.comment("TokenLor _operand = newGpq"));
+	DBG(cout << "TokenLor _operand = newGpq" << endl);
+	_operand = pgm.cc.newGpq();
+	pgm.cc.xor_(_operand.as<x86::Gp>(), _operand.as<x86::Gp>());
+    }
+
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "TokenBor::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    x86::Gp _tst;
+    if ( !_operand.isReg() || !_operand.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
+	_tst = pgm.cc.newGpq();
+	DBG(pgm.cc.comment("zeroing _tst"));
+	pgm.cc.xor_(_tst, _tst);
+    }
+    x86::Gp &rtst = (_operand.isReg() && _operand.as<BaseReg>().isGroup(BaseReg::kGroupGp))
+		 ? _operand.as<x86::Gp>() : _tst;
+
+    pgm.testzero(lval);					 // test lval is 0
+    pgm.cc.setne(rtst.r8()); //  pgm.safesetne(lval);	 // if lval != 0, ret = 1
+    pgm.cc.jne(done);					 // if lval != 0, jump to done
+    pgm.testzero(rval);					 // test rval is 0
+    pgm.cc.setne(rtst.r8()); //  pgm.safesetne(lval);	 // if rval != 0, ret = 1
+    pgm.cc.bind(done);					 // done is here
+    if ( lval.isReg() && lval.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	DBG(pgm.cc.comment("converting rtst into lval Xmm <-- rtst"));
+	pgm.cc.cvtsi2sd(lval.as<x86::Xmm>(), rtst.r64());
+    }
+    regdp.first = &lval;
+    return *regdp.first;				 // return result operand
 }
+#endif
 
 // logical and &&
 //
@@ -2012,21 +1923,24 @@ Operand &TokenLand::compile(Program &pgm, regdefp_t &regdp)
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    Label done = pgm.cc.newLabel();	// label to skip further tests
-    x86::Gp &reg  = getreg(pgm);	// get clean register
-    Operand &lval = left->compile(pgm, regdp);
-    Operand &rval = right->compile(pgm, regdp);
+    Label done = pgm.cc.newLabel();			 // label to skip further tests
+    _operand = pgm.cc.newGpb();				 // register for test
+    x86::Gp &reg  = _operand.as<x86::Gp>();		 // typecast as reference
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side as lval
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side as ref=rval
     DBG(pgm.cc.comment("TokenLand::compile() pgm.safetest(lval, lval)"));
-    pgm.safetest(lval, lval);		// test lval is 0
+    pgm.safetest(lval, lval);				 // test lval is 0
     DBG(pgm.cc.comment("TokenLand::compile() pgm.cc.sete(_reg)"));
-    pgm.cc.setne(reg.r8()); 		// if lval != 0, ret = 1
-    pgm.cc.je(done);			// if lval == 0, jump to done
+    pgm.cc.setne(reg.r8()); 				 // if lval != 0, ret = 1
+    pgm.cc.je(done);					 // if lval == 0, jump to done
     DBG(pgm.cc.comment("TokenLand::compile() pgm.safetest(rval, rval)"));
-    pgm.safetest(rval, rval);		// test rval is 0
+    pgm.safetest(rval, rval);				 // test rval is 0
     DBG(pgm.cc.comment("TokenLand::compile() pgm.cc.sete(_reg)"));
-    pgm.cc.setne(reg.r8());		// if rval != 0, ret = 1
-    pgm.cc.bind(done);			// done is here
-    return reg;				// return register
+    pgm.cc.setne(reg.r8());				 // if rval != 0, ret = 1
+    pgm.cc.bind(done);					 // done is here
+    return _operand;					 // return result operand
 }
 
 
