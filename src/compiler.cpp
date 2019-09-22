@@ -2404,7 +2404,7 @@ Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
     {
 	DBG(cout << "TokenIF::compile() pgm.safetest(reg, reg)" << endl);
 	DBG(pgm.cc.comment("TokenIF::compile() pgm.safetest(reg, reg)"));
-	pgm.safetest(reg, reg);			// compare to zero
+	pgm.testzero(reg); //pgm.safetest(reg, reg);			// compare to zero
 	DBG(pgm.cc.comment("TokenIF::compile() pgm.cc.je(else/tail)"));
 	pgm.cc.je(elsestmt ? elsedo : iftail);	// jump appropriately
 

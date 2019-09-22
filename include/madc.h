@@ -327,6 +327,9 @@ public:
     // perform cc.test with size casting
     void safetest(asmjit::Operand &, asmjit::Operand &);
 
+    // tests if operand is zero
+    void testzero(asmjit::Operand &);
+
     // perform cc.setCC with size casting
     void safesete(asmjit::Operand &);
     void safesetg(asmjit::Operand &);
