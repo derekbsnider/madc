@@ -1942,15 +1942,7 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     }
     Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
     if ( !regdp.second ) { throw "TokenBnot::compile() right->compile cleared datatype"; }
-    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-    {
-	x86::Gp tmp = pgm.cc.newGpq();
-	pgm.cc.cvtsd2si(tmp, rval.as<x86::Xmm>());
-	pgm.cc.not_(tmp);
-	pgm.cc.cvtsi2sd(rval.as<x86::Xmm>(), tmp);
-    }
-    else
-	pgm.cc.not_(rval.as<x86::Gp>());		 // not of rval
+    pgm.safenot(rval);					 // type safe bitwise not
     regdp.first = &rval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
