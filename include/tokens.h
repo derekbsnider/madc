@@ -87,6 +87,7 @@ public:
     virtual TokenType  type()  const { return TokenType::ttBase; }
     virtual TokenID    id()    const { return TokenID::tkBase; }
     virtual DataType datatype() const { return _datatype ? _datatype->type() : DataType::dtVOID; }
+    virtual DataDef *datadef()  const { return _datatype ? _datatype : &ddVOID; }
     virtual TokenAssoc associativity() const { return TokenAssoc::taNone; }
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);

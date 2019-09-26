@@ -33,7 +33,7 @@ using namespace asmjit;
 // simple for now, should have different versions for signed vs unsigned
 // small to big vs big to small, etc, as we need to ensure that moving
 // small to big doesn't leave unwanted data in the other part of the register
-void Program::safemov(x86::Gp &r1, x86::Gp &r2)
+void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Gp, Gp)"));
     if ( r1.size() > r2.size() )
@@ -52,7 +52,7 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2)
     }
 }
 
-void Program::safemov(x86::Gp &r1, x86::Xmm &r2)
+void Program::safemov(x86::Gp &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     switch(r1.type())
     {
@@ -63,60 +63,95 @@ void Program::safemov(x86::Gp &r1, x86::Xmm &r2)
 	default: throw "Program::safemov() cannot match register types";
     }
 }
-void Program::safemov(x86::Xmm &r1, x86::Gp &r2)
+void Program::safemov(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
-    cc.cvtsi2sd(r1, r2);
+    if ( d1 && d1->size == sizeof(float) )
+	cc.cvtsi2ss(r1, r2);
+    else
+	cc.cvtsi2sd(r1, r2);
 }
-void Program::safemov(x86::Xmm &r1, x86::Xmm &r2)
+void Program::safemov(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
-   DBG(cc.comment("safemov(Xmm, Xmm)"));
-   cc.movsd(r1, r2);
+    DBG(cc.comment("safemov(Xmm, Xmm)"));
+    if ( d1 && d1->size == sizeof(float) )
+    {
+	if ( d2 && d2->size == sizeof(float) )
+	    cc.movss(r1, r2);
+	else
+	    cc.cvtsd2ss(r1, r2);
+    }
+    else
+    {
+	if ( d2 && d2->size == sizeof(float) )
+	    cc.cvtss2sd(r1, r2);
+	else
+	    cc.movsd(r1, r2);
+    }
 }
-void Program::safemov(x86::Xmm &r1, x86::Mem &r2)
+void Program::safemov(x86::Xmm &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
 {
-   DBG(cc.comment("safemov(Xmm, Mem)"));
-   cc.movsd(r1, r2);
+    DBG(cc.comment("safemov(Xmm, Mem)"));
+    if ( d1 && d1->size == sizeof(float) )
+    {
+	if ( d2 && d2->size == sizeof(float) )
+	    cc.movss(r1, r2);
+	else
+	    cc.cvtsd2ss(r1, r2);
+    }
+    else
+    {
+	if ( d2 && d2->size == sizeof(float) )
+	    cc.cvtss2sd(r1, r2);
+	else
+	    cc.movsd(r1, r2);
+    }
 }
-void Program::safemov(x86::Gp &r1, x86::Mem &r2)
+void Program::safemov(x86::Gp &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
 {
-   DBG(cc.comment("safemov(Gp, Mem)"));
-   cc.mov(r1, r2);
+    DBG(cc.comment("safemov(Gp, Mem)"));
+    cc.mov(r1, r2);
 }
-void Program::safemov(x86::Xmm &r1, Imm &r2)
+void Program::safemov(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
 {
-   throw "safemov() unable to move imm to xmm";
+    throw "safemov() unable to move imm to xmm";
 }
 
-void Program::safemov(Operand &op1, int i)
+void Program::safemov(Operand &op1, int i, DataDef *d1, DataDef *d2)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
 	x86::Mem _const = cc.newDoubleConst(ConstPool::kScopeLocal, (double)i);
 	DBG(cc.comment("safemov(Xmm, ConstPool)"));
-	cc.movsd(op1.as<x86::Xmm>(), _const);
+	if ( d1 && d1->size == sizeof(float) )
+	    cc.cvtsd2ss(op1.as<x86::Xmm>(), _const);
+	else
+	    cc.movsd(op1.as<x86::Xmm>(), _const);
 	return;
     }
     DBG(cc.comment("safemov(Operand, int)"));
     Operand op2 = imm(i);
-    safemov(op1, op2);
+    safemov(op1, op2, d1, d2);
 }
 
-void Program::safemov(Operand &op1, double d)
+void Program::safemov(Operand &op1, double d, DataDef *d1, DataDef *d2)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
 	x86::Mem _const = cc.newDoubleConst(ConstPool::kScopeLocal, d);
 	DBG(cc.comment("safemov(Xmm, ConstPool)"));
-	cc.movsd(op1.as<x86::Xmm>(), _const);
+	if ( d1 && d1->size == sizeof(float) )
+	    cc.cvtsd2ss(op1.as<x86::Xmm>(), _const);
+	else
+	    cc.movsd(op1.as<x86::Xmm>(), _const);
 	return;
     }
     DBG(cc.comment("safemov(Operand, (int)double)"));
     Operand op2 = imm((int)d);
-    safemov(op1, op2);
+    safemov(op1, op2, d1, d2);
 }
 
 // should handle all necessary conversions...
-void Program::safemov(Operand &op1, Operand &op2)
+void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Operand, Operand)"));
     if ( !op1.isReg() ) { throw "safemov() lval is not a register"; }
@@ -125,16 +160,16 @@ void Program::safemov(Operand &op1, Operand &op2)
     {
 	DBG(cc.comment("safemov(Operand=Xmm, Operand)"));
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), d1, d2);
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Gp>());
+	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Gp>(), d1, d2);
 	else
 	if ( op2.isMem() )
-	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Mem>());
+	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Mem>(), d1, d2);
 	else
 	if ( op2.isImm() )
-	    safemov(op1.as<x86::Xmm>(), op2.as<Imm>());
+	    safemov(op1.as<x86::Xmm>(), op2.as<Imm>(), d1, d2);
 	else
 	    throw "safemov() rval is unsupported";
     }
@@ -143,10 +178,10 @@ void Program::safemov(Operand &op1, Operand &op2)
     {
 	DBG(cc.comment("safemov(Operand=Gp, Operand)"));
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-	    safemov(op1.as<x86::Gp>(), op2.as<x86::Xmm>());
+	    safemov(op1.as<x86::Gp>(), op2.as<x86::Xmm>(), d1, d2);
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	    safemov(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+	    safemov(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
 	if ( op2.isImm() )
 	    cc.mov(op1.as<x86::Gp>(), op2.as<Imm>());

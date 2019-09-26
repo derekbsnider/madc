@@ -1612,7 +1612,8 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 		case DataType::dtUINT24:call = pgm.cc.call(imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConv::kIdHost));break;
 		case DataType::dtUINT32:call = pgm.cc.call(imm(streamout_numeric<uint32_t>), FuncSignatureT<void, void *, uint32_t>(CallConv::kIdHost));break;
 		case DataType::dtUINT64:call = pgm.cc.call(imm(streamout_numeric<uint64_t>), FuncSignatureT<void, void *, uint64_t>(CallConv::kIdHost));break;
-		case DataType::dtFLOAT: call = pgm.cc.call(imm(streamout_numeric<float>),  FuncSignatureT<void, void *, float>(CallConv::kIdHost));	break;
+		case DataType::dtFLOAT: DBG(pgm.cc.comment("pgm.cc.call(imm(streamout_numeric<float>),  FuncSignatureT<void, void *, float>(CallConv::kIdHost))"));
+		call = pgm.cc.call(imm(streamout_numeric<float>),  FuncSignatureT<void, void *, float>(CallConv::kIdHost));	break;
 		case DataType::dtDOUBLE: DBG(pgm.cc.comment("pgm.cc.call(imm(streamout_numeric<double>), FuncSignatureT<void, void *, double>(CallConv::kIdHost))"));
 		call = pgm.cc.call(imm(streamout_numeric<double>), FuncSignatureT<void, void *, double>(CallConv::kIdHost));	break;
 		default: throw "TokenBSL::compile() unsupported numeric type";
@@ -1632,11 +1633,15 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    }
 	    else
 		throw "TokenBSL::compile() lval unsupported register type";
-#if 1
+
 	    if ( regdp.first->isReg() )
 	    {
 		if ( regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+		{
+		    DBG(cout << "call->setArg(1, regdp.first->as<x86::Xmm>()) size=" << regdp.first->size() << " regdp.second->size=" << regdp.second->size << " type " << regdp.second->name << endl);
+		    DBG(pgm.cc.comment("call->setArg(1, regdp.first->as<x86::Xmm>())"));
 		    call->setArg(1, regdp.first->as<x86::Xmm>());
+		}
 		else
 		if ( regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 		    call->setArg(1, regdp.first->as<x86::Gp>());
@@ -1646,12 +1651,6 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    else
 	    if ( regdp.first->isImm() )
 		call->setArg(1, regdp.first->as<Imm>());
-#else
-	    if ( regdp.second->is_real() && regdp.xmm )
-		call->setArg(1, *regdp.xmm);
-	    else
-		call->setArg(1, rval);
-#endif
 	}
 	else
 	if ( regdp.second->is_string() )
@@ -2251,7 +2250,7 @@ Operand &TokenReal::compile(Program &pgm, regdefp_t &regdp)
 	_const = pgm.cc.newDoubleConst(ConstPool::kScopeLocal, _val);
 	DBG(pgm.cc.comment("TokenReal::compile() calling safemov(*regdp.first, _const)"));
 	DBG(cout << "TokenReal::compile() calling safemov(*regdp.first, _const[" << _val << "])" << endl);
-	pgm.safemov(*regdp.first, _const);
+	pgm.safemov(*regdp.first, _const, regdp.second);
     }
     else
     {

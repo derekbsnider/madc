@@ -272,17 +272,17 @@ public:
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
 
     // perform cc.mov with size casting
-    void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    void safemov(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    void safemov(asmjit::x86::Gp &,  asmjit::x86::Mem &);
-    void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &);
-    void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    void safemov(asmjit::x86::Xmm &, asmjit::x86::Mem &);
-    void safemov(asmjit::x86::Xmm &, asmjit::Imm &);
-    void safemov(asmjit::Operand &,  asmjit::Operand &);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Mem &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Mem &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
+    void safemov(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
     // only int and double are standard numeric token types
-    void safemov(asmjit::Operand &,  int);
-    void safemov(asmjit::Operand &,  double);
+    void safemov(asmjit::Operand &,  int, DataDef *d1=NULL, DataDef *d2=NULL);
+    void safemov(asmjit::Operand &,  double, DataDef *d1=NULL, DataDef *d2=NULL);
 
     // perform cc.add with size casting
     void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &);
