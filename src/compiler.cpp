@@ -2384,7 +2384,7 @@ Operand &TokenDO::compile(Program &pgm, regdefp_t &regdp)
     statement->compile(pgm, regdp); 	// execute loop's statement(s)
     Operand &reg = condition->compile(pgm, regdp); // get condition result
     DBG(pgm.cc.comment("TokenDO::compile() pgm.safetest(reg, reg)"));
-    pgm.safetest(reg, reg);		// compare to zero
+    pgm.testzero(reg);			// compare to zero
     pgm.cc.je(dotail);			// jump to end
 
     pgm.cc.bind(dodo);			// bind action label
@@ -2439,7 +2439,7 @@ Operand &TokenFOR::compile(Program &pgm, regdefp_t &regdp)
     pgm.cc.bind(fortop);			// label the top of the loop
     Operand &reg = condition->compile(pgm, regdp); // get condition result
     DBG(pgm.cc.comment("TokenFOR::compile() pgm.safetest(reg, reg)"));
-    pgm.safetest(reg, reg);			// compare to zero
+    pgm.testzero(reg);				// compare to zero
     pgm.cc.je(fortail);				// jump to end
 
     DBG(cout << "TokenFOR::compile() calling statement->compile(pgm, regdp)" << endl);
