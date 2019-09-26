@@ -118,6 +118,8 @@ void Program::_compiler_init()
 //  this seems to break things at times
 //  code.addEmitterOptions(BaseEmitter::kOptionStrictValidation);
     code.attach(&cc);
+    // constant initialization
+    __const_double_1 = cc.newDoubleConst(ConstPool::kScopeGlobal, 1.0);
 }
 
 bool Program::_compiler_finalize()
@@ -2409,7 +2411,7 @@ Operand &TokenWHILE::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("condition->compile(pgm, regdp)"));
     Operand &reg = condition->compile(pgm, regdp);// get condition result
     DBG(pgm.cc.comment("TokenWHILE::compile() pgm.safetest(reg, reg)"));
-    pgm.safetest(reg, reg);			// compare to zero
+    pgm.testzero(reg);  //    pgm.safetest(reg, reg);			// compare to zero
     pgm.cc.je(whiletail);			// if zero, jump to end
 
     DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm, regdp)" << endl);
