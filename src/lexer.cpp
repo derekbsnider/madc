@@ -76,6 +76,7 @@ TokenLPSTR	tkLPSTR;
 
 void Program::_tokenizer_init()
 {
+    
     tkProgram = NULL;
     tkFunction = NULL;
     _cur_token = NULL;

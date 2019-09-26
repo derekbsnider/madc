@@ -517,9 +517,7 @@ void Program::safenot(Operand &op)
 void Program::safeinc(Operand &op)
 {
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-    {
-	throw "safeinc() Xmm not supported ATM";
-    }
+	cc.addsd(op.as<x86::Xmm>(), __const_double_1);
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	cc.inc(op.as<x86::Gp>());
@@ -534,9 +532,7 @@ void Program::safeinc(Operand &op)
 void Program::safedec(Operand &op)
 {
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-    {
-	throw "safedec() Xmm not supported ATM";
-    }
+	cc.subsd(op.as<x86::Xmm>(), __const_double_1);
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	cc.dec(op.as<x86::Gp>());

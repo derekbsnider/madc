@@ -198,11 +198,12 @@ protected:
     void _parser_init();
     void _compiler_init();
     bool _compiler_finalize();
-
+    // protected members
     int _line, _column, _braces;
     std::streampos _pos;
     TokenBase *_prv_token;
     TokenBase *_cur_token;
+    asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
     keyword_map_t  keyword_map;		// reserved keywords
     datatype_map_t datatype_map;	// TokenDataType map
