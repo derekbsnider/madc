@@ -517,7 +517,10 @@ void Program::safenot(Operand &op)
 void Program::safeinc(Operand &op)
 {
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	__const_double_1 = cc.newDoubleConst(ConstPool::kScopeLocal, 1.0);
 	cc.addsd(op.as<x86::Xmm>(), __const_double_1);
+    }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	cc.inc(op.as<x86::Gp>());
@@ -532,7 +535,10 @@ void Program::safeinc(Operand &op)
 void Program::safedec(Operand &op)
 {
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	__const_double_1 = cc.newDoubleConst(ConstPool::kScopeLocal, 1.0);
 	cc.subsd(op.as<x86::Xmm>(), __const_double_1);
+    }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	cc.dec(op.as<x86::Gp>());
