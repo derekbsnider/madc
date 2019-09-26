@@ -314,7 +314,7 @@ void Program::safeneg(Operand &op)
     if ( op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
 	x86::Xmm tmp = cc.newXmm();
-	cc.pcmpeqd(tmp, tmp);
+	cc.xorpd(tmp, tmp);
 	cc.subsd(tmp, op.as<x86::Xmm>());
 	cc.movsd(op.as<x86::Xmm>(), tmp);
     }
@@ -500,10 +500,16 @@ void Program::safenot(Operand &op)
 {
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
+#if 0
 	x86::Gp tmp = cc.newGpq();
 	cc.cvtsd2si(tmp, op.as<x86::Xmm>());
 	cc.not_(tmp);
 	cc.cvtsi2sd(op.as<x86::Xmm>(), tmp);
+#else
+	x86::Xmm tmp = cc.newXmm();
+	cc.pcmpeqb(tmp, tmp);
+	cc.pandn(op.as<x86::Xmm>(), tmp);
+#endif
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
