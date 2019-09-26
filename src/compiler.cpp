@@ -736,7 +736,7 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
 	    throw "Increment on a non-variable lval";
 	tv = dynamic_cast<TokenVar *>(left);
 	Operand &reg = tv->operand(pgm);
-//	pgm.cc.inc(reg);
+	pgm.safeinc(reg);
 	tv->var.modified();
 	tv->putreg(pgm);
 	return reg;
@@ -747,7 +747,7 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
 	    throw "Increment on a non-variable rval";
 	tv = dynamic_cast<TokenVar *>(right);
 	Operand &reg = tv->operand(pgm);
-//	pgm.cc.inc(reg);
+	pgm.safeinc(reg);
 	tv->var.modified();
 	tv->putreg(pgm);
 	return reg;
@@ -767,7 +767,7 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 	    throw "Decrement on a non-variable lval";
 	tv = dynamic_cast<TokenVar *>(left);
 	Operand &reg = tv->operand(pgm);
-//	pgm.cc.dec(reg);
+	pgm.safedec(reg);
 	tv->var.modified();
 	tv->putreg(pgm);
 	return reg;
@@ -778,7 +778,7 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 	    throw "Decrement on a non-variable rval";
 	tv = dynamic_cast<TokenVar *>(right);
 	Operand &reg = tv->operand(pgm);
-//	pgm.cc.dec(reg);
+	pgm.safedec(reg);
 	tv->var.modified();
 	tv->putreg(pgm);
 	return reg;
@@ -2406,6 +2406,7 @@ Operand &TokenWHILE::compile(Program &pgm, regdefp_t &regdp)
 
     pgm.loopstack.push(make_pair(&whiletop, &whiletail)); // push labels onto loopstack
     pgm.cc.bind(whiletop);			// label the top of the loop
+    DBG(pgm.cc.comment("condition->compile(pgm, regdp)"));
     Operand &reg = condition->compile(pgm, regdp);// get condition result
     DBG(pgm.cc.comment("TokenWHILE::compile() pgm.safetest(reg, reg)"));
     pgm.safetest(reg, reg);			// compare to zero
@@ -2413,6 +2414,7 @@ Operand &TokenWHILE::compile(Program &pgm, regdefp_t &regdp)
 
     DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm, regdp)" << endl);
     pgm.cc.bind(whiledo);			// bind action label
+    DBG(pgm.cc.comment("statement->compile(pgm, regdp)"));
     statement->compile(pgm, regdp); 		// execute loop's statement(s)
     pgm.cc.jmp(whiletop);			// jump back to top
     pgm.cc.bind(whiletail);			// bind while tail

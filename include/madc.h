@@ -318,6 +318,11 @@ public:
     // perform cc.not_ with size casting
     void safenot(asmjit::Operand &);
 
+    // perform cc.inc with size casting
+    void safeinc(asmjit::Operand &);
+    // perform cc.dec with size casting
+    void safedec(asmjit::Operand &);
+
     // negate the operand
     void safeneg(asmjit::Operand &);
 

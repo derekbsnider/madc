@@ -513,6 +513,40 @@ void Program::safenot(Operand &op)
 	throw "safenot() operand not register";
 }
 
+// perform cc.inc with size casting
+void Program::safeinc(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	throw "safeinc() Xmm not supported ATM";
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.inc(op.as<x86::Gp>());
+    else
+    if ( op.isMem() )
+	cc.inc(op.as<x86::Mem>());
+    else
+	throw "safeinc() operand not register";
+}
+
+// perform cc.dec with size casting
+void Program::safedec(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	throw "safedec() Xmm not supported ATM";
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.dec(op.as<x86::Gp>());
+    else
+    if ( op.isMem() )
+	cc.dec(op.as<x86::Mem>());
+    else
+	throw "safedec() operand not register";
+}
+
 void Program::saferet(Operand &op)
 {
     if ( !op.isReg() && !op.isImm() ) { throw "saferet() operand is not register or immediate"; }
