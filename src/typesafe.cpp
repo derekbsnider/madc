@@ -313,8 +313,10 @@ void Program::safeneg(Operand &op)
     if ( !op.isReg() ) { throw "safeneg() lval is not a register"; }
     if ( op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
-//	x86::Xmm tmp = cc.newXmm();
-	throw "safeneg doesn't support xmm";
+	x86::Xmm tmp = cc.newXmm();
+	cc.pcmpeqd(tmp, tmp);
+	cc.subsd(tmp, op.as<x86::Xmm>());
+	cc.movsd(op.as<x86::Xmm>(), tmp);
     }
     else
     if ( op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
