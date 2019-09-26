@@ -109,6 +109,21 @@ public:
 	    return true;
 	return false;
     }
+    virtual bool is_unsigned()
+    {
+    	switch(rawtype())
+    	{
+	    case DataType::dtUINT8:
+	    case DataType::dtUINT16:
+	    case DataType::dtUINT24:
+	    case DataType::dtUINT32:
+	    case DataType::dtUINT64:
+		return true;
+	    default:
+		return false;
+    	}
+	return false;
+    }
     virtual bool is_function()
     {
 	if ( basetype() == BaseType::btFunct )

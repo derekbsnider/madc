@@ -36,6 +36,11 @@ using namespace asmjit;
 void Program::safemov(x86::Gp &r1, x86::Gp &r2)
 {
     DBG(cc.comment("safemov(Gp, Gp)"));
+    if ( r1.size() > r2.size() )
+    {
+	cc.movzx(r1, r2);
+    }
+    else
     switch(r1.type())
     {
 	case BaseReg::kTypeGp8Lo: cc.mov(r1, r2.r8Lo());  break;
@@ -320,7 +325,11 @@ void Program::safeneg(Operand &op)
     }
     else
     if ( op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
 	cc.neg(op.as<x86::Gp>());
+	if ( op.size() > 1 )
+	    cc.movsx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
     else
 	throw "safeneg() unsupported register type";
 }
@@ -513,7 +522,16 @@ void Program::safenot(Operand &op)
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
 	cc.not_(op.as<x86::Gp>());
+
+	switch(op.size())
+	{
+	    case 1:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r8());	break;
+	    case 2:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r16());	break;
+//	    case 4:  cc.mov(op.as<x86::Gp>().r32(), op.as<x86::Gp>().r32());	break;
+	}
+    }
     else
     if ( op.isMem() )
 	cc.not_(op.as<x86::Mem>());
@@ -606,6 +624,32 @@ void Program::testzero(Operand &op)
 	throw "testzero(op) invalid operand";
 }
 
+void Program::safeextend(Operand &op, bool unsign)
+{
+    DBG(cc.comment("safeextend"));
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
+	if ( unsign )
+	{
+	    switch(op.size())
+	    {
+		case 1:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r8());	break;
+		case 2:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r16());	break;
+		case 4:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r32());	break;
+	    }
+	}
+	else
+	{
+	    switch(op.size())
+	    {
+		case 1:  cc.movsx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r8());	break;
+		case 2:  cc.movsx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r16());	break;
+		case 4:  cc.movsx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r32());	break;
+	    }
+	}
+    }
+}
+
 // perform a test on two operands
 void Program::safetest(Operand &op1, Operand &op2)
 {
@@ -654,13 +698,17 @@ void Program::safesete(Operand &op)
 	DBG(cc.comment("cc.sete(tmp.r8)"));
 	cc.sete(tmpq.r8());
 	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
-	cc.movzx(tmpq, tmpq.r8());
+	cc.movzx(tmpq, tmpq.r8());  // zero extend because setCC is unsigned
 	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
 	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
 	cc.sete(op.as<x86::Gp>().r8());
+	if ( op.size() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
     else
 	throw "safesete() operand not supported";
 }
@@ -679,7 +727,11 @@ void Program::safesetg(Operand &op)
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
 	cc.setg(op.as<x86::Gp>().r8());
+	if ( op.size() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
     else
 	throw "safesetg() operand not supported";
 }
@@ -698,7 +750,11 @@ void Program::safesetge(Operand &op)
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
 	cc.setge(op.as<x86::Gp>().r8());
+	if ( op.size() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
     else
 	throw "safesetge() operand not supported";
 }
@@ -717,7 +773,11 @@ void Program::safesetl(Operand &op)
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
 	cc.setl(op.as<x86::Gp>().r8());
+	if ( op.size() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
     else
 	throw "safesetl() operand not supported";
 }
@@ -736,7 +796,11 @@ void Program::safesetle(Operand &op)
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
 	cc.setle(op.as<x86::Gp>().r8());
+	if ( op.size() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
     else
 	throw "safesetle() operand not supported";
 }
@@ -755,7 +819,11 @@ void Program::safesetne(Operand &op)
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+    {
 	cc.setne(op.as<x86::Gp>().r8());
+	if ( op.size() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
     else
 	throw "safesetne() operand not supported";
 }

@@ -336,6 +336,9 @@ public:
     // tests if operand is zero
     void testzero(asmjit::Operand &);
 
+    // sign/zero extend operand in place
+    void safeextend(asmjit::Operand &, bool unsign=false);
+
     // perform cc.setCC with size casting
     void safesete(asmjit::Operand &);
     void safesetg(asmjit::Operand &);

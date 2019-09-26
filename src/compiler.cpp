@@ -119,7 +119,7 @@ void Program::_compiler_init()
 //  code.addEmitterOptions(BaseEmitter::kOptionStrictValidation);
     code.attach(&cc);
     // constant initialization
-    __const_double_1 = cc.newDoubleConst(ConstPool::kScopeGlobal, 1.0);
+//  __const_double_1 = cc.newDoubleConst(ConstPool::kScopeGlobal, 1.0);
 }
 
 bool Program::_compiler_finalize()
@@ -307,13 +307,14 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    if ( !ptype->is_real() )
 		throw "Not expecting floating point argument";
-	    pgm.cc.comment("tnreg is Xmm");
+	    DBG(pgm.cc.comment("tnreg is Xmm"));
 	}
 	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	{
 	    if ( ptype->is_real() )
 		throw "Expecting floating point argument";
-	    pgm.cc.comment("tnreg is Gp");
+	    DBG(pgm.cc.comment("tnreg is Gp"));
+            DBG(cout << "tnreg size=" << tnreg.size() << " regdp.second->size=" << funcrdp.second->size << " type " << funcrdp.second->name << endl);
 	}
 	if ( tnreg.isImm() )
 	    pgm.cc.comment("tnreg is Imm");
@@ -1304,6 +1305,12 @@ void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
     if ( (left && left->is_real()) || (right && right->is_real()) )
 	regdp.second = &ddDOUBLE;
     else
+    if ( (left && left->datadef()->is_integer() ) )
+	regdp.second = left->datadef();
+    else
+    if ( (right && right->datadef()->is_integer() ) )
+	regdp.second = right->datadef();
+    else
 	regdp.second = &ddINT;
 }
 
@@ -1620,6 +1627,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    if ( lval.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	    {
 		DBG(pgm.cc.comment("call->setArg(0, lval.as<x86::Gp>())"));
+		DBG(cout << "call->setArg(0, lval.as<x86::Gp>()) size=" << lval.size() << " regdp.second->size=" << regdp.second->size << " type " << regdp.second->name << endl);
 		call->setArg(0, lval.as<x86::Gp>());
 	    }
 	    else
@@ -1662,7 +1670,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 		call->setArg(0, lval.as<x86::Gp>());
 	    else
 		throw "TokenBSL::compile() lval unsupported register type";
-	    DBG(pgm.cc.comment("call->setArg(1, rval"));
+	    DBG(pgm.cc.comment("call->setArg(1, rval)"));
 	    call->setArg(1, regdp.first->as<x86::Gp>());
 	}
 	else
@@ -2198,6 +2206,11 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.safemov(*regdp.first, reg);
 	}
 	return *regdp.first;
+    }
+    if ( reg.size() < regdp.second->size )
+    {
+	if ( regdp.second->is_integer() )
+	    pgm.safeextend(reg, regdp.second->is_unsigned());
     }
 
     regdp.first = &reg;
