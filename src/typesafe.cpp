@@ -60,7 +60,7 @@ void Program::safemov(x86::Gp &r1, x86::Xmm &r2)
 }
 void Program::safemov(x86::Xmm &r1, x86::Gp &r2)
 {
-   throw "safemov() unable to move gp to xmm";
+    cc.cvtsi2sd(r1, r2);
 }
 void Program::safemov(x86::Xmm &r1, x86::Xmm &r2)
 {
@@ -604,50 +604,110 @@ void Program::safetest(Operand &op1, Operand &op2)
 
 void Program::safesete(Operand &op)
 {
-    if ( !op.isReg() || !op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safesete() operand is not a Gp register";
-    cc.sete(op.as<x86::Gp>().r8());
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Gp tmpq = cc.newGpq();
+	DBG(cc.comment("cc.sete(tmp.r8)"));
+	cc.sete(tmpq.r8());
+	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
+	cc.movzx(tmpq, tmpq.r8());
+	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
+	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.sete(op.as<x86::Gp>().r8());
+    else
+	throw "safesete() operand not supported";
 }
 
 void Program::safesetg(Operand &op)
 {
-    if ( !op.isReg() || !op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safesetg() operand is not a Gp register";
-    cc.setg(op.as<x86::Gp>().r8());
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Gp tmpq = cc.newGpq();
+	DBG(cc.comment("cc.setg(tmp.r8)"));
+	cc.setg(tmpq.r8());
+	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
+	cc.movzx(tmpq, tmpq.r8());
+	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
+	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.setg(op.as<x86::Gp>().r8());
+    else
+	throw "safesetg() operand not supported";
 }
 
 void Program::safesetge(Operand &op)
 {
-    if ( !op.isReg() || !op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safesetge() operand is not a Gp register";
-    cc.setge(op.as<x86::Gp>().r8());
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Gp tmpq = cc.newGpq();
+	DBG(cc.comment("cc.setge(tmp.r8)"));
+	cc.setge(tmpq.r8());
+	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
+	cc.movzx(tmpq, tmpq.r8());
+	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
+	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.setge(op.as<x86::Gp>().r8());
+    else
+	throw "safesetge() operand not supported";
 }
 
 void Program::safesetl(Operand &op)
 {
-    if ( !op.isReg() || !op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safesetl() operand is not a Gp register";
-    cc.setl(op.as<x86::Gp>().r8());
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Gp tmpq = cc.newGpq();
+	DBG(cc.comment("cc.setl(tmp.r8)"));
+	cc.setl(tmpq.r8());
+	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
+	cc.movzx(tmpq, tmpq.r8());
+	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
+	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.setl(op.as<x86::Gp>().r8());
+    else
+	throw "safesetl() operand not supported";
 }
 
 void Program::safesetle(Operand &op)
 {
-    if ( !op.isReg() || !op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	throw "safesetle() operand is not a Gp register";
-    cc.setle(op.as<x86::Gp>().r8());
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	x86::Gp tmpq = cc.newGpq();
+	DBG(cc.comment("cc.setle(tmp.r8)"));
+	cc.setle(tmpq.r8());
+	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
+	cc.movzx(tmpq, tmpq.r8());
+	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
+	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
+    }
+    else
+    if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	cc.setle(op.as<x86::Gp>().r8());
+    else
+	throw "safesetle() operand not supported";
 }
 
 void Program::safesetne(Operand &op)
 {
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
-	x86::Gp tmp = cc.newGpq();
-	DBG(cc.comment("cc.xor_(tmp, tmp)"));
-	cc.xor_(tmp, tmp);
-	DBG(cc.comment("cc.setne(tmp.r8())"));
-	cc.setne(tmp.r8());
+	x86::Gp tmpq = cc.newGpq();
+	DBG(cc.comment("cc.setne(tmp.r8)"));
+	cc.setne(tmpq.r8());
+	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
+	cc.movzx(tmpq, tmpq.r8());
 	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
-	cc.cvtsi2sd(op.as<x86::Xmm>(), tmp);
+	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
     }
     else
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
