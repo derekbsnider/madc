@@ -54,6 +54,16 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 
 void Program::safemov(x86::Gp &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
+    if ( d2 && d2->size == sizeof(float) )
+    switch(r1.type())
+    {
+	case BaseReg::kTypeGp8Lo: cc.cvtss2si(r1.r32(), r2);	break;
+	case BaseReg::kTypeGp8Hi: cc.cvtss2si(r1.r32(), r2);	break;
+	case BaseReg::kTypeGp32:  cc.cvtss2si(r1, r2);		break;
+	case BaseReg::kTypeGp64:  cc.cvtss2si(r1, r2);		break;
+	default: throw "Program::safemov() cannot match register types";
+    }
+    else
     switch(r1.type())
     {
 	case BaseReg::kTypeGp8Lo: cc.cvtsd2si(r1.r32(), r2);	break;
