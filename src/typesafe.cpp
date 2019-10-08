@@ -163,7 +163,6 @@ void Program::safemov(Operand &op1, double d, DataDef *d1, DataDef *d2)
 // should handle all necessary conversions...
 void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
-    if ( d1 && !d2 ) { d2 = d1; }
     DBG(cc.comment("safemov(Operand, Operand)"));
     if ( !op1.isReg() ) { throw "safemov() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() && !op2.isMem() ) { throw "safemov() rval is not register, memory, or immediate"; }
@@ -250,7 +249,6 @@ void Program::safeadd(Operand &op1, int i, DataDef *d1, DataDef *d2)
 // should handle all necessary conversions...
 void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
-    if ( d1 && !d2 ) { d2 = d1; }
     if ( !op1.isReg() ) { cerr << op1.opType() << endl; throw "safeadd() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safeadd() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
@@ -331,7 +329,6 @@ void Program::safesub(Operand &op1, int i, DataDef *d1, DataDef *d2)
 // should handle all necessary conversions...
 void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
-    if ( d1 && !d2 ) { d2 = d1; }
     if ( !op1.isReg() ) { throw "safesub() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safesub() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
@@ -389,12 +386,15 @@ void Program::safeneg(Operand &op)
 }
 
 // perform cc.mul with size casting
-void Program::safemul(Operand &op1, Operand &op2)
+void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec)
     &&   op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
-	cc.mulsd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	if ( d1 && d1->size == sizeof(float) )
+	    cc.mulss(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	else
+	    cc.mulsd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
 	return;
     }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
@@ -415,13 +415,16 @@ void printint(int i)
 #endif
 
 // perform cc.div with size casting
-void Program::safediv(Operand &op1, Operand &op2, Operand &op3)
+void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, DataDef *d2, DataDef *d3)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec)
     &&   op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec)
     &&   op3.isReg() && op3.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
-	cc.divsd(op2.as<x86::Xmm>(), op3.as<x86::Xmm>());
+	if ( d1 && d1->size == sizeof(float) )
+	    cc.divss(op2.as<x86::Xmm>(), op3.as<x86::Xmm>());
+	else
+	    cc.divsd(op2.as<x86::Xmm>(), op3.as<x86::Xmm>());
 	return;
     }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
