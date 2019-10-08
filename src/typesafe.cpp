@@ -163,6 +163,7 @@ void Program::safemov(Operand &op1, double d, DataDef *d1, DataDef *d2)
 // should handle all necessary conversions...
 void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
+    if ( d1 && !d2 ) { d2 = d1; }
     DBG(cc.comment("safemov(Operand, Operand)"));
     if ( !op1.isReg() ) { throw "safemov() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() && !op2.isMem() ) { throw "safemov() rval is not register, memory, or immediate"; }
@@ -207,7 +208,7 @@ void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 // simple for now, should have different versions for signed vs unsigned
 // small to big vs big to small, etc, as we need to ensure that adding
 // small to big doesn't leave unwanted data in the other part of the register
-void Program::safeadd(x86::Gp &r1, x86::Gp &r2)
+void Program::safeadd(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
     switch(r1.type())
     {
@@ -220,44 +221,48 @@ void Program::safeadd(x86::Gp &r1, x86::Gp &r2)
     }
 }
 
-void Program::safeadd(x86::Gp &r1, x86::Xmm &r2)
+void Program::safeadd(x86::Gp &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
-   throw "safeadd() unable to add xmm to gp";
+    throw "safeadd() unable to add xmm to gp";
 }
-void Program::safeadd(x86::Xmm &r1, x86::Gp &r2)
+void Program::safeadd(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
-   throw "safeadd() unable to add gp to xmm";
+    throw "safeadd() unable to add gp to xmm";
 }
-void Program::safeadd(x86::Xmm &r1, x86::Xmm &r2)
+void Program::safeadd(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
-   cc.addsd(r1, r2);
+    if ( d1 && d1->size == sizeof(float) )
+	cc.addss(r1, r2);
+    else
+	cc.addsd(r1, r2);
 }
-void Program::safeadd(x86::Xmm &r1, Imm &r2)
+void Program::safeadd(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
 {
-   throw "safeadd() unable to add imm to xmm";
+    throw "safeadd() unable to add imm to xmm";
 }
 
-void Program::safeadd(Operand &op1, int i)
+void Program::safeadd(Operand &op1, int i, DataDef *d1, DataDef *d2)
 {
     Operand op2 = imm(i);
-    safeadd(op1, op2);
+    safeadd(op1, op2, d1, d2);
 }
 
 // should handle all necessary conversions...
-void Program::safeadd(Operand &op1, Operand &op2)
+void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
+    if ( d1 && !d2 ) { d2 = d1; }
     if ( !op1.isReg() ) { cerr << op1.opType() << endl; throw "safeadd() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safeadd() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	    safeadd(op1.as<x86::Xmm>(), op2.as<x86::Gp>());
+	    safeadd(op1.as<x86::Xmm>(), op2.as<x86::Gp>(), d1, d2);
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-	    safeadd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	    safeadd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), d1, d2);
 	else
 	if ( op2.isImm() )
-	    safeadd(op1.as<x86::Xmm>(), op2.as<Imm>());
+	    safeadd(op1.as<x86::Xmm>(), op2.as<Imm>(), d1, d2);
 	else
 	    throw "safeadd() rval is unsupported";
     }
@@ -265,10 +270,10 @@ void Program::safeadd(Operand &op1, Operand &op2)
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	    safeadd(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+	    safeadd(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-	    safeadd(op1.as<x86::Gp>(), op2.as<x86::Xmm>());
+	    safeadd(op1.as<x86::Gp>(), op2.as<x86::Xmm>(), d1, d2);
 	else
 	if ( op2.isImm() )
 	    cc.add(op1.as<x86::Gp>(), op2.as<Imm>());
@@ -284,7 +289,7 @@ void Program::safeadd(Operand &op1, Operand &op2)
 // simple for now, should have different versions for signed vs unsigned
 // small to big vs big to small, etc, as we need to ensure that subing
 // small to big doesn't leave unwanted data in the other part of the register
-void Program::safesub(x86::Gp &r1, x86::Gp &r2)
+void Program::safesub(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
     switch(r1.type())
     {
@@ -297,44 +302,48 @@ void Program::safesub(x86::Gp &r1, x86::Gp &r2)
     }
 }
 
-void Program::safesub(x86::Gp &r1, x86::Xmm &r2)
+void Program::safesub(x86::Gp &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
-   throw "safesub() unable to sub xmm to gp";
+    throw "safesub() unable to sub xmm to gp";
 }
-void Program::safesub(x86::Xmm &r1, x86::Gp &r2)
+void Program::safesub(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
-   throw "safesub() unable to sub gp to xmm";
+    throw "safesub() unable to sub gp to xmm";
 }
-void Program::safesub(x86::Xmm &r1, x86::Xmm &r2)
+void Program::safesub(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
-   cc.subsd(r1, r2);
+    if ( d1 && d1->size == sizeof(float) )
+	cc.subss(r1, r2);
+    else
+	cc.subsd(r1, r2);
 }
-void Program::safesub(x86::Xmm &r1, Imm &r2)
+void Program::safesub(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
 {
-   throw "safesub() unable to sub imm to xmm";
+    throw "safesub() unable to sub imm to xmm";
 }
 
-void Program::safesub(Operand &op1, int i)
+void Program::safesub(Operand &op1, int i, DataDef *d1, DataDef *d2)
 {
     Operand op2 = imm(i);
     safesub(op1, op2);
 }
 
 // should handle all necessary conversions...
-void Program::safesub(Operand &op1, Operand &op2)
+void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
+    if ( d1 && !d2 ) { d2 = d1; }
     if ( !op1.isReg() ) { throw "safesub() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safesub() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	    safesub(op1.as<x86::Xmm>(), op2.as<x86::Gp>());
+	    safesub(op1.as<x86::Xmm>(), op2.as<x86::Gp>(), d1, d2);
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-	    safesub(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	    safesub(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), d1, d2);
 	else
 	if ( op2.isImm() )
-	    safesub(op1.as<x86::Xmm>(), op2.as<Imm>());
+	    safesub(op1.as<x86::Xmm>(), op2.as<Imm>(), d1, d2);
 	else
 	    throw "safesub() rval is unsupported";
     }
@@ -342,10 +351,10 @@ void Program::safesub(Operand &op1, Operand &op2)
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
-	    safesub(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+	    safesub(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
-	    safesub(op1.as<x86::Gp>(), op2.as<x86::Xmm>());
+	    safesub(op1.as<x86::Gp>(), op2.as<x86::Xmm>(), d1, d2);
 	else
 	if ( op2.isImm() )
 	    cc.sub(op1.as<x86::Gp>(), op2.as<Imm>());
@@ -382,6 +391,12 @@ void Program::safeneg(Operand &op)
 // perform cc.mul with size casting
 void Program::safemul(Operand &op1, Operand &op2)
 {
+    if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec)
+    &&   op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	cc.mulsd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	return;
+    }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	throw "safemul() left operand is not a Gp register";
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupGp)) )
@@ -402,6 +417,13 @@ void printint(int i)
 // perform cc.div with size casting
 void Program::safediv(Operand &op1, Operand &op2, Operand &op3)
 {
+    if ( op1.isReg() && op1.as<BaseReg>().isGroup(BaseReg::kGroupVec)
+    &&   op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec)
+    &&   op3.isReg() && op3.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+    {
+	cc.divsd(op2.as<x86::Xmm>(), op3.as<x86::Xmm>());
+	return;
+    }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	throw "safediv() left operand is not a Gp register";
     if ( !op2.isReg() || !op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )

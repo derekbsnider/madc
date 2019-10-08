@@ -1405,12 +1405,12 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safeadd(lval, rval);				 // type safe addition
+    pgm.safeadd(lval, rval, regdp.second);		 // type safe addition
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
 
-// subtract two integers
+// subtraction
 Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenSub::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
@@ -1451,13 +1451,12 @@ Operand &TokenNeg::compile(Program &pgm, regdefp_t &regdp)
     return *regdp.first;				 // return result operand
 }
 
-// multiply two integers
+// multiply two numbers
 Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenMul::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "* missing lval operand"; }
     if ( !right ) { throw "* missing rval operand"; }
-    if ( can_optimize() )  {return optimize(pgm, regdp);} 
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     if ( !regdp.first )					 // if not passed a register:
@@ -1466,7 +1465,7 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
 	regdp.first = &_operand;			 // pass _operand along
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
-    if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
+    if ( !regdp.second ) { throw "TokenMul::compile() left->compile() cleared datatype!"; }
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
@@ -1475,7 +1474,33 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     return *regdp.first;				 // return result operand
 }
 
-// divide two integers
+// divide two numbers
+Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(cout << "TokenDiv::Compile() TOP" << endl);
+    if ( !left )  { throw "/ missing lval operand"; } 
+    if ( !right ) { throw "/ missing rval operand"; }
+    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand remainder = regdp.second->newreg(pgm.cc, "remainder");
+    Operand &dividend = left->compile(pgm, regdp);	 // compile left side ref=dividend
+    if ( !regdp.second ) { throw "TokenDiv::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "divisor");// use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &divisor = right->compile(pgm, regdp);	 // compile right side into tmp
+    pgm.safexor(remainder, remainder);			 // zero out remainder
+    pgm.safediv(remainder, dividend, divisor);		 // type safe division
+    regdp.first = &dividend;				 // restore regdp.first
+    return *regdp.first;				 // return result operand
+}
+
+#if 0
+// divide two numbers
 Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDiv::Compile() TOP" << endl);
@@ -1499,6 +1524,7 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &dividend;
     return *regdp.first;
 }
+#endif
 
 // modulus
 Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)

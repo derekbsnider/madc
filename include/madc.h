@@ -285,22 +285,22 @@ public:
     void safemov(asmjit::Operand &,  double, DataDef *d1=NULL, DataDef *d2=NULL);
 
     // perform cc.add with size casting
-    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Gp &);
-    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    void safeadd(asmjit::x86::Xmm &, asmjit::Imm &);
-    void safeadd(asmjit::Operand &,  asmjit::Operand &);
-    void safeadd(asmjit::Operand &,  int);
+    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safeadd(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
+    void safeadd(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
+    void safeadd(asmjit::Operand &,  int, DataDef *, DataDef *);
 
     // perform cc.sub with size casting
-    void safesub(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    void safesub(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    void safesub(asmjit::x86::Xmm &, asmjit::x86::Gp &);
-    void safesub(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    void safesub(asmjit::x86::Xmm &, asmjit::Imm &);
-    void safesub(asmjit::Operand &,  asmjit::Operand &);
-    void safesub(asmjit::Operand &,  int);
+    void safesub(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safesub(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safesub(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safesub(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safesub(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
+    void safesub(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
+    void safesub(asmjit::Operand &,  int, DataDef *, DataDef *);
 
     // perform cc.mul with size casting
     void safemul(asmjit::Operand &,  asmjit::Operand &);
