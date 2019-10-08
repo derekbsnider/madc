@@ -303,9 +303,9 @@ public:
     void safesub(asmjit::Operand &,  int, DataDef *, DataDef *);
 
     // perform cc.mul with size casting
-    void safemul(asmjit::Operand &,  asmjit::Operand &);
+    void safemul(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
     // perform cc.div with size casting
-    void safediv(asmjit::Operand &,  asmjit::Operand &,  asmjit::Operand &);
+    void safediv(asmjit::Operand &,  asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL, DataDef *d3=NULL);
     // perform cc.shl with size casting
     void safeshl(asmjit::Operand &,  asmjit::Operand &);
     // perform cc.shr with size casting

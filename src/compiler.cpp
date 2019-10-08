@@ -94,7 +94,7 @@ void streamout_int(std::ostream &os, int i)
 
 template<typename T> void streamout_numeric(std::ostream &os, T i)
 {
-//  DBG(std::cout << "streamout_int: << " << i << std::endl);
+//  DBG(std::cout << "streamout_numeric: sizeof(i) " << sizeof(i) << std::endl);
     os << i;
 }
 
@@ -1428,7 +1428,7 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safesub(lval, rval);				 // type safe subtraction
+    pgm.safesub(lval, rval, regdp.second);		 // type safe subtraction
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -1469,7 +1469,7 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safemul(lval, rval);				 // type safe multiplication
+    pgm.safemul(lval, rval, regdp.second);		 // type safe multiplication
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -1494,7 +1494,7 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &divisor = right->compile(pgm, regdp);	 // compile right side into tmp
     pgm.safexor(remainder, remainder);			 // zero out remainder
-    pgm.safediv(remainder, dividend, divisor);		 // type safe division
+    pgm.safediv(remainder, dividend, divisor, regdp.second);// type safe division
     regdp.first = &dividend;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
