@@ -270,7 +270,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	tn = parameters[i];
 
 	funcrdp.object = NULL; // should this be regdp.object?
-	funcrdp.second = ptype;
+	funcrdp.second = ptype;// this may result in an unwanted movsx on an unsigned integer type
 //	_operand = ptype->newreg(pgm.cc);
 //	funcrdp.first = &_operand;
 	funcrdp.first = NULL; // clean for param
@@ -1288,7 +1288,10 @@ void TokenOperator::setregdp(Program &pgm, regdefp_t &regdp)
     if ( left->type() == TokenType::ttInteger || right->type() == TokenType::ttInteger )
     {
 	if ( !regdp.second )
+	{
+	    DBG(pgm.cc.comment("setregdp() regdp.second = &ddINT"));
 	    regdp.second = &ddINT;
+	}
 	if ( regdp.first )
 	    return;
 	_operand = pgm.cc.newGpq("setregdp_reg");
@@ -1311,7 +1314,10 @@ void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
     if ( (right && right->datadef()->is_integer() ) )
 	regdp.second = right->datadef();
     else
+    {
+	DBG(pgm.cc.comment("settype() regdp.second = &ddINT"));
 	regdp.second = &ddINT;
+    }
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -1356,7 +1362,11 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
 	pgm.safemov(*regdp.first, foperate());
 	return *regdp.first;
     }
-    if ( !regdp.second ) { regdp.second = &ddINT; }
+    if ( !regdp.second )
+    {
+	DBG(pgm.cc.comment("optimize() regdp.second = &ddINT"));
+	regdp.second = &ddINT;
+    }
     if ( !regdp.first )
     {
 	_operand = pgm.cc.newGpq("_operand_Gpq_");
@@ -1546,6 +1556,7 @@ Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)
     else
     {
 	_dividend = pgm.cc.newInt64("dividend");
+	DBG(pgm.cc.comment("TokenMod() regdp.second = &ddINT"));
 	regdp.second = &ddINT;
     }
     regdp.first = &_dividend;
@@ -2223,6 +2234,8 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
 	regdp.second = _datatype;
 
+    DBG(cout << "TokenVar::compile() name=" << var.name << " regdp.second.name " << regdp.second->name << endl);
+
     if ( regdp.first )
     {
 	if ( !reg.isEqual(*regdp.first) && regdp.first != &reg )
@@ -2232,10 +2245,14 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	}
 	return *regdp.first;
     }
-    if ( reg.size() < regdp.second->size )
+    if ( reg.size() < 4 && reg.size() < regdp.second->size )
     {
-	if ( regdp.second->is_integer() )
-	    pgm.safeextend(reg, regdp.second->is_unsigned());
+	DBG(cout << "TokenVar::compile() reg.size() " << reg.size() << " < regdp.second->size " << regdp.second->size << endl);
+	if ( regdp.second->is_integer() && var.type->is_integer() )
+	{
+	    DBG(pgm.cc.comment("TokenVar::compile() safeextend(reg, is_unsigned())"));
+	    pgm.safeextend(reg, var.type->is_unsigned());
+	}
     }
 
     regdp.first = &reg;
