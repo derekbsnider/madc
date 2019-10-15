@@ -696,7 +696,10 @@ void Program::testzero(Operand &op)
 
 void Program::safeextend(Operand &op, bool unsign)
 {
-    DBG(cc.comment("safeextend"));
+    if ( unsign )
+	DBG(cc.comment("safeextend unsigned"));
+    else
+	DBG(cc.comment("safeextend signed"));
     if ( op.isReg() && op.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
     {
 	if ( unsign )
