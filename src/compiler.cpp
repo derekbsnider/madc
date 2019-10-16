@@ -405,7 +405,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     else
 #endif
     if ( func->returns.type() != DataType::dtVOID )
-    {
+    { 
 	if ( func->returns.is_real() )
 	    call->setRet(0, _operand.as<x86::Xmm>());
 	else
@@ -916,11 +916,11 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    << (tvl->var.data ? ((string *)(tvl->var.data))->c_str() : "") << ").assign[" << (uint64_t)string_assign << "](" << tvr->var.name
 	    << '(' << (tvr->var.data ? ((string *)(tvr->var.data))->c_str() : "") << ')' << endl);
 */
-/*	DBG(pgm.cc.comment("string_assign"));
+	DBG(pgm.cc.comment("string_assign"));
 	FuncCallNode* call = pgm.cc.call(imm(string_assign), FuncSignatureT<void, const char*, const char *>(CallConv::kIdHost));
-	call->setArg(0, lreg);
-	call->setArg(1, rreg);
-*/
+	call->setArg(0, _operand.as<x86::Gp>());
+	call->setArg(1, r_operand->as<x86::Gp>());
+
 	tvl->var.modified();
 	tvl->putreg(pgm);
     }
@@ -2141,27 +2141,35 @@ Operand &Token3Way::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "Token3Way::Compile() TOP" << endl);
     Label done = pgm.cc.newLabel();	// label to skip further tests
     Label sign = pgm.cc.newLabel();	// label to negate _reg (make negative)
-    if ( !left )  { throw "!= missing lval operand"; }
-    if ( !right ) { throw "!= missing rval operand"; }
+    if ( !left )  { throw "<=> missing lval operand"; }
+    if ( !right ) { throw "<=> missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    x86::Gp &reg  = getreg(pgm); // get clean register for test
-    Operand &lval = left->compile(pgm, regdp);
-    regdp.first = NULL; // clear operand parameter
-    Operand &rval = right->compile(pgm, regdp);
+    settype(pgm, regdp);				 // set regdp.second type
+    if ( !regdp.first )					 // if not passed a register:
+    {
+	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	DBG(pgm.cc.comment("Token3Way _operand = newreg"));
+	DBG(cout << "Token3Way _operand = newreg" << endl);
+	regdp.first = &_operand;			 // pass _operand along
+    }
+    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    if ( !regdp.second ) { throw "Token3Way::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    regdp.first = &tmp;					 // pass tmp along
+    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     DBG(pgm.cc.comment("Token3Way::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);
+    pgm.safecmp(lval, rval);				 // typesafe comparison
 
-    pgm.cc.setg(reg.r8());	// set _reg to 1 if >
-    pgm.cc.jg(done);		// if >, jump to done
-    pgm.cc.setl(reg.r8());	// set _reg to 1 if <
-    pgm.cc.jl(sign);		// if <, jump to negate
-    pgm.cc.xor_(reg, reg);	// _reg = 0
+    pgm.safesetg(lval);					 // set lval to 1 if >
+    pgm.cc.jg(done);					 // if >, jump to done
+    pgm.safesetl(lval);					 // set lval to 1 if <
+    pgm.cc.jl(sign);					 // if <, jump to negate
+    pgm.safexor(lval, lval);				 // lval = 0
     pgm.cc.bind(sign);
-    pgm.cc.neg(reg);		// _reg ? 1 : -1
-    pgm.cc.bind(done); 		// done
-    return reg;
+    pgm.safeneg(lval);					 // _lval ? 1 : -1
+    pgm.cc.bind(done);					 // done
+    return *regdp.first;
 }
-
 
 // access structure/class member: struct.member
 Operand &TokenDot::compile(Program &pgm, regdefp_t &regdp)
@@ -2221,8 +2229,6 @@ Operand &TokenDot::compile(Program &pgm, regdefp_t &regdp)
 #endif
     return _operand;
 }
-
-
 
 
 // load variable into register
