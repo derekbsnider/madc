@@ -671,16 +671,22 @@ bool Program::compile()
     catch(const char *err_msg)
     {
 	if ( tb )
-	    cerr << ANSI_WHITE;
-	else
 	    cerr << ANSI_WHITE << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column;
+	else
+	    cerr << ANSI_WHITE;
 	cerr << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
+	if ( tb )
+	{
+	    source.showerror(tb->line, tb->column);
+	    cout << "TokenType: " << (int)tb->type() << endl;
+	}
 	return false;
     }
     catch(TokenBase *tb)
     {
 	cerr << ANSI_WHITE << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << " value " << (int)tb->get() << " char " << (char)tb->get() << ANSI_RESET << endl;
+	source.showerror(tb->line, tb->column);
 	return false;
     }
 

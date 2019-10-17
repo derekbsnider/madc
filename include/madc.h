@@ -186,23 +186,74 @@ typedef std::vector<TokenBase *>::iterator tokenbase_vec_iter;
 typedef std::pair<asmjit::Label *, asmjit::Label *> l_shortcut_t;
 typedef std::stack<l_shortcut_t> shortstack_t;
 
+// class to hold source for lexing
+class Source
+{
+protected:
+    std::stringstream _ss;
+    int _lf, _cr, _column;
+    std::streampos _pos;
+public:
+    Source() { _lf = 0; _cr = 0; _column = 0; _pos = 0; }
+    void copybuf(std::streambuf *sb) { _ss << sb; }
+    void str(const std::string &s) { _ss.str(s); }
+    bool good() { return _ss.good(); }
+    bool eof()  { return _ss.eof(); }
+    int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
+    int column(){ return _column; }
+    int get()
+    {
+	int ch = _ss.get();
+	if ( ch == -1 ) { return -1; }
+	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
+	else if ( ch == '\r' ) { ++_cr; _column = 0; _pos = _ss.tellg(); }
+	else { ++_column; }
+	return ch;
+    }
+    int peek()
+    {
+	return _ss.peek();
+    }
+    bool getline(std::string &s)
+    {
+	int ch;
+	s.clear();
+	while ( _ss.good() && !_ss.eof() && (ch=_ss.get()) != -1 && ch != '\r' && ch != '\n' )
+	    s += ch;
+	if ( ch == -1 ) { return !s.empty(); }
+	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
+	else if ( ch == '\r' ) { ++_cr; _column = 0; _pos = _ss.tellg(); }
+	else { ++_column; }
+	if ( _ss.peek() == '\n' )
+	{
+	    _ss.get();
+	    ++_lf;
+	    _pos = _ss.tellg();
+	}
+	return !s.empty();
+    }
+    void showerror(int row=0, int col=0);
+};
+
+
 // program class, keep things somewhat contained
 class Program
 {
 protected:
-    TokenBase *_getToken(std::istream &);
+    TokenBase *_getToken();
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
-    inline int get(std::istream &is) { ++_column; return is.get(); }
+//  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
     void _tokenizer_init();
     void _parser_init();
     void _compiler_init();
     bool _compiler_finalize();
     // protected members
-    int _line, _column, _braces;
-    std::streampos _pos;
+    int _braces;
+//  std::streampos _pos;
     TokenBase *_prv_token;
     TokenBase *_cur_token;
+    Source source;
     asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
     keyword_map_t  keyword_map;		// reserved keywords
@@ -238,14 +289,14 @@ public:
     void popCompound();
 
     // generate tokens
-    TokenBase *getToken(std::istream &);
-    TokenBase *getRealToken(std::istream &);
+    TokenBase *getToken();
+    TokenBase *getRealToken();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
 
     // for debugging
     void printt(TokenBase *);
-    void showerror(std::istream &);
+//  void showerror(std::istream &);
 
     // accessing token queue
     inline TokenBase *peekToken() { if (tokens.empty()) return NULL; return tokens.front(); }
