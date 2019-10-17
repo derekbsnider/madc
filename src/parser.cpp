@@ -1644,23 +1644,23 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(const char *err_msg)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << _line << ':' << _column 
+	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column 
 	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
-	showerror(*tp->is);
+	source.showerror(tb->line, tb->column);
 	return false;
     }
     catch(TokenIdent *ti)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << _line << ':' << _column
+	cerr << ANSI_WHITE << tp->source << ':' << ti->line << ':' << ti->column
 	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
-	showerror(*tp->is);
+	source.showerror(ti->line, ti->column);
 	return false;
     }
     catch(TokenBase *tb)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << _line << ':' << _column
+	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
-	showerror(*tp->is);
+	source.showerror(tb->line, tb->column);
 	if ( tb->type() == TokenType::ttReal )
 	{
 	    cerr << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
