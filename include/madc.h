@@ -315,6 +315,7 @@ public:
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
+    throwstream Throw;			// throw an error
 
     bool colors;
     asmjit::JitRuntime jit;
@@ -473,7 +474,5 @@ public:
 #define ANSI_RED "\e[1;31m"
 #define ANSI_WHITE "\e[1;37m"
 #define ANSI_RESET "\e[m"
-
-extern throwstream throwit;
 
 #endif // __MADC_H
