@@ -186,6 +186,7 @@ typedef std::vector<TokenBase *>::iterator tokenbase_vec_iter;
 typedef std::pair<asmjit::Label *, asmjit::Label *> l_shortcut_t;
 typedef std::stack<l_shortcut_t> shortstack_t;
 
+
 // class to hold source for lexing
 class Source
 {
@@ -193,14 +194,18 @@ protected:
     std::stringstream _ss;
     int _lf, _cr, _column;
     std::streampos _pos;
+    std::string _fname;
 public:
     Source() { _lf = 0; _cr = 0; _column = 0; _pos = 0; }
-    void copybuf(std::streambuf *sb) { _ss << sb; }
+    const char *fname() { return _fname.c_str(); }
+    const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
+    const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
+    void copybuf(std::streambuf *sb)  { _ss << sb;  }
     void str(const std::string &s) { _ss.str(s); }
     bool good() { return _ss.good(); }
     bool eof()  { return _ss.eof(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
-    int column(){ return _column; }
+    int column(){ return _column ? _column : 1; }
     int get()
     {
 	int ch = _ss.get();
@@ -232,7 +237,48 @@ public:
 	}
 	return !s.empty();
     }
+    void setpos(int row, int col) { _lf = _cr = (row-1); _column = col; }
     void showerror(int row=0, int col=0);
+};
+
+// very simple exception container
+class Exception: public std::exception
+{
+protected:
+    std::string _msg;
+public:
+    explicit Exception(const std::string& message): _msg(message) {}
+    virtual ~Exception() throw() {}
+    virtual const char *what() const throw () { return _msg.c_str(); }
+};
+
+// streambuf class to throw an exception at sync
+class throwbuf: public std::stringbuf
+{
+protected:
+    TokenBase *_tb;
+    Source *_src;
+public:
+    throwbuf() : std::stringbuf() { _tb = NULL; _src = NULL; }
+    virtual int sync();
+    TokenBase *token() { return _tb; }
+    TokenBase *token(TokenBase *t) { return (_tb=t); }
+    Source *source() { return _src; }
+    Source *source(Source *s) { return (_src=s); }
+};
+
+class throwstream: public std::ostream
+{
+protected:
+    throwbuf _tbuf;
+public:
+    throwstream() : std::ostream(&_tbuf) { exceptions(std::ios_base::badbit); }
+    TokenBase *token() { return _tbuf.token(); };
+    Source *source() { return _tbuf.source(); }
+    Source *source(Source *s) { return _tbuf.source(s); }
+    Source *source(Source &s) { return _tbuf.source(&s); }
+    std::string str() const { return _tbuf.str(); }
+    throwstream& operator()(TokenBase *t) { _tbuf.token(t); return *this; }
 };
 
 
@@ -427,5 +473,7 @@ public:
 #define ANSI_RED "\e[1;31m"
 #define ANSI_WHITE "\e[1;37m"
 #define ANSI_RESET "\e[m"
+
+extern throwstream throwit;
 
 #endif // __MADC_H

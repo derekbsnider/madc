@@ -23,6 +23,8 @@
 
 using namespace std;
 
+throwstream throwit;
+
 double time_diff(struct timeval x , struct timeval y)
 {
 	double x_ms , y_ms , diff;
