@@ -144,7 +144,7 @@ TokenBase *Program::_getToken()
     keyword_map_iter kmi;
     datatype_map_iter bmi;
     string word;
-    int ch, cnt;
+    int ch, cnt, row, col;
 
     if ( !source.good() || source.eof() ) { return NULL; }
 
@@ -270,6 +270,8 @@ TokenBase *Program::_getToken()
 	case '.': return new TokenDot;
 	case '"':
 	    word = "";
+	    row = source.line();
+	    col = source.column();
 	    while ( source.good() && source.peek() != '"' )
 	    {
 		if ( source.peek() == '\\' )
@@ -277,11 +279,16 @@ TokenBase *Program::_getToken()
 		word += source.get();
 	    }
 	    if ( !source.good() )
-		throw "Unterminated string";
+	    {
+		source.setpos(row, col);
+		throwit << "Unterminated string" << flush;
+	    }
 	    source.get();
 	    return new TokenStr(word);
 	case '\'':
 	    word = "";
+	    row = source.line();
+	    col = source.column();
 	    while ( source.good() && source.peek() != '\'' )
 	    {
 		if ( source.peek() == '\\' )
@@ -289,7 +296,10 @@ TokenBase *Program::_getToken()
 		word += source.get();
 	    }
 	    if ( !source.good() )
-		throw "Unterminated string";
+	    {
+		source.setpos(row, col);
+		throwit << "Unterminated string" << flush;
+	    }
 	    source.get();
 	    return new TokenChar(word[0]);
 	case '<':
@@ -562,6 +572,32 @@ void Source::showerror(int row, int col)
 	std::cerr << "\e[1;32m^\e[m" << std::endl;
 }
 
+int throwbuf::sync()
+{
+    cerr << endl;
+    if ( _tb )
+    {
+	cerr << ANSI_WHITE << (_src ? _src->fname() : "???") << ':' << _tb->line << ':' << _tb->column 
+	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	if ( _src )
+	    _src->showerror(_tb->line, _tb->column);
+    }
+    else
+    if ( _src )
+    {
+	cerr << ANSI_WHITE << _src->fname() << ':' << _src->line() << ':' << _src->column()
+	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	_src->showerror();
+    }
+    else
+    {
+	cerr << ANSI_WHITE << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+    }
+    throw std::exception();
+    return -1;
+}
+
+
 #if 0
 void Program::showerror(istream &is)
 {
@@ -627,7 +663,9 @@ TokenProgram *Program::tokenize(const char *fname)
 
     _tokenizer_init();
 
+    source.fname(fname);
     source.copybuf(file.rdbuf());
+    throwit.source(source);
 
     try
     {
@@ -658,6 +696,10 @@ TokenProgram *Program::tokenize(const char *fname)
 	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column()
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
 	source.showerror(source.line(), source.column());
+	return NULL;
+    }
+    catch(std::exception &e)
+    {
 	return NULL;
     }
 

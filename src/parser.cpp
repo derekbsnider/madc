@@ -899,7 +899,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		if ( !(var=findVariable(((TokenIdent *)tb)->str)) )
 		{
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);
-		    throw (TokenIdent *)tb;
+		    throwit(tb) << "use of undeclared identifier '" << ((TokenIdent *)tb)->str << '\'' << flush;
+		    //throw (TokenIdent *)tb;
 		}
 #if 1
 		if ( var->type->is_function() )
@@ -1666,6 +1667,10 @@ bool Program::parse(TokenProgram *tp)
 	    cerr << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
 	    printf("%.14lf\n", ((TokenReal *)tb)->dval());
 	}
+	return false;
+    }
+    catch(std::exception &e)
+    {
 	return false;
     }
 
