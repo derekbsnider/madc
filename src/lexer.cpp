@@ -281,7 +281,7 @@ TokenBase *Program::_getToken()
 	    if ( !source.good() )
 	    {
 		source.setpos(row, col);
-		throwit << "Unterminated string" << flush;
+		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
 	    return new TokenStr(word);
@@ -298,7 +298,7 @@ TokenBase *Program::_getToken()
 	    if ( !source.good() )
 	    {
 		source.setpos(row, col);
-		throwit << "Unterminated string" << flush;
+		Throw << "Unterminated string" << flush;
 	    }
 	    source.get();
 	    return new TokenChar(word[0]);
@@ -665,7 +665,7 @@ TokenProgram *Program::tokenize(const char *fname)
 
     source.fname(fname);
     source.copybuf(file.rdbuf());
-    throwit.source(source);
+    Throw.source(source);
 
     try
     {
