@@ -377,6 +377,8 @@ public:
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Mem &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Mem &, asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Mem &, asmjit::x86::Xmm &, DataDef *, DataDef *);
     void safemov(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
     // only int and double are standard numeric token types
     void safemov(asmjit::Operand &,  int, DataDef *d1=NULL, DataDef *d2=NULL);

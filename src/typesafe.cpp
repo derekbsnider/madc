@@ -121,6 +121,7 @@ void Program::safemov(x86::Gp &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
     DBG(cc.comment("safemov(Gp, Mem)"));
     cc.mov(r1, r2);
 }
+
 void Program::safemov(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
 {
     throw "safemov() unable to move imm to xmm";
@@ -160,10 +161,45 @@ void Program::safemov(Operand &op1, double d, DataDef *d1, DataDef *d2)
     safemov(op1, op2, d1, d2);
 }
 
+
+void Program::safemov(x86::Mem &m, x86::Gp &r2, DataDef *d1, DataDef *d2)
+{
+    DBG(cc.comment("safemov(Mem, Gp)"));
+    switch(r2.type())
+    {
+	case BaseReg::kTypeGp8Lo: cc.mov(m, r2.r8Lo());  break;
+	case BaseReg::kTypeGp8Hi: cc.mov(m, r2.r8Hi());  break;
+	case BaseReg::kTypeGp16:  cc.mov(m, r2.r16());   break;
+	case BaseReg::kTypeGp32:  cc.mov(m, r2.r32());   break;
+	case BaseReg::kTypeGp64:  cc.mov(m, r2.r64());   break;
+	default: throw "Program::safemov() cannot match register types";
+    }
+}
+
+void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
+{
+    throw "safemov() unable to move xmm to mem";
+}
+
 // should handle all necessary conversions...
 void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Operand, Operand)"));
+    if ( op1.isMem() )
+    {
+	DBG(cc.comment("safemov(Operand=Mem, Operand)"));
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+	    safemov(op1.as<x86::Mem>(), op2.as<x86::Xmm>(), d1, d2);
+	else
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	    safemov(op1.as<x86::Mem>(), op2.as<x86::Gp>(), d1, d2);
+	else
+	if ( op2.isImm() )
+	    cc.mov(op1.as<x86::Mem>(), op2.as<Imm>());
+	else
+	    throw "safemov() rval is unsupported";
+	return;
+    }
     if ( !op1.isReg() ) { throw "safemov() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() && !op2.isMem() ) { throw "safemov() rval is not register, memory, or immediate"; }
     if ( op1.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
