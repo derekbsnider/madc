@@ -176,18 +176,18 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment(var.name.c_str()));
 
     if ( !var.type->is_function() )
-	throw "TokenCallFunc::compile() called on non-function";
+	pgm.Throw(this) << "TokenCallFunc::compile() called on non-function" << flush;
 
     Method *method;
     FuncNode *fnd;
 
     // grab the Method object
     if ( !(method=(Method *)var.data) )
-	throw "TokenCallFunc::compile() function method is NULL";
+	pgm.Throw(this) << "TokenCallFunc::compile() function method is NULL" << flush;
 
     // grab the FuncNode object
     if ( !(fnd=((FuncDef *)(method->returns.type))->funcnode) && !method->x86code )
-	throw "TokenCallFunc::compile() method has neither FuncNode nor x86code";
+	pgm.Throw(this) << "TokenCallFunc::compile() method has neither FuncNode nor x86code" << flush;
 
     // build arguments
     FuncDef *func = (FuncDef *)method->returns.type;
@@ -260,7 +260,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    tn = parameters[i];
 	    std::cerr << "arg[" << i << "] type() = " << (int)tn->type() << " id() = " << (int)tn->id() << std::endl;
 	}
-	throw "TokenCallFunc::compile() called with too many parameters";
+	pgm.Throw(this) << "TokenCallFunc::compile() called with too many parameters" << flush;
     }
 
     for ( size_t i = 0; i < argc(); ++i )
@@ -276,43 +276,43 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	funcrdp.first = NULL; // clean for param
 	Operand &tnreg = tn->compile(pgm, funcrdp);
 	if ( !funcrdp.second )
-	    throw "Failed to detemine type of rval";
+	    pgm.Throw(tn) << "Failed to detemine type of rval" << flush;
 	if ( ptype->is_numeric() && !funcrdp.second->is_numeric() )
 	{
 	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-	    throw "Expecting numeric argument";
+	    pgm.Throw(tn) << "Expecting numeric argument" << flush;
 	}
 	if ( ptype->is_integer() && !funcrdp.second->is_integer() )
 	{
 	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-	    throw "Expecting integer argument";
+	    pgm.Throw(tn) << "Expecting integer argument" << flush;
 	}
 	if ( ptype->is_real() && !funcrdp.second->is_real() )
 	{
 	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-	    throw "Expecting floating point argument";
+	    pgm.Throw(tn) << "Expecting floating point argument" << flush;
 	}
 	if ( ptype->is_string() && !funcrdp.second->is_string() )
-	    throw "Expecting string argument";
+	    pgm.Throw(tn) << "Expecting string argument" << flush;
 	if ( ptype->is_object() )
 	{
 	    if ( !funcrdp.second->is_object() )
-		throw "Expecting object argument";
+		pgm.Throw(tn) << "Expecting object argument" << flush;
 	    // check for has_ostream / has_istream
 	    if ( ptype->rawtype() != funcrdp.second->rawtype() )
-		throw "Object type mismatch";
+		pgm.Throw(tn) << "Object type mismatch" << flush;
 	}
 	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(tnreg)"));
 	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
 	{
 	    if ( !ptype->is_real() )
-		throw "Not expecting floating point argument";
+		pgm.Throw(tn) << "Not expecting floating point argument" << flush;
 	    DBG(pgm.cc.comment("tnreg is Xmm"));
 	}
 	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	{
 	    if ( ptype->is_real() )
-		throw "Expecting floating point argument";
+		pgm.Throw(tn) << "Expecting floating point argument" << flush;
 	    DBG(pgm.cc.comment("tnreg is Gp"));
             DBG(cout << "tnreg size=" << tnreg.size() << " regdp.second->size=" << funcrdp.second->size << " type " << funcrdp.second->name << endl);
 	}
@@ -372,7 +372,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		call->setArg(_argc++, gvi->as<x86::Gp>());
 	    }
 	    else
-		throw "TokenCallFunc::compile() unexpected parameter Operand";
+		pgm.Throw(tn) << "TokenCallFunc::compile() unexpected parameter Operand" << flush;
 	}
 	else
 	if ( gvi->isImm() )
@@ -689,6 +689,10 @@ bool Program::compile()
 	source.showerror(tb->line, tb->column);
 	return false;
     }
+    catch(std::exception &e)
+    {
+	return false;
+    }
 
     DBG(cout << "Program::compile() done" << endl);
 
@@ -826,8 +830,9 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenAssign::compile(" << (regdp.second ? regdp.second->name : "") << ") TOP" << endl);
-    TokenVar *tvl; //, *tvr;
-    DataDef *ltype;
+    TokenVar *tvl = NULL;
+    TokenMember *tml;
+    DataDef *ltype = NULL;
     Operand *r_operand;
 
     if ( !left )  // = 1;
@@ -865,11 +870,30 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     // TODO: handle member token
     if ( left->type() == TokenType::ttMember )
     {
-	throw "Assignment on a member lval not supported";
+	tml = dynamic_cast<TokenMember *>(left);
+	ltype = tml->var.type;
+	DBG(cout << "TokenAssign::compile() assignment to " << tml->var.name << " type " << ltype->name << endl);
+	DBG(pgm.cc.comment("TokenAssign::compile() assignment to:"));
+	DBG(pgm.cc.comment(tml->var.name.c_str()));
+	DBG(pgm.cc.comment(ltype->name.c_str()));
+	DBG(pgm.cc.comment("TokenAssign::compile() _operand = tml->operand(pgm)"));
+	_operand = tml->operand(pgm);
+	if ( regdp.second && regdp.second != ltype
+	&&  !regdp.second->is_compatible(*ltype) )
+	{
+	    cerr << "regdp.second->type() " << (int)regdp.second->type() << " name: " << regdp.second->name << endl;
+	    cerr << "     tml->var.type() " << (int)ltype->type() << " name: " << ltype->name << endl;
+	    throw "incompatible assignment";
+	}
+	if ( regdp.second )
+	    DBG(cout << "regdp.second->type() " << (int)regdp.second->type() << " name: " << regdp.second->name << endl);
+	else
+	    DBG(cout << "regdp.second is NULL" << endl);
+	DBG(cout << "     tml->var.type() " << (int)ltype->type() << " name: " << ltype->name << endl);
     }
     else
     {
-	throw "Assignment on a non-variable lval";
+	pgm.Throw(this) << "Assignment on a non-variable lval" << flush;
     }
 
     if ( !regdp.first || !regdp.second )
@@ -910,8 +934,11 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     {
 	DBG(cout << "TokenAssign::compile() numeric to numeric" << endl);
 	DBG(pgm.cc.comment("TokenAssign::compile() numeric to numeric"));
-	tvl->var.modified();
-	tvl->putreg(pgm);
+	if ( tvl )
+	{
+	    tvl->var.modified();
+	    tvl->putreg(pgm);
+	}
     }
     else
     if ( ltype->is_string() )
@@ -926,9 +953,11 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	FuncCallNode* call = pgm.cc.call(imm(string_assign), FuncSignatureT<void, const char*, const char *>(CallConv::kIdHost));
 	call->setArg(0, _operand.as<x86::Gp>());
 	call->setArg(1, r_operand->as<x86::Gp>());
-
-	tvl->var.modified();
-	tvl->putreg(pgm);
+	if ( tvl )
+	{
+	    tvl->var.modified();
+	    tvl->putreg(pgm);
+	}
     }
     else
 	throw "Unsupported assignment";
@@ -1003,6 +1032,10 @@ void TokenVar::putreg(Program &pgm)
 
 Operand &TokenMember::operand(Program &pgm)
 {
+    Operand &_obj = pgm.tkFunction->voperand(pgm, &object); // make sure the parent object is all set up
+    _operand = _obj.clone();
+    _operand.as<x86::Mem>().setSize(var.type->size);
+    _operand.as<x86::Mem>().setOffset(offset);
     return _operand; // getreg(pgm);
 }
 
@@ -1148,10 +1181,10 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		||   var->type->basetype() == BaseType::btClass )
 		{
 		    x86::Mem stack = pgm.cc.newStack(var->type->size, 4);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
-		    pgm.cc.lea(reg, stack);
+//		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+//		    pgm.cc.lea(reg, stack);
 //		    pgm.cc.mov(qword_ptr(reg, sizeof(string)), 0);
-		    operand_map[var] = reg;
+		    operand_map[var] = stack;
 		    break;
 		}
 		std::cerr << "unsupported type: " << (int)var->type->type() << std::endl;
