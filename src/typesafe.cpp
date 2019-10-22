@@ -54,6 +54,7 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 
 void Program::safemov(x86::Gp &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
+    DBG(cc.comment("safemov(Gp, Xmm)"));
     if ( d2 && d2->size == sizeof(float) )
     switch(r1.type())
     {
@@ -75,6 +76,7 @@ void Program::safemov(x86::Gp &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 }
 void Program::safemov(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
+    DBG(cc.comment("safemov(Xmm, Gp)"));
     if ( d1 && d1->size == sizeof(float) )
 	cc.cvtsi2ss(r1, r2);
     else

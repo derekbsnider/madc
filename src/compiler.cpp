@@ -380,6 +380,14 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(pgm.cc.comment("call->setArg(_argc++, gvi->as<Imm>())"));
 	    call->setArg(_argc++, gvi->as<Imm>());
 	}
+	else
+	if ( gvi->isMem() )
+	{
+	    x86::Gp tmp = pgm.cc.newGpq();
+	    pgm.cc.mov(tmp, gvi->as<x86::Mem>());
+	    call->setArg(_argc++, tmp);
+	    DBG(pgm.cc.comment("call->setArg(_argc++, gvi->as<Mem>())"));
+	}
     }
 
     DBG(std::cout << "TokenCallFunc::compile() END" << std::endl);
@@ -1398,7 +1406,7 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
 	    _operand = pgm.cc.newXmm("_operand_Xmm_");
 	    regdp.first = &_operand;
 	}
-	pgm.safemov(*regdp.first, foperate());
+	pgm.safemov(*regdp.first, foperate(), regdp.second);
 	return *regdp.first;
     }
     if ( !regdp.second )
@@ -1411,7 +1419,7 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
 	_operand = pgm.cc.newGpq("_operand_Gpq_");
 	regdp.first = &_operand;
     }
-    pgm.safemov(*regdp.first, ioperate());
+    pgm.safemov(*regdp.first, ioperate(), regdp.second);
     return *regdp.first;
 }
 
@@ -1731,8 +1739,12 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	else
 	if ( regdp.second->is_string() )
 	{
-	    if ( !regdp.first->isReg() ) { throw "TokenBSL::compile() regdp.first->isReg() is FALSE"; }
-	    if ( !regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupGp) ) { throw "TokenBSL::compile() regdp.first not GpReg"; }
+	    if ( !regdp.first ) { pgm.Throw(this) << "TokenBSL::compile() regdp.first is NULL" << flush; }
+	    if ( !regdp.first->isReg() && !regdp.first->isMem() )
+	    {
+		pgm.Throw(this) << "TokenBSL::compile() regdp.first->isReg() is FALSE" << flush;
+	    }
+	    if ( regdp.first->isReg() && !regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupGp) ) { throw "TokenBSL::compile() regdp.first not GpReg"; }
 	    DBG(cout << "TokenBSL::compile() regdp.second->is_string()" << endl);
 	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_string()"));
 	    DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
@@ -2286,7 +2298,7 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	if ( !reg.isEqual(*regdp.first) && regdp.first != &reg )
 	{
 	    DBG(pgm.cc.comment("TokenVar::compile() safemov(*ret, reg)"));
-	    pgm.safemov(*regdp.first, reg);
+	    pgm.safemov(*regdp.first, reg, regdp.second);
 	}
 	return *regdp.first;
     }
@@ -2316,9 +2328,10 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
     if ( regdp.first )
     {
 	DBG(pgm.cc.comment("TokenMember::compile() safemov(*ret, reg)"));
-	pgm.safemov(*regdp.first, reg);
+	pgm.safemov(*regdp.first, reg, regdp.second);
 	return *regdp.first;
     }
+    regdp.first = &reg;
 
     return reg;
 }
@@ -2360,7 +2373,7 @@ Operand &TokenInt::compile(Program &pgm, regdefp_t &regdp)
     if ( regdp.first )
     {
 	DBG(pgm.cc.comment("TokenInt::compile() cc.mov(*ret, value)"));
-	pgm.safemov(*regdp.first, _token);
+	pgm.safemov(*regdp.first, _token, regdp.second);
 	return *regdp.first;
     }
     DBG(cout << "TokenInt::compile[" << (uint64_t)this << "]() value: " << (int)_token << endl);
