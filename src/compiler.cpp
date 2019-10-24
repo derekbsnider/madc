@@ -181,9 +181,11 @@ Operand &TokenCallMethod::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenCallMethod::compile(" << var.name << ") TOP" << endl);
     DBG(pgm.cc.comment("TokenCallMethod start for "));
+    DBG(pgm.cc.comment(object.name.c_str()));
+    DBG(pgm.cc.comment("::"));
     DBG(pgm.cc.comment(var.name.c_str()));
     regdp.object = &pgm.tkFunction->voperand(pgm, &object);
-    return dynamic_cast<TokenCallFunc *>(this)->compile(pgm, regdp);
+    return TokenCallFunc::compile(pgm, regdp);
 }
 
 Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
@@ -423,8 +425,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    call->setRet(0, regdp.first->as<x86::Xmm>());
 	else
 	if ( regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+	{
+	    DBG(pgm.cc.comment("call->setRet(0, regdp.first->as<x86::Gp>())"));
 	    call->setRet(0, regdp.first->as<x86::Gp>());
-	DBG(pgm.cc.comment("TokenCallFunc::compile() END"));
+	}
+	DBG(pgm.cc.comment("TokenCallFunc::compile() regdp.first END"));
 	return *regdp.first;
     }
     else
@@ -438,7 +443,6 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	regdp.first = &_operand;
     }
     DBG(pgm.cc.comment("TokenCallFunc::compile() END"));
-
 
     return _operand;
 }
