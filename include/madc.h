@@ -117,12 +117,12 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
-class TokenMember: public TokenVar
+class TokenMember: public TokenCallFunc
 {
 public:
     Variable &object;
     size_t offset;
-    TokenMember(Variable &o, Variable &m, size_t ofs) : TokenVar(m), object(o), offset(ofs) { _datatype = m.type; }
+    TokenMember(Variable &o, Variable &m, size_t ofs) : TokenCallFunc(m), object(o), offset(ofs) { _datatype = m.type; }
     virtual TokenType type() const { return TokenType::ttMember; }
     virtual bool is_real() { return _datatype->is_real(); }
     virtual void putreg(Program &);
@@ -133,12 +133,8 @@ public:
 class TokenCallMethod: public TokenMember
 {
 public:
-    std::vector<TokenBase *> parameters;
     TokenCallMethod(Variable &o, Variable &m) : TokenMember(o, m, 0) { _datatype = returns(); }
-    virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
-    virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallMethod; }
-    virtual bool is_real() { return _datatype->is_real(); }
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
