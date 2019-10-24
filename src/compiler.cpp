@@ -78,9 +78,16 @@ void string_assign(std::string &o, std::string &n)
     DBG(cout << "string_assign(" << o << '['<< (uint64_t)&o << "], " << n << '[' << (uint64_t)&n << "])" << endl);
     o.assign(n);
     DBG(cout << "string_assign(" << o << '['<< (uint64_t)&o << "])" << endl);
+    DBG(cout << "string_assign(" << o << "::c_str()["<< (uint64_t)o.c_str() << "])" << endl);
 }
 
 void streamout_string(std::ostream &os, std::string &s)
+{
+//  DBG(std::cout << "streamout_string: << " << (uint64_t)&s << std::endl);
+    os << s;
+}
+
+void streamout_cstr(std::ostream &os, const char *s)
 {
 //  DBG(std::cout << "streamout_string: << " << (uint64_t)&s << std::endl);
     os << s;
@@ -167,6 +174,16 @@ bool Program::_compiler_finalize()
     }
 
     return true;
+}
+
+
+Operand &TokenCallMethod::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(cout << "TokenCallMethod::compile(" << var.name << ") TOP" << endl);
+    DBG(pgm.cc.comment("TokenCallMethod start for "));
+    DBG(pgm.cc.comment(var.name.c_str()));
+    regdp.object = &pgm.tkFunction->voperand(pgm, &object);
+    return dynamic_cast<TokenCallFunc *>(this)->compile(pgm, regdp);
 }
 
 Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
@@ -505,6 +522,8 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 	    return dynamic_cast<TokenVar *>(this)->compile(pgm, regdp);
 	case TokenType::ttCallFunc:
 	    return dynamic_cast<TokenCallFunc *>(this)->compile(pgm, regdp);
+	case TokenType::ttCallMethod:
+	    return dynamic_cast<TokenCallMethod *>(this)->compile(pgm, regdp);
 	case TokenType::ttDeclare:
 	    return dynamic_cast<TokenDecl *>(this)->compile(pgm, regdp);
 	case TokenType::ttFunction:
@@ -1082,6 +1101,12 @@ void TokenMember::putreg(Program &pgm)
 }
 
 Operand &TokenCallFunc::operand(Program &pgm)
+{
+    _operand = returns()->newreg(pgm.cc, var.name.c_str());
+    return _operand;
+}
+
+Operand &TokenCallMethod::operand(Program &pgm)
 {
     _operand = returns()->newreg(pgm.cc, var.name.c_str());
     return _operand;
@@ -1749,6 +1774,30 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_string()"));
 	    DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
 	    FuncCallNode* call = pgm.cc.call(imm(streamout_string), FuncSignatureT<void, void *, void *>(CallConv::kIdHost));
+	    DBG(pgm.cc.comment("call->setArg(0, lval)"));
+	    if ( lval.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
+		call->setArg(0, lval.as<x86::Xmm>());
+	    else
+	    if ( lval.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
+		call->setArg(0, lval.as<x86::Gp>());
+	    else
+		throw "TokenBSL::compile() lval unsupported register type";
+	    DBG(pgm.cc.comment("call->setArg(1, rval)"));
+	    call->setArg(1, regdp.first->as<x86::Gp>());
+	}
+	else
+	if ( regdp.second->type() == DataType::dtCHARptr )
+	{
+	    if ( !regdp.first ) { pgm.Throw(this) << "TokenBSL::compile() regdp.first is NULL" << flush; }
+	    if ( !regdp.first->isReg() && !regdp.first->isMem() )
+	    {
+		pgm.Throw(this) << "TokenBSL::compile() regdp.first->isReg() is FALSE" << flush;
+	    }
+	    if ( regdp.first->isReg() && !regdp.first->as<BaseReg>().isGroup(BaseReg::kGroupGp) ) { throw "TokenBSL::compile() regdp.first not GpReg"; }
+	    DBG(cout << "TokenBSL::compile() regdp.second->is_cstr()" << endl);
+	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_cstr()"));
+	    DBG(pgm.cc.comment("pgm.cc.call(streamout_cstr)"));
+	    FuncCallNode* call = pgm.cc.call(imm(streamout_cstr), FuncSignatureT<void, void *, void *>(CallConv::kIdHost));
 	    DBG(pgm.cc.comment("call->setArg(0, lval)"));
 	    if ( lval.as<BaseReg>().isGroup(BaseReg::kGroupVec) )
 		call->setArg(0, lval.as<x86::Xmm>());

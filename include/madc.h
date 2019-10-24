@@ -139,8 +139,8 @@ public:
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallMethod; }
     virtual bool is_real() { return _datatype->is_real(); }
-//  virtual asmjit::Operand &operand(Program &);
-//  virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenProgram: public TokenCpnd
@@ -364,6 +364,7 @@ public:
     void parseFunction(DataDef &, std::string &);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
+    TokenBase *parseCallMethod(TokenCallMethod *);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *);
