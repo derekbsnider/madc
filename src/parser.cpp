@@ -284,6 +284,11 @@ void printinteger(int i)
     std::cout << i << std::endl;
 }
 
+void printuinteger(unsigned int i)
+{
+    std::cout << i << std::endl;
+}
+
 // some debugging functions
 void printdouble(double d)
 {
@@ -328,6 +333,7 @@ void Program::add_functions()
     addFunction("printstream",  datatype_vec_t{DataType::dtVOID, DataType::dtSSTREAM}, (fVOIDFUNC)printstream);
     addFunction("puts",		datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)puts);
     addFunction("puti",		datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
+    addFunction("putu",		datatype_vec_t{DataType::dtVOID, DataType::dtUINT64}, (fVOIDFUNC)printuinteger);
     addFunction("putd",		datatype_vec_t{DataType::dtVOID, DataType::dtDOUBLE}, (fVOIDFUNC)printdouble);
     addFunction("putf",		datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
     addFunction("putchar",	datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
@@ -616,6 +622,11 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	    exStack.push(opStack.top());
 	    opStack.pop();
 	    break;
+	case TokenType::ttCallMethod:
+	    DBG(cout << "popOperator() got ttCallMethod" << endl);
+	    exStack.push(opStack.top());
+	    opStack.pop();
+	    break;
 	default:
 	    DBG(cerr << "popOperator() throwing opStack.top()" << endl);
 	    Throw(opStack.top()) << "unexpected token type " << (int)opStack.top()->type() << flush;
@@ -716,6 +727,48 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     return tb;
 }
 #endif
+
+// parse a method call and it's parameters
+// parameters are individually parsed by parseExpression
+// returns ending token
+TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
+{
+    TokenBase *tb;
+
+    DBG(std::cout << tc->line << ':' << tc->column << ":Program::parseCallMethod(" << tc->var.name << ')' << std::endl);
+    int brackets = 1;
+    size_t paramcnt = 0;
+
+    while ( brackets )
+    {
+	tb = peekToken();
+	if ( tb->id() == TokenID::tkSemi )  { return tb; }
+	tb = nextToken();
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	if ( tb->id() == TokenID::tkComma )
+	{
+	    if ( ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
+		Throw(tb) << "Too many parameters" << flush;
+	    continue;
+	}
+	if ( tb->id() == TokenID::tkSemi ) { break; }
+	DBG(cout << "parseCallMethod() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
+	if ( !(tb=parseExpression(tb, true)) ) { break; }
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
+	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
+	tc->parameters.push_back(tb);
+    }
+    // (need check for optional parameters)
+    if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
+    {
+	DBG(std::cout << "parseCallMethod: argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << std::endl);
+	Throw(tc) << "Incorrect number of parameters: expected " << ((FuncDef *)tc->var.type)->parameters.size() << " got " << tc->argc() << flush;
+    }
+
+    return tb;
+}
+
 
 // parse one complete expression
 // for expression: x = 5, sum(5, 5), ++x, etc
@@ -833,7 +886,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		// and (the operator at the top of the operator stack is not a left parenthesis):
 		// (Note: we don't put functions in the stack right now)
 		while ( !opStack.empty() && opStack.top()->id() != TokenID::tkOpBrk
-		&&      (opStack.top()->type() == TokenType::ttCallFunc
+		&&      (opStack.top()->type() == TokenType::ttCallFunc || opStack.top()->type() == TokenType::ttCallMethod
 		||      (opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to))) )
 		{
 		    DBG(cout << "Operator(" << (char)opStack.top()->get() << ") has precedence over operator(" << (char)to->get() << ')' << endl);
@@ -874,7 +927,32 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    if ( tv->var.type->is_object() && (var=((DataDefCLASS *)tv->var.type)->findMethod(id)) )
 		    {
 			// cout << "Found " << tv->var.name << "::" << var->name << endl;
-			Throw(tb) << "parseExpression() found method " << tv->var.name << "::" << var->name << flush;
+			// Throw(tb) << "parseExpression() found method " << tv->var.name << "::" << var->name << flush;
+			TokenCallMethod *tc = new TokenCallMethod(tv->var, *var);
+			tb = nextToken();
+			tc->line = tb->line;
+			tc->column = tb->column;
+			// if bracket, parse params
+			if ( tb->id() == TokenID::tkOpBrk )
+			{
+			    // delete tb?
+			    tb = parseCallMethod(tc);
+			    DBG(cout << "parseCallMethod returned with token " << (char)tb->get() << endl);
+			}
+			// remove object TokenVar from exStack
+			exStack.pop();
+			// remove TokenDot from opStack
+			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			{
+			    DBG(cout << "parseCallMethod, removing tkDot from opStack" << endl);
+			    opStack.pop();
+			}
+			DBG(cout << "Pushing found method call: " << var->name << "() onto opStack" << endl);
+			opStack.push(tc);
+			// I'm not sure why I need to do this TODO: figure this out
+			if ( tb->id() == TokenID::tkSemi )
+			    done = true;
+			break;
 		    }
 		    // get offset
 		    ssize_t ofs = ((DataDefSTRUCT *)tv->var.type)->m_offset(id);
@@ -968,6 +1046,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		break;
 	    case TokenType::ttCallFunc:
 		Throw(tb) << "Got call function!" << flush;
+		break;
+	    case TokenType::ttCallMethod:
+		Throw(tb) << "Got call method!" << flush;
 		break;
 	    case TokenType::ttChar:
 	        DBG(cout << "Pushing char: " << (int)tb->get() << " onto exStack" << endl);
