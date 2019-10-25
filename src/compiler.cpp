@@ -219,7 +219,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
 	regdp.second = &func->returns;
 
-    DBG(cout << "TokenCallFunc::compile() func->returns.type() " << (int)func->returns.type() << endl);
+    DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
     // set return type
     switch(func->returns.type())
@@ -1100,6 +1100,8 @@ void TokenMember::putreg(Program &pgm)
 Operand &TokenCallFunc::operand(Program &pgm)
 {
     _operand = returns()->newreg(pgm.cc, var.name.c_str());
+    DBG(pgm.cc.comment("TokenCallFunc::operand"));
+    DBG(cout << "TokenCallFunc::operand() size " << _operand.size() << endl);
     return _operand;
 }
 
@@ -1166,6 +1168,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::voperand(" << var->name << ") building register" << std::endl);
     if ( (var->flags & vfSTACK) && !var->type->is_numeric() )
     {
+	DBG(pgm.cc.comment("voperand on stack and non-numeric"));
 	switch(var->type->type())
 	{
 	    case DataType::dtSTRING:
@@ -1203,6 +1206,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		if ( var->type->reftype() == RefType::rtReference
 		||   var->type->reftype() == RefType::rtPointer )
 		{
+		    DBG(pgm.cc.comment("pgm.cc.newIntPtr"));
 		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
 		    operand_map[var] = reg;
 		    break;

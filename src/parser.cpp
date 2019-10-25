@@ -61,6 +61,9 @@ const char *c_str2(std::string *str)
 {
     std::cout << "c_str2() on " << *str << '[' << (uint64_t)str << ']' << std::endl;
     std::cout << "c_str2() returning " << (uint64_t)str->c_str() << std::endl;
+    uint64_t ui64 = (uint64_t)str->c_str();
+    uint32_t ui32 = ui64;
+    std::cout << "c_str2() uint32 " << ui32 << std::endl;
     return str->c_str();
 }
 
@@ -297,7 +300,7 @@ void printinteger(int i)
     std::cout << i << std::endl;
 }
 
-void printuinteger(unsigned int i)
+void printuinteger(uint64_t i)
 {
     std::cout << i << std::endl;
 }
@@ -480,7 +483,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	return NULL;
     }
 
-    switch(DataDef::rawtype(params[0]))
+//  switch(DataDef::rawtype(params[0]))
+    switch(params[0])
     {
 	default:	 	  dd = &ddVOID;		break;
 	case DataType::dtCHAR:    dd = &ddCHAR;		break;
