@@ -57,6 +57,14 @@ DataDefLPSTR ddLPSTR;
 DataDefTEST ddTESTSTRUCT;
 
 
+const char *c_str2(std::string *str)
+{
+    std::cout << "c_str2() on " << *str << '[' << (uint64_t)str << ']' << std::endl;
+    std::cout << "c_str2() returning " << (uint64_t)str->c_str() << std::endl;
+    return str->c_str();
+}
+
+
 void printuint32(uint32_t &i)
 {
     std::cout << "i: " << i << std::endl << std::flush;
@@ -248,6 +256,8 @@ union string_member_cast {
 };
 
 
+
+
 // add methods to ddSTRING
 void Program::add_string_methods()
 {
@@ -255,7 +265,10 @@ void Program::add_string_methods()
     Variable *var;
 
     scmc.c_str = (const char *(string::*)(void))&string::c_str;
-    var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
+    var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
+    ddSTRING.methods.push_back(var);
+
+    var = addFunction("c_str2", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)c_str2, true);
     ddSTRING.methods.push_back(var);
 
     scmc.method_str = (string &(string::*)(const string &))&string::assign;
@@ -737,7 +750,7 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 
     DBG(std::cout << tc->line << ':' << tc->column << ":Program::parseCallMethod(" << tc->var.name << ')' << std::endl);
     int brackets = 1;
-    size_t paramcnt = 0;
+    size_t paramcnt = 1;
 
     while ( brackets )
     {
@@ -760,10 +773,10 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	tc->parameters.push_back(tb);
     }
     // (need check for optional parameters)
-    if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
+    if ( tc->argc()+1 != ((FuncDef *)tc->var.type)->parameters.size() )
     {
 	DBG(std::cout << "parseCallMethod: argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << std::endl);
-	Throw(tc) << "Incorrect number of parameters: expected " << ((FuncDef *)tc->var.type)->parameters.size() << " got " << tc->argc() << flush;
+	Throw(tc) << "Incorrect number of parameters: expected " << ((FuncDef *)tc->var.type)->parameters.size() << " got " << tc->argc()+1 << flush;
     }
 
     return tb;

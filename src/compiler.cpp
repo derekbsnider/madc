@@ -252,21 +252,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 //#if OBJECT_SUPPORT
     // pass along object ("this") as first argument if appropriate
-    if ( regdp.object && func->parameters.size() )
+    if ( regdp.object )
     {
-	ptype = func->parameters[0];
-	// we need to add support for reference types
-	if ( 1 /*ptype->is_object()*/ )
-	{
-	    funcsig.addArgT<void *>();
-	    params.push_back(*regdp.object);
-	    DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(*regdp.object)"));
-	}
-	else
-	{
-	    DBG(std::cout << "TokenCallFunc::compile() got obj param, but param[0] is not an object: " << (int)ptype->type() << std::endl);
-	    DBG(pgm.cc.comment("TokenCallFunc::compile() got obj param, but param[0] is not an object"));
-	}
+	funcsig.addArgT<void *>();
+	params.push_back(*regdp.object);
+	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(*regdp.object)"));
     }
 //#endif
 
@@ -287,6 +277,8 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	regdefp_t funcrdp;
 	ptype = func->parameters[i];
 	tn = parameters[i];
+
+	DBG(pgm.cc.comment("TokenCallFunc::argc param"));
 
 	funcrdp.object = NULL; // should this be regdp.object?
 	funcrdp.second = ptype;// this may result in an unwanted movsx on an unsigned integer type
@@ -376,6 +368,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     for ( gvi = params.begin(); gvi != params.end(); ++gvi )
     {
 	DBG(std::cout << "TokenCallFunc::compile(call->setArg(" << _argc << ", reg)" << endl);
+	DBG(pgm.cc.comment("TokenCallFunc::compile(call->setArg())"));
 	
 	if ( gvi->isReg() )
 	{
