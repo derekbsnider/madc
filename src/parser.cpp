@@ -258,6 +258,12 @@ union string_member_cast {
     void * void_pointer[1];
 };
 
+typedef string (*fnSSTREAMstr)(void *);		// stringstream::str()
+union sstream_member_cast {
+    string (stringstream::*str)(void) const;
+    void * void_pointer[1];
+};
+
 
 
 
@@ -291,6 +297,17 @@ void Program::add_string_methods()
     ddSTRING.methods.push_back(var);
 
     DBG(std::cout << "add_string_methods() ddSTRING.methods.size() = " << ddSTRING.methods.size() << std::endl);
+}
+
+// add methods to ddSSTREAM
+void Program::add_sstream_methods()
+{
+    sstream_member_cast ssmc;
+    Variable *var;
+
+    ssmc.str = (string (stringstream::*)(void) const)&stringstream::str;
+    var = addFunction("str", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSSTREAM)}, (fVOIDFUNC)(fnSSTREAMstr)ssmc.void_pointer[0], true);
+    ddSSTREAM.methods.push_back(var);
 }
 
 
@@ -369,6 +386,7 @@ void Program::_parser_init()
 {
     add_functions();
     add_string_methods();
+    add_sstream_methods();
     add_globals();
     _braces = 0;
 }
@@ -496,6 +514,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	case DataType::dtINT64:	  dd = &ddINT64;	break;
 	case DataType::dtUINT64:  dd = &ddUINT64;	break;
 	case DataType::dtSTRING:  dd = &ddSTRING;	break;
+	case rtPtr(DataType::dtOSTREAM):
 	case DataType::dtOSTREAM: dd = &ddOSTREAM;	break;
 	case rtPtr(DataType::dtCHAR): dd = &ddLPSTR;	break;
     }
