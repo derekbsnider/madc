@@ -217,7 +217,10 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     TokenBase *tn;
 
     if ( !regdp.second )
+    {
+	DBG(cout << "TokenCallFunc::compile(" << var.name << ") regdp.second = " << func->returns.name << endl);
 	regdp.second = &func->returns;
+    }
 
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
@@ -1690,6 +1693,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	regdp.first = NULL;
 	regdp.second = NULL;
 	regdp.object = &lval;
+	DBG(cout << "TokenBSL::compile() calling right->compile() on " << (int)right->type() << endl);
 	/* Operand &rval =*/ right->compile(pgm, regdp); // compile right side
 
 	if ( !regdp.second )
@@ -1813,7 +1817,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	else
 	{
 	    cerr << "TokenBSL::compile() regdp.second.name: " << regdp.second->name << " regdp.second->type() " << (int)regdp.second->type() << endl;
-	    throw "TokenBSL::compile unsupported dataype";
+	    pgm.Throw(this) << "TokenBSL::compile unsupported dataype " << regdp.second->name << " (" << (int)regdp.second->type() << ')' << flush;
 	}
 
 	DBG(cout << "TokenBSL::Compile() END" << endl);
@@ -2348,7 +2352,7 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	if ( !reg.isEqual(*regdp.first) && regdp.first != &reg )
 	{
 	    DBG(pgm.cc.comment("TokenVar::compile() safemov(*ret, reg)"));
-	    pgm.safemov(*regdp.first, reg, regdp.second);
+	    pgm.safemov(*regdp.first, reg, regdp.second, var.type);
 	}
 	return *regdp.first;
     }

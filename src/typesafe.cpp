@@ -269,9 +269,15 @@ void Program::safeadd(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 void Program::safeadd(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     if ( d1 && d1->size == sizeof(float) )
+    {
+	DBG(cc.comment("Program::safeadd(r1, r2, float)"));
 	cc.addss(r1, r2);
+    }
     else
+    {
+	DBG(cc.comment("Program::safeadd(r1, r2, double)"));
 	cc.addsd(r1, r2);
+    }
 }
 void Program::safeadd(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
 {
