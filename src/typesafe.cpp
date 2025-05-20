@@ -21,7 +21,7 @@
 #include <queue>
 #include <stack>
 #define DBG(x) x
-#include <asmjit/asmjit.h>
+#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -478,7 +478,7 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
     if ( !op3.isReg() || !op3.as<BaseReg>().isGroup(BaseReg::kGroupGp) )
 	throw "safediv() right operand is not a Gp register";
 #if 0
-    FuncCallNode* call;
+    InvokeNode* call;
     call = cc.call(imm(printint), FuncSignatureT<void, int>(CallConv::kIdHost));
     call->setArg(0, op1.as<x86::Gp>());
     call = cc.call(imm(printint), FuncSignatureT<void, int>(CallConv::kIdHost));
