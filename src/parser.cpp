@@ -23,7 +23,7 @@
 #include <queue>
 #include <stack>
 #define DBG(x) x
-#include <asmjit/asmjit.h>
+#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
