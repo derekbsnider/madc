@@ -14,7 +14,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#include <asmjit/asmjit.h>
+#include <asmjit/x86.h>
 #define DBG(x)
 #include "datadef.h"
 #include "tokens.h"
@@ -48,7 +48,7 @@ int main(int argc, char **argv)
     if ( argc >= 2 )
     {
 	asmjit::String sb, hsb;
-	DBG(prog.code.init(prog.jit.codeInfo()));
+        DBG(prog.code.init(prog.jit.environment()));
 	if ( !(tp=prog.tokenize(argv[1])) )
 	    return 0;
 	if ( !prog.parse(tp) )
