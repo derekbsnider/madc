@@ -1,0 +1,96 @@
+#!/../bin/madc
+
+int main()
+{
+    string s;
+    string result;
+    int n;
+
+    // --- python:: ---
+    s = "hello world";
+    python::title(s);
+    cout << "py title: " << s << endl;
+
+    s = "Hello World";
+    python::swapcase(s);
+    cout << "py swapcase: " << s << endl;
+
+    s = "hi";
+    string dot = ".";
+    python::center(s, 10, dot);
+    cout << "py center: [" << s << "]" << endl;
+
+    s = "42";
+    python::zfill(s, 8);
+    cout << "py zfill: " << s << endl;
+
+    s = "banana";
+    string needle = "an";
+    n = python::count(s, needle);
+    cout << "py count: " << n << endl;
+
+    // --- ruby:: ---
+    s = "aaabbbccc";
+    ruby::squeeze(s);
+    cout << "rb squeeze: " << s << endl;
+
+    s = "hello";
+    string from = "aeiou";
+    string to = "*";
+    ruby::tr(s, from, to);
+    cout << "rb tr: " << s << endl;
+
+    array chars;
+    s = "Mad";
+    ruby::chars(chars, s);
+    n = php::count(chars);
+    cout << "rb chars: " << n << " chars" << endl;
+
+    array items;
+    php::array_push(items, "c");
+    php::array_push(items, "a");
+    php::array_push(items, "b");
+    ruby::rotate(items, 1);
+    string joined;
+    string comma = ",";
+    php::implode(joined, comma, items);
+    cout << "rb rotate: " << joined << endl;
+
+    // --- js:: ---
+    string encoded;
+    s = "Hello, World!";
+    js::btoa(encoded, s);
+    cout << "js btoa: " << encoded << endl;
+
+    string decoded;
+    js::atob(decoded, encoded);
+    cout << "js atob: " << decoded << endl;
+
+    string url;
+    s = "hello world&foo=bar";
+    js::encodeURIComponent(url, s);
+    cout << "js encode: " << url << endl;
+
+    string back;
+    js::decodeURIComponent(back, url);
+    cout << "js decode: " << back << endl;
+
+    s = "ff";
+    n = js::parseInt(s, 16);
+    cout << "js parseInt(ff,16): " << n << endl;
+
+    // js::stringify
+    array data;
+    php::array_push(data, "hello");
+    php::array_push_int(data, 42);
+    string json;
+    js::stringify(json, data);
+    cout << "js stringify: " << json << endl;
+
+    // --- C globals ---
+    string path;
+    getenv(path, "HOME");
+    cout << "HOME: " << path << endl;
+
+    return 0;
+}

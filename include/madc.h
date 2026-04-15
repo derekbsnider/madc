@@ -331,6 +331,9 @@ public:
     void add_namespaces();
     void add_php_namespace();
     void add_perl_namespace();
+    void add_python_namespace();
+    void add_ruby_namespace();
+    void add_js_namespace();
 
     Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
 
