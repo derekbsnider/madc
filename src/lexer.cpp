@@ -21,8 +21,8 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) x
-#include <asmjit/asmjit.h>
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -51,6 +51,7 @@ TokenSTRUCT	tkSTRUCT;
 TokenDEFAULT	tkDEFAULT;
 TokenTYPEDEF	tkTYPEDEF;
 TokenOPEROVER	tkOPEROVER;
+TokenREGISTER	tkREGISTER;
 
 // basic type tokens
 TokenVOID	tkVOID;
@@ -108,6 +109,7 @@ void Program::add_keywords()
     keyword_map[tkDEFAULT.str] = &tkDEFAULT;
     keyword_map[tkTYPEDEF.str] = &tkTYPEDEF;
     keyword_map[tkOPEROVER.str] = &tkOPEROVER;
+    keyword_map[tkREGISTER.str] = &tkREGISTER;
 }
 
 // add static tokens for base data types

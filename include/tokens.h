@@ -39,7 +39,7 @@ enum class TokenID {
 // 68	69	70	71	72	73	74	75	76	77	78	79
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
 // 80		81	82	83	84		85	86
-  tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER
+  tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER
 };
 
 enum class TokenAssoc {
@@ -800,6 +800,8 @@ public:
     virtual bool is_constant()	    { return true; }
     virtual TokenType type() const  { return TokenType::ttChar; }
     virtual TokenID   id()   const  { return TokenID::tkChar; }
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenInt: public TokenBase
@@ -935,6 +937,17 @@ public:
     TokenSTRUCT() : TokenKeyword("struct") {}
     virtual TokenID id() const { return TokenID::tkSTRUCT; }
     virtual TokenBase *clone() { return new TokenSTRUCT(); }
+    virtual TokenBase *parse(Program &pgm);
+};
+
+// register keyword: declares a variable that lives only in a virtual register
+// (never written to memory), for maximum performance in hot loops
+class TokenREGISTER: public TokenKeyword
+{
+public:
+    TokenREGISTER() : TokenKeyword("register") {}
+    virtual TokenID id() const { return TokenID::tkREGISTER; }
+    virtual TokenBase *clone() { return new TokenREGISTER(); }
     virtual TokenBase *parse(Program &pgm);
 };
 
