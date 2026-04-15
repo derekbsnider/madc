@@ -36,7 +36,7 @@ using namespace asmjit;
 void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Gp, Gp)"));
-    if ( r1.size() > r2.size() )
+    if ( r1.x86RmSize() > r2.x86RmSize() )
     {
 	cc.movzx(r1, r2);
     }
@@ -444,7 +444,7 @@ void Program::safeneg(Operand &op)
     if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.neg(op.as<x86::Gp>());
-	if ( op.size() > 1 )
+	if ( op.x86RmSize() > 1 )
 	    cc.movsx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
     }
     else
@@ -661,7 +661,7 @@ void Program::safenot(Operand &op)
     {
 	cc.not_(op.as<x86::Gp>());
 
-	switch(op.size())
+	switch(op.x86RmSize())
 	{
 	    case 1:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r8());	break;
 	    case 2:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r16());	break;
@@ -770,7 +770,7 @@ void Program::safeextend(Operand &op, bool unsign)
     {
 	if ( unsign )
 	{
-	    switch(op.size())
+	    switch(op.x86RmSize())
 	    {
 		case 1:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r8());	break;
 		case 2:  cc.movzx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r16());	break;
@@ -779,7 +779,7 @@ void Program::safeextend(Operand &op, bool unsign)
 	}
 	else
 	{
-	    switch(op.size())
+	    switch(op.x86RmSize())
 	    {
 		case 1:  cc.movsx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r8());	break;
 		case 2:  cc.movsx(op.as<x86::Gp>().r64(), op.as<x86::Gp>().r16());	break;
@@ -845,7 +845,7 @@ void Program::safesete(Operand &op)
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.sete(op.as<x86::Gp>().r8());
-	if ( op.size() > 1 )
+	if ( op.x86RmSize() > 1 )
 	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
     }
     else
@@ -868,7 +868,7 @@ void Program::safesetg(Operand &op)
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setg(op.as<x86::Gp>().r8());
-	if ( op.size() > 1 )
+	if ( op.x86RmSize() > 1 )
 	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
     }
     else
@@ -891,7 +891,7 @@ void Program::safesetge(Operand &op)
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setge(op.as<x86::Gp>().r8());
-	if ( op.size() > 1 )
+	if ( op.x86RmSize() > 1 )
 	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
     }
     else
@@ -914,7 +914,7 @@ void Program::safesetl(Operand &op)
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setl(op.as<x86::Gp>().r8());
-	if ( op.size() > 1 )
+	if ( op.x86RmSize() > 1 )
 	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
     }
     else
@@ -937,7 +937,7 @@ void Program::safesetle(Operand &op)
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setle(op.as<x86::Gp>().r8());
-	if ( op.size() > 1 )
+	if ( op.x86RmSize() > 1 )
 	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
     }
     else
@@ -960,7 +960,7 @@ void Program::safesetne(Operand &op)
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setne(op.as<x86::Gp>().r8());
-	if ( op.size() > 1 )
+	if ( op.x86RmSize() > 1 )
 	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
     }
     else
@@ -972,7 +972,7 @@ void Program::safesetne(Operand &op)
 // compare two registers even if they are different sizes
 void Program::safecmp(x86::Gp &lval, x86::Gp &rval)
 {
-    if ( lval.size() != rval.size() )
+    if ( lval.x86RmSize() != rval.x86RmSize() )
 	cc.cmp(lval.r64(), rval.r64());
     else
 	cc.cmp(lval, rval);

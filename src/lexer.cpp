@@ -312,7 +312,7 @@ TokenBase *Program::_getToken()
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = full_path.c_str();
-			tokens.push(itb);
+			tokens.push_back(itb);
 		    }
 		    source = std::move(saved);
 		    return getToken(); // continue with current file
@@ -834,7 +834,7 @@ TokenProgram *Program::tokenize(const char *fname)
 	    tb->file = fname;
 //	    tb->line = source.line();
 //	    tb->column = source.column();
-	    tokens.push(tb);
+	    tokens.push_back(tb);
         }
     }
     catch(const char *err_msg)

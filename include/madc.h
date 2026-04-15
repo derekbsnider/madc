@@ -343,9 +343,10 @@ public:
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
+    std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
-    std::queue<TokenBase *> tokens;	// parsed token queue
+    std::deque<TokenBase *> tokens;	// parsed token queue
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::stack<l_shortcut_t> loopstack;	// stack to manage break/continue for loops
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
@@ -367,6 +368,7 @@ public:
     void add_functions();
     void add_globals();
     void add_namespaces();
+    void add_madc_namespace();
     void add_php_namespace();
     void add_perl_namespace();
     void add_python_namespace();
@@ -392,6 +394,7 @@ public:
     // accessing token queue
     inline TokenBase *peekToken() { if (tokens.empty()) return NULL; return tokens.front(); }
     inline TokenBase *prevToken() { return _prv_token; }
+    inline void pushToken(TokenBase *t) { tokens.push_front(t); }
     inline TokenBase *nextToken()
     {
 	if ( tokens.empty() )
@@ -399,7 +402,7 @@ public:
         _prv_token = _cur_token;
 	_cur_token = tokens.front();
 //	DBG(cout << "nextToken(" << (int)ret->type() << ", " << (int)ret->id() << ')' << endl);
-	tokens.pop();
+	tokens.pop_front();
 	return _cur_token;
     }
     // parse tokens into AST

@@ -340,7 +340,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	DataDefFPTR *fptr = static_cast<DataDefFPTR *>(var.type);
 	FuncDef *func = fptr->target;
-	FuncSignatureBuilder funcsig(CallConvId::kCDecl);
+	FuncSignature funcsig(CallConvId::kCDecl);
 
 	// set return type
 	DataDef &retdd = func->returns;
@@ -497,7 +497,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		pgm.Throw(this) << "dlcall requires at least a function pointer argument" << flush;
 
 	    FuncDef *func = (FuncDef *)method->returns.type;
-	    FuncSignatureBuilder funcsig(CallConvId::kCDecl);
+	    FuncSignature funcsig(CallConvId::kCDecl);
 	    funcsig.setRetT<int64_t>();
 
 	    // compile the first arg — the function pointer
@@ -517,7 +517,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		{
 		    x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
 		    InvokeNode *cstr_call;
-		    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignatureT<const char *, void *>(CallConvId::kCDecl));
+		    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignature::build<const char *, void *>());
 		    cstr_call->setArg(0, areg.as<x86::Gp>());
 		    cstr_call->setRet(0, cstr_reg);
 		    params.push_back(cstr_reg);
@@ -566,7 +566,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     // build arguments
     FuncDef *func = (FuncDef *)method->returns.type;
-    FuncSignatureBuilder funcsig(CallConvId::kCDecl);
+    FuncSignature funcsig(CallConvId::kCDecl);
     std::vector<Operand> params;
     DataDef *ptype;
     uint32_t _argc;
@@ -657,7 +657,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(pgm.cc.comment("coerce dtSTRING -> dtCHARptr via string_cstr"));
 	    x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
 	    InvokeNode *cstr_call;
-	    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignatureT<const char *, void *>(CallConvId::kCDecl));
+	    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignature::build<const char *, void *>());
 	    cstr_call->setArg(0, tnreg.as<x86::Gp>());
 	    cstr_call->setRet(0, cstr_reg);
 	    params.push_back(cstr_reg);
@@ -670,7 +670,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(pgm.cc.comment("dlopen: coerce dtSTRING -> const char* via string_cstr"));
 	    x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
 	    InvokeNode *cstr_call;
-	    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignatureT<const char *, void *>(CallConvId::kCDecl));
+	    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignature::build<const char *, void *>());
 	    cstr_call->setArg(0, tnreg.as<x86::Gp>());
 	    cstr_call->setRet(0, cstr_reg);
 	    params.push_back(cstr_reg);
@@ -714,7 +714,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    if ( ptype->is_real() )
 		pgm.Throw(tn) << "Expecting floating point argument" << flush;
 	    DBG(pgm.cc.comment("tnreg is Gp"));
-            DBG(cout << "tnreg size=" << tnreg.size() << " regdp.second->size=" << funcrdp.second->size << " type " << funcrdp.second->name << endl);
+            DBG(cout << "tnreg size=" << tnreg.x86RmSize() << " regdp.second->size=" << funcrdp.second->size << " type " << funcrdp.second->name << endl);
 	}
 	if ( tnreg.isImm() )
 	    pgm.cc.comment("tnreg is Imm");
@@ -860,7 +860,7 @@ Operand &TokenProgram::compile(Program &pgm, regdefp_t &regdp)
     pgm.tkFunction = pgm.tkProgram;
     pgm.tkFunction->clear_operand_map(); // clear operand map
 
-    pgm.cc.addFunc(FuncSignatureT<void>(CallConvId::kCDecl));
+    pgm.cc.addFunc(FuncSignature::build<void>());
 
     for ( vector<TokenStmt *>::iterator si = statements.begin(); si != statements.end(); ++si )
     {
@@ -959,7 +959,7 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 
     Method &method = *((Method *)var.data);
     FuncDef *func = (FuncDef *)method.returns.type;
-    FuncSignatureBuilder funcsig(CallConvId::kCDecl);
+    FuncSignature funcsig(CallConvId::kCDecl);
     datadef_vec_iter dvi;
 
     // set return type
@@ -1017,16 +1017,16 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	for ( variable_vec_iter vvi = method.parameters.begin(); vvi != method.parameters.end(); ++vvi )
 	{
-	    DBG(std::cout << "TokenFunc::compile(): cc.setArg(" << argc << ", " << (*vvi)->name << ')' << std::endl);
+	    DBG(std::cout << "TokenFunc::compile(): funcnode->setArg(" << argc << ", " << (*vvi)->name << ')' << std::endl);
 	    Operand &reg = voperand(pgm, (*vvi));
 
 	    if ( reg.isReg() )
 	    {
 		if ( reg.as<BaseReg>().isGroup(RegGroup::kVec) )
-		    pgm.cc.setArg(argc++, reg.as<x86::Xmm>());
+		    func->funcnode->setArg(argc++, reg.as<x86::Xmm>());
 		else
 		if ( reg.as<BaseReg>().isGroup(RegGroup::kGp) )
-		    pgm.cc.setArg(argc++, reg.as<x86::Gp>());
+		    func->funcnode->setArg(argc++, reg.as<x86::Gp>());
 		else
 		    throw "TokenFunc::compile() unexpected parameter Operand";
 	    }
@@ -1386,7 +1386,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    << '(' << (tvr->var.data ? ((string *)(tvr->var.data))->c_str() : "") << ')' << endl);
 */
 	DBG(pgm.cc.comment("string_assign"));
-        InvokeNode* call; pgm.cc.invoke(&call, imm(string_assign), FuncSignatureT<void, const char*, const char *>(CallConvId::kCDecl));
+        InvokeNode* call; pgm.cc.invoke(&call, imm(string_assign), FuncSignature::build<void, const char*, const char *>());
 	call->setArg(0, _operand.as<x86::Gp>());
 	call->setArg(1, r_operand->as<x86::Gp>());
 	if ( tvl )
@@ -1538,7 +1538,7 @@ Operand &TokenCallFunc::operand(Program &pgm)
 {
     _operand = returns()->newreg(pgm.cc, var.name.c_str());
     DBG(pgm.cc.comment("TokenCallFunc::operand"));
-    DBG(cout << "TokenCallFunc::operand() size " << _operand.size() << endl);
+    DBG(cout << "TokenCallFunc::operand() size " << _operand.x86RmSize() << endl);
     return _operand;
 }
 
@@ -1613,7 +1613,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             InvokeNode *call;
             DBG(pgm.cc.comment("vector_str_at"));
             pgm.cc.invoke(&call, imm(vector_str_at),
-                FuncSignatureT<void *, void *, void *, int64_t>(CallConvId::kCDecl));
+                FuncSignature::build<void *, void *, void *, int64_t>());
             call->setArg(0, tmp_op.as<x86::Gp>());
             call->setArg(1, obj_reg);
             call->setArg(2, idx_reg);
@@ -1626,7 +1626,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             InvokeNode *call;
             DBG(pgm.cc.comment("vector_int_at"));
             pgm.cc.invoke(&call, imm(vector_int_at),
-                FuncSignatureT<int64_t, void *, int64_t>(CallConvId::kCDecl));
+                FuncSignature::build<int64_t, void *, int64_t>());
             call->setArg(0, obj_reg);
             call->setArg(1, idx_reg);
             call->setRet(0, res);
@@ -1643,7 +1643,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             InvokeNode *call;
             DBG(pgm.cc.comment("map_str_str_get"));
             pgm.cc.invoke(&call, imm(map_str_str_get),
-                FuncSignatureT<void *, void *, void *, void *>(CallConvId::kCDecl));
+                FuncSignature::build<void *, void *, void *, void *>());
             call->setArg(0, tmp_op.as<x86::Gp>());
             call->setArg(1, obj_reg);
             call->setArg(2, idx_reg);
@@ -1656,7 +1656,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             InvokeNode *call;
             DBG(pgm.cc.comment("map_str_int_get"));
             pgm.cc.invoke(&call, imm(map_str_int_get),
-                FuncSignatureT<int64_t, void *, void *>(CallConvId::kCDecl));
+                FuncSignature::build<int64_t, void *, void *>());
             call->setArg(0, obj_reg);
             call->setArg(1, idx_reg);
             call->setRet(0, res);
@@ -1670,7 +1670,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
         InvokeNode *call;
         DBG(pgm.cc.comment("php_array_get_int"));
         pgm.cc.invoke(&call, imm(php_array_get_int),
-            FuncSignatureT<int64_t, void *, int64_t>(CallConvId::kCDecl));
+            FuncSignature::build<int64_t, void *, int64_t>());
         call->setArg(0, obj_reg);
         call->setArg(1, idx_reg);
         call->setRet(0, res);
@@ -1711,7 +1711,7 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
             InvokeNode *call;
             DBG(pgm.cc.comment("vector_str_set"));
             pgm.cc.invoke(&call, imm(vector_str_set),
-                FuncSignatureT<void, void *, int64_t, void *>(CallConvId::kCDecl));
+                FuncSignature::build<void, void *, int64_t, void *>());
             call->setArg(0, obj_reg);
             call->setArg(1, idx_reg);
             call->setArg(2, val_op.as<x86::Gp>());
@@ -1721,7 +1721,7 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
             InvokeNode *call;
             DBG(pgm.cc.comment("vector_int_set"));
             pgm.cc.invoke(&call, imm(vector_int_set),
-                FuncSignatureT<void, void *, int64_t, int64_t>(CallConvId::kCDecl));
+                FuncSignature::build<void, void *, int64_t, int64_t>());
             call->setArg(0, obj_reg);
             call->setArg(1, idx_reg);
             call->setArg(2, val_op.as<x86::Gp>());
@@ -1735,7 +1735,7 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
             InvokeNode *call;
             DBG(pgm.cc.comment("map_str_str_set"));
             pgm.cc.invoke(&call, imm(map_str_str_set),
-                FuncSignatureT<void, void *, void *, void *>(CallConvId::kCDecl));
+                FuncSignature::build<void, void *, void *, void *>());
             call->setArg(0, obj_reg);
             call->setArg(1, idx_reg);
             call->setArg(2, val_op.as<x86::Gp>());
@@ -1745,7 +1745,7 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
             InvokeNode *call;
             DBG(pgm.cc.comment("map_str_int_set"));
             pgm.cc.invoke(&call, imm(map_str_int_set),
-                FuncSignatureT<void, void *, void *, int64_t>(CallConvId::kCDecl));
+                FuncSignature::build<void, void *, void *, int64_t>());
             call->setArg(0, obj_reg);
             call->setArg(1, idx_reg);
             call->setArg(2, val_op.as<x86::Gp>());
@@ -1837,7 +1837,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    pgm.cc.lea(reg, stack);
 		    DBG(std::cout << "TokenCpnd::voperand(" << var->name << ") stack var calling string_construct[" << (uint64_t)string_construct << ']' << std::endl);
 		    DBG(pgm.cc.comment("string_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(string_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(string_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1848,7 +1848,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("stringstream_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(stringstream_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(stringstream_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1859,7 +1859,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("ifstream_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(ifstream_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(ifstream_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1870,7 +1870,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("ofstream_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(ofstream_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(ofstream_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1881,7 +1881,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("fstream_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(fstream_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(fstream_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1892,7 +1892,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("madarray_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(madarray_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(madarray_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1906,7 +1906,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    void *ctor = vdd->element_type->is_string()
 			? (void *)vector_str_construct : (void *)vector_int_construct;
 		    DBG(pgm.cc.comment("vector construct"));
-		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1919,7 +1919,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    DataDefMAP *mdd = static_cast<DataDefMAP *>(var->type);
 		    void *ctor = mdd->val_type->is_string()
 			? (void *)map_str_str_construct : (void *)map_str_int_construct;
-		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1932,7 +1932,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    DataDefSET *sdd = static_cast<DataDefSET *>(var->type);
 		    void *ctor = sdd->element_type->is_string()
 			? (void *)set_str_construct : (void *)set_int_construct;
-		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1945,7 +1945,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    DataDefLIST *ldd = static_cast<DataDefLIST *>(var->type);
 		    void *ctor = ldd->element_type->is_string()
 			? (void *)list_str_construct : (void *)list_int_construct;
-		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
 		}
@@ -1987,7 +1987,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 				x86::Gp mreg = pgm.cc.newIntPtr((var->name + "." + m.first).c_str());
 				pgm.cc.lea(mreg, x86::ptr(base_reg, (int32_t)ofs));
 				DBG(pgm.cc.comment(("struct member " + m.first + " string_construct").c_str()));
-                                InvokeNode* call; pgm.cc.invoke(&call, imm(string_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+                                InvokeNode* call; pgm.cc.invoke(&call, imm(string_construct), FuncSignature::build<void *, void *>());
 				call->setArg(0, mreg);
 			    }
 			    ofs += (ssize_t)m.second->size;
@@ -2095,19 +2095,19 @@ void TokenCpnd::cleanup(Program &pgm)
 		    case DataType::dtSTRING:
 			{
 			    DBG(std::cout << "TokenCpnd::cleanup(" << var->name << ") calling string_destruct[" << (uint64_t)string_destruct << ']' << std::endl);
-                            InvokeNode* call; cc.invoke(&call, imm(string_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+                            InvokeNode* call; cc.invoke(&call, imm(string_destruct), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
 		    case DataType::dtSSTREAM:
 			{
-                            InvokeNode* call; cc.invoke(&call, imm(stringstream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+                            InvokeNode* call; cc.invoke(&call, imm(stringstream_destruct), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
 		    case DataType::dtARRAY:
 			{
-                            InvokeNode* call; cc.invoke(&call, imm(madarray_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+                            InvokeNode* call; cc.invoke(&call, imm(madarray_destruct), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
@@ -2116,7 +2116,7 @@ void TokenCpnd::cleanup(Program &pgm)
 			    DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(var->type);
 			    void *dtor = vdd->element_type->is_string()
 				? (void *)vector_str_destruct : (void *)vector_int_destruct;
-			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
@@ -2125,7 +2125,7 @@ void TokenCpnd::cleanup(Program &pgm)
 			    DataDefMAP *mdd = static_cast<DataDefMAP *>(var->type);
 			    void *dtor = mdd->val_type->is_string()
 				? (void *)map_str_str_destruct : (void *)map_str_int_destruct;
-			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
@@ -2134,7 +2134,7 @@ void TokenCpnd::cleanup(Program &pgm)
 			    DataDefSET *sdd = static_cast<DataDefSET *>(var->type);
 			    void *dtor = sdd->element_type->is_string()
 				? (void *)set_str_destruct : (void *)set_int_destruct;
-			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
@@ -2143,31 +2143,31 @@ void TokenCpnd::cleanup(Program &pgm)
 			    DataDefLIST *ldd = static_cast<DataDefLIST *>(var->type);
 			    void *dtor = ldd->element_type->is_string()
 				? (void *)list_str_destruct : (void *)list_int_destruct;
-			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
 		    case DataType::dtIFSTREAM:
 			{
-                            InvokeNode* call; cc.invoke(&call, imm(ifstream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+                            InvokeNode* call; cc.invoke(&call, imm(ifstream_destruct), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
 		    case DataType::dtOFSTREAM:
 			{
-                            InvokeNode* call; cc.invoke(&call, imm(ofstream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+                            InvokeNode* call; cc.invoke(&call, imm(ofstream_destruct), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
 		    case DataType::dtFSTREAM:
 			{
-                            InvokeNode* call; cc.invoke(&call, imm(fstream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+                            InvokeNode* call; cc.invoke(&call, imm(fstream_destruct), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
 		    case DataType::dtOSTREAM:
 			{
-                            InvokeNode* call; cc.invoke(&call, imm(ostream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+                            InvokeNode* call; cc.invoke(&call, imm(ostream_destruct), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
@@ -2189,7 +2189,7 @@ void TokenCpnd::cleanup(Program &pgm)
 					x86::Gp mreg = cc.newIntPtr((var->name + "." + m.first).c_str());
 					cc.lea(mreg, x86::ptr(base_reg, (int32_t)ofs));
 					DBG(std::cerr << "cleanup: " << var->name << '.' << m.first << " string_destruct" << std::endl);
-                                        InvokeNode* call; cc.invoke(&call, imm(string_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+                                        InvokeNode* call; cc.invoke(&call, imm(string_destruct), FuncSignature::build<void, void *>());
 					call->setArg(0, mreg);
 				    }
 				    ofs += (ssize_t)m.second->size;
@@ -2584,21 +2584,21 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
             InvokeNode *call;
 	    switch(regdp.second->type())
 	    {
-		case DataType::dtCHAR:	pgm.cc.invoke(&call, imm(streamout_numeric<char>), FuncSignatureT<void, void *, char>(CallConvId::kCDecl));	break;
-		case DataType::dtBOOL:	pgm.cc.invoke(&call, imm(streamout_numeric<bool>), FuncSignatureT<void, void *, bool>(CallConvId::kCDecl));	break;
-		case DataType::dtINT16:	pgm.cc.invoke(&call, imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConvId::kCDecl));	break;
-		case DataType::dtINT24:	pgm.cc.invoke(&call, imm(streamout_numeric<int16_t>), FuncSignatureT<void, void *, int16_t>(CallConvId::kCDecl));	break;
-		case DataType::dtINT32:	pgm.cc.invoke(&call, imm(streamout_numeric<int32_t>), FuncSignatureT<void, void *, int32_t>(CallConvId::kCDecl));	break;
-		case DataType::dtINT64:	pgm.cc.invoke(&call, imm(streamout_numeric<int64_t>), FuncSignatureT<void, void *, int64_t>(CallConvId::kCDecl));	break;
-		case DataType::dtUINT8:	pgm.cc.invoke(&call, imm(streamout_numeric<uint8_t>), FuncSignatureT<void, void *, uint8_t>(CallConvId::kCDecl));	break;
-		case DataType::dtUINT16:pgm.cc.invoke(&call, imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConvId::kCDecl));break;
-		case DataType::dtUINT24:pgm.cc.invoke(&call, imm(streamout_numeric<uint16_t>), FuncSignatureT<void, void *, uint16_t>(CallConvId::kCDecl));break;
-		case DataType::dtUINT32:pgm.cc.invoke(&call, imm(streamout_numeric<uint32_t>), FuncSignatureT<void, void *, uint32_t>(CallConvId::kCDecl));break;
-		case DataType::dtUINT64:pgm.cc.invoke(&call, imm(streamout_numeric<uint64_t>), FuncSignatureT<void, void *, uint64_t>(CallConvId::kCDecl));break;
-		case DataType::dtFLOAT: DBG(pgm.cc.comment("pgm.cc.call(imm(streamout_numeric<float>),  FuncSignatureT<void, void *, float>(CallConvId::kCDecl))"));
-		pgm.cc.invoke(&call, imm(streamout_numeric<float>),  FuncSignatureT<void, void *, float>(CallConvId::kCDecl));	break;
-		case DataType::dtDOUBLE: DBG(pgm.cc.comment("pgm.cc.call(imm(streamout_numeric<double>), FuncSignatureT<void, void *, double>(CallConvId::kCDecl))"));
-		pgm.cc.invoke(&call, imm(streamout_numeric<double>), FuncSignatureT<void, void *, double>(CallConvId::kCDecl));	break;
+		case DataType::dtCHAR:	pgm.cc.invoke(&call, imm(streamout_numeric<char>), FuncSignature::build<void, void *, char>());	break;
+		case DataType::dtBOOL:	pgm.cc.invoke(&call, imm(streamout_numeric<bool>), FuncSignature::build<void, void *, bool>());	break;
+		case DataType::dtINT16:	pgm.cc.invoke(&call, imm(streamout_numeric<int16_t>), FuncSignature::build<void, void *, int16_t>());	break;
+		case DataType::dtINT24:	pgm.cc.invoke(&call, imm(streamout_numeric<int16_t>), FuncSignature::build<void, void *, int16_t>());	break;
+		case DataType::dtINT32:	pgm.cc.invoke(&call, imm(streamout_numeric<int32_t>), FuncSignature::build<void, void *, int32_t>());	break;
+		case DataType::dtINT64:	pgm.cc.invoke(&call, imm(streamout_numeric<int64_t>), FuncSignature::build<void, void *, int64_t>());	break;
+		case DataType::dtUINT8:	pgm.cc.invoke(&call, imm(streamout_numeric<uint8_t>), FuncSignature::build<void, void *, uint8_t>());	break;
+		case DataType::dtUINT16:pgm.cc.invoke(&call, imm(streamout_numeric<uint16_t>), FuncSignature::build<void, void *, uint16_t>());break;
+		case DataType::dtUINT24:pgm.cc.invoke(&call, imm(streamout_numeric<uint16_t>), FuncSignature::build<void, void *, uint16_t>());break;
+		case DataType::dtUINT32:pgm.cc.invoke(&call, imm(streamout_numeric<uint32_t>), FuncSignature::build<void, void *, uint32_t>());break;
+		case DataType::dtUINT64:pgm.cc.invoke(&call, imm(streamout_numeric<uint64_t>), FuncSignature::build<void, void *, uint64_t>());break;
+		case DataType::dtFLOAT: DBG(pgm.cc.comment("pgm.cc.call(imm(streamout_numeric<float>),  FuncSignature::build<void, void *, float>())"));
+		pgm.cc.invoke(&call, imm(streamout_numeric<float>),  FuncSignature::build<void, void *, float>());	break;
+		case DataType::dtDOUBLE: DBG(pgm.cc.comment("pgm.cc.call(imm(streamout_numeric<double>), FuncSignature::build<void, void *, double>())"));
+		pgm.cc.invoke(&call, imm(streamout_numeric<double>), FuncSignature::build<void, void *, double>());	break;
 		default: throw "TokenBSL::compile() unsupported numeric type";
 	    }
 	    DBG(pgm.cc.comment("about to setArg(0)"));
@@ -2611,7 +2611,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    if ( lval.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    {
 		DBG(pgm.cc.comment("call->setArg(0, lval.as<x86::Gp>())"));
-		DBG(cout << "call->setArg(0, lval.as<x86::Gp>()) size=" << lval.size() << " regdp.second->size=" << regdp.second->size << " type " << regdp.second->name << endl);
+		DBG(cout << "call->setArg(0, lval.as<x86::Gp>()) size=" << lval.x86RmSize() << " regdp.second->size=" << regdp.second->size << " type " << regdp.second->name << endl);
 		call->setArg(0, lval.as<x86::Gp>());
 	    }
 	    else
@@ -2621,7 +2621,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    {
 		if ( regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
 		{
-		    DBG(cout << "call->setArg(1, regdp.first->as<x86::Xmm>()) size=" << regdp.first->size() << " regdp.second->size=" << regdp.second->size << " type " << regdp.second->name << endl);
+		    DBG(cout << "call->setArg(1, regdp.first->as<x86::Xmm>()) size=" << regdp.first->x86RmSize() << " regdp.second->size=" << regdp.second->size << " type " << regdp.second->name << endl);
 		    DBG(pgm.cc.comment("call->setArg(1, regdp.first->as<x86::Xmm>())"));
 		    call->setArg(1, regdp.first->as<x86::Xmm>());
 		}
@@ -2647,7 +2647,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(cout << "TokenBSL::compile() regdp.second->is_string()" << endl);
 	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_string()"));
 	    DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
-            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_string), FuncSignatureT<void, void *, void *>(CallConvId::kCDecl));
+            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_string), FuncSignature::build<void, void *, void *>());
 	    DBG(pgm.cc.comment("call->setArg(0, lval)"));
 	    if ( lval.as<BaseReg>().isGroup(RegGroup::kVec) )
 		call->setArg(0, lval.as<x86::Xmm>());
@@ -2671,7 +2671,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(cout << "TokenBSL::compile() regdp.second->is_cstr()" << endl);
 	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_cstr()"));
 	    DBG(pgm.cc.comment("pgm.cc.call(streamout_cstr)"));
-            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_cstr), FuncSignatureT<void, void *, void *>(CallConvId::kCDecl));
+            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_cstr), FuncSignature::build<void, void *, void *>());
 	    DBG(pgm.cc.comment("call->setArg(0, lval)"));
 	    if ( lval.as<BaseReg>().isGroup(RegGroup::kVec) )
 		call->setArg(0, lval.as<x86::Xmm>());
@@ -3256,9 +3256,9 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	}
 	return *regdp.first;
     }
-    if ( reg.size() < 4 && reg.size() < regdp.second->size )
+    if ( reg.x86RmSize() < 4 && reg.x86RmSize() < regdp.second->size )
     {
-	DBG(cout << "TokenVar::compile() reg.size() " << reg.size() << " < regdp.second->size " << regdp.second->size << endl);
+	DBG(cout << "TokenVar::compile() reg.x86RmSize() " << reg.x86RmSize() << " < regdp.second->size " << regdp.second->size << endl);
 	if ( regdp.second->is_integer() && var.type->is_integer() )
 	{
 	    DBG(pgm.cc.comment("TokenVar::compile() safeextend(reg, is_unsigned())"));
@@ -3585,7 +3585,7 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    size_fn = (void *)php_count;
 	InvokeNode *cnt_call;
-	pgm.cc.invoke(&cnt_call, imm(size_fn), FuncSignatureT<int64_t, void *>(CallConvId::kCDecl));
+	pgm.cc.invoke(&cnt_call, imm(size_fn), FuncSignature::build<int64_t, void *>());
 	cnt_call->setArg(0, arr_reg);
 	cnt_call->setRet(0, count_reg);
     }
@@ -3610,7 +3610,7 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("foreach: get string element"));
 	InvokeNode *get_call;
 	pgm.cc.invoke(&get_call, imm(at_fn),
-	    FuncSignatureT<void *, void *, void *, int64_t>(CallConvId::kCDecl));
+	    FuncSignature::build<void *, void *, void *, int64_t>());
 	get_call->setArg(0, elem_op.as<x86::Gp>());
 	get_call->setArg(1, arr_reg);
 	get_call->setArg(2, idx_reg);
@@ -3621,7 +3621,7 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("foreach: get int element"));
 	InvokeNode *get_call;
 	pgm.cc.invoke(&get_call, imm(at_fn),
-	    FuncSignatureT<int64_t, void *, int64_t>(CallConvId::kCDecl));
+	    FuncSignature::build<int64_t, void *, int64_t>());
 	get_call->setArg(0, arr_reg);
 	get_call->setArg(1, idx_reg);
 	get_call->setRet(0, elem_op.as<x86::Gp>());

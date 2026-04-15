@@ -127,7 +127,7 @@ done
 make -C src test
 ```
 
-**Current status: 44/44 integration tests pass. 25/25 unit tests pass.**
+**Current status: 49/49 integration tests pass. 25/25 unit tests pass.**
 
 ---
 

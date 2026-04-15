@@ -1,6 +1,24 @@
 # Changelog
 
-## [Unreleased] — Phase 3.5 Complete (2026-04-15)
+## [Unreleased] — Phase 3.5+ (2026-04-15)
+
+### Added — Post Phase 3.5
+
+- **`madc::` namespace** — `madc::array` works alongside bare `array` keyword. New `add_madc_namespace()` registration. Backward compatible.
+
+- **`std::` namespace scoping for containers** — `std::vector<int>`, `std::map<string, int>`, `std::set<string>`, `std::list<int>` all work alongside bare keywords. Namespace prefix is stripped in `parseStatement()` and re-enters the existing keyword parser. Uses a `current_namespace` resolution model: namespace-aware identifier lookup in `parseExpression()`.
+
+- **Register-only foreach iterator** — Numeric element variables in range-for loops now use `vfREGISTER`, keeping them in Gp registers instead of stack-backing. Tighter loops for integer iteration.
+
+- **`pushToken()` / deque-based token queue** — Token queue changed from `std::queue` to `std::deque` to support `pushToken()` for clean speculative parsing and namespace prefix fallback.
+
+### Fixed — Post Phase 3.5
+
+- **asmjit v1.14 deprecation warnings** — Migrated ~70 call sites:
+  - `FuncSignatureT<...>(CallConvId::kCDecl)` → `FuncSignature::build<...>()`
+  - `FuncSignatureBuilder` → `FuncSignature`
+  - `Operand::size()` → `x86RmSize()` (on asmjit operands only)
+  - `cc.setArg()` → `funcnode->setArg()`
 
 ### Added — Phase 3.5 (Modern Language Features)
 

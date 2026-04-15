@@ -594,6 +594,19 @@ void Program::add_namespaces()
     DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
 }
 
+void Program::add_madc_namespace()
+{
+    variable_map_t &madc_ns = namespace_map["madc"];
+
+    // register array type as madc::array
+    std::string id = "__madc_array";
+    Variable *var = new Variable(id, ddARRAY, 1, NULL, false);
+    var->flags |= vfSTATIC;
+    madc_ns["array"] = var;
+
+    DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
+}
+
 void Program::_parser_init()
 {
     add_functions();
@@ -602,6 +615,7 @@ void Program::_parser_init()
     add_fstream_methods();
     add_globals();
     add_namespaces();
+    add_madc_namespace();
     add_php_namespace();
     add_perl_namespace();
     add_python_namespace();
@@ -1331,11 +1345,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    tb = member_tb; // update tb for line/col tracking below
 		    goto ns_resolved;
 		}
-		if ( !(var=findVariable(((TokenIdent *)tb)->str)) )
+		// resolve identifier: current namespace → global scope
+		var = NULL;
+		if ( !current_namespace.empty() )
+		{
+		    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
+		    if ( nsi != namespace_map.end() )
+		    {
+			variable_map_iter vmi = nsi->second.find(((TokenIdent *)tb)->str);
+			if ( vmi != nsi->second.end() )
+			    var = vmi->second;
+		    }
+		}
+		if ( !var )
+		    var = findVariable(((TokenIdent *)tb)->str);
+		if ( !var )
 		{
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);
 		    Throw(tb) << "use of undeclared identifier '" << ((TokenIdent *)tb)->str << '\'' << flush;
-		    //throw (TokenIdent *)tb;
 		}
 		ns_resolved:
 		if ( var->type->is_function() )
@@ -2917,6 +2944,20 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		{
 		    DBG(std::cout << "parseStatement() identifier is a registered type, calling parseDeclaration" << std::endl);
 		    return parseDeclaration(dmi->second);
+		}
+	    }
+	    // namespace resolution: set current namespace and re-enter parseStatement
+	    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+	    {
+		std::string ns_name = ((TokenIdent *)tb)->str;
+		namespace_map_t::iterator nsi = namespace_map.find(ns_name);
+		if ( nsi != namespace_map.end() )
+		{
+		    nextToken(); // consume ::
+		    current_namespace = ns_name;
+		    TokenBase *result = parseStatement(nextToken());
+		    current_namespace.clear();
+		    return result;
 		}
 	    }
 	    // := short declaration: identifier := expression;
