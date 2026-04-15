@@ -215,6 +215,23 @@ void streamout_intptr(std::ostream &os, int *i)
 }
 
 
+// stream input helpers for double (streamin_string/streamin_int already exist above)
+void *streamin_double(void *stream, void *val)
+{
+    *(std::istream *)stream >> *(double *)val;
+    return stream;
+}
+
+void istream_construct(void *ptr, void *init)
+{
+    new(ptr) std::istream((std::streambuf *)init);
+}
+
+void istream_destruct(void *ptr)
+{
+    ((std::istream *)ptr)->~istream();
+}
+
 // extern declarations for php array helpers (defined in ns_php.cpp)
 extern int64_t php_count(void *arr);
 extern void *php_array_get(void *result, void *arr, int64_t index);
@@ -1950,6 +1967,14 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    operand_map[var] = reg;
 		}
 		break;
+	    case DataType::dtISTREAM:
+		{
+		    x86::Mem stack = pgm.cc.newStack(sizeof(std::istream), 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    operand_map[var] = reg;
+		}
+		break;
 	    case DataType::dtOSTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ostream), 4);
@@ -2162,6 +2187,12 @@ void TokenCpnd::cleanup(Program &pgm)
 		    case DataType::dtFSTREAM:
 			{
                             InvokeNode* call; cc.invoke(&call, imm(fstream_destruct), FuncSignature::build<void, void *>());
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtISTREAM:
+			{
+                            InvokeNode* call; cc.invoke(&call, imm(istream_destruct), FuncSignature::build<void, void *>());
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
@@ -2724,12 +2755,88 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     return *regdp.first;				 // return result operand
 }
 
-// bit shift right
+// bit shift right / stream input (>>)
 Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenBSR::Compile() TOP" << endl);
-    if ( !left )  { throw "!= missing lval operand"; }
-    if ( !right ) { throw "!= missing rval operand"; }
+    if ( !left )  { throw ">> missing lval operand"; }
+    if ( !right ) { throw ">> missing rval operand"; }
+
+    // istream input: cin >> var
+    if ( left->type() == TokenType::ttVariable && dynamic_cast<TokenVar *>(left)->var.type->has_istream() )
+    {
+	TokenVar *tvl = dynamic_cast<TokenVar *>(left);
+	DBG(pgm.cc.comment("TokenBSR::compile() istream >>"));
+	Operand &lval = tvl->operand(pgm); // get istream register
+
+	// converge chained >>: cin >> a >> b
+	if ( right->id() == TokenID::tkBSR && !right->is_bracketed() )
+	{
+	    DBG(cout << "TokenBSR::compile() converging right BSR(>>) to left istream" << endl);
+	    TokenBSR tmpsin;
+	    TokenBSR *rsin = static_cast<TokenBSR *>(right);
+	    tmpsin.left = left;
+	    tmpsin.right = rsin->left;
+	    tmpsin.compile(pgm, regdp);
+	    tmpsin.right = rsin->right;
+	    tmpsin.compile(pgm, regdp);
+	    regdp.first = &lval;
+	    regdp.second = tvl->var.type;
+	    return *regdp.first;
+	}
+
+	// compile right side to get the target variable
+	regdp.first = NULL;
+	regdp.second = NULL;
+	regdp.object = &lval;
+	right->compile(pgm, regdp);
+
+	if ( !regdp.second )
+	    throw "TokenBSR::compile() unable to determine rval type for >>";
+
+	InvokeNode *call;
+	if ( regdp.second->is_string() )
+	{
+	    DBG(pgm.cc.comment("streamin_string"));
+	    pgm.cc.invoke(&call, imm(streamin_string), FuncSignature::build<void *, void *, void *>());
+	    call->setArg(0, lval.as<x86::Gp>());
+	    call->setArg(1, regdp.first->as<x86::Gp>());
+	}
+	else if ( regdp.second->is_integer() )
+	{
+	    // streamin_int expects a pointer to int64_t — use a temp stack slot
+	    DBG(pgm.cc.comment("streamin_int"));
+	    x86::Mem tmp_slot = pgm.cc.newStack(8, 8);
+	    x86::Gp tmp_addr = pgm.cc.newIntPtr("__cin_addr");
+	    pgm.cc.lea(tmp_addr, tmp_slot);
+	    pgm.cc.invoke(&call, imm(streamin_int), FuncSignature::build<void *, void *, void *>());
+	    call->setArg(0, lval.as<x86::Gp>());
+	    call->setArg(1, tmp_addr);
+	    // reload value from temp slot into the variable's register
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(regdp.first->as<x86::Gp>(), tmp_slot);
+	}
+	else if ( regdp.second->is_real() )
+	{
+	    DBG(pgm.cc.comment("streamin_double"));
+	    x86::Mem tmp_slot = pgm.cc.newStack(8, 8);
+	    x86::Gp tmp_addr = pgm.cc.newIntPtr("__cin_addr");
+	    pgm.cc.lea(tmp_addr, tmp_slot);
+	    pgm.cc.invoke(&call, imm(streamin_double), FuncSignature::build<void *, void *, void *>());
+	    call->setArg(0, lval.as<x86::Gp>());
+	    call->setArg(1, tmp_addr);
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.cc.movsd(regdp.first->as<x86::Xmm>(), tmp_slot);
+	}
+	else
+	    throw "TokenBSR::compile() unsupported type for >> input";
+
+	regdp.first = &lval;
+	regdp.second = tvl->var.type;
+	return *regdp.first;
+    }
+
+    // bitwise right-shift
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     if ( !regdp.first )					 // if not passed a register:

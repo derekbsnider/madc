@@ -53,6 +53,7 @@ DataDefFLOAT ddFLOAT;
 DataDefDOUBLE ddDOUBLE;
 DataDefSTRING ddSTRING;
 DataDefSTRINGref ddSTRINGref;
+DataDefISTREAM ddISTREAM;
 DataDefOSTREAM ddOSTREAM;
 DataDefSSTREAM ddSSTREAM;
 DataDefARRAY ddARRAY;
@@ -154,6 +155,15 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
 		DBG(std::cout << "Variable::Variable data = new stringstream for " << n << std::endl);
 	    }
 	    DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
+	    break;
+	case DataType::dtISTREAM:
+	    if ( init )
+	    {
+		data = new std::istream((streambuf *)init);
+		flags |= vfALLOC;
+		DBG(std::cout << "Variable::Variable data = new istream for " << n << std::endl);
+		DBG(std::cout << "Data address: " << (uint64_t)data << std::endl);
+	    }
 	    break;
 	case DataType::dtOSTREAM:
 	    if ( init )
@@ -568,6 +578,7 @@ void Program::add_functions()
 void Program::add_globals()
 {
     addGlobal(ddSTRING,  "version", 1, (void *)"v0.0.1");
+    addGlobal(ddISTREAM, "cin",  1, std::cin.rdbuf());
     addGlobal(ddOSTREAM, "cout", 1, std::cout.rdbuf());
     addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
 }
@@ -580,6 +591,7 @@ void Program::add_namespaces()
     // std:: namespace — map to existing global variables and functions
     variable_map_t &std_ns = namespace_map["std"];
 
+    id = "cin";   if ( (var=tkProgram->findVariable(id)) ) std_ns["cin"]   = var;
     id = "cout";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cout"]  = var;
     id = "cerr";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cerr"]  = var;
     id = "endl";  if ( (var=tkProgram->findVariable(id)) ) std_ns["endl"]  = var;

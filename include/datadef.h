@@ -493,6 +493,7 @@ class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("floa
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
 class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtSTRING) {} };
 class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} };
+class DataDefISTREAM:   public DDClass { public: DataDefISTREAM(): DDClass("istream", sizeof(std::istream), DataType::dtISTREAM) {} };
 class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostream", sizeof(std::ostream), DataType::dtOSTREAM) {} };
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
 class DataDefIFSTREAM:  public DDClass { public: DataDefIFSTREAM():DDClass("ifstream", sizeof(std::ifstream), DataType::dtIFSTREAM) {} };
@@ -657,6 +658,7 @@ extern DataDefDOUBLE ddDOUBLE;
 extern DataDefSTRING ddSTRING;
 extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
+extern DataDefISTREAM ddISTREAM;
 extern DataDefOSTREAM ddOSTREAM;
 extern DataDefSSTREAM ddSSTREAM;
 extern DataDefIFSTREAM ddIFSTREAM;
