@@ -1,6 +1,32 @@
 # Changelog
 
-## [Unreleased] — Phase 3 Complete (2026-04-15)
+## [Unreleased] — Phase 3.5 Complete (2026-04-15)
+
+### Added — Phase 3.5 (Modern Language Features)
+
+- **Range-based for loops** — `for (type var : container) { ... }` C++ style iteration over `array` and `vector<T>`. Parser detects `:` in for-header, emits `TokenFOREACH` with index-based loop. Break/continue supported.
+
+- **Function pointers** — `auto fn = my_function; fn(args);` Store function addresses in variables and call through them. `DataDefFPTR` wraps `FuncDef` for typed indirect calls via `cc.invoke(ptr_reg, funcsig)`.
+
+- **Lambda expressions** — `[](params) { body }` and `[type](params) { body }` for typed returns. Anonymous functions hoisted to AST as top-level `TokenFunc` entries (asmjit can't nest addFunc/endFunc). Auto-named `__lambda_0`, `__lambda_1`, etc.
+
+- **`auto` keyword** — Type inference for function pointer and lambda assignments. `auto fn = greet;` or `auto add = [int](int a, int b) { return a + b; };`
+
+- **`defer` statement** — Go-style deferred execution. `defer statement;` registers code to run at scope exit in LIFO order, before destructors. Stored on `TokenCpnd::deferred` vector, compiled in reverse during `cleanup()`.
+
+- **`std::for_each()`** — Iterates a MadArray calling a function pointer per element. Works with named function pointers and inline lambdas.
+
+- **Typed STL containers** — C++ template syntax with lazy DataDef instantiation:
+  - `vector<int>`, `vector<string>` — push_back, pop_back, at, size, clear, empty + range-for
+  - `map<string, int>`, `map<string, string>` — put, get, contains, erase, size, clear
+  - `set<string>`, `set<int>` — insert, contains, erase, size, clear
+  - `list<int>`, `list<string>` — push_back, push_front, size, clear
+
+- **New source file** `src/ns_stl.cpp` — C++ helper functions for all STL container operations.
+
+- **Documentation** — `docs/language/modern/` for range-for, function pointers, lambdas, defer. `docs/rules/` for branching and feature guard rationale.
+
+- **Infrastructure** — `make debug` target, `scripts/run_tests.sh` helper, feature branch workflow with `#ifdef` guards.
 
 ### Added — Phase 2 (Core Language Features)
 

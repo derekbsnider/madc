@@ -24,13 +24,15 @@ bin/madc -v tests/testint.mad
 ## Language Features
 
 - **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `string`, `array`
+- **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>`, `list<int>` — C++ template syntax
 - **Streams:** `cout`, `cerr`, `stringstream`, `ifstream`, `ofstream`, `fstream`
 - **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`
+- **Range-based for:** `for (string name : names) { ... }` — works with array and vector
 - **Functions:** user-defined with return values and parameters
 - **Function pointers:** `auto fn = my_func; fn(args);`
 - **Lambdas:** `[](int a, int b) { return a + b; }` with optional return type `[int](...)`
-- **Range-based for:** `for (string name : names) { ... }`
-- **`auto` keyword:** type inference for function pointer declarations
+- **`defer`:** Go-style deferred execution at scope exit (LIFO order)
+- **`auto` keyword:** type inference for function pointer and lambda declarations
 - **`register` keyword:** explicitly register-only variables (never written to memory)
 - **User-defined structs:** `struct Point { int x; int y; };`
 - **Class definitions:** `class Foo { int x; string name; };` with data members
@@ -125,7 +127,7 @@ done
 make -C src test
 ```
 
-**Current status: 40/40 integration tests pass. 25/25 unit tests pass.**
+**Current status: 44/44 integration tests pass. 25/25 unit tests pass.**
 
 ---
 
@@ -139,6 +141,7 @@ make -C src test
 | [`docs/language/ns-python.md`](docs/language/ns-python.md) | python:: namespace reference |
 | [`docs/language/ns-ruby.md`](docs/language/ns-ruby.md) | ruby:: namespace reference |
 | [`docs/language/ns-js.md`](docs/language/ns-js.md) | js:: namespace reference |
+| [`docs/language/modern/`](docs/language/modern/) | Range-for, function pointers, lambdas, defer |
 | [`docs/build.md`](docs/build.md) | Build requirements, asmjit setup |
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
@@ -155,6 +158,7 @@ make -C src test
 | **Phase 1** | Foundation: verbose flag, char literals, struct fix, register, doctest | **Complete** |
 | **Phase 2** | User-defined structs/classes, namespaces, #include, using | **Complete** |
 | **Phase 3** | php::/perl::/python::/ruby::/js:: namespaces, dlopen, MadArray | **Complete** |
+| **Phase 3.5** | Modern language features: range-for, function pointers, lambdas, defer, STL containers | **Complete** |
 | **Phase 4** | `libmadc.so` embedding API | Planned |
 
 ---
@@ -173,4 +177,4 @@ Source (.mad file)
     v JIT execute        — run machine code in-process
 ```
 
-Namespace implementations: `src/ns_php.cpp`, `src/ns_perl.cpp`, `src/ns_python.cpp`, `src/ns_ruby.cpp`, `src/ns_js.cpp`
+Namespace implementations: `src/ns_php.cpp`, `src/ns_perl.cpp`, `src/ns_python.cpp`, `src/ns_ruby.cpp`, `src/ns_js.cpp`, `src/ns_stl.cpp`
