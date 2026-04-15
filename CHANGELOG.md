@@ -4,13 +4,25 @@
 
 ### Added — Post Phase 3.5
 
-- **`madc::` namespace** — `madc::array` works alongside bare `array` keyword. New `add_madc_namespace()` registration. Backward compatible.
+- **`switch`/`case`/`default` statement** — C-style switch with fall-through semantics. Case values are literal constants. `break` exits via loopstack. Tests: `testswitch.mad`.
 
-- **`std::` namespace scoping for containers** — `std::vector<int>`, `std::map<string, int>`, `std::set<string>`, `std::list<int>` all work alongside bare keywords. Namespace prefix is stripped in `parseStatement()` and re-enters the existing keyword parser. Uses a `current_namespace` resolution model: namespace-aware identifier lookup in `parseExpression()`.
+- **`cin` / `>>` input operator** — Read from stdin. `cin >> name >> age;` for string, int, double. Chained input via BSR convergence (mirrors `<<` for cout). `DataDefISTREAM` added. Tests: `testcin.mad`.
 
-- **Register-only foreach iterator** — Numeric element variables in range-for loops now use `vfREGISTER`, keeping them in Gp registers instead of stack-backing. Tighter loops for integer iteration.
+- **Class methods** — `class Counter { int count; void inc() { count = count + 1; } };` Methods receive hidden `__this` parameter (void*). Member access resolves through `[__this + offset]`. Method names mangled as `ClassName__methodName`. Tests: `testmethod.mad`.
 
-- **`pushToken()` / deque-based token queue** — Token queue changed from `std::queue` to `std::deque` to support `pushToken()` for clean speculative parsing and namespace prefix fallback.
+- **Regex support** — `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()` via `std::regex`. `perl::grep` and `perl::split` upgraded to use regex (fallback to substring on invalid patterns). Tests: `testregex.mad`.
+
+- **Multiple return values** — Go-style `return q, r;` and `q, r := divide(17, 5);`. Hidden `__retbuf` parameter injected at compile time. Values written to `[retbuf+i*8]`. Works with conditional returns in braced if/else. Tests: `testmultiret.mad`.
+
+- **Ternary operator** — `condition ? true_expr : false_expr`. Uses stack-slot merge to avoid asmjit register convergence issues. Colon acts as expression stop in non-bracketed context. Tests: `testternary.mad`.
+
+- **`madc::` namespace** — `madc::array` works alongside bare `array` keyword. Also hosts regex functions. Backward compatible.
+
+- **`std::` namespace scoping for containers** — `std::vector<int>`, `std::map<string, int>`, `std::set<string>`, `std::list<int>` all work alongside bare keywords. `std::cin` also available.
+
+- **Register-only foreach iterator** — Numeric element variables in range-for loops use `vfREGISTER` for tighter loops.
+
+- **`pushToken()` / deque-based token queue** — Token queue changed from `std::queue` to `std::deque` for speculative parsing support.
 
 ### Fixed — Post Phase 3.5
 
@@ -19,6 +31,10 @@
   - `FuncSignatureBuilder` → `FuncSignature`
   - `Operand::size()` → `x86RmSize()` (on asmjit operands only)
   - `cc.setArg()` → `funcnode->setArg()`
+
+- **Mem←Mem safemov** — Added temporary register path for `safemov(Mem, Mem)` operations (needed for class method member access).
+
+- **Multi-return cleanup crash** — Skipping `cleanup()` on multi-return paths prevents double-destruct when multiple return statements exist in if/else branches.
 
 ### Added — Phase 3.5 (Modern Language Features)
 

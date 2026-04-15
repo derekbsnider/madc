@@ -3,3 +3,4 @@ tests/unit/test_datadef
 *.h~
 Makefile~
 *.sh~
+claude_status.json
