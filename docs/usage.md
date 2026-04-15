@@ -132,6 +132,32 @@ while (x > 0) { x--; }
 do { ... } while (condition);
 ```
 
+### switch / case / default
+
+```c
+switch (x)
+{
+    case 1:
+        cout << "one" << endl;
+        break;
+    case 2:
+        cout << "two" << endl;
+        break;
+    default:
+        cout << "other" << endl;
+        break;
+}
+```
+
+### Ternary Operator
+
+```c
+int result;
+result = (x > 0) ? x : -x;   // conditional expression
+```
+
+The ternary operator works in assignments and expressions. Both branches must produce the same type.
+
 ## Functions
 
 ```c
@@ -144,6 +170,51 @@ void greet(string name) {
 }
 ```
 
+### Multiple Return Values (Go-style)
+
+Functions can return multiple values using comma-separated return:
+
+```c
+int, int divmod(int a, int b) {
+    return a / b, a % b;
+}
+
+int main() {
+    int q, r;
+    q, r = divmod(17, 5);
+    cout << "quotient: " << q << ", remainder: " << r << endl;
+}
+```
+
+Multiple return types are declared with comma-separated types before the function name. The caller receives values via comma-separated assignment. Currently works with numeric types only.
+
+### Class Methods
+
+Classes support methods with an implicit `this` pointer:
+
+```c
+class Counter {
+    int count;
+
+    void increment() {
+        this.count = this.count + 1;
+    }
+
+    int get() {
+        return this.count;
+    }
+};
+
+int main() {
+    Counter c;
+    c.count = 0;
+    c.increment();
+    cout << c.get() << endl;   // prints 1
+}
+```
+
+Methods access the instance via `this.member`. The compiler passes a hidden `__this` pointer as the first argument.
+
 ## Output
 
 ```c
@@ -153,6 +224,22 @@ puts("c-style");
 putchar('h');
 puti(42);
 ```
+
+## Input
+
+```c
+string name;
+cout << "Enter name: ";
+cin >> name;
+cout << "Hello, " << name << endl;
+
+int x;
+cout << "Enter number: ";
+cin >> x;
+cout << "You entered: " << x << endl;
+```
+
+`cin >> var` reads whitespace-delimited tokens from stdin. Works with `string`, `int`, and other numeric types.
 
 ## File I/O
 
@@ -216,6 +303,29 @@ Import with `using`:
 using namespace std;       // import all members
 using std::cout;           // import one member
 ```
+
+### madc:: Namespace
+
+The `madc::` namespace provides built-in functions unique to Mad-C:
+
+```c
+// Regex functions
+int matched;
+string s = "Hello World 123";
+matched = madc::regex_match(s, "[A-Za-z]+ [A-Za-z]+ [0-9]+");
+matched = madc::regex_search(s, "[0-9]+");
+
+string result;
+madc::regex_replace(result, s, "[0-9]+", "456");
+// result = "Hello World 456"
+```
+
+| Function | Description |
+|----------|-------------|
+| `madc::regex_match(str, pattern)` | Full-string regex match, returns 1/0 |
+| `madc::regex_search(str, pattern)` | Search for pattern anywhere in string, returns 1/0 |
+| `madc::regex_replace(result, str, pattern, replacement)` | Regex substitution |
+| `madc::array` | Native array type |
 
 See the namespace reference docs:
 - [`docs/language/ns-php.md`](language/ns-php.md)

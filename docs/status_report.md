@@ -3,7 +3,7 @@
 **Date:** 2026-04-15
 **Branch:** develop
 **Build:** Clean (no errors, no warnings)
-**Tests:** 36/36 integration, 25/25 unit — all passing
+**Tests:** 54/54 integration (testcin needs stdin), 25/25 unit — all passing
 
 ---
 
@@ -30,12 +30,21 @@
 | File I/O (read/write/loop with getline) | Solid |
 | Type conversions (to_string/stoi/stod/strlen) | Solid |
 | C library globals (system/getenv/setenv) | Solid |
+| switch/case/default | Solid |
+| cin/>> input | Solid |
+| Class methods with `this` pointer | Solid |
+| Ternary operator (`?:`) | Solid |
+| Multiple return values (Go-style) | Solid |
+| Regex (madc::regex_match/search/replace) | Solid |
+| madc:: namespace | Solid |
+| std:: container scoping (vector, map, set, list) | Solid |
 
 ## Namespace Inventory
 
 | Namespace | Functions | Highlights |
 |-----------|-----------|------------|
-| `std::` | 3 | cout, cerr, endl |
+| `std::` | 5 | cin, cout, cerr, endl, for_each |
+| `madc::` | 4 | array, regex_match, regex_search, regex_replace |
 | `php::` | 36 | explode, implode, trim, sort, str_replace, array ops |
 | `perl::` | 21 | chop, chomp, grep, glob, split, join |
 | `python::` | 16 | title, swapcase, center, ljust, rjust, zfill, format |
@@ -43,20 +52,16 @@
 | `js::` | 6 | btoa/atob, URL encode/decode, parseInt, JSON stringify |
 | `#load` | any | dlopen shared libraries as namespaces with lazy dlsym |
 
-**Total: 94 namespace functions across 6 languages.**
+**Total: ~100 namespace functions across 8 namespaces.**
 
 ## Known Limitations
 
 | Limitation | Notes |
 |------------|-------|
 | String params are pass-by-reference | Mutation inside function affects caller. True copy semantics not implemented. |
-| Class methods not compiled | Parser detects them but no `this` pointer compilation yet. Data members only. |
-| No escape sequences in strings | `"\n"` is literal backslash-n, not a newline. |
 | dlcall returns int64 only | No float/double return via dlcall. |
-| No `>>` input operator | `>>` is bitwise right-shift only. cin not supported. |
-| No `switch` statement | Keyword exists but no compile support. |
-| No arrays with `[]` syntax | Array access is function-based (`php::array_get`). |
-| No regex | grep/split use substring match, not regex. |
+| Multi-return in brace-less if doesn't parse | `if (cond) return a, b;` requires braces: `if (cond) { return a, b; }` |
+| String multi-return not yet implemented | Multiple return values work for numeric types only. |
 
 ## Bugs Found and Fixed (2026-04-14 — 2026-04-15)
 
@@ -75,6 +80,7 @@
 | Phase 1 | Foundation: verbose, char literals, struct fix, register, doctest | **Complete** |
 | Phase 2 | Structs, classes, namespaces, std::, #include, using | **Complete** |
 | Phase 3 | php/perl/python/ruby/js namespaces, dlopen, MadArray | **Complete** |
+| Phase 3.5 | switch, cin, class methods, ternary, multi-return, regex, STL containers, escape sequences, subscript, := | **Complete** |
 | Phase 4 | `libmadc.so` embedding API | Planned |
 
 ## Commits This Session

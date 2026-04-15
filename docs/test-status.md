@@ -1,10 +1,10 @@
 # Test Status
 
-Test results as of April 14, 2026 (Phase 2 in progress).
+Test results as of April 15, 2026 (Phase 3.5+ complete).
 
 Run with: `bin/madc tests/<name>.mad`
 
-## Passing Tests — 30/30
+## Passing Tests — 54/54 integration + 25/25 unit
 
 | Test | What it tests | Output |
 |------|--------------|--------|
@@ -38,6 +38,31 @@ Run with: `bin/madc tests/<name>.mad`
 | `testinclude.mad` | `#include` directive | `Hello, World!`, `Hello, Mad-C!`, `include works!` |
 | `testusing.mad` | `using namespace std` | `using namespace std works!` |
 | `testwhile.mad` | While loop | `100000000` |
+| `testcapture.mad` | Lambda capture of outer variables | Captured values printed |
+| `testcin.mad` | `cin >>` input from stdin | Reads and echoes user input (needs stdin) |
+| `testcolon.mad` | `:=` short variable declaration (Go-style type inference) | Inferred-type variables |
+| `testdefer.mad` | `defer` statement (Go-style deferred execution) | Deferred output at scope exit |
+| `testdlcall.mad` | `dlcall()` through function pointer | Calls C library function via pointer |
+| `testdlopen.mad` | `dlopen`/`dlsym`/`dlclose` | Loads and calls shared library symbols |
+| `testescape.mad` | Escape sequences in string literals (`\n`, `\t`, etc.) | Formatted output with escapes |
+| `testforeach.mad` | Range-based `for (type var : array)` | Iterates over MadArray elements |
+| `testforeach2.mad` | Range-based for with STL containers | Iterates over vector/map/set |
+| `testfstream.mad` | File I/O with ifstream/ofstream/fstream | Read/write file operations |
+| `testfuncptr.mad` | Function pointers via `auto fn = func` | Calls through stored function pointer |
+| `testlambda.mad` | Lambda expressions with `auto` and `[]` | Defines and calls inline lambdas |
+| `testlang.mad` | Multi-language namespace usage in one program | php/perl/python/ruby/js functions together |
+| `testloop.mad` | Loop constructs (for, while, do-while) | Various loop patterns |
+| `testmadc_ns.mad` | `madc::` namespace (regex, array) | madc::regex_match, regex_search, regex_replace |
+| `testmap.mad` | `map<K,V>` typed STL container | Insert, find, erase, iterate |
+| `testmethod.mad` | Class methods with `this` pointer | Method call compiles and dispatches |
+| `testmultiret.mad` | Multiple return values (Go-style) | Function returns multiple values via `__retbuf` |
+| `testperl.mad` | perl:: namespace functions | chop, chomp, split, join, grep, glob |
+| `testregex.mad` | Regex functions (match, search, replace) | Pattern matching and substitution |
+| `testset.mad` | `set<T>` typed STL container | Insert, find, erase, iterate |
+| `testsubscript.mad` | `[]` subscript operator on strings and containers | Indexed access |
+| `testswitch.mad` | `switch`/`case`/`default` statement | Branch selection by value |
+| `testternary.mad` | Ternary operator (`cond ? a : b`) | Conditional expression |
+| `testvector.mad` | `vector<T>` typed STL container | push_back, size, at, iterate |
 
 ## Phase 1 Fixes Applied
 

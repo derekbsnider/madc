@@ -29,6 +29,7 @@ Source lives in `src/`, headers in `include/`, output in `bin/` and `obj/`.
 | python:: | `src/ns_python.cpp` | 16 Python-style functions (title, center, zfill, format) |
 | ruby:: | `src/ns_ruby.cpp` | 12 Ruby-style functions (squeeze, tr, chars, rotate) |
 | js:: | `src/ns_js.cpp` | 6 JS-style functions (base64, URL encoding, JSON) |
+| STL | `src/ns_stl.cpp` | STL container helpers: vector<T>, map<K,V>, set<T>, list<T> |
 | Headers | `include/madc.h`, `include/tokens.h`, `include/datadef.h`, `include/datatokens.h` | Core data structures |
 
 Execution flow: `madc.cpp` -> lexer -> parser -> compiler -> JIT execute.
@@ -54,7 +55,7 @@ bin/madc tests/testint.mad        # run a single test
 make -C src test                  # run unit tests
 ```
 
-36 integration tests in `tests/*.mad`, 25 unit tests in `tests/unit/`. All must pass before merging. Skip `include_helper.mad` when running batch tests (it's included by `testinclude.mad`, not standalone).
+54 integration tests in `tests/*.mad`, 25 unit tests in `tests/unit/`. All must pass before merging. Skip `include_helper.mad` when running batch tests (it's included by `testinclude.mad`, not standalone). `testcin.mad` requires stdin input.
 
 ## Key Design Notes
 
@@ -63,6 +64,9 @@ make -C src test                  # run unit tests
 - **`dtSTRING -> dtCHARptr` coercion** happens automatically in `TokenCallFunc::compile()` via `string_cstr()` when a function expects `const char*`.
 - **MadValue/MadArray** — tagged union + container for PHP-style mixed-type arrays. Used internally by php:: array functions.
 - **dlopen functions** use variadic calling: 0 declared params, actual args passed based on compile-time types. String args auto-coerce to `const char*`.
+- **Class methods** receive a hidden `__this` pointer as their first parameter. `this.member` compiles as an offset from that pointer.
+- **Multi-return functions** use a hidden `__retbuf` parameter — a pointer to caller-allocated stack memory where return values are written.
+- **Ternary operator** uses stack-slot merge: both branches of `cond ? a : b` write to the same stack location, avoiding the need for phi nodes.
 
 ## Rules
 

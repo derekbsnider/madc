@@ -22,14 +22,14 @@ Perl-unique string and array functions. Perl's `chop`/`chomp`, `grep`, `glob`, a
 
 | Function | Description | Example |
 |----------|-------------|---------|
-| `split(arr, delim, str)` | Split string into array | `perl::split(a, ":", path)` |
+| `split(arr, delim, str)` | Split string by regex delimiter (falls back to substring match on invalid patterns) | `perl::split(a, ":", path)` |
 | `join(result, sep, arr)` | Join array into string | `perl::join(s, ",", a)` |
 | `push(arr, str)` | Append element | `perl::push(a, "val")` |
 | `pop(result, arr)` | Remove + return last element | `perl::pop(s, a)` |
 | `shift(result, arr)` | Remove + return first element | `perl::shift(s, a)` |
 | `unshift(arr, str)` | Prepend element | `perl::unshift(a, "val")` |
 | `scalar(arr)` | Number of elements | `n = perl::scalar(a)` |
-| `grep(dest, pattern, src)` | Filter by substring match | `perl::grep(matches, "err", lines)` |
+| `grep(dest, pattern, src)` | Filter by regex match (falls back to substring match on invalid patterns) | `perl::grep(matches, "err", lines)` |
 | `glob(arr, pattern)` | File globbing | `perl::glob(files, "*.mad")` |
 
 ## Key Differences from PHP

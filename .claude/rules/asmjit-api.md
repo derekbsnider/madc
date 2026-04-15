@@ -85,3 +85,27 @@ DBG(
 DBG(static FileLogger logger(stdout));
 DBG(logger.setFlags(FormatFlags::kMachineCode));  // compile error
 ```
+
+## Deprecation Warnings (Fixed April 2026)
+
+All ~70 deprecation warnings have been resolved across `compiler.cpp` and `typesafe.cpp`:
+
+- `FuncSignatureT<...>(CallConvId::kCDecl)` → `FuncSignature::build<...>()`
+- `FuncSignatureBuilder` → `FuncSignature`
+- `Operand::size()` → `x86RmSize()` (only on asmjit Operands, NOT on C++ containers like `std::vector`)
+- `cc.setArg(idx, reg)` → `funcnode->setArg(idx, reg)` (use the FuncNode pointer from `cc.newFunc()`)
+
+## Register Convergence Limitation
+
+asmjit's register allocator cannot handle the same virtual register being written on two
+divergent code paths (e.g., both branches of an if/else writing to the same Gp). Use a
+**stack slot** as the merge point instead:
+
+```cpp
+x86::Mem slot = cc.newStack(8, 8);
+// true branch: mov(slot, true_val)
+// false branch: mov(slot, false_val)
+// after merge: mov(result_reg, slot)
+```
+
+This pattern is used by the ternary operator implementation.

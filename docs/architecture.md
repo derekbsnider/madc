@@ -32,6 +32,9 @@ Source (.mad file)
 | `src/ns_python.cpp` | ~290 | python:: namespace: 16 functions |
 | `src/ns_ruby.cpp` | ~255 | ruby:: namespace: 12 functions |
 | `src/ns_js.cpp` | ~240 | js:: namespace: 6 functions (base64, URL encoding, JSON) |
+| `src/ns_stl.cpp` | — | STL container helpers: vector<T>, map<K,V>, set<T>, list<T> method compilation |
+
+> **Note:** Line counts above are from the initial documentation pass and may be outdated as the codebase has grown significantly through Phase 3.5.
 
 ## Header Files
 
@@ -76,6 +79,25 @@ Each token implements:
 - `operand(Program& pgm)` — returns the cached asmjit `Operand` for this value
 
 `regdefp_t` is `pair<Operand*, DataDef*>` — the result register and its type.
+
+### Token Queue (pushToken)
+
+The parser uses a `deque`-based token queue (`pushToken`/`popToken`) to handle lookahead situations where tokens need to be re-examined. This is used when the parser speculatively consumes a token and then needs to put it back for a different parse path.
+
+### Class Method Dispatch
+
+Class methods are compiled as regular functions with a hidden `__this` pointer injected as the first parameter. When `obj.method()` is called:
+1. The compiler looks up the method in the class's `DataDefCLASS` method vector
+2. A pointer to the object's stack memory is passed as the implicit first argument
+3. Inside the method body, `this.member` accesses are compiled as offsets from the `__this` pointer
+
+### Ternary Operator
+
+The ternary operator (`cond ? a : b`) is compiled using asmjit labels for branching. Both branches emit code to produce a value into the same stack slot (stack-slot merge), and execution resumes after the false-branch label. The merge ensures both paths write to a single result location.
+
+### Multi-Return (`__retbuf` Mechanism)
+
+Functions with multiple return values use a hidden `__retbuf` parameter — a pointer to caller-allocated stack memory. The callee writes return values into `__retbuf` slots, and the caller reads them back after the call. This avoids register-pressure issues when returning more than one value.
 
 ## Program Class
 
