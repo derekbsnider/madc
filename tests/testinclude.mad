@@ -1,0 +1,12 @@
+#!/../bin/madc
+
+#include "include_helper.mad"
+
+int main()
+{
+    greet("World");
+    greet("Mad-C");
+    cout << "include works!" << endl;
+
+    return 0;
+}

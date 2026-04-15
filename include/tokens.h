@@ -39,7 +39,8 @@ enum class TokenID {
 // 68	69	70	71	72	73	74	75	76	77	78	79
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
 // 80		81	82	83	84		85	86
-  tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER
+  tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
+  tkUSING, tkNAMESPACE
 };
 
 enum class TokenAssoc {
@@ -930,6 +931,17 @@ class TokenSWITCH:   public TokenKeyword { public: TokenSWITCH()   : TokenKeywor
 class TokenCLASS:    public TokenKeyword { public: TokenCLASS()    : TokenKeyword("class") {}    virtual TokenID id() const { return TokenID::tkCLASS;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCLASS();   } };
 class TokenDEFAULT:  public TokenKeyword { public: TokenDEFAULT()  : TokenKeyword("default") {}  virtual TokenID id() const { return TokenID::tkDEFAULT;  } virtual TokenBase *clone() { return (TokenBase*)new TokenDEFAULT(); } };
 class TokenTYPEDEF:  public TokenKeyword { public: TokenTYPEDEF()  : TokenKeyword("typedef") {}  virtual TokenID id() const { return TokenID::tkTYPEDEF;  } virtual TokenBase *clone() { return (TokenBase*)new TokenTYPEDEF(); } };
+
+class TokenNAMESPACE:public TokenKeyword { public: TokenNAMESPACE() : TokenKeyword("namespace") {} virtual TokenID id() const { return TokenID::tkNAMESPACE; } virtual TokenBase *clone() { return (TokenBase*)new TokenNAMESPACE(); } };
+
+class TokenUSING: public TokenKeyword
+{
+public:
+    TokenUSING() : TokenKeyword("using") {}
+    virtual TokenID id() const { return TokenID::tkUSING; }
+    virtual TokenBase *clone() { return (TokenBase*)new TokenUSING(); }
+    virtual TokenBase *parse(Program &);
+};
 
 class TokenSTRUCT: public TokenKeyword
 {

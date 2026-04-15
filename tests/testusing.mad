@@ -1,0 +1,11 @@
+#!/../bin/madc
+
+using namespace std;
+
+int main()
+{
+    string hello = "using namespace std works!";
+    cout << hello << endl;
+
+    return 0;
+}
