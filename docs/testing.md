@@ -21,7 +21,9 @@ for t in tests/*.mad; do
 done
 ```
 
-Current status: **24/24 pass** (see `docs/test-status.md` for details).
+Current status: **36/36 pass** (see `docs/test-status.md` for details).
+
+Note: `tests/include_helper.mad` is not a standalone test — it's included by `testinclude.mad`. Skip it when running the test loop.
 
 ## Unit Tests
 
