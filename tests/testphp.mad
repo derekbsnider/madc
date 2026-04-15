@@ -1,0 +1,55 @@
+#!/../bin/madc
+
+int main()
+{
+    string hello = "  Hello, World!  ";
+    string name = "Mad-C";
+    int len;
+
+    // strlen
+    len = php::strlen(hello);
+    cout << "strlen: " << len << endl;
+
+    // trim
+    php::trim(hello);
+    cout << "trim: [" << hello << "]" << endl;
+
+    // strtoupper / strtolower
+    php::strtoupper(name);
+    cout << "upper: " << name << endl;
+    php::strtolower(name);
+    cout << "lower: " << name << endl;
+
+    // strrev
+    string rev = "abcdef";
+    php::strrev(rev);
+    cout << "rev: " << rev << endl;
+
+    // strpos
+    string hay = "hello world";
+    string needle = "world";
+    int pos;
+    pos = php::strpos(hay, needle);
+    cout << "strpos: " << pos << endl;
+
+    // str_replace
+    string subj = "foo bar foo baz foo";
+    string srch = "foo";
+    string repl = "qux";
+    php::str_replace(srch, repl, subj);
+    cout << "replace: " << subj << endl;
+
+    // str_repeat
+    string star = "*";
+    php::str_repeat(star, 5);
+    cout << "repeat: " << star << endl;
+
+    // str_contains
+    string text = "Hello, World!";
+    string find = "World";
+    int found;
+    found = php::str_contains(text, find);
+    cout << "contains: " << found << endl;
+
+    return 0;
+}

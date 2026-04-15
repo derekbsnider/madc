@@ -4,7 +4,7 @@ Test results as of April 14, 2026 (Phase 2 in progress).
 
 Run with: `bin/madc tests/<name>.mad`
 
-## Passing Tests — 29/29
+## Passing Tests — 30/30
 
 | Test | What it tests | Output |
 |------|--------------|--------|
@@ -32,6 +32,7 @@ Run with: `bin/madc tests/<name>.mad`
 | `teststruct.mad` | Struct member access | `test.name: Joe Blow`, `test.id: 2`, `test.age: d` (uint8=char in stream) |
 | `testversion.mad` | Version string | `v0.0.1` |
 | `testns.mad` | Namespace resolution (std::) | `Hello from std::cout!`, `x = 42`, stderr output, unqualified still works |
+| `testphp.mad` | php:: namespace functions | strlen, trim, upper/lower, strrev, strpos, str_replace, str_repeat, str_contains |
 | `teststruct2.mad` | User-defined structs | `p.x: 10`, `p.y: 20`, `bob.name: Bob Smith`, `bob.age: 42`, `bob.id: 1001` |
 | `testclass.mad` | Class definitions with data members | `p.x: 100`, `p.y: 200`, `bob.name: Bob`, `bob.age: 30` |
 | `testinclude.mad` | `#include` directive | `Hello, World!`, `Hello, Mad-C!`, `include works!` |
