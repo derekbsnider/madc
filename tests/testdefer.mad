@@ -1,0 +1,18 @@
+#!/../bin/madc
+int main()
+{
+    // basic LIFO order
+    cout << "start" << endl;
+    defer cout << "third (deferred 1st)" << endl;
+    defer cout << "second (deferred 2nd)" << endl;
+    cout << "first" << endl;
+
+    // practical: file cleanup
+    ofstream out;
+    string fname = "/tmp/defer_test.txt";
+    out.open(fname);
+    defer out.close();
+    out << "written via deferred close" << endl;
+
+    return 0;
+}

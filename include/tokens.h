@@ -40,7 +40,7 @@ enum class TokenID {
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
-  tkUSING, tkNAMESPACE
+  tkUSING, tkNAMESPACE, tkDEFER
 };
 
 enum class TokenAssoc {
@@ -947,6 +947,16 @@ public:
     TokenUSING() : TokenKeyword("using") {}
     virtual TokenID id() const { return TokenID::tkUSING; }
     virtual TokenBase *clone() { return (TokenBase*)new TokenUSING(); }
+    virtual TokenBase *parse(Program &);
+};
+
+// defer keyword: register a statement to run at scope exit (LIFO)
+class TokenDEFER: public TokenKeyword
+{
+public:
+    TokenDEFER() : TokenKeyword("defer") {}
+    virtual TokenID id() const { return TokenID::tkDEFER; }
+    virtual TokenBase *clone() { return new TokenDEFER(); }
     virtual TokenBase *parse(Program &);
 };
 
