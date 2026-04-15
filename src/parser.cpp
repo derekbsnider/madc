@@ -1383,6 +1383,150 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     return NULL;
 }
 
+// parse a class definition
+// forms:
+// class Name { type member; rettype method() { ... } };
+// class Name variable;
+// typedef class Name alias;
+TokenBase *TokenCLASS::parse(Program &pgm)
+{
+    TokenIdent *tag = NULL;
+    TokenBase *tn;
+    TokenDataType *tdt;
+    bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false;
+    datatype_map_iter bmi;
+    datadef_map_iter dmi;
+
+    DBG(std::cout << std::endl << "TokenCLASS::parse() top" << std::endl);
+    if ( !(tn=pgm.peekToken()) )
+	pgm.Throw << "Unexpected end of input" << flush;
+
+    // class name is required (no anonymous classes)
+    if ( tn->type() == TokenType::ttIdentifier )
+    {
+	tag = (TokenIdent *)pgm.nextToken();
+	DBG(cout << "TokenCLASS::parse() got name " << tag->str << endl);
+	tn = pgm.peekToken();
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input after class name" << flush;
+    }
+
+    // if no brace, class type must already be defined
+    if ( tn->id() != TokenID::tkOpBrc )
+    {
+	if ( !tag )
+	    pgm.Throw(tn) << "Expecting class name" << flush;
+	if ( (dmi=pgm.struct_map.find(tag->str)) == pgm.struct_map.end() )
+	    pgm.Throw(tn) << "Unknown class type '" << tag->str << "'" << flush;
+	if ( do_typedef )
+	{
+	    tn = pgm.nextToken();
+	    if ( tn->type() != TokenType::ttIdentifier )
+		pgm.Throw(tn) << "Expecting identifier in typedef" << flush;
+	    TokenIdent *alias = (TokenIdent *)tn;
+	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
+		pgm.Throw(tn) << "Identifier already defined" << flush;
+	    tdt = new TokenDataType(alias->str.c_str(), *dmi->second);
+	    pgm.datatype_map[alias->str] = tdt;
+	    return NULL;
+	}
+	tdt = new TokenDataType(tag->str.c_str(), *dmi->second);
+	return pgm.parseDeclaration(tdt);
+    }
+
+    // ---- defining a new class: class Name { ... } ----
+
+    if ( !tag )
+	pgm.Throw(tn) << "Class definition requires a name" << flush;
+
+    pgm.nextToken(); // consume '{'
+
+    DataDefCLASS *ddc = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
+    DBG(cout << "TokenCLASS::parse() defining class " << tag->str << endl);
+
+    while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
+    {
+	// expect a data type token
+	if ( tn->type() != TokenType::ttDataType )
+	    pgm.Throw(tn) << "Expecting type in class definition" << flush;
+	TokenDataType *mtype = (TokenDataType *)pgm.nextToken();
+
+	// expect member name
+	tn = pgm.nextToken();
+	if ( tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
+	std::string mname = ((TokenIdent *)tn)->str;
+
+	// peek: is this a method (followed by '(') or a data member (followed by ';')?
+	tn = pgm.peekToken();
+	if ( tn && tn->id() == TokenID::tkOpBrk )
+	{
+	    // method declaration — parse as function, add to class methods
+	    DBG(cout << "TokenCLASS::parse() parsing method " << mname << endl);
+	    pgm.parseFunction(mtype->definition, mname);
+	    // find the variable that parseFunction created and add to class methods
+	    Variable *mvar;
+	    if ( (mvar=pgm.tkProgram->findVariable(mname)) )
+		ddc->methods.push_back(mvar);
+	}
+	else
+	{
+	    // data member
+	    ddc->addMember(mname, mtype->definition, 1);
+	    DBG(cout << "TokenCLASS::parse() added member " << mtype->definition.name << ' ' << mname
+		<< " (size " << mtype->definition.size << ", total " << ddc->size << ')' << endl);
+	    tn = pgm.nextToken();
+	    if ( tn->id() != TokenID::tkSemi )
+		pgm.Throw(tn) << "Expecting ';' after class member" << flush;
+	}
+    }
+
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input in class definition" << flush;
+    pgm.nextToken(); // consume '}'
+
+    // register the class type
+    if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
+	pgm.Throw(tag) << "Class '" << tag->str << "' already defined" << flush;
+    pgm.struct_map[tag->str] = ddc;
+    // also register as a data type so "ClassName var;" works without "class" prefix
+    tdt = new TokenDataType(tag->str.c_str(), *ddc);
+    pgm.datatype_map[tag->str] = tdt;
+    DBG(cout << "TokenCLASS::parse() registered class " << tag->str << " size=" << ddc->size << endl);
+
+    // what follows?
+    tn = pgm.peekToken();
+
+    if ( do_typedef )
+    {
+	tn = pgm.nextToken();
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
+	TokenIdent *alias = (TokenIdent *)tn;
+	tdt = new TokenDataType(alias->str.c_str(), *ddc);
+	pgm.datatype_map[alias->str] = tdt;
+	pgm.struct_map[alias->str] = ddc;
+	return NULL;
+    }
+
+    // class Name { ... } variable;
+    if ( tn && tn->type() == TokenType::ttIdentifier )
+    {
+	tdt = new TokenDataType(tag->str.c_str(), *ddc);
+	return pgm.parseDeclaration(tdt);
+    }
+
+    // class Name { ... }; — just a definition
+    if ( tn && tn->id() == TokenID::tkSemi )
+    {
+	pgm.nextToken();
+	return NULL;
+    }
+
+    pgm.Throw(tn) << "Expecting variable name or ';' after class definition" << flush;
+    return NULL;
+}
+
 TokenBase *TokenRETURN::parse(Program &pgm)
 {
     TokenBase *tn;
@@ -1909,6 +2053,15 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	// assignment or a function call
 	case TokenType::ttIdentifier:
 	    DBG(std::cout << "parseStatement() got identifier " << ((TokenIdent *)tb)->str << std::endl);
+	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
+	    {
+		datatype_map_iter dmi = datatype_map.find(((TokenIdent *)tb)->str);
+		if ( dmi != datatype_map.end() )
+		{
+		    DBG(std::cout << "parseStatement() identifier is a registered type, calling parseDeclaration" << std::endl);
+		    return parseDeclaration(dmi->second);
+		}
+	    }
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseExpression" << std::endl);

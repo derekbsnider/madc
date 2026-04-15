@@ -1,7 +1,7 @@
 # Mad-C Revival Plan
 
 **Date:** 2026-04-14  
-**Status:** Phase 1 Complete — Phase 2 Planned
+**Status:** Phase 2 Complete — Phase 3 Planned
 
 ## Context
 
@@ -98,7 +98,7 @@ madc was last touched ~7 years ago. The asmjit v1.14 migration has been complete
 
 ---
 
-## Phase 2 — Core Language Features
+## Phase 2 — Core Language Features ✓ COMPLETE
 
 *Goal: Full struct/class support, formalized C++ integration, namespace resolution.*
 

@@ -4,7 +4,7 @@ Test results as of April 14, 2026 (Phase 2 in progress).
 
 Run with: `bin/madc tests/<name>.mad`
 
-## Passing Tests — 28/28
+## Passing Tests — 29/29
 
 | Test | What it tests | Output |
 |------|--------------|--------|
@@ -33,6 +33,7 @@ Run with: `bin/madc tests/<name>.mad`
 | `testversion.mad` | Version string | `v0.0.1` |
 | `testns.mad` | Namespace resolution (std::) | `Hello from std::cout!`, `x = 42`, stderr output, unqualified still works |
 | `teststruct2.mad` | User-defined structs | `p.x: 10`, `p.y: 20`, `bob.name: Bob Smith`, `bob.age: 42`, `bob.id: 1001` |
+| `testclass.mad` | Class definitions with data members | `p.x: 100`, `p.y: 200`, `bob.name: Bob`, `bob.age: 30` |
 | `testinclude.mad` | `#include` directive | `Hello, World!`, `Hello, Mad-C!`, `include works!` |
 | `testusing.mad` | `using namespace std` | `using namespace std works!` |
 | `testwhile.mad` | While loop | `100000000` |
@@ -65,6 +66,7 @@ Run with: `make -C src test`
 | User-defined structs (2.1) | ✓ Done | `TokenSTRUCT::parse()` parses `struct Name { type member; ... };`, builds `DataDefSTRUCT` dynamically, registers in `struct_map` |
 | Namespace resolution (2.3+2.4) | ✓ Done | `namespace_map` registry, `::` resolution in `parseExpression()`, `std::` namespace with cout/cerr/endl |
 | `#include` + `using` (2.5) | ✓ Done | Lexer handles `#include "file.mad"` with relative paths; parser handles `using namespace X;` and `using X::member;` |
+| Class definitions (2.2) | ✓ Done | Data members, `class Name { ... };` syntax, type registered in `datatype_map` for prefix-free use |
 
 ## Known Issues
 
