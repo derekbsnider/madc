@@ -928,7 +928,14 @@ class TokenTRY:      public TokenKeyword { public: TokenTRY()      : TokenKeywor
 class TokenCATCH:    public TokenKeyword { public: TokenCATCH()    : TokenKeyword("catch") {}    virtual TokenID id() const { return TokenID::tkCATCH;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCATCH();   } };
 class TokenTHROW:    public TokenKeyword { public: TokenTHROW()    : TokenKeyword("throw") {}    virtual TokenID id() const { return TokenID::tkTHROW;    } virtual TokenBase *clone() { return (TokenBase*)new TokenTHROW();   } };
 class TokenSWITCH:   public TokenKeyword { public: TokenSWITCH()   : TokenKeyword("switch") {}   virtual TokenID id() const { return TokenID::tkSWITCH;   } virtual TokenBase *clone() { return (TokenBase*)new TokenSWITCH();  } };
-class TokenCLASS:    public TokenKeyword { public: TokenCLASS()    : TokenKeyword("class") {}    virtual TokenID id() const { return TokenID::tkCLASS;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCLASS();   } };
+class TokenCLASS: public TokenKeyword
+{
+public:
+    TokenCLASS() : TokenKeyword("class") {}
+    virtual TokenID id() const { return TokenID::tkCLASS; }
+    virtual TokenBase *clone() { return (TokenBase*)new TokenCLASS(); }
+    virtual TokenBase *parse(Program &);
+};
 class TokenDEFAULT:  public TokenKeyword { public: TokenDEFAULT()  : TokenKeyword("default") {}  virtual TokenID id() const { return TokenID::tkDEFAULT;  } virtual TokenBase *clone() { return (TokenBase*)new TokenDEFAULT(); } };
 class TokenTYPEDEF:  public TokenKeyword { public: TokenTYPEDEF()  : TokenKeyword("typedef") {}  virtual TokenID id() const { return TokenID::tkTYPEDEF;  } virtual TokenBase *clone() { return (TokenBase*)new TokenTYPEDEF(); } };
 
