@@ -2195,6 +2195,35 @@ TokenBase *TokenMAP::parse(Program &pgm)
 	DataDefMAP *dd = new DataDefMAP(key, val, tname, sizeof(std::map<std::string, int64_t>));
 	tdt = new TokenDataType(tname.c_str(), *dd);
 	pgm.datatype_map[tname] = tdt;
+
+	// register methods
+	Variable *mv;
+	if ( val->is_string() )
+	{
+	    mv = pgm.addFunction("put", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)map_str_str_set, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("get", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_str_get, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_str_contains, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_str_size, true);
+	    dd->methods.push_back(mv);
+	}
+	else
+	{
+	    mv = pgm.addFunction("put", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)map_str_int_set, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("get", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_get, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_contains, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("erase", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_erase, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_int_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_int_clear, true);
+	    dd->methods.push_back(mv);
+	}
     }
 
     return pgm.parseDeclaration(tdt);
@@ -2229,6 +2258,30 @@ TokenBase *TokenSET::parse(Program &pgm)
 	DataDefSET *dd = new DataDefSET(elem, tname, sizeof(std::set<std::string>));
 	tdt = new TokenDataType(tname.c_str(), *dd);
 	pgm.datatype_map[tname] = tdt;
+
+	Variable *mv;
+	if ( elem->is_string() )
+	{
+	    mv = pgm.addFunction("insert", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_insert, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_contains, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("erase", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_erase, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_str_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_str_clear, true);
+	    dd->methods.push_back(mv);
+	}
+	else
+	{
+	    mv = pgm.addFunction("insert", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtINT64}, (fVOIDFUNC)set_int_insert, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET), DataType::dtINT64}, (fVOIDFUNC)set_int_contains, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_int_size, true);
+	    dd->methods.push_back(mv);
+	}
     }
 
     return pgm.parseDeclaration(tdt);
@@ -2263,6 +2316,28 @@ TokenBase *TokenLIST::parse(Program &pgm)
 	DataDefLIST *dd = new DataDefLIST(elem, tname, sizeof(std::list<int64_t>));
 	tdt = new TokenDataType(tname.c_str(), *dd);
 	pgm.datatype_map[tname] = tdt;
+
+	Variable *mv;
+	if ( elem->is_string() )
+	{
+	    mv = pgm.addFunction("push_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtLIST), DataType::dtSTRING}, (fVOIDFUNC)list_str_push_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("push_front", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtLIST), DataType::dtSTRING}, (fVOIDFUNC)list_str_push_front, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtLIST)}, (fVOIDFUNC)list_str_size, true);
+	    dd->methods.push_back(mv);
+	}
+	else
+	{
+	    mv = pgm.addFunction("push_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtLIST), DataType::dtINT64}, (fVOIDFUNC)list_int_push_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("push_front", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtLIST), DataType::dtINT64}, (fVOIDFUNC)list_int_push_front, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtLIST)}, (fVOIDFUNC)list_int_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtLIST)}, (fVOIDFUNC)list_int_clear, true);
+	    dd->methods.push_back(mv);
+	}
     }
 
     return pgm.parseDeclaration(tdt);
