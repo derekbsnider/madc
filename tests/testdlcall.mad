@@ -1,0 +1,32 @@
+#!/../bin/madc
+
+int main()
+{
+    string libname = "libc.so.6";
+    int handle;
+    int fn;
+    int result;
+
+    // dlopen
+    handle = dlopen(libname);
+    cout << "handle: " << handle << endl;
+
+    // dlsym + dlcall for abs
+    string fname = "abs";
+    fn = dlsym(handle, fname);
+    result = dlcall(fn, -99);
+    cout << "abs(-99): " << result << endl;
+
+    // dlsym + dlcall for atoi
+    string atoi_name = "atoi";
+    fn = dlsym(handle, atoi_name);
+    string num = "12345";
+    result = dlcall(fn, num);
+    cout << "atoi: " << result << endl;
+
+    // cleanup
+    dlclose(handle);
+    cout << "done" << endl;
+
+    return 0;
+}

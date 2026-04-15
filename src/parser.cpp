@@ -355,6 +355,31 @@ void printstream(std::stringstream *os)
     cout << os->str() << endl;
 }
 
+// dlopen/dlsym wrappers that accept std::string* (madc strings)
+int64_t madc_dlopen(void *filename)
+{
+    const char *fn = ((std::string *)filename)->c_str();
+    void *handle = dlopen(fn, RTLD_LAZY);
+    if ( !handle )
+	std::cerr << "dlopen: " << dlerror() << std::endl;
+    return (int64_t)handle;
+}
+
+int64_t madc_dlsym(int64_t handle, void *name)
+{
+    const char *n = ((std::string *)name)->c_str();
+    void *sym = dlsym((void *)handle, n);
+    if ( !sym )
+	std::cerr << "dlsym: " << dlerror() << std::endl;
+    return (int64_t)sym;
+}
+
+void madc_dlclose(int64_t handle)
+{
+    if ( handle )
+	dlclose((void *)handle);
+}
+
 // needed to add getline
 typedef istream& (*fnGETLINE)(istream&, string&);
 // needed to add endl
@@ -374,6 +399,12 @@ void Program::add_functions()
     addFunction("putchar",	datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     addFunction("getline",	datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
     addFunction("endl",		datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
+    // dlopen/dlsym/dlclose — dynamic library loading
+    addFunction("dlopen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlopen);
+    addFunction("dlsym",	datatype_vec_t{DataType::dtINT64, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlsym);
+    addFunction("dlclose",	datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
+    // dlcall — call through function pointer (variadic, handled specially in compiler)
+    addFunction("dlcall",	datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 }
 
 // define some global variables
@@ -762,7 +793,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	if ( tb->id() == TokenID::tkComma )
 	{
-	    if ( ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
+	    FuncDef *_fd = (FuncDef *)tc->var.type;
+	    if ( !_fd->parameters.empty() && ++paramcnt >= _fd->parameters.size() )
 		Throw(tb) << "Too many parameters" << flush;
 	    continue;
 	}
@@ -779,7 +811,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     {
 	FuncDef *fd = (FuncDef *)tc->var.type;
 	Method *md = (Method *)tc->var.data;
-	if ( !(fd->parameters.empty() && md && md->x86code) )
+	if ( !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
 	{
 	    if ( tc->argc() != fd->parameters.size() )
 	    {
