@@ -365,9 +365,14 @@ extern void ofstream_open(void *, void *);
 extern void ofstream_close(void *);
 extern void fstream_open(void *, void *);
 extern void fstream_close(void *);
-extern int64_t stream_eof(void *);
-extern int64_t stream_good(void *);
-extern int64_t stream_is_open(void *);
+extern int64_t ifstream_eof(void *);
+extern int64_t ifstream_good(void *);
+extern int64_t ifstream_is_open(void *);
+extern int64_t ofstream_good(void *);
+extern int64_t ofstream_is_open(void *);
+extern int64_t fstream_eof(void *);
+extern int64_t fstream_good(void *);
+extern int64_t fstream_is_open(void *);
 
 // dlopen/dlsym wrappers that accept std::string* (madc strings)
 int64_t madc_dlopen(void *filename)
@@ -452,16 +457,16 @@ void Program::add_fstream_methods()
 {
     Variable *var;
 
-    // ifstream methods
+    // ifstream methods — must use typed wrappers (ios is virtual base, pointer offset differs)
     var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)ifstream_open, true);
     ddIFSTREAM.methods.push_back(var);
     var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_close, true);
     ddIFSTREAM.methods.push_back(var);
-    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)stream_eof, true);
+    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_eof, true);
     ddIFSTREAM.methods.push_back(var);
-    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)stream_good, true);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_good, true);
     ddIFSTREAM.methods.push_back(var);
-    var = addFunction("is_open", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)stream_is_open, true);
+    var = addFunction("is_open", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_is_open, true);
     ddIFSTREAM.methods.push_back(var);
 
     // ofstream methods
@@ -469,7 +474,7 @@ void Program::add_fstream_methods()
     ddOFSTREAM.methods.push_back(var);
     var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)ofstream_close, true);
     ddOFSTREAM.methods.push_back(var);
-    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)stream_good, true);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)ofstream_good, true);
     ddOFSTREAM.methods.push_back(var);
 
     // fstream methods
@@ -477,9 +482,9 @@ void Program::add_fstream_methods()
     ddFSTREAM.methods.push_back(var);
     var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_close, true);
     ddFSTREAM.methods.push_back(var);
-    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)stream_eof, true);
+    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_eof, true);
     ddFSTREAM.methods.push_back(var);
-    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)stream_good, true);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_good, true);
     ddFSTREAM.methods.push_back(var);
 }
 
