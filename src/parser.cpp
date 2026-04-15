@@ -380,6 +380,30 @@ void madc_dlclose(int64_t handle)
 	dlclose((void *)handle);
 }
 
+// C library wrappers that accept madc strings
+int64_t madc_system(void *cmd)
+{
+    return (int64_t)system(((std::string *)cmd)->c_str());
+}
+
+int64_t madc_getenv(void *result, void *name)
+{
+    const char *val = getenv(((std::string *)name)->c_str());
+    std::string &res = *(std::string *)result;
+    res = val ? val : "";
+    return val ? 1 : 0;
+}
+
+void madc_setenv(void *name, void *value)
+{
+    setenv(((std::string *)name)->c_str(), ((std::string *)value)->c_str(), 1);
+}
+
+void madc_unsetenv(void *name)
+{
+    unsetenv(((std::string *)name)->c_str());
+}
+
 // needed to add getline
 typedef istream& (*fnGETLINE)(istream&, string&);
 // needed to add endl
@@ -399,6 +423,11 @@ void Program::add_functions()
     addFunction("putchar",	datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     addFunction("getline",	datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
     addFunction("endl",		datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
+    // C library functions
+    addFunction("system",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
+    addFunction("getenv",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
+    addFunction("setenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_setenv);
+    addFunction("unsetenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)madc_unsetenv);
     // dlopen/dlsym/dlclose — dynamic library loading
     addFunction("dlopen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlopen);
     addFunction("dlsym",	datatype_vec_t{DataType::dtINT64, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlsym);
@@ -439,6 +468,9 @@ void Program::_parser_init()
     add_namespaces();
     add_php_namespace();
     add_perl_namespace();
+    add_python_namespace();
+    add_ruby_namespace();
+    add_js_namespace();
     _braces = 0;
 }
 
