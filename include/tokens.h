@@ -337,6 +337,7 @@ public:
 class TokenAssign: public TokenOperator
 {
 public:
+    std::vector<Variable *> multi_vars; // for multi-return: a, b := func()
     TokenAssign() : TokenOperator('=') {}
     virtual TokenBase *clone() { TokenAssign *to = new TokenAssign(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkAssign; }
@@ -1057,6 +1058,7 @@ class TokenRETURN: public TokenKeyword
 {
 public:
     TokenBase *returns;
+    std::vector<TokenBase *> return_exprs; // multi-return: return a, b;
     TokenRETURN() : TokenKeyword("return") { returns = NULL; }
     virtual TokenBase *parse(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);

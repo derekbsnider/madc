@@ -597,7 +597,9 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
-    // set return type
+    // set return type (multi-return functions return void — values go via __retbuf)
+    if ( func->is_multi_return() ) funcsig.setRetT<void>();
+    else
     switch(func->returns.type())
     {
 	case DataType::dtVOID:		funcsig.setRetT<void>();		break;
@@ -646,7 +648,10 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     // allow extra args for dlopen functions (0 declared params = variadic)
     bool is_variadic = func->parameters.empty() && method->x86code;
-    if ( !is_variadic && argc() > func->parameters.size() )
+    // adjust expected param count: subtract hidden params (object/retbuf)
+    size_t expected_argc = func->parameters.size();
+    if ( regdp.object ) expected_argc--; // hidden object/retbuf param
+    if ( !is_variadic && argc() > expected_argc )
     {
 	std::cerr << "ERROR: TokenCallFunc::compile() method " << var.name << " called with too many parameters" << std::endl;
 	std::cerr << "argc(): " << argc() << " func->parameters.size(): " << func->parameters.size() << std::endl;
@@ -658,10 +663,12 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	pgm.Throw(this) << "TokenCallFunc::compile() called with too many parameters" << flush;
     }
 
+    size_t param_offset = regdp.object ? 1 : 0; // skip hidden retbuf/this param
     for ( size_t i = 0; i < argc(); ++i )
     {
 	regdefp_t funcrdp;
-	ptype = i < func->parameters.size() ? func->parameters[i] : &ddINT64;
+	size_t pi = i + param_offset;
+	ptype = pi < func->parameters.size() ? func->parameters[pi] : &ddINT64;
 	tn = parameters[i];
 
 	DBG(pgm.cc.comment("TokenCallFunc::argc param"));
@@ -987,8 +994,27 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
     FuncSignature funcsig(CallConvId::kCDecl);
     datadef_vec_iter dvi;
 
-    // set return type
-    /**/ if ( &func->returns == &ddSTRING ) { funcsig.setRetT<const char *>(); }
+    // multi-return: inject hidden __retbuf param if not already present
+    if ( func->is_multi_return() )
+    {
+	// check if __retbuf was already added at parse time
+	bool has_retbuf = false;
+	for ( auto *p : method.parameters )
+	    if ( p->name == "__retbuf" ) { has_retbuf = true; break; }
+	if ( !has_retbuf )
+	{
+	    // inject __retbuf as first parameter (at compile time)
+	    std::string rbname = "__retbuf";
+	    Variable *rbvar = new Variable(rbname, ddINT64, 1, NULL, false);
+	    rbvar->flags |= vfPARAM;
+	    method.parameters.insert(method.parameters.begin(), rbvar);
+	    func->parameters.insert(func->parameters.begin(), &ddINT64);
+	}
+    }
+
+    // set return type (multi-return functions return void — values go via __retbuf)
+    if ( func->is_multi_return() ) { funcsig.setRetT<void>(); }
+    else if ( &func->returns == &ddSTRING ) { funcsig.setRetT<const char *>(); }
     else if ( &func->returns == &ddCHAR   ) { funcsig.setRetT<char>();         }
     else if ( &func->returns == &ddBOOL   ) { funcsig.setRetT<bool>();         }
     else if ( &func->returns == &ddINT    ) { funcsig.setRetT<int>();          }
@@ -1284,6 +1310,54 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	throw "Assignment with no rval";
 
     DBG(pgm.cc.comment("TokenAssign start"));
+
+    // multi-return: a, b := func()
+    if ( !multi_vars.empty() )
+    {
+	DBG(pgm.cc.comment("multi-return assignment"));
+	// allocate stack buffer for return values
+	size_t bufsize = multi_vars.size() * 8;
+	x86::Mem retbuf = pgm.cc.newStack((uint32_t)bufsize, 8);
+	x86::Gp retbuf_ptr = pgm.cc.newIntPtr("__retbuf_ptr");
+	pgm.cc.lea(retbuf_ptr, retbuf);
+
+	// The right side is a function call — we need to inject retbuf_ptr as arg 0
+	// Compile the call with the retbuf as the object pointer
+	regdefp_t callrdp = {NULL, NULL, NULL};
+	callrdp.object = &_operand; // temporary, will be overwritten
+	_operand = retbuf_ptr;
+	callrdp.object = &_operand;
+	right->compile(pgm, callrdp);
+
+	// after call, load each value from retbuf into the corresponding variable
+	for ( size_t i = 0; i < multi_vars.size(); ++i )
+	{
+	    Operand &var_op = pgm.tkFunction->voperand(pgm, multi_vars[i]);
+	    if ( multi_vars[i]->type->is_integer() || multi_vars[i]->type->is_numeric() )
+	    {
+		x86::Gp tmp = pgm.cc.newGpq("__mret_val");
+		pgm.cc.mov(tmp, x86::qword_ptr(retbuf_ptr, (int32_t)(i * 8)));
+		if ( var_op.isReg() && var_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		    pgm.cc.mov(var_op.as<x86::Gp>(), tmp);
+		else if ( var_op.isMem() )
+		    pgm.cc.mov(var_op.as<x86::Mem>(), tmp);
+	    }
+	    else if ( multi_vars[i]->type->is_string() )
+	    {
+		// string pointer stored in retbuf — copy to target string
+		x86::Gp src_ptr = pgm.cc.newIntPtr("__mret_str");
+		pgm.cc.mov(src_ptr, x86::qword_ptr(retbuf_ptr, (int32_t)(i * 8)));
+		InvokeNode *scall;
+		pgm.cc.invoke(&scall, imm(string_assign), FuncSignature::build<void, void *, void *>());
+		scall->setArg(0, var_op.as<x86::Gp>());
+		scall->setArg(1, src_ptr);
+	    }
+	}
+
+	regdp.first = &_operand;
+	regdp.second = multi_vars[0]->type;
+	return *regdp.first;
+    }
 
     // handle variable token
     if ( left->type() == TokenType::ttVariable )
@@ -3505,6 +3579,43 @@ Operand &TokenChar::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 {
     pgm.tkFunction->cleanup(pgm);
+
+    // multi-return: write each value into __retbuf[i*8]
+    if ( !return_exprs.empty() )
+    {
+	DBG(pgm.cc.comment("multi-return: writing values to __retbuf"));
+	// find __retbuf parameter
+	std::string rbname = "__retbuf";
+	Variable *rbvar = pgm.tkFunction->method ? pgm.tkFunction->method->findParameter(rbname) : NULL;
+	if ( !rbvar )
+	    throw "multi-return: __retbuf parameter not found";
+	Operand &rb_op = pgm.tkFunction->voperand(pgm, rbvar);
+	x86::Gp rb_gp = rb_op.as<x86::Gp>();
+
+	for ( size_t i = 0; i < return_exprs.size(); ++i )
+	{
+	    regdefp_t retrdp = {NULL, NULL, NULL};
+	    Operand &val = return_exprs[i]->compile(pgm, retrdp);
+	    if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), val.as<x86::Gp>());
+	    else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.cc.movsd(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), val.as<x86::Xmm>());
+	    else if ( val.isImm() )
+	    {
+		x86::Gp tmp = pgm.cc.newGpq("__ret_tmp");
+		pgm.cc.mov(tmp, val.as<Imm>());
+		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), tmp);
+	    }
+	    else if ( val.isMem() )
+	    {
+		x86::Gp tmp = pgm.cc.newGpq("__ret_tmp");
+		pgm.cc.mov(tmp, val.as<x86::Mem>());
+		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), tmp);
+	    }
+	}
+	pgm.cc.ret();
+	return _reg;
+    }
 
     if ( returns )
     {

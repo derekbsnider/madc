@@ -1047,7 +1047,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    Method *md = (Method *)tc->var.data;
 	    if ( !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
 	    {
-		size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0);
+		size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0)
+			- (md && md->owner_class ? 1 : 0);
 		if ( tc->argc() != expected )
 		{
 		    DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << expected << std::endl);
@@ -1916,12 +1917,48 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     DBG(std::cout << std::endl << "TokenRETURN::parse()" << std::endl);
     tn = pgm.nextToken();
 
-    // return with no value, should check if function has a return value
+    // return with no value
     if ( tn->id() == TokenID::tkSemi )
-    {
 	return this;
-    }
+
+    // parse first return expression
     returns = pgm.parseExpression(tn);
+
+    // check for multi-return: return a, b;
+    // parseExpression stops at commas and consumes the comma.
+    // _cur_token is the comma; peekToken() is the next expression.
+    if ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkSemi
+	 && pgm.peekToken()->type() != TokenType::ttSymbol )
+    {
+	// parseExpression consumed the comma — check if there's more to parse
+	// The comma stop means _cur_token is ',' — verify by looking at what's next
+	// If next token is an expression (not ; or }), this is multi-return
+	return_exprs.push_back(returns);
+	tn = pgm.nextToken();
+	return_exprs.push_back(pgm.parseExpression(tn));
+	// check for more comma-separated values (same pattern)
+	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkSemi
+		&& pgm.peekToken()->type() != TokenType::ttSymbol )
+	{
+	    tn = pgm.nextToken();
+	    return_exprs.push_back(pgm.parseExpression(tn));
+	}
+	returns = NULL; // multi-return uses return_exprs instead
+
+	// mark the enclosing function as multi-return so it gets __retbuf at compile time
+	TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	if ( code && code->method )
+	{
+	    FuncDef *fdef = (FuncDef *)code->method->returns.type;
+	    if ( fdef && fdef->return_types.empty() )
+	    {
+		// populate return_types with int64 for each value (inferred)
+		for ( size_t i = 0; i < return_exprs.size(); ++i )
+		    fdef->return_types.push_back(&ddINT64);
+	    }
+	}
+	DBG(std::cout << "TokenRETURN::parse() multi-return with " << return_exprs.size() << " values" << std::endl);
+    }
 
     return this;
 }
@@ -2602,7 +2639,8 @@ TokenBase *Program::parseCompound()
 }
 
 // parse a function definition, can be a forward declaration, or function definition
-void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class)
+void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
+			    std::vector<DataDef *> *multi_ret)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -2626,6 +2664,15 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	func = new FuncDef(dd);
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
+    }
+
+    // for multi-return functions, inject hidden __retbuf parameter as first arg
+    if ( multi_ret && multi_ret->size() > 1 )
+    {
+	func->return_types = *multi_ret;
+	func->parameters.push_back(&ddINT64); // void* as int64
+	ids.push_back("__retbuf");
+	DBG(cout << "parseFunction() injected hidden __retbuf for multi-return (" << multi_ret->size() << " types)" << endl);
     }
 
     // for class methods, inject hidden __this parameter as first arg
@@ -3127,23 +3174,101 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		}
 	    }
 	    // := short declaration: identifier := expression;
-	    if ( peekToken() && peekToken()->id() == TokenID::tkColEq )
+	    // also handles multi-return: a, b := func();
+	    if ( peekToken() && (peekToken()->id() == TokenID::tkColEq
+		|| peekToken()->id() == TokenID::tkComma) )
 	    {
-		std::string id = ((TokenIdent *)tb)->str;
+		std::string first_id = ((TokenIdent *)tb)->str;
+
+		// check if this is a multi-variable declaration: a, b := func()
+		if ( peekToken()->id() == TokenID::tkComma )
+		{
+		    // collect identifiers: a, b, c, ... := expr
+		    std::vector<std::string> ids;
+		    ids.push_back(first_id);
+		    while ( peekToken() && peekToken()->id() == TokenID::tkComma )
+		    {
+			nextToken(); // consume comma
+			TokenBase *next_id = nextToken();
+			if ( next_id->type() != TokenType::ttIdentifier )
+			    Throw(next_id) << "Expecting identifier in multi-return declaration" << flush;
+			ids.push_back(((TokenIdent *)next_id)->str);
+		    }
+		    // expect :=
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkColEq )
+		    {
+			// not a multi-return declaration — we consumed commas we shouldn't have
+			// this shouldn't happen in practice since comma after identifiers
+			// only makes sense before :=
+			Throw(tb) << "Expecting := after identifier list" << flush;
+		    }
+		    nextToken(); // consume :=
+
+		    // parse the RHS function call
+		    TokenBase *rhs = parseExpression(nextToken());
+
+		    // look up the function's return_types to infer variable types
+		    FuncDef *func = NULL;
+		    if ( rhs->type() == TokenType::ttCallFunc )
+		    {
+			TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(rhs);
+			if ( tcf->var.type->basetype() == BaseType::btFunct )
+			    func = (FuncDef *)tcf->var.type;
+		    }
+
+		    // create a TokenCpnd-like wrapper that declares all variables
+		    // and generates the multi-return unpack
+		    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+
+		    // create variables with inferred types from return_types
+		    std::vector<Variable *> vars;
+		    for ( size_t i = 0; i < ids.size(); ++i )
+		    {
+			DataDef *vtype = &ddINT64; // default
+			if ( func && i < func->return_types.size() )
+			    vtype = func->return_types[i];
+			else if ( func && i == 0 )
+			    vtype = &func->returns;
+			bool alloc = (!code) ? true : false;
+			Variable *v = addVariable(code, *vtype, ids[i], 1, NULL, alloc);
+			vars.push_back(v);
+		    }
+
+		    // build a TokenDecl for the first variable with the call as initializer
+		    // The multi-return unpack will be handled at compile time
+		    TokenDecl *td = new TokenDecl(*vars[0]);
+		    td->file = tb->file;
+		    td->line = tb->line;
+		    td->column = tb->column;
+
+		    // store extra info for multi-return compile
+		    // We use a TokenMultiReturn node that wraps the call and target variables
+		    TokenAssign *assign = new TokenAssign();
+		    assign->file = tb->file;
+		    assign->line = tb->line;
+		    assign->column = tb->column;
+		    assign->left = new TokenVar(*vars[0]);
+		    assign->right = rhs;
+		    assign->multi_vars = vars; // store all target variables
+		    td->initialize = assign;
+
+		    DBG(std::cout << "parseStatement() multi-return ':=' with " << ids.size() << " variables" << std::endl);
+		    return td;
+		}
+
+		// single := declaration (existing behavior)
 		nextToken(); // consume :=
 		TokenBase *rhs = parseExpression(nextToken());
-		// infer type from rhs
 		DataDef *inferred = rhs->datadef();
 		if ( !inferred || inferred == &ddVOID )
-		    inferred = &ddINT64; // fallback to int
+		    inferred = &ddINT64;
 		TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 		bool alloc = (!code) ? true : false;
-		Variable *var = addVariable(code, *inferred, id, 1, NULL, alloc);
+		Variable *var = addVariable(code, *inferred, first_id, 1, NULL, alloc);
 		TokenDecl *td = new TokenDecl(*var);
 		td->file = tb->file;
 		td->line = tb->line;
 		td->column = tb->column;
-		// build assignment: var = rhs
 		TokenAssign *assign = new TokenAssign();
 		assign->file = tb->file;
 		assign->line = tb->line;
@@ -3151,11 +3276,37 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		assign->left  = new TokenVar(*var);
 		assign->right = rhs;
 		td->initialize = assign;
-		DBG(std::cout << "parseStatement() ':=' declared '" << id << "' type=" << inferred->name << std::endl);
+		DBG(std::cout << "parseStatement() ':=' declared '" << first_id << "' type=" << inferred->name << std::endl);
 		return td;
 	    }
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
+	    // multi-return function declaration: (type, type) funcname(...)
+	    if ( tb->id() == TokenID::tkOpBrk && peekToken()
+		 && peekToken()->type() == TokenType::ttDataType )
+	    {
+		std::vector<DataDef *> rtypes;
+		while ( true )
+		{
+		    TokenBase *rt = nextToken();
+		    if ( rt->type() != TokenType::ttDataType )
+			Throw(rt) << "Expecting type in multi-return declaration" << flush;
+		    rtypes.push_back(&((TokenDataType *)rt)->definition);
+		    TokenBase *sep = nextToken();
+		    if ( sep->id() == TokenID::tkClBrk ) break;
+		    if ( sep->id() != TokenID::tkComma )
+			Throw(sep) << "Expecting , or ) in multi-return type list" << flush;
+		}
+		TokenBase *fname = nextToken();
+		if ( fname->type() != TokenType::ttIdentifier )
+		    Throw(fname) << "Expecting function name after multi-return type list" << flush;
+		std::string id = ((TokenIdent *)fname)->str;
+		TokenBase *opbrk = nextToken();
+		if ( opbrk->id() != TokenID::tkOpBrk )
+		    Throw(opbrk) << "Expecting ( after function name" << flush;
+		parseFunction(*rtypes[0], id, NULL, &rtypes);
+		return NULL;
+	    }
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseExpression" << std::endl);
 	    return parseExpression(tb);
 	    break;

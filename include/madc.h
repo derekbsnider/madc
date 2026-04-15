@@ -19,9 +19,12 @@ public:
     struct CaptureEntry { std::string name; DataDef *type; };
     std::vector<Variable *> potential_captures; // outer-scope vars at lambda creation time
     std::vector<CaptureEntry> captures;         // populated during lambda body compilation
+    // multiple return values (empty = single return via `returns`)
+    std::vector<DataDef *> return_types;
     FuncDef(DataDef &d) : returns(d), has_captures(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
+    bool is_multi_return() const { return return_types.size() > 1; }
 };
 
 class DataStruct: public DataDef
@@ -409,7 +412,8 @@ public:
     // parse tokens into AST
     bool parse(TokenProgram *);
     void parseIdentifier(TokenIdent *);
-    void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL);
+    void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
+		       std::vector<DataDef *> *multi_ret = NULL);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);
