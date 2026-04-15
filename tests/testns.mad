@@ -1,0 +1,16 @@
+#!/../bin/madc
+
+int main()
+{
+    string hello = "Hello from std::cout!";
+    int x = 42;
+
+    std::cout << hello << std::endl;
+    std::cout << "x = " << x << std::endl;
+    std::cerr << "this goes to stderr" << std::endl;
+
+    // mix qualified and unqualified
+    cout << "unqualified cout still works" << endl;
+
+    return 0;
+}
