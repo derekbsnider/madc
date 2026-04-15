@@ -72,6 +72,12 @@ void ostream_destruct(void *ptr)
     ((std::ostream *)ptr)->~ostream();
 }
 
+// return c_str() pointer from a std::string — used when passing a string to a const char* param
+const char *string_cstr(void *ptr)
+{
+    return ((std::string *)ptr)->c_str();
+}
+
 // call string assign method, TODO: call directly
 void string_assign(std::string &o, std::string &n)
 {
@@ -291,6 +297,21 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	Operand &tnreg = tn->compile(pgm, funcrdp);
 	if ( !funcrdp.second )
 	    pgm.Throw(tn) << "Failed to detemine type of rval" << flush;
+	// coerce dtSTRING -> dtCHARptr when function expects a C string pointer (e.g. puts)
+	// funcrdp.second stays as ptype after compile(), so use tn->datadef() for the actual arg type
+	// rawtype() strips pointer/reference modifiers so string & and string both match
+	if ( ptype->type() == DataType::dtCHARptr && tn->datadef()->rawtype() == DataType::dtSTRING )
+	{
+	    DBG(pgm.cc.comment("coerce dtSTRING -> dtCHARptr via string_cstr"));
+	    x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
+	    InvokeNode *cstr_call;
+	    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignatureT<const char *, void *>(CallConvId::kCDecl));
+	    cstr_call->setArg(0, tnreg.as<x86::Gp>());
+	    cstr_call->setRet(0, cstr_reg);
+	    params.push_back(cstr_reg);
+	    funcsig.addArgT<const char *>();
+	    continue;
+	}
 	if ( ptype->is_numeric() && !funcrdp.second->is_numeric() )
 	{
 	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
@@ -1201,6 +1222,17 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::voperand(" << var->name << ") building register" << std::endl);
     if ( (var->flags & vfSTACK) && !var->type->is_numeric() )
     {
+	// Function parameters receive their value from setArg — just create
+	// a Gp register to hold the incoming pointer.  No stack allocation
+	// or construction; the caller owns the object.
+	if ( var->flags & vfPARAM )
+	{
+	    DBG(pgm.cc.comment("voperand param (non-numeric) — bare register"));
+	    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+	    operand_map[var] = reg;
+	}
+	else
+	{
 	DBG(pgm.cc.comment("voperand on stack and non-numeric"));
 	switch(var->type->type())
 	{
@@ -1277,6 +1309,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		throw "TokenCpnd()::voperand() unsupported type on stack";
 		
 	} // switch
+    } // else (non-param stack variable)
     }
     else
     {
@@ -1349,6 +1382,9 @@ void TokenCpnd::cleanup(asmjit::x86::Compiler &cc)
     {
 	if ( (rmi->first->flags & vfSTACK) )
 	{
+	    // Don't destruct parameter objects — the caller owns them
+	    if ( (rmi->first->flags & vfPARAM) )
+		continue;
 	    if ( rmi->first->type->type() > DataType::dtRESERVED )
 	    {
 		Operand &reg = rmi->second;
