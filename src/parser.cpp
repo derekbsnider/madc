@@ -615,12 +615,33 @@ void Program::add_namespaces()
 void Program::add_madc_namespace()
 {
     variable_map_t &madc_ns = namespace_map["madc"];
+    Variable *var;
 
     // register array type as madc::array
     std::string id = "__madc_array";
-    Variable *var = new Variable(id, ddARRAY, 1, NULL, false);
+    var = new Variable(id, ddARRAY, 1, NULL, false);
     var->flags |= vfSTATIC;
     madc_ns["array"] = var;
+
+    // regex functions
+    extern int64_t madc_regex_match(void *, void *);
+    extern int64_t madc_regex_search(void *, void *);
+    extern void *madc_regex_replace(void *, void *, void *, void *);
+
+    var = addFunction("__madc_regex_match",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_regex_match);
+    if (var) madc_ns["regex_match"] = var;
+
+    var = addFunction("__madc_regex_search",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_regex_search);
+    if (var) madc_ns["regex_search"] = var;
+
+    var = addFunction("__madc_regex_replace",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_regex_replace);
+    if (var) madc_ns["regex_replace"] = var;
 
     DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
 }
