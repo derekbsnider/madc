@@ -376,6 +376,7 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *);
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
+    TokenBase *parseLambda();  // parse [](params) { body } lambda expression
 
     // perform cc.mov with size casting
     void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
