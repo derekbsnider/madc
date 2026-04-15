@@ -1,10 +1,10 @@
 # Test Status
 
-Test results as of April 14, 2026 (Phase 1 + string parameter fix).
+Test results as of April 14, 2026 (Phase 2 in progress).
 
 Run with: `bin/madc tests/<name>.mad`
 
-## Passing Tests — 24/24
+## Passing Tests — 25/25
 
 | Test | What it tests | Output |
 |------|--------------|--------|
@@ -31,6 +31,7 @@ Run with: `bin/madc tests/<name>.mad`
 | `testsstream.mad` | Stringstream | `456`, `123`, `5`, stream content, `This is a test to cout: 5` |
 | `teststruct.mad` | Struct member access | `test.name: Joe Blow`, `test.id: 2`, `test.age: d` (uint8=char in stream) |
 | `testversion.mad` | Version string | `v0.0.1` |
+| `teststruct2.mad` | User-defined structs | `p.x: 10`, `p.y: 20`, `bob.name: Bob Smith`, `bob.age: 42`, `bob.id: 1001` |
 | `testwhile.mad` | While loop | `100000000` |
 
 ## Phase 1 Fixes Applied
@@ -58,6 +59,7 @@ Run with: `make -C src test`
 |-----|--------|---------|
 | String parameter pass-by-ref | ✓ Done | `voperand()` creates bare Gp for `vfPARAM` non-numeric vars; `cleanup()` skips param destruction |
 | `dtSTRING → dtCHARptr` coercion | ✓ Done | `string_cstr()` helper auto-converts string args to `const char*` when calling `puts()` etc. |
+| User-defined structs (2.1) | ✓ Done | `TokenSTRUCT::parse()` parses `struct Name { type member; ... };`, builds `DataDefSTRUCT` dynamically, registers in `struct_map` |
 
 ## Known Issues
 

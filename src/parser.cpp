@@ -1130,10 +1130,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 // typedef struct { type member; } alias;
 TokenBase *TokenSTRUCT::parse(Program &pgm)
 {
-    TokenIdent *tag = NULL, *alias = NULL;
+    TokenIdent *tag = NULL;
     TokenBase *tn;
     TokenDataType *tdt;
-    bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF ? true : false : false;
+    bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false;
     datatype_map_iter bmi; // TokenDataType map
     datadef_map_iter dmi;  // DataDef map
 
@@ -1141,42 +1141,126 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( !(tn=pgm.peekToken()) )
 	pgm.Throw << "Unexpected end of input" << flush;
 
+    // optional struct tag name
     if ( tn->type() == TokenType::ttIdentifier )
     {
-	tag = (TokenIdent *)tn;
+	tag = (TokenIdent *)pgm.nextToken(); // consume tag
 	DBG(cout << "TokenSTRUCT::parse() got tag " << tag->str << endl);
-	tn = pgm.nextToken();
+	tn = pgm.peekToken(); // peek at what follows the tag
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input after struct tag" << flush;
     }
 
     // if no brace, then this structure type must already be defined
     // and we are either doing a typedef, or a variable declaration
     if ( tn->id() != TokenID::tkOpBrc )
     {
-	if ( !tag ) { throw "Expecting { or identifier"; }
+	if ( !tag )
+	    pgm.Throw(tn) << "Expecting '{' or identifier after struct" << flush;
 	if ( (dmi=pgm.struct_map.find(tag->str)) == pgm.struct_map.end() )
-	    pgm.Throw(tn) << "Unknown identifier" << flush;
+	    pgm.Throw(tn) << "Unknown struct type '" << tag->str << "'" << flush;
 	// typedef struct tag alias
 	if ( do_typedef )
 	{
+	    tn = pgm.nextToken(); // consume the alias identifier
 	    if ( tn->type() != TokenType::ttIdentifier )
-		pgm.Throw(tn) << "Expecting identifier" << flush;
-	    alias = (TokenIdent *)pgm.nextToken();
+		pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
+	    TokenIdent *alias = (TokenIdent *)tn;
 	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
 		pgm.Throw(tn) << "Identifier already defined" << flush;
 	    tdt = new TokenDataType(alias->str.c_str(), *dmi->second);
 	    pgm.datatype_map[alias->str] = tdt;
-	    return this;
+	    return NULL;
 	}
 
+	// struct tag variable; — declare variable of existing struct type
 	string tname("struct ");
 	tname.append(tag->str);
 	tdt = new TokenDataType(tname.c_str(), *dmi->second);
 	return pgm.parseDeclaration(tdt);
     }
 
-    // otherwise we are defining a structure
+    // ---- defining a new structure: struct [tag] { type member; ... } ----
 
-    return this;
+    pgm.nextToken(); // consume '{'
+
+    DataDefSTRUCT *dds = new DataDefSTRUCT(tag ? tag->str : "anonymous", 0);
+    DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
+
+    while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
+    {
+	// expect a data type token
+	if ( tn->type() != TokenType::ttDataType )
+	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
+	TokenDataType *mtype = (TokenDataType *)pgm.nextToken(); // consume type
+
+	// expect member name
+	tn = pgm.nextToken();
+	if ( tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
+	std::string mname = ((TokenIdent *)tn)->str;
+
+	dds->addMember(mname, mtype->definition, 1);
+	DBG(cout << "TokenSTRUCT::parse() added member " << mtype->definition.name << ' ' << mname
+	    << " (size " << mtype->definition.size << ", total " << dds->size << ')' << endl);
+
+	// expect semicolon
+	tn = pgm.nextToken();
+	if ( tn->id() != TokenID::tkSemi )
+	    pgm.Throw(tn) << "Expecting ';' after struct member" << flush;
+    }
+
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input in struct definition" << flush;
+    pgm.nextToken(); // consume '}'
+
+    // register the struct type
+    if ( tag )
+    {
+	if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
+	    pgm.Throw(tag) << "Struct '" << tag->str << "' already defined" << flush;
+	pgm.struct_map[tag->str] = dds;
+	DBG(cout << "TokenSTRUCT::parse() registered struct " << tag->str << " size=" << dds->size << endl);
+    }
+
+    // what follows the closing brace?
+    tn = pgm.peekToken();
+
+    // typedef struct [tag] { ... } alias;
+    if ( do_typedef )
+    {
+	tn = pgm.nextToken();
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
+	TokenIdent *alias = (TokenIdent *)tn;
+	if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
+	    pgm.Throw(tn) << "Identifier '" << alias->str << "' already defined" << flush;
+	tdt = new TokenDataType(alias->str.c_str(), *dds);
+	pgm.datatype_map[alias->str] = tdt;
+	// also register in struct_map so "struct alias" works
+	pgm.struct_map[alias->str] = dds;
+	DBG(cout << "TokenSTRUCT::parse() typedef alias " << alias->str << endl);
+	return NULL;
+    }
+
+    // struct [tag] { ... } variable;
+    if ( tn && tn->type() == TokenType::ttIdentifier )
+    {
+	string tname("struct ");
+	tname.append(tag ? tag->str : "anonymous");
+	tdt = new TokenDataType(tname.c_str(), *dds);
+	return pgm.parseDeclaration(tdt);
+    }
+
+    // struct tag { ... }; — just a type definition, nothing to compile
+    if ( tn && tn->id() == TokenID::tkSemi )
+    {
+	pgm.nextToken(); // consume ';'
+	return NULL;
+    }
+
+    pgm.Throw(tn) << "Expecting variable name or ';' after struct definition" << flush;
+    return NULL;
 }
 
 TokenBase *TokenRETURN::parse(Program &pgm)
