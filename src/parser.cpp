@@ -542,6 +542,13 @@ void Program::add_namespaces()
     id = "cerr";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cerr"]  = var;
     id = "endl";  if ( (var=tkProgram->findVariable(id)) ) std_ns["endl"]  = var;
 
+    // std::for_each(array, func_ptr) — iterate array calling function per element
+    extern void std_for_each(void *, int64_t);
+    var = addFunction("__std_for_each",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtINT64},
+	(fVOIDFUNC)std_for_each);
+    if (var) std_ns["for_each"] = var;
+
     DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
 }
 

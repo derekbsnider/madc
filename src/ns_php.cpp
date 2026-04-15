@@ -484,6 +484,35 @@ void *php_array_merge(void *dest, void *src)
 
 // ---- Namespace registration ----
 
+// std::for_each — iterate array, call function pointer per element (string version)
+void std_for_each(void *arr, int64_t fn_ptr)
+{
+    MadArray &a = *(MadArray *)arr;
+    typedef void (*fn_str_t)(void *);
+    fn_str_t fn = (fn_str_t)fn_ptr;
+
+    for ( size_t i = 0; i < a.data.size(); ++i )
+    {
+	MadValue &v = a.data[i];
+	if ( v.is_string() )
+	{
+	    std::string s = v.as_string();
+	    fn(&s);
+	}
+	else if ( v.is_int() )
+	{
+	    // convert int to string for the callback
+	    std::string s = std::to_string(v.as_int());
+	    fn(&s);
+	}
+	else if ( v.is_double() )
+	{
+	    std::string s = std::to_string(v.as_double());
+	    fn(&s);
+	}
+    }
+}
+
 void Program::add_php_namespace()
 {
 	variable_map_t &php_ns = namespace_map["php"];
