@@ -220,6 +220,28 @@ extern int64_t php_count(void *arr);
 extern void *php_array_get(void *result, void *arr, int64_t index);
 extern int64_t php_array_get_int(void *arr, int64_t index);
 
+// extern declarations for STL container helpers (defined in ns_stl.cpp)
+extern void *vector_int_construct(void *);
+extern void  vector_int_destruct(void *);
+extern void *vector_str_construct(void *);
+extern void  vector_str_destruct(void *);
+extern int64_t vector_int_size(void *);
+extern int64_t vector_int_at(void *, int64_t);
+extern void *vector_str_at(void *, void *, int64_t);
+extern int64_t vector_str_size(void *);
+extern void *map_str_int_construct(void *);
+extern void  map_str_int_destruct(void *);
+extern void *map_str_str_construct(void *);
+extern void  map_str_str_destruct(void *);
+extern void *set_str_construct(void *);
+extern void  set_str_destruct(void *);
+extern void *set_int_construct(void *);
+extern void  set_int_destruct(void *);
+extern void *list_int_construct(void *);
+extern void  list_int_destruct(void *);
+extern void *list_str_construct(void *);
+extern void  list_str_destruct(void *);
+
 void Program::_compiler_init()
 {
     code.reset();
@@ -1567,6 +1589,59 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    operand_map[var] = reg;
 		}
 		break;
+	    case DataType::dtVECTOR:
+		{
+		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(var->type);
+		    void *ctor = vdd->element_type->is_string()
+			? (void *)vector_str_construct : (void *)vector_int_construct;
+		    DBG(pgm.cc.comment("vector construct"));
+		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    call->setArg(0, reg);
+		    operand_map[var] = reg;
+		}
+		break;
+	    case DataType::dtMAP:
+		{
+		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    DataDefMAP *mdd = static_cast<DataDefMAP *>(var->type);
+		    void *ctor = mdd->val_type->is_string()
+			? (void *)map_str_str_construct : (void *)map_str_int_construct;
+		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    call->setArg(0, reg);
+		    operand_map[var] = reg;
+		}
+		break;
+	    case DataType::dtSET:
+		{
+		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    DataDefSET *sdd = static_cast<DataDefSET *>(var->type);
+		    void *ctor = sdd->element_type->is_string()
+			? (void *)set_str_construct : (void *)set_int_construct;
+		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    call->setArg(0, reg);
+		    operand_map[var] = reg;
+		}
+		break;
+	    case DataType::dtLIST:
+		{
+		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    DataDefLIST *ldd = static_cast<DataDefLIST *>(var->type);
+		    void *ctor = ldd->element_type->is_string()
+			? (void *)list_str_construct : (void *)list_int_construct;
+		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    call->setArg(0, reg);
+		    operand_map[var] = reg;
+		}
+		break;
 	    case DataType::dtOSTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ostream), 4);
@@ -1725,6 +1800,42 @@ void TokenCpnd::cleanup(Program &pgm)
 		    case DataType::dtARRAY:
 			{
                             InvokeNode* call; cc.invoke(&call, imm(madarray_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtVECTOR:
+			{
+			    DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(var->type);
+			    void *dtor = vdd->element_type->is_string()
+				? (void *)vector_str_destruct : (void *)vector_int_destruct;
+			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtMAP:
+			{
+			    DataDefMAP *mdd = static_cast<DataDefMAP *>(var->type);
+			    void *dtor = mdd->val_type->is_string()
+				? (void *)map_str_str_destruct : (void *)map_str_int_destruct;
+			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtSET:
+			{
+			    DataDefSET *sdd = static_cast<DataDefSET *>(var->type);
+			    void *dtor = sdd->element_type->is_string()
+				? (void *)set_str_destruct : (void *)set_int_destruct;
+			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtLIST:
+			{
+			    DataDefLIST *ldd = static_cast<DataDefLIST *>(var->type);
+			    void *dtor = ldd->element_type->is_string()
+				? (void *)list_str_destruct : (void *)list_int_destruct;
+			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignatureT<void, void *>(CallConvId::kCDecl));
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;
@@ -3153,12 +3264,23 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
     x86::Gp arr_reg = pgm.cc.newIntPtr("foreach_arr");
     pgm.cc.mov(arr_reg, arr_op.as<x86::Gp>());
 
-    // get count
+    // determine the container type to pick the right size/at functions
+    DataDef *container_type = arrrdp.second;
+    bool is_vector = container_type && container_type->type() == DataType::dtVECTOR;
+
+    // get count — dispatch based on container type
     x86::Gp count_reg = pgm.cc.newGpq("foreach_count");
-    InvokeNode *cnt_call;
-    pgm.cc.invoke(&cnt_call, imm(php_count), FuncSignatureT<int64_t, void *>(CallConvId::kCDecl));
-    cnt_call->setArg(0, arr_reg);
-    cnt_call->setRet(0, count_reg);
+    {
+	void *size_fn;
+	if ( is_vector )
+	    size_fn = elemtype->is_string() ? (void *)vector_str_size : (void *)vector_int_size;
+	else
+	    size_fn = (void *)php_count;
+	InvokeNode *cnt_call;
+	pgm.cc.invoke(&cnt_call, imm(size_fn), FuncSignatureT<int64_t, void *>(CallConvId::kCDecl));
+	cnt_call->setArg(0, arr_reg);
+	cnt_call->setRet(0, count_reg);
+    }
 
     // index register
     x86::Gp idx_reg = pgm.cc.newGpq("foreach_idx");
@@ -3173,12 +3295,13 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
     pgm.cc.cmp(idx_reg, count_reg);
     pgm.cc.jge(fortail);
 
-    // fetch element
+    // fetch element — dispatch based on container + element type
     if ( elemtype->is_string() )
     {
-	DBG(pgm.cc.comment("foreach: php_array_get(elem, arr, idx)"));
+	void *at_fn = is_vector ? (void *)vector_str_at : (void *)php_array_get;
+	DBG(pgm.cc.comment("foreach: get string element"));
 	InvokeNode *get_call;
-	pgm.cc.invoke(&get_call, imm(php_array_get),
+	pgm.cc.invoke(&get_call, imm(at_fn),
 	    FuncSignatureT<void *, void *, void *, int64_t>(CallConvId::kCDecl));
 	get_call->setArg(0, elem_op.as<x86::Gp>());
 	get_call->setArg(1, arr_reg);
@@ -3186,9 +3309,10 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
     }
     else if ( elemtype->is_integer() )
     {
-	DBG(pgm.cc.comment("foreach: php_array_get_int(arr, idx)"));
+	void *at_fn = is_vector ? (void *)vector_int_at : (void *)php_array_get_int;
+	DBG(pgm.cc.comment("foreach: get int element"));
 	InvokeNode *get_call;
-	pgm.cc.invoke(&get_call, imm(php_array_get_int),
+	pgm.cc.invoke(&get_call, imm(at_fn),
 	    FuncSignatureT<int64_t, void *, int64_t>(CallConvId::kCDecl));
 	get_call->setArg(0, arr_reg);
 	get_call->setArg(1, idx_reg);

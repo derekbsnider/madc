@@ -40,7 +40,8 @@ enum class TokenID {
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
-  tkUSING, tkNAMESPACE, tkDEFER
+  tkUSING, tkNAMESPACE, tkDEFER,
+  tkVECTOR, tkMAP, tkSET, tkLIST
 };
 
 enum class TokenAssoc {
@@ -959,6 +960,12 @@ public:
     virtual TokenBase *clone() { return new TokenDEFER(); }
     virtual TokenBase *parse(Program &);
 };
+
+// STL container keywords — parse template syntax vector<type>, map<k,v>, etc.
+class TokenVECTOR: public TokenKeyword { public: TokenVECTOR() : TokenKeyword("vector") {} virtual TokenID id() const { return TokenID::tkVECTOR; } virtual TokenBase *clone() { return new TokenVECTOR(); } virtual TokenBase *parse(Program &); };
+class TokenMAP:    public TokenKeyword { public: TokenMAP()    : TokenKeyword("map") {}    virtual TokenID id() const { return TokenID::tkMAP; }    virtual TokenBase *clone() { return new TokenMAP(); }    virtual TokenBase *parse(Program &); };
+class TokenSET:    public TokenKeyword { public: TokenSET()    : TokenKeyword("set") {}    virtual TokenID id() const { return TokenID::tkSET; }    virtual TokenBase *clone() { return new TokenSET(); }    virtual TokenBase *parse(Program &); };
+class TokenLIST:   public TokenKeyword { public: TokenLIST()   : TokenKeyword("list") {}   virtual TokenID id() const { return TokenID::tkLIST; }   virtual TokenBase *clone() { return new TokenLIST(); }   virtual TokenBase *parse(Program &); };
 
 class TokenSTRUCT: public TokenKeyword
 {

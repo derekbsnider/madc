@@ -24,6 +24,7 @@ enum class DataType : uint16_t {
 	dtIFSTREAM, dtOFSTREAM, dtFSTREAM, dtTCPSTREAM, 
 	dtMUTEX, dtTHREAD, dtTHISTHREAD,
 	dtARRAY,
+	dtVECTOR, dtMAP, dtSET, dtLIST,
 
 	// rtPointer variants
 	dtVOIDptr = 10000, dtBOOLptr, dtUINT8ptr, dtBYTEptr=dtUINT8ptr, dtINT8ptr, dtCHARptr = dtINT8ptr,
@@ -35,6 +36,7 @@ enum class DataType : uint16_t {
 	dtIFSTREAMptr, dtOFSTREAMptr, dtFSTREAMptr, dtTCPSTREAMptr, 
 	dtMUTEXptr, dtTHREADptr, dtTHISTHREADptr,
 	dtARRAYptr,
+	dtVECTORptr, dtMAPptr, dtSETptr, dtLISTptr,
 
 	// rtReference variants
 	dtVOIDref = 20000, dtBOOLref, dtUINT8ref, dtBYTEref=dtUINT8ref, dtINT8ref, dtCHARref = dtINT8ref,
@@ -46,6 +48,7 @@ enum class DataType : uint16_t {
 	dtIFSTREAMref, dtOFSTREAMref, dtFSTREAMref, dtTCPSTREAMref, 
 	dtMUTEXref, dtTHREADref, dtTHISTHREADref,
 	dtARRAYref,
+	dtVECTORref, dtMAPref, dtSETref, dtLISTref,
 };
 
 // Variable flags
@@ -599,6 +602,40 @@ public:
 };
 
 class DataDefARRAY:    public DDClass { public: DataDefARRAY():   DDClass("array", sizeof(MadArray), DataType::dtARRAY) {} };
+
+// typed STL containers — parameterized types created lazily during parsing
+class DataDefVECTOR: public DDClass
+{
+public:
+    DataDef *element_type;
+    DataDefVECTOR(DataDef *elem, const std::string &name, size_t sz)
+	: DDClass(name, sz, DataType::dtVECTOR), element_type(elem) {}
+};
+
+class DataDefMAP: public DDClass
+{
+public:
+    DataDef *key_type;
+    DataDef *val_type;
+    DataDefMAP(DataDef *k, DataDef *v, const std::string &name, size_t sz)
+	: DDClass(name, sz, DataType::dtMAP), key_type(k), val_type(v) {}
+};
+
+class DataDefSET: public DDClass
+{
+public:
+    DataDef *element_type;
+    DataDefSET(DataDef *elem, const std::string &name, size_t sz)
+	: DDClass(name, sz, DataType::dtSET), element_type(elem) {}
+};
+
+class DataDefLIST: public DDClass
+{
+public:
+    DataDef *element_type;
+    DataDefLIST(DataDef *elem, const std::string &name, size_t sz)
+	: DDClass(name, sz, DataType::dtLIST), element_type(elem) {}
+};
 
 extern DataDefVOID ddVOID;
 extern DataDefVOIDref ddVOIDref;
