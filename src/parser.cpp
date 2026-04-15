@@ -1046,6 +1046,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    done = true;
 		    break;
 		}
+		// lambda expression: [](params) { body }
+		if ( tb->id() == TokenID::tkOpSqr )
+		{
+		    DBG(cout << "parseExpression: detected [ — parsing lambda" << endl);
+		    TokenBase *lambda = parseLambda();
+		    exStack.push(lambda);
+		    break;
+		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
 		    ++brackets;
@@ -2210,6 +2218,119 @@ grabnt:
     DBG(cout << "parseFunction(" << id << ") END" << endl);
 }
 
+// parse a lambda expression: [](type arg, ...) { body }
+// Returns a TokenVar referencing the lambda's anonymous function variable.
+// The lambda is pushed onto ast as a top-level TokenFunc so it compiles
+// before the enclosing function (asmjit can't nest addFunc/endFunc).
+TokenBase *Program::parseLambda()
+{
+    static int lambda_counter = 0;
+
+    DBG(cout << "parseLambda() START" << endl);
+
+    // we already consumed '[', check for optional return type before ']'
+    // [int](params) { body }  — returns int
+    // [](params) { body }     — returns void
+    TokenBase *tn = nextToken();
+    DataDef *rettype = &ddVOID;
+
+    if ( tn->type() == TokenType::ttDataType )
+    {
+	rettype = &((TokenDataType *)tn)->definition;
+	DBG(cout << "parseLambda() return type: " << rettype->name << endl);
+	tn = nextToken();
+    }
+
+    if ( tn->id() != TokenID::tkClSqr )
+	Throw(tn) << "Expecting ] in lambda expression" << flush;
+
+    // expect '('
+    tn = nextToken();
+    if ( tn->id() != TokenID::tkOpBrk )
+	Throw(tn) << "Expecting ( after lambda []" << flush;
+
+    // generate unique name
+    std::string lambda_name = "__lambda_" + std::to_string(lambda_counter++);
+
+    DBG(cout << "parseLambda() name: " << lambda_name << endl);
+
+    // create FuncDef
+    FuncDef *func = new FuncDef(*rettype);
+    funcdef_map[lambda_name] = func;
+
+    // parse parameters (same pattern as parseFunction)
+    std::vector<std::string> param_ids;
+    TokenDataType *pb;
+
+    while ( (tn=nextToken()) && tn->id() != TokenID::tkClBrk )
+    {
+	if ( tn->type() != TokenType::ttDataType )
+	    Throw(tn) << "Expecting type in lambda parameter list" << flush;
+
+	pb = (TokenDataType *)tn;
+	tn = nextToken();
+
+	if ( tn->type() != TokenType::ttIdentifier )
+	    Throw(tn) << "Expecting identifier in lambda parameter list" << flush;
+
+	std::string pid = ((TokenIdent *)tn)->str;
+	param_ids.push_back(pid);
+	func->parameters.push_back(&pb->definition);
+
+	DBG(cout << "parseLambda() param: " << pb->definition.name << ' ' << pid << endl);
+
+	// peek for comma or closing paren
+	tn = peekToken();
+	if ( tn && tn->id() == TokenID::tkComma )
+	    nextToken(); // consume comma
+    }
+
+    // create Variable and Method (same as parseFunction)
+    Variable *var = addVariable(NULL, *func, lambda_name);
+    Method *method = new Method(*var);
+    var->data = (void *)method;
+
+    // add parameters to method
+    for ( size_t i = 0; i < func->parameters.size(); ++i )
+    {
+	Variable *pv = new Variable(param_ids[i], *func->parameters[i], 1, NULL, false);
+	pv->flags |= vfPARAM;
+	method->parameters.push_back(pv);
+    }
+
+    // expect '{' for the body
+    tn = nextToken();
+    if ( tn->id() != TokenID::tkOpBrc )
+	Throw(tn) << "Expecting { for lambda body" << flush;
+
+    // push compound scope and parse the body
+    pushCompound();
+    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+    if ( code )
+	code->method = method;
+
+    TokenFunc *tf = new TokenFunc(*var);
+    DBG(cout << "parseLambda() calling parseCompound()" << endl);
+    TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
+
+    tf->method = method;
+    tf->parent = tc->parent;
+    tf->variables = tc->variables;
+    tf->statements = tc->statements;
+
+    // push the lambda as a top-level function in the AST
+    // It will be compiled before the enclosing function since
+    // the enclosing function's ast.push happens after parseCompound returns.
+    DBG(cout << "parseLambda() pushing " << lambda_name << " onto ast" << endl);
+    ast.push(tf);
+
+    DBG(cout << "parseLambda() END — returning TokenVar for " << lambda_name << endl);
+
+    // return a TokenVar that references the lambda function variable
+    // When compiled, TokenVar::compile() emits the function's address
+    return new TokenVar(*var);
+}
+
 // parse either a variable declaration, or a function declaration
 TokenBase *Program::parseDeclaration(TokenDataType *tb)
 {
@@ -2237,21 +2358,39 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
     if ( !(nt=peekToken()) )
 	Throw << "expecting token after identifier" << flush;
 
-    // auto type inference: auto fn = func_name;
+    // auto type inference: auto fn = func_name; or auto fn = [](params) { body };
     if ( &tb->definition == &ddAUTO )
     {
 	if ( nt->id() != TokenID::tkAssign )
 	    Throw(tb) << "'auto' requires an initializer" << flush;
 
-	// consume '=', then consume and inspect the RHS identifier
-	nextToken(); // consume '='
-	TokenBase *rhs_tok = nextToken();
-	if ( !rhs_tok || rhs_tok->type() != TokenType::ttIdentifier )
-	    Throw(tb) << "'auto' type deduction requires a function name" << flush;
+	// consume '='
+	nextToken();
+	TokenBase *rhs_tok = peekToken();
 
-	Variable *rhs_var = findVariable(((TokenIdent *)rhs_tok)->str);
-	if ( !rhs_var || !rhs_var->type->is_function() )
-	    Throw(tb) << "'auto' type deduction currently only supports function pointer assignment" << flush;
+	Variable *rhs_var = NULL;
+	TokenBase *rhs_node = NULL;
+
+	if ( rhs_tok && rhs_tok->id() == TokenID::tkOpSqr )
+	{
+	    // lambda: auto fn = [](params) { body };
+	    nextToken(); // consume '['
+	    rhs_node = parseLambda();
+	    rhs_var = &(dynamic_cast<TokenVar *>(rhs_node)->var);
+	}
+	else if ( rhs_tok && rhs_tok->type() == TokenType::ttIdentifier )
+	{
+	    // named function: auto fn = func_name;
+	    nextToken(); // consume identifier
+	    rhs_var = findVariable(((TokenIdent *)rhs_tok)->str);
+	    if ( !rhs_var || !rhs_var->type->is_function() )
+		Throw(tb) << "'auto' type deduction requires a function name or lambda" << flush;
+	    rhs_node = new TokenVar(*rhs_var);
+	}
+	else
+	{
+	    Throw(tb) << "'auto' type deduction requires a function name or lambda" << flush;
+	}
 
 	// consume the semicolon
 	TokenBase *semi = peekToken();
@@ -2269,13 +2408,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
 	td->line = tb->line;
 	td->column = tb->column;
 
-	// build the assignment AST manually (fn = &greet)
+	// build the assignment AST
 	TokenAssign *assign = new TokenAssign();
 	assign->file = tb->file;
 	assign->line = tb->line;
 	assign->column = tb->column;
 	assign->left = new TokenVar(*var);
-	assign->right = new TokenVar(*rhs_var);
+	assign->right = rhs_node;
 	td->initialize = assign;
 
 	DBG(std::cout << "parseDeclaration() auto: " << id << " = " << rhs_var->name << std::endl);

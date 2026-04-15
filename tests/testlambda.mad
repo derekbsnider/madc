@@ -1,0 +1,18 @@
+#!/../bin/madc
+
+int main()
+{
+    auto fn = [](string name) {
+        cout << "Lambda says: " << name << endl;
+    };
+    fn("hello");
+
+    auto add = [int](int a, int b) {
+        return a + b;
+    };
+    int result;
+    result = add(17, 25);
+    cout << result << endl;
+
+    return 0;
+}
