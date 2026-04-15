@@ -226,7 +226,80 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     // grab the FuncNode object
     if ( !(fnd=((FuncDef *)(method->returns.type))->funcnode) && !method->x86code )
+    {
+	// dlcall: special case — call through function pointer (first arg)
+	if ( var.name == "dlcall" )
+	{
+	    if ( argc() < 1 )
+		pgm.Throw(this) << "dlcall requires at least a function pointer argument" << flush;
+
+	    FuncDef *func = (FuncDef *)method->returns.type;
+	    FuncSignatureBuilder funcsig(CallConvId::kCDecl);
+	    funcsig.setRetT<int64_t>();
+
+	    // compile the first arg — the function pointer
+	    regdefp_t ptrrdp = {NULL, NULL, NULL};
+	    Operand &ptr_reg = parameters[0]->compile(pgm, ptrrdp);
+
+	    // compile remaining args
+	    std::vector<Operand> params;
+	    for ( size_t i = 1; i < argc(); ++i )
+	    {
+		regdefp_t argrdp = {NULL, NULL, NULL};
+		TokenBase *tn = parameters[i];
+		Operand &areg = tn->compile(pgm, argrdp);
+
+		// auto-coerce strings to const char*
+		if ( argrdp.second && argrdp.second->rawtype() == DataType::dtSTRING )
+		{
+		    x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
+		    InvokeNode *cstr_call;
+		    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignatureT<const char *, void *>(CallConvId::kCDecl));
+		    cstr_call->setArg(0, areg.as<x86::Gp>());
+		    cstr_call->setRet(0, cstr_reg);
+		    params.push_back(cstr_reg);
+		    funcsig.addArgT<const char *>();
+		}
+		else if ( argrdp.second && argrdp.second->is_real() )
+		{
+		    params.push_back(areg);
+		    funcsig.addArgT<double>();
+		}
+		else
+		{
+		    params.push_back(areg);
+		    funcsig.addArgT<int64_t>();
+		}
+	    }
+
+	    // invoke through the function pointer register
+	    InvokeNode *call;
+	    pgm.cc.invoke(&call, ptr_reg.as<x86::Gp>(), funcsig);
+	    uint32_t ai = 0;
+	    for ( auto &p : params )
+	    {
+		if ( p.isReg() && p.as<BaseReg>().isGroup(RegGroup::kVec) )
+		    call->setArg(ai++, p.as<x86::Xmm>());
+		else if ( p.isReg() )
+		    call->setArg(ai++, p.as<x86::Gp>());
+		else if ( p.isImm() )
+		    call->setArg(ai++, p.as<Imm>());
+	    }
+
+	    // capture return value
+	    if ( !regdp.first )
+	    {
+		_operand = pgm.cc.newGpq("dlcall_ret");
+		regdp.first = &_operand;
+	    }
+	    call->setRet(0, regdp.first->as<x86::Gp>());
+	    if ( !regdp.second )
+		regdp.second = &func->returns;
+
+	    return *regdp.first;
+	}
 	pgm.Throw(this) << "TokenCallFunc::compile() method has neither FuncNode nor x86code" << flush;
+    }
 
     // build arguments
     FuncDef *func = (FuncDef *)method->returns.type;
