@@ -1165,6 +1165,89 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 // typedef struct tag alias;
 // typedef struct tag { type member; } alias;
 // typedef struct { type member; } alias;
+// parse 'using' statement
+// forms:
+// using namespace std;       — import all members of std into global scope
+// using std::cout;            — import single member
+TokenBase *TokenUSING::parse(Program &pgm)
+{
+    TokenBase *tn;
+
+    DBG(std::cout << std::endl << "TokenUSING::parse() top" << std::endl);
+
+    tn = pgm.nextToken();
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input after 'using'" << flush;
+
+    // using namespace std;
+    if ( tn->id() == TokenID::tkNAMESPACE )
+    {
+	tn = pgm.nextToken(); // namespace name
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting namespace name after 'using namespace'" << flush;
+	std::string ns_name = ((TokenIdent *)tn)->str;
+	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
+	if ( nsi == pgm.namespace_map.end() )
+	    pgm.Throw(tn) << "Unknown namespace '" << ns_name << "'" << flush;
+	// import all members into global scope
+	for ( variable_map_iter vmi = nsi->second.begin(); vmi != nsi->second.end(); ++vmi )
+	{
+	    std::string name = vmi->first;
+	    // only import if not already defined
+	    if ( !pgm.findVariable(name) )
+		pgm.tkProgram->variables.push_back(vmi->second);
+	    DBG(std::cout << "TokenUSING::parse() imported " << ns_name << "::" << name << std::endl);
+	}
+	// expect semicolon
+	tn = pgm.nextToken();
+	if ( !tn || tn->id() != TokenID::tkSemi )
+	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
+	return NULL;
+    }
+
+    // using std::cout;
+    if ( tn->type() == TokenType::ttIdentifier )
+    {
+	std::string ns_name = ((TokenIdent *)tn)->str;
+	tn = pgm.nextToken(); // should be ::
+	if ( !tn || tn->id() != TokenID::tkNS )
+	    pgm.Throw(tn) << "Expecting '::' in using declaration" << flush;
+	tn = pgm.nextToken(); // member name
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting member name in using declaration" << flush;
+	std::string member_name = ((TokenIdent *)tn)->str;
+	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
+	if ( nsi == pgm.namespace_map.end() )
+	    pgm.Throw(tn) << "Unknown namespace '" << ns_name << "'" << flush;
+	variable_map_iter vmi = nsi->second.find(member_name);
+	if ( vmi == nsi->second.end() )
+	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+	// import into global scope
+	std::string name = member_name;
+	if ( !pgm.findVariable(name) )
+	    pgm.tkProgram->variables.push_back(vmi->second);
+	// expect semicolon
+	tn = pgm.nextToken();
+	if ( !tn || tn->id() != TokenID::tkSemi )
+	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
+	return NULL;
+    }
+
+    pgm.Throw(tn) << "Unexpected token in using declaration" << flush;
+    return NULL;
+}
+
+
+// parse a structure definition
+//
+// forms:
+// struct tag { type member; ... };
+// struct { type member; } variable;
+// struct tag { type member; } variable;
+// struct tag variable;
+// typedef struct tag alias;
+// typedef struct tag { type member; } alias;
+// typedef struct { type member; } alias;
 TokenBase *TokenSTRUCT::parse(Program &pgm)
 {
     TokenIdent *tag = NULL;

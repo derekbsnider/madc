@@ -52,6 +52,8 @@ TokenDEFAULT	tkDEFAULT;
 TokenTYPEDEF	tkTYPEDEF;
 TokenOPEROVER	tkOPEROVER;
 TokenREGISTER	tkREGISTER;
+TokenUSING	tkUSING;
+TokenNAMESPACE	tkNAMESPACE;
 
 // basic type tokens
 TokenVOID	tkVOID;
@@ -110,6 +112,8 @@ void Program::add_keywords()
     keyword_map[tkTYPEDEF.str] = &tkTYPEDEF;
     keyword_map[tkOPEROVER.str] = &tkOPEROVER;
     keyword_map[tkREGISTER.str] = &tkREGISTER;
+    keyword_map[tkUSING.str] = &tkUSING;
+    keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
 }
 
 // add static tokens for base data types
@@ -241,6 +245,51 @@ TokenBase *Program::_getToken()
 		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
 		    word += source.get();
 		return new TokenREM(word);
+	    }
+	    // #include directive
+	    if ( isalpha(source.peek()) )
+	    {
+		std::string directive;
+		while ( source.good() && !source.eof() && isalpha(source.peek()) )
+		    directive += source.get();
+		if ( directive == "include" )
+		{
+		    // skip whitespace
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    // read filename: "file" or <file>
+		    char delim = source.get();
+		    char end_delim = (delim == '<') ? '>' : '"';
+		    std::string incfile;
+		    while ( source.good() && !source.eof() && source.peek() != end_delim
+		    &&      source.peek() != '\n' && source.peek() != '\r' )
+			incfile += source.get();
+		    if ( source.peek() == end_delim )
+			source.get(); // consume closing delimiter
+		    // resolve relative path based on current file's directory
+		    std::string full_path = incfile;
+		    std::string cur_fname(source.fname());
+		    size_t slash_pos = cur_fname.rfind('/');
+		    if ( slash_pos != std::string::npos )
+			full_path = cur_fname.substr(0, slash_pos + 1) + incfile;
+		    DBG(std::cout << "#include \"" << full_path << "\"" << std::endl);
+		    // save current source, tokenize included file
+		    Source saved = std::move(source);
+		    source = Source();
+		    std::ifstream incf(full_path.c_str());
+		    if ( !incf )
+			throw ("Failed to open include file: " + full_path).c_str();
+		    source.fname(full_path.c_str());
+		    source.copybuf(incf.rdbuf());
+		    TokenBase *itb;
+		    while ( (itb = getRealToken()) )
+		    {
+			itb->file = full_path.c_str();
+			tokens.push(itb);
+		    }
+		    source = std::move(saved);
+		    return getToken(); // continue with current file
+		}
 	    }
 	    return new TokenHash;
 	case '{': return new TokenOpBrc;

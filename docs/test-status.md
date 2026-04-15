@@ -4,7 +4,7 @@ Test results as of April 14, 2026 (Phase 2 in progress).
 
 Run with: `bin/madc tests/<name>.mad`
 
-## Passing Tests — 26/26
+## Passing Tests — 28/28
 
 | Test | What it tests | Output |
 |------|--------------|--------|
@@ -33,6 +33,8 @@ Run with: `bin/madc tests/<name>.mad`
 | `testversion.mad` | Version string | `v0.0.1` |
 | `testns.mad` | Namespace resolution (std::) | `Hello from std::cout!`, `x = 42`, stderr output, unqualified still works |
 | `teststruct2.mad` | User-defined structs | `p.x: 10`, `p.y: 20`, `bob.name: Bob Smith`, `bob.age: 42`, `bob.id: 1001` |
+| `testinclude.mad` | `#include` directive | `Hello, World!`, `Hello, Mad-C!`, `include works!` |
+| `testusing.mad` | `using namespace std` | `using namespace std works!` |
 | `testwhile.mad` | While loop | `100000000` |
 
 ## Phase 1 Fixes Applied
@@ -62,6 +64,7 @@ Run with: `make -C src test`
 | `dtSTRING → dtCHARptr` coercion | ✓ Done | `string_cstr()` helper auto-converts string args to `const char*` when calling `puts()` etc. |
 | User-defined structs (2.1) | ✓ Done | `TokenSTRUCT::parse()` parses `struct Name { type member; ... };`, builds `DataDefSTRUCT` dynamically, registers in `struct_map` |
 | Namespace resolution (2.3+2.4) | ✓ Done | `namespace_map` registry, `::` resolution in `parseExpression()`, `std::` namespace with cout/cerr/endl |
+| `#include` + `using` (2.5) | ✓ Done | Lexer handles `#include "file.mad"` with relative paths; parser handles `using namespace X;` and `using X::member;` |
 
 ## Known Issues
 
