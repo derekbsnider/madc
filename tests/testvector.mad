@@ -1,0 +1,6 @@
+#!/../bin/madc
+int main()
+{
+    vector<int> nums;
+    return 0;
+}

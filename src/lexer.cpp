@@ -56,6 +56,10 @@ TokenREGISTER	tkREGISTER;
 TokenUSING	tkUSING;
 TokenNAMESPACE	tkNAMESPACE;
 TokenDEFER	tkDEFER;
+TokenVECTOR	tkVECTOR;
+TokenMAP	tkMAP;
+TokenSET	tkSET;
+TokenLIST	tkLIST;
 
 // basic type tokens
 TokenVOID	tkVOID;
@@ -122,6 +126,10 @@ void Program::add_keywords()
     keyword_map[tkUSING.str] = &tkUSING;
     keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
     keyword_map[tkDEFER.str] = &tkDEFER;
+    keyword_map[tkVECTOR.str] = &tkVECTOR;
+    keyword_map[tkMAP.str] = &tkMAP;
+    keyword_map[tkSET.str] = &tkSET;
+    keyword_map[tkLIST.str] = &tkLIST;
 }
 
 // add static tokens for base data types

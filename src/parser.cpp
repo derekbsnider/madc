@@ -20,6 +20,7 @@
 #include <string>
 #include <map>
 #include <list>
+#include <set>
 #include <vector>
 #include <queue>
 #include <stack>
@@ -2045,6 +2046,154 @@ TokenBase *TokenDEFER::parse(Program &pgm)
 
     // return NULL — defer doesn't produce code at this point
     return NULL;
+}
+
+// parse vector<type> — creates DataDefVECTOR and delegates to parseDeclaration
+TokenBase *TokenVECTOR::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenVECTOR::parse()" << std::endl);
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkLT )
+	pgm.Throw(tn) << "Expecting < after vector" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->type() != TokenType::ttDataType )
+	pgm.Throw(tn) << "Expecting type inside vector<>" << flush;
+
+    DataDef *elem = &((TokenDataType *)tn)->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkGT )
+	pgm.Throw(tn) << "Expecting > after vector<type" << flush;
+
+    // build composite name and look up or create
+    std::string tname = "vector<" + elem->name + ">";
+    datatype_map_iter dmi = pgm.datatype_map.find(tname);
+    TokenDataType *tdt;
+    if ( dmi != pgm.datatype_map.end() )
+    {
+	tdt = dmi->second;
+    }
+    else
+    {
+	// use sizeof of the underlying vector type — all std::vector are same size
+	DataDefVECTOR *dd = new DataDefVECTOR(elem, tname, sizeof(std::vector<int64_t>));
+	tdt = new TokenDataType(tname.c_str(), *dd);
+	pgm.datatype_map[tname] = tdt;
+    }
+
+    return pgm.parseDeclaration(tdt);
+}
+
+// parse map<key_type, val_type>
+TokenBase *TokenMAP::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenMAP::parse()" << std::endl);
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkLT )
+	pgm.Throw(tn) << "Expecting < after map" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->type() != TokenType::ttDataType )
+	pgm.Throw(tn) << "Expecting key type inside map<>" << flush;
+    DataDef *key = &((TokenDataType *)tn)->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkComma )
+	pgm.Throw(tn) << "Expecting , between key and value types in map<k, v>" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->type() != TokenType::ttDataType )
+	pgm.Throw(tn) << "Expecting value type inside map<k, v>" << flush;
+    DataDef *val = &((TokenDataType *)tn)->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkGT )
+	pgm.Throw(tn) << "Expecting > after map<k, v" << flush;
+
+    std::string tname = "map<" + key->name + "," + val->name + ">";
+    datatype_map_iter dmi = pgm.datatype_map.find(tname);
+    TokenDataType *tdt;
+    if ( dmi != pgm.datatype_map.end() )
+    {
+	tdt = dmi->second;
+    }
+    else
+    {
+	DataDefMAP *dd = new DataDefMAP(key, val, tname, sizeof(std::map<std::string, int64_t>));
+	tdt = new TokenDataType(tname.c_str(), *dd);
+	pgm.datatype_map[tname] = tdt;
+    }
+
+    return pgm.parseDeclaration(tdt);
+}
+
+// parse set<type>
+TokenBase *TokenSET::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenSET::parse()" << std::endl);
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkLT )
+	pgm.Throw(tn) << "Expecting < after set" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->type() != TokenType::ttDataType )
+	pgm.Throw(tn) << "Expecting type inside set<>" << flush;
+    DataDef *elem = &((TokenDataType *)tn)->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkGT )
+	pgm.Throw(tn) << "Expecting > after set<type" << flush;
+
+    std::string tname = "set<" + elem->name + ">";
+    datatype_map_iter dmi = pgm.datatype_map.find(tname);
+    TokenDataType *tdt;
+    if ( dmi != pgm.datatype_map.end() )
+    {
+	tdt = dmi->second;
+    }
+    else
+    {
+	DataDefSET *dd = new DataDefSET(elem, tname, sizeof(std::set<std::string>));
+	tdt = new TokenDataType(tname.c_str(), *dd);
+	pgm.datatype_map[tname] = tdt;
+    }
+
+    return pgm.parseDeclaration(tdt);
+}
+
+// parse list<type>
+TokenBase *TokenLIST::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenLIST::parse()" << std::endl);
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkLT )
+	pgm.Throw(tn) << "Expecting < after list" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->type() != TokenType::ttDataType )
+	pgm.Throw(tn) << "Expecting type inside list<>" << flush;
+    DataDef *elem = &((TokenDataType *)tn)->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkGT )
+	pgm.Throw(tn) << "Expecting > after list<type" << flush;
+
+    std::string tname = "list<" + elem->name + ">";
+    datatype_map_iter dmi = pgm.datatype_map.find(tname);
+    TokenDataType *tdt;
+    if ( dmi != pgm.datatype_map.end() )
+    {
+	tdt = dmi->second;
+    }
+    else
+    {
+	DataDefLIST *dd = new DataDefLIST(elem, tname, sizeof(std::list<int64_t>));
+	tdt = new TokenDataType(tname.c_str(), *dd);
+	pgm.datatype_map[tname] = tdt;
+    }
+
+    return pgm.parseDeclaration(tdt);
 }
 
 TokenBase *Program::parseKeyword(TokenKeyword *tk)
