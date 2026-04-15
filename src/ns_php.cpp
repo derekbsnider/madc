@@ -1,6 +1,10 @@
 ///////////////////////////////////////////////////////////////////////////
 //                                                                     //
-// madc php:: namespace — PHP-style string functions                   //
+// madc php:: namespace                                                //
+//                                                                     //
+// Functions unique to PHP that have no direct C/C++ equivalent.       //
+// C-standard functions (strlen, strpos, toupper, etc.) belong in      //
+// the global scope or a future c:: namespace, not here.               //
 //                                                                     //
 ///////////////////////////////////////////////////////////////////////////
 
@@ -28,13 +32,7 @@ using namespace asmjit;
 
 // ---- C++ wrapper functions called by JIT ----
 
-// php::strlen — return length of string
-int64_t php_strlen(void *ptr)
-{
-	return (int64_t)((std::string *)ptr)->length();
-}
-
-// php::trim — trim whitespace from both ends, modifies in place
+// php::trim — trim whitespace from both ends (no C/C++ equivalent)
 void *php_trim(void *ptr)
 {
 	std::string &s = *(std::string *)ptr;
@@ -71,57 +69,31 @@ void *php_rtrim(void *ptr)
 	return ptr;
 }
 
-// php::strtolower — convert to lowercase in place
-void *php_strtolower(void *ptr)
+// php::ucfirst — capitalize first character
+void *php_ucfirst(void *ptr)
 {
 	std::string &s = *(std::string *)ptr;
-	std::transform(s.begin(), s.end(), s.begin(), ::tolower);
+	if ( !s.empty() )
+		s[0] = toupper(s[0]);
 	return ptr;
 }
 
-// php::strtoupper — convert to uppercase in place
-void *php_strtoupper(void *ptr)
+// php::lcfirst — lowercase first character
+void *php_lcfirst(void *ptr)
 {
 	std::string &s = *(std::string *)ptr;
-	std::transform(s.begin(), s.end(), s.begin(), ::toupper);
+	if ( !s.empty() )
+		s[0] = tolower(s[0]);
 	return ptr;
 }
 
-// php::strrev — reverse string in place
-void *php_strrev(void *ptr)
-{
-	std::string &s = *(std::string *)ptr;
-	std::reverse(s.begin(), s.end());
-	return ptr;
-}
-
-// php::strpos — find position of needle in haystack, returns -1 if not found
-int64_t php_strpos(void *haystack, void *needle)
-{
-	std::string &h = *(std::string *)haystack;
-	std::string &n = *(std::string *)needle;
-	size_t pos = h.find(n);
-	return pos == std::string::npos ? -1 : (int64_t)pos;
-}
-
-// php::substr — extract substring, modifies string in place
-void *php_substr(void *ptr, int64_t start, int64_t length)
-{
-	std::string &s = *(std::string *)ptr;
-	if ( start < 0 ) start = (int64_t)s.length() + start;
-	if ( start < 0 ) start = 0;
-	if ( length < 0 ) length = (int64_t)s.length() + length - start;
-	if ( length < 0 ) length = 0;
-	s = s.substr((size_t)start, (size_t)length);
-	return ptr;
-}
-
-// php::str_repeat — repeat string n times, modifies in place
+// php::str_repeat — repeat string n times
 void *php_str_repeat(void *ptr, int64_t count)
 {
 	std::string &s = *(std::string *)ptr;
 	std::string orig = s;
 	s.clear();
+	s.reserve(orig.length() * count);
 	for ( int64_t i = 0; i < count; ++i )
 		s += orig;
 	return ptr;
@@ -133,6 +105,7 @@ void *php_str_replace(void *search, void *replace, void *subject)
 	std::string &srch = *(std::string *)search;
 	std::string &repl = *(std::string *)replace;
 	std::string &subj = *(std::string *)subject;
+	if ( srch.empty() ) return subject;
 	size_t pos = 0;
 	while ( (pos = subj.find(srch, pos)) != std::string::npos )
 	{
@@ -142,26 +115,178 @@ void *php_str_replace(void *search, void *replace, void *subject)
 	return subject;
 }
 
-// php::str_contains — check if string contains substring
-int64_t php_str_contains(void *haystack, void *needle)
+// php::str_pad — pad string to a given length (default right-pad with spaces)
+void *php_str_pad(void *ptr, int64_t length, void *pad_str)
 {
-	return ((std::string *)haystack)->find(*(std::string *)needle) != std::string::npos ? 1 : 0;
+	std::string &s = *(std::string *)ptr;
+	std::string &pad = *(std::string *)pad_str;
+	if ( pad.empty() || (int64_t)s.length() >= length )
+		return ptr;
+	while ( (int64_t)s.length() < length )
+	{
+		size_t remaining = (size_t)length - s.length();
+		s += pad.substr(0, remaining);
+	}
+	return ptr;
 }
 
-// php::str_starts_with
-int64_t php_str_starts_with(void *str, void *prefix)
+// php::str_word_count — count words in string
+int64_t php_str_word_count(void *ptr)
 {
-	std::string &s = *(std::string *)str;
-	std::string &p = *(std::string *)prefix;
-	return s.length() >= p.length() && s.compare(0, p.length(), p) == 0 ? 1 : 0;
+	std::string &s = *(std::string *)ptr;
+	int64_t count = 0;
+	bool in_word = false;
+	for ( size_t i = 0; i < s.length(); ++i )
+	{
+		if ( isspace(s[i]) )
+			in_word = false;
+		else if ( !in_word )
+		{
+			in_word = true;
+			++count;
+		}
+	}
+	return count;
 }
 
-// php::str_ends_with
-int64_t php_str_ends_with(void *str, void *suffix)
+// php::nl2br — convert newlines to "<br>\n"
+void *php_nl2br(void *ptr)
 {
+	std::string &s = *(std::string *)ptr;
+	std::string result;
+	result.reserve(s.length() * 2);
+	for ( size_t i = 0; i < s.length(); ++i )
+	{
+		if ( s[i] == '\n' )
+			result += "<br>\n";
+		else if ( s[i] == '\r' )
+		{
+			result += "<br>\r";
+			if ( i + 1 < s.length() && s[i+1] == '\n' )
+				result += s[++i]; // consume \n after \r
+		}
+		else
+			result += s[i];
+	}
+	s = result;
+	return ptr;
+}
+
+// php::str_rot13 — ROT13 encoding
+void *php_str_rot13(void *ptr)
+{
+	std::string &s = *(std::string *)ptr;
+	for ( size_t i = 0; i < s.length(); ++i )
+	{
+		char c = s[i];
+		if ( c >= 'a' && c <= 'z' )
+			s[i] = 'a' + (c - 'a' + 13) % 26;
+		else if ( c >= 'A' && c <= 'Z' )
+			s[i] = 'A' + (c - 'A' + 13) % 26;
+	}
+	return ptr;
+}
+
+// php::chunk_split — insert separator every chunklen characters
+void *php_chunk_split(void *ptr, int64_t chunklen, void *separator)
+{
+	std::string &s = *(std::string *)ptr;
+	std::string &sep = *(std::string *)separator;
+	if ( chunklen <= 0 || s.empty() ) return ptr;
+	std::string result;
+	result.reserve(s.length() + (s.length() / chunklen + 1) * sep.length());
+	for ( size_t i = 0; i < s.length(); i += (size_t)chunklen )
+	{
+		result += s.substr(i, (size_t)chunklen);
+		result += sep;
+	}
+	s = result;
+	return ptr;
+}
+
+// php::number_format — format number with thousands separator
+void *php_number_format(void *result, int64_t number, void *thousands_sep)
+{
+	std::string &sep = *(std::string *)thousands_sep;
+	std::string &res = *(std::string *)result;
+	bool negative = number < 0;
+	if ( negative ) number = -number;
+	std::string digits = std::to_string(number);
+	res.clear();
+	int count = 0;
+	for ( int i = (int)digits.length() - 1; i >= 0; --i )
+	{
+		if ( count > 0 && count % 3 == 0 )
+			res = sep + res;
+		res = digits[i] + res;
+		++count;
+	}
+	if ( negative ) res = "-" + res;
+	return result;
+}
+
+// php::wordwrap — wrap text at specified width
+void *php_wordwrap(void *ptr, int64_t width, void *brk)
+{
+	std::string &s = *(std::string *)ptr;
+	std::string &br = *(std::string *)brk;
+	if ( width <= 0 ) return ptr;
+	std::string result;
+	int64_t col = 0;
+	size_t last_space = std::string::npos;
+	for ( size_t i = 0; i < s.length(); ++i )
+	{
+		result += s[i];
+		++col;
+		if ( s[i] == ' ' ) last_space = result.length() - 1;
+		if ( s[i] == '\n' ) { col = 0; last_space = std::string::npos; }
+		if ( col >= width && last_space != std::string::npos )
+		{
+			result.replace(last_space, 1, br);
+			col = (int64_t)(result.length() - last_space - br.length());
+			last_space = std::string::npos;
+		}
+	}
+	s = result;
+	return ptr;
+}
+
+
+// php::explode — extract the Nth piece of a string split by delimiter
+// (full array version needs array type; this is the indexed accessor)
+void *php_explode(void *result, void *delim, void *str, int64_t index)
+{
+	std::string &d = *(std::string *)delim;
 	std::string &s = *(std::string *)str;
-	std::string &x = *(std::string *)suffix;
-	return s.length() >= x.length() && s.compare(s.length() - x.length(), x.length(), x) == 0 ? 1 : 0;
+	std::string &res = *(std::string *)result;
+	res.clear();
+	if ( d.empty() ) { res = s; return result; }
+	size_t start = 0, end;
+	int64_t i = 0;
+	while ( (end = s.find(d, start)) != std::string::npos )
+	{
+		if ( i == index ) { res = s.substr(start, end - start); return result; }
+		start = end + d.length();
+		++i;
+	}
+	if ( i == index ) res = s.substr(start);
+	return result;
+}
+
+// php::explode_count — count how many pieces a split would produce
+int64_t php_explode_count(void *delim, void *str)
+{
+	std::string &d = *(std::string *)delim;
+	std::string &s = *(std::string *)str;
+	if ( d.empty() ) return 1;
+	int64_t count = 1;
+	size_t pos = 0;
+	while ( (pos = s.find(d, pos)) != std::string::npos )
+	{
+		++count;
+		pos += d.length();
+	}
+	return count;
 }
 
 // ---- Namespace registration ----
@@ -171,23 +296,7 @@ void Program::add_php_namespace()
 	variable_map_t &php_ns = namespace_map["php"];
 	Variable *var;
 
-	// string → int functions
-	var = addFunction("__php_strlen",         datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_strlen);
-	if (var) php_ns["strlen"] = var;
-
-	var = addFunction("__php_strpos",         datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_strpos);
-	if (var) php_ns["strpos"] = var;
-
-	var = addFunction("__php_str_contains",   datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_str_contains);
-	if (var) php_ns["str_contains"] = var;
-
-	var = addFunction("__php_str_starts_with",datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_str_starts_with);
-	if (var) php_ns["str_starts_with"] = var;
-
-	var = addFunction("__php_str_ends_with",  datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_str_ends_with);
-	if (var) php_ns["str_ends_with"] = var;
-
-	// string → string functions (modify in place, return same pointer)
+	// trim family — no C/C++ equivalent
 	var = addFunction("__php_trim",           datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_trim);
 	if (var) php_ns["trim"] = var;
 
@@ -197,26 +306,51 @@ void Program::add_php_namespace()
 	var = addFunction("__php_rtrim",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_rtrim);
 	if (var) php_ns["rtrim"] = var;
 
-	var = addFunction("__php_strtolower",     datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_strtolower);
-	if (var) php_ns["strtolower"] = var;
+	// case manipulation — ucfirst/lcfirst are PHP-unique
+	var = addFunction("__php_ucfirst",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_ucfirst);
+	if (var) php_ns["ucfirst"] = var;
 
-	var = addFunction("__php_strtoupper",     datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_strtoupper);
-	if (var) php_ns["strtoupper"] = var;
+	var = addFunction("__php_lcfirst",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_lcfirst);
+	if (var) php_ns["lcfirst"] = var;
 
-	var = addFunction("__php_strrev",         datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_strrev);
-	if (var) php_ns["strrev"] = var;
-
-	// string + int → string
+	// string building
 	var = addFunction("__php_str_repeat",     datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)php_str_repeat);
 	if (var) php_ns["str_repeat"] = var;
 
-	// substr(str, start, length)
-	var = addFunction("__php_substr",         datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)php_substr);
-	if (var) php_ns["substr"] = var;
-
-	// str_replace(search, replace, subject) — all strings
 	var = addFunction("__php_str_replace",    datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_str_replace);
 	if (var) php_ns["str_replace"] = var;
+
+	var = addFunction("__php_str_pad",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_str_pad);
+	if (var) php_ns["str_pad"] = var;
+
+	// text analysis
+	var = addFunction("__php_str_word_count", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_str_word_count);
+	if (var) php_ns["str_word_count"] = var;
+
+	// text transformation
+	var = addFunction("__php_nl2br",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_nl2br);
+	if (var) php_ns["nl2br"] = var;
+
+	var = addFunction("__php_str_rot13",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_str_rot13);
+	if (var) php_ns["str_rot13"] = var;
+
+	var = addFunction("__php_chunk_split",    datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_chunk_split);
+	if (var) php_ns["chunk_split"] = var;
+
+	// formatting
+	var = addFunction("__php_number_format",  datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_number_format);
+	if (var) php_ns["number_format"] = var;
+
+	var = addFunction("__php_wordwrap",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_wordwrap);
+	if (var) php_ns["wordwrap"] = var;
+
+	// explode — indexed accessor until arrays are implemented
+	// explode(result, delim, str, index) — get Nth piece
+	var = addFunction("__php_explode",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)php_explode);
+	if (var) php_ns["explode"] = var;
+
+	var = addFunction("__php_explode_count",  datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_explode_count);
+	if (var) php_ns["explode_count"] = var;
 
 	DBG(std::cout << "add_php_namespace() registered php:: with " << php_ns.size() << " members" << std::endl);
 }
