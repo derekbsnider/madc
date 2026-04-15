@@ -395,8 +395,27 @@ TokenBase *Program::_getToken()
 	    while ( source.good() && source.peek() != '"' )
 	    {
 		if ( source.peek() == '\\' )
+		{
+		    source.get(); // consume backslash
+		    if ( !source.good() ) break;
+		    char esc = source.get();
+		    switch (esc) {
+			case 'n':  word += '\n'; break;
+			case 't':  word += '\t'; break;
+			case 'r':  word += '\r'; break;
+			case '\\': word += '\\'; break;
+			case '"':  word += '"';  break;
+			case '\'': word += '\''; break;
+			case '0':  word += '\0'; break;
+			case 'a':  word += '\a'; break;
+			case 'b':  word += '\b'; break;
+			case 'f':  word += '\f'; break;
+			case 'v':  word += '\v'; break;
+			default:   word += '\\'; word += esc; break;
+		    }
+		}
+		else
 		    word += source.get();
-		word += source.get();
 	    }
 	    if ( !source.good() )
 	    {
@@ -412,7 +431,26 @@ TokenBase *Program::_getToken()
 	    while ( source.good() && source.peek() != '\'' )
 	    {
 		if ( source.peek() == '\\' )
-		    source.get();
+		{
+		    source.get(); // consume backslash
+		    if ( !source.good() ) break;
+		    char esc = source.get();
+		    switch (esc) {
+			case 'n':  word += '\n'; break;
+			case 't':  word += '\t'; break;
+			case 'r':  word += '\r'; break;
+			case '\\': word += '\\'; break;
+			case '\'': word += '\''; break;
+			case '"':  word += '"';  break;
+			case '0':  word += '\0'; break;
+			case 'a':  word += '\a'; break;
+			case 'b':  word += '\b'; break;
+			case 'f':  word += '\f'; break;
+			case 'v':  word += '\v'; break;
+			default:   word += '\\'; word += esc; break;
+		    }
+		    continue;
+		}
 		word += source.get();
 	    }
 	    if ( !source.good() )

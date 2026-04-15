@@ -383,9 +383,11 @@ extern int64_t vector_int_at(void *, int64_t);
 extern int64_t vector_int_size(void *);
 extern void vector_int_clear(void *);
 extern int64_t vector_int_empty(void *);
+extern void vector_int_set(void *, int64_t, int64_t);
 extern void vector_str_push_back(void *, void *);
 extern void vector_str_pop_back(void *);
 extern void *vector_str_at(void *, void *, int64_t);
+extern void vector_str_set(void *, int64_t, void *);
 extern int64_t vector_str_size(void *);
 extern void vector_str_clear(void *);
 extern int64_t vector_str_empty(void *);
@@ -1093,9 +1095,39 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    done = true;
 		    break;
 		}
-		// lambda expression: [](params) { body }
+		// subscript: var[index] or lambda: [](params) { body }
 		if ( tb->id() == TokenID::tkOpSqr )
 		{
+		    // if top of exStack is a variable, treat [ as subscript operator
+		    if ( !exStack.empty() && exStack.top()->type() == TokenType::ttVariable )
+		    {
+			static int sub_tmp_counter = 0;
+			TokenVar *tv = dynamic_cast<TokenVar *>(exStack.top());
+			exStack.pop();
+			// parse index expression (stops at ] via peek-stop below)
+			TokenBase *idx = parseExpression(nextToken());
+			TokenBase *clsqr = nextToken(); // consume ]
+			if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
+			    Throw(tb) << "Expected ] in subscript expression" << flush;
+			// for string-returning containers, allocate a temp variable for the result
+			Variable *tmp = nullptr;
+			if ( tv->var.type->type() == DataType::dtVECTOR ) {
+			    DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(tv->var.type);
+			    if ( vdd->element_type->is_string() ) {
+				std::string tmpname = "__sub_tmp_" + std::to_string(sub_tmp_counter++);
+				tmp = addVariable(code, ddSTRING, tmpname, 1, NULL, true);
+			    }
+			} else if ( tv->var.type->type() == DataType::dtMAP ) {
+			    DataDefMAP *mdd = static_cast<DataDefMAP *>(tv->var.type);
+			    if ( mdd->val_type->is_string() ) {
+				std::string tmpname = "__sub_tmp_" + std::to_string(sub_tmp_counter++);
+				tmp = addVariable(code, ddSTRING, tmpname, 1, NULL, true);
+			    }
+			}
+			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
+			exStack.push(new TokenSubscript(tv->var, idx, tmp));
+			break;
+		    }
 		    DBG(cout << "parseExpression: detected [ — parsing lambda" << endl);
 		    TokenBase *lambda = parseLambda();
 		    exStack.push(lambda);
@@ -1134,7 +1166,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		}
 		// see if we need to convert TokenNeg to TokenSub
 		if ( tb->id() == TokenID::tkNeg && prevToken()
-		&&  (prevToken()->id() == TokenID::tkClBrk || !prevToken()->is_operator()) )
+		&&  (prevToken()->id() == TokenID::tkClBrk || prevToken()->id() == TokenID::tkClSqr || !prevToken()->is_operator()) )
 		{
 		    DBG(std::cout << "parseExpression() converting TokenNeg to TokenSub, prevToken id: " << (int)prevToken()->id() << " prevToken->is_operator: " << (prevToken()->is_operator() ? "true" : "false") << std::endl);
 		    TokenSub *ts = new TokenSub();
@@ -1386,6 +1418,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 	{
 	    DBG(cout << "Hit ), no prior brackets, might be end of function?" << endl);
 	    break;
+	}
+	if ( tb->id() == TokenID::tkClSqr )
+	{
+	    DBG(cout << "Hit ], end of subscript index" << endl);
+	    break; // stop without consuming: let the subscript handler consume ]
 	}
 	tb = nextToken();
     }

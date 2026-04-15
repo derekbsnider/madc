@@ -1,0 +1,33 @@
+// Test escape sequences in string and char literals
+
+int main()
+{
+    // \n newline
+    cout << "line1\nline2" << endl;
+
+    // \t tab
+    cout << "col1\tcol2" << endl;
+
+    // \\ literal backslash
+    cout << "back\\slash" << endl;
+
+    // \" embedded quote
+    cout << "say \"hello\"" << endl;
+
+    // \r carriage return (just test it doesn't crash; overwrite with newline)
+    cout << "cr\rok" << endl;
+
+    // char literal escape: '\n' should be ASCII 10
+    int n = '\n';
+    cout << n << endl;
+
+    // char literal escape: '\t' should be ASCII 9
+    int t = '\t';
+    cout << t << endl;
+
+    // char literal: '\\' should be ASCII 92
+    int bs = '\\';
+    cout << bs << endl;
+
+    return 0;
+}

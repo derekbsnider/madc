@@ -140,6 +140,36 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+// subscript access: container[index]
+class TokenSubscript: public TokenBase
+{
+public:
+    Variable &object;    // the container variable
+    TokenBase *index;    // the index expression
+    Variable *tmp_var;   // temp string variable for string-returning subscripts (or NULL)
+    asmjit::Operand _operand;
+
+    TokenSubscript(Variable &o, TokenBase *idx, Variable *tmp = nullptr)
+        : object(o), index(idx), tmp_var(tmp)
+    {
+        if ( o.type->type() == DataType::dtVECTOR )
+            _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
+        else if ( o.type->type() == DataType::dtMAP )
+            _datatype = static_cast<DataDefMAP *>(o.type)->val_type;
+        else
+            _datatype = &ddINT64; // MadArray: default to int
+    }
+    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual bool is_real() { return _datatype->is_real(); }
+    virtual asmjit::Operand &operand(Program &pgm) {
+        regdefp_t r = {nullptr, nullptr, nullptr};
+        return compile(pgm, r);
+    }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &);
+    // emit setter call for write context: container[index] = val
+    void compile_set(Program &, asmjit::Operand &, DataDef *);
+};
+
 class TokenProgram: public TokenCpnd
 {
 public:

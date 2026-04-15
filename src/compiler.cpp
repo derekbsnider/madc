@@ -227,8 +227,14 @@ extern void *vector_str_construct(void *);
 extern void  vector_str_destruct(void *);
 extern int64_t vector_int_size(void *);
 extern int64_t vector_int_at(void *, int64_t);
+extern void vector_int_set(void *, int64_t, int64_t);
 extern void *vector_str_at(void *, void *, int64_t);
+extern void vector_str_set(void *, int64_t, void *);
 extern int64_t vector_str_size(void *);
+extern void map_str_int_set(void *, void *, int64_t);
+extern int64_t map_str_int_get(void *, void *);
+extern void map_str_str_set(void *, void *, void *);
+extern void *map_str_str_get(void *, void *, void *);
 extern void *map_str_int_construct(void *);
 extern void  map_str_int_destruct(void *);
 extern void *map_str_str_construct(void *);
@@ -1231,6 +1237,24 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	DBG(cout << "     tml->var.type() " << (int)ltype->type() << " name: " << ltype->name << endl);
     }
     else
+    if ( left->type() == TokenType::ttSubscript )
+    {
+	// subscript write: container[index] = value
+	TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(left);
+	ltype = tsub->datadef();
+	DBG(cout << "TokenAssign::compile() subscript assignment to " << tsub->object.name << " elem type " << ltype->name << endl);
+	DBG(pgm.cc.comment("TokenAssign: subscript write"));
+	// compile right side independently
+	regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
+	rhs_rdp.second = ltype;
+	Operand &rhs_op = right->compile(pgm, rhs_rdp);
+	tsub->compile_set(pgm, rhs_op, rhs_rdp.second ? rhs_rdp.second : ltype);
+	_operand = rhs_op;
+	regdp.first = &_operand;
+	regdp.second = ltype;
+	return _operand;
+    }
+    else
     {
 	pgm.Throw(this) << "Assignment on a non-variable lval" << flush;
     }
@@ -1483,6 +1507,178 @@ void TokenCpnd::movreg(x86::Compiler &cc, Operand &op, Variable *var)
     {
 	throw "TokenCpnd::movreg() unsupported operand";
     }
+}
+
+// Read subscript: container[index]
+Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenSubscript::compile()"));
+
+    // get container pointer
+    Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
+    x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
+    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+
+    // compile index expression
+    regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
+    Operand &idx_op = index->compile(pgm, idx_rdp);
+    x86::Gp idx_reg = pgm.cc.newGpq("sub_idx");
+    if ( idx_op.isReg() )
+        pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
+    else
+        pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+
+    DataType ctype = object.type->type();
+
+    if ( ctype == DataType::dtVECTOR )
+    {
+        DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(object.type);
+        if ( vdd->element_type->is_string() )
+        {
+            // vector<string>[i] → vector_str_at(result, ptr, i)
+            Operand &tmp_op = pgm.tkFunction->voperand(pgm, tmp_var);
+            InvokeNode *call;
+            DBG(pgm.cc.comment("vector_str_at"));
+            pgm.cc.invoke(&call, imm(vector_str_at),
+                FuncSignatureT<void *, void *, void *, int64_t>(CallConvId::kCDecl));
+            call->setArg(0, tmp_op.as<x86::Gp>());
+            call->setArg(1, obj_reg);
+            call->setArg(2, idx_reg);
+            _operand = tmp_op;
+        }
+        else
+        {
+            // vector<int>[i] → vector_int_at(ptr, i)
+            x86::Gp res = pgm.cc.newGpq("sub_res");
+            InvokeNode *call;
+            DBG(pgm.cc.comment("vector_int_at"));
+            pgm.cc.invoke(&call, imm(vector_int_at),
+                FuncSignatureT<int64_t, void *, int64_t>(CallConvId::kCDecl));
+            call->setArg(0, obj_reg);
+            call->setArg(1, idx_reg);
+            call->setRet(0, res);
+            _operand = res;
+        }
+    }
+    else if ( ctype == DataType::dtMAP )
+    {
+        DataDefMAP *mdd = static_cast<DataDefMAP *>(object.type);
+        if ( mdd->val_type->is_string() )
+        {
+            // map<string,string>["k"] → map_str_str_get(result, ptr, key)
+            Operand &tmp_op = pgm.tkFunction->voperand(pgm, tmp_var);
+            InvokeNode *call;
+            DBG(pgm.cc.comment("map_str_str_get"));
+            pgm.cc.invoke(&call, imm(map_str_str_get),
+                FuncSignatureT<void *, void *, void *, void *>(CallConvId::kCDecl));
+            call->setArg(0, tmp_op.as<x86::Gp>());
+            call->setArg(1, obj_reg);
+            call->setArg(2, idx_reg);
+            _operand = tmp_op;
+        }
+        else
+        {
+            // map<string,int>["k"] → map_str_int_get(ptr, key)
+            x86::Gp res = pgm.cc.newGpq("sub_res");
+            InvokeNode *call;
+            DBG(pgm.cc.comment("map_str_int_get"));
+            pgm.cc.invoke(&call, imm(map_str_int_get),
+                FuncSignatureT<int64_t, void *, void *>(CallConvId::kCDecl));
+            call->setArg(0, obj_reg);
+            call->setArg(1, idx_reg);
+            call->setRet(0, res);
+            _operand = res;
+        }
+    }
+    else // dtARRAY (MadArray) — int-indexed read
+    {
+        // array[i] → php_array_get_int(ptr, i)
+        x86::Gp res = pgm.cc.newGpq("sub_res");
+        InvokeNode *call;
+        DBG(pgm.cc.comment("php_array_get_int"));
+        pgm.cc.invoke(&call, imm(php_array_get_int),
+            FuncSignatureT<int64_t, void *, int64_t>(CallConvId::kCDecl));
+        call->setArg(0, obj_reg);
+        call->setArg(1, idx_reg);
+        call->setRet(0, res);
+        _operand = res;
+    }
+
+    regdp.second = _datatype;
+    regdp.first = &_operand;
+    return _operand;
+}
+
+// Write subscript: container[index] = val  (called from TokenAssign::compile)
+void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_type)
+{
+    DBG(pgm.cc.comment("TokenSubscript::compile_set()"));
+
+    // get container pointer
+    Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
+    x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
+    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+
+    // compile index expression
+    regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
+    Operand &idx_op = index->compile(pgm, idx_rdp);
+    x86::Gp idx_reg = pgm.cc.newGpq("sub_idx");
+    if ( idx_op.isReg() )
+        pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
+    else
+        pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+
+    DataType ctype = object.type->type();
+
+    if ( ctype == DataType::dtVECTOR )
+    {
+        DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(object.type);
+        if ( vdd->element_type->is_string() )
+        {
+            InvokeNode *call;
+            DBG(pgm.cc.comment("vector_str_set"));
+            pgm.cc.invoke(&call, imm(vector_str_set),
+                FuncSignatureT<void, void *, int64_t, void *>(CallConvId::kCDecl));
+            call->setArg(0, obj_reg);
+            call->setArg(1, idx_reg);
+            call->setArg(2, val_op.as<x86::Gp>());
+        }
+        else
+        {
+            InvokeNode *call;
+            DBG(pgm.cc.comment("vector_int_set"));
+            pgm.cc.invoke(&call, imm(vector_int_set),
+                FuncSignatureT<void, void *, int64_t, int64_t>(CallConvId::kCDecl));
+            call->setArg(0, obj_reg);
+            call->setArg(1, idx_reg);
+            call->setArg(2, val_op.as<x86::Gp>());
+        }
+    }
+    else if ( ctype == DataType::dtMAP )
+    {
+        DataDefMAP *mdd = static_cast<DataDefMAP *>(object.type);
+        if ( mdd->val_type->is_string() )
+        {
+            InvokeNode *call;
+            DBG(pgm.cc.comment("map_str_str_set"));
+            pgm.cc.invoke(&call, imm(map_str_str_set),
+                FuncSignatureT<void, void *, void *, void *>(CallConvId::kCDecl));
+            call->setArg(0, obj_reg);
+            call->setArg(1, idx_reg);
+            call->setArg(2, val_op.as<x86::Gp>());
+        }
+        else
+        {
+            InvokeNode *call;
+            DBG(pgm.cc.comment("map_str_int_set"));
+            pgm.cc.invoke(&call, imm(map_str_int_set),
+                FuncSignatureT<void, void *, void *, int64_t>(CallConvId::kCDecl));
+            call->setArg(0, obj_reg);
+            call->setArg(1, idx_reg);
+            call->setArg(2, val_op.as<x86::Gp>());
+        }
+    }
+    // else: MadArray write not yet supported (no indexed set helper)
 }
 
 // Manage operands/registers for use on local as well as global variables

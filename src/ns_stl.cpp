@@ -75,6 +75,13 @@ int64_t vector_int_empty(void *ptr)
     return ((std::vector<int64_t> *)ptr)->empty() ? 1 : 0;
 }
 
+void vector_int_set(void *ptr, int64_t index, int64_t val)
+{
+    std::vector<int64_t> &v = *(std::vector<int64_t> *)ptr;
+    if ( index >= 0 && (size_t)index < v.size() )
+        v[(size_t)index] = val;
+}
+
 //
 // vector<string> helpers
 //
@@ -122,6 +129,13 @@ void vector_str_clear(void *ptr)
 int64_t vector_str_empty(void *ptr)
 {
     return ((std::vector<std::string> *)ptr)->empty() ? 1 : 0;
+}
+
+void vector_str_set(void *ptr, int64_t index, void *str)
+{
+    std::vector<std::string> &v = *(std::vector<std::string> *)ptr;
+    if ( index >= 0 && (size_t)index < v.size() )
+        v[(size_t)index] = *(std::string *)str;
 }
 
 //

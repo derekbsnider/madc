@@ -1,0 +1,50 @@
+// Test [] subscript operator for arrays and containers
+
+int main()
+{
+    // vector<int> read and write
+    vector<int> nums;
+    nums.push_back(10);
+    nums.push_back(20);
+    nums.push_back(30);
+    cout << nums[0] << endl;   // 10
+    cout << nums[1] << endl;   // 20
+    cout << nums[2] << endl;   // 30
+    nums[1] = 99;
+    cout << nums[1] << endl;   // 99
+
+    // map<string,int> read and write
+    map<string,int> ages;
+    ages.put("alice", 30);
+    ages.put("bob", 25);
+    string k1 = "alice";
+    string k2 = "bob";
+    cout << ages[k1] << endl;  // 30
+    cout << ages[k2] << endl;  // 25
+    ages[k1] = 31;
+    cout << ages[k1] << endl;  // 31
+
+    // vector<string> read and write
+    vector<string> names;
+    names.push_back("hello");
+    names.push_back("world");
+    cout << names[0] << endl;  // hello
+    cout << names[1] << endl;  // world
+    names[0] = "hi";
+    cout << names[0] << endl;  // hi
+
+    // map<string,string> read and write
+    map<string,string> dict;
+    string k = "en";
+    string v = "hello";
+    dict.put(k, v);
+    string k2b = "fr";
+    string v2 = "bonjour";
+    dict.put(k2b, v2);
+    cout << dict[k] << endl;   // hello
+    cout << dict[k2b] << endl; // bonjour
+    dict[k] = "hi";
+    cout << dict[k] << endl;   // hi
+
+    return 0;
+}
