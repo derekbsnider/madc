@@ -252,41 +252,234 @@ void *php_wordwrap(void *ptr, int64_t width, void *brk)
 }
 
 
-// php::explode — extract the Nth piece of a string split by delimiter
-// (full array version needs array type; this is the indexed accessor)
-void *php_explode(void *result, void *delim, void *str, int64_t index)
+// ---- MadArray-based functions ----
+
+// php::explode — split string by delimiter into array
+void *php_explode(void *arr, void *delim, void *str)
 {
+	MadArray &a = *(MadArray *)arr;
 	std::string &d = *(std::string *)delim;
 	std::string &s = *(std::string *)str;
-	std::string &res = *(std::string *)result;
-	res.clear();
-	if ( d.empty() ) { res = s; return result; }
+	a.data.clear();
+	a.assoc.clear();
+	if ( d.empty() ) { a.push(MadValue(s)); return arr; }
 	size_t start = 0, end;
-	int64_t i = 0;
 	while ( (end = s.find(d, start)) != std::string::npos )
 	{
-		if ( i == index ) { res = s.substr(start, end - start); return result; }
+		a.push(MadValue(s.substr(start, end - start)));
 		start = end + d.length();
-		++i;
 	}
-	if ( i == index ) res = s.substr(start);
+	a.push(MadValue(s.substr(start)));
+	return arr;
+}
+
+// php::implode — join array elements with glue string
+void *php_implode(void *result, void *glue, void *arr)
+{
+	std::string &res = *(std::string *)result;
+	std::string &g = *(std::string *)glue;
+	MadArray &a = *(MadArray *)arr;
+	res.clear();
+	for ( size_t i = 0; i < a.data.size(); ++i )
+	{
+		if ( i > 0 ) res += g;
+		if ( a.data[i].is_string() )
+			res += a.data[i].as_string();
+		else if ( a.data[i].is_int() )
+			res += std::to_string(a.data[i].as_int());
+		else if ( a.data[i].is_double() )
+			res += std::to_string(a.data[i].as_double());
+	}
 	return result;
 }
 
-// php::explode_count — count how many pieces a split would produce
-int64_t php_explode_count(void *delim, void *str)
+// php::count — return number of elements
+int64_t php_count(void *arr)
 {
-	std::string &d = *(std::string *)delim;
-	std::string &s = *(std::string *)str;
-	if ( d.empty() ) return 1;
-	int64_t count = 1;
-	size_t pos = 0;
-	while ( (pos = s.find(d, pos)) != std::string::npos )
+	return (int64_t)((MadArray *)arr)->count();
+}
+
+// php::array_push — append value (string) to array
+void *php_array_push_str(void *arr, void *str)
+{
+	((MadArray *)arr)->push(MadValue(*(std::string *)str));
+	return arr;
+}
+
+// php::array_push_int — append integer to array
+void *php_array_push_int(void *arr, int64_t val)
+{
+	((MadArray *)arr)->push(MadValue(val));
+	return arr;
+}
+
+// php::array_pop — remove and return last element as string
+void *php_array_pop(void *result, void *arr)
+{
+	MadValue v = ((MadArray *)arr)->pop();
+	std::string &res = *(std::string *)result;
+	if ( v.is_string() )
+		res = v.as_string();
+	else if ( v.is_int() )
+		res = std::to_string(v.as_int());
+	else
+		res.clear();
+	return result;
+}
+
+// php::array_get — get element at integer index as string
+void *php_array_get(void *result, void *arr, int64_t index)
+{
+	MadArray &a = *(MadArray *)arr;
+	std::string &res = *(std::string *)result;
+	if ( index < 0 || (size_t)index >= a.data.size() )
 	{
-		++count;
-		pos += d.length();
+		res.clear();
+		return result;
 	}
-	return count;
+	MadValue &v = a.data[(size_t)index];
+	if ( v.is_string() )
+		res = v.as_string();
+	else if ( v.is_int() )
+		res = std::to_string(v.as_int());
+	else if ( v.is_double() )
+		res = std::to_string(v.as_double());
+	else
+		res.clear();
+	return result;
+}
+
+// php::array_get_int — get element at integer index as int
+int64_t php_array_get_int(void *arr, int64_t index)
+{
+	MadArray &a = *(MadArray *)arr;
+	if ( index < 0 || (size_t)index >= a.data.size() )
+		return 0;
+	MadValue &v = a.data[(size_t)index];
+	if ( v.is_int() ) return v.as_int();
+	if ( v.is_double() ) return (int64_t)v.as_double();
+	if ( v.is_string() ) { try { return std::stoll(v.as_string()); } catch(...) { return 0; } }
+	return 0;
+}
+
+// php::array_reverse — reverse array in place
+void *php_array_reverse(void *arr)
+{
+	MadArray &a = *(MadArray *)arr;
+	std::reverse(a.data.begin(), a.data.end());
+	return arr;
+}
+
+// php::in_array — check if value exists in array (string comparison)
+int64_t php_in_array(void *needle, void *arr)
+{
+	std::string &n = *(std::string *)needle;
+	MadArray &a = *(MadArray *)arr;
+	for ( auto &v : a.data )
+		if ( v.is_string() && v.as_string() == n )
+			return 1;
+	return 0;
+}
+
+// php::array_search — find index of value in array, returns -1 if not found
+int64_t php_array_search(void *needle, void *arr)
+{
+	std::string &n = *(std::string *)needle;
+	MadArray &a = *(MadArray *)arr;
+	for ( size_t i = 0; i < a.data.size(); ++i )
+		if ( a.data[i].is_string() && a.data[i].as_string() == n )
+			return (int64_t)i;
+	return -1;
+}
+
+// php::array_unique — remove duplicate string values
+void *php_array_unique(void *arr)
+{
+	MadArray &a = *(MadArray *)arr;
+	std::vector<MadValue> unique;
+	for ( auto &v : a.data )
+	{
+		bool found = false;
+		if ( v.is_string() )
+		{
+			for ( auto &u : unique )
+				if ( u.is_string() && u.as_string() == v.as_string() )
+				{ found = true; break; }
+		}
+		if ( !found ) unique.push_back(v);
+	}
+	a.data = unique;
+	return arr;
+}
+
+// php::array_shift — remove first element, shift rest down
+void *php_array_shift(void *result, void *arr)
+{
+	MadArray &a = *(MadArray *)arr;
+	std::string &res = *(std::string *)result;
+	if ( a.data.empty() ) { res.clear(); return result; }
+	MadValue v = a.data.front();
+	a.data.erase(a.data.begin());
+	if ( v.is_string() ) res = v.as_string();
+	else if ( v.is_int() ) res = std::to_string(v.as_int());
+	else res.clear();
+	return result;
+}
+
+// php::array_unshift — prepend value to beginning
+void *php_array_unshift(void *arr, void *str)
+{
+	MadArray &a = *(MadArray *)arr;
+	a.data.insert(a.data.begin(), MadValue(*(std::string *)str));
+	return arr;
+}
+
+// php::sort — sort array (string comparison)
+void *php_sort(void *arr)
+{
+	MadArray &a = *(MadArray *)arr;
+	std::sort(a.data.begin(), a.data.end(), [](const MadValue &a, const MadValue &b) {
+		if ( a.is_string() && b.is_string() )
+			return a.as_string() < b.as_string();
+		if ( a.is_int() && b.is_int() )
+			return a.as_int() < b.as_int();
+		return false;
+	});
+	return arr;
+}
+
+// php::rsort — sort array in reverse
+void *php_rsort(void *arr)
+{
+	php_sort(arr);
+	php_array_reverse(arr);
+	return arr;
+}
+
+// php::array_slice — extract a slice of the array
+void *php_array_slice(void *dest, void *src, int64_t offset, int64_t length)
+{
+	MadArray &d = *(MadArray *)dest;
+	MadArray &s = *(MadArray *)src;
+	d.data.clear();
+	d.assoc.clear();
+	if ( offset < 0 ) offset = (int64_t)s.data.size() + offset;
+	if ( offset < 0 ) offset = 0;
+	if ( length < 0 ) length = (int64_t)s.data.size() + length - offset;
+	if ( length < 0 ) length = 0;
+	for ( int64_t i = offset; i < offset + length && (size_t)i < s.data.size(); ++i )
+		d.data.push_back(s.data[(size_t)i]);
+	return dest;
+}
+
+// php::array_merge — merge two arrays
+void *php_array_merge(void *dest, void *src)
+{
+	MadArray &d = *(MadArray *)dest;
+	MadArray &s = *(MadArray *)src;
+	for ( auto &v : s.data )
+		d.data.push_back(v);
+	return dest;
 }
 
 // ---- Namespace registration ----
@@ -344,13 +537,79 @@ void Program::add_php_namespace()
 	var = addFunction("__php_wordwrap",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_wordwrap);
 	if (var) php_ns["wordwrap"] = var;
 
-	// explode — indexed accessor until arrays are implemented
-	// explode(result, delim, str, index) — get Nth piece
-	var = addFunction("__php_explode",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)php_explode);
+	// ---- MadArray functions ----
+
+	// explode(arr, delim, str) — split string into array
+	var = addFunction("__php_explode",        datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_explode);
 	if (var) php_ns["explode"] = var;
 
-	var = addFunction("__php_explode_count",  datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_explode_count);
-	if (var) php_ns["explode_count"] = var;
+	// implode(result, glue, arr) — join array into string
+	var = addFunction("__php_implode",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_implode);
+	if (var) php_ns["implode"] = var;
+
+	// count(arr) — number of elements
+	var = addFunction("__php_count",          datatype_vec_t{DataType::dtINT64, DataType::dtARRAY}, (fVOIDFUNC)php_count);
+	if (var) php_ns["count"] = var;
+
+	// array_push(arr, str) — append string
+	var = addFunction("__php_array_push",     datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)php_array_push_str);
+	if (var) php_ns["array_push"] = var;
+
+	// array_push_int(arr, int) — append int
+	var = addFunction("__php_array_push_int", datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_push_int);
+	if (var) php_ns["array_push_int"] = var;
+
+	// array_pop(result, arr) — remove last, return as string
+	var = addFunction("__php_array_pop",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_pop);
+	if (var) php_ns["array_pop"] = var;
+
+	// array_get(result, arr, index) — get element as string
+	var = addFunction("__php_array_get",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_get);
+	if (var) php_ns["array_get"] = var;
+
+	// array_get_int(arr, index) — get element as int
+	var = addFunction("__php_array_get_int",  datatype_vec_t{DataType::dtINT64, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_get_int);
+	if (var) php_ns["array_get_int"] = var;
+
+	// array_reverse(arr)
+	var = addFunction("__php_array_reverse",  datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_reverse);
+	if (var) php_ns["array_reverse"] = var;
+
+	// in_array(needle, arr) — check if string exists in array
+	var = addFunction("__php_in_array",       datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_in_array);
+	if (var) php_ns["in_array"] = var;
+
+	// array_search(needle, arr) — find index of string, -1 if not found
+	var = addFunction("__php_array_search",   datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_search);
+	if (var) php_ns["array_search"] = var;
+
+	// array_unique(arr) — remove duplicates
+	var = addFunction("__php_array_unique",   datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_unique);
+	if (var) php_ns["array_unique"] = var;
+
+	// array_shift(result, arr) — remove first element
+	var = addFunction("__php_array_shift",    datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_shift);
+	if (var) php_ns["array_shift"] = var;
+
+	// array_unshift(arr, str) — prepend value
+	var = addFunction("__php_array_unshift",  datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)php_array_unshift);
+	if (var) php_ns["array_unshift"] = var;
+
+	// sort(arr) — sort ascending
+	var = addFunction("__php_sort",           datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_sort);
+	if (var) php_ns["sort"] = var;
+
+	// rsort(arr) — sort descending
+	var = addFunction("__php_rsort",          datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_rsort);
+	if (var) php_ns["rsort"] = var;
+
+	// array_slice(dest, src, offset, length)
+	var = addFunction("__php_array_slice",    datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)php_array_slice);
+	if (var) php_ns["array_slice"] = var;
+
+	// array_merge(dest, src) — append src elements to dest
+	var = addFunction("__php_array_merge",    datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_merge);
+	if (var) php_ns["array_merge"] = var;
 
 	DBG(std::cout << "add_php_namespace() registered php:: with " << php_ns.size() << " members" << std::endl);
 }

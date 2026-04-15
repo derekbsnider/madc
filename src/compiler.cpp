@@ -72,6 +72,20 @@ void ostream_destruct(void *ptr)
     ((std::ostream *)ptr)->~ostream();
 }
 
+// construct a MadArray at ptr address
+void *madarray_construct(void *ptr)
+{
+    DBG(cout << "madarray_construct(" << (uint64_t)ptr << ')' << endl);
+    return new(ptr) MadArray;
+}
+
+// destruct a MadArray at ptr address
+void madarray_destruct(void *ptr)
+{
+    DBG(cout << "madarray_destruct(" << (uint64_t)ptr << ')' << endl);
+    ((MadArray *)ptr)->~MadArray();
+}
+
 // return c_str() pointer from a std::string — used when passing a string to a const char* param
 const char *string_cstr(void *ptr)
 {
@@ -1259,6 +1273,17 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    operand_map[var] = reg;
 		}
 		break;
+	    case DataType::dtARRAY:
+		{
+		    x86::Mem stack = pgm.cc.newStack(sizeof(MadArray), 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    DBG(pgm.cc.comment("madarray_construct"));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(madarray_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    call->setArg(0, reg);
+		    operand_map[var] = reg;
+		}
+		break;
 	    case DataType::dtOSTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ostream), 4);
@@ -1402,6 +1427,12 @@ void TokenCpnd::cleanup(asmjit::x86::Compiler &cc)
 		    case DataType::dtSSTREAM:
 			{
                             InvokeNode* call; cc.invoke(&call, imm(stringstream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtARRAY:
+			{
+                            InvokeNode* call; cc.invoke(&call, imm(madarray_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;

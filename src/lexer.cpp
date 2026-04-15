@@ -74,6 +74,7 @@ TokenFLOAT	tkFLOAT;
 TokenDOUBLE	tkDOUBLE;
 TokenSTRING	tkSTRING;
 TokenSSTREAM	tkSSTREAM;
+TokenARRAY	tkARRAY;
 TokenLPSTR	tkLPSTR;
 
 
@@ -137,6 +138,7 @@ void Program::add_datatypes()
     datatype_map[tkDOUBLE.str] = &tkDOUBLE;
     datatype_map[tkSTRING.str] = &tkSTRING;
     datatype_map[tkSSTREAM.str] = &tkSSTREAM;
+    datatype_map[tkARRAY.str] = &tkARRAY;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
 }
 

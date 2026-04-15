@@ -53,6 +53,7 @@ DataDefSTRING ddSTRING;
 DataDefSTRINGref ddSTRINGref;
 DataDefOSTREAM ddOSTREAM;
 DataDefSSTREAM ddSSTREAM;
+DataDefARRAY ddARRAY;
 DataDefLPSTR ddLPSTR;
 DataDefTEST ddTESTSTRUCT;
 
@@ -531,6 +532,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	case DataType::dtINT64:	  dd = &ddINT64;	break;
 	case DataType::dtUINT64:  dd = &ddUINT64;	break;
 	case DataType::dtSTRING:  dd = &ddSTRING;	break;
+	case DataType::dtARRAY:   dd = &ddARRAY;	break;
 	case rtPtr(DataType::dtOSTREAM):
 	case DataType::dtOSTREAM: dd = &ddOSTREAM;	break;
 	case rtPtr(DataType::dtCHAR): dd = &ddLPSTR;	break;
@@ -557,6 +559,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    case DataType::dtINT64:   dd = &ddINT64;	break;
 	    case DataType::dtUINT64:  dd = &ddUINT64;	break;
 	    case DataType::dtSTRING:  dd = &ddSTRING;	break;
+	    case DataType::dtARRAY:   dd = &ddARRAY;	break;
 	    case DataType::dtOSTREAM: dd = &ddOSTREAM;  break;
 	    case DataType::dtFLOAT:   dd = &ddFLOAT;    break;
 	    case DataType::dtDOUBLE:  dd = &ddDOUBLE;   break;
