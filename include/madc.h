@@ -330,6 +330,7 @@ public:
     void add_globals();
     void add_namespaces();
     void add_php_namespace();
+    void add_perl_namespace();
 
     Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
 

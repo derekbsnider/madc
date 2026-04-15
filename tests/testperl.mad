@@ -1,0 +1,63 @@
+#!/../bin/madc
+
+int main()
+{
+    // chop — removes last character
+    string word = "Hello!";
+    int ch;
+    ch = perl::chop(word);
+    cout << "chop: " << word << " (removed " << ch << ")" << endl;
+
+    // chomp — removes trailing newline only
+    string line = "data";
+    int removed;
+    removed = perl::chomp(line);
+    cout << "chomp: " << line << " (removed " << removed << ")" << endl;
+
+    // grep — filter array
+    array fruits;
+    php::array_push(fruits, "apple");
+    php::array_push(fruits, "apricot");
+    php::array_push(fruits, "banana");
+    php::array_push(fruits, "avocado");
+    php::array_push(fruits, "cherry");
+
+    array matches;
+    string pattern = "ap";
+    perl::grep(matches, pattern, fruits);
+    int count;
+    count = perl::scalar(matches);
+    cout << "grep 'ap': " << count << " matches" << endl;
+    string item;
+    php::array_get(item, matches, 0);
+    cout << "  [0]: " << item << endl;
+    php::array_get(item, matches, 1);
+    cout << "  [1]: " << item << endl;
+
+    // glob — file globbing
+    array files;
+    string globpat = "tests/test?.mad";
+    perl::glob(files, globpat);
+    count = perl::scalar(files);
+    cout << "glob: " << count << " files" << endl;
+
+    // split + join
+    string csv = "one:two:three";
+    string sep = ":";
+    array parts;
+    perl::split(parts, sep, csv);
+    string joined;
+    string comma = ", ";
+    perl::join(joined, comma, parts);
+    cout << "split+join: " << joined << endl;
+
+    // php::chop vs perl::chop
+    string s1 = "hello   ";
+    string s2 = "hello!";
+    php::chop(s1);
+    cout << "php::chop: [" << s1 << "]" << endl;
+    perl::chop(s2);
+    cout << "perl::chop: [" << s2 << "]" << endl;
+
+    return 0;
+}
