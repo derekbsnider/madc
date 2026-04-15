@@ -15,13 +15,15 @@
 #include <queue>
 #include <stack>
 #include <asmjit/x86.h>
-#define DBG(x)
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
+
+bool madc_verbose = false;
 
 throwstream throwit;
 
@@ -45,19 +47,25 @@ int main(int argc, char **argv)
 
     prog.colors = true;
 
-    if ( argc >= 2 )
+    int filearg = 1;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
+            madc_verbose = true;
+            filearg = i + 1;
+        } else {
+            filearg = i;
+            break;
+        }
+    }
+
+    if ( argc >= 2 && filearg < argc )
     {
-	asmjit::String sb, hsb;
-        DBG(prog.code.init(prog.jit.environment()));
-	if ( !(tp=prog.tokenize(argv[1])) )
+	if ( !(tp=prog.tokenize(argv[filearg])) )
 	    return 0;
 	if ( !prog.parse(tp) )
 	    return 0;
 	if ( !prog.compile() )
 	    return 0;
-	DBG(puts("Assember:"));
-	DBG(prog.cc.dump(sb));
-	DBG(puts(sb.data()));
 
 	struct timeval before, after;
 
@@ -69,7 +77,7 @@ int main(int argc, char **argv)
 
 	return 0;
     }
-    std::cout << "Usage: madc <file.mad>" << std::endl;
+    std::cout << "Usage: madc [-v|--verbose] <file.mad>" << std::endl;
 
     return 0;
 }

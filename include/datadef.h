@@ -6,6 +6,8 @@
 //////////////////////////////////////////////////////////////////////////
 #define __DATADEF_H 1
 
+extern bool madc_verbose;
+
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
 
@@ -48,6 +50,7 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfSTACK	=    2, // stack vs heap
 			  vfSTATIC	=    4, // static variable
 			  vfPARAM	=    8, // parameter variable
+			  vfREGISTER	=   16, // register-only: never written to memory
 			  vfREGSET	=   64, // GpReg set
 			  vfXREGSET	=  128, // extra reg is set (used for string.c_str)
 			  vfALLOC	=  256, // data pointer was allocated by us
@@ -328,7 +331,7 @@ public:
 	case DataType::dtFLOAT:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
 	case DataType::dtDOUBLE:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
 	case DataType::dtLDOUBLE: cc.movsd(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
-	default:		  cc.movsd(reg, (uintptr_t)ptr);		         break;
+	default:		  cc.movq(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
 	} // switch
     }
     // move memory pointed to by a register into a register

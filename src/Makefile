@@ -9,14 +9,27 @@ LIBDIR	= ../lib
 OBJDIR	= ../obj
 DEFINES	= -I$(INCDIR)
 #LIBS	= -lreadline -lasmjit
-LIBS	= -lasmjit
+LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -lasmjit
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES))
 OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
+
+TESTDIR  = ../tests/unit
+TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
+TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(TESTDIR)/%,$(TESTSRCS))
+# Link tests against all objects except madc.o (which has main())
+TESTOBJ  = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 
 all:
 	make ../bin/madc
 clean:
 	rm $(OBJECTS)
+	rm -f $(TESTBINS)
+
+test: $(TESTBINS)
+	@for t in $(TESTBINS); do echo "Running $$t..."; $$t; done
+
+$(TESTDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
+	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(TESTOBJ) $(LIBS)
 
 ../bin/madc: $(OBJECTS)
 	$(CXX) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
