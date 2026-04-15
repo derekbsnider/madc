@@ -54,6 +54,66 @@ Point p;            // no 'struct' prefix needed for classes
 Person bob;
 ```
 
+## `auto` Keyword
+
+Type inference for function pointer declarations:
+
+```c
+auto fn = my_function;     // fn holds my_function's address
+fn(42);                     // call through pointer
+
+auto add = [int](int a, int b) { return a + b; };
+int result;
+result = add(10, 20);
+```
+
+## Function Pointers
+
+Store a function's address in a variable and call through it:
+
+```c
+void greet(string name) { cout << "Hi " << name << endl; }
+
+int main() {
+    auto fn = greet;
+    fn("World");          // calls greet("World")
+}
+```
+
+## Lambda Expressions
+
+Anonymous inline functions:
+
+```c
+// void lambda
+auto print = [](string s) { cout << s << endl; };
+
+// typed-return lambda: return type inside []
+auto add = [int](int a, int b) { return a + b; };
+```
+
+## Range-Based For
+
+C++ style iteration over arrays:
+
+```c
+array names;
+php::array_push(names, "Alice");
+php::array_push(names, "Bob");
+
+for (string name : names) {
+    cout << name << endl;
+}
+
+// also works with integers
+array nums;
+php::array_push_int(nums, 10);
+php::array_push_int(nums, 20);
+for (int n : nums) {
+    cout << n << endl;
+}
+```
+
 ## `register` Keyword
 
 Declare a variable as register-only — lives entirely in a virtual register, never written to memory:

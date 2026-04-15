@@ -27,6 +27,10 @@ bin/madc -v tests/testint.mad
 - **Streams:** `cout`, `cerr`, `stringstream`, `ifstream`, `ofstream`, `fstream`
 - **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`
 - **Functions:** user-defined with return values and parameters
+- **Function pointers:** `auto fn = my_func; fn(args);`
+- **Lambdas:** `[](int a, int b) { return a + b; }` with optional return type `[int](...)`
+- **Range-based for:** `for (string name : names) { ... }`
+- **`auto` keyword:** type inference for function pointer declarations
 - **`register` keyword:** explicitly register-only variables (never written to memory)
 - **User-defined structs:** `struct Point { int x; int y; };`
 - **Class definitions:** `class Foo { int x; string name; };` with data members
@@ -88,7 +92,7 @@ int main()
 | [`python::`](docs/language/ns-python.md) | 16 | Title case, alignment (center/ljust/rjust/zfill), format |
 | [`ruby::`](docs/language/ns-ruby.md) | 12 | squeeze, tr (transliterate), chars, rotate, compact |
 | [`js::`](docs/language/ns-js.md) | 6 | Base64 (btoa/atob), URL encoding, parseInt, JSON stringify |
-| `std::` | 3 | cout, cerr, endl |
+| `std::` | 4 | cout, cerr, endl, for_each |
 
 Plus `#load` for any shared library via dlopen.
 
@@ -121,7 +125,7 @@ done
 make -C src test
 ```
 
-**Current status: 36/36 integration tests pass. 25/25 unit tests pass.**
+**Current status: 40/40 integration tests pass. 25/25 unit tests pass.**
 
 ---
 

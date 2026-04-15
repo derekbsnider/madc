@@ -59,6 +59,7 @@ All AST nodes inherit from `TokenBase`. Key subclasses:
 - **TokenMember** — struct/class member access (`obj.field`)
 - **TokenAssign** — assignment operator (`=`, `+=`, `-=`, etc.)
 - **TokenIf / TokenFor / TokenWhile / TokenDo** — control flow
+- **TokenFOREACH** — range-based for loop (`for (type var : container)`)
 - **TokenReturn** — return statement
 - **TokenBSL** — `<<` stream-output operator
 - **TokenInt / TokenReal / TokenChar** — integer, float, and char literals
@@ -106,6 +107,8 @@ Each token implements:
 - `DataDefSTRUCT` — struct types with member vector and offset/type lookup
 - `DataDefCLASS` — class types, extends struct with methods vector
 - `DataDefARRAY` — MadArray container type
+- `DataDefFPTR` — function pointer type, wraps a `FuncDef*` for the target signature
+- `DataDefAUTO` — placeholder for `auto` type inference (resolved at parse time)
 
 ### MadValue / MadArray
 
