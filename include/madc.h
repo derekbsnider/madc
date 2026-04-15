@@ -72,13 +72,14 @@ public:
     TokenCpnd *child;
     std::vector<Variable *> variables;
     std::vector<TokenStmt *> statements;
+    std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
     std::map<Variable *, asmjit::Operand> operand_map;
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
     void movreg(asmjit::x86::Compiler &, asmjit::Operand &, Variable *);
     void putreg(asmjit::x86::Compiler &, Variable *);
-    void cleanup(asmjit::x86::Compiler &);
+    void cleanup(Program &);
     void clear_operand_map() { operand_map.clear(); }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     Variable *getParameter(unsigned int);

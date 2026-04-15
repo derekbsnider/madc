@@ -768,7 +768,7 @@ Operand &TokenProgram::compile(Program &pgm, regdefp_t &regdp)
 	(*si)->compile(pgm, regdp);
     }
 
-    pgm.tkFunction->cleanup(pgm.cc);	// cleanup stack
+    pgm.tkFunction->cleanup(pgm);	// cleanup stack
     pgm.cc.ret();			// always add return in case source doesn't have one
     pgm.cc.endFunc();			// end function
 
@@ -952,7 +952,7 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	(*si)->compile(pgm, regdp);
     }
 
-    cleanup(pgm.cc);	// cleanup stack
+    cleanup(pgm);	// cleanup stack
     pgm.cc.ret();	// always add return in case source doesn't have one
     pgm.cc.endFunc();	// end function
 
@@ -1680,11 +1680,20 @@ void TokenCpnd::putreg(asmjit::x86::Compiler &cc, Variable *var)
 }
 
 // cleanup function: will call destructors on all stack objects
-void TokenCpnd::cleanup(asmjit::x86::Compiler &cc)
+void TokenCpnd::cleanup(Program &pgm)
 {
+    x86::Compiler &cc = pgm.cc;
     std::map<Variable *, Operand>::iterator rmi;
 
     DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::cleanup()" << std::endl);
+
+    // compile deferred statements in reverse (LIFO) order before destructors
+    for ( auto it = deferred.rbegin(); it != deferred.rend(); ++it )
+    {
+	DBG(cc.comment("defer statement"));
+	regdefp_t regdp = {NULL, NULL, NULL};
+	(*it)->compile(pgm, regdp);
+    }
 
     for ( rmi = operand_map.begin(); rmi != operand_map.end(); ++rmi )
     {
@@ -2943,7 +2952,7 @@ Operand &TokenChar::compile(Program &pgm, regdefp_t &regdp)
 // compile a return statement
 Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 {
-    pgm.tkFunction->cleanup(pgm.cc);
+    pgm.tkFunction->cleanup(pgm);
 
     if ( returns )
     {

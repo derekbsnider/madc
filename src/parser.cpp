@@ -2021,6 +2021,32 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
     return decl;
 }
 
+TokenBase *TokenDEFER::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenDEFER::parse()" << std::endl);
+
+    TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+    if ( !code )
+	pgm.Throw(this) << "'defer' must be inside a function or block" << flush;
+
+    // parse the deferred statement
+    TokenBase *tn = pgm.nextToken();
+    if ( !tn )
+	pgm.Throw(this) << "Unexpected end of input after 'defer'" << flush;
+
+    TokenBase *stmt = pgm.parseStatement(tn);
+    if ( !stmt )
+	pgm.Throw(tn) << "Failed to parse deferred statement" << flush;
+
+    // store on the enclosing compound — compiled in reverse order at scope exit
+    code->deferred.push_back(stmt);
+
+    DBG(std::cout << "TokenDEFER::parse() deferred statement added (total: " << code->deferred.size() << ")" << std::endl);
+
+    // return NULL — defer doesn't produce code at this point
+    return NULL;
+}
+
 TokenBase *Program::parseKeyword(TokenKeyword *tk)
 {
     TokenBase *tb = (TokenBase *)tk->parse(*this);
@@ -2218,6 +2244,7 @@ grabnt:
     tf->parent = tc->parent;
     tf->variables = tc->variables;
     tf->statements = tc->statements;
+    tf->deferred = tc->deferred;
 
     DBG(cout << "parseFunction() calling ast.push" << endl);
     ast.push(tf);
@@ -2324,6 +2351,7 @@ TokenBase *Program::parseLambda()
     tf->parent = tc->parent;
     tf->variables = tc->variables;
     tf->statements = tc->statements;
+    tf->deferred = tc->deferred;
 
     // push the lambda as a top-level function in the AST
     // It will be compiled before the enclosing function since
