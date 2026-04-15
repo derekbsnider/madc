@@ -3264,12 +3264,23 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
     x86::Gp arr_reg = pgm.cc.newIntPtr("foreach_arr");
     pgm.cc.mov(arr_reg, arr_op.as<x86::Gp>());
 
-    // get count
+    // determine the container type to pick the right size/at functions
+    DataDef *container_type = arrrdp.second;
+    bool is_vector = container_type && container_type->type() == DataType::dtVECTOR;
+
+    // get count — dispatch based on container type
     x86::Gp count_reg = pgm.cc.newGpq("foreach_count");
-    InvokeNode *cnt_call;
-    pgm.cc.invoke(&cnt_call, imm(php_count), FuncSignatureT<int64_t, void *>(CallConvId::kCDecl));
-    cnt_call->setArg(0, arr_reg);
-    cnt_call->setRet(0, count_reg);
+    {
+	void *size_fn;
+	if ( is_vector )
+	    size_fn = elemtype->is_string() ? (void *)vector_str_size : (void *)vector_int_size;
+	else
+	    size_fn = (void *)php_count;
+	InvokeNode *cnt_call;
+	pgm.cc.invoke(&cnt_call, imm(size_fn), FuncSignatureT<int64_t, void *>(CallConvId::kCDecl));
+	cnt_call->setArg(0, arr_reg);
+	cnt_call->setRet(0, count_reg);
+    }
 
     // index register
     x86::Gp idx_reg = pgm.cc.newGpq("foreach_idx");
@@ -3284,12 +3295,13 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
     pgm.cc.cmp(idx_reg, count_reg);
     pgm.cc.jge(fortail);
 
-    // fetch element
+    // fetch element — dispatch based on container + element type
     if ( elemtype->is_string() )
     {
-	DBG(pgm.cc.comment("foreach: php_array_get(elem, arr, idx)"));
+	void *at_fn = is_vector ? (void *)vector_str_at : (void *)php_array_get;
+	DBG(pgm.cc.comment("foreach: get string element"));
 	InvokeNode *get_call;
-	pgm.cc.invoke(&get_call, imm(php_array_get),
+	pgm.cc.invoke(&get_call, imm(at_fn),
 	    FuncSignatureT<void *, void *, void *, int64_t>(CallConvId::kCDecl));
 	get_call->setArg(0, elem_op.as<x86::Gp>());
 	get_call->setArg(1, arr_reg);
@@ -3297,9 +3309,10 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
     }
     else if ( elemtype->is_integer() )
     {
-	DBG(pgm.cc.comment("foreach: php_array_get_int(arr, idx)"));
+	void *at_fn = is_vector ? (void *)vector_int_at : (void *)php_array_get_int;
+	DBG(pgm.cc.comment("foreach: get int element"));
 	InvokeNode *get_call;
-	pgm.cc.invoke(&get_call, imm(php_array_get_int),
+	pgm.cc.invoke(&get_call, imm(at_fn),
 	    FuncSignatureT<int64_t, void *, int64_t>(CallConvId::kCDecl));
 	get_call->setArg(0, arr_reg);
 	get_call->setArg(1, idx_reg);

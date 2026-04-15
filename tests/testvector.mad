@@ -2,5 +2,28 @@
 int main()
 {
     vector<int> nums;
+    nums.push_back(10);
+    nums.push_back(20);
+    nums.push_back(30);
+
+    int sz;
+    sz = nums.size();
+    cout << "size: " << sz << endl;
+
+    for (int n : nums)
+    {
+        cout << n << endl;
+    }
+
+    vector<string> names;
+    names.push_back("Alice");
+    names.push_back("Bob");
+    names.push_back("Charlie");
+
+    for (string name : names)
+    {
+        cout << "Hello, " << name << endl;
+    }
+
     return 0;
 }

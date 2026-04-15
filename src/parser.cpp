@@ -376,6 +376,45 @@ extern int64_t fstream_eof(void *);
 extern int64_t fstream_good(void *);
 extern int64_t fstream_is_open(void *);
 
+// forward declarations for STL container methods (defined in ns_stl.cpp)
+extern void vector_int_push_back(void *, int64_t);
+extern void vector_int_pop_back(void *);
+extern int64_t vector_int_at(void *, int64_t);
+extern int64_t vector_int_size(void *);
+extern void vector_int_clear(void *);
+extern int64_t vector_int_empty(void *);
+extern void vector_str_push_back(void *, void *);
+extern void vector_str_pop_back(void *);
+extern void *vector_str_at(void *, void *, int64_t);
+extern int64_t vector_str_size(void *);
+extern void vector_str_clear(void *);
+extern int64_t vector_str_empty(void *);
+extern void map_str_int_set(void *, void *, int64_t);
+extern int64_t map_str_int_get(void *, void *);
+extern int64_t map_str_int_contains(void *, void *);
+extern void map_str_int_erase(void *, void *);
+extern int64_t map_str_int_size(void *);
+extern void map_str_int_clear(void *);
+extern void map_str_str_set(void *, void *, void *);
+extern void *map_str_str_get(void *, void *, void *);
+extern int64_t map_str_str_contains(void *, void *);
+extern int64_t map_str_str_size(void *);
+extern void set_str_insert(void *, void *);
+extern int64_t set_str_contains(void *, void *);
+extern void set_str_erase(void *, void *);
+extern int64_t set_str_size(void *);
+extern void set_str_clear(void *);
+extern void set_int_insert(void *, int64_t);
+extern int64_t set_int_contains(void *, int64_t);
+extern int64_t set_int_size(void *);
+extern void list_int_push_back(void *, int64_t);
+extern void list_int_push_front(void *, int64_t);
+extern int64_t list_int_size(void *);
+extern void list_int_clear(void *);
+extern void list_str_push_back(void *, void *);
+extern void list_str_push_front(void *, void *);
+extern int64_t list_str_size(void *);
+
 // dlopen/dlsym wrappers that accept std::string* (madc strings)
 int64_t madc_dlopen(void *filename)
 {
@@ -2080,6 +2119,39 @@ TokenBase *TokenVECTOR::parse(Program &pgm)
 	DataDefVECTOR *dd = new DataDefVECTOR(elem, tname, sizeof(std::vector<int64_t>));
 	tdt = new TokenDataType(tname.c_str(), *dd);
 	pgm.datatype_map[tname] = tdt;
+
+	// register methods on this parameterization
+	Variable *mv;
+	if ( elem->is_string() )
+	{
+	    mv = pgm.addFunction("push_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR), DataType::dtSTRING}, (fVOIDFUNC)vector_str_push_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("pop_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_pop_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("at", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_str_at, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_clear, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_empty, true);
+	    dd->methods.push_back(mv);
+	}
+	else
+	{
+	    mv = pgm.addFunction("push_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_int_push_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("pop_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_pop_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("at", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_int_at, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_clear, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_empty, true);
+	    dd->methods.push_back(mv);
+	}
     }
 
     return pgm.parseDeclaration(tdt);
