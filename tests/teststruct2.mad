@@ -1,0 +1,32 @@
+#!/../bin/madc
+
+struct point {
+    int x;
+    int y;
+};
+
+struct person {
+    string name;
+    int age;
+    int id;
+};
+
+int main()
+{
+    struct point p;
+    struct person bob;
+
+    p.x = 10;
+    p.y = 20;
+    cout << "p.x: " << p.x << endl;
+    cout << "p.y: " << p.y << endl;
+
+    bob.name = "Bob Smith";
+    bob.age = 42;
+    bob.id = 1001;
+    cout << "bob.name: " << bob.name << endl;
+    cout << "bob.age:  " << bob.age << endl;
+    cout << "bob.id:   " << bob.id << endl;
+
+    return 0;
+}
