@@ -154,6 +154,8 @@ public:
 	    case DataType::dtOSSTREAM:
 	    case DataType::dtFSTREAM:
 	    case DataType::dtOFSTREAM:
+	    case DataType::dtIFSTREAM:
+	    case DataType::dtISTREAM:
 	    case DataType::dtTCPSTREAM:
 	    case DataType::dtARRAY:
 		return true;
@@ -172,6 +174,21 @@ public:
 	    case DataType::dtFSTREAM:
 	    case DataType::dtOFSTREAM:
 	    case DataType::dtTCPSTREAM:
+		return true;
+	    default:
+		return false;
+    	}
+	return false;
+    }
+    virtual bool has_istream()
+    {
+    	switch(rawtype())
+    	{
+	    case DataType::dtISTREAM:
+	    case DataType::dtSSTREAM:
+	    case DataType::dtISSTREAM:
+	    case DataType::dtFSTREAM:
+	    case DataType::dtIFSTREAM:
 		return true;
 	    default:
 		return false;
@@ -475,6 +492,9 @@ class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("stri
 class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} };
 class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostream", sizeof(std::ostream), DataType::dtOSTREAM) {} };
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
+class DataDefIFSTREAM:  public DDClass { public: DataDefIFSTREAM():DDClass("ifstream", sizeof(std::ifstream), DataType::dtIFSTREAM) {} };
+class DataDefOFSTREAM:  public DDClass { public: DataDefOFSTREAM():DDClass("ofstream", sizeof(std::ofstream), DataType::dtOFSTREAM) {} };
+class DataDefFSTREAM:   public DDClass { public: DataDefFSTREAM(): DDClass("fstream", sizeof(std::fstream), DataType::dtFSTREAM) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
 
 // ---- MadValue: tagged union for PHP-style mixed-type arrays ----
@@ -602,6 +622,9 @@ extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
 extern DataDefOSTREAM ddOSTREAM;
 extern DataDefSSTREAM ddSSTREAM;
+extern DataDefIFSTREAM ddIFSTREAM;
+extern DataDefOFSTREAM ddOFSTREAM;
+extern DataDefFSTREAM ddFSTREAM;
 extern DataDefARRAY ddARRAY;
 
 #if 1

@@ -86,6 +86,90 @@ void madarray_destruct(void *ptr)
     ((MadArray *)ptr)->~MadArray();
 }
 
+// construct/destruct file streams
+void *ifstream_construct(void *ptr)
+{
+    DBG(cout << "ifstream_construct(" << (uint64_t)ptr << ')' << endl);
+    return new(ptr) std::ifstream;
+}
+void ifstream_destruct(void *ptr)
+{
+    DBG(cout << "ifstream_destruct(" << (uint64_t)ptr << ')' << endl);
+    ((std::ifstream *)ptr)->~ifstream();
+}
+void *ofstream_construct(void *ptr)
+{
+    DBG(cout << "ofstream_construct(" << (uint64_t)ptr << ')' << endl);
+    return new(ptr) std::ofstream;
+}
+void ofstream_destruct(void *ptr)
+{
+    DBG(cout << "ofstream_destruct(" << (uint64_t)ptr << ')' << endl);
+    ((std::ofstream *)ptr)->~ofstream();
+}
+void *fstream_construct(void *ptr)
+{
+    DBG(cout << "fstream_construct(" << (uint64_t)ptr << ')' << endl);
+    return new(ptr) std::fstream;
+}
+void fstream_destruct(void *ptr)
+{
+    DBG(cout << "fstream_destruct(" << (uint64_t)ptr << ')' << endl);
+    ((std::fstream *)ptr)->~fstream();
+}
+
+// file stream methods
+void fstream_open(void *ptr, void *filename)
+{
+    ((std::fstream *)ptr)->open(((std::string *)filename)->c_str());
+}
+void ifstream_open(void *ptr, void *filename)
+{
+    ((std::ifstream *)ptr)->open(((std::string *)filename)->c_str());
+}
+void ofstream_open(void *ptr, void *filename)
+{
+    ((std::ofstream *)ptr)->open(((std::string *)filename)->c_str());
+}
+void fstream_close(void *ptr)
+{
+    ((std::fstream *)ptr)->close();
+}
+void ifstream_close(void *ptr)
+{
+    ((std::ifstream *)ptr)->close();
+}
+void ofstream_close(void *ptr)
+{
+    ((std::ofstream *)ptr)->close();
+}
+int64_t stream_eof(void *ptr)
+{
+    return ((std::ios *)ptr)->eof() ? 1 : 0;
+}
+int64_t stream_good(void *ptr)
+{
+    return ((std::ios *)ptr)->good() ? 1 : 0;
+}
+int64_t stream_is_open(void *ptr)
+{
+    return ((std::ifstream *)ptr)->is_open() ? 1 : 0;
+}
+
+// istream >> string (read one word)
+void *streamin_string(void *stream, void *str)
+{
+    *(std::istream *)stream >> *(std::string *)str;
+    return stream;
+}
+
+// istream >> int
+void *streamin_int(void *stream, void *val)
+{
+    *(std::istream *)stream >> *(int64_t *)val;
+    return stream;
+}
+
 // return c_str() pointer from a std::string — used when passing a string to a const char* param
 const char *string_cstr(void *ptr)
 {
@@ -1361,6 +1445,39 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    operand_map[var] = reg;
 		}
 		break;
+	    case DataType::dtIFSTREAM:
+		{
+		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ifstream), 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    DBG(pgm.cc.comment("ifstream_construct"));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(ifstream_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    call->setArg(0, reg);
+		    operand_map[var] = reg;
+		}
+		break;
+	    case DataType::dtOFSTREAM:
+		{
+		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ofstream), 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    DBG(pgm.cc.comment("ofstream_construct"));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(ofstream_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    call->setArg(0, reg);
+		    operand_map[var] = reg;
+		}
+		break;
+	    case DataType::dtFSTREAM:
+		{
+		    x86::Mem stack = pgm.cc.newStack(sizeof(std::fstream), 8);
+		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    pgm.cc.lea(reg, stack);
+		    DBG(pgm.cc.comment("fstream_construct"));
+                    InvokeNode* call; pgm.cc.invoke(&call, imm(fstream_construct), FuncSignatureT<void *, void *>(CallConvId::kCDecl));
+		    call->setArg(0, reg);
+		    operand_map[var] = reg;
+		}
+		break;
 	    case DataType::dtARRAY:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(MadArray), 8);
@@ -1521,6 +1638,24 @@ void TokenCpnd::cleanup(asmjit::x86::Compiler &cc)
 		    case DataType::dtARRAY:
 			{
                             InvokeNode* call; cc.invoke(&call, imm(madarray_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtIFSTREAM:
+			{
+                            InvokeNode* call; cc.invoke(&call, imm(ifstream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtOFSTREAM:
+			{
+                            InvokeNode* call; cc.invoke(&call, imm(ofstream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
+			    call->setArg(0, reg.as<x86::Gp>());
+			}
+			break;
+		    case DataType::dtFSTREAM:
+			{
+                            InvokeNode* call; cc.invoke(&call, imm(fstream_destruct), FuncSignatureT<void, void *>(CallConvId::kCDecl));
 			    call->setArg(0, reg.as<x86::Gp>());
 			}
 			break;

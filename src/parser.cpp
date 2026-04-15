@@ -55,6 +55,9 @@ DataDefSTRINGref ddSTRINGref;
 DataDefOSTREAM ddOSTREAM;
 DataDefSSTREAM ddSSTREAM;
 DataDefARRAY ddARRAY;
+DataDefIFSTREAM ddIFSTREAM;
+DataDefOFSTREAM ddOFSTREAM;
+DataDefFSTREAM ddFSTREAM;
 DataDefLPSTR ddLPSTR;
 DataDefTEST ddTESTSTRUCT;
 
@@ -355,6 +358,17 @@ void printstream(std::stringstream *os)
     cout << os->str() << endl;
 }
 
+// forward declarations for functions defined in compiler.cpp
+extern void ifstream_open(void *, void *);
+extern void ifstream_close(void *);
+extern void ofstream_open(void *, void *);
+extern void ofstream_close(void *);
+extern void fstream_open(void *, void *);
+extern void fstream_close(void *);
+extern int64_t stream_eof(void *);
+extern int64_t stream_good(void *);
+extern int64_t stream_is_open(void *);
+
 // dlopen/dlsym wrappers that accept std::string* (madc strings)
 int64_t madc_dlopen(void *filename)
 {
@@ -378,6 +392,30 @@ void madc_dlclose(int64_t handle)
 {
     if ( handle )
 	dlclose((void *)handle);
+}
+
+// type conversion wrappers
+void madc_to_string(void *result, int64_t val)
+{
+    *(std::string *)result = std::to_string(val);
+}
+void madc_to_string_d(void *result, double val)
+{
+    *(std::string *)result = std::to_string(val);
+}
+int64_t madc_stoi(void *str)
+{
+    try { return (int64_t)std::stoll(((std::string *)str)->c_str()); }
+    catch (...) { return 0; }
+}
+double madc_stod(void *str)
+{
+    try { return std::stod(((std::string *)str)->c_str()); }
+    catch (...) { return 0.0; }
+}
+int64_t madc_strlen(void *str)
+{
+    return (int64_t)((std::string *)str)->length();
 }
 
 // C library wrappers that accept madc strings
@@ -409,6 +447,42 @@ typedef istream& (*fnGETLINE)(istream&, string&);
 // needed to add endl
 typedef ostream& (*fnENDL)(ostream&);
 
+// add file stream methods
+void Program::add_fstream_methods()
+{
+    Variable *var;
+
+    // ifstream methods
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)ifstream_open, true);
+    ddIFSTREAM.methods.push_back(var);
+    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_close, true);
+    ddIFSTREAM.methods.push_back(var);
+    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)stream_eof, true);
+    ddIFSTREAM.methods.push_back(var);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)stream_good, true);
+    ddIFSTREAM.methods.push_back(var);
+    var = addFunction("is_open", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)stream_is_open, true);
+    ddIFSTREAM.methods.push_back(var);
+
+    // ofstream methods
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)ofstream_open, true);
+    ddOFSTREAM.methods.push_back(var);
+    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)ofstream_close, true);
+    ddOFSTREAM.methods.push_back(var);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)stream_good, true);
+    ddOFSTREAM.methods.push_back(var);
+
+    // fstream methods
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)fstream_open, true);
+    ddFSTREAM.methods.push_back(var);
+    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_close, true);
+    ddFSTREAM.methods.push_back(var);
+    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)stream_eof, true);
+    ddFSTREAM.methods.push_back(var);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)stream_good, true);
+    ddFSTREAM.methods.push_back(var);
+}
+
 // add system library functions
 void Program::add_functions()
 {
@@ -423,6 +497,12 @@ void Program::add_functions()
     addFunction("putchar",	datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     addFunction("getline",	datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
     addFunction("endl",		datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
+    // type conversion functions
+    addFunction("to_string",	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
+    addFunction("to_string_d",	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtDOUBLE}, (fVOIDFUNC)madc_to_string_d);
+    addFunction("stoi",		datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_stoi);
+    addFunction("stod",		datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
+    addFunction("strlen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_strlen);
     // C library functions
     addFunction("system",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
     addFunction("getenv",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
@@ -464,6 +544,7 @@ void Program::_parser_init()
     add_functions();
     add_string_methods();
     add_sstream_methods();
+    add_fstream_methods();
     add_globals();
     add_namespaces();
     add_php_namespace();
