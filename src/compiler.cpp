@@ -631,7 +631,15 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( regdp.object )
     {
 	funcsig.addArgT<void *>();
-	params.push_back(*regdp.object);
+	// for struct/class objects on the stack (Mem), pass the address via LEA
+	if ( regdp.object->isMem() )
+	{
+	    x86::Gp obj_ptr = pgm.cc.newIntPtr("__obj_ptr");
+	    pgm.cc.lea(obj_ptr, regdp.object->as<x86::Mem>());
+	    params.push_back(obj_ptr);
+	}
+	else
+	    params.push_back(*regdp.object);
 	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(*regdp.object)"));
     }
 //#endif
@@ -1509,9 +1517,27 @@ Operand &TokenMember::operand(Program &pgm)
 	    _operand = addr_reg;
 	}
     }
+    else if ( _obj.isReg() && _obj.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	// Object is a pointer in a Gp register (e.g. __this in class methods)
+	// Access member at [gp + offset]
+	x86::Gp obj_gp = _obj.as<x86::Gp>();
+	if ( var.type->is_numeric() )
+	{
+	    x86::Mem member_mem = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
+	    _operand = member_mem;
+	}
+	else
+	{
+	    x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+	    DBG(pgm.cc.comment("TokenMember::operand() lea from pointer base"));
+	    pgm.cc.lea(addr_reg, x86::ptr(obj_gp, (int32_t)offset));
+	    _operand = addr_reg;
+	}
+    }
     else
     {
-	// Fallback for pointer/register-based structs (not yet common)
+	// Fallback
 	_operand = _obj.clone();
     }
     return _operand;

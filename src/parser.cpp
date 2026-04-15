@@ -204,6 +204,12 @@ Variable::~Variable()
 
 Variable *DataDefCLASS::findMethod(std::string &s)
 {
+    // check method_map first (unmangled names)
+    std::map<std::string, Variable *>::iterator it = method_map.find(s);
+    if ( it != method_map.end() )
+	return it->second;
+
+    // fallback: search methods vector by variable name
     for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
 	if ( !s.compare((*vvi)->name) )
 	    return *vvi;
@@ -1371,6 +1377,26 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		}
 		if ( !var )
 		    var = findVariable(((TokenIdent *)tb)->str);
+		// class method: resolve unqualified member name through __this
+		if ( !var && code && code->method && code->method->owner_class )
+		{
+		    DataDefCLASS *cls = code->method->owner_class;
+		    std::string mname = ((TokenIdent *)tb)->str;
+		    ssize_t ofs = cls->m_offset(mname);
+		    if ( ofs >= 0 )
+		    {
+			DataDef *mtype = cls->m_type(mname);
+			// find __this parameter
+			std::string thisid = "__this";
+			Variable *thisvar = code->method->findParameter(thisid);
+			if ( thisvar )
+			{
+			    Variable *member = new Variable(mname, *mtype, 1, NULL, false);
+			    exStack.push(new TokenMember(*thisvar, *member, ofs));
+			    break;
+			}
+		    }
+		}
 		if ( !var )
 		{
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);
@@ -1789,13 +1815,20 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	tn = pgm.peekToken();
 	if ( tn && tn->id() == TokenID::tkOpBrk )
 	{
+	    pgm.nextToken(); // consume '('
 	    // method declaration — parse as function, add to class methods
 	    DBG(cout << "TokenCLASS::parse() parsing method " << mname << endl);
-	    pgm.parseFunction(mtype->definition, mname);
+	    // mangle method name to avoid collisions: ClassName__methodName
+	    std::string mangled = tag->str + "__" + mname;
+	    pgm.parseFunction(mtype->definition, mangled, ddc);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
-	    if ( (mvar=pgm.tkProgram->findVariable(mname)) )
+	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
+	    {
 		ddc->methods.push_back(mvar);
+		// also register under the unmangled name for method lookup
+		ddc->method_map[mname] = mvar;
+	    }
 	}
 	else
 	{
@@ -2548,7 +2581,7 @@ TokenBase *Program::parseCompound()
 }
 
 // parse a function definition, can be a forward declaration, or function definition
-void Program::parseFunction(DataDef &dd, std::string &id)
+void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class)
 {
     variable_map_iter vmi;
     funcdef_map_iter fmi;
@@ -2572,6 +2605,14 @@ void Program::parseFunction(DataDef &dd, std::string &id)
 	func = new FuncDef(dd);
 	funcdef_map[id] = func;
 	DBG(std::cout << "parseFunction() Added new function declaration type: " << dd.name << " size: " << dd.size << " name: " << id << std::endl);
+    }
+
+    // for class methods, inject hidden __this parameter as first arg
+    if ( owner_class )
+    {
+	func->parameters.push_back(&ddINT64); // void* as int64
+	ids.push_back("__this");
+	DBG(cout << "parseFunction() injected hidden __this parameter for class method" << endl);
     }
 
     // look for parameters
@@ -2660,6 +2701,9 @@ grabnt:
 	method = new Method(*var);
 	var->data = (void *)method;
     }
+
+    if ( owner_class )
+	method->owner_class = owner_class;
 
     // semicolon means this is just a function declaration
     if ( nt->id() == TokenID::tkSemi )

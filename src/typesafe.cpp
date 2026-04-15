@@ -199,6 +199,14 @@ void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	if ( op2.isImm() )
 	    cc.mov(op1.as<x86::Mem>(), op2.as<Imm>());
 	else
+	if ( op2.isMem() )
+	{
+	    // Mem ← Mem: load through a tmp register
+	    x86::Gp tmp = cc.newGpq("_tmp_mm");
+	    cc.mov(tmp, op2.as<x86::Mem>());
+	    cc.mov(op1.as<x86::Mem>(), tmp);
+	}
+	else
 	    throw "safemov() rval is unsupported";
 	return;
     }

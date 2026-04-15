@@ -465,6 +465,7 @@ class DataDefCLASS: public DataDefSTRUCT
 public:
     std::vector<Variable *> methods;
     std::vector<Variable *> staticconst;
+    std::map<std::string, Variable *> method_map; // unmangled name -> method variable
 
     DataDefCLASS(std::string n, size_t s, DataType d) : DataDefSTRUCT(n, s, d) {}
     virtual BaseType basetype() const { return BaseType::btClass; }

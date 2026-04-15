@@ -47,7 +47,8 @@ public:
     std::vector<Variable *> variables;
     void *x86code;
     Variable *env_param; // hidden void** param for [&] lambdas (nullptr if no capture)
-    Method(Variable &v) : returns(v), x86code(NULL), env_param(NULL) {}
+    class DataDefCLASS *owner_class; // non-null when this is a class method
+    Method(Variable &v) : returns(v), x86code(NULL), env_param(NULL), owner_class(NULL) {}
     Variable *getParameter(unsigned int i) { if ( i >= parameters.size() ) return NULL; return parameters[i]; }
     Variable *findParameter(std::string &);
     Variable *findVariable(std::string &);
@@ -408,7 +409,7 @@ public:
     // parse tokens into AST
     bool parse(TokenProgram *);
     void parseIdentifier(TokenIdent *);
-    void parseFunction(DataDef &, std::string &);
+    void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);
