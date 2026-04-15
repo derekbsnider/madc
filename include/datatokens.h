@@ -40,6 +40,7 @@ class TokenLPSTR:     public TokenDataType { public: TokenLPSTR():  TokenDataTyp
 class TokenSTRING:    public TokenDataType { public: TokenSTRING(): TokenDataType("string", ddSTRING) {} };
 class TokenOSTREAM:   public TokenDataType { public: TokenOSTREAM():TokenDataType("ostream", ddOSTREAM) {} };
 class TokenSSTREAM:   public TokenDataType { public: TokenSSTREAM():TokenDataType("stringstream", ddSSTREAM) {} };
+class TokenARRAY:     public TokenDataType { public: TokenARRAY():  TokenDataType("array", ddARRAY) {} };
 
 
 // Variable "container" class to keep track of everything about a variable,

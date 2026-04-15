@@ -23,6 +23,7 @@ enum class DataType : uint16_t {
 	dtSTRING, dtISTREAM, dtOSTREAM, dtISSTREAM, dtOSSTREAM, dtSSTREAM,
 	dtIFSTREAM, dtOFSTREAM, dtFSTREAM, dtTCPSTREAM, 
 	dtMUTEX, dtTHREAD, dtTHISTHREAD,
+	dtARRAY,
 
 	// rtPointer variants
 	dtVOIDptr = 10000, dtBOOLptr, dtUINT8ptr, dtBYTEptr=dtUINT8ptr, dtINT8ptr, dtCHARptr = dtINT8ptr,
@@ -33,6 +34,7 @@ enum class DataType : uint16_t {
 	dtSTRINGptr, dtISTREAMptr, dtOSTREAMptr, dtISSTREAMptr, dtOSSTREAMptr, dtSSTREAMptr,
 	dtIFSTREAMptr, dtOFSTREAMptr, dtFSTREAMptr, dtTCPSTREAMptr, 
 	dtMUTEXptr, dtTHREADptr, dtTHISTHREADptr,
+	dtARRAYptr,
 
 	// rtReference variants
 	dtVOIDref = 20000, dtBOOLref, dtUINT8ref, dtBYTEref=dtUINT8ref, dtINT8ref, dtCHARref = dtINT8ref,
@@ -43,6 +45,7 @@ enum class DataType : uint16_t {
 	dtSTRINGref, dtISTREAMref, dtOSTREAMref, dtISSTREAMref, dtOSSTREAMref, dtSSTREAMref,
 	dtIFSTREAMref, dtOFSTREAMref, dtFSTREAMref, dtTCPSTREAMref, 
 	dtMUTEXref, dtTHREADref, dtTHISTHREADref,
+	dtARRAYref,
 };
 
 // Variable flags
@@ -152,6 +155,7 @@ public:
 	    case DataType::dtFSTREAM:
 	    case DataType::dtOFSTREAM:
 	    case DataType::dtTCPSTREAM:
+	    case DataType::dtARRAY:
 		return true;
 	    default:
 		return false;
@@ -473,6 +477,108 @@ class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostr
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
 
+// ---- MadValue: tagged union for PHP-style mixed-type arrays ----
+
+struct MadValue
+{
+    DataType type;
+    union {
+	int64_t     ival;
+	double      dval;
+	void       *ptr;    // std::string*, MadArray*, etc.
+    };
+
+    MadValue() : type(DataType::dtVOID), ival(0) {}
+    MadValue(int64_t v) : type(DataType::dtINT64), ival(v) {}
+    MadValue(double v)  : type(DataType::dtDOUBLE), dval(v) {}
+
+    // string constructor — copies the string
+    MadValue(const std::string &s) : type(DataType::dtSTRING)
+    {
+	ptr = new std::string(s);
+    }
+
+    // copy constructor — deep copy strings
+    MadValue(const MadValue &o) : type(o.type)
+    {
+	if ( type == DataType::dtSTRING && o.ptr )
+	    ptr = new std::string(*(std::string *)o.ptr);
+	else
+	    ival = o.ival; // covers ival, dval, and ptr (non-string)
+    }
+
+    // assignment — deep copy strings
+    MadValue &operator=(const MadValue &o)
+    {
+	if ( this != &o )
+	{
+	    // clean up existing string
+	    if ( type == DataType::dtSTRING && ptr )
+		delete (std::string *)ptr;
+	    type = o.type;
+	    if ( type == DataType::dtSTRING && o.ptr )
+		ptr = new std::string(*(std::string *)o.ptr);
+	    else
+		ival = o.ival;
+	}
+	return *this;
+    }
+
+    ~MadValue()
+    {
+	if ( type == DataType::dtSTRING && ptr )
+	    delete (std::string *)ptr;
+    }
+
+    // accessors
+    int64_t      as_int()    const { return ival; }
+    double       as_double() const { return dval; }
+    std::string &as_string() const { return *(std::string *)ptr; }
+    bool         is_string() const { return type == DataType::dtSTRING; }
+    bool         is_int()    const { return type == DataType::dtINT64; }
+    bool         is_double() const { return type == DataType::dtDOUBLE; }
+};
+
+// PHP-style array: ordered, mixed-type, supports both integer and string keys
+class MadArray
+{
+public:
+    std::vector<MadValue> data;                      // indexed storage
+    std::vector<std::pair<std::string, MadValue>> assoc; // associative storage
+
+    size_t count() const { return data.size() + assoc.size(); }
+
+    // integer-indexed access
+    void push(const MadValue &v) { data.push_back(v); }
+    MadValue &at(size_t i) { return data.at(i); }
+    const MadValue &at(size_t i) const { return data.at(i); }
+
+    // associative access
+    MadValue &get(const std::string &key)
+    {
+	for ( auto &p : assoc )
+	    if ( p.first == key ) return p.second;
+	assoc.emplace_back(key, MadValue());
+	return assoc.back().second;
+    }
+
+    void set(const std::string &key, const MadValue &v)
+    {
+	for ( auto &p : assoc )
+	    if ( p.first == key ) { p.second = v; return; }
+	assoc.emplace_back(key, v);
+    }
+
+    MadValue pop()
+    {
+	if ( data.empty() ) return MadValue();
+	MadValue v = data.back();
+	data.pop_back();
+	return v;
+    }
+};
+
+class DataDefARRAY:    public DDClass { public: DataDefARRAY():   DDClass("array", sizeof(MadArray), DataType::dtARRAY) {} };
 
 extern DataDefVOID ddVOID;
 extern DataDefVOIDref ddVOIDref;
@@ -496,6 +602,7 @@ extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
 extern DataDefOSTREAM ddOSTREAM;
 extern DataDefSSTREAM ddSSTREAM;
+extern DataDefARRAY ddARRAY;
 
 #if 1
 class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
