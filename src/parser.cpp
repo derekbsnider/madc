@@ -382,12 +382,28 @@ void Program::add_globals()
     addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
 }
 
+void Program::add_namespaces()
+{
+    Variable *var;
+    std::string id;
+
+    // std:: namespace — map to existing global variables and functions
+    variable_map_t &std_ns = namespace_map["std"];
+
+    id = "cout";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cout"]  = var;
+    id = "cerr";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cerr"]  = var;
+    id = "endl";  if ( (var=tkProgram->findVariable(id)) ) std_ns["endl"]  = var;
+
+    DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
+}
+
 void Program::_parser_init()
 {
     add_functions();
     add_string_methods();
     add_sstream_methods();
     add_globals();
+    add_namespaces();
     _braces = 0;
 }
 
@@ -1010,12 +1026,33 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 #endif
 		    break;
 		}
+		// namespace resolution: identifier :: member
+		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		{
+		    std::string ns_name = ((TokenIdent *)tb)->str;
+		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
+		    if ( nsi == namespace_map.end() )
+			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
+		    nextToken(); // consume '::'
+		    TokenBase *member_tb = nextToken(); // consume member identifier
+		    if ( !member_tb || member_tb->type() != TokenType::ttIdentifier )
+			Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
+		    std::string member_name = ((TokenIdent *)member_tb)->str;
+		    variable_map_iter vmi = nsi->second.find(member_name);
+		    if ( vmi == nsi->second.end() )
+			Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+		    var = vmi->second;
+		    DBG(cout << "parseExpression() resolved " << ns_name << "::" << member_name << endl);
+		    tb = member_tb; // update tb for line/col tracking below
+		    goto ns_resolved;
+		}
 		if ( !(var=findVariable(((TokenIdent *)tb)->str)) )
 		{
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);
 		    Throw(tb) << "use of undeclared identifier '" << ((TokenIdent *)tb)->str << '\'' << flush;
 		    //throw (TokenIdent *)tb;
 		}
+		ns_resolved:
 #if 1
 		if ( var->type->is_function() )
 		{

@@ -161,6 +161,7 @@ typedef std::map<std::string, TokenDataType *> datatype_map_t;
 typedef std::map<std::string, DataDef *> datadef_map_t;
 typedef std::map<std::string, FuncDef *> funcdef_map_t;
 typedef std::map<std::string, Variable *> variable_map_t;
+typedef std::map<std::string, variable_map_t> namespace_map_t;
 
 // map-iterators
 typedef std::map<std::string, TokenKeyword *>::iterator keyword_map_iter;
@@ -304,6 +305,7 @@ public:
     datadef_map_t  struct_map;		// data definitions defined by struct
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
+    namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::queue<TokenBase *> tokens;	// parsed token queue
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
@@ -325,6 +327,7 @@ public:
     void add_sstream_methods();
     void add_functions();
     void add_globals();
+    void add_namespaces();
 
     Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
 
