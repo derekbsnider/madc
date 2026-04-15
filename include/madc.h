@@ -72,15 +72,15 @@ public:
     TokenCpnd *child;
     std::vector<Variable *> variables;
     std::vector<TokenStmt *> statements;
-    std::map<Variable *, asmjit::x86::Gp> register_map;
+    std::map<Variable *, asmjit::Operand> operand_map;
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
-    asmjit::x86::Gp &getvreg(asmjit::x86::Compiler &, Variable *);
-    void movreg(asmjit::x86::Compiler &, asmjit::x86::Gp &, Variable *);
+    asmjit::Operand &voperand(Program &, Variable *);
+    void movreg(asmjit::x86::Compiler &, asmjit::Operand &, Variable *);
     void putreg(asmjit::x86::Compiler &, Variable *);
     void cleanup(asmjit::x86::Compiler &);
-    void clear_regmap() { register_map.clear(); }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
+    void clear_operand_map() { operand_map.clear(); }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
     Variable *findVariable(std::string &);
@@ -90,10 +90,10 @@ class TokenFunc: public TokenVar, public TokenCpnd
 {
 public:
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
-    virtual int argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
+    virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
-    using TokenCpnd::getreg;
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+//  using TokenCpnd::getreg;
 };
 
 class TokenDecl: public TokenVar
@@ -102,7 +102,7 @@ public:
     TokenBase *initialize;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenCallFunc: public TokenVar
@@ -111,10 +111,32 @@ public:
     std::vector<TokenBase *> parameters;
     TokenCallFunc(Variable &v) : TokenVar(v) {}
     virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
-    virtual int argc() const { return parameters.size(); }
+    virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
-    virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+class TokenMember: public TokenCallFunc
+{
+public:
+    Variable &object;
+    size_t offset;
+    TokenMember(Variable &o, Variable &m, size_t ofs) : TokenCallFunc(m), object(o), offset(ofs) { _datatype = m.type; }
+    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual bool is_real() { return _datatype->is_real(); }
+    virtual void putreg(Program &);
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+class TokenCallMethod: public TokenMember
+{
+public:
+    TokenCallMethod(Variable &o, Variable &m) : TokenMember(o, m, 0) { _datatype = returns(); }
+    virtual TokenType type() const { return TokenType::ttCallMethod; }
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenProgram: public TokenCpnd
@@ -126,7 +148,7 @@ public:
     size_t bytes;
     TokenProgram() : TokenCpnd() { lines = 0; bytes = 0; is = NULL; }
     virtual TokenType type() const { return TokenType::ttProgram; }
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 
@@ -139,6 +161,7 @@ typedef std::map<std::string, TokenDataType *> datatype_map_t;
 typedef std::map<std::string, DataDef *> datadef_map_t;
 typedef std::map<std::string, FuncDef *> funcdef_map_t;
 typedef std::map<std::string, Variable *> variable_map_t;
+typedef std::map<std::string, variable_map_t> namespace_map_t;
 
 // map-iterators
 typedef std::map<std::string, TokenKeyword *>::iterator keyword_map_iter;
@@ -160,23 +183,121 @@ typedef std::vector<TokenBase *>::iterator tokenbase_vec_iter;
 typedef std::pair<asmjit::Label *, asmjit::Label *> l_shortcut_t;
 typedef std::stack<l_shortcut_t> shortstack_t;
 
+
+// class to hold source for lexing
+class Source
+{
+protected:
+    std::stringstream _ss;
+    int _lf, _cr, _column;
+    std::streampos _pos;
+    std::string _fname;
+public:
+    Source() { _lf = 0; _cr = 0; _column = 0; _pos = 0; }
+    const char *fname() { return _fname.c_str(); }
+    const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
+    const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
+    void copybuf(std::streambuf *sb)  { _ss << sb;  }
+    void str(const std::string &s) { _ss.str(s); }
+    bool good() { return _ss.good(); }
+    bool eof()  { return _ss.eof(); }
+    int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
+    int column(){ return _column ? _column : 1; }
+    int get()
+    {
+	int ch = _ss.get();
+	if ( ch == -1 ) { return -1; }
+	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
+	else if ( ch == '\r' ) { ++_cr; _column = 0; _pos = _ss.tellg(); }
+	else { ++_column; }
+	return ch;
+    }
+    int peek()
+    {
+	return _ss.peek();
+    }
+    bool getline(std::string &s)
+    {
+	int ch;
+	s.clear();
+	while ( _ss.good() && !_ss.eof() && (ch=_ss.get()) != -1 && ch != '\r' && ch != '\n' )
+	    s += ch;
+	if ( ch == -1 ) { return !s.empty(); }
+	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
+	else if ( ch == '\r' ) { ++_cr; _column = 0; _pos = _ss.tellg(); }
+	else { ++_column; }
+	if ( _ss.peek() == '\n' )
+	{
+	    _ss.get();
+	    ++_lf;
+	    _pos = _ss.tellg();
+	}
+	return !s.empty();
+    }
+    void setpos(int row, int col) { _lf = _cr = (row-1); _column = col; }
+    void showerror(int row=0, int col=0);
+};
+
+// very simple exception container
+class Exception: public std::exception
+{
+protected:
+    std::string _msg;
+public:
+    explicit Exception(const std::string& message): _msg(message) {}
+    virtual ~Exception() throw() {}
+    virtual const char *what() const throw () { return _msg.c_str(); }
+};
+
+// streambuf class to throw an exception at sync
+class throwbuf: public std::stringbuf
+{
+protected:
+    TokenBase *_tb;
+    Source *_src;
+public:
+    throwbuf() : std::stringbuf() { _tb = NULL; _src = NULL; }
+    virtual int sync();
+    TokenBase *token() { return _tb; }
+    TokenBase *token(TokenBase *t) { return (_tb=t); }
+    Source *source() { return _src; }
+    Source *source(Source *s) { return (_src=s); }
+};
+
+class throwstream: public std::ostream
+{
+protected:
+    throwbuf _tbuf;
+public:
+    throwstream() : std::ostream(&_tbuf) { exceptions(std::ios_base::badbit); }
+    TokenBase *token() { return _tbuf.token(); };
+    Source *source() { return _tbuf.source(); }
+    Source *source(Source *s) { return _tbuf.source(s); }
+    Source *source(Source &s) { return _tbuf.source(&s); }
+    std::string str() const { return _tbuf.str(); }
+    throwstream& operator()(TokenBase *t) { _tbuf.token(t); return *this; }
+};
+
+
 // program class, keep things somewhat contained
 class Program
 {
 protected:
-    TokenBase *_getToken(std::istream &);
+    TokenBase *_getToken();
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
-    inline int get(std::istream &is) { ++_column; return is.get(); }
+//  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
     void _tokenizer_init();
     void _parser_init();
     void _compiler_init();
     bool _compiler_finalize();
-
-    int _line, _column, _braces;
-    std::streampos _pos;
+    // protected members
+    int _braces;
+//  std::streampos _pos;
     TokenBase *_prv_token;
     TokenBase *_cur_token;
+    Source source;
+    asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
     keyword_map_t  keyword_map;		// reserved keywords
     datatype_map_t datatype_map;	// TokenDataType map
@@ -184,6 +305,8 @@ public:
     datadef_map_t  struct_map;		// data definitions defined by struct
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
+    namespace_map_t namespace_map;	// namespace registries (std::, etc.)
+    std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::queue<TokenBase *> tokens;	// parsed token queue
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
@@ -191,6 +314,7 @@ public:
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
+    throwstream Throw;			// throw an error
 
     bool colors;
     asmjit::JitRuntime jit;
@@ -201,8 +325,16 @@ public:
     void add_keywords();
     void add_datatypes();
     void add_string_methods();
+    void add_sstream_methods();
+    void add_fstream_methods();
     void add_functions();
     void add_globals();
+    void add_namespaces();
+    void add_php_namespace();
+    void add_perl_namespace();
+    void add_python_namespace();
+    void add_ruby_namespace();
+    void add_js_namespace();
 
     Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
 
@@ -211,14 +343,14 @@ public:
     void popCompound();
 
     // generate tokens
-    TokenBase *getToken(std::istream &);
-    TokenBase *getRealToken(std::istream &);
+    TokenBase *getToken();
+    TokenBase *getRealToken();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
 
     // for debugging
     void printt(TokenBase *);
-    void showerror(std::istream &);
+//  void showerror(std::istream &);
 
     // accessing token queue
     inline TokenBase *peekToken() { if (tokens.empty()) return NULL; return tokens.front(); }
@@ -239,16 +371,96 @@ public:
     void parseFunction(DataDef &, std::string &);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
+    TokenBase *parseCallMethod(TokenCallMethod *);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *);
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
 
     // perform cc.mov with size casting
-    inline void safemov(asmjit::x86::Gp &, asmjit::x86::Gp &);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Gp &,  asmjit::x86::Mem &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Xmm &, asmjit::x86::Mem &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Mem &, asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safemov(asmjit::x86::Mem &, asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safemov(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
+    // only int and double are standard numeric token types
+    void safemov(asmjit::Operand &,  int, DataDef *d1=NULL, DataDef *d2=NULL);
+    void safemov(asmjit::Operand &,  double, DataDef *d1=NULL, DataDef *d2=NULL);
+
+    // perform cc.add with size casting
+    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safeadd(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
+    void safeadd(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
+    void safeadd(asmjit::Operand &,  int, DataDef *, DataDef *);
+
+    // perform cc.sub with size casting
+    void safesub(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safesub(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safesub(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
+    void safesub(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
+    void safesub(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
+    void safesub(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
+    void safesub(asmjit::Operand &,  int, DataDef *, DataDef *);
+
+    // perform cc.mul with size casting
+    void safemul(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
+    // perform cc.div with size casting
+    void safediv(asmjit::Operand &,  asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL, DataDef *d3=NULL);
+    // perform cc.shl with size casting
+    void safeshl(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.shr with size casting
+    void safeshr(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.or_ with size casting
+    void safeor(asmjit::Operand &,   asmjit::Operand &);
+    // perform cc.and_ with size casting
+    void safeand(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.xor_ with size casting
+    void safexor(asmjit::Operand &,  asmjit::Operand &);
+    // perform cc.not_ with size casting
+    void safenot(asmjit::Operand &);
+
+    // perform cc.inc with size casting
+    void safeinc(asmjit::Operand &);
+    // perform cc.dec with size casting
+    void safedec(asmjit::Operand &);
+
+    // negate the operand
+    void safeneg(asmjit::Operand &);
+
+    // return the operand
+    void saferet(asmjit::Operand &);
+
+    // perform cc.test with size casting
+    void safetest(asmjit::Operand &, asmjit::Operand &);
+
+    // tests if operand is zero
+    void testzero(asmjit::Operand &);
+
+    // sign/zero extend operand in place
+    void safeextend(asmjit::Operand &, bool unsign=false);
+
+    // perform cc.setCC with size casting
+    void safesete(asmjit::Operand &);
+    void safesetg(asmjit::Operand &);
+    void safesetge(asmjit::Operand &);
+    void safesetl(asmjit::Operand &);
+    void safesetle(asmjit::Operand &);
+    void safesetne(asmjit::Operand &);
 
     // perform cc.cmp with size casting
-    inline void safecmp(asmjit::x86::Gp &, asmjit::x86::Gp &);
+    void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);
+    void safecmp(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
+    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Gp &);
+    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
+    void safecmp(asmjit::Operand &,  asmjit::Operand &);
 
     // compile code
     bool compile();

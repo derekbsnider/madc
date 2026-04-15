@@ -11,6 +11,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dlfcn.h>
+#include <unistd.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -21,10 +23,11 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x)
-#include <asmjit/asmjit.h>
-#include "tokens.h"
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+#include <asmjit/x86.h>
 #include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
@@ -51,8 +54,23 @@ DataDefSTRING ddSTRING;
 DataDefSTRINGref ddSTRINGref;
 DataDefOSTREAM ddOSTREAM;
 DataDefSSTREAM ddSSTREAM;
+DataDefARRAY ddARRAY;
+DataDefIFSTREAM ddIFSTREAM;
+DataDefOFSTREAM ddOFSTREAM;
+DataDefFSTREAM ddFSTREAM;
 DataDefLPSTR ddLPSTR;
 DataDefTEST ddTESTSTRUCT;
+
+
+const char *c_str2(std::string *str)
+{
+    std::cout << "c_str2() on " << *str << '[' << (uint64_t)str << ']' << std::endl;
+    std::cout << "c_str2() returning " << (uint64_t)str->c_str() << std::endl;
+    uint64_t ui64 = (uint64_t)str->c_str();
+    uint32_t ui32 = ui64;
+    std::cout << "c_str2() uint32 " << ui32 << std::endl;
+    return str->c_str();
+}
 
 
 void printuint32(uint32_t &i)
@@ -78,7 +96,7 @@ void EatSpaces(istream &is)
 }
 
 
-int TokenAssign::operate() const
+int TokenAssign::ioperate() const
 {
     DBG(std::cout << "TokenAssign" << std::endl);
     if ( left->type() != TokenType::ttVariable )
@@ -86,9 +104,9 @@ int TokenAssign::operate() const
 	std::cerr << "TokenAssign::operate() left side not variable" << std::endl;
 	return 0;
     }
-    DBG(std::cout << "TokenAssign: " << dynamic_cast<TokenVar *>(left)->var.name << "=" << right->val() << std::endl);
-    left->set(right->val());
-    return right->val();
+    DBG(std::cout << "TokenAssign: " << dynamic_cast<TokenVar *>(left)->var.name << "=" << right->ival() << std::endl);
+    left->set(right->ival());
+    return right->ival();
 }
 
 
@@ -172,6 +190,15 @@ Variable::~Variable()
     } // switch
 }
 
+Variable *DataDefCLASS::findMethod(std::string &s)
+{
+    for ( variable_vec_iter vvi = methods.begin(); vvi != methods.end(); ++vvi )
+	if ( !s.compare((*vvi)->name) )
+	    return *vvi;
+
+    return NULL;
+}
+
 DataDef *FuncDef::findParameter(std::string &s)
 {
     DBG(cout << "FuncDef[" << name << "]::findParameter(" << s << ')' << endl);
@@ -236,6 +263,14 @@ union string_member_cast {
     void * void_pointer[1];
 };
 
+typedef string (*fnSSTREAMstr)(void *);		// stringstream::str()
+union sstream_member_cast {
+    string (stringstream::*str)(void) const;
+    void * void_pointer[1];
+};
+
+
+
 
 // add methods to ddSTRING
 void Program::add_string_methods()
@@ -244,7 +279,10 @@ void Program::add_string_methods()
     Variable *var;
 
     scmc.c_str = (const char *(string::*)(void))&string::c_str;
-    var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
+    var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
+    ddSTRING.methods.push_back(var);
+
+    var = addFunction("c_str2", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)c_str2, true);
     ddSTRING.methods.push_back(var);
 
     scmc.method_str = (string &(string::*)(const string &))&string::assign;
@@ -266,11 +304,39 @@ void Program::add_string_methods()
     DBG(std::cout << "add_string_methods() ddSTRING.methods.size() = " << ddSTRING.methods.size() << std::endl);
 }
 
+// add methods to ddSSTREAM
+void Program::add_sstream_methods()
+{
+    sstream_member_cast ssmc;
+    Variable *var;
+
+    ssmc.str = (string (stringstream::*)(void) const)&stringstream::str;
+    var = addFunction("str", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSSTREAM)}, (fVOIDFUNC)(fnSSTREAMstr)ssmc.void_pointer[0], true);
+    ddSSTREAM.methods.push_back(var);
+}
+
 
 // some debugging functions
 void printinteger(int i)
 {
     std::cout << i << std::endl;
+}
+
+void printuinteger(uint64_t i)
+{
+    std::cout << i << std::endl;
+}
+
+// some debugging functions
+void printdouble(double d)
+{
+    std::cout << std::setprecision(16) << d << std::endl;
+}
+
+// some debugging functions
+void printfloat(float f)
+{
+    std::cout << std::setprecision(8) << f << std::endl;
 }
 
 void printstarred(std::string &s)
@@ -292,10 +358,135 @@ void printstream(std::stringstream *os)
     cout << os->str() << endl;
 }
 
+// forward declarations for functions defined in compiler.cpp
+extern void ifstream_open(void *, void *);
+extern void ifstream_close(void *);
+extern void ofstream_open(void *, void *);
+extern void ofstream_close(void *);
+extern void fstream_open(void *, void *);
+extern void fstream_close(void *);
+extern int64_t ifstream_eof(void *);
+extern int64_t ifstream_good(void *);
+extern int64_t ifstream_is_open(void *);
+extern int64_t ofstream_good(void *);
+extern int64_t ofstream_is_open(void *);
+extern int64_t fstream_eof(void *);
+extern int64_t fstream_good(void *);
+extern int64_t fstream_is_open(void *);
+
+// dlopen/dlsym wrappers that accept std::string* (madc strings)
+int64_t madc_dlopen(void *filename)
+{
+    const char *fn = ((std::string *)filename)->c_str();
+    void *handle = dlopen(fn, RTLD_LAZY);
+    if ( !handle )
+	std::cerr << "dlopen: " << dlerror() << std::endl;
+    return (int64_t)handle;
+}
+
+int64_t madc_dlsym(int64_t handle, void *name)
+{
+    const char *n = ((std::string *)name)->c_str();
+    void *sym = dlsym((void *)handle, n);
+    if ( !sym )
+	std::cerr << "dlsym: " << dlerror() << std::endl;
+    return (int64_t)sym;
+}
+
+void madc_dlclose(int64_t handle)
+{
+    if ( handle )
+	dlclose((void *)handle);
+}
+
+// type conversion wrappers
+void madc_to_string(void *result, int64_t val)
+{
+    *(std::string *)result = std::to_string(val);
+}
+void madc_to_string_d(void *result, double val)
+{
+    *(std::string *)result = std::to_string(val);
+}
+int64_t madc_stoi(void *str)
+{
+    try { return (int64_t)std::stoll(((std::string *)str)->c_str()); }
+    catch (...) { return 0; }
+}
+double madc_stod(void *str)
+{
+    try { return std::stod(((std::string *)str)->c_str()); }
+    catch (...) { return 0.0; }
+}
+int64_t madc_strlen(void *str)
+{
+    return (int64_t)((std::string *)str)->length();
+}
+
+// C library wrappers that accept madc strings
+int64_t madc_system(void *cmd)
+{
+    return (int64_t)system(((std::string *)cmd)->c_str());
+}
+
+int64_t madc_getenv(void *result, void *name)
+{
+    const char *val = getenv(((std::string *)name)->c_str());
+    std::string &res = *(std::string *)result;
+    res = val ? val : "";
+    return val ? 1 : 0;
+}
+
+void madc_setenv(void *name, void *value)
+{
+    setenv(((std::string *)name)->c_str(), ((std::string *)value)->c_str(), 1);
+}
+
+void madc_unsetenv(void *name)
+{
+    unsetenv(((std::string *)name)->c_str());
+}
+
 // needed to add getline
 typedef istream& (*fnGETLINE)(istream&, string&);
 // needed to add endl
 typedef ostream& (*fnENDL)(ostream&);
+
+// add file stream methods
+void Program::add_fstream_methods()
+{
+    Variable *var;
+
+    // ifstream methods — must use typed wrappers (ios is virtual base, pointer offset differs)
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)ifstream_open, true);
+    ddIFSTREAM.methods.push_back(var);
+    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_close, true);
+    ddIFSTREAM.methods.push_back(var);
+    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_eof, true);
+    ddIFSTREAM.methods.push_back(var);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_good, true);
+    ddIFSTREAM.methods.push_back(var);
+    var = addFunction("is_open", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_is_open, true);
+    ddIFSTREAM.methods.push_back(var);
+
+    // ofstream methods
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)ofstream_open, true);
+    ddOFSTREAM.methods.push_back(var);
+    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)ofstream_close, true);
+    ddOFSTREAM.methods.push_back(var);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)ofstream_good, true);
+    ddOFSTREAM.methods.push_back(var);
+
+    // fstream methods
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)fstream_open, true);
+    ddFSTREAM.methods.push_back(var);
+    var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_close, true);
+    ddFSTREAM.methods.push_back(var);
+    var = addFunction("eof", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_eof, true);
+    ddFSTREAM.methods.push_back(var);
+    var = addFunction("good", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_good, true);
+    ddFSTREAM.methods.push_back(var);
+}
 
 // add system library functions
 void Program::add_functions()
@@ -305,9 +496,29 @@ void Program::add_functions()
     addFunction("printstream",  datatype_vec_t{DataType::dtVOID, DataType::dtSSTREAM}, (fVOIDFUNC)printstream);
     addFunction("puts",		datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)puts);
     addFunction("puti",		datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
+    addFunction("putu",		datatype_vec_t{DataType::dtVOID, DataType::dtUINT64}, (fVOIDFUNC)printuinteger);
+    addFunction("putd",		datatype_vec_t{DataType::dtVOID, DataType::dtDOUBLE}, (fVOIDFUNC)printdouble);
+    addFunction("putf",		datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
     addFunction("putchar",	datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     addFunction("getline",	datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
     addFunction("endl",		datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
+    // type conversion functions
+    addFunction("to_string",	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
+    addFunction("to_string_d",	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtDOUBLE}, (fVOIDFUNC)madc_to_string_d);
+    addFunction("stoi",		datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_stoi);
+    addFunction("stod",		datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
+    addFunction("strlen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_strlen);
+    // C library functions
+    addFunction("system",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
+    addFunction("getenv",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
+    addFunction("setenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_setenv);
+    addFunction("unsetenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)madc_unsetenv);
+    // dlopen/dlsym/dlclose — dynamic library loading
+    addFunction("dlopen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlopen);
+    addFunction("dlsym",	datatype_vec_t{DataType::dtINT64, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlsym);
+    addFunction("dlclose",	datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
+    // dlcall — call through function pointer (variadic, handled specially in compiler)
+    addFunction("dlcall",	datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 }
 
 // define some global variables
@@ -318,11 +529,34 @@ void Program::add_globals()
     addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
 }
 
+void Program::add_namespaces()
+{
+    Variable *var;
+    std::string id;
+
+    // std:: namespace — map to existing global variables and functions
+    variable_map_t &std_ns = namespace_map["std"];
+
+    id = "cout";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cout"]  = var;
+    id = "cerr";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cerr"]  = var;
+    id = "endl";  if ( (var=tkProgram->findVariable(id)) ) std_ns["endl"]  = var;
+
+    DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
+}
+
 void Program::_parser_init()
 {
     add_functions();
     add_string_methods();
+    add_sstream_methods();
+    add_fstream_methods();
     add_globals();
+    add_namespaces();
+    add_php_namespace();
+    add_perl_namespace();
+    add_python_namespace();
+    add_ruby_namespace();
+    add_js_namespace();
     _braces = 0;
 }
 
@@ -436,7 +670,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	return NULL;
     }
 
-    switch(DataDef::rawtype(params[0]))
+//  switch(DataDef::rawtype(params[0]))
+    switch(params[0])
     {
 	default:	 	  dd = &ddVOID;		break;
 	case DataType::dtCHAR:    dd = &ddCHAR;		break;
@@ -448,6 +683,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	case DataType::dtINT64:	  dd = &ddINT64;	break;
 	case DataType::dtUINT64:  dd = &ddUINT64;	break;
 	case DataType::dtSTRING:  dd = &ddSTRING;	break;
+	case DataType::dtARRAY:   dd = &ddARRAY;	break;
+	case rtPtr(DataType::dtOSTREAM):
 	case DataType::dtOSTREAM: dd = &ddOSTREAM;	break;
 	case rtPtr(DataType::dtCHAR): dd = &ddLPSTR;	break;
     }
@@ -455,7 +692,7 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     func = new FuncDef(*dd);
     if ( !isMethod )
 	funcdef_map[id] = func;
-    DBG(std::cout << "addFunction() Added new function declaration name: " << id << " numparams: " << params.size()-1  << " x86code: " << (uint64_t)extfunc << std::endl);
+    DBG(std::cout << "addFunction() Added new function declaration name: " << id << " numparams: " << params.size()-1  << " x86code: " << (uint64_t)extfunc << " returns " << dd->name << std::endl);
 
     // func->parameters.push_back(&pb->definition);
 
@@ -473,7 +710,10 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    case DataType::dtINT64:   dd = &ddINT64;	break;
 	    case DataType::dtUINT64:  dd = &ddUINT64;	break;
 	    case DataType::dtSTRING:  dd = &ddSTRING;	break;
+	    case DataType::dtARRAY:   dd = &ddARRAY;	break;
 	    case DataType::dtOSTREAM: dd = &ddOSTREAM;  break;
+	    case DataType::dtFLOAT:   dd = &ddFLOAT;    break;
+	    case DataType::dtDOUBLE:  dd = &ddDOUBLE;   break;
 	    case rtPtr(DataType::dtCHAR): dd = &ddLPSTR;break;
 	}
 
@@ -563,9 +803,9 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 		    if ( exStack.empty() )
 		    {
 			DBG(cerr << "got operator, but exStack is empty!" << endl);
-			throw "Missing operand";
+			Throw(to) << "Missing operand" << flush;
 		    }
-		    to->right = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->right->val() << endl);
+		    to->right = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->right->ival() << endl);
 		}
 		if ( to->argc() > 1 )
 		{
@@ -574,13 +814,13 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 			if ( exStack.empty() )
 			{
 			    DBG(cerr << "got operator, but exStack is empty!" << endl);
-			    throw "Missing operand";
+			    Throw(to) << "Missing operand" << flush;
 			}
-			to->left = exStack.top(); exStack.pop();  DBG(cout << "popped " << to->left->val() << endl);
+			to->left = exStack.top(); exStack.pop();  DBG(cout << "popped " << to->left->ival() << endl);
 		    }
 		}
 	    }
-	    DBG(cout << "Popping " << (char)to->get() << "[" << (to->left ? to->left->val() : 0) << ", " << (to->right ? to->right->val() : 0) << "] from opStack and onto exStack" << endl);
+	    DBG(cout << "Popping " << (char)to->get() << "[" << (to->left ? to->left->ival() : 0) << ", " << (to->right ? to->right->ival() : 0) << "] from opStack and onto exStack" << endl);
 	    opStack.pop();
 	    exStack.push(to);
 	    break;
@@ -589,13 +829,62 @@ void Program::popOperator(stack<TokenBase *> &opStack, stack<TokenBase *> &exSta
 	    exStack.push(opStack.top());
 	    opStack.pop();
 	    break;
+	case TokenType::ttCallMethod:
+	    DBG(cout << "popOperator() got ttCallMethod" << endl);
+	    exStack.push(opStack.top());
+	    opStack.pop();
+	    break;
 	default:
 	    DBG(cerr << "popOperator() throwing opStack.top()" << endl);
-	    throw opStack.top();
+	    Throw(opStack.top()) << "unexpected token type " << (int)opStack.top()->type() << flush;
     } // end switch
     DBG(cout << "popOperator() size: " << opStack.size() << " END" << endl);
 }
 
+#if 0
+// parse a function call and it's parameters
+// parameters are individually parsed by parseExpression
+// returns ending token
+TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
+{
+    TokenBase *tb;
+
+    DBG(std::cout << tc->line << ':' << tc->column << ":Program::parseCallFunc(" << tc->var.name << ')' << std::endl);
+    int brackets = 1;
+    size_t paramcnt = 0;
+
+    if ( !(tb=peekToken()) )
+	throw "Unexpected end of input";
+    while ( brackets && tb->id() != TokenID::tkSemi )
+    {
+	tb = nextToken();
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	if ( tb->id() == TokenID::tkComma )
+	{
+	    if ( ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
+		throw "Too many parameters";
+	    continue;
+	}
+	if ( tb->id() == TokenID::tkSemi ) { DBG(cout << "Got ;" << endl); break; }
+	DBG(cout << "parseCallFunc() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
+	if ( !(tb=parseExpression(tb, true)) ) { DBG(cout << "parseExp return NULL" << endl); break; }
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
+	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "]) brackets: " << brackets << endl);
+	tc->parameters.push_back(tb);
+    }
+    if ( tb->id() == TokenID::tkSemi )
+	DBG(cout << "parseCallFunc() while ended on semicolon" << endl);
+    // (need check for optional parameters)
+    if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
+    {
+	DBG(std::cout << "parseCallFunc(" << tc->var.name << "): argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << " (paramcnt: " << paramcnt << ") brackets: " << brackets << std::endl);
+	throw "Incorrect number of parameters";
+    }
+
+    return tb;
+}
+#else
 // parse a function call and it's parameters
 // parameters are individually parsed by parseExpression
 // returns ending token
@@ -613,7 +902,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     }
 #endif
     int brackets = 1;
-    int paramcnt = 0;
+    size_t paramcnt = 0;
 
     while ( brackets )
     {
@@ -623,8 +912,9 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	if ( tb->id() == TokenID::tkComma )
 	{
-	    if ( ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
-		throw "Too many parameters";
+	    FuncDef *_fd = (FuncDef *)tc->var.type;
+	    if ( !_fd->parameters.empty() && ++paramcnt >= _fd->parameters.size() )
+		Throw(tb) << "Too many parameters" << flush;
 	    continue;
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
@@ -636,14 +926,65 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	tc->parameters.push_back(tb);
     }
     // (need check for optional parameters)
-    if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
+    // skip arg count check for dlopen functions (0 declared params = variadic-like)
     {
-	DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << std::endl);
-	throw "Incorrect number of parameters";
+	FuncDef *fd = (FuncDef *)tc->var.type;
+	Method *md = (Method *)tc->var.data;
+	if ( !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
+	{
+	    if ( tc->argc() != fd->parameters.size() )
+	    {
+		DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << fd->parameters.size() << std::endl);
+		Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc() << flush;
+	    }
+	}
     }
 
     return tb;
 }
+#endif
+
+// parse a method call and it's parameters
+// parameters are individually parsed by parseExpression
+// returns ending token
+TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
+{
+    TokenBase *tb;
+
+    DBG(std::cout << tc->line << ':' << tc->column << ":Program::parseCallMethod(" << tc->var.name << ')' << std::endl);
+    int brackets = 1;
+    size_t paramcnt = 1;
+
+    while ( brackets )
+    {
+	tb = peekToken();
+	if ( tb->id() == TokenID::tkSemi )  { return tb; }
+	tb = nextToken();
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	if ( tb->id() == TokenID::tkComma )
+	{
+	    if ( ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
+		Throw(tb) << "Too many parameters" << flush;
+	    continue;
+	}
+	if ( tb->id() == TokenID::tkSemi ) { break; }
+	DBG(cout << "parseCallMethod() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
+	if ( !(tb=parseExpression(tb, true)) ) { break; }
+	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
+	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
+	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
+	tc->parameters.push_back(tb);
+    }
+    // (need check for optional parameters)
+    if ( tc->argc()+1 != ((FuncDef *)tc->var.type)->parameters.size() )
+    {
+	DBG(std::cout << "parseCallMethod: argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << std::endl);
+	Throw(tc) << "Incorrect number of parameters: expected " << ((FuncDef *)tc->var.type)->parameters.size() << " got " << tc->argc()+1 << flush;
+    }
+
+    return tb;
+}
+
 
 // parse one complete expression
 // for expression: x = 5, sum(5, 5), ++x, etc
@@ -661,15 +1002,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 
     DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
 
-//    for ( done = false; !done && tb; tb = peekToken() )
     while ( !done && tb )
     {
-//parseexpswitchtop:
 	switch(tb->type())
 	{
 	    case TokenType::ttInteger:
-	        DBG(cout << "Pushing number: " << (int)tb->get() << " onto exStack" << endl);
+	        DBG(cout << "Pushing integer: " << (int)tb->get() << " onto exStack" << endl);
 		exStack.push(tb); // exStack.push(tb->clone());
+		break;
+	    case TokenType::ttReal:
+	        DBG(cout << "Pushing number: " << ((TokenReal *)tb)->dval() << " onto exStack" << endl);
+		exStack.push(tb);
 		break;
 	    case TokenType::ttSymbol:
 	    	if ( tb->id() == TokenID::tkSemi )
@@ -685,6 +1028,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		break;
 	    case TokenType::ttMultiOp:
 	    case TokenType::ttOperator:
+	    	if ( tb->id() == TokenID::tkComma )
+		{
+		    DBG(cout << "parseExpression: found comma" << endl);
+		    done = true;
+		    break;
+		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
 		    ++brackets;
@@ -703,7 +1052,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    --brackets;
 		    DBG(cout << "Got ), clearing opStack until (" << endl);
 		    while ( !opStack.empty() && opStack.top()->get() != '(' )
+		    {
+			opStack.top()->setFlag(tfBRACKETED);
 			popOperator(opStack, exStack);
+		    }
 		    if ( !opStack.empty() )
 			opStack.pop(); // pop off '('
 		    if ( conditional && !brackets )
@@ -737,7 +1089,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    else
 		    {
 			to = (TokenOperator *)tb; // ->clone();
-			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->val() << endl);
+			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->ival() << endl);
 			exStack.push(to);
 		    }
 		    break;
@@ -750,7 +1102,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		// and (the operator at the top of the operator stack is not a left parenthesis):
 		// (Note: we don't put functions in the stack right now)
 		while ( !opStack.empty() && opStack.top()->id() != TokenID::tkOpBrk
-		&&      (opStack.top()->type() == TokenType::ttCallFunc
+		&&      (opStack.top()->type() == TokenType::ttCallFunc || opStack.top()->type() == TokenType::ttCallMethod
 		||      (opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to))) )
 		{
 		    DBG(cout << "Operator(" << (char)opStack.top()->get() << ") has precedence over operator(" << (char)to->get() << ')' << endl);
@@ -762,7 +1114,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
             case TokenType::ttDataType:
 		bt = (TokenDataType *)tb;
 		tb = nextToken();
-		if ( tb->type() != TokenType::ttIdentifier ) { throw "Expecting identifier"; }
+		if ( tb->type() != TokenType::ttIdentifier ) { Throw(tb) << "Expecting identifier" << flush; }
 		var = addVariable(code, bt->definition, ((TokenIdent *)tb)->str);
 		DBG(cout << "Pushing newly declared variable: " << var->name << " onto exStack" << endl);
 		exStack.push(new TokenVar(*var));
@@ -775,15 +1127,115 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 	    case TokenType::ttIdentifier:
 	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
 		{
-		    DBG(cerr << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
+#if 0
+		    DBG(cout << "parseExpression() prevToken is tkDot, pushing TokenIdent " << ((TokenIdent *)tb)->str << endl);
 		    exStack.push(tb);
+#else
+		    if ( exStack.empty() )
+			Throw(tb) << "expected expression" << flush;
+		    if ( exStack.top()->type() != TokenType::ttVariable )
+			Throw(tb) << "member reference is not a structure or union" << flush;
+		    TokenVar *tv = dynamic_cast<TokenVar *>(exStack.top());
+		    if ( !tv->var.type->is_struct() && !tv->var.type->is_object() )
+			Throw(tb) << "member reference is not a structure or union" << flush;
+		    var = NULL;
+		    string id = ((TokenIdent *)tb)->str;
+		    if ( tv->var.type->is_object() && (var=((DataDefCLASS *)tv->var.type)->findMethod(id)) )
+		    {
+			// cout << "Found " << tv->var.name << "::" << var->name << endl;
+			// Throw(tb) << "parseExpression() found method " << tv->var.name << "::" << var->name << flush;
+			TokenCallMethod *tc = new TokenCallMethod(tv->var, *var);
+			tb = nextToken();
+			tc->line = tb->line;
+			tc->column = tb->column;
+			// if bracket, parse params
+			if ( tb->id() == TokenID::tkOpBrk )
+			{
+			    // delete tb?
+			    tb = parseCallMethod(tc);
+			    DBG(cout << "parseCallMethod returned with token " << (char)tb->get() << endl);
+			}
+			// remove object TokenVar from exStack
+			exStack.pop();
+			// remove TokenDot from opStack
+			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			{
+			    DBG(cout << "parseCallMethod, removing tkDot from opStack" << endl);
+			    opStack.pop();
+			}
+			DBG(cout << "Pushing found method call: " << var->name << "() onto opStack" << endl);
+			opStack.push(tc);
+			// I'm not sure why I need to do this TODO: figure this out
+			if ( tb->id() == TokenID::tkSemi )
+			    done = true;
+			break;
+		    }
+		    // get offset
+		    ssize_t ofs = ((DataDefSTRUCT *)tv->var.type)->m_offset(id);
+		    if ( ofs == -1 )
+			Throw(tb) << "Unidentified member" << flush;
+		    DataDef *mtype = ((DataDefSTRUCT *)tv->var.type)->m_type(id);
+		    // create new variable
+		    var = new Variable(id, *mtype, 1, NULL, false);
+		    var->flags = tv->var.flags;
+		    if ( tv->var.data )
+			var->data = (void *)((char *)tv->var.data + ofs);
+		    // remove object TokenVar from exStack
+		    exStack.pop();
+		    // replace with TokenMember
+		    exStack.push(new TokenMember(tv->var, *var, ofs));
+		    // remove TokenDot from opStack
+		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			opStack.pop();
+#endif
 		    break;
+		}
+		// namespace resolution: identifier :: member
+		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+		{
+		    std::string ns_name = ((TokenIdent *)tb)->str;
+		    namespace_map_t::iterator nsi = namespace_map.find(ns_name);
+		    if ( nsi == namespace_map.end() )
+			Throw(tb) << "Unknown namespace '" << ns_name << "'" << flush;
+		    nextToken(); // consume '::'
+		    TokenBase *member_tb = nextToken(); // consume member identifier
+		    if ( !member_tb || member_tb->type() != TokenType::ttIdentifier )
+			Throw(tb) << "Expecting identifier after '" << ns_name << "::'" << flush;
+		    std::string member_name = ((TokenIdent *)member_tb)->str;
+		    variable_map_iter vmi = nsi->second.find(member_name);
+		    if ( vmi == nsi->second.end() )
+		    {
+			// try dlsym fallback if this namespace was loaded via #load
+			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
+			if ( dli == dlopen_map.end() )
+			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+			void *sym = dlsym(dli->second, member_name.c_str());
+			if ( !sym )
+			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
+			// create function with int64 return, no declared params (variadic-like)
+			// actual args are passed through at compile time
+			std::string func_id = "__dl_" + ns_name + "_" + member_name;
+			var = addFunction(func_id,
+			    datatype_vec_t{DataType::dtINT64},
+			    (fVOIDFUNC)sym);
+			if ( !var )
+			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
+			nsi->second[member_name] = var; // cache for next call
+			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
+		    }
+		    else
+			var = vmi->second;
+		    DBG(cout << "parseExpression() resolved " << ns_name << "::" << member_name << endl);
+		    tb = member_tb; // update tb for line/col tracking below
+		    goto ns_resolved;
 		}
 		if ( !(var=findVariable(((TokenIdent *)tb)->str)) )
 		{
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);
-		    throw (TokenIdent *)tb;
+		    Throw(tb) << "use of undeclared identifier '" << ((TokenIdent *)tb)->str << '\'' << flush;
+		    //throw (TokenIdent *)tb;
 		}
+		ns_resolved:
 #if 1
 		if ( var->type->is_function() )
 		{
@@ -809,7 +1261,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		if ( var->type->is_function() )
 		{
 		    if ( peekToken()->id() != TokenID::tkOpBrk )
-			throw "Expecting (";
+			Throw(tb) << "Expecting (" << flush;
 		    tb = nextToken();
 		    TokenCallFunc *tc = new TokenCallFunc(*var);
 		    tc->line = tb->line;
@@ -825,25 +1277,34 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    break;
 		}
 #endif
-		if ( var->type->is_numeric() )
+		if ( var->type->is_integer() )
 		    DBG(cout << "Pushing found variable: " << var->name << '=' << (int)var->get<int>() << " onto exStack" << endl);
+		else
+		if ( var->type->is_real() )
+		    DBG(cout << "Pushing found variable: " << var->name << '=' << (double)var->get<double>() << " onto exStack" << endl);
 		else
 		    DBG(cout << "Pushing found variable: " << var->name << " onto exStack" << endl);
 		exStack.push(new TokenVar(*var));
 		break;
 	    case TokenType::ttVariable:
 		var = &dynamic_cast<TokenVar *>(tb)->var;
-		if ( var->type->is_numeric() )
+		if ( var->type->is_integer() )
 		    DBG(cout << "Pushing direct variable: " << var->name << '=' << (int)var->get<int>() << " onto exStack" << endl);
+		else
+		if ( var->type->is_real() )
+		    DBG(cout << "Pushing direct variable: " << var->name << '=' << (double)var->get<double>() << " onto exStack" << endl);
 		else
 		    DBG(cout << "Pushing direct variable: " << var->name << " onto exStack" << endl);
 		exStack.push(tb);
 		break;
 	    case TokenType::ttFunction:
-		throw "Got function!";
+		Throw(tb) << "Got function!" << flush;
 		break;
 	    case TokenType::ttCallFunc:
-		throw "Got call function!";
+		Throw(tb) << "Got call function!" << flush;
+		break;
+	    case TokenType::ttCallMethod:
+		Throw(tb) << "Got call method!" << flush;
 		break;
 	    case TokenType::ttChar:
 	        DBG(cout << "Pushing char: " << (int)tb->get() << " onto exStack" << endl);
@@ -851,7 +1312,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		break;
 	    default:
 		DBG(std::cerr << "parseExpression() primary switch throwing token" << std::endl);
-		throw tb;
+		Throw(tb) << "unexpected token type " << (int)opStack.top()->type() << flush;
 	}
 	if ( done ) { break; /* prevent eating next token */ }
 	tb = peekToken();
@@ -887,55 +1348,366 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 // typedef struct tag alias;
 // typedef struct tag { type member; } alias;
 // typedef struct { type member; } alias;
+// parse 'using' statement
+// forms:
+// using namespace std;       — import all members of std into global scope
+// using std::cout;            — import single member
+TokenBase *TokenUSING::parse(Program &pgm)
+{
+    TokenBase *tn;
+
+    DBG(std::cout << std::endl << "TokenUSING::parse() top" << std::endl);
+
+    tn = pgm.nextToken();
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input after 'using'" << flush;
+
+    // using namespace std;
+    if ( tn->id() == TokenID::tkNAMESPACE )
+    {
+	tn = pgm.nextToken(); // namespace name
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting namespace name after 'using namespace'" << flush;
+	std::string ns_name = ((TokenIdent *)tn)->str;
+	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
+	if ( nsi == pgm.namespace_map.end() )
+	    pgm.Throw(tn) << "Unknown namespace '" << ns_name << "'" << flush;
+	// import all members into global scope
+	for ( variable_map_iter vmi = nsi->second.begin(); vmi != nsi->second.end(); ++vmi )
+	{
+	    std::string name = vmi->first;
+	    // only import if not already defined
+	    if ( !pgm.findVariable(name) )
+		pgm.tkProgram->variables.push_back(vmi->second);
+	    DBG(std::cout << "TokenUSING::parse() imported " << ns_name << "::" << name << std::endl);
+	}
+	// expect semicolon
+	tn = pgm.nextToken();
+	if ( !tn || tn->id() != TokenID::tkSemi )
+	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
+	return NULL;
+    }
+
+    // using std::cout;
+    if ( tn->type() == TokenType::ttIdentifier )
+    {
+	std::string ns_name = ((TokenIdent *)tn)->str;
+	tn = pgm.nextToken(); // should be ::
+	if ( !tn || tn->id() != TokenID::tkNS )
+	    pgm.Throw(tn) << "Expecting '::' in using declaration" << flush;
+	tn = pgm.nextToken(); // member name
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting member name in using declaration" << flush;
+	std::string member_name = ((TokenIdent *)tn)->str;
+	namespace_map_t::iterator nsi = pgm.namespace_map.find(ns_name);
+	if ( nsi == pgm.namespace_map.end() )
+	    pgm.Throw(tn) << "Unknown namespace '" << ns_name << "'" << flush;
+	variable_map_iter vmi = nsi->second.find(member_name);
+	if ( vmi == nsi->second.end() )
+	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+	// import into global scope
+	std::string name = member_name;
+	if ( !pgm.findVariable(name) )
+	    pgm.tkProgram->variables.push_back(vmi->second);
+	// expect semicolon
+	tn = pgm.nextToken();
+	if ( !tn || tn->id() != TokenID::tkSemi )
+	    pgm.Throw(tn) << "Expecting ';' after using declaration" << flush;
+	return NULL;
+    }
+
+    pgm.Throw(tn) << "Unexpected token in using declaration" << flush;
+    return NULL;
+}
+
+
+// parse a structure definition
+//
+// forms:
+// struct tag { type member; ... };
+// struct { type member; } variable;
+// struct tag { type member; } variable;
+// struct tag variable;
+// typedef struct tag alias;
+// typedef struct tag { type member; } alias;
+// typedef struct { type member; } alias;
 TokenBase *TokenSTRUCT::parse(Program &pgm)
 {
-    TokenIdent *tag = NULL, *alias = NULL;
+    TokenIdent *tag = NULL;
     TokenBase *tn;
     TokenDataType *tdt;
-    bool do_typedef = pgm.prevToken()->id() == TokenID::tkTYPEDEF ? true : false;
+    bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false;
     datatype_map_iter bmi; // TokenDataType map
     datadef_map_iter dmi;  // DataDef map
 
     DBG(std::cout << std::endl << "TokenSTRUCT::parse() top" << std::endl);
     if ( !(tn=pgm.peekToken()) )
-	throw "Unexpected end of input";
+	pgm.Throw << "Unexpected end of input" << flush;
 
+    // optional struct tag name
     if ( tn->type() == TokenType::ttIdentifier )
     {
-	tag = (TokenIdent *)tn;
+	tag = (TokenIdent *)pgm.nextToken(); // consume tag
 	DBG(cout << "TokenSTRUCT::parse() got tag " << tag->str << endl);
-	tn = pgm.nextToken();
+	tn = pgm.peekToken(); // peek at what follows the tag
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input after struct tag" << flush;
     }
 
     // if no brace, then this structure type must already be defined
     // and we are either doing a typedef, or a variable declaration
     if ( tn->id() != TokenID::tkOpBrc )
     {
-	if ( !tag ) { throw "Expecting { or identifier"; }
+	if ( !tag )
+	    pgm.Throw(tn) << "Expecting '{' or identifier after struct" << flush;
 	if ( (dmi=pgm.struct_map.find(tag->str)) == pgm.struct_map.end() )
-	    throw "Unknown identifier";
+	    pgm.Throw(tn) << "Unknown struct type '" << tag->str << "'" << flush;
 	// typedef struct tag alias
 	if ( do_typedef )
 	{
+	    tn = pgm.nextToken(); // consume the alias identifier
 	    if ( tn->type() != TokenType::ttIdentifier )
-		throw "Expecting identifier";
-	    alias = (TokenIdent *)pgm.nextToken();
+		pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
+	    TokenIdent *alias = (TokenIdent *)tn;
 	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
-		throw "Identifier already defined";
+		pgm.Throw(tn) << "Identifier already defined" << flush;
 	    tdt = new TokenDataType(alias->str.c_str(), *dmi->second);
 	    pgm.datatype_map[alias->str] = tdt;
-	    return this;
+	    return NULL;
 	}
 
+	// struct tag variable; — declare variable of existing struct type
 	string tname("struct ");
 	tname.append(tag->str);
 	tdt = new TokenDataType(tname.c_str(), *dmi->second);
 	return pgm.parseDeclaration(tdt);
     }
 
-    // otherwise we are defining a structure
+    // ---- defining a new structure: struct [tag] { type member; ... } ----
 
-    return this;
+    pgm.nextToken(); // consume '{'
+
+    DataDefSTRUCT *dds = new DataDefSTRUCT(tag ? tag->str : "anonymous", 0);
+    DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
+
+    while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
+    {
+	// expect a data type token
+	if ( tn->type() != TokenType::ttDataType )
+	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
+	TokenDataType *mtype = (TokenDataType *)pgm.nextToken(); // consume type
+
+	// expect member name
+	tn = pgm.nextToken();
+	if ( tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
+	std::string mname = ((TokenIdent *)tn)->str;
+
+	dds->addMember(mname, mtype->definition, 1);
+	DBG(cout << "TokenSTRUCT::parse() added member " << mtype->definition.name << ' ' << mname
+	    << " (size " << mtype->definition.size << ", total " << dds->size << ')' << endl);
+
+	// expect semicolon
+	tn = pgm.nextToken();
+	if ( tn->id() != TokenID::tkSemi )
+	    pgm.Throw(tn) << "Expecting ';' after struct member" << flush;
+    }
+
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input in struct definition" << flush;
+    pgm.nextToken(); // consume '}'
+
+    // register the struct type
+    if ( tag )
+    {
+	if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
+	    pgm.Throw(tag) << "Struct '" << tag->str << "' already defined" << flush;
+	pgm.struct_map[tag->str] = dds;
+	DBG(cout << "TokenSTRUCT::parse() registered struct " << tag->str << " size=" << dds->size << endl);
+    }
+
+    // what follows the closing brace?
+    tn = pgm.peekToken();
+
+    // typedef struct [tag] { ... } alias;
+    if ( do_typedef )
+    {
+	tn = pgm.nextToken();
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
+	TokenIdent *alias = (TokenIdent *)tn;
+	if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
+	    pgm.Throw(tn) << "Identifier '" << alias->str << "' already defined" << flush;
+	tdt = new TokenDataType(alias->str.c_str(), *dds);
+	pgm.datatype_map[alias->str] = tdt;
+	// also register in struct_map so "struct alias" works
+	pgm.struct_map[alias->str] = dds;
+	DBG(cout << "TokenSTRUCT::parse() typedef alias " << alias->str << endl);
+	return NULL;
+    }
+
+    // struct [tag] { ... } variable;
+    if ( tn && tn->type() == TokenType::ttIdentifier )
+    {
+	string tname("struct ");
+	tname.append(tag ? tag->str : "anonymous");
+	tdt = new TokenDataType(tname.c_str(), *dds);
+	return pgm.parseDeclaration(tdt);
+    }
+
+    // struct tag { ... }; — just a type definition, nothing to compile
+    if ( tn && tn->id() == TokenID::tkSemi )
+    {
+	pgm.nextToken(); // consume ';'
+	return NULL;
+    }
+
+    pgm.Throw(tn) << "Expecting variable name or ';' after struct definition" << flush;
+    return NULL;
+}
+
+// parse a class definition
+// forms:
+// class Name { type member; rettype method() { ... } };
+// class Name variable;
+// typedef class Name alias;
+TokenBase *TokenCLASS::parse(Program &pgm)
+{
+    TokenIdent *tag = NULL;
+    TokenBase *tn;
+    TokenDataType *tdt;
+    bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false;
+    datatype_map_iter bmi;
+    datadef_map_iter dmi;
+
+    DBG(std::cout << std::endl << "TokenCLASS::parse() top" << std::endl);
+    if ( !(tn=pgm.peekToken()) )
+	pgm.Throw << "Unexpected end of input" << flush;
+
+    // class name is required (no anonymous classes)
+    if ( tn->type() == TokenType::ttIdentifier )
+    {
+	tag = (TokenIdent *)pgm.nextToken();
+	DBG(cout << "TokenCLASS::parse() got name " << tag->str << endl);
+	tn = pgm.peekToken();
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input after class name" << flush;
+    }
+
+    // if no brace, class type must already be defined
+    if ( tn->id() != TokenID::tkOpBrc )
+    {
+	if ( !tag )
+	    pgm.Throw(tn) << "Expecting class name" << flush;
+	if ( (dmi=pgm.struct_map.find(tag->str)) == pgm.struct_map.end() )
+	    pgm.Throw(tn) << "Unknown class type '" << tag->str << "'" << flush;
+	if ( do_typedef )
+	{
+	    tn = pgm.nextToken();
+	    if ( tn->type() != TokenType::ttIdentifier )
+		pgm.Throw(tn) << "Expecting identifier in typedef" << flush;
+	    TokenIdent *alias = (TokenIdent *)tn;
+	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
+		pgm.Throw(tn) << "Identifier already defined" << flush;
+	    tdt = new TokenDataType(alias->str.c_str(), *dmi->second);
+	    pgm.datatype_map[alias->str] = tdt;
+	    return NULL;
+	}
+	tdt = new TokenDataType(tag->str.c_str(), *dmi->second);
+	return pgm.parseDeclaration(tdt);
+    }
+
+    // ---- defining a new class: class Name { ... } ----
+
+    if ( !tag )
+	pgm.Throw(tn) << "Class definition requires a name" << flush;
+
+    pgm.nextToken(); // consume '{'
+
+    DataDefCLASS *ddc = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
+    DBG(cout << "TokenCLASS::parse() defining class " << tag->str << endl);
+
+    while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
+    {
+	// expect a data type token
+	if ( tn->type() != TokenType::ttDataType )
+	    pgm.Throw(tn) << "Expecting type in class definition" << flush;
+	TokenDataType *mtype = (TokenDataType *)pgm.nextToken();
+
+	// expect member name
+	tn = pgm.nextToken();
+	if ( tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
+	std::string mname = ((TokenIdent *)tn)->str;
+
+	// peek: is this a method (followed by '(') or a data member (followed by ';')?
+	tn = pgm.peekToken();
+	if ( tn && tn->id() == TokenID::tkOpBrk )
+	{
+	    // method declaration — parse as function, add to class methods
+	    DBG(cout << "TokenCLASS::parse() parsing method " << mname << endl);
+	    pgm.parseFunction(mtype->definition, mname);
+	    // find the variable that parseFunction created and add to class methods
+	    Variable *mvar;
+	    if ( (mvar=pgm.tkProgram->findVariable(mname)) )
+		ddc->methods.push_back(mvar);
+	}
+	else
+	{
+	    // data member
+	    ddc->addMember(mname, mtype->definition, 1);
+	    DBG(cout << "TokenCLASS::parse() added member " << mtype->definition.name << ' ' << mname
+		<< " (size " << mtype->definition.size << ", total " << ddc->size << ')' << endl);
+	    tn = pgm.nextToken();
+	    if ( tn->id() != TokenID::tkSemi )
+		pgm.Throw(tn) << "Expecting ';' after class member" << flush;
+	}
+    }
+
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input in class definition" << flush;
+    pgm.nextToken(); // consume '}'
+
+    // register the class type
+    if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
+	pgm.Throw(tag) << "Class '" << tag->str << "' already defined" << flush;
+    pgm.struct_map[tag->str] = ddc;
+    // also register as a data type so "ClassName var;" works without "class" prefix
+    tdt = new TokenDataType(tag->str.c_str(), *ddc);
+    pgm.datatype_map[tag->str] = tdt;
+    DBG(cout << "TokenCLASS::parse() registered class " << tag->str << " size=" << ddc->size << endl);
+
+    // what follows?
+    tn = pgm.peekToken();
+
+    if ( do_typedef )
+    {
+	tn = pgm.nextToken();
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
+	TokenIdent *alias = (TokenIdent *)tn;
+	tdt = new TokenDataType(alias->str.c_str(), *ddc);
+	pgm.datatype_map[alias->str] = tdt;
+	pgm.struct_map[alias->str] = ddc;
+	return NULL;
+    }
+
+    // class Name { ... } variable;
+    if ( tn && tn->type() == TokenType::ttIdentifier )
+    {
+	tdt = new TokenDataType(tag->str.c_str(), *ddc);
+	return pgm.parseDeclaration(tdt);
+    }
+
+    // class Name { ... }; — just a definition
+    if ( tn && tn->id() == TokenID::tkSemi )
+    {
+	pgm.nextToken();
+	return NULL;
+    }
+
+    pgm.Throw(tn) << "Expecting variable name or ';' after class definition" << flush;
+    return NULL;
 }
 
 TokenBase *TokenRETURN::parse(Program &pgm)
@@ -965,16 +1737,16 @@ TokenBase *TokenIF::parse(Program &pgm)
     if ( tn->id() != TokenID::tkOpBrk )
     {
 	DBG(cerr << "TokenIF::parse() expecting (" << endl);
-	throw tn;
+	pgm.Throw(tn) << "expecting ( after if" << flush;
     }
     DBG(cout << "TokenIF::parse() calling condition=parseExpression(" << (char)tn->get() << ')' << endl);
     if ( !(condition=pgm.parseExpression(tn, true)) )
-	throw "Failed to parse if expression";
+	pgm.Throw(tn) << "Failed to parse if expression" << flush;
 
     tn = pgm.nextToken();
     DBG(cout << "TokenIF::parse() calling statement=parseStatement(" << (char)tn->get() << ')' << endl);
     if ( !(statement=pgm.parseStatement(tn)) )
-	throw "Failed to parse if statement";
+	pgm.Throw(tn) << "Failed to parse if statement" << flush;
 
     tn = pgm.peekToken();
     if ( tn && tn->id() == TokenID::tkELSE )
@@ -984,7 +1756,7 @@ TokenBase *TokenIF::parse(Program &pgm)
 	DBG(cout << "TokenIF::parse() calling elsestmt=parseStatement(" << (char)tn->get() << ')' << endl);
 	elsestmt = pgm.parseStatement(tn);
 	if ( !elsestmt )
-	    throw "parse error on else";
+	    pgm.Throw(tn) << "parse error on else" << flush;
     }
     else
     if ( tn )
@@ -1002,32 +1774,32 @@ TokenBase *TokenFOR::parse(Program &pgm)
     if ( tn->id() != TokenID::tkOpBrk )
     {
 	DBG(cerr << "TokenFOR::parse() expecting (" << endl);
-	throw tn;
+	pgm.Throw(tn) << "expecting ( after for" << flush;
     }
 
     tn = pgm.nextToken();
     DBG(cout << "TokenFOR::parse() initialize: calling parseStatement(" << (char)tn->get() << ')' << endl);
     if ( !(initialize = pgm.parseStatement(tn)) )
-	throw "Failed to parse initialize";
+	pgm.Throw(tn) << "Failed to parse initialize" << flush;
     tn = pgm.nextToken();
     DBG(cout << "TokenFOR::parse() condition: calling parseExpression(" << (char)tn->get() << ')' << endl);
     if ( !(condition = pgm.parseExpression(tn, true)) )
-	throw "Failed to parse expression";
+	pgm.Throw(tn) << "Failed to parse expression" << flush;
 
     tn = pgm.nextToken();
     DBG(cout << "TokenFOR::parse() increment: calling parseStatement(" << (char)tn->get() << ')' << endl);
     if ( !(increment = pgm.parseStatement(tn)) )
-	throw "Failed to parse increment";
+	pgm.Throw(tn) << "Failed to parse increment" << flush;
 
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkClBrk )
-	throw "Expecting )";
+	pgm.Throw(tn) << "Expecting )" << flush;
 
     tn = pgm.nextToken();
 
     DBG(cout << "TokenFOR::parse() statement(s): calling parseStatement(" << (char)tn->get() << ')' << endl);
     if ( !(statement = pgm.parseStatement(tn)) )
-	throw "Failed to parse statement";
+	pgm.Throw(tn) << "Failed to parse statement" << flush;
 
     DBG(std::cout << "TokenFOR::parse() END" << std::endl);
 
@@ -1043,7 +1815,7 @@ TokenBase *TokenWHILE::parse(Program &pgm)
     if ( tn->id() != TokenID::tkOpBrk )
     {
 	DBG(cerr << "TokenWHILE::parse() expecting (" << endl);
-	throw tn;
+	pgm.Throw(tn) << "expecting ( after while" << flush;
     }
     DBG(cout << "TokenWHILE::parse() calling parseExpression(" << (char)tn->get() << ')' << endl);
     condition = pgm.parseExpression(tn, true);
@@ -1068,13 +1840,13 @@ TokenBase *TokenDO::parse(Program &pgm)
     if ( tn->id() != TokenID::tkWHILE )
     {
 	DBG(cerr << "TokenDO::parse() expecting while " << endl);
-	throw "Expecting while";
+	pgm.Throw(tn) << "Expecting while after do" << flush;
     }
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkOpBrk )
     {
 	DBG(cerr << "TokenDO::parse() expecting (" << endl);
-	throw "Expecting (";
+	pgm.Throw(tn) << "Expecting ( after while" << flush;
     }
     DBG(cout << "TokenDO::parse() calling parseExpression(" << (char)tn->get() << ')' << endl);
     condition = pgm.parseExpression(tn, true);
@@ -1098,14 +1870,14 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 	// multi-token
 	case TokenID::tkOpBrk:
 	    if ( pgm.peekToken()->id() != TokenID::tkClBrk )
-		throw "Expecting )";
+		pgm.Throw(pgm.peekToken()) << "Expecting )" << flush;
 	    delete tn;
 	    delete pgm.nextToken();
 	    str = "()";
 	    return this;
 	case TokenID::tkOpSqr:
 	    if ( pgm.peekToken()->id() != TokenID::tkClSqr )
-		throw "Expecting ]";
+		pgm.Throw(pgm.peekToken()) << "Expecting ]" << flush;
 	    delete tn;
 	    delete pgm.nextToken();
 	    str = "[]";
@@ -1135,10 +1907,26 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 	    delete tn;
 	    return this;
 	default:
-	    throw tn;
+	    pgm.Throw(tn) << "unexpected token type " << (int)tn->type() << flush;
     }
+    return this;
 }
 
+
+TokenBase *TokenREGISTER::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenREGISTER::parse()" << std::endl);
+    TokenBase *tn = pgm.peekToken();
+    if ( !tn )
+        pgm.Throw << "Unexpected end of input after 'register'" << flush;
+    if ( tn->type() != TokenType::ttDataType )
+        pgm.Throw(tn) << "Expecting type after 'register'" << flush;
+    tn = pgm.nextToken();
+    TokenBase *decl = pgm.parseDeclaration(static_cast<TokenDataType *>(tn));
+    if ( decl && decl->type() == TokenType::ttDeclare )
+        dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
+    return decl;
+}
 
 TokenBase *Program::parseKeyword(TokenKeyword *tk)
 {
@@ -1209,14 +1997,14 @@ void Program::parseFunction(DataDef &dd, std::string &id)
 	if ( nt->type() != TokenType::ttDataType )
 	{
 	    DBG(std::cerr << "parseFunction() params: failed to obtain basetype" << std::endl);
-	    throw "Failed to find type when parsing function parameters";
+	    Throw(nt) << "Failed to find type when parsing function parameters" << flush;
 	}
 	pb = (TokenDataType *)nt;
 	rtype = RefType::rtValue;
 grabnt:
 	// grab the next token
 	if ( !peekToken() )
-	    throw "Unexpected end of file parsing function parameters";
+	    Throw(nt) << "Unexpected end of file parsing function parameters" << flush;
 
 	nt = nextToken();
 
@@ -1235,13 +2023,13 @@ grabnt:
 	}
 	if ( nt->type() != TokenType::ttIdentifier )
 	{
-	    throw "Expecting identifier after type";
+	    Throw(nt) << "Expecting identifier after type" << flush;
 	}
 
 	// grab identifier string
 	pid = ((TokenIdent *)nt)->str;
 	if ( !peekToken() )
-	    throw "Expecting token after identifier";
+	    Throw(nt) << "Expecting token after identifier" << flush;
 
 	nt = nextToken();
 
@@ -1256,12 +2044,12 @@ grabnt:
 		else
 		    func->parameters.push_back(&pb->definition);
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
-		    << dd.size << " name: " << pid << " ptr: " << var << std::endl);
+		    << dd.size << " name: " << pid << " ptr: " << &dd << std::endl);
 	    }
 	    else
 	    {
 		DBG(std::cerr << "parseFunction() params: duplicate parameter name " << pid << std::endl);
-		throw "Duplicate parameter name";
+		Throw(nt) << "Duplicate parameter name" << flush;
 	    }
 	    if ( nt->id() == TokenID::tkClBrk )
 		break;
@@ -1271,7 +2059,7 @@ grabnt:
     if ( !nt )
     {
 	DBG(std::cerr << "parseFunction() expecting more tokens, missing closing bracket" << std::endl);
-	throw "Missing closing bracket";
+	Throw << "Missing closing bracket" << flush;
     }
 
     nt = nextToken();
@@ -1301,7 +2089,7 @@ grabnt:
     if ( nt->id() != TokenID::tkOpBrc )
     {
 	// throw error
-	throw "Expecting brace after function declaration";
+	Throw(nt) << "Expecting brace after function declaration" << flush;
     }
 
     DataDef *d;
@@ -1313,6 +2101,7 @@ grabnt:
 	d = *dvi;
 	DBG(cout << "parseFunction() adding parameter variable " << ids[i] << endl);
 	v = new Variable(ids[i++], *d, 1, NULL, false);
+	v->flags |= vfPARAM;
 	method->parameters.push_back(v);
     }
 
@@ -1355,20 +2144,20 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
     DBG(std::cout << "parseDeclaration(" << tb->str << ") START " << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column << std::endl);
 
     if ( !peekToken() )
-	throw "Unexpected end of data: Expecting identifier after type";
+	Throw(tb) << "Unexpected end of data: Expecting identifier after type" << flush;
     nt = nextToken();
 
     if ( nt->type() != TokenType::ttIdentifier )
     {
 	DBG(cerr << "parseDeclaration() nt->type()=" << (int)nt->type() << endl);
-	throw "Expecting identifier after type";
+	Throw(nt) << "Expecting identifier after type" << flush;
     }
     // grab identifier string
     id = ((TokenIdent *)nt)->str;
     DBG(std::cout << "parseDeclaration() identifier: " << id << std::endl);
 
     if ( !(nt=peekToken()) )
-	throw "expecting token after identifier";
+	Throw << "expecting token after identifier" << flush;
 
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )
@@ -1395,7 +2184,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
     if ( nt->id() != TokenID::tkOpBrk )
     {
 	DBG(std::cerr << "parseDeclaration() throwing token " << (int)nt->id() << std::endl);
-	throw nt;
+	Throw(nt) << "unexpected token type " << (int)nt->type() << flush;
     }
 
     DBG(std::cout << "parseDeclaration() returning" << std::endl);
@@ -1441,12 +2230,21 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return tb;
 
 	    DBG(std::cerr << "parseStatement() throwing token " << (char)tb->get() << std::endl);
-	    throw tb;
+	    Throw(tb) << "unexpected token type " << (int)tb->type() << flush;
 
 	// if we start with an operator or an identifier, then this could be an
 	// assignment or a function call
 	case TokenType::ttIdentifier:
 	    DBG(std::cout << "parseStatement() got identifier " << ((TokenIdent *)tb)->str << std::endl);
+	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
+	    {
+		datatype_map_iter dmi = datatype_map.find(((TokenIdent *)tb)->str);
+		if ( dmi != datatype_map.end() )
+		{
+		    DBG(std::cout << "parseStatement() identifier is a registered type, calling parseDeclaration" << std::endl);
+		    return parseDeclaration(dmi->second);
+		}
+	    }
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseExpression" << std::endl);
@@ -1469,7 +2267,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	case TokenType::ttDataType:
 */
 	default:
-	    throw tb;
+	    Throw(tb) << "unexpected token type " << (int)tb->type() << flush;
     } // end switch
     DBG(cout << "parseStatement() returns NULL" << endl);
 
@@ -1520,23 +2318,33 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(const char *err_msg)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << _line << ':' << _column 
+	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column 
 	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
-	showerror(*tp->is);
+	source.showerror(tb->line, tb->column);
 	return false;
     }
     catch(TokenIdent *ti)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << _line << ':' << _column
+	cerr << ANSI_WHITE << tp->source << ':' << ti->line << ':' << ti->column
 	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
-	showerror(*tp->is);
+	source.showerror(ti->line, ti->column);
 	return false;
     }
     catch(TokenBase *tb)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << _line << ':' << _column
+	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
-	showerror(*tp->is);
+	source.showerror(tb->line, tb->column);
+	if ( tb->type() == TokenType::ttReal )
+	{
+	    cerr << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
+	    printf("%.14lf\n", ((TokenReal *)tb)->dval());
+	}
+	return false;
+    }
+    catch(std::exception &e)
+    {
+	// throwbuf::sync() already printed the formatted error to stderr before throwing
 	return false;
     }
 

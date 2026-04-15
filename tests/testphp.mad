@@ -1,0 +1,93 @@
+#!/../bin/madc
+
+int main()
+{
+    string hello = "  Hello, World!  ";
+    string name = "mad-c is cool";
+    int count;
+
+    // trim
+    php::trim(hello);
+    cout << "trim: [" << hello << "]" << endl;
+
+    // ucfirst / lcfirst
+    php::ucfirst(name);
+    cout << "ucfirst: " << name << endl;
+    php::lcfirst(name);
+    cout << "lcfirst: " << name << endl;
+
+    // str_repeat
+    string star = "*";
+    php::str_repeat(star, 10);
+    cout << "repeat: " << star << endl;
+
+    // str_replace
+    string subj = "foo bar foo baz foo";
+    string srch = "foo";
+    string repl = "qux";
+    php::str_replace(srch, repl, subj);
+    cout << "replace: " << subj << endl;
+
+    // str_rot13
+    string secret = "Hello";
+    php::str_rot13(secret);
+    cout << "rot13: " << secret << endl;
+    php::str_rot13(secret);
+    cout << "rot13x2: " << secret << endl;
+
+    // str_word_count
+    string sentence = "the quick brown fox jumps";
+    count = php::str_word_count(sentence);
+    cout << "words: " << count << endl;
+
+    // nl2br
+    string html = "line1\nline2\nline3";
+    php::nl2br(html);
+    cout << "nl2br: " << html << endl;
+
+    // number_format
+    string formatted;
+    string comma = ",";
+    php::number_format(formatted, 1234567, comma);
+    cout << "number: " << formatted << endl;
+
+    // explode + implode with MadArray
+    string csv = "one,two,three,four";
+    string delim = ",";
+    string piece;
+    int parts;
+    array arr;
+
+    php::explode(arr, delim, csv);
+    parts = php::count(arr);
+    cout << "parts: " << parts << endl;
+
+    php::array_get(piece, arr, 0);
+    cout << "piece[0]: " << piece << endl;
+    php::array_get(piece, arr, 2);
+    cout << "piece[2]: " << piece << endl;
+
+    // implode
+    string glue = " | ";
+    string joined;
+    php::implode(joined, glue, arr);
+    cout << "joined: " << joined << endl;
+
+    // array_push + count
+    php::array_push(arr, "five");
+    parts = php::count(arr);
+    cout << "after push: " << parts << endl;
+
+    // in_array
+    string search = "three";
+    int found;
+    found = php::in_array(search, arr);
+    cout << "in_array: " << found << endl;
+
+    // sort
+    php::sort(arr);
+    php::implode(joined, delim, arr);
+    cout << "sorted: " << joined << endl;
+
+    return 0;
+}

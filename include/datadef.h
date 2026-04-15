@@ -6,6 +6,8 @@
 //////////////////////////////////////////////////////////////////////////
 #define __DATADEF_H 1
 
+extern bool madc_verbose;
+
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
 
@@ -21,6 +23,7 @@ enum class DataType : uint16_t {
 	dtSTRING, dtISTREAM, dtOSTREAM, dtISSTREAM, dtOSSTREAM, dtSSTREAM,
 	dtIFSTREAM, dtOFSTREAM, dtFSTREAM, dtTCPSTREAM, 
 	dtMUTEX, dtTHREAD, dtTHISTHREAD,
+	dtARRAY,
 
 	// rtPointer variants
 	dtVOIDptr = 10000, dtBOOLptr, dtUINT8ptr, dtBYTEptr=dtUINT8ptr, dtINT8ptr, dtCHARptr = dtINT8ptr,
@@ -31,6 +34,7 @@ enum class DataType : uint16_t {
 	dtSTRINGptr, dtISTREAMptr, dtOSTREAMptr, dtISSTREAMptr, dtOSSTREAMptr, dtSSTREAMptr,
 	dtIFSTREAMptr, dtOFSTREAMptr, dtFSTREAMptr, dtTCPSTREAMptr, 
 	dtMUTEXptr, dtTHREADptr, dtTHISTHREADptr,
+	dtARRAYptr,
 
 	// rtReference variants
 	dtVOIDref = 20000, dtBOOLref, dtUINT8ref, dtBYTEref=dtUINT8ref, dtINT8ref, dtCHARref = dtINT8ref,
@@ -41,12 +45,15 @@ enum class DataType : uint16_t {
 	dtSTRINGref, dtISTREAMref, dtOSTREAMref, dtISSTREAMref, dtOSSTREAMref, dtSSTREAMref,
 	dtIFSTREAMref, dtOFSTREAMref, dtFSTREAMref, dtTCPSTREAMref, 
 	dtMUTEXref, dtTHREADref, dtTHISTHREADref,
+	dtARRAYref,
 };
 
 // Variable flags
 typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfSTACK	=    2, // stack vs heap
 			  vfSTATIC	=    4, // static variable
+			  vfPARAM	=    8, // parameter variable
+			  vfREGISTER	=   16, // register-only: never written to memory
 			  vfREGSET	=   64, // GpReg set
 			  vfXREGSET	=  128, // extra reg is set (used for string.c_str)
 			  vfALLOC	=  256, // data pointer was allocated by us
@@ -74,6 +81,15 @@ public:
     DataDef() { size = 0; _type = 0; }
     DataDef(std::string n, size_t s, DataType d) { name = n; size = s; _type = (uint32_t)d; }
     virtual ~DataDef() {}
+    virtual bool is_compatible(DataDef &d)
+    {
+	if ( &d == this
+	||   rawtype() == d.rawtype()
+	||  (is_numeric() && d.is_numeric()) )
+	    return true;
+
+	return false;
+    }
     virtual bool is_string() { if (rawtype() == DataType::dtSTRING) return true; return false; }
     virtual bool is_numeric()
     {
@@ -81,6 +97,37 @@ public:
 	    return false;
 	if ( _type > 0 && _type < (uint16_t)DataType::dtRESERVED )
 	    return true;
+	return false;
+    }
+    virtual bool is_integer()
+    {
+	if ( basetype() != BaseType::btSimple )
+	    return false;
+	if ( _type > 0 && _type < (uint16_t)DataType::dtFLOAT )
+	    return true;
+	return false;
+    }
+    virtual bool is_real()
+    {
+	if ( basetype() != BaseType::btSimple )
+	    return false;
+	if ( _type >= (uint16_t)DataType::dtFLOAT && _type < (uint16_t)DataType::dtRESERVED )
+	    return true;
+	return false;
+    }
+    virtual bool is_unsigned()
+    {
+    	switch(rawtype())
+    	{
+	    case DataType::dtUINT8:
+	    case DataType::dtUINT16:
+	    case DataType::dtUINT24:
+	    case DataType::dtUINT32:
+	    case DataType::dtUINT64:
+		return true;
+	    default:
+		return false;
+    	}
 	return false;
     }
     virtual bool is_function()
@@ -107,7 +154,10 @@ public:
 	    case DataType::dtOSSTREAM:
 	    case DataType::dtFSTREAM:
 	    case DataType::dtOFSTREAM:
+	    case DataType::dtIFSTREAM:
+	    case DataType::dtISTREAM:
 	    case DataType::dtTCPSTREAM:
+	    case DataType::dtARRAY:
 		return true;
 	    default:
 		return false;
@@ -124,6 +174,21 @@ public:
 	    case DataType::dtFSTREAM:
 	    case DataType::dtOFSTREAM:
 	    case DataType::dtTCPSTREAM:
+		return true;
+	    default:
+		return false;
+    	}
+	return false;
+    }
+    virtual bool has_istream()
+    {
+    	switch(rawtype())
+    	{
+	    case DataType::dtISTREAM:
+	    case DataType::dtSSTREAM:
+	    case DataType::dtISSTREAM:
+	    case DataType::dtFSTREAM:
+	    case DataType::dtIFSTREAM:
 		return true;
 	    default:
 		return false;
@@ -158,25 +223,30 @@ public:
 	if ( rt == RefType::rtPointer )   { _type += 10000; return; }
     }
     // get a new register for the datatype
-    virtual asmjit::x86::Gp newreg(asmjit::x86::Compiler &cc, const char *n=NULL)
+    virtual asmjit::Operand newreg(asmjit::x86::Compiler &cc, const char *n=NULL)
     {
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    return cc.newGpb(n);
-	case DataType::dtBOOL:    return cc.newGpb(n);
-	case DataType::dtINT64:   return cc.newGpq(n);
-	case DataType::dtINT16:   return cc.newGpw(n);
-	case DataType::dtINT24:   return cc.newGpw(n);
-	case DataType::dtINT32:   return cc.newGpd(n);
-	case DataType::dtUINT8:   return cc.newGpb(n);
-	case DataType::dtUINT16:  return cc.newGpw(n);
-	case DataType::dtUINT24:  return cc.newGpw(n);
-	case DataType::dtUINT32:  return cc.newGpd(n);
-	case DataType::dtUINT64:  return cc.newGpq(n);
-	default:		  return cc.newIntPtr(n);
+	case DataType::dtCHAR:    return n ? cc.newGpb(n) : cc.newGpb();
+	case DataType::dtBOOL:    return n ? cc.newGpb(n) : cc.newGpb();
+	case DataType::dtINT64:   return n ? cc.newGpq(n) : cc.newGpq();
+	case DataType::dtINT16:   return n ? cc.newGpw(n) : cc.newGpw();
+	case DataType::dtINT24:   return n ? cc.newGpw(n) : cc.newGpw();
+	case DataType::dtINT32:   return n ? cc.newGpd(n) : cc.newGpd();
+	case DataType::dtUINT8:   return n ? cc.newGpb(n) : cc.newGpb();
+	case DataType::dtUINT16:  return n ? cc.newGpw(n) : cc.newGpw();
+	case DataType::dtUINT24:  return n ? cc.newGpw(n) : cc.newGpw();
+	case DataType::dtUINT32:  return n ? cc.newGpd(n) : cc.newGpd();
+	case DataType::dtUINT64:  return n ? cc.newGpq(n) : cc.newGpq();
+	case DataType::dtFLOAT:   return n ? cc.newXmm(n) : cc.newXmm();
+	case DataType::dtDOUBLE:  return n ? cc.newXmm(n) : cc.newXmm();
+	case DataType::dtLDOUBLE: return n ? cc.newXmm(n) : cc.newXmm();
+	default:		  return n ? cc.newIntPtr(n) : cc.newIntPtr();
 	}
     }
-    virtual void putreg(asmjit::x86::Compiler &cc, void *ptr, asmjit::x86::Gp reg)
+    // move a register value into memory location pointed to by a pointer
+    // mov([mem], reg)
+    virtual void movrval2mptr(asmjit::x86::Compiler &cc, void *ptr, asmjit::x86::Gp reg)
     {
 	switch((DataType)_type)
 	{
@@ -191,10 +261,15 @@ public:
 	case DataType::dtUINT24:  cc.mov(asmjit::x86::word_ptr((uintptr_t)ptr),  reg); break;
 	case DataType::dtUINT32:  cc.mov(asmjit::x86::dword_ptr((uintptr_t)ptr), reg); break;
 	case DataType::dtUINT64:  cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); break;
+	case DataType::dtFLOAT:   cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); break;
+	case DataType::dtDOUBLE:  cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); break;
+	case DataType::dtLDOUBLE: cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); break;
 	default: DBG(std::cerr << "DataDef::putreg() unsupported numeric type " << _type << std::endl); break;
 	}
     }
-    virtual void putreg(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, asmjit::x86::Gp reg)
+    // move a register value into a memory location pointed to by a register
+    // mov([reg1], reg2)
+    virtual void movrval2rptr(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, asmjit::x86::Gp reg)
     {
 	switch((DataType)_type)
 	{
@@ -209,10 +284,34 @@ public:
 	case DataType::dtUINT24:  cc.mov(asmjit::x86::word_ptr(ptr),  reg); break;
 	case DataType::dtUINT32:  cc.mov(asmjit::x86::dword_ptr(ptr), reg); break;
 	case DataType::dtUINT64:  cc.mov(asmjit::x86::qword_ptr(ptr), reg); break;
-	default:		  cc.mov(asmjit::x86::ptr(ptr), reg); break; // DBG(std::cerr << "DataDef::putreg() unsupported numeric type " << _type << std::endl); break;
+	default:		  cc.mov(asmjit::x86::ptr(ptr), reg);       break;
+	// DBG(std::cerr << "DataDef::movrval2rptr() unsupported numeric type " << _type << std::endl); break;
 	}
     }
-    virtual void movreg(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
+    // move a numeric value into a memory location pointed to by a register
+    // mov([reg1], int)
+    virtual void movint2rptr(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, int rval)
+    {
+	switch((DataType)_type)
+	{
+	case DataType::dtCHAR:    cc.mov(asmjit::x86::byte_ptr(ptr),  rval); break;
+	case DataType::dtBOOL:    cc.mov(asmjit::x86::byte_ptr(ptr),  rval); break;
+	case DataType::dtINT64:   cc.mov(asmjit::x86::qword_ptr(ptr), rval); break;
+	case DataType::dtINT16:   cc.mov(asmjit::x86::word_ptr(ptr),  rval); break;
+	case DataType::dtINT24:   cc.mov(asmjit::x86::word_ptr(ptr),  rval); break;
+	case DataType::dtINT32:   cc.mov(asmjit::x86::dword_ptr(ptr), rval); break;
+	case DataType::dtUINT8:   cc.mov(asmjit::x86::byte_ptr(ptr),  rval); break;
+	case DataType::dtUINT16:  cc.mov(asmjit::x86::word_ptr(ptr),  rval); break;
+	case DataType::dtUINT24:  cc.mov(asmjit::x86::word_ptr(ptr),  rval); break;
+	case DataType::dtUINT32:  cc.mov(asmjit::x86::dword_ptr(ptr), rval); break;
+	case DataType::dtUINT64:  cc.mov(asmjit::x86::qword_ptr(ptr), rval); break;
+	default:		  cc.mov(asmjit::x86::ptr(ptr), rval);       break;
+	// DBG(std::cerr << "DataDef::movint2rptr() unsupported numeric type " << _type << std::endl); break;
+	}
+    }
+    // move memory pointed by a pointer into a Gp register
+    // mov(reg, [mem])
+    virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
     {
 	switch((DataType)_type)
 	{
@@ -227,10 +326,37 @@ public:
 	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
 	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
 	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtFLOAT:   cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtDOUBLE:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtLDOUBLE: cc.mov(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
 	default:		  cc.mov(reg, asmjit::imm(ptr));		       break;
 	} // switch
     }
-    virtual void movreg(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, asmjit::x86::Gp &ptr)
+    // move memory pointed by a pointer into an Xmm register
+    // mov(reg, [mem])
+    virtual void movmptr2xval(asmjit::x86::Compiler &cc, asmjit::x86::Xmm &reg, void *ptr)
+    {
+	switch((DataType)_type)
+	{
+	case DataType::dtCHAR:    cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
+	case DataType::dtBOOL:    cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
+	case DataType::dtINT64:   cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtINT16:   cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
+	case DataType::dtINT24:   cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
+	case DataType::dtINT32:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtUINT8:   cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
+	case DataType::dtUINT16:  cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
+	case DataType::dtUINT24:  cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
+	case DataType::dtUINT32:  cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtUINT64:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtFLOAT:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtDOUBLE:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtLDOUBLE: cc.movsd(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
+	default:		  cc.movq(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	} // switch
+    }
+    // move memory pointed to by a register into a register
+    virtual void movrptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, asmjit::x86::Gp &ptr)
     {
 	switch((DataType)_type)
 	{
@@ -248,16 +374,25 @@ public:
 	default:		  cc.mov(reg, asmjit::x86::ptr(ptr));            break;
 	} // switch
     }
-};
-
-// Date Type tokens
-class TokenDataType: public TokenIdent
-{
-public:
-    DataDef &definition;
-    TokenDataType(const char *k, DataDef &d) : TokenIdent(k), definition(d) {}
-    virtual TokenType type() const { return TokenType::ttDataType; }
-    virtual TokenBase *clone() { return new TokenDataType(str.c_str(), definition); }
+    // move memory pointed to by a register and an offset, into a register
+    virtual void movrptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, asmjit::x86::Gp &ptr, size_t ofs)
+    {
+	switch((DataType)_type)
+	{
+	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs)); break;
+	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr(ptr, ofs)); break;
+	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr(ptr, ofs)); break;
+	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs)); break;
+	default:		  cc.mov(reg, asmjit::x86::ptr(ptr, ofs));       break;
+	} // switch
+    }
 };
 
 typedef std::pair<std::string, DataDef *> memberpair_t;
@@ -330,6 +465,7 @@ public:
 
     DataDefCLASS(std::string n, size_t s, DataType d) : DataDefSTRUCT(n, s, d) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
+    Variable *findMethod(std::string &s);
 };
 
 typedef DataDefCLASS DDClass;
@@ -356,8 +492,113 @@ class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("stri
 class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} };
 class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostream", sizeof(std::ostream), DataType::dtOSTREAM) {} };
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
+class DataDefIFSTREAM:  public DDClass { public: DataDefIFSTREAM():DDClass("ifstream", sizeof(std::ifstream), DataType::dtIFSTREAM) {} };
+class DataDefOFSTREAM:  public DDClass { public: DataDefOFSTREAM():DDClass("ofstream", sizeof(std::ofstream), DataType::dtOFSTREAM) {} };
+class DataDefFSTREAM:   public DDClass { public: DataDefFSTREAM(): DDClass("fstream", sizeof(std::fstream), DataType::dtFSTREAM) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
 
+// ---- MadValue: tagged union for PHP-style mixed-type arrays ----
+
+struct MadValue
+{
+    DataType type;
+    union {
+	int64_t     ival;
+	double      dval;
+	void       *ptr;    // std::string*, MadArray*, etc.
+    };
+
+    MadValue() : type(DataType::dtVOID), ival(0) {}
+    MadValue(int64_t v) : type(DataType::dtINT64), ival(v) {}
+    MadValue(double v)  : type(DataType::dtDOUBLE), dval(v) {}
+
+    // string constructor — copies the string
+    MadValue(const std::string &s) : type(DataType::dtSTRING)
+    {
+	ptr = new std::string(s);
+    }
+
+    // copy constructor — deep copy strings
+    MadValue(const MadValue &o) : type(o.type)
+    {
+	if ( type == DataType::dtSTRING && o.ptr )
+	    ptr = new std::string(*(std::string *)o.ptr);
+	else
+	    ival = o.ival; // covers ival, dval, and ptr (non-string)
+    }
+
+    // assignment — deep copy strings
+    MadValue &operator=(const MadValue &o)
+    {
+	if ( this != &o )
+	{
+	    // clean up existing string
+	    if ( type == DataType::dtSTRING && ptr )
+		delete (std::string *)ptr;
+	    type = o.type;
+	    if ( type == DataType::dtSTRING && o.ptr )
+		ptr = new std::string(*(std::string *)o.ptr);
+	    else
+		ival = o.ival;
+	}
+	return *this;
+    }
+
+    ~MadValue()
+    {
+	if ( type == DataType::dtSTRING && ptr )
+	    delete (std::string *)ptr;
+    }
+
+    // accessors
+    int64_t      as_int()    const { return ival; }
+    double       as_double() const { return dval; }
+    std::string &as_string() const { return *(std::string *)ptr; }
+    bool         is_string() const { return type == DataType::dtSTRING; }
+    bool         is_int()    const { return type == DataType::dtINT64; }
+    bool         is_double() const { return type == DataType::dtDOUBLE; }
+};
+
+// PHP-style array: ordered, mixed-type, supports both integer and string keys
+class MadArray
+{
+public:
+    std::vector<MadValue> data;                      // indexed storage
+    std::vector<std::pair<std::string, MadValue>> assoc; // associative storage
+
+    size_t count() const { return data.size() + assoc.size(); }
+
+    // integer-indexed access
+    void push(const MadValue &v) { data.push_back(v); }
+    MadValue &at(size_t i) { return data.at(i); }
+    const MadValue &at(size_t i) const { return data.at(i); }
+
+    // associative access
+    MadValue &get(const std::string &key)
+    {
+	for ( auto &p : assoc )
+	    if ( p.first == key ) return p.second;
+	assoc.emplace_back(key, MadValue());
+	return assoc.back().second;
+    }
+
+    void set(const std::string &key, const MadValue &v)
+    {
+	for ( auto &p : assoc )
+	    if ( p.first == key ) { p.second = v; return; }
+	assoc.emplace_back(key, v);
+    }
+
+    MadValue pop()
+    {
+	if ( data.empty() ) return MadValue();
+	MadValue v = data.back();
+	data.pop_back();
+	return v;
+    }
+};
+
+class DataDefARRAY:    public DDClass { public: DataDefARRAY():   DDClass("array", sizeof(MadArray), DataType::dtARRAY) {} };
 
 extern DataDefVOID ddVOID;
 extern DataDefVOIDref ddVOIDref;
@@ -381,13 +622,17 @@ extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
 extern DataDefOSTREAM ddOSTREAM;
 extern DataDefSSTREAM ddSSTREAM;
+extern DataDefIFSTREAM ddIFSTREAM;
+extern DataDefOFSTREAM ddOFSTREAM;
+extern DataDefFSTREAM ddFSTREAM;
+extern DataDefARRAY ddARRAY;
 
 #if 1
 class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
 	DataDefSTRUCT("teststruct",
 	{
 		{"name", &ddSTRING},
-		{"id", &ddINT},
+		{"id",   &ddINT},
 		{"age",  &ddUINT8},
 		{"sex",  &ddUINT8}
 	}) {}
@@ -395,160 +640,5 @@ class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
 
 extern DataDefTEST ddTESTSTRUCT;
 #endif
-
-
-// token definitions of integral data types
-class TokenVOID:      public TokenDataType { public: TokenVOID() :  TokenDataType("void", ddVOID) {} };
-class TokenBOOL:      public TokenDataType { public: TokenBOOL() :  TokenDataType("bool", ddBOOL) {} };
-class TokenCHAR:      public TokenDataType { public: TokenCHAR() :  TokenDataType("char", ddCHAR) {} };
-class TokenINT:       public TokenDataType { public: TokenINT()  :  TokenDataType("int", ddINT) {} };
-class TokenINT8:      public TokenDataType { public: TokenINT8() :  TokenDataType("int8_t", ddINT8) {} };
-class TokenINT16:     public TokenDataType { public: TokenINT16():  TokenDataType("int16_t", ddINT16) {} };
-class TokenINT24:     public TokenDataType { public: TokenINT24():  TokenDataType("int24_t", ddINT24) {} };
-class TokenINT32:     public TokenDataType { public: TokenINT32():  TokenDataType("int32_t", ddINT32) {} };
-class TokenINT64:     public TokenDataType { public: TokenINT64():  TokenDataType("int64_t", ddINT64) {} };
-class TokenUINT8:     public TokenDataType { public: TokenUINT8() : TokenDataType("uint8_t", ddUINT8) {} };
-class TokenUINT16:    public TokenDataType { public: TokenUINT16(): TokenDataType("uint16_t", ddUINT16) {} };
-class TokenUINT24:    public TokenDataType { public: TokenUINT24(): TokenDataType("uint24_t", ddUINT24) {} };
-class TokenUINT32:    public TokenDataType { public: TokenUINT32(): TokenDataType("uint32_t", ddUINT32) {} };
-class TokenUINT64:    public TokenDataType { public: TokenUINT64(): TokenDataType("uint64_t", ddUINT64) {} };
-class TokenFLOAT:     public TokenDataType { public: TokenFLOAT() : TokenDataType("float", ddFLOAT) {} };
-class TokenDOUBLE:    public TokenDataType { public: TokenDOUBLE(): TokenDataType("double", ddDOUBLE) {} };
-
-// char *
-class TokenLPSTR:     public TokenDataType { public: TokenLPSTR():  TokenDataType("LPSTR", ddLPSTR) {} };
-
-// some basic c++ types
-class TokenSTRING:    public TokenDataType { public: TokenSTRING(): TokenDataType("string", ddSTRING) {} };
-class TokenOSTREAM:   public TokenDataType { public: TokenOSTREAM():TokenDataType("ostream", ddOSTREAM) {} };
-class TokenSSTREAM:   public TokenDataType { public: TokenSSTREAM():TokenDataType("stringstream", ddSSTREAM) {} };
-
-
-// Variable "container" class to keep track of everything about a variable,
-// primary only used during parsing/compiling
-class Variable
-{
-public:
-    std::string name;
-    DataDef *type;
-    void *data;
-    uint32_t count;
-    uint16_t flags;
-    Variable() { type = &ddINT; data = NULL; flags = 0; count = 0; }
-    Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
-   ~Variable();
-    inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
-    inline void makeconstant() { flags |= vfCONSTANT; }
-    inline bool is_global()   { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
-    inline bool is_constant() { if ( (flags & vfCONSTANT) ) return true; return false; }
-    bool set(int c)
-    {
-	if ( !data ) { return false; }
-	/**/ if (type == &ddCHAR)   *((char *)data) = c;
-	else if (type == &ddBOOL)   *((bool *)data) = c;
-	else if (type == &ddINT)    *((int *)data) = c;
-	else if (type == &ddINT8)   *((int8_t *)data) = c;
-	else if (type == &ddINT16)  *((int16_t *)data) = c;
-	else if (type == &ddINT24)  *((int16_t *)data) = c;
-	else if (type == &ddINT32)  *((int32_t *)data) = c;
-	else if (type == &ddUINT8)  *((uint8_t *)data) = c;
-	else if (type == &ddUINT16) *((uint16_t *)data) = c;
-	else if (type == &ddUINT24) *((uint16_t *)data) = c;
-	else if (type == &ddUINT32) *((uint32_t *)data) = c;
-	else if (type == &ddFLOAT)  *((float *)data) = c;
-	else if (type == &ddDOUBLE) *((double *)data) = c;
-	else 	     { return false; }
-	return true;
-    }
-    template<typename T> int cmp(T c)
-    {
-	if ( !data ) { return 0; }
-	if (type == &ddCHAR)   return *((char *)data) == c;
-	if (type == &ddBOOL)   return *((bool *)data) == c;
-	if (type == &ddINT)    return *((int *)data) == c;
-	if (type == &ddINT8)   return *((int8_t *)data) == c;
-	if (type == &ddINT16)  return *((int16_t *)data) == c;
-	if (type == &ddINT24)  return *((int16_t *)data) == c;
-	if (type == &ddINT32)  return *((int32_t *)data) == c;
-	if (type == &ddUINT8)  return *((uint8_t *)data) == c;
-	if (type == &ddUINT16) return *((uint16_t *)data) == c;
-	if (type == &ddUINT24) return *((uint16_t *)data) == c;
-	if (type == &ddUINT32) return *((uint32_t *)data) == c;
-	if (type == &ddFLOAT)  return *((float *)data) == c;
-	if (type == &ddDOUBLE) return *((double *)data) == c;
-	return 0;
-    }
-    int cmp(std::string &s)
-    {
-	if (type == &ddSTRING) return ((std::string *)data)->compare(s);
-	return 0;
-    }
-    bool dec()
-    {
-	if ( !data ) { return false; }
-	/**/ if (type == &ddCHAR)   --*((char *)data);
-	else if (type == &ddINT)    --*((int *)data);
-	else if (type == &ddINT8)   --*((int8_t *)data);
-	else if (type == &ddINT16)  --*((int16_t *)data);
-	else if (type == &ddINT24)  --*((int16_t *)data);
-	else if (type == &ddINT32)  --*((int32_t *)data);
-	else if (type == &ddUINT8)  --*((uint8_t *)data);
-	else if (type == &ddUINT16) --*((uint16_t *)data);
-	else if (type == &ddUINT24) --*((uint16_t *)data);
-	else if (type == &ddUINT32) --*((uint32_t *)data);
-	else if (type == &ddFLOAT)  --*((float *)data);
-	else if (type == &ddDOUBLE) --*((double *)data);
-	return true;
-    }
-    bool inc()
-    {
-	if ( !data ) { return false; }
-	/**/ if (type == &ddCHAR)   ++*((char *)data);
-	else if (type == &ddINT)    ++*((int *)data);
-	else if (type == &ddINT8)   ++*((int8_t *)data);
-	else if (type == &ddINT16)  ++*((int16_t *)data);
-	else if (type == &ddINT24)  ++*((int16_t *)data);
-	else if (type == &ddINT32)  ++*((int32_t *)data);
-	else if (type == &ddUINT8)  ++*((uint8_t *)data);
-	else if (type == &ddUINT16) ++*((uint16_t *)data);
-	else if (type == &ddUINT24) ++*((uint16_t *)data);
-	else if (type == &ddUINT32) ++*((uint32_t *)data);
-	else if (type == &ddFLOAT)  ++*((float *)data);
-	else if (type == &ddDOUBLE) ++*((double *)data);
-	return true;
-    }
-    template<typename T> T get()
-    {
-	if ( !data ) { return false; }
-	/**/ if (type == &ddCHAR)   return *((char *)data);
-	else if (type == &ddINT)    return *((int *)data);
-	else if (type == &ddINT8)   return *((int8_t *)data);
-	else if (type == &ddINT16)  return *((int16_t *)data);
-	else if (type == &ddINT24)  return *((int16_t *)data);
-	else if (type == &ddINT32)  return *((int32_t *)data);
-	else if (type == &ddUINT8)  return *((uint8_t *)data);
-	else if (type == &ddUINT16) return *((uint16_t *)data);
-	else if (type == &ddUINT24) return *((uint16_t *)data);
-	else if (type == &ddUINT32) return *((uint32_t *)data);
-	else if (type == &ddFLOAT)  return *((float *)data);
-	else if (type == &ddDOUBLE) return *((double *)data);
-	return true;
-    }
-};
-
-
-class TokenVar: public virtual TokenBase
-{
-public:
-    Variable &var;
-    TokenVar(Variable &v) : TokenBase(), var(v) {}
-    virtual TokenType type() const { return TokenType::ttVariable; }
-    virtual int get() const { return var.get<int>(); }
-    virtual int val() const { return var.get<int>(); }
-    virtual void set(int c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
-    virtual asmjit::x86::Gp &getreg(Program &);
-    virtual void putreg(Program &);
-    virtual asmjit::x86::Gp &compile(Program &, asmjit::x86::Gp *ret=NULL);
-};
 
 #endif // __DATADEF_H

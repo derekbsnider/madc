@@ -1,0 +1,29 @@
+#!/../bin/madc
+
+class Point {
+    int x;
+    int y;
+};
+
+class Person {
+    string name;
+    int age;
+};
+
+int main()
+{
+    Point p;
+    Person bob;
+
+    p.x = 100;
+    p.y = 200;
+    cout << "p.x: " << p.x << endl;
+    cout << "p.y: " << p.y << endl;
+
+    bob.name = "Bob";
+    bob.age = 30;
+    cout << "bob.name: " << bob.name << endl;
+    cout << "bob.age:  " << bob.age << endl;
+
+    return 0;
+}

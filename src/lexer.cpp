@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dlfcn.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -21,10 +22,11 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x)
-#include <asmjit/asmjit.h>
-#include "tokens.h"
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+#include <asmjit/x86.h>
 #include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
@@ -50,6 +52,9 @@ TokenSTRUCT	tkSTRUCT;
 TokenDEFAULT	tkDEFAULT;
 TokenTYPEDEF	tkTYPEDEF;
 TokenOPEROVER	tkOPEROVER;
+TokenREGISTER	tkREGISTER;
+TokenUSING	tkUSING;
+TokenNAMESPACE	tkNAMESPACE;
 
 // basic type tokens
 TokenVOID	tkVOID;
@@ -70,11 +75,16 @@ TokenFLOAT	tkFLOAT;
 TokenDOUBLE	tkDOUBLE;
 TokenSTRING	tkSTRING;
 TokenSSTREAM	tkSSTREAM;
+TokenARRAY	tkARRAY;
+TokenIFSTREAM	tkIFSTREAM;
+TokenOFSTREAM	tkOFSTREAM;
+TokenFSTREAM	tkFSTREAM;
 TokenLPSTR	tkLPSTR;
 
 
 void Program::_tokenizer_init()
 {
+    
     tkProgram = NULL;
     tkFunction = NULL;
     _cur_token = NULL;
@@ -106,6 +116,9 @@ void Program::add_keywords()
     keyword_map[tkDEFAULT.str] = &tkDEFAULT;
     keyword_map[tkTYPEDEF.str] = &tkTYPEDEF;
     keyword_map[tkOPEROVER.str] = &tkOPEROVER;
+    keyword_map[tkREGISTER.str] = &tkREGISTER;
+    keyword_map[tkUSING.str] = &tkUSING;
+    keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
 }
 
 // add static tokens for base data types
@@ -129,6 +142,10 @@ void Program::add_datatypes()
     datatype_map[tkDOUBLE.str] = &tkDOUBLE;
     datatype_map[tkSTRING.str] = &tkSTRING;
     datatype_map[tkSSTREAM.str] = &tkSSTREAM;
+    datatype_map[tkARRAY.str] = &tkARRAY;
+    datatype_map[tkIFSTREAM.str] = &tkIFSTREAM;
+    datatype_map[tkOFSTREAM.str] = &tkOFSTREAM;
+    datatype_map[tkFSTREAM.str] = &tkFSTREAM;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
 }
 
@@ -137,93 +154,90 @@ void Program::add_datatypes()
 // TODO: replace top switch with direct dispatch
 //       also likely better to replace istream stuff
 //       with a character buffer for maximum speed
-TokenBase *Program::_getToken(istream &ss)
+TokenBase *Program::_getToken()
 {
     keyword_map_iter kmi;
     datatype_map_iter bmi;
     string word;
-    int ch, cnt;
+    int ch, cnt, row, col;
 
-    if ( !ss.good() || ss.eof() ) { return NULL; }
+    if ( !source.good() || source.eof() ) { return NULL; }
 
-    switch( (ch=get(ss)) )
+    switch( (ch=source.get()) )
     {
 	case ' ':
 	    cnt = 1;
-	    while ( ss.peek() == ' ' )
+	    while ( source.peek() == ' ' )
 	    {
 		++cnt;
-		get(ss);
-		if ( !ss.good() || ss.eof() )
+		source.get();
+		if ( !source.good() || source.eof() )
 		    break;
 	    }
 	    return new TokenSpace(cnt);
 	case '\t':
 	    cnt = 1;
-	    while ( ss.peek() == '\t' )
+	    while ( source.peek() == '\t' )
 	    {
 		++cnt;
-		get(ss);
-		if ( !ss.good() || ss.eof() )
+		source.get();
+		if ( !source.good() || source.eof() )
 		    break;
 	    }
 	    return new TokenTab(cnt);
 	case '\r':
-	    get(ss);
+	    source.get();
 	case '\n':
 	    cnt = 1;
-	    while ( ss.peek() == '\r' || ss.peek() == '\n' )
+	    while ( source.peek() == '\r' || source.peek() == '\n' )
 	    {
 		++cnt;
-		if ( ss.peek() == '\r' ) { get(ss); }
-		get(ss);
-		if ( !ss.good() || ss.eof() )
+		if ( source.peek() == '\r' ) { source.get(); }
+		source.get();
+		if ( !source.good() || source.eof() )
 		    break;
 	    }
-	    _column = 0;
-	    _line += cnt;
-	    _pos = ss.tellg();
 	    return new TokenEOL(cnt);
 	case '=':
-	    if (ss.peek() == '=')
+	    if (source.peek() == '=')
 	    {
-		get(ss);
-		if (ss.peek() == '=') { get(ss); return new Token3Eq; } // ===
+		source.get();
+		if (source.peek() == '=') { source.get(); return new Token3Eq; } // ===
 		return new TokenEquals;					// ==
 	    }
 	    return new TokenAssign;					// =
 	case '+':
-	    if (ss.peek() == '+') { get(ss); return new TokenInc;   }   // ++
-	    if (ss.peek() == '=') { get(ss); return new TokenAddEq; }   // +=
+	    if (source.peek() == '+') { source.get(); return new TokenInc;   }   // ++
+	    if (source.peek() == '=') { source.get(); return new TokenAddEq; }   // +=
 	    return new TokenAdd;					// +
 	case '-':
-	    if (ss.peek() == '-') { get(ss); return new TokenDec;   }   // --
-	    if (ss.peek() == '=') { get(ss); return new TokenSubEq; }   // -=
-	    if (ss.peek() == '>') { get(ss); return new TokenDeRef; }   // ->
+	    if (source.peek() == '-') { source.get(); return new TokenDec;   }   // --
+	    if (source.peek() == '=') { source.get(); return new TokenSubEq; }   // -=
+	    if (source.peek() == '>') { source.get(); return new TokenDeRef; }   // ->
 	    return new TokenNeg;					// -
-	case '*': if (ss.peek() != '=') return new TokenMul;		// *
-	     get(ss); return new TokenMulEq;				// *=
+	case '*': if (source.peek() != '=') return new TokenMul;		// *
+	     source.get(); return new TokenMulEq;				// *=
 	case '/':
-	    if (ss.peek() == '=') { get(ss); return new TokenDivEq; }   // /=
-	    if (ss.peek() == '/')					// //
+	    if (source.peek() == '=') { source.get(); return new TokenDivEq; }   // /=
+	    if (source.peek() == '/')					// //
 	    {
-		get(ss);
+		source.get();
 		word = "//";
-		while ( ss.good() && !ss.eof() && ss.peek() != '\r' && ss.peek() != '\n' )
-		    word += get(ss);
+		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
+		    word += source.get();
 		return new TokenREM(word);
 	    }
-	    if (ss.peek() == '*')					// /*
+	    if (source.peek() == '*')					// /*
 	    {
-		get(ss);
+		source.get();
 		word = "/*";
-		while ( ss.good() && !ss.eof() )
+		while ( source.good() && !source.eof() )
 		{
-		    ch = get(ss);
-		    if ( ch == '*' && ss.peek() == '/' )		// */
+		    ch = source.get();
+		    if ( ch == '*' && source.peek() == '/' )		// */
 		    {
 			word += ch;
-			word += get(ss);
+			word += source.get();
 			break;
 		    }
 		    word += ch;
@@ -233,13 +247,97 @@ TokenBase *Program::_getToken(istream &ss)
 	    return new TokenDiv;
 	case '\\': return new TokenBslsh;
 	case '#': // #! is a special comment style for shell script execution
-	    if ( ss.peek() == '!' )
+	    if ( source.peek() == '!' )
 	    {
-		get(ss);
+		source.get();
 		word = "#!";
-		while ( ss.good() && !ss.eof() && ss.peek() != '\r' && ss.peek() != '\n' )
-		    word += get(ss);
+		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
+		    word += source.get();
 		return new TokenREM(word);
+	    }
+	    // #include directive
+	    if ( isalpha(source.peek()) )
+	    {
+		std::string directive;
+		while ( source.good() && !source.eof() && isalpha(source.peek()) )
+		    directive += source.get();
+		if ( directive == "include" )
+		{
+		    // skip whitespace
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    // read filename: "file" or <file>
+		    char delim = source.get();
+		    char end_delim = (delim == '<') ? '>' : '"';
+		    std::string incfile;
+		    while ( source.good() && !source.eof() && source.peek() != end_delim
+		    &&      source.peek() != '\n' && source.peek() != '\r' )
+			incfile += source.get();
+		    if ( source.peek() == end_delim )
+			source.get(); // consume closing delimiter
+		    // resolve relative path based on current file's directory
+		    std::string full_path = incfile;
+		    std::string cur_fname(source.fname());
+		    size_t slash_pos = cur_fname.rfind('/');
+		    if ( slash_pos != std::string::npos )
+			full_path = cur_fname.substr(0, slash_pos + 1) + incfile;
+		    DBG(std::cout << "#include \"" << full_path << "\"" << std::endl);
+		    // save current source, tokenize included file
+		    Source saved = std::move(source);
+		    source = Source();
+		    std::ifstream incf(full_path.c_str());
+		    if ( !incf )
+			throw ("Failed to open include file: " + full_path).c_str();
+		    source.fname(full_path.c_str());
+		    source.copybuf(incf.rdbuf());
+		    TokenBase *itb;
+		    while ( (itb = getRealToken()) )
+		    {
+			itb->file = full_path.c_str();
+			tokens.push(itb);
+		    }
+		    source = std::move(saved);
+		    return getToken(); // continue with current file
+		}
+		if ( directive == "load" )
+		{
+		    // #load "libfoo.so" as namespace;
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    char delim = source.get(); // "
+		    std::string libname;
+		    while ( source.good() && !source.eof() && source.peek() != delim
+		    &&      source.peek() != '\n' && source.peek() != '\r' )
+			libname += source.get();
+		    if ( source.peek() == delim )
+			source.get();
+		    // skip whitespace, expect "as"
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string kw;
+		    while ( source.good() && !source.eof() && isalpha(source.peek()) )
+			kw += source.get();
+		    if ( kw != "as" )
+			throw "Expecting 'as' in #load directive";
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string ns_name;
+		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+			ns_name += source.get();
+		    // skip to semicolon
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    if ( source.peek() == ';' )
+			source.get();
+		    // dlopen the library
+		    void *handle = dlopen(libname.c_str(), RTLD_LAZY);
+		    if ( !handle )
+			throw ("Failed to load library: " + libname + ": " + dlerror()).c_str();
+		    dlopen_map[ns_name] = handle;
+		    namespace_map[ns_name]; // create empty namespace
+		    DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
+		    return getToken();
+		}
 	    }
 	    return new TokenHash;
 	case '{': return new TokenOpBrc;
@@ -249,70 +347,80 @@ TokenBase *Program::_getToken(istream &ss)
 	case '[': return new TokenOpSqr;
 	case ']': return new TokenClSqr;
 	case '~': return new TokenBnot;
-	case '!': if (ss.peek() != '=') return new TokenLnot;		// !
-	    get(ss); return new TokenNotEq;				// !=
+	case '!': if (source.peek() != '=') return new TokenLnot;		// !
+	    source.get(); return new TokenNotEq;				// !=
 	case '&':
-	    if (ss.peek() == '&') { get(ss); return new TokenLand;   }  // &&
-	    if (ss.peek() == '=') { get(ss); return new TokenBandEq; }  // &=
+	    if (source.peek() == '&') { source.get(); return new TokenLand;   }  // &&
+	    if (source.peek() == '=') { source.get(); return new TokenBandEq; }  // &=
 	    return new TokenBand;					// &
 	case '|':
-	    if (ss.peek() == '|') { get(ss); return new TokenLor;    }  // ||
-	    if (ss.peek() == '=') { get(ss); return new TokenBorEq;  }  // |=
+	    if (source.peek() == '|') { source.get(); return new TokenLor;    }  // ||
+	    if (source.peek() == '=') { source.get(); return new TokenBorEq;  }  // |=
 	    return new TokenBor;					// |
-	case '%': if (ss.peek() != '=') return new TokenMod;		// %
-	    get(ss); return new TokenModEq;				// %=
-	case '^': if (ss.peek() != '=') return new TokenXor;		// ^
-	     get(ss); return new TokenXorEq;				// ^=
+	case '%': if (source.peek() != '=') return new TokenMod;		// %
+	    source.get(); return new TokenModEq;				// %=
+	case '^': if (source.peek() != '=') return new TokenXor;		// ^
+	     source.get(); return new TokenXorEq;				// ^=
 	case '?': return new TokenTerQ;					// ?
-	case ':': if (ss.peek() != ':') return new TokenTerC;		// :
-	    get(ss); return new TokenNS;				// ::
+	case ':': if (source.peek() != ':') return new TokenTerC;		// :
+	    source.get(); return new TokenNS;				// ::
 	case ';': return new TokenSemi;					// ,
 	case ',': return new TokenComma;				// .
 	case '.': return new TokenDot;
 	case '"':
 	    word = "";
-	    while ( ss.good() && ss.peek() != '"' )
+	    row = source.line();
+	    col = source.column();
+	    while ( source.good() && source.peek() != '"' )
 	    {
-		if ( ss.peek() == '\\' )
-		    word += get(ss);
-		word += get(ss);
+		if ( source.peek() == '\\' )
+		    word += source.get();
+		word += source.get();
 	    }
-	    if ( !ss.good() )
-		throw "Unterminated string";
-	    get(ss);
+	    if ( !source.good() )
+	    {
+		source.setpos(row, col);
+		Throw << "Unterminated string" << flush;
+	    }
+	    source.get();
 	    return new TokenStr(word);
 	case '\'':
 	    word = "";
-	    while ( ss.good() && ss.peek() != '\'' )
+	    row = source.line();
+	    col = source.column();
+	    while ( source.good() && source.peek() != '\'' )
 	    {
-		if ( ss.peek() == '\\' )
-		    get(ss);
-		word += get(ss);
+		if ( source.peek() == '\\' )
+		    source.get();
+		word += source.get();
 	    }
-	    if ( !ss.good() )
-		throw "Unterminated string";
-	    get(ss);
+	    if ( !source.good() )
+	    {
+		source.setpos(row, col);
+		Throw << "Unterminated string" << flush;
+	    }
+	    source.get();
 	    return new TokenChar(word[0]);
 	case '<':
-	    if (ss.peek() == '=')
+	    if (source.peek() == '=')
 	    {
-		get(ss);
-		if (ss.peek() == '>') { get(ss); return new Token3Way; }  // <=>
+		source.get();
+		if (source.peek() == '>') { source.get(); return new Token3Way; }  // <=>
 		return new TokenLE;					  // <=
 	    }
-	    if (ss.peek() == '<')
+	    if (source.peek() == '<')
 	    {
-		get(ss);
-		if (ss.peek() == '=') { get(ss); return new TokenBSLEq; } // <<=
+		source.get();
+		if (source.peek() == '=') { source.get(); return new TokenBSLEq; } // <<=
 		return new TokenBSL;					  // <<
 	    }
 	    return new TokenLT;						  // <
 	case '>':
-	    if (ss.peek() == '=')     { get(ss); return new TokenGE;  }	  // >=
-	    if (ss.peek() == '>')
+	    if (source.peek() == '=')     { source.get(); return new TokenGE;  }	  // >=
+	    if (source.peek() == '>')
 	    {
-		get(ss);
-		if (ss.peek() == '=') { get(ss); return new TokenBSREq; } // >>=
+		source.get();
+		if (source.peek() == '=') { source.get(); return new TokenBSREq; } // >>=
 		return new TokenBSR;					  // >>
 	    }
 	    return new TokenGT;						  // >
@@ -321,20 +429,31 @@ TokenBase *Program::_getToken(istream &ss)
 	    {
 		int v = (ch & 0xf);
 		
-		while ( ss.good() && isdigit(ss.peek()) )
+		while ( source.good() && isdigit(source.peek()) )
 		{
 		    v *= 10;
-		    v += get(ss) & 0xf;
+		    v += source.get() & 0xf;
 		}
-		return new TokenInt(v);
+		// no decimal means integer
+		if ( source.peek() != '.' )		
+		    return new TokenInt(v);
+		// handle floating point
+		source.get(); // eat .
+		double num = v, divisor = 10;
+		while ( source.good() && isdigit(source.peek()) )
+		{
+		    num += (source.get() & 0xf) / divisor;
+		    divisor *= 10;
+		}
+		return new TokenReal(num);
 	    }
 	    if ( ch == '_' || isalnum(ch) )
 	    {
 		word = "";
 		word += ch;
 
-		while ( ss.good() && (isalnum(ss.peek()) || ss.peek() == '_') )
-		    word += get(ss);
+		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
+		    word += source.get();
 		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
 		    return kmi->second->clone();
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
@@ -348,23 +467,24 @@ TokenBase *Program::_getToken(istream &ss)
     return NULL;
 }
 
-TokenBase *Program::getToken(istream &ss)
+TokenBase *Program::getToken()
 {
-    TokenBase *tb = _getToken(ss);
+    TokenBase *tb = _getToken();
 
     DBG(if (tb) printt(tb));
     return tb;
 }
 
 // get a real token (ignore whitespace and comments)
-TokenBase *Program::getRealToken(istream &ss)
+TokenBase *Program::getRealToken()
 {
     TokenBase *tb;
 
-    while ( (tb=getToken(ss)) )
+    while ( (tb=getToken()) )
     {
-	tb->line = _line;
-	tb->column = _column;
+	tb->line = source.line(); //_line;
+	tb->column = source.column(); //_column;
+
 	switch(tb->type())
 	{
 	    case TokenType::ttSpace:
@@ -506,12 +626,83 @@ void Program::printt(TokenBase *tb)
     } // end switch
 }
 
+void Source::showerror(int row, int col)
+{
+//	std::cout << "showerror(" << row << ", " << col << ')' << std::endl;
+	char *env_columns = getenv("COLUMNS");
+	size_t term_columns;
+	std::string ln;
 
+	if ( env_columns )
+	    term_columns = atoi(env_columns);
+	else
+	    term_columns = 80;
+	_ss.clear();
+
+	if ( !row || !col )
+	{
+	    row = line();
+	    col = column();
+	}
+
+	_cr = _lf = 0;
+	_ss.seekg(0, _ss.beg);
+	if ( !_ss.good() )
+	    std::cerr << " seekfail";
+
+	while ( peek() != -1 )
+	{
+	    getline(ln);
+	    //cout << "line()-1 " << (line()-1) << "  row " << row << endl;
+	    if ( line()-1 >= row )
+		break;
+        }
+
+	if ( ln.length()+5 > term_columns )
+	{
+	    ln = "  ..." + ln.substr(col);
+	    std::cerr << ln << std::endl;
+	    std::cerr << std::setw(4) << ' ' << "\e[1;32m^\e[m" << std::endl;
+	    return;
+	}
+	std::cerr << ln << std::endl;
+	if ( col > 1 )
+	    std::cerr << std::setw(col-1) << ' ';
+	std::cerr << "\e[1;32m^\e[m" << std::endl;
+}
+
+int throwbuf::sync()
+{
+    cerr << endl;
+    if ( _tb )
+    {
+	cerr << ANSI_WHITE << (_src ? _src->fname() : "???") << ':' << _tb->line << ':' << _tb->column 
+	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	if ( _src )
+	    _src->showerror(_tb->line, _tb->column);
+    }
+    else
+    if ( _src )
+    {
+	cerr << ANSI_WHITE << _src->fname() << ':' << _src->line() << ':' << _src->column()
+	     << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+	_src->showerror();
+    }
+    else
+    {
+	cerr << ANSI_WHITE << ": \e[1;31merror:\e[1;37m " << str() << ANSI_RESET << endl;
+    }
+    throw std::exception();
+    return -1;
+}
+
+
+#if 0
 void Program::showerror(istream &is)
 {
     char *env_columns = getenv("COLUMNS");
     string line;
-    int term_columns;
+    size_t term_columns;
 
     if ( env_columns )
 	term_columns = atoi(env_columns);
@@ -533,6 +724,7 @@ void Program::showerror(istream &is)
     cerr << line << endl;
     cerr << setw(_column-1) << ' ' << "\e[1;32m^\e[m" << endl;
 }
+#endif
 
 #if 0
 // tokenize stream of data TODO -- do all the same as tokenize(file), except set up filename
@@ -544,7 +736,7 @@ void Program::tokenize(istream &ss)
 
     _init();
 
-    while ( (tb=getToken(ss)) )
+    while ( (tb=getToken()) )
 	parseStatement(tb);
 
     DBG(std::cout << "Program::parse() finished parsing" << std::endl);
@@ -570,39 +762,43 @@ TokenProgram *Program::tokenize(const char *fname)
 
     _tokenizer_init();
 
-    _pos = 0;
-    _line = 1;
-    _column = 0;
+    source.fname(fname);
+    source.copybuf(file.rdbuf());
+    Throw.source(source);
 
     try
     {
-	while ( (tb=getRealToken(file)) )
+	while ( (tb=getRealToken()) )
 	{
 	    tb->file = fname;
-	    tb->line = _line;
-	    tb->column = _column;
+//	    tb->line = source.line();
+//	    tb->column = source.column();
 	    tokens.push(tb);
         }
     }
     catch(const char *err_msg)
     {
-	cerr << ANSI_WHITE << fname << ':' << _line << ':' << _column 
+	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column() 
 	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
-	showerror(file);
+	source.showerror(source.line(), source.column());
 	return NULL;
     }
     catch(TokenIdent *ti)
     {
-	cerr << ANSI_WHITE << fname << ':' << _line << ':' << _column
+	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column()
 	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
-	showerror(file);
+	source.showerror(source.line(), source.column());
 	return NULL;
     }
     catch(TokenBase *tb)
     {
-	cerr << ANSI_WHITE << fname << ':' << _line << ':' << _column
+	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column()
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
-	showerror(file);
+	source.showerror(source.line(), source.column());
+	return NULL;
+    }
+    catch(std::exception &e)
+    {
 	return NULL;
     }
 
@@ -615,7 +811,7 @@ TokenProgram *Program::tokenize(const char *fname)
 
     tkProgram->source = fname;
     tkProgram->is = new ifstream(fname);
-    tkProgram->lines = _line-1;
+    tkProgram->lines = source.line()-1;
     tkProgram->bytes = file.tellg();
 
     return tkProgram;
