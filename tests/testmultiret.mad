@@ -1,5 +1,4 @@
 #!/usr/bin/env madc
-// Test multiple return values
 
 int divide(int a, int b)
 {
@@ -8,16 +7,24 @@ int divide(int a, int b)
 	return q, r;
 }
 
+int minmax(int a, int b)
+{
+	if (a < b)
+	{
+		return a, b;
+	}
+	return b, a;
+}
+
 int main()
 {
 	q, r := divide(17, 5);
 	cout << q << endl;
 	cout << r << endl;
 
-	// second call
-	a, b := divide(100, 7);
-	cout << a << endl;
-	cout << b << endl;
+	lo, hi := minmax(42, 7);
+	cout << lo << endl;
+	cout << hi << endl;
 
 	return 0;
 }

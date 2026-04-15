@@ -3655,9 +3655,9 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 // compile a return statement
 Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 {
-    pgm.tkFunction->cleanup(pgm);
-
-    // multi-return: write each value into __retbuf[i*8]
+    // multi-return: write values to __retbuf and return without cleanup
+    // (cleanup runs destructors which can't be called multiple times
+    //  when there are multiple return paths in if/else branches)
     if ( !return_exprs.empty() )
     {
 	DBG(pgm.cc.comment("multi-return: writing values to __retbuf"));
@@ -3693,6 +3693,9 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	pgm.cc.ret();
 	return _reg;
     }
+
+    // single-return or void: cleanup before returning
+    pgm.tkFunction->cleanup(pgm);
 
     if ( returns )
     {

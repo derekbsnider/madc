@@ -2,7 +2,7 @@
 
 ## Medium Priority
 
-- **Multi-return with conditionals** — `return a, b;` inside if/else branches crashes due to cleanup ordering. Need to defer cleanup or handle multi-return without calling cleanup before each return path.
+- **Multi-return in brace-less if** — `if (x) return a, b;` (no braces) fails to parse because comma confuses the single-statement if body. Workaround: use braces `if (x) { return a, b; }`. Braced multi-return works correctly.
 
 ## Low Priority
 
