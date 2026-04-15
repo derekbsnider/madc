@@ -14,7 +14,12 @@ public:
     DataDef &returns;
     asmjit::FuncNode *funcnode;
     std::vector<DataDef *> parameters;
-    FuncDef(DataDef &d) : returns(d) { funcnode = NULL; }
+    // [&] capture support
+    bool has_captures;
+    struct CaptureEntry { std::string name; DataDef *type; };
+    std::vector<Variable *> potential_captures; // outer-scope vars at lambda creation time
+    std::vector<CaptureEntry> captures;         // populated during lambda body compilation
+    FuncDef(DataDef &d) : returns(d), has_captures(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
 };
@@ -41,7 +46,8 @@ public:
     std::vector<Variable *> parameters;
     std::vector<Variable *> variables;
     void *x86code;
-    Method(Variable &v) : returns(v) { x86code = NULL; }
+    Variable *env_param; // hidden void** param for [&] lambdas (nullptr if no capture)
+    Method(Variable &v) : returns(v), x86code(NULL), env_param(NULL) {}
     Variable *getParameter(unsigned int i) { if ( i >= parameters.size() ) return NULL; return parameters[i]; }
     Variable *findParameter(std::string &);
     Variable *findVariable(std::string &);

@@ -983,8 +983,10 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	{
 	    DataDefFPTR *fptr = static_cast<DataDefFPTR *>(tc->var.type);
 	    FuncDef *fd = fptr->target;
-	    if ( tc->argc() != fd->parameters.size() )
-		Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc() << flush;
+	    // don't count hidden env param for [&] lambdas
+	    size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0);
+	    if ( tc->argc() != expected )
+		Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
 	}
 	else
 	{
@@ -992,10 +994,11 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    Method *md = (Method *)tc->var.data;
 	    if ( !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
 	    {
-		if ( tc->argc() != fd->parameters.size() )
+		size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0);
+		if ( tc->argc() != expected )
 		{
-		    DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << fd->parameters.size() << std::endl);
-		    Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc() << flush;
+		    DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << expected << std::endl);
+		    Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
 		}
 	    }
 	}
@@ -2595,13 +2598,21 @@ TokenBase *Program::parseLambda()
 
     DBG(cout << "parseLambda() START" << endl);
 
-    // we already consumed '[', check for optional return type before ']'
-    // [int](params) { body }  — returns int
-    // [](params) { body }     — returns void
+    // we already consumed '[', peek at next token
+    // [](params) { body }       — pure lambda (no capture)
+    // [int](params) { body }    — pure lambda with return type
+    // [&](params) { body }      — capture all outer vars by reference
     TokenBase *tn = nextToken();
     DataDef *rettype = &ddVOID;
+    bool is_capturing = false;
 
-    if ( tn->type() == TokenType::ttDataType )
+    // check for [&] capture syntax
+    if ( tn->id() == TokenID::tkBand )
+    {
+	is_capturing = true;
+	tn = nextToken(); // consume &, expect ]
+    }
+    else if ( tn->type() == TokenType::ttDataType )
     {
 	rettype = &((TokenDataType *)tn)->definition;
 	DBG(cout << "parseLambda() return type: " << rettype->name << endl);
@@ -2614,7 +2625,7 @@ TokenBase *Program::parseLambda()
     // expect '('
     tn = nextToken();
     if ( tn->id() != TokenID::tkOpBrk )
-	Throw(tn) << "Expecting ( after lambda []" << flush;
+	Throw(tn) << "Expecting ( after lambda [...]" << flush;
 
     // generate unique name
     std::string lambda_name = "__lambda_" + std::to_string(lambda_counter++);
@@ -2624,6 +2635,27 @@ TokenBase *Program::parseLambda()
     // create FuncDef
     FuncDef *func = new FuncDef(*rettype);
     funcdef_map[lambda_name] = func;
+    func->has_captures = is_capturing;
+
+    if ( is_capturing )
+    {
+	// Collect all currently visible vars from the enclosing compound chain
+	// These are "potential captures" — whichever ones the body actually uses
+	TokenCpnd *outer = compounds.empty() ? NULL : compounds.top();
+	while ( outer )
+	{
+	    for ( auto *v : outer->variables )
+		func->potential_captures.push_back(v);
+	    // also capture method parameters from the outer scope
+	    if ( outer->method )
+		for ( auto *p : outer->method->parameters )
+		    func->potential_captures.push_back(p);
+	    outer = outer->parent;
+	}
+	// Pre-register env as first parameter in FuncDef (user params appended after)
+	func->parameters.push_back(&ddINT64);
+	DBG(cout << "parseLambda() [&] capturing " << func->potential_captures.size() << " outer vars" << endl);
+    }
 
     // parse parameters (same pattern as parseFunction)
     std::vector<std::string> param_ids;
@@ -2657,10 +2689,22 @@ TokenBase *Program::parseLambda()
     Method *method = new Method(*var);
     var->data = (void *)method;
 
-    // add parameters to method
-    for ( size_t i = 0; i < func->parameters.size(); ++i )
+    // if capturing: create hidden env_param at position 0 in method->parameters
+    if ( is_capturing )
     {
-	Variable *pv = new Variable(param_ids[i], *func->parameters[i], 1, NULL, false);
+	std::string env_name = "__env";
+	Variable *env_pv = new Variable(env_name, ddINT64, 1, NULL, false);
+	env_pv->flags |= vfPARAM;
+	method->env_param = env_pv;
+	method->parameters.push_back(env_pv); // will be moved to front below
+    }
+
+    // add user parameters to method
+    for ( size_t i = 0; i < param_ids.size(); ++i )
+    {
+	// user params start at index 1 in func->parameters when capturing (0 is env)
+	size_t fi = is_capturing ? i + 1 : i;
+	Variable *pv = new Variable(param_ids[i], *func->parameters[fi], 1, NULL, false);
 	pv->flags |= vfPARAM;
 	method->parameters.push_back(pv);
     }

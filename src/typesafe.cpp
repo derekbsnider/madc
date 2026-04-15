@@ -231,6 +231,9 @@ void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    safemov(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
+	if ( op2.isMem() )
+	    cc.mov(op1.as<x86::Gp>(), op2.as<x86::Mem>());
+	else
 	if ( op2.isImm() )
 	    cc.mov(op1.as<x86::Gp>(), op2.as<Imm>());
 	else
@@ -293,6 +296,16 @@ void Program::safeadd(Operand &op1, int i, DataDef *d1, DataDef *d2)
 // should handle all necessary conversions...
 void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
+    if ( op1.isMem() )
+    {
+	// load-add-store for captured numeric vars (Mem operands)
+	x86::Gp tmp = cc.newGpq("_tmp_add");
+	cc.mov(tmp, op1.as<x86::Mem>());
+	Operand tmp_op = tmp;
+	safeadd(tmp_op, op2, d1, d2);
+	cc.mov(op1.as<x86::Mem>(), tmp);
+	return;
+    }
     if ( !op1.isReg() ) { cerr << (uint32_t)op1.opType() << endl; throw "safeadd() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safeadd() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
@@ -373,6 +386,15 @@ void Program::safesub(Operand &op1, int i, DataDef *d1, DataDef *d2)
 // should handle all necessary conversions...
 void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
+    if ( op1.isMem() )
+    {
+	x86::Gp tmp = cc.newGpq("_tmp_sub");
+	cc.mov(tmp, op1.as<x86::Mem>());
+	Operand tmp_op = tmp;
+	safesub(tmp_op, op2, d1, d2);
+	cc.mov(op1.as<x86::Mem>(), tmp);
+	return;
+    }
     if ( !op1.isReg() ) { throw "safesub() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safesub() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )

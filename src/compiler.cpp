@@ -354,11 +354,58 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	// compile arguments and build signature
 	std::vector<Operand> params;
+
+	// [&] lambda capture: env_ptr declared here so post-call reload can access it
+	x86::Gp env_ptr = pgm.cc.newIntPtr("__env_ptr");
+	pgm.cc.xor_(env_ptr, env_ptr);
+
+	if ( func->has_captures )
+	{
+	    funcsig.addArgT<int64_t>(); // env pointer (first arg)
+	    size_t n = func->captures.size();
+	    if ( n > 0 )
+	    {
+		x86::Mem env_stack = pgm.cc.newStack((uint32_t)(n * 8), 8);
+		pgm.cc.lea(env_ptr, env_stack);
+		for ( size_t ci = 0; ci < n; ++ci )
+		{
+		    std::string cap_name = func->captures[ci].name;
+		    Variable *cap_var = pgm.tkFunction->findVariable(cap_name);
+		    if ( !cap_var ) continue;
+		    Operand &cap_op = pgm.tkFunction->voperand(pgm, cap_var);
+		    DataDef *cap_type = func->captures[ci].type;
+		    if ( cap_type->is_numeric() )
+		    {
+			// Store value directly in env[ci]
+			x86::Gp val = pgm.cc.newGpq("__cap_val");
+			if ( cap_op.isReg() && cap_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+			    pgm.cc.mov(val, cap_op.as<x86::Gp>());
+			else if ( cap_op.isMem() )
+			    pgm.cc.mov(val, cap_op.as<x86::Mem>());
+			pgm.cc.mov(x86::qword_ptr(env_ptr, (int64_t)ci * 8), val);
+		    }
+		    else
+		    {
+			// Store pointer to string/object in env[ci]
+			x86::Gp str_ptr = pgm.cc.newIntPtr("__cap_str");
+			if ( cap_op.isReg() && cap_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+			    pgm.cc.mov(str_ptr, cap_op.as<x86::Gp>());
+			else if ( cap_op.isMem() )
+			    pgm.cc.lea(str_ptr, cap_op.as<x86::Mem>());
+			pgm.cc.mov(x86::qword_ptr(env_ptr, (int64_t)ci * 8), str_ptr);
+		    }
+		}
+	    }
+	    params.push_back(env_ptr);
+	}
+
 	for ( size_t i = 0; i < argc(); ++i )
 	{
 	    regdefp_t argrdp = {NULL, NULL, NULL};
-	    if ( i < func->parameters.size() )
-		argrdp.second = func->parameters[i];
+	    // skip env param (index 0 in func->parameters) when capturing
+	    size_t fi = func->has_captures ? i + 1 : i;
+	    if ( fi < func->parameters.size() )
+		argrdp.second = func->parameters[fi];
 	    Operand &areg = parameters[i]->compile(pgm, argrdp);
 	    DataDef *ptype = argrdp.second;
 
@@ -391,6 +438,32 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		call->setArg(ai++, p.as<x86::Gp>());
 	    else if ( p.isImm() )
 		call->setArg(ai++, p.as<Imm>());
+	    else if ( p.isMem() )
+	    {
+		x86::Gp tmp = pgm.cc.newIntPtr("__env_tmp");
+		pgm.cc.lea(tmp, p.as<x86::Mem>());
+		call->setArg(ai++, tmp);
+	    }
+	}
+
+	// reload numeric captures from env back to outer variables (copy-out semantics)
+	if ( func->has_captures )
+	{
+	    for ( size_t ci = 0; ci < func->captures.size(); ++ci )
+	    {
+		DataDef *cap_type = func->captures[ci].type;
+		if ( !cap_type->is_numeric() ) continue;
+		std::string cap_name = func->captures[ci].name;
+		Variable *cap_var = pgm.tkFunction->findVariable(cap_name);
+		if ( !cap_var ) continue;
+		Operand &cap_op = pgm.tkFunction->voperand(pgm, cap_var);
+		x86::Gp val = pgm.cc.newGpq("__cap_reload");
+		pgm.cc.mov(val, x86::qword_ptr(env_ptr, (int64_t)ci * 8));
+		if ( cap_op.isReg() && cap_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		    pgm.cc.mov(cap_op.as<x86::Gp>(), val);
+		else if ( cap_op.isMem() )
+		    pgm.cc.mov(cap_op.as<x86::Mem>(), val);
+	    }
 	}
 
 	// capture return value
@@ -1699,6 +1772,45 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    movreg(pgm.cc, rmi->second, var);
         }
 	return rmi->second;
+    }
+
+    // [&] capture: if this is a capturing lambda and var is from the outer scope, access it
+    // through the env pointer rather than allocating a new stack slot
+    if ( method && method->env_param && method->env_param != var )
+    {
+	FuncDef *fdef = (FuncDef *)method->returns.type;
+	bool is_cap = false;
+	for ( auto *cv : fdef->potential_captures )
+	    if ( cv == var ) { is_cap = true; break; }
+	if ( is_cap )
+	{
+	    // Find or assign capture index (in order of first access)
+	    int cap_idx = -1;
+	    for ( size_t ci = 0; ci < fdef->captures.size(); ++ci )
+		if ( fdef->captures[ci].name == var->name ) { cap_idx = (int)ci; break; }
+	    if ( cap_idx < 0 )
+	    {
+		cap_idx = (int)fdef->captures.size();
+		FuncDef::CaptureEntry ce;
+		ce.name = var->name;
+		ce.type = var->type;
+		fdef->captures.push_back(ce);
+	    }
+	    // Load env pointer (the hidden first param of this lambda)
+	    Operand &env_op = voperand(pgm, method->env_param);
+	    x86::Gp env_gp = env_op.as<x86::Gp>();
+	    // Build operand: numeric → direct Mem in env[cap_idx]; string → loaded pointer
+	    if ( var->type->is_numeric() )
+		operand_map[var] = x86::ptr(env_gp, (int64_t)cap_idx * 8, (uint32_t)var->type->size);
+	    else
+	    {
+		x86::Gp str_ptr = pgm.cc.newIntPtr(var->name.c_str());
+		pgm.cc.mov(str_ptr, x86::qword_ptr(env_gp, (int64_t)cap_idx * 8));
+		operand_map[var] = str_ptr;
+	    }
+	    var->flags |= vfREGSET;
+	    return operand_map[var];
+	}
     }
 
     DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::voperand(" << var->name << ") building register" << std::endl);
