@@ -46,23 +46,25 @@ The signature feature of madc — use the best functions from each language:
 
 int main()
 {
-    // PHP-style string splitting
+    // PHP-style string splitting and joining
     string csv = "alice,bob,charlie";
     string delim = ",";
     array names;
     php::explode(names, delim, csv);
-
-    // Python-style formatting
-    string greeting;
-    string fmt = "Hello, {}!";
-    array args;
-    php::array_get(args, names, 0);    // not quite right yet
-    // python::format(greeting, fmt, args);
+    php::sort(names);
+    string sorted;
+    php::implode(sorted, delim, names);
+    cout << sorted << endl;             // alice,bob,charlie
 
     // Perl-style file globbing
     array files;
     string pattern = "*.mad";
     perl::glob(files, pattern);
+
+    // Python-style string formatting
+    string title = "hello world";
+    python::title(title);
+    cout << title << endl;              // Hello World
 
     // Ruby-style string transforms
     string s = "aabbccdd";
@@ -71,11 +73,7 @@ int main()
     // JavaScript base64
     string encoded;
     js::btoa(encoded, s);
-
-    // Load any C library at runtime
-    #load "libc.so.6" as libc;
-    int result;
-    result = libc::abs(-42);
+    cout << encoded << endl;            // YWJjZA==
 
     return 0;
 }
