@@ -35,6 +35,7 @@ enum class TokenID {
   tkBSLEq, tkBSREq, tkBandEq, tkBnot, tkBorEq, tkDivEq, tkFuncOp, tkGE, tkLE, tkLnot, tkModEq, tkMulEq, tk3Way,
 // 57	   58		59	60	61	62	63	64	65		66	67
   tkNotEq, tkSubEq, tkXorEq, tkIdent, tkInt, tkChar, tkStr, tkOperator, tkDeclare, tkArrayOp, tkMultiOp, tkReal,
+  tkColEq,  // := short variable declaration (Go-style)
 // keywords
 // 68	69	70	71	72	73	74	75	76	77	78	79
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
@@ -786,6 +787,7 @@ class TokenClBrk: public TokenPrimary  { public: TokenClBrk()  :  TokenPrimary('
 class TokenOpSqr: public TokenPrimary  { public: TokenOpSqr()  :  TokenPrimary('[') {} virtual TokenID id() const { return TokenID::tkOpSqr; }  virtual TokenBase *clone() { return new TokenOpSqr(); } };
 class TokenClSqr: public TokenPrimary  { public: TokenClSqr()  :  TokenPrimary(']') {} virtual TokenID id() const { return TokenID::tkClSqr; }  virtual TokenBase *clone() { return new TokenClSqr(); } };
 class TokenSemi:  public TokenSymbol   { public: TokenSemi()   :   TokenSymbol(';') {} virtual TokenID id() const { return TokenID::tkSemi; }   virtual TokenBase *clone() { return new TokenSemi(); } };
+class TokenColEq: public TokenSymbol   { public: TokenColEq()  :  TokenSymbol(':') {} virtual TokenID id() const { return TokenID::tkColEq; } virtual TokenBase *clone() { return new TokenColEq(); } };
 class TokenQuote: public TokenSymbol   { public: TokenQuote()  :   TokenSymbol('"') {} virtual TokenID id() const { return TokenID::tkQuote; }  virtual TokenBase *clone() { return new TokenQuote(); } };
 class TokenApost: public TokenSymbol   { public: TokenApost()  :  TokenSymbol('\'') {} virtual TokenID id() const { return TokenID::tkApost; }  virtual TokenBase *clone() { return new TokenApost(); } };
 

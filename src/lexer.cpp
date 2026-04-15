@@ -383,8 +383,10 @@ TokenBase *Program::_getToken()
 	case '^': if (source.peek() != '=') return new TokenXor;		// ^
 	     source.get(); return new TokenXorEq;				// ^=
 	case '?': return new TokenTerQ;					// ?
-	case ':': if (source.peek() != ':') return new TokenTerC;		// :
-	    source.get(); return new TokenNS;				// ::
+	case ':':
+	    if (source.peek() == ':') { source.get(); return new TokenNS; }   // ::
+	    if (source.peek() == '=') { source.get(); return new TokenColEq; } // :=
+	    return new TokenTerC;                                               // :
 	case ';': return new TokenSemi;					// ,
 	case ',': return new TokenComma;				// .
 	case '.': return new TokenDot;

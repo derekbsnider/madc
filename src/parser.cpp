@@ -2875,6 +2875,34 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    return parseDeclaration(dmi->second);
 		}
 	    }
+	    // := short declaration: identifier := expression;
+	    if ( peekToken() && peekToken()->id() == TokenID::tkColEq )
+	    {
+		std::string id = ((TokenIdent *)tb)->str;
+		nextToken(); // consume :=
+		TokenBase *rhs = parseExpression(nextToken());
+		// infer type from rhs
+		DataDef *inferred = rhs->datadef();
+		if ( !inferred || inferred == &ddVOID )
+		    inferred = &ddINT64; // fallback to int
+		TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+		bool alloc = (!code) ? true : false;
+		Variable *var = addVariable(code, *inferred, id, 1, NULL, alloc);
+		TokenDecl *td = new TokenDecl(*var);
+		td->file = tb->file;
+		td->line = tb->line;
+		td->column = tb->column;
+		// build assignment: var = rhs
+		TokenAssign *assign = new TokenAssign();
+		assign->file = tb->file;
+		assign->line = tb->line;
+		assign->column = tb->column;
+		assign->left  = new TokenVar(*var);
+		assign->right = rhs;
+		td->initialize = assign;
+		DBG(std::cout << "parseStatement() ':=' declared '" << id << "' type=" << inferred->name << std::endl);
+		return td;
+	    }
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseExpression" << std::endl);
