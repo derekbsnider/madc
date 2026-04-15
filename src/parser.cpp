@@ -1778,9 +1778,76 @@ TokenBase *TokenFOR::parse(Program &pgm)
     }
 
     tn = pgm.nextToken();
-    DBG(cout << "TokenFOR::parse() initialize: calling parseStatement(" << (char)tn->get() << ')' << endl);
-    if ( !(initialize = pgm.parseStatement(tn)) )
-	pgm.Throw(tn) << "Failed to parse initialize" << flush;
+
+    // detect range-based for: for (type var : container)
+    if ( tn->type() == TokenType::ttDataType )
+    {
+	TokenDataType *dt = (TokenDataType *)tn;
+	TokenBase *tn2 = pgm.nextToken();
+	if ( tn2->type() == TokenType::ttIdentifier )
+	{
+	    TokenBase *tn3 = pgm.peekToken();
+	    if ( tn3 && tn3->id() == TokenID::tkTerC )
+	    {
+		pgm.nextToken(); // consume the colon
+
+		TokenFOREACH *fe = new TokenFOREACH();
+		fe->file = this->file;
+		fe->line = this->line;
+		fe->column = this->column;
+		fe->elemtype = &dt->definition;
+		fe->elemname = ((TokenIdent *)tn2)->str;
+
+		DBG(cout << "TokenFOR::parse() range-for detected: " << dt->definition.name << ' ' << fe->elemname << endl);
+
+		// add the loop variable to the current scope
+		TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+		fe->elemvar = pgm.addVariable(code, dt->definition, fe->elemname, 1, NULL, false);
+
+		// parse the container expression
+		TokenBase *tn4 = pgm.nextToken();
+		fe->container = pgm.parseExpression(tn4, true);
+		if ( !fe->container )
+		    pgm.Throw(tn4) << "Failed to parse container expression in range-for" << flush;
+
+		tn4 = pgm.nextToken();
+		if ( tn4->id() != TokenID::tkClBrk )
+		    pgm.Throw(tn4) << "Expecting ) after range-for container" << flush;
+
+		tn4 = pgm.nextToken();
+		fe->statement = pgm.parseStatement(tn4);
+		if ( !fe->statement )
+		    pgm.Throw(tn4) << "Failed to parse range-for body" << flush;
+
+		DBG(std::cout << "TokenFOR::parse() range-for END" << std::endl);
+		return fe;
+	    }
+	}
+
+	// not range-for — traditional for with type declaration
+	DBG(cout << "TokenFOR::parse() traditional for with type declaration" << endl);
+	TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	std::string id = ((TokenIdent *)tn2)->str;
+	Variable *var = pgm.addVariable(code, dt->definition, id, 1, NULL, false);
+	TokenDecl *td = new TokenDecl(*var);
+	td->file = dt->file;
+	td->line = dt->line;
+	td->column = dt->column;
+
+	TokenBase *tn_peek = pgm.peekToken();
+	if ( tn_peek && tn_peek->id() == TokenID::tkAssign )
+	{
+	    td->initialize = pgm.parseExpression(new TokenVar(*var));
+	}
+	initialize = td;
+    }
+    else
+    {
+	DBG(cout << "TokenFOR::parse() initialize: calling parseStatement(" << (char)tn->get() << ')' << endl);
+	if ( !(initialize = pgm.parseStatement(tn)) )
+	    pgm.Throw(tn) << "Failed to parse initialize" << flush;
+    }
+
     tn = pgm.nextToken();
     DBG(cout << "TokenFOR::parse() condition: calling parseExpression(" << (char)tn->get() << ')' << endl);
     if ( !(condition = pgm.parseExpression(tn, true)) )

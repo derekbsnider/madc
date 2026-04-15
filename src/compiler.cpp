@@ -215,6 +215,11 @@ void streamout_intptr(std::ostream &os, int *i)
 }
 
 
+// extern declarations for php array helpers (defined in ns_php.cpp)
+extern int64_t php_count(void *arr);
+extern void *php_array_get(void *result, void *arr, int64_t index);
+extern int64_t php_array_get_int(void *arr, int64_t index);
+
 void Program::_compiler_init()
 {
     code.reset();
@@ -3014,4 +3019,82 @@ Operand &TokenFOR::compile(Program &pgm, regdefp_t &regdp)
     DBG(std::cout << "TokenFOR::compile() END" << std::endl);
 
     return reg;
+}
+
+Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(std::cout << "TokenFOREACH::compile() TOP — " << elemtype->name << ' ' << elemname << std::endl);
+    DBG(pgm.cc.comment("TokenFOREACH::compile() start"));
+
+    Label fortop  = pgm.cc.newLabel();
+    Label forcont = pgm.cc.newLabel();
+    Label fortail = pgm.cc.newLabel();
+
+    pgm.loopstack.push(make_pair(&forcont, &fortail));
+
+    // compile container expression to get array pointer
+    regdefp_t arrrdp = {NULL, NULL, NULL};
+    Operand &arr_op = container->compile(pgm, arrrdp);
+    x86::Gp arr_reg = pgm.cc.newIntPtr("foreach_arr");
+    pgm.cc.mov(arr_reg, arr_op.as<x86::Gp>());
+
+    // get count
+    x86::Gp count_reg = pgm.cc.newGpq("foreach_count");
+    InvokeNode *cnt_call;
+    pgm.cc.invoke(&cnt_call, imm(php_count), FuncSignatureT<int64_t, void *>(CallConvId::kCDecl));
+    cnt_call->setArg(0, arr_reg);
+    cnt_call->setRet(0, count_reg);
+
+    // index register
+    x86::Gp idx_reg = pgm.cc.newGpq("foreach_idx");
+    pgm.cc.xor_(idx_reg, idx_reg);
+
+    // allocate loop variable
+    TokenCpnd *code = pgm.tkFunction;
+    Operand &elem_op = code->voperand(pgm, elemvar);
+
+    // loop top
+    pgm.cc.bind(fortop);
+    pgm.cc.cmp(idx_reg, count_reg);
+    pgm.cc.jge(fortail);
+
+    // fetch element
+    if ( elemtype->is_string() )
+    {
+	DBG(pgm.cc.comment("foreach: php_array_get(elem, arr, idx)"));
+	InvokeNode *get_call;
+	pgm.cc.invoke(&get_call, imm(php_array_get),
+	    FuncSignatureT<void *, void *, void *, int64_t>(CallConvId::kCDecl));
+	get_call->setArg(0, elem_op.as<x86::Gp>());
+	get_call->setArg(1, arr_reg);
+	get_call->setArg(2, idx_reg);
+    }
+    else if ( elemtype->is_integer() )
+    {
+	DBG(pgm.cc.comment("foreach: php_array_get_int(arr, idx)"));
+	InvokeNode *get_call;
+	pgm.cc.invoke(&get_call, imm(php_array_get_int),
+	    FuncSignatureT<int64_t, void *, int64_t>(CallConvId::kCDecl));
+	get_call->setArg(0, arr_reg);
+	get_call->setArg(1, idx_reg);
+	get_call->setRet(0, elem_op.as<x86::Gp>());
+    }
+    else
+    {
+	pgm.Throw(this) << "range-for: unsupported element type '" << elemtype->name << "'" << flush;
+    }
+
+    // loop body
+    statement->compile(pgm, regdp);
+
+    // continue: increment and loop
+    pgm.cc.bind(forcont);
+    pgm.cc.inc(idx_reg);
+    pgm.cc.jmp(fortop);
+    pgm.cc.bind(fortail);
+
+    pgm.loopstack.pop();
+    DBG(std::cout << "TokenFOREACH::compile() END" << std::endl);
+
+    return _operand;
 }

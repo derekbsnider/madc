@@ -1,0 +1,26 @@
+#!/../bin/madc
+int main()
+{
+    array names;
+    php::array_push(names, "Alice");
+    php::array_push(names, "Bob");
+    php::array_push(names, "Charlie");
+
+    for (string name : names)
+    {
+        cout << "Hello, " << name << endl;
+    }
+
+    array nums;
+    php::array_push_int(nums, 10);
+    php::array_push_int(nums, 20);
+    php::array_push_int(nums, 30);
+    int sum = 0;
+    for (int n : nums)
+    {
+        sum = sum + n;
+    }
+    cout << sum << endl;
+
+    return 0;
+}

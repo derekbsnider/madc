@@ -1062,5 +1062,20 @@ public:
     virtual TokenBase *clone() { return new TokenFOR(); }
 };
 
+// range-based for: for (type var : container) { ... }
+class TokenFOREACH: public TokenKeyword
+{
+public:
+    DataDef *elemtype;
+    std::string elemname;
+    Variable *elemvar;
+    TokenBase *container;
+    TokenBase *statement;
+    TokenFOREACH() : TokenKeyword("for") { elemtype = NULL; elemvar = NULL; container = statement = NULL; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    virtual TokenID id() const { return TokenID::tkFOR; }
+    virtual TokenBase *clone() { return new TokenFOREACH(); }
+};
+
 
 #endif // __TOKENS_H

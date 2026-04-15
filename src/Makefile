@@ -21,6 +21,8 @@ TESTOBJ  = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 
 all:
 	make ../bin/madc
+debug:
+	make CXXFLAGS="-std=c++11 -Wall -g -O0" ../bin/madc
 clean:
 	rm -f $(OBJECTS)
 	rm -f $(TESTBINS)
