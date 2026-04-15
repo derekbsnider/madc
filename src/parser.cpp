@@ -59,6 +59,7 @@ DataDefIFSTREAM ddIFSTREAM;
 DataDefOFSTREAM ddOFSTREAM;
 DataDefFSTREAM ddFSTREAM;
 DataDefLPSTR ddLPSTR;
+DataDefAUTO ddAUTO;
 DataDefTEST ddTESTSTRUCT;
 
 
@@ -928,14 +929,25 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     // (need check for optional parameters)
     // skip arg count check for dlopen functions (0 declared params = variadic-like)
     {
-	FuncDef *fd = (FuncDef *)tc->var.type;
-	Method *md = (Method *)tc->var.data;
-	if ( !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
+	// function pointer variable: type is DataDefFPTR, get target FuncDef
+	if ( tc->var.type->is_function() && tc->var.type->is_numeric() )
 	{
+	    DataDefFPTR *fptr = static_cast<DataDefFPTR *>(tc->var.type);
+	    FuncDef *fd = fptr->target;
 	    if ( tc->argc() != fd->parameters.size() )
-	    {
-		DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << fd->parameters.size() << std::endl);
 		Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc() << flush;
+	}
+	else
+	{
+	    FuncDef *fd = (FuncDef *)tc->var.type;
+	    Method *md = (Method *)tc->var.data;
+	    if ( !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
+	    {
+		if ( tc->argc() != fd->parameters.size() )
+		{
+		    DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << fd->parameters.size() << std::endl);
+		    Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc() << flush;
+		}
 	    }
 	}
     }
@@ -1236,47 +1248,46 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    //throw (TokenIdent *)tb;
 		}
 		ns_resolved:
-#if 1
 		if ( var->type->is_function() )
 		{
+		    // function pointer variable (DataDefFPTR) — different from regular functions
+		    if ( var->type->is_numeric() )
+		    {
+			// FPTR variable: if followed by (, call through pointer
+			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			{
+			    TokenCallFunc *tc = new TokenCallFunc(*var);
+			    tb = nextToken();
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallFunc(tc);
+			    opStack.push(tc);
+			    if ( tb->id() == TokenID::tkSemi )
+				done = true;
+			}
+			else
+			{
+			    // FPTR variable as value — push onto exStack
+			    exStack.push(new TokenVar(*var));
+			}
+			break;
+		    }
+		    // regular function: existing behavior
 		    TokenCallFunc *tc = new TokenCallFunc(*var);
 		    tb = nextToken();
 		    tc->line = tb->line;
 		    tc->column = tb->column;
-		    // if bracket, parse params
 		    if ( tb->id() == TokenID::tkOpBrk )
 		    {
-			// delete tb?
 			tb = parseCallFunc(tc);
 			DBG(cout << "parseCallFunc returned with token " << (char)tb->get() << endl);
 		    }
 		    DBG(cout << "Pushing found function call: " << var->name << "() onto opStack" << endl);
 		    opStack.push(tc);
-		    // I'm not sure why I need to do this TODO: figure this out
 		    if ( tb->id() == TokenID::tkSemi )
 			done = true;
 		    break;
 		}
-#else
-		if ( var->type->is_function() )
-		{
-		    if ( peekToken()->id() != TokenID::tkOpBrk )
-			Throw(tb) << "Expecting (" << flush;
-		    tb = nextToken();
-		    TokenCallFunc *tc = new TokenCallFunc(*var);
-		    tc->line = tb->line;
-		    tc->column = tb->column;
-		    // delete tb?
-		    tb = parseCallFunc(tc);
-		    DBG(cout << "Pushing found function call: " << var->name << "() onto opStack" << endl);
-		    opStack.push(tc);
-		    DBG(cout << "parseCallFunc returned with token " << (char)tb->get() << endl);
-		    // I'm not sure why I need to do this TODO: figure this out
-		    if ( tb->id() == TokenID::tkSemi )
-			done = true;
-		    break;
-		}
-#endif
 		if ( var->type->is_integer() )
 		    DBG(cout << "Pushing found variable: " << var->name << '=' << (int)var->get<int>() << " onto exStack" << endl);
 		else
@@ -2225,6 +2236,51 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
 
     if ( !(nt=peekToken()) )
 	Throw << "expecting token after identifier" << flush;
+
+    // auto type inference: auto fn = func_name;
+    if ( &tb->definition == &ddAUTO )
+    {
+	if ( nt->id() != TokenID::tkAssign )
+	    Throw(tb) << "'auto' requires an initializer" << flush;
+
+	// consume '=', then consume and inspect the RHS identifier
+	nextToken(); // consume '='
+	TokenBase *rhs_tok = nextToken();
+	if ( !rhs_tok || rhs_tok->type() != TokenType::ttIdentifier )
+	    Throw(tb) << "'auto' type deduction requires a function name" << flush;
+
+	Variable *rhs_var = findVariable(((TokenIdent *)rhs_tok)->str);
+	if ( !rhs_var || !rhs_var->type->is_function() )
+	    Throw(tb) << "'auto' type deduction currently only supports function pointer assignment" << flush;
+
+	// consume the semicolon
+	TokenBase *semi = peekToken();
+	if ( semi && semi->id() == TokenID::tkSemi )
+	    nextToken();
+
+	// create a DataDefFPTR wrapping the target function's FuncDef
+	FuncDef *target_func = (FuncDef *)rhs_var->type;
+	DataDefFPTR *fptr_type = new DataDefFPTR(target_func);
+
+	bool alloc = (!code || gotstatic) ? true : false;
+	var = addVariable(code, *fptr_type, id, 1, NULL, alloc);
+	TokenDecl *td = new TokenDecl(*var);
+	td->file = tb->file;
+	td->line = tb->line;
+	td->column = tb->column;
+
+	// build the assignment AST manually (fn = &greet)
+	TokenAssign *assign = new TokenAssign();
+	assign->file = tb->file;
+	assign->line = tb->line;
+	assign->column = tb->column;
+	assign->left = new TokenVar(*var);
+	assign->right = new TokenVar(*rhs_var);
+	td->initialize = assign;
+
+	DBG(std::cout << "parseDeclaration() auto: " << id << " = " << rhs_var->name << std::endl);
+	return td;
+    }
 
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )

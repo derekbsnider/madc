@@ -80,6 +80,7 @@ TokenIFSTREAM	tkIFSTREAM;
 TokenOFSTREAM	tkOFSTREAM;
 TokenFSTREAM	tkFSTREAM;
 TokenLPSTR	tkLPSTR;
+TokenAUTO	tkAUTO;
 
 
 void Program::_tokenizer_init()
@@ -147,6 +148,7 @@ void Program::add_datatypes()
     datatype_map[tkOFSTREAM.str] = &tkOFSTREAM;
     datatype_map[tkFSTREAM.str] = &tkFSTREAM;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
+    datatype_map[tkAUTO.str] = &tkAUTO;
 }
 
 

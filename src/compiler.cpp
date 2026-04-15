@@ -304,6 +304,81 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !var.type->is_function() )
 	pgm.Throw(this) << "TokenCallFunc::compile() called on non-function" << flush;
 
+    // function pointer call — indirect invoke through address in variable
+    if ( var.type->is_function() && var.type->is_numeric() )
+    {
+	DBG(cout << "TokenCallFunc::compile() function pointer call through " << var.name << endl);
+	DBG(pgm.cc.comment("function pointer call"));
+
+	DataDefFPTR *fptr = static_cast<DataDefFPTR *>(var.type);
+	FuncDef *func = fptr->target;
+	FuncSignatureBuilder funcsig(CallConvId::kCDecl);
+
+	// set return type
+	DataDef &retdd = func->returns;
+	if ( retdd.is_real() )        funcsig.setRetT<double>();
+	else if ( retdd.is_integer() ) funcsig.setRetT<int64_t>();
+	else if ( retdd.is_string() ) funcsig.setRetT<int64_t>();
+	else                          funcsig.setRetT<void>();
+
+	// load the function pointer from the variable's register
+	Operand &ptr_op = pgm.tkFunction->voperand(pgm, &var);
+
+	// compile arguments and build signature
+	std::vector<Operand> params;
+	for ( size_t i = 0; i < argc(); ++i )
+	{
+	    regdefp_t argrdp = {NULL, NULL, NULL};
+	    if ( i < func->parameters.size() )
+		argrdp.second = func->parameters[i];
+	    Operand &areg = parameters[i]->compile(pgm, argrdp);
+	    DataDef *ptype = argrdp.second;
+
+	    if ( ptype && ptype->is_real() )
+	    {
+		params.push_back(areg);
+		funcsig.addArgT<double>();
+	    }
+	    else if ( ptype && ptype->is_string() )
+	    {
+		params.push_back(areg);
+		funcsig.addArgT<void *>();
+	    }
+	    else
+	    {
+		params.push_back(areg);
+		funcsig.addArgT<int64_t>();
+	    }
+	}
+
+	// invoke through register
+	InvokeNode *call;
+	pgm.cc.invoke(&call, ptr_op.as<x86::Gp>(), funcsig);
+	uint32_t ai = 0;
+	for ( auto &p : params )
+	{
+	    if ( p.isReg() && p.as<BaseReg>().isGroup(RegGroup::kVec) )
+		call->setArg(ai++, p.as<x86::Xmm>());
+	    else if ( p.isReg() )
+		call->setArg(ai++, p.as<x86::Gp>());
+	    else if ( p.isImm() )
+		call->setArg(ai++, p.as<Imm>());
+	}
+
+	// capture return value
+	if ( !regdp.first )
+	{
+	    _operand = pgm.cc.newGpq("fptr_ret");
+	    regdp.first = &_operand;
+	}
+	if ( retdd.rawtype() != DataType::dtVOID )
+	    call->setRet(0, regdp.first->as<x86::Gp>());
+	if ( !regdp.second )
+	    regdp.second = &func->returns;
+
+	return *regdp.first;
+    }
+
     Method *method;
     FuncNode *fnd;
 
@@ -2705,6 +2780,37 @@ Operand &TokenDot::compile(Program &pgm, regdefp_t &regdp)
 // load variable into register
 Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 {
+    // function reference — emit function's entry point address
+    // A real function has is_function()=true but is_numeric()=false
+    if ( var.type->is_function() && !var.type->is_numeric() && var.data )
+    {
+	DBG(pgm.cc.comment("TokenVar::compile() function address"));
+	Method *method = (Method *)var.data;
+	FuncDef *func = (FuncDef *)method->returns.type;
+
+	if ( regdp.first )
+	{
+	    // store into caller's register (e.g. LHS of assignment)
+	    if ( func->funcnode )
+		pgm.cc.lea(regdp.first->as<x86::Gp>(), x86::ptr(func->funcnode->label()));
+	    else if ( method->x86code )
+		pgm.cc.mov(regdp.first->as<x86::Gp>(), imm(method->x86code));
+	    if ( !regdp.second )
+		regdp.second = var.type;
+	    return *regdp.first;
+	}
+
+	_operand = pgm.cc.newGpq(var.name.c_str());
+	if ( func->funcnode )
+	    pgm.cc.lea(_operand.as<x86::Gp>(), x86::ptr(func->funcnode->label()));
+	else if ( method->x86code )
+	    pgm.cc.mov(_operand.as<x86::Gp>(), imm(method->x86code));
+	regdp.first = &_operand;
+	if ( !regdp.second )
+	    regdp.second = var.type;
+	return _operand;
+    }
+
     DBG(pgm.cc.comment("TokenVar::compile() reg = operand()"));
     Operand &reg = operand(pgm);
 
