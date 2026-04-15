@@ -1232,8 +1232,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		if ( tb->id() == TokenID::tkTerQ )
 		{
 		    DBG(cout << "parseExpression: ternary operator ?" << endl);
-		    // pop all pending operators and get the condition from exStack
-		    while ( !opStack.empty() && opStack.top()->get() != '(' )
+		    // pop operators with higher or equal precedence than ? (13)
+		    // but NOT assignment (14) or lower precedence operators
+		    while ( !opStack.empty() && opStack.top()->get() != '('
+			    && dynamic_cast<TokenOperator *>(opStack.top())
+			    && dynamic_cast<TokenOperator *>(opStack.top())->precedence() <= 13 )
 			popOperator(opStack, exStack);
 		    if ( exStack.empty() )
 			Throw(tb) << "Missing condition before ?" << flush;

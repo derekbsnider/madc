@@ -2,8 +2,6 @@
 
 ## Medium Priority
 
-- **Ternary operator** — `condition ? expr1 : expr2` syntax. Needs parser support in `parseExpression()` for `?` and `:` operators, and compiler support to emit conditional JIT code (compare + two branches).
-
 - **Multi-return with conditionals** — `return a, b;` inside if/else branches crashes due to cleanup ordering. Need to defer cleanup or handle multi-return without calling cleanup before each return path.
 
 ## Low Priority

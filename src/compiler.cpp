@@ -3576,6 +3576,8 @@ Operand &TokenChar::compile(Program &pgm, regdefp_t &regdp)
 }
 
 // compile ternary operator: condition ? true_expr : false_expr
+// Uses a stack slot as the merge point to avoid asmjit register allocator
+// issues with the same virtual register written on two divergent paths.
 Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(std::cout << "TokenTerQ::compile() TOP" << std::endl);
@@ -3583,12 +3585,9 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
     Label L_false = pgm.cc.newLabel();
     Label L_end   = pgm.cc.newLabel();
 
-    // use the caller's destination register directly (or create one)
-    if ( !regdp.first )
-    {
-	_operand = pgm.cc.newGpq("__tern_result");
-	regdp.first = &_operand;
-    }
+    // stack slot for branch merge — both branches write here
+    x86::Mem slot = pgm.cc.newStack(8, 8);
+
     if ( !regdp.second )
 	regdp.second = &ddINT64;
 
@@ -3605,22 +3604,52 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
     pgm.cc.test(cond_gp, cond_gp);
     pgm.cc.je(L_false);
 
-    // true branch — compile directly into regdp.first
+    // true branch — compile into a fresh register, store to stack slot
     {
-	regdefp_t trdp = {regdp.first, regdp.second, NULL};
-	true_expr->compile(pgm, trdp);
+	regdefp_t trdp = {NULL, NULL, NULL};
+	Operand &tval = true_expr->compile(pgm, trdp);
+	x86::Gp t_tmp = pgm.cc.newGpq("__tern_true");
+	if ( tval.isReg() && tval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.mov(t_tmp, tval.as<x86::Gp>());
+	else if ( tval.isImm() )
+	    pgm.cc.mov(t_tmp, tval.as<Imm>());
+	else if ( tval.isMem() )
+	    pgm.cc.mov(t_tmp, tval.as<x86::Mem>());
+	pgm.cc.mov(slot, t_tmp);
+	if ( !regdp.second && trdp.second )
+	    regdp.second = trdp.second;
     }
     pgm.cc.jmp(L_end);
 
-    // false branch — compile directly into regdp.first
+    // false branch — compile into a fresh register, store to stack slot
     pgm.cc.bind(L_false);
     {
-	regdefp_t frdp = {regdp.first, regdp.second, NULL};
-	false_expr->compile(pgm, frdp);
+	regdefp_t frdp = {NULL, NULL, NULL};
+	Operand &fval = false_expr->compile(pgm, frdp);
+	x86::Gp f_tmp = pgm.cc.newGpq("__tern_false");
+	if ( fval.isReg() && fval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.mov(f_tmp, fval.as<x86::Gp>());
+	else if ( fval.isImm() )
+	    pgm.cc.mov(f_tmp, fval.as<Imm>());
+	else if ( fval.isMem() )
+	    pgm.cc.mov(f_tmp, fval.as<x86::Mem>());
+	pgm.cc.mov(slot, f_tmp);
     }
     pgm.cc.bind(L_end);
 
-    return *regdp.first;
+    // load result from stack slot
+    // If caller provided a destination (regdp.first), load directly into it
+    if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	pgm.cc.mov(regdp.first->as<x86::Gp>(), slot);
+	return *regdp.first;
+    }
+    // otherwise create our own result register
+    x86::Gp result = pgm.cc.newGpq("__tern_result");
+    pgm.cc.mov(result, slot);
+    _operand = result;
+    regdp.first = &_operand;
+    return _operand;
 }
 
 // compile a return statement
