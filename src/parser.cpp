@@ -2154,6 +2154,95 @@ TokenBase *TokenDEFER::parse(Program &pgm)
     return NULL;
 }
 
+// parse switch(expr) { case val: ...; break; default: ...; }
+TokenBase *TokenSWITCH::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenSWITCH::parse()" << std::endl);
+
+    // expect (
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkOpBrk )
+	pgm.Throw(tn) << "Expecting ( after switch" << flush;
+
+    // parse expression
+    expression = pgm.parseExpression(pgm.nextToken(), true);
+    if ( !expression )
+	pgm.Throw(tn) << "Failed to parse switch expression" << flush;
+
+    // expect )
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkClBrk )
+	pgm.Throw(tn) << "Expecting ) after switch expression" << flush;
+
+    // expect {
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkOpBrc )
+	pgm.Throw(tn) << "Expecting { after switch()" << flush;
+
+    // parse case/default blocks until }
+    while ( (tn = pgm.nextToken()) )
+    {
+	if ( tn->id() == TokenID::tkClBrc )
+	    break;
+	if ( tn->id() == TokenID::tkCASE )
+	{
+	    TokenCASE *tc = new TokenCASE();
+	    tc->file = tn->file;
+	    tc->line = tn->line;
+	    tc->column = tn->column;
+	    // parse case value — must be a literal constant (integer, char, string)
+	    tc->value = pgm.nextToken();
+	    // expect : after case value
+	    tn = pgm.nextToken();
+	    if ( tn->id() != TokenID::tkTerC )
+		pgm.Throw(tn) << "Expecting : after case value" << flush;
+	    // parse statements until next case/default/}
+	    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkCASE
+		    && pgm.peekToken()->id() != TokenID::tkDEFAULT
+		    && pgm.peekToken()->id() != TokenID::tkClBrc )
+	    {
+		TokenBase *stmt = pgm.parseStatement(pgm.nextToken());
+		if ( stmt )
+		    tc->statements.push_back(stmt);
+	    }
+	    cases.push_back(tc);
+	}
+	else if ( tn->id() == TokenID::tkDEFAULT )
+	{
+	    // expect : after default
+	    tn = pgm.nextToken();
+	    if ( tn->id() != TokenID::tkTerC )
+		pgm.Throw(tn) << "Expecting : after default" << flush;
+	    defaultcase = new TokenCASE();
+	    defaultcase->value = NULL;
+	    defaultcase->file = tn->file;
+	    defaultcase->line = tn->line;
+	    defaultcase->column = tn->column;
+	    // parse statements until next case/}
+	    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkCASE
+		    && pgm.peekToken()->id() != TokenID::tkDEFAULT
+		    && pgm.peekToken()->id() != TokenID::tkClBrc )
+	    {
+		TokenBase *stmt = pgm.parseStatement(pgm.nextToken());
+		if ( stmt )
+		    defaultcase->statements.push_back(stmt);
+	    }
+	}
+	else
+	    pgm.Throw(tn) << "Expecting case or default in switch body" << flush;
+    }
+
+    DBG(std::cout << "TokenSWITCH::parse() " << cases.size() << " cases" << (defaultcase ? " + default" : "") << std::endl);
+    return this;
+}
+
+// TokenCASE::parse() is not called directly — TokenSWITCH::parse() handles case parsing
+TokenBase *TokenCASE::parse(Program &pgm)
+{
+    pgm.Throw(this) << "case outside of switch" << flush;
+    return NULL;
+}
+
 // parse vector<type> — creates DataDefVECTOR and delegates to parseDeclaration
 TokenBase *TokenVECTOR::parse(Program &pgm)
 {

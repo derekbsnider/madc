@@ -3407,6 +3407,87 @@ Operand &TokenCONT::compile(Program &pgm, regdefp_t &regdp)
     return _reg;
 }
 
+// compile a switch statement
+Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(std::cout << "TokenSWITCH::compile() TOP — " << cases.size() << " cases" << std::endl);
+    DBG(pgm.cc.comment("switch start"));
+
+    // compile switch expression
+    regdefp_t exprrdp = {NULL, NULL, NULL};
+    Operand &expr_op = expression->compile(pgm, exprrdp);
+    x86::Gp expr_reg = pgm.cc.newGpq("switch_expr");
+    if ( expr_op.isReg() && expr_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	pgm.cc.mov(expr_reg, expr_op.as<x86::Gp>());
+    else if ( expr_op.isImm() )
+	pgm.cc.mov(expr_reg, expr_op.as<Imm>());
+    else if ( expr_op.isMem() )
+	pgm.cc.mov(expr_reg, expr_op.as<x86::Mem>());
+
+    Label sw_exit = pgm.cc.newLabel();
+
+    // create labels for each case + default
+    std::vector<Label> case_labels;
+    for ( size_t i = 0; i < cases.size(); ++i )
+	case_labels.push_back(pgm.cc.newLabel());
+    Label default_label = pgm.cc.newLabel();
+
+    // emit compare-and-jump for each case
+    for ( size_t i = 0; i < cases.size(); ++i )
+    {
+	regdefp_t valrdp = {NULL, NULL, NULL};
+	Operand &val_op = cases[i]->value->compile(pgm, valrdp);
+	if ( val_op.isReg() && val_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.cmp(expr_reg, val_op.as<x86::Gp>());
+	else if ( val_op.isImm() )
+	    pgm.cc.cmp(expr_reg, val_op.as<Imm>());
+	else if ( val_op.isMem() )
+	    pgm.cc.cmp(expr_reg, val_op.as<x86::Mem>());
+	pgm.cc.je(case_labels[i]);
+    }
+    // fall through to default or exit
+    pgm.cc.jmp(defaultcase ? default_label : sw_exit);
+
+    // push exit label onto loopstack so break works
+    pgm.loopstack.push(make_pair((Label *)NULL, &sw_exit));
+
+    // emit case bodies (fall-through between cases)
+    for ( size_t i = 0; i < cases.size(); ++i )
+    {
+	pgm.cc.bind(case_labels[i]);
+	DBG(pgm.cc.comment("case body"));
+	for ( auto *stmt : cases[i]->statements )
+	{
+	    regdefp_t stmtrdp = {NULL, NULL, NULL};
+	    stmt->compile(pgm, stmtrdp);
+	}
+    }
+
+    // emit default body
+    if ( defaultcase )
+    {
+	pgm.cc.bind(default_label);
+	DBG(pgm.cc.comment("default body"));
+	for ( auto *stmt : defaultcase->statements )
+	{
+	    regdefp_t stmtrdp = {NULL, NULL, NULL};
+	    stmt->compile(pgm, stmtrdp);
+	}
+    }
+
+    pgm.loopstack.pop();
+    pgm.cc.bind(sw_exit);
+    DBG(pgm.cc.comment("switch end"));
+
+    return _operand;
+}
+
+// TokenCASE::compile() is not called directly — TokenSWITCH::compile() handles it
+Operand &TokenCASE::compile(Program &pgm, regdefp_t &regdp)
+{
+    return _operand;
+}
+
 // compile an if statement
 Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
 {

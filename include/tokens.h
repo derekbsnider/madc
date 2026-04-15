@@ -926,11 +926,32 @@ using        virtual     wchar_t
 
 class TokenELSE:     public TokenKeyword { public: TokenELSE()     : TokenKeyword("else") {}     virtual TokenID id() const { return TokenID::tkELSE;     } virtual TokenBase *clone() { return (TokenBase*)new TokenELSE();    } };
 class TokenGOTO:     public TokenKeyword { public: TokenGOTO()     : TokenKeyword("goto") {}     virtual TokenID id() const { return TokenID::tkGOTO;     } virtual TokenBase *clone() { return (TokenBase*)new TokenGOTO();    } };
-class TokenCASE:     public TokenKeyword { public: TokenCASE()     : TokenKeyword("case") {}     virtual TokenID id() const { return TokenID::tkCASE;     } virtual TokenBase *clone() { return (TokenBase*)new TokenCASE();    } };
+class TokenCASE: public TokenKeyword
+{
+public:
+    TokenBase *value;                          // case constant expression
+    std::vector<TokenBase *> statements;       // statements until next case/default/}
+    TokenCASE() : TokenKeyword("case"), value(NULL) {}
+    virtual TokenID id() const { return TokenID::tkCASE; }
+    virtual TokenBase *clone() { return new TokenCASE(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
 class TokenTRY:      public TokenKeyword { public: TokenTRY()      : TokenKeyword("try") {}      virtual TokenID id() const { return TokenID::tkTRY;      } virtual TokenBase *clone() { return (TokenBase*)new TokenTRY();     } };
 class TokenCATCH:    public TokenKeyword { public: TokenCATCH()    : TokenKeyword("catch") {}    virtual TokenID id() const { return TokenID::tkCATCH;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCATCH();   } };
 class TokenTHROW:    public TokenKeyword { public: TokenTHROW()    : TokenKeyword("throw") {}    virtual TokenID id() const { return TokenID::tkTHROW;    } virtual TokenBase *clone() { return (TokenBase*)new TokenTHROW();   } };
-class TokenSWITCH:   public TokenKeyword { public: TokenSWITCH()   : TokenKeyword("switch") {}   virtual TokenID id() const { return TokenID::tkSWITCH;   } virtual TokenBase *clone() { return (TokenBase*)new TokenSWITCH();  } };
+class TokenSWITCH: public TokenKeyword
+{
+public:
+    TokenBase *expression;                     // switch(expr)
+    std::vector<TokenCASE *> cases;            // case entries
+    TokenCASE *defaultcase;                    // default entry (reuses TokenCASE with value=NULL)
+    TokenSWITCH() : TokenKeyword("switch"), expression(NULL), defaultcase(NULL) {}
+    virtual TokenID id() const { return TokenID::tkSWITCH; }
+    virtual TokenBase *clone() { return new TokenSWITCH(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
 class TokenCLASS: public TokenKeyword
 {
 public:
