@@ -76,6 +76,9 @@ TokenDOUBLE	tkDOUBLE;
 TokenSTRING	tkSTRING;
 TokenSSTREAM	tkSSTREAM;
 TokenARRAY	tkARRAY;
+TokenIFSTREAM	tkIFSTREAM;
+TokenOFSTREAM	tkOFSTREAM;
+TokenFSTREAM	tkFSTREAM;
 TokenLPSTR	tkLPSTR;
 
 
@@ -140,6 +143,9 @@ void Program::add_datatypes()
     datatype_map[tkSTRING.str] = &tkSTRING;
     datatype_map[tkSSTREAM.str] = &tkSSTREAM;
     datatype_map[tkARRAY.str] = &tkARRAY;
+    datatype_map[tkIFSTREAM.str] = &tkIFSTREAM;
+    datatype_map[tkOFSTREAM.str] = &tkOFSTREAM;
+    datatype_map[tkFSTREAM.str] = &tkFSTREAM;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
 }
 

@@ -41,6 +41,9 @@ class TokenSTRING:    public TokenDataType { public: TokenSTRING(): TokenDataTyp
 class TokenOSTREAM:   public TokenDataType { public: TokenOSTREAM():TokenDataType("ostream", ddOSTREAM) {} };
 class TokenSSTREAM:   public TokenDataType { public: TokenSSTREAM():TokenDataType("stringstream", ddSSTREAM) {} };
 class TokenARRAY:     public TokenDataType { public: TokenARRAY():  TokenDataType("array", ddARRAY) {} };
+class TokenIFSTREAM:  public TokenDataType { public: TokenIFSTREAM(): TokenDataType("ifstream", ddIFSTREAM) {} };
+class TokenOFSTREAM:  public TokenDataType { public: TokenOFSTREAM(): TokenDataType("ofstream", ddOFSTREAM) {} };
+class TokenFSTREAM:   public TokenDataType { public: TokenFSTREAM():  TokenDataType("fstream", ddFSTREAM) {} };
 
 
 // Variable "container" class to keep track of everything about a variable,

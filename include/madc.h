@@ -326,6 +326,7 @@ public:
     void add_datatypes();
     void add_string_methods();
     void add_sstream_methods();
+    void add_fstream_methods();
     void add_functions();
     void add_globals();
     void add_namespaces();
