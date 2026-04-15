@@ -304,7 +304,6 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !var.type->is_function() )
 	pgm.Throw(this) << "TokenCallFunc::compile() called on non-function" << flush;
 
-#ifdef FEATURE_FUNCPTR
     // function pointer call — indirect invoke through address in variable
     if ( var.type->is_function() && var.type->is_numeric() )
     {
@@ -379,7 +378,6 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	return *regdp.first;
     }
-#endif // FEATURE_FUNCPTR
 
     Method *method;
     FuncNode *fnd;
@@ -2782,7 +2780,6 @@ Operand &TokenDot::compile(Program &pgm, regdefp_t &regdp)
 // load variable into register
 Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 {
-#ifdef FEATURE_FUNCPTR
     // function reference — emit function's entry point address
     // A real function has is_function()=true but is_numeric()=false
     if ( var.type->is_function() && !var.type->is_numeric() && var.data )
@@ -2813,7 +2810,6 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	    regdp.second = var.type;
 	return _operand;
     }
-#endif // FEATURE_FUNCPTR
 
     DBG(pgm.cc.comment("TokenVar::compile() reg = operand()"));
     Operand &reg = operand(pgm);

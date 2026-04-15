@@ -641,7 +641,6 @@ class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
 extern DataDefTEST ddTESTSTRUCT;
 #endif
 
-#ifdef FEATURE_FUNCPTR
 // auto type placeholder
 class DataDefAUTO: public DataDef
 {
@@ -662,6 +661,5 @@ public:
     virtual bool is_numeric()  { return true; }
     virtual bool is_integer()  { return true; }
 };
-#endif // FEATURE_FUNCPTR
 
 #endif // __DATADEF_H

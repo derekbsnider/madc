@@ -59,9 +59,7 @@ DataDefIFSTREAM ddIFSTREAM;
 DataDefOFSTREAM ddOFSTREAM;
 DataDefFSTREAM ddFSTREAM;
 DataDefLPSTR ddLPSTR;
-#ifdef FEATURE_FUNCPTR
 DataDefAUTO ddAUTO;
-#endif
 DataDefTEST ddTESTSTRUCT;
 
 
@@ -931,7 +929,6 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     // (need check for optional parameters)
     // skip arg count check for dlopen functions (0 declared params = variadic-like)
     {
-#ifdef FEATURE_FUNCPTR
 	// function pointer variable: type is DataDefFPTR, get target FuncDef
 	if ( tc->var.type->is_function() && tc->var.type->is_numeric() )
 	{
@@ -941,7 +938,6 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 		Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc() << flush;
 	}
 	else
-#endif
 	{
 	    FuncDef *fd = (FuncDef *)tc->var.type;
 	    Method *md = (Method *)tc->var.data;
@@ -1254,7 +1250,6 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		ns_resolved:
 		if ( var->type->is_function() )
 		{
-#ifdef FEATURE_FUNCPTR
 		    // function pointer variable (DataDefFPTR) — different from regular functions
 		    if ( var->type->is_numeric() )
 		    {
@@ -1277,7 +1272,6 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			}
 			break;
 		    }
-#endif
 		    // regular function: existing behavior
 		    TokenCallFunc *tc = new TokenCallFunc(*var);
 		    tb = nextToken();
@@ -2243,7 +2237,6 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
     if ( !(nt=peekToken()) )
 	Throw << "expecting token after identifier" << flush;
 
-#ifdef FEATURE_FUNCPTR
     // auto type inference: auto fn = func_name;
     if ( &tb->definition == &ddAUTO )
     {
@@ -2288,7 +2281,6 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
 	DBG(std::cout << "parseDeclaration() auto: " << id << " = " << rhs_var->name << std::endl);
 	return td;
     }
-#endif // FEATURE_FUNCPTR
 
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )
