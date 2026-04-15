@@ -283,7 +283,9 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 //#endif
 
-    if ( argc() > func->parameters.size() )
+    // allow extra args for dlopen functions (0 declared params = variadic)
+    bool is_variadic = func->parameters.empty() && method->x86code;
+    if ( !is_variadic && argc() > func->parameters.size() )
     {
 	std::cerr << "ERROR: TokenCallFunc::compile() method " << var.name << " called with too many parameters" << std::endl;
 	std::cerr << "argc(): " << argc() << " func->parameters.size(): " << func->parameters.size() << std::endl;
@@ -298,7 +300,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     for ( size_t i = 0; i < argc(); ++i )
     {
 	regdefp_t funcrdp;
-	ptype = func->parameters[i];
+	ptype = i < func->parameters.size() ? func->parameters[i] : &ddINT64;
 	tn = parameters[i];
 
 	DBG(pgm.cc.comment("TokenCallFunc::argc param"));
@@ -317,6 +319,19 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	if ( ptype->type() == DataType::dtCHARptr && tn->datadef()->rawtype() == DataType::dtSTRING )
 	{
 	    DBG(pgm.cc.comment("coerce dtSTRING -> dtCHARptr via string_cstr"));
+	    x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
+	    InvokeNode *cstr_call;
+	    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignatureT<const char *, void *>(CallConvId::kCDecl));
+	    cstr_call->setArg(0, tnreg.as<x86::Gp>());
+	    cstr_call->setRet(0, cstr_reg);
+	    params.push_back(cstr_reg);
+	    funcsig.addArgT<const char *>();
+	    continue;
+	}
+	// for dlopen variadic functions, auto-coerce strings to const char*
+	if ( is_variadic && tn->datadef()->rawtype() == DataType::dtSTRING )
+	{
+	    DBG(pgm.cc.comment("dlopen: coerce dtSTRING -> const char* via string_cstr"));
 	    x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
 	    InvokeNode *cstr_call;
 	    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignatureT<const char *, void *>(CallConvId::kCDecl));

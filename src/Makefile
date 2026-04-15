@@ -9,7 +9,7 @@ LIBDIR	= ../lib
 OBJDIR	= ../obj
 DEFINES	= -I$(INCDIR)
 #LIBS	= -lreadline -lasmjit
-LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -lasmjit
+LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -lasmjit -ldl
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES))
 OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 

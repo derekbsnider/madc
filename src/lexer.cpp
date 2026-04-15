@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dlfcn.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -291,6 +292,45 @@ TokenBase *Program::_getToken()
 		    }
 		    source = std::move(saved);
 		    return getToken(); // continue with current file
+		}
+		if ( directive == "load" )
+		{
+		    // #load "libfoo.so" as namespace;
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    char delim = source.get(); // "
+		    std::string libname;
+		    while ( source.good() && !source.eof() && source.peek() != delim
+		    &&      source.peek() != '\n' && source.peek() != '\r' )
+			libname += source.get();
+		    if ( source.peek() == delim )
+			source.get();
+		    // skip whitespace, expect "as"
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string kw;
+		    while ( source.good() && !source.eof() && isalpha(source.peek()) )
+			kw += source.get();
+		    if ( kw != "as" )
+			throw "Expecting 'as' in #load directive";
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string ns_name;
+		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+			ns_name += source.get();
+		    // skip to semicolon
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    if ( source.peek() == ';' )
+			source.get();
+		    // dlopen the library
+		    void *handle = dlopen(libname.c_str(), RTLD_LAZY);
+		    if ( !handle )
+			throw ("Failed to load library: " + libname + ": " + dlerror()).c_str();
+		    dlopen_map[ns_name] = handle;
+		    namespace_map[ns_name]; // create empty namespace
+		    DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
+		    return getToken();
 		}
 	    }
 	    return new TokenHash;

@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dlfcn.h>
 #include <unistd.h>
 #include <iostream>
 #include <iomanip>
@@ -774,10 +775,18 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	tc->parameters.push_back(tb);
     }
     // (need check for optional parameters)
-    if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
+    // skip arg count check for dlopen functions (0 declared params = variadic-like)
     {
-	DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << std::endl);
-	Throw(tc) << "Incorrect number of parameters: expected " << ((FuncDef *)tc->var.type)->parameters.size() << " got " << tc->argc() << flush;
+	FuncDef *fd = (FuncDef *)tc->var.type;
+	Method *md = (Method *)tc->var.data;
+	if ( !(fd->parameters.empty() && md && md->x86code) )
+	{
+	    if ( tc->argc() != fd->parameters.size() )
+	    {
+		DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << fd->parameters.size() << std::endl);
+		Throw(tc) << "Incorrect number of parameters: expected " << fd->parameters.size() << " got " << tc->argc() << flush;
+	    }
+	}
     }
 
     return tb;
@@ -1044,8 +1053,27 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    std::string member_name = ((TokenIdent *)member_tb)->str;
 		    variable_map_iter vmi = nsi->second.find(member_name);
 		    if ( vmi == nsi->second.end() )
-			Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
-		    var = vmi->second;
+		    {
+			// try dlsym fallback if this namespace was loaded via #load
+			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
+			if ( dli == dlopen_map.end() )
+			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+			void *sym = dlsym(dli->second, member_name.c_str());
+			if ( !sym )
+			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
+			// create function with int64 return, no declared params (variadic-like)
+			// actual args are passed through at compile time
+			std::string func_id = "__dl_" + ns_name + "_" + member_name;
+			var = addFunction(func_id,
+			    datatype_vec_t{DataType::dtINT64},
+			    (fVOIDFUNC)sym);
+			if ( !var )
+			    Throw(member_tb) << "Failed to register dlsym function '" << member_name << "'" << flush;
+			nsi->second[member_name] = var; // cache for next call
+			DBG(cout << "parseExpression() dlsym resolved " << ns_name << "::" << member_name << " at " << (uint64_t)sym << endl);
+		    }
+		    else
+			var = vmi->second;
 		    DBG(cout << "parseExpression() resolved " << ns_name << "::" << member_name << endl);
 		    tb = member_tb; // update tb for line/col tracking below
 		    goto ns_resolved;

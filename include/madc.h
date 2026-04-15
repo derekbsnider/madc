@@ -306,6 +306,7 @@ public:
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
+    std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::queue<TokenBase *> tokens;	// parsed token queue
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
