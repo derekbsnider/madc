@@ -3,34 +3,23 @@
 int main()
 {
     string hello = "  Hello, World!  ";
-    string name = "Mad-C";
-    int len;
-
-    // strlen
-    len = php::strlen(hello);
-    cout << "strlen: " << len << endl;
+    string name = "mad-c is cool";
+    int count;
 
     // trim
     php::trim(hello);
     cout << "trim: [" << hello << "]" << endl;
 
-    // strtoupper / strtolower
-    php::strtoupper(name);
-    cout << "upper: " << name << endl;
-    php::strtolower(name);
-    cout << "lower: " << name << endl;
+    // ucfirst / lcfirst
+    php::ucfirst(name);
+    cout << "ucfirst: " << name << endl;
+    php::lcfirst(name);
+    cout << "lcfirst: " << name << endl;
 
-    // strrev
-    string rev = "abcdef";
-    php::strrev(rev);
-    cout << "rev: " << rev << endl;
-
-    // strpos
-    string hay = "hello world";
-    string needle = "world";
-    int pos;
-    pos = php::strpos(hay, needle);
-    cout << "strpos: " << pos << endl;
+    // str_repeat
+    string star = "*";
+    php::str_repeat(star, 10);
+    cout << "repeat: " << star << endl;
 
     // str_replace
     string subj = "foo bar foo baz foo";
@@ -39,17 +28,40 @@ int main()
     php::str_replace(srch, repl, subj);
     cout << "replace: " << subj << endl;
 
-    // str_repeat
-    string star = "*";
-    php::str_repeat(star, 5);
-    cout << "repeat: " << star << endl;
+    // str_rot13
+    string secret = "Hello";
+    php::str_rot13(secret);
+    cout << "rot13: " << secret << endl;
+    php::str_rot13(secret);
+    cout << "rot13x2: " << secret << endl;
 
-    // str_contains
-    string text = "Hello, World!";
-    string find = "World";
-    int found;
-    found = php::str_contains(text, find);
-    cout << "contains: " << found << endl;
+    // str_word_count
+    string sentence = "the quick brown fox jumps";
+    count = php::str_word_count(sentence);
+    cout << "words: " << count << endl;
+
+    // nl2br
+    string html = "line1\nline2\nline3";
+    php::nl2br(html);
+    cout << "nl2br: " << html << endl;
+
+    // number_format
+    string formatted;
+    string comma = ",";
+    php::number_format(formatted, 1234567, comma);
+    cout << "number: " << formatted << endl;
+
+    // explode
+    string csv = "one,two,three,four";
+    string delim = ",";
+    string piece;
+    int parts;
+    parts = php::explode_count(delim, csv);
+    cout << "parts: " << parts << endl;
+    php::explode(piece, delim, csv, 0);
+    cout << "piece[0]: " << piece << endl;
+    php::explode(piece, delim, csv, 2);
+    cout << "piece[2]: " << piece << endl;
 
     return 0;
 }
