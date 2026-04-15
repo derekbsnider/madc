@@ -1,15 +1,15 @@
 # Mad-C Revival Plan
 
 **Date:** 2026-04-14  
-**Status:** Planning
+**Status:** Phase 1 Complete — Phase 2 Planned
 
 ## Context
 
-madc was last touched ~7 years ago. The asmjit v1.14 migration has been completed and the binary builds and runs. 22/24 tests pass. This plan covers the full path to a robust, extensible, "gone mad" C-style JIT language.
+madc was last touched ~7 years ago. The asmjit v1.14 migration has been completed and the binary builds and runs. Phase 1 is complete: 24/24 tests pass, doctest unit tests pass. This plan covers the full path to a robust, extensible, "gone mad" C-style JIT language.
 
 ---
 
-## Phase 1 — Foundation: Correctness & Developer Experience
+## Phase 1 — Foundation: Correctness & Developer Experience ✓ COMPLETE
 
 *Goal: Make madc reliable and usable as a scripting tool. Unblocks everything else.*
 

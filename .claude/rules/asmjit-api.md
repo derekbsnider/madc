@@ -55,3 +55,33 @@ New: `FormatFlags::kMachineCode` (kFlagDebugRA and kFlagDebugPasses removed)
 The `movsd` instruction only accepts `(Xmm, Xmm)` or `(Xmm, Mem)` operands.
 The old default case `cc.movsd(reg, (uintptr_t)ptr)` is invalid.
 Fixed to: `cc.movq(reg, asmjit::x86::qword_ptr((uintptr_t)ptr))`
+
+## x86::Mem Displacement: addOffset vs setOffset
+
+When adjusting a stack `Mem` operand to point to a struct member, always use
+`addOffset(delta)`, NOT `setOffset(delta)`.
+
+- `setOffset(n)` — **replaces** the entire displacement, losing the base stack offset
+- `addOffset(n)` — **adds** to the existing displacement, giving `[rbp - slot + offset]`
+
+Stack `Mem` operands from asmjit already embed a negative displacement from `rbp`.
+Using `setOffset` produces `[rbp + member_offset]` — pointing into the wrong address.
+
+## Multi-Statement DBG Blocks Across asmjit Scope
+
+When multiple DBG statements share a local variable (e.g. `FileLogger`), they must be
+combined into a single `DBG(...)` call, because `do { ... } while(0)` creates its own
+scope. A variable declared in one `DBG()` is not visible in the next.
+
+```cpp
+// CORRECT — single DBG block, logger visible throughout
+DBG(
+    static FileLogger logger(stdout);
+    logger.setFlags(FormatFlags::kMachineCode);
+    code.setLogger(&logger);
+);
+
+// WRONG — logger declared in first block, cannot be used in second
+DBG(static FileLogger logger(stdout));
+DBG(logger.setFlags(FormatFlags::kMachineCode));  // compile error
+```
