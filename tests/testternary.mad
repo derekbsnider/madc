@@ -1,0 +1,21 @@
+#!/usr/bin/env madc
+// Test ternary operator
+
+int pick(int x)
+{
+	return x > 3 ? 100 : 200;
+}
+
+int main()
+{
+	// ternary in return
+	cout << pick(5) << endl;
+	cout << pick(1) << endl;
+
+	// ternary in function args
+	int x = 10;
+	int y = pick(x > 5 ? 7 : 0);
+	cout << y << endl;
+
+	return 0;
+}

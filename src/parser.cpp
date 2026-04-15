@@ -1197,6 +1197,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    opStack.push(tb); // opStack.push(tb->clone());
 		    break;
 		}
+		// colon stops expression (ternary false branch, case label, range-for)
+		if ( tb->id() == TokenID::tkTerC && !brackets )
+		{
+		    pushToken(tb); // put : back for caller to consume
+		    done = true;
+		    break;
+		}
 		if ( tb->id() == TokenID::tkClBrk )
 		{
 		    if ( !brackets )
@@ -1219,6 +1226,34 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			DBG(std::cout << "Program::parseExpression() conditional end exStack:" << exStack.size() << std::endl);
 			return exStack.empty() ? NULL : exStack.top();
 		    }
+		    break;
+		}
+		// ternary operator: condition ? true_expr : false_expr
+		if ( tb->id() == TokenID::tkTerQ )
+		{
+		    DBG(cout << "parseExpression: ternary operator ?" << endl);
+		    // pop all pending operators and get the condition from exStack
+		    while ( !opStack.empty() && opStack.top()->get() != '(' )
+			popOperator(opStack, exStack);
+		    if ( exStack.empty() )
+			Throw(tb) << "Missing condition before ?" << flush;
+		    TokenTerQ *ternary = (TokenTerQ *)tb;
+		    ternary->condition = exStack.top();
+		    exStack.pop();
+		    // parse true expression — use conditional mode so it stops at : or )
+		    // but : is an operator, not ), so we parse then check for :
+		    TokenBase *texpr = nextToken();
+		    ternary->true_expr = parseExpression(texpr, true);
+		    // after conditional parseExpression, expect : next
+		    TokenBase *colon = nextToken();
+		    if ( colon->id() != TokenID::tkTerC )
+			Throw(colon) << "Expecting : in ternary expression" << flush;
+		    // parse false expression
+		    TokenBase *fexpr = nextToken();
+		    ternary->false_expr = parseExpression(fexpr, conditional);
+		    // push ternary result onto exStack
+		    exStack.push(ternary);
+		    done = true;
 		    break;
 		}
 		// see if we need to convert TokenNeg to TokenSub

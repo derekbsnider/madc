@@ -576,12 +576,16 @@ public:
 class TokenTerQ: public TokenOperator
 {
 public:
-    TokenTerQ() : TokenOperator('?') {}
+    TokenBase *condition;
+    TokenBase *true_expr;
+    TokenBase *false_expr;
+    TokenTerQ() : TokenOperator('?'), condition(NULL), true_expr(NULL), false_expr(NULL) {}
     virtual TokenID id() const { return TokenID::tkTerQ; }
     virtual TokenBase *clone() { return new TokenTerQ(); }
     virtual inline int precedence()   const { return 13; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int    ioperate() const { return left->ival() ? left->ival() : right->ival(); }
     inline double foperate() const { return left->dval() ? left->dval() : right->dval(); }
 };

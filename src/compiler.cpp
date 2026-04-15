@@ -648,9 +648,9 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     // allow extra args for dlopen functions (0 declared params = variadic)
     bool is_variadic = func->parameters.empty() && method->x86code;
-    // adjust expected param count: subtract hidden params (object/retbuf)
+    // adjust expected param count: subtract hidden params (retbuf for multi-return, this for methods)
     size_t expected_argc = func->parameters.size();
-    if ( regdp.object ) expected_argc--; // hidden object/retbuf param
+    if ( func->is_multi_return() ) expected_argc--; // hidden __retbuf param
     if ( !is_variadic && argc() > expected_argc )
     {
 	std::cerr << "ERROR: TokenCallFunc::compile() method " << var.name << " called with too many parameters" << std::endl;
@@ -663,7 +663,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	pgm.Throw(this) << "TokenCallFunc::compile() called with too many parameters" << flush;
     }
 
-    size_t param_offset = regdp.object ? 1 : 0; // skip hidden retbuf/this param
+    size_t param_offset = (func->is_multi_return() || (method && method->owner_class)) ? 1 : 0;
     for ( size_t i = 0; i < argc(); ++i )
     {
 	regdefp_t funcrdp;
@@ -3573,6 +3573,54 @@ Operand &TokenChar::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenChar::compile[" << (uint64_t)this << "]() value: " << (char)_token << endl);
     regdp.first = &_operand;
     return operand(pgm);
+}
+
+// compile ternary operator: condition ? true_expr : false_expr
+Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(std::cout << "TokenTerQ::compile() TOP" << std::endl);
+    DBG(pgm.cc.comment("ternary ? : start"));
+    Label L_false = pgm.cc.newLabel();
+    Label L_end   = pgm.cc.newLabel();
+
+    // use the caller's destination register directly (or create one)
+    if ( !regdp.first )
+    {
+	_operand = pgm.cc.newGpq("__tern_result");
+	regdp.first = &_operand;
+    }
+    if ( !regdp.second )
+	regdp.second = &ddINT64;
+
+    // compile condition into a fresh register
+    regdefp_t condrdp = {NULL, NULL, NULL};
+    Operand &cond = condition->compile(pgm, condrdp);
+    x86::Gp cond_gp = pgm.cc.newGpq("__tern_cond");
+    if ( cond.isReg() && cond.as<BaseReg>().isGroup(RegGroup::kGp) )
+	pgm.cc.mov(cond_gp, cond.as<x86::Gp>());
+    else if ( cond.isMem() )
+	pgm.cc.mov(cond_gp, cond.as<x86::Mem>());
+    else if ( cond.isImm() )
+	pgm.cc.mov(cond_gp, cond.as<Imm>());
+    pgm.cc.test(cond_gp, cond_gp);
+    pgm.cc.je(L_false);
+
+    // true branch — compile directly into regdp.first
+    {
+	regdefp_t trdp = {regdp.first, regdp.second, NULL};
+	true_expr->compile(pgm, trdp);
+    }
+    pgm.cc.jmp(L_end);
+
+    // false branch — compile directly into regdp.first
+    pgm.cc.bind(L_false);
+    {
+	regdefp_t frdp = {regdp.first, regdp.second, NULL};
+	false_expr->compile(pgm, frdp);
+    }
+    pgm.cc.bind(L_end);
+
+    return *regdp.first;
 }
 
 // compile a return statement
