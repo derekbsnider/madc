@@ -1,0 +1,23 @@
+#!/../bin/madc
+
+#load "libc.so.6" as libc;
+
+int main()
+{
+    int result;
+
+    // abs(-42) should return 42
+    result = libc::abs(-42);
+    cout << "abs(-42): " << result << endl;
+
+    // abs(100) should return 100
+    result = libc::abs(100);
+    cout << "abs(100): " << result << endl;
+
+    // atoi("999")
+    string num = "999";
+    result = libc::atoi(num);
+    cout << "atoi: " << result << endl;
+
+    return 0;
+}
