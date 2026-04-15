@@ -1,0 +1,5 @@
+tests/unit/test_datadef
+*.cpp~
+*.h~
+Makefile~
+*.sh~

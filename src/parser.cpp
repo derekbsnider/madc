@@ -22,7 +22,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#define DBG(x) x
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
@@ -1382,6 +1382,21 @@ TokenBase *TokenOPEROVER::parse(Program &pgm)
 }
 
 
+TokenBase *TokenREGISTER::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenREGISTER::parse()" << std::endl);
+    TokenBase *tn = pgm.peekToken();
+    if ( !tn )
+        pgm.Throw << "Unexpected end of input after 'register'" << flush;
+    if ( tn->type() != TokenType::ttDataType )
+        pgm.Throw(tn) << "Expecting type after 'register'" << flush;
+    tn = pgm.nextToken();
+    TokenBase *decl = pgm.parseDeclaration(static_cast<TokenDataType *>(tn));
+    if ( decl && decl->type() == TokenType::ttDeclare )
+        dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
+    return decl;
+}
+
 TokenBase *Program::parseKeyword(TokenKeyword *tk)
 {
     TokenBase *tb = (TokenBase *)tk->parse(*this);
@@ -1789,6 +1804,7 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(std::exception &e)
     {
+	// throwbuf::sync() already printed the formatted error to stderr before throwing
 	return false;
     }
 
