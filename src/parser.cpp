@@ -438,6 +438,7 @@ void Program::_parser_init()
     add_globals();
     add_namespaces();
     add_php_namespace();
+    add_perl_namespace();
     _braces = 0;
 }
 

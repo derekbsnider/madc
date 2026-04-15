@@ -497,7 +497,7 @@ void Program::add_php_namespace()
 	if (var) php_ns["ltrim"] = var;
 
 	var = addFunction("__php_rtrim",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_rtrim);
-	if (var) php_ns["rtrim"] = var;
+	if (var) { php_ns["rtrim"] = var; php_ns["chop"] = var; } // chop is alias for rtrim in PHP
 
 	// case manipulation — ucfirst/lcfirst are PHP-unique
 	var = addFunction("__php_ucfirst",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_ucfirst);
