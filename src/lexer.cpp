@@ -277,17 +277,23 @@ TokenBase *Program::_getToken()
 			source.get(); // consume closing delimiter
 		    // resolve relative path based on current file's directory
 		    std::string full_path = incfile;
-		    std::string cur_fname(source.fname());
-		    size_t slash_pos = cur_fname.rfind('/');
-		    if ( slash_pos != std::string::npos )
-			full_path = cur_fname.substr(0, slash_pos + 1) + incfile;
+		    if ( !incfile.empty() && incfile[0] != '/' )
+		    {
+			std::string cur_fname(source.fname());
+			size_t slash_pos = cur_fname.rfind('/');
+			if ( slash_pos != std::string::npos )
+			    full_path = cur_fname.substr(0, slash_pos + 1) + incfile;
+		    }
 		    DBG(std::cout << "#include \"" << full_path << "\"" << std::endl);
 		    // save current source, tokenize included file
 		    Source saved = std::move(source);
 		    source = Source();
 		    std::ifstream incf(full_path.c_str());
 		    if ( !incf )
-			throw ("Failed to open include file: " + full_path).c_str();
+		    {
+			source = std::move(saved); // restore before throwing
+			Throw << "Failed to open include file: " << full_path.c_str() << flush;
+		    }
 		    source.fname(full_path.c_str());
 		    source.copybuf(incf.rdbuf());
 		    TokenBase *itb;
@@ -332,7 +338,10 @@ TokenBase *Program::_getToken()
 		    // dlopen the library
 		    void *handle = dlopen(libname.c_str(), RTLD_LAZY);
 		    if ( !handle )
-			throw ("Failed to load library: " + libname + ": " + dlerror()).c_str();
+		    {
+			std::string err = "Failed to load library: " + libname + ": " + dlerror();
+			Throw << err.c_str() << flush;
+		    }
 		    dlopen_map[ns_name] = handle;
 		    namespace_map[ns_name]; // create empty namespace
 		    DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
