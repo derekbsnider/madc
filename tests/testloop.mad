@@ -1,0 +1,36 @@
+#!/../bin/madc
+
+int main()
+{
+    // write test file
+    ofstream outf;
+    string fname = "/tmp/madc_loop_test.txt";
+    outf.open(fname);
+    outf << "line1" << endl;
+    outf << "line2" << endl;
+    outf << "line3" << endl;
+    outf.close();
+
+    // read with while loop
+    ifstream inf;
+    inf.open(fname);
+    string line;
+    int count = 0;
+    while ( inf.good() )
+    {
+        getline(inf, line);
+        if ( inf.good() )
+        {
+            cout << line << endl;
+            count = count + 1;
+        }
+    }
+    inf.close();
+    cout << "lines: " << count << endl;
+
+    // cleanup
+    string rm = "rm -f /tmp/madc_loop_test.txt";
+    system(rm);
+
+    return 0;
+}

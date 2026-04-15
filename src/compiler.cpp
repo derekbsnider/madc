@@ -143,18 +143,16 @@ void ofstream_close(void *ptr)
 {
     ((std::ofstream *)ptr)->close();
 }
-int64_t stream_eof(void *ptr)
-{
-    return ((std::ios *)ptr)->eof() ? 1 : 0;
-}
-int64_t stream_good(void *ptr)
-{
-    return ((std::ios *)ptr)->good() ? 1 : 0;
-}
-int64_t stream_is_open(void *ptr)
-{
-    return ((std::ifstream *)ptr)->is_open() ? 1 : 0;
-}
+// separate typed versions needed because ios is a virtual base —
+// casting void* to ios* directly gives the wrong pointer offset
+int64_t ifstream_eof(void *ptr)  { return ((std::ifstream *)ptr)->eof() ? 1 : 0; }
+int64_t ifstream_good(void *ptr) { return ((std::ifstream *)ptr)->good() ? 1 : 0; }
+int64_t ifstream_is_open(void *ptr) { return ((std::ifstream *)ptr)->is_open() ? 1 : 0; }
+int64_t ofstream_good(void *ptr) { return ((std::ofstream *)ptr)->good() ? 1 : 0; }
+int64_t ofstream_is_open(void *ptr) { return ((std::ofstream *)ptr)->is_open() ? 1 : 0; }
+int64_t fstream_eof(void *ptr)   { return ((std::fstream *)ptr)->eof() ? 1 : 0; }
+int64_t fstream_good(void *ptr)  { return ((std::fstream *)ptr)->good() ? 1 : 0; }
+int64_t fstream_is_open(void *ptr) { return ((std::fstream *)ptr)->is_open() ? 1 : 0; }
 
 // istream >> string (read one word)
 void *streamin_string(void *stream, void *str)
