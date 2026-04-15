@@ -641,4 +641,27 @@ class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
 extern DataDefTEST ddTESTSTRUCT;
 #endif
 
+#ifdef FEATURE_FUNCPTR
+// auto type placeholder
+class DataDefAUTO: public DataDef
+{
+public:
+    DataDefAUTO() : DataDef("auto", 0, DataType::dtVOID) {}
+};
+extern DataDefAUTO ddAUTO;
+
+// function pointer type — wraps a FuncDef to carry the target signature
+class FuncDef;  // forward declaration (defined in madc.h)
+class DataDefFPTR: public DataDef
+{
+public:
+    FuncDef *target;
+    DataDefFPTR(FuncDef *fd) : DataDef("funcptr", 8, DataType::dtINT64), target(fd) {}
+    virtual BaseType basetype() const { return BaseType::btFunct; }
+    virtual bool is_function() { return true; }
+    virtual bool is_numeric()  { return true; }
+    virtual bool is_integer()  { return true; }
+};
+#endif // FEATURE_FUNCPTR
+
 #endif // __DATADEF_H

@@ -1,0 +1,24 @@
+#!/../bin/madc
+int double_it(int x)
+{
+    return x + x;
+}
+
+int add(int a, int b)
+{
+    return a + b;
+}
+
+int main()
+{
+    auto calc = double_it;
+    int result;
+    result = calc(21);
+    cout << result << endl;
+
+    auto adder = add;
+    result = adder(17, 25);
+    cout << result << endl;
+
+    return 0;
+}

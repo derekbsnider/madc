@@ -45,6 +45,9 @@ class TokenIFSTREAM:  public TokenDataType { public: TokenIFSTREAM(): TokenDataT
 class TokenOFSTREAM:  public TokenDataType { public: TokenOFSTREAM(): TokenDataType("ofstream", ddOFSTREAM) {} };
 class TokenFSTREAM:   public TokenDataType { public: TokenFSTREAM():  TokenDataType("fstream", ddFSTREAM) {} };
 
+#ifdef FEATURE_FUNCPTR
+class TokenAUTO:      public TokenDataType { public: TokenAUTO():  TokenDataType("auto", ddAUTO) {} };
+#endif
 
 // Variable "container" class to keep track of everything about a variable,
 // primary only used during parsing/compiling
