@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of April 14, 2026 (after Phase 1 fixes).
+Test results as of April 14, 2026 (Phase 1 + string parameter fix).
 
 Run with: `bin/madc tests/<name>.mad`
 
@@ -11,8 +11,8 @@ Run with: `bin/madc tests/<name>.mad`
 | `test.mad` | String variable, puts() | Prints string |
 | `test2.mad` | Large loop (100M iterations) | `100000000` |
 | `test3.mad` | Basic program structure | Runs silently |
-| `test4.mad` | Char literals, putchar() | `Hello, World!`, `HEY`, `hey 123`, `v0.0.1` |
-| `test5.mad` | String ops | Partial output (garbled prefix from string copy) |
+| `test4.mad` | Char literals, putchar(), user-defined string funcs | `Hello, World!`, `hi`, `test`, `Hello, World!`, `HEY`, `hey 123`, `v0.0.1` |
+| `test5.mad` | String ops | `Hello, World!`, `hi` |
 | `testassign.mad` | Variable assignment | `456` |
 | `testbsl.mad` | Bit shift operators | `200`, `40` |
 | `testcout.mad` | cout stream output | `This is a test, x = -1` |
@@ -28,7 +28,7 @@ Run with: `bin/madc tests/<name>.mad`
 | `testnot.mad` | Bitwise NOT | `-2`, `-1` |
 | `testprint.mad` | String print | `Hello, World!` |
 | `testreturn.mad` | Function return values | `100`, `101` |
-| `testsstream.mad` | Stringstream | Runs (no visible output - stream ops work, but no extraction tested) |
+| `testsstream.mad` | Stringstream | `456`, `123`, `5`, stream content, `This is a test to cout: 5` |
 | `teststruct.mad` | Struct member access | `test.name: Joe Blow`, `test.id: 2`, `test.age: d` (uint8=char in stream) |
 | `testversion.mad` | Version string | `v0.0.1` |
 | `testwhile.mad` | While loop | `100000000` |
@@ -52,8 +52,14 @@ Run with: `make -C src test`
 |-----------|-------|--------|
 | `tests/unit/test_datadef.cpp` | 25 | All pass |
 
+## Phase 2 Fixes Applied
+
+| Fix | Status | Details |
+|-----|--------|---------|
+| String parameter pass-by-ref | ✓ Done | `voperand()` creates bare Gp for `vfPARAM` non-numeric vars; `cleanup()` skips param destruction |
+| `dtSTRING → dtCHARptr` coercion | ✓ Done | `string_cstr()` helper auto-converts string args to `const char*` when calling `puts()` etc. |
+
 ## Known Issues
 
-- `test5.mad` output has garbage characters before expected output — related to string-copy-by-value in functions
-- `testsstream.mad` runs but no output visible — stringstream operations may not flush properly
-- `test4.mad` now runs but user-defined `print(string s)` outputs garbled strings — string pass-by-value is unsupported
+- String pass-by-value is implemented as pass-by-reference (caller's string is shared, not copied)
+- No true string copy semantics yet for function parameters
