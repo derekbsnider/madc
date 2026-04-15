@@ -328,6 +328,7 @@ public:
     void add_functions();
     void add_globals();
     void add_namespaces();
+    void add_php_namespace();
 
     Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
 

@@ -404,6 +404,7 @@ void Program::_parser_init()
     add_sstream_methods();
     add_globals();
     add_namespaces();
+    add_php_namespace();
     _braces = 0;
 }
 
