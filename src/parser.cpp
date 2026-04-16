@@ -593,32 +593,34 @@ void Program::add_globals()
     addGlobal(ddSTRING,  "version", 1, (void *)"v0.0.1");
 }
 
-enum LazyHeader { LAZY_IOSTREAM = 1, LAZY_STDIO = 2 };
+enum { LAZY_IOSTREAM = 1, LAZY_STDIO = 2, LAZY_MATHH = 3 };
 
 // populates lazy_map — symbols are registered on first use via lazy_resolve()
 void Program::add_iostream()
 {
-    lazy_map["cout"] = LAZY_IOSTREAM;
-    lazy_map["cin"]  = LAZY_IOSTREAM;
-    lazy_map["cerr"] = LAZY_IOSTREAM;
+    lazy_map["cout"] = {LAZY_IOSTREAM, Program::lkVariable};
+    lazy_map["cin"]  = {LAZY_IOSTREAM, Program::lkVariable};
+    lazy_map["cerr"] = {LAZY_IOSTREAM, Program::lkVariable};
 }
 
 void Program::add_stdio()
 {
     // printf family available via dlsym fallback (libc is always loaded)
-    // placeholder for future lazy stdio symbols
+    // placeholder for future lazy symbols (FILE*, etc.)
 }
 
-// on-demand symbol registration — called when parser can't find a symbol
+// on-demand variable/function registration — called from parseExpression()
 Variable *Program::lazy_resolve(const std::string &name)
 {
-    std::map<std::string, int>::iterator it = lazy_map.find(name);
+    std::map<std::string, LazyEntry>::iterator it = lazy_map.find(name);
     if ( it == lazy_map.end() )
 	return NULL;
+    if ( it->second.kind != lkVariable && it->second.kind != lkFunction )
+	return NULL; // not a variable/function — leave for lazy_resolve_type
 
     Variable *var = NULL;
-    int header = it->second;
-    lazy_map.erase(it); // remove so we don't re-register
+    int header = it->second.header;
+    lazy_map.erase(it);
 
     if ( header == LAZY_IOSTREAM )
     {
@@ -629,13 +631,32 @@ Variable *Program::lazy_resolve(const std::string &name)
 	else if ( name == "cerr" )
 	    var = addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
 
-	// also register in std:: namespace
 	if ( var )
 	    namespace_map["std"][name] = var;
     }
 
     DBG(if (var) std::cout << "lazy_resolve(" << name << ") registered" << std::endl);
     return var;
+}
+
+// on-demand type/struct registration — called from type lookup paths
+DataDef *Program::lazy_resolve_type(const std::string &name)
+{
+    std::map<std::string, LazyEntry>::iterator it = lazy_map.find(name);
+    if ( it == lazy_map.end() )
+	return NULL;
+    if ( it->second.kind != lkType && it->second.kind != lkStruct )
+	return NULL;
+
+    DataDef *dd = NULL;
+    int header = it->second.header;
+    lazy_map.erase(it);
+
+    // future: register struct layouts, typedefs from embedded headers
+    // e.g. if ( header == LAZY_TIME_H && name == "time_t" ) dd = &ddINT64;
+
+    DBG(if (dd) std::cout << "lazy_resolve_type(" << name << ") registered" << std::endl);
+    return dd;
 }
 
 void Program::add_namespaces()
@@ -3262,8 +3283,19 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    DBG(std::cout << "parseStatement() got identifier " << ((TokenIdent *)tb)->str << std::endl);
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {
-		datatype_map_iter dmi = datatype_map.find(((TokenIdent *)tb)->str);
-		if ( dmi != datatype_map.end() )
+		std::string tname = ((TokenIdent *)tb)->str;
+		datatype_map_iter dmi = datatype_map.find(tname);
+		if ( dmi == datatype_map.end() )
+		{
+		    // try lazy type registration from #include headers
+		    DataDef *dd = lazy_resolve_type(tname);
+		    if ( dd )
+		    {
+			// register as a datatype so future lookups find it
+			// TODO: create a TokenDataType wrapper for the resolved type
+		    }
+		}
+		else
 		{
 		    DBG(std::cout << "parseStatement() identifier is a registered type, calling parseDeclaration" << std::endl);
 		    return parseDeclaration(dmi->second);
