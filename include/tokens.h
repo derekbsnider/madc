@@ -41,7 +41,7 @@ enum class TokenID {
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
-  tkUSING, tkNAMESPACE, tkDEFER, tkSTATIC, tkCONST, tkEXTERN,
+  tkUSING, tkNAMESPACE, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM,
   tkVECTOR, tkMAP, tkSET, tkLIST
 };
 
@@ -1050,6 +1050,15 @@ public:
     TokenEXTERN() : TokenKeyword("extern") {}
     virtual TokenID id() const { return TokenID::tkEXTERN; }
     virtual TokenBase *clone() { return new TokenEXTERN(); }
+    virtual TokenBase *parse(Program &pgm);
+};
+
+class TokenENUM: public TokenKeyword
+{
+public:
+    TokenENUM() : TokenKeyword("enum") {}
+    virtual TokenID id() const { return TokenID::tkENUM; }
+    virtual TokenBase *clone() { return new TokenENUM(); }
     virtual TokenBase *parse(Program &pgm);
 };
 

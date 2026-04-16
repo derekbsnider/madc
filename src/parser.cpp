@@ -2704,6 +2704,66 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
     return decl;
 }
 
+// parse enum { NAME, NAME = val, ... } [;]
+// registers each enumerator as a #define constant
+TokenBase *TokenENUM::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenENUM::parse()" << std::endl);
+    TokenBase *tn = pgm.peekToken();
+
+    // optional tag name: enum colors { ... }
+    if ( tn && tn->type() == TokenType::ttIdentifier )
+	pgm.nextToken(); // consume tag name (ignored for now)
+
+    tn = pgm.peekToken();
+    if ( !tn || tn->id() != TokenID::tkOpBrc )
+	pgm.Throw(tn) << "Expecting '{' after enum" << flush;
+    pgm.nextToken(); // consume '{'
+
+    int64_t val = 0;
+    while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
+    {
+	if ( tn->id() == TokenID::tkComma ) { pgm.nextToken(); continue; }
+	if ( tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting identifier in enum" << flush;
+	std::string name = ((TokenIdent *)pgm.nextToken())->str;
+
+	// check for = explicit value
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )
+	{
+	    pgm.nextToken(); // consume '='
+	    TokenBase *vt = pgm.nextToken();
+	    if ( vt->type() == TokenType::ttInteger )
+		val = vt->get();
+	    else if ( vt->id() == TokenID::tkNeg )
+	    {
+		vt = pgm.nextToken();
+		if ( vt->type() == TokenType::ttInteger )
+		    val = -vt->get();
+	    }
+	    else
+		pgm.Throw(vt) << "Expecting integer value in enum" << flush;
+	}
+
+	// register as a global constant variable
+	Variable *evar = pgm.addVariable(NULL, ddINT, name, 1, NULL, true);
+	evar->set((int)val);
+	evar->makeconstant();
+	DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
+	val++;
+    }
+
+    if ( !tn )
+	pgm.Throw << "Unterminated enum" << flush;
+    pgm.nextToken(); // consume '}'
+
+    // consume optional semicolon
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
+    return NULL;
+}
+
 TokenBase *TokenSTATIC::parse(Program &pgm)
 {
     DBG(std::cout << "TokenSTATIC::parse()" << std::endl);

@@ -54,6 +54,7 @@ TokenTYPEDEF	tkTYPEDEF;
 TokenOPEROVER	tkOPEROVER;
 TokenREGISTER	tkREGISTER;
 TokenSTATIC	tkSTATIC;
+TokenENUM	tkENUM;
 TokenCONST	tkCONST;
 TokenEXTERN	tkEXTERN;
 TokenUSING	tkUSING;
@@ -129,6 +130,7 @@ void Program::add_keywords()
     keyword_map[tkOPEROVER.str] = &tkOPEROVER;
     keyword_map[tkREGISTER.str] = &tkREGISTER;
     keyword_map[tkSTATIC.str] = &tkSTATIC;
+    keyword_map[tkENUM.str] = &tkENUM;
     keyword_map[tkCONST.str] = &tkCONST;
     keyword_map[tkEXTERN.str] = &tkEXTERN;
     keyword_map[tkUSING.str] = &tkUSING;
