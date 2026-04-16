@@ -6,12 +6,17 @@
 
 The "Mad" in Mad-C: mix functions from multiple programming languages (PHP, Perl, Python, Ruby, JavaScript) in a single program via namespaces.
 
+## Shell Command Rules
+
+**Never chain commands with `&&` or use shell variable substitution.** Each Bash tool call must be a single, simple command. This prevents repeated permission prompts.
+
 ## Build System
 
 ```bash
 make -C src          # build bin/madc
 make -C src clean    # remove all object files
 make -C src test     # build and run unit tests
+make -C src fulltest # build + unit tests + all integration tests
 ```
 
 Source lives in `src/`, headers in `include/`, output in `bin/` and `obj/`.
