@@ -24,10 +24,10 @@ struct room_data {
 
 // function-like macros
 #define CREATE(result, type, number) \
-	result = (type *) calloc(number, sizeof(type))
+	do { result = (type *) calloc(number, sizeof(type)); } while(0)
 
 #define DISPOSE(point) \
-	free(point)
+	do { free(point); point = NULL; } while(0)
 
 #define IS_SET(flag, bit) ((flag) & (bit))
 #define SET_BIT(var, bit) ((var) | (bit))
@@ -66,7 +66,9 @@ int main()
 	CREATE(room, ROOM_DATA, 1);
 	room->vnum = 3001;
 	room->name = strdup("The Temple of Midgaard");
-	printf("Room: [%ld] %s\n", room->vnum, room->name);
+	int rv = room->vnum;
+	char *rn = room->name;
+	printf("Room: [%ld] %s\n", rv, rn);
 
 	// put char in room (assigns struct pointer member)
 	char_to_room(ch, room);
