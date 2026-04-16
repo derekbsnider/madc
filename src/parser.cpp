@@ -593,28 +593,49 @@ void Program::add_globals()
     addGlobal(ddSTRING,  "version", 1, (void *)"v0.0.1");
 }
 
-// registers cout, cin, cerr, endl — called when #include <iostream> is processed
+enum LazyHeader { LAZY_IOSTREAM = 1, LAZY_STDIO = 2 };
+
+// populates lazy_map — symbols are registered on first use via lazy_resolve()
 void Program::add_iostream()
 {
-    addGlobal(ddISTREAM, "cin",  1, std::cin.rdbuf());
-    addGlobal(ddOSTREAM, "cout", 1, std::cout.rdbuf());
-    addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
-
-    // also register in std:: namespace
-    Variable *var;
-    std::string id;
-    variable_map_t &std_ns = namespace_map["std"];
-    id = "cin";   if ( (var=tkProgram->findVariable(id)) ) std_ns["cin"]   = var;
-    id = "cout";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cout"]  = var;
-    id = "cerr";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cerr"]  = var;
-    id = "endl";  if ( (var=findVariable(id)) )            std_ns["endl"]  = var;
+    lazy_map["cout"] = LAZY_IOSTREAM;
+    lazy_map["cin"]  = LAZY_IOSTREAM;
+    lazy_map["cerr"] = LAZY_IOSTREAM;
 }
 
-// registers printf, sprintf, snprintf — called when #include <stdio.h> is processed
 void Program::add_stdio()
 {
     // printf family available via dlsym fallback (libc is always loaded)
-    // this function is a placeholder for future stdio constants/types
+    // placeholder for future lazy stdio symbols
+}
+
+// on-demand symbol registration — called when parser can't find a symbol
+Variable *Program::lazy_resolve(const std::string &name)
+{
+    std::map<std::string, int>::iterator it = lazy_map.find(name);
+    if ( it == lazy_map.end() )
+	return NULL;
+
+    Variable *var = NULL;
+    int header = it->second;
+    lazy_map.erase(it); // remove so we don't re-register
+
+    if ( header == LAZY_IOSTREAM )
+    {
+	if ( name == "cout" )
+	    var = addGlobal(ddOSTREAM, "cout", 1, std::cout.rdbuf());
+	else if ( name == "cin" )
+	    var = addGlobal(ddISTREAM, "cin", 1, std::cin.rdbuf());
+	else if ( name == "cerr" )
+	    var = addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
+
+	// also register in std:: namespace
+	if ( var )
+	    namespace_map["std"][name] = var;
+    }
+
+    DBG(if (var) std::cout << "lazy_resolve(" << name << ") registered" << std::endl);
+    return var;
 }
 
 void Program::add_namespaces()
@@ -678,7 +699,7 @@ void Program::_parser_init()
     add_sstream_methods();
     add_fstream_methods();
     add_globals();
-    // deferred header registrations (flags set during tokenization)
+    // populate lazy_map for included headers (actual registration deferred to first use)
     if ( _include_iostream ) add_iostream();
     if ( _include_stdio )   add_stdio();
     add_namespaces();
@@ -1490,6 +1511,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			}
 		    }
 		}
+		// lazy-load check: symbol registered by #include but not yet created
+		if ( !var )
+		    var = lazy_resolve(((TokenIdent *)tb)->str);
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
 		    // dlsym fallback: try to resolve as a libc/system function

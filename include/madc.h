@@ -365,6 +365,7 @@ public:
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
+    std::map<std::string, int> lazy_map;	// deferred symbol registration (name → header ID)
     std::map<std::string, std::string> define_map;	// #define name value
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
@@ -394,8 +395,9 @@ public:
     void add_fstream_methods();
     void add_functions();
     void add_globals();
-    void add_iostream();	// registers cout, cin, cerr, endl (via #include <iostream>)
-    void add_stdio();		// registers printf, sprintf, snprintf (via #include <stdio.h>)
+    void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
+    void add_stdio();		// placeholder for #include <stdio.h> registration
+    Variable *lazy_resolve(const std::string &name);	// on-demand symbol registration
     void add_namespaces();
     void add_madc_namespace();
     void add_php_namespace();
