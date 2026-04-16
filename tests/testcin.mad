@@ -1,4 +1,5 @@
 #!/usr/bin/env madc
+#include <iostream>
 // Test cin >> input operator
 
 int main()

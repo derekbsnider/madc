@@ -1,3 +1,4 @@
+#include <iostream>
 // Test [] subscript operator for arrays and containers
 
 int main()

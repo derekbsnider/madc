@@ -3,6 +3,9 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
+    {"iostream", R"EMBED(// madc embedded iostream — registers cout, cin, cerr, endl
+// The actual registration is handled by add_iostream() callback
+)EMBED"},
     {"math.h", R"EMBED(// madc embedded math.h — auto-loads libm and defines math constants
 #load "libm.so.6" as libm;
 
@@ -18,6 +21,16 @@ static std::map<std::string, std::string> embedded_headers = {
 #define M_SQRT1_2  0.70710678118654752440
 #define HUGE_VAL   1e308
 #define INFINITY   1e309
+)EMBED"},
+    {"stdio.h", R"EMBED(// madc embedded stdio.h — C standard I/O
+// printf/fprintf/sprintf/snprintf are available via dlsym fallback (libc is always loaded)
+
+#define EOF    -1
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+#define BUFSIZ 8192
+#define NULL 0
 )EMBED"}
 };
 

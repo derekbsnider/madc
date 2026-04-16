@@ -591,9 +591,30 @@ void Program::add_functions()
 void Program::add_globals()
 {
     addGlobal(ddSTRING,  "version", 1, (void *)"v0.0.1");
+}
+
+// registers cout, cin, cerr, endl — called when #include <iostream> is processed
+void Program::add_iostream()
+{
     addGlobal(ddISTREAM, "cin",  1, std::cin.rdbuf());
     addGlobal(ddOSTREAM, "cout", 1, std::cout.rdbuf());
     addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
+
+    // also register in std:: namespace
+    Variable *var;
+    std::string id;
+    variable_map_t &std_ns = namespace_map["std"];
+    id = "cin";   if ( (var=tkProgram->findVariable(id)) ) std_ns["cin"]   = var;
+    id = "cout";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cout"]  = var;
+    id = "cerr";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cerr"]  = var;
+    id = "endl";  if ( (var=findVariable(id)) )            std_ns["endl"]  = var;
+}
+
+// registers printf, sprintf, snprintf — called when #include <stdio.h> is processed
+void Program::add_stdio()
+{
+    // printf family available via dlsym fallback (libc is always loaded)
+    // this function is a placeholder for future stdio constants/types
 }
 
 void Program::add_namespaces()
@@ -604,10 +625,7 @@ void Program::add_namespaces()
     // std:: namespace — map to existing global variables and functions
     variable_map_t &std_ns = namespace_map["std"];
 
-    id = "cin";   if ( (var=tkProgram->findVariable(id)) ) std_ns["cin"]   = var;
-    id = "cout";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cout"]  = var;
-    id = "cerr";  if ( (var=tkProgram->findVariable(id)) ) std_ns["cerr"]  = var;
-    id = "endl";  if ( (var=tkProgram->findVariable(id)) ) std_ns["endl"]  = var;
+    // cout/cin/cerr/endl are registered by add_iostream() when #include <iostream> is processed
 
     // std::for_each(array, func_ptr) — iterate array calling function per element
     extern void std_for_each(void *, int64_t);
@@ -660,6 +678,9 @@ void Program::_parser_init()
     add_sstream_methods();
     add_fstream_methods();
     add_globals();
+    // deferred header registrations (flags set during tokenization)
+    if ( _include_iostream ) add_iostream();
+    if ( _include_stdio )   add_stdio();
     add_namespaces();
     add_madc_namespace();
     add_php_namespace();
@@ -1476,14 +1497,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
 		    if ( sym )
 		    {
-			std::string func_id = "__dl_" + fname;
-			var = addFunction(func_id,
+			var = addFunction(fname,
 			    datatype_vec_t{DataType::dtINT64},
 			    (fVOIDFUNC)sym);
-			if ( var )
-			{
-			    DBG(cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
-			}
+			DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 		    }
 		}
 		if ( !var )

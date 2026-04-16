@@ -1,3 +1,4 @@
+#include <iostream>
 // Test libc dlsym fallback — functions available without #include or #load
 
 int main()

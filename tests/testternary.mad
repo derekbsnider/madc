@@ -1,4 +1,5 @@
 #!/usr/bin/env madc
+#include <iostream>
 // Test ternary operator
 
 int main()

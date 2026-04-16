@@ -1,4 +1,5 @@
 #!/../bin/madc
+#include <iostream>
 void print_name(string name)
 {
     cout << "Name: " << name << endl;

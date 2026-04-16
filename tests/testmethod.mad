@@ -1,4 +1,5 @@
 #!/usr/bin/env madc
+#include <iostream>
 // Test class methods
 
 class Counter {

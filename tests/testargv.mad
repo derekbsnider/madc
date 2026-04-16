@@ -1,3 +1,4 @@
+#include <iostream>
 // Test command line arguments: int main(int argc, char **argv)
 // Run: bin/madc tests/testargv.mad hello world
 

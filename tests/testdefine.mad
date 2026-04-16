@@ -1,3 +1,4 @@
+#include <iostream>
 // Test C preprocessor directives: #define, #undef, #ifdef, #ifndef, #if, #else, #elif, #endif
 
 #define MAX 100

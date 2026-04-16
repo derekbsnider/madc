@@ -14,7 +14,7 @@ static std::map<std::string, std::string> embedded_headers = {
 HEADER
 
 first=1
-for f in "$SRCDIR"/*.h; do
+for f in "$SRCDIR"/*; do
     [ -f "$f" ] || continue
     name=$(basename "$f")
     if [ "$first" -ne 1 ]; then

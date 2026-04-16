@@ -1,4 +1,5 @@
 #!/usr/bin/env madc
+#include <iostream>
 // Test madc:: and std:: namespace-qualified types
 
 int main()

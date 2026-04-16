@@ -95,6 +95,8 @@ void Program::_tokenizer_init()
     tkFunction = NULL;
     _cur_token = NULL;
     _prv_token = NULL;
+    _include_iostream = false;
+    _include_stdio = false;
     add_keywords();
     add_datatypes();
     struct_map["teststruct"] = &ddTESTSTRUCT;
@@ -306,6 +308,9 @@ TokenBase *Program::_getToken()
 				tokens.push_back(itb);
 			    }
 			    source = std::move(saved);
+			    // flag headers for deferred registration during parse init
+			    if ( incfile == "iostream" ) _include_iostream = true;
+			    if ( incfile == "stdio.h" )  _include_stdio = true;
 			    return getToken();
 			}
 		    }

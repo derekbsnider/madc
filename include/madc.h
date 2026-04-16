@@ -378,6 +378,8 @@ public:
     throwstream Throw;			// throw an error
     int script_argc;			// argc for the .mad script
     char **script_argv;			// argv for the .mad script
+    bool _include_iostream;		// #include <iostream> was seen during tokenization
+    bool _include_stdio;		// #include <stdio.h> was seen during tokenization
 
     bool colors;
     asmjit::JitRuntime jit;
@@ -392,6 +394,8 @@ public:
     void add_fstream_methods();
     void add_functions();
     void add_globals();
+    void add_iostream();	// registers cout, cin, cerr, endl (via #include <iostream>)
+    void add_stdio();		// registers printf, sprintf, snprintf (via #include <stdio.h>)
     void add_namespaces();
     void add_madc_namespace();
     void add_php_namespace();
