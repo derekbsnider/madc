@@ -57,6 +57,7 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfSTATIC	=    4, // static variable
 			  vfPARAM	=    8, // parameter variable
 			  vfREGISTER	=   16, // register-only: never written to memory
+			  vfFIXEDARRAY	=   32, // C fixed-size array (var.dims non-empty)
 			  vfREGSET	=   64, // GpReg set
 			  vfXREGSET	=  128, // extra reg is set (used for string.c_str)
 			  vfALLOC	=  256, // data pointer was allocated by us

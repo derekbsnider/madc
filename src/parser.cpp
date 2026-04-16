@@ -1249,6 +1249,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		// subscript: var[index] or lambda: [](params) { body }
 		if ( tb->id() == TokenID::tkOpSqr )
 		{
+		    // Chained subscript on a multi-dim C fixed-size array: arr[i][j]
+		    // Append to the existing TokenSubscript's extra_indices vector.
+		    if ( !exStack.empty() && exStack.top()->type() == TokenType::ttSubscript )
+		    {
+			TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(exStack.top());
+			if ( tsub && tsub->object.is_fixed_array()
+			  && tsub->extra_indices.size() + 2 <= tsub->object.dims.size() )
+			{
+			    TokenBase *idx = parseExpression(nextToken());
+			    TokenBase *clsqr = nextToken(); // consume ]
+			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
+				Throw(tb) << "Expected ] in subscript expression" << flush;
+			    tsub->extra_indices.push_back(idx);
+			    break;
+			}
+		    }
 		    // if top of exStack is a variable, treat [ as subscript operator
 		    if ( !exStack.empty() && exStack.top()->type() == TokenType::ttVariable )
 		    {
@@ -3884,13 +3900,40 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	return td;
     }
 
+    // Check for C fixed-size array declaration: type id[N][M]...
+    std::vector<uint32_t> arr_dims;
+    while ( nt && nt->id() == TokenID::tkOpSqr )
+    {
+	nextToken(); // consume [
+	TokenBase *sz = nextToken();
+	if ( !sz || sz->type() != TokenType::ttInteger )
+	    Throw(sz ? sz : tb) << "Fixed-size array dimension must be an integer constant" << flush;
+	int64_t n = ((TokenInt *)sz)->get();
+	if ( n <= 0 )
+	    Throw(sz) << "Fixed-size array dimension must be positive" << flush;
+	arr_dims.push_back((uint32_t)n);
+	TokenBase *cl = nextToken();
+	if ( !cl || cl->id() != TokenID::tkClSqr )
+	    Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
+	nt = peekToken();
+	if ( !nt )
+	    Throw(tb) << "Unexpected end of data in array declaration" << flush;
+    }
+
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )
     {
 	bool alloc = (!code || gotstatic) ? true : false;
-	var = addVariable(code, *decl_type, id, 1, NULL, alloc);
+	uint32_t elem_count = 1;
+	for ( auto d : arr_dims ) elem_count *= d;
+	var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
+	if ( !arr_dims.empty() )
+	{
+	    var->dims = arr_dims;
+	    var->flags |= vfFIXEDARRAY;
+	}
 	TokenDecl *td = new TokenDecl(*var);
 
 	td->file = tb->file;
@@ -3899,6 +3942,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 	if ( nt->id() == TokenID::tkAssign )
 	{
+	    if ( !arr_dims.empty() )
+		Throw(nt) << "Fixed-size array initializers not yet supported" << flush;
 	    DBG(std::cout << "parseDeclaration() calling td->initialize = parseExpression" << std::endl);
 	    td->initialize = parseExpression(new TokenVar(*var));
 	}

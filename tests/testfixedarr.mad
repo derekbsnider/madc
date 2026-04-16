@@ -1,0 +1,53 @@
+#include <stdio.h>
+
+// Test C fixed-size arrays (1D and multi-dim)
+
+int main()
+{
+    // int array, read/write by index
+    int arr[4];
+    for ( int i = 0; i < 4; i++ )
+        arr[i] = i * 10;
+    for ( int i = 0; i < 4; i++ )
+        printf("arr[%ld] = %ld\n", i, arr[i]);
+
+    // arithmetic in subscript and RHS
+    int j = 2;
+    int sum = arr[0] + arr[j] + arr[j + 1];  // 0 + 20 + 30 = 50
+    printf("sum = %ld\n", sum);
+
+    arr[0] = arr[3] - arr[1];                // 30 - 10 = 20
+    printf("arr[0] = %ld\n", arr[0]);
+
+    // int32_t array (4-byte elements)
+    int32_t nums[3];
+    nums[0] = 100;
+    nums[1] = 200;
+    nums[2] = 300;
+    printf("nums[1] = %ld\n", nums[1]);
+
+    // char array decays to char* for printf %s
+    char buf[8];
+    for ( int i = 0; i < 7; i++ )
+        buf[i] = 65 + i;    // 'A'..'G'
+    buf[7] = 0;
+    printf("buf[0] = %ld\n", buf[0]);
+    printf("buf as string: %s\n", buf);
+
+    // 2D array
+    int board[3][4];
+    for ( int r = 0; r < 3; r++ )
+        for ( int c = 0; c < 4; c++ )
+            board[r][c] = r * 10 + c;
+    printf("board[2][3] = %ld\n", board[2][3]);       // 23
+    printf("board[0][0] = %ld\n", board[0][0]);       // 0
+
+    // 3D array — spot check
+    int cube[2][3][4];
+    cube[1][2][3] = 999;
+    cube[0][0][0] = 1;
+    printf("cube[1][2][3] = %ld\n", cube[1][2][3]);   // 999
+    printf("cube[0][0][0] = %ld\n", cube[0][0][0]);   // 1
+
+    return 0;
+}

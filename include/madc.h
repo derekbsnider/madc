@@ -198,14 +198,17 @@ class TokenSubscript: public TokenBase
 {
 public:
     Variable &object;    // the container variable
-    TokenBase *index;    // the index expression
+    TokenBase *index;    // the primary (first) index expression
+    std::vector<TokenBase *> extra_indices; // additional indices for multi-dim fixed arrays
     Variable *tmp_var;   // temp string variable for string-returning subscripts (or NULL)
     asmjit::Operand _operand;
 
     TokenSubscript(Variable &o, TokenBase *idx, Variable *tmp = nullptr)
         : object(o), index(idx), tmp_var(tmp)
     {
-        if ( o.type->type() == DataType::dtVECTOR )
+        if ( o.is_fixed_array() )
+            _datatype = o.type; // C fixed array: subscript yields element of base type
+        else if ( o.type->type() == DataType::dtVECTOR )
             _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
         else if ( o.type->type() == DataType::dtMAP )
             _datatype = static_cast<DataDefMAP *>(o.type)->val_type;
