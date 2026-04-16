@@ -1275,16 +1275,21 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		if ( tb->id() == TokenID::tkDec || tb->id() == TokenID::tkInc )
 		{
 		    DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << (char)tb->get() << endl);
-		    if ( exStack.empty() )
+		    // postfix if previous token was a value (non-operator, ), or ])
+		    bool is_postfix = prevToken()
+			&& (prevToken()->id() == TokenID::tkClBrk
+			||  prevToken()->id() == TokenID::tkClSqr
+			||  !prevToken()->is_operator());
+		    if ( is_postfix && !exStack.empty() )
 		    {
-			to = (TokenOperator *)tb; // ->clone();
-			opStack.push(to);
+			to = (TokenOperator *)tb;
+			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->ival() << endl);
+			exStack.push(to);
 		    }
 		    else
 		    {
-			to = (TokenOperator *)tb; // ->clone();
-			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->ival() << endl);
-			exStack.push(to);
+			to = (TokenOperator *)tb;
+			opStack.push(to);
 		    }
 		    break;
 		}

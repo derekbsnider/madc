@@ -1211,18 +1211,28 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
 {
     TokenVar *tv;
 
-    // left has precedence over right
+    // left = postfix (x++): return old value, then increment
     if ( left )
     {
 	if ( left->type() != TokenType::ttVariable )
 	    throw "Increment on a non-variable lval";
 	tv = dynamic_cast<TokenVar *>(left);
 	Operand &reg = tv->operand(pgm);
+	if ( regdp.first )
+	    pgm.safemov(*regdp.first, reg);
+	else
+	{
+	    _operand = tv->var.type->newreg(pgm.cc, "postinc");
+	    pgm.safemov(_operand, reg);
+	    regdp.first = &_operand;
+	}
 	pgm.safeinc(reg);
 	tv->var.modified();
 	tv->putreg(pgm);
-	return reg;
+	regdp.second = tv->var.type;
+	return *regdp.first;
     }
+    // right = prefix (++x): increment, return new value
     if ( right )
     {
 	if ( right->type() != TokenType::ttVariable )
@@ -1232,7 +1242,12 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
 	pgm.safeinc(reg);
 	tv->var.modified();
 	tv->putreg(pgm);
-	return reg;
+	if ( regdp.first )
+	    pgm.safemov(*regdp.first, reg);
+	else
+	    regdp.first = &reg;
+	regdp.second = tv->var.type;
+	return *regdp.first;
     }
     throw "Invalid increment";
 }
@@ -1242,18 +1257,28 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 {
     TokenVar *tv;
 
-    // left has precedence over right
+    // left = postfix (x--): return old value, then decrement
     if ( left )
     {
 	if ( left->type() != TokenType::ttVariable )
 	    throw "Decrement on a non-variable lval";
 	tv = dynamic_cast<TokenVar *>(left);
 	Operand &reg = tv->operand(pgm);
+	if ( regdp.first )
+	    pgm.safemov(*regdp.first, reg);
+	else
+	{
+	    _operand = tv->var.type->newreg(pgm.cc, "postdec");
+	    pgm.safemov(_operand, reg);
+	    regdp.first = &_operand;
+	}
 	pgm.safedec(reg);
 	tv->var.modified();
 	tv->putreg(pgm);
-	return reg;
+	regdp.second = tv->var.type;
+	return *regdp.first;
     }
+    // right = prefix (--x): decrement, return new value
     if ( right )
     {
 	if ( right->type() != TokenType::ttVariable )
@@ -1263,9 +1288,14 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 	pgm.safedec(reg);
 	tv->var.modified();
 	tv->putreg(pgm);
-	return reg;
+	if ( regdp.first )
+	    pgm.safemov(*regdp.first, reg);
+	else
+	    regdp.first = &reg;
+	regdp.second = tv->var.type;
+	return *regdp.first;
     }
-    throw "Invalid increment";
+    throw "Invalid decrement";
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -4186,8 +4216,12 @@ Operand &TokenFOR::compile(Program &pgm, regdefp_t &regdp)
     pgm.cc.je(fortail);				// jump to end
 
     DBG(cout << "TokenFOR::compile() calling statement->compile(pgm, regdp)" << endl);
+    regdp.first  = NULL;			// reset so statement doesn't inherit stale destination
+    regdp.second = NULL;
     statement->compile(pgm, regdp); 		// execute loop's statement(s)
     pgm.cc.bind(forcont);			// bind continue label
+    regdp.first  = NULL;			// reset so increment doesn't clobber unrelated registers
+    regdp.second = NULL;
     increment->compile(pgm, regdp); 		// execute loop's increment statement
     pgm.cc.jmp(fortop);				// jump back to top
     pgm.cc.bind(fortail);			// bind for tail

@@ -13,9 +13,6 @@
   Implemented at lexer level (lexer already handles `#include` and `#load`). `#if defined(X)` and
   `#if (expr)` constant-expression evaluation needed for `#if`/`#elif`.
 
-- **Postfix increment/decrement** — `x++` and `x--`. Prefix `++x` / `--x` is confirmed working.
-  Postfix requires a read-then-increment semantic (return old value, then update).
-
 - **`printf` / `sprintf` / `snprintf` / `fprintf`** — C-style format strings are the idiomatic
   output mechanism for C-like scripts. `cout <<` covers basic cases but format strings are
   essential for anything numeric or padded. These are in libc (see below) but warrant explicit
@@ -136,5 +133,7 @@
 - ~~Multiple return values~~ — `q, r := divide(17, 5)` with hidden `__retbuf` (b1c0e86, 8d07f44)
 - ~~Ternary operator~~ — `condition ? true_expr : false_expr` with stack-slot merge (f64cf18)
 - ~~Multi-return conditional crash~~ — skip cleanup for multi-return paths (8d07f44)
-- ~~Compound assignment operators~~ — `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=` (feature/compound-assign)
-- ~~For-loop condition clobber bug~~ — `TokenFOR::compile()` now resets `regdp` before condition (feature/compound-assign)
+- ~~Compound assignment operators~~ — `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
+- ~~For-loop regdp clobber bug~~ — `TokenFOR::compile()` now resets `regdp` before each sub-compilation
+- ~~Hex integer literals~~ — `0xFF`, `0xDEAD`, `0X1A` etc.
+- ~~Postfix increment/decrement~~ — `x++`, `x--` with correct old-value-return semantics; parser uses `prevToken()` for prefix/postfix disambiguation
