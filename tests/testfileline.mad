@@ -1,0 +1,23 @@
+#include <stdio.h>
+
+// Test __FILE__ and __LINE__ predefined macros
+
+int main()
+{
+    // __FILE__ is a string literal; __LINE__ is an integer.
+    printf("FILE: %s\n", __FILE__);
+    printf("line 9: %ld\n", __LINE__);
+    printf("line 10: %ld\n", __LINE__);
+
+    // Inside a function-like macro: each invocation captures the call site.
+    #define LOC() printf("%s:%ld\n", __FILE__, __LINE__)
+    LOC();
+    LOC();
+
+    // SMAUG CREATE-style: include file+line in an error context
+    #define BUG(msg) printf("BUG: %s [%s:%ld]\n", msg, __FILE__, __LINE__)
+    BUG("first");
+    BUG("second");
+
+    return 0;
+}

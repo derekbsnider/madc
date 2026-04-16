@@ -885,6 +885,24 @@ TokenBase *Program::_getToken()
 		    // empty define — skip and get next token
 		    return getToken();
 		}
+		// Built-in predefined macros: __FILE__ and __LINE__.
+		// Match C semantics — expand to a string literal of the current
+		// filename and an integer constant of the current source line.
+		// Users can still override via #define (handled above).
+		if ( word == "__FILE__" )
+		{
+		    std::string quoted = "\"";
+		    const char *fn = source.fname();
+		    quoted += (fn ? fn : "<unknown>");
+		    quoted += "\"";
+		    source.pushback(quoted);
+		    return getToken();
+		}
+		if ( word == "__LINE__" )
+		{
+		    source.pushback(std::to_string(source.line()));
+		    return getToken();
+		}
 		// compound type keywords: unsigned/signed/long/short [type]
 		if ( word == "unsigned" || word == "signed" || word == "long" || word == "short" )
 		{
