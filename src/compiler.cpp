@@ -1843,7 +1843,16 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	DBG(cout << "     tvl->var.type() " << (int)ltype->type() << " name: " << ltype->name << endl);
     }
     else
-    // TODO: handle member token
+    // handle *ptr dereference on LHS
+    if ( dynamic_cast<TokenDeref *>(left) )
+    {
+	TokenDeref *tdl = dynamic_cast<TokenDeref *>(left);
+	ltype = tdl->deref_type;
+	DBG(cout << "TokenAssign::compile() dereference assignment to *" << tdl->var.name << " type " << ltype->name << endl);
+	_operand = tdl->operand(pgm);  // Mem operand [ptr]
+    }
+    else
+    // handle member token (struct.member or ptr->member)
     if ( left->type() == TokenType::ttMember )
     {
 	tml = dynamic_cast<TokenMember *>(left);
@@ -3965,6 +3974,47 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
 
     regdp.first = &reg;
     return reg;
+}
+
+// *ptr dereference — load/store through pointer
+Operand &TokenDeref::operand(Program &pgm)
+{
+    Operand &ptr_op = pgm.tkFunction->voperand(pgm, &var);
+    x86::Gp ptr_gp = ptr_op.as<x86::Gp>();
+    // return Mem operand [ptr] for numeric types (enables read/write)
+    if ( deref_type->is_numeric() )
+	_operand = x86::ptr(ptr_gp, 0, (uint32_t)deref_type->size);
+    else
+	_operand = ptr_gp; // non-numeric: pointer value IS the address
+    return _operand;
+}
+
+Operand &TokenDeref::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenDeref::compile()"));
+    if ( !regdp.second )
+	regdp.second = deref_type;
+
+    Operand &mem = operand(pgm);
+
+    if ( regdp.first )
+    {
+	pgm.safemov(*regdp.first, mem, regdp.second);
+	return *regdp.first;
+    }
+
+    // read: load dereferenced value into a register
+    if ( deref_type->is_numeric() && mem.isMem() )
+    {
+	x86::Gp gp = pgm.cc.newGpq(("*" + var.name).c_str());
+	pgm.safemov(gp, mem.as<x86::Mem>(), deref_type, deref_type);
+	_operand = gp;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
+    regdp.first = &_operand;
+    return _operand;
 }
 
 // (TYPE *) cast expression

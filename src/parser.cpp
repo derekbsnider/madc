@@ -1444,6 +1444,23 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    exStack.push(new TokenAddrOf(*avar, aptr));
 		    break;
 		}
+		// * dereference in unary position
+		if ( tb->id() == TokenID::tkMul && isUnaryPosition() )
+		{
+		    TokenBase *deref_tb = nextToken();
+		    if ( deref_tb->type() != TokenType::ttIdentifier )
+			Throw(deref_tb) << "expecting variable name after '*'" << flush;
+		    std::string dname = ((TokenIdent *)deref_tb)->str;
+		    Variable *dvar = findVariable(dname);
+		    if ( !dvar )
+			Throw(deref_tb) << "undeclared identifier '" << dname << "'" << flush;
+		    if ( !dvar->type->is_pointer() )
+			Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+		    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dvar->type);
+		    DataDef *base = dptr ? dptr->base_type : &ddINT64;
+		    exStack.push(new TokenDeref(*dvar, base));
+		    break;
+		}
 		if ( tb->id() == TokenID::tkDec || tb->id() == TokenID::tkInc )
 		{
 		    DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << (char)tb->get() << endl);

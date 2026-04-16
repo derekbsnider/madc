@@ -153,6 +153,20 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+// *ptr dereference — reads/writes the value at the address held by a pointer
+class TokenDeref: public TokenBase
+{
+public:
+    Variable &var;
+    DataDef *deref_type;  // pointed-to type
+    asmjit::Operand _operand;
+    TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
+    virtual TokenType type() const { return TokenType::ttMember; }  // reuse member type for assignment compat
+    virtual DataDef *datadef() { return deref_type; }
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 // (TYPE *) cast expression — type annotation, no codegen for pointer casts
 class TokenCast: public TokenBase
 {

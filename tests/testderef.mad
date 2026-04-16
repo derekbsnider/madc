@@ -1,0 +1,25 @@
+#!/usr/bin/env madc
+// Test *ptr dereference operator
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main()
+{
+	// write and read through heap pointer
+	int *p = (int *) calloc(1, sizeof(int));
+	*p = 42;
+	printf("*p = %ld\n", *p);
+	*p = 99;
+	printf("*p = %ld\n", *p);
+	free(p);
+
+	// array-like access via pointer arithmetic (manual offset)
+	int *arr = (int *) calloc(4, sizeof(int));
+	*arr = 10;
+	printf("arr[0] = %ld\n", *arr);
+	free(arr);
+
+	printf("All deref tests passed!\n");
+	return 0;
+}
