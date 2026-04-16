@@ -191,8 +191,7 @@ void streamout_string(std::ostream &os, std::string &s)
 
 void streamout_cstr(std::ostream &os, const char *s)
 {
-//  DBG(std::cout << "streamout_string: << " << (uint64_t)&s << std::endl);
-    os << s;
+    os << (s ? s : "(null)");
 }
 
 void streamout_int(std::ostream &os, int i)
@@ -3189,25 +3188,14 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	if ( regdp.second->type() == DataType::dtCHARptr )
 	{
 	    if ( !regdp.first ) { pgm.Throw(this) << "TokenBSL::compile() regdp.first is NULL" << flush; }
-	    if ( !regdp.first->isReg() && !regdp.first->isMem() )
-	    {
-		pgm.Throw(this) << "TokenBSL::compile() regdp.first->isReg() is FALSE" << flush;
-	    }
-	    if ( regdp.first->isReg() && !regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) ) { throw "TokenBSL::compile() regdp.first not GpReg"; }
 	    DBG(cout << "TokenBSL::compile() regdp.second->is_cstr()" << endl);
 	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_cstr()"));
-	    DBG(pgm.cc.comment("pgm.cc.call(streamout_cstr)"));
-            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_cstr), FuncSignature::build<void, void *, void *>());
-	    DBG(pgm.cc.comment("call->setArg(0, lval)"));
-	    if ( lval.as<BaseReg>().isGroup(RegGroup::kVec) )
-		call->setArg(0, lval.as<x86::Xmm>());
-	    else
-	    if ( lval.as<BaseReg>().isGroup(RegGroup::kGp) )
-		call->setArg(0, lval.as<x86::Gp>());
-	    else
-		throw "TokenBSL::compile() lval unsupported register type";
-	    DBG(pgm.cc.comment("call->setArg(1, rval)"));
-	    call->setArg(1, regdp.first->as<x86::Gp>());
+	    // copy cstr pointer to a fresh register to avoid RA conflicts
+	    x86::Gp cstr_tmp = pgm.cc.newIntPtr("cstr_out");
+	    pgm.cc.mov(cstr_tmp, regdp.first->as<x86::Gp>());
+            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_cstr), FuncSignature::build<void, void *, const char *>());
+	    call->setArg(0, lval.as<x86::Gp>());
+	    call->setArg(1, cstr_tmp);
 	}
 	else
 	{
