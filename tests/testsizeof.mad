@@ -1,0 +1,41 @@
+#include <iostream>
+
+// Test sizeof operator
+
+struct point {
+    int x;
+    int y;
+};
+
+struct mixed {
+    int32_t a;
+    int64_t b;
+};
+
+struct __attribute__((packed)) packed_mix {
+    int32_t a;
+    int64_t b;
+};
+
+int main()
+{
+    // basic types
+    cout << "char: " << sizeof(char) << endl;        // 1
+    cout << "int: " << sizeof(int) << endl;          // 8
+    cout << "int32_t: " << sizeof(int32_t) << endl;  // 4
+    cout << "int64_t: " << sizeof(int64_t) << endl;  // 8
+    cout << "double: " << sizeof(double) << endl;    // 8
+    cout << "string: " << sizeof(string) << endl;    // 32
+
+    // struct types
+    cout << "point: " << sizeof(struct point) << endl;         // 16 (8+8)
+    cout << "mixed: " << sizeof(struct mixed) << endl;         // 16 (4+pad4+8)
+    cout << "packed_mix: " << sizeof(struct packed_mix) << endl; // 12 (4+8)
+
+    // sizeof in expression
+    int sz;
+    sz = sizeof(int) * 10;
+    cout << "10 ints: " << sz << endl;  // 80
+
+    return 0;
+}

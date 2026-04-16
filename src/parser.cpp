@@ -1394,6 +1394,57 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		exStack.push(new TokenVar(*var));
 		break;
 	    case TokenType::ttIdentifier:
+		// sizeof(type) — resolve to integer constant at parse time
+		if ( ((TokenIdent *)tb)->str == "sizeof" )
+		{
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after sizeof" << flush;
+		    nextToken(); // consume (
+		    TokenBase *type_tb = nextToken(); // consume type
+		    DataDef *dd = NULL;
+		    if ( type_tb->type() == TokenType::ttDataType )
+			dd = &((TokenDataType *)type_tb)->definition;
+		    else if ( type_tb->type() == TokenType::ttIdentifier )
+		    {
+			std::string tname = ((TokenIdent *)type_tb)->str;
+			// check struct_map
+			datadef_map_iter dmi = struct_map.find(tname);
+			if ( dmi != struct_map.end() )
+			    dd = dmi->second;
+			// check datatype_map
+			if ( !dd )
+			{
+			    datatype_map_iter bmi = datatype_map.find(tname);
+			    if ( bmi != datatype_map.end() )
+				dd = &bmi->second->definition;
+			}
+			// check lazy types
+			if ( !dd )
+			    dd = lazy_resolve_type(tname);
+		    }
+		    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkSTRUCT )
+		    {
+			// sizeof(struct tag)
+			TokenBase *tag_tb = nextToken();
+			if ( tag_tb->type() == TokenType::ttIdentifier )
+			{
+			    std::string tname = ((TokenIdent *)tag_tb)->str;
+			    datadef_map_iter dmi = struct_map.find(tname);
+			    if ( dmi != struct_map.end() )
+				dd = dmi->second;
+			}
+			if ( !dd )
+			    Throw(tag_tb) << "Unknown struct type in sizeof" << flush;
+		    }
+		    if ( !dd )
+			Throw(type_tb) << "Unknown type in sizeof" << flush;
+		    // consume closing )
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+			Throw(type_tb) << "Expecting ')' after sizeof type" << flush;
+		    nextToken(); // consume )
+		    exStack.push(new TokenInt((int)dd->size));
+		    break;
+		}
 	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
 		{
 #if 0
