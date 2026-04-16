@@ -1348,7 +1348,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    ternary->false_expr = parseExpression(fexpr, conditional);
 		    // push ternary result onto exStack
 		    exStack.push(ternary);
-		    done = true;
+		    // only stop if not inside brackets — inside () we need
+		    // to continue to find the closing )
+		    if ( brackets == 0 )
+			done = true;
 		    break;
 		}
 		// see if we need to convert TokenNeg to TokenSub

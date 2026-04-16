@@ -3,9 +3,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// simple expression macros
+// expression macros
 #define SQUARE(x) ((x) * (x))
 #define ADD(a, b) ((a) + (b))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+#define MIN(a, b) ((a) < (b) ? (a) : (b))
 #define IS_SET(flag, bit) ((flag) & (bit))
 #define NEGATE(x) (-(x))
 
@@ -34,6 +36,12 @@ int main()
 	int s = ADD(10, 20);
 	printf("ADD(10, 20) = %ld\n", s);
 
+	int m = MAX(3, 7);
+	printf("MAX(3, 7) = %ld\n", m);
+
+	int n = MIN(3, 7);
+	printf("MIN(3, 7) = %ld\n", n);
+
 	printf("inline SQUARE(4) = %ld\n", SQUARE(4));
 	printf("inline ADD(1, 2) = %ld\n", ADD(1, 2));
 
@@ -50,6 +58,10 @@ int main()
 	PRINT_INT("value = %ld\n", 999);
 
 	printf("HAS_SQUARE = %ld\n", HAS_SQUARE);
+
+	// parenthesized ternary (was broken before fix)
+	int t = (3 > 7 ? 3 : 7);
+	printf("(3>7?3:7) = %ld\n", t);
 
 	printf("All macro tests passed!\n");
 	return 0;
