@@ -496,6 +496,12 @@ int64_t madc_getenv(void *result, void *name)
     return val ? 1 : 0;
 }
 
+const char *madc_get_argv(int64_t argv_ptr, int64_t index)
+{
+    char **argv = (char **)argv_ptr;
+    return argv[index];
+}
+
 void madc_setenv(void *name, void *value)
 {
     setenv(((std::string *)name)->c_str(), ((std::string *)value)->c_str(), 1);
@@ -570,6 +576,7 @@ void Program::add_functions()
     // C library functions
     addFunction("system",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
     addFunction("getenv",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
+    addFunction("get_argv",	datatype_vec_t{DataType::dtCHARptr, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
     addFunction("setenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_setenv);
     addFunction("unsetenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)madc_unsetenv);
     // dlopen/dlsym/dlclose — dynamic library loading
@@ -2793,6 +2800,8 @@ grabnt:
 		ids.push_back(pid);
 		if ( rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING )
 		    func->parameters.push_back(&ddSTRINGref);
+		else if ( rtype == RefType::rtPointer )
+		    func->parameters.push_back(&ddINT64); // pointers are int64 at the ABI level
 		else
 		    func->parameters.push_back(&pb->definition);
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "

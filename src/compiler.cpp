@@ -1317,11 +1317,22 @@ void Program::execute()
 	std::cerr << "Program::execute() main has no x86 code" << std::endl;
 	return;
     }
-    DBG(std::cout << std::endl << "Program::execute() starts" << std::endl);    
+    DBG(std::cout << std::endl << "Program::execute() starts" << std::endl);
     DBG(std::cout << "Program::execute() calling main()[" << std::hex << ((uint64_t)main_fn) << std::dec << ']' << std::endl << std::endl);
-    main_fn();
+
+    // check if main expects (int argc, char **argv)
+    FuncDef *func = (FuncDef *)method->returns.type;
+    if ( func->parameters.size() >= 2 )
+    {
+	typedef int (*fMAINARGS)(int64_t, char **);
+	fMAINARGS main_args = (fMAINARGS)method->x86code;
+	main_args((int64_t)script_argc, script_argv);
+    }
+    else
+	main_fn();
+
     DBG(std::cout << std::endl << "Program::execute() main() returns" << std::endl);
-    DBG(std::cout << "Program::execute() ends" << std::endl);    
+    DBG(std::cout << "Program::execute() ends" << std::endl);
 }
 
 // compile the increment operator

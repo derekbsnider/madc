@@ -67,6 +67,10 @@ int main(int argc, char **argv)
 	if ( !prog.compile() )
 	    return 0;
 
+	// set script argc/argv after tokenize/parse/compile (tokenizer_init resets members)
+	prog.script_argc = argc - filearg;
+	prog.script_argv = argv + filearg;
+
 	struct timeval before, after;
 
 	gettimeofday(&before, NULL);

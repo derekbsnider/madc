@@ -376,6 +376,8 @@ public:
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
     throwstream Throw;			// throw an error
+    int script_argc;			// argc for the .mad script
+    char **script_argv;			// argv for the .mad script
 
     bool colors;
     asmjit::JitRuntime jit;
