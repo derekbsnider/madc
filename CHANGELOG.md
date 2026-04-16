@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased] — SMAUG Phase A/B/C: C Pointer System + Macros (2026-04-16)
+## [Unreleased]
+
+## [v0.6.0] — 2026-04-16 — SMAUG Phase A/B/C: C Pointer System + Macros
 
 ### Added — C Pointer and Type System (Phase A — all 5 items complete)
 
