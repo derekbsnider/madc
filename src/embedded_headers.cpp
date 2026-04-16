@@ -3,6 +3,19 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
+    {"arpa/inet.h", R"EMBED(// madc embedded arpa/inet.h — IPv4/IPv6 address conversion
+// Functions (inet_addr, inet_aton, inet_ntoa, inet_pton, inet_ntop,
+//            htons, htonl, ntohs, ntohl) available via dlsym fallback
+
+#define INET_ADDRSTRLEN  16
+#define INET6_ADDRSTRLEN 46
+)EMBED"},
+    {"ctype.h", R"EMBED(// madc embedded ctype.h — character classification and conversion
+// All functions available via dlsym fallback (libc always loaded):
+//   isalnum, isalpha, isblank, iscntrl, isdigit, isgraph,
+//   islower, isprint, ispunct, isspace, isupper, isxdigit,
+//   tolower, toupper, toascii
+)EMBED"},
     {"dirent.h", R"EMBED(// madc embedded dirent.h — directory entry constants
 // Functions (opendir, readdir, closedir, rewinddir) available via dlsym fallback
 // struct dirent access deferred (requires struct interop)
@@ -16,6 +29,18 @@ static std::map<std::string, std::string> embedded_headers = {
 #define DT_LNK     10
 #define DT_SOCK    12
 #define DT_WHT     14
+)EMBED"},
+    {"dlfcn.h", R"EMBED(// madc embedded dlfcn.h — dynamic linking constants
+// Note: dlopen/dlsym/dlclose/dlerror are first-class in madc via #load
+// These constants are for use with explicit dlopen() calls
+
+#define RTLD_LAZY     0x00001
+#define RTLD_NOW      0x00002
+#define RTLD_GLOBAL   0x00100
+#define RTLD_LOCAL    0x00000
+#define RTLD_NOLOAD   0x00004
+#define RTLD_DEEPBIND 0x00008
+#define RTLD_NODELETE 0x01000
 )EMBED"},
     {"errno.h", R"EMBED(// madc embedded errno.h — POSIX error constants
 // Note: errno itself (thread-local) is not directly accessible; use strerror()/perror() via dlsym
@@ -68,6 +93,51 @@ static std::map<std::string, std::string> embedded_headers = {
 #define O_SYNC     1052672
 #define O_CLOEXEC  524288
 )EMBED"},
+    {"fnmatch.h", R"EMBED(// madc embedded fnmatch.h — filename pattern matching
+// Functions (fnmatch) available via dlsym fallback
+
+// fnmatch() flags
+#define FNM_NOESCAPE    0x01
+#define FNM_PATHNAME    0x02
+#define FNM_PERIOD      0x04
+#define FNM_FILE_NAME   0x02
+#define FNM_LEADING_DIR 0x08
+#define FNM_CASEFOLD    0x10
+#define FNM_EXTMATCH    0x20
+
+// fnmatch() return values
+#define FNM_NOMATCH 1
+)EMBED"},
+    {"glob.h", R"EMBED(// madc embedded glob.h — filename expansion
+// Functions (glob, globfree) available via dlsym fallback
+// struct glob_t access deferred
+
+// glob() flags
+#define GLOB_ERR      0x0001
+#define GLOB_MARK     0x0002
+#define GLOB_NOSORT   0x0004
+#define GLOB_DOOFFS   0x0008
+#define GLOB_NOCHECK  0x0010
+#define GLOB_APPEND   0x0020
+#define GLOB_NOESCAPE 0x0040
+#define GLOB_PERIOD   0x0080
+#define GLOB_ALTDIRFUNC 0x0100
+#define GLOB_BRACE    0x0200
+#define GLOB_NOMAGIC  0x0400
+#define GLOB_TILDE    0x0800
+#define GLOB_ONLYDIR  0x1000
+#define GLOB_TILDE_CHECK 0x2000
+
+// glob() return values (success = 0)
+#define GLOB_NOSPACE 1
+#define GLOB_ABORTED 2
+#define GLOB_NOMATCH 3
+)EMBED"},
+    {"grp.h", R"EMBED(// madc embedded grp.h — group database
+// Functions (getgrgid, getgrnam, getgrent, setgrent, endgrent)
+// available via dlsym fallback
+// struct group access deferred
+)EMBED"},
     {"iostream", R"EMBED(// madc embedded iostream — registers cout, cin, cerr, endl
 // The actual registration is handled by add_iostream() callback
 )EMBED"},
@@ -88,6 +158,17 @@ static std::map<std::string, std::string> embedded_headers = {
 #define PATH_MAX  4096
 #define NAME_MAX  255
 )EMBED"},
+    {"locale.h", R"EMBED(// madc embedded locale.h — locale constants
+// Functions (setlocale, localeconv) available via dlsym fallback
+
+#define LC_ALL       6
+#define LC_COLLATE   3
+#define LC_CTYPE     0
+#define LC_MESSAGES  5
+#define LC_MONETARY  4
+#define LC_NUMERIC   1
+#define LC_TIME      2
+)EMBED"},
     {"math.h", R"EMBED(// madc embedded math.h — auto-loads libm and defines math constants
 #load "libm.so.6" as libm;
 
@@ -103,6 +184,136 @@ static std::map<std::string, std::string> embedded_headers = {
 #define M_SQRT1_2  0.70710678118654752440
 #define HUGE_VAL   1e308
 #define INFINITY   1e309
+)EMBED"},
+    {"netdb.h", R"EMBED(// madc embedded netdb.h — network database constants
+// Functions (getaddrinfo, freeaddrinfo, gai_strerror, getnameinfo,
+//            gethostbyname, getservbyname, getservbyport, gethostname)
+// available via dlsym fallback
+// struct addrinfo / hostent / servent access deferred
+
+// getaddrinfo() flags
+#define AI_PASSIVE      0x0001
+#define AI_CANONNAME    0x0002
+#define AI_NUMERICHOST  0x0004
+#define AI_V4MAPPED     0x0008
+#define AI_ALL          0x0010
+#define AI_ADDRCONFIG   0x0020
+#define AI_NUMERICSERV  0x0400
+
+// getnameinfo() flags
+#define NI_NUMERICHOST  1
+#define NI_NUMERICSERV  2
+#define NI_NOFQDN       4
+#define NI_NAMEREQD     8
+#define NI_DGRAM        16
+#define NI_MAXHOST      1025
+#define NI_MAXSERV      32
+
+// getaddrinfo() error codes
+#define EAI_BADFLAGS    -1
+#define EAI_NONAME      -2
+#define EAI_AGAIN       -3
+#define EAI_FAIL        -4
+#define EAI_FAMILY      -6
+#define EAI_SOCKTYPE    -7
+#define EAI_SERVICE     -8
+#define EAI_MEMORY      -10
+#define EAI_SYSTEM      -11
+#define EAI_OVERFLOW    -12
+)EMBED"},
+    {"netinet/in.h", R"EMBED(// madc embedded netinet/in.h — IP protocol constants (Linux x86-64)
+// Functions (htons, htonl, ntohs, ntohl) available via dlsym fallback
+// struct sockaddr_in / sockaddr_in6 / in_addr access deferred
+
+// IP protocols
+#define IPPROTO_IP      0
+#define IPPROTO_ICMP    1
+#define IPPROTO_TCP     6
+#define IPPROTO_UDP     17
+#define IPPROTO_IPV6    41
+#define IPPROTO_RAW     255
+
+// Special IPv4 addresses (network byte order — use htonl() at runtime)
+#define INADDR_ANY       0x00000000
+#define INADDR_BROADCAST 0xffffffff
+#define INADDR_LOOPBACK  0x7f000001
+#define INADDR_NONE      0xffffffff
+
+// IPv6 address length
+#define IN6ADDR_ANY_INIT 0
+
+// Port range
+#define IPPORT_RESERVED 1024
+
+// TCP socket options (for setsockopt with IPPROTO_TCP)
+#define TCP_NODELAY     1
+#define TCP_MAXSEG      2
+#define TCP_KEEPIDLE    4
+#define TCP_KEEPINTVL   5
+#define TCP_KEEPCNT     6
+)EMBED"},
+    {"poll.h", R"EMBED(// madc embedded poll.h — poll() I/O multiplexing
+// Functions (poll, ppoll) available via dlsym fallback
+// struct pollfd access deferred (requires struct interop)
+
+// Events to poll for (events / revents bitmask)
+#define POLLIN   0x001
+#define POLLPRI  0x002
+#define POLLOUT  0x004
+#define POLLERR  0x008
+#define POLLHUP  0x010
+#define POLLNVAL 0x020
+#define POLLRDHUP 0x2000
+)EMBED"},
+    {"pthread.h", R"EMBED(// madc embedded pthread.h — POSIX threads
+// On Linux (glibc 2.34+) pthread functions are in libc — dlsym fallback works.
+// On older systems, use: #load "libpthread.so.0" as pthread;
+// Functions: pthread_create, pthread_join, pthread_detach, pthread_self,
+//            pthread_exit, pthread_cancel, pthread_equal,
+//            pthread_mutex_init, pthread_mutex_lock, pthread_mutex_trylock,
+//            pthread_mutex_unlock, pthread_mutex_destroy,
+//            pthread_cond_init, pthread_cond_wait, pthread_cond_signal,
+//            pthread_cond_broadcast, pthread_cond_destroy,
+//            pthread_attr_init, pthread_attr_destroy,
+//            pthread_attr_setdetachstate, pthread_attr_getstacksize,
+//            pthread_rwlock_init, pthread_rwlock_rdlock,
+//            pthread_rwlock_wrlock, pthread_rwlock_unlock,
+//            pthread_rwlock_destroy
+// struct pthread_mutex_t / pthread_cond_t / pthread_attr_t deferred
+
+// Thread creation attributes
+#define PTHREAD_CREATE_JOINABLE  0
+#define PTHREAD_CREATE_DETACHED  1
+
+// Mutex type attributes
+#define PTHREAD_MUTEX_TIMED_NP     0
+#define PTHREAD_MUTEX_DEFAULT      0
+#define PTHREAD_MUTEX_RECURSIVE    1
+#define PTHREAD_MUTEX_ERRORCHECK   2
+#define PTHREAD_MUTEX_ADAPTIVE_NP  3
+
+// Process sharing
+#define PTHREAD_PROCESS_PRIVATE 0
+#define PTHREAD_PROCESS_SHARED  1
+
+// Cancellation
+#define PTHREAD_CANCEL_ENABLE   0
+#define PTHREAD_CANCEL_DISABLE  1
+#define PTHREAD_CANCEL_DEFERRED 0
+#define PTHREAD_CANCEL_ASYNCHRONOUS 1
+#define PTHREAD_CANCELED ((int64_t)-1)
+
+// Scope
+#define PTHREAD_SCOPE_SYSTEM  0
+#define PTHREAD_SCOPE_PROCESS 1
+
+// pthread_t type alias
+#define pthread_t int64_t
+)EMBED"},
+    {"pwd.h", R"EMBED(// madc embedded pwd.h — password database
+// Functions (getpwuid, getpwnam, getpwent, setpwent, endpwent, getlogin)
+// available via dlsym fallback
+// struct passwd access deferred
 )EMBED"},
     {"signal.h", R"EMBED(// madc embedded signal.h — POSIX signal constants (Linux values)
 // Functions (kill, signal, raise, sigaction) available via dlsym fallback
@@ -131,6 +342,29 @@ static std::map<std::string, std::string> embedded_headers = {
 #define SIG_DFL 0
 #define SIG_IGN 1
 )EMBED"},
+    {"stdint.h", R"EMBED(// madc embedded stdint.h — exact-width integer types
+// Note: int8_t through uint64_t are native madc types
+// This header provides the min/max constants for completeness
+
+#define INT8_MIN    -128
+#define INT8_MAX    127
+#define UINT8_MAX   255
+#define INT16_MIN   -32768
+#define INT16_MAX   32767
+#define UINT16_MAX  65535
+#define INT32_MIN   -2147483648
+#define INT32_MAX   2147483647
+#define UINT32_MAX  4294967295
+#define INT64_MIN   -9223372036854775807
+#define INT64_MAX   9223372036854775807
+#define UINT64_MAX  0xFFFFFFFFFFFFFFFF
+#define SIZE_MAX    0xFFFFFFFFFFFFFFFF
+#define INTMAX_MIN  -9223372036854775807
+#define INTMAX_MAX  9223372036854775807
+#define UINTMAX_MAX 0xFFFFFFFFFFFFFFFF
+#define PTRDIFF_MIN -9223372036854775807
+#define PTRDIFF_MAX 9223372036854775807
+)EMBED"},
     {"stdio.h", R"EMBED(// madc embedded stdio.h — C standard I/O
 // printf/fprintf/sprintf/snprintf are available via dlsym fallback (libc is always loaded)
 
@@ -152,6 +386,190 @@ static std::map<std::string, std::string> embedded_headers = {
 // All functions available via dlsym fallback (libc always loaded):
 //   strlen, strcmp, strncmp, strcpy, strncpy, strcat, strncat,
 //   strchr, strrchr, strstr, strdup, memcpy, memmove, memset, memcmp
+)EMBED"},
+    {"sys/ipc.h", R"EMBED(// madc embedded sys/ipc.h — System V IPC constants
+// Used with sys/shm.h, sys/msg.h, sys/sem.h
+
+#define IPC_PRIVATE 0
+
+// Creation flags (for shmget/msgget/semget)
+#define IPC_CREAT   0x0200
+#define IPC_EXCL    0x0400
+#define IPC_NOWAIT  0x0800
+
+// Control commands (for shmctl/msgctl/semctl)
+#define IPC_RMID 0
+#define IPC_SET  1
+#define IPC_STAT 2
+#define IPC_INFO 3
+)EMBED"},
+    {"sys/mman.h", R"EMBED(// madc embedded sys/mman.h — memory mapping constants (Linux x86-64)
+// Functions (mmap, munmap, mprotect, msync, madvise, mlockall, munlockall)
+// available via dlsym fallback
+// Note: mmap returns void* (use int64_t to hold the address)
+
+// Memory protection flags (prot param to mmap/mprotect)
+#define PROT_NONE  0x0
+#define PROT_READ  0x1
+#define PROT_WRITE 0x2
+#define PROT_EXEC  0x4
+
+// Mapping type flags (flags param to mmap)
+#define MAP_SHARED     0x01
+#define MAP_PRIVATE    0x02
+#define MAP_FIXED      0x10
+#define MAP_ANONYMOUS  0x20
+#define MAP_ANON       0x20
+#define MAP_GROWSDOWN  0x0100
+#define MAP_DENYWRITE  0x0800
+#define MAP_EXECUTABLE 0x1000
+#define MAP_LOCKED     0x2000
+#define MAP_NORESERVE  0x4000
+#define MAP_POPULATE   0x8000
+#define MAP_NONBLOCK   0x10000
+#define MAP_HUGETLB    0x40000
+
+// mmap failure return value
+#define MAP_FAILED -1
+
+// msync flags
+#define MS_ASYNC      1
+#define MS_SYNC       4
+#define MS_INVALIDATE 2
+
+// madvise flags
+#define MADV_NORMAL     0
+#define MADV_RANDOM     1
+#define MADV_SEQUENTIAL 2
+#define MADV_WILLNEED   3
+#define MADV_DONTNEED   4
+#define MADV_FREE       8
+)EMBED"},
+    {"sys/resource.h", R"EMBED(// madc embedded sys/resource.h — resource limits and usage
+// Functions (getrlimit, setrlimit, getrusage, getpriority, setpriority)
+// available via dlsym fallback
+// struct rlimit / rusage access deferred
+
+// Resource limit types (first arg to getrlimit/setrlimit)
+#define RLIMIT_CPU     0
+#define RLIMIT_FSIZE   1
+#define RLIMIT_DATA    2
+#define RLIMIT_STACK   3
+#define RLIMIT_CORE    4
+#define RLIMIT_RSS     5
+#define RLIMIT_NPROC   6
+#define RLIMIT_NOFILE  7
+#define RLIMIT_MEMLOCK 8
+#define RLIMIT_AS      9
+#define RLIMIT_LOCKS   10
+#define RLIMIT_SIGPENDING 11
+#define RLIMIT_MSGQUEUE   12
+#define RLIMIT_NICE       13
+#define RLIMIT_RTPRIO     14
+#define RLIM_INFINITY -1
+
+// getrusage() who values
+#define RUSAGE_SELF     0
+#define RUSAGE_CHILDREN -1
+#define RUSAGE_THREAD   1
+
+// getpriority/setpriority which values
+#define PRIO_PROCESS 0
+#define PRIO_PGRP    1
+#define PRIO_USER    2
+)EMBED"},
+    {"sys/select.h", R"EMBED(// madc embedded sys/select.h — select() multiplexing
+// Functions (select, pselect) available via dlsym fallback
+// struct fd_set manipulation macros (FD_SET, FD_CLR, FD_ISSET, FD_ZERO)
+// are not implementable without function-like macros — use poll() instead
+
+#define FD_SETSIZE 1024
+)EMBED"},
+    {"sys/shm.h", R"EMBED(// madc embedded sys/shm.h — shared memory IPC
+// Functions (shmget, shmat, shmdt, shmctl) available via dlsym fallback
+// struct shmid_ds access deferred
+
+// shmat() flags
+#define SHM_RDONLY  0x01000
+#define SHM_RND    0x02000
+#define SHM_REMAP  0x04000
+#define SHM_EXEC   0x08000
+
+// shmctl() commands (in addition to IPC_* from sys/ipc.h)
+#define SHM_LOCK   11
+#define SHM_UNLOCK 12
+#define SHM_STAT   13
+#define SHM_INFO   14
+)EMBED"},
+    {"sys/socket.h", R"EMBED(// madc embedded sys/socket.h — POSIX socket constants (Linux x86-64)
+// Functions (socket, bind, connect, listen, accept, send, recv,
+//            sendto, recvfrom, setsockopt, getsockopt, shutdown,
+//            getpeername, getsockname) available via dlsym fallback
+// struct sockaddr / sockaddr_in / sockaddr_in6 access deferred
+
+// Address families
+#define AF_UNSPEC  0
+#define AF_UNIX    1
+#define AF_LOCAL   1
+#define AF_INET    2
+#define AF_INET6   10
+#define AF_PACKET  17
+
+// Protocol families (aliases for AF_*)
+#define PF_UNSPEC  0
+#define PF_UNIX    1
+#define PF_LOCAL   1
+#define PF_INET    2
+#define PF_INET6   10
+
+// Socket types
+#define SOCK_STREAM    1
+#define SOCK_DGRAM     2
+#define SOCK_RAW       3
+#define SOCK_SEQPACKET 5
+#define SOCK_NONBLOCK  2048
+#define SOCK_CLOEXEC   524288
+
+// Socket-level option (for setsockopt/getsockopt level param)
+#define SOL_SOCKET 1
+
+// Socket options (SO_*)
+#define SO_DEBUG        1
+#define SO_REUSEADDR    2
+#define SO_TYPE         3
+#define SO_ERROR        4
+#define SO_DONTROUTE    5
+#define SO_BROADCAST    6
+#define SO_SNDBUF       7
+#define SO_RCVBUF       8
+#define SO_KEEPALIVE    9
+#define SO_OOBINLINE    10
+#define SO_LINGER       13
+#define SO_RCVLOWAT     18
+#define SO_SNDLOWAT     19
+#define SO_RCVTIMEO     20
+#define SO_SNDTIMEO     21
+#define SO_REUSEPORT    15
+#define SO_PASSCRED     16
+#define SO_PEERCRED     17
+
+// Shutdown how values
+#define SHUT_RD   0
+#define SHUT_WR   1
+#define SHUT_RDWR 2
+
+// Send/recv flags
+#define MSG_OOB        1
+#define MSG_PEEK       2
+#define MSG_DONTROUTE  4
+#define MSG_CTRUNC     8
+#define MSG_PROXY      16
+#define MSG_TRUNC      32
+#define MSG_DONTWAIT   64
+#define MSG_EOR        128
+#define MSG_WAITALL    256
+#define MSG_NOSIGNAL   16384
+#define MSG_MORE       32768
 )EMBED"},
     {"sys/stat.h", R"EMBED(// madc embedded sys/stat.h — file status constants (Linux x86-64 values)
 // Functions (stat, fstat, lstat, chmod, mkdir, mkfifo) available via dlsym fallback
@@ -187,6 +605,40 @@ static std::map<std::string, std::string> embedded_headers = {
 #define S_IXOTH  0x1
 #define S_IRWXO  0x7
 )EMBED"},
+    {"sys/time.h", R"EMBED(// madc embedded sys/time.h — POSIX time structures and constants
+// Functions (gettimeofday, settimeofday, getitimer, setitimer)
+// available via dlsym fallback
+// struct timeval / struct timezone access deferred
+
+// Interval timer types
+#define ITIMER_REAL    0
+#define ITIMER_VIRTUAL 1
+#define ITIMER_PROF    2
+)EMBED"},
+    {"sys/types.h", R"EMBED(// madc embedded sys/types.h — POSIX type aliases
+// These supplement the aliases in unistd.h
+
+#define pid_t    int
+#define uid_t    int
+#define gid_t    int
+#define off_t    int64_t
+#define off64_t  int64_t
+#define size_t   uint64_t
+#define ssize_t  int64_t
+#define mode_t   int
+#define dev_t    int64_t
+#define ino_t    uint64_t
+#define nlink_t  int64_t
+#define blksize_t int64_t
+#define blkcnt_t  int64_t
+#define socklen_t int
+#define sa_family_t int
+)EMBED"},
+    {"sys/un.h", R"EMBED(// madc embedded sys/un.h — UNIX domain socket support
+// AF_UNIX / AF_LOCAL = 1 (defined in sys/socket.h)
+// struct sockaddr_un access deferred (requires struct interop)
+// Functions via dlsym fallback (same as sys/socket.h: socket, bind, connect, etc.)
+)EMBED"},
     {"sys/wait.h", R"EMBED(// madc embedded sys/wait.h — process wait constants
 // Functions (wait, waitpid) available via dlsym fallback
 
@@ -202,6 +654,129 @@ static std::map<std::string, std::string> embedded_headers = {
 #define WTERMSIG(s)     ((s) & 0x7f)
 #define WIFSTOPPED(s)   (((s) & 0xff) == 0x7f)
 #define WSTOPSIG(s)     (((s) >> 8) & 0xff)
+)EMBED"},
+    {"syslog.h", R"EMBED(// madc embedded syslog.h — system logging constants
+// Functions (openlog, syslog, closelog, setlogmask) available via dlsym fallback
+
+// Priorities (severity levels)
+#define LOG_EMERG   0
+#define LOG_ALERT   1
+#define LOG_CRIT    2
+#define LOG_ERR     3
+#define LOG_WARNING 4
+#define LOG_NOTICE  5
+#define LOG_INFO    6
+#define LOG_DEBUG   7
+
+// Facilities
+#define LOG_KERN    0
+#define LOG_USER    8
+#define LOG_MAIL    16
+#define LOG_DAEMON  24
+#define LOG_AUTH    32
+#define LOG_SYSLOG  40
+#define LOG_LPR     48
+#define LOG_NEWS    56
+#define LOG_UUCP    64
+#define LOG_CRON    72
+#define LOG_AUTHPRIV 80
+#define LOG_FTP     88
+#define LOG_LOCAL0  128
+#define LOG_LOCAL1  136
+#define LOG_LOCAL2  144
+#define LOG_LOCAL3  152
+#define LOG_LOCAL4  160
+#define LOG_LOCAL5  168
+#define LOG_LOCAL6  176
+#define LOG_LOCAL7  184
+
+// openlog() options
+#define LOG_PID     1
+#define LOG_CONS    2
+#define LOG_ODELAY  4
+#define LOG_NDELAY  8
+#define LOG_NOWAIT  16
+#define LOG_PERROR  32
+)EMBED"},
+    {"termios.h", R"EMBED(// madc embedded termios.h — terminal I/O constants (Linux x86-64)
+// Functions (tcgetattr, tcsetattr, tcsendbreak, tcdrain, tcflush,
+//            tcflow, cfgetispeed, cfgetospeed, cfsetispeed, cfsetospeed,
+//            isatty, ttyname) available via dlsym fallback
+// struct termios access deferred
+
+// tcsetattr() action flags
+#define TCSANOW   0
+#define TCSADRAIN 1
+#define TCSAFLUSH 2
+
+// tcflush() queue selectors
+#define TCIFLUSH  0
+#define TCOFLUSH  1
+#define TCIOFLUSH 2
+
+// tcflow() action values
+#define TCOOFF 0
+#define TCOON  1
+#define TCIOFF 2
+#define TCION  3
+
+// c_lflag bits
+#define ISIG    0000001
+#define ICANON  0000002
+#define ECHO    0000010
+#define ECHOE   0000020
+#define ECHOK   0000040
+#define ECHONL  0000100
+#define NOFLSH  0000200
+#define TOSTOP  0000400
+#define IEXTEN  0100000
+
+// c_iflag bits
+#define IGNBRK  0000001
+#define BRKINT  0000002
+#define IGNPAR  0000004
+#define PARMRK  0000010
+#define INPCK   0000020
+#define ISTRIP  0000040
+#define INLCR   0000100
+#define IGNCR   0000200
+#define ICRNL   0000400
+#define IXON    0002000
+#define IXOFF   0010000
+
+// c_oflag bits
+#define OPOST   0000001
+#define ONLCR   0000004
+#define OCRNL   0000010
+#define ONOCR   0000020
+#define ONLRET  0000040
+
+// Baud rates
+#define B0       0
+#define B50      1
+#define B75      2
+#define B110     3
+#define B134     4
+#define B150     5
+#define B200     6
+#define B300     7
+#define B600     8
+#define B1200    9
+#define B1800    10
+#define B2400    11
+#define B4800    12
+#define B9600    13
+#define B19200   14
+#define B38400   15
+#define B57600   4097
+#define B115200  4098
+#define B230400  4099
+#define B460800  4100
+#define B921600  4103
+
+// ioctl TIOCGWINSZ / TIOCSWINSZ (get/set window size)
+#define TIOCGWINSZ 0x5413
+#define TIOCSWINSZ 0x5414
 )EMBED"},
     {"time.h", R"EMBED(// madc embedded time.h — POSIX time constants and type aliases
 // Functions (time, clock, difftime, mktime, localtime, gmtime, strftime, nanosleep)
