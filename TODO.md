@@ -2,92 +2,95 @@
 
 ## High Priority
 
+### Embedded POSIX Headers
+
+Infrastructure is complete: embedded headers baked into binary, `#include <name>` checks
+embedded map first, lazy symbol registration defers `addGlobal`/`addFunction` until first use,
+dlsym fallback resolves unqualified libc/libm calls automatically, `RTLD_GLOBAL` on `#load`
+makes loaded library symbols globally visible.
+
+**Implemented headers:**
+- `<iostream>` — `cout`, `cin`, `cerr`, `endl` (lazy registration)
+- `<math.h>` — `M_PI`, `M_E`, `M_SQRT2`, `INFINITY`, auto-loads libm; `sqrt()`, `sin()`,
+  `cos()`, `pow()`, `floor()`, `ceil()`, `fabs()`, `log()` etc. via dlsym
+- `<stdio.h>` — `EOF`, `SEEK_SET`/`CUR`/`END`, `BUFSIZ`, `NULL`; `printf()`, `sprintf()`,
+  `snprintf()`, `fprintf()` via dlsym
+
+**Next headers (constants only — functions via dlsym):**
+- `<stdlib.h>` — `EXIT_SUCCESS`, `EXIT_FAILURE`, `RAND_MAX`
+- `<string.h>` — (functions only: `strlen`, `strcmp`, `strncmp`, `strcpy`, `strcat`, `memcpy`,
+  `memset`, `memcmp` — all via dlsym)
+- `<unistd.h>` — `STDIN_FILENO`, `STDOUT_FILENO`, `STDERR_FILENO`, `R_OK`, `W_OK`, `X_OK`,
+  `F_OK`; typedefs `pid_t`→int, `uid_t`→int, `gid_t`→int, `off_t`→int64, `size_t`→uint64,
+  `ssize_t`→int64 (via `#define`); functions `read`, `write`, `close`, `lseek`, `fork`,
+  `execvp`, `pipe`, `dup2`, `getcwd`, `chdir`, `unlink`, `rmdir`, `access` via dlsym
+- `<fcntl.h>` — `O_RDONLY` (0), `O_WRONLY` (1), `O_RDWR` (2), `O_CREAT` (64), `O_EXCL` (128),
+  `O_TRUNC` (512), `O_APPEND` (1024), `O_NONBLOCK` (2048); `open` via dlsym
+- `<signal.h>` — `SIGHUP` (1), `SIGINT` (2), `SIGQUIT` (3), `SIGKILL` (9), `SIGTERM` (15),
+  `SIGCHLD` (17), `SIGCONT` (18), `SIGSTOP` (19), `SIGUSR1` (10), `SIGUSR2` (12),
+  `SIG_DFL` (0), `SIG_IGN` (1); `kill`, `signal`, `raise` via dlsym
+- `<errno.h>` — `EPERM` (1), `ENOENT` (2), `ESRCH` (3), `EINTR` (4), `EIO` (5),
+  `EACCES` (13), `EEXIST` (17), `ENOTDIR` (20), `EISDIR` (21), `EINVAL` (22),
+  `ENOMEM` (12), `ENOSPC` (28), `EPIPE` (32); `strerror`, `perror` via dlsym
+- `<time.h>` — `CLOCKS_PER_SEC`, `CLOCK_REALTIME` (0), `CLOCK_MONOTONIC` (1); typedefs
+  `time_t`→int64, `clock_t`→int64; `time`, `clock`, `difftime`, `strftime` via dlsym
+- `<limits.h>` — `INT_MAX`, `INT_MIN`, `LONG_MAX`, `LONG_MIN`, `PATH_MAX` (4096)
+- `<dirent.h>` — `DT_REG` (8), `DT_DIR` (4), `DT_LNK` (10); `opendir`, `readdir`,
+  `closedir` via dlsym (struct access deferred)
+- `<sys/wait.h>` — `WNOHANG` (1), `WUNTRACED` (2); `wait`, `waitpid` via dlsym
+- `<sys/stat.h>` — `S_IRUSR` (0400), `S_IWUSR` (0200), `S_IXUSR` (0100), `S_IRGRP` (040),
+  `S_IROTH` (04), `S_ISUID` (04000), `S_ISGID` (02000); `stat`, `fstat`, `chmod`, `mkdir`
+  via dlsym (struct access deferred)
+
+**Struct-dependent headers (require struct interop — deferred):**
+- `struct tm` for `localtime`/`gmtime`/`mktime`/`strftime` (time.h)
+- `struct stat` for `stat`/`fstat` result access (sys/stat.h)
+- `struct dirent` for `readdir` result access (dirent.h)
+- `struct sockaddr_in`/`struct in_addr` for networking (netinet/in.h)
+
 ### Language Completeness
 
-- **Function-like macros** — `#define NAME(args) expr` (parameterized macros). Simple `#define NAME value`
-  constant substitution, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`, `#undef`, and
-  `#if defined(X)` are all implemented. Function-like macros are deferred.
+- **Function-like macros** — `#define NAME(args) expr` (parameterized macros)
 
-- **`printf` / `sprintf` / `snprintf` / `fprintf`** — C-style format strings are the idiomatic
-  output mechanism for C-like scripts. `cout <<` covers basic cases but format strings are
-  essential for anything numeric or padded. These are in libc (see below) but warrant explicit
-  built-in treatment given their frequency of use.
+- **`cout << [const char*]` in chained expressions** — `cout << func_returning_cstr() << endl`
+  crashes when the cstr function is inside a convergent BSL chain. Single `cout << cstr` works.
+  Root cause likely in BSL convergence re-entering compile with stale regdp.
 
-### Standard Library Access
+- **`char *` variable declarations** — `char *str = "test";` doesn't parse. The parser sees
+  `char` as a type token and `*` as multiply. Need to handle pointer declaration syntax in
+  `parseDeclaration`.
 
-- **Embedded standard headers — additional headers** — The infrastructure is in place
-  (`#include <math.h>` routes to embedded `include/madc/math.h` which auto-loads libm via
-  `#load` and defines math constants). Additional headers needed:
-  - `<stdio.h>` — `EOF`, `SEEK_*` constants, `printf` family
-  - `<stdlib.h>` — `EXIT_SUCCESS`, `EXIT_FAILURE`, `NULL`
-  - `<fcntl.h>` — `O_RDONLY`, `O_WRONLY`, `O_CREAT`, etc.
-  - `<signal.h>` — `SIGKILL`, `SIGTERM`, `SIGINT`, etc.
-  - `<errno.h>` — `ENOENT`, `EACCES`, `EEXIST`, etc.
+### printf improvements
 
-  Typedefs (`pid_t`, `size_t`, `off_t`, `time_t`, `mode_t`) map to existing madc integer types
-  and can be defined with `#define` once that lands.
+- **printf with `%f`/`%e`/`%g` for doubles** — Verify doubles pass correctly through the
+  variadic dlsym path for printf format strings. The x86-64 ABI requires `al` to hold the
+  number of SSE registers used for variadic functions — this may need special handling.
 
 ## Medium Priority
-
-### POSIX Coverage
-
-- **Time functions** — `time`, `clock`, `sleep`, `usleep`, `nanosleep`, `gettimeofday`,
-  `localtime`, `gmtime`, `mktime`, `strftime`, `clock_gettime`. Available via `libc` namespace
-  once that lands, but may need `struct tm` binding for `localtime`/`strftime` to be useful.
-
-- **Process control** — `getpid`, `getppid`, `getuid`, `geteuid`, `fork`, `exec*`, `wait`,
-  `waitpid`, `kill`, `signal`, `raise`, `abort`, `atexit`. `system()` and `getenv/setenv` are
-  already built-in; this covers the rest of the process lifecycle.
-
-- **Filesystem operations** — `stat`, `access`, `rename`, `remove`, `unlink`, `mkdir`, `rmdir`,
-  `getcwd`, `chdir`, `opendir`, `readdir`, `closedir`. Currently madc has C++ `ifstream`/`ofstream`
-  for file I/O; this covers directory traversal and metadata.
-
-- **Memory functions** — `malloc`, `free`, `calloc`, `realloc`, `memcpy`, `memmove`, `memset`,
-  `memcmp`. Needed for interoperating with C libraries that allocate/pass raw buffers.
-
-- **Error reporting** — `errno` (global int), `strerror`, `perror`. Needed for any script that
-  checks syscall return values.
 
 ### Language Completeness
 
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
-  String returns need pointer-passing via `__retbuf`. Significantly extends multi-return utility.
 
-- **Right-shift operator `>>`** — `<<` is working; `>>` is tokenized but has no integration test.
-  Verify it works in expression context (distinct from `>>` as template terminator in
-  `vector<vector<int>>`).
+- **Right-shift operator `>>`** — `<<` is working; `>>` is tokenized but needs integration test.
 
-- **Error diagnostics** — For the scripting use case, a raw JIT crash with no context is a bad
-  experience. Audit what the user sees on type mismatches, missing symbols, bad casts. File and
-  line number should always appear in error output.
+- **Error diagnostics** — File and line number should always appear in error output.
 
 ## Low Priority
 
-- **Multi-return in brace-less if** — `if (x) return a, b;` fails to parse because comma
-  confuses the single-statement if body. Workaround: use braces `if (x) { return a, b; }`.
+- **Multi-return in brace-less if** — `if (x) return a, b;` doesn't parse. Use braces.
 
-- **`(type, type)` multi-return declaration syntax** — Explicit `(int, string) func()` signature
-  for documentation and type safety. Currently inferred from `return a, b;` at parse time.
-
-- **`struct` interop for libc calls** — Some libc functions take/return `struct tm`, `struct stat`,
-  `struct dirent`, etc. For full POSIX coverage these need madc struct definitions that match
-  the C ABI layout so they can be passed to `libc::` functions.
+- **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
 
 ## Deferred / Future
 
 - **ARM64 support** — asmjit supports ARM64 backends. Currently x86-64 Linux only.
 
-- **Phase 4: `libmadc.so` embedding API** — Decouple static globals, create public C API
-  (`madc_create`, `madc_exec_file`, `madc_exec_string`, `madc_destroy`), build as shared library.
-  Lower priority given the primary use case is running `.mad` scripts directly.
+- **Phase 4: `libmadc.so` embedding API** — Decouple static globals, create public C API.
 
-- **Networking** — `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`, `getaddrinfo`.
-  Available via `libc` namespace once that lands, but useful enough to warrant first-class
-  wrapper treatment eventually.
+- **Networking** — `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`.
 
-- **Operator overloading** — `<<`, `+`, `-`, `*`, `/` for user-defined types. High effort,
-  niche benefit at this stage.
+- **Operator overloading** — `<<`, `+`, `-`, `*`, `/` for user-defined types.
 
 ## Completed
 
@@ -107,10 +110,17 @@
 - ~~Ternary operator~~ — `condition ? true_expr : false_expr` with stack-slot merge (f64cf18)
 - ~~Multi-return conditional crash~~ — skip cleanup for multi-return paths (8d07f44)
 - ~~Compound assignment operators~~ — `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`
-- ~~For-loop regdp clobber bug~~ — `TokenFOR::compile()` now resets `regdp` before each sub-compilation
+- ~~For-loop regdp clobber bug~~ — `TokenFOR::compile()` resets `regdp` before each sub-compilation
 - ~~Hex integer literals~~ — `0xFF`, `0xDEAD`, `0X1A` etc.
-- ~~Postfix increment/decrement~~ — `x++`, `x--` with correct old-value-return semantics; parser uses `prevToken()` for prefix/postfix disambiguation
-- ~~C preprocessor directives~~ — `#define`, `#undef`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`, `#if defined(X)`, `#if 0`/`#if 1`
-- ~~Embedded header infrastructure~~ — `#include <name>` checks embedded headers first; `scripts/gen_embedded_headers.sh` bakes `include/madc/*.h` into binary; first header: `math.h`
-- ~~dlsym fallback for libc~~ — unresolved function calls try `dlsym(RTLD_DEFAULT, name)` before erroring; `getpid()`, `sleep()`, `getuid()` etc. work without `#include` or `#load`
-- ~~Variadic dlsym calling convention~~ — dedicated compile path for dlsym-resolved functions builds FuncSignature from actual arg types; handles int, double, and string args; infers double return from destination register or arg types
+- ~~Postfix increment/decrement~~ — `x++`, `x--` with correct old-value-return semantics
+- ~~C preprocessor directives~~ — `#define`, `#undef`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`
+- ~~Embedded header infrastructure~~ — `#include <name>` routes to embedded headers baked into binary
+- ~~dlsym fallback for libc~~ — unresolved function calls try `dlsym(RTLD_DEFAULT)` before erroring
+- ~~Variadic dlsym calling convention~~ — dedicated compile path handles int, double, string args
+- ~~`#include <iostream>`~~ — cout/cin/cerr/endl gated behind include (lazy registration)
+- ~~`#include <math.h>`~~ — M_PI/M_E/M_SQRT2/INFINITY + libm auto-load
+- ~~`#include <stdio.h>`~~ — EOF/SEEK_*/NULL + printf/sprintf/snprintf via dlsym
+- ~~Lazy symbol registration~~ — `lazy_map` defers addGlobal/addFunction to first use; supports variables, functions, types, structs
+- ~~Command line arguments~~ — `int main(int argc, char **argv)` with `get_argv(argv, i)`
+- ~~`cout << func()` crash fix~~ — BSL only injects ostream for ostream-consuming functions
+- ~~`RTLD_GLOBAL` for `#load`~~ — loaded library symbols visible via dlsym without namespace prefix
