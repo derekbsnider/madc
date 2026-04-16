@@ -378,6 +378,12 @@ public:
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
+    // function-like macro definitions: #define NAME(params) body
+    struct MacroDef {
+	std::vector<std::string> params;  // parameter names
+	std::string body;                 // body template with param names as placeholders
+    };
+    std::map<std::string, MacroDef> macro_map;	// function-like macros
     enum LazyKind { lkVariable = 1, lkFunction = 2, lkType = 3, lkStruct = 4 };
     struct LazyEntry { int header; LazyKind kind; };
     std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration

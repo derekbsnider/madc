@@ -388,19 +388,94 @@ TokenBase *Program::_getToken()
 		}
 		if ( directive == "define" )
 		{
-		    // #define NAME value
+		    // #define NAME[(params)] value
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
 		    std::string name;
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
+
+		    // function-like macro: ( immediately after name (no space)
+		    if ( source.peek() == '(' )
+		    {
+			source.get(); // consume '('
+			MacroDef macro;
+			// read parameter names
+			while ( source.good() && source.peek() != ')' )
+			{
+			    while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
+				source.get();
+			    if ( source.peek() == ')' ) break;
+			    std::string param;
+			    while ( source.good() && isalnum(source.peek()) || source.peek() == '_' )
+				param += source.get();
+			    if ( !param.empty() )
+				macro.params.push_back(param);
+			}
+			if ( source.peek() == ')' ) source.get(); // consume ')'
+			// skip whitespace before body
+			while ( source.peek() == ' ' || source.peek() == '\t' )
+			    source.get();
+			// read body (rest of line, with \ continuation)
+			std::string body;
+			while ( source.good() && !source.eof() )
+			{
+			    char ch = source.peek();
+			    if ( ch == '\n' || ch == '\r' ) break;
+			    if ( ch == '\\' )
+			    {
+				source.get(); // consume backslash
+				char next = source.peek();
+				if ( next == '\n' || next == '\r' )
+				{
+				    // line continuation
+				    source.get(); // consume newline
+				    if ( source.peek() == '\n' ) source.get(); // consume \r\n
+				    body += ' ';
+				    continue;
+				}
+				body += '\\';
+				continue;
+			    }
+			    body += source.get();
+			}
+			// trim trailing whitespace
+			while ( !body.empty() && (body.back() == ' ' || body.back() == '\t') )
+			    body.pop_back();
+			macro.body = body;
+			macro_map[name] = macro;
+			DBG(std::cout << "#define " << name << "(");
+			DBG(for (size_t i=0; i<macro.params.size(); ++i) { if (i) std::cout << ","; std::cout << macro.params[i]; });
+			DBG(std::cout << ") " << body << std::endl);
+			return getToken();
+		    }
+
+		    // object-like macro: #define NAME value
 		    // skip whitespace between name and value
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
-		    // read value (rest of line, trimmed)
+		    // read value (rest of line, with \ continuation)
 		    std::string value;
-		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		    while ( source.good() && !source.eof() )
+		    {
+			char ch = source.peek();
+			if ( ch == '\n' || ch == '\r' ) break;
+			if ( ch == '\\' )
+			{
+			    source.get();
+			    char next = source.peek();
+			    if ( next == '\n' || next == '\r' )
+			    {
+				source.get();
+				if ( source.peek() == '\n' ) source.get();
+				value += ' ';
+				continue;
+			    }
+			    value += '\\';
+			    continue;
+			}
 			value += source.get();
+		    }
 		    // trim trailing whitespace
 		    while ( !value.empty() && (value.back() == ' ' || value.back() == '\t') )
 			value.pop_back();
@@ -416,6 +491,7 @@ TokenBase *Program::_getToken()
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
 		    define_map.erase(name);
+		    macro_map.erase(name);
 		    DBG(std::cout << "#undef " << name << std::endl);
 		    // consume rest of line
 		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
@@ -429,7 +505,7 @@ TokenBase *Program::_getToken()
 		    std::string name;
 		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
 			name += source.get();
-		    bool defined = define_map.count(name) > 0;
+		    bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
 		    ifdef_done_stack.push(active);
@@ -724,6 +800,71 @@ TokenBase *Program::_getToken()
 
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 		    word += source.get();
+		// function-like macro expansion: NAME(args) → substituted body
+		if ( macro_map.count(word) && source.peek() == '(' )
+		{
+		    MacroDef &macro = macro_map[word];
+		    source.get(); // consume '('
+		    // read actual arguments (handling nested parens and strings)
+		    std::vector<std::string> args;
+		    std::string arg;
+		    int depth = 1;
+		    while ( source.good() && depth > 0 )
+		    {
+			char mc = source.get();
+			if ( mc == '(' ) { ++depth; arg += mc; }
+			else if ( mc == ')' ) { --depth; if (depth > 0) arg += mc; }
+			else if ( mc == ',' && depth == 1 )
+			{
+			    // trim whitespace from arg
+			    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
+			    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
+			    args.push_back(arg);
+			    arg.clear();
+			}
+			else if ( mc == '"' )
+			{
+			    arg += mc;
+			    while ( source.good() && source.peek() != '"' )
+			    {
+				if ( source.peek() == '\\' ) arg += source.get();
+				arg += source.get();
+			    }
+			    if ( source.peek() == '"' ) arg += source.get();
+			}
+			else arg += mc;
+		    }
+		    // last argument
+		    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
+		    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
+		    if ( !arg.empty() || !args.empty() )
+			args.push_back(arg);
+		    // substitute params in body
+		    std::string expanded = macro.body;
+		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
+		    {
+			std::string &pname = macro.params[i];
+			std::string &aval = args[i];
+			size_t pos = 0;
+			while ( (pos = expanded.find(pname, pos)) != std::string::npos )
+			{
+			    // only replace whole words (not substrings)
+			    bool left_ok = (pos == 0 || (!isalnum(expanded[pos-1]) && expanded[pos-1] != '_'));
+			    bool right_ok = (pos + pname.size() >= expanded.size()
+				|| (!isalnum(expanded[pos+pname.size()]) && expanded[pos+pname.size()] != '_'));
+			    if ( left_ok && right_ok )
+			    {
+				expanded.replace(pos, pname.size(), aval);
+				pos += aval.size();
+			    }
+			    else
+				pos += pname.size();
+			}
+		    }
+		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
+		    source.pushback(expanded);
+		    return getToken();
+		}
 		// #define substitution: inject the define value into the source stream
 		if ( define_map.count(word) )
 		{
@@ -894,14 +1035,14 @@ bool Program::evaluateIfCondition()
 	    // consume rest of line
 	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 		source.get();
-	    bool result = define_map.count(name) > 0;
+	    bool result = define_map.count(name) > 0 || macro_map.count(name) > 0;
 	    return negate ? !result : result;
 	}
 	// plain identifier — check if it's defined and non-zero
 	// consume rest of line
 	while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 	    source.get();
-	bool result = define_map.count(word) > 0;
+	bool result = define_map.count(word) > 0 || macro_map.count(word) > 0;
 	if ( result )
 	{
 	    std::string &val = define_map[word];

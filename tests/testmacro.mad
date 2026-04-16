@@ -1,0 +1,56 @@
+#!/usr/bin/env madc
+// Test function-like macros
+#include <stdio.h>
+#include <stdlib.h>
+
+// simple expression macros
+#define SQUARE(x) ((x) * (x))
+#define ADD(a, b) ((a) + (b))
+#define IS_SET(flag, bit) ((flag) & (bit))
+#define NEGATE(x) (-(x))
+
+// multi-line macro with \ continuation
+#define MUL3(a, b, c) \
+	((a) * (b) * (c))
+
+// macro with no args
+#define GREETING() printf("Hello from macro!\n")
+
+// statement macro
+#define PRINT_INT(label, val) printf(label, val)
+
+// ifdef check on macro
+#ifdef SQUARE
+#define HAS_SQUARE 1
+#else
+#define HAS_SQUARE 0
+#endif
+
+int main()
+{
+	int r = SQUARE(5);
+	printf("SQUARE(5) = %ld\n", r);
+
+	int s = ADD(10, 20);
+	printf("ADD(10, 20) = %ld\n", s);
+
+	printf("inline SQUARE(4) = %ld\n", SQUARE(4));
+	printf("inline ADD(1, 2) = %ld\n", ADD(1, 2));
+
+	int flags = 13;
+	printf("IS_SET(13, 4) = %ld\n", IS_SET(flags, 4));
+	printf("IS_SET(13, 2) = %ld\n", IS_SET(flags, 2));
+
+	printf("NEGATE(42) = %ld\n", NEGATE(42));
+
+	printf("MUL3(2, 3, 4) = %ld\n", MUL3(2, 3, 4));
+
+	GREETING();
+
+	PRINT_INT("value = %ld\n", 999);
+
+	printf("HAS_SQUARE = %ld\n", HAS_SQUARE);
+
+	printf("All macro tests passed!\n");
+	return 0;
+}
