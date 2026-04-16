@@ -1,5 +1,103 @@
 # Changelog
 
+## [Unreleased] — SMAUG Phase A/B/C: C Pointer System + Macros (2026-04-16)
+
+### Added — C Pointer and Type System (Phase A — all 5 items complete)
+
+- **`char *` pointer declarations** — `DataDefPTR` class tracks pointed-to type. Pointer
+  handling in `parseDeclaration`, struct/class members, function parameters, and `sizeof()`.
+  Supports `char *`, `int *`, `void *`, `struct *`, `char **` (double pointers).
+
+- **`->` struct pointer member access** — `ptr->member` parsed in `parseExpression`,
+  resolved via `DataDefPTR::base_type`. Reuses `TokenMember` Gp codegen path
+  (`[gp + offset]`). Chained `->` supported (with temp variable for intermediate).
+
+- **`(TYPE *)` cast expressions** — Detects casts by checking if `(` is followed by a
+  type name. `TokenCast::compile()` passes through the value with target type annotation.
+  Works with `(CHAR_DATA *)calloc(...)`, `(struct tag *)ptr`, `(int *)raw`.
+
+- **`&` address-of operator** — `TokenAddrOf` emits LEA for stack variables. Unary
+  detection via `isUnaryPosition()` helper. Works for struct variables passed to functions.
+
+- **Forward typedef struct declarations** — `typedef struct tag_name ALIAS;` before the
+  struct body exists. Creates placeholder `DataDefSTRUCT` (size 0), filled in-place when
+  the full definition is encountered. The typedef alias automatically sees the completed type.
+
+### Added — Macros (Phase B — all 3 items complete)
+
+- **Function-like macros** — `#define NAME(params) body` with parameter substitution.
+  Whole-word matching prevents substring replacement. Handles nested parens, string literals
+  in arguments, and zero-parameter macros.
+
+- **Multi-line `#define` with `\` continuation** — Both function-like and object-like macros
+  support backslash line continuation.
+
+- **`do { } while(0)` macro bodies** — Fixed do-while crash when multiple loops in sequence
+  (regdp reset + TokenInt with NULL regdp.first). SMAUG's CREATE/DISPOSE macros now work.
+
+### Added — Data Structures and Types (Phase C partial)
+
+- **`unsigned`/`signed`/`long`/`short` compound type keywords** — Lexer handles compound
+  specifiers: `unsigned char` → dtUINT8, `unsigned int` → dtUINT32, `long int` → dtINT64,
+  `short int` → dtINT16, bare `unsigned` → dtUINT32, etc.
+
+- **`enum` keyword** — `enum { NAME, NAME = val, ... }` with auto-incrementing values and
+  explicit `= N` assignments. Each enumerator registered as a global constant variable.
+
+- **`typedef` for primitive types** — `typedef int sh_int;`, `typedef unsigned char bool;`,
+  `typedef char *LPSTR;`. Alias names can redefine existing type names.
+
+- **`static` keyword** — Static local variables persist across function calls. Heap-allocated
+  with `vfSTATIC` flag. Runtime initialization skipped (pre-initialized via allocation).
+
+- **`const` keyword** — Consumed and passed through to type declaration.
+
+- **`extern` keyword** — Consumed and skipped to semicolon.
+
+- **`*ptr` dereference operator** — Read and write through pointer. `TokenDeref` returns
+  Mem operand `[ptr_gp]` for numeric types. Works with heap pointers (calloc/malloc).
+
+### Added — Infrastructure
+
+- **`struct Type` in function parameters** — `parseFunction()` handles `struct Name` and
+  typedef'd identifiers as parameter types (was only accepting `ttDataType` tokens).
+
+- **Typedef'd types in struct member definitions** — `ROOM_DATA *in_room;` inside a struct
+  body now works (identifier resolved against `datatype_map`).
+
+- **`isUnaryPosition()` / `isPostfixPosition()` helpers** — Replaces duplicated prevToken
+  checks for unary `&`, `*`, prefix/postfix `++`/`--`, and Neg→Sub conversion.
+
+- **`resolveCompoundLHS()` helper** — All 10 compound assignment operators (`+=`, `|=`, etc.)
+  now work on struct members via `->`, not just plain variables. Load-op-store pattern for
+  Mem operands.
+
+- **`make fulltest` target** — Runs unit tests + all integration tests in one command.
+
+### Fixed
+
+- **Ternary inside parentheses** — `int m = (a > b ? a : b)` now works. Was setting
+  `done=true` unconditionally after ternary, preventing closing `)` from being consumed.
+  Fix: only set `done` when `brackets == 0`.
+
+- **Variadic argument promotion** — Sub-64-bit integer types (char, short, int32) now
+  sign/zero-extended to 64-bit before passing to variadic functions (printf, etc.).
+
+- **C string function redirect** — When a registered built-in (e.g. `strlen`) expects
+  `std::string` but receives a `char *` pointer argument, redirects the call to the C
+  library version via dlsym.
+
+- **dlsym return to Mem operand** — Function returns assigned directly to `->` members
+  no longer crash. Uses temp Gp register for `setRet` then writes to Mem.
+
+- **Mem-to-Gp for variadic args** — Struct member access via `->` in variadic function
+  arguments (printf) now loads Mem into temp Gp before passing.
+
+- **Do-while regdp reset** — `TokenDO` and `TokenWHILE` compile() now reset regdp before
+  body and condition sub-compilations. Also fixed `TokenInt::compile()` with NULL regdp.first.
+
+---
+
 ## [Unreleased] — SMAUG Goal + Full POSIX Header Coverage (2026-04-16)
 
 ### Added — 31 Additional Embedded POSIX/libc Headers (c971eb1, ea06f5a)

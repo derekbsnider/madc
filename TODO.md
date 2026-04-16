@@ -2,48 +2,29 @@
 
 ## High Priority
 
-### SMAUG Phase A — C Pointer and Type System
-
-These are the top blockers for SMAUG 1.8 compatibility (see `docs/SMAUG_requirements.md`)
-and also the most impactful gaps for general C compatibility. Each item fixes a fundamental
-parse/compile failure that affects virtually every real C program.
-
-- **`char *` pointer declarations** — `char *str = "test";` doesn't parse. Parser sees `char`
-  as a type token and `*` as multiply. Fix `parseDeclaration` to handle pointer declarator
-  syntax. Affects every string field in every C struct.
-
-- **`->` struct pointer member access** — `node->next`, `ch->name` style access. Required for
-  any linked-list traversal. Parse as `deref + member` or as a dedicated binary operator.
-
-- **`(TYPE *)` explicit cast expressions** — `(CHAR_DATA *) calloc(...)`, `(int *) ptr`. Cast
-  syntax with a type name inside parentheses. Currently ambiguous with grouped expressions.
-
-- **`&` address-of operator in expressions** — `&sa`, `&buf`, `sizeof(&x)`. Required for any
-  call to socket functions, `stat`, `memset`, etc. that take pointer arguments.
-
-- **Forward typedef struct declarations** — `typedef struct char_data CHAR_DATA;` followed later
-  by `struct char_data { ... };`. Parser must accept forward references to undefined structs.
-
-### SMAUG Phase B — Macros
-
-- **Function-like macros** — `#define NAME(args) body` with parameter substitution.
-  SMAUG's `CREATE`/`DISPOSE`/`KEY` macros cover every allocation and file-read. Also needed
-  for `FD_SET`, `FD_ZERO`, `FD_ISSET` (from `<sys/select.h>`). High leverage for all C code.
-
-- **Multi-line `#define` with `\` continuation** — `#define MACRO(x) \` spanning multiple
-  source lines. Required by SMAUG's macro definitions in `mud.h`.
-
 ### SMAUG Phase D — I/O Infrastructure
 
 - **`<stdarg.h>` / `va_list`** — `va_list`, `va_start`, `va_end`, `va_arg`. Used in
   `comm.c`, `db.c`, `misc.c` for `ch_printf`, `log_string`, `send_to_char`. Without this,
-  all formatted output functions fail.
+  all formatted output functions fail. Hardest remaining SMAUG blocker.
 
 ### Language Completeness
 
 - **`cout << [const char*]` in chained expressions** — `cout << func_returning_cstr() << endl`
   crashes when the cstr function is inside a convergent BSL chain. Single `cout << cstr` works.
   Root cause likely in BSL convergence re-entering compile with stale regdp.
+
+- **`*ptr` dereference on stack variables** — `int x = 42; int *p = &x; *p = 99;` crashes
+  at runtime because `&x` LEAs a virtual register that may not have a stack address.
+  Need to force address-taken variables to the stack via `cc.newStack()`.
+
+- **Chained `->` without temp variable** — `ch->in_room->name` parses but the intermediate
+  TokenMember isn't a real variable in operand_map. Works with: `ROOM_DATA *r = ch->in_room;
+  r->name;`. Needs TokenMember-as-object support in codegen.
+
+- **`->` member access in certain printf arg combinations** — Direct `->` in variadic args
+  works for simple cases but crashes in specific multi-struct patterns. Workaround: use temp
+  variables.
 
 ### printf improvements
 
@@ -61,8 +42,8 @@ parse/compile failure that affects virtually every real C program.
 - **Static initializer tables** — `static struct { ... } table[] = { { "name", func }, ... };`
   used heavily in `const.c` and `tables.c`. Requires aggregate initialization syntax.
 
-- **`unsigned` type keywords** — `unsigned char`, `unsigned int`, `unsigned short`, `unsigned long`.
-  Also `long int`, `short int` explicit type combos. Used in `sh_int`, `bool` typedef contexts.
+- **`char *str = "hello"` string literal to pointer** — Assign string literal directly to
+  `char *` variable. Currently requires `strdup("hello")` workaround.
 
 ### Language Completeness
 
@@ -72,11 +53,15 @@ parse/compile failure that affects virtually every real C program.
 
 - **Error diagnostics** — File and line number should always appear in error output.
 
+- **`__FILE__` and `__LINE__` macros** — Used in SMAUG's CREATE/DISPOSE error messages.
+
 ## Low Priority
 
 - **Multi-return in brace-less if** — `if (x) return a, b;` doesn't parse. Use braces.
 
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
+
+- **Function pointer typedefs** — `typedef void DO_FUN(CHAR_DATA *ch, char *argument);`
 
 ## Deferred / Future
 
@@ -131,7 +116,30 @@ parse/compile failure that affects virtually every real C program.
 - ~~Command line arguments~~ — `int main(int argc, char **argv)` with `get_argv(argv, i)`
 - ~~`cout << func()` crash fix~~ — BSL only injects ostream for ostream-consuming functions
 - ~~`RTLD_GLOBAL` for `#load`~~ — loaded library symbols visible via dlsym without namespace prefix
-- ~~31 additional embedded POSIX/libc headers~~ — stdlib.h, string.h, limits.h, errno.h, fcntl.h, signal.h, unistd.h, time.h, dirent.h, ctype.h, stdint.h, dlfcn.h, glob.h, fnmatch.h, pwd.h, grp.h, locale.h, poll.h, syslog.h, termios.h, pthread.h, netdb.h, sys/socket.h, netinet/in.h, arpa/inet.h, sys/types.h, sys/stat.h, sys/wait.h, sys/mman.h, sys/select.h, sys/time.h, sys/ipc.h, sys/shm.h, sys/resource.h, sys/un.h (c971eb1, ea06f5a)
-- ~~int64_t integer literal storage~~ — lexer decimal accumulator widened to int64_t; TokenBase._token widened to int64_t; no overflow for values ≥ 2^31 (e.g. INT_MIN, UINT32_MAX) (c971eb1)
-- ~~safeneg truncation fix~~ — removed spurious `movsx(op, op.r8())` after `cc.neg()`; negated values ≥ 128 now correct (c971eb1)
-- ~~SMAUG 1.8 requirements analysis~~ — gap analysis, severity table, 5-phase roadmap in docs/SMAUG_requirements.md (bd9844c)
+- ~~31 additional embedded POSIX/libc headers~~ — 38 total (c971eb1, ea06f5a)
+- ~~int64_t integer literal storage~~ — lexer/token widened to int64_t (c971eb1)
+- ~~safeneg truncation fix~~ — removed spurious movsx after cc.neg() (c971eb1)
+- ~~SMAUG 1.8 requirements analysis~~ — gap analysis in docs/SMAUG_requirements.md (bd9844c)
+- ~~**`char *` pointer declarations**~~ — DataDefPTR, pointer parsing in decl/struct/params/sizeof (a3576bc)
+- ~~**`->` struct pointer member access**~~ — reuses TokenMember Gp path (683f379)
+- ~~**`&` address-of operator**~~ — TokenAddrOf with LEA, unary detection (8b0f8e2)
+- ~~**`(TYPE *)` cast expressions**~~ — TokenCast, cast detection in parseExpression (31e5fbd)
+- ~~**Forward typedef struct declarations**~~ — placeholder struct filled in-place (e8e6379)
+- ~~**Function-like macros**~~ — #define NAME(params) body with substitution (680d982)
+- ~~**Multi-line #define with \\ continuation**~~ — both function-like and object-like (680d982)
+- ~~**do { } while(0) macro bodies**~~ — regdp reset + TokenInt fix (d15f01c)
+- ~~**Ternary inside parentheses**~~ — brackets check before done=true (70425d7)
+- ~~**unsigned/signed/long/short compound types**~~ — lexer compound specifiers (8bfab4f)
+- ~~**Variadic arg promotion**~~ — sub-64-bit movsx/movzx for printf (299ccf5)
+- ~~**C string function redirect**~~ — strlen(char*) → libc via dlsym (78949c0)
+- ~~**dlsym return to Mem**~~ — temp Gp for setRet when regdp.first is Mem (41c977a)
+- ~~**Typedef'd types in struct members**~~ — identifier resolved against datatype_map (41c977a)
+- ~~**struct Type in function parameters**~~ — parseFunction handles struct/typedef names (8b0f8e2)
+- ~~**`*ptr` dereference operator**~~ — TokenDeref for read/write through heap pointers (f481ea4)
+- ~~**`static` keyword**~~ — persistent locals with vfSTATIC + heap allocation (ebcfd93)
+- ~~**`const` and `extern` keywords**~~ — consumed/skipped for C compatibility (ebcfd93)
+- ~~**`enum` keyword**~~ — global constant variables with auto-increment (b0f5df4)
+- ~~**`typedef` for primitive types**~~ — typedef int sh_int; typedef unsigned char bool; (0047fd0)
+- ~~**Compound assignments on struct members**~~ — resolveCompoundLHS helper (b61fdbe)
+- ~~**make fulltest**~~ — unit + integration tests in one command (bbc2f04)
+- ~~**isUnaryPosition()/isPostfixPosition() helpers**~~ — replaces duplicated checks (59805a6)
