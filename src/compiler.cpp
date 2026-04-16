@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <dlfcn.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -789,7 +790,12 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenCallFunc::argc param"));
 
 	funcrdp.object = NULL; // should this be regdp.object?
-	funcrdp.second = ptype;// this may result in an unwanted movsx on an unsigned integer type
+	// if function expects dtSTRING but argument is a pointer type,
+	// don't force the string type hint — let the pointer pass through
+	if ( ptype->is_string() && tn->datadef() && tn->datadef()->is_pointer() )
+	    funcrdp.second = tn->datadef();
+	else
+	    funcrdp.second = ptype;// this may result in an unwanted movsx on an unsigned integer type
 //	_operand = ptype->newreg(pgm.cc);
 //	funcrdp.first = &_operand;
 	funcrdp.first = NULL; // clean for param
@@ -839,9 +845,9 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
 	    pgm.Throw(tn) << "Expecting floating point argument" << flush;
 	}
-	if ( ptype->is_string() && !funcrdp.second->is_string() )
+	if ( ptype->is_string() && !funcrdp.second->is_string() && !funcrdp.second->is_pointer() )
 	    pgm.Throw(tn) << "Expecting string argument" << flush;
-	if ( ptype->is_object() )
+	if ( ptype->is_object() && !funcrdp.second->is_pointer() )
 	{
 	    if ( !funcrdp.second->is_object() )
 		pgm.Throw(tn) << "Expecting object argument" << flush;
@@ -893,20 +899,44 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !fnd )
 	DBG(std::cout << "TokenCallFunc::compile(cc.call(" << (uint64_t)method->x86code << ')' << std::endl);
 
+    // when pointer args were passed for string params, redirect to C library
+    // version via dlsym (the built-in wrapper expects std::string*)
+    void *call_target = method->x86code;
+    bool use_c_version = false;
+    for ( size_t i = 0; i < argc(); ++i )
+    {
+	size_t pi = i + param_offset;
+	DataDef *pt = pi < func->parameters.size() ? func->parameters[pi] : NULL;
+	if ( pt && pt->is_string() && parameters[i]->datadef() && parameters[i]->datadef()->is_pointer() )
+	{
+	    use_c_version = true;
+	    break;
+	}
+    }
+    if ( use_c_version && !fnd )
+    {
+	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
+	if ( sym )
+	{
+	    call_target = sym;
+	    DBG(cout << "TokenCallFunc::compile() redirecting " << var.name << " to C library version" << endl);
+	}
+    }
+
     // now we should have all we need to call the function
     DBG(pgm.cc.comment("pgm.call:"));
     DBG(pgm.cc.comment(var.name.c_str()));
     InvokeNode *call;
     DBG(cout << "invoke: argCount=" << funcsig.argCount() << " hasRet=" << funcsig.hasRet() << " is_variadic=" << is_variadic << endl);
-    if ( fnd ) pgm.cc.invoke(&call, fnd->label(), funcsig);
+    if ( fnd && !use_c_version ) pgm.cc.invoke(&call, fnd->label(), funcsig);
     else if ( is_variadic )
     {
 	// variadic dlsym: load function pointer into Gp register for invoke
 	x86::Gp fn_ptr = pgm.cc.newIntPtr("dl_fn");
-	pgm.cc.mov(fn_ptr, imm(method->x86code));
+	pgm.cc.mov(fn_ptr, imm(call_target));
 	pgm.cc.invoke(&call, fn_ptr, funcsig);
     }
-    else pgm.cc.invoke(&call, imm(method->x86code), funcsig);
+    else pgm.cc.invoke(&call, imm(call_target), funcsig);
     std::vector<Operand>::iterator gvi;
     _argc = 0;
 
