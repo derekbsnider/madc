@@ -15,17 +15,9 @@
 
 ### Standard Library Access
 
-- **Fix dlsym namespace calling convention** — `ns::func()` calls resolved via dlsym have
-  broken return values (always 0 for integers, code generation failure for doubles). The
-  asmjit `cc.finalize()` reports `kErrorInvalidAssignment` (25) for double returns and
-  `kErrorInvalidInstruction` (26) for integer returns. Root cause: likely a mismatch between
-  the function signature registered by `addFunction()` (variadic with dtINT64 return) and
-  the actual calling convention needed. Unqualified libc calls via the dlsym fallback
-  (e.g. `getpid()`, `sleep(0)`) work correctly since they go through a different code path.
-
 - **Embedded standard headers — additional headers** — The infrastructure is in place
   (`#include <math.h>` routes to embedded `include/madc/math.h` which auto-loads libm via
-  `#load` and defines math constants). Additional headers needed once dlsym calling is fixed:
+  `#load` and defines math constants). Additional headers needed:
   - `<stdio.h>` — `EOF`, `SEEK_*` constants, `printf` family
   - `<stdlib.h>` — `EXIT_SUCCESS`, `EXIT_FAILURE`, `NULL`
   - `<fcntl.h>` — `O_RDONLY`, `O_WRONLY`, `O_CREAT`, etc.
@@ -121,4 +113,4 @@
 - ~~C preprocessor directives~~ — `#define`, `#undef`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`, `#if defined(X)`, `#if 0`/`#if 1`
 - ~~Embedded header infrastructure~~ — `#include <name>` checks embedded headers first; `scripts/gen_embedded_headers.sh` bakes `include/madc/*.h` into binary; first header: `math.h`
 - ~~dlsym fallback for libc~~ — unresolved function calls try `dlsym(RTLD_DEFAULT, name)` before erroring; `getpid()`, `sleep()`, `getuid()` etc. work without `#include` or `#load`
-- ~~Variadic type-check bypass~~ — dlsym-resolved functions skip parameter type checks and infer return type from destination register
+- ~~Variadic dlsym calling convention~~ — dedicated compile path for dlsym-resolved functions builds FuncSignature from actual arg types; handles int, double, and string args; infers double return from destination register or arg types

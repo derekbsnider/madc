@@ -575,14 +575,22 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	    return *regdp.first;
 	}
-	// variadic dlsym call — build signature from actual arg types (like dlcall)
-	if ( method->x86code )
-	{
-	    FuncDef *func = (FuncDef *)method->returns.type;
-	    FuncSignature funcsig(CallConvId::kCDecl);
-	    funcsig.setRetT<int64_t>();
+	pgm.Throw(this) << "TokenCallFunc::compile() method has neither FuncNode nor x86code" << flush;
+    }
 
+    // variadic dlsym call: no funcnode, has x86code, 0 declared params
+    // build signature from actual arg types (like dlcall)
+    if ( !fnd && method->x86code )
+    {
+	FuncDef *func = (FuncDef *)method->returns.type;
+	if ( func->parameters.empty() )
+	{
+	    FuncSignature funcsig(CallConvId::kCDecl);
+
+	    // compile args to determine types
+	    bool has_double_args = false;
 	    std::vector<Operand> params;
+	    std::vector<bool> param_is_double;
 	    for ( size_t i = 0; i < argc(); ++i )
 	    {
 		regdefp_t argrdp = {NULL, NULL, NULL};
@@ -597,26 +605,68 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		    cstr_call->setArg(0, areg.as<x86::Gp>());
 		    cstr_call->setRet(0, cstr_reg);
 		    params.push_back(cstr_reg);
-		    funcsig.addArgT<const char *>();
+		    param_is_double.push_back(false);
+		}
+		else if ( argrdp.second && argrdp.second->is_real() )
+		{
+		    params.push_back(areg);
+		    param_is_double.push_back(true);
+		    has_double_args = true;
 		}
 		else
 		{
 		    params.push_back(areg);
-		    funcsig.addArgT<int64_t>();
+		    param_is_double.push_back(false);
 		}
 	    }
 
-	    InvokeNode *call;
-	    pgm.cc.invoke(&call, imm(method->x86code), funcsig);
-	    uint32_t ai = 0;
-	    for ( auto &p : params )
+	    // set return type BEFORE adding arg types
+	    bool ret_double = has_double_args
+		|| (regdp.first && regdp.first->isReg()
+		    && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec));
+	    if ( ret_double )
+		funcsig.setRetT<double>();
+	    else
+		funcsig.setRetT<int64_t>();
+
+	    // add arg types to signature
+	    for ( size_t i = 0; i < params.size(); ++i )
 	    {
-		if ( p.isReg() )
-		    call->setArg(ai++, p.as<x86::Gp>());
-		else if ( p.isImm() )
-		    call->setArg(ai++, p.as<Imm>());
+		if ( param_is_double[i] )
+		    funcsig.addArgT<double>();
+		else
+		    funcsig.addArgT<int64_t>();
 	    }
 
+	    // invoke
+	    InvokeNode *call;
+	    pgm.cc.invoke(&call, imm(method->x86code), funcsig);
+	    for ( uint32_t ai = 0; ai < params.size(); ++ai )
+	    {
+		Operand &p = params[ai];
+		if ( p.isReg() && p.as<BaseReg>().isGroup(RegGroup::kVec) )
+		    call->setArg(ai, p.as<x86::Xmm>());
+		else if ( p.isReg() )
+		    call->setArg(ai, p.as<x86::Gp>());
+		else if ( p.isImm() )
+		    call->setArg(ai, p.as<Imm>());
+	    }
+
+	    // capture return value
+	    if ( ret_double )
+	    {
+		x86::Xmm ret_xmm = pgm.cc.newXmm("dl_ret");
+		call->setRet(0, ret_xmm);
+		if ( regdp.first )
+		    pgm.cc.movsd(regdp.first->as<x86::Xmm>(), ret_xmm);
+		else
+		{
+		    _operand = ret_xmm;
+		    regdp.first = &_operand;
+		}
+		regdp.second = &ddDOUBLE;
+	    }
+	    else
 	    {
 		if ( !regdp.first )
 		{
@@ -630,7 +680,6 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	    return *regdp.first;
 	}
-	pgm.Throw(this) << "TokenCallFunc::compile() method has neither FuncNode nor x86code" << flush;
     }
 
     // build arguments
@@ -651,15 +700,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
     // set return type (multi-return functions return void — values go via __retbuf)
-    // for variadic/dlsym functions, infer return type from destination register
     if ( func->is_multi_return() ) funcsig.setRetT<void>();
-    else if ( is_variadic && regdp.first && regdp.first->isReg()
-	 &&   regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
-    {
-	DBG(cout << "TokenCallFunc::compile() variadic: setRetT<double>()" << endl);
-	funcsig.setRetT<double>();
-	regdp.second = &ddDOUBLE;
-    }
     else
     switch(func->returns.type())
     {
@@ -768,26 +809,23 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    funcsig.addArgT<const char *>();
 	    continue;
 	}
-	if ( !is_variadic )
+	if ( ptype->is_numeric() && !funcrdp.second->is_numeric() )
 	{
-	    if ( ptype->is_numeric() && !funcrdp.second->is_numeric() )
-	    {
-		DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-		pgm.Throw(tn) << "Expecting numeric argument" << flush;
-	    }
-	    if ( ptype->is_integer() && !funcrdp.second->is_integer() )
-	    {
-		DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-		pgm.Throw(tn) << "Expecting integer argument" << flush;
-	    }
-	    if ( ptype->is_real() && !funcrdp.second->is_real() )
-	    {
-		DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-		pgm.Throw(tn) << "Expecting floating point argument" << flush;
-	    }
-	    if ( ptype->is_string() && !funcrdp.second->is_string() )
-		pgm.Throw(tn) << "Expecting string argument" << flush;
+	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
+	    pgm.Throw(tn) << "Expecting numeric argument" << flush;
 	}
+	if ( ptype->is_integer() && !funcrdp.second->is_integer() )
+	{
+	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
+	    pgm.Throw(tn) << "Expecting integer argument" << flush;
+	}
+	if ( ptype->is_real() && !funcrdp.second->is_real() )
+	{
+	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
+	    pgm.Throw(tn) << "Expecting floating point argument" << flush;
+	}
+	if ( ptype->is_string() && !funcrdp.second->is_string() )
+	    pgm.Throw(tn) << "Expecting string argument" << flush;
 	if ( ptype->is_object() )
 	{
 	    if ( !funcrdp.second->is_object() )
@@ -799,13 +837,13 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(tnreg)"));
 	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
-	    if ( !is_variadic && !ptype->is_real() )
+	    if ( !ptype->is_real() )
 		pgm.Throw(tn) << "Not expecting floating point argument" << flush;
 	    DBG(pgm.cc.comment("tnreg is Xmm"));
 	}
 	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(RegGroup::kGp) )
 	{
-	    if ( !is_variadic && ptype->is_real() )
+	    if ( ptype->is_real() )
 		pgm.Throw(tn) << "Expecting floating point argument" << flush;
 	    DBG(pgm.cc.comment("tnreg is Gp"));
             DBG(cout << "tnreg size=" << tnreg.x86RmSize() << " regdp.second->size=" << funcrdp.second->size << " type " << funcrdp.second->name << endl);
