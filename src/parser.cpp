@@ -2742,11 +2742,17 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	base_dd = pgm.getPointerType(base_dd);
     }
 
-    // get alias name
+    // get alias name (may be an identifier or an existing type name being redefined)
     tn = pgm.nextToken();
-    if ( tn->type() != TokenType::ttIdentifier )
+    std::string alias;
+    if ( tn->type() == TokenType::ttIdentifier )
+	alias = ((TokenIdent *)tn)->str;
+    else if ( tn->type() == TokenType::ttDataType )
+	alias = ((TokenDataType *)tn)->str;
+    else if ( tn->type() == TokenType::ttKeyword )
+	alias = ((TokenKeyword *)tn)->str;
+    else
 	pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
-    std::string alias = ((TokenIdent *)tn)->str;
 
     // register in datatype_map
     TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
