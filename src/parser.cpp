@@ -1462,7 +1462,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		// & address-of in unary position
 		if ( tb->id() == TokenID::tkBand && isUnaryPosition() )
 		{
-		    // unary & — address-of operator
+		    // unary & — address-of operator. Accept `&name` or `&(name)`;
+		    // the parenthesized form shows up after macro expansion
+		    // (e.g. `FD_SET(fd, set)` → `__madc_fd_set(fd, &(set))`).
+		    bool paren = false;
+		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			nextToken(); // consume '('
+			paren = true;
+		    }
 		    TokenBase *addr_tb = nextToken();
 		    if ( addr_tb->type() != TokenType::ttIdentifier )
 			Throw(addr_tb) << "expecting variable name after '&'" << flush;
@@ -1470,6 +1478,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    Variable *avar = findVariable(aname);
 		    if ( !avar )
 			Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
+		    if ( paren )
+		    {
+			TokenBase *close = nextToken();
+			if ( !close || close->id() != TokenID::tkClBrk )
+			    Throw(close ? close : addr_tb) << "expected ')' after &(name)" << flush;
+		    }
 		    DataDefPTR *aptr = getPointerType(avar->type);
 		    exStack.push(new TokenAddrOf(*avar, aptr));
 		    break;

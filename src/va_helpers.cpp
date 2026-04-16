@@ -109,3 +109,24 @@ extern "C" int __madc_vfprintf(FILE *fp, const char *fmt, int64_t *args)
     fputs(tmp, fp);
     return len;
 }
+
+// fd_set bit-array helpers. Called by the FD_ZERO/FD_SET/FD_CLR/FD_ISSET
+// macros in the embedded <sys/select.h>. The "set" pointer is the address
+// of a `struct fd_set` (128 bytes, laid out as 16 int64s — identical to
+// glibc's fd_set on x86-64).
+extern "C" void __madc_fd_zero(void *set)
+{
+    memset(set, 0, 128);
+}
+extern "C" void __madc_fd_set(long fd, void *set)
+{
+    ((long *)set)[fd / 64] |= (1L << (fd % 64));
+}
+extern "C" void __madc_fd_clr(long fd, void *set)
+{
+    ((long *)set)[fd / 64] &= ~(1L << (fd % 64));
+}
+extern "C" long __madc_fd_isset(long fd, void *set)
+{
+    return (((long *)set)[fd / 64] >> (fd % 64)) & 1L;
+}

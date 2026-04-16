@@ -495,12 +495,39 @@ typedef long va_list;
 #define PRIO_PGRP    1
 #define PRIO_USER    2
 )EMBED"},
-    {"sys/select.h", R"EMBED(// madc embedded sys/select.h — select() multiplexing
-// Functions (select, pselect) available via dlsym fallback
-// struct fd_set manipulation macros (FD_SET, FD_CLR, FD_ISSET, FD_ZERO)
-// are not implementable without function-like macros — use poll() instead
+    {"sys/select.h", R"EMBED(// madc embedded sys/select.h — select() multiplexing with fd_set support
+// Functions (select, pselect) available via dlsym fallback.
+// FD_SETSIZE is 1024; fd_set holds 1024 bits in 16 int64 slots (128 bytes),
+// matching glibc x86-64 layout exactly. The FD_* macros forward to built-in
+// C helpers (__madc_fd_zero/set/clr/isset) bundled into the madc binary.
 
 #define FD_SETSIZE 1024
+
+// 128-byte bit array laid out as 16 int64_t slots. Field names are internal
+// and not intended for direct access — use the FD_* macros.
+struct fd_set {
+    int64_t __b0;
+    int64_t __b1;
+    int64_t __b2;
+    int64_t __b3;
+    int64_t __b4;
+    int64_t __b5;
+    int64_t __b6;
+    int64_t __b7;
+    int64_t __b8;
+    int64_t __b9;
+    int64_t __b10;
+    int64_t __b11;
+    int64_t __b12;
+    int64_t __b13;
+    int64_t __b14;
+    int64_t __b15;
+};
+
+#define FD_ZERO(set)      __madc_fd_zero(&(set))
+#define FD_SET(fd, set)   __madc_fd_set((fd), &(set))
+#define FD_CLR(fd, set)   __madc_fd_clr((fd), &(set))
+#define FD_ISSET(fd, set) __madc_fd_isset((fd), &(set))
 )EMBED"},
     {"sys/shm.h", R"EMBED(// madc embedded sys/shm.h — shared memory IPC
 // Functions (shmget, shmat, shmdt, shmctl) available via dlsym fallback
@@ -623,14 +650,29 @@ typedef long va_list;
 #define S_IRWXO  0x7
 )EMBED"},
     {"sys/time.h", R"EMBED(// madc embedded sys/time.h — POSIX time structures and constants
-// Functions (gettimeofday, settimeofday, getitimer, setitimer)
-// available via dlsym fallback
-// struct timeval / struct timezone access deferred
+// Functions (gettimeofday, settimeofday, getitimer, setitimer) available
+// via dlsym fallback. Use `(struct timeval *)` cast to access fields on
+// the caller-allocated buffer.
 
 // Interval timer types
 #define ITIMER_REAL    0
 #define ITIMER_VIRTUAL 1
 #define ITIMER_PROF    2
+
+// suseconds_t is signed long on glibc x86-64.
+#define suseconds_t int64_t
+
+// glibc x86-64 struct timeval — 16 bytes.
+struct timeval {
+    int64_t tv_sec;     // seconds
+    int64_t tv_usec;    // microseconds
+};
+
+// struct timezone — deprecated by POSIX; glibc still accepts NULL for it.
+struct timezone {
+    int32_t tz_minuteswest;
+    int32_t tz_dsttime;
+};
 )EMBED"},
     {"sys/types.h", R"EMBED(// madc embedded sys/types.h — POSIX type aliases
 // These supplement the aliases in unistd.h
@@ -795,10 +837,10 @@ typedef long va_list;
 #define TIOCGWINSZ 0x5413
 #define TIOCSWINSZ 0x5414
 )EMBED"},
-    {"time.h", R"EMBED(// madc embedded time.h — POSIX time constants and type aliases
-// Functions (time, clock, difftime, mktime, localtime, gmtime, strftime, nanosleep)
-// available via dlsym fallback
-// struct tm access deferred (requires struct interop)
+    {"time.h", R"EMBED(// madc embedded time.h — POSIX time constants, types, and struct tm.
+// Functions (time, clock, difftime, mktime, localtime, gmtime, strftime,
+// nanosleep) available via dlsym fallback. Use `(struct tm *)` cast on
+// the return value of localtime/gmtime to attach field access.
 
 // Clocks
 #define CLOCKS_PER_SEC 1000000
@@ -810,6 +852,24 @@ typedef long va_list;
 // Time type aliases
 #define time_t  int64_t
 #define clock_t int64_t
+
+// glibc x86-64 struct tm layout — 56 bytes total, natural C ABI alignment.
+// All int fields are 32-bit (C int) to match glibc; tm_gmtoff is long (64-bit
+// on LP64); tm_zone is const char *. The 4-byte pad between tm_isdst and
+// tm_gmtoff is inserted automatically by madc's natural field alignment.
+struct tm {
+    int32_t tm_sec;     // seconds  [0, 60]
+    int32_t tm_min;     // minutes  [0, 59]
+    int32_t tm_hour;    // hours    [0, 23]
+    int32_t tm_mday;    // day of month  [1, 31]
+    int32_t tm_mon;     // months since Jan [0, 11]
+    int32_t tm_year;    // years since 1900
+    int32_t tm_wday;    // days since Sunday [0, 6]
+    int32_t tm_yday;    // days since Jan 1  [0, 365]
+    int32_t tm_isdst;   // DST flag
+    int64_t tm_gmtoff;  // seconds east of UTC
+    char   *tm_zone;    // timezone abbreviation
+};
 )EMBED"},
     {"unistd.h", R"EMBED(// madc embedded unistd.h — POSIX constants and type aliases
 // Functions (read, write, close, lseek, fork, execvp, pipe, dup2,
