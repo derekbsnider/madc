@@ -4,14 +4,9 @@
 
 ### Language Completeness
 
-- **Hex literals** — `0xFF`, `0x1A`, etc. are not recognized by the lexer. The lexer reads
-  decimal integers only. Fix: in the lexer's number-reading path, detect `0x`/`0X` prefix
-  and parse the remaining hex digits with `strtol(..., 16)`.
-
-- **C preprocessor directives** — `#define NAME value` (constant substitution), `#define NAME(args) expr`
-  (function-like macros), `#ifdef` / `#ifndef` / `#if` / `#else` / `#elif` / `#endif`, `#undef`.
-  Implemented at lexer level (lexer already handles `#include` and `#load`). `#if defined(X)` and
-  `#if (expr)` constant-expression evaluation needed for `#if`/`#elif`.
+- **Function-like macros** — `#define NAME(args) expr` (parameterized macros). Simple `#define NAME value`
+  constant substitution, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`, `#undef`, and
+  `#if defined(X)` are all implemented. Function-like macros are deferred.
 
 - **`printf` / `sprintf` / `snprintf` / `fprintf`** — C-style format strings are the idiomatic
   output mechanism for C-like scripts. `cout <<` covers basic cases but format strings are
@@ -137,3 +132,4 @@
 - ~~For-loop regdp clobber bug~~ — `TokenFOR::compile()` now resets `regdp` before each sub-compilation
 - ~~Hex integer literals~~ — `0xFF`, `0xDEAD`, `0X1A` etc.
 - ~~Postfix increment/decrement~~ — `x++`, `x--` with correct old-value-return semantics; parser uses `prevToken()` for prefix/postfix disambiguation
+- ~~C preprocessor directives~~ — `#define`, `#undef`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`, `#if defined(X)`, `#if 0`/`#if 1`

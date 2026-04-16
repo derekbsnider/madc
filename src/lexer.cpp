@@ -359,6 +359,125 @@ TokenBase *Program::_getToken()
 		    DBG(std::cout << "#load \"" << libname << "\" as " << ns_name << std::endl);
 		    return getToken();
 		}
+		if ( directive == "define" )
+		{
+		    // #define NAME value
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string name;
+		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+			name += source.get();
+		    // skip whitespace between name and value
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    // read value (rest of line, trimmed)
+		    std::string value;
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			value += source.get();
+		    // trim trailing whitespace
+		    while ( !value.empty() && (value.back() == ' ' || value.back() == '\t') )
+			value.pop_back();
+		    define_map[name] = value;
+		    DBG(std::cout << "#define " << name << " " << value << std::endl);
+		    return getToken();
+		}
+		if ( directive == "undef" )
+		{
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string name;
+		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+			name += source.get();
+		    define_map.erase(name);
+		    DBG(std::cout << "#undef " << name << std::endl);
+		    // consume rest of line
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			source.get();
+		    return getToken();
+		}
+		if ( directive == "ifdef" || directive == "ifndef" )
+		{
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string name;
+		    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+			name += source.get();
+		    bool defined = define_map.count(name) > 0;
+		    bool active = (directive == "ifdef") ? defined : !defined;
+		    ifdef_stack.push(active);
+		    ifdef_done_stack.push(active);
+		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << std::endl);
+		    // consume rest of line
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			source.get();
+		    if ( !active )
+			return skipConditionalBlock();
+		    return getToken();
+		}
+		if ( directive == "if" )
+		{
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    bool active = evaluateIfCondition();
+		    ifdef_stack.push(active);
+		    ifdef_done_stack.push(active);
+		    DBG(std::cout << "#if -> " << (active ? "true" : "false") << std::endl);
+		    if ( !active )
+			return skipConditionalBlock();
+		    return getToken();
+		}
+		if ( directive == "elif" )
+		{
+		    if ( ifdef_stack.empty() )
+			Throw << "#elif without matching #if/#ifdef" << flush;
+		    bool already_done = ifdef_done_stack.top();
+		    ifdef_stack.pop();
+		    if ( already_done )
+		    {
+			ifdef_stack.push(false);
+			return skipConditionalBlock();
+		    }
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    bool active = evaluateIfCondition();
+		    ifdef_stack.push(active);
+		    if ( active )
+			ifdef_done_stack.top() = true;
+		    DBG(std::cout << "#elif -> " << (active ? "true" : "false") << std::endl);
+		    if ( !active )
+			return skipConditionalBlock();
+		    return getToken();
+		}
+		if ( directive == "else" )
+		{
+		    if ( ifdef_stack.empty() )
+			Throw << "#else without matching #if/#ifdef" << flush;
+		    bool already_done = ifdef_done_stack.top();
+		    ifdef_stack.pop();
+		    bool active = !already_done;
+		    ifdef_stack.push(active);
+		    if ( active )
+			ifdef_done_stack.top() = true;
+		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << std::endl);
+		    // consume rest of line
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			source.get();
+		    if ( !active )
+			return skipConditionalBlock();
+		    return getToken();
+		}
+		if ( directive == "endif" )
+		{
+		    if ( ifdef_stack.empty() )
+			Throw << "#endif without matching #if/#ifdef" << flush;
+		    ifdef_stack.pop();
+		    ifdef_done_stack.pop();
+		    DBG(std::cout << "#endif" << std::endl);
+		    // consume rest of line
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			source.get();
+		    return getToken();
+		}
 	    }
 	    return new TokenHash;
 	case '{': return new TokenOpBrc;
@@ -530,6 +649,18 @@ TokenBase *Program::_getToken()
 
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 		    word += source.get();
+		// #define substitution: inject the define value into the source stream
+		if ( define_map.count(word) )
+		{
+		    std::string &val = define_map[word];
+		    if ( !val.empty() )
+		    {
+			source.pushback(val);
+			return getToken(); // re-tokenize the substituted text
+		    }
+		    // empty define — skip and get next token
+		    return getToken();
+		}
 		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
 		    return kmi->second->clone();
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
@@ -541,6 +672,190 @@ TokenBase *Program::_getToken()
     }
 
     return NULL;
+}
+
+// skip tokens in a false #ifdef/#ifndef/#if/#elif/#else block
+// handles nested #if/#ifdef/#ifndef blocks; returns when matching #else/#elif/#endif found
+TokenBase *Program::skipConditionalBlock()
+{
+    int depth = 0;
+    while ( source.good() && !source.eof() )
+    {
+	// skip to next '#' at start of a directive
+	char ch = source.get();
+	if ( ch == '\n' || ch == '\r' )
+	    continue;
+	if ( ch != '#' )
+	{
+	    // skip rest of line
+	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		source.get();
+	    continue;
+	}
+	// skip whitespace after #
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+	// read directive word
+	std::string dir;
+	while ( source.good() && !source.eof() && isalpha(source.peek()) )
+	    dir += source.get();
+	if ( dir == "ifdef" || dir == "ifndef" || dir == "if" )
+	{
+	    depth++;
+	    // consume rest of line
+	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		source.get();
+	}
+	else if ( dir == "endif" )
+	{
+	    // consume rest of line
+	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		source.get();
+	    if ( depth == 0 )
+	    {
+		// this #endif closes our block
+		ifdef_stack.pop();
+		ifdef_done_stack.pop();
+		return getToken();
+	    }
+	    depth--;
+	}
+	else if ( depth == 0 && dir == "else" )
+	{
+	    // consume rest of line
+	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		source.get();
+	    bool already_done = ifdef_done_stack.top();
+	    ifdef_stack.pop();
+	    bool active = !already_done;
+	    ifdef_stack.push(active);
+	    if ( active )
+		ifdef_done_stack.top() = true;
+	    if ( active )
+		return getToken();
+	    // still false, keep skipping
+	}
+	else if ( depth == 0 && dir == "elif" )
+	{
+	    // do NOT consume rest of line — evaluateIfCondition() needs to read the condition
+	    bool already_done = ifdef_done_stack.top();
+	    ifdef_stack.pop();
+	    if ( already_done )
+	    {
+		ifdef_stack.push(false);
+		// consume rest of line since we won't evaluate
+		while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		    source.get();
+		// keep skipping
+	    }
+	    else
+	    {
+		bool active = evaluateIfCondition();
+		ifdef_stack.push(active);
+		if ( active )
+		    ifdef_done_stack.top() = true;
+		DBG(std::cout << "#elif (in skip) -> " << (active ? "true" : "false") << std::endl);
+		if ( active )
+		    return getToken();
+		// still false, keep skipping
+	    }
+	}
+	else
+	{
+	    // consume rest of line for unknown directives inside skipped block
+	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		source.get();
+	}
+    }
+    Throw << "Unterminated conditional compilation block" << flush;
+    return NULL;
+}
+
+// evaluate #if condition: supports "defined(NAME)", "!defined(NAME)", integer constants
+bool Program::evaluateIfCondition()
+{
+    // skip whitespace
+    while ( source.peek() == ' ' || source.peek() == '\t' )
+	source.get();
+
+    bool negate = false;
+    if ( source.peek() == '!' )
+    {
+	source.get();
+	negate = true;
+	while ( source.peek() == ' ' || source.peek() == '\t' )
+	    source.get();
+    }
+
+    // check for "defined" keyword
+    if ( isalpha(source.peek()) )
+    {
+	std::string word;
+	while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+	    word += source.get();
+
+	if ( word == "defined" )
+	{
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
+	    bool has_paren = false;
+	    if ( source.peek() == '(' )
+	    {
+		source.get();
+		has_paren = true;
+		while ( source.peek() == ' ' || source.peek() == '\t' )
+		    source.get();
+	    }
+	    std::string name;
+	    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+		name += source.get();
+	    if ( has_paren )
+	    {
+		while ( source.peek() == ' ' || source.peek() == '\t' )
+		    source.get();
+		if ( source.peek() == ')' )
+		    source.get();
+	    }
+	    // consume rest of line
+	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		source.get();
+	    bool result = define_map.count(name) > 0;
+	    return negate ? !result : result;
+	}
+	// plain identifier — check if it's defined and non-zero
+	// consume rest of line
+	while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+	    source.get();
+	bool result = define_map.count(word) > 0;
+	if ( result )
+	{
+	    std::string &val = define_map[word];
+	    if ( !val.empty() )
+		result = (atoi(val.c_str()) != 0);
+	}
+	return negate ? !result : result;
+    }
+
+    // integer constant: #if 0, #if 1
+    if ( isdigit(source.peek()) )
+    {
+	int val = 0;
+	while ( source.good() && isdigit(source.peek()) )
+	{
+	    val *= 10;
+	    val += source.get() - '0';
+	}
+	// consume rest of line
+	while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+	    source.get();
+	bool result = (val != 0);
+	return negate ? !result : result;
+    }
+
+    // consume rest of line for anything we don't understand
+    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+	source.get();
+    return negate ? true : false;
 }
 
 TokenBase *Program::getToken()

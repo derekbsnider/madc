@@ -230,6 +230,7 @@ class Source
 {
 protected:
     std::stringstream _ss;
+    std::string _pushback;		// pushback buffer for #define substitution
     int _lf, _cr, _column;
     std::streampos _pos;
     std::string _fname;
@@ -240,12 +241,20 @@ public:
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { _ss << sb;  }
     void str(const std::string &s) { _ss.str(s); }
-    bool good() { return _ss.good(); }
-    bool eof()  { return _ss.eof(); }
+    void pushback(const std::string &s) { _pushback = s + _pushback; }
+    bool good() { return !_pushback.empty() || _ss.good(); }
+    bool eof()  { return _pushback.empty() && _ss.eof(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
     int column(){ return _column ? _column : 1; }
     int get()
     {
+	if ( !_pushback.empty() )
+	{
+	    int ch = (unsigned char)_pushback[0];
+	    _pushback.erase(0, 1);
+	    ++_column;
+	    return ch;
+	}
 	int ch = _ss.get();
 	if ( ch == -1 ) { return -1; }
 	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
@@ -255,6 +264,8 @@ public:
     }
     int peek()
     {
+	if ( !_pushback.empty() )
+	    return (unsigned char)_pushback[0];
 	return _ss.peek();
     }
     bool getline(std::string &s)
@@ -325,6 +336,8 @@ class Program
 {
 protected:
     TokenBase *_getToken();
+    TokenBase *skipConditionalBlock();
+    bool evaluateIfCondition();
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
@@ -349,6 +362,9 @@ public:
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
+    std::map<std::string, std::string> define_map;	// #define name value
+    std::stack<bool> ifdef_stack;	// conditional compilation state stack
+    std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::deque<TokenBase *> tokens;	// parsed token queue
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
