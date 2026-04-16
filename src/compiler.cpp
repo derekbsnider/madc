@@ -614,6 +614,22 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		}
 		else
 		{
+		    // promote sub-64-bit integers to 64-bit for variadic ABI
+		    if ( areg.isReg() && areg.as<BaseReg>().isGroup(RegGroup::kGp) )
+		    {
+			x86::Gp gp = areg.as<x86::Gp>();
+			if ( gp.size() < 8 )
+			{
+			    x86::Gp wide = pgm.cc.newGpq("promoted");
+			    if ( argrdp.second && argrdp.second->is_unsigned() )
+				pgm.cc.movzx(wide, gp);
+			    else
+				pgm.cc.movsx(wide, gp);
+			    params.push_back(wide);
+			    param_is_double.push_back(false);
+			    continue;
+			}
+		    }
 		    params.push_back(areg);
 		    param_is_double.push_back(false);
 		}

@@ -8,11 +8,11 @@ int main()
 	unsigned int ui = 42;
 	unsigned long ul = 123456789;
 	unsigned u = 99;
-	short s = 1234;
+	short s = -1234;
 	short int si = 5678;
 	long l = 999999999;
 	long int li = 888888888;
-	signed char sc = 50;
+	signed char sc = -50;
 
 	printf("unsigned char = %ld\n", uc);
 	printf("unsigned short = %ld\n", us);
