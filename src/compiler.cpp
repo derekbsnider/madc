@@ -3902,6 +3902,19 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
     return reg;
 }
 
+// (TYPE *) cast expression
+Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenCast::compile()"));
+    // set the result type to the cast target
+    regdp.second = cast_type;
+    // compile the inner expression — for pointer/integer casts, the value
+    // is the same (all 64-bit), so just compile and reinterpret the type
+    Operand &result = expr->compile(pgm, regdp);
+    regdp.second = cast_type; // ensure type is set after compile
+    return result;
+}
+
 // & address-of operator: emit LEA to get address of variable
 Operand &TokenAddrOf::compile(Program &pgm, regdefp_t &regdp)
 {

@@ -153,6 +153,18 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+// (TYPE *) cast expression — type annotation, no codegen for pointer casts
+class TokenCast: public TokenBase
+{
+public:
+    DataDef *cast_type;   // target type
+    TokenBase *expr;      // expression being cast
+    asmjit::Operand _operand;
+    TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 class TokenCallMethod: public TokenMember
 {
 public:

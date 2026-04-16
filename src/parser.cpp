@@ -1284,6 +1284,69 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
+		    // check for cast expression: (TYPE [*...]) expr
+		    TokenBase *peek1 = peekToken();
+		    DataDef *cast_dd = NULL;
+		    if ( peek1 )
+		    {
+			if ( peek1->type() == TokenType::ttDataType )
+			    cast_dd = &((TokenDataType *)peek1)->definition;
+			else if ( peek1->id() == TokenID::tkSTRUCT )
+			{
+			    // (struct Tag *) — peek further
+			    TokenBase *save1 = nextToken(); // consume 'struct'
+			    TokenBase *save2 = peekToken();
+			    if ( save2 && save2->type() == TokenType::ttIdentifier )
+			    {
+				std::string sname = ((TokenIdent *)save2)->str;
+				datadef_map_iter sdmi = struct_map.find(sname);
+				if ( sdmi != struct_map.end() )
+				{
+				    nextToken(); // consume tag name
+				    cast_dd = sdmi->second;
+				}
+				else
+				{
+				    pushToken(save1); // push 'struct' back
+				}
+			    }
+			    else
+				pushToken(save1);
+			}
+			else if ( peek1->type() == TokenType::ttIdentifier )
+			{
+			    std::string tname = ((TokenIdent *)peek1)->str;
+			    datatype_map_iter tdmi = datatype_map.find(tname);
+			    if ( tdmi != datatype_map.end() )
+				cast_dd = &tdmi->second->definition;
+			}
+		    }
+		    if ( cast_dd )
+		    {
+			// speculatively consume the type token (if not struct, which was already consumed)
+			if ( peekToken() && (peekToken()->type() == TokenType::ttDataType
+			||  (peekToken()->type() == TokenType::ttIdentifier && datatype_map.count(((TokenIdent *)peekToken())->str))) )
+			    nextToken();
+			// consume pointer stars
+			while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+			{
+			    nextToken();
+			    cast_dd = getPointerType(cast_dd);
+			}
+			// must have closing )
+			if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+			{
+			    nextToken(); // consume )
+			    // parse the expression being cast
+			    TokenBase *cast_expr_tb = nextToken();
+			    TokenBase *cast_expr = parseExpression(cast_expr_tb, true);
+			    exStack.push(new TokenCast(cast_dd, cast_expr));
+			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
+			    break;
+			}
+			// not a cast after all — fall through to grouping
+			// (this shouldn't happen in practice for valid C code)
+		    }
 		    ++brackets;
 		    DBG(cout << "Got (, pushing onto opStack" << endl);
 		    opStack.push(tb); // opStack.push(tb->clone());
@@ -1783,6 +1846,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 	    DBG(cout << "Hit ], end of subscript index" << endl);
 	    break; // stop without consuming: let the subscript handler consume ]
 	}
+	// in conditional mode, stop at ; without consuming it
+	// (needed for cast expressions: (TYPE *)expr; must not eat the ;)
+	if ( conditional && tb->id() == TokenID::tkSemi )
+	    break;
 	tb = nextToken();
     }
 

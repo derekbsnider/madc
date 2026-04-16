@@ -1,0 +1,42 @@
+#!/usr/bin/env madc
+// Test (TYPE *) cast expressions
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct point_data POINT_DATA;
+
+struct point_data {
+	int x;
+	int y;
+};
+
+int main()
+{
+	// cast calloc return to struct pointer
+	POINT_DATA *pt = (POINT_DATA *) calloc(1, sizeof(POINT_DATA));
+	pt->x = 42;
+	pt->y = 99;
+	printf("pt->x = %ld, pt->y = %ld\n", pt->x, pt->y);
+	free(pt);
+
+	// cast with struct keyword
+	struct point_data *p2 = (struct point_data *) calloc(1, sizeof(struct point_data));
+	p2->x = 10;
+	p2->y = 20;
+	printf("p2->x = %ld, p2->y = %ld\n", p2->x, p2->y);
+	free(p2);
+
+	// int cast
+	int x = (int) 3;
+	printf("(int) 3 = %ld\n", x);
+
+	// void pointer cast
+	void *raw = calloc(1, 16);
+	int *ip = (int *) raw;
+	printf("cast void* to int* ok\n");
+	free(raw);
+
+	printf("All cast tests passed!\n");
+	return 0;
+}
