@@ -1417,9 +1417,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			done = true;
 		    break;
 		}
-		// see if we need to convert TokenNeg to TokenSub
-		if ( tb->id() == TokenID::tkNeg && prevToken()
-		&&  (prevToken()->id() == TokenID::tkClBrk || prevToken()->id() == TokenID::tkClSqr || !prevToken()->is_operator()) )
+		// see if we need to convert TokenNeg to TokenSub (binary context)
+		if ( tb->id() == TokenID::tkNeg && isPostfixPosition() )
 		{
 		    DBG(std::cout << "parseExpression() converting TokenNeg to TokenSub, prevToken id: " << (int)prevToken()->id() << " prevToken->is_operator: " << (prevToken()->is_operator() ? "true" : "false") << std::endl);
 		    TokenSub *ts = new TokenSub();
@@ -1431,10 +1430,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    tb = ts;
 		}
 		// & address-of in unary position
-		if ( tb->id() == TokenID::tkBand
-		&&  (!prevToken() || (prevToken()->is_operator()
-		     && prevToken()->id() != TokenID::tkClBrk
-		     && prevToken()->id() != TokenID::tkClSqr)) )
+		if ( tb->id() == TokenID::tkBand && isUnaryPosition() )
 		{
 		    // unary & — address-of operator
 		    TokenBase *addr_tb = nextToken();
@@ -1451,12 +1447,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		if ( tb->id() == TokenID::tkDec || tb->id() == TokenID::tkInc )
 		{
 		    DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << (char)tb->get() << endl);
-		    // postfix if previous token was a value (non-operator, ), or ])
-		    bool is_postfix = prevToken()
-			&& (prevToken()->id() == TokenID::tkClBrk
-			||  prevToken()->id() == TokenID::tkClSqr
-			||  !prevToken()->is_operator());
-		    if ( is_postfix && !exStack.empty() )
+		    if ( isPostfixPosition() && !exStack.empty() )
 		    {
 			to = (TokenOperator *)tb;
 			to->left = exStack.top(); exStack.pop(); DBG(cout << "popped " << to->left->ival() << endl);

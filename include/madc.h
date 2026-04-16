@@ -462,6 +462,28 @@ public:
     inline TokenBase *peekToken() { if (tokens.empty()) return NULL; return tokens.front(); }
     inline TokenBase *prevToken() { return _prv_token; }
     inline void pushToken(TokenBase *t) { tokens.push_front(t); }
+
+    // helper: is prevToken in a position where the next operator would be unary?
+    // true when prevToken is NULL, ;, {, (, ,, =, or any operator except ) and ]
+    inline bool isUnaryPosition()
+    {
+	if ( !_prv_token ) return true;
+	TokenID id = _prv_token->id();
+	if ( id == TokenID::tkSemi || id == TokenID::tkOpBrc
+	||   id == TokenID::tkOpBrk || id == TokenID::tkComma
+	||   id == TokenID::tkAssign ) return true;
+	if ( _prv_token->is_operator()
+	&&   id != TokenID::tkClBrk && id != TokenID::tkClSqr ) return true;
+	return false;
+    }
+    // helper: is prevToken in a position where the next operator would be postfix?
+    // true when prevToken is ), ], or a non-operator (i.e. a value)
+    inline bool isPostfixPosition()
+    {
+	if ( !_prv_token ) return false;
+	TokenID id = _prv_token->id();
+	return id == TokenID::tkClBrk || id == TokenID::tkClSqr || !_prv_token->is_operator();
+    }
     inline TokenBase *nextToken()
     {
 	if ( tokens.empty() )
