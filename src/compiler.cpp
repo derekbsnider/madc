@@ -3086,7 +3086,13 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 //	regdp.second = tvl->var.type;
 	regdp.first = NULL;
 	regdp.second = NULL;
-	regdp.object = &lval;
+	// only pass ostream as object for functions that consume it (e.g. endl)
+	// otherwise the ostream gets injected as a hidden first arg to unrelated functions
+	if ( right->type() == TokenType::ttCallFunc
+	&&   dynamic_cast<TokenCallFunc *>(right)->returns()->has_ostream() )
+	    regdp.object = &lval;
+	else
+	    regdp.object = NULL;
 	DBG(cout << "TokenBSL::compile() calling right->compile() on " << (int)right->type() << endl);
 	/* Operand &rval =*/ right->compile(pgm, regdp); // compile right side
 

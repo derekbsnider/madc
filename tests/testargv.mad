@@ -7,7 +7,7 @@ int main(int argc, char **argv)
 
     int i;
     for ( i = 0; i < argc; i++ )
-        puts(get_argv(argv, i));
+        cout << "argv[" << i << "]: " << get_argv(argv, i) << endl;
 
     return 0;
 }
