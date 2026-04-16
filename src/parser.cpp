@@ -1967,6 +1967,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 	    DBG(cout << "Hit ], end of subscript index" << endl);
 	    break; // stop without consuming: let the subscript handler consume ]
 	}
+	if ( tb->id() == TokenID::tkClBrc )
+	{
+	    DBG(cout << "Hit }, end of expression (initializer or block terminator)" << endl);
+	    break; // stop without consuming: caller handles }
+	}
 	// in conditional mode, stop at ; without consuming it
 	// (needed for cast expressions: (TYPE *)expr; must not eat the ;)
 	if ( conditional && tb->id() == TokenID::tkSemi )
@@ -3900,21 +3905,31 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	return td;
     }
 
-    // Check for C fixed-size array declaration: type id[N][M]...
+    // Check for C fixed-size array declaration: type id[N][M]... or type id[] = {...}
     std::vector<uint32_t> arr_dims;
     while ( nt && nt->id() == TokenID::tkOpSqr )
     {
 	nextToken(); // consume [
-	TokenBase *sz = nextToken();
-	if ( !sz || sz->type() != TokenType::ttInteger )
-	    Throw(sz ? sz : tb) << "Fixed-size array dimension must be an integer constant" << flush;
-	int64_t n = ((TokenInt *)sz)->get();
-	if ( n <= 0 )
-	    Throw(sz) << "Fixed-size array dimension must be positive" << flush;
-	arr_dims.push_back((uint32_t)n);
-	TokenBase *cl = nextToken();
-	if ( !cl || cl->id() != TokenID::tkClSqr )
-	    Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
+	TokenBase *peek = peekToken();
+	if ( peek && peek->id() == TokenID::tkClSqr )
+	{
+	    // [] — size to be inferred from initializer
+	    nextToken(); // consume ]
+	    arr_dims.push_back(0);
+	}
+	else
+	{
+	    TokenBase *sz = nextToken();
+	    if ( !sz || sz->type() != TokenType::ttInteger )
+		Throw(sz ? sz : tb) << "Fixed-size array dimension must be an integer constant" << flush;
+	    int64_t n = ((TokenInt *)sz)->get();
+	    if ( n <= 0 )
+		Throw(sz) << "Fixed-size array dimension must be positive" << flush;
+	    arr_dims.push_back((uint32_t)n);
+	    TokenBase *cl = nextToken();
+	    if ( !cl || cl->id() != TokenID::tkClSqr )
+		Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
+	}
 	nt = peekToken();
 	if ( !nt )
 	    Throw(tb) << "Unexpected end of data in array declaration" << flush;
@@ -3923,6 +3938,46 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )
     {
+	// parse brace-enclosed initializer list for fixed-size arrays
+	std::vector<TokenBase *> init_list;
+	if ( nt->id() == TokenID::tkAssign && !arr_dims.empty() )
+	{
+	    // peek past '=' to see if we have a {
+	    nextToken(); // consume '='
+	    TokenBase *openbrace = peekToken();
+	    if ( !openbrace || openbrace->id() != TokenID::tkOpBrc )
+		Throw(nt) << "Expected '{' for array initializer" << flush;
+	    nextToken(); // consume '{'
+	    // parse comma-separated expressions up to '}'
+	    while ( true )
+	    {
+		TokenBase *look = peekToken();
+		if ( !look )
+		    Throw(tb) << "Unexpected end of data in array initializer" << flush;
+		if ( look->id() == TokenID::tkClBrc )
+		{
+		    nextToken(); // consume '}'
+		    break;
+		}
+		TokenBase *expr = parseExpression(nextToken());
+		init_list.push_back(expr);
+		TokenBase *sep = peekToken();
+		if ( sep && sep->id() == TokenID::tkComma )
+		    nextToken(); // consume ','
+	    }
+	    // Infer size for dims[0] == 0 (the first empty [])
+	    if ( arr_dims[0] == 0 )
+		arr_dims[0] = (uint32_t)init_list.size();
+	    if ( init_list.size() > (size_t)arr_dims[0] )
+		Throw(tb) << "Too many initializers for array (expected " << arr_dims[0] << ")" << flush;
+	}
+	else if ( !arr_dims.empty() )
+	{
+	    for ( auto d : arr_dims )
+		if ( d == 0 )
+		    Throw(nt) << "Array size missing and no initializer" << flush;
+	}
+
 	bool alloc = (!code || gotstatic) ? true : false;
 	uint32_t elem_count = 1;
 	for ( auto d : arr_dims ) elem_count *= d;
@@ -3939,11 +3994,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	td->file = tb->file;
 	td->line = tb->line;
 	td->column = tb->column;
+	td->init_list = init_list;
 
-	if ( nt->id() == TokenID::tkAssign )
+	if ( nt->id() == TokenID::tkAssign && arr_dims.empty() )
 	{
-	    if ( !arr_dims.empty() )
-		Throw(nt) << "Fixed-size array initializers not yet supported" << flush;
 	    DBG(std::cout << "parseDeclaration() calling td->initialize = parseExpression" << std::endl);
 	    td->initialize = parseExpression(new TokenVar(*var));
 	}

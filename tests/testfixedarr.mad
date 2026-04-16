@@ -49,5 +49,19 @@ int main()
     printf("cube[1][2][3] = %ld\n", cube[1][2][3]);   // 999
     printf("cube[0][0][0] = %ld\n", cube[0][0][0]);   // 1
 
+    // Initializer lists
+    int v[4] = { 100, 200, 300, 400 };
+    printf("v[0]=%ld v[3]=%ld\n", v[0], v[3]);         // 100 400
+
+    // Size inference from initializer
+    int primes[] = { 2, 3, 5, 7, 11 };
+    int psum = 0;
+    for ( int i = 0; i < 5; i++ ) psum += primes[i];
+    printf("psum = %ld\n", psum);                      // 28
+
+    // Partial init, rest zero-filled
+    int partial[5] = { 9, 99 };
+    printf("partial[0]=%ld partial[4]=%ld\n", partial[0], partial[4]); // 9 0
+
     return 0;
 }

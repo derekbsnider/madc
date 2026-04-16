@@ -1231,6 +1231,49 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     if ( initialize && !(var.flags & vfSTATIC) )
 	initialize->compile(pgm, regdp);
 
+    // brace-enclosed initializer for fixed-size arrays: arr[N] = { v0, v1, ... }
+    if ( !init_list.empty() && var.is_fixed_array() )
+    {
+	DBG(pgm.cc.comment("TokenDecl fixed-array init_list"));
+	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
+	x86::Gp base_reg = pgm.cc.newIntPtr((var.name + ".init_base").c_str());
+	pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+
+	size_t elem_size = var.type->size ? var.type->size : 8;
+	for ( size_t i = 0; i < init_list.size(); ++i )
+	{
+	    regdefp_t it_rdp = {nullptr, nullptr, nullptr};
+	    Operand &val_op = init_list[i]->compile(pgm, it_rdp);
+	    x86::Mem slot = x86::ptr(base_reg, (int32_t)(i * elem_size), (uint32_t)elem_size);
+	    if ( val_op.isImm() )
+		pgm.cc.mov(slot, val_op.as<Imm>());
+	    else if ( val_op.isReg() )
+	    {
+		x86::Gp vgp = val_op.as<x86::Gp>();
+		if      ( elem_size == 8 ) pgm.cc.mov(slot, vgp.r64());
+		else if ( elem_size == 4 ) pgm.cc.mov(slot, vgp.r32());
+		else if ( elem_size == 2 ) pgm.cc.mov(slot, vgp.r16());
+		else                       pgm.cc.mov(slot, vgp.r8());
+	    }
+	    else if ( val_op.isMem() )
+	    {
+		x86::Gp tmp = pgm.cc.newGpq("_init_tmp");
+		pgm.cc.mov(tmp, val_op.as<x86::Mem>());
+		if      ( elem_size == 8 ) pgm.cc.mov(slot, tmp.r64());
+		else if ( elem_size == 4 ) pgm.cc.mov(slot, tmp.r32());
+		else if ( elem_size == 2 ) pgm.cc.mov(slot, tmp.r16());
+		else                       pgm.cc.mov(slot, tmp.r8());
+	    }
+	}
+	// zero-fill remaining slots (C initializer semantics)
+	uint32_t total = var.total_elements();
+	for ( size_t i = init_list.size(); i < total; ++i )
+	{
+	    x86::Mem slot = x86::ptr(base_reg, (int32_t)(i * elem_size), (uint32_t)elem_size);
+	    pgm.cc.mov(slot, imm(0));
+	}
+    }
+
     DBG(cout << "TokenDecl::compile(" << var.name << ") END" << endl);
 
     return _reg;

@@ -112,6 +112,7 @@ class TokenDecl: public TokenVar
 {
 public:
     TokenBase *initialize;
+    std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
