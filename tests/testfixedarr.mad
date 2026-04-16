@@ -63,5 +63,14 @@ int main()
     int partial[5] = { 9, 99 };
     printf("partial[0]=%ld partial[4]=%ld\n", partial[0], partial[4]); // 9 0
 
+    // String literal init for char arrays
+    char msg[] = "hello";
+    printf("msg = [%s]\n", msg);                    // hello
+    printf("msg[0]=%ld msg[5]=%ld\n", msg[0], msg[5]); // 104 0
+
+    char padded[10] = "hi";
+    printf("padded = [%s]\n", padded);              // hi
+    printf("padded[2]=%ld\n", padded[2]);           // 0
+
     return 0;
 }

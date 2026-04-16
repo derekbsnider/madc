@@ -3942,11 +3942,26 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	std::vector<TokenBase *> init_list;
 	if ( nt->id() == TokenID::tkAssign && !arr_dims.empty() )
 	{
-	    // peek past '=' to see if we have a {
+	    // peek past '=' to see if we have { (brace list) or "..." (string lit for char arr)
 	    nextToken(); // consume '='
-	    TokenBase *openbrace = peekToken();
-	    if ( !openbrace || openbrace->id() != TokenID::tkOpBrc )
-		Throw(nt) << "Expected '{' for array initializer" << flush;
+	    TokenBase *peek0 = peekToken();
+	    if ( !peek0 )
+		Throw(nt) << "Expected initializer after '='" << flush;
+
+	    // String-literal char-array init: char buf[] = "hello";
+	    if ( peek0->type() == TokenType::ttString
+	      && decl_type == &ddCHAR && arr_dims.size() == 1 )
+	    {
+		TokenBase *strtok = nextToken(); // consume the string literal
+		const std::string &s = ((TokenStr *)strtok)->str;
+		for ( char c : s )
+		    init_list.push_back(new TokenInt((int64_t)(unsigned char)c));
+		init_list.push_back(new TokenInt(0)); // null terminator
+	    }
+	    else
+	    {
+	    if ( peek0->id() != TokenID::tkOpBrc )
+		Throw(nt) << "Expected '{' or string literal for array initializer" << flush;
 	    nextToken(); // consume '{'
 	    // parse comma-separated expressions up to '}'
 	    while ( true )
@@ -3964,6 +3979,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		TokenBase *sep = peekToken();
 		if ( sep && sep->id() == TokenID::tkComma )
 		    nextToken(); // consume ','
+	    }
 	    }
 	    // Infer size for dims[0] == 0 (the first empty [])
 	    if ( arr_dims[0] == 0 )
