@@ -1629,17 +1629,35 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 #else
 		    if ( exStack.empty() )
 			Throw(tb) << "expected expression" << flush;
-		    if ( exStack.top()->type() != TokenType::ttVariable )
+		    // Accept both TokenVar and TokenMember as LHS for dot access
+		    // (e.g. ch->desc.buf — the LHS ch->desc is a TokenMember)
+		    TokenBase *lhs_dot = exStack.top();
+		    if ( lhs_dot->type() != TokenType::ttVariable && lhs_dot->type() != TokenType::ttMember )
 			Throw(tb) << "member reference is not a structure or union" << flush;
-		    TokenVar *tv = dynamic_cast<TokenVar *>(exStack.top());
-		    if ( !tv->var.type->is_struct() && !tv->var.type->is_object() )
+		    Variable *tv_var;
+		    DataDef  *struct_type;
+		    if ( lhs_dot->type() == TokenType::ttVariable )
+		    {
+			TokenVar *tv = dynamic_cast<TokenVar *>(lhs_dot);
+			tv_var      = &tv->var;
+			struct_type =  tv->var.type;
+		    }
+		    else
+		    {
+			TokenMember *tm = dynamic_cast<TokenMember *>(lhs_dot);
+			tv_var      = &tm->var;
+			struct_type =  tm->var.type;
+		    }
+		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    var = NULL;
 		    string id = ((TokenIdent *)tb)->str;
-		    if ( tv->var.type->is_object() && (var=((DataDefCLASS *)tv->var.type)->findMethod(id)) )
+		    if ( struct_type->is_object() && (var=((DataDefCLASS *)struct_type)->findMethod(id)) )
 		    {
+			if ( lhs_dot->type() != TokenType::ttVariable )
+			    Throw(tb) << "chained method call not yet supported" << flush;
+			TokenVar *tv = dynamic_cast<TokenVar *>(lhs_dot);
 			// cout << "Found " << tv->var.name << "::" << var->name << endl;
-			// Throw(tb) << "parseExpression() found method " << tv->var.name << "::" << var->name << flush;
 			TokenCallMethod *tc = new TokenCallMethod(tv->var, *var);
 			tb = nextToken();
 			tc->line = tb->line;
@@ -1667,19 +1685,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			break;
 		    }
 		    // get offset
-		    ssize_t ofs = ((DataDefSTRUCT *)tv->var.type)->m_offset(id);
+		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
 		    if ( ofs == -1 )
 			Throw(tb) << "Unidentified member" << flush;
-		    DataDef *mtype = ((DataDefSTRUCT *)tv->var.type)->m_type(id);
+		    DataDef *mtype = ((DataDefSTRUCT *)struct_type)->m_type(id);
 		    // create new variable
 		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = tv->var.flags;
-		    if ( tv->var.data )
-			var->data = (void *)((char *)tv->var.data + ofs);
-		    // remove object TokenVar from exStack
+		    var->flags = tv_var->flags;
+		    if ( tv_var->data )
+			var->data = (void *)((char *)tv_var->data + ofs);
+		    // remove LHS from exStack
 		    exStack.pop();
-		    // replace with TokenMember
-		    exStack.push(new TokenMember(tv->var, *var, ofs));
+		    // replace with TokenMember — pass parent_expr when LHS was a TokenMember
+		    if ( lhs_dot->type() == TokenType::ttMember )
+			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
+		    else
+			exStack.push(new TokenMember(*tv_var, *var, ofs));
 		    // remove TokenDot from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
 			opStack.pop();
@@ -1735,8 +1756,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 
 		    // remove LHS from exStack
 		    exStack.pop();
-		    // replace with TokenMember (operand path handles [gp + offset])
-		    exStack.push(new TokenMember(*obj_var, *var, ofs));
+		    // for chained -> (lhs was a TokenMember), pass it as parent_expr so
+		    // operand() can compile the intermediate pointer at codegen time
+		    if ( lhs->type() == TokenType::ttMember )
+			exStack.push(new TokenMember(*obj_var, *var, ofs, lhs));
+		    else
+			exStack.push(new TokenMember(*obj_var, *var, ofs));
 		    // remove TokenDeRef from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 			opStack.pop();

@@ -134,7 +134,11 @@ class TokenMember: public TokenCallFunc
 public:
     Variable &object;
     size_t offset;
-    TokenMember(Variable &o, Variable &m, size_t ofs) : TokenCallFunc(m), object(o), offset(ofs) { _datatype = m.type; }
+    TokenBase *parent_expr;  // non-null for chained -> (e.g. ch->in_room->name)
+    TokenMember(Variable &o, Variable &m, size_t ofs)
+        : TokenCallFunc(m), object(o), offset(ofs), parent_expr(nullptr) { _datatype = m.type; }
+    TokenMember(Variable &o, Variable &m, size_t ofs, TokenBase *parent)
+        : TokenCallFunc(m), object(o), offset(ofs), parent_expr(parent) { _datatype = m.type; }
     virtual TokenType type() const { return TokenType::ttMember; }
     virtual bool is_real() { return _datatype->is_real(); }
     virtual void putreg(Program &);

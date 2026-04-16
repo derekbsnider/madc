@@ -2114,6 +2114,75 @@ void TokenVar::putreg(Program &pgm)
 
 Operand &TokenMember::operand(Program &pgm)
 {
+    if ( parent_expr != nullptr )
+    {
+	// Chained member access (e.g. ch->in_room->name or ch->desc.buf).
+	// parent_expr->operand() gives us the parent member's operand.
+	Operand &parent_op = parent_expr->operand(pgm);
+
+	if ( object.type->is_pointer() )
+	{
+	    // Arrow chain: parent member holds a POINTER VALUE — load it into a Gp.
+	    // e.g. ch->in_room->name: parent_op = Mem [ch + in_room_offset],
+	    //      load that pointer, then compute [gp + name_offset].
+	    x86::Gp obj_gp = pgm.cc.newIntPtr(object.name.c_str());
+	    DBG(pgm.cc.comment("TokenMember::operand() chained -> load intermediate ptr"));
+	    if ( parent_op.isMem() )
+		pgm.cc.mov(obj_gp, parent_op.as<x86::Mem>());
+	    else
+		pgm.cc.mov(obj_gp, parent_op.as<x86::Gp>());
+
+	    if ( var.type->is_numeric() )
+		_operand = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
+	    else
+	    {
+		x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+		DBG(pgm.cc.comment("TokenMember::operand() chained -> lea non-numeric member"));
+		pgm.cc.lea(addr_reg, x86::ptr(obj_gp, (int32_t)offset));
+		_operand = addr_reg;
+	    }
+	}
+	else
+	{
+	    // Dot chain: parent member is a STRUCT VALUE (not a pointer).
+	    // The parent operand is either:
+	    //   Gp  — parent LEA'd the address of the struct (typical: non-numeric structs)
+	    //   Mem — parent returned a stack Mem (rare fallback)
+	    if ( parent_op.isReg() )
+	    {
+		// e.g. ch->desc.buf: parent returned LEA of desc → use [gp + buf_offset]
+		x86::Gp base_gp = parent_op.as<x86::Gp>();
+		if ( var.type->is_numeric() )
+		    _operand = x86::ptr(base_gp, (int32_t)offset, (uint32_t)var.type->size);
+		else
+		{
+		    x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+		    DBG(pgm.cc.comment("TokenMember::operand() chained . lea from gp base"));
+		    pgm.cc.lea(addr_reg, x86::ptr(base_gp, (int32_t)offset));
+		    _operand = addr_reg;
+		}
+	    }
+	    else
+	    {
+		// Mem-based fallback: addOffset to existing stack displacement
+		x86::Mem member_mem = parent_op.as<x86::Mem>();
+		member_mem.setSize(var.type->size);
+		member_mem.addOffset((int64_t)offset);
+
+		if ( var.type->is_numeric() )
+		    _operand = member_mem;
+		else
+		{
+		    x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+		    DBG(pgm.cc.comment("TokenMember::operand() chained . lea non-numeric member"));
+		    pgm.cc.lea(addr_reg, member_mem);
+		    _operand = addr_reg;
+		}
+	    }
+	}
+	return _operand;
+    }
+
     Operand &_obj = pgm.tkFunction->voperand(pgm, &object); // make sure the parent object is all set up
 
     if ( _obj.isMem() )
@@ -2140,7 +2209,7 @@ Operand &TokenMember::operand(Program &pgm)
     }
     else if ( _obj.isReg() && _obj.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
-	// Object is a pointer in a Gp register (e.g. __this in class methods)
+	// Object is a pointer in a Gp register (e.g. __this in class methods, or -> access)
 	// Access member at [gp + offset]
 	x86::Gp obj_gp = _obj.as<x86::Gp>();
 	if ( var.type->is_numeric() )
