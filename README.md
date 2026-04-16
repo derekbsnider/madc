@@ -19,6 +19,26 @@ bin/madc tests/testint.mad
 bin/madc -v tests/testint.mad
 ```
 
+## Multi-file Projects
+
+Single-file programs are the default. For larger projects, the convention is
+a top-level file named after the application (e.g. `smaug.mad`, `mygame.mad`)
+that `#include`s the rest in the right order, with `int main()` last:
+
+```c
+// smaug.mad
+#include "config.mad"
+#include "mud.mad"
+#include "tables.mad"
+#include "comm.mad"
+// ... other source files ...
+#include "main.mad"   // contains int main()
+```
+
+Run the whole project with `bin/madc smaug.mad`. `#include "file.mad"` works
+at the lexer level — filenames resolve relative to the including file, and
+nested includes are supported.
+
 ---
 
 ## Language Features
