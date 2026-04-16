@@ -2,63 +2,48 @@
 
 ## High Priority
 
-### Embedded POSIX Headers
+### SMAUG Phase A — C Pointer and Type System
 
-Infrastructure is complete: embedded headers baked into binary, `#include <name>` checks
-embedded map first, lazy symbol registration defers `addGlobal`/`addFunction` until first use,
-dlsym fallback resolves unqualified libc/libm calls automatically, `RTLD_GLOBAL` on `#load`
-makes loaded library symbols globally visible.
+These are the top blockers for SMAUG 1.8 compatibility (see `docs/SMAUG_requirements.md`)
+and also the most impactful gaps for general C compatibility. Each item fixes a fundamental
+parse/compile failure that affects virtually every real C program.
 
-**Implemented headers:**
-- `<iostream>` — `cout`, `cin`, `cerr`, `endl` (lazy registration)
-- `<math.h>` — `M_PI`, `M_E`, `M_SQRT2`, `INFINITY`, auto-loads libm; `sqrt()`, `sin()`,
-  `cos()`, `pow()`, `floor()`, `ceil()`, `fabs()`, `log()` etc. via dlsym
-- `<stdio.h>` — `EOF`, `SEEK_SET`/`CUR`/`END`, `BUFSIZ`, `NULL`; `printf()`, `sprintf()`,
-  `snprintf()`, `fprintf()` via dlsym
+- **`char *` pointer declarations** — `char *str = "test";` doesn't parse. Parser sees `char`
+  as a type token and `*` as multiply. Fix `parseDeclaration` to handle pointer declarator
+  syntax. Affects every string field in every C struct.
 
-**Next headers (constants only — functions via dlsym):**
-- `<stdlib.h>` — `EXIT_SUCCESS`, `EXIT_FAILURE`, `RAND_MAX`
-- `<string.h>` — (functions only: `strlen`, `strcmp`, `strncmp`, `strcpy`, `strcat`, `memcpy`,
-  `memset`, `memcmp` — all via dlsym)
-- `<unistd.h>` — `STDIN_FILENO`, `STDOUT_FILENO`, `STDERR_FILENO`, `R_OK`, `W_OK`, `X_OK`,
-  `F_OK`; typedefs `pid_t`→int, `uid_t`→int, `gid_t`→int, `off_t`→int64, `size_t`→uint64,
-  `ssize_t`→int64 (via `#define`); functions `read`, `write`, `close`, `lseek`, `fork`,
-  `execvp`, `pipe`, `dup2`, `getcwd`, `chdir`, `unlink`, `rmdir`, `access` via dlsym
-- `<fcntl.h>` — `O_RDONLY` (0), `O_WRONLY` (1), `O_RDWR` (2), `O_CREAT` (64), `O_EXCL` (128),
-  `O_TRUNC` (512), `O_APPEND` (1024), `O_NONBLOCK` (2048); `open` via dlsym
-- `<signal.h>` — `SIGHUP` (1), `SIGINT` (2), `SIGQUIT` (3), `SIGKILL` (9), `SIGTERM` (15),
-  `SIGCHLD` (17), `SIGCONT` (18), `SIGSTOP` (19), `SIGUSR1` (10), `SIGUSR2` (12),
-  `SIG_DFL` (0), `SIG_IGN` (1); `kill`, `signal`, `raise` via dlsym
-- `<errno.h>` — `EPERM` (1), `ENOENT` (2), `ESRCH` (3), `EINTR` (4), `EIO` (5),
-  `EACCES` (13), `EEXIST` (17), `ENOTDIR` (20), `EISDIR` (21), `EINVAL` (22),
-  `ENOMEM` (12), `ENOSPC` (28), `EPIPE` (32); `strerror`, `perror` via dlsym
-- `<time.h>` — `CLOCKS_PER_SEC`, `CLOCK_REALTIME` (0), `CLOCK_MONOTONIC` (1); typedefs
-  `time_t`→int64, `clock_t`→int64; `time`, `clock`, `difftime`, `strftime` via dlsym
-- `<limits.h>` — `INT_MAX`, `INT_MIN`, `LONG_MAX`, `LONG_MIN`, `PATH_MAX` (4096)
-- `<dirent.h>` — `DT_REG` (8), `DT_DIR` (4), `DT_LNK` (10); `opendir`, `readdir`,
-  `closedir` via dlsym (struct access deferred)
-- `<sys/wait.h>` — `WNOHANG` (1), `WUNTRACED` (2); `wait`, `waitpid` via dlsym
-- `<sys/stat.h>` — `S_IRUSR` (0400), `S_IWUSR` (0200), `S_IXUSR` (0100), `S_IRGRP` (040),
-  `S_IROTH` (04), `S_ISUID` (04000), `S_ISGID` (02000); `stat`, `fstat`, `chmod`, `mkdir`
-  via dlsym (struct access deferred)
+- **`->` struct pointer member access** — `node->next`, `ch->name` style access. Required for
+  any linked-list traversal. Parse as `deref + member` or as a dedicated binary operator.
 
-**Struct-dependent headers (require struct interop — deferred):**
-- `struct tm` for `localtime`/`gmtime`/`mktime`/`strftime` (time.h)
-- `struct stat` for `stat`/`fstat` result access (sys/stat.h)
-- `struct dirent` for `readdir` result access (dirent.h)
-- `struct sockaddr_in`/`struct in_addr` for networking (netinet/in.h)
+- **`(TYPE *)` explicit cast expressions** — `(CHAR_DATA *) calloc(...)`, `(int *) ptr`. Cast
+  syntax with a type name inside parentheses. Currently ambiguous with grouped expressions.
+
+- **`&` address-of operator in expressions** — `&sa`, `&buf`, `sizeof(&x)`. Required for any
+  call to socket functions, `stat`, `memset`, etc. that take pointer arguments.
+
+- **Forward typedef struct declarations** — `typedef struct char_data CHAR_DATA;` followed later
+  by `struct char_data { ... };`. Parser must accept forward references to undefined structs.
+
+### SMAUG Phase B — Macros
+
+- **Function-like macros** — `#define NAME(args) body` with parameter substitution.
+  SMAUG's `CREATE`/`DISPOSE`/`KEY` macros cover every allocation and file-read. Also needed
+  for `FD_SET`, `FD_ZERO`, `FD_ISSET` (from `<sys/select.h>`). High leverage for all C code.
+
+- **Multi-line `#define` with `\` continuation** — `#define MACRO(x) \` spanning multiple
+  source lines. Required by SMAUG's macro definitions in `mud.h`.
+
+### SMAUG Phase D — I/O Infrastructure
+
+- **`<stdarg.h>` / `va_list`** — `va_list`, `va_start`, `va_end`, `va_arg`. Used in
+  `comm.c`, `db.c`, `misc.c` for `ch_printf`, `log_string`, `send_to_char`. Without this,
+  all formatted output functions fail.
 
 ### Language Completeness
-
-- **Function-like macros** — `#define NAME(args) expr` (parameterized macros)
 
 - **`cout << [const char*]` in chained expressions** — `cout << func_returning_cstr() << endl`
   crashes when the cstr function is inside a convergent BSL chain. Single `cout << cstr` works.
   Root cause likely in BSL convergence re-entering compile with stale regdp.
-
-- **`char *` variable declarations** — `char *str = "test";` doesn't parse. The parser sees
-  `char` as a type token and `*` as multiply. Need to handle pointer declaration syntax in
-  `parseDeclaration`.
 
 ### printf improvements
 
@@ -67,6 +52,17 @@ makes loaded library symbols globally visible.
   number of SSE registers used for variadic functions — this may need special handling.
 
 ## Medium Priority
+
+### SMAUG Phase C — Data Structures
+
+- **2D arrays** — `int board[8][8]`, `char inbuf[MAX_INBUF_SIZE]`. Parser needs to handle
+  multi-dimensional array declaration and indexing `arr[i][j]`.
+
+- **Static initializer tables** — `static struct { ... } table[] = { { "name", func }, ... };`
+  used heavily in `const.c` and `tables.c`. Requires aggregate initialization syntax.
+
+- **`unsigned` type keywords** — `unsigned char`, `unsigned int`, `unsigned short`, `unsigned long`.
+  Also `long int`, `short int` explicit type combos. Used in `sh_int`, `bool` typedef contexts.
 
 ### Language Completeness
 
@@ -84,11 +80,22 @@ makes loaded library symbols globally visible.
 
 ## Deferred / Future
 
+- **Struct interop for C functions** — `struct tm` for `localtime`/`strftime`, `struct stat`
+  for `stat`/`fstat`, `struct dirent` for `readdir`, `struct sockaddr_in` for networking.
+  Headers are embedded with all constants; struct field access is the remaining gap.
+
+- **`fd_set` + FD_SET/FD_ZERO/FD_ISSET** — `fd_set` is a fixed-size bit array struct.
+  Either model as a struct with known layout, or implement FD_* as built-in functions.
+  Needed for `select()` in SMAUG's main network loop.
+
+- **`select()` end-to-end** — `select` is available via dlsym; needs `fd_set` struct interop
+  and `struct timeval` to be usable (both in `sys/select.h` and `sys/time.h`).
+
+- **`gettimeofday()` returning struct timeval** — Used in SMAUG's main loop. Needs struct interop.
+
 - **ARM64 support** — asmjit supports ARM64 backends. Currently x86-64 Linux only.
 
 - **Phase 4: `libmadc.so` embedding API** — Decouple static globals, create public C API.
-
-- **Networking** — `socket`, `bind`, `connect`, `listen`, `accept`, `send`, `recv`.
 
 - **Operator overloading** — `<<`, `+`, `-`, `*`, `/` for user-defined types.
 
@@ -114,7 +121,7 @@ makes loaded library symbols globally visible.
 - ~~Hex integer literals~~ — `0xFF`, `0xDEAD`, `0X1A` etc.
 - ~~Postfix increment/decrement~~ — `x++`, `x--` with correct old-value-return semantics
 - ~~C preprocessor directives~~ — `#define`, `#undef`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`
-- ~~Embedded header infrastructure~~ — `#include <name>` routes to embedded headers baked into binary
+- ~~Embedded header infrastructure~~ — `#include <name>` routes to embedded headers baked into binary; subdirectory support via `find` + relative-path keys
 - ~~dlsym fallback for libc~~ — unresolved function calls try `dlsym(RTLD_DEFAULT)` before erroring
 - ~~Variadic dlsym calling convention~~ — dedicated compile path handles int, double, string args
 - ~~`#include <iostream>`~~ — cout/cin/cerr/endl gated behind include (lazy registration)
@@ -124,3 +131,7 @@ makes loaded library symbols globally visible.
 - ~~Command line arguments~~ — `int main(int argc, char **argv)` with `get_argv(argv, i)`
 - ~~`cout << func()` crash fix~~ — BSL only injects ostream for ostream-consuming functions
 - ~~`RTLD_GLOBAL` for `#load`~~ — loaded library symbols visible via dlsym without namespace prefix
+- ~~31 additional embedded POSIX/libc headers~~ — stdlib.h, string.h, limits.h, errno.h, fcntl.h, signal.h, unistd.h, time.h, dirent.h, ctype.h, stdint.h, dlfcn.h, glob.h, fnmatch.h, pwd.h, grp.h, locale.h, poll.h, syslog.h, termios.h, pthread.h, netdb.h, sys/socket.h, netinet/in.h, arpa/inet.h, sys/types.h, sys/stat.h, sys/wait.h, sys/mman.h, sys/select.h, sys/time.h, sys/ipc.h, sys/shm.h, sys/resource.h, sys/un.h (c971eb1, ea06f5a)
+- ~~int64_t integer literal storage~~ — lexer decimal accumulator widened to int64_t; TokenBase._token widened to int64_t; no overflow for values ≥ 2^31 (e.g. INT_MIN, UINT32_MAX) (c971eb1)
+- ~~safeneg truncation fix~~ — removed spurious `movsx(op, op.r8())` after `cc.neg()`; negated values ≥ 128 now correct (c971eb1)
+- ~~SMAUG 1.8 requirements analysis~~ — gap analysis, severity table, 5-phase roadmap in docs/SMAUG_requirements.md (bd9844c)

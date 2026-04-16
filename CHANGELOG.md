@@ -1,5 +1,56 @@
 # Changelog
 
+## [Unreleased] — SMAUG Goal + Full POSIX Header Coverage (2026-04-16)
+
+### Added — 31 Additional Embedded POSIX/libc Headers (c971eb1, ea06f5a)
+
+38 embedded headers total (up from 3). All standard POSIX/libc headers madc programs
+are likely to use are now covered. Each header provides constants via `#define` and
+type aliases via `#define`; functions are available via the existing dlsym fallback.
+
+**Batch 1** (c971eb1) — `<stdlib.h>`, `<string.h>`, `<limits.h>`, `<errno.h>`, `<fcntl.h>`,
+`<signal.h>`, `<unistd.h>`, `<time.h>`, `<dirent.h>`, `<sys/wait.h>`, `<sys/stat.h>`
+
+**Batch 2** (ea06f5a) — `<sys/socket.h>`, `<netinet/in.h>`, `<arpa/inet.h>`, `<netdb.h>`,
+`<sys/un.h>`, `<poll.h>`, `<sys/select.h>`, `<sys/time.h>`, `<sys/mman.h>`, `<sys/ipc.h>`,
+`<sys/shm.h>`, `<sys/resource.h>`, `<sys/types.h>`, `<pthread.h>`, `<termios.h>`,
+`<syslog.h>`, `<dlfcn.h>`, `<ctype.h>`, `<stdint.h>`, `<locale.h>`, `<glob.h>`,
+`<fnmatch.h>`, `<pwd.h>`, `<grp.h>`
+
+- `gen_embedded_headers.sh` updated to use `find` + relative paths for subdirectory support
+  (`sys/wait.h`, `sys/stat.h`, `netinet/in.h`, etc. all key correctly)
+- Type aliases (`pid_t`, `time_t`, `size_t`, etc.) implemented via `#define` — substituted
+  through the existing lexer pushback mechanism; no lazy registration needed
+
+### Added — SMAUG 1.8 Compatibility Goal (bd9844c)
+
+- **Long-term goal established:** run SMAUG 1.8 MUD (~158k LOC, C89) in madc without gcc
+- **`smaug.tgz`** checked into repo root (official 1.8 tarball)
+- **`docs/SMAUG_requirements.md`** — full gap analysis: system headers checklist (37/38
+  embedded; only `<stdarg.h>` missing), language feature gap table with BLOCKER/HIGH/MEDIUM/LOW
+  severity, 5-phase implementation roadmap (A: pointer/type system, B: macros, C: data
+  structures, D: I/O infrastructure, E: full SMAUG boot)
+- Top blockers identified: function-like macros, `char *` declarations, `->` operator,
+  `(TYPE *)` casts, `&` address-of — all Phase A/B work
+
+### Fixed — Integer Literal Storage (c971eb1)
+
+- **`int` overflow in lexer decimal parser** — accumulator variable was `int`; values ≥ 2^31
+  (e.g. `2147483648` from `#define INT_MIN -2147483648`) silently wrapped to negative.
+  Fixed: widened accumulator to `int64_t`.
+
+- **`_token` field overflow in `TokenBase`** — `int _token` truncated stored literal values
+  for constants ≥ 2^31. Fixed: widened to `int64_t` throughout `TokenBase`, `TokenInt`,
+  `TokenVar`; all `get()`/`set()` signatures updated to `int64_t`.
+
+- **`safeneg` sign-extension truncation** — `cc.neg()` was followed by
+  `cc.movsx(op, op.r8())`, which sign-extended from `al` (8 bits) back to 64 bits.
+  This corrupted any negated value with absolute magnitude ≥ 128 (e.g. `-INT_MIN` → 1,
+  `-200` → 56). Fixed: removed the `movsx` entirely — `cc.neg()` on the full-width GP
+  register is correct and sufficient.
+
+---
+
 ## [Unreleased] — Phase 4 Prep (2026-04-15 → 2026-04-16)
 
 ### Added — Standard C Infrastructure
