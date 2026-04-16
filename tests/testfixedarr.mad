@@ -72,5 +72,13 @@ int main()
     printf("padded = [%s]\n", padded);              // hi
     printf("padded[2]=%ld\n", padded[2]);           // 0
 
+    // char *name = "literal" behaves like char name[] = "literal"
+    char *greet = "Hello";
+    printf("greet = [%s]\n", greet);                 // Hello
+
+    // char *p = 0 still works as a null pointer
+    char *np = 0;
+    printf("np null? %ld\n", np == 0 ? 1 : 0);       // 1
+
     return 0;
 }

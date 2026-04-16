@@ -3935,6 +3935,26 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    Throw(tb) << "Unexpected end of data in array declaration" << flush;
     }
 
+    // Sugar: char *name = "literal"  →  treat as  char name[]  with string init.
+    // This matches C's practical equivalence where a string-literal-initialized
+    // char pointer and a char array are interchangeable at the point of use.
+    if ( nt->id() == TokenID::tkAssign && arr_dims.empty() )
+    {
+	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(decl_type);
+	if ( pdd && pdd->base_type == &ddCHAR )
+	{
+	    TokenBase *eq_tok = nextToken(); // consume '=' to peek past it
+	    TokenBase *str_peek = peekToken();
+	    if ( str_peek && str_peek->type() == TokenType::ttString )
+	    {
+		decl_type = &ddCHAR;
+		arr_dims.push_back(0); // size inferred from the string literal
+	    }
+	    pushToken(eq_tok); // put '=' back for the existing init path
+	    nt = peekToken();
+	}
+    }
+
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )
     {
