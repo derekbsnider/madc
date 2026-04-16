@@ -4,3 +4,23 @@ tests/unit/test_datadef
 Makefile~
 *.sh~
 claude_status.json
+
+# Extracted SMAUG 1.8 tree (source of truth is smaug.tgz).
+smaug1.8/
+ftp_game.org
+
+# MadSMAUG runtime data (source tracked, data not).
+MadSMAUG/area/
+MadSMAUG/boards/
+MadSMAUG/classes/
+MadSMAUG/clans/
+MadSMAUG/councils/
+MadSMAUG/deity/
+MadSMAUG/doc/
+MadSMAUG/gods/
+MadSMAUG/houses/
+MadSMAUG/log/
+MadSMAUG/player/
+MadSMAUG/races/
+MadSMAUG/system/
+MadSMAUG/vault/

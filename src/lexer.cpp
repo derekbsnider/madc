@@ -904,45 +904,64 @@ TokenBase *Program::_getToken()
 		    return getToken();
 		}
 		// compound type keywords: unsigned/signed/long/short [type]
+		// C allows up to three words: `unsigned short int`, `signed long
+		// int`, `long long int`, `unsigned long long`. Read up to two
+		// lookahead words and pick the longest match.
 		if ( word == "unsigned" || word == "signed" || word == "long" || word == "short" )
 		{
-		    // peek at next word
-		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
-			source.get();
-		    std::string next;
-		    while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
-			next += source.get();
+		    auto read_word = [&]() -> std::string {
+			while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+			    source.get();
+			std::string w;
+			while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
+			    w += source.get();
+			return w;
+		    };
+		    std::string next = read_word();
+		    std::string peek2;
+		    if ( next == "short" || next == "long" )
+			peek2 = read_word();
+		    auto unget = [&](const std::string &a, const std::string &b) {
+			if ( !b.empty() ) source.pushback(std::string(" ") + b);
+			if ( !a.empty() ) source.pushback(std::string(" ") + a);
+		    };
 		    if ( word == "unsigned" )
 		    {
-			if ( next == "char" )  return new TokenDataType("unsigned char", ddUINT8);
-			if ( next == "short" ) return new TokenDataType("unsigned short", ddUINT16);
-			if ( next == "int" )   return new TokenDataType("unsigned int", ddUINT32);
-			if ( next == "long" )  return new TokenDataType("unsigned long", ddUINT64);
-			// bare 'unsigned' = unsigned int
-			if ( !next.empty() ) source.pushback(next);
+			if ( next == "char" )                     { unget("", peek2); return new TokenDataType("unsigned char", ddUINT8); }
+			if ( next == "short" && peek2 == "int" )  return new TokenDataType("unsigned short int", ddUINT16);
+			if ( next == "short" )                    { unget("", peek2); return new TokenDataType("unsigned short", ddUINT16); }
+			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("unsigned int", ddUINT32); }
+			if ( next == "long" && peek2 == "long" )  return new TokenDataType("unsigned long long", ddUINT64);
+			if ( next == "long" && peek2 == "int" )   return new TokenDataType("unsigned long int", ddUINT64);
+			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("unsigned long", ddUINT64); }
+			unget(next, peek2);
 			return new TokenDataType("unsigned", ddUINT32);
 		    }
 		    if ( word == "signed" )
 		    {
-			if ( next == "char" )  return new TokenDataType("signed char", ddINT8);
-			if ( next == "short" ) return new TokenDataType("signed short", ddINT16);
-			if ( next == "int" )   return new TokenDataType("signed int", ddINT32);
-			if ( next == "long" )  return new TokenDataType("signed long", ddINT64);
-			if ( !next.empty() ) source.pushback(next);
+			if ( next == "char" )                     { unget("", peek2); return new TokenDataType("signed char", ddINT8); }
+			if ( next == "short" && peek2 == "int" )  return new TokenDataType("signed short int", ddINT16);
+			if ( next == "short" )                    { unget("", peek2); return new TokenDataType("signed short", ddINT16); }
+			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("signed int", ddINT32); }
+			if ( next == "long" && peek2 == "long" )  return new TokenDataType("signed long long", ddINT64);
+			if ( next == "long" && peek2 == "int" )   return new TokenDataType("signed long int", ddINT64);
+			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("signed long", ddINT64); }
+			unget(next, peek2);
 			return new TokenDataType("signed", ddINT32);
 		    }
 		    if ( word == "long" )
 		    {
-			if ( next == "int" )   return new TokenDataType("long int", ddINT64);
-			if ( next == "long" )  return new TokenDataType("long long", ddINT64);
-			if ( next == "double" ) return new TokenDataType("long double", ddDOUBLE);
-			if ( !next.empty() ) source.pushback(next);
+			if ( next == "long" && peek2 == "int" )   return new TokenDataType("long long int", ddINT64);
+			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("long long", ddINT64); }
+			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("long int", ddINT64); }
+			if ( next == "double" )                   { unget("", peek2); return new TokenDataType("long double", ddDOUBLE); }
+			unget(next, peek2);
 			return new TokenDataType("long", ddINT64);
 		    }
 		    if ( word == "short" )
 		    {
-			if ( next == "int" )   return new TokenDataType("short int", ddINT16);
-			if ( !next.empty() ) source.pushback(next);
+			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("short int", ddINT16); }
+			unget(next, peek2);
 			return new TokenDataType("short", ddINT16);
 		    }
 		}

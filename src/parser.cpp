@@ -2233,6 +2233,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	dds->pack = pgm.pack_stack_top();
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
 
+    // Pre-register the tag (if any) before parsing the body so fields like
+    // `struct hashstr_data *next;` inside `struct hashstr_data { ... }` can
+    // resolve the self-reference. The struct is treated as "incomplete" at
+    // this point (size 0 members none); pointer-to-incomplete works because
+    // DataDefPTR only needs an 8-byte pointer size.
+    bool was_pre_registered = false;
+    if ( tag && pgm.struct_map.find(tag->str) == pgm.struct_map.end() )
+    {
+	pgm.struct_map[tag->str] = dds;
+	was_pre_registered = true;
+	DBG(cout << "TokenSTRUCT::parse() pre-registered " << tag->str << " for self-reference" << endl);
+    }
+
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	// expect a data type token (or typedef'd identifier, or 'struct Tag')
@@ -2301,11 +2314,16 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	dmi = pgm.struct_map.find(tag->str);
 	if ( dmi != pgm.struct_map.end() )
 	{
-	    // allow completing a forward-declared struct (size 0, no members)
 	    DataDefSTRUCT *existing = static_cast<DataDefSTRUCT *>(dmi->second);
-	    if ( existing->size == 0 && existing->members.empty() )
+	    if ( was_pre_registered && existing == dds )
 	    {
-		// fill in the forward-declared struct in place
+		// We registered `dds` ourselves before body-parsing to enable
+		// self-reference; the entry is already correct, nothing to do.
+		DBG(cout << "TokenSTRUCT::parse() finalized self-registered struct " << tag->str << " size=" << dds->size << endl);
+	    }
+	    else if ( existing->size == 0 && existing->members.empty() )
+	    {
+		// Complete a forward-declared struct in place.
 		existing->members = dds->members;
 		existing->size = dds->size;
 		existing->pack = dds->pack;
@@ -3490,6 +3508,15 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // look for parameters
     while ( (nt=nextToken()) && nt->id() != TokenID::tkClBrk )
     {
+	// C `void` as sole parameter means no parameters (e.g. `int f(void)`).
+	if ( nt->type() == TokenType::ttDataType
+	  && &((TokenDataType *)nt)->definition == &ddVOID
+	  && peekToken() && peekToken()->id() == TokenID::tkClBrk )
+	{
+	    nextToken(); // consume ')'
+	    break;
+	}
+
 	// detect ... (variadic parameter)
 	if ( nt->id() == TokenID::tkDot )
 	{
