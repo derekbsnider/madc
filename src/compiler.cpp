@@ -4034,8 +4034,12 @@ Operand &TokenInt::compile(Program &pgm, regdefp_t &regdp)
 	return *regdp.first;
     }
     DBG(cout << "TokenInt::compile[" << (uint64_t)this << "]() value: " << (int)_token << endl);
+    // no destination register — create one and load the value
+    x86::Gp gp = pgm.cc.newGpq("int_lit");
+    pgm.cc.mov(gp, (int64_t)_token);
+    _operand = gp;
     regdp.first = &_operand;
-    return operand(pgm);
+    return _operand;
 }
 
 Operand &TokenChar::operand(Program &pgm)
@@ -4370,10 +4374,17 @@ Operand &TokenDO::compile(Program &pgm, regdefp_t &regdp)
     pgm.loopstack.push(make_pair(&dotop, &dotail)); // push labels onto loopstack
     pgm.cc.bind(dotop);			// label the top of the loop
     DBG(cout << "TokenDO::compile() calling statement->compile(pgm, regdp)" << endl);
+    regdp.first  = NULL;			// reset regdp for body
+    regdp.second = NULL;
     statement->compile(pgm, regdp); 	// execute loop's statement(s)
+    DBG(cout << "TokenDO::compile() statement done, compiling condition" << endl);
+    regdp.first  = NULL;			// reset regdp for condition
+    regdp.second = NULL;
     Operand &reg = condition->compile(pgm, regdp); // get condition result
+    DBG(cout << "TokenDO::compile() condition done, reg type: " << (reg.isReg() ? "reg" : reg.isMem() ? "mem" : "other") << endl);
     DBG(pgm.cc.comment("TokenDO::compile() pgm.safetest(reg, reg)"));
     pgm.testzero(reg);			// compare to zero
+    DBG(cout << "TokenDO::compile() testzero done" << endl);
     pgm.cc.je(dotail);			// jump to end
 
     pgm.cc.bind(dodo);			// bind action label
@@ -4397,6 +4408,8 @@ Operand &TokenWHILE::compile(Program &pgm, regdefp_t &regdp)
 
     pgm.loopstack.push(make_pair(&whiletop, &whiletail)); // push labels onto loopstack
     pgm.cc.bind(whiletop);			// label the top of the loop
+    regdp.first  = NULL;			// reset regdp for condition
+    regdp.second = NULL;
     DBG(pgm.cc.comment("condition->compile(pgm, regdp)"));
     Operand &reg = condition->compile(pgm, regdp);// get condition result
     DBG(pgm.cc.comment("TokenWHILE::compile() pgm.safetest(reg, reg)"));
@@ -4405,6 +4418,8 @@ Operand &TokenWHILE::compile(Program &pgm, regdefp_t &regdp)
 
     DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm, regdp)" << endl);
     pgm.cc.bind(whiledo);			// bind action label
+    regdp.first  = NULL;			// reset regdp for body
+    regdp.second = NULL;
     DBG(pgm.cc.comment("statement->compile(pgm, regdp)"));
     statement->compile(pgm, regdp); 		// execute loop's statement(s)
     pgm.cc.jmp(whiletop);			// jump back to top
