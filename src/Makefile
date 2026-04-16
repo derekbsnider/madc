@@ -31,6 +31,9 @@ clean:
 test: $(TESTBINS)
 	@for t in $(TESTBINS); do echo "Running $$t..."; $$t; done
 
+fulltest: ../bin/madc test
+	@cd .. && bash scripts/run_tests.sh
+
 $(TESTDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(TESTOBJ) $(LIBS)
 
