@@ -139,6 +139,10 @@ public:
 	    return true;
 	return false;
     }
+    virtual bool is_pointer()
+    {
+	return _type >= 10000 && _type < 20000;
+    }
     virtual bool is_struct()
     {
 	if ( basetype() == BaseType::btStruct )
@@ -527,6 +531,18 @@ class DataDefOFSTREAM:  public DDClass { public: DataDefOFSTREAM():DDClass("ofst
 class DataDefFSTREAM:   public DDClass { public: DataDefFSTREAM(): DDClass("fstream", sizeof(std::fstream), DataType::dtFSTREAM) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
 
+// generic pointer-to-type — tracks what the pointer points to
+// pointers are 64-bit integers at the ABI level (stored in Gp registers)
+class DataDefPTR : public DataDef
+{
+public:
+    DataDef *base_type;  // what this pointer points to
+    DataDefPTR(DataDef &base)
+	: DataDef(base.name + "*", 8, rtPtr(base.type())), base_type(&base) {}
+    virtual bool is_numeric() { return true; }
+    virtual bool is_integer() { return true; }
+};
+
 // ---- MadValue: tagged union for PHP-style mixed-type arrays ----
 
 struct MadValue
@@ -684,6 +700,7 @@ extern DataDefDOUBLE ddDOUBLE;
 extern DataDefSTRING ddSTRING;
 extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
+extern DataDefPTR ddVOIDptr, ddCHARptr, ddINTptr, ddINT32ptr;
 extern DataDefISTREAM ddISTREAM;
 extern DataDefOSTREAM ddOSTREAM;
 extern DataDefSSTREAM ddSSTREAM;

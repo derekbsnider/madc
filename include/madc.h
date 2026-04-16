@@ -360,6 +360,7 @@ public:
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
+    std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
@@ -452,6 +453,7 @@ public:
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *);
+    DataDefPTR *getPointerType(DataDef *base);
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
     TokenBase *parseLambda();  // parse [](params) { body } lambda expression
 

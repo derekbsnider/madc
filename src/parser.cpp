@@ -61,6 +61,7 @@ DataDefIFSTREAM ddIFSTREAM;
 DataDefOFSTREAM ddOFSTREAM;
 DataDefFSTREAM ddFSTREAM;
 DataDefLPSTR ddLPSTR;
+DataDefPTR ddVOIDptr(ddVOID), ddCHARptr(ddCHAR), ddINTptr(ddINT), ddINT32ptr(ddINT32);
 DataDefAUTO ddAUTO;
 DataDefTEST ddTESTSTRUCT;
 
@@ -827,6 +828,27 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
     return var;
 }
 
+// get or create a pointer-to-T DataDef
+DataDefPTR *Program::getPointerType(DataDef *base)
+{
+    // check cache first
+    auto it = ptr_type_cache.find(base);
+    if ( it != ptr_type_cache.end() )
+	return it->second;
+
+    // return well-known globals for common types
+    if ( base == &ddVOID )  return &ddVOIDptr;
+    if ( base == &ddCHAR )  return &ddCHARptr;
+    if ( base == &ddINT )   return &ddINTptr;
+    if ( base == &ddINT32 ) return &ddINT32ptr;
+
+    // create and cache a new pointer DataDef
+    DataDefPTR *ptr = new DataDefPTR(*base);
+    ptr_type_cache[base] = ptr;
+    DBG(std::cout << "getPointerType() created " << ptr->name << " for base " << base->name << std::endl);
+    return ptr;
+}
+
 // add a function definition
 Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC extfunc, bool isMethod)
 {
@@ -1438,6 +1460,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    }
 		    if ( !dd )
 			Throw(type_tb) << "Unknown type in sizeof" << flush;
+		    // handle pointer: sizeof(type *)
+		    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+		    {
+			nextToken(); // consume '*'
+			dd = getPointerType(dd);
+		    }
 		    // consume closing )
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
 			Throw(type_tb) << "Expecting ')' after sizeof type" << flush;
@@ -1907,15 +1935,23 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
 	TokenDataType *mtype = (TokenDataType *)pgm.nextToken(); // consume type
 
+	// check for pointer declarator(s): type * [*...] member_name
+	DataDef *member_dd = &mtype->definition;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	{
+	    pgm.nextToken(); // consume '*'
+	    member_dd = pgm.getPointerType(member_dd);
+	}
+
 	// expect member name
 	tn = pgm.nextToken();
 	if ( tn->type() != TokenType::ttIdentifier )
 	    pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
 	std::string mname = ((TokenIdent *)tn)->str;
 
-	dds->addMember(mname, mtype->definition, 1);
-	DBG(cout << "TokenSTRUCT::parse() added member " << mtype->definition.name << ' ' << mname
-	    << " (size " << mtype->definition.size << ", total " << dds->size << ')' << endl);
+	dds->addMember(mname, *member_dd, 1);
+	DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
+	    << " (size " << member_dd->size << ", total " << dds->size << ')' << endl);
 
 	// expect semicolon
 	tn = pgm.nextToken();
@@ -2045,6 +2081,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting type in class definition" << flush;
 	TokenDataType *mtype = (TokenDataType *)pgm.nextToken();
 
+	// check for pointer declarator(s): type * [*...] member_name
+	DataDef *cmember_dd = &mtype->definition;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	{
+	    pgm.nextToken(); // consume '*'
+	    cmember_dd = pgm.getPointerType(cmember_dd);
+	}
+
 	// expect member name
 	tn = pgm.nextToken();
 	if ( tn->type() != TokenType::ttIdentifier )
@@ -2060,7 +2104,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    DBG(cout << "TokenCLASS::parse() parsing method " << mname << endl);
 	    // mangle method name to avoid collisions: ClassName__methodName
 	    std::string mangled = tag->str + "__" + mname;
-	    pgm.parseFunction(mtype->definition, mangled, ddc);
+	    pgm.parseFunction(*cmember_dd, mangled, ddc);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
@@ -2073,9 +2117,9 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	else
 	{
 	    // data member
-	    ddc->addMember(mname, mtype->definition, 1);
-	    DBG(cout << "TokenCLASS::parse() added member " << mtype->definition.name << ' ' << mname
-		<< " (size " << mtype->definition.size << ", total " << ddc->size << ')' << endl);
+	    ddc->addMember(mname, *cmember_dd, 1);
+	    DBG(cout << "TokenCLASS::parse() added member " << cmember_dd->name << ' ' << mname
+		<< " (size " << cmember_dd->size << ", total " << ddc->size << ')' << endl);
 	    tn = pgm.nextToken();
 	    if ( tn->id() != TokenID::tkSemi )
 		pgm.Throw(tn) << "Expecting ';' after class member" << flush;
@@ -2911,6 +2955,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	}
 	pb = (TokenDataType *)nt;
 	rtype = RefType::rtValue;
+	DataDef *param_dd = &pb->definition;
 grabnt:
 	// grab the next token
 	if ( !peekToken() )
@@ -2928,7 +2973,8 @@ grabnt:
 	if ( nt->id() == TokenID::tkStar )
 	{
 	    rtype = RefType::rtPointer;
-	    DBG(std::cout << "parseFunction() ignoring pointer token" << std::endl);
+	    param_dd = getPointerType(param_dd);
+	    DBG(std::cout << "parseFunction() pointer param: " << param_dd->name << std::endl);
 	    goto grabnt;
 	}
 	if ( nt->type() != TokenType::ttIdentifier )
@@ -2952,7 +2998,7 @@ grabnt:
 		if ( rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING )
 		    func->parameters.push_back(&ddSTRINGref);
 		else if ( rtype == RefType::rtPointer )
-		    func->parameters.push_back(&ddINT64); // pointers are int64 at the ABI level
+		    func->parameters.push_back(param_dd);
 		else
 		    func->parameters.push_back(&pb->definition);
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
@@ -3214,6 +3260,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
 
     DBG(std::cout << "parseDeclaration(" << tb->str << ") START " << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column << std::endl);
 
+    // check for pointer declarator(s): type * [*...] identifier
+    DataDef *decl_type = &tb->definition;
+    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+    {
+	nextToken(); // consume '*'
+	decl_type = getPointerType(decl_type);
+	DBG(std::cout << "parseDeclaration() pointer: " << decl_type->name << std::endl);
+    }
+
     if ( !peekToken() )
 	Throw(tb) << "Unexpected end of data: Expecting identifier after type" << flush;
     nt = nextToken();
@@ -3297,7 +3352,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )
     {
 	bool alloc = (!code || gotstatic) ? true : false;
-	var = addVariable(code, tb->definition, id, 1, NULL, alloc);
+	var = addVariable(code, *decl_type, id, 1, NULL, alloc);
 	TokenDecl *td = new TokenDecl(*var);
 
 	td->file = tb->file;
@@ -3323,7 +3378,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
 
     DBG(std::cout << "parseDeclaration() returning" << std::endl);
 
-    parseFunction(tb->definition, id);
+    parseFunction(*decl_type, id);
 
     return NULL;
 }
