@@ -976,7 +976,14 @@ public:
     virtual TokenBase *parse(Program &);
 };
 class TokenDEFAULT:  public TokenKeyword { public: TokenDEFAULT()  : TokenKeyword("default") {}  virtual TokenID id() const { return TokenID::tkDEFAULT;  } virtual TokenBase *clone() { return (TokenBase*)new TokenDEFAULT(); } };
-class TokenTYPEDEF:  public TokenKeyword { public: TokenTYPEDEF()  : TokenKeyword("typedef") {}  virtual TokenID id() const { return TokenID::tkTYPEDEF;  } virtual TokenBase *clone() { return (TokenBase*)new TokenTYPEDEF(); } };
+class TokenTYPEDEF: public TokenKeyword
+{
+public:
+    TokenTYPEDEF() : TokenKeyword("typedef") {}
+    virtual TokenID id() const { return TokenID::tkTYPEDEF; }
+    virtual TokenBase *clone() { return new TokenTYPEDEF(); }
+    virtual TokenBase *parse(Program &pgm);
+};
 
 class TokenNAMESPACE:public TokenKeyword { public: TokenNAMESPACE() : TokenKeyword("namespace") {} virtual TokenID id() const { return TokenID::tkNAMESPACE; } virtual TokenBase *clone() { return (TokenBase*)new TokenNAMESPACE(); } };
 

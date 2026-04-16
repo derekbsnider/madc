@@ -2704,6 +2704,62 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
     return decl;
 }
 
+// typedef TYPE alias; or typedef struct/class ... (struct/class detected via prevToken)
+TokenBase *TokenTYPEDEF::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenTYPEDEF::parse()" << std::endl);
+    TokenBase *tn = pgm.peekToken();
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input after 'typedef'" << flush;
+
+    // typedef struct ... or typedef class ... — handled by struct/class parse via prevToken
+    if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkCLASS )
+	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+
+    // typedef TYPE alias; — primitive type alias
+    DataDef *base_dd = NULL;
+    if ( tn->type() == TokenType::ttDataType )
+    {
+	base_dd = &((TokenDataType *)pgm.nextToken())->definition;
+    }
+    else if ( tn->type() == TokenType::ttIdentifier )
+    {
+	std::string tname = ((TokenIdent *)tn)->str;
+	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	if ( tdmi != pgm.datatype_map.end() )
+	{
+	    pgm.nextToken();
+	    base_dd = &tdmi->second->definition;
+	}
+    }
+    if ( !base_dd )
+	pgm.Throw(tn) << "Expecting type after 'typedef'" << flush;
+
+    // handle pointer: typedef int *intptr;
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+    {
+	pgm.nextToken();
+	base_dd = pgm.getPointerType(base_dd);
+    }
+
+    // get alias name
+    tn = pgm.nextToken();
+    if ( tn->type() != TokenType::ttIdentifier )
+	pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
+    std::string alias = ((TokenIdent *)tn)->str;
+
+    // register in datatype_map
+    TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
+    pgm.datatype_map[alias] = tdt;
+    DBG(std::cout << "TokenTYPEDEF::parse() " << alias << " = " << base_dd->name << std::endl);
+
+    // consume semicolon
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
+    return NULL;
+}
+
 // parse enum { NAME, NAME = val, ... } [;]
 // registers each enumerator as a #define constant
 TokenBase *TokenENUM::parse(Program &pgm)
