@@ -370,7 +370,7 @@ TokenBase *Program::_getToken()
 		    if ( source.peek() == ';' )
 			source.get();
 		    // dlopen the library
-		    void *handle = dlopen(libname.c_str(), RTLD_LAZY);
+		    void *handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_GLOBAL);
 		    if ( !handle )
 		    {
 			std::string err = "Failed to load library: " + libname + ": " + dlerror();

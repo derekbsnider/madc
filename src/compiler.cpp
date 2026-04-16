@@ -285,10 +285,7 @@ bool Program::_compiler_finalize()
 {
     cc.ret(); // extra ret just in case
     asmjit::Error ferr = cc.finalize();
-    if ( ferr )
-    {
-	DBG(std::cerr << "Finalize warning: error=" << ferr << std::endl);
-    }
+    DBG(if (ferr) std::cerr << "cc.finalize() error=" << ferr << std::endl);
     asmjit::Error err = jit.add(&root_fn, &code);
     if ( !root_fn )
     {
@@ -578,6 +575,61 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	    return *regdp.first;
 	}
+	// variadic dlsym call — build signature from actual arg types (like dlcall)
+	if ( method->x86code )
+	{
+	    FuncDef *func = (FuncDef *)method->returns.type;
+	    FuncSignature funcsig(CallConvId::kCDecl);
+	    funcsig.setRetT<int64_t>();
+
+	    std::vector<Operand> params;
+	    for ( size_t i = 0; i < argc(); ++i )
+	    {
+		regdefp_t argrdp = {NULL, NULL, NULL};
+		TokenBase *tn = parameters[i];
+		Operand &areg = tn->compile(pgm, argrdp);
+
+		if ( argrdp.second && argrdp.second->rawtype() == DataType::dtSTRING )
+		{
+		    x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
+		    InvokeNode *cstr_call;
+		    pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+		    cstr_call->setArg(0, areg.as<x86::Gp>());
+		    cstr_call->setRet(0, cstr_reg);
+		    params.push_back(cstr_reg);
+		    funcsig.addArgT<const char *>();
+		}
+		else
+		{
+		    params.push_back(areg);
+		    funcsig.addArgT<int64_t>();
+		}
+	    }
+
+	    InvokeNode *call;
+	    pgm.cc.invoke(&call, imm(method->x86code), funcsig);
+	    uint32_t ai = 0;
+	    for ( auto &p : params )
+	    {
+		if ( p.isReg() )
+		    call->setArg(ai++, p.as<x86::Gp>());
+		else if ( p.isImm() )
+		    call->setArg(ai++, p.as<Imm>());
+	    }
+
+	    {
+		if ( !regdp.first )
+		{
+		    _operand = pgm.cc.newGpq("dl_ret");
+		    regdp.first = &_operand;
+		}
+		call->setRet(0, regdp.first->as<x86::Gp>());
+		if ( !regdp.second )
+		    regdp.second = &func->returns;
+	    }
+
+	    return *regdp.first;
+	}
 	pgm.Throw(this) << "TokenCallFunc::compile() method has neither FuncNode nor x86code" << flush;
     }
 
@@ -792,7 +844,15 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("pgm.call:"));
     DBG(pgm.cc.comment(var.name.c_str()));
     InvokeNode *call;
+    DBG(cout << "invoke: argCount=" << funcsig.argCount() << " hasRet=" << funcsig.hasRet() << " is_variadic=" << is_variadic << endl);
     if ( fnd ) pgm.cc.invoke(&call, fnd->label(), funcsig);
+    else if ( is_variadic )
+    {
+	// variadic dlsym: load function pointer into Gp register for invoke
+	x86::Gp fn_ptr = pgm.cc.newIntPtr("dl_fn");
+	pgm.cc.mov(fn_ptr, imm(method->x86code));
+	pgm.cc.invoke(&call, fn_ptr, funcsig);
+    }
     else pgm.cc.invoke(&call, imm(method->x86code), funcsig);
     std::vector<Operand>::iterator gvi;
     _argc = 0;
@@ -848,7 +908,17 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
             ; // skip non-register return values
 //	    throw "TokenCallFunc::compile() regdp.first->isReg() is FALSE";
 	if ( regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
-	    call->setRet(0, regdp.first->as<x86::Xmm>());
+	{
+	    // for variadic dlsym calls, capture to fresh Xmm then copy
+	    if ( is_variadic )
+	    {
+		x86::Xmm ret_xmm = pgm.cc.newXmm("dl_ret");
+		call->setRet(0, ret_xmm);
+		pgm.cc.movsd(regdp.first->as<x86::Xmm>(), ret_xmm);
+	    }
+	    else
+		call->setRet(0, regdp.first->as<x86::Xmm>());
+	}
 	else
 	if ( regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
 	{

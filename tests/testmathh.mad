@@ -1,0 +1,17 @@
+// Test #include <math.h> — embedded header with math constants
+#include <math.h>
+
+int main()
+{
+    // math constants from embedded header
+    cout << M_PI << endl;       // 3.14159
+    cout << M_E << endl;        // 2.71828
+    cout << M_SQRT2 << endl;    // 1.41421
+
+    // integer libc functions via dlsym fallback
+    int x;
+    x = abs(-42);
+    cout << x << endl;          // 42
+
+    return 0;
+}
