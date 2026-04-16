@@ -46,25 +46,14 @@ Perform the full release workflow:
    - Do NOT use `--amend`
 
 10. **Merge to develop** (if not already on develop):
-   - Push the current branch to origin
-   - Switch to `develop`
-   - Merge the feature branch into develop (fast-forward or merge commit)
-   - If there are merge conflicts, STOP and ask the user
+    - Push the current branch to origin
+    - Switch to `develop`
+    - Merge the feature branch into develop (fast-forward or merge commit)
+    - If there are merge conflicts, STOP and ask the user
 
-11. **Merge develop into master**:
-   - Switch to `master`
-   - Merge `develop` into master (fast-forward or merge commit)
-   - If there are merge conflicts, STOP and ask the user
+11. **Push develop to GitHub**: `git push origin develop`
 
-12. **Tag the release**: `git tag vX.Y.Z` (on master)
-
-13. **Push everything to GitHub**:
-   - Push master
-   - Push develop
-   - Push tags: `git push --tags`
-   - Switch back to develop when done
-
-14. **Report**: Print a summary of what was released, the version number, and the GitHub URL
+12. **Report**: Print a summary of what was released, the version number, and remind the user to run `/promote` when ready to push to master
 
 ## Important
 - Run `make -C src fulltest` before starting — abort if tests fail
