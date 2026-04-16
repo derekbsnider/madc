@@ -291,6 +291,9 @@ union sstream_member_cast {
 
 
 
+// forward decl — body defined below next to other madc_string_* helpers
+int64_t madc_string_length(void *str);
+
 // add methods to ddSTRING
 void Program::add_string_methods()
 {
@@ -318,6 +321,14 @@ void Program::add_string_methods()
 
     scmc.method_cstr = (string &(string::*)(const char *))&string::append;
     var = addFunction("append", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    ddSTRING.methods.push_back(var);
+
+    // length() and size() — wrap std::string::length via a free helper.
+    // Signature: (int64_t, string*) matches madc method calling convention
+    // where the object pointer is the hidden first argument.
+    var = addFunction("length", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    ddSTRING.methods.push_back(var);
+    var = addFunction("size",   datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
     ddSTRING.methods.push_back(var);
 
     DBG(std::cout << "add_string_methods() ddSTRING.methods.size() = " << ddSTRING.methods.size() << std::endl);
@@ -478,7 +489,7 @@ double madc_stod(void *str)
     try { return std::stod(((std::string *)str)->c_str()); }
     catch (...) { return 0.0; }
 }
-int64_t madc_strlen(void *str)
+int64_t madc_string_length(void *str)
 {
     return (int64_t)((std::string *)str)->length();
 }
@@ -573,7 +584,8 @@ void Program::add_functions()
     addFunction("to_string_d",	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtDOUBLE}, (fVOIDFUNC)madc_to_string_d);
     addFunction("stoi",		datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_stoi);
     addFunction("stod",		datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
-    addFunction("strlen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_strlen);
+    // strlen is NOT pre-registered: it resolves via dlsym fallback to libc's
+    // strlen(const char *). For std::string, use str.length() or str.size().
     // C library functions
     addFunction("system",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
     addFunction("getenv",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
@@ -3960,9 +3972,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     {
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
+	// Only real user-defined structs/classes accept brace init.
+	// Built-in class types (std::string, ostream, etc.) use DataDefCLASS
+	// but have a concrete DataType; user-defined structs/classes use
+	// dtRESERVED. Discriminate on that.
 	bool is_struct_init = arr_dims.empty()
-	    && (decl_type->basetype() == BaseType::btStruct
-	     || decl_type->basetype() == BaseType::btClass);
+	    && dynamic_cast<DataDefSTRUCT *>(decl_type) != NULL
+	    && decl_type->type() == DataType::dtRESERVED;
 	if ( nt->id() == TokenID::tkAssign && (!arr_dims.empty() || is_struct_init) )
 	{
 	    // peek past '=' to see if we have { (brace list) or "..." (string lit for char arr)
