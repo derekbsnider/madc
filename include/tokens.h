@@ -19,7 +19,8 @@ enum class TokenType {
 //	8		9	  10	 11	    12	    13		14	    15
 	ttIdentifier, ttString, ttChar, ttInteger, ttReal, ttKeyword, ttDataType, ttVariable,
 //	16		17	  18		19	  20		21	22	 23
-	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram, ttMember, ttCallMethod, ttSubscript
+	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram, ttMember, ttCallMethod, ttSubscript,
+	ttStructLit
 };
 
 enum class TokenID {

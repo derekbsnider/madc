@@ -118,6 +118,16 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+// { v0, v1, ... } — a nested brace initializer, used for elements of an
+// array-of-structs or for nested struct members. Not a value by itself.
+class TokenStructLit: public TokenBase
+{
+public:
+    std::vector<TokenBase *> inits;
+    TokenStructLit() {}
+    virtual TokenType type() const { return TokenType::ttStructLit; }
+};
+
 class TokenCallFunc: public TokenVar
 {
 public:

@@ -233,23 +233,28 @@ public:
     // get a new register for the datatype
     virtual asmjit::Operand newreg(asmjit::x86::Compiler &cc, const char *n=NULL)
     {
+	// IMPORTANT: asmjit's newGpq/newXmm/etc. are variadic printf-style —
+	// they interpret the first const char* as a format string. Names that
+	// contain '%' (e.g. our __literal__... string-literal variable names
+	// with embedded %ld / %s) must be passed with an explicit "%s" fmt
+	// to avoid garbage deref on the unmatched format spec.
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    return n ? cc.newGpb(n) : cc.newGpb();
-	case DataType::dtBOOL:    return n ? cc.newGpb(n) : cc.newGpb();
-	case DataType::dtINT64:   return n ? cc.newGpq(n) : cc.newGpq();
-	case DataType::dtINT16:   return n ? cc.newGpw(n) : cc.newGpw();
-	case DataType::dtINT24:   return n ? cc.newGpw(n) : cc.newGpw();
-	case DataType::dtINT32:   return n ? cc.newGpd(n) : cc.newGpd();
-	case DataType::dtUINT8:   return n ? cc.newGpb(n) : cc.newGpb();
-	case DataType::dtUINT16:  return n ? cc.newGpw(n) : cc.newGpw();
-	case DataType::dtUINT24:  return n ? cc.newGpw(n) : cc.newGpw();
-	case DataType::dtUINT32:  return n ? cc.newGpd(n) : cc.newGpd();
-	case DataType::dtUINT64:  return n ? cc.newGpq(n) : cc.newGpq();
-	case DataType::dtFLOAT:   return n ? cc.newXmm(n) : cc.newXmm();
-	case DataType::dtDOUBLE:  return n ? cc.newXmm(n) : cc.newXmm();
-	case DataType::dtLDOUBLE: return n ? cc.newXmm(n) : cc.newXmm();
-	default:		  return n ? cc.newIntPtr(n) : cc.newIntPtr();
+	case DataType::dtCHAR:    return n ? cc.newGpb("%s", n) : cc.newGpb();
+	case DataType::dtBOOL:    return n ? cc.newGpb("%s", n) : cc.newGpb();
+	case DataType::dtINT64:   return n ? cc.newGpq("%s", n) : cc.newGpq();
+	case DataType::dtINT16:   return n ? cc.newGpw("%s", n) : cc.newGpw();
+	case DataType::dtINT24:   return n ? cc.newGpw("%s", n) : cc.newGpw();
+	case DataType::dtINT32:   return n ? cc.newGpd("%s", n) : cc.newGpd();
+	case DataType::dtUINT8:   return n ? cc.newGpb("%s", n) : cc.newGpb();
+	case DataType::dtUINT16:  return n ? cc.newGpw("%s", n) : cc.newGpw();
+	case DataType::dtUINT24:  return n ? cc.newGpw("%s", n) : cc.newGpw();
+	case DataType::dtUINT32:  return n ? cc.newGpd("%s", n) : cc.newGpd();
+	case DataType::dtUINT64:  return n ? cc.newGpq("%s", n) : cc.newGpq();
+	case DataType::dtFLOAT:   return n ? cc.newXmm("%s", n) : cc.newXmm();
+	case DataType::dtDOUBLE:  return n ? cc.newXmm("%s", n) : cc.newXmm();
+	case DataType::dtLDOUBLE: return n ? cc.newXmm("%s", n) : cc.newXmm();
+	default:		  return n ? cc.newIntPtr("%s", n) : cc.newIntPtr();
 	}
     }
     // move a register value into memory location pointed to by a pointer

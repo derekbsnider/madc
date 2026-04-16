@@ -1222,6 +1222,105 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
     return _reg;
 }
 
+// Emit per-member writes for a struct init block into [base_reg + base_ofs + member_ofs].
+// Used for both standalone struct init and each element of an array-of-structs.
+static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
+    DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc)
+{
+    size_t ofs = 0;
+    for ( size_t i = 0; i < inits.size() && i < dds->members.size(); ++i )
+    {
+	auto &mp = dds->members[i];
+	DataDef *mtype = mp.second;
+	size_t fa = dds->field_align(*mtype);
+	ofs = DataDefSTRUCT::align_up(ofs, fa);
+
+	regdefp_t it_rdp = {nullptr, nullptr, nullptr};
+	Operand &val_op = inits[i]->compile(pgm, it_rdp);
+	int32_t addr = base_ofs + (int32_t)ofs;
+
+	if ( mtype->is_numeric() || mtype->is_pointer() )
+	{
+	    // NOTE: do NOT mutate `val_op` directly — it's a reference to the
+	    // operand stored in operand_map for global literal variables. Any
+	    // reassignment would corrupt the cached entry for subsequent uses
+	    // of the same literal. Use a local copy for the effective value.
+	    Operand eff_val = val_op;
+
+	    // char* member initialized from a string literal: coerce std::string → const char*
+	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(mtype);
+	    if ( pdd && pdd->base_type == &ddCHAR
+	      && it_rdp.second && it_rdp.second->is_string()
+	      && val_op.isReg() )
+	    {
+		DBG(pgm.cc.comment("struct init: coerce string literal -> char*"));
+		x86::Gp cstr_gp = pgm.cc.newIntPtr("_si_cstr");
+		InvokeNode *cstr_call;
+		pgm.cc.invoke(&cstr_call, imm(string_cstr),
+		    FuncSignature::build<const char *, void *>());
+		cstr_call->setArg(0, val_op.as<x86::Gp>());
+		cstr_call->setRet(0, cstr_gp);
+		eff_val = cstr_gp;
+	    }
+
+	    size_t esize = mtype->size;
+	    x86::Mem mm = x86::ptr(base_reg, addr, (uint32_t)esize);
+	    if ( eff_val.isImm() )
+		pgm.cc.mov(mm, eff_val.as<Imm>());
+	    else if ( eff_val.isReg() )
+	    {
+		x86::Gp vgp = eff_val.as<x86::Gp>();
+		if      ( esize == 8 ) pgm.cc.mov(mm, vgp.r64());
+		else if ( esize == 4 ) pgm.cc.mov(mm, vgp.r32());
+		else if ( esize == 2 ) pgm.cc.mov(mm, vgp.r16());
+		else                   pgm.cc.mov(mm, vgp.r8());
+	    }
+	    else if ( eff_val.isMem() )
+	    {
+		x86::Gp tmp = pgm.cc.newGpq("_si_tmp");
+		pgm.cc.mov(tmp, eff_val.as<x86::Mem>());
+		if      ( esize == 8 ) pgm.cc.mov(mm, tmp.r64());
+		else if ( esize == 4 ) pgm.cc.mov(mm, tmp.r32());
+		else if ( esize == 2 ) pgm.cc.mov(mm, tmp.r16());
+		else                   pgm.cc.mov(mm, tmp.r8());
+	    }
+	}
+	else if ( mtype->is_string() )
+	{
+	    x86::Gp m_addr = pgm.cc.newIntPtr("_si_straddr");
+	    pgm.cc.lea(m_addr, x86::ptr(base_reg, addr));
+	    if ( val_op.isReg() )
+	    {
+		InvokeNode *call;
+		pgm.cc.invoke(&call, imm(string_assign),
+		    FuncSignature::build<void, void *, void *>());
+		call->setArg(0, m_addr);
+		call->setArg(1, val_op.as<x86::Gp>());
+	    }
+	}
+	else
+	{
+	    pgm.Throw(err_loc) << "Unsupported struct member type in initializer: " << mtype->name << flush;
+	}
+
+	ofs += mtype->size;
+    }
+    // Zero-fill remaining numeric/pointer members
+    for ( size_t i = inits.size(); i < dds->members.size(); ++i )
+    {
+	auto &mp = dds->members[i];
+	DataDef *mtype = mp.second;
+	size_t fa = dds->field_align(*mtype);
+	ofs = DataDefSTRUCT::align_up(ofs, fa);
+	if ( mtype->is_numeric() || mtype->is_pointer() )
+	{
+	    x86::Mem mm = x86::ptr(base_reg, base_ofs + (int32_t)ofs, (uint32_t)mtype->size);
+	    pgm.cc.mov(mm, imm(0));
+	}
+	ofs += mtype->size;
+    }
+}
+
 Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDecl::compile(" << var.name << " regdp.second: " << (regdp.second ? regdp.second->name : "")<<  ") TOP" << endl);
@@ -1231,17 +1330,16 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     if ( initialize && !(var.flags & vfSTATIC) )
 	initialize->compile(pgm, regdp);
 
-    // brace-enclosed initializer for structs: struct Foo x = { v0, v1, ... }
+    // brace-enclosed initializer for standalone structs: struct Foo x = { v0, v1, ... }
     if ( !init_list.empty() && !var.is_fixed_array()
-      && (var.type->basetype() == BaseType::btStruct
-       || var.type->basetype() == BaseType::btClass) )
+      && dynamic_cast<DataDefSTRUCT *>(var.type) != NULL
+      && var.type->type() == DataType::dtRESERVED )
     {
 	DBG(pgm.cc.comment("TokenDecl struct init_list"));
 	DataDefSTRUCT *dds = static_cast<DataDefSTRUCT *>(var.type);
 	if ( init_list.size() > dds->members.size() )
 	    pgm.Throw(this) << "Too many initializers for struct " << dds->name << flush;
 
-	// Get struct base pointer (voperand already constructed any string members)
 	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
 	x86::Gp base_reg = pgm.cc.newIntPtr((var.name + ".init_base").c_str());
 	if ( base_op.isMem() )
@@ -1249,95 +1347,7 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
 
-	size_t ofs = 0;
-	for ( size_t i = 0; i < init_list.size(); ++i )
-	{
-	    auto &mp = dds->members[i];
-	    DataDef *mtype = mp.second;
-	    size_t fa = dds->field_align(*mtype);
-	    ofs = DataDefSTRUCT::align_up(ofs, fa);
-
-	    regdefp_t it_rdp = {nullptr, nullptr, nullptr};
-	    Operand &val_op = init_list[i]->compile(pgm, it_rdp);
-
-	    if ( mtype->is_numeric() || mtype->is_pointer() )
-	    {
-		// char* member initialized from a string literal: coerce std::string → const char*
-		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(mtype);
-		if ( pdd && pdd->base_type == &ddCHAR
-		  && it_rdp.second && it_rdp.second->is_string()
-		  && val_op.isReg() )
-		{
-		    DBG(pgm.cc.comment("struct init: coerce string literal -> char*"));
-		    x86::Gp cstr_gp = pgm.cc.newIntPtr("_si_cstr");
-		    InvokeNode *cstr_call;
-		    pgm.cc.invoke(&cstr_call, imm(string_cstr),
-			FuncSignature::build<const char *, void *>());
-		    cstr_call->setArg(0, val_op.as<x86::Gp>());
-		    cstr_call->setRet(0, cstr_gp);
-		    val_op = cstr_gp;
-		}
-
-		size_t esize = mtype->size;
-		x86::Mem member_mem = x86::ptr(base_reg, (int32_t)ofs, (uint32_t)esize);
-		if ( val_op.isImm() )
-		    pgm.cc.mov(member_mem, val_op.as<Imm>());
-		else if ( val_op.isReg() )
-		{
-		    x86::Gp vgp = val_op.as<x86::Gp>();
-		    if      ( esize == 8 ) pgm.cc.mov(member_mem, vgp.r64());
-		    else if ( esize == 4 ) pgm.cc.mov(member_mem, vgp.r32());
-		    else if ( esize == 2 ) pgm.cc.mov(member_mem, vgp.r16());
-		    else                   pgm.cc.mov(member_mem, vgp.r8());
-		}
-		else if ( val_op.isMem() )
-		{
-		    x86::Gp tmp = pgm.cc.newGpq("_si_tmp");
-		    pgm.cc.mov(tmp, val_op.as<x86::Mem>());
-		    if      ( esize == 8 ) pgm.cc.mov(member_mem, tmp.r64());
-		    else if ( esize == 4 ) pgm.cc.mov(member_mem, tmp.r32());
-		    else if ( esize == 2 ) pgm.cc.mov(member_mem, tmp.r16());
-		    else                   pgm.cc.mov(member_mem, tmp.r8());
-		}
-	    }
-	    else if ( mtype->is_string() )
-	    {
-		// std::string member: already placement-constructed; assign the value.
-		// val_op is a Gp pointer to the source std::string (from string literal).
-		x86::Gp m_addr = pgm.cc.newIntPtr("_si_straddr");
-		pgm.cc.lea(m_addr, x86::ptr(base_reg, (int32_t)ofs));
-		if ( val_op.isReg() )
-		{
-		    InvokeNode *call;
-		    pgm.cc.invoke(&call, imm(string_assign),
-			FuncSignature::build<void, void *, void *>());
-		    call->setArg(0, m_addr);
-		    call->setArg(1, val_op.as<x86::Gp>());
-		}
-	    }
-	    else
-	    {
-		pgm.Throw(this) << "Unsupported struct member type in initializer: " << mtype->name << flush;
-	    }
-
-	    ofs += mtype->size;
-	}
-	// Zero-fill remaining members (C initializer semantics)
-	for ( size_t i = init_list.size(); i < dds->members.size(); ++i )
-	{
-	    auto &mp = dds->members[i];
-	    DataDef *mtype = mp.second;
-	    size_t fa = dds->field_align(*mtype);
-	    ofs = DataDefSTRUCT::align_up(ofs, fa);
-	    if ( mtype->is_numeric() || mtype->is_pointer() )
-	    {
-		size_t esize = mtype->size;
-		x86::Mem member_mem = x86::ptr(base_reg, (int32_t)ofs, (uint32_t)esize);
-		pgm.cc.mov(member_mem, imm(0));
-	    }
-	    // strings were already placement-constructed to empty; no zero-fill needed.
-	    ofs += mtype->size;
-	}
+	emit_struct_init(pgm, base_reg, 0, dds, init_list, this);
     }
 
     // brace-enclosed initializer for fixed-size arrays: arr[N] = { v0, v1, ... }
@@ -1347,6 +1357,40 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
 	x86::Gp base_reg = pgm.cc.newIntPtr((var.name + ".init_base").c_str());
 	pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+
+	// Array-of-structs: each element is a nested brace list; emit member
+	// writes at [base + i*struct_size + member_offset] per element.
+	DataDefSTRUCT *elem_dds =
+	    (var.type->type() == DataType::dtRESERVED)
+	    ? dynamic_cast<DataDefSTRUCT *>(var.type) : NULL;
+	if ( elem_dds )
+	{
+	    size_t struct_size = var.type->size;
+	    for ( size_t i = 0; i < init_list.size(); ++i )
+	    {
+		TokenStructLit *slit = dynamic_cast<TokenStructLit *>(init_list[i]);
+		if ( !slit )
+		    pgm.Throw(this) << "Array-of-structs element must be a brace list { ... }" << flush;
+		emit_struct_init(pgm, base_reg, (int32_t)(i * struct_size),
+		    elem_dds, slit->inits, this);
+	    }
+	    // Zero-fill remaining element slots byte by byte (8 bytes at a time)
+	    uint32_t total = var.total_elements();
+	    for ( size_t i = init_list.size(); i < total; ++i )
+	    {
+		for ( size_t off = 0; off < struct_size; off += 8 )
+		{
+		    size_t chunk = (struct_size - off >= 8) ? 8 :
+		                   (struct_size - off >= 4) ? 4 :
+		                   (struct_size - off >= 2) ? 2 : 1;
+		    x86::Mem slot = x86::ptr(base_reg,
+			(int32_t)(i * struct_size + off), (uint32_t)chunk);
+		    pgm.cc.mov(slot, imm(0));
+		}
+	    }
+	    DBG(cout << "TokenDecl::compile(" << var.name << ") END" << endl);
+	    return _reg;
+	}
 
 	size_t elem_size = var.type->size ? var.type->size : 8;
 	for ( size_t i = 0; i < init_list.size(); ++i )
@@ -2492,13 +2536,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     if ( object.is_fixed_array() )
     {
         size_t elem_size = object.type->size ? object.type->size : 8;
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
-        DBG(pgm.cc.comment("fixed-array subscript read"));
-        // For multi-dim arr[i][j]...: linear = ((i0 * d1) + i1) * d2 + i2 ...
-        // The first index is already in idx_reg. Fold in each extra index.
+        // Fold any extra indices (multi-dim): linear = ((i0*d1) + i1)*d2 + i2 ...
         for ( size_t k = 0; k < extra_indices.size(); ++k )
         {
             uint32_t dim_k = object.dims[k + 1];
@@ -2510,6 +2548,28 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             else
                 pgm.cc.add(idx_reg, ex_op.as<Imm>());
         }
+
+        // Struct-element array: return a Gp pointer to the element (no load).
+        // Callers (TokenMember for dot access) treat it as the struct's base.
+        if ( dynamic_cast<DataDefSTRUCT *>(object.type) != NULL
+          && object.type->type() == DataType::dtRESERVED )
+        {
+            DBG(pgm.cc.comment("fixed-array subscript: struct element → pointer"));
+            x86::Gp addr = pgm.cc.newIntPtr("sub_addr");
+            pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+            pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, 0, 0));
+            _operand = addr;
+            if ( !regdp.second )
+                regdp.second = _datatype;
+            regdp.first = &_operand;
+            return _operand;
+        }
+
+        uint32_t shift = 0;
+        if      ( elem_size == 8 ) shift = 3;
+        else if ( elem_size == 4 ) shift = 2;
+        else if ( elem_size == 2 ) shift = 1;
+        DBG(pgm.cc.comment("fixed-array subscript read"));
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
         if ( !regdp.second )
             regdp.second = _datatype;

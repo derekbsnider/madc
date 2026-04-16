@@ -1657,10 +1657,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 #else
 		    if ( exStack.empty() )
 			Throw(tb) << "expected expression" << flush;
-		    // Accept both TokenVar and TokenMember as LHS for dot access
-		    // (e.g. ch->desc.buf — the LHS ch->desc is a TokenMember)
+		    // Accept TokenVar, TokenMember, or TokenSubscript as LHS for dot access.
+		    // Subscript case: tab[i].member for an array of structs.
 		    TokenBase *lhs_dot = exStack.top();
-		    if ( lhs_dot->type() != TokenType::ttVariable && lhs_dot->type() != TokenType::ttMember )
+		    if ( lhs_dot->type() != TokenType::ttVariable
+		      && lhs_dot->type() != TokenType::ttMember
+		      && lhs_dot->type() != TokenType::ttSubscript )
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    Variable *tv_var;
 		    DataDef  *struct_type;
@@ -1670,11 +1672,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			tv_var      = &tv->var;
 			struct_type =  tv->var.type;
 		    }
-		    else
+		    else if ( lhs_dot->type() == TokenType::ttMember )
 		    {
 			TokenMember *tm = dynamic_cast<TokenMember *>(lhs_dot);
 			tv_var      = &tm->var;
 			struct_type =  tm->var.type;
+		    }
+		    else
+		    {
+			TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(lhs_dot);
+			tv_var      = &tsub->object;
+			struct_type =  tsub->datadef(); // element type
 		    }
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 			Throw(tb) << "member reference is not a structure or union" << flush;
@@ -1724,8 +1732,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			var->data = (void *)((char *)tv_var->data + ofs);
 		    // remove LHS from exStack
 		    exStack.pop();
-		    // replace with TokenMember — pass parent_expr when LHS was a TokenMember
-		    if ( lhs_dot->type() == TokenType::ttMember )
+		    // When LHS carries its own base-pointer (TokenMember for dot/arrow
+		    // chains, or TokenSubscript for array-of-structs), pass it as
+		    // parent_expr so TokenMember::operand() can resolve the base at
+		    // codegen time.
+		    if ( lhs_dot->type() == TokenType::ttMember
+		      || lhs_dot->type() == TokenType::ttSubscript )
 			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
 		    else
 			exStack.push(new TokenMember(*tv_var, *var, ofs));
@@ -4003,7 +4015,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( peek0->id() != TokenID::tkOpBrc )
 		Throw(nt) << "Expected '{' or string literal for initializer" << flush;
 	    nextToken(); // consume '{'
-	    // parse comma-separated expressions up to '}'
+	    // parse comma-separated elements up to '}'. Each element may itself
+	    // be a brace-list (for array-of-structs or nested struct members).
 	    while ( true )
 	    {
 		TokenBase *look = peekToken();
@@ -4014,8 +4027,35 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    nextToken(); // consume '}'
 		    break;
 		}
-		TokenBase *expr = parseExpression(nextToken());
-		init_list.push_back(expr);
+		if ( look->id() == TokenID::tkOpBrc )
+		{
+		    // Nested brace-list → TokenStructLit (one element of an
+		    // array-of-structs, or a nested struct member value).
+		    nextToken(); // consume inner '{'
+		    TokenStructLit *slit = new TokenStructLit();
+		    while ( true )
+		    {
+			TokenBase *iln = peekToken();
+			if ( !iln )
+			    Throw(tb) << "Unexpected end of data in nested initializer" << flush;
+			if ( iln->id() == TokenID::tkClBrc )
+			{
+			    nextToken(); // consume inner '}'
+			    break;
+			}
+			TokenBase *iexpr = parseExpression(nextToken());
+			slit->inits.push_back(iexpr);
+			TokenBase *isep = peekToken();
+			if ( isep && isep->id() == TokenID::tkComma )
+			    nextToken();
+		    }
+		    init_list.push_back(slit);
+		}
+		else
+		{
+		    TokenBase *expr = parseExpression(nextToken());
+		    init_list.push_back(expr);
+		}
 		TokenBase *sep = peekToken();
 		if ( sep && sep->id() == TokenID::tkComma )
 		    nextToken(); // consume ','
