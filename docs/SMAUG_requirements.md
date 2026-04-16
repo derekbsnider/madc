@@ -13,7 +13,7 @@ target.
 All already embedded in madc:
 ```
 <stdio.h>       ✅  <stdlib.h>      ✅  <string.h>      ✅
-<stdarg.h>      ❌  <limits.h>      ✅  <errno.h>       ✅
+<stdarg.h>      ✅  <limits.h>      ✅  <errno.h>       ✅
 <ctype.h>       ✅  <signal.h>      ✅  <time.h>        ✅
 <fcntl.h>       ✅  <unistd.h>      ✅  <sys/types.h>   ✅
 <sys/stat.h>    ✅  <sys/time.h>    ✅  <sys/socket.h>  ✅
@@ -23,18 +23,16 @@ All already embedded in madc:
 
 Still needed:
 ```
-<stdarg.h>      ❌  va_list, va_start, va_end, va_arg  (BLOCKER — used heavily)
 <sys/file.h>    ❌  flock() and LOCK_* constants (minor)
 ```
 
-`<stdarg.h>` is the only missing standard header that is actually used in the source.
-Functions like `vsprintf(buf, fmt, args)` depend on it.
+All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in Phase D.
 
 ---
 
 ## Language Features Needed
 
-### ✅ Already Working (as of v0.6.0)
+### ✅ Already Working (as of v0.6.0 / v0.7.0)
 - `char *` pointer declarations in variables, struct members, function parameters
 - `->` struct pointer member access (single-level; chained via temp variable)
 - `(TYPE *)` explicit cast expressions: `(CHAR_DATA *) calloc(...)`
@@ -66,25 +64,26 @@ Functions like `vsprintf(buf, fmt, args)` depend on it.
 - Array indexing and pointer subscript
 - `NULL` as pointer assignment: `ch->next = NULL`
 
+### ✅ Phase D Complete
+
+- **`va_list` / varargs** — `va_start`/`va_arg`/`va_end`, packed `int64_t[]` buffer,
+  `__madc_vsprintf`/`__madc_vsnprintf`/`__madc_vfprintf` helpers, `-rdynamic` flag
+
 ### ❌ Not Yet Implemented — Remaining Blockers
 
-**1. `va_list` / varargs** — SMAUG uses `va_start`/`vsprintf` in ~6 files
-for `ch_printf`, `log_string`, `send_to_char` etc. Without this, all formatted
-output functions fail. **Hardest remaining blocker.**
-
-**2. Multi-dimensional arrays** — `int board[8][8]`, `char inbuf[MAX_INBUF_SIZE]`.
+**1. Multi-dimensional arrays** — `int board[8][8]`, `char inbuf[MAX_INBUF_SIZE]`.
 The 2D array case needs parser support.
 
-**3. Static initializer tables** — `static struct { ... } table[] = { { "name", func }, ... };`
+**2. Static initializer tables** — `static struct { ... } table[] = { { "name", func }, ... };`
 Used heavily in const.c and tables.c. Requires aggregate initialization syntax.
 
-**4. `select()` with `fd_set`** — `fd_set` is a struct with a fixed array of longs.
+**3. `select()` with `fd_set`** — `fd_set` is a struct with a fixed array of longs.
 The FD_SET/FD_ZERO/FD_ISSET operations are macros that manipulate bit arrays.
 
-**5. Chained `->` without temp variable** — `ch->desc->character->name` works with
+**4. Chained `->` without temp variable** — `ch->desc->character->name` works with
 a temp variable but not as a single expression yet.
 
-**6. String literals as array initializers** — `char buf[] = "hello"` style.
+**5. String literals as array initializers** — `char buf[] = "hello"` style.
 
 ---
 
@@ -94,7 +93,7 @@ a temp variable but not as a single expression yet.
 |-----|----------|--------|
 | Function-like macros (`#define F(x) ...`) | BLOCKER | **DONE** (v0.6.0) |
 | `char *` pointer declarations | BLOCKER | **DONE** (v0.6.0) |
-| `va_list` / `<stdarg.h>` support | **BLOCKER** | Not started |
+| `va_list` / `<stdarg.h>` support | **BLOCKER** | **DONE** (v0.7.0) |
 | `->` struct pointer member access | BLOCKER | **DONE** (v0.6.0) |
 | Forward struct typedef declarations | HIGH | **DONE** (v0.6.0) |
 | Explicit cast syntax `(TYPE *)expr` | HIGH | **DONE** (v0.6.0) |

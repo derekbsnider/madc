@@ -2,16 +2,6 @@
 
 ## High Priority
 
-### For-loop increment parsing bug (pre-existing)
-
-- **`for ( i = 0; i < N; i++ )` fails** — The for-loop parser calls
-  `parseExpression(tn, true)` for the condition part. In conditional mode, the expression
-  parser consumes through the `;` separator, leaving the increment `i++` as a new statement.
-  `parseStatement(;)` returns the empty semicolon, then the parser expects `)` but finds `i++`.
-  Root cause: `TokenFOR::parse()` at parser.cpp:2616-2624 — the condition's `parseExpression`
-  in conditional mode doesn't stop at `;` correctly. Fix: either parse the condition without
-  conditional mode (stop at `;` explicitly), or add `;` as a stop token in conditional mode.
-
 ### Language Completeness
 
 - **`cout << [const char*]` in chained expressions** — `cout << func_returning_cstr() << endl`
@@ -148,3 +138,4 @@
 - ~~**make fulltest**~~ — unit + integration tests in one command (bbc2f04)
 - ~~**isUnaryPosition()/isPostfixPosition() helpers**~~ — replaces duplicated checks (59805a6)
 - ~~**`<stdarg.h>` / `va_list`**~~ — `...` in function decls, va_start/va_end macros, va_arg intrinsic, packed int64_t[] buffer, format-aware vsprintf helper (9afa644)
+- ~~**For-loop increment parsing bug**~~ — `i++`/`i--`/`++i`/`--i` in for-loop third position now works. Root cause: conditional `parseExpression` left `;` in stream; fixed with one extra `nextToken()` in `TokenFOR::parse()`

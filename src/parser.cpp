@@ -2618,7 +2618,8 @@ TokenBase *TokenFOR::parse(Program &pgm)
     if ( !(condition = pgm.parseExpression(tn, true)) )
 	pgm.Throw(tn) << "Failed to parse expression" << flush;
 
-    tn = pgm.nextToken();
+    tn = pgm.nextToken();  // consume ; separator between condition and increment
+    tn = pgm.nextToken();  // first token of increment expression
     DBG(cout << "TokenFOR::parse() increment: calling parseStatement(" << (char)tn->get() << ')' << endl);
     if ( !(increment = pgm.parseStatement(tn)) )
 	pgm.Throw(tn) << "Failed to parse increment" << flush;

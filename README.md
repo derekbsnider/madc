@@ -139,7 +139,7 @@ done
 make -C src test
 ```
 
-**Current status: 68 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
+**Current status: 69 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
 
 (`testcin.mad` requires stdin piping: `echo "input" | bin/madc tests/testcin.mad`)
 
@@ -172,10 +172,11 @@ make -C src test
 
 ## Current Release
 
-**v0.6.0** (2026-04-16) — Massive C compatibility push for SMAUG 1.8. Adds pointer declarations (`char *`, `struct *`, `char **`), the `->` operator, `&` address-of, `(TYPE *)` casts, forward typedef structs, function-like macros with `\` continuation and `do-while(0)` bodies, compound type keywords (`unsigned char`, `long int`), `enum`, `static`/`const`/`extern`, `*ptr` dereference, primitive `typedef`, and compound assignments (`|=`, `&=`) on struct members. 68 integration tests, 25 unit tests, zero regressions.
+**v0.7.0** (2026-04-16) — SMAUG Phase D: completes variadic function support (`va_list`, `va_start`/`va_end`, `va_arg`, `vsprintf`/`vsnprintf`/`vfprintf` helpers, `<stdarg.h>` embedded header) and fixes the for-loop increment parser bug (`i++`/`i--` in the third position now work). 69 integration tests, 25 unit tests, zero regressions.
 
 ### Recent Releases
 
+- **v0.7.0** — SMAUG Phase D: va_list/stdarg.h, vsprintf helpers, -rdynamic, for-loop increment fix
 - **v0.6.0** — SMAUG Phase A/B/C: C pointer system, macros, compound types, enum, static, typedef
 - **v0.5.0** — Phase 4 prep: 38 embedded headers, dlsym fallback, struct alignment, sizeof, argc/argv
 
@@ -190,7 +191,8 @@ make -C src test
 | **Phase 3.5+** | switch, cin, class methods, regex, multi-return, ternary, namespace scoping | **Complete** |
 | **Phase 4 prep** | C preprocessor, 38 embedded headers, struct alignment, sizeof, argc/argv | **Complete** |
 | **SMAUG A/B/C** | Pointers, `->`, casts, `&`, macros, unsigned/enum/static/typedef | **Complete** |
-| **SMAUG D/E** | `va_list`, `fd_set`, struct interop, full SMAUG boot | In progress |
+| **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
+| **SMAUG E** | `fd_set`, struct interop, full SMAUG boot | In progress |
 | **Phase 4** | `libmadc.so` embedding API | Planned |
 
 ---

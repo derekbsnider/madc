@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v0.7.0] — 2026-04-16 — SMAUG Phase D: va_list + For-Loop Fix
+
 ### Added — SMAUG Phase D: Variadic Functions
 
 - **`va_list` / `<stdarg.h>` support** — Variadic functions with `...` syntax. Hidden
@@ -20,11 +22,13 @@
 
 - **39 embedded headers** — Added `<stdarg.h>` (was 38).
 
-### Known Issues
+### Fixed
 
-- **For-loop `i++` increment parsing bug** — `for ( i = 0; i < N; i++ )` fails.
-  Pre-existing: `parseExpression(tn, true)` for the condition consumes the `;` separator.
-  Workaround: use `while` loops.
+- **For-loop increment parsing bug** — `for ( i = 0; i < N; i++ )` now works. All
+  increment forms (`i++`, `i--`, `++i`, `--i`, `--c`) parse correctly. Root cause: the
+  conditional peek-stop in `parseExpression` left the `;` separator in the token stream,
+  so `TokenFOR::parse()` was passing `;` to `parseStatement` instead of the increment
+  expression. Fixed by consuming the `;` separator explicitly before calling `parseStatement`.
 
 ## [v0.6.0] — 2026-04-16 — SMAUG Phase A/B/C: C Pointer System + Macros
 
