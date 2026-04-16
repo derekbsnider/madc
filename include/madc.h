@@ -383,6 +383,8 @@ public:
     char **script_argv;			// argv for the .mad script
     bool _include_iostream;		// #include <iostream> was seen during tokenization
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
+    std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
+    int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
 
     bool colors;
     asmjit::JitRuntime jit;

@@ -406,15 +406,30 @@ class DataDefSTRUCT: public DataDef
 {
 public:
     std::vector<memberpair_t> members;
+    size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
+    size_t max_align;	// largest member alignment (for finalizing struct size)
+
+    static size_t align_up(size_t v, size_t a) { return a ? ((v + a - 1) & ~(a - 1)) : v; }
+
+    // compute alignment for a field: natural alignment capped by pack setting
+    size_t field_align(const DataDef &dd) const
+    {
+	size_t natural = dd.size > 8 ? 8 : dd.size;  // x86-64: max natural alignment is 8
+	if ( pack == 0 ) return natural;              // C ABI default
+	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
+    }
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
-    DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED) : DataDef(n, s, d) {}
-    DataDefSTRUCT(std::string n, std::vector<memberpair_t> m) : DataDef(n, 0, DataType::dtRESERVED)
+    DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
+	: DataDef(n, s, d), pack(0), max_align(1) {}
+    DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
+	: DataDef(n, 0, DataType::dtRESERVED), pack(0), max_align(1)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);
 	std::vector<memberpair_t>::iterator dvpi;
 	for ( dvpi = m.begin(); dvpi != m.end(); ++dvpi )
 	    addMember(dvpi->first, *dvpi->second, 1);
+	finalize();
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") members.size() " << members.size() << std::endl);
     }
     virtual ~DataDefSTRUCT()
@@ -424,9 +439,17 @@ public:
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
     void addMember(std::string n, DataDef &dd, size_t cnt)
     {
-	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ')' << std::endl);
-	size += dd.size * cnt;
+	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
+	size_t fa = field_align(dd);
+	size = align_up(size, fa);	// pad to field's alignment
+	if ( fa > max_align ) max_align = fa;
 	members.emplace_back(n, &dd);
+	size += dd.size * cnt;
+    }
+    // round struct size up to its overall alignment (for arrays of structs)
+    void finalize()
+    {
+	size = align_up(size, max_align);
     }
     ssize_t m_offset(std::string &member)
     {
@@ -435,7 +458,9 @@ public:
 	DBG(std::cout << "DataDefSTRUCT::offset(" << member << ')' << std::endl);
 	for ( dvpi = members.begin(); dvpi != members.end(); ++dvpi )
 	{
-	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << dvpi->first << std::endl);
+	    size_t fa = field_align(*dvpi->second);
+	    ofs = (ssize_t)align_up((size_t)ofs, fa);
+	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << dvpi->first << " ofs=" << ofs << std::endl);
 	    if ( !member.compare(dvpi->first) )
 		return ofs;
 	    ofs += dvpi->second->size;

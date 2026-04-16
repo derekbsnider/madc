@@ -505,6 +505,54 @@ TokenBase *Program::_getToken()
 			source.get();
 		    return getToken();
 		}
+		if ( directive == "pragma" )
+		{
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string pragma;
+		    while ( source.good() && !source.eof() && isalpha(source.peek()) )
+			pragma += source.get();
+		    if ( pragma == "pack" )
+		    {
+			while ( source.peek() == ' ' || source.peek() == '\t' )
+			    source.get();
+			if ( source.peek() == '(' )
+			{
+			    source.get(); // consume (
+			    while ( source.peek() == ' ' || source.peek() == '\t' )
+				source.get();
+			    std::string arg;
+			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+				arg += source.get();
+			    if ( arg == "push" )
+			    {
+				while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
+				    source.get();
+				int val = 0;
+				while ( source.good() && isdigit(source.peek()) )
+				    val = val * 10 + (source.get() - '0');
+				_pack_stack.push(val ? val : 1);
+				DBG(std::cout << "#pragma pack(push, " << (val ? val : 1) << ")" << std::endl);
+			    }
+			    else if ( arg == "pop" )
+			    {
+				if ( !_pack_stack.empty() )
+				    _pack_stack.pop();
+				DBG(std::cout << "#pragma pack(pop)" << std::endl);
+			    }
+			    // consume rest of line
+			    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+				source.get();
+			}
+		    }
+		    else
+		    {
+			// consume rest of line for unknown pragmas
+			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			    source.get();
+		    }
+		    return getToken();
+		}
 	    }
 	    return new TokenHash;
 	case '{': return new TokenOpBrc;

@@ -1766,6 +1766,36 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( !(tn=pgm.peekToken()) )
 	pgm.Throw << "Unexpected end of input" << flush;
 
+    // check for __attribute__((packed)) before or after tag
+    bool is_packed = false;
+    auto consume_attribute = [&]()
+    {
+	if ( tn && tn->type() == TokenType::ttIdentifier
+	&&   ((TokenIdent *)tn)->str == "__attribute__" )
+	{
+	    pgm.nextToken(); // consume __attribute__
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	    {
+		pgm.nextToken(); // consume first (
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    pgm.nextToken(); // consume second (
+		    TokenBase *attr = pgm.nextToken(); // consume attribute name
+		    if ( attr->type() == TokenType::ttIdentifier && ((TokenIdent *)attr)->str == "packed" )
+			is_packed = true;
+		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
+			pgm.nextToken(); // consume first )
+		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
+			pgm.nextToken(); // consume second )
+		}
+	    }
+	    tn = pgm.peekToken();
+	}
+    };
+
+    // __attribute__ can appear before the tag name
+    consume_attribute();
+
     // optional struct tag name
     if ( tn->type() == TokenType::ttIdentifier )
     {
@@ -1775,6 +1805,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	if ( !tn )
 	    pgm.Throw << "Unexpected end of input after struct tag" << flush;
     }
+
+    // __attribute__ can also appear after the tag name
+    consume_attribute();
 
     // if no brace, then this structure type must already be defined
     // and we are either doing a typedef, or a variable declaration
@@ -1810,6 +1843,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     pgm.nextToken(); // consume '{'
 
     DataDefSTRUCT *dds = new DataDefSTRUCT(tag ? tag->str : "anonymous", 0);
+    if ( is_packed || pgm.pack_stack_top() == 1 )
+	dds->pack = 1;
+    else if ( pgm.pack_stack_top() > 0 )
+	dds->pack = pgm.pack_stack_top();
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
@@ -1838,6 +1875,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input in struct definition" << flush;
     pgm.nextToken(); // consume '}'
+    dds->finalize(); // round up size to struct alignment
 
     // register the struct type
     if ( tag )

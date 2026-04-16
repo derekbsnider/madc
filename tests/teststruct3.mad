@@ -1,0 +1,48 @@
+#include <iostream>
+
+// Test struct alignment (C ABI) and __attribute__((packed))
+
+// With int32_t(4) before int64_t(8), should get 4 bytes padding
+// Total: 4 + 4(pad) + 8 = 16 bytes
+struct padded {
+    int32_t a;
+    int64_t b;
+};
+
+// packed: no padding
+// Total: 4 + 8 = 12 bytes
+struct __attribute__((packed)) packed {
+    int32_t a;
+    int64_t b;
+};
+
+// all same-size fields: no padding
+struct uniform {
+    int x;
+    int y;
+    int z;
+};
+
+int main()
+{
+    // padded: a at offset 0, b at offset 8 (with 4 bytes padding)
+    struct padded pd;
+    pd.a = 100;
+    pd.b = 200;
+    cout << "padded: " << pd.a << " " << pd.b << endl;  // 100 200
+
+    // packed: a at offset 0, b at offset 4 (no padding)
+    struct packed pk;
+    pk.a = 300;
+    pk.b = 400;
+    cout << "packed: " << pk.a << " " << pk.b << endl;  // 300 400
+
+    // uniform: all 8-byte fields
+    struct uniform u;
+    u.x = 1;
+    u.y = 2;
+    u.z = 3;
+    cout << "uniform: " << u.x << " " << u.y << " " << u.z << endl;  // 1 2 3
+
+    return 0;
+}

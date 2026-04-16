@@ -2489,7 +2489,11 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		if ( var->type->basetype() == BaseType::btStruct
 		||   var->type->basetype() == BaseType::btClass )
 		{
-		    x86::Mem stack = pgm.cc.newStack(var->type->size, 4);
+		    // align stack to struct's max member alignment (C ABI compatible)
+		    size_t struct_align = 8;
+		    if ( var->type->basetype() == BaseType::btStruct )
+			struct_align = static_cast<DataDefSTRUCT *>(var->type)->max_align;
+		    x86::Mem stack = pgm.cc.newStack(var->type->size, (uint32_t)struct_align);
 		    operand_map[var] = stack;
 
 		    // Construct any non-trivial members (strings, streams) inside the struct
