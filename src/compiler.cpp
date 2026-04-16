@@ -631,8 +631,19 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 			    continue;
 			}
 		    }
-		    params.push_back(areg);
-		    param_is_double.push_back(false);
+		    // load Mem operands (from -> member access) into Gp registers
+		    if ( areg.isMem() )
+		    {
+			x86::Gp tmp = pgm.cc.newGpq("mem_arg");
+			pgm.cc.mov(tmp, areg.as<x86::Mem>());
+			params.push_back(tmp);
+			param_is_double.push_back(false);
+		    }
+		    else
+		    {
+			params.push_back(areg);
+			param_is_double.push_back(false);
+		    }
 		}
 	    }
 
