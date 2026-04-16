@@ -1,6 +1,84 @@
 # Changelog
 
-## [Unreleased] — Phase 3.5+ (2026-04-15)
+## [Unreleased] — Phase 4 Prep (2026-04-15 → 2026-04-16)
+
+### Added — Standard C Infrastructure
+
+- **Embedded header system** — `#include <name>` checks headers baked into the binary (via
+  `scripts/gen_embedded_headers.sh` at build time) before filesystem. `include/madc/` contains
+  the source headers. Three implemented: `<iostream>`, `<math.h>`, `<stdio.h>`.
+
+- **`#include <iostream>`** — `cout`, `cin`, `cerr`, `endl` now require this include (matching
+  C++ convention). Uses lazy registration — symbols created on first use, not at parse init.
+
+- **`#include <math.h>`** — Auto-loads libm via `#load "libm.so.6"`. Defines `M_PI`, `M_E`,
+  `M_SQRT2`, `M_SQRT1_2`, `INFINITY`, `HUGE_VAL`. Math functions (`sqrt`, `sin`, `cos`, `pow`,
+  `floor`, `ceil`, `fabs`, `log`) available via dlsym fallback.
+
+- **`#include <stdio.h>`** — Defines `EOF`, `SEEK_SET`/`CUR`/`END`, `BUFSIZ`, `NULL`. `printf`,
+  `sprintf`, `snprintf` available via dlsym fallback.
+
+- **dlsym fallback** — Unresolved function calls followed by `(` try `dlsym(RTLD_DEFAULT, name)`
+  before throwing "undeclared identifier". Works for all libc functions: `getpid()`, `sleep()`,
+  `abs()`, `strlen()`, etc. No `#include` or `#load` needed for basic libc.
+
+- **Variadic dlsym call path** — Dedicated compile path for dlsym-resolved functions. Builds
+  `FuncSignature` from actual argument types (int, double, string→cstr). Infers double return
+  type from destination register or argument types. Supports `sqrt(4.0)`, `pow(2.0, 10.0)`.
+
+- **C preprocessor directives** — `#define NAME value` (constant substitution via pushback
+  re-tokenization), `#undef NAME`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`,
+  `#if defined(X)`, `#if !defined(X)`, `#if 0`/`#if 1`. Nested conditionals handled correctly.
+
+- **`#pragma pack(push, N)` / `#pragma pack(pop)`** — Controls struct field alignment. Maintains
+  a stack of pack values in the lexer.
+
+- **C ABI struct alignment** — Structs now use natural x86-64 alignment by default: fields
+  placed at `align_up(offset, min(field_size, 8))`. Total size rounded to max member alignment.
+  `DataDefSTRUCT.pack`: 0=natural (default), 1=packed, N=max alignment N.
+
+- **`struct __attribute__((packed))`** — Packed structs with no padding between fields.
+  Attribute parsed before or after the struct tag name.
+
+- **`sizeof()` operator** — Resolves to integer constant at parse time. Supports `sizeof(int)`,
+  `sizeof(struct name)`, `sizeof(int32_t)`. Works in expressions: `sizeof(int) * 10`.
+
+- **Compound assignment operators** — `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`,
+  `>>=`. All 10 operators with int and double support.
+
+- **Postfix increment/decrement** — `x++` and `x--` with correct old-value-return semantics.
+  Parser uses `prevToken()` for prefix/postfix disambiguation.
+
+- **Hex integer literals** — `0xFF`, `0xDEAD`, `0X1A`, mixed-case digits.
+
+- **Command line arguments** — `int main(int argc, char **argv)`. Script args passed from
+  the command line. `get_argv(argv, i)` built-in returns `const char*` for the i-th argument.
+
+- **Lazy symbol registration** — `lazy_map<name, {header, kind}>` defers `addGlobal`/
+  `addFunction` until the parser first encounters the symbol. Supports variables, functions,
+  types, and structs. Extensible for future `#include` headers.
+
+- **`RTLD_GLOBAL` for `#load`** — Loaded library symbols are globally visible via
+  `dlsym(RTLD_DEFAULT)`. No namespace prefix needed after `#include <math.h>`.
+
+### Fixed — Phase 4 Prep
+
+- **For-loop `regdp` clobber** — `TokenFOR::compile()` now resets `regdp` before condition,
+  statement, and increment sub-compilations. Prevents comparison results from overwriting
+  loop counter variables.
+
+- **`cout << func()` crash** — BSL was injecting the ostream as a hidden first parameter to
+  ALL function calls on the right side of `<<`. Fixed: only inject for ostream-consuming
+  functions (checked via `has_ostream()` on return type).
+
+- **dlsym function name** — dlsym fallback now registers functions under their original name
+  (was `__dl_` prefixed, which broke repeated calls to the same function).
+
+- **`streamout_cstr` null safety** — Added null pointer check for `const char*` output.
+
+---
+
+## [Phase 3.5+] — 2026-04-15
 
 ### Added — Post Phase 3.5
 

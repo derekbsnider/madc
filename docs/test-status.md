@@ -1,10 +1,33 @@
 # Test Status
 
-Test results as of April 15, 2026 (Phase 3.5+ complete).
+Test results as of April 16, 2026 (Phase 4 prep).
 
 Run with: `bin/madc tests/<name>.mad`
 
-## Passing Tests — 54/54 integration + 25/25 unit
+## Passing Tests — 65 integration (63 auto, 2 manual) + 25/25 unit
+
+### New tests added in this session
+
+| Test | What it tests |
+|------|--------------|
+| `testcompoundassign.mad` | All 10 compound assignment operators (+=, -=, *=, etc.) |
+| `testhex.mad` | Hex integer literals (0xFF, 0xDEAD, 0X1A) |
+| `testpostfix.mad` | Postfix x++/x-- with old-value-return semantics |
+| `testdefine.mad` | #define, #undef, #ifdef, #ifndef, #if, #elif, #else, #endif |
+| `testlibc.mad` | dlsym fallback: getpid(), sleep(), getuid(), getppid() |
+| `testmathh.mad` | #include <math.h>: M_PI, sqrt, floor, ceil, fabs, pow, sin, cos |
+| `testargv.mad` | int main(int argc, char **argv) — requires cmd args (manual) |
+| `teststruct3.mad` | C ABI alignment, __attribute__((packed)), mixed field sizes |
+| `testsizeof.mad` | sizeof(type), sizeof(struct), sizeof in expressions |
+
+### Notes
+
+- `testcin.mad` requires stdin input (run manually)
+- `testargv.mad` requires command line arguments: `bin/madc tests/testargv.mad hello world`
+- `include_helper.mad` is not standalone (included by testinclude.mad)
+- All tests that use `cout`/`cin`/`cerr`/`endl` now require `#include <iostream>`
+
+## Previously Passing Tests — 54/54 integration + 25/25 unit
 
 | Test | What it tests | Output |
 |------|--------------|--------|
