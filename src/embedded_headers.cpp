@@ -3,8 +3,90 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
+    {"dirent.h", R"EMBED(// madc embedded dirent.h — directory entry constants
+// Functions (opendir, readdir, closedir, rewinddir) available via dlsym fallback
+// struct dirent access deferred (requires struct interop)
+
+#define DT_UNKNOWN 0
+#define DT_FIFO    1
+#define DT_CHR     2
+#define DT_DIR     4
+#define DT_BLK     6
+#define DT_REG     8
+#define DT_LNK     10
+#define DT_SOCK    12
+#define DT_WHT     14
+)EMBED"},
+    {"errno.h", R"EMBED(// madc embedded errno.h — POSIX error constants
+// Note: errno itself (thread-local) is not directly accessible; use strerror()/perror() via dlsym
+
+#define EPERM    1
+#define ENOENT   2
+#define ESRCH    3
+#define EINTR    4
+#define EIO      5
+#define ENXIO    6
+#define E2BIG    7
+#define ENOEXEC  8
+#define EBADF    9
+#define ECHILD   10
+#define EAGAIN   11
+#define ENOMEM   12
+#define EACCES   13
+#define EFAULT   14
+#define EBUSY    16
+#define EEXIST   17
+#define EXDEV    18
+#define ENODEV   19
+#define ENOTDIR  20
+#define EISDIR   21
+#define EINVAL   22
+#define ENFILE   23
+#define EMFILE   24
+#define ENOTTY   25
+#define EFBIG    27
+#define ENOSPC   28
+#define ESPIPE   29
+#define EROFS    30
+#define EMLINK   31
+#define EPIPE    32
+#define ERANGE   34
+)EMBED"},
+    {"fcntl.h", R"EMBED(// madc embedded fcntl.h — file control constants (Linux x86-64 values)
+// Functions (open, creat, fcntl) available via dlsym fallback
+
+#define O_RDONLY   0
+#define O_WRONLY   1
+#define O_RDWR     2
+#define O_CREAT    64
+#define O_EXCL     128
+#define O_NOCTTY   256
+#define O_TRUNC    512
+#define O_APPEND   1024
+#define O_NONBLOCK 2048
+#define O_DSYNC    4096
+#define O_SYNC     1052672
+#define O_CLOEXEC  524288
+)EMBED"},
     {"iostream", R"EMBED(// madc embedded iostream — registers cout, cin, cerr, endl
 // The actual registration is handled by add_iostream() callback
+)EMBED"},
+    {"limits.h", R"EMBED(// madc embedded limits.h — integer limit constants
+
+#define CHAR_BIT  8
+#define SCHAR_MIN -128
+#define SCHAR_MAX 127
+#define UCHAR_MAX 255
+#define SHRT_MIN  -32768
+#define SHRT_MAX  32767
+#define USHRT_MAX 65535
+#define INT_MIN   -2147483648
+#define INT_MAX   2147483647
+#define UINT_MAX  4294967295
+#define LONG_MIN  -9223372036854775807
+#define LONG_MAX  9223372036854775807
+#define PATH_MAX  4096
+#define NAME_MAX  255
 )EMBED"},
     {"math.h", R"EMBED(// madc embedded math.h — auto-loads libm and defines math constants
 #load "libm.so.6" as libm;
@@ -22,6 +104,33 @@ static std::map<std::string, std::string> embedded_headers = {
 #define HUGE_VAL   1e308
 #define INFINITY   1e309
 )EMBED"},
+    {"signal.h", R"EMBED(// madc embedded signal.h — POSIX signal constants (Linux values)
+// Functions (kill, signal, raise, sigaction) available via dlsym fallback
+
+#define SIGHUP  1
+#define SIGINT  2
+#define SIGQUIT 3
+#define SIGILL  4
+#define SIGTRAP 5
+#define SIGABRT 6
+#define SIGBUS  7
+#define SIGFPE  8
+#define SIGKILL 9
+#define SIGUSR1 10
+#define SIGSEGV 11
+#define SIGUSR2 12
+#define SIGPIPE 13
+#define SIGALRM 14
+#define SIGTERM 15
+#define SIGCHLD 17
+#define SIGCONT 18
+#define SIGSTOP 19
+#define SIGTSTP 20
+
+// Signal dispositions (passed as handler arg to signal())
+#define SIG_DFL 0
+#define SIG_IGN 1
+)EMBED"},
     {"stdio.h", R"EMBED(// madc embedded stdio.h — C standard I/O
 // printf/fprintf/sprintf/snprintf are available via dlsym fallback (libc is always loaded)
 
@@ -31,6 +140,117 @@ static std::map<std::string, std::string> embedded_headers = {
 #define SEEK_END 2
 #define BUFSIZ 8192
 #define NULL 0
+)EMBED"},
+    {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
+// Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback
+
+#define EXIT_SUCCESS 0
+#define EXIT_FAILURE 1
+#define RAND_MAX     2147483647
+)EMBED"},
+    {"string.h", R"EMBED(// madc embedded string.h — C string functions
+// All functions available via dlsym fallback (libc always loaded):
+//   strlen, strcmp, strncmp, strcpy, strncpy, strcat, strncat,
+//   strchr, strrchr, strstr, strdup, memcpy, memmove, memset, memcmp
+)EMBED"},
+    {"sys/stat.h", R"EMBED(// madc embedded sys/stat.h — file status constants (Linux x86-64 values)
+// Functions (stat, fstat, lstat, chmod, mkdir, mkfifo) available via dlsym fallback
+// struct stat access deferred (requires struct interop)
+
+// File type bits (for st_mode)
+#define S_IFMT   0xF000
+#define S_IFREG  0x8000
+#define S_IFDIR  0x4000
+#define S_IFLNK  0xA000
+#define S_IFBLK  0x6000
+#define S_IFCHR  0x2000
+#define S_IFIFO  0x1000
+#define S_IFSOCK 0xC000
+
+// Permission bits
+#define S_ISUID  0x800
+#define S_ISGID  0x400
+#define S_ISVTX  0x200
+
+#define S_IRUSR  0x100
+#define S_IWUSR  0x80
+#define S_IXUSR  0x40
+#define S_IRWXU  0x1C0
+
+#define S_IRGRP  0x20
+#define S_IWGRP  0x10
+#define S_IXGRP  0x8
+#define S_IRWXG  0x38
+
+#define S_IROTH  0x4
+#define S_IWOTH  0x2
+#define S_IXOTH  0x1
+#define S_IRWXO  0x7
+)EMBED"},
+    {"sys/wait.h", R"EMBED(// madc embedded sys/wait.h — process wait constants
+// Functions (wait, waitpid) available via dlsym fallback
+
+#define WNOHANG   1
+#define WUNTRACED 2
+#define WCONTINUED 8
+
+// Macros to extract status from waitpid() result
+// (implemented as simple integer expressions)
+#define WIFEXITED(s)    (((s) & 0x7f) == 0)
+#define WEXITSTATUS(s)  (((s) >> 8) & 0xff)
+#define WIFSIGNALED(s)  (((s) & 0x7f) != 0 && ((s) & 0x7f) != 0x7f)
+#define WTERMSIG(s)     ((s) & 0x7f)
+#define WIFSTOPPED(s)   (((s) & 0xff) == 0x7f)
+#define WSTOPSIG(s)     (((s) >> 8) & 0xff)
+)EMBED"},
+    {"time.h", R"EMBED(// madc embedded time.h — POSIX time constants and type aliases
+// Functions (time, clock, difftime, mktime, localtime, gmtime, strftime, nanosleep)
+// available via dlsym fallback
+// struct tm access deferred (requires struct interop)
+
+// Clocks
+#define CLOCKS_PER_SEC 1000000
+#define CLOCK_REALTIME  0
+#define CLOCK_MONOTONIC 1
+#define CLOCK_PROCESS_CPUTIME_ID 2
+#define CLOCK_THREAD_CPUTIME_ID  3
+
+// Time type aliases
+#define time_t  int64_t
+#define clock_t int64_t
+)EMBED"},
+    {"unistd.h", R"EMBED(// madc embedded unistd.h — POSIX constants and type aliases
+// Functions (read, write, close, lseek, fork, execvp, pipe, dup2,
+//           getcwd, chdir, unlink, rmdir, access, getpid, getuid, sleep)
+// available via dlsym fallback
+
+// Standard file descriptors
+#define STDIN_FILENO  0
+#define STDOUT_FILENO 1
+#define STDERR_FILENO 2
+
+// access() mode flags
+#define F_OK 0
+#define X_OK 1
+#define W_OK 2
+#define R_OK 4
+
+// lseek() whence values (mirrors stdio.h SEEK_*)
+#define SEEK_SET 0
+#define SEEK_CUR 1
+#define SEEK_END 2
+
+// POSIX type aliases — substituted at tokenization time via #define
+#define pid_t    int
+#define uid_t    int
+#define gid_t    int
+#define off_t    int64_t
+#define size_t   uint64_t
+#define ssize_t  int64_t
+#define mode_t   int
+#define dev_t    int64_t
+#define ino_t    uint64_t
+#define nlink_t  int64_t
 )EMBED"}
 };
 

@@ -58,7 +58,7 @@ typedef enum : uint16_t { tfBRACKETED	=    1,
 class TokenBase
 {
 protected:
-    int _token;
+    int64_t _token;
     DataDef *_datatype;
     asmjit::x86::Gp _reg;
     asmjit::Operand _operand;
@@ -69,11 +69,11 @@ public:
     int line;
     int column;
     std::streampos pos;
-    TokenBase()      { _token = 0; _datatype = &ddVOID; _flags = 0; }
-    TokenBase(int t) { _token = t; _datatype = &ddVOID; _flags = 0; }
+    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; }
+    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; }
     virtual ~TokenBase() {}
     virtual TokenBase *clone() { return new TokenBase(_token); }
-    virtual void set(int c)  { /*DBG(cout << "TokenBase::set(" << c << ')' << endl);*/ _token = c;    }
+    virtual void set(int64_t c) { _token = c; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
     virtual void setFlag(tokflag_t f) { _flags |= f; }
     virtual bool is_bracketed()  { return (_flags & tfBRACKETED) ? true : false;  }
@@ -83,8 +83,8 @@ public:
     virtual bool is_real()     { return false; }
     virtual int inc() { return 0; }
     virtual int dec() { return 0; }
-    virtual int get() const     { return _token; }
-    virtual int ival() const    { return 0; }
+    virtual int64_t get() const  { return _token; }
+    virtual int ival() const     { return 0; }
     virtual double dval() const { return 0; }
     virtual size_t argc() const { return 0; }
     virtual TokenType  type()  const { return TokenType::ttBase; }
@@ -826,9 +826,9 @@ public:
 class TokenInt: public TokenBase
 {
 public:
-    TokenInt() : TokenBase()       { _datatype = &ddINT; }
-    TokenInt(int v) : TokenBase(v) { _datatype = &ddINT; }
-    virtual int ival() const       { return _token;      }
+    TokenInt() : TokenBase()            { _datatype = &ddINT; }
+    TokenInt(int64_t v) : TokenBase(v) { _datatype = &ddINT; }
+    virtual int ival() const            { return (int)_token; }
     virtual double dval() const    { return (double)_token; }
     virtual TokenType type() const { return TokenType::ttInteger; }
     virtual TokenID   id()   const { return TokenID::tkInt; }

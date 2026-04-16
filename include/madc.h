@@ -466,8 +466,9 @@ public:
     void safemov(asmjit::x86::Mem &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Mem &, asmjit::x86::Xmm &, DataDef *, DataDef *);
     void safemov(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
-    // only int and double are standard numeric token types
+    // int, int64 and double are the standard numeric token types
     void safemov(asmjit::Operand &,  int, DataDef *d1=NULL, DataDef *d2=NULL);
+    void safemov(asmjit::Operand &,  int64_t, DataDef *d1=NULL, DataDef *d2=NULL);
     void safemov(asmjit::Operand &,  double, DataDef *d1=NULL, DataDef *d2=NULL);
 
     // perform cc.add with size casting

@@ -166,11 +166,11 @@ public:
     Variable &var;
     TokenVar(Variable &v) : TokenBase(), var(v) { _datatype = v.type; }
     virtual TokenType type() const { return TokenType::ttVariable; }
-    virtual int get() const { return var.get<int>(); }
-    virtual int val() const { return var.get<int>(); }
+    virtual int64_t get() const { return var.get<int64_t>(); }
+    virtual int val() const     { return var.get<int>(); }
     virtual bool is_constant() { return var.is_constant(); }
     virtual bool is_real() { return _datatype->is_real(); }
-    virtual void set(int c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
+    virtual void set(int64_t c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
     virtual void putreg(Program &);
 //  virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::Operand &operand(Program &);

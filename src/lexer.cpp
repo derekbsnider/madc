@@ -697,7 +697,7 @@ TokenBase *Program::_getToken()
 		    }
 		    return new TokenInt((int)hv);
 		}
-		int v = (ch & 0xf);
+		int64_t v = (ch & 0xf);
 
 		while ( source.good() && isdigit(source.peek()) )
 		{

@@ -1,6 +1,7 @@
 #!/bin/bash
-# Generate src/embedded_headers.cpp from include/madc/*.h files
-# Each file becomes an entry in a map<string, string> keyed by its basename
+# Generate src/embedded_headers.cpp from include/madc/* files
+# Supports subdirectories — keys are paths relative to include/madc/
+# e.g. include/madc/sys/wait.h becomes "sys/wait.h"
 
 SRCDIR="$(dirname "$0")/../include/madc"
 OUTFILE="$(dirname "$0")/../src/embedded_headers.cpp"
@@ -14,19 +15,19 @@ static std::map<std::string, std::string> embedded_headers = {
 HEADER
 
 first=1
-for f in "$SRCDIR"/*; do
+while IFS= read -r f; do
     [ -f "$f" ] || continue
-    name=$(basename "$f")
+    # key = path relative to SRCDIR (e.g. "sys/wait.h")
+    name="${f#${SRCDIR}/}"
     if [ "$first" -ne 1 ]; then
-        echo "," >> "$OUTFILE"
+        printf ',\n' >> "$OUTFILE"
     fi
     first=0
     printf '    {"%s", ' "$name" >> "$OUTFILE"
-    # output file content as a C++ raw string literal
     printf 'R"EMBED(' >> "$OUTFILE"
     cat "$f" >> "$OUTFILE"
     printf ')EMBED"}' >> "$OUTFILE"
-done
+done < <(find "$SRCDIR" -type f | sort)
 
 cat >> "$OUTFILE" <<'FOOTER'
 

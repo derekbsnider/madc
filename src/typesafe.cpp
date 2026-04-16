@@ -131,6 +131,11 @@ void Program::safemov(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
 
 void Program::safemov(Operand &op1, int i, DataDef *d1, DataDef *d2)
 {
+    safemov(op1, (int64_t)i, d1, d2);
+}
+
+void Program::safemov(Operand &op1, int64_t i, DataDef *d1, DataDef *d2)
+{
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
 	x86::Mem _const = cc.newDoubleConst(ConstPoolScope::kLocal, (double)i);
@@ -141,7 +146,7 @@ void Program::safemov(Operand &op1, int i, DataDef *d1, DataDef *d2)
 	    cc.movsd(op1.as<x86::Xmm>(), _const);
 	return;
     }
-    DBG(cc.comment("safemov(Operand, int)"));
+    DBG(cc.comment("safemov(Operand, int64_t)"));
     Operand op2 = imm(i);
     safemov(op1, op2, d1, d2);
 }
@@ -452,8 +457,6 @@ void Program::safeneg(Operand &op)
     if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.neg(op.as<x86::Gp>());
-	if ( op.x86RmSize() > 1 )
-	    cc.movsx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
     }
     else
 	throw "safeneg() unsupported register type";
