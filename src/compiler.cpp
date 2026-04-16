@@ -2588,6 +2588,36 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
         return _operand;
     }
 
+    // Raw pointer subscript: ptr[i] == *(ptr + i).
+    // obj_reg already holds the pointer value (from voperand). Compute
+    // [ptr + idx * sizeof(base_type)] with SIB scale when possible.
+    if ( !object.is_fixed_array() && object.type->is_pointer() )
+    {
+        DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(object.type);
+        DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+        size_t elem_size = base->size ? base->size : 8;
+        uint32_t shift = 0;
+        if      ( elem_size == 8 ) shift = 3;
+        else if ( elem_size == 4 ) shift = 2;
+        else if ( elem_size == 2 ) shift = 1;
+        DBG(pgm.cc.comment("pointer subscript read"));
+        x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( !regdp.second )
+            regdp.second = _datatype;
+        if ( regdp.first && regdp.first->isReg() )
+        {
+            pgm.safemov(*regdp.first, elem_mem, regdp.second, _datatype);
+            return *regdp.first;
+        }
+        x86::Gp res = pgm.cc.newGpq("sub_res");
+        if      ( elem_size == 8 ) pgm.cc.mov(res, elem_mem);
+        else if ( elem_size == 4 ) pgm.cc.movsxd(res, elem_mem);
+        else                       pgm.cc.movsx(res, elem_mem);
+        _operand = res;
+        regdp.first = &_operand;
+        return _operand;
+    }
+
     if ( ctype == DataType::dtVECTOR )
     {
         DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(object.type);
@@ -2722,6 +2752,31 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
         {
             // immediate value
             pgm.cc.mov(elem_mem, val_op.as<Imm>());
+        }
+        return;
+    }
+
+    // Raw pointer subscript write: ptr[i] = val  →  *(ptr + i*elem) = val
+    if ( !object.is_fixed_array() && object.type->is_pointer() )
+    {
+        DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(object.type);
+        DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+        size_t elem_size = base->size ? base->size : 8;
+        uint32_t shift = 0;
+        if      ( elem_size == 8 ) shift = 3;
+        else if ( elem_size == 4 ) shift = 2;
+        else if ( elem_size == 2 ) shift = 1;
+        DBG(pgm.cc.comment("pointer subscript write"));
+        x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( val_op.isImm() )
+            pgm.cc.mov(elem_mem, val_op.as<Imm>());
+        else if ( val_op.isReg() )
+        {
+            x86::Gp val_gp = val_op.as<x86::Gp>();
+            if      ( elem_size == 8 ) pgm.cc.mov(elem_mem, val_gp.r64());
+            else if ( elem_size == 4 ) pgm.cc.mov(elem_mem, val_gp.r32());
+            else if ( elem_size == 2 ) pgm.cc.mov(elem_mem, val_gp.r16());
+            else                       pgm.cc.mov(elem_mem, val_gp.r8());
         }
         return;
     }

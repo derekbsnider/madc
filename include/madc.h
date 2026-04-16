@@ -219,6 +219,12 @@ public:
     {
         if ( o.is_fixed_array() )
             _datatype = o.type; // C fixed array: subscript yields element of base type
+        else if ( o.type->is_pointer() )
+        {
+            // Raw pointer: ptr[i] == *(ptr + i). Element type = pointed-to type.
+            DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(o.type);
+            _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+        }
         else if ( o.type->type() == DataType::dtVECTOR )
             _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
         else if ( o.type->type() == DataType::dtMAP )

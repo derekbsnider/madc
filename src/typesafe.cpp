@@ -274,7 +274,12 @@ void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	    safemov(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
 	if ( op2.isMem() )
-	    cc.mov(op1.as<x86::Gp>(), op2.as<x86::Mem>());
+	{
+	    // Forward to typed (Gp, Mem) so size-mismatched loads get sign/zero-extension.
+	    x86::Mem mm = op2.as<x86::Mem>();
+	    x86::Gp  gp = op1.as<x86::Gp>();
+	    safemov(gp, mm, d1, d2);
+	}
 	else
 	if ( op2.isImm() )
 	    cc.mov(op1.as<x86::Gp>(), op2.as<Imm>());
