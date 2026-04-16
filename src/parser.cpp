@@ -1140,8 +1140,10 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    if ( !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
 	    {
 		size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0)
-			- (md && md->owner_class ? 1 : 0);
-		if ( tc->argc() != expected )
+			- (md && md->owner_class ? 1 : 0)
+			- (fd->is_varargs ? 1 : 0);
+		// varargs functions accept expected or more args; fixed functions require exact match
+		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
 		{
 		    DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << expected << std::endl);
 		    Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
@@ -1563,6 +1565,60 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			Throw(type_tb) << "Expecting ')' after sizeof type" << flush;
 		    nextToken(); // consume )
 		    exStack.push(new TokenInt((int)dd->size));
+		    break;
+		}
+		// va_arg(ap, type) — compiler intrinsic for reading variadic args
+		if ( ((TokenIdent *)tb)->str == "va_arg" )
+		{
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after va_arg" << flush;
+		    nextToken(); // consume (
+		    // first arg: the va_list variable name
+		    TokenBase *ap_tb = nextToken();
+		    if ( ap_tb->type() != TokenType::ttIdentifier )
+			Throw(ap_tb) << "Expecting va_list variable name in va_arg" << flush;
+		    std::string ap_name = ((TokenIdent *)ap_tb)->str;
+		    TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
+		    Variable *ap_var = scope ? scope->findVariable(ap_name) : NULL;
+		    if ( !ap_var )
+			ap_var = findVariable(ap_name);
+		    if ( !ap_var )
+			Throw(ap_tb) << "Unknown variable '" << ap_name << "' in va_arg" << flush;
+		    // consume comma
+		    TokenBase *comma_tb = nextToken();
+		    if ( comma_tb->id() != TokenID::tkComma )
+			Throw(comma_tb) << "Expecting ',' after va_list variable in va_arg" << flush;
+		    // second arg: type name
+		    TokenBase *type_tb = nextToken();
+		    DataDef *target_dd = NULL;
+		    if ( type_tb->type() == TokenType::ttDataType )
+			target_dd = &((TokenDataType *)type_tb)->definition;
+		    else if ( type_tb->type() == TokenType::ttIdentifier )
+		    {
+			std::string tname = ((TokenIdent *)type_tb)->str;
+			datatype_map_iter tdmi = datatype_map.find(tname);
+			if ( tdmi != datatype_map.end() )
+			    target_dd = &tdmi->second->definition;
+			if ( !target_dd )
+			{
+			    datadef_map_iter sdmi = struct_map.find(tname);
+			    if ( sdmi != struct_map.end() )
+				target_dd = sdmi->second;
+			}
+		    }
+		    if ( !target_dd )
+			Throw(type_tb) << "Unknown type in va_arg" << flush;
+		    // handle pointer: va_arg(ap, char *)
+		    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+		    {
+			nextToken(); // consume '*'
+			target_dd = getPointerType(target_dd);
+		    }
+		    // consume closing )
+		    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+			Throw(type_tb) << "Expecting ')' after va_arg type" << flush;
+		    nextToken(); // consume )
+		    exStack.push(new TokenVaArg(ap_var, target_dd));
 		    break;
 		}
 	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
@@ -2562,7 +2618,8 @@ TokenBase *TokenFOR::parse(Program &pgm)
     if ( !(condition = pgm.parseExpression(tn, true)) )
 	pgm.Throw(tn) << "Failed to parse expression" << flush;
 
-    tn = pgm.nextToken();
+    tn = pgm.nextToken();  // consume ; separator between condition and increment
+    tn = pgm.nextToken();  // first token of increment expression
     DBG(cout << "TokenFOR::parse() increment: calling parseStatement(" << (char)tn->get() << ')' << endl);
     if ( !(increment = pgm.parseStatement(tn)) )
 	pgm.Throw(tn) << "Failed to parse increment" << flush;
@@ -3349,6 +3406,25 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // look for parameters
     while ( (nt=nextToken()) && nt->id() != TokenID::tkClBrk )
     {
+	// detect ... (variadic parameter)
+	if ( nt->id() == TokenID::tkDot )
+	{
+	    TokenBase *d2 = nextToken();
+	    TokenBase *d3 = nextToken();
+	    if ( !d2 || d2->id() != TokenID::tkDot || !d3 || d3->id() != TokenID::tkDot )
+		Throw(nt) << "Expecting '...' for variadic parameter" << flush;
+	    func->is_varargs = true;
+	    // inject hidden __va_args parameter (pointer to packed args buffer)
+	    func->parameters.push_back(&ddINT64);
+	    ids.push_back("__va_args");
+	    DBG(cout << "parseFunction() detected varargs, injected __va_args" << endl);
+	    // next token should be )
+	    nt = nextToken();
+	    if ( nt->id() != TokenID::tkClBrk )
+		Throw(nt) << "Expecting ')' after '...'" << flush;
+	    break;
+	}
+
 	// handle 'struct Tag' as parameter type
 	if ( nt->id() == TokenID::tkSTRUCT )
 	{

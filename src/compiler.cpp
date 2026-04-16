@@ -783,10 +783,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 //#endif
 
-    // adjust expected param count: subtract hidden params (retbuf for multi-return, this for methods)
+    // adjust expected param count: subtract hidden params (retbuf for multi-return, this for methods, va_args for varargs)
     size_t expected_argc = func->parameters.size();
     if ( func->is_multi_return() ) expected_argc--; // hidden __retbuf param
-    if ( !is_variadic && argc() > expected_argc )
+    if ( func->is_varargs ) expected_argc--; // hidden __va_args param
+    if ( !is_variadic && !func->is_varargs && argc() > expected_argc )
     {
 	std::cerr << "ERROR: TokenCallFunc::compile() method " << var.name << " called with too many parameters" << std::endl;
 	std::cerr << "argc(): " << argc() << " func->parameters.size(): " << func->parameters.size() << std::endl;
@@ -799,7 +800,8 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 
     size_t param_offset = (func->is_multi_return() || (method && method->owner_class)) ? 1 : 0;
-    for ( size_t i = 0; i < argc(); ++i )
+    size_t fixed_argc = func->is_varargs ? expected_argc : argc();
+    for ( size_t i = 0; i < fixed_argc; ++i )
     {
 	regdefp_t funcrdp;
 	size_t pi = i + param_offset;
@@ -913,6 +915,72 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    case DataType::dtCHARptr:	funcsig.addArgT<const char *>();break;
 	    default:			funcsig.addArgT<void *>();	break;
 	} // switch
+    }
+
+    // varargs call site: pack extra arguments into a stack buffer, pass as __va_args
+    if ( func->is_varargs && argc() > fixed_argc )
+    {
+	size_t nvarargs = argc() - fixed_argc;
+	x86::Mem va_buf = pgm.cc.newStack((uint32_t)(nvarargs * 8), 8);
+	x86::Gp va_ptr = pgm.cc.newIntPtr("__va_buf");
+	pgm.cc.lea(va_ptr, va_buf);
+
+	for ( size_t i = 0; i < nvarargs; ++i )
+	{
+	    TokenBase *tn_va = parameters[fixed_argc + i];
+	    regdefp_t vrdp = {NULL, NULL, NULL};
+	    Operand &va_reg = tn_va->compile(pgm, vrdp);
+
+	    x86::Gp val = pgm.cc.newGpq("va_pack");
+	    if ( va_reg.isReg() && va_reg.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    {
+		x86::Gp gp = va_reg.as<x86::Gp>();
+		if ( gp.size() < 8 )
+		{
+		    if ( vrdp.second && vrdp.second->is_unsigned() )
+			pgm.cc.movzx(val, gp);
+		    else
+			pgm.cc.movsx(val, gp);
+		}
+		else
+		    pgm.cc.mov(val, gp);
+	    }
+	    else if ( va_reg.isReg() && va_reg.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		// store double as raw 8 bytes
+		pgm.cc.movq(val, va_reg.as<x86::Xmm>());
+	    }
+	    else if ( va_reg.isMem() )
+		pgm.cc.mov(val, va_reg.as<x86::Mem>());
+	    else if ( va_reg.isImm() )
+		pgm.cc.mov(val, va_reg.as<Imm>());
+	    // coerce string to const char* for varargs
+	    if ( vrdp.second && vrdp.second->rawtype() == DataType::dtSTRING )
+	    {
+		x86::Gp cstr = pgm.cc.newIntPtr("va_cstr");
+		InvokeNode *cstr_call;
+		pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+		cstr_call->setArg(0, va_reg.as<x86::Gp>());
+		cstr_call->setRet(0, cstr);
+		val = cstr;
+	    }
+
+	    x86::Mem slot = va_buf;
+	    slot.addOffset((int64_t)(i * 8));
+	    slot.setSize(8);
+	    pgm.cc.mov(slot, val);
+	}
+
+	params.push_back(va_ptr);
+	funcsig.addArgT<int64_t>(); // __va_args: pointer to packed buffer
+    }
+    else if ( func->is_varargs )
+    {
+	// no extra args — pass NULL for __va_args
+	x86::Gp null_ptr = pgm.cc.newIntPtr("__va_null");
+	pgm.cc.mov(null_ptr, 0);
+	params.push_back(null_ptr);
+	funcsig.addArgT<int64_t>();
     }
 
     if ( !fnd )
@@ -1193,6 +1261,22 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	    rbvar->flags |= vfPARAM;
 	    method.parameters.insert(method.parameters.begin(), rbvar);
 	    func->parameters.insert(func->parameters.begin(), &ddINT64);
+	}
+    }
+
+    // varargs: inject hidden __va_args param if not already present
+    if ( func->is_varargs )
+    {
+	bool has_va = false;
+	for ( auto *p : method.parameters )
+	    if ( p->name == "__va_args" ) { has_va = true; break; }
+	if ( !has_va )
+	{
+	    std::string vaname = "__va_args";
+	    Variable *vavar = new Variable(vaname, ddINT64, 1, NULL, false);
+	    vavar->flags |= vfPARAM;
+	    method.parameters.push_back(vavar);
+	    func->parameters.push_back(&ddINT64);
 	}
     }
 
@@ -4045,6 +4129,43 @@ Operand &TokenAddrOf::compile(Program &pgm, regdefp_t &regdp)
 	return *regdp.first;
     }
     _operand = addr;
+    regdp.first = &_operand;
+    return _operand;
+}
+
+// va_arg(ap, type) — read next variadic argument from packed buffer and advance
+Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenVaArg::compile()"));
+
+    // get the va_list variable's operand (it's an int64_t holding a pointer)
+    Operand &ap_op = pgm.tkFunction->voperand(pgm, ap_var);
+
+    // load current pointer value into a temp register
+    x86::Gp ptr = pgm.cc.newIntPtr("va_ptr");
+    if ( ap_op.isReg() )
+	pgm.cc.mov(ptr, ap_op.as<x86::Gp>());
+    else
+	pgm.cc.mov(ptr, ap_op.as<x86::Mem>());
+
+    // read value at [ptr] into result register
+    x86::Gp result = pgm.cc.newGpq("va_val");
+    pgm.cc.mov(result, x86::qword_ptr(ptr));
+
+    // advance ap by 8 bytes
+    pgm.cc.add(ptr, 8);
+    if ( ap_op.isReg() )
+	pgm.cc.mov(ap_op.as<x86::Gp>(), ptr);
+    else
+	pgm.cc.mov(ap_op.as<x86::Mem>(), ptr);
+
+    regdp.second = target_type;
+    if ( regdp.first )
+    {
+	pgm.safemov(*regdp.first, result, regdp.second, &ddINT64);
+	return *regdp.first;
+    }
+    _operand = result;
     regdp.first = &_operand;
     return _operand;
 }

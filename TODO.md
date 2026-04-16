@@ -2,12 +2,6 @@
 
 ## High Priority
 
-### SMAUG Phase D — I/O Infrastructure
-
-- **`<stdarg.h>` / `va_list`** — `va_list`, `va_start`, `va_end`, `va_arg`. Used in
-  `comm.c`, `db.c`, `misc.c` for `ch_printf`, `log_string`, `send_to_char`. Without this,
-  all formatted output functions fail. Hardest remaining SMAUG blocker.
-
 ### Language Completeness
 
 - **`cout << [const char*]` in chained expressions** — `cout << func_returning_cstr() << endl`
@@ -143,3 +137,5 @@
 - ~~**Compound assignments on struct members**~~ — resolveCompoundLHS helper (b61fdbe)
 - ~~**make fulltest**~~ — unit + integration tests in one command (bbc2f04)
 - ~~**isUnaryPosition()/isPostfixPosition() helpers**~~ — replaces duplicated checks (59805a6)
+- ~~**`<stdarg.h>` / `va_list`**~~ — `...` in function decls, va_start/va_end macros, va_arg intrinsic, packed int64_t[] buffer, format-aware vsprintf helper (9afa644)
+- ~~**For-loop increment parsing bug**~~ — `i++`/`i--`/`++i`/`--i` in for-loop third position now works. Root cause: conditional `parseExpression` left `;` in stream; fixed with one extra `nextToken()` in `TokenFOR::parse()`

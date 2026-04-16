@@ -1069,6 +1069,17 @@ public:
     virtual TokenBase *parse(Program &pgm);
 };
 
+// va_arg(ap, type) — reads next variadic argument and advances va_list pointer
+class TokenVaArg: public TokenBase
+{
+public:
+    Variable *ap_var;     // the va_list variable
+    DataDef *target_type; // the type to read as
+    TokenVaArg(Variable *ap, DataDef *tt) : ap_var(ap), target_type(tt) { _datatype = tt; }
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 class TokenBREAK: public TokenKeyword
 {
 public:

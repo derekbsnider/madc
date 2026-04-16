@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [v0.7.0] — 2026-04-16 — SMAUG Phase D: va_list + For-Loop Fix
+
+### Added — SMAUG Phase D: Variadic Functions
+
+- **`va_list` / `<stdarg.h>` support** — Variadic functions with `...` syntax. Hidden
+  `__va_args` parameter carries a packed `int64_t[]` buffer from call site to callee.
+  `va_start` macro sets the pointer, `va_arg` is a compiler intrinsic that reads and
+  advances, `va_end` is a no-op macro. Design avoids the System V `va_list` struct
+  (impossible in asmjit Compiler mode due to virtual registers).
+
+- **`vsprintf`/`vsnprintf`/`vfprintf` helpers** — Format-string-aware C functions
+  (`__madc_vsprintf` etc.) compiled into the binary. Parse `%d`/`%s`/`%f`/etc. from
+  the format string and call `sprintf` per-specifier with args from the packed buffer.
+  Redirected via `#define vsprintf __madc_vsprintf` in embedded `<stdarg.h>`.
+
+- **`-rdynamic` linker flag** — Exports binary symbols for `dlsym(RTLD_DEFAULT)`
+  visibility, enabling JIT code to call built-in C helpers like `__madc_vsprintf`.
+
+- **39 embedded headers** — Added `<stdarg.h>` (was 38).
+
+### Fixed
+
+- **For-loop increment parsing bug** — `for ( i = 0; i < N; i++ )` now works. All
+  increment forms (`i++`, `i--`, `++i`, `--i`, `--c`) parse correctly. Root cause: the
+  conditional peek-stop in `parseExpression` left the `;` separator in the token stream,
+  so `TokenFOR::parse()` was passing `;` to `parseStatement` instead of the increment
+  expression. Fixed by consuming the `;` separator explicitly before calling `parseStatement`.
+
 ## [v0.6.0] — 2026-04-16 — SMAUG Phase A/B/C: C Pointer System + Macros
 
 ### Added — C Pointer and Type System (Phase A — all 5 items complete)
