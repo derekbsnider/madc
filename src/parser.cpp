@@ -1952,7 +1952,18 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !tag )
 	    pgm.Throw(tn) << "Expecting '{' or identifier after struct" << flush;
-	if ( (dmi=pgm.struct_map.find(tag->str)) == pgm.struct_map.end() )
+	dmi = pgm.struct_map.find(tag->str);
+
+	// forward typedef: typedef struct tag_name alias; (struct not yet defined)
+	if ( dmi == pgm.struct_map.end() && do_typedef )
+	{
+	    // create placeholder struct (size 0, no members) for forward declaration
+	    DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->str, 0);
+	    pgm.struct_map[tag->str] = fwd;
+	    dmi = pgm.struct_map.find(tag->str);
+	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
+	}
+	if ( dmi == pgm.struct_map.end() )
 	    pgm.Throw(tn) << "Unknown struct type '" << tag->str << "'" << flush;
 	// typedef struct tag alias
 	if ( do_typedef )
@@ -1965,6 +1976,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.Throw(tn) << "Identifier already defined" << flush;
 	    tdt = new TokenDataType(alias->str.c_str(), *dmi->second);
 	    pgm.datatype_map[alias->str] = tdt;
+	    // also register tag in struct_map so "struct tag" works
+	    pgm.struct_map[alias->str] = dmi->second;
 	    return NULL;
 	}
 
@@ -2025,10 +2038,30 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // register the struct type
     if ( tag )
     {
-	if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
-	    pgm.Throw(tag) << "Struct '" << tag->str << "' already defined" << flush;
-	pgm.struct_map[tag->str] = dds;
-	DBG(cout << "TokenSTRUCT::parse() registered struct " << tag->str << " size=" << dds->size << endl);
+	dmi = pgm.struct_map.find(tag->str);
+	if ( dmi != pgm.struct_map.end() )
+	{
+	    // allow completing a forward-declared struct (size 0, no members)
+	    DataDefSTRUCT *existing = static_cast<DataDefSTRUCT *>(dmi->second);
+	    if ( existing->size == 0 && existing->members.empty() )
+	    {
+		// fill in the forward-declared struct in place
+		existing->members = dds->members;
+		existing->size = dds->size;
+		existing->pack = dds->pack;
+		existing->max_align = dds->max_align;
+		DBG(cout << "TokenSTRUCT::parse() completed forward-declared struct " << tag->str << " size=" << existing->size << endl);
+		delete dds;
+		dds = existing;
+	    }
+	    else
+		pgm.Throw(tag) << "Struct '" << tag->str << "' already defined" << flush;
+	}
+	else
+	{
+	    pgm.struct_map[tag->str] = dds;
+	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag->str << " size=" << dds->size << endl);
+	}
     }
 
     // what follows the closing brace?

@@ -1,15 +1,18 @@
 #!/usr/bin/env madc
-// Test pointer type declarations, -> operator, and & address-of
+// Test pointer type declarations, -> operator, & address-of, forward typedef
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-struct Point {
+// forward typedef struct declarations (SMAUG pattern)
+typedef struct point_data POINT_DATA;
+
+struct point_data {
 	int x;
 	int y;
 };
 
-void set_point(struct Point *p, int x, int y)
+void set_point(POINT_DATA *p, int x, int y)
 {
 	p->x = x;
 	p->y = y;
@@ -43,7 +46,7 @@ int main()
 	printf("char **argv = %ld\n", argv);
 
 	// -> operator: allocate struct via calloc and access via pointer
-	struct Point *pt = calloc(1, sizeof(struct Point));
+	POINT_DATA *pt = calloc(1, sizeof(POINT_DATA));
 	pt->x = 42;
 	pt->y = 99;
 	printf("pt->x = %ld\n", pt->x);
@@ -51,10 +54,10 @@ int main()
 	free(pt);
 
 	// & address-of: get pointer to local struct
-	struct Point local;
+	POINT_DATA local;
 	local.x = 10;
 	local.y = 20;
-	struct Point *lp = &local;
+	POINT_DATA *lp = &local;
 	printf("lp->x = %ld\n", lp->x);
 	printf("lp->y = %ld\n", lp->y);
 
