@@ -3902,6 +3902,30 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
     return reg;
 }
 
+// & address-of operator: emit LEA to get address of variable
+Operand &TokenAddrOf::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenAddrOf::compile()"));
+    Operand &obj = pgm.tkFunction->voperand(pgm, &var);
+
+    x86::Gp addr = pgm.cc.newIntPtr(("&" + var.name).c_str());
+    if ( obj.isMem() )
+	pgm.cc.lea(addr, obj.as<x86::Mem>());
+    else
+	pgm.cc.mov(addr, obj.as<x86::Gp>()); // already a pointer/register
+
+    if ( !regdp.second )
+	regdp.second = ptr_type;
+    if ( regdp.first )
+    {
+	pgm.safemov(*regdp.first, addr, regdp.second);
+	return *regdp.first;
+    }
+    _operand = addr;
+    regdp.first = &_operand;
+    return _operand;
+}
+
 // load double into operand
 Operand &TokenReal::compile(Program &pgm, regdefp_t &regdp)
 {

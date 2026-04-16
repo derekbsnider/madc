@@ -1364,6 +1364,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    // should we delete tb ?
 		    tb = ts;
 		}
+		// & address-of in unary position
+		if ( tb->id() == TokenID::tkBand
+		&&  (!prevToken() || (prevToken()->is_operator()
+		     && prevToken()->id() != TokenID::tkClBrk
+		     && prevToken()->id() != TokenID::tkClSqr)) )
+		{
+		    // unary & — address-of operator
+		    TokenBase *addr_tb = nextToken();
+		    if ( addr_tb->type() != TokenType::ttIdentifier )
+			Throw(addr_tb) << "expecting variable name after '&'" << flush;
+		    std::string aname = ((TokenIdent *)addr_tb)->str;
+		    Variable *avar = findVariable(aname);
+		    if ( !avar )
+			Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
+		    DataDefPTR *aptr = getPointerType(avar->type);
+		    exStack.push(new TokenAddrOf(*avar, aptr));
+		    break;
+		}
 		if ( tb->id() == TokenID::tkDec || tb->id() == TokenID::tkInc )
 		{
 		    DBG(cout << "parseExpression: Got operator: " << (char)tb->get() << (char)tb->get() << endl);
@@ -2988,12 +3006,46 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // look for parameters
     while ( (nt=nextToken()) && nt->id() != TokenID::tkClBrk )
     {
+	// handle 'struct Tag' as parameter type
+	if ( nt->id() == TokenID::tkSTRUCT )
+	{
+	    TokenBase *tag_nt = nextToken();
+	    if ( tag_nt->type() != TokenType::ttIdentifier )
+		Throw(tag_nt) << "Expecting struct name after 'struct' in parameters" << flush;
+	    std::string sname = ((TokenIdent *)tag_nt)->str;
+	    datadef_map_iter sdmi = struct_map.find(sname);
+	    if ( sdmi == struct_map.end() )
+		Throw(tag_nt) << "Unknown struct type '" << sname << "'" << flush;
+	    std::string tname("struct ");
+	    tname.append(sname);
+	    pb = new TokenDataType(tname.c_str(), *sdmi->second);
+	}
+	else
 	if ( nt->type() != TokenType::ttDataType )
 	{
-	    DBG(std::cerr << "parseFunction() params: failed to obtain basetype" << std::endl);
-	    Throw(nt) << "Failed to find type when parsing function parameters" << flush;
+	    // also check datatype_map for typedef'd names (e.g. CHAR_DATA)
+	    if ( nt->type() == TokenType::ttIdentifier )
+	    {
+		std::string tname = ((TokenIdent *)nt)->str;
+		datatype_map_iter tdmi = datatype_map.find(tname);
+		if ( tdmi != datatype_map.end() )
+		{
+		    pb = tdmi->second;
+		}
+		else
+		{
+		    DBG(std::cerr << "parseFunction() params: failed to obtain basetype" << std::endl);
+		    Throw(nt) << "Failed to find type when parsing function parameters" << flush;
+		}
+	    }
+	    else
+	    {
+		DBG(std::cerr << "parseFunction() params: failed to obtain basetype" << std::endl);
+		Throw(nt) << "Failed to find type when parsing function parameters" << flush;
+	    }
 	}
-	pb = (TokenDataType *)nt;
+	else
+	    pb = (TokenDataType *)nt;
 	rtype = RefType::rtValue;
 	DataDef *param_dd = &pb->definition;
 grabnt:

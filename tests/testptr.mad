@@ -1,8 +1,19 @@
 #!/usr/bin/env madc
-// Test pointer type declarations and -> operator
+// Test pointer type declarations, -> operator, and & address-of
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+struct Point {
+	int x;
+	int y;
+};
+
+void set_point(struct Point *p, int x, int y)
+{
+	p->x = x;
+	p->y = y;
+}
 
 int main()
 {
@@ -20,12 +31,11 @@ int main()
 	printf("sizeof(char *) = %ld\n", sizeof(char *));
 	printf("sizeof(void *) = %ld\n", sizeof(void *));
 
-	// pointer in struct
+	// struct with pointer member
 	struct Node {
 		int value;
 		int *next;
 	};
-
 	printf("sizeof(struct Node) = %ld\n", sizeof(struct Node));
 
 	// double pointer
@@ -33,17 +43,24 @@ int main()
 	printf("char **argv = %ld\n", argv);
 
 	// -> operator: allocate struct via calloc and access via pointer
-	struct Point {
-		int x;
-		int y;
-	};
-
 	struct Point *pt = calloc(1, sizeof(struct Point));
 	pt->x = 42;
 	pt->y = 99;
 	printf("pt->x = %ld\n", pt->x);
 	printf("pt->y = %ld\n", pt->y);
 	free(pt);
+
+	// & address-of: get pointer to local struct
+	struct Point local;
+	local.x = 10;
+	local.y = 20;
+	struct Point *lp = &local;
+	printf("lp->x = %ld\n", lp->x);
+	printf("lp->y = %ld\n", lp->y);
+
+	// & with function taking struct pointer
+	set_point(&local, 77, 88);
+	printf("after set_point: local.x = %ld, local.y = %ld\n", local.x, local.y);
 
 	printf("All pointer tests passed!\n");
 	return 0;

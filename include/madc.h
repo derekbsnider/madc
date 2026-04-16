@@ -141,6 +141,18 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+// & address-of operator — emits LEA to get address of a variable
+class TokenAddrOf: public TokenBase
+{
+public:
+    Variable &var;
+    DataDef *ptr_type;  // pointer-to-var type
+    asmjit::Operand _operand;
+    TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 class TokenCallMethod: public TokenMember
 {
 public:
