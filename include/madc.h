@@ -205,7 +205,9 @@ public:
     TokenSubscript(Variable &o, TokenBase *idx, Variable *tmp = nullptr)
         : object(o), index(idx), tmp_var(tmp)
     {
-        if ( o.type->type() == DataType::dtVECTOR )
+        if ( o.is_fixed_array() )
+            _datatype = o.type; // C fixed array: subscript yields element of base type
+        else if ( o.type->type() == DataType::dtVECTOR )
             _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
         else if ( o.type->type() == DataType::dtMAP )
             _datatype = static_cast<DataDefMAP *>(o.type)->val_type;

@@ -2336,6 +2336,33 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
 
     DataType ctype = object.type->type();
 
+    // C fixed-size array: load element directly from [base + idx*elem_size]
+    if ( object.is_fixed_array() )
+    {
+        size_t elem_size = object.type->size ? object.type->size : 8;
+        uint32_t shift = 0;
+        if      ( elem_size == 8 ) shift = 3;
+        else if ( elem_size == 4 ) shift = 2;
+        else if ( elem_size == 2 ) shift = 1;
+        DBG(pgm.cc.comment("fixed-array subscript read"));
+        x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( !regdp.second )
+            regdp.second = _datatype;
+        // If caller supplied a destination register, write directly into it
+        if ( regdp.first && regdp.first->isReg() )
+        {
+            pgm.safemov(*regdp.first, elem_mem, regdp.second, _datatype);
+            return *regdp.first;
+        }
+        x86::Gp res = pgm.cc.newGpq("sub_res");
+        if      ( elem_size == 8 ) pgm.cc.mov(res, elem_mem);
+        else if ( elem_size == 4 ) pgm.cc.movsxd(res, elem_mem);
+        else                       pgm.cc.movsx(res, elem_mem);
+        _operand = res;
+        regdp.first = &_operand;
+        return _operand;
+    }
+
     if ( ctype == DataType::dtVECTOR )
     {
         DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(object.type);
@@ -2435,6 +2462,32 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
         pgm.cc.mov(idx_reg, idx_op.as<Imm>());
 
     DataType ctype = object.type->type();
+
+    // C fixed-size array: store element directly to [base + idx*elem_size]
+    if ( object.is_fixed_array() )
+    {
+        size_t elem_size = object.type->size ? object.type->size : 8;
+        uint32_t shift = 0;
+        if      ( elem_size == 8 ) shift = 3;
+        else if ( elem_size == 4 ) shift = 2;
+        else if ( elem_size == 2 ) shift = 1;
+        DBG(pgm.cc.comment("fixed-array subscript write"));
+        x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( val_op.isReg() )
+        {
+            x86::Gp val_gp = val_op.as<x86::Gp>();
+            if      ( elem_size == 8 ) pgm.cc.mov(elem_mem, val_gp.r64());
+            else if ( elem_size == 4 ) pgm.cc.mov(elem_mem, val_gp.r32());
+            else if ( elem_size == 2 ) pgm.cc.mov(elem_mem, val_gp.r16());
+            else                       pgm.cc.mov(elem_mem, val_gp.r8());
+        }
+        else
+        {
+            // immediate value
+            pgm.cc.mov(elem_mem, val_op.as<Imm>());
+        }
+        return;
+    }
 
     if ( ctype == DataType::dtVECTOR )
     {
@@ -2547,6 +2600,21 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     }
 
     DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::voperand(" << var->name << ") building register" << std::endl);
+    // C fixed-size array: allocate stack slot and LEA base pointer into a Gp register.
+    // The operand is the base pointer; subscript code adds index*elem_size.
+    if ( var->is_fixed_array() )
+    {
+	size_t elem_size = var->type->size ? var->type->size : 8;
+	size_t total = elem_size * var->total_elements();
+	uint32_t align = (uint32_t)(elem_size < 8 ? elem_size : 8);
+	DBG(pgm.cc.comment("voperand fixed-size array"));
+	x86::Mem stack = pgm.cc.newStack((uint32_t)total, align);
+	x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+	pgm.cc.lea(reg, stack);
+	operand_map[var] = reg;
+	var->flags |= vfREGSET;
+	return operand_map[var];
+    }
     if ( (var->flags & vfSTACK) && !var->type->is_numeric() )
     {
 	// Function parameters receive their value from setArg — just create

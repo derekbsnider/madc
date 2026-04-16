@@ -57,9 +57,16 @@ public:
     void *data;
     uint32_t count;
     uint16_t flags;
+    std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
     Variable() { type = &ddINT; data = NULL; flags = 0; count = 0; }
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
+    inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
+    inline uint32_t total_elements() const {
+	uint32_t n = 1;
+	for ( auto d : dims ) n *= d;
+	return n;
+    }
     inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
     inline void makeconstant() { flags |= vfCONSTANT; }
     inline bool is_global()   { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
