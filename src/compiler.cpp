@@ -1499,26 +1499,105 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 // /= and %= use a fresh dividend register because safediv requires 3 distinct Gp regs.
 /////////////////////////////////////////////////////////////////////////////
 
+// helper: resolve LHS for compound assignment — handles variables and struct members
+// returns the Gp register holding the value, and sets type/writeback info
+struct CompoundLHS {
+    Operand lval;        // Gp register holding the current value
+    DataDef *type;       // data type of the LHS
+    x86::Mem writeback;  // Mem to write back to (for members); invalid if variable
+    TokenVar *tv;        // variable token (for modified/putreg); NULL for members
+    bool is_member;
+
+    void finish(Program &pgm, regdefp_t &regdp)
+    {
+	if ( tv )
+	{
+	    tv->var.modified();
+	    tv->putreg(pgm);
+	}
+	if ( is_member && writeback.hasBase() )
+	    pgm.cc.mov(writeback, lval.as<x86::Gp>());
+	regdp.first  = &lval;
+	regdp.second = type;
+    }
+};
+
+static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char *op_name)
+{
+    CompoundLHS r;
+    r.tv = NULL;
+    r.is_member = false;
+    r.type = NULL;
+
+    if ( left->type() == TokenType::ttVariable )
+    {
+	r.tv = dynamic_cast<TokenVar *>(left);
+	r.type = r.tv->var.type;
+	r.lval = r.tv->operand(pgm);
+    }
+    else if ( left->type() == TokenType::ttMember )
+    {
+	// struct member via . or -> : load Mem into temp register
+	TokenMember *tm = dynamic_cast<TokenMember *>(left);
+	if ( tm )
+	{
+	    r.type = tm->var.type;
+	    Operand &mem = tm->operand(pgm);
+	    if ( mem.isMem() )
+	    {
+		x86::Gp gp = pgm.cc.newGpq("member_lhs");
+		pgm.cc.mov(gp, mem.as<x86::Mem>());
+		r.writeback = mem.as<x86::Mem>();
+		r.lval = gp;
+		r.is_member = true;
+	    }
+	    else
+		r.lval = mem;
+	}
+	else
+	{
+	    // TokenDeref also uses ttMember type
+	    TokenDeref *td = dynamic_cast<TokenDeref *>(left);
+	    if ( td )
+	    {
+		r.type = td->deref_type;
+		Operand &mem = td->operand(pgm);
+		if ( mem.isMem() )
+		{
+		    x86::Gp gp = pgm.cc.newGpq("deref_lhs");
+		    pgm.cc.mov(gp, mem.as<x86::Mem>());
+		    r.writeback = mem.as<x86::Mem>();
+		    r.lval = gp;
+		    r.is_member = true;
+		}
+		else
+		    r.lval = mem;
+	    }
+	    else
+		throw "compound assignment on unsupported member type";
+	}
+    }
+    else
+    {
+	std::string msg = std::string(op_name) + " on a non-variable lval";
+	throw msg.c_str();
+    }
+    return r;
+}
+
 Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenAddEq::compile() TOP" << endl);
     if ( !left )  throw "+= missing lval operand";
     if ( !right ) throw "+= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "+= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval = tv->operand(pgm);
-    Operand tmp = type->newreg(pgm.cc, "tmp");
-    regdp.second = type;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "+=");
+    Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    regdp.second = lhs.type;
     regdp.first  = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeadd(lval, rval, type);
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    pgm.safeadd(lhs.lval, rval, lhs.type);
+    lhs.finish(pgm, regdp);
+    return lhs.lval;
 }
 
 Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
@@ -1526,119 +1605,72 @@ Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenSubEq::compile() TOP" << endl);
     if ( !left )  throw "-= missing lval operand";
     if ( !right ) throw "-= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "-= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval = tv->operand(pgm);
-    Operand tmp = type->newreg(pgm.cc, "tmp");
-    regdp.second = type;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "-=");
+    Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    regdp.second = lhs.type;
     regdp.first  = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safesub(lval, rval, type);
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    pgm.safesub(lhs.lval, rval, lhs.type);
+    lhs.finish(pgm, regdp);
+    return lhs.lval;
 }
 
 Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenMulEq::compile() TOP" << endl);
     if ( !left )  throw "*= missing lval operand";
     if ( !right ) throw "*= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "*= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval = tv->operand(pgm);
-    Operand tmp = type->newreg(pgm.cc, "tmp");
-    regdp.second = type;
-    regdp.first  = &tmp;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "*=");
+    Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safemul(lval, rval, type);
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    pgm.safemul(lhs.lval, rval, lhs.type);
+    lhs.finish(pgm, regdp); return lhs.lval;
 }
 
 Operand &TokenDivEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenDivEq::compile() TOP" << endl);
     if ( !left )  throw "/= missing lval operand";
     if ( !right ) throw "/= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "/= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval     = tv->operand(pgm);
-    Operand dividend  = type->newreg(pgm.cc, "dividend");
-    Operand remainder = type->newreg(pgm.cc, "remainder");
-    Operand divisor   = type->newreg(pgm.cc, "divisor");
-    pgm.safemov(dividend, lval);               // load current value into dividend
-    regdp.second = type;
-    regdp.first  = &divisor;
-    right->compile(pgm, regdp);                // compile rval into divisor
-    pgm.safexor(remainder, remainder);         // zero remainder for idiv
-    pgm.safediv(remainder, dividend, divisor, type); // dividend = lval / rval
-    pgm.safemov(lval, dividend);               // write quotient back to lval
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "/=");
+    Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
+    Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
+    Operand divisor   = lhs.type->newreg(pgm.cc, "divisor");
+    pgm.safemov(dividend, lhs.lval);
+    regdp.second = lhs.type; regdp.first = &divisor;
+    right->compile(pgm, regdp);
+    pgm.safexor(remainder, remainder);
+    pgm.safediv(remainder, dividend, divisor, lhs.type);
+    pgm.safemov(lhs.lval, dividend);
+    lhs.finish(pgm, regdp); return lhs.lval;
 }
 
 Operand &TokenModEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenModEq::compile() TOP" << endl);
     if ( !left )  throw "%= missing lval operand";
     if ( !right ) throw "%= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "%= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval     = tv->operand(pgm);
-    Operand dividend  = type->newreg(pgm.cc, "dividend");
-    Operand remainder = type->newreg(pgm.cc, "remainder");
-    Operand divisor   = type->newreg(pgm.cc, "divisor");
-    pgm.safemov(dividend, lval);               // load current value into dividend
-    regdp.second = type;
-    regdp.first  = &divisor;
-    right->compile(pgm, regdp);                // compile rval into divisor
-    pgm.safexor(remainder, remainder);         // zero remainder for idiv
-    pgm.safediv(remainder, dividend, divisor, type); // remainder = lval % rval
-    pgm.safemov(lval, remainder);              // write remainder back to lval
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "%=");
+    Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
+    Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
+    Operand divisor   = lhs.type->newreg(pgm.cc, "divisor");
+    pgm.safemov(dividend, lhs.lval);
+    regdp.second = lhs.type; regdp.first = &divisor;
+    right->compile(pgm, regdp);
+    pgm.safexor(remainder, remainder);
+    pgm.safediv(remainder, dividend, divisor, lhs.type);
+    pgm.safemov(lhs.lval, remainder);
+    lhs.finish(pgm, regdp); return lhs.lval;
 }
 
 Operand &TokenBSLEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenBSLEq::compile() TOP" << endl);
     if ( !left )  throw "<<= missing lval operand";
     if ( !right ) throw "<<= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "<<= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval = tv->operand(pgm);
-    Operand tmp = type->newreg(pgm.cc, "tmp");
-    regdp.second = type;
-    regdp.first  = &tmp;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "<<=");
+    Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeshl(lval, rval);
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    pgm.safeshl(lhs.lval, rval);
+    lhs.finish(pgm, regdp); return lhs.lval;
 }
 
 Operand &TokenBSREq::compile(Program &pgm, regdefp_t &regdp)
@@ -1646,87 +1678,48 @@ Operand &TokenBSREq::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenBSREq::compile() TOP" << endl);
     if ( !left )  throw ">>= missing lval operand";
     if ( !right ) throw ">>= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << ">>= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval = tv->operand(pgm);
-    Operand tmp = type->newreg(pgm.cc, "tmp");
-    regdp.second = type;
-    regdp.first  = &tmp;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, ">>=");
+    Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeshr(lval, rval);
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    pgm.safeshr(lhs.lval, rval);
+    lhs.finish(pgm, regdp); return lhs.lval;
 }
 
 Operand &TokenBandEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenBandEq::compile() TOP" << endl);
     if ( !left )  throw "&= missing lval operand";
     if ( !right ) throw "&= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "&= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval = tv->operand(pgm);
-    Operand tmp = type->newreg(pgm.cc, "tmp");
-    regdp.second = type;
-    regdp.first  = &tmp;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "&=");
+    Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeand(lval, rval);
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    pgm.safeand(lhs.lval, rval);
+    lhs.finish(pgm, regdp); return lhs.lval;
 }
 
 Operand &TokenBorEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenBorEq::compile() TOP" << endl);
     if ( !left )  throw "|= missing lval operand";
     if ( !right ) throw "|= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "|= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval = tv->operand(pgm);
-    Operand tmp = type->newreg(pgm.cc, "tmp");
-    regdp.second = type;
-    regdp.first  = &tmp;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "|=");
+    Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeor(lval, rval);
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    pgm.safeor(lhs.lval, rval);
+    lhs.finish(pgm, regdp); return lhs.lval;
 }
 
 Operand &TokenXorEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenXorEq::compile() TOP" << endl);
     if ( !left )  throw "^= missing lval operand";
     if ( !right ) throw "^= missing rval operand";
-    if ( left->type() != TokenType::ttVariable )
-	pgm.Throw(this) << "^= on a non-variable lval" << flush;
-    TokenVar *tv = dynamic_cast<TokenVar *>(left);
-    DataDef *type = tv->var.type;
-    Operand &lval = tv->operand(pgm);
-    Operand tmp = type->newreg(pgm.cc, "tmp");
-    regdp.second = type;
-    regdp.first  = &tmp;
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "^=");
+    Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safexor(lval, rval);
-    tv->var.modified();
-    tv->putreg(pgm);
-    regdp.first  = &lval;
-    regdp.second = type;
-    return lval;
+    pgm.safexor(lhs.lval, rval);
+    lhs.finish(pgm, regdp); return lhs.lval;
 }
 
 // Basic assignment left = right
