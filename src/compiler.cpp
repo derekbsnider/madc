@@ -2336,7 +2336,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
 
     DataType ctype = object.type->type();
 
-    // C fixed-size array: load element directly from [base + idx*elem_size]
+    // C fixed-size array: load element directly from [base + linear_idx*elem_size]
     if ( object.is_fixed_array() )
     {
         size_t elem_size = object.type->size ? object.type->size : 8;
@@ -2345,6 +2345,19 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
         else if ( elem_size == 4 ) shift = 2;
         else if ( elem_size == 2 ) shift = 1;
         DBG(pgm.cc.comment("fixed-array subscript read"));
+        // For multi-dim arr[i][j]...: linear = ((i0 * d1) + i1) * d2 + i2 ...
+        // The first index is already in idx_reg. Fold in each extra index.
+        for ( size_t k = 0; k < extra_indices.size(); ++k )
+        {
+            uint32_t dim_k = object.dims[k + 1];
+            pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)dim_k));
+            regdefp_t ex_rdp = {nullptr, nullptr, nullptr};
+            Operand &ex_op = extra_indices[k]->compile(pgm, ex_rdp);
+            if ( ex_op.isReg() )
+                pgm.cc.add(idx_reg, ex_op.as<x86::Gp>());
+            else
+                pgm.cc.add(idx_reg, ex_op.as<Imm>());
+        }
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
         if ( !regdp.second )
             regdp.second = _datatype;
@@ -2463,7 +2476,7 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
 
     DataType ctype = object.type->type();
 
-    // C fixed-size array: store element directly to [base + idx*elem_size]
+    // C fixed-size array: store element directly to [base + linear_idx*elem_size]
     if ( object.is_fixed_array() )
     {
         size_t elem_size = object.type->size ? object.type->size : 8;
@@ -2472,6 +2485,18 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
         else if ( elem_size == 4 ) shift = 2;
         else if ( elem_size == 2 ) shift = 1;
         DBG(pgm.cc.comment("fixed-array subscript write"));
+        // Fold extra indices into idx_reg using dims: linear = ((i0*d1)+i1)*d2 + i2 ...
+        for ( size_t k = 0; k < extra_indices.size(); ++k )
+        {
+            uint32_t dim_k = object.dims[k + 1];
+            pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)dim_k));
+            regdefp_t ex_rdp = {nullptr, nullptr, nullptr};
+            Operand &ex_op = extra_indices[k]->compile(pgm, ex_rdp);
+            if ( ex_op.isReg() )
+                pgm.cc.add(idx_reg, ex_op.as<x86::Gp>());
+            else
+                pgm.cc.add(idx_reg, ex_op.as<Imm>());
+        }
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
         if ( val_op.isReg() )
         {

@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-// Test C fixed-size arrays (1D)
+// Test C fixed-size arrays (1D and multi-dim)
 
 int main()
 {
@@ -33,6 +33,21 @@ int main()
     buf[7] = 0;
     printf("buf[0] = %ld\n", buf[0]);
     printf("buf as string: %s\n", buf);
+
+    // 2D array
+    int board[3][4];
+    for ( int r = 0; r < 3; r++ )
+        for ( int c = 0; c < 4; c++ )
+            board[r][c] = r * 10 + c;
+    printf("board[2][3] = %ld\n", board[2][3]);       // 23
+    printf("board[0][0] = %ld\n", board[0][0]);       // 0
+
+    // 3D array — spot check
+    int cube[2][3][4];
+    cube[1][2][3] = 999;
+    cube[0][0][0] = 1;
+    printf("cube[1][2][3] = %ld\n", cube[1][2][3]);   // 999
+    printf("cube[0][0][0] = %ld\n", cube[0][0][0]);   // 1
 
     return 0;
 }

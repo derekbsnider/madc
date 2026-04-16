@@ -1249,6 +1249,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		// subscript: var[index] or lambda: [](params) { body }
 		if ( tb->id() == TokenID::tkOpSqr )
 		{
+		    // Chained subscript on a multi-dim C fixed-size array: arr[i][j]
+		    // Append to the existing TokenSubscript's extra_indices vector.
+		    if ( !exStack.empty() && exStack.top()->type() == TokenType::ttSubscript )
+		    {
+			TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(exStack.top());
+			if ( tsub && tsub->object.is_fixed_array()
+			  && tsub->extra_indices.size() + 2 <= tsub->object.dims.size() )
+			{
+			    TokenBase *idx = parseExpression(nextToken());
+			    TokenBase *clsqr = nextToken(); // consume ]
+			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
+				Throw(tb) << "Expected ] in subscript expression" << flush;
+			    tsub->extra_indices.push_back(idx);
+			    break;
+			}
+		    }
 		    // if top of exStack is a variable, treat [ as subscript operator
 		    if ( !exStack.empty() && exStack.top()->type() == TokenType::ttVariable )
 		    {

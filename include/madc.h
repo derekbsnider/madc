@@ -198,7 +198,8 @@ class TokenSubscript: public TokenBase
 {
 public:
     Variable &object;    // the container variable
-    TokenBase *index;    // the index expression
+    TokenBase *index;    // the primary (first) index expression
+    std::vector<TokenBase *> extra_indices; // additional indices for multi-dim fixed arrays
     Variable *tmp_var;   // temp string variable for string-returning subscripts (or NULL)
     asmjit::Operand _operand;
 
