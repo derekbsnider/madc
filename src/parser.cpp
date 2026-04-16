@@ -1627,14 +1627,30 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		{
 		    if ( exStack.empty() )
 			Throw(tb) << "expected expression before '->'" << flush;
-		    if ( exStack.top()->type() != TokenType::ttVariable )
-			Throw(tb) << "expression before '->' must be a variable" << flush;
-		    TokenVar *tv = dynamic_cast<TokenVar *>(exStack.top());
-		    if ( !tv->var.type->is_pointer() )
+
+		    // get the pointer variable — from TokenVar or TokenMember (chained ->)
+		    TokenBase *lhs = exStack.top();
+		    Variable *obj_var = NULL;
+		    DataDef *obj_type = NULL;
+		    if ( lhs->type() == TokenType::ttVariable )
+		    {
+			obj_var = &dynamic_cast<TokenVar *>(lhs)->var;
+			obj_type = obj_var->type;
+		    }
+		    else if ( lhs->type() == TokenType::ttMember )
+		    {
+			TokenMember *tm = dynamic_cast<TokenMember *>(lhs);
+			obj_var = &tm->var;
+			obj_type = tm->var.type;
+		    }
+		    else
+			Throw(tb) << "expression before '->' must be a pointer" << flush;
+
+		    if ( !obj_type->is_pointer() )
 			Throw(tb) << "expression before '->' must be a pointer" << flush;
 
 		    // get the pointed-to type
-		    DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(tv->var.type);
+		    DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(obj_type);
 		    if ( !ptr_type || !ptr_type->base_type )
 			Throw(tb) << "expression before '->' is not a typed pointer" << flush;
 		    DataDef *base = ptr_type->base_type;
@@ -1651,12 +1667,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 
 		    // create variable for the member
 		    var = new Variable(id, *mtype, 1, NULL, false);
-		    var->flags = tv->var.flags;
+		    var->flags = obj_var->flags;
 
-		    // remove pointer TokenVar from exStack
+		    // remove LHS from exStack
 		    exStack.pop();
 		    // replace with TokenMember (operand path handles [gp + offset])
-		    exStack.push(new TokenMember(tv->var, *var, ofs));
+		    exStack.push(new TokenMember(*obj_var, *var, ofs));
 		    // remove TokenDeRef from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 			opStack.pop();
@@ -2071,10 +2087,36 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
-	// expect a data type token
-	if ( tn->type() != TokenType::ttDataType )
+	// expect a data type token (or typedef'd identifier, or 'struct Tag')
+	TokenDataType *mtype = NULL;
+	if ( tn->type() == TokenType::ttDataType )
+	    mtype = (TokenDataType *)pgm.nextToken();
+	else if ( tn->type() == TokenType::ttIdentifier )
+	{
+	    std::string tname = ((TokenIdent *)tn)->str;
+	    datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	    if ( tdmi != pgm.datatype_map.end() )
+	    {
+		pgm.nextToken(); // consume the identifier
+		mtype = tdmi->second;
+	    }
+	    else
+		pgm.Throw(tn) << "Expecting type in struct definition, got '" << tname << "'" << flush;
+	}
+	else if ( tn->id() == TokenID::tkSTRUCT )
+	{
+	    pgm.nextToken(); // consume 'struct'
+	    TokenBase *stag = pgm.nextToken();
+	    if ( stag->type() != TokenType::ttIdentifier )
+		pgm.Throw(stag) << "Expecting struct name" << flush;
+	    std::string sname = ((TokenIdent *)stag)->str;
+	    datadef_map_iter sdmi = pgm.struct_map.find(sname);
+	    if ( sdmi == pgm.struct_map.end() )
+		pgm.Throw(stag) << "Unknown struct type '" << sname << "'" << flush;
+	    mtype = new TokenDataType(sname.c_str(), *sdmi->second);
+	}
+	else
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
-	TokenDataType *mtype = (TokenDataType *)pgm.nextToken(); // consume type
 
 	// check for pointer declarator(s): type * [*...] member_name
 	DataDef *member_dd = &mtype->definition;

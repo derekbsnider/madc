@@ -689,7 +689,15 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		    _operand = pgm.cc.newGpq("dl_ret");
 		    regdp.first = &_operand;
 		}
-		call->setRet(0, regdp.first->as<x86::Gp>());
+		if ( regdp.first->isMem() )
+		{
+		    // return into a temp register, then write to Mem
+		    x86::Gp ret_gp = pgm.cc.newGpq("dl_ret");
+		    call->setRet(0, ret_gp);
+		    pgm.cc.mov(regdp.first->as<x86::Mem>(), ret_gp);
+		}
+		else
+		    call->setRet(0, regdp.first->as<x86::Gp>());
 		if ( !regdp.second )
 		    regdp.second = &func->returns;
 	    }
