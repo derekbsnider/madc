@@ -877,6 +877,49 @@ TokenBase *Program::_getToken()
 		    // empty define — skip and get next token
 		    return getToken();
 		}
+		// compound type keywords: unsigned/signed/long/short [type]
+		if ( word == "unsigned" || word == "signed" || word == "long" || word == "short" )
+		{
+		    // peek at next word
+		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+			source.get();
+		    std::string next;
+		    while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
+			next += source.get();
+		    if ( word == "unsigned" )
+		    {
+			if ( next == "char" )  return new TokenDataType("unsigned char", ddUINT8);
+			if ( next == "short" ) return new TokenDataType("unsigned short", ddUINT16);
+			if ( next == "int" )   return new TokenDataType("unsigned int", ddUINT32);
+			if ( next == "long" )  return new TokenDataType("unsigned long", ddUINT64);
+			// bare 'unsigned' = unsigned int
+			if ( !next.empty() ) source.pushback(next);
+			return new TokenDataType("unsigned", ddUINT32);
+		    }
+		    if ( word == "signed" )
+		    {
+			if ( next == "char" )  return new TokenDataType("signed char", ddINT8);
+			if ( next == "short" ) return new TokenDataType("signed short", ddINT16);
+			if ( next == "int" )   return new TokenDataType("signed int", ddINT32);
+			if ( next == "long" )  return new TokenDataType("signed long", ddINT64);
+			if ( !next.empty() ) source.pushback(next);
+			return new TokenDataType("signed", ddINT32);
+		    }
+		    if ( word == "long" )
+		    {
+			if ( next == "int" )   return new TokenDataType("long int", ddINT64);
+			if ( next == "long" )  return new TokenDataType("long long", ddINT64);
+			if ( next == "double" ) return new TokenDataType("long double", ddDOUBLE);
+			if ( !next.empty() ) source.pushback(next);
+			return new TokenDataType("long", ddINT64);
+		    }
+		    if ( word == "short" )
+		    {
+			if ( next == "int" )   return new TokenDataType("short int", ddINT16);
+			if ( !next.empty() ) source.pushback(next);
+			return new TokenDataType("short", ddINT16);
+		    }
+		}
 		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
 		    return kmi->second->clone();
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
