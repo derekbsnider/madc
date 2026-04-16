@@ -30,18 +30,18 @@ int main()
     cout << x << endl;  // 2
 
     // &=
-    x = 255;
-    x &= 15;
+    x = 0xFF;
+    x &= 0x0F;
     cout << x << endl;  // 15
 
     // |=
-    x = 240;
-    x |= 15;
+    x = 0xF0;
+    x |= 0x0F;
     cout << x << endl;  // 255
 
     // ^=
-    x = 255;
-    x ^= 15;
+    x = 0xFF;
+    x ^= 0x0F;
     cout << x << endl;  // 240
 
     // <<=

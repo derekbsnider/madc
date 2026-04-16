@@ -488,15 +488,30 @@ TokenBase *Program::_getToken()
 	default:
 	    if ( isdigit(ch) )
 	    {
+		// hex literal: 0x... or 0X...
+		if ( ch == '0' && source.good() && (source.peek() == 'x' || source.peek() == 'X') )
+		{
+		    source.get(); // eat 'x'
+		    long long hv = 0;
+		    while ( source.good() && isxdigit(source.peek()) )
+		    {
+			char hc = source.get();
+			hv *= 16;
+			if      ( hc >= '0' && hc <= '9' ) hv += hc - '0';
+			else if ( hc >= 'a' && hc <= 'f' ) hv += hc - 'a' + 10;
+			else                               hv += hc - 'A' + 10;
+		    }
+		    return new TokenInt((int)hv);
+		}
 		int v = (ch & 0xf);
-		
+
 		while ( source.good() && isdigit(source.peek()) )
 		{
 		    v *= 10;
 		    v += source.get() & 0xf;
 		}
 		// no decimal means integer
-		if ( source.peek() != '.' )		
+		if ( source.peek() != '.' )
 		    return new TokenInt(v);
 		// handle floating point
 		source.get(); // eat .

@@ -1,0 +1,43 @@
+// Test hex integer literals
+
+int main()
+{
+    int x;
+
+    x = 0xFF;
+    cout << x << endl;   // 255
+
+    x = 0x0F;
+    cout << x << endl;   // 15
+
+    x = 0xF0;
+    cout << x << endl;   // 240
+
+    x = 0x1A2B;
+    cout << x << endl;   // 6699
+
+    x = 0xDEAD;
+    cout << x << endl;   // 57005
+
+    // uppercase X prefix
+    x = 0XFF;
+    cout << x << endl;   // 255
+
+    // mixed case digits
+    x = 0xDeAd;
+    cout << x << endl;   // 57005
+
+    // zero
+    x = 0x0;
+    cout << x << endl;   // 0
+
+    // use in expression
+    x = 0x10 + 0x10;
+    cout << x << endl;   // 32
+
+    // use in condition
+    if ( 0xFF == 255 )
+        cout << "eq" << endl;  // eq
+
+    return 0;
+}
