@@ -2704,6 +2704,74 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
     return decl;
 }
 
+TokenBase *TokenSTATIC::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenSTATIC::parse()" << std::endl);
+    TokenBase *tn = pgm.peekToken();
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input after 'static'" << flush;
+    // static can appear before other modifiers: static const, static struct, etc.
+    if ( tn->type() == TokenType::ttKeyword )
+	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+    if ( tn->type() != TokenType::ttDataType )
+    {
+	// might be a typedef'd identifier
+	if ( tn->type() == TokenType::ttIdentifier )
+	{
+	    std::string tname = ((TokenIdent *)tn)->str;
+	    datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	    if ( tdmi != pgm.datatype_map.end() )
+	    {
+		pgm.nextToken();
+		return pgm.parseDeclaration(tdmi->second, true);
+	    }
+	}
+	pgm.Throw(tn) << "Expecting type after 'static'" << flush;
+    }
+    tn = pgm.nextToken();
+    return pgm.parseDeclaration(static_cast<TokenDataType *>(tn), true);
+}
+
+// const — consume and pass through to the type that follows
+TokenBase *TokenCONST::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenCONST::parse() — consuming const" << std::endl);
+    TokenBase *tn = pgm.peekToken();
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input after 'const'" << flush;
+    if ( tn->type() == TokenType::ttKeyword )
+	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+    if ( tn->type() == TokenType::ttDataType )
+    {
+	tn = pgm.nextToken();
+	return pgm.parseDeclaration(static_cast<TokenDataType *>(tn));
+    }
+    // might be typedef'd name
+    if ( tn->type() == TokenType::ttIdentifier )
+    {
+	std::string tname = ((TokenIdent *)tn)->str;
+	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	if ( tdmi != pgm.datatype_map.end() )
+	{
+	    pgm.nextToken();
+	    return pgm.parseDeclaration(tdmi->second);
+	}
+    }
+    pgm.Throw(tn) << "Expecting type after 'const'" << flush;
+    return NULL;
+}
+
+// extern — consume and pass through (declarations are just skipped)
+TokenBase *TokenEXTERN::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenEXTERN::parse() — consuming extern" << std::endl);
+    // skip to semicolon
+    TokenBase *tn;
+    while ( (tn = pgm.nextToken()) && tn->id() != TokenID::tkSemi )
+	;
+    return NULL;
+}
+
 TokenBase *TokenDEFER::parse(Program &pgm)
 {
     DBG(std::cout << "TokenDEFER::parse()" << std::endl);
@@ -3495,13 +3563,13 @@ TokenBase *Program::parseLambda()
 }
 
 // parse either a variable declaration, or a function declaration
-TokenBase *Program::parseDeclaration(TokenDataType *tb)
+TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
     TokenBase *nt; // next token;
     Variable *var;
     string id;
-    bool gotstatic = false;
+    bool gotstatic = is_static;
 
     DBG(std::cout << "parseDeclaration(" << tb->str << ") START " << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column << std::endl);
 
@@ -3598,6 +3666,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb)
     {
 	bool alloc = (!code || gotstatic) ? true : false;
 	var = addVariable(code, *decl_type, id, 1, NULL, alloc);
+	if ( gotstatic )
+	    var->flags |= vfSTATIC;
 	TokenDecl *td = new TokenDecl(*var);
 
 	td->file = tb->file;

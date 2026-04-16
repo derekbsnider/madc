@@ -41,7 +41,7 @@ enum class TokenID {
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
-  tkUSING, tkNAMESPACE, tkDEFER,
+  tkUSING, tkNAMESPACE, tkDEFER, tkSTATIC, tkCONST, tkEXTERN,
   tkVECTOR, tkMAP, tkSET, tkLIST
 };
 
@@ -1022,6 +1022,34 @@ public:
     TokenREGISTER() : TokenKeyword("register") {}
     virtual TokenID id() const { return TokenID::tkREGISTER; }
     virtual TokenBase *clone() { return new TokenREGISTER(); }
+    virtual TokenBase *parse(Program &pgm);
+};
+
+class TokenSTATIC: public TokenKeyword
+{
+public:
+    TokenSTATIC() : TokenKeyword("static") {}
+    virtual TokenID id() const { return TokenID::tkSTATIC; }
+    virtual TokenBase *clone() { return new TokenSTATIC(); }
+    virtual TokenBase *parse(Program &pgm);
+};
+
+// const and extern are consumed and ignored for C compatibility
+class TokenCONST: public TokenKeyword
+{
+public:
+    TokenCONST() : TokenKeyword("const") {}
+    virtual TokenID id() const { return TokenID::tkCONST; }
+    virtual TokenBase *clone() { return new TokenCONST(); }
+    virtual TokenBase *parse(Program &pgm);
+};
+
+class TokenEXTERN: public TokenKeyword
+{
+public:
+    TokenEXTERN() : TokenKeyword("extern") {}
+    virtual TokenID id() const { return TokenID::tkEXTERN; }
+    virtual TokenBase *clone() { return new TokenEXTERN(); }
     virtual TokenBase *parse(Program &pgm);
 };
 

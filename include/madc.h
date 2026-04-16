@@ -518,7 +518,7 @@ public:
     TokenBase *parseCallMethod(TokenCallMethod *);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
-    TokenBase *parseDeclaration(TokenDataType *);
+    TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
     TokenBase *parseLambda();  // parse [](params) { body } lambda expression

@@ -1158,7 +1158,9 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDecl::compile(" << var.name << " regdp.second: " << (regdp.second ? regdp.second->name : "")<<  ") TOP" << endl);
 
-    if ( initialize )
+    // skip runtime initialization for static variables — they're pre-initialized
+    // via heap allocation and their value persists across function calls
+    if ( initialize && !(var.flags & vfSTATIC) )
 	initialize->compile(pgm, regdp);
 
     DBG(cout << "TokenDecl::compile(" << var.name << ") END" << endl);
