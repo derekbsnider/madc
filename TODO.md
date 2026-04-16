@@ -12,10 +12,6 @@
   at runtime because `&x` LEAs a virtual register that may not have a stack address.
   Need to force address-taken variables to the stack via `cc.newStack()`.
 
-- **Chained `->` without temp variable** — `ch->in_room->name` parses but the intermediate
-  TokenMember isn't a real variable in operand_map. Works with: `ROOM_DATA *r = ch->in_room;
-  r->name;`. Needs TokenMember-as-object support in codegen.
-
 - **`->` member access in certain printf arg combinations** — Direct `->` in variadic args
   works for simple cases but crashes in specific multi-struct patterns. Workaround: use temp
   variables.
@@ -28,17 +24,6 @@
 
 ## Medium Priority
 
-### SMAUG Phase C — Data Structures
-
-- **2D arrays** — `int board[8][8]`, `char inbuf[MAX_INBUF_SIZE]`. Parser needs to handle
-  multi-dimensional array declaration and indexing `arr[i][j]`.
-
-- **Static initializer tables** — `static struct { ... } table[] = { { "name", func }, ... };`
-  used heavily in `const.c` and `tables.c`. Requires aggregate initialization syntax.
-
-- **`char *str = "hello"` string literal to pointer** — Assign string literal directly to
-  `char *` variable. Currently requires `strdup("hello")` workaround.
-
 ### Language Completeness
 
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
@@ -48,6 +33,15 @@
 - **Error diagnostics** — File and line number should always appear in error output.
 
 - **`__FILE__` and `__LINE__` macros** — Used in SMAUG's CREATE/DISPOSE error messages.
+
+- **Operator overloading (user-defined)** — `operator+`, `operator<<`, etc. on user types.
+  Currently the compiler has hard-coded special cases for std::string assign, stream `<<`,
+  subscript; there's no way for user code to define its own.
+
+- **Sweep remaining `cc.newXxx(name)` calls for `%` safety** — `DataDef::newreg` was fixed
+  to use `"%s"` format; other direct callers (compiler.cpp has ~25 `cc.newIntPtr(var->name
+  .c_str())` sites etc.) have the same latent bug. Audit and standardize on a helper or the
+  `"%s"` format pattern.
 
 ## Low Priority
 
@@ -76,9 +70,47 @@
 
 - **Phase 4: `libmadc.so` embedding API** — Decouple static globals, create public C API.
 
-- **Operator overloading** — `<<`, `+`, `-`, `*`, `/` for user-defined types.
-
 ## Completed
+
+### Session 2026-04-16 (Phase E underway)
+
+- ~~**Chained `->` and `.` member access**~~ — `a->b->c`, `a->b.c`, `a.b.c`; LHS can be
+  TokenVar, TokenMember, or TokenSubscript (b3a9d9a)
+- ~~**C fixed-size arrays (1D)**~~ — `int arr[N]`, stack allocation + subscript
+  `[base+idx*elem_size]` via SIB; honors regdp.first destination so it works as RHS of
+  assignment (fd98935)
+- ~~**Multi-dimensional fixed arrays**~~ — `int m[N][M]`, `int cube[N][M][K]`; extra_indices
+  vector folded into linear offset (26dca0e)
+- ~~**Brace initializer lists for arrays**~~ — `int a[] = {1,2,3}`, size inference, partial
+  fill (rest zero), expressions as values (a1774d0)
+- ~~**String-literal char-array init**~~ — `char msg[] = "hello"` expands to per-byte init
+  list plus null terminator (1bae4f4)
+- ~~**`char *msg = "literal"` sugar**~~ — routed through same path as `char msg[]` so the
+  two forms produce identical storage (13bbc35)
+- ~~**Struct initializer lists**~~ — `struct X v = { s0, s1 }` with scalars, pointers,
+  char* (string_cstr coercion), std::string (string_assign); partial fill zero-fills
+  remaining numeric/pointer members (8df2dca)
+- ~~**Array-of-structs initializer**~~ — `struct Entry tab[] = {{"a",1}, {"b",2}}`; new
+  TokenStructLit node for nested braces; TokenSubscript returns a Gp pointer for struct
+  elements so `tab[i].name` reaches the member via TokenMember's Gp-base dot-chain path
+  (e62d2e7)
+- ~~**Crash handler with backtrace**~~ — SIGSEGV/SIGABRT/SIGFPE/SIGBUS/SIGILL caught at
+  startup, prints signal name + fault address + backtrace to stderr, then re-raises so
+  the shell still sees the real exit status (308b622)
+- ~~**Remove mis-firing strlen builtin; add `.length()`/`.size()`**~~ — strlen resolves
+  via dlsym to libc (correct for char*/char[]); std::string exposes length/size as
+  instance methods (f04b7b6)
+- ~~**DataDef::newreg format safety**~~ — variable names with `%` (our `__literal__foo`
+  literal variable names embedded printf format specs) crashed asmjit's variadic
+  `newGpq(name)`; fixed by passing `"%s"` as the format (e62d2e7)
+- ~~**emit_struct_init no longer mutates shared Operand**~~ — the coercion of a
+  std::string literal to char* was reassigning through the reference returned by
+  compile(), which aliased the cached Operand in operand_map for global literals;
+  subsequent uses of the same literal in another struct init re-coerced the already
+  char-pointer, causing "alice" SSO bytes to be interpreted as a pointer
+  (0x6563696c61) and crash in printf. Now uses a local Operand. (e62d2e7)
+
+### Prior
 
 - ~~Escape sequences in string literals~~ (c90acff)
 - ~~`[]` subscript operator~~ (c90acff)

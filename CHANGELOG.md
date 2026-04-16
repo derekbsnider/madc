@@ -1,6 +1,89 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] — SMAUG Phase E Progress (2026-04-16)
+
+### Added — C Arrays and Structs (SMAUG Phase E)
+
+- **Chained `->` and `.` member access** (b3a9d9a) — `a->b->c`, `a->b.c`, `a.b.c` all
+  compile. TokenMember's parent_expr path resolves intermediate pointers and struct
+  addresses at codegen time; the dot handler now accepts TokenMember LHS in addition
+  to TokenVar.
+
+- **C fixed-size arrays — 1D** (fd98935) — `int arr[N]` allocates a stack slot and
+  stores the LEA'd base pointer as the variable's operand. Subscript emits
+  `[base + idx*elem_size]` via SIB. `TokenSubscript::compile` honors `regdp.first`
+  when the caller supplies a destination register, so `int x = arr[i]` works as RHS.
+  Supports int, int32_t, int16_t, char element types, plus char-array decay to
+  `char *` for `printf "%s"`.
+
+- **Multi-dimensional arrays** (26dca0e) — `int m[N][M]`, `int cube[N][M][K]`.
+  `TokenSubscript` gains an `extra_indices` vector; chained `[i][j][k]` folds into
+  a single linear offset `((i0*d1)+i1)*d2 + i2 + ...`.
+
+- **Brace initializer lists for arrays** (a1774d0) — `int a[N] = { v0, v1, ... };`
+  with explicit size, inferred size (`int a[] = {1,2,3}`), partial (rest zero-filled),
+  and arbitrary expressions as values. Includes a parseExpression fix: the outer
+  loop was consuming a trailing `}` past the final element; now treats `}` like `]`
+  and breaks without consuming.
+
+- **String-literal char-array init** (1bae4f4) — `char msg[] = "hello"` expands to
+  a per-byte initializer list plus a null terminator (length = strlen + 1 for the
+  inferred form; zero-padded for oversized explicit `char buf[20] = "hi"`).
+
+- **`char *msg = "literal"`** (13bbc35) — routed through the same path as
+  `char msg[] = "literal"` so the two forms produce identical internal storage
+  (`ddCHAR` + `vfFIXEDARRAY` + inferred `dims`).
+
+- **Struct initializer lists** (8df2dca) — `struct Foo x = { ... };` with scalars,
+  pointers, char* (string_cstr coerces `std::string` literal → `const char *`), and
+  `std::string` members (`string_assign` after the auto-construct in voperand).
+  Partial inits zero-fill remaining numeric/pointer members.
+
+- **Array-of-structs initializer** (e62d2e7) — `struct Entry tab[] = { {"a", 1},
+  {"b", 2}, ... };`. New `TokenStructLit` AST node carries nested brace lists as
+  array elements; `emit_struct_init` factored into a shared helper invoked at
+  `base + i*struct_size`. `TokenSubscript` now returns a Gp pointer (LEA) when
+  indexing into a struct-element array — no load — so `tab[i].name` reaches the
+  member via `TokenMember`'s Gp-base dot-chain path (parser also accepts
+  `TokenSubscript` as the LHS of `.`).
+
+### Added — Ergonomics
+
+- **Crash handler with backtrace** (308b622) — `SIGSEGV`, `SIGABRT`, `SIGFPE`,
+  `SIGBUS`, `SIGILL` caught at startup. Writes signal name, fault address (for
+  SEGV/BUS), and a `backtrace_symbols_fd` trace to stderr, then restores the
+  default handler and re-raises so the shell sees the real exit status and core
+  dumps still drop.
+
+- **`str.length()` / `str.size()` methods** (f04b7b6) — `std::string` exposes its
+  length via instance methods that wrap `madc_string_length`.
+
+### Changed
+
+- **Removed builtin `strlen`** (f04b7b6) — the pre-registered madc wrapper
+  expected a `std::string *` argument and misfired on char arrays/pointers.
+  `strlen(char *)` now resolves via dlsym fallback to libc, which is the natural
+  type fit. A `madc::`-namespaced type-aware alternative could be added later if
+  useful.
+
+### Fixed
+
+- **`DataDef::newreg` format-string safety** (e62d2e7) — asmjit's
+  `newGpq/newXmm/newIntPtr` are variadic printf-style: they interpret the first
+  `const char *` argument as a format. Variable names containing `%` (e.g. our
+  `__literal__tab[%ld] = (%s, %ld)` string-literal variable names) crashed on the
+  unmatched format spec, dereferencing garbage as a pointer. Fixed by passing
+  `"%s"` as the format and the name as the argument. (Other direct callers of
+  `cc.newIntPtr(name)` likely share the same latent bug; sweep is on TODO.)
+
+- **`emit_struct_init` aliasing corruption** (e62d2e7) — the `std::string`→
+  `const char *` coercion was reassigning through the `Operand &` returned by
+  `inits[i]->compile(...)`. For global literal variables that reference aliases
+  the cached entry in `operand_map`; subsequent uses of the same literal saw the
+  already-coerced `char *` and ran string_cstr over it again, interpreting the
+  char pointer as a `std::string *` and reading SSO bytes as a new "pointer"
+  (e.g. `"alice"` becoming `0x6563696c61` → SEGV in printf). Fixed by using a
+  local `Operand` for the effective value.
 
 ## [v0.7.0] — 2026-04-16 — SMAUG Phase D: va_list + For-Loop Fix
 

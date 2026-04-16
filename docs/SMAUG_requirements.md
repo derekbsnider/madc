@@ -32,9 +32,11 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 
 ## Language Features Needed
 
-### ✅ Already Working (as of v0.6.0 / v0.7.0)
+### ✅ Already Working (as of v0.6.0 / v0.7.0 / Phase E in progress)
 - `char *` pointer declarations in variables, struct members, function parameters
-- `->` struct pointer member access (single-level; chained via temp variable)
+- `->` struct pointer member access — single-level AND chained (`ch->in_room->name`)
+- `.` member access on struct values and via dot-chain (`a.b.c`, `a->b.c`)
+- `.` member access through array subscripts (`tab[i].name`)
 - `(TYPE *)` explicit cast expressions: `(CHAR_DATA *) calloc(...)`
 - `&` address-of operator for struct variables
 - `*ptr` dereference for heap pointers
@@ -60,9 +62,19 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 - `signal`/`gettimeofday`/`perror` (via dlsym)
 - String functions: `sprintf`/`strlen`/`strcpy`/`strcmp`/`strdup`/`strcat` (via dlsym)
 - File I/O: `fopen`/`fclose`/`fprintf`/`fgets` (via dlsym)
-- Fixed-size arrays: `char buf[MAX_INPUT_LENGTH]`
+- C fixed-size arrays (1D and multi-dim): `int arr[N]`, `int board[8][8]`,
+  `char inbuf[MAX_INBUF_SIZE]`, `int cube[N][M][K]`
 - Array indexing and pointer subscript
+- Brace initializer lists: `int a[] = {1,2,3}`, explicit size, inferred size, partial
+  with zero-fill, arbitrary expressions
+- String-literal init for char arrays: `char msg[] = "hello"`, `char buf[N] = "hi"`
+- `char *name = "literal"` — sugar for `char name[] = "literal"` (same storage)
+- Struct initializer lists: `struct Foo v = { s0, "str", 42 }` (scalars, pointers,
+  char*, std::string)
+- Array-of-structs initializers: `struct Entry tab[] = {{"a", 1}, {"b", 2}, ...}`
 - `NULL` as pointer assignment: `ch->next = NULL`
+- `str.length()` / `str.size()` methods on std::string
+- Crash handler with backtrace on fatal signals (dev ergonomics)
 
 ### ✅ Phase D Complete
 
@@ -71,19 +83,18 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 
 ### ❌ Not Yet Implemented — Remaining Blockers
 
-**1. Multi-dimensional arrays** — `int board[8][8]`, `char inbuf[MAX_INBUF_SIZE]`.
-The 2D array case needs parser support.
-
-**2. Static initializer tables** — `static struct { ... } table[] = { { "name", func }, ... };`
-Used heavily in const.c and tables.c. Requires aggregate initialization syntax.
-
-**3. `select()` with `fd_set`** — `fd_set` is a struct with a fixed array of longs.
+**1. `select()` with `fd_set`** — `fd_set` is a struct with a fixed array of longs.
 The FD_SET/FD_ZERO/FD_ISSET operations are macros that manipulate bit arrays.
+`select` itself is available via dlsym; needs `fd_set` modeling plus `struct timeval`.
 
-**4. Chained `->` without temp variable** — `ch->desc->character->name` works with
-a temp variable but not as a single expression yet.
+**2. Struct interop for libc types** — `struct tm` for `localtime`/`strftime`,
+`struct stat` for `stat`/`fstat`, `struct dirent` for `readdir`, `struct sockaddr_in`
+for networking. Headers are embedded with all constants; struct field access is the
+remaining gap (the layouts need to match glibc's actual layouts, not just be
+declared).
 
-**5. String literals as array initializers** — `char buf[] = "hello"` style.
+**3. `gettimeofday()` returning `struct timeval`** — used in SMAUG's main loop.
+Follows from struct interop.
 
 ---
 
@@ -95,12 +106,16 @@ a temp variable but not as a single expression yet.
 | `char *` pointer declarations | BLOCKER | **DONE** (v0.6.0) |
 | `va_list` / `<stdarg.h>` support | **BLOCKER** | **DONE** (v0.7.0) |
 | `->` struct pointer member access | BLOCKER | **DONE** (v0.6.0) |
+| Chained `->` / `.` member access | HIGH | **DONE** (Phase E) |
 | Forward struct typedef declarations | HIGH | **DONE** (v0.6.0) |
 | Explicit cast syntax `(TYPE *)expr` | HIGH | **DONE** (v0.6.0) |
-| 2D arrays `int x[N][M]` | HIGH | Not started |
-| Static initializer tables `= { {}, {} }` | HIGH | Not started |
+| 2D arrays `int x[N][M]` | HIGH | **DONE** (Phase E) |
+| Static initializer tables `= { {}, {} }` | HIGH | **DONE** (Phase E) |
+| String-literal char-array init `char s[] = "..."` | HIGH | **DONE** (Phase E) |
+| Array-of-structs `tab[] = {{...}, {...}}` | HIGH | **DONE** (Phase E) |
 | `&` address-of in expressions | HIGH | **DONE** (v0.6.0) |
 | `fd_set` struct + FD_SET macros | HIGH | Not started |
+| Struct interop for libc types (`tm`, `stat`, etc.) | HIGH | Not started |
 | `sizeof(struct name)` | MEDIUM | **DONE** (v0.5.0) |
 | `do { ... } while(0)` macros | MEDIUM | **DONE** (v0.6.0) |
 | Ternary in struct member context | MEDIUM | **DONE** (v0.6.0) |
