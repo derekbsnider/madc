@@ -1,10 +1,10 @@
 # Test Status
 
-Test results as of April 16, 2026 (Phase 4 prep).
+Test results as of April 16, 2026 (v0.6.0).
 
-Run with: `bin/madc tests/<name>.mad`
+Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Passing Tests — 65 integration (63 auto, 2 manual) + 25/25 unit
+## Passing Tests — 70 integration (68 auto, 2 manual) + 25/25 unit
 
 ### New tests added in this session
 

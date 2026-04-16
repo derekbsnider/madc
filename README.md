@@ -139,7 +139,7 @@ done
 make -C src test
 ```
 
-**Current status: 54/54 integration tests pass. 25/25 unit tests pass.**
+**Current status: 68 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
 
 (`testcin.mad` requires stdin piping: `echo "input" | bin/madc tests/testcin.mad`)
 
