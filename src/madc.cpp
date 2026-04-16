@@ -4,6 +4,9 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/time.h>
+#include <signal.h>
+#include <execinfo.h>
+#include <unistd.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -27,6 +30,60 @@ bool madc_verbose = false;
 
 throwstream throwit;
 
+// Async-signal-safe crash handler: writes signal name + backtrace to fd 2
+// (stderr) using only async-signal-safe libc calls. Re-raises the signal
+// with the default handler so core files still drop if enabled.
+static void crash_handler(int sig, siginfo_t *info, void *uctx)
+{
+    (void)uctx;
+    const char *name = "signal";
+    switch ( sig )
+    {
+	case SIGSEGV: name = "SIGSEGV (segmentation fault)";	break;
+	case SIGABRT: name = "SIGABRT (abort)";			break;
+	case SIGFPE:  name = "SIGFPE (arithmetic error)";	break;
+	case SIGBUS:  name = "SIGBUS (bus error)";		break;
+	case SIGILL:  name = "SIGILL (illegal instruction)";	break;
+    }
+    const char *prefix = "\nmadc: caught ";
+    write(2, prefix, strlen(prefix));
+    write(2, name, strlen(name));
+    if ( info && (sig == SIGSEGV || sig == SIGBUS) )
+    {
+	char addrbuf[64];
+	int n = snprintf(addrbuf, sizeof(addrbuf), " at address %p", info->si_addr);
+	write(2, addrbuf, n);
+    }
+    const char *btheader = "\nBacktrace:\n";
+    write(2, btheader, strlen(btheader));
+
+    void *frames[64];
+    int nf = backtrace(frames, 64);
+    backtrace_symbols_fd(frames, nf, 2);
+
+    // Restore default handler and re-raise so the shell sees the real exit
+    // status (and optionally produces a core dump).
+    struct sigaction dfl;
+    memset(&dfl, 0, sizeof(dfl));
+    dfl.sa_handler = SIG_DFL;
+    sigaction(sig, &dfl, NULL);
+    raise(sig);
+}
+
+static void install_crash_handler()
+{
+    struct sigaction sa;
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_sigaction = crash_handler;
+    sa.sa_flags = SA_SIGINFO | SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGSEGV, &sa, NULL);
+    sigaction(SIGABRT, &sa, NULL);
+    sigaction(SIGFPE,  &sa, NULL);
+    sigaction(SIGBUS,  &sa, NULL);
+    sigaction(SIGILL,  &sa, NULL);
+}
+
 double time_diff(struct timeval x , struct timeval y)
 {
 	double x_ms , y_ms , diff;
@@ -41,6 +98,8 @@ double time_diff(struct timeval x , struct timeval y)
 
 int main(int argc, char **argv)
 {
+    install_crash_handler();
+
     stringstream ss;
     Program prog;
     TokenProgram *tp;
