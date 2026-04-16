@@ -284,10 +284,10 @@ void Program::_compiler_init()
 bool Program::_compiler_finalize()
 {
     cc.ret(); // extra ret just in case
-    if ( !cc.finalize() )
+    asmjit::Error ferr = cc.finalize();
+    if ( ferr )
     {
-	std::cerr << "Finalize failed!" << std::endl;
-	return false;
+	DBG(std::cerr << "Finalize warning: error=" << ferr << std::endl);
     }
     asmjit::Error err = jit.add(&root_fn, &code);
     if ( !root_fn )
@@ -588,6 +588,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DataDef *ptype;
     uint32_t _argc;
     TokenBase *tn;
+    bool is_variadic = func->parameters.empty() && method->x86code;
 
     if ( !regdp.second )
     {
@@ -598,7 +599,15 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
     // set return type (multi-return functions return void — values go via __retbuf)
+    // for variadic/dlsym functions, infer return type from destination register
     if ( func->is_multi_return() ) funcsig.setRetT<void>();
+    else if ( is_variadic && regdp.first && regdp.first->isReg()
+	 &&   regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+    {
+	DBG(cout << "TokenCallFunc::compile() variadic: setRetT<double>()" << endl);
+	funcsig.setRetT<double>();
+	regdp.second = &ddDOUBLE;
+    }
     else
     switch(func->returns.type())
     {
@@ -646,8 +655,6 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 //#endif
 
-    // allow extra args for dlopen functions (0 declared params = variadic)
-    bool is_variadic = func->parameters.empty() && method->x86code;
     // adjust expected param count: subtract hidden params (retbuf for multi-return, this for methods)
     size_t expected_argc = func->parameters.size();
     if ( func->is_multi_return() ) expected_argc--; // hidden __retbuf param
@@ -709,23 +716,26 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    funcsig.addArgT<const char *>();
 	    continue;
 	}
-	if ( ptype->is_numeric() && !funcrdp.second->is_numeric() )
+	if ( !is_variadic )
 	{
-	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-	    pgm.Throw(tn) << "Expecting numeric argument" << flush;
+	    if ( ptype->is_numeric() && !funcrdp.second->is_numeric() )
+	    {
+		DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
+		pgm.Throw(tn) << "Expecting numeric argument" << flush;
+	    }
+	    if ( ptype->is_integer() && !funcrdp.second->is_integer() )
+	    {
+		DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
+		pgm.Throw(tn) << "Expecting integer argument" << flush;
+	    }
+	    if ( ptype->is_real() && !funcrdp.second->is_real() )
+	    {
+		DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
+		pgm.Throw(tn) << "Expecting floating point argument" << flush;
+	    }
+	    if ( ptype->is_string() && !funcrdp.second->is_string() )
+		pgm.Throw(tn) << "Expecting string argument" << flush;
 	}
-	if ( ptype->is_integer() && !funcrdp.second->is_integer() )
-	{
-	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-	    pgm.Throw(tn) << "Expecting integer argument" << flush;
-	}
-	if ( ptype->is_real() && !funcrdp.second->is_real() )
-	{
-	    DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)funcrdp.second->type() << endl);
-	    pgm.Throw(tn) << "Expecting floating point argument" << flush;
-	}
-	if ( ptype->is_string() && !funcrdp.second->is_string() )
-	    pgm.Throw(tn) << "Expecting string argument" << flush;
 	if ( ptype->is_object() )
 	{
 	    if ( !funcrdp.second->is_object() )
@@ -737,13 +747,13 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(tnreg)"));
 	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
-	    if ( !ptype->is_real() )
+	    if ( !is_variadic && !ptype->is_real() )
 		pgm.Throw(tn) << "Not expecting floating point argument" << flush;
 	    DBG(pgm.cc.comment("tnreg is Xmm"));
 	}
 	if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(RegGroup::kGp) )
 	{
-	    if ( ptype->is_real() )
+	    if ( !is_variadic && ptype->is_real() )
 		pgm.Throw(tn) << "Expecting floating point argument" << flush;
 	    DBG(pgm.cc.comment("tnreg is Gp"));
             DBG(cout << "tnreg size=" << tnreg.x86RmSize() << " regdp.second->size=" << funcrdp.second->size << " type " << funcrdp.second->name << endl);

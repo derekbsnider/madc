@@ -15,36 +15,22 @@
 
 ### Standard Library Access
 
-- **Built-in `libc` and `libm` namespaces** — `libc::getpid()`, `libc::sleep(1)`,
-  `libm::sqrt(x)`, `libm::pow(x, y)` etc. work without any `#load` directive.
-  Implementation uses a **two-phase approach**: (1) during parsing, `libc::`/`libm::` calls
-  are recorded as symbol references but nothing is resolved yet; (2) after parsing completes,
-  a single resolution pass `dlopen`s each library once and `dlsym`s only the symbols actually
-  referenced in the source — nothing else. Libraries that aren't used don't get opened at all.
-  `libc` → `dlopen(NULL, RTLD_LAZY)` (already in-process); `libm` → `dlopen("libm.so.6", RTLD_LAZY)`.
-  Key `libm` functions: `sqrt`, `pow`, `exp`, `log`, `log2`, `log10`, `sin`, `cos`, `tan`,
-  `asin`, `acos`, `atan`, `atan2`, `floor`, `ceil`, `round`, `fabs`, `fmod`, `hypot`.
+- **Fix dlsym namespace calling convention** — `ns::func()` calls resolved via dlsym have
+  broken return values (always 0 for integers, code generation failure for doubles). The
+  asmjit `cc.finalize()` reports `kErrorInvalidAssignment` (25) for double returns and
+  `kErrorInvalidInstruction` (26) for integer returns. Root cause: likely a mismatch between
+  the function signature registered by `addFunction()` (variadic with dtINT64 return) and
+  the actual calling convention needed. Unqualified libc calls via the dlsym fallback
+  (e.g. `getpid()`, `sleep(0)`) work correctly since they go through a different code path.
 
-- **Embedded standard headers** — `dlsym` gives function pointers but not the type information
-  from C headers: struct layouts, constants, and typedefs. Solution: madc-native `.mad` header
-  files that define these using madc's own type system (field offsets and constant values
-  hardcoded for x86-64 Linux ABI), **compiled directly into the binary** so no external files
-  are needed at runtime. This preserves the core "single binary, nothing else" promise.
-
-  Build mechanism: source headers live in `include/madc/` as human-editable `.mad` files; the
-  Makefile converts them to C++ byte arrays at build time (via `xxd -i` or a small gen script)
-  and links them in. The lexer's `#include` handler checks the in-memory map first:
-  - `#include <madc/libc/fcntl>` — angle-bracket form routes to embedded headers
-  - `#include "local.mad"` — quoted form stays as filesystem lookup (existing behaviour)
-
-  Priority headers (depends on `#define` and struct support being solid):
-  - `<madc/libc/fcntl>` — `O_RDONLY`, `O_WRONLY`, `O_CREAT`, `O_APPEND`, `O_TRUNC` etc.
-  - `<madc/libc/stat>` — `struct stat` with correct field offsets, `S_IRUSR`, `S_IWUSR` etc.
-  - `<madc/libc/signal>` — `SIGKILL`, `SIGTERM`, `SIGINT`, `SIGHUP` etc.
-  - `<madc/libc/errno>` — `ENOENT`, `EACCES`, `EEXIST`, `EINVAL`, `ENOMEM` etc.
-  - `<madc/libc/time>` — `struct tm`, `struct timespec`, `struct timeval`, `CLOCK_MONOTONIC` etc.
-  - `<madc/libc/dirent>` — `struct dirent` for `opendir`/`readdir` results
-  - `<madc/net/socket>` — `AF_INET`, `SOCK_STREAM`, `struct sockaddr_in`, `struct in_addr`
+- **Embedded standard headers — additional headers** — The infrastructure is in place
+  (`#include <math.h>` routes to embedded `include/madc/math.h` which auto-loads libm via
+  `#load` and defines math constants). Additional headers needed once dlsym calling is fixed:
+  - `<stdio.h>` — `EOF`, `SEEK_*` constants, `printf` family
+  - `<stdlib.h>` — `EXIT_SUCCESS`, `EXIT_FAILURE`, `NULL`
+  - `<fcntl.h>` — `O_RDONLY`, `O_WRONLY`, `O_CREAT`, etc.
+  - `<signal.h>` — `SIGKILL`, `SIGTERM`, `SIGINT`, etc.
+  - `<errno.h>` — `ENOENT`, `EACCES`, `EEXIST`, etc.
 
   Typedefs (`pid_t`, `size_t`, `off_t`, `time_t`, `mode_t`) map to existing madc integer types
   and can be defined with `#define` once that lands.
@@ -133,3 +119,6 @@
 - ~~Hex integer literals~~ — `0xFF`, `0xDEAD`, `0X1A` etc.
 - ~~Postfix increment/decrement~~ — `x++`, `x--` with correct old-value-return semantics; parser uses `prevToken()` for prefix/postfix disambiguation
 - ~~C preprocessor directives~~ — `#define`, `#undef`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`, `#if defined(X)`, `#if 0`/`#if 1`
+- ~~Embedded header infrastructure~~ — `#include <name>` checks embedded headers first; `scripts/gen_embedded_headers.sh` bakes `include/madc/*.h` into binary; first header: `math.h`
+- ~~dlsym fallback for libc~~ — unresolved function calls try `dlsym(RTLD_DEFAULT, name)` before erroring; `getpid()`, `sleep()`, `getuid()` etc. work without `#include` or `#load`
+- ~~Variadic type-check bypass~~ — dlsym-resolved functions skip parameter type checks and infer return type from destination register

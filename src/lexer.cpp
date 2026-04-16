@@ -281,12 +281,34 @@ TokenBase *Program::_getToken()
 		    // read filename: "file" or <file>
 		    char delim = source.get();
 		    char end_delim = (delim == '<') ? '>' : '"';
+		    bool is_system = (delim == '<');
 		    std::string incfile;
 		    while ( source.good() && !source.eof() && source.peek() != end_delim
 		    &&      source.peek() != '\n' && source.peek() != '\r' )
 			incfile += source.get();
 		    if ( source.peek() == end_delim )
 			source.get(); // consume closing delimiter
+		    // angle-bracket includes: check embedded headers first
+		    if ( is_system )
+		    {
+			const std::string *embedded = find_embedded_header(incfile);
+			if ( embedded )
+			{
+			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
+			    Source saved = std::move(source);
+			    source = Source();
+			    source.fname(incfile.c_str());
+			    source.str(*embedded);
+			    TokenBase *itb;
+			    while ( (itb = getRealToken()) )
+			    {
+				itb->file = incfile.c_str();
+				tokens.push_back(itb);
+			    }
+			    source = std::move(saved);
+			    return getToken();
+			}
+		    }
 		    // resolve relative path based on current file's directory
 		    std::string full_path = incfile;
 		    if ( !incfile.empty() && incfile[0] != '/' )

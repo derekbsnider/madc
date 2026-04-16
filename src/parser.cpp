@@ -1462,6 +1462,23 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			}
 		    }
 		}
+		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+		{
+		    // dlsym fallback: try to resolve as a libc/system function
+		    std::string fname = ((TokenIdent *)tb)->str;
+		    void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
+		    if ( sym )
+		    {
+			std::string func_id = "__dl_" + fname;
+			var = addFunction(func_id,
+			    datatype_vec_t{DataType::dtINT64},
+			    (fVOIDFUNC)sym);
+			if ( var )
+			{
+			    DBG(cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
+			}
+		    }
+		}
 		if ( !var )
 		{
 		    DBG(cerr << "parseExpression() failed to resolve identifier " << ((TokenIdent *)tb)->str << endl);

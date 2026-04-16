@@ -2,7 +2,8 @@ CXX=g++
 CXXFLAGS= -std=c++11 -Wall
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-OFILES	= lexer.o parser.o typesafe.o compiler.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_stl.o madc.o
+OFILES	= lexer.o parser.o typesafe.o compiler.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_stl.o embedded_headers.o madc.o
+MADHDRS = $(wildcard ../include/madc/*.h)
 INCDIR	= ../include
 BINDIR	= ../bin
 LIBDIR	= ../lib
@@ -35,6 +36,9 @@ $(TESTDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
 
 ../bin/madc: $(OBJECTS)
 	$(CXX) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
+
+embedded_headers.cpp: $(MADHDRS)
+	../scripts/gen_embedded_headers.sh
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) $<
