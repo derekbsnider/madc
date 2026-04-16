@@ -1341,7 +1341,7 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.Throw(this) << "Too many initializers for struct " << dds->name << flush;
 
 	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
-	x86::Gp base_reg = pgm.cc.newIntPtr((var.name + ".init_base").c_str());
+	x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var.name + ".init_base").c_str());
 	if ( base_op.isMem() )
 	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
 	else
@@ -1355,7 +1355,7 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     {
 	DBG(pgm.cc.comment("TokenDecl fixed-array init_list"));
 	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
-	x86::Gp base_reg = pgm.cc.newIntPtr((var.name + ".init_base").c_str());
+	x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var.name + ".init_base").c_str());
 	pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
 
 	// Array-of-structs: each element is a nested brace list; emit member
@@ -2321,7 +2321,7 @@ Operand &TokenMember::operand(Program &pgm)
 	    // Arrow chain: parent member holds a POINTER VALUE — load it into a Gp.
 	    // e.g. ch->in_room->name: parent_op = Mem [ch + in_room_offset],
 	    //      load that pointer, then compute [gp + name_offset].
-	    x86::Gp obj_gp = pgm.cc.newIntPtr(object.name.c_str());
+	    x86::Gp obj_gp = pgm.cc.newIntPtr("%s", object.name.c_str());
 	    DBG(pgm.cc.comment("TokenMember::operand() chained -> load intermediate ptr"));
 	    if ( parent_op.isMem() )
 		pgm.cc.mov(obj_gp, parent_op.as<x86::Mem>());
@@ -2332,7 +2332,7 @@ Operand &TokenMember::operand(Program &pgm)
 		_operand = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
 	    else
 	    {
-		x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+		x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
 		DBG(pgm.cc.comment("TokenMember::operand() chained -> lea non-numeric member"));
 		pgm.cc.lea(addr_reg, x86::ptr(obj_gp, (int32_t)offset));
 		_operand = addr_reg;
@@ -2352,7 +2352,7 @@ Operand &TokenMember::operand(Program &pgm)
 		    _operand = x86::ptr(base_gp, (int32_t)offset, (uint32_t)var.type->size);
 		else
 		{
-		    x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+		    x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
 		    DBG(pgm.cc.comment("TokenMember::operand() chained . lea from gp base"));
 		    pgm.cc.lea(addr_reg, x86::ptr(base_gp, (int32_t)offset));
 		    _operand = addr_reg;
@@ -2369,7 +2369,7 @@ Operand &TokenMember::operand(Program &pgm)
 		    _operand = member_mem;
 		else
 		{
-		    x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+		    x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
 		    DBG(pgm.cc.comment("TokenMember::operand() chained . lea non-numeric member"));
 		    pgm.cc.lea(addr_reg, member_mem);
 		    _operand = addr_reg;
@@ -2397,7 +2397,7 @@ Operand &TokenMember::operand(Program &pgm)
 	{
 	    // For string/object members: return address (pointer) in a Gp register
 	    // so functions like string_assign can receive the destination pointer
-	    x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+	    x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
 	    DBG(pgm.cc.comment("TokenMember::operand() lea addr of non-numeric member"));
 	    pgm.cc.lea(addr_reg, member_mem);
 	    _operand = addr_reg;
@@ -2415,7 +2415,7 @@ Operand &TokenMember::operand(Program &pgm)
 	}
 	else
 	{
-	    x86::Gp addr_reg = pgm.cc.newIntPtr(var.name.c_str());
+	    x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
 	    DBG(pgm.cc.comment("TokenMember::operand() lea from pointer base"));
 	    pgm.cc.lea(addr_reg, x86::ptr(obj_gp, (int32_t)offset));
 	    _operand = addr_reg;
@@ -2827,7 +2827,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		operand_map[var] = x86::ptr(env_gp, (int64_t)cap_idx * 8, (uint32_t)var->type->size);
 	    else
 	    {
-		x86::Gp str_ptr = pgm.cc.newIntPtr(var->name.c_str());
+		x86::Gp str_ptr = pgm.cc.newIntPtr("%s", var->name.c_str());
 		pgm.cc.mov(str_ptr, x86::qword_ptr(env_gp, (int64_t)cap_idx * 8));
 		operand_map[var] = str_ptr;
 	    }
@@ -2846,7 +2846,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	uint32_t align = (uint32_t)(elem_size < 8 ? elem_size : 8);
 	DBG(pgm.cc.comment("voperand fixed-size array"));
 	x86::Mem stack = pgm.cc.newStack((uint32_t)total, align);
-	x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+	x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 	pgm.cc.lea(reg, stack);
 	operand_map[var] = reg;
 	var->flags |= vfREGSET;
@@ -2860,7 +2860,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	if ( var->flags & vfPARAM )
 	{
 	    DBG(pgm.cc.comment("voperand param (non-numeric) — bare register"));
-	    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+	    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 	    operand_map[var] = reg;
 	}
 	else
@@ -2871,7 +2871,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtSTRING:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::string), 4);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(std::cout << "TokenCpnd::voperand(" << var->name << ") stack var calling string_construct[" << (uint64_t)string_construct << ']' << std::endl);
 		    DBG(pgm.cc.comment("string_construct"));
@@ -2883,7 +2883,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtSSTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::stringstream), 4);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("stringstream_construct"));
                     InvokeNode* call; pgm.cc.invoke(&call, imm(stringstream_construct), FuncSignature::build<void *, void *>());
@@ -2894,7 +2894,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtIFSTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ifstream), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("ifstream_construct"));
                     InvokeNode* call; pgm.cc.invoke(&call, imm(ifstream_construct), FuncSignature::build<void *, void *>());
@@ -2905,7 +2905,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtOFSTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ofstream), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("ofstream_construct"));
                     InvokeNode* call; pgm.cc.invoke(&call, imm(ofstream_construct), FuncSignature::build<void *, void *>());
@@ -2916,7 +2916,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtFSTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::fstream), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("fstream_construct"));
                     InvokeNode* call; pgm.cc.invoke(&call, imm(fstream_construct), FuncSignature::build<void *, void *>());
@@ -2927,7 +2927,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtARRAY:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(MadArray), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DBG(pgm.cc.comment("madarray_construct"));
                     InvokeNode* call; pgm.cc.invoke(&call, imm(madarray_construct), FuncSignature::build<void *, void *>());
@@ -2938,7 +2938,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtVECTOR:
 		{
 		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(var->type);
 		    void *ctor = vdd->element_type->is_string()
@@ -2952,7 +2952,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtMAP:
 		{
 		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DataDefMAP *mdd = static_cast<DataDefMAP *>(var->type);
 		    void *ctor = mdd->val_type->is_string()
@@ -2965,7 +2965,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtSET:
 		{
 		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DataDefSET *sdd = static_cast<DataDefSET *>(var->type);
 		    void *ctor = sdd->element_type->is_string()
@@ -2978,7 +2978,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtLIST:
 		{
 		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    DataDefLIST *ldd = static_cast<DataDefLIST *>(var->type);
 		    void *ctor = ldd->element_type->is_string()
@@ -2991,7 +2991,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtISTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::istream), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    operand_map[var] = reg;
 		}
@@ -2999,7 +2999,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    case DataType::dtOSTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ostream), 4);
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    pgm.cc.lea(reg, stack);
 		    operand_map[var] = reg;
 		}
@@ -3009,7 +3009,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		||   var->type->reftype() == RefType::rtPointer )
 		{
 		    DBG(pgm.cc.comment("pgm.cc.newIntPtr"));
-		    x86::Gp reg = pgm.cc.newIntPtr(var->name.c_str());
+		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 		    operand_map[var] = reg;
 		    break;
 		}
@@ -3027,14 +3027,14 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    DataDefSTRUCT *dds = static_cast<DataDefSTRUCT *>(var->type);
 		    if ( !dds->members.empty() )
 		    {
-			x86::Gp base_reg = pgm.cc.newIntPtr((var->name + ".base").c_str());
+			x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var->name + ".base").c_str());
 			pgm.cc.lea(base_reg, stack);
 			ssize_t ofs = 0;
 			for ( auto &m : dds->members )
 			{
 			    if ( m.second->rawtype() == DataType::dtSTRING )
 			    {
-				x86::Gp mreg = pgm.cc.newIntPtr((var->name + "." + m.first).c_str());
+				x86::Gp mreg = pgm.cc.newIntPtr("%s", (var->name + "." + m.first).c_str());
 				pgm.cc.lea(mreg, x86::ptr(base_reg, (int32_t)ofs));
 				DBG(pgm.cc.comment(("struct member " + m.first + " string_construct").c_str()));
                                 InvokeNode* call; pgm.cc.invoke(&call, imm(string_construct), FuncSignature::build<void *, void *>());
@@ -3235,14 +3235,14 @@ void TokenCpnd::cleanup(Program &pgm)
 			    DataDefSTRUCT *dds = static_cast<DataDefSTRUCT *>(var->type);
 			    if ( !dds->members.empty() && reg.isMem() )
 			    {
-				x86::Gp base_reg = cc.newIntPtr((var->name + ".base").c_str());
+				x86::Gp base_reg = cc.newIntPtr("%s", (var->name + ".base").c_str());
 				cc.lea(base_reg, reg.as<x86::Mem>());
 				ssize_t ofs = 0;
 				for ( auto &m : dds->members )
 				{
 				    if ( m.second->rawtype() == DataType::dtSTRING )
 				    {
-					x86::Gp mreg = cc.newIntPtr((var->name + "." + m.first).c_str());
+					x86::Gp mreg = cc.newIntPtr("%s", (var->name + "." + m.first).c_str());
 					cc.lea(mreg, x86::ptr(base_reg, (int32_t)ofs));
 					DBG(std::cerr << "cleanup: " << var->name << '.' << m.first << " string_destruct" << std::endl);
                                         InvokeNode* call; cc.invoke(&call, imm(string_destruct), FuncSignature::build<void, void *>());
@@ -4355,7 +4355,7 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	    return *regdp.first;
 	}
 
-	_operand = pgm.cc.newGpq(var.name.c_str());
+	_operand = pgm.cc.newGpq("%s", var.name.c_str());
 	if ( func->funcnode )
 	    pgm.cc.lea(_operand.as<x86::Gp>(), x86::ptr(func->funcnode->label()));
 	else if ( method->x86code )
@@ -4418,7 +4418,7 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
     if ( _datatype->is_numeric() && reg.isMem() )
     {
 	DBG(pgm.cc.comment("TokenMember::compile() loading numeric member into register"));
-	x86::Gp gp = pgm.cc.newGpq(var.name.c_str());
+	x86::Gp gp = pgm.cc.newGpq("%s", var.name.c_str());
 	pgm.safemov(gp, reg.as<x86::Mem>(), _datatype, _datatype);
 	_operand = gp;
 	regdp.first = &_operand;
@@ -4459,7 +4459,7 @@ Operand &TokenDeref::compile(Program &pgm, regdefp_t &regdp)
     // read: load dereferenced value into a register
     if ( deref_type->is_numeric() && mem.isMem() )
     {
-	x86::Gp gp = pgm.cc.newGpq(("*" + var.name).c_str());
+	x86::Gp gp = pgm.cc.newGpq("%s", ("*" + var.name).c_str());
 	pgm.safemov(gp, mem.as<x86::Mem>(), deref_type, deref_type);
 	_operand = gp;
 	regdp.first = &_operand;
@@ -4489,7 +4489,7 @@ Operand &TokenAddrOf::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("TokenAddrOf::compile()"));
     Operand &obj = pgm.tkFunction->voperand(pgm, &var);
 
-    x86::Gp addr = pgm.cc.newIntPtr(("&" + var.name).c_str());
+    x86::Gp addr = pgm.cc.newIntPtr("%s", ("&" + var.name).c_str());
     if ( obj.isMem() )
 	pgm.cc.lea(addr, obj.as<x86::Mem>());
     else
