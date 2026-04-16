@@ -1,0 +1,73 @@
+#!/usr/bin/env madc
+// testvarargs.mad — test va_list / stdarg.h support
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+
+// SMAUG-style pattern: variadic wrapper around vsprintf
+void my_printf(char *fmt, ...)
+{
+    char *buf = (char *)calloc(4096, 1);
+    va_list args;
+    va_start(args, fmt);
+    vsprintf(buf, fmt, args);
+    va_end(args);
+    printf("%s", buf);
+    free(buf);
+}
+
+// variant that returns length
+int my_sprintf(char *buf, char *fmt, ...)
+{
+    va_list args;
+    va_start(args, fmt);
+    int len = vsprintf(buf, fmt, args);
+    va_end(args);
+    return len;
+}
+
+// direct va_arg usage
+int sum_ints(int count, ...)
+{
+    va_list ap;
+    va_start(ap, count);
+    int total = 0;
+    int i = 0;
+    while (i < count)
+    {
+        int val = va_arg(ap, int);
+        total = total + val;
+        i = i + 1;
+    }
+    va_end(ap);
+    return total;
+}
+
+int main()
+{
+    // Test 1: basic string and integer formatting
+    my_printf("Hello %s, you have %d gold.\n", "Player", 100);
+
+    // Test 2: multiple integers
+    my_printf("Coords: %d, %d, %d\n", 10, 20, 30);
+
+    // Test 3: hex formatting
+    my_printf("Hex: 0x%x\n", 255);
+
+    // Test 4: zero variadic args
+    my_printf("Just a message\n");
+
+    // Test 5: my_sprintf with return value
+    char *result = (char *)calloc(256, 1);
+    int len = my_sprintf(result, "Answer: %d", 42);
+    printf("%s (len=%d)\n", result, len);
+    free(result);
+
+    // Test 6: va_arg direct usage — sum integers
+    int s = sum_ints(4, 10, 20, 30, 40);
+    printf("Sum: %d\n", s);
+
+    return 0;
+}

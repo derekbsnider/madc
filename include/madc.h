@@ -21,9 +21,10 @@ public:
     std::vector<CaptureEntry> captures;         // populated during lambda body compilation
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
-    FuncDef(DataDef &d) : returns(d), has_captures(false) { funcnode = NULL; }
+    FuncDef(DataDef &d) : returns(d), has_captures(false), is_varargs(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
+    bool is_varargs;  // function declared with ... (variadic)
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 
