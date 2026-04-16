@@ -1538,6 +1538,46 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 #endif
 		    break;
 		}
+		// -> pointer member access: ptr->member
+		if ( prevToken() && prevToken()->id() == TokenID::tkDeRef )
+		{
+		    if ( exStack.empty() )
+			Throw(tb) << "expected expression before '->'" << flush;
+		    if ( exStack.top()->type() != TokenType::ttVariable )
+			Throw(tb) << "expression before '->' must be a variable" << flush;
+		    TokenVar *tv = dynamic_cast<TokenVar *>(exStack.top());
+		    if ( !tv->var.type->is_pointer() )
+			Throw(tb) << "expression before '->' must be a pointer" << flush;
+
+		    // get the pointed-to type
+		    DataDefPTR *ptr_type = dynamic_cast<DataDefPTR *>(tv->var.type);
+		    if ( !ptr_type || !ptr_type->base_type )
+			Throw(tb) << "expression before '->' is not a typed pointer" << flush;
+		    DataDef *base = ptr_type->base_type;
+		    if ( !base->is_struct() && !base->is_object() )
+			Throw(tb) << "member reference type is not a structure or union" << flush;
+
+		    string id = ((TokenIdent *)tb)->str;
+
+		    // get member offset and type
+		    ssize_t ofs = ((DataDefSTRUCT *)base)->m_offset(id);
+		    if ( ofs == -1 )
+			Throw(tb) << "no member named '" << id << "'" << flush;
+		    DataDef *mtype = ((DataDefSTRUCT *)base)->m_type(id);
+
+		    // create variable for the member
+		    var = new Variable(id, *mtype, 1, NULL, false);
+		    var->flags = tv->var.flags;
+
+		    // remove pointer TokenVar from exStack
+		    exStack.pop();
+		    // replace with TokenMember (operand path handles [gp + offset])
+		    exStack.push(new TokenMember(tv->var, *var, ofs));
+		    // remove TokenDeRef from opStack
+		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
+			opStack.pop();
+		    break;
+		}
 		// namespace resolution: identifier :: member
 		if ( peekToken() && peekToken()->id() == TokenID::tkNS )
 		{

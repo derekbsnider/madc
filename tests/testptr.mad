@@ -1,5 +1,5 @@
 #!/usr/bin/env madc
-// Test pointer type declarations
+// Test pointer type declarations and -> operator
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,6 +31,19 @@ int main()
 	// double pointer
 	char **argv = NULL;
 	printf("char **argv = %ld\n", argv);
+
+	// -> operator: allocate struct via calloc and access via pointer
+	struct Point {
+		int x;
+		int y;
+	};
+
+	struct Point *pt = calloc(1, sizeof(struct Point));
+	pt->x = 42;
+	pt->y = 99;
+	printf("pt->x = %ld\n", pt->x);
+	printf("pt->y = %ld\n", pt->y);
+	free(pt);
 
 	printf("All pointer tests passed!\n");
 	return 0;
