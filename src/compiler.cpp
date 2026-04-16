@@ -1231,6 +1231,115 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     if ( initialize && !(var.flags & vfSTATIC) )
 	initialize->compile(pgm, regdp);
 
+    // brace-enclosed initializer for structs: struct Foo x = { v0, v1, ... }
+    if ( !init_list.empty() && !var.is_fixed_array()
+      && (var.type->basetype() == BaseType::btStruct
+       || var.type->basetype() == BaseType::btClass) )
+    {
+	DBG(pgm.cc.comment("TokenDecl struct init_list"));
+	DataDefSTRUCT *dds = static_cast<DataDefSTRUCT *>(var.type);
+	if ( init_list.size() > dds->members.size() )
+	    pgm.Throw(this) << "Too many initializers for struct " << dds->name << flush;
+
+	// Get struct base pointer (voperand already constructed any string members)
+	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
+	x86::Gp base_reg = pgm.cc.newIntPtr((var.name + ".init_base").c_str());
+	if ( base_op.isMem() )
+	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+
+	size_t ofs = 0;
+	for ( size_t i = 0; i < init_list.size(); ++i )
+	{
+	    auto &mp = dds->members[i];
+	    DataDef *mtype = mp.second;
+	    size_t fa = dds->field_align(*mtype);
+	    ofs = DataDefSTRUCT::align_up(ofs, fa);
+
+	    regdefp_t it_rdp = {nullptr, nullptr, nullptr};
+	    Operand &val_op = init_list[i]->compile(pgm, it_rdp);
+
+	    if ( mtype->is_numeric() || mtype->is_pointer() )
+	    {
+		// char* member initialized from a string literal: coerce std::string → const char*
+		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(mtype);
+		if ( pdd && pdd->base_type == &ddCHAR
+		  && it_rdp.second && it_rdp.second->is_string()
+		  && val_op.isReg() )
+		{
+		    DBG(pgm.cc.comment("struct init: coerce string literal -> char*"));
+		    x86::Gp cstr_gp = pgm.cc.newIntPtr("_si_cstr");
+		    InvokeNode *cstr_call;
+		    pgm.cc.invoke(&cstr_call, imm(string_cstr),
+			FuncSignature::build<const char *, void *>());
+		    cstr_call->setArg(0, val_op.as<x86::Gp>());
+		    cstr_call->setRet(0, cstr_gp);
+		    val_op = cstr_gp;
+		}
+
+		size_t esize = mtype->size;
+		x86::Mem member_mem = x86::ptr(base_reg, (int32_t)ofs, (uint32_t)esize);
+		if ( val_op.isImm() )
+		    pgm.cc.mov(member_mem, val_op.as<Imm>());
+		else if ( val_op.isReg() )
+		{
+		    x86::Gp vgp = val_op.as<x86::Gp>();
+		    if      ( esize == 8 ) pgm.cc.mov(member_mem, vgp.r64());
+		    else if ( esize == 4 ) pgm.cc.mov(member_mem, vgp.r32());
+		    else if ( esize == 2 ) pgm.cc.mov(member_mem, vgp.r16());
+		    else                   pgm.cc.mov(member_mem, vgp.r8());
+		}
+		else if ( val_op.isMem() )
+		{
+		    x86::Gp tmp = pgm.cc.newGpq("_si_tmp");
+		    pgm.cc.mov(tmp, val_op.as<x86::Mem>());
+		    if      ( esize == 8 ) pgm.cc.mov(member_mem, tmp.r64());
+		    else if ( esize == 4 ) pgm.cc.mov(member_mem, tmp.r32());
+		    else if ( esize == 2 ) pgm.cc.mov(member_mem, tmp.r16());
+		    else                   pgm.cc.mov(member_mem, tmp.r8());
+		}
+	    }
+	    else if ( mtype->is_string() )
+	    {
+		// std::string member: already placement-constructed; assign the value.
+		// val_op is a Gp pointer to the source std::string (from string literal).
+		x86::Gp m_addr = pgm.cc.newIntPtr("_si_straddr");
+		pgm.cc.lea(m_addr, x86::ptr(base_reg, (int32_t)ofs));
+		if ( val_op.isReg() )
+		{
+		    InvokeNode *call;
+		    pgm.cc.invoke(&call, imm(string_assign),
+			FuncSignature::build<void, void *, void *>());
+		    call->setArg(0, m_addr);
+		    call->setArg(1, val_op.as<x86::Gp>());
+		}
+	    }
+	    else
+	    {
+		pgm.Throw(this) << "Unsupported struct member type in initializer: " << mtype->name << flush;
+	    }
+
+	    ofs += mtype->size;
+	}
+	// Zero-fill remaining members (C initializer semantics)
+	for ( size_t i = init_list.size(); i < dds->members.size(); ++i )
+	{
+	    auto &mp = dds->members[i];
+	    DataDef *mtype = mp.second;
+	    size_t fa = dds->field_align(*mtype);
+	    ofs = DataDefSTRUCT::align_up(ofs, fa);
+	    if ( mtype->is_numeric() || mtype->is_pointer() )
+	    {
+		size_t esize = mtype->size;
+		x86::Mem member_mem = x86::ptr(base_reg, (int32_t)ofs, (uint32_t)esize);
+		pgm.cc.mov(member_mem, imm(0));
+	    }
+	    // strings were already placement-constructed to empty; no zero-fill needed.
+	    ofs += mtype->size;
+	}
+    }
+
     // brace-enclosed initializer for fixed-size arrays: arr[N] = { v0, v1, ... }
     if ( !init_list.empty() && var.is_fixed_array() )
     {

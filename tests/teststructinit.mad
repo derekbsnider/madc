@@ -1,0 +1,45 @@
+#include <stdio.h>
+#include <iostream>
+
+// Test struct initializer lists
+
+struct Point {
+    int x;
+    int y;
+};
+
+struct Entry {
+    char *name;
+    int value;
+};
+
+struct Mixed {
+    string label;
+    int a;
+    int b;
+};
+
+int main()
+{
+    // Scalars only
+    struct Point p = { 10, 20 };
+    printf("p = (%ld, %ld)\n", p.x, p.y);
+
+    // Expressions as init values
+    struct Point q = { 1 + 2, 3 * 4 };
+    printf("q = (%ld, %ld)\n", q.x, q.y);
+
+    // Partial init: remaining fields zero-filled
+    struct Point z = { 99 };
+    printf("z = (%ld, %ld)\n", z.x, z.y);       // 99 0
+
+    // char* member with string literal (SMAUG tables.c pattern)
+    struct Entry e = { "alice", 30 };
+    printf("e = (%s, %ld)\n", e.name, e.value);
+
+    // string member
+    struct Mixed m = { "greetings", 100, 200 };
+    cout << "m = (" << m.label << ", " << m.a << ", " << m.b << ")" << endl;
+
+    return 0;
+}

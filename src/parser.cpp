@@ -3958,9 +3958,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )
     {
-	// parse brace-enclosed initializer list for fixed-size arrays
+	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
-	if ( nt->id() == TokenID::tkAssign && !arr_dims.empty() )
+	bool is_struct_init = arr_dims.empty()
+	    && (decl_type->basetype() == BaseType::btStruct
+	     || decl_type->basetype() == BaseType::btClass);
+	if ( nt->id() == TokenID::tkAssign && (!arr_dims.empty() || is_struct_init) )
 	{
 	    // peek past '=' to see if we have { (brace list) or "..." (string lit for char arr)
 	    nextToken(); // consume '='
@@ -3969,7 +3972,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		Throw(nt) << "Expected initializer after '='" << flush;
 
 	    // String-literal char-array init: char buf[] = "hello";
-	    if ( peek0->type() == TokenType::ttString
+	    if ( !arr_dims.empty()
+	      && peek0->type() == TokenType::ttString
 	      && decl_type == &ddCHAR && arr_dims.size() == 1 )
 	    {
 		TokenBase *strtok = nextToken(); // consume the string literal
@@ -3981,14 +3985,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    else
 	    {
 	    if ( peek0->id() != TokenID::tkOpBrc )
-		Throw(nt) << "Expected '{' or string literal for array initializer" << flush;
+		Throw(nt) << "Expected '{' or string literal for initializer" << flush;
 	    nextToken(); // consume '{'
 	    // parse comma-separated expressions up to '}'
 	    while ( true )
 	    {
 		TokenBase *look = peekToken();
 		if ( !look )
-		    Throw(tb) << "Unexpected end of data in array initializer" << flush;
+		    Throw(tb) << "Unexpected end of data in initializer" << flush;
 		if ( look->id() == TokenID::tkClBrc )
 		{
 		    nextToken(); // consume '}'
@@ -4001,11 +4005,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    nextToken(); // consume ','
 	    }
 	    }
-	    // Infer size for dims[0] == 0 (the first empty [])
-	    if ( arr_dims[0] == 0 )
-		arr_dims[0] = (uint32_t)init_list.size();
-	    if ( init_list.size() > (size_t)arr_dims[0] )
-		Throw(tb) << "Too many initializers for array (expected " << arr_dims[0] << ")" << flush;
+	    // Infer size for arrays with dims[0] == 0; validate count
+	    if ( !arr_dims.empty() )
+	    {
+		if ( arr_dims[0] == 0 )
+		    arr_dims[0] = (uint32_t)init_list.size();
+		if ( init_list.size() > (size_t)arr_dims[0] )
+		    Throw(tb) << "Too many initializers for array (expected " << arr_dims[0] << ")" << flush;
+	    }
 	}
 	else if ( !arr_dims.empty() )
 	{
