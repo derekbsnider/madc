@@ -150,39 +150,78 @@ sibling file under `docs/rules/` with the same base name.
 
 **You must read the rules that apply to your task.** Skimming them is
 not optional. Follow them unless the user explicitly overrides one.
+When two rules could both apply, the lower-numbered priority tier
+(P1 → P4) wins.
 
-### Cross-cutting (apply to every change)
+Claude Code auto-loads every file under `.claude/rules/` each turn.
+Other tools need the index below. The line counts are a guard against
+rule bloat — run `scripts/rule_stats.sh` and update the "Total rule
+footprint" line below if any rule grows or shrinks noticeably.
 
-| Rule                                             | Scope                                         |
-|--------------------------------------------------|-----------------------------------------------|
-| [design-principles.md](.claude/rules/design-principles.md) | Separation of concerns, high cohesion / low coupling, OOP, no hard-coding specifics into general machinery |
-| [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` |
-| [code-style.md](.claude/rules/code-style.md)     | C++11, tabs, header guards, naming            |
-| [helper-methods.md](.claude/rules/helper-methods.md) | Extract ad-hoc checks into named helpers  |
-| [feature-guards.md](.claude/rules/feature-guards.md) | `#ifdef FEATURE_NAME` for in-progress code |
+### P1 — Safety and process (never violate)
 
-### Build, branching, testing
+Highest priority. Violating these can destroy work, break the git
+history, or spam agent-permission prompts. Apply them unconditionally.
 
-| Rule                                             | Scope                                         |
-|--------------------------------------------------|-----------------------------------------------|
-| [build.md](.claude/rules/build.md)               | `make -C src`, asmjit v1.14 at `/usr/local/` |
-| [branching.md](.claude/rules/branching.md)       | Feature branches off `develop`, `develop` → `master` for releases |
-| [testing.md](.claude/rules/testing.md)           | Integration + unit test conventions           |
-| [testing-fulltest.md](.claude/rules/testing-fulltest.md) | `make -C src fulltest` after every change |
-| [test-fixtures.md](.claude/rules/test-fixtures.md) | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
+| Rule                                             | Lines | Scope                                          |
+|--------------------------------------------------|------:|------------------------------------------------|
+| [branching.md](.claude/rules/branching.md)       |     8 | Feature branches off `develop`, never destroy uncommitted work, `develop` → `master` for releases |
+| [feature-guards.md](.claude/rules/feature-guards.md) |   9 | `#ifdef FEATURE_NAME` for in-progress code; never `git checkout` over uncommitted work |
+| [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
 
-### Compiler internals
+Shell-command hygiene (single commands, no `&&` chains) is a P1 rule
+too; it's stated in the "Shell command hygiene" section of this file.
 
-| Rule                                             | Scope                                         |
-|--------------------------------------------------|-----------------------------------------------|
-| [asmjit-api.md](.claude/rules/asmjit-api.md)     | asmjit v1.14 API dos / don'ts                 |
-| [debug.md](.claude/rules/debug.md)               | `DBG(x)` macro usage and rules                |
-| [regdp-reset.md](.claude/rules/regdp-reset.md)   | Reset `regdp` before sub-compiles in loops / conditionals |
-| [struct-compiler.md](.claude/rules/struct-compiler.md) | `addOffset` vs `setOffset`, string-member lifecycle |
-| [class-methods.md](.claude/rules/class-methods.md) | Name mangling, `__this`, unqualified member access |
-| [multi-return.md](.claude/rules/multi-return.md) | `__retbuf` injection, multi-return call sites |
-| [ternary.md](.claude/rules/ternary.md)           | Ternary parsing + stack-slot merge pattern    |
-| [embedded-headers.md](.claude/rules/embedded-headers.md) | `include/madc/` headers, lazy registration, `#load` |
+### P2 — Cross-cutting design (apply to every change)
+
+These shape every edit. If a change doesn't honour them, it's wrong
+no matter how small.
+
+| Rule                                             | Lines | Scope                                          |
+|--------------------------------------------------|------:|------------------------------------------------|
+| [design-principles.md](.claude/rules/design-principles.md) |  59 | Separation of concerns, high cohesion / low coupling, OOP, no hard-coding specifics into general machinery |
+| [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
+| [code-style.md](.claude/rules/code-style.md)     |     9 | C++11, tabs, header guards, naming             |
+
+### P3 — Build, test, and validation (gate "done")
+
+Must be satisfied before a change is considered complete. A change
+that fails any of these is not merged.
+
+| Rule                                             | Lines | Scope                                          |
+|--------------------------------------------------|------:|------------------------------------------------|
+| [build.md](.claude/rules/build.md)               |    15 | `make -C src`, asmjit v1.14 at `/usr/local/`   |
+| [testing-fulltest.md](.claude/rules/testing-fulltest.md) |  5 | `make -C src fulltest` after every change      |
+| [testing.md](.claude/rules/testing.md)           |    32 | Integration + unit test conventions            |
+| [test-fixtures.md](.claude/rules/test-fixtures.md) |  16 | Per-test `.input` / `.argv` / `.expect` files; runner stays generic |
+
+### P4 — Compiler internals (apply when touching that area)
+
+Area-specific rules. Read the ones relevant to the code you're
+editing — don't try to memorize all of them.
+
+| Rule                                             | Lines | Scope                                          |
+|--------------------------------------------------|------:|------------------------------------------------|
+| [asmjit-api.md](.claude/rules/asmjit-api.md)     |    32 | asmjit v1.14 API dos / don'ts                  |
+| [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
+| [regdp-reset.md](.claude/rules/regdp-reset.md)   |    23 | Reset `regdp` before sub-compiles in loops / conditionals |
+| [struct-compiler.md](.claude/rules/struct-compiler.md) |  40 | `addOffset` vs `setOffset`, string-member lifecycle |
+| [class-methods.md](.claude/rules/class-methods.md) |    26 | Name mangling, `__this`, unqualified member access |
+| [multi-return.md](.claude/rules/multi-return.md) |    33 | `__retbuf` injection, multi-return call sites  |
+| [ternary.md](.claude/rules/ternary.md)           |    30 | Ternary parsing + stack-slot merge pattern     |
+| [embedded-headers.md](.claude/rules/embedded-headers.md) |  53 | `include/madc/` headers, lazy registration, `#load` |
+
+### Total rule footprint
+
+- **18 rules, 440 lines** in `.claude/rules/`.
+- **This file (AGENTS.md): ~266 lines** — loaded by Claude via
+  `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
+- **Grand total loaded by Claude Code per turn: ~714 lines.**
+
+Rule bloat ages: if any tier exceeds a few hundred lines, split the
+heaviest rule into a narrower sub-rule or move more content into the
+sibling `docs/rules/` reasoning file. Refresh these counts by running
+`scripts/rule_stats.sh` and updating this section.
 
 ## Directory layout
 
