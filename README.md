@@ -201,7 +201,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.8.0** (2026-04-17) — SMAUG Phase E complete + Phase F start. C fixed arrays (1D + multi-dim + global), brace initializer lists, string-literal char-array init, `char *msg = "literal"` sugar, struct initializer lists, array-of-structs init, chained `->`/`.` member access, `str.length()` / `.size()` methods, crash handler with backtrace, `__FILE__`/`__LINE__`, raw-pointer `ptr[i]` subscript, `struct tm`/`timeval`/`fd_set` with glibc-matching layouts + `FD_*` macros + end-to-end `select()`, self-referencing structs, three-word compound types, multi-variable declarations, `stdin`/`stdout`/`stderr`, for-loop comma expressions, forward decl + definition. The SMAUG 1.8 source port begins (`MadSMAUG/src/hashstr.mad` first target). 74 integration + 25 unit tests pass.
+**v0.8.0** (2026-04-17) — SMAUG Phase E complete + Phase F start. C fixed arrays (1D + multi-dim + global), brace initializer lists, string-literal char-array init, `char *msg = "literal"` sugar, struct initializer lists, array-of-structs init, chained `->`/`.` member access, `str.length()` / `.size()` methods, crash handler with backtrace, `__FILE__`/`__LINE__`, raw-pointer `ptr[i]` subscript, `struct tm`/`timeval`/`fd_set` with glibc-matching layouts + `FD_*` macros + end-to-end `select()`, self-referencing structs, three-word compound types, multi-variable declarations, `stdin`/`stdout`/`stderr`, for-loop comma expressions, forward decl + definition. The SMAUG 1.8 port begins in the separate [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) repo (`hashstr.mad` first target). 74 integration + 25 unit tests pass.
 
 ### Recent Releases
 
@@ -223,7 +223,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG A/B/C** | Pointers, `->`, casts, `&`, macros, unsigned/enum/static/typedef | **Complete** |
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
-| **SMAUG F** | Actual SMAUG 1.8 source port into `MadSMAUG/src/` | **In progress** (hashstr.mad first target, v0.8.0) |
+| **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **In progress** (hashstr.mad first file ported) |
 | **Phase 4** | `libmadc.so` embedding API | Planned |
 
 ---

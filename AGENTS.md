@@ -37,8 +37,12 @@ The "Mad" in Mad-C: mix functions from multiple programming languages
 (PHP, Perl, Python, Ruby, JavaScript) in a single program via
 namespaces.
 
-Long-term goal: run the SMAUG 1.8 MUD codebase (~158k LOC, C89)
-without gcc. See `docs/SMAUG_requirements.md` for the gap analysis.
+Long-term goal: compile a realistic C89 codebase end-to-end. The
+concrete test case is SMAUG 1.8 (~158k LOC). The actual port lives
+in a separate repository, **[MadSMAUG](https://github.com/derekbsnider/MadSMAUG)**,
+because the Diku / Merc / SMAUG license stack is distinct from
+madc's own MPL 2.0 licence. `docs/SMAUG_requirements.md` in this
+repo is the historical gap analysis that drove madc's Phase A–F.
 
 ## Shell command hygiene
 
@@ -235,7 +239,7 @@ sibling `docs/rules/` reasoning file. Refresh these counts by running
 | `.claude/rules/`  | Bare rules (this index's subjects)                    |
 | `docs/rules/`     | Reasoning behind each rule                            |
 | `docs/`           | User / language documentation                         |
-| `MadSMAUG/`       | SMAUG 1.8 port target                                 |
+| `MadSMAUG/`       | Symlink (gitignored) to the external [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) repo — the SMAUG 1.8 port. Kept separate due to the Diku / Merc / SMAUG license stack. |
 | `scripts/`        | `run_tests.sh`, `gen_embedded_headers.sh`, `psed.sh`  |
 
 ## When a rule needs to change

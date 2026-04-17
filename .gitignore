@@ -5,22 +5,11 @@ Makefile~
 *.sh~
 claude_status.json
 
-# Extracted SMAUG 1.8 tree (source of truth is smaug.tgz).
+# SMAUG-derived content lives in a separate MadSMAUG repository due to
+# the Diku/Merc/SMAUG license stack (see https://github.com/derekbsnider/MadSMAUG).
+# ./MadSMAUG is a symlink to that repo for dev convenience; the tarball
+# and extracted tree also live there, not here.
+MadSMAUG
+smaug.tgz
 smaug1.8/
 ftp_game.org
-
-# MadSMAUG runtime data (source tracked, data not).
-MadSMAUG/area/
-MadSMAUG/boards/
-MadSMAUG/classes/
-MadSMAUG/clans/
-MadSMAUG/councils/
-MadSMAUG/deity/
-MadSMAUG/doc/
-MadSMAUG/gods/
-MadSMAUG/houses/
-MadSMAUG/log/
-MadSMAUG/player/
-MadSMAUG/races/
-MadSMAUG/system/
-MadSMAUG/vault/

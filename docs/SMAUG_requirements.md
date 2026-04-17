@@ -1,5 +1,18 @@
 # SMAUG 1.8 Compatibility Requirements
 
+> **Note:** This document records the C-language gap analysis that
+> drove madc's Phase A–F work. The actual SMAUG 1.8 port now lives in
+> a separate repository — **[MadSMAUG](https://github.com/derekbsnider/MadSMAUG)**
+> — because the SMAUG / Merc / DikuMUD license stack is distinct from
+> madc's own MPL 2.0 licence and should not be mingled.
+>
+> madc continues to treat SMAUG as a motivating use case for "a
+> realistic C89 codebase that madc must be able to compile." When
+> porting surfaces a compiler gap, the fix lands here along with a
+> *minimal* test case (pure madc, no SMAUG-derived code). The full
+> port progress and per-file status are tracked in MadSMAUG's
+> `docs/port-progress.md`.
+
 **Goal:** Run SMAUG 1.8 MUD source (smaug.tgz from ftp.smaug.org) in madc without needing gcc.
 
 SMAUG 1.8 is ~158,000 lines of C across ~70 .c files. It is clean C89/C90 — no C99, no
@@ -108,16 +121,15 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 - **`va_list` / varargs** — `va_start`/`va_arg`/`va_end`, packed `int64_t[]` buffer,
   `__madc_vsprintf`/`__madc_vsnprintf`/`__madc_vfprintf` helpers, `-rdynamic` flag
 
-### 🚧 Remaining SMAUG-specific blockers
+### 🚧 Remaining compiler gaps that affect SMAUG-class C code
 
 **1. `struct stat` / `struct sockaddr_in` / `struct dirent` layouts** — same
 glibc-layout-match approach as `struct tm`/`timeval`/`fd_set`; just not done
 yet. `stat()`, socket bind/connect, and `readdir()` all need these.
 
-**2. Port more SMAUG source files** — `hashstr.mad` (the first target) now
-compiles AND runs end-to-end correctly via `SMAUG.mad`. Next dependencies
-(roughly): utility/macro headers → tables.c → db.c → comm.c → …. Expect
-more gaps to surface as larger files land.
+**2. Per-file port progress** is tracked in the external MadSMAUG repo —
+see `docs/port-progress.md` there. As the port advances, expect more gaps
+to surface; each one lands here along with a minimal test.
 
 ---
 
