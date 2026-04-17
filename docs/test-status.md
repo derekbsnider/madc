@@ -1,10 +1,22 @@
 # Test Status
 
-Test results as of April 17, 2026 (post-v0.7.0 / Phase E complete, Phase F in progress).
+Test results as of April 17, 2026 (post-v0.8.0 / Phase F continues — hashstr.mad runs).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Passing Tests — 74 integration (72 auto, 2 manual) + 25/25 unit
+## Passing Tests — 81 integration (79 auto, 2 manual) + 25/25 unit
+
+### New post-v0.8.0 (SMAUG Phase F regressions — hashstr.mad runs)
+
+| Test | What it tests |
+|------|--------------|
+| `testincmember.mad` | Prefix/postfix inc/dec on struct members (`++ptr->links`, `obj.f--`), including if-guarded for the size-aware load/store path |
+| `testunsignedcmp.mad` | Unsigned comparisons in if-conditions (setb/seta path) for short and int |
+| `testglobalptr.mad` | Global pointer variable read/assign (DataDefPTR qword overrides) |
+| `testsubtomember.mad` | `p->next = arr[i]` — subscript result into a struct member Mem |
+| `testcastargcomma.mad` | Cast+arith as first call arg with a following comma, e.g. `strcpy((char *)h+8, "x")` |
+| `testcommaincrement.mad` | `for (...; ptr = ptr->next, c++)` — SMAUG's comma-increment pattern |
+| `testpostdeclstr.mad` | `char *p; p = "literal";` and `r->name = "literal";` |
 
 ### New in Phase E / F session
 

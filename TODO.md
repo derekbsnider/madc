@@ -16,15 +16,6 @@
   works for simple cases but crashes in specific multi-struct patterns. Workaround: use temp
   variables.
 
-- **`char *p; p = "literal";`** — post-decl string-literal assignment misbehaves (the sugar
-  that turns `char *p = "literal"` into char-array + LEA only fires at declaration time).
-  SMAUG code uses this pattern after-decl often. Fix: detect the pattern in TokenAssign
-  and route through the same backing-storage mechanism.
-
-- **`c++` / `--x` in compound-comma increment contexts** — blocks SMAUG's `for (…; …; ptr =
-  ptr->next, c++)` pattern. Error: "Increment on a non-variable rval". Needs investigation
-  in the postfix-inc/dec AST path when the preceding expression consumed unusually.
-
 ### printf improvements
 
 - **printf with `%f`/`%e`/`%g` for doubles** — Verify doubles pass correctly through the
@@ -71,6 +62,48 @@
 - **Phase 4: `libmadc.so` embedding API** — Decouple static globals, create public C API.
 
 ## Completed
+
+### Session 2026-04-17 (Phase F continues — hashstr.mad runs)
+
+- ~~**Inc/dec on struct members**~~ — `++ptr->links`, `ptr->field--` etc.
+  TokenInc / TokenDec extended to `ttMember` (via `->` and `.`) and
+  `*deref` via `resolveCompoundLHS`. Shares the load-op-store pattern
+  with the compound-assignment operators (e8c3f0b).
+- ~~**`c++` / `--x` in compound-comma increment contexts**~~ — same
+  underlying fix; SMAUG's `for (ptr = head, c = 0; ptr; ptr = ptr->next,
+  c++)` pattern now compiles and runs (e8c3f0b).
+- ~~**`char *p; p = "literal";`**~~ — post-decl string-literal
+  assignment. TokenAssign detects char* ← dtSTRING and routes through
+  `string_cstr` to pull the literal's data pointer; previously wrote
+  the std::string operand verbatim so reads printed garbage (acfc8b1).
+- ~~**Unsigned comparison ops**~~ — `TokenLT`/`LE`/`GT`/`GE` pick
+  setb/setbe/seta/setae when either operand is unsigned. Without this,
+  `if (ptr->links < 65535) ++ptr->links;` with unsigned short skipped
+  the then-branch because 65535 sign-interprets as -1 (e8c3f0b).
+- ~~**Global pointer variable read/write**~~ — `DataDefPTR` overrides
+  `movrval2mptr`/`movrval2rptr`/`movint2rptr`/`movmptr2rval` with
+  qword semantics. Base-class switch on DataType fell through to the
+  unhandled default for rtPtr() values (>= 10000), so `global_ptr = x;`
+  was a silent no-op (e8c3f0b).
+- ~~**Subscript → member assign**~~ — `p->next = arr[i];` now writes.
+  `TokenSubscript::compile` respects a Mem destination by loading
+  into a temp and storing; previously overwrote regdp.first with its
+  own fresh Gp and abandoned the member's Mem (e8c3f0b).
+- ~~**Sub-qword sign/zero-extension in `resolveCompoundLHS`**~~ —
+  loading a word-sized member into a Gp64 for arithmetic now uses
+  movzx/movsx/movsxd. Plain `cc.mov(gpq, word_ptr)` is invalid x86 and
+  asmjit silently emitted truncated ops or dropped them (e8c3f0b).
+- ~~**`safemov(Mem, Gp)` size mismatch**~~ — picks r8/r16/r32/r64
+  register view based on Mem size, not Gp size. Without this, writing
+  a Gp64 (widened member_lhs) to a word-sized member silently dropped
+  (e8c3f0b).
+- ~~**Parser: comma peek-stop in conditional mode**~~ — nested
+  parseExpression (in the cast-body handler) used to consume the `,`
+  that terminated the outer function-call arg, so `strcpy((char *)h +
+  8, "x")` parsed as one arg (e8c3f0b).
+- ~~**`TokenIF::compile` regdp reset**~~ — zeroes regdp before
+  condition, then branch, and else branch, matching the regdp-reset
+  rule already applied to TokenFOR/WHILE/DO (e8c3f0b).
 
 ### Session 2026-04-17 (Phase E finish + Phase F start)
 

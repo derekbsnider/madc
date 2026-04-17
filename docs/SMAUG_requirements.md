@@ -92,6 +92,16 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 - `struct timeval` (from `<sys/time.h>`); `gettimeofday` works
 - `struct fd_set` (from `<sys/select.h>`) + `FD_ZERO`/`FD_SET`/`FD_CLR`/`FD_ISSET`
   macros, with `select()` working end-to-end against real pipes
+- Prefix/postfix `++`/`--` on struct members (via `->` and `.`) and `*deref`
+- `for (...; ...; ptr = ptr->next, c++)` — compound-comma increment
+- `char *p; p = "literal";` — post-declaration string-literal assignment
+  (and `ptr->name = "literal";` via struct member)
+- Unsigned `<` / `<=` / `>` / `>=` comparisons use `setb`/`setbe`/`seta`/
+  `setae` when either operand is unsigned (SMAUG's `if (ptr->links < 65535)
+  ++ptr->links;` pattern)
+- Global pointer variables (`struct X *gp = NULL;`) — read and assign via
+  DataDefPTR qword overrides
+- `p->next = arr[i];` — subscript result written into a struct member
 
 ### ✅ Phase D Complete
 
@@ -100,18 +110,14 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 
 ### 🚧 Remaining SMAUG-specific blockers
 
-**1. `char *p; p = "literal";`** — post-decl assignment of a string literal to a
-previously-declared `char *` variable. The sugar that backs `char *p = "literal"`
-with a char array only fires at declaration time; after-decl assignment leaves `p`
-pointing at the raw `std::string` object rather than its data.
+**1. `struct stat` / `struct sockaddr_in` / `struct dirent` layouts** — same
+glibc-layout-match approach as `struct tm`/`timeval`/`fd_set`; just not done
+yet. `stat()`, socket bind/connect, and `readdir()` all need these.
 
-**2. `c++` / `--x` in complex comma-increment contexts** — blocks SMAUG's
-`for (…; …; ptr = ptr->next, c++)` pattern. Error: "Increment on a non-variable
-rval". Likely an edge case in TokenInc/TokenDec AST handling when the preceding
-expression's parse state is unusual.
-
-**3. `struct stat` / `struct sockaddr_in` / `struct dirent` layouts** — same
-glibc-layout-match approach as `struct tm`/`timeval`; just not done yet.
+**2. Port more SMAUG source files** — `hashstr.mad` (the first target) now
+compiles AND runs end-to-end correctly via `SMAUG.mad`. Next dependencies
+(roughly): utility/macro headers → tables.c → db.c → comm.c → …. Expect
+more gaps to surface as larger files land.
 
 ---
 
@@ -147,8 +153,13 @@ glibc-layout-match approach as `struct tm`/`timeval`; just not done yet.
 | `__FILE__` / `__LINE__` | MEDIUM | **DONE** (Phase E) |
 | `void` as sole parameter | MEDIUM | **DONE** (Phase F) |
 | Three-word compound types | LOW | **DONE** (Phase F) |
-| `char *p; p = "lit";` post-decl assign | HIGH | Not started |
-| `c++` in comma-increment contexts | HIGH | Not started |
+| `char *p; p = "lit";` post-decl assign | HIGH | **DONE** (Phase F) |
+| `c++` in comma-increment contexts | HIGH | **DONE** (Phase F) |
+| Inc/dec on struct members (`++ptr->f`) | HIGH | **DONE** (Phase F) |
+| Global pointer variable read/write | HIGH | **DONE** (Phase F) |
+| Unsigned comparison ops (setb/seta) | HIGH | **DONE** (Phase F) |
+| Subscript → member assign (`p->n = arr[i]`) | HIGH | **DONE** (Phase F) |
+| Cast+arith as call arg (`f((char *)h+8, x)`) | HIGH | **DONE** (Phase F) |
 | `struct stat` / `sockaddr_in` layouts | MEDIUM | Not started |
 | `sizeof(struct name)` | MEDIUM | **DONE** (v0.5.0) |
 | `do { ... } while(0)` macros | MEDIUM | **DONE** (v0.6.0) |

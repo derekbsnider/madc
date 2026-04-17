@@ -159,7 +159,7 @@ done
 make -C src test
 ```
 
-**Current status: 74 integration tests pass (72 auto + 2 skipped requiring manual input). 25 unit tests pass. (`make -C src fulltest`)**
+**Current status: 81 integration tests pass (79 auto + 2 skipped requiring manual input). 25 unit tests pass. (`make -C src fulltest`)**
 
 (`testcin.mad` requires stdin piping: `echo "input" | bin/madc tests/testcin.mad`)
 

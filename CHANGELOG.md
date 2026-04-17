@@ -1,6 +1,90 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] — SMAUG Phase F Continues (2026-04-17)
+
+MadSMAUG's `hashstr.mad` now compiles AND runs correctly end-to-end
+(`bin/madc MadSMAUG/src/SMAUG.mad` → expected link-count hash stats with
+no runtime errors). Every language gap exposed while running the file
+was fixed in madc proper. 81 integration + 25 unit tests pass.
+
+### Added
+
+- **Inc/dec on struct members** (e8c3f0b) — `++ptr->links`, `ptr->field--`
+  etc. via `TokenInc` / `TokenDec` now support `ttMember` (via `->` and
+  `.`) and `*deref` targets, sharing the load-op-store pattern with the
+  compound-assignment operators through `resolveCompoundLHS`. Previously
+  threw "Increment on a non-variable rval" on anything other than a
+  plain variable.
+
+- **For-loop compound-comma increment with postfix inc** (e8c3f0b) — the
+  classic SMAUG `for (ptr = head, c = 0; ptr; ptr = ptr->next, c++)`
+  pattern now compiles and runs; the postfix-inc-in-incrementer path
+  was the same underlying gap as the member-inc one.
+
+- **Post-declaration `char *p; p = "literal";`** (acfc8b1) — and `ptr->
+  name = "alice";` — TokenAssign detects char* ← dtSTRING and routes
+  through `string_cstr` to pull the literal's data pointer. Before, the
+  RHS's `std::string` operand was written verbatim into p, so reads
+  dereferenced the string object header and printed garbage.
+
+- **Unsigned comparison operators** (e8c3f0b) — `TokenLT` / `TokenLE` /
+  `TokenGT` / `TokenGE` pick `setb` / `setbe` / `seta` / `setae` when
+  either operand is unsigned, vs the signed `setl` / `setle` / `setg` /
+  `setge` previously used always. Without this, `if (ptr->links <
+  65535) ++ptr->links;` with `unsigned short int` jumped over the
+  increment because 65535 sign-interprets as -1. New `safesetb` /
+  `safesetbe` / `safeseta` / `safesetae` helpers in `typesafe.cpp`.
+
+### Fixed
+
+- **Global pointer variable read/write** (e8c3f0b) — `DataDefPTR` now
+  overrides `movrval2mptr` / `movrval2rptr` / `movint2rptr` /
+  `movmptr2rval` with explicit qword semantics. The base-class switch
+  on `DataType` fell through to the unhandled default for `rtPtr()`
+  values (>= 10000), so `global_ptr = x;` silently dropped the store.
+  Every global pointer variable read would return the slot's stale
+  initial memory rather than the stored value.
+
+- **Subscript → member assign** (e8c3f0b) — `p->next = arr[i];` now
+  writes. `TokenSubscript::compile` respects a caller-supplied `Mem`
+  destination (the struct member's Mem) by loading into a temp and
+  storing; previously it overwrote `regdp.first` with its own fresh Gp
+  and abandoned the member's Mem, making the assignment a no-op.
+
+- **Sub-qword sign/zero-extension in `resolveCompoundLHS`** (e8c3f0b) —
+  loading a word-sized member into a Gp64 for arithmetic now uses
+  `movzx` (unsigned) / `movsx` (signed) / `movsxd` / `mov r32,m32`.
+  Plain `cc.mov(gpq, word_ptr)` is not a valid x86 encoding — asmjit
+  silently emitted a truncated op or dropped it, leaving the upper bits
+  dirty for subsequent arithmetic.
+
+- **`safemov(Mem, Gp)` size mismatch** (e8c3f0b) — now picks the `r8` /
+  `r16` / `r32` / `r64` view based on the Mem's size, not the Gp's.
+  Without this, writing a Gp64 (the widened member_lhs register) to a
+  word-sized member emitted `mov word ptr, r64` which asmjit rejects,
+  silently dropping the store.
+
+- **Parser: comma peek-stop in conditional mode** (e8c3f0b) — a nested
+  `parseExpression` called from the cast-body handler used to consume
+  the `,` that terminates the outer function-call argument. So
+  `strcpy((char *)h + 8, "x")` parsed as a one-arg call with `"x"`
+  silently merged into the first arg's expression tree. Fixed by adding
+  comma to the peek-stop set alongside `;`.
+
+- **`TokenIF::compile` regdp reset** (e8c3f0b) — now zeros regdp before
+  the condition, then branch, and else branch, matching what
+  `TokenFOR` / `TokenWHILE` / `TokenDO` already do (per
+  `.claude/rules/regdp-reset.md`).
+
+### Tests
+
+- `testincmember.mad` — prefix/postfix inc/dec on struct members
+- `testunsignedcmp.mad` — unsigned comparisons inside if
+- `testglobalptr.mad` — global pointer var read/assign
+- `testsubtomember.mad` — `p->next = arr[i]` for NULL and non-NULL
+- `testcastargcomma.mad` — cast+arith as call arg with commas
+- `testcommaincrement.mad` — SMAUG's `for (...; ptr = ptr->next, c++)`
+- `testpostdeclstr.mad` — `char *p; p = "literal";` and via struct member
 
 ## [v0.8.0] — 2026-04-17 — SMAUG Phase E Complete + Phase F Start
 
