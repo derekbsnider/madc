@@ -4,7 +4,11 @@ Test results as of April 17, 2026 (post-v0.8.0 / Phase F continues — hashstr.m
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Passing Tests — 81 integration (79 auto, 2 manual) + 25/25 unit
+## Passing Tests — 83 integration + 25/25 unit
+
+`scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
+hello world`) and `testargv.mad` with argv (`hello world`), asserting
+on their output instead of skipping. Previously these were run manually.
 
 ### New post-v0.8.0 (SMAUG Phase F regressions — hashstr.mad runs)
 
@@ -44,8 +48,8 @@ Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
 ### Notes
 
-- `testcin.mad` requires stdin input (run manually)
-- `testargv.mad` requires command line arguments: `bin/madc tests/testargv.mad hello world`
+- `testcin.mad` is driven by `scripts/run_tests.sh` with piped stdin
+- `testargv.mad` is driven by `scripts/run_tests.sh` with argv
 - `include_helper.mad` is not standalone (included by testinclude.mad)
 - All tests that use `cout`/`cin`/`cerr`/`endl` now require `#include <iostream>`
 
