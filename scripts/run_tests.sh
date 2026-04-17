@@ -11,7 +11,8 @@ for t in tests/*.mad; do
     case "$base" in
         testcin.mad)
             # testcin reads: string name, int age, then string a, string b.
-            out=$(echo "Alice 42 hello world" | timeout 5 bin/madc "$t" 2>/dev/null)
+            # Input comes from tests/testcin.input via shell redirection.
+            out=$(timeout 5 bin/madc "$t" < tests/testcin.input 2>/dev/null)
             rc=$?
             if [ $rc -eq 0 ] && echo "$out" | grep -q "^name: Alice$" \
                              && echo "$out" | grep -q "^age: 42$" \
