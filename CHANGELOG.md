@@ -1,6 +1,10 @@
 # Changelog
 
-## [Unreleased] — SMAUG Phase E Complete + Phase F Start (2026-04-16 → 2026-04-17)
+## [Unreleased]
+
+## [v0.8.0] — 2026-04-17 — SMAUG Phase E Complete + Phase F Start
+
+SMAUG Phase E finishes (C arrays, brace initializers, struct interop with `struct tm`/`timeval`/`fd_set`, end-to-end `select()`) and Phase F begins with the first `.c → .mad` port (`MadSMAUG/src/hashstr.mad`). Every language gap surfaced during the port has been fixed in madc proper: self-referencing structs, three-word compound types, multi-var decls, global fixed arrays, `stdin`/`stdout`/`stderr`, for-loop comma expressions, forward decl + definition, `__FILE__`/`__LINE__`, raw-pointer `ptr[i]` subscript, and more.
 
 ### Added — SMAUG 1.8 Source Port Begins (2026-04-17)
 
