@@ -513,6 +513,10 @@ public:
 	||   id == TokenID::tkAssign ) return true;
 	if ( _prv_token->is_operator()
 	&&   id != TokenID::tkClBrk && id != TokenID::tkClSqr ) return true;
+	// Keywords like `return`, `if`, `while`, `case` open an expression
+	// context — the following `-` should be unary negation, not binary
+	// subtraction with a missing left operand.
+	if ( _prv_token->type() == TokenType::ttKeyword ) return true;
 	return false;
     }
     // helper: is prevToken in a position where the next operator would be postfix?
@@ -521,6 +525,8 @@ public:
     {
 	if ( !_prv_token ) return false;
 	TokenID id = _prv_token->id();
+	// Keywords aren't values — they open expression contexts, not close them.
+	if ( _prv_token->type() == TokenType::ttKeyword ) return false;
 	return id == TokenID::tkClBrk || id == TokenID::tkClSqr || !_prv_token->is_operator();
     }
     inline TokenBase *nextToken()

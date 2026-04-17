@@ -618,8 +618,12 @@ void Program::add_iostream()
 
 void Program::add_stdio()
 {
-    // printf family available via dlsym fallback (libc is always loaded)
-    // placeholder for future lazy symbols (FILE*, etc.)
+    // printf family available via dlsym fallback (libc is always loaded).
+    // Register stdin/stdout/stderr for lazy resolution — each becomes an
+    // int64 global whose data holds libc's current FILE* value.
+    lazy_map["stdin"]  = {LAZY_STDIO, Program::lkVariable};
+    lazy_map["stdout"] = {LAZY_STDIO, Program::lkVariable};
+    lazy_map["stderr"] = {LAZY_STDIO, Program::lkVariable};
 }
 
 // on-demand variable/function registration — called from parseExpression()
@@ -646,6 +650,21 @@ Variable *Program::lazy_resolve(const std::string &name)
 
 	if ( var )
 	    namespace_map["std"][name] = var;
+    }
+    else if ( header == LAZY_STDIO )
+    {
+	// dlsym the libc symbol and copy the current FILE* value into our
+	// backing slot. Note: dlsym("stderr") returns the address of the
+	// libc `FILE *stderr;` variable — one deref yields the FILE*.
+	void **sym = NULL;
+	if ( name == "stdin" || name == "stdout" || name == "stderr" )
+	    sym = (void **)dlsym(RTLD_DEFAULT, name.c_str());
+	if ( sym )
+	{
+	    var = addGlobal(ddINT64, name, 1, NULL);
+	    if ( var && var->data )
+		*(void **)var->data = *sym;
+	}
     }
 
     DBG(if (var) std::cout << "lazy_resolve(" << name << ") registered" << std::endl);
@@ -2555,21 +2574,30 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     // parse first return expression
     returns = pgm.parseExpression(tn);
 
-    // check for multi-return: return a, b;
-    // parseExpression stops at commas and consumes the comma.
-    // _cur_token is the comma; peekToken() is the next expression.
-    if ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkSemi
-	 && pgm.peekToken()->type() != TokenType::ttSymbol )
+    // Multi-return detection: parseExpression consumed either `,` or `;`.
+    // If it stopped on `,`, the next token is the second expression (an
+    // identifier, number, string, `(`, unary op etc). If it stopped on
+    // `;`, the next token is whatever the next statement starts with —
+    // which is a keyword (if/while/return/...), `}` (block close), a type
+    // name, or another identifier. Restrict detection to clear expression
+    // starters so `return X;` followed by `if(...)` / `<ident>()` / etc.
+    // doesn't misfire as multi-return.
+    auto looks_like_second_return = [&]() -> bool {
+	TokenBase *p = pgm.peekToken();
+	if ( !p ) return false;
+	if ( p->id() == TokenID::tkSemi ) return false;
+	if ( p->id() == TokenID::tkClBrc ) return false;
+	if ( p->type() == TokenType::ttSymbol ) return false;
+	if ( p->type() == TokenType::ttKeyword ) return false;
+	if ( p->type() == TokenType::ttDataType ) return false;
+	return true;
+    };
+    if ( looks_like_second_return() )
     {
-	// parseExpression consumed the comma — check if there's more to parse
-	// The comma stop means _cur_token is ',' — verify by looking at what's next
-	// If next token is an expression (not ; or }), this is multi-return
 	return_exprs.push_back(returns);
 	tn = pgm.nextToken();
 	return_exprs.push_back(pgm.parseExpression(tn));
-	// check for more comma-separated values (same pattern)
-	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkSemi
-		&& pgm.peekToken()->type() != TokenType::ttSymbol )
+	while ( looks_like_second_return() )
 	{
 	    tn = pgm.nextToken();
 	    return_exprs.push_back(pgm.parseExpression(tn));
@@ -2854,6 +2882,27 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
         pgm.Throw << "Unexpected end of input after 'register'" << flush;
+
+    // Accept `register struct ...`, `register TypedefName ...`, and
+    // `register <primitive type> ...`. `register` is a C hint — we set
+    // vfREGISTER for the primitive path where the Variable is numeric;
+    // for struct/typedef paths the flag is dropped (the variable will
+    // still live in a register when it's a pointer, which is typical).
+    if ( tn->type() == TokenType::ttKeyword )
+	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+    if ( tn->type() == TokenType::ttIdentifier )
+    {
+	std::string tname = ((TokenIdent *)tn)->str;
+	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	if ( tdmi != pgm.datatype_map.end() )
+	{
+	    pgm.nextToken();
+	    TokenBase *decl = pgm.parseDeclaration(tdmi->second);
+	    if ( decl && decl->type() == TokenType::ttDeclare )
+		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
+	    return decl;
+	}
+    }
     if ( tn->type() != TokenType::ttDataType )
         pgm.Throw(tn) << "Expecting type after 'register'" << flush;
     tn = pgm.nextToken();
@@ -3882,8 +3931,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
     DBG(std::cout << "parseDeclaration(" << tb->str << ") START " << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column << std::endl);
 
-    // check for pointer declarator(s): type * [*...] identifier
-    DataDef *decl_type = &tb->definition;
+    // check for pointer declarator(s): type * [*...] identifier.
+    // base_type is the declared type without any `*`s — comma-continuations
+    // later in this function start fresh from base_type because each var
+    // in `char *p, *q;` has its own `*`s, not cumulative.
+    DataDef *base_type = &tb->definition;
+    DataDef *decl_type = base_type;
     while ( peekToken() && peekToken()->id() == TokenID::tkMul )
     {
 	nextToken(); // consume '*'
@@ -4021,7 +4074,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     }
 
     // variable declaration
-    if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign )
+    if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign
+      || nt->id() == TokenID::tkComma )
     {
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
@@ -4128,6 +4182,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	{
 	    var->dims = arr_dims;
 	    var->flags |= vfFIXEDARRAY;
+	    // Global (or static-local) fixed arrays can't live on the JIT
+	    // stack — allocate a heap buffer now. voperand detects var->data
+	    // and loads the absolute address as the base pointer.
+	    if ( alloc && !var->data )
+	    {
+		size_t total = (size_t)decl_type->size * (size_t)elem_count;
+		if ( total == 0 ) total = 1;
+		var->data = calloc(1, total);
+		var->flags |= vfALLOC;
+	    }
 	}
 	TokenDecl *td = new TokenDecl(*var);
 
@@ -4139,8 +4203,43 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( nt->id() == TokenID::tkAssign && arr_dims.empty() )
 	{
 	    DBG(std::cout << "parseDeclaration() calling td->initialize = parseExpression" << std::endl);
-	    td->initialize = parseExpression(new TokenVar(*var));
+	    // conditional=true so `;` stops without being consumed, which lets
+	    // the comma-continuation loop below distinguish "end of decl" (peek
+	    // is `;`) from "more decls" (peek is `,` or the next identifier).
+	    td->initialize = parseExpression(new TokenVar(*var), true);
 	}
+
+	// Comma-continuation: `int a, b = 1, c;` — after the first decl, if the
+	// next token is `,` (or parseExpression already consumed one and left
+	// an identifier/`*` next), inject a clone of the base type token back
+	// into the stream. parseCompound's next iteration sees it as a fresh
+	// `int ...` statement and calls parseDeclaration recursively, which
+	// handles pointer decorators, initializers, and further commas.
+	if ( arr_dims.empty() )
+	{
+	    TokenBase *peek = peekToken();
+	    bool have_comma = peek && peek->id() == TokenID::tkComma;
+	    if ( have_comma )
+	    {
+		nextToken(); // consume ','
+		peek = peekToken();
+	    }
+	    // Either we just consumed ',' and expect another decl, or
+	    // parseExpression already consumed ',' and peek is the next one.
+	    bool looks_like_next_decl = peek
+		&& (peek->id() == TokenID::tkMul
+		 || peek->type() == TokenType::ttIdentifier);
+	    if ( have_comma || (looks_like_next_decl
+		&& nt->id() == TokenID::tkAssign) ) // only infer no-comma case when we had an init
+	    {
+		if ( !looks_like_next_decl )
+		    Throw(peek ? peek : tb) << "Expecting identifier after ',' in declaration" << flush;
+		// Push back a synthetic base-type token so the next parseStatement
+		// sees it as the start of a new declaration.
+		pushToken(tb->clone());
+	    }
+	}
+
 	DBG(std::cout << "parseDeclaration() returning" << std::endl);
 
 	return td;

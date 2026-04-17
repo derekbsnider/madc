@@ -2843,8 +2843,11 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     if ( (rmi=operand_map.find(var)) != operand_map.end() )
     {
 	DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::voperand(" << var->name << ") found" << std::endl);
-	// copy global variable to register -- needs to happen every time we need to access a global
-	if ( var->is_global() && var->data && !var->is_constant() )
+	// copy global variable to register -- needs to happen every time we need to access a global.
+	// Fixed arrays skip this: the register already holds the base pointer
+	// (a constant for the program's lifetime), and movreg would reload
+	// the numeric element zero as if it were the pointer value.
+	if ( var->is_global() && var->data && !var->is_constant() && !var->is_fixed_array() )
 	{
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() variable found, var->is_global() && var->data && !var->is_constant()"));
 	    movreg(pgm.cc, rmi->second, var);
@@ -2892,17 +2895,28 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     }
 
     DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::voperand(" << var->name << ") building register" << std::endl);
-    // C fixed-size array: allocate stack slot and LEA base pointer into a Gp register.
-    // The operand is the base pointer; subscript code adds index*elem_size.
+    // C fixed-size array: allocate stack slot (local) or load heap pointer
+    // (global / static-local). The operand is the base pointer; subscript
+    // code adds index*elem_size.
     if ( var->is_fixed_array() )
     {
-	size_t elem_size = var->type->size ? var->type->size : 8;
-	size_t total = elem_size * var->total_elements();
-	uint32_t align = (uint32_t)(elem_size < 8 ? elem_size : 8);
-	DBG(pgm.cc.comment("voperand fixed-size array"));
-	x86::Mem stack = pgm.cc.newStack((uint32_t)total, align);
 	x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-	pgm.cc.lea(reg, stack);
+	if ( var->data )
+	{
+	    // Global or static-local: parseDeclaration calloc'd the backing
+	    // storage. Load its absolute address.
+	    DBG(pgm.cc.comment("voperand fixed-size array (global/static)"));
+	    pgm.cc.mov(reg, imm(var->data));
+	}
+	else
+	{
+	    size_t elem_size = var->type->size ? var->type->size : 8;
+	    size_t total = elem_size * var->total_elements();
+	    uint32_t align = (uint32_t)(elem_size < 8 ? elem_size : 8);
+	    DBG(pgm.cc.comment("voperand fixed-size array (stack)"));
+	    x86::Mem stack = pgm.cc.newStack((uint32_t)total, align);
+	    pgm.cc.lea(reg, stack);
+	}
 	operand_map[var] = reg;
 	var->flags |= vfREGSET;
 	return operand_map[var];
