@@ -75,26 +75,43 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 - `NULL` as pointer assignment: `ch->next = NULL`
 - `str.length()` / `str.size()` methods on std::string
 - Crash handler with backtrace on fatal signals (dev ergonomics)
+- `__FILE__` / `__LINE__` predefined macros
+- Self-referencing structs: `struct X { struct X *next; ... };`
+- Three-word compound types: `unsigned short int`, `long long int`, etc.
+- `void` as sole parameter: `int f(void)`
+- Global fixed-size arrays: `struct X *arr[N]` at file scope
+- Multi-variable declarations: `int a, b, c;`, `char *p, *q;`, `int x = 1, y = 2;`
+- `stdin`, `stdout`, `stderr` (via `#include <stdio.h>`, dlsym-resolved from libc)
+- `register` before struct / typedef / primitive
+- Unary minus after keywords: `return -1;`, `if (-x > 0)`
+- For-loop comma expressions: `for (a=0, b=1; cond; i++, j--)`
+- Forward function declaration followed by definition (same signature)
+- Raw-pointer subscript `ptr[i]` for any base type
+- `struct tm` (from `<time.h>`) with glibc-matching layout; `localtime`/`gmtime`/
+  `strftime`/`timegm` interop works bidirectionally
+- `struct timeval` (from `<sys/time.h>`); `gettimeofday` works
+- `struct fd_set` (from `<sys/select.h>`) + `FD_ZERO`/`FD_SET`/`FD_CLR`/`FD_ISSET`
+  macros, with `select()` working end-to-end against real pipes
 
 ### ✅ Phase D Complete
 
 - **`va_list` / varargs** — `va_start`/`va_arg`/`va_end`, packed `int64_t[]` buffer,
   `__madc_vsprintf`/`__madc_vsnprintf`/`__madc_vfprintf` helpers, `-rdynamic` flag
 
-### ❌ Not Yet Implemented — Remaining Blockers
+### 🚧 Remaining SMAUG-specific blockers
 
-**1. `select()` with `fd_set`** — `fd_set` is a struct with a fixed array of longs.
-The FD_SET/FD_ZERO/FD_ISSET operations are macros that manipulate bit arrays.
-`select` itself is available via dlsym; needs `fd_set` modeling plus `struct timeval`.
+**1. `char *p; p = "literal";`** — post-decl assignment of a string literal to a
+previously-declared `char *` variable. The sugar that backs `char *p = "literal"`
+with a char array only fires at declaration time; after-decl assignment leaves `p`
+pointing at the raw `std::string` object rather than its data.
 
-**2. Struct interop for libc types** — `struct tm` for `localtime`/`strftime`,
-`struct stat` for `stat`/`fstat`, `struct dirent` for `readdir`, `struct sockaddr_in`
-for networking. Headers are embedded with all constants; struct field access is the
-remaining gap (the layouts need to match glibc's actual layouts, not just be
-declared).
+**2. `c++` / `--x` in complex comma-increment contexts** — blocks SMAUG's
+`for (…; …; ptr = ptr->next, c++)` pattern. Error: "Increment on a non-variable
+rval". Likely an edge case in TokenInc/TokenDec AST handling when the preceding
+expression's parse state is unusual.
 
-**3. `gettimeofday()` returning `struct timeval`** — used in SMAUG's main loop.
-Follows from struct interop.
+**3. `struct stat` / `struct sockaddr_in` / `struct dirent` layouts** — same
+glibc-layout-match approach as `struct tm`/`timeval`; just not done yet.
 
 ---
 
@@ -114,8 +131,25 @@ Follows from struct interop.
 | String-literal char-array init `char s[] = "..."` | HIGH | **DONE** (Phase E) |
 | Array-of-structs `tab[] = {{...}, {...}}` | HIGH | **DONE** (Phase E) |
 | `&` address-of in expressions | HIGH | **DONE** (v0.6.0) |
-| `fd_set` struct + FD_SET macros | HIGH | Not started |
-| Struct interop for libc types (`tm`, `stat`, etc.) | HIGH | Not started |
+| `fd_set` struct + FD_SET macros | HIGH | **DONE** (Phase E) |
+| `struct tm` + `strftime` / `localtime` | HIGH | **DONE** (Phase E) |
+| `struct timeval` + `gettimeofday` | HIGH | **DONE** (Phase E) |
+| `select()` end-to-end | HIGH | **DONE** (Phase E) |
+| Self-referencing structs | HIGH | **DONE** (Phase F) |
+| Multi-variable declarations | HIGH | **DONE** (Phase F) |
+| Global fixed-size arrays | HIGH | **DONE** (Phase F) |
+| Raw-pointer subscript `ptr[i]` | HIGH | **DONE** (Phase E) |
+| For-loop comma expressions | HIGH | **DONE** (Phase F) |
+| `stdin` / `stdout` / `stderr` | HIGH | **DONE** (Phase F) |
+| Forward function decl → definition | HIGH | **DONE** (Phase F) |
+| `register` before non-primitive | MEDIUM | **DONE** (Phase F) |
+| Unary `-` after keyword | MEDIUM | **DONE** (Phase F) |
+| `__FILE__` / `__LINE__` | MEDIUM | **DONE** (Phase E) |
+| `void` as sole parameter | MEDIUM | **DONE** (Phase F) |
+| Three-word compound types | LOW | **DONE** (Phase F) |
+| `char *p; p = "lit";` post-decl assign | HIGH | Not started |
+| `c++` in comma-increment contexts | HIGH | Not started |
+| `struct stat` / `sockaddr_in` layouts | MEDIUM | Not started |
 | `sizeof(struct name)` | MEDIUM | **DONE** (v0.5.0) |
 | `do { ... } while(0)` macros | MEDIUM | **DONE** (v0.6.0) |
 | Ternary in struct member context | MEDIUM | **DONE** (v0.6.0) |

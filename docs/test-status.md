@@ -1,18 +1,20 @@
 # Test Status
 
-Test results as of April 16, 2026 (post-v0.7.0 / Phase E in progress).
+Test results as of April 17, 2026 (post-v0.7.0 / Phase E complete, Phase F in progress).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Passing Tests — 72 integration (70 auto, 2 manual) + 25/25 unit
+## Passing Tests — 74 integration (72 auto, 2 manual) + 25/25 unit
 
-### New in Phase E session
+### New in Phase E / F session
 
 | Test | What it tests |
 |------|--------------|
 | `testchain.mad` | Chained `->` and `.` member access (a->b->c, a->b.c, a.b.c) |
 | `testfixedarr.mad` | C fixed-size arrays (1D + multi-dim), brace init, char* init, string-literal init |
 | `teststructinit.mad` | Struct initializer lists and array-of-structs init |
+| `teststructinterop.mad` | struct tm, struct timeval, struct fd_set + FD_* macros, select() |
+| `testfileline.mad` | `__FILE__` / `__LINE__` predefined macros, including inside function-like macros |
 
 ### New tests added in this session
 

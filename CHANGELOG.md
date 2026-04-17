@@ -1,6 +1,116 @@
 # Changelog
 
-## [Unreleased] — SMAUG Phase E Progress (2026-04-16)
+## [Unreleased] — SMAUG Phase E Complete + Phase F Start (2026-04-16 → 2026-04-17)
+
+### Added — SMAUG 1.8 Source Port Begins (2026-04-17)
+
+First .c → .mad port: `MadSMAUG/src/hashstr.mad` (copied from SMAUG 1.8's
+`hashstr.c`). The bootstrap convention is an app-named top-level file
+(`SMAUG.mad`) that `#include`s the ported sources in dependency order with
+`main()` last; `bin/madc SMAUG.mad` compiles the whole tree.
+
+Each language gap surfaced during the port was fixed in madc proper:
+
+- **Self-referencing structs** (54087c2) — `struct X { struct X *next; ... };`
+  works. `TokenSTRUCT::parse` pre-registers the tag in `struct_map` with an
+  incomplete placeholder before entering the body-parsing loop, so field types
+  like `struct X *` resolve the in-progress struct.
+
+- **Three-word compound types** (54087c2) — `unsigned short int`, `signed long
+  int`, `long long int`, `unsigned long long`, `signed long long` all
+  produce the correct DataDef. Lexer reads up to two lookahead words and
+  picks the longest match.
+
+- **`void` as sole parameter** (54087c2) — `int f(void)` parses as zero-arg.
+
+- **Global fixed-size arrays** (35c6bf0) — `struct X *arr[N]` at file scope
+  now works. parseDeclaration allocates a `calloc`'d buffer when the decl is
+  global/static; voperand loads the absolute address into the base-pointer Gp
+  instead of stack-allocating. The cache-hit path skips `movreg` for fixed
+  arrays (the pointer is a compile-time constant).
+
+- **Multi-variable declarations** (35c6bf0) — `int a, b, c;` / `char *p, *q;` /
+  `int x = 1, y = 2;`. After the first decl the parser pushes back a clone of
+  the base type token so parseCompound naturally iterates and parseDeclaration
+  recurses. Base type is preserved alongside the decorated decl_type so each
+  var in `char *p, *q` gets its own independent pointer depth.
+
+- **stdin / stdout / stderr** (35c6bf0) — lazy-registered in `<stdio.h>` as
+  int64 globals whose backing slot holds `*dlsym("stderr")` etc. Reading
+  `stderr` in madc loads libc's current FILE\* value.
+
+- **`register` before struct / typedef** (35c6bf0) — `register struct X *p;`
+  now compiles. Previously only primitive types after register were allowed.
+
+- **Unary minus after a keyword** (35c6bf0) — `return -1;`, `if (-x > 0)` etc.
+  `isPostfixPosition` / `isUnaryPosition` now treat keywords as unary-opening
+  contexts instead of value-producing ones; the Neg→Sub conversion no longer
+  misfires.
+
+- **TokenRETURN multi-return detection tightened** (35c6bf0) — previously any
+  non-`;` / non-symbol peek after parseExpression triggered the multi-return
+  path, so `return X;` followed by `if (...)` / `<ident>()` / etc. misfired
+  as multi. Keywords and type names are now also excluded.
+
+- **For-loop comma expressions** (be6c359) — `for (a=0, b=1; cond; i++, j--)`
+  parses and runs. `TokenFOR` gains `init_extras` / `incr_extras` vectors;
+  the parser uses conditional `parseExpression` for init/cond/incr so `;`
+  stays in the stream to gate the extras loops. Compile runs all extras in
+  order after the main init and before the jmp-back-to-top.
+
+- **Forward decl + definition param mismatch** (be6c359) — the definition
+  pass was re-pushing every DataDef onto `func->parameters` (because
+  `FuncDef::findParameter` compares against the DataDef name, not the param
+  name), causing the ids[]-vs-parameters[] binding loop to overshoot. Track
+  `func_already_declared` and skip the re-push on the 2nd pass.
+
+- **Compile-time error handler robustness** (be6c359) — the
+  `catch(const char*)` block crashed on NULL/dangling pointers in the
+  exception value (ostream `<<` of NULL), masking the real compile error.
+  Guarded.
+
+### Added — Phase E Finish (2026-04-17)
+
+- **`__FILE__` / `__LINE__`** (9e2d5ad) — lexer injects a quoted filename
+  and current `source.line()` as a decimal integer. Works correctly inside
+  `#define` bodies — each invocation captures the call site.
+
+- **`cc.newXxx(name)` format-safety sweep** (c50acbe) — 32 direct call
+  sites in compiler.cpp that passed user- or literal-derived names
+  verbatim to asmjit's variadic register-naming API are now routed through
+  a `"%s"` format. Variable names containing `%` (our `__literal__tab[%ld]
+  = (%s, %ld)` style) previously crashed on the unmatched format spec.
+  `DataDef::newreg` was fixed in an earlier commit; this extends the same
+  pattern to the rest.
+
+- **Struct interop for libc types + fd_set / select()** (2f08efd) —
+  `struct tm` (56 bytes), `struct timeval` (16 bytes), `struct fd_set`
+  (128 bytes) with glibc-x86-64-matching layouts. `FD_ZERO` / `FD_SET` /
+  `FD_CLR` / `FD_ISSET` forward to `__madc_fd_*` helpers bundled into the
+  madc binary (reachable via dlsym thanks to -rdynamic). `select()` works
+  end-to-end with a real pipe.
+  - Fixed latent `safemov(Gp, Mem)` bug: it used `cc.mov(r1, r2)` for all
+    sizes, and asmjit resolves that by reading a full qword even when the
+    Mem is 4/2/1 bytes. Reading an int32 struct member (e.g. `tm->
+    tm_hour`) pulled 8 bytes starting at the field's offset, returning the
+    adjacent field packed into the upper half. Now picks `movsxd` / `mov
+    r32,mem` (implicit zero-extend) / `movsx` / `movzx` based on sizes.
+  - Extended unary `&` to accept `&(name)` in addition to `&name`, so the
+    macro-expanded `__madc_fd_set(fd, &(set))` parses.
+
+- **Raw-pointer subscript `ptr[i]`** (189f4ae) — for `int *`, `char *`,
+  `int32_t *`, etc. Computes `[ptr + i*sizeof(base)]` with SIB scaling by
+  the pointed-to type's size. Unblocks C interop like `pipe(pfd); int rfd
+  = pfd[0];` / `FD_SET(rfd, rfds);` / `select(rfd+1, &rfds, ...)`. Also
+  fixed `safemov(Operand, Operand)` Gp←Mem path to forward to the size-
+  aware typed overload instead of calling `cc.mov` directly.
+  - Added `scripts/psed.sh` — python-backed literal-text patcher for
+    multi-line edits where tab-sensitive Edit calls are brittle.
+
+- **Multi-file project convention** (ac0cf4f) — README documents the
+  app-named bootstrap file (e.g. `smaug.mad`) that `#include`s its sources
+  in dependency order with `main()` last. No new tooling — the existing
+  `#include` already resolves relative paths and handles nested includes.
 
 ### Added — C Arrays and Structs (SMAUG Phase E)
 

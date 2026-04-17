@@ -16,6 +16,15 @@
   works for simple cases but crashes in specific multi-struct patterns. Workaround: use temp
   variables.
 
+- **`char *p; p = "literal";`** — post-decl string-literal assignment misbehaves (the sugar
+  that turns `char *p = "literal"` into char-array + LEA only fires at declaration time).
+  SMAUG code uses this pattern after-decl often. Fix: detect the pattern in TokenAssign
+  and route through the same backing-storage mechanism.
+
+- **`c++` / `--x` in compound-comma increment contexts** — blocks SMAUG's `for (…; …; ptr =
+  ptr->next, c++)` pattern. Error: "Increment on a non-variable rval". Needs investigation
+  in the postfix-inc/dec AST path when the preceding expression consumed unusually.
+
 ### printf improvements
 
 - **printf with `%f`/`%e`/`%g` for doubles** — Verify doubles pass correctly through the
@@ -32,16 +41,13 @@
 
 - **Error diagnostics** — File and line number should always appear in error output.
 
-- **`__FILE__` and `__LINE__` macros** — Used in SMAUG's CREATE/DISPOSE error messages.
-
 - **Operator overloading (user-defined)** — `operator+`, `operator<<`, etc. on user types.
   Currently the compiler has hard-coded special cases for std::string assign, stream `<<`,
   subscript; there's no way for user code to define its own.
 
-- **Sweep remaining `cc.newXxx(name)` calls for `%` safety** — `DataDef::newreg` was fixed
-  to use `"%s"` format; other direct callers (compiler.cpp has ~25 `cc.newIntPtr(var->name
-  .c_str())` sites etc.) have the same latent bug. Audit and standardize on a helper or the
-  `"%s"` format pattern.
+- **Sweep remaining `cc.newXxx(name)` calls for `%` safety** — `DataDef::newreg` and 32
+  compiler.cpp sites routed through `"%s"` format. typesafe.cpp and some lambda paths still
+  use raw names; audit those too.
 
 ## Low Priority
 
@@ -51,26 +57,67 @@
 
 - **Function pointer typedefs** — `typedef void DO_FUN(CHAR_DATA *ch, char *argument);`
 
+- **Typed for-init with comma** — `for (int i = 0, j = 10; ...)` declares only i. The non-
+  typed form (`for (a = 0, b = 10; ...)`) works.
+
 ## Deferred / Future
 
-- **Struct interop for C functions** — `struct tm` for `localtime`/`strftime`, `struct stat`
-  for `stat`/`fstat`, `struct dirent` for `readdir`, `struct sockaddr_in` for networking.
-  Headers are embedded with all constants; struct field access is the remaining gap.
-
-- **`fd_set` + FD_SET/FD_ZERO/FD_ISSET** — `fd_set` is a fixed-size bit array struct.
-  Either model as a struct with known layout, or implement FD_* as built-in functions.
-  Needed for `select()` in SMAUG's main network loop.
-
-- **`select()` end-to-end** — `select` is available via dlsym; needs `fd_set` struct interop
-  and `struct timeval` to be usable (both in `sys/select.h` and `sys/time.h`).
-
-- **`gettimeofday()` returning struct timeval** — Used in SMAUG's main loop. Needs struct interop.
+- **struct stat / sockaddr_in / dirent layouts** — `struct tm` and `struct timeval` done;
+  still need these for `stat()`, socket functions, `readdir()`. Same glibc-layout-match
+  approach as tm/timeval.
 
 - **ARM64 support** — asmjit supports ARM64 backends. Currently x86-64 Linux only.
 
 - **Phase 4: `libmadc.so` embedding API** — Decouple static globals, create public C API.
 
 ## Completed
+
+### Session 2026-04-17 (Phase E finish + Phase F start)
+
+- ~~**`__FILE__` and `__LINE__` macros**~~ — lexer expands to quoted filename and
+  `source.line()`; works correctly inside `#define` bodies (each invocation captures the
+  call site) (9e2d5ad)
+- ~~**`cc.newXxx(name)` format-safety sweep**~~ — 32 direct call sites in compiler.cpp
+  routed through `"%s"` format; `DataDef::newreg` already done earlier (c50acbe)
+- ~~**Struct interop for libc types**~~ — `struct tm` (56 bytes), `struct timeval`
+  (16 bytes), `struct fd_set` (128 bytes) with glibc-x86-64-matching layouts. FD_ZERO /
+  FD_SET / FD_CLR / FD_ISSET macros forward to `__madc_fd_*` helpers. `select()` works
+  end-to-end with a real pipe. Fixed `safemov(Gp, Mem)` to sign/zero-extend sub-qword
+  loads (int32 struct members previously read 8 bytes) (2f08efd)
+- ~~**Raw-pointer subscript `ptr[i]`**~~ — for `int *`, `char *`, etc., emit `[ptr + i *
+  sizeof(base)]` with SIB scaling. Also fixed `safemov(Operand, Operand)` Gp←Mem path to
+  forward to the size-aware variant (189f4ae)
+- ~~**App-named bootstrap convention**~~ — documented in README: use `smaug.mad` /
+  `myapp.mad` at project root, `#include`ing sources in dependency order with main() last
+  (ac0cf4f)
+- ~~**Self-referencing structs**~~ — `struct X { struct X *next; ... };` works by pre-
+  registering the tag in struct_map before body parse (54087c2)
+- ~~**Three-word compound types**~~ — `unsigned short int`, `signed long int`, `long long
+  int`, `unsigned long long`, etc. (54087c2)
+- ~~**`void` as sole parameter**~~ — `int f(void)` now parses as zero-arg (54087c2)
+- ~~**Global fixed-size arrays**~~ — `struct X *arr[N]` at file/static-local scope;
+  heap-allocated calloc'd backing storage, voperand loads absolute address (35c6bf0)
+- ~~**Multi-variable declarations**~~ — `int a, b, c;`, `char *p, *q;`, `int x = 1, y =
+  2;`. Push-back synthetic base-type token so parseCompound iterates naturally. Base type
+  preserved for per-var `*` decorators (35c6bf0)
+- ~~**stdin / stdout / stderr**~~ — lazy-registered in `<stdio.h>` as int64 globals
+  initialized from `*dlsym("stderr")` etc.; returns the FILE* for fprintf (35c6bf0)
+- ~~**`register struct X *p;`**~~ — register now accepts struct/typedef tokens via the
+  same keyword-delegation path as static (35c6bf0)
+- ~~**Unary minus after a keyword**~~ — `return -1;`, `if (-x > 0)` no longer misfires as
+  "Missing operand". isUnaryPosition treats keywords as unary positions; isPostfixPosition
+  excludes them (35c6bf0)
+- ~~**TokenRETURN multi-return detection tightened**~~ — keywords and types excluded from
+  the detection peek so `return X;` followed by `if(...)` / `ident()` doesn't misfire
+  (35c6bf0)
+- ~~**For-loop comma expressions**~~ — `for (a=0, b=1; cond; i++, j--)` — TokenFOR has
+  init_extras / incr_extras vectors parsed via conditional parseExpression, compiled in
+  order (be6c359)
+- ~~**Forward decl + definition param mismatch**~~ — `FuncDef::findParameter` compares
+  against DataDef name, so every definition-pass re-pushed all params. Track
+  func_already_declared; skip re-push on the 2nd pass (be6c359)
+- ~~**Compile-time error handler robustness**~~ — catch(const char*) block no longer
+  crashes on NULL err_msg or dangling tb (be6c359)
 
 ### Session 2026-04-16 (Phase E underway)
 

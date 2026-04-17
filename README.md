@@ -159,7 +159,7 @@ done
 make -C src test
 ```
 
-**Current status: 72 integration tests pass (70 auto + 2 skipped requiring manual input). 25 unit tests pass. (`make -C src fulltest`)**
+**Current status: 74 integration tests pass (72 auto + 2 skipped requiring manual input). 25 unit tests pass. (`make -C src fulltest`)**
 
 (`testcin.mad` requires stdin piping: `echo "input" | bin/madc tests/testcin.mad`)
 
@@ -194,7 +194,7 @@ make -C src test
 
 **v0.7.0** (2026-04-16) — SMAUG Phase D: completes variadic function support (`va_list`, `va_start`/`va_end`, `va_arg`, `vsprintf`/`vsnprintf`/`vfprintf` helpers, `<stdarg.h>` embedded header) and fixes the for-loop increment parser bug (`i++`/`i--` in the third position now work).
 
-**Unreleased (Phase E in progress):** C fixed-size arrays (1D + multi-dim), brace initializer lists with size inference and partial fill, string-literal char-array init, `char *msg = "literal"` sugar, struct initializer lists (scalars, pointers, char\*, std::string), array-of-structs init (SMAUG tables.c pattern), chained `->`/`.` member access, `str.length()`/`.size()` methods, crash handler with backtrace. 72 integration + 25 unit tests.
+**Unreleased (Phase E complete + Phase F in progress):** C fixed arrays (1D + multi-dim + global), brace initializer lists, string-literal char-array init, `char *msg = "literal"` sugar, struct initializer lists, array-of-structs init, chained `->`/`.` member access, `str.length()` / `.size()` methods, crash handler with backtrace, `__FILE__`/`__LINE__`, raw-pointer `ptr[i]` subscript, `struct tm` / `timeval` / `fd_set` with glibc-matching layouts, `FD_ZERO`/`FD_SET`/`FD_CLR`/`FD_ISSET` macros, `select()` end-to-end, self-referencing structs, three-word compound types, multi-variable declarations, `stdin`/`stdout`/`stderr`, for-loop comma expressions, forward decl + definition, and the first SMAUG 1.8 file port begun (`MadSMAUG/src/hashstr.mad`). 74 integration + 25 unit tests.
 
 ### Recent Releases
 
@@ -214,7 +214,8 @@ make -C src test
 | **Phase 4 prep** | C preprocessor, 39 embedded headers, struct alignment, sizeof, argc/argv | **Complete** |
 | **SMAUG A/B/C** | Pointers, `->`, casts, `&`, macros, unsigned/enum/static/typedef | **Complete** |
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
-| **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access | **Mostly done** (fd_set + struct interop remaining) |
+| **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** |
+| **SMAUG F** | Actual SMAUG 1.8 source port into `MadSMAUG/src/` | **In progress** (hashstr.mad first target) |
 | **Phase 4** | `libmadc.so` embedding API | Planned |
 
 ---
