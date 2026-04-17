@@ -632,6 +632,15 @@ public:
     void safesetl(asmjit::Operand &);
     void safesetle(asmjit::Operand &);
     void safesetne(asmjit::Operand &);
+    // Unsigned variants — use when either comparison operand is unsigned.
+    // C's "usual arithmetic conversions" treat mixed unsigned/signed as
+    // unsigned, so signed setl/setg give wrong results when compared
+    // against values whose signed interpretation flips (e.g. unsigned
+    // short cmp vs 65535 → signed-interpret as -1 → bogus ordering).
+    void safesetb(asmjit::Operand &);   // below          (unsigned <)
+    void safesetbe(asmjit::Operand &);  // below-or-equal (unsigned <=)
+    void safeseta(asmjit::Operand &);   // above          (unsigned >)
+    void safesetae(asmjit::Operand &);  // above-or-equal (unsigned >=)
 
     // perform cc.cmp with size casting
     void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);

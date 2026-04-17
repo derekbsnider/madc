@@ -1677,106 +1677,9 @@ void Program::execute()
     DBG(std::cout << "Program::execute() ends" << std::endl);
 }
 
-// compile the increment operator
-Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
-{
-    TokenVar *tv;
-
-    // left = postfix (x++): return old value, then increment
-    if ( left )
-    {
-	if ( left->type() != TokenType::ttVariable )
-	    throw "Increment on a non-variable lval";
-	tv = dynamic_cast<TokenVar *>(left);
-	Operand &reg = tv->operand(pgm);
-	if ( regdp.first )
-	    pgm.safemov(*regdp.first, reg);
-	else
-	{
-	    _operand = tv->var.type->newreg(pgm.cc, "postinc");
-	    pgm.safemov(_operand, reg);
-	    regdp.first = &_operand;
-	}
-	pgm.safeinc(reg);
-	tv->var.modified();
-	tv->putreg(pgm);
-	regdp.second = tv->var.type;
-	return *regdp.first;
-    }
-    // right = prefix (++x): increment, return new value
-    if ( right )
-    {
-	if ( right->type() != TokenType::ttVariable )
-	    throw "Increment on a non-variable rval";
-	tv = dynamic_cast<TokenVar *>(right);
-	Operand &reg = tv->operand(pgm);
-	pgm.safeinc(reg);
-	tv->var.modified();
-	tv->putreg(pgm);
-	if ( regdp.first )
-	    pgm.safemov(*regdp.first, reg);
-	else
-	    regdp.first = &reg;
-	regdp.second = tv->var.type;
-	return *regdp.first;
-    }
-    throw "Invalid increment";
-}
-
-// compile the decrement operator
-Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
-{
-    TokenVar *tv;
-
-    // left = postfix (x--): return old value, then decrement
-    if ( left )
-    {
-	if ( left->type() != TokenType::ttVariable )
-	    throw "Decrement on a non-variable lval";
-	tv = dynamic_cast<TokenVar *>(left);
-	Operand &reg = tv->operand(pgm);
-	if ( regdp.first )
-	    pgm.safemov(*regdp.first, reg);
-	else
-	{
-	    _operand = tv->var.type->newreg(pgm.cc, "postdec");
-	    pgm.safemov(_operand, reg);
-	    regdp.first = &_operand;
-	}
-	pgm.safedec(reg);
-	tv->var.modified();
-	tv->putreg(pgm);
-	regdp.second = tv->var.type;
-	return *regdp.first;
-    }
-    // right = prefix (--x): decrement, return new value
-    if ( right )
-    {
-	if ( right->type() != TokenType::ttVariable )
-	    throw "Decrement on a non-variable rval";
-	tv = dynamic_cast<TokenVar *>(right);
-	Operand &reg = tv->operand(pgm);
-	pgm.safedec(reg);
-	tv->var.modified();
-	tv->putreg(pgm);
-	if ( regdp.first )
-	    pgm.safemov(*regdp.first, reg);
-	else
-	    regdp.first = &reg;
-	regdp.second = tv->var.type;
-	return *regdp.first;
-    }
-    throw "Invalid decrement";
-}
-
-/////////////////////////////////////////////////////////////////////////////
-// compound assignment operators (+=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=)
-// Pattern: load lval, compile rval into tmp, apply op in-place, write back.
-// /= and %= use a fresh dividend register because safediv requires 3 distinct Gp regs.
-/////////////////////////////////////////////////////////////////////////////
-
-// helper: resolve LHS for compound assignment — handles variables and struct members
-// returns the Gp register holding the value, and sets type/writeback info
+// LHS resolver shared by inc/dec and compound-assignment operators.
+// Handles plain variables and struct members (via -> or .) and *ptr derefs.
+// For member/deref, loads the Mem into a Gp and records the Mem for writeback.
 struct CompoundLHS {
     Operand lval;        // Gp register holding the current value
     DataDef *type;       // data type of the LHS
@@ -1792,11 +1695,38 @@ struct CompoundLHS {
 	    tv->putreg(pgm);
 	}
 	if ( is_member && writeback.hasBase() )
-	    pgm.cc.mov(writeback, lval.as<x86::Gp>());
+	    pgm.safemov(writeback, lval, type, type); // size-aware store
 	regdp.first  = &lval;
 	regdp.second = type;
     }
 };
+
+// Load a sub-qword Mem into a full 64-bit Gp with proper sign/zero extension.
+// Plain cc.mov(Gp64, Mem<2>) is not a legal x86 encoding — asmjit silently
+// drops it or emits a 16-bit partial op, leaving the upper bits dirty and
+// producing wrong arithmetic results.
+static void load_mem_to_gpq(Program &pgm, x86::Gp &gp, const x86::Mem &mem, DataDef *type)
+{
+    uint32_t sz = mem.size();
+    if ( sz == 8 )       pgm.cc.mov(gp, mem);
+    else if ( sz == 4 )
+    {
+	if ( type && type->is_unsigned() ) pgm.cc.mov(gp.r32(), mem); // implicit zero-extend
+	else                               pgm.cc.movsxd(gp, mem);
+    }
+    else if ( sz == 2 )
+    {
+	if ( type && type->is_unsigned() ) pgm.cc.movzx(gp, mem);
+	else                               pgm.cc.movsx(gp, mem);
+    }
+    else if ( sz == 1 )
+    {
+	if ( type && type->is_unsigned() ) pgm.cc.movzx(gp, mem);
+	else                               pgm.cc.movsx(gp, mem);
+    }
+    else // fallback
+	pgm.cc.mov(gp, mem);
+}
 
 static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char *op_name)
 {
@@ -1822,7 +1752,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    if ( mem.isMem() )
 	    {
 		x86::Gp gp = pgm.cc.newGpq("member_lhs");
-		pgm.cc.mov(gp, mem.as<x86::Mem>());
+		load_mem_to_gpq(pgm, gp, mem.as<x86::Mem>(), r.type);
 		r.writeback = mem.as<x86::Mem>();
 		r.lval = gp;
 		r.is_member = true;
@@ -1841,7 +1771,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		if ( mem.isMem() )
 		{
 		    x86::Gp gp = pgm.cc.newGpq("deref_lhs");
-		    pgm.cc.mov(gp, mem.as<x86::Mem>());
+		    load_mem_to_gpq(pgm, gp, mem.as<x86::Mem>(), r.type);
 		    r.writeback = mem.as<x86::Mem>();
 		    r.lval = gp;
 		    r.is_member = true;
@@ -1860,6 +1790,132 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
     }
     return r;
 }
+
+// compile the increment operator.
+// Supports plain variables (fast in-register inc) and struct members /
+// *deref (load-inc-store). `left` = postfix (x++), `right` = prefix (++x).
+Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
+{
+    TokenBase *target = left ? left : right;
+    bool postfix = (left != nullptr);
+    if ( !target )
+	throw "Invalid increment";
+
+    // Fast path: plain variable — inc the register directly, no writeback needed.
+    if ( target->type() == TokenType::ttVariable )
+    {
+	TokenVar *tv = dynamic_cast<TokenVar *>(target);
+	Operand &reg = tv->operand(pgm);
+	if ( postfix )
+	{
+	    if ( regdp.first )
+		pgm.safemov(*regdp.first, reg);
+	    else
+	    {
+		_operand = tv->var.type->newreg(pgm.cc, "postinc");
+		pgm.safemov(_operand, reg);
+		regdp.first = &_operand;
+	    }
+	    pgm.safeinc(reg);
+	}
+	else
+	{
+	    pgm.safeinc(reg);
+	    if ( regdp.first )
+		pgm.safemov(*regdp.first, reg);
+	    else
+		regdp.first = &reg;
+	}
+	tv->var.modified();
+	tv->putreg(pgm);
+	regdp.second = tv->var.type;
+	return *regdp.first;
+    }
+
+    // Member (obj->field / obj.field) or *deref: load → inc → store.
+    CompoundLHS lhs = resolveCompoundLHS(pgm, target, postfix ? "++" : "++");
+    if ( postfix )
+    {
+	// save old value before incrementing
+	_operand = lhs.type->newreg(pgm.cc, "postinc_old");
+	pgm.safemov(_operand, lhs.lval);
+    }
+    pgm.safeinc(lhs.lval);
+    if ( lhs.is_member && lhs.writeback.hasBase() )
+	pgm.safemov(lhs.writeback, lhs.lval, lhs.type, lhs.type);
+    if ( !postfix )
+	_operand = lhs.lval;  // stash new value on the node for pointer stability
+    if ( regdp.first )
+	pgm.safemov(*regdp.first, _operand);
+    else
+	regdp.first = &_operand;
+    regdp.second = lhs.type;
+    return *regdp.first;
+}
+
+// compile the decrement operator — symmetric with TokenInc.
+Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
+{
+    TokenBase *target = left ? left : right;
+    bool postfix = (left != nullptr);
+    if ( !target )
+	throw "Invalid decrement";
+
+    if ( target->type() == TokenType::ttVariable )
+    {
+	TokenVar *tv = dynamic_cast<TokenVar *>(target);
+	Operand &reg = tv->operand(pgm);
+	if ( postfix )
+	{
+	    if ( regdp.first )
+		pgm.safemov(*regdp.first, reg);
+	    else
+	    {
+		_operand = tv->var.type->newreg(pgm.cc, "postdec");
+		pgm.safemov(_operand, reg);
+		regdp.first = &_operand;
+	    }
+	    pgm.safedec(reg);
+	}
+	else
+	{
+	    pgm.safedec(reg);
+	    if ( regdp.first )
+		pgm.safemov(*regdp.first, reg);
+	    else
+		regdp.first = &reg;
+	}
+	tv->var.modified();
+	tv->putreg(pgm);
+	regdp.second = tv->var.type;
+	return *regdp.first;
+    }
+
+    CompoundLHS lhs = resolveCompoundLHS(pgm, target, postfix ? "--" : "--");
+    if ( postfix )
+    {
+	_operand = lhs.type->newreg(pgm.cc, "postdec_old");
+	pgm.safemov(_operand, lhs.lval);
+    }
+    pgm.safedec(lhs.lval);
+    if ( lhs.is_member && lhs.writeback.hasBase() )
+	pgm.safemov(lhs.writeback, lhs.lval, lhs.type, lhs.type);
+    if ( !postfix )
+	_operand = lhs.lval;
+    if ( regdp.first )
+	pgm.safemov(*regdp.first, _operand);
+    else
+	regdp.first = &_operand;
+    regdp.second = lhs.type;
+    return *regdp.first;
+}
+
+/////////////////////////////////////////////////////////////////////////////
+// compound assignment operators (+=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=)
+// Pattern: load lval, compile rval into tmp, apply op in-place, write back.
+// /= and %= use a fresh dividend register because safediv requires 3 distinct Gp regs.
+// CompoundLHS / resolveCompoundLHS are defined above TokenInc::compile (shared).
+/////////////////////////////////////////////////////////////////////////////
 
 Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
 {
@@ -2575,6 +2631,18 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             pgm.safemov(*regdp.first, elem_mem, regdp.second, _datatype);
             return *regdp.first;
         }
+        // Caller-supplied Mem destination (e.g. `p->next = arr[i]`): load
+        // element into a tmp and store into the Mem. Without this the
+        // assign to the struct member would silently drop the value.
+        if ( regdp.first && regdp.first->isMem() )
+        {
+            x86::Gp tmp = pgm.cc.newGpq("sub_to_mem");
+            if      ( elem_size == 8 ) pgm.cc.mov(tmp, elem_mem);
+            else if ( elem_size == 4 ) pgm.cc.movsxd(tmp, elem_mem);
+            else                       pgm.cc.movsx(tmp, elem_mem);
+            pgm.safemov(*regdp.first, tmp, regdp.second, _datatype);
+            return *regdp.first;
+        }
         x86::Gp res = pgm.cc.newGpq("sub_res");
         if      ( elem_size == 8 ) pgm.cc.mov(res, elem_mem);
         else if ( elem_size == 4 ) pgm.cc.movsxd(res, elem_mem);
@@ -2603,6 +2671,15 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
         if ( regdp.first && regdp.first->isReg() )
         {
             pgm.safemov(*regdp.first, elem_mem, regdp.second, _datatype);
+            return *regdp.first;
+        }
+        if ( regdp.first && regdp.first->isMem() )
+        {
+            x86::Gp tmp = pgm.cc.newGpq("sub_to_mem");
+            if      ( elem_size == 8 ) pgm.cc.mov(tmp, elem_mem);
+            else if ( elem_size == 4 ) pgm.cc.movsxd(tmp, elem_mem);
+            else                       pgm.cc.movsx(tmp, elem_mem);
+            pgm.safemov(*regdp.first, tmp, regdp.second, _datatype);
             return *regdp.first;
         }
         x86::Gp res = pgm.cc.newGpq("sub_res");
@@ -4205,13 +4282,17 @@ Operand &TokenLT::compile(Program &pgm, regdefp_t &regdp)
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenLT::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    DataDef *cmp_type = regdp.second;
+    bool is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
+                    || (right->datadef() && right->datadef()->is_unsigned())
+                    || (cmp_type && cmp_type->is_unsigned());
+    Operand tmp = cmp_type->newreg(pgm.cc, "tmp");	 // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     DBG(pgm.cc.comment("TokenLT::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);				 // typesafe comparison
-    DBG(pgm.cc.comment("TokenLT::compile() pgm.safesetl(reg)"));
-    pgm.safesetl(lval);					 // if lval < rval, ret(lval) = 1
+    if ( is_unsigned ) { DBG(pgm.cc.comment("safesetb (unsigned <)")); pgm.safesetb(lval); }
+    else               { DBG(pgm.cc.comment("safesetl (signed <)")); pgm.safesetl(lval); }
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }
@@ -4233,13 +4314,17 @@ Operand &TokenLE::compile(Program &pgm, regdefp_t &regdp)
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenLE::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    DataDef *cmp_type = regdp.second;
+    bool is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
+                    || (right->datadef() && right->datadef()->is_unsigned())
+                    || (cmp_type && cmp_type->is_unsigned());
+    Operand tmp = cmp_type->newreg(pgm.cc, "tmp");	 // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     DBG(pgm.cc.comment("TokenLE::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);				 // typesafe comparison
-    DBG(pgm.cc.comment("TokenLE::compile() pgm.safesetle(reg)"));
-    pgm.safesetle(lval);				 // if lval <= rval, ret(lval) = 1
+    if ( is_unsigned ) { DBG(pgm.cc.comment("safesetbe (unsigned <=)")); pgm.safesetbe(lval); }
+    else               { DBG(pgm.cc.comment("safesetle (signed <=)"));   pgm.safesetle(lval); }
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }
@@ -4261,13 +4346,17 @@ Operand &TokenGT::compile(Program &pgm, regdefp_t &regdp)
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenGT::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    DataDef *cmp_type = regdp.second;
+    bool is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
+                    || (right->datadef() && right->datadef()->is_unsigned())
+                    || (cmp_type && cmp_type->is_unsigned());
+    Operand tmp = cmp_type->newreg(pgm.cc, "tmp");	 // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     DBG(pgm.cc.comment("TokenGT::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);				 // typesafe comparison
-    DBG(pgm.cc.comment("TokenGT::compile() pgm.safesetg(reg)"));
-    pgm.safesetg(lval);					 // if lval > rval, ret(lval) = 1
+    if ( is_unsigned ) { DBG(pgm.cc.comment("safeseta (unsigned >)")); pgm.safeseta(lval); }
+    else               { DBG(pgm.cc.comment("safesetg (signed >)"));   pgm.safesetg(lval); }
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }
@@ -4289,13 +4378,17 @@ Operand &TokenGE::compile(Program &pgm, regdefp_t &regdp)
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenGE::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
+    DataDef *cmp_type = regdp.second;
+    bool is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
+                    || (right->datadef() && right->datadef()->is_unsigned())
+                    || (cmp_type && cmp_type->is_unsigned());
+    Operand tmp = cmp_type->newreg(pgm.cc, "tmp");	 // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     DBG(pgm.cc.comment("TokenGE::compile() pgm.safecmp(lval, rval)"));
     pgm.safecmp(lval, rval);				 // typesafe comparison
-    DBG(pgm.cc.comment("TokenGE::compile() pgm.safesetge(reg)"));
-    pgm.safesetge(lval);				 // if lval >= rval, ret(lval) = 1
+    if ( is_unsigned ) { DBG(pgm.cc.comment("safesetae (unsigned >=)")); pgm.safesetae(lval); }
+    else               { DBG(pgm.cc.comment("safesetge (signed >=)"));   pgm.safesetge(lval); }
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }
@@ -4927,8 +5020,13 @@ Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
     if ( !statement ) { throw "if missing statement"; }
     // push labels onto ifstack
     pgm.ifstack.push(make_pair(&thendo, elsestmt ? &elsedo : &iftail));
-    // perform condition check, false goes either to elsedo or iftail
+    // perform condition check, false goes either to elsedo or iftail.
+    // Reset regdp first so the condition's compile doesn't inherit a
+    // stale destination register from the caller — same rule applied in
+    // TokenFOR / TokenWHILE / TokenDO (see .claude/rules/regdp-reset.md).
     DBG(pgm.cc.comment("TokenIF::compile() reg = condition->compile()"));
+    regdp.first  = NULL;
+    regdp.second = NULL;
     Operand &reg = condition->compile(pgm, regdp);
     // hard coded if (1) / if (0)
     if ( reg.isImm() )
@@ -4938,6 +5036,7 @@ Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    pgm.cc.bind(thendo);
 	    DBG(pgm.cc.comment("TokenIF::compile(1) statement->compile(pgm, regdp)"));
+	    regdp.first = NULL; regdp.second = NULL;
 	    statement->compile(pgm, regdp); // execute if statement(s) for true
 	}
 	else
@@ -4946,6 +5045,7 @@ Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    pgm.cc.bind(elsedo);	// bind elsedo label
 	    DBG(pgm.cc.comment("TokenIF::compile(0) elsestmt->compile(pgm, regdp)"));
+	    regdp.first = NULL; regdp.second = NULL;
 	    elsestmt->compile(pgm, regdp);  // execute else condition
 	}
     }
@@ -4961,12 +5061,14 @@ Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
 
 	DBG(pgm.cc.comment("TokenIF::compile() statement->compile(pgm, regdp)"));
 	pgm.cc.bind(thendo);
+	regdp.first = NULL; regdp.second = NULL;
 	statement->compile(pgm, regdp); // execute if statement(s) if condition met
 	if ( elsestmt )			// do we have an else?
 	{
 	    pgm.cc.jmp(iftail);		// jump to tail after executing if statements
 	    pgm.cc.bind(elsedo);	// bind elsedo label
 	    DBG(pgm.cc.comment("TokenIF::compile() elsestmt->compile(pgm, regdp)"));
+	    regdp.first = NULL; regdp.second = NULL;
 	    elsestmt->compile(pgm, regdp); 	// execute else condition
 	}
     }

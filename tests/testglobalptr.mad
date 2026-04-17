@@ -1,0 +1,30 @@
+// Global pointer variables: read initial value, store new value.
+// Before the DataDefPTR::movrval2mptr/movmptr2rval overrides, the base
+// switch silently dropped all pointer types (_type >= 10000) into the
+// "unsupported numeric type" default, so `gp = x;` was a no-op.
+#include <stdio.h>
+#include <stdlib.h>
+
+struct s { int a; };
+
+struct s *gp = NULL;
+char *gstr = NULL;
+
+int main()
+{
+    // Initial NULL reads back as NULL
+    if (gp == NULL)   printf("gp init NULL: ok\n");   else printf("gp init NOT null: FAIL\n");
+    if (gstr == NULL) printf("gstr init NULL: ok\n"); else printf("gstr init NOT null: FAIL\n");
+
+    // Assign and read back
+    struct s *local = (struct s *) malloc(sizeof(struct s));
+    local->a = 42;
+    gp = local;
+    if (gp == local) printf("gp = local: ok\n"); else printf("gp != local: FAIL\n");
+
+    char *buf = "hello";
+    gstr = buf;
+    printf("gstr = [%s] (expect hello)\n", gstr);
+
+    return 0;
+}

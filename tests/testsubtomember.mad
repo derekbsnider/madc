@@ -1,0 +1,32 @@
+// Assign a subscript result into a struct member: `p->next = arr[i];`.
+// Without TokenSubscript honoring a Mem destination, the subscript result
+// was loaded into a fresh Gp and the member's Mem never got written.
+#include <stdio.h>
+#include <stdlib.h>
+
+struct node { struct node *next; int val; };
+
+struct node *list_head[4];
+
+int main()
+{
+    struct node *a = (struct node *) malloc(sizeof(struct node));
+    struct node *b = (struct node *) malloc(sizeof(struct node));
+    a->val = 1; a->next = NULL;
+    b->val = 2; b->next = NULL;
+    list_head[0] = a;
+
+    // Subscript → member assign
+    b->next = list_head[0];
+    if (b->next == a) printf("b->next = list_head[0]: ok\n");
+    else              printf("b->next = %p a = %p: FAIL\n", b->next, a);
+
+    // NULL slot — must assign NULL, not leave the old value
+    b->next = list_head[1];
+    if (b->next == NULL) printf("b->next = list_head[1] (NULL): ok\n");
+    else                 printf("b->next = %p (expected nil): FAIL\n", b->next);
+
+    free(a);
+    free(b);
+    return 0;
+}

@@ -1,0 +1,32 @@
+// Unsigned comparisons: `p->b < 65535` must use setb/below, not setl/signed.
+// Without the fix, signed-less-than treats 65535 as -1 (int16) and the
+// compare flips. This breaks any if-guarded update to an unsigned short
+// member — exactly SMAUG's `if (ptr->links < 65535) ++ptr->links` pattern.
+#include <stdio.h>
+#include <stdlib.h>
+
+struct sh { struct sh *next; unsigned short int b; };
+struct ui { struct ui *next; unsigned int    b; };
+
+int main()
+{
+    struct sh *sh = (struct sh *) malloc(sizeof(struct sh));
+    struct ui *ui = (struct ui *) malloc(sizeof(struct ui));
+    sh->b = 5; sh->next = NULL;
+    ui->b = 5; ui->next = NULL;
+
+    if (sh->b < 65535) ++sh->b;
+    printf("ushort: sh->b=%d (expect 6)\n", sh->b);
+
+    if (ui->b < 4000000000) ui->b += 1;
+    printf("uint:   ui->b=%d (expect 6)\n", ui->b);
+
+    // signed short still uses setl
+    short int sv = -1;
+    if (sv < 0) sv = sv + 1;
+    printf("short sv=%d (expect 0)\n", sv);
+
+    free(sh);
+    free(ui);
+    return 0;
+}

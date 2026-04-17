@@ -201,14 +201,19 @@ void Program::safemov(Operand &op1, double d, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Mem &m, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Mem, Gp)"));
-    switch(r2.type())
+    // Pick the register view that matches the Mem's size — an `mov word
+    // ptr, r64` is not a valid x86 encoding and asmjit silently drops it
+    // (or emits a truncated op). Without this, callers that widen a member
+    // to Gp64 for arithmetic would fail to write back to the narrower Mem.
+    uint32_t msz = m.size();
+    if ( !msz ) msz = (uint32_t)r2.size();
+    switch(msz)
     {
-	case RegType::kGp8Lo: cc.mov(m, r2.r8Lo());  break;
-	case RegType::kGp8Hi: cc.mov(m, r2.r8Hi());  break;
-	case RegType::kGp16:  cc.mov(m, r2.r16());   break;
-	case RegType::kGp32:  cc.mov(m, r2.r32());   break;
-	case RegType::kGp64:  cc.mov(m, r2.r64());   break;
-	default: throw "Program::safemov() cannot match register types";
+	case 1: cc.mov(m, r2.r8());   break;
+	case 2: cc.mov(m, r2.r16());  break;
+	case 4: cc.mov(m, r2.r32());  break;
+	case 8: cc.mov(m, r2.r64());  break;
+	default: throw "Program::safemov(Mem, Gp) unsupported Mem size";
     }
 }
 
@@ -1010,6 +1015,57 @@ void Program::safesetne(Operand &op)
     }
     else
 	throw "safesetne() operand not supported";
+}
+
+// Unsigned comparison setcc — setb/setbe/seta/setae. Used when either
+// operand of a < / <= / > / >= comparison is unsigned; picking the signed
+// variant in that case miscategorises values with the high bit set.
+void Program::safesetb(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	cc.setb(op.as<x86::Gp>().r8());
+	if ( op.x86RmSize() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
+    else
+	throw "safesetb() operand not supported";
+}
+
+void Program::safesetbe(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	cc.setbe(op.as<x86::Gp>().r8());
+	if ( op.x86RmSize() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
+    else
+	throw "safesetbe() operand not supported";
+}
+
+void Program::safeseta(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	cc.seta(op.as<x86::Gp>().r8());
+	if ( op.x86RmSize() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
+    else
+	throw "safeseta() operand not supported";
+}
+
+void Program::safesetae(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	cc.setae(op.as<x86::Gp>().r8());
+	if ( op.x86RmSize() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
+    else
+	throw "safesetae() operand not supported";
 }
 
 

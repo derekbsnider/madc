@@ -547,6 +547,18 @@ public:
 	: DataDef(base.name + "*", 8, rtPtr(base.type())), base_type(&base) {}
     virtual bool is_numeric() { return true; }
     virtual bool is_integer() { return true; }
+    // Pointers are 8 bytes regardless of what they point to. Without these
+    // overrides the base-class switches fall into the "unsupported numeric
+    // type" default for rtPtr() values (>= 10000), silently dropping the
+    // store — so `global_ptr = x;` becomes a no-op.
+    virtual void movrval2mptr(asmjit::x86::Compiler &cc, void *ptr, asmjit::x86::Gp reg)
+    { cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); }
+    virtual void movrval2rptr(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, asmjit::x86::Gp reg)
+    { cc.mov(asmjit::x86::qword_ptr(ptr), reg); }
+    virtual void movint2rptr(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, int rval)
+    { cc.mov(asmjit::x86::qword_ptr(ptr), rval); }
+    virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
+    { cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); }
 };
 
 // ---- MadValue: tagged union for PHP-style mixed-type arrays ----

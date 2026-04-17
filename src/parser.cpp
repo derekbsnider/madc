@@ -2033,6 +2033,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 	// (needed for cast expressions: (TYPE *)expr; must not eat the ;)
 	if ( conditional && tb->id() == TokenID::tkSemi )
 	    break;
+	// in conditional mode, stop at , without consuming — the caller
+	// (parseCallFunc, for-init/incr, nested cast) uses the comma as an
+	// argument / clause separator and needs it left in the stream.
+	// Without this, `strcpy((char *)h + 8, "x")` lets the cast's inner
+	// parseExpression eat the comma, and the outer parseExpression then
+	// merges `"x"` into the first arg's expression.
+	if ( conditional && tb->id() == TokenID::tkComma )
+	    break;
 	tb = nextToken();
     }
 
