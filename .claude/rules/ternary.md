@@ -1,34 +1,30 @@
-# Ternary Operator Compilation Rules
+# Ternary Operator Rules
 
 ## Parsing
 
-- When `?` is encountered in `parseExpression`, pop operators from opStack with precedence <= 13 only
-- Do NOT pop `=` (precedence 14) or other low-precedence operators — they must remain on opStack
-- Pop the condition from exStack after clearing higher-precedence operators
-- Parse true expression with `conditional=true` — stops at `:` (colon-stop rule)
-- Consume `:` via `nextToken()`, then parse false expression
-- Push the `TokenTerQ` node onto exStack and set `done=true`
+- When `?` is encountered in `parseExpression`, pop operators from
+  `opStack` with precedence <= 13 only.
+- Do NOT pop `=` (precedence 14) or other lower-precedence operators.
+- Pop the condition from `exStack` after clearing higher-precedence
+  operators.
+- Parse the true expression with `conditional=true` — stops at `:`.
+- Consume `:` via `nextToken()`, then parse the false expression.
+- Push the `TokenTerQ` node onto `exStack` and set `done=true`.
 
-## Colon as Expression Stop
+## Colon as expression stop
 
-- `:` (`tkTerC`) stops expression parsing in non-bracketed context
-- When encountered, push it back via `pushToken(tb)` and set `done=true`
-- This is safe because `:` in other contexts (case labels, range-for) is handled before `parseExpression`
+- `:` (`tkTerC`) stops expression parsing in non-bracketed context.
+- When encountered, push it back via `pushToken(tb)` and set `done=true`.
 
-## Code Generation
+## Code generation
 
-- Use a **stack slot** as the merge point — do NOT write both branches to the same virtual register
-- asmjit's register allocator cannot handle the same virtual register written on two divergent code paths
-- Pattern:
-  1. Allocate stack slot: `cc.newStack(8, 8)`
-  2. Compile condition into a fresh Gp (don't clobber `regdp.first`)
-  3. `test(cond_gp, cond_gp)` + `je(L_false)`
-  4. True branch: compile into fresh Gp, `mov(slot, true_tmp)`
-  5. `jmp(L_end)`
-  6. False branch: compile into fresh Gp, `mov(slot, false_tmp)`
-  7. `bind(L_end)`: load from slot into destination
+- The merge point MUST be a stack slot — not a shared virtual register.
+  asmjit's register allocator cannot handle the same virtual register
+  written on two divergent paths.
+- Compile the condition with a clean `regdefp_t` (`first=NULL`) to
+  avoid writing the comparison result into the caller's destination.
+- Compile each branch with a clean `regdefp_t` — use fresh tmp
+  registers; write to the stack slot.
 
-## Register Safety
-
-- Condition must compile with a clean `regdefp_t` (`first=NULL`) to avoid writing the comparison result into the caller's destination register
-- Branch expressions must also compile with clean `regdefp_t` — use fresh tmp registers, write to stack slot
+See `docs/rules/ternary.md` for the full codegen pattern and the
+register-convergence explanation.
