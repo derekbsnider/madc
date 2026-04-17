@@ -4,6 +4,12 @@
 
 The "Mad" in Mad-C: mix functions from multiple programming languages in a single program.
 
+> **Contributing / using an AI agent?** Start with [`AGENTS.md`](AGENTS.md)
+> — it's the canonical briefing for every agent (Claude Code, Codex CLI,
+> Gemini CLI, Copilot, Cursor, Aider, Windsurf). Rules are in
+> [`.claude/rules/`](.claude/rules/), with reasoning in
+> [`docs/rules/`](docs/rules/).
+
 ---
 
 ## Quick Start
@@ -187,6 +193,8 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
 | [`docs/test-status.md`](docs/test-status.md) | Per-test results |
+| [`AGENTS.md`](AGENTS.md) | Agent briefing — project rules, architecture, multi-tool setup |
+| [`docs/rules/`](docs/rules/) | Reasoning behind each rule in `.claude/rules/` |
 | [`CHANGELOG.md`](CHANGELOG.md) | Change history |
 
 ---
