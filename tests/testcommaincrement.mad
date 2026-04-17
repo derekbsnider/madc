@@ -1,0 +1,26 @@
+// for-loop with `c++` in compound-comma increment context.
+// Before the member inc fix, SMAUG's `for (c=0, ptr = string_hash[x];
+// ptr; ptr = ptr->next, c++);` reported "Increment on a non-variable rval".
+#include <stdio.h>
+#include <stdlib.h>
+
+struct node { struct node *next; int v; };
+
+int main()
+{
+    struct node *a = (struct node *) malloc(sizeof(struct node));
+    struct node *b = (struct node *) malloc(sizeof(struct node));
+    struct node *c_ = (struct node *) malloc(sizeof(struct node));
+    a->v = 1; a->next = b;
+    b->v = 2; b->next = c_;
+    c_->v = 3; c_->next = NULL;
+
+    int c, sum;
+    struct node *ptr;
+    for (c = 0, sum = 0, ptr = a; ptr; ptr = ptr->next, c++)
+        sum += ptr->v;
+    printf("c=%d sum=%d (expect c=3 sum=6)\n", c, sum);
+
+    free(a); free(b); free(c_);
+    return 0;
+}

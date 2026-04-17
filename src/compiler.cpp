@@ -2229,6 +2229,32 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.first || !regdp.second )
 	regdp.second = ltype; // set type if not set
 
+    // Post-declaration string-literal → char* assignment: `char *p; p =
+    // "literal";`. The LHS is a char* (pointer, so is_numeric), but the
+    // RHS is a dtSTRING object — passing the dtSTRING operand as
+    // regdp.first would write the std::string pointer into p instead of
+    // its data. Compile the RHS into a tmp, pass it through string_cstr,
+    // then store the resulting char* into p's register.
+    if ( ltype->is_pointer() && ltype->rawtype() == DataType::dtCHAR
+      && right->datadef() && right->datadef()->rawtype() == DataType::dtSTRING )
+    {
+	regdefp_t rhs_rdp = {NULL, NULL, NULL};
+	Operand &str_op = right->compile(pgm, rhs_rdp);
+	x86::Gp cstr = pgm.cc.newIntPtr("cstr");
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+	call->setArg(0, str_op.as<x86::Gp>());
+	call->setRet(0, cstr);
+	if ( _operand.isReg() && _operand.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.mov(_operand.as<x86::Gp>(), cstr);
+	else if ( _operand.isMem() )
+	    pgm.cc.mov(_operand.as<x86::Mem>(), cstr);
+	if ( tvl ) { tvl->var.modified(); tvl->putreg(pgm); }
+	regdp.first = &_operand;
+	regdp.second = ltype;
+	return *regdp.first;
+    }
+
     // we should have _operand set to our left variable at this point
     // only if our left variable is numeric do we want to pass it to
     // our right side, otherwise we want to clear it
