@@ -1,0 +1,6 @@
+# Aider configuration for the madc repo.
+# Points Aider at AGENTS.md so every session starts with the project
+# briefing and rule index. Same content Claude Code / Gemini CLI /
+# Codex CLI / Copilot see (AGENTS.md is the canonical source).
+read:
+  - AGENTS.md

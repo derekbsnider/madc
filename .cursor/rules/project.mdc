@@ -1,0 +1,14 @@
+---
+description: Loads the canonical agent briefing and rules from AGENTS.md
+globs: ["**/*"]
+alwaysApply: true
+---
+
+Read `AGENTS.md` in the repository root. It is the canonical briefing
+for any agent on this project — build commands, architecture, asmjit
+notes, and the full rule index. All content there applies to work
+done through Cursor.
+
+The `.claude/rules/*.md` files contain bare imperatives; sibling
+`docs/rules/*.md` files contain the reasoning. Read the rules that
+apply to your current task before editing.

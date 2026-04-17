@@ -1,0 +1,13 @@
+# Windsurf / Codeium project rules.
+# The canonical briefing is AGENTS.md at the repo root. Read that
+# first — it has the project overview, build commands, architecture,
+# asmjit notes, and the rule index.
+#
+# `.claude/rules/*.md` — bare imperatives (must follow)
+# `docs/rules/*.md`    — reasoning behind each rule
+
+Read AGENTS.md before making any change. Follow every rule in
+.claude/rules/ that applies to your task.
+
+Never chain shell commands with && or use shell variable substitution;
+each command must be a single simple invocation.
