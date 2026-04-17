@@ -61,6 +61,14 @@
 
 - **Phase 4: `libmadc.so` embedding API** — Decouple static globals, create public C API.
 
+- **Full C23 standard coverage** — After SMAUG 1.8 compatibility is reached, the next
+  long-term goal for the C-dialect side is full C23 (including C99/C11/C17 features along
+  the way: `_Bool`, designated initializers, compound literals, variadic macros with `__VA_ARGS__`,
+  `_Static_assert`, `_Generic`, `_Alignas`/`_Alignof`, VLAs, `restrict`, digit separators,
+  `#embed`, `constexpr`, `nullptr`, binary literals `0b…`, typeof, etc.). `.mad` stays as the
+  naming convention for files using madc's beyond-C23 extensions (multi-language namespaces,
+  etc.); bare `.c` / `.h` files get the C-compatible subset.
+
 ## Completed
 
 ### Session 2026-04-17 (Phase F continues — hashstr.mad runs)
