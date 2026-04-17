@@ -2732,16 +2732,41 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	TokenBase *tn_peek = pgm.peekToken();
 	if ( tn_peek && tn_peek->id() == TokenID::tkAssign )
 	{
-	    td->initialize = pgm.parseExpression(new TokenVar(*var));
+	    // conditional=true so `;` stops without being consumed, matching
+	    // the non-typed init path and letting the common ';' gate below
+	    // work uniformly for both.
+	    td->initialize = pgm.parseExpression(new TokenVar(*var), true);
 	}
 	initialize = td;
     }
     else
     {
-	DBG(cout << "TokenFOR::parse() initialize: calling parseStatement(" << (char)tn->get() << ')' << endl);
-	if ( !(initialize = pgm.parseStatement(tn)) )
+	DBG(cout << "TokenFOR::parse() initialize: calling parseExpression(" << (char)tn->get() << ')' << endl);
+	// conditional=true so parseExpression stops on `;` WITHOUT consuming;
+	// comma continuations read below get to see `,` left in the stream.
+	if ( !(initialize = pgm.parseExpression(tn, true)) )
 	    pgm.Throw(tn) << "Failed to parse initialize" << flush;
     }
+
+    // C comma-expression init: `for (a=0, b=1, ... ; ...)`. parseExpression
+    // consumes `,`, so after a comma-terminated init the peek is already
+    // the next expression starter; accept either case.
+    while ( pgm.peekToken() )
+    {
+	TokenBase *pk = pgm.peekToken();
+	if ( pk->id() == TokenID::tkComma ) { pgm.nextToken(); pk = pgm.peekToken(); }
+	if ( !pk || pk->id() == TokenID::tkSemi ) break;
+	// anything else must look like an expression starter
+	if ( pk->type() == TokenType::ttSymbol || pk->type() == TokenType::ttKeyword
+	  || pk->type() == TokenType::ttDataType ) break;
+	tn = pgm.nextToken();
+	TokenBase *extra = pgm.parseExpression(tn, true);
+	if ( extra ) init_extras.push_back(extra);
+    }
+
+    tn = pgm.nextToken(); // consume `;` after init
+    if ( tn->id() != TokenID::tkSemi )
+	pgm.Throw(tn) << "Expecting ';' after for init" << flush;
 
     tn = pgm.nextToken();
     DBG(cout << "TokenFOR::parse() condition: calling parseExpression(" << (char)tn->get() << ')' << endl);
@@ -2749,10 +2774,25 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	pgm.Throw(tn) << "Failed to parse expression" << flush;
 
     tn = pgm.nextToken();  // consume ; separator between condition and increment
+    if ( tn->id() != TokenID::tkSemi )
+	pgm.Throw(tn) << "Expecting ';' after for condition" << flush;
     tn = pgm.nextToken();  // first token of increment expression
-    DBG(cout << "TokenFOR::parse() increment: calling parseStatement(" << (char)tn->get() << ')' << endl);
-    if ( !(increment = pgm.parseStatement(tn)) )
+    DBG(cout << "TokenFOR::parse() increment: calling parseExpression(" << (char)tn->get() << ')' << endl);
+    if ( !(increment = pgm.parseExpression(tn, true)) )
 	pgm.Throw(tn) << "Failed to parse increment" << flush;
+
+    // C comma-expression increment: `for (...; ...; i++, j--, k++)`.
+    while ( pgm.peekToken() )
+    {
+	TokenBase *pk = pgm.peekToken();
+	if ( pk->id() == TokenID::tkComma ) { pgm.nextToken(); pk = pgm.peekToken(); }
+	if ( !pk || pk->id() == TokenID::tkClBrk ) break;
+	if ( pk->type() == TokenType::ttSymbol || pk->type() == TokenType::ttKeyword
+	  || pk->type() == TokenType::ttDataType ) break;
+	tn = pgm.nextToken();
+	TokenBase *extra = pgm.parseExpression(tn, true);
+	if ( extra ) incr_extras.push_back(extra);
+    }
 
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkClBrk )
@@ -3527,9 +3567,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
     DBG(cout << "parseFunction(" << dd.name << ' ' << id << ") START" << endl);
 
-    // may have already been declared
+    // may have already been declared (e.g. forward decl → definition)
+    bool func_already_declared = false;
     if ( (fmi=funcdef_map.find(id)) != funcdef_map.end() )
+    {
 	func = fmi->second;
+	func_already_declared = true;
+    }
     else
     {
 	func = new FuncDef(dd);
@@ -3663,7 +3707,15 @@ grabnt:
 	// parameter declaration
 	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
 	{
-	    if ( !func->findParameter(pid) )
+	    // If this is a definition following a forward declaration, the
+	    // function already has its parameter DataDefs — don't re-push.
+	    // Just record the name so the body's `ids[]` / variable binding
+	    // stays aligned.
+	    if ( func_already_declared )
+	    {
+		ids.push_back(pid);
+	    }
+	    else if ( !func->findParameter(pid) )
 	    {
 		ids.push_back(pid);
 		if ( rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING )
@@ -3728,6 +3780,8 @@ grabnt:
     Variable *v;
     int i = 0;
 
+    DBG(cout << "parseFunction() param loop: func->parameters.size()=" << func->parameters.size()
+	<< " ids.size()=" << ids.size() << " method=" << (void*)method << endl);
     for ( dvi = func->parameters.begin(); dvi != func->parameters.end(); ++dvi )
     {
 	d = *dvi;
@@ -3735,6 +3789,7 @@ grabnt:
 	v = new Variable(ids[i++], *d, 1, NULL, false);
 	v->flags |= vfPARAM;
 	method->parameters.push_back(v);
+	DBG(cout << "parseFunction() pushed param, method->parameters.size()=" << method->parameters.size() << endl);
     }
 
     pushCompound();

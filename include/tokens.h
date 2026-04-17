@@ -1167,6 +1167,12 @@ public:
     TokenBase *condition;
     TokenBase *increment;
     TokenBase *statement;
+    // C allows comma-separated expressions in the init and increment slots:
+    //   for (a = 0, b = 1; cond; i++, j--)
+    // The first one lives in `initialize` / `increment`; any extras here
+    // run sequentially before/after at compile time.
+    std::vector<TokenBase *> init_extras;
+    std::vector<TokenBase *> incr_extras;
     TokenFOR() : TokenKeyword("for") { initialize = condition = increment = statement = NULL; }
     virtual TokenBase *parse(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);

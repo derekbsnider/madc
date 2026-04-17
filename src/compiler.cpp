@@ -1603,16 +1603,12 @@ bool Program::compile()
     }
     catch(const char *err_msg)
     {
-	if ( tb )
-	    cerr << ANSI_WHITE << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column;
-	else
-	    cerr << ANSI_WHITE;
-	cerr << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
-	if ( tb )
-	{
-	    source.showerror(tb->line, tb->column);
-	    cout << "TokenType: " << (int)tb->type() << endl;
-	}
+	// err_msg may be NULL if something threw a raw null pointer; guard.
+	// tb may be dangling if the throw happened deep in compile() after
+	// ast.pop() and statement compilation — don't deref tb->file/line.
+	cerr << ANSI_WHITE << ": \e[1;31merror:\e[1;37m "
+	     << (err_msg ? err_msg : "(null error message)")
+	     << ANSI_RESET << endl;
 	return false;
     }
     catch(TokenBase *tb)
@@ -5060,6 +5056,12 @@ Operand &TokenFOR::compile(Program &pgm, regdefp_t &regdp)
 
     pgm.loopstack.push(make_pair(&forcont, &fortail)); // push labels onto loopstack
     initialize->compile(pgm, regdp); 		// execute loop's initializer statement
+    for ( auto *extra : init_extras )		// C comma-init extras
+    {
+	regdp.first = NULL;
+	regdp.second = NULL;
+	extra->compile(pgm, regdp);
+    }
     pgm.cc.bind(fortop);			// label the top of the loop
     regdp.first  = NULL;			// reset so condition compiles into a fresh register
     regdp.second = NULL;
@@ -5076,6 +5078,12 @@ Operand &TokenFOR::compile(Program &pgm, regdefp_t &regdp)
     regdp.first  = NULL;			// reset so increment doesn't clobber unrelated registers
     regdp.second = NULL;
     increment->compile(pgm, regdp); 		// execute loop's increment statement
+    for ( auto *extra : incr_extras )		// C comma-incr extras
+    {
+	regdp.first = NULL;
+	regdp.second = NULL;
+	extra->compile(pgm, regdp);
+    }
     pgm.cc.jmp(fortop);				// jump back to top
     pgm.cc.bind(fortail);			// bind for tail
 
