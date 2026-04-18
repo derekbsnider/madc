@@ -159,7 +159,7 @@ make -C src test      # run unit tests
 make -C src fulltest
 ```
 
-**Current status: 89 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
+**Current status: 90 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)

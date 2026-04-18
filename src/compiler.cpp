@@ -423,6 +423,22 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    Operand &areg = parameters[i]->compile(pgm, argrdp);
 	    DataDef *ptype = argrdp.second;
 
+	    // Coerce dtSTRING -> dtCHARptr when typedef param expects char*
+	    // (mirrors the direct-call coercion path).
+	    if ( ptype && ptype->type() == DataType::dtCHARptr
+	      && parameters[i]->datadef() && parameters[i]->datadef()->rawtype() == DataType::dtSTRING )
+	    {
+		DBG(pgm.cc.comment("fptr: coerce dtSTRING -> dtCHARptr via string_cstr"));
+		x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
+		InvokeNode *cstr_call;
+		pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+		cstr_call->setArg(0, areg.as<x86::Gp>());
+		cstr_call->setRet(0, cstr_reg);
+		params.push_back(cstr_reg);
+		funcsig.addArgT<const char *>();
+		continue;
+	    }
+
 	    if ( ptype && ptype->is_real() )
 	    {
 		params.push_back(areg);

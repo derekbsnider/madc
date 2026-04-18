@@ -1998,7 +1998,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    // no-arg ostream-taking function) keep the pre-decay behavior.
 		    {
 			TokenBase *peek_after = peekToken();
-			bool followed_by_paren = peek_after && peek_after->id() == TokenID::tkOpBrk;
+			TokenID peek_id = peek_after ? peek_after->id() : TokenID::tkBase;
+			bool followed_by_paren = (peek_id == TokenID::tkOpBrk);
+			// Value-context followers: struct/array-init element end,
+			// call-arg end, ternary branch separator - a bare function
+			// name in these positions is passing/returning its address.
+			bool followed_by_value_end =
+			    peek_id == TokenID::tkComma || peek_id == TokenID::tkClBrk
+			 || peek_id == TokenID::tkClSqr || peek_id == TokenID::tkClBrc
+			 || peek_id == TokenID::tkTerC;
 			bool in_assign_context = false;
 			if ( !opStack.empty() )
 			{
@@ -2011,7 +2019,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			      || opid == TokenID::tkBSLEq  || opid == TokenID::tkBSREq )
 				in_assign_context = true;
 			}
-			if ( !followed_by_paren && in_assign_context )
+			if ( !followed_by_paren && (in_assign_context || followed_by_value_end) )
 			{
 			    DBG(cout << "Pushing function address (decay): " << var->name << " onto exStack" << endl);
 			    exStack.push(new TokenVar(*var));

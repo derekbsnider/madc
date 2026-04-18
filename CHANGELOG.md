@@ -15,16 +15,32 @@
   `FuncDef` to wrap in the `DataDefFPTR`. `tests/testfnptrtypedef.mad` covers
   both forms, reassignment, and invocation with `cout <<`.
 
+- **SMAUG command-table pattern** — `struct cmd { char *name; DO_FUN *fn; };`
+  followed by `struct cmd c = { "who", do_who };` now compiles and runs.
+  Dispatch via intermediate variable (`DO_FUN *fp = c.fn; fp(args);`) works;
+  direct invocation `c.fn(args);` is a separate gap (TokenMember-callable
+  wiring). `tests/testfnptrstruct.mad` covers the pattern.
+
 ### Fixed
 
-- **Function-to-pointer decay for assignment RHS** — `fptr = func_name;`
-  previously compiled `func_name` as a no-argument call and assigned the
-  return value into `fptr`, not the function's address. Parser now pushes a
-  bare function identifier as a `TokenVar` (value) when the surrounding
-  context is an assignment operator (`=`, `+=`, `-=`, `*=`, `/=`, `%=`,
-  `&=`, `|=`, `^=`, `<<=`, `>>=`). Other contexts (notably `cout << endl;`,
-  where BSL consumes a no-arg ostream-taking function specially) keep the
-  prior call-construction behavior.
+- **Function-to-pointer decay for value contexts** — `fptr = func_name;`,
+  `struct X x = { "name", func_name };`, `call(a, func_name, b);`, `cond ?
+  f1 : f2` — anywhere a bare function identifier appears as a value — now
+  pushes the function's address instead of mis-compiling as a no-arg call.
+  Decay triggers when the function identifier isn't followed by `(` and
+  either (a) top of opStack is an assignment op (`=`, `+=`, `-=`, `*=`,
+  `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`) or (b) the follower token
+  is a value-end (`,`, `}`, `)`, `]`, `:`). `cout << endl;` keeps the
+  pre-existing behavior because `endl;` has neither, so BSL's special
+  handling of ostream-consuming no-arg functions still applies.
+
+- **`char*` coercion in function-pointer indirect calls** —
+  `TokenCallFunc::compile`'s fptr path (the `is_function() && is_numeric()`
+  branch) now runs the same `dtSTRING -> dtCHARptr` coercion via
+  `string_cstr` that the direct-call path uses. Previously, passing a
+  string literal to a typedef-declared `void (*)(char *)` function pointer
+  would pass the `std::string*` pointer verbatim, so the callee received
+  the string object header instead of the null-terminated bytes.
 
 ## [Unreleased] — SMAUG Phase F Continues (2026-04-17)
 

@@ -31,7 +31,22 @@
 - **Typed for-init with comma** — `for (int i = 0, j = 10; ...)` declares only i. The non-
   typed form (`for (a = 0, b = 10; ...)`) works.
 
+## Known Runtime Bugs (surfaced but pre-existing)
+
+- **`ruby::chars` crashes in MadValue destructor** — `ruby::chars(arr, str);`
+  crashes at runtime inside `a.data.clear()` in `ruby_chars`. Likely an
+  ABI/layout issue with how MadArray is passed through a direct call whose
+  registered return type is `dtARRAY`. The call-in-testlang.mad was commented
+  out because the widened function-to-pointer decay (which is correct C
+  semantics) now lets it compile, exposing the crash. Other MadArray ops
+  (php::array_push, php::count) work fine. Needs separate investigation.
+
 ## Deferred / Future
+
+- **Direct invocation via struct member fn-pointer** — `cmd.fn(args);`
+  doesn't parse; intermediate variable (`DO_FUN *fp = cmd.fn; fp(args);`)
+  works. Requires extending TokenMember to be callable when its datadef is
+  DataDefFPTR.
 
 - **struct stat / sockaddr_in / dirent layouts** — `struct tm` and `struct timeval` done;
   still need these for `stat()`, socket functions, `readdir()`. Same glibc-layout-match
@@ -60,9 +75,18 @@
   Form 1 uses is a no-op because the typedef already names a pointer-like
   storage. Assignment uses C's function-to-pointer decay: `fn = func_name;`
   takes the function's address (previously this mis-parsed as a no-arg call to
-  `func_name`). Decay is restricted to assignment contexts (`=`, `+=`,
-  `<<=` etc.) so that `cout << endl;` still parses as a BSL-consumed call.
-  `tests/testfnptrtypedef.mad` covers both forms, reassignment, and invocation.
+  `func_name`). Decay widens to any value-context follower — assignment
+  operators (`=`, `+=`, `<<=` etc.), and struct/array-init / call-arg / ternary
+  separators (`,`, `}`, `)`, `]`, `:`) — so SMAUG's command-table pattern
+  `struct cmd c = { "who", do_who };` works. `cout << endl;` still parses as
+  BSL-consumed call because `endl;` has neither an assignment operator on top
+  of opStack nor a value-end follower. `tests/testfnptrtypedef.mad` covers
+  typedefs + reassignment + invocation. `tests/testfnptrstruct.mad` covers
+  the SMAUG command-table pattern.
+- ~~**char* coercion in function-pointer indirect calls**~~ — `TokenCallFunc`'s
+  fptr path now runs the same `string_cstr` coercion the direct-call path
+  does, so `fp("world")` where `fp` is declared `void STRFN(char *)` passes
+  the string-literal's `.c_str()` instead of the `std::string*` pointer.
 - ~~**`sizeof(object)` for variables and fixed arrays**~~ — the parser now
   resolves `sizeof(identifier)` through normal variable lookup before falling
   back to type lookup, so local scalars and fixed arrays like `char buf[32];`
