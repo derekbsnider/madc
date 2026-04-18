@@ -51,6 +51,36 @@
   fn-ptr + dispatch loop against a file-scope command table + direct
   indexed invocation.
 
+- **`struct sockaddr_in` + `struct sockaddr` + `struct in_addr` interop** —
+  glibc x86-64 layouts for socket programming, embedded in
+  `<netinet/in.h>` (sockaddr_in 16 bytes, in_addr 4 bytes) and
+  `<sys/socket.h>` (sockaddr 16-byte generic base used for the
+  `bind()`/`connect()` cast trick). Plus `sa_family_t`, `in_port_t`,
+  `in_addr_t`, `socklen_t` type aliases. All socket functions (socket,
+  bind, connect, listen, accept, htons, ntohl, etc.) resolve via dlsym.
+  `tests/testsockaddr.mad` binds a TCP loopback socket end-to-end.
+
+- **`struct dirent` interop** — 280-byte glibc layout in `<dirent.h>`.
+  `opendir()` / `readdir()` / `closedir()` via dlsym fallback.
+  `tests/testdirent.mad` iterates `tests/` and classifies entries.
+
+- **Fixed-size array members in struct bodies** — `char buf[N];`,
+  `char sa_data[14];`, `int m[N][M];` inside a struct definition now
+  parse. The struct-body loop peeks for `[dim]` after the identifier,
+  multiplies dimensions, and passes the product as `count` to
+  `DataDefSTRUCT::addMember`. The member reserves `count * sizeof(base)`
+  bytes inline; `&obj.member` yields a pointer to the buffer start.
+  Needed for `struct dirent::d_name[256]` and broadly for SMAUG's
+  many fixed char buffers.
+
+- **Unary `&` / `*` immediately following a cast** — `(struct sockaddr *)
+  &addr`, `(int *)*ptr` etc. now parse. Previously the cast's closing
+  `)` leaked through `isUnaryPosition` as a value-returning token, so
+  the next `&` / `*` mis-parsed as binary AND / multiplication and
+  threw "Missing operand". The cast block now nulls `_prv_token`
+  between consuming its `)` and calling the nested `parseExpression`,
+  so unary operators at the head of the cast body see a unary context.
+
 - **`struct stat` + `struct timespec` interop** — `<sys/stat.h>` now embeds
   the full glibc x86-64 layout (144 bytes) of `struct stat` and the
   supporting `struct timespec` (16 bytes). Includes:

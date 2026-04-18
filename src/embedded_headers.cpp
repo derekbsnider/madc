@@ -16,10 +16,14 @@ static std::map<std::string, std::string> embedded_headers = {
 //   islower, isprint, ispunct, isspace, isupper, isxdigit,
 //   tolower, toupper, toascii
 )EMBED"},
-    {"dirent.h", R"EMBED(// madc embedded dirent.h — directory entry constants
-// Functions (opendir, readdir, closedir, rewinddir) available via dlsym fallback
-// struct dirent access deferred (requires struct interop)
+    {"dirent.h", R"EMBED(// madc embedded dirent.h — directory entry constants and struct layout.
+// Functions (opendir, readdir, closedir, rewinddir, telldir, seekdir)
+// available via dlsym fallback. DIR * is an opaque glibc type; treat the
+// opendir return value as a void * / int64 handle and pass it verbatim to
+// readdir / closedir.
 
+// d_type values (linux-specific, not portable across Unix — fall back to
+// stat() if a value is DT_UNKNOWN).
 #define DT_UNKNOWN 0
 #define DT_FIFO    1
 #define DT_CHR     2
@@ -29,6 +33,17 @@ static std::map<std::string, std::string> embedded_headers = {
 #define DT_LNK     10
 #define DT_SOCK    12
 #define DT_WHT     14
+
+// glibc x86-64 struct dirent — 280 bytes total (275 active + 5 trailing
+// pad to the 8-byte struct alignment). d_name is declared as char[256]
+// matching NAME_MAX + 1; readdir guarantees a null terminator.
+struct dirent {
+    uint64_t d_ino;      // inode number
+    int64_t  d_off;      // offset to next dirent (opaque — do not interpret)
+    uint16_t d_reclen;   // length of this record
+    uint8_t  d_type;     // DT_* file-type hint (DT_UNKNOWN if not provided)
+    char     d_name[256]; // null-terminated filename
+};
 )EMBED"},
     {"dlfcn.h", R"EMBED(// madc embedded dlfcn.h — dynamic linking constants
 // Note: dlopen/dlsym/dlclose/dlerror are first-class in madc via #load
@@ -221,9 +236,9 @@ static std::map<std::string, std::string> embedded_headers = {
 #define EAI_SYSTEM      -11
 #define EAI_OVERFLOW    -12
 )EMBED"},
-    {"netinet/in.h", R"EMBED(// madc embedded netinet/in.h — IP protocol constants (Linux x86-64)
-// Functions (htons, htonl, ntohs, ntohl) available via dlsym fallback
-// struct sockaddr_in / sockaddr_in6 / in_addr access deferred
+    {"netinet/in.h", R"EMBED(// madc embedded netinet/in.h — IP protocol constants and struct layouts.
+// Functions (htons, htonl, ntohs, ntohl, inet_addr, inet_ntoa) available
+// via dlsym fallback.
 
 // IP protocols
 #define IPPROTO_IP      0
@@ -251,6 +266,28 @@ static std::map<std::string, std::string> embedded_headers = {
 #define TCP_KEEPIDLE    4
 #define TCP_KEEPINTVL   5
 #define TCP_KEEPCNT     6
+
+// POSIX type aliases for network-order field widths.
+#define sa_family_t uint16_t
+#define in_port_t   uint16_t
+#define in_addr_t   uint32_t
+#define socklen_t   uint32_t
+
+// glibc x86-64 struct in_addr — 4 bytes: a single uint32 in network order.
+struct in_addr {
+    uint32_t s_addr;
+};
+
+// glibc x86-64 struct sockaddr_in — 16 bytes, natural C ABI alignment.
+// sin_addr occupies 4 bytes starting at offset 4; sin_zero is the 8-byte
+// padding that makes sockaddr_in and sockaddr (BSD base) the same size for
+// the traditional bind()/connect() cast trick.
+struct sockaddr_in {
+    uint16_t sin_family;    // AF_INET
+    uint16_t sin_port;      // network byte order — use htons()
+    struct in_addr sin_addr;
+    int64_t  sin_zero;      // glibc declares as char[8]; same 8-byte padding
+};
 )EMBED"},
     {"poll.h", R"EMBED(// madc embedded poll.h — poll() I/O multiplexing
 // Functions (poll, ppoll) available via dlsym fallback
@@ -547,11 +584,21 @@ struct fd_set {
 #define SHM_STAT   13
 #define SHM_INFO   14
 )EMBED"},
-    {"sys/socket.h", R"EMBED(// madc embedded sys/socket.h — POSIX socket constants (Linux x86-64)
+    {"sys/socket.h", R"EMBED(// madc embedded sys/socket.h — POSIX socket constants and base struct.
 // Functions (socket, bind, connect, listen, accept, send, recv,
 //            sendto, recvfrom, setsockopt, getsockopt, shutdown,
-//            getpeername, getsockname) available via dlsym fallback
-// struct sockaddr / sockaddr_in / sockaddr_in6 access deferred
+//            getpeername, getsockname) available via dlsym fallback.
+// struct sockaddr is the 16-byte generic base used to cast specific
+// sockaddr_in / sockaddr_in6 / sockaddr_un / etc. for bind()/connect().
+// sa_data is declared as two 56-bit opaque chunks here; the concrete
+// family-specific layout lives in netinet/in.h and friends.
+
+struct sockaddr {
+    uint16_t sa_family;  // AF_* (AF_INET, AF_INET6, ...)
+    int16_t  __sa_pad0;
+    int32_t  __sa_pad1;
+    int64_t  __sa_pad2;  // 16 bytes total, matches glibc sockaddr
+};
 
 // Address families
 #define AF_UNSPEC  0

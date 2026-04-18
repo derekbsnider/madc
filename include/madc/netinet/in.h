@@ -1,6 +1,6 @@
-// madc embedded netinet/in.h — IP protocol constants (Linux x86-64)
-// Functions (htons, htonl, ntohs, ntohl) available via dlsym fallback
-// struct sockaddr_in / sockaddr_in6 / in_addr access deferred
+// madc embedded netinet/in.h — IP protocol constants and struct layouts.
+// Functions (htons, htonl, ntohs, ntohl, inet_addr, inet_ntoa) available
+// via dlsym fallback.
 
 // IP protocols
 #define IPPROTO_IP      0
@@ -28,3 +28,25 @@
 #define TCP_KEEPIDLE    4
 #define TCP_KEEPINTVL   5
 #define TCP_KEEPCNT     6
+
+// POSIX type aliases for network-order field widths.
+#define sa_family_t uint16_t
+#define in_port_t   uint16_t
+#define in_addr_t   uint32_t
+#define socklen_t   uint32_t
+
+// glibc x86-64 struct in_addr — 4 bytes: a single uint32 in network order.
+struct in_addr {
+    uint32_t s_addr;
+};
+
+// glibc x86-64 struct sockaddr_in — 16 bytes, natural C ABI alignment.
+// sin_addr occupies 4 bytes starting at offset 4; sin_zero is the 8-byte
+// padding that makes sockaddr_in and sockaddr (BSD base) the same size for
+// the traditional bind()/connect() cast trick.
+struct sockaddr_in {
+    uint16_t sin_family;    // AF_INET
+    uint16_t sin_port;      // network byte order — use htons()
+    struct in_addr sin_addr;
+    int64_t  sin_zero;      // glibc declares as char[8]; same 8-byte padding
+};

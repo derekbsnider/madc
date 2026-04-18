@@ -43,9 +43,6 @@
 
 ## Deferred / Future
 
-- **struct sockaddr_in / dirent layouts** — `struct stat` done (2026-04-18);
-  still need these for socket functions, `readdir()`. Same glibc-layout-match
-  approach as tm/timeval/stat.
 
 - **ARM64 support** — asmjit supports ARM64 backends. Currently x86-64 Linux only.
 
@@ -107,6 +104,29 @@
   avoid mistreating their 8-byte data as a `Method*`.
   `tests/testfnptrglobal.mad` covers global fn-ptr + SMAUG command-table
   dispatch.
+- ~~**`struct sockaddr` + `struct sockaddr_in` + `struct in_addr` interop**~~ —
+  `sys/socket.h` adds the 16-byte generic `struct sockaddr`; `netinet/in.h`
+  adds the 16-byte `struct sockaddr_in` and 4-byte `struct in_addr` with
+  glibc-matching layouts. Also `sa_family_t`, `in_port_t`, `in_addr_t`,
+  `socklen_t` type aliases. Real socket bind on loopback works via
+  `bind(s, (struct sockaddr *)&addr, sizeof(addr))`. `tests/testsockaddr.mad`
+  opens, binds, closes a TCP loopback socket.
+- ~~**`struct dirent` interop**~~ — `dirent.h` carries the 280-byte glibc
+  layout. `opendir()` / `readdir()` / `closedir()` via dlsym; user code
+  iterates and inspects `entry->d_type` / `entry->d_ino`.
+  `tests/testdirent.mad` scans `tests/` and counts DT_REG / DT_DIR entries.
+- ~~**Fixed-size array members in struct bodies**~~ — `char buf[N]`,
+  `int m[N][M]` inside a struct now parses. The parser collects the
+  dimension(s) after the member identifier, multiplies them, and calls
+  `addMember(name, type, count)` with the product. The member reserves
+  `count * sizeof(base)` bytes inline; access the buffer's starting
+  pointer via `&obj.buf`. Needed for `struct dirent::d_name[256]` and
+  SMAUG's many fixed char buffers.
+- ~~**Unary `&` / `*` after a cast**~~ — `(struct sockaddr *)&addr` and
+  `(int *)*ptr` now parse. The cast block nulls `_prv_token` after
+  consuming its closing `)` so `isUnaryPosition` sees the cast-body's
+  head token in a unary context; otherwise the close-paren leaked
+  through and `&` / `*` mis-parsed as binary operators.
 - ~~**`struct stat` + `struct timespec` interop**~~ — `sys/stat.h` now embeds
   the glibc x86-64 `struct stat` layout (144 bytes) with natural C ABI
   alignment plus the `struct timespec` (16 bytes) used by its `st_atim` /

@@ -1406,8 +1406,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
 			{
 			    nextToken(); // consume )
-			    // parse the expression being cast
 			    TokenBase *cast_expr_tb = nextToken();
+			    // Null out _prv_token so unary operators at the head of
+			    // the cast body (`&addr`, `*ptr`, `-x`) see a unary
+			    // position. Otherwise the cast's close-paren leaks into
+			    // isUnaryPosition and they mis-parse as binary ops.
+			    _prv_token = NULL;
 			    TokenBase *cast_expr = parseExpression(cast_expr_tb, true);
 			    exStack.push(new TokenCast(cast_dd, cast_expr));
 			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
@@ -2415,9 +2419,30 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
 	std::string mname = ((TokenIdent *)tn)->str;
 
-	dds->addMember(mname, *member_dd, 1);
+	// Optional fixed-array dimensions: `char d_name[256];`, `int m[4][8];`.
+	// Multiply the dimensions into a single count so the member reserves
+	// N*sizeof(base) bytes inline. Access via `&obj.member` yields a pointer
+	// to the start of the inline buffer.
+	size_t member_count = 1;
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	{
+	    pgm.nextToken(); // consume '['
+	    TokenBase *dim = pgm.nextToken();
+	    if ( !dim || dim->type() != TokenType::ttInteger )
+		pgm.Throw(dim ? dim : tn) << "Fixed-size array dimension must be an integer constant" << flush;
+	    int64_t n = ((TokenInt *)dim)->get();
+	    if ( n <= 0 )
+		pgm.Throw(dim) << "Fixed-size array dimension must be positive" << flush;
+	    TokenBase *cl = pgm.nextToken();
+	    if ( !cl || cl->id() != TokenID::tkClSqr )
+		pgm.Throw(cl ? cl : tn) << "Expected ']' in struct member array declaration" << flush;
+	    member_count *= (size_t)n;
+	}
+
+	dds->addMember(mname, *member_dd, member_count);
 	DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
-	    << " (size " << member_dd->size << ", total " << dds->size << ')' << endl);
+	    << " (size " << member_dd->size << " x " << member_count
+	    << ", total " << dds->size << ')' << endl);
 
 	// expect semicolon
 	tn = pgm.nextToken();
