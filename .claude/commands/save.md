@@ -44,9 +44,21 @@ Ensures all documentation is up to date with the current state of the codebase, 
    - Check if any docs reference features or limitations that have been resolved
    - Flag any docs that need updating (don't rewrite them unless clearly wrong)
 
-8. **Commit and push**:
+8. **Flush knowledge to the `madc-knowledge` FalkorDB graph**:
+   - Per `.claude/rules/knowledge-graph.md`, the graph is a full prose backup + fast index, not just a relationship overlay. Anything updated above must be reflected in the graph too.
+   - For each flat file touched in this /save, update the matching graph node:
+     - `claude_status.json` phase/feature status changes → Phase/Feature `status` + `description` + `updatedAt`.
+     - `TODO.md` items moved to Completed → the matching Gap's `status: done` + `CLOSED_BY` edge to a Decision if a fix landed.
+     - `CHANGELOG.md` new `[Unreleased]` entries → new Decision node for any non-obvious architectural choice; bump affected Component `updatedAt`.
+     - `.claude/rules/*.md` or `docs/rules/*.md` edits → Rule node `body` / `reasoning`.
+     - `README.md` version / test counts → no graph mirror (that state lives in claude_status.json and the repo, not the graph).
+   - For any graph node whose referenced flat file changed today: set `updatedAt` to today's ISO date.
+   - If the FalkorDB MCP is unreachable, skip this step and flag it in the report — do not block the save.
+   - Use `mcp__falkordb__query_graph` for writes, `mcp__falkordb__query_graph_readonly` for verification.
+
+9. **Commit and push**:
    - If any files were modified, stage and commit: `Sync documentation for v{version}`
    - Push to current branch
    - If on develop, also push develop
 
-9. **Report**: List what was updated, what was already current, and any docs flagged for manual review
+10. **Report**: List what was updated, what was already current, any docs flagged for manual review, and which graph nodes were touched (or why the KG flush was skipped).
