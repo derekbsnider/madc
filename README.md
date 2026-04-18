@@ -155,17 +155,11 @@ make -C src test      # run unit tests
 ## Testing
 
 ```bash
-# Run all integration tests
-for t in tests/*.mad; do
-    [ "$(basename $t)" = "include_helper.mad" ] && continue
-    timeout 5 bin/madc "$t" > /dev/null 2>&1 && echo "PASS: $t" || echo "FAIL: $t"
-done
-
-# Run unit tests
-make -C src test
+# Run unit + integration tests
+make -C src fulltest
 ```
 
-**Current status: 83 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
+**Current status: 97 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -201,7 +195,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.8.0** (2026-04-17) — SMAUG Phase E complete + Phase F start. C fixed arrays (1D + multi-dim + global), brace initializer lists, string-literal char-array init, `char *msg = "literal"` sugar, struct initializer lists, array-of-structs init, chained `->`/`.` member access, `str.length()` / `.size()` methods, crash handler with backtrace, `__FILE__`/`__LINE__`, raw-pointer `ptr[i]` subscript, `struct tm`/`timeval`/`fd_set` with glibc-matching layouts + `FD_*` macros + end-to-end `select()`, self-referencing structs, three-word compound types, multi-variable declarations, `stdin`/`stdout`/`stderr`, for-loop comma expressions, forward decl + definition. The SMAUG 1.8 port begins in the separate [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) repo (`hashstr.mad` first target). 74 integration + 25 unit tests pass.
+**v0.8.0** (2026-04-17) — SMAUG Phase E complete + Phase F start. C fixed arrays (1D + multi-dim + global), brace initializer lists, string-literal char-array init, `char *msg = "literal"` sugar, struct initializer lists, array-of-structs init, chained `->`/`.` member access, `str.length()` / `.size()` methods, crash handler with backtrace, `__FILE__`/`__LINE__`, raw-pointer `ptr[i]` subscript, `struct tm`/`timeval`/`fd_set` with glibc-matching layouts + `FD_*` macros + end-to-end `select()`, self-referencing structs, three-word compound types, multi-variable declarations, `stdin`/`stdout`/`stderr`, for-loop comma expressions, forward decl + definition. The SMAUG 1.8 port begins in the separate [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) repo (`hashstr.mad` first target). 88 integration + 25 unit tests pass.
 
 ### Recent Releases
 

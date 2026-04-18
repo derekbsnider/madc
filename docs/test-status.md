@@ -1,10 +1,10 @@
 # Test Status
 
-Test results as of April 17, 2026 (post-v0.8.0 / Phase F continues — hashstr.mad runs).
+Test results as of April 18, 2026 (post-v0.8.0 / Phase F continues — hashstr.mad runs).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Passing Tests — 83 integration + 25/25 unit
+## Passing Tests — 97 integration + 25/25 unit
 
 `scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
 hello world`) and `testargv.mad` with argv (`hello world`), asserting
@@ -21,6 +21,10 @@ on their output instead of skipping. Previously these were run manually.
 | `testcastargcomma.mad` | Cast+arith as first call arg with a following comma, e.g. `strcpy((char *)h+8, "x")` |
 | `testcommaincrement.mad` | `for (...; ptr = ptr->next, c++)` — SMAUG's comma-increment pattern |
 | `testpostdeclstr.mad` | `char *p; p = "literal";` and `r->name = "literal";` |
+| `testcoutcstr.mad` | Chained `cout << char*` output, including function-returned `char*` and mixed string-prefix chains |
+| `testprintfmember.mad` | Varargs wrapper calls with `->` member arguments, macro-expanded nested members, and plain `printf` mixes |
+| `testprintfdouble.mad` | `%f` / `%e` / `%g` formatting through direct `printf` and `...` wrappers, including mixed args and multiple doubles |
+| `testsmaug_requests.mad` | Upstream SMAUG `requests.c` compatibility test with a minimal `mud.h` shim and embedded POSIX/C headers |
 
 ### New in Phase E / F session
 

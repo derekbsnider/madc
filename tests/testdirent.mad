@@ -1,0 +1,26 @@
+#include <stdio.h>
+#include <dirent.h>
+
+int main()
+{
+    // struct dirent layout exposed — read a directory and count types.
+    printf("sizeof=%ld\n", sizeof(struct dirent));
+
+    void *d = opendir("tests");
+    if (!d) { printf("opendir failed\n"); return 1; }
+
+    int regs = 0;
+    int dirs = 0;
+    struct dirent *entry;
+    entry = readdir(d);
+    while (entry != NULL) {
+        if (entry->d_type == DT_REG) regs++;
+        else if (entry->d_type == DT_DIR) dirs++;
+        entry = readdir(d);
+    }
+    closedir(d);
+
+    // tests/ has many .mad files (DT_REG) and . / .. entries (DT_DIR).
+    printf("regs_gt0=%d dirs_gt0=%d\n", regs > 0 ? 1 : 0, dirs > 0 ? 1 : 0);
+    return 0;
+}

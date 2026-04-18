@@ -1,5 +1,148 @@
 # Changelog
 
+## [Unreleased] — SMAUG Phase F Continues (2026-04-18)
+
+### Added
+
+- **Function pointer typedefs** — `typedef void DO_FUN(CHAR_DATA *ch, char
+  *argument);` and `typedef int (*UNOP)(int);` (SMAUG-style and classic C
+  forms). Both produce a `DataDefFPTR` registered in `datatype_map`.
+  Declarations like `DO_FUN *cmd;` and `UNOP u;` yield function-pointer
+  variables; call through with `cmd(args)`. The `*` decorator on Form 1
+  (`DO_FUN *cmd`) is accepted as a no-op since the typedef already names a
+  function-pointer storage. New helper `Program::parseFnPtrParams` reads a
+  parameter list (types only, optional names discarded) and builds a
+  `FuncDef` to wrap in the `DataDefFPTR`. `tests/testfnptrtypedef.mad` covers
+  both forms, reassignment, and invocation with `cout <<`.
+
+- **SMAUG command-table pattern** — `struct cmd { char *name; DO_FUN *fn; };`
+  followed by `struct cmd c = { "who", do_who };` now compiles and runs.
+  Both dispatch forms work: intermediate variable (`DO_FUN *fp = c.fn;
+  fp(args);`) and direct invocation (`c.fn(args);`).
+  `tests/testfnptrstruct.mad` covers the intermediate pattern;
+  `tests/testfnptrmember.mad` covers direct invocation.
+
+- **Direct struct-member function-pointer invocation** — `c.fn(args)` and
+  `o.fn(a, b)` now parse and run. The parser detects the `(` following a
+  `TokenMember` whose datadef is `DataDefFPTR` and builds a `TokenCallFunc`
+  whose new `src_node` field points to the member. At compile time the
+  fptr-call path compiles `src_node` to materialise the function-pointer
+  value, instead of looking it up from a variable. Also fixes struct-body
+  parsing so `DO_FUN *fn;` inside a struct stays a `DataDefFPTR` member
+  (previously got wrapped in `DataDefPTR(DataDefFPTR)`, which defeated
+  fptr dispatch — the parseDeclaration skip for fnptr-base needed the
+  same treatment at the struct-body level).
+
+- **Global function-pointer initialization + SMAUG command tables at file
+  scope** — `DO_FUN *g = do_who;` and `struct cmd tab[] = { {"who", do_who},
+  ... };` at file scope now compile and run. Two-part fix:
+  - `Variable` constructor now allocates storage for `DataDefFPTR` globals
+    (size 8). Previously ALL `btFunct` types were skipped, but DataDefFPTR
+    represents a pointer SLOT, not a function definition — it needs storage.
+  - New pre-pass in `Program::compile` creates a FuncNode label for every
+    user function and lambda *before* the globals compile, so LEA at global
+    init time resolves correctly. Factored `TokenFunc::prepareFuncNode` out
+    of `TokenFunc::compile` to do this idempotently. A new `pending_funcs`
+    vector on `Program` lists user functions in source order; parser pushes
+    to it alongside the existing `ast.push()`.
+  - Excluded `DataDefFPTR` variables from `_compiler_finalize`'s x86code-
+    backfill loop so its 8-byte slot isn't mistakenly cast to `Method *`.
+  `tests/testfnptrglobal.mad` covers the end-to-end pattern: plain global
+  fn-ptr + dispatch loop against a file-scope command table + direct
+  indexed invocation.
+
+- **`struct sockaddr_in` + `struct sockaddr` + `struct in_addr` interop** —
+  glibc x86-64 layouts for socket programming, embedded in
+  `<netinet/in.h>` (sockaddr_in 16 bytes, in_addr 4 bytes) and
+  `<sys/socket.h>` (sockaddr 16-byte generic base used for the
+  `bind()`/`connect()` cast trick). Plus `sa_family_t`, `in_port_t`,
+  `in_addr_t`, `socklen_t` type aliases. All socket functions (socket,
+  bind, connect, listen, accept, htons, ntohl, etc.) resolve via dlsym.
+  `tests/testsockaddr.mad` binds a TCP loopback socket end-to-end.
+
+- **`struct dirent` interop** — 280-byte glibc layout in `<dirent.h>`.
+  `opendir()` / `readdir()` / `closedir()` via dlsym fallback.
+  `tests/testdirent.mad` iterates `tests/` and classifies entries.
+
+- **Fixed-size array members in struct bodies** — `char buf[N];`,
+  `char sa_data[14];`, `int m[N][M];` inside a struct definition now
+  parse. The struct-body loop peeks for `[dim]` after the identifier,
+  multiplies dimensions, and passes the product as `count` to
+  `DataDefSTRUCT::addMember`. The member reserves `count * sizeof(base)`
+  bytes inline; `&obj.member` yields a pointer to the buffer start.
+  Needed for `struct dirent::d_name[256]` and broadly for SMAUG's
+  many fixed char buffers.
+
+- **Unary `&` / `*` immediately following a cast** — `(struct sockaddr *)
+  &addr`, `(int *)*ptr` etc. now parse. Previously the cast's closing
+  `)` leaked through `isUnaryPosition` as a value-returning token, so
+  the next `&` / `*` mis-parsed as binary AND / multiplication and
+  threw "Missing operand". The cast block now nulls `_prv_token`
+  between consuming its `)` and calling the nested `parseExpression`,
+  so unary operators at the head of the cast body see a unary context.
+
+- **`struct stat` + `struct timespec` interop** — `<sys/stat.h>` now embeds
+  the full glibc x86-64 layout (144 bytes) of `struct stat` and the
+  supporting `struct timespec` (16 bytes). Includes:
+  - All type aliases: `mode_t`, `uid_t`, `gid_t`, `dev_t`, `ino_t`,
+    `nlink_t`, `off_t`, `blksize_t`, `blkcnt_t`.
+  - File-type predicate macros: `S_ISREG`, `S_ISDIR`, `S_ISLNK`,
+    `S_ISBLK`, `S_ISCHR`, `S_ISFIFO`, `S_ISSOCK`.
+  - Legacy field aliases via macro: `st_atime` → `st_atim.tv_sec` etc.,
+    matching glibc.
+  `stat()` / `fstat()` / `lstat()` / `chmod()` / `mkdir()` / `mkfifo()`
+  resolve via the existing dlsym fallback. `tests/teststat.mad` drives
+  real `stat()` on a regular file, a directory, a missing path, and
+  checks `st_mtime > 0`.
+
+- **Reassigning a struct's function-pointer member** — `c.fn = other_fn;`
+  after init. `TokenVar::compile` for a function identifier assumed any
+  `regdp.first` destination was a Gp register — true for variable
+  assignments, but wrong for struct-member LHS where the destination is a
+  Mem operand. Now LEAs the function address into a tmp Gp and stores to
+  the caller's Mem when `regdp.first->isMem()`. `tests/testfnptrreassign.mad`
+  covers member reassignment and fn-ptr-variable reassignment paths.
+
+### Fixed
+
+- **Assignment as an expression in enclosing context** — `while ((entry =
+  readdir(d)) != NULL)`, `if ((n = get()) > 0)`, and `y = (x = 42)` now
+  evaluate the inner assignment and propagate the assigned value to the
+  enclosing expression (C `operator=` semantics). `TokenAssign::compile`'s
+  numeric path previously wrote the RHS into the LHS storage, then
+  restored the caller's original `regdp.first` and returned it — but
+  without ever copying the assigned value there, so the enclosing
+  comparison / assignment saw an uninitialised Gp. Now, when the
+  caller-provided destination is distinct from the LHS's own `_operand`,
+  mirror `_operand` into it via `safemov` before returning. Unlocks
+  the standard readdir / accept / recv assign-in-condition SMAUG idioms.
+  `tests/testassigninexpr.mad` covers while-condition, if-condition,
+  chained `y = (x = ...)`, and paired `if ((p = ...) == (q = ...))`.
+
+  Known limitation: `int y = (x = 42);` at declaration-init time still
+  gives `y == 0`. The parser only wires the inner `TokenAssign(x, 42)`
+  as the declaration's initializer and drops the outer y-assign wrapper.
+  Workaround: use `int y = 0; y = (x = 42);` instead.
+
+- **Function-to-pointer decay for value contexts** — `fptr = func_name;`,
+  `struct X x = { "name", func_name };`, `call(a, func_name, b);`, `cond ?
+  f1 : f2` — anywhere a bare function identifier appears as a value — now
+  pushes the function's address instead of mis-compiling as a no-arg call.
+  Decay triggers when the function identifier isn't followed by `(` and
+  either (a) top of opStack is an assignment op (`=`, `+=`, `-=`, `*=`,
+  `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`) or (b) the follower token
+  is a value-end (`,`, `}`, `)`, `]`, `:`). `cout << endl;` keeps the
+  pre-existing behavior because `endl;` has neither, so BSL's special
+  handling of ostream-consuming no-arg functions still applies.
+
+- **`char*` coercion in function-pointer indirect calls** —
+  `TokenCallFunc::compile`'s fptr path (the `is_function() && is_numeric()`
+  branch) now runs the same `dtSTRING -> dtCHARptr` coercion via
+  `string_cstr` that the direct-call path uses. Previously, passing a
+  string literal to a typedef-declared `void (*)(char *)` function pointer
+  would pass the `std::string*` pointer verbatim, so the callee received
+  the string object header instead of the null-terminated bytes.
+
 ## [Unreleased] — SMAUG Phase F Continues (2026-04-17)
 
 MadSMAUG's `hashstr.mad` now compiles AND runs correctly end-to-end

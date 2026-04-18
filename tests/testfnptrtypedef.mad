@@ -1,0 +1,33 @@
+#include <iostream>
+
+typedef int BINOP(int, int);
+typedef int (*UNOP)(int);
+
+int add(int a, int b) { return a + b; }
+int mul(int a, int b) { return a * b; }
+int neg(int x) { return -x; }
+int sqr(int x) { return x * x; }
+
+int main()
+{
+    // Form 1: typedef RET NAME(params); — use as NAME *var
+    BINOP *op;
+    op = add;
+    cout << op(3, 5) << endl;
+    op = mul;
+    cout << op(3, 5) << endl;
+
+    // Form 2: typedef RET (*NAME)(params); — use as NAME var
+    UNOP u;
+    u = neg;
+    cout << u(7) << endl;
+    u = sqr;
+    cout << u(7) << endl;
+
+    // Reassignment after call
+    op = add;
+    int x = op(10, 20);
+    cout << x << endl;
+
+    return 0;
+}

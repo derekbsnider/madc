@@ -123,11 +123,19 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 
 ### 🚧 Remaining compiler gaps that affect SMAUG-class C code
 
-**1. `struct stat` / `struct sockaddr_in` / `struct dirent` layouts** — same
-glibc-layout-match approach as `struct tm`/`timeval`/`fd_set`; just not done
-yet. `stat()`, socket bind/connect, and `readdir()` all need these.
+**1. Error diagnostics with file:line** (MEDIUM) — compile-time errors
+don't uniformly carry file:line, making large-file ports harder to
+debug.
 
-**2. Per-file port progress** is tracked in the external MadSMAUG repo —
+**2. String multi-return types** (MEDIUM) — `return s, n;` for mixed
+string + int returns. Numeric-only works.
+
+**3. `ruby::chars` runtime MadArray crash** (MEDIUM) — separate
+runtime bug unrelated to compiler gaps, tracked in TODO.md under
+Known Runtime Bugs. Does not block SMAUG porting since SMAUG does
+not use the Ruby namespace.
+
+**4. Per-file port progress** is tracked in the external MadSMAUG repo —
 see `docs/port-progress.md` there. As the port advances, expect more gaps
 to surface; each one lands here along with a minimal test.
 
@@ -172,7 +180,23 @@ to surface; each one lands here along with a minimal test.
 | Unsigned comparison ops (setb/seta) | HIGH | **DONE** (Phase F) |
 | Subscript → member assign (`p->n = arr[i]`) | HIGH | **DONE** (Phase F) |
 | Cast+arith as call arg (`f((char *)h+8, x)`) | HIGH | **DONE** (Phase F) |
-| `struct stat` / `sockaddr_in` layouts | MEDIUM | Not started |
+| `struct stat` + `timespec` | MEDIUM | **DONE** (Phase F) |
+| `struct sockaddr` + `sockaddr_in` + `in_addr` | MEDIUM | **DONE** (Phase F) |
+| `struct dirent` + `d_name[256]` | MEDIUM | **DONE** (Phase F) |
+| Fixed-size array members in struct bodies | MEDIUM | **DONE** (Phase F) |
+| Unary `&` / `*` after a cast | MEDIUM | **DONE** (Phase F) |
+| Function pointer typedefs | MEDIUM | **DONE** (Phase F) |
+| Function-to-pointer decay (value contexts) | MEDIUM | **DONE** (Phase F) |
+| SMAUG command-table pattern (struct + fptr init) | HIGH | **DONE** (Phase F) |
+| Direct struct-member fn-pointer invocation | MEDIUM | **DONE** (Phase F) |
+| Global fn-pointer init at file scope | MEDIUM | **DONE** (Phase F) |
+| Struct-member fn-pointer reassignment | LOW | **DONE** (Phase F) |
+| Address-taken stack locals (`int *p = &n;`) | MEDIUM | **DONE** (Phase F) |
+| Assign-in-condition (`while ((p = f()) != NULL)`) | MEDIUM | **DONE** (Phase F) |
+| `sizeof(object)` on variables / fixed arrays | LOW | **DONE** (Phase F) |
+| printf `%f`/`%e`/`%g` doubles verified | LOW | **DONE** (Phase F) |
+| `->` in varargs arg list | LOW | **DONE** (Phase F) |
+| chained `cout << char*` | LOW | **DONE** (Phase F) |
 | `sizeof(struct name)` | MEDIUM | **DONE** (v0.5.0) |
 | `do { ... } while(0)` macros | MEDIUM | **DONE** (v0.6.0) |
 | Ternary in struct member context | MEDIUM | **DONE** (v0.6.0) |

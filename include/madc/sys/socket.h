@@ -1,8 +1,18 @@
-// madc embedded sys/socket.h — POSIX socket constants (Linux x86-64)
+// madc embedded sys/socket.h — POSIX socket constants and base struct.
 // Functions (socket, bind, connect, listen, accept, send, recv,
 //            sendto, recvfrom, setsockopt, getsockopt, shutdown,
-//            getpeername, getsockname) available via dlsym fallback
-// struct sockaddr / sockaddr_in / sockaddr_in6 access deferred
+//            getpeername, getsockname) available via dlsym fallback.
+// struct sockaddr is the 16-byte generic base used to cast specific
+// sockaddr_in / sockaddr_in6 / sockaddr_un / etc. for bind()/connect().
+// sa_data is declared as two 56-bit opaque chunks here; the concrete
+// family-specific layout lives in netinet/in.h and friends.
+
+struct sockaddr {
+    uint16_t sa_family;  // AF_* (AF_INET, AF_INET6, ...)
+    int16_t  __sa_pad0;
+    int32_t  __sa_pad1;
+    int64_t  __sa_pad2;  // 16 bytes total, matches glibc sockaddr
+};
 
 // Address families
 #define AF_UNSPEC  0

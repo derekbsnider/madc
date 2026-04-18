@@ -4,24 +4,6 @@
 
 ### Language Completeness
 
-- **`cout << [const char*]` in chained expressions** — `cout << func_returning_cstr() << endl`
-  crashes when the cstr function is inside a convergent BSL chain. Single `cout << cstr` works.
-  Root cause likely in BSL convergence re-entering compile with stale regdp.
-
-- **`*ptr` dereference on stack variables** — `int x = 42; int *p = &x; *p = 99;` crashes
-  at runtime because `&x` LEAs a virtual register that may not have a stack address.
-  Need to force address-taken variables to the stack via `cc.newStack()`.
-
-- **`->` member access in certain printf arg combinations** — Direct `->` in variadic args
-  works for simple cases but crashes in specific multi-struct patterns. Workaround: use temp
-  variables.
-
-### printf improvements
-
-- **printf with `%f`/`%e`/`%g` for doubles** — Verify doubles pass correctly through the
-  variadic dlsym path for printf format strings. The x86-64 ABI requires `al` to hold the
-  number of SSE registers used for variadic functions — this may need special handling.
-
 ## Medium Priority
 
 ### Language Completeness
@@ -46,16 +28,21 @@
 
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
 
-- **Function pointer typedefs** — `typedef void DO_FUN(CHAR_DATA *ch, char *argument);`
-
 - **Typed for-init with comma** — `for (int i = 0, j = 10; ...)` declares only i. The non-
   typed form (`for (a = 0, b = 10; ...)`) works.
 
+## Known Runtime Bugs (surfaced but pre-existing)
+
+- **`ruby::chars` crashes in MadValue destructor** — `ruby::chars(arr, str);`
+  crashes at runtime inside `a.data.clear()` in `ruby_chars`. Likely an
+  ABI/layout issue with how MadArray is passed through a direct call whose
+  registered return type is `dtARRAY`. The call-in-testlang.mad was commented
+  out because the widened function-to-pointer decay (which is correct C
+  semantics) now lets it compile, exposing the crash. Other MadArray ops
+  (php::array_push, php::count) work fine. Needs separate investigation.
+
 ## Deferred / Future
 
-- **struct stat / sockaddr_in / dirent layouts** — `struct tm` and `struct timeval` done;
-  still need these for `stat()`, socket functions, `readdir()`. Same glibc-layout-match
-  approach as tm/timeval.
 
 - **ARM64 support** — asmjit supports ARM64 backends. Currently x86-64 Linux only.
 
@@ -70,6 +57,145 @@
   etc.); bare `.c` / `.h` files get the C-compatible subset.
 
 ## Completed
+
+### Session 2026-04-18
+
+- ~~**Function pointer typedefs**~~ — `typedef void DO_FUN(CHAR_DATA *ch, char
+  *argument);` (Form 1, SMAUG idiom) and `typedef int (*UNOP)(int);` (Form 2,
+  classic C) both register a `DataDefFPTR` in `datatype_map`. Declarations like
+  `DO_FUN *cmd;` and `UNOP u;` create function-pointer variables; the `*` on
+  Form 1 uses is a no-op because the typedef already names a pointer-like
+  storage. Assignment uses C's function-to-pointer decay: `fn = func_name;`
+  takes the function's address (previously this mis-parsed as a no-arg call to
+  `func_name`). Decay widens to any value-context follower — assignment
+  operators (`=`, `+=`, `<<=` etc.), and struct/array-init / call-arg / ternary
+  separators (`,`, `}`, `)`, `]`, `:`) — so SMAUG's command-table pattern
+  `struct cmd c = { "who", do_who };` works. `cout << endl;` still parses as
+  BSL-consumed call because `endl;` has neither an assignment operator on top
+  of opStack nor a value-end follower. `tests/testfnptrtypedef.mad` covers
+  typedefs + reassignment + invocation. `tests/testfnptrstruct.mad` covers
+  the SMAUG command-table pattern.
+- ~~**char* coercion in function-pointer indirect calls**~~ — `TokenCallFunc`'s
+  fptr path now runs the same `string_cstr` coercion the direct-call path
+  does, so `fp("world")` where `fp` is declared `void STRFN(char *)` passes
+  the string-literal's `.c_str()` instead of the `std::string*` pointer.
+- ~~**Direct invocation through struct-member function pointer**~~ — `c.fn(args)`
+  now parses and runs. When the parser sees `(` after a `TokenMember` whose
+  datadef is `DataDefFPTR`, it builds a `TokenCallFunc` whose new `src_node`
+  field points at the member. At compile time the fptr-call path compiles
+  `src_node` to materialise the function-pointer value, instead of looking
+  it up from a variable. Also fixes struct-body parsing so `DO_FUN *fn;`
+  inside a struct stays a `DataDefFPTR` member (previously got wrapped in
+  an extra `DataDefPTR`, which defeated fptr dispatch). `tests/testfnptrmember.mad`
+  covers direct invocation.
+- ~~**Global function-pointer initialization**~~ — `DO_FUN *g = do_who;` at
+  file scope, and `struct cmd tab[] = { {"who", do_who}, ... };` (SMAUG-style
+  command tables), now compile and run correctly. Root cause was two-fold:
+  (a) `Variable` constructor skipped heap allocation for any `btFunct` type,
+  including `DataDefFPTR` which IS storage; (b) user functions compiled AFTER
+  `TokenProgram` processed globals, so LEA of the target function's label
+  emitted nothing (funcnode was still NULL). Fixes: allocate storage for
+  `DataDefFPTR` globals (size 8), and add a pre-pass in `Program::compile`
+  that creates a FuncNode label for every user function before globals
+  compile, via `TokenFunc::prepareFuncNode` (factored out of
+  `TokenFunc::compile`). A new `pending_funcs` vector on `Program` tracks
+  user functions + lambdas in source order. Also excludes `DataDefFPTR`
+  variables from the existing function-global-x86code backfill loop to
+  avoid mistreating their 8-byte data as a `Method*`.
+  `tests/testfnptrglobal.mad` covers global fn-ptr + SMAUG command-table
+  dispatch.
+- ~~**Assignment as a value in enclosing expressions**~~ — `while ((entry =
+  readdir(d)) != NULL)`, `if ((n = get()) > 0)`, `y = (x = 42)` now evaluate
+  the assignment as an expression that returns the assigned value. Root
+  cause: `TokenAssign::compile`'s numeric-assign path wrote the RHS into
+  the LHS storage, restored the caller's pre-existing `regdp.first`, and
+  returned it — but never mirrored the assigned value into that
+  caller-provided destination. Now when the caller's `regdp.first` is a
+  distinct Gp (the enclosing comparison / containing-assignment passed
+  its own accumulator), copy `_operand` into it via `safemov` before
+  returning. Unlocks the standard SMAUG readdir / accept / recv
+  assign-in-condition idioms. `tests/testassigninexpr.mad` covers
+  while-condition, if-condition, chained assign, and paired assign.
+- ~~**`struct sockaddr` + `struct sockaddr_in` + `struct in_addr` interop**~~ —
+  `sys/socket.h` adds the 16-byte generic `struct sockaddr`; `netinet/in.h`
+  adds the 16-byte `struct sockaddr_in` and 4-byte `struct in_addr` with
+  glibc-matching layouts. Also `sa_family_t`, `in_port_t`, `in_addr_t`,
+  `socklen_t` type aliases. Real socket bind on loopback works via
+  `bind(s, (struct sockaddr *)&addr, sizeof(addr))`. `tests/testsockaddr.mad`
+  opens, binds, closes a TCP loopback socket.
+- ~~**`struct dirent` interop**~~ — `dirent.h` carries the 280-byte glibc
+  layout. `opendir()` / `readdir()` / `closedir()` via dlsym; user code
+  iterates and inspects `entry->d_type` / `entry->d_ino`.
+  `tests/testdirent.mad` scans `tests/` and counts DT_REG / DT_DIR entries.
+- ~~**Fixed-size array members in struct bodies**~~ — `char buf[N]`,
+  `int m[N][M]` inside a struct now parses. The parser collects the
+  dimension(s) after the member identifier, multiplies them, and calls
+  `addMember(name, type, count)` with the product. The member reserves
+  `count * sizeof(base)` bytes inline; access the buffer's starting
+  pointer via `&obj.buf`. Needed for `struct dirent::d_name[256]` and
+  SMAUG's many fixed char buffers.
+- ~~**Unary `&` / `*` after a cast**~~ — `(struct sockaddr *)&addr` and
+  `(int *)*ptr` now parse. The cast block nulls `_prv_token` after
+  consuming its closing `)` so `isUnaryPosition` sees the cast-body's
+  head token in a unary context; otherwise the close-paren leaked
+  through and `&` / `*` mis-parsed as binary operators.
+- ~~**`struct stat` + `struct timespec` interop**~~ — `sys/stat.h` now embeds
+  the glibc x86-64 `struct stat` layout (144 bytes) with natural C ABI
+  alignment plus the `struct timespec` (16 bytes) used by its `st_atim` /
+  `st_mtim` / `st_ctim` triplet. Type aliases (`mode_t`, `uid_t`, `off_t`,
+  etc.) land as `#define`s that expand to the concrete madc primitive types.
+  File-type predicate macros (`S_ISREG`, `S_ISDIR`, `S_ISLNK`, `S_ISBLK`,
+  `S_ISCHR`, `S_ISFIFO`, `S_ISSOCK`) added as function-like macros.
+  `st_atime` / `st_mtime` / `st_ctime` aliases resolve to
+  `st_Xtim.tv_sec` via object-like macros, matching glibc. `stat()`,
+  `fstat()`, `lstat()`, `chmod()`, `mkdir()`, `mkfifo()` resolve through
+  the existing dlsym fallback. `tests/teststat.mad` drives real `stat()`
+  on a regular file, a directory, a missing path, and checks
+  `st_mtime > 0`.
+- ~~**Reassigning a struct's function-pointer member**~~ — `c.fn = other_fn;`
+  now works. `TokenVar::compile` for a function identifier assumed the
+  assignment destination was a Gp register; for struct-member LHS the
+  destination is a Mem. Now LEAs the function address into a tmp Gp and
+  stores to the Mem when `regdp.first->isMem()`. Also returns the tmp
+  unchanged for no-dest callers. `tests/testfnptrreassign.mad` covers
+  member reassignment and reassignment through a local fn-ptr variable.
+- ~~**`sizeof(object)` for variables and fixed arrays**~~ — the parser now
+  resolves `sizeof(identifier)` through normal variable lookup before falling
+  back to type lookup, so local scalars and fixed arrays like `char buf[32];`
+  return the right compile-time size. `tests/testsizeof.mad` now covers
+  `sizeof(scalar)` and `sizeof(buf)`.
+- ~~**First real SMAUG source compatibility test (`requests.c`)**~~ — added
+  `tests/testsmaug_requests.mad`, which exercises the upstream
+  `requests.c` body against a minimal SMAUG shim header. This flushed out the
+  `sizeof(buf)` parser gap and the missing opaque `FILE` alias in embedded
+  `<stdio.h>`, both now fixed enough for the test to compile and run.
+- ~~**printf with `%f`/`%e`/`%g` for doubles**~~ — verified the existing
+  variadic call path handles double arguments correctly for both direct libc
+  `printf` and a user-defined `...` wrapper around `vsprintf`. Mixed
+  string/int/double calls and repeated double arguments all format correctly;
+  no compiler change was required. `tests/testprintfdouble.mad` covers `%f`,
+  `%e`, `%g`, mixed scalar calls, and multiple doubles per call.
+- ~~**`->` member access in certain printf arg combinations**~~ — the parser's
+  early comma-count guard in `parseCallFunc()` / `parseCallMethod()` now skips
+  "too many parameters" rejection for declared varargs targets, so wrapper
+  calls like `wrapper("%s %ld", ch->name, ch->in_room->vnum, ...)` compile
+  correctly even when the extra arguments are `->` member expressions or
+  macro-expanded member expressions. `tests/testprintfmember.mad` covers plain
+  libc `printf`, macro-expanded nested members, and a user-declared `...`
+  wrapper around `vsprintf`.
+- ~~**`cout << [const char*]` in chained expressions**~~ — `TokenBSL::compile()`
+  now routes `dtCHARptr` through `streamout_cstr` before the generic numeric
+  stream path, so chained forms like `cout << ident(msg) << endl` and
+  `"prefix: " << ident(msg)` no longer fall into the unsupported numeric
+  switch. `tests/testcoutcstr.mad` covers plain `char*`, function-returned
+  `char*`, and mixed string-prefix chains.
+- ~~**`*ptr` dereference on stack variables**~~ — address-taken numeric locals and
+  parameters now spill to stable stack slots instead of living only in virtual
+  registers. `TokenAddrOf` marks variables as address-taken during parse,
+  `TokenCpnd::voperand()` allocates a typed `cc.newStack()` slot for those
+  numerics, and `TokenFunc::compile()` spills incoming numeric parameters into
+  that slot before the body runs. `tests/testptr.mad` now covers both
+  `int n; int *p = &n; *p = ...;` and `int *p = &param;`.
 
 ### Session 2026-04-17 (Phase F continues — hashstr.mad runs)
 

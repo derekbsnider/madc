@@ -16,10 +16,14 @@ static std::map<std::string, std::string> embedded_headers = {
 //   islower, isprint, ispunct, isspace, isupper, isxdigit,
 //   tolower, toupper, toascii
 )EMBED"},
-    {"dirent.h", R"EMBED(// madc embedded dirent.h — directory entry constants
-// Functions (opendir, readdir, closedir, rewinddir) available via dlsym fallback
-// struct dirent access deferred (requires struct interop)
+    {"dirent.h", R"EMBED(// madc embedded dirent.h — directory entry constants and struct layout.
+// Functions (opendir, readdir, closedir, rewinddir, telldir, seekdir)
+// available via dlsym fallback. DIR * is an opaque glibc type; treat the
+// opendir return value as a void * / int64 handle and pass it verbatim to
+// readdir / closedir.
 
+// d_type values (linux-specific, not portable across Unix — fall back to
+// stat() if a value is DT_UNKNOWN).
 #define DT_UNKNOWN 0
 #define DT_FIFO    1
 #define DT_CHR     2
@@ -29,6 +33,17 @@ static std::map<std::string, std::string> embedded_headers = {
 #define DT_LNK     10
 #define DT_SOCK    12
 #define DT_WHT     14
+
+// glibc x86-64 struct dirent — 280 bytes total (275 active + 5 trailing
+// pad to the 8-byte struct alignment). d_name is declared as char[256]
+// matching NAME_MAX + 1; readdir guarantees a null terminator.
+struct dirent {
+    uint64_t d_ino;      // inode number
+    int64_t  d_off;      // offset to next dirent (opaque — do not interpret)
+    uint16_t d_reclen;   // length of this record
+    uint8_t  d_type;     // DT_* file-type hint (DT_UNKNOWN if not provided)
+    char     d_name[256]; // null-terminated filename
+};
 )EMBED"},
     {"dlfcn.h", R"EMBED(// madc embedded dlfcn.h — dynamic linking constants
 // Note: dlopen/dlsym/dlclose/dlerror are first-class in madc via #load
@@ -221,9 +236,9 @@ static std::map<std::string, std::string> embedded_headers = {
 #define EAI_SYSTEM      -11
 #define EAI_OVERFLOW    -12
 )EMBED"},
-    {"netinet/in.h", R"EMBED(// madc embedded netinet/in.h — IP protocol constants (Linux x86-64)
-// Functions (htons, htonl, ntohs, ntohl) available via dlsym fallback
-// struct sockaddr_in / sockaddr_in6 / in_addr access deferred
+    {"netinet/in.h", R"EMBED(// madc embedded netinet/in.h — IP protocol constants and struct layouts.
+// Functions (htons, htonl, ntohs, ntohl, inet_addr, inet_ntoa) available
+// via dlsym fallback.
 
 // IP protocols
 #define IPPROTO_IP      0
@@ -251,6 +266,28 @@ static std::map<std::string, std::string> embedded_headers = {
 #define TCP_KEEPIDLE    4
 #define TCP_KEEPINTVL   5
 #define TCP_KEEPCNT     6
+
+// POSIX type aliases for network-order field widths.
+#define sa_family_t uint16_t
+#define in_port_t   uint16_t
+#define in_addr_t   uint32_t
+#define socklen_t   uint32_t
+
+// glibc x86-64 struct in_addr — 4 bytes: a single uint32 in network order.
+struct in_addr {
+    uint32_t s_addr;
+};
+
+// glibc x86-64 struct sockaddr_in — 16 bytes, natural C ABI alignment.
+// sin_addr occupies 4 bytes starting at offset 4; sin_zero is the 8-byte
+// padding that makes sockaddr_in and sockaddr (BSD base) the same size for
+// the traditional bind()/connect() cast trick.
+struct sockaddr_in {
+    uint16_t sin_family;    // AF_INET
+    uint16_t sin_port;      // network byte order — use htons()
+    struct in_addr sin_addr;
+    int64_t  sin_zero;      // glibc declares as char[8]; same 8-byte padding
+};
 )EMBED"},
     {"poll.h", R"EMBED(// madc embedded poll.h — poll() I/O multiplexing
 // Functions (poll, ppoll) available via dlsym fallback
@@ -384,6 +421,7 @@ typedef long va_list;
 )EMBED"},
     {"stdio.h", R"EMBED(// madc embedded stdio.h — C standard I/O
 // printf/fprintf/sprintf/snprintf are available via dlsym fallback (libc is always loaded)
+// FILE is treated as an opaque pointer-like type in madc source.
 
 #define EOF    -1
 #define SEEK_SET 0
@@ -391,6 +429,7 @@ typedef long va_list;
 #define SEEK_END 2
 #define BUFSIZ 8192
 #define NULL 0
+#define FILE void
 )EMBED"},
     {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
 // Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback
@@ -545,11 +584,21 @@ struct fd_set {
 #define SHM_STAT   13
 #define SHM_INFO   14
 )EMBED"},
-    {"sys/socket.h", R"EMBED(// madc embedded sys/socket.h — POSIX socket constants (Linux x86-64)
+    {"sys/socket.h", R"EMBED(// madc embedded sys/socket.h — POSIX socket constants and base struct.
 // Functions (socket, bind, connect, listen, accept, send, recv,
 //            sendto, recvfrom, setsockopt, getsockopt, shutdown,
-//            getpeername, getsockname) available via dlsym fallback
-// struct sockaddr / sockaddr_in / sockaddr_in6 access deferred
+//            getpeername, getsockname) available via dlsym fallback.
+// struct sockaddr is the 16-byte generic base used to cast specific
+// sockaddr_in / sockaddr_in6 / sockaddr_un / etc. for bind()/connect().
+// sa_data is declared as two 56-bit opaque chunks here; the concrete
+// family-specific layout lives in netinet/in.h and friends.
+
+struct sockaddr {
+    uint16_t sa_family;  // AF_* (AF_INET, AF_INET6, ...)
+    int16_t  __sa_pad0;
+    int32_t  __sa_pad1;
+    int64_t  __sa_pad2;  // 16 bytes total, matches glibc sockaddr
+};
 
 // Address families
 #define AF_UNSPEC  0
@@ -615,11 +664,12 @@ struct fd_set {
 #define MSG_NOSIGNAL   16384
 #define MSG_MORE       32768
 )EMBED"},
-    {"sys/stat.h", R"EMBED(// madc embedded sys/stat.h — file status constants (Linux x86-64 values)
-// Functions (stat, fstat, lstat, chmod, mkdir, mkfifo) available via dlsym fallback
-// struct stat access deferred (requires struct interop)
+    {"sys/stat.h", R"EMBED(// madc embedded sys/stat.h — file-status constants and struct layout.
+// Functions (stat, fstat, lstat, chmod, mkdir, mkfifo) available via dlsym
+// fallback. Use `(struct stat *)` to attach field access to a caller-allocated
+// buffer, or `struct stat sbuf; stat(path, &sbuf);` directly.
 
-// File type bits (for st_mode)
+// File-type bits (for st_mode)
 #define S_IFMT   0xF000
 #define S_IFREG  0x8000
 #define S_IFDIR  0x4000
@@ -648,6 +698,63 @@ struct fd_set {
 #define S_IWOTH  0x2
 #define S_IXOTH  0x1
 #define S_IRWXO  0x7
+
+// File-type predicate macros (C-library style, evaluate st_mode).
+#define S_ISREG(m)  (((m) & S_IFMT) == S_IFREG)
+#define S_ISDIR(m)  (((m) & S_IFMT) == S_IFDIR)
+#define S_ISLNK(m)  (((m) & S_IFMT) == S_IFLNK)
+#define S_ISBLK(m)  (((m) & S_IFMT) == S_IFBLK)
+#define S_ISCHR(m)  (((m) & S_IFMT) == S_IFCHR)
+#define S_ISFIFO(m) (((m) & S_IFMT) == S_IFIFO)
+#define S_ISSOCK(m) (((m) & S_IFMT) == S_IFSOCK)
+
+// Type aliases (glibc x86-64 LP64).
+#define mode_t    uint32_t
+#define uid_t     uint32_t
+#define gid_t     uint32_t
+#define dev_t     uint64_t
+#define ino_t     uint64_t
+#define nlink_t   uint64_t
+#define off_t     int64_t
+#define blksize_t int64_t
+#define blkcnt_t  int64_t
+
+// struct timespec — 16 bytes, glibc x86-64 layout (shared with time.h).
+struct timespec {
+    int64_t tv_sec;      // seconds
+    int64_t tv_nsec;     // nanoseconds
+};
+
+// glibc x86-64 struct stat — 144 bytes total, natural C ABI alignment.
+// Layout matches <bits/stat.h>: nlink comes before mode, with a 4-byte __pad0
+// between st_gid and st_rdev; timespec triplet at the tail followed by 3 x
+// reserved int64 slots. madc's natural field alignment inserts the __pad0
+// automatically (st_rdev aligns to 8 after three 4-byte fields).
+struct stat {
+    uint64_t st_dev;     // device ID
+    uint64_t st_ino;     // inode number
+    uint64_t st_nlink;   // hard-link count
+    uint32_t st_mode;    // file-type + permissions
+    uint32_t st_uid;     // owner user ID
+    uint32_t st_gid;     // owner group ID
+    int32_t  __pad0;     // explicit; natural alignment would pad anyway
+    uint64_t st_rdev;    // device ID (if special file)
+    int64_t  st_size;    // size in bytes
+    int64_t  st_blksize; // preferred I/O block size
+    int64_t  st_blocks;  // 512-byte blocks allocated
+    struct timespec st_atim;  // last access
+    struct timespec st_mtim;  // last modification
+    struct timespec st_ctim;  // last status change
+    int64_t  __glibc_reserved0;
+    int64_t  __glibc_reserved1;
+    int64_t  __glibc_reserved2;
+};
+
+// Legacy field aliases. glibc exposes these as macros pointing at the tv_sec
+// of the corresponding timespec, so `sbuf.st_mtime` yields an int64 seconds.
+#define st_atime st_atim.tv_sec
+#define st_mtime st_mtim.tv_sec
+#define st_ctime st_ctim.tv_sec
 )EMBED"},
     {"sys/time.h", R"EMBED(// madc embedded sys/time.h — POSIX time structures and constants
 // Functions (gettimeofday, settimeofday, getitimer, setitimer) available

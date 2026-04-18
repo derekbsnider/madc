@@ -105,6 +105,10 @@ public:
     virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    // Create FuncNode (label + signature) ahead of body compilation so
+    // global fn-pointer inits can LEA the label. Idempotent: skips if
+    // the FuncDef already has funcnode set.
+    void prepareFuncNode(Program &);
 //  using TokenCpnd::getreg;
 };
 
@@ -132,6 +136,11 @@ class TokenCallFunc: public TokenVar
 {
 public:
     std::vector<TokenBase *> parameters;
+    // Non-null when the function-pointer value comes from a sub-expression
+    // (e.g. a struct member access c.fn or arr[i].fn) rather than a variable.
+    // When set, TokenCallFunc::compile loads the fn-ptr by compiling src_node
+    // instead of calling voperand(var). var.type must still be DataDefFPTR.
+    TokenBase *src_node = nullptr;
     TokenCallFunc(Variable &v) : TokenVar(v) {}
     virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
     virtual size_t argc() const { return parameters.size(); }
@@ -443,6 +452,11 @@ public:
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::deque<TokenBase *> tokens;	// parsed token queue
+    // User-defined function AST nodes, in source order. Parallel to the
+    // ast queue. Populated by parseFunction / parseLambda; consumed by
+    // Program::compile in a pre-pass to create funcnodes (labels) before
+    // globals compile, so global fn-pointer inits can LEA the target label.
+    std::vector<TokenBase *> pending_funcs;
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::stack<l_shortcut_t> loopstack;	// stack to manage break/continue for loops
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
@@ -551,6 +565,10 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
+    // parse a `(params)` list after the opening '(' has been consumed; used by
+    // function-pointer typedefs. Builds a FuncDef with the given return type.
+    // Parameter names are accepted but discarded. Stops after consuming ')'.
+    FuncDef *parseFnPtrParams(DataDef &returns);
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
     TokenBase *parseLambda();  // parse [](params) { body } lambda expression
 
