@@ -66,6 +66,7 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfCONSTANT	= 2048, // variable is a constant
 			  vfPRIVATE	= 4096, // variable is a private class member
 			  vfPROTECTED	= 8192, // variable is a protected class member
+			  vfADDRTAKEN	=16384, // variable needs stable stack storage for &
 			} varflag_t;
 
 #define rtNone(x) 0

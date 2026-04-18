@@ -551,6 +551,10 @@ public:
     TokenBase *parseStatement(TokenBase *);
     TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
     DataDefPTR *getPointerType(DataDef *base);
+    // parse a `(params)` list after the opening '(' has been consumed; used by
+    // function-pointer typedefs. Builds a FuncDef with the given return type.
+    // Parameter names are accepted but discarded. Stops after consuming ')'.
+    FuncDef *parseFnPtrParams(DataDef &returns);
     TokenBase *parseExpression(TokenBase *, bool conditional=false);
     TokenBase *parseLambda();  // parse [](params) { body } lambda expression
 

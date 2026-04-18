@@ -1,0 +1,36 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#define REQUESTS 1
+#define MAX_STRING_LENGTH 4096
+#define SYSTEM_DIR "tests/"
+#define REQUEST_PIPE SYSTEM_DIR "smaug_requests.pipe"
+
+int bug_calls = 0;
+int who_calls = 0;
+char *last_log = NULL;
+char *last_who_arg = NULL;
+
+void bug(char *msg, int unused)
+{
+	bug_calls++;
+	printf("bug: %s\n", msg);
+}
+
+void log_string(char *txt)
+{
+	if (last_log)
+		free(last_log);
+	last_log = strdup(txt);
+}
+
+void do_who(void *unused, char *arg)
+{
+	who_calls++;
+	if (last_who_arg)
+		free(last_who_arg);
+	last_who_arg = strdup(arg);
+}

@@ -4,24 +4,6 @@
 
 ### Language Completeness
 
-- **`cout << [const char*]` in chained expressions** — `cout << func_returning_cstr() << endl`
-  crashes when the cstr function is inside a convergent BSL chain. Single `cout << cstr` works.
-  Root cause likely in BSL convergence re-entering compile with stale regdp.
-
-- **`*ptr` dereference on stack variables** — `int x = 42; int *p = &x; *p = 99;` crashes
-  at runtime because `&x` LEAs a virtual register that may not have a stack address.
-  Need to force address-taken variables to the stack via `cc.newStack()`.
-
-- **`->` member access in certain printf arg combinations** — Direct `->` in variadic args
-  works for simple cases but crashes in specific multi-struct patterns. Workaround: use temp
-  variables.
-
-### printf improvements
-
-- **printf with `%f`/`%e`/`%g` for doubles** — Verify doubles pass correctly through the
-  variadic dlsym path for printf format strings. The x86-64 ABI requires `al` to hold the
-  number of SSE registers used for variadic functions — this may need special handling.
-
 ## Medium Priority
 
 ### Language Completeness
@@ -46,8 +28,6 @@
 
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
 
-- **Function pointer typedefs** — `typedef void DO_FUN(CHAR_DATA *ch, char *argument);`
-
 - **Typed for-init with comma** — `for (int i = 0, j = 10; ...)` declares only i. The non-
   typed form (`for (a = 0, b = 10; ...)`) works.
 
@@ -70,6 +50,56 @@
   etc.); bare `.c` / `.h` files get the C-compatible subset.
 
 ## Completed
+
+### Session 2026-04-18
+
+- ~~**Function pointer typedefs**~~ — `typedef void DO_FUN(CHAR_DATA *ch, char
+  *argument);` (Form 1, SMAUG idiom) and `typedef int (*UNOP)(int);` (Form 2,
+  classic C) both register a `DataDefFPTR` in `datatype_map`. Declarations like
+  `DO_FUN *cmd;` and `UNOP u;` create function-pointer variables; the `*` on
+  Form 1 uses is a no-op because the typedef already names a pointer-like
+  storage. Assignment uses C's function-to-pointer decay: `fn = func_name;`
+  takes the function's address (previously this mis-parsed as a no-arg call to
+  `func_name`). Decay is restricted to assignment contexts (`=`, `+=`,
+  `<<=` etc.) so that `cout << endl;` still parses as a BSL-consumed call.
+  `tests/testfnptrtypedef.mad` covers both forms, reassignment, and invocation.
+- ~~**`sizeof(object)` for variables and fixed arrays**~~ — the parser now
+  resolves `sizeof(identifier)` through normal variable lookup before falling
+  back to type lookup, so local scalars and fixed arrays like `char buf[32];`
+  return the right compile-time size. `tests/testsizeof.mad` now covers
+  `sizeof(scalar)` and `sizeof(buf)`.
+- ~~**First real SMAUG source compatibility test (`requests.c`)**~~ — added
+  `tests/testsmaug_requests.mad`, which exercises the upstream
+  `requests.c` body against a minimal SMAUG shim header. This flushed out the
+  `sizeof(buf)` parser gap and the missing opaque `FILE` alias in embedded
+  `<stdio.h>`, both now fixed enough for the test to compile and run.
+- ~~**printf with `%f`/`%e`/`%g` for doubles**~~ — verified the existing
+  variadic call path handles double arguments correctly for both direct libc
+  `printf` and a user-defined `...` wrapper around `vsprintf`. Mixed
+  string/int/double calls and repeated double arguments all format correctly;
+  no compiler change was required. `tests/testprintfdouble.mad` covers `%f`,
+  `%e`, `%g`, mixed scalar calls, and multiple doubles per call.
+- ~~**`->` member access in certain printf arg combinations**~~ — the parser's
+  early comma-count guard in `parseCallFunc()` / `parseCallMethod()` now skips
+  "too many parameters" rejection for declared varargs targets, so wrapper
+  calls like `wrapper("%s %ld", ch->name, ch->in_room->vnum, ...)` compile
+  correctly even when the extra arguments are `->` member expressions or
+  macro-expanded member expressions. `tests/testprintfmember.mad` covers plain
+  libc `printf`, macro-expanded nested members, and a user-declared `...`
+  wrapper around `vsprintf`.
+- ~~**`cout << [const char*]` in chained expressions**~~ — `TokenBSL::compile()`
+  now routes `dtCHARptr` through `streamout_cstr` before the generic numeric
+  stream path, so chained forms like `cout << ident(msg) << endl` and
+  `"prefix: " << ident(msg)` no longer fall into the unsupported numeric
+  switch. `tests/testcoutcstr.mad` covers plain `char*`, function-returned
+  `char*`, and mixed string-prefix chains.
+- ~~**`*ptr` dereference on stack variables**~~ — address-taken numeric locals and
+  parameters now spill to stable stack slots instead of living only in virtual
+  registers. `TokenAddrOf` marks variables as address-taken during parse,
+  `TokenCpnd::voperand()` allocates a typed `cc.newStack()` slot for those
+  numerics, and `TokenFunc::compile()` spills incoming numeric parameters into
+  that slot before the body runs. `tests/testptr.mad` now covers both
+  `int n; int *p = &n; *p = ...;` and `int *p = &param;`.
 
 ### Session 2026-04-17 (Phase F continues — hashstr.mad runs)
 

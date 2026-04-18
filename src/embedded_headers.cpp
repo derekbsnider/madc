@@ -384,6 +384,7 @@ typedef long va_list;
 )EMBED"},
     {"stdio.h", R"EMBED(// madc embedded stdio.h — C standard I/O
 // printf/fprintf/sprintf/snprintf are available via dlsym fallback (libc is always loaded)
+// FILE is treated as an opaque pointer-like type in madc source.
 
 #define EOF    -1
 #define SEEK_SET 0
@@ -391,6 +392,7 @@ typedef long va_list;
 #define SEEK_END 2
 #define BUFSIZ 8192
 #define NULL 0
+#define FILE void
 )EMBED"},
     {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
 // Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback

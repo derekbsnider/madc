@@ -1116,12 +1116,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenCpnd::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") TOP" << endl);
-    Operand *operand = NULL;
     for ( vector<TokenStmt *>::iterator vti = statements.begin(); vti != statements.end(); ++vti )
     {
 	// each new statement starts with a clean slate
 	regdp = {NULL, NULL, NULL};
-	operand = &(*vti)->compile(pgm, regdp);
+	(*vti)->compile(pgm, regdp);
     }
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") END" << endl);
 
@@ -1546,6 +1545,24 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 		    throw "TokenFunc::compile() unexpected parameter Operand";
 	    }
 	    else
+	    if ( reg.isMem() )
+	    {
+		Operand tmp = (*vvi)->type->newreg(pgm.cc, (*vvi)->name.c_str());
+		if ( tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kVec) )
+		{
+		    func->funcnode->setArg(argc++, tmp.as<x86::Xmm>());
+		    pgm.safemov(reg.as<x86::Mem>(), tmp, (*vvi)->type, (*vvi)->type);
+		}
+		else
+		if ( tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kGp) )
+		{
+		    func->funcnode->setArg(argc++, tmp.as<x86::Gp>());
+		    pgm.safemov(reg.as<x86::Mem>(), tmp, (*vvi)->type, (*vvi)->type);
+		}
+		else
+		    throw "TokenFunc::compile() unexpected stack parameter Operand";
+	    }
+	    else
 		throw "TokenFunc::compile() argument not register";
 
 	    (*vvi)->flags |= vfREGSET;
@@ -1687,7 +1704,7 @@ struct CompoundLHS {
     TokenVar *tv;        // variable token (for modified/putreg); NULL for members
     bool is_member;
 
-    void finish(Program &pgm, regdefp_t &regdp)
+    void finish(Program &pgm)
     {
 	if ( tv )
 	{
@@ -1696,10 +1713,24 @@ struct CompoundLHS {
 	}
 	if ( is_member && writeback.hasBase() )
 	    pgm.safemov(writeback, lval, type, type); // size-aware store
-	regdp.first  = &lval;
-	regdp.second = type;
     }
 };
+
+static Operand &finish_compound_assign(Program &pgm, regdefp_t &regdp,
+    CompoundLHS &lhs, Operand &_operand, Operand *out)
+{
+    lhs.finish(pgm);
+    regdp.second = lhs.type;
+    if ( out )
+    {
+	pgm.safemov(*out, lhs.lval, lhs.type, lhs.type);
+	regdp.first = out;
+	return *out;
+    }
+    _operand = lhs.lval;
+    regdp.first = &_operand;
+    return _operand;
+}
 
 // Load a sub-qword Mem into a full 64-bit Gp with proper sign/zero extension.
 // Plain cc.mov(Gp64, Mem<2>) is not a legal x86 encoding — asmjit silently
@@ -1924,12 +1955,12 @@ Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) throw "+= missing rval operand";
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, "+=");
     Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    Operand *out = regdp.first;
     regdp.second = lhs.type;
     regdp.first  = &tmp;
     Operand &rval = right->compile(pgm, regdp);
     pgm.safeadd(lhs.lval, rval, lhs.type);
-    lhs.finish(pgm, regdp);
-    return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
@@ -1939,12 +1970,12 @@ Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) throw "-= missing rval operand";
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, "-=");
     Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    Operand *out = regdp.first;
     regdp.second = lhs.type;
     regdp.first  = &tmp;
     Operand &rval = right->compile(pgm, regdp);
     pgm.safesub(lhs.lval, rval, lhs.type);
-    lhs.finish(pgm, regdp);
-    return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
@@ -1953,10 +1984,11 @@ Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) throw "*= missing rval operand";
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, "*=");
     Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    Operand *out = regdp.first;
     regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
     pgm.safemul(lhs.lval, rval, lhs.type);
-    lhs.finish(pgm, regdp); return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenDivEq::compile(Program &pgm, regdefp_t &regdp)
@@ -1967,13 +1999,14 @@ Operand &TokenDivEq::compile(Program &pgm, regdefp_t &regdp)
     Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
     Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
     Operand divisor   = lhs.type->newreg(pgm.cc, "divisor");
+    Operand *out = regdp.first;
     pgm.safemov(dividend, lhs.lval);
     regdp.second = lhs.type; regdp.first = &divisor;
     right->compile(pgm, regdp);
     pgm.safexor(remainder, remainder);
     pgm.safediv(remainder, dividend, divisor, lhs.type);
     pgm.safemov(lhs.lval, dividend);
-    lhs.finish(pgm, regdp); return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenModEq::compile(Program &pgm, regdefp_t &regdp)
@@ -1984,13 +2017,14 @@ Operand &TokenModEq::compile(Program &pgm, regdefp_t &regdp)
     Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
     Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
     Operand divisor   = lhs.type->newreg(pgm.cc, "divisor");
+    Operand *out = regdp.first;
     pgm.safemov(dividend, lhs.lval);
     regdp.second = lhs.type; regdp.first = &divisor;
     right->compile(pgm, regdp);
     pgm.safexor(remainder, remainder);
     pgm.safediv(remainder, dividend, divisor, lhs.type);
     pgm.safemov(lhs.lval, remainder);
-    lhs.finish(pgm, regdp); return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenBSLEq::compile(Program &pgm, regdefp_t &regdp)
@@ -1999,10 +2033,11 @@ Operand &TokenBSLEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) throw "<<= missing rval operand";
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, "<<=");
     Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    Operand *out = regdp.first;
     regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
     pgm.safeshl(lhs.lval, rval);
-    lhs.finish(pgm, regdp); return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenBSREq::compile(Program &pgm, regdefp_t &regdp)
@@ -2012,10 +2047,11 @@ Operand &TokenBSREq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) throw ">>= missing rval operand";
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, ">>=");
     Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    Operand *out = regdp.first;
     regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
     pgm.safeshr(lhs.lval, rval);
-    lhs.finish(pgm, regdp); return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenBandEq::compile(Program &pgm, regdefp_t &regdp)
@@ -2024,10 +2060,11 @@ Operand &TokenBandEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) throw "&= missing rval operand";
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, "&=");
     Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    Operand *out = regdp.first;
     regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
     pgm.safeand(lhs.lval, rval);
-    lhs.finish(pgm, regdp); return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenBorEq::compile(Program &pgm, regdefp_t &regdp)
@@ -2036,10 +2073,11 @@ Operand &TokenBorEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) throw "|= missing rval operand";
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, "|=");
     Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    Operand *out = regdp.first;
     regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
     pgm.safeor(lhs.lval, rval);
-    lhs.finish(pgm, regdp); return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 Operand &TokenXorEq::compile(Program &pgm, regdefp_t &regdp)
@@ -2048,10 +2086,11 @@ Operand &TokenXorEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) throw "^= missing rval operand";
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, "^=");
     Operand tmp = lhs.type->newreg(pgm.cc, "tmp");
+    Operand *out = regdp.first;
     regdp.second = lhs.type; regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
     pgm.safexor(lhs.lval, rval);
-    lhs.finish(pgm, regdp); return lhs.lval;
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
 // Basic assignment left = right
@@ -3020,6 +3059,29 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	var->flags |= vfREGSET;
 	return operand_map[var];
     }
+    if ( (var->flags & vfSTACK) && var->type->is_numeric() && (var->flags & vfADDRTAKEN) )
+    {
+	uint32_t align = (uint32_t)(var->type->size < 8 ? var->type->size : 8);
+	if ( align == 0 )
+	    align = 8;
+	x86::Mem stack = pgm.cc.newStack((uint32_t)var->type->size, align);
+	stack.setSize((uint32_t)var->type->size);
+	operand_map[var] = stack;
+	var->flags |= vfSTACKSET;
+
+	if ( !(var->flags & vfPARAM) )
+	{
+	    Operand tmp = var->type->newreg(pgm.cc, var->name.c_str());
+	    if ( var->type->is_integer() && tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.safexor(tmp, tmp);
+	    else
+	    if ( var->type->is_real() && tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.cc.xorps(tmp.as<x86::Xmm>(), tmp.as<x86::Xmm>());
+	    pgm.safemov(stack, tmp, var->type, var->type);
+	}
+	var->flags |= vfREGSET;
+	return operand_map[var];
+    }
     if ( (var->flags & vfSTACK) && !var->type->is_numeric() )
     {
 	// Function parameters receive their value from setArg — just create
@@ -3807,6 +3869,43 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(cout << "TokenBSL::compile() regdp.second->has_ostream()" << endl);
 	}
 	else
+	if ( regdp.second->is_string() )
+	{
+	    if ( !regdp.first ) { pgm.Throw(this) << "TokenBSL::compile() regdp.first is NULL" << flush; }
+	    if ( !regdp.first->isReg() && !regdp.first->isMem() )
+	    {
+		pgm.Throw(this) << "TokenBSL::compile() regdp.first->isReg() is FALSE" << flush;
+	    }
+	    if ( regdp.first->isReg() && !regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) ) { throw "TokenBSL::compile() regdp.first not GpReg"; }
+	    DBG(cout << "TokenBSL::compile() regdp.second->is_string()" << endl);
+	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_string()"));
+	    DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
+            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_string), FuncSignature::build<void, void *, void *>());
+	    DBG(pgm.cc.comment("call->setArg(0, lval)"));
+	    if ( lval.as<BaseReg>().isGroup(RegGroup::kVec) )
+		call->setArg(0, lval.as<x86::Xmm>());
+	    else
+	    if ( lval.as<BaseReg>().isGroup(RegGroup::kGp) )
+		call->setArg(0, lval.as<x86::Gp>());
+	    else
+		throw "TokenBSL::compile() lval unsupported register type";
+	    DBG(pgm.cc.comment("call->setArg(1, rval)"));
+	    call->setArg(1, regdp.first->as<x86::Gp>());
+	}
+	else
+	if ( regdp.second->type() == DataType::dtCHARptr )
+	{
+	    if ( !regdp.first ) { pgm.Throw(this) << "TokenBSL::compile() regdp.first is NULL" << flush; }
+	    DBG(cout << "TokenBSL::compile() regdp.second->is_cstr()" << endl);
+	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_cstr()"));
+	    // copy cstr pointer to a fresh register to avoid RA conflicts
+	    x86::Gp cstr_tmp = pgm.cc.newIntPtr("cstr_out");
+	    pgm.cc.mov(cstr_tmp, regdp.first->as<x86::Gp>());
+            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_cstr), FuncSignature::build<void, void *, const char *>());
+	    call->setArg(0, lval.as<x86::Gp>());
+	    call->setArg(1, cstr_tmp);
+	}
+	else
 	if ( regdp.second->is_numeric() )
 	{
 	    DBG(cout << "TokenBSL::compile() regdp.second->is_numeric()" << endl);
@@ -3864,43 +3963,6 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    else
 	    if ( regdp.first->isImm() )
 		call->setArg(1, regdp.first->as<Imm>());
-	}
-	else
-	if ( regdp.second->is_string() )
-	{
-	    if ( !regdp.first ) { pgm.Throw(this) << "TokenBSL::compile() regdp.first is NULL" << flush; }
-	    if ( !regdp.first->isReg() && !regdp.first->isMem() )
-	    {
-		pgm.Throw(this) << "TokenBSL::compile() regdp.first->isReg() is FALSE" << flush;
-	    }
-	    if ( regdp.first->isReg() && !regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) ) { throw "TokenBSL::compile() regdp.first not GpReg"; }
-	    DBG(cout << "TokenBSL::compile() regdp.second->is_string()" << endl);
-	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_string()"));
-	    DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
-            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_string), FuncSignature::build<void, void *, void *>());
-	    DBG(pgm.cc.comment("call->setArg(0, lval)"));
-	    if ( lval.as<BaseReg>().isGroup(RegGroup::kVec) )
-		call->setArg(0, lval.as<x86::Xmm>());
-	    else
-	    if ( lval.as<BaseReg>().isGroup(RegGroup::kGp) )
-		call->setArg(0, lval.as<x86::Gp>());
-	    else
-		throw "TokenBSL::compile() lval unsupported register type";
-	    DBG(pgm.cc.comment("call->setArg(1, rval)"));
-	    call->setArg(1, regdp.first->as<x86::Gp>());
-	}
-	else
-	if ( regdp.second->type() == DataType::dtCHARptr )
-	{
-	    if ( !regdp.first ) { pgm.Throw(this) << "TokenBSL::compile() regdp.first is NULL" << flush; }
-	    DBG(cout << "TokenBSL::compile() regdp.second->is_cstr()" << endl);
-	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_cstr()"));
-	    // copy cstr pointer to a fresh register to avoid RA conflicts
-	    x86::Gp cstr_tmp = pgm.cc.newIntPtr("cstr_out");
-	    pgm.cc.mov(cstr_tmp, regdp.first->as<x86::Gp>());
-            InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_cstr), FuncSignature::build<void, void *, const char *>());
-	    call->setArg(0, lval.as<x86::Gp>());
-	    call->setArg(1, cstr_tmp);
 	}
 	else
 	{
@@ -4567,6 +4629,16 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	}
 	return *regdp.first;
     }
+    if ( var.type->is_numeric() && reg.isMem() )
+    {
+	if ( var.type->is_real() )
+	    _operand = var.type->newreg(pgm.cc, var.name.c_str());
+	else
+	    _operand = pgm.cc.newGpq("%s", var.name.c_str());
+	pgm.safemov(_operand, reg.as<x86::Mem>(), var.type, var.type);
+	regdp.first = &_operand;
+	return _operand;
+    }
     if ( reg.x86RmSize() < 4 && reg.x86RmSize() < regdp.second->size )
     {
 	DBG(cout << "TokenVar::compile() reg.x86RmSize() " << reg.x86RmSize() << " < regdp.second->size " << regdp.second->size << endl);
@@ -4674,6 +4746,9 @@ Operand &TokenAddrOf::compile(Program &pgm, regdefp_t &regdp)
     Operand &obj = pgm.tkFunction->voperand(pgm, &var);
 
     x86::Gp addr = pgm.cc.newIntPtr("%s", ("&" + var.name).c_str());
+    if ( var.is_global() && var.data && !var.is_fixed_array() )
+	pgm.cc.mov(addr, imm(var.data));
+    else
     if ( obj.isMem() )
 	pgm.cc.lea(addr, obj.as<x86::Mem>());
     else

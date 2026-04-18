@@ -1,5 +1,31 @@
 # Changelog
 
+## [Unreleased] — SMAUG Phase F Continues (2026-04-18)
+
+### Added
+
+- **Function pointer typedefs** — `typedef void DO_FUN(CHAR_DATA *ch, char
+  *argument);` and `typedef int (*UNOP)(int);` (SMAUG-style and classic C
+  forms). Both produce a `DataDefFPTR` registered in `datatype_map`.
+  Declarations like `DO_FUN *cmd;` and `UNOP u;` yield function-pointer
+  variables; call through with `cmd(args)`. The `*` decorator on Form 1
+  (`DO_FUN *cmd`) is accepted as a no-op since the typedef already names a
+  function-pointer storage. New helper `Program::parseFnPtrParams` reads a
+  parameter list (types only, optional names discarded) and builds a
+  `FuncDef` to wrap in the `DataDefFPTR`. `tests/testfnptrtypedef.mad` covers
+  both forms, reassignment, and invocation with `cout <<`.
+
+### Fixed
+
+- **Function-to-pointer decay for assignment RHS** — `fptr = func_name;`
+  previously compiled `func_name` as a no-argument call and assigned the
+  return value into `fptr`, not the function's address. Parser now pushes a
+  bare function identifier as a `TokenVar` (value) when the surrounding
+  context is an assignment operator (`=`, `+=`, `-=`, `*=`, `/=`, `%=`,
+  `&=`, `|=`, `^=`, `<<=`, `>>=`). Other contexts (notably `cout << endl;`,
+  where BSL consumes a no-arg ostream-taking function specially) keep the
+  prior call-construction behavior.
+
 ## [Unreleased] — SMAUG Phase F Continues (2026-04-17)
 
 MadSMAUG's `hashstr.mad` now compiles AND runs correctly end-to-end

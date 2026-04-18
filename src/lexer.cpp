@@ -415,7 +415,7 @@ TokenBase *Program::_getToken()
 				source.get();
 			    if ( source.peek() == ')' ) break;
 			    std::string param;
-			    while ( source.good() && isalnum(source.peek()) || source.peek() == '_' )
+			    while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 				param += source.get();
 			    if ( !param.empty() )
 				macro.params.push_back(param);

@@ -37,5 +37,11 @@ int main()
     sz = sizeof(int) * 10;
     cout << "10 ints: " << sz << endl;  // 80
 
+    // sizeof on objects
+    int scalar;
+    char buf[32];
+    cout << "scalar object: " << sizeof(scalar) << endl; // 8
+    cout << "buf object: " << sizeof(buf) << endl;       // 32
+
     return 0;
 }

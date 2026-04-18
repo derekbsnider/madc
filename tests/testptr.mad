@@ -18,6 +18,13 @@ void set_point(POINT_DATA *p, int x, int y)
 	p->y = y;
 }
 
+void bump_local_param(int v)
+{
+	int *p = &v;
+	*p = *p + 5;
+	printf("bump_local_param: v = %ld\n", v);
+}
+
 int main()
 {
 	// basic pointer declarations
@@ -64,6 +71,15 @@ int main()
 	// & with function taking struct pointer
 	set_point(&local, 77, 88);
 	printf("after set_point: local.x = %ld, local.y = %ld\n", local.x, local.y);
+
+	// & address-of on scalar local should use stable stack storage
+	int n = 42;
+	int *np = &n;
+	*np = 99;
+	printf("n after *np = %ld\n", n);
+
+	// same rule for numeric parameters
+	bump_local_param(10);
 
 	printf("All pointer tests passed!\n");
 	return 0;

@@ -1,0 +1,18 @@
+#!/usr/bin/env madc
+#include <iostream>
+
+char *ident(char *s)
+{
+	return s;
+}
+
+int main()
+{
+	char *msg = "hello";
+
+	cout << msg << endl;
+	cout << ident(msg) << endl;
+	cout << "prefix: " << ident(msg) << endl;
+
+	return 0;
+}

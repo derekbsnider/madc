@@ -681,7 +681,6 @@ DataDef *Program::lazy_resolve_type(const std::string &name)
 	return NULL;
 
     DataDef *dd = NULL;
-    int header = it->second.header;
     lazy_map.erase(it);
 
     // future: register struct layouts, typedefs from embedded headers
@@ -1111,6 +1110,18 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     return tb;
 }
 #else
+static bool call_accepts_extra_args(TokenCallFunc *tc)
+{
+    FuncDef *fd = (FuncDef *)tc->var.type;
+    Method *md = (Method *)tc->var.data;
+
+    if ( fd->is_varargs )
+	return true;
+    if ( fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall") )
+	return true;
+    return false;
+}
+
 // parse a function call and it's parameters
 // parameters are individually parsed by parseExpression
 // returns ending token
@@ -1139,7 +1150,9 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	if ( tb->id() == TokenID::tkComma )
 	{
 	    FuncDef *_fd = (FuncDef *)tc->var.type;
-	    if ( !_fd->parameters.empty() && ++paramcnt >= _fd->parameters.size() )
+	    if ( !_fd->parameters.empty()
+	    &&   !call_accepts_extra_args(tc)
+	    &&   ++paramcnt >= _fd->parameters.size() )
 		Throw(tb) << "Too many parameters" << flush;
 	    continue;
 	}
@@ -1206,7 +1219,8 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	if ( tb->id() == TokenID::tkComma )
 	{
-	    if ( ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
+	    if ( !((FuncDef *)tc->var.type)->is_varargs
+	    &&   ++paramcnt >= ((FuncDef *)tc->var.type)->parameters.size() )
 		Throw(tb) << "Too many parameters" << flush;
 	    continue;
 	}
@@ -1219,7 +1233,9 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	tc->parameters.push_back(tb);
     }
     // (need check for optional parameters)
-    if ( tc->argc()+1 != ((FuncDef *)tc->var.type)->parameters.size() )
+    if ( ((FuncDef *)tc->var.type)->is_varargs
+      ? (tc->argc()+1 < ((FuncDef *)tc->var.type)->parameters.size()-1)
+      : (tc->argc()+1 != ((FuncDef *)tc->var.type)->parameters.size()) )
     {
 	DBG(std::cout << "parseCallMethod: argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << std::endl);
 	Throw(tc) << "Incorrect number of parameters: expected " << ((FuncDef *)tc->var.type)->parameters.size() << " got " << tc->argc()+1 << flush;
@@ -1497,6 +1513,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    Variable *avar = findVariable(aname);
 		    if ( !avar )
 			Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
+		    avar->flags |= vfADDRTAKEN;
 		    if ( paren )
 		    {
 			TokenBase *close = nextToken();
@@ -1579,25 +1596,37 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    nextToken(); // consume (
 		    TokenBase *type_tb = nextToken(); // consume type
 		    DataDef *dd = NULL;
+		    Variable *var = NULL;
+		    size_t sizeof_value = 0;
 		    if ( type_tb->type() == TokenType::ttDataType )
 			dd = &((TokenDataType *)type_tb)->definition;
 		    else if ( type_tb->type() == TokenType::ttIdentifier )
 		    {
 			std::string tname = ((TokenIdent *)type_tb)->str;
-			// check struct_map
-			datadef_map_iter dmi = struct_map.find(tname);
-			if ( dmi != struct_map.end() )
-			    dd = dmi->second;
-			// check datatype_map
-			if ( !dd )
+			var = findVariable(tname);
+			if ( var )
 			{
-			    datatype_map_iter bmi = datatype_map.find(tname);
-			    if ( bmi != datatype_map.end() )
-				dd = &bmi->second->definition;
+			    sizeof_value = var->type->size;
+			    if ( var->is_fixed_array() )
+				sizeof_value *= var->total_elements();
 			}
-			// check lazy types
-			if ( !dd )
-			    dd = lazy_resolve_type(tname);
+			// check struct_map
+			if ( !var )
+			{
+			    datadef_map_iter dmi = struct_map.find(tname);
+			    if ( dmi != struct_map.end() )
+				dd = dmi->second;
+			    // check datatype_map
+			    if ( !dd )
+			    {
+				datatype_map_iter bmi = datatype_map.find(tname);
+				if ( bmi != datatype_map.end() )
+				    dd = &bmi->second->definition;
+			    }
+			    // check lazy types
+			    if ( !dd )
+				dd = lazy_resolve_type(tname);
+			}
 		    }
 		    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkSTRUCT )
 		    {
@@ -1613,10 +1642,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			if ( !dd )
 			    Throw(tag_tb) << "Unknown struct type in sizeof" << flush;
 		    }
-		    if ( !dd )
+		    if ( !var && !dd )
 			Throw(type_tb) << "Unknown type in sizeof" << flush;
 		    // handle pointer: sizeof(type *)
-		    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+		    while ( !var && peekToken() && peekToken()->id() == TokenID::tkMul )
 		    {
 			nextToken(); // consume '*'
 			dd = getPointerType(dd);
@@ -1625,7 +1654,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
 			Throw(type_tb) << "Expecting ')' after sizeof type" << flush;
 		    nextToken(); // consume )
-		    exStack.push(new TokenInt((int)dd->size));
+		    if ( !var )
+			sizeof_value = dd->size;
+		    exStack.push(new TokenInt((int)sizeof_value));
 		    break;
 		}
 		// va_arg(ap, type) — compiler intrinsic for reading variadic args
@@ -1959,7 +1990,34 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			}
 			break;
 		    }
-		    // regular function: existing behavior
+		    // Regular function identifier.
+		    // C function-to-pointer decay: a bare function name used as an
+		    // rvalue (RHS of assignment) becomes its address, so
+		    // `fptr = func_name;` writes the function's address into fptr.
+		    // Other contexts (e.g. `cout << endl;`, where BSL consumes a
+		    // no-arg ostream-taking function) keep the pre-decay behavior.
+		    {
+			TokenBase *peek_after = peekToken();
+			bool followed_by_paren = peek_after && peek_after->id() == TokenID::tkOpBrk;
+			bool in_assign_context = false;
+			if ( !opStack.empty() )
+			{
+			    TokenID opid = opStack.top()->id();
+			    if ( opid == TokenID::tkAssign
+			      || opid == TokenID::tkAddEq || opid == TokenID::tkSubEq
+			      || opid == TokenID::tkMulEq  || opid == TokenID::tkDivEq
+			      || opid == TokenID::tkModEq  || opid == TokenID::tkXorEq
+			      || opid == TokenID::tkBandEq || opid == TokenID::tkBorEq
+			      || opid == TokenID::tkBSLEq  || opid == TokenID::tkBSREq )
+				in_assign_context = true;
+			}
+			if ( !followed_by_paren && in_assign_context )
+			{
+			    DBG(cout << "Pushing function address (decay): " << var->name << " onto exStack" << endl);
+			    exStack.push(new TokenVar(*var));
+			    break;
+			}
+		    }
 		    TokenCallFunc *tc = new TokenCallFunc(*var);
 		    tb = nextToken();
 		    tc->line = tb->line;
@@ -2998,6 +3056,34 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	base_dd = pgm.getPointerType(base_dd);
     }
 
+    // Function-pointer typedef Form 2: typedef RET (*NAME)(params);
+    TokenBase *peek = pgm.peekToken();
+    if ( peek && peek->id() == TokenID::tkOpBrk )
+    {
+	pgm.nextToken(); // consume '('
+	TokenBase *star = pgm.nextToken();
+	if ( !star || star->id() != TokenID::tkMul )
+	    pgm.Throw(star ? star : tn) << "Expecting '*' in function pointer typedef" << flush;
+	TokenBase *name_tok = pgm.nextToken();
+	if ( !name_tok || name_tok->type() != TokenType::ttIdentifier )
+	    pgm.Throw(name_tok ? name_tok : tn) << "Expecting identifier in function pointer typedef" << flush;
+	std::string alias = ((TokenIdent *)name_tok)->str;
+	TokenBase *rbrk = pgm.nextToken();
+	if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
+	    pgm.Throw(rbrk ? rbrk : tn) << "Expecting ')' after function pointer name" << flush;
+	TokenBase *open = pgm.nextToken();
+	if ( !open || open->id() != TokenID::tkOpBrk )
+	    pgm.Throw(open ? open : tn) << "Expecting '(' for parameter list" << flush;
+	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
+	DataDefFPTR *fptr = new DataDefFPTR(func);
+	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
+	pgm.datatype_map[alias] = tdt;
+	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 2): " << alias << std::endl);
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	    pgm.nextToken();
+	return NULL;
+    }
+
     // get alias name (may be an identifier or an existing type name being redefined)
     tn = pgm.nextToken();
     std::string alias;
@@ -3010,6 +3096,21 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     else
 	pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 
+    // Function-pointer typedef Form 1: typedef RET NAME(params);
+    TokenBase *post = pgm.peekToken();
+    if ( post && post->id() == TokenID::tkOpBrk )
+    {
+	pgm.nextToken(); // consume '('
+	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
+	DataDefFPTR *fptr = new DataDefFPTR(func);
+	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
+	pgm.datatype_map[alias] = tdt;
+	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 1): " << alias << std::endl);
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	    pgm.nextToken();
+	return NULL;
+    }
+
     // register in datatype_map
     TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
     pgm.datatype_map[alias] = tdt;
@@ -3020,6 +3121,104 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.nextToken();
 
     return NULL;
+}
+
+// Parse a function-pointer parameter list. The opening '(' has already been
+// consumed by the caller. Stops after consuming the closing ')'. Parameter
+// names are optional and discarded — typedef signatures don't bind names.
+FuncDef *Program::parseFnPtrParams(DataDef &returns)
+{
+    FuncDef *func = new FuncDef(returns);
+    TokenBase *nt = nextToken();
+    if ( !nt )
+	Throw << "Unexpected end of input in function pointer typedef" << flush;
+
+    // empty param list: ()
+    if ( nt->id() == TokenID::tkClBrk )
+	return func;
+
+    // (void) as sole parameter = no parameters
+    if ( nt->type() == TokenType::ttDataType
+      && &((TokenDataType *)nt)->definition == &ddVOID
+      && peekToken() && peekToken()->id() == TokenID::tkClBrk )
+    {
+	nextToken(); // consume ')'
+	return func;
+    }
+
+    while ( nt )
+    {
+	// variadic
+	if ( nt->id() == TokenID::tkDot )
+	{
+	    TokenBase *d2 = nextToken();
+	    TokenBase *d3 = nextToken();
+	    if ( !d2 || d2->id() != TokenID::tkDot || !d3 || d3->id() != TokenID::tkDot )
+		Throw(nt) << "Expecting '...' for variadic parameter" << flush;
+	    func->is_varargs = true;
+	    func->parameters.push_back(&ddINT64);
+	    nt = nextToken();
+	    if ( !nt || nt->id() != TokenID::tkClBrk )
+		Throw(nt) << "Expecting ')' after '...'" << flush;
+	    return func;
+	}
+
+	// Resolve parameter type: plain type, struct Tag, or typedef alias
+	DataDef *param_dd = NULL;
+	if ( nt->id() == TokenID::tkSTRUCT )
+	{
+	    TokenBase *tag = nextToken();
+	    if ( !tag || tag->type() != TokenType::ttIdentifier )
+		Throw(tag ? tag : nt) << "Expecting struct name after 'struct'" << flush;
+	    std::string sname = ((TokenIdent *)tag)->str;
+	    datadef_map_iter sdmi = struct_map.find(sname);
+	    if ( sdmi == struct_map.end() )
+		Throw(tag) << "Unknown struct type '" << sname << "'" << flush;
+	    param_dd = sdmi->second;
+	}
+	else if ( nt->type() == TokenType::ttDataType )
+	{
+	    param_dd = &((TokenDataType *)nt)->definition;
+	}
+	else if ( nt->type() == TokenType::ttIdentifier )
+	{
+	    std::string tname = ((TokenIdent *)nt)->str;
+	    datatype_map_iter tdmi = datatype_map.find(tname);
+	    if ( tdmi == datatype_map.end() )
+		Throw(nt) << "Unknown type '" << tname << "' in function pointer typedef" << flush;
+	    param_dd = &tdmi->second->definition;
+	}
+	else
+	{
+	    Throw(nt) << "Expecting parameter type in function pointer typedef" << flush;
+	}
+
+	// Pointer decorators
+	while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+	{
+	    nextToken();
+	    param_dd = getPointerType(param_dd);
+	}
+
+	// Optional parameter name (discard)
+	if ( peekToken() && peekToken()->type() == TokenType::ttIdentifier )
+	    nextToken();
+
+	func->parameters.push_back(param_dd);
+
+	// Next: ',' or ')'
+	nt = nextToken();
+	if ( !nt )
+	    Throw << "Unexpected end of input in function pointer typedef" << flush;
+	if ( nt->id() == TokenID::tkClBrk )
+	    return func;
+	if ( nt->id() != TokenID::tkComma )
+	    Throw(nt) << "Expecting ',' or ')' in function pointer typedef" << flush;
+	nt = nextToken(); // next parameter
+    }
+
+    Throw << "Unexpected end of input in function pointer typedef" << flush;
+    return NULL; // unreachable
 }
 
 // parse enum { NAME, NAME = val, ... } [;]
@@ -4000,10 +4199,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // in `char *p, *q;` has its own `*`s, not cumulative.
     DataDef *base_type = &tb->definition;
     DataDef *decl_type = base_type;
+    // Function-pointer typedefs (DataDefFPTR) already represent pointers;
+    // `DO_FUN *cmd;` and `DO_FUN cmd;` both name a function-pointer variable.
+    bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
     while ( peekToken() && peekToken()->id() == TokenID::tkMul )
     {
 	nextToken(); // consume '*'
-	decl_type = getPointerType(decl_type);
+	if ( !is_fnptr_base )
+	    decl_type = getPointerType(decl_type);
 	DBG(std::cout << "parseDeclaration() pointer: " << decl_type->name << std::endl);
     }
 
@@ -4637,4 +4840,3 @@ bool Program::parse(TokenProgram *tp)
     
     return true;
 }
-
