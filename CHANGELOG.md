@@ -105,6 +105,25 @@
 
 ### Fixed
 
+- **Assignment as an expression in enclosing context** — `while ((entry =
+  readdir(d)) != NULL)`, `if ((n = get()) > 0)`, and `y = (x = 42)` now
+  evaluate the inner assignment and propagate the assigned value to the
+  enclosing expression (C `operator=` semantics). `TokenAssign::compile`'s
+  numeric path previously wrote the RHS into the LHS storage, then
+  restored the caller's original `regdp.first` and returned it — but
+  without ever copying the assigned value there, so the enclosing
+  comparison / assignment saw an uninitialised Gp. Now, when the
+  caller-provided destination is distinct from the LHS's own `_operand`,
+  mirror `_operand` into it via `safemov` before returning. Unlocks
+  the standard readdir / accept / recv assign-in-condition SMAUG idioms.
+  `tests/testassigninexpr.mad` covers while-condition, if-condition,
+  chained `y = (x = ...)`, and paired `if ((p = ...) == (q = ...))`.
+
+  Known limitation: `int y = (x = 42);` at declaration-init time still
+  gives `y == 0`. The parser only wires the inner `TokenAssign(x, 42)`
+  as the declaration's initializer and drops the outer y-assign wrapper.
+  Workaround: use `int y = 0; y = (x = 42);` instead.
+
 - **Function-to-pointer decay for value contexts** — `fptr = func_name;`,
   `struct X x = { "name", func_name };`, `call(a, func_name, b);`, `cond ?
   f1 : f2` — anywhere a bare function identifier appears as a value — now

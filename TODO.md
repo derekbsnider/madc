@@ -104,6 +104,18 @@
   avoid mistreating their 8-byte data as a `Method*`.
   `tests/testfnptrglobal.mad` covers global fn-ptr + SMAUG command-table
   dispatch.
+- ~~**Assignment as a value in enclosing expressions**~~ — `while ((entry =
+  readdir(d)) != NULL)`, `if ((n = get()) > 0)`, `y = (x = 42)` now evaluate
+  the assignment as an expression that returns the assigned value. Root
+  cause: `TokenAssign::compile`'s numeric-assign path wrote the RHS into
+  the LHS storage, restored the caller's pre-existing `regdp.first`, and
+  returned it — but never mirrored the assigned value into that
+  caller-provided destination. Now when the caller's `regdp.first` is a
+  distinct Gp (the enclosing comparison / containing-assignment passed
+  its own accumulator), copy `_operand` into it via `safemov` before
+  returning. Unlocks the standard SMAUG readdir / accept / recv
+  assign-in-condition idioms. `tests/testassigninexpr.mad` covers
+  while-condition, if-condition, chained assign, and paired assign.
 - ~~**`struct sockaddr` + `struct sockaddr_in` + `struct in_addr` interop**~~ —
   `sys/socket.h` adds the 16-byte generic `struct sockaddr`; `netinet/in.h`
   adds the 16-byte `struct sockaddr_in` and 4-byte `struct in_addr` with

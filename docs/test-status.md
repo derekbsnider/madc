@@ -4,7 +4,7 @@ Test results as of April 18, 2026 (post-v0.8.0 / Phase F continues — hashstr.m
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Passing Tests — 96 integration + 25/25 unit
+## Passing Tests — 97 integration + 25/25 unit
 
 `scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
 hello world`) and `testargv.mad` with argv (`hello world`), asserting

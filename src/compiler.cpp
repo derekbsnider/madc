@@ -2406,6 +2406,16 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    tvl->var.modified();
 	    tvl->putreg(pgm);
 	}
+	// C assignment expressions return the assigned value. If the caller
+	// provided a destination (regdp.first set to something other than
+	// our _operand — e.g. `(x = f()) < 25` where TokenLT passed a fresh
+	// Gp), mirror _operand's value into it so the containing expression
+	// can consume the assigned value.
+	if ( regdp.first && regdp.first != &_operand )
+	{
+	    DBG(pgm.cc.comment("TokenAssign::compile() mirror to caller dest"));
+	    pgm.safemov(*regdp.first, _operand, ltype, ltype);
+	}
     }
     else
     if ( ltype->is_string() )
