@@ -1,0 +1,4 @@
+teststat.mad: regular=1 dir=0 size_gt0=1
+tests: regular=0 dir=1
+missing: rc_nonzero=1
+mtime_positive=1

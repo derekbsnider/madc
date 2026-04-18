@@ -51,6 +51,20 @@
   fn-ptr + dispatch loop against a file-scope command table + direct
   indexed invocation.
 
+- **`struct stat` + `struct timespec` interop** — `<sys/stat.h>` now embeds
+  the full glibc x86-64 layout (144 bytes) of `struct stat` and the
+  supporting `struct timespec` (16 bytes). Includes:
+  - All type aliases: `mode_t`, `uid_t`, `gid_t`, `dev_t`, `ino_t`,
+    `nlink_t`, `off_t`, `blksize_t`, `blkcnt_t`.
+  - File-type predicate macros: `S_ISREG`, `S_ISDIR`, `S_ISLNK`,
+    `S_ISBLK`, `S_ISCHR`, `S_ISFIFO`, `S_ISSOCK`.
+  - Legacy field aliases via macro: `st_atime` → `st_atim.tv_sec` etc.,
+    matching glibc.
+  `stat()` / `fstat()` / `lstat()` / `chmod()` / `mkdir()` / `mkfifo()`
+  resolve via the existing dlsym fallback. `tests/teststat.mad` drives
+  real `stat()` on a regular file, a directory, a missing path, and
+  checks `st_mtime > 0`.
+
 - **Reassigning a struct's function-pointer member** — `c.fn = other_fn;`
   after init. `TokenVar::compile` for a function identifier assumed any
   `regdp.first` destination was a Gp register — true for variable

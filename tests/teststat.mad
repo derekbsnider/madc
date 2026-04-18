@@ -1,0 +1,30 @@
+#include <stdio.h>
+#include <sys/stat.h>
+
+int main()
+{
+    struct stat sb;
+
+    // Regular file (this test file itself — a .mad file is a file).
+    int rc = stat("tests/teststat.mad", &sb);
+    if (rc != 0) { printf("stat failed on teststat.mad\n"); return 1; }
+    printf("teststat.mad: regular=%d dir=%d size_gt0=%d\n",
+        S_ISREG(sb.st_mode), S_ISDIR(sb.st_mode), sb.st_size > 0 ? 1 : 0);
+
+    // Directory.
+    rc = stat("tests", &sb);
+    if (rc != 0) { printf("stat failed on tests\n"); return 1; }
+    printf("tests: regular=%d dir=%d\n",
+        S_ISREG(sb.st_mode), S_ISDIR(sb.st_mode));
+
+    // Missing file — stat returns non-zero.
+    rc = stat("__does_not_exist__", &sb);
+    printf("missing: rc_nonzero=%d\n", rc != 0 ? 1 : 0);
+
+    // st_mtime alias — reads the seconds of the last-modified timespec.
+    rc = stat("tests/teststat.mad", &sb);
+    if (rc == 0)
+        printf("mtime_positive=%d\n", sb.st_mtime > 0 ? 1 : 0);
+
+    return 0;
+}

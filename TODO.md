@@ -43,9 +43,9 @@
 
 ## Deferred / Future
 
-- **struct stat / sockaddr_in / dirent layouts** — `struct tm` and `struct timeval` done;
-  still need these for `stat()`, socket functions, `readdir()`. Same glibc-layout-match
-  approach as tm/timeval.
+- **struct sockaddr_in / dirent layouts** — `struct stat` done (2026-04-18);
+  still need these for socket functions, `readdir()`. Same glibc-layout-match
+  approach as tm/timeval/stat.
 
 - **ARM64 support** — asmjit supports ARM64 backends. Currently x86-64 Linux only.
 
@@ -107,6 +107,19 @@
   avoid mistreating their 8-byte data as a `Method*`.
   `tests/testfnptrglobal.mad` covers global fn-ptr + SMAUG command-table
   dispatch.
+- ~~**`struct stat` + `struct timespec` interop**~~ — `sys/stat.h` now embeds
+  the glibc x86-64 `struct stat` layout (144 bytes) with natural C ABI
+  alignment plus the `struct timespec` (16 bytes) used by its `st_atim` /
+  `st_mtim` / `st_ctim` triplet. Type aliases (`mode_t`, `uid_t`, `off_t`,
+  etc.) land as `#define`s that expand to the concrete madc primitive types.
+  File-type predicate macros (`S_ISREG`, `S_ISDIR`, `S_ISLNK`, `S_ISBLK`,
+  `S_ISCHR`, `S_ISFIFO`, `S_ISSOCK`) added as function-like macros.
+  `st_atime` / `st_mtime` / `st_ctime` aliases resolve to
+  `st_Xtim.tv_sec` via object-like macros, matching glibc. `stat()`,
+  `fstat()`, `lstat()`, `chmod()`, `mkdir()`, `mkfifo()` resolve through
+  the existing dlsym fallback. `tests/teststat.mad` drives real `stat()`
+  on a regular file, a directory, a missing path, and checks
+  `st_mtime > 0`.
 - ~~**Reassigning a struct's function-pointer member**~~ — `c.fn = other_fn;`
   now works. `TokenVar::compile` for a function identifier assumed the
   assignment destination was a Gp register; for struct-member LHS the
