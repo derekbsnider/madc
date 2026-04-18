@@ -363,8 +363,29 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	else if ( retdd.is_string() ) funcsig.setRetT<int64_t>();
 	else                          funcsig.setRetT<void>();
 
-	// load the function pointer from the variable's register
-	Operand &ptr_op = pgm.tkFunction->voperand(pgm, &var);
+	// Load the function pointer. When src_node is set (direct struct-member
+	// invocation like cmd.fn(args)), compile it to materialise the fn-ptr
+	// value in a register — var is a placeholder Variable the member created
+	// at parse time and has no real storage to voperand from.
+	x86::Gp ptr_gp;
+	Operand *ptr_op_ptr;
+	if ( src_node )
+	{
+	    DBG(pgm.cc.comment("fptr call source: src_node (struct-member fptr)"));
+	    regdefp_t src_rdp = {NULL, NULL, NULL};
+	    Operand &src_op = src_node->compile(pgm, src_rdp);
+	    ptr_gp = pgm.cc.newIntPtr("__fptr_member");
+	    if ( src_op.isMem() )
+		pgm.cc.mov(ptr_gp, src_op.as<x86::Mem>());
+	    else
+		pgm.cc.mov(ptr_gp, src_op.as<x86::Gp>());
+	    ptr_op_ptr = reinterpret_cast<Operand *>(&ptr_gp);
+	}
+	else
+	{
+	    ptr_op_ptr = &pgm.tkFunction->voperand(pgm, &var);
+	}
+	Operand &ptr_op = *ptr_op_ptr;
 
 	// compile arguments and build signature
 	std::vector<Operand> params;

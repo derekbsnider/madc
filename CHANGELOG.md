@@ -17,9 +17,21 @@
 
 - **SMAUG command-table pattern** — `struct cmd { char *name; DO_FUN *fn; };`
   followed by `struct cmd c = { "who", do_who };` now compiles and runs.
-  Dispatch via intermediate variable (`DO_FUN *fp = c.fn; fp(args);`) works;
-  direct invocation `c.fn(args);` is a separate gap (TokenMember-callable
-  wiring). `tests/testfnptrstruct.mad` covers the pattern.
+  Both dispatch forms work: intermediate variable (`DO_FUN *fp = c.fn;
+  fp(args);`) and direct invocation (`c.fn(args);`).
+  `tests/testfnptrstruct.mad` covers the intermediate pattern;
+  `tests/testfnptrmember.mad` covers direct invocation.
+
+- **Direct struct-member function-pointer invocation** — `c.fn(args)` and
+  `o.fn(a, b)` now parse and run. The parser detects the `(` following a
+  `TokenMember` whose datadef is `DataDefFPTR` and builds a `TokenCallFunc`
+  whose new `src_node` field points to the member. At compile time the
+  fptr-call path compiles `src_node` to materialise the function-pointer
+  value, instead of looking it up from a variable. Also fixes struct-body
+  parsing so `DO_FUN *fn;` inside a struct stays a `DataDefFPTR` member
+  (previously got wrapped in `DataDefPTR(DataDefFPTR)`, which defeated
+  fptr dispatch — the parseDeclaration skip for fnptr-base needed the
+  same treatment at the struct-body level).
 
 ### Fixed
 

@@ -1412,6 +1412,27 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional)
 			// not a cast after all — fall through to grouping
 			// (this shouldn't happen in practice for valid C code)
 		    }
+		    // Direct invocation through a struct-member function pointer,
+		    // e.g. `cmd.fn(3, 4)` or `tab[i].fn(ch, arg)`. Detected when the
+		    // top of exStack is a TokenMember whose datadef is DataDefFPTR.
+		    if ( !exStack.empty()
+		      && exStack.top()->type() == TokenType::ttMember
+		      && dynamic_cast<DataDefFPTR *>(dynamic_cast<TokenMember *>(exStack.top())->var.type) )
+		    {
+			TokenMember *tmem = dynamic_cast<TokenMember *>(exStack.top());
+			exStack.pop();
+			TokenCallFunc *tc = new TokenCallFunc(tmem->var);
+			tc->src_node = tmem;
+			tc->file = tb->file;
+			tc->line = tb->line;
+			tc->column = tb->column;
+			tb = parseCallFunc(tc);
+			DBG(cout << "member fptr call through " << tmem->var.name << endl);
+			opStack.push(tc);
+			if ( tb && tb->id() == TokenID::tkSemi )
+			    done = true;
+			break;
+		    }
 		    ++brackets;
 		    DBG(cout << "Got (, pushing onto opStack" << endl);
 		    opStack.push(tb); // opStack.push(tb->clone());
@@ -2374,10 +2395,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
 	// check for pointer declarator(s): type * [*...] member_name
 	DataDef *member_dd = &mtype->definition;
+	// Function-pointer typedefs (DataDefFPTR) already represent pointers;
+	// `DO_FUN *fn` inside a struct names the same storage as `DO_FUN fn`.
+	bool mem_fnptr_base = (dynamic_cast<DataDefFPTR *>(member_dd) != NULL);
 	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
 	{
 	    pgm.nextToken(); // consume '*'
-	    member_dd = pgm.getPointerType(member_dd);
+	    if ( !mem_fnptr_base )
+		member_dd = pgm.getPointerType(member_dd);
 	}
 
 	// expect member name

@@ -1,0 +1,39 @@
+#include <stdio.h>
+
+// Direct invocation through a struct-member function pointer —
+// SMAUG's command-dispatch idiom.
+
+typedef void DO_FUN(int lvl, char *arg);
+typedef int BINOP(int, int);
+
+void do_who(int lvl, char *arg)  { printf("who %d [%s]\n", lvl, arg); }
+void do_look(int lvl, char *arg) { printf("look %d [%s]\n", lvl, arg); }
+
+int add(int a, int b) { return a + b; }
+int mul(int a, int b) { return a * b; }
+
+struct cmd {
+    char *name;
+    DO_FUN *fn;
+};
+
+struct op {
+    char *name;
+    BINOP *fn;
+};
+
+int main()
+{
+    // Direct invocation on a local struct.
+    struct cmd c1 = { "who", do_who };
+    c1.fn(5, "all");
+
+    struct cmd c2 = { "look", do_look };
+    c2.fn(3, "north");
+
+    // Int-returning fn-pointer via struct member.
+    struct op o = { "add", add };
+    printf("%s: %d\n", o.name, o.fn(3, 4));
+
+    return 0;
+}

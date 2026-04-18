@@ -132,6 +132,11 @@ class TokenCallFunc: public TokenVar
 {
 public:
     std::vector<TokenBase *> parameters;
+    // Non-null when the function-pointer value comes from a sub-expression
+    // (e.g. a struct member access c.fn or arr[i].fn) rather than a variable.
+    // When set, TokenCallFunc::compile loads the fn-ptr by compiling src_node
+    // instead of calling voperand(var). var.type must still be DataDefFPTR.
+    TokenBase *src_node = nullptr;
     TokenCallFunc(Variable &v) : TokenVar(v) {}
     virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
     virtual size_t argc() const { return parameters.size(); }

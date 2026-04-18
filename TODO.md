@@ -43,10 +43,16 @@
 
 ## Deferred / Future
 
-- **Direct invocation via struct member fn-pointer** — `cmd.fn(args);`
-  doesn't parse; intermediate variable (`DO_FUN *fp = cmd.fn; fp(args);`)
-  works. Requires extending TokenMember to be callable when its datadef is
-  DataDefFPTR.
+- **Global function-pointer initialization** — `DO_FUN *global_fp = do_who;`
+  at file scope crashes. Local form works. Likely because global-var init
+  runs `TokenVar::compile` for the function value before the function's
+  funcnode label exists, or because global fptr voperand setup is missing.
+  SMAUG's command tables can be worked around by populating inside main.
+
+- **Reassignment of struct fn-pointer member** — `c.fn = other_fn;` crashes.
+  Initial struct init with a fn-ptr works; later assignment through the
+  member path doesn't. Likely a missing DataDefFPTR case in TokenAssign's
+  struct-member store path.
 
 - **struct stat / sockaddr_in / dirent layouts** — `struct tm` and `struct timeval` done;
   still need these for `stat()`, socket functions, `readdir()`. Same glibc-layout-match
@@ -87,6 +93,15 @@
   fptr path now runs the same `string_cstr` coercion the direct-call path
   does, so `fp("world")` where `fp` is declared `void STRFN(char *)` passes
   the string-literal's `.c_str()` instead of the `std::string*` pointer.
+- ~~**Direct invocation through struct-member function pointer**~~ — `c.fn(args)`
+  now parses and runs. When the parser sees `(` after a `TokenMember` whose
+  datadef is `DataDefFPTR`, it builds a `TokenCallFunc` whose new `src_node`
+  field points at the member. At compile time the fptr-call path compiles
+  `src_node` to materialise the function-pointer value, instead of looking
+  it up from a variable. Also fixes struct-body parsing so `DO_FUN *fn;`
+  inside a struct stays a `DataDefFPTR` member (previously got wrapped in
+  an extra `DataDefPTR`, which defeated fptr dispatch). `tests/testfnptrmember.mad`
+  covers direct invocation.
 - ~~**`sizeof(object)` for variables and fixed arrays**~~ — the parser now
   resolves `sizeof(identifier)` through normal variable lookup before falling
   back to type lookup, so local scalars and fixed arrays like `char buf[32];`
