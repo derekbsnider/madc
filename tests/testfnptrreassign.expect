@@ -1,0 +1,4 @@
+who 1 [first]
+look 2 [second]
+who 3 [via_var]
+look 4 [var_reassigned]

@@ -1,0 +1,31 @@
+#include <stdio.h>
+
+// Reassigning a struct's function-pointer member and via intermediate var.
+
+typedef void DO_FUN(int lvl, char *arg);
+
+void do_who(int lvl, char *arg)  { printf("who %d [%s]\n", lvl, arg); }
+void do_look(int lvl, char *arg) { printf("look %d [%s]\n", lvl, arg); }
+
+struct cmd {
+    char *name;
+    DO_FUN *fn;
+};
+
+int main()
+{
+    struct cmd c = { "who", do_who };
+    c.fn(1, "first");
+
+    // Reassign the member directly.
+    c.fn = do_look;
+    c.fn(2, "second");
+
+    // Reassign through a local fn-ptr variable.
+    DO_FUN *fp = do_who;
+    fp(3, "via_var");
+    fp = do_look;
+    fp(4, "var_reassigned");
+
+    return 0;
+}

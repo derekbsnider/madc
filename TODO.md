@@ -43,17 +43,6 @@
 
 ## Deferred / Future
 
-- **Global function-pointer initialization** — `DO_FUN *global_fp = do_who;`
-  at file scope crashes. Local form works. Likely because global-var init
-  runs `TokenVar::compile` for the function value before the function's
-  funcnode label exists, or because global fptr voperand setup is missing.
-  SMAUG's command tables can be worked around by populating inside main.
-
-- **Reassignment of struct fn-pointer member** — `c.fn = other_fn;` crashes.
-  Initial struct init with a fn-ptr works; later assignment through the
-  member path doesn't. Likely a missing DataDefFPTR case in TokenAssign's
-  struct-member store path.
-
 - **struct stat / sockaddr_in / dirent layouts** — `struct tm` and `struct timeval` done;
   still need these for `stat()`, socket functions, `readdir()`. Same glibc-layout-match
   approach as tm/timeval.
@@ -102,6 +91,29 @@
   inside a struct stays a `DataDefFPTR` member (previously got wrapped in
   an extra `DataDefPTR`, which defeated fptr dispatch). `tests/testfnptrmember.mad`
   covers direct invocation.
+- ~~**Global function-pointer initialization**~~ — `DO_FUN *g = do_who;` at
+  file scope, and `struct cmd tab[] = { {"who", do_who}, ... };` (SMAUG-style
+  command tables), now compile and run correctly. Root cause was two-fold:
+  (a) `Variable` constructor skipped heap allocation for any `btFunct` type,
+  including `DataDefFPTR` which IS storage; (b) user functions compiled AFTER
+  `TokenProgram` processed globals, so LEA of the target function's label
+  emitted nothing (funcnode was still NULL). Fixes: allocate storage for
+  `DataDefFPTR` globals (size 8), and add a pre-pass in `Program::compile`
+  that creates a FuncNode label for every user function before globals
+  compile, via `TokenFunc::prepareFuncNode` (factored out of
+  `TokenFunc::compile`). A new `pending_funcs` vector on `Program` tracks
+  user functions + lambdas in source order. Also excludes `DataDefFPTR`
+  variables from the existing function-global-x86code backfill loop to
+  avoid mistreating their 8-byte data as a `Method*`.
+  `tests/testfnptrglobal.mad` covers global fn-ptr + SMAUG command-table
+  dispatch.
+- ~~**Reassigning a struct's function-pointer member**~~ — `c.fn = other_fn;`
+  now works. `TokenVar::compile` for a function identifier assumed the
+  assignment destination was a Gp register; for struct-member LHS the
+  destination is a Mem. Now LEAs the function address into a tmp Gp and
+  stores to the Mem when `regdp.first->isMem()`. Also returns the tmp
+  unchanged for no-dest callers. `tests/testfnptrreassign.mad` covers
+  member reassignment and reassignment through a local fn-ptr variable.
 - ~~**`sizeof(object)` for variables and fixed arrays**~~ — the parser now
   resolves `sizeof(identifier)` through normal variable lookup before falling
   back to type lookup, so local scalars and fixed arrays like `char buf[32];`

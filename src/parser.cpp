@@ -176,7 +176,11 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
 	    }
 	    break;
 	default:
-	    if ( alloc && count == 1 && type->basetype() != BaseType::btFunct )
+	    // Size 0 (e.g. FuncDef, void) has no storage. Function-pointer types
+	    // (DataDefFPTR, size 8) are a pointer slot and DO need allocation.
+	    if ( alloc && count == 1
+	      && ((type->basetype() != BaseType::btFunct && type->size > 0)
+	        || dynamic_cast<DataDefFPTR *>(type) != NULL) )
 	    {
 		data = calloc(count, d.size);
 		flags |= vfALLOC;
@@ -4056,6 +4060,7 @@ grabnt:
 
     DBG(cout << "parseFunction() calling ast.push" << endl);
     ast.push(tf);
+    pending_funcs.push_back(tf);
 
     DBG(cout << "parseFunction(" << id << ") END" << endl);
 }
@@ -4207,6 +4212,7 @@ TokenBase *Program::parseLambda()
     // the enclosing function's ast.push happens after parseCompound returns.
     DBG(cout << "parseLambda() pushing " << lambda_name << " onto ast" << endl);
     ast.push(tf);
+    pending_funcs.push_back(tf);
 
     DBG(cout << "parseLambda() END — returning TokenVar for " << lambda_name << endl);
 

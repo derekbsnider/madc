@@ -33,6 +33,32 @@
   fptr dispatch — the parseDeclaration skip for fnptr-base needed the
   same treatment at the struct-body level).
 
+- **Global function-pointer initialization + SMAUG command tables at file
+  scope** — `DO_FUN *g = do_who;` and `struct cmd tab[] = { {"who", do_who},
+  ... };` at file scope now compile and run. Two-part fix:
+  - `Variable` constructor now allocates storage for `DataDefFPTR` globals
+    (size 8). Previously ALL `btFunct` types were skipped, but DataDefFPTR
+    represents a pointer SLOT, not a function definition — it needs storage.
+  - New pre-pass in `Program::compile` creates a FuncNode label for every
+    user function and lambda *before* the globals compile, so LEA at global
+    init time resolves correctly. Factored `TokenFunc::prepareFuncNode` out
+    of `TokenFunc::compile` to do this idempotently. A new `pending_funcs`
+    vector on `Program` lists user functions in source order; parser pushes
+    to it alongside the existing `ast.push()`.
+  - Excluded `DataDefFPTR` variables from `_compiler_finalize`'s x86code-
+    backfill loop so its 8-byte slot isn't mistakenly cast to `Method *`.
+  `tests/testfnptrglobal.mad` covers the end-to-end pattern: plain global
+  fn-ptr + dispatch loop against a file-scope command table + direct
+  indexed invocation.
+
+- **Reassigning a struct's function-pointer member** — `c.fn = other_fn;`
+  after init. `TokenVar::compile` for a function identifier assumed any
+  `regdp.first` destination was a Gp register — true for variable
+  assignments, but wrong for struct-member LHS where the destination is a
+  Mem operand. Now LEAs the function address into a tmp Gp and stores to
+  the caller's Mem when `regdp.first->isMem()`. `tests/testfnptrreassign.mad`
+  covers member reassignment and fn-ptr-variable reassignment paths.
+
 ### Fixed
 
 - **Function-to-pointer decay for value contexts** — `fptr = func_name;`,

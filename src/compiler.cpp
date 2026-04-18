@@ -312,11 +312,14 @@ bool Program::_compiler_finalize()
     FuncNode *fnd;
 
     // find all global variables which are functions, have no x86code assigned
-    // and have a funcnode label, so that we can properly set our function pointer
+    // and have a funcnode label, so that we can properly set our function pointer.
+    // Skip DataDefFPTR variables — those are function-POINTER storage (8-byte
+    // slot), not function definitions. Their data is a uint64, not a Method*.
     for ( vvi = tkProgram->variables.begin(); vvi != tkProgram->variables.end(); ++vvi )
     {
 	var = *vvi;
 	if ( var->type->basetype() == BaseType::btFunct
+	&&   dynamic_cast<DataDefFPTR *>(var->type) == NULL
 	&&   (method=(Method *)var->data) && !method->x86code
 	&&   (fnd=((FuncDef *)(method->returns.type))->funcnode) )
 	    method->x86code = (uint8_t *)root_fn + code.labelOffset(fnd->label());
@@ -1468,26 +1471,24 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     return _reg;
 }
 
-Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
+void TokenFunc::prepareFuncNode(Program &pgm)
 {
-    DBG(cout << "TokenFunc::compile(" << var.name << '[' << (uint64_t)this << "]) TOP" << endl);
-    if ( !var.data ) { throw "TokenFunc::compile: method is NULL"; }
-
+    if ( !var.data ) return; // not a real function (edge case)
     Method &method = *((Method *)var.data);
     FuncDef *func = (FuncDef *)method.returns.type;
+    if ( func->funcnode ) return; // already prepared
+
     FuncSignature funcsig(CallConvId::kCDecl);
     datadef_vec_iter dvi;
 
     // multi-return: inject hidden __retbuf param if not already present
     if ( func->is_multi_return() )
     {
-	// check if __retbuf was already added at parse time
 	bool has_retbuf = false;
 	for ( auto *p : method.parameters )
 	    if ( p->name == "__retbuf" ) { has_retbuf = true; break; }
 	if ( !has_retbuf )
 	{
-	    // inject __retbuf as first parameter (at compile time)
 	    std::string rbname = "__retbuf";
 	    Variable *rbvar = new Variable(rbname, ddINT64, 1, NULL, false);
 	    rbvar->flags |= vfPARAM;
@@ -1555,6 +1556,20 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	std::cerr << "Failed to create funcnode!" << std::endl;
 	throw "Failed to create funcnode";
     }
+}
+
+Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(cout << "TokenFunc::compile(" << var.name << '[' << (uint64_t)this << "]) TOP" << endl);
+    if ( !var.data ) { throw "TokenFunc::compile: method is NULL"; }
+
+    Method &method = *((Method *)var.data);
+    FuncDef *func = (FuncDef *)method.returns.type;
+
+    // Pre-pass in Program::compile usually already prepared this function's
+    // funcnode so global fn-pointer inits could LEA its label. If not
+    // (e.g. a late-compiled lambda), do it now.
+    prepareFuncNode(pgm);
 
     pgm.tkFunction = this;
     clear_operand_map(); // clear operand map
@@ -1642,6 +1657,26 @@ bool Program::compile()
 
     DBG(cout << endl << endl << "Program::compile() start" << endl << endl);
     _compiler_init();
+
+    // Pre-pass: create FuncNode labels for every user-defined function and
+    // lambda so global fn-pointer inits (which compile first via TokenProgram)
+    // can LEA the target label. The bodies still compile in the normal loop.
+    try
+    {
+	for ( TokenBase *tb_func : pending_funcs )
+	{
+	    TokenFunc *tf = dynamic_cast<TokenFunc *>(tb_func);
+	    if ( tf ) tf->prepareFuncNode(*this);
+	}
+    }
+    catch(const char *err_msg)
+    {
+	cerr << ANSI_WHITE << ": \e[1;31merror:\e[1;37m "
+	     << (err_msg ? err_msg : "(null error message)")
+	     << " (during funcnode pre-pass)"
+	     << ANSI_RESET << endl;
+	return false;
+    }
 
     try
     {
@@ -4626,9 +4661,9 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	Method *method = (Method *)var.data;
 	FuncDef *func = (FuncDef *)method->returns.type;
 
-	if ( regdp.first )
+	if ( regdp.first && regdp.first->isReg() )
 	{
-	    // store into caller's register (e.g. LHS of assignment)
+	    // store into caller's Gp register (e.g. LHS of variable assignment)
 	    if ( func->funcnode )
 		pgm.cc.lea(regdp.first->as<x86::Gp>(), x86::ptr(func->funcnode->label()));
 	    else if ( method->x86code )
@@ -4638,11 +4673,23 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	    return *regdp.first;
 	}
 
-	_operand = pgm.cc.newGpq("%s", var.name.c_str());
+	// Materialise address in a tmp Gp, then either return it (no caller dest)
+	// or store into caller's Mem (struct-member or deref assignment target).
+	x86::Gp addr_gp = pgm.cc.newGpq("%s", var.name.c_str());
 	if ( func->funcnode )
-	    pgm.cc.lea(_operand.as<x86::Gp>(), x86::ptr(func->funcnode->label()));
+	    pgm.cc.lea(addr_gp, x86::ptr(func->funcnode->label()));
 	else if ( method->x86code )
-	    pgm.cc.mov(_operand.as<x86::Gp>(), imm(method->x86code));
+	    pgm.cc.mov(addr_gp, imm(method->x86code));
+
+	if ( regdp.first && regdp.first->isMem() )
+	{
+	    pgm.cc.mov(regdp.first->as<x86::Mem>(), addr_gp);
+	    if ( !regdp.second )
+		regdp.second = var.type;
+	    return *regdp.first;
+	}
+
+	_operand = addr_gp;
 	regdp.first = &_operand;
 	if ( !regdp.second )
 	    regdp.second = var.type;
