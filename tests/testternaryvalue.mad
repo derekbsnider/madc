@@ -1,0 +1,39 @@
+// TokenTerQ::compile used to only honour a Gp-register caller
+// destination for its merged result. When a Mem destination was
+// passed (typical for `int r = cond ? a : b;` where TokenAssign
+// targets r's stack slot), the branches wrote to a fresh internal
+// Gp and the caller's Mem was never updated — so `r` kept its
+// zero-initialised value. Fixed by storing the merged result to
+// a Mem destination via safemov before returning.
+
+#include <stdio.h>
+
+int main()
+{
+    int x = 5;
+    int r = x < 0 ? -1 : 1;
+    printf("r=%d\n", r);
+
+    int y = -3;
+    int s = y < 0 ? -1 : 1;
+    printf("s=%d\n", s);
+
+    int r2 = 1 ? 42 : 99;
+    int s2 = 0 ? 42 : 99;
+    printf("r2=%d s2=%d\n", r2, s2);
+
+    // post-decl assignment — also uses Mem destination
+    int t;
+    t = x > 3 ? 100 : 200;
+    printf("t=%d\n", t);
+
+    // nested ternary
+    int u = x < 0 ? -1 : x == 0 ? 0 : 1;
+    printf("u=%d\n", u);
+
+    // ternary as a sub-expression of another operator
+    int v = 10 + (x > 0 ? 5 : 50);
+    printf("v=%d\n", v);
+
+    return 0;
+}

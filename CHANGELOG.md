@@ -136,6 +136,18 @@
 
 ### Added
 
+- **Ternary operator now writes its merged result to Mem destinations** —
+  `TokenTerQ::compile()` only honoured a Gp-register caller destination
+  when returning its merged result; if the caller passed a Mem (typical
+  for `int r = cond ? a : b;` where TokenAssign targets `r`'s stack
+  slot), the branches wrote to a fresh internal Gp and the caller's Mem
+  was never updated — `r` kept its zero-initialised value. Every
+  int-valued ternary assigned to a local was silently producing 0. Now
+  stores the merged result into the caller's Mem via safemov before
+  returning. Added `tests/testternaryvalue.mad`. Note: string-typed
+  ternary branches (`const char *s = cond ? "a" : "b";`) still don't
+  coerce `std::string` to `char *` correctly — filed in TODO.
+
 - **`DIR` typedef in embedded `<dirent.h>`** — glibc exposes `DIR` as a
   typedef for an opaque struct, but madc's embedded `<dirent.h>` only
   defined `struct dirent` and the `DT_*` constants. C code using

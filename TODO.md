@@ -19,6 +19,16 @@
 
 ### Language Completeness
 
+- **String-typed ternary branches** — `const char *s = cond ? "a" : "b";`
+  doesn't coerce the `std::string` literal to `char *` through the ternary
+  merge, so `s` ends up with garbage. Workaround: use `if/else` with
+  explicit `char *` assignments. The int-valued case is now working.
+
+- **`sizeof(expr)` with subscript/member expressions** — `sizeof(buf[0])` /
+  `sizeof(obj.field)` don't parse; only `sizeof(type)` and `sizeof(variable)`
+  are recognised. SMAUG uses the subscript form for array-stride compile-time
+  constants.
+
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 
 - **Error diagnostics** — parser-side diagnostics already carry source context,

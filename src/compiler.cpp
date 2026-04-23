@@ -5418,11 +5418,22 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
     pgm.cc.bind(L_end);
 
     _operand = result;
-    if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+    if ( regdp.first )
     {
-	if ( regdp.first->id() != _operand.id() )
-	    pgm.cc.mov(regdp.first->as<x86::Gp>(), result);
-	return *regdp.first;
+	if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( regdp.first->id() != _operand.id() )
+		pgm.cc.mov(regdp.first->as<x86::Gp>(), result);
+	    return *regdp.first;
+	}
+	if ( regdp.first->isMem() )
+	{
+	    // Caller passed a Mem destination (typical for `int r = cond ? …`
+	    // where TokenAssign points us at r's stack slot). Write the merged
+	    // result into that Mem so subsequent loads see the assigned value.
+	    pgm.safemov(regdp.first->as<x86::Mem>(), result, regdp.second, regdp.second);
+	    return *regdp.first;
+	}
     }
     regdp.first = &_operand;
     return _operand;
