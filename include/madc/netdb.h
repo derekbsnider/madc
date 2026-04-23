@@ -2,7 +2,7 @@
 // Functions (getaddrinfo, freeaddrinfo, gai_strerror, getnameinfo,
 //            gethostbyname, getservbyname, getservbyport, gethostname)
 // available via dlsym fallback
-// struct addrinfo / hostent / servent access deferred
+// struct addrinfo / hostent access deferred
 
 // getaddrinfo() flags
 #define AI_PASSIVE      0x0001
@@ -33,3 +33,15 @@
 #define EAI_MEMORY      -10
 #define EAI_SYSTEM      -11
 #define EAI_OVERFLOW    -12
+
+// glibc x86-64 struct servent — 32 bytes, natural C ABI alignment.
+// Returned by getservbyname() / getservbyport(). s_port holds the port
+// in network byte order — use ntohs() to get a host-order integer.
+// s_aliases is a NULL-terminated array of alternate service names.
+// s_proto is typically "tcp" or "udp".
+struct servent {
+    char  *s_name;      // official service name
+    char **s_aliases;   // NULL-terminated list of aliases
+    int    s_port;      // port number (network byte order)
+    char  *s_proto;     // protocol name
+};

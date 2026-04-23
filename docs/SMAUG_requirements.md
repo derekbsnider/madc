@@ -115,6 +115,13 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
   `F_SETFL`, `F_GETLK`, `F_SETLK`, `F_SETLKW`, `F_SETOWN`, `F_GETOWN`,
   `F_DUPFD_CLOEXEC`) plus `FD_CLOEXEC`, `O_NDELAY`/`O_ASYNC`/
   `O_DIRECTORY`/`O_NOFOLLOW` at Linux x86-64 values
+- `struct servent` from `<netdb.h>` — 32-byte glibc layout
+  (`char *s_name; char **s_aliases; int s_port; char *s_proto;`) so
+  `getservbyname()` / `getservbyport()` return values expose `->s_port`
+  etc. (use `ntohs()` to convert to host-order integer)
+- Socket/network errno values — `EINPROGRESS`, `ECONNREFUSED`,
+  `EWOULDBLOCK`, `EADDRINUSE`, `ETIMEDOUT`, etc. (full glibc set, see
+  `include/madc/errno.h`)
 
 ### ✅ Phase D Complete
 
@@ -198,7 +205,9 @@ to surface; each one lands here along with a minimal test.
 | `->` in varargs arg list | LOW | **DONE** (Phase F) |
 | chained `cout << char*` | LOW | **DONE** (Phase F) |
 | `fcntl` command constants (`F_SETFL` etc.) | HIGH | **DONE** (Phase F) |
-| `struct servent` + `getservbyname` | HIGH | **TODO** (Phase F front edge) |
+| `struct servent` + `getservbyname` | HIGH | **DONE** (Phase F) |
+| Socket/network errno constants (`EINPROGRESS` etc.) | HIGH | **DONE** (Phase F) |
+| Parser SIGSEGV in SMAUG `ident.c:268` `connect(...) && errno != EINPROGRESS` | HIGH | **TODO** (Phase F front edge) |
 | `sizeof(struct name)` | MEDIUM | **DONE** (v0.5.0) |
 | `do { ... } while(0)` macros | MEDIUM | **DONE** (v0.6.0) |
 | Ternary in struct member context | MEDIUM | **DONE** (v0.6.0) |

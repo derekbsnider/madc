@@ -4,18 +4,22 @@
 
 ### Language Completeness
 
-- **MadSMAUG umbrella bootstrap** — `../MadSMAUG/src/SMAUG.mad` now includes
-  upstream headers plus `hashstr.c`, `ibuild.c`, `ident.c`, and `interp.c`
-  in Makefile order with a temporary `main()`. After extending
-  `<fcntl.h>` with full `F_*` / `FD_CLOEXEC` / `O_NDELAY` constant coverage,
-  the `F_SETFL` front edge is closed. The next real external bootstrap
-  stop point is now `/workspace/MadSMAUG/src/SMAUG.mad` at
-  `sock.sin_port = serv->s_port;` in upstream `ident.c`:
-  `struct servent` is currently deferred in embedded `<netdb.h>` and
-  needs a glibc-matching layout (plus a regression test) so that
-  `getservbyname()` return values resolve `->s_port` / `->s_name` /
-  `->s_proto` / `->s_aliases`. Rerun the umbrella bootstrap immediately
-  afterward.
+- **MadSMAUG umbrella bootstrap — parser SIGSEGV front edge** —
+  `../MadSMAUG/src/SMAUG.mad` now includes upstream headers plus
+  `hashstr.c`, `ibuild.c`, `ident.c`, and `interp.c` in Makefile order
+  with a temporary `main()`. With the Phase F additions so far (extended
+  `<fcntl.h>` constant set, new `struct servent` in embedded `<netdb.h>`,
+  expanded socket/network errno values in `<errno.h>`), the earlier
+  `F_SETFL` / `serv->s_port` / `EINPROGRESS` front edges are all closed.
+  The next bootstrap stop point is a parser SIGSEGV (address `0x8`)
+  inside `Program::parseExpression` while parsing upstream `ident.c:268` —
+  `if (connect(a->afd, (struct sockaddr *)&sock, sizeof(sock)) < 0 &&
+  errno != EINPROGRESS ) { ... }`. A standalone minimal repro of that
+  same expression shape compiles cleanly, so the trap is set by
+  something upstream in the SMAUG include chain (macro expansions like
+  `KILLRET` / `STRFREE`, or a prior forward declaration priming parser
+  state). Next session: bisect the include chain to a true minimal
+  repro, then fix the null pointer in `parseExpression`.
 
 ## Medium Priority
 
@@ -66,6 +70,27 @@
 ## Completed
 
 ### Session 2026-04-23
+
+- ~~**`struct servent` interop in embedded `<netdb.h>`**~~ — 32-byte
+  glibc-matching layout (`char *s_name; char **s_aliases; int s_port;
+  char *s_proto;`). Closes the MadSMAUG umbrella bootstrap's
+  `sock.sin_port = serv->s_port;` front edge in upstream `ident.c`.
+  `tests/testservent.mad` drives `getservbyname("ftp","tcp")` and
+  `getservbyname("http","tcp")` end-to-end and asserts
+  `sizeof(struct servent) == 32`.
+
+- ~~**Extended `<errno.h>` socket/network constant coverage**~~ —
+  added `EWOULDBLOCK` (= `EAGAIN`), `EINPROGRESS`, `EALREADY`,
+  `ENOTSOCK`, `EDESTADDRREQ`, `EMSGSIZE`, `EPROTOTYPE`, `ENOPROTOOPT`,
+  `EPROTONOSUPPORT`, `ESOCKTNOSUPPORT`, `EOPNOTSUPP`, `EPFNOSUPPORT`,
+  `EAFNOSUPPORT`, `EADDRINUSE`, `EADDRNOTAVAIL`, `ENETDOWN`,
+  `ENETUNREACH`, `ENETRESET`, `ECONNABORTED`, `ECONNRESET`, `ENOBUFS`,
+  `EISCONN`, `ENOTCONN`, `ESHUTDOWN`, `ETIMEDOUT`, `ECONNREFUSED`,
+  `EHOSTDOWN`, `EHOSTUNREACH`, plus the System V / extended POSIX
+  errors (`EDEADLK`, `ENAMETOOLONG`, `ENOLCK`, `ENOSYS`, `ENOTEMPTY`,
+  `ELOOP`, `EDOM`, `EILSEQ`, `EOVERFLOW`, `ENODATA`, `ETXTBSY`,
+  `EUSERS`, `EDQUOT`, `ESTALE`, `ENOMSG`). Closes the MadSMAUG umbrella
+  bootstrap's `errno != EINPROGRESS` front edge in upstream `ident.c`.
 
 - ~~**Extended `<fcntl.h>` constant coverage for `fcntl()`**~~ — embedded
   `<fcntl.h>` now defines the `F_DUPFD`/`F_GETFD`/`F_SETFD`/`F_GETFL`/

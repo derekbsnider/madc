@@ -1,0 +1,29 @@
+#include <stdio.h>
+#include <netdb.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+
+int main()
+{
+    struct servent *serv = getservbyname("ftp", "tcp");
+    if ( serv == NULL )
+    {
+        printf("ftp/tcp-missing\n");
+        return 1;
+    }
+
+    int host_port = ntohs(serv->s_port);
+    printf("name=%s port=%ld proto=%s\n", serv->s_name, host_port, serv->s_proto);
+
+    struct servent *http = getservbyname("http", "tcp");
+    if ( http == NULL )
+    {
+        printf("http/tcp-missing\n");
+        return 1;
+    }
+    printf("name=%s port=%ld proto=%s\n", http->s_name, ntohs(http->s_port), http->s_proto);
+
+    printf("sizeof=%ld\n", sizeof(struct servent));
+    printf("done\n");
+    return 0;
+}

@@ -4,6 +4,33 @@
 
 ### Added
 
+- **`struct servent` interop in embedded `<netdb.h>`** — 32-byte
+  glibc-matching layout (`char *s_name; char **s_aliases; int s_port;
+  char *s_proto;`) so `getservbyname()` / `getservbyport()` return
+  values now expose `serv->s_port` / `serv->s_name` / `serv->s_proto`
+  directly. The `s_port` field holds the port in network byte order,
+  matching glibc — user code calls `ntohs(serv->s_port)` to get a
+  host-order integer. This closes the MadSMAUG umbrella bootstrap's
+  `sock.sin_port = serv->s_port;` front edge in upstream `ident.c`.
+  `tests/testservent.mad` drives a real `getservbyname("ftp","tcp")`
+  and `getservbyname("http","tcp")`, verifies host-order port values
+  (21, 80) after `ntohs()`, and asserts `sizeof(struct servent) == 32`.
+
+- **Extended `<errno.h>` socket/network constant coverage** —
+  `<errno.h>` now defines the Linux x86-64 values for `EWOULDBLOCK`
+  (alias of `EAGAIN`), `EINPROGRESS`, `EALREADY`, `ENOTSOCK`,
+  `EDESTADDRREQ`, `EMSGSIZE`, `EPROTOTYPE`, `ENOPROTOOPT`,
+  `EPROTONOSUPPORT`, `ESOCKTNOSUPPORT`, `EOPNOTSUPP`, `EPFNOSUPPORT`,
+  `EAFNOSUPPORT`, `EADDRINUSE`, `EADDRNOTAVAIL`, `ENETDOWN`,
+  `ENETUNREACH`, `ENETRESET`, `ECONNABORTED`, `ECONNRESET`, `ENOBUFS`,
+  `EISCONN`, `ENOTCONN`, `ESHUTDOWN`, `ETIMEDOUT`, `ECONNREFUSED`,
+  `EHOSTDOWN`, `EHOSTUNREACH`, plus the System V / extended POSIX
+  errors (`EDEADLK`, `ENAMETOOLONG`, `ENOLCK`, `ENOSYS`, `ENOTEMPTY`,
+  `ELOOP`, `EDOM`, `EILSEQ`, `EOVERFLOW`, `ENODATA`, `ETXTBSY`,
+  `EUSERS`, `EDQUOT`, `ESTALE`, `ENOMSG`). SMAUG's socket bootstrap
+  paths (`errno != EINPROGRESS`, `errno != ECONNREFUSED`) can now
+  compile.
+
 - **Extended `<fcntl.h>` constant coverage** — the embedded `<fcntl.h>`
   header now defines the `fcntl()` command constants
   (`F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`, `F_GETLK`,
@@ -19,15 +46,21 @@
 
 ### Known Current Front Edge
 
-- **MadSMAUG bootstrap now stops at `struct servent`** — rerunning the
-  external umbrella bootstrap after the `F_SETFL` fix moves the real
-  front edge to `/workspace/MadSMAUG/src/SMAUG.mad` reporting
-  `no member named 's_port'` on the
-  `sock.sin_port = serv->s_port;` line in upstream `ident.c`.
-  `struct servent` is currently deferred in embedded `<netdb.h>`;
-  next session should add the glibc-matching layout (plus a regression
-  test) so `getservbyname()` return values resolve `->s_port` /
-  `->s_name` / `->s_proto` / `->s_aliases`.
+- **MadSMAUG bootstrap now hits a parser SIGSEGV** — after the
+  `struct servent` + `EINPROGRESS` additions, the umbrella bootstrap
+  advances through `ident.c`'s `sock.sin_port = serv->s_port;` and
+  `errno != EINPROGRESS` without reporting an undeclared identifier,
+  then crashes inside `Program::parseExpression` (SIGSEGV at address
+  `0x8`) while parsing upstream `ident.c:268` —
+  `if (connect(a->afd, (struct sockaddr *)&sock, sizeof(sock)) < 0
+  && errno != EINPROGRESS ) { ... }`. A standalone minimal repro with
+  the same condition shape (local `int afd`, cast + `&sock`,
+  `sizeof()`, `&&`, `errno != EINPROGRESS`) does not crash, so the
+  trap is set by something upstream in the SMAUG include chain — most
+  likely one of the macro expansions (`KILLRET` / `STRFREE` etc.) or a
+  prior forward declaration that primes parser state. Next session
+  should bisect the include chain, extract a true minimal repro, then
+  fix the null pointer in `parseExpression`.
 
 ## [Unreleased] — SMAUG Phase F Continues (2026-04-19)
 
