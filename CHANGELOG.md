@@ -2,7 +2,36 @@
 
 ## [Unreleased] — SMAUG Phase F continues (post-v0.9.0)
 
+### Added
+
+- **C function-pointer cast syntax** — the cast parser now recognizes
+  `(RET (*)(PARAMS)) expr` after the return type (and any pointer
+  stars) by consuming `(*)` and then reusing `parseFnPtrParams()` to
+  build a `DataDefFPTR`. Unblocks `qsort(.., (int(*)(const void *,
+  const void *)) cmp_fn);` as used in SMAUG's `db.c sort_exits()`.
+  Added `tests/testfnptrcast.mad`.
+
+- **Case values accept constant integer expressions** —
+  `TokenSWITCH::parse()` used to store `nextToken()` as the case
+  value, which worked only for a single-token literal and broke on
+  `case EOF:` (where `EOF` expands to `-1`), `case (FOO+1):`, or
+  `case 1+1:`. The parse now uses `parse_constant_integer_expression`
+  and wraps the evaluated int64 in a `TokenInt` for compile(). Also
+  extended `resolve_integer_constant` to accept `ttChar` so
+  `case 'a':` still works through the new path. Added
+  `tests/testcaseconstexpr.mad`.
+
 ### Fixed
+
+- **`switch` expression now sign-extends narrow signed types** —
+  `TokenSWITCH::compile()` loaded the switch expression via plain
+  `cc.mov(r64, m32)` / `cc.mov(r64, r32)`, which zero-extends and
+  leaves the upper bits clear. A negative `int`/`short`/`char`
+  expression would therefore never match a negative case constant
+  (`case -2:` missed when `i` held `-2`). Now routes through
+  `safemov(..., &ddINT64, expr_type)`, and `safemov(Gp, Gp)` was
+  updated to emit `movsxd` / `movsx` for signed widening (it used to
+  unconditionally `movzx`).
 
 - **Container-type keywords (`map`, `vector`, `set`, `list`) now usable
   as identifiers at statement position** — `parseStatement()`'s

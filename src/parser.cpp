@@ -79,6 +79,11 @@ static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
 	out = ((TokenInt *)tb)->get();
 	return true;
     }
+    if ( tb->type() == TokenType::ttChar )
+    {
+	out = ((TokenChar *)tb)->get();
+	return true;
+    }
     if ( tb->type() != TokenType::ttIdentifier )
 	return false;
     Variable *var = pgm.findVariable(((TokenIdent *)tb)->str);
@@ -1601,6 +1606,33 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			{
 			    nextToken();
 			    cast_dd = getPointerType(cast_dd);
+			}
+			// Function-pointer cast: `(RET (*)(PARAMS)) expr`. After the
+			// return type (plus any pointer stars) we may see `(*)` and
+			// then a parameter list. Reuse parseFnPtrParams() to build the
+			// FuncDef, then wrap in DataDefFPTR.
+			if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+			{
+			    TokenBase *open = nextToken();    // consume '('
+			    TokenBase *star = peekToken();
+			    if ( star && star->id() == TokenID::tkMul )
+			    {
+				nextToken(); // consume '*'
+				TokenBase *close1 = nextToken();
+				if ( !close1 || close1->id() != TokenID::tkClBrk )
+				    Throw(close1 ? close1 : open) << "expected ')' after '(*' in function pointer cast" << flush;
+				TokenBase *open2 = nextToken();
+				if ( !open2 || open2->id() != TokenID::tkOpBrk )
+				    Throw(open2 ? open2 : open) << "expected '(' to introduce parameter list in function pointer cast" << flush;
+				FuncDef *func = parseFnPtrParams(*cast_dd);
+				cast_dd = new DataDefFPTR(func);
+			    }
+			    else
+			    {
+				// not a function-pointer cast — push '(' back and fall
+				// through to the regular close-paren handling below.
+				pushToken(open);
+			    }
 			}
 			// must have closing )
 			if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
@@ -4164,8 +4196,21 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 	    tc->file = tn->file;
 	    tc->line = tn->line;
 	    tc->column = tn->column;
-	    // parse case value — must be a literal constant (integer, char, string)
-	    tc->value = pgm.nextToken();
+	    // Parse case value as a constant integer expression. This accepts
+	    // plain literals (`case 42:`, `case 'a':`), enum constants, and
+	    // parenthesized / negated forms such as `case EOF:` where EOF
+	    // expands to `(-1)`. The evaluated int64 is wrapped in a TokenInt
+	    // for downstream compile().
+	    TokenBase *val_anchor = pgm.peekToken();
+	    int64_t case_val = parse_constant_integer_expression(pgm);
+	    TokenInt *val_tok = new TokenInt(case_val);
+	    if ( val_anchor )
+	    {
+		val_tok->file = val_anchor->file;
+		val_tok->line = val_anchor->line;
+		val_tok->column = val_anchor->column;
+	    }
+	    tc->value = val_tok;
 	    // expect : after case value
 	    tn = pgm.nextToken();
 	    if ( tn->id() != TokenID::tkTerC )

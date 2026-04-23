@@ -4,11 +4,20 @@
 
 ### Language Completeness
 
-- **C function-pointer cast syntax** — `(int(*)(const void *, const void *)) fn`
-  doesn't parse; the cast handler only recognizes simple types plus optional
-  `*` stars, not a parenthesized function-signature type. MadSMAUG umbrella
-  front edge: `db.c` `sort_exits()` passing a typed function pointer to
-  `qsort()`. Fix in `parseExpression`'s cast branch.
+- **Function-like macros shadowing later definitions** — SMAUG.mad does
+  `#define bug(...) ((void)0)` to stub out calls, then `#include`s
+  `db.c` which contains `void bug(const char *str, ...) { … }`. The
+  lexer expands `bug(` at the definition, turning `void bug(...)` into
+  `void ((void)0)` and killing the parse. Either (a) teach the lexer
+  to suppress function-like macro expansion when the identifier is in
+  a definition/declaration head position, or (b) document that
+  MadSMAUG should `#undef` the stub around the matching definition.
+  Current MadSMAUG front edge at db.c:4184.
+
+- **Negative-constant initializer** — `int a = -2;` stores 0 (the unary
+  `-` is dropped during init-expression parse). `a = 0 - 2;` works, as
+  does `a = -2` as a subsequent assignment (pending further testing).
+  Pre-existing — uncovered while debugging the case-expression fix.
 
 ## Medium Priority
 

@@ -5538,12 +5538,17 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
     regdefp_t exprrdp = {NULL, NULL, NULL};
     Operand &expr_op = expression->compile(pgm, exprrdp);
     x86::Gp expr_reg = pgm.cc.newGpq("switch_expr");
+    DataDef *expr_type = exprrdp.second ? exprrdp.second : &ddINT64;
+    // Route through safemov so narrow signed expressions (int, short, char)
+    // sign-extend into the 64-bit switch register. A plain cc.mov(r64, m32)
+    // on a negative int32 zero-extends, leaving the upper bits clear, which
+    // makes `case -2:` fail to match an int expression holding -2.
     if ( expr_op.isReg() && expr_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-	pgm.cc.mov(expr_reg, expr_op.as<x86::Gp>());
+	pgm.safemov(expr_reg, expr_op.as<x86::Gp>(), &ddINT64, expr_type);
     else if ( expr_op.isImm() )
 	pgm.cc.mov(expr_reg, expr_op.as<Imm>());
     else if ( expr_op.isMem() )
-	pgm.cc.mov(expr_reg, expr_op.as<x86::Mem>());
+	pgm.safemov(expr_reg, expr_op.as<x86::Mem>(), &ddINT64, expr_type);
 
     Label sw_exit = pgm.cc.newLabel();
 

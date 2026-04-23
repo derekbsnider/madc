@@ -36,9 +36,35 @@ using namespace asmjit;
 void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Gp, Gp)"));
-    if ( r1.x86RmSize() > r2.x86RmSize() )
+    uint32_t rs = r1.x86RmSize();
+    uint32_t ms = r2.x86RmSize();
+    if ( rs > ms )
     {
-	cc.movzx(r1, r2);
+	// Dest is wider than source — sign- or zero-extend based on the
+	// source type's signedness.
+	bool is_unsigned = d2 && d2->is_unsigned();
+	if ( ms == 4 )
+	{
+	    if ( is_unsigned )
+		cc.mov(r1.r32(), r2);    // implicit zero-extend to r64
+	    else
+		cc.movsxd(r1, r2);       // sign-extend 32→64
+	}
+	else if ( ms == 2 || ms == 1 )
+	{
+	    if ( rs >= 8 )
+	    {
+		if ( is_unsigned ) cc.movzx(r1.r32(), r2);
+		else               cc.movsx(r1.r32(), r2);
+	    }
+	    else
+	    {
+		if ( is_unsigned ) cc.movzx(r1, r2);
+		else               cc.movsx(r1, r2);
+	    }
+	}
+	else
+	    cc.mov(r1, r2);
     }
     else
     switch(r1.type())
