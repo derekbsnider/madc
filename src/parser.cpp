@@ -1434,6 +1434,99 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 // parse one complete expression
 // for expression: x = 5, sum(5, 5), ++x, etc
 // a "conditional" expression stops when brackets are equalized
+// Parse an identifier followed by any chain of postfix operators
+// (->ident, .ident, [expr]) and return the resulting node. Stops at the
+// first non-postfix token (binary operator, comma, semicolon, etc.);
+// that token remains consumable by the caller on the next nextToken().
+// Used by unary `*` to avoid parseExpression's greedy consumption of
+// trailing binary operators such as `== '$'`.
+TokenBase *Program::parsePostfixChain(TokenBase *head)
+{
+    if ( !head || head->type() != TokenType::ttIdentifier )
+	return NULL;
+
+    std::string name = ((TokenIdent *)head)->str;
+    Variable *var = findVariable(name);
+    if ( !var )
+	Throw(head) << "undeclared identifier '" << name << "'" << flush;
+
+    TokenBase *result = new TokenVar(*var);
+    result->file = head->file;
+    result->line = head->line;
+    result->column = head->column;
+
+    while ( peekToken() )
+    {
+	TokenID pid = peekToken()->id();
+	if ( pid == TokenID::tkDeRef || pid == TokenID::tkDot )
+	{
+	    bool is_arrow = (pid == TokenID::tkDeRef);
+	    TokenBase *op_tb = nextToken();
+	    TokenBase *mtb = nextToken();
+	    if ( !mtb || mtb->type() != TokenType::ttIdentifier )
+		Throw(mtb ? mtb : op_tb) << "expected member name after '"
+		    << (is_arrow ? "->" : ".") << "'" << flush;
+	    std::string mname = ((TokenIdent *)mtb)->str;
+
+	    DataDef *obj_type = result->datadef();
+	    if ( is_arrow )
+	    {
+		if ( !obj_type || !obj_type->is_pointer() )
+		    Throw(mtb) << "expression before '->' must be a pointer" << flush;
+		DataDefPTR *pt = dynamic_cast<DataDefPTR *>(obj_type);
+		if ( !pt || !pt->base_type )
+		    Throw(mtb) << "expression before '->' is not a typed pointer" << flush;
+		obj_type = pt->base_type;
+	    }
+	    if ( !obj_type || (!obj_type->is_struct() && !obj_type->is_object()) )
+		Throw(mtb) << "member reference type is not a structure or union" << flush;
+	    DataDefSTRUCT *sdd = static_cast<DataDefSTRUCT *>(obj_type);
+	    ssize_t ofs = sdd->m_offset(mname);
+	    if ( ofs == -1 )
+		Throw(mtb) << "no member named '" << mname << "'" << flush;
+	    DataDef *mtype = sdd->m_type(mname);
+	    Variable *mvar = new Variable(mname, *mtype, 1, NULL, false);
+	    mvar->flags = var->flags;
+
+	    TokenMember *tm;
+	    if ( result->type() == TokenType::ttVariable )
+	    {
+		TokenVar *tv = dynamic_cast<TokenVar *>(result);
+		tm = new TokenMember(tv->var, *mvar, ofs);
+	    }
+	    else
+	    {
+		tm = new TokenMember(*var, *mvar, ofs, result);
+	    }
+	    tm->file = op_tb->file;
+	    tm->line = op_tb->line;
+	    tm->column = op_tb->column;
+	    result = tm;
+	    continue;
+	}
+	if ( pid == TokenID::tkOpSqr )
+	{
+	    TokenBase *open = nextToken();
+	    TokenBase *idx_tb = nextToken();
+	    TokenBase *idx_expr = parseExpression(idx_tb, true);
+	    TokenBase *close = nextToken();
+	    if ( !close || close->id() != TokenID::tkClSqr )
+		Throw(close ? close : open) << "expected ']' in subscript" << flush;
+	    DataDef *base_type = result->datadef();
+	    DataDef *elem_type = &ddINT64;
+	    if ( base_type && base_type->is_pointer() )
+	    {
+		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(base_type);
+		elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+	    }
+	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
+	    continue;
+	}
+	break;
+    }
+    return result;
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets)
 {
@@ -1962,6 +2055,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    }
 				    else
 					Throw(inner_tb) << "expecting pointer expression after '*'" << flush;
+				}
+				else if ( deref_tb->type() == TokenType::ttIdentifier
+				   && peekToken()
+				   && (peekToken()->id() == TokenID::tkDeRef
+				    || peekToken()->id() == TokenID::tkDot
+				    || peekToken()->id() == TokenID::tkOpSqr) )
+				{
+				    // Postfix chain (e.g. `res->name`, `p.x`, `tab[i]`)
+				    // — parse only the chain so trailing binary operators
+				    // like `*p->name == '$'` don't get swallowed.
+				    deref_expr = parsePostfixChain(deref_tb);
 				}
 				else
 				    deref_expr = parseExpression(deref_tb, true);

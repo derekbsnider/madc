@@ -1,0 +1,48 @@
+// `*res->name == '$'` — the unary `*` dereference of a postfix chain
+// followed by a binary operator. The old else-branch handler called
+// `parseExpression(deref_tb, true)` which greedily consumed the
+// binary operator too, turning the dereference target into a full
+// boolean expression and losing the pointer type. Fixed by routing
+// postfix-chain LHS cases through `parsePostfixChain()` which stops
+// at the first non-postfix token.
+
+#include <stdio.h>
+
+struct node {
+    char *name;
+    int x;
+};
+
+struct outer {
+    struct node *inner;
+    int y;
+};
+
+int main()
+{
+    struct node n;
+    n.name = "hello";
+    n.x = 42;
+
+    struct node *p = &n;
+
+    // Simple case — just the deref, no trailing binop. Known-working.
+    char c = *p->name;
+    printf("c=%c\n", c);
+
+    // Key regression — deref followed by binary op.
+    if (*p->name == 'h') printf("arrow_eq\n");
+    if (*p->name != 'x') printf("arrow_ne\n");
+
+    // Dot-chain form.
+    if (*n.name == 'h') printf("dot_eq\n");
+
+    // Chained `->` through a second pointer level.
+    struct outer o;
+    o.inner = &n;
+    o.y = 99;
+    struct outer *op = &o;
+    if (*op->inner->name == 'h') printf("chain_eq\n");
+
+    return 0;
+}

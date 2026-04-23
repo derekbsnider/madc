@@ -134,7 +134,28 @@
   on an open file descriptor and verifies that `O_NONBLOCK` is actually
   reflected by a follow-up `F_GETFL`.
 
+### Added
+
+- **`DIR` typedef in embedded `<dirent.h>`** — glibc exposes `DIR` as a
+  typedef for an opaque struct, but madc's embedded `<dirent.h>` only
+  defined `struct dirent` and the `DT_*` constants. C code using
+  `DIR *dp;` (SMAUG's `db.c` and others) now parses via the new
+  `typedef struct __dir_opaque DIR;`. Added `tests/testdirtype.mad`.
+
 ### Fixed
+
+- **Unary `*` on a postfix chain no longer swallows trailing binary
+  operators** — the old fallthrough for `*ident->member`,
+  `*ident.member`, `*ident[idx]` cases called `parseExpression(...,
+  true)` on the postfix chain, which greedily consumed trailing binary
+  operators such as `*p->name == '$'`. The inner parse would return a
+  `TokenEq` (boolean result), and the outer `!dtype->is_pointer()` check
+  then threw `"cannot dereference non-pointer type"`. Added a
+  `parsePostfixChain()` helper that manually builds `TokenVar` /
+  `TokenMember` / `TokenSubscriptExpr` nodes stopping at the first
+  non-postfix token, and routed the `*` handler's identifier+postfix
+  fallthrough through it. Added `tests/testderefmember.mad` covering
+  `*p->name == 'h'`, `*n.name == 'h'`, and chained `*op->inner->name`.
 
 - **Global / literal variables re-emit their address load on every access** —
   `TokenCpnd::voperand()`'s cache-hit branch re-runs `movreg` for global

@@ -651,6 +651,13 @@ public:
 			       bool ternary_branch=false,
 			       bool stop_on_closing_paren=false,
 			       int initial_brackets=0);
+    // Parse an identifier followed by any chain of postfix operators
+    // (->ident / .ident / [expr] / ++ / --) and return the resulting
+    // expression node. Stops at the first non-postfix token (binary
+    // operator, comma, semicolon, etc.) and pushes it back on the
+    // token stream. Used by unary `*` and `&` to avoid
+    // parseExpression's greedy consumption of trailing binary ops.
+    TokenBase *parsePostfixChain(TokenBase *head);
     TokenBase *parseLambda();  // parse [](params) { body } lambda expression
 
     // perform cc.mov with size casting

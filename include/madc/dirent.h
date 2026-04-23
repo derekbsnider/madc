@@ -4,6 +4,12 @@
 // opendir return value as a void * / int64 handle and pass it verbatim to
 // readdir / closedir.
 
+// `DIR` is the opaque directory-handle type returned by opendir(). glibc
+// exposes it via typedef but the underlying struct is implementation-
+// internal; madc code only holds pointers to it, so a zero-size struct
+// alias is sufficient — `DIR *dp;` parses as `struct __dir_opaque *dp;`.
+typedef struct __dir_opaque DIR;
+
 // d_type values (linux-specific, not portable across Unix — fall back to
 // stat() if a value is DT_UNKNOWN).
 #define DT_UNKNOWN 0
