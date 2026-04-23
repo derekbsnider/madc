@@ -44,23 +44,19 @@
   on an open file descriptor and verifies that `O_NONBLOCK` is actually
   reflected by a follow-up `F_GETFL`.
 
-### Known Current Front Edge
+### Fixed
 
-- **MadSMAUG bootstrap now hits a parser SIGSEGV** — after the
-  `struct servent` + `EINPROGRESS` additions, the umbrella bootstrap
-  advances through `ident.c`'s `sock.sin_port = serv->s_port;` and
-  `errno != EINPROGRESS` without reporting an undeclared identifier,
-  then crashes inside `Program::parseExpression` (SIGSEGV at address
-  `0x8`) while parsing upstream `ident.c:268` —
-  `if (connect(a->afd, (struct sockaddr *)&sock, sizeof(sock)) < 0
-  && errno != EINPROGRESS ) { ... }`. A standalone minimal repro with
-  the same condition shape (local `int afd`, cast + `&sock`,
-  `sizeof()`, `&&`, `errno != EINPROGRESS`) does not crash, so the
-  trap is set by something upstream in the SMAUG include chain — most
-  likely one of the macro expansions (`KILLRET` / `STRFREE` etc.) or a
-  prior forward declaration that primes parser state. Next session
-  should bisect the include chain, extract a true minimal repro, then
-  fix the null pointer in `parseExpression`.
+- **`parseExpression` SIGSEGV when `->` follows a dereference expression** —
+  `TokenDeref` and `TokenDerefExpr` both reuse `TokenType::ttMember` as their
+  `type()` (for assignment-compat purposes), so when the LHS of `->` was a
+  dereference the `dynamic_cast<TokenMember *>` in the `tkDeRef` branch
+  returned `NULL` and the subsequent `tm->var` read crashed at offset `0x8`.
+  `Program::parseExpression()` now null-guards that cast and throws a proper
+  "expression before '->' must be a pointer to struct" error instead. This
+  replaces the SIGSEGV that MadSMAUG's umbrella bootstrap was hitting during
+  `ident.c` parsing with a clean diagnostic, and the umbrella now advances
+  past the crash to the next structural front edge (address-of struct member
+  via pointer, `&cmd->userec`).
 
 ## [Unreleased] — SMAUG Phase F Continues (2026-04-19)
 

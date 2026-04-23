@@ -1879,9 +1879,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				DataDef *dtype = deref_expr->datadef();
 				if ( !dtype || !dtype->is_pointer() )
 				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-				    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
-				    DataDef *base = dptr ? dptr->base_type : &ddINT64;
-				    exStack.push(new TokenDerefExpr(deref_expr, base));
+				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
+				DataDef *base = dptr ? dptr->base_type : &ddINT64;
+				exStack.push(new TokenDerefExpr(deref_expr, base));
 				}
 			    }
 			    break;
@@ -2183,7 +2183,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    else if ( lhs->type() == TokenType::ttMember )
 		    {
+			// TokenDeref and TokenDerefExpr also report ttMember (reuse
+			// member type for assignment compat); guard against them so a
+			// failed dynamic_cast doesn't crash via null tm->var.
 			TokenMember *tm = dynamic_cast<TokenMember *>(lhs);
+			if ( !tm )
+			    Throw(tb) << "expression before '->' must be a pointer to struct" << flush;
 			obj_var = &tm->var;
 			obj_type = tm->var.type;
 		    }

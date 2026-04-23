@@ -4,22 +4,18 @@
 
 ### Language Completeness
 
-- **MadSMAUG umbrella bootstrap — parser SIGSEGV front edge** —
-  `../MadSMAUG/src/SMAUG.mad` now includes upstream headers plus
-  `hashstr.c`, `ibuild.c`, `ident.c`, and `interp.c` in Makefile order
-  with a temporary `main()`. With the Phase F additions so far (extended
-  `<fcntl.h>` constant set, new `struct servent` in embedded `<netdb.h>`,
-  expanded socket/network errno values in `<errno.h>`), the earlier
-  `F_SETFL` / `serv->s_port` / `EINPROGRESS` front edges are all closed.
-  The next bootstrap stop point is a parser SIGSEGV (address `0x8`)
-  inside `Program::parseExpression` while parsing upstream `ident.c:268` —
-  `if (connect(a->afd, (struct sockaddr *)&sock, sizeof(sock)) < 0 &&
-  errno != EINPROGRESS ) { ... }`. A standalone minimal repro of that
-  same expression shape compiles cleanly, so the trap is set by
-  something upstream in the SMAUG include chain (macro expansions like
-  `KILLRET` / `STRFREE`, or a prior forward declaration priming parser
-  state). Next session: bisect the include chain to a true minimal
-  repro, then fix the null pointer in `parseExpression`.
+- **MadSMAUG umbrella bootstrap — struct-pointer function-member call** —
+  The parser SIGSEGV front edge is now closed: `Program::parseExpression()`
+  null-guards the `dynamic_cast<TokenMember *>` in its `->` branch so a
+  `TokenDeref` / `TokenDerefExpr` LHS (which both report `ttMember`) now
+  produces a proper "expression before '->' must be a pointer to struct"
+  diagnostic instead of crashing at offset `0x8`. The umbrella bootstrap
+  now advances past `ident.c` and stops at an `interp.c` shape that
+  exercises function-pointer struct members — `(*cmd->do_fun)(ch, arg)` and
+  related `&cmd->userec`. That path needs struct function-pointer members
+  to carry real `DataDefFPTR` type info through member lookup (currently
+  lowered to plain `int64_t`), so `*fp_member` and `fp_member(args)` can
+  both resolve. That is its own Phase F work item, not a parser crash.
 
 ## Medium Priority
 
