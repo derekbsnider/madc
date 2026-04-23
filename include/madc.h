@@ -141,8 +141,13 @@ public:
     // When set, TokenCallFunc::compile loads the fn-ptr by compiling src_node
     // instead of calling voperand(var). var.type must still be DataDefFPTR.
     TokenBase *src_node = nullptr;
-    TokenCallFunc(Variable &v) : TokenVar(v) {}
-    virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
+    TokenCallFunc(Variable &v) : TokenVar(v) { if (v.type->is_function()) _datatype = returns(); }
+    virtual DataDef *returns()  const { return &((FuncDef *)var.type)->returns; }
+    virtual DataDef *datadef()  const override {
+        if ( var.type->is_function() )
+            return returns();
+        return _datatype;
+    }
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::Operand &operand(Program &);
@@ -160,7 +165,8 @@ public:
     TokenMember(Variable &o, Variable &m, size_t ofs, TokenBase *parent)
         : TokenCallFunc(m), object(o), offset(ofs), parent_expr(parent) { _datatype = m.type; }
     virtual TokenType type() const { return TokenType::ttMember; }
-    virtual bool is_real() { return _datatype->is_real(); }
+    virtual DataDef *datadef() const override { return _datatype; }
+    virtual bool is_real() const override { return _datatype->is_real(); }
     virtual void putreg(Program &);
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
@@ -178,6 +184,18 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+// &(expr) address-of operator for member/subscript/deref lvalues
+class TokenAddrExpr: public TokenBase
+{
+public:
+    TokenBase *expr;
+    DataDef *ptr_type;
+    asmjit::Operand _operand;
+    TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 // *ptr dereference — reads/writes the value at the address held by a pointer
 class TokenDeref: public TokenBase
 {
@@ -187,8 +205,38 @@ public:
     asmjit::Operand _operand;
     TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const { return TokenType::ttMember; }  // reuse member type for assignment compat
-    virtual DataDef *datadef() { return deref_type; }
+    virtual DataDef *datadef() const override { return deref_type; }
     virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// *(expr) dereference for cast/member/subscript pointer expressions
+class TokenDerefExpr: public TokenBase
+{
+public:
+    TokenBase *expr;
+    DataDef *deref_type;
+    asmjit::Operand _operand;
+    TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
+    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual DataDef *datadef() const override { return deref_type; }
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// *ptr++ / *ptr-- — dereference the current pointer value, then advance
+// or rewind the pointer variable itself.
+class TokenDerefStep: public TokenBase
+{
+public:
+    Variable &var;
+    DataDef *deref_type;
+    bool increment;
+    asmjit::Operand _operand;
+    TokenDerefStep(Variable &v, DataDef *dt, bool inc)
+        : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return deref_type; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -201,6 +249,7 @@ public:
     asmjit::Operand _operand;
     TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
     virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return cast_type; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -242,7 +291,7 @@ public:
             _datatype = &ddINT64; // MadArray: default to int
     }
     virtual TokenType type() const { return TokenType::ttSubscript; }
-    virtual bool is_real() { return _datatype->is_real(); }
+    virtual bool is_real() const override { return _datatype->is_real(); }
     virtual asmjit::Operand &operand(Program &pgm) {
         regdefp_t r = {nullptr, nullptr, nullptr};
         return compile(pgm, r);
@@ -250,6 +299,27 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &);
     // emit setter call for write context: container[index] = val
     void compile_set(Program &, asmjit::Operand &, DataDef *);
+};
+
+class TokenSubscriptExpr: public TokenBase
+{
+public:
+    TokenBase *base_expr;
+    TokenBase *index;
+    asmjit::Operand _operand;
+
+    TokenSubscriptExpr(TokenBase *base, TokenBase *idx, DataDef *elem_type)
+        : base_expr(base), index(idx)
+    {
+        _datatype = elem_type ? elem_type : &ddINT64;
+    }
+    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual bool is_real() const override { return _datatype->is_real(); }
+    virtual asmjit::Operand &operand(Program &pgm) {
+        regdefp_t r = {nullptr, nullptr, nullptr};
+        return compile(pgm, r);
+    }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &);
 };
 
 class TokenProgram: public TokenCpnd
@@ -441,6 +511,7 @@ public:
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
 	std::vector<std::string> params;  // parameter names
+	bool variadic = false;           // trailing ... / __VA_ARGS__
 	std::string body;                 // body template with param names as placeholders
     };
     std::map<std::string, MacroDef> macro_map;	// function-like macros
@@ -448,6 +519,7 @@ public:
     struct LazyEntry { int header; LazyKind kind; };
     std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration
     std::map<std::string, std::string> define_map;	// #define name value
+    std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
@@ -467,6 +539,7 @@ public:
     char **script_argv;			// argv for the .mad script
     bool _include_iostream;		// #include <iostream> was seen during tokenization
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
+    bool parsing_extern_decl = false;	// current declaration originated from `extern`
     std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
     int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
 
@@ -494,6 +567,10 @@ public:
     void add_python_namespace();
     void add_ruby_namespace();
     void add_js_namespace();
+    std::string current_source_directory();
+    bool include_already_seen(const std::string &path);
+    std::string resolve_include_path(const std::string &incfile, bool is_system);
+    bool should_tokenize_include(const std::string &path);
 
     Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
 
@@ -514,6 +591,7 @@ public:
     // accessing token queue
     inline TokenBase *peekToken() { if (tokens.empty()) return NULL; return tokens.front(); }
     inline TokenBase *prevToken() { return _prv_token; }
+    inline void resetPrevToken() { _prv_token = NULL; }
     inline void pushToken(TokenBase *t) { tokens.push_front(t); }
 
     // helper: is prevToken in a position where the next operator would be unary?
@@ -569,7 +647,10 @@ public:
     // function-pointer typedefs. Builds a FuncDef with the given return type.
     // Parameter names are accepted but discarded. Stops after consuming ')'.
     FuncDef *parseFnPtrParams(DataDef &returns);
-    TokenBase *parseExpression(TokenBase *, bool conditional=false);
+    TokenBase *parseExpression(TokenBase *, bool conditional=false,
+			       bool ternary_branch=false,
+			       bool stop_on_closing_paren=false,
+			       int initial_brackets=0);
     TokenBase *parseLambda();  // parse [](params) { body } lambda expression
 
     // perform cc.mov with size casting

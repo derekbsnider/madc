@@ -1,8 +1,39 @@
 # Changelog
 
-## [Unreleased] — SMAUG Phase F Continues (2026-04-23)
+## [Unreleased]
+
+## [v0.9.0] — 2026-04-23 — SMAUG Phase F continues: MadSMAUG bootstrap + compiler fixes
 
 ### Added
+
+- **Empty-clause `for` regression coverage** — added
+  `tests/testforemptyclause.mad` and `.expect` to cover `for (; cond; inc)`,
+  `for (init; ; inc)`, and `for (init; cond; )`.
+
+- **Statement-leading unary dereference regression coverage** — added
+  `tests/teststmtleadingunary.mad` and `.expect` to cover statement-start
+  `*ptr = ...;` after control-flow blocks, which previously leaked prior
+  parse context into the new statement.
+
+- **`register` parameter regression coverage** — added
+  `tests/testparamregister.mad` and `.expect` to cover function definitions
+  that spell parameters as `register int x` / `register char *s`.
+
+- **Pointer pre-increment dereference regression coverage** — added
+  `tests/testderefpreincptr.mad` and `.expect` to cover `c = *++p;`, which
+  must parse and type-check the same as `c = *(++p);`.
+
+- **Build-then-run helper script** — added `scripts/build_then.sh` so local
+  debugging can serialize `make -C src` and the next command against the
+  freshly built `bin/madc`. This avoids stale-binary runs and makes targeted
+  repro/test loops (`scripts/build_then.sh bin/madc tests/foo.mad`) safer.
+
+- **Struct-member function-pointer regression coverage** — added
+  `tests/testfnptrmemberarrow.mad` and
+  `tests/testfnptrmemberarrow.expect` to cover `cmd->fn(args)`, the
+  classic C parenthesized form `(*cmd->fn)(args)`, and typed extraction
+  from `cmd->fn` into a local function-pointer variable before indirect
+  invocation.
 
 - **`struct servent` interop in embedded `<netdb.h>`** — 32-byte
   glibc-matching layout (`char *s_name; char **s_aliases; int s_port;
@@ -46,6 +77,102 @@
 
 ### Fixed
 
+- **`->` after a function-call now evaluates the call** — `TokenMember::operand()`'s
+  chained-arrow path previously called `parent_expr->operand()` unconditionally,
+  which works for chained `TokenMember` parents (they re-materialize their own
+  address each call) but silently failed for expression parents such as
+  `TokenCallFunc` / `TokenCallMethod` / `TokenSubscript` / `TokenDerefExpr`,
+  whose `operand()` returns a fresh uninitialized register without emitting
+  the underlying computation. The arrow chain therefore read a garbage
+  register as the pointer. `TokenMember::operand()` now invokes
+  `parent_expr->compile(pgm, fresh_regdp)` for any non-`ttMember` parent,
+  so `get_slot(i)->value`, `cmd->fn(args)->field`, and similar patterns
+  emit the producing computation before dereferencing. Added
+  `tests/testglobalptrarrayarrow.mad` as the regression.
+
+- **Mem-backed arithmetic expressions now materialize through temps** —
+  plain arithmetic and bitwise operators (`+`, `-`, `*`, `/`, `%`, `|`,
+  `^`, `&`, `<<`, `>>`) now allocate a temporary register when the caller
+  passes a Mem destination, then mirror the result back after the op.
+  Compound-assignment LHS resolution now does the same for stack-backed
+  variables. This fixes SMAUG patterns like `number = (number * 10) + ...`,
+  `number *= (multiplier = 1000)`, and `hash = len % STR_HASH_SIZE` in
+  `bet.h` / `hashstr.c`. Added targeted regressions
+  `tests/testassignexprmem.mad` and `tests/testcompoundassignmem.mad`.
+
+- **Unary `*` now accepts fixed arrays via C array-to-pointer decay** —
+  the parser's direct identifier dereference path now treats fixed arrays
+  like `char arg[N]` as dereferenceable element pointers in value context,
+  so SMAUG forms such as `if ( !*arg )` parse correctly. Added
+  `tests/testderefarray.mad` to cover `!*buf` and plain `*word`.
+
+- **Traditional `for` now accepts empty init/condition/increment clauses** —
+  `TokenFOR::parse()` and `TokenFOR::compile()` now handle C forms like
+  `for (; cond; inc)`, `for (init; ; inc)`, and `for (init; cond; )` instead
+  of treating empty clauses as parse failures. This advances the external
+  MadSMAUG umbrella through `interp.c`'s `for ( ; *arg != '\0'; arg++ )`
+  loop in `one_argument2()`. Current full-batch status: 133 integration
+  tests pass.
+
+- **Statement-leading unary operators now reset expression context** —
+  `parseStatement()` now clears prior-token context before handing an
+  operator-led statement to `parseExpression()`, so statement-start forms
+  like `*arg_first = LOWER(*argument);` are parsed as unary dereference
+  instead of as a missing left operand for binary `*`. This advances the
+  external umbrella through the first `one_argument2()` dereference-assignment
+  path in `interp.c`.
+
+- **`register` is now accepted in function parameter lists** —
+  `parseFunction()` now tolerates storage-class hints like
+  `register char *argument` alongside existing `const` handling when reading
+  parameter types. This advances the external umbrella through
+  `char *one_argument2(register char *argument, char *arg_first)`.
+
+- **Prefix/postfix inc/dec now preserve operand type metadata** —
+  `TokenInc` and `TokenDec` now report the same `datadef()` as their child
+  expression, so pointer expressions such as `*++argument` and `*--p` remain
+  dereferenceable. This closes the `ch = *++argument;` front edge in
+  `interp.c` and moves the MadSMAUG umbrella to the next dereference gap at
+  `/workspace/MadSMAUG/src/SMAUG.mad:1178:12`.
+
+- **Bare unary `&` now accepts postfix lvalue chains** — the parser no
+  longer limits the non-parenthesized address-of form to plain identifiers.
+  Expressions like `&cmd->userec`, `&op->in.x`, and other member/subscript
+  postfix chains now parse through the same addressable-expression path as
+  `&(cmd->userec)`, which advances the external MadSMAUG umbrella bootstrap
+  past `interp.c`'s `update_userec(&time_used, &cmd->userec);` front edge.
+  Added `tests/testaddrmemberparen.mad` / `.expect` coverage for nested dot
+  and arrow member-address forms. Current full-batch status: 133 integration
+  tests pass.
+
+- **Typed Mem-backed local writeback regressions** — three stack-local paths
+  now preserve narrow numeric storage correctly instead of bouncing through
+  accidental 64-bit temporaries:
+  - function-pointer indirect calls now bind integer returns into Mem
+    destinations as well as registers, which fixes `int x = op(10, 20);`
+    in `tests/testfnptrtypedef.mad`
+  - `cin >>` integer and floating-point extraction now writes back to the
+    actual lvalue operand for stack-backed locals instead of only updating a
+    transient loaded register, which fixes `tests/testcin.mad`
+  - generic `safemov(Mem <- Mem)` now copies through a typed temporary
+    instead of an unconditional `Gpq`, which fixes stack-local `uint32_t`
+    assignment / print paths (`tests/testassign.mad`, `tests/testint.mad`)
+
+- **Struct-body function-pointer members now preserve `DataDefFPTR`** —
+  declarators like `void (*callback)(void *)` inside `struct` bodies no
+  longer degrade to a plain `int64_t` placeholder. `TokenSTRUCT::parse()`
+  now routes the member parameter list through `parseFnPtrParams()` and
+  stores a real `DataDefFPTR`, which keeps the signature available through
+  member lookup so `cmd->fn(args)` and `FPTR_TYPE *fp = cmd->fn; fp(args);`
+  compile.
+
+- **Parenthesized struct-member function-pointer calls** —
+  `TokenMember::datadef()` now reports the member's actual stored type
+  instead of inheriting `TokenCallFunc`'s callable-return behavior, so
+  `(*cmd->fn)(args)` now sees `cmd->fn` as a `DataDefFPTR` member rather
+  than as the function's return type. This closes the remaining SMAUG-style
+  direct-dispatch spelling gap for function-pointer struct members.
+
 - **`parseExpression` SIGSEGV when `->` follows a dereference expression** —
   `TokenDeref` and `TokenDerefExpr` both reuse `TokenType::ttMember` as their
   `type()` (for assignment-compat purposes), so when the LHS of `->` was a
@@ -58,7 +185,7 @@
   past the crash to the next structural front edge (address-of struct member
   via pointer, `&cmd->userec`).
 
-## [Unreleased] — SMAUG Phase F Continues (2026-04-19)
+## [v0.9.0] — 2026-04-19 — SMAUG Phase F continues (session 2)
 
 ### Fixed
 
@@ -110,12 +237,13 @@
 
 ### Known Current Front Edge
 
-- **MadSMAUG bootstrap now stops at `F_SETFL`** — rerunning the external
-  umbrella bootstrap after the `errno` / pointer-return fix moves the real
-  front edge to `/workspace/MadSMAUG/src/SMAUG.mad` complaining about
-  undeclared `F_SETFL` (upstream `ident.c` nonblocking `fcntl` path). The
-  next session should add missing `fcntl` constant coverage, then rerun the
-  umbrella bootstrap immediately.
+- **MadSMAUG bootstrap now stops at `timerisset`** — after the Mem-backed
+  arithmetic fixes and fixed-array unary-deref parsing, rerunning the full
+  umbrella bootstrap advances the front edge to
+  `/workspace/MadSMAUG/src/SMAUG.mad:1257:18` complaining about undeclared
+  `timerisset` (upstream `interp.c` / `do_timecmd`). The next session should
+  add `timerisset` / related timeval helper macro coverage and rerun the
+  bootstrap immediately.
 
 ### Docs
 
@@ -354,7 +482,7 @@
   would pass the `std::string*` pointer verbatim, so the callee received
   the string object header instead of the null-terminated bytes.
 
-## [Unreleased] — SMAUG Phase F Continues (2026-04-17)
+## [v0.9.0] — 2026-04-17 — SMAUG Phase F continues (session 1)
 
 MadSMAUG's `hashstr.mad` now compiles AND runs correctly end-to-end
 (`bin/madc MadSMAUG/src/SMAUG.mad` → expected link-count hash stats with

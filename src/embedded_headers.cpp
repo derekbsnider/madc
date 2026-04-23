@@ -58,55 +58,124 @@ struct dirent {
 #define RTLD_NODELETE 0x01000
 )EMBED"},
     {"errno.h", R"EMBED(// madc embedded errno.h — POSIX error constants
-// Note: errno itself (thread-local) is not directly accessible; use strerror()/perror() via dlsym
+// glibc exposes errno via __errno_location(), so mirror the usual macro.
+// Keep the function undeclared here and let madc resolve it through the
+// normal external-call path when the macro expands.
+#define errno (*(__errno_location()))
 
-#define EPERM    1
-#define ENOENT   2
-#define ESRCH    3
-#define EINTR    4
-#define EIO      5
-#define ENXIO    6
-#define E2BIG    7
-#define ENOEXEC  8
-#define EBADF    9
-#define ECHILD   10
-#define EAGAIN   11
-#define ENOMEM   12
-#define EACCES   13
-#define EFAULT   14
-#define EBUSY    16
-#define EEXIST   17
-#define EXDEV    18
-#define ENODEV   19
-#define ENOTDIR  20
-#define EISDIR   21
-#define EINVAL   22
-#define ENFILE   23
-#define EMFILE   24
-#define ENOTTY   25
-#define EFBIG    27
-#define ENOSPC   28
-#define ESPIPE   29
-#define EROFS    30
-#define EMLINK   31
-#define EPIPE    32
-#define ERANGE   34
+// Base POSIX errors
+#define EPERM             1
+#define ENOENT            2
+#define ESRCH             3
+#define EINTR             4
+#define EIO               5
+#define ENXIO             6
+#define E2BIG             7
+#define ENOEXEC           8
+#define EBADF             9
+#define ECHILD            10
+#define EAGAIN            11
+#define EWOULDBLOCK       11
+#define ENOMEM            12
+#define EACCES            13
+#define EFAULT            14
+#define EBUSY             16
+#define EEXIST            17
+#define EXDEV             18
+#define ENODEV            19
+#define ENOTDIR           20
+#define EISDIR            21
+#define EINVAL            22
+#define ENFILE            23
+#define EMFILE            24
+#define ENOTTY            25
+#define ETXTBSY           26
+#define EFBIG             27
+#define ENOSPC            28
+#define ESPIPE            29
+#define EROFS             30
+#define EMLINK            31
+#define EPIPE             32
+#define EDOM              33
+#define ERANGE            34
+
+// System V / extended POSIX errors
+#define EDEADLK           35
+#define ENAMETOOLONG      36
+#define ENOLCK            37
+#define ENOSYS            38
+#define ENOTEMPTY         39
+#define ELOOP             40
+#define ENOMSG            42
+#define ENODATA           61
+#define EOVERFLOW         75
+#define EILSEQ            84
+
+// Socket / network errors (Linux x86-64 values)
+#define EUSERS            87
+#define ENOTSOCK          88
+#define EDESTADDRREQ      89
+#define EMSGSIZE          90
+#define EPROTOTYPE        91
+#define ENOPROTOOPT       92
+#define EPROTONOSUPPORT   93
+#define ESOCKTNOSUPPORT   94
+#define EOPNOTSUPP        95
+#define EPFNOSUPPORT      96
+#define EAFNOSUPPORT      97
+#define EADDRINUSE        98
+#define EADDRNOTAVAIL     99
+#define ENETDOWN          100
+#define ENETUNREACH       101
+#define ENETRESET         102
+#define ECONNABORTED      103
+#define ECONNRESET        104
+#define ENOBUFS           105
+#define EISCONN           106
+#define ENOTCONN          107
+#define ESHUTDOWN         108
+#define ETIMEDOUT         110
+#define ECONNREFUSED      111
+#define EHOSTDOWN         112
+#define EHOSTUNREACH      113
+#define EALREADY          114
+#define EINPROGRESS       115
+#define ESTALE            116
+#define EDQUOT            122
 )EMBED"},
     {"fcntl.h", R"EMBED(// madc embedded fcntl.h — file control constants (Linux x86-64 values)
 // Functions (open, creat, fcntl) available via dlsym fallback
 
-#define O_RDONLY   0
-#define O_WRONLY   1
-#define O_RDWR     2
-#define O_CREAT    64
-#define O_EXCL     128
-#define O_NOCTTY   256
-#define O_TRUNC    512
-#define O_APPEND   1024
-#define O_NONBLOCK 2048
-#define O_DSYNC    4096
-#define O_SYNC     1052672
-#define O_CLOEXEC  524288
+#define O_RDONLY     0
+#define O_WRONLY     1
+#define O_RDWR       2
+#define O_CREAT      64
+#define O_EXCL       128
+#define O_NOCTTY     256
+#define O_TRUNC      512
+#define O_APPEND     1024
+#define O_NONBLOCK   2048
+#define O_NDELAY     2048
+#define O_DSYNC      4096
+#define O_ASYNC      8192
+#define O_DIRECTORY  65536
+#define O_NOFOLLOW   131072
+#define O_SYNC       1052672
+#define O_CLOEXEC    524288
+
+#define F_DUPFD           0
+#define F_GETFD           1
+#define F_SETFD           2
+#define F_GETFL           3
+#define F_SETFL           4
+#define F_GETLK           5
+#define F_SETLK           6
+#define F_SETLKW          7
+#define F_SETOWN          8
+#define F_GETOWN          9
+#define F_DUPFD_CLOEXEC   1030
+
+#define FD_CLOEXEC   1
 )EMBED"},
     {"fnmatch.h", R"EMBED(// madc embedded fnmatch.h — filename pattern matching
 // Functions (fnmatch) available via dlsym fallback
@@ -204,7 +273,7 @@ struct dirent {
 // Functions (getaddrinfo, freeaddrinfo, gai_strerror, getnameinfo,
 //            gethostbyname, getservbyname, getservbyport, gethostname)
 // available via dlsym fallback
-// struct addrinfo / hostent / servent access deferred
+// struct addrinfo / hostent access deferred
 
 // getaddrinfo() flags
 #define AI_PASSIVE      0x0001
@@ -235,6 +304,18 @@ struct dirent {
 #define EAI_MEMORY      -10
 #define EAI_SYSTEM      -11
 #define EAI_OVERFLOW    -12
+
+// glibc x86-64 struct servent — 32 bytes, natural C ABI alignment.
+// Returned by getservbyname() / getservbyport(). s_port holds the port
+// in network byte order — use ntohs() to get a host-order integer.
+// s_aliases is a NULL-terminated array of alternate service names.
+// s_proto is typically "tcp" or "udp".
+struct servent {
+    char  *s_name;      // official service name
+    char **s_aliases;   // NULL-terminated list of aliases
+    int    s_port;      // port number (network byte order)
+    char  *s_proto;     // protocol name
+};
 )EMBED"},
     {"netinet/in.h", R"EMBED(// madc embedded netinet/in.h — IP protocol constants and struct layouts.
 // Functions (htons, htonl, ntohs, ntohl, inet_addr, inet_ntoa) available
@@ -352,6 +433,50 @@ struct sockaddr_in {
 // available via dlsym fallback
 // struct passwd access deferred
 )EMBED"},
+    {"regex.h", R"EMBED(#ifndef __MADC_REGEX_H
+#define __MADC_REGEX_H 1
+
+#include <sys/types.h>
+
+/*
+ * Minimal POSIX regex declarations for source compatibility.
+ * Extend this if upstream code starts using regex_t/regcomp/regexec directly.
+ */
+
+typedef long regoff_t;
+
+typedef struct
+{
+    regoff_t rm_so;
+    regoff_t rm_eo;
+} regmatch_t;
+
+typedef struct
+{
+    void *buffer;
+    size_t allocated;
+    size_t used;
+    uint32_t re_nsub;
+} regex_t;
+
+#define REG_EXTENDED 1
+#define REG_ICASE 2
+#define REG_NOSUB 4
+#define REG_NEWLINE 8
+
+#define REG_NOTBOL 1
+#define REG_NOTEOL 2
+
+#define REG_NOERROR 0
+#define REG_NOMATCH 1
+
+int regcomp(regex_t *preg, const char *pattern, int cflags);
+int regexec(const regex_t *preg, const char *string, size_t nmatch, regmatch_t pmatch[], int eflags);
+size_t regerror(int errcode, const regex_t *preg, char *errbuf, size_t errbuf_size);
+void regfree(regex_t *preg);
+
+#endif
+)EMBED"},
     {"signal.h", R"EMBED(// madc embedded signal.h — POSIX signal constants (Linux values)
 // Functions (kill, signal, raise, sigaction) available via dlsym fallback
 
@@ -442,6 +567,52 @@ typedef long va_list;
 // All functions available via dlsym fallback (libc always loaded):
 //   strlen, strcmp, strncmp, strcpy, strncpy, strcat, strncat,
 //   strchr, strrchr, strstr, strdup, memcpy, memmove, memset, memcmp
+)EMBED"},
+    {"sys/cdefs.h", R"EMBED(#ifndef __MADC_SYS_CDEFS_H
+#define __MADC_SYS_CDEFS_H 1
+
+/*
+ * Minimal glibc-style cdefs shim for embedded-header consumers.
+ * Extend this only as upstream code or embedded headers require more.
+ */
+
+#define __P(args) args
+#define __PMT(args) args
+
+#define __CONCAT(x, y) x ## y
+#define __STRING(x) #x
+
+#define __ptr_t void *
+
+#ifdef __cplusplus
+#define __BEGIN_DECLS extern "C" {
+#define __END_DECLS }
+#else
+#define __BEGIN_DECLS
+#define __END_DECLS
+#endif
+
+#define __THROW
+#define __THROWNL
+#define __NTH(fct) fct
+#define __NTHNL(fct) fct
+#define __LEAF
+#define __LEAF_ATTR
+#define __COLD
+
+#ifndef __inline
+#define __inline inline
+#endif
+
+#endif
+)EMBED"},
+    {"sys/file.h", R"EMBED(// madc embedded sys/file.h — BSD/POSIX file locking constants.
+// Functions (flock) available via dlsym fallback.
+
+#define LOCK_SH 1
+#define LOCK_EX 2
+#define LOCK_NB 4
+#define LOCK_UN 8
 )EMBED"},
     {"sys/ipc.h", R"EMBED(// madc embedded sys/ipc.h — System V IPC constants
 // Used with sys/shm.h, sys/msg.h, sys/sem.h
@@ -766,6 +937,39 @@ struct stat {
 #define ITIMER_VIRTUAL 1
 #define ITIMER_PROF    2
 
+// fd_set is commonly surfaced alongside <sys/time.h> on older Unix codepaths.
+// Keep this in sync with embedded sys/select.h so code that only includes
+// <sys/time.h> can still declare select() sets.
+#define FD_SETSIZE 1024
+
+struct fd_set {
+    int64_t __b0;
+    int64_t __b1;
+    int64_t __b2;
+    int64_t __b3;
+    int64_t __b4;
+    int64_t __b5;
+    int64_t __b6;
+    int64_t __b7;
+    int64_t __b8;
+    int64_t __b9;
+    int64_t __b10;
+    int64_t __b11;
+    int64_t __b12;
+    int64_t __b13;
+    int64_t __b14;
+    int64_t __b15;
+};
+typedef struct fd_set fd_set;
+
+#define FD_ZERO(set)      __madc_fd_zero(&(set))
+#define FD_SET(fd, set)   __madc_fd_set((fd), &(set))
+#define FD_CLR(fd, set)   __madc_fd_clr((fd), &(set))
+#define FD_ISSET(fd, set) __madc_fd_isset((fd), &(set))
+
+// time_t is int64_t on glibc x86-64.
+#define time_t int64_t
+
 // suseconds_t is signed long on glibc x86-64.
 #define suseconds_t int64_t
 
@@ -774,6 +978,12 @@ struct timeval {
     int64_t tv_sec;     // seconds
     int64_t tv_usec;    // microseconds
 };
+
+#define timerisset __madc_timerisset
+#define timerclear __madc_timerclear
+#define timercmp(left_ptr, right_ptr, cmp_token) ((__madc_timeval_sec((left_ptr)) == __madc_timeval_sec((right_ptr))) ? (__madc_timeval_usec((left_ptr)) cmp_token __madc_timeval_usec((right_ptr))) : (__madc_timeval_sec((left_ptr)) cmp_token __madc_timeval_sec((right_ptr))))
+#define timeradd __madc_timeradd
+#define timersub __madc_timersub
 
 // struct timezone — deprecated by POSIX; glibc still accepts NULL for it.
 struct timezone {

@@ -256,10 +256,24 @@ void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	else
 	if ( op2.isMem() )
 	{
-	    // Mem ← Mem: load through a tmp register
-	    x86::Gp tmp = cc.newGpq("_tmp_mm");
-	    cc.mov(tmp, op2.as<x86::Mem>());
-	    cc.mov(op1.as<x86::Mem>(), tmp);
+	    // Mem <- Mem: bounce through a typed temporary so 4-byte stack
+	    // slots don't get widened to accidental 8-byte loads/stores.
+	    DataDef *tmp_type = d1 ? d1 : d2;
+	    if ( tmp_type && tmp_type->is_real() )
+	    {
+		x86::Xmm tmp = cc.newXmm("_tmp_mm");
+		safemov(tmp, op2.as<x86::Mem>(), d1, d2);
+		if ( op1.as<x86::Mem>().size() <= 4 )
+		    cc.movss(op1.as<x86::Mem>(), tmp);
+		else
+		    cc.movsd(op1.as<x86::Mem>(), tmp);
+	    }
+	    else
+	    {
+		x86::Gp tmp = cc.newGpq("_tmp_mm");
+		safemov(tmp, op2.as<x86::Mem>(), d1, d2);
+		safemov(op1.as<x86::Mem>(), tmp, d1, d2);
+	    }
 	}
 	else
 	    throw "safemov() rval is unsupported";

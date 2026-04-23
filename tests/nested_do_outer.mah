@@ -1,0 +1,5 @@
+typedef void CHAR_DATA;
+typedef char char_ptr;
+typedef void DO_FUN(CHAR_DATA *ch, char *argument);
+#define DECLARE_DO_FUN( fun ) DO_FUN fun
+#include "nested_do_inner.mah"

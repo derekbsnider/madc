@@ -1,0 +1,26 @@
+#include <iostream>
+
+int main()
+{
+    int i;
+    int seen;
+    seen = 0;
+
+    for (int a = 0, b = 4; a < b; a++, b--)
+    {
+	cout << a << ':' << b << endl;
+	seen++;
+    }
+    cout << "seen=" << seen << endl;
+
+    for (int x = 1, y = 2, z = 3; x <= 3; x++, y++, z++)
+	cout << x + y + z << endl;
+
+    for (int *p = &i, j = 9; j > 7; j--)
+    {
+	*p = j;
+	cout << i << endl;
+    }
+
+    return 0;
+}

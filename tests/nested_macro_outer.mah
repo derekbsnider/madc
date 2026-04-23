@@ -1,0 +1,2 @@
+#define DECLARE_DO_FUN(fun) void fun()
+#include "nested_macro_inner.mah"

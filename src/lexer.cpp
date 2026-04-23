@@ -22,6 +22,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
+#include <functional>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include <asmjit/x86.h>
 #include "datadef.h"
@@ -31,6 +32,100 @@
 
 using namespace std;
 using namespace asmjit;
+
+static bool is_binary_prefix(int ch, Source &source)
+{
+    return ch == '0' && source.good() && (source.peek() == 'b' || source.peek() == 'B');
+}
+
+static int64_t read_binary_literal(Source &source)
+{
+    int64_t bv = 0;
+    source.get(); // eat 'b' / 'B'
+    while ( source.good() && (source.peek() == '0' || source.peek() == '1') )
+    {
+	bv <<= 1;
+	bv += source.get() - '0';
+    }
+    return bv;
+}
+
+static bool consume_macro_call_open(Source &source)
+{
+    std::string spacing;
+
+    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+	spacing += source.get();
+    if ( source.peek() == '(' )
+    {
+	source.get(); // consume '('
+	return true;
+    }
+    if ( !spacing.empty() )
+	source.pushback(spacing);
+    return false;
+}
+
+static std::string read_macro_body(Source &source)
+{
+    std::string body;
+
+    while ( source.good() && !source.eof() )
+    {
+	char ch = source.peek();
+	if ( ch == '\n' || ch == '\r' )
+	    break;
+	if ( ch == '\\' )
+	{
+	    source.get();
+	    char next = source.peek();
+	    if ( next == '\n' || next == '\r' )
+	    {
+		source.get();
+		if ( source.peek() == '\n' )
+		    source.get();
+		body += ' ';
+		continue;
+	    }
+	    body += '\\';
+	    continue;
+	}
+	if ( ch == '/' )
+	{
+	    source.get();
+	    if ( source.peek() == '/' )
+	    {
+		source.get();
+		while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+		    source.get();
+		break;
+	    }
+	    if ( source.peek() == '*' )
+	    {
+		source.get();
+		while ( source.good() && !source.eof() )
+		{
+		    ch = source.get();
+		    if ( ch == '*' && source.peek() == '/' )
+		    {
+			source.get();
+			break;
+		    }
+		}
+		if ( !body.empty() && body.back() != ' ' && body.back() != '\t' )
+		    body += ' ';
+		continue;
+	    }
+	    body += '/';
+	    continue;
+	}
+	body += source.get();
+    }
+
+    while ( !body.empty() && (body.back() == ' ' || body.back() == '\t') )
+	body.pop_back();
+    return body;
+}
 
 // keyword tokens
 TokenDO		tkDO;
@@ -57,6 +152,7 @@ TokenSTATIC	tkSTATIC;
 TokenENUM	tkENUM;
 TokenCONST	tkCONST;
 TokenEXTERN	tkEXTERN;
+TokenRESTRICT	tkRESTRICT;
 TokenUSING	tkUSING;
 TokenNAMESPACE	tkNAMESPACE;
 TokenDEFER	tkDEFER;
@@ -68,6 +164,7 @@ TokenLIST	tkLIST;
 // basic type tokens
 TokenVOID	tkVOID;
 TokenBOOL	tkBOOL;
+TokenC23BOOL	tkC23BOOL;
 TokenCHAR	tkCHAR;
 TokenINT	tkINT;
 TokenINT8	tkINT8;
@@ -94,16 +191,51 @@ TokenAUTO	tkAUTO;
 
 void Program::_tokenizer_init()
 {
-    
+
     tkProgram = NULL;
     tkFunction = NULL;
     _cur_token = NULL;
     _prv_token = NULL;
     _include_iostream = false;
     _include_stdio = false;
+    included_files.clear();
     add_keywords();
     add_datatypes();
     struct_map["teststruct"] = &ddTESTSTRUCT;
+}
+
+bool Program::include_already_seen(const std::string &path)
+{
+    return included_files.count(path) != 0;
+}
+
+std::string Program::current_source_directory()
+{
+    std::string cur_fname(source.fname());
+    size_t slash_pos = cur_fname.rfind('/');
+    if ( slash_pos == std::string::npos )
+	return "";
+    return cur_fname.substr(0, slash_pos + 1);
+}
+
+std::string Program::resolve_include_path(const std::string &incfile, bool is_system)
+{
+    if ( incfile.empty() || incfile[0] == '/' )
+	return incfile;
+
+    if ( is_system )
+	return incfile;
+
+    std::string cur_dir = current_source_directory();
+    return cur_dir.empty() ? incfile : cur_dir + incfile;
+}
+
+bool Program::should_tokenize_include(const std::string &path)
+{
+    if ( include_already_seen(path) )
+	return false;
+    included_files[path] = true;
+    return true;
 }
 
 // add static tokens for language keywords
@@ -133,6 +265,7 @@ void Program::add_keywords()
     keyword_map[tkENUM.str] = &tkENUM;
     keyword_map[tkCONST.str] = &tkCONST;
     keyword_map[tkEXTERN.str] = &tkEXTERN;
+    keyword_map[tkRESTRICT.str] = &tkRESTRICT;
     keyword_map[tkUSING.str] = &tkUSING;
     keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
     keyword_map[tkDEFER.str] = &tkDEFER;
@@ -147,6 +280,7 @@ void Program::add_datatypes()
 {
     datatype_map[tkVOID.str] = &tkVOID;
     datatype_map[tkBOOL.str] = &tkBOOL;
+    datatype_map[tkC23BOOL.str] = &tkC23BOOL;
     datatype_map[tkCHAR.str] = &tkCHAR;
     datatype_map[tkINT.str] = &tkINT;
     datatype_map[tkINT8.str] = &tkINT8;
@@ -301,6 +435,12 @@ TokenBase *Program::_getToken()
 		    // angle-bracket includes: check embedded headers first
 		    if ( is_system )
 		    {
+			std::string include_key = "<" + incfile + ">";
+			if ( !should_tokenize_include(include_key) )
+			{
+			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
+			    return getToken();
+			}
 			const std::string *embedded = find_embedded_header(incfile);
 			if ( embedded )
 			{
@@ -322,16 +462,18 @@ TokenBase *Program::_getToken()
 			    return getToken();
 			}
 		    }
-		    // resolve relative path based on current file's directory
-		    std::string full_path = incfile;
-		    if ( !incfile.empty() && incfile[0] != '/' )
+		    std::string full_path = resolve_include_path(incfile, is_system);
+		    if ( !should_tokenize_include(full_path) )
 		    {
-			std::string cur_fname(source.fname());
-			size_t slash_pos = cur_fname.rfind('/');
-			if ( slash_pos != std::string::npos )
-			    full_path = cur_fname.substr(0, slash_pos + 1) + incfile;
+			DBG(std::cout << "#include "
+			    << (is_system ? "<" : "\"") << full_path
+			    << (is_system ? ">" : "\"")
+			    << " skipped (already included)" << std::endl);
+			return getToken();
 		    }
-		    DBG(std::cout << "#include \"" << full_path << "\"" << std::endl);
+		    DBG(std::cout << "#include "
+			<< (is_system ? "<" : "\"") << full_path
+			<< (is_system ? ">" : "\"") << std::endl);
 		    // save current source, tokenize included file
 		    Source saved = std::move(source);
 		    source = Source();
@@ -414,42 +556,35 @@ TokenBase *Program::_getToken()
 			    while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
 				source.get();
 			    if ( source.peek() == ')' ) break;
+			    if ( source.peek() == '.' )
+			    {
+				source.get();
+				if ( source.peek() != '.' )
+				    Throw << "Expecting '...' in variadic macro parameter list" << flush;
+				source.get();
+				if ( source.peek() != '.' )
+				    Throw << "Expecting '...' in variadic macro parameter list" << flush;
+				source.get();
+				macro.variadic = true;
+				while ( source.peek() == ' ' || source.peek() == '\t' )
+				    source.get();
+				if ( source.peek() != ')' )
+				    Throw << "Variadic macro '...' must be the last parameter" << flush;
+				break;
+			    }
 			    std::string param;
 			    while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 				param += source.get();
 			    if ( !param.empty() )
 				macro.params.push_back(param);
+			    else
+				Throw << "Expecting macro parameter name" << flush;
 			}
 			if ( source.peek() == ')' ) source.get(); // consume ')'
 			// skip whitespace before body
 			while ( source.peek() == ' ' || source.peek() == '\t' )
 			    source.get();
-			// read body (rest of line, with \ continuation)
-			std::string body;
-			while ( source.good() && !source.eof() )
-			{
-			    char ch = source.peek();
-			    if ( ch == '\n' || ch == '\r' ) break;
-			    if ( ch == '\\' )
-			    {
-				source.get(); // consume backslash
-				char next = source.peek();
-				if ( next == '\n' || next == '\r' )
-				{
-				    // line continuation
-				    source.get(); // consume newline
-				    if ( source.peek() == '\n' ) source.get(); // consume \r\n
-				    body += ' ';
-				    continue;
-				}
-				body += '\\';
-				continue;
-			    }
-			    body += source.get();
-			}
-			// trim trailing whitespace
-			while ( !body.empty() && (body.back() == ' ' || body.back() == '\t') )
-			    body.pop_back();
+			std::string body = read_macro_body(source);
 			macro.body = body;
 			macro_map[name] = macro;
 			DBG(std::cout << "#define " << name << "(");
@@ -462,31 +597,7 @@ TokenBase *Program::_getToken()
 		    // skip whitespace between name and value
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
-		    // read value (rest of line, with \ continuation)
-		    std::string value;
-		    while ( source.good() && !source.eof() )
-		    {
-			char ch = source.peek();
-			if ( ch == '\n' || ch == '\r' ) break;
-			if ( ch == '\\' )
-			{
-			    source.get();
-			    char next = source.peek();
-			    if ( next == '\n' || next == '\r' )
-			    {
-				source.get();
-				if ( source.peek() == '\n' ) source.get();
-				value += ' ';
-				continue;
-			    }
-			    value += '\\';
-			    continue;
-			}
-			value += source.get();
-		    }
-		    // trim trailing whitespace
-		    while ( !value.empty() && (value.back() == ' ' || value.back() == '\t') )
-			value.pop_back();
+		    std::string value = read_macro_body(source);
 		    define_map[name] = value;
 		    DBG(std::cout << "#define " << name << " " << value << std::endl);
 		    return getToken();
@@ -766,6 +877,8 @@ TokenBase *Program::_getToken()
 	default:
 	    if ( isdigit(ch) )
 	    {
+		if ( is_binary_prefix(ch, source) )
+		    return new TokenInt(read_binary_literal(source));
 		// hex literal: 0x... or 0X...
 		if ( ch == '0' && source.good() && (source.peek() == 'x' || source.peek() == 'X') )
 		{
@@ -808,11 +921,10 @@ TokenBase *Program::_getToken()
 
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 		    word += source.get();
-		// function-like macro expansion: NAME(args) → substituted body
-		if ( macro_map.count(word) && source.peek() == '(' )
+		// function-like macro expansion: NAME(args) or NAME (args)
+		if ( macro_map.count(word) && consume_macro_call_open(source) )
 		{
 		    MacroDef &macro = macro_map[word];
-		    source.get(); // consume '('
 		    // read actual arguments (handling nested parens and strings)
 		    std::vector<std::string> args;
 		    std::string arg;
@@ -867,6 +979,22 @@ TokenBase *Program::_getToken()
 			    }
 			    else
 				pos += pname.size();
+			}
+		    }
+		    if ( macro.variadic )
+		    {
+			std::string varargs;
+			for ( size_t i = macro.params.size(); i < args.size(); ++i )
+			{
+			    if ( !varargs.empty() )
+				varargs += ", ";
+			    varargs += args[i];
+			}
+			size_t pos = 0;
+			while ( (pos = expanded.find("__VA_ARGS__", pos)) != std::string::npos )
+			{
+			    expanded.replace(pos, strlen("__VA_ARGS__"), varargs);
+			    pos += varargs.size();
 			}
 		    }
 		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
@@ -985,13 +1113,16 @@ TokenBase *Program::skipConditionalBlock()
     int depth = 0;
     while ( source.good() && !source.eof() )
     {
-	// skip to next '#' at start of a directive
+	// skip leading horizontal whitespace; directives may be indented
+	while ( source.good() && !source.eof() && (source.peek() == ' ' || source.peek() == '\t') )
+	    source.get();
+	if ( !source.good() || source.eof() )
+	    break;
 	char ch = source.get();
 	if ( ch == '\n' || ch == '\r' )
 	    continue;
 	if ( ch != '#' )
 	{
-	    // skip rest of line
 	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 		source.get();
 	    continue;
@@ -1075,91 +1206,134 @@ TokenBase *Program::skipConditionalBlock()
     return NULL;
 }
 
-// evaluate #if condition: supports "defined(NAME)", "!defined(NAME)", integer constants
+// evaluate #if condition: supports defined(NAME), !, &&, ||, identifiers,
+// and integer constants. This is enough for the header guards and platform
+// feature checks used by the imported SMAUG sources.
 bool Program::evaluateIfCondition()
 {
-    // skip whitespace
-    while ( source.peek() == ' ' || source.peek() == '\t' )
-	source.get();
-
-    bool negate = false;
-    if ( source.peek() == '!' )
-    {
-	source.get();
-	negate = true;
-	while ( source.peek() == ' ' || source.peek() == '\t' )
-	    source.get();
-    }
-
-    // check for "defined" keyword
-    if ( isalpha(source.peek()) )
-    {
-	std::string word;
-	while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
-	    word += source.get();
-
-	if ( word == "defined" )
-	{
-	    while ( source.peek() == ' ' || source.peek() == '\t' )
-		source.get();
-	    bool has_paren = false;
-	    if ( source.peek() == '(' )
-	    {
-		source.get();
-		has_paren = true;
-		while ( source.peek() == ' ' || source.peek() == '\t' )
-		    source.get();
-	    }
-	    std::string name;
-	    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
-		name += source.get();
-	    if ( has_paren )
-	    {
-		while ( source.peek() == ' ' || source.peek() == '\t' )
-		    source.get();
-		if ( source.peek() == ')' )
-		    source.get();
-	    }
-	    // consume rest of line
-	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-		source.get();
-	    bool result = define_map.count(name) > 0 || macro_map.count(name) > 0;
-	    return negate ? !result : result;
-	}
-	// plain identifier — check if it's defined and non-zero
-	// consume rest of line
-	while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-	    source.get();
-	bool result = define_map.count(word) > 0 || macro_map.count(word) > 0;
-	if ( result )
-	{
-	    std::string &val = define_map[word];
-	    if ( !val.empty() )
-		result = (atoi(val.c_str()) != 0);
-	}
-	return negate ? !result : result;
-    }
-
-    // integer constant: #if 0, #if 1
-    if ( isdigit(source.peek()) )
-    {
-	int val = 0;
-	while ( source.good() && isdigit(source.peek()) )
-	{
-	    val *= 10;
-	    val += source.get() - '0';
-	}
-	// consume rest of line
-	while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-	    source.get();
-	bool result = (val != 0);
-	return negate ? !result : result;
-    }
-
-    // consume rest of line for anything we don't understand
+    std::string expr;
     while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-	source.get();
-    return negate ? true : false;
+	expr += source.get();
+
+    size_t pos = 0;
+
+    auto skip_ws = [&]() {
+	while ( pos < expr.size() && (expr[pos] == ' ' || expr[pos] == '\t') )
+	    ++pos;
+    };
+
+    std::function<bool()> parse_or;
+    std::function<bool()> parse_and;
+    std::function<bool()> parse_unary;
+    std::function<bool()> parse_primary;
+
+    parse_primary = [&]() -> bool {
+	skip_ws();
+	if ( pos >= expr.size() )
+	    return false;
+
+	if ( expr[pos] == '(' )
+	{
+	    ++pos;
+	    bool value = parse_or();
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == ')' )
+		++pos;
+	    return value;
+	}
+
+	if ( isdigit((unsigned char)expr[pos]) )
+	{
+	    int val = 0;
+	    while ( pos < expr.size() && isdigit((unsigned char)expr[pos]) )
+	    {
+		val *= 10;
+		val += expr[pos++] - '0';
+	    }
+	    return val != 0;
+	}
+
+	if ( isalpha((unsigned char)expr[pos]) || expr[pos] == '_' )
+	{
+	    std::string word;
+	    while ( pos < expr.size()
+		 && (isalnum((unsigned char)expr[pos]) || expr[pos] == '_') )
+		word += expr[pos++];
+
+	    if ( word == "defined" )
+	    {
+		skip_ws();
+		bool has_paren = false;
+		if ( pos < expr.size() && expr[pos] == '(' )
+		{
+		    has_paren = true;
+		    ++pos;
+		    skip_ws();
+		}
+		std::string name;
+		while ( pos < expr.size()
+		     && (isalnum((unsigned char)expr[pos]) || expr[pos] == '_') )
+		    name += expr[pos++];
+		skip_ws();
+		if ( has_paren && pos < expr.size() && expr[pos] == ')' )
+		    ++pos;
+		return define_map.count(name) > 0 || macro_map.count(name) > 0;
+	    }
+
+	    bool result = define_map.count(word) > 0 || macro_map.count(word) > 0;
+	    if ( result )
+	    {
+		std::string &val = define_map[word];
+		if ( !val.empty() )
+		    result = (atoi(val.c_str()) != 0);
+	    }
+	    return result;
+	}
+
+	return false;
+    };
+
+    parse_unary = [&]() -> bool {
+	skip_ws();
+	if ( pos < expr.size() && expr[pos] == '!' )
+	{
+	    ++pos;
+	    return !parse_unary();
+	}
+	return parse_primary();
+    };
+
+    parse_and = [&]() -> bool {
+	bool value = parse_unary();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos + 1 < expr.size() && expr[pos] == '&' && expr[pos + 1] == '&' )
+	    {
+		pos += 2;
+		value = value && parse_unary();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_or = [&]() -> bool {
+	bool value = parse_and();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos + 1 < expr.size() && expr[pos] == '|' && expr[pos + 1] == '|' )
+	    {
+		pos += 2;
+		value = value || parse_and();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    return parse_or();
 }
 
 TokenBase *Program::getToken()

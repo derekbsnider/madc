@@ -1,31 +1,43 @@
 # Test Status
 
-Test results as of April 23, 2026 (post-v0.8.0 / Phase F continues — external MadSMAUG bootstrap advanced past `errno` and now stops at `F_SETFL`).
+Test results as of April 23, 2026 (v0.9.0 — Phase F continues; external MadSMAUG bootstrap now advances past `F_SETFL`, Mem-backed arithmetic expression regressions, fixed-array unary dereference, and chained `->` after expression parents, and currently stops at `timerisset`).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 121 passed, 4 failed, 0 skipped
+## Current Batch Status — 141 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 121 integration tests
-- Failing: `testassign.mad`, `testcin.mad`, `testfnptrtypedef.mad`, `testint.mad`
-- Unit tests were not rerun in this session
+- Passing: 141 integration tests
+- Failing: none
+- Timed out: none
+- Unit tests: 25/25 passing (doctest)
 
 The newly exercised regressions from this session all pass directly:
 
+- `testassignexprmem.mad`
+- `testcompoundassignmem.mad`
+- `testderefarray.mad`
+- `testassign.mad`
 - `testassigninexpr.mad`
 - `testc23_bool.mad`
+- `testcin.mad`
+- `testfnptrtypedef.mad`
+- `testint.mad`
 - `testpostfix.mad`
 - `test_ptr_fn_deref.mad`
 - `test_get_argv_deref.mad`
 - `test_errno_deref.mad`
+- `testfnptrmemberarrow.mad`
+- `testglobalptrarrayarrow.mad`
 
-## Passing Tests — 121 integration (latest batch)
+## Passing Tests — 141 integration (latest batch)
 
 `scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
 hello world`) and `testargv.mad` with argv (`hello world`), asserting
-on their output instead of skipping. Previously these were run manually.
+on their output instead of skipping. The runner now also reports
+`TIMEOUT: tests/...` explicitly when `timeout 5` kills a spinning test,
+instead of collapsing that case into a generic `FAIL`.
 
 ### New post-v0.8.0 (SMAUG Phase F regressions — hashstr.mad runs)
 
@@ -49,6 +61,9 @@ on their output instead of skipping. Previously these were run manually.
 | `testflock.mad` | Embedded `<sys/file.h>` and `flock()`/`LOCK_*` constants via dlsym fallback |
 | `testincludeonce.mad` | `#include` include-once behavior for repeated local includes within a single compile |
 | `testassigninexpr.mad` | Assignment expressions used in `while` / `if` conditions and chained assignment value flow |
+| `testassignexprmem.mad` | Stack-local Mem destinations on plain arithmetic / `%` expressions |
+| `testcompoundassignmem.mad` | Stack-local compound assignment with Mem-backed LHS (`*=`, then `+=`) |
+| `testderefarray.mad` | Unary `*` on fixed arrays (`!*buf`, `*word`) via array-to-pointer decay |
 | `test_ptr_fn_deref.mad` | Dereference of a user-function `char *` return (`*get_msg()`) |
 | `test_get_argv_deref.mad` | Dereference of a method-call `char *` return (`*(version.c_str())`) |
 | `test_errno_deref.mad` | Dereference of builtin/external pointer-return path via `errno` / `__errno_location()` |

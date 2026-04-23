@@ -1,0 +1,13 @@
+#!/../bin/madc
+#include <stdio.h>
+
+#define UPPER(c) ((c) >= 'a' && (c) <= 'z' ? (c)+'A'-'a' : (c))
+
+int main()
+{
+    int x = UPPER('b');
+    int y = UPPER('!');
+    if ( x == 'B' && y == '!' )
+        return 0;
+    return 1;
+}

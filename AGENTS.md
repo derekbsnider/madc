@@ -121,6 +121,23 @@ instructions.
 Skip `tests/include_helper.mad` when running by hand; it is included
 by `testinclude.mad`, not a standalone test.
 
+## Session hand-off
+
+Cross-agent work in this repo uses
+[`docs/agent-handoff.md`](docs/agent-handoff.md) as the hand-off
+playbook.
+
+- `claude_status.json` is the canonical current snapshot.
+- `madc-knowledge` is the authoritative project-memory source.
+- `claude_status.json`, `TODO.md`, and `CHANGELOG.md` are mirrored
+  repo surfaces that must stay in sync with it.
+- `docs/test-status.md` is the detailed test baseline.
+- Live git state and actual build/test results remain operational truth
+  for branch, working tree, and validation.
+
+Read and update those artifacts per `docs/agent-handoff.md` when
+passing work between agents.
+
 ## Key design notes
 
 - **Stream methods** use type-specific wrappers (`ifstream_good`,
@@ -169,9 +186,11 @@ history, or spam agent-permission prompts. Apply them unconditionally.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
-| [branching.md](.claude/rules/branching.md)       |     8 | Feature branches off `develop`, never destroy uncommitted work, `develop` → `master` for releases |
+| [branching.md](.claude/rules/branching.md)       |    12 | Feature branches off `develop`, agent-owned `-claude` / `-codex` WIP branches, stable `develop` |
 | [feature-guards.md](.claude/rules/feature-guards.md) |   9 | `#ifdef FEATURE_NAME` for in-progress code; never `git checkout` over uncommitted work |
 | [docs-vs-rules.md](.claude/rules/docs-vs-rules.md) |   20 | Bare rules in `.claude/rules/`, reasoning in `docs/rules/` — never duplicate content |
+| [session-handoff.md](.claude/rules/session-handoff.md) |   19 | KG-first hand-off flow, hypothesis-first execution, concise hand-off note |
+| [knowledge-graph.md](.claude/rules/knowledge-graph.md) |   14 | KG as authoritative project memory, mirrored back into repo files |
 
 Shell-command hygiene (single commands, no `&&` chains) is a P1 rule
 too; it's stated in the "Shell command hygiene" section of this file.
@@ -217,10 +236,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **18 rules, 440 lines** in `.claude/rules/`.
-- **This file (AGENTS.md): ~266 lines** — loaded by Claude via
+- **20 rules, 477 lines** in `.claude/rules/`.
+- **This file (AGENTS.md): 288 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~714 lines.**
+- **Grand total loaded by Claude Code per turn: 765 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

@@ -1,0 +1,16 @@
+#!/../bin/madc
+#include <stdio.h>
+
+enum { MAX_STANCE = 3 };
+
+struct Thing
+{
+    int values[MAX_STANCE];
+};
+
+int main()
+{
+    struct Thing t;
+    printf("%d\n", MAX_STANCE);
+    return 0;
+}

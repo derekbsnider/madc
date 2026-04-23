@@ -1,0 +1,13 @@
+#!/../bin/madc
+#include <stdio.h>
+
+#define BASIC_STANCE 1 /* This is one more than the last basic
+                        * Stance for setting up mobs values if
+                        * None are specified.
+                        */
+
+int main()
+{
+    printf("%d\n", BASIC_STANCE);
+    return 0;
+}

@@ -1,0 +1,13 @@
+#include <stdio.h>
+
+int main()
+{
+    int number = 12;
+    int multiplier = 0;
+
+    number *= (multiplier = 1000);
+    number += 345;
+
+    printf("%d %d\n", number, multiplier);
+    return 0;
+}

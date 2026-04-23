@@ -12,6 +12,7 @@
 # No test names are hard-coded here.
 PASS=0
 FAIL=0
+TIMEOUTS=0
 SKIP=0
 for t in tests/*.mad; do
     base=$(basename "$t" .mad)
@@ -32,7 +33,11 @@ for t in tests/*.mad; do
     rc=$?
 
     ok=1
-    if [ $rc -ne 0 ]; then
+    timed_out=0
+    if [ $rc -eq 124 ]; then
+        ok=0
+        timed_out=1
+    elif [ $rc -ne 0 ]; then
         ok=0
     elif [ -f "$expect_file" ]; then
         while IFS= read -r line; do
@@ -48,9 +53,15 @@ for t in tests/*.mad; do
     if [ $ok -eq 1 ]; then
         PASS=$((PASS+1))
     else
-        echo "FAIL: $t"
-        FAIL=$((FAIL+1))
+        if [ $timed_out -eq 1 ]; then
+            echo "TIMEOUT: $t"
+            TIMEOUTS=$((TIMEOUTS+1))
+        else
+            echo "FAIL: $t"
+            FAIL=$((FAIL+1))
+        fi
     fi
 done
-echo "$PASS passed, $FAIL failed, $SKIP skipped"
+echo "$PASS passed, $FAIL failed, $TIMEOUTS timed out, $SKIP skipped"
 [ $FAIL -eq 0 ] || exit 1
+[ $TIMEOUTS -eq 0 ] || exit 1

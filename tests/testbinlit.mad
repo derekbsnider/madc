@@ -1,0 +1,26 @@
+#include <iostream>
+
+int main()
+{
+    int x;
+
+    x = 0b0;
+    cout << x << endl;
+
+    x = 0b1;
+    cout << x << endl;
+
+    x = 0b1010;
+    cout << x << endl;
+
+    x = 0B11110000;
+    cout << x << endl;
+
+    x = 0b10000 + 0b11;
+    cout << x << endl;
+
+    if ( 0b1111 == 15 )
+        cout << "eq" << endl;
+
+    return 0;
+}

@@ -1,0 +1,11 @@
+#include <stdio.h>
+#include <sys/time.h>
+
+int main()
+{
+    struct timeval a;
+    a.tv_sec = 0;
+    a.tv_usec = 1;
+    printf("%d\n", __madc_timerisset(&a));
+    return 0;
+}

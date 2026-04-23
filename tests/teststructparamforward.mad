@@ -1,0 +1,10 @@
+#!/../bin/madc
+
+#define args(list) list
+
+struct tm *update_time args( ( struct tm *old_time ) );
+
+int main()
+{
+    return 0;
+}

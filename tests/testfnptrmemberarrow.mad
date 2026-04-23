@@ -1,0 +1,51 @@
+#include <stdio.h>
+
+typedef void DO_FUN(int lvl, char *arg);
+typedef int BINOP(int, int);
+
+void do_who(int lvl, char *arg)
+{
+    printf("who %d [%s]\n", lvl, arg);
+}
+
+void do_look(int lvl, char *arg)
+{
+    printf("look %d [%s]\n", lvl, arg);
+}
+
+int add(int a, int b)
+{
+    return a + b;
+}
+
+struct cmd {
+    char *name;
+    DO_FUN *fn;
+};
+
+struct op {
+    char *name;
+    BINOP *fn;
+};
+
+int main()
+{
+    struct cmd who_cmd = { "who", do_who };
+    struct cmd look_cmd = { "look", do_look };
+    struct cmd *pcmd = &who_cmd;
+    DO_FUN *dispatch;
+
+    pcmd->fn(5, "all");
+    (*pcmd->fn)(7, "again");
+    dispatch = pcmd->fn;
+    dispatch(9, "again");
+
+    pcmd = &look_cmd;
+    pcmd->fn(3, "north");
+
+    struct op add_op = { "add", add };
+    struct op *pop = &add_op;
+    printf("%s: %d\n", pop->name, (*pop->fn)(9, 4));
+
+    return 0;
+}

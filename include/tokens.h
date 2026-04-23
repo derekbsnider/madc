@@ -42,7 +42,7 @@ enum class TokenID {
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
-  tkUSING, tkNAMESPACE, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM,
+  tkUSING, tkNAMESPACE, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT,
   tkVECTOR, tkMAP, tkSET, tkLIST
 };
 
@@ -70,18 +70,18 @@ public:
     int line;
     int column;
     std::streampos pos;
-    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; }
-    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; }
+    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = NULL; parent = NULL; line = 0; column = 0; pos = 0; }
+    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = NULL; parent = NULL; line = 0; column = 0; pos = 0; }
     virtual ~TokenBase() {}
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int64_t c) { _token = c; }
     virtual void setDataType(DataDef *d) { if (d) _datatype = d; }
     virtual void setFlag(tokflag_t f) { _flags |= f; }
-    virtual bool is_bracketed()  { return (_flags & tfBRACKETED) ? true : false;  }
-    virtual bool is_overloaded() { return (_flags & tfOVERLOADED) ? true : false; }
-    virtual bool is_operator() { return false; }
-    virtual bool is_constant() { return false; }
-    virtual bool is_real()     { return false; }
+    virtual bool is_bracketed() const { return (_flags & tfBRACKETED) ? true : false;  }
+    virtual bool is_overloaded() const { return (_flags & tfOVERLOADED) ? true : false; }
+    virtual bool is_operator() const { return false; }
+    virtual bool is_constant() const { return false; }
+    virtual bool is_real()     const { return false; }
     virtual int inc() { return 0; }
     virtual int dec() { return 0; }
     virtual int64_t get() const  { return _token; }
@@ -150,7 +150,7 @@ public:
     virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; return to; }
     virtual int ival() const { /*if (left && right) return operate();*/ return 0; }
     virtual size_t argc() const { return 2; }
-    virtual bool is_operator() { return true; }
+    virtual bool is_operator() const override { return true; }
     virtual inline TokenType type()     const { return TokenType::ttOperator;     }
     virtual inline TokenID   id()       const { return TokenID::tkOperator;       }
     virtual inline TokenAssoc assoc()   const { return TokenAssoc::taLeftToRight; }
@@ -291,6 +291,12 @@ public:
     TokenInc() : TokenMultiOp("++") {}
     virtual TokenBase *clone() { TokenInc *to = new TokenInc(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkInc; }
+    virtual DataDef *datadef() const override
+    {
+	if ( left )  return left->datadef();
+	if ( right ) return right->datadef();
+	return TokenBase::datadef();
+    }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
@@ -316,6 +322,12 @@ public:
     TokenDec() : TokenMultiOp("--") {}
     virtual TokenBase *clone() { TokenDec *to = new TokenDec(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkDec; }
+    virtual DataDef *datadef() const override
+    {
+	if ( left )  return left->datadef();
+	if ( right ) return right->datadef();
+	return TokenBase::datadef();
+    }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
@@ -834,7 +846,7 @@ public:
     virtual TokenType type() const { return TokenType::ttInteger; }
     virtual TokenID   id()   const { return TokenID::tkInt; }
     virtual TokenBase *clone()     { return new TokenInt(_token); }
-    virtual bool is_constant()	   { return true; }
+    virtual bool is_constant() const override { return true; }
     virtual void setDataType(DataDef *d) { if (d && d->is_integer()) _datatype = d; }
 //  virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::Operand &operand(Program &);
@@ -854,8 +866,8 @@ public:
     virtual TokenType type() const    { return TokenType::ttReal; }
     virtual TokenID   id()   const    { return TokenID::tkReal;   }
     virtual TokenBase *clone()        { return new TokenReal(_val); }
-    virtual bool is_constant()	      { return true; }
-    virtual bool is_real()            { return true; }
+    virtual bool is_constant() const override { return true; }
+    virtual bool is_real()     const override { return true; }
     virtual void setDataType(DataDef *d) { if (d && d->is_real()) _datatype = d; }
 //  virtual asmjit::x86::Gp &getreg(Program &) { throw "TokenReal::getreg(): Use TokenReal::operand()!"; }
     virtual asmjit::Operand &operand(Program &);
@@ -886,7 +898,7 @@ public:
     TokenStr(const char *k) : TokenIdent(k) {}
     TokenStr(std::string k) : TokenIdent(k) {}
     virtual int ival() const       { return atol(str.c_str()); }
-    virtual bool is_constant()	   { return true; }
+    virtual bool is_constant() const override { return true; }
     virtual TokenType type() const { return TokenType::ttString; }
     virtual TokenID   id()   const { return TokenID::tkStr; }
     virtual TokenBase *clone()     { return new TokenStr(str); }
@@ -899,7 +911,7 @@ public:
     TokenREM() {}
     TokenREM(const char *k) : TokenIdent(k) {}
     TokenREM(std::string k) : TokenIdent(k) {}
-    virtual bool is_constant()	   { return true; }
+    virtual bool is_constant() const override { return true; }
     virtual TokenType type() const { return TokenType::ttComment; }
     virtual TokenID   id()   const { return TokenID::tkREM; }
     virtual TokenBase *clone()     { return new TokenREM(str); }
@@ -1058,6 +1070,15 @@ public:
     TokenEXTERN() : TokenKeyword("extern") {}
     virtual TokenID id() const { return TokenID::tkEXTERN; }
     virtual TokenBase *clone() { return new TokenEXTERN(); }
+    virtual TokenBase *parse(Program &pgm);
+};
+
+class TokenRESTRICT: public TokenKeyword
+{
+public:
+    TokenRESTRICT() : TokenKeyword("restrict") {}
+    virtual TokenID id() const { return TokenID::tkRESTRICT; }
+    virtual TokenBase *clone() { return new TokenRESTRICT(); }
     virtual TokenBase *parse(Program &pgm);
 };
 

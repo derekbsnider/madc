@@ -12,6 +12,12 @@
 #include <cstring>
 #include <cstdint>
 
+struct madc_timeval
+{
+    int64_t tv_sec;
+    int64_t tv_usec;
+};
+
 // Parse one format specifier from *pp (starting at '%'), advance *pp past it,
 // copy the specifier into mini_fmt, and return the conversion character.
 static char parse_spec(const char **pp, char *mini_fmt, size_t mini_size)
@@ -129,4 +135,55 @@ extern "C" void __madc_fd_clr(long fd, void *set)
 extern "C" long __madc_fd_isset(long fd, void *set)
 {
     return (((long *)set)[fd / 64] >> (fd % 64)) & 1L;
+}
+
+extern "C" long __madc_timeval_sec(void *tv)
+{
+    return ((madc_timeval *)tv)->tv_sec;
+}
+
+extern "C" long __madc_timeval_usec(void *tv)
+{
+    return ((madc_timeval *)tv)->tv_usec;
+}
+
+extern "C" long __madc_timerisset(void *tv)
+{
+    madc_timeval *tp = (madc_timeval *)tv;
+    return tp->tv_sec || tp->tv_usec;
+}
+
+extern "C" void __madc_timerclear(void *tv)
+{
+    madc_timeval *tp = (madc_timeval *)tv;
+    tp->tv_sec = 0;
+    tp->tv_usec = 0;
+}
+
+extern "C" void __madc_timeradd(void *left, void *right, void *result)
+{
+    madc_timeval *a = (madc_timeval *)left;
+    madc_timeval *b = (madc_timeval *)right;
+    madc_timeval *r = (madc_timeval *)result;
+    r->tv_sec = a->tv_sec + b->tv_sec;
+    r->tv_usec = a->tv_usec + b->tv_usec;
+    if ( r->tv_usec >= 1000000 )
+    {
+        ++r->tv_sec;
+        r->tv_usec -= 1000000;
+    }
+}
+
+extern "C" void __madc_timersub(void *left, void *right, void *result)
+{
+    madc_timeval *a = (madc_timeval *)left;
+    madc_timeval *b = (madc_timeval *)right;
+    madc_timeval *r = (madc_timeval *)result;
+    r->tv_sec = a->tv_sec - b->tv_sec;
+    r->tv_usec = a->tv_usec - b->tv_usec;
+    if ( r->tv_usec < 0 )
+    {
+        --r->tv_sec;
+        r->tv_usec += 1000000;
+    }
 }

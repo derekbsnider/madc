@@ -18,6 +18,7 @@ public:
 // token definitions of integral data types
 class TokenVOID:      public TokenDataType { public: TokenVOID() :  TokenDataType("void", ddVOID) {} };
 class TokenBOOL:      public TokenDataType { public: TokenBOOL() :  TokenDataType("bool", ddBOOL) {} };
+class TokenC23BOOL:   public TokenDataType { public: TokenC23BOOL() : TokenDataType("_Bool", ddBOOL) {} };
 class TokenCHAR:      public TokenDataType { public: TokenCHAR() :  TokenDataType("char", ddCHAR) {} };
 class TokenINT:       public TokenDataType { public: TokenINT()  :  TokenDataType("int", ddINT) {} };
 class TokenINT8:      public TokenDataType { public: TokenINT8() :  TokenDataType("int8_t", ddINT8) {} };
@@ -69,8 +70,8 @@ public:
     }
     inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
     inline void makeconstant() { flags |= vfCONSTANT; }
-    inline bool is_global()   { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
-    inline bool is_constant() { if ( (flags & vfCONSTANT) ) return true; return false; }
+    inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
+    inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
     bool set(int c)
     {
 	if ( !data ) { return false; }
@@ -175,8 +176,8 @@ public:
     virtual TokenType type() const { return TokenType::ttVariable; }
     virtual int64_t get() const { return var.get<int64_t>(); }
     virtual int val() const     { return var.get<int>(); }
-    virtual bool is_constant() { return var.is_constant(); }
-    virtual bool is_real() { return _datatype->is_real(); }
+    virtual bool is_constant() const { return var.is_constant(); }
+    virtual bool is_real() const { return _datatype->is_real(); }
     virtual void set(int64_t c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
     virtual void putreg(Program &);
 //  virtual asmjit::x86::Gp &getreg(Program &);

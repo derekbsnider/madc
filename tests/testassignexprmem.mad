@@ -1,0 +1,14 @@
+#include <ctype.h>
+#include <stdio.h>
+
+int main()
+{
+    char *s = "12";
+    int number = 0;
+
+    while ( isdigit(s[0]) )
+        number = (number * 10) + (*s++ - '0');
+
+    printf("%d\n", number);
+    return 0;
+}

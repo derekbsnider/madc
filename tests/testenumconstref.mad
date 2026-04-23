@@ -1,0 +1,16 @@
+#!/../bin/madc
+#include <stdio.h>
+
+typedef enum
+{
+    AT_COLORBASE = 1024,
+    AT_PLAIN = AT_COLORBASE,
+    AT_ACTION
+} at_types;
+
+int main()
+{
+    at_types at = AT_PLAIN;
+    printf("%d %d\n", AT_COLORBASE, at);
+    return 0;
+}

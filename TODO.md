@@ -4,19 +4,6 @@
 
 ### Language Completeness
 
-- **MadSMAUG umbrella bootstrap — struct-pointer function-member call** —
-  The parser SIGSEGV front edge is now closed: `Program::parseExpression()`
-  null-guards the `dynamic_cast<TokenMember *>` in its `->` branch so a
-  `TokenDeref` / `TokenDerefExpr` LHS (which both report `ttMember`) now
-  produces a proper "expression before '->' must be a pointer to struct"
-  diagnostic instead of crashing at offset `0x8`. The umbrella bootstrap
-  now advances past `ident.c` and stops at an `interp.c` shape that
-  exercises function-pointer struct members — `(*cmd->do_fun)(ch, arg)` and
-  related `&cmd->userec`. That path needs struct function-pointer members
-  to carry real `DataDefFPTR` type info through member lookup (currently
-  lowered to plain `int64_t`), so `*fp_member` and `fp_member(args)` can
-  both resolve. That is its own Phase F work item, not a parser crash.
-
 ## Medium Priority
 
 ### Language Completeness
@@ -66,6 +53,32 @@
 ## Completed
 
 ### Session 2026-04-23
+
+- ~~**`->` after expression parents (call / subscript / cast / deref-expr)**~~ —
+  `TokenMember::operand()`'s chained-arrow path previously called
+  `parent_expr->operand()` unconditionally, which works for `TokenMember`
+  parents (they re-materialize their own address each call) but silently
+  failed for `TokenCallFunc` / `TokenCallMethod` / `TokenSubscript` /
+  `TokenDerefExpr`, whose `operand()` returns a fresh register without
+  emitting the computation. Now compiles non-`ttMember` parent expressions,
+  so `get_slot(i)->value` and the chained call-ptr dispatch patterns emit
+  the producing computation before dereferencing. Targeted regression:
+  `tests/testglobalptrarrayarrow.mad`.
+
+- ~~**Mem-backed arithmetic expression codegen**~~ — plain arithmetic /
+  bitwise operators now compute through a temp register when the caller's
+  destination is Mem, then mirror the result back; compound assignments now
+  do the same for stack-backed variables. This closes SMAUG front edges in
+  `bet.h` / `hashstr.c` such as `number = (number * 10) + ...`,
+  `number *= (multiplier = 1000)`, and `hash = len % STR_HASH_SIZE`.
+  Targeted regressions: `tests/testassignexprmem.mad`,
+  `tests/testcompoundassignmem.mad`.
+
+- ~~**Unary `*` on fixed arrays (`*arg`, `!*buf`)**~~ — the parser now
+  accepts fixed arrays in unary dereference contexts via normal C
+  array-to-pointer decay. This advances the MadSMAUG umbrella past
+  `interp.c`'s `if ( !*arg )` in `do_timecmd`. Targeted regression:
+  `tests/testderefarray.mad`.
 
 - ~~**`struct servent` interop in embedded `<netdb.h>`**~~ — 32-byte
   glibc-matching layout (`char *s_name; char **s_aliases; int s_port;
@@ -117,6 +130,11 @@
   `errno` / `*(__errno_location())` parsing. Targeted regressions:
   `tests/test_ptr_fn_deref.mad`, `tests/test_get_argv_deref.mad`,
   `tests/test_errno_deref.mad`.
+
+- **Next MadSMAUG front edge** — full `/workspace/MadSMAUG/src/SMAUG.mad`
+  now advances to undeclared `timerisset` at `interp.c` / `do_timecmd`
+  (`/workspace/MadSMAUG/src/SMAUG.mad:1257:18`). Likely next work is
+  embedded timeval helper macro coverage.
 
 ### Session 2026-04-18
 

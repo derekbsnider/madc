@@ -310,23 +310,25 @@ bool Program::_compiler_finalize()
 	}
 	return false;
     }
-    variable_vec_iter vvi;
-    Variable *var;
-    Method *method;
-    FuncNode *fnd;
-
-    // find all global variables which are functions, have no x86code assigned
-    // and have a funcnode label, so that we can properly set our function pointer.
-    // Skip DataDefFPTR variables — those are function-POINTER storage (8-byte
-    // slot), not function definitions. Their data is a uint64, not a Method*.
-    for ( vvi = tkProgram->variables.begin(); vvi != tkProgram->variables.end(); ++vvi )
+    // Backfill x86code only for the known user-defined functions/lambdas that
+    // participated in the funcnode pre-pass. Scanning every global btFunct
+    // symbol is unsafe for large C headers because prototypes / typedef-like
+    // declarations can be "function-shaped" without carrying a real Method.
+    for ( TokenBase *tb_func : pending_funcs )
     {
-	var = *vvi;
-	if ( var->type->basetype() == BaseType::btFunct
-	&&   dynamic_cast<DataDefFPTR *>(var->type) == NULL
-	&&   (method=(Method *)var->data) && !method->x86code
-	&&   (fnd=((FuncDef *)(method->returns.type))->funcnode) )
-	    method->x86code = (uint8_t *)root_fn + code.labelOffset(fnd->label());
+	TokenFunc *tf = dynamic_cast<TokenFunc *>(tb_func);
+	if ( !tf || !tf->var.data )
+	    continue;
+
+	Method *method = (Method *)tf->var.data;
+	if ( !method || method->x86code )
+	    continue;
+
+	FuncDef *func = dynamic_cast<FuncDef *>(method->returns.type);
+	if ( !func || !func->funcnode )
+	    continue;
+
+	method->x86code = (uint8_t *)root_fn + code.labelOffset(func->funcnode->label());
     }
 
     return true;
@@ -362,13 +364,18 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	DataDefFPTR *fptr = static_cast<DataDefFPTR *>(var.type);
 	FuncDef *func = fptr->target;
 	FuncSignature funcsig(CallConvId::kCDecl);
+	bool ret_is_variadic = false;
 
 	// set return type
 	DataDef &retdd = func->returns;
-	if ( retdd.is_real() )        funcsig.setRetT<double>();
+	if ( retdd.is_real() )          funcsig.setRetT<double>();
 	else if ( retdd.is_integer() ) funcsig.setRetT<int64_t>();
-	else if ( retdd.is_string() ) funcsig.setRetT<int64_t>();
-	else                          funcsig.setRetT<void>();
+	else if ( retdd.is_string()
+	       || retdd.is_pointer()
+	       || retdd.is_function()
+	       || retdd.is_object()
+	       || retdd.is_struct() ) funcsig.setRetT<void *>();
+	else                            funcsig.setRetT<void>();
 
 	// Load the function pointer. When src_node is set (direct struct-member
 	// invocation like cmd.fn(args)), compile it to materialise the fn-ptr
@@ -525,13 +532,18 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	}
 
 	// capture return value
-	if ( !regdp.first )
-	{
-	    _operand = pgm.cc.newGpq("fptr_ret");
-	    regdp.first = &_operand;
-	}
 	if ( retdd.rawtype() != DataType::dtVOID )
-	    call->setRet(0, regdp.first->as<x86::Gp>());
+	{
+	    if ( !regdp.first )
+	    {
+		if ( retdd.is_real() )
+		    _operand = pgm.cc.newXmm("fptr_ret");
+		else
+		    _operand = pgm.cc.newGpq("fptr_ret");
+		regdp.first = &_operand;
+	    }
+	    bind_call_return(pgm, call, regdp.first, &retdd, _operand, ret_is_variadic);
+	}
 	if ( !regdp.second )
 	    regdp.second = &func->returns;
 
@@ -619,7 +631,8 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	    return *regdp.first;
 	}
-	pgm.Throw(this) << "TokenCallFunc::compile() method has neither FuncNode nor x86code" << flush;
+	pgm.Throw(this) << "TokenCallFunc::compile(" << var.name
+			<< ") method has neither FuncNode nor x86code" << flush;
     }
 
     // variadic dlsym call: no funcnode, has x86code, 0 declared params
@@ -1851,7 +1864,17 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
     {
 	r.tv = dynamic_cast<TokenVar *>(left);
 	r.type = r.tv->var.type;
-	r.lval = r.tv->operand(pgm);
+	Operand &op = r.tv->operand(pgm);
+	if ( op.isMem() )
+	{
+	    x86::Gp gp = pgm.cc.newGpq("var_lhs");
+	    load_mem_to_gpq(pgm, gp, op.as<x86::Mem>(), r.type);
+	    r.writeback = op.as<x86::Mem>();
+	    r.lval = gp;
+	    r.is_member = true;
+	}
+	else
+	    r.lval = op;
     }
     else if ( left->type() == TokenType::ttMember )
     {
@@ -2567,8 +2590,21 @@ Operand &TokenMember::operand(Program &pgm)
     if ( parent_expr != nullptr )
     {
 	// Chained member access (e.g. ch->in_room->name or ch->desc.buf).
-	// parent_expr->operand() gives us the parent member's operand.
-	Operand &parent_op = parent_expr->operand(pgm);
+	// For a TokenMember parent, operand() re-materializes the parent's
+	// address each call from its stored Variable/offset. For any other
+	// expression parent (TokenCallFunc, TokenCallMethod, TokenSubscript,
+	// TokenDerefExpr, ...), operand() returns an empty/fresh register
+	// without emitting the computation, so we must compile() instead to
+	// actually evaluate the pointer-producing expression.
+	Operand *parent_op_ptr;
+	regdefp_t parent_regdp;
+	parent_regdp.first = NULL;
+	parent_regdp.second = NULL;
+	if ( parent_expr->type() == TokenType::ttMember )
+	    parent_op_ptr = &parent_expr->operand(pgm);
+	else
+	    parent_op_ptr = &parent_expr->compile(pgm, parent_regdp);
+	Operand &parent_op = *parent_op_ptr;
 
 	if ( object.type->is_pointer() )
 	{
@@ -3888,7 +3924,9 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "+ missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -3899,6 +3937,8 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     pgm.safeadd(lval, rval, regdp.second);		 // type safe addition
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -3911,7 +3951,9 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "- missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -3922,6 +3964,8 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     pgm.safesub(lval, rval, regdp.second);		 // type safe subtraction
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -3932,7 +3976,9 @@ Operand &TokenNeg::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenNeg::Compile() TOP" << endl);
     if ( !right ) { throw "- missing rval operand"; }
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -3952,7 +3998,9 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "* missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -3963,6 +4011,8 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     pgm.safemul(lval, rval, regdp.second);		 // type safe multiplication
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -3975,7 +4025,9 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "/ missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -3988,6 +4040,8 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     Operand &divisor = right->compile(pgm, regdp);	 // compile right side into tmp
     pgm.safexor(remainder, remainder);			 // zero out remainder
     pgm.safediv(remainder, dividend, divisor, regdp.second);// type safe division
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, dividend, regdp.second, regdp.second);
     regdp.first = &dividend;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -4027,7 +4081,9 @@ Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "% missing rval operand"; }
     if ( can_optimize() )  {return optimize(pgm, regdp);} 
 
-    if ( !regdp.first ) // { throw "% missing register"; }
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller ) // { throw "% missing register"; }
     {
 	_operand = pgm.cc.newInt64("remainder");
 	regdp.first = &_operand;
@@ -4050,6 +4106,8 @@ Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)
     pgm.safexor(remainder, remainder); // clear whole register
     DBG(pgm.cc.comment("TokenMod::compile() pgm.cc.idiv(remainder, lreg, rval)"));
     pgm.safediv(remainder, dividend, divisor);
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, remainder, regdp.second, regdp.second);
     regdp.first = &remainder;
     return *regdp.first;
 }
@@ -4241,7 +4299,9 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 //  if ( !regdp.first ) { throw "<< missing register"; }
 
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -4252,6 +4312,8 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     pgm.safeshl(lval, rval);				 // type safe shift left
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // restore regdp.first
     DBG(cout << "TokenBSL::Compile() END" << endl);	 // (debugging message)
     return *regdp.first;				 // return result operand
@@ -4293,6 +4355,12 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 	regdp.object = &lval;
 	right->compile(pgm, regdp);
 
+	Operand *input_dest = NULL;
+	if ( TokenVar *tvr = dynamic_cast<TokenVar *>(right) )
+	    input_dest = &tvr->operand(pgm);
+	else if ( TokenMember *tmr = dynamic_cast<TokenMember *>(right) )
+	    input_dest = &tmr->operand(pgm);
+
 	if ( !regdp.second )
 	    throw "TokenBSR::compile() unable to determine rval type for >>";
 
@@ -4315,8 +4383,11 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 	    call->setArg(0, lval.as<x86::Gp>());
 	    call->setArg(1, tmp_addr);
 	    // reload value from temp slot into the variable's register
-	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.cc.mov(regdp.first->as<x86::Gp>(), tmp_slot);
+	    Operand *store_dest = input_dest ? input_dest : regdp.first;
+	    if ( store_dest->isReg() && store_dest->as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(store_dest->as<x86::Gp>(), tmp_slot);
+	    else if ( store_dest->isMem() )
+		pgm.safemov(store_dest->as<x86::Mem>(), tmp_slot, regdp.second, &ddINT64);
 	}
 	else if ( regdp.second->is_real() )
 	{
@@ -4327,8 +4398,15 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.invoke(&call, imm(streamin_double), FuncSignature::build<void *, void *, void *>());
 	    call->setArg(0, lval.as<x86::Gp>());
 	    call->setArg(1, tmp_addr);
-	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
-		pgm.cc.movsd(regdp.first->as<x86::Xmm>(), tmp_slot);
+	    Operand *store_dest = input_dest ? input_dest : regdp.first;
+	    if ( store_dest->isReg() && store_dest->as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.cc.movsd(store_dest->as<x86::Xmm>(), tmp_slot);
+	    else if ( store_dest->isMem() )
+	    {
+		x86::Xmm tmp_xmm = pgm.cc.newXmm("__cin_double");
+		pgm.cc.movsd(tmp_xmm, tmp_slot);
+		pgm.cc.movsd(store_dest->as<x86::Mem>(), tmp_xmm);
+	    }
 	}
 	else
 	    throw "TokenBSR::compile() unsupported type for >> input";
@@ -4341,7 +4419,9 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
     // bitwise right-shift
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -4352,6 +4432,8 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     pgm.safeshr(lval, rval);				 // type safe shift right
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -4364,7 +4446,9 @@ Operand &TokenBor::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "!= missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -4375,6 +4459,8 @@ Operand &TokenBor::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     pgm.safeor(lval, rval);				 // type safe binary or
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -4387,7 +4473,9 @@ Operand &TokenXor::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "!= missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -4398,6 +4486,8 @@ Operand &TokenXor::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     pgm.safexor(lval, rval);				 // type safe exclusive or
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -4410,7 +4500,9 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "!= missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
     {
 	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
 	regdp.first = &_operand;			 // pass _operand along
@@ -4421,6 +4513,8 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
     pgm.safeand(lval, rval);				 // type safe binary and
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -5119,7 +5213,17 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("TokenAddrExpr::compile()"));
 
     x86::Gp addr = pgm.cc.newIntPtr("addr_expr");
-    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+    // TokenMember inherits from TokenVar, but its address must come from the
+    // member lvalue operand, not the detached member symbol.
+    if ( dynamic_cast<TokenMember *>(expr) )
+    {
+	Operand &obj = expr->operand(pgm);
+	if ( obj.isMem() )
+	    pgm.cc.lea(addr, obj.as<x86::Mem>());
+	else
+	    pgm.cc.mov(addr, obj.as<x86::Gp>());
+    }
+    else if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
     {
 	Variable &v = tv->var;
 	Operand &obj = pgm.tkFunction->voperand(pgm, &v);
@@ -5653,7 +5757,8 @@ Operand &TokenFOR::compile(Program &pgm, regdefp_t &regdp)
     Label fortail = pgm.cc.newLabel();		// label for tail of loop
 
     pgm.loopstack.push(make_pair(&forcont, &fortail)); // push labels onto loopstack
-    initialize->compile(pgm, regdp); 		// execute loop's initializer statement
+    if ( initialize )
+	initialize->compile(pgm, regdp); 	// execute loop's initializer statement
     for ( auto *extra : init_extras )		// C comma-init extras
     {
 	regdp.first = NULL;
@@ -5675,7 +5780,8 @@ Operand &TokenFOR::compile(Program &pgm, regdefp_t &regdp)
     pgm.cc.bind(forcont);			// bind continue label
     regdp.first  = NULL;			// reset so increment doesn't clobber unrelated registers
     regdp.second = NULL;
-    increment->compile(pgm, regdp); 		// execute loop's increment statement
+    if ( increment )
+	increment->compile(pgm, regdp); 		// execute loop's increment statement
     for ( auto *extra : incr_extras )		// C comma-incr extras
     {
 	regdp.first = NULL;

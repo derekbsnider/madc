@@ -1,0 +1,8 @@
+#!/../bin/madc
+
+void register_cb(void (*cb)(void *));
+
+int main()
+{
+    return 0;
+}

@@ -1,0 +1,19 @@
+#include <stdio.h>
+
+int sum(int *restrict a, int *restrict b)
+{
+    return *a + *b;
+}
+
+int main()
+{
+    int x = 7;
+    int y = 5;
+    int *restrict px = &x;
+    int *restrict py = &y;
+
+    printf("px=%ld py=%ld\n", *px, *py);
+    printf("sum=%ld\n", sum(px, py));
+
+    return 0;
+}

@@ -8,7 +8,8 @@ The "Mad" in Mad-C: mix functions from multiple programming languages in a singl
 > — it's the canonical briefing for every agent (Claude Code, Codex CLI,
 > Gemini CLI, Copilot, Cursor, Aider, Windsurf). Rules are in
 > [`.claude/rules/`](.claude/rules/), with reasoning in
-> [`docs/rules/`](docs/rules/).
+> [`docs/rules/`](docs/rules/). Cross-agent session flow lives in
+> [`docs/agent-handoff.md`](docs/agent-handoff.md).
 
 ---
 
@@ -23,6 +24,9 @@ bin/madc tests/testint.mad
 
 # Run with debug trace
 bin/madc -v tests/testint.mad
+
+# Build first, then run a command against the fresh binary
+scripts/build_then.sh bin/madc tests/testint.mad
 ```
 
 ## Multi-file Projects
@@ -42,8 +46,9 @@ that `#include`s the rest in the right order, with `int main()` last:
 ```
 
 Run the whole project with `bin/madc smaug.mad`. `#include "file.mad"` works
-at the lexer level — filenames resolve relative to the including file, and
-nested includes are supported.
+at the lexer level — filenames resolve relative to the including file, nested
+includes are supported, and repeated includes are skipped within the same
+compile.
 
 ---
 
@@ -157,9 +162,12 @@ make -C src test      # run unit tests
 ```bash
 # Run unit + integration tests
 make -C src fulltest
+
+# Build first, then run one integration test through the batch runner
+scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 97 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
+**Current status: 141 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -187,6 +195,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
 | [`docs/test-status.md`](docs/test-status.md) | Per-test results |
+| [`docs/agent-handoff.md`](docs/agent-handoff.md) | Cross-agent hand-off workflow and source-of-truth rules |
 | [`AGENTS.md`](AGENTS.md) | Agent briefing — project rules, architecture, multi-tool setup |
 | [`docs/rules/`](docs/rules/) | Reasoning behind each rule in `.claude/rules/` |
 | [`CHANGELOG.md`](CHANGELOG.md) | Change history |
@@ -195,10 +204,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.8.0** (2026-04-17) — SMAUG Phase E complete + Phase F start. C fixed arrays (1D + multi-dim + global), brace initializer lists, string-literal char-array init, `char *msg = "literal"` sugar, struct initializer lists, array-of-structs init, chained `->`/`.` member access, `str.length()` / `.size()` methods, crash handler with backtrace, `__FILE__`/`__LINE__`, raw-pointer `ptr[i]` subscript, `struct tm`/`timeval`/`fd_set` with glibc-matching layouts + `FD_*` macros + end-to-end `select()`, self-referencing structs, three-word compound types, multi-variable declarations, `stdin`/`stdout`/`stderr`, for-loop comma expressions, forward decl + definition. The SMAUG 1.8 port begins in the separate [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) repo (`hashstr.mad` first target). 88 integration + 25 unit tests pass.
+**v0.9.0** (2026-04-23) — SMAUG Phase F continues. Three sessions of porting the external [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) umbrella surfaced a long list of C gaps, each landed with a minimal test: `->` after a function-call / subscript / cast now evaluates the call; Mem-backed arithmetic and compound assignment materialize through temporaries; control-flow parenthesis parsing unified across `if`/`while`/`do`; function-pointer typedefs + function-to-pointer decay in value contexts; `struct servent` / `sockaddr` / `sockaddr_in` / `stat` / `dirent` interop with glibc-matching layouts; fixed-size array members in struct bodies; address-taken stack locals; assignment-as-expression in conditions / init-lists / chains; expanded `<fcntl.h>` / `<errno.h>` / `<sys/file.h>` coverage; parser robustness (null-guard on `->` after deref, `#include`-once, chained unary `*`); typed `for` init with comma declarations, `_Bool`, binary literals (`0b…`), `restrict` no-op, empty-clause `for (;;)`, `register` in parameter lists. MadSMAUG umbrella is pinned at undeclared `timerisset` in `do_timecmd`. Current repo baseline: 141 integration + 25 unit tests pass.
 
 ### Recent Releases
 
+- **v0.9.0** — SMAUG Phase F continues: `->` on call results, Mem-backed arithmetic, unified control-flow parens, fn-ptr typedefs + decay, struct interop expansion, address-taken locals, assign-as-expression
 - **v0.8.0** — SMAUG Phase E complete + Phase F start: C arrays, brace init, struct interop, select(), MadSMAUG port begins
 - **v0.7.0** — SMAUG Phase D: va_list/stdarg.h, vsprintf helpers, -rdynamic, for-loop increment fix
 - **v0.6.0** — SMAUG Phase A/B/C: C pointer system, macros, compound types, enum, static, typedef
@@ -213,7 +223,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **Phase 3** | php::/perl::/python::/ruby::/js:: namespaces, dlopen, MadArray | **Complete** |
 | **Phase 3.5** | Modern language features: range-for, function pointers, lambdas, defer, STL containers | **Complete** |
 | **Phase 3.5+** | switch, cin, class methods, regex, multi-return, ternary, namespace scoping | **Complete** |
-| **Phase 4 prep** | C preprocessor, 39 embedded headers, struct alignment, sizeof, argc/argv | **Complete** |
+| **Phase 4 prep** | C preprocessor, 40 embedded headers, struct alignment, sizeof, argc/argv | **Complete** |
 | **SMAUG A/B/C** | Pointers, `->`, casts, `&`, macros, unsigned/enum/static/typedef | **Complete** |
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |

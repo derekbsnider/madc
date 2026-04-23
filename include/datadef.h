@@ -67,6 +67,7 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfPRIVATE	= 4096, // variable is a private class member
 			  vfPROTECTED	= 8192, // variable is a protected class member
 			  vfADDRTAKEN	=16384, // variable needs stable stack storage for &
+			  vfEXTERN	=32768, // extern declaration placeholder
 			} varflag_t;
 
 #define rtNone(x) 0
@@ -95,8 +96,8 @@ public:
 
 	return false;
     }
-    virtual bool is_string() { if (rawtype() == DataType::dtSTRING) return true; return false; }
-    virtual bool is_numeric()
+    virtual bool is_string() const { if (rawtype() == DataType::dtSTRING) return true; return false; }
+    virtual bool is_numeric() const
     {
 	if ( basetype() != BaseType::btSimple )
 	    return false;
@@ -104,7 +105,7 @@ public:
 	    return true;
 	return false;
     }
-    virtual bool is_integer()
+    virtual bool is_integer() const
     {
 	if ( basetype() != BaseType::btSimple )
 	    return false;
@@ -112,7 +113,7 @@ public:
 	    return true;
 	return false;
     }
-    virtual bool is_real()
+    virtual bool is_real() const
     {
 	if ( basetype() != BaseType::btSimple )
 	    return false;
@@ -120,7 +121,7 @@ public:
 	    return true;
 	return false;
     }
-    virtual bool is_unsigned()
+    virtual bool is_unsigned() const
     {
     	switch(rawtype())
     	{
@@ -135,23 +136,23 @@ public:
     	}
 	return false;
     }
-    virtual bool is_function()
+    virtual bool is_function() const
     {
 	if ( basetype() == BaseType::btFunct )
 	    return true;
 	return false;
     }
-    virtual bool is_pointer()
+    virtual bool is_pointer() const
     {
 	return _type >= 10000 && _type < 20000;
     }
-    virtual bool is_struct()
+    virtual bool is_struct() const
     {
 	if ( basetype() == BaseType::btStruct )
 	    return true;
 	return false;
     }
-    virtual bool is_object()
+    virtual bool is_object() const
     {
 	if ( basetype() == BaseType::btClass )
 	    return true;
@@ -546,8 +547,9 @@ public:
     DataDef *base_type;  // what this pointer points to
     DataDefPTR(DataDef &base)
 	: DataDef(base.name + "*", 8, rtPtr(base.type())), base_type(&base) {}
-    virtual bool is_numeric() { return true; }
-    virtual bool is_integer() { return true; }
+    virtual bool is_pointer() const { return true; }
+    virtual bool is_numeric() const { return true; }
+    virtual bool is_integer() const { return true; }
     // Pointers are 8 bytes regardless of what they point to. Without these
     // overrides the base-class switches fall into the "unsupported numeric
     // type" default for rtPtr() values (>= 10000), silently dropping the
@@ -758,9 +760,9 @@ public:
     FuncDef *target;
     DataDefFPTR(FuncDef *fd) : DataDef("funcptr", 8, DataType::dtINT64), target(fd) {}
     virtual BaseType basetype() const { return BaseType::btFunct; }
-    virtual bool is_function() { return true; }
-    virtual bool is_numeric()  { return true; }
-    virtual bool is_integer()  { return true; }
+    virtual bool is_function() const { return true; }
+    virtual bool is_numeric()  const { return true; }
+    virtual bool is_integer()  const { return true; }
 };
 
 #endif // __DATADEF_H
