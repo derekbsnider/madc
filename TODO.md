@@ -14,10 +14,10 @@
   MadSMAUG should `#undef` the stub around the matching definition.
   Current MadSMAUG front edge at db.c:4184.
 
-- **Negative-constant initializer** — `int a = -2;` stores 0 (the unary
-  `-` is dropped during init-expression parse). `a = 0 - 2;` works, as
-  does `a = -2` as a subsequent assignment (pending further testing).
-  Pre-existing — uncovered while debugging the case-expression fix.
+- **Narrow signed init still loses negation** — `short int sv = -1;`
+  stores 0 even after the TokenNeg mirror-back fix. Likely a safemov
+  size mismatch when the mirror target is a narrow stack slot. Low
+  priority — int/long paths are fixed.
 
 ## Medium Priority
 

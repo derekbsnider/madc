@@ -136,6 +136,23 @@
 
 ### Fixed
 
+- **Negative-constant initializer `int a = -2;` now stores -2** — two
+  separate bugs collaborated to leave `a` at 0:
+  1. `TokenNeg::compile()` set `mirror_to_caller` when the caller's
+     destination was Mem and allocated a fresh temp register, but
+     never actually mirrored the negated result back to the caller's
+     Mem — so the stack slot was left untouched. Fixed by emitting
+     `safemov(*caller_dest, rval, ...)` after the `safeneg`, matching
+     the pattern already used by TokenAdd / TokenSub / TokenMul etc.
+  2. `parseExpression()`'s conditional-end-at-`)` short-circuit
+     returned `exStack.top()` without flushing the operator stack.
+     For `-(2)` this lost the pending unary `-`; for `c = -(2)` it
+     also lost the pending `=`. Now flushes the opStack via
+     `popOperator` before returning.
+  Added `tests/testneginit.mad` covering `int a = -2;`, post-decl
+  `d = -7;`, `int e = -(2);`, `int f = -(3+4);`, and the sanity-check
+  `0 - 2` form.
+
 - **`->` after a function-call now evaluates the call** — `TokenMember::operand()`'s
   chained-arrow path previously called `parent_expr->operand()` unconditionally,
   which works for chained `TokenMember` parents (they re-materialize their own

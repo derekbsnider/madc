@@ -1,0 +1,29 @@
+// `TokenNeg::compile()` computed `-rhs` into a temp register when the
+// caller's destination was Mem, then forgot to mirror the result back
+// — so `int a = -2;` left `a` at 0. Separately, `parseExpression`'s
+// conditional-end-at-`)` shortcut returned without flushing the
+// operator stack, so `-(2)` lost the pending unary `-` on the way out.
+
+#include <stdio.h>
+
+int main()
+{
+    int a = -2;
+    int b = -1;
+    int c = -100;
+    printf("a=%d b=%d c=%d\n", a, b, c);
+
+    int d;
+    d = -7;
+    printf("d=%d\n", d);
+
+    int e = -(2);
+    int f = -(3 + 4);
+    printf("e=%d f=%d\n", e, f);
+
+    int g = 0 - 2;
+    int h = -0;
+    printf("g=%d h=%d\n", g, h);
+
+    return 0;
+}

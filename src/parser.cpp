@@ -1717,6 +1717,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    || (ternary_branch && next->id() == TokenID::tkTerC));
 			if ( ends_conditional )
 			{
+			    // Flush any remaining operators before returning so
+			    // expressions like `c = -(2)` complete the pending
+			    // unary `-` and assignment before the conditional-end
+			    // short-circuit. Otherwise exStack may hold only the
+			    // inner paren's value, losing the outer operator chain.
+			    while ( !opStack.empty() )
+				popOperator(opStack, exStack);
 			    DBG(std::cout << "Program::parseExpression() conditional end exStack:" << exStack.size() << std::endl);
 			    return exStack.empty() ? NULL : exStack.top();
 			}

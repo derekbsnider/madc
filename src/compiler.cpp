@@ -3986,6 +3986,8 @@ Operand &TokenNeg::compile(Program &pgm, regdefp_t &regdp)
     Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
     if ( !regdp.second ) { throw "TokenNeg::compile() right->compile cleared datatype"; }
     pgm.safeneg(rval);					 // type safe negation
+    if ( mirror_to_caller )				 // write result back to caller's Mem
+	pgm.safemov(*caller_dest, rval, regdp.second, regdp.second);
     regdp.first = &rval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
