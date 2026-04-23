@@ -1514,7 +1514,15 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		Throw(close ? close : open) << "expected ']' in subscript" << flush;
 	    DataDef *base_type = result->datadef();
 	    DataDef *elem_type = &ddINT64;
-	    if ( base_type && base_type->is_pointer() )
+	    // Fixed-array subscripts preserve the element type directly (the
+	    // `struct node *` in `struct node *arr[2]` is already the element),
+	    // whereas raw-pointer subscripts dereference one level.
+	    bool fixed_array = false;
+	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
+		fixed_array = tv->var.is_fixed_array();
+	    if ( fixed_array )
+		elem_type = base_type ? base_type : &ddINT64;
+	    else if ( base_type && base_type->is_pointer() )
 	    {
 		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(base_type);
 		elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;

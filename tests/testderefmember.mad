@@ -44,5 +44,13 @@ int main()
     struct outer *op = &o;
     if (*op->inner->name == 'h') printf("chain_eq\n");
 
+    // Subscript + arrow combination on a fixed array of pointers.
+    struct node *arr[2];
+    arr[0] = &n;
+    arr[1] = &n;
+    if (*arr[0]->name == 'h') printf("sub_arrow\n");
+    char s = *arr[1]->name;
+    printf("s=%c\n", s);
+
     return 0;
 }
