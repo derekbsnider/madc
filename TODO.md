@@ -14,10 +14,6 @@
   MadSMAUG should `#undef` the stub around the matching definition.
   Current MadSMAUG front edge at db.c:4184.
 
-- **Narrow signed init still loses negation** — `short int sv = -1;`
-  stores 0 even after the TokenNeg mirror-back fix. Likely a safemov
-  size mismatch when the mirror target is a narrow stack slot. Low
-  priority — int/long paths are fixed.
 
 ## Medium Priority
 

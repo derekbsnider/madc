@@ -25,5 +25,15 @@ int main()
     int h = -0;
     printf("g=%d h=%d\n", g, h);
 
+    // narrow signed types go through the same safemov(Mem, Gp) path —
+    // make sure the mirror honours the narrow stack slot size.
+    short int sv = -1;
+    int branch = 0;
+    if (sv < 0) { branch = 1; sv = sv + 1; }
+    printf("sv=%d branch=%d\n", (int)sv, branch);
+
+    signed char cv = -5;
+    printf("cv=%d\n", (int)cv);
+
     return 0;
 }
