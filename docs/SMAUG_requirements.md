@@ -31,12 +31,7 @@ All already embedded in madc:
 <fcntl.h>       ✅  <unistd.h>      ✅  <sys/types.h>   ✅
 <sys/stat.h>    ✅  <sys/time.h>    ✅  <sys/socket.h>  ✅
 <netinet/in.h>  ✅  <arpa/inet.h>   ✅  <netdb.h>       ✅
-<sys/ioctl.h>   ✅
-```
-
-Still needed:
-```
-<sys/file.h>    ❌  flock() and LOCK_* constants (minor)
+<sys/ioctl.h>   ✅  <sys/file.h>    ✅
 ```
 
 All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in Phase D.
@@ -115,6 +110,11 @@ All standard headers used by SMAUG are now embedded. `<stdarg.h>` was added in P
 - Global pointer variables (`struct X *gp = NULL;`) — read and assign via
   DataDefPTR qword overrides
 - `p->next = arr[i];` — subscript result written into a struct member
+- `fcntl(fd, F_SETFL, O_NONBLOCK)` — embedded `<fcntl.h>` now covers the
+  full `F_*` command set (`F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`,
+  `F_SETFL`, `F_GETLK`, `F_SETLK`, `F_SETLKW`, `F_SETOWN`, `F_GETOWN`,
+  `F_DUPFD_CLOEXEC`) plus `FD_CLOEXEC`, `O_NDELAY`/`O_ASYNC`/
+  `O_DIRECTORY`/`O_NOFOLLOW` at Linux x86-64 values
 
 ### ✅ Phase D Complete
 
@@ -197,6 +197,8 @@ to surface; each one lands here along with a minimal test.
 | printf `%f`/`%e`/`%g` doubles verified | LOW | **DONE** (Phase F) |
 | `->` in varargs arg list | LOW | **DONE** (Phase F) |
 | chained `cout << char*` | LOW | **DONE** (Phase F) |
+| `fcntl` command constants (`F_SETFL` etc.) | HIGH | **DONE** (Phase F) |
+| `struct servent` + `getservbyname` | HIGH | **TODO** (Phase F front edge) |
 | `sizeof(struct name)` | MEDIUM | **DONE** (v0.5.0) |
 | `do { ... } while(0)` macros | MEDIUM | **DONE** (v0.6.0) |
 | Ternary in struct member context | MEDIUM | **DONE** (v0.6.0) |

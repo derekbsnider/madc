@@ -6,13 +6,16 @@
 
 - **MadSMAUG umbrella bootstrap** — `../MadSMAUG/src/SMAUG.mad` now includes
   upstream headers plus `hashstr.c`, `ibuild.c`, `ident.c`, and `interp.c`
-  in Makefile order with a temporary `main()`. The previous `ident.c`
-  `err = errno;` front edge is fixed in `madc`. The next real external
-  bootstrap stop point is now `/workspace/MadSMAUG/src/SMAUG.mad`
-  complaining about undeclared `F_SETFL` (from upstream `ident.c`'s
-  `fcntl(..., F_SETFL, FNDELAY)` path). Next session should add the missing
-  `fcntl` constant coverage (`F_SETFL`, likely `F_GETFL` and adjacent flags)
-  and rerun the umbrella bootstrap immediately afterward.
+  in Makefile order with a temporary `main()`. After extending
+  `<fcntl.h>` with full `F_*` / `FD_CLOEXEC` / `O_NDELAY` constant coverage,
+  the `F_SETFL` front edge is closed. The next real external bootstrap
+  stop point is now `/workspace/MadSMAUG/src/SMAUG.mad` at
+  `sock.sin_port = serv->s_port;` in upstream `ident.c`:
+  `struct servent` is currently deferred in embedded `<netdb.h>` and
+  needs a glibc-matching layout (plus a regression test) so that
+  `getservbyname()` return values resolve `->s_port` / `->s_name` /
+  `->s_proto` / `->s_aliases`. Rerun the umbrella bootstrap immediately
+  afterward.
 
 ## Medium Priority
 
@@ -63,6 +66,17 @@
 ## Completed
 
 ### Session 2026-04-23
+
+- ~~**Extended `<fcntl.h>` constant coverage for `fcntl()`**~~ — embedded
+  `<fcntl.h>` now defines the `F_DUPFD`/`F_GETFD`/`F_SETFD`/`F_GETFL`/
+  `F_SETFL`/`F_GETLK`/`F_SETLK`/`F_SETLKW`/`F_SETOWN`/`F_GETOWN`/
+  `F_DUPFD_CLOEXEC` command constants and the adjacent `FD_CLOEXEC`,
+  `O_NDELAY`, `O_ASYNC`, `O_DIRECTORY`, `O_NOFOLLOW` flags at their
+  Linux x86-64 values. This closes the MadSMAUG umbrella `F_SETFL` front
+  edge in upstream `ident.c`'s `fcntl(..., F_SETFL, FNDELAY)` path.
+  `tests/testfcntl.mad` runs an end-to-end `F_GETFL` / `F_SETFL` round
+  trip against a real file descriptor to prove nonblocking mode is
+  actually set.
 
 - ~~**Control-flow paren helper + assignment-expression regressions**~~ —
   control-flow condition parsing now goes through a reusable parenthesized

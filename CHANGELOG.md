@@ -1,5 +1,34 @@
 # Changelog
 
+## [Unreleased] — SMAUG Phase F Continues (2026-04-23)
+
+### Added
+
+- **Extended `<fcntl.h>` constant coverage** — the embedded `<fcntl.h>`
+  header now defines the `fcntl()` command constants
+  (`F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`, `F_GETLK`,
+  `F_SETLK`, `F_SETLKW`, `F_SETOWN`, `F_GETOWN`, `F_DUPFD_CLOEXEC`) at
+  their Linux x86-64 values, plus the missing open flags `O_NDELAY`
+  (alias of `O_NONBLOCK`), `O_ASYNC`, `O_DIRECTORY`, `O_NOFOLLOW`, and
+  the `FD_CLOEXEC` file-descriptor flag. This closes the MadSMAUG
+  umbrella `F_SETFL` bootstrap front edge in upstream `ident.c`'s
+  `fcntl(a->afd, F_SETFL, FNDELAY)` path.
+  `tests/testfcntl.mad` drives a real `F_GETFL` / `F_SETFL` round-trip
+  on an open file descriptor and verifies that `O_NONBLOCK` is actually
+  reflected by a follow-up `F_GETFL`.
+
+### Known Current Front Edge
+
+- **MadSMAUG bootstrap now stops at `struct servent`** — rerunning the
+  external umbrella bootstrap after the `F_SETFL` fix moves the real
+  front edge to `/workspace/MadSMAUG/src/SMAUG.mad` reporting
+  `no member named 's_port'` on the
+  `sock.sin_port = serv->s_port;` line in upstream `ident.c`.
+  `struct servent` is currently deferred in embedded `<netdb.h>`;
+  next session should add the glibc-matching layout (plus a regression
+  test) so `getservbyname()` return values resolve `->s_port` /
+  `->s_name` / `->s_proto` / `->s_aliases`.
+
 ## [Unreleased] — SMAUG Phase F Continues (2026-04-19)
 
 ### Fixed
