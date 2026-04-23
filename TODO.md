@@ -4,32 +4,36 @@
 
 ### Language Completeness
 
+- **MadSMAUG umbrella bootstrap** — `../MadSMAUG/src/SMAUG.mad` now includes
+  upstream headers plus `hashstr.c`, `ibuild.c`, `ident.c`, and `interp.c`
+  in Makefile order with a temporary `main()`. The previous `ident.c`
+  `err = errno;` front edge is fixed in `madc`. The next real external
+  bootstrap stop point is now `/workspace/MadSMAUG/src/SMAUG.mad`
+  complaining about undeclared `F_SETFL` (from upstream `ident.c`'s
+  `fcntl(..., F_SETFL, FNDELAY)` path). Next session should add the missing
+  `fcntl` constant coverage (`F_SETFL`, likely `F_GETFL` and adjacent flags)
+  and rerun the umbrella bootstrap immediately afterward.
+
 ## Medium Priority
 
 ### Language Completeness
 
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 
-- **Right-shift operator `>>`** — `<<` is working; `>>` is tokenized but needs integration test.
-
-- **Error diagnostics** — File and line number should always appear in error output.
+- **Error diagnostics** — parser-side diagnostics already carry source context,
+  and compiler top-level raw-string failures now anchor to the current
+  statement token. Remaining work is to convert deeper raw-string throws to
+  token-aware `Throw(...)` paths where a more precise inner location exists.
 
 - **Operator overloading (user-defined)** — `operator+`, `operator<<`, etc. on user types.
   Currently the compiler has hard-coded special cases for std::string assign, stream `<<`,
   subscript; there's no way for user code to define its own.
-
-- **Sweep remaining `cc.newXxx(name)` calls for `%` safety** — `DataDef::newreg` and 32
-  compiler.cpp sites routed through `"%s"` format. typesafe.cpp and some lambda paths still
-  use raw names; audit those too.
 
 ## Low Priority
 
 - **Multi-return in brace-less if** — `if (x) return a, b;` doesn't parse. Use braces.
 
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
-
-- **Typed for-init with comma** — `for (int i = 0, j = 10; ...)` declares only i. The non-
-  typed form (`for (a = 0, b = 10; ...)`) works.
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
@@ -50,15 +54,68 @@
 
 - **Full C23 standard coverage** — After SMAUG 1.8 compatibility is reached, the next
   long-term goal for the C-dialect side is full C23 (including C99/C11/C17 features along
-  the way: `_Bool`, designated initializers, compound literals, variadic macros with `__VA_ARGS__`,
-  `_Static_assert`, `_Generic`, `_Alignas`/`_Alignof`, VLAs, `restrict`, digit separators,
-  `#embed`, `constexpr`, `nullptr`, binary literals `0b…`, typeof, etc.). `.mad` stays as the
+  the way: designated initializers, compound literals, variadic macros with `__VA_ARGS__`,
+  `_Static_assert`, `_Generic`, `_Alignas`/`_Alignof`, VLAs, digit separators,
+  `#embed`, `constexpr`, `nullptr`, typeof, etc.). `.mad` stays as the
   naming convention for files using madc's beyond-C23 extensions (multi-language namespaces,
   etc.); bare `.c` / `.h` files get the C-compatible subset.
 
 ## Completed
 
+### Session 2026-04-23
+
+- ~~**Control-flow paren helper + assignment-expression regressions**~~ —
+  control-flow condition parsing now goes through a reusable parenthesized
+  expression helper instead of per-keyword ad hoc handling, which fixed
+  `_Bool` single-statement `if (...) stmt; else stmt;` parsing/branching.
+  Function-call RHS assignment now also returns into Mem-backed lvalues
+  correctly, so assignment-in-condition loops work again with stack-backed
+  locals. Direct regressions now pass: `tests/testc23_bool.mad`,
+  `tests/testpostfix.mad`, and `tests/testassigninexpr.mad`.
+
+- ~~**Pointer-return typing for dereferenced call results**~~ —
+  `addFunction()` now resolves generic `rtPtr(...)` signatures through a
+  helper instead of a few hard-coded pointer cases, so builtin/external
+  functions like `__errno_location()` retain typed pointer returns during
+  parse. The unary `*` path also now treats identifier-followed-by-`(` as a
+  full call expression, which fixes `*get_msg()`, `*(version.c_str())`, and
+  `errno` / `*(__errno_location())` parsing. Targeted regressions:
+  `tests/test_ptr_fn_deref.mad`, `tests/test_get_argv_deref.mad`,
+  `tests/test_errno_deref.mad`.
+
 ### Session 2026-04-18
+
+- ~~**Assignment as expression inside declaration init**~~ — declaration
+  initializers like `int y = (x = 42);` now preserve the outer assignment to
+  the declared variable instead of collapsing to the inner assignment only.
+  The parser keeps the original assignment-context parse for normal
+  initializers, then wraps the result only when the parsed initializer does
+  not already assign to the declared variable. Brace initializers stay on the
+  existing `init_list` path. `tests/testdeclassignexpr.mad` covers nested
+  assignment in declaration init, expression use, and comma declarations.
+- ~~**Right-shift operator `>>` integration coverage**~~ — `tests/testbsl.mad`
+  now exercises plain arithmetic right shift in addition to the existing
+  left-shift cases, and `tests/testbsl.expect` asserts the concrete outputs.
+  This closes the lingering gap where `>>=` and `cin >>` were covered but
+  plain bitwise `>>` had no integration assertion.
+- ~~**`cc.newXxx(name)` percent-safety sweep**~~ — verified that the
+  user-derived register names now flow through `"%s"` call sites or
+  `DataDef::newreg()`, which already applies the safe formatting wrapper in
+  `include/datadef.h`. The remaining named temporaries in `typesafe.cpp` and
+  lambda-related paths are fixed literals, not user-controlled format
+  strings, so the old TODO entry was stale rather than unfinished.
+- ~~**Typed for-init with comma**~~ — `for (int i = 0, j = 10; ...)` now
+  works by reusing `parseDeclaration()` for the typed `for` initializer and
+  feeding any synthetic comma-continuation declarations into
+  `TokenFOR::init_extras`. `tests/testfortypedcomma.mad` covers plain scalar
+  declarations, three-variable init, and mixed pointer/scalar init in the
+  same typed `for` header.
+- **Error diagnostics narrowed** — `Program::compile()` now prints file/line
+  context for raw-string compiler failures by anchoring them to the current
+  statement token (and the current pre-pass token during FuncNode setup),
+  instead of emitting location-less `: error:` lines. Full closure still
+  requires replacing deeper raw `throw "..."` sites with token-aware
+  diagnostics where available.
 
 - ~~**Function pointer typedefs**~~ — `typedef void DO_FUN(CHAR_DATA *ch, char
   *argument);` (Form 1, SMAUG idiom) and `typedef int (*UNOP)(int);` (Form 2,

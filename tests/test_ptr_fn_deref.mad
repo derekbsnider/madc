@@ -1,0 +1,5 @@
+char *get_msg() { return "hello"; }
+void main() {
+    char c = *get_msg();
+    putchar(c);
+}

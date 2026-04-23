@@ -136,13 +136,29 @@ void Program::safemov(x86::Gp &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
 	}
 	else if ( ms == 2 )
 	{
-	    if ( is_unsigned ) cc.movzx(r1, r2);
-	    else               cc.movsx(r1, r2);
+	    if ( rs >= 8 )
+	    {
+		if ( is_unsigned ) cc.movzx(r1.r32(), r2);
+		else               cc.movsx(r1.r32(), r2);
+	    }
+	    else
+	    {
+		if ( is_unsigned ) cc.movzx(r1, r2);
+		else               cc.movsx(r1, r2);
+	    }
 	}
 	else if ( ms == 1 )
 	{
-	    if ( is_unsigned ) cc.movzx(r1, r2);
-	    else               cc.movsx(r1, r2);
+	    if ( rs >= 8 )
+	    {
+		if ( is_unsigned ) cc.movzx(r1.r32(), r2);
+		else               cc.movsx(r1.r32(), r2);
+	    }
+	    else
+	    {
+		if ( is_unsigned ) cc.movzx(r1, r2);
+		else               cc.movsx(r1, r2);
+	    }
 	}
 	else
 	    cc.mov(r1, r2);

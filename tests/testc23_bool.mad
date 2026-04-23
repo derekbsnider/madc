@@ -1,0 +1,24 @@
+#include <stdio.h>
+
+int main()
+{
+    _Bool a = 0;
+    _Bool b = 1;
+    _Bool vals[3] = { 0, 1, 1 };
+
+    printf("a=%ld b=%ld\n", a, b);
+
+    if ( a )
+        printf("bad-a\n");
+    else
+        printf("a-false\n");
+
+    if ( b )
+        printf("b-true\n");
+    else
+        printf("bad-b\n");
+
+    printf("vals=%ld,%ld,%ld\n", vals[0], vals[1], vals[2]);
+
+    return 0;
+}

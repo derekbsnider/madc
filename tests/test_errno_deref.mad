@@ -1,0 +1,6 @@
+#include <errno.h>
+void main() {
+    int err = errno;
+    if (err >= 0)
+        putchar('z');
+}

@@ -1,6 +1,159 @@
 # Changelog
 
-## [Unreleased] — SMAUG Phase F Continues (2026-04-18)
+## [Unreleased] — SMAUG Phase F Continues (2026-04-19)
+
+### Fixed
+
+- **Control-flow condition parsing now uses a reusable parenthesis helper** —
+  `if`, `while`, and `do/while` conditions now parse through one helper
+  instead of hand-rolled stop behavior at each keyword. This fixed the
+  `_Bool` regression where `if (a) stmt; else stmt;` with single expression
+  statements bound incorrectly. Added/stabilized regression coverage:
+  `tests/testc23_bool.mad`.
+
+- **Assignment-expression call results now persist into Mem-backed locals** —
+  stack-backed local numerics exposed a gap where function-call RHS values
+  assigned into local lvalues were returned to the enclosing expression but
+  not reliably stored back through a Mem destination. Call return binding now
+  routes through a helper that handles register and memory destinations
+  generically, which restores assignment-in-condition behavior like
+  `while ((x = next_val(count)) < 35)`. `tests/testassigninexpr.mad` now
+  runs cleanly again.
+
+- **Prefix/postfix inc/dec on Mem-backed locals** — once ordinary local
+  scalar numerics became stack-backed for stability, prefix/postfix fast
+  paths that assumed register-only variables broke value semantics and the
+  final `while (x--)` loop case. `TokenInc::compile()` and
+  `TokenDec::compile()` now handle Mem operands explicitly, and
+  `tests/testpostfix.mad` now passes with the expected output.
+
+- **Pointer-return typing for dereferenced call results** — generic
+  `rtPtr(...)` builtin/external signatures now resolve through a helper in
+  `addFunction()` instead of a few hard-coded pointer cases, so
+  `__errno_location()` keeps an `int *` return type during parsing. The unary
+  dereference path also no longer assumes every identifier after `*` is a
+  plain variable; when followed by `(` it parses the full call expression.
+  This fixes dereferencing call results such as `*get_msg()`,
+  `*(version.c_str())`, and `errno` / `*(__errno_location())`. Added targeted
+  regressions: `tests/test_ptr_fn_deref.mad`,
+  `tests/test_get_argv_deref.mad`, and `tests/test_errno_deref.mad`.
+
+- **MadSMAUG bootstrap parser/front-end follow-ups** — continued the external
+  `MadSMAUG` umbrella bootstrap through `ident.c` / `interp.c` and landed the
+  next compiler compatibility fixes:
+  - struct-body comma declarators now parse (`struct sockaddr_in us, them;`)
+  - grouped RHS expressions after deref assignment no longer crash
+    (`*p = (x);`, `UMAX(*p, ...)`)
+  - chained unary dereference now parses for pointer chains used in SMAUG
+    (`*s`, `**s`)
+  - `for (...) *ptr = ...;` style bodies starting with a unary operator now
+    parse correctly
+  - nested pointer `DataDefPTR` types now report `is_pointer() == true`
+
+### Known Current Front Edge
+
+- **MadSMAUG bootstrap now stops at `F_SETFL`** — rerunning the external
+  umbrella bootstrap after the `errno` / pointer-return fix moves the real
+  front edge to `/workspace/MadSMAUG/src/SMAUG.mad` complaining about
+  undeclared `F_SETFL` (upstream `ident.c` nonblocking `fcntl` path). The
+  next session should add missing `fcntl` constant coverage, then rerun the
+  umbrella bootstrap immediately.
+
+### Docs
+
+- **Cross-agent hand-off workflow** — added `docs/agent-handoff.md` as the
+  canonical playbook for Codex CLI / Claude Code session transfer. It defines
+  the read order, source-of-truth rules, end-of-session update contract,
+  default task split, and agent-owned feature-branch convention.
+
+- **Claude rule coverage for hand-offs and KG sync** — added
+  `.claude/rules/session-handoff.md` and `.claude/rules/knowledge-graph.md`,
+  plus paired reasoning docs under `docs/rules/`. Updated the branching rule
+  to support agent-owned WIP branches with `-claude` / `-codex` suffixes.
+
+- **Retired `docs/status_report.md` as a live source** — it now points agents
+  at `claude_status.json`, `TODO.md`, `CHANGELOG.md`, `docs/test-status.md`,
+  and `docs/agent-handoff.md` instead of acting as a stale parallel snapshot.
+
+### Tests
+
+- **Plain bitwise `>>` integration coverage** — `tests/testbsl.mad` now
+  exercises both left and right arithmetic bit shifts, and
+  `tests/testbsl.expect` asserts the concrete outputs. This closes the
+  remaining backlog item where `>>=` and `cin >>` were covered but plain
+  `>>` had no integration assertion.
+
+- **C `_Bool` regression coverage** — added `tests/testc23_bool.mad` and
+  `tests/testc23_bool.expect` to cover scalar `_Bool` declarations,
+  branching, and fixed-array initialization.
+
+- **Binary literal regression coverage** — added `tests/testbinlit.mad` and
+  `tests/testbinlit.expect` to cover `0b...` / `0B...` integer literals in
+  assignments, expressions, and conditions.
+
+- **`restrict` regression coverage** — added `tests/testrestrict.mad` and
+  `tests/testrestrict.expect` to cover `restrict` in pointer declarations and
+  function parameters.
+
+- **`flock()` regression coverage** — added `tests/testflock.mad` and
+  `tests/testflock.expect` to cover embedded `<sys/file.h>` plus `flock()`
+  and the `LOCK_*` constants through the libc dlsym fallback.
+
+- **Include-once regression coverage** — added `tests/testincludeonce.mad`
+  and `tests/testincludeonce.expect` to cover repeated local `#include`
+  directives being ignored after the first tokenization pass.
+
+### Maintenance
+
+- **Closed stale `%`-safety follow-up** — audited the remaining
+  `cc.newXxx(name)` follow-up noted in the backlog. User-derived register names
+  are already routed through `"%s"` call sites or `DataDef::newreg()`;
+  leftover named temporaries in `typesafe.cpp` and lambda paths are fixed
+  literals, so no further code change was required.
+
+### Fixed
+
+- **Assignment as expression inside declaration initializers** — `int y = (x
+  = 42);` and related forms now preserve the outer declaration assignment
+  while still allowing nested assignment expressions on the RHS. The parser
+  keeps the original assignment-context parse and only wraps the initializer
+  when it does not already assign to the declared variable. Brace-init paths
+  are unchanged. `tests/testdeclassignexpr.mad` covers nested assignment,
+  expression composition, and comma declarations.
+
+- **Typed `for` init with comma-separated declarations** — `for (int i = 0,
+  j = 10; ...)` now declares all variables correctly. The parser reuses
+  `parseDeclaration()` for the typed `for` initializer and routes any
+  synthetic comma-continuation declarations into `TokenFOR::init_extras`,
+  matching the existing compile-time execution path. `tests/testfortypedcomma.mad`
+  covers scalar, three-variable, and mixed pointer/scalar cases.
+
+- **Compiler raw-string diagnostics now carry source context** — top-level
+  `Program::compile()` catches for raw `throw "..."` failures now anchor
+  messages to the current statement token (and current pre-pass token during
+  FuncNode setup) and show source context, replacing location-less compiler
+  error lines.
+
+- **C `_Bool` keyword alias** — `_Bool` is now registered as a datatype token
+  alias for `ddBOOL`, so C-style boolean declarations and fixed arrays parse
+  and compile the same as `bool`.
+
+- **Binary integer literals** — the lexer now accepts `0b...` and `0B...`
+  integer literals and emits them as `TokenInt` values alongside the
+  existing decimal and hexadecimal literal paths.
+
+- **`restrict` parsed as a no-op qualifier** — the parser now accepts
+  `restrict` in declaration and function-parameter pointer declarators and
+  ignores it semantically, matching the current compatibility-only handling.
+
+- **Embedded `<sys/file.h>`** — added `LOCK_SH`, `LOCK_EX`, `LOCK_NB`,
+  `LOCK_UN`, and `flock()` availability through the existing dlsym fallback,
+  closing the last header gap called out in `docs/SMAUG_requirements.md`.
+
+- **`#include` now behaves include-once by default** — the lexer records
+  resolved local paths and embedded-header keys, then skips repeated
+  includes within the same compile. This matches madc's single-unit build
+  model and reduces duplicate header tokenization for SMAUG bootstrap files.
 
 ### Added
 

@@ -1,10 +1,27 @@
 # Test Status
 
-Test results as of April 18, 2026 (post-v0.8.0 / Phase F continues — hashstr.mad runs).
+Test results as of April 23, 2026 (post-v0.8.0 / Phase F continues — external MadSMAUG bootstrap advanced past `errno` and now stops at `F_SETFL`).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Passing Tests — 97 integration + 25/25 unit
+## Current Batch Status — 121 passed, 4 failed, 0 skipped
+
+Latest `scripts/run_tests.sh` result in this dirty tree:
+
+- Passing: 121 integration tests
+- Failing: `testassign.mad`, `testcin.mad`, `testfnptrtypedef.mad`, `testint.mad`
+- Unit tests were not rerun in this session
+
+The newly exercised regressions from this session all pass directly:
+
+- `testassigninexpr.mad`
+- `testc23_bool.mad`
+- `testpostfix.mad`
+- `test_ptr_fn_deref.mad`
+- `test_get_argv_deref.mad`
+- `test_errno_deref.mad`
+
+## Passing Tests — 121 integration (latest batch)
 
 `scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
 hello world`) and `testargv.mad` with argv (`hello world`), asserting
@@ -22,9 +39,19 @@ on their output instead of skipping. Previously these were run manually.
 | `testcommaincrement.mad` | `for (...; ptr = ptr->next, c++)` — SMAUG's comma-increment pattern |
 | `testpostdeclstr.mad` | `char *p; p = "literal";` and `r->name = "literal";` |
 | `testcoutcstr.mad` | Chained `cout << char*` output, including function-returned `char*` and mixed string-prefix chains |
+| `testdeclassignexpr.mad` | Assignment as an expression inside declaration initializers (`int y = (x = 42)`) |
 | `testprintfmember.mad` | Varargs wrapper calls with `->` member arguments, macro-expanded nested members, and plain `printf` mixes |
 | `testprintfdouble.mad` | `%f` / `%e` / `%g` formatting through direct `printf` and `...` wrappers, including mixed args and multiple doubles |
 | `testsmaug_requests.mad` | Upstream SMAUG `requests.c` compatibility test with a minimal `mud.h` shim and embedded POSIX/C headers |
+| `testc23_bool.mad` | C `_Bool` keyword aliasing to madc's bool type, including scalar and fixed-array initialization |
+| `testbinlit.mad` | C23-style binary integer literals (`0b...` / `0B...`) in assignments, expressions, and conditions |
+| `testrestrict.mad` | `restrict` as a parsed no-op qualifier in pointer declarations and function parameters |
+| `testflock.mad` | Embedded `<sys/file.h>` and `flock()`/`LOCK_*` constants via dlsym fallback |
+| `testincludeonce.mad` | `#include` include-once behavior for repeated local includes within a single compile |
+| `testassigninexpr.mad` | Assignment expressions used in `while` / `if` conditions and chained assignment value flow |
+| `test_ptr_fn_deref.mad` | Dereference of a user-function `char *` return (`*get_msg()`) |
+| `test_get_argv_deref.mad` | Dereference of a method-call `char *` return (`*(version.c_str())`) |
+| `test_errno_deref.mad` | Dereference of builtin/external pointer-return path via `errno` / `__errno_location()` |
 
 ### New in Phase E / F session
 
@@ -41,8 +68,9 @@ on their output instead of skipping. Previously these were run manually.
 | Test | What it tests |
 |------|--------------|
 | `testcompoundassign.mad` | All 10 compound assignment operators (+=, -=, *=, etc.) |
+| `testfortypedcomma.mad` | Typed `for` initializer with comma-separated declarations (`for (int i = 0, j = 10; ...)`) |
 | `testhex.mad` | Hex integer literals (0xFF, 0xDEAD, 0X1A) |
-| `testpostfix.mad` | Postfix x++/x-- with old-value-return semantics |
+| `testpostfix.mad` | Postfix x++/x-- with old-value-return semantics, including `for` and `while (x--)` |
 | `testdefine.mad` | #define, #undef, #ifdef, #ifndef, #if, #elif, #else, #endif |
 | `testlibc.mad` | dlsym fallback: getpid(), sleep(), getuid(), getppid() |
 | `testmathh.mad` | #include <math.h>: M_PI, sqrt, floor, ceil, fabs, pow, sin, cos |
@@ -55,6 +83,7 @@ on their output instead of skipping. Previously these were run manually.
 - `testcin.mad` is driven by `scripts/run_tests.sh` with piped stdin
 - `testargv.mad` is driven by `scripts/run_tests.sh` with argv
 - `include_helper.mad` is not standalone (included by testinclude.mad)
+- `include_once_helper.mah` is not standalone (included by testincludeonce.mad)
 - All tests that use `cout`/`cin`/`cerr`/`endl` now require `#include <iostream>`
 
 ## Previously Passing Tests — 54/54 integration + 25/25 unit
@@ -67,7 +96,7 @@ on their output instead of skipping. Previously these were run manually.
 | `test4.mad` | Char literals, putchar(), user-defined string funcs | `Hello, World!`, `hi`, `test`, `Hello, World!`, `HEY`, `hey 123`, `v0.0.1` |
 | `test5.mad` | String ops | `Hello, World!`, `hi` |
 | `testassign.mad` | Variable assignment | `456` |
-| `testbsl.mad` | Bit shift operators | `200`, `40` |
+| `testbsl.mad` | Bit shift operators (`<<` and `>>`) | `200`, `40`, `16`, `15` |
 | `testcout.mad` | cout stream output | `This is a test, x = -1` |
 | `testfor.mad` | For loop | `a == 5` |
 | `testfunc.mad` | User-defined functions | `10`, `15` |
