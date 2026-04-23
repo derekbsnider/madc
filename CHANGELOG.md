@@ -136,6 +136,21 @@
 
 ### Fixed
 
+- **Global / literal variables re-emit their address load on every access** —
+  `TokenCpnd::voperand()`'s cache-hit branch re-runs `movreg` for global
+  variables each time they are referenced (so the register always holds
+  the up-to-date global value), but the check excluded `is_constant()`
+  vars. For a string literal (`addLiteral` calls `makeconstant()`), the
+  initial `mov reg, imm(var->data)` load was therefore emitted only at
+  the first use site. If that site was inside a conditional branch
+  (a switch case, an if/else arm) that didn't execute at runtime, the
+  asmjit-spilled slot was never initialised, and subsequent uses on
+  other branches read garbage — the most visible symptom was identical
+  `printf("...")` calls across two switches printing nothing on the
+  second switch. The exclusion on `is_constant()` was removed; fixed
+  arrays still skip `movreg` to avoid re-loading the element-zero of
+  the backing storage. Added `tests/testdupliteral.mad`.
+
 - **Negative-constant initializer `int a = -2;` now stores -2** — two
   separate bugs collaborated to leave `a` at 0:
   1. `TokenNeg::compile()` set `mirror_to_caller` when the caller's

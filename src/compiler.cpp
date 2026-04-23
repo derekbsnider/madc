@@ -3264,13 +3264,18 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     if ( (rmi=operand_map.find(var)) != operand_map.end() )
     {
 	DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::voperand(" << var->name << ") found" << std::endl);
-	// copy global variable to register -- needs to happen every time we need to access a global.
-	// Fixed arrays skip this: the register already holds the base pointer
-	// (a constant for the program's lifetime), and movreg would reload
-	// the numeric element zero as if it were the pointer value.
-	if ( var->is_global() && var->data && !var->is_constant() && !var->is_fixed_array() )
+	// Copy global variable to register — needs to happen every time we
+	// access a global, including global constants (string literals etc.).
+	// Without re-emitting for constants, the initial `mov reg, imm` that
+	// populates the virtual register is emitted at the first use site,
+	// which may be inside a conditional branch; subsequent uses on other
+	// branches see the spilled slot uninitialized.
+	// Fixed arrays still skip this: the register already holds the base
+	// pointer (a program-lifetime constant), and movreg would reload the
+	// numeric element zero as if it were the pointer value.
+	if ( var->is_global() && var->data && !var->is_fixed_array() )
 	{
-	    DBG(pgm.cc.comment("TokenCpnd::voperand() variable found, var->is_global() && var->data && !var->is_constant()"));
+	    DBG(pgm.cc.comment("TokenCpnd::voperand() variable found, var->is_global() && var->data"));
 	    movreg(pgm.cc, rmi->second, var);
         }
 	return rmi->second;
