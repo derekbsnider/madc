@@ -1,0 +1,3 @@
+map vnum=42 y=7
+room vnum=100 mp=3 via map vnum=42
+fn vnum=42

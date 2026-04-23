@@ -2245,13 +2245,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    else if ( lhs->type() == TokenType::ttMember )
 		    {
 			// TokenDeref and TokenDerefExpr also report ttMember (reuse
-			// member type for assignment compat); guard against them so a
-			// failed dynamic_cast doesn't crash via null tm->var.
+			// member type for assignment compat) but are not TokenMember
+			// instances. When the cast fails, fall through to the
+			// expression-backed path using the node's reported datadef
+			// instead of throwing.
 			TokenMember *tm = dynamic_cast<TokenMember *>(lhs);
-			if ( !tm )
+			if ( tm )
+			{
+			    obj_var = &tm->var;
+			    obj_type = tm->var.type;
+			}
+			else if ( lhs->datadef() && lhs->datadef()->is_pointer() )
+			{
+			    obj_type = lhs->datadef();
+			    obj_var = new Variable("__arrow_expr", *obj_type, 1, NULL, false);
+			    expr_backed_lhs = true;
+			}
+			else
 			    Throw(tb) << "expression before '->' must be a pointer to struct" << flush;
-			obj_var = &tm->var;
-			obj_type = tm->var.type;
 		    }
 		    else if ( lhs->datadef() && lhs->datadef()->is_pointer() )
 		    {
@@ -3650,7 +3661,11 @@ static std::string contextual_identifier_name(TokenBase *tb)
 	if ( &td->definition == &ddSTRING )
 	    return td->str;
     }
-    if ( tb->id() == TokenID::tkCLASS )
+    if ( tb->id() == TokenID::tkCLASS
+	|| tb->id() == TokenID::tkVECTOR
+	|| tb->id() == TokenID::tkMAP
+	|| tb->id() == TokenID::tkSET
+	|| tb->id() == TokenID::tkLIST )
 	return ((TokenKeyword *)tb)->str;
     return "";
 }
@@ -5618,6 +5633,19 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    break;
 
 	case TokenType::ttKeyword:
+	    // Container-type keywords (map, vector, set, list) are only types when
+	    // followed by '<'. Otherwise the user is using them as an identifier —
+	    // e.g. `MAP_DATA *map;` followed by `map->vnum = …;` — so route through
+	    // parseExpression which already accepts them as contextual identifiers.
+	    if ( (tb->id() == TokenID::tkMAP || tb->id() == TokenID::tkVECTOR
+		|| tb->id() == TokenID::tkSET || tb->id() == TokenID::tkLIST)
+		&& peekToken() && peekToken()->id() != TokenID::tkLT )
+	    {
+		DBG(std::cout << "parseStatement() container keyword used as identifier: "
+		    << ((TokenKeyword *)tb)->str << std::endl);
+		resetPrevToken();
+		return parseExpression(tb);
+	    }
 	    DBG(std::cout << "parseKeyword(" << ((TokenKeyword *)tb)->str << ") calling parseKeyword" << std::endl);
 	    return parseKeyword((TokenKeyword *)tb);
 

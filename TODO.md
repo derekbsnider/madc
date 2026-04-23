@@ -4,6 +4,12 @@
 
 ### Language Completeness
 
+- **C function-pointer cast syntax** — `(int(*)(const void *, const void *)) fn`
+  doesn't parse; the cast handler only recognizes simple types plus optional
+  `*` stars, not a parenthesized function-signature type. MadSMAUG umbrella
+  front edge: `db.c` `sort_exits()` passing a typed function pointer to
+  `qsort()`. Fix in `parseExpression`'s cast branch.
+
 ## Medium Priority
 
 ### Language Completeness

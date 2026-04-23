@@ -1,0 +1,39 @@
+// The `->` parser's `ttMember` branch must fall through to the
+// expression-backed path when the LHS is a TokenDeref / TokenDerefExpr
+// (they reuse ttMember for assignment-compat but aren't TokenMember
+// instances). Previously threw "expression before '->' must be a
+// pointer to struct" immediately without trying the pointer-datadef
+// fallback, breaking the common `(*pp)->field` idiom used in qsort
+// comparators.
+
+#include <stdio.h>
+
+struct node {
+    int vdir;
+    int other;
+};
+
+int sort_key(struct node **p1, struct node **p2)
+{
+    int d1, d2;
+    d1 = (*p1)->vdir;
+    d2 = (*p2)->vdir;
+    if (d1 < d2) return -1;
+    if (d1 > d2) return 1;
+    return 0;
+}
+
+int main()
+{
+    struct node a, b;
+    struct node *pa = &a;
+    struct node *pb = &b;
+    a.vdir = 7;
+    b.vdir = 3;
+    printf("ord=%d\n", sort_key(&pa, &pb));
+    b.vdir = 42;
+    printf("ord=%d\n", sort_key(&pa, &pb));
+    a.vdir = 42;
+    printf("ord=%d\n", sort_key(&pa, &pb));
+    return 0;
+}

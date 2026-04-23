@@ -1,6 +1,36 @@
 # Changelog
 
-## [Unreleased]
+## [Unreleased] — SMAUG Phase F continues (post-v0.9.0)
+
+### Fixed
+
+- **Container-type keywords (`map`, `vector`, `set`, `list`) now usable
+  as identifiers at statement position** — `parseStatement()`'s
+  `ttKeyword` case used to dispatch `map` / `vector` / `set` / `list`
+  straight to the keyword-specific parser, which expects a templated
+  use (`map<K,V>` etc.). In plain C code these names legitimately
+  appear as local variables, parameters, or struct members —
+  `MAP_DATA *map; map->vnum = fread_number(fp);` in SMAUG's `db.c` is
+  the motivating case. When the token after one of these keywords is
+  not `<`, `parseStatement()` now resets the prior-token context and
+  routes through `parseExpression()` instead. `contextual_identifier_name()`
+  was also missing tkMAP / tkVECTOR / tkSET / tkLIST — it now returns
+  their keyword `str` so downstream code sees `"map"` instead of `""`.
+  This advances the external MadSMAUG umbrella past `db.c`'s map
+  loader. Added `tests/testmapidentifier.mad`.
+
+- **`->` after a dereference expression now falls through to the
+  expression-backed path** — `TokenDeref` / `TokenDerefExpr` both
+  report `type() == ttMember` (for assignment-compat purposes) but
+  are not `TokenMember` instances. `parseExpression()`'s `->` handler
+  used to throw `"expression before '->' must be a pointer to struct"`
+  when the `dynamic_cast<TokenMember *>` failed, without trying the
+  pointer-datadef fallback that already exists for general
+  expression-parent `->` uses. The ttMember branch now falls through
+  to the expr-backed path when the cast fails, so the classic
+  `(*pp)->field` idiom (qsort comparators etc.) parses correctly.
+  This advances the MadSMAUG umbrella past `db.c`'s `exit_comp()`
+  sort helper. Added `tests/testderefparenarrow.mad`.
 
 ## [v0.9.0] — 2026-04-23 — SMAUG Phase F continues: MadSMAUG bootstrap + compiler fixes
 
