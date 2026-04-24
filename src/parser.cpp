@@ -2004,11 +2004,37 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    TokenBase *deref_tb = nextToken();
 			    if ( deref_tb->id() == TokenID::tkOpBrk )
 		    {
-			TokenBase *inner_tb = nextToken();
-			TokenBase *deref_expr = parseExpression(inner_tb, true);
-			TokenBase *close = nextToken();
-			if ( !close || close->id() != TokenID::tkClBrk )
-			    Throw(close ? close : deref_tb) << "expected ')' after *(expr)" << flush;
+			// Check whether the inner expression is a cast
+			// signature (`(TYPE*) expr`). If so, delegate the
+			// whole `(...)` to parseExpression so its cast
+			// detection fires and `TYPE` gets resolved against
+			// `datatype_map` instead of being sent through the
+			// identifier/variable lookup path — which fails for
+			// typedef'd struct names like `EXT_BV` in
+			// `*(EXT_BV*)vd.data`. Delegation consumes the `)`
+			// itself, so the subsequent nextToken() is skipped
+			// on the cast path.
+			TokenBase *peek_inner = peekToken();
+			bool inner_is_cast_head =
+			    peek_inner
+			    && ( peek_inner->type() == TokenType::ttDataType
+			      || peek_inner->id() == TokenID::tkSTRUCT
+			      || peek_inner->id() == TokenID::tkCLASS
+			      || ( peek_inner->type() == TokenType::ttIdentifier
+				&& datatype_map.count(((TokenIdent *)peek_inner)->str) ) );
+			TokenBase *deref_expr;
+			if ( inner_is_cast_head )
+			{
+			    deref_expr = parseExpression(deref_tb, true);
+			}
+			else
+			{
+			    TokenBase *inner_tb = nextToken();
+			    deref_expr = parseExpression(inner_tb, true);
+			    TokenBase *close = nextToken();
+			    if ( !close || close->id() != TokenID::tkClBrk )
+				Throw(close ? close : deref_tb) << "expected ')' after *(expr)" << flush;
+			}
 			DataDef *dtype = deref_expr->datadef();
 			if ( !dtype )
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;

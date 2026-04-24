@@ -4,16 +4,6 @@
 
 ### Language Completeness
 
-- **`(EXT_BV*)` cast inside `xIS_SET` macro expansion in mud_prog.c**
-  — `return xIS_SET(*(EXT_BV*)vd->data, flag) ? TRUE : FALSE;`
-  expands to a `(EXT_BV*)`-cast-inside-a-larger-macro context and
-  the parser reports "use of undeclared identifier 'EXT_BV'" despite
-  `EXT_BV` being typedef'd in the already-ingested mud.h. Isolated
-  casts of the same form (`((EXT_BV*)p)->bits[0]`) compile fine, so
-  the trigger is macro-expansion context. Blocks mud_prog.c ingest
-  for now.
-
-
 - **Function-like macros shadowing later definitions** — SMAUG.mad does
   `#define bug(...) ((void)0)` to stub out calls, then `#include`s
   `db.c` which contains `void bug(const char *str, ...) { … }`. The
@@ -91,6 +81,22 @@
 ## Completed
 
 ### Session 2026-04-24 (post-v0.11.0)
+
+- ~~**`*(TYPE*)expr` failed when TYPE was a typedef'd user type**~~
+  — the unary-`*` handler's `(` branch consumed the `(` and called
+  `parseExpression` on the inner content, which bypassed the cast
+  detection that normally runs on `(`. Typedef'd type names like
+  `EXT_BV` then reached the variable-lookup path and failed with
+  "use of undeclared identifier". The TODO had ascribed this to
+  macro-expansion context, but isolated `(*(EXT_BV*)p).bits[0]`
+  and `EXT_BV v = *(EXT_BV*)p;` had the same failure. Fix: peek
+  inside the `(` — when the first token is a cast-signature head
+  (`ttDataType`, `struct`/`class`, or a typedef'd identifier in
+  `datatype_map`), delegate the whole `(...)` back to
+  `parseExpression` so its cast detection handles it. Plain
+  grouping (`*(a + b)`) is untouched. Regression:
+  `tests/testderefcasttypedef.mad`. Closes the mud_prog.c front
+  edge at line 1276 (`xIS_SET(*(EXT_BV*)vd->data, flag)`).
 
 - ~~**Real `<` / `<=` / `>` / `>=` used setl/setle/setg/setge after
   ucomisd**~~ — x86 `ucomisd` writes CF/PF/ZF (unsigned-style flags),

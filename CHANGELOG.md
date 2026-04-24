@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **`*(TYPE*)expr` with typedef'd TYPE** — the unary-`*`-`(` parser
+  branch used to consume the `(` and call `parseExpression` on the
+  inner content, bypassing cast detection (which runs on `(`).
+  Typedef'd type names like `EXT_BV` then fell into the identifier/
+  variable-lookup path and failed with "use of undeclared identifier
+  'EXT_BV'". Fix: peek inside the `(` — when the first token is a
+  cast signature head (`ttDataType` keyword, `struct`/`class`, or a
+  typedef'd identifier in `datatype_map`), delegate the whole
+  `(...)` back to `parseExpression` so its existing cast detection
+  runs. Plain grouping forms (`*(a + b)`) take the previous path
+  unchanged. Regression: `tests/testderefcasttypedef.mad`. Closes
+  the MadSMAUG mud_prog.c front edge at line 1276
+  (`xIS_SET(*(EXT_BV*)vd->data, flag)`), and the isolated
+  `(*(EXT_BV*)p).bits[0]` / `EXT_BV v = *(EXT_BV*)p;` forms.
+
 - **Real `<` / `<=` / `>` / `>=` comparisons were flipping** — x86
   `ucomisd` writes CF/PF/ZF (unsigned-compare semantics), not the
   signed SF/OF flags that `setl` / `setle` / `setg` / `setge` read.
