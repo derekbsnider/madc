@@ -226,6 +226,45 @@ static Operand &emit_plain_divmod(Program &pgm, TokenBase *left, TokenBase *righ
     return storage;
 }
 
+// State carried across the general-fallback scaffolding of the binary-op
+// tokens (TokenAdd, TokenSub, TokenMul, TokenXor, TokenBand, TokenBor,
+// TokenBSL general integer path). Captured at begin_general_binop,
+// consumed at finish_general_binop.
+struct GeneralBinopCascade {
+    Operand *caller_dest;
+    bool mirror_to_caller;
+};
+
+// Set up regdp.first as a scratch Reg of regdp.second when the caller
+// either didn't pass a dest or passed a non-Reg dest (typically a Mem
+// location we'll need to write back to at the end). Mirrors the
+// pre-amble each binary-op general path used to open-code.
+static GeneralBinopCascade begin_general_binop(Program &pgm, regdefp_t &regdp,
+					       Operand &operand_storage)
+{
+    GeneralBinopCascade c;
+    c.caller_dest = regdp.first;
+    c.mirror_to_caller = c.caller_dest && !c.caller_dest->isReg();
+    if ( !regdp.first || c.mirror_to_caller )
+    {
+	operand_storage = regdp.second->newreg(pgm.cc, "_reg");
+	regdp.first = &operand_storage;
+    }
+    return c;
+}
+
+// After the safe* op has run on lval (which is the scratch set up
+// above or the caller-passed Reg), mirror into the original caller
+// Mem dest if we had one, then restore regdp.first to point at lval.
+static Operand &finish_general_binop(Program &pgm, regdefp_t &regdp,
+				     Operand &lval, GeneralBinopCascade &c)
+{
+    if ( c.mirror_to_caller )
+	pgm.safemov(*c.caller_dest, lval, regdp.second, regdp.second);
+    regdp.first = &lval;
+    return *regdp.first;
+}
+
 // C pointer arithmetic: if `left` is a pointer or fixed-array type and
 // `right` is a non-pointer integer offset, scale the offset by the
 // pointed-to / element size so `p ± n` yields `p ± n*sizeof(*p)` bytes.
@@ -4314,24 +4353,15 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safeadd, regdp, _operand, "_add_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
-    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
+    regdp.first = &tmp;
+    Operand &rval = right->compile(pgm, regdp);
     emit_pointer_arith_scale(pgm, left, right, rval);	 // p + n → p + n*sizeof(*p)
-    pgm.safeadd(lval, rval, regdp.second);		 // type safe addition
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
-    regdp.first = &lval;				 // restore regdp.first
-    return *regdp.first;				 // return result operand
+    pgm.safeadd(lval, rval, regdp.second);
+    return finish_general_binop(pgm, regdp, lval, c);
 }
 
 // subtraction
@@ -4344,24 +4374,15 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safesub, regdp, _operand, "_sub_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
-    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
-    if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &lval = left->compile(pgm, regdp);
+    if ( !regdp.second ) { throw "TokenSub::compile() left->compile() cleared datatype!"; }
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
+    regdp.first = &tmp;
+    Operand &rval = right->compile(pgm, regdp);
     emit_pointer_arith_scale(pgm, left, right, rval);	 // ptr - n → ptr - n*sizeof(*ptr)
-    pgm.safesub(lval, rval, regdp.second);		 // type safe subtraction
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
-    regdp.first = &lval;				 // restore regdp.first
-    return *regdp.first;				 // return result operand
+    pgm.safesub(lval, rval, regdp.second);
+    return finish_general_binop(pgm, regdp, lval, c);
 }
 
 // make number negative
@@ -4417,23 +4438,14 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safemul, regdp, _operand, "_mul_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
-    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenMul::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safemul(lval, rval, regdp.second);		 // type safe multiplication
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
-    regdp.first = &lval;				 // restore regdp.first
-    return *regdp.first;				 // return result operand
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
+    regdp.first = &tmp;
+    Operand &rval = right->compile(pgm, regdp);
+    pgm.safemul(lval, rval, regdp.second);
+    return finish_general_binop(pgm, regdp, lval, c);
 }
 
 // divide two numbers
@@ -4727,24 +4739,14 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshl,
 				 /*right_must_be_gp=*/true, regdp, _operand, "_shl_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
-    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBSL::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safeshl(lval, rval);				 // type safe shift left
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
-    regdp.first = &lval;				 // restore regdp.first
-    DBG(cout << "TokenBSL::Compile() END" << endl);	 // (debugging message)
-    return *regdp.first;				 // return result operand
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
+    regdp.first = &tmp;
+    Operand &rval = right->compile(pgm, regdp);
+    pgm.safeshl(lval, rval);
+    return finish_general_binop(pgm, regdp, lval, c);
 }
 
 // bit shift right / stream input (>>)
@@ -4851,23 +4853,14 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshr,
 				 /*right_must_be_gp=*/true, regdp, _operand, "_shr_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
-    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBSR::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safeshr(lval, rval);				 // type safe shift right
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
-    regdp.first = &lval;				 // restore regdp.first
-    return *regdp.first;				 // return result operand
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
+    regdp.first = &tmp;
+    Operand &rval = right->compile(pgm, regdp);
+    pgm.safeshr(lval, rval);
+    return finish_general_binop(pgm, regdp, lval, c);
 }
 
 // bitwise or |
@@ -4882,23 +4875,14 @@ Operand &TokenBor::compile(Program &pgm, regdefp_t &regdp)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeor,
 				 /*right_must_be_gp=*/true, regdp, _operand, "_or_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
-    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBor::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safeor(lval, rval);				 // type safe binary or
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
-    regdp.first = &lval;				 // restore regdp.first
-    return *regdp.first;				 // return result operand
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
+    regdp.first = &tmp;
+    Operand &rval = right->compile(pgm, regdp);
+    pgm.safeor(lval, rval);
+    return finish_general_binop(pgm, regdp, lval, c);
 }
 
 // bitwise xor ^
@@ -4913,23 +4897,14 @@ Operand &TokenXor::compile(Program &pgm, regdefp_t &regdp)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safexor,
 				 /*right_must_be_gp=*/true, regdp, _operand, "_xor_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
-    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenXor::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safexor(lval, rval);				 // type safe exclusive or
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
-    regdp.first = &lval;				 // restore regdp.first
-    return *regdp.first;				 // return result operand
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
+    regdp.first = &tmp;
+    Operand &rval = right->compile(pgm, regdp);
+    pgm.safexor(lval, rval);
+    return finish_general_binop(pgm, regdp, lval, c);
 }
 
 // bitwise and &
@@ -4944,23 +4919,14 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeand,
 				 /*right_must_be_gp=*/true, regdp, _operand, "_and_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
-    Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBand::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    pgm.safeand(lval, rval);				 // type safe binary and
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
-    regdp.first = &lval;				 // restore regdp.first
-    return *regdp.first;				 // return result operand
+    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
+    regdp.first = &tmp;
+    Operand &rval = right->compile(pgm, regdp);
+    pgm.safeand(lval, rval);
+    return finish_general_binop(pgm, regdp, lval, c);
 }
 
 // bitwise not ~
