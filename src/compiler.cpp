@@ -133,6 +133,50 @@ static Operand &compile_compound_rhs_gp_normalized(Program &pgm, TokenBase *toke
     return compile_token_gp_normalized(pgm, token, target_type, storage);
 }
 
+enum class CmpKind : uint8_t { Eq, Ne, Lt, Le, Gt, Ge };
+
+// Central implementation of `lval <cmp> rval` -> 0/1 int64 result.
+// Both sides normalize through compile_token_normalized to a Reg of the
+// inferred cmp_type; safecmp + the right safeset produce the flag and
+// zero-extended byte; the final 0/1 routes through emit_ir_value so a
+// caller's regdp.first (Reg or Mem) is honored uniformly.
+static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, CmpKind op,
+			     regdefp_t &regdp, Operand &storage)
+{
+    Operand *caller_dest = regdp.first;
+    DataDef *cmp_type = infer_numeric_type(left, right);
+    bool is_unsigned = false;
+    if ( op != CmpKind::Eq && op != CmpKind::Ne )
+	is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
+		   || (right->datadef() && right->datadef()->is_unsigned())
+		   || (cmp_type && cmp_type->is_unsigned());
+
+    Operand left_norm;
+    Operand right_norm;
+    Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
+    Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
+    x86::Gp result = pgm.cc.newGpq("_cmp");
+    pgm.safecmp(lval, rval);
+    switch(op)
+    {
+	case CmpKind::Eq: pgm.safesete(result);                                          break;
+	case CmpKind::Ne: pgm.safesetne(result);                                         break;
+	case CmpKind::Lt: if ( is_unsigned ) pgm.safesetb(result);  else pgm.safesetl(result);  break;
+	case CmpKind::Le: if ( is_unsigned ) pgm.safesetbe(result); else pgm.safesetle(result); break;
+	case CmpKind::Gt: if ( is_unsigned ) pgm.safeseta(result);  else pgm.safesetg(result);  break;
+	case CmpKind::Ge: if ( is_unsigned ) pgm.safesetae(result); else pgm.safesetge(result); break;
+    }
+    regdp.second = &ddINT64;
+    storage = result;
+    regdp.first = &storage;
+    if ( caller_dest )
+    {
+	regdp.first = caller_dest;
+	return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, storage, &ddINT64);
+    }
+    return storage;
+}
+
 static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					    bool variadic_real_promotion,
 					    Operand &storage, DataDef *&out_type)
@@ -5132,189 +5176,56 @@ Operand &TokenLand::compile(Program &pgm, regdefp_t &regdp)
 // Equal to: ==
 Operand &TokenEquals::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenEquals::Compile() TOP" << endl);
     if ( !left )  { throw "== missing lval operand"; }
     if ( !right ) { throw "== missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    Operand *caller_dest = regdp.first;
-    DataDef *cmp_type = infer_numeric_type(left, right);
-    Operand left_norm;
-    Operand right_norm;
-    Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
-    Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
-    x86::Gp result = pgm.cc.newGpq("_cmp_eq");
-    DBG(pgm.cc.comment("TokenEquals::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);				 // typesafe comparison
-    DBG(pgm.cc.comment("TokenEquals::compile() pgm.safesete(reg)"));
-    pgm.safesete(result);					 // if lval == rval, ret(result) = 1
-    regdp.second = &ddINT64;
-    _operand = result;
-    regdp.first = &_operand;
-    if ( caller_dest )
-    {
-	regdp.first = caller_dest;
-	return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, &ddINT64);
-    }
-    return _operand;
+    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    return emit_compare(pgm, left, right, CmpKind::Eq, regdp, _operand);
 }
 
 // Not equal to: !=
 Operand &TokenNotEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenNotEq::Compile() TOP" << endl);
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    Operand *caller_dest = regdp.first;
-    DataDef *cmp_type = infer_numeric_type(left, right);
-    Operand left_norm;
-    Operand right_norm;
-    Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
-    Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
-    x86::Gp result = pgm.cc.newGpq("_cmp_ne");
-    DBG(pgm.cc.comment("TokenNotEq::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);				 // typesafe comparison
-    DBG(pgm.cc.comment("TokenNotEq::compile() pgm.safesetne(reg)"));
-    pgm.safesetne(result);				 // if lval != rval, ret(result) = 1
-    regdp.second = &ddINT64;
-    _operand = result;
-    regdp.first = &_operand;
-    if ( caller_dest )
-    {
-	regdp.first = caller_dest;
-	return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, &ddINT64);
-    }
-    return _operand;
+    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    return emit_compare(pgm, left, right, CmpKind::Ne, regdp, _operand);
 }
 
 // Less than: <
 Operand &TokenLT::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenLT::Compile() TOP" << endl);
-    if ( !left )  { throw "== missing lval operand"; }
-    if ( !right ) { throw "== missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    Operand *caller_dest = regdp.first;
-    DataDef *cmp_type = infer_numeric_type(left, right);
-    bool is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
-                    || (right->datadef() && right->datadef()->is_unsigned())
-                    || (cmp_type && cmp_type->is_unsigned());
-    Operand left_norm;
-    Operand right_norm;
-    Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
-    Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
-    x86::Gp result = pgm.cc.newGpq("_cmp_lt");
-    DBG(pgm.cc.comment("TokenLT::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);				 // typesafe comparison
-    if ( is_unsigned ) { DBG(pgm.cc.comment("safesetb (unsigned <)")); pgm.safesetb(result); }
-    else               { DBG(pgm.cc.comment("safesetl (signed <)")); pgm.safesetl(result); }
-    regdp.second = &ddINT64;
-    _operand = result;
-    regdp.first = &_operand;
-    if ( caller_dest )
-    {
-	regdp.first = caller_dest;
-	return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, &ddINT64);
-    }
-    return _operand;
+    if ( !left )  { throw "< missing lval operand"; }
+    if ( !right ) { throw "< missing rval operand"; }
+    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    return emit_compare(pgm, left, right, CmpKind::Lt, regdp, _operand);
 }
 
 // Less than or equal to: <=
 Operand &TokenLE::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenLE::Compile() TOP" << endl);
-    if ( !left )  { throw "== missing lval operand"; }
-    if ( !right ) { throw "== missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    Operand *caller_dest = regdp.first;
-    DataDef *cmp_type = infer_numeric_type(left, right);
-    bool is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
-                    || (right->datadef() && right->datadef()->is_unsigned())
-                    || (cmp_type && cmp_type->is_unsigned());
-    Operand left_norm;
-    Operand right_norm;
-    Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
-    Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
-    x86::Gp result = pgm.cc.newGpq("_cmp_le");
-    DBG(pgm.cc.comment("TokenLE::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);				 // typesafe comparison
-    if ( is_unsigned ) { DBG(pgm.cc.comment("safesetbe (unsigned <=)")); pgm.safesetbe(result); }
-    else               { DBG(pgm.cc.comment("safesetle (signed <=)"));   pgm.safesetle(result); }
-    regdp.second = &ddINT64;
-    _operand = result;
-    regdp.first = &_operand;
-    if ( caller_dest )
-    {
-	regdp.first = caller_dest;
-	return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, &ddINT64);
-    }
-    return _operand;
+    if ( !left )  { throw "<= missing lval operand"; }
+    if ( !right ) { throw "<= missing rval operand"; }
+    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    return emit_compare(pgm, left, right, CmpKind::Le, regdp, _operand);
 }
 
 // Greater than: >
 Operand &TokenGT::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenGT::Compile() TOP" << endl);
-    if ( !left )  { throw "== missing lval operand"; }
-    if ( !right ) { throw "== missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    Operand *caller_dest = regdp.first;
-    DataDef *cmp_type = infer_numeric_type(left, right);
-    bool is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
-                    || (right->datadef() && right->datadef()->is_unsigned())
-                    || (cmp_type && cmp_type->is_unsigned());
-    Operand left_norm;
-    Operand right_norm;
-    Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
-    Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
-    x86::Gp result = pgm.cc.newGpq("_cmp_gt");
-    DBG(pgm.cc.comment("TokenGT::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);				 // typesafe comparison
-    if ( is_unsigned ) { DBG(pgm.cc.comment("safeseta (unsigned >)")); pgm.safeseta(result); }
-    else               { DBG(pgm.cc.comment("safesetg (signed >)"));   pgm.safesetg(result); }
-    regdp.second = &ddINT64;
-    _operand = result;
-    regdp.first = &_operand;
-    if ( caller_dest )
-    {
-	regdp.first = caller_dest;
-	return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, &ddINT64);
-    }
-    return _operand;
+    if ( !left )  { throw "> missing lval operand"; }
+    if ( !right ) { throw "> missing rval operand"; }
+    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    return emit_compare(pgm, left, right, CmpKind::Gt, regdp, _operand);
 }
 
 // Greater than or equal to: >=
 Operand &TokenGE::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenGE::Compile() TOP" << endl);
-    if ( !left )  { throw "== missing lval operand"; }
-    if ( !right ) { throw "== missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    Operand *caller_dest = regdp.first;
-    DataDef *cmp_type = infer_numeric_type(left, right);
-    bool is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
-                    || (right->datadef() && right->datadef()->is_unsigned())
-                    || (cmp_type && cmp_type->is_unsigned());
-    Operand left_norm;
-    Operand right_norm;
-    Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
-    Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
-    x86::Gp result = pgm.cc.newGpq("_cmp_ge");
-    DBG(pgm.cc.comment("TokenGE::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);				 // typesafe comparison
-    if ( is_unsigned ) { DBG(pgm.cc.comment("safesetae (unsigned >=)")); pgm.safesetae(result); }
-    else               { DBG(pgm.cc.comment("safesetge (signed >=)"));   pgm.safesetge(result); }
-    regdp.second = &ddINT64;
-    _operand = result;
-    regdp.first = &_operand;
-    if ( caller_dest )
-    {
-	regdp.first = caller_dest;
-	return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, &ddINT64);
-    }
-    return _operand;
+    if ( !left )  { throw ">= missing lval operand"; }
+    if ( !right ) { throw ">= missing rval operand"; }
+    if ( can_optimize() ) { return optimize(pgm, regdp); }
+    return emit_compare(pgm, left, right, CmpKind::Ge, regdp, _operand);
 }
-
 
 // Greater than gives 1, less than gives -1, equal to gives 0 (<=>)
 Operand &Token3Way::compile(Program &pgm, regdefp_t &regdp)
