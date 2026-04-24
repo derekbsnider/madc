@@ -3497,6 +3497,19 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     return NULL;
 }
 
+TokenBase *TokenGOTO::parse(Program &pgm)
+{
+    DBG(std::cout << std::endl << "TokenGOTO::parse()" << std::endl);
+    TokenBase *tn = pgm.nextToken();
+    if ( !tn || !is_contextual_identifier_token(tn) )
+	pgm.Throw(tn ? tn : (TokenBase *)this) << "expected label name after 'goto'" << flush;
+    target = contextual_identifier_name(tn);
+    TokenBase *semi = pgm.nextToken();
+    if ( !semi || semi->id() != TokenID::tkSemi )
+	pgm.Throw(semi ? semi : tn) << "expected ';' after 'goto " << target << "'" << flush;
+    return this;
+}
+
 TokenBase *TokenRETURN::parse(Program &pgm)
 {
     TokenBase *tn;
@@ -5750,6 +5763,19 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	// assignment or a function call
 	case TokenType::ttIdentifier:
 	    DBG(std::cout << "parseStatement() got identifier " << ((TokenIdent *)tb)->str << std::endl);
+	    // Label definition: `name:` at statement position. `:` alone is
+	    // tkTerC (it shares the id with the ternary-`:`), while `::` is
+	    // the separate tkNS token emitted by the lexer, so a peek of
+	    // tkTerC here cannot be a namespace prefix. This has to run
+	    // before the datatype-identifier / namespace / `:=` branches
+	    // because `name:` at statement position is otherwise ambiguous.
+	    if ( peekToken() && peekToken()->id() == TokenID::tkTerC )
+	    {
+		std::string lname = ((TokenIdent *)tb)->str;
+		nextToken(); // consume ':'
+		DBG(std::cout << "parseStatement() label definition: " << lname << std::endl);
+		return new TokenLabel(lname);
+	    }
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {
 		std::string tname = ((TokenIdent *)tb)->str;

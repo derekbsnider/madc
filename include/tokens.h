@@ -953,7 +953,32 @@ using        virtual     wchar_t
 */
 
 class TokenELSE:     public TokenKeyword { public: TokenELSE()     : TokenKeyword("else") {}     virtual TokenID id() const { return TokenID::tkELSE;     } virtual TokenBase *clone() { return (TokenBase*)new TokenELSE();    } };
-class TokenGOTO:     public TokenKeyword { public: TokenGOTO()     : TokenKeyword("goto") {}     virtual TokenID id() const { return TokenID::tkGOTO;     } virtual TokenBase *clone() { return (TokenBase*)new TokenGOTO();    } };
+// goto <label>; — unconditional jump to a named label in the
+// enclosing function. Labels are function-scoped; forward references
+// resolve through Program::label_map (populated on first goto or
+// label reference, bound on the TokenLabel::compile pass).
+class TokenGOTO: public TokenKeyword
+{
+public:
+    std::string target;   // label name (set by parse)
+    TokenGOTO() : TokenKeyword("goto") {}
+    virtual TokenID id() const { return TokenID::tkGOTO; }
+    virtual TokenBase *clone() { return (TokenBase*)new TokenGOTO(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// `name:` — label statement (function-scoped). Binds the enclosing
+// function's Program::label_map[name] at codegen time.
+class TokenLabel: public TokenBase
+{
+public:
+    std::string name;
+    TokenLabel(const std::string &n) : name(n) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenBase *clone() { return new TokenLabel(name); }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
 class TokenCASE: public TokenKeyword
 {
 public:

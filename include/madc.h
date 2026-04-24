@@ -543,6 +543,14 @@ public:
     std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
     int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
 
+    // goto / label map — function-scoped. `TokenFunc::compile` clears
+    // this at the start of each function body; `TokenGOTO::compile`
+    // look-or-creates entries; `TokenLabel::compile` binds them.
+    // Kept on Program rather than TokenFunc to avoid a layout change
+    // in TokenFunc's multi-inheritance shape (which silently regressed
+    // downstream codegen when an `std::map` was added there directly).
+    std::map<std::string, asmjit::Label> label_map;
+
     bool colors;
     asmjit::JitRuntime jit;
     asmjit::CodeHolder code;

@@ -4,10 +4,14 @@
 
 ### Language Completeness
 
-- **`goto label` + forward labels** — needed for several SMAUG sources
-  (mud_prog.c, magic.c, build.c, tables.c, ban.c, services.c,
-  mud_comm.c). `tkGOTO` exists as a lexer token but no parse/compile
-  support. Currently routed around by stubbing the calling symbols.
+- **`(EXT_BV*)` cast inside `xIS_SET` macro expansion in mud_prog.c**
+  — `return xIS_SET(*(EXT_BV*)vd->data, flag) ? TRUE : FALSE;`
+  expands to a `(EXT_BV*)`-cast-inside-a-larger-macro context and
+  the parser reports "use of undeclared identifier 'EXT_BV'" despite
+  `EXT_BV` being typedef'd in the already-ingested mud.h. Isolated
+  casts of the same form (`((EXT_BV*)p)->bits[0]`) compile fine, so
+  the trigger is macro-expansion context. Blocks mud_prog.c ingest
+  for now.
 
 
 - **Real `<` / `<=` comparison with Mem-backed literal RHS** —
@@ -92,6 +96,14 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**`goto label;` + forward labels**~~ — function-scoped labels;
+  Program::label_map (cleared on each function boundary) holds the
+  asmjit::Labels. Forward references work via look-or-create. The
+  map on Program (not TokenFunc) because adding an std::map to
+  TokenFunc silently regressed downstream codegen through
+  multi-inheritance vtable shift. Targeted regression:
+  `tests/testgoto.mad`.
 
 - ~~**Unary `-` in brace-init lists**~~ — `isPostfixPosition` now
   recognizes `{` / `(` / `,` / `;` / `=` as expression-opening

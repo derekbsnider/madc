@@ -1913,6 +1913,7 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 
     pgm.tkFunction = this;
     clear_operand_map(); // clear operand map
+    pgm.label_map.clear(); // labels are function-scoped
 
     pgm.cc.addFunc(func->funcnode);
 
@@ -6049,6 +6050,39 @@ Operand &TokenCONT::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("CONTINUE"));
 	pgm.cc.jmp(*pgm.loopstack.top().first);
     }
+    return _reg;
+}
+
+// Function-scope label-map accessor. Creates an asmjit Label on
+// first reference so forward-referenced gotos resolve without
+// ordering requirements. `TokenFunc::compile` clears
+// `pgm.label_map` at each function boundary.
+static asmjit::Label &lookup_or_make_label(Program &pgm, const std::string &name)
+{
+    auto it = pgm.label_map.find(name);
+    if ( it != pgm.label_map.end() )
+	return it->second;
+    pgm.label_map[name] = pgm.cc.newLabel();
+    return pgm.label_map[name];
+}
+
+// compile a goto statement
+Operand &TokenGOTO::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(std::cout << "TokenGOTO::compile(" << target << ")" << std::endl);
+    asmjit::Label &L = lookup_or_make_label(pgm, target);
+    DBG(pgm.cc.comment(("goto " + target).c_str()));
+    pgm.cc.jmp(L);
+    return _reg;
+}
+
+// compile a label definition: bind the Label at the current point.
+Operand &TokenLabel::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(std::cout << "TokenLabel::compile(" << name << ":)" << std::endl);
+    asmjit::Label &L = lookup_or_make_label(pgm, name);
+    DBG(pgm.cc.comment((name + ":").c_str()));
+    pgm.cc.bind(L);
     return _reg;
 }
 

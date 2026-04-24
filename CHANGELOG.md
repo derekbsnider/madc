@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **`goto label;` + forward labels** — function-scoped labels and
+  `goto` resolve through `Program::label_map`, which `TokenFunc::
+  compile` clears at each function boundary. Forward references
+  work naturally: `TokenGOTO::compile` look-or-creates the
+  `asmjit::Label` on first use, and a later `TokenLabel::compile`
+  binds it. parseStatement detects `ident:` at statement position
+  via a `tkTerC` peek (the single-`:` token; `::` stays as the
+  separate tkNS token, so there's no ambiguity).
+
+  The `label_map` lives on `Program` rather than `TokenFunc` by
+  design — adding an `std::map<std::string, asmjit::Label>` member
+  directly to `TokenFunc` silently shifted its multi-inheritance
+  vtable layout and regressed unrelated codegen paths
+  (`float f = 1.5;` initialization in particular). Keeping the map
+  on Program and clearing it at each function entry avoids the
+  layout change while preserving function-scoped semantics.
+
+  Regression: `tests/testgoto.mad` covering backward loop gotos,
+  forward skips, the SMAUG `doneargs:` multi-branch exit pattern,
+  and per-function label isolation. Unlocks (future) ingest of
+  mud_prog.c / magic.c / tables.c / build.c / mud_comm.c / ban.c /
+  services.c, though mud_prog.c still stumbles on a separate
+  deep-macro `(EXT_BV*)` cast parse issue filed as a new gap.
+
 - **`char[N] = "..."` with matching length skips null terminator** —
   C89 allows `char c[3] = "abc";` (no implicit `'\0'` because the
   array is exactly full). The parser was always pushing a null onto
