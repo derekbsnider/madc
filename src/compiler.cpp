@@ -2533,6 +2533,77 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     {
 	// subscript write: container[index] = value
 	TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(left);
+	if ( !tsub )
+	{
+	    // TokenSubscriptExpr (subscript with an expression base like
+	    // `s->items[i] = v`) reports ttSubscript too but isn't a
+	    // TokenSubscript. Emit the element store directly: compile
+	    // base_expr for the pointer, compile index, then store rhs at
+	    // [base + idx * elem_size].
+	    TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(left);
+	    if ( !tse )
+		throw "TokenAssign: unknown subscript lvalue type";
+	    DataDef *elem_type = tse->datadef();
+	    size_t elem_size = elem_type ? elem_type->size : 8;
+
+	    // Compile RHS first so the caller's destination (if any) is
+	    // preserved through the LHS evaluation.
+	    regdefp_t rhs_rdp = {NULL, NULL, NULL};
+	    rhs_rdp.second = elem_type;
+	    Operand &rhs_op = right->compile(pgm, rhs_rdp);
+	    Operand effective_rhs = rhs_op;
+	    if ( elem_type && elem_type->is_pointer()
+	      && elem_type->rawtype() == DataType::dtCHAR
+	      && right->datadef()
+	      && right->datadef()->rawtype() == DataType::dtSTRING )
+	    {
+		x86::Gp cstr = pgm.cc.newIntPtr("subx_cstr");
+		InvokeNode *cstr_call;
+		pgm.cc.invoke(&cstr_call, imm(string_cstr),
+		    FuncSignature::build<const char *, void *>());
+		cstr_call->setArg(0, rhs_op.as<x86::Gp>());
+		cstr_call->setRet(0, cstr);
+		effective_rhs = cstr;
+	    }
+
+	    regdefp_t base_rdp = {NULL, NULL, NULL};
+	    Operand &base_op = tse->base_expr->compile(pgm, base_rdp);
+	    x86::Gp base_reg = pgm.cc.newIntPtr("subx_base");
+	    if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+	    else if ( base_op.isMem() )
+		pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
+	    else
+		throw "TokenAssign: subscript base is not a register or memory";
+
+	    regdefp_t idx_rdp = {NULL, NULL, NULL};
+	    Operand &idx_op = tse->index->compile(pgm, idx_rdp);
+	    x86::Gp idx_reg = pgm.cc.newGpq("subx_idx");
+	    if ( idx_op.isReg() && idx_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
+	    else if ( idx_op.isImm() )
+		pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+	    else if ( idx_op.isMem() )
+		pgm.cc.mov(idx_reg, idx_op.as<x86::Mem>());
+
+	    uint32_t shift = 0;
+	    if      ( elem_size == 8 ) shift = 3;
+	    else if ( elem_size == 4 ) shift = 2;
+	    else if ( elem_size == 2 ) shift = 1;
+	    x86::Mem slot = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+
+	    if ( effective_rhs.isReg() && effective_rhs.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.safemov(slot, effective_rhs.as<x86::Gp>(), elem_type, elem_type);
+	    else if ( effective_rhs.isImm() )
+		pgm.cc.mov(slot, effective_rhs.as<Imm>());
+	    else
+		throw "TokenAssign: unsupported RHS for subscript store";
+
+	    _operand = effective_rhs;
+	    regdp.first = &_operand;
+	    regdp.second = elem_type;
+	    return _operand;
+	}
 	ltype = tsub->datadef();
 	DBG(cout << "TokenAssign::compile() subscript assignment to " << tsub->object.name << " elem type " << ltype->name << endl);
 	DBG(pgm.cc.comment("TokenAssign: subscript write"));
@@ -3226,7 +3297,18 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     Operand &base_op = base_expr->operand(pgm);
     x86::Gp base_reg = pgm.cc.newIntPtr("subexpr_obj");
     if ( base_op.isMem() )
-	pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+    {
+	// If base_expr is a pointer-typed value (e.g. `s->items` where items
+	// is `int *`), the Mem holds the pointer value — dereference it with
+	// mov to get the real array address. If base_expr is an aggregate
+	// stored in-place (fixed-array variable, nested struct), we want the
+	// address OF the Mem, which LEA gives. Pick based on datadef.
+	DataDef *bdd = base_expr->datadef();
+	if ( bdd && bdd->is_pointer() )
+	    pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
+	else
+	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+    }
     else
 	pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
 

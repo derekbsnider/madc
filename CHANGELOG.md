@@ -31,6 +31,27 @@
 
 ### Fixed
 
+- **`s->items[i]` read/write through pointer-typed struct members** —
+  two bugs collaborated to SIGSEGV (or return garbage) when a
+  subscript operated on a pointer held in a struct member:
+  (a) `TokenAssign`'s ttSubscript write path only `dynamic_cast`'d
+      to `TokenSubscript` (Variable-based subscript) — for a
+      `TokenSubscriptExpr` (expression-based, which the parser builds
+      for member / subscript / deref bases), the cast returned NULL
+      and the next `tsub->datadef()` crashed at address nil.
+  (b) `TokenSubscriptExpr::compile` unconditionally `lea`'d when the
+      base operand was a Mem. That's correct for a Mem that IS the
+      backing storage (fixed arrays), but wrong for a Mem that HOLDS
+      a pointer value (`s->items` where items is `int *`) — reads
+      then returned bytes from the member slot itself instead of the
+      pointed-to array.
+  Fix: `TokenAssign` now emits an inline store path for
+  `TokenSubscriptExpr` lvalues (including the dtSTRING → char*
+  coercion for char*-element arrays), and `TokenSubscriptExpr::compile`
+  picks `mov` vs `lea` based on whether base_expr's datadef is a
+  pointer. Added `tests/teststructptrsub.mad` covering struct-of-
+  pointer read/write and a heap-allocated stack via push/pop helpers.
+
 - **Signed integer division with negative dividend** — `a / b` where
   `a < 0` used to produce wildly wrong quotients (`-17 / 5` came out
   as 858993455 instead of -3). x86's `idiv` treats rdx:rax as a

@@ -1,0 +1,67 @@
+// `s->items[i]` where items is a pointer-typed struct member — the
+// subscript reads / writes through the stored pointer, not the
+// member's slot address. Two bugs collaborated:
+//
+//   1. TokenAssign's ttSubscript path only dynamic_cast'd to
+//      TokenSubscript (Variable-based subscript), so TokenSubscriptExpr
+//      (expression-based, used for member/subscript/deref base) fell
+//      through with `tsub = NULL` and the next `tsub->datadef()`
+//      segfaulted at address nil.
+//   2. TokenSubscriptExpr::compile unconditionally LEA'd when the
+//      base operand was a Mem — correct for fixed-array in-place
+//      storage, wrong for a Mem holding a pointer value (like
+//      `s->items`). Reads therefore returned bytes from the member
+//      slot itself, not from the pointed-to array.
+//
+// Fix: TokenAssign now emits an inline store path for
+// TokenSubscriptExpr lvalues, and TokenSubscriptExpr::compile now
+// MOVs (dereferences) the Mem when base_expr's datadef is a pointer,
+// LEA'ing only for aggregate-typed bases.
+
+#include <stdio.h>
+#include <stdlib.h>
+
+struct box { int *items; int count; };
+struct stack { int *items; int top; };
+
+void push(struct stack *s, int v)
+{
+    s->items[s->top] = v;
+    s->top = s->top + 1;
+}
+
+int pop(struct stack *s)
+{
+    s->top = s->top - 1;
+    return s->items[s->top];
+}
+
+int main()
+{
+    // struct-of-pointer read/write
+    int arr[3];
+    arr[0] = 10; arr[1] = 20; arr[2] = 30;
+    struct box b;
+    b.items = arr;
+    b.count = 3;
+    printf("before=%d %d %d\n", b.items[0], b.items[1], b.items[2]);
+    b.items[1] = 99;
+    printf("after=%d %d %d\n", b.items[0], b.items[1], b.items[2]);
+
+    // heap-allocated stack
+    struct stack *s = (struct stack *) malloc(sizeof(struct stack));
+    s->items = (int *) malloc(sizeof(int) * 10);
+    s->top = 0;
+
+    push(s, 1);
+    push(s, 2);
+    push(s, 3);
+    printf("top=%d\n", s->top);
+    printf("pop=%d\n", pop(s));
+    printf("pop=%d\n", pop(s));
+    printf("pop=%d\n", pop(s));
+
+    free(s->items);
+    free(s);
+    return 0;
+}
