@@ -4,6 +4,34 @@
 
 ### Added
 
+- **Typed-register IR — Stage 2f/g/h general-fallback collapse +
+  TokenNeg dead-code fix** — three more bounded refactors on the
+  binary-op general fallback paths:
+  - **TokenNeg dead-code branch fixed.** The old
+    `is_plain_numeric_expr(left) && is_plain_numeric_expr(right)`
+    fast path was unreachable (TokenNeg is unary, `left` is
+    always NULL) and its body wrongly emitted `safeshl` instead
+    of `safeneg`. Replaced with a real unary-right IR-normalized
+    fast path.
+  - **Pointer-arithmetic scaling extracted.** The two inline
+    blocks in TokenAdd/TokenSub that emitted
+    `imul rval, rval, sizeof(*ptr)` for `p ± n` collapse into
+    `emit_pointer_arith_scale`. TokenSub's extra "right is not
+    pointer" guard is now folded in and applies uniformly.
+  - **General-fallback cascade extracted.** TokenAdd / TokenSub /
+    TokenMul / TokenXor / TokenBand / TokenBor / TokenBSL /
+    TokenBSR / TokenDiv all open-coded the same ~8-line
+    `caller_dest + mirror_to_caller` scaffolding around their
+    safe op. A `GeneralBinopCascade` struct plus
+    `begin_general_binop` / `finish_general_binop` helpers
+    replace it. Each general-path body now reads: begin cascade,
+    compile left, tmp for right, compile right, (optional per-op
+    work), safe op, finish cascade. TokenMod general path stays
+    open-coded because its remainder register is woven through
+    regdp.first in a way that doesn't factor cleanly.
+  Net: ~200 more lines removed from compiler.cpp. 18 IR + 25
+  datadef unit + 170 integration tests pass.
+
 - **Typed-register IR — Stage 3a call return-binding unification**
   — `TokenCallFunc` had three divergent call-return paths: the
   function-pointer-call path (used `bind_call_return` — handled

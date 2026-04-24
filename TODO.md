@@ -14,14 +14,13 @@
   `emit_compound_divmod`). Call return-binding is unified via
   `bind_call_return` + `narrow_int_ret` flag across the fptr /
   dlcall / variadic-dlsym paths (Stage 3a). Still to do:
-  - **General (non-plain-numeric) fallback paths** — the binary
-    ops' else-branch still uses the regdp-cascade pattern (mutate
-    `regdp.first` through `left->compile`, use `tmp` for right,
-    then `safe*`). Pointer-arithmetic scaling lives here. These
-    are where the trickier operand-shape bugs have historically
-    hidden. Walking these onto the IR means teaching it about
-    pointer-scale (new `IRBuilder::scaled_add` / similar) or
-    about Mem-backed lvalues with cascade semantics.
+  - ~~**General (non-plain-numeric) fallback paths**~~ — Add /
+    Sub / Mul / Div / Xor / Band / Bor / BSL / BSR general paths
+    now route through `GeneralBinopCascade` +
+    `begin_general_binop` / `finish_general_binop`. Pointer-
+    scale extracted into `emit_pointer_arith_scale`. TokenMod
+    still open-coded (remainder-register interleaving doesn't
+    factor cleanly). TokenNeg's dead-code branch fixed.
   - **typesafe.cpp shrinkage** — once the fallback paths also
     normalize upstream, `safeadd` / `safesub` / `safemul` /
     `safediv` / `safemod` / `safeor` / `safeand` / `safexor` /
@@ -37,14 +36,6 @@
   Plan in `docs/plans/typed-register-ir.md`, rules in
   `.claude/rules/typed-register-ir.md`.
 
-- **Latent dead-code bug in TokenNeg plain path** — the
-  `is_plain_numeric_expr(left)` branch at the top of
-  `TokenNeg::compile` (unary minus) is unreachable because `left`
-  is always NULL for a unary-minus token; `is_plain_numeric_expr(
-  NULL) == false`. Inside the unreachable body the op is
-  erroneously `safeshl` instead of `safeneg`. Dead + wrong — the
-  cleanest fix is to delete the branch. Not part of Stage 2
-  because Stage 2 is deliberately behavior-preserving.
 
 ### Language Completeness
 
