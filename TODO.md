@@ -4,17 +4,14 @@
 
 ### Compiler Infrastructure
 
-- **Typed-register IR Stage 2 — remaining work** — the
-  plain-numeric fast paths of the binary-op tokens (Add/Sub/Mul/
-  Div/Mod/Xor/Band/Bor/BSL/BSR) and all six comparison ops
-  (==, !=, <, <=, >, >=) are collapsed onto the new shared helpers
-  (`emit_compare`, `emit_plain_binop3`, `emit_plain_divmod`,
-  `emit_plain_bitop2`). Still to do:
-  - **Compound-assigns** (`+=` / `-=` / `*=` / `/=` / `%=` /
-    `|=` / `&=` / `^=` / `<<=` / `>>=`) — these still do
-    inline `resolveCompoundLHS` + `safe*` without going through
-    the helpers. Port them so the load-op-store pattern lives
-    in one place and respects the same operand-shape contract.
+- **Typed-register IR Stage 2 — remaining work** — plain-numeric
+  fast paths of the binary-op tokens (Add/Sub/Mul/Div/Mod/Xor/
+  Band/Bor/BSL/BSR), all six comparison ops, and all ten
+  compound-assigns (+= -= *= /= %= |= &= ^= <<= >>=) are now
+  collapsed onto shared helpers (`emit_compare`,
+  `emit_plain_binop3`, `emit_plain_divmod`, `emit_plain_bitop2`,
+  `emit_compound_binop3`, `emit_compound_bitop2`,
+  `emit_compound_divmod`). Still to do:
   - **General (non-plain-numeric) fallback paths** — the binary
     ops' else-branch still uses the regdp-cascade pattern (mutate
     `regdp.first` through `left->compile`, use `tmp` for right,
@@ -23,11 +20,12 @@
     hidden. Walking these onto the IR means teaching it about
     pointer-scale (new `IRBuilder::scaled_add` / similar) or
     about Mem-backed lvalues with cascade semantics.
-  - After that: `safeadd` / `safesub` / `safemul` / `safediv` /
-    `safemod` / `safeor` / `safeand` / `safexor` / `safeshl` /
-    `safeshr` in `typesafe.cpp` can shrink to pure low-level
-    emitters — the IR will already normalize both operands to
-    Reg of the same concrete type before the helper runs.
+  - **typesafe.cpp shrinkage** — once the fallback paths also
+    normalize upstream, `safeadd` / `safesub` / `safemul` /
+    `safediv` / `safemod` / `safeor` / `safeand` / `safexor` /
+    `safeshl` / `safeshr` can shrink to pure low-level emitters
+    (the IR will already normalize both operands to Reg of the
+    same concrete type before the helper runs).
   Plan in `docs/plans/typed-register-ir.md`, rules in
   `.claude/rules/typed-register-ir.md`.
 

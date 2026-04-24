@@ -18,10 +18,14 @@
   - `emit_plain_bitop2` (2-arg safe ops) folds TokenXor /
     TokenBand / TokenBor / TokenBSL / TokenBSR. BSL gains a
     plain-integer shortcut it didn't previously have.
+  - `emit_compound_binop3` / `emit_compound_bitop2` /
+    `emit_compound_divmod` fold the ten compound-assigns
+    (`+=` / `-=` / `*=` / `/=` / `%=` / `<<=` / `>>=` /
+    `&=` / `|=` / `^=`) onto the same helper surface.
   Token general-fallback paths (pointer arithmetic, regdp-
   cascade for complex expressions) are intentionally untouched
   — they still handle the operand shapes the fast path rejects.
-  Net: ~300 lines removed across compiler.cpp with no behavior
+  Net: ~380 lines removed across compiler.cpp with no behavior
   change. 18 IR + 25 datadef unit + 170 integration tests pass.
 
 - **Typed-register IR — Stage 1 leaf-token sweep** — every leaf
