@@ -4458,25 +4458,16 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_divmod(pgm, left, right, regdp.second, /*return_remainder=*/false, regdp, _operand, "_div_l");
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
-    {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
-	regdp.first = &_operand;			 // pass _operand along
-    }
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand remainder = regdp.second->newreg(pgm.cc, "remainder");
-    Operand &dividend = left->compile(pgm, regdp);	 // compile left side ref=dividend
+    Operand &dividend = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenDiv::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "divisor");// use tmp for right side
-    regdp.first = &tmp;					 // pass tmp along
-    Operand &divisor = right->compile(pgm, regdp);	 // compile right side into tmp
-    pgm.safexor(remainder, remainder);			 // zero out remainder
-    pgm.safediv(remainder, dividend, divisor, regdp.second);// type safe division
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, dividend, regdp.second, regdp.second);
-    regdp.first = &dividend;				 // restore regdp.first
-    return *regdp.first;				 // return result operand
+    Operand tmp = regdp.second->newreg(pgm.cc, "divisor");
+    regdp.first = &tmp;
+    Operand &divisor = right->compile(pgm, regdp);
+    pgm.safexor(remainder, remainder);
+    pgm.safediv(remainder, dividend, divisor, regdp.second);
+    return finish_general_binop(pgm, regdp, dividend, c);
 }
 
 #if 0
