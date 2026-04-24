@@ -4,17 +4,6 @@
 
 ### Language Completeness
 
-- **Function-like macros shadowing later definitions** — SMAUG.mad does
-  `#define bug(...) ((void)0)` to stub out calls, then `#include`s
-  `db.c` which contains `void bug(const char *str, ...) { … }`. The
-  lexer expands `bug(` at the definition, turning `void bug(...)` into
-  `void ((void)0)` and killing the parse. The MadSMAUG umbrella now
-  wraps the db.c include with `#undef bug` / re-`#define bug(...)` as
-  the option-(b) workaround. A proper fix would teach the lexer to
-  suppress function-like macro expansion when the identifier is in a
-  definition/declaration head position (option-(a)).
-
-
 ## Medium Priority
 
 ### Language Completeness
@@ -81,6 +70,21 @@
 ## Completed
 
 ### Session 2026-04-24 (post-v0.11.0)
+
+- ~~**Function-like macros shadowing later definitions**~~ — lexer
+  now suppresses function-like macro expansion when the preceding
+  tokens form a declaration/definition head. Walks back through
+  `tokens`, skipping pointer decorators (`*`), and treats the first
+  non-`*` token as a type signal when it is a `ttDataType` keyword,
+  `struct`/`class`/`enum`, or a storage-class / qualifier token
+  (`const`/`extern`/`static`/`register`/`typedef`/`restrict`).
+  Ordinary call sites preceded by `{` / `;` / `,` / operators still
+  expand. Closes the MadSMAUG `#define bug(...) ((void)0)` →
+  `void bug(const char *, ...)` collision cleanly; the umbrella's
+  `#undef bug` workaround around the db.c include can now be
+  removed. Regression: `tests/testmacrodefhead.mad` covering
+  `void foo(...)`, `char *foo(...)`, and `static int foo(int)`
+  definitions all coexisting with same-named function-like macros.
 
 - ~~**`*(TYPE*)expr` failed when TYPE was a typedef'd user type**~~
   — the unary-`*` handler's `(` branch consumed the `(` and called

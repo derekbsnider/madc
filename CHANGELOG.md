@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **Function-like macros no longer eat later declarators** — SMAUG-
+  style `#define bug(...) ((void)0)` above a later
+  `void bug(const char *, ...) { ... }` definition used to expand at
+  the definition head, turning `void bug(const char *, ...)` into
+  `void ((void)0)` and killing the parse. The lexer now walks back
+  through recently emitted tokens before the function-like expansion
+  check; if the preceding non-`*` token is a type keyword
+  (`ttDataType`), `struct`/`class`/`enum`, or a storage-class /
+  qualifier (`const`/`extern`/`static`/`register`/`typedef`/
+  `restrict`), expansion is suppressed so the declarator parses
+  normally. Ordinary call sites (preceded by `{` / `;` / `,` / an
+  operator) still expand. Covers the three common declarator shapes
+  — `void foo(...)`, `char *foo(...)`, and `static int foo(int)`.
+  MadSMAUG's `#undef bug` workaround around the db.c include can
+  now be removed. Regression: `tests/testmacrodefhead.mad`.
+
 - **`*(TYPE*)expr` with typedef'd TYPE** — the unary-`*`-`(` parser
   branch used to consume the `(` and call `parseExpression` on the
   inner content, bypassing cast detection (which runs on `(`).

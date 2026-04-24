@@ -66,6 +66,33 @@ static bool consume_macro_call_open(Source &source)
     return false;
 }
 
+// Walk back through recently emitted tokens to decide whether the
+// current identifier is at a declaration / definition head, i.e.
+// `<type> [*...] <ident> (...)`. When so, we must suppress
+// function-like macro expansion: otherwise `#define bug(...) ((void)0)`
+// above a later `void bug(const char *, ...)` definition eats the
+// declarator and the parse fails. Skips pointer decorators; stops at
+// the first non-`*` token and classifies it as type / qualifier /
+// typedef-identifier (→ decl head) or anything else (→ not decl head).
+static bool looks_like_decl_head(const std::deque<TokenBase *> &tokens)
+{
+    for ( auto it = tokens.rbegin(); it != tokens.rend(); ++it )
+    {
+	TokenBase *t = *it;
+	TokenID tid = t->id();
+	TokenType tt = t->type();
+	if ( tid == TokenID::tkMul ) continue;
+	if ( tt == TokenType::ttDataType ) return true;
+	if ( tid == TokenID::tkSTRUCT || tid == TokenID::tkCLASS
+	  || tid == TokenID::tkENUM ) return true;
+	if ( tid == TokenID::tkCONST || tid == TokenID::tkEXTERN
+	  || tid == TokenID::tkSTATIC || tid == TokenID::tkREGISTER
+	  || tid == TokenID::tkTYPEDEF || tid == TokenID::tkRESTRICT ) return true;
+	return false;
+    }
+    return false;
+}
+
 static std::string read_macro_body(Source &source)
 {
     std::string body;
@@ -986,7 +1013,11 @@ TokenBase *Program::_getToken()
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 		    word += source.get();
 		// function-like macro expansion: NAME(args) or NAME (args)
-		if ( macro_map.count(word) && consume_macro_call_open(source) )
+		// Suppressed when the preceding tokens form a declaration /
+		// definition head (`void bug(const char *, ...)` must not
+		// be eaten by a prior `#define bug(...) ((void)0)`).
+		if ( macro_map.count(word) && !looks_like_decl_head(tokens)
+		     && consume_macro_call_open(source) )
 		{
 		    MacroDef &macro = macro_map[word];
 		    // read actual arguments (handling nested parens and strings)
