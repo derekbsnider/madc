@@ -1977,13 +1977,26 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    Operand &mem = tm->operand(pgm);
 	    if ( mem.isMem() )
 	    {
-		x86::Gp gp = pgm.cc.newGpq("member_lhs");
-		load_mem_to_gpq(pgm, gp, mem.as<x86::Mem>(), r.type);
-		r.writeback = mem.as<x86::Mem>();
-		r.lval = gp;
-		r.is_member = true;
-		if ( r.type && r.type->size && r.type->size < 8 )
-		    r.type = &ddINT64;
+		if ( r.type && r.type->is_real() )
+		{
+		    // Double/float struct member — load into Xmm so the
+		    // subsequent safeadd / safemul / etc. use Xmm/Xmm paths.
+		    x86::Xmm xm = pgm.cc.newXmm("member_lhs_xmm");
+		    pgm.safemov(xm, mem.as<x86::Mem>(), r.type, r.type);
+		    r.writeback = mem.as<x86::Mem>();
+		    r.lval = xm;
+		    r.is_member = true;
+		}
+		else
+		{
+		    x86::Gp gp = pgm.cc.newGpq("member_lhs");
+		    load_mem_to_gpq(pgm, gp, mem.as<x86::Mem>(), r.type);
+		    r.writeback = mem.as<x86::Mem>();
+		    r.lval = gp;
+		    r.is_member = true;
+		    if ( r.type && r.type->size && r.type->size < 8 )
+			r.type = &ddINT64;
+		}
 	    }
 	    else
 		r.lval = mem;
@@ -1998,13 +2011,24 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		Operand &mem = td->operand(pgm);
 		if ( mem.isMem() )
 		{
-		    x86::Gp gp = pgm.cc.newGpq("deref_lhs");
-		    load_mem_to_gpq(pgm, gp, mem.as<x86::Mem>(), r.type);
-		    r.writeback = mem.as<x86::Mem>();
-		    r.lval = gp;
-		    r.is_member = true;
-		    if ( r.type && r.type->size && r.type->size < 8 )
-			r.type = &ddINT64;
+		    if ( r.type && r.type->is_real() )
+		    {
+			x86::Xmm xm = pgm.cc.newXmm("deref_lhs_xmm");
+			pgm.safemov(xm, mem.as<x86::Mem>(), r.type, r.type);
+			r.writeback = mem.as<x86::Mem>();
+			r.lval = xm;
+			r.is_member = true;
+		    }
+		    else
+		    {
+			x86::Gp gp = pgm.cc.newGpq("deref_lhs");
+			load_mem_to_gpq(pgm, gp, mem.as<x86::Mem>(), r.type);
+			r.writeback = mem.as<x86::Mem>();
+			r.lval = gp;
+			r.is_member = true;
+			if ( r.type && r.type->size && r.type->size < 8 )
+			    r.type = &ddINT64;
+		    }
 		}
 		else
 		    r.lval = mem;

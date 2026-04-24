@@ -4,6 +4,20 @@
 
 ### Fixed
 
+- **Struct-member compound-assign on doubles** — `v.x += 2.5;`,
+  `v.y *= 3.0;` and friends where the LHS is a `double` struct
+  member used to throw `"safeadd() unable to add xmm to gp"` (or
+  asmjit finalize error 25) because `resolveCompoundLHS`'s
+  `ttMember` branch always loaded the member Mem via
+  `load_mem_to_gpq` into a Gp, regardless of type. The local-
+  variable path already handled `is_real()` with an Xmm load;
+  the member and `*deref` paths now mirror it. Added
+  `tests/teststructdoublecompound.mad` covering `+=` / `-=` /
+  `*=` / `/=` on double members, one op per helper function to
+  sidestep two other pre-existing bugs (struct-member double
+  varargs printf, and multi-float interleaved with printf —
+  both filed in TODO).
+
 - **`!=` / `<` / `<=` / `>` / `>=` comparisons with Mem destination** —
   completes the roll-out of the `==` fix from commit `6318e6b`.
   `TokenNotEq` / `TokenLT` / `TokenLE` / `TokenGT` / `TokenGE`

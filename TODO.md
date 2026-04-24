@@ -19,12 +19,19 @@
 
 ### Language Completeness
 
-- **Struct-member compound-assign on doubles / floats** — `a.v +=
-  2.5;` where `v` is a double still goes through the Gpq load in
-  `resolveCompoundLHS` and fails asmjit finalize with error 25. The
-  Xmm variant worked end-to-end for local-variable lvalues but
-  tripped finalize when applied to the member path. Local double
-  compound-assign is fixed; struct member remains.
+- **Struct-member double `%f` / `%e` / `%g` printf / read path** —
+  two related pre-existing bugs found while writing the struct-
+  member compound-assign test:
+  (a) `printf("%.2f", v.x);` where `v.x` is a `double` struct
+      member fails asmjit `finalize` (error 25) — varargs arg
+      compile doesn't emit a correct load from a struct-member
+      Mem to the variadic Xmm register.
+  (b) `double r = v.f;` (float struct member → local double)
+      reads back 0.0 instead of the stored value.
+  Both are in the struct-member real-type arithmetic family and
+  likely share the same "multi-float interleaved with printf"
+  asmjit interaction below. Workaround: copy the member into a
+  local `double` before printing.
 
 - **Write through double-dereference `**pp = v;`** — crashes the
   compiler (not the JIT) with a SIGSEGV at address 0x8 inside

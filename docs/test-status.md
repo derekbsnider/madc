@@ -57,6 +57,7 @@ The newly exercised regressions from this session all pass directly:
 - `testdoubleptr.mad`
 - `testderefeq.mad`
 - `testderefcmp.mad`
+- `teststructdoublecompound.mad`
 
 ## Passing Tests — 168 integration (latest batch)
 
