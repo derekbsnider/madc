@@ -16,7 +16,7 @@ bootstrap).
 | Phase            | % | Notes |
 |------------------|--:|-------|
 | **Parse**        | ~24% | 38,581 / 158,537 lines ingested via the umbrella + fully parsed (fight.c + skills.c added this session) |
-| **Compile**      | ~22% | Most of that range compiles; umbrella now hits an `IRBuilder::coerce() invalid src` in a later function (likely a typed-pointer-return mis-wiring) |
+| **Compile**      | ~24% | Return-mis-detection fix unblocked fight.c/skills.c bodies that were corrupted by phantom `__retbuf` injection. Now hits `&= on unsupported subscript lval` deeper in SMAUG (compound bitwise-AND assign on a subscript form) |
 | **Link**         | 0%  | Umbrella still stops before linkage — compile errors precede link |
 | **Runtime**      | 0%  | `main()` has never been executed against the full umbrella |
 
