@@ -1,0 +1,29 @@
+// `char *names[] = {"alice", "bob", ...};` — string-literal
+// initialisers for a char*-element array used to store the
+// std::string object's address, not its c_str() pointer, because
+// TokenDecl's fixed-array init-list path wrote the compile result
+// of each init straight into the slot without the dtSTRING → char*
+// coercion. Same class of bug as `names[0] = "literal";`
+// assignment (fixed earlier) but on the init-list path.
+
+#include <stdio.h>
+#include <string.h>
+
+int main()
+{
+    char *names[] = {"alice", "bob", "charlie"};
+    int i;
+    for (i = 0; i < 3; i++) printf("%s\n", names[i]);
+
+    // implicit size
+    char *single[] = {"only"};
+    printf("single=%s\n", single[0]);
+
+    // strcmp across init'd elements
+    int bob_idx = -1;
+    for (i = 0; i < 3; i++)
+	if (strcmp(names[i], "bob") == 0) { bob_idx = i; break; }
+    printf("bob_idx=%d\n", bob_idx);
+
+    return 0;
+}

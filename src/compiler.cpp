@@ -1495,11 +1495,29 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    flatten_init(node);
 
 	size_t elem_size = var.type->size ? var.type->size : 8;
+	bool elem_is_charptr = var.type->is_pointer()
+	    && var.type->rawtype() == DataType::dtCHAR;
 	for ( size_t i = 0; i < flat_inits.size(); ++i )
 	{
 	    regdefp_t it_rdp = {nullptr, nullptr, nullptr};
 	    Operand &val_op = flat_inits[i]->compile(pgm, it_rdp);
 	    x86::Mem slot = x86::ptr(base_reg, (int32_t)(i * elem_size), (uint32_t)elem_size);
+	    // char *arr[] = {"alice", ...}: each string-literal init yields a
+	    // std::string object pointer; coerce to c_str() so the slot
+	    // holds a real char * instead of the object address.
+	    if ( elem_is_charptr && flat_inits[i]->datadef()
+	      && flat_inits[i]->datadef()->rawtype() == DataType::dtSTRING
+	      && val_op.isReg() )
+	    {
+		x86::Gp cstr = pgm.cc.newIntPtr("init_cstr");
+		InvokeNode *cstr_call;
+		pgm.cc.invoke(&cstr_call, imm(string_cstr),
+		    FuncSignature::build<const char *, void *>());
+		cstr_call->setArg(0, val_op.as<x86::Gp>());
+		cstr_call->setRet(0, cstr);
+		pgm.cc.mov(slot, cstr);
+		continue;
+	    }
 	    if ( val_op.isImm() )
 		pgm.cc.mov(slot, val_op.as<Imm>());
 	    else if ( val_op.isReg() )

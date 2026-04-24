@@ -31,6 +31,13 @@
 
 ### Fixed
 
+- **`char *arr[] = {"a","b",...};` init stores c_str() pointers** —
+  TokenDecl's fixed-array init-list path wrote each init's compile
+  result straight into the slot, so for a char*-element array the
+  slot received the std::string object's address instead of its
+  c_str() pointer. Same coercion the `names[0] = "literal"`
+  assignment path already applies. Added `tests/teststrarrinit.mad`.
+
 - **Compound-assign on local double/float variables** — `x += 5.0;`,
   `x *= 2.0;` and friends on a stack-local double used to throw
   `"safeadd() unable to add xmm to gp"` because `resolveCompoundLHS`
