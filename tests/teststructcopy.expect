@@ -1,0 +1,5 @@
+b = 1 2 3
+c = 1 2 3
+c.x=99 b.x=1
+extra = 10 20 30 40
+clone.id=7 clone.f.a=10

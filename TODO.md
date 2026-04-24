@@ -4,16 +4,21 @@
 
 ### Language Completeness
 
-- **Struct-copy initialization and assignment** — `struct S a = other;`
-  at declaration and plain `a = other;` as an assignment statement,
-  where both sides are the same user-defined struct type. `parseDeclaration`
-  currently accepts only `{ ... }` brace-init or a string literal after
-  `=` for struct types and errors out with `Expected '{' or string
-  literal for initializer` otherwise. `TokenAssign::compile` has no
-  struct-to-struct path either. C89 allows plain struct copy (emitted
-  as a bytewise `memcpy(dest, src, sizeof(S))`). Current MadSMAUG front
-  edge at `handler.c:1284` — `EXT_BV extra_flags = obj->extra_flags;`
-  where `EXT_BV` is a `struct { unsigned int bits[XBI]; }`.
+- **Parenthesized `*p` followed by `.member` parses crash** —
+  `(*p).bits[i]` / `(*p).x` segfaults in `parseExpression` even though
+  the equivalent `p->bits[i]` parses fine. Root cause not yet pinpointed;
+  the cast-like `(TYPE *)` handler likely interferes with a bare `(*p)`
+  parenthesized-expression start. Exposed by SMAUG's
+  `xIS_SET((var), bit)` macro which expands to `((var).bits[...])`
+  when a caller passes `*vector` as `var`. Current MadSMAUG front edge
+  at `handler.c:2990` in `affect_bit_name`.
+
+- **int[N] struct-member subscript reads wrong element size** —
+  `struct { int bits[N]; }` — writing `a.bits[i] = v` works, but
+  reading `a.bits[i]` emits `qword_ptr` loads instead of `dword_ptr`,
+  yielding garbage and often SIGSEGV. Pre-existing bug surfaced while
+  testing struct-copy with int-array members; routed around in
+  `tests/teststructcopy.mad` by using scalar members.
 
 - **Function-like macros shadowing later definitions** — SMAUG.mad does
   `#define bug(...) ((void)0)` to stub out calls, then `#include`s
@@ -92,6 +97,18 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**Struct-copy initialization and assignment**~~ — `struct S a = other;`
+  (decl init) and `a = other;` (plain assign) now emit
+  `memcpy(&a, &other, sizeof(S))`. Parser pushes `=` back and falls
+  through to the normal init path when the struct RHS isn't `{`;
+  `TokenAssign::compile` gained a btStruct/btClass branch that LEAs
+  both sides and invokes libc `memcpy`. Handles both `struct S b = a;`
+  and `struct Inner extra = p->member;` (where TokenMember::operand
+  LEAs the member into a Gp for non-numeric members). Targeted
+  regression: `tests/teststructcopy.mad`. Advances MadSMAUG from
+  handler.c:1284 to handler.c:2990 (next front edge is the parser
+  crash on `(*p).member`).
 
 - ~~**`#include` canonicalization via realpath**~~ — `should_tokenize_include`
   now canonicalizes each resolved quoted-include path through `realpath()`

@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **Struct-copy initialization and assignment** — C's bytewise struct
+  copy (`struct S a = other;` at declaration and plain `a = other;` as
+  assignment where both sides are the same user-defined struct type)
+  now compiles to a single `memcpy(&dest, &src, sizeof(S))` invocation.
+  Two split changes:
+  - **parseDeclaration**: when an `=`-initialized struct's RHS is not
+    `{` (and not a string literal), push the `=` back and fall through
+    to the normal initializer path instead of throwing `Expected '{'
+    or string literal for initializer`. That path wraps the init as a
+    `TokenAssign` which TokenAssign::compile then lowers via memcpy.
+  - **TokenAssign::compile**: added a struct-to-struct branch that
+    LEAs both sides' storage (or reuses the Gp when TokenMember already
+    returned a LEA'd address, e.g. for `obj->member` struct members)
+    and invokes libc `memcpy` with `sizeof(S)`. Struct types must
+    match (`ltype == regdp.second`); mismatches raise a compile error
+    rather than silently reinterpreting.
+  Closes the MadSMAUG umbrella front edge at `handler.c:1284`
+  (`EXT_BV extra_flags = obj->extra_flags;`). Regression:
+  `tests/teststructcopy.mad`.
+
 - **SMAUG Phase F — `#include` canonicalization** — `should_tokenize_include`
   now canonicalizes each resolved path through `realpath()` before the
   include-once check. Previously the raw `cur_dir + incfile` key was used,

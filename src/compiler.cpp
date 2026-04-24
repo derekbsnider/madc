@@ -2990,6 +2990,46 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	}
     }
     else
+    if ( ltype->basetype() == BaseType::btStruct
+      || ltype->basetype() == BaseType::btClass )
+    {
+	// struct-to-struct copy: emit memcpy(&dest, &src, sizeof(S)).
+	// Both sides expose their struct storage either as a Mem (stack
+	// slot for a local struct variable) or as a Gp holding a LEA'd
+	// address (e.g. `obj->member` through TokenMember::operand for a
+	// non-numeric member). LEA the Mem form into a Gp; use the Gp
+	// form directly.
+	if ( ltype != regdp.second )
+	    throw "TokenAssign struct: lhs/rhs struct types differ";
+	DBG(cout << "TokenAssign::compile() struct to struct (" << ltype->name << ", " << ltype->size << " bytes)" << endl);
+	DBG(pgm.cc.comment("TokenAssign::compile() struct memcpy"));
+	x86::Gp dst_gp = pgm.cc.newIntPtr("struct_copy_dst");
+	if ( _operand.isMem() )
+	    pgm.cc.lea(dst_gp, _operand.as<x86::Mem>());
+	else if ( _operand.isReg() && _operand.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.mov(dst_gp, _operand.as<x86::Gp>());
+	else
+	    throw "TokenAssign struct: unsupported LHS operand shape";
+	x86::Gp src_gp = pgm.cc.newIntPtr("struct_copy_src");
+	if ( r_operand->isMem() )
+	    pgm.cc.lea(src_gp, r_operand->as<x86::Mem>());
+	else if ( r_operand->isReg() && r_operand->as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.mov(src_gp, r_operand->as<x86::Gp>());
+	else
+	    throw "TokenAssign struct: unsupported RHS operand shape";
+	InvokeNode *mcall;
+	pgm.cc.invoke(&mcall, imm((void *)memcpy),
+	    FuncSignature::build<void *, void *, void *, size_t>());
+	mcall->setArg(0, dst_gp);
+	mcall->setArg(1, src_gp);
+	mcall->setArg(2, imm((size_t)ltype->size));
+	if ( tvl )
+	{
+	    tvl->var.modified();
+	    tvl->putreg(pgm);
+	}
+    }
+    else
 	throw "Unsupported assignment";
 
     DBG(cout << "TokenAssign::compile() END" << endl);

@@ -5458,6 +5458,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		}
 		init_list.push_back(new TokenInt(0)); // null terminator
 	    }
+	    else if ( is_struct_init && peek0->id() != TokenID::tkOpBrc )
+	    {
+		// struct-copy init: `struct S a = expr;` where `expr` is
+		// another struct-typed lvalue. Push '=' back and fall
+		// through to the normal `=` init path below; TokenAssign's
+		// struct-to-struct branch emits a bytewise memcpy at
+		// compile time.
+		pushToken(nt);
+	    }
 	    else
 	    {
 	    if ( peek0->id() != TokenID::tkOpBrc )
