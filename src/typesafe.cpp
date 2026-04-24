@@ -203,11 +203,6 @@ void Program::safemov(x86::Gp &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
     }
 }
 
-void Program::safemov(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
-{
-    throw "safemov() unable to move imm to xmm";
-}
-
 void Program::safemov(Operand &op1, int i, DataDef *d1, DataDef *d2)
 {
     safemov(op1, (int64_t)i, d1, d2);
@@ -376,9 +371,6 @@ void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	if ( op2.isMem() )
 	    safemov(op1.as<x86::Xmm>(), op2.as<x86::Mem>(), d1, d2);
 	else
-	if ( op2.isImm() )
-	    safemov(op1.as<x86::Xmm>(), op2.as<Imm>(), d1, d2);
-	else
 	    throw "safemov() rval is unsupported";
     }
     else
@@ -426,14 +418,6 @@ void Program::safeadd(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
     }
 }
 
-void Program::safeadd(x86::Gp &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
-{
-    throw "safeadd() unable to add xmm to gp";
-}
-void Program::safeadd(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
-{
-    throw "safeadd() unable to add gp to xmm";
-}
 void Program::safeadd(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     if ( d1 && d1->size == sizeof(float) )
@@ -446,10 +430,6 @@ void Program::safeadd(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 	DBG(cc.comment("Program::safeadd(r1, r2, double)"));
 	cc.addsd(r1, r2);
     }
-}
-void Program::safeadd(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
-{
-    throw "safeadd() unable to add imm to xmm";
 }
 
 void Program::safeadd(Operand &op1, int i, DataDef *d1, DataDef *d2)
@@ -465,25 +445,16 @@ void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     if ( !op2.isReg() && !op2.isImm() ) { throw "safeadd() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    safeadd(op1.as<x86::Xmm>(), op2.as<x86::Gp>(), d1, d2);
-	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	    safeadd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), d1, d2);
 	else
-	if ( op2.isImm() )
-	    safeadd(op1.as<x86::Xmm>(), op2.as<Imm>(), d1, d2);
-	else
-	    throw "safeadd() rval is unsupported";
+	    throw "safeadd() Xmm arithmetic expects an Xmm rhs";
     }
     else
     if ( op1.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    safeadd(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
-	else
-	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
-	    safeadd(op1.as<x86::Gp>(), op2.as<x86::Xmm>(), d1, d2);
 	else
 	if ( op2.isImm() )
 	    cc.add(op1.as<x86::Gp>(), op2.as<Imm>());
@@ -512,24 +483,12 @@ void Program::safesub(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
     }
 }
 
-void Program::safesub(x86::Gp &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
-{
-    throw "safesub() unable to sub xmm to gp";
-}
-void Program::safesub(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
-{
-    throw "safesub() unable to sub gp to xmm";
-}
 void Program::safesub(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     if ( d1 && d1->size == sizeof(float) )
 	cc.subss(r1, r2);
     else
 	cc.subsd(r1, r2);
-}
-void Program::safesub(x86::Xmm &r1, Imm &r2, DataDef *d1, DataDef *d2)
-{
-    throw "safesub() unable to sub imm to xmm";
 }
 
 void Program::safesub(Operand &op1, int i, DataDef *d1, DataDef *d2)
@@ -545,25 +504,16 @@ void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     if ( !op2.isReg() && !op2.isImm() ) { throw "safesub() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    safesub(op1.as<x86::Xmm>(), op2.as<x86::Gp>(), d1, d2);
-	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	    safesub(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), d1, d2);
 	else
-	if ( op2.isImm() )
-	    safesub(op1.as<x86::Xmm>(), op2.as<Imm>(), d1, d2);
-	else
-	    throw "safesub() rval is unsupported";
+	    throw "safesub() Xmm arithmetic expects an Xmm rhs";
     }
     else
     if ( op1.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    safesub(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
-	else
-	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
-	    safesub(op1.as<x86::Gp>(), op2.as<x86::Xmm>(), d1, d2);
 	else
 	if ( op2.isImm() )
 	    cc.sub(op1.as<x86::Gp>(), op2.as<Imm>());
@@ -1092,14 +1042,6 @@ void Program::safecmp(x86::Gp &lval, x86::Gp &rval)
 	cc.cmp(lval, rval);
 }
 
-void Program::safecmp(x86::Gp &r1, x86::Xmm &r2)
-{
-   throw "safecmp() unable to cmp xmm to gp";
-}
-void Program::safecmp(x86::Xmm &r1, x86::Gp &r2)
-{
-   throw "safecmp() unable to cmp gp to xmm";
-}
 void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2)
 {
    cc.ucomisd(r1, r2);
@@ -1112,25 +1054,16 @@ void Program::safecmp(Operand &op1, Operand &op2)
     if ( !op2.isReg() && !op2.isImm() ) { throw "safecmp() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    safecmp(op1.as<x86::Xmm>(), op2.as<x86::Gp>());
-	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	    safecmp(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
 	else
-	if ( op2.isImm() )
-	    throw "safecmp() unable to cmp imm to xmm";
-	else
-	    throw "safecmp() rval is unsupported";
+	    throw "safecmp() Xmm compare expects an Xmm rhs";
     }
     else
     if ( op1.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    safecmp(op1.as<x86::Gp>(), op2.as<x86::Gp>());
-	else
-	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
-	    safecmp(op1.as<x86::Gp>(), op2.as<x86::Xmm>());
 	else
 	if ( op2.isImm() )
 	    cc.cmp(op1.as<x86::Gp>(), op2.as<Imm>());

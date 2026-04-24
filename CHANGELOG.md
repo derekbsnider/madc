@@ -2,6 +2,57 @@
 
 ## [Unreleased]
 
+## [v0.10.1] — 2026-04-24
+
+- **Typed-register IR — multi-return return-buffer store normalization**
+  — `TokenRETURN::compile` no longer open-codes separate Reg/Xmm/Imm/Mem
+  cases when writing numeric/pointer multi-return slots into `__retbuf`.
+  Eligible slots now compile through `compile_token_normalized(...)` and
+  store through `IRBuilder::store`, preserving the existing qword-slot
+  contract while moving shape normalization into the shared IR path.
+  Unsupported slot types still fall back to the legacy path. Validation:
+  23 IR unit + 25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — stream I/O shape normalization** —
+  `TokenBSL` / `TokenBSR` no longer duplicate their own Reg-vs-Mem-vs-Imm
+  argument and writeback logic. ostream string output now materializes
+  object addresses through `lea_var_to_gp`, cstr output uses
+  `load_var_to_gp`, ostream numeric output normalizes through
+  `IRBuilder::coerce` + `load`, and istream integer/real writeback now
+  routes through `emit_ir_value` from the temporary stack slot. The
+  stream helper invoke selection is still explicit, but the shape
+  normalization now lives on the shared path. Validation: 23 IR unit +
+  25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — direct-call fallback allocation + typesafe prune**
+  — the normal direct-call path no longer pre-allocates `operand(pgm)`
+  before `bind_call_return`; fallback return storage is now allocated
+  at the bind point only when no caller destination was supplied. Follow-on
+  Stage 5 cleanup removed dead mixed Gp↔Xmm arithmetic/compare overloads
+  and Xmm+Imm arithmetic overloads from `typesafe.cpp` after auditing the
+  remaining direct call sites, and tightened the Operand dispatchers to
+  reject mixed-group arithmetic/compare immediately. Validation: 23 IR unit
+  + 25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — dead `safemov(Xmm, Imm)` removal** — a narrower
+  follow-up Stage 5 audit confirmed the dedicated vector-immediate mover
+  was dead: it had no external callers, and the only path to it was the
+  `safemov(Operand&, Operand&, ...)` Xmm+Imm dispatcher arm. Both were
+  removed. Real/vector constants still materialize through the existing
+  `safemov(op, double/int64_t, ...)` const-pool paths. Validation: 23 IR
+  unit + 25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — final compiler-site cleanup** — the remaining
+  obvious compiler-side Mem stores/loads now route through
+  `IRBuilder::store` / `load` / `coerce` where appropriate: stack-local
+  zero/init, stack-parameter home-slot stores, compound/member writeback,
+  subscript Gp stores, call returns to Mem, cast-to-Mem, ternary
+  merge-to-Mem, compound real-member loads, and switch-expression
+  Mem-to-int64 normalization. After this pass, the remaining `safemov`
+  calls in `compiler.cpp` are adapter internals, pure register shuffles,
+  or legitimate leaf/boundary loads rather than unfinished IR cleanup.
+  Validation: 23 IR unit + 25 datadef unit + 170 integration tests pass.
+
 ## [v0.10.0] — 2026-04-24
 
 Typed-register IR scaffolding + bottom-up migration (Stages 0–3c): fifteen shared compile-site helpers now absorb the per-token shape/coercion boilerplate that used to be copy-pasted across binary ops, comparisons, compound-assigns, inc/dec, lambda-capture, and call return-binding. Three latent bugs fixed as side effects. ~880 net lines removed from `compiler.cpp`, zero behavior change, 48 unit + 170 integration tests green throughout.

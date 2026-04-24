@@ -1321,15 +1321,6 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
     set_funcsig_ret(funcsig, &func->returns, func->is_multi_return());
-#if 1
-    if ( !regdp.first )
-    {
-	DBG(pgm.cc.comment("TokenCallFunc::compile() operand() to assign _operand"));
-	regdp.first = &operand(pgm); // assign _reg if not provided
-//	regdp.first = &_reg;
-    }
-#endif
-
 //#if OBJECT_SUPPORT
     // pass along object ("this") as first argument if appropriate
     if ( has_object_arg )
@@ -1947,13 +1938,17 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 		if ( tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kVec) )
 		{
 		    func->funcnode->setArg(argc++, tmp.as<x86::Xmm>());
-		    pgm.safemov(reg.as<x86::Mem>(), tmp, (*vvi)->type, (*vvi)->type);
+		    IRBuilder ir(pgm.cc);
+		    ir.store(IRValue::mem(reg.as<x86::Mem>(), (*vvi)->type),
+			     ir_from_operand(tmp, (*vvi)->type));
 		}
 		else
 		if ( tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kGp) )
 		{
 		    func->funcnode->setArg(argc++, tmp.as<x86::Gp>());
-		    pgm.safemov(reg.as<x86::Mem>(), tmp, (*vvi)->type, (*vvi)->type);
+		    IRBuilder ir(pgm.cc);
+		    ir.store(IRValue::mem(reg.as<x86::Mem>(), (*vvi)->type),
+			     ir_from_operand(tmp, (*vvi)->type));
 		}
 		else
 		    throw "TokenFunc::compile() unexpected stack parameter Operand";
@@ -2141,7 +2136,10 @@ struct CompoundLHS {
 	    tv->putreg(pgm);
 	}
 	if ( is_member && writeback.hasBase() )
-	    pgm.safemov(writeback, lval, type, type); // size-aware store
+	{
+	    IRBuilder ir(pgm.cc);
+	    ir.store(IRValue::mem(writeback, type), ir_from_operand(lval, type));
+	}
     }
 };
 
@@ -2207,10 +2205,10 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		// Double/float lval on stack — load into Xmm so the
 		// subsequent safeadd / safemul / etc. all work with
 		// matching-type operands.
-		x86::Xmm xm = pgm.cc.newXmm("var_lhs_xmm");
-		pgm.safemov(xm, op.as<x86::Mem>(), r.type, r.type);
+		IRBuilder ir(pgm.cc);
+		IRValue lhs = ir.load(IRValue::mem(op.as<x86::Mem>(), r.type));
 		r.writeback = op.as<x86::Mem>();
-		r.lval = xm;
+		r.lval = lhs.op;
 		r.is_member = true;
 	    }
 	    else
@@ -2244,10 +2242,10 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		{
 		    // Double/float struct member — load into Xmm so the
 		    // subsequent safeadd / safemul / etc. use Xmm/Xmm paths.
-		    x86::Xmm xm = pgm.cc.newXmm("member_lhs_xmm");
-		    pgm.safemov(xm, mem.as<x86::Mem>(), r.type, r.type);
+		    IRBuilder ir(pgm.cc);
+		    IRValue lhs = ir.load(IRValue::mem(mem.as<x86::Mem>(), r.type));
 		    r.writeback = mem.as<x86::Mem>();
-		    r.lval = xm;
+		    r.lval = lhs.op;
 		    r.is_member = true;
 		}
 		else
@@ -2276,10 +2274,10 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		{
 		    if ( r.type && r.type->is_real() )
 		    {
-			x86::Xmm xm = pgm.cc.newXmm("deref_lhs_xmm");
-			pgm.safemov(xm, mem.as<x86::Mem>(), r.type, r.type);
+			IRBuilder ir(pgm.cc);
+			IRValue lhs = ir.load(IRValue::mem(mem.as<x86::Mem>(), r.type));
 			r.writeback = mem.as<x86::Mem>();
-			r.lval = xm;
+			r.lval = lhs.op;
 			r.is_member = true;
 		    }
 		    else
@@ -2428,7 +2426,10 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
     }
     (pgm.*step)(lhs.lval);
     if ( lhs.is_member && lhs.writeback.hasBase() )
-	pgm.safemov(lhs.writeback, lhs.lval, lhs.type, lhs.type);
+    {
+	IRBuilder ir(pgm.cc);
+	ir.store(IRValue::mem(lhs.writeback, lhs.type), ir_from_operand(lhs.lval, lhs.type));
+    }
     if ( !postfix )
 	_operand = lhs.lval;  // stash new value on the node for pointer stability
     if ( regdp.first )
@@ -2812,7 +2813,11 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    x86::Mem slot = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
 
 	    if ( effective_rhs.isReg() && effective_rhs.as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.safemov(slot, effective_rhs.as<x86::Gp>(), elem_type, elem_type);
+	    {
+		IRBuilder ir(pgm.cc);
+		ir.store(IRValue::mem(slot, elem_type),
+			 ir_from_operand(effective_rhs.as<x86::Gp>(), elem_type));
+	    }
 	    else if ( effective_rhs.isImm() )
 		pgm.cc.mov(slot, effective_rhs.as<Imm>());
 	    else
@@ -3232,7 +3237,10 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 	if ( dest->isReg() && dest->as<BaseReg>().isGroup(RegGroup::kGp) )
 	    pgm.cc.mov(dest->as<x86::Gp>(), ret_gp);
 	else if ( dest->isMem() )
-	    pgm.safemov(dest->as<x86::Mem>(), ret_gp, ret_type, ret_type);
+	{
+	    IRBuilder ir(pgm.cc);
+	    ir.store(IRValue::mem(dest->as<x86::Mem>(), ret_type), ir_from_operand(ret_gp, ret_type));
+	}
 	else
 	    throw "bind_call_return() narrow_int_ret: unsupported destination";
 	return;
@@ -3240,6 +3248,10 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 
     if ( !dest )
     {
+	if ( !fallback_operand.isReg()
+	  || (ret_type->is_real() && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kVec))
+	  || (!ret_type->is_real() && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kGp)) )
+	    fallback_operand = ret_type->newreg(pgm.cc, "call_ret");
 	if ( ret_type->is_real() )
 	    call->setRet(0, fallback_operand.as<x86::Xmm>());
 	else
@@ -3275,7 +3287,8 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 	{
 	    x86::Xmm ret_xmm = pgm.cc.newXmm("call_ret");
 	    call->setRet(0, ret_xmm);
-	    pgm.safemov(dest->as<x86::Mem>(), ret_xmm, ret_type, ret_type);
+	    IRBuilder ir(pgm.cc);
+	    ir.store(IRValue::mem(dest->as<x86::Mem>(), ret_type), ir_from_operand(ret_xmm, ret_type));
 	}
 	else
 	{
@@ -3283,7 +3296,8 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 	    if ( !tmp.isReg() || !tmp.as<BaseReg>().isGroup(RegGroup::kGp) )
 		throw "bind_call_return() non-real return did not allocate gp register";
 	    call->setRet(0, tmp.as<x86::Gp>());
-	    pgm.safemov(dest->as<x86::Mem>(), tmp.as<x86::Gp>(), ret_type, ret_type);
+	    IRBuilder ir(pgm.cc);
+	    ir.store(IRValue::mem(dest->as<x86::Mem>(), ret_type), ir_from_operand(tmp.as<x86::Gp>(), ret_type));
 	}
 	return;
     }
@@ -3773,7 +3787,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    else
 	    if ( var->type->is_real() && tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kVec) )
 		pgm.cc.xorps(tmp.as<x86::Xmm>(), tmp.as<x86::Xmm>());
-	    pgm.safemov(stack, tmp, var->type, var->type);
+	    IRBuilder ir(pgm.cc);
+	    ir.store(IRValue::mem(stack, var->type), ir_from_operand(tmp, var->type));
 	}
 	var->flags |= vfREGSET;
 	return operand_map[var];
@@ -4578,11 +4593,8 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	if ( regdp.second->is_string() )
 	{
 	    if ( !regdp.first ) { pgm.Throw(this) << "TokenBSL::compile() regdp.first is NULL" << flush; }
-	    if ( !regdp.first->isReg() && !regdp.first->isMem() )
-	    {
-		pgm.Throw(this) << "TokenBSL::compile() regdp.first->isReg() is FALSE" << flush;
-	    }
-	    if ( regdp.first->isReg() && !regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) ) { throw "TokenBSL::compile() regdp.first not GpReg"; }
+	    x86::Gp str_arg = pgm.cc.newIntPtr("__cout_str");
+	    lea_var_to_gp(pgm, *regdp.first, str_arg);
 	    DBG(cout << "TokenBSL::compile() regdp.second->is_string()" << endl);
 	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_string()"));
 	    DBG(pgm.cc.comment("pgm.cc.call(streamout_string)"));
@@ -4596,7 +4608,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    else
 		throw "TokenBSL::compile() lval unsupported register type";
 	    DBG(pgm.cc.comment("call->setArg(1, rval)"));
-	    call->setArg(1, regdp.first->as<x86::Gp>());
+	    call->setArg(1, str_arg);
 	}
 	else
 	if ( regdp.second->type() == DataType::dtCHARptr )
@@ -4606,7 +4618,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(pgm.cc.comment("TokenBSL::compile() regdp.second->is_cstr()"));
 	    // copy cstr pointer to a fresh register to avoid RA conflicts
 	    x86::Gp cstr_tmp = pgm.cc.newIntPtr("cstr_out");
-	    pgm.cc.mov(cstr_tmp, regdp.first->as<x86::Gp>());
+	    load_var_to_gp(pgm, *regdp.first, cstr_tmp);
             InvokeNode* call; pgm.cc.invoke(&call, imm(streamout_cstr), FuncSignature::build<void, void *, const char *>());
 	    call->setArg(0, lval.as<x86::Gp>());
 	    call->setArg(1, cstr_tmp);
@@ -4652,23 +4664,24 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	    else
 		throw "TokenBSL::compile() lval unsupported register type";
 
-	    if ( regdp.first->isReg() )
+	    IRBuilder ir(pgm.cc);
+	    IRValue stream_arg = ir.load(ir.coerce(ir_from_operand(*regdp.first, regdp.second), regdp.second));
+	    if ( stream_arg.op.isReg() )
 	    {
-		if ( regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+		if ( stream_arg.op.as<BaseReg>().isGroup(RegGroup::kVec) )
 		{
-		    DBG(cout << "call->setArg(1, regdp.first->as<x86::Xmm>()) size=" << regdp.first->x86RmSize() << " regdp.second->size=" << regdp.second->size << " type " << regdp.second->name << endl);
+		    DBG(cout << "call->setArg(1, stream_arg.op.as<x86::Xmm>()) size=" << stream_arg.op.x86RmSize() << " regdp.second->size=" << regdp.second->size << " type " << regdp.second->name << endl);
 		    DBG(pgm.cc.comment("call->setArg(1, regdp.first->as<x86::Xmm>())"));
-		    call->setArg(1, regdp.first->as<x86::Xmm>());
+		    call->setArg(1, stream_arg.op.as<x86::Xmm>());
 		}
 		else
-		if ( regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
-		    call->setArg(1, regdp.first->as<x86::Gp>());
+		if ( stream_arg.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		    call->setArg(1, stream_arg.op.as<x86::Gp>());
 		else
 		    throw "TokenBSL::compile() unexpected parameter Operand";
 	    }
 	    else
-	    if ( regdp.first->isImm() )
-		call->setArg(1, regdp.first->as<Imm>());
+		throw "TokenBSL::compile() unexpected normalized numeric operand";
 	}
 	else
 	{
@@ -4749,17 +4762,22 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 	    input_dest = &tvr->operand(pgm);
 	else if ( TokenMember *tmr = dynamic_cast<TokenMember *>(right) )
 	    input_dest = &tmr->operand(pgm);
+	Operand *store_dest = input_dest ? input_dest : regdp.first;
 
 	if ( !regdp.second )
 	    throw "TokenBSR::compile() unable to determine rval type for >>";
+	if ( !store_dest )
+	    throw "TokenBSR::compile() unable to determine input destination for >>";
 
 	InvokeNode *call;
 	if ( regdp.second->is_string() )
 	{
 	    DBG(pgm.cc.comment("streamin_string"));
+	    x86::Gp str_dst = pgm.cc.newIntPtr("__cin_str");
+	    lea_var_to_gp(pgm, *store_dest, str_dst);
 	    pgm.cc.invoke(&call, imm(streamin_string), FuncSignature::build<void *, void *, void *>());
 	    call->setArg(0, lval.as<x86::Gp>());
-	    call->setArg(1, regdp.first->as<x86::Gp>());
+	    call->setArg(1, str_dst);
 	}
 	else if ( regdp.second->is_integer() )
 	{
@@ -4771,12 +4789,9 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.invoke(&call, imm(streamin_int), FuncSignature::build<void *, void *, void *>());
 	    call->setArg(0, lval.as<x86::Gp>());
 	    call->setArg(1, tmp_addr);
-	    // reload value from temp slot into the variable's register
-	    Operand *store_dest = input_dest ? input_dest : regdp.first;
-	    if ( store_dest->isReg() && store_dest->as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.cc.mov(store_dest->as<x86::Gp>(), tmp_slot);
-	    else if ( store_dest->isMem() )
-		pgm.safemov(store_dest->as<x86::Mem>(), tmp_slot, regdp.second, &ddINT64);
+	    Operand store_tmp;
+	    regdefp_t store_rdp = {store_dest, regdp.second, NULL};
+	    emit_ir_value(pgm, IRValue::mem(tmp_slot, &ddINT64), store_rdp, store_tmp, regdp.second);
 	}
 	else if ( regdp.second->is_real() )
 	{
@@ -4787,15 +4802,9 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.invoke(&call, imm(streamin_double), FuncSignature::build<void *, void *, void *>());
 	    call->setArg(0, lval.as<x86::Gp>());
 	    call->setArg(1, tmp_addr);
-	    Operand *store_dest = input_dest ? input_dest : regdp.first;
-	    if ( store_dest->isReg() && store_dest->as<BaseReg>().isGroup(RegGroup::kVec) )
-		pgm.cc.movsd(store_dest->as<x86::Xmm>(), tmp_slot);
-	    else if ( store_dest->isMem() )
-	    {
-		x86::Xmm tmp_xmm = pgm.cc.newXmm("__cin_double");
-		pgm.cc.movsd(tmp_xmm, tmp_slot);
-		pgm.cc.movsd(store_dest->as<x86::Mem>(), tmp_xmm);
-	    }
+	    Operand store_tmp;
+	    regdefp_t store_rdp = {store_dest, regdp.second, NULL};
+	    emit_ir_value(pgm, IRValue::mem(tmp_slot, &ddDOUBLE), store_rdp, store_tmp, regdp.second);
 	}
 	else
 	    throw "TokenBSR::compile() unsupported type for >> input";
@@ -5480,7 +5489,8 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	}
 	if ( regdp.first && regdp.first->isMem() )
 	{
-	    pgm.safemov(regdp.first->as<x86::Mem>(), out, cast_type, cast_type);
+	    IRBuilder ir(pgm.cc);
+	    ir.store(IRValue::mem(regdp.first->as<x86::Mem>(), cast_type), ir_from_operand(out, cast_type));
 	    return *regdp.first;
 	}
 	_operand = out;
@@ -5732,7 +5742,9 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 	}
 	if ( caller_dest->isMem() )
 	{
-	    pgm.safemov(caller_dest->as<x86::Mem>(), result, regdp.second, regdp.second);
+	    IRBuilder ir(pgm.cc);
+	    ir.store(IRValue::mem(caller_dest->as<x86::Mem>(), regdp.second),
+		     ir_from_operand(result, regdp.second));
 	    return *caller_dest;
 	}
     }
@@ -5759,18 +5771,26 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	FuncDef *fdef = pgm.tkFunction && pgm.tkFunction->method
 	    ? dynamic_cast<FuncDef *>(pgm.tkFunction->method->returns.type)
 	    : NULL;
+	IRBuilder ir(pgm.cc);
 
 	for ( size_t i = 0; i < return_exprs.size(); ++i )
 	{
 	    DataDef *slot_type = (fdef && i < fdef->return_types.size())
 		? fdef->return_types[i]
-		: NULL;
+		: &ddINT64;
 	    Operand ret_storage;
 	    regdefp_t retrdp = {NULL, NULL, NULL};
-	    Operand &val = (slot_type && (slot_type->is_numeric() || slot_type->is_pointer()))
+	    bool ir_slot = slot_type && (slot_type->is_numeric() || slot_type->is_pointer());
+	    Operand &val = ir_slot
 		? compile_token_normalized(pgm, return_exprs[i], slot_type, NULL, ret_storage)
 		: return_exprs[i]->compile(pgm, retrdp);
-	    if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    if ( ir_slot )
+	    {
+		x86::Mem slot = x86::qword_ptr(rb_gp, (int32_t)(i * 8));
+		slot.setSize(8);
+		ir.store(IRValue::mem(slot, slot_type), ir_from_operand(val, slot_type));
+	    }
+	    else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kGp) )
 		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), val.as<x86::Gp>());
 	    else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
 		pgm.cc.movsd(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), val.as<x86::Xmm>());
@@ -5882,7 +5902,11 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
 	else if ( raw_expr.isImm() )
 	    pgm.cc.mov(expr_reg, raw_expr.as<Imm>());
 	else if ( raw_expr.isMem() )
-	    pgm.safemov(expr_reg, raw_expr.as<x86::Mem>(), &ddINT64, expr_type);
+	{
+	    IRBuilder ir(pgm.cc);
+	    IRValue expr_val = ir.load(ir.coerce(IRValue::mem(raw_expr.as<x86::Mem>(), expr_type), &ddINT64));
+	    expr_reg = expr_val.op.as<x86::Gp>();
+	}
 	expr_storage = expr_reg;
 	expr_op = &expr_storage;
 	expr_type = &ddINT64;

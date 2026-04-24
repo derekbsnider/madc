@@ -2,45 +2,6 @@
 
 ## High Priority
 
-### Compiler Infrastructure
-
-- **Typed-register IR Stage 2 + 3a — remaining work** — plain-numeric
-  fast paths of the binary-op tokens (Add/Sub/Mul/Div/Mod/Xor/
-  Band/Bor/BSL/BSR), all six comparison ops, and all ten
-  compound-assigns (+= -= *= /= %= |= &= ^= <<= >>=) are now
-  collapsed onto shared helpers (`emit_compare`,
-  `emit_plain_binop3`, `emit_plain_divmod`, `emit_plain_bitop2`,
-  `emit_compound_binop3`, `emit_compound_bitop2`,
-  `emit_compound_divmod`). Call return-binding is unified via
-  `bind_call_return` + `narrow_int_ret` flag across the fptr /
-  dlcall / variadic-dlsym paths (Stage 3a). Still to do:
-  - ~~**General (non-plain-numeric) fallback paths**~~ — all
-    eleven binary-op tokens (Add / Sub / Mul / Div / Mod / Xor /
-    Band / Bor / BSL / BSR, plus now TokenInc / TokenDec via
-    `emit_inc_dec`) route through the shared cascade helpers.
-    Pointer scale extracted into `emit_pointer_arith_scale`.
-    TokenNeg's dead-code branch fixed.
-  - **typesafe.cpp shrinkage** — once the fallback paths also
-    normalize upstream, `safeadd` / `safesub` / `safemul` /
-    `safediv` / `safemod` / `safeor` / `safeand` / `safexor` /
-    `safeshl` / `safeshr` can shrink to pure low-level emitters
-    (the IR will already normalize both operands to Reg of the
-    same concrete type before the helper runs).
-  - **Stage 3 continuation** — lambda-capture pack/reload and
-    multi-return integer unpack now go through the three
-    var-move helpers (`load_var_to_gp` / `lea_var_to_gp` /
-    `store_gp_to_var`) added in Stage 3c. `bind_call_return`
-    unifies the fptr / dlcall / variadic-dlsym paths. Still
-    bypassing the IR: `TokenBSL` / `TokenBSR` stream I/O (raw
-    asmjit), `TokenReturn`'s multi-return write path
-    (Gp/Xmm/Imm/Mem explicit dispatch), and the
-    `operand(pgm)` pre-allocation at the top of the regular
-    call path. These aren't bugs today but they bypass the IR
-    normalization contract.
-  Plan in `docs/plans/typed-register-ir.md`, rules in
-  `.claude/rules/typed-register-ir.md`.
-
-
 ### Language Completeness
 
 - **Function-like macros shadowing later definitions** — SMAUG.mad does

@@ -204,10 +204,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.10.0** (2026-04-24) — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c). The compile path grew a new `IRBuilder` layer (`include/madc_ir.h` + `src/madc_ir.cpp`) sitting between AST-walking `compile()` methods and asmjit emission; values carry `(operand, DataDef, IRShape)` triples so shape normalization and type coercion happen in one place instead of being re-derived at each compile site. Fifteen shared compile-site helpers in `compiler.cpp` now absorb the per-token boilerplate that used to be copy-pasted across binary ops, all six comparisons, the ten compound-assigns, `TokenInc`/`TokenDec`, lambda-capture pack/reload, and the fptr/dlcall/variadic-dlsym call-return paths. ~880 net lines removed from `compiler.cpp`, zero behavior change, three latent bugs fixed as side effects (`TokenNeg`'s unreachable `safeshl` branch, `dlcall` return-binding ignoring Mem destinations, stack-backed fn-ptr variables crashing on invoke). Baseline: 170 integration + 48 unit tests (25 datadef + 23 IR) pass.
+**v0.10.1** (2026-04-24) — Typed-register IR cleanup completion. This patch release finishes the post-`v0.10.0` cleanup pass: multi-return return-buffer stores, stream `<<` / `>>` shape handling, direct-call fallback return allocation, and the remaining obvious compiler-side Mem load/store sites now route through the shared IR surface where appropriate. Dead `typesafe.cpp` surface was pruned (`Gp`↔`Xmm` arithmetic/compare overloads, `Xmm`+`Imm` arithmetic, and dead `safemov(Xmm, Imm)` path). Baseline remains 170 integration + 48 unit tests (25 datadef + 23 IR) passing.
 
 ### Recent Releases
 
+- **v0.10.1** — Typed-register IR cleanup completion: stream/multi-return/direct-call cleanup, final compiler-site IR store/load ports, dead `typesafe.cpp` surface pruned
 - **v0.10.0** — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c): 15 shared compile-site helpers, ~880 lines removed from `compiler.cpp`, three latent bugs fixed
 - **v0.9.1** — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts, constant `case`, postfix chains
 - **v0.9.0** — SMAUG Phase F continues: `->` on call results, Mem-backed arithmetic, unified control-flow parens, fn-ptr typedefs + decay, struct interop expansion, address-taken locals, assign-as-expression

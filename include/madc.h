@@ -667,7 +667,6 @@ public:
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Mem &, DataDef *, DataDef *);
-    void safemov(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Mem &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Mem &, asmjit::x86::Xmm &, DataDef *, DataDef *);
     void safemov(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
@@ -678,19 +677,13 @@ public:
 
     // perform cc.add with size casting
     void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
-    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
-    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safeadd(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
-    void safeadd(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
     void safeadd(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
     void safeadd(asmjit::Operand &,  int, DataDef *, DataDef *);
 
     // perform cc.sub with size casting
     void safesub(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
-    void safesub(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
-    void safesub(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safesub(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
-    void safesub(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
     void safesub(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
     void safesub(asmjit::Operand &,  int, DataDef *, DataDef *);
 
@@ -750,8 +743,6 @@ public:
 
     // perform cc.cmp with size casting
     void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    void safecmp(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Gp &);
     void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
     void safecmp(asmjit::Operand &,  asmjit::Operand &);
 

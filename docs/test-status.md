@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of April 23, 2026 (v0.9.0 — Phase F continues; external MadSMAUG bootstrap now advances past `F_SETFL`, Mem-backed arithmetic expression regressions, fixed-array unary dereference, and chained `->` after expression parents, and currently stops at `timerisset`).
+Test results as of April 24, 2026 (v0.10.1 — typed-register IR cleanup is complete enough to resume SMAUG-facing work).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,9 +11,9 @@ Latest `scripts/run_tests.sh` result in this dirty tree:
 - Passing: 170 integration tests
 - Failing: none
 - Timed out: none
-- Unit tests: 42/42 passing (doctest) — 25 datadef + 17 IR (Stage 0)
+- Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR
 
-The newly exercised regressions from this session all pass directly:
+The latest IR-focused validation batch passes directly, including:
 
 - `testassignexprmem.mad`
 - `testcompoundassignmem.mad`
@@ -209,7 +209,7 @@ Run with: `make -C src test`
 | Test File | Tests | Status |
 |-----------|-------|--------|
 | `tests/unit/test_datadef.cpp` | 25 | All pass |
-| `tests/unit/test_ir.cpp`      | 17 | All pass — IR Stage 0 scaffolding |
+| `tests/unit/test_ir.cpp`      | 23 | All pass — IR Stage 0 scaffolding + Stage 1/2 coerce coverage |
 
 ## Phase 2 Fixes Applied
 
