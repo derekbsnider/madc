@@ -2410,155 +2410,132 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 
 /////////////////////////////////////////////////////////////////////////////
 // compound assignment operators (+=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=)
-// Pattern: load lval, compile rval into tmp, apply op in-place, write back.
-// /= and %= use a fresh dividend register because safediv requires 3 distinct Gp regs.
-// CompoundLHS / resolveCompoundLHS are defined above TokenInc::compile (shared).
+// Pattern: resolve LHS, compile RHS normalized, apply safe op in place,
+// write back + route result through finish_compound_assign.
 /////////////////////////////////////////////////////////////////////////////
 
-Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
+// Helper for +=, -=, *= (3-arg safe ops with DataDef slots).
+static Operand &emit_compound_binop3(Program &pgm, TokenBase *left, TokenBase *right,
+				     SafeBinOp3 op, regdefp_t &regdp, Operand &_operand,
+				     const char *op_name)
 {
-    DBG(cout << "TokenAddEq::compile() TOP" << endl);
-    if ( !left )  throw "+= missing lval operand";
-    if ( !right ) throw "+= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "+=");
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
     Operand tmp;
     Operand *out = regdp.first;
     regdp.second = lhs.type;
     regdp.first  = nullptr;
     Operand &rval = compile_compound_rhs_normalized(pgm, right, lhs.type, tmp);
-    pgm.safeadd(lhs.lval, rval, lhs.type);
+    (pgm.*op)(lhs.lval, rval, lhs.type, nullptr);
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+}
+
+// Helper for |=, &=, ^=, <<=, >>= (2-arg bit/shift safe ops; right side is
+// forced to a Gp).
+static Operand &emit_compound_bitop2(Program &pgm, TokenBase *left, TokenBase *right,
+				     SafeBitOp2 op, regdefp_t &regdp, Operand &_operand,
+				     const char *op_name)
+{
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
+    Operand tmp;
+    Operand *out = regdp.first;
+    regdp.second = lhs.type;
+    regdp.first  = nullptr;
+    Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
+    (pgm.*op)(lhs.lval, rval);
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+}
+
+// Helper for /= (return_remainder=false) and %= (return_remainder=true).
+// safediv needs three distinct Gp regs, so the LHS value gets copied into
+// a fresh dividend Reg and the result is stored back to lhs.lval.
+static Operand &emit_compound_divmod(Program &pgm, TokenBase *left, TokenBase *right,
+				     bool return_remainder, regdefp_t &regdp,
+				     Operand &_operand, const char *op_name)
+{
+    CompoundLHS lhs  = resolveCompoundLHS(pgm, left, op_name);
+    Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
+    Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
+    Operand divisor;
+    Operand *out = regdp.first;
+    pgm.safemov(dividend, lhs.lval);
+    regdp.second = lhs.type;
+    regdp.first  = nullptr;
+    compile_compound_rhs_normalized(pgm, right, lhs.type, divisor);
+    if ( lhs.type->is_integer() )
+	pgm.safexor(remainder, remainder);
+    pgm.safediv(remainder, dividend, divisor, lhs.type);
+    pgm.safemov(lhs.lval, return_remainder ? remainder : dividend);
+    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+}
+
+Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
+{
+    if ( !left )  throw "+= missing lval operand";
+    if ( !right ) throw "+= missing rval operand";
+    return emit_compound_binop3(pgm, left, right, &Program::safeadd, regdp, _operand, "+=");
 }
 
 Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenSubEq::compile() TOP" << endl);
     if ( !left )  throw "-= missing lval operand";
     if ( !right ) throw "-= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "-=");
-    Operand tmp;
-    Operand *out = regdp.first;
-    regdp.second = lhs.type;
-    regdp.first  = nullptr;
-    Operand &rval = compile_compound_rhs_normalized(pgm, right, lhs.type, tmp);
-    pgm.safesub(lhs.lval, rval, lhs.type);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_binop3(pgm, left, right, &Program::safesub, regdp, _operand, "-=");
 }
 
 Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  throw "*= missing lval operand";
     if ( !right ) throw "*= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "*=");
-    Operand tmp;
-    Operand *out = regdp.first;
-    regdp.second = lhs.type; regdp.first = nullptr;
-    Operand &rval = compile_compound_rhs_normalized(pgm, right, lhs.type, tmp);
-    pgm.safemul(lhs.lval, rval, lhs.type);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_binop3(pgm, left, right, &Program::safemul, regdp, _operand, "*=");
 }
 
 Operand &TokenDivEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  throw "/= missing lval operand";
     if ( !right ) throw "/= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "/=");
-    Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
-    Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
-    Operand divisor;
-    Operand *out = regdp.first;
-    pgm.safemov(dividend, lhs.lval);
-    regdp.second = lhs.type; regdp.first = nullptr;
-    compile_compound_rhs_normalized(pgm, right, lhs.type, divisor);
-    if ( lhs.type->is_integer() )
-	pgm.safexor(remainder, remainder);
-    pgm.safediv(remainder, dividend, divisor, lhs.type);
-    pgm.safemov(lhs.lval, dividend);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_divmod(pgm, left, right, /*return_remainder=*/false, regdp, _operand, "/=");
 }
 
 Operand &TokenModEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  throw "%= missing lval operand";
     if ( !right ) throw "%= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "%=");
-    Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
-    Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
-    Operand divisor;
-    Operand *out = regdp.first;
-    pgm.safemov(dividend, lhs.lval);
-    regdp.second = lhs.type; regdp.first = nullptr;
-    compile_compound_rhs_normalized(pgm, right, lhs.type, divisor);
-    pgm.safexor(remainder, remainder);
-    pgm.safediv(remainder, dividend, divisor, lhs.type);
-    pgm.safemov(lhs.lval, remainder);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_divmod(pgm, left, right, /*return_remainder=*/true, regdp, _operand, "%=");
 }
 
 Operand &TokenBSLEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  throw "<<= missing lval operand";
     if ( !right ) throw "<<= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "<<=");
-    Operand tmp;
-    Operand *out = regdp.first;
-    regdp.second = lhs.type; regdp.first = nullptr;
-    Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
-    pgm.safeshl(lhs.lval, rval);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_bitop2(pgm, left, right, &Program::safeshl, regdp, _operand, "<<=");
 }
 
 Operand &TokenBSREq::compile(Program &pgm, regdefp_t &regdp)
 {
-    DBG(cout << "TokenBSREq::compile() TOP" << endl);
     if ( !left )  throw ">>= missing lval operand";
     if ( !right ) throw ">>= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, ">>=");
-    Operand tmp;
-    Operand *out = regdp.first;
-    regdp.second = lhs.type; regdp.first = nullptr;
-    Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
-    pgm.safeshr(lhs.lval, rval);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_bitop2(pgm, left, right, &Program::safeshr, regdp, _operand, ">>=");
 }
 
 Operand &TokenBandEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  throw "&= missing lval operand";
     if ( !right ) throw "&= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "&=");
-    Operand tmp;
-    Operand *out = regdp.first;
-    regdp.second = lhs.type; regdp.first = nullptr;
-    Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
-    pgm.safeand(lhs.lval, rval);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_bitop2(pgm, left, right, &Program::safeand, regdp, _operand, "&=");
 }
 
 Operand &TokenBorEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  throw "|= missing lval operand";
     if ( !right ) throw "|= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "|=");
-    Operand tmp;
-    Operand *out = regdp.first;
-    regdp.second = lhs.type; regdp.first = nullptr;
-    Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
-    pgm.safeor(lhs.lval, rval);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_bitop2(pgm, left, right, &Program::safeor, regdp, _operand, "|=");
 }
 
 Operand &TokenXorEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  throw "^= missing lval operand";
     if ( !right ) throw "^= missing rval operand";
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, "^=");
-    Operand tmp;
-    Operand *out = regdp.first;
-    regdp.second = lhs.type; regdp.first = nullptr;
-    Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
-    pgm.safexor(lhs.lval, rval);
-    return finish_compound_assign(pgm, regdp, lhs, _operand, out);
+    return emit_compound_bitop2(pgm, left, right, &Program::safexor, regdp, _operand, "^=");
 }
 
 // Basic assignment left = right
