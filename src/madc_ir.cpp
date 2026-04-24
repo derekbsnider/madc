@@ -265,8 +265,35 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return out;
     }
 
-    // Integer → real and real → integer. Intentionally left for a
-    // later stage; the ABI paths that need them (`double x = int_expr`
-    // and `int i = (int)double_expr`) aren't ported yet.
+    // Integer/pointer → real. We treat pointers like integers here so
+    // address-valued arithmetic/casts can still flow through the same
+    // normalized path during migration.
+    bool src_intish = src.type->is_integer() || src.type->is_pointer();
+    bool dst_intish = to->is_integer() || to->is_pointer();
+    if ( src_intish && to->is_real() )
+    {
+	IRValue r = load(src);
+	IRValue out = newReg(to, "ir_coerce_i2r");
+	if ( to->size == sizeof(float) )
+	    cc_.cvtsi2ss(out.op.as<x86::Xmm>(), r.op.as<x86::Gp>());
+	else
+	    cc_.cvtsi2sd(out.op.as<x86::Xmm>(), r.op.as<x86::Gp>());
+	return out;
+    }
+
+    // Real → integer/pointer. Current migration only needs the common
+    // truncating cast semantics; if later stages need rounded or
+    // saturating variants they should become explicit builder ops.
+    if ( src.type->is_real() && dst_intish )
+    {
+	IRValue r = load(src);
+	IRValue out = newReg(to, "ir_coerce_r2i");
+	if ( src.type->size == sizeof(float) )
+	    cc_.cvttss2si(out.op.as<x86::Gp>(), r.op.as<x86::Xmm>());
+	else
+	    cc_.cvttsd2si(out.op.as<x86::Gp>(), r.op.as<x86::Xmm>());
+	return IRValue::reg(out.op, to);
+    }
+
     throw "IRBuilder::coerce() unsupported type conversion (not yet implemented)";
 }

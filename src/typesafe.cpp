@@ -461,16 +461,6 @@ void Program::safeadd(Operand &op1, int i, DataDef *d1, DataDef *d2)
 // should handle all necessary conversions...
 void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
-    if ( op1.isMem() )
-    {
-	// load-add-store for captured numeric vars (Mem operands)
-	x86::Gp tmp = cc.newGpq("_tmp_add");
-	cc.mov(tmp, op1.as<x86::Mem>());
-	Operand tmp_op = tmp;
-	safeadd(tmp_op, op2, d1, d2);
-	cc.mov(op1.as<x86::Mem>(), tmp);
-	return;
-    }
     if ( !op1.isReg() ) { cerr << (uint32_t)op1.opType() << endl; throw "safeadd() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safeadd() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
@@ -551,15 +541,6 @@ void Program::safesub(Operand &op1, int i, DataDef *d1, DataDef *d2)
 // should handle all necessary conversions...
 void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
-    if ( op1.isMem() )
-    {
-	x86::Gp tmp = cc.newGpq("_tmp_sub");
-	cc.mov(tmp, op1.as<x86::Mem>());
-	Operand tmp_op = tmp;
-	safesub(tmp_op, op2, d1, d2);
-	cc.mov(op1.as<x86::Mem>(), tmp);
-	return;
-    }
     if ( !op1.isReg() ) { throw "safesub() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safesub() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
@@ -722,14 +703,6 @@ void Program::safeor(Operand &op1, Operand &op2)
     }
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safeor() right operand is not a Gp register or immediate value";
-    if ( op1.isMem() )
-    {
-	if ( op2.isImm() )
-	    cc.or_(op1.as<x86::Mem>(), op2.as<Imm>());
-	else
-	    cc.or_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
-	return;
-    }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeor() left operand is not a Gp register";
     if ( op2.isImm() )
@@ -756,14 +729,6 @@ void Program::safeand(Operand &op1, Operand &op2)
     }
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safeand() right operand is not a Gp register and immediate value";
-    if ( op1.isMem() )
-    {
-	if ( op2.isImm() )
-	    cc.and_(op1.as<x86::Mem>(), op2.as<Imm>());
-	else
-	    cc.and_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
-	return;
-    }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeand() left operand is not a Gp register";
     if ( op2.isImm() )
@@ -790,14 +755,6 @@ void Program::safexor(Operand &op1, Operand &op2)
     }
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safexor() right operand is not a Gp register or immediate value";
-    if ( op1.isMem() )
-    {
-	if ( op2.isImm() )
-	    cc.xor_(op1.as<x86::Mem>(), op2.as<Imm>());
-	else
-	    cc.xor_(op1.as<x86::Mem>(), op2.as<x86::Gp>());
-	return;
-    }
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safexor() left operand is not a Gp register";
     if ( op2.isImm() )
@@ -1003,17 +960,6 @@ void Program::safetest(Operand &op1, Operand &op2)
 
 void Program::safesete(Operand &op)
 {
-    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kVec) )
-    {
-	x86::Gp tmpq = cc.newGpq();
-	DBG(cc.comment("cc.sete(tmp.r8)"));
-	cc.sete(tmpq.r8());
-	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
-	cc.movzx(tmpq, tmpq.r8());  // zero extend because setCC is unsigned
-	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
-	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
-    }
-    else
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.sete(op.as<x86::Gp>().r8());
@@ -1026,17 +972,6 @@ void Program::safesete(Operand &op)
 
 void Program::safesetg(Operand &op)
 {
-    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kVec) )
-    {
-	x86::Gp tmpq = cc.newGpq();
-	DBG(cc.comment("cc.setg(tmp.r8)"));
-	cc.setg(tmpq.r8());
-	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
-	cc.movzx(tmpq, tmpq.r8());
-	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
-	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
-    }
-    else
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setg(op.as<x86::Gp>().r8());
@@ -1049,17 +984,6 @@ void Program::safesetg(Operand &op)
 
 void Program::safesetge(Operand &op)
 {
-    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kVec) )
-    {
-	x86::Gp tmpq = cc.newGpq();
-	DBG(cc.comment("cc.setge(tmp.r8)"));
-	cc.setge(tmpq.r8());
-	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
-	cc.movzx(tmpq, tmpq.r8());
-	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
-	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
-    }
-    else
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setge(op.as<x86::Gp>().r8());
@@ -1072,17 +996,6 @@ void Program::safesetge(Operand &op)
 
 void Program::safesetl(Operand &op)
 {
-    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kVec) )
-    {
-	x86::Gp tmpq = cc.newGpq();
-	DBG(cc.comment("cc.setl(tmp.r8)"));
-	cc.setl(tmpq.r8());
-	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
-	cc.movzx(tmpq, tmpq.r8());
-	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
-	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
-    }
-    else
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setl(op.as<x86::Gp>().r8());
@@ -1095,17 +1008,6 @@ void Program::safesetl(Operand &op)
 
 void Program::safesetle(Operand &op)
 {
-    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kVec) )
-    {
-	x86::Gp tmpq = cc.newGpq();
-	DBG(cc.comment("cc.setle(tmp.r8)"));
-	cc.setle(tmpq.r8());
-	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
-	cc.movzx(tmpq, tmpq.r8());
-	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
-	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
-    }
-    else
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setle(op.as<x86::Gp>().r8());
@@ -1118,17 +1020,6 @@ void Program::safesetle(Operand &op)
 
 void Program::safesetne(Operand &op)
 {
-    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kVec) )
-    {
-	x86::Gp tmpq = cc.newGpq();
-	DBG(cc.comment("cc.setne(tmp.r8)"));
-	cc.setne(tmpq.r8());
-	DBG(cc.comment("cc.movzx(tmpq, tmpq.r8)"));
-	cc.movzx(tmpq, tmpq.r8());
-	DBG(cc.comment("cc.cvtsi2sd(op.as<x86::Xmm>(), tmp)"));
-	cc.cvtsi2sd(op.as<x86::Xmm>(), tmpq);
-    }
-    else
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	cc.setne(op.as<x86::Gp>().r8());
@@ -1217,32 +1108,6 @@ void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2)
 
 void Program::safecmp(Operand &op1, Operand &op2)
 {
-    if ( op1.isMem() )
-    {
-	// Load the Mem into a typed temp Gp and compare through that.
-	// Needed for things like `*p == 0` where the deref yields a
-	// `byte ptr [ptr]` Mem that can't be the destination of a raw
-	// cmp.
-	uint32_t msz = op1.as<x86::Mem>().size();
-	x86::Gp tmp = cc.newGpq("_cmp_tmp");
-	if ( msz == 8 )      cc.mov(tmp, op1.as<x86::Mem>());
-	else if ( msz == 4 ) cc.movsxd(tmp, op1.as<x86::Mem>());
-	else                 cc.movsx(tmp, op1.as<x86::Mem>());
-	Operand tmp_op = tmp;
-	safecmp(tmp_op, op2);
-	return;
-    }
-    if ( op2.isMem() )
-    {
-	uint32_t msz = op2.as<x86::Mem>().size();
-	x86::Gp tmp = cc.newGpq("_cmp_tmp");
-	if ( msz == 8 )      cc.mov(tmp, op2.as<x86::Mem>());
-	else if ( msz == 4 ) cc.movsxd(tmp, op2.as<x86::Mem>());
-	else                 cc.movsx(tmp, op2.as<x86::Mem>());
-	Operand tmp_op = tmp;
-	safecmp(op1, tmp_op);
-	return;
-    }
     if ( !op1.isReg() ) { throw "safecmp() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safecmp() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
