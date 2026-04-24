@@ -4,6 +4,24 @@
 
 ### Added
 
+- **Typed-register IR — Stage 3a call return-binding unification**
+  — `TokenCallFunc` had three divergent call-return paths: the
+  function-pointer-call path (used `bind_call_return` — handled
+  Reg + Mem + void uniformly), the `dlcall` path (open-coded
+  `call->setRet(0, regdp.first->as<Gp>())` — would crash if the
+  caller passed a Mem destination), and the variadic dlsym path
+  (open-coded with separate double/int branches; the int branch
+  carried a movsxd sign-extend whitelist for int32-returning
+  libc functions, the double branch used movsd into a Reg-only
+  dest). Both open-coded paths are latent Mem-destination bugs
+  not exercised by today's tests. Widened `bind_call_return`
+  with a `narrow_int_ret` flag that carries the movsxd dance
+  the variadic dlsym path needs, then routed all three call
+  sites through `bind_call_return`. Mem-destination returns now
+  work uniformly across every call shape — the Stage-1 IR-route
+  contract (emit_ir_value honors caller dest) now holds
+  end-to-end through function calls.
+
 - **Typed-register IR — Stage 2 arithmetic/comparison collapse** —
   the per-operator boilerplate that each binary token duplicated
   (normalize both sides, run the safe* helper, route through

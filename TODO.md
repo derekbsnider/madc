@@ -4,14 +4,16 @@
 
 ### Compiler Infrastructure
 
-- **Typed-register IR Stage 2 — remaining work** — plain-numeric
+- **Typed-register IR Stage 2 + 3a — remaining work** — plain-numeric
   fast paths of the binary-op tokens (Add/Sub/Mul/Div/Mod/Xor/
   Band/Bor/BSL/BSR), all six comparison ops, and all ten
   compound-assigns (+= -= *= /= %= |= &= ^= <<= >>=) are now
   collapsed onto shared helpers (`emit_compare`,
   `emit_plain_binop3`, `emit_plain_divmod`, `emit_plain_bitop2`,
   `emit_compound_binop3`, `emit_compound_bitop2`,
-  `emit_compound_divmod`). Still to do:
+  `emit_compound_divmod`). Call return-binding is unified via
+  `bind_call_return` + `narrow_int_ret` flag across the fptr /
+  dlcall / variadic-dlsym paths (Stage 3a). Still to do:
   - **General (non-plain-numeric) fallback paths** — the binary
     ops' else-branch still uses the regdp-cascade pattern (mutate
     `regdp.first` through `left->compile`, use `tmp` for right,
@@ -26,6 +28,12 @@
     `safeshl` / `safeshr` can shrink to pure low-level emitters
     (the IR will already normalize both operands to Reg of the
     same concrete type before the helper runs).
+  - **Stage 3 continuation** — multi-return call sites
+    (`a, b := func()` through `__retbuf`), lambda-capture env
+    pack/unpack (currently open-coded in `TokenCallFunc` with
+    raw `cc.mov`/`cc.lea`), and the `operand(pgm)` pre-allocation
+    at the top of the regular call path. These aren't bugs today
+    but they bypass the IR normalization contract.
   Plan in `docs/plans/typed-register-ir.md`, rules in
   `.claude/rules/typed-register-ir.md`.
 
