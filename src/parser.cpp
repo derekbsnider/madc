@@ -3511,15 +3511,18 @@ TokenBase *TokenRETURN::parse(Program &pgm)
     // parse first return expression
     returns = pgm.parseExpression(tn);
 
-    // Multi-return detection: parseExpression consumed either `,` or `;`.
-    // If it stopped on `,`, the next token is the second expression (an
-    // identifier, number, string, `(`, unary op etc). If it stopped on
-    // `;`, the next token is whatever the next statement starts with —
-    // which is a keyword (if/while/return/...), `}` (block close), a type
-    // name, or another identifier. Restrict detection to clear expression
-    // starters so `return X;` followed by `if(...)` / `<ident>()` / etc.
-    // doesn't misfire as multi-return.
+    // Multi-return detection: parseExpression consumed either `,` or `;`
+    // to stop the first return expression. The cleanest signal is the
+    // consumed stop token itself (curToken()): only `,` indicates that
+    // a second expression follows. Without that check, a plain
+    // `return x;` followed by any identifier-starting statement (e.g.
+    // `noop(ch);`) misfires as multi-return because the peek-based
+    // heuristic can't distinguish a second return expression from the
+    // start of the next statement.
     auto looks_like_second_return = [&]() -> bool {
+	TokenBase *stop = pgm.curToken();
+	if ( !stop || stop->id() != TokenID::tkComma )
+	    return false;
 	TokenBase *p = pgm.peekToken();
 	if ( !p ) return false;
 	if ( p->id() == TokenID::tkSemi ) return false;

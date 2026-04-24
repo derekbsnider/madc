@@ -1588,8 +1588,13 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 		break;
 	    }
 	default:
-	    DBG(cerr << "TokenStmt::compile() throwing unexpected token" << endl);
-	    throw this;
+	    DBG(cerr << "TokenStmt::compile() throwing unexpected token type=" << (int)type() << " id=" << (int)id() << endl);
+	    {
+		static char msg[128];
+		snprintf(msg, sizeof(msg), "TokenStmt::compile() unexpected token type=%d id=%d",
+			 (int)type(), (int)id());
+		throw (const char *)msg;
+	    }
     } // end switch
     DBG(cout << "TokenStmt::compile(" << (void *)this << ") END" << endl);
     return _reg;
@@ -2335,14 +2340,16 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	}
 	else
 	{
-	    std::string msg = std::string(op_name) + " on unsupported subscript lval";
-	    throw msg.c_str();
+	    static char msg[128];
+	    snprintf(msg, sizeof(msg), "%s on unsupported subscript lval", op_name);
+	    throw (const char *)msg;
 	}
     }
     else
     {
-	std::string msg = std::string(op_name) + " on a non-variable lval";
-	throw msg.c_str();
+	static char msg[128];
+	snprintf(msg, sizeof(msg), "%s on a non-variable lval", op_name);
+	throw (const char *)msg;
     }
     return r;
 }

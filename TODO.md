@@ -9,12 +9,11 @@
   mud_comm.c). `tkGOTO` exists as a lexer token but no parse/compile
   support. Currently routed around by stubbing the calling symbols.
 
-- **`IRBuilder::coerce() invalid src`** inside fight.c / skills.c
-  compile — surfaces after `class`-as-identifier lands and the
-  umbrella reaches deep into those TUs. Likely a typed-pointer-return
-  mis-wiring where a compile path lets `regdp.second` fall to NULL
-  before calling a shared helper that then feeds an invalid IRValue
-  into `ir.coerce`. Reproducer pending — current MadSMAUG umbrella
+- **`&= on unsupported subscript lval` in SMAUG** — after the
+  return-mis-detection fix, the MadSMAUG umbrella's compile hits
+  `resolveCompoundLHS` with a compound bitwise-AND assignment on a
+  subscript expression form it doesn't handle (likely a struct-array
+  or pointer-subscript member). Current MadSMAUG umbrella compile
   front edge.
 
 - **Real `<` / `<=` comparison with Mem-backed literal RHS** —
@@ -99,6 +98,17 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**`return X;` mis-detected as multi-return**~~ — `TokenRETURN`'s
+  multi-return heuristic now consults the consumed stop token via
+  `Program::curToken()` (new accessor) and requires `,` specifically
+  before considering a second expression. Previously peeked the next
+  token and couldn't disambiguate an identifier second-return-expr
+  from the start of the next statement. Targeted regression:
+  `tests/testreturnnextident.mad`. Also improved error messages in
+  `resolveCompoundLHS` and `TokenStmt::compile` default branch
+  (both were throwing dangling `c_str()` / `this` pointers, garbling
+  the error output).
 
 - ~~**`class` as a plain C identifier**~~ — parseStatement routes
   `class` through parseExpression when it's not followed by an

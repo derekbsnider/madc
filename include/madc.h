@@ -591,6 +591,7 @@ public:
     // accessing token queue
     inline TokenBase *peekToken() { if (tokens.empty()) return NULL; return tokens.front(); }
     inline TokenBase *prevToken() { return _prv_token; }
+    inline TokenBase *curToken()  { return _cur_token; }
     inline void resetPrevToken() { _prv_token = NULL; }
     inline void pushToken(TokenBase *t) { tokens.push_front(t); }
 

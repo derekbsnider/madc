@@ -1,0 +1,49 @@
+#!/../bin/madc
+// `return x;` followed by a statement that starts with an identifier
+// (a void call, another local variable use) used to misfire as
+// multi-return because `looks_like_second_return` peeked at the next
+// token and couldn't tell a second return expression apart from the
+// start of the next statement. That silently injected a `__retbuf`
+// parameter at compile time and corrupted the function's emission,
+// which downstream manifested as an `IRBuilder::coerce() invalid src`
+// throw. Now the check requires the consumed stop token (`curToken`)
+// to be `,` before attempting multi-return parsing.
+//
+// This repro would fail to compile (throwing from ir.coerce in
+// `foo`'s body) before the fix because the `return 1;` was detected
+// as multi-return when followed by `noop(ch);`, injecting a
+// `__retbuf` parameter that mis-wired the function.
+
+#include <stdio.h>
+
+struct C { struct C *mount; };
+
+void noop(struct C *c) {}
+
+int foo(struct C *ch)
+{
+    if (0)
+        return 1;
+    noop(ch);
+    if (ch->mount)
+        return 1;
+    return 0;
+}
+
+int bar(int x)
+{
+    if (x > 0)
+        return x;
+    noop((struct C *)0);
+    return -x;
+}
+
+int main()
+{
+    struct C c;
+    c.mount = 0;
+    printf("foo=%d\n", foo(&c));
+    printf("bar+=%d\n", bar(3));
+    printf("bar-=%d\n", bar(-5));
+    return 0;
+}

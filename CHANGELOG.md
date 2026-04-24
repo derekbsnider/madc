@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- **`return X;` mis-detected as multi-return when the next statement
+  starts with an identifier** — `TokenRETURN::parse`'s
+  `looks_like_second_return` peeked at the next token and, because an
+  identifier could plausibly be the start of a second return expression
+  OR the start of the next statement, treated `return 1; noop(ch); …`
+  as multi-return. That silently injected a `__retbuf` parameter at
+  compile time and corrupted the function's emission, which
+  downstream blew up as `IRBuilder::coerce() invalid src` in
+  fight.c / skills.c bodies. The fix uses the consumed stop token
+  (`curToken()`) as the signal: multi-return only fires when
+  parseExpression actually stopped on `,`. Added a new `curToken()`
+  accessor on `Program`. Regression: `tests/testreturnnextident.mad`.
+
+- **Better diagnostics for unsupported compound-assign lval errors**
+  — `resolveCompoundLHS` threw `msg.c_str()` from a stack-local
+  `std::string`; the catch handler then printed garbage bytes once
+  the string went out of scope. Same for `TokenStmt::compile`'s
+  `throw this` fallback. Both now throw into static buffers with
+  actual diagnostic text, so SMAUG-level errors like `&= on
+  unsupported subscript lval` are visible.
+
 - **`class` as a plain C identifier** — madc reserves `class` for OOP
   declarations, but C codebases (notably SMAUG) use it everywhere as
   a struct member name (`ch->class`), a local variable (`int class;`),
