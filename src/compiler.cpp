@@ -35,7 +35,7 @@ using namespace std;
 using namespace asmjit;
 
 static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, DataDef *ret_type,
-			     Operand &fallback_operand, bool is_variadic);
+			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret=false);
 const char *string_cstr(void *ptr);
 
 static IRValue ir_from_operand(const Operand &op, DataDef *type)
@@ -1047,13 +1047,13 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.invoke(&call, ptr_reg.as<x86::Gp>(), funcsig);
 	    set_invoke_args(pgm, call, params, false);
 
-	    // capture return value
+	    // capture return value (Mem dests are honored via bind_call_return)
 	    if ( !regdp.first )
 	    {
 		_operand = pgm.cc.newGpq("dlcall_ret");
 		regdp.first = &_operand;
 	    }
-	    call->setRet(0, regdp.first->as<x86::Gp>());
+	    bind_call_return(pgm, call, regdp.first, &func->returns, _operand, /*is_variadic=*/false);
 	    if ( !regdp.second )
 		regdp.second = &func->returns;
 
@@ -1109,24 +1109,16 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    // capture return value
 	    if ( ret_double )
 	    {
-		x86::Xmm ret_xmm = pgm.cc.newXmm("dl_ret");
-		call->setRet(0, ret_xmm);
-		if ( regdp.first )
-		    pgm.cc.movsd(regdp.first->as<x86::Xmm>(), ret_xmm);
-		else
+		if ( !regdp.first )
 		{
-		    _operand = ret_xmm;
+		    _operand = pgm.cc.newXmm("dl_ret");
 		    regdp.first = &_operand;
 		}
+		bind_call_return(pgm, call, regdp.first, &ddDOUBLE, _operand, /*is_variadic=*/true);
 		regdp.second = &ddDOUBLE;
 	    }
 	    else
 	    {
-		if ( !regdp.first )
-		{
-		    _operand = pgm.cc.newGpq("dl_ret");
-		    regdp.first = &_operand;
-		}
 		// dlsym-resolved C functions that return plain `int` (int32)
 		// place the result in EAX; the upper 32 bits of RAX are left
 		// indeterminate and typically zero-extended by the compiler,
@@ -1181,14 +1173,13 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		    && func->returns.is_integer()
 		    && func->returns.size < 8)
 		    || int32_returners.count(var.name) > 0;
-		x86::Gp ret_gp = pgm.cc.newGpq("dl_ret");
-		call->setRet(0, ret_gp);
-		if ( is_narrow_int_ret )
-		    pgm.cc.movsxd(ret_gp, ret_gp.r32());
-		if ( regdp.first->isMem() )
-		    pgm.cc.mov(regdp.first->as<x86::Mem>(), ret_gp);
-		else
-		    pgm.cc.mov(regdp.first->as<x86::Gp>(), ret_gp);
+		if ( !regdp.first )
+		{
+		    _operand = pgm.cc.newGpq("dl_ret");
+		    regdp.first = &_operand;
+		}
+		bind_call_return(pgm, call, regdp.first, &func->returns, _operand,
+				 /*is_variadic=*/false, is_narrow_int_ret);
 		if ( !regdp.second )
 		    regdp.second = &func->returns;
 	    }
@@ -3164,10 +3155,33 @@ Operand &TokenCallMethod::operand(Program &pgm)
 }
 
 static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, DataDef *ret_type,
-			     Operand &fallback_operand, bool is_variadic)
+			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret)
 {
     if ( !ret_type || ret_type->type() == DataType::dtVOID )
 	return;
+
+    // narrow_int_ret: libc dlsym functions that return a 32-bit int (strcmp,
+    // memcmp, printf, fcntl, ...) place the result in EAX; the upper 32 bits
+    // of RAX are indeterminate, so madc — which treats returns as int64 —
+    // sign-extends via movsxd. Only meaningful on non-real returns.
+    if ( narrow_int_ret && !ret_type->is_real() )
+    {
+	x86::Gp ret_gp = pgm.cc.newGpq("dl_ret");
+	call->setRet(0, ret_gp);
+	pgm.cc.movsxd(ret_gp, ret_gp.r32());
+	if ( !dest )
+	{
+	    fallback_operand = ret_gp;
+	    return;
+	}
+	if ( dest->isReg() && dest->as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.mov(dest->as<x86::Gp>(), ret_gp);
+	else if ( dest->isMem() )
+	    pgm.safemov(dest->as<x86::Mem>(), ret_gp, ret_type, ret_type);
+	else
+	    throw "bind_call_return() narrow_int_ret: unsupported destination";
+	return;
+    }
 
     if ( !dest )
     {
