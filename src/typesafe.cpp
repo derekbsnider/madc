@@ -310,7 +310,24 @@ void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	    safemov(op1.as<x86::Mem>(), op2.as<x86::Gp>(), d1, d2);
 	else
 	if ( op2.isImm() )
-	    cc.mov(op1.as<x86::Mem>(), op2.as<Imm>());
+	{
+	    // x86's `mov m64, imm` only carries a 32-bit sign-extended
+	    // immediate. For int64 literals that don't fit in int32
+	    // (`long long big = 9000000000;`), we'd silently store the
+	    // truncated lower 32 bits. Bounce through a register for
+	    // out-of-range literals.
+	    int64_t iv = op2.as<Imm>().value();
+	    uint32_t msz = op1.as<x86::Mem>().size();
+	    bool too_big = (msz == 8 && (iv < INT32_MIN || iv > INT32_MAX));
+	    if ( too_big )
+	    {
+		x86::Gp tmp = cc.newGpq("_imm64_tmp");
+		cc.mov(tmp, iv);
+		cc.mov(op1.as<x86::Mem>(), tmp);
+	    }
+	    else
+		cc.mov(op1.as<x86::Mem>(), op2.as<Imm>());
+	}
 	else
 	if ( op2.isMem() )
 	{

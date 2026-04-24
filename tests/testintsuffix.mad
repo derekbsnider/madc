@@ -1,0 +1,37 @@
+// C integer-literal suffixes (u/U, l/L, ll/LL, combinations like
+// UL / ULL / Lu / LLU) used to leak into the next token: `1u` was
+// tokenised as integer `1` followed by identifier `u`, so
+// `flags |= 1u << 3` threw "use of undeclared identifier 'u'".
+// Float suffixes `f/F/l/L` were similar. Now the lexer consumes
+// these suffixes after the numeric literal.
+//
+// Also: storing an int64 literal whose value doesn't fit in int32
+// (e.g. `long long big = 9000000000;`) used to truncate to the
+// low 32 bits because `mov m64, imm` in x86 only carries a
+// 32-bit sign-extended immediate. safemov(Operand, Operand) now
+// bounces through a register for out-of-range immediates.
+
+#include <stdio.h>
+
+int main()
+{
+    unsigned int a = 1u;
+    unsigned int b = 2U;
+    long c = 3L;
+    long d = 4l;
+    unsigned long e = 5ul;
+    unsigned long f = 6UL;
+    long long g = 7LL;
+    unsigned long long h = 8ULL;
+    long long big1 = 9000000000LL;
+    long long big2 = 9000000000;
+    int hx = 0xFFu;
+    int bn = 0b1010U;
+
+    printf("a=%d b=%d c=%ld d=%ld e=%ld f=%ld g=%lld h=%llu\n",
+	   (int)a, (int)b, c, d, (long)e, (long)f, g, h);
+    printf("big1=%lld big2=%lld\n", big1, big2);
+    printf("hx=%d bn=%d\n", hx, bn);
+
+    return 0;
+}

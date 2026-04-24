@@ -877,8 +877,27 @@ TokenBase *Program::_getToken()
 	default:
 	    if ( isdigit(ch) )
 	    {
+		// Consume C integer-literal suffixes (u/U, l/L, ll/LL, combos
+		// like ul/ULL/Lu). madc's int is 64-bit so the size hints are
+		// informational only, and we don't currently propagate
+		// signedness from the suffix — but the lexer must strip them
+		// or the next token (identifier) starts inside the number.
+		auto eat_int_suffix = [&]() {
+		    for (int i = 0; i < 3; ++i)
+		    {
+			int c = source.peek();
+			if (c == 'u' || c == 'U' || c == 'l' || c == 'L')
+			    source.get();
+			else
+			    break;
+		    }
+		};
 		if ( is_binary_prefix(ch, source) )
-		    return new TokenInt(read_binary_literal(source));
+		{
+		    int64_t bv = read_binary_literal(source);
+		    eat_int_suffix();
+		    return new TokenInt(bv);
+		}
 		// hex literal: 0x... or 0X...
 		if ( ch == '0' && source.good() && (source.peek() == 'x' || source.peek() == 'X') )
 		{
@@ -892,7 +911,8 @@ TokenBase *Program::_getToken()
 			else if ( hc >= 'a' && hc <= 'f' ) hv += hc - 'a' + 10;
 			else                               hv += hc - 'A' + 10;
 		    }
-		    return new TokenInt((int)hv);
+		    eat_int_suffix();
+		    return new TokenInt((int64_t)hv);
 		}
 		int64_t v = (ch & 0xf);
 
@@ -903,7 +923,10 @@ TokenBase *Program::_getToken()
 		}
 		// no decimal means integer
 		if ( source.peek() != '.' )
+		{
+		    eat_int_suffix();
 		    return new TokenInt(v);
+		}
 		// handle floating point
 		source.get(); // eat .
 		double num = v, divisor = 10;
@@ -911,6 +934,16 @@ TokenBase *Program::_getToken()
 		{
 		    num += (source.get() & 0xf) / divisor;
 		    divisor *= 10;
+		}
+		// C float literal suffixes (f/F, l/L). f marks a float (4-byte
+		// real); madc doesn't currently distinguish float-vs-double
+		// literals at lex time (TokenReal is always double-precision),
+		// so we just consume the suffix char.
+		if ( source.good() )
+		{
+		    int c = source.peek();
+		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
+			source.get();
 		}
 		return new TokenReal(num);
 	    }

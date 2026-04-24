@@ -4,6 +4,24 @@
 
 ### Added
 
+- **C integer and float literal suffixes** — the lexer now consumes
+  `u`/`U`, `l`/`L`, up to three in a row (so `ul` / `UL` / `lu` /
+  `LU` / `ull` / `ULL` / `lul` etc. all work) after a decimal /
+  hex / binary integer literal, and `f`/`F`/`l`/`L` after a
+  real literal. madc's `int` is 64-bit, so the size hints are
+  informational; signedness-via-suffix isn't propagated yet (tracked
+  separately). Previously `1u` lexed as `1` followed by identifier
+  `u`, breaking `flags |= 1u << 3` and `9000000000LL` literals.
+  Added `tests/testintsuffix.mad`.
+
+- **int64 literals that don't fit in int32 store correctly** —
+  `long long big = 9000000000;` was truncating to the low 32 bits
+  because `mov qword ptr [mem], imm` in x86 only carries a 32-bit
+  sign-extended immediate. `safemov(Operand, Operand)` now bounces
+  through a register for out-of-range imm-to-Mem stores (imm fits
+  in int32 → direct store; otherwise `mov tmp, imm64` then
+  `mov [mem], tmp`).
+
 - **C pointer arithmetic scales by element size** — `p + n` on `T *`
   previously added `n` bytes instead of `n * sizeof(T)`, so
   `int *q = p + 2;` advanced `q` by 2 bytes and `*q` read garbage.
