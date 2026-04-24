@@ -5229,6 +5229,40 @@ Operand &TokenDerefStep::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(pgm.cc.comment("TokenCast::compile()"));
+    // Casting a std::string expression to `char *` needs an actual
+    // conversion via string_cstr — a bare reinterpretation would leave
+    // the caller holding the std::string object's address, not its
+    // c_str() data. Detect the case before compiling so we can route
+    // the inner expression into a fresh register and run string_cstr
+    // on it.
+    bool str_to_cstr = expr && expr->datadef()
+	&& expr->datadef()->rawtype() == DataType::dtSTRING
+	&& cast_type && cast_type->is_pointer()
+	&& cast_type->rawtype() == DataType::dtCHAR;
+    if ( str_to_cstr )
+    {
+	regdefp_t inner_rdp = {NULL, NULL, NULL};
+	Operand &str_op = expr->compile(pgm, inner_rdp);
+	x86::Gp cstr = pgm.cc.newIntPtr("cast_cstr");
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+	call->setArg(0, str_op.as<x86::Gp>());
+	call->setRet(0, cstr);
+	regdp.second = cast_type;
+	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    pgm.cc.mov(regdp.first->as<x86::Gp>(), cstr);
+	    return *regdp.first;
+	}
+	if ( regdp.first && regdp.first->isMem() )
+	{
+	    pgm.cc.mov(regdp.first->as<x86::Mem>(), cstr);
+	    return *regdp.first;
+	}
+	_operand = cstr;
+	regdp.first = &_operand;
+	return _operand;
+    }
     // set the result type to the cast target
     regdp.second = cast_type;
     // compile the inner expression — for pointer/integer casts, the value

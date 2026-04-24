@@ -22,6 +22,16 @@
 
 ### Fixed
 
+- **`(char *)` cast of std::string expressions coerces via
+  string_cstr** — `TokenCast::compile()` used to just reinterpret the
+  inner operand's type without changing its value, which for a
+  std::string source meant the caller kept the `std::string` object
+  address and treated it as a `char *`. `(char *)(cond ? "a" : "b")`
+  and `(char *)str_var` both rendered garbage when `%s`-printed.
+  `TokenCast` now detects dtSTRING → char* and routes the inner
+  expression through `string_cstr` before returning. Added
+  `tests/teststringcast.mad`.
+
 - **Compound-assign on narrow (1/2/4-byte) lvalues no longer
   SIGSEGVs** — `resolveCompoundLHS` widens Mem lvalues into a Gpq via
   `load_mem_to_gpq`, but kept `r.type` at the narrow source type. The
