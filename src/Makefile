@@ -16,7 +16,7 @@ OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
-TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(TESTDIR)/%,$(TESTSRCS))
+TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(TESTSRCS))
 # Link tests against all objects except madc.o (which has main())
 TESTOBJ  = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 
@@ -34,7 +34,7 @@ test: $(TESTBINS)
 fulltest: ../bin/madc test
 	@cd .. && bash scripts/run_tests.sh
 
-$(TESTDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
+$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(TESTOBJ) $(LIBS)
 
 ../bin/madc: $(OBJECTS)
