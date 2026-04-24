@@ -1,4 +1,6 @@
 tests/unit/test_datadef
+tests/unit/test_ir
+.mcp.json
 *.cpp~
 *.h~
 Makefile~
