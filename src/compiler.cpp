@@ -226,6 +226,41 @@ static Operand &emit_plain_divmod(Program &pgm, TokenBase *left, TokenBase *righ
     return storage;
 }
 
+// C pointer arithmetic: if `left` is a pointer or fixed-array type and
+// `right` is a non-pointer integer offset, scale the offset by the
+// pointed-to / element size so `p ± n` yields `p ± n*sizeof(*p)` bytes.
+// No-op when `right` is also a pointer (pointer difference stays in
+// raw bytes — an explicit `(long)p - (long)q` is how users opt in to
+// the unscaled form anyway). Mutates `rval` in place. Safe to call
+// from both TokenAdd and TokenSub; the previous inline copies diverged
+// only in TokenSub's extra `right is not pointer` guard, which is now
+// folded into the single helper.
+static void emit_pointer_arith_scale(Program &pgm, TokenBase *left, TokenBase *right,
+				     Operand &rval)
+{
+    DataDef *rtype = right ? right->datadef() : nullptr;
+    if ( rtype && rtype->is_pointer() )
+	return;  // ptr ± ptr: raw byte arithmetic, no scale
+    size_t elem_size = 0;
+    DataDef *ltype = left ? left->datadef() : nullptr;
+    if ( ltype && ltype->is_pointer() )
+    {
+	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ltype);
+	if ( pdd && pdd->base_type )
+	    elem_size = pdd->base_type->size;
+    }
+    else if ( TokenVar *lvar = dynamic_cast<TokenVar *>(left) )
+    {
+	if ( lvar->var.is_fixed_array() && lvar->var.type )
+	    elem_size = lvar->var.type->size;
+    }
+    if ( elem_size <= 1 )
+	return;
+    if ( !rval.isReg() || !rval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	return;
+    pgm.cc.imul(rval.as<x86::Gp>(), rval.as<x86::Gp>(), imm((int64_t)elem_size));
+}
+
 enum class CmpKind : uint8_t { Eq, Ne, Lt, Le, Gt, Ge };
 
 // Central implementation of `lval <cmp> rval` -> 0/1 int64 result.
@@ -4291,27 +4326,7 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    // C pointer arithmetic: `p + n` where p is `T *` adds n*sizeof(T)
-    // bytes to p. Also applies to fixed arrays — `nums + 1` for
-    // `int nums[N]` decays nums to `int *` and scales by sizeof(int).
-    // Skip when base element is 1 byte (char*/void*) — plain byte add.
-    {
-	size_t elem_size = 0;
-	DataDef *ltype = left->datadef();
-	if ( ltype && ltype->is_pointer() )
-	{
-	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ltype);
-	    if ( pdd && pdd->base_type )
-		elem_size = pdd->base_type->size;
-	}
-	else if ( TokenVar *lvar = dynamic_cast<TokenVar *>(left) )
-	{
-	    if ( lvar->var.is_fixed_array() && lvar->var.type )
-		elem_size = lvar->var.type->size;
-	}
-	if ( elem_size > 1 && rval.isReg() && rval.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.cc.imul(rval.as<x86::Gp>(), rval.as<x86::Gp>(), imm((int64_t)elem_size));
-    }
+    emit_pointer_arith_scale(pgm, left, right, rval);	 // p + n → p + n*sizeof(*p)
     pgm.safeadd(lval, rval, regdp.second);		 // type safe addition
     if ( mirror_to_caller )
 	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
@@ -4341,30 +4356,7 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
-    // C pointer arithmetic: scale the subtrahend for `ptr - n` when
-    // left is a pointer / fixed array and right is a non-pointer
-    // integer. Pointer difference (ptr - ptr) keeps the raw byte
-    // subtraction; explicit `(long)p - (long)q` is the supported form.
-    {
-	DataDef *ltype_sub = left->datadef();
-	DataDef *rtype_sub = right->datadef();
-	size_t elem_size = 0;
-	if ( ltype_sub && ltype_sub->is_pointer()
-	  && rtype_sub && !rtype_sub->is_pointer() )
-	{
-	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ltype_sub);
-	    if ( pdd && pdd->base_type )
-		elem_size = pdd->base_type->size;
-	}
-	else if ( TokenVar *lvar = dynamic_cast<TokenVar *>(left) )
-	{
-	    if ( lvar->var.is_fixed_array() && lvar->var.type
-	      && rtype_sub && !rtype_sub->is_pointer() )
-		elem_size = lvar->var.type->size;
-	}
-	if ( elem_size > 1 && rval.isReg() && rval.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.cc.imul(rval.as<x86::Gp>(), rval.as<x86::Gp>(), imm((int64_t)elem_size));
-    }
+    emit_pointer_arith_scale(pgm, left, right, rval);	 // ptr - n → ptr - n*sizeof(*ptr)
     pgm.safesub(lval, rval, regdp.second);		 // type safe subtraction
     if ( mirror_to_caller )
 	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
@@ -4378,22 +4370,24 @@ Operand &TokenNeg::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenNeg::Compile() TOP" << endl);
     if ( !right ) { throw "- missing rval operand"; }
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
-      && regdp.second && regdp.second->is_integer() )
+    // TokenNeg is unary; `left` is structurally NULL, so the old
+    // `is_plain_numeric_expr(left) && is_plain_numeric_expr(right)`
+    // plain-numeric fast path was unreachable — and its body wrongly
+    // emitted safeshl instead of safeneg. Replace it with a real
+    // unary-right fast path that normalizes through the IR.
+    if ( is_plain_numeric_expr(right) && regdp.second && regdp.second->is_numeric() )
     {
 	Operand *caller_dest = regdp.first;
-	Operand left_reg = regdp.second->newreg(pgm.cc, "_shl_l");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &lval = compile_token_normalized(pgm, left, regdp.second, &left_reg, left_norm);
-	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, right_norm);
-	pgm.safeshl(lval, rval);
-	_operand = lval;
+	Operand rval_reg = regdp.second->newreg(pgm.cc, "_neg");
+	Operand rval_norm;
+	Operand &rval = compile_token_normalized(pgm, right, regdp.second, &rval_reg, rval_norm);
+	pgm.safeneg(rval);
+	_operand = rval;
 	regdp.first = &_operand;
 	if ( caller_dest )
 	{
 	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(lval, regdp.second), regdp, _operand, regdp.second);
+	    return emit_ir_value(pgm, IRValue::reg(rval, regdp.second), regdp, _operand, regdp.second);
 	}
 	return _operand;
     }
