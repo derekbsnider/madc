@@ -4,10 +4,18 @@
 
 ### Language Completeness
 
-- **Leading-dot float literal `.4`** — the lexer doesn't accept
-  `.4` as shorthand for `0.4`; it tokenizes `.` as tkDot followed by
-  `4` as integer, so `c += .4 * expr` fails with `Missing operand`.
-  Current MadSMAUG front edge at `handler.c:4683`.
+- **`expr[i].member` parser crash after subscript-on-expression-base**
+  — when a subscript LHS is an expression (not a plain variable —
+  e.g. `ch->pcdata->killed[x].vnum`), the dot handler that runs
+  immediately after hits a null/stale lhs_dot and segfaults. Root
+  cause is the "subscript on expression base" exStack shape diverging
+  from what the dot handler expects. Current MadSMAUG front edge
+  at `handler.c:4789` in `add_kill`.
+
+- **Double addition `a + b` produces wrong result in some contexts** —
+  `double d = 1.0 + 0.5;` prints `4.94066e-324` instead of `1.5`,
+  but a separately-declared `double c = a + b;` works. Pre-existing
+  bug surfaced while testing leading-dot float literals.
 
 - **int[N] struct-member subscript reads wrong element size** —
   `struct { int bits[N]; }` — writing `a.bits[i] = v` works, but
@@ -93,6 +101,12 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**Leading-dot float literal `.4`**~~ — lexer's single-`.` case now
+  peeks for a digit and parses the fractional expansion (consuming
+  the optional `f/F/l/L` suffix) before falling back to TokenDot.
+  Advances MadSMAUG from handler.c:4683 to handler.c:4789. Targeted
+  regression: `tests/testleadingdotfloat.mad`.
 
 - ~~**`(*p).member` now parses as `p->member`**~~ — the dot handler in
   parseExpression cast `lhs_dot` to `TokenMember *` unconditionally,

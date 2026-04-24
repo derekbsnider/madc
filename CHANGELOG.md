@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **Leading-dot float literal `.4`** — lexer now accepts `.4` / `.25f`
+  / `.75l` as shorthand for `0.4` / `0.25f` / `0.75l`. The single-`.`
+  case in the main tokenizer peeks for a digit and parses the
+  fractional expansion (consuming the optional `f/F/l/L` suffix)
+  before falling back to TokenDot. Closes the MadSMAUG umbrella
+  front edge at `handler.c:4683` (`c += .4*(...)`). Regression:
+  `tests/testleadingdotfloat.mad`.
+
 - **`(*p).member` now parses as `p->member`** — the parenthesized-deref-
   then-dot form used to segfault `parseExpression` because the `.`
   handler cast `lhs_dot` to `TokenMember *` unconditionally, but

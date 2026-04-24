@@ -1,0 +1,26 @@
+#!/../bin/madc
+// Leading-dot float literals — `.4`, `.25f`, etc. are valid C shorthand
+// for `0.4`, `0.25f`. The lexer used to tokenize `.4` as TokenDot
+// followed by integer `4`, which the expression parser rejected with
+// `Missing operand`. Closes the MadSMAUG umbrella front edge at
+// handler.c:4683 where `c += .4 * expr` previously failed to parse.
+
+#include <stdio.h>
+
+int main()
+{
+    double a = .5;
+    double b = .125;
+    double c = .25f;
+    double d = .75l;
+
+    printf("a=%g b=%g c=%g d=%g\n", a, b, c, d);
+
+    double sum = 0.0;
+    sum += .25;
+    sum += .5;
+    sum += .1;
+    printf("sum=%g\n", sum);
+
+    return 0;
+}

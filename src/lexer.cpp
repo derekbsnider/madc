@@ -788,7 +788,28 @@ TokenBase *Program::_getToken()
 	    return new TokenTerC;                                               // :
 	case ';': return new TokenSemi;					// ,
 	case ',': return new TokenComma;				// .
-	case '.': return new TokenDot;
+	case '.':
+	    // Leading-dot float literal: `.4`, `.25f`, etc. are valid C
+	    // shorthand for `0.4`, `0.25f`. The lexer used to tokenize
+	    // `.4` as TokenDot followed by integer, which the expression
+	    // parser rejected as `Missing operand`.
+	    if ( source.good() && isdigit(source.peek()) )
+	    {
+		double num = 0, divisor = 10;
+		while ( source.good() && isdigit(source.peek()) )
+		{
+		    num += (source.get() & 0xf) / divisor;
+		    divisor *= 10;
+		}
+		if ( source.good() )
+		{
+		    int c = source.peek();
+		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
+			source.get();
+		}
+		return new TokenReal(num);
+	    }
+	    return new TokenDot;
 	case '"':
 	    word = "";
 	    row = source.line();
