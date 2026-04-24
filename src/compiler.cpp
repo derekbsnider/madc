@@ -133,6 +133,66 @@ static Operand &compile_compound_rhs_gp_normalized(Program &pgm, TokenBase *toke
     return compile_token_gp_normalized(pgm, token, target_type, storage);
 }
 
+// Shared shape for the typesafe binary ops (safeadd / safesub /
+// safemul): in-place on lval, producing lval := lval <op> rval. All
+// three take a pair of DataDef slots (both default NULL) for
+// per-operand type info; the emit_plain_binop3 helper only sets the
+// left slot since both operands are pre-normalized to result_type.
+typedef void (Program::*SafeBinOp3)(asmjit::Operand &, asmjit::Operand &, DataDef *, DataDef *);
+
+// Normalize both sides through the IR to Reg-of-result_type, run the
+// given safe* helper in place on the left Reg, then route the result
+// through emit_ir_value so a caller's regdp.first (Reg or Mem) is
+// honored without every token duplicating the dest-dance.
+static Operand &emit_plain_binop3(Program &pgm, TokenBase *left, TokenBase *right,
+				  DataDef *result_type, SafeBinOp3 op,
+				  regdefp_t &regdp, Operand &storage, const char *name_hint)
+{
+    Operand *caller_dest = regdp.first;
+    Operand left_reg = result_type->newreg(pgm.cc, name_hint);
+    Operand left_norm;
+    Operand right_norm;
+    Operand &lval = compile_token_normalized(pgm, left, result_type, &left_reg, left_norm);
+    Operand &rval = compile_token_normalized(pgm, right, result_type, nullptr, right_norm);
+    (pgm.*op)(lval, rval, result_type, nullptr);
+    storage = lval;
+    regdp.first = &storage;
+    if ( caller_dest )
+    {
+	regdp.first = caller_dest;
+	return emit_ir_value(pgm, IRValue::reg(storage, result_type), regdp, storage, result_type);
+    }
+    return storage;
+}
+
+// Similar to emit_plain_binop3 but for safediv, which takes a separate
+// remainder register and an extra pair of type slots. return_remainder
+// selects TokenMod semantics; otherwise we return the dividend (TokenDiv).
+static Operand &emit_plain_divmod(Program &pgm, TokenBase *left, TokenBase *right,
+				  DataDef *result_type, bool return_remainder,
+				  regdefp_t &regdp, Operand &storage, const char *name_hint)
+{
+    Operand *caller_dest = regdp.first;
+    Operand dividend_reg = result_type->newreg(pgm.cc, name_hint);
+    Operand remainder    = result_type->newreg(pgm.cc, "_divmod_rem");
+    Operand left_norm;
+    Operand right_norm;
+    Operand &dividend = compile_token_normalized(pgm, left,  result_type, &dividend_reg, left_norm);
+    Operand &divisor  = compile_token_normalized(pgm, right, result_type, nullptr,       right_norm);
+    if ( result_type->is_integer() )
+	pgm.safexor(remainder, remainder);
+    pgm.safediv(remainder, dividend, divisor, result_type, result_type, result_type);
+    Operand &result = return_remainder ? remainder : dividend;
+    storage = result;
+    regdp.first = &storage;
+    if ( caller_dest )
+    {
+	regdp.first = caller_dest;
+	return emit_ir_value(pgm, IRValue::reg(storage, result_type), regdp, storage, result_type);
+    }
+    return storage;
+}
+
 enum class CmpKind : uint8_t { Eq, Ne, Lt, Le, Gt, Ge };
 
 // Central implementation of `lval <cmp> rval` -> 0/1 int64 result.
@@ -4194,23 +4254,7 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand left_reg = regdp.second->newreg(pgm.cc, "_add_l");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &lval = compile_token_normalized(pgm, left, regdp.second, &left_reg, left_norm);
-	Operand &rval = compile_token_normalized(pgm, right, regdp.second, nullptr, right_norm);
-	pgm.safeadd(lval, rval, regdp.second);
-	_operand = lval;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(lval, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safeadd, regdp, _operand, "_add_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
@@ -4260,23 +4304,7 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand left_reg = regdp.second->newreg(pgm.cc, "_sub_l");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &lval = compile_token_normalized(pgm, left, regdp.second, &left_reg, left_norm);
-	Operand &rval = compile_token_normalized(pgm, right, regdp.second, nullptr, right_norm);
-	pgm.safesub(lval, rval, regdp.second);
-	_operand = lval;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(lval, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safesub, regdp, _operand, "_sub_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
@@ -4370,23 +4398,7 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand left_reg = regdp.second->newreg(pgm.cc, "_mul_l");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &lval = compile_token_normalized(pgm, left, regdp.second, &left_reg, left_norm);
-	Operand &rval = compile_token_normalized(pgm, right, regdp.second, nullptr, right_norm);
-	pgm.safemul(lval, rval, regdp.second);
-	_operand = lval;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(lval, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safemul, regdp, _operand, "_mul_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
@@ -4415,26 +4427,7 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand dividend_reg = regdp.second->newreg(pgm.cc, "_div_l");
-	Operand remainder = regdp.second->newreg(pgm.cc, "_div_rem");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &dividend = compile_token_normalized(pgm, left, regdp.second, &dividend_reg, left_norm);
-	Operand &divisor  = compile_token_normalized(pgm, right, regdp.second, nullptr, right_norm);
-	if ( regdp.second->is_integer() )
-	    pgm.safexor(remainder, remainder);
-	pgm.safediv(remainder, dividend, divisor, regdp.second, regdp.second, regdp.second);
-	_operand = dividend;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(dividend, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_divmod(pgm, left, right, regdp.second, /*return_remainder=*/false, regdp, _operand, "_div_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
@@ -4489,29 +4482,11 @@ Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenMod::Compile() TOP" << endl);
     if ( !left )  { throw "% missing lval operand"; }
     if ( !right ) { throw "% missing rval operand"; }
-    if ( can_optimize() )  {return optimize(pgm, regdp);} 
+    if ( can_optimize() )  {return optimize(pgm, regdp);}
     settype(pgm, regdp);
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand dividend_reg = regdp.second->newreg(pgm.cc, "_mod_l");
-	Operand remainder = regdp.second->newreg(pgm.cc, "_mod_rem");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &dividend = compile_token_normalized(pgm, left, regdp.second, &dividend_reg, left_norm);
-	Operand &divisor  = compile_token_normalized(pgm, right, regdp.second, nullptr, right_norm);
-	pgm.safexor(remainder, remainder);
-	pgm.safediv(remainder, dividend, divisor, regdp.second, regdp.second, regdp.second);
-	_operand = remainder;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(remainder, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_divmod(pgm, left, right, regdp.second, /*return_remainder=*/true, regdp, _operand, "_mod_l");
 
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
