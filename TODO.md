@@ -44,16 +44,6 @@
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
-- **`&ptr->member` returns garbage when `ptr` is address-taken** —
-  any pointer-typed local that later appears on the RHS of `&ptr`
-  (marking it vfADDRTAKEN → stack-backed) breaks earlier `&ptr->m`
-  uses: they print a junk address instead of the member's real
-  address. Reproduced with a plain variable name, so not related to
-  the `class`-as-identifier fix. Likely cause: TokenAddrExpr /
-  TokenMember's voperand path assumes a Gp-resident pointer and
-  doesn't load from the Mem slot when the variable is stack-backed.
-  Filed while landing the `&class->member` parse fix.
-
 - **`ruby::chars` crashes in MadValue destructor** — `ruby::chars(arr, str);`
   crashes at runtime inside `a.data.clear()` in `ruby_chars`. Likely an
   ABI/layout issue with how MadArray is passed through a direct call whose
@@ -80,6 +70,15 @@
 ## Completed
 
 ### Session 2026-04-24 (post-v0.11.0)
+
+- ~~**Address-taken pointer + `&ptr->member` returned garbage**~~ —
+  `TokenMember::operand`'s Mem branch assumed `_obj` was the struct
+  itself. For a stack-backed pointer variable, `_obj` was the Mem
+  slot holding the pointer value, so `addOffset` walked inside the
+  pointer's own storage. Fix: when `_obj.isMem()` AND
+  `object.type->is_pointer()`, load the pointer value into a Gp
+  first, then index off of it like the existing reg-resident branch.
+  Targeted regression: `tests/testaddrtakenptrmember.mad`.
 
 - ~~**`&class->member` failed when `class` was a C variable name**~~
   — unary-`&` handler required `ttIdentifier` at both the postfix-

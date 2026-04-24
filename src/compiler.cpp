@@ -3275,6 +3275,27 @@ Operand &TokenMember::operand(Program &pgm)
 
     Operand &_obj = pgm.tkFunction->voperand(pgm, &object); // make sure the parent object is all set up
 
+    // Stack-backed POINTER variables (vfADDRTAKEN etc.): voperand returns
+    // the Mem slot holding the pointer *value*. Load it into a Gp first —
+    // otherwise the addOffset below would walk into the pointer's storage
+    // instead of the struct the pointer points at.
+    if ( _obj.isMem() && object.type->is_pointer() )
+    {
+	x86::Gp obj_gp = pgm.cc.newIntPtr("%s", object.name.c_str());
+	DBG(pgm.cc.comment("TokenMember::operand() load stack-backed pointer into Gp"));
+	pgm.cc.mov(obj_gp, _obj.as<x86::Mem>());
+	if ( var.type->is_numeric() )
+	    _operand = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
+	else
+	{
+	    x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
+	    DBG(pgm.cc.comment("TokenMember::operand() lea from stack-backed pointer"));
+	    pgm.cc.lea(addr_reg, x86::ptr(obj_gp, (int32_t)offset));
+	    _operand = addr_reg;
+	}
+	return _operand;
+    }
+
     if ( _obj.isMem() )
     {
 	// Struct/array on the JIT stack: compute [struct_base + member_offset]

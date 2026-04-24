@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **`&ptr->member` now works when `ptr` is address-taken** —
+  whenever a pointer-typed local was later referenced via `&ptr`
+  (marking it vfADDRTAKEN → stack-backed), earlier `ptr->member` /
+  `&ptr->member` uses read through the Mem slot as if it were the
+  struct itself. `TokenMember::operand` saw a `Mem` for `_obj` and
+  jumped to the "struct on the JIT stack" branch, which `addOffset`-d
+  into the pointer's own storage rather than the struct it points at
+  — producing a stack-frame-relative address instead of the real
+  member address. Fix: when `_obj` is `Mem` and `object.type` is a
+  pointer, first load the pointer value from the Mem into a fresh
+  Gp, then compute `[gp + offset]` via the same shapes the reg-
+  resident pointer branch uses. Regression:
+  `tests/testaddrtakenptrmember.mad`.
+
 - **`&class->member` parses when `class` names a C variable** — the
   unary-`&` handler's postfix-chain detector and its simple-ident
   fallthrough both required `addr_tb->type() == ttIdentifier`, so
