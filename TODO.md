@@ -71,6 +71,17 @@
 
 ### Session 2026-04-24 (post-v0.11.0)
 
+- ~~**Function-like macro parameter substitution cascaded**~~ — a
+  per-param sequential sweep let an argument that matched a later
+  param name get re-substituted. `CREATE(type, NEWS_TYPE, 1)` where
+  the user variable was named `type` (same as CREATE's second
+  param) produced `((NEWS_TYPE) = (NEWS_TYPE *) calloc(...))`.
+  Fix: single-pass walk over the original body, substituting each
+  identifier via a param→arg map; substituted text is never re-
+  scanned. Targeted regression: `tests/testmacrosubst.mad`.
+  Advanced the MadSMAUG news.c / stances.c ingest by several
+  hundred lines.
+
 - ~~**`*(ptr + N)` / `*(ptr - N)` / `*(p = ptr + N)` rejected by
   unary-`*` with "cannot dereference non-pointer type"**~~ —
   `TokenAdd`, `TokenSub`, `TokenAssign` all left `_datatype` as

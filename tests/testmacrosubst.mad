@@ -1,0 +1,44 @@
+// Regression: macro parameter substitution used to cascade because
+// the lexer ran one full-body pass per parameter. That meant an
+// argument string could get re-substituted on a later pass if it
+// happened to match a later parameter's name. SMAUG's
+// `CREATE(type, NEWS_TYPE, 1)` — where the user's local variable
+// is named `type` (same as the CREATE macro's second parameter) —
+// hit this: first `result→type` rewrote `(result)` into `(type)`,
+// then the next pass rewrote that `type` into `NEWS_TYPE`, killing
+// the expansion.
+//
+// Fix: substitute all parameters in a single pass, walking the
+// original macro body by character. Each identifier is looked up
+// once in the param map; substituted strings are emitted verbatim
+// and never re-scanned.
+
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+
+// Classic SMAUG CREATE macro.
+#define CREATE(result, type, number) \
+do { (result) = (type *) calloc(number, sizeof(type)); } while(0)
+
+// Another cascade trap: the user's argument matches a later param name.
+#define PAIR(a, b) cout << a << ',' << b << endl;
+
+typedef struct my_data MY_DATA;
+struct my_data { int v; };
+
+int main()
+{
+    // variable name `type` == CREATE's second macro param
+    MY_DATA *type = NULL;
+    CREATE(type, MY_DATA, 1);
+    type->v = 42;
+    cout << type->v << endl;         // 42
+
+    // argument matching later param name
+    int a = 1;
+    int b = 2;
+    PAIR(b, a);                       // 2,1 — NOT 1,1 or 2,2
+
+    return 0;
+}

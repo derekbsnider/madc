@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **Function-like macro parameter substitution no longer cascades** —
+  the lexer ran one full-body pass per parameter. If the value
+  substituted for parameter N happened to match the name of a later
+  parameter M, the M-pass would rewrite the already-substituted
+  value. SMAUG's `CREATE(type, NEWS_TYPE, 1)` — where the user's
+  local variable is named `type` (identical to `CREATE`'s second
+  parameter) — hit this: first `result→type` rewrote `(result)` to
+  `(type)`, then `type→NEWS_TYPE` rewrote that into `(NEWS_TYPE)`,
+  leaving `(NEWS_TYPE) = (NEWS_TYPE *) calloc(...)` which does not
+  parse. Fix: walk the original macro body once, collecting each
+  identifier, and look it up in a single param-name → arg-value
+  map. Substituted strings are emitted verbatim and never re-
+  scanned. Closes the MadSMAUG `news.c:153` front edge. Regression:
+  `tests/testmacrosubst.mad`.
+
 - **`*(ptr + N)` / `*(ptr - N)` / `*(p = ptr + N)` now parse** —
   `TokenAdd`, `TokenSub`, and `TokenAssign` all inherit
   `_datatype = &ddINT` from `TokenOperator`'s constructor and never

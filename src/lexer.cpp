@@ -1054,26 +1054,39 @@ TokenBase *Program::_getToken()
 		    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
 		    if ( !arg.empty() || !args.empty() )
 			args.push_back(arg);
-		    // substitute params in body
-		    std::string expanded = macro.body;
+		    // substitute params in body — single pass over the
+		    // original body so an argument that happens to match a
+		    // later parameter name doesn't get re-substituted. A
+		    // per-param sequential sweep cascades: for
+		    // `CREATE(type, T, 1)` where the user's variable is
+		    // named `type` (macro's first arg), substituting
+		    // `result→type` first and `type→T` next would rewrite
+		    // the user's variable and corrupt the expansion.
+		    std::map<std::string, const std::string *> param_map;
 		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
+			param_map[macro.params[i]] = &args[i];
+		    std::string expanded;
+		    expanded.reserve(macro.body.size());
+		    for ( size_t p = 0; p < macro.body.size(); )
 		    {
-			std::string &pname = macro.params[i];
-			std::string &aval = args[i];
-			size_t pos = 0;
-			while ( (pos = expanded.find(pname, pos)) != std::string::npos )
+			char bc = macro.body[p];
+			if ( bc == '_' || isalpha((unsigned char)bc) )
 			{
-			    // only replace whole words (not substrings)
-			    bool left_ok = (pos == 0 || (!isalnum(expanded[pos-1]) && expanded[pos-1] != '_'));
-			    bool right_ok = (pos + pname.size() >= expanded.size()
-				|| (!isalnum(expanded[pos+pname.size()]) && expanded[pos+pname.size()] != '_'));
-			    if ( left_ok && right_ok )
-			    {
-				expanded.replace(pos, pname.size(), aval);
-				pos += aval.size();
-			    }
+			    size_t start = p;
+			    while ( p < macro.body.size()
+				 && (macro.body[p] == '_' || isalnum((unsigned char)macro.body[p])) )
+				++p;
+			    std::string ident = macro.body.substr(start, p - start);
+			    auto it = param_map.find(ident);
+			    if ( it != param_map.end() )
+				expanded += *it->second;
 			    else
-				pos += pname.size();
+				expanded += ident;
+			}
+			else
+			{
+			    expanded += bc;
+			    ++p;
 			}
 		    }
 		    if ( macro.variadic )
