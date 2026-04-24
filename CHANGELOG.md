@@ -4,6 +4,26 @@
 
 ### Added
 
+- **Typed-register IR — Stage 2 arithmetic/comparison collapse** —
+  the per-operator boilerplate that each binary token duplicated
+  (normalize both sides, run the safe* helper, route through
+  emit_ir_value) is now in shared helpers:
+  - `emit_compare` with a `CmpKind` enum collapses the six
+    comparison tokens (`TokenEquals`, `TokenNotEq`, `TokenLT`,
+    `TokenLE`, `TokenGT`, `TokenGE`) to 4-line delegations.
+  - `emit_plain_binop3` (3-arg safe ops) folds the plain-numeric
+    fast paths of `TokenAdd`, `TokenSub`, `TokenMul`.
+  - `emit_plain_divmod` (safediv + remainder) folds TokenDiv
+    (dividend result) and TokenMod (remainder result).
+  - `emit_plain_bitop2` (2-arg safe ops) folds TokenXor /
+    TokenBand / TokenBor / TokenBSL / TokenBSR. BSL gains a
+    plain-integer shortcut it didn't previously have.
+  Token general-fallback paths (pointer arithmetic, regdp-
+  cascade for complex expressions) are intentionally untouched
+  — they still handle the operand shapes the fast path rejects.
+  Net: ~300 lines removed across compiler.cpp with no behavior
+  change. 18 IR + 25 datadef unit + 170 integration tests pass.
+
 - **Typed-register IR — Stage 1 leaf-token sweep** — every leaf
   token that produces a value now routes its final operand
   through `emit_ir_value`, so shape normalization and type

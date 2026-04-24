@@ -4,22 +4,41 @@
 
 ### Compiler Infrastructure
 
-- **Typed-register IR Stage 2 — arithmetic & comparison ports** —
-  Stage 1 is done (leaf tokens + call-arg normalization now route
-  through `emit_ir_value` / `IRBuilder::coerce`). Next grow
-  `IRBuilder` with `binop()` / `cmp()` primitives and port
-  `TokenAdd` / `TokenSub` / `TokenMul` / `TokenDiv` / `TokenMod`,
-  comparison ops (`TokenEquals` / `TokenNotEq` / `TokenLT` /
-  `TokenLE` / `TokenGT` / `TokenGE`), bitwise ops (`TokenAnd` /
-  `TokenOr` / `TokenXor` / `TokenBSL` / `TokenBSR`), and the
-  compound-assign variants onto those primitives. This should
-  shrink `safeadd` / `safesub` / `safemul` / `safediv` / `safemod`
-  / `safecmp` / `safeor` / `safeand` / `safexor` / `safebsl` /
-  `safebsr` in `typesafe.cpp` to pure low-level emitters because
-  the IR will already normalize both operands to `Reg` of the
-  same concrete type before the helper runs. Plan in
-  `docs/plans/typed-register-ir.md`, rules in
+- **Typed-register IR Stage 2 — remaining work** — the
+  plain-numeric fast paths of the binary-op tokens (Add/Sub/Mul/
+  Div/Mod/Xor/Band/Bor/BSL/BSR) and all six comparison ops
+  (==, !=, <, <=, >, >=) are collapsed onto the new shared helpers
+  (`emit_compare`, `emit_plain_binop3`, `emit_plain_divmod`,
+  `emit_plain_bitop2`). Still to do:
+  - **Compound-assigns** (`+=` / `-=` / `*=` / `/=` / `%=` /
+    `|=` / `&=` / `^=` / `<<=` / `>>=`) — these still do
+    inline `resolveCompoundLHS` + `safe*` without going through
+    the helpers. Port them so the load-op-store pattern lives
+    in one place and respects the same operand-shape contract.
+  - **General (non-plain-numeric) fallback paths** — the binary
+    ops' else-branch still uses the regdp-cascade pattern (mutate
+    `regdp.first` through `left->compile`, use `tmp` for right,
+    then `safe*`). Pointer-arithmetic scaling lives here. These
+    are where the trickier operand-shape bugs have historically
+    hidden. Walking these onto the IR means teaching it about
+    pointer-scale (new `IRBuilder::scaled_add` / similar) or
+    about Mem-backed lvalues with cascade semantics.
+  - After that: `safeadd` / `safesub` / `safemul` / `safediv` /
+    `safemod` / `safeor` / `safeand` / `safexor` / `safeshl` /
+    `safeshr` in `typesafe.cpp` can shrink to pure low-level
+    emitters — the IR will already normalize both operands to
+    Reg of the same concrete type before the helper runs.
+  Plan in `docs/plans/typed-register-ir.md`, rules in
   `.claude/rules/typed-register-ir.md`.
+
+- **Latent dead-code bug in TokenNeg plain path** — the
+  `is_plain_numeric_expr(left)` branch at the top of
+  `TokenNeg::compile` (unary minus) is unreachable because `left`
+  is always NULL for a unary-minus token; `is_plain_numeric_expr(
+  NULL) == false`. Inside the unreachable body the op is
+  erroneously `safeshl` instead of `safeneg`. Dead + wrong — the
+  cleanest fix is to delete the branch. Not part of Stage 2
+  because Stage 2 is deliberately behavior-preserving.
 
 ### Language Completeness
 
