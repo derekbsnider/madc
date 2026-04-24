@@ -44,6 +44,16 @@
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
+- **`&ptr->member` returns garbage when `ptr` is address-taken** —
+  any pointer-typed local that later appears on the RHS of `&ptr`
+  (marking it vfADDRTAKEN → stack-backed) breaks earlier `&ptr->m`
+  uses: they print a junk address instead of the member's real
+  address. Reproduced with a plain variable name, so not related to
+  the `class`-as-identifier fix. Likely cause: TokenAddrExpr /
+  TokenMember's voperand path assumes a Gp-resident pointer and
+  doesn't load from the Mem slot when the variable is stack-backed.
+  Filed while landing the `&class->member` parse fix.
+
 - **`ruby::chars` crashes in MadValue destructor** — `ruby::chars(arr, str);`
   crashes at runtime inside `a.data.clear()` in `ruby_chars`. Likely an
   ABI/layout issue with how MadArray is passed through a direct call whose
@@ -70,6 +80,15 @@
 ## Completed
 
 ### Session 2026-04-24 (post-v0.11.0)
+
+- ~~**`&class->member` failed when `class` was a C variable name**~~
+  — unary-`&` handler required `ttIdentifier` at both the postfix-
+  chain detector and the simple-ident fallthrough. Fix: use
+  `is_contextual_identifier_token()` / `contextual_identifier_name()`
+  (existing helpers used by the rest of the parser's keyword-as-
+  identifier handling). Targeted regression: `tests/testaddrclass.mad`.
+  Closes MadSMAUG tables.c:1861 (`&class->affected` inside
+  fwrite_class).
 
 - ~~**Function-like macro parameter substitution cascaded**~~ — a
   per-param sequential sweep let an argument that matched a later

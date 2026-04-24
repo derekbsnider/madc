@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **`&class->member` parses when `class` names a C variable** — the
+  unary-`&` handler's postfix-chain detector and its simple-ident
+  fallthrough both required `addr_tb->type() == ttIdentifier`, so
+  `&class->affected` (SMAUG's `tables.c:1861`, `fwrite_class`) threw
+  "expecting variable name after '&'". Earlier fixes made `class`
+  usable as a C identifier in parseStatement and parsePostfixChain,
+  but the `&` path was missed. Fix: the `&` handler now uses
+  `is_contextual_identifier_token()` / `contextual_identifier_name()`
+  at both spots, matching the rest of the parser's keyword-as-
+  identifier handling. Regression: `tests/testaddrclass.mad`.
+
 - **Function-like macro parameter substitution no longer cascades** —
   the lexer ran one full-body pass per parameter. If the value
   substituted for parameter N happened to match the name of a later

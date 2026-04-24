@@ -1957,7 +1957,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    else
 		    {
-			bool postfix_chain = addr_tb->type() == TokenType::ttIdentifier
+			bool postfix_chain = is_contextual_identifier_token(addr_tb)
 			    && peekToken()
 			    && (peekToken()->id() == TokenID::tkDot
 			     || peekToken()->id() == TokenID::tkDeRef
@@ -1985,9 +1985,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			}
 			else
 			{
-			    if ( addr_tb->type() != TokenType::ttIdentifier )
+			    if ( !is_contextual_identifier_token(addr_tb) )
 				Throw(addr_tb) << "expecting variable name after '&'" << flush;
-			    std::string aname = ((TokenIdent *)addr_tb)->str;
+			    std::string aname = contextual_identifier_name(addr_tb);
 			    Variable *avar = findVariable(aname);
 			    if ( !avar )
 				Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
