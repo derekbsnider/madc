@@ -4509,35 +4509,22 @@ Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_divmod(pgm, left, right, regdp.second, /*return_remainder=*/true, regdp, _operand, "_mod_l");
 
-    Operand *caller_dest = regdp.first;
-    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
-    if ( !regdp.first || mirror_to_caller ) // { throw "% missing register"; }
-    {
-	_operand = pgm.cc.newInt64("remainder");
-	regdp.first = &_operand;
-    }
-    Operand &remainder = *regdp.first;
-    Operand _dividend;
-    if ( regdp.second )
-	_dividend = regdp.second->newreg(pgm.cc, "dividend");
-    else
-    {
-	_dividend = pgm.cc.newInt64("dividend");
-	DBG(pgm.cc.comment("TokenMod() regdp.second = &ddINT"));
+    if ( !regdp.second )
 	regdp.second = &ddINT;
-    }
-    regdp.first = &_dividend;
-    Operand &dividend = left->compile(pgm, regdp);
+    // begin_general_binop allocates the scratch Reg that becomes our
+    // remainder — this is the one place the cascade's "scratch" doubles
+    // as the op's result, because safediv writes the remainder into it.
+    GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    Operand &remainder = *regdp.first;
+    Operand dividend = regdp.second->newreg(pgm.cc, "dividend");
+    regdp.first = &dividend;
+    left->compile(pgm, regdp);
     Operand divisor = regdp.second->newreg(pgm.cc, "divisor");
     regdp.first = &divisor;
     right->compile(pgm, regdp);
-    pgm.safexor(remainder, remainder); // clear whole register
-    DBG(pgm.cc.comment("TokenMod::compile() pgm.cc.idiv(remainder, lreg, rval)"));
+    pgm.safexor(remainder, remainder);
     pgm.safediv(remainder, dividend, divisor);
-    if ( mirror_to_caller )
-	pgm.safemov(*caller_dest, remainder, regdp.second, regdp.second);
-    regdp.first = &remainder;
-    return *regdp.first;
+    return finish_general_binop(pgm, regdp, remainder, c);
 }
 /////////////////////////////////////////////////////////////////////////////
 // bit math operators                                                      //

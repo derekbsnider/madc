@@ -295,4 +295,66 @@ TEST_SUITE("IRBuilder::coerce") {
 	CHECK_FALSE(contains(asm_out, "mov "));
 	CHECK_FALSE(contains(asm_out, "lea "));
     }
+
+    TEST_CASE("int64 → double emits cvtsi2sd") {
+	IRFixture f;
+	IRBuilder ir(f.cc);
+	x86::Gp g = f.cc.newGpq("i");
+	IRValue src = IRValue::reg(g, &ddINT64);
+	IRValue out = ir.coerce(src, &ddDOUBLE);
+	CHECK(out.isReg());
+	CHECK(out.type == &ddDOUBLE);
+	std::string asm_out = f.finishAndGetAsm();
+	CHECK(contains(asm_out, "cvtsi2sd"));
+    }
+
+    TEST_CASE("int64 → float emits cvtsi2ss") {
+	IRFixture f;
+	IRBuilder ir(f.cc);
+	x86::Gp g = f.cc.newGpq("i");
+	IRValue src = IRValue::reg(g, &ddINT64);
+	IRValue out = ir.coerce(src, &ddFLOAT);
+	CHECK(out.isReg());
+	CHECK(out.type == &ddFLOAT);
+	std::string asm_out = f.finishAndGetAsm();
+	CHECK(contains(asm_out, "cvtsi2ss"));
+    }
+
+    TEST_CASE("double → int64 emits cvttsd2si") {
+	IRFixture f;
+	IRBuilder ir(f.cc);
+	x86::Xmm x = f.cc.newXmm("d");
+	IRValue src = IRValue::reg(x, &ddDOUBLE);
+	IRValue out = ir.coerce(src, &ddINT64);
+	CHECK(out.isReg());
+	CHECK(out.type == &ddINT64);
+	std::string asm_out = f.finishAndGetAsm();
+	CHECK(contains(asm_out, "cvttsd2si"));
+    }
+
+    TEST_CASE("float → int64 emits cvttss2si") {
+	IRFixture f;
+	IRBuilder ir(f.cc);
+	x86::Xmm x = f.cc.newXmm("fl");
+	IRValue src = IRValue::reg(x, &ddFLOAT);
+	IRValue out = ir.coerce(src, &ddINT64);
+	CHECK(out.isReg());
+	CHECK(out.type == &ddINT64);
+	std::string asm_out = f.finishAndGetAsm();
+	CHECK(contains(asm_out, "cvttss2si"));
+    }
+
+    TEST_CASE("int64 → int32 narrow relabels with no conversion") {
+	IRFixture f;
+	IRBuilder ir(f.cc);
+	x86::Gp g = f.cc.newGpq("i64");
+	IRValue src = IRValue::reg(g, &ddINT64);
+	IRValue out = ir.coerce(src, &ddINT32);
+	CHECK(out.isReg());
+	CHECK(out.type == &ddINT32);
+	std::string asm_out = f.finishAndGetAsm();
+	CHECK_FALSE(contains(asm_out, "cvt"));
+	// Narrowing is a pure relabel — no truncating instruction needed
+	// because downstream store() picks the right sub-register view.
+    }
 }
