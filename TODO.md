@@ -33,12 +33,6 @@
   asmjit interaction below. Workaround: copy the member into a
   local `double` before printing.
 
-- **Write through double-dereference `**pp = v;`** — crashes the
-  compiler (not the JIT) with a SIGSEGV at address 0x8 inside
-  TokenAssign::compile. Read-through (`v = **pp;`) now works.
-  Likely some path doesn't handle TokenDerefExpr wrapping a
-  TokenDeref as a write target.
-
 - **Multiple floats interleaved with printf in one function** —
   asmjit's register allocator spills-then-reloads from an
   uninitialised stack slot in this specific shape (`float a = X;

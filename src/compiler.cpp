@@ -2528,6 +2528,20 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	_operand = tdl->operand(pgm);  // Mem operand [ptr]
     }
     else
+    // handle *(expr) dereference on LHS (e.g. `**pp = v;` where the inner
+    // `*pp` is a TokenDeref wrapped by a TokenDerefExpr, or any other
+    // pointer-producing expression dereferenced as a write target).
+    // TokenDerefExpr::type() returns ttMember, so without this branch we'd
+    // fall through to the ttMember path and SIGSEGV at tml->var.type because
+    // dynamic_cast<TokenMember *> returns NULL.
+    if ( dynamic_cast<TokenDerefExpr *>(left) )
+    {
+	TokenDerefExpr *tdxl = dynamic_cast<TokenDerefExpr *>(left);
+	ltype = tdxl->deref_type;
+	DBG(cout << "TokenAssign::compile() dereference-expr assignment type " << ltype->name << endl);
+	_operand = tdxl->operand(pgm);  // Mem operand [addr]
+    }
+    else
     // handle member token (struct.member or ptr->member)
     if ( left->type() == TokenType::ttMember )
     {

@@ -4,6 +4,21 @@
 
 ### Fixed
 
+- **Write through double-dereference (`**pp = v;`)** — used to
+  SIGSEGV the compiler at address 0x8 inside
+  `TokenAssign::compile`. `TokenDerefExpr::type()` returns
+  `ttMember` (matching `TokenDeref`), but `TokenDerefExpr` is not
+  derived from `TokenMember`. The LHS handling chain checked
+  `dynamic_cast<TokenDeref *>` first (which caught plain `*p =
+  v;`), then fell through to the `ttMember` branch and blindly
+  accessed `tml->var.type` on a NULL dynamic_cast result —
+  dereferencing NULL at field offset 8. Added an explicit
+  `TokenDerefExpr` branch that mirrors the `TokenDeref` path,
+  using the inner expression's compiled Mem as the write
+  target. Read-through (`v = **pp;`) already worked because the
+  read path compiles the LHS expression directly. Added
+  `tests/testdoubleptrwrite.mad`.
+
 - **Struct-member compound-assign on doubles** — `v.x += 2.5;`,
   `v.y *= 3.0;` and friends where the LHS is a `double` struct
   member used to throw `"safeadd() unable to add xmm to gp"` (or
