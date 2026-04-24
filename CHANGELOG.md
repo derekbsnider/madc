@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **`!=` / `<` / `<=` / `>` / `>=` comparisons with Mem destination** —
+  completes the roll-out of the `==` fix from commit `6318e6b`.
+  `TokenNotEq` / `TokenLT` / `TokenLE` / `TokenGT` / `TokenGE`
+  previously passed the caller's destination verbatim to their
+  setcc helper. When `TokenAssign` handed them a Mem (typical
+  `int r = *p < 'm';` / `int r = a != b;` pattern), the setcc
+  target came back Mem and either the safecmp helper or the
+  setcc helper threw. Now each operator allocates its own Gp
+  when the caller's dest isn't a Reg, runs compare+setcc there,
+  and mirrors the 0/1 result back into the caller's Mem via
+  safemov. Added `tests/testderefcmp.mad` covering all five
+  operators on a `*char` lvalue with Mem destinations.
+
 ### Added
 
 - **C integer and float literal suffixes** — the lexer now consumes

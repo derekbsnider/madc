@@ -4974,12 +4974,13 @@ Operand &TokenNotEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "!= missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )
     {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	_operand = regdp.second->newreg(pgm.cc, "_reg");
 	DBG(pgm.cc.comment("TokenNotEq _operand = newreg"));
-	DBG(cout << "TokenNotEq _operand = newreg" << endl);
-	regdp.first = &_operand;			 // pass _operand along
+	regdp.first = &_operand;
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenNotEq::compile() left->compile() cleared datatype!"; }
@@ -4990,6 +4991,8 @@ Operand &TokenNotEq::compile(Program &pgm, regdefp_t &regdp)
     pgm.safecmp(lval, rval);				 // typesafe comparison
     DBG(pgm.cc.comment("TokenNotEq::compile() pgm.safesetne(reg)"));
     pgm.safesetne(lval);				 // if lval != rval, ret(lval) = 1
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }
@@ -5002,12 +5005,13 @@ Operand &TokenLT::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "== missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )
     {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	_operand = regdp.second->newreg(pgm.cc, "_reg");
 	DBG(pgm.cc.comment("TokenLT _operand = newreg"));
-	DBG(cout << "TokenLT _operand = newreg" << endl);
-	regdp.first = &_operand;			 // pass _operand along
+	regdp.first = &_operand;
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenLT::compile() left->compile() cleared datatype!"; }
@@ -5022,6 +5026,8 @@ Operand &TokenLT::compile(Program &pgm, regdefp_t &regdp)
     pgm.safecmp(lval, rval);				 // typesafe comparison
     if ( is_unsigned ) { DBG(pgm.cc.comment("safesetb (unsigned <)")); pgm.safesetb(lval); }
     else               { DBG(pgm.cc.comment("safesetl (signed <)")); pgm.safesetl(lval); }
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }
@@ -5034,12 +5040,13 @@ Operand &TokenLE::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "== missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )
     {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	_operand = regdp.second->newreg(pgm.cc, "_reg");
 	DBG(pgm.cc.comment("TokenLE _operand = newreg"));
-	DBG(cout << "TokenLE _operand = newreg" << endl);
-	regdp.first = &_operand;			 // pass _operand along
+	regdp.first = &_operand;
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenLE::compile() left->compile() cleared datatype!"; }
@@ -5054,6 +5061,8 @@ Operand &TokenLE::compile(Program &pgm, regdefp_t &regdp)
     pgm.safecmp(lval, rval);				 // typesafe comparison
     if ( is_unsigned ) { DBG(pgm.cc.comment("safesetbe (unsigned <=)")); pgm.safesetbe(lval); }
     else               { DBG(pgm.cc.comment("safesetle (signed <=)"));   pgm.safesetle(lval); }
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }
@@ -5066,12 +5075,13 @@ Operand &TokenGT::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "== missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )
     {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	_operand = regdp.second->newreg(pgm.cc, "_reg");
 	DBG(pgm.cc.comment("TokenGT _operand = newreg"));
-	DBG(cout << "TokenGT _operand = newreg" << endl);
-	regdp.first = &_operand;			 // pass _operand along
+	regdp.first = &_operand;
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenGT::compile() left->compile() cleared datatype!"; }
@@ -5086,6 +5096,8 @@ Operand &TokenGT::compile(Program &pgm, regdefp_t &regdp)
     pgm.safecmp(lval, rval);				 // typesafe comparison
     if ( is_unsigned ) { DBG(pgm.cc.comment("safeseta (unsigned >)")); pgm.safeseta(lval); }
     else               { DBG(pgm.cc.comment("safesetg (signed >)"));   pgm.safesetg(lval); }
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }
@@ -5098,12 +5110,13 @@ Operand &TokenGE::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "== missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )
     {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	_operand = regdp.second->newreg(pgm.cc, "_reg");
 	DBG(pgm.cc.comment("TokenGE _operand = newreg"));
-	DBG(cout << "TokenGE _operand = newreg" << endl);
-	regdp.first = &_operand;			 // pass _operand along
+	regdp.first = &_operand;
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenGE::compile() left->compile() cleared datatype!"; }
@@ -5118,6 +5131,8 @@ Operand &TokenGE::compile(Program &pgm, regdefp_t &regdp)
     pgm.safecmp(lval, rval);				 // typesafe comparison
     if ( is_unsigned ) { DBG(pgm.cc.comment("safesetae (unsigned >=)")); pgm.safesetae(lval); }
     else               { DBG(pgm.cc.comment("safesetge (signed >=)"));   pgm.safesetge(lval); }
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }

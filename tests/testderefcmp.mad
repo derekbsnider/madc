@@ -1,0 +1,37 @@
+// Comparison operators with Mem operands and a Mem destination.
+// Companion to testderefeq.mad — covers !=, <, <=, >, >= after the
+// same TokenEquals fix was replicated across TokenNotEq / TokenLT /
+// TokenLE / TokenGT / TokenGE.
+//
+// Before the fix, `int x = *e < 'm';` etc. threw
+// "safecmp() lval is not a register" / "safesetX() operand not
+// supported" because the comparison op handed the caller's Mem
+// dest straight to the setcc helpers.
+
+#include <stdio.h>
+
+int main()
+{
+    char *e = "hello";
+
+    int ne = *e != 0;
+    printf("ne=%d\n", ne);
+
+    int lt = *e < 'm';
+    printf("lt=%d\n", lt);
+
+    int le = *e <= 'h';
+    printf("le=%d\n", le);
+
+    int gt = *e > 'a';
+    printf("gt=%d\n", gt);
+
+    int ge = *e >= 'h';
+    printf("ge=%d\n", ge);
+
+    // Boundary: lval not less than a larger rval reads as 0
+    int lt_false = *e < 'a';
+    printf("lt_false=%d\n", lt_false);
+
+    return 0;
+}

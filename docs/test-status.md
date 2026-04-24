@@ -4,11 +4,11 @@ Test results as of April 23, 2026 (v0.9.0 — Phase F continues; external MadSMA
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 167 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 168 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 167 integration tests
+- Passing: 168 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 25/25 passing (doctest)
@@ -56,8 +56,9 @@ The newly exercised regressions from this session all pass directly:
 - `testintsuffix.mad`
 - `testdoubleptr.mad`
 - `testderefeq.mad`
+- `testderefcmp.mad`
 
-## Passing Tests — 167 integration (latest batch)
+## Passing Tests — 168 integration (latest batch)
 
 `scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
 hello world`) and `testargv.mad` with argv (`hello world`), asserting

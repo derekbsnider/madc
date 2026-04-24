@@ -19,13 +19,6 @@
 
 ### Language Completeness
 
-- **Comparison operators `!=` / `<` / `<=` / `>` / `>=` with Mem
-  operands** — only `==` (TokenEquals) is fixed so far. Same two
-  problems: safecmp Mem handling + TokenXxx not allocating a Gp
-  when the caller's dest is Mem. Copy the pattern from
-  TokenEquals::compile into TokenNotEq / TokenLT / TokenLE /
-  TokenGT / TokenGE.
-
 - **Struct-member compound-assign on doubles / floats** — `a.v +=
   2.5;` where `v` is a double still goes through the Gpq load in
   `resolveCompoundLHS` and fails asmjit finalize with error 25. The
