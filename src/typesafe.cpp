@@ -1209,6 +1209,32 @@ void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2)
 
 void Program::safecmp(Operand &op1, Operand &op2)
 {
+    if ( op1.isMem() )
+    {
+	// Load the Mem into a typed temp Gp and compare through that.
+	// Needed for things like `*p == 0` where the deref yields a
+	// `byte ptr [ptr]` Mem that can't be the destination of a raw
+	// cmp.
+	uint32_t msz = op1.as<x86::Mem>().size();
+	x86::Gp tmp = cc.newGpq("_cmp_tmp");
+	if ( msz == 8 )      cc.mov(tmp, op1.as<x86::Mem>());
+	else if ( msz == 4 ) cc.movsxd(tmp, op1.as<x86::Mem>());
+	else                 cc.movsx(tmp, op1.as<x86::Mem>());
+	Operand tmp_op = tmp;
+	safecmp(tmp_op, op2);
+	return;
+    }
+    if ( op2.isMem() )
+    {
+	uint32_t msz = op2.as<x86::Mem>().size();
+	x86::Gp tmp = cc.newGpq("_cmp_tmp");
+	if ( msz == 8 )      cc.mov(tmp, op2.as<x86::Mem>());
+	else if ( msz == 4 ) cc.movsxd(tmp, op2.as<x86::Mem>());
+	else                 cc.movsx(tmp, op2.as<x86::Mem>());
+	Operand tmp_op = tmp;
+	safecmp(op1, tmp_op);
+	return;
+    }
     if ( !op1.isReg() ) { throw "safecmp() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() ) { throw "safecmp() rval is not register or immediate"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )

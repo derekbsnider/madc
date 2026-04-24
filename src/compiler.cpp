@@ -4937,12 +4937,19 @@ Operand &TokenEquals::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "== missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( !regdp.first )					 // if not passed a register:
+    Operand *caller_dest = regdp.first;
+    bool mirror_to_caller = caller_dest && !caller_dest->isReg();
+    if ( !regdp.first || mirror_to_caller )
     {
-	_operand = regdp.second->newreg(pgm.cc, "_reg"); // use internal operand
+	// Allocate a fresh Gp for the comparison result. If the caller
+	// passed a Mem (common when assigning the result to a local
+	// scalar), we can't use that Mem as the safecmp lval / safesete
+	// destination — x86 setcc requires a register (or a byte Mem,
+	// but our helpers assume a register). Materialise into a Gp,
+	// run the compare, and mirror to the caller's Mem after.
+	_operand = regdp.second->newreg(pgm.cc, "_reg");
 	DBG(pgm.cc.comment("TokenEquals _operand = newreg"));
-	DBG(cout << "TokenEquals _operand = newreg" << endl);
-	regdp.first = &_operand;			 // pass _operand along
+	regdp.first = &_operand;
     }
     Operand &lval = left->compile(pgm, regdp);		 // compile left side ref=lval
     if ( !regdp.second ) { throw "TokenEquals::compile() left->compile() cleared datatype!"; }
@@ -4953,6 +4960,8 @@ Operand &TokenEquals::compile(Program &pgm, regdefp_t &regdp)
     pgm.safecmp(lval, rval);				 // typesafe comparison
     DBG(pgm.cc.comment("TokenEquals::compile() pgm.safesete(reg)"));
     pgm.safesete(lval);					 // if lval == rval, ret(lval) = 1
+    if ( mirror_to_caller )
+	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
     regdp.first = &lval;				 // set regdp.first to lval
     return *regdp.first;				 // return result operand(lval)
 }

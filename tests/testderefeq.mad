@@ -1,0 +1,33 @@
+// `*e == 0` on a pointer variable, assigned to an int local, used
+// to throw "safecmp() lval is not a register" / "safesete()
+// operand not supported". Two compile-side bugs collaborated:
+//   1. safecmp(Operand, Operand) rejected Mem lval / rval outright.
+//      For `*e == 0` the deref produces a Mem operand; previously
+//      the comparison couldn't be expressed.
+//   2. TokenEquals::compile passed the caller's destination
+//      verbatim as the lval. When that destination was a Mem (the
+//      typical `int x = *e == 0;` case, where TokenAssign points
+//      at x's stack slot), safesete had no register to set.
+//
+// Fix: safecmp now bounces Mem operands through a typed Gp temp;
+// TokenEquals allocates its own Gp when the caller's destination
+// is not a register, runs the compare+sete there, and mirrors the
+// 0/1 result into the caller's Mem via safemov.
+
+#include <stdio.h>
+
+int main()
+{
+    char *e = "hello";
+    int a = *e == 0;
+    printf("a=%d\n", a);
+
+    char *f = "";
+    int b = *f == 0;
+    printf("b=%d\n", b);
+
+    int c = *e == 'h';
+    printf("c=%d\n", c);
+
+    return 0;
+}

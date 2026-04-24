@@ -49,6 +49,18 @@
 
 ### Fixed
 
+- **`*e == 0` comparisons with Mem operands** — two gaps:
+  (a) `safecmp(Operand, Operand)` rejected Mem lval / rval outright
+      — for `*e == 0` the deref yields a Mem operand. Now bounces
+      Mem operands through a sign-extending Gp temp.
+  (b) `TokenEquals::compile` handed the caller's destination
+      verbatim to safesete. When TokenAssign passed a Mem (typical
+      for `int x = *e == 0;`), safesete had no register to set.
+      Now allocates its own Gp for the compare/sete and mirrors the
+      0/1 result back into the caller's Mem via safemov.
+  `!=`, `<`, `<=`, `>`, `>=` have the same pattern — only `==` is
+  fixed here; filed in TODO. Added `tests/testderefeq.mad`.
+
 - **Dereferencing an address-taken pointer (`int **pp = &p; *p`)** —
   taking `&p` of a pointer variable spilled `p` to a stack Mem
   slot. Subsequent `*p` went through `TokenDeref::operand` which
