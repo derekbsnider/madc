@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`sizeof(expr)` now handles postfix chains** — `sizeof(buf[0])`,
+  `sizeof(obj.field)`, `sizeof(ptr->field)` parse by routing the
+  identifier + `[` / `.` / `->` tail through `parsePostfixChain()`
+  and taking the resulting node's datadef size. Previously only
+  `sizeof(TYPE)` and `sizeof(var)` (bare variable) worked; the
+  subscript form `sizeof(arr) / sizeof(arr[0])` is idiomatic C for
+  array-length compile-time constants. Added
+  `tests/testsizeofexpr.mad`.
+
 ### Fixed
 
 - **String-typed ternary branches now coerce correctly** — follow-up to

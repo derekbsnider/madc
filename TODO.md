@@ -19,11 +19,6 @@
 
 ### Language Completeness
 
-- **`sizeof(expr)` with subscript/member expressions** — `sizeof(buf[0])` /
-  `sizeof(obj.field)` don't parse; only `sizeof(type)` and `sizeof(variable)`
-  are recognised. SMAUG uses the subscript form for array-stride compile-time
-  constants.
-
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 
 - **Error diagnostics** — parser-side diagnostics already carry source context,

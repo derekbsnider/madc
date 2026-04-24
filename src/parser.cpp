@@ -2185,14 +2185,28 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    {
 			std::string tname = ((TokenIdent *)type_tb)->str;
 			var = findVariable(tname);
-			if ( var )
+			// sizeof(expr) — postfix chain (`buf[0]`, `obj.field`,
+			// `ptr->field`). Take the chain's result datadef's size.
+			if ( var && peekToken()
+			  && (peekToken()->id() == TokenID::tkOpSqr
+			   || peekToken()->id() == TokenID::tkDot
+			   || peekToken()->id() == TokenID::tkDeRef) )
+			{
+			    TokenBase *chain = parsePostfixChain(type_tb);
+			    DataDef *cdd = chain ? chain->datadef() : NULL;
+			    if ( !cdd )
+				Throw(type_tb) << "sizeof: cannot determine type of expression" << flush;
+			    sizeof_value = cdd->size;
+			    var = NULL;
+			}
+			else if ( var )
 			{
 			    sizeof_value = var->type->size;
 			    if ( var->is_fixed_array() )
 				sizeof_value *= var->total_elements();
 			}
 			// check struct_map
-			if ( !var )
+			if ( !var && !sizeof_value )
 			{
 			    datadef_map_iter dmi = struct_map.find(tname);
 			    if ( dmi != struct_map.end() )
@@ -2223,7 +2237,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( !dd )
 			    Throw(tag_tb) << "Unknown struct type in sizeof" << flush;
 		    }
-		    if ( !var && !dd )
+		    if ( !var && !dd && !sizeof_value )
 			Throw(type_tb) << "Unknown type in sizeof" << flush;
 		    // handle pointer: sizeof(type *)
 		    while ( !var && peekToken() && peekToken()->id() == TokenID::tkMul )
@@ -2235,7 +2249,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
 			Throw(type_tb) << "Expecting ')' after sizeof type" << flush;
 		    nextToken(); // consume )
-		    if ( !var )
+		    if ( !var && !sizeof_value && dd )
 			sizeof_value = dd->size;
 		    exStack.push(new TokenInt((int)sizeof_value));
 		    break;
