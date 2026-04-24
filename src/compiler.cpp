@@ -140,6 +140,12 @@ static Operand &compile_compound_rhs_gp_normalized(Program &pgm, TokenBase *toke
 // left slot since both operands are pre-normalized to result_type.
 typedef void (Program::*SafeBinOp3)(asmjit::Operand &, asmjit::Operand &, DataDef *, DataDef *);
 
+// Shared shape for the 2-arg bitwise/shift typesafe ops (safeor /
+// safeand / safexor / safeshl / safeshr): in-place on lval. No
+// DataDef arg because these are type-agnostic (they operate on Gp
+// registers regardless of integer width).
+typedef void (Program::*SafeBitOp2)(asmjit::Operand &, asmjit::Operand &);
+
 // Normalize both sides through the IR to Reg-of-result_type, run the
 // given safe* helper in place on the left Reg, then route the result
 // through emit_ir_value so a caller's regdp.first (Reg or Mem) is
@@ -155,6 +161,33 @@ static Operand &emit_plain_binop3(Program &pgm, TokenBase *left, TokenBase *righ
     Operand &lval = compile_token_normalized(pgm, left, result_type, &left_reg, left_norm);
     Operand &rval = compile_token_normalized(pgm, right, result_type, nullptr, right_norm);
     (pgm.*op)(lval, rval, result_type, nullptr);
+    storage = lval;
+    regdp.first = &storage;
+    if ( caller_dest )
+    {
+	regdp.first = caller_dest;
+	return emit_ir_value(pgm, IRValue::reg(storage, result_type), regdp, storage, result_type);
+    }
+    return storage;
+}
+
+// Bitwise/shift version: safe* helper takes 2 args only, and (for
+// shifts) the right side is forced to a Gp through
+// compile_token_gp_normalized — matching the original per-op code.
+static Operand &emit_plain_bitop2(Program &pgm, TokenBase *left, TokenBase *right,
+				  DataDef *result_type, SafeBitOp2 op,
+				  bool right_must_be_gp,
+				  regdefp_t &regdp, Operand &storage, const char *name_hint)
+{
+    Operand *caller_dest = regdp.first;
+    Operand left_reg = result_type->newreg(pgm.cc, name_hint);
+    Operand left_norm;
+    Operand right_norm;
+    Operand &lval = compile_token_normalized(pgm, left, result_type, &left_reg, left_norm);
+    Operand &rval = right_must_be_gp
+	? compile_token_gp_normalized(pgm, right, result_type, right_norm)
+	: compile_token_normalized(pgm, right, result_type, nullptr, right_norm);
+    (pgm.*op)(lval, rval);
     storage = lval;
     regdp.first = &storage;
     if ( caller_dest )
@@ -4874,23 +4907,8 @@ Operand &TokenBor::compile(Program &pgm, regdefp_t &regdp)
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand left_reg = regdp.second->newreg(pgm.cc, "_or_l");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &lval = compile_token_normalized(pgm, left, regdp.second, &left_reg, left_norm);
-	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, right_norm);
-	pgm.safeor(lval, rval);
-	_operand = lval;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(lval, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeor,
+				 /*right_must_be_gp=*/true, regdp, _operand, "_or_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
@@ -4920,23 +4938,8 @@ Operand &TokenXor::compile(Program &pgm, regdefp_t &regdp)
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand left_reg = regdp.second->newreg(pgm.cc, "_xor_l");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &lval = compile_token_normalized(pgm, left, regdp.second, &left_reg, left_norm);
-	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, right_norm);
-	pgm.safexor(lval, rval);
-	_operand = lval;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(lval, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safexor,
+				 /*right_must_be_gp=*/true, regdp, _operand, "_xor_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
@@ -4966,23 +4969,8 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand left_reg = regdp.second->newreg(pgm.cc, "_and_l");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &lval = compile_token_normalized(pgm, left, regdp.second, &left_reg, left_norm);
-	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, right_norm);
-	pgm.safeand(lval, rval);
-	_operand = lval;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(lval, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeand,
+				 /*right_must_be_gp=*/true, regdp, _operand, "_and_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
