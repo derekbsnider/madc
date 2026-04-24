@@ -4061,6 +4061,27 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    // C pointer arithmetic: `p + n` where p is `T *` adds n*sizeof(T)
+    // bytes to p. Also applies to fixed arrays — `nums + 1` for
+    // `int nums[N]` decays nums to `int *` and scales by sizeof(int).
+    // Skip when base element is 1 byte (char*/void*) — plain byte add.
+    {
+	size_t elem_size = 0;
+	DataDef *ltype = left->datadef();
+	if ( ltype && ltype->is_pointer() )
+	{
+	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ltype);
+	    if ( pdd && pdd->base_type )
+		elem_size = pdd->base_type->size;
+	}
+	else if ( TokenVar *lvar = dynamic_cast<TokenVar *>(left) )
+	{
+	    if ( lvar->var.is_fixed_array() && lvar->var.type )
+		elem_size = lvar->var.type->size;
+	}
+	if ( elem_size > 1 && rval.isReg() && rval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.imul(rval.as<x86::Gp>(), rval.as<x86::Gp>(), imm((int64_t)elem_size));
+    }
     pgm.safeadd(lval, rval, regdp.second);		 // type safe addition
     if ( mirror_to_caller )
 	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);
@@ -4088,6 +4109,30 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");   // use tmp for right side
     regdp.first = &tmp;					 // pass tmp along
     Operand &rval = right->compile(pgm, regdp);		 // compile right side into tmp
+    // C pointer arithmetic: scale the subtrahend for `ptr - n` when
+    // left is a pointer / fixed array and right is a non-pointer
+    // integer. Pointer difference (ptr - ptr) keeps the raw byte
+    // subtraction; explicit `(long)p - (long)q` is the supported form.
+    {
+	DataDef *ltype_sub = left->datadef();
+	DataDef *rtype_sub = right->datadef();
+	size_t elem_size = 0;
+	if ( ltype_sub && ltype_sub->is_pointer()
+	  && rtype_sub && !rtype_sub->is_pointer() )
+	{
+	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ltype_sub);
+	    if ( pdd && pdd->base_type )
+		elem_size = pdd->base_type->size;
+	}
+	else if ( TokenVar *lvar = dynamic_cast<TokenVar *>(left) )
+	{
+	    if ( lvar->var.is_fixed_array() && lvar->var.type
+	      && rtype_sub && !rtype_sub->is_pointer() )
+		elem_size = lvar->var.type->size;
+	}
+	if ( elem_size > 1 && rval.isReg() && rval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.imul(rval.as<x86::Gp>(), rval.as<x86::Gp>(), imm((int64_t)elem_size));
+    }
     pgm.safesub(lval, rval, regdp.second);		 // type safe subtraction
     if ( mirror_to_caller )
 	pgm.safemov(*caller_dest, lval, regdp.second, regdp.second);

@@ -4,6 +4,15 @@
 
 ### Added
 
+- **C pointer arithmetic scales by element size** — `p + n` on `T *`
+  previously added `n` bytes instead of `n * sizeof(T)`, so
+  `int *q = p + 2;` advanced `q` by 2 bytes and `*q` read garbage.
+  `TokenAdd::compile()` and `TokenSub::compile()` now scale the
+  offset by the pointer's pointed-to element size (or the element
+  size of a fixed-array base that's decaying to pointer). `char *`
+  and `void *` (1-byte elements) skip scaling. Added
+  `tests/testptrarith.mad`.
+
 - **Compound-assign on array subscript lvalues** — `resolveCompoundLHS`
   previously threw "+= on a non-variable lval" (as a raw C-string throw
   that further corrupted the error-location printout) for any
@@ -21,6 +30,16 @@
   `tests/testsizeofexpr.mad`.
 
 ### Fixed
+
+- **Cast body no longer consumes trailing binary operators** —
+  `(long)q - (long)nums` used to parse as `(long)(q - (long)nums)`
+  because the cast body used `parseExpression(.., true)` which
+  greedily continues past binary operators. Cast now uses
+  `parsePostfixChain` when the body is a bare identifier with an
+  optional `->`/`.`/`[]` tail, and falls back to `parseExpression`
+  only for parenthesized bodies / unary-operator heads / function
+  calls inside the cast. Known remaining: `(long)(expr)` with an
+  inner parenthesized expression still uses the greedy path.
 
 - **Negative int32 returns from dlsym libc functions sign-extend
   correctly** — `strcmp("abc", "abd")` returns `-1` in EAX on Linux

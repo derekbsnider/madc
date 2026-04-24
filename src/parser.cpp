@@ -1745,7 +1745,27 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    // position. Otherwise the cast's close-paren leaks into
 			    // isUnaryPosition and they mis-parse as binary ops.
 			    _prv_token = NULL;
-			    TokenBase *cast_expr = parseExpression(cast_expr_tb, true);
+			    TokenBase *cast_expr = NULL;
+			    // Casts in C bind tighter than binary operators: `(long)q
+			    // - n` means `((long)q) - n`, not `(long)(q - n)`. When
+			    // the body is a bare identifier (with an optional postfix
+			    // chain of ->/./[] accesses), use parsePostfixChain which
+			    // stops at the first non-postfix token. Function calls
+			    // (`ident(args)`) and everything else (parenthesized
+			    // body, unary-operator head) still go through
+			    // parseExpression so the full call or complex expression
+			    // parses correctly.
+			    bool ident_no_call = cast_expr_tb
+			      && cast_expr_tb->type() == TokenType::ttIdentifier
+			      && !(peekToken() && peekToken()->id() == TokenID::tkOpBrk);
+			    if ( ident_no_call )
+			    {
+				cast_expr = parsePostfixChain(cast_expr_tb);
+			    }
+			    else
+			    {
+				cast_expr = parseExpression(cast_expr_tb, true);
+			    }
 			    exStack.push(new TokenCast(cast_dd, cast_expr));
 			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
 			    break;
