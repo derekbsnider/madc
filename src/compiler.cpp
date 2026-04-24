@@ -4736,9 +4736,12 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	throw "lval is non-numeric";
     if ( right->type() == TokenType::ttVariable && !dynamic_cast<TokenVar *>(right)->var.type->is_numeric() )
 	throw "rval is non-numeric";
-//  if ( !regdp.first ) { throw "<< missing register"; }
 
     settype(pgm, regdp);				 // set regdp.second type
+    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
+      && regdp.second && regdp.second->is_integer() )
+	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshl,
+				 /*right_must_be_gp=*/true, regdp, _operand, "_shl_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
@@ -4861,23 +4864,8 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
     settype(pgm, regdp);				 // set regdp.second type
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
-    {
-	Operand *caller_dest = regdp.first;
-	Operand left_reg = regdp.second->newreg(pgm.cc, "_shr_l");
-	Operand left_norm;
-	Operand right_norm;
-	Operand &lval = compile_token_normalized(pgm, left, regdp.second, &left_reg, left_norm);
-	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, right_norm);
-	pgm.safeshr(lval, rval);
-	_operand = lval;
-	regdp.first = &_operand;
-	if ( caller_dest )
-	{
-	    regdp.first = caller_dest;
-	    return emit_ir_value(pgm, IRValue::reg(lval, regdp.second), regdp, _operand, regdp.second);
-	}
-	return _operand;
-    }
+	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshr,
+				 /*right_must_be_gp=*/true, regdp, _operand, "_shr_l");
     Operand *caller_dest = regdp.first;
     bool mirror_to_caller = caller_dest && !caller_dest->isReg();
     if ( !regdp.first || mirror_to_caller )		 // if not passed a usable register:
