@@ -4,6 +4,17 @@
 
 ### Added
 
+- **Typed-register IR — Stage 3c var-move helpers** — three
+  file-scope helpers (`load_var_to_gp`, `lea_var_to_gp`,
+  `store_gp_to_var`) absorb the "move a variable's value or
+  address in or out of a Gp, independent of whether the variable
+  is register- or stack-backed" pattern. Three sites that
+  open-coded this pattern now one-line through the helpers:
+  lambda-capture pack / reload loops in `TokenCallFunc::compile`
+  and the multi-return integer-unpack loop in
+  `TokenAssign::compile`. Each Reg/Mem shape-dispatch for these
+  three sites now lives in exactly one place.
+
 - **Typed-register IR — Stage 2i/2j + Stage 3b** — three more
   bounded cleanups:
   - **TokenMod general path** now routes through
