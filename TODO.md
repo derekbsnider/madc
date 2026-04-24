@@ -19,6 +19,13 @@
 
 ### Language Completeness
 
+- **Struct-member compound-assign on doubles / floats** — `a.v +=
+  2.5;` where `v` is a double still goes through the Gpq load in
+  `resolveCompoundLHS` and fails asmjit finalize with error 25. The
+  Xmm variant worked end-to-end for local-variable lvalues but
+  tripped finalize when applied to the member path. Local double
+  compound-assign is fixed; struct member remains.
+
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 
 - **Error diagnostics** — parser-side diagnostics already carry source context,

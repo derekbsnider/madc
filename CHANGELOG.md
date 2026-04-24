@@ -31,6 +31,16 @@
 
 ### Fixed
 
+- **Compound-assign on local double/float variables** — `x += 5.0;`,
+  `x *= 2.0;` and friends on a stack-local double used to throw
+  `"safeadd() unable to add xmm to gp"` because `resolveCompoundLHS`
+  always loaded the Mem lval via `load_mem_to_gpq` into a Gp, so the
+  subsequent `safeadd(Gp, Xmm)` had no valid overload. Now the
+  variable path checks `r.type->is_real()` and loads into an Xmm via
+  `safemov`; the Xmm-vs-Xmm arithmetic then proceeds normally.
+  Struct-member compound-assign on doubles still falls through the
+  Gpq path — filed in TODO. Added `tests/testdoublecompound.mad`.
+
 - **`safemov(Mem, Xmm)` now stores the xmm to memory** — the overload
   used to unconditionally throw `"safemov() unable to move xmm to
   mem"`, so every `double` / `float` arithmetic expression that had

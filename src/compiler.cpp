@@ -1921,16 +1921,30 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	Operand &op = r.tv->operand(pgm);
 	if ( op.isMem() )
 	{
-	    x86::Gp gp = pgm.cc.newGpq("var_lhs");
-	    load_mem_to_gpq(pgm, gp, op.as<x86::Mem>(), r.type);
-	    r.writeback = op.as<x86::Mem>();
-	    r.lval = gp;
-	    r.is_member = true;
-	    // lval is widened to Gpq; work in ddINT64 so tmp / rval / safeop
-	    // match its width. Writeback Mem keeps its original size so the
-	    // final store truncates correctly.
-	    if ( r.type && r.type->size && r.type->size < 8 )
-		r.type = &ddINT64;
+	    if ( r.type && r.type->is_real() )
+	    {
+		// Double/float lval on stack — load into Xmm so the
+		// subsequent safeadd / safemul / etc. all work with
+		// matching-type operands.
+		x86::Xmm xm = pgm.cc.newXmm("var_lhs_xmm");
+		pgm.safemov(xm, op.as<x86::Mem>(), r.type, r.type);
+		r.writeback = op.as<x86::Mem>();
+		r.lval = xm;
+		r.is_member = true;
+	    }
+	    else
+	    {
+		x86::Gp gp = pgm.cc.newGpq("var_lhs");
+		load_mem_to_gpq(pgm, gp, op.as<x86::Mem>(), r.type);
+		r.writeback = op.as<x86::Mem>();
+		r.lval = gp;
+		r.is_member = true;
+		// lval is widened to Gpq; work in ddINT64 so tmp / rval / safeop
+		// match its width. Writeback Mem keeps its original size so the
+		// final store truncates correctly.
+		if ( r.type && r.type->size && r.type->size < 8 )
+		    r.type = &ddINT64;
+	    }
 	}
 	else
 	    r.lval = op;
