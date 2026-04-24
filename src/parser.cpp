@@ -2384,8 +2384,28 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    else
 		    {
 			TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(lhs_dot);
-			tv_var      = &tsub->object;
-			struct_type =  tsub->datadef(); // element type
+			if ( tsub )
+			{
+			    tv_var      = &tsub->object;
+			    struct_type =  tsub->datadef(); // element type
+			}
+			else if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(lhs_dot) )
+			{
+			    // expr[i].member — subscript LHS is an arbitrary
+			    // pointer/array-producing expression (e.g.
+			    // `ch->pcdata->killed[x].vnum`). Synthesize a
+			    // struct-typed object variable and route codegen
+			    // through the TokenSubscriptExpr as parent_expr;
+			    // TokenMember::operand's dot-chain path handles
+			    // [base + idx*shift + offset].
+			    DataDef *elem_type = tse->datadef();
+			    if ( !elem_type )
+				Throw(tb) << "subscript expression has no element type" << flush;
+			    tv_var      = new Variable("__sub_expr", *elem_type, 1, NULL, false);
+			    struct_type =  elem_type;
+			}
+			else
+			    Throw(tb) << "member reference '.' on unsupported subscript form" << flush;
 		    }
 		    if ( !struct_type->is_struct() && !struct_type->is_object() )
 			Throw(tb) << "member reference is not a structure or union" << flush;

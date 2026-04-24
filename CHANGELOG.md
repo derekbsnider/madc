@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **`expr[i].member` now parses and compiles** — the dot handler's
+  ttSubscript branch used to `dynamic_cast<TokenSubscript *>`
+  unconditionally, but `TokenSubscriptExpr` also reports ttSubscript
+  without deriving from `TokenSubscript`; the NULL cast's
+  `tsub->object` segfaulted. Added an explicit TokenSubscriptExpr
+  fallback that synthesizes a struct-typed object variable and routes
+  the result through the existing parent_expr path. Also taught
+  `TokenSubscriptExpr::compile` to return the raw element Mem
+  directly when the element type is struct/class — `emit_ir_value`'s
+  coerce/load path doesn't handle aggregate types and would have
+  corrupted the Mem before TokenMember's parent-expr dot-chain
+  could add the member offset. Closes the MadSMAUG umbrella front
+  edge at `handler.c:4789` in `add_kill`
+  (`ch->pcdata->killed[x].vnum`). Regression:
+  `tests/testsubscriptexprmember.mad`.
+
 - **Leading-dot float literal `.4`** — lexer now accepts `.4` / `.25f`
   / `.75l` as shorthand for `0.4` / `0.25f` / `0.75l`. The single-`.`
   case in the main tokenizer peeks for a digit and parses the

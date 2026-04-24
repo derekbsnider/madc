@@ -3620,6 +3620,18 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     x86::Mem elem_mem = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     if ( !regdp.second )
 	regdp.second = _datatype;
+    // Struct/class element: return the Mem directly. emit_ir_value assumes
+    // a numeric-sized value it can coerce/load; a struct element isn't a
+    // value that fits in a register. Callers (e.g. TokenMember::operand
+    // for `s[i].member`) read the Mem and add the member offset.
+    if ( _datatype && (_datatype->basetype() == BaseType::btStruct
+		    || _datatype->basetype() == BaseType::btClass) )
+    {
+	_operand = elem_mem;
+	if ( !regdp.first )
+	    regdp.first = &_operand;
+	return _operand;
+    }
     return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
 }
 

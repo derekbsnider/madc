@@ -4,14 +4,6 @@
 
 ### Language Completeness
 
-- **`expr[i].member` parser crash after subscript-on-expression-base**
-  — when a subscript LHS is an expression (not a plain variable —
-  e.g. `ch->pcdata->killed[x].vnum`), the dot handler that runs
-  immediately after hits a null/stale lhs_dot and segfaults. Root
-  cause is the "subscript on expression base" exStack shape diverging
-  from what the dot handler expects. Current MadSMAUG front edge
-  at `handler.c:4789` in `add_kill`.
-
 - **Double addition `a + b` produces wrong result in some contexts** —
   `double d = 1.0 + 0.5;` prints `4.94066e-324` instead of `1.5`,
   but a separately-declared `double c = a + b;` works. Pre-existing
@@ -101,6 +93,16 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**`expr[i].member` parses + compiles for struct element types**~~
+  — dot handler's ttSubscript branch now detects TokenSubscriptExpr
+  explicitly (the NULL dynamic_cast to TokenSubscript used to
+  segfault). TokenSubscriptExpr::compile returns raw element Mem for
+  struct/class element types so the TokenMember parent-expr path can
+  add the member offset without emit_ir_value corrupting the Mem.
+  Advances MadSMAUG from handler.c:4789 to an undefined-function
+  front edge in fight.c (`learn_from_failure`). Targeted regression:
+  `tests/testsubscriptexprmember.mad`.
 
 - ~~**Leading-dot float literal `.4`**~~ — lexer's single-`.` case now
   peeks for a digit and parses the fractional expansion (consuming
