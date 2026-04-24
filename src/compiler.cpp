@@ -959,25 +959,38 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	// invocation like cmd.fn(args)), compile it to materialise the fn-ptr
 	// value in a register — var is a placeholder Variable the member created
 	// at parse time and has no real storage to voperand from.
-	x86::Gp ptr_gp;
-	Operand *ptr_op_ptr;
+	//
+	// Hold the result in an Operand local rather than juggling a Gp*-to-
+	// Operand* reinterpret cast; both branches write a pointer-shaped
+	// value into `ptr_op` which the invoke below treats as a Gp.
+	Operand ptr_op;
 	if ( src_node )
 	{
 	    DBG(pgm.cc.comment("fptr call source: src_node (struct-member fptr)"));
 	    regdefp_t src_rdp = {NULL, NULL, NULL};
 	    Operand &src_op = src_node->compile(pgm, src_rdp);
-	    ptr_gp = pgm.cc.newIntPtr("__fptr_member");
+	    x86::Gp ptr_gp = pgm.cc.newIntPtr("__fptr_member");
 	    if ( src_op.isMem() )
 		pgm.cc.mov(ptr_gp, src_op.as<x86::Mem>());
 	    else
 		pgm.cc.mov(ptr_gp, src_op.as<x86::Gp>());
-	    ptr_op_ptr = reinterpret_cast<Operand *>(&ptr_gp);
+	    ptr_op = ptr_gp;
 	}
 	else
 	{
-	    ptr_op_ptr = &pgm.tkFunction->voperand(pgm, &var);
+	    Operand &var_op = pgm.tkFunction->voperand(pgm, &var);
+	    // Stack-backed fn-pointer variables land here as Mem — load into
+	    // a Gp so the invoke below can dispatch through it. Register-
+	    // backed vars pass through untouched.
+	    if ( var_op.isMem() )
+	    {
+		x86::Gp ptr_gp = pgm.cc.newIntPtr("__fptr_var");
+		pgm.cc.mov(ptr_gp, var_op.as<x86::Mem>());
+		ptr_op = ptr_gp;
+	    }
+	    else
+		ptr_op = var_op;
 	}
-	Operand &ptr_op = *ptr_op_ptr;
 
 	// compile arguments and build signature
 	std::vector<Operand> params;
