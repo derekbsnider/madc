@@ -26,6 +26,15 @@
   tripped finalize when applied to the member path. Local double
   compound-assign is fixed; struct member remains.
 
+- **Multiple floats interleaved with printf in one function** —
+  asmjit's register allocator spills-then-reloads from an
+  uninitialised stack slot in this specific shape (`float a = X;
+  printf(%f, a); float b = Y; printf(%f, b);` — second printf
+  reads a's value, not b's). Isolated-function form works.
+  Likely the cvtsd2ss pattern emitted by safemov(Mem, Xmm) triggers
+  an asmjit pre-existing issue. Workaround: split into helper
+  functions or assign through a double temporary.
+
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 
 - **Error diagnostics** — parser-side diagnostics already carry source context,

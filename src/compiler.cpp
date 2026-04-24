@@ -5492,6 +5492,54 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	regdp.first = &_operand;
 	return _operand;
     }
+    // Real ↔ real cast: `(double)flt_expr` / `(float)dbl_expr` need a
+    // cvtss2sd / cvtsd2ss. A bare reinterpret leaves the Xmm holding
+    // raw bits in the source precision, so subsequent variadic-arg
+    // handling (printf(%f) reads it as double) gets garbage.
+    DataDef *src_type = expr ? expr->datadef() : NULL;
+    bool src_is_real = src_type && src_type->is_real();
+    bool dst_is_real = cast_type && cast_type->is_real();
+    if ( src_is_real && dst_is_real && src_type->size != cast_type->size )
+    {
+	regdefp_t inner_rdp = {NULL, NULL, NULL};
+	inner_rdp.second = src_type;
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	x86::Xmm out = pgm.cc.newXmm("cast_real");
+	if ( cast_type->size == sizeof(float) )
+	{
+	    // dbl -> flt
+	    if ( src_op.isReg() )
+		pgm.cc.cvtsd2ss(out, src_op.as<x86::Xmm>());
+	    else
+		pgm.cc.cvtsd2ss(out, src_op.as<x86::Mem>());
+	}
+	else
+	{
+	    // flt -> dbl
+	    if ( src_op.isReg() )
+		pgm.cc.cvtss2sd(out, src_op.as<x86::Xmm>());
+	    else
+		pgm.cc.cvtss2sd(out, src_op.as<x86::Mem>());
+	}
+	regdp.second = cast_type;
+	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    if ( cast_type->size == sizeof(float) )
+		pgm.cc.movss(regdp.first->as<x86::Xmm>(), out);
+	    else
+		pgm.cc.movsd(regdp.first->as<x86::Xmm>(), out);
+	    return *regdp.first;
+	}
+	if ( regdp.first && regdp.first->isMem() )
+	{
+	    pgm.safemov(regdp.first->as<x86::Mem>(), out, cast_type, cast_type);
+	    return *regdp.first;
+	}
+	_operand = out;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
     // set the result type to the cast target
     regdp.second = cast_type;
     // compile the inner expression — for pointer/integer casts, the value

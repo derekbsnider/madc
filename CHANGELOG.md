@@ -31,6 +31,23 @@
 
 ### Fixed
 
+- **`float` variables and real↔real casts** — two gaps kept
+  4-byte floats broken:
+  (a) `safemov(Mem, Xmm)` with a float-sized Mem emitted plain
+      `movss` on a double-valued Xmm, storing the low 32 bits of
+      the double (mantissa) instead of a valid float32. Now
+      `cvtsd2ss`s when source is double and dest is float (and
+      `cvtss2sd` for the opposite direction).
+  (b) `TokenCast::compile` reinterpreted real↔real casts. `(double)
+      flt_var` therefore passed the raw 32-bit float bits to a
+      variadic printf which reads them as a double (→ 0.0).
+      Now emits `cvtss2sd` / `cvtsd2ss` when src and dst sizes
+      differ.
+  Added `tests/testfloat.mad` — split across functions because a
+  separate asmjit register-allocation interaction (multiple floats
+  with interleaved printf calls in one function spills to an
+  uninitialised slot) is filed in TODO.
+
 - **`s->items[i]` read/write through pointer-typed struct members** —
   two bugs collaborated to SIGSEGV (or return garbage) when a
   subscript operated on a pointer held in a struct member:

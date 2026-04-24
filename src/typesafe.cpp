@@ -262,16 +262,38 @@ void Program::safemov(x86::Mem &m, x86::Gp &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Mem, Xmm)"));
-    // Destination is a float (4 byte) or double (8 byte) slot. Use the
-    // Mem's declared size to pick movss / movsd; fall back to movsd for
-    // 0-sized (uninitialised) destinations since most madc real-typed
-    // vars are 8-byte doubles.
+    // Destination is a float (4 byte) or double (8 byte) slot. The
+    // source Xmm holds the value in whichever precision produced it —
+    // if the destination is narrower we must cvtsd2ss down to float
+    // first (movss would otherwise store the raw low 32 bits, which
+    // for a double-precision value are the low mantissa bits, not a
+    // valid float32).
     uint32_t ms = m.size();
     if ( !ms && d1 ) ms = (uint32_t)d1->size;
-    if ( ms == 4 )
-	cc.movss(m, r2);
+    bool dst_is_float = (ms == 4) || (d1 && d1->size == sizeof(float));
+    bool src_is_float = d2 && d2->size == sizeof(float);
+    if ( dst_is_float )
+    {
+	if ( !src_is_float )
+	{
+	    x86::Xmm tmp = cc.newXmm("_fx_tmp");
+	    cc.cvtsd2ss(tmp, r2);
+	    cc.movss(m, tmp);
+	}
+	else
+	    cc.movss(m, r2);
+    }
     else
-	cc.movsd(m, r2);
+    {
+	if ( src_is_float )
+	{
+	    x86::Xmm tmp = cc.newXmm("_fx_tmp");
+	    cc.cvtss2sd(tmp, r2);
+	    cc.movsd(m, tmp);
+	}
+	else
+	    cc.movsd(m, r2);
+    }
 }
 
 // should handle all necessary conversions...
