@@ -4,6 +4,13 @@
 
 ### Added
 
+- **Compound-assign on array subscript lvalues** — `resolveCompoundLHS`
+  previously threw "+= on a non-variable lval" (as a raw C-string throw
+  that further corrupted the error-location printout) for any
+  `arr[i] += n;`-style expression. Now computes the element Mem
+  operand directly from `TokenSubscript::object` + `index` and uses it
+  as the load/compute/store target. Added `tests/testarrayc.mad`.
+
 - **`sizeof(expr)` now handles postfix chains** — `sizeof(buf[0])`,
   `sizeof(obj.field)`, `sizeof(ptr->field)` parse by routing the
   identifier + `[` / `.` / `->` tail through `parsePostfixChain()`
@@ -14,6 +21,22 @@
   `tests/testsizeofexpr.mad`.
 
 ### Fixed
+
+- **Compound-assign on narrow (1/2/4-byte) lvalues no longer
+  SIGSEGVs** — `resolveCompoundLHS` widens Mem lvalues into a Gpq via
+  `load_mem_to_gpq`, but kept `r.type` at the narrow source type. The
+  compound-op handlers then allocated a narrow `tmp` matching that
+  type and compiled the RHS into it, producing e.g. `safeor(Gp64,
+  Gp8)` which is not a legal encoding. asmjit silently dropped /
+  malformed the op, `cc.finalize()` returned an error, and the JIT
+  executed invalid code — the resulting crash manifested as a
+  dereference of whatever register was left stuck holding the RHS
+  value. Fixed by switching `r.type` to `ddINT64` whenever we widen
+  (variable / member / deref / subscript paths). The writeback Mem
+  keeps its original size so the final `safemov(Mem<1|2|4>, Gp64)`
+  truncates correctly via the matching-width register view. Added
+  `tests/testcompoundnarrow.mad` covering char/short locals, struct
+  char/short members, and char array subscripts.
 
 - **String-typed ternary branches now coerce correctly** — follow-up to
   the ternary-to-Mem fix in v0.9.1. Two additional paths were missing:

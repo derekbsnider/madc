@@ -1872,6 +1872,11 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    r.writeback = op.as<x86::Mem>();
 	    r.lval = gp;
 	    r.is_member = true;
+	    // lval is widened to Gpq; work in ddINT64 so tmp / rval / safeop
+	    // match its width. Writeback Mem keeps its original size so the
+	    // final store truncates correctly.
+	    if ( r.type && r.type->size && r.type->size < 8 )
+		r.type = &ddINT64;
 	}
 	else
 	    r.lval = op;
@@ -1891,6 +1896,8 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		r.writeback = mem.as<x86::Mem>();
 		r.lval = gp;
 		r.is_member = true;
+		if ( r.type && r.type->size && r.type->size < 8 )
+		    r.type = &ddINT64;
 	    }
 	    else
 		r.lval = mem;
@@ -1910,12 +1917,55 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		    r.writeback = mem.as<x86::Mem>();
 		    r.lval = gp;
 		    r.is_member = true;
+		    if ( r.type && r.type->size && r.type->size < 8 )
+			r.type = &ddINT64;
 		}
 		else
 		    r.lval = mem;
 	    }
 	    else
 		throw "compound assignment on unsupported member type";
+	}
+    }
+    else if ( left->type() == TokenType::ttSubscript )
+    {
+	// Array / pointer subscript lvalue (`arr[i] += N`). Materialise the
+	// element Mem directly so the load/compute/store cycle can write
+	// back through the same address. TokenSubscript::compile reads into
+	// a Gp when no destination is given, which would hide the Mem, so
+	// we reconstruct the element address here.
+	TokenSubscript *ts = dynamic_cast<TokenSubscript *>(left);
+	if ( ts && ts->object.is_fixed_array() )
+	{
+	    size_t elem_size = ts->object.type->size ? ts->object.type->size : 8;
+	    Operand &obj_op = pgm.tkFunction->voperand(pgm, &ts->object);
+	    x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
+	    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+	    regdefp_t idx_rdp = {NULL, NULL, NULL};
+	    Operand &idx_op = ts->index->compile(pgm, idx_rdp);
+	    x86::Gp idx_reg = pgm.cc.newGpq("sub_idx");
+	    if ( idx_op.isReg() )
+		pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
+	    else
+		pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+	    uint32_t shift = 0;
+	    if      ( elem_size == 8 ) shift = 3;
+	    else if ( elem_size == 4 ) shift = 2;
+	    else if ( elem_size == 2 ) shift = 1;
+	    x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+	    r.type = ts->object.type;
+	    x86::Gp gp = pgm.cc.newGpq("sub_lhs");
+	    load_mem_to_gpq(pgm, gp, elem_mem, r.type);
+	    r.writeback = elem_mem;
+	    r.lval = gp;
+	    r.is_member = true;
+	    if ( r.type && r.type->size && r.type->size < 8 )
+		r.type = &ddINT64;
+	}
+	else
+	{
+	    std::string msg = std::string(op_name) + " on unsupported subscript lval";
+	    throw msg.c_str();
 	}
     }
     else
