@@ -31,6 +31,18 @@
 
 ### Fixed
 
+- **Signed integer division with negative dividend** — `a / b` where
+  `a < 0` used to produce wildly wrong quotients (`-17 / 5` came out
+  as 858993455 instead of -3). x86's `idiv` treats rdx:rax as a
+  128-bit signed dividend; the caller has to sign-extend rax into
+  rdx before the divide. `safediv()` was called with a zeroed
+  remainder register (via `safexor`), which is correct for unsigned
+  division but produces a huge positive 128-bit dividend when rax is
+  negative. Now emits `cqo` inside `safediv` for signed types
+  (unsigned types keep the caller's zero-extended path). Affects
+  both plain `/` `%` and compound `/=` `%=`. Added
+  `tests/testsigneddiv.mad`.
+
 - **`char *arr[] = {"a","b",...};` init stores c_str() pointers** —
   TokenDecl's fixed-array init-list path wrote each init's compile
   result straight into the slot, so for a char*-element array the

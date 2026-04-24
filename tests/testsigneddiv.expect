@@ -1,0 +1,7 @@
+neg/pos q=-3 r=-2
+pos/neg q=-3 r=2
+neg/neg q=3 r=-2
+pos/pos q=3 r=2
+u q=3 r=2
+cmpd /= : -33
+cmpd %= : -2

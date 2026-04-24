@@ -1,0 +1,46 @@
+// Signed integer division with a negative dividend used to produce
+// wildly wrong results (e.g. `-17 / 5` came out as 858993455). x86's
+// idiv treats rdx:rax as a 128-bit signed dividend, so the caller
+// must sign-extend rax into rdx before the divide. safediv() was
+// called with a zeroed remainder register (via safexor), which is
+// correct for unsigned division but produces a huge positive
+// 128-bit dividend when rax is negative. Fixed by emitting `cqo`
+// inside safediv for signed types (still zero-extending for
+// unsigned via the caller's safexor).
+
+#include <stdio.h>
+
+int main()
+{
+    int a = -17;
+    int b = 5;
+    printf("neg/pos q=%d r=%d\n", a / b, a % b);
+
+    int c = 17;
+    int d = -5;
+    printf("pos/neg q=%d r=%d\n", c / d, c % d);
+
+    int e = -17;
+    int f = -5;
+    printf("neg/neg q=%d r=%d\n", e / f, e % f);
+
+    int g = 17;
+    int h = 5;
+    printf("pos/pos q=%d r=%d\n", g / h, g % h);
+
+    // unsigned — caller still zero-extends
+    unsigned int ua = 17;
+    unsigned int ub = 5;
+    printf("u q=%u r=%u\n", ua / ub, ua % ub);
+
+    // compound
+    int x = -100;
+    x /= 3;
+    printf("cmpd /= : %d\n", x);
+
+    int y = -100;
+    y %= 7;
+    printf("cmpd %%= : %d\n", y);
+
+    return 0;
+}
