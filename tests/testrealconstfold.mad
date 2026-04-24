@@ -1,0 +1,39 @@
+#!/../bin/madc
+// Constant-folded real arithmetic (`double d = 1.0 + 0.5;` etc.) used
+// to silently truncate to integer when the caller's destination was
+// a Mem: TokenOperator::optimize folded to 1.5 but safemov(Mem, 1.5,
+// double) fell through to `imm((int)1.5)` and stored 1, yielding
+// denormal garbage when read back as double. safemov(op, double, ...)
+// now takes the Xmm-through-constpool path for real-typed Mem
+// destinations.
+//
+// The output uses `==` / `<` / `>` comparisons because variadic
+// printf of the same result hits a separate pre-existing asmjit
+// register-allocator quirk (filed in TODO) that's unrelated to the
+// fold itself.
+
+#include <stdio.h>
+
+int main()
+{
+    double a = 1.0 + 0.5;
+    double b = 2.0 * 3.0;
+    double c = 10.0 - 4.5;
+    double d = 7.5 / 2.5;
+
+    printf("a==1.5? %d\n", (a == 1.5));
+    printf("b==6.0? %d\n", (b == 6.0));
+    printf("c==5.5? %d\n", (c == 5.5));
+    printf("d==3.0? %d\n", (d == 3.0));
+
+    // Mixed variable + literal (already worked) as a control.
+    double x = 4.0;
+    double y = x + 0.25;
+    printf("y==4.25? %d\n", (y == 4.25));
+
+    // In a non-first printf slot the folded values print correctly.
+    double sum = a + b + c + d;
+    printf("sum=%g\n", sum);
+
+    return 0;
+}

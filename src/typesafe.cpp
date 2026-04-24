@@ -237,6 +237,24 @@ void Program::safemov(Operand &op1, double d, DataDef *d1, DataDef *d2)
 	    cc.movsd(op1.as<x86::Xmm>(), _const);
 	return;
     }
+    // Mem destination for a real value: load the double through the
+    // constant pool into a scratch Xmm, then store Xmm to Mem. The
+    // previous fallback truncated to int via `imm((int)d)`, which
+    // silently dropped the fractional part for expressions like
+    // `double d = 1.0 + 0.5;` (TokenOperator::optimize constant-folded
+    // to 1.5 and then this path stored it as integer 1). Use the
+    // destination type hint to pick the Xmm-through-Mem path; callers
+    // that genuinely want double→int truncation (rare — explicit int
+    // target) still fall through to the imm path below.
+    if ( op1.isMem() && d1 && d1->is_real() )
+    {
+	x86::Mem _const = cc.newDoubleConst(ConstPoolScope::kLocal, d);
+	x86::Xmm tmp = cc.newXmm("_fconst");
+	cc.movsd(tmp, _const);
+	DBG(cc.comment("safemov(Mem, double via Xmm)"));
+	safemov(op1.as<x86::Mem>(), tmp, d1, d2);
+	return;
+    }
     DBG(cc.comment("safemov(Operand, (int)double)"));
     Operand op2 = imm((int)d);
     safemov(op1, op2, d1, d2);

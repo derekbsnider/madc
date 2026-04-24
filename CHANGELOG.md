@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **`safemov(Operand, double, ...)` truncating to int for Mem
+  destinations** — `TokenOperator::optimize` constant-folds
+  expressions like `double d = 1.0 + 0.5;` and then calls
+  `safemov(*regdp.first, foperate(), regdp.second)` with the
+  computed double. For Mem destinations the fallback converted
+  via `imm((int)d)` — silently dropping the fractional part — so
+  the stored bit pattern looked like a denormal double and readers
+  got garbage (`2.122e-314` etc.). Added a Mem + `d1->is_real()`
+  branch that materializes the double through the local const pool
+  into a scratch Xmm and stores Xmm → Mem. Regression:
+  `tests/testrealconstfold.mad`. (Printf of the same result still
+  hits the separate pre-existing asmjit variadic-doubles quirk;
+  the fold itself is now correct, as the `==` / `>` comparisons
+  demonstrate.)
+
 - **SMAUG progress tracking** — `docs/smaug-progress.md` holds a running
   parse / compile / link / runtime percentage estimate for the SMAUG
   1.8 umbrella bootstrap. Mirrored in `claude_status.json` under

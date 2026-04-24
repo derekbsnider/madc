@@ -4,10 +4,10 @@
 
 ### Language Completeness
 
-- **Double addition `a + b` produces wrong result in some contexts** —
-  `double d = 1.0 + 0.5;` prints `4.94066e-324` instead of `1.5`,
-  but a separately-declared `double c = a + b;` works. Pre-existing
-  bug surfaced while testing leading-dot float literals.
+- **Real `<` / `<=` comparison with Mem-backed literal RHS** —
+  `1.5 < 2.0` returns 0. `>` works. Narrow comparison bug distinct
+  from the storage truncation just fixed; surfaced while verifying
+  the fix via `==` / `<` / `>` checks.
 
 - **Function-like macros shadowing later definitions** — SMAUG.mad does
   `#define bug(...) ((void)0)` to stub out calls, then `#include`s
@@ -86,6 +86,14 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**`safemov(Operand, double, ...)` truncating to int for Mem
+  destinations**~~ — when TokenOperator::optimize constant-folded
+  a real expression (`double d = 1.0 + 0.5;`) and the caller's
+  destination was a Mem, the double-valued fallback called
+  `imm((int)d)` and silently dropped the fractional part. Now takes
+  the Xmm-through-constpool path when `d1->is_real()`. Regression:
+  `tests/testrealconstfold.mad`.
 
 - ~~**Struct-array subscript element stride + base addressing**~~ —
   TokenSubscriptExpr and the TokenAssign write branch now fold
