@@ -15,10 +15,10 @@ bootstrap).
 
 | Phase            | % | Notes |
 |------------------|--:|-------|
-| **Parse**        | ~24% | 38,581 / 158,537 lines ingested via the umbrella + fully parsed (fight.c + skills.c added this session) |
-| **Compile**      | ~24% | Return-mis-detection fix unblocked fight.c/skills.c bodies that were corrupted by phantom `__retbuf` injection. Now hits `&= on unsupported subscript lval` deeper in SMAUG (compound bitwise-AND assign on a subscript form) |
-| **Link**         | 0%  | Umbrella still stops before linkage — compile errors precede link |
-| **Runtime**      | 0%  | `main()` has never been executed against the full umbrella |
+| **Parse**        | ~27% | 42,891 / 158,537 lines ingested via the umbrella (fight.c + skills.c + act_comm.c added this session) |
+| **Compile**      | ~27% | **Every ingested TU compiles cleanly.** Next compile-time fronts wait on source files that aren't yet in the umbrella |
+| **Link**         | ~27% | All referenced symbols resolve — either inside an ingested TU or through `_bootstrap_comm_shim.c` stubs for not-yet-ingested files |
+| **Runtime**      | ~1% | `bin/madc SMAUG.mad` now parses + compiles + links + **executes to clean exit 0**. The umbrella's `main()` is still a stub (`return 0`), so no actual game logic runs — but we're no longer crashing at any point. |
 
 These numbers are rough. Headers are ingested whole; each C file that
 parses cleanly counts as fully parsed. The link column will be
@@ -40,9 +40,10 @@ meaningful once we start stubbing and connecting more TUs.
 | `ibuild.c`      | 3,891 | ✅    | ✅      | |
 | `ident.c`       |   354 | ✅    | ✅      | |
 | `interp.c`      | 1,307 | ✅    | ✅      | |
-| `fight.c`       | 4,521 | ✅    | partial | Parses; compile hits IR coerce somewhere later in the file |
-| `skills.c`      | 6,239 | ✅    | partial | Parses after `class`-as-identifier lands |
-| **Subtotal**    | 38,581 | | | |
+| `fight.c`       | 4,521 | ✅    | ✅      | Compiles after the return-mis-detection fix lands |
+| `skills.c`      | 6,239 | ✅    | ✅      | Compiles after `class`-as-identifier + compound-subscript-assign land |
+| `act_comm.c`    | 4,310 | ✅    | ✅      | |
+| **Subtotal**    | 42,891 | | | |
 
 ## Not yet ingested
 

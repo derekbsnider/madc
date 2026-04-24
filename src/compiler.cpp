@@ -2338,6 +2338,61 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    if ( r.type && r.type->size && r.type->size < 8 )
 		r.type = &ddINT64;
 	}
+	else if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(left) )
+	{
+	    // Expression-base subscript lvalue (`obj.bits[i] &= ~mask;`,
+	    // `ptr->arr[j] += n;`). Mirror TokenAssign's TokenSubscriptExpr
+	    // path: compile the base through operand() (avoid the
+	    // emit_ir_value load-first-element trap), LEA if the base is an
+	    // in-place aggregate / MOV if it's a pointer value, fold the
+	    // element stride via imul for non-power-of-2 sizes.
+	    DataDef *elem_type = tse->datadef();
+	    if ( !elem_type )
+		throw "compound-assign on subscript expression with no element type";
+	    size_t elem_size = elem_type->size ? elem_type->size : 8;
+
+	    Operand &base_op = tse->base_expr->operand(pgm);
+	    x86::Gp base_reg = pgm.cc.newIntPtr("cmpd_sub_base");
+	    if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+	    else if ( base_op.isMem() )
+	    {
+		DataDef *bdd = tse->base_expr->datadef();
+		if ( bdd && bdd->is_pointer() )
+		    pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
+		else
+		    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+	    }
+	    else
+		throw "compound-assign subscript base is not a register or memory";
+
+	    regdefp_t idx_rdp = {NULL, NULL, NULL};
+	    Operand &idx_op = tse->index->compile(pgm, idx_rdp);
+	    x86::Gp idx_reg = pgm.cc.newGpq("cmpd_sub_idx");
+	    if ( idx_op.isReg() )
+		pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
+	    else if ( idx_op.isImm() )
+		pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+	    else if ( idx_op.isMem() )
+		pgm.cc.mov(idx_reg, idx_op.as<x86::Mem>());
+
+	    uint32_t shift = 0;
+	    if      ( elem_size == 8 ) shift = 3;
+	    else if ( elem_size == 4 ) shift = 2;
+	    else if ( elem_size == 2 ) shift = 1;
+	    else if ( elem_size != 1 )
+		pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+	    x86::Mem elem_mem = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+
+	    r.type = elem_type;
+	    x86::Gp gp = pgm.cc.newGpq("cmpd_sub_lhs");
+	    load_mem_to_gpq(pgm, gp, elem_mem, r.type);
+	    r.writeback = elem_mem;
+	    r.lval = gp;
+	    r.is_member = true;
+	    if ( r.type && r.type->size && r.type->size < 8 )
+		r.type = &ddINT64;
+	}
 	else
 	{
 	    static char msg[128];

@@ -9,12 +9,6 @@
   mud_comm.c). `tkGOTO` exists as a lexer token but no parse/compile
   support. Currently routed around by stubbing the calling symbols.
 
-- **`&= on unsupported subscript lval` in SMAUG** — after the
-  return-mis-detection fix, the MadSMAUG umbrella's compile hits
-  `resolveCompoundLHS` with a compound bitwise-AND assignment on a
-  subscript expression form it doesn't handle (likely a struct-array
-  or pointer-subscript member). Current MadSMAUG umbrella compile
-  front edge.
 
 - **Real `<` / `<=` comparison with Mem-backed literal RHS** —
   `1.5 < 2.0` returns 0. `>` works. Narrow comparison bug distinct
@@ -98,6 +92,15 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**Compound-assign on expression-base subscripts**~~ —
+  `resolveCompoundLHS` gained a `TokenSubscriptExpr` path mirroring
+  the TokenAssign write branch (operand-not-compile on base, LEA vs
+  MOV via pointer-check, `imul` fallback for non-power-of-2 element
+  sizes, `load_mem_to_gpq` for the old-value load). SMAUG's
+  `xREMOVE_BIT` / `xSET_BIT` macros expand to this form. Targeted
+  regression: `tests/testcompoundsubexpr.mad`. Advances MadSMAUG
+  umbrella to "compiles + runs end-to-end" (stub main).
 
 - ~~**`return X;` mis-detected as multi-return**~~ — `TokenRETURN`'s
   multi-return heuristic now consults the consumed stop token via

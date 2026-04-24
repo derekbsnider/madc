@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **Compound-assign on expression-base subscripts** —
+  `resolveCompoundLHS`'s ttSubscript branch only recognized
+  `TokenSubscript` with a fixed-array variable base. Any
+  `TokenSubscriptExpr` form — struct-contained array members
+  (`obj.bits[i] &= ~mask;`), pointer-deref-then-subscript
+  (`p->arr[i] += n;`) — fell through to `<op> on unsupported
+  subscript lval`. Added a TokenSubscriptExpr path that mirrors the
+  TokenAssign write branch: `base_expr->operand()` (avoid the
+  `emit_ir_value` load-first-element trap), LEA for aggregate bases
+  / MOV for pointer-typed bases, fold non-power-of-2 element sizes
+  via `imul`, compute the element Mem, load through
+  `load_mem_to_gpq`, then the existing compound-op path handles the
+  arithmetic + writeback. Regression: `tests/testcompoundsubexpr.mad`.
+
+  SMAUG's `xREMOVE_BIT` / `xSET_BIT` macros expand to exactly this
+  form. Closes the deepest MadSMAUG compile front edge: after this
+  fix `bin/madc SMAUG.mad` compiles + runs end-to-end (umbrella
+  `main()` is still a stub, but every ingested translation unit
+  compiles and every symbol resolves via the bootstrap shim).
+
 - **`return X;` mis-detected as multi-return when the next statement
   starts with an identifier** — `TokenRETURN::parse`'s
   `looks_like_second_return` peeked at the next token and, because an
