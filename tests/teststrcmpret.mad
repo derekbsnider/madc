@@ -1,0 +1,38 @@
+// dlsym-resolved libc functions that return `int` (int32) write
+// their result in EAX only; the upper 32 bits of RAX are left
+// indeterminate (on Linux typically zero-extended). madc treats
+// the return as int64, so a negative int32 like strcmp's -1
+// reads back as 0x00000000FFFFFFFF and compares as positive.
+//
+// Fix: sign-extend via `movsxd ret, eax` for known int32-returning
+// libc functions in the dlsym variadic path. Gated on a curated
+// whitelist so that int64/pointer returners (malloc, strdup, strtol)
+// keep all 64 bits.
+
+#include <stdio.h>
+#include <string.h>
+
+int main()
+{
+    // raw negative value
+    int r = strcmp("abc", "abd");
+    printf("raw=%d\n", r);
+    printf("neg=%d\n", r < 0 ? 1 : 0);
+    printf("pos=%d\n", r > 0 ? 1 : 0);
+
+    // raw positive value
+    int r2 = strcmp("xyz", "abc");
+    printf("raw2=%d\n", r2);
+    printf("neg2=%d\n", r2 < 0 ? 1 : 0);
+    printf("pos2=%d\n", r2 > 0 ? 1 : 0);
+
+    // equality
+    int r3 = strcmp("foo", "foo");
+    printf("eq=%d\n", r3 == 0 ? 1 : 0);
+
+    // memcmp — also int32 return
+    int m = memcmp("abc", "abd", 3);
+    printf("mem_neg=%d\n", m < 0 ? 1 : 0);
+
+    return 0;
+}

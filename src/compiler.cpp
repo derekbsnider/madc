@@ -18,6 +18,7 @@
 #include <string>
 #include <functional>
 #include <map>
+#include <set>
 #include <list>
 #include <vector>
 #include <queue>
@@ -757,15 +758,68 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		    _operand = pgm.cc.newGpq("dl_ret");
 		    regdp.first = &_operand;
 		}
+		// dlsym-resolved C functions that return plain `int` (int32)
+		// place the result in EAX; the upper 32 bits of RAX are left
+		// indeterminate and typically zero-extended by the compiler,
+		// so negative int32 values read back as large positives. madc
+		// treats the return as int64, so sign-extend from the low 32
+		// bits via movsxd for known int32-returning libc functions.
+		//
+		// The dlsym fallback registers every unknown function with
+		// return type dtINT64, losing real-ABI info; int64/pointer
+		// returners (malloc, strdup, strtol, time, lseek, ...) must
+		// keep their upper 32 bits. So we gate the movsxd on a
+		// curated whitelist of common int32 returners rather than
+		// applying it universally.
+		static const std::set<std::string> int32_returners = {
+		    // comparison / search
+		    "strcmp", "strncmp", "strcasecmp", "strncasecmp",
+		    "memcmp", "strcoll",
+		    // char-level I/O
+		    "getchar", "putchar", "getc", "putc", "fgetc", "fputc",
+		    "ungetc",
+		    // stdio returning # written / status / 0
+		    "printf", "fprintf", "sprintf", "snprintf", "dprintf",
+		    "scanf", "fscanf", "sscanf", "vprintf", "vfprintf",
+		    "vsprintf", "vsnprintf", "vscanf", "vfscanf", "vsscanf",
+		    "fputs", "puts", "fflush", "fclose", "fileno", "feof",
+		    "ferror", "setvbuf", "setbuf",
+		    // file / process status
+		    "remove", "rename", "unlink", "rmdir", "mkdir", "chmod",
+		    "chown", "access", "link", "symlink", "truncate",
+		    "ftruncate", "fcntl", "ioctl", "dup", "dup2", "close",
+		    "open", "creat", "fsync", "pipe",
+		    // process / signal
+		    "kill", "fork", "exec", "execv", "execvp", "execve",
+		    "wait", "waitpid", "getpid", "getppid", "getuid", "geteuid",
+		    "getgid", "getegid", "setuid", "setgid", "system",
+		    "atexit", "raise", "sigaction", "sigprocmask",
+		    // conversions
+		    "atoi", "atol",
+		    // network / socket
+		    "socket", "bind", "listen", "accept", "connect", "send",
+		    "recv", "sendto", "recvfrom", "shutdown", "setsockopt",
+		    "getsockopt", "getsockname", "getpeername", "inet_pton",
+		    "inet_aton", "select", "poll", "flock",
+		    // time
+		    "gettimeofday", "settimeofday", "clock_gettime",
+		    "clock_settime", "nanosleep", "sleep", "usleep",
+		    // string helpers that happen to return int
+		    "strerror_r", "strtol_safe"
+		};
+		bool is_narrow_int_ret = (!func->returns.is_pointer()
+		    && !func->returns.is_real()
+		    && func->returns.is_integer()
+		    && func->returns.size < 8)
+		    || int32_returners.count(var.name) > 0;
+		x86::Gp ret_gp = pgm.cc.newGpq("dl_ret");
+		call->setRet(0, ret_gp);
+		if ( is_narrow_int_ret )
+		    pgm.cc.movsxd(ret_gp, ret_gp.r32());
 		if ( regdp.first->isMem() )
-		{
-		    // return into a temp register, then write to Mem
-		    x86::Gp ret_gp = pgm.cc.newGpq("dl_ret");
-		    call->setRet(0, ret_gp);
 		    pgm.cc.mov(regdp.first->as<x86::Mem>(), ret_gp);
-		}
 		else
-		    call->setRet(0, regdp.first->as<x86::Gp>());
+		    pgm.cc.mov(regdp.first->as<x86::Gp>(), ret_gp);
 		if ( !regdp.second )
 		    regdp.second = &func->returns;
 	    }
@@ -2454,8 +2508,24 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
 	rhs_rdp.second = ltype;
 	Operand &rhs_op = right->compile(pgm, rhs_rdp);
-	tsub->compile_set(pgm, rhs_op, rhs_rdp.second ? rhs_rdp.second : ltype);
-	_operand = rhs_op;
+	// Coerce dtSTRING → char*: storing a string literal into a
+	// `char *arr[N]` slot used to write the std::string object's
+	// address into the slot (not its c_str()). Match the same
+	// coercion TokenAssign applies for plain `char *p = "literal";`.
+	Operand effective_rhs = rhs_op;
+	if ( ltype->is_pointer() && ltype->rawtype() == DataType::dtCHAR
+	  && right->datadef() && right->datadef()->rawtype() == DataType::dtSTRING )
+	{
+	    x86::Gp cstr = pgm.cc.newIntPtr("sub_cstr");
+	    InvokeNode *cstr_call;
+	    pgm.cc.invoke(&cstr_call, imm(string_cstr),
+		FuncSignature::build<const char *, void *>());
+	    cstr_call->setArg(0, rhs_op.as<x86::Gp>());
+	    cstr_call->setRet(0, cstr);
+	    effective_rhs = cstr;
+	}
+	tsub->compile_set(pgm, effective_rhs, rhs_rdp.second ? rhs_rdp.second : ltype);
+	_operand = effective_rhs;
 	regdp.first = &_operand;
 	regdp.second = ltype;
 	return _operand;

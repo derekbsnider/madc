@@ -22,6 +22,27 @@
 
 ### Fixed
 
+- **Negative int32 returns from dlsym libc functions sign-extend
+  correctly** — `strcmp("abc", "abd")` returns `-1` in EAX on Linux
+  x86-64, but the upper 32 bits of RAX are indeterminate (typically
+  zero-extended by the compiler). madc's dlsym variadic call path
+  stored the raw RAX into an int64 destination, so `r < 0` evaluated
+  to false (the value read back as `0x00000000FFFFFFFF`, a large
+  positive). Now emits `movsxd ret, eax` after the call for a
+  curated whitelist of known int32-returning libc functions
+  (strcmp/memcmp family, char I/O, printf/scanf family, process
+  syscalls, network/socket, time, etc.). Pointer / int64 returners
+  (malloc, strdup, strtol, time, lseek...) stay untouched. Added
+  `tests/teststrcmpret.mad`.
+
+- **String literals stored into `char *` array elements go through
+  string_cstr** — `names[0] = "alice";` where `names` is `char
+  *names[3]` used to write the std::string object's address into the
+  slot instead of its c_str() pointer; subsequent `%s` or `strcmp()`
+  reads returned garbage. TokenAssign's ttSubscript path now applies
+  the same dtSTRING → char* coercion the plain `char *p =
+  "literal";` path uses. Added `tests/teststrcharptrarr.mad`.
+
 - **`(char *)` cast of std::string expressions coerces via
   string_cstr** — `TokenCast::compile()` used to just reinterpret the
   inner operand's type without changing its value, which for a
