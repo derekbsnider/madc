@@ -1,6 +1,8 @@
 # Changelog
 
-## [Unreleased] — SMAUG Phase F continues (post-v0.9.0)
+## [Unreleased]
+
+## [v0.9.1] — 2026-04-24 — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts
 
 ### Added
 
