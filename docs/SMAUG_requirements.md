@@ -195,6 +195,18 @@ to surface; each one lands here along with a minimal test.
 | Function pointer typedefs | MEDIUM | **DONE** (Phase F) |
 | Function-to-pointer decay (value contexts) | MEDIUM | **DONE** (Phase F) |
 | SMAUG command-table pattern (struct + fptr init) | HIGH | **DONE** (Phase F) |
+| Struct-copy init + assignment (`struct S a = b;`, `a = b;`) | HIGH | **DONE** (Phase F, via `memcpy`) |
+| `(*p).member` as expression / LHS | HIGH | **DONE** (Phase F) |
+| `expr[i].member` (subscript on expression base) | HIGH | **DONE** (Phase F) |
+| Struct-array subscript stride for `sizeof(S) != 1/2/4/8` | HIGH | **DONE** (Phase F, `imul` fallback) |
+| `*p++ = rhs` (postfix-inc LHS) | HIGH | **DONE** (Phase F) |
+| Compound-assign on expression-base subscripts (`obj.bits[i] &= ~m`) | HIGH | **DONE** (Phase F) |
+| Unary `-` in brace-init lists (`int a[] = { -5, -4 };`) | HIGH | **DONE** (Phase F) |
+| `char[N] = "..."` with matching N skips `'\0'` | MEDIUM | **DONE** (Phase F) |
+| `.4` leading-dot float literal | LOW | **DONE** (Phase F) |
+| `class` usable as plain C identifier | HIGH | **DONE** (Phase F) |
+| `goto label;` + forward labels | HIGH | **DONE** (Phase F) |
+| `#include` realpath canonicalization | MEDIUM | **DONE** (Phase F) |
 | Direct struct-member fn-pointer invocation | MEDIUM | **DONE** (Phase F) |
 | Global fn-pointer init at file scope | MEDIUM | **DONE** (Phase F) |
 | Struct-member fn-pointer reassignment | LOW | **DONE** (Phase F) |
