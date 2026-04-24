@@ -9,13 +9,6 @@
   but a separately-declared `double c = a + b;` works. Pre-existing
   bug surfaced while testing leading-dot float literals.
 
-- **int[N] struct-member subscript reads wrong element size** —
-  `struct { int bits[N]; }` — writing `a.bits[i] = v` works, but
-  reading `a.bits[i]` emits `qword_ptr` loads instead of `dword_ptr`,
-  yielding garbage and often SIGSEGV. Pre-existing bug surfaced while
-  testing struct-copy with int-array members; routed around in
-  `tests/teststructcopy.mad` by using scalar members.
-
 - **Function-like macros shadowing later definitions** — SMAUG.mad does
   `#define bug(...) ((void)0)` to stub out calls, then `#include`s
   `db.c` which contains `void bug(const char *str, ...) { … }`. The
@@ -93,6 +86,15 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**Struct-array subscript element stride + base addressing**~~ —
+  TokenSubscriptExpr and the TokenAssign write branch now fold
+  non-power-of-2 element sizes into the index via `imul`, and both
+  sites use `base_expr->operand()` rather than `compile()` to avoid
+  the emit_ir_value load-first-element path for numeric-typed
+  TokenMember bases. `struct { int bits[N]; }` reads / writes work,
+  nested struct arrays like `o.arr[i].member` work with correct
+  per-element strides. Targeted regression: `tests/teststructarrsub.mad`.
 
 - ~~**`expr[i].member` parses + compiles for struct element types**~~
   — dot handler's ttSubscript branch now detects TokenSubscriptExpr

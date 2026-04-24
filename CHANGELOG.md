@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+- **SMAUG progress tracking** — `docs/smaug-progress.md` holds a running
+  parse / compile / link / runtime percentage estimate for the SMAUG
+  1.8 umbrella bootstrap. Mirrored in `claude_status.json` under
+  `long_term_goal.smaug_completion_estimate`. Current state:
+  ~18% parse / ~18% compile / 0% link / 0% runtime (27,821 of 158,537
+  upstream lines ingested and parse-clean through the MadSMAUG
+  umbrella).
+
+- **Struct-array subscript element stride + base addressing** —
+  `arr[i].member` for a fixed array of structs nested inside another
+  struct used to produce wrong values / crashes. Two aligned fixes:
+  - TokenSubscriptExpr::compile and TokenAssign's ttSubscript /
+    TokenSubscriptExpr write branch now fold non-power-of-2 element
+    sizes into the index register via `imul` (SIB scale only covers
+    1/2/4/8; `sizeof(struct K)` of 16 fell through to scale 1 and
+    aliased adjacent elements).
+  - Both sites now read `base_expr->operand(pgm)` rather than
+    `compile(pgm, rdp)`. For a struct-contained `int bits[N]`, the
+    `bits` TokenMember reports `_datatype = int` (numeric), and
+    `compile()` routes through `emit_ir_value` — which loads the
+    first element's value into a Gp. Subsequent writes would then
+    index off that value rather than the array base. Using
+    `operand()` keeps the raw Mem/Gp so LEA/MOV can pick the right
+    shape downstream.
+  Regression: `tests/teststructarrsub.mad` covering both
+  `struct { int a; int b; }` elements and `int bits[4]` members.
+
 - **`expr[i].member` now parses and compiles** — the dot handler's
   ttSubscript branch used to `dynamic_cast<TokenSubscript *>`
   unconditionally, but `TokenSubscriptExpr` also reports ttSubscript

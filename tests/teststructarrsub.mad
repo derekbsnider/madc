@@ -1,0 +1,64 @@
+#!/../bin/madc
+// Fixed-size struct arrays nested inside another struct, and int[N]
+// struct members. Both cases used to produce wrong element addressing
+// because:
+//   (1) TokenSubscriptExpr's SIB-scale lookup only covered shifts for
+//       elem_size ∈ {1,2,4,8}. For sizeof(struct K) == 16 (two int64
+//       members), shift fell through to 0 and SIB scaled by 1 instead
+//       of 16, aliasing adjacent elements.
+//   (2) TokenAssign's ttSubscript / TokenSubscriptExpr write branch —
+//       and TokenSubscriptExpr::compile's read path — called
+//       base_expr->compile() which routes through emit_ir_value for
+//       numeric-typed TokenMember bases (e.g. struct-contained
+//       `int bits[N]`), loading the first element's value into a Gp
+//       and indexing off that value as if it were the array base.
+// Both now use the shared `imul` fallback for non-power-of-2 element
+// sizes, and use `base_expr->operand()` (which returns the raw Mem/Gp)
+// instead of compile().
+
+#include <stdio.h>
+
+struct K {
+    int a;
+    int b;
+};
+
+struct O {
+    int id;
+    struct K arr[3];
+};
+
+struct V {
+    int bits[4];
+};
+
+int main()
+{
+    // (1) Struct array inside struct — stride must be sizeof(struct K).
+    struct O o;
+    o.id = 99;
+    o.arr[0].a = 10;  o.arr[0].b = 11;
+    o.arr[1].a = 20;  o.arr[1].b = 21;
+    o.arr[2].a = 30;  o.arr[2].b = 31;
+
+    printf("id=%d\n", o.id);
+    printf("arr[0]=%d,%d\n", o.arr[0].a, o.arr[0].b);
+    printf("arr[1]=%d,%d\n", o.arr[1].a, o.arr[1].b);
+    printf("arr[2]=%d,%d\n", o.arr[2].a, o.arr[2].b);
+
+    // (2) int[N] array inside struct — writes and reads must both
+    // target the array base, not the first element's value.
+    struct V v;
+    v.bits[0] = 100;
+    v.bits[1] = 200;
+    v.bits[2] = 300;
+    v.bits[3] = 400;
+    printf("bits=%d %d %d %d\n",
+	   v.bits[0], v.bits[1], v.bits[2], v.bits[3]);
+
+    // Runtime index too.
+    int i = 2;
+    printf("bits[i]=%d\n", v.bits[i]);
+
+    return 0;
+}

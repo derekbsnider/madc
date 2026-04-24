@@ -2814,13 +2814,29 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 		effective_rhs = cstr;
 	    }
 
-	    regdefp_t base_rdp = {NULL, NULL, NULL};
-	    Operand &base_op = tse->base_expr->compile(pgm, base_rdp);
+	    // Use operand() rather than compile() here: for an aggregate
+	    // base_expr (e.g. a struct-contained `int bits[4]` exposed as
+	    // TokenMember with a numeric _datatype), compile() would emit
+	    // the load-first-element-into-Gp path via emit_ir_value, and we'd
+	    // end up indexing off the element value instead of the array
+	    // base address. operand() returns the raw Mem/Gp.
+	    Operand &base_op = tse->base_expr->operand(pgm);
 	    x86::Gp base_reg = pgm.cc.newIntPtr("subx_base");
 	    if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
 		pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
 	    else if ( base_op.isMem() )
-		pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
+	    {
+		// If base_expr is a pointer-typed value (e.g. `s->items` where
+		// items is `int *`), the Mem holds the pointer value — load it
+		// with MOV to get the real array address. If base_expr is an
+		// aggregate stored in-place (struct-contained fixed array, local
+		// array), we want the address OF the Mem — LEA gives that.
+		DataDef *bdd = tse->base_expr->datadef();
+		if ( bdd && bdd->is_pointer() )
+		    pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
+		else
+		    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+	    }
 	    else
 		throw "TokenAssign: subscript base is not a register or memory";
 
@@ -2834,10 +2850,15 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    else if ( idx_op.isMem() )
 		pgm.cc.mov(idx_reg, idx_op.as<x86::Mem>());
 
+	    // SIB scale only covers 1/2/4/8 — for any other element size (e.g.
+	    // sizeof(struct K) == 16) fold the element stride into the index
+	    // via imul and access with scale = 1.
 	    uint32_t shift = 0;
 	    if      ( elem_size == 8 ) shift = 3;
 	    else if ( elem_size == 4 ) shift = 2;
 	    else if ( elem_size == 2 ) shift = 1;
+	    else if ( elem_size != 1 )
+		pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
 	    x86::Mem slot = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
 
 	    if ( effective_rhs.isReg() && effective_rhs.as<BaseReg>().isGroup(RegGroup::kGp) )
@@ -3585,6 +3606,9 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(pgm.cc.comment("TokenSubscriptExpr::compile()"));
 
+    // operand() keeps the raw Mem/Gp for aggregate bases; compile() would
+    // load-into-Gp via emit_ir_value for numeric-typed TokenMember bases
+    // (e.g. struct-contained `int bits[4]`) and destroy the array address.
     Operand &base_op = base_expr->operand(pgm);
     x86::Gp base_reg = pgm.cc.newIntPtr("subexpr_obj");
     if ( base_op.isMem() )
@@ -3612,10 +3636,17 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
 	pgm.cc.mov(idx_reg, idx_op.as<Imm>());
 
     size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
+    // SIB scale only covers 1/2/4/8; any other element size (notably struct
+    // elements like sizeof(struct K) == 16) must be folded into the index
+    // register via imul, then accessed with SIB scale = 1.
     uint32_t shift = 0;
     if      ( elem_size == 8 ) shift = 3;
     else if ( elem_size == 4 ) shift = 2;
     else if ( elem_size == 2 ) shift = 1;
+    else if ( elem_size != 1 )
+    {
+	pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+    }
 
     x86::Mem elem_mem = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     if ( !regdp.second )
