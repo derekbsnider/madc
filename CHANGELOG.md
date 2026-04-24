@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- **`(*p).member` now parses as `p->member`** — the parenthesized-deref-
+  then-dot form used to segfault `parseExpression` because the `.`
+  handler cast `lhs_dot` to `TokenMember *` unconditionally, but
+  `TokenDeref` and `TokenDerefExpr` both report `ttMember` for LHS-
+  compat reasons without actually deriving from `TokenMember`. Added
+  explicit branches to the dot handler:
+  - `TokenDeref` LHS — route the dot through the underlying pointer
+    variable so the normal no-`parent_expr` `TokenMember` compiles as
+    `[ptr + offset]` via voperand's pointer-in-Gp branch.
+  - `TokenDerefExpr` LHS — synthesize a struct-typed object variable
+    and pass the `TokenDerefExpr` as `parent_expr`, so
+    `TokenMember::operand` calls `TokenDerefExpr::operand` (which
+    materializes the pointer value) and accesses `[ptr + offset]`
+    through the struct-value "dot chain" branch.
+  Exposed by SMAUG's `xIS_SET((var), bit)` macro after `*vector`
+  substitution — when `vector` is also a madc keyword (STL container
+  reserve), the unary-`*` handler hands the parser a keyword rather
+  than an identifier and wraps the expression in `TokenDerefExpr`.
+  Closes the MadSMAUG umbrella front edge at `handler.c:2989`
+  (`affect_bit_name`). Regression: `tests/testparenderefmember.mad`.
+
 - **Struct-copy initialization and assignment** — C's bytewise struct
   copy (`struct S a = other;` at declaration and plain `a = other;` as
   assignment where both sides are the same user-defined struct type)

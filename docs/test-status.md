@@ -4,11 +4,11 @@ Test results as of April 24, 2026 (v0.10.1 — typed-register IR cleanup is comp
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 172 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 173 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 172 integration tests
+- Passing: 173 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR
@@ -62,8 +62,9 @@ The latest IR-focused validation batch passes directly, including:
 - `testfloatvarargs.mad`
 - `testderefpostincstore.mad`
 - `teststructcopy.mad`
+- `testparenderefmember.mad`
 
-## Passing Tests — 172 integration (latest batch)
+## Passing Tests — 173 integration (latest batch)
 
 `scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
 hello world`) and `testargv.mad` with argv (`hello world`), asserting

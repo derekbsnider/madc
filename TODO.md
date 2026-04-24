@@ -4,14 +4,10 @@
 
 ### Language Completeness
 
-- **Parenthesized `*p` followed by `.member` parses crash** —
-  `(*p).bits[i]` / `(*p).x` segfaults in `parseExpression` even though
-  the equivalent `p->bits[i]` parses fine. Root cause not yet pinpointed;
-  the cast-like `(TYPE *)` handler likely interferes with a bare `(*p)`
-  parenthesized-expression start. Exposed by SMAUG's
-  `xIS_SET((var), bit)` macro which expands to `((var).bits[...])`
-  when a caller passes `*vector` as `var`. Current MadSMAUG front edge
-  at `handler.c:2990` in `affect_bit_name`.
+- **Leading-dot float literal `.4`** — the lexer doesn't accept
+  `.4` as shorthand for `0.4`; it tokenizes `.` as tkDot followed by
+  `4` as integer, so `c += .4 * expr` fails with `Missing operand`.
+  Current MadSMAUG front edge at `handler.c:4683`.
 
 - **int[N] struct-member subscript reads wrong element size** —
   `struct { int bits[N]; }` — writing `a.bits[i] = v` works, but
@@ -97,6 +93,22 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**`(*p).member` now parses as `p->member`**~~ — the dot handler in
+  parseExpression cast `lhs_dot` to `TokenMember *` unconditionally,
+  but `TokenDeref` and `TokenDerefExpr` both report `ttMember` without
+  actually deriving from `TokenMember`. Added explicit branches:
+  TokenDeref routes tv_var through the underlying pointer variable
+  (no parent_expr — TokenMember's voperand pointer-in-Gp path compiles
+  it as `[ptr+offset]`); TokenDerefExpr synthesizes a struct-typed
+  object variable and passes the TokenDerefExpr as parent_expr (the
+  struct-value "dot chain" branch then handles `[ptr+offset]`).
+  Exposed by SMAUG's `xIS_SET((var), bit)` macro after `*vector`
+  substitution — `vector` is also a madc keyword (STL container
+  reserve), so the unary-`*` handler hands a keyword rather than an
+  identifier and falls into the TokenDerefExpr path. Advances the
+  MadSMAUG umbrella from handler.c:2989 to handler.c:4683. Targeted
+  regression: `tests/testparenderefmember.mad`.
 
 - ~~**Struct-copy initialization and assignment**~~ — `struct S a = other;`
   (decl init) and `a = other;` (plain assign) now emit

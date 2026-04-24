@@ -2354,8 +2354,32 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    else if ( lhs_dot->type() == TokenType::ttMember )
 		    {
 			TokenMember *tm = dynamic_cast<TokenMember *>(lhs_dot);
-			tv_var      = &tm->var;
-			struct_type =  tm->var.type;
+			if ( tm )
+			{
+			    tv_var      = &tm->var;
+			    struct_type =  tm->var.type;
+			}
+			else if ( TokenDeref *tdl = dynamic_cast<TokenDeref *>(lhs_dot) )
+			{
+			    // (*p).member — logically equivalent to p->member.
+			    // Route the dot through the pointer variable so the
+			    // normal TokenMember pointer-in-Gp path compiles it
+			    // as [p + offset] at codegen time.
+			    tv_var      = &tdl->var;
+			    struct_type =  tdl->deref_type;
+			}
+			else if ( TokenDerefExpr *tdxl = dynamic_cast<TokenDerefExpr *>(lhs_dot) )
+			{
+			    // (*expr).member — expr yields a pointer whose target
+			    // is a struct. Resolve member lookup against the
+			    // dereferenced struct type; codegen uses the expr's
+			    // pointer value as base via TokenMember's parent_expr
+			    // path.
+			    tv_var      = new Variable("__deref_expr", *tdxl->deref_type, 1, NULL, false);
+			    struct_type =  tdxl->deref_type;
+			}
+			else
+			    Throw(tb) << "member reference '.' on unsupported deref expression" << flush;
 		    }
 		    else
 		    {
@@ -2415,8 +2439,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // chains, or TokenSubscript for array-of-structs), pass it as
 		    // parent_expr so TokenMember::operand() can resolve the base at
 		    // codegen time.
-		    if ( lhs_dot->type() == TokenType::ttMember
-		      || lhs_dot->type() == TokenType::ttSubscript )
+		    //
+		    // TokenDeref reports ttMember for LHS-compat reasons but is
+		    // not a real TokenMember — for `(*p).x` we already routed
+		    // tv_var to the pointer `p`, so the normal no-parent_expr path
+		    // compiles it as `p->x` via voperand's pointer-in-Gp branch.
+		    //
+		    // TokenDerefExpr is the opposite: `(*expr).x` where expr is a
+		    // pointer-producing expression. Pass the TokenDerefExpr as
+		    // parent_expr so TokenMember::operand calls expr->compile to
+		    // materialize the pointer value at codegen, then accesses
+		    // [ptr + offset] via the struct-value ("dot chain") branch.
+		    bool is_deref_lhs = (dynamic_cast<TokenDeref *>(lhs_dot) != NULL);
+		    bool is_derefexpr_lhs = (dynamic_cast<TokenDerefExpr *>(lhs_dot) != NULL);
+		    if ( is_derefexpr_lhs )
+			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
+		    else if ( !is_deref_lhs
+		      && (lhs_dot->type() == TokenType::ttMember
+		       || lhs_dot->type() == TokenType::ttSubscript) )
 			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
 		    else
 			exStack.push(new TokenMember(*tv_var, *var, ofs));
