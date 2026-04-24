@@ -4,6 +4,19 @@
 
 ### Language Completeness
 
+- **`goto label` + forward labels** — needed for several SMAUG sources
+  (mud_prog.c, magic.c, build.c, tables.c, ban.c, services.c,
+  mud_comm.c). `tkGOTO` exists as a lexer token but no parse/compile
+  support. Currently routed around by stubbing the calling symbols.
+
+- **`IRBuilder::coerce() invalid src`** inside fight.c / skills.c
+  compile — surfaces after `class`-as-identifier lands and the
+  umbrella reaches deep into those TUs. Likely a typed-pointer-return
+  mis-wiring where a compile path lets `regdp.second` fall to NULL
+  before calling a shared helper that then feeds an invalid IRValue
+  into `ir.coerce`. Reproducer pending — current MadSMAUG umbrella
+  front edge.
+
 - **Real `<` / `<=` comparison with Mem-backed literal RHS** —
   `1.5 < 2.0` returns 0. `>` works. Narrow comparison bug distinct
   from the storage truncation just fixed; surfaced while verifying
@@ -86,6 +99,15 @@
 ## Completed
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**`class` as a plain C identifier**~~ — parseStatement routes
+  `class` through parseExpression when it's not followed by an
+  identifier or `{` (real class-declaration head); parsePostfixChain
+  accepts `class` after `.` / `->` via `is_contextual_identifier_token`
+  (which was already set up to accept tkCLASS and the STL keywords —
+  just needed to be plugged into the postfix-chain member-name parse).
+  Targeted regression: `tests/testclassident.mad`. Advances MadSMAUG
+  through skills.c.
 
 - ~~**`safemov(Operand, double, ...)` truncating to int for Mem
   destinations**~~ — when TokenOperator::optimize constant-folded

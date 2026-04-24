@@ -1463,10 +1463,10 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    bool is_arrow = (pid == TokenID::tkDeRef);
 	    TokenBase *op_tb = nextToken();
 	    TokenBase *mtb = nextToken();
-	    if ( !mtb || mtb->type() != TokenType::ttIdentifier )
+	    if ( !mtb || !is_contextual_identifier_token(mtb) )
 		Throw(mtb ? mtb : op_tb) << "expected member name after '"
 		    << (is_arrow ? "->" : ".") << "'" << flush;
-	    std::string mname = ((TokenIdent *)mtb)->str;
+	    std::string mname = contextual_identifier_name(mtb);
 
 	    DataDef *obj_type = result->datadef();
 	    if ( is_arrow )
@@ -5926,6 +5926,21 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    {
 		DBG(std::cout << "parseStatement() container keyword used as identifier: "
 		    << ((TokenKeyword *)tb)->str << std::endl);
+		resetPrevToken();
+		return parseExpression(tb);
+	    }
+	    // `class` is also a madc keyword (OOP class declaration), but C
+	    // codebases (notably SMAUG) use it as a plain identifier for
+	    // struct members / locals (`ch->class`, `int class;`). Treat as
+	    // an identifier here when it's not the start of an actual class
+	    // declaration — i.e. when the next token is not an identifier
+	    // (class name) or '{' (anonymous class body).
+	    if ( tb->id() == TokenID::tkCLASS
+	      && peekToken()
+	      && peekToken()->type() != TokenType::ttIdentifier
+	      && peekToken()->id() != TokenID::tkOpBrc )
+	    {
+		DBG(std::cout << "parseStatement() 'class' used as identifier" << std::endl);
 		resetPrevToken();
 		return parseExpression(tb);
 	    }

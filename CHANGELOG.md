@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **`class` as a plain C identifier** — madc reserves `class` for OOP
+  declarations, but C codebases (notably SMAUG) use it everywhere as
+  a struct member name (`ch->class`), a local variable (`int class;`),
+  a function parameter, and a subscript index (`tbl[ch->class]`).
+  `parseStatement`'s ttKeyword case now routes `class` through
+  `parseExpression` when the next token is neither an identifier (real
+  class-declaration head) nor `{`. `parsePostfixChain` now accepts
+  `class` after `.` / `->` via `is_contextual_identifier_token` (which
+  already accepted `tkCLASS` and the STL container keywords).
+  Regression: `tests/testclassident.mad`. Advances the MadSMAUG
+  umbrella through `skills.c` to the next compile-time front edge
+  (an IR coerce mis-wiring in fight/skills function bodies).
+
 - **`safemov(Operand, double, ...)` truncating to int for Mem
   destinations** — `TokenOperator::optimize` constant-folds
   expressions like `double d = 1.0 + 0.5;` and then calls

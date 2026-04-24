@@ -15,9 +15,9 @@ bootstrap).
 
 | Phase            | % | Notes |
 |------------------|--:|-------|
-| **Parse**        | ~18% | 27,821 / 158,537 lines ingested via the umbrella + fully parsed |
-| **Compile**      | ~18% | Same scope — JIT finalize succeeds (pre-existing `finalize error=26` is non-fatal) |
-| **Link**         | 0%  | Umbrella stops on the first undefined symbol per C file added |
+| **Parse**        | ~24% | 38,581 / 158,537 lines ingested via the umbrella + fully parsed (fight.c + skills.c added this session) |
+| **Compile**      | ~22% | Most of that range compiles; umbrella now hits an `IRBuilder::coerce() invalid src` in a later function (likely a typed-pointer-return mis-wiring) |
+| **Link**         | 0%  | Umbrella still stops before linkage — compile errors precede link |
 | **Runtime**      | 0%  | `main()` has never been executed against the full umbrella |
 
 These numbers are rough. Headers are ingested whole; each C file that
@@ -40,17 +40,18 @@ meaningful once we start stubbing and connecting more TUs.
 | `ibuild.c`      | 3,891 | ✅    | ✅      | |
 | `ident.c`       |   354 | ✅    | ✅      | |
 | `interp.c`      | 1,307 | ✅    | ✅      | |
-| **Subtotal**    | 27,821 | | | |
+| `fight.c`       | 4,521 | ✅    | partial | Parses; compile hits IR coerce somewhere later in the file |
+| `skills.c`      | 6,239 | ✅    | partial | Parses after `class`-as-identifier lands |
+| **Subtotal**    | 38,581 | | | |
 
 ## Not yet ingested
 
 | File            | Lines | Blocker |
 |-----------------|------:|---------|
-| `fight.c`       | 4,521 | Current front edge — `learn_from_failure` referenced by ibuild.c, defined here |
+| `mud_prog.c`    | 4,019 | Uses `goto label` — labels + goto not yet supported. Stubbed in `_bootstrap_comm_shim.c` for now (rprog/mprog/oprog leave/entry/greet triggers) |
 | `comm.c`        | 4,091 | Shimmed; real `comm.c` has descriptor / socket / color code |
 | `update.c`      | 3,144 | |
 | `magic.c`       | 7,394 | |
-| `mud_prog.c`    | 4,019 | |
 | `act_comm.c`    |       | |
 | `act_info.c`    |       | |
 | `act_obj.c`     |       | |
@@ -62,7 +63,9 @@ SMAUG game loop without MUD-network federation.
 
 ## Pinned language gaps (from `TODO.md`)
 
-- `a + b` in some declaration-init contexts produces wrong result (pre-existing)
+- `goto label` / forward labels — needed for mud_prog.c, magic.c, etc.
+- `IRBuilder::coerce() invalid src` inside a fight.c/skills.c function — current compile-time front edge. Likely a typed-pointer-return mis-wiring or a call-return path that drops `regdp.second`.
+- Real `<` / `<=` comparison with Mem-backed literal RHS (surfaced this session)
 - `p[i].member` via raw pointer subscript segfaults at runtime (pre-existing)
 - Function-like macros shadowing later definitions (workaround via umbrella `#undef`)
 - `int a = -2;` declaration-init drops the unary `-` (pre-existing)
