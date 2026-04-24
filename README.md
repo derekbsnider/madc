@@ -204,16 +204,16 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.10.1** (2026-04-24) — Typed-register IR cleanup completion. This patch release finishes the post-`v0.10.0` cleanup pass: multi-return return-buffer stores, stream `<<` / `>>` shape handling, direct-call fallback return allocation, and the remaining obvious compiler-side Mem load/store sites now route through the shared IR surface where appropriate. Dead `typesafe.cpp` surface was pruned (`Gp`↔`Xmm` arithmetic/compare overloads, `Xmm`+`Imm` arithmetic, and dead `safemov(Xmm, Imm)` path). Baseline remains 170 integration + 48 unit tests (25 datadef + 23 IR) passing.
+**v0.11.0** (2026-04-24) — SMAUG Phase F front-edge resumption. Twelve language gaps surfaced during whole-program porting closed this cycle, and the MadSMAUG umbrella bootstrap now **compiles and runs end-to-end** against a stub `main()`. Highlights: `goto` + forward labels, struct-copy init+assign via `memcpy`, `*p++ = rhs` as LHS, `(*p).member`, `expr[i].member`, compound-assign on expression-base subscripts (`xREMOVE_BIT`/`xSET_BIT`), struct-array subscript stride + base addressing, `class` as a plain C identifier, leading-dot float literals, exact-length `char[N]` init, unary `-` after `{` / `,` / `;` / `(` / `=`, `#include` realpath canonicalization, and `safemov(Operand, double)` no longer truncating for Mem destinations. SMAUG completion tracked in [`docs/smaug-progress.md`](docs/smaug-progress.md). 183 integration + 48 unit tests (25 datadef + 23 IR) passing.
 
 ### Recent Releases
 
+- **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, `expr[i].m`, compound-assign on subscripts, realpath includes, class-as-ident
 - **v0.10.1** — Typed-register IR cleanup completion: stream/multi-return/direct-call cleanup, final compiler-site IR store/load ports, dead `typesafe.cpp` surface pruned
 - **v0.10.0** — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c): 15 shared compile-site helpers, ~880 lines removed from `compiler.cpp`, three latent bugs fixed
 - **v0.9.1** — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts, constant `case`, postfix chains
 - **v0.9.0** — SMAUG Phase F continues: `->` on call results, Mem-backed arithmetic, unified control-flow parens, fn-ptr typedefs + decay, struct interop expansion, address-taken locals, assign-as-expression
 - **v0.8.0** — SMAUG Phase E complete + Phase F start: C arrays, brace init, struct interop, select(), MadSMAUG port begins
-- **v0.7.0** — SMAUG Phase D: va_list/stdarg.h, vsprintf helpers, -rdynamic, for-loop increment fix
 
 ## Roadmap
 
