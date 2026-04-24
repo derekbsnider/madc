@@ -226,6 +226,47 @@ static Operand &emit_plain_divmod(Program &pgm, TokenBase *left, TokenBase *righ
     return storage;
 }
 
+// Helper: load a variable's value into `dst_gp` with the size-aware move
+// — mov from Gp, mov from Mem. Used by lambda-capture pack / multi-return
+// unpack paths that need to move a var's value into a scratch Gp before
+// storing it elsewhere.
+static void load_var_to_gp(Program &pgm, Operand &src, asmjit::x86::Gp &dst_gp)
+{
+    if ( src.isReg() && src.as<asmjit::BaseReg>().isGroup(asmjit::RegGroup::kGp) )
+	pgm.cc.mov(dst_gp, src.as<asmjit::x86::Gp>());
+    else if ( src.isMem() )
+	pgm.cc.mov(dst_gp, src.as<asmjit::x86::Mem>());
+    else
+	throw "load_var_to_gp() unsupported source operand";
+}
+
+// Helper: load the address-of a variable into `dst_gp` — mov from Gp
+// (a Gp already holds a pointer/address), lea from Mem (stack-backed
+// var where we want its slot address). Used for non-numeric lambda
+// captures where the env slot stores a pointer to the outer string.
+static void lea_var_to_gp(Program &pgm, Operand &src, asmjit::x86::Gp &dst_gp)
+{
+    if ( src.isReg() && src.as<asmjit::BaseReg>().isGroup(asmjit::RegGroup::kGp) )
+	pgm.cc.mov(dst_gp, src.as<asmjit::x86::Gp>());
+    else if ( src.isMem() )
+	pgm.cc.lea(dst_gp, src.as<asmjit::x86::Mem>());
+    else
+	throw "lea_var_to_gp() unsupported source operand";
+}
+
+// Helper: store `src_gp` into a variable's operand (Reg or Mem) via
+// the size-aware move. Used by multi-return unpack + lambda-capture
+// reload paths.
+static void store_gp_to_var(Program &pgm, asmjit::x86::Gp &src_gp, Operand &dst)
+{
+    if ( dst.isReg() && dst.as<asmjit::BaseReg>().isGroup(asmjit::RegGroup::kGp) )
+	pgm.cc.mov(dst.as<asmjit::x86::Gp>(), src_gp);
+    else if ( dst.isMem() )
+	pgm.cc.mov(dst.as<asmjit::x86::Mem>(), src_gp);
+    else
+	throw "store_gp_to_var() unsupported destination operand";
+}
+
 // State carried across the general-fallback scaffolding of the binary-op
 // tokens (TokenAdd, TokenSub, TokenMul, TokenXor, TokenBand, TokenBor,
 // TokenBSL general integer path). Captured at begin_general_binop,
@@ -1014,26 +1055,16 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		    if ( !cap_var ) continue;
 		    Operand &cap_op = pgm.tkFunction->voperand(pgm, cap_var);
 		    DataDef *cap_type = func->captures[ci].type;
+		    // Numeric captures: store the VALUE in env[ci].
+		    // Non-numeric (string/object) captures: store the ADDRESS
+		    // of the outer variable in env[ci] — the callee dereferences
+		    // on each access.
+		    x86::Gp slot_val = pgm.cc.newGpq(cap_type->is_numeric() ? "__cap_val" : "__cap_str");
 		    if ( cap_type->is_numeric() )
-		    {
-			// Store value directly in env[ci]
-			x86::Gp val = pgm.cc.newGpq("__cap_val");
-			if ( cap_op.isReg() && cap_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-			    pgm.cc.mov(val, cap_op.as<x86::Gp>());
-			else if ( cap_op.isMem() )
-			    pgm.cc.mov(val, cap_op.as<x86::Mem>());
-			pgm.cc.mov(x86::qword_ptr(env_ptr, (int64_t)ci * 8), val);
-		    }
+			load_var_to_gp(pgm, cap_op, slot_val);
 		    else
-		    {
-			// Store pointer to string/object in env[ci]
-			x86::Gp str_ptr = pgm.cc.newIntPtr("__cap_str");
-			if ( cap_op.isReg() && cap_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-			    pgm.cc.mov(str_ptr, cap_op.as<x86::Gp>());
-			else if ( cap_op.isMem() )
-			    pgm.cc.lea(str_ptr, cap_op.as<x86::Mem>());
-			pgm.cc.mov(x86::qword_ptr(env_ptr, (int64_t)ci * 8), str_ptr);
-		    }
+			lea_var_to_gp(pgm, cap_op, slot_val);
+		    pgm.cc.mov(x86::qword_ptr(env_ptr, (int64_t)ci * 8), slot_val);
 		}
 	    }
 	    params.push_back(env_ptr);
@@ -1068,10 +1099,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		Operand &cap_op = pgm.tkFunction->voperand(pgm, cap_var);
 		x86::Gp val = pgm.cc.newGpq("__cap_reload");
 		pgm.cc.mov(val, x86::qword_ptr(env_ptr, (int64_t)ci * 8));
-		if ( cap_op.isReg() && cap_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-		    pgm.cc.mov(cap_op.as<x86::Gp>(), val);
-		else if ( cap_op.isMem() )
-		    pgm.cc.mov(cap_op.as<x86::Mem>(), val);
+		store_gp_to_var(pgm, val, cap_op);
 	    }
 	}
 
@@ -2628,10 +2656,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    {
 		x86::Gp tmp = pgm.cc.newGpq("__mret_val");
 		pgm.cc.mov(tmp, x86::qword_ptr(retbuf_ptr, (int32_t)(i * 8)));
-		if ( var_op.isReg() && var_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-		    pgm.cc.mov(var_op.as<x86::Gp>(), tmp);
-		else if ( var_op.isMem() )
-		    pgm.cc.mov(var_op.as<x86::Mem>(), tmp);
+		store_gp_to_var(pgm, tmp, var_op);
 	    }
 	    else if ( multi_vars[i]->type->is_string() )
 	    {
