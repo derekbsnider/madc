@@ -2324,14 +2324,20 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 // compile the increment operator.
 // Supports plain variables (fast in-register inc) and struct members /
 // *deref (load-inc-store). `left` = postfix (x++), `right` = prefix (++x).
-Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
-{
-    TokenBase *target = left ? left : right;
-    bool postfix = (left != nullptr);
-    if ( !target )
-	throw "Invalid increment";
+// Shared shape for safeinc / safedec: in-place on the register/Mem.
+typedef void (Program::*SafeUnaryStep)(asmjit::Operand &);
 
-    // Fast path: plain variable — inc the register directly, no writeback needed.
+// Emit ++target or --target, depending on `step`. Handles all four
+// combinations of target shape (plain variable vs. member/deref lvalue)
+// and position (postfix — return old value — vs. prefix — return new).
+// The `old_name_hint` / `new_name_hint` parameters feed into the
+// temp-register names so ++/-- keep readable asm in logs.
+static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
+			     SafeUnaryStep step, regdefp_t &regdp, Operand &_operand,
+			     const char *old_name_hint, const char *new_name_hint,
+			     const char *op_name)
+{
+    // Fast path: plain variable — apply step to its register/Mem directly.
     if ( target->type() == TokenType::ttVariable )
     {
 	TokenVar *tv = dynamic_cast<TokenVar *>(target);
@@ -2340,14 +2346,14 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    if ( postfix )
 	    {
-		_operand = tv->var.type->newreg(pgm.cc, "postinc");
+		_operand = tv->var.type->newreg(pgm.cc, old_name_hint);
 		pgm.safemov(_operand, reg, tv->var.type, tv->var.type);
-		pgm.safeinc(reg);
+		(pgm.*step)(reg);
 	    }
 	    else
 	    {
-		pgm.safeinc(reg);
-		_operand = tv->var.type->newreg(pgm.cc, "preinc");
+		(pgm.*step)(reg);
+		_operand = tv->var.type->newreg(pgm.cc, new_name_hint);
 		pgm.safemov(_operand, reg, tv->var.type, tv->var.type);
 	    }
 	    if ( regdp.first )
@@ -2365,15 +2371,15 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
 		pgm.safemov(*regdp.first, reg);
 	    else
 	    {
-		_operand = tv->var.type->newreg(pgm.cc, "postinc");
+		_operand = tv->var.type->newreg(pgm.cc, old_name_hint);
 		pgm.safemov(_operand, reg);
 		regdp.first = &_operand;
 	    }
-	    pgm.safeinc(reg);
+	    (pgm.*step)(reg);
 	}
 	else
 	{
-	    pgm.safeinc(reg);
+	    (pgm.*step)(reg);
 	    if ( regdp.first )
 		pgm.safemov(*regdp.first, reg);
 	    else
@@ -2385,15 +2391,14 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
 	return *regdp.first;
     }
 
-    // Member (obj->field / obj.field) or *deref: load → inc → store.
-    CompoundLHS lhs = resolveCompoundLHS(pgm, target, postfix ? "++" : "++");
+    // Member (obj->field / obj.field) or *deref: load → step → store.
+    CompoundLHS lhs = resolveCompoundLHS(pgm, target, op_name);
     if ( postfix )
     {
-	// save old value before incrementing
-	_operand = lhs.type->newreg(pgm.cc, "postinc_old");
+	_operand = lhs.type->newreg(pgm.cc, old_name_hint);
 	pgm.safemov(_operand, lhs.lval);
     }
-    pgm.safeinc(lhs.lval);
+    (pgm.*step)(lhs.lval);
     if ( lhs.is_member && lhs.writeback.hasBase() )
 	pgm.safemov(lhs.writeback, lhs.lval, lhs.type, lhs.type);
     if ( !postfix )
@@ -2406,84 +2411,22 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
     return *regdp.first;
 }
 
-// compile the decrement operator — symmetric with TokenInc.
+Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
+{
+    TokenBase *target = left ? left : right;
+    bool postfix = (left != nullptr);
+    if ( !target ) throw "Invalid increment";
+    return emit_inc_dec(pgm, target, postfix, &Program::safeinc, regdp, _operand,
+			"postinc", "preinc", "++");
+}
+
 Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 {
     TokenBase *target = left ? left : right;
     bool postfix = (left != nullptr);
-    if ( !target )
-	throw "Invalid decrement";
-
-    if ( target->type() == TokenType::ttVariable )
-    {
-	TokenVar *tv = dynamic_cast<TokenVar *>(target);
-	Operand &reg = tv->operand(pgm);
-	if ( reg.isMem() )
-	{
-	    if ( postfix )
-	    {
-		_operand = tv->var.type->newreg(pgm.cc, "postdec");
-		pgm.safemov(_operand, reg, tv->var.type, tv->var.type);
-		pgm.safedec(reg);
-	    }
-	    else
-	    {
-		pgm.safedec(reg);
-		_operand = tv->var.type->newreg(pgm.cc, "predec");
-		pgm.safemov(_operand, reg, tv->var.type, tv->var.type);
-	    }
-	    if ( regdp.first )
-		pgm.safemov(*regdp.first, _operand, tv->var.type, tv->var.type);
-	    else
-		regdp.first = &_operand;
-	    tv->var.modified();
-	    tv->putreg(pgm);
-	    regdp.second = tv->var.type;
-	    return *regdp.first;
-	}
-	if ( postfix )
-	{
-	    if ( regdp.first )
-		pgm.safemov(*regdp.first, reg);
-	    else
-	    {
-		_operand = tv->var.type->newreg(pgm.cc, "postdec");
-		pgm.safemov(_operand, reg);
-		regdp.first = &_operand;
-	    }
-	    pgm.safedec(reg);
-	}
-	else
-	{
-	    pgm.safedec(reg);
-	    if ( regdp.first )
-		pgm.safemov(*regdp.first, reg);
-	    else
-		regdp.first = &reg;
-	}
-	tv->var.modified();
-	tv->putreg(pgm);
-	regdp.second = tv->var.type;
-	return *regdp.first;
-    }
-
-    CompoundLHS lhs = resolveCompoundLHS(pgm, target, postfix ? "--" : "--");
-    if ( postfix )
-    {
-	_operand = lhs.type->newreg(pgm.cc, "postdec_old");
-	pgm.safemov(_operand, lhs.lval);
-    }
-    pgm.safedec(lhs.lval);
-    if ( lhs.is_member && lhs.writeback.hasBase() )
-	pgm.safemov(lhs.writeback, lhs.lval, lhs.type, lhs.type);
-    if ( !postfix )
-	_operand = lhs.lval;
-    if ( regdp.first )
-	pgm.safemov(*regdp.first, _operand);
-    else
-	regdp.first = &_operand;
-    regdp.second = lhs.type;
-    return *regdp.first;
+    if ( !target ) throw "Invalid decrement";
+    return emit_inc_dec(pgm, target, postfix, &Program::safedec, regdp, _operand,
+			"postdec", "predec", "--");
 }
 
 /////////////////////////////////////////////////////////////////////////////
