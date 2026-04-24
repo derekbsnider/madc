@@ -4,6 +4,33 @@
 
 ### Added
 
+- **Typed-register IR — Stage 2i/2j + Stage 3b** — three more
+  bounded cleanups:
+  - **TokenMod general path** now routes through
+    `GeneralBinopCascade`. The scratch Reg that
+    `begin_general_binop` allocates doubles as the remainder
+    register safediv writes into, closing the last binary-op
+    hold-out. All eleven binary-op tokens share the same
+    cascade scaffolding now.
+  - **TokenInc / TokenDec collapsed into `emit_inc_dec`.** The
+    two were near-identical; factor the shared lowering through
+    a SafeUnaryStep function pointer and each TokenXx::compile
+    now one-lines its delegation. Covers all four
+    shape+position combinations (plain-var Reg, plain-var Mem,
+    member/deref lvalue, each in postfix and prefix).
+  - **Fn-pointer call dispatch cleanup.** Remove
+    `reinterpret_cast<Operand *>(&gp)` UB in TokenCallFunc's
+    fptr-call path by using an Operand local that both branches
+    write into. Also add a load-Mem-to-Gp step for stack-backed
+    fn-pointer variables so the downstream invoke's
+    `ptr_op.as<Gp>()` can never see a Mem (previously a latent
+    crash for any fn-pointer variable that got spilled).
+  - **Five more IRBuilder::coerce unit tests.** Cover int↔real
+    (cvtsi2sd/ss, cvttsd/ss2si) and int64→int32 narrow relabel
+    paths that Stage 1/2 introduced but hadn't yet asserted.
+  Tests: 23 IR (up from 18) + 25 datadef unit + 170 integration
+  all pass.
+
 - **Typed-register IR — Stage 2f/g/h general-fallback collapse +
   TokenNeg dead-code fix** — three more bounded refactors on the
   binary-op general fallback paths:

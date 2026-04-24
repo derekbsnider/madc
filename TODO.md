@@ -14,13 +14,12 @@
   `emit_compound_divmod`). Call return-binding is unified via
   `bind_call_return` + `narrow_int_ret` flag across the fptr /
   dlcall / variadic-dlsym paths (Stage 3a). Still to do:
-  - ~~**General (non-plain-numeric) fallback paths**~~ — Add /
-    Sub / Mul / Div / Xor / Band / Bor / BSL / BSR general paths
-    now route through `GeneralBinopCascade` +
-    `begin_general_binop` / `finish_general_binop`. Pointer-
-    scale extracted into `emit_pointer_arith_scale`. TokenMod
-    still open-coded (remainder-register interleaving doesn't
-    factor cleanly). TokenNeg's dead-code branch fixed.
+  - ~~**General (non-plain-numeric) fallback paths**~~ — all
+    eleven binary-op tokens (Add / Sub / Mul / Div / Mod / Xor /
+    Band / Bor / BSL / BSR, plus now TokenInc / TokenDec via
+    `emit_inc_dec`) route through the shared cascade helpers.
+    Pointer scale extracted into `emit_pointer_arith_scale`.
+    TokenNeg's dead-code branch fixed.
   - **typesafe.cpp shrinkage** — once the fallback paths also
     normalize upstream, `safeadd` / `safesub` / `safemul` /
     `safediv` / `safemod` / `safeor` / `safeand` / `safexor` /
