@@ -4,15 +4,26 @@
 
 ### Language Completeness
 
+- **Struct-copy initialization and assignment** — `struct S a = other;`
+  at declaration and plain `a = other;` as an assignment statement,
+  where both sides are the same user-defined struct type. `parseDeclaration`
+  currently accepts only `{ ... }` brace-init or a string literal after
+  `=` for struct types and errors out with `Expected '{' or string
+  literal for initializer` otherwise. `TokenAssign::compile` has no
+  struct-to-struct path either. C89 allows plain struct copy (emitted
+  as a bytewise `memcpy(dest, src, sizeof(S))`). Current MadSMAUG front
+  edge at `handler.c:1284` — `EXT_BV extra_flags = obj->extra_flags;`
+  where `EXT_BV` is a `struct { unsigned int bits[XBI]; }`.
+
 - **Function-like macros shadowing later definitions** — SMAUG.mad does
   `#define bug(...) ((void)0)` to stub out calls, then `#include`s
   `db.c` which contains `void bug(const char *str, ...) { … }`. The
   lexer expands `bug(` at the definition, turning `void bug(...)` into
-  `void ((void)0)` and killing the parse. Either (a) teach the lexer
-  to suppress function-like macro expansion when the identifier is in
-  a definition/declaration head position, or (b) document that
-  MadSMAUG should `#undef` the stub around the matching definition.
-  Current MadSMAUG front edge at db.c:4184.
+  `void ((void)0)` and killing the parse. The MadSMAUG umbrella now
+  wraps the db.c include with `#undef bug` / re-`#define bug(...)` as
+  the option-(b) workaround. A proper fix would teach the lexer to
+  suppress function-like macro expansion when the identifier is in a
+  definition/declaration head position (option-(a)).
 
 
 ## Medium Priority
@@ -79,6 +90,28 @@
   etc.); bare `.c` / `.h` files get the C-compatible subset.
 
 ## Completed
+
+### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
+
+- ~~**`#include` canonicalization via realpath**~~ — `should_tokenize_include`
+  now canonicalizes each resolved quoted-include path through `realpath()`
+  before the include-once check. The MadSMAUG umbrella was tripping on
+  `mud.h` being pulled in both as `upstream_src/mud.h` (from SMAUG.mad)
+  and bare `mud.h` (from ident.c / interp.c / ibuild.c): two distinct
+  keys in the seen-files map even though both resolve — via symlinks —
+  to the same underlying file. Embedded-header keys starting with `<`
+  bypass realpath entirely.
+
+- ~~**`*p++ = rhs` / `*p-- = rhs` as a write target**~~ — the read side
+  (`c = *p++`) already compiled through TokenDerefStep, but the write
+  side threw `Assignment on a non-variable lval` because
+  TokenAssign::compile only dispatched TokenVar / TokenDeref /
+  TokenDerefExpr / TokenMember / TokenSubscript* LHS kinds. Added a
+  TokenDerefStep LHS branch that mirrors the read: capture `old_ptr = ptr`,
+  step the pointer variable, then expose `[old_ptr]` as the Mem lval
+  the numeric-assignment path writes into. Closes the MadSMAUG umbrella
+  front edge in `act_move.c:182` (`grab_word`). Targeted regression:
+  `tests/testderefpostincstore.mad`.
 
 ### Session 2026-04-23
 

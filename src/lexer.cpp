@@ -232,9 +232,19 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 
 bool Program::should_tokenize_include(const std::string &path)
 {
-    if ( include_already_seen(path) )
+    std::string canonical = path;
+    if ( !path.empty() && path[0] != '<' )
+    {
+	char *rp = realpath(path.c_str(), NULL);
+	if ( rp )
+	{
+	    canonical = rp;
+	    free(rp);
+	}
+    }
+    if ( include_already_seen(canonical) )
 	return false;
-    included_files[path] = true;
+    included_files[canonical] = true;
     return true;
 }
 

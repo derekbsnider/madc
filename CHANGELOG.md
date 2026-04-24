@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **SMAUG Phase F — `#include` canonicalization** — `should_tokenize_include`
+  now canonicalizes each resolved path through `realpath()` before the
+  include-once check. Previously the raw `cur_dir + incfile` key was used,
+  so `#include "upstream_src/mud.h"` (from the SMAUG.mad umbrella) and
+  `#include "mud.h"` (from `ident.c` / `interp.c` / `ibuild.c`) registered
+  as two distinct entries even when both paths resolved — via symlinks —
+  to the same underlying file. The MadSMAUG umbrella tripped on this at
+  mud.h:97 (`AFFECT_DATA` redefined) once the earlier `bug(...)` macro
+  front edge was resolved. Quoted includes still fall back to the raw
+  path when `realpath()` cannot resolve (e.g. before the file exists);
+  embedded-header keys starting with `<` bypass `realpath` entirely.
+
+- **`*p++ = rhs` / `*p-- = rhs` as a write target** — the read side
+  (`c = *p++`) already went through `TokenDerefStep`, but the write side
+  was missing: `TokenAssign::compile` only dispatched `TokenVar`,
+  `TokenDeref`, `TokenDerefExpr`, `TokenMember`, and `TokenSubscript*`
+  LHS kinds, so `*arg_first++ = *argument++;` threw `Assignment on a
+  non-variable lval`. Added a `TokenDerefStep` LHS branch that mirrors
+  the read side: capture `old_ptr = ptr`, step the pointer variable,
+  then expose `[old_ptr]` as the Mem lvalue the numeric-assignment path
+  writes into. Closes the MadSMAUG umbrella front edge in
+  `act_move.c:182` (`grab_word`). Regression:
+  `tests/testderefpostincstore.mad`.
+
 ## [v0.10.1] — 2026-04-24
 
 - **Typed-register IR — multi-return return-buffer store normalization**

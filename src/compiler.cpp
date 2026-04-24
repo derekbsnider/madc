@@ -2724,6 +2724,34 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	_operand = tdxl->operand(pgm);  // Mem operand [addr]
     }
     else
+    // handle *ptr++ / *ptr-- on LHS (store through the current pointer
+    // value, then advance/rewind the pointer variable itself). The read
+    // side lives in TokenDerefStep::compile; the write side mirrors it:
+    // capture old_ptr, step ptr, then expose [old_ptr] as the Mem lval
+    // that the numeric-assignment path writes into.
+    if ( dynamic_cast<TokenDerefStep *>(left) )
+    {
+	TokenDerefStep *tdsl = dynamic_cast<TokenDerefStep *>(left);
+	ltype = tdsl->deref_type;
+	DBG(cout << "TokenAssign::compile() *ptr"
+	    << (tdsl->increment ? "++" : "--")
+	    << " store type " << (ltype ? ltype->name : "?") << endl);
+	Operand &ptr_op = pgm.tkFunction->voperand(pgm, &tdsl->var);
+	if ( !ptr_op.isReg() || !ptr_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    throw "TokenDerefStep LHS: pointer operand is not a gp register";
+	x86::Gp ptr_reg = ptr_op.as<x86::Gp>();
+	x86::Gp old_ptr = pgm.cc.newIntPtr(tdsl->increment ? "store_postinc_ptr" : "store_postdec_ptr");
+	pgm.safemov(old_ptr, ptr_reg);
+	int step = ltype ? (int)ltype->size : 1;
+	if ( step <= 0 ) step = 1;
+	if ( tdsl->increment )
+	    pgm.safeadd(ptr_reg, step, tdsl->var.type, ltype);
+	else
+	    pgm.safesub(ptr_reg, step, tdsl->var.type, ltype);
+	tdsl->var.modified();
+	_operand = x86::ptr(old_ptr, 0, (uint32_t)ltype->size);
+    }
+    else
     // handle member token (struct.member or ptr->member)
     if ( left->type() == TokenType::ttMember )
     {
