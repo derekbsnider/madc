@@ -71,6 +71,16 @@
 
 ### Session 2026-04-24 (post-v0.11.0)
 
+- ~~**`*(ptr + N)` / `*(ptr - N)` / `*(p = ptr + N)` rejected by
+  unary-`*` with "cannot dereference non-pointer type"**~~ —
+  `TokenAdd`, `TokenSub`, `TokenAssign` all left `_datatype` as
+  `&ddINT` (TokenOperator default), so the expression advertised
+  `int` even when operands were pointers. Fix: override `datadef()`
+  on each to propagate the correct pointer type (`ptr ± int → ptr`,
+  `ptr - ptr → ptrdiff_t`, `assign → LHS type`). Surfaced at
+  MadSMAUG mud_prog.c:2552/2553. Targeted regression:
+  `tests/testderefptrexpr.mad`.
+
 - ~~**Function-like macros shadowing later definitions**~~ — lexer
   now suppresses function-like macro expansion when the preceding
   tokens form a declaration/definition head. Walks back through

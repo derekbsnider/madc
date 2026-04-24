@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **`*(ptr + N)` / `*(ptr - N)` / `*(p = ptr + N)` now parse** —
+  `TokenAdd`, `TokenSub`, and `TokenAssign` all inherit
+  `_datatype = &ddINT` from `TokenOperator`'s constructor and never
+  overrode `datadef()`, so expressions like `start - 1` reported
+  their type as `int` regardless of operand types. The unary-`*`
+  parser consulted `deref_expr->datadef()` and rejected these as
+  "cannot dereference non-pointer type". Fix: override `datadef()`
+  on `TokenAdd`/`TokenSub` to propagate a pointer operand's type
+  through arithmetic (`ptr + int`, `int + ptr`, `ptr - int`; `ptr -
+  ptr` still yields the integer default), and override
+  `TokenAssign::datadef()` to return the LHS's type (C assignment-
+  as-expression evaluates to the assigned value). Closes the
+  MadSMAUG mud_prog.c front edges at lines 2552/2553
+  (`*(start - 1) == ' '`, `*(end = start + strlen(arglist)) == ' '`).
+  Regression: `tests/testderefptrexpr.mad`.
+
 - **Function-like macros no longer eat later declarators** — SMAUG-
   style `#define bug(...) ((void)0)` above a later
   `void bug(const char *, ...) { ... }` definition used to expand at

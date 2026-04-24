@@ -203,6 +203,12 @@ public:
     virtual inline int precedence() const { return 4; }
     virtual TokenID id() const { return TokenID::tkAdd; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    virtual DataDef *datadef() const override
+    {
+	if ( left  && left->datadef()  && left->datadef()->is_pointer()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_pointer() ) return right->datadef();
+	return TokenOperator::datadef();
+    }
     inline int    ioperate() const { return left->ival() + right->ival(); }
     inline double foperate() const { return left->dval() + right->dval(); }
 };
@@ -226,6 +232,17 @@ public:
     virtual TokenID id() const { return TokenID::tkSub; }
     virtual inline int precedence() const { return 4; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    virtual DataDef *datadef() const override
+    {
+	// `p - n` is a pointer; `p - q` (both pointers) is ptrdiff_t.
+	if ( left && left->datadef() && left->datadef()->is_pointer() )
+	{
+	    if ( right && right->datadef() && right->datadef()->is_pointer() )
+		return TokenOperator::datadef();
+	    return left->datadef();
+	}
+	return TokenOperator::datadef();
+    }
     inline int    ioperate() const { return left->ival() - right->ival(); }
     inline double foperate() const { return left->dval() - right->dval(); }
 };
@@ -355,6 +372,14 @@ public:
     virtual TokenBase *clone() { TokenAssign *to = new TokenAssign(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkAssign; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    virtual DataDef *datadef() const override
+    {
+	// An assignment-as-expression evaluates to the assigned LHS
+	// value, so its type is the LHS's type — required for
+	// `*(end = ptr + N)` where `end` is `char *`.
+	if ( left && left->datadef() ) return left->datadef();
+	return TokenOperator::datadef();
+    }
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     int ioperate() const;
