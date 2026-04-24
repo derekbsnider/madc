@@ -19,28 +19,22 @@
 
 ### Language Completeness
 
-- **Struct-member double `%f` / `%e` / `%g` printf / read path** —
-  two related pre-existing bugs found while writing the struct-
-  member compound-assign test:
-  (a) `printf("%.2f", v.x);` where `v.x` is a `double` struct
-      member fails asmjit `finalize` (error 25) — varargs arg
-      compile doesn't emit a correct load from a struct-member
-      Mem to the variadic Xmm register.
-  (b) `double r = v.f;` (float struct member → local double)
-      reads back 0.0 instead of the stored value.
-  Both are in the struct-member real-type arithmetic family and
-  likely share the same "multi-float interleaved with printf"
-  asmjit interaction below. Workaround: copy the member into a
-  local `double` before printing.
-
-- **Multiple floats interleaved with printf in one function** —
-  asmjit's register allocator spills-then-reloads from an
-  uninitialised stack slot in this specific shape (`float a = X;
-  printf(%f, a); float b = Y; printf(%f, b);` — second printf
-  reads a's value, not b's). Isolated-function form works.
-  Likely the cvtsd2ss pattern emitted by safemov(Mem, Xmm) triggers
-  an asmjit pre-existing issue. Workaround: split into helper
-  functions or assign through a double temporary.
+- **Struct-member double / mixed float+double printf** —
+  `printf("%.2f", v.x)` where v.x is a struct-member double
+  (or more generally, mixing local floats with struct-member
+  reals across multiple printf calls in one function) produces
+  non-deterministic wrong output — the result depends on the
+  JIT source filename length and unrelated earlier float
+  activity. The generated asm looks correct on inspection
+  (each call cvtss2sd's its own load and movdqa's into xmm0
+  before the call), but asmjit's compiler pass reorders or
+  elides something under specific register-pressure shapes.
+  Single-local float varargs `printf("%f", local_float)` is
+  reliable after the cvtss2sd-promotion fix. Broader cluster
+  (struct-member double varargs, multi-float interleaved with
+  printf) is a known asmjit Compiler interaction that the
+  typed-register IR work is expected to supersede. Workaround:
+  copy the real member into a local double before printf.
 
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 

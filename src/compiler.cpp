@@ -667,7 +667,34 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		}
 		else if ( argrdp.second && argrdp.second->is_real() )
 		{
-		    params.push_back(areg);
+		    // Variadic ABI promotes float to double. If the value was
+		    // produced as a float (4-byte Xmm from movss, or float-sized
+		    // Mem from a struct member), cvtss2sd into a fresh Xmm. A
+		    // double-sized Xmm is already correct. A Mem holding a
+		    // double still needs a movsd load into an Xmm to become a
+		    // proper varargs register operand.
+		    bool src_is_float = (argrdp.second->size == sizeof(float));
+		    if ( areg.isMem() || src_is_float )
+		    {
+			x86::Xmm xdbl = pgm.cc.newXmm("vararg_dbl");
+			if ( areg.isMem() )
+			{
+			    if ( src_is_float )
+				pgm.cc.cvtss2sd(xdbl, areg.as<x86::Mem>());
+			    else
+				pgm.cc.movsd(xdbl, areg.as<x86::Mem>());
+			}
+			else
+			{
+			    // areg is an Xmm (src_is_float path); widen in place
+			    pgm.cc.cvtss2sd(xdbl, areg.as<x86::Xmm>());
+			}
+			params.push_back(xdbl);
+		    }
+		    else
+		    {
+			params.push_back(areg);
+		    }
 		    param_is_double.push_back(true);
 		    has_double_args = true;
 		}
@@ -5376,13 +5403,26 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
     }
 
     // When reading a numeric member (no destination given), load the value
-    // from the Mem operand into a register so callers get a Gp they can use
+    // from the Mem operand into a register so callers get a Reg they can use.
+    // Real (float/double) members belong in an Xmm — loading into a Gpq would
+    // put the raw bits in the wrong register class, which downstream varargs /
+    // arithmetic callers can't distinguish from an integer load.
     if ( _datatype->is_numeric() && reg.isMem() )
     {
-	DBG(pgm.cc.comment("TokenMember::compile() loading numeric member into register"));
-	x86::Gp gp = pgm.cc.newGpq("%s", var.name.c_str());
-	pgm.safemov(gp, reg.as<x86::Mem>(), _datatype, _datatype);
-	_operand = gp;
+	if ( _datatype->is_real() )
+	{
+	    DBG(pgm.cc.comment("TokenMember::compile() loading real member into xmm"));
+	    x86::Xmm xm = pgm.cc.newXmm("%s", var.name.c_str());
+	    pgm.safemov(xm, reg.as<x86::Mem>(), _datatype, _datatype);
+	    _operand = xm;
+	}
+	else
+	{
+	    DBG(pgm.cc.comment("TokenMember::compile() loading numeric member into register"));
+	    x86::Gp gp = pgm.cc.newGpq("%s", var.name.c_str());
+	    pgm.safemov(gp, reg.as<x86::Mem>(), _datatype, _datatype);
+	    _operand = gp;
+	}
 	regdp.first = &_operand;
 	return _operand;
     }

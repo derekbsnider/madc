@@ -129,16 +129,24 @@ void Program::safemov(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Xmm &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Xmm, Mem)"));
-    if ( d1 && d1->size == sizeof(float) )
+    // When d2 isn't supplied, fall back to the Mem's actual size so a
+    // 3-arg safemov that just says "destination is float" doesn't
+    // misread a 4-byte Mem as a double (the old default blindly used
+    // cvtsd2ss, reading 8 bytes from a 4-byte slot and producing
+    // garbage).
+    bool dst_is_float = d1 && d1->size == sizeof(float);
+    bool src_is_float = d2 ? (d2->size == sizeof(float))
+			   : (r2.size() == sizeof(float));
+    if ( dst_is_float )
     {
-	if ( d2 && d2->size == sizeof(float) )
+	if ( src_is_float )
 	    cc.movss(r1, r2);
 	else
 	    cc.cvtsd2ss(r1, r2);
     }
     else
     {
-	if ( d2 && d2->size == sizeof(float) )
+	if ( src_is_float )
 	    cc.cvtss2sd(r1, r2);
 	else
 	    cc.movsd(r1, r2);

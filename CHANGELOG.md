@@ -4,6 +4,23 @@
 
 ### Fixed
 
+- **Float varargs promotion** — `float a = 1.5f; printf("%f", a);`
+  used to print `0.000000`. The dlsym variadic call path in
+  `TokenCallFunc::compile` checked `argrdp.second->is_real()`
+  and passed the Xmm straight to `addArgT<double>()`, but for
+  a float value the Xmm only held the low 32 bits (movss); C
+  ABI requires cvtss2sd promotion to double before the varargs
+  call. Also fixed for struct-member floats loaded via Mem.
+  Companion changes: `TokenMember::compile`'s no-destination
+  path now loads real-typed members into an Xmm (via
+  safemov(Xmm, Mem)) instead of a Gpq, and `safemov(Xmm, Mem)`
+  with no `d2` falls back to the Mem's actual size so a 4-byte
+  Mem isn't read as a double via an 8-byte cvtsd2ss. Added
+  `tests/testfloatvarargs.mad` covering single-local float
+  varargs; struct-member double varargs and mixed-real printf
+  still hit a separate asmjit-compiler register-allocator
+  quirk filed in TODO.
+
 - **Write through double-dereference (`**pp = v;`)** — used to
   SIGSEGV the compiler at address 0x8 inside
   `TokenAssign::compile`. `TokenDerefExpr::type()` returns
