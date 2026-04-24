@@ -49,6 +49,17 @@
 
 ### Fixed
 
+- **Dereferencing an address-taken pointer (`int **pp = &p; *p`)** —
+  taking `&p` of a pointer variable spilled `p` to a stack Mem
+  slot. Subsequent `*p` went through `TokenDeref::operand` which
+  did `ptr_op.as<x86::Gp>()` on the Mem — a silent reinterpret
+  that returned a bogus Gp. The resulting `ptr(gp, 0, 8)` had
+  garbage register ids and asmjit's finalize flagged error 26,
+  after which the JIT executed illegal instructions (SIGILL /
+  SIGSEGV). Now loads the pointer value from the Mem slot into a
+  fresh Gp before using it as the base. Added
+  `tests/testdoubleptr.mad`.
+
 - **`float` variables and real↔real casts** — two gaps kept
   4-byte floats broken:
   (a) `safemov(Mem, Xmm)` with a float-sized Mem emitted plain

@@ -5333,7 +5333,19 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenDeref::operand(Program &pgm)
 {
     Operand &ptr_op = pgm.tkFunction->voperand(pgm, &var);
-    x86::Gp ptr_gp = ptr_op.as<x86::Gp>();
+    x86::Gp ptr_gp;
+    if ( ptr_op.isMem() )
+    {
+	// Address-taken pointer variables live in a stack Mem slot;
+	// load the pointer value into a Gp before using it as the
+	// base of the dereferenced Mem. Without this, `.as<Gp>()` on
+	// a Mem silently reinterprets it and subsequent ptr(gp, 0, 8)
+	// yields invalid encodings that asmjit flags at finalize.
+	ptr_gp = pgm.cc.newIntPtr("%s", ("*" + var.name).c_str());
+	pgm.cc.mov(ptr_gp, ptr_op.as<x86::Mem>());
+    }
+    else
+	ptr_gp = ptr_op.as<x86::Gp>();
     // return Mem operand [ptr] for numeric types (enables read/write)
     if ( deref_type->is_numeric() )
 	_operand = x86::ptr(ptr_gp, 0, (uint32_t)deref_type->size);
