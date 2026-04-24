@@ -93,6 +93,18 @@
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
 
+- ~~**Unary `-` in brace-init lists**~~ — `isPostfixPosition` now
+  recognizes `{` / `(` / `,` / `;` / `=` as expression-opening
+  positions where `-` stays unary (previously converted to binary
+  subtraction, tripping "Missing operand"). Targeted regression:
+  `tests/testnegbraceInit.mad`.
+
+- ~~**`char[N] = "..."` with matching length skips null terminator**~~
+  — explicit-size char arrays that exactly match the string literal
+  length no longer append an implicit `'\0'` (C89 behavior).
+  Inferred and oversized sizes still do. Targeted regression:
+  `tests/testcharnoterm.mad`.
+
 - ~~**Compound-assign on expression-base subscripts**~~ —
   `resolveCompoundLHS` gained a `TokenSubscriptExpr` path mirroring
   the TokenAssign write branch (operand-not-compile on base, LEA vs

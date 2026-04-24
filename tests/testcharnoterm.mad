@@ -1,0 +1,32 @@
+#!/../bin/madc
+// C89: a char-array with an explicit size that exactly matches the
+// string-literal length does NOT require room for a trailing null
+// terminator. `char c[3] = "abc";` is valid C — no implicit '\0'.
+// The parser previously always pushed a null onto the init list,
+// which tripped "Too many initializers for array (expected 3)" in
+// the 1-too-many case.
+//
+// SMAUG's `colorize.c` contains:
+//   static const char colors[MAX_COLOR] = "xrgObpcwzRGYBPCW";
+// where MAX_COLOR == 16 and the string is exactly 16 chars. Closes
+// that front edge.
+
+#include <stdio.h>
+
+int main()
+{
+    // Exact-size array, no null terminator expected.
+    char colors[16] = "xrgObpcwzRGYBPCW";
+    printf("%c%c%c\n", colors[0], colors[5], colors[15]);
+
+    // Inferred size still includes null terminator — `char[6]` for "hello".
+    char greet[] = "hello";
+    printf("%s len=%d\n", greet, (int)sizeof(greet));
+
+    // Oversized explicit size — padding zeros plus a null terminator
+    // (well, the remaining trailing bytes are zero via calloc-like init).
+    char buf[10] = "hi";
+    printf("%s ok\n", buf);
+
+    return 0;
+}

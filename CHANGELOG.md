@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **`char[N] = "..."` with matching length skips null terminator** —
+  C89 allows `char c[3] = "abc";` (no implicit `'\0'` because the
+  array is exactly full). The parser was always pushing a null onto
+  the init list, producing `Too many initializers for array
+  (expected N)` when the explicit size matched the string length.
+  Inferred-size (`char c[] = "abc";`) and oversized
+  (`char c[10] = "hi";`) cases still append `'\0'`. Regression:
+  `tests/testcharnoterm.mad`.
+
+- **Unary `-` in brace-init lists** — `isPostfixPosition` treated
+  any non-operator prev-token as "postfix position", including the
+  symbol tokens that actually open expression contexts (`{`, `(`,
+  `,`, `;`, `=`). As a result `int arr[] = { -5, -4 };` converted
+  the unary `TokenNeg` to a binary `TokenSub` at the position right
+  after `{` and `,`, and the expression parser reported `Missing
+  operand`. The postfix check now rejects those symbol positions.
+  SMAUG's const.c is full of negative-initialized lookup tables
+  (`str_app`, `int_app`, `dex_app`, …). Regression:
+  `tests/testnegbraceInit.mad`.
+
 - **Compound-assign on expression-base subscripts** —
   `resolveCompoundLHS`'s ttSubscript branch only recognized
   `TokenSubscript` with a fixed-array variable base. Any

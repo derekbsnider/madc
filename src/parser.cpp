@@ -5519,7 +5519,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    for ( char c : s )
 			init_list.push_back(new TokenInt((int64_t)(unsigned char)c));
 		}
-		init_list.push_back(new TokenInt(0)); // null terminator
+		// C89/C99: if the explicit array size exactly matches the
+		// string length, the null terminator is omitted (e.g.
+		// `char c[3] = "abc";` is valid). For inferred sizes and
+		// any size larger than the literal, append '\0'.
+		if ( arr_dims[0] == 0 || arr_dims[0] > init_list.size() )
+		    init_list.push_back(new TokenInt(0)); // null terminator
 	    }
 	    else if ( is_struct_init && peek0->id() != TokenID::tkOpBrc )
 	    {

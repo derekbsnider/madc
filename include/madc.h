@@ -613,13 +613,22 @@ public:
 	return false;
     }
     // helper: is prevToken in a position where the next operator would be postfix?
-    // true when prevToken is ), ], or a non-operator (i.e. a value)
+    // true when prevToken is ), ], or a non-operator value token
     inline bool isPostfixPosition()
     {
 	if ( !_prv_token ) return false;
 	TokenID id = _prv_token->id();
 	// Keywords aren't values — they open expression contexts, not close them.
 	if ( _prv_token->type() == TokenType::ttKeyword ) return false;
+	// Symbols that open or continue expression contexts aren't values
+	// either — `{`, `(`, `,`, `;`, `=` mean the next `-` / `!` is
+	// unary, not binary. Without this guard `int x[] = { -5 };`
+	// converted TokenNeg → TokenSub at the unary-after-`{` slot and
+	// emitted a binary subtraction missing its left operand.
+	if ( id == TokenID::tkOpBrc || id == TokenID::tkOpBrk
+	||   id == TokenID::tkComma || id == TokenID::tkSemi
+	||   id == TokenID::tkAssign )
+	    return false;
 	return id == TokenID::tkClBrk || id == TokenID::tkClSqr || !_prv_token->is_operator();
     }
     inline TokenBase *nextToken()

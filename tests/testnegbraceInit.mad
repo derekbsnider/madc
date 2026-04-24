@@ -1,0 +1,30 @@
+#!/../bin/madc
+// Unary minus inside brace-init lists — `int arr[] = { -5, -4 };`,
+// `struct S tbl[] = { { -1, 0 }, { 2, -3 } };`, etc. The parser's
+// `isPostfixPosition` treated ANY non-operator prev-token as "postfix
+// position", including `{`, `(`, `,`, `;`, `=`, which then converted
+// the unary TokenNeg to a binary TokenSub and emitted a subtraction
+// missing its left operand — `Missing operand`.
+//
+// The guard now recognizes those symbol positions as expression-
+// opening contexts where `-` stays unary. SMAUG's const.c and several
+// other lookup tables are full of negative initializer values.
+
+#include <stdio.h>
+
+struct S { int a; int b; };
+
+int main()
+{
+    // Array of ints with negative literals.
+    int arr[4] = { -5, -4, 3, -2 };
+    printf("arr: %d %d %d %d\n", arr[0], arr[1], arr[2], arr[3]);
+
+    // Array-of-struct with negatives in nested braces.
+    struct S tbl[3] = { { -1, 0 }, { 2, -3 }, { -4, -5 } };
+    printf("tbl[0]=%d,%d\n", tbl[0].a, tbl[0].b);
+    printf("tbl[1]=%d,%d\n", tbl[1].a, tbl[1].b);
+    printf("tbl[2]=%d,%d\n", tbl[2].a, tbl[2].b);
+
+    return 0;
+}
