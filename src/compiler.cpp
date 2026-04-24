@@ -3301,7 +3301,17 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
         _operand = res;
     }
 
-    regdp.second = _datatype;
+    if ( !regdp.second )
+        regdp.second = _datatype;
+
+    // Numeric / pointer container reads normalize through the IR so a
+    // caller's regdp.first=Mem destination is honored (writing the
+    // result into the caller's Mem via store) instead of being silently
+    // overwritten by our local `_operand` Gp.
+    if ( _datatype && (_datatype->is_numeric() || _datatype->is_pointer())
+      && _operand.isReg() )
+        return emit_ir_value(pgm, IRValue::reg(_operand, _datatype), regdp, _operand, _datatype);
+
     regdp.first = &_operand;
     return _operand;
 }
@@ -5415,39 +5425,15 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	Method *method = (Method *)var.data;
 	FuncDef *func = (FuncDef *)method->returns.type;
 
-	if ( regdp.first && regdp.first->isReg() )
-	{
-	    // store into caller's Gp register (e.g. LHS of variable assignment)
-	    if ( func->funcnode )
-		pgm.cc.lea(regdp.first->as<x86::Gp>(), x86::ptr(func->funcnode->label()));
-	    else if ( method->x86code )
-		pgm.cc.mov(regdp.first->as<x86::Gp>(), imm(method->x86code));
-	    if ( !regdp.second )
-		regdp.second = var.type;
-	    return *regdp.first;
-	}
-
-	// Materialise address in a tmp Gp, then either return it (no caller dest)
-	// or store into caller's Mem (struct-member or deref assignment target).
 	x86::Gp addr_gp = pgm.cc.newGpq("%s", var.name.c_str());
 	if ( func->funcnode )
 	    pgm.cc.lea(addr_gp, x86::ptr(func->funcnode->label()));
 	else if ( method->x86code )
 	    pgm.cc.mov(addr_gp, imm(method->x86code));
 
-	if ( regdp.first && regdp.first->isMem() )
-	{
-	    pgm.cc.mov(regdp.first->as<x86::Mem>(), addr_gp);
-	    if ( !regdp.second )
-		regdp.second = var.type;
-	    return *regdp.first;
-	}
-
-	_operand = addr_gp;
-	regdp.first = &_operand;
 	if ( !regdp.second )
 	    regdp.second = var.type;
-	return _operand;
+	return emit_ir_value(pgm, IRValue::reg(addr_gp, var.type), regdp, _operand, var.type);
     }
 
     DBG(pgm.cc.comment("TokenVar::compile() reg = operand()"));
@@ -5540,8 +5526,9 @@ Operand &TokenDeref::compile(Program &pgm, regdefp_t &regdp)
 
     Operand &mem = operand(pgm);
 
-    if ( deref_type->is_numeric() && mem.isMem() )
-	return emit_ir_value(pgm, IRValue::mem(mem.as<x86::Mem>(), deref_type), regdp, _operand, deref_type);
+    if ( (deref_type->is_numeric() || deref_type->is_pointer())
+      && (mem.isMem() || mem.isReg() || mem.isImm()) )
+	return emit_ir_value(pgm, ir_from_operand(mem, deref_type), regdp, _operand, deref_type);
 
     if ( regdp.first )
     {
@@ -5573,8 +5560,9 @@ Operand &TokenDerefExpr::compile(Program &pgm, regdefp_t &regdp)
 
     Operand &mem = operand(pgm);
 
-    if ( deref_type->is_numeric() && mem.isMem() )
-	return emit_ir_value(pgm, IRValue::mem(mem.as<x86::Mem>(), deref_type), regdp, _operand, deref_type);
+    if ( (deref_type->is_numeric() || deref_type->is_pointer())
+      && (mem.isMem() || mem.isReg() || mem.isImm()) )
+	return emit_ir_value(pgm, ir_from_operand(mem, deref_type), regdp, _operand, deref_type);
 
     if ( regdp.first )
     {
@@ -5819,15 +5807,9 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
     else
 	pgm.cc.mov(ap_op.as<x86::Mem>(), ptr);
 
-    regdp.second = target_type;
-    if ( regdp.first )
-    {
-	pgm.safemov(*regdp.first, result, regdp.second, &ddINT64);
-	return *regdp.first;
-    }
-    _operand = result;
-    regdp.first = &_operand;
-    return _operand;
+    if ( !regdp.second )
+	regdp.second = target_type;
+    return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, target_type);
 }
 
 // load double into operand

@@ -2,6 +2,25 @@
 
 ## High Priority
 
+### Compiler Infrastructure
+
+- **Typed-register IR Stage 2 — arithmetic & comparison ports** —
+  Stage 1 is done (leaf tokens + call-arg normalization now route
+  through `emit_ir_value` / `IRBuilder::coerce`). Next grow
+  `IRBuilder` with `binop()` / `cmp()` primitives and port
+  `TokenAdd` / `TokenSub` / `TokenMul` / `TokenDiv` / `TokenMod`,
+  comparison ops (`TokenEquals` / `TokenNotEq` / `TokenLT` /
+  `TokenLE` / `TokenGT` / `TokenGE`), bitwise ops (`TokenAnd` /
+  `TokenOr` / `TokenXor` / `TokenBSL` / `TokenBSR`), and the
+  compound-assign variants onto those primitives. This should
+  shrink `safeadd` / `safesub` / `safemul` / `safediv` / `safemod`
+  / `safecmp` / `safeor` / `safeand` / `safexor` / `safebsl` /
+  `safebsr` in `typesafe.cpp` to pure low-level emitters because
+  the IR will already normalize both operands to `Reg` of the
+  same concrete type before the helper runs. Plan in
+  `docs/plans/typed-register-ir.md`, rules in
+  `.claude/rules/typed-register-ir.md`.
+
 ### Language Completeness
 
 - **Function-like macros shadowing later definitions** — SMAUG.mad does

@@ -282,4 +282,17 @@ TEST_SUITE("IRBuilder::coerce") {
 	CHECK_FALSE(contains(asm_out, "cvtss2sd"));
 	CHECK_FALSE(contains(asm_out, "cvtsd2ss"));
     }
+
+    TEST_CASE("pointer → pointer relabel emits no instruction") {
+	IRFixture f;
+	IRBuilder ir(f.cc);
+	x86::Gp g = f.cc.newGpq("p");
+	IRValue src = IRValue::reg(g, &ddVOIDptr);
+	IRValue out = ir.coerce(src, &ddCHARptr);
+	CHECK(out.isReg());
+	CHECK(out.type == &ddCHARptr);
+	std::string asm_out = f.finishAndGetAsm();
+	CHECK_FALSE(contains(asm_out, "mov "));
+	CHECK_FALSE(contains(asm_out, "lea "));
+    }
 }

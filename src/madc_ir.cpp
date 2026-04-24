@@ -295,5 +295,18 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return IRValue::reg(out.op, to);
     }
 
+    // Function reference ↔ pointer / function. Both are 8-byte
+    // addresses held in a Gp; no conversion beyond a relabel is
+    // needed. This covers `DO_FUN *fn = do_who;` and struct-member
+    // function-pointer assignments where src is a function label and
+    // dst is a typed function-pointer slot.
+    bool src_fnptr = src.type->is_function() || src.type->is_pointer();
+    bool dst_fnptr = to->is_function() || to->is_pointer();
+    if ( src_fnptr && dst_fnptr )
+    {
+	IRValue r = load(src);
+	return IRValue::reg(r.op, to);
+    }
+
     throw "IRBuilder::coerce() unsupported type conversion (not yet implemented)";
 }

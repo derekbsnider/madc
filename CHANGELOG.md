@@ -4,6 +4,43 @@
 
 ### Added
 
+- **Typed-register IR — Stage 1 leaf-token sweep** — every leaf
+  token that produces a value now routes its final operand
+  through `emit_ir_value`, so shape normalization and type
+  coercion happen in one place instead of being re-derived at
+  each compile site. Sweep coverage: `TokenInt`, `TokenReal`,
+  `TokenChar`, `TokenVar` (numeric, pointer, and function-
+  reference paths), `TokenAddrOf`, `TokenAddrExpr`,
+  `TokenMember`, `TokenDeref`, `TokenDerefExpr`,
+  `TokenSubscript` (fixed-array, pointer, and container-call
+  paths), `TokenSubscriptExpr`, `TokenVaArg`. The
+  `TokenVar::compile` function-reference branch collapsed from
+  three asymmetric branches (Reg-dest, Mem-dest, no-dest) to a
+  single emit_ir_value call, as did the container-call tail of
+  `TokenSubscript::compile`, which previously ignored a caller's
+  `regdp.first=Mem` destination. To support function-pointer
+  assignments through the IR, grew `IRBuilder::coerce` with a
+  function-ref ↔ pointer passthrough (both are 8-byte addresses
+  in a Gp; no instruction emitted, just a type relabel). One new
+  unit test in `tests/unit/test_ir.cpp` covers the relabel. 18
+  IR unit tests + 25 datadef unit tests + 170 integration tests
+  all pass.
+
+- **Typed-register IR — Stage 1 call-arg + operand normalization**
+  — introduced IR-mediated helpers in `compiler.cpp`
+  (`emit_ir_value`, `ir_from_operand`, `compile_token_normalized`,
+  `compile_call_arg_normalized`, `add_funcsig_arg`,
+  `set_funcsig_ret`, `set_invoke_arg`, `set_invoke_args`) that
+  centralize the compile-site normalization patterns previously
+  scattered across the `safe*` helpers and ad-hoc call-site code.
+  Now that compile sites normalize into (Reg, concrete-type)
+  before calling the `safe*` helpers, the Mem-path branches in
+  `safeadd` / `safesub` / `safeor` / `safeand` / `safexor` /
+  `safecmp` / `safeset{e,g,ge,l,le,ne}` are gone — the caller
+  never hands in the un-normalized shape anymore. Grew
+  `IRBuilder::coerce` to cover integer/pointer ↔ real
+  conversions (`cvtsi2ss/sd`, `cvttss/sd2si`).
+
 - **Typed-register IR — Stage 0 scaffolding** — new `IRBuilder`
   layer (in `include/madc_ir.h` / `src/madc_ir.cpp`) sitting
   between AST-walking compile() methods and asmjit emission.
