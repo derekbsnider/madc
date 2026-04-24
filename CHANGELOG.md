@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.10.0] — 2026-04-24
+
+Typed-register IR scaffolding + bottom-up migration (Stages 0–3c): fifteen shared compile-site helpers now absorb the per-token shape/coercion boilerplate that used to be copy-pasted across binary ops, comparisons, compound-assigns, inc/dec, lambda-capture, and call return-binding. Three latent bugs fixed as side effects. ~880 net lines removed from `compiler.cpp`, zero behavior change, 48 unit + 170 integration tests green throughout.
+
 ### Added
 
 - **Typed-register IR — Stage 3c var-move helpers** — three

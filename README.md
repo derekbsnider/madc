@@ -167,7 +167,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 167 integration tests pass. 25 unit tests pass. (`make -C src fulltest`)**
+**Current status: 170 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -204,15 +204,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.9.1** (2026-04-24) — Silent codegen bug roll-up. Eight commits of bug fixes surfaced during continued SMAUG Phase F porting, including a ternary operator that silently dropped its result when assigned to a local `int` (every `int r = cond ? a : b;` was producing 0), a shared string-literal caching pattern that printed garbage on all but the first branch that referenced a literal, `int a = -2;` silently storing 0 because `TokenNeg`'s mirror-back was missing, C function-pointer cast syntax `(RET (*)(PARAMS)) expr`, constant-expression `case` values (`case EOF:`, `case 1+1:`), unary `*` on postfix chains (`*p->name == '$'`), `map` / `vector` / `set` / `list` usable as identifiers at statement position, `(*pp)->field` falling through the `TokenMember` branch to the expression-backed pointer path, and the `DIR` typedef in embedded `<dirent.h>`. Baseline: 150 integration + 25 unit tests pass.
+**v0.10.0** (2026-04-24) — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c). The compile path grew a new `IRBuilder` layer (`include/madc_ir.h` + `src/madc_ir.cpp`) sitting between AST-walking `compile()` methods and asmjit emission; values carry `(operand, DataDef, IRShape)` triples so shape normalization and type coercion happen in one place instead of being re-derived at each compile site. Fifteen shared compile-site helpers in `compiler.cpp` now absorb the per-token boilerplate that used to be copy-pasted across binary ops, all six comparisons, the ten compound-assigns, `TokenInc`/`TokenDec`, lambda-capture pack/reload, and the fptr/dlcall/variadic-dlsym call-return paths. ~880 net lines removed from `compiler.cpp`, zero behavior change, three latent bugs fixed as side effects (`TokenNeg`'s unreachable `safeshl` branch, `dlcall` return-binding ignoring Mem destinations, stack-backed fn-ptr variables crashing on invoke). Baseline: 170 integration + 48 unit tests (25 datadef + 23 IR) pass.
 
 ### Recent Releases
 
+- **v0.10.0** — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c): 15 shared compile-site helpers, ~880 lines removed from `compiler.cpp`, three latent bugs fixed
 - **v0.9.1** — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts, constant `case`, postfix chains
 - **v0.9.0** — SMAUG Phase F continues: `->` on call results, Mem-backed arithmetic, unified control-flow parens, fn-ptr typedefs + decay, struct interop expansion, address-taken locals, assign-as-expression
 - **v0.8.0** — SMAUG Phase E complete + Phase F start: C arrays, brace init, struct interop, select(), MadSMAUG port begins
 - **v0.7.0** — SMAUG Phase D: va_list/stdarg.h, vsprintf helpers, -rdynamic, for-loop increment fix
-- **v0.6.0** — SMAUG Phase A/B/C: C pointer system, macros, compound types, enum, static, typedef
 
 ## Roadmap
 

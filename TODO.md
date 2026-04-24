@@ -26,12 +26,17 @@
     `safeshl` / `safeshr` can shrink to pure low-level emitters
     (the IR will already normalize both operands to Reg of the
     same concrete type before the helper runs).
-  - **Stage 3 continuation** — multi-return call sites
-    (`a, b := func()` through `__retbuf`), lambda-capture env
-    pack/unpack (currently open-coded in `TokenCallFunc` with
-    raw `cc.mov`/`cc.lea`), and the `operand(pgm)` pre-allocation
-    at the top of the regular call path. These aren't bugs today
-    but they bypass the IR normalization contract.
+  - **Stage 3 continuation** — lambda-capture pack/reload and
+    multi-return integer unpack now go through the three
+    var-move helpers (`load_var_to_gp` / `lea_var_to_gp` /
+    `store_gp_to_var`) added in Stage 3c. `bind_call_return`
+    unifies the fptr / dlcall / variadic-dlsym paths. Still
+    bypassing the IR: `TokenBSL` / `TokenBSR` stream I/O (raw
+    asmjit), `TokenReturn`'s multi-return write path
+    (Gp/Xmm/Imm/Mem explicit dispatch), and the
+    `operand(pgm)` pre-allocation at the top of the regular
+    call path. These aren't bugs today but they bypass the IR
+    normalization contract.
   Plan in `docs/plans/typed-register-ir.md`, rules in
   `.claude/rules/typed-register-ir.md`.
 
