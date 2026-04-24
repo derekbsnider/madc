@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- **String-typed ternary branches now coerce correctly** — follow-up to
+  the ternary-to-Mem fix in v0.9.1. Two additional paths were missing:
+  (1) the parser didn't set `TokenTerQ::_datatype` from the branches,
+  so `TokenAssign`'s dtSTRING → char* coercion couldn't see the ternary
+  as string-typed; (2) `TokenTerQ::compile()` set `regdp.second` to
+  `&ddINT64` by default, hiding the branch type from variadic-arg
+  coercion (printf's dtSTRING → const char* via string_cstr). Now
+  parser propagates the true branch's datadef (falling back to the
+  false branch when the true is int/NULL), and compile uses the stored
+  `_datatype` for `regdp.second`. `const char *s = cond ? "a" : "b";`
+  and `printf("%s", cond ? "T" : "F");` both work. Added
+  `tests/testternarystring.mad`.
+
 ## [v0.9.1] — 2026-04-24 — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts
 
 ### Added

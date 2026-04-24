@@ -1861,6 +1861,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // parse false expression
 		    TokenBase *fexpr = nextToken();
 		    ternary->false_expr = parseExpression(fexpr, conditional);
+		    // Propagate branch datadef up to the ternary so downstream
+		    // type-directed paths (e.g. TokenAssign's dtSTRING → char*
+		    // coercion) can see a meaningful datadef(). Prefer the true
+		    // branch's type; fall back to the false branch if that's
+		    // richer (non-NULL / non-int).
+		    DataDef *ternary_dd = NULL;
+		    if ( ternary->true_expr )
+			ternary_dd = ternary->true_expr->datadef();
+		    if ( (!ternary_dd || ternary_dd == &ddINT64) && ternary->false_expr )
+		    {
+			DataDef *fdd = ternary->false_expr->datadef();
+			if ( fdd && fdd != &ddINT64 )
+			    ternary_dd = fdd;
+		    }
+		    if ( ternary_dd )
+			ternary->setDataType(ternary_dd);
 		    // push ternary result onto exStack
 		    exStack.push(ternary);
 		    // only stop if not inside brackets — inside () we need

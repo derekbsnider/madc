@@ -5379,8 +5379,13 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
     Label L_false = pgm.cc.newLabel();
     Label L_end   = pgm.cc.newLabel();
 
+    // Propagate the branch type to the caller. Parser already stored it on
+    // _datatype (true branch, fallback to false branch). Without this,
+    // variadic-arg coercion paths (e.g. printf's dtSTRING → char* via
+    // string_cstr) can't see the ternary as a string-typed expression and
+    // pass a raw std::string* to %s, producing garbage.
     if ( !regdp.second )
-	regdp.second = &ddINT64;
+	regdp.second = _datatype ? _datatype : &ddINT64;
 
     // Merge both branches into one result register directly.
     x86::Gp result = pgm.cc.newGpq("__tern_result");
