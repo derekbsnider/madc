@@ -353,11 +353,16 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
 {
     Operand *caller_dest = regdp.first;
     DataDef *cmp_type = infer_numeric_type(left, right);
+    // Real comparisons use ucomisd which sets CF/PF/ZF, not SF/OF,
+    // so setl/setle/setg/setge are meaningless after ucomisd. The
+    // x86 manual mandates the unsigned setcc variants (setb/setbe/
+    // seta/setae) to read its flags correctly.
     bool is_unsigned = false;
     if ( op != CmpKind::Eq && op != CmpKind::Ne )
 	is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
 		   || (right->datadef() && right->datadef()->is_unsigned())
-		   || (cmp_type && cmp_type->is_unsigned());
+		   || (cmp_type && cmp_type->is_unsigned())
+		   || (cmp_type && cmp_type->is_real());
 
     Operand left_norm;
     Operand right_norm;

@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **Real `<` / `<=` / `>` / `>=` comparisons were flipping** — x86
+  `ucomisd` writes CF/PF/ZF (unsigned-compare semantics), not the
+  signed SF/OF flags that `setl` / `setle` / `setg` / `setge` read.
+  `emit_compare` was emitting the signed setcc variants after a
+  ucomisd, which read unrelated flags and produced wrong 0/1
+  results — `1.5 < 2.0` returned `0`, `1.5 > 2.0` returned `1`.
+  The fix treats reals like unsigned when choosing the setcc (`setb`
+  / `setbe` / `seta` / `setae`, matching the flag semantics x86
+  mandates for floating-point compares). Equality (`==` / `!=`) was
+  already correct because `setce`/`setne` read ZF, which ucomisd
+  does set. Regression: `tests/testrealcmp.mad`.
+
 ## [v0.11.0] — 2026-04-24
 
 SMAUG Phase F front-edge resumption: the MadSMAUG umbrella now compiles and runs end-to-end against a stub `main()` after a dozen language gaps filed during whole-program porting were closed. Highlights: `goto` / forward labels, struct-copy init+assign via `memcpy`, `*p++ = rhs` as LHS, `(*p).member`, `expr[i].member`, compound-assign on expression-base subscripts (`xREMOVE_BIT` / `xSET_BIT`), struct-array subscript stride, `class` as a plain C identifier, leading-dot float literals, `char[N]` exact-length init without implicit `'\0'`, unary `-` after `{` / `,` / `;` / `(` / `=`, `#include` realpath canonicalization, better diagnostics for unsupported compound-assign lvals, and `safemov(Operand, double)` no longer truncating for Mem destinations. SMAUG completion tracked in `docs/smaug-progress.md` (~27% parse/compile by line count).

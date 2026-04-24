@@ -14,11 +14,6 @@
   for now.
 
 
-- **Real `<` / `<=` comparison with Mem-backed literal RHS** —
-  `1.5 < 2.0` returns 0. `>` works. Narrow comparison bug distinct
-  from the storage truncation just fixed; surfaced while verifying
-  the fix via `==` / `<` / `>` checks.
-
 - **Function-like macros shadowing later definitions** — SMAUG.mad does
   `#define bug(...) ((void)0)` to stub out calls, then `#include`s
   `db.c` which contains `void bug(const char *str, ...) { … }`. The
@@ -94,6 +89,19 @@
   etc.); bare `.c` / `.h` files get the C-compatible subset.
 
 ## Completed
+
+### Session 2026-04-24 (post-v0.11.0)
+
+- ~~**Real `<` / `<=` / `>` / `>=` used setl/setle/setg/setge after
+  ucomisd**~~ — x86 `ucomisd` writes CF/PF/ZF (unsigned-style flags),
+  not SF/OF, so the signed setcc variants read garbage flags and
+  produced wrong 0/1 results. Both `<` and `>` flipped whenever the
+  true answer disagreed with a signed setcc on uninvolved SF/OF.
+  `emit_compare` now treats reals like unsigned when picking setcc
+  (`setb`/`setbe`/`seta`/`setae`). Targeted regression:
+  `tests/testrealcmp.mad`. Both `<` and `>` now agree with C for
+  all eight float/double combinations including Mem-backed literal
+  RHS (e.g. `1.5 < 2.0`).
 
 ### Session 2026-04-24 (SMAUG Phase F front-edge resumption)
 

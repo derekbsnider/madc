@@ -1,0 +1,40 @@
+// Regression: real comparisons (<, <=, >, >=) used setl/setle/setg/setge
+// after ucomisd — bogus since ucomisd writes CF/PF/ZF (unsigned-style
+// semantics), not SF/OF. Fix: emit_compare forces the unsigned setcc
+// variants (setb/setbe/seta/setae) whenever the compare type is real.
+
+#include <iostream>
+
+int main()
+{
+    double a = 1.5;
+    double b = 2.5;
+
+    // `<`
+    cout << (a < 2.0) << endl;   // 1
+    cout << (b < 2.0) << endl;   // 0
+
+    // `<=`
+    cout << (a <= 1.5) << endl;  // 1
+    cout << (b <= 1.5) << endl;  // 0
+
+    // `>`
+    cout << (a > 2.0) << endl;   // 0
+    cout << (b > 2.0) << endl;   // 1
+
+    // `>=`
+    cout << (a >= 2.5) << endl;  // 0
+    cout << (b >= 2.5) << endl;  // 1
+
+    // Real vs Mem-backed literal on either side
+    if ( 1.5 < 2.0 ) cout << "lt-lit-ok" << endl;
+    if ( 2.0 > 1.5 ) cout << "gt-lit-ok" << endl;
+
+    // Floats too
+    float f = 0.25f;
+    float g = 0.75f;
+    cout << (f < g) << endl;  // 1
+    cout << (f > g) << endl;  // 0
+
+    return 0;
+}
