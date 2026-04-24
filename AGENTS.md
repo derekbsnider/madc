@@ -233,13 +233,14 @@ editing — don't try to memorize all of them.
 | [multi-return.md](.claude/rules/multi-return.md) |    33 | `__retbuf` injection, multi-return call sites  |
 | [ternary.md](.claude/rules/ternary.md)           |    30 | Ternary parsing + stack-slot merge pattern     |
 | [embedded-headers.md](.claude/rules/embedded-headers.md) |  53 | `include/madc/` headers, lazy registration, `#load` |
+| [typed-register-ir.md](.claude/rules/typed-register-ir.md) |  32 | IR layer between tokens and asmjit; Load/Store/Coerce; per-token migration |
 
 ### Total rule footprint
 
-- **20 rules, 477 lines** in `.claude/rules/`.
-- **This file (AGENTS.md): 288 lines** — loaded by Claude via
+- **21 rules, 509 lines** in `.claude/rules/`.
+- **This file (AGENTS.md): ~290 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: 765 lines.**
+- **Grand total loaded by Claude Code per turn: ~800 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

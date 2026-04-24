@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- **Typed-register IR — Stage 0 scaffolding** — new `IRBuilder`
+  layer (in `include/madc_ir.h` / `src/madc_ir.cpp`) sitting
+  between AST-walking compile() methods and asmjit emission.
+  Values carry `(operand, DataDef, IRShape)` triples; shapes are
+  `Reg`, `Mem`, `Imm`, `Addr`. Stage 0 exposes `load()`,
+  `store()`, and `coerce()` — the minimum needed to centralize
+  the integer sign/zero widening and real↔real conversion
+  decisions currently scattered across `safemov`/`safeadd`/
+  compile() sites. Emit-as-you-build: each call emits asmjit
+  immediately, no deferred graph. 17 new doctest cases in
+  `tests/unit/test_ir.cpp` check the emitted instructions via
+  `StringLogger` (mov / movsxd / movzx / movsx / movss / movsd
+  / cvtss2sd / cvtsd2ss for the right type+shape combinations).
+  No existing tokens are ported yet — 170-integration-test
+  baseline is untouched. Migration plan in
+  `docs/plans/typed-register-ir.md`; rules in
+  `.claude/rules/typed-register-ir.md` and `docs/rules/
+  typed-register-ir.md`.
+
 ### Fixed
 
 - **Float varargs promotion** — `float a = 1.5f; printf("%f", a);`

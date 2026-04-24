@@ -11,7 +11,7 @@ Latest `scripts/run_tests.sh` result in this dirty tree:
 - Passing: 170 integration tests
 - Failing: none
 - Timed out: none
-- Unit tests: 25/25 passing (doctest)
+- Unit tests: 42/42 passing (doctest) — 25 datadef + 17 IR (Stage 0)
 
 The newly exercised regressions from this session all pass directly:
 
@@ -209,6 +209,7 @@ Run with: `make -C src test`
 | Test File | Tests | Status |
 |-----------|-------|--------|
 | `tests/unit/test_datadef.cpp` | 25 | All pass |
+| `tests/unit/test_ir.cpp`      | 17 | All pass — IR Stage 0 scaffolding |
 
 ## Phase 2 Fixes Applied
 
