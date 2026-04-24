@@ -261,7 +261,17 @@ void Program::safemov(x86::Mem &m, x86::Gp &r2, DataDef *d1, DataDef *d2)
 
 void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
-    throw "safemov() unable to move xmm to mem";
+    DBG(cc.comment("safemov(Mem, Xmm)"));
+    // Destination is a float (4 byte) or double (8 byte) slot. Use the
+    // Mem's declared size to pick movss / movsd; fall back to movsd for
+    // 0-sized (uninitialised) destinations since most madc real-typed
+    // vars are 8-byte doubles.
+    uint32_t ms = m.size();
+    if ( !ms && d1 ) ms = (uint32_t)d1->size;
+    if ( ms == 4 )
+	cc.movss(m, r2);
+    else
+	cc.movsd(m, r2);
 }
 
 // should handle all necessary conversions...

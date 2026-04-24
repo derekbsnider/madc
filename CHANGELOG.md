@@ -31,6 +31,13 @@
 
 ### Fixed
 
+- **`safemov(Mem, Xmm)` now stores the xmm to memory** — the overload
+  used to unconditionally throw `"safemov() unable to move xmm to
+  mem"`, so every `double` / `float` arithmetic expression that had
+  to mirror its result back into a Mem destination (local variable,
+  struct member) bombed at compile. Now emits `movsd` / `movss`
+  based on the Mem's declared size. Added `tests/testdoublestore.mad`.
+
 - **Cast body no longer consumes trailing binary operators** —
   `(long)q - (long)nums` used to parse as `(long)(q - (long)nums)`
   because the cast body used `parseExpression(.., true)` which
