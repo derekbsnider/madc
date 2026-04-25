@@ -2306,7 +2306,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		    r.lval = mem;
 	    }
 	    else
-		throw "compound assignment on unsupported member type";
+		pgm.Throw(left) << "compound assignment " << op_name << " on unsupported member type" << flush;
 	}
     }
     else if ( left->type() == TokenType::ttSubscript )
@@ -2354,7 +2354,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    // element stride via imul for non-power-of-2 sizes.
 	    DataDef *elem_type = tse->datadef();
 	    if ( !elem_type )
-		throw "compound-assign on subscript expression with no element type";
+		pgm.Throw(tse) << "compound-assign " << op_name << " on subscript expression with no element type" << flush;
 	    size_t elem_size = elem_type->size ? elem_type->size : 8;
 
 	    Operand &base_op = tse->base_expr->operand(pgm);
@@ -2370,7 +2370,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
 	    }
 	    else
-		throw "compound-assign subscript base is not a register or memory";
+		pgm.Throw(tse) << "compound-assign " << op_name << " subscript base is not a register or memory" << flush;
 
 	    regdefp_t idx_rdp = {NULL, NULL, NULL};
 	    Operand &idx_op = tse->index->compile(pgm, idx_rdp);
@@ -2512,7 +2512,7 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
 {
     TokenBase *target = left ? left : right;
     bool postfix = (left != nullptr);
-    if ( !target ) throw "Invalid increment";
+    if ( !target ) pgm.Throw(this) << "Invalid increment" << flush;
     return emit_inc_dec(pgm, target, postfix, &Program::safeinc, regdp, _operand,
 			"postinc", "preinc", "++");
 }
@@ -2521,7 +2521,7 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
 {
     TokenBase *target = left ? left : right;
     bool postfix = (left != nullptr);
-    if ( !target ) throw "Invalid decrement";
+    if ( !target ) pgm.Throw(this) << "Invalid decrement" << flush;
     return emit_inc_dec(pgm, target, postfix, &Program::safedec, regdp, _operand,
 			"postdec", "predec", "--");
 }
@@ -2588,71 +2588,71 @@ static Operand &emit_compound_divmod(Program &pgm, TokenBase *left, TokenBase *r
 
 Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "+= missing lval operand";
-    if ( !right ) throw "+= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "+= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "+= missing rval operand" << flush;
     return emit_compound_binop3(pgm, left, right, &Program::safeadd, regdp, _operand, "+=");
 }
 
 Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "-= missing lval operand";
-    if ( !right ) throw "-= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "-= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "-= missing rval operand" << flush;
     return emit_compound_binop3(pgm, left, right, &Program::safesub, regdp, _operand, "-=");
 }
 
 Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "*= missing lval operand";
-    if ( !right ) throw "*= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "*= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "*= missing rval operand" << flush;
     return emit_compound_binop3(pgm, left, right, &Program::safemul, regdp, _operand, "*=");
 }
 
 Operand &TokenDivEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "/= missing lval operand";
-    if ( !right ) throw "/= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "/= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "/= missing rval operand" << flush;
     return emit_compound_divmod(pgm, left, right, /*return_remainder=*/false, regdp, _operand, "/=");
 }
 
 Operand &TokenModEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "%= missing lval operand";
-    if ( !right ) throw "%= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "%= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "%= missing rval operand" << flush;
     return emit_compound_divmod(pgm, left, right, /*return_remainder=*/true, regdp, _operand, "%=");
 }
 
 Operand &TokenBSLEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "<<= missing lval operand";
-    if ( !right ) throw "<<= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "<<= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "<<= missing rval operand" << flush;
     return emit_compound_bitop2(pgm, left, right, &Program::safeshl, regdp, _operand, "<<=");
 }
 
 Operand &TokenBSREq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw ">>= missing lval operand";
-    if ( !right ) throw ">>= missing rval operand";
+    if ( !left )  pgm.Throw(this) << ">>= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << ">>= missing rval operand" << flush;
     return emit_compound_bitop2(pgm, left, right, &Program::safeshr, regdp, _operand, ">>=");
 }
 
 Operand &TokenBandEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "&= missing lval operand";
-    if ( !right ) throw "&= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "&= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "&= missing rval operand" << flush;
     return emit_compound_bitop2(pgm, left, right, &Program::safeand, regdp, _operand, "&=");
 }
 
 Operand &TokenBorEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "|= missing lval operand";
-    if ( !right ) throw "|= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "|= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "|= missing rval operand" << flush;
     return emit_compound_bitop2(pgm, left, right, &Program::safeor, regdp, _operand, "|=");
 }
 
 Operand &TokenXorEq::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !left )  throw "^= missing lval operand";
-    if ( !right ) throw "^= missing rval operand";
+    if ( !left )  pgm.Throw(this) << "^= missing lval operand" << flush;
+    if ( !right ) pgm.Throw(this) << "^= missing rval operand" << flush;
     return emit_compound_bitop2(pgm, left, right, &Program::safexor, regdp, _operand, "^=");
 }
 

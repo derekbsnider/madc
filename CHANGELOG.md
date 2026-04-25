@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **Compound-assign / inc-dec error diagnostics now carry file:line**
+  — `TokenAddEq`/`SubEq`/`MulEq`/`DivEq`/`ModEq`/`BSLEq`/`BSREq`/
+  `BandEq`/`BorEq`/`XorEq` and `TokenInc`/`TokenDec` previously
+  threw raw C-strings on missing operands or unsupported lvalues, so
+  the user saw a bare `: error:` line with no source context.
+  Converted to `pgm.Throw(this) << "..." << flush` (or `Throw(left)`
+  / `Throw(tse)` for inner-token-precise resolveCompoundLHS sites)
+  so diagnostics now anchor to the operator's source location and
+  the message includes the operator name.
+
 - **`&ptr->member` now works when `ptr` is address-taken** —
   whenever a pointer-typed local was later referenced via `&ptr`
   (marking it vfADDRTAKEN → stack-backed), earlier `ptr->member` /

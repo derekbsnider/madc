@@ -4,6 +4,30 @@
 
 ### Language Completeness
 
+- **Struct member offset miscalculated for fields after fixed-array
+  members** — `m_offset()` in `DataDefSTRUCT` walks members adding
+  `dd.size` per iteration, but per-member array counts (e.g.
+  `int arr[4]`) are not stored in the `members` vector — `addMember`
+  multiplies count into the struct's total size but loses the count
+  per member. Fields declared after a fixed-array member end up at
+  the wrong offset. Reproducer: `struct S { int x; int arr[4]; int y; }`;
+  writes to `arr` overwrite `y` because m_offset(y)==8 instead of 24.
+  Most existing structs (dirent, stat, etc.) have only one tail array,
+  so corruption hasn't surfaced — the bug is latent. The natural fix
+  (parallel `member_counts` vector) regressed the float-quirk tests
+  by shifting JIT memory layout enough to push the asmjit Compiler
+  filename-length flake into the failing zone. Blocked on the typed-
+  register IR replacing the asmjit Compiler reg-allocator pass.
+
+- **TokenSubscriptExpr unwraps element type unconditionally for
+  pointer bases** — `SKILLTYPE *arr[N]; arr[i]` reports its result
+  as `SKILLTYPE` instead of `SKILLTYPE *`, so `arr[i]->name` throws
+  "expression before '->' must be a pointer". Distinguishing fixed-
+  array vs raw-pointer base needs the per-member count above (so the
+  parser knows the member is a fixed array, not a stored pointer).
+  Filed at `parser.cpp:1645`. Surfaced in MadSMAUG `magic.c:134`
+  (`ch->pcdata->special_skills[sn]->name`).
+
 ## Medium Priority
 
 ### Language Completeness
@@ -29,8 +53,12 @@
 
 - **Error diagnostics** — parser-side diagnostics already carry source context,
   and compiler top-level raw-string failures now anchor to the current
-  statement token. Remaining work is to convert deeper raw-string throws to
-  token-aware `Throw(...)` paths where a more precise inner location exists.
+  statement token. Compound-assign / inc-dec operator diagnostics were
+  swept to use `Throw(this/left/tse)`. Remaining work is the deeper
+  internal-invariant raw `throw "..."` sites in `compile.cpp` (call-site
+  helpers, set_invoke_arg, IRBuilder/coerce internals); those generally
+  signal compiler bugs rather than user errors, so the value of token
+  context is lower.
 
 - **Operator overloading (user-defined)** — `operator+`, `operator<<`, etc. on user types.
   Currently the compiler has hard-coded special cases for std::string assign, stream `<<`,
@@ -68,6 +96,16 @@
   etc.); bare `.c` / `.h` files get the C-compatible subset.
 
 ## Completed
+
+### Session 2026-04-25 (continued)
+
+- ~~**Compound-assign / inc-dec error diagnostics swept to Throw**~~
+  — TokenAddEq/SubEq/MulEq/DivEq/ModEq/BSLEq/BSREq/BandEq/BorEq/
+  XorEq and TokenInc/TokenDec converted from raw `throw "..."` to
+  `pgm.Throw(this) << "..." << flush`. resolveCompoundLHS's
+  unsupported-member / no-elem-type / non-Reg-non-Mem subscript
+  base sites also converted (using Throw(left/tse)). 13 sites
+  total; messages now carry the operator name and file:line.
 
 ### Session 2026-04-24 (post-v0.11.0)
 
