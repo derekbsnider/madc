@@ -157,7 +157,8 @@ static int64_t parse_constant_mul(Program &pgm)
     return lhs;
 }
 
-static int64_t parse_constant_integer_expression(Program &pgm)
+// additive: parse_constant_mul ([+-] parse_constant_mul)*
+static int64_t parse_constant_add(Program &pgm)
 {
     int64_t lhs = parse_constant_mul(pgm);
 
@@ -173,6 +174,64 @@ static int64_t parse_constant_integer_expression(Program &pgm)
     }
 
     return lhs;
+}
+
+// shift: parse_constant_add ([<<>>] parse_constant_add)*
+static int64_t parse_constant_shift(Program &pgm)
+{
+    int64_t lhs = parse_constant_add(pgm);
+
+    while ( pgm.peekToken() )
+    {
+	TokenBase *op = pgm.peekToken();
+	if ( op->id() != TokenID::tkBSL && op->id() != TokenID::tkBSR )
+	    break;
+	pgm.nextToken();
+	int64_t rhs = parse_constant_add(pgm);
+	if ( op->id() == TokenID::tkBSL ) lhs <<= rhs;
+	else                              lhs >>= rhs;
+    }
+
+    return lhs;
+}
+
+// bitwise-and / xor / or: same precedence order as C.
+static int64_t parse_constant_band(Program &pgm)
+{
+    int64_t lhs = parse_constant_shift(pgm);
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBand )
+    {
+	pgm.nextToken();
+	lhs &= parse_constant_shift(pgm);
+    }
+    return lhs;
+}
+
+static int64_t parse_constant_bxor(Program &pgm)
+{
+    int64_t lhs = parse_constant_band(pgm);
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkXor )
+    {
+	pgm.nextToken();
+	lhs ^= parse_constant_band(pgm);
+    }
+    return lhs;
+}
+
+static int64_t parse_constant_bor(Program &pgm)
+{
+    int64_t lhs = parse_constant_bxor(pgm);
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBor )
+    {
+	pgm.nextToken();
+	lhs |= parse_constant_bxor(pgm);
+    }
+    return lhs;
+}
+
+static int64_t parse_constant_integer_expression(Program &pgm)
+{
+    return parse_constant_bor(pgm);
 }
 
 DataDefVOID ddVOID;

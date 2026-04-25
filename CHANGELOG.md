@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **Constant-expression evaluator now supports `<<`, `>>`, `&`, `|`,
+  `^`** — `case (1 << 14):` (and the underlying SMAUG idiom
+  `case ITEM_HOLD:` where `ITEM_HOLD` expands to `(1 << 14)`) used
+  to throw "Expecting ')' in constant expression". The const-expr
+  recursive descent only had additive (`+`, `-`) and multiplicative
+  (`*`, `/`, `%`) layers — when the additive loop saw `<<` it
+  returned to the outer paren handler, which then demanded `)`.
+  Added the full C precedence chain (shift → bitwise-and → bitwise-
+  xor → bitwise-or). Closes the MadSMAUG `act_obj.c:1735` front
+  edge. Regression: `tests/testconstexprshift.mad`.
+
 - **`struct tag { ... } *first, *last;`** — defining a struct and
   immediately declaring pointer-to-the-struct variables in the same
   statement used to throw "Expecting variable name or ';' after

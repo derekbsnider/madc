@@ -1,0 +1,59 @@
+// Regression: the integer-constant-expression evaluator only
+// handled +, -, *, /, % — so `case (1 << 14):` and friends in
+// SMAUG (`switch (1 << bit) { case ITEM_HOLD: ... }`) threw
+// "Expecting ')' in constant expression": after parse_constant_mul
+// returned with `1`, the additive loop didn't recognize `<<` and
+// returned to the outer paren handler, which then expected `)`.
+//
+// Fix: extended the evaluator with C's full integer-constant
+// precedence chain — shift / bitwise-and / xor / or layers.
+//
+// Surfaced at MadSMAUG act_obj.c:1735 (`case ITEM_HOLD:` where
+// ITEM_HOLD expands to `(1 << 14)`).
+
+#include <iostream>
+
+#define BV13   (1 << 13)
+#define BV14   (1 << 14)
+#define ITEM_WIELD  BV13
+#define ITEM_HOLD   BV14
+
+int main()
+{
+    int x = (1 << 14);
+    switch (x)
+    {
+        case (1 << 14):
+            cout << "match-shift" << endl;
+            break;
+        default:
+            cout << "no" << endl;
+    }
+
+    // Macro-expansion path
+    int y = ITEM_HOLD;
+    switch (y)
+    {
+        case ITEM_WIELD:
+            cout << "wield" << endl;
+            break;
+        case ITEM_HOLD:
+            cout << "hold" << endl;
+            break;
+    }
+
+    // Bitwise-or case: `case (BV0 | BV1)` style
+    switch (3)
+    {
+        case ((1 << 0) | (1 << 1)):
+            cout << "or-match" << endl;
+            break;
+    }
+
+    // Right shift in const expr
+    int arr[16 >> 2];   // size 4
+    arr[3] = 99;
+    cout << arr[3] << endl;
+
+    return 0;
+}

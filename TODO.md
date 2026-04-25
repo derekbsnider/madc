@@ -108,6 +108,13 @@
 
 ### Session 2026-04-25 (continued)
 
+- ~~**Constant-expression `<<`, `>>`, `&`, `|`, `^` operators**~~ —
+  added full C precedence chain (shift → bitwise-and → bitwise-xor
+  → bitwise-or) to the parse_constant_* recursive descent. Closes
+  MadSMAUG act_obj.c:1735 (`case ITEM_HOLD:` where `ITEM_HOLD`
+  expands to `(1 << 14)`). Targeted regression:
+  tests/testconstexprshift.mad.
+
 - ~~**`struct tag { ... } *first, *last;`**~~ — TokenSTRUCT::parse
   now routes through parseDeclaration when the post-brace token is
   `*` (pointer decorator), not just identifier or `;`.
