@@ -249,7 +249,7 @@ void Program::safemov(Operand &op1, double d, DataDef *d1, DataDef *d2)
     if ( op1.isMem() && d1 && d1->is_real() )
     {
 	x86::Mem _const = cc.newDoubleConst(ConstPoolScope::kLocal, d);
-	x86::Xmm tmp = cc.newXmm("_fconst");
+	x86::Xmm tmp = cc.newXmmSd("_fconst");
 	cc.movsd(tmp, _const);
 	DBG(cc.comment("safemov(Mem, double via Xmm)"));
 	safemov(op1.as<x86::Mem>(), tmp, d1, d2);
@@ -297,7 +297,8 @@ void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
     {
 	if ( !src_is_float )
 	{
-	    x86::Xmm tmp = cc.newXmm("_fx_tmp");
+	    // dst is float, src is double — narrow.
+	    x86::Xmm tmp = cc.newXmmSs("_fx_tmp");
 	    cc.cvtsd2ss(tmp, r2);
 	    cc.movss(m, tmp);
 	}
@@ -308,7 +309,8 @@ void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
     {
 	if ( src_is_float )
 	{
-	    x86::Xmm tmp = cc.newXmm("_fx_tmp");
+	    // dst is double, src is float — widen.
+	    x86::Xmm tmp = cc.newXmmSd("_fx_tmp");
 	    cc.cvtss2sd(tmp, r2);
 	    cc.movsd(m, tmp);
 	}
@@ -357,7 +359,8 @@ void Program::safemov(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	    DataDef *tmp_type = d1 ? d1 : d2;
 	    if ( tmp_type && tmp_type->is_real() )
 	    {
-		x86::Xmm tmp = cc.newXmm("_tmp_mm");
+		x86::Xmm tmp = (d1 && d1->is_real() && d1->size == sizeof(float)) || (d2 && d2->is_real() && d2->size == sizeof(float))
+			   ? cc.newXmmSs("_tmp_mm_ss") : cc.newXmmSd("_tmp_mm_sd");
 		safemov(tmp, op2.as<x86::Mem>(), d1, d2);
 		if ( op1.as<x86::Mem>().size() <= 4 )
 		    cc.movss(op1.as<x86::Mem>(), tmp);
@@ -549,7 +552,7 @@ void Program::safeneg(Operand &op)
     if ( !op.isReg() ) { throw "safeneg() lval is not a register"; }
     if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	x86::Xmm tmp = cc.newXmm();
+	x86::Xmm tmp = cc.newXmmSd("safeneg_tmp");
 	cc.xorpd(tmp, tmp);
 	cc.subsd(tmp, op.as<x86::Xmm>());
 	cc.movsd(op.as<x86::Xmm>(), tmp);
@@ -843,7 +846,7 @@ void Program::testzero(Operand &op)
     {
 	if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
-	    x86::Xmm tmp = cc.newXmm("testzero_tmp");
+	    x86::Xmm tmp = cc.newXmmSd("testzero_tmp");
 	    cc.xorpd(tmp, tmp);
 	    cc.ucomisd(op.as<x86::Xmm>(), tmp);
 	}

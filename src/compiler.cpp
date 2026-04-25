@@ -38,6 +38,21 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret=false);
 const char *string_cstr(void *ptr);
 
+// Allocate an Xmm with a scalar-real type hint (kFloat32x1 or
+// kFloat64x1) so asmjit's Compiler register allocator treats it
+// correctly as a scalar float / double rather than the default
+// `kInt32x4` (4-element int vector). Mismatched type hints make
+// the allocator's liveness path interleave float and int-vector
+// uses, producing filename-length-dependent reordering of varargs
+// xmm setup. Pass `dd` as the float / double type, or NULL to
+// default to double.
+static x86::Xmm newScalarXmm(Program &pgm, DataDef *dd, const char *name)
+{
+    if ( dd && dd->size == sizeof(float) )
+	return pgm.cc.newXmmSs("%s", name ? name : "_xmm_ss");
+    return pgm.cc.newXmmSd("%s", name ? name : "_xmm_sd");
+}
+
 // Whether a dlsym-resolved libc/system call returns a plain 32-bit int
 // (vs an int64 / pointer / real). True for sub-int64 return types and for
 // a curated whitelist of widely-used libc functions whose declared return
@@ -1162,7 +1177,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    if ( !regdp.first )
 	    {
 		if ( retdd.is_real() )
-		    _operand = pgm.cc.newXmm("fptr_ret");
+		    _operand = newScalarXmm(pgm, &retdd, "fptr_ret");
 		else
 		    _operand = pgm.cc.newGpq("fptr_ret");
 		regdp.first = &_operand;
@@ -1269,10 +1284,18 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		    has_double_args = true;
 	    }
 
-	    // set return type BEFORE adding arg types
-	    bool ret_double = has_double_args
-		|| (regdp.first && regdp.first->isReg()
-		    && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec));
+	    // Set return type BEFORE adding arg types. The default
+	    // heuristic ("any double arg → double return") is wrong for
+	    // the printf family — they return `int` even with double args.
+	    // Telling asmjit the return is `double` makes its register
+	    // allocator keep an xmm reg live across the call, which can
+	    // interfere with arg xmm setup. Use the int-returner whitelist
+	    // to suppress the override for known int-returning libc funcs.
+	    bool actually_returns_int = is_int32_dlsym_ret(&func->returns, var.name);
+	    bool ret_double = !actually_returns_int
+		&& (has_double_args
+		    || (regdp.first && regdp.first->isReg()
+			&& regdp.first->as<BaseReg>().isGroup(RegGroup::kVec)));
 	    if ( ret_double )
 		funcsig.setRetT<double>();
 	    else
@@ -1292,7 +1315,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    {
 		if ( !regdp.first )
 		{
-		    _operand = pgm.cc.newXmm("dl_ret");
+		    _operand = newScalarXmm(pgm, &ddDOUBLE, "dl_ret");
 		    regdp.first = &_operand;
 		}
 		bind_call_return(pgm, call, regdp.first, &ddDOUBLE, _operand, /*is_variadic=*/true);
@@ -3170,7 +3193,7 @@ Operand &TokenOperator::operand(Program &pgm)
 {
     if ( _datatype && _datatype->is_real() )
     {
-	_operand = pgm.cc.newXmm();
+	_operand = newScalarXmm(pgm, _datatype, NULL);
 	pgm.cc.xorps(_operand.as<x86::Xmm>(), _operand.as<x86::Xmm>());
     }
     else
@@ -3201,7 +3224,7 @@ Operand &TokenInt::operand(Program &pgm)
 Operand &TokenReal::operand(Program &pgm)
 {
     _const = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, _val);
-    _operand = pgm.cc.newXmm();
+    _operand = pgm.cc.newXmmSd("_real_const");
     DBG(pgm.cc.comment("TokenReal::operand() calling movsd(_operand.as<x86::Xmm>(), _const)"));
     DBG(cout << "TokenReal::operand() calling movsd(_operand.as<x86::Xmm>(), _const[" << _val << "])" << endl);
     pgm.cc.movsd(_operand.as<x86::Xmm>(), _const); //x86::qword_ptr((uintptr_t)&d_testval)); // x86::qword_ptr((uintptr_t)&_val));
@@ -3474,7 +3497,7 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 	{
 	    if ( is_variadic )
 	    {
-		x86::Xmm ret_xmm = pgm.cc.newXmm("dl_ret");
+		x86::Xmm ret_xmm = newScalarXmm(pgm, ret_type, "dl_ret");
 		call->setRet(0, ret_xmm);
 		pgm.cc.movsd(dest->as<x86::Xmm>(), ret_xmm);
 	    }
@@ -3494,7 +3517,7 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
     {
 	if ( ret_type->is_real() )
 	{
-	    x86::Xmm ret_xmm = pgm.cc.newXmm("call_ret");
+	    x86::Xmm ret_xmm = newScalarXmm(pgm, ret_type, "call_ret");
 	    call->setRet(0, ret_xmm);
 	    IRBuilder ir(pgm.cc);
 	    ir.store(IRValue::mem(dest->as<x86::Mem>(), ret_type), ir_from_operand(ret_xmm, ret_type));
@@ -4473,7 +4496,7 @@ void TokenOperator::setregdp(Program &pgm, regdefp_t &regdp)
 	    regdp.second = &ddDOUBLE;
 	if ( regdp.first )
 	    return;
-	_operand = pgm.cc.newXmm("setregdp_xmm");
+	_operand = newScalarXmm(pgm, regdp.second, "setregdp_xmm");
 	regdp.first = &_operand;
 	return;
     }
@@ -4548,7 +4571,7 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
 	if ( !regdp.second ) { regdp.second = &ddDOUBLE; }
 	if ( !regdp.first )
 	{
-	    _operand = pgm.cc.newXmm("_operand_Xmm_");
+	    _operand = newScalarXmm(pgm, regdp.second, "_operand_Xmm_");
 	    regdp.first = &_operand;
 	}
 	pgm.safemov(*regdp.first, foperate(), regdp.second);
@@ -5711,7 +5734,7 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	regdefp_t inner_rdp = {NULL, NULL, NULL};
 	inner_rdp.second = src_type;
 	Operand &src_op = expr->compile(pgm, inner_rdp);
-	x86::Xmm out = pgm.cc.newXmm("cast_real");
+	x86::Xmm out = newScalarXmm(pgm, cast_type, "cast_real");
 	if ( cast_type->size == sizeof(float) )
 	{
 	    // dbl -> flt
