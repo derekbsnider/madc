@@ -3713,7 +3713,24 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     // operand() keeps the raw Mem/Gp for aggregate bases; compile() would
     // load-into-Gp via emit_ir_value for numeric-typed TokenMember bases
     // (e.g. struct-contained `int bits[4]`) and destroy the array address.
-    Operand &base_op = base_expr->operand(pgm);
+    // Exception: complex value-producing operators (TokenAdd/Sub/Assign for
+    // `(p + n)[i]`, `(q = p + 1)[i]`) DON'T have a meaningful operand() —
+    // they need compile() to actually emit the arithmetic and yield a Reg
+    // holding the pointer value.
+    bool base_needs_compile =
+	dynamic_cast<TokenAdd *>(base_expr) != NULL
+     || dynamic_cast<TokenSub *>(base_expr) != NULL
+     || dynamic_cast<TokenAssign *>(base_expr) != NULL;
+    Operand op_storage;
+    Operand *op_ptr;
+    if ( base_needs_compile )
+    {
+	regdefp_t base_rdp = {nullptr, base_expr->datadef(), nullptr};
+	op_ptr = &base_expr->compile(pgm, base_rdp);
+    }
+    else
+	op_ptr = &base_expr->operand(pgm);
+    Operand &base_op = *op_ptr;
     x86::Gp base_reg = pgm.cc.newIntPtr("subexpr_obj");
     if ( base_op.isMem() )
     {
@@ -3728,8 +3745,10 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
     }
-    else
+    else if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
 	pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+    else
+	pgm.Throw(this) << "TokenSubscriptExpr::compile() unsupported base operand" << flush;
 
     regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
     Operand &idx_op = index->compile(pgm, idx_rdp);

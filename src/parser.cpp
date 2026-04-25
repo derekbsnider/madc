@@ -1689,11 +1689,32 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			exStack.push(new TokenSubscript(tv->var, idx, tmp));
 			break;
 		    }
+		    // Widened detection: complex value-producing expressions
+		    // whose datadef() reports a pointer (TokenAdd / TokenSub /
+		    // TokenAssign — see their datadef() overrides). Lets
+		    // `(p + n)[i]`, `(q = p + 1)[i]`, `(mud = imc_mudof(arg))[0]`
+		    // parse as subscript-on-pointer rather than lambda.
+		    // TokenSubscriptExpr::compile branches on the base_expr type
+		    // and uses compile() (not operand()) for these complex bases.
+		    bool top_is_complex_ptr_expr = false;
+		    if ( !exStack.empty() )
+		    {
+			TokenBase *xt = exStack.top();
+			if ( dynamic_cast<TokenAdd *>(xt) != NULL
+			  || dynamic_cast<TokenSub *>(xt) != NULL
+			  || dynamic_cast<TokenAssign *>(xt) != NULL )
+			{
+			    DataDef *xd = xt->datadef();
+			    if ( xd && xd->is_pointer() )
+				top_is_complex_ptr_expr = true;
+			}
+		    }
 		    if ( !exStack.empty()
 		      && (exStack.top()->type() == TokenType::ttMember
 		       || exStack.top()->type() == TokenType::ttSubscript
 		       || dynamic_cast<TokenDerefExpr *>(exStack.top()) != NULL
-		       || dynamic_cast<TokenDeref *>(exStack.top()) != NULL) )
+		       || dynamic_cast<TokenDeref *>(exStack.top()) != NULL
+		       || top_is_complex_ptr_expr) )
 		    {
 			TokenBase *base_expr = exStack.top();
 			exStack.pop();
