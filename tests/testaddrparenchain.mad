@@ -1,0 +1,43 @@
+// Regression: `&((ch)->member)` and similar `&(parenthesized chain)`
+// forms used to throw "expected ')' after &(name)" because the
+// `&(...)` parser passes `stop_on_closing_paren=true` to the inner
+// parseExpression. The inner expression `(ch)->member` opens its
+// own paren around `ch`; when that close-paren brings brackets to 0,
+// `stop_on_closing_paren` ended parseExpression — so the `->member`
+// part was left unparsed and the outer close failed.
+//
+// Fix: in parseExpression's `)` handler, when we'd otherwise end on
+// `stop_on_closing_paren`, peek one ahead. If the next token is a
+// postfix-chain operator (`.`, `->`, `[`), the parenthesized
+// sub-expression is just one part of a larger chain — keep parsing
+// the chain instead of ending. Comma/Sema/etc. still end normally.
+//
+// Surfaced at MadSMAUG `icec-mercbase.c:318` (`&ICE_LISTEN(ch)`
+// where ICE_LISTEN macro-expands to `((ch)->pcdata->ice_listen)`).
+
+#include <iostream>
+
+struct Inner { int v; };
+struct Outer { struct Inner *p; };
+
+int main()
+{
+    struct Inner i; i.v = 42;
+    struct Outer o; o.p = &i;
+    struct Outer *ch = &o;
+
+    // &((ch)->p->v) — the SMAUG-derived form via macro expansion.
+    int *vp = &((ch)->p->v);
+    cout << *vp << endl;            // 42
+
+    // Also: &((ch)->p) — single-level chain inside parens.
+    struct Inner **ipp = &((ch)->p);
+    cout << (*ipp)->v << endl;      // 42
+
+    // Plain `&(name)` (no chain) must still work — earlier session.
+    int x = 7;
+    int *xp = &(x);
+    cout << *xp << endl;            // 7
+
+    return 0;
+}

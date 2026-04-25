@@ -2014,7 +2014,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( conditional && !brackets )
 		    {
 			TokenBase *next = peekToken();
-			bool ends_conditional = (stop_on_closing_paren || !next
+			// A postfix-chain operator after the close paren means
+			// the parenthesized expression is a SUB-expression
+			// (e.g. `&((ch)->pcdata->ice_listen)` — the inner
+			// `(ch)` closes here but `->pcdata` continues the
+			// outer chain). Don't end on stop_on_closing_paren in
+			// that case.
+			bool postfix_follows = next
+			    && (next->id() == TokenID::tkDot
+			     || next->id() == TokenID::tkDeRef
+			     || next->id() == TokenID::tkOpSqr);
+			bool ends_conditional = !postfix_follows && (stop_on_closing_paren || !next
 			    || next->id() == TokenID::tkComma
 			    || next->id() == TokenID::tkClBrk
 			    || next->id() == TokenID::tkClSqr
