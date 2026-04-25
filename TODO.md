@@ -108,6 +108,14 @@
 
 ### Session 2026-04-25 (continued)
 
+- ~~**fn-ptr-member-access + later `(...)`**~~ — fn-ptr-call
+  detection at the `(` handler now scans opStack for any pending
+  operator (anything not `(`); a non-empty pending op means the
+  `(` belongs to a sub-expression, not a call through the fn-ptr.
+  Closes MadSMAUG update.c:744-745 (`ch->spec_fun &&
+  !IS_AFFECTED(...)`). Targeted regression:
+  tests/testfnptrmember_binop.mad.
+
 - ~~**`*++p` / `*--p` followed by a binary operator**~~ — explicit
   tkInc/tkDec branch in the unary-`*` parser builds a
   TokenInc/TokenDec with the pointer as `right` and wraps in a

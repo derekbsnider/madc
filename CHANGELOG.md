@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **`ch->fn && expr_with_parens` no longer mis-fires fn-ptr call
+  detection** — when a struct member of function-pointer type sits
+  on top of exStack, any `(` later in the expression triggered the
+  "direct invocation through struct-member function pointer"
+  branch — even with `&&`, `!`, or other operators between. Result
+  was "Missing operand" because the parser tried to consume the
+  `(args)` of a sub-expression as call args of the prior fn-ptr
+  member. Fix: scan opStack for any pending operator (anything not
+  `(`) — if one's there, the `(` belongs to a sub-expression and
+  the fn-ptr-call form is skipped. Closes the MadSMAUG
+  `update.c:744-745` (`!xIS_SET(ch->act, ACT_RUNNING) &&
+  ch->spec_fun && !IS_AFFECTED(ch, AFF_POSSESS)`) front edge.
+  Regression: `tests/testfnptrmember_binop.mad`.
+
 - **`*++p` / `*--p` followed by a binary operator** — the unary-`*`
   parser fell through to `parseExpression(deref_tb=tkInc, true)`
   which then happily consumed any trailing binary op too, so

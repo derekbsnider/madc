@@ -1,0 +1,61 @@
+// Regression: `ch->fn && macro_call(args)` and similar — where
+// `ch->fn` is a struct member of function-pointer type and the
+// next `(` belongs to a later sub-expression, not a call through
+// the fn-ptr — used to throw "Missing operand". The fn-ptr-call
+// detection at the `(` handler checked `exStack.top()` for a
+// TokenMember/FPTR but didn't check that the `(` IMMEDIATELY
+// followed the member access. Operators between the member and
+// the `(` (`&&`, `!`, etc.) live on opStack, leaving exStack top
+// unchanged at the TokenMember — so the fn-ptr call detection
+// fired for any `(` later in the expression.
+//
+// Fix: scan opStack for a pending operator (anything not `(`) — if
+// one's there, the `(` belongs to a sub-expression and the fn-ptr
+// invocation form should be skipped.
+//
+// Surfaced in MadSMAUG update.c:744-745 (`!xIS_SET(ch->act,
+// ACT_RUNNING) && ch->spec_fun && !IS_AFFECTED(ch, AFF_POSSESS)`).
+
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+
+struct ch_t {
+    int v;
+    int (*fn)(struct ch_t *);
+};
+
+#define helper(p, n) ((p)->v & (1 << (n)))
+
+int main()
+{
+    struct ch_t c;
+    c.v = 7;
+    c.fn = NULL;
+    struct ch_t *ch = &c;
+
+    // The failing form: fn-ptr member && macro-call.
+    if ( ch->fn && helper(ch, 0) )
+        cout << "both" << endl;
+    else
+        cout << "short" << endl;     // short — fn is NULL
+
+    // Pre-existing similar: `ch->fn && (paren_expr)`.
+    if ( ch->fn && (ch->v > 0) )
+        cout << "paren" << endl;
+    else
+        cout << "noparen" << endl;   // noparen
+
+    // The full SMAUG-style chain: !macro && fn-ptr && !macro
+    if ( !helper(ch, 0) && ch->fn && !helper(ch, 1) )
+        cout << "chain" << endl;
+    else
+        cout << "nochain" << endl;   // nochain (helper(ch,0)=1, !=0 false)
+
+    // Make sure the genuine fn-ptr call form still works.
+    extern int strlen(char *);
+    c.v = strlen("hi");
+    cout << c.v << endl;             // 2
+
+    return 0;
+}

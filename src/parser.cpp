@@ -1835,8 +1835,26 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // Direct invocation through a struct-member function pointer,
 		    // e.g. `cmd.fn(3, 4)` or `tab[i].fn(ch, arg)`. Detected when the
 		    // top of exStack is a TokenMember whose datadef is DataDefFPTR.
+		    // The `(` must IMMEDIATELY follow the member access — if any
+		    // operator (binary or unary) has been pushed onto opStack since
+		    // the member was parsed (e.g. `ch->fn && (something_else)` or
+		    // `ch->fn && !(macro_expansion)`), the `(` belongs to the next
+		    // sub-expression, not a call through the fn-ptr. Scan every
+		    // operator currently in opStack: any non-`(` entry means a
+		    // pending binop/unary is between the member and this `(`.
 		    TokenMember *member_call_base = NULL;
+		    bool opstack_has_pending_op = false;
+		    {
+			std::stack<TokenBase *> tmp = opStack;
+			while ( !tmp.empty() )
+			{
+			    if ( tmp.top()->id() != TokenID::tkOpBrk )
+			    { opstack_has_pending_op = true; break; }
+			    tmp.pop();
+			}
+		    }
 		    if ( !exStack.empty()
+		      && !opstack_has_pending_op
 		      && exStack.top()->type() == TokenType::ttMember
 		      && (member_call_base = dynamic_cast<TokenMember *>(exStack.top())) != NULL
 		      && dynamic_cast<DataDefFPTR *>(member_call_base->var.type) )
