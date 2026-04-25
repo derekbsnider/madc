@@ -1315,6 +1315,20 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    for ( DataDef *param_type : param_types )
 		add_funcsig_arg(funcsig, param_type);
 
+	    // The variadic dlsym path resolves printf-family functions
+	    // (printf / fprintf / sprintf / snprintf / ...). Per SysV
+	    // x86-64 ABI, calls to variadic functions must set AL = number
+	    // of XMM registers used. Without telling asmjit the signature
+	    // is variadic, AL is left with whatever was in rax (often the
+	    // format-string pointer's low byte) — printf reads it and may
+	    // skip xmm0, printing 0.0 for `%f` arguments instead of the
+	    // real value. Setting vaIndex marks the args at and after
+	    // that index as variadic; index 1 (everything past the first
+	    // fixed arg, e.g. the format string) is correct for the
+	    // entire printf family.
+	    if ( funcsig.argCount() >= 1 )
+		funcsig.setVaIndex(1);
+
 	    // invoke
 	    InvokeNode *call;
 	    pgm.cc.invoke(&call, imm(method->x86code), funcsig);
