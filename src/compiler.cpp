@@ -5776,7 +5776,12 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("TokenCast::compile()"));
     // `(void)expr` discards the value; it should not force the inner
     // expression through a nonexistent "coerce to void" path.
-    if ( cast_type && cast_type->rawtype() == DataType::dtVOID )
+    // `(void *)expr` is a real reinterpreting cast — DataDef::rawtype()
+    // strips the pointer ref bias and reports dtVOID for both, so the
+    // is_pointer() guard keeps `(void *)` flowing through the normal
+    // cast path that sets regdp.second = cast_type.
+    if ( cast_type && cast_type->rawtype() == DataType::dtVOID
+      && !cast_type->is_pointer() )
     {
 	regdefp_t inner_rdp = {NULL, expr ? expr->datadef() : NULL, NULL};
 	Operand &result = expr->compile(pgm, inner_rdp);
