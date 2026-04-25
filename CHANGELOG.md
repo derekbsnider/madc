@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+- **IRBuilder::coerce: include src/dst type names in error message** —
+  bare `throw "unsupported type conversion"` gave no clue which types
+  caused the failure; every gap looked the same. Promoted to
+  `snprintf`-into-static-buffer so the actual `src=...` /  `dst=...`
+  type names land in the error stream. Surfaced while probing past
+  act_wiz.c, where an `int* -> void` coerce was firing from inside a
+  TokenIF → TokenLT → TokenCallFunc → TokenCast → TokenAddrOf chain;
+  investigation deferred to next session now that the message is
+  actionable.
+
+- **resolveCompoundLHS: raw-pointer subscript lvalues** — `int *p;
+  p[i] += N;` (and the rest of the compound-op family — -=, *=, /=,
+  %=, &=, |=, ^=, <<=, >>=) used to throw `"<op> on unsupported
+  subscript lval"` because the ttSubscript branch only covered
+  TokenSubscript with a fixed-array base and TokenSubscriptExpr with
+  an expression base. A TokenSubscript whose `object.type` is a
+  pointer fell between the two. New branch mirrors
+  TokenSubscript::compile()'s pointer-subscript read path — MOV the
+  pointer into a Gp, fold the index by element stride (SIB scale for
+  power-of-2, imul otherwise), build the writeback Mem, load through
+  it for the LHS. Closes SMAUG `act_info.c` `prgnShow[iShow] +=
+  obj->count`. Two remaining raw `throw` sites in resolveCompoundLHS
+  upgraded to `pgm.Throw(left)` for better diagnostics on the next
+  gap. Regression: `tests/testcompoundptrsub.mad`.
+
+- **safediv: Gp/Xmm mixed dividend/divisor operands** — `op2` (the
+  dividend) is the destination register that receives the quotient
+  for both x86 idiv and SSE divsd/divss. Its register family now
+  selects the result family — Xmm op2 → real division, Gp op2 →
+  integer division — and op3 is coerced into the chosen family
+  before the hardware op (`cvtsi2sd` / `cvtsi2ss` for Gp→Xmm,
+  `cvttsd2si` / `cvttss2si` for Xmm→Gp). Closes the SMAUG
+  mud_prog.c blocker reached after the Gp-vs-Xmm safecmp closure.
+
 - **safecmp: Gp-vs-Mem and Gp-vs-Xmm mixed comparisons** — `if
   (chances != 0 && victim->morph)` and similar SMAUG idioms compare a
   computed Gp value against a stack-resident Mem; now safecmp loads

@@ -1,14 +1,14 @@
 # Test Status
 
-Test results as of April 25, 2026 (post-v0.12.0, session 3 — float quirk closed at SysV-ABI level via setVaIndex(1); MadSMAUG umbrella advanced to 36 upstream TUs via emit_struct_init nested fixed-arrays, fn-ptr-MEMBER assignment-LHS guard, continue-in-switch piercing, IRBuilder coerce char*→string relabel, safecmp Gp-vs-Mem and Gp-vs-Xmm).
+Test results as of April 25, 2026 (post-v0.12.0, session 4 — safediv Gp/Xmm mixed dividend/divisor operands, resolveCompoundLHS raw-pointer subscript lvalue, IRBuilder::coerce error message now reports src/dst type names).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 215 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 216 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 215 integration tests
+- Passing: 216 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR

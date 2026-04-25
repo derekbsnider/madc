@@ -61,6 +61,31 @@
 
 ## Completed
 
+### Session 2026-04-25 (post-v0.12.0, session 4 — safediv mixed + ptr-subscript compound)
+
+- ~~**safediv Gp/Xmm mixed dividend/divisor operands**~~ — op2's
+  register family now selects integer vs real division; mixed op3
+  is coerced via cvtsi2sd / cvttsd2si before idiv / divsd. Closes
+  the SMAUG mud_prog.c blocker reached after the Gp-vs-Xmm safecmp
+  closure. Commit `4a609c7`.
+
+- ~~**resolveCompoundLHS raw-pointer subscript lvalues**~~ — `int *p;
+  p[i] += N;` (and the rest of the compound-op family) now compile.
+  Mirrors TokenSubscript::compile()'s pointer-subscript read path.
+  Closes SMAUG `act_info.c` `prgnShow[iShow] += obj->count`. Two
+  raw-throw sites in resolveCompoundLHS upgraded to `pgm.Throw(left)`.
+  Regression: `tests/testcompoundptrsub.mad`. Commit `09f1c9b`.
+
+- ~~**IRBuilder::coerce error includes src/dst type names**~~ — bare
+  throw "unsupported type conversion" gave no signal which gap was
+  firing; now the message names the actual types so the next
+  investigation has somewhere to start. Commit `e30a666`.
+
+- ~~**variables.c + update.c removed from MadSMAUG deferred list**~~ —
+  both now compile cleanly (the IRBuilder::coerce char*→string
+  blocker that gated them was closed by session 3's transient
+  relabel). MadSMAUG-side change, uncommitted.
+
 ### Session 2026-04-25 (post-v0.12.0, session 3 — SMAUG mid-umbrella push)
 
 - ~~**safecmp Gp-vs-Mem and Gp-vs-Xmm mixed comparisons**~~ — both
