@@ -28,19 +28,18 @@
   Filed at `parser.cpp:1645`. Surfaced in MadSMAUG `magic.c:134`
   (`ch->pcdata->special_skills[sn]->name`).
 
-- **`<string.h>` typed return declarations for `strchr`/`strrchr`/
-  `strstr`/`strdup` etc.** — the embedded header registers these
-  through dlsym fallback only, which gives a generic int64 return
-  signature. So `*(strchr(s,c)) = 0` and similar fail with "cannot
-  dereference non-pointer type" because the parser thinks strchr
-  returns int64. Adding `extern char *strchr(...)` etc. to embedded
-  `<string.h>` fixed it cleanly (verified via standalone test) but
-  shifted the JIT binary layout enough to push the documented
-  asmjit-compiler float-quirk into the failing zone for `testfloat.mad`
-  and `teststructdoublecompound.mad`. Blocked on the typed-register
-  IR replacing the asmjit Compiler reg-allocator pass — same cluster
-  as the per-member array count bug above. Surfaced at MadSMAUG
-  `imc.c:340`.
+- **Remaining `<string.h>` typed return declarations
+  (`strrchr`/`strstr`/`strdup`/`strpbrk`/`strtok`/`strndup`)** —
+  `strchr` landed; the rest still trigger the cross-function
+  variant of the asmjit-Compiler quirk (different from the
+  multi-arg-printf variant the typed-Xmm IR fix closed). Symptom:
+  in `testfloat.mad`, `test_promote()` reads xmm0 with the value
+  from the previous function's printf instead of loading its own
+  arg. The xmm load is being elided across function boundaries
+  even though xmm regs are caller-saved per ABI. Likely needs the
+  typed-register IR Stage 4 work to force a fresh load via
+  Assembler-emitted bytes that asmjit's Compiler can't see /
+  optimize.
 
 ## Medium Priority
 
@@ -121,6 +120,19 @@
 ## Completed
 
 ### Session 2026-04-25 (post-v0.12.0)
+
+- ~~**Typed Xmm allocation + `extern char *strchr(...)` in embedded
+  string.h**~~ — IRBuilder::newReg now dispatches on real-type size
+  and uses `cc.newXmmSs` (float) / `cc.newXmmSd` (double) instead
+  of the generic `cc.newXmm` (which asmjit types as `int32x4`).
+  This gives asmjit's Compiler register allocator scalar-real
+  type hints, which closes the multi-arg printf reordering case
+  of the float quirk. With the allocator behaving, added
+  `extern char *strchr` to embedded `<string.h>`. Targeted
+  regression: `tests/teststrchrtyped.mad`. Closes the SMAUG
+  `imc.c:340` front edge. Other char*-returning libc functions
+  (strrchr/strstr/strdup/etc.) still trigger a separate cross-
+  function xmm-leakage variant; filed under High Priority.
 
 - ~~**`string` as a function parameter name**~~ — parseExpression's
   ttDataType branch now looks up the type-name as a variable first

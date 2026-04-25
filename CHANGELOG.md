@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **Typed scalar Xmm allocation in IR + `extern char *strchr(...)`
+  in embedded `<string.h>`** — `IRBuilder::newReg` was using
+  `cc.newXmm()` for every Xmm value, which asmjit types as
+  `int32x4` (4-element int vector). For scalar floats / doubles
+  the allocator's int-vector liveness path interleaved with the
+  scalar-real path under register pressure, producing
+  filename-length-dependent reordering of varargs `printf`
+  arguments. Fix: dispatch on `type->size`, using `cc.newXmmSs`
+  for `float` and `cc.newXmmSd` for `double`. The allocator now
+  sees scalar-real type hints and varargs xmm setup is
+  deterministic. With the allocator behaving, added the long-
+  blocked `extern char *strchr(char *s, int c);` to embedded
+  `<string.h>` so `*(strchr(s,c)) = 0` and `if (strchr(...) ==
+  NULL)` work without explicit user-side `extern`. Closes the
+  MadSMAUG `imc.c:340` front edge. Regression:
+  `tests/teststrchrtyped.mad`. The remaining string.h additions
+  (`strrchr`/`strstr`/`strdup`/etc.) still hit a different
+  cross-function xmm-leakage variant of the asmjit-Compiler
+  quirk; filed in TODO for the typed-register-IR Stage 4 work.
+
 - **`string` as a function parameter name** — `static void
   parsekeys(char *string) { p1 = string; }` used to throw
   "Expecting identifier". Inside the function body the lexer

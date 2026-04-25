@@ -41,10 +41,17 @@ IRValue IRBuilder::newReg(DataDef *type, const char *name_hint)
 	throw "IRBuilder::newReg() type is NULL";
     if ( type->is_real() )
     {
-	// One virtual Xmm holds either a float or a double; the size
-	// distinction lives in the instructions (movss/movsd) not the
-	// register itself.
-	x86::Xmm xm = cc_.newXmm("%s", name_hint ? name_hint : "ir_xmm");
+	// Use the type-specific Xmm allocator so asmjit's Compiler
+	// register allocator sees a scalar-float / scalar-double type
+	// hint instead of the default `int32x4`. Without this, varargs
+	// double args interleave through the allocator's int-vector
+	// liveness path, which sometimes elides reloads and leaves
+	// stale values in xmm0 across calls.
+	x86::Xmm xm;
+	if ( type->size == sizeof(float) )
+	    xm = cc_.newXmmSs("%s", name_hint ? name_hint : "ir_xmm_ss");
+	else
+	    xm = cc_.newXmmSd("%s", name_hint ? name_hint : "ir_xmm_sd");
 	return IRValue::reg(xm, type);
     }
     // Integer or pointer — always allocate a Gpq. Narrower moves still
