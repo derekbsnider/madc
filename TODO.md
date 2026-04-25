@@ -108,6 +108,17 @@
 
 ### Session 2026-04-25 (continued)
 
+- ~~**`extern` libc/system functions via dlsym late-bind**~~ — at
+  TokenCallFunc::compile time, when a declared function has neither
+  funcnode nor x86code, try dlsym(RTLD_DEFAULT, name) as a last
+  resort and route through the typed-call path. Also extracted the
+  int32-sign-extension whitelist into a file-scope helper so typed
+  calls get the same movsxd dance. Targeted regression:
+  tests/testexterndlsym.mad. Closes the MadSMAUG act_info.c:4642 /
+  build.c:1822 `crypt` front edge for any libc symbol resolvable
+  through RTLD_DEFAULT (crypt itself isn't, but strcmp/strncmp/etc
+  all work).
+
 - ~~**Char literals in macro args**~~ — lexer's macro-arg loop now
   treats `'` symmetrically with `"`, copying char literals verbatim
   through their closing `'` so any `(`/`)`/`,`/`"` inside (e.g.

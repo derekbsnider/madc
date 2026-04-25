@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **`extern RET name(args);` typed-calls via dlsym** — explicit
+  forward declarations of libc / system functions used to fail at
+  compile time with "method has neither FuncNode nor x86code". The
+  dlsym fallback fired only for *implicit* calls (an undeclared
+  identifier followed by `(`); explicit `extern` declarations
+  registered the function symbol but never tried to resolve it.
+  Fix: in `TokenCallFunc::compile`, when a declared function has
+  neither funcnode nor x86code, try `dlsym(RTLD_DEFAULT, name)` as
+  a last resort. If resolved, set `method->x86code` and fall through
+  to the typed-call path. Also extracted the int32-sign-extension
+  whitelist into a file-scope helper so the typed-call's
+  `bind_call_return` applies the same movsxd dance the variadic
+  dlsym path does — otherwise `extern int strcmp(...)` returned
+  garbage-signed int64 values. Regression: `tests/testexterndlsym.mad`.
+
 - **Char literals inside macro arguments don't break the macro arg
   parser** — the lexer's macro-arg loop tracked `(`, `)`, `,`, and
   `"` for nesting/escapes but not `'`. So an argument containing a

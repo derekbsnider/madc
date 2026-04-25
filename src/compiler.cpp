@@ -38,6 +38,54 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret=false);
 const char *string_cstr(void *ptr);
 
+// Whether a dlsym-resolved libc/system call returns a plain 32-bit int
+// (vs an int64 / pointer / real). True for sub-int64 return types and for
+// a curated whitelist of widely-used libc functions whose declared return
+// is `int` even though the parser usually registers them as int64. The
+// caller uses this to insert a movsxd sign-extension on the AX result.
+static bool is_int32_dlsym_ret(DataDef *ret_type, const std::string &fname)
+{
+    static const std::set<std::string> int32_returners = {
+	// comparison / search
+	"strcmp", "strncmp", "strcasecmp", "strncasecmp",
+	"memcmp", "strcoll",
+	// char-level I/O
+	"getchar", "putchar", "getc", "putc", "fgetc", "fputc", "ungetc",
+	// stdio returning # written / status / 0
+	"printf", "fprintf", "sprintf", "snprintf", "dprintf",
+	"scanf", "fscanf", "sscanf", "vprintf", "vfprintf",
+	"vsprintf", "vsnprintf", "vscanf", "vfscanf", "vsscanf",
+	"fputs", "puts", "fflush", "fclose", "fileno", "feof",
+	"ferror", "setvbuf", "setbuf",
+	// file / process status
+	"remove", "rename", "unlink", "rmdir", "mkdir", "chmod",
+	"chown", "access", "link", "symlink", "truncate",
+	"ftruncate", "fcntl", "ioctl", "dup", "dup2", "close",
+	"open", "creat", "fsync", "pipe",
+	// process / signal
+	"kill", "fork", "exec", "execv", "execvp", "execve",
+	"wait", "waitpid", "getpid", "getppid", "getuid", "geteuid",
+	"getgid", "getegid", "setuid", "setgid", "system",
+	"atexit", "raise", "sigaction", "sigprocmask",
+	// conversions
+	"atoi", "atol",
+	// network / socket
+	"socket", "bind", "listen", "accept", "connect", "send",
+	"recv", "sendto", "recvfrom", "shutdown", "setsockopt",
+	"getsockopt", "getsockname", "getpeername", "inet_pton",
+	"inet_aton", "select", "poll", "flock",
+	// time
+	"gettimeofday", "settimeofday", "clock_gettime",
+	"clock_settime", "nanosleep", "sleep", "usleep",
+	// string helpers that happen to return int
+	"strerror_r", "strtol_safe"
+    };
+    if ( ret_type && !ret_type->is_pointer() && !ret_type->is_real()
+	 && ret_type->is_integer() && ret_type->size < 8 )
+	return true;
+    return int32_returners.count(fname) > 0;
+}
+
 static IRValue ir_from_operand(const Operand &op, DataDef *type)
 {
     if ( !type )
@@ -1179,8 +1227,21 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	    return *regdp.first;
 	}
-	pgm.Throw(this) << "TokenCallFunc::compile(" << var.name
-			<< ") method has neither FuncNode nor x86code" << flush;
+	// Last-chance dlsym: an `extern RET name(args);` forward
+	// declaration registers `name` as a function but doesn't run
+	// dlsym (only undeclared identifiers hit the parse-time
+	// fallback). Try resolving here so user code can typed-call
+	// any libc / system symbol just by extern-declaring it.
+	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
+	if ( sym )
+	{
+	    method->x86code = sym;
+	    fnd = NULL; // intentional — fall into the typed-call path below
+	    DBG(pgm.cc.comment("TokenCallFunc::compile() dlsym late-bind"));
+	}
+	else
+	    pgm.Throw(this) << "TokenCallFunc::compile(" << var.name
+			    << ") method has neither FuncNode nor x86code" << flush;
     }
 
     // variadic dlsym call: no funcnode, has x86code, 0 declared params
@@ -1239,60 +1300,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    }
 	    else
 	    {
-		// dlsym-resolved C functions that return plain `int` (int32)
-		// place the result in EAX; the upper 32 bits of RAX are left
-		// indeterminate and typically zero-extended by the compiler,
-		// so negative int32 values read back as large positives. madc
-		// treats the return as int64, so sign-extend from the low 32
-		// bits via movsxd for known int32-returning libc functions.
-		//
-		// The dlsym fallback registers every unknown function with
-		// return type dtINT64, losing real-ABI info; int64/pointer
-		// returners (malloc, strdup, strtol, time, lseek, ...) must
-		// keep their upper 32 bits. So we gate the movsxd on a
-		// curated whitelist of common int32 returners rather than
-		// applying it universally.
-		static const std::set<std::string> int32_returners = {
-		    // comparison / search
-		    "strcmp", "strncmp", "strcasecmp", "strncasecmp",
-		    "memcmp", "strcoll",
-		    // char-level I/O
-		    "getchar", "putchar", "getc", "putc", "fgetc", "fputc",
-		    "ungetc",
-		    // stdio returning # written / status / 0
-		    "printf", "fprintf", "sprintf", "snprintf", "dprintf",
-		    "scanf", "fscanf", "sscanf", "vprintf", "vfprintf",
-		    "vsprintf", "vsnprintf", "vscanf", "vfscanf", "vsscanf",
-		    "fputs", "puts", "fflush", "fclose", "fileno", "feof",
-		    "ferror", "setvbuf", "setbuf",
-		    // file / process status
-		    "remove", "rename", "unlink", "rmdir", "mkdir", "chmod",
-		    "chown", "access", "link", "symlink", "truncate",
-		    "ftruncate", "fcntl", "ioctl", "dup", "dup2", "close",
-		    "open", "creat", "fsync", "pipe",
-		    // process / signal
-		    "kill", "fork", "exec", "execv", "execvp", "execve",
-		    "wait", "waitpid", "getpid", "getppid", "getuid", "geteuid",
-		    "getgid", "getegid", "setuid", "setgid", "system",
-		    "atexit", "raise", "sigaction", "sigprocmask",
-		    // conversions
-		    "atoi", "atol",
-		    // network / socket
-		    "socket", "bind", "listen", "accept", "connect", "send",
-		    "recv", "sendto", "recvfrom", "shutdown", "setsockopt",
-		    "getsockopt", "getsockname", "getpeername", "inet_pton",
-		    "inet_aton", "select", "poll", "flock",
-		    // time
-		    "gettimeofday", "settimeofday", "clock_gettime",
-		    "clock_settime", "nanosleep", "sleep", "usleep",
-		    // string helpers that happen to return int
-		    "strerror_r", "strtol_safe"
-		};
-		bool is_narrow_int_ret = (!func->returns.is_pointer()
-		    && !func->returns.is_real()
-		    && func->returns.is_integer()
-		    && func->returns.size < 8)
-		    || int32_returners.count(var.name) > 0;
+		bool is_narrow_int_ret = is_int32_dlsym_ret(&func->returns, var.name);
 		if ( !regdp.first )
 		{
 		    _operand = pgm.cc.newGpq("dl_ret");
@@ -1472,19 +1480,26 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
 	regdp.second = &func->returns;
 
+    // For a dlsym late-bound extern-declared function, apply the same
+    // int32-sign-extension whitelist the variadic dlsym path uses, so
+    // `extern int strcmp(...)` returns negative values correctly.
+    bool typed_narrow_int_ret = (!fnd && method->x86code)
+				&& is_int32_dlsym_ret(&func->returns, var.name);
 #if 1
     // handle return value
     if ( regdp.first )
     {
-	bind_call_return(pgm, call, regdp.first, &func->returns, _operand, is_variadic);
+	bind_call_return(pgm, call, regdp.first, &func->returns, _operand,
+			 is_variadic, typed_narrow_int_ret);
 	DBG(pgm.cc.comment("TokenCallFunc::compile() regdp.first END"));
 	return *regdp.first;
     }
     else
 #endif
     if ( func->returns.type() != DataType::dtVOID )
-    { 
-	bind_call_return(pgm, call, NULL, &func->returns, _operand, is_variadic);
+    {
+	bind_call_return(pgm, call, NULL, &func->returns, _operand,
+			 is_variadic, typed_narrow_int_ret);
 	regdp.first = &_operand;
     }
     DBG(pgm.cc.comment("TokenCallFunc::compile() END"));
