@@ -418,6 +418,7 @@ class DataDefSTRUCT: public DataDef
 {
 public:
     std::vector<memberpair_t> members;
+    std::vector<size_t> member_counts;	// per-member count for fixed arrays (1 for scalars)
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
 
@@ -456,6 +457,7 @@ public:
 	size = align_up(size, fa);	// pad to field's alignment
 	if ( fa > max_align ) max_align = fa;
 	members.emplace_back(n, &dd);
+	member_counts.push_back(cnt);
 	size += dd.size * cnt;
     }
     // round struct size up to its overall alignment (for arrays of structs)
@@ -466,18 +468,26 @@ public:
     ssize_t m_offset(std::string &member)
     {
 	ssize_t ofs = 0;
-	std::vector<memberpair_t>::iterator dvpi;
 	DBG(std::cout << "DataDefSTRUCT::offset(" << member << ')' << std::endl);
-	for ( dvpi = members.begin(); dvpi != members.end(); ++dvpi )
+	for ( size_t i = 0; i < members.size(); ++i )
 	{
-	    size_t fa = field_align(*dvpi->second);
+	    size_t fa = field_align(*members[i].second);
 	    ofs = (ssize_t)align_up((size_t)ofs, fa);
-	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << dvpi->first << " ofs=" << ofs << std::endl);
-	    if ( !member.compare(dvpi->first) )
+	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << members[i].first << " ofs=" << ofs << std::endl);
+	    if ( !member.compare(members[i].first) )
 		return ofs;
-	    ofs += dvpi->second->size;
+	    size_t cnt = (i < member_counts.size()) ? member_counts[i] : 1;
+	    ofs += members[i].second->size * cnt;
 	}
 	return -1;
+    }
+    // Per-member fixed-array count (1 for scalar / non-array members).
+    size_t m_count(std::string &member)
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_counts.size()) ? member_counts[i] : 1;
+	return 1;
     }
     DataDef *m_type(std::string &member)
     {

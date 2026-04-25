@@ -170,6 +170,17 @@ public:
     virtual void putreg(Program &);
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    // Member is declared as a fixed array (e.g. `SKILLTYPE *arr[N]`).
+    // Such a member's datadef reports the element type but the storage
+    // is in-place, so subscripting needs LEA on the member's Mem and
+    // the parser must not unwrap pointer-typed elements.
+    bool is_fixed_array_member() const
+    {
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(object.type);
+	if ( !sdd ) return false;
+	std::string mname = var.name;
+	return sdd->m_count(mname) > 1;
+    }
 };
 
 // & address-of operator — emits LEA to get address of a variable

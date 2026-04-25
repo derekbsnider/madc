@@ -1750,7 +1750,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 			    Throw(tb) << "Expected ] in subscript expression" << flush;
 			DataDef *elem_type = base_expr->datadef();
-			if ( elem_type && elem_type->is_pointer() )
+			// Distinguish a fixed-array struct member (e.g.
+			// `SKILLTYPE *arr[N]` — array of pointers) from a
+			// stored pointer member (`SKILLTYPE *p`). For the
+			// first, `arr[i]` yields the declared element type
+			// as-is (still a SKILLTYPE *); for the second, `p[i]`
+			// derefs the pointer to its base type.
+			TokenMember *tm = dynamic_cast<TokenMember *>(base_expr);
+			bool member_is_fixed_array = tm && tm->is_fixed_array_member();
+			if ( !member_is_fixed_array && elem_type && elem_type->is_pointer() )
 			{
 			    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
 			    elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;

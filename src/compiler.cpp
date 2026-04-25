@@ -378,6 +378,16 @@ static Operand &finish_general_binop(Program &pgm, regdefp_t &regdp,
 // from both TokenAdd and TokenSub; the previous inline copies diverged
 // only in TokenSub's extra `right is not pointer` guard, which is now
 // folded into the single helper.
+// Convenience wrapper: dynamic_cast tb to TokenMember and call its
+// is_fixed_array_member(). True for `SKILLTYPE *arr[N]`-style struct
+// members where the storage is in-place but the member's datadef
+// reports the element type.
+static bool is_fixed_array_struct_member(TokenBase *tb)
+{
+    TokenMember *tm = dynamic_cast<TokenMember *>(tb);
+    return tm && tm->is_fixed_array_member();
+}
+
 static void emit_pointer_arith_scale(Program &pgm, TokenBase *left, TokenBase *right,
 				     Operand &rval)
 {
@@ -2418,7 +2428,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    else if ( base_op.isMem() )
 	    {
 		DataDef *bdd = tse->base_expr->datadef();
-		if ( bdd && bdd->is_pointer() )
+		if ( bdd && bdd->is_pointer() && !is_fixed_array_struct_member(tse->base_expr) )
 		    pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
 		else
 		    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
@@ -2954,7 +2964,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 		// aggregate stored in-place (struct-contained fixed array, local
 		// array), we want the address OF the Mem — LEA gives that.
 		DataDef *bdd = tse->base_expr->datadef();
-		if ( bdd && bdd->is_pointer() )
+		if ( bdd && bdd->is_pointer() && !is_fixed_array_struct_member(tse->base_expr) )
 		    pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
 		else
 		    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
@@ -3779,7 +3789,7 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
 	// stored in-place (fixed-array variable, nested struct), we want the
 	// address OF the Mem, which LEA gives. Pick based on datadef.
 	DataDef *bdd = base_expr->datadef();
-	if ( bdd && bdd->is_pointer() )
+	if ( bdd && bdd->is_pointer() && !is_fixed_array_struct_member(base_expr) )
 	    pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
 	else
 	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());

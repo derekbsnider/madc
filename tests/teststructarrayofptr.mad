@@ -1,0 +1,90 @@
+// Regression: a struct member declared as a fixed array of pointers
+// (`SKILLTYPE *arr[N]`) used to fail in two ways:
+//
+// 1. Parser-side: `arr[i]` reported its result as `SKILLTYPE` instead
+//    of `SKILLTYPE *`, so `arr[i]->name` threw "expression before '->'
+//    must be a pointer". The unwrap in parseExpression's subscript-
+//    on-expression branch fired because the member's datadef is a
+//    pointer, ignoring that the storage is an array of those pointers.
+//
+// 2. Codegen-side (the latent crash that surfaced once parse worked):
+//    the assign-write path (and compound-assign, and read-side
+//    TokenSubscriptExpr::compile) MOVed instead of LEA'd when the base
+//    member's datadef was a pointer — for an in-place fixed-array of
+//    pointers this loaded the value of arr[0] and used it as the base
+//    address, corrupting memory.
+//
+// Both fixes hinge on a per-member array count stored on
+// DataDefSTRUCT (member_counts vector). The same vector also fixes
+// the long-latent struct-member-offset bug for fields after a fixed-
+// array member: previously m_offset advanced by `dd.size` per member,
+// losing the per-member count, so e.g. `int x; int arr[4]; int y;`
+// reported y at offset 16 (overwriting arr[1]) instead of 40.
+//
+// Surfaced in MadSMAUG `magic.c:134` (`ch->pcdata->special_skills[sn]
+// ->name`).
+
+#include <iostream>
+#include <stdio.h>
+
+struct SKILLTYPE
+{
+    char *name;
+    int level;
+};
+
+struct PCDATA
+{
+    struct SKILLTYPE *special_skills[3];
+};
+
+// Independent struct that exercises the offset bug for a field after
+// a fixed-array member.
+struct LAYOUT
+{
+    int x;
+    int arr[4];
+    int y;
+};
+
+int main()
+{
+    // Array-of-pointers: write through the subscript, then read back
+    // via `->member` chained access.
+    struct SKILLTYPE s0;
+    s0.name = "fireball";
+    s0.level = 5;
+    struct SKILLTYPE s1;
+    s1.name = "heal";
+    s1.level = 3;
+
+    struct PCDATA pc;
+    pc.special_skills[0] = &s0;
+    pc.special_skills[1] = &s1;
+    pc.special_skills[2] = NULL;
+
+    cout << pc.special_skills[0]->name << endl;   // fireball
+    cout << pc.special_skills[0]->level << endl;  // 5
+    cout << pc.special_skills[1]->name << endl;   // heal
+    cout << pc.special_skills[1]->level << endl;  // 3
+    cout << (pc.special_skills[2] == NULL ? "null" : "found") << endl;  // null
+
+    // Struct-member-offset bug: writes to arr should not bleed into y,
+    // and writes to y should not clobber any element of arr.
+    struct LAYOUT v;
+    v.x = 1;
+    v.arr[0] = 100;
+    v.arr[1] = 200;
+    v.arr[2] = 300;
+    v.arr[3] = 400;
+    v.y = 999;
+
+    cout << v.x << endl;        // 1
+    cout << v.arr[0] << endl;   // 100
+    cout << v.arr[1] << endl;   // 200 (was 999 before the fix)
+    cout << v.arr[2] << endl;   // 300
+    cout << v.arr[3] << endl;   // 400
+    cout << v.y << endl;        // 999
+
+    return 0;
+}
