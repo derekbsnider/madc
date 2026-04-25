@@ -3071,7 +3071,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			bool followed_by_value_end =
 			    peek_id == TokenID::tkComma || peek_id == TokenID::tkClBrk
 			 || peek_id == TokenID::tkClSqr || peek_id == TokenID::tkClBrc
-			 || peek_id == TokenID::tkTerC;
+			 || peek_id == TokenID::tkTerC
+			 // Binary comparison / logical / bitwise operators: a bare
+			 // function name on either side of these is its address
+			 // (function-to-pointer decay), not a call. Closes patterns
+			 // like `t->fn == do_cast && tmp->...` where do_cast was
+			 // previously pushed as a TokenCallFunc, then the operator
+			 // was silently consumed and the next token mis-parsed.
+			 || peek_id == TokenID::tkEquals || peek_id == TokenID::tkNotEq
+			 || peek_id == TokenID::tkLT     || peek_id == TokenID::tkLE
+			 || peek_id == TokenID::tkGT     || peek_id == TokenID::tkGE
+			 || peek_id == TokenID::tkLand   || peek_id == TokenID::tkLor
+			 || peek_id == TokenID::tkBand   || peek_id == TokenID::tkBor
+			 || peek_id == TokenID::tkXor;
 			bool in_assign_context = false;
 			if ( !opStack.empty() )
 			{

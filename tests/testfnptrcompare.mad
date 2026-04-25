@@ -1,0 +1,53 @@
+// Regression: a bare function name compared against a function-pointer-
+// typed slot — `if (timer->fn == do_cast && ...)` — failed at parse
+// with "expression before '->' must be a pointer". Root cause: the
+// function-to-pointer-decay heuristic only fired for value-end tokens
+// (`,`, `)`, `]`, `}`, `:`) and assignment-context opStack tops. For a
+// comparison operator following the function name, the parser fell
+// through and built a TokenCallFunc, then consumed the next token
+// (`==`) eagerly — the `==` was silently lost and the rest of the
+// chain mis-parsed (next-but-one identifier ended up where the function
+// call's arguments would have been).
+//
+// Fix: also treat binary comparison (`==`, `!=`, `<`, `<=`, `>`, `>=`)
+// and logical/bitwise (`&&`, `||`, `&`, `|`, `^`) operators as decay
+// triggers. After any of these, a bare function name is its address —
+// what C function-to-pointer decay produces in those positions.
+//
+// Surfaced compiling MadSMAUG `magic.c:1613`
+// (`t->do_fun == do_cast && tmp->tempnum == sn`).
+
+#include <iostream>
+#include <stdio.h>
+
+typedef int (*INTFN)(int);
+
+int square(int x) { return x * x; }
+int twice(int x)  { return x * 2; }
+
+struct timer
+{
+    INTFN fn;
+    int tag;
+};
+
+int main()
+{
+    struct timer t;
+    t.fn = square;
+    t.tag = 7;
+
+    // Prior to the fix, each of these failed with the parser bailing at
+    // the operator following the bare function name.
+    if (t.fn == square)
+        cout << "square match" << endl;
+    if (t.fn != twice)
+        cout << "not twice" << endl;
+    if (t.fn == square && t.tag == 7)
+        cout << "both" << endl;
+    // Logical OR also covered.
+    if (t.fn == twice || t.fn == square)
+        cout << "either" << endl;
+
+    return 0;
+}
