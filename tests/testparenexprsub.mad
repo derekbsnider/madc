@@ -47,5 +47,12 @@ int main()
     // q was actually assigned
     cout << *q << endl;               // l
 
+    // Fixed-array base in pointer arithmetic — `buf + N` where buf
+    // is `char[N]` doesn't have a directly pointer-typed datadef
+    // (TokenVar reports element type), but the parser walks into
+    // TokenAdd's operands and detects the fixed-array decay.
+    cout << (buf + 1)[0] << endl;     // e (buf[1])
+    cout << (buf + 4)[0] << endl;     // o
+
     return 0;
 }

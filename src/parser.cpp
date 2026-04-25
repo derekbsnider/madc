@@ -1704,9 +1704,35 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			  || dynamic_cast<TokenSub *>(xt) != NULL
 			  || dynamic_cast<TokenAssign *>(xt) != NULL )
 			{
+			    // Direct datadef() check first — covers
+			    // `(char *p + n)[i]` where p is a real pointer.
 			    DataDef *xd = xt->datadef();
 			    if ( xd && xd->is_pointer() )
 				top_is_complex_ptr_expr = true;
+			    // Fallback: a TokenVar of a fixed-array decays
+			    // to a pointer in arithmetic context, but its
+			    // raw datadef reports the element type. Walk
+			    // into TokenAdd/Sub operands to find such a
+			    // base. Surfaced by `(buf + strlen(buf))[i]`
+			    // where buf is `char[N]`.
+			    if ( !top_is_complex_ptr_expr )
+			    {
+				TokenBase *op_l = NULL, *op_r = NULL;
+				if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(xt) )
+				    { op_l = ta->left; op_r = ta->right; }
+				else if ( TokenSub *ts = dynamic_cast<TokenSub *>(xt) )
+				    { op_l = ts->left; op_r = ts->right; }
+				else if ( TokenAssign *tas = dynamic_cast<TokenAssign *>(xt) )
+				    { op_l = tas->left; op_r = tas->right; }
+				auto is_fixed_array_var = [](TokenBase *t) -> bool {
+				    if ( !t ) return false;
+				    if ( TokenVar *tv = dynamic_cast<TokenVar *>(t) )
+					return tv->var.is_fixed_array();
+				    return false;
+				};
+				if ( is_fixed_array_var(op_l) || is_fixed_array_var(op_r) )
+				    top_is_complex_ptr_expr = true;
+			    }
 			}
 		    }
 		    if ( !exStack.empty()
@@ -1727,6 +1753,34 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			{
 			    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
 			    elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+			}
+			// Fixed-array decay: when the base was widened via the
+			// fixed-array fallback, the chain's datadef() reports the
+			// element type (TokenVar of fixed-array does so), and
+			// is_pointer is false — so the unwrap above didn't fire.
+			// Walk into TokenAdd/Sub/Assign operands to recover the
+			// fixed-array's element type. Surfaced by `(buf + N)[i]`
+			// where buf is `char[K]`.
+			if ( top_is_complex_ptr_expr
+			  && (!base_expr->datadef() || !base_expr->datadef()->is_pointer()) )
+			{
+			    TokenBase *op_l = NULL, *op_r = NULL;
+			    if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(base_expr) )
+				{ op_l = ta->left; op_r = ta->right; }
+			    else if ( TokenSub *ts = dynamic_cast<TokenSub *>(base_expr) )
+				{ op_l = ts->left; op_r = ts->right; }
+			    else if ( TokenAssign *tas = dynamic_cast<TokenAssign *>(base_expr) )
+				{ op_l = tas->left; op_r = tas->right; }
+			    auto fixed_array_var = [](TokenBase *t) -> Variable * {
+				if ( !t ) return NULL;
+				if ( TokenVar *tv = dynamic_cast<TokenVar *>(t) )
+				    return tv->var.is_fixed_array() ? &tv->var : NULL;
+				return NULL;
+			    };
+			    Variable *fav = fixed_array_var(op_l);
+			    if ( !fav ) fav = fixed_array_var(op_r);
+			    if ( fav )
+				elem_type = fav->type;
 			}
 			DBG(cout << "parseExpression: subscript on expression base" << endl);
 			exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
