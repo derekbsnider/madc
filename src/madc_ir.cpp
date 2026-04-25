@@ -315,5 +315,21 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return IRValue::reg(r.op, to);
     }
 
+    // char* ↔ string transient relabel: ternary branches sometimes
+    // mix a string literal (dtSTRING) with a char*-yielding pointer
+    // expression (e.g. SMAUG `!CAN_PKILL(victim) ? "&W<Peaceful>" :
+    // victim->pcdata->clan->badge`). The merged ternary value is
+    // labeled dtSTRING but the actual storage is a Gp char*. For
+    // printf-style consumers (the typical use), we just need the
+    // pointer value. Keep the underlying Gp, relabel as string.
+    // Conversely, a string passed where char* is expected still goes
+    // through the existing string_cstr coercion at the call site —
+    // this handles the OTHER direction.
+    if ( src.type->is_pointer() && to->is_string() )
+    {
+	IRValue r = load(src);
+	return IRValue::reg(r.op, to);
+    }
+
     throw "IRBuilder::coerce() unsupported type conversion (not yet implemented)";
 }
