@@ -1697,6 +1697,46 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    continue;
 	}
 
+	// Nested fixed-array member init: `{ ..., { 0, 1, 10 }, ... }`
+	// where the member is `sh_int liq_affect[3]` — a fixed array of
+	// the element type. Per-element write at `[base + addr + j*esize]`.
+	// Member's per-member count lives on the parent struct.
+	{
+	    std::string mname = mp.first;
+	    size_t mcount = dds->m_count(mname);
+	    TokenStructLit *nested_arr = dynamic_cast<TokenStructLit *>(inits[i]);
+	    if ( mcount > 1 && nested_arr != NULL )
+	    {
+		size_t esize = mtype->size;
+		for ( size_t j = 0; j < nested_arr->inits.size() && j < mcount; ++j )
+		{
+		    regdefp_t arr_rdp = {nullptr, nullptr, nullptr};
+		    Operand &elem_val = nested_arr->inits[j]->compile(pgm, arr_rdp);
+		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
+		    if ( elem_val.isImm() )
+			pgm.cc.mov(em, elem_val.as<Imm>());
+		    else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kGp) )
+		    {
+			x86::Gp src = elem_val.as<x86::Gp>();
+			if ( esize == 8 ) pgm.cc.mov(em, src.r64());
+			else if ( esize == 4 ) pgm.cc.mov(em, src.r32());
+			else if ( esize == 2 ) pgm.cc.mov(em, src.r16());
+			else pgm.cc.mov(em, src.r8());
+		    }
+		    else
+			pgm.Throw(err_loc) << "Unsupported nested-array initializer element" << flush;
+		}
+		// Zero remaining slots
+		for ( size_t j = nested_arr->inits.size(); j < mcount; ++j )
+		{
+		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
+		    pgm.cc.mov(em, imm(0));
+		}
+		ofs += esize * mcount;
+		continue;
+	    }
+	}
+
 	regdefp_t it_rdp = {nullptr, nullptr, nullptr};
 	Operand &val_op = inits[i]->compile(pgm, it_rdp);
 
@@ -6169,10 +6209,23 @@ Operand &TokenBREAK::compile(Program &pgm, regdefp_t &regdp)
 // compile a continue statement
 Operand &TokenCONT::compile(Program &pgm, regdefp_t &regdp)
 {
-    if ( !pgm.loopstack.empty() )
+    // `continue` jumps to the innermost ENCLOSING LOOP's continue
+    // label. Switches push (NULL, exit) onto loopstack so `break`
+    // exits the switch — but `continue` inside a switch must skip
+    // the switch and target the enclosing loop. Walk the stack from
+    // top to bottom looking for the first entry with a non-NULL
+    // continue label (which only loops, not switches, set).
+    DBG(pgm.cc.comment("CONTINUE"));
+    std::stack<std::pair<asmjit::Label *, asmjit::Label *>> tmp = pgm.loopstack;
+    while ( !tmp.empty() )
     {
-	DBG(pgm.cc.comment("CONTINUE"));
-	pgm.cc.jmp(*pgm.loopstack.top().first);
+	auto &top = tmp.top();
+	if ( top.first != NULL )
+	{
+	    pgm.cc.jmp(*top.first);
+	    break;
+	}
+	tmp.pop();
     }
     return _reg;
 }

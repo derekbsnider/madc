@@ -1981,8 +1981,28 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    tmp.pop();
 			}
 		    }
+		    // A member appearing as the LHS of an assignment is NOT
+		    // callable through `(`: `ch->fn = (...)` opens an RHS
+		    // paren, not a call through fn. prevToken at this point
+		    // for that case is the assignment op; for the legitimate
+		    // call site (`tab[i].fn(args)`, `cmd.fn(arg)`) it's the
+		    // member-name identifier.
+		    TokenBase *prev_for_member = prevToken();
+		    bool member_is_assign_lhs = prev_for_member
+			&& (prev_for_member->id() == TokenID::tkAssign
+			 || prev_for_member->id() == TokenID::tkAddEq
+			 || prev_for_member->id() == TokenID::tkSubEq
+			 || prev_for_member->id() == TokenID::tkMulEq
+			 || prev_for_member->id() == TokenID::tkDivEq
+			 || prev_for_member->id() == TokenID::tkModEq
+			 || prev_for_member->id() == TokenID::tkXorEq
+			 || prev_for_member->id() == TokenID::tkBandEq
+			 || prev_for_member->id() == TokenID::tkBorEq
+			 || prev_for_member->id() == TokenID::tkBSLEq
+			 || prev_for_member->id() == TokenID::tkBSREq);
 		    if ( !exStack.empty()
 		      && !opstack_has_pending_op
+		      && !member_is_assign_lhs
 		      && exStack.top()->type() == TokenType::ttMember
 		      && (member_call_base = dynamic_cast<TokenMember *>(exStack.top())) != NULL
 		      && dynamic_cast<DataDefFPTR *>(member_call_base->var.type) )
