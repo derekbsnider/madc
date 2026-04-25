@@ -3150,6 +3150,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    peek_id == TokenID::tkComma || peek_id == TokenID::tkClBrk
 			 || peek_id == TokenID::tkClSqr || peek_id == TokenID::tkClBrc
 			 || peek_id == TokenID::tkTerC
+			 // `;` follower with empty opStack: a bare function name
+			 // followed by semicolon at the top of an expression is
+			 // function-to-pointer decay (`return func;`). The
+			 // empty-opStack guard preserves operator-consuming
+			 // patterns like `cout << endl;` where BSL on opStack
+			 // wants the no-arg function call form, not the address.
+			 // Closes the SMAUG `tables.c:skill_function` `return
+			 // do_aassign;` family where TokenCallFunc was being
+			 // built for a void-returning function, yielding an
+			 // empty Operand back into TokenRETURN.
+			 || (peek_id == TokenID::tkSemi && opStack.empty())
 			 // Binary comparison / logical / bitwise operators: a bare
 			 // function name on either side of these is its address
 			 // (function-to-pointer decay), not a call. Closes patterns

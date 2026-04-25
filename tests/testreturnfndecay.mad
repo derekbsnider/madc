@@ -1,0 +1,52 @@
+#!/../bin/madc
+// Function-to-pointer decay in `return func;`. The parser's
+// "follower decides decay vs call" heuristic missed the `;` follower
+// (statement end) at top level, so `return do_thing;` was being built
+// as TokenCallFunc for a void-returning function — its compile()
+// returned an empty asmjit Operand and TokenRETURN's
+// compile_token_normalized → IRBuilder::coerce threw "invalid src".
+//
+// SMAUG `tables.c:skill_function` is the canonical case:
+//   DO_FUN *skill_function(char *name) { ... return do_aassign; }
+// where DO_FUN is `typedef void (CHAR_DATA *, char *)`.
+//
+// `cout << endl;` (BSL on opStack) keeps the call form via the
+// opStack-empty guard.
+
+#include <stdio.h>
+#include <iostream>
+
+typedef void DO_FUN(int x);
+typedef int  IFN_FUN(int x);
+
+void hello_one(int x)  { printf("hello_one: %d\n", x); }
+void hello_two(int x)  { printf("hello_two: %d\n", x); }
+int  square    (int x) { return x * x; }
+
+DO_FUN *pick_void(int n)
+{
+    if ( n == 1 )
+	return hello_one;
+    return hello_two;
+}
+
+IFN_FUN *pick_int(void)
+{
+    return square;
+}
+
+int main()
+{
+    DO_FUN *f = pick_void(1);
+    f(42);
+    f = pick_void(2);
+    f(99);
+
+    IFN_FUN *g = pick_int();
+    printf("square(7) = %d\n", g(7));
+
+    // BSL must still get endl as a call, not as a decayed address.
+    cout << "ostream-endl OK" << endl;
+
+    return 0;
+}

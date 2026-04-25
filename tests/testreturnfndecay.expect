@@ -1,0 +1,4 @@
+hello_one: 42
+hello_two: 99
+square(7) = 49
+ostream-endl OK
