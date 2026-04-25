@@ -5,3 +5,9 @@
 // `*(strchr(...)) = 0` works without explicit user-side `extern`.
 
 extern char *strchr(char *s, int c);
+extern char *strrchr(char *s, int c);
+extern char *strstr(char *haystack, char *needle);
+extern char *strdup(char *s);
+extern char *strpbrk(char *s, char *accept);
+extern char *strtok(char *s, char *delim);
+extern char *strndup(char *s, int n);

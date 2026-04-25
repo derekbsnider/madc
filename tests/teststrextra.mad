@@ -1,0 +1,91 @@
+// Regression: with strchr's typed `char *` return landed in v0.12.0+1
+// via embedded <string.h>, the cross-function xmm-leakage variant of
+// the asmjit-Compiler float quirk previously prevented the rest of
+// <string.h>'s char*-returning functions from being declared the same
+// way (adding more `extern char *...` decls shifted the binary's
+// code-cache layout and `tests/testfloat.mad`'s test_promote() then
+// read xmm0 with the prior printf return value). The typed-Xmm
+// IRBuilder fix (newXmmSs / newXmmSd in v0.12.0) gave the asmjit
+// allocator a proper scalar-real type hint, which closed the
+// cross-function variant too.
+//
+// This test confirms strrchr / strstr / strdup / strpbrk / strtok /
+// strndup all return `char *` correctly with their typed extern decls
+// in embedded <string.h>, exercising idioms used in MadSMAUG.
+
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main()
+{
+    char buf[32];
+    buf[0]='a'; buf[1]='b'; buf[2]='/'; buf[3]='c';
+    buf[4]='/'; buf[5]='d'; buf[6]='\0';
+
+    // strrchr — last occurrence of a char.
+    char *last = strrchr(buf, '/');
+    int rridx = last - buf;
+    cout << rridx << endl;               // 4
+
+    // strstr — substring search.
+    char hay[32];
+    hay[0]='h'; hay[1]='e'; hay[2]='l'; hay[3]='l'; hay[4]='o';
+    hay[5]=' '; hay[6]='w'; hay[7]='o'; hay[8]='r'; hay[9]='l';
+    hay[10]='d'; hay[11]='\0';
+    char ndl[8];
+    ndl[0]='w'; ndl[1]='o'; ndl[2]='r'; ndl[3]='\0';
+    char *hit = strstr(hay, ndl);
+    int hidx = hit - hay;
+    cout << hidx << endl;                // 6
+
+    // strstr miss → NULL comparison without explicit cast.
+    char ndl2[8];
+    ndl2[0]='X'; ndl2[1]='\0';
+    char *miss = strstr(hay, ndl2);
+    cout << (miss == NULL ? "null" : "found") << endl;  // null
+
+    // strdup — heap-allocated copy; deref-and-assign through the result.
+    char src[8];
+    src[0]='d'; src[1]='u'; src[2]='p'; src[3]='\0';
+    char *dup = strdup(src);
+    cout << dup << endl;                 // dup
+    *(dup) = 'D';
+    cout << dup << endl;                 // Dup
+    free(dup);
+
+    // strpbrk — locate first match from a set of bytes.
+    char text[32];
+    text[0]='a'; text[1]='b'; text[2]='c'; text[3]='1';
+    text[4]='2'; text[5]='3'; text[6]='\0';
+    char accept[8];
+    accept[0]='2'; accept[1]='3'; accept[2]='\0';
+    char *brk = strpbrk(text, accept);
+    int bidx = brk - text;
+    cout << bidx << endl;                // 4
+
+    // strtok — destructive tokenizer.
+    char csv[32];
+    csv[0]='r'; csv[1]='e'; csv[2]='d'; csv[3]=',';
+    csv[4]='g'; csv[5]='r'; csv[6]='n'; csv[7]=',';
+    csv[8]='b'; csv[9]='l'; csv[10]='u'; csv[11]='\0';
+    char delim[4];
+    delim[0]=','; delim[1]='\0';
+    char *tok = strtok(csv, delim);
+    while (tok != NULL)
+    {
+        cout << tok << endl;             // red, grn, blu
+        tok = strtok(NULL, delim);
+    }
+
+    // strndup — bounded heap-copy.
+    char long_src[16];
+    long_src[0]='a'; long_src[1]='b'; long_src[2]='c';
+    long_src[3]='d'; long_src[4]='e'; long_src[5]='\0';
+    char *part = strndup(long_src, 3);
+    cout << part << endl;                // abc
+    free(part);
+
+    return 0;
+}
