@@ -1,63 +1,8 @@
 # TODO
 
-## High Priority
-
-### Language Completeness
-
-- **Struct member offset miscalculated for fields after fixed-array
-  members** — `m_offset()` in `DataDefSTRUCT` walks members adding
-  `dd.size` per iteration, but per-member array counts (e.g.
-  `int arr[4]`) are not stored in the `members` vector — `addMember`
-  multiplies count into the struct's total size but loses the count
-  per member. Fields declared after a fixed-array member end up at
-  the wrong offset. Reproducer: `struct S { int x; int arr[4]; int y; }`;
-  writes to `arr` overwrite `y` because m_offset(y)==8 instead of 24.
-  Most existing structs (dirent, stat, etc.) have only one tail array,
-  so corruption hasn't surfaced — the bug is latent. The natural fix
-  (parallel `member_counts` vector) regressed the float-quirk tests
-  by shifting JIT memory layout enough to push the asmjit Compiler
-  filename-length flake into the failing zone. Blocked on the typed-
-  register IR replacing the asmjit Compiler reg-allocator pass.
-
-- **TokenSubscriptExpr unwraps element type unconditionally for
-  pointer bases** — `SKILLTYPE *arr[N]; arr[i]` reports its result
-  as `SKILLTYPE` instead of `SKILLTYPE *`, so `arr[i]->name` throws
-  "expression before '->' must be a pointer". Distinguishing fixed-
-  array vs raw-pointer base needs the per-member count above (so the
-  parser knows the member is a fixed array, not a stored pointer).
-  Filed at `parser.cpp:1645`. Surfaced in MadSMAUG `magic.c:134`
-  (`ch->pcdata->special_skills[sn]->name`).
-
-- **Remaining `<string.h>` typed return declarations
-  (`strrchr`/`strstr`/`strdup`/`strpbrk`/`strtok`/`strndup`)** —
-  `strchr` landed; the rest still trigger the cross-function
-  variant of the asmjit-Compiler quirk (different from the
-  multi-arg-printf variant the typed-Xmm IR fix closed). Symptom:
-  in `testfloat.mad`, `test_promote()` reads xmm0 with the value
-  from the previous function's printf instead of loading its own
-  arg. The xmm load is being elided across function boundaries
-  even though xmm regs are caller-saved per ABI. Likely needs the
-  typed-register IR Stage 4 work to force a fresh load via
-  Assembler-emitted bytes that asmjit's Compiler can't see /
-  optimize.
-
 ## Medium Priority
 
 ### Language Completeness
-
-- **Cross-function xmm-leakage in float-arg printf** — narrower
-  cluster after the v0.13.x typed-Xmm sweep closed the multi-arg-
-  in-one-call reordering variant. Remaining symptom: in
-  `testfloat.mad` test_promote reads xmm0 with the value from the
-  previous function's printf return instead of loading its own
-  arg. Triggered by binary-layout shifts that move the offending
-  function past a code-cache threshold (e.g. adding more `extern
-  char *...` decls to embedded `<string.h>`). Doesn't reproduce
-  in standalone `/tmp/X.mad` files with the same source. Likely
-  needs Assembler-level emission of the immediately-pre-call
-  movsd that asmjit's Compiler register allocator can't reorder
-  around. Workaround: copy the real member into a local double
-  before printf.
 
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 

@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+- **Struct member offsets after fixed-array members + array-of-pointers
+  indexing** — two long-latent bugs sharing a root cause: `DataDefSTRUCT`
+  never recorded per-member counts for fixed-array members, so
+  `m_offset()` walked `dd.size` per step instead of `dd.size * count`,
+  and anywhere parser/compiler asked "in-place aggregate or stored
+  pointer?" the answer was just `is_pointer()` on the member's datadef —
+  which mis-classifies an array of pointers (`SKILLTYPE *arr[N]`) as a
+  stored pointer. Fix: parallel `member_counts` vector on DataDefSTRUCT
+  with an `m_count(name)` accessor, plus `TokenMember::is_fixed_array_member()`
+  shared by parser and compiler. Three compiler sites updated
+  (TokenSubscriptExpr::compile, resolveCompoundLHS's tse path,
+  TokenAssign's tse write path) to LEA the member when it's a fixed
+  array even if its element is a pointer; parser's subscript-on-
+  expression branch skips the pointer-element unwrap for fixed-array
+  members so `arr[i]->member` types correctly. The TODO had the natural
+  fix blocked on a float-quirk regression — the v0.12.0 typed-Xmm
+  IRBuilder sweep already closed that. Closes the MadSMAUG `magic.c:134`
+  (`ch->pcdata->special_skills[sn]->name`) front edge. Regression:
+  `tests/teststructarrayofptr.mad`.
+
+- **Cast body stops at matching `)` in BSL chains** — `cout << (int)(a
+  - b) << endl;` (and any cast wrapping a parenthesized expression
+  inside an operator chain) failed at parse time with "Unexpected
+  keyword in expression" pointing at the next statement. The recursive
+  parseExpression invoked on the cast body parsed past its matching `)`
+  and kept consuming the outer `<< endl;` chain. Fix: when the cast
+  body starts with `(`, consume it and call parseExpression with
+  stop_on_closing_paren and initial_brackets=1. Postfix follow-ups
+  like `(MyType*)(p+1)->m` keep parsing — that path is already handled
+  in parseExpression's close-paren branch. Surfaced while writing
+  tests/teststrextra.mad. Regression: `tests/testcastparenexpr.mad`.
+
+- **Remaining `<string.h>` typed returns landed** — `extern char *strrchr`,
+  `strstr`, `strdup`, `strpbrk`, `strtok`, `strndup` all added to embedded
+  `<string.h>`. The cross-function xmm-leakage variant of the asmjit-
+  Compiler float quirk that previously blocked these (binary-layout
+  shifts pushed `testfloat.mad`'s `test_promote()` past a code-cache
+  threshold) is closed by the v0.12.0 typed-Xmm IRBuilder fix — the
+  allocator's scalar-real type hints no longer interleave with the
+  int-vector path. Regression: `tests/teststrextra.mad` exercises each
+  through standard SMAUG idioms (pointer arithmetic, NULL comparison
+  without explicit cast, deref-and-assign, while-loop tokenization,
+  heap-allocated copies).
+
 - **Comprehensive `cc.newXmm()` → typed scalar sweep across
   `compiler.cpp` and `typesafe.cpp`** — followup to the IRBuilder
   fix below: every other generic `cc.newXmm()` call site (call
