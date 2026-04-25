@@ -1072,7 +1072,8 @@ void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2)
 void Program::safecmp(Operand &op1, Operand &op2)
 {
     if ( !op1.isReg() ) { throw "safecmp() lval is not a register"; }
-    if ( !op2.isReg() && !op2.isImm() ) { throw "safecmp() rval is not register or immediate"; }
+    if ( !op2.isReg() && !op2.isImm() && !op2.isMem() )
+	{ throw "safecmp() rval is not register, immediate, or memory"; }
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
@@ -1088,6 +1089,27 @@ void Program::safecmp(Operand &op1, Operand &op2)
 	else
 	if ( op2.isImm() )
 	    cc.cmp(op1.as<x86::Gp>(), op2.as<Imm>());
+	else
+	if ( op2.isMem() )
+	{
+	    // Gp vs Mem comparison: load Mem into a Gp first to ensure
+	    // matching widths (sub-qword loads need movzx/movsx). This
+	    // handles the common SMAUG idiom of comparing a computed
+	    // value against a stack-resident local or a struct member.
+	    x86::Gp tmp = cc.newGpq("__cmp_rhs");
+	    safemov(tmp, op2.as<x86::Mem>());
+	    safecmp(op1.as<x86::Gp>(), tmp);
+	}
+	else
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    // Gp vs Xmm: convert the integer to double via cvtsi2sd, then
+	    // ucomisd. SMAUG idioms compare an int member against a real
+	    // expression, e.g. `victim->stances[i] > STANCE_GRAND_MASTER * .75`.
+	    x86::Xmm tmp = cc.newXmmSd("__cmp_int_as_dbl");
+	    cc.cvtsi2sd(tmp, op1.as<x86::Gp>());
+	    cc.ucomisd(tmp, op2.as<x86::Xmm>());
+	}
 	else
 	    throw "safecmp() rval is unsupported";
     }
