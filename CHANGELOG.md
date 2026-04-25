@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **Keyword-as-identifier in enum body** — `enum { name, sex, class,
+  race, ... }` (using `class` or other contextual-keyword identifiers
+  as enum tags) used to throw "Expecting identifier in enum". Earlier
+  sessions made `class` work as a variable name, struct member, postfix
+  chain, and `&` operand, but the enum body was missed. Fix: route
+  enum identifier parsing through `is_contextual_identifier_token` /
+  `contextual_identifier_name` like the rest of the parser. Closes the
+  MadSMAUG `grub.c:500` front edge. Regression: `tests/testenumclass.mad`.
+
 - **`sizeof(*arr)` / `sizeof(*ptr)`** — sizeof parser handled
   ttDataType, ttIdentifier, and `struct tag` forms but rejected
   unary `*` with "Unknown type in sizeof". The standard C idiom

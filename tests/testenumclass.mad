@@ -1,0 +1,28 @@
+// Regression: `enum { name, sex, class, race, ... }` — using `class`
+// (or any other contextual-keyword identifier) as an enum tag — used
+// to throw "Expecting identifier in enum". The enum parser checked
+// `tn->type() != ttIdentifier`, but `class` is a keyword token
+// (tkCLASS) per madc's OOP support. Earlier sessions fixed this in
+// other declarators (variable name, struct member, postfix chain,
+// `&` operand); the enum body was missed.
+//
+// Fix: route enum identifier parsing through `is_contextual_identifier_token`
+// / `contextual_identifier_name`, the same helpers other parser sites
+// use for keyword-as-identifier.
+//
+// Surfaced at MadSMAUG `grub.c:500`:
+//   enum gr_field_type
+//      { name, sex, class, race, level, room, gold, ... };
+
+#include <iostream>
+
+enum gr_field_type {
+    name, sex, class, race, level, room, gold, clan, council
+};
+
+int main()
+{
+    cout << name << ' ' << sex << ' ' << class << ' ' << race << ' ' << level << endl;
+    cout << gold << ' ' << clan << ' ' << council << endl;
+    return 0;
+}

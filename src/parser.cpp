@@ -4430,9 +4430,9 @@ TokenBase *TokenENUM::parse(Program &pgm)
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	if ( tn->id() == TokenID::tkComma ) { pgm.nextToken(); continue; }
-	if ( tn->type() != TokenType::ttIdentifier )
+	if ( !is_contextual_identifier_token(tn) )
 	    pgm.Throw(tn) << "Expecting identifier in enum" << flush;
-	std::string name = ((TokenIdent *)pgm.nextToken())->str;
+	std::string name = contextual_identifier_name(pgm.nextToken());
 
 	// check for = explicit value
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkAssign )

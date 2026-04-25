@@ -108,6 +108,12 @@
 
 ### Session 2026-04-25 (post-v0.12.0)
 
+- ~~**Keyword-as-identifier in enum body**~~ — TokenENUM::parse uses
+  `is_contextual_identifier_token` / `contextual_identifier_name`,
+  matching the rest of the parser's keyword-as-identifier handling.
+  Closes MadSMAUG grub.c:500 (`enum gr_field_type { name, sex, class,
+  ... }`). Targeted regression: tests/testenumclass.mad.
+
 - ~~**`sizeof(*arr)` / `sizeof(*ptr)`**~~ — sizeof parser now has
   a `*identifier` branch. For a fixed-array variable, returns the
   element type's size. For a pointer variable, returns the pointed-
