@@ -2441,6 +2441,32 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( !dd )
 			    Throw(tag_tb) << "Unknown struct type in sizeof" << flush;
 		    }
+		    else if ( type_tb->id() == TokenID::tkMul )
+		    {
+			// sizeof(*identifier) — element size of a pointer or
+			// fixed array. Standard C idiom for `sizeof(arr) /
+			// sizeof(*arr)` to count fixed-array elements.
+			TokenBase *deref_tb = nextToken();
+			if ( !deref_tb || deref_tb->type() != TokenType::ttIdentifier )
+			    Throw(type_tb) << "Expecting identifier after '*' in sizeof" << flush;
+			std::string dname = ((TokenIdent *)deref_tb)->str;
+			Variable *dvar = findVariable(dname);
+			if ( !dvar )
+			    Throw(deref_tb) << "undeclared identifier '" << dname << "' in sizeof(*...)" << flush;
+			if ( dvar->is_fixed_array() )
+			{
+			    // *arr where arr is a fixed array: element type size.
+			    sizeof_value = dvar->type->size;
+			}
+			else if ( dvar->type->is_pointer() )
+			{
+			    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dvar->type);
+			    DataDef *base = (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
+			    sizeof_value = base->size;
+			}
+			else
+			    Throw(deref_tb) << "sizeof(*" << dname << "): not a pointer or array" << flush;
+		    }
 		    if ( !var && !dd && !sizeof_value )
 			Throw(type_tb) << "Unknown type in sizeof" << flush;
 		    // handle pointer: sizeof(type *)

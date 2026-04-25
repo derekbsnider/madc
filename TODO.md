@@ -108,6 +108,13 @@
 
 ### Session 2026-04-25 (post-v0.12.0)
 
+- ~~**`sizeof(*arr)` / `sizeof(*ptr)`**~~ — sizeof parser now has
+  a `*identifier` branch. For a fixed-array variable, returns the
+  element type's size. For a pointer variable, returns the pointed-
+  to type's size. Targeted regression: tests/testsizeofderef.mad.
+  Closes MadSMAUG update.c:2300-2301
+  (`sizeof(times)/sizeof(*times)` element counter).
+
 - ~~**`(*flfunc)(args)` classic C fn-ptr call**~~ — two gaps:
   (1) unary-`*` on a fn-ptr variable now pushes the var as a value
   (function-to-pointer decay reverses through `*`), matching the

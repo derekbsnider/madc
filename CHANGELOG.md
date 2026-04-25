@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **`sizeof(*arr)` / `sizeof(*ptr)`** — sizeof parser handled
+  ttDataType, ttIdentifier, and `struct tag` forms but rejected
+  unary `*` with "Unknown type in sizeof". The standard C idiom
+  `sizeof(arr) / sizeof(*arr)` (count the elements of a fixed
+  array) didn't compile. Fix: added a `*identifier` branch — for a
+  fixed-array variable, returns the element type's size; for a
+  pointer variable, returns the pointed-to type's size. Closes
+  MadSMAUG `update.c:2300-2301`. Regression:
+  `tests/testsizeofderef.mad`.
+
 - **Classic C `(*flfunc)(args)` fn-pointer call** — two distinct
   gaps fixed together while probing MadSMAUG `reset.c:985`
   (`value = (*flfunc)(arg);`). (1) The unary-`*` parser threw
