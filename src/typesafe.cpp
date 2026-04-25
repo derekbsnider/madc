@@ -849,7 +849,8 @@ void Program::safedec(Operand &op)
 
 void Program::saferet(Operand &op)
 {
-    if ( !op.isReg() && !op.isImm() ) { throw "saferet() operand is not register or immediate"; }
+    if ( !op.isReg() && !op.isImm() && !op.isMem() )
+	throw "saferet() operand is not register, immediate, or memory";
     if ( op.isReg() )
     {
 	if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
@@ -865,6 +866,16 @@ void Program::saferet(Operand &op)
     {
 	x86::Gp reg = cc.newGpq();
 	cc.mov(reg, op.as<Imm>().value());
+	cc.ret(reg);
+    }
+    else
+    if ( op.isMem() )
+    {
+	// Stack-resident value: load into a Gp first, then ret.
+	// SMAUG `fread_bitvector` returns a struct-typed local where the
+	// IR pipeline left the value as a Mem operand.
+	x86::Gp reg = cc.newGpq("__ret_mem");
+	cc.mov(reg, op.as<x86::Mem>());
 	cc.ret(reg);
     }
     else
