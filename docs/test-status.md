@@ -1,14 +1,14 @@
 # Test Status
 
-Test results as of April 25, 2026 (post-v0.12.0 — SMAUG Phase F front-edge wave + IRBuilder typed Xmm allocation; multi-arg printf reordering variant of the asmjit-Compiler float quirk closed).
+Test results as of April 25, 2026 (post-v0.12.0 — SMAUG Phase F front-edge wave + IRBuilder typed Xmm allocation + setVaIndex(1) on variadic dlsym FuncSignature, which closed the asmjit-Compiler "float quirk" cluster at the SysV-ABI level — both the multi-arg-printf-reordering and cross-function xmm-leakage variants).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 206 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 215 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 183 integration tests
+- Passing: 215 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR

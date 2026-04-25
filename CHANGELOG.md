@@ -2,6 +2,76 @@
 
 ## [Unreleased]
 
+- **Cross-function xmm-leakage variant of the asmjit float quirk closed
+  at the root** — the variadic-dlsym call path was building a
+  `FuncSignature` from the actual argument types but never marking it
+  variadic. Per SysV x86-64 ABI, calls to variadic functions must set
+  `AL` = number of XMM registers used so the callee knows where to
+  find float args. Without it, `AL` was left with whatever was in
+  `rax` from prior code (often the format string's low byte) and
+  printf either skipped xmm0 (`%f` printed `0.000000`) or read past
+  valid args. Symptom was binary-layout-dependent because the leftover
+  `AL` value depends on what code ran just before — this is what made
+  the issue look like a typed-Xmm reg-allocator quirk for weeks.
+  Fix: `funcsig.setVaIndex(1)` marks args at index 1+ as variadic
+  (correct for the entire printf family — one fixed format-or-target
+  arg followed by `...`). asmjit now emits the AL setup and float-arg
+  printf works deterministically. Both float-quirk variants the prior
+  TODO had filed (multi-arg-printf-reordering and cross-function xmm-
+  leakage) are now closed; `tests/testfloat.mad` is no longer a
+  layout-shift canary.
+
+- **`fd_set` typedef + FD_* macros take pointer; `struct hostent`** —
+  Bare `fd_set` typedef alias added to `<sys/select.h>` /
+  `<sys/time.h>`. `FD_ZERO`/`SET`/`CLR`/`ISSET` now expect a
+  `fd_set *` (pointer), matching glibc; `FD_CLR(fd, &set)` (the
+  standard call style) no longer expands to `&(&set)`. `struct
+  hostent` added to embedded `<netdb.h>` with the full glibc layout.
+  Required by MadSMAUG `comm.c`. Existing FD_* test
+  (`tests/teststructinterop.mad`) updated to the pointer call form.
+
+- **`((char *)expr)[i]` cast-of-pointer subscript** — parser's `[`
+  handler now recognizes TokenCast-of-pointer alongside
+  TokenMember/Subscript/Deref bases, and `TokenSubscriptExpr::compile`
+  routes TokenCast through `compile()` (not `operand()`) so the cast
+  emits its conversion before the index calculation. Closes the SMAUG
+  `comm.c:3112` `((char *)arg)[0] == '\0'` form. Regression:
+  `tests/testcastsubscript.mad`.
+
+- **`sizeof unary-expr` (no parens) + keyword case-labels + multi-decl
+  idents** — `sizeof ok_otype`, `sizeof *a` (no parens) now resolved.
+  Constant-integer-expression parser accepts contextual-identifier
+  keywords (`case class:` for an enum tag named `class`). Multi-
+  variable declarations (`sh_int cou, race, class, ...`) accept
+  contextual-identifier names. Closes MadSMAUG `grub.c` front edges.
+  Regression: `tests/testsizeofnoparens.mad`.
+
+- **Embedded headers `<crypt.h>`, `<netinet/in_systm.h>`,
+  `<netinet/ip.h>`, `<arpa/telnet.h>`** — `<crypt.h>` `#load`s
+  `libcrypt.so` and types `extern char *crypt(...)` (libcrypt isn't
+  in glibc's RTLD_DEFAULT search). `<arpa/telnet.h>` carries the
+  TELNET protocol constants (IAC, WILL/WONT/DO/DONT, GA, the
+  TELOPT_* set). Required by MadSMAUG `act_info.c` (crypt) and
+  `comm.c` (telnet protocol).
+
+- **`try`/`catch`/`throw` as C identifiers; pre-case declarations in
+  switch bodies** — `int try; try = saving_throw();` is valid C; the
+  parser now treats these C++ keywords as contextual identifiers in
+  declaration / variable / member positions, and routes them through
+  `parseExpression` at statement position when not followed by `{`
+  (would-be try-block) or `(` (would-be throw-arg). Switch parser
+  also accepts variable declarations and stray `;` between
+  `switch(...) {` and the first `case`/`default`. Regressions:
+  `tests/testkeywordsasidents.mad`, `tests/testswitchpredecl.mad`.
+
+- **Function-to-pointer decay before comparison/logical/bitwise
+  operators** — `if (t->fn == do_cast && tmp->...)` failed at parse;
+  the decay heuristic only fired for value-end tokens. Now
+  `==`/`!=`/`<`/`<=`/`>`/`>=`/`&&`/`||`/`&`/`|`/`^` also trigger
+  decay. Without this the call-creation path consumed the operator
+  token eagerly and silently lost it. Regression:
+  `tests/testfnptrcompare.mad`.
+
 - **Struct member offsets after fixed-array members + array-of-pointers
   indexing** — two long-latent bugs sharing a root cause: `DataDefSTRUCT`
   never recorded per-member counts for fixed-array members, so

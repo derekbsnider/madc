@@ -11,14 +11,17 @@ Upstream total: **158,537 lines** across `MadSMAUG/upstream/smaug1.8/src/*.{c,h}
 (including IMC sources, which will be skipped on the first-pass
 bootstrap).
 
-## Current state — 2026-04-24
+## Current state — 2026-04-25
 
 | Phase            | % | Notes |
 |------------------|--:|-------|
-| **Parse**        | ~27% | 42,891 / 158,537 lines ingested via the umbrella (fight.c + skills.c + act_comm.c added this session) |
-| **Compile**      | ~27% | **Every ingested TU compiles cleanly.** Next compile-time fronts wait on source files that aren't yet in the umbrella |
-| **Link**         | ~27% | All referenced symbols resolve — either inside an ingested TU or through `_bootstrap_comm_shim.c` stubs for not-yet-ingested files |
-| **Runtime**      | ~1% | `bin/madc SMAUG.mad` now parses + compiles + links + **executes to clean exit 0**. The umbrella's `main()` is still a stub (`return 0`), so no actual game logic runs — but we're no longer crashing at any point. |
+| **Parse**        | ~50% | ~78,000 / 158,537 lines ingested. 24 upstream TUs + bootstrap shims. |
+| **Compile**      | ~50% | **Every ingested TU compiles cleanly.** asmjit "float quirk" closed at the root via `FuncSignature::setVaIndex(1)` on variadic-dlsym calls — the binary-layout-shift fragility that had blocked landing larger changes for ~2 weeks is gone. |
+| **Link**         | ~50% | All referenced symbols resolve — either inside an ingested TU or through `_bootstrap_comm_shim.c` stubs for not-yet-ingested files |
+| **Runtime**      | ~1% | `bin/madc SMAUG.mad` parses + compiles + links + **executes to clean exit 0**. The umbrella's `main()` is still a stub. |
+
+Deferred TUs: `clans.c` (parser SIGSEGV on struct-init pattern),
+`house.c` (TokenStmt sees ttStructLit), `build.c` (C99 VLA).
 
 These numbers are rough. Headers are ingested whole; each C file that
 parses cleanly counts as fully parsed. The link column will be

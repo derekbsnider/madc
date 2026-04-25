@@ -61,6 +61,96 @@
 
 ## Completed
 
+### Session 2026-04-25 (post-v0.12.0, session 2 — float quirk root cause)
+
+- ~~**Cross-function xmm-leakage variant of the asmjit float quirk
+  closed at the root**~~ — the variadic-dlsym FuncSignature was being
+  built without a variadic marker, so asmjit didn't emit the SysV
+  `AL = N` setup that variadic functions need. AL was leaking from
+  prior code (typically the format string's low byte). Fix:
+  `funcsig.setVaIndex(1)` marks the call as variadic and asmjit emits
+  the AL load. Both float-quirk variants the previous TODO entries
+  filed (multi-arg-printf-reordering AND cross-function xmm-leakage)
+  are now closed. `tests/testfloat.mad` is no longer layout-sensitive.
+  Single-line fix; commit 3542968.
+
+- ~~**`fd_set` typedef + `FD_*` macros take pointer**~~ — bare `fd_set`
+  alias added to `<sys/select.h>` and `<sys/time.h>`; `FD_ZERO/SET/
+  CLR/ISSET` now take `fd_set *` (matching glibc), so `FD_CLR(fd,
+  &in_set)` no longer expands to `&(&in_set)`. Existing
+  `tests/teststructinterop.mad` updated to the pointer call form.
+
+- ~~**`struct hostent` in embedded `<netdb.h>`**~~ — full glibc layout
+  (h_name, h_aliases, h_addrtype, h_length, h_addr_list + the legacy
+  `h_addr` macro). Required by MadSMAUG `comm.c`.
+
+- ~~**`((char *)expr)[i]` cast-of-pointer subscript**~~ — parser
+  recognizes TokenCast-of-pointer as a valid subscript base;
+  `TokenSubscriptExpr::compile` routes TokenCast through `compile()`
+  (not `operand()`) so the cast emits before the index calc. Closes
+  SMAUG `comm.c:3112`. Regression: `tests/testcastsubscript.mad`.
+
+- ~~**`sizeof unary-expr` (no parens)**~~ — `sizeof ok_otype`,
+  `sizeof *a`, `sizeof r` parse correctly. Closes SMAUG `grub.c`.
+  Regression: `tests/testsizeofnoparens.mad`.
+
+- ~~**Keyword case-labels + multi-decl identifiers**~~ — constant-
+  integer-expression parser accepts contextual-identifier keywords
+  (`case class:` for enum-tag-named-`class`); multi-variable
+  declarations (`sh_int cou, race, class, ...`) accept the same.
+
+- ~~**`try`/`catch`/`throw` as C identifiers**~~ — added to
+  `is_contextual_identifier_token` and routed through `parseExpression`
+  at statement position when not followed by `{` or `(`. Closes
+  SMAUG `magic.c:5758` (`int try;` followed by `try = saving_throw()`).
+  Regression: `tests/testkeywordsasidents.mad`.
+
+- ~~**Pre-case declarations + stray `;` in switch bodies**~~ — switch
+  parser accepts `OBJ_DATA *clone;` and `;` between `switch(...) {`
+  and the first `case`/`default`. C allows it (the variable is
+  unreachable but the declaration is well-formed). Regression:
+  `tests/testswitchpredecl.mad`.
+
+- ~~**Function-to-pointer decay before comparison/logical/bitwise
+  operators**~~ — `if (t->fn == do_cast && ...)` failed because the
+  decay heuristic only fired for value-end tokens. Adding `==`/`!=`/
+  `<`/`<=`/`>`/`>=`/`&&`/`||`/`&`/`|`/`^` to the trigger set fixed it.
+  Without this the call path silently consumed the operator token.
+  Regression: `tests/testfnptrcompare.mad`.
+
+- ~~**Struct member offsets after fixed-array members +
+  array-of-pointers indexing**~~ — `DataDefSTRUCT` never recorded
+  per-member counts; `m_offset()` walked `dd.size` per step instead
+  of `dd.size * count`. Plus the parser/compiler "in-place aggregate
+  vs stored pointer?" check used bare `is_pointer()` which mis-
+  classifies `SKILLTYPE *arr[N]`. Fix: parallel `member_counts` vector
+  + `m_count()` accessor + `TokenMember::is_fixed_array_member()`
+  shared by parser and compiler. Three compiler sites + one parser
+  site updated. Regression: `tests/teststructarrayofptr.mad`. Plus
+  forward-typedef'd struct completion now copies `member_counts`
+  alongside `members` (regression: `tests/teststructfwdtypedefarr.mad`).
+
+- ~~**`extern char *strrchr/strstr/strdup/strpbrk/strtok/strndup` in
+  embedded `<string.h>`**~~ — added with `char *` typed return.
+  Previously blocked because adding these decls shifted the binary
+  layout enough to re-trigger the float quirk; the setVaIndex fix
+  eliminates the layout-shift fragility. Regression:
+  `tests/teststrextra.mad`.
+
+- ~~**Cast body stops at matching `)` in BSL chains**~~ — `cout <<
+  (int)(a - b) << endl;` failed at parse with "Unexpected keyword in
+  expression". Recursive parseExpression on the cast body parsed past
+  the matching `)` and consumed the outer `<< endl;` chain. Fix:
+  when the cast body starts with `(`, parseExpression with
+  `stop_on_closing_paren=true` and `initial_brackets=1`. Regression:
+  `tests/testcastparenexpr.mad`.
+
+- ~~**Embedded `<crypt.h>` / `<netinet/in_systm.h>` / `<netinet/ip.h>`
+  / `<arpa/telnet.h>`**~~ — `<crypt.h>` `#load`s libcrypt.so and types
+  `extern char *crypt(...)`; `<arpa/telnet.h>` carries the TELNET
+  protocol constants. Required by MadSMAUG `act_info.c` (crypt) and
+  `comm.c` (telnet).
+
 ### Session 2026-04-25 (post-v0.12.0)
 
 - ~~**Typed Xmm allocation + `extern char *strchr(...)` in embedded
