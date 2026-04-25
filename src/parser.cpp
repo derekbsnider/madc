@@ -1952,7 +1952,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    // a TokenAssign with the cast as its left — and the
 			    // outer wrapper ends up holding the assignment
 			    // instead of the bare cast.
-			    if ( stop_on_closing_paren && opStack.empty() )
+			    //
+			    // Restricted to initial_brackets == 0 so the if/while
+			    // pre-paren callers (parse_parenthesized_expression
+			    // passes initial_brackets=1) keep parsing the rest of
+			    // the condition. SMAUG `if ((int)a == b == 0)` from
+			    // QUICKMATCH macro expansion regressed when this
+			    // returned early there.
+			    if ( stop_on_closing_paren && opStack.empty() && initial_brackets == 0 )
 				return exStack.top();
 			    break;
 			}
