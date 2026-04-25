@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **`*++p` / `*--p` followed by a binary operator** — the unary-`*`
+  parser fell through to `parseExpression(deref_tb=tkInc, true)`
+  which then happily consumed any trailing binary op too, so
+  `*++p == 'e'` parsed as `*(++p == 'e')` (deref of a bool).
+  `*++p;` (no trailing binop) accidentally worked because
+  parseExpression stopped on `;`. Fix: explicit `tkInc`/`tkDec`
+  branch in the unary-`*` parser that builds a `TokenInc`/`TokenDec`
+  with the pointer as `right`, wrapped in `TokenDerefExpr` — one
+  node sequence, no recursive parseExpression. Closes the MadSMAUG
+  `misc.c:2149` front edge (`*srcptr == '%' && *++srcptr == 's'`).
+  Regression: `tests/testderefpreinc.mad`.
+
 - **`extern RET name(args);` typed-calls via dlsym** — explicit
   forward declarations of libc / system functions used to fail at
   compile time with "method has neither FuncNode nor x86code". The

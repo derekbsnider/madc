@@ -108,6 +108,15 @@
 
 ### Session 2026-04-25 (continued)
 
+- ~~**`*++p` / `*--p` followed by a binary operator**~~ — explicit
+  tkInc/tkDec branch in the unary-`*` parser builds a
+  TokenInc/TokenDec with the pointer as `right` and wraps in a
+  TokenDerefExpr. Avoids the recursive parseExpression-with-
+  conditional-true that previously consumed any trailing binop
+  (so `*++p == 'e'` parsed as `*(++p == 'e')`, a deref of a bool).
+  Targeted regression: tests/testderefpreinc.mad. Closes MadSMAUG
+  misc.c:2149.
+
 - ~~**`extern` libc/system functions via dlsym late-bind**~~ — at
   TokenCallFunc::compile time, when a declared function has neither
   funcnode nor x86code, try dlsym(RTLD_DEFAULT, name) as a last

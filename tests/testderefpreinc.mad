@@ -1,0 +1,47 @@
+// Regression: `*++p` (pre-increment of a pointer immediately
+// dereferenced) used to throw "cannot dereference non-pointer type"
+// when followed by a binary operator like `==`, because the
+// unary-`*` parser fell through to a recursive
+// `parseExpression(deref_tb=tkInc, conditional=true)` that happily
+// consumed the trailing binary op too. So `*++p == 'e'` parsed as
+// `*(++p == 'e')` — `++p == 'e'` is a bool, not a pointer.
+//
+// `*++p` followed by `;` or `)` accidentally worked because
+// parseExpression stopped on those tokens.
+//
+// Fix: in the unary-`*` parser, add an explicit `tkInc`/`tkDec`
+// branch that builds a `TokenInc`/`TokenDec` with the pointer
+// variable as `right`, then wraps the whole thing in a
+// `TokenDerefExpr` — one node sequence, no recursive parseExpression
+// that could eat trailing binops.
+//
+// Surfaced in MadSMAUG misc.c:2149 (`*srcptr == '%' && *++srcptr == 's'`).
+
+#include <iostream>
+
+int main()
+{
+    char buf[] = "hello";
+    char *p = buf;
+
+    // The original failing form: pre-inc deref followed by ==
+    if ( *p == 'h' && *++p == 'e' )
+        cout << "match" << endl;            // match
+    else
+        cout << "no" << endl;
+
+    // After the &&-shortcircuit's pre-inc, p points at 'e'
+    cout << *p << endl;                     // e
+
+    // Pre-decrement form too
+    char *q = buf + 4;     // points at 'o'
+    if ( *q == 'o' && *--q == 'l' )
+        cout << "dec-ok" << endl;           // dec-ok
+
+    // Bare `*++p;` (no trailing binary) still works
+    char *r = buf;
+    char rc = *++r;
+    cout << rc << endl;                     // e
+
+    return 0;
+}

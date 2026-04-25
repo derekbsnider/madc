@@ -2196,6 +2196,43 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    // like `*p->name == '$'` don't get swallowed.
 				    deref_expr = parsePostfixChain(deref_tb);
 				}
+				else if ( (deref_tb->id() == TokenID::tkInc
+				        || deref_tb->id() == TokenID::tkDec)
+				    && peekToken()
+				    && peekToken()->type() == TokenType::ttIdentifier )
+				{
+				    // Pre-increment / pre-decrement of a pointer:
+				    // `*++p`, `*--p`. The recursive parseExpression
+				    // path would happily consume any trailing binary
+				    // operator (`*++p == 'e'` would parse as
+				    // `*(++p == 'e')`), so handle the unary step
+				    // explicitly: build a `TokenInc(right=p)` (pre-
+				    // increment, which mutates p and yields its new
+				    // value), then wrap it in a `TokenDerefExpr` so
+				    // the deref reads through the post-step pointer.
+				    TokenBase *id_tb = nextToken();
+				    std::string id_name = ((TokenIdent *)id_tb)->str;
+				    Variable *id_var = findVariable(id_name);
+				    if ( !id_var )
+					Throw(id_tb) << "undeclared identifier '" << id_name << "'" << flush;
+				    if ( !id_var->type->is_pointer() )
+					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+				    DataDefPTR *idptr = dynamic_cast<DataDefPTR *>(id_var->type);
+				    DataDef *base = (idptr && idptr->base_type) ? idptr->base_type : &ddINT64;
+				    TokenOperator *step;
+				    if ( deref_tb->id() == TokenID::tkInc )
+					step = new TokenInc();
+				    else
+					step = new TokenDec();
+				    step->left = NULL;
+				    step->right = new TokenVar(*id_var);
+				    deref_expr = new TokenDerefExpr(step, base);
+				    DataDef *dtype = id_var->type;
+				    if ( !dtype || !dtype->is_pointer() )
+					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+				    exStack.push(deref_expr);
+				    break;
+				}
 				else
 				    deref_expr = parseExpression(deref_tb, true);
 				if ( !deref_expr )
