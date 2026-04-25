@@ -1,0 +1,33 @@
+#!/../bin/madc
+// `*(TYPE *)expr = rhs;` — assignment through a cast-then-deref LHS.
+// The parser's inner cast detection used to consume past the matching
+// `)` and continue through `=` and the RHS, producing a TokenAssign
+// with the cast itself as its left side. The outer `*` wrapper then
+// held the assignment instead of the cast, so the real assignment
+// dispatch saw a TokenCast LHS — which TokenAssign doesn't handle —
+// and threw "Assignment on a non-variable lval".
+//
+// Surfaced by SMAUG `variables.c`:
+//   *(EXT_BV *)pvd->data = fread_bitvector(fp);
+
+#include <stdio.h>
+#include <stdlib.h>
+
+int main()
+{
+    void *p = malloc(sizeof(int) * 4);
+
+    *(int *)p = 42;
+    int *q = (int *)p;
+    printf("scalar: %d\n", q[0]);
+
+    // Multiple stores through cast-deref to confirm the pattern is
+    // reusable, not a one-shot fluke.
+    *(int *)(q + 1) = 100;
+    *(int *)(q + 2) = 200;
+    *(int *)(q + 3) = 300;
+    printf("stride: %d %d %d\n", q[1], q[2], q[3]);
+
+    free(p);
+    return 0;
+}

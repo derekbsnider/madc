@@ -1945,6 +1945,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    }
 			    exStack.push(new TokenCast(cast_dd, cast_expr));
 			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
+			    // Caller wants only the cast group, not whatever
+			    // follows. Without this the inner parseExpression
+			    // (e.g. the `*(CAST)X` deref-of-cast detector) keeps
+			    // consuming through a following `=` etc., returning
+			    // a TokenAssign with the cast as its left — and the
+			    // outer wrapper ends up holding the assignment
+			    // instead of the bare cast.
+			    if ( stop_on_closing_paren && opStack.empty() )
+				return exStack.top();
 			    break;
 			}
 			// not a cast after all — fall through to grouping
@@ -2284,7 +2293,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			TokenBase *deref_expr;
 			if ( inner_is_cast_head )
 			{
-			    deref_expr = parseExpression(deref_tb, true);
+			    // stop_on_closing_paren=true so the matching `)` of
+			    // the cast group ends parsing — otherwise conditional
+			    // mode would chase past it into a following `=` or
+			    // operator chain (closing the SMAUG `*(EXT_BV *)p =
+			    // fread_bitvector(...)` family). Cast delegation
+			    // consumes the `)` itself, so no follow-up
+			    // nextToken() is needed.
+			    deref_expr = parseExpression(deref_tb, true, false, true);
 			}
 			else
 			{
