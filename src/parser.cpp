@@ -4301,6 +4301,11 @@ static bool is_contextual_identifier_token(TokenBase *tb)
 	case TokenID::tkMAP:
 	case TokenID::tkSET:
 	case TokenID::tkLIST:
+	// C++ keywords that are valid C identifiers — `int try;`, struct
+	// member named `new`, `void *catch_block`, etc.
+	case TokenID::tkTRY:
+	case TokenID::tkCATCH:
+	case TokenID::tkTHROW:
 	    return true;
 	default:
 	    return false;
@@ -4323,7 +4328,10 @@ static std::string contextual_identifier_name(TokenBase *tb)
 	|| tb->id() == TokenID::tkVECTOR
 	|| tb->id() == TokenID::tkMAP
 	|| tb->id() == TokenID::tkSET
-	|| tb->id() == TokenID::tkLIST )
+	|| tb->id() == TokenID::tkLIST
+	|| tb->id() == TokenID::tkTRY
+	|| tb->id() == TokenID::tkCATCH
+	|| tb->id() == TokenID::tkTHROW )
 	return ((TokenKeyword *)tb)->str;
     return "";
 }
@@ -4872,6 +4880,23 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 		if ( stmt )
 		    defaultcase->statements.push_back(stmt);
 	    }
+	}
+	else if ( tn->type() == TokenType::ttDataType
+	       || tn->type() == TokenType::ttIdentifier )
+	{
+	    // C allows variable declarations in a switch body before any
+	    // case label — they're unreachable (no case path enters
+	    // there) but valid as compile-time declarations. SMAUG's
+	    // `switch(SPELL_POWER(skill)) { OBJ_DATA *clone; default: ... }`
+	    // is a common form. Parse and discard.
+	    DBG(std::cout << "TokenSWITCH::parse() skipping pre-case declaration" << std::endl);
+	    pgm.parseStatement(tn);
+	}
+	else if ( tn->id() == TokenID::tkSemi )
+	{
+	    // Stray `;` between pre-case declarations and the first case
+	    // label — also an empty statement at switch body scope.
+	    continue;
 	}
 	else
 	    pgm.Throw(tn) << "Expecting case or default in switch body" << flush;
@@ -6374,6 +6399,24 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	      && peekToken()->id() != TokenID::tkOpBrc )
 	    {
 		DBG(std::cout << "parseStatement() 'class' used as identifier" << std::endl);
+		resetPrevToken();
+		return parseExpression(tb);
+	    }
+	    // `try` / `catch` / `throw` are C++ keywords but valid C
+	    // identifiers (SMAUG has `int try;` then `try = saving_throw()`).
+	    // A real try-block is `try { ... }`; a real catch starts a
+	    // `catch (...)` block; a real throw is `throw expr;`. In any
+	    // other follower context, treat as an identifier and route
+	    // through parseExpression.
+	    if ( (tb->id() == TokenID::tkTRY
+	       || tb->id() == TokenID::tkCATCH
+	       || tb->id() == TokenID::tkTHROW)
+	      && peekToken()
+	      && peekToken()->id() != TokenID::tkOpBrc
+	      && peekToken()->id() != TokenID::tkOpBrk )
+	    {
+		DBG(std::cout << "parseStatement() '"
+		    << ((TokenKeyword *)tb)->str << "' used as identifier" << std::endl);
 		resetPrevToken();
 		return parseExpression(tb);
 	    }

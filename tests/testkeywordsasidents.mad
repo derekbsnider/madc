@@ -1,0 +1,48 @@
+// Regression: C++ keywords (`try`, `catch`, `throw`) are valid C
+// identifiers — SMAUG declares `int try; ... try = saving_throw();`.
+// The parser previously rejected them in declaration / variable
+// contexts. is_contextual_identifier_token() now accepts these
+// keywords (alongside `class`, `vector`, `map`, `set`, `list`), and
+// parseStatement routes them through parseExpression when the
+// follower token is not `{` (would-be try/catch block) or `(`
+// (would-be throw expression in some forms).
+
+#include <iostream>
+#include <stdio.h>
+
+struct slot
+{
+    int try;
+    char *catch_;   // `catch` itself is a keyword; with this fix the
+                    // base name `catch` is now legal too — but use a
+                    // suffixed name here just to keep the test from
+                    // accidentally exercising the `catch (` branch.
+    int throw;
+};
+
+int saving_throw(int level)
+{
+    return level * 2 + 1;
+}
+
+int main()
+{
+    int try;
+    try = saving_throw(7);
+    cout << try << endl;            // 15
+
+    // Member named `try`.
+    struct slot s;
+    s.try = 3;
+    s.catch_ = "ok";
+    s.throw = 99;
+    cout << s.try << endl;          // 3
+    cout << s.catch_ << endl;       // ok
+    cout << s.throw << endl;        // 99
+
+    // Comparison and arithmetic with the identifier.
+    if (try > 10)
+        cout << "high" << endl;     // high
+
+    return 0;
+}
