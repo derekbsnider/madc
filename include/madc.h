@@ -176,7 +176,12 @@ public:
     // the parser must not unwrap pointer-typed elements.
     bool is_fixed_array_member() const
     {
-	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(object.type);
+	// For `obj->member` access, object.type is the pointer-to-struct,
+	// not the struct itself. Walk through any pointer wrapper.
+	DataDef *otype = object.type;
+	if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
+	    otype = opt->base_type;
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype);
 	if ( !sdd ) return false;
 	std::string mname = var.name;
 	return sdd->m_count(mname) > 1;

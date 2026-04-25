@@ -3647,6 +3647,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    {
 		// Complete a forward-declared struct in place.
 		existing->members = dds->members;
+		existing->member_counts = dds->member_counts;
 		existing->size = dds->size;
 		existing->pack = dds->pack;
 		existing->max_align = dds->max_align;
