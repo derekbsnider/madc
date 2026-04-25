@@ -331,5 +331,10 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return IRValue::reg(r.op, to);
     }
 
-    throw "IRBuilder::coerce() unsupported type conversion (not yet implemented)";
+    static char msg[256];
+    snprintf(msg, sizeof(msg),
+	     "IRBuilder::coerce() unsupported type conversion (src=%s -> dst=%s)",
+	     src.type ? src.type->name.c_str() : "(null)",
+	     to ? to->name.c_str() : "(null)");
+    throw (const char *)msg;
 }
