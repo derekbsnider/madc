@@ -3345,7 +3345,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     }
 
     // struct [tag] { ... } variable;
-    if ( tn && tn->type() == TokenType::ttIdentifier )
+    // struct [tag] { ... } *first_whogr, *last_whogr;  (pointer decl)
+    if ( tn && (tn->type() == TokenType::ttIdentifier
+	     || tn->id() == TokenID::tkMul) )
     {
 	string tname("struct ");
 	tname.append(tag ? tag->str : "anonymous");
@@ -5367,15 +5369,24 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // Function-pointer typedefs (DataDefFPTR) already represent pointers;
     // `DO_FUN *cmd;` and `DO_FUN cmd;` both name a function-pointer variable.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
-    while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+    // C allows CV-qualifiers (`const`/`restrict`) interleaved with
+    // pointer stars: `type const *p`, `int * const *xpp`, etc.
+    // Loop consuming any qualifier-or-star sequence; qualifiers are
+    // treated as no-ops, stars stack the pointer level.
+    while ( peekToken()
+	 && (peekToken()->id() == TokenID::tkMul
+	  || is_post_pointer_qualifier_token(peekToken())) )
     {
-	nextToken(); // consume '*'
-	if ( !is_fnptr_base )
-	    decl_type = getPointerType(decl_type);
-	DBG(std::cout << "parseDeclaration() pointer: " << decl_type->name << std::endl);
+	if ( peekToken()->id() == TokenID::tkMul )
+	{
+	    nextToken(); // consume '*'
+	    if ( !is_fnptr_base )
+		decl_type = getPointerType(decl_type);
+	    DBG(std::cout << "parseDeclaration() pointer: " << decl_type->name << std::endl);
+	}
+	else
+	    nextToken(); // consume const/restrict
     }
-    while ( is_post_pointer_qualifier_token(peekToken()) )
-	nextToken();
 
     if ( !peekToken() )
 	Throw(tb) << "Unexpected end of data: Expecting identifier after type" << flush;

@@ -1,0 +1,40 @@
+// Regression: `struct tag { ... } *first, *last;` — defining a
+// struct and immediately declaring pointer-to-the-struct variables
+// in the same statement — used to throw "Expecting variable name or
+// ';' after struct definition" because TokenSTRUCT::parse only
+// handled an identifier (`} name;`) or a semicolon (`};`) after the
+// closing brace, not a `*` pointer decorator.
+//
+// Fix: also route through parseDeclaration when the post-brace
+// token is `*`, so the existing pointer/list parsing handles
+// `*first, *last;`.
+//
+// Surfaced at MadSMAUG act_info.c:2721 (the whogr_s linked-list
+// definition).
+
+#include <iostream>
+#include <stdio.h>
+
+struct node {
+    int v;
+    struct node *next;
+} *first, *last;
+
+int main()
+{
+    struct node n1;
+    struct node n2;
+    n1.v = 11;
+    n2.v = 22;
+    n1.next = &n2;
+    n2.next = NULL;
+
+    first = &n1;
+    last = &n2;
+
+    cout << first->v << endl;             // 11
+    cout << first->next->v << endl;       // 22
+    cout << last->v << endl;              // 22
+
+    return 0;
+}

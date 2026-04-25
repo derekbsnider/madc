@@ -108,6 +108,18 @@
 
 ### Session 2026-04-25 (continued)
 
+- ~~**`struct tag { ... } *first, *last;`**~~ — TokenSTRUCT::parse
+  now routes through parseDeclaration when the post-brace token is
+  `*` (pointer decorator), not just identifier or `;`.
+  Targeted regression: tests/teststructptrdecl.mad. Closes
+  MadSMAUG act_info.c:2721 (whogr_s linked-list definition).
+
+- ~~**`type const *p` interleaved qualifier+star chains**~~ — single
+  qualifier-or-star loop in parseDeclaration absorbs both `const`/
+  `restrict` qualifiers and `*` pointer decorators, in any order.
+  Closes MadSMAUG act_info.c:3074 (`char const *class;`). Targeted
+  regression: tests/testconstmid.mad.
+
 - ~~**Compound-assign / inc-dec error diagnostics swept to Throw**~~
   — TokenAddEq/SubEq/MulEq/DivEq/ModEq/BSLEq/BSREq/BandEq/BorEq/
   XorEq and TokenInc/TokenDec converted from raw `throw "..."` to

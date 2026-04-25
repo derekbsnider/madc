@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **`struct tag { ... } *first, *last;`** — defining a struct and
+  immediately declaring pointer-to-the-struct variables in the same
+  statement used to throw "Expecting variable name or ';' after
+  struct definition". `TokenSTRUCT::parse` only routed through
+  `parseDeclaration` when the post-`}` token was an identifier
+  (`} name;`); a leading `*` decorator (`} *first, *last;`) fell
+  through to the diagnostic. Fix: also enter parseDeclaration when
+  the next token is `*`. Closes the MadSMAUG `act_info.c:2721` front
+  edge (`whogr_s` linked-list definition). Regression:
+  `tests/teststructptrdecl.mad`.
+
+- **`type const *p` and interleaved CV-qualifier-with-stars chains**
+  — `parseDeclaration` consumed `const` / `restrict` only after the
+  pointer stars, so `char const *p`, `int const *q`, and
+  `int const * const *xpp` all threw "Expecting identifier after
+  type". Replaced the two separate sweeps with a single qualifier-
+  or-star loop so qualifiers and stars can interleave freely.
+  Closes the MadSMAUG `act_info.c:3074` front edge
+  (`char const *class;`). Regression: `tests/testconstmid.mad`.
+
 - **Compound-assign / inc-dec error diagnostics now carry file:line**
   — `TokenAddEq`/`SubEq`/`MulEq`/`DivEq`/`ModEq`/`BSLEq`/`BSREq`/
   `BandEq`/`BorEq`/`XorEq` and `TokenInc`/`TokenDec` previously
