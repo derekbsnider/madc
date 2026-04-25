@@ -68,6 +68,15 @@
 
 - **Multi-return in brace-less if** — `if (x) return a, b;` doesn't parse. Use braces.
 
+- **Multi-return runtime output is silently truncated** — even existing
+  `tests/testmultiret.mad` produces empty stdout (its own cout writes
+  never reach the terminal). Verbose trace shows `cc.finalize() error=26`
+  during compilation; execution continues but the JITted code that
+  unpacks the return-buffer isn't finalized. Test passes only because
+  it has no `.expect` file and exits with rc=0. Same cluster as the
+  asmjit-compiler float quirk — typed-register IR work is the path
+  forward.
+
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
 
 ## Known Runtime Bugs (surfaced but pre-existing)
