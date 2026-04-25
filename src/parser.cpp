@@ -23,6 +23,7 @@
 #include <list>
 #include <set>
 #include <vector>
+#include <functional>
 #include <queue>
 #include <stack>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -5920,26 +5921,35 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		if ( look->id() == TokenID::tkOpBrc )
 		{
 		    // Nested brace-list → TokenStructLit (one element of an
-		    // array-of-structs, or a nested struct member value).
-		    nextToken(); // consume inner '{'
-		    TokenStructLit *slit = new TokenStructLit();
-		    while ( true )
-		    {
-			TokenBase *iln = peekToken();
-			if ( !iln )
-			    Throw(tb) << "Unexpected end of data in nested initializer" << flush;
-			if ( iln->id() == TokenID::tkClBrc )
+		    // array-of-structs, or a nested struct member value). Recursive
+		    // so a struct member can itself be initialized with a brace list,
+		    // e.g. SMAUG's liq_type[]:
+		    //   { "water", "clear", { 0, 1, 10 } },
+		    std::function<TokenStructLit *(void)> read_struct_lit;
+		    read_struct_lit = [&]() -> TokenStructLit * {
+			nextToken(); // consume '{'
+			TokenStructLit *slit = new TokenStructLit();
+			while ( true )
 			{
-			    nextToken(); // consume inner '}'
-			    break;
+			    TokenBase *iln = peekToken();
+			    if ( !iln )
+				Throw(tb) << "Unexpected end of data in nested initializer" << flush;
+			    if ( iln->id() == TokenID::tkClBrc )
+			    {
+				nextToken(); // consume '}'
+				break;
+			    }
+			    if ( iln->id() == TokenID::tkOpBrc )
+				slit->inits.push_back(read_struct_lit());
+			    else
+				slit->inits.push_back(parseExpression(nextToken()));
+			    TokenBase *isep = peekToken();
+			    if ( isep && isep->id() == TokenID::tkComma )
+				nextToken();
 			}
-			TokenBase *iexpr = parseExpression(nextToken());
-			slit->inits.push_back(iexpr);
-			TokenBase *isep = peekToken();
-			if ( isep && isep->id() == TokenID::tkComma )
-			    nextToken();
-		    }
-		    init_list.push_back(slit);
+			return slit;
+		    };
+		    init_list.push_back(read_struct_lit());
 		}
 		else
 		{

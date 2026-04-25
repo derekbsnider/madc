@@ -1632,10 +1632,26 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	DataDef *mtype = mp.second;
 	size_t fa = dds->field_align(*mtype);
 	ofs = DataDefSTRUCT::align_up(ofs, fa);
+	int32_t addr = base_ofs + (int32_t)ofs;
+
+	// Nested struct-member init: `{ ..., { 0, 1, 10 }, ... }` where
+	// the member is itself a struct value. TokenStructLit has no
+	// compile() — recurse here instead of letting it fall through to
+	// TokenStmt's default-throw branch.
+	if ( mtype->basetype() == BaseType::btStruct
+	  && dynamic_cast<TokenStructLit *>(inits[i]) != NULL )
+	{
+	    TokenStructLit *nested = static_cast<TokenStructLit *>(inits[i]);
+	    DataDefSTRUCT *ndds = dynamic_cast<DataDefSTRUCT *>(mtype);
+	    if ( !ndds )
+		pgm.Throw(err_loc) << "Nested initializer for non-struct member type" << flush;
+	    emit_struct_init(pgm, base_reg, addr, ndds, nested->inits, err_loc);
+	    ofs += mtype->size;
+	    continue;
+	}
 
 	regdefp_t it_rdp = {nullptr, nullptr, nullptr};
 	Operand &val_op = inits[i]->compile(pgm, it_rdp);
-	int32_t addr = base_ofs + (int32_t)ofs;
 
 	if ( mtype->is_numeric() || mtype->is_pointer() )
 	{
