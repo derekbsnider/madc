@@ -1897,6 +1897,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    {
 				cast_expr = parsePostfixChain(cast_expr_tb);
 			    }
+			    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkOpBrk )
+			    {
+				// Cast body is a parenthesized primary, e.g.
+				// `(int)(a - b)` inside `cout << (int)(a-b) << endl`.
+				// The cast binds to that primary only — anything
+				// after the matching ')' (a binary `<<`, etc.) belongs
+				// to the enclosing expression, not the cast body.
+				// Consume the '(' and parse with stop_on_closing_paren
+				// so parseExpression returns after the matching ')'.
+				// (postfix follow-ups like `(MyType*)(p+1)->m` keep
+				// parsing because postfix `->` binds tighter than the
+				// cast — that path is already handled inside
+				// parseExpression's close-paren branch.)
+				TokenBase *first_inner = nextToken();
+				cast_expr = parseExpression(first_inner, true, false, true, 1);
+			    }
 			    else
 			    {
 				cast_expr = parseExpression(cast_expr_tb, true);
