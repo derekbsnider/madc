@@ -6162,7 +6162,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // parseExpression already consumed ',' and peek is the next one.
 	    bool looks_like_next_decl = peek
 		&& (peek->id() == TokenID::tkMul
-		 || peek->type() == TokenType::ttIdentifier);
+		 || peek->type() == TokenType::ttIdentifier
+		 || is_contextual_identifier_token(peek));
 	    if ( have_comma || (looks_like_next_decl
 		&& nt->id() == TokenID::tkAssign) ) // only infer no-comma case when we had an init
 	    {
