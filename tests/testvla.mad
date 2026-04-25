@@ -1,0 +1,49 @@
+#!/../bin/madc
+// C99 variable-length arrays. `T arr[expr]` where `expr` references a
+// runtime value: the variable is laid out as a stack-resident pointer
+// slot whose value is `malloc(expr * sizeof(T))` emitted at scope
+// entry; the matching free fires in TokenCpnd::cleanup.
+//
+// SMAUG `build.c:6010` `char temp_buf[MAX_STRING_LENGTH+max_buf_lines]`
+// is the canonical case — MAX_STRING_LENGTH is a #define (compile-time
+// integer) but max_buf_lines is a runtime global, so the sum is a VLA.
+
+#include <stdio.h>
+
+int main()
+{
+    int n = 5;
+    int buf[n];
+    for ( int i = 0; i < n; i++ )
+	buf[i] = 100 + i;
+    for ( int i = 0; i < n; i++ )
+	printf("%d ", buf[i]);
+    printf("\n");
+
+    int m = 3;
+    char cbuf[m + 4];
+    for ( int i = 0; i < m + 4; i++ )
+	cbuf[i] = 'a' + i;
+    cbuf[m + 4 - 1] = 0;
+    printf("%s\n", cbuf);
+
+    // Expression involving a global+local mix mirrors the SMAUG case.
+    int extra = 10;
+    int big[n + extra];
+    for ( int i = 0; i < n + extra; i++ )
+	big[i] = i;
+    int sum = 0;
+    for ( int i = 0; i < n + extra; i++ )
+	sum += big[i];
+    printf("sum=%d\n", sum);
+
+    // `i` redeclared safely inside.
+    {
+	int n2 = 4;
+	int local[n2];
+	local[0] = 1; local[1] = 2; local[2] = 3; local[3] = 4;
+	printf("%d %d %d %d\n", local[0], local[1], local[2], local[3]);
+    }
+
+    return 0;
+}

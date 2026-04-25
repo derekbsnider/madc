@@ -326,11 +326,12 @@ int TokenAssign::ioperate() const
 // Variable constructor, will allocate data and initialize if requested
 Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc)
 {
-    name = n; 
+    name = n;
     type = &d;
     count = c;
     flags = 0;
     data = NULL;
+    vla_size_expr = nullptr;
     if ( init ) { alloc = true; }
     if ( !alloc ) { flags |= vfSTACK; }
     switch(type->type())
@@ -6008,7 +6009,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     }
 
     // Check for C fixed-size array declaration: type id[N][M]... or type id[] = {...}
+    // Also handles C99 variable-length arrays: `T id[expr]` where `expr`
+    // references a runtime value. The first dim's runtime expression is
+    // captured on the Variable as `vla_size_expr`; the variable then acts
+    // as a pointer to a heap buffer allocated at scope entry and freed at
+    // scope exit (see TokenCpnd::voperand / TokenCpnd::cleanup).
     std::vector<uint32_t> arr_dims;
+    TokenBase *vla_size_expr = NULL;
     while ( nt && nt->id() == TokenID::tkOpSqr )
     {
 	nextToken(); // consume [
@@ -6021,13 +6028,54 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	else
 	{
-	    int64_t n = parse_constant_integer_expression(*this);
-	    if ( n <= 0 )
-		Throw(tb) << "Fixed-size array dimension must be positive" << flush;
-	    arr_dims.push_back((uint32_t)n);
-	    TokenBase *cl = nextToken();
-	    if ( !cl || cl->id() != TokenID::tkClSqr )
-		Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
+	    // Scan ahead to the matching `]` to detect any non-constant
+	    // identifier — that makes the dim a runtime expression (VLA).
+	    // Constants (enum values, vfCONSTANT vars, typedef'd integer
+	    // constants) stay on the parse_constant_integer_expression path
+	    // because resolve_integer_constant handles them.
+	    bool is_vla = false;
+	    int depth = 1;
+	    for ( auto it = tokens.begin(); it != tokens.end() && depth > 0; ++it )
+	    {
+		TokenBase *t = *it;
+		if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
+		if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
+		if ( t->id() == TokenID::tkSemi || t->id() == TokenID::tkOpBrc ) break;
+		std::string name;
+		if ( t->type() == TokenType::ttIdentifier )
+		    name = ((TokenIdent *)t)->str;
+		else
+		    continue;
+		Variable *v = findVariable(name);
+		// No matching variable → assume it'll resolve via some
+		// other route (typedef, enum, lookup retry). NOT a VLA marker.
+		if ( !v )
+		    continue;
+		// Constant variable → still a fixed dim.
+		if ( v->is_constant() )
+		    continue;
+		is_vla = true;
+		break;
+	    }
+	    if ( is_vla && arr_dims.empty() && !vla_size_expr )
+	    {
+		// First-dim VLA: capture the runtime expression.
+		vla_size_expr = parseExpression(nextToken(), true);
+		TokenBase *cl = nextToken();
+		if ( !cl || cl->id() != TokenID::tkClSqr )
+		    Throw(cl ? cl : tb) << "Expected ] after VLA size expression" << flush;
+		arr_dims.push_back(1); // sentinel; real count is runtime
+	    }
+	    else
+	    {
+		int64_t n = parse_constant_integer_expression(*this);
+		if ( n <= 0 )
+		    Throw(tb) << "Fixed-size array dimension must be positive" << flush;
+		arr_dims.push_back((uint32_t)n);
+		TokenBase *cl = nextToken();
+		if ( !cl || cl->id() != TokenID::tkClSqr )
+		    Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
+	    }
 	}
 	nt = peekToken();
 	if ( !nt )
@@ -6180,17 +6228,29 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    var->flags &= ~vfEXTERN;
 	if ( !arr_dims.empty() )
 	{
-	    var->dims = arr_dims;
-	    var->flags |= vfFIXEDARRAY;
-	    // Global (or static-local) fixed arrays can't live on the JIT
-	    // stack — allocate a heap buffer now. voperand detects var->data
-	    // and loads the absolute address as the base pointer.
-	    if ( alloc && !var->data )
+	    if ( vla_size_expr )
 	    {
-		size_t total = (size_t)decl_type->size * (size_t)elem_count;
-		if ( total == 0 ) total = 1;
-		var->data = calloc(1, total);
-		var->flags |= vfALLOC;
+		// C99 VLA: the variable is really a pointer-to-element. Don't
+		// set vfFIXEDARRAY — let pointer-subscript handling cover
+		// `arr[i]` access paths. voperand emits the malloc at scope
+		// entry; the parent TokenCpnd's cleanup emits the free.
+		var->type = getPointerType(decl_type);
+		var->vla_size_expr = vla_size_expr;
+	    }
+	    else
+	    {
+		var->dims = arr_dims;
+		var->flags |= vfFIXEDARRAY;
+		// Global (or static-local) fixed arrays can't live on the
+		// JIT stack — allocate a heap buffer now. voperand detects
+		// var->data and loads the absolute address as the base.
+		if ( alloc && !var->data )
+		{
+		    size_t total = (size_t)decl_type->size * (size_t)elem_count;
+		    if ( total == 0 ) total = 1;
+		    var->data = calloc(1, total);
+		    var->flags |= vfALLOC;
+		}
 	    }
 	}
 	TokenDecl *td = new TokenDecl(*var);

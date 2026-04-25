@@ -1826,6 +1826,14 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDecl::compile(" << var.name << " regdp.second: " << (regdp.second ? regdp.second->name : "")<<  ") TOP" << endl);
 
+    // VLAs need their malloc-init emitted at the declaration point — not
+    // lazily on first use. Lazy emission would put the malloc inside the
+    // enclosing loop body if the first subscript appears in a loop, and
+    // every iteration would reallocate (wiping prior writes). Touch
+    // voperand now so the buffer is allocated exactly once at decl time.
+    if ( var.is_vla() )
+	pgm.tkFunction->voperand(pgm, &var);
+
     // Top-level program declarations still need their initializer code emitted
     // so file-scope C globals like `static char *p = "x";` and static tables
     // are materialized before `main()` runs. Only local statics skip here.
@@ -3675,10 +3683,14 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("TokenSubscript::compile()"));
     IRBuilder ir(pgm.cc);
 
-    // get container pointer
+    // get container pointer. VLAs / address-taken pointer locals stash
+    // the pointer in a stack slot — load the value before indexing.
     Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
     x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
-    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+    if ( obj_op.isMem() )
+	pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    else
+	pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
 
     // compile index expression
     regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
@@ -3933,10 +3945,14 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
     DBG(pgm.cc.comment("TokenSubscript::compile_set()"));
     IRBuilder ir(pgm.cc);
 
-    // get container pointer
+    // get container pointer. VLAs and address-taken pointer locals live
+    // in a stack-resident slot — load the pointer value before indexing.
     Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
     x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
-    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+    if ( obj_op.isMem() )
+	pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    else
+	pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
 
     // compile index expression
     regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
@@ -4110,6 +4126,50 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     }
 
     DBG(std::cout << "TokenCpnd[" << (uint64_t)this << (method ? method->returns.name : "") << "]::voperand(" << var->name << ") building register" << std::endl);
+    // C99 variable-length array: `T name[runtime_expr];` → backed by a
+    // stack-resident pointer slot whose value is `malloc(N*elem_size)`
+    // emitted at scope entry. The matching free is emitted in cleanup().
+    // Subscript / pointer-arith on `name` reuses the existing pointer
+    // handling because `var->type` was already retyped to T*.
+    if ( var->is_vla() )
+    {
+	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(var->type);
+	DataDef *elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+	size_t elem_size = elem_type->size ? elem_type->size : 8;
+
+	x86::Mem slot = pgm.cc.newStack(8, 8);
+	slot.setSize(8);
+	operand_map[var] = slot;
+	var->flags |= vfSTACKSET;
+
+	// Compile the size expression into a Gp.
+	regdefp_t sz_rdp = {NULL, NULL, NULL};
+	Operand &sz_op = var->vla_size_expr->compile(pgm, sz_rdp);
+	x86::Gp sz_reg = pgm.cc.newGpq("__vla_n");
+	if ( sz_op.isReg() && sz_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.cc.mov(sz_reg, sz_op.as<x86::Gp>());
+	else if ( sz_op.isImm() )
+	    pgm.cc.mov(sz_reg, sz_op.as<Imm>());
+	else if ( sz_op.isMem() )
+	    pgm.cc.mov(sz_reg, sz_op.as<x86::Mem>());
+	else
+	    throw "TokenCpnd::voperand VLA: size expression yields unsupported operand";
+
+	if ( elem_size > 1 )
+	    pgm.cc.imul(sz_reg, sz_reg, imm((int64_t)elem_size));
+
+	// malloc(total_bytes)
+	x86::Gp buf = pgm.cc.newIntPtr("%s_vla", var->name.c_str());
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm((void *)::malloc),
+		      FuncSignature::build<void *, size_t>());
+	call->setArg(0, sz_reg);
+	call->setRet(0, buf);
+
+	pgm.cc.mov(slot, buf);
+	var->flags |= vfREGSET;
+	return operand_map[var];
+    }
     // C fixed-size array: allocate stack slot (local) or load heap pointer
     // (global / static-local). The operand is the base pointer; subscript
     // code adds index*elem_size.
@@ -4443,6 +4503,23 @@ void TokenCpnd::cleanup(Program &pgm)
 
     for ( rmi = operand_map.begin(); rmi != operand_map.end(); ++rmi )
     {
+	// VLA cleanup: free the malloc'd buffer. Reads the pointer slot,
+	// invokes free, then continues so any other type-based dispatch
+	// below can also fire if applicable.
+	if ( rmi->first->is_vla() )
+	{
+	    Variable *var = rmi->first;
+	    Operand &slot = rmi->second;
+	    if ( !slot.isMem() )
+		continue;
+	    x86::Gp p = cc.newIntPtr("%s_vla_free", var->name.c_str());
+	    cc.mov(p, slot.as<x86::Mem>());
+	    InvokeNode *call;
+	    cc.invoke(&call, imm((void *)::free),
+		      FuncSignature::build<void, void *>());
+	    call->setArg(0, p);
+	    continue;
+	}
 	if ( (rmi->first->flags & vfSTACK) )
 	{
 	    // Don't destruct parameter objects — the caller owns them

@@ -59,9 +59,17 @@ public:
     uint32_t count;
     uint16_t flags;
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
-    Variable() { type = &ddINT; data = NULL; flags = 0; count = 0; }
+    // C99 variable-length array: when non-NULL, the local was declared as
+    // `T name[expr]` with a runtime-valued size. The variable acts as a
+    // pointer (slot holds the malloc'd buffer); voperand emits the malloc
+    // at scope entry and the parent TokenCpnd's cleanup emits the free.
+    // dims[0] holds the element-count contribution from the FIRST dim
+    // (always 1 for the runtime path; multiply by vla_size_expr at runtime).
+    class TokenBase *vla_size_expr;
+    Variable() { type = &ddINT; data = NULL; flags = 0; count = 0; vla_size_expr = nullptr; }
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
+    inline bool is_vla() const { return vla_size_expr != nullptr; }
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
     inline uint32_t total_elements() const {
 	uint32_t n = 1;
