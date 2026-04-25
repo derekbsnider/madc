@@ -6298,6 +6298,27 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	    return _operand;
 	}
 
+	// Void return-of-expression: `return some_void_call();` or
+	// `return (void)expr;`. C allows this in a void-returning function;
+	// the inner expression must run for side effects, but there's no
+	// value to ret. Compile the expression, drop the result, emit a
+	// bare ret. Without this, saferet would receive an empty Operand
+	// from the void-call's compile and throw.
+	if ( ret_type && ret_type->rawtype() == DataType::dtVOID
+	  && !ret_type->is_pointer() )
+	{
+	    // `return some_void_call();` in a void-returning function: run
+	    // the inner expression for side effects, drop the (empty) result,
+	    // emit a bare ret. Without this saferet would receive an empty
+	    // Operand and throw. The is_pointer guard keeps `void *` returns
+	    // (which share rawtype dtVOID with bare void) on the regular
+	    // pointer path.
+	    regdefp_t void_rdp = {NULL, NULL, NULL};
+	    returns->compile(pgm, void_rdp);
+	    pgm.cc.ret();
+	    return _reg;
+	}
+
 	Operand ret_storage;
 	Operand &reg = (ret_type && (ret_type->is_numeric() || ret_type->is_pointer()))
 	    ? compile_token_normalized(pgm, returns, ret_type, NULL, ret_storage)
