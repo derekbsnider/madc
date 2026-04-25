@@ -5590,15 +5590,29 @@ paramdecl:
 
     DBG(cout << "parseFunction() param loop: func->parameters.size()=" << func->parameters.size()
 	<< " ids.size()=" << ids.size() << " method=" << (void*)method << endl);
-    for ( dvi = func->parameters.begin(); dvi != func->parameters.end(); ++dvi )
+    // If a forward declaration registered N parameters and the definition
+    // produced a mismatching count, ids[i] dereffed past size() crashes
+    // through the std::string copy ctor (NULL+8 read). Bound the loop by
+    // the smaller of the two — when ids is short, fill remaining slots
+    // with synthetic names. (Pre-existing param-parse bugs in dlsym/
+    // typedef'd-pointer paths can produce ids.size() < parameters.size();
+    // those need separate fixes but shouldn't crash the parser here.
+    // ids.size() > parameters.size() is the reverse case — extra ids are
+    // ignored.)
+    size_t n = func->parameters.size();
+    for ( dvi = func->parameters.begin(); dvi != func->parameters.end(); ++dvi, ++i )
     {
 	d = *dvi;
-	DBG(cout << "parseFunction() adding parameter variable " << ids[i] << endl);
-	v = new Variable(ids[i++], *d, 1, NULL, false);
+	std::string pname = (size_t)i < ids.size()
+	    ? ids[i]
+	    : std::string("__synthetic_p") + std::to_string(i);
+	DBG(cout << "parseFunction() adding parameter variable " << pname << endl);
+	v = new Variable(pname, *d, 1, NULL, false);
 	v->flags |= vfPARAM;
 	method->parameters.push_back(v);
 	DBG(cout << "parseFunction() pushed param, method->parameters.size()=" << method->parameters.size() << endl);
     }
+    (void)n;
 
     pushCompound();
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
