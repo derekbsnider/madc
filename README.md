@@ -167,7 +167,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 183 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
+**Current status: 197 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -204,16 +204,16 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.11.0** (2026-04-24) — SMAUG Phase F front-edge resumption. Twelve language gaps surfaced during whole-program porting closed this cycle, and the MadSMAUG umbrella bootstrap now **compiles and runs end-to-end** against a stub `main()`. Highlights: `goto` + forward labels, struct-copy init+assign via `memcpy`, `*p++ = rhs` as LHS, `(*p).member`, `expr[i].member`, compound-assign on expression-base subscripts (`xREMOVE_BIT`/`xSET_BIT`), struct-array subscript stride + base addressing, `class` as a plain C identifier, leading-dot float literals, exact-length `char[N]` init, unary `-` after `{` / `,` / `;` / `(` / `=`, `#include` realpath canonicalization, and `safemov(Operand, double)` no longer truncating for Mem destinations. SMAUG completion tracked in [`docs/smaug-progress.md`](docs/smaug-progress.md). 183 integration + 48 unit tests (25 datadef + 23 IR) passing.
+**v0.12.0** (2026-04-25) — SMAUG Phase F front-edge wave. Thirteen parser / lexer / compiler fixes surfaced while probing MadSMAUG translation units one at a time. Highlights: pointer-typed `*(ptr ± N)` / `*(p = ptr + N)`, single-pass macro parameter substitution (no more cascade through later param names), `extern` libc late-bind via dlsym, `*++p` not eating trailing binops, fn-ptr-member access not mis-firing through pending operators, constant-expression `<<`/`>>`/`&`/`|`/`^`, char literals inside function-like macro args, `struct {...} *p, *q;` declarators, `type const *p` / `int * const *xpp` interleaved CV-qualifier+star chains, `vfADDRTAKEN` pointer + `&ptr->member`, and a sweep converting compound-assign / inc-dec raw `throw` sites to token-aware `Throw(...)`. 197 integration + 48 unit tests (25 datadef + 23 IR) passing.
 
 ### Recent Releases
 
+- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c)
 - **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, `expr[i].m`, compound-assign on subscripts, realpath includes, class-as-ident
 - **v0.10.1** — Typed-register IR cleanup completion: stream/multi-return/direct-call cleanup, final compiler-site IR store/load ports, dead `typesafe.cpp` surface pruned
 - **v0.10.0** — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c): 15 shared compile-site helpers, ~880 lines removed from `compiler.cpp`, three latent bugs fixed
 - **v0.9.1** — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts, constant `case`, postfix chains
 - **v0.9.0** — SMAUG Phase F continues: `->` on call results, Mem-backed arithmetic, unified control-flow parens, fn-ptr typedefs + decay, struct interop expansion, address-taken locals, assign-as-expression
-- **v0.8.0** — SMAUG Phase E complete + Phase F start: C arrays, brace init, struct interop, select(), MadSMAUG port begins
 
 ## Roadmap
 

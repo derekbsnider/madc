@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.12.0] — 2026-04-25
+
+SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes surfaced while probing MadSMAUG translation units (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c). Highlights: pointer-typed `*(ptr ± N)` / `*(p = ptr + N)`, single-pass macro substitution, keyword-as-identifier in unary `&`, `vfADDRTAKEN` pointer + `&ptr->member`, struct decl with `*` decorator, interleaved CV-qualifier+star chains, constant-expression shift+bitwise operators, char literals inside macro args, `extern` libc late-bind via dlsym, `*++p` not eating trailing binops, and fn-ptr-member-access not mis-firing through pending operators. Compound-assign / inc-dec error diagnostics swept to `Throw(...)`. 14 new integration tests; 197/197 passing.
+
 - **`ch->fn && expr_with_parens` no longer mis-fires fn-ptr call
   detection** — when a struct member of function-pointer type sits
   on top of exStack, any `(` later in the expression triggered the
