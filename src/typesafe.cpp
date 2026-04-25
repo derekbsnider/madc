@@ -596,33 +596,69 @@ void printint(int i)
 #endif
 
 // perform cc.div with size casting
+//
+// op2 (the dividend) is the destination register that receives the quotient
+// for both x86 idiv (writes quotient into rax) and SSE divsd/divss (writes
+// op2 := op2 / op3). Its register family therefore selects the result
+// family: Xmm op2 → real division, Gp op2 → integer division. Mixed-family
+// op3 (and op1 in the Xmm path) is coerced into the chosen family before the
+// hardware op so SMAUG idioms that compute one side as Xmm and the other as
+// Gp don't fall through to a raw throw.
 void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, DataDef *d2, DataDef *d3)
 {
-    if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec)
-    &&   op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec)
-    &&   op3.isReg() && op3.as<BaseReg>().isGroup(RegGroup::kVec) )
+    bool op2_is_xmm = op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec);
+    bool op2_is_gp  = op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp);
+
+    if ( op2_is_xmm )
     {
-	if ( d1 && d1->size == sizeof(float) )
-	    cc.divss(op2.as<x86::Xmm>(), op3.as<x86::Xmm>());
+	// Real division. Coerce op3 into Xmm if it's Gp.
+	if ( !op3.isReg() )
+	    throw "safediv() right operand is not a register";
+	x86::Xmm divisor_xmm;
+	if ( op3.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    divisor_xmm = op3.as<x86::Xmm>();
+	else if ( op3.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    DBG(cc.comment("safediv() cvtsi2sd op3 Gp -> Xmm"));
+	    divisor_xmm = (d1 && d1->size == sizeof(float))
+		? cc.newXmmSs("__div_rhs_xmm")
+		: cc.newXmmSd("__div_rhs_xmm");
+	    if ( d1 && d1->size == sizeof(float) )
+		cc.cvtsi2ss(divisor_xmm, op3.as<x86::Gp>().r64());
+	    else
+		cc.cvtsi2sd(divisor_xmm, op3.as<x86::Gp>().r64());
+	}
 	else
-	    cc.divsd(op2.as<x86::Xmm>(), op3.as<x86::Xmm>());
+	    throw "safediv() right operand is not a Gp or Xmm register";
+
+	if ( d1 && d1->size == sizeof(float) )
+	    cc.divss(op2.as<x86::Xmm>(), divisor_xmm);
+	else
+	    cc.divsd(op2.as<x86::Xmm>(), divisor_xmm);
 	return;
     }
+
+    // Integer division: op1 (remainder/rdx) and op2 (dividend/rax) must be Gp.
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safediv() left operand is not a Gp register";
-    if ( !op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp) )
+    if ( !op2_is_gp )
 	throw "safediv() middle operand is not a Gp register";
-    if ( !op3.isReg() || !op3.as<BaseReg>().isGroup(RegGroup::kGp) )
-	throw "safediv() right operand is not a Gp register";
-#if 0
-    InvokeNode* call;
-    call = cc.call(imm(printint), FuncSignatureT<void, int>(CallConv::kIdHost));
-    call->setArg(0, op1.as<x86::Gp>());
-    call = cc.call(imm(printint), FuncSignatureT<void, int>(CallConv::kIdHost));
-    call->setArg(0, op2.as<x86::Gp>());
-    call = cc.call(imm(printint), FuncSignatureT<void, int>(CallConv::kIdHost));
-    call->setArg(0, op3.as<x86::Gp>());
-#endif
+
+    x86::Gp divisor_gp;
+    if ( op3.isReg() && op3.as<BaseReg>().isGroup(RegGroup::kGp) )
+	divisor_gp = op3.as<x86::Gp>();
+    else if ( op3.isReg() && op3.as<BaseReg>().isGroup(RegGroup::kVec) )
+    {
+	DBG(cc.comment("safediv() cvttsd2si op3 Xmm -> Gp"));
+	divisor_gp = cc.newGpq("__div_rhs_gp");
+	if ( d3 && d3->size == sizeof(float) )
+	    cc.cvttss2si(divisor_gp, op3.as<x86::Xmm>());
+	else
+	    cc.cvttsd2si(divisor_gp, op3.as<x86::Xmm>());
+    }
+    else
+	throw "safediv() right operand is not a Gp or Xmm register";
+
     DBG(cc.comment("safediv() cc.idiv(op1, op2, op3)"));
     // Sign-extend the dividend into the remainder register before idiv.
     // x86's idiv treats rdx:rax as a 128-bit signed dividend; a zeroed
@@ -633,7 +669,7 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
     // which the caller already arranged via safexor.
     if ( !d2 || !d2->is_unsigned() )
 	cc.cqo(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
-    cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), op3.as<x86::Gp>().r64());
+    cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
 }
 
 // perform cc.shl with size casting
