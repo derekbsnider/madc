@@ -45,22 +45,19 @@
 
 ### Language Completeness
 
-- **Struct-member double / mixed float+double printf** —
-  `printf("%.2f", v.x)` where v.x is a struct-member double
-  (or more generally, mixing local floats with struct-member
-  reals across multiple printf calls in one function) produces
-  non-deterministic wrong output — the result depends on the
-  JIT source filename length and unrelated earlier float
-  activity. The generated asm looks correct on inspection
-  (each call cvtss2sd's its own load and movdqa's into xmm0
-  before the call), but asmjit's compiler pass reorders or
-  elides something under specific register-pressure shapes.
-  Single-local float varargs `printf("%f", local_float)` is
-  reliable after the cvtss2sd-promotion fix. Broader cluster
-  (struct-member double varargs, multi-float interleaved with
-  printf) is a known asmjit Compiler interaction that the
-  typed-register IR work is expected to supersede. Workaround:
-  copy the real member into a local double before printf.
+- **Cross-function xmm-leakage in float-arg printf** — narrower
+  cluster after the v0.13.x typed-Xmm sweep closed the multi-arg-
+  in-one-call reordering variant. Remaining symptom: in
+  `testfloat.mad` test_promote reads xmm0 with the value from the
+  previous function's printf return instead of loading its own
+  arg. Triggered by binary-layout shifts that move the offending
+  function past a code-cache threshold (e.g. adding more `extern
+  char *...` decls to embedded `<string.h>`). Doesn't reproduce
+  in standalone `/tmp/X.mad` files with the same source. Likely
+  needs Assembler-level emission of the immediately-pre-call
+  movsd that asmjit's Compiler register allocator can't reorder
+  around. Workaround: copy the real member into a local double
+  before printf.
 
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 

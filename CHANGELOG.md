@@ -2,6 +2,77 @@
 
 ## [Unreleased]
 
+- **Comprehensive `cc.newXmm()` → typed scalar sweep across
+  `compiler.cpp` and `typesafe.cpp`** — followup to the IRBuilder
+  fix below: every other generic `cc.newXmm()` call site (call
+  return binding, real-typed token operand caching, `safeneg` /
+  `testzero` temps, real-cast intermediates, `_fconst` /
+  `_fx_tmp` / `_tmp_mm` etc.) was mistyping its Xmm as `int32x4`.
+  Each was replaced with the right `cc.newXmmSs` / `cc.newXmmSd`
+  variant (or via a new file-scope `newScalarXmm(pgm, dd, name)`
+  helper that dispatches on `dd->size`). Variadic-dlsym call path
+  also now suppresses `funcsig.setRetT<double>()` for known int-
+  returning libc functions (printf family) — telling asmjit the
+  return is `double` made its allocator keep an xmm reg live
+  across the call, interfering with arg setup. Doesn't fully
+  eliminate the cross-function xmm-leakage variant of the float
+  quirk; that's still filed as a TODO blocker for the broader
+  `<string.h>` typed-return additions.
+
+- **Nested struct-member initializers** — struct initializers with
+  a nested brace-list for a struct-typed member —
+  `struct Liq v = { "x", "y", { 0, 1, 10 } }` — used to throw
+  "TokenStmt::compile() unexpected token type=25" (ttStructLit).
+  Two-part fix: (1) parser's nested-brace reader is now recursive
+  (a `{` inside a `TokenStructLit`'s inits is itself another
+  `TokenStructLit`); (2) `emit_struct_init` detects `mtype is
+  btStruct + element is TokenStructLit` and recurses with the
+  member offset as the new base. Both global
+  (`struct Liq tab[] = {{...}, ...};`) and local forms work.
+  Closes the MadSMAUG `const.c:360+` (`liq_table[]`) front edge.
+  Regression: `tests/teststructinitnested.mad`.
+
+- **`&((ch)->p->v)` postfix chain after `)`** — the `&(...)`
+  parser passes `stop_on_closing_paren=true` to `parseExpression`
+  so it can grab a parenthesized lvalue. The inner expression
+  `(ch)->p->v` itself opens a paren around `ch`; when that close-
+  paren brought parseExpression's brackets count to 0,
+  `stop_on_closing_paren` ended parsing — leaving `->p->v`
+  unconsumed. Fix: when we'd otherwise end on stop_on_closing_paren,
+  peek one ahead — if the next token is a postfix-chain operator
+  (`.` / `->` / `[`), keep parsing the chain. Closes the
+  MadSMAUG `icec-mercbase.c:318` (`&ICE_LISTEN(ch)`) front edge.
+  Regression: `tests/testaddrparenchain.mad`.
+
+- **`(expr)[N]` for pointer-yielding expressions** —
+  `(p + n)[i]`, `(q = p + 1)[i]`, `(mud = imc_mudof(arg))[0]`,
+  `(buf + N)[i]` (with `buf` a fixed array) used to throw
+  "Expecting ] in lambda expression" because the `[` handler only
+  recognized TokenMember/Subscript/Deref* as valid subscript
+  bases. Two-part fix: (1) parser widens subscript-on-expression
+  detection to accept TokenAdd/TokenSub/TokenAssign whose
+  `datadef()` reports a pointer (or whose operands include a
+  fixed-array TokenVar); the elem_type derivation walks into
+  TokenAdd/Sub/Assign operands to recover the fixed-array's
+  element type when the operator-level datadef misreports
+  scalar; (2) `TokenSubscriptExpr::compile` calls
+  `base_expr->compile()` (not `operand()`) for these complex
+  bases — they need full arithmetic/assign emission to yield a
+  Reg holding the pointer value. Closes the MadSMAUG
+  `imc-mail.c:1047` and `imc-config.c:186`
+  (`GETSTRING(..., (idetails + strlen(idetails)), ...)`) front
+  edges. Regression: `tests/testparenexprsub.mad`.
+
+- **`sizeof(*ptr->member)` and `sizeof(*obj.member)`** — the
+  sizeof parser's `*` branch only accepted a bare identifier; for
+  postfix chains like `*c->local` it threw "Expecting identifier
+  after '*' in sizeof". Fix: when the next token after `*` is
+  followed by `.`, `->`, or `[`, parse a full postfix chain and
+  use its datadef. For pointer chains return sizeof(pointed-to);
+  otherwise sizeof(chain type). Closes the MadSMAUG
+  `icec-mercbase.c:130` (`imc_malloc(sizeof(*c->local))`) front
+  edge. Regression: `tests/testsizeofderefchain.mad`.
+
 - **Typed scalar Xmm allocation in IR + `extern char *strchr(...)`
   in embedded `<string.h>`** — `IRBuilder::newReg` was using
   `cc.newXmm()` for every Xmm value, which asmjit types as

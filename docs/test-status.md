@@ -1,10 +1,10 @@
 # Test Status
 
-Test results as of April 24, 2026 (v0.10.1 — typed-register IR cleanup is complete enough to resume SMAUG-facing work).
+Test results as of April 25, 2026 (post-v0.12.0 — SMAUG Phase F front-edge wave + IRBuilder typed Xmm allocation; multi-arg printf reordering variant of the asmjit-Compiler float quirk closed).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 183 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 206 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
