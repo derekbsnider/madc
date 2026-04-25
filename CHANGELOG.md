@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **`string` as a function parameter name** — `static void
+  parsekeys(char *string) { p1 = string; }` used to throw
+  "Expecting identifier". Inside the function body the lexer
+  always returns the type-keyword token for `string`, and
+  parseExpression's ttDataType branch unconditionally took the
+  inline-declaration path (`type ident`), failing when the next
+  token wasn't an identifier. Fix: when the ttDataType is a
+  contextual identifier (`string` is currently the only flagged
+  one), look it up as a variable first; if found AND the next
+  token is not an identifier, treat the keyword as a variable
+  reference. Inline declarations still work because they have an
+  identifier next. Closes the MadSMAUG `imc-version.c:128` front
+  edge. Regression: `tests/teststringparam.mad`.
+
 - **Keyword-as-identifier in enum body** — `enum { name, sex, class,
   race, ... }` (using `class` or other contextual-keyword identifiers
   as enum tags) used to throw "Expecting identifier in enum". Earlier

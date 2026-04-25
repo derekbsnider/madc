@@ -122,6 +122,14 @@
 
 ### Session 2026-04-25 (post-v0.12.0)
 
+- ~~**`string` as a function parameter name**~~ — parseExpression's
+  ttDataType branch now looks up the type-name as a variable first
+  (when it's a contextual identifier), so `parsekeys(char *string)`
+  works inside the body. Inline `string s = "..."` declarations
+  still work via the next-token-is-identifier check. Targeted
+  regression: tests/teststringparam.mad. Closes MadSMAUG
+  imc-version.c:128.
+
 - ~~**Keyword-as-identifier in enum body**~~ — TokenENUM::parse uses
   `is_contextual_identifier_token` / `contextual_identifier_name`,
   matching the rest of the parser's keyword-as-identifier handling.

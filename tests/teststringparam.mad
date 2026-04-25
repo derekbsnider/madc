@@ -1,0 +1,40 @@
+// Regression: a function parameter named `string` (where `string` is
+// a madc builtin type name) used to throw "Expecting identifier" when
+// the body referenced the parameter. Inside the function the lexer
+// always returns the type-keyword token for `string`, and parseExpression's
+// ttDataType branch unconditionally took the inline-declaration path
+// — `next must be identifier` — which failed when the next token was
+// `=`, `;`, etc.
+//
+// Fix: in the ttDataType branch, when the type name is a contextual
+// identifier (`string` is the only one currently flagged), look it up
+// as a variable first. If found AND the next token is not an
+// identifier, treat the keyword as a variable reference. Inline
+// declarations (`string s = ...`) still work because peeking finds an
+// identifier next.
+//
+// Surfaced at MadSMAUG `imc-version.c:128` where parsekeys takes a
+// `const char *string` parameter and assigns from it.
+
+#include <iostream>
+
+static void parsekeys(char *string)
+{
+    char *p1;
+    p1 = string;
+    cout << p1 << endl;            // hello
+}
+
+// Inline declaration must still work the normal way.
+static void useinlinedecl()
+{
+    string s = "world";
+    cout << s << endl;             // world
+}
+
+int main()
+{
+    parsekeys("hello");
+    useinlinedecl();
+    return 0;
+}

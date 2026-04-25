@@ -2352,6 +2352,23 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		break;
             case TokenType::ttDataType:
 		bt = (TokenDataType *)tb;
+		// If the next token isn't an identifier, the user probably
+		// meant the data type *name* as a contextual identifier — a
+		// parameter or local variable named e.g. `string`. Look it up
+		// as a variable first; only treat as inline declaration if we
+		// don't find one and the next token is an identifier.
+		if ( is_contextual_identifier_token(bt) )
+		{
+		    std::string ctx_name = contextual_identifier_name(bt);
+		    Variable *ctx_var = findVariable(ctx_name);
+		    if ( ctx_var
+			 && (!peekToken() || peekToken()->type() != TokenType::ttIdentifier) )
+		    {
+			DBG(cout << "ttDataType " << ctx_name << " resolves to variable" << endl);
+			exStack.push(new TokenVar(*ctx_var));
+			break;
+		    }
+		}
 		tb = nextToken();
 		if ( tb->type() != TokenType::ttIdentifier ) { Throw(tb) << "Expecting identifier" << flush; }
 		var = addVariable(code, bt->definition, ((TokenIdent *)tb)->str);
