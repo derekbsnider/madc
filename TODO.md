@@ -28,6 +28,20 @@
   Filed at `parser.cpp:1645`. Surfaced in MadSMAUG `magic.c:134`
   (`ch->pcdata->special_skills[sn]->name`).
 
+- **`<string.h>` typed return declarations for `strchr`/`strrchr`/
+  `strstr`/`strdup` etc.** — the embedded header registers these
+  through dlsym fallback only, which gives a generic int64 return
+  signature. So `*(strchr(s,c)) = 0` and similar fail with "cannot
+  dereference non-pointer type" because the parser thinks strchr
+  returns int64. Adding `extern char *strchr(...)` etc. to embedded
+  `<string.h>` fixed it cleanly (verified via standalone test) but
+  shifted the JIT binary layout enough to push the documented
+  asmjit-compiler float-quirk into the failing zone for `testfloat.mad`
+  and `teststructdoublecompound.mad`. Blocked on the typed-register
+  IR replacing the asmjit Compiler reg-allocator pass — same cluster
+  as the per-member array count bug above. Surfaced at MadSMAUG
+  `imc.c:340`.
+
 ## Medium Priority
 
 ### Language Completeness
