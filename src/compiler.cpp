@@ -2395,10 +2395,12 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	{
 	    // TokenDeref also uses ttMember type
 	    TokenDeref *td = dynamic_cast<TokenDeref *>(left);
-	    if ( td )
+	    TokenDerefExpr *tde = td ? NULL : dynamic_cast<TokenDerefExpr *>(left);
+	    DataDef *deref_t = td ? td->deref_type : (tde ? tde->deref_type : NULL);
+	    if ( td || tde )
 	    {
-		r.type = td->deref_type;
-		Operand &mem = td->operand(pgm);
+		r.type = deref_t;
+		Operand &mem = td ? td->operand(pgm) : tde->operand(pgm);
 		if ( mem.isMem() )
 		{
 		    if ( r.type && r.type->is_real() )
