@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+- **safecmp: Gp-vs-Mem and Gp-vs-Xmm mixed comparisons** — `if
+  (chances != 0 && victim->morph)` and similar SMAUG idioms compare a
+  computed Gp value against a stack-resident Mem; now safecmp loads
+  the Mem into a fresh Gp via safemov and delegates to the Gp/Gp
+  path. Mixed Gp-vs-Xmm (`stances[i] > GRAND_MASTER * .75`) converts
+  the Gp to double via cvtsi2sd and uses ucomisd. Closes the
+  `skills.c:check_parry` front edge.
+
+- **IRBuilder::coerce: char*→string transient relabel** — ternary
+  branches that mix a string literal (dtSTRING) with a char*-yielding
+  pointer expression set the merged value's `_datatype` to dtSTRING
+  but the actual storage is a Gp char*. For printf-style consumers
+  (the typical use), the relabel-only coerce keeps the Gp and
+  retypes as string. Closes the `fight.c:damage` front edge that
+  surfaced once the nested fixed-array struct-init fix advanced
+  compile far enough to reach `damage`.
+
+- **Three SMAUG-front-edge fixes in one commit** (`b7d6347`):
+  - `emit_struct_init` now handles nested fixed-array members. SMAUG's
+    `const struct liq_type liq_table[] = { { "water", "clear", { 0,
+    1, 10 } }, ... };` has a third member (`sh_int liq_affect[3]`)
+    that's itself a fixed array. Reads the parent struct's
+    `m_count(member_name)` and emits per-element stores at
+    `[base + addr + j*esize]` with zero-fill for trailing slots.
+  - fn-ptr-member-call detector skips when the member is the LHS of
+    an assignment. `ch->last_cmd = (aRoom ? do_rreset : do_reset);`
+    was mis-parsing the RHS paren as a CALL through last_cmd.
+    prevToken-based check distinguishes from `int v = (*flfunc)(args)`
+    where the `(`'s prevToken is `)`, not the assignment op.
+  - `continue` inside `switch` inside `for` now compiles. TokenCONT
+    walks loopstack from top to bottom looking for the first entry
+    with a non-NULL continue label; switches push (NULL, exit) so
+    `break` targets the switch but `continue` pierces through to
+    the enclosing loop.
+
+- **parseFunction param-loop hardening** — when a forward declaration
+  registered N parameters and the definition arrived with fewer
+  parsed names (real C-side mismatch like `int main(int, char**);`
+  → `int main()` OR a parser-side undercount in typedef'd-pointer
+  param parsing), the loop walked off the end of `ids[]` and crashed
+  inside the std::string copy ctor (NULL+8 deref). Now fills missing
+  slots with synthetic names (`__synthetic_pN`); extras past the
+  count are ignored.
+
 - **Cross-function xmm-leakage variant of the asmjit float quirk closed
   at the root** — the variadic-dlsym call path was building a
   `FuncSignature` from the actual argument types but never marking it

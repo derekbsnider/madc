@@ -61,6 +61,32 @@
 
 ## Completed
 
+### Session 2026-04-25 (post-v0.12.0, session 3 — SMAUG mid-umbrella push)
+
+- ~~**safecmp Gp-vs-Mem and Gp-vs-Xmm mixed comparisons**~~ — both
+  paths now supported; closes `skills.c:check_parry` ABI mismatches.
+  Commit `f10ffd7`.
+
+- ~~**IRBuilder::coerce char*→string transient relabel**~~ — ternary
+  with mixed string-literal + char* branches now coerces cleanly.
+  Closes `fight.c:damage` front edge. Commit `2cc65ee`.
+
+- ~~**emit_struct_init handles nested fixed-array members**~~ — SMAUG's
+  `liq_table[]` `{ "water", "clear", {0, 1, 10} }` now compiles.
+  Commit `b7d6347`.
+
+- ~~**fn-ptr-member-call assignment-LHS guard**~~ — `ch->last_cmd =
+  (aRoom ? do_rreset : do_reset);` no longer mis-parsed as a call.
+  Commit `b7d6347`.
+
+- ~~**`continue` inside `switch` inside `for` compiles**~~ —
+  TokenCONT walks loopstack to skip over switches' (NULL, exit)
+  entries. Commit `b7d6347`.
+
+- ~~**parseFunction param-loop hardening**~~ — synthetic names fill
+  ids gap from forward-decl/definition param-count mismatches; no
+  more std::string-NULL-+8 crashes. Commit `a3a647b`.
+
 ### Session 2026-04-25 (post-v0.12.0, session 2 — float quirk root cause)
 
 - ~~**Cross-function xmm-leakage variant of the asmjit float quirk

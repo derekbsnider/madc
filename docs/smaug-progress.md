@@ -11,17 +11,27 @@ Upstream total: **158,537 lines** across `MadSMAUG/upstream/smaug1.8/src/*.{c,h}
 (including IMC sources, which will be skipped on the first-pass
 bootstrap).
 
-## Current state — 2026-04-25
+## Current state — 2026-04-25 (session 3)
 
 | Phase            | % | Notes |
 |------------------|--:|-------|
-| **Parse**        | ~50% | ~78,000 / 158,537 lines ingested. 24 upstream TUs + bootstrap shims. |
-| **Compile**      | ~50% | **Every ingested TU compiles cleanly.** asmjit "float quirk" closed at the root via `FuncSignature::setVaIndex(1)` on variadic-dlsym calls — the binary-layout-shift fragility that had blocked landing larger changes for ~2 weeks is gone. |
-| **Link**         | ~50% | All referenced symbols resolve — either inside an ingested TU or through `_bootstrap_comm_shim.c` stubs for not-yet-ingested files |
-| **Runtime**      | ~1% | `bin/madc SMAUG.mad` parses + compiles + links + **executes to clean exit 0**. The umbrella's `main()` is still a stub. |
+| **Parse**        | ~65% | ~102,000 / 158,537 lines ingested. 36 upstream TUs + `_bootstrap_comm_shim.c`. |
+| **Compile**      | ~65% | Every ingested TU compiles cleanly. Live blocker (next session): `safediv` rejects mixed Gp/Xmm operands — surfaces in some skills/fight code paths. |
+| **Link**         | ~60% | Referenced symbols resolve via ingested TUs or `_bootstrap_comm_shim.c` stubs (build.c-only entries: `stop_editing`, `fold_area`, `copy_buffer`, `start_editing`, `get_*flag`/`get_*type` family, `get_dir`, plus update.c/variables.c stubs). |
+| **Runtime**      | ~1% | Umbrella's `main()` still a stub. |
 
-Deferred TUs: `clans.c` (parser SIGSEGV on struct-init pattern),
-`house.c` (TokenStmt sees ttStructLit), `build.c` (C99 VLA).
+Active TUs (36): act_move, db, hashstr, handler, fight, skills, news,
+magic, mud_prog, stances, requests, act_comm, act_obj, boards,
+act_info, act_wiz, ban, comments, const, clans, colorize, deity,
+hint, grub, comm, tables, save, misc, reset, mapout, special,
+makeobjs, imm_host, polymorph, planes, house — plus
+_bootstrap_comm_shim, ibuild, ident, interp.
+
+Deferred TUs:
+- `variables.c` — IRBuilder::coerce surface in a different code path.
+- `update.c` — same (a different surface in `damage`-adjacent code).
+- `build.c` — C99 VLA (`char temp_buf[N + max_buf_lines]`); functions
+  used elsewhere are stubbed in the bootstrap shim.
 
 These numbers are rough. Headers are ingested whole; each C file that
 parses cleanly counts as fully parsed. The link column will be

@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of April 25, 2026 (post-v0.12.0 — SMAUG Phase F front-edge wave + IRBuilder typed Xmm allocation + setVaIndex(1) on variadic dlsym FuncSignature, which closed the asmjit-Compiler "float quirk" cluster at the SysV-ABI level — both the multi-arg-printf-reordering and cross-function xmm-leakage variants).
+Test results as of April 25, 2026 (post-v0.12.0, session 3 — float quirk closed at SysV-ABI level via setVaIndex(1); MadSMAUG umbrella advanced to 36 upstream TUs via emit_struct_init nested fixed-arrays, fn-ptr-MEMBER assignment-LHS guard, continue-in-switch piercing, IRBuilder coerce char*→string relabel, safecmp Gp-vs-Mem and Gp-vs-Xmm).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
