@@ -2462,6 +2462,46 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    if ( r.type && r.type->size && r.type->size < 8 )
 		r.type = &ddINT64;
 	}
+	else if ( ts && ts->object.type && ts->object.type->is_pointer() )
+	{
+	    // Raw-pointer subscript lvalue (`int *p; p[i] += N;`). Mirror
+	    // TokenSubscript::compile()'s pointer-subscript read path: MOV
+	    // the pointer value into a Gp, compute [ptr + idx*esize], load
+	    // through that Mem, write-back through the same Mem.
+	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ts->object.type);
+	    DataDef *elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+	    size_t elem_size = elem_type->size ? elem_type->size : 8;
+	    Operand &obj_op = pgm.tkFunction->voperand(pgm, &ts->object);
+	    x86::Gp obj_reg = pgm.cc.newIntPtr("cmpd_subptr_obj");
+	    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+
+	    regdefp_t idx_rdp = {NULL, NULL, NULL};
+	    Operand &idx_op = ts->index->compile(pgm, idx_rdp);
+	    x86::Gp idx_reg = pgm.cc.newGpq("cmpd_subptr_idx");
+	    if ( idx_op.isReg() )
+		pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
+	    else if ( idx_op.isImm() )
+		pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+	    else if ( idx_op.isMem() )
+		pgm.cc.mov(idx_reg, idx_op.as<x86::Mem>());
+
+	    uint32_t shift = 0;
+	    if      ( elem_size == 8 ) shift = 3;
+	    else if ( elem_size == 4 ) shift = 2;
+	    else if ( elem_size == 2 ) shift = 1;
+	    else if ( elem_size != 1 )
+		pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+	    x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+
+	    r.type = elem_type;
+	    x86::Gp gp = pgm.cc.newGpq("cmpd_subptr_lhs");
+	    load_mem_to_gpq(pgm, gp, elem_mem, r.type);
+	    r.writeback = elem_mem;
+	    r.lval = gp;
+	    r.is_member = true;
+	    if ( r.type && r.type->size && r.type->size < 8 )
+		r.type = &ddINT64;
+	}
 	else if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(left) )
 	{
 	    // Expression-base subscript lvalue (`obj.bits[i] &= ~mask;`,
@@ -2518,18 +2558,10 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		r.type = &ddINT64;
 	}
 	else
-	{
-	    static char msg[128];
-	    snprintf(msg, sizeof(msg), "%s on unsupported subscript lval", op_name);
-	    throw (const char *)msg;
-	}
+	    pgm.Throw(left) << op_name << " on unsupported subscript lval" << flush;
     }
     else
-    {
-	static char msg[128];
-	snprintf(msg, sizeof(msg), "%s on a non-variable lval", op_name);
-	throw (const char *)msg;
-    }
+	pgm.Throw(left) << op_name << " on a non-variable lval" << flush;
     return r;
 }
 
