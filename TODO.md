@@ -108,6 +108,14 @@
 
 ### Session 2026-04-25 (continued)
 
+- ~~**Char literals in macro args**~~ — lexer's macro-arg loop now
+  treats `'` symmetrically with `"`, copying char literals verbatim
+  through their closing `'` so any `(`/`)`/`,`/`"` inside (e.g.
+  `')'`, `','`, `'"'`) doesn't disturb arg parsing. Targeted
+  regression: tests/testmacrocharlit.mad. Closes MadSMAUG
+  boards.c:599-607 (pager_printf with nested-ternary char-literal
+  args).
+
 - ~~**Constant-expression `<<`, `>>`, `&`, `|`, `^` operators**~~ —
   added full C precedence chain (shift → bitwise-and → bitwise-xor
   → bitwise-or) to the parse_constant_* recursive descent. Closes

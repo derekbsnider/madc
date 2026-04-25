@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **Char literals inside macro arguments don't break the macro arg
+  parser** — the lexer's macro-arg loop tracked `(`, `)`, `,`, and
+  `"` for nesting/escapes but not `'`. So an argument containing a
+  char literal with a paren/comma/quote inside it (e.g.
+  `stub(x, (x > 0) ? ')' : '(')` ) prematurely ended the macro call:
+  the `)` inside `')'` was read as a real close-paren. Diagnostic
+  was "Unterminated string" once the lexer ran out of input
+  expecting more. Fix: handle `'` symmetrically with `"` — copy the
+  char literal verbatim through its closing `'`, honouring `\`
+  escapes. Surfaced in MadSMAUG `boards.c:599-607` where
+  `pager_printf` gets nested-ternary args containing `'V'`/`'B'`/
+  `':'`/`')'`. Regression: `tests/testmacrocharlit.mad`.
+
 - **Constant-expression evaluator now supports `<<`, `>>`, `&`, `|`,
   `^`** — `case (1 << 14):` (and the underlying SMAUG idiom
   `case ITEM_HOLD:` where `ITEM_HOLD` expands to `(1 << 14)`) used

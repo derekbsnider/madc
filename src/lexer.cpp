@@ -1047,6 +1047,20 @@ TokenBase *Program::_getToken()
 			    }
 			    if ( source.peek() == '"' ) arg += source.get();
 			}
+			else if ( mc == '\'' )
+			{
+			    // Char literal — copy verbatim through the closing
+			    // `'` so any `(`, `)`, `,`, `"` inside the literal
+			    // (e.g. `')'`, `','`, `'"'`) doesn't disturb the
+			    // macro arg parser. Honour `\\` escapes.
+			    arg += mc;
+			    while ( source.good() && source.peek() != '\'' )
+			    {
+				if ( source.peek() == '\\' ) arg += source.get();
+				arg += source.get();
+			    }
+			    if ( source.peek() == '\'' ) arg += source.get();
+			}
 			else arg += mc;
 		    }
 		    // last argument
