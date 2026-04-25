@@ -33,10 +33,12 @@ struct fd_set {
 };
 typedef struct fd_set fd_set;
 
-#define FD_ZERO(set)      __madc_fd_zero(&(set))
-#define FD_SET(fd, set)   __madc_fd_set((fd), &(set))
-#define FD_CLR(fd, set)   __madc_fd_clr((fd), &(set))
-#define FD_ISSET(fd, set) __madc_fd_isset((fd), &(set))
+// FD_* macros take a `fd_set *` (pointer), matching glibc — see
+// sys/select.h for rationale.
+#define FD_ZERO(setp)      __madc_fd_zero((setp))
+#define FD_SET(fd, setp)   __madc_fd_set((fd), (setp))
+#define FD_CLR(fd, setp)   __madc_fd_clr((fd), (setp))
+#define FD_ISSET(fd, setp) __madc_fd_isset((fd), (setp))
 
 // time_t is int64_t on glibc x86-64.
 #define time_t int64_t

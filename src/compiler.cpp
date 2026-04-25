@@ -3783,7 +3783,8 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     bool base_needs_compile =
 	dynamic_cast<TokenAdd *>(base_expr) != NULL
      || dynamic_cast<TokenSub *>(base_expr) != NULL
-     || dynamic_cast<TokenAssign *>(base_expr) != NULL;
+     || dynamic_cast<TokenAssign *>(base_expr) != NULL
+     || dynamic_cast<TokenCast *>(base_expr) != NULL;
     Operand op_storage;
     Operand *op_ptr;
     if ( base_needs_compile )

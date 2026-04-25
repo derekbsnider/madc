@@ -34,6 +34,17 @@
 #define EAI_SYSTEM      -11
 #define EAI_OVERFLOW    -12
 
+// glibc x86-64 struct hostent — 32 bytes, natural C ABI alignment.
+// Returned by gethostbyname() / gethostbyaddr().
+struct hostent {
+    char  *h_name;          // official name of host
+    char **h_aliases;       // NULL-terminated alias list
+    int    h_addrtype;      // host address type (AF_INET / AF_INET6)
+    int    h_length;        // length of address (4 for v4, 16 for v6)
+    char **h_addr_list;     // NULL-terminated array of pointers to addresses
+};
+#define h_addr h_addr_list[0]   // legacy single-address alias
+
 // glibc x86-64 struct servent — 32 bytes, natural C ABI alignment.
 // Returned by getservbyname() / getservbyport(). s_port holds the port
 // in network byte order — use ntohs() to get a host-order integer.

@@ -1744,12 +1744,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    }
 			}
 		    }
+		    bool top_is_cast_pointer = false;
+		    if ( !exStack.empty() )
+		    {
+			if ( TokenCast *tc = dynamic_cast<TokenCast *>(exStack.top()) )
+			{
+			    if ( tc->datadef() && tc->datadef()->is_pointer() )
+				top_is_cast_pointer = true;
+			}
+		    }
 		    if ( !exStack.empty()
 		      && (exStack.top()->type() == TokenType::ttMember
 		       || exStack.top()->type() == TokenType::ttSubscript
 		       || dynamic_cast<TokenDerefExpr *>(exStack.top()) != NULL
 		       || dynamic_cast<TokenDeref *>(exStack.top()) != NULL
-		       || top_is_complex_ptr_expr) )
+		       || top_is_complex_ptr_expr
+		       || top_is_cast_pointer) )
 		    {
 			TokenBase *base_expr = exStack.top();
 			exStack.pop();

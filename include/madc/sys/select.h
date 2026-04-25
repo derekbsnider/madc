@@ -27,7 +27,18 @@ struct fd_set {
     int64_t __b15;
 };
 
-#define FD_ZERO(set)      __madc_fd_zero(&(set))
-#define FD_SET(fd, set)   __madc_fd_set((fd), &(set))
-#define FD_CLR(fd, set)   __madc_fd_clr((fd), &(set))
-#define FD_ISSET(fd, set) __madc_fd_isset((fd), &(set))
+// Bare `fd_set` (typedef alias) is the C-portable spelling used by
+// most network code. Without it, `fd_set in_set;` fails with "use of
+// undeclared identifier 'fd_set'".
+typedef struct fd_set fd_set;
+
+// FD_* macros take a `fd_set *` (a pointer), matching glibc. Callers
+// pass either `&local_set` or an existing `fd_set *` parameter; both
+// expand cleanly without a stray `&(&...)` doubling. Earlier versions
+// of these macros baked `&(set)` into the body, which made the
+// pointer form `FD_CLR(fd, &in_set)` fail with "expecting addressable
+// expression after '&('".
+#define FD_ZERO(setp)      __madc_fd_zero((setp))
+#define FD_SET(fd, setp)   __madc_fd_set((fd), (setp))
+#define FD_CLR(fd, setp)   __madc_fd_clr((fd), (setp))
+#define FD_ISSET(fd, setp) __madc_fd_isset((fd), (setp))

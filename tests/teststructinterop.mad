@@ -35,25 +35,25 @@ int main()
 
     // fd_set + FD_* macros
     struct fd_set rfds;
-    FD_ZERO(rfds);
-    FD_SET(0, rfds);
-    FD_SET(5, rfds);
-    FD_SET(63, rfds);    // last bit in first slot
-    FD_SET(64, rfds);    // first bit in second slot
-    FD_SET(1000, rfds);  // bit in 16th slot
+    FD_ZERO(&rfds);
+    FD_SET(0, &rfds);
+    FD_SET(5, &rfds);
+    FD_SET(63, &rfds);    // last bit in first slot
+    FD_SET(64, &rfds);    // first bit in second slot
+    FD_SET(1000, &rfds);  // bit in 16th slot
 
-    printf("FD_ISSET(0) = %ld\n",    FD_ISSET(0, rfds));    // 1
-    printf("FD_ISSET(1) = %ld\n",    FD_ISSET(1, rfds));    // 0
-    printf("FD_ISSET(5) = %ld\n",    FD_ISSET(5, rfds));    // 1
-    printf("FD_ISSET(63) = %ld\n",   FD_ISSET(63, rfds));   // 1
-    printf("FD_ISSET(64) = %ld\n",   FD_ISSET(64, rfds));   // 1
-    printf("FD_ISSET(1000) = %ld\n", FD_ISSET(1000, rfds)); // 1
+    printf("FD_ISSET(0) = %ld\n",    FD_ISSET(0, &rfds));    // 1
+    printf("FD_ISSET(1) = %ld\n",    FD_ISSET(1, &rfds));    // 0
+    printf("FD_ISSET(5) = %ld\n",    FD_ISSET(5, &rfds));    // 1
+    printf("FD_ISSET(63) = %ld\n",   FD_ISSET(63, &rfds));   // 1
+    printf("FD_ISSET(64) = %ld\n",   FD_ISSET(64, &rfds));   // 1
+    printf("FD_ISSET(1000) = %ld\n", FD_ISSET(1000, &rfds)); // 1
 
-    FD_CLR(5, rfds);
-    printf("after FD_CLR(5): %ld\n", FD_ISSET(5, rfds));    // 0
+    FD_CLR(5, &rfds);
+    printf("after FD_CLR(5): %ld\n", FD_ISSET(5, &rfds));    // 0
 
-    FD_ZERO(rfds);
-    printf("after FD_ZERO, 1000 set? %ld\n", FD_ISSET(1000, rfds)); // 0
+    FD_ZERO(&rfds);
+    printf("after FD_ZERO, 1000 set? %ld\n", FD_ISSET(1000, &rfds)); // 0
 
     // select with zero timeout (no fds, should return 0 immediately)
     struct timeval *to = (struct timeval *) calloc(1, sizeof(struct timeval));

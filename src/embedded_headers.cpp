@@ -377,6 +377,17 @@ struct dirent {
 #define EAI_SYSTEM      -11
 #define EAI_OVERFLOW    -12
 
+// glibc x86-64 struct hostent — 32 bytes, natural C ABI alignment.
+// Returned by gethostbyname() / gethostbyaddr().
+struct hostent {
+    char  *h_name;          // official name of host
+    char **h_aliases;       // NULL-terminated alias list
+    int    h_addrtype;      // host address type (AF_INET / AF_INET6)
+    int    h_length;        // length of address (4 for v4, 16 for v6)
+    char **h_addr_list;     // NULL-terminated array of pointers to addresses
+};
+#define h_addr h_addr_list[0]   // legacy single-address alias
+
 // glibc x86-64 struct servent — 32 bytes, natural C ABI alignment.
 // Returned by getservbyname() / getservbyport(). s_port holds the port
 // in network byte order — use ntohs() to get a host-order integer.
@@ -830,10 +841,21 @@ struct fd_set {
     int64_t __b15;
 };
 
-#define FD_ZERO(set)      __madc_fd_zero(&(set))
-#define FD_SET(fd, set)   __madc_fd_set((fd), &(set))
-#define FD_CLR(fd, set)   __madc_fd_clr((fd), &(set))
-#define FD_ISSET(fd, set) __madc_fd_isset((fd), &(set))
+// Bare `fd_set` (typedef alias) is the C-portable spelling used by
+// most network code. Without it, `fd_set in_set;` fails with "use of
+// undeclared identifier 'fd_set'".
+typedef struct fd_set fd_set;
+
+// FD_* macros take a `fd_set *` (a pointer), matching glibc. Callers
+// pass either `&local_set` or an existing `fd_set *` parameter; both
+// expand cleanly without a stray `&(&...)` doubling. Earlier versions
+// of these macros baked `&(set)` into the body, which made the
+// pointer form `FD_CLR(fd, &in_set)` fail with "expecting addressable
+// expression after '&('".
+#define FD_ZERO(setp)      __madc_fd_zero((setp))
+#define FD_SET(fd, setp)   __madc_fd_set((fd), (setp))
+#define FD_CLR(fd, setp)   __madc_fd_clr((fd), (setp))
+#define FD_ISSET(fd, setp) __madc_fd_isset((fd), (setp))
 )EMBED"},
     {"sys/shm.h", R"EMBED(// madc embedded sys/shm.h — shared memory IPC
 // Functions (shmget, shmat, shmdt, shmctl) available via dlsym fallback
@@ -1058,10 +1080,12 @@ struct fd_set {
 };
 typedef struct fd_set fd_set;
 
-#define FD_ZERO(set)      __madc_fd_zero(&(set))
-#define FD_SET(fd, set)   __madc_fd_set((fd), &(set))
-#define FD_CLR(fd, set)   __madc_fd_clr((fd), &(set))
-#define FD_ISSET(fd, set) __madc_fd_isset((fd), &(set))
+// FD_* macros take a `fd_set *` (pointer), matching glibc — see
+// sys/select.h for rationale.
+#define FD_ZERO(setp)      __madc_fd_zero((setp))
+#define FD_SET(fd, setp)   __madc_fd_set((fd), (setp))
+#define FD_CLR(fd, setp)   __madc_fd_clr((fd), (setp))
+#define FD_ISSET(fd, setp) __madc_fd_isset((fd), (setp))
 
 // time_t is int64_t on glibc x86-64.
 #define time_t int64_t
