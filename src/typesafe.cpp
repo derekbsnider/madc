@@ -463,11 +463,26 @@ void Program::safeadd(Operand &op1, int i, DataDef *d1, DataDef *d2)
 void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
     if ( !op1.isReg() ) { cerr << (uint32_t)op1.opType() << endl; throw "safeadd() lval is not a register"; }
-    if ( !op2.isReg() && !op2.isImm() ) { throw "safeadd() rval is not register or immediate"; }
+    if ( !op2.isReg() && !op2.isImm() && !op2.isMem() )
+	throw "safeadd() rval is not register, immediate, or memory";
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	    safeadd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), d1, d2);
+	else
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    // Gp rhs → convert to Xmm via cvtsi2sd/cvtsi2ss before add.
+	    DBG(cc.comment("safeadd() cvtsi2sd op2 Gp -> Xmm"));
+	    x86::Xmm tmp = (d1 && d1->size == sizeof(float))
+		? cc.newXmmSs("__add_rhs_xmm")
+		: cc.newXmmSd("__add_rhs_xmm");
+	    if ( d1 && d1->size == sizeof(float) )
+		cc.cvtsi2ss(tmp, op2.as<x86::Gp>().r64());
+	    else
+		cc.cvtsi2sd(tmp, op2.as<x86::Gp>().r64());
+	    safeadd(op1.as<x86::Xmm>(), tmp, d1, d1);
+	}
 	else
 	    throw "safeadd() Xmm arithmetic expects an Xmm rhs";
     }
@@ -479,6 +494,14 @@ void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	else
 	if ( op2.isImm() )
 	    cc.add(op1.as<x86::Gp>(), op2.as<Imm>());
+	else
+	if ( op2.isMem() )
+	{
+	    // Stack-resident rhs: load into a Gp first.
+	    x86::Gp tmp = cc.newGpq("__add_rhs_gp");
+	    safemov(tmp, op2.as<x86::Mem>());
+	    safeadd(op1.as<x86::Gp>(), tmp, d1, d2);
+	}
 	else
 	    throw "safeadd() rval is unsupported";
     }
