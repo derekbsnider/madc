@@ -85,9 +85,17 @@ static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
 	out = ((TokenChar *)tb)->get();
 	return true;
     }
-    if ( tb->type() != TokenType::ttIdentifier )
+    // Also accept contextual-identifier keywords (`class`, `try`, `catch`,
+    // etc.) as integer constants when they resolve to one — this lets
+    // `case class:` work for an enum that has `class` as one of its tags.
+    std::string name;
+    if ( tb->type() == TokenType::ttIdentifier )
+	name = ((TokenIdent *)tb)->str;
+    else if ( is_contextual_identifier_token(tb) )
+	name = contextual_identifier_name(tb);
+    else
 	return false;
-    Variable *var = pgm.findVariable(((TokenIdent *)tb)->str);
+    Variable *var = pgm.findVariable(name);
     return read_constant_integer(var, out);
 }
 
@@ -2503,6 +2511,46 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// sizeof(type) — resolve to integer constant at parse time
 		if ( ident_tb->str == "sizeof" )
 		{
+		    // C also accepts `sizeof expr` (no parens) for unary
+		    // expressions: `sizeof ok_otype`, `sizeof *a`, `sizeof r`.
+		    // When the follower isn't `(`, parse a postfix chain (or
+		    // a `*` deref of one) and use the result's datadef size.
+		    if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
+		    {
+			TokenBase *probe = peekToken();
+			bool deref = (probe->id() == TokenID::tkMul);
+			if ( deref )
+			{
+			    nextToken(); // consume `*`
+			    probe = peekToken();
+			}
+			if ( !probe || !is_contextual_identifier_token(probe) )
+			    Throw(tb) << "Expecting '(' or identifier after sizeof" << flush;
+			TokenBase *id_tb = nextToken();
+			TokenBase *chain = parsePostfixChain(id_tb);
+			DataDef *cdd = chain ? chain->datadef() : NULL;
+			if ( !cdd )
+			    Throw(id_tb) << "sizeof: cannot determine type of expression" << flush;
+			size_t sz = cdd->size;
+			if ( deref && cdd->is_pointer() )
+			{
+			    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(cdd);
+			    if ( pdd && pdd->base_type )
+				sz = pdd->base_type->size;
+			}
+			else if ( !deref )
+			{
+			    if ( TokenVar *tv = dynamic_cast<TokenVar *>(chain) )
+			    {
+				if ( tv->var.is_fixed_array() )
+				    sz = tv->var.type->size * tv->var.total_elements();
+			    }
+			}
+			TokenInt *ti = new TokenInt((int64_t)sz);
+			ti->file = tb->file; ti->line = tb->line; ti->column = tb->column;
+			exStack.push(ti);
+			break;
+		    }
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after sizeof" << flush;
 		    nextToken(); // consume (

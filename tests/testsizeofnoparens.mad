@@ -1,0 +1,43 @@
+// Regression: C accepts `sizeof unary-expression` (without parens) in
+// addition to `sizeof(type-name)`. SMAUG `grub.c:1195` uses
+// `memset(ok_otype, 0, sizeof ok_otype)` and `1251`/`1258` use
+// `sizeof *a` for pointer element size. Previously the sizeof handler
+// hard-required `(` after the keyword and threw "Expecting '(' after
+// sizeof".
+//
+// Fix: when the follower isn't `(`, parse a postfix chain (with
+// optional leading `*` for pointer deref) and resolve the size from
+// the chain's datadef. Fixed-array variables yield total bytes;
+// pointers yield pointed-to size; deref yields pointed-to size.
+
+#include <iostream>
+#include <stdio.h>
+
+struct row
+{
+    int x;
+    int y;
+};
+
+int main()
+{
+    int n;
+    cout << sizeof n << endl;        // 8 (int is 8 bytes in madc)
+
+    int arr[6];
+    cout << sizeof arr << endl;      // 48 (6 * 8)
+
+    struct row r;
+    cout << sizeof r << endl;        // 16 (two ints)
+
+    int *p;
+    cout << sizeof p << endl;        // 8 (pointer)
+    cout << sizeof *p << endl;       // 8 (pointed-to int)
+
+    struct row *rp;
+    cout << sizeof *rp << endl;      // 16 (pointed-to row)
+
+    // Round-trip that mirrors the SMAUG idiom: count = total / element.
+    cout << sizeof arr / sizeof *arr << endl;  // 6
+    return 0;
+}

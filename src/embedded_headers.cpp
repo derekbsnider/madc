@@ -10,6 +10,72 @@ static std::map<std::string, std::string> embedded_headers = {
 #define INET_ADDRSTRLEN  16
 #define INET6_ADDRSTRLEN 46
 )EMBED"},
+    {"arpa/telnet.h", R"EMBED(// madc embedded arpa/telnet.h — minimal TELNET protocol constants
+// Mirrors the BSD/glibc subset used by typical text-MUD codebases.
+
+#define IAC          255  // interpret as command
+#define DONT         254
+#define DO           253
+#define WONT         252
+#define WILL         251
+#define SB           250  // sub-option begin
+#define GA           249  // go-ahead
+#define EL           248  // erase line
+#define EC           247  // erase character
+#define AYT          246  // are you there
+#define AO           245  // abort output
+#define IP           244  // interrupt process
+#define BREAK        243
+#define DM           242  // data mark
+#define NOP          241
+#define SE           240  // sub-option end
+#define EOR          239  // end of record
+#define ABORT        238
+#define SUSP         237
+#define xEOF         236
+
+#define TELOPT_BINARY     0
+#define TELOPT_ECHO       1
+#define TELOPT_RCP        2
+#define TELOPT_SGA        3
+#define TELOPT_NAMS       4
+#define TELOPT_STATUS     5
+#define TELOPT_TM         6
+#define TELOPT_RCTE       7
+#define TELOPT_NAOL       8
+#define TELOPT_NAOP       9
+#define TELOPT_NAOCRD    10
+#define TELOPT_NAOHTS    11
+#define TELOPT_NAOHTD    12
+#define TELOPT_NAOFFD    13
+#define TELOPT_NAOVTS    14
+#define TELOPT_NAOVTD    15
+#define TELOPT_NAOLFD    16
+#define TELOPT_XASCII    17
+#define TELOPT_LOGOUT    18
+#define TELOPT_BM        19
+#define TELOPT_DET       20
+#define TELOPT_TTYPE     24
+#define TELOPT_NAWS      31
+#define TELOPT_TSPEED    32
+#define TELOPT_LFLOW     33
+#define TELOPT_LINEMODE  34
+#define TELOPT_AUTHENTICATION 37
+#define TELOPT_ENCRYPT   38
+#define TELOPT_NEW_ENVIRON 39
+#define NTELOPTS         40
+#define TELOPT_EXOPL     255
+)EMBED"},
+    {"crypt.h", R"EMBED(// madc embedded crypt.h — POSIX password crypt
+// libcrypt.so isn't part of glibc's RTLD_DEFAULT search, so #load it
+// explicitly. Once loaded with RTLD_GLOBAL, dlsym(RTLD_DEFAULT, "crypt")
+// resolves and the typed extern decl below routes the call through the
+// existing dlsym late-bind path with proper char* return typing.
+
+#load "libcrypt.so" as crypt_lib;
+
+extern char *crypt(char *key, char *salt);
+)EMBED"},
     {"ctype.h", R"EMBED(// madc embedded ctype.h — character classification and conversion
 // All functions available via dlsym fallback (libc always loaded):
 //   isalnum, isalpha, isblank, iscntrl, isdigit, isgraph,
@@ -375,6 +441,21 @@ struct sockaddr_in {
     struct in_addr sin_addr;
     int64_t  sin_zero;      // glibc declares as char[8]; same 8-byte padding
 };
+)EMBED"},
+    {"netinet/in_systm.h", R"EMBED(// madc embedded netinet/in_systm.h — Internet system types
+// Historical BSD networking compatibility header. Most code only
+// needs the n_* type aliases.
+
+#define n_short  int16_t
+#define n_long   int32_t
+#define n_time   int32_t
+)EMBED"},
+    {"netinet/ip.h", R"EMBED(// madc embedded netinet/ip.h — minimal IP header stub
+// Most user code that includes this just expects the protocol
+// constants; the struct ip layout is only needed by raw-socket code.
+// Pull in netinet/in.h for the protocol numbers.
+
+#include <netinet/in.h>
 )EMBED"},
     {"poll.h", R"EMBED(// madc embedded poll.h — poll() I/O multiplexing
 // Functions (poll, ppoll) available via dlsym fallback
