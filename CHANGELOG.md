@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **Classic C `(*flfunc)(args)` fn-pointer call** — two distinct
+  gaps fixed together while probing MadSMAUG `reset.c:985`
+  (`value = (*flfunc)(arg);`). (1) The unary-`*` parser threw
+  "cannot dereference non-pointer type" on a fn-pointer variable;
+  C semantics treat `*fp` as the function itself, so the unary-`*`
+  identifier branch now pushes the var as a value when its type is
+  `is_function() && is_numeric()` (i.e. `DataDefFPTR`), matching
+  the existing paren-branch behavior. (2) After the deref, the
+  `(args)` call needed a fn-ptr-VAR-call branch in the `(`
+  handler, parallel to the existing fn-ptr-MEMBER-call branch. Both
+  branches now scan opStack for tighter-than-`=` pending operators
+  (precedence < 14): `&&`, `!`, `<`, etc. block the call, but `=`
+  (declaration init / assignment) doesn't, so `int v = (*fp)(arg);`
+  works while `ch->fn && (other)` still doesn't mis-fire.
+  Regression: `tests/testfnptrparenscall.mad`.
+
 ## [v0.12.0] — 2026-04-25
 
 SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes surfaced while probing MadSMAUG translation units (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c). Highlights: pointer-typed `*(ptr ± N)` / `*(p = ptr + N)`, single-pass macro substitution, keyword-as-identifier in unary `&`, `vfADDRTAKEN` pointer + `&ptr->member`, struct decl with `*` decorator, interleaved CV-qualifier+star chains, constant-expression shift+bitwise operators, char literals inside macro args, `extern` libc late-bind via dlsym, `*++p` not eating trailing binops, and fn-ptr-member-access not mis-firing through pending operators. Compound-assign / inc-dec error diagnostics swept to `Throw(...)`. 14 new integration tests; 197/197 passing.

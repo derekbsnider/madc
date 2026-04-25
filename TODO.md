@@ -106,6 +106,19 @@
 
 ## Completed
 
+### Session 2026-04-25 (post-v0.12.0)
+
+- ~~**`(*flfunc)(args)` classic C fn-ptr call**~~ — two gaps:
+  (1) unary-`*` on a fn-ptr variable now pushes the var as a value
+  (function-to-pointer decay reverses through `*`), matching the
+  paren branch's behaviour for fn-ptr-typed expressions;
+  (2) added a fn-ptr-VAR-call branch in the `(` handler parallel to
+  the existing fn-ptr-MEMBER-call branch. Both branches now scan
+  opStack with a tighter-than-`=` precedence threshold so `int v =
+  (*fp)(arg)` works (with `=` on opStack) while `ch->fn && (other)`
+  still doesn't mis-fire. Targeted regression:
+  tests/testfnptrparenscall.mad. Closes MadSMAUG reset.c:985.
+
 ### Session 2026-04-25 (continued)
 
 - ~~**fn-ptr-member-access + later `(...)`**~~ — fn-ptr-call

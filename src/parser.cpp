@@ -1836,20 +1836,30 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // e.g. `cmd.fn(3, 4)` or `tab[i].fn(ch, arg)`. Detected when the
 		    // top of exStack is a TokenMember whose datadef is DataDefFPTR.
 		    // The `(` must IMMEDIATELY follow the member access — if any
-		    // operator (binary or unary) has been pushed onto opStack since
-		    // the member was parsed (e.g. `ch->fn && (something_else)` or
-		    // `ch->fn && !(macro_expansion)`), the `(` belongs to the next
-		    // sub-expression, not a call through the fn-ptr. Scan every
-		    // operator currently in opStack: any non-`(` entry means a
-		    // pending binop/unary is between the member and this `(`.
+		    // tighter-than-assignment operator has been pushed onto opStack
+		    // since the member was parsed (e.g. `ch->fn && (something_else)`),
+		    // the `(` belongs to the next sub-expression, not a call through
+		    // the fn-ptr. We only count operators with precedence < 14
+		    // (anything tighter than `=`); `=` itself is the OUTER context
+		    // for declaration init like `int v = (*flfunc)(args)` and must
+		    // not block the call.
 		    TokenMember *member_call_base = NULL;
 		    bool opstack_has_pending_op = false;
 		    {
 			std::stack<TokenBase *> tmp = opStack;
 			while ( !tmp.empty() )
 			{
-			    if ( tmp.top()->id() != TokenID::tkOpBrk )
-			    { opstack_has_pending_op = true; break; }
+			    TokenBase *t = tmp.top();
+			    if ( t->id() == TokenID::tkOpBrk ) { tmp.pop(); continue; }
+			    if ( t->is_operator() )
+			    {
+				int p = ((TokenOperator *)t)->precedence();
+				if ( p < 14 )
+				{
+				    opstack_has_pending_op = true;
+				    break;
+				}
+			    }
 			    tmp.pop();
 			}
 		    }
@@ -1868,6 +1878,30 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			tc->column = tb->column;
 			tb = parseCallFunc(tc);
 			DBG(cout << "member fptr call through " << tmem->var.name << endl);
+			opStack.push(tc);
+			if ( tb && tb->id() == TokenID::tkSemi )
+			    done = true;
+			break;
+		    }
+		    // Direct invocation through a function-pointer variable wrapped
+		    // in parens: `(*flfunc)(args)` and `(flfunc)(args)`. After the
+		    // inner expression resolved, exStack top is a TokenVar whose
+		    // type is DataDefFPTR. The `(` here begins the call args.
+		    TokenVar *var_call_base = NULL;
+		    if ( !exStack.empty()
+		      && !opstack_has_pending_op
+		      && exStack.top()->type() == TokenType::ttVariable
+		      && (var_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
+		      && dynamic_cast<DataDefFPTR *>(var_call_base->var.type) )
+		    {
+			TokenVar *tv = var_call_base;
+			exStack.pop();
+			TokenCallFunc *tc = new TokenCallFunc(tv->var);
+			tc->file = tb->file;
+			tc->line = tb->line;
+			tc->column = tb->column;
+			tb = parseCallFunc(tc);
+			DBG(cout << "var fptr call through " << tv->var.name << endl);
 			opStack.push(tc);
 			if ( tb && tb->id() == TokenID::tkSemi )
 			    done = true;
@@ -2139,6 +2173,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    Variable *dvar = findVariable(dname);
 				    if ( !dvar )
 					Throw(deref_tb) << "undeclared identifier '" << dname << "'" << flush;
+				    // C function-to-pointer decay reverses through `*`:
+				    // `*fp` (where fp is a function pointer) IS the
+				    // function — still callable as `(*fp)(args)`. Push
+				    // the variable as a value and let the call-site
+				    // logic dispatch normally.
+				    if ( dvar->type->is_function() && dvar->type->is_numeric() )
+				    {
+					exStack.push(new TokenVar(*dvar));
+					break;
+				    }
 				    if ( !dvar->type->is_pointer() && !dvar->is_fixed_array() )
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				    DataDef *base = dvar->type;
