@@ -9,7 +9,6 @@
 ///////////////////////////////////////////////////////////////////////////
 
 #include <cstdio>
-#include <cstdlib>
 #include <cstring>
 #include <cstdint>
 
@@ -56,15 +55,6 @@ extern "C" int __madc_vsprintf(char *buf, const char *fmt, int64_t *args)
     int ai = 0;
     char mini_fmt[128];
 
-    if ( getenv("MADC_DBG_VSPRINTF") )
-    {
-	fprintf(stderr, "[__madc_vsprintf] buf=%p fmt=%p args=%p\n",
-		(void*)buf, (void*)fmt, (void*)args);
-	if ( fmt && (uintptr_t)fmt > 0x10000 )
-	    fprintf(stderr, "  fmt='%s'\n", fmt);
-	else
-	    fprintf(stderr, "  fmt is suspicious (small ptr)\n");
-    }
     while ( *p )
     {
 	if ( *p != '%' ) { *out++ = *p++; continue; }
