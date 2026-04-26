@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **compiler/IR: drop spurious finalize ret + clean up codegen mismatches**
+  — Five fixes that drove the SMAUG umbrella's `MADC_VALIDATE` error
+  count from ~50 to 2. (1) `_compiler_finalize` no longer emits a
+  trailing `cc.ret()` outside any active function — it had been
+  producing a noise-storm of `InvalidInstruction` errors that masked
+  real codegen bugs. (2) `bind_call_return` narrow_int_ret path
+  emitted `mov gpw/gpd, gpq` when a libc dlsym int return fed a
+  narrower destination; asmjit's intermediate validator silently
+  rejected that and left the destination uninitialized. Fix routes
+  through `dest.r64()` so the encoder sees `mov gpq, gpq`; the
+  destination vreg's natural sub-word width still truncates
+  downstream consumers. (3) `safemov(Gp,Gp)` in the
+  same-or-narrower-dest branch hits the same root cause for direct
+  callers — force both ends to r64() matching the safemul/shl/shr/
+  or/and/xor pattern. (4) `IRBuilder::load` clamps aggregate Mem
+  sizes (>8) down to 8 and explicitly `setSize()`s the local Mem
+  copy so the encoder doesn't reject unsized operands with
+  `InvalidOperandSize`. (5) `IRBuilder::store` clamps the Mem dest
+  the same way and avoids the widening branch when both ends are
+  already gpq. Also: `TokenAssign` subscript-write path now routes
+  the index through `load_idx_to_gpq` so a sub-word index (postinc
+  on sh_int / char) gets sign/zero-extended before being added to
+  the base. New regression: `tests/testnarrowdlret.mad` covers the
+  bind_call_return fix end-to-end.
+
 - **compiler: track current function name + widen extra-index Gp adds**
   — `Program::cur_func_name` is set at TokenFunc::compile entry. The
   MADC_VALIDATE error handler now prints `in function: <name>` for
