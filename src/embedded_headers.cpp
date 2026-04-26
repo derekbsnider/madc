@@ -721,6 +721,14 @@ extern char *strndup(char *s, int n);
 #define LOCK_NB 4
 #define LOCK_UN 8
 )EMBED"},
+    {"sys/ioctl.h", R"EMBED(// madc embedded sys/ioctl.h — minimal stubs for IMC sources.
+// ioctl() resolves via dlsym. Common request codes that IMC uses
+// (TIOCINQ, TIOCOUTQ, FIONREAD) match glibc x86-64 values.
+
+#define FIONREAD 0x541B
+#define TIOCINQ  FIONREAD
+#define TIOCOUTQ 0x5411
+)EMBED"},
     {"sys/ipc.h", R"EMBED(// madc embedded sys/ipc.h — System V IPC constants
 // Used with sys/shm.h, sys/msg.h, sys/sem.h
 

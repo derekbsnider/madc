@@ -1,0 +1,29 @@
+// Regression: C token-paste operator `##` in function-like macros.
+//
+// IMC's color-code pattern `#define COL(x) C_##x` requires the
+// preprocessor to fuse `C_` and `x` into a single identifier after
+// parameter substitution. Before the lexer learnt about `##`,
+// expanding `COL(b)` produced the literal text `C_##b` which the
+// lexer then split into `C_`, `#`, `#`, `b` — the parser saw an
+// undeclared identifier `C_`. The fix strips every `##` (and the
+// surrounding whitespace) from the post-substitution body so the
+// lexer re-tokenizes the fused identifier.
+//
+// This test stays minimal so a regression here is obvious in the
+// fulltest log.
+
+#include <stdio.h>
+
+int my_var = 42;
+int my_other = 7;
+
+#define MAKE_NAME(prefix, suffix) prefix##suffix
+
+int main()
+{
+    int a = MAKE_NAME(my_, var);
+    int b = MAKE_NAME(my_, other);
+    printf("a=%d b=%d\n", a, b);
+    if ( a != 42 || b != 7 ) return 1;
+    return 0;
+}

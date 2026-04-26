@@ -1103,6 +1103,31 @@ TokenBase *Program::_getToken()
 			    ++p;
 			}
 		    }
+		    // C token-pasting: `A##B` after parameter substitution
+		    // fuses the two identifiers into one. Strip every `##`
+		    // (and optional whitespace around it) so the lexer sees
+		    // a single identifier when it re-tokenizes the
+		    // expansion. Required for IMC's COL(x) → C_##x pattern.
+		    {
+			std::string fused;
+			fused.reserve(expanded.size());
+			for ( size_t p = 0; p < expanded.size(); )
+			{
+			    if ( p + 1 < expanded.size() && expanded[p] == '#' && expanded[p+1] == '#' )
+			    {
+				// Drop trailing whitespace already in fused.
+				while ( !fused.empty() && (fused.back() == ' ' || fused.back() == '\t') )
+				    fused.pop_back();
+				p += 2;
+				// Drop leading whitespace after the ##.
+				while ( p < expanded.size() && (expanded[p] == ' ' || expanded[p] == '\t') )
+				    ++p;
+				continue;
+			    }
+			    fused += expanded[p++];
+			}
+			expanded.swap(fused);
+		    }
 		    if ( macro.variadic )
 		    {
 			std::string varargs;
