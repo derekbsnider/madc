@@ -550,6 +550,7 @@ public:
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
+    std::string cur_func_name;		// name of current function being compiled (for diagnostics)
     throwstream Throw;			// throw an error
     int script_argc;			// argc for the .mad script
     char **script_argv;			// argv for the .mad script

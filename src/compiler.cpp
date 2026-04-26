@@ -1016,13 +1016,15 @@ public:
     void handleError(asmjit::Error err, const char *message,
 		     asmjit::BaseEmitter *) override
     {
-	if ( ++hits > 20 ) return; // cap noise on cascades
+	if ( ++hits > 30 ) return; // cap noise on cascades
 	std::cerr << "[asmjit] err=" << err << " ("
 		  << asmjit::DebugUtils::errorAsString(err) << "): "
 		  << (message ? message : "")
 		  << std::endl;
 	if ( pgm )
 	{
+	    if ( !pgm->cur_func_name.empty() )
+		std::cerr << "  in function: " << pgm->cur_func_name << std::endl;
 	    TokenBase *tb = pgm->curToken();
 	    if ( tb )
 		std::cerr << "  at curToken file="
@@ -2128,6 +2130,7 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
     prepareFuncNode(pgm);
 
     pgm.tkFunction = this;
+    pgm.cur_func_name = var.name; // for asmjit ErrorHandler context
     clear_operand_map(); // clear operand map
     pgm.label_map.clear(); // labels are function-scoped
 
@@ -3783,10 +3786,14 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)dim_k));
             regdefp_t ex_rdp = {nullptr, nullptr, nullptr};
             Operand &ex_op = extra_indices[k]->compile(pgm, ex_rdp);
-            if ( ex_op.isReg() )
-                pgm.cc.add(idx_reg, ex_op.as<x86::Gp>());
-            else
+            if ( ex_op.isImm() )
                 pgm.cc.add(idx_reg, ex_op.as<Imm>());
+            else
+            {
+                x86::Gp ex_widened = pgm.cc.newGpq("ex_idx_widened");
+                load_idx_to_gpq(pgm, ex_widened, ex_op);
+                pgm.cc.add(idx_reg, ex_widened);
+            }
         }
 
         // Struct-element array: return a Gp pointer to the element (no load).
@@ -4044,10 +4051,14 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
             pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)dim_k));
             regdefp_t ex_rdp = {nullptr, nullptr, nullptr};
             Operand &ex_op = extra_indices[k]->compile(pgm, ex_rdp);
-            if ( ex_op.isReg() )
-                pgm.cc.add(idx_reg, ex_op.as<x86::Gp>());
-            else
+            if ( ex_op.isImm() )
                 pgm.cc.add(idx_reg, ex_op.as<Imm>());
+            else
+            {
+                x86::Gp ex_widened = pgm.cc.newGpq("ex_idx_widened");
+                load_idx_to_gpq(pgm, ex_widened, ex_op);
+                pgm.cc.add(idx_reg, ex_widened);
+            }
         }
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
         ir.store(IRValue::mem(elem_mem, _datatype), ir_from_operand(val_op, val_type ? val_type : _datatype));
