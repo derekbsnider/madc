@@ -1054,6 +1054,21 @@ void Program::_compiler_init()
 	    code.setErrorHandler(&g_madc_asmjit_err);
 	}
     }
+    if ( const char *envlog = ::getenv("MADC_DUMP_ASM") )
+    {
+	if ( envlog[0] )
+	{
+	    static FILE *fp = fopen(envlog, "w");
+	    if ( fp )
+	    {
+		static asmjit::FileLogger logger(fp);
+		logger.addFlags(asmjit::FormatFlags::kMachineCode
+			      | asmjit::FormatFlags::kExplainImms
+			      | asmjit::FormatFlags::kRegCasts);
+		code.setLogger(&logger);
+	    }
+	}
+    }
     // constant initialization
 //  __const_double_1 = cc.newDoubleConst(ConstPool::kScopeGlobal, 1.0);
 }
