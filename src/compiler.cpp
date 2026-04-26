@@ -994,7 +994,9 @@ bool Program::_compiler_finalize()
 {
     cc.ret(); // extra ret just in case
     asmjit::Error ferr = cc.finalize();
-    DBG(if (ferr) std::cerr << "cc.finalize() error=" << ferr << std::endl);
+    if (ferr)
+	std::cerr << "cc.finalize() error=" << ferr << " ("
+		  << asmjit::DebugUtils::errorAsString(ferr) << ")" << std::endl;
     asmjit::Error err = jit.add(&root_fn, &code);
     if ( !root_fn )
     {
