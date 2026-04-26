@@ -67,14 +67,14 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 	    cc.mov(r1, r2);
     }
     else
-    switch(r1.type())
     {
-	case RegType::kGp8Lo: cc.mov(r1, r2.r8Lo());  break;
-	case RegType::kGp8Hi: cc.mov(r1, r2.r8Hi());  break;
-	case RegType::kGp16:  cc.mov(r1, r2.r16());   break;
-	case RegType::kGp32:  cc.mov(r1, r2.r32());   break;
-	case RegType::kGp64:  cc.mov(r1, r2.r64());   break;
-	default: throw "Program::safemov() cannot match register types";
+	// Same-or-narrower-dest path. asmjit's intermediate validator
+	// rejects `mov gpw, gpq` even when r2 is narrowed via `.r16()` —
+	// it inspects the vreg's natural allocation width, not the view.
+	// Force both ends to r64() so the encoder sees `mov gpq, gpq`;
+	// asmjit's Compiler treats the 64-bit view of a sub-word vreg
+	// as the same vreg (matches the safemul/shl/or/and/xor pattern).
+	cc.mov(r1.r64(), r2.r64());
     }
 }
 

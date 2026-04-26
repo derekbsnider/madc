@@ -1077,7 +1077,6 @@ void Program::_compiler_init()
 
 bool Program::_compiler_finalize()
 {
-    cc.ret(); // extra ret just in case
     asmjit::Error ferr = cc.finalize();
     if (ferr)
 	std::cerr << "cc.finalize() error=" << ferr << " ("
@@ -3146,12 +3145,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    regdefp_t idx_rdp = {NULL, NULL, NULL};
 	    Operand &idx_op = tse->index->compile(pgm, idx_rdp);
 	    x86::Gp idx_reg = pgm.cc.newGpq("subx_idx");
-	    if ( idx_op.isReg() && idx_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
-	    else if ( idx_op.isImm() )
-		pgm.cc.mov(idx_reg, idx_op.as<Imm>());
-	    else if ( idx_op.isMem() )
-		pgm.cc.mov(idx_reg, idx_op.as<x86::Mem>());
+	    load_idx_to_gpq(pgm, idx_reg, idx_op);
 
 	    // SIB scale only covers 1/2/4/8 — for any other element size (e.g.
 	    // sizeof(struct K) == 16) fold the element stride into the index
@@ -3648,7 +3642,13 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 	    return;
 	}
 	if ( dest->isReg() && dest->as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.cc.mov(dest->as<x86::Gp>(), ret_gp);
+	{
+	    // asmjit's intermediate validator rejects `mov gpw, gpq`
+	    // even when the destination is a narrower-allocated vreg.
+	    // Move via the 64-bit view; the dest vreg's natural width
+	    // already truncates downstream consumers correctly.
+	    pgm.cc.mov(dest->as<x86::Gp>().r64(), ret_gp);
+	}
 	else if ( dest->isMem() )
 	{
 	    IRBuilder ir(pgm.cc);

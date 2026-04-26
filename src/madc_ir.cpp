@@ -79,15 +79,22 @@ IRValue IRBuilder::load(const IRValue &src)
     if ( src.isMem() )
     {
 	IRValue dst = newReg(src.type, "ir_load");
-	const x86::Mem &m = src.op.as<x86::Mem>();
+	x86::Mem m = src.op.as<x86::Mem>();
+	uint32_t msz = m.size();
+	if ( msz == 0 ) msz = (uint32_t)src.type->size;
+	// Clamp aggregate sizes (struct/zmmword tags from subscript paths)
+	// down to a scalar load width — load reads at most a Gp's worth.
+	if ( msz > 8 ) msz = 8;
+	// asmjit's encoder requires the Mem operand to carry an explicit
+	// size; otherwise it emits InvalidOperandSize. Sync the local Mem
+	// to the resolved msz before any cc.mov.
+	if ( m.size() != msz ) m.setSize(msz);
 	if ( src.type->is_real() )
 	{
 	    // Real members come in float (4-byte) or double (8-byte)
 	    // flavors. The instruction choice must match the Mem's
 	    // actual width, not the DataDef's conceptual width — Mem
 	    // size is the x86 ground truth.
-	    uint32_t msz = m.size();
-	    if ( msz == 0 ) msz = (uint32_t)src.type->size;
 	    if ( msz == sizeof(float) )
 		cc_.movss(dst.op.as<x86::Xmm>(), m);
 	    else
@@ -97,8 +104,6 @@ IRValue IRBuilder::load(const IRValue &src)
 	// Integer or pointer. Widening to Gpq happens via the right
 	// extend instruction based on Mem size and source signedness.
 	x86::Gp g = dst.op.as<x86::Gp>();
-	uint32_t msz = m.size();
-	if ( msz == 0 ) msz = (uint32_t)src.type->size;
 	bool is_unsigned = src.type->is_unsigned();
 	if ( msz == 8 )
 	{
@@ -209,7 +214,16 @@ void IRBuilder::store(const IRValue &dst, const IRValue &src)
     x86::Gp g = reg.op.as<x86::Gp>();
     uint32_t dsz = dst_mem.size();
     uint32_t gsz = g.x86RmSize();
-    if ( dsz > gsz )
+    // Clamp dsz to a scalar move width. A Gp source can carry at most
+    // 8 bytes, so a Mem with size > 8 (struct/oword/zmmword tagged via
+    // sizeof(struct) in subscript paths) becomes a 64-bit qword store
+    // — the natural-width slot for a pointer or integer scalar.
+    if ( dsz > 8 )
+    {
+	dsz = 8;
+	dst_mem.setSize(8);
+    }
+    if ( dsz > gsz && gsz > 0 && gsz < 8 )
     {
 	x86::Gp wide = cc_.newGpq("ir_store_wide");
 	bool is_unsigned = reg.type && reg.type->is_unsigned();
