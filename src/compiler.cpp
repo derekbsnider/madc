@@ -4747,6 +4747,31 @@ void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
     if ( (left && left->is_real()) || (right && right->is_real()) )
 	regdp.second = &ddDOUBLE;
     else
+    // Pointer / fixed-array operand: propagate its pointer type. Without
+    // this the result of `buf + n` (buf=char[N]) keeps `regdp.second` as
+    // bare `char` and downstream arg-packing for variadic calls truncates
+    // the 64-bit address to a single byte, since dtCHAR maps to addArgT<char>().
+    if ( left && left->datadef() && left->datadef()->is_pointer() )
+	regdp.second = left->datadef();
+    else
+    if ( right && right->datadef() && right->datadef()->is_pointer() )
+	regdp.second = right->datadef();
+    else
+    if ( left )
+    {
+	if ( TokenVar *lv = dynamic_cast<TokenVar *>(left) )
+	    if ( lv->var.is_fixed_array() && lv->var.type )
+		regdp.second = pgm.getPointerType(lv->var.type);
+    }
+    if ( !regdp.second && right )
+    {
+	if ( TokenVar *rv = dynamic_cast<TokenVar *>(right) )
+	    if ( rv->var.is_fixed_array() && rv->var.type )
+		regdp.second = pgm.getPointerType(rv->var.type);
+    }
+    if ( regdp.second )
+	;
+    else
     if ( (left && left->datadef()->is_integer() ) )
 	regdp.second = left->datadef();
     else
