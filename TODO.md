@@ -36,6 +36,20 @@
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
+- **SMAUG umbrella wrapper-frame corruption** — Calling a madc-compiled
+  function from another madc-compiled function inside the SMAUG
+  umbrella context corrupts the wrapper's stack frame; the wrapper's
+  epilogue ret pops a corrupted RIP and crashes. Confirmed via the
+  `_probe_*.mad` files in MadSMAUG/src: `void wrap(void) {
+  show_hash(8); }` works in a small standalone but crashes in the
+  umbrella. Calling show_hash directly from main() always works.
+  Same wrapper pattern works in plain `tests/test_callchain.mad`.
+  Root cause likely an asmjit-Compiler state issue triggered by the
+  umbrella's scale (39 .c files, thousands of vregs / global decls)
+  — possibly stack-frame size analysis, or vreg allocator state
+  carrying between function compilations. Live blocker for SMAUG
+  runtime > 4-5%.
+
 - **`ruby::chars` crashes in MadValue destructor** — `ruby::chars(arr, str);`
   crashes at runtime inside `a.data.clear()` in `ruby_chars`. Likely an
   ABI/layout issue with how MadArray is passed through a direct call whose
@@ -60,6 +74,18 @@
   etc.); bare `.c` / `.h` files get the C-compatible subset.
 
 ## Completed
+
+### Session 2026-04-26 (post-v0.12.0, session 9 — codegen cleanup)
+
+- ~~**compiler/IR: drop spurious finalize ret + clean up codegen
+  mismatches**~~ — Five fixes that drove SMAUG MADC_VALIDATE error
+  count from ~50 to 2: dropped trailing cc.ret() outside any active
+  function (was the noise-storm source); bind_call_return.narrow
+  routed through dest.r64() instead of bare `mov gpw, gpq`; safemov
+  Gp,Gp same-or-narrower path uses r64 trick; IRBuilder::load and
+  store clamp aggregate Mem sizes (>8) to 8 and explicitly setSize
+  the local Mem; subscript-write index path uses load_idx_to_gpq.
+  Regression: tests/testnarrowdlret.mad. Commit `f89e422`.
 
 ### Session 2026-04-26 (post-v0.12.0, session 8 — diagnostics + bisect)
 
