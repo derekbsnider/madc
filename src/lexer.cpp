@@ -1178,6 +1178,26 @@ TokenBase *Program::_getToken()
 		    source.pushback(std::to_string(source.line()));
 		    return getToken();
 		}
+		// GCC `__attribute__((...))` is a no-op for madc — the
+		// attribute payload (alignment, format checks, visibility,
+		// etc.) doesn't change the call ABI we care about. Skip the
+		// keyword and its matching outer parens, then re-enter the
+		// tokenizer so the lexer sees the next real token.
+		if ( word == "__attribute__" )
+		{
+		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
+			source.get();
+		    if ( source.peek() == '(' )
+		    {
+			int depth = 0;
+			do {
+			    char c = source.get();
+			    if ( c == '(' ) ++depth;
+			    else if ( c == ')' ) --depth;
+			} while ( source.good() && depth > 0 );
+		    }
+		    return getToken();
+		}
 		// compound type keywords: unsigned/signed/long/short [type]
 		// C allows up to three words: `unsigned short int`, `signed long
 		// int`, `long long int`, `unsigned long long`. Read up to two

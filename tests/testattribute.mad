@@ -1,0 +1,28 @@
+// Regression: GCC `__attribute__((...))` is parsed as a no-op.
+//
+// Real-world C codebases (SMAUG's IMC sources, much libc) decorate
+// declarations with `__attribute__((format(printf,1,2)))` or
+// `__attribute__((noreturn))` etc. The lexer used to bail mid-parse
+// because it didn't recognise the keyword and then mis-parsed the
+// `((...))` payload as a function declarator.
+//
+// The fix skips `__attribute__` and its outer parenthesised payload
+// at the lexer level, before any tokens reach the parser.
+
+#include <stdio.h>
+
+void greet(const char *who) __attribute__((format(printf,1,2)));
+
+void greet(const char *who) { printf("hi %s\n", who); }
+
+int compute(int a, int b) __attribute__((const)) __attribute__((unused));
+
+int compute(int a, int b) { return a + b; }
+
+int main()
+{
+    greet("world");
+    int r = compute(3, 4);
+    printf("r=%d\n", r);
+    return 0;
+}
