@@ -605,10 +605,13 @@ void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	throw "safemul() left operand is not a Gp register";
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safemul() right operand is not a Gp register or immediate value";
+    // asmjit's imul requires both Gp operands at the same width; mixed
+    // gpw/gpq combinations come up when small-typed (sh_int, char)
+    // multiplications meet a wider promotion. Force both sides to r64.
     if ( op2.isImm() )
-	cc.imul(op1.as<x86::Gp>(), op2.as<Imm>());
+	cc.imul(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     else
-	cc.imul(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+	cc.imul(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
 }
 
 #if 0
@@ -703,9 +706,9 @@ void Program::safeshl(Operand &op1, Operand &op2)
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safeshl() right operand is not a Gp register or immediate value";
     if ( op2.isImm() )
-	cc.shl(op1.as<x86::Gp>(), op2.as<Imm>());
+	cc.shl(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     else
-	cc.shl(op1.as<x86::Gp>(), op2.as<x86::Gp>().r8());
+	cc.shl(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
 }
 
 // perform cc.shr with size casting
@@ -716,9 +719,9 @@ void Program::safeshr(Operand &op1, Operand &op2)
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safeshr() right operand is not a Gp register or immediate value";
     if ( op2.isImm() )
-	cc.shr(op1.as<x86::Gp>(), op2.as<Imm>());
+	cc.shr(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     else
-	cc.shr(op1.as<x86::Gp>(), op2.as<x86::Gp>().r8());
+	cc.shr(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
 }
 
 // perform cc.or_ with size casting
@@ -738,12 +741,12 @@ void Program::safeor(Operand &op1, Operand &op2)
     if ( op2.isImm() )
     {
 	cc.comment("cc.or_(gp, imm)");
-	cc.or_(op1.as<x86::Gp>(), op2.as<Imm>());
+	cc.or_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
 	cc.comment("cc.or_(gp, gp)");
-	cc.or_(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+	cc.or_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 
@@ -764,12 +767,12 @@ void Program::safeand(Operand &op1, Operand &op2)
     if ( op2.isImm() )
     {
 	cc.comment("cc.and_(gp, imm)");
-	cc.and_(op1.as<x86::Gp>(), op2.as<Imm>());
+	cc.and_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
 	cc.comment("cc.and_(gp, gp)");
-	cc.and_(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+	cc.and_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 
@@ -790,12 +793,12 @@ void Program::safexor(Operand &op1, Operand &op2)
     if ( op2.isImm() )
     {
 	cc.comment("cc.xor_(gp, imm)");
-	cc.xor_(op1.as<x86::Gp>(), op2.as<Imm>());
+	cc.xor_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
 	cc.comment("cc.xor_(gp, gp)");
-	cc.xor_(op1.as<x86::Gp>(), op2.as<x86::Gp>());
+	cc.xor_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 

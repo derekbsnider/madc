@@ -303,6 +303,36 @@ static void load_var_to_gp(Program &pgm, Operand &src, asmjit::x86::Gp &dst_gp)
 	throw "load_var_to_gp() unsupported source operand";
 }
 
+// Load an index Operand into dst_gpq (a 64-bit Gp). Widens sub-word Gp
+// sources via movsxd / movsx so a `mov gpq, gpw` (illegal x86) doesn't
+// fall through to asmjit's encoder. Used by every subscript / compound-
+// subscript path that expects to compute `[base + idx*scale]`.
+static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand &src)
+{
+    if ( src.isImm() )
+    {
+	pgm.cc.mov(dst, src.as<asmjit::Imm>());
+	return;
+    }
+    if ( src.isMem() )
+    {
+	pgm.cc.mov(dst, src.as<asmjit::x86::Mem>());
+	return;
+    }
+    if ( !src.isReg() || !src.as<asmjit::BaseReg>().isGroup(asmjit::RegGroup::kGp) )
+	throw "load_idx_to_gpq() unsupported source operand";
+    asmjit::x86::Gp s = src.as<asmjit::x86::Gp>();
+    uint32_t sz = s.x86RmSize();
+    if ( sz == 8 )
+	pgm.cc.mov(dst, s);
+    else if ( sz == 4 )
+	pgm.cc.movsxd(dst, s);          // 32→64 sign-extend
+    else if ( sz == 2 || sz == 1 )
+	pgm.cc.movsx(dst.r32(), s);     // 16/8→32 sign-extend (implicit zero-ext to 64)
+    else
+	pgm.cc.mov(dst, s);
+}
+
 // Helper: load the address-of a variable into `dst_gp` — mov from Gp
 // (a Gp already holds a pointer/address), lea from Mem (stack-backed
 // var where we want its slot address). Used for non-numeric lambda
@@ -974,6 +1004,35 @@ extern void  list_int_destruct(void *);
 extern void *list_str_construct(void *);
 extern void  list_str_destruct(void *);
 
+// Diagnostic ErrorHandler for MADC_VALIDATE: prints the asmjit error
+// at the moment of emit (kValidateIntermediate active) so the offending
+// instruction is localized to the current source token.
+class MadcAsmjitErrHandler : public asmjit::ErrorHandler
+{
+public:
+    Program *pgm;
+    int hits;
+    MadcAsmjitErrHandler() : pgm(nullptr), hits(0) {}
+    void handleError(asmjit::Error err, const char *message,
+		     asmjit::BaseEmitter *) override
+    {
+	if ( ++hits > 20 ) return; // cap noise on cascades
+	std::cerr << "[asmjit] err=" << err << " ("
+		  << asmjit::DebugUtils::errorAsString(err) << "): "
+		  << (message ? message : "")
+		  << std::endl;
+	if ( pgm )
+	{
+	    TokenBase *tb = pgm->curToken();
+	    if ( tb )
+		std::cerr << "  at curToken file="
+			  << (tb->file ? tb->file : "(null)")
+			  << " " << tb->line << ":" << tb->column << std::endl;
+	}
+    }
+};
+static MadcAsmjitErrHandler g_madc_asmjit_err;
+
 void Program::_compiler_init()
 {
     code.reset();
@@ -986,6 +1045,15 @@ void Program::_compiler_init()
 //  this seems to break things at times
 //  code.addEmitterOptions(BaseEmitter::kOptionStrictValidation);
     code.attach(&cc);
+    if ( const char *env = ::getenv("MADC_VALIDATE") )
+    {
+	if ( env[0] && env[0] != '0' )
+	{
+	    cc.addDiagnosticOptions(asmjit::DiagnosticOptions::kValidateIntermediate);
+	    g_madc_asmjit_err.pgm = this;
+	    code.setErrorHandler(&g_madc_asmjit_err);
+	}
+    }
     // constant initialization
 //  __const_double_1 = cc.newDoubleConst(ConstPool::kScopeGlobal, 1.0);
 }
@@ -2456,10 +2524,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    regdefp_t idx_rdp = {NULL, NULL, NULL};
 	    Operand &idx_op = ts->index->compile(pgm, idx_rdp);
 	    x86::Gp idx_reg = pgm.cc.newGpq("sub_idx");
-	    if ( idx_op.isReg() )
-		pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
-	    else
-		pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+	    load_idx_to_gpq(pgm, idx_reg, idx_op);
 	    uint32_t shift = 0;
 	    if      ( elem_size == 8 ) shift = 3;
 	    else if ( elem_size == 4 ) shift = 2;
@@ -2490,12 +2555,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    regdefp_t idx_rdp = {NULL, NULL, NULL};
 	    Operand &idx_op = ts->index->compile(pgm, idx_rdp);
 	    x86::Gp idx_reg = pgm.cc.newGpq("cmpd_subptr_idx");
-	    if ( idx_op.isReg() )
-		pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
-	    else if ( idx_op.isImm() )
-		pgm.cc.mov(idx_reg, idx_op.as<Imm>());
-	    else if ( idx_op.isMem() )
-		pgm.cc.mov(idx_reg, idx_op.as<x86::Mem>());
+	    load_idx_to_gpq(pgm, idx_reg, idx_op);
 
 	    uint32_t shift = 0;
 	    if      ( elem_size == 8 ) shift = 3;
@@ -2545,12 +2605,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    regdefp_t idx_rdp = {NULL, NULL, NULL};
 	    Operand &idx_op = tse->index->compile(pgm, idx_rdp);
 	    x86::Gp idx_reg = pgm.cc.newGpq("cmpd_sub_idx");
-	    if ( idx_op.isReg() )
-		pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
-	    else if ( idx_op.isImm() )
-		pgm.cc.mov(idx_reg, idx_op.as<Imm>());
-	    else if ( idx_op.isMem() )
-		pgm.cc.mov(idx_reg, idx_op.as<x86::Mem>());
+	    load_idx_to_gpq(pgm, idx_reg, idx_op);
 
 	    uint32_t shift = 0;
 	    if      ( elem_size == 8 ) shift = 3;
@@ -3698,10 +3753,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
     Operand &idx_op = index->compile(pgm, idx_rdp);
     x86::Gp idx_reg = pgm.cc.newGpq("sub_idx");
-    if ( idx_op.isReg() )
-        pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
-    else
-        pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+    load_idx_to_gpq(pgm, idx_reg, idx_op);
 
     DataType ctype = object.type->type();
 
@@ -3905,10 +3957,7 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
     Operand &idx_op = index->compile(pgm, idx_rdp);
     x86::Gp idx_reg = pgm.cc.newGpq("subexpr_idx");
-    if ( idx_op.isReg() )
-	pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
-    else
-	pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+    load_idx_to_gpq(pgm, idx_reg, idx_op);
 
     size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
     // SIB scale only covers 1/2/4/8; any other element size (notably struct
@@ -3960,10 +4009,7 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
     regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
     Operand &idx_op = index->compile(pgm, idx_rdp);
     x86::Gp idx_reg = pgm.cc.newGpq("sub_idx");
-    if ( idx_op.isReg() )
-        pgm.cc.mov(idx_reg, idx_op.as<x86::Gp>());
-    else
-        pgm.cc.mov(idx_reg, idx_op.as<Imm>());
+    load_idx_to_gpq(pgm, idx_reg, idx_op);
 
     DataType ctype = object.type->type();
 

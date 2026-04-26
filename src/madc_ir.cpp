@@ -202,10 +202,27 @@ void IRBuilder::store(const IRValue &dst, const IRValue &src)
 
     // Integer/pointer store. asmjit picks the instruction size from
     // the Mem width; pass the correct sub-register of the Gpq so the
-    // encoding matches.
+    // encoding matches. When the source Gp's natural width is narrower
+    // than the destination Mem (e.g. dst=qword stack slot, src=sh_int
+    // call return in a gpw vreg), widen to r64 first via movsx/movzx
+    // so the bare `mov qword[mem], gpw` doesn't reach asmjit's encoder.
     x86::Gp g = reg.op.as<x86::Gp>();
     uint32_t dsz = dst_mem.size();
-    if      ( dsz == 8 ) cc_.mov(dst_mem, g);
+    uint32_t gsz = g.x86RmSize();
+    if ( dsz > gsz )
+    {
+	x86::Gp wide = cc_.newGpq("ir_store_wide");
+	bool is_unsigned = reg.type && reg.type->is_unsigned();
+	if      ( gsz == 4 && !is_unsigned ) cc_.movsxd(wide, g);
+	else if ( gsz == 4 )                 cc_.mov(wide.r32(), g);  // implicit zero-ext
+	else if ( gsz == 2 && !is_unsigned ) cc_.movsx(wide, g);
+	else if ( gsz == 2 )                 cc_.movzx(wide, g);
+	else if ( gsz == 1 && !is_unsigned ) cc_.movsx(wide, g);
+	else                                 cc_.movzx(wide, g);
+	g = wide;
+	gsz = 8;
+    }
+    if      ( dsz == 8 ) cc_.mov(dst_mem, g.r64());
     else if ( dsz == 4 ) cc_.mov(dst_mem, g.r32());
     else if ( dsz == 2 ) cc_.mov(dst_mem, g.r16());
     else if ( dsz == 1 ) cc_.mov(dst_mem, g.r8());
