@@ -61,6 +61,16 @@
 
 ## Completed
 
+### Session 2026-04-26 (post-v0.12.0, session 8 — diagnostics + bisect)
+
+- ~~**compiler: cur_func_name + extra-index Gp widening**~~ — asmjit
+  ErrorHandler now reports `in function: <name>` for every error,
+  converting end-of-file noise into a per-function trail. Multi-dim
+  subscript extra-index `add gpq, gpw` now widened via
+  `load_idx_to_gpq`. Bisect of SMAUG umbrella narrowed bad codegen
+  to act_comm.c (20 errors across ~10 functions; do_mstat worst at
+  7). Commit `d8b4a59`.
+
 ### Session 2026-04-26 (post-v0.12.0, sessions 5–7 — VLA, runtime breakthrough)
 
 - ~~**MADC_DUMP_ASM env knob**~~ — env-gated FileLogger captures full

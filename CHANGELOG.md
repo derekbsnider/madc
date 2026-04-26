@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **compiler: track current function name + widen extra-index Gp adds**
+  — `Program::cur_func_name` is set at TokenFunc::compile entry. The
+  MADC_VALIDATE error handler now prints `in function: <name>` for
+  every asmjit error, converting the previous noise-storm of
+  `InvalidArgument` errors at end-of-file into a per-function trail
+  pointing at the actual offender (e.g. `do_mstat` (7 errors),
+  `pull_type_name` (5), `do_showrace` (3) in the SMAUG umbrella).
+  Separately, the multi-dim fixed-array subscript path's
+  `cc.add(idx_reg, ex_op.as<x86::Gp>())` widens `ex_op` through
+  `load_idx_to_gpq` so a sub-word extra-index (sh_int / char) doesn't
+  produce `add gpq, gpw`.
+
 - **MADC_DUMP_ASM env knob** — env-gated asmjit FileLogger captures the
   complete instruction stream (mnemonics + machine bytes + immediate
   explanations + register-cast annotations) to a file. Used to localize
