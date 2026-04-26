@@ -1,14 +1,14 @@
 # Test Status
 
-Test results as of April 25, 2026 (post-v0.12.0, session 4 — safediv Gp/Xmm mixed dividend/divisor operands, resolveCompoundLHS raw-pointer subscript lvalue, IRBuilder::coerce error message now reports src/dst type names).
+Test results as of April 26, 2026 (post-v0.12.0, session 7 — C99 VLA support, `return void_call();` in void fn, asmjit instruction-size mismatches in subscript indices and IR stores, TokenOperator::settype pointer/fixed-array propagation, MADC_DUMP_ASM / MADC_VALIDATE diagnostic env knobs. SMAUG umbrella now compiles 39 TUs incl. build.c; first boot_log line prints from runtime).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 216 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 222 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 216 integration tests
+- Passing: 222 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR

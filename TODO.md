@@ -61,6 +61,66 @@
 
 ## Completed
 
+### Session 2026-04-26 (post-v0.12.0, sessions 5–7 — VLA, runtime breakthrough)
+
+- ~~**MADC_DUMP_ASM env knob**~~ — env-gated FileLogger captures full
+  asmjit instruction stream to a file for offline analysis. Commit
+  `18ce123`.
+
+- ~~**TokenOperator::settype: pointer/fixed-array type propagation**~~
+  — `buf+strlen(buf)` (buf=char[N]) typed as `char` instead of `char*`,
+  variadic dlsym packing truncated 64-bit pointer to 1 byte at the
+  call site. SMAUG's first boot_log line now prints from runtime.
+  Commit `3b3ec93`.
+
+- ~~**Fix asmjit instruction-size mismatches: subscript indices and
+  IR stores**~~ — load_idx_to_gpq helper widens sub-word index Gps
+  via movsxd/movsx; IRBuilder::store widens sub-word source Gp before
+  storing into wider Mem; safemul/safeshl/safeshr/safeor/safeand/
+  safexor force both Gp operands to r64. Plus MADC_VALIDATE knob.
+  Commit `b828832`.
+
+- ~~**compiler: always print cc.finalize() errors with name**~~ —
+  was DBG-only, silent in normal builds. Programs with finalize
+  errors compiled, exited 0, but main never ran. Commit `d8570b2`.
+
+- ~~**TokenRETURN: handle `return void_call();` in void fn**~~ —
+  inner expression runs for side effects; bare ret. Commit `ddc6694`.
+
+- ~~**C99 variable-length array (VLA) support**~~ — `T name[expr]`
+  with runtime-valued expr now compiles; backed by stack-resident
+  pointer slot; malloc at scope entry, free in cleanup. Build.c
+  finally compiles. Commit `c04632d`.
+
+- ~~**safeadd: Xmm-lhs/Gp-rhs and Gp-lhs/Mem-rhs widening**~~ —
+  cvtsi2sd / safemov before delegating. Commit `ac024f9`.
+
+- ~~**parser: stop after cast push when initial_brackets == 0**~~ —
+  closes SMAUG QUICKMATCH chained-eq through if/while.
+  Regression: `tests/testchainedeq.mad`. Commit `ca3dc56`.
+
+- ~~**parser: stop after cast push in stop_on_closing_paren mode**~~
+  — closes SMAUG `*(EXT_BV*)pvd->data = fread_bitvector(fp);`.
+  Regression: `tests/testderefcastassign.mad`. Commit `9dc614a`.
+
+- ~~**resolveCompoundLHS: TokenDerefExpr lvalue**~~ — `*(expr) op=
+  rhs` for pointer-yielding subexpressions now handled.
+  Regression: `tests/testcompoundderefexpr.mad`. Commit `603a98d`.
+
+- ~~**saferet: Mem operand support**~~ — load Mem into Gp before ret.
+  Commit `7c9df6a`.
+
+- ~~**parser: function-to-pointer decay on `return func;`**~~ —
+  `(peek_id == tkSemi && opStack.empty())` added to value-end set.
+  Closes SMAUG `tables.c:skill_function`. Regression:
+  `tests/testreturnfndecay.mad`. Commit `613f9d2`.
+
+- ~~**TokenCast: don't short-circuit (void *) through (void)-discard
+  path**~~ — DataDef::rawtype() collapses pointer-to-void to dtVOID;
+  the (void) discard branch's guard needed `!cast_type->is_pointer()`.
+  Surfaced by SMAUG `comm.c:init_socket setsockopt(..., (void *)&x,
+  ...)`. Regression: `tests/testvoidptrcast.mad`. Commit `78120ee`.
+
 ### Session 2026-04-25 (post-v0.12.0, session 4 — safediv mixed + ptr-subscript compound)
 
 - ~~**safediv Gp/Xmm mixed dividend/divisor operands**~~ — op2's

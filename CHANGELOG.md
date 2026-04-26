@@ -2,6 +2,165 @@
 
 ## [Unreleased]
 
+- **MADC_DUMP_ASM env knob** — env-gated asmjit FileLogger captures the
+  complete instruction stream (mnemonics + machine bytes + immediate
+  explanations + register-cast annotations) to a file. Used to localize
+  InvalidInstruction / InvalidArgument errors in the SMAUG umbrella
+  where curToken-based localization runs out of signal once asmjit's
+  pass-2 register allocator fires after token compile. Off by default.
+
+- **TokenOperator::settype: propagate pointer / fixed-array type
+  through arithmetic** — `buf + strlen(buf)` where `buf` is a fixed
+  `char[N]` was being typed as plain `char` (because settype only
+  checked is_real / is_integer). For variadic dlsym call paths the
+  packing then inserted `addArgT<char>()` (1 byte), asmjit truncated
+  the 64-bit pointer to a single byte at the call site, and the callee
+  received e.g. 0xb0 (low byte of stack address) instead of the real
+  pointer. SMAUG's `boot_log` call `vsprintf(buf+strlen(buf), str,
+  param)` SIGSEGV'd at 0x36-ish addresses. settype now also propagates
+  pointer-typed operands and synthesizes a pointer type from a
+  fixed-array TokenVar via getPointerType. After this the first
+  SMAUG `boot_log` line prints correctly:
+  `Thu Jan  1 00:00:00 1970 :: [*****] BOOT: ---[ Boot Log ]---`.
+
+- **Fix asmjit instruction-size mismatches: subscript indices and IR
+  stores** — asmjit's encoder rejects mixed-width Gp/Gp instructions
+  (`mov gpq, gpw`, `imul gpw, gpq`, `and gpb, gpq`). The SMAUG
+  umbrella's density of sub-word integer types (`sh_int`, `char`,
+  `unsigned char`) lit them up — main never actually ran because the
+  JIT machine code was incomplete. Three fixes:
+  - New `load_idx_to_gpq()` helper widens sub-word index Gps via
+    movsxd / movsx in all six subscript call sites
+    (sub / cmpd_sub / cmpd_subptr / subexpr).
+  - `IRBuilder::store()` widens a sub-word source Gp before storing
+    into a wider Mem (sh_int call return into qword stack slot).
+  - `safemul` / `safeshl` / `safeshr` / `safeor` / `safeand` /
+    `safexor` now force both Gp operands to r64() before emitting
+    the op. The destination vreg's natural width is preserved
+    (asmjit Compiler treats r64() of a gpw as the same vreg via the
+    64-bit view).
+  - Plus `MADC_VALIDATE=1` env knob installs an asmjit ErrorHandler +
+    `kValidateIntermediate` so each ill-formed instruction is flagged
+    at emit with mnemonic and source token.
+
+- **compiler: always print cc.finalize() errors** — was DBG-only,
+  silent in normal builds. Symptom: a program with a finalize error
+  compiles, exits 0, but main never actually runs (the JIT machine
+  code is incomplete). For non-trivial programs this looked like a
+  successful no-op. Promoted to unconditional stderr output with
+  `asmjit::DebugUtils::errorAsString()` for the kind name.
+
+- **TokenRETURN: handle `return void_call();` in void-returning fn**
+  — C allows `return some_void_call();` in a void-returning function;
+  the inner expression runs for side effects, no value to ret.
+  Compiler was sending the empty-Operand result of the void call
+  straight to saferet, which threw "operand is not register,
+  immediate, or memory". Detect ret_type as bare void (rawtype
+  dtVOID && !is_pointer — the pointer guard keeps `void *` returning
+  functions on the regular pointer path), compile expression with a
+  discarded regdp, emit a bare cc.ret().
+
+- **C99 variable-length array (VLA) support** — `T name[expr]` where
+  `expr` references a runtime value now compiles. The variable is
+  retyped as `T *` internally and laid out as a stack-resident
+  pointer slot. At scope entry voperand emits
+  `name = malloc(expr * sizeof(T))`; the matching free fires from
+  TokenCpnd::cleanup before any object destructors. Subscript and
+  pointer-arith reuse existing pointer paths because the variable
+  type is now DataDefPTR.
+  - Detection (parser): scan ahead from each `[` for any
+    ttIdentifier that resolves via findVariable to a non-vfCONSTANT
+    variable. Constants (#defines were already lex-expanded; enum
+    values and `const int N` are vfCONSTANT) keep the parse_constant
+    path. No-match identifiers also keep parse_constant so typedef'd
+    integer constants and other lookup-retry idioms aren't mis-
+    classified.
+  - TokenDecl::compile forces voperand for VLAs at the decl point —
+    otherwise lazy emission could put the malloc inside a loop body
+    and re-execute every iteration, wiping prior writes.
+  - TokenSubscript::compile / compile_set load the pointer through
+    the Mem slot before indexing (was assuming Gp).
+  - Surfaced by SMAUG `build.c:6010` `char temp_buf[MAX_STRING_LENGTH
+    + max_buf_lines]`. Regression: `tests/testvla.mad`.
+
+- **safeadd: handle Xmm-lhs/Gp-rhs and Gp-lhs/Mem-rhs** — mirrors the
+  earlier safediv mixed-operand widening. Xmm op1 + Gp op2 — convert
+  op2 to Xmm via cvtsi2sd / cvtsi2ss before delegating to the
+  Xmm/Xmm safeadd. Gp op1 + Mem op2 — load Mem into a fresh Gp via
+  safemov, then delegate to the Gp/Gp path. Surfaced by SMAUG
+  `track.c:hunt_victim`.
+
+- **parser: only stop after cast push when initial_brackets == 0** —
+  a previous fix's early return in the cast-detection branch fired
+  for any caller with stop_on_closing_paren=true, including
+  parse_parenthesized_expression (used by `if (...)` / `while
+  (...)`). That caller passes initial_brackets=1, so a cast inside
+  the condition stopped parsing right after the cast pushed —
+  leaving trailing operators unparsed and popOperator hitting an
+  empty exStack with "Missing operand". Restrict the early return
+  to initial_brackets == 0 — the deref-of-cast caller (`*(CAST)X`)
+  passes initial_brackets=0; if/while pass 1. Closes SMAUG
+  `save.c:668` through QUICKMATCH macro:
+    #define QUICKMATCH(p1, p2)  (int) (p1) == (int) (p2)
+    if ( QUICKMATCH(a, b) == 0 )  →  if ( (int)(a) == (int)(b) == 0 )
+  Regression: `tests/testchainedeq.mad`.
+
+- **parser: stop after cast push in stop_on_closing_paren mode** —
+  `*(TYPE *)expr = rhs;` was being parsed with the inner cast
+  detection consuming past the matching `)` of the cast group and
+  through the following `=` and RHS, returning a TokenAssign with
+  the cast as its left side. The outer `*` wrapper then held that
+  TokenAssign instead of the bare TokenCast, so when the assignment
+  dispatch fired it saw a TokenCast LHS — which TokenAssign doesn't
+  handle — and threw "Assignment on a non-variable lval". Surfaced
+  by SMAUG `variables.c`:
+    *(EXT_BV *)pvd->data = fread_bitvector(fp);
+  Regression: `tests/testderefcastassign.mad`.
+
+- **resolveCompoundLHS: TokenDerefExpr (deref of expr) lvalue** —
+  `*(expr) |= rhs;` where `expr` is a pointer-yielding subexpression
+  lands as TokenDerefExpr. That class reports `type() == ttMember`
+  but isn't a TokenMember or TokenDeref, so resolveCompoundLHS's
+  ttMember branch threw "compound assignment <op> on unsupported
+  member type". Mirror TokenAssign::compile()'s TokenDerefExpr
+  handling: pull the deref_type and operand() Mem from
+  TokenDerefExpr the same way TokenDeref already does. Regression:
+  `tests/testcompoundderefexpr.mad`.
+
+- **saferet: handle Mem operand by loading into a Gp before ret** —
+  saferet was strict on Reg|Imm; a Mem operand falling through from
+  the IR pipeline tripped a raw throw. Now loads Mem into a fresh
+  Gp via `cc.mov` and rets through that. Surfaced by SMAUG
+  `fread_bitvector` returning an EXT_BV struct.
+
+- **parser: function-to-pointer decay on `return func;`** — the
+  parser's "follower decides decay vs call" heuristic missed the
+  `;` follower at top of an expression. `return do_aassign;` (where
+  DO_FUN is `typedef void (...)`) was being built as a TokenCallFunc
+  for a void-returning function — its compile() returned an empty
+  asmjit Operand and TokenRETURN's compile_token_normalized →
+  IRBuilder::coerce threw "invalid src" with no useful context.
+  Add `(peek_id == tkSemi && opStack.empty())` to the
+  followed_by_value_end set. The opStack-empty guard preserves
+  operator-consuming patterns like `cout << endl;` where BSL on
+  opStack wants the no-arg ostream call form. Regression:
+  `tests/testreturnfndecay.mad`.
+
+- **TokenCast: don't short-circuit (void *) through the (void)-discard
+  path** — `DataDef::rawtype()` strips the pointer ref bias — `void
+  *` and bare `void` both report `rawtype() == dtVOID` because
+  pointer-ness lives in the high bits of `_type` (10000-step
+  encoding) not the rawtype. TokenCast's `(void)expr` discard
+  short-circuit only checked rawtype, so `(void *)expr` was taking
+  the same path: it set `regdp.second = expr->datadef()` (often the
+  bare value type, losing the pointer-ness) and didn't propagate
+  the cast type forward, so downstream `emit_ir_value` ended up
+  calling `IRBuilder::coerce(int* -> void)` and threw. Add
+  `!cast_type->is_pointer()` to the guard. Surfaced by SMAUG
+  `comm.c:init_socket`:
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (void *) &x, sizeof(x))
+  Regression: `tests/testvoidptrcast.mad`.
+
 - **IRBuilder::coerce: include src/dst type names in error message** —
   bare `throw "unsupported type conversion"` gave no clue which types
   caused the failure; every gap looked the same. Promoted to
