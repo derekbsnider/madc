@@ -254,6 +254,15 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
     if ( !to )
 	throw "IRBuilder::coerce() to-type is NULL";
 
+    // Coercing to void is a discard — the caller is treating the
+    // value as a statement expression with no use. Pass the source
+    // through unchanged; the load/store pipeline downstream
+    // ignores the result. Without this fast path the type-check
+    // ladder below throws on `(unnamed) -> void` for cases where
+    // src.type is a synthesized fn-ptr/struct without a name.
+    if ( to->type() == DataType::dtVOID )
+	return src;
+
     // Same type: no conversion needed. Just normalize shape to Reg.
     if ( src.type == to )
 	return load(src);
