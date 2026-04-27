@@ -11,14 +11,14 @@ Upstream total: **158,537 lines** across `MadSMAUG/upstream/smaug1.8/src/*.{c,h}
 (including IMC sources, which will be skipped on the first-pass
 bootstrap).
 
-## Current state — 2026-04-25 (session 3)
+## Current state — 2026-04-27 (session 10)
 
 | Phase            | % | Notes |
 |------------------|--:|-------|
-| **Parse**        | ~65% | ~102,000 / 158,537 lines ingested. 36 upstream TUs + `_bootstrap_comm_shim.c`. |
-| **Compile**      | ~65% | Every ingested TU compiles cleanly. Live blocker (next session): `safediv` rejects mixed Gp/Xmm operands — surfaces in some skills/fight code paths. |
-| **Link**         | ~60% | Referenced symbols resolve via ingested TUs or `_bootstrap_comm_shim.c` stubs (build.c-only entries: `stop_editing`, `fold_area`, `copy_buffer`, `start_editing`, `get_*flag`/`get_*type` family, `get_dir`, plus update.c/variables.c stubs). |
-| **Runtime**      | ~1% | Umbrella's `main()` still a stub. |
+| **Parse**        | ~87% | 137,398 / 158,537 lines ingested. 44 upstream TUs + 4 IMC headers + `_bootstrap_comm_shim.c`. |
+| **Compile**      | ~87% | Every ingested TU compiles cleanly post-session-10 lexer fixes (`##` token paste, `__attribute__` skip, IRBuilder::coerce dst=void fast path). |
+| **Link**         | ~85% | Referenced symbols resolve via ingested TUs or `_bootstrap_comm_shim.c` stubs. |
+| **Runtime**      | ~4–5% | First boot_log line prints; `boot_db` SIGSEGVs at 0xfffffffffffffff0 (asmjit wrapper-frame bug). |
 
 Active TUs (36): act_move, db, hashstr, handler, fight, skills, news,
 magic, mud_prog, stances, requests, act_comm, act_obj, boards,
