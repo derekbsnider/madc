@@ -791,7 +791,14 @@ void Program::add_functions()
     addFunction("putd",		datatype_vec_t{DataType::dtVOID, DataType::dtDOUBLE}, (fVOIDFUNC)printdouble);
     addFunction("putf",		datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
     addFunction("putchar",	datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
-    addFunction("getline",	datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
+    // istream `getline(istream&, string&)` lives in std:: — moved out of
+    // the global symbol table so user code defining its own `getline`
+    // (e.g. SMAUG IMC's `static const char *getline(char *buffer)`)
+    // doesn't collide. `using namespace std;` exposes it unqualified;
+    // bare `getline` falls back to the user-defined function or libc
+    // dlsym. Registered under `__std_getline` and aliased into
+    // namespace_map["std"]["getline"] in add_namespaces().
+    addFunction("__std_getline",	datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
     addFunction("endl",		datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
     // type conversion functions
     addFunction("to_string",	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
@@ -921,6 +928,12 @@ void Program::add_namespaces()
 	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtINT64},
 	(fVOIDFUNC)std_for_each);
     if (var) std_ns["for_each"] = var;
+
+    // std::getline(istream&, string&) — registered as __std_getline at
+    // the top of _parser_init(); alias into the std namespace here.
+    std::string gl_name = "__std_getline";
+    var = findVariable(gl_name);
+    if (var) std_ns["getline"] = var;
 
     DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
 }
@@ -3355,7 +3368,27 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    std::string name = vmi->first;
 	    // only import if not already defined
 	    if ( !pgm.findVariable(name) )
-		pgm.tkProgram->variables.push_back(vmi->second);
+	    {
+		// If the original Variable's name doesn't match the
+		// namespace key (e.g. std::getline keyed as "getline"
+		// but the underlying Variable is named "__std_getline"),
+		// register an alias Variable so unqualified `getline(...)`
+		// lookups resolve. Otherwise the imported Variable's name
+		// must match — push it through unchanged.
+		Variable *src = vmi->second;
+		if ( src->name != name )
+		{
+		    Variable *alias = new Variable();
+		    alias->name = name;
+		    alias->type = src->type;
+		    alias->data = src->data;
+		    alias->count = src->count;
+		    alias->flags = src->flags;
+		    pgm.tkProgram->variables.push_back(alias);
+		}
+		else
+		    pgm.tkProgram->variables.push_back(src);
+	    }
 	    DBG(std::cout << "TokenUSING::parse() imported " << ns_name << "::" << name << std::endl);
 	}
 	// expect semicolon
