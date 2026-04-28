@@ -15,8 +15,8 @@ bootstrap).
 
 | Phase            | % | Notes |
 |------------------|--:|-------|
-| **Parse**        | ~87% | 137,398 / 158,537 lines ingested. 44 upstream TUs + 4 IMC headers + `_bootstrap_comm_shim.c`. |
-| **Compile**      | ~87% | Every ingested TU compiles cleanly post-session-10 lexer fixes (`##` token paste, `__attribute__` skip, IRBuilder::coerce dst=void fast path). |
+| **Parse**        | ~86% | 136,166 / 158,537 lines ingested. 44 upstream TUs + `_bootstrap_comm_shim.c`. (IMC headers guarded under `#ifdef IMC` and not counted.) |
+| **Compile**      | ~86% | Every ingested TU compiles cleanly post-session-10 lexer fixes (`##` token paste, `__attribute__` skip, IRBuilder::coerce dst=void fast path). |
 | **Link**         | ~85% | Referenced symbols resolve via ingested TUs or `_bootstrap_comm_shim.c` stubs. |
 | **Runtime**      | ~4–5% | First boot_log line prints; `boot_db` SIGSEGVs at 0xfffffffffffffff0 (asmjit wrapper-frame bug). |
 
