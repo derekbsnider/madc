@@ -4449,6 +4449,21 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() re-emit fixed-array base"));
 	    pgm.cc.mov(rmi->second.as<x86::Gp>(), imm(var->data));
         }
+	else if ( var->is_fixed_array() && rmi->second.isReg()
+		  && fixed_array_stack.count(var) )
+	{
+	    // Local (stack-backed) fixed-arrays: same re-emit story as
+	    // the global case. The cached Gp holds the LEA of the stack
+	    // slot, but the LEA was emitted at the first use site. A
+	    // second use on a divergent branch reads an uninitialized
+	    // vreg — concrete failure: SMAUG `bug()` declares
+	    // `char buf[MAX_STRING_LENGTH]`, first uses it inside
+	    // `if (fpArea != NULL) sprintf(buf, ...)`, then
+	    // unconditionally `strcpy(buf, "[*****] BUG: ")` after. When
+	    // fpArea is NULL the strcpy lands on NULL.
+	    DBG(pgm.cc.comment("TokenCpnd::voperand() re-emit local-fixed-array LEA"));
+	    pgm.cc.lea(rmi->second.as<x86::Gp>(), fixed_array_stack[var]);
+	}
 	else if ( var->is_global() && var->data && rmi->second.isMem()
 		  && (var->type->basetype() == BaseType::btStruct
 		   || var->type->basetype() == BaseType::btClass) )
@@ -4574,6 +4589,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    DBG(pgm.cc.comment("voperand fixed-size array (stack)"));
 	    x86::Mem stack = pgm.cc.newStack((uint32_t)total, align);
 	    pgm.cc.lea(reg, stack);
+	    fixed_array_stack[var] = stack;
 	}
 	operand_map[var] = reg;
 	var->flags |= vfREGSET;
@@ -6615,25 +6631,59 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
     pgm.testzero(*cond_op);
     pgm.cc.je(L_false);
 
-    if ( regdp.second && (regdp.second->is_numeric() || regdp.second->is_pointer()) )
+    // Pointer-sized merge surface: numeric, true pointer, OR string
+    // (std::string is held as an 8-byte pointer-to-object, so it fits
+    // the same merge slot). Routing dtSTRING here lets a mixed
+    // string-literal/char* ternary unify cleanly via compile_token_normalized
+    // — each branch is coerced to the merge type through IRBuilder so the
+    // false branch's raw char* and the true branch's std::string both
+    // arrive in the slot as the same shape.
+    if ( regdp.second
+      && (regdp.second->is_numeric() || regdp.second->is_pointer() || regdp.second->is_string()) )
     {
 	uint32_t merge_size = (uint32_t)(regdp.second->size ? regdp.second->size : 8);
+	if ( regdp.second->is_string() )
+	    merge_size = 8;
 	uint32_t merge_align = merge_size < 8 ? merge_size : 8;
 	x86::Mem merge_slot = pgm.cc.newStack(merge_size, merge_align);
 	merge_slot.setSize(merge_size);
-	Operand merge_op = merge_slot;
 
-	{
-	    regdefp_t trdp = {&merge_op, regdp.second, NULL};
-	    true_expr->compile(pgm, trdp);
-	}
+	auto emit_branch = [&](TokenBase *expr) {
+	    regdefp_t brdp = {NULL, NULL, NULL};
+	    Operand &raw = expr->compile(pgm, brdp);
+	    DataDef *raw_type = brdp.second
+		? brdp.second
+		: (expr && expr->datadef() ? expr->datadef() : regdp.second);
+	    // Fixed-array branches decay to pointer-to-element here. A
+	    // TokenVar of `char buf[N]` reports `char` as its element
+	    // type but voperand returns a Gp holding the array's
+	    // address; treat its raw type as the corresponding
+	    // pointer-to-element so the IR coerce path sees an 8-byte
+	    // pointer instead of a 1-byte scalar. Only relabel when
+	    // the merge surface itself is pointer-like — int merges of
+	    // genuine scalar fixed-array elements still want the scalar.
+	    if ( regdp.second && (regdp.second->is_pointer() || regdp.second->is_string()) )
+	    {
+		bool branch_decays = false;
+		if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+		    if ( tv->var.is_fixed_array() )
+			branch_decays = true;
+		if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
+		    if ( tm->is_fixed_array_member() )
+			branch_decays = true;
+		if ( branch_decays && raw_type && !raw_type->is_pointer() )
+		    raw_type = &ddLPSTR;
+	    }
+	    IRBuilder ir(pgm.cc);
+	    IRValue coerced = ir.coerce(ir_from_operand(raw, raw_type), regdp.second);
+	    ir.store(IRValue::mem(merge_slot, regdp.second), coerced);
+	};
+
+	emit_branch(true_expr);
 	pgm.cc.jmp(L_end);
 
 	pgm.cc.bind(L_false);
-	{
-	    regdefp_t frdp = {&merge_op, regdp.second, NULL};
-	    false_expr->compile(pgm, frdp);
-	}
+	emit_branch(false_expr);
 	pgm.cc.bind(L_end);
 
 	regdp.first = caller_dest;

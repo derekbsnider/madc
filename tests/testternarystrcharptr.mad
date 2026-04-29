@@ -1,0 +1,56 @@
+// Regression: ternary mixing a string literal (dtSTRING) with a
+// char*-yielding function call. The merge surface is char*; if the
+// false branch's raw char* gets unified under dtSTRING, the
+// downstream coercion sends it through `string_cstr` (which expects
+// a std::string object) and dereferences arbitrary bytes → NULL or
+// segfault. Closes SMAUG boards.c:1615
+//   `word = feof(fp) ? "End" : fread_word(fp);`
+// pattern.
+//
+// Fix path: parser prefers the pointer-typed branch when the other
+// branch is a string literal; merge-slot path uses
+// compile_token_normalized so each branch is coerced through
+// IRBuilder::coerce, which gained a dtSTRING → pointer-to-char
+// conversion via string_cstr.
+
+#include <iostream>
+#include <stdio.h>
+
+char *get_word()
+{
+    static char buf[16];
+    buf[0] = 'H'; buf[1] = 'i'; buf[2] = '\0';
+    return buf;
+}
+
+int main()
+{
+    int flag = 0;
+    char *a = flag ? "End" : get_word();
+    cout << "a=[" << a << "]" << endl;
+
+    char *b = !flag ? get_word() : "End";
+    cout << "b=[" << b << "]" << endl;
+
+    int t = 1;
+    char *c = t ? "End" : get_word();
+    cout << "c=[" << c << "]" << endl;
+
+    // Fixed-array vs string-literal — mirrors SMAUG fight.c:4298
+    // `IS_NPC(victim) ? buf2 : ""` (buf2 is `char[N]`).
+    char buf[16];
+    buf[0] = 'B'; buf[1] = 'u'; buf[2] = 'f'; buf[3] = '\0';
+    char *d = (t ? buf : "");
+    cout << "d=[" << d << "]" << endl;
+
+    // Nested ternary: outer mixes fixed-array with inner-ternary
+    // result. Mirrors player.c:1883
+    // `(x == lvl) ? buf : (x == lvl+1) ? buf2 : " exp"`.
+    char buf2[16];
+    buf2[0] = 'X'; buf2[1] = '\0';
+    int x = 2;
+    char *e = (x == 1) ? buf : (x == 2) ? buf2 : " exp";
+    cout << "e=[" << e << "]" << endl;
+
+    return 0;
+}

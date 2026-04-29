@@ -2175,14 +2175,65 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // coercion) can see a meaningful datadef(). Prefer the true
 		    // branch's type; fall back to the false branch if that's
 		    // richer (non-NULL / non-int).
-		    DataDef *ternary_dd = NULL;
-		    if ( ternary->true_expr )
-			ternary_dd = ternary->true_expr->datadef();
-		    if ( (!ternary_dd || ternary_dd == &ddINT64) && ternary->false_expr )
+		    //
+		    // Mixed string-literal/pointer ternary: when one branch is
+		    // a string literal (dtSTRING) and the other is a real
+		    // char*-yielding expression (pointer type), prefer the
+		    // pointer type. The merge needs both branches to land as
+		    // raw char* in the merge slot — labeling the result
+		    // dtSTRING would force downstream `string_cstr` over the
+		    // function's char* return, dereferencing it as if it were
+		    // a std::string and crashing. Closes SMAUG boards.c:1615
+		    // `feof(fp) ? "End" : fread_word(fp)`.
+		    DataDef *tdd = ternary->true_expr  ? ternary->true_expr->datadef()  : NULL;
+		    DataDef *fdd = ternary->false_expr ? ternary->false_expr->datadef() : NULL;
+		    DataDef *ternary_dd = tdd;
+		    if ( (!ternary_dd || ternary_dd == &ddINT64) && fdd && fdd != &ddINT64 )
+			ternary_dd = fdd;
+
+		    // C ternary type unification for pointer-flavored
+		    // branches. Each branch has an *effective* type:
+		    //   - real pointer types stay as-is
+		    //   - dtSTRING (string literals) → char* equivalent
+		    //   - fixed-array variables / members → char* equivalent
+		    //     (their datadef reports the element type, but
+		    //     the value decays to pointer-to-element)
+		    // When both branches are pointer-flavored and their
+		    // raw datadefs disagree, unify on a real pointer if
+		    // available, else on `char *` (ddLPSTR). Without this,
+		    // the merge slot inherits a single-byte / dtSTRING /
+		    // mixed type and the IR coerce step rejects the other
+		    // branch. Closes SMAUG boards.c:1615
+		    // `feof(fp) ? "End" : fread_word(fp)`, fight.c:4298
+		    // `IS_NPC(victim) ? buf2 : ""`, player.c:1883
+		    // `(x == lvl) ? buf : (x == lvl+1) ? buf2 : " exp"`,
+		    // and act_wiz.c do_mstat's many
+		    // `obj ? obj->name : "(none)"` calls.
+		    auto charptr_like = [](TokenBase *expr, DataDef *dd) {
+			if ( !dd )
+			    return false;
+			if ( dd->is_pointer() || dd->is_string() )
+			    return true;
+			if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+			    if ( tv->var.is_fixed_array() )
+				return true;
+			if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
+			    if ( tm->is_fixed_array_member() )
+				return true;
+			return false;
+		    };
+		    bool tptr = charptr_like(ternary->true_expr,  tdd);
+		    bool fptr = charptr_like(ternary->false_expr, fdd);
+		    if ( tptr && fptr && tdd != fdd )
 		    {
-			DataDef *fdd = ternary->false_expr->datadef();
-			if ( fdd && fdd != &ddINT64 )
-			    ternary_dd = fdd;
+			DataDef *pick = NULL;
+			if ( tdd && tdd->is_pointer() )
+			    pick = tdd;
+			else if ( fdd && fdd->is_pointer() )
+			    pick = fdd;
+			if ( !pick )
+			    pick = &ddLPSTR;
+			ternary_dd = pick;
 		    }
 		    if ( ternary_dd )
 			ternary->setDataType(ternary_dd);

@@ -371,6 +371,36 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return IRValue::reg(r.op, to);
     }
 
+    // 8-byte integer / int64-from-dlsym → string relabel. Functions
+    // declared via dlsym fallback (e.g. ctime, strchr) return what
+    // madc tracks as int64 because the libc prototype isn't seen at
+    // parse time. When the ternary merges such a call with a string
+    // literal — `ch->save_time ? ctime(&...) : "no save"` — we want
+    // both branches to land in the same 8-byte slot. Relabel.
+    if ( src.type->is_integer() && src.type->size == 8 && to->is_string() )
+    {
+	IRValue r = load(src);
+	return IRValue::reg(r.op, to);
+    }
+
+    // dtSTRING → char* / pointer-to-char: invoke string_cstr on the
+    // std::string operand and yield its underlying char buffer. The
+    // ternary merge surface relies on this when a string-literal
+    // branch is unified against a char*-yielding branch (SMAUG
+    // boards.c:1615 `feof(fp) ? "End" : fread_word(fp)` pattern).
+    if ( src.type->is_string() && to->is_pointer() )
+    {
+	extern const char *string_cstr(void *);
+	IRValue r = load(src);
+	x86::Gp str_gp = r.op.as<x86::Gp>();
+	InvokeNode *call;
+	cc_.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+	call->setArg(0, str_gp);
+	x86::Gp out_gp = cc_.newIntPtr("ir_str_cstr");
+	call->setRet(0, out_gp);
+	return IRValue::reg(out_gp, to);
+    }
+
     static char msg[256];
     snprintf(msg, sizeof(msg),
 	     "IRBuilder::coerce() unsupported type conversion (src=%s -> dst=%s)",
