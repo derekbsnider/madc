@@ -36,19 +36,26 @@
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
-- **SMAUG umbrella wrapper-frame corruption** — Calling a madc-compiled
-  function from another madc-compiled function inside the SMAUG
-  umbrella context corrupts the wrapper's stack frame; the wrapper's
-  epilogue ret pops a corrupted RIP and crashes. Confirmed via the
-  `_probe_*.mad` files in MadSMAUG/src: `void wrap(void) {
-  show_hash(8); }` works in a small standalone but crashes in the
-  umbrella. Calling show_hash directly from main() always works.
-  Same wrapper pattern works in plain `tests/test_callchain.mad`.
-  Root cause likely an asmjit-Compiler state issue triggered by the
-  umbrella's scale (39 .c files, thousands of vregs / global decls)
-  — possibly stack-frame size analysis, or vreg allocator state
-  carrying between function compilations. Live blocker for SMAUG
-  runtime > 4-5%.
+- **SMAUG `make_wizlist` readdir(NULL)** — After the session-11 funcnode
+  dedupe fix, SMAUG `boot_db` runs through 12+ init phases and crashes
+  inside `make_wizlist` at `readdir+0x2e` with NULL DIR\*. Almost
+  certainly a missing data directory (the upstream SMAUG runtime needs
+  `area/`, `gods/`, `player/`, `system/` etc.) rather than a JIT bug.
+  Need to either provide minimal stub data files or short-circuit the
+  data-loading paths to push runtime coverage further.
+
+- **(RESOLVED 2026-04-29, session 11)** ~~SMAUG umbrella wrapper-frame
+  corruption~~ — Root cause was NOT a stack-frame analysis issue. Out
+  of 1878 user-defined functions, ~1710 had unbound funcnode labels
+  because asmjit's Compiler v1.14 silently drops labels of funcnodes
+  added between two `cc.addFunc(node)` calls for the same FuncNode.
+  The umbrella has ~125 functions defined twice (shim stubs override
+  upstream defs), each sharing one FuncDef + FuncNode. Unbound labels
+  emitted as `call $+5` (zero-displacement), pushing extra return
+  addresses that corrupted wrapper ret pops → SIGSEGV at
+  0xfffffffffffffff0. Fixed by deduping `pending_funcs` in reverse
+  order and short-circuiting earlier TokenFuncs that share a FuncDef
+  with a later one.
 
 - **`ruby::chars` crashes in MadValue destructor** — `ruby::chars(arr, str);`
   crashes at runtime inside `a.data.clear()` in `ruby_chars`. Likely an

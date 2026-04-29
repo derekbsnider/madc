@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **compiler: dedupe pending_funcs by FuncDef so duplicate definitions
+  don't poison asmjit's funcnode binding** — the MadSMAUG umbrella has
+  ~125 functions defined twice (once in upstream files, once stubbed in
+  `_bootstrap_comm_shim.c`). Both definitions shared one FuncDef +
+  FuncNode in `funcdef_map`. Each TokenFunc::compile called
+  `cc.addFunc(funcnode)` for the same FuncNode — asmjit's Compiler v1.14
+  silently dropped the labels of every funcnode added between the
+  duplicate addFunc calls. Out of 1878 SMAUG user functions, only 168
+  ended up with bound labels at finalize; the other 1710 calls emitted
+  as `call $+5` (zero-displacement), pushing extra return addresses
+  that corrupted wrapper-frame ret pops. `boot_db` SIGSEGV'd at
+  0xfffffffffffffff0 before `show_hash` could even run. Fix walks
+  `pending_funcs` in reverse, marks earlier TokenFuncs sharing a
+  FuncDef as `is_overridden`, and short-circuits both `prepareFuncNode`
+  and `TokenFunc::compile` for them so asmjit sees exactly one addFunc
+  per FuncNode (the LAST source definition wins — matches the user's
+  expectation that shim stubs override upstream defs). Result: 0/1878
+  unbound. SMAUG `boot_db` now runs through 12+ init phases (Loading
+  commands → sysdata → socials → skill table → classes → races → news →
+  stances → herbs → tongues → make_wizlist) before hitting a missing-
+  data-file `readdir(NULL)` crash. Runtime coverage 5% → ~30%+. Also
+  adds `MADC_DUMP_FINAL=path` env knob — post-finalize per-function
+  machine-byte dump (unlike emit-time `MADC_DUMP_ASM`, which truncates
+  after the register allocator pass).
+
 - **parser: move istream getline into std:: namespace** — `getline(istream&,
   string&)` was registered globally via `addFunction("getline", ...)`,
   which collided with user-defined `getline` (e.g. SMAUG IMC's

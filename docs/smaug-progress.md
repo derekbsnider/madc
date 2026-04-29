@@ -11,14 +11,25 @@ Upstream total: **158,537 lines** across `MadSMAUG/upstream/smaug1.8/src/*.{c,h}
 (including IMC sources, which will be skipped on the first-pass
 bootstrap).
 
-## Current state — 2026-04-27 (session 10)
+## Current state — 2026-04-29 (session 11)
 
 | Phase            | % | Notes |
 |------------------|--:|-------|
-| **Parse**        | ~86% | 136,166 / 158,537 lines ingested. 44 upstream TUs + `_bootstrap_comm_shim.c`. (IMC headers guarded under `#ifdef IMC` and not counted.) |
+| **Parse**        | ~86% | 136,166 / 158,537 lines ingested. 49 upstream TUs + `_bootstrap_comm_shim.c`. (IMC headers guarded under `#ifdef IMC` and not counted.) |
 | **Compile**      | ~86% | Every ingested TU compiles cleanly post-session-10 lexer fixes (`##` token paste, `__attribute__` skip, IRBuilder::coerce dst=void fast path). |
-| **Link**         | ~85% | Referenced symbols resolve via ingested TUs or `_bootstrap_comm_shim.c` stubs. |
-| **Runtime**      | ~4–5% | First boot_log line prints; `boot_db` SIGSEGVs at 0xfffffffffffffff0 (asmjit wrapper-frame bug). |
+| **Link**         | ~95% | Post-session-11 funcnode dedupe — all 1878 user-defined functions now bind labels. Previously only 168 / 1878 (9%) survived finalize. |
+| **Runtime**      | ~30%+ | `boot_db` runs through 12+ init phases: Loading commands → sysdata → socials → skill table → classes → races → news → stances → herbs → tongues → make_wizlist. Crashes inside `make_wizlist` at `readdir(NULL)` (missing data file, not a JIT bug). |
+
+The session-11 funcnode-dedupe fix unstuck the runtime blocker. Root
+cause was duplicate function definitions (~125 of them, mostly shim
+stubs of upstream functions) sharing one FuncDef + FuncNode. When
+`cc.addFunc(funcnode)` was called twice for the same node, asmjit's
+Compiler v1.14 silently dropped the labels of every funcnode added
+between the duplicate addFunc calls. The fix walks `pending_funcs` in
+reverse, marks earlier duplicates as `is_overridden`, and short-circuits
+both `prepareFuncNode` and `TokenFunc::compile` for them. The LAST
+source definition wins, which matches the user's expectation that shim
+stubs override upstream defs.
 
 Active TUs (36): act_move, db, hashstr, handler, fight, skills, news,
 magic, mud_prog, stances, requests, act_comm, act_obj, boards,
