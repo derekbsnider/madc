@@ -2,6 +2,68 @@
 
 ## [Unreleased]
 
+- **SMAUG `boot_db()` runs end-to-end** — five compounding fixes in
+  one session unstuck the post-area-loading runtime path. SMAUG now
+  loads all 25 areas, fires `area_update`, finishes board / vault /
+  clan / member-list / council / deity / watch / ban / corpse /
+  immortal-host / hint / project / morph / login-message / color
+  loading, and reaches `[probe] after boot_db` in the bootstrap
+  shim. Runtime estimate ~75% → ~95%+ (boot complete; the only
+  remaining surface is the game loop, which the bootstrap doesn't
+  invoke). Five fixes, in order found:
+
+  1. **Mixed string-literal / char-pointer ternary type
+     unification** — `feof(fp) ? "End" : fread_word(fp)` had its
+     parser-side datadef set to dtSTRING (true branch wins), so the
+     downstream `char *` consumer ran `string_cstr` on the false
+     branch's raw `char *` return, dereferencing it as if it were a
+     `std::string` and crashing inside libstdc++. The parser now
+     unifies pointer-flavored ternary branches: real pointers,
+     dtSTRING string literals, fixed-array variables, and
+     fixed-array struct members are all "char-pointer-like"; when
+     they disagree the result type is a real pointer (or
+     `char *` / `ddLPSTR` if both are decay/literal). Closes
+     boards.c:1615, fight.c:4298 `IS_NPC(victim) ? buf2 : ""` (buf2
+     is `char[N]`), player.c:1883 `(x == lvl) ? buf : (x == lvl+1)
+     ? buf2 : " exp"`, and the dozen `obj ? obj->field : "(none)"`
+     calls in act_wiz.c do_mstat. **(closes the boards-loading
+     SIGSEGV.)**
+  2. **TokenTerQ::compile merge slot rewrite + IRBuilder coerce
+     extensions** — the existing merge_slot path called
+     `compile_token_normalized` whose tmp_rdp.second was
+     pre-seeded to the *target* type, not the branch's actual
+     type, so a dtSTRING literal on a char* merge surface got
+     relabeled char* without ever calling `string_cstr`. New
+     emit_branch lambda compiles each branch with a clean
+     regdefp_t, then routes the produced operand through
+     `IRBuilder::coerce(raw_type → merge_type)`. Two new coerce
+     pairs: dtSTRING → pointer-to-char (emits `string_cstr` to
+     yield the c_str() char *) and 8-byte integer → dtSTRING
+     relabel (covers dlsym-fallback functions like `ctime` whose
+     return type is `char *` but parses as int64).
+  3. **Local C fixed-size array LEA re-emit on every reuse** —
+     `voperand` cached the Gp holding a stack-array's base pointer
+     but only re-emitted the LEA for *global* fixed-arrays. SMAUG
+     `bug()` declares `char buf[MAX_STRING_LENGTH]`, first uses it
+     inside `if (fpArea != NULL) sprintf(buf, ...)`, then
+     unconditionally `strcpy(buf, "[*****] BUG: ")` after the if.
+     With fpArea NULL (the load_vaults phase), the LEA inside the
+     not-taken branch never executes; the cached vreg is
+     uninitialized and the strcpy lands on NULL inside libc
+     memcpy. New `fixed_array_stack` map on TokenCpnd remembers
+     the stack Mem so reuse can re-LEA into the cached Gp,
+     mirroring the existing global-fixed-array re-emit pattern.
+  4. **Crash-handler stack walk for non-JIT faulting RIP** — when
+     a JIT'd function calls into libc and the fault happens inside
+     glibc (e.g. memcpy on NULL dst), the existing handler reads
+     RIP from `ucontext_t::uc_mcontext.gregs[REG_RIP]`, finds it
+     outside the JIT region, and prints no source-line context.
+     Walk `backtrace()` looking for the first frame whose address
+     falls in the JIT'd region; that's the call-site that pushed
+     the return address into libc. Surfaced db.c:4225 strcpy as
+     the actual fault site behind the load_vaults segfault — a
+     diagnostic that paid for itself within minutes.
+
 - **TokenLand / TokenLor: actually short-circuit && and ||
   evaluation** — both operators compiled left AND right
   unconditionally before testing either, so `p && p->next` evaluated

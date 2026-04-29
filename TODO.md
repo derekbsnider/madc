@@ -44,12 +44,18 @@
   loads cleanly and gods.are produces the standard
   `Rooms / Objs / Mobs` area summary.
 
-- **SMAUG limbo.are NULL deref** — Loading the area after gods.are
-  (limbo.are) hits a SIGSEGV at NULL with no libc trace, just one
-  JIT frame. Could be related to mob-prog parsing, larger object
-  list, or another struct-return-style ABI surface that's not yet
-  covered. Reproducible by running SMAUG.mad against the area dir
-  with limbo.are present.
+- **(RESOLVED 2026-04-29, session 12)** ~~SMAUG limbo.are NULL deref~~
+  — Resolved earlier in session 11 by the TokenSubscriptExpr lvalue
+  override (limbo.are and the rest of the area list — 25 files —
+  load end-to-end).
+
+- **(RESOLVED 2026-04-29, session 12)** ~~SMAUG load_vaults
+  segfault~~ — Five compounding fixes (mixed string/char-pointer
+  ternary unification, TokenTerQ merge_slot rewrite, dtSTRING ↔
+  pointer / int64 ↔ string IR coerce extensions, local fixed-array
+  LEA re-emit on cache hit, crash-handler stack walk for non-JIT
+  faulting RIP). SMAUG now boots through every load_*() phase and
+  reaches `[probe] after boot_db` in the bootstrap shim.
 
 - **(RESOLVED 2026-04-29, session 11)** ~~SMAUG umbrella wrapper-frame
   corruption~~ — Root cause was NOT a stack-frame analysis issue. Out
