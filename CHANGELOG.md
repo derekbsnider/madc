@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **parseDeclaration: allocate storage when promoting extern to
+  definition** — when a global was first seen as `extern T name;`
+  and later defined without `extern`, addVariable returned the
+  existing Variable* without running the allocate-storage path —
+  var->data stayed NULL with vfSTACK still set, and every function
+  that referenced the global created a fresh stack-local instead.
+  Concrete failure (uncovered with the SMAUG umbrella's `last_area`
+  pointer): mud.h declared extern, db.c defined it, load_area set
+  it; load_author saw NULL because both lived in their own stack
+  copies. Fix calloc's storage when transitioning out of extern at
+  file scope (alloc=true, scalar with non-zero size, not a function
+  type) and clears vfSTACK / sets vfALLOC.
+
+- **static-local struct: allocate persistent storage; thread `static`
+  flag through `static struct X x;` path** — `static struct A x;`
+  inside a function was stack-allocated. TokenSTATIC::parse handed
+  off to parseKeyword for the `struct` token, which routed through
+  TokenSTRUCT::parse → parseDeclaration *without* its is_static
+  parameter set. Voperand allocated via cc.newStack instead of
+  addressing the calloc'd heap backing store; `&x` returned a stack
+  address and persistence across calls was lost. Two-part fix:
+  (1) voperand path that loads `mov base_reg, imm(var->data)` and
+  returns Mem indexed off it for global structs, mirroring the
+  existing global fixed-array path; (2) new
+  `Program::parsing_static_decl` flag (analogous to parsing_extern_decl)
+  that TokenSTATIC sets before parseKeyword and parseDeclaration
+  ORs into `gotstatic` then immediately clears so nested locals in
+  the function body don't inherit static storage.
+
 - **TokenAddrExpr: compute &arr[i] without going through value-load
   path** — `&arr[i]` returned the *value* at arr[i] instead of its
   address. The fallthrough case called `expr->operand(pgm)` which
