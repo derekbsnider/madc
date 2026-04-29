@@ -36,20 +36,24 @@
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
-- **SMAUG runtime: fread_word / sprintf crashes during data-file parsing**
-  — With proper data directories (see `docs/smaug-progress.md`),
-  boot_db now loads commands → sysdata → socials → skill table →
-  classes → races → herbs → tongues end-to-end. Two parse-time
-  crashes block further progress:
-  - `load_systemdata`: when `sysdata.dat` is present, `fread_letter`
-    / `fread_word` path crashes during parse. Removing sysdata.dat
-    routes through the "Not found.  Creating new configuration."
-    branch and bypasses the issue.
-  - `make_wizlist`: `sprintf( buf, "%s%s", GOD_DIR, dentry->d_name );`
-    SIGSEGVs inside libc `_IO_sprintf` — almost certainly a varargs
-    ABI mismatch (madc's varargs packing vs glibc's expectation) or
-    a NULL string-arg the caller didn't validate. Same pattern as
-    the older "struct-member double varargs printf" cluster.
+- **Struct-return-by-value ABI** — `EXT_BV fread_bitvector(FILE *fp)`
+  returns a 16-byte struct in (rax, rdx) per SysV x86-64. Madc's call
+  path treats the return as a single 8-byte value and, when the call
+  site is `pMobIndex->act = fread_bitvector(fp);`, emits a memcpy
+  whose source pointer is whatever the first 8 bytes happen to be.
+  For the gods.are mobile section this is `0x40000001` (act_flags
+  = 1073741825), and the memcpy `movups (%rsi),%xmm0` segfaults at
+  that address. Need madc-side support for struct-return ABI:
+  capture (rax, rdx) into a stack spill, memcpy from spill to dest.
+  Larger structs (>16 bytes) already use a hidden return-buffer
+  pointer; the small-struct register-pair case is the gap. Once
+  fixed, SMAUG runtime should advance into actual area-file mobile
+  loading.
+
+  (Earlier "fread_word/sysdata parse crash" symptoms in this slot
+  were already resolved by the session-11 fixes — sysdata `Not
+  found` branch works; make_wizlist now reaches its real
+  data-driven crash, currently bypassed via shim stubs.)
 
 - **(RESOLVED 2026-04-29, session 11)** ~~SMAUG umbrella wrapper-frame
   corruption~~ — Root cause was NOT a stack-frame analysis issue. Out
