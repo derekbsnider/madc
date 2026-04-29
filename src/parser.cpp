@@ -6279,7 +6279,24 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	if ( parsing_extern_decl )
 	    var->flags |= vfEXTERN;
 	else
+	{
+	    // Promoting a previously-extern declaration to a real
+	    // definition: addVariable returned the existing var without
+	    // running the allocate-storage path, so var->data is still
+	    // NULL and voperand can't take the absolute-address branch.
+	    // Allocate the storage now so the global ends up backed by
+	    // real memory shared across every reference site.
+	    if ( (var->flags & vfSTACK) && alloc && !var->data
+	      && arr_dims.empty()
+	      && decl_type->size > 0 && elem_count == 1
+	      && decl_type->basetype() != BaseType::btFunct )
+	    {
+		var->data = calloc(1, decl_type->size);
+		var->flags |= vfALLOC;
+		var->flags &= ~vfSTACK;
+	    }
 	    var->flags &= ~vfEXTERN;
+	}
 	if ( !arr_dims.empty() )
 	{
 	    if ( vla_size_expr )
