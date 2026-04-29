@@ -5740,6 +5740,20 @@ paramdecl:
     tf->variables = tc->variables;
     tf->statements = tc->statements;
     tf->deferred = tc->deferred;
+    // Walk statements to find one with real file/line info — the first
+    // statement isn't always a body statement (parser sometimes hangs
+    // initializer-shaped tokens off the front whose file pointer
+    // belongs to the enclosing init context, not the function body).
+    for ( auto *st : tf->statements )
+    {
+	if ( st && st->file && st->line > 0 )
+	{
+	    tf->file = st->file;
+	    tf->line = st->line;
+	    tf->column = st->column;
+	    break;
+	}
+    }
 
     DBG(cout << "parseFunction() calling ast.push" << endl);
     ast.push(tf);

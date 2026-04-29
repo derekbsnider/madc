@@ -570,8 +570,38 @@ public:
     char **script_argv;			// argv for the .mad script
     bool _include_iostream;		// #include <iostream> was seen during tokenization
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
+    // Intern file paths so TokenBase::file pointers stay stable for
+    // the program's lifetime. Lexer used to store `c_str()` of a
+    // stack-local std::string into tokens — the pointer dangled the
+    // moment the include scope ended, leaving every later read of
+    // tb->file undefined. Reuse the existing `included_files` map
+    // (keys are std::string and stable since we never erase entries).
+    const char *intern_file(const std::string &s) {
+	return included_files.emplace(s, true).first->first.c_str();
+    }
+
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
+
+    // JIT crash → source location map. Populated during compile by
+    // record_compile_anchor() and finalized into jit_source_map after
+    // cc.finalize(). The signal handler binary-searches jit_source_map
+    // by faulting RIP - root_fn to print the .mad source line that
+    // emitted the crashing instruction. Disable with MADC_NO_SOURCE_MAP=1
+    // env var (small overhead per anchor: one Label + entry per
+    // top-level / per-statement compile call).
+    struct JitSourceEntry
+    {
+	uint32_t byte_offset;
+	const char *file;
+	uint32_t line;
+	uint16_t col;
+	const char *kind;	// short token-type label (e.g. "stmt", "fn")
+    };
+    bool jit_source_map_enabled = true;
+    std::vector<std::pair<asmjit::Label, JitSourceEntry>> jit_anchor_labels;
+    std::vector<JitSourceEntry> jit_source_map;
+    void record_compile_anchor(class TokenBase *tb, const char *kind);
     std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
     int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
 

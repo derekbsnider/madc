@@ -487,9 +487,10 @@ TokenBase *Program::_getToken()
 			    source.fname(incfile.c_str());
 			    source.str(*embedded);
 			    TokenBase *itb;
+			    const char *_interned1 = intern_file(incfile);
 			    while ( (itb = getRealToken()) )
 			    {
-				itb->file = incfile.c_str();
+				itb->file = _interned1;
 				tokens.push_back(itb);
 			    }
 			    source = std::move(saved);
@@ -523,9 +524,10 @@ TokenBase *Program::_getToken()
 		    source.fname(full_path.c_str());
 		    source.copybuf(incf.rdbuf());
 		    TokenBase *itb;
+		    const char *_interned2 = intern_file(full_path);
 		    while ( (itb = getRealToken()) )
 		    {
-			itb->file = full_path.c_str();
+			itb->file = _interned2;
 			tokens.push_back(itb);
 		    }
 		    source = std::move(saved);

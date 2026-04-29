@@ -1036,10 +1036,38 @@ public:
 };
 static MadcAsmjitErrHandler g_madc_asmjit_err;
 
+// Globals that crash_handler() reads to translate a faulting JIT'd
+// instruction back to a .mad source location. set_jit_source_map_globals()
+// is called from _compiler_finalize() once the source map is built.
+const Program::JitSourceEntry *g_madc_jit_map = nullptr;
+size_t g_madc_jit_map_size = 0;
+const void *g_madc_jit_code_base = nullptr;
+size_t g_madc_jit_code_size = 0;
+
+void Program::record_compile_anchor(TokenBase *tb, const char *kind)
+{
+    if ( !jit_source_map_enabled || !tb || !tb->file ) return;
+    asmjit::Label l = cc.newLabel();
+    cc.bind(l);
+    JitSourceEntry e;
+    e.byte_offset = 0;
+    e.file = tb->file;
+    e.line = (uint32_t)tb->line;
+    e.col = (uint16_t)tb->column;
+    e.kind = kind;
+    jit_anchor_labels.push_back(std::make_pair(l, e));
+}
+
 void Program::_compiler_init()
 {
     code.reset();
     code.init(jit.environment());
+
+    jit_anchor_labels.clear();
+    jit_source_map.clear();
+    if ( const char *env = ::getenv("MADC_NO_SOURCE_MAP") )
+	if ( env[0] && env[0] != '0' )
+	    jit_source_map_enabled = false;
     DBG(
         static FileLogger logger(stdout);
         logger.setFlags(FormatFlags::kMachineCode);
@@ -1123,6 +1151,53 @@ bool Program::_compiler_finalize()
 
 	method->x86code = (uint8_t *)root_fn + code.labelOffset(func->funcnode->label());
     }
+
+    // Build the JIT-PC → source-line map. Each anchor was a label
+    // bound at a Token::compile() entry; resolve each to a byte offset
+    // in the code section, sort by offset, and expose the result via
+    // the g_madc_jit_map globals so the SIGSEGV handler can binary-
+    // search it.
+    if ( jit_source_map_enabled && !jit_anchor_labels.empty() )
+    {
+	jit_source_map.clear();
+	jit_source_map.reserve(jit_anchor_labels.size());
+	for ( auto &pr : jit_anchor_labels )
+	{
+	    if ( !code.isLabelBound(pr.first) ) continue;
+	    JitSourceEntry e = pr.second;
+	    e.byte_offset = (uint32_t)code.labelOffset(pr.first);
+	    jit_source_map.push_back(e);
+	}
+	std::sort(jit_source_map.begin(), jit_source_map.end(),
+		  [](const JitSourceEntry &a, const JitSourceEntry &b) {
+		      return a.byte_offset < b.byte_offset;
+		  });
+	g_madc_jit_map = jit_source_map.data();
+	g_madc_jit_map_size = jit_source_map.size();
+	g_madc_jit_code_base = (const void *)root_fn;
+	g_madc_jit_code_size = code.codeSize();
+	// Optional dump for debugging the source map itself
+	if ( const char *envmap = ::getenv("MADC_DUMP_SOURCEMAP") )
+	{
+	    if ( envmap[0] )
+	    {
+		FILE *fp = fopen(envmap, "w");
+		if ( fp )
+		{
+		    fprintf(fp, "# %zu anchors, code base=%p size=%zu\n",
+			    jit_source_map.size(), g_madc_jit_code_base, g_madc_jit_code_size);
+		    for ( auto &e : jit_source_map )
+			fprintf(fp, "+0x%-8x %s:%u:%u (%s)\n",
+				e.byte_offset,
+				e.file ? e.file : "(null)",
+				(unsigned)e.line, (unsigned)e.col,
+				e.kind ? e.kind : "?");
+		    fclose(fp);
+		}
+	    }
+	}
+    }
+    jit_anchor_labels.clear();
 
     if ( const char *envfinal = ::getenv("MADC_DUMP_FINAL") )
     {
@@ -1758,6 +1833,7 @@ Operand &TokenCpnd::compile(Program &pgm, regdefp_t &regdp)
     {
 	// each new statement starts with a clean slate
 	regdp = {NULL, NULL, NULL};
+	pgm.record_compile_anchor(*vti, "stmt");
 	(*vti)->compile(pgm, regdp);
     }
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") END" << endl);
@@ -1785,6 +1861,7 @@ Operand &TokenProgram::compile(Program &pgm, regdefp_t &regdp)
     {
 	// each new statement starts with a clean slate
 	regdp = {NULL, NULL, NULL};
+	pgm.record_compile_anchor(*si, "init");
 	(*si)->compile(pgm, regdp);
     }
 
@@ -2249,6 +2326,14 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
     pgm.label_map.clear(); // labels are function-scoped
 
     pgm.cc.addFunc(func->funcnode);
+    // Function-entry anchor — covers the prologue / param-binding so
+    // crashes there resolve to the function's source location instead
+    // of falling through to the previous function's last anchor.
+    if ( const char *e = ::getenv("MADC_TRACE_FNENTRY") )
+	if ( e[0] ) std::cerr << "[fn-entry] " << var.name << " file="
+			      << (this->file ? this->file : "(null)")
+			      << " line=" << this->line << std::endl;
+    pgm.record_compile_anchor(this, "fn-entry");
 
     if ( method.parameters.size() )
     {
@@ -2312,6 +2397,7 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
     {
 	// each new statement starts with a clean slate
 	regdp = {NULL, NULL, NULL};
+	pgm.record_compile_anchor(*si, "stmt");
 	(*si)->compile(pgm, regdp);
     }
 
