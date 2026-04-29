@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **TokenCallFunc: spill (rax, rdx) to stack for small-struct
+  return-by-value** — SysV x86-64 returns aggregates of 1..16 bytes
+  in (rax, rdx). Madc's FuncSignature only carries a single TypeId
+  for the return, so cc.invoke captured rax alone — downstream
+  struct copies treated that 8-byte value as a *pointer* and
+  segfaulted dereferencing arbitrary bytes. Concrete failure (SMAUG
+  mobile loading): `pMobIndex->act = fread_bitvector(fp);` where
+  EXT_BV is 4 ints. Mobile act_flags 1073741825 ended up packed
+  into rax with the next int; struct memcpy crashed at
+  `movups (%rsi=0x40000001),%xmm0`. Fix: for struct returns of size
+  1..16, allocate a 16-byte stack slot, capture rax via setRet,
+  emit `mov [slot+0], rax_vreg` and (for >8-byte returns) the rdx
+  spill `mov rdx_vreg, x86::rdx; mov [slot+8], rdx_vreg` as the
+  first instruction after the InvokeNode (before asmjit's allocator
+  reuses rdx). Operand becomes the slot's LEA'd address, which is
+  what struct-aware consumers expect. SMAUG now loads gods.are
+  end-to-end: "gods.are : Rooms: 1200-1201 Objs: 1200-1200 Mobs:
+  1200-1200".
+
 - **parseDeclaration: allocate storage when promoting extern to
   definition** — when a global was first seen as `extern T name;`
   and later defined without `extern`, addVariable returned the

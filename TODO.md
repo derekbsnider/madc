@@ -36,24 +36,20 @@
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
-- **Struct-return-by-value ABI** — `EXT_BV fread_bitvector(FILE *fp)`
-  returns a 16-byte struct in (rax, rdx) per SysV x86-64. Madc's call
-  path treats the return as a single 8-byte value and, when the call
-  site is `pMobIndex->act = fread_bitvector(fp);`, emits a memcpy
-  whose source pointer is whatever the first 8 bytes happen to be.
-  For the gods.are mobile section this is `0x40000001` (act_flags
-  = 1073741825), and the memcpy `movups (%rsi),%xmm0` segfaults at
-  that address. Need madc-side support for struct-return ABI:
-  capture (rax, rdx) into a stack spill, memcpy from spill to dest.
-  Larger structs (>16 bytes) already use a hidden return-buffer
-  pointer; the small-struct register-pair case is the gap. Once
-  fixed, SMAUG runtime should advance into actual area-file mobile
-  loading.
+- **(RESOLVED 2026-04-29, session 11)** ~~Struct-return-by-value ABI~~
+  — Fixed by TokenCallFunc small-struct spill path. SysV
+  (rax, rdx) is captured to a 16-byte stack slot whose address
+  becomes the call's operand; downstream struct memcpy reads from
+  it correctly. SMAUG `pMobIndex->act = fread_bitvector(fp);` now
+  loads cleanly and gods.are produces the standard
+  `Rooms / Objs / Mobs` area summary.
 
-  (Earlier "fread_word/sysdata parse crash" symptoms in this slot
-  were already resolved by the session-11 fixes — sysdata `Not
-  found` branch works; make_wizlist now reaches its real
-  data-driven crash, currently bypassed via shim stubs.)
+- **SMAUG limbo.are NULL deref** — Loading the area after gods.are
+  (limbo.are) hits a SIGSEGV at NULL with no libc trace, just one
+  JIT frame. Could be related to mob-prog parsing, larger object
+  list, or another struct-return-style ABI surface that's not yet
+  covered. Reproducible by running SMAUG.mad against the area dir
+  with limbo.are present.
 
 - **(RESOLVED 2026-04-29, session 11)** ~~SMAUG umbrella wrapper-frame
   corruption~~ — Root cause was NOT a stack-frame analysis issue. Out
