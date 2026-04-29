@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **TokenLand / TokenLor: actually short-circuit && and ||
+  evaluation** — both operators compiled left AND right
+  unconditionally before testing either, so `p && p->next` evaluated
+  p->next even when p was NULL. Move right-operand compilation
+  behind the short-circuit branch. Found within minutes of having
+  the JIT-crash → source-line tooling working — handler.c:132 was
+  the last anchor, the && expression was the obvious culprit.
+
+- **JIT crash → source-line traceback** — sorted byte-offset →
+  (file, line, col, kind) source map built at `cc.finalize()` from
+  per-statement / per-function-entry label anchors; SIGSEGV /
+  SIGBUS handler reads RIP from `ucontext_t::uc_mcontext.gregs[REG_RIP]`,
+  binary-searches the map, prints both the last anchor and the next
+  anchor so the user can see the bracket of source that emitted the
+  crash. Toggle off with `MADC_NO_SOURCE_MAP=1`. Dump the full map
+  with `MADC_DUMP_SOURCEMAP=path`. Three companion fixes were
+  needed for the file path to be useful: (1) parseFunction now
+  copies file/line from the first body statement so TokenFunc
+  fn-entry anchors point at the function body, (2) the lexer was
+  storing `c_str()` of stack-local `std::string` into
+  `TokenBase::file` at #include time — pointer dangled the moment
+  the include scope ended; intern via the existing `included_files`
+  map (whose std::string keys are stable since we never erase),
+  (3) crash handler print formatting cleaned up.
+
 - **TokenSubscriptExpr: override operand() to return Mem lvalue
   without loading value** — the default `operand()` called
   `compile()` which emits `emit_ir_value` to LOAD the element via
