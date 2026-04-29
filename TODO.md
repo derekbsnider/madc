@@ -63,7 +63,48 @@
 
 - **ARM64 support** — asmjit supports ARM64 backends. Currently x86-64 Linux only.
 
-- **Phase 4: `libmadc.so` embedding API** — Decouple static globals, create public C API.
+- **Phase 4: `libmadc.so` embedding API + sandboxed-scripting use case** —
+  Decouple static globals, create public C API. The load-bearing
+  product direction is **embedded sandboxed scripting** for host
+  runtimes (Node.js CMSes, game engines, embedded admin consoles,
+  plugin marketplaces) that want to give C/C++ devs a way to extend
+  them without native addons. Position none of vm/vm2/isolated-vm/
+  Workers/WASM/Lua/AngelScript/ChaiScript holds: **JIT-compiled
+  C/C++ as a sandboxed script language with PHP/Perl/Python/Ruby/JS
+  idioms borrowed via namespaces.** SMAUG (158k lines of unmodified
+  upstream C) is the credibility proof. Embedding API design must
+  support up front:
+
+  - **Fork-pool architecture.** Parent dlopens libmadc, parses+JITs
+    the script once, listens on a unix socket; per-request `fork()`
+    inherits R+X JIT pages via Linux COW (~hundreds of microseconds
+    cold start, zero parse/JIT cost per call). Child writes JSON to
+    stdout, exits.
+  - **`MADC_SAFE_MODE`** flag at namespace registration: refuse to
+    expose `system`/`execve`/`popen`/`fork`/`clone`/`setuid`/
+    `setcap`/`prctl`/`chmod`/`chown`/`chroot`/`mount`/`ptrace`/
+    `kill`/`unshare`/`bpf`/`init_module`/raw-sockets even if the
+    seccomp filter has gaps.
+  - **Curated dlsym allow-list** (~200 entries — stdio / string /
+    math / time / regex / basic socket) instead of the current
+    "fall through to anything in libc" behavior. Allow-list, not
+    deny-list — deny-lists rot every glibc release.
+  - **Block `dlopen` / `#load`** in tenant mode (or restrict to a
+    host-curated allow-list of pre-vetted shared libs).
+  - **JSON-stdin / JSON-stdout** as the canonical IPC contract;
+    `madc::stdin_json()` / `madc::reply_json()` helpers.
+  - **rlimit wrappers** (`RLIMIT_CPU` / `RLIMIT_AS` / `RLIMIT_FSIZE`
+    / `RLIMIT_NPROC`) and seccomp-filter scaffolding so the host
+    doesn't have to wire each one by hand.
+  - **OS-layer composition**: chroot per tenant, run-as-tenant-uid,
+    `unshare(CLONE_NEWNET|CLONE_NEWNS|CLONE_NEWPID)` documented as
+    the recommended sandbox stack.
+
+  Threat model is **webhosting-tenant**, not untrusted-end-user —
+  mirror mod_php's 20-year track record (tenants are accountable;
+  block escape routes between tenants and to host, not all
+  dangerous-looking calls). Prioritise this over the last 10% of
+  SMAUG ingestion once the runtime blocker is unstuck.
 
 - **Full C23 standard coverage** — After SMAUG 1.8 compatibility is reached, the next
   long-term goal for the C-dialect side is full C23 (including C99/C11/C17 features along
