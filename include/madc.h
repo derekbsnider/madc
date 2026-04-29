@@ -85,6 +85,12 @@ public:
     std::vector<TokenStmt *> statements;
     std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
     std::map<Variable *, asmjit::Operand> operand_map;
+    // Stack-slot Mem for local C fixed-size arrays. Cached so reuse on a
+    // divergent branch can re-emit the LEA into the (also-cached) Gp,
+    // mirroring the global-fixed-array re-emit pattern. Without this,
+    // the first use's LEA can sit inside a branch the second use does
+    // not dominate, leaving the cached Gp uninitialized → NULL deref.
+    std::map<Variable *, asmjit::x86::Mem> fixed_array_stack;
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
