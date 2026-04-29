@@ -4269,6 +4269,23 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() re-emit fixed-array base"));
 	    pgm.cc.mov(rmi->second.as<x86::Gp>(), imm(var->data));
         }
+	else if ( var->is_global() && var->data && rmi->second.isMem()
+		  && (var->type->basetype() == BaseType::btStruct
+		   || var->type->basetype() == BaseType::btClass) )
+	{
+	    // Global structs: cached Mem uses a base register. Re-emit
+	    // the absolute-address load into that base reg so the Mem
+	    // is well-defined on every branch — same reasoning as the
+	    // fixed-array case.
+	    DBG(pgm.cc.comment("TokenCpnd::voperand() re-emit global-struct base"));
+	    x86::Mem mem = rmi->second.as<x86::Mem>();
+	    if ( mem.hasBaseReg() )
+	    {
+		// We allocated the base as IntPtr (Gpq). Reconstruct.
+		x86::Gpq base_gp(mem.baseId());
+		pgm.cc.mov(base_gp, imm(var->data));
+	    }
+        }
 	return rmi->second;
     }
 
@@ -4575,6 +4592,24 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		if ( var->type->basetype() == BaseType::btStruct
 		||   var->type->basetype() == BaseType::btClass )
 		{
+		    // Static-local or global struct: backing store was calloc'd
+		    // at parse time. Address it through a base register loaded
+		    // with the absolute heap address, mimicking the
+		    // fixed-array global path. Without this the struct is
+		    // re-allocated on the stack every call and "static"
+		    // semantics are lost — `static struct X x` becomes
+		    // observably stack-resident and `&x` returns a stack
+		    // address, breaking persistence across calls.
+		    if ( var->is_global() && var->data )
+		    {
+			DBG(pgm.cc.comment("voperand global struct: load absolute base"));
+			x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
+			pgm.cc.mov(base_reg, imm(var->data));
+			x86::Mem mem = x86::ptr(base_reg, 0, (uint32_t)var->type->size);
+			operand_map[var] = mem;
+			var->flags |= vfREGSET;
+			return operand_map[var];
+		    }
 		    // align stack to struct's max member alignment (C ABI compatible)
 		    size_t struct_align = 8;
 		    if ( var->type->basetype() == BaseType::btStruct )

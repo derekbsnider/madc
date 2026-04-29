@@ -4790,9 +4790,18 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'static'" << flush;
     // static can appear before other modifiers: static const, static struct, etc.
+    // Set parsing_static_decl so the inner parseDeclaration call (which may
+    // be reached via parseKeyword → TokenSTRUCT::parse → parseDeclaration
+    // for `static struct X x;` or via parseDeclaration directly for plain
+    // primitives) knows to mark the variable static and allocate persistent
+    // storage. is_static parameter on parseDeclaration only covers the
+    // direct path; the keyword-routed path needs the flag.
+    bool prev_static = pgm.parsing_static_decl;
+    pgm.parsing_static_decl = true;
+    TokenBase *result = nullptr;
     if ( tn->type() == TokenType::ttKeyword )
-	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
-    if ( tn->type() != TokenType::ttDataType )
+	result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+    else if ( tn->type() != TokenType::ttDataType )
     {
 	// might be a typedef'd identifier
 	if ( tn->type() == TokenType::ttIdentifier )
@@ -4802,13 +4811,21 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    if ( tdmi != pgm.datatype_map.end() )
 	    {
 		pgm.nextToken();
-		return pgm.parseDeclaration(tdmi->second, true);
+		result = pgm.parseDeclaration(tdmi->second, true);
 	    }
+	    else
+		pgm.Throw(tn) << "Expecting type after 'static'" << flush;
 	}
-	pgm.Throw(tn) << "Expecting type after 'static'" << flush;
+	else
+	    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
     }
-    tn = pgm.nextToken();
-    return pgm.parseDeclaration(static_cast<TokenDataType *>(tn), true);
+    else
+    {
+	tn = pgm.nextToken();
+	result = pgm.parseDeclaration(static_cast<TokenDataType *>(tn), true);
+    }
+    pgm.parsing_static_decl = prev_static;
+    return result;
 }
 
 // const — consume and pass through to the type that follows
@@ -5894,7 +5911,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     TokenBase *nt; // next token;
     Variable *var;
     string id;
-    bool gotstatic = is_static;
+    bool gotstatic = is_static || parsing_static_decl;
+    // The flag covers exactly this declaration. Clear so nested declarations
+    // (e.g. locals inside a `static void f() { string s = ...; }` body)
+    // don't inherit static storage.
+    parsing_static_decl = false;
 
     DBG(std::cout << "parseDeclaration(" << tb->str << ") START" << std::endl);
 
