@@ -2,6 +2,37 @@
 
 ## [Unreleased]
 
+- **TokenAddrExpr: compute &arr[i] without going through value-load
+  path** — `&arr[i]` returned the *value* at arr[i] instead of its
+  address. The fallthrough case called `expr->operand(pgm)` which
+  for TokenSubscript inlines through to `compile()` — which loads
+  the element via emit_ir_value. SMAUG's `init_mm` hits this with
+  `int *piState = &rgiState[2];` and the negative-subscript
+  centered-indexing trick wrote to garbage. New TokenSubscript
+  branch in TokenAddrExpr mirrors the fixed-array address calc
+  (load base, widen index, LEA [base + idx<<shift]).
+
+- **TokenCpnd::voperand: re-emit global fixed-array base on every
+  reuse** — global fixed-arrays (`char buf[256];` at file scope)
+  cached the first `mov reg, imm(addr)` and skipped the reuse-emit
+  path other globals took. The populating mov is itself an
+  instruction, and asmjit only sees it on the first control-flow
+  path. Subsequent uses on a divergent branch read an uninitialized
+  vreg → stack/garbage address. Concrete failure: a function that
+  wrote a global fixed-array on one if-branch and returned it on
+  both; the else-branch return was a stack address.
+
+- **TokenMember::operand: LEA fixed-array struct members instead of
+  loading first byte** — a struct member declared as a fixed array
+  (`char d_name[256]`) lives in-place. As an rvalue it decays to a
+  pointer to its first element. Madc was returning a Mem operand of
+  size sizeof(element) at the array's start, so any value-context
+  use loaded the first byte. Concrete failure: `printf("%s",
+  dentry->d_name)` segfaulted in libc sprintf — we'd passed
+  `(uint8_t)'.'` instead of the address of d_name. All six branches
+  of TokenMember::operand updated to LEA when
+  `is_fixed_array_member()` is true.
+
 - **compiler: dedupe pending_funcs by FuncDef so duplicate definitions
   don't poison asmjit's funcnode binding** — the MadSMAUG umbrella has
   ~125 functions defined twice (once in upstream files, once stubbed in
