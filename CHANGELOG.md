@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **TokenSubscriptExpr: override operand() to return Mem lvalue
+  without loading value** — the default `operand()` called
+  `compile()` which emits `emit_ir_value` to LOAD the element via
+  the computed Mem and yield a Gp holding the value. Callers that
+  expected an lvalue (TokenAssign LHS for nested subscripts, outer
+  TokenSubscriptExpr for chained 2D indexing, TokenMember for
+  `s[i].field`) treated that Gp as an *address* and indexed off the
+  value — for 2D-array struct member writes
+  `m->map[0][0] = 7` the inner subscript loaded the int value at
+  &map[0][0] (zero in calloc'd memory) and the outer subscript
+  wrote to NULL. Override operand() to mirror compile()'s address
+  calculation but return the Mem operand directly. SMAUG `load_rooms`
+  initializes `map_index->map_of_vnums[i][j] = -1` over a 49×79 int
+  grid inside MAP_INDEX_DATA — every element write went through the
+  value-as-address path before the fix. After the fix limbo.are AND
+  the rest of the area list (25 files total) load end-to-end.
+
 - **TokenCallFunc: spill (rax, rdx) to stack for small-struct
   return-by-value** — SysV x86-64 returns aggregates of 1..16 bytes
   in (rax, rdx). Madc's FuncSignature only carries a single TypeId
