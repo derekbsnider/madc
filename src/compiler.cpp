@@ -5856,14 +5856,17 @@ Operand &TokenLor::compile(Program &pgm, regdefp_t &regdp)
     DataDef *test_type = infer_numeric_type(left, right);
     Operand left_storage;
     Operand right_storage;
+    // Short-circuit: compile+test left, branch out if non-zero BEFORE
+    // compiling right. Otherwise `p || p->next` evaluates p->next even
+    // when p is non-NULL, defeating the C short-circuit guarantee.
     Operand &lval = compile_token_normalized(pgm, left, test_type, nullptr, left_storage);
-    Operand &rval = compile_token_normalized(pgm, right, test_type, nullptr, right_storage);
     x86::Gp result = pgm.cc.newGpq("_lor");
     pgm.testzero(lval);					 // test lval is 0
-    pgm.safesetne(result);				 // if lval !=0, ret(result) = 1
-    pgm.cc.jne(done);					 // if lval != 0, jump to done
+    pgm.safesetne(result);				 // result = (lval != 0) ? 1 : 0
+    pgm.cc.jne(done);					 // if lval != 0, skip rval
+    Operand &rval = compile_token_normalized(pgm, right, test_type, nullptr, right_storage);
     pgm.testzero(rval);					 // test rval is 0
-    pgm.safesetne(result);				 // if rval !=0, ret(result) = 1
+    pgm.safesetne(result);				 // if rval !=0, result = 1
     pgm.cc.bind(done);					 // done is here
     regdp.second = &ddINT64;
     _operand = result;
@@ -5892,14 +5895,17 @@ Operand &TokenLand::compile(Program &pgm, regdefp_t &regdp)
     DataDef *test_type = infer_numeric_type(left, right);
     Operand left_storage;
     Operand right_storage;
+    // Short-circuit: compile + test left, branch if zero BEFORE compiling
+    // right. Otherwise `p && p->next` evaluates p->next when p is NULL
+    // and segfaults — every C/C++ programmer relies on the short-circuit.
     Operand &lval = compile_token_normalized(pgm, left, test_type, nullptr, left_storage);
-    Operand &rval = compile_token_normalized(pgm, right, test_type, nullptr, right_storage);
     x86::Gp result = pgm.cc.newGpq("_land");
+    pgm.safexor(result, result);			 // result = 0
     pgm.testzero(lval);					 // test lval is 0
-    pgm.safesetne(result);				 // if lval !=0, ret(result) = 1
-    pgm.cc.je(done);					 // if lval == 0, jump to done
+    pgm.cc.je(done);					 // if lval == 0, result stays 0
+    Operand &rval = compile_token_normalized(pgm, right, test_type, nullptr, right_storage);
     pgm.testzero(rval);					 // test rval is 0
-    pgm.safesetne(result);				 // if rval !=0, ret(result) = 1
+    pgm.safesetne(result);				 // if rval !=0, result = 1
     pgm.cc.bind(done);					 // done is here
     regdp.second = &ddINT64;
     _operand = result;
