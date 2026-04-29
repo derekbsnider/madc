@@ -101,6 +101,15 @@ public:
 class TokenFunc: public TokenVar, public TokenCpnd
 {
 public:
+    // True when a later definition of the same function overrides this
+    // one. Set during compile pre-pass by walking pending_funcs in
+    // reverse and marking earlier duplicates. Overridden TokenFuncs
+    // skip both prepareFuncNode and body emission so asmjit's Compiler
+    // sees exactly one addFunc per funcnode — without this, calling
+    // addFunc(node) twice for the same FuncNode causes asmjit to lose
+    // track of every other funcnode added between the duplicate calls,
+    // leaving their labels unbound.
+    bool is_overridden = false;
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }

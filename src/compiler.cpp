@@ -23,6 +23,7 @@
 #include <vector>
 #include <queue>
 #include <stack>
+#include <algorithm>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include <asmjit/x86.h>
 #include "datadef.h"
@@ -1053,6 +1054,7 @@ void Program::_compiler_init()
 	{
 	    cc.addDiagnosticOptions(asmjit::DiagnosticOptions::kValidateIntermediate);
 	    g_madc_asmjit_err.pgm = this;
+	    g_madc_asmjit_err.hits = 0;
 	    code.setErrorHandler(&g_madc_asmjit_err);
 	}
     }
@@ -1108,7 +1110,7 @@ bool Program::_compiler_finalize()
     for ( TokenBase *tb_func : pending_funcs )
     {
 	TokenFunc *tf = dynamic_cast<TokenFunc *>(tb_func);
-	if ( !tf || !tf->var.data )
+	if ( !tf || !tf->var.data || tf->is_overridden )
 	    continue;
 
 	Method *method = (Method *)tf->var.data;
@@ -1120,6 +1122,75 @@ bool Program::_compiler_finalize()
 	    continue;
 
 	method->x86code = (uint8_t *)root_fn + code.labelOffset(func->funcnode->label());
+    }
+
+    if ( const char *envfinal = ::getenv("MADC_DUMP_FINAL") )
+    {
+	if ( envfinal[0] )
+	{
+	    FILE *fp = fopen(envfinal, "w");
+	    if ( fp )
+	    {
+		// Collect (start_addr, name) tuples for every user-defined
+		// function whose JIT'd code we know the address of.
+		std::vector<std::pair<uint8_t *, std::string>> functions;
+		size_t total = 0, unbound = 0;
+		for ( TokenBase *tb_func : pending_funcs )
+		{
+		    TokenFunc *tf = dynamic_cast<TokenFunc *>(tb_func);
+		    if ( !tf || !tf->var.data ) continue;
+		    Method *method = (Method *)tf->var.data;
+		    if ( !method || !method->x86code ) continue;
+		    total++;
+		    FuncDef *fd = dynamic_cast<FuncDef *>(method->returns.type);
+		    bool bound = (fd && fd->funcnode &&
+				  code.isLabelBound(fd->funcnode->label()));
+		    if ( !bound ) { unbound++; continue; }
+		    functions.push_back(std::make_pair(
+			(uint8_t *)method->x86code, tf->var.name));
+		}
+		fprintf(fp, "# total user funcs in pending_funcs=%zu, "
+			    "unbound-label=%zu (skipped from per-func dump)\n",
+			total, unbound);
+		std::sort(functions.begin(), functions.end());
+		uint8_t *code_end = (uint8_t *)root_fn + code.codeSize();
+		fprintf(fp, "# MADC_DUMP_FINAL: %zu user functions, "
+			    "code base=%p size=%zu\n",
+			functions.size(), root_fn, code.codeSize());
+		// Index header: name -> start, length
+		fprintf(fp, "# index:\n");
+		for ( size_t i = 0; i < functions.size(); i++ )
+		{
+		    uint8_t *start = functions[i].first;
+		    uint8_t *end = (i + 1 < functions.size())
+				   ? functions[i + 1].first : code_end;
+		    fprintf(fp, "#   %p +%-6zu  %s\n",
+			    (void *)start, (size_t)(end - start),
+			    functions[i].second.c_str());
+		}
+		fprintf(fp, "\n");
+		// Per-function byte dump
+		for ( size_t i = 0; i < functions.size(); i++ )
+		{
+		    uint8_t *start = functions[i].first;
+		    uint8_t *end = (i + 1 < functions.size())
+				   ? functions[i + 1].first : code_end;
+		    size_t len = (end > start) ? (size_t)(end - start) : 0;
+		    fprintf(fp, "=== %s @ %p (size=%zu) ===\n",
+			    functions[i].second.c_str(),
+			    (void *)start, len);
+		    for ( size_t j = 0; j < len; j++ )
+		    {
+			if ( (j & 15) == 0 ) fprintf(fp, "%04zx: ", j);
+			fprintf(fp, "%02x ", start[j]);
+			if ( (j & 15) == 15 ) fprintf(fp, "\n");
+		    }
+		    if ( (len & 15) != 0 ) fprintf(fp, "\n");
+		    fprintf(fp, "\n");
+		}
+		fclose(fp);
+	    }
+	}
     }
 
     return true;
@@ -2118,6 +2189,10 @@ void TokenFunc::prepareFuncNode(Program &pgm)
 Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenFunc::compile(" << var.name << '[' << (uint64_t)this << "]) TOP" << endl);
+    // Earlier duplicate definition — a later TokenFunc with the same
+    // FuncDef will compile the winning body. Skip silently here so we
+    // don't double-addFunc the shared funcnode.
+    if ( is_overridden ) return _operand;
     if ( !var.data ) { throw "TokenFunc::compile: method is NULL"; }
 
     Method &method = *((Method *)var.data);
@@ -2222,6 +2297,30 @@ bool Program::compile()
     DBG(cout << endl << endl << "Program::compile() start" << endl << endl);
     _compiler_init();
 
+    // Dedupe pre-pass: when the same function is defined more than once
+    // (e.g. shim stubs that override an upstream definition), every
+    // TokenFunc shares one FuncDef + funcnode. Calling cc.addFunc(node)
+    // twice for the same FuncNode confuses asmjit's Compiler — bodies of
+    // every funcnode added between the duplicate calls end up with
+    // unbound labels. Walk pending_funcs in reverse, keep only the last
+    // TokenFunc per FuncDef, mark earlier duplicates as overridden so
+    // both prepareFuncNode and TokenFunc::compile skip them.
+    {
+	std::set<FuncDef *> seen_fd;
+	for ( auto it = pending_funcs.rbegin(); it != pending_funcs.rend(); ++it )
+	{
+	    TokenFunc *tf = dynamic_cast<TokenFunc *>(*it);
+	    if ( !tf || !tf->var.data ) continue;
+	    Method *m = (Method *)tf->var.data;
+	    FuncDef *fd = dynamic_cast<FuncDef *>(m->returns.type);
+	    if ( !fd ) continue;
+	    if ( seen_fd.count(fd) )
+		tf->is_overridden = true;
+	    else
+		seen_fd.insert(fd);
+	}
+    }
+
     // Pre-pass: create FuncNode labels for every user-defined function and
     // lambda so global fn-pointer inits (which compile first via TokenProgram)
     // can LEA the target label. The bodies still compile in the normal loop.
@@ -2231,7 +2330,7 @@ bool Program::compile()
 	{
 	    prepass_tb = tb_func;
 	    TokenFunc *tf = dynamic_cast<TokenFunc *>(tb_func);
-	    if ( tf ) tf->prepareFuncNode(*this);
+	    if ( tf && !tf->is_overridden ) tf->prepareFuncNode(*this);
 	}
     }
     catch(const char *err_msg)
