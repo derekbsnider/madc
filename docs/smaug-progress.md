@@ -18,7 +18,29 @@ bootstrap).
 | **Parse**        | ~86% | 136,166 / 158,537 lines ingested. 49 upstream TUs + `_bootstrap_comm_shim.c`. (IMC headers guarded under `#ifdef IMC` and not counted.) |
 | **Compile**      | ~86% | Every ingested TU compiles cleanly post-session-10 lexer fixes (`##` token paste, `__attribute__` skip, IRBuilder::coerce dst=void fast path). |
 | **Link**         | ~95% | Post-session-11 funcnode dedupe — all 1878 user-defined functions now bind labels. Previously only 168 / 1878 (9%) survived finalize. |
-| **Runtime**      | ~30%+ | `boot_db` runs through 12+ init phases: Loading commands → sysdata → socials → skill table → classes → races → news → stances → herbs → tongues → make_wizlist. Crashes inside `make_wizlist` at `readdir(NULL)` (missing data file, not a JIT bug). |
+| **Runtime**      | ~30%+ | With proper data directories (run from `area/` with `../gods/`, `../system/`, `../races/`, `../classes/`), boot_db loads commands → sysdata → socials → skill table → classes → races → herbs → tongues. Crashes in `make_wizlist` inside `sprintf( buf, "%s%s", GOD_DIR, dentry->d_name );` — a different bug surface (real-data parsing) than the funcnode-binding issue session-11 fixed. With sysdata.dat present, fread_letter / fread_word path crashes during sysdata parsing — same pattern. Next session: debug fread_word / fread_letter / SMAUG-side struct member writes vs glibc varargs ABI. |
+
+## Reproducing the runtime
+
+```sh
+# Set up a writable data directory tree
+mkdir -p /tmp/smaug_run
+cd /tmp/smaug_run
+for d in area gods player system boards classes clans races system; do
+  ln -sfn /workspace/MadSMAUG/upstream/smaug1.8/$d $d
+done
+# `area` and `system` need to be real (writable) for SMAUG to write
+# back; symlinks let upstream `../system/sysdata.dat` resolve through
+# the symlink target.
+rm area system
+cp -rL /workspace/MadSMAUG/upstream/smaug1.8/area area
+cp -rL /workspace/MadSMAUG/upstream/smaug1.8/system system
+# Optional: remove sysdata.dat / news.dat / stances.dat to bypass
+# their parse-crash and reach later init phases.
+rm -f system/sysdata.dat system/news.dat
+cd area
+/workspace/madc/bin/madc /workspace/madc/MadSMAUG/src/SMAUG.mad
+```
 
 The session-11 funcnode-dedupe fix unstuck the runtime blocker. Root
 cause was duplicate function definitions (~125 of them, mostly shim

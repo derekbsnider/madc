@@ -36,13 +36,20 @@
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
-- **SMAUG `make_wizlist` readdir(NULL)** — After the session-11 funcnode
-  dedupe fix, SMAUG `boot_db` runs through 12+ init phases and crashes
-  inside `make_wizlist` at `readdir+0x2e` with NULL DIR\*. Almost
-  certainly a missing data directory (the upstream SMAUG runtime needs
-  `area/`, `gods/`, `player/`, `system/` etc.) rather than a JIT bug.
-  Need to either provide minimal stub data files or short-circuit the
-  data-loading paths to push runtime coverage further.
+- **SMAUG runtime: fread_word / sprintf crashes during data-file parsing**
+  — With proper data directories (see `docs/smaug-progress.md`),
+  boot_db now loads commands → sysdata → socials → skill table →
+  classes → races → herbs → tongues end-to-end. Two parse-time
+  crashes block further progress:
+  - `load_systemdata`: when `sysdata.dat` is present, `fread_letter`
+    / `fread_word` path crashes during parse. Removing sysdata.dat
+    routes through the "Not found.  Creating new configuration."
+    branch and bypasses the issue.
+  - `make_wizlist`: `sprintf( buf, "%s%s", GOD_DIR, dentry->d_name );`
+    SIGSEGVs inside libc `_IO_sprintf` — almost certainly a varargs
+    ABI mismatch (madc's varargs packing vs glibc's expectation) or
+    a NULL string-arg the caller didn't validate. Same pattern as
+    the older "struct-member double varargs printf" cluster.
 
 - **(RESOLVED 2026-04-29, session 11)** ~~SMAUG umbrella wrapper-frame
   corruption~~ — Root cause was NOT a stack-frame analysis issue. Out
