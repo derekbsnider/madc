@@ -3550,12 +3550,12 @@ Operand &TokenMember::operand(Program &pgm)
 	    else
 		pgm.cc.mov(obj_gp, parent_op.as<x86::Gp>());
 
-	    if ( var.type->is_numeric() )
+	    if ( var.type->is_numeric() && !is_fixed_array_member() )
 		_operand = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
 	    else
 	    {
 		x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
-		DBG(pgm.cc.comment("TokenMember::operand() chained -> lea non-numeric member"));
+		DBG(pgm.cc.comment("TokenMember::operand() chained -> lea non-numeric/array member"));
 		pgm.cc.lea(addr_reg, x86::ptr(obj_gp, (int32_t)offset));
 		_operand = addr_reg;
 	    }
@@ -3570,7 +3570,7 @@ Operand &TokenMember::operand(Program &pgm)
 	    {
 		// e.g. ch->desc.buf: parent returned LEA of desc → use [gp + buf_offset]
 		x86::Gp base_gp = parent_op.as<x86::Gp>();
-		if ( var.type->is_numeric() )
+		if ( var.type->is_numeric() && !is_fixed_array_member() )
 		    _operand = x86::ptr(base_gp, (int32_t)offset, (uint32_t)var.type->size);
 		else
 		{
@@ -3587,12 +3587,12 @@ Operand &TokenMember::operand(Program &pgm)
 		member_mem.setSize(var.type->size);
 		member_mem.addOffset((int64_t)offset);
 
-		if ( var.type->is_numeric() )
+		if ( var.type->is_numeric() && !is_fixed_array_member() )
 		    _operand = member_mem;
 		else
 		{
 		    x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
-		    DBG(pgm.cc.comment("TokenMember::operand() chained . lea non-numeric member"));
+		    DBG(pgm.cc.comment("TokenMember::operand() chained . lea non-numeric/array member"));
 		    pgm.cc.lea(addr_reg, member_mem);
 		    _operand = addr_reg;
 		}
@@ -3612,7 +3612,7 @@ Operand &TokenMember::operand(Program &pgm)
 	x86::Gp obj_gp = pgm.cc.newIntPtr("%s", object.name.c_str());
 	DBG(pgm.cc.comment("TokenMember::operand() load stack-backed pointer into Gp"));
 	pgm.cc.mov(obj_gp, _obj.as<x86::Mem>());
-	if ( var.type->is_numeric() )
+	if ( var.type->is_numeric() && !is_fixed_array_member() )
 	    _operand = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
 	else
 	{
@@ -3631,7 +3631,7 @@ Operand &TokenMember::operand(Program &pgm)
 	member_mem.setSize(var.type->size);
 	member_mem.addOffset((int64_t)offset);
 
-	if ( var.type->is_numeric() )
+	if ( var.type->is_numeric() && !is_fixed_array_member() )
 	{
 	    // For numeric members: return the Mem so assignments go directly to memory
 	    _operand = member_mem;
@@ -3651,7 +3651,7 @@ Operand &TokenMember::operand(Program &pgm)
 	// Object is a pointer in a Gp register (e.g. __this in class methods, or -> access)
 	// Access member at [gp + offset]
 	x86::Gp obj_gp = _obj.as<x86::Gp>();
-	if ( var.type->is_numeric() )
+	if ( var.type->is_numeric() && !is_fixed_array_member() )
 	{
 	    x86::Mem member_mem = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
 	    _operand = member_mem;
