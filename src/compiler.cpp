@@ -6216,6 +6216,48 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    pgm.cc.mov(addr, obj.as<x86::Gp>());
     }
+    else if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(expr) )
+    {
+	// &arr[i] — compute base + i*sizeof(elem) directly. expr->operand
+	// would otherwise call compile() which loads the value, not the
+	// address. Mirrors the address calculation in TokenSubscript::compile
+	// (fixed-array path) without the trailing emit_ir_value load.
+	Variable &obj_var = ts->object;
+	Operand &obj_op = pgm.tkFunction->voperand(pgm, &obj_var);
+	x86::Gp obj_reg = pgm.cc.newIntPtr("addr_sub_base");
+	if ( obj_op.isMem() )
+	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+
+	regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
+	Operand &idx_op = ts->index->compile(pgm, idx_rdp);
+	x86::Gp idx_reg = pgm.cc.newGpq("addr_sub_idx");
+	load_idx_to_gpq(pgm, idx_reg, idx_op);
+
+	size_t elem_size = 8;
+	if ( obj_var.is_fixed_array() && obj_var.type->size )
+	    elem_size = obj_var.type->size;
+	else if ( obj_var.type->is_pointer() )
+	{
+	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(obj_var.type);
+	    DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+	    if ( base->size ) elem_size = base->size;
+	}
+
+	if ( elem_size == 1 || elem_size == 2 || elem_size == 4 || elem_size == 8 )
+	{
+	    uint32_t shift = (elem_size == 8) ? 3
+			    : (elem_size == 4) ? 2
+			    : (elem_size == 2) ? 1 : 0;
+	    pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, shift, 0));
+	}
+	else
+	{
+	    pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+	    pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, 0, 0));
+	}
+    }
     else
     {
 	Operand &obj = expr->operand(pgm);
