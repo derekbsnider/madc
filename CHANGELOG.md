@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+- **parser: move istream getline into std:: namespace** — `getline(istream&,
+  string&)` was registered globally via `addFunction("getline", ...)`,
+  which collided with user-defined `getline` (e.g. SMAUG IMC's
+  `static const char *getline(char *buffer)`) — call sites resolved to
+  the istream form with the wrong arity and the parser errored
+  "Incorrect number of parameters: expected 2 got 1". Moved
+  registration to `__std_getline` and aliased into
+  `namespace_map["std"]["getline"]` so the unqualified spelling is
+  reachable only via `std::getline(...)` or `using namespace std;`.
+  Fixed `using namespace` to register an alias `Variable` when the
+  namespace key doesn't match the underlying name — without it,
+  `__std_X` imported as `X` wouldn't resolve under
+  `findVariable("X")`. `tests/testfstream.mad` and `tests/testloop.mad`
+  updated to add `using namespace std;`.
+
+- **IRBuilder::coerce: dst=void fast path for statement-discard sites**
+  — Compile path that synthesizes an unnamed function-pointer or
+  struct-typed value and immediately discards it as a statement
+  expression hit the type-check ladder with `src.type->name` empty
+  and dst=void, throwing "unsupported type conversion (src= ->
+  dst=void)" with no useful position info. Surfaced while ingesting
+  MadSMAUG IMC sources (imc-mail.c `imc_recv_mail` body declares
+  `imc_packet out;`, whose typedef chain has unnamed inner
+  DataDefs). Fast path matches what the ladder would do anyway —
+  pass through.
+
+- **lexer: skip GCC `__attribute__((...))` decorations** — Treat
+  `__attribute__` as a no-op at the lexer level: when the keyword
+  is seen, consume the matching outer parenthesised payload and
+  re-enter the tokenizer. Required for IMC's `iced.h`
+  (`__attribute__((format(printf,1,2)))`) and any C codebase that
+  decorates declarations with `noreturn` / `aligned` / `unused` /
+  `visibility` / `const`. Without this the parser bailed mid-
+  declaration with "Expecting brace after function declaration"
+  because it tried to interpret `__attribute__((...))` as the start
+  of a new function declarator. Regression: `tests/testattribute.mad`.
+
+- **lexer: implement C token-paste operator (##) in function-like macros**
+  — After parameter substitution, scan the expanded body for `##`
+  and strip it (along with surrounding whitespace) so the lexer
+  fuses adjacent identifiers when it re-tokenizes. Required for
+  IMC's color-code pattern `#define COL(x) C_##x` — without `##`
+  support, expanding `COL(b)` produced literal `C_##b` which the
+  parser saw as undeclared identifier `C_`. Also adds a minimal
+  `<sys/ioctl.h>` embedded header (FIONREAD / TIOCINQ / TIOCOUTQ).
+  Regression: `tests/testtokenpaste.mad`.
+
 - **compiler/IR: drop spurious finalize ret + clean up codegen mismatches**
   — Five fixes that drove the SMAUG umbrella's `MADC_VALIDATE` error
   count from ~50 to 2. (1) `_compiler_finalize` no longer emits a
