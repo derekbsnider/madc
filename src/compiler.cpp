@@ -4151,6 +4151,60 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
 }
 
+// Lvalue path — return the Mem pointing at the element address. Mirrors
+// the address-computing portion of compile() but stops before
+// emit_ir_value so callers can continue chaining (e.g. nested 2D
+// subscripts, TokenMember on s[i], `&arr[i]`).
+Operand &TokenSubscriptExpr::operand(Program &pgm)
+{
+    DBG(pgm.cc.comment("TokenSubscriptExpr::operand()"));
+
+    bool base_needs_compile =
+	dynamic_cast<TokenAdd *>(base_expr) != NULL
+     || dynamic_cast<TokenSub *>(base_expr) != NULL
+     || dynamic_cast<TokenAssign *>(base_expr) != NULL
+     || dynamic_cast<TokenCast *>(base_expr) != NULL;
+    Operand op_storage;
+    Operand *op_ptr;
+    if ( base_needs_compile )
+    {
+	regdefp_t base_rdp = {nullptr, base_expr->datadef(), nullptr};
+	op_ptr = &base_expr->compile(pgm, base_rdp);
+    }
+    else
+	op_ptr = &base_expr->operand(pgm);
+    Operand &base_op = *op_ptr;
+    x86::Gp base_reg = pgm.cc.newIntPtr("subexpr_obj");
+    if ( base_op.isMem() )
+    {
+	DataDef *bdd = base_expr->datadef();
+	if ( bdd && bdd->is_pointer() && !is_fixed_array_struct_member(base_expr) )
+	    pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
+	else
+	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+    }
+    else if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+    else
+	pgm.Throw(this) << "TokenSubscriptExpr::operand() unsupported base operand" << flush;
+
+    regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
+    Operand &idx_op = index->compile(pgm, idx_rdp);
+    x86::Gp idx_reg = pgm.cc.newGpq("subexpr_idx");
+    load_idx_to_gpq(pgm, idx_reg, idx_op);
+
+    size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
+    uint32_t shift = 0;
+    if      ( elem_size == 8 ) shift = 3;
+    else if ( elem_size == 4 ) shift = 2;
+    else if ( elem_size == 2 ) shift = 1;
+    else if ( elem_size != 1 )
+	pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+
+    _operand = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+    return _operand;
+}
+
 // Write subscript: container[index] = val  (called from TokenAssign::compile)
 void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_type)
 {

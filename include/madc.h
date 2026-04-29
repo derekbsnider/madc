@@ -340,10 +340,15 @@ public:
     }
     virtual TokenType type() const { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
-    virtual asmjit::Operand &operand(Program &pgm) {
-        regdefp_t r = {nullptr, nullptr, nullptr};
-        return compile(pgm, r);
-    }
+    // operand() must return an *lvalue* (Mem) — i.e. the address of
+    // the element — not the loaded value. Callers (TokenAssign LHS,
+    // outer TokenSubscriptExpr for chained 2D indexing, TokenMember
+    // for s[i].field, etc.) need to compute offsets from the
+    // element's address, and the default `compile()` path emits
+    // emit_ir_value which loads through Mem and yields a Gp holding
+    // the value — chaining through that returned a numeric value as
+    // if it were an address and crashed at NULL/garbage.
+    virtual asmjit::Operand &operand(Program &pgm);
     virtual asmjit::Operand &compile(Program &, regdefp_t &);
 };
 
