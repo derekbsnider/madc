@@ -1684,6 +1684,46 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
 	regdp.second = &func->returns;
 
+    // Small struct return-by-value (1..16 bytes) per SysV x86-64:
+    // the callee places bytes 0..7 in rax, bytes 8..15 in rdx. Madc's
+    // FuncSignature can only declare a single TypeId for the return,
+    // so cc.invoke alone captures rax. Without explicit handling, the
+    // caller treats the rax value as a pointer (e.g. for the struct
+    // memcpy in TokenAssign) and segfaults dereferencing arbitrary
+    // bytes. Spill rax (and rdx for >8-byte structs) to a fresh stack
+    // slot here, then return the slot's address as the operand —
+    // that is the address downstream struct copies expect.
+    if ( func->returns.basetype() == BaseType::btStruct
+      && func->returns.size > 0 && func->returns.size <= 16 )
+    {
+	DBG(pgm.cc.comment("TokenCallFunc::compile() small struct ret spill"));
+	x86::Gp rax_v = pgm.cc.newGpq("structret_lo");
+	call->setRet(0, rax_v);
+
+	uint32_t slot_size = (uint32_t)((func->returns.size + 7u) & ~7u);
+	if ( slot_size < 16 ) slot_size = 16;
+	x86::Mem slot = pgm.cc.newStack(slot_size, 8);
+	x86::Mem lo = slot; lo.setSize(8);
+	pgm.cc.mov(lo, rax_v);
+
+	if ( func->returns.size > 8 )
+	{
+	    // Capture rdx into a vreg before asmjit's allocator reuses it.
+	    // The mov is the first instruction emitted after the InvokeNode,
+	    // so rdx still holds the high half of the SysV return.
+	    x86::Gp rdx_v = pgm.cc.newGpq("structret_hi");
+	    pgm.cc.mov(rdx_v, x86::rdx);
+	    x86::Mem hi = slot; hi.setSize(8); hi.addOffset(8);
+	    pgm.cc.mov(hi, rdx_v);
+	}
+
+	x86::Gp slot_addr = pgm.cc.newIntPtr("structret_addr");
+	pgm.cc.lea(slot_addr, slot);
+	_operand = slot_addr;
+	if ( !regdp.first ) regdp.first = &_operand;
+	return _operand;
+    }
+
     // For a dlsym late-bound extern-declared function, apply the same
     // int32-sign-extension whitelist the variadic dlsym path uses, so
     // `extern int strcmp(...)` returns negative values correctly.
