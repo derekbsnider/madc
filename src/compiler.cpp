@@ -4256,6 +4256,19 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() variable found, var->is_global() && var->data"));
 	    movreg(pgm.cc, rmi->second, var);
         }
+	else if ( var->is_global() && var->data && var->is_fixed_array()
+		  && rmi->second.isReg() )
+	{
+	    // Global fixed-arrays: cached Gp holds the base pointer (a
+	    // program-lifetime constant). Re-emit the immediate load so
+	    // every reuse — including ones on a branch the original mov
+	    // doesn't dominate — sees the address. Without this, the
+	    // first use's `mov reg, imm(addr)` is emitted inside one
+	    // branch (e.g. the `then`) and the `else` branch reads an
+	    // uninitialized vreg.
+	    DBG(pgm.cc.comment("TokenCpnd::voperand() re-emit fixed-array base"));
+	    pgm.cc.mov(rmi->second.as<x86::Gp>(), imm(var->data));
+        }
 	return rmi->second;
     }
 
