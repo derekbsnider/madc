@@ -246,25 +246,120 @@ madc was last touched ~7 years ago. The asmjit v1.14 migration has been complete
 
 ---
 
-### 4.2 Public API design
+### 4.2 Public C++ API
+
+The C++ API is the primary embedding surface. madc is implemented in
+C++ already — exposing a stable C++ class is a small refactor of the
+existing `Program` class plus some hardening, not a from-scratch
+design.  Modern C++ hosts (game engines, CMS plugins, native dev tools)
+get the natural API; the C shim in §4.3 is a thin wrapper for legacy
+hosts and FFI bindings (Python ctypes, Rust, Node-API).
+
+**New header:** `include/madc/embed.h` — public C++ surface, namespaced
+under `madc::`.  Distinct from internal headers (`madc.h`, `tokens.h`,
+`datadef.h`) which stay private.
+
+```cpp
+namespace madc {
+
+class value;          // tagged union: int64 / double / string / pointer
+class error;          // structured: code, message, source location
+class program;        // one madc execution context — replaces today's Program
+
+class program {
+public:
+    program();
+    ~program();
+
+    // Loading
+    void exec_file(const std::string &path);
+    void exec_string(const std::string &source);
+    void compile_file(const std::string &path);   // load + JIT, don't run
+
+    // Calling into a script
+    value call(const std::string &fn_name, std::initializer_list<value> args);
+
+    // Calling out of a script — register a C++ callable under a name
+    // the script can invoke.
+    using callback = std::function<value(std::vector<value> &)>;
+    void register_function(const std::string &name, callback fn,
+                           const std::string &signature);
+
+    // Globals
+    value get_global(const std::string &name);
+    void  set_global(const std::string &name, const value &v);
+
+    // Sandbox / resource limits
+    void set_cpu_limit(unsigned seconds);
+    void set_mem_limit_mb(unsigned mb);
+    void set_dlsym_allowlist(const std::vector<std::string> &names);
+    void disable_dlsym();
+
+    // Diagnostics
+    void set_verbose(bool v);
+    const std::vector<error> &errors() const;
+
+private:
+    struct impl;             // pimpl — internal Program lives here
+    std::unique_ptr<impl> _;
+};
+
+} // namespace madc
+```
+
+**Implementation:** the existing `Program` becomes `madc::program::impl`.
+Public methods forward through.  `exec_file` etc. throw `madc::compile_error`
+or `madc::runtime_error` (subclasses of `std::exception`) on failure — the
+existing `throwit` / `Throw` machinery already produces source-tagged errors,
+just needs a public exception type.
+
+**Files:**
+- `include/madc/embed.h` (new, public)
+- `include/madc/value.h` (new, public)
+- `include/madc/error.h` (new, public)
+- `src/embed.cpp` (new) — pimpl forwarding
+- existing internals stay where they are; the `madc::` namespace is purely
+  the public façade.
+
+### 4.3 C shim (`madc_api.h`) + libmadc.so build
+
+Thin `extern "C"` wrappers over §4.2's C++ API for hosts that can't link
+C++ directly (legacy C codebases, FFI bindings).  Hand-written, ~200 LOC,
+each function is roughly:
+
+```c
+extern "C" int madc_exec_file(madc_program *p, const char *path) {
+    try { reinterpret_cast<madc::program *>(p)->exec_file(path); return 0; }
+    catch (const madc::compile_error &e) { /* stash */ return -1; }
+    catch (...) { return -2; }
+}
+```
 
 **New header:** `include/madc_api.h`
 
-```cpp
-// Minimal embedding API
-madc_program* madc_create();
-int madc_exec_file(madc_program*, const char* path);
-int madc_exec_string(madc_program*, const char* source);
-void madc_set_verbose(madc_program*, bool verbose);
-void madc_destroy(madc_program*);
+```c
+typedef struct madc_program_opaque madc_program;
+
+madc_program *madc_create(void);
+void          madc_destroy(madc_program *);
+int           madc_exec_file   (madc_program *, const char *path);
+int           madc_exec_string (madc_program *, const char *src);
+int           madc_call        (madc_program *, const char *fn,
+                                const madc_value *args, int nargs,
+                                madc_value *result);
+int           madc_register    (madc_program *, const char *name,
+                                madc_func_t fn, const char *signature);
+const char   *madc_last_error  (madc_program *);
+/* … resource-limit / sandbox setters mirror the C++ class … */
 ```
 
-### 4.3 Build system changes
-
 **`src/Makefile` additions:**
-- `lib/libmadc.so` target (shared library from all .o files except madc.o)
-- `bin/madc` links against `lib/libmadc.so` (thin wrapper)
-- `make install` copies headers and library to `/usr/local/`
+- `lib/libmadc.so` target — shared library from all `.o` files except
+  `madc.o` (the CLI driver).  Includes `embed.o` (C++ API) and
+  `madc_api.o` (C shim).
+- `bin/madc` links against `lib/libmadc.so` as a thin wrapper.
+- `make install` copies headers (`include/madc/`, `include/madc_api.h`)
+  and library to `/usr/local/`.
 
 ---
 
@@ -388,8 +483,8 @@ the work is wiring them up and writing a small Object/ELF writer.
 | 3.2 | dlopen namespace fallback | 2.3 | Medium |
 | 3.3 | First-class dlopen/dlsym | 3.2 | Low |
 | 4.1   | Decouple static globals | All Phase 2 | Low |
-| 4.2   | Public embedding API | 4.1 | Low |
-| 4.3   | Build libmadc.so | 4.1, 4.2 | Low |
+| 4.2   | C++ embedding API (`madc::program`) | 4.1 | Low |
+| 4.3   | C shim (`madc_api.h`) + libmadc.so build | 4.2 | Low |
 | 4.4.a | JIT code cache (skips lex/parse/compile on cache hit) | 4.3 | Medium |
 | 4.4.b | True AOT to ELF .so | 4.3, 4.4.a | Low |
 
