@@ -16,5 +16,12 @@ int main()
 	puti(a);
     }
 
+    int i;
+    for ( i = 0; i < 5; i++ )
+	puti(i);
+
+    for ( i = 5; i > 0; i-- )
+	puti(i);
+
     return 0;
 }

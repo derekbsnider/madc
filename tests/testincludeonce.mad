@@ -1,0 +1,11 @@
+#!/../bin/madc
+#include <stdio.h>
+#include "include_once_helper.mah"
+#include "include_once_helper.mah"
+
+int main()
+{
+    printf("%ld\n", greet_once_count);
+    printf("include once works!\n");
+    return 0;
+}

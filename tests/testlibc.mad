@@ -1,0 +1,30 @@
+#include <iostream>
+// Test libc dlsym fallback — functions available without #include or #load
+
+int main()
+{
+    // getpid() — always returns a positive int
+    int pid;
+    pid = getpid();
+    if ( pid > 0 )
+        cout << "pid ok" << endl;   // pid ok
+
+    // sleep(0) — returns 0 on success
+    int r;
+    r = sleep(0);
+    cout << r << endl;              // 0
+
+    // getuid — returns current user id
+    int uid;
+    uid = getuid();
+    if ( uid >= 0 )
+        cout << "uid ok" << endl;   // uid ok
+
+    // getppid — parent process id
+    int ppid;
+    ppid = getppid();
+    if ( ppid > 0 )
+        cout << "ppid ok" << endl;  // ppid ok
+
+    return 0;
+}

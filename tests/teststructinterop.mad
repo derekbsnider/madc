@@ -1,0 +1,67 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include <sys/time.h>
+#include <sys/select.h>
+
+// Test libc struct interop: struct tm, struct timeval, struct fd_set
+
+int main()
+{
+    // struct tm via localtime
+    time_t *pt = (time_t *) calloc(1, sizeof(time_t));
+    *pt = 1735689600;   // 2025-01-01 00:00:00 UTC
+    struct tm *t = (struct tm *) gmtime(pt);
+    printf("tm_year=%ld (since 1900)\n", t->tm_year);       // 125
+    printf("tm_mon=%ld (0=Jan)\n", t->tm_mon);              // 0
+    printf("tm_mday=%ld\n", t->tm_mday);                    // 1
+    printf("tm_hour=%ld\n", t->tm_hour);                    // 0
+    printf("tm_min=%ld\n", t->tm_min);                      // 0
+    printf("tm_sec=%ld\n", t->tm_sec);                      // 0
+    free(pt);
+
+    // struct timeval via gettimeofday — check that fields are populated
+    struct timeval *tv = (struct timeval *) calloc(1, sizeof(struct timeval));
+    gettimeofday(tv, 0);
+    int64_t sec = tv->tv_sec;
+    int64_t us  = tv->tv_usec;
+    if ( sec > 1700000000 ) printf("tv_sec looks recent: 1\n");
+    else                    printf("tv_sec looks recent: 0\n");
+    if ( us >= 0 )
+        if ( us < 1000000 ) printf("tv_usec in range: 1\n");
+        else                printf("tv_usec in range: 0\n");
+    else                    printf("tv_usec in range: 0\n");
+    free(tv);
+
+    // fd_set + FD_* macros
+    struct fd_set rfds;
+    FD_ZERO(&rfds);
+    FD_SET(0, &rfds);
+    FD_SET(5, &rfds);
+    FD_SET(63, &rfds);    // last bit in first slot
+    FD_SET(64, &rfds);    // first bit in second slot
+    FD_SET(1000, &rfds);  // bit in 16th slot
+
+    printf("FD_ISSET(0) = %ld\n",    FD_ISSET(0, &rfds));    // 1
+    printf("FD_ISSET(1) = %ld\n",    FD_ISSET(1, &rfds));    // 0
+    printf("FD_ISSET(5) = %ld\n",    FD_ISSET(5, &rfds));    // 1
+    printf("FD_ISSET(63) = %ld\n",   FD_ISSET(63, &rfds));   // 1
+    printf("FD_ISSET(64) = %ld\n",   FD_ISSET(64, &rfds));   // 1
+    printf("FD_ISSET(1000) = %ld\n", FD_ISSET(1000, &rfds)); // 1
+
+    FD_CLR(5, &rfds);
+    printf("after FD_CLR(5): %ld\n", FD_ISSET(5, &rfds));    // 0
+
+    FD_ZERO(&rfds);
+    printf("after FD_ZERO, 1000 set? %ld\n", FD_ISSET(1000, &rfds)); // 0
+
+    // select with zero timeout (no fds, should return 0 immediately)
+    struct timeval *to = (struct timeval *) calloc(1, sizeof(struct timeval));
+    to->tv_sec = 0;
+    to->tv_usec = 0;
+    int r = select(1, &rfds, 0, 0, to);
+    printf("select(empty, 0ms) = %ld\n", r);                // 0
+    free(to);
+
+    return 0;
+}

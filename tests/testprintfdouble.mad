@@ -1,0 +1,37 @@
+#!/usr/bin/env madc
+// Regression: variadic printf-style calls with double arguments must pass
+// floating-point values correctly through both libc printf and user wrappers.
+
+#include <stdio.h>
+#include <stdarg.h>
+
+void wrap_printf(char *fmt, ...)
+{
+	char buf[256];
+	va_list args;
+	va_start(args, fmt);
+	vsprintf(buf, fmt, args);
+	va_end(args);
+	printf("%s", buf);
+}
+
+int main()
+{
+	double pi = 3.1415926535;
+	double small = 0.00125;
+	double big = 12345.6789;
+
+	printf("printf f: %.3f\n", pi);
+	printf("printf e: %.3e\n", small);
+	printf("printf g: %.6g\n", big);
+	printf("printf mix: %s %.2f %d %.3e %.4g\n", "vals", pi, 7, small, big);
+	printf("printf many: %.1f %.1f %.1f %.1f\n", 1.5, 2.5, 3.5, 4.5);
+
+	wrap_printf("wrap f: %.2f\n", pi);
+	wrap_printf("wrap e: %.4e\n", small);
+	wrap_printf("wrap g: %.5g\n", big);
+	wrap_printf("wrap mix: %s %.2f %d %.3e %.4g\n", "vals", pi, 7, small, big);
+	wrap_printf("wrap many: %.1f %.1f %.1f %.1f\n", 1.5, 2.5, 3.5, 4.5);
+
+	return 0;
+}

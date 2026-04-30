@@ -1,0 +1,4 @@
+while: x=40 count=30
+if_big: y=15
+chain: a=99 b=99
+pair_eq: 7 7

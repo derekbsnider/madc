@@ -1,0 +1,61 @@
+// Regression: madc int is 64-bit, but C `%d` writes only 4 bytes. The
+// __madc_sscanf wrapper rewrites %d/%i/%u/%o/%x/%X/%n -> %ld/etc. so
+// libc writes the full 8 bytes into the int slot.
+//
+// Before this fix, `int x = 0; sscanf("-1", "%d", &x);` left x with the
+// low 4 bytes set to 0xFFFFFFFF and the high 4 at 0 — reading x as
+// int64 gave a positive 4B, which broke the SMAUG slot_lookup
+// guard `if (slot <= 0) return -1;` for negative slots from area
+// data.
+
+#include <stdio.h>
+
+int main()
+{
+    int x1 = 0, x2 = 0, x3 = 0, x4 = 0;
+
+    sscanf("-1 -2 100 -3", "%d %d %d %d", &x1, &x2, &x3, &x4);
+
+    if (x1 == -1 && x2 == -2 && x3 == 100 && x4 == -3)
+        printf("PASS: int values %d %d %d %d\n", x1, x2, x3, x4);
+    else
+        printf("FAIL: got %d %d %d %d (long: 0x%016lx)\n",
+               x1, x2, x3, x4, (long)x1);
+
+    if (x1 < 0 && x2 < 0 && x4 < 0)
+        printf("PASS: negative comparison works\n");
+    else
+        printf("FAIL: x1<0=%d x2<0=%d x4<0=%d\n", x1<0, x2<0, x4<0);
+
+    if ((long)x1 == 0xffffffffffffffffL)
+        printf("PASS: full 8-byte sign extension\n");
+    else
+        printf("FAIL: high 32 not extended, got 0x%016lx\n", (long)x1);
+
+    // Hex
+    int h = 0;
+    sscanf("ffffffff", "%x", &h);
+    if (h == 0xffffffff)
+        printf("PASS: hex %%x reads 0xffffffff\n");
+    else
+        printf("FAIL: hex got 0x%08x\n", h);
+
+    // Mixed string + int
+    char buf[32] = "";
+    int n = 0;
+    sscanf("name -7", "%s %d", buf, &n);
+    if (n == -7 && buf[0] == 'n')
+        printf("PASS: mixed %%s %%d (n=%d, buf=%s)\n", n, buf);
+    else
+        printf("FAIL: mixed got n=%d buf=%s\n", n, buf);
+
+    // Long unaffected
+    long l1 = 0;
+    sscanf("-99", "%ld", &l1);
+    if (l1 == -99)
+        printf("PASS: %%ld passthrough\n");
+    else
+        printf("FAIL: %%ld got %ld\n", l1);
+
+    return 0;
+}

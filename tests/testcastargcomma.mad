@@ -1,0 +1,28 @@
+// Cast expressions as function-call arguments followed by a comma.
+// In conditional parseExpression (used for cast-body), comma used to be
+// consumed, so the outer call-arg list didn't see the separator and
+// merged the next arg into the first. E.g. `strcpy((char *)h+8, "x")`
+// silently produced a one-arg call.
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+struct hdr { int a; int b; };
+
+int main()
+{
+    struct hdr *h = (struct hdr *) malloc(32);
+    char *p = (char *) h;
+    for (int i = 0; i < 32; i++) p[i] = 'Q';
+
+    // Cast + add as first arg, string literal as second arg
+    strcpy((char *) h + 8, "WORLD");
+    printf("at h+8: [%s] (expect WORLD)\n", p + 8);
+
+    // Cast-only as first arg
+    strcpy((char *) h, "ZZZZ");
+    printf("at h:   [%s] (expect ZZZZ)\n", p);
+
+    free(h);
+    return 0;
+}

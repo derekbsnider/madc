@@ -1,0 +1,37 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+int main()
+{
+	unsigned char uc = 200;
+	unsigned short us = 50000;
+	unsigned int ui = 42;
+	unsigned long ul = 123456789;
+	unsigned u = 99;
+	short s = -1234;
+	short int si = 5678;
+	long l = 999999999;
+	long int li = 888888888;
+	signed char sc = -50;
+
+	printf("unsigned char = %ld\n", uc);
+	printf("unsigned short = %ld\n", us);
+	printf("unsigned int = %ld\n", ui);
+	printf("unsigned long = %ld\n", ul);
+	printf("unsigned = %ld\n", u);
+	printf("short = %ld\n", s);
+	printf("short int = %ld\n", si);
+	printf("long = %ld\n", l);
+	printf("long int = %ld\n", li);
+	printf("signed char = %ld\n", sc);
+
+	printf("sizeof(unsigned char) = %ld\n", sizeof(unsigned char));
+	printf("sizeof(unsigned short) = %ld\n", sizeof(unsigned short));
+	printf("sizeof(unsigned int) = %ld\n", sizeof(unsigned int));
+	printf("sizeof(unsigned long) = %ld\n", sizeof(unsigned long));
+	printf("sizeof(short) = %ld\n", sizeof(short));
+	printf("sizeof(long) = %ld\n", sizeof(long));
+
+	printf("All unsigned tests passed!\n");
+	return 0;
+}

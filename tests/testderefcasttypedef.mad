@@ -1,0 +1,60 @@
+// Regression: `*(TYPE*)expr` where TYPE is a typedef'd user type
+// (e.g. `EXT_BV`) used to fail with "use of undeclared identifier
+// 'TYPE'" because the unary-`*`-`(` parser branch bypassed cast
+// detection and sent `TYPE` through the variable-lookup path.
+//
+// Fix: peek inside the `(`. If the first token looks like a cast
+// signature head (`ttDataType` keyword, `struct`/`class`, or a
+// typedef'd identifier), delegate the entire `(...)` to
+// parseExpression so its existing cast detection runs. The plain
+// grouping path (`*(a + b)`) is unchanged.
+//
+// Surfaced in MadSMAUG's `xIS_SET(*(EXT_BV*)vd->data, flag)` in
+// mud_prog.c.
+
+#include <iostream>
+
+typedef struct extended_bitvector EXT_BV;
+struct extended_bitvector {
+    int bits[4];
+};
+
+#define XBM 31
+#define RSV 5
+#define xIS_SET(var, bit)  ((var).bits[(bit) >> RSV] & 1 << ((bit) & XBM))
+
+struct vd_rec { void *data; };
+
+int main()
+{
+    struct extended_bitvector bv;
+    bv.bits[0] = 7;
+    bv.bits[1] = 0;
+    void *p = &bv;
+
+    // isolated: `(*(TYPE*)p).member`
+    int v = (*(EXT_BV*)p).bits[0];
+    cout << v << endl;                 // 7
+
+    // deref-and-copy: `TYPE x = *(TYPE*)p;`
+    EXT_BV copy = *(EXT_BV*)p;
+    cout << copy.bits[0] << endl;      // 7
+
+    // arrow still works (was already fine)
+    cout << ((EXT_BV*)p)->bits[0] << endl;  // 7
+
+    // Macro-expansion context — the original mud_prog.c surface.
+    struct vd_rec vd;
+    vd.data = &bv;
+    int flag = 1;
+    int r = xIS_SET(*(EXT_BV*)vd.data, flag) ? 1 : 0;
+    cout << r << endl;                 // 1  (7 & (1<<1) = 2, nonzero)
+
+    // Plain grouping path must still work.
+    int a = 10;
+    int *ap = &a;
+    int b = *(ap);
+    cout << b << endl;                 // 10
+
+    return 0;
+}

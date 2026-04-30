@@ -1,0 +1,22 @@
+#include <stdio.h>
+
+int main()
+{
+    int x = 0;
+    int y = 7;
+    int *p = &x;
+    int *q = &y;
+    int i = 0;
+
+    while ( i < 1 )
+    {
+        if ( i == 0 )
+        {
+            i++;
+        }
+        *p = *q;
+    }
+
+    printf("%d\n", x);
+    return 0;
+}

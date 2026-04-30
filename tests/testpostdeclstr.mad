@@ -1,0 +1,33 @@
+// Post-declaration string-literal assignment.
+// `char *p; p = "literal";` and `ptr->name = "literal";` need to extract
+// the literal's data pointer via string_cstr rather than copy the
+// std::string object header — which shows up as garbage bytes.
+#include <stdio.h>
+#include <stdlib.h>
+
+struct row { char *name; int val; };
+
+int main()
+{
+    // Bare char *
+    char *p;
+    p = "hello";
+    printf("bare: [%s] (expect hello)\n", p);
+
+    // At-declaration init (control case — was already working)
+    char *q = "world";
+    printf("init: [%s] (expect world)\n", q);
+
+    // Struct member char *
+    struct row *r = (struct row *) malloc(sizeof(struct row));
+    r->name = "alice";
+    r->val = 42;
+    printf("member: [%s] val=%d (expect alice 42)\n", r->name, r->val);
+
+    // Reassign
+    p = "goodbye";
+    printf("reassign: [%s] (expect goodbye)\n", p);
+
+    free(r);
+    return 0;
+}

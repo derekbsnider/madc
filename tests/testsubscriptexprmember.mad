@@ -1,0 +1,53 @@
+#!/../bin/madc
+// `expr[i].member` — subscript LHS is an expression (not a plain
+// variable), e.g. `p->arr[i].member`. The dot handler's ttSubscript
+// branch used to dynamic_cast lhs_dot to `TokenSubscript *`
+// unconditionally, but `TokenSubscriptExpr` also reports ttSubscript
+// without deriving from `TokenSubscript`; the unchecked cast returned
+// NULL and dereferencing `tsub->object` segfaulted.
+//
+// Closes the MadSMAUG umbrella front edge at handler.c:4789 where
+// `ch->pcdata->killed[x].vnum` previously crashed the parser.
+
+#include <stdio.h>
+
+struct Item { int x; };
+
+struct Container {
+    int id;
+    struct Item items[4];
+};
+
+int sum3(struct Container *p)
+{
+    return p->items[0].x + p->items[1].x + p->items[2].x;
+}
+
+int main()
+{
+    struct Container c;
+    c.id = 1;
+    c.items[0].x = 10;
+    c.items[1].x = 20;
+    c.items[2].x = 30;
+    c.items[3].x = 40;
+
+    struct Container *p = &c;
+
+    // Read through p->items[i].x
+    printf("0=%d 1=%d 2=%d 3=%d\n", p->items[0].x, p->items[1].x,
+	                             p->items[2].x, p->items[3].x);
+
+    // Read with a runtime index.
+    int i = 2;
+    printf("at %d = %d\n", i, p->items[i].x);
+
+    // Write through the same pattern.
+    p->items[0].x = 999;
+    printf("after write: c.items[0].x=%d\n", c.items[0].x);
+
+    // Used inside a summing helper that takes a pointer.
+    printf("sum=%d\n", sum3(p));
+
+    return 0;
+}

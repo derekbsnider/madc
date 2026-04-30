@@ -1,0 +1,40 @@
+// Writing through a double-deref (`**pp = v;`) used to SIGSEGV
+// inside TokenAssign::compile at offset 0x8 (= `tml->var.type`).
+//
+// TokenDerefExpr::type() returns ttMember (alongside TokenDeref),
+// but TokenDerefExpr is NOT derived from TokenMember. So LHS
+// handling that first dynamic_cast'd to TokenDeref (which caught
+// `*p = v;`), then fell through to the ttMember branch and
+// dynamic_cast'd to TokenMember, got NULL back from TokenMember
+// on a `**pp = v;` AST — then blind-accessed `tml->var.type`,
+// dereferencing NULL at field offset 8.
+//
+// Fix: add an explicit TokenDerefExpr branch between the
+// TokenDeref branch and the ttMember branch in TokenAssign::
+// compile. Read through (`v = **pp;`) already worked because
+// the read path compiles the LHS expression, not the dest-type
+// switch.
+
+#include <stdio.h>
+
+int main()
+{
+    // Basic write-through double-deref on a local int
+    int n = 42;
+    int *p  = &n;
+    int **pp = &p;
+    **pp = 99;
+    printf("n=%d\n", n);
+
+    // Read-through still works
+    int m = **pp;
+    printf("m=%d\n", m);
+
+    // Double-deref write via a pointer re-aimed at a different slot
+    int other = 7;
+    p = &other;
+    **pp = 123;
+    printf("other=%d n=%d\n", other, n);
+
+    return 0;
+}

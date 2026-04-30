@@ -1,0 +1,84 @@
+#include <stdio.h>
+
+// Test C fixed-size arrays (1D and multi-dim)
+
+int main()
+{
+    // int array, read/write by index
+    int arr[4];
+    for ( int i = 0; i < 4; i++ )
+        arr[i] = i * 10;
+    for ( int i = 0; i < 4; i++ )
+        printf("arr[%ld] = %ld\n", i, arr[i]);
+
+    // arithmetic in subscript and RHS
+    int j = 2;
+    int sum = arr[0] + arr[j] + arr[j + 1];  // 0 + 20 + 30 = 50
+    printf("sum = %ld\n", sum);
+
+    arr[0] = arr[3] - arr[1];                // 30 - 10 = 20
+    printf("arr[0] = %ld\n", arr[0]);
+
+    // int32_t array (4-byte elements)
+    int32_t nums[3];
+    nums[0] = 100;
+    nums[1] = 200;
+    nums[2] = 300;
+    printf("nums[1] = %ld\n", nums[1]);
+
+    // char array decays to char* for printf %s
+    char buf[8];
+    for ( int i = 0; i < 7; i++ )
+        buf[i] = 65 + i;    // 'A'..'G'
+    buf[7] = 0;
+    printf("buf[0] = %ld\n", buf[0]);
+    printf("buf as string: %s\n", buf);
+
+    // 2D array
+    int board[3][4];
+    for ( int r = 0; r < 3; r++ )
+        for ( int c = 0; c < 4; c++ )
+            board[r][c] = r * 10 + c;
+    printf("board[2][3] = %ld\n", board[2][3]);       // 23
+    printf("board[0][0] = %ld\n", board[0][0]);       // 0
+
+    // 3D array — spot check
+    int cube[2][3][4];
+    cube[1][2][3] = 999;
+    cube[0][0][0] = 1;
+    printf("cube[1][2][3] = %ld\n", cube[1][2][3]);   // 999
+    printf("cube[0][0][0] = %ld\n", cube[0][0][0]);   // 1
+
+    // Initializer lists
+    int v[4] = { 100, 200, 300, 400 };
+    printf("v[0]=%ld v[3]=%ld\n", v[0], v[3]);         // 100 400
+
+    // Size inference from initializer
+    int primes[] = { 2, 3, 5, 7, 11 };
+    int psum = 0;
+    for ( int i = 0; i < 5; i++ ) psum += primes[i];
+    printf("psum = %ld\n", psum);                      // 28
+
+    // Partial init, rest zero-filled
+    int partial[5] = { 9, 99 };
+    printf("partial[0]=%ld partial[4]=%ld\n", partial[0], partial[4]); // 9 0
+
+    // String literal init for char arrays
+    char msg[] = "hello";
+    printf("msg = [%s]\n", msg);                    // hello
+    printf("msg[0]=%ld msg[5]=%ld\n", msg[0], msg[5]); // 104 0
+
+    char padded[10] = "hi";
+    printf("padded = [%s]\n", padded);              // hi
+    printf("padded[2]=%ld\n", padded[2]);           // 0
+
+    // char *name = "literal" behaves like char name[] = "literal"
+    char *greet = "Hello";
+    printf("greet = [%s]\n", greet);                 // Hello
+
+    // char *p = 0 still works as a null pointer
+    char *np = 0;
+    printf("np null? %ld\n", np == 0 ? 1 : 0);       // 1
+
+    return 0;
+}

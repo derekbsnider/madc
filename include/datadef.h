@@ -24,6 +24,7 @@ enum class DataType : uint16_t {
 	dtIFSTREAM, dtOFSTREAM, dtFSTREAM, dtTCPSTREAM, 
 	dtMUTEX, dtTHREAD, dtTHISTHREAD,
 	dtARRAY,
+	dtVECTOR, dtMAP, dtSET, dtLIST,
 
 	// rtPointer variants
 	dtVOIDptr = 10000, dtBOOLptr, dtUINT8ptr, dtBYTEptr=dtUINT8ptr, dtINT8ptr, dtCHARptr = dtINT8ptr,
@@ -35,6 +36,7 @@ enum class DataType : uint16_t {
 	dtIFSTREAMptr, dtOFSTREAMptr, dtFSTREAMptr, dtTCPSTREAMptr, 
 	dtMUTEXptr, dtTHREADptr, dtTHISTHREADptr,
 	dtARRAYptr,
+	dtVECTORptr, dtMAPptr, dtSETptr, dtLISTptr,
 
 	// rtReference variants
 	dtVOIDref = 20000, dtBOOLref, dtUINT8ref, dtBYTEref=dtUINT8ref, dtINT8ref, dtCHARref = dtINT8ref,
@@ -46,6 +48,7 @@ enum class DataType : uint16_t {
 	dtIFSTREAMref, dtOFSTREAMref, dtFSTREAMref, dtTCPSTREAMref, 
 	dtMUTEXref, dtTHREADref, dtTHISTHREADref,
 	dtARRAYref,
+	dtVECTORref, dtMAPref, dtSETref, dtLISTref,
 };
 
 // Variable flags
@@ -54,6 +57,7 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfSTATIC	=    4, // static variable
 			  vfPARAM	=    8, // parameter variable
 			  vfREGISTER	=   16, // register-only: never written to memory
+			  vfFIXEDARRAY	=   32, // C fixed-size array (var.dims non-empty)
 			  vfREGSET	=   64, // GpReg set
 			  vfXREGSET	=  128, // extra reg is set (used for string.c_str)
 			  vfALLOC	=  256, // data pointer was allocated by us
@@ -62,6 +66,8 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfCONSTANT	= 2048, // variable is a constant
 			  vfPRIVATE	= 4096, // variable is a private class member
 			  vfPROTECTED	= 8192, // variable is a protected class member
+			  vfADDRTAKEN	=16384, // variable needs stable stack storage for &
+			  vfEXTERN	=32768, // extern declaration placeholder
 			} varflag_t;
 
 #define rtNone(x) 0
@@ -90,8 +96,8 @@ public:
 
 	return false;
     }
-    virtual bool is_string() { if (rawtype() == DataType::dtSTRING) return true; return false; }
-    virtual bool is_numeric()
+    virtual bool is_string() const { if (rawtype() == DataType::dtSTRING) return true; return false; }
+    virtual bool is_numeric() const
     {
 	if ( basetype() != BaseType::btSimple )
 	    return false;
@@ -99,7 +105,7 @@ public:
 	    return true;
 	return false;
     }
-    virtual bool is_integer()
+    virtual bool is_integer() const
     {
 	if ( basetype() != BaseType::btSimple )
 	    return false;
@@ -107,7 +113,7 @@ public:
 	    return true;
 	return false;
     }
-    virtual bool is_real()
+    virtual bool is_real() const
     {
 	if ( basetype() != BaseType::btSimple )
 	    return false;
@@ -115,7 +121,7 @@ public:
 	    return true;
 	return false;
     }
-    virtual bool is_unsigned()
+    virtual bool is_unsigned() const
     {
     	switch(rawtype())
     	{
@@ -130,19 +136,23 @@ public:
     	}
 	return false;
     }
-    virtual bool is_function()
+    virtual bool is_function() const
     {
 	if ( basetype() == BaseType::btFunct )
 	    return true;
 	return false;
     }
-    virtual bool is_struct()
+    virtual bool is_pointer() const
+    {
+	return _type >= 10000 && _type < 20000;
+    }
+    virtual bool is_struct() const
     {
 	if ( basetype() == BaseType::btStruct )
 	    return true;
 	return false;
     }
-    virtual bool is_object()
+    virtual bool is_object() const
     {
 	if ( basetype() == BaseType::btClass )
 	    return true;
@@ -225,23 +235,28 @@ public:
     // get a new register for the datatype
     virtual asmjit::Operand newreg(asmjit::x86::Compiler &cc, const char *n=NULL)
     {
+	// IMPORTANT: asmjit's newGpq/newXmm/etc. are variadic printf-style —
+	// they interpret the first const char* as a format string. Names that
+	// contain '%' (e.g. our __literal__... string-literal variable names
+	// with embedded %ld / %s) must be passed with an explicit "%s" fmt
+	// to avoid garbage deref on the unmatched format spec.
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    return n ? cc.newGpb(n) : cc.newGpb();
-	case DataType::dtBOOL:    return n ? cc.newGpb(n) : cc.newGpb();
-	case DataType::dtINT64:   return n ? cc.newGpq(n) : cc.newGpq();
-	case DataType::dtINT16:   return n ? cc.newGpw(n) : cc.newGpw();
-	case DataType::dtINT24:   return n ? cc.newGpw(n) : cc.newGpw();
-	case DataType::dtINT32:   return n ? cc.newGpd(n) : cc.newGpd();
-	case DataType::dtUINT8:   return n ? cc.newGpb(n) : cc.newGpb();
-	case DataType::dtUINT16:  return n ? cc.newGpw(n) : cc.newGpw();
-	case DataType::dtUINT24:  return n ? cc.newGpw(n) : cc.newGpw();
-	case DataType::dtUINT32:  return n ? cc.newGpd(n) : cc.newGpd();
-	case DataType::dtUINT64:  return n ? cc.newGpq(n) : cc.newGpq();
-	case DataType::dtFLOAT:   return n ? cc.newXmm(n) : cc.newXmm();
-	case DataType::dtDOUBLE:  return n ? cc.newXmm(n) : cc.newXmm();
-	case DataType::dtLDOUBLE: return n ? cc.newXmm(n) : cc.newXmm();
-	default:		  return n ? cc.newIntPtr(n) : cc.newIntPtr();
+	case DataType::dtCHAR:    return n ? cc.newGpb("%s", n) : cc.newGpb();
+	case DataType::dtBOOL:    return n ? cc.newGpb("%s", n) : cc.newGpb();
+	case DataType::dtINT64:   return n ? cc.newGpq("%s", n) : cc.newGpq();
+	case DataType::dtINT16:   return n ? cc.newGpw("%s", n) : cc.newGpw();
+	case DataType::dtINT24:   return n ? cc.newGpw("%s", n) : cc.newGpw();
+	case DataType::dtINT32:   return n ? cc.newGpd("%s", n) : cc.newGpd();
+	case DataType::dtUINT8:   return n ? cc.newGpb("%s", n) : cc.newGpb();
+	case DataType::dtUINT16:  return n ? cc.newGpw("%s", n) : cc.newGpw();
+	case DataType::dtUINT24:  return n ? cc.newGpw("%s", n) : cc.newGpw();
+	case DataType::dtUINT32:  return n ? cc.newGpd("%s", n) : cc.newGpd();
+	case DataType::dtUINT64:  return n ? cc.newGpq("%s", n) : cc.newGpq();
+	case DataType::dtFLOAT:   return n ? cc.newXmm("%s", n) : cc.newXmm();
+	case DataType::dtDOUBLE:  return n ? cc.newXmm("%s", n) : cc.newXmm();
+	case DataType::dtLDOUBLE: return n ? cc.newXmm("%s", n) : cc.newXmm();
+	default:		  return n ? cc.newIntPtr("%s", n) : cc.newIntPtr();
 	}
     }
     // move a register value into memory location pointed to by a pointer
@@ -334,26 +349,53 @@ public:
     }
     // move memory pointed by a pointer into an Xmm register
     // mov(reg, [mem])
+    //
+    // Heap pointers from calloc usually live above the 32-bit signed
+    // displacement range, so emitting `movss/movsd xmm, [abs64]`
+    // directly trips asmjit's reloc-out-of-range error at finalize.
+    // Spill the address into a Gp first and use register-base
+    // addressing — the encoding for `movss/movsd xmm, [reg]` exists
+    // for any 64-bit address. Float (4) needs movss; double (8) and
+    // smaller-int loads happen via movsd which reads only the low
+    // bytes of the addressed slot.
     virtual void movmptr2xval(asmjit::x86::Compiler &cc, asmjit::x86::Xmm &reg, void *ptr)
     {
+	asmjit::x86::Gp p = cc.newIntPtr("_x_addr");
+	cc.mov(p, asmjit::imm(ptr));
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtBOOL:    cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT64:   cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtINT16:   cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT24:   cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT32:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtUINT8:   cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT16:  cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT24:  cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT32:  cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtUINT64:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtFLOAT:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtDOUBLE:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtLDOUBLE: cc.movsd(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
-	default:		  cc.movq(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtCHAR:    cc.movsd(reg, asmjit::x86::byte_ptr(p));  break;
+	case DataType::dtBOOL:    cc.movsd(reg, asmjit::x86::byte_ptr(p));  break;
+	case DataType::dtINT64:   cc.movsd(reg, asmjit::x86::qword_ptr(p)); break;
+	case DataType::dtINT16:   cc.movsd(reg, asmjit::x86::word_ptr(p));  break;
+	case DataType::dtINT24:   cc.movsd(reg, asmjit::x86::word_ptr(p));  break;
+	case DataType::dtINT32:   cc.movsd(reg, asmjit::x86::dword_ptr(p)); break;
+	case DataType::dtUINT8:   cc.movsd(reg, asmjit::x86::byte_ptr(p));  break;
+	case DataType::dtUINT16:  cc.movsd(reg, asmjit::x86::word_ptr(p));  break;
+	case DataType::dtUINT24:  cc.movsd(reg, asmjit::x86::word_ptr(p));  break;
+	case DataType::dtUINT32:  cc.movsd(reg, asmjit::x86::dword_ptr(p)); break;
+	case DataType::dtUINT64:  cc.movsd(reg, asmjit::x86::qword_ptr(p)); break;
+	case DataType::dtFLOAT:   cc.movss(reg, asmjit::x86::dword_ptr(p)); break;
+	case DataType::dtDOUBLE:  cc.movsd(reg, asmjit::x86::qword_ptr(p)); break;
+	case DataType::dtLDOUBLE: cc.movsd(reg, asmjit::x86::tword_ptr(p)); break;
+	default:		  cc.movq(reg, asmjit::x86::qword_ptr(p));   break;
 	} // switch
+    }
+    // move an Xmm register's value into the memory pointed to by a
+    // pointer. Counterpart of movmptr2xval; needed by TokenCpnd::putreg
+    // for write-back of double/float global variables. Same Gp-base
+    // trick to dodge the 32-bit-displacement reloc limit.
+    virtual void movxval2mptr(asmjit::x86::Compiler &cc, void *ptr, asmjit::x86::Xmm reg)
+    {
+	asmjit::x86::Gp p = cc.newIntPtr("_x_addr");
+	cc.mov(p, asmjit::imm(ptr));
+	switch((DataType)_type)
+	{
+	case DataType::dtFLOAT:   cc.movss(asmjit::x86::dword_ptr(p), reg); break;
+	case DataType::dtDOUBLE:  cc.movsd(asmjit::x86::qword_ptr(p), reg); break;
+	case DataType::dtLDOUBLE: cc.movsd(asmjit::x86::tword_ptr(p), reg); break;
+	default:		  cc.movsd(asmjit::x86::qword_ptr(p), reg); break;
+	}
     }
     // move memory pointed to by a register into a register
     virtual void movrptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, asmjit::x86::Gp &ptr)
@@ -403,15 +445,31 @@ class DataDefSTRUCT: public DataDef
 {
 public:
     std::vector<memberpair_t> members;
+    std::vector<size_t> member_counts;	// per-member count for fixed arrays (1 for scalars)
+    size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
+    size_t max_align;	// largest member alignment (for finalizing struct size)
+
+    static size_t align_up(size_t v, size_t a) { return a ? ((v + a - 1) & ~(a - 1)) : v; }
+
+    // compute alignment for a field: natural alignment capped by pack setting
+    size_t field_align(const DataDef &dd) const
+    {
+	size_t natural = dd.size > 8 ? 8 : dd.size;  // x86-64: max natural alignment is 8
+	if ( pack == 0 ) return natural;              // C ABI default
+	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
+    }
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
-    DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED) : DataDef(n, s, d) {}
-    DataDefSTRUCT(std::string n, std::vector<memberpair_t> m) : DataDef(n, 0, DataType::dtRESERVED)
+    DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
+	: DataDef(n, s, d), pack(0), max_align(1) {}
+    DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
+	: DataDef(n, 0, DataType::dtRESERVED), pack(0), max_align(1)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);
 	std::vector<memberpair_t>::iterator dvpi;
 	for ( dvpi = m.begin(); dvpi != m.end(); ++dvpi )
 	    addMember(dvpi->first, *dvpi->second, 1);
+	finalize();
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") members.size() " << members.size() << std::endl);
     }
     virtual ~DataDefSTRUCT()
@@ -421,23 +479,42 @@ public:
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
     void addMember(std::string n, DataDef &dd, size_t cnt)
     {
-	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ')' << std::endl);
-	size += dd.size * cnt;
+	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
+	size_t fa = field_align(dd);
+	size = align_up(size, fa);	// pad to field's alignment
+	if ( fa > max_align ) max_align = fa;
 	members.emplace_back(n, &dd);
+	member_counts.push_back(cnt);
+	size += dd.size * cnt;
+    }
+    // round struct size up to its overall alignment (for arrays of structs)
+    void finalize()
+    {
+	size = align_up(size, max_align);
     }
     ssize_t m_offset(std::string &member)
     {
 	ssize_t ofs = 0;
-	std::vector<memberpair_t>::iterator dvpi;
 	DBG(std::cout << "DataDefSTRUCT::offset(" << member << ')' << std::endl);
-	for ( dvpi = members.begin(); dvpi != members.end(); ++dvpi )
+	for ( size_t i = 0; i < members.size(); ++i )
 	{
-	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << dvpi->first << std::endl);
-	    if ( !member.compare(dvpi->first) )
+	    size_t fa = field_align(*members[i].second);
+	    ofs = (ssize_t)align_up((size_t)ofs, fa);
+	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << members[i].first << " ofs=" << ofs << std::endl);
+	    if ( !member.compare(members[i].first) )
 		return ofs;
-	    ofs += dvpi->second->size;
+	    size_t cnt = (i < member_counts.size()) ? member_counts[i] : 1;
+	    ofs += members[i].second->size * cnt;
 	}
 	return -1;
+    }
+    // Per-member fixed-array count (1 for scalar / non-array members).
+    size_t m_count(std::string &member)
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_counts.size()) ? member_counts[i] : 1;
+	return 1;
     }
     DataDef *m_type(std::string &member)
     {
@@ -462,6 +539,7 @@ class DataDefCLASS: public DataDefSTRUCT
 public:
     std::vector<Variable *> methods;
     std::vector<Variable *> staticconst;
+    std::map<std::string, Variable *> method_map; // unmangled name -> method variable
 
     DataDefCLASS(std::string n, size_t s, DataType d) : DataDefSTRUCT(n, s, d) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
@@ -490,12 +568,38 @@ class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("floa
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
 class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtSTRING) {} };
 class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} };
+class DataDefISTREAM:   public DDClass { public: DataDefISTREAM(): DDClass("istream", sizeof(std::istream), DataType::dtISTREAM) {} };
 class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostream", sizeof(std::ostream), DataType::dtOSTREAM) {} };
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
 class DataDefIFSTREAM:  public DDClass { public: DataDefIFSTREAM():DDClass("ifstream", sizeof(std::ifstream), DataType::dtIFSTREAM) {} };
 class DataDefOFSTREAM:  public DDClass { public: DataDefOFSTREAM():DDClass("ofstream", sizeof(std::ofstream), DataType::dtOFSTREAM) {} };
 class DataDefFSTREAM:   public DDClass { public: DataDefFSTREAM(): DDClass("fstream", sizeof(std::fstream), DataType::dtFSTREAM) {} };
 class DataDefLPSTR:     public DataDef { public: DataDefLPSTR():   DataDef("LPSTR", sizeof(char *), rtPtr(DataType::dtCHAR)) {} };
+
+// generic pointer-to-type — tracks what the pointer points to
+// pointers are 64-bit integers at the ABI level (stored in Gp registers)
+class DataDefPTR : public DataDef
+{
+public:
+    DataDef *base_type;  // what this pointer points to
+    DataDefPTR(DataDef &base)
+	: DataDef(base.name + "*", 8, rtPtr(base.type())), base_type(&base) {}
+    virtual bool is_pointer() const { return true; }
+    virtual bool is_numeric() const { return true; }
+    virtual bool is_integer() const { return true; }
+    // Pointers are 8 bytes regardless of what they point to. Without these
+    // overrides the base-class switches fall into the "unsupported numeric
+    // type" default for rtPtr() values (>= 10000), silently dropping the
+    // store — so `global_ptr = x;` becomes a no-op.
+    virtual void movrval2mptr(asmjit::x86::Compiler &cc, void *ptr, asmjit::x86::Gp reg)
+    { cc.mov(asmjit::x86::qword_ptr((uintptr_t)ptr), reg); }
+    virtual void movrval2rptr(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, asmjit::x86::Gp reg)
+    { cc.mov(asmjit::x86::qword_ptr(ptr), reg); }
+    virtual void movint2rptr(asmjit::x86::Compiler &cc, asmjit::x86::Gp ptr, int rval)
+    { cc.mov(asmjit::x86::qword_ptr(ptr), rval); }
+    virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
+    { cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); }
+};
 
 // ---- MadValue: tagged union for PHP-style mixed-type arrays ----
 
@@ -600,6 +704,40 @@ public:
 
 class DataDefARRAY:    public DDClass { public: DataDefARRAY():   DDClass("array", sizeof(MadArray), DataType::dtARRAY) {} };
 
+// typed STL containers — parameterized types created lazily during parsing
+class DataDefVECTOR: public DDClass
+{
+public:
+    DataDef *element_type;
+    DataDefVECTOR(DataDef *elem, const std::string &name, size_t sz)
+	: DDClass(name, sz, DataType::dtVECTOR), element_type(elem) {}
+};
+
+class DataDefMAP: public DDClass
+{
+public:
+    DataDef *key_type;
+    DataDef *val_type;
+    DataDefMAP(DataDef *k, DataDef *v, const std::string &name, size_t sz)
+	: DDClass(name, sz, DataType::dtMAP), key_type(k), val_type(v) {}
+};
+
+class DataDefSET: public DDClass
+{
+public:
+    DataDef *element_type;
+    DataDefSET(DataDef *elem, const std::string &name, size_t sz)
+	: DDClass(name, sz, DataType::dtSET), element_type(elem) {}
+};
+
+class DataDefLIST: public DDClass
+{
+public:
+    DataDef *element_type;
+    DataDefLIST(DataDef *elem, const std::string &name, size_t sz)
+	: DDClass(name, sz, DataType::dtLIST), element_type(elem) {}
+};
+
 extern DataDefVOID ddVOID;
 extern DataDefVOIDref ddVOIDref;
 extern DataDefBOOL ddBOOL;
@@ -620,6 +758,8 @@ extern DataDefDOUBLE ddDOUBLE;
 extern DataDefSTRING ddSTRING;
 extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
+extern DataDefPTR ddVOIDptr, ddCHARptr, ddINTptr, ddINT32ptr;
+extern DataDefISTREAM ddISTREAM;
 extern DataDefOSTREAM ddOSTREAM;
 extern DataDefSSTREAM ddSSTREAM;
 extern DataDefIFSTREAM ddIFSTREAM;
@@ -640,5 +780,26 @@ class DataDefTEST:      public DataDefSTRUCT { public: DataDefTEST():
 
 extern DataDefTEST ddTESTSTRUCT;
 #endif
+
+// auto type placeholder
+class DataDefAUTO: public DataDef
+{
+public:
+    DataDefAUTO() : DataDef("auto", 0, DataType::dtVOID) {}
+};
+extern DataDefAUTO ddAUTO;
+
+// function pointer type — wraps a FuncDef to carry the target signature
+class FuncDef;  // forward declaration (defined in madc.h)
+class DataDefFPTR: public DataDef
+{
+public:
+    FuncDef *target;
+    DataDefFPTR(FuncDef *fd) : DataDef("funcptr", 8, DataType::dtINT64), target(fd) {}
+    virtual BaseType basetype() const { return BaseType::btFunct; }
+    virtual bool is_function() const { return true; }
+    virtual bool is_numeric()  const { return true; }
+    virtual bool is_integer()  const { return true; }
+};
 
 #endif // __DATADEF_H

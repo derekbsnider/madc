@@ -1,0 +1,4 @@
+name=ftp port=21 proto=tcp
+name=http port=80 proto=tcp
+sizeof=32
+done

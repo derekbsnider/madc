@@ -1,0 +1,39 @@
+// String-typed ternary branches need two fixes:
+//   (1) parser sets TokenTerQ::_datatype from the branches so
+//       TokenAssign's dtSTRING → char* coercion can see the type.
+//   (2) TokenTerQ::compile propagates _datatype up via regdp.second
+//       when no caller type was provided, so variadic-arg coercion
+//       (e.g. printf's dtSTRING → const char* via string_cstr) fires.
+
+#include <stdio.h>
+
+int main()
+{
+    int x = 5;
+    int y = 0;
+    int z = -3;
+
+    // assignment to char* local
+    const char *s1 = x < 0 ? "neg" : "pos";
+    printf("s1=%s\n", s1);
+
+    // nested ternary
+    const char *s2 = y < 0 ? "neg" : y == 0 ? "zero" : "pos";
+    printf("s2=%s\n", s2);
+
+    const char *s3 = z < 0 ? "neg" : z == 0 ? "zero" : "pos";
+    printf("s3=%s\n", s3);
+
+    // ternary as direct printf arg (variadic path)
+    printf("direct=%s\n", x > 0 ? "T" : "F");
+
+    // nested ternary as direct printf arg
+    printf("tag=%s\n", x > 10 ? "big" : x > 0 ? "mid" : "small");
+
+    // post-decl assignment
+    const char *t;
+    t = x > 0 ? "yes" : "no";
+    printf("t=%s\n", t);
+
+    return 0;
+}

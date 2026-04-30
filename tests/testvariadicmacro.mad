@@ -1,0 +1,11 @@
+#include <stdio.h>
+
+#define IGNORE(...) ((void)0)
+#define LOG2(fmt, ...) printf(fmt, __VA_ARGS__)
+
+int main()
+{
+    IGNORE("alpha", 1, 2, 3);
+    LOG2("%d %d\n", 10, 20);
+    return 0;
+}

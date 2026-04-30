@@ -1,0 +1,24 @@
+#!/../bin/madc
+#include <iostream>
+int main()
+{
+    set<string> names;
+    names.insert("Alice");
+    names.insert("Bob");
+    names.insert("Alice");
+
+    int sz;
+    sz = names.size();
+    cout << "size: " << sz << endl;
+
+    string key = "Bob";
+    int found;
+    found = names.contains(key);
+    cout << "has Bob: " << found << endl;
+
+    key = "Charlie";
+    found = names.contains(key);
+    cout << "has Charlie: " << found << endl;
+
+    return 0;
+}

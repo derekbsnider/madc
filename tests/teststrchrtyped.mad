@@ -1,0 +1,50 @@
+// Regression: `*(strchr(s, c)) = 0` and similar deref-and-assign on
+// strchr's return used to throw "cannot dereference non-pointer
+// type" because the dlsym fallback registers strchr with a generic
+// int64 return signature. Adding `extern char *strchr(...)` to
+// embedded `<string.h>` gives the parser proper return-type info,
+// and the existing extern-late-bind path (commit 6eb7816) handles
+// the dlsym resolution at compile time.
+//
+// Surfaced at MadSMAUG `imc.c:340` (`*(strchr(shorthost,'['))=0;`).
+//
+// This change shifts the madc binary's text size, which previously
+// triggered the asmjit-Compiler float-varargs reordering quirk on
+// `testfloat.mad` / `teststructdoublecompound.mad`. The fix in
+// `madc_ir.cpp` (typed Xmm allocation via `newXmmSd` / `newXmmSs`)
+// gives asmjit's register allocator a proper scalar-real type hint
+// for floating-point virtual regs — without it, generic `newXmm`
+// produces an `int32x4` typed register and the allocator's
+// liveness analysis interleaves the int-vector and scalar-double
+// paths in unpredictable ways depending on code-cache layout.
+
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main()
+{
+    char buf[16];
+    buf[0] = 'a'; buf[1] = 'b'; buf[2] = 'c';
+    buf[3] = '['; buf[4] = 'd'; buf[5] = '\0';
+
+    // Standard SMAUG idiom: terminate string at the first occurrence
+    // of a character.
+    *(strchr(buf, '[')) = 0;
+    cout << (int)buf[3] << endl;          // 0 (the '[' was overwritten)
+
+    // Pointer arithmetic on the result.
+    char buf2[16];
+    buf2[0] = '/'; buf2[1] = 'a'; buf2[2] = '/'; buf2[3] = 'b';
+    buf2[4] = '\0';
+    char *slash = strchr(buf2, '/');
+    int idx = slash - buf2;
+    cout << idx << endl;                  // 0 (first slash at index 0)
+
+    // Comparison against NULL must work without an explicit cast.
+    char *missing = strchr(buf2, 'X');
+    cout << (missing == NULL ? "null" : "found") << endl;  // null
+
+    return 0;
+}

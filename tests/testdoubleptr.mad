@@ -1,0 +1,30 @@
+// `int **pp = &p;` taking the address of a pointer variable made
+// `p` address-taken and spilled its operand to a stack Mem slot.
+// Subsequent `*p` then went through TokenDeref::operand which did
+// `ptr_op.as<x86::Gp>()` — a bogus reinterpret when ptr_op was a
+// Mem. The resulting ptr(gp, 0, 8) encoded with garbage-register
+// ids, failing asmjit's finalize (error 26) and the JIT then ran
+// illegal bytes.
+//
+// Fix: TokenDeref::operand now loads the pointer value from the
+// Mem slot into a fresh Gp before using it as the base of the
+// dereferenced Mem.
+
+#include <stdio.h>
+
+int main()
+{
+    int x = 42;
+    int *p = &x;
+    int **pp = &p;
+
+    printf("x=%d\n", x);
+    printf("*p=%d\n", *p);
+    printf("**pp=%d\n", **pp);
+
+    // write through single deref
+    *p = 100;
+    printf("x=%d\n", x);
+
+    return 0;
+}

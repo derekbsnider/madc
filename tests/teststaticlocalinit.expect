@@ -1,0 +1,8 @@
+color_index(_red)=1
+color_index(_blu)=3
+color_index(_xx)=-1
+next_id=100
+next_id=101
+next_id=102
+multi_static: label='tag' call_count=1 scale=2.5
+multi_static: label='tag' call_count=2 scale=2.5

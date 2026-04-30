@@ -1,0 +1,47 @@
+#!/usr/bin/env madc
+#include <iostream>
+// Test regex support
+
+int main()
+{
+	// madc::regex_match — full string match
+	string s = "hello123";
+	string pat = "hello[0-9]+";
+	int m = madc::regex_match(s, pat);
+	cout << m << endl;
+
+	// madc::regex_search — partial match
+	string s2 = "foo bar baz";
+	string pat2 = "bar";
+	int found = madc::regex_search(s2, pat2);
+	cout << found << endl;
+
+	// madc::regex_replace
+	string result;
+	string src = "The quick brown fox";
+	string rpat = "quick|brown";
+	string repl = "slow";
+	madc::regex_replace(result, src, rpat, repl);
+	cout << result << endl;
+
+	// perl::grep with regex
+	array words;
+	string csv = "apple,banana,cherry,avocado,blueberry";
+	string delim = ",";
+	php::explode(words, delim, csv);
+	array matches;
+	string gp = "^a";
+	perl::grep(matches, gp, words);
+	int n = php::count(matches);
+	cout << n << endl;
+
+	// perl::split with regex
+	array parts;
+	string data = "one:two::three:::four";
+	string sp = ":+";
+	perl::split(parts, sp, data);
+	int pc = php::count(parts);
+	cout << pc << endl;
+
+	return 0;
+}

@@ -1,0 +1,87 @@
+#include <iostream>
+// Test C preprocessor directives: #define, #undef, #ifdef, #ifndef, #if, #else, #elif, #endif
+
+#define MAX 100
+#define PI 3.14159
+#define MSG "hello"
+
+int main()
+{
+    // basic constant substitution
+    cout << MAX << endl;    // 100
+    cout << PI << endl;     // 3.14159
+    cout << MSG << endl;    // hello
+
+    // use in expressions
+    int x;
+    x = MAX + 5;
+    cout << x << endl;      // 105
+
+    // #ifdef true branch
+#ifdef MAX
+    cout << "MAX defined" << endl;   // MAX defined
+#endif
+
+    // #ifdef false branch
+#ifdef UNDEFINED_SYMBOL
+    cout << "should not print" << endl;
+#endif
+
+    // #ifdef / #else
+#ifdef UNDEFINED_SYMBOL
+    cout << "should not print" << endl;
+#else
+    cout << "else branch" << endl;   // else branch
+#endif
+
+    // #ifndef
+#ifndef UNDEFINED_SYMBOL
+    cout << "not defined" << endl;   // not defined
+#endif
+
+    // #if defined()
+#if defined(MAX)
+    cout << "if defined" << endl;    // if defined
+#endif
+
+    // #if !defined()
+#if !defined(UNDEFINED_SYMBOL)
+    cout << "not defined 2" << endl; // not defined 2
+#endif
+
+    // #if 0 / #if 1
+#if 0
+    cout << "should not print" << endl;
+#endif
+
+#if 1
+    cout << "if 1" << endl;         // if 1
+#endif
+
+    // #elif
+#ifdef UNDEFINED_SYMBOL
+    cout << "should not print" << endl;
+#elif defined(MAX)
+    cout << "elif branch" << endl;   // elif branch
+#else
+    cout << "should not print" << endl;
+#endif
+
+    // #undef
+#undef MAX
+#ifndef MAX
+    cout << "MAX undef" << endl;     // MAX undef
+#endif
+
+    // nested #ifdef
+#define OUTER 1
+#ifdef OUTER
+#ifdef UNDEFINED_SYMBOL
+    cout << "should not print" << endl;
+#else
+    cout << "nested else" << endl;   // nested else
+#endif
+#endif
+
+    return 0;
+}

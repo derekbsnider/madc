@@ -1,0 +1,36 @@
+#include <stdio.h>
+#include <sys/time.h>
+
+int main()
+{
+    struct timeval a;
+    struct timeval b;
+    struct timeval r;
+
+    a.tv_sec = 0;
+    a.tv_usec = 0;
+    printf("clear %d\n", timerisset(&a));
+
+    a.tv_sec = 1;
+    a.tv_usec = 500000;
+    b.tv_sec = 1;
+    b.tv_usec = 700000;
+    printf("isset %d\n", timerisset(&a));
+    printf("cmp_lt %d cmp_gt %d cmp_eq %d\n",
+           timercmp(&a, &b, <),
+           timercmp(&b, &a, >),
+           timercmp(&a, &a, ==));
+
+    a.tv_sec = 1;
+    a.tv_usec = 900000;
+    b.tv_sec = 2;
+    b.tv_usec = 200000;
+    timeradd(&a, &b, &r);
+    printf("add %ld %ld\n", r.tv_sec, r.tv_usec);
+
+    timersub(&r, &a, &b);
+    printf("sub %ld %ld\n", b.tv_sec, b.tv_usec);
+
+    timerclear(&r);
+    return 0;
+}

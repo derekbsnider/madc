@@ -1,0 +1,31 @@
+#!/usr/bin/env madc
+#include <iostream>
+// Test ternary operator
+
+int main()
+{
+	int x = 5;
+
+	// basic ternary in assignment
+	int y = x > 3 ? 100 : 200;
+	cout << y << endl;
+
+	// false branch
+	int z = x < 3 ? 100 : 200;
+	cout << z << endl;
+
+	// with expressions in branches
+	int a = 10;
+	int b = a > 5 ? a + 1 : a - 1;
+	cout << b << endl;
+
+	// ternary with literal false condition
+	int c = 0 ? 999 : 42;
+	cout << c << endl;
+
+	// ternary in return
+	int d = x > 0 ? 1 : 0;
+	cout << d << endl;
+
+	return 0;
+}

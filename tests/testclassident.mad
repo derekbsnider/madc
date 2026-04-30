@@ -1,0 +1,43 @@
+#!/../bin/madc
+// `class` used as a plain C identifier (struct member, local variable,
+// function parameter). madc reserves `class` for OOP declarations,
+// but C codebases like SMAUG use it everywhere — `int class;` locals,
+// `ch->class` member access, `skill_level[ch->class]` subscript index.
+// parseStatement and parsePostfixChain now treat `class` as a
+// contextual identifier when it appears in a position that can't be
+// the start of an actual class declaration.
+
+#include <stdio.h>
+
+struct Char {
+    int level;
+    int class;
+};
+
+int lookup(int class) {
+    return class + 100;
+}
+
+int main()
+{
+    struct Char c;
+    c.level = 10;
+    c.class = 3;
+
+    struct Char *p = &c;
+    printf("member=%d\n", p->class);
+    printf("dot=%d\n", c.class);
+
+    int class = 7;
+    class = class + 1;
+    printf("local=%d\n", class);
+
+    printf("param=%d\n", lookup(42));
+
+    // Fixed-array indexed by class
+    int tbl[5];
+    tbl[0] = 100; tbl[1] = 101; tbl[2] = 102; tbl[3] = 103; tbl[4] = 104;
+    printf("indexed=%d\n", tbl[c.class]);
+
+    return 0;
+}

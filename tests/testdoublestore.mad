@@ -1,0 +1,39 @@
+// safemov(Mem, Xmm) was a stub that threw
+// "safemov() unable to move xmm to mem", so any double arithmetic
+// whose result had to mirror back into a Mem destination (local
+// double variable, struct double member) errored out at parse.
+// Now emits movsd (8-byte double) or movss (4-byte float) matching
+// the Mem's declared size.
+
+#include <stdio.h>
+
+struct pair { double x; double y; };
+
+int main()
+{
+    // local double — arith into Mem
+    double d = 3.14;
+    double e = d * 2;
+    double f = e / 0.5;
+    printf("e=%.2f f=%.2f\n", e, f);
+
+    // addition and subtraction
+    double a = 1.5;
+    double b = 2.25;
+    double s = a + b;
+    double t = b - a;
+    printf("s=%.2f t=%.2f\n", s, t);
+
+    // negation
+    double neg = -d;
+    printf("neg=%.2f\n", neg);
+
+    // struct double member
+    struct pair p;
+    p.x = 1.5;
+    p.y = 2.5;
+    double sum = p.x + p.y;
+    printf("sum=%.2f\n", sum);
+
+    return 0;
+}

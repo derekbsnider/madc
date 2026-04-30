@@ -1,0 +1,38 @@
+// Regression: `sizeof(*arr)` and `sizeof(*ptr)` used to throw
+// "Unknown type in sizeof" because the sizeof parser handled
+// ttDataType, ttIdentifier, and `struct tag` but not unary `*`.
+// `sizeof(arr) / sizeof(*arr)` is the standard C idiom for
+// counting fixed-array elements.
+//
+// Fix: added a `*identifier` branch to the sizeof parser. For a
+// fixed-array variable, returns the element type's size. For a
+// pointer variable, returns the pointed-to type's size.
+//
+// Surfaced at MadSMAUG `update.c:2300-2301`:
+//   static const int times[] = { 60, 120, ... };
+//   static const int timesize =
+//       UMIN(sizeof(times)/sizeof(*times), sizeof(tmsg)/sizeof(*tmsg));
+
+#include <iostream>
+
+int main()
+{
+    int arr[8];
+    char buf[16];
+
+    // sizeof(*arr): element size of a fixed array.
+    cout << sizeof(*arr) << endl;          // 8 (sizeof(int) in madc)
+    cout << sizeof(*buf) << endl;          // 1 (sizeof(char))
+
+    // The standard idiom for counting elements:
+    cout << sizeof(arr) / sizeof(*arr) << endl;    // 8
+    cout << sizeof(buf) / sizeof(*buf) << endl;    // 16
+
+    // Pointer form: *ptr's size = pointed-to type size.
+    int *ip = arr;
+    cout << sizeof(*ip) << endl;           // 8
+    char *cp = buf;
+    cout << sizeof(*cp) << endl;           // 1
+
+    return 0;
+}

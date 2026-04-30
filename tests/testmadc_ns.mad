@@ -1,0 +1,68 @@
+#!/usr/bin/env madc
+#include <iostream>
+// Test madc:: and std:: namespace-qualified types
+
+int main()
+{
+	int n;
+
+	// madc::array — namespace-qualified array declaration
+	madc::array names;
+	string delim = ",";
+	string csv = "alice,bob,charlie";
+	php::explode(names, delim, csv);
+	n = php::count(names);
+	cout << n << endl;
+
+	// bare array still works (backward compat)
+	array nums;
+	php::array_push_int(nums, 10);
+	php::array_push_int(nums, 20);
+	n = php::count(nums);
+	cout << n << endl;
+
+	// std::vector<int>
+	std::vector<int> vi;
+	vi.push_back(100);
+	vi.push_back(200);
+	vi.push_back(300);
+	n = vi.size();
+	cout << n << endl;
+
+	// std::vector<string>
+	std::vector<string> vs;
+	string h = "hello";
+	string w = "world";
+	vs.push_back(h);
+	vs.push_back(w);
+	n = vs.size();
+	cout << n << endl;
+
+	// std::map<string, int>
+	std::map<string, int> ages;
+	string k1 = "alice";
+	string k2 = "bob";
+	ages.put(k1, 30);
+	ages.put(k2, 25);
+	n = ages.size();
+	cout << n << endl;
+
+	// std::set<string>
+	std::set<string> tags;
+	string t1 = "red";
+	string t2 = "blue";
+	tags.insert(t1);
+	tags.insert(t2);
+	n = tags.size();
+	cout << n << endl;
+
+	// std::list<int>
+	std::list<int> li;
+	li.push_back(1);
+	li.push_back(2);
+	li.push_front(0);
+	n = li.size();
+	cout << n << endl;
+
+	return 0;
+}

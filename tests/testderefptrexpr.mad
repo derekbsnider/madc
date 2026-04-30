@@ -1,0 +1,46 @@
+// Regression: `*(ptr + N)`, `*(ptr - N)`, `*(p = ptr + N)` used to
+// fail with "cannot dereference non-pointer type" because
+// `TokenAdd`, `TokenSub`, and `TokenAssign` all inherit
+// `_datatype = &ddINT` from `TokenOperator`'s constructor and never
+// override `datadef()`. The unary-`*` parser consults
+// `deref_expr->datadef()` and saw `int`, not a pointer.
+//
+// Fix: override `datadef()` on TokenAdd/TokenSub to propagate a
+// pointer operand's type through arithmetic (C ptr + int = ptr,
+// int + ptr = ptr, ptr - int = ptr, ptr - ptr = ptrdiff_t). Override
+// TokenAssign::datadef() to return the LHS's type (C assignment
+// expression evaluates to the assigned value).
+//
+// Surfaced in MadSMAUG mud_prog.c at lines 2552/2553 where SMAUG
+// does `*(start - 1) == ' '` and `*(end = start + strlen(a)) == ' '`.
+
+#include <iostream>
+#include <string.h>
+
+int main()
+{
+    char buf[16];
+    strcpy(buf, "hello");
+    char *start = buf;
+
+    // *(ptr + N)
+    cout << *(start + 0) << endl;  // h
+    cout << *(start + 1) << endl;  // e
+    cout << *(start + 4) << endl;  // o
+
+    // *(ptr - N)  — offset from mid-string back to start
+    char *mid = start + 2;
+    cout << *(mid - 2) << endl;    // h
+    cout << *(mid - 1) << endl;    // e
+
+    // *(assign-expr) — `*(p = ptr + N)` SMAUG idiom
+    char *p;
+    cout << *(p = start + 3) << endl;  // l
+    // confirm p was actually assigned (not just read through)
+    cout << *p << endl;                // l
+
+    // Chained: `*(q = p + 1)` with p being the stored assign target
+    cout << *(p = p + 1) << endl;      // o
+
+    return 0;
+}

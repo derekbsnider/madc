@@ -1,0 +1,34 @@
+// Regression: `char const *p` (CV-qualifier between the type and
+// the pointer stars, vs the more common leading `const char *p`)
+// used to throw "Expecting identifier after type". parseDeclaration
+// only consumed `const` / `restrict` AFTER the pointer stars, not
+// between the type and the stars.
+//
+// Fix: add a pre-pointer post-qualifier pass at the head of
+// parseDeclaration. Both `type const *p` and `const type *p` now
+// produce identical declarations (qualifier is a no-op).
+//
+// Surfaced at MadSMAUG act_info.c:3074 (`char const *class;`).
+
+#include <iostream>
+
+int main()
+{
+    char const *p = "hello";
+    cout << p << endl;             // hello
+
+    int const *q;
+    int v = 42;
+    q = &v;
+    cout << *q << endl;            // 42
+
+    // `const` between type and pointer star is also legal in
+    // function-parameter context (see existing `is_post_pointer_qualifier_token`
+    // path) — verify a full chain `type const * const *` doesn't break.
+    int const x = 5;
+    int const *xp = &x;
+    int const * const *xpp = &xp;
+    cout << **xpp << endl;         // 5
+
+    return 0;
+}

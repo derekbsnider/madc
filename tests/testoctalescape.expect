@@ -1,0 +1,8 @@
+PASS: \033[ -> bytes 0x1b 0x5b
+PASS: \0abc -> empty string (NUL terminator)
+PASS: \x1b[ -> bytes 0x1b 0x5b
+PASS: \377 -> 0xff
+PASS: \0118 -> 0x09 then '8'
+PASS: '\033' -> 0x1b
+PASS: '\xff' -> 0xff
+PASS: sprintf("\033[") = 2, bytes 0x1b 0x5b

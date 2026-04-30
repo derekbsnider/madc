@@ -1,0 +1,44 @@
+#include <stdio.h>
+#include <string.h>
+
+// Global function pointers and SMAUG-style command tables at file scope.
+
+typedef void DO_FUN(int lvl, char *arg);
+
+void do_who(int lvl, char *arg)   { printf("who %d [%s]\n", lvl, arg); }
+void do_look(int lvl, char *arg)  { printf("look %d [%s]\n", lvl, arg); }
+void do_north(int lvl, char *arg) { printf("north %d [%s]\n", lvl, arg); }
+
+struct cmd {
+    char *name;
+    DO_FUN *fn;
+};
+
+// Plain global fn-pointer init.
+DO_FUN *g_default = do_who;
+
+// Global array of structs with fn-pointer members — SMAUG command_table.
+struct cmd cmd_table[] = {
+    { "who",   do_who   },
+    { "look",  do_look  },
+    { "north", do_north },
+};
+
+int main()
+{
+    g_default(1, "direct");
+
+    // Dispatch loop against the global table.
+    char *cmd = "look";
+    for (int i = 0; i < 3; i++) {
+        if (strcmp(cmd_table[i].name, cmd) == 0) {
+            cmd_table[i].fn(99, "found");
+            break;
+        }
+    }
+
+    // Direct index + member call.
+    cmd_table[2].fn(5, "direct-idx");
+
+    return 0;
+}

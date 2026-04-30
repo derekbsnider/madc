@@ -1,0 +1,7 @@
+#!/../bin/madc
+#include "nested_macro_outer.mah"
+
+int main()
+{
+    return 0;
+}

@@ -1,0 +1,15 @@
+#!/../bin/madc
+#include <stdio.h>
+
+typedef enum
+{
+    LOG_NORMAL,
+    LOG_WARN = 2
+} log_types;
+
+int main()
+{
+    log_types lt = LOG_NORMAL;
+    printf("%d %d\n", lt, LOG_WARN);
+    return 0;
+}

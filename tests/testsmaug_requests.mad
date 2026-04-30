@@ -1,0 +1,42 @@
+#!/usr/bin/env madc
+
+#include "smaug_requests_source.mad"
+
+void write_request(char *text)
+{
+	FILE *fp = fopen(REQUEST_PIPE, "w");
+	fprintf(fp, "%s\n", text);
+	fclose(fp);
+}
+
+int main()
+{
+	unlink(REQUEST_PIPE);
+
+	write_request("who");
+	init_request_pipe();
+	check_requests();
+	printf("who_calls after who = %ld\n", who_calls);
+	printf("last_log = %s\n", last_log);
+	printf("last_who_arg = [%s]\n", last_who_arg);
+	close(REQ);
+
+	who_calls = 0;
+	free(last_log);
+	free(last_who_arg);
+	last_log = NULL;
+	last_who_arg = NULL;
+
+	write_request("webwho");
+	init_request_pipe();
+	check_requests();
+	printf("who_calls after webwho = %ld\n", who_calls);
+	printf("last_log = %s\n", last_log);
+	printf("last_who_arg = [%s]\n", last_who_arg);
+	close(REQ);
+
+	free(last_log);
+	free(last_who_arg);
+	unlink(REQUEST_PIPE);
+	return 0;
+}

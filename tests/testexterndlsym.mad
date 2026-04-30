@@ -1,0 +1,46 @@
+// Regression: `extern RET name(args);` followed by a typed call
+// failed at compile time with "method has neither FuncNode nor
+// x86code". The dlsym fallback only fired for IMPLICIT calls (an
+// undeclared identifier followed by `(`); explicit `extern`
+// declarations registered the function symbol but never tried to
+// resolve it via dlsym, so the call site found the declaration but
+// no native target.
+//
+// Fix: at TokenCallFunc::compile time, when a declared function has
+// neither funcnode nor x86code, try `dlsym(RTLD_DEFAULT, name)` as
+// a last resort. If found, set method->x86code and fall through to
+// the typed-call path. Also extracted the int32-sign-extension
+// whitelist into a file-scope helper so the typed-call path applies
+// the same movsxd dance the variadic dlsym path does — otherwise
+// `extern int strcmp(...)` would return wrong-signed int64 values.
+//
+// Surfaced in MadSMAUG act_info.c:4642 / build.c:1822 (both call
+// crypt) and is the general mechanism for pulling in any libc
+// symbol resolvable through RTLD_DEFAULT.
+
+#include <iostream>
+
+extern int strcmp(char *a, char *b);
+extern int strncmp(char *a, char *b, int n);
+
+int main()
+{
+    // Equal strings → 0
+    cout << strcmp("hello", "hello") << endl;
+
+    // Negative result must sign-extend through int64 (otherwise it
+    // reads back as a large positive due to upper-32-bit garbage).
+    int r = strcmp("apple", "banana");
+    cout << (r < 0 ? "neg" : (r > 0 ? "pos" : "zero")) << endl;
+
+    // Positive result.
+    int r2 = strcmp("zoo", "apple");
+    cout << (r2 > 0 ? "pos" : "neg") << endl;
+
+    // strncmp for prefix match
+    cout << strncmp("hello world", "hello there", 5) << endl;  // 0
+    int r3 = strncmp("hello", "world", 5);
+    cout << (r3 < 0 ? "h<w" : "h>w") << endl;
+
+    return 0;
+}

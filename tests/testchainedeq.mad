@@ -1,0 +1,41 @@
+#!/../bin/madc
+// Chained equality with a cast on either operand:
+// `(int)a == b == 0` / `(int)a == (int)b == 0`. The previous
+// "stop_on_closing_paren after cast push" optimization fired
+// inside `if (...)` / `while (...)` callers (which pass
+// initial_brackets=1) — leaving the trailing `== 0` unparsed and
+// the outer popOperator hitting an empty exStack.
+//
+// SMAUG `save.c:668` triggered this through QUICKMATCH macro:
+//   #define QUICKMATCH(p1, p2)  (int) (p1) == (int) (p2)
+//   if ( QUICKMATCH(a, b) == 0 ) ... // expands to
+//   if ( (int)(a) == (int)(b) == 0 ) ...
+//
+// In C, `A == B == C` parses as `(A == B) == C` (left-to-right).
+
+#include <stdio.h>
+
+int main()
+{
+    int a = 1, b = 1;
+
+    // (a == b) is 1, then (1 == 0) is 0 → false → "no"
+    if ( (int)a == (int)b == 0 )
+	printf("yes\n");
+    else
+	printf("no\n");
+
+    // (a == b) is 1, then (1 == 1) is 1 → true → "yes"
+    if ( (int)a == (int)b == 1 )
+	printf("yes\n");
+    else
+	printf("no\n");
+
+    // Single-cast variant.
+    if ( (int)a == b == 1 )
+	printf("yes\n");
+    else
+	printf("no\n");
+
+    return 0;
+}

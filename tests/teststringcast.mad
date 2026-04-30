@@ -1,0 +1,31 @@
+// Casting a std::string expression to `char *` needs a real
+// string_cstr conversion — a bare `reinterpret` (madc's default
+// TokenCast behavior) leaves the caller with the std::string
+// object's address, and subsequent `%s` / deref reads render
+// garbage. Now TokenCast detects dtSTRING → char* specifically and
+// routes through string_cstr to obtain the c_str() pointer.
+
+#include <stdio.h>
+
+int main()
+{
+    int x = 5;
+
+    // cast of a string literal
+    char *a = (char *)"hello";
+    printf("a=%s\n", a);
+
+    // cast of a ternary whose branches are string literals
+    char *b = (char *)(x > 0 ? "pos" : "neg");
+    printf("b=%s\n", b);
+
+    // cast as direct printf argument
+    printf("c=%s\n", (char *)(x > 10 ? "big" : "small"));
+
+    // cast of a const-char-star ternary (no-op cast — but must still work)
+    const char *s = x > 0 ? "yes" : "no";
+    char *d = (char *)s;
+    printf("d=%s\n", d);
+
+    return 0;
+}

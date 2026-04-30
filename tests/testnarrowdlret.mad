@@ -1,0 +1,30 @@
+// Regression: narrow-typed assignment from a libc dlsym int return.
+//
+// `bind_call_return()`'s narrow_int_ret path used to emit a bare
+// `cc.mov(dest_gpw, dl_ret_gpq)` which asmjit's intermediate
+// validator silently rejected, leaving the destination
+// uninitialized. Manifested in SMAUG act_wiz.c `do_set_boot_time`
+// (`(now_time->tm_hour = atoi(arg)) < 0`) where the assigned int
+// member was effectively uninitialized at the comparison point.
+// Fix: route through `dest.r64()` so the encoder sees `mov gpq, gpq`
+// and the destination vreg's natural sub-word width truncates the
+// downstream consumers.
+
+#include <stdio.h>
+
+extern int atoi(const char *s);
+
+int main()
+{
+    char buf[16] = "42";
+    short s_val = atoi(buf) - 3;
+    int   i_val = atoi(buf) - 3;
+    long  l_val = atoi(buf) - 3;
+
+    if ( s_val != 39 ) { printf("FAIL s_val=%d\n", (int)s_val); return 1; }
+    if ( i_val != 39 ) { printf("FAIL i_val=%d\n", i_val); return 1; }
+    if ( l_val != 39 ) { printf("FAIL l_val=%ld\n", l_val); return 1; }
+
+    printf("OK s=%d i=%d l=%ld\n", (int)s_val, i_val, l_val);
+    return 0;
+}

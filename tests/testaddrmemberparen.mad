@@ -1,0 +1,32 @@
+#include <stdio.h>
+
+struct inner {
+    int x;
+};
+
+struct outer {
+    struct inner in;
+};
+
+void takes_int_ptr(int *p)
+{
+    printf("%d\n", *p);
+}
+
+void takes_inner_ptr(struct inner *p)
+{
+    printf("%d\n", p->x);
+}
+
+int main()
+{
+    struct outer o;
+    struct outer *op = &o;
+
+    o.in.x = 42;
+    takes_int_ptr(&(o.in.x));
+    takes_int_ptr(&op->in.x);
+    takes_inner_ptr(&op->in);
+
+    return 0;
+}

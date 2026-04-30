@@ -1,0 +1,30 @@
+#!/../bin/madc
+#include <iostream>
+int main()
+{
+    map<string, int> ages;
+    string key = "Alice";
+    ages.put(key, 30);
+    key = "Bob";
+    ages.put(key, 25);
+
+    int sz;
+    sz = ages.size();
+    cout << "size: " << sz << endl;
+
+    key = "Alice";
+    int age;
+    age = ages.get(key);
+    cout << "Alice: " << age << endl;
+
+    int found;
+    key = "Bob";
+    found = ages.contains(key);
+    cout << "has Bob: " << found << endl;
+
+    key = "Charlie";
+    found = ages.contains(key);
+    cout << "has Charlie: " << found << endl;
+
+    return 0;
+}

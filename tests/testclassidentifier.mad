@@ -1,0 +1,15 @@
+#!/../bin/madc
+#include <stdio.h>
+
+struct Thing
+{
+    int class;
+};
+
+int main()
+{
+    struct Thing t;
+    t.class = 7;
+    printf("%d\n", t.class);
+    return 0;
+}

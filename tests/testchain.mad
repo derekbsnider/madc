@@ -1,0 +1,57 @@
+#include <iostream>
+
+// Test chained -> and . member access
+
+struct Point {
+    int x;
+    int y;
+};
+
+struct Line {
+    struct Point start;
+    struct Point end;
+};
+
+struct Room {
+    int id;
+    int sector;
+};
+
+struct Char {
+    int level;
+    struct Room *in_room;
+};
+
+int main()
+{
+    // Test 1: ptr->struct.member (arrow then dot) — lp->start.x
+    struct Line ln;
+    ln.start.x = 10;
+    ln.start.y = 20;
+    ln.end.x   = 30;
+    ln.end.y   = 40;
+    struct Line *lp;
+    lp = &ln;
+    cout << lp->start.x << endl;   // 10
+    cout << lp->start.y << endl;   // 20
+    cout << lp->end.x   << endl;   // 30
+    cout << lp->end.y   << endl;   // 40
+
+    // Test 2: struct.struct.member (pure dot chain) — ln.start.x
+    cout << ln.start.x << endl;    // 10
+    cout << ln.end.y   << endl;    // 40
+
+    // Test 3: ptr->ptr->member (double arrow chain) — ch->in_room->id
+    struct Room rm;
+    rm.id     = 3001;
+    rm.sector = 2;
+    struct Char ch;
+    ch.level   = 50;
+    ch.in_room = &rm;
+    struct Char *cp;
+    cp = &ch;
+    cout << cp->in_room->id     << endl;  // 3001
+    cout << cp->in_room->sector << endl;  // 2
+
+    return 0;
+}

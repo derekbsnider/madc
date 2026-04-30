@@ -1,0 +1,35 @@
+#include <stdio.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <unistd.h>
+
+int main()
+{
+    // Field sizes match glibc: sockaddr_in is 16 bytes.
+    struct sockaddr_in addr;
+    printf("sizeof_addr=%ld\n", sizeof(addr));
+
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(0);                    // any free port
+    addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+
+    printf("family=%d\n", addr.sin_family);
+
+    // Bind a TCP socket to 127.0.0.1:<any>. If successful, getsockname
+    // returns the actual port (> 0).
+    int s = socket(AF_INET, SOCK_STREAM, 0);
+    if (s < 0)
+    {
+        // Some containers forbid socket creation entirely (EPERM).
+        // The layout/constant checks above are still meaningful, so
+        // don't fail the suite on that environment policy.
+        printf("socket failed\n");
+        return 0;
+    }
+
+    int rc = bind(s, (struct sockaddr *)&addr, sizeof(addr));
+    printf("bind.rc=%d\n", rc);
+
+    close(s);
+    return 0;
+}

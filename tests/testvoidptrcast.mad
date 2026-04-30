@@ -1,0 +1,41 @@
+#!/../bin/madc
+// `(void *)expr` — explicit cast to a void pointer. DataDef::rawtype()
+// strips the pointer ref bias, so `void *` and bare `void` share
+// `rawtype() == dtVOID`. TokenCast's "(void) discards the value"
+// short-circuit was firing for both, leaving `regdp.second` pointing
+// at the inner expression's datadef (often the bare value type) and
+// then losing the pointer-ness when downstream coerce / call args
+// looked at it. SMAUG `comm.c:init_socket` hit it via
+// `setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (void *) &x, sizeof(x))`.
+
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+void take_void_ptr(void *p, int sz)
+{
+    // Read the first sz bytes back out as ints to confirm the value
+    // arrived intact through the void* arg.
+    int *ip = (int *)p;
+    printf("take_void_ptr: ip[0]=%d sz=%d\n", ip[0], sz);
+}
+
+int main()
+{
+    int x = 42;
+    int arr[3];
+    arr[0] = 1; arr[1] = 2; arr[2] = 3;
+
+    // 1. (void *) on a stack int via &.
+    take_void_ptr((void *)&x, sizeof(x));
+
+    // 2. (void *) on an array (decay).
+    take_void_ptr((void *)arr, (int)sizeof(arr));
+
+    // 3. Roundtrip: assign to a void* local then cast back.
+    void *vp = (void *)&x;
+    int *ip = (int *)vp;
+    printf("roundtrip: %d\n", ip[0]);
+
+    return 0;
+}

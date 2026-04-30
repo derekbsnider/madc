@@ -1,0 +1,27 @@
+#!/../bin/madc
+// `*p++ = rhs` as a write target — C's canonical copy loop.
+// Closes the SMAUG Phase F front edge in act_move.c:182 `grab_word`:
+//   *arg_first++ = *argument++;
+
+#include <stdio.h>
+
+int main()
+{
+    char dst[16];
+    char *d = dst;
+    char *s = "hello";
+
+    while (*s)
+	*d++ = *s++;
+    *d = 0;
+    printf("%s\n", dst);
+
+    // pre-dec/post-dec on LHS too
+    char buf[8] = { 'x', 'x', 'x', 'x', 'x', 0, 0, 0 };
+    char *q = buf + 4;
+    *q-- = 'Y';
+    *q-- = 'Z';
+    printf("%s\n", buf);
+
+    return 0;
+}

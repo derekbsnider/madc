@@ -18,6 +18,7 @@ public:
 // token definitions of integral data types
 class TokenVOID:      public TokenDataType { public: TokenVOID() :  TokenDataType("void", ddVOID) {} };
 class TokenBOOL:      public TokenDataType { public: TokenBOOL() :  TokenDataType("bool", ddBOOL) {} };
+class TokenC23BOOL:   public TokenDataType { public: TokenC23BOOL() : TokenDataType("_Bool", ddBOOL) {} };
 class TokenCHAR:      public TokenDataType { public: TokenCHAR() :  TokenDataType("char", ddCHAR) {} };
 class TokenINT:       public TokenDataType { public: TokenINT()  :  TokenDataType("int", ddINT) {} };
 class TokenINT8:      public TokenDataType { public: TokenINT8() :  TokenDataType("int8_t", ddINT8) {} };
@@ -45,6 +46,7 @@ class TokenIFSTREAM:  public TokenDataType { public: TokenIFSTREAM(): TokenDataT
 class TokenOFSTREAM:  public TokenDataType { public: TokenOFSTREAM(): TokenDataType("ofstream", ddOFSTREAM) {} };
 class TokenFSTREAM:   public TokenDataType { public: TokenFSTREAM():  TokenDataType("fstream", ddFSTREAM) {} };
 
+class TokenAUTO:      public TokenDataType { public: TokenAUTO():  TokenDataType("auto", ddAUTO) {} };
 
 // Variable "container" class to keep track of everything about a variable,
 // primary only used during parsing/compiling
@@ -56,13 +58,28 @@ public:
     void *data;
     uint32_t count;
     uint16_t flags;
-    Variable() { type = &ddINT; data = NULL; flags = 0; count = 0; }
+    std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
+    // C99 variable-length array: when non-NULL, the local was declared as
+    // `T name[expr]` with a runtime-valued size. The variable acts as a
+    // pointer (slot holds the malloc'd buffer); voperand emits the malloc
+    // at scope entry and the parent TokenCpnd's cleanup emits the free.
+    // dims[0] holds the element-count contribution from the FIRST dim
+    // (always 1 for the runtime path; multiply by vla_size_expr at runtime).
+    class TokenBase *vla_size_expr;
+    Variable() { type = &ddINT; data = NULL; flags = 0; count = 0; vla_size_expr = nullptr; }
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
+    inline bool is_vla() const { return vla_size_expr != nullptr; }
+    inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
+    inline uint32_t total_elements() const {
+	uint32_t n = 1;
+	for ( auto d : dims ) n *= d;
+	return n;
+    }
     inline void modified() { flags |= vfMODIFIED; DBG(std::cout << "Variable::modified(" << name << ')' << std::endl); }
     inline void makeconstant() { flags |= vfCONSTANT; }
-    inline bool is_global()   { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
-    inline bool is_constant() { if ( (flags & vfCONSTANT) ) return true; return false; }
+    inline bool is_global()   const { if ( (flags & vfLOCAL) && !(flags &vfSTATIC) ) return false; return true; }
+    inline bool is_constant() const { if ( (flags & vfCONSTANT) ) return true; return false; }
     bool set(int c)
     {
 	if ( !data ) { return false; }
@@ -165,11 +182,20 @@ public:
     Variable &var;
     TokenVar(Variable &v) : TokenBase(), var(v) { _datatype = v.type; }
     virtual TokenType type() const { return TokenType::ttVariable; }
-    virtual int get() const { return var.get<int>(); }
-    virtual int val() const { return var.get<int>(); }
-    virtual bool is_constant() { return var.is_constant(); }
-    virtual bool is_real() { return _datatype->is_real(); }
-    virtual void set(int c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
+    virtual int64_t get() const { return var.get<int64_t>(); }
+    virtual int val() const     { return var.get<int>(); }
+    // Constant-fold path (TokenOperator::optimize → ioperate/foperate)
+    // calls ival()/dval() on each leaf. Without these overrides
+    // enum/const-var leaves report 0, so e.g. (TOPCOLOR-COLORBASE)
+    // folds to 0 at runtime even though parse-time array sizing reads
+    // them correctly via read_constant_integer.
+    virtual int ival() const override
+        { return var.is_constant() ? var.get<int>() : 0; }
+    virtual double dval() const override
+        { return var.is_constant() ? var.get<double>() : 0; }
+    virtual bool is_constant() const { return var.is_constant(); }
+    virtual bool is_real() const { return _datatype->is_real(); }
+    virtual void set(int64_t c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
     virtual void putreg(Program &);
 //  virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::Operand &operand(Program &);

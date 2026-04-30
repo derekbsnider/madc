@@ -1,0 +1,51 @@
+// C pointer arithmetic: `p + n` on a typed pointer `T *` must add
+// `n * sizeof(T)` bytes, not `n` bytes. Previously TokenAdd emitted
+// a raw byte add, so `int *q = p + 2;` advanced q by 2 bytes
+// instead of 16 (sizeof(int64) * 2), and subsequent `*q` read
+// garbage. Fixed by scaling the rval by the pointer's element size
+// before the add (same logic applied to TokenSub for `ptr - n`).
+// Fixed arrays also decay to pointer for arithmetic, so `nums + 1`
+// scales by the element size too. char* / void* (1-byte elements)
+// skip scaling.
+
+#include <stdio.h>
+#include <string.h>
+
+int main()
+{
+    int nums[5] = {10, 20, 30, 40, 50};
+
+    // Typed pointer + int
+    int *p = nums;
+    int *q = p + 2;
+    printf("q0=%d q1=%d\n", q[0], q[1]);
+    printf("*q=%d\n", *q);
+
+    // Fixed array + int (decays to pointer)
+    int *r = nums + 3;
+    printf("*r=%d\n", *r);
+
+    // Typed pointer - int
+    int *s = q - 1;
+    printf("*s=%d\n", *s);
+
+    // char * arithmetic — elements are 1 byte, no scaling
+    char *t = "hello world";
+    char *u = t + 6;
+    printf("u=%s\n", u);
+    char *v = u - 1;
+    printf("v=%s\n", v);
+
+    // short * arithmetic — 2-byte scaling
+    short sarr[4] = {100, 200, 300, 400};
+    short *sp = sarr + 2;
+    printf("sp=%d\n", (int)*sp);
+
+    // Pointer difference via explicit cast — bare `(long)q` form so
+    // the cast body is an identifier, not a parenthesized expression
+    // (the latter is still greedy per the known cast-parse limitation).
+    long bytes = (long)q - (long)p;
+    printf("bytes=%ld\n", bytes);
+
+    return 0;
+}

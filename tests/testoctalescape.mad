@@ -1,0 +1,65 @@
+// Regression: madc lexer must support multi-digit octal and hex escapes
+// in string and char literals. \033 = 0x1b (ESC), \x1b same, \0 still NUL.
+//
+// SMAUG's color codes use "\033[..." everywhere. Before this fix the
+// lexer parsed `\033` as `\0` (NUL) followed by literal `33`, ending
+// the string at the NUL and giving sprintf a 0-length format which
+// caused buf[ln-1] to write OOB during ANSI sequence assembly.
+
+#include <stdio.h>
+#include <string.h>
+
+static int byteof(char c) { return ((int)c) & 0xff; }
+
+int main()
+{
+    // Octal multi-digit
+    const char *esc1 = "\033[";
+    if (strlen(esc1) != 2) { printf("FAIL: \\033[ strlen=%lu, want 2\n", strlen(esc1)); return 1; }
+    if (byteof(esc1[0]) != 0x1b) { printf("FAIL: \\033 = 0x%02x, want 0x1b\n", byteof(esc1[0])); return 1; }
+    if (esc1[1] != '[') { printf("FAIL: esc1[1]=%c, want [\n", esc1[1]); return 1; }
+    printf("PASS: \\033[ -> bytes 0x1b 0x5b\n");
+
+    // Plain \0 still works
+    const char *nul1 = "\0abc";
+    if (strlen(nul1) != 0) { printf("FAIL: \\0abc strlen=%lu, want 0\n", strlen(nul1)); return 1; }
+    printf("PASS: \\0abc -> empty string (NUL terminator)\n");
+
+    // Hex escape
+    const char *hex1 = "\x1b[";
+    if (strlen(hex1) != 2) { printf("FAIL: \\x1b[ strlen=%lu, want 2\n", strlen(hex1)); return 1; }
+    if (byteof(hex1[0]) != 0x1b) { printf("FAIL: \\x1b = 0x%02x\n", byteof(hex1[0])); return 1; }
+    printf("PASS: \\x1b[ -> bytes 0x1b 0x5b\n");
+
+    // 3-digit octal max
+    const char *oct377 = "\377";
+    if (byteof(oct377[0]) != 0xff) { printf("FAIL: \\377 = 0x%02x, want 0xff\n", byteof(oct377[0])); return 1; }
+    printf("PASS: \\377 -> 0xff\n");
+
+    // Octal stops at first non-octal
+    const char *oct8 = "\0118";    // \011 = TAB (0x09), then literal '8'
+    if (strlen(oct8) != 2) { printf("FAIL: \\0118 strlen=%lu, want 2\n", strlen(oct8)); return 1; }
+    if (byteof(oct8[0]) != 0x09) { printf("FAIL: \\011 = 0x%02x\n", byteof(oct8[0])); return 1; }
+    if (oct8[1] != '8') { printf("FAIL: oct8[1]=%c\n", oct8[1]); return 1; }
+    printf("PASS: \\0118 -> 0x09 then '8'\n");
+
+    // Char literal with octal
+    char c1 = '\033';
+    if (byteof(c1) != 0x1b) { printf("FAIL: char '\\033'=0x%02x\n", byteof(c1)); return 1; }
+    printf("PASS: '\\033' -> 0x1b\n");
+
+    // Char literal with hex
+    char c2 = '\xff';
+    if (byteof(c2) != 0xff) { printf("FAIL: char '\\xff'=0x%02x\n", byteof(c2)); return 1; }
+    printf("PASS: '\\xff' -> 0xff\n");
+
+    // The smoking-gun pattern: sprintf with "\033[" must write 2 bytes
+    char buf[8];
+    memset(buf, 0, 8);
+    int n = sprintf(buf, "\033[");
+    if (n != 2) { printf("FAIL: sprintf(\"\\033[\") returned %d, want 2\n", n); return 1; }
+    if (byteof(buf[0]) != 0x1b || buf[1] != '[') { printf("FAIL: sprintf bytes wrong\n"); return 1; }
+    printf("PASS: sprintf(\"\\033[\") = 2, bytes 0x1b 0x5b\n");
+
+    return 0;
+}

@@ -1,0 +1,3 @@
+take_void_ptr: ip[0]=42 sz=8
+take_void_ptr: ip[0]=1 sz=24
+roundtrip: 42

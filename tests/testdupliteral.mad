@@ -1,0 +1,41 @@
+// Global literals / constants are cached per-function in voperand's
+// operand_map. On a cache hit, the cache-refresh branch used to skip
+// `is_constant()` vars, so the initial `mov reg, imm` that loads the
+// literal's std::string address was emitted only at the FIRST use
+// site — and if that first use was inside a conditional branch that
+// didn't execute at runtime, subsequent uses on other branches saw an
+// uninitialized spilled slot. Removing the `!is_constant()` exclusion
+// so literals also get re-materialised on each access fixes this.
+
+#include <stdio.h>
+
+int main()
+{
+    int i = 5;
+    switch (i) {
+    case (3+2): printf("paren_add\n"); break;
+    case 1+1: printf("bare_add\n"); break;
+    default: printf("d\n"); break;
+    }
+
+    i = 2;
+    switch (i) {
+    case (3+2): printf("paren_add\n"); break;
+    case 1+1: printf("bare_add\n"); break;
+    default: printf("d\n"); break;
+    }
+
+    // Repeated literal inside a single if/else gate — the `else` branch
+    // must also see the string address populated correctly.
+    int j = 3;
+    if (j == 1) printf("one\n");
+    else if (j == 2) printf("two\n");
+    else if (j == 3) printf("three\n");
+    else printf("other\n");
+
+    j = 1;
+    if (j == 1) printf("one\n");
+    else printf("other\n");
+
+    return 0;
+}

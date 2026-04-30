@@ -1,0 +1,86 @@
+#!/usr/bin/env madc
+// Test pointer type declarations, -> operator, & address-of, forward typedef
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// forward typedef struct declarations (SMAUG pattern)
+typedef struct point_data POINT_DATA;
+
+struct point_data {
+	int x;
+	int y;
+};
+
+void set_point(POINT_DATA *p, int x, int y)
+{
+	p->x = x;
+	p->y = y;
+}
+
+void bump_local_param(int v)
+{
+	int *p = &v;
+	*p = *p + 5;
+	printf("bump_local_param: v = %ld\n", v);
+}
+
+int main()
+{
+	// basic pointer declarations
+	int *p = NULL;
+	char *name = NULL;
+	void *data = NULL;
+
+	printf("int *p = %ld\n", p);
+	printf("char *name = %ld\n", name);
+	printf("void *data = %ld\n", data);
+
+	// sizeof pointer types
+	printf("sizeof(int *) = %ld\n", sizeof(int *));
+	printf("sizeof(char *) = %ld\n", sizeof(char *));
+	printf("sizeof(void *) = %ld\n", sizeof(void *));
+
+	// struct with pointer member
+	struct Node {
+		int value;
+		int *next;
+	};
+	printf("sizeof(struct Node) = %ld\n", sizeof(struct Node));
+
+	// double pointer
+	char **argv = NULL;
+	printf("char **argv = %ld\n", argv);
+
+	// -> operator: allocate struct via calloc and access via pointer
+	POINT_DATA *pt = calloc(1, sizeof(POINT_DATA));
+	pt->x = 42;
+	pt->y = 99;
+	printf("pt->x = %ld\n", pt->x);
+	printf("pt->y = %ld\n", pt->y);
+	free(pt);
+
+	// & address-of: get pointer to local struct
+	POINT_DATA local;
+	local.x = 10;
+	local.y = 20;
+	POINT_DATA *lp = &local;
+	printf("lp->x = %ld\n", lp->x);
+	printf("lp->y = %ld\n", lp->y);
+
+	// & with function taking struct pointer
+	set_point(&local, 77, 88);
+	printf("after set_point: local.x = %ld, local.y = %ld\n", local.x, local.y);
+
+	// & address-of on scalar local should use stable stack storage
+	int n = 42;
+	int *np = &n;
+	*np = 99;
+	printf("n after *np = %ld\n", n);
+
+	// same rule for numeric parameters
+	bump_local_param(10);
+
+	printf("All pointer tests passed!\n");
+	return 0;
+}

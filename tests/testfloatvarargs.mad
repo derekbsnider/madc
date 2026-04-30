@@ -1,0 +1,36 @@
+// Float varargs promotion.
+//
+// Before the fix, `float a = 1.5f; printf("%f", a);` printed
+// 0.000000. The dlsym variadic call path in TokenCallFunc::
+// compile checked `argrdp.second->is_real()` and pushed the
+// Xmm with `addArgT<double>()`. For float values the Xmm only
+// held the low 32 bits (movss), so printf read the upper 32
+// bits as garbage zero. C ABI says floats promote to double
+// in varargs — the call site must cvtss2sd into a fresh Xmm.
+//
+// Also fixed in the same change: TokenMember::compile's no-
+// destination path used to load numeric members into a Gpq
+// via safemov, which dropped real-typed members into the
+// wrong register class. The real path now routes into an Xmm.
+// TODO: struct-member double `printf("%f", v.x)` still
+// interacts with an asmjit compiler-pass register allocator
+// quirk; output depends on filename length and other prior
+// float activity in the same function. Filed under the multi-
+// float / struct-double printf TODO cluster. Single-local
+// float varargs is the reliable case.
+
+#include <stdio.h>
+
+int main()
+{
+    float a = 1.5f;
+    printf("a=%f\n", a);
+
+    float b = 2.5f;
+    printf("b=%f\n", b);
+
+    float c = 3.5f;
+    printf("c=%f\n", c);
+
+    return 0;
+}

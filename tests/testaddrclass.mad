@@ -1,0 +1,38 @@
+// Regression: `&class->member` used to throw "expecting variable
+// name after '&'" because the unary-`&` handler's postfix-chain
+// detector required `addr_tb->type() == ttIdentifier`. `class` is
+// a keyword token (tkCLASS); earlier fixes made it usable as a C
+// identifier elsewhere (parseStatement, parsePostfixChain), but
+// the `&` path was missed.
+//
+// Fix: the `&` handler uses `is_contextual_identifier_token()` /
+// `contextual_identifier_name()`, matching the rest of the
+// parser's keyword-as-identifier handling.
+//
+// Surfaced at MadSMAUG tables.c:1861 (fwrite_class):
+//   fprintf(..., print_bitvector(&class->affected));
+
+#include <iostream>
+
+struct X { int v; };
+struct Y { struct X ext; };
+
+void dump(struct X *px) { cout << px->v << endl; }
+
+int main()
+{
+    struct Y y;
+    y.ext.v = 7;
+    struct Y *class = &y;
+
+    // `&class->ext` — postfix-chain after `&` with `class` as base
+    dump(&class->ext);
+
+    // Chained: `&class->ext.v_addr` not exercised because v is scalar;
+    // but we can check the assigned address still round-trips.
+    struct X *p = &class->ext;
+    p->v = 13;
+    cout << class->ext.v << endl;
+
+    return 0;
+}

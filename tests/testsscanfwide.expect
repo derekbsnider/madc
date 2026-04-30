@@ -1,0 +1,6 @@
+PASS: int values -1 -2 100 -3
+PASS: negative comparison works
+PASS: full 8-byte sign extension
+PASS: hex %x reads 0xffffffff
+PASS: mixed %s %d (n=-7, buf=name)
+PASS: %ld passthrough

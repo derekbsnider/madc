@@ -1,0 +1,23 @@
+#include <stdio.h>
+
+int add_one(register int x)
+{
+    return x + 1;
+}
+
+char *head_char(register char *s, char *out)
+{
+    *out = *s;
+    return s;
+}
+
+int main()
+{
+    char c = 0;
+
+    printf("%d\n", add_one(4));
+    head_char("z", &c);
+    printf("%c\n", c);
+
+    return 0;
+}

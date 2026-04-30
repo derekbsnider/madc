@@ -1,0 +1,65 @@
+// Struct-member compound-assign on double members.
+// Before the fix, `v.x += 2.5;` where v.x is a double threw
+// "safeadd() unable to add xmm to gp" (or finalize error 25)
+// because resolveCompoundLHS's ttMember branch always loaded the
+// member Mem into a Gpq via load_mem_to_gpq, regardless of type.
+// Local double compound-assign worked (ttVariable branch handled
+// is_real); the ttMember and ttDeref branches now mirror it.
+//
+// Tests are split into one-op-per-function to sidestep two separate
+// pre-existing bugs filed in TODO:
+//   - printing a struct-member double directly via printf varargs
+//   - multiple floats interleaved with printf in one function
+// Neither affects the compound-assign fix itself — they'd misreport
+// values in a combined test. The compound-assign emits correct code
+// in all cases; observation is just limited to one-per-function.
+//
+// Struct float-member compound is emitted correctly too, but the
+// read-back path (struct float → local double) is broken
+// pre-existing, so a direct float check isn't visible yet. Filed
+// under TODO's multi-float / struct-member double printf cluster.
+
+#include <stdio.h>
+
+struct Vec { double x; double y; };
+
+void test_add()
+{
+    struct Vec v; v.x = 10.0;
+    v.x += 2.5;
+    double r = v.x;
+    printf("add=%.2f\n", r);
+}
+
+void test_sub()
+{
+    struct Vec v; v.x = 10.0;
+    v.x -= 1.5;
+    double r = v.x;
+    printf("sub=%.2f\n", r);
+}
+
+void test_mul()
+{
+    struct Vec v; v.y = 4.0;
+    v.y *= 3.0;
+    double r = v.y;
+    printf("mul=%.2f\n", r);
+}
+
+void test_div()
+{
+    struct Vec v; v.y = 12.0;
+    v.y /= 4.0;
+    double r = v.y;
+    printf("div=%.2f\n", r);
+}
+
+int main()
+{
+    test_add();
+    test_sub();
+    test_mul();
+    test_div();
+    return 0;
+}

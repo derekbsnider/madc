@@ -1,0 +1,9 @@
+#!/../bin/madc
+
+typedef struct { int dummy; } imc_packet;
+int (*imc_recv_hook)(const imc_packet *p, int bcast);
+
+int main()
+{
+    return 0;
+}

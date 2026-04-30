@@ -1,0 +1,58 @@
+// Regression: `(expr)[N]` where `expr` produces a pointer (via
+// pointer arithmetic, assign-as-expression, or pointer subtraction)
+// used to throw "Expecting ] in lambda expression" because the
+// parser's `[` handler only recognized TokenMember / TokenSubscript /
+// TokenDerefExpr / TokenDeref as valid subscript bases. Anything
+// else fell through to the lambda branch, which then failed on the
+// integer literal inside `[`.
+//
+// Fix (two parts):
+//   1. Parser: widen the subscript-on-expression detection to also
+//      accept TokenAdd / TokenSub / TokenAssign whose datadef()
+//      reports a pointer (the existing datadef() overrides on these
+//      handle pointer-arithmetic and assignment-as-expression
+//      semantics).
+//   2. Compiler: TokenSubscriptExpr::compile uses base_expr->compile()
+//      (not operand()) for these complex base types — they need to
+//      actually emit the arithmetic / assignment to yield a Reg
+//      holding the pointer value. Existing leaf bases (TokenMember
+//      etc.) still go through operand() since their compile() would
+//      load-via-IR and lose the array address.
+//
+// Surfaced at MadSMAUG `imc-mail.c:1047`:
+//   if ( ... && (mud = imc_mudof(arg))[0] != 0 && ... )
+// And the `imc-config.c:186` `GETSTRING` macro pattern with
+// `(idetails + strlen(idetails))[0]`.
+
+#include <iostream>
+#include <stdio.h>
+
+int main()
+{
+    char buf[16];
+    buf[0] = 'h'; buf[1] = 'e'; buf[2] = 'l'; buf[3] = 'l';
+    buf[4] = 'o'; buf[5] = '\0';
+    char *p = buf;
+
+    // (ptr + N)[0] — pointer addition
+    cout << (p + 1)[0] << endl;       // e
+
+    // (ptr - N)[0] — pointer subtraction
+    char *r = p + 3;
+    cout << (r - 1)[0] << endl;       // l (p[2])
+
+    // (q = ptr + N)[0] — assign-as-expression
+    char *q;
+    cout << (q = p + 2)[0] << endl;   // l (p[2])
+    // q was actually assigned
+    cout << *q << endl;               // l
+
+    // Fixed-array base in pointer arithmetic — `buf + N` where buf
+    // is `char[N]` doesn't have a directly pointer-typed datadef
+    // (TokenVar reports element type), but the parser walks into
+    // TokenAdd's operands and detects the fixed-array decay.
+    cout << (buf + 1)[0] << endl;     // e (buf[1])
+    cout << (buf + 4)[0] << endl;     // o
+
+    return 0;
+}

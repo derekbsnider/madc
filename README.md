@@ -4,6 +4,13 @@
 
 The "Mad" in Mad-C: mix functions from multiple programming languages in a single program.
 
+> **Contributing / using an AI agent?** Start with [`AGENTS.md`](AGENTS.md)
+> — it's the canonical briefing for every agent (Claude Code, Codex CLI,
+> Gemini CLI, Copilot, Cursor, Aider, Windsurf). Rules are in
+> [`.claude/rules/`](.claude/rules/), with reasoning in
+> [`docs/rules/`](docs/rules/). Cross-agent session flow lives in
+> [`docs/agent-handoff.md`](docs/agent-handoff.md).
+
 ---
 
 ## Quick Start
@@ -17,25 +24,62 @@ bin/madc tests/testint.mad
 
 # Run with debug trace
 bin/madc -v tests/testint.mad
+
+# Build first, then run a command against the fresh binary
+scripts/build_then.sh bin/madc tests/testint.mad
 ```
+
+## Multi-file Projects
+
+Single-file programs are the default. For larger projects, the convention is
+a top-level file named after the application (e.g. `smaug.mad`, `mygame.mad`)
+that `#include`s the rest in the right order, with `int main()` last:
+
+```c
+// smaug.mad
+#include "config.mad"
+#include "mud.mad"
+#include "tables.mad"
+#include "comm.mad"
+// ... other source files ...
+#include "main.mad"   // contains int main()
+```
+
+Run the whole project with `bin/madc smaug.mad`. `#include "file.mad"` works
+at the lexer level — filenames resolve relative to the including file, nested
+includes are supported, and repeated includes are skipped within the same
+compile.
 
 ---
 
 ## Language Features
 
 - **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `string`, `array`
-- **Streams:** `cout`, `cerr`, `stringstream`, `ifstream`, `ofstream`, `fstream`
-- **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`
+- **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>`, `list<int>` — also as `std::vector<int>` etc.
+- **Streams:** `cout`, `cerr`, `cin`, `stringstream`, `ifstream`, `ofstream`, `fstream`
+- **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`
+- **Range-based for:** `for (string name : names) { ... }` — works with array and vector
+- **Ternary operator:** `condition ? true_expr : false_expr`
 - **Functions:** user-defined with return values and parameters
+- **Multiple return values:** `return q, r;` and `q, r := divide(17, 5);` (Go-style)
+- **Function pointers:** `auto fn = my_func; fn(args);`
+- **Lambdas:** `[](int a, int b) { return a + b; }` with `[&]` capture by reference
+- **`defer`:** Go-style deferred execution at scope exit (LIFO order)
+- **`auto` keyword:** type inference for function pointer and lambda declarations
+- **`:=` short declaration:** `x := 42;` with type inference from RHS
 - **`register` keyword:** explicitly register-only variables (never written to memory)
 - **User-defined structs:** `struct Point { int x; int y; };`
-- **Class definitions:** `class Foo { int x; string name; };` with data members
-- **Namespaces:** `std::cout`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`
+- **Classes with methods:** `class Counter { int count; void inc() { count = count + 1; } };`
+- **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`
+- **Regex:** `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()`
+- **Input:** `cin >> name >> age;` reads from stdin
 - **`#include`:** `#include "file.mad"` for source inclusion
 - **`using`:** `using namespace std;` or `using std::cout;`
 - **`#load`:** `#load "libfoo.so" as foo;` for dynamic library loading
 - **`dlopen`/`dlsym`/`dlcall`:** first-class dynamic linking
 - **File I/O:** `ifstream`/`ofstream` with `open`, `close`, `good`, `eof`, `getline`
+- **Subscript operator:** `a[0]`, `nums[i]`, `ages["key"]`
+- **Escape sequences:** `\n`, `\t`, `\r`, `\\`, `\"`, `\0`
 
 ### Multi-Language Namespaces
 
@@ -56,10 +100,10 @@ int main()
     php::implode(sorted, delim, names);
     cout << sorted << endl;             // alice,bob,charlie
 
-    // Perl-style file globbing
-    array files;
-    string pattern = "*.mad";
-    perl::glob(files, pattern);
+    // Perl-style regex grep
+    array matches;
+    string pat = "^a";
+    perl::grep(matches, pat, names);    // apple, avocado
 
     // Python-style string formatting
     string title = "hello world";
@@ -75,6 +119,10 @@ int main()
     js::btoa(encoded, s);
     cout << encoded << endl;            // YWJjZA==
 
+    // Regex
+    int m = madc::regex_match(s, "[a-d]+");
+    cout << m << endl;                  // 1
+
     return 0;
 }
 ```
@@ -84,11 +132,12 @@ int main()
 | Namespace | Functions | Focus |
 |-----------|-----------|-------|
 | [`php::`](docs/language/ns-php.md) | 36 | String manipulation, array operations (explode, implode, sort) |
-| [`perl::`](docs/language/ns-perl.md) | 21 | chop/chomp, grep, glob, split/join, array ops |
+| [`perl::`](docs/language/ns-perl.md) | 21 | chop/chomp, grep (regex), glob, split (regex)/join, array ops |
 | [`python::`](docs/language/ns-python.md) | 16 | Title case, alignment (center/ljust/rjust/zfill), format |
 | [`ruby::`](docs/language/ns-ruby.md) | 12 | squeeze, tr (transliterate), chars, rotate, compact |
 | [`js::`](docs/language/ns-js.md) | 6 | Base64 (btoa/atob), URL encoding, parseInt, JSON stringify |
-| `std::` | 3 | cout, cerr, endl |
+| `std::` | 5 | cin, cout, cerr, endl, for_each |
+| `madc::` | 4 | array, regex_match, regex_search, regex_replace |
 
 Plus `#load` for any shared library via dlopen.
 
@@ -111,17 +160,17 @@ make -C src test      # run unit tests
 ## Testing
 
 ```bash
-# Run all integration tests
-for t in tests/*.mad; do
-    [ "$(basename $t)" = "include_helper.mad" ] && continue
-    timeout 5 bin/madc "$t" > /dev/null 2>&1 && echo "PASS: $t" || echo "FAIL: $t"
-done
+# Run unit + integration tests
+make -C src fulltest
 
-# Run unit tests
-make -C src test
+# Build first, then run one integration test through the batch runner
+scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 36/36 integration tests pass. 25/25 unit tests pass.**
+**Current status: 238 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
+
+(`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
+feeds them stdin and argv respectively and asserts on their output.)
 
 ---
 
@@ -135,14 +184,36 @@ make -C src test
 | [`docs/language/ns-python.md`](docs/language/ns-python.md) | python:: namespace reference |
 | [`docs/language/ns-ruby.md`](docs/language/ns-ruby.md) | ruby:: namespace reference |
 | [`docs/language/ns-js.md`](docs/language/ns-js.md) | js:: namespace reference |
+| [`docs/language/modern/`](docs/language/modern/) | Range-for, function pointers, lambdas, defer |
+| [`docs/language/switch.md`](docs/language/switch.md) | Switch/case/default statement |
+| [`docs/language/input-operator.md`](docs/language/input-operator.md) | cin >> input operator |
+| [`docs/language/class-methods.md`](docs/language/class-methods.md) | Class methods with this pointer |
+| [`docs/language/regex.md`](docs/language/regex.md) | Regex functions |
+| [`docs/language/multiple-returns.md`](docs/language/multiple-returns.md) | Go-style multiple return values |
+| [`docs/language/ternary-operator.md`](docs/language/ternary-operator.md) | Ternary operator |
 | [`docs/build.md`](docs/build.md) | Build requirements, asmjit setup |
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
 | [`docs/test-status.md`](docs/test-status.md) | Per-test results |
-| [`docs/plans/revival-plan.md`](docs/plans/revival-plan.md) | Development roadmap |
+| [`docs/agent-handoff.md`](docs/agent-handoff.md) | Cross-agent hand-off workflow and source-of-truth rules |
+| [`AGENTS.md`](AGENTS.md) | Agent briefing — project rules, architecture, multi-tool setup |
+| [`docs/rules/`](docs/rules/) | Reasoning behind each rule in `.claude/rules/` |
 | [`CHANGELOG.md`](CHANGELOG.md) | Change history |
 
 ---
+
+## Current Release
+
+**v0.13.0** (2026-04-30) — **SMAUG 1.8 plays end-to-end on madc.** The 158k-line C89 codebase JIT-compiles in-process and runs as a real network MUD: telnet greeting, full character creation (name → confirm → password → color → sex → class → race), stats roll, MOTD, room entry, and in-game commands (`look`, `inventory`, movement, `say`, `who`, `quit`). Returning-player `Reconnecting.` flow also works. Four codegen / lexer fixes collapsed the cascade of SMAUG runtime symptoms (second-connection NULL deref, `slot_lookup` int-widening, fgetc EOF hangs) into single root causes: octal/hex escape sequences in the lexer, `scanf %d → %ld` rewrite for madc's 8-byte int slots, `stat()` int-return sign-extension, and `safemov` `movsx r64, r/m8` for narrow→64 sign-extension. All MadSMAUG bootstrap shims removed. 238 integration + 48 unit tests passing.
+
+### Recent Releases
+
+- **v0.13.0** — SMAUG plays end-to-end on madc: telnet/creation/MOTD/room/commands/reconnect; lexer octal+hex escapes, scanf %d→%ld, stat sign-ext, safemov narrow→64
+- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c)
+- **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, `expr[i].m`, compound-assign on subscripts, realpath includes, class-as-ident
+- **v0.10.1** — Typed-register IR cleanup completion: stream/multi-return/direct-call cleanup, final compiler-site IR store/load ports, dead `typesafe.cpp` surface pruned
+- **v0.10.0** — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c): 15 shared compile-site helpers, ~880 lines removed from `compiler.cpp`, three latent bugs fixed
+- **v0.9.1** — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts, constant `case`, postfix chains
 
 ## Roadmap
 
@@ -151,6 +222,13 @@ make -C src test
 | **Phase 1** | Foundation: verbose flag, char literals, struct fix, register, doctest | **Complete** |
 | **Phase 2** | User-defined structs/classes, namespaces, #include, using | **Complete** |
 | **Phase 3** | php::/perl::/python::/ruby::/js:: namespaces, dlopen, MadArray | **Complete** |
+| **Phase 3.5** | Modern language features: range-for, function pointers, lambdas, defer, STL containers | **Complete** |
+| **Phase 3.5+** | switch, cin, class methods, regex, multi-return, ternary, namespace scoping | **Complete** |
+| **Phase 4 prep** | C preprocessor, 40 embedded headers, struct alignment, sizeof, argc/argv | **Complete** |
+| **SMAUG A/B/C** | Pointers, `->`, casts, `&`, macros, unsigned/enum/static/typedef | **Complete** |
+| **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
+| **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
+| **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
 | **Phase 4** | `libmadc.so` embedding API | Planned |
 
 ---
@@ -169,4 +247,4 @@ Source (.mad file)
     v JIT execute        — run machine code in-process
 ```
 
-Namespace implementations: `src/ns_php.cpp`, `src/ns_perl.cpp`, `src/ns_python.cpp`, `src/ns_ruby.cpp`, `src/ns_js.cpp`
+Namespace implementations: `src/ns_php.cpp`, `src/ns_perl.cpp`, `src/ns_python.cpp`, `src/ns_ruby.cpp`, `src/ns_js.cpp`, `src/ns_stl.cpp`

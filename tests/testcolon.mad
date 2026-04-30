@@ -1,0 +1,28 @@
+#include <iostream>
+// Test := short variable declaration (Go-style type inference)
+
+int main()
+{
+    // integer inference
+    x := 42;
+    cout << x << endl;   // 42
+
+    // string inference
+    s := "hello";
+    cout << s << endl;   // hello
+
+    // double inference
+    f := 3.14;
+    cout << f << endl;   // 3.14
+
+    // inference from variable
+    int n = 100;
+    m := n;
+    cout << m << endl;   // 100
+
+    // arithmetic - inferred as int
+    a := 10 + 5;
+    cout << a << endl;   // 15
+
+    return 0;
+}

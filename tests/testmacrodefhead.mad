@@ -1,0 +1,58 @@
+// Regression: function-like macro must not eat a later declarator
+// with the same name. In SMAUG's `comm.c` / `db.c`, the umbrella
+// stubs `bug(...)` via `#define bug(...) ((void)0)`; the *defining*
+// TU then contains `void bug(const char *str, ...) { ... }`. Before
+// the fix, the lexer expanded `bug(const char *str, ...)` at the
+// definition head into `((void)0)`, producing garbage like
+// `void ((void)0) { ... }`.
+//
+// Fix: the lexer now skips function-like macro expansion when the
+// preceding token(s) form a declaration/definition head — a type
+// keyword, struct/class/enum, qualifier (const/extern/static/
+// register/typedef/restrict), or typedef'd identifier, optionally
+// separated from the current identifier by pointer decorators.
+// Ordinary call sites (preceded by `{`, `;`, `,`, an operator, etc.)
+// still expand as before.
+
+#include <iostream>
+
+#define bug(...)  ((void)0)
+
+// The real function definition. Must compile despite the macro.
+void bug(const char *msg, int arg)
+{
+    cout << "real bug: " << msg << " " << arg << endl;
+}
+
+// Also verify the pointer-declarator case — `char *foo(...)`.
+#define foo(...)  ((void)0)
+char *foo(const char *s)
+{
+    return (char *)s;
+}
+
+// Static-qualified definition.
+#define baz(...)  ((void)0)
+static int baz(int n)
+{
+    return n * 2;
+}
+
+int main()
+{
+    // At the call site, the macro expansion still fires
+    // (no type keyword directly before `bug`), so these are
+    // stubbed to `((void)0)` — no output from `bug` itself.
+    bug("hello", 42);
+    foo("x");
+
+    // Invoke through a typedef'd function pointer to bypass macro
+    // expansion at the call site and confirm the real function
+    // compiled and is reachable.
+    typedef int (*BAZFN)(int);
+    BAZFN pb = baz;
+    cout << pb(7) << endl;   // 14
+
+    cout << "end" << endl;
+    return 0;
+}

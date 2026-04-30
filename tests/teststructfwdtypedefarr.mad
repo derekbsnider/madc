@@ -1,0 +1,69 @@
+// Regression: a forward-typedef'd struct (`typedef struct foo FOO;`
+// followed later by `struct foo { ... };`) used to lose its per-member
+// fixed-array counts. The forward-typedef path created a placeholder
+// DataDefSTRUCT, and the later body-parse copied the new struct's
+// `members` vector into the placeholder but didn't copy the parallel
+// `member_counts` vector. Result: m_count(any_member) == 1, so
+// is_fixed_array_member() returned false for all members. Subscripting
+// a fixed-array-of-pointers member through `obj->arr[i]` then unwrapped
+// the element type to the pointed-to struct (instead of staying as
+// pointer), and the codegen's MOV/LEA dispatch picked MOV (loading the
+// stored pointer's value as the base) instead of LEA. The compiler
+// surfaced this as `IRBuilder::coerce() unsupported type conversion`
+// when assigning NULL into the bogus struct-typed slot.
+//
+// Surfaced by SMAUG `auction->history[x] = NULL` where struct
+// auction_data is forward-typedef'd in mud.h ahead of its definition.
+
+#include <iostream>
+#include <stdio.h>
+#include <stdlib.h>
+
+#define AUCTION_MEM 3
+
+// Forward-typedef both structs ahead of their definitions.
+typedef struct obj_index_data OBJ_INDEX_DATA;
+typedef struct auction_data AUCTION_DATA;
+
+// Now the actual definitions.
+struct obj_index_data
+{
+    int vnum;
+    char *name;
+};
+
+struct auction_data
+{
+    int starting;
+    OBJ_INDEX_DATA *history[AUCTION_MEM];
+    int hist_timer;
+};
+
+int main()
+{
+    AUCTION_DATA *auction;
+    auction = (AUCTION_DATA *)calloc(1, sizeof(AUCTION_DATA));
+    auction->starting = 100;
+    auction->hist_timer = 7;
+
+    int x;
+    for (x = 0; x < AUCTION_MEM; x++)
+        auction->history[x] = NULL;
+
+    cout << auction->starting << endl;
+    cout << auction->hist_timer << endl;
+    cout << (auction->history[0] == NULL ? "null" : "found") << endl;
+    cout << (auction->history[1] == NULL ? "null" : "found") << endl;
+    cout << (auction->history[2] == NULL ? "null" : "found") << endl;
+
+    // Round-trip: stash a real pointer, read it back through `->name`.
+    OBJ_INDEX_DATA item0;
+    item0.vnum = 42;
+    item0.name = "sword";
+    auction->history[0] = &item0;
+    cout << auction->history[0]->vnum << endl;
+    cout << auction->history[0]->name << endl;
+
+    free(auction);
+    return 0;
+}

@@ -1,0 +1,35 @@
+#include <stdio.h>
+
+// SMAUG-style command table pattern.
+typedef void DO_FUN(int lvl, char *arg);
+
+void do_who(int lvl, char *arg)
+{
+    printf("who %d [%s]\n", lvl, arg);
+}
+
+void do_look(int lvl, char *arg)
+{
+    printf("look %d [%s]\n", lvl, arg);
+}
+
+struct cmd {
+    char *name;
+    DO_FUN *fn;
+};
+
+int main()
+{
+    struct cmd who_cmd = { "who", do_who };
+    struct cmd look_cmd = { "look", do_look };
+
+    // Dispatch via intermediate variable (SMAUG's usual idiom).
+    DO_FUN *fp;
+    fp = who_cmd.fn;
+    fp(5, "all");
+    fp = look_cmd.fn;
+    fp(3, "north");
+
+    // Int-returning fptr via struct member also works.
+    return 0;
+}

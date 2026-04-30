@@ -1,0 +1,73 @@
+#include <iostream>
+// Test compound assignment operators: +=, -=, *=, /=, %=, &=, |=, ^=, <<=, >>=
+
+int main()
+{
+    int x;
+
+    // +=
+    x = 10;
+    x += 5;
+    cout << x << endl;  // 15
+
+    // -=
+    x = 10;
+    x -= 3;
+    cout << x << endl;  // 7
+
+    // *=
+    x = 6;
+    x *= 4;
+    cout << x << endl;  // 24
+
+    // /=
+    x = 20;
+    x /= 4;
+    cout << x << endl;  // 5
+
+    // %=
+    x = 17;
+    x %= 5;
+    cout << x << endl;  // 2
+
+    // &=
+    x = 0xFF;
+    x &= 0x0F;
+    cout << x << endl;  // 15
+
+    // |=
+    x = 0xF0;
+    x |= 0x0F;
+    cout << x << endl;  // 255
+
+    // ^=
+    x = 0xFF;
+    x ^= 0x0F;
+    cout << x << endl;  // 240
+
+    // <<=
+    x = 1;
+    x <<= 4;
+    cout << x << endl;  // 16
+
+    // >>=
+    x = 256;
+    x >>= 3;
+    cout << x << endl;  // 32
+
+    // chained use in a loop
+    int sum;
+    sum = 0;
+    int i;
+    for ( i = 1; i <= 5; i++ )
+        sum += i;
+    cout << sum << endl;  // 15
+
+    // double +=
+    double d;
+    d = 3.5;
+    d += 1.5;
+    cout << d << endl;  // 5
+
+    return 0;
+}

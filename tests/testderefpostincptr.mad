@@ -1,0 +1,13 @@
+#!/../bin/madc
+
+int main()
+{
+    char *s = "7";
+    int number = 0;
+    number = (*s++ - '0');
+    puti(number);
+    putchar('\n');
+    puti(*s);
+    putchar('\n');
+    return 0;
+}

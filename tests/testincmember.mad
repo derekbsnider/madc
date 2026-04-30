@@ -1,0 +1,40 @@
+// Prefix/postfix inc/dec on struct members (-> and .), short members.
+// Regression for SMAUG Phase F: CompoundLHS member path with size-aware
+// load (movzx/movsx) + size-aware store.
+#include <stdio.h>
+#include <stdlib.h>
+
+struct node
+{
+    struct node *next;
+    unsigned short int links;
+    int big;
+};
+
+int main()
+{
+    struct node *p = (struct node *) malloc(sizeof(struct node));
+    p->next = NULL;
+    p->links = 5;
+    p->big = 100;
+
+    ++p->links;                     // prefix inc on unsigned short via ->
+    printf("links=%d (expect 6)\n", p->links);
+
+    p->links++;                     // postfix inc on unsigned short via ->
+    printf("links=%d (expect 7)\n", p->links);
+
+    int old = p->links++;           // postfix saves old value
+    printf("old=%d links=%d (expect old=7 links=8)\n", old, p->links);
+
+    --p->big;                       // prefix dec on int via ->
+    printf("big=%d (expect 99)\n", p->big);
+
+    // Condition reads p->links — exercises load+store across a label boundary
+    // with unsigned comparison (setb not setl).
+    if (p->links < 65535) ++p->links;
+    printf("links=%d (expect 9)\n", p->links);
+
+    free(p);
+    return 0;
+}

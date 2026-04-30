@@ -1,6 +1,3145 @@
 # Changelog
 
-## [Unreleased] — Phase 3 Complete (2026-04-15)
+## [Unreleased]
+
+## [v0.13.0] — 2026-04-30 — SMAUG 1.8 plays end-to-end on madc
+
+- **SMAUG 1.8 is a fully playable network MUD on madc.** The
+  158k-line C89 codebase JIT-compiles in-process, accepts telnet
+  connections, walks the full character-creation flow (name →
+  confirm → password → retype → color → sex → class → race →
+  stats roll), serves the MOTD, drops the player into "Ominous
+  Tapestries" with a newbie burlap sack, and responds to in-game
+  commands: `look`, `inventory`, movement (`n`/`s`/`e`/`w`/`u`/`d`),
+  `say`, `who`, `quit`. Returning-player `Reconnecting.` flow also
+  works. NPCs greet, bow, and offer advice.
+
+- **Four real codegen / lexer fixes this session.** Each
+  collapsed multiple SMAUG runtime symptoms into one root cause:
+
+  - **Lexer: octal (`\NNN`) and hex (`\xHH`) escape sequences.**
+    The lexer previously parsed `\033` as `\0` (NUL terminator)
+    followed by literal `"33"`, silently truncating the string.
+    SMAUG's `make_color_sequence()` then `sprintf`'d into a
+    zero-length format and the next line `buf[ln-1] = 'm'`
+    wrote 'm' (0x6D) to `buf[-1]` — out of bounds into a
+    caller's stack frame. The corruption clobbered byte 7 of
+    `nanny()`'s `DESCRIPTOR_DATA *d` slot, turning `0x55…` into
+    `0x6d0055…`, and the next `write_to_buffer` SIGSEGV'd
+    dereferencing the bogus pointer (the long-standing
+    "comm.c:1381 second-connection NULL deref"). Full C escape
+    syntax now supported: `\NNN` (1-3 octal digits), `\xHH`
+    (1-2 hex digits), plus the existing single-letter escapes.
+    `tests/testoctalescape.mad`.
+
+  - **`scanf`-family rewrites `%d` → `%ld`.** madc's `int` is
+    64-bit by design, but libc's `%d` writes only 4 bytes into
+    a destination slot — leaving the high 4 bytes of an
+    `int x = 0; sscanf("%d", &x);` round-trip stale. SMAUG
+    `db.c`'s `sscanf("%d %d ...", &x1, &x2, ...)` produced
+    `0x00000000FFFFFFFF` for negative inputs read from `.are`
+    files; that broke `slot_lookup`'s `if (slot <= 0) return -1;`
+    guard for the first negative slot during `gods.are` object
+    loading and `abort()`'d boot. Three new wrappers
+    (`__madc_sscanf` / `__madc_fscanf` / `__madc_scanf`) parse
+    the format string and prepend `l` to `%d/%i/%u/%o/%x/%X/%n`
+    that have no explicit length modifier, then forward to
+    `vsscanf`/`vfscanf`/`vscanf`. Embedded `<stdio.h>` `#define`s
+    `sscanf`/`fscanf`/`scanf` to redirect transparently — no
+    source changes needed. `tests/testsscanfwide.mad`.
+
+  - **`stat` family added to the int32-return whitelist.**
+    `stat` / `fstat` / `lstat` etc. return `int` (-1 on failure)
+    but were missing from the dlsym-int-returner whitelist that
+    triggers `movsxd` of the 32-bit result into the 64-bit RAX
+    madc reads. Without sign extension, a -1 return arrived as
+    `0x00000000FFFFFFFF` and `if (stat(p, &sb) == -1)` silently
+    fell through to the success branch. SMAUG `save.c:891`
+    logged spurious `Preloading player data ... (-15803487K)`
+    on every connection because the stat-failed path never
+    short-circuited. Added `stat`, `fstat`, `lstat`, `fstatat`,
+    `statfs`, `fstatfs`, `utime`, `utimes`, `futimes`.
+    `tests/teststatret.mad`.
+
+  - **`safemov` narrow→64 must sign-extend across the full 64
+    bits.** The signed-sub-int → 64-bit-dest path used
+    `movsx r32, r/m8` (and similar for `r/m16`). x86 `movsx` to
+    a 32-bit register sign-extends to the dest's 32 bits and
+    then implicitly zero-extends to 64 — leaving the high 32
+    bits at zero. So a signed -1 char loaded into a Gpq came out
+    as `0x00000000FFFFFFFF`. Visible victim: the chained EOF
+    idiom `int x = (c = fgetc(fp)); if (x == EOF) break;` —
+    the assignment-expression value extended through this
+    `safemov` didn't match an int64 sentinel. Fixed by using
+    `movsx r64, r/m8` (and `r64, r/m16`) directly when the dest
+    is gpq. Unsigned narrows continue to use the shorter
+    `movzx r32` form whose implicit zero-extend to 64 is
+    correct. `tests/testsignextend.mad`.
+
+- **MadSMAUG: all bootstrap shims removed.** `slot_lookup`,
+  `act`, `to_channel`, `boot_log` all run upstream definitions.
+  The `_bootstrap_comm_shim.c` is now just a doc comment.
+
+- **MadSMAUG: upstream `fgetc`-into-char-array idiom patched.**
+  `act_comm.c`'s `send_*_title` (4 sites) and `db.c`'s
+  `show_file` / `show_file_vnum` (2 sites) used the chained
+  `(buf[i] = fgetc(fp)) != EOF` idiom; this returns the unbound
+  RHS register's full int instead of the truncated-and-extended
+  char value the C standard requires, so the EOF compare never
+  matched and the loop walked off the buffer. The patch
+  (`patches/madc-fgetc-loop.patch`) substitutes an `int`
+  intermediate at the six call sites. The TokenVar variant of
+  the same pattern (`(c = fgetc(fp))`) works correctly under
+  this release; the TokenSubscript variant is queued for a
+  follow-up codegen fix and the workaround patch comes out then.
+
+## Previous unreleased work (now part of v0.13.0)
+
+- **SMAUG runtime is fully interactive end-to-end.** boot_db
+  completes through every load_*() phase, game_loop ticks at
+  4 Hz, area_update fires every 30-90 s with `Resetting:` log
+  lines, telnet returns the greeting, and the character-creation
+  dialog progresses through Name → "Did I get that right? (Y/N)"
+  → password prompt (with telnet IAC `ff fb 01` echo-suppression)
+  → password retype → color preference. Clean client disconnect
+  handled. First time SMAUG under madc has been genuinely
+  playable as a network-protocol MUD.
+
+- **Five real codegen / parser bugs fixed this session.** Each
+  one was a real divergence from gcc's behavior on the exact same
+  upstream source, and each had a one-line repro:
+
+  - **TokenVar enum const-fold**: `TokenOperator::optimize` calls
+    `ival()` / `dval()` on each leaf when both sides report
+    `is_constant()`. `TokenVar` reported is_constant correctly for
+    vfCONSTANT vars (enum members, `static const int`) but
+    inherited the default returning 0. So `enum { BASE=1024, ...,
+    TOP }; (TOP - BASE)` folded to **0** at runtime even though
+    parse-time array sizing read the same expression correctly via
+    `read_constant_integer`. Visible victim was SMAUG colorize.c's
+    `for (at=0; at < AT_MAXCOLOR; ++at)` running zero iterations
+    and the file-read loop's `DISPOSE` macro spamming ~57
+    `DISPOSEing NULL in colorize.c, line 40` lines per boot. Fix:
+    9-line override of `ival()` / `dval()` on `TokenVar`.
+    `tests/testenumconstfold.mad`.
+
+  - **Brace-less comma-expression statements**: `parseExpression`
+    treats `,` as a hard stop because every other caller (function
+    args, for-init/incr separators) needs it that way. So a body
+    like `while ( (*p = *i) != '\0' ) ++p, ++i;` parsed as
+    `++p;` and the `, ++i;` became a sibling statement AFTER the
+    loop. `*i` stayed at the first char forever, `p` walked off
+    the buffer, SIGSEGV — found via SMAUG mud_prog.c:2437. Fix:
+    new `parseExpression(push_back_comma=true)` flag, new
+    `parseExprStmt` helper called from parseStatement's
+    expression-statement branch, new `TokenComma::compile` that
+    evaluates left for side effects and returns right's value.
+    `tests/testcommastmt.mad`.
+
+  - **`setrlimit` resource guards**: codegen bugs that compile to
+    spinning loops (the comma-stmt bug above was one) used to pin
+    the host at 99% CPU until killed by hand. Add
+    `MADC_CPU_LIMIT=<seconds>` (default 60, RLIMIT_CPU →
+    SIGXCPU/SIGKILL) and `MADC_MEM_LIMIT=<MB>` (default 2048,
+    RLIMIT_AS — covers JIT mappings + dlopen libs). Both
+    overridable, both have a `=0` disable knob.
+
+  - **Function-scope static initializers**: TokenDecl::compile
+    skipped the inline initialize-on-every-call code for
+    vfSTATIC vars (correct C semantics — static init must fire
+    exactly once, before main), but nothing was feeding the
+    initializer into program-startup code instead. So
+    `static char const *p = "literal";` left p NULL. SMAUG
+    mud_comm.c's `get_color` SIGSEGV'd inside
+    `strstr(color_list, color)` — `color_list` was the static
+    pointer that never got its literal address. Fix: in
+    parseDeclaration, push the wrapped TokenAssign onto
+    `tkProgram->statements` when the decl is a function-scope
+    static with `=`-init. Counter-pattern statics
+    (`static int n = 5; n++;`) keep working — the init still
+    fires only once. `tests/teststaticlocalinit.mad`.
+
+  - **Real-typed global Xmm load/store via reg-base addressing**:
+    three independent gaps, all in the same TokenCpnd::movreg path.
+    (1) Missing `else` between the kVec and kGp arms: an Xmm
+    operand fell through to the Gp branch's bare `else` clause
+    which threw "unsupported operand". (2) `movsd xmm, [abs64]`
+    has no encoding — only `mov rax, [moffs64]` for the GP analog
+    (which is why integer globals worked: asmjit's reloc system
+    patches the moffs64 form, but movsd has nothing to patch). At
+    cc.finalize() asmjit aborted with `Reloc entry contains
+    address that is out of range (unencodable)` for any heap
+    pointer above the 32-bit signed range. Spill the address into
+    a Gp first and use `[gp]` addressing — always encodes. (3)
+    `movxval2mptr` (the Xmm-to-mem write-back) didn't exist, and
+    `TokenCpnd::putreg` only had a Gp branch — even when reads
+    were fixed, writes silently no-op'd and globals stayed at
+    zero. Add the helper and the kVec branch.
+
+- **MadSMAUG `act()` un-stubbed.** All four bootstrap-shim
+  function bodies that earlier sessions thought were "variadic
+  pipeline corrupts the heap" turn out to be layout-shift
+  symptoms of the comma-stmt and real-global codegen bugs above.
+  With those fixed, the upstream `act()`, `to_channel`,
+  `boot_log` definitions stand on their own. Only `slot_lookup`
+  remains stubbed (next-session blocker, see below).
+
+- **Open issue blocking slot_lookup un-stub**: a real madc bug
+  that only manifests in the SMAUG umbrella context (5800+
+  functions). Inside slot_lookup, `if (slot <= 0) return -1;`
+  fails to early-return for slot=-1. Probes confirm:
+  `sizeof(slot)=8` (madc int is 64-bit by design), low 32 bits
+  read as -1 correctly, high 32 bits are zero (NOT
+  sign-extended), the 64-bit cmp sees positive 4B and the guard
+  fails. Cannot reproduce in a small repro — SMAUG-umbrella
+  specific. Three hypotheses documented in
+  MadSMAUG/src/_bootstrap_comm_shim.c. Workaround keeps an
+  unconditional `return -1` stub.
+
+- **MadSMAUG accepts telnet connections and sends the login
+  greeting** — `Welcome to MadSMAUG. By what name do you wish to
+  be known?` — the first interactive frame from a JIT-compiled
+  SMAUG. The path from `boot_db()` to a responsive `game_loop()`
+  surfaced one madc bug:
+
+  - **Function-local `extern T name;` resolves to the file-scope
+    global, not a fresh uninitialized local.** addVariable was
+    checking only the local scope before creating a new
+    Variable; comm.c new_descriptor()'s
+    `extern char *help_greeting; if (help_greeting[0] == '.')`
+    crashed on every incoming connection because the local
+    extern shadowed db.c's actual global with an uninitialized
+    NULL pointer. Fix: when `parsing_extern_decl`, fall through
+    to `tkProgram->findVariable(id)` and reuse the existing
+    global. Regression test
+    `tests/testfunclocalextern.mad` covers the read-and-write
+    case across two calls.
+
+  Plus bootstrap-shim peeling on the MadSMAUG side: the
+  send_to_char / write_to_buffer / send_to_pager /
+  send_to_char_color / set_char_color stubs were removed so the
+  upstream comm.c definitions win the funcnode-dedupe race;
+  slot_lookup gained a stub (the upstream version aborts during
+  boot when skill_table is empty, which exposed itself only
+  after the extern fix wired fBootDb visibility correctly inside
+  it); main() in SMAUG.mad now drives `boot_db() →
+  init_socket(port) → game_loop()` instead of `exit(0)`.
+
+- **SMAUG `boot_db()` runs end-to-end** — five compounding fixes in
+  one session unstuck the post-area-loading runtime path. SMAUG now
+  loads all 25 areas, fires `area_update`, finishes board / vault /
+  clan / member-list / council / deity / watch / ban / corpse /
+  immortal-host / hint / project / morph / login-message / color
+  loading, and reaches `[probe] after boot_db` in the bootstrap
+  shim. Runtime estimate ~75% → ~95%+ (boot complete; the only
+  remaining surface is the game loop, which the bootstrap doesn't
+  invoke). Five fixes, in order found:
+
+  1. **Mixed string-literal / char-pointer ternary type
+     unification** — `feof(fp) ? "End" : fread_word(fp)` had its
+     parser-side datadef set to dtSTRING (true branch wins), so the
+     downstream `char *` consumer ran `string_cstr` on the false
+     branch's raw `char *` return, dereferencing it as if it were a
+     `std::string` and crashing inside libstdc++. The parser now
+     unifies pointer-flavored ternary branches: real pointers,
+     dtSTRING string literals, fixed-array variables, and
+     fixed-array struct members are all "char-pointer-like"; when
+     they disagree the result type is a real pointer (or
+     `char *` / `ddLPSTR` if both are decay/literal). Closes
+     boards.c:1615, fight.c:4298 `IS_NPC(victim) ? buf2 : ""` (buf2
+     is `char[N]`), player.c:1883 `(x == lvl) ? buf : (x == lvl+1)
+     ? buf2 : " exp"`, and the dozen `obj ? obj->field : "(none)"`
+     calls in act_wiz.c do_mstat. **(closes the boards-loading
+     SIGSEGV.)**
+  2. **TokenTerQ::compile merge slot rewrite + IRBuilder coerce
+     extensions** — the existing merge_slot path called
+     `compile_token_normalized` whose tmp_rdp.second was
+     pre-seeded to the *target* type, not the branch's actual
+     type, so a dtSTRING literal on a char* merge surface got
+     relabeled char* without ever calling `string_cstr`. New
+     emit_branch lambda compiles each branch with a clean
+     regdefp_t, then routes the produced operand through
+     `IRBuilder::coerce(raw_type → merge_type)`. Two new coerce
+     pairs: dtSTRING → pointer-to-char (emits `string_cstr` to
+     yield the c_str() char *) and 8-byte integer → dtSTRING
+     relabel (covers dlsym-fallback functions like `ctime` whose
+     return type is `char *` but parses as int64).
+  3. **Local C fixed-size array LEA re-emit on every reuse** —
+     `voperand` cached the Gp holding a stack-array's base pointer
+     but only re-emitted the LEA for *global* fixed-arrays. SMAUG
+     `bug()` declares `char buf[MAX_STRING_LENGTH]`, first uses it
+     inside `if (fpArea != NULL) sprintf(buf, ...)`, then
+     unconditionally `strcpy(buf, "[*****] BUG: ")` after the if.
+     With fpArea NULL (the load_vaults phase), the LEA inside the
+     not-taken branch never executes; the cached vreg is
+     uninitialized and the strcpy lands on NULL inside libc
+     memcpy. New `fixed_array_stack` map on TokenCpnd remembers
+     the stack Mem so reuse can re-LEA into the cached Gp,
+     mirroring the existing global-fixed-array re-emit pattern.
+  4. **Crash-handler stack walk for non-JIT faulting RIP** — when
+     a JIT'd function calls into libc and the fault happens inside
+     glibc (e.g. memcpy on NULL dst), the existing handler reads
+     RIP from `ucontext_t::uc_mcontext.gregs[REG_RIP]`, finds it
+     outside the JIT region, and prints no source-line context.
+     Walk `backtrace()` looking for the first frame whose address
+     falls in the JIT'd region; that's the call-site that pushed
+     the return address into libc. Surfaced db.c:4225 strcpy as
+     the actual fault site behind the load_vaults segfault — a
+     diagnostic that paid for itself within minutes.
+
+- **TokenLand / TokenLor: actually short-circuit && and ||
+  evaluation** — both operators compiled left AND right
+  unconditionally before testing either, so `p && p->next` evaluated
+  p->next even when p was NULL. Move right-operand compilation
+  behind the short-circuit branch. Found within minutes of having
+  the JIT-crash → source-line tooling working — handler.c:132 was
+  the last anchor, the && expression was the obvious culprit.
+
+- **JIT crash → source-line traceback** — sorted byte-offset →
+  (file, line, col, kind) source map built at `cc.finalize()` from
+  per-statement / per-function-entry label anchors; SIGSEGV /
+  SIGBUS handler reads RIP from `ucontext_t::uc_mcontext.gregs[REG_RIP]`,
+  binary-searches the map, prints both the last anchor and the next
+  anchor so the user can see the bracket of source that emitted the
+  crash. Toggle off with `MADC_NO_SOURCE_MAP=1`. Dump the full map
+  with `MADC_DUMP_SOURCEMAP=path`. Three companion fixes were
+  needed for the file path to be useful: (1) parseFunction now
+  copies file/line from the first body statement so TokenFunc
+  fn-entry anchors point at the function body, (2) the lexer was
+  storing `c_str()` of stack-local `std::string` into
+  `TokenBase::file` at #include time — pointer dangled the moment
+  the include scope ended; intern via the existing `included_files`
+  map (whose std::string keys are stable since we never erase),
+  (3) crash handler print formatting cleaned up.
+
+- **TokenSubscriptExpr: override operand() to return Mem lvalue
+  without loading value** — the default `operand()` called
+  `compile()` which emits `emit_ir_value` to LOAD the element via
+  the computed Mem and yield a Gp holding the value. Callers that
+  expected an lvalue (TokenAssign LHS for nested subscripts, outer
+  TokenSubscriptExpr for chained 2D indexing, TokenMember for
+  `s[i].field`) treated that Gp as an *address* and indexed off the
+  value — for 2D-array struct member writes
+  `m->map[0][0] = 7` the inner subscript loaded the int value at
+  &map[0][0] (zero in calloc'd memory) and the outer subscript
+  wrote to NULL. Override operand() to mirror compile()'s address
+  calculation but return the Mem operand directly. SMAUG `load_rooms`
+  initializes `map_index->map_of_vnums[i][j] = -1` over a 49×79 int
+  grid inside MAP_INDEX_DATA — every element write went through the
+  value-as-address path before the fix. After the fix limbo.are AND
+  the rest of the area list (25 files total) load end-to-end.
+
+- **TokenCallFunc: spill (rax, rdx) to stack for small-struct
+  return-by-value** — SysV x86-64 returns aggregates of 1..16 bytes
+  in (rax, rdx). Madc's FuncSignature only carries a single TypeId
+  for the return, so cc.invoke captured rax alone — downstream
+  struct copies treated that 8-byte value as a *pointer* and
+  segfaulted dereferencing arbitrary bytes. Concrete failure (SMAUG
+  mobile loading): `pMobIndex->act = fread_bitvector(fp);` where
+  EXT_BV is 4 ints. Mobile act_flags 1073741825 ended up packed
+  into rax with the next int; struct memcpy crashed at
+  `movups (%rsi=0x40000001),%xmm0`. Fix: for struct returns of size
+  1..16, allocate a 16-byte stack slot, capture rax via setRet,
+  emit `mov [slot+0], rax_vreg` and (for >8-byte returns) the rdx
+  spill `mov rdx_vreg, x86::rdx; mov [slot+8], rdx_vreg` as the
+  first instruction after the InvokeNode (before asmjit's allocator
+  reuses rdx). Operand becomes the slot's LEA'd address, which is
+  what struct-aware consumers expect. SMAUG now loads gods.are
+  end-to-end: "gods.are : Rooms: 1200-1201 Objs: 1200-1200 Mobs:
+  1200-1200".
+
+- **parseDeclaration: allocate storage when promoting extern to
+  definition** — when a global was first seen as `extern T name;`
+  and later defined without `extern`, addVariable returned the
+  existing Variable* without running the allocate-storage path —
+  var->data stayed NULL with vfSTACK still set, and every function
+  that referenced the global created a fresh stack-local instead.
+  Concrete failure (uncovered with the SMAUG umbrella's `last_area`
+  pointer): mud.h declared extern, db.c defined it, load_area set
+  it; load_author saw NULL because both lived in their own stack
+  copies. Fix calloc's storage when transitioning out of extern at
+  file scope (alloc=true, scalar with non-zero size, not a function
+  type) and clears vfSTACK / sets vfALLOC.
+
+- **static-local struct: allocate persistent storage; thread `static`
+  flag through `static struct X x;` path** — `static struct A x;`
+  inside a function was stack-allocated. TokenSTATIC::parse handed
+  off to parseKeyword for the `struct` token, which routed through
+  TokenSTRUCT::parse → parseDeclaration *without* its is_static
+  parameter set. Voperand allocated via cc.newStack instead of
+  addressing the calloc'd heap backing store; `&x` returned a stack
+  address and persistence across calls was lost. Two-part fix:
+  (1) voperand path that loads `mov base_reg, imm(var->data)` and
+  returns Mem indexed off it for global structs, mirroring the
+  existing global fixed-array path; (2) new
+  `Program::parsing_static_decl` flag (analogous to parsing_extern_decl)
+  that TokenSTATIC sets before parseKeyword and parseDeclaration
+  ORs into `gotstatic` then immediately clears so nested locals in
+  the function body don't inherit static storage.
+
+- **TokenAddrExpr: compute &arr[i] without going through value-load
+  path** — `&arr[i]` returned the *value* at arr[i] instead of its
+  address. The fallthrough case called `expr->operand(pgm)` which
+  for TokenSubscript inlines through to `compile()` — which loads
+  the element via emit_ir_value. SMAUG's `init_mm` hits this with
+  `int *piState = &rgiState[2];` and the negative-subscript
+  centered-indexing trick wrote to garbage. New TokenSubscript
+  branch in TokenAddrExpr mirrors the fixed-array address calc
+  (load base, widen index, LEA [base + idx<<shift]).
+
+- **TokenCpnd::voperand: re-emit global fixed-array base on every
+  reuse** — global fixed-arrays (`char buf[256];` at file scope)
+  cached the first `mov reg, imm(addr)` and skipped the reuse-emit
+  path other globals took. The populating mov is itself an
+  instruction, and asmjit only sees it on the first control-flow
+  path. Subsequent uses on a divergent branch read an uninitialized
+  vreg → stack/garbage address. Concrete failure: a function that
+  wrote a global fixed-array on one if-branch and returned it on
+  both; the else-branch return was a stack address.
+
+- **TokenMember::operand: LEA fixed-array struct members instead of
+  loading first byte** — a struct member declared as a fixed array
+  (`char d_name[256]`) lives in-place. As an rvalue it decays to a
+  pointer to its first element. Madc was returning a Mem operand of
+  size sizeof(element) at the array's start, so any value-context
+  use loaded the first byte. Concrete failure: `printf("%s",
+  dentry->d_name)` segfaulted in libc sprintf — we'd passed
+  `(uint8_t)'.'` instead of the address of d_name. All six branches
+  of TokenMember::operand updated to LEA when
+  `is_fixed_array_member()` is true.
+
+- **compiler: dedupe pending_funcs by FuncDef so duplicate definitions
+  don't poison asmjit's funcnode binding** — the MadSMAUG umbrella has
+  ~125 functions defined twice (once in upstream files, once stubbed in
+  `_bootstrap_comm_shim.c`). Both definitions shared one FuncDef +
+  FuncNode in `funcdef_map`. Each TokenFunc::compile called
+  `cc.addFunc(funcnode)` for the same FuncNode — asmjit's Compiler v1.14
+  silently dropped the labels of every funcnode added between the
+  duplicate addFunc calls. Out of 1878 SMAUG user functions, only 168
+  ended up with bound labels at finalize; the other 1710 calls emitted
+  as `call $+5` (zero-displacement), pushing extra return addresses
+  that corrupted wrapper-frame ret pops. `boot_db` SIGSEGV'd at
+  0xfffffffffffffff0 before `show_hash` could even run. Fix walks
+  `pending_funcs` in reverse, marks earlier TokenFuncs sharing a
+  FuncDef as `is_overridden`, and short-circuits both `prepareFuncNode`
+  and `TokenFunc::compile` for them so asmjit sees exactly one addFunc
+  per FuncNode (the LAST source definition wins — matches the user's
+  expectation that shim stubs override upstream defs). Result: 0/1878
+  unbound. SMAUG `boot_db` now runs through 12+ init phases (Loading
+  commands → sysdata → socials → skill table → classes → races → news →
+  stances → herbs → tongues → make_wizlist) before hitting a missing-
+  data-file `readdir(NULL)` crash. Runtime coverage 5% → ~30%+. Also
+  adds `MADC_DUMP_FINAL=path` env knob — post-finalize per-function
+  machine-byte dump (unlike emit-time `MADC_DUMP_ASM`, which truncates
+  after the register allocator pass).
+
+- **parser: move istream getline into std:: namespace** — `getline(istream&,
+  string&)` was registered globally via `addFunction("getline", ...)`,
+  which collided with user-defined `getline` (e.g. SMAUG IMC's
+  `static const char *getline(char *buffer)`) — call sites resolved to
+  the istream form with the wrong arity and the parser errored
+  "Incorrect number of parameters: expected 2 got 1". Moved
+  registration to `__std_getline` and aliased into
+  `namespace_map["std"]["getline"]` so the unqualified spelling is
+  reachable only via `std::getline(...)` or `using namespace std;`.
+  Fixed `using namespace` to register an alias `Variable` when the
+  namespace key doesn't match the underlying name — without it,
+  `__std_X` imported as `X` wouldn't resolve under
+  `findVariable("X")`. `tests/testfstream.mad` and `tests/testloop.mad`
+  updated to add `using namespace std;`.
+
+- **IRBuilder::coerce: dst=void fast path for statement-discard sites**
+  — Compile path that synthesizes an unnamed function-pointer or
+  struct-typed value and immediately discards it as a statement
+  expression hit the type-check ladder with `src.type->name` empty
+  and dst=void, throwing "unsupported type conversion (src= ->
+  dst=void)" with no useful position info. Surfaced while ingesting
+  MadSMAUG IMC sources (imc-mail.c `imc_recv_mail` body declares
+  `imc_packet out;`, whose typedef chain has unnamed inner
+  DataDefs). Fast path matches what the ladder would do anyway —
+  pass through.
+
+- **lexer: skip GCC `__attribute__((...))` decorations** — Treat
+  `__attribute__` as a no-op at the lexer level: when the keyword
+  is seen, consume the matching outer parenthesised payload and
+  re-enter the tokenizer. Required for IMC's `iced.h`
+  (`__attribute__((format(printf,1,2)))`) and any C codebase that
+  decorates declarations with `noreturn` / `aligned` / `unused` /
+  `visibility` / `const`. Without this the parser bailed mid-
+  declaration with "Expecting brace after function declaration"
+  because it tried to interpret `__attribute__((...))` as the start
+  of a new function declarator. Regression: `tests/testattribute.mad`.
+
+- **lexer: implement C token-paste operator (##) in function-like macros**
+  — After parameter substitution, scan the expanded body for `##`
+  and strip it (along with surrounding whitespace) so the lexer
+  fuses adjacent identifiers when it re-tokenizes. Required for
+  IMC's color-code pattern `#define COL(x) C_##x` — without `##`
+  support, expanding `COL(b)` produced literal `C_##b` which the
+  parser saw as undeclared identifier `C_`. Also adds a minimal
+  `<sys/ioctl.h>` embedded header (FIONREAD / TIOCINQ / TIOCOUTQ).
+  Regression: `tests/testtokenpaste.mad`.
+
+- **compiler/IR: drop spurious finalize ret + clean up codegen mismatches**
+  — Five fixes that drove the SMAUG umbrella's `MADC_VALIDATE` error
+  count from ~50 to 2. (1) `_compiler_finalize` no longer emits a
+  trailing `cc.ret()` outside any active function — it had been
+  producing a noise-storm of `InvalidInstruction` errors that masked
+  real codegen bugs. (2) `bind_call_return` narrow_int_ret path
+  emitted `mov gpw/gpd, gpq` when a libc dlsym int return fed a
+  narrower destination; asmjit's intermediate validator silently
+  rejected that and left the destination uninitialized. Fix routes
+  through `dest.r64()` so the encoder sees `mov gpq, gpq`; the
+  destination vreg's natural sub-word width still truncates
+  downstream consumers. (3) `safemov(Gp,Gp)` in the
+  same-or-narrower-dest branch hits the same root cause for direct
+  callers — force both ends to r64() matching the safemul/shl/shr/
+  or/and/xor pattern. (4) `IRBuilder::load` clamps aggregate Mem
+  sizes (>8) down to 8 and explicitly `setSize()`s the local Mem
+  copy so the encoder doesn't reject unsized operands with
+  `InvalidOperandSize`. (5) `IRBuilder::store` clamps the Mem dest
+  the same way and avoids the widening branch when both ends are
+  already gpq. Also: `TokenAssign` subscript-write path now routes
+  the index through `load_idx_to_gpq` so a sub-word index (postinc
+  on sh_int / char) gets sign/zero-extended before being added to
+  the base. New regression: `tests/testnarrowdlret.mad` covers the
+  bind_call_return fix end-to-end.
+
+- **compiler: track current function name + widen extra-index Gp adds**
+  — `Program::cur_func_name` is set at TokenFunc::compile entry. The
+  MADC_VALIDATE error handler now prints `in function: <name>` for
+  every asmjit error, converting the previous noise-storm of
+  `InvalidArgument` errors at end-of-file into a per-function trail
+  pointing at the actual offender (e.g. `do_mstat` (7 errors),
+  `pull_type_name` (5), `do_showrace` (3) in the SMAUG umbrella).
+  Separately, the multi-dim fixed-array subscript path's
+  `cc.add(idx_reg, ex_op.as<x86::Gp>())` widens `ex_op` through
+  `load_idx_to_gpq` so a sub-word extra-index (sh_int / char) doesn't
+  produce `add gpq, gpw`.
+
+- **MADC_DUMP_ASM env knob** — env-gated asmjit FileLogger captures the
+  complete instruction stream (mnemonics + machine bytes + immediate
+  explanations + register-cast annotations) to a file. Used to localize
+  InvalidInstruction / InvalidArgument errors in the SMAUG umbrella
+  where curToken-based localization runs out of signal once asmjit's
+  pass-2 register allocator fires after token compile. Off by default.
+
+- **TokenOperator::settype: propagate pointer / fixed-array type
+  through arithmetic** — `buf + strlen(buf)` where `buf` is a fixed
+  `char[N]` was being typed as plain `char` (because settype only
+  checked is_real / is_integer). For variadic dlsym call paths the
+  packing then inserted `addArgT<char>()` (1 byte), asmjit truncated
+  the 64-bit pointer to a single byte at the call site, and the callee
+  received e.g. 0xb0 (low byte of stack address) instead of the real
+  pointer. SMAUG's `boot_log` call `vsprintf(buf+strlen(buf), str,
+  param)` SIGSEGV'd at 0x36-ish addresses. settype now also propagates
+  pointer-typed operands and synthesizes a pointer type from a
+  fixed-array TokenVar via getPointerType. After this the first
+  SMAUG `boot_log` line prints correctly:
+  `Thu Jan  1 00:00:00 1970 :: [*****] BOOT: ---[ Boot Log ]---`.
+
+- **Fix asmjit instruction-size mismatches: subscript indices and IR
+  stores** — asmjit's encoder rejects mixed-width Gp/Gp instructions
+  (`mov gpq, gpw`, `imul gpw, gpq`, `and gpb, gpq`). The SMAUG
+  umbrella's density of sub-word integer types (`sh_int`, `char`,
+  `unsigned char`) lit them up — main never actually ran because the
+  JIT machine code was incomplete. Three fixes:
+  - New `load_idx_to_gpq()` helper widens sub-word index Gps via
+    movsxd / movsx in all six subscript call sites
+    (sub / cmpd_sub / cmpd_subptr / subexpr).
+  - `IRBuilder::store()` widens a sub-word source Gp before storing
+    into a wider Mem (sh_int call return into qword stack slot).
+  - `safemul` / `safeshl` / `safeshr` / `safeor` / `safeand` /
+    `safexor` now force both Gp operands to r64() before emitting
+    the op. The destination vreg's natural width is preserved
+    (asmjit Compiler treats r64() of a gpw as the same vreg via the
+    64-bit view).
+  - Plus `MADC_VALIDATE=1` env knob installs an asmjit ErrorHandler +
+    `kValidateIntermediate` so each ill-formed instruction is flagged
+    at emit with mnemonic and source token.
+
+- **compiler: always print cc.finalize() errors** — was DBG-only,
+  silent in normal builds. Symptom: a program with a finalize error
+  compiles, exits 0, but main never actually runs (the JIT machine
+  code is incomplete). For non-trivial programs this looked like a
+  successful no-op. Promoted to unconditional stderr output with
+  `asmjit::DebugUtils::errorAsString()` for the kind name.
+
+- **TokenRETURN: handle `return void_call();` in void-returning fn**
+  — C allows `return some_void_call();` in a void-returning function;
+  the inner expression runs for side effects, no value to ret.
+  Compiler was sending the empty-Operand result of the void call
+  straight to saferet, which threw "operand is not register,
+  immediate, or memory". Detect ret_type as bare void (rawtype
+  dtVOID && !is_pointer — the pointer guard keeps `void *` returning
+  functions on the regular pointer path), compile expression with a
+  discarded regdp, emit a bare cc.ret().
+
+- **C99 variable-length array (VLA) support** — `T name[expr]` where
+  `expr` references a runtime value now compiles. The variable is
+  retyped as `T *` internally and laid out as a stack-resident
+  pointer slot. At scope entry voperand emits
+  `name = malloc(expr * sizeof(T))`; the matching free fires from
+  TokenCpnd::cleanup before any object destructors. Subscript and
+  pointer-arith reuse existing pointer paths because the variable
+  type is now DataDefPTR.
+  - Detection (parser): scan ahead from each `[` for any
+    ttIdentifier that resolves via findVariable to a non-vfCONSTANT
+    variable. Constants (#defines were already lex-expanded; enum
+    values and `const int N` are vfCONSTANT) keep the parse_constant
+    path. No-match identifiers also keep parse_constant so typedef'd
+    integer constants and other lookup-retry idioms aren't mis-
+    classified.
+  - TokenDecl::compile forces voperand for VLAs at the decl point —
+    otherwise lazy emission could put the malloc inside a loop body
+    and re-execute every iteration, wiping prior writes.
+  - TokenSubscript::compile / compile_set load the pointer through
+    the Mem slot before indexing (was assuming Gp).
+  - Surfaced by SMAUG `build.c:6010` `char temp_buf[MAX_STRING_LENGTH
+    + max_buf_lines]`. Regression: `tests/testvla.mad`.
+
+- **safeadd: handle Xmm-lhs/Gp-rhs and Gp-lhs/Mem-rhs** — mirrors the
+  earlier safediv mixed-operand widening. Xmm op1 + Gp op2 — convert
+  op2 to Xmm via cvtsi2sd / cvtsi2ss before delegating to the
+  Xmm/Xmm safeadd. Gp op1 + Mem op2 — load Mem into a fresh Gp via
+  safemov, then delegate to the Gp/Gp path. Surfaced by SMAUG
+  `track.c:hunt_victim`.
+
+- **parser: only stop after cast push when initial_brackets == 0** —
+  a previous fix's early return in the cast-detection branch fired
+  for any caller with stop_on_closing_paren=true, including
+  parse_parenthesized_expression (used by `if (...)` / `while
+  (...)`). That caller passes initial_brackets=1, so a cast inside
+  the condition stopped parsing right after the cast pushed —
+  leaving trailing operators unparsed and popOperator hitting an
+  empty exStack with "Missing operand". Restrict the early return
+  to initial_brackets == 0 — the deref-of-cast caller (`*(CAST)X`)
+  passes initial_brackets=0; if/while pass 1. Closes SMAUG
+  `save.c:668` through QUICKMATCH macro:
+    #define QUICKMATCH(p1, p2)  (int) (p1) == (int) (p2)
+    if ( QUICKMATCH(a, b) == 0 )  →  if ( (int)(a) == (int)(b) == 0 )
+  Regression: `tests/testchainedeq.mad`.
+
+- **parser: stop after cast push in stop_on_closing_paren mode** —
+  `*(TYPE *)expr = rhs;` was being parsed with the inner cast
+  detection consuming past the matching `)` of the cast group and
+  through the following `=` and RHS, returning a TokenAssign with
+  the cast as its left side. The outer `*` wrapper then held that
+  TokenAssign instead of the bare TokenCast, so when the assignment
+  dispatch fired it saw a TokenCast LHS — which TokenAssign doesn't
+  handle — and threw "Assignment on a non-variable lval". Surfaced
+  by SMAUG `variables.c`:
+    *(EXT_BV *)pvd->data = fread_bitvector(fp);
+  Regression: `tests/testderefcastassign.mad`.
+
+- **resolveCompoundLHS: TokenDerefExpr (deref of expr) lvalue** —
+  `*(expr) |= rhs;` where `expr` is a pointer-yielding subexpression
+  lands as TokenDerefExpr. That class reports `type() == ttMember`
+  but isn't a TokenMember or TokenDeref, so resolveCompoundLHS's
+  ttMember branch threw "compound assignment <op> on unsupported
+  member type". Mirror TokenAssign::compile()'s TokenDerefExpr
+  handling: pull the deref_type and operand() Mem from
+  TokenDerefExpr the same way TokenDeref already does. Regression:
+  `tests/testcompoundderefexpr.mad`.
+
+- **saferet: handle Mem operand by loading into a Gp before ret** —
+  saferet was strict on Reg|Imm; a Mem operand falling through from
+  the IR pipeline tripped a raw throw. Now loads Mem into a fresh
+  Gp via `cc.mov` and rets through that. Surfaced by SMAUG
+  `fread_bitvector` returning an EXT_BV struct.
+
+- **parser: function-to-pointer decay on `return func;`** — the
+  parser's "follower decides decay vs call" heuristic missed the
+  `;` follower at top of an expression. `return do_aassign;` (where
+  DO_FUN is `typedef void (...)`) was being built as a TokenCallFunc
+  for a void-returning function — its compile() returned an empty
+  asmjit Operand and TokenRETURN's compile_token_normalized →
+  IRBuilder::coerce threw "invalid src" with no useful context.
+  Add `(peek_id == tkSemi && opStack.empty())` to the
+  followed_by_value_end set. The opStack-empty guard preserves
+  operator-consuming patterns like `cout << endl;` where BSL on
+  opStack wants the no-arg ostream call form. Regression:
+  `tests/testreturnfndecay.mad`.
+
+- **TokenCast: don't short-circuit (void *) through the (void)-discard
+  path** — `DataDef::rawtype()` strips the pointer ref bias — `void
+  *` and bare `void` both report `rawtype() == dtVOID` because
+  pointer-ness lives in the high bits of `_type` (10000-step
+  encoding) not the rawtype. TokenCast's `(void)expr` discard
+  short-circuit only checked rawtype, so `(void *)expr` was taking
+  the same path: it set `regdp.second = expr->datadef()` (often the
+  bare value type, losing the pointer-ness) and didn't propagate
+  the cast type forward, so downstream `emit_ir_value` ended up
+  calling `IRBuilder::coerce(int* -> void)` and threw. Add
+  `!cast_type->is_pointer()` to the guard. Surfaced by SMAUG
+  `comm.c:init_socket`:
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (void *) &x, sizeof(x))
+  Regression: `tests/testvoidptrcast.mad`.
+
+- **IRBuilder::coerce: include src/dst type names in error message** —
+  bare `throw "unsupported type conversion"` gave no clue which types
+  caused the failure; every gap looked the same. Promoted to
+  `snprintf`-into-static-buffer so the actual `src=...` /  `dst=...`
+  type names land in the error stream. Surfaced while probing past
+  act_wiz.c, where an `int* -> void` coerce was firing from inside a
+  TokenIF → TokenLT → TokenCallFunc → TokenCast → TokenAddrOf chain;
+  investigation deferred to next session now that the message is
+  actionable.
+
+- **resolveCompoundLHS: raw-pointer subscript lvalues** — `int *p;
+  p[i] += N;` (and the rest of the compound-op family — -=, *=, /=,
+  %=, &=, |=, ^=, <<=, >>=) used to throw `"<op> on unsupported
+  subscript lval"` because the ttSubscript branch only covered
+  TokenSubscript with a fixed-array base and TokenSubscriptExpr with
+  an expression base. A TokenSubscript whose `object.type` is a
+  pointer fell between the two. New branch mirrors
+  TokenSubscript::compile()'s pointer-subscript read path — MOV the
+  pointer into a Gp, fold the index by element stride (SIB scale for
+  power-of-2, imul otherwise), build the writeback Mem, load through
+  it for the LHS. Closes SMAUG `act_info.c` `prgnShow[iShow] +=
+  obj->count`. Two remaining raw `throw` sites in resolveCompoundLHS
+  upgraded to `pgm.Throw(left)` for better diagnostics on the next
+  gap. Regression: `tests/testcompoundptrsub.mad`.
+
+- **safediv: Gp/Xmm mixed dividend/divisor operands** — `op2` (the
+  dividend) is the destination register that receives the quotient
+  for both x86 idiv and SSE divsd/divss. Its register family now
+  selects the result family — Xmm op2 → real division, Gp op2 →
+  integer division — and op3 is coerced into the chosen family
+  before the hardware op (`cvtsi2sd` / `cvtsi2ss` for Gp→Xmm,
+  `cvttsd2si` / `cvttss2si` for Xmm→Gp). Closes the SMAUG
+  mud_prog.c blocker reached after the Gp-vs-Xmm safecmp closure.
+
+- **safecmp: Gp-vs-Mem and Gp-vs-Xmm mixed comparisons** — `if
+  (chances != 0 && victim->morph)` and similar SMAUG idioms compare a
+  computed Gp value against a stack-resident Mem; now safecmp loads
+  the Mem into a fresh Gp via safemov and delegates to the Gp/Gp
+  path. Mixed Gp-vs-Xmm (`stances[i] > GRAND_MASTER * .75`) converts
+  the Gp to double via cvtsi2sd and uses ucomisd. Closes the
+  `skills.c:check_parry` front edge.
+
+- **IRBuilder::coerce: char*→string transient relabel** — ternary
+  branches that mix a string literal (dtSTRING) with a char*-yielding
+  pointer expression set the merged value's `_datatype` to dtSTRING
+  but the actual storage is a Gp char*. For printf-style consumers
+  (the typical use), the relabel-only coerce keeps the Gp and
+  retypes as string. Closes the `fight.c:damage` front edge that
+  surfaced once the nested fixed-array struct-init fix advanced
+  compile far enough to reach `damage`.
+
+- **Three SMAUG-front-edge fixes in one commit** (`b7d6347`):
+  - `emit_struct_init` now handles nested fixed-array members. SMAUG's
+    `const struct liq_type liq_table[] = { { "water", "clear", { 0,
+    1, 10 } }, ... };` has a third member (`sh_int liq_affect[3]`)
+    that's itself a fixed array. Reads the parent struct's
+    `m_count(member_name)` and emits per-element stores at
+    `[base + addr + j*esize]` with zero-fill for trailing slots.
+  - fn-ptr-member-call detector skips when the member is the LHS of
+    an assignment. `ch->last_cmd = (aRoom ? do_rreset : do_reset);`
+    was mis-parsing the RHS paren as a CALL through last_cmd.
+    prevToken-based check distinguishes from `int v = (*flfunc)(args)`
+    where the `(`'s prevToken is `)`, not the assignment op.
+  - `continue` inside `switch` inside `for` now compiles. TokenCONT
+    walks loopstack from top to bottom looking for the first entry
+    with a non-NULL continue label; switches push (NULL, exit) so
+    `break` targets the switch but `continue` pierces through to
+    the enclosing loop.
+
+- **parseFunction param-loop hardening** — when a forward declaration
+  registered N parameters and the definition arrived with fewer
+  parsed names (real C-side mismatch like `int main(int, char**);`
+  → `int main()` OR a parser-side undercount in typedef'd-pointer
+  param parsing), the loop walked off the end of `ids[]` and crashed
+  inside the std::string copy ctor (NULL+8 deref). Now fills missing
+  slots with synthetic names (`__synthetic_pN`); extras past the
+  count are ignored.
+
+- **Cross-function xmm-leakage variant of the asmjit float quirk closed
+  at the root** — the variadic-dlsym call path was building a
+  `FuncSignature` from the actual argument types but never marking it
+  variadic. Per SysV x86-64 ABI, calls to variadic functions must set
+  `AL` = number of XMM registers used so the callee knows where to
+  find float args. Without it, `AL` was left with whatever was in
+  `rax` from prior code (often the format string's low byte) and
+  printf either skipped xmm0 (`%f` printed `0.000000`) or read past
+  valid args. Symptom was binary-layout-dependent because the leftover
+  `AL` value depends on what code ran just before — this is what made
+  the issue look like a typed-Xmm reg-allocator quirk for weeks.
+  Fix: `funcsig.setVaIndex(1)` marks args at index 1+ as variadic
+  (correct for the entire printf family — one fixed format-or-target
+  arg followed by `...`). asmjit now emits the AL setup and float-arg
+  printf works deterministically. Both float-quirk variants the prior
+  TODO had filed (multi-arg-printf-reordering and cross-function xmm-
+  leakage) are now closed; `tests/testfloat.mad` is no longer a
+  layout-shift canary.
+
+- **`fd_set` typedef + FD_* macros take pointer; `struct hostent`** —
+  Bare `fd_set` typedef alias added to `<sys/select.h>` /
+  `<sys/time.h>`. `FD_ZERO`/`SET`/`CLR`/`ISSET` now expect a
+  `fd_set *` (pointer), matching glibc; `FD_CLR(fd, &set)` (the
+  standard call style) no longer expands to `&(&set)`. `struct
+  hostent` added to embedded `<netdb.h>` with the full glibc layout.
+  Required by MadSMAUG `comm.c`. Existing FD_* test
+  (`tests/teststructinterop.mad`) updated to the pointer call form.
+
+- **`((char *)expr)[i]` cast-of-pointer subscript** — parser's `[`
+  handler now recognizes TokenCast-of-pointer alongside
+  TokenMember/Subscript/Deref bases, and `TokenSubscriptExpr::compile`
+  routes TokenCast through `compile()` (not `operand()`) so the cast
+  emits its conversion before the index calculation. Closes the SMAUG
+  `comm.c:3112` `((char *)arg)[0] == '\0'` form. Regression:
+  `tests/testcastsubscript.mad`.
+
+- **`sizeof unary-expr` (no parens) + keyword case-labels + multi-decl
+  idents** — `sizeof ok_otype`, `sizeof *a` (no parens) now resolved.
+  Constant-integer-expression parser accepts contextual-identifier
+  keywords (`case class:` for an enum tag named `class`). Multi-
+  variable declarations (`sh_int cou, race, class, ...`) accept
+  contextual-identifier names. Closes MadSMAUG `grub.c` front edges.
+  Regression: `tests/testsizeofnoparens.mad`.
+
+- **Embedded headers `<crypt.h>`, `<netinet/in_systm.h>`,
+  `<netinet/ip.h>`, `<arpa/telnet.h>`** — `<crypt.h>` `#load`s
+  `libcrypt.so` and types `extern char *crypt(...)` (libcrypt isn't
+  in glibc's RTLD_DEFAULT search). `<arpa/telnet.h>` carries the
+  TELNET protocol constants (IAC, WILL/WONT/DO/DONT, GA, the
+  TELOPT_* set). Required by MadSMAUG `act_info.c` (crypt) and
+  `comm.c` (telnet protocol).
+
+- **`try`/`catch`/`throw` as C identifiers; pre-case declarations in
+  switch bodies** — `int try; try = saving_throw();` is valid C; the
+  parser now treats these C++ keywords as contextual identifiers in
+  declaration / variable / member positions, and routes them through
+  `parseExpression` at statement position when not followed by `{`
+  (would-be try-block) or `(` (would-be throw-arg). Switch parser
+  also accepts variable declarations and stray `;` between
+  `switch(...) {` and the first `case`/`default`. Regressions:
+  `tests/testkeywordsasidents.mad`, `tests/testswitchpredecl.mad`.
+
+- **Function-to-pointer decay before comparison/logical/bitwise
+  operators** — `if (t->fn == do_cast && tmp->...)` failed at parse;
+  the decay heuristic only fired for value-end tokens. Now
+  `==`/`!=`/`<`/`<=`/`>`/`>=`/`&&`/`||`/`&`/`|`/`^` also trigger
+  decay. Without this the call-creation path consumed the operator
+  token eagerly and silently lost it. Regression:
+  `tests/testfnptrcompare.mad`.
+
+- **Struct member offsets after fixed-array members + array-of-pointers
+  indexing** — two long-latent bugs sharing a root cause: `DataDefSTRUCT`
+  never recorded per-member counts for fixed-array members, so
+  `m_offset()` walked `dd.size` per step instead of `dd.size * count`,
+  and anywhere parser/compiler asked "in-place aggregate or stored
+  pointer?" the answer was just `is_pointer()` on the member's datadef —
+  which mis-classifies an array of pointers (`SKILLTYPE *arr[N]`) as a
+  stored pointer. Fix: parallel `member_counts` vector on DataDefSTRUCT
+  with an `m_count(name)` accessor, plus `TokenMember::is_fixed_array_member()`
+  shared by parser and compiler. Three compiler sites updated
+  (TokenSubscriptExpr::compile, resolveCompoundLHS's tse path,
+  TokenAssign's tse write path) to LEA the member when it's a fixed
+  array even if its element is a pointer; parser's subscript-on-
+  expression branch skips the pointer-element unwrap for fixed-array
+  members so `arr[i]->member` types correctly. The TODO had the natural
+  fix blocked on a float-quirk regression — the v0.12.0 typed-Xmm
+  IRBuilder sweep already closed that. Closes the MadSMAUG `magic.c:134`
+  (`ch->pcdata->special_skills[sn]->name`) front edge. Regression:
+  `tests/teststructarrayofptr.mad`.
+
+- **Cast body stops at matching `)` in BSL chains** — `cout << (int)(a
+  - b) << endl;` (and any cast wrapping a parenthesized expression
+  inside an operator chain) failed at parse time with "Unexpected
+  keyword in expression" pointing at the next statement. The recursive
+  parseExpression invoked on the cast body parsed past its matching `)`
+  and kept consuming the outer `<< endl;` chain. Fix: when the cast
+  body starts with `(`, consume it and call parseExpression with
+  stop_on_closing_paren and initial_brackets=1. Postfix follow-ups
+  like `(MyType*)(p+1)->m` keep parsing — that path is already handled
+  in parseExpression's close-paren branch. Surfaced while writing
+  tests/teststrextra.mad. Regression: `tests/testcastparenexpr.mad`.
+
+- **Remaining `<string.h>` typed returns landed** — `extern char *strrchr`,
+  `strstr`, `strdup`, `strpbrk`, `strtok`, `strndup` all added to embedded
+  `<string.h>`. The cross-function xmm-leakage variant of the asmjit-
+  Compiler float quirk that previously blocked these (binary-layout
+  shifts pushed `testfloat.mad`'s `test_promote()` past a code-cache
+  threshold) is closed by the v0.12.0 typed-Xmm IRBuilder fix — the
+  allocator's scalar-real type hints no longer interleave with the
+  int-vector path. Regression: `tests/teststrextra.mad` exercises each
+  through standard SMAUG idioms (pointer arithmetic, NULL comparison
+  without explicit cast, deref-and-assign, while-loop tokenization,
+  heap-allocated copies).
+
+- **Comprehensive `cc.newXmm()` → typed scalar sweep across
+  `compiler.cpp` and `typesafe.cpp`** — followup to the IRBuilder
+  fix below: every other generic `cc.newXmm()` call site (call
+  return binding, real-typed token operand caching, `safeneg` /
+  `testzero` temps, real-cast intermediates, `_fconst` /
+  `_fx_tmp` / `_tmp_mm` etc.) was mistyping its Xmm as `int32x4`.
+  Each was replaced with the right `cc.newXmmSs` / `cc.newXmmSd`
+  variant (or via a new file-scope `newScalarXmm(pgm, dd, name)`
+  helper that dispatches on `dd->size`). Variadic-dlsym call path
+  also now suppresses `funcsig.setRetT<double>()` for known int-
+  returning libc functions (printf family) — telling asmjit the
+  return is `double` made its allocator keep an xmm reg live
+  across the call, interfering with arg setup. Doesn't fully
+  eliminate the cross-function xmm-leakage variant of the float
+  quirk; that's still filed as a TODO blocker for the broader
+  `<string.h>` typed-return additions.
+
+- **Nested struct-member initializers** — struct initializers with
+  a nested brace-list for a struct-typed member —
+  `struct Liq v = { "x", "y", { 0, 1, 10 } }` — used to throw
+  "TokenStmt::compile() unexpected token type=25" (ttStructLit).
+  Two-part fix: (1) parser's nested-brace reader is now recursive
+  (a `{` inside a `TokenStructLit`'s inits is itself another
+  `TokenStructLit`); (2) `emit_struct_init` detects `mtype is
+  btStruct + element is TokenStructLit` and recurses with the
+  member offset as the new base. Both global
+  (`struct Liq tab[] = {{...}, ...};`) and local forms work.
+  Closes the MadSMAUG `const.c:360+` (`liq_table[]`) front edge.
+  Regression: `tests/teststructinitnested.mad`.
+
+- **`&((ch)->p->v)` postfix chain after `)`** — the `&(...)`
+  parser passes `stop_on_closing_paren=true` to `parseExpression`
+  so it can grab a parenthesized lvalue. The inner expression
+  `(ch)->p->v` itself opens a paren around `ch`; when that close-
+  paren brought parseExpression's brackets count to 0,
+  `stop_on_closing_paren` ended parsing — leaving `->p->v`
+  unconsumed. Fix: when we'd otherwise end on stop_on_closing_paren,
+  peek one ahead — if the next token is a postfix-chain operator
+  (`.` / `->` / `[`), keep parsing the chain. Closes the
+  MadSMAUG `icec-mercbase.c:318` (`&ICE_LISTEN(ch)`) front edge.
+  Regression: `tests/testaddrparenchain.mad`.
+
+- **`(expr)[N]` for pointer-yielding expressions** —
+  `(p + n)[i]`, `(q = p + 1)[i]`, `(mud = imc_mudof(arg))[0]`,
+  `(buf + N)[i]` (with `buf` a fixed array) used to throw
+  "Expecting ] in lambda expression" because the `[` handler only
+  recognized TokenMember/Subscript/Deref* as valid subscript
+  bases. Two-part fix: (1) parser widens subscript-on-expression
+  detection to accept TokenAdd/TokenSub/TokenAssign whose
+  `datadef()` reports a pointer (or whose operands include a
+  fixed-array TokenVar); the elem_type derivation walks into
+  TokenAdd/Sub/Assign operands to recover the fixed-array's
+  element type when the operator-level datadef misreports
+  scalar; (2) `TokenSubscriptExpr::compile` calls
+  `base_expr->compile()` (not `operand()`) for these complex
+  bases — they need full arithmetic/assign emission to yield a
+  Reg holding the pointer value. Closes the MadSMAUG
+  `imc-mail.c:1047` and `imc-config.c:186`
+  (`GETSTRING(..., (idetails + strlen(idetails)), ...)`) front
+  edges. Regression: `tests/testparenexprsub.mad`.
+
+- **`sizeof(*ptr->member)` and `sizeof(*obj.member)`** — the
+  sizeof parser's `*` branch only accepted a bare identifier; for
+  postfix chains like `*c->local` it threw "Expecting identifier
+  after '*' in sizeof". Fix: when the next token after `*` is
+  followed by `.`, `->`, or `[`, parse a full postfix chain and
+  use its datadef. For pointer chains return sizeof(pointed-to);
+  otherwise sizeof(chain type). Closes the MadSMAUG
+  `icec-mercbase.c:130` (`imc_malloc(sizeof(*c->local))`) front
+  edge. Regression: `tests/testsizeofderefchain.mad`.
+
+- **Typed scalar Xmm allocation in IR + `extern char *strchr(...)`
+  in embedded `<string.h>`** — `IRBuilder::newReg` was using
+  `cc.newXmm()` for every Xmm value, which asmjit types as
+  `int32x4` (4-element int vector). For scalar floats / doubles
+  the allocator's int-vector liveness path interleaved with the
+  scalar-real path under register pressure, producing
+  filename-length-dependent reordering of varargs `printf`
+  arguments. Fix: dispatch on `type->size`, using `cc.newXmmSs`
+  for `float` and `cc.newXmmSd` for `double`. The allocator now
+  sees scalar-real type hints and varargs xmm setup is
+  deterministic. With the allocator behaving, added the long-
+  blocked `extern char *strchr(char *s, int c);` to embedded
+  `<string.h>` so `*(strchr(s,c)) = 0` and `if (strchr(...) ==
+  NULL)` work without explicit user-side `extern`. Closes the
+  MadSMAUG `imc.c:340` front edge. Regression:
+  `tests/teststrchrtyped.mad`. The remaining string.h additions
+  (`strrchr`/`strstr`/`strdup`/etc.) still hit a different
+  cross-function xmm-leakage variant of the asmjit-Compiler
+  quirk; filed in TODO for the typed-register-IR Stage 4 work.
+
+- **`string` as a function parameter name** — `static void
+  parsekeys(char *string) { p1 = string; }` used to throw
+  "Expecting identifier". Inside the function body the lexer
+  always returns the type-keyword token for `string`, and
+  parseExpression's ttDataType branch unconditionally took the
+  inline-declaration path (`type ident`), failing when the next
+  token wasn't an identifier. Fix: when the ttDataType is a
+  contextual identifier (`string` is currently the only flagged
+  one), look it up as a variable first; if found AND the next
+  token is not an identifier, treat the keyword as a variable
+  reference. Inline declarations still work because they have an
+  identifier next. Closes the MadSMAUG `imc-version.c:128` front
+  edge. Regression: `tests/teststringparam.mad`.
+
+- **Keyword-as-identifier in enum body** — `enum { name, sex, class,
+  race, ... }` (using `class` or other contextual-keyword identifiers
+  as enum tags) used to throw "Expecting identifier in enum". Earlier
+  sessions made `class` work as a variable name, struct member, postfix
+  chain, and `&` operand, but the enum body was missed. Fix: route
+  enum identifier parsing through `is_contextual_identifier_token` /
+  `contextual_identifier_name` like the rest of the parser. Closes the
+  MadSMAUG `grub.c:500` front edge. Regression: `tests/testenumclass.mad`.
+
+- **`sizeof(*arr)` / `sizeof(*ptr)`** — sizeof parser handled
+  ttDataType, ttIdentifier, and `struct tag` forms but rejected
+  unary `*` with "Unknown type in sizeof". The standard C idiom
+  `sizeof(arr) / sizeof(*arr)` (count the elements of a fixed
+  array) didn't compile. Fix: added a `*identifier` branch — for a
+  fixed-array variable, returns the element type's size; for a
+  pointer variable, returns the pointed-to type's size. Closes
+  MadSMAUG `update.c:2300-2301`. Regression:
+  `tests/testsizeofderef.mad`.
+
+- **Classic C `(*flfunc)(args)` fn-pointer call** — two distinct
+  gaps fixed together while probing MadSMAUG `reset.c:985`
+  (`value = (*flfunc)(arg);`). (1) The unary-`*` parser threw
+  "cannot dereference non-pointer type" on a fn-pointer variable;
+  C semantics treat `*fp` as the function itself, so the unary-`*`
+  identifier branch now pushes the var as a value when its type is
+  `is_function() && is_numeric()` (i.e. `DataDefFPTR`), matching
+  the existing paren-branch behavior. (2) After the deref, the
+  `(args)` call needed a fn-ptr-VAR-call branch in the `(`
+  handler, parallel to the existing fn-ptr-MEMBER-call branch. Both
+  branches now scan opStack for tighter-than-`=` pending operators
+  (precedence < 14): `&&`, `!`, `<`, etc. block the call, but `=`
+  (declaration init / assignment) doesn't, so `int v = (*fp)(arg);`
+  works while `ch->fn && (other)` still doesn't mis-fire.
+  Regression: `tests/testfnptrparenscall.mad`.
+
+## [v0.12.0] — 2026-04-25
+
+SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes surfaced while probing MadSMAUG translation units (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c). Highlights: pointer-typed `*(ptr ± N)` / `*(p = ptr + N)`, single-pass macro substitution, keyword-as-identifier in unary `&`, `vfADDRTAKEN` pointer + `&ptr->member`, struct decl with `*` decorator, interleaved CV-qualifier+star chains, constant-expression shift+bitwise operators, char literals inside macro args, `extern` libc late-bind via dlsym, `*++p` not eating trailing binops, and fn-ptr-member-access not mis-firing through pending operators. Compound-assign / inc-dec error diagnostics swept to `Throw(...)`. 14 new integration tests; 197/197 passing.
+
+- **`ch->fn && expr_with_parens` no longer mis-fires fn-ptr call
+  detection** — when a struct member of function-pointer type sits
+  on top of exStack, any `(` later in the expression triggered the
+  "direct invocation through struct-member function pointer"
+  branch — even with `&&`, `!`, or other operators between. Result
+  was "Missing operand" because the parser tried to consume the
+  `(args)` of a sub-expression as call args of the prior fn-ptr
+  member. Fix: scan opStack for any pending operator (anything not
+  `(`) — if one's there, the `(` belongs to a sub-expression and
+  the fn-ptr-call form is skipped. Closes the MadSMAUG
+  `update.c:744-745` (`!xIS_SET(ch->act, ACT_RUNNING) &&
+  ch->spec_fun && !IS_AFFECTED(ch, AFF_POSSESS)`) front edge.
+  Regression: `tests/testfnptrmember_binop.mad`.
+
+- **`*++p` / `*--p` followed by a binary operator** — the unary-`*`
+  parser fell through to `parseExpression(deref_tb=tkInc, true)`
+  which then happily consumed any trailing binary op too, so
+  `*++p == 'e'` parsed as `*(++p == 'e')` (deref of a bool).
+  `*++p;` (no trailing binop) accidentally worked because
+  parseExpression stopped on `;`. Fix: explicit `tkInc`/`tkDec`
+  branch in the unary-`*` parser that builds a `TokenInc`/`TokenDec`
+  with the pointer as `right`, wrapped in `TokenDerefExpr` — one
+  node sequence, no recursive parseExpression. Closes the MadSMAUG
+  `misc.c:2149` front edge (`*srcptr == '%' && *++srcptr == 's'`).
+  Regression: `tests/testderefpreinc.mad`.
+
+- **`extern RET name(args);` typed-calls via dlsym** — explicit
+  forward declarations of libc / system functions used to fail at
+  compile time with "method has neither FuncNode nor x86code". The
+  dlsym fallback fired only for *implicit* calls (an undeclared
+  identifier followed by `(`); explicit `extern` declarations
+  registered the function symbol but never tried to resolve it.
+  Fix: in `TokenCallFunc::compile`, when a declared function has
+  neither funcnode nor x86code, try `dlsym(RTLD_DEFAULT, name)` as
+  a last resort. If resolved, set `method->x86code` and fall through
+  to the typed-call path. Also extracted the int32-sign-extension
+  whitelist into a file-scope helper so the typed-call's
+  `bind_call_return` applies the same movsxd dance the variadic
+  dlsym path does — otherwise `extern int strcmp(...)` returned
+  garbage-signed int64 values. Regression: `tests/testexterndlsym.mad`.
+
+- **Char literals inside macro arguments don't break the macro arg
+  parser** — the lexer's macro-arg loop tracked `(`, `)`, `,`, and
+  `"` for nesting/escapes but not `'`. So an argument containing a
+  char literal with a paren/comma/quote inside it (e.g.
+  `stub(x, (x > 0) ? ')' : '(')` ) prematurely ended the macro call:
+  the `)` inside `')'` was read as a real close-paren. Diagnostic
+  was "Unterminated string" once the lexer ran out of input
+  expecting more. Fix: handle `'` symmetrically with `"` — copy the
+  char literal verbatim through its closing `'`, honouring `\`
+  escapes. Surfaced in MadSMAUG `boards.c:599-607` where
+  `pager_printf` gets nested-ternary args containing `'V'`/`'B'`/
+  `':'`/`')'`. Regression: `tests/testmacrocharlit.mad`.
+
+- **Constant-expression evaluator now supports `<<`, `>>`, `&`, `|`,
+  `^`** — `case (1 << 14):` (and the underlying SMAUG idiom
+  `case ITEM_HOLD:` where `ITEM_HOLD` expands to `(1 << 14)`) used
+  to throw "Expecting ')' in constant expression". The const-expr
+  recursive descent only had additive (`+`, `-`) and multiplicative
+  (`*`, `/`, `%`) layers — when the additive loop saw `<<` it
+  returned to the outer paren handler, which then demanded `)`.
+  Added the full C precedence chain (shift → bitwise-and → bitwise-
+  xor → bitwise-or). Closes the MadSMAUG `act_obj.c:1735` front
+  edge. Regression: `tests/testconstexprshift.mad`.
+
+- **`struct tag { ... } *first, *last;`** — defining a struct and
+  immediately declaring pointer-to-the-struct variables in the same
+  statement used to throw "Expecting variable name or ';' after
+  struct definition". `TokenSTRUCT::parse` only routed through
+  `parseDeclaration` when the post-`}` token was an identifier
+  (`} name;`); a leading `*` decorator (`} *first, *last;`) fell
+  through to the diagnostic. Fix: also enter parseDeclaration when
+  the next token is `*`. Closes the MadSMAUG `act_info.c:2721` front
+  edge (`whogr_s` linked-list definition). Regression:
+  `tests/teststructptrdecl.mad`.
+
+- **`type const *p` and interleaved CV-qualifier-with-stars chains**
+  — `parseDeclaration` consumed `const` / `restrict` only after the
+  pointer stars, so `char const *p`, `int const *q`, and
+  `int const * const *xpp` all threw "Expecting identifier after
+  type". Replaced the two separate sweeps with a single qualifier-
+  or-star loop so qualifiers and stars can interleave freely.
+  Closes the MadSMAUG `act_info.c:3074` front edge
+  (`char const *class;`). Regression: `tests/testconstmid.mad`.
+
+- **Compound-assign / inc-dec error diagnostics now carry file:line**
+  — `TokenAddEq`/`SubEq`/`MulEq`/`DivEq`/`ModEq`/`BSLEq`/`BSREq`/
+  `BandEq`/`BorEq`/`XorEq` and `TokenInc`/`TokenDec` previously
+  threw raw C-strings on missing operands or unsupported lvalues, so
+  the user saw a bare `: error:` line with no source context.
+  Converted to `pgm.Throw(this) << "..." << flush` (or `Throw(left)`
+  / `Throw(tse)` for inner-token-precise resolveCompoundLHS sites)
+  so diagnostics now anchor to the operator's source location and
+  the message includes the operator name.
+
+- **`&ptr->member` now works when `ptr` is address-taken** —
+  whenever a pointer-typed local was later referenced via `&ptr`
+  (marking it vfADDRTAKEN → stack-backed), earlier `ptr->member` /
+  `&ptr->member` uses read through the Mem slot as if it were the
+  struct itself. `TokenMember::operand` saw a `Mem` for `_obj` and
+  jumped to the "struct on the JIT stack" branch, which `addOffset`-d
+  into the pointer's own storage rather than the struct it points at
+  — producing a stack-frame-relative address instead of the real
+  member address. Fix: when `_obj` is `Mem` and `object.type` is a
+  pointer, first load the pointer value from the Mem into a fresh
+  Gp, then compute `[gp + offset]` via the same shapes the reg-
+  resident pointer branch uses. Regression:
+  `tests/testaddrtakenptrmember.mad`.
+
+- **`&class->member` parses when `class` names a C variable** — the
+  unary-`&` handler's postfix-chain detector and its simple-ident
+  fallthrough both required `addr_tb->type() == ttIdentifier`, so
+  `&class->affected` (SMAUG's `tables.c:1861`, `fwrite_class`) threw
+  "expecting variable name after '&'". Earlier fixes made `class`
+  usable as a C identifier in parseStatement and parsePostfixChain,
+  but the `&` path was missed. Fix: the `&` handler now uses
+  `is_contextual_identifier_token()` / `contextual_identifier_name()`
+  at both spots, matching the rest of the parser's keyword-as-
+  identifier handling. Regression: `tests/testaddrclass.mad`.
+
+- **Function-like macro parameter substitution no longer cascades** —
+  the lexer ran one full-body pass per parameter. If the value
+  substituted for parameter N happened to match the name of a later
+  parameter M, the M-pass would rewrite the already-substituted
+  value. SMAUG's `CREATE(type, NEWS_TYPE, 1)` — where the user's
+  local variable is named `type` (identical to `CREATE`'s second
+  parameter) — hit this: first `result→type` rewrote `(result)` to
+  `(type)`, then `type→NEWS_TYPE` rewrote that into `(NEWS_TYPE)`,
+  leaving `(NEWS_TYPE) = (NEWS_TYPE *) calloc(...)` which does not
+  parse. Fix: walk the original macro body once, collecting each
+  identifier, and look it up in a single param-name → arg-value
+  map. Substituted strings are emitted verbatim and never re-
+  scanned. Closes the MadSMAUG `news.c:153` front edge. Regression:
+  `tests/testmacrosubst.mad`.
+
+- **`*(ptr + N)` / `*(ptr - N)` / `*(p = ptr + N)` now parse** —
+  `TokenAdd`, `TokenSub`, and `TokenAssign` all inherit
+  `_datatype = &ddINT` from `TokenOperator`'s constructor and never
+  overrode `datadef()`, so expressions like `start - 1` reported
+  their type as `int` regardless of operand types. The unary-`*`
+  parser consulted `deref_expr->datadef()` and rejected these as
+  "cannot dereference non-pointer type". Fix: override `datadef()`
+  on `TokenAdd`/`TokenSub` to propagate a pointer operand's type
+  through arithmetic (`ptr + int`, `int + ptr`, `ptr - int`; `ptr -
+  ptr` still yields the integer default), and override
+  `TokenAssign::datadef()` to return the LHS's type (C assignment-
+  as-expression evaluates to the assigned value). Closes the
+  MadSMAUG mud_prog.c front edges at lines 2552/2553
+  (`*(start - 1) == ' '`, `*(end = start + strlen(arglist)) == ' '`).
+  Regression: `tests/testderefptrexpr.mad`.
+
+- **Function-like macros no longer eat later declarators** — SMAUG-
+  style `#define bug(...) ((void)0)` above a later
+  `void bug(const char *, ...) { ... }` definition used to expand at
+  the definition head, turning `void bug(const char *, ...)` into
+  `void ((void)0)` and killing the parse. The lexer now walks back
+  through recently emitted tokens before the function-like expansion
+  check; if the preceding non-`*` token is a type keyword
+  (`ttDataType`), `struct`/`class`/`enum`, or a storage-class /
+  qualifier (`const`/`extern`/`static`/`register`/`typedef`/
+  `restrict`), expansion is suppressed so the declarator parses
+  normally. Ordinary call sites (preceded by `{` / `;` / `,` / an
+  operator) still expand. Covers the three common declarator shapes
+  — `void foo(...)`, `char *foo(...)`, and `static int foo(int)`.
+  MadSMAUG's `#undef bug` workaround around the db.c include can
+  now be removed. Regression: `tests/testmacrodefhead.mad`.
+
+- **`*(TYPE*)expr` with typedef'd TYPE** — the unary-`*`-`(` parser
+  branch used to consume the `(` and call `parseExpression` on the
+  inner content, bypassing cast detection (which runs on `(`).
+  Typedef'd type names like `EXT_BV` then fell into the identifier/
+  variable-lookup path and failed with "use of undeclared identifier
+  'EXT_BV'". Fix: peek inside the `(` — when the first token is a
+  cast signature head (`ttDataType` keyword, `struct`/`class`, or a
+  typedef'd identifier in `datatype_map`), delegate the whole
+  `(...)` back to `parseExpression` so its existing cast detection
+  runs. Plain grouping forms (`*(a + b)`) take the previous path
+  unchanged. Regression: `tests/testderefcasttypedef.mad`. Closes
+  the MadSMAUG mud_prog.c front edge at line 1276
+  (`xIS_SET(*(EXT_BV*)vd->data, flag)`), and the isolated
+  `(*(EXT_BV*)p).bits[0]` / `EXT_BV v = *(EXT_BV*)p;` forms.
+
+- **Real `<` / `<=` / `>` / `>=` comparisons were flipping** — x86
+  `ucomisd` writes CF/PF/ZF (unsigned-compare semantics), not the
+  signed SF/OF flags that `setl` / `setle` / `setg` / `setge` read.
+  `emit_compare` was emitting the signed setcc variants after a
+  ucomisd, which read unrelated flags and produced wrong 0/1
+  results — `1.5 < 2.0` returned `0`, `1.5 > 2.0` returned `1`.
+  The fix treats reals like unsigned when choosing the setcc (`setb`
+  / `setbe` / `seta` / `setae`, matching the flag semantics x86
+  mandates for floating-point compares). Equality (`==` / `!=`) was
+  already correct because `setce`/`setne` read ZF, which ucomisd
+  does set. Regression: `tests/testrealcmp.mad`.
+
+## [v0.11.0] — 2026-04-24
+
+SMAUG Phase F front-edge resumption: the MadSMAUG umbrella now compiles and runs end-to-end against a stub `main()` after a dozen language gaps filed during whole-program porting were closed. Highlights: `goto` / forward labels, struct-copy init+assign via `memcpy`, `*p++ = rhs` as LHS, `(*p).member`, `expr[i].member`, compound-assign on expression-base subscripts (`xREMOVE_BIT` / `xSET_BIT`), struct-array subscript stride, `class` as a plain C identifier, leading-dot float literals, `char[N]` exact-length init without implicit `'\0'`, unary `-` after `{` / `,` / `;` / `(` / `=`, `#include` realpath canonicalization, better diagnostics for unsupported compound-assign lvals, and `safemov(Operand, double)` no longer truncating for Mem destinations. SMAUG completion tracked in `docs/smaug-progress.md` (~27% parse/compile by line count).
+
+- **`goto label;` + forward labels** — function-scoped labels and
+  `goto` resolve through `Program::label_map`, which `TokenFunc::
+  compile` clears at each function boundary. Forward references
+  work naturally: `TokenGOTO::compile` look-or-creates the
+  `asmjit::Label` on first use, and a later `TokenLabel::compile`
+  binds it. parseStatement detects `ident:` at statement position
+  via a `tkTerC` peek (the single-`:` token; `::` stays as the
+  separate tkNS token, so there's no ambiguity).
+
+  The `label_map` lives on `Program` rather than `TokenFunc` by
+  design — adding an `std::map<std::string, asmjit::Label>` member
+  directly to `TokenFunc` silently shifted its multi-inheritance
+  vtable layout and regressed unrelated codegen paths
+  (`float f = 1.5;` initialization in particular). Keeping the map
+  on Program and clearing it at each function entry avoids the
+  layout change while preserving function-scoped semantics.
+
+  Regression: `tests/testgoto.mad` covering backward loop gotos,
+  forward skips, the SMAUG `doneargs:` multi-branch exit pattern,
+  and per-function label isolation. Unlocks (future) ingest of
+  mud_prog.c / magic.c / tables.c / build.c / mud_comm.c / ban.c /
+  services.c, though mud_prog.c still stumbles on a separate
+  deep-macro `(EXT_BV*)` cast parse issue filed as a new gap.
+
+- **`char[N] = "..."` with matching length skips null terminator** —
+  C89 allows `char c[3] = "abc";` (no implicit `'\0'` because the
+  array is exactly full). The parser was always pushing a null onto
+  the init list, producing `Too many initializers for array
+  (expected N)` when the explicit size matched the string length.
+  Inferred-size (`char c[] = "abc";`) and oversized
+  (`char c[10] = "hi";`) cases still append `'\0'`. Regression:
+  `tests/testcharnoterm.mad`.
+
+- **Unary `-` in brace-init lists** — `isPostfixPosition` treated
+  any non-operator prev-token as "postfix position", including the
+  symbol tokens that actually open expression contexts (`{`, `(`,
+  `,`, `;`, `=`). As a result `int arr[] = { -5, -4 };` converted
+  the unary `TokenNeg` to a binary `TokenSub` at the position right
+  after `{` and `,`, and the expression parser reported `Missing
+  operand`. The postfix check now rejects those symbol positions.
+  SMAUG's const.c is full of negative-initialized lookup tables
+  (`str_app`, `int_app`, `dex_app`, …). Regression:
+  `tests/testnegbraceInit.mad`.
+
+- **Compound-assign on expression-base subscripts** —
+  `resolveCompoundLHS`'s ttSubscript branch only recognized
+  `TokenSubscript` with a fixed-array variable base. Any
+  `TokenSubscriptExpr` form — struct-contained array members
+  (`obj.bits[i] &= ~mask;`), pointer-deref-then-subscript
+  (`p->arr[i] += n;`) — fell through to `<op> on unsupported
+  subscript lval`. Added a TokenSubscriptExpr path that mirrors the
+  TokenAssign write branch: `base_expr->operand()` (avoid the
+  `emit_ir_value` load-first-element trap), LEA for aggregate bases
+  / MOV for pointer-typed bases, fold non-power-of-2 element sizes
+  via `imul`, compute the element Mem, load through
+  `load_mem_to_gpq`, then the existing compound-op path handles the
+  arithmetic + writeback. Regression: `tests/testcompoundsubexpr.mad`.
+
+  SMAUG's `xREMOVE_BIT` / `xSET_BIT` macros expand to exactly this
+  form. Closes the deepest MadSMAUG compile front edge: after this
+  fix `bin/madc SMAUG.mad` compiles + runs end-to-end (umbrella
+  `main()` is still a stub, but every ingested translation unit
+  compiles and every symbol resolves via the bootstrap shim).
+
+- **`return X;` mis-detected as multi-return when the next statement
+  starts with an identifier** — `TokenRETURN::parse`'s
+  `looks_like_second_return` peeked at the next token and, because an
+  identifier could plausibly be the start of a second return expression
+  OR the start of the next statement, treated `return 1; noop(ch); …`
+  as multi-return. That silently injected a `__retbuf` parameter at
+  compile time and corrupted the function's emission, which
+  downstream blew up as `IRBuilder::coerce() invalid src` in
+  fight.c / skills.c bodies. The fix uses the consumed stop token
+  (`curToken()`) as the signal: multi-return only fires when
+  parseExpression actually stopped on `,`. Added a new `curToken()`
+  accessor on `Program`. Regression: `tests/testreturnnextident.mad`.
+
+- **Better diagnostics for unsupported compound-assign lval errors**
+  — `resolveCompoundLHS` threw `msg.c_str()` from a stack-local
+  `std::string`; the catch handler then printed garbage bytes once
+  the string went out of scope. Same for `TokenStmt::compile`'s
+  `throw this` fallback. Both now throw into static buffers with
+  actual diagnostic text, so SMAUG-level errors like `&= on
+  unsupported subscript lval` are visible.
+
+- **`class` as a plain C identifier** — madc reserves `class` for OOP
+  declarations, but C codebases (notably SMAUG) use it everywhere as
+  a struct member name (`ch->class`), a local variable (`int class;`),
+  a function parameter, and a subscript index (`tbl[ch->class]`).
+  `parseStatement`'s ttKeyword case now routes `class` through
+  `parseExpression` when the next token is neither an identifier (real
+  class-declaration head) nor `{`. `parsePostfixChain` now accepts
+  `class` after `.` / `->` via `is_contextual_identifier_token` (which
+  already accepted `tkCLASS` and the STL container keywords).
+  Regression: `tests/testclassident.mad`. Advances the MadSMAUG
+  umbrella through `skills.c` to the next compile-time front edge
+  (an IR coerce mis-wiring in fight/skills function bodies).
+
+- **`safemov(Operand, double, ...)` truncating to int for Mem
+  destinations** — `TokenOperator::optimize` constant-folds
+  expressions like `double d = 1.0 + 0.5;` and then calls
+  `safemov(*regdp.first, foperate(), regdp.second)` with the
+  computed double. For Mem destinations the fallback converted
+  via `imm((int)d)` — silently dropping the fractional part — so
+  the stored bit pattern looked like a denormal double and readers
+  got garbage (`2.122e-314` etc.). Added a Mem + `d1->is_real()`
+  branch that materializes the double through the local const pool
+  into a scratch Xmm and stores Xmm → Mem. Regression:
+  `tests/testrealconstfold.mad`. (Printf of the same result still
+  hits the separate pre-existing asmjit variadic-doubles quirk;
+  the fold itself is now correct, as the `==` / `>` comparisons
+  demonstrate.)
+
+- **SMAUG progress tracking** — `docs/smaug-progress.md` holds a running
+  parse / compile / link / runtime percentage estimate for the SMAUG
+  1.8 umbrella bootstrap. Mirrored in `claude_status.json` under
+  `long_term_goal.smaug_completion_estimate`. Current state:
+  ~18% parse / ~18% compile / 0% link / 0% runtime (27,821 of 158,537
+  upstream lines ingested and parse-clean through the MadSMAUG
+  umbrella).
+
+- **Struct-array subscript element stride + base addressing** —
+  `arr[i].member` for a fixed array of structs nested inside another
+  struct used to produce wrong values / crashes. Two aligned fixes:
+  - TokenSubscriptExpr::compile and TokenAssign's ttSubscript /
+    TokenSubscriptExpr write branch now fold non-power-of-2 element
+    sizes into the index register via `imul` (SIB scale only covers
+    1/2/4/8; `sizeof(struct K)` of 16 fell through to scale 1 and
+    aliased adjacent elements).
+  - Both sites now read `base_expr->operand(pgm)` rather than
+    `compile(pgm, rdp)`. For a struct-contained `int bits[N]`, the
+    `bits` TokenMember reports `_datatype = int` (numeric), and
+    `compile()` routes through `emit_ir_value` — which loads the
+    first element's value into a Gp. Subsequent writes would then
+    index off that value rather than the array base. Using
+    `operand()` keeps the raw Mem/Gp so LEA/MOV can pick the right
+    shape downstream.
+  Regression: `tests/teststructarrsub.mad` covering both
+  `struct { int a; int b; }` elements and `int bits[4]` members.
+
+- **`expr[i].member` now parses and compiles** — the dot handler's
+  ttSubscript branch used to `dynamic_cast<TokenSubscript *>`
+  unconditionally, but `TokenSubscriptExpr` also reports ttSubscript
+  without deriving from `TokenSubscript`; the NULL cast's
+  `tsub->object` segfaulted. Added an explicit TokenSubscriptExpr
+  fallback that synthesizes a struct-typed object variable and routes
+  the result through the existing parent_expr path. Also taught
+  `TokenSubscriptExpr::compile` to return the raw element Mem
+  directly when the element type is struct/class — `emit_ir_value`'s
+  coerce/load path doesn't handle aggregate types and would have
+  corrupted the Mem before TokenMember's parent-expr dot-chain
+  could add the member offset. Closes the MadSMAUG umbrella front
+  edge at `handler.c:4789` in `add_kill`
+  (`ch->pcdata->killed[x].vnum`). Regression:
+  `tests/testsubscriptexprmember.mad`.
+
+- **Leading-dot float literal `.4`** — lexer now accepts `.4` / `.25f`
+  / `.75l` as shorthand for `0.4` / `0.25f` / `0.75l`. The single-`.`
+  case in the main tokenizer peeks for a digit and parses the
+  fractional expansion (consuming the optional `f/F/l/L` suffix)
+  before falling back to TokenDot. Closes the MadSMAUG umbrella
+  front edge at `handler.c:4683` (`c += .4*(...)`). Regression:
+  `tests/testleadingdotfloat.mad`.
+
+- **`(*p).member` now parses as `p->member`** — the parenthesized-deref-
+  then-dot form used to segfault `parseExpression` because the `.`
+  handler cast `lhs_dot` to `TokenMember *` unconditionally, but
+  `TokenDeref` and `TokenDerefExpr` both report `ttMember` for LHS-
+  compat reasons without actually deriving from `TokenMember`. Added
+  explicit branches to the dot handler:
+  - `TokenDeref` LHS — route the dot through the underlying pointer
+    variable so the normal no-`parent_expr` `TokenMember` compiles as
+    `[ptr + offset]` via voperand's pointer-in-Gp branch.
+  - `TokenDerefExpr` LHS — synthesize a struct-typed object variable
+    and pass the `TokenDerefExpr` as `parent_expr`, so
+    `TokenMember::operand` calls `TokenDerefExpr::operand` (which
+    materializes the pointer value) and accesses `[ptr + offset]`
+    through the struct-value "dot chain" branch.
+  Exposed by SMAUG's `xIS_SET((var), bit)` macro after `*vector`
+  substitution — when `vector` is also a madc keyword (STL container
+  reserve), the unary-`*` handler hands the parser a keyword rather
+  than an identifier and wraps the expression in `TokenDerefExpr`.
+  Closes the MadSMAUG umbrella front edge at `handler.c:2989`
+  (`affect_bit_name`). Regression: `tests/testparenderefmember.mad`.
+
+- **Struct-copy initialization and assignment** — C's bytewise struct
+  copy (`struct S a = other;` at declaration and plain `a = other;` as
+  assignment where both sides are the same user-defined struct type)
+  now compiles to a single `memcpy(&dest, &src, sizeof(S))` invocation.
+  Two split changes:
+  - **parseDeclaration**: when an `=`-initialized struct's RHS is not
+    `{` (and not a string literal), push the `=` back and fall through
+    to the normal initializer path instead of throwing `Expected '{'
+    or string literal for initializer`. That path wraps the init as a
+    `TokenAssign` which TokenAssign::compile then lowers via memcpy.
+  - **TokenAssign::compile**: added a struct-to-struct branch that
+    LEAs both sides' storage (or reuses the Gp when TokenMember already
+    returned a LEA'd address, e.g. for `obj->member` struct members)
+    and invokes libc `memcpy` with `sizeof(S)`. Struct types must
+    match (`ltype == regdp.second`); mismatches raise a compile error
+    rather than silently reinterpreting.
+  Closes the MadSMAUG umbrella front edge at `handler.c:1284`
+  (`EXT_BV extra_flags = obj->extra_flags;`). Regression:
+  `tests/teststructcopy.mad`.
+
+- **SMAUG Phase F — `#include` canonicalization** — `should_tokenize_include`
+  now canonicalizes each resolved path through `realpath()` before the
+  include-once check. Previously the raw `cur_dir + incfile` key was used,
+  so `#include "upstream_src/mud.h"` (from the SMAUG.mad umbrella) and
+  `#include "mud.h"` (from `ident.c` / `interp.c` / `ibuild.c`) registered
+  as two distinct entries even when both paths resolved — via symlinks —
+  to the same underlying file. The MadSMAUG umbrella tripped on this at
+  mud.h:97 (`AFFECT_DATA` redefined) once the earlier `bug(...)` macro
+  front edge was resolved. Quoted includes still fall back to the raw
+  path when `realpath()` cannot resolve (e.g. before the file exists);
+  embedded-header keys starting with `<` bypass `realpath` entirely.
+
+- **`*p++ = rhs` / `*p-- = rhs` as a write target** — the read side
+  (`c = *p++`) already went through `TokenDerefStep`, but the write side
+  was missing: `TokenAssign::compile` only dispatched `TokenVar`,
+  `TokenDeref`, `TokenDerefExpr`, `TokenMember`, and `TokenSubscript*`
+  LHS kinds, so `*arg_first++ = *argument++;` threw `Assignment on a
+  non-variable lval`. Added a `TokenDerefStep` LHS branch that mirrors
+  the read side: capture `old_ptr = ptr`, step the pointer variable,
+  then expose `[old_ptr]` as the Mem lvalue the numeric-assignment path
+  writes into. Closes the MadSMAUG umbrella front edge in
+  `act_move.c:182` (`grab_word`). Regression:
+  `tests/testderefpostincstore.mad`.
+
+## [v0.10.1] — 2026-04-24
+
+- **Typed-register IR — multi-return return-buffer store normalization**
+  — `TokenRETURN::compile` no longer open-codes separate Reg/Xmm/Imm/Mem
+  cases when writing numeric/pointer multi-return slots into `__retbuf`.
+  Eligible slots now compile through `compile_token_normalized(...)` and
+  store through `IRBuilder::store`, preserving the existing qword-slot
+  contract while moving shape normalization into the shared IR path.
+  Unsupported slot types still fall back to the legacy path. Validation:
+  23 IR unit + 25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — stream I/O shape normalization** —
+  `TokenBSL` / `TokenBSR` no longer duplicate their own Reg-vs-Mem-vs-Imm
+  argument and writeback logic. ostream string output now materializes
+  object addresses through `lea_var_to_gp`, cstr output uses
+  `load_var_to_gp`, ostream numeric output normalizes through
+  `IRBuilder::coerce` + `load`, and istream integer/real writeback now
+  routes through `emit_ir_value` from the temporary stack slot. The
+  stream helper invoke selection is still explicit, but the shape
+  normalization now lives on the shared path. Validation: 23 IR unit +
+  25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — direct-call fallback allocation + typesafe prune**
+  — the normal direct-call path no longer pre-allocates `operand(pgm)`
+  before `bind_call_return`; fallback return storage is now allocated
+  at the bind point only when no caller destination was supplied. Follow-on
+  Stage 5 cleanup removed dead mixed Gp↔Xmm arithmetic/compare overloads
+  and Xmm+Imm arithmetic overloads from `typesafe.cpp` after auditing the
+  remaining direct call sites, and tightened the Operand dispatchers to
+  reject mixed-group arithmetic/compare immediately. Validation: 23 IR unit
+  + 25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — dead `safemov(Xmm, Imm)` removal** — a narrower
+  follow-up Stage 5 audit confirmed the dedicated vector-immediate mover
+  was dead: it had no external callers, and the only path to it was the
+  `safemov(Operand&, Operand&, ...)` Xmm+Imm dispatcher arm. Both were
+  removed. Real/vector constants still materialize through the existing
+  `safemov(op, double/int64_t, ...)` const-pool paths. Validation: 23 IR
+  unit + 25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — final compiler-site cleanup** — the remaining
+  obvious compiler-side Mem stores/loads now route through
+  `IRBuilder::store` / `load` / `coerce` where appropriate: stack-local
+  zero/init, stack-parameter home-slot stores, compound/member writeback,
+  subscript Gp stores, call returns to Mem, cast-to-Mem, ternary
+  merge-to-Mem, compound real-member loads, and switch-expression
+  Mem-to-int64 normalization. After this pass, the remaining `safemov`
+  calls in `compiler.cpp` are adapter internals, pure register shuffles,
+  or legitimate leaf/boundary loads rather than unfinished IR cleanup.
+  Validation: 23 IR unit + 25 datadef unit + 170 integration tests pass.
+
+## [v0.10.0] — 2026-04-24
+
+Typed-register IR scaffolding + bottom-up migration (Stages 0–3c): fifteen shared compile-site helpers now absorb the per-token shape/coercion boilerplate that used to be copy-pasted across binary ops, comparisons, compound-assigns, inc/dec, lambda-capture, and call return-binding. Three latent bugs fixed as side effects. ~880 net lines removed from `compiler.cpp`, zero behavior change, 48 unit + 170 integration tests green throughout.
+
+### Added
+
+- **Typed-register IR — Stage 3c var-move helpers** — three
+  file-scope helpers (`load_var_to_gp`, `lea_var_to_gp`,
+  `store_gp_to_var`) absorb the "move a variable's value or
+  address in or out of a Gp, independent of whether the variable
+  is register- or stack-backed" pattern. Three sites that
+  open-coded this pattern now one-line through the helpers:
+  lambda-capture pack / reload loops in `TokenCallFunc::compile`
+  and the multi-return integer-unpack loop in
+  `TokenAssign::compile`. Each Reg/Mem shape-dispatch for these
+  three sites now lives in exactly one place.
+
+- **Typed-register IR — Stage 2i/2j + Stage 3b** — three more
+  bounded cleanups:
+  - **TokenMod general path** now routes through
+    `GeneralBinopCascade`. The scratch Reg that
+    `begin_general_binop` allocates doubles as the remainder
+    register safediv writes into, closing the last binary-op
+    hold-out. All eleven binary-op tokens share the same
+    cascade scaffolding now.
+  - **TokenInc / TokenDec collapsed into `emit_inc_dec`.** The
+    two were near-identical; factor the shared lowering through
+    a SafeUnaryStep function pointer and each TokenXx::compile
+    now one-lines its delegation. Covers all four
+    shape+position combinations (plain-var Reg, plain-var Mem,
+    member/deref lvalue, each in postfix and prefix).
+  - **Fn-pointer call dispatch cleanup.** Remove
+    `reinterpret_cast<Operand *>(&gp)` UB in TokenCallFunc's
+    fptr-call path by using an Operand local that both branches
+    write into. Also add a load-Mem-to-Gp step for stack-backed
+    fn-pointer variables so the downstream invoke's
+    `ptr_op.as<Gp>()` can never see a Mem (previously a latent
+    crash for any fn-pointer variable that got spilled).
+  - **Five more IRBuilder::coerce unit tests.** Cover int↔real
+    (cvtsi2sd/ss, cvttsd/ss2si) and int64→int32 narrow relabel
+    paths that Stage 1/2 introduced but hadn't yet asserted.
+  Tests: 23 IR (up from 18) + 25 datadef unit + 170 integration
+  all pass.
+
+- **Typed-register IR — Stage 2f/g/h general-fallback collapse +
+  TokenNeg dead-code fix** — three more bounded refactors on the
+  binary-op general fallback paths:
+  - **TokenNeg dead-code branch fixed.** The old
+    `is_plain_numeric_expr(left) && is_plain_numeric_expr(right)`
+    fast path was unreachable (TokenNeg is unary, `left` is
+    always NULL) and its body wrongly emitted `safeshl` instead
+    of `safeneg`. Replaced with a real unary-right IR-normalized
+    fast path.
+  - **Pointer-arithmetic scaling extracted.** The two inline
+    blocks in TokenAdd/TokenSub that emitted
+    `imul rval, rval, sizeof(*ptr)` for `p ± n` collapse into
+    `emit_pointer_arith_scale`. TokenSub's extra "right is not
+    pointer" guard is now folded in and applies uniformly.
+  - **General-fallback cascade extracted.** TokenAdd / TokenSub /
+    TokenMul / TokenXor / TokenBand / TokenBor / TokenBSL /
+    TokenBSR / TokenDiv all open-coded the same ~8-line
+    `caller_dest + mirror_to_caller` scaffolding around their
+    safe op. A `GeneralBinopCascade` struct plus
+    `begin_general_binop` / `finish_general_binop` helpers
+    replace it. Each general-path body now reads: begin cascade,
+    compile left, tmp for right, compile right, (optional per-op
+    work), safe op, finish cascade. TokenMod general path stays
+    open-coded because its remainder register is woven through
+    regdp.first in a way that doesn't factor cleanly.
+  Net: ~200 more lines removed from compiler.cpp. 18 IR + 25
+  datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — Stage 3a call return-binding unification**
+  — `TokenCallFunc` had three divergent call-return paths: the
+  function-pointer-call path (used `bind_call_return` — handled
+  Reg + Mem + void uniformly), the `dlcall` path (open-coded
+  `call->setRet(0, regdp.first->as<Gp>())` — would crash if the
+  caller passed a Mem destination), and the variadic dlsym path
+  (open-coded with separate double/int branches; the int branch
+  carried a movsxd sign-extend whitelist for int32-returning
+  libc functions, the double branch used movsd into a Reg-only
+  dest). Both open-coded paths are latent Mem-destination bugs
+  not exercised by today's tests. Widened `bind_call_return`
+  with a `narrow_int_ret` flag that carries the movsxd dance
+  the variadic dlsym path needs, then routed all three call
+  sites through `bind_call_return`. Mem-destination returns now
+  work uniformly across every call shape — the Stage-1 IR-route
+  contract (emit_ir_value honors caller dest) now holds
+  end-to-end through function calls.
+
+- **Typed-register IR — Stage 2 arithmetic/comparison collapse** —
+  the per-operator boilerplate that each binary token duplicated
+  (normalize both sides, run the safe* helper, route through
+  emit_ir_value) is now in shared helpers:
+  - `emit_compare` with a `CmpKind` enum collapses the six
+    comparison tokens (`TokenEquals`, `TokenNotEq`, `TokenLT`,
+    `TokenLE`, `TokenGT`, `TokenGE`) to 4-line delegations.
+  - `emit_plain_binop3` (3-arg safe ops) folds the plain-numeric
+    fast paths of `TokenAdd`, `TokenSub`, `TokenMul`.
+  - `emit_plain_divmod` (safediv + remainder) folds TokenDiv
+    (dividend result) and TokenMod (remainder result).
+  - `emit_plain_bitop2` (2-arg safe ops) folds TokenXor /
+    TokenBand / TokenBor / TokenBSL / TokenBSR. BSL gains a
+    plain-integer shortcut it didn't previously have.
+  - `emit_compound_binop3` / `emit_compound_bitop2` /
+    `emit_compound_divmod` fold the ten compound-assigns
+    (`+=` / `-=` / `*=` / `/=` / `%=` / `<<=` / `>>=` /
+    `&=` / `|=` / `^=`) onto the same helper surface.
+  Token general-fallback paths (pointer arithmetic, regdp-
+  cascade for complex expressions) are intentionally untouched
+  — they still handle the operand shapes the fast path rejects.
+  Net: ~380 lines removed across compiler.cpp with no behavior
+  change. 18 IR + 25 datadef unit + 170 integration tests pass.
+
+- **Typed-register IR — Stage 1 leaf-token sweep** — every leaf
+  token that produces a value now routes its final operand
+  through `emit_ir_value`, so shape normalization and type
+  coercion happen in one place instead of being re-derived at
+  each compile site. Sweep coverage: `TokenInt`, `TokenReal`,
+  `TokenChar`, `TokenVar` (numeric, pointer, and function-
+  reference paths), `TokenAddrOf`, `TokenAddrExpr`,
+  `TokenMember`, `TokenDeref`, `TokenDerefExpr`,
+  `TokenSubscript` (fixed-array, pointer, and container-call
+  paths), `TokenSubscriptExpr`, `TokenVaArg`. The
+  `TokenVar::compile` function-reference branch collapsed from
+  three asymmetric branches (Reg-dest, Mem-dest, no-dest) to a
+  single emit_ir_value call, as did the container-call tail of
+  `TokenSubscript::compile`, which previously ignored a caller's
+  `regdp.first=Mem` destination. To support function-pointer
+  assignments through the IR, grew `IRBuilder::coerce` with a
+  function-ref ↔ pointer passthrough (both are 8-byte addresses
+  in a Gp; no instruction emitted, just a type relabel). One new
+  unit test in `tests/unit/test_ir.cpp` covers the relabel. 18
+  IR unit tests + 25 datadef unit tests + 170 integration tests
+  all pass.
+
+- **Typed-register IR — Stage 1 call-arg + operand normalization**
+  — introduced IR-mediated helpers in `compiler.cpp`
+  (`emit_ir_value`, `ir_from_operand`, `compile_token_normalized`,
+  `compile_call_arg_normalized`, `add_funcsig_arg`,
+  `set_funcsig_ret`, `set_invoke_arg`, `set_invoke_args`) that
+  centralize the compile-site normalization patterns previously
+  scattered across the `safe*` helpers and ad-hoc call-site code.
+  Now that compile sites normalize into (Reg, concrete-type)
+  before calling the `safe*` helpers, the Mem-path branches in
+  `safeadd` / `safesub` / `safeor` / `safeand` / `safexor` /
+  `safecmp` / `safeset{e,g,ge,l,le,ne}` are gone — the caller
+  never hands in the un-normalized shape anymore. Grew
+  `IRBuilder::coerce` to cover integer/pointer ↔ real
+  conversions (`cvtsi2ss/sd`, `cvttss/sd2si`).
+
+- **Typed-register IR — Stage 0 scaffolding** — new `IRBuilder`
+  layer (in `include/madc_ir.h` / `src/madc_ir.cpp`) sitting
+  between AST-walking compile() methods and asmjit emission.
+  Values carry `(operand, DataDef, IRShape)` triples; shapes are
+  `Reg`, `Mem`, `Imm`, `Addr`. Stage 0 exposes `load()`,
+  `store()`, and `coerce()` — the minimum needed to centralize
+  the integer sign/zero widening and real↔real conversion
+  decisions currently scattered across `safemov`/`safeadd`/
+  compile() sites. Emit-as-you-build: each call emits asmjit
+  immediately, no deferred graph. 17 new doctest cases in
+  `tests/unit/test_ir.cpp` check the emitted instructions via
+  `StringLogger` (mov / movsxd / movzx / movsx / movss / movsd
+  / cvtss2sd / cvtsd2ss for the right type+shape combinations).
+  No existing tokens are ported yet — 170-integration-test
+  baseline is untouched. Migration plan in
+  `docs/plans/typed-register-ir.md`; rules in
+  `.claude/rules/typed-register-ir.md` and `docs/rules/
+  typed-register-ir.md`.
+
+### Fixed
+
+- **Float varargs promotion** — `float a = 1.5f; printf("%f", a);`
+  used to print `0.000000`. The dlsym variadic call path in
+  `TokenCallFunc::compile` checked `argrdp.second->is_real()`
+  and passed the Xmm straight to `addArgT<double>()`, but for
+  a float value the Xmm only held the low 32 bits (movss); C
+  ABI requires cvtss2sd promotion to double before the varargs
+  call. Also fixed for struct-member floats loaded via Mem.
+  Companion changes: `TokenMember::compile`'s no-destination
+  path now loads real-typed members into an Xmm (via
+  safemov(Xmm, Mem)) instead of a Gpq, and `safemov(Xmm, Mem)`
+  with no `d2` falls back to the Mem's actual size so a 4-byte
+  Mem isn't read as a double via an 8-byte cvtsd2ss. Added
+  `tests/testfloatvarargs.mad` covering single-local float
+  varargs; struct-member double varargs and mixed-real printf
+  still hit a separate asmjit-compiler register-allocator
+  quirk filed in TODO.
+
+- **Write through double-dereference (`**pp = v;`)** — used to
+  SIGSEGV the compiler at address 0x8 inside
+  `TokenAssign::compile`. `TokenDerefExpr::type()` returns
+  `ttMember` (matching `TokenDeref`), but `TokenDerefExpr` is not
+  derived from `TokenMember`. The LHS handling chain checked
+  `dynamic_cast<TokenDeref *>` first (which caught plain `*p =
+  v;`), then fell through to the `ttMember` branch and blindly
+  accessed `tml->var.type` on a NULL dynamic_cast result —
+  dereferencing NULL at field offset 8. Added an explicit
+  `TokenDerefExpr` branch that mirrors the `TokenDeref` path,
+  using the inner expression's compiled Mem as the write
+  target. Read-through (`v = **pp;`) already worked because the
+  read path compiles the LHS expression directly. Added
+  `tests/testdoubleptrwrite.mad`.
+
+- **Struct-member compound-assign on doubles** — `v.x += 2.5;`,
+  `v.y *= 3.0;` and friends where the LHS is a `double` struct
+  member used to throw `"safeadd() unable to add xmm to gp"` (or
+  asmjit finalize error 25) because `resolveCompoundLHS`'s
+  `ttMember` branch always loaded the member Mem via
+  `load_mem_to_gpq` into a Gp, regardless of type. The local-
+  variable path already handled `is_real()` with an Xmm load;
+  the member and `*deref` paths now mirror it. Added
+  `tests/teststructdoublecompound.mad` covering `+=` / `-=` /
+  `*=` / `/=` on double members, one op per helper function to
+  sidestep two other pre-existing bugs (struct-member double
+  varargs printf, and multi-float interleaved with printf —
+  both filed in TODO).
+
+- **`!=` / `<` / `<=` / `>` / `>=` comparisons with Mem destination** —
+  completes the roll-out of the `==` fix from commit `6318e6b`.
+  `TokenNotEq` / `TokenLT` / `TokenLE` / `TokenGT` / `TokenGE`
+  previously passed the caller's destination verbatim to their
+  setcc helper. When `TokenAssign` handed them a Mem (typical
+  `int r = *p < 'm';` / `int r = a != b;` pattern), the setcc
+  target came back Mem and either the safecmp helper or the
+  setcc helper threw. Now each operator allocates its own Gp
+  when the caller's dest isn't a Reg, runs compare+setcc there,
+  and mirrors the 0/1 result back into the caller's Mem via
+  safemov. Added `tests/testderefcmp.mad` covering all five
+  operators on a `*char` lvalue with Mem destinations.
+
+### Added
+
+- **C integer and float literal suffixes** — the lexer now consumes
+  `u`/`U`, `l`/`L`, up to three in a row (so `ul` / `UL` / `lu` /
+  `LU` / `ull` / `ULL` / `lul` etc. all work) after a decimal /
+  hex / binary integer literal, and `f`/`F`/`l`/`L` after a
+  real literal. madc's `int` is 64-bit, so the size hints are
+  informational; signedness-via-suffix isn't propagated yet (tracked
+  separately). Previously `1u` lexed as `1` followed by identifier
+  `u`, breaking `flags |= 1u << 3` and `9000000000LL` literals.
+  Added `tests/testintsuffix.mad`.
+
+- **int64 literals that don't fit in int32 store correctly** —
+  `long long big = 9000000000;` was truncating to the low 32 bits
+  because `mov qword ptr [mem], imm` in x86 only carries a 32-bit
+  sign-extended immediate. `safemov(Operand, Operand)` now bounces
+  through a register for out-of-range imm-to-Mem stores (imm fits
+  in int32 → direct store; otherwise `mov tmp, imm64` then
+  `mov [mem], tmp`).
+
+- **C pointer arithmetic scales by element size** — `p + n` on `T *`
+  previously added `n` bytes instead of `n * sizeof(T)`, so
+  `int *q = p + 2;` advanced `q` by 2 bytes and `*q` read garbage.
+  `TokenAdd::compile()` and `TokenSub::compile()` now scale the
+  offset by the pointer's pointed-to element size (or the element
+  size of a fixed-array base that's decaying to pointer). `char *`
+  and `void *` (1-byte elements) skip scaling. Added
+  `tests/testptrarith.mad`.
+
+- **Compound-assign on array subscript lvalues** — `resolveCompoundLHS`
+  previously threw "+= on a non-variable lval" (as a raw C-string throw
+  that further corrupted the error-location printout) for any
+  `arr[i] += n;`-style expression. Now computes the element Mem
+  operand directly from `TokenSubscript::object` + `index` and uses it
+  as the load/compute/store target. Added `tests/testarrayc.mad`.
+
+- **`sizeof(expr)` now handles postfix chains** — `sizeof(buf[0])`,
+  `sizeof(obj.field)`, `sizeof(ptr->field)` parse by routing the
+  identifier + `[` / `.` / `->` tail through `parsePostfixChain()`
+  and taking the resulting node's datadef size. Previously only
+  `sizeof(TYPE)` and `sizeof(var)` (bare variable) worked; the
+  subscript form `sizeof(arr) / sizeof(arr[0])` is idiomatic C for
+  array-length compile-time constants. Added
+  `tests/testsizeofexpr.mad`.
+
+### Fixed
+
+- **`*e == 0` comparisons with Mem operands** — two gaps:
+  (a) `safecmp(Operand, Operand)` rejected Mem lval / rval outright
+      — for `*e == 0` the deref yields a Mem operand. Now bounces
+      Mem operands through a sign-extending Gp temp.
+  (b) `TokenEquals::compile` handed the caller's destination
+      verbatim to safesete. When TokenAssign passed a Mem (typical
+      for `int x = *e == 0;`), safesete had no register to set.
+      Now allocates its own Gp for the compare/sete and mirrors the
+      0/1 result back into the caller's Mem via safemov.
+  `!=`, `<`, `<=`, `>`, `>=` have the same pattern — only `==` is
+  fixed here; filed in TODO. Added `tests/testderefeq.mad`.
+
+- **Dereferencing an address-taken pointer (`int **pp = &p; *p`)** —
+  taking `&p` of a pointer variable spilled `p` to a stack Mem
+  slot. Subsequent `*p` went through `TokenDeref::operand` which
+  did `ptr_op.as<x86::Gp>()` on the Mem — a silent reinterpret
+  that returned a bogus Gp. The resulting `ptr(gp, 0, 8)` had
+  garbage register ids and asmjit's finalize flagged error 26,
+  after which the JIT executed illegal instructions (SIGILL /
+  SIGSEGV). Now loads the pointer value from the Mem slot into a
+  fresh Gp before using it as the base. Added
+  `tests/testdoubleptr.mad`.
+
+- **`float` variables and real↔real casts** — two gaps kept
+  4-byte floats broken:
+  (a) `safemov(Mem, Xmm)` with a float-sized Mem emitted plain
+      `movss` on a double-valued Xmm, storing the low 32 bits of
+      the double (mantissa) instead of a valid float32. Now
+      `cvtsd2ss`s when source is double and dest is float (and
+      `cvtss2sd` for the opposite direction).
+  (b) `TokenCast::compile` reinterpreted real↔real casts. `(double)
+      flt_var` therefore passed the raw 32-bit float bits to a
+      variadic printf which reads them as a double (→ 0.0).
+      Now emits `cvtss2sd` / `cvtsd2ss` when src and dst sizes
+      differ.
+  Added `tests/testfloat.mad` — split across functions because a
+  separate asmjit register-allocation interaction (multiple floats
+  with interleaved printf calls in one function spills to an
+  uninitialised slot) is filed in TODO.
+
+- **`s->items[i]` read/write through pointer-typed struct members** —
+  two bugs collaborated to SIGSEGV (or return garbage) when a
+  subscript operated on a pointer held in a struct member:
+  (a) `TokenAssign`'s ttSubscript write path only `dynamic_cast`'d
+      to `TokenSubscript` (Variable-based subscript) — for a
+      `TokenSubscriptExpr` (expression-based, which the parser builds
+      for member / subscript / deref bases), the cast returned NULL
+      and the next `tsub->datadef()` crashed at address nil.
+  (b) `TokenSubscriptExpr::compile` unconditionally `lea`'d when the
+      base operand was a Mem. That's correct for a Mem that IS the
+      backing storage (fixed arrays), but wrong for a Mem that HOLDS
+      a pointer value (`s->items` where items is `int *`) — reads
+      then returned bytes from the member slot itself instead of the
+      pointed-to array.
+  Fix: `TokenAssign` now emits an inline store path for
+  `TokenSubscriptExpr` lvalues (including the dtSTRING → char*
+  coercion for char*-element arrays), and `TokenSubscriptExpr::compile`
+  picks `mov` vs `lea` based on whether base_expr's datadef is a
+  pointer. Added `tests/teststructptrsub.mad` covering struct-of-
+  pointer read/write and a heap-allocated stack via push/pop helpers.
+
+- **Signed integer division with negative dividend** — `a / b` where
+  `a < 0` used to produce wildly wrong quotients (`-17 / 5` came out
+  as 858993455 instead of -3). x86's `idiv` treats rdx:rax as a
+  128-bit signed dividend; the caller has to sign-extend rax into
+  rdx before the divide. `safediv()` was called with a zeroed
+  remainder register (via `safexor`), which is correct for unsigned
+  division but produces a huge positive 128-bit dividend when rax is
+  negative. Now emits `cqo` inside `safediv` for signed types
+  (unsigned types keep the caller's zero-extended path). Affects
+  both plain `/` `%` and compound `/=` `%=`. Added
+  `tests/testsigneddiv.mad`.
+
+- **`char *arr[] = {"a","b",...};` init stores c_str() pointers** —
+  TokenDecl's fixed-array init-list path wrote each init's compile
+  result straight into the slot, so for a char*-element array the
+  slot received the std::string object's address instead of its
+  c_str() pointer. Same coercion the `names[0] = "literal"`
+  assignment path already applies. Added `tests/teststrarrinit.mad`.
+
+- **Compound-assign on local double/float variables** — `x += 5.0;`,
+  `x *= 2.0;` and friends on a stack-local double used to throw
+  `"safeadd() unable to add xmm to gp"` because `resolveCompoundLHS`
+  always loaded the Mem lval via `load_mem_to_gpq` into a Gp, so the
+  subsequent `safeadd(Gp, Xmm)` had no valid overload. Now the
+  variable path checks `r.type->is_real()` and loads into an Xmm via
+  `safemov`; the Xmm-vs-Xmm arithmetic then proceeds normally.
+  Struct-member compound-assign on doubles still falls through the
+  Gpq path — filed in TODO. Added `tests/testdoublecompound.mad`.
+
+- **`safemov(Mem, Xmm)` now stores the xmm to memory** — the overload
+  used to unconditionally throw `"safemov() unable to move xmm to
+  mem"`, so every `double` / `float` arithmetic expression that had
+  to mirror its result back into a Mem destination (local variable,
+  struct member) bombed at compile. Now emits `movsd` / `movss`
+  based on the Mem's declared size. Added `tests/testdoublestore.mad`.
+
+- **Cast body no longer consumes trailing binary operators** —
+  `(long)q - (long)nums` used to parse as `(long)(q - (long)nums)`
+  because the cast body used `parseExpression(.., true)` which
+  greedily continues past binary operators. Cast now uses
+  `parsePostfixChain` when the body is a bare identifier with an
+  optional `->`/`.`/`[]` tail, and falls back to `parseExpression`
+  only for parenthesized bodies / unary-operator heads / function
+  calls inside the cast. Known remaining: `(long)(expr)` with an
+  inner parenthesized expression still uses the greedy path.
+
+- **Negative int32 returns from dlsym libc functions sign-extend
+  correctly** — `strcmp("abc", "abd")` returns `-1` in EAX on Linux
+  x86-64, but the upper 32 bits of RAX are indeterminate (typically
+  zero-extended by the compiler). madc's dlsym variadic call path
+  stored the raw RAX into an int64 destination, so `r < 0` evaluated
+  to false (the value read back as `0x00000000FFFFFFFF`, a large
+  positive). Now emits `movsxd ret, eax` after the call for a
+  curated whitelist of known int32-returning libc functions
+  (strcmp/memcmp family, char I/O, printf/scanf family, process
+  syscalls, network/socket, time, etc.). Pointer / int64 returners
+  (malloc, strdup, strtol, time, lseek...) stay untouched. Added
+  `tests/teststrcmpret.mad`.
+
+- **String literals stored into `char *` array elements go through
+  string_cstr** — `names[0] = "alice";` where `names` is `char
+  *names[3]` used to write the std::string object's address into the
+  slot instead of its c_str() pointer; subsequent `%s` or `strcmp()`
+  reads returned garbage. TokenAssign's ttSubscript path now applies
+  the same dtSTRING → char* coercion the plain `char *p =
+  "literal";` path uses. Added `tests/teststrcharptrarr.mad`.
+
+- **`(char *)` cast of std::string expressions coerces via
+  string_cstr** — `TokenCast::compile()` used to just reinterpret the
+  inner operand's type without changing its value, which for a
+  std::string source meant the caller kept the `std::string` object
+  address and treated it as a `char *`. `(char *)(cond ? "a" : "b")`
+  and `(char *)str_var` both rendered garbage when `%s`-printed.
+  `TokenCast` now detects dtSTRING → char* and routes the inner
+  expression through `string_cstr` before returning. Added
+  `tests/teststringcast.mad`.
+
+- **Compound-assign on narrow (1/2/4-byte) lvalues no longer
+  SIGSEGVs** — `resolveCompoundLHS` widens Mem lvalues into a Gpq via
+  `load_mem_to_gpq`, but kept `r.type` at the narrow source type. The
+  compound-op handlers then allocated a narrow `tmp` matching that
+  type and compiled the RHS into it, producing e.g. `safeor(Gp64,
+  Gp8)` which is not a legal encoding. asmjit silently dropped /
+  malformed the op, `cc.finalize()` returned an error, and the JIT
+  executed invalid code — the resulting crash manifested as a
+  dereference of whatever register was left stuck holding the RHS
+  value. Fixed by switching `r.type` to `ddINT64` whenever we widen
+  (variable / member / deref / subscript paths). The writeback Mem
+  keeps its original size so the final `safemov(Mem<1|2|4>, Gp64)`
+  truncates correctly via the matching-width register view. Added
+  `tests/testcompoundnarrow.mad` covering char/short locals, struct
+  char/short members, and char array subscripts.
+
+- **String-typed ternary branches now coerce correctly** — follow-up to
+  the ternary-to-Mem fix in v0.9.1. Two additional paths were missing:
+  (1) the parser didn't set `TokenTerQ::_datatype` from the branches,
+  so `TokenAssign`'s dtSTRING → char* coercion couldn't see the ternary
+  as string-typed; (2) `TokenTerQ::compile()` set `regdp.second` to
+  `&ddINT64` by default, hiding the branch type from variadic-arg
+  coercion (printf's dtSTRING → const char* via string_cstr). Now
+  parser propagates the true branch's datadef (falling back to the
+  false branch when the true is int/NULL), and compile uses the stored
+  `_datatype` for `regdp.second`. `const char *s = cond ? "a" : "b";`
+  and `printf("%s", cond ? "T" : "F");` both work. Added
+  `tests/testternarystring.mad`.
+
+## [v0.9.1] — 2026-04-24 — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts
+
+### Added
+
+- **C function-pointer cast syntax** — the cast parser now recognizes
+  `(RET (*)(PARAMS)) expr` after the return type (and any pointer
+  stars) by consuming `(*)` and then reusing `parseFnPtrParams()` to
+  build a `DataDefFPTR`. Unblocks `qsort(.., (int(*)(const void *,
+  const void *)) cmp_fn);` as used in SMAUG's `db.c sort_exits()`.
+  Added `tests/testfnptrcast.mad`.
+
+- **Case values accept constant integer expressions** —
+  `TokenSWITCH::parse()` used to store `nextToken()` as the case
+  value, which worked only for a single-token literal and broke on
+  `case EOF:` (where `EOF` expands to `-1`), `case (FOO+1):`, or
+  `case 1+1:`. The parse now uses `parse_constant_integer_expression`
+  and wraps the evaluated int64 in a `TokenInt` for compile(). Also
+  extended `resolve_integer_constant` to accept `ttChar` so
+  `case 'a':` still works through the new path. Added
+  `tests/testcaseconstexpr.mad`.
+
+### Fixed
+
+- **`switch` expression now sign-extends narrow signed types** —
+  `TokenSWITCH::compile()` loaded the switch expression via plain
+  `cc.mov(r64, m32)` / `cc.mov(r64, r32)`, which zero-extends and
+  leaves the upper bits clear. A negative `int`/`short`/`char`
+  expression would therefore never match a negative case constant
+  (`case -2:` missed when `i` held `-2`). Now routes through
+  `safemov(..., &ddINT64, expr_type)`, and `safemov(Gp, Gp)` was
+  updated to emit `movsxd` / `movsx` for signed widening (it used to
+  unconditionally `movzx`).
+
+- **Container-type keywords (`map`, `vector`, `set`, `list`) now usable
+  as identifiers at statement position** — `parseStatement()`'s
+  `ttKeyword` case used to dispatch `map` / `vector` / `set` / `list`
+  straight to the keyword-specific parser, which expects a templated
+  use (`map<K,V>` etc.). In plain C code these names legitimately
+  appear as local variables, parameters, or struct members —
+  `MAP_DATA *map; map->vnum = fread_number(fp);` in SMAUG's `db.c` is
+  the motivating case. When the token after one of these keywords is
+  not `<`, `parseStatement()` now resets the prior-token context and
+  routes through `parseExpression()` instead. `contextual_identifier_name()`
+  was also missing tkMAP / tkVECTOR / tkSET / tkLIST — it now returns
+  their keyword `str` so downstream code sees `"map"` instead of `""`.
+  This advances the external MadSMAUG umbrella past `db.c`'s map
+  loader. Added `tests/testmapidentifier.mad`.
+
+- **`->` after a dereference expression now falls through to the
+  expression-backed path** — `TokenDeref` / `TokenDerefExpr` both
+  report `type() == ttMember` (for assignment-compat purposes) but
+  are not `TokenMember` instances. `parseExpression()`'s `->` handler
+  used to throw `"expression before '->' must be a pointer to struct"`
+  when the `dynamic_cast<TokenMember *>` failed, without trying the
+  pointer-datadef fallback that already exists for general
+  expression-parent `->` uses. The ttMember branch now falls through
+  to the expr-backed path when the cast fails, so the classic
+  `(*pp)->field` idiom (qsort comparators etc.) parses correctly.
+  This advances the MadSMAUG umbrella past `db.c`'s `exit_comp()`
+  sort helper. Added `tests/testderefparenarrow.mad`.
+
+## [v0.9.0] — 2026-04-23 — SMAUG Phase F continues: MadSMAUG bootstrap + compiler fixes
+
+### Added
+
+- **Empty-clause `for` regression coverage** — added
+  `tests/testforemptyclause.mad` and `.expect` to cover `for (; cond; inc)`,
+  `for (init; ; inc)`, and `for (init; cond; )`.
+
+- **Statement-leading unary dereference regression coverage** — added
+  `tests/teststmtleadingunary.mad` and `.expect` to cover statement-start
+  `*ptr = ...;` after control-flow blocks, which previously leaked prior
+  parse context into the new statement.
+
+- **`register` parameter regression coverage** — added
+  `tests/testparamregister.mad` and `.expect` to cover function definitions
+  that spell parameters as `register int x` / `register char *s`.
+
+- **Pointer pre-increment dereference regression coverage** — added
+  `tests/testderefpreincptr.mad` and `.expect` to cover `c = *++p;`, which
+  must parse and type-check the same as `c = *(++p);`.
+
+- **Build-then-run helper script** — added `scripts/build_then.sh` so local
+  debugging can serialize `make -C src` and the next command against the
+  freshly built `bin/madc`. This avoids stale-binary runs and makes targeted
+  repro/test loops (`scripts/build_then.sh bin/madc tests/foo.mad`) safer.
+
+- **Struct-member function-pointer regression coverage** — added
+  `tests/testfnptrmemberarrow.mad` and
+  `tests/testfnptrmemberarrow.expect` to cover `cmd->fn(args)`, the
+  classic C parenthesized form `(*cmd->fn)(args)`, and typed extraction
+  from `cmd->fn` into a local function-pointer variable before indirect
+  invocation.
+
+- **`struct servent` interop in embedded `<netdb.h>`** — 32-byte
+  glibc-matching layout (`char *s_name; char **s_aliases; int s_port;
+  char *s_proto;`) so `getservbyname()` / `getservbyport()` return
+  values now expose `serv->s_port` / `serv->s_name` / `serv->s_proto`
+  directly. The `s_port` field holds the port in network byte order,
+  matching glibc — user code calls `ntohs(serv->s_port)` to get a
+  host-order integer. This closes the MadSMAUG umbrella bootstrap's
+  `sock.sin_port = serv->s_port;` front edge in upstream `ident.c`.
+  `tests/testservent.mad` drives a real `getservbyname("ftp","tcp")`
+  and `getservbyname("http","tcp")`, verifies host-order port values
+  (21, 80) after `ntohs()`, and asserts `sizeof(struct servent) == 32`.
+
+- **Extended `<errno.h>` socket/network constant coverage** —
+  `<errno.h>` now defines the Linux x86-64 values for `EWOULDBLOCK`
+  (alias of `EAGAIN`), `EINPROGRESS`, `EALREADY`, `ENOTSOCK`,
+  `EDESTADDRREQ`, `EMSGSIZE`, `EPROTOTYPE`, `ENOPROTOOPT`,
+  `EPROTONOSUPPORT`, `ESOCKTNOSUPPORT`, `EOPNOTSUPP`, `EPFNOSUPPORT`,
+  `EAFNOSUPPORT`, `EADDRINUSE`, `EADDRNOTAVAIL`, `ENETDOWN`,
+  `ENETUNREACH`, `ENETRESET`, `ECONNABORTED`, `ECONNRESET`, `ENOBUFS`,
+  `EISCONN`, `ENOTCONN`, `ESHUTDOWN`, `ETIMEDOUT`, `ECONNREFUSED`,
+  `EHOSTDOWN`, `EHOSTUNREACH`, plus the System V / extended POSIX
+  errors (`EDEADLK`, `ENAMETOOLONG`, `ENOLCK`, `ENOSYS`, `ENOTEMPTY`,
+  `ELOOP`, `EDOM`, `EILSEQ`, `EOVERFLOW`, `ENODATA`, `ETXTBSY`,
+  `EUSERS`, `EDQUOT`, `ESTALE`, `ENOMSG`). SMAUG's socket bootstrap
+  paths (`errno != EINPROGRESS`, `errno != ECONNREFUSED`) can now
+  compile.
+
+- **Extended `<fcntl.h>` constant coverage** — the embedded `<fcntl.h>`
+  header now defines the `fcntl()` command constants
+  (`F_DUPFD`, `F_GETFD`, `F_SETFD`, `F_GETFL`, `F_SETFL`, `F_GETLK`,
+  `F_SETLK`, `F_SETLKW`, `F_SETOWN`, `F_GETOWN`, `F_DUPFD_CLOEXEC`) at
+  their Linux x86-64 values, plus the missing open flags `O_NDELAY`
+  (alias of `O_NONBLOCK`), `O_ASYNC`, `O_DIRECTORY`, `O_NOFOLLOW`, and
+  the `FD_CLOEXEC` file-descriptor flag. This closes the MadSMAUG
+  umbrella `F_SETFL` bootstrap front edge in upstream `ident.c`'s
+  `fcntl(a->afd, F_SETFL, FNDELAY)` path.
+  `tests/testfcntl.mad` drives a real `F_GETFL` / `F_SETFL` round-trip
+  on an open file descriptor and verifies that `O_NONBLOCK` is actually
+  reflected by a follow-up `F_GETFL`.
+
+### Added
+
+- **Ternary operator now writes its merged result to Mem destinations** —
+  `TokenTerQ::compile()` only honoured a Gp-register caller destination
+  when returning its merged result; if the caller passed a Mem (typical
+  for `int r = cond ? a : b;` where TokenAssign targets `r`'s stack
+  slot), the branches wrote to a fresh internal Gp and the caller's Mem
+  was never updated — `r` kept its zero-initialised value. Every
+  int-valued ternary assigned to a local was silently producing 0. Now
+  stores the merged result into the caller's Mem via safemov before
+  returning. Added `tests/testternaryvalue.mad`. Note: string-typed
+  ternary branches (`const char *s = cond ? "a" : "b";`) still don't
+  coerce `std::string` to `char *` correctly — filed in TODO.
+
+- **`DIR` typedef in embedded `<dirent.h>`** — glibc exposes `DIR` as a
+  typedef for an opaque struct, but madc's embedded `<dirent.h>` only
+  defined `struct dirent` and the `DT_*` constants. C code using
+  `DIR *dp;` (SMAUG's `db.c` and others) now parses via the new
+  `typedef struct __dir_opaque DIR;`. Added `tests/testdirtype.mad`.
+
+### Fixed
+
+- **Unary `*` on a postfix chain no longer swallows trailing binary
+  operators** — the old fallthrough for `*ident->member`,
+  `*ident.member`, `*ident[idx]` cases called `parseExpression(...,
+  true)` on the postfix chain, which greedily consumed trailing binary
+  operators such as `*p->name == '$'`. The inner parse would return a
+  `TokenEq` (boolean result), and the outer `!dtype->is_pointer()` check
+  then threw `"cannot dereference non-pointer type"`. Added a
+  `parsePostfixChain()` helper that manually builds `TokenVar` /
+  `TokenMember` / `TokenSubscriptExpr` nodes stopping at the first
+  non-postfix token, and routed the `*` handler's identifier+postfix
+  fallthrough through it. Added `tests/testderefmember.mad` covering
+  `*p->name == 'h'`, `*n.name == 'h'`, and chained `*op->inner->name`.
+
+- **Global / literal variables re-emit their address load on every access** —
+  `TokenCpnd::voperand()`'s cache-hit branch re-runs `movreg` for global
+  variables each time they are referenced (so the register always holds
+  the up-to-date global value), but the check excluded `is_constant()`
+  vars. For a string literal (`addLiteral` calls `makeconstant()`), the
+  initial `mov reg, imm(var->data)` load was therefore emitted only at
+  the first use site. If that site was inside a conditional branch
+  (a switch case, an if/else arm) that didn't execute at runtime, the
+  asmjit-spilled slot was never initialised, and subsequent uses on
+  other branches read garbage — the most visible symptom was identical
+  `printf("...")` calls across two switches printing nothing on the
+  second switch. The exclusion on `is_constant()` was removed; fixed
+  arrays still skip `movreg` to avoid re-loading the element-zero of
+  the backing storage. Added `tests/testdupliteral.mad`.
+
+- **Negative-constant initializer `int a = -2;` now stores -2** — two
+  separate bugs collaborated to leave `a` at 0:
+  1. `TokenNeg::compile()` set `mirror_to_caller` when the caller's
+     destination was Mem and allocated a fresh temp register, but
+     never actually mirrored the negated result back to the caller's
+     Mem — so the stack slot was left untouched. Fixed by emitting
+     `safemov(*caller_dest, rval, ...)` after the `safeneg`, matching
+     the pattern already used by TokenAdd / TokenSub / TokenMul etc.
+  2. `parseExpression()`'s conditional-end-at-`)` short-circuit
+     returned `exStack.top()` without flushing the operator stack.
+     For `-(2)` this lost the pending unary `-`; for `c = -(2)` it
+     also lost the pending `=`. Now flushes the opStack via
+     `popOperator` before returning.
+  Added `tests/testneginit.mad` covering `int a = -2;`, post-decl
+  `d = -7;`, `int e = -(2);`, `int f = -(3+4);`, and the sanity-check
+  `0 - 2` form.
+
+- **`->` after a function-call now evaluates the call** — `TokenMember::operand()`'s
+  chained-arrow path previously called `parent_expr->operand()` unconditionally,
+  which works for chained `TokenMember` parents (they re-materialize their own
+  address each call) but silently failed for expression parents such as
+  `TokenCallFunc` / `TokenCallMethod` / `TokenSubscript` / `TokenDerefExpr`,
+  whose `operand()` returns a fresh uninitialized register without emitting
+  the underlying computation. The arrow chain therefore read a garbage
+  register as the pointer. `TokenMember::operand()` now invokes
+  `parent_expr->compile(pgm, fresh_regdp)` for any non-`ttMember` parent,
+  so `get_slot(i)->value`, `cmd->fn(args)->field`, and similar patterns
+  emit the producing computation before dereferencing. Added
+  `tests/testglobalptrarrayarrow.mad` as the regression.
+
+- **Mem-backed arithmetic expressions now materialize through temps** —
+  plain arithmetic and bitwise operators (`+`, `-`, `*`, `/`, `%`, `|`,
+  `^`, `&`, `<<`, `>>`) now allocate a temporary register when the caller
+  passes a Mem destination, then mirror the result back after the op.
+  Compound-assignment LHS resolution now does the same for stack-backed
+  variables. This fixes SMAUG patterns like `number = (number * 10) + ...`,
+  `number *= (multiplier = 1000)`, and `hash = len % STR_HASH_SIZE` in
+  `bet.h` / `hashstr.c`. Added targeted regressions
+  `tests/testassignexprmem.mad` and `tests/testcompoundassignmem.mad`.
+
+- **Unary `*` now accepts fixed arrays via C array-to-pointer decay** —
+  the parser's direct identifier dereference path now treats fixed arrays
+  like `char arg[N]` as dereferenceable element pointers in value context,
+  so SMAUG forms such as `if ( !*arg )` parse correctly. Added
+  `tests/testderefarray.mad` to cover `!*buf` and plain `*word`.
+
+- **Traditional `for` now accepts empty init/condition/increment clauses** —
+  `TokenFOR::parse()` and `TokenFOR::compile()` now handle C forms like
+  `for (; cond; inc)`, `for (init; ; inc)`, and `for (init; cond; )` instead
+  of treating empty clauses as parse failures. This advances the external
+  MadSMAUG umbrella through `interp.c`'s `for ( ; *arg != '\0'; arg++ )`
+  loop in `one_argument2()`. Current full-batch status: 133 integration
+  tests pass.
+
+- **Statement-leading unary operators now reset expression context** —
+  `parseStatement()` now clears prior-token context before handing an
+  operator-led statement to `parseExpression()`, so statement-start forms
+  like `*arg_first = LOWER(*argument);` are parsed as unary dereference
+  instead of as a missing left operand for binary `*`. This advances the
+  external umbrella through the first `one_argument2()` dereference-assignment
+  path in `interp.c`.
+
+- **`register` is now accepted in function parameter lists** —
+  `parseFunction()` now tolerates storage-class hints like
+  `register char *argument` alongside existing `const` handling when reading
+  parameter types. This advances the external umbrella through
+  `char *one_argument2(register char *argument, char *arg_first)`.
+
+- **Prefix/postfix inc/dec now preserve operand type metadata** —
+  `TokenInc` and `TokenDec` now report the same `datadef()` as their child
+  expression, so pointer expressions such as `*++argument` and `*--p` remain
+  dereferenceable. This closes the `ch = *++argument;` front edge in
+  `interp.c` and moves the MadSMAUG umbrella to the next dereference gap at
+  `/workspace/MadSMAUG/src/SMAUG.mad:1178:12`.
+
+- **Bare unary `&` now accepts postfix lvalue chains** — the parser no
+  longer limits the non-parenthesized address-of form to plain identifiers.
+  Expressions like `&cmd->userec`, `&op->in.x`, and other member/subscript
+  postfix chains now parse through the same addressable-expression path as
+  `&(cmd->userec)`, which advances the external MadSMAUG umbrella bootstrap
+  past `interp.c`'s `update_userec(&time_used, &cmd->userec);` front edge.
+  Added `tests/testaddrmemberparen.mad` / `.expect` coverage for nested dot
+  and arrow member-address forms. Current full-batch status: 133 integration
+  tests pass.
+
+- **Typed Mem-backed local writeback regressions** — three stack-local paths
+  now preserve narrow numeric storage correctly instead of bouncing through
+  accidental 64-bit temporaries:
+  - function-pointer indirect calls now bind integer returns into Mem
+    destinations as well as registers, which fixes `int x = op(10, 20);`
+    in `tests/testfnptrtypedef.mad`
+  - `cin >>` integer and floating-point extraction now writes back to the
+    actual lvalue operand for stack-backed locals instead of only updating a
+    transient loaded register, which fixes `tests/testcin.mad`
+  - generic `safemov(Mem <- Mem)` now copies through a typed temporary
+    instead of an unconditional `Gpq`, which fixes stack-local `uint32_t`
+    assignment / print paths (`tests/testassign.mad`, `tests/testint.mad`)
+
+- **Struct-body function-pointer members now preserve `DataDefFPTR`** —
+  declarators like `void (*callback)(void *)` inside `struct` bodies no
+  longer degrade to a plain `int64_t` placeholder. `TokenSTRUCT::parse()`
+  now routes the member parameter list through `parseFnPtrParams()` and
+  stores a real `DataDefFPTR`, which keeps the signature available through
+  member lookup so `cmd->fn(args)` and `FPTR_TYPE *fp = cmd->fn; fp(args);`
+  compile.
+
+- **Parenthesized struct-member function-pointer calls** —
+  `TokenMember::datadef()` now reports the member's actual stored type
+  instead of inheriting `TokenCallFunc`'s callable-return behavior, so
+  `(*cmd->fn)(args)` now sees `cmd->fn` as a `DataDefFPTR` member rather
+  than as the function's return type. This closes the remaining SMAUG-style
+  direct-dispatch spelling gap for function-pointer struct members.
+
+- **`parseExpression` SIGSEGV when `->` follows a dereference expression** —
+  `TokenDeref` and `TokenDerefExpr` both reuse `TokenType::ttMember` as their
+  `type()` (for assignment-compat purposes), so when the LHS of `->` was a
+  dereference the `dynamic_cast<TokenMember *>` in the `tkDeRef` branch
+  returned `NULL` and the subsequent `tm->var` read crashed at offset `0x8`.
+  `Program::parseExpression()` now null-guards that cast and throws a proper
+  "expression before '->' must be a pointer to struct" error instead. This
+  replaces the SIGSEGV that MadSMAUG's umbrella bootstrap was hitting during
+  `ident.c` parsing with a clean diagnostic, and the umbrella now advances
+  past the crash to the next structural front edge (address-of struct member
+  via pointer, `&cmd->userec`).
+
+## [v0.9.0] — 2026-04-19 — SMAUG Phase F continues (session 2)
+
+### Fixed
+
+- **Control-flow condition parsing now uses a reusable parenthesis helper** —
+  `if`, `while`, and `do/while` conditions now parse through one helper
+  instead of hand-rolled stop behavior at each keyword. This fixed the
+  `_Bool` regression where `if (a) stmt; else stmt;` with single expression
+  statements bound incorrectly. Added/stabilized regression coverage:
+  `tests/testc23_bool.mad`.
+
+- **Assignment-expression call results now persist into Mem-backed locals** —
+  stack-backed local numerics exposed a gap where function-call RHS values
+  assigned into local lvalues were returned to the enclosing expression but
+  not reliably stored back through a Mem destination. Call return binding now
+  routes through a helper that handles register and memory destinations
+  generically, which restores assignment-in-condition behavior like
+  `while ((x = next_val(count)) < 35)`. `tests/testassigninexpr.mad` now
+  runs cleanly again.
+
+- **Prefix/postfix inc/dec on Mem-backed locals** — once ordinary local
+  scalar numerics became stack-backed for stability, prefix/postfix fast
+  paths that assumed register-only variables broke value semantics and the
+  final `while (x--)` loop case. `TokenInc::compile()` and
+  `TokenDec::compile()` now handle Mem operands explicitly, and
+  `tests/testpostfix.mad` now passes with the expected output.
+
+- **Pointer-return typing for dereferenced call results** — generic
+  `rtPtr(...)` builtin/external signatures now resolve through a helper in
+  `addFunction()` instead of a few hard-coded pointer cases, so
+  `__errno_location()` keeps an `int *` return type during parsing. The unary
+  dereference path also no longer assumes every identifier after `*` is a
+  plain variable; when followed by `(` it parses the full call expression.
+  This fixes dereferencing call results such as `*get_msg()`,
+  `*(version.c_str())`, and `errno` / `*(__errno_location())`. Added targeted
+  regressions: `tests/test_ptr_fn_deref.mad`,
+  `tests/test_get_argv_deref.mad`, and `tests/test_errno_deref.mad`.
+
+- **MadSMAUG bootstrap parser/front-end follow-ups** — continued the external
+  `MadSMAUG` umbrella bootstrap through `ident.c` / `interp.c` and landed the
+  next compiler compatibility fixes:
+  - struct-body comma declarators now parse (`struct sockaddr_in us, them;`)
+  - grouped RHS expressions after deref assignment no longer crash
+    (`*p = (x);`, `UMAX(*p, ...)`)
+  - chained unary dereference now parses for pointer chains used in SMAUG
+    (`*s`, `**s`)
+  - `for (...) *ptr = ...;` style bodies starting with a unary operator now
+    parse correctly
+  - nested pointer `DataDefPTR` types now report `is_pointer() == true`
+
+### Known Current Front Edge
+
+- **MadSMAUG bootstrap now stops at `timerisset`** — after the Mem-backed
+  arithmetic fixes and fixed-array unary-deref parsing, rerunning the full
+  umbrella bootstrap advances the front edge to
+  `/workspace/MadSMAUG/src/SMAUG.mad:1257:18` complaining about undeclared
+  `timerisset` (upstream `interp.c` / `do_timecmd`). The next session should
+  add `timerisset` / related timeval helper macro coverage and rerun the
+  bootstrap immediately.
+
+### Docs
+
+- **Cross-agent hand-off workflow** — added `docs/agent-handoff.md` as the
+  canonical playbook for Codex CLI / Claude Code session transfer. It defines
+  the read order, source-of-truth rules, end-of-session update contract,
+  default task split, and agent-owned feature-branch convention.
+
+- **Claude rule coverage for hand-offs and KG sync** — added
+  `.claude/rules/session-handoff.md` and `.claude/rules/knowledge-graph.md`,
+  plus paired reasoning docs under `docs/rules/`. Updated the branching rule
+  to support agent-owned WIP branches with `-claude` / `-codex` suffixes.
+
+- **Retired `docs/status_report.md` as a live source** — it now points agents
+  at `claude_status.json`, `TODO.md`, `CHANGELOG.md`, `docs/test-status.md`,
+  and `docs/agent-handoff.md` instead of acting as a stale parallel snapshot.
+
+### Tests
+
+- **Plain bitwise `>>` integration coverage** — `tests/testbsl.mad` now
+  exercises both left and right arithmetic bit shifts, and
+  `tests/testbsl.expect` asserts the concrete outputs. This closes the
+  remaining backlog item where `>>=` and `cin >>` were covered but plain
+  `>>` had no integration assertion.
+
+- **C `_Bool` regression coverage** — added `tests/testc23_bool.mad` and
+  `tests/testc23_bool.expect` to cover scalar `_Bool` declarations,
+  branching, and fixed-array initialization.
+
+- **Binary literal regression coverage** — added `tests/testbinlit.mad` and
+  `tests/testbinlit.expect` to cover `0b...` / `0B...` integer literals in
+  assignments, expressions, and conditions.
+
+- **`restrict` regression coverage** — added `tests/testrestrict.mad` and
+  `tests/testrestrict.expect` to cover `restrict` in pointer declarations and
+  function parameters.
+
+- **`flock()` regression coverage** — added `tests/testflock.mad` and
+  `tests/testflock.expect` to cover embedded `<sys/file.h>` plus `flock()`
+  and the `LOCK_*` constants through the libc dlsym fallback.
+
+- **Include-once regression coverage** — added `tests/testincludeonce.mad`
+  and `tests/testincludeonce.expect` to cover repeated local `#include`
+  directives being ignored after the first tokenization pass.
+
+### Maintenance
+
+- **Closed stale `%`-safety follow-up** — audited the remaining
+  `cc.newXxx(name)` follow-up noted in the backlog. User-derived register names
+  are already routed through `"%s"` call sites or `DataDef::newreg()`;
+  leftover named temporaries in `typesafe.cpp` and lambda paths are fixed
+  literals, so no further code change was required.
+
+### Fixed
+
+- **Assignment as expression inside declaration initializers** — `int y = (x
+  = 42);` and related forms now preserve the outer declaration assignment
+  while still allowing nested assignment expressions on the RHS. The parser
+  keeps the original assignment-context parse and only wraps the initializer
+  when it does not already assign to the declared variable. Brace-init paths
+  are unchanged. `tests/testdeclassignexpr.mad` covers nested assignment,
+  expression composition, and comma declarations.
+
+- **Typed `for` init with comma-separated declarations** — `for (int i = 0,
+  j = 10; ...)` now declares all variables correctly. The parser reuses
+  `parseDeclaration()` for the typed `for` initializer and routes any
+  synthetic comma-continuation declarations into `TokenFOR::init_extras`,
+  matching the existing compile-time execution path. `tests/testfortypedcomma.mad`
+  covers scalar, three-variable, and mixed pointer/scalar cases.
+
+- **Compiler raw-string diagnostics now carry source context** — top-level
+  `Program::compile()` catches for raw `throw "..."` failures now anchor
+  messages to the current statement token (and current pre-pass token during
+  FuncNode setup) and show source context, replacing location-less compiler
+  error lines.
+
+- **C `_Bool` keyword alias** — `_Bool` is now registered as a datatype token
+  alias for `ddBOOL`, so C-style boolean declarations and fixed arrays parse
+  and compile the same as `bool`.
+
+- **Binary integer literals** — the lexer now accepts `0b...` and `0B...`
+  integer literals and emits them as `TokenInt` values alongside the
+  existing decimal and hexadecimal literal paths.
+
+- **`restrict` parsed as a no-op qualifier** — the parser now accepts
+  `restrict` in declaration and function-parameter pointer declarators and
+  ignores it semantically, matching the current compatibility-only handling.
+
+- **Embedded `<sys/file.h>`** — added `LOCK_SH`, `LOCK_EX`, `LOCK_NB`,
+  `LOCK_UN`, and `flock()` availability through the existing dlsym fallback,
+  closing the last header gap called out in `docs/SMAUG_requirements.md`.
+
+- **`#include` now behaves include-once by default** — the lexer records
+  resolved local paths and embedded-header keys, then skips repeated
+  includes within the same compile. This matches madc's single-unit build
+  model and reduces duplicate header tokenization for SMAUG bootstrap files.
+
+### Added
+
+- **Function pointer typedefs** — `typedef void DO_FUN(CHAR_DATA *ch, char
+  *argument);` and `typedef int (*UNOP)(int);` (SMAUG-style and classic C
+  forms). Both produce a `DataDefFPTR` registered in `datatype_map`.
+  Declarations like `DO_FUN *cmd;` and `UNOP u;` yield function-pointer
+  variables; call through with `cmd(args)`. The `*` decorator on Form 1
+  (`DO_FUN *cmd`) is accepted as a no-op since the typedef already names a
+  function-pointer storage. New helper `Program::parseFnPtrParams` reads a
+  parameter list (types only, optional names discarded) and builds a
+  `FuncDef` to wrap in the `DataDefFPTR`. `tests/testfnptrtypedef.mad` covers
+  both forms, reassignment, and invocation with `cout <<`.
+
+- **SMAUG command-table pattern** — `struct cmd { char *name; DO_FUN *fn; };`
+  followed by `struct cmd c = { "who", do_who };` now compiles and runs.
+  Both dispatch forms work: intermediate variable (`DO_FUN *fp = c.fn;
+  fp(args);`) and direct invocation (`c.fn(args);`).
+  `tests/testfnptrstruct.mad` covers the intermediate pattern;
+  `tests/testfnptrmember.mad` covers direct invocation.
+
+- **Direct struct-member function-pointer invocation** — `c.fn(args)` and
+  `o.fn(a, b)` now parse and run. The parser detects the `(` following a
+  `TokenMember` whose datadef is `DataDefFPTR` and builds a `TokenCallFunc`
+  whose new `src_node` field points to the member. At compile time the
+  fptr-call path compiles `src_node` to materialise the function-pointer
+  value, instead of looking it up from a variable. Also fixes struct-body
+  parsing so `DO_FUN *fn;` inside a struct stays a `DataDefFPTR` member
+  (previously got wrapped in `DataDefPTR(DataDefFPTR)`, which defeated
+  fptr dispatch — the parseDeclaration skip for fnptr-base needed the
+  same treatment at the struct-body level).
+
+- **Global function-pointer initialization + SMAUG command tables at file
+  scope** — `DO_FUN *g = do_who;` and `struct cmd tab[] = { {"who", do_who},
+  ... };` at file scope now compile and run. Two-part fix:
+  - `Variable` constructor now allocates storage for `DataDefFPTR` globals
+    (size 8). Previously ALL `btFunct` types were skipped, but DataDefFPTR
+    represents a pointer SLOT, not a function definition — it needs storage.
+  - New pre-pass in `Program::compile` creates a FuncNode label for every
+    user function and lambda *before* the globals compile, so LEA at global
+    init time resolves correctly. Factored `TokenFunc::prepareFuncNode` out
+    of `TokenFunc::compile` to do this idempotently. A new `pending_funcs`
+    vector on `Program` lists user functions in source order; parser pushes
+    to it alongside the existing `ast.push()`.
+  - Excluded `DataDefFPTR` variables from `_compiler_finalize`'s x86code-
+    backfill loop so its 8-byte slot isn't mistakenly cast to `Method *`.
+  `tests/testfnptrglobal.mad` covers the end-to-end pattern: plain global
+  fn-ptr + dispatch loop against a file-scope command table + direct
+  indexed invocation.
+
+- **`struct sockaddr_in` + `struct sockaddr` + `struct in_addr` interop** —
+  glibc x86-64 layouts for socket programming, embedded in
+  `<netinet/in.h>` (sockaddr_in 16 bytes, in_addr 4 bytes) and
+  `<sys/socket.h>` (sockaddr 16-byte generic base used for the
+  `bind()`/`connect()` cast trick). Plus `sa_family_t`, `in_port_t`,
+  `in_addr_t`, `socklen_t` type aliases. All socket functions (socket,
+  bind, connect, listen, accept, htons, ntohl, etc.) resolve via dlsym.
+  `tests/testsockaddr.mad` binds a TCP loopback socket end-to-end.
+
+- **`struct dirent` interop** — 280-byte glibc layout in `<dirent.h>`.
+  `opendir()` / `readdir()` / `closedir()` via dlsym fallback.
+  `tests/testdirent.mad` iterates `tests/` and classifies entries.
+
+- **Fixed-size array members in struct bodies** — `char buf[N];`,
+  `char sa_data[14];`, `int m[N][M];` inside a struct definition now
+  parse. The struct-body loop peeks for `[dim]` after the identifier,
+  multiplies dimensions, and passes the product as `count` to
+  `DataDefSTRUCT::addMember`. The member reserves `count * sizeof(base)`
+  bytes inline; `&obj.member` yields a pointer to the buffer start.
+  Needed for `struct dirent::d_name[256]` and broadly for SMAUG's
+  many fixed char buffers.
+
+- **Unary `&` / `*` immediately following a cast** — `(struct sockaddr *)
+  &addr`, `(int *)*ptr` etc. now parse. Previously the cast's closing
+  `)` leaked through `isUnaryPosition` as a value-returning token, so
+  the next `&` / `*` mis-parsed as binary AND / multiplication and
+  threw "Missing operand". The cast block now nulls `_prv_token`
+  between consuming its `)` and calling the nested `parseExpression`,
+  so unary operators at the head of the cast body see a unary context.
+
+- **`struct stat` + `struct timespec` interop** — `<sys/stat.h>` now embeds
+  the full glibc x86-64 layout (144 bytes) of `struct stat` and the
+  supporting `struct timespec` (16 bytes). Includes:
+  - All type aliases: `mode_t`, `uid_t`, `gid_t`, `dev_t`, `ino_t`,
+    `nlink_t`, `off_t`, `blksize_t`, `blkcnt_t`.
+  - File-type predicate macros: `S_ISREG`, `S_ISDIR`, `S_ISLNK`,
+    `S_ISBLK`, `S_ISCHR`, `S_ISFIFO`, `S_ISSOCK`.
+  - Legacy field aliases via macro: `st_atime` → `st_atim.tv_sec` etc.,
+    matching glibc.
+  `stat()` / `fstat()` / `lstat()` / `chmod()` / `mkdir()` / `mkfifo()`
+  resolve via the existing dlsym fallback. `tests/teststat.mad` drives
+  real `stat()` on a regular file, a directory, a missing path, and
+  checks `st_mtime > 0`.
+
+- **Reassigning a struct's function-pointer member** — `c.fn = other_fn;`
+  after init. `TokenVar::compile` for a function identifier assumed any
+  `regdp.first` destination was a Gp register — true for variable
+  assignments, but wrong for struct-member LHS where the destination is a
+  Mem operand. Now LEAs the function address into a tmp Gp and stores to
+  the caller's Mem when `regdp.first->isMem()`. `tests/testfnptrreassign.mad`
+  covers member reassignment and fn-ptr-variable reassignment paths.
+
+### Fixed
+
+- **Assignment as an expression in enclosing context** — `while ((entry =
+  readdir(d)) != NULL)`, `if ((n = get()) > 0)`, and `y = (x = 42)` now
+  evaluate the inner assignment and propagate the assigned value to the
+  enclosing expression (C `operator=` semantics). `TokenAssign::compile`'s
+  numeric path previously wrote the RHS into the LHS storage, then
+  restored the caller's original `regdp.first` and returned it — but
+  without ever copying the assigned value there, so the enclosing
+  comparison / assignment saw an uninitialised Gp. Now, when the
+  caller-provided destination is distinct from the LHS's own `_operand`,
+  mirror `_operand` into it via `safemov` before returning. Unlocks
+  the standard readdir / accept / recv assign-in-condition SMAUG idioms.
+  `tests/testassigninexpr.mad` covers while-condition, if-condition,
+  chained `y = (x = ...)`, and paired `if ((p = ...) == (q = ...))`.
+
+  Known limitation: `int y = (x = 42);` at declaration-init time still
+  gives `y == 0`. The parser only wires the inner `TokenAssign(x, 42)`
+  as the declaration's initializer and drops the outer y-assign wrapper.
+  Workaround: use `int y = 0; y = (x = 42);` instead.
+
+- **Function-to-pointer decay for value contexts** — `fptr = func_name;`,
+  `struct X x = { "name", func_name };`, `call(a, func_name, b);`, `cond ?
+  f1 : f2` — anywhere a bare function identifier appears as a value — now
+  pushes the function's address instead of mis-compiling as a no-arg call.
+  Decay triggers when the function identifier isn't followed by `(` and
+  either (a) top of opStack is an assignment op (`=`, `+=`, `-=`, `*=`,
+  `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`, `>>=`) or (b) the follower token
+  is a value-end (`,`, `}`, `)`, `]`, `:`). `cout << endl;` keeps the
+  pre-existing behavior because `endl;` has neither, so BSL's special
+  handling of ostream-consuming no-arg functions still applies.
+
+- **`char*` coercion in function-pointer indirect calls** —
+  `TokenCallFunc::compile`'s fptr path (the `is_function() && is_numeric()`
+  branch) now runs the same `dtSTRING -> dtCHARptr` coercion via
+  `string_cstr` that the direct-call path uses. Previously, passing a
+  string literal to a typedef-declared `void (*)(char *)` function pointer
+  would pass the `std::string*` pointer verbatim, so the callee received
+  the string object header instead of the null-terminated bytes.
+
+## [v0.9.0] — 2026-04-17 — SMAUG Phase F continues (session 1)
+
+MadSMAUG's `hashstr.mad` now compiles AND runs correctly end-to-end
+(`bin/madc MadSMAUG/src/SMAUG.mad` → expected link-count hash stats with
+no runtime errors). Every language gap exposed while running the file
+was fixed in madc proper. 81 integration + 25 unit tests pass.
+
+### Added
+
+- **Inc/dec on struct members** (e8c3f0b) — `++ptr->links`, `ptr->field--`
+  etc. via `TokenInc` / `TokenDec` now support `ttMember` (via `->` and
+  `.`) and `*deref` targets, sharing the load-op-store pattern with the
+  compound-assignment operators through `resolveCompoundLHS`. Previously
+  threw "Increment on a non-variable rval" on anything other than a
+  plain variable.
+
+- **For-loop compound-comma increment with postfix inc** (e8c3f0b) — the
+  classic SMAUG `for (ptr = head, c = 0; ptr; ptr = ptr->next, c++)`
+  pattern now compiles and runs; the postfix-inc-in-incrementer path
+  was the same underlying gap as the member-inc one.
+
+- **Post-declaration `char *p; p = "literal";`** (acfc8b1) — and `ptr->
+  name = "alice";` — TokenAssign detects char* ← dtSTRING and routes
+  through `string_cstr` to pull the literal's data pointer. Before, the
+  RHS's `std::string` operand was written verbatim into p, so reads
+  dereferenced the string object header and printed garbage.
+
+- **Unsigned comparison operators** (e8c3f0b) — `TokenLT` / `TokenLE` /
+  `TokenGT` / `TokenGE` pick `setb` / `setbe` / `seta` / `setae` when
+  either operand is unsigned, vs the signed `setl` / `setle` / `setg` /
+  `setge` previously used always. Without this, `if (ptr->links <
+  65535) ++ptr->links;` with `unsigned short int` jumped over the
+  increment because 65535 sign-interprets as -1. New `safesetb` /
+  `safesetbe` / `safeseta` / `safesetae` helpers in `typesafe.cpp`.
+
+### Fixed
+
+- **Global pointer variable read/write** (e8c3f0b) — `DataDefPTR` now
+  overrides `movrval2mptr` / `movrval2rptr` / `movint2rptr` /
+  `movmptr2rval` with explicit qword semantics. The base-class switch
+  on `DataType` fell through to the unhandled default for `rtPtr()`
+  values (>= 10000), so `global_ptr = x;` silently dropped the store.
+  Every global pointer variable read would return the slot's stale
+  initial memory rather than the stored value.
+
+- **Subscript → member assign** (e8c3f0b) — `p->next = arr[i];` now
+  writes. `TokenSubscript::compile` respects a caller-supplied `Mem`
+  destination (the struct member's Mem) by loading into a temp and
+  storing; previously it overwrote `regdp.first` with its own fresh Gp
+  and abandoned the member's Mem, making the assignment a no-op.
+
+- **Sub-qword sign/zero-extension in `resolveCompoundLHS`** (e8c3f0b) —
+  loading a word-sized member into a Gp64 for arithmetic now uses
+  `movzx` (unsigned) / `movsx` (signed) / `movsxd` / `mov r32,m32`.
+  Plain `cc.mov(gpq, word_ptr)` is not a valid x86 encoding — asmjit
+  silently emitted a truncated op or dropped it, leaving the upper bits
+  dirty for subsequent arithmetic.
+
+- **`safemov(Mem, Gp)` size mismatch** (e8c3f0b) — now picks the `r8` /
+  `r16` / `r32` / `r64` view based on the Mem's size, not the Gp's.
+  Without this, writing a Gp64 (the widened member_lhs register) to a
+  word-sized member emitted `mov word ptr, r64` which asmjit rejects,
+  silently dropping the store.
+
+- **Parser: comma peek-stop in conditional mode** (e8c3f0b) — a nested
+  `parseExpression` called from the cast-body handler used to consume
+  the `,` that terminates the outer function-call argument. So
+  `strcpy((char *)h + 8, "x")` parsed as a one-arg call with `"x"`
+  silently merged into the first arg's expression tree. Fixed by adding
+  comma to the peek-stop set alongside `;`.
+
+- **`TokenIF::compile` regdp reset** (e8c3f0b) — now zeros regdp before
+  the condition, then branch, and else branch, matching what
+  `TokenFOR` / `TokenWHILE` / `TokenDO` already do (per
+  `.claude/rules/regdp-reset.md`).
+
+### Tests
+
+- `testincmember.mad` — prefix/postfix inc/dec on struct members
+- `testunsignedcmp.mad` — unsigned comparisons inside if
+- `testglobalptr.mad` — global pointer var read/assign
+- `testsubtomember.mad` — `p->next = arr[i]` for NULL and non-NULL
+- `testcastargcomma.mad` — cast+arith as call arg with commas
+- `testcommaincrement.mad` — SMAUG's `for (...; ptr = ptr->next, c++)`
+- `testpostdeclstr.mad` — `char *p; p = "literal";` and via struct member
+
+## [v0.8.0] — 2026-04-17 — SMAUG Phase E Complete + Phase F Start
+
+SMAUG Phase E finishes (C arrays, brace initializers, struct interop with `struct tm`/`timeval`/`fd_set`, end-to-end `select()`) and Phase F begins with the first `.c → .mad` port (`MadSMAUG/src/hashstr.mad`). Every language gap surfaced during the port has been fixed in madc proper: self-referencing structs, three-word compound types, multi-var decls, global fixed arrays, `stdin`/`stdout`/`stderr`, for-loop comma expressions, forward decl + definition, `__FILE__`/`__LINE__`, raw-pointer `ptr[i]` subscript, and more.
+
+### Added — SMAUG 1.8 Source Port Begins (2026-04-17)
+
+First .c → .mad port: `MadSMAUG/src/hashstr.mad` (copied from SMAUG 1.8's
+`hashstr.c`). The bootstrap convention is an app-named top-level file
+(`SMAUG.mad`) that `#include`s the ported sources in dependency order with
+`main()` last; `bin/madc SMAUG.mad` compiles the whole tree.
+
+Each language gap surfaced during the port was fixed in madc proper:
+
+- **Self-referencing structs** (54087c2) — `struct X { struct X *next; ... };`
+  works. `TokenSTRUCT::parse` pre-registers the tag in `struct_map` with an
+  incomplete placeholder before entering the body-parsing loop, so field types
+  like `struct X *` resolve the in-progress struct.
+
+- **Three-word compound types** (54087c2) — `unsigned short int`, `signed long
+  int`, `long long int`, `unsigned long long`, `signed long long` all
+  produce the correct DataDef. Lexer reads up to two lookahead words and
+  picks the longest match.
+
+- **`void` as sole parameter** (54087c2) — `int f(void)` parses as zero-arg.
+
+- **Global fixed-size arrays** (35c6bf0) — `struct X *arr[N]` at file scope
+  now works. parseDeclaration allocates a `calloc`'d buffer when the decl is
+  global/static; voperand loads the absolute address into the base-pointer Gp
+  instead of stack-allocating. The cache-hit path skips `movreg` for fixed
+  arrays (the pointer is a compile-time constant).
+
+- **Multi-variable declarations** (35c6bf0) — `int a, b, c;` / `char *p, *q;` /
+  `int x = 1, y = 2;`. After the first decl the parser pushes back a clone of
+  the base type token so parseCompound naturally iterates and parseDeclaration
+  recurses. Base type is preserved alongside the decorated decl_type so each
+  var in `char *p, *q` gets its own independent pointer depth.
+
+- **stdin / stdout / stderr** (35c6bf0) — lazy-registered in `<stdio.h>` as
+  int64 globals whose backing slot holds `*dlsym("stderr")` etc. Reading
+  `stderr` in madc loads libc's current FILE\* value.
+
+- **`register` before struct / typedef** (35c6bf0) — `register struct X *p;`
+  now compiles. Previously only primitive types after register were allowed.
+
+- **Unary minus after a keyword** (35c6bf0) — `return -1;`, `if (-x > 0)` etc.
+  `isPostfixPosition` / `isUnaryPosition` now treat keywords as unary-opening
+  contexts instead of value-producing ones; the Neg→Sub conversion no longer
+  misfires.
+
+- **TokenRETURN multi-return detection tightened** (35c6bf0) — previously any
+  non-`;` / non-symbol peek after parseExpression triggered the multi-return
+  path, so `return X;` followed by `if (...)` / `<ident>()` / etc. misfired
+  as multi. Keywords and type names are now also excluded.
+
+- **For-loop comma expressions** (be6c359) — `for (a=0, b=1; cond; i++, j--)`
+  parses and runs. `TokenFOR` gains `init_extras` / `incr_extras` vectors;
+  the parser uses conditional `parseExpression` for init/cond/incr so `;`
+  stays in the stream to gate the extras loops. Compile runs all extras in
+  order after the main init and before the jmp-back-to-top.
+
+- **Forward decl + definition param mismatch** (be6c359) — the definition
+  pass was re-pushing every DataDef onto `func->parameters` (because
+  `FuncDef::findParameter` compares against the DataDef name, not the param
+  name), causing the ids[]-vs-parameters[] binding loop to overshoot. Track
+  `func_already_declared` and skip the re-push on the 2nd pass.
+
+- **Compile-time error handler robustness** (be6c359) — the
+  `catch(const char*)` block crashed on NULL/dangling pointers in the
+  exception value (ostream `<<` of NULL), masking the real compile error.
+  Guarded.
+
+### Added — Phase E Finish (2026-04-17)
+
+- **`__FILE__` / `__LINE__`** (9e2d5ad) — lexer injects a quoted filename
+  and current `source.line()` as a decimal integer. Works correctly inside
+  `#define` bodies — each invocation captures the call site.
+
+- **`cc.newXxx(name)` format-safety sweep** (c50acbe) — 32 direct call
+  sites in compiler.cpp that passed user- or literal-derived names
+  verbatim to asmjit's variadic register-naming API are now routed through
+  a `"%s"` format. Variable names containing `%` (our `__literal__tab[%ld]
+  = (%s, %ld)` style) previously crashed on the unmatched format spec.
+  `DataDef::newreg` was fixed in an earlier commit; this extends the same
+  pattern to the rest.
+
+- **Struct interop for libc types + fd_set / select()** (2f08efd) —
+  `struct tm` (56 bytes), `struct timeval` (16 bytes), `struct fd_set`
+  (128 bytes) with glibc-x86-64-matching layouts. `FD_ZERO` / `FD_SET` /
+  `FD_CLR` / `FD_ISSET` forward to `__madc_fd_*` helpers bundled into the
+  madc binary (reachable via dlsym thanks to -rdynamic). `select()` works
+  end-to-end with a real pipe.
+  - Fixed latent `safemov(Gp, Mem)` bug: it used `cc.mov(r1, r2)` for all
+    sizes, and asmjit resolves that by reading a full qword even when the
+    Mem is 4/2/1 bytes. Reading an int32 struct member (e.g. `tm->
+    tm_hour`) pulled 8 bytes starting at the field's offset, returning the
+    adjacent field packed into the upper half. Now picks `movsxd` / `mov
+    r32,mem` (implicit zero-extend) / `movsx` / `movzx` based on sizes.
+  - Extended unary `&` to accept `&(name)` in addition to `&name`, so the
+    macro-expanded `__madc_fd_set(fd, &(set))` parses.
+
+- **Raw-pointer subscript `ptr[i]`** (189f4ae) — for `int *`, `char *`,
+  `int32_t *`, etc. Computes `[ptr + i*sizeof(base)]` with SIB scaling by
+  the pointed-to type's size. Unblocks C interop like `pipe(pfd); int rfd
+  = pfd[0];` / `FD_SET(rfd, rfds);` / `select(rfd+1, &rfds, ...)`. Also
+  fixed `safemov(Operand, Operand)` Gp←Mem path to forward to the size-
+  aware typed overload instead of calling `cc.mov` directly.
+  - Added `scripts/psed.sh` — python-backed literal-text patcher for
+    multi-line edits where tab-sensitive Edit calls are brittle.
+
+- **Multi-file project convention** (ac0cf4f) — README documents the
+  app-named bootstrap file (e.g. `smaug.mad`) that `#include`s its sources
+  in dependency order with `main()` last. No new tooling — the existing
+  `#include` already resolves relative paths and handles nested includes.
+
+### Added — C Arrays and Structs (SMAUG Phase E)
+
+- **Chained `->` and `.` member access** (b3a9d9a) — `a->b->c`, `a->b.c`, `a.b.c` all
+  compile. TokenMember's parent_expr path resolves intermediate pointers and struct
+  addresses at codegen time; the dot handler now accepts TokenMember LHS in addition
+  to TokenVar.
+
+- **C fixed-size arrays — 1D** (fd98935) — `int arr[N]` allocates a stack slot and
+  stores the LEA'd base pointer as the variable's operand. Subscript emits
+  `[base + idx*elem_size]` via SIB. `TokenSubscript::compile` honors `regdp.first`
+  when the caller supplies a destination register, so `int x = arr[i]` works as RHS.
+  Supports int, int32_t, int16_t, char element types, plus char-array decay to
+  `char *` for `printf "%s"`.
+
+- **Multi-dimensional arrays** (26dca0e) — `int m[N][M]`, `int cube[N][M][K]`.
+  `TokenSubscript` gains an `extra_indices` vector; chained `[i][j][k]` folds into
+  a single linear offset `((i0*d1)+i1)*d2 + i2 + ...`.
+
+- **Brace initializer lists for arrays** (a1774d0) — `int a[N] = { v0, v1, ... };`
+  with explicit size, inferred size (`int a[] = {1,2,3}`), partial (rest zero-filled),
+  and arbitrary expressions as values. Includes a parseExpression fix: the outer
+  loop was consuming a trailing `}` past the final element; now treats `}` like `]`
+  and breaks without consuming.
+
+- **String-literal char-array init** (1bae4f4) — `char msg[] = "hello"` expands to
+  a per-byte initializer list plus a null terminator (length = strlen + 1 for the
+  inferred form; zero-padded for oversized explicit `char buf[20] = "hi"`).
+
+- **`char *msg = "literal"`** (13bbc35) — routed through the same path as
+  `char msg[] = "literal"` so the two forms produce identical internal storage
+  (`ddCHAR` + `vfFIXEDARRAY` + inferred `dims`).
+
+- **Struct initializer lists** (8df2dca) — `struct Foo x = { ... };` with scalars,
+  pointers, char* (string_cstr coerces `std::string` literal → `const char *`), and
+  `std::string` members (`string_assign` after the auto-construct in voperand).
+  Partial inits zero-fill remaining numeric/pointer members.
+
+- **Array-of-structs initializer** (e62d2e7) — `struct Entry tab[] = { {"a", 1},
+  {"b", 2}, ... };`. New `TokenStructLit` AST node carries nested brace lists as
+  array elements; `emit_struct_init` factored into a shared helper invoked at
+  `base + i*struct_size`. `TokenSubscript` now returns a Gp pointer (LEA) when
+  indexing into a struct-element array — no load — so `tab[i].name` reaches the
+  member via `TokenMember`'s Gp-base dot-chain path (parser also accepts
+  `TokenSubscript` as the LHS of `.`).
+
+### Added — Ergonomics
+
+- **Crash handler with backtrace** (308b622) — `SIGSEGV`, `SIGABRT`, `SIGFPE`,
+  `SIGBUS`, `SIGILL` caught at startup. Writes signal name, fault address (for
+  SEGV/BUS), and a `backtrace_symbols_fd` trace to stderr, then restores the
+  default handler and re-raises so the shell sees the real exit status and core
+  dumps still drop.
+
+- **`str.length()` / `str.size()` methods** (f04b7b6) — `std::string` exposes its
+  length via instance methods that wrap `madc_string_length`.
+
+### Changed
+
+- **Removed builtin `strlen`** (f04b7b6) — the pre-registered madc wrapper
+  expected a `std::string *` argument and misfired on char arrays/pointers.
+  `strlen(char *)` now resolves via dlsym fallback to libc, which is the natural
+  type fit. A `madc::`-namespaced type-aware alternative could be added later if
+  useful.
+
+### Fixed
+
+- **`DataDef::newreg` format-string safety** (e62d2e7) — asmjit's
+  `newGpq/newXmm/newIntPtr` are variadic printf-style: they interpret the first
+  `const char *` argument as a format. Variable names containing `%` (e.g. our
+  `__literal__tab[%ld] = (%s, %ld)` string-literal variable names) crashed on the
+  unmatched format spec, dereferencing garbage as a pointer. Fixed by passing
+  `"%s"` as the format and the name as the argument. (Other direct callers of
+  `cc.newIntPtr(name)` likely share the same latent bug; sweep is on TODO.)
+
+- **`emit_struct_init` aliasing corruption** (e62d2e7) — the `std::string`→
+  `const char *` coercion was reassigning through the `Operand &` returned by
+  `inits[i]->compile(...)`. For global literal variables that reference aliases
+  the cached entry in `operand_map`; subsequent uses of the same literal saw the
+  already-coerced `char *` and ran string_cstr over it again, interpreting the
+  char pointer as a `std::string *` and reading SSO bytes as a new "pointer"
+  (e.g. `"alice"` becoming `0x6563696c61` → SEGV in printf). Fixed by using a
+  local `Operand` for the effective value.
+
+## [v0.7.0] — 2026-04-16 — SMAUG Phase D: va_list + For-Loop Fix
+
+### Added — SMAUG Phase D: Variadic Functions
+
+- **`va_list` / `<stdarg.h>` support** — Variadic functions with `...` syntax. Hidden
+  `__va_args` parameter carries a packed `int64_t[]` buffer from call site to callee.
+  `va_start` macro sets the pointer, `va_arg` is a compiler intrinsic that reads and
+  advances, `va_end` is a no-op macro. Design avoids the System V `va_list` struct
+  (impossible in asmjit Compiler mode due to virtual registers).
+
+- **`vsprintf`/`vsnprintf`/`vfprintf` helpers** — Format-string-aware C functions
+  (`__madc_vsprintf` etc.) compiled into the binary. Parse `%d`/`%s`/`%f`/etc. from
+  the format string and call `sprintf` per-specifier with args from the packed buffer.
+  Redirected via `#define vsprintf __madc_vsprintf` in embedded `<stdarg.h>`.
+
+- **`-rdynamic` linker flag** — Exports binary symbols for `dlsym(RTLD_DEFAULT)`
+  visibility, enabling JIT code to call built-in C helpers like `__madc_vsprintf`.
+
+- **39 embedded headers** — Added `<stdarg.h>` (was 38).
+
+### Fixed
+
+- **For-loop increment parsing bug** — `for ( i = 0; i < N; i++ )` now works. All
+  increment forms (`i++`, `i--`, `++i`, `--i`, `--c`) parse correctly. Root cause: the
+  conditional peek-stop in `parseExpression` left the `;` separator in the token stream,
+  so `TokenFOR::parse()` was passing `;` to `parseStatement` instead of the increment
+  expression. Fixed by consuming the `;` separator explicitly before calling `parseStatement`.
+
+## [v0.6.0] — 2026-04-16 — SMAUG Phase A/B/C: C Pointer System + Macros
+
+### Added — C Pointer and Type System (Phase A — all 5 items complete)
+
+- **`char *` pointer declarations** — `DataDefPTR` class tracks pointed-to type. Pointer
+  handling in `parseDeclaration`, struct/class members, function parameters, and `sizeof()`.
+  Supports `char *`, `int *`, `void *`, `struct *`, `char **` (double pointers).
+
+- **`->` struct pointer member access** — `ptr->member` parsed in `parseExpression`,
+  resolved via `DataDefPTR::base_type`. Reuses `TokenMember` Gp codegen path
+  (`[gp + offset]`). Chained `->` supported (with temp variable for intermediate).
+
+- **`(TYPE *)` cast expressions** — Detects casts by checking if `(` is followed by a
+  type name. `TokenCast::compile()` passes through the value with target type annotation.
+  Works with `(CHAR_DATA *)calloc(...)`, `(struct tag *)ptr`, `(int *)raw`.
+
+- **`&` address-of operator** — `TokenAddrOf` emits LEA for stack variables. Unary
+  detection via `isUnaryPosition()` helper. Works for struct variables passed to functions.
+
+- **Forward typedef struct declarations** — `typedef struct tag_name ALIAS;` before the
+  struct body exists. Creates placeholder `DataDefSTRUCT` (size 0), filled in-place when
+  the full definition is encountered. The typedef alias automatically sees the completed type.
+
+### Added — Macros (Phase B — all 3 items complete)
+
+- **Function-like macros** — `#define NAME(params) body` with parameter substitution.
+  Whole-word matching prevents substring replacement. Handles nested parens, string literals
+  in arguments, and zero-parameter macros.
+
+- **Multi-line `#define` with `\` continuation** — Both function-like and object-like macros
+  support backslash line continuation.
+
+- **`do { } while(0)` macro bodies** — Fixed do-while crash when multiple loops in sequence
+  (regdp reset + TokenInt with NULL regdp.first). SMAUG's CREATE/DISPOSE macros now work.
+
+### Added — Data Structures and Types (Phase C partial)
+
+- **`unsigned`/`signed`/`long`/`short` compound type keywords** — Lexer handles compound
+  specifiers: `unsigned char` → dtUINT8, `unsigned int` → dtUINT32, `long int` → dtINT64,
+  `short int` → dtINT16, bare `unsigned` → dtUINT32, etc.
+
+- **`enum` keyword** — `enum { NAME, NAME = val, ... }` with auto-incrementing values and
+  explicit `= N` assignments. Each enumerator registered as a global constant variable.
+
+- **`typedef` for primitive types** — `typedef int sh_int;`, `typedef unsigned char bool;`,
+  `typedef char *LPSTR;`. Alias names can redefine existing type names.
+
+- **`static` keyword** — Static local variables persist across function calls. Heap-allocated
+  with `vfSTATIC` flag. Runtime initialization skipped (pre-initialized via allocation).
+
+- **`const` keyword** — Consumed and passed through to type declaration.
+
+- **`extern` keyword** — Consumed and skipped to semicolon.
+
+- **`*ptr` dereference operator** — Read and write through pointer. `TokenDeref` returns
+  Mem operand `[ptr_gp]` for numeric types. Works with heap pointers (calloc/malloc).
+
+### Added — Infrastructure
+
+- **`struct Type` in function parameters** — `parseFunction()` handles `struct Name` and
+  typedef'd identifiers as parameter types (was only accepting `ttDataType` tokens).
+
+- **Typedef'd types in struct member definitions** — `ROOM_DATA *in_room;` inside a struct
+  body now works (identifier resolved against `datatype_map`).
+
+- **`isUnaryPosition()` / `isPostfixPosition()` helpers** — Replaces duplicated prevToken
+  checks for unary `&`, `*`, prefix/postfix `++`/`--`, and Neg→Sub conversion.
+
+- **`resolveCompoundLHS()` helper** — All 10 compound assignment operators (`+=`, `|=`, etc.)
+  now work on struct members via `->`, not just plain variables. Load-op-store pattern for
+  Mem operands.
+
+- **`make fulltest` target** — Runs unit tests + all integration tests in one command.
+
+### Fixed
+
+- **Ternary inside parentheses** — `int m = (a > b ? a : b)` now works. Was setting
+  `done=true` unconditionally after ternary, preventing closing `)` from being consumed.
+  Fix: only set `done` when `brackets == 0`.
+
+- **Variadic argument promotion** — Sub-64-bit integer types (char, short, int32) now
+  sign/zero-extended to 64-bit before passing to variadic functions (printf, etc.).
+
+- **C string function redirect** — When a registered built-in (e.g. `strlen`) expects
+  `std::string` but receives a `char *` pointer argument, redirects the call to the C
+  library version via dlsym.
+
+- **dlsym return to Mem operand** — Function returns assigned directly to `->` members
+  no longer crash. Uses temp Gp register for `setRet` then writes to Mem.
+
+- **Mem-to-Gp for variadic args** — Struct member access via `->` in variadic function
+  arguments (printf) now loads Mem into temp Gp before passing.
+
+- **Do-while regdp reset** — `TokenDO` and `TokenWHILE` compile() now reset regdp before
+  body and condition sub-compilations. Also fixed `TokenInt::compile()` with NULL regdp.first.
+
+---
+
+## [Unreleased] — SMAUG Goal + Full POSIX Header Coverage (2026-04-16)
+
+### Added — 31 Additional Embedded POSIX/libc Headers (c971eb1, ea06f5a)
+
+38 embedded headers total (up from 3). All standard POSIX/libc headers madc programs
+are likely to use are now covered. Each header provides constants via `#define` and
+type aliases via `#define`; functions are available via the existing dlsym fallback.
+
+**Batch 1** (c971eb1) — `<stdlib.h>`, `<string.h>`, `<limits.h>`, `<errno.h>`, `<fcntl.h>`,
+`<signal.h>`, `<unistd.h>`, `<time.h>`, `<dirent.h>`, `<sys/wait.h>`, `<sys/stat.h>`
+
+**Batch 2** (ea06f5a) — `<sys/socket.h>`, `<netinet/in.h>`, `<arpa/inet.h>`, `<netdb.h>`,
+`<sys/un.h>`, `<poll.h>`, `<sys/select.h>`, `<sys/time.h>`, `<sys/mman.h>`, `<sys/ipc.h>`,
+`<sys/shm.h>`, `<sys/resource.h>`, `<sys/types.h>`, `<pthread.h>`, `<termios.h>`,
+`<syslog.h>`, `<dlfcn.h>`, `<ctype.h>`, `<stdint.h>`, `<locale.h>`, `<glob.h>`,
+`<fnmatch.h>`, `<pwd.h>`, `<grp.h>`
+
+- `gen_embedded_headers.sh` updated to use `find` + relative paths for subdirectory support
+  (`sys/wait.h`, `sys/stat.h`, `netinet/in.h`, etc. all key correctly)
+- Type aliases (`pid_t`, `time_t`, `size_t`, etc.) implemented via `#define` — substituted
+  through the existing lexer pushback mechanism; no lazy registration needed
+
+### Added — SMAUG 1.8 Compatibility Goal (bd9844c)
+
+- **Long-term goal established:** run SMAUG 1.8 MUD (~158k LOC, C89) in madc without gcc
+- **`smaug.tgz`** checked into repo root (official 1.8 tarball)
+- **`docs/SMAUG_requirements.md`** — full gap analysis: system headers checklist (37/38
+  embedded; only `<stdarg.h>` missing), language feature gap table with BLOCKER/HIGH/MEDIUM/LOW
+  severity, 5-phase implementation roadmap (A: pointer/type system, B: macros, C: data
+  structures, D: I/O infrastructure, E: full SMAUG boot)
+- Top blockers identified: function-like macros, `char *` declarations, `->` operator,
+  `(TYPE *)` casts, `&` address-of — all Phase A/B work
+
+### Fixed — Integer Literal Storage (c971eb1)
+
+- **`int` overflow in lexer decimal parser** — accumulator variable was `int`; values ≥ 2^31
+  (e.g. `2147483648` from `#define INT_MIN -2147483648`) silently wrapped to negative.
+  Fixed: widened accumulator to `int64_t`.
+
+- **`_token` field overflow in `TokenBase`** — `int _token` truncated stored literal values
+  for constants ≥ 2^31. Fixed: widened to `int64_t` throughout `TokenBase`, `TokenInt`,
+  `TokenVar`; all `get()`/`set()` signatures updated to `int64_t`.
+
+- **`safeneg` sign-extension truncation** — `cc.neg()` was followed by
+  `cc.movsx(op, op.r8())`, which sign-extended from `al` (8 bits) back to 64 bits.
+  This corrupted any negated value with absolute magnitude ≥ 128 (e.g. `-INT_MIN` → 1,
+  `-200` → 56). Fixed: removed the `movsx` entirely — `cc.neg()` on the full-width GP
+  register is correct and sufficient.
+
+---
+
+## [Unreleased] — Phase 4 Prep (2026-04-15 → 2026-04-16)
+
+### Added — Standard C Infrastructure
+
+- **Embedded header system** — `#include <name>` checks headers baked into the binary (via
+  `scripts/gen_embedded_headers.sh` at build time) before filesystem. `include/madc/` contains
+  the source headers. Three implemented: `<iostream>`, `<math.h>`, `<stdio.h>`.
+
+- **`#include <iostream>`** — `cout`, `cin`, `cerr`, `endl` now require this include (matching
+  C++ convention). Uses lazy registration — symbols created on first use, not at parse init.
+
+- **`#include <math.h>`** — Auto-loads libm via `#load "libm.so.6"`. Defines `M_PI`, `M_E`,
+  `M_SQRT2`, `M_SQRT1_2`, `INFINITY`, `HUGE_VAL`. Math functions (`sqrt`, `sin`, `cos`, `pow`,
+  `floor`, `ceil`, `fabs`, `log`) available via dlsym fallback.
+
+- **`#include <stdio.h>`** — Defines `EOF`, `SEEK_SET`/`CUR`/`END`, `BUFSIZ`, `NULL`. `printf`,
+  `sprintf`, `snprintf` available via dlsym fallback.
+
+- **dlsym fallback** — Unresolved function calls followed by `(` try `dlsym(RTLD_DEFAULT, name)`
+  before throwing "undeclared identifier". Works for all libc functions: `getpid()`, `sleep()`,
+  `abs()`, `strlen()`, etc. No `#include` or `#load` needed for basic libc.
+
+- **Variadic dlsym call path** — Dedicated compile path for dlsym-resolved functions. Builds
+  `FuncSignature` from actual argument types (int, double, string→cstr). Infers double return
+  type from destination register or argument types. Supports `sqrt(4.0)`, `pow(2.0, 10.0)`.
+
+- **C preprocessor directives** — `#define NAME value` (constant substitution via pushback
+  re-tokenization), `#undef NAME`, `#ifdef`/`#ifndef`/`#if`/`#else`/`#elif`/`#endif`,
+  `#if defined(X)`, `#if !defined(X)`, `#if 0`/`#if 1`. Nested conditionals handled correctly.
+
+- **`#pragma pack(push, N)` / `#pragma pack(pop)`** — Controls struct field alignment. Maintains
+  a stack of pack values in the lexer.
+
+- **C ABI struct alignment** — Structs now use natural x86-64 alignment by default: fields
+  placed at `align_up(offset, min(field_size, 8))`. Total size rounded to max member alignment.
+  `DataDefSTRUCT.pack`: 0=natural (default), 1=packed, N=max alignment N.
+
+- **`struct __attribute__((packed))`** — Packed structs with no padding between fields.
+  Attribute parsed before or after the struct tag name.
+
+- **`sizeof()` operator** — Resolves to integer constant at parse time. Supports `sizeof(int)`,
+  `sizeof(struct name)`, `sizeof(int32_t)`. Works in expressions: `sizeof(int) * 10`.
+
+- **Compound assignment operators** — `+=`, `-=`, `*=`, `/=`, `%=`, `&=`, `|=`, `^=`, `<<=`,
+  `>>=`. All 10 operators with int and double support.
+
+- **Postfix increment/decrement** — `x++` and `x--` with correct old-value-return semantics.
+  Parser uses `prevToken()` for prefix/postfix disambiguation.
+
+- **Hex integer literals** — `0xFF`, `0xDEAD`, `0X1A`, mixed-case digits.
+
+- **Command line arguments** — `int main(int argc, char **argv)`. Script args passed from
+  the command line. `get_argv(argv, i)` built-in returns `const char*` for the i-th argument.
+
+- **Lazy symbol registration** — `lazy_map<name, {header, kind}>` defers `addGlobal`/
+  `addFunction` until the parser first encounters the symbol. Supports variables, functions,
+  types, and structs. Extensible for future `#include` headers.
+
+- **`RTLD_GLOBAL` for `#load`** — Loaded library symbols are globally visible via
+  `dlsym(RTLD_DEFAULT)`. No namespace prefix needed after `#include <math.h>`.
+
+### Fixed — Phase 4 Prep
+
+- **For-loop `regdp` clobber** — `TokenFOR::compile()` now resets `regdp` before condition,
+  statement, and increment sub-compilations. Prevents comparison results from overwriting
+  loop counter variables.
+
+- **`cout << func()` crash** — BSL was injecting the ostream as a hidden first parameter to
+  ALL function calls on the right side of `<<`. Fixed: only inject for ostream-consuming
+  functions (checked via `has_ostream()` on return type).
+
+- **dlsym function name** — dlsym fallback now registers functions under their original name
+  (was `__dl_` prefixed, which broke repeated calls to the same function).
+
+- **`streamout_cstr` null safety** — Added null pointer check for `const char*` output.
+
+---
+
+## [Phase 3.5+] — 2026-04-15
+
+### Added — Post Phase 3.5
+
+- **`switch`/`case`/`default` statement** — C-style switch with fall-through semantics. Case values are literal constants. `break` exits via loopstack. Tests: `testswitch.mad`.
+
+- **`cin` / `>>` input operator** — Read from stdin. `cin >> name >> age;` for string, int, double. Chained input via BSR convergence (mirrors `<<` for cout). `DataDefISTREAM` added. Tests: `testcin.mad`.
+
+- **Class methods** — `class Counter { int count; void inc() { count = count + 1; } };` Methods receive hidden `__this` parameter (void*). Member access resolves through `[__this + offset]`. Method names mangled as `ClassName__methodName`. Tests: `testmethod.mad`.
+
+- **Regex support** — `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()` via `std::regex`. `perl::grep` and `perl::split` upgraded to use regex (fallback to substring on invalid patterns). Tests: `testregex.mad`.
+
+- **Multiple return values** — Go-style `return q, r;` and `q, r := divide(17, 5);`. Hidden `__retbuf` parameter injected at compile time. Values written to `[retbuf+i*8]`. Works with conditional returns in braced if/else. Tests: `testmultiret.mad`.
+
+- **Ternary operator** — `condition ? true_expr : false_expr`. Uses stack-slot merge to avoid asmjit register convergence issues. Colon acts as expression stop in non-bracketed context. Tests: `testternary.mad`.
+
+- **`madc::` namespace** — `madc::array` works alongside bare `array` keyword. Also hosts regex functions. Backward compatible.
+
+- **`std::` namespace scoping for containers** — `std::vector<int>`, `std::map<string, int>`, `std::set<string>`, `std::list<int>` all work alongside bare keywords. `std::cin` also available.
+
+- **Register-only foreach iterator** — Numeric element variables in range-for loops use `vfREGISTER` for tighter loops.
+
+- **`pushToken()` / deque-based token queue** — Token queue changed from `std::queue` to `std::deque` for speculative parsing support.
+
+### Fixed — Post Phase 3.5
+
+- **asmjit v1.14 deprecation warnings** — Migrated ~70 call sites:
+  - `FuncSignatureT<...>(CallConvId::kCDecl)` → `FuncSignature::build<...>()`
+  - `FuncSignatureBuilder` → `FuncSignature`
+  - `Operand::size()` → `x86RmSize()` (on asmjit operands only)
+  - `cc.setArg()` → `funcnode->setArg()`
+
+- **Mem←Mem safemov** — Added temporary register path for `safemov(Mem, Mem)` operations (needed for class method member access).
+
+- **Multi-return cleanup crash** — Skipping `cleanup()` on multi-return paths prevents double-destruct when multiple return statements exist in if/else branches.
+
+### Added — Phase 3.5 (Modern Language Features)
+
+- **Range-based for loops** — `for (type var : container) { ... }` C++ style iteration over `array` and `vector<T>`. Parser detects `:` in for-header, emits `TokenFOREACH` with index-based loop. Break/continue supported.
+
+- **Function pointers** — `auto fn = my_function; fn(args);` Store function addresses in variables and call through them. `DataDefFPTR` wraps `FuncDef` for typed indirect calls via `cc.invoke(ptr_reg, funcsig)`.
+
+- **Lambda expressions** — `[](params) { body }` and `[type](params) { body }` for typed returns. Anonymous functions hoisted to AST as top-level `TokenFunc` entries (asmjit can't nest addFunc/endFunc). Auto-named `__lambda_0`, `__lambda_1`, etc.
+
+- **`auto` keyword** — Type inference for function pointer and lambda assignments. `auto fn = greet;` or `auto add = [int](int a, int b) { return a + b; };`
+
+- **`defer` statement** — Go-style deferred execution. `defer statement;` registers code to run at scope exit in LIFO order, before destructors. Stored on `TokenCpnd::deferred` vector, compiled in reverse during `cleanup()`.
+
+- **`std::for_each()`** — Iterates a MadArray calling a function pointer per element. Works with named function pointers and inline lambdas.
+
+- **Typed STL containers** — C++ template syntax with lazy DataDef instantiation:
+  - `vector<int>`, `vector<string>` — push_back, pop_back, at, size, clear, empty + range-for
+  - `map<string, int>`, `map<string, string>` — put, get, contains, erase, size, clear
+  - `set<string>`, `set<int>` — insert, contains, erase, size, clear
+  - `list<int>`, `list<string>` — push_back, push_front, size, clear
+
+- **New source file** `src/ns_stl.cpp` — C++ helper functions for all STL container operations.
+
+- **Documentation** — `docs/language/modern/` for range-for, function pointers, lambdas, defer. `docs/rules/` for branching and feature guard rationale.
+
+- **Infrastructure** — `make debug` target, `scripts/run_tests.sh` helper, feature branch workflow with `#ifdef` guards.
 
 ### Added — Phase 2 (Core Language Features)
 

@@ -1,0 +1,5 @@
+PASS: int v = (c = -1)
+PASS: int v = (c = rhs_int)
+PASS: (c = -1) compares == EOF
+PASS: short chain extends
+PASS: unsigned char chain zero-extends

@@ -1,0 +1,41 @@
+#include <iostream>
+// Test #include <math.h> — C-style math functions and constants
+#include <math.h>
+
+int main()
+{
+    // math constants from embedded header
+    cout << M_PI << endl;       // 3.14159
+    cout << M_E << endl;        // 2.71828
+    cout << M_SQRT2 << endl;    // 1.41421
+
+    // integer libc function via dlsym fallback
+    int a;
+    a = abs(-42);
+    cout << a << endl;          // 42
+
+    // libm double functions via dlsym fallback
+    double x;
+    x = sqrt(16.0);
+    cout << x << endl;          // 4
+
+    x = floor(3.7);
+    cout << x << endl;          // 3
+
+    x = ceil(3.2);
+    cout << x << endl;          // 4
+
+    x = fabs(-5.5);
+    cout << x << endl;          // 5.5
+
+    x = pow(2.0, 10.0);
+    cout << x << endl;          // 1024
+
+    x = sin(0.0);
+    cout << x << endl;          // 0
+
+    x = cos(0.0);
+    cout << x << endl;          // 1
+
+    return 0;
+}

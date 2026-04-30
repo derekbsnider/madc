@@ -14,9 +14,18 @@ public:
     DataDef &returns;
     asmjit::FuncNode *funcnode;
     std::vector<DataDef *> parameters;
-    FuncDef(DataDef &d) : returns(d) { funcnode = NULL; }
+    // [&] capture support
+    bool has_captures;
+    struct CaptureEntry { std::string name; DataDef *type; };
+    std::vector<Variable *> potential_captures; // outer-scope vars at lambda creation time
+    std::vector<CaptureEntry> captures;         // populated during lambda body compilation
+    // multiple return values (empty = single return via `returns`)
+    std::vector<DataDef *> return_types;
+    FuncDef(DataDef &d) : returns(d), has_captures(false), is_varargs(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
+    bool is_varargs;  // function declared with ... (variadic)
+    bool is_multi_return() const { return return_types.size() > 1; }
 };
 
 class DataStruct: public DataDef
@@ -41,7 +50,9 @@ public:
     std::vector<Variable *> parameters;
     std::vector<Variable *> variables;
     void *x86code;
-    Method(Variable &v) : returns(v) { x86code = NULL; }
+    Variable *env_param; // hidden void** param for [&] lambdas (nullptr if no capture)
+    class DataDefCLASS *owner_class; // non-null when this is a class method
+    Method(Variable &v) : returns(v), x86code(NULL), env_param(NULL), owner_class(NULL) {}
     Variable *getParameter(unsigned int i) { if ( i >= parameters.size() ) return NULL; return parameters[i]; }
     Variable *findParameter(std::string &);
     Variable *findVariable(std::string &);
@@ -72,13 +83,20 @@ public:
     TokenCpnd *child;
     std::vector<Variable *> variables;
     std::vector<TokenStmt *> statements;
+    std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
     std::map<Variable *, asmjit::Operand> operand_map;
+    // Stack-slot Mem for local C fixed-size arrays. Cached so reuse on a
+    // divergent branch can re-emit the LEA into the (also-cached) Gp,
+    // mirroring the global-fixed-array re-emit pattern. Without this,
+    // the first use's LEA can sit inside a branch the second use does
+    // not dominate, leaving the cached Gp uninitialized → NULL deref.
+    std::map<Variable *, asmjit::x86::Mem> fixed_array_stack;
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
     void movreg(asmjit::x86::Compiler &, asmjit::Operand &, Variable *);
     void putreg(asmjit::x86::Compiler &, Variable *);
-    void cleanup(asmjit::x86::Compiler &);
+    void cleanup(Program &);
     void clear_operand_map() { operand_map.clear(); }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     Variable *getParameter(unsigned int);
@@ -89,10 +107,23 @@ public:
 class TokenFunc: public TokenVar, public TokenCpnd
 {
 public:
+    // True when a later definition of the same function overrides this
+    // one. Set during compile pre-pass by walking pending_funcs in
+    // reverse and marking earlier duplicates. Overridden TokenFuncs
+    // skip both prepareFuncNode and body emission so asmjit's Compiler
+    // sees exactly one addFunc per funcnode — without this, calling
+    // addFunc(node) twice for the same FuncNode causes asmjit to lose
+    // track of every other funcnode added between the duplicate calls,
+    // leaving their labels unbound.
+    bool is_overridden = false;
     TokenFunc(Variable &v) : TokenVar(v), TokenCpnd() {}
     virtual size_t argc() const { if (var.type->basetype() != BaseType::btFunct) return 0; return ((FuncDef *)var.type)->parameters.size(); }
     virtual TokenType type() const { return TokenType::ttFunction; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    // Create FuncNode (label + signature) ahead of body compilation so
+    // global fn-pointer inits can LEA the label. Idempotent: skips if
+    // the FuncDef already has funcnode set.
+    void prepareFuncNode(Program &);
 //  using TokenCpnd::getreg;
 };
 
@@ -100,17 +131,38 @@ class TokenDecl: public TokenVar
 {
 public:
     TokenBase *initialize;
+    std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// { v0, v1, ... } — a nested brace initializer, used for elements of an
+// array-of-structs or for nested struct members. Not a value by itself.
+class TokenStructLit: public TokenBase
+{
+public:
+    std::vector<TokenBase *> inits;
+    TokenStructLit() {}
+    virtual TokenType type() const { return TokenType::ttStructLit; }
 };
 
 class TokenCallFunc: public TokenVar
 {
 public:
     std::vector<TokenBase *> parameters;
-    TokenCallFunc(Variable &v) : TokenVar(v) {}
-    virtual DataDef *returns()  { return &((FuncDef *)var.type)->returns; }
+    // Non-null when the function-pointer value comes from a sub-expression
+    // (e.g. a struct member access c.fn or arr[i].fn) rather than a variable.
+    // When set, TokenCallFunc::compile loads the fn-ptr by compiling src_node
+    // instead of calling voperand(var). var.type must still be DataDefFPTR.
+    TokenBase *src_node = nullptr;
+    TokenCallFunc(Variable &v) : TokenVar(v) { if (v.type->is_function()) _datatype = returns(); }
+    virtual DataDef *returns()  const { return &((FuncDef *)var.type)->returns; }
+    virtual DataDef *datadef()  const override {
+        if ( var.type->is_function() )
+            return returns();
+        return _datatype;
+    }
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::Operand &operand(Program &);
@@ -122,11 +174,113 @@ class TokenMember: public TokenCallFunc
 public:
     Variable &object;
     size_t offset;
-    TokenMember(Variable &o, Variable &m, size_t ofs) : TokenCallFunc(m), object(o), offset(ofs) { _datatype = m.type; }
+    TokenBase *parent_expr;  // non-null for chained -> (e.g. ch->in_room->name)
+    TokenMember(Variable &o, Variable &m, size_t ofs)
+        : TokenCallFunc(m), object(o), offset(ofs), parent_expr(nullptr) { _datatype = m.type; }
+    TokenMember(Variable &o, Variable &m, size_t ofs, TokenBase *parent)
+        : TokenCallFunc(m), object(o), offset(ofs), parent_expr(parent) { _datatype = m.type; }
     virtual TokenType type() const { return TokenType::ttMember; }
-    virtual bool is_real() { return _datatype->is_real(); }
+    virtual DataDef *datadef() const override { return _datatype; }
+    virtual bool is_real() const override { return _datatype->is_real(); }
     virtual void putreg(Program &);
     virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    // Member is declared as a fixed array (e.g. `SKILLTYPE *arr[N]`).
+    // Such a member's datadef reports the element type but the storage
+    // is in-place, so subscripting needs LEA on the member's Mem and
+    // the parser must not unwrap pointer-typed elements.
+    bool is_fixed_array_member() const
+    {
+	// For `obj->member` access, object.type is the pointer-to-struct,
+	// not the struct itself. Walk through any pointer wrapper.
+	DataDef *otype = object.type;
+	if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
+	    otype = opt->base_type;
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype);
+	if ( !sdd ) return false;
+	std::string mname = var.name;
+	return sdd->m_count(mname) > 1;
+    }
+};
+
+// & address-of operator — emits LEA to get address of a variable
+class TokenAddrOf: public TokenBase
+{
+public:
+    Variable &var;
+    DataDef *ptr_type;  // pointer-to-var type
+    asmjit::Operand _operand;
+    TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// &(expr) address-of operator for member/subscript/deref lvalues
+class TokenAddrExpr: public TokenBase
+{
+public:
+    TokenBase *expr;
+    DataDef *ptr_type;
+    asmjit::Operand _operand;
+    TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// *ptr dereference — reads/writes the value at the address held by a pointer
+class TokenDeref: public TokenBase
+{
+public:
+    Variable &var;
+    DataDef *deref_type;  // pointed-to type
+    asmjit::Operand _operand;
+    TokenDeref(Variable &v, DataDef *dt) : var(v), deref_type(dt) { _datatype = dt; }
+    virtual TokenType type() const { return TokenType::ttMember; }  // reuse member type for assignment compat
+    virtual DataDef *datadef() const override { return deref_type; }
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// *(expr) dereference for cast/member/subscript pointer expressions
+class TokenDerefExpr: public TokenBase
+{
+public:
+    TokenBase *expr;
+    DataDef *deref_type;
+    asmjit::Operand _operand;
+    TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
+    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual DataDef *datadef() const override { return deref_type; }
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// *ptr++ / *ptr-- — dereference the current pointer value, then advance
+// or rewind the pointer variable itself.
+class TokenDerefStep: public TokenBase
+{
+public:
+    Variable &var;
+    DataDef *deref_type;
+    bool increment;
+    asmjit::Operand _operand;
+    TokenDerefStep(Variable &v, DataDef *dt, bool inc)
+        : var(v), deref_type(dt), increment(inc) { _datatype = dt; }
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return deref_type; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// (TYPE *) cast expression — type annotation, no codegen for pointer casts
+class TokenCast: public TokenBase
+{
+public:
+    DataDef *cast_type;   // target type
+    TokenBase *expr;      // expression being cast
+    asmjit::Operand _operand;
+    TokenCast(DataDef *ct, TokenBase *e) : cast_type(ct), expr(e) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return cast_type; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -137,6 +291,71 @@ public:
     virtual TokenType type() const { return TokenType::ttCallMethod; }
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// subscript access: container[index]
+class TokenSubscript: public TokenBase
+{
+public:
+    Variable &object;    // the container variable
+    TokenBase *index;    // the primary (first) index expression
+    std::vector<TokenBase *> extra_indices; // additional indices for multi-dim fixed arrays
+    Variable *tmp_var;   // temp string variable for string-returning subscripts (or NULL)
+    asmjit::Operand _operand;
+
+    TokenSubscript(Variable &o, TokenBase *idx, Variable *tmp = nullptr)
+        : object(o), index(idx), tmp_var(tmp)
+    {
+        if ( o.is_fixed_array() )
+            _datatype = o.type; // C fixed array: subscript yields element of base type
+        else if ( o.type->is_pointer() )
+        {
+            // Raw pointer: ptr[i] == *(ptr + i). Element type = pointed-to type.
+            DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(o.type);
+            _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+        }
+        else if ( o.type->type() == DataType::dtVECTOR )
+            _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
+        else if ( o.type->type() == DataType::dtMAP )
+            _datatype = static_cast<DataDefMAP *>(o.type)->val_type;
+        else
+            _datatype = &ddINT64; // MadArray: default to int
+    }
+    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual bool is_real() const override { return _datatype->is_real(); }
+    virtual asmjit::Operand &operand(Program &pgm) {
+        regdefp_t r = {nullptr, nullptr, nullptr};
+        return compile(pgm, r);
+    }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &);
+    // emit setter call for write context: container[index] = val
+    void compile_set(Program &, asmjit::Operand &, DataDef *);
+};
+
+class TokenSubscriptExpr: public TokenBase
+{
+public:
+    TokenBase *base_expr;
+    TokenBase *index;
+    asmjit::Operand _operand;
+
+    TokenSubscriptExpr(TokenBase *base, TokenBase *idx, DataDef *elem_type)
+        : base_expr(base), index(idx)
+    {
+        _datatype = elem_type ? elem_type : &ddINT64;
+    }
+    virtual TokenType type() const { return TokenType::ttSubscript; }
+    virtual bool is_real() const override { return _datatype->is_real(); }
+    // operand() must return an *lvalue* (Mem) — i.e. the address of
+    // the element — not the loaded value. Callers (TokenAssign LHS,
+    // outer TokenSubscriptExpr for chained 2D indexing, TokenMember
+    // for s[i].field, etc.) need to compute offsets from the
+    // element's address, and the default `compile()` path emits
+    // emit_ir_value which loads through Mem and yields a Gp holding
+    // the value — chaining through that returned a numeric value as
+    // if it were an address and crashed at NULL/garbage.
+    virtual asmjit::Operand &operand(Program &pgm);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &);
 };
 
 class TokenProgram: public TokenCpnd
@@ -185,10 +404,14 @@ typedef std::stack<l_shortcut_t> shortstack_t;
 
 
 // class to hold source for lexing
+// embedded header lookup (generated by scripts/gen_embedded_headers.sh)
+const std::string *find_embedded_header(const std::string &name);
+
 class Source
 {
 protected:
     std::stringstream _ss;
+    std::string _pushback;		// pushback buffer for #define substitution
     int _lf, _cr, _column;
     std::streampos _pos;
     std::string _fname;
@@ -199,12 +422,20 @@ public:
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { _ss << sb;  }
     void str(const std::string &s) { _ss.str(s); }
-    bool good() { return _ss.good(); }
-    bool eof()  { return _ss.eof(); }
+    void pushback(const std::string &s) { _pushback = s + _pushback; }
+    bool good() { return !_pushback.empty() || _ss.good(); }
+    bool eof()  { return _pushback.empty() && _ss.eof(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
     int column(){ return _column ? _column : 1; }
     int get()
     {
+	if ( !_pushback.empty() )
+	{
+	    int ch = (unsigned char)_pushback[0];
+	    _pushback.erase(0, 1);
+	    ++_column;
+	    return ch;
+	}
 	int ch = _ss.get();
 	if ( ch == -1 ) { return -1; }
 	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
@@ -214,6 +445,8 @@ public:
     }
     int peek()
     {
+	if ( !_pushback.empty() )
+	    return (unsigned char)_pushback[0];
 	return _ss.peek();
     }
     bool getline(std::string &s)
@@ -284,6 +517,8 @@ class Program
 {
 protected:
     TokenBase *_getToken();
+    TokenBase *skipConditionalBlock();
+    bool evaluateIfCondition();
     void popOperator(std::stack<TokenBase *> &, std::stack<TokenBase *> &);
 //  inline int get(std::istream &is) { ++_column; return is.get(); }
     // initializers / finalizers
@@ -303,18 +538,86 @@ public:
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
+    std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
+    std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
+    // function-like macro definitions: #define NAME(params) body
+    struct MacroDef {
+	std::vector<std::string> params;  // parameter names
+	bool variadic = false;           // trailing ... / __VA_ARGS__
+	std::string body;                 // body template with param names as placeholders
+    };
+    std::map<std::string, MacroDef> macro_map;	// function-like macros
+    enum LazyKind { lkVariable = 1, lkFunction = 2, lkType = 3, lkStruct = 4 };
+    struct LazyEntry { int header; LazyKind kind; };
+    std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration
+    std::map<std::string, std::string> define_map;	// #define name value
+    std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
+    std::stack<bool> ifdef_stack;	// conditional compilation state stack
+    std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
-    std::queue<TokenBase *> tokens;	// parsed token queue
+    std::deque<TokenBase *> tokens;	// parsed token queue
+    // User-defined function AST nodes, in source order. Parallel to the
+    // ast queue. Populated by parseFunction / parseLambda; consumed by
+    // Program::compile in a pre-pass to create funcnodes (labels) before
+    // globals compile, so global fn-pointer inits can LEA the target label.
+    std::vector<TokenBase *> pending_funcs;
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::stack<l_shortcut_t> loopstack;	// stack to manage break/continue for loops
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
+    std::string cur_func_name;		// name of current function being compiled (for diagnostics)
     throwstream Throw;			// throw an error
+    int script_argc;			// argc for the .mad script
+    char **script_argv;			// argv for the .mad script
+    bool _include_iostream;		// #include <iostream> was seen during tokenization
+    bool _include_stdio;		// #include <stdio.h> was seen during tokenization
+    // Intern file paths so TokenBase::file pointers stay stable for
+    // the program's lifetime. Lexer used to store `c_str()` of a
+    // stack-local std::string into tokens — the pointer dangled the
+    // moment the include scope ended, leaving every later read of
+    // tb->file undefined. Reuse the existing `included_files` map
+    // (keys are std::string and stable since we never erase entries).
+    const char *intern_file(const std::string &s) {
+	return included_files.emplace(s, true).first->first.c_str();
+    }
+
+    bool parsing_extern_decl = false;	// current declaration originated from `extern`
+    bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
+
+    // JIT crash → source location map. Populated during compile by
+    // record_compile_anchor() and finalized into jit_source_map after
+    // cc.finalize(). The signal handler binary-searches jit_source_map
+    // by faulting RIP - root_fn to print the .mad source line that
+    // emitted the crashing instruction. Disable with MADC_NO_SOURCE_MAP=1
+    // env var (small overhead per anchor: one Label + entry per
+    // top-level / per-statement compile call).
+    struct JitSourceEntry
+    {
+	uint32_t byte_offset;
+	const char *file;
+	uint32_t line;
+	uint16_t col;
+	const char *kind;	// short token-type label (e.g. "stmt", "fn")
+    };
+    bool jit_source_map_enabled = true;
+    std::vector<std::pair<asmjit::Label, JitSourceEntry>> jit_anchor_labels;
+    std::vector<JitSourceEntry> jit_source_map;
+    void record_compile_anchor(class TokenBase *tb, const char *kind);
+    std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
+    int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
+
+    // goto / label map — function-scoped. `TokenFunc::compile` clears
+    // this at the start of each function body; `TokenGOTO::compile`
+    // look-or-creates entries; `TokenLabel::compile` binds them.
+    // Kept on Program rather than TokenFunc to avoid a layout change
+    // in TokenFunc's multi-inheritance shape (which silently regressed
+    // downstream codegen when an `std::map` was added there directly).
+    std::map<std::string, asmjit::Label> label_map;
 
     bool colors;
     asmjit::JitRuntime jit;
@@ -329,12 +632,21 @@ public:
     void add_fstream_methods();
     void add_functions();
     void add_globals();
+    void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
+    void add_stdio();		// placeholder for #include <stdio.h> registration
+    Variable *lazy_resolve(const std::string &name);	// on-demand variable/function registration
+    DataDef  *lazy_resolve_type(const std::string &name);	// on-demand type/struct registration
     void add_namespaces();
+    void add_madc_namespace();
     void add_php_namespace();
     void add_perl_namespace();
     void add_python_namespace();
     void add_ruby_namespace();
     void add_js_namespace();
+    std::string current_source_directory();
+    bool include_already_seen(const std::string &path);
+    std::string resolve_include_path(const std::string &incfile, bool is_system);
+    bool should_tokenize_include(const std::string &path);
 
     Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
 
@@ -347,6 +659,12 @@ public:
     TokenBase *getRealToken();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
+    // C/C++ translation phase 6: adjacent string literals concatenate.
+    // Funnel every tokens.push_back through this helper so an
+    // included `SYSTEM_DIR "file.dat"` (= `"../system/" "file.dat"`)
+    // ends up as one merged literal, not two adjacent tokens whose
+    // first one gets dropped by parser exStack semantics.
+    void push_token_with_string_concat(TokenBase *tb);
 
     // for debugging
     void printt(TokenBase *);
@@ -355,6 +673,46 @@ public:
     // accessing token queue
     inline TokenBase *peekToken() { if (tokens.empty()) return NULL; return tokens.front(); }
     inline TokenBase *prevToken() { return _prv_token; }
+    inline TokenBase *curToken()  { return _cur_token; }
+    inline void resetPrevToken() { _prv_token = NULL; }
+    inline void pushToken(TokenBase *t) { tokens.push_front(t); }
+
+    // helper: is prevToken in a position where the next operator would be unary?
+    // true when prevToken is NULL, ;, {, (, ,, =, or any operator except ) and ]
+    inline bool isUnaryPosition()
+    {
+	if ( !_prv_token ) return true;
+	TokenID id = _prv_token->id();
+	if ( id == TokenID::tkSemi || id == TokenID::tkOpBrc
+	||   id == TokenID::tkOpBrk || id == TokenID::tkComma
+	||   id == TokenID::tkAssign ) return true;
+	if ( _prv_token->is_operator()
+	&&   id != TokenID::tkClBrk && id != TokenID::tkClSqr ) return true;
+	// Keywords like `return`, `if`, `while`, `case` open an expression
+	// context — the following `-` should be unary negation, not binary
+	// subtraction with a missing left operand.
+	if ( _prv_token->type() == TokenType::ttKeyword ) return true;
+	return false;
+    }
+    // helper: is prevToken in a position where the next operator would be postfix?
+    // true when prevToken is ), ], or a non-operator value token
+    inline bool isPostfixPosition()
+    {
+	if ( !_prv_token ) return false;
+	TokenID id = _prv_token->id();
+	// Keywords aren't values — they open expression contexts, not close them.
+	if ( _prv_token->type() == TokenType::ttKeyword ) return false;
+	// Symbols that open or continue expression contexts aren't values
+	// either — `{`, `(`, `,`, `;`, `=` mean the next `-` / `!` is
+	// unary, not binary. Without this guard `int x[] = { -5 };`
+	// converted TokenNeg → TokenSub at the unary-after-`{` slot and
+	// emitted a binary subtraction missing its left operand.
+	if ( id == TokenID::tkOpBrc || id == TokenID::tkOpBrk
+	||   id == TokenID::tkComma || id == TokenID::tkSemi
+	||   id == TokenID::tkAssign )
+	    return false;
+	return id == TokenID::tkClBrk || id == TokenID::tkClSqr || !_prv_token->is_operator();
+    }
     inline TokenBase *nextToken()
     {
 	if ( tokens.empty() )
@@ -362,20 +720,46 @@ public:
         _prv_token = _cur_token;
 	_cur_token = tokens.front();
 //	DBG(cout << "nextToken(" << (int)ret->type() << ", " << (int)ret->id() << ')' << endl);
-	tokens.pop();
+	tokens.pop_front();
 	return _cur_token;
     }
     // parse tokens into AST
     bool parse(TokenProgram *);
     void parseIdentifier(TokenIdent *);
-    void parseFunction(DataDef &, std::string &);
+    void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
+		       std::vector<DataDef *> *multi_ret = NULL);
     TokenBase *parseKeyword(TokenKeyword *);
     TokenBase *parseCallFunc(TokenCallFunc *);
     TokenBase *parseCallMethod(TokenCallMethod *);
     TokenBase *parseCompound();
     TokenBase *parseStatement(TokenBase *);
-    TokenBase *parseDeclaration(TokenDataType *);
-    TokenBase *parseExpression(TokenBase *, bool conditional=false);
+    TokenBase *parseDeclaration(TokenDataType *, bool is_static = false);
+    DataDefPTR *getPointerType(DataDef *base);
+    // parse a `(params)` list after the opening '(' has been consumed; used by
+    // function-pointer typedefs. Builds a FuncDef with the given return type.
+    // Parameter names are accepted but discarded. Stops after consuming ')'.
+    FuncDef *parseFnPtrParams(DataDef &returns);
+    TokenBase *parseExpression(TokenBase *, bool conditional=false,
+			       bool ternary_branch=false,
+			       bool stop_on_closing_paren=false,
+			       int initial_brackets=0,
+			       bool push_back_comma=false);
+    // Statement-level expression parse: parseExpression + comma-chain.
+    // parseExpression treats `,` as a hard stop (callers like for-loop
+    // init/incr and call-arg lists rely on this). In statement contexts
+    // (`expr1, expr2;` or a brace-less `while (c) e1, e2;` body), the
+    // comma is the C comma operator and both expressions must run for
+    // side effects. parseExprStmt collects them into a TokenComma chain
+    // whose compile() evaluates left for effects and returns right.
+    TokenBase *parseExprStmt(TokenBase *);
+    // Parse an identifier followed by any chain of postfix operators
+    // (->ident / .ident / [expr] / ++ / --) and return the resulting
+    // expression node. Stops at the first non-postfix token (binary
+    // operator, comma, semicolon, etc.) and pushes it back on the
+    // token stream. Used by unary `*` and `&` to avoid
+    // parseExpression's greedy consumption of trailing binary ops.
+    TokenBase *parsePostfixChain(TokenBase *head);
+    TokenBase *parseLambda();  // parse [](params) { body } lambda expression
 
     // perform cc.mov with size casting
     void safemov(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
@@ -384,29 +768,23 @@ public:
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Xmm &, asmjit::x86::Mem &, DataDef *, DataDef *);
-    void safemov(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Mem &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safemov(asmjit::x86::Mem &, asmjit::x86::Xmm &, DataDef *, DataDef *);
     void safemov(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
-    // only int and double are standard numeric token types
+    // int, int64 and double are the standard numeric token types
     void safemov(asmjit::Operand &,  int, DataDef *d1=NULL, DataDef *d2=NULL);
+    void safemov(asmjit::Operand &,  int64_t, DataDef *d1=NULL, DataDef *d2=NULL);
     void safemov(asmjit::Operand &,  double, DataDef *d1=NULL, DataDef *d2=NULL);
 
     // perform cc.add with size casting
     void safeadd(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
-    void safeadd(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
-    void safeadd(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safeadd(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
-    void safeadd(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
     void safeadd(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
     void safeadd(asmjit::Operand &,  int, DataDef *, DataDef *);
 
     // perform cc.sub with size casting
     void safesub(asmjit::x86::Gp &,  asmjit::x86::Gp &, DataDef *, DataDef *);
-    void safesub(asmjit::x86::Gp &,  asmjit::x86::Xmm &, DataDef *, DataDef *);
-    void safesub(asmjit::x86::Xmm &, asmjit::x86::Gp &, DataDef *, DataDef *);
     void safesub(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *, DataDef *);
-    void safesub(asmjit::x86::Xmm &, asmjit::Imm &, DataDef *, DataDef *);
     void safesub(asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL);
     void safesub(asmjit::Operand &,  int, DataDef *, DataDef *);
 
@@ -454,11 +832,18 @@ public:
     void safesetl(asmjit::Operand &);
     void safesetle(asmjit::Operand &);
     void safesetne(asmjit::Operand &);
+    // Unsigned variants — use when either comparison operand is unsigned.
+    // C's "usual arithmetic conversions" treat mixed unsigned/signed as
+    // unsigned, so signed setl/setg give wrong results when compared
+    // against values whose signed interpretation flips (e.g. unsigned
+    // short cmp vs 65535 → signed-interpret as -1 → bogus ordering).
+    void safesetb(asmjit::Operand &);   // below          (unsigned <)
+    void safesetbe(asmjit::Operand &);  // below-or-equal (unsigned <=)
+    void safeseta(asmjit::Operand &);   // above          (unsigned >)
+    void safesetae(asmjit::Operand &);  // above-or-equal (unsigned >=)
 
     // perform cc.cmp with size casting
     void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    void safecmp(asmjit::x86::Gp &,  asmjit::x86::Xmm &);
-    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Gp &);
     void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
     void safecmp(asmjit::Operand &,  asmjit::Operand &);
 

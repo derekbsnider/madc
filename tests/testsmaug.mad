@@ -1,0 +1,102 @@
+#!/usr/bin/env madc
+// Mini SMAUG-like test — exercises all Phase A/B/C features
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+// forward typedef declarations (SMAUG pattern)
+typedef struct char_data CHAR_DATA;
+typedef struct room_data ROOM_DATA;
+
+// struct definitions
+struct char_data {
+	char *name;
+	short level;
+	int hp;
+	int max_hp;
+	ROOM_DATA *in_room;
+};
+
+struct room_data {
+	int vnum;
+	char *name;
+};
+
+// function-like macros
+#define CREATE(result, type, number) \
+	do { result = (type *) calloc(number, sizeof(type)); } while(0)
+
+#define DISPOSE(point) \
+	do { free(point); point = NULL; } while(0)
+
+#define IS_SET(flag, bit) ((flag) & (bit))
+#define SET_BIT(var, bit) ((var) | (bit))
+#define MAX(a, b) ((a) > (b) ? (a) : (b))
+
+#define ACT_IS_NPC  1
+#define ACT_SENTINEL 2
+
+// function using struct pointer
+int get_max_hp(CHAR_DATA *ch)
+{
+	return ch->max_hp;
+}
+
+void char_to_room(CHAR_DATA *ch, ROOM_DATA *room)
+{
+	ch->in_room = room;
+}
+
+int main()
+{
+	// create character via macro
+	CHAR_DATA *ch;
+	CREATE(ch, CHAR_DATA, 1);
+	ch->name = strdup("Gandalf");
+	ch->level = 50;
+	ch->hp = 500;
+	ch->max_hp = 500;
+
+	printf("Name: %s\n", ch->name);
+	printf("Level: %ld\n", ch->level);
+	printf("HP: %ld/%ld\n", ch->hp, get_max_hp(ch));
+
+	// create room
+	ROOM_DATA *room;
+	CREATE(room, ROOM_DATA, 1);
+	room->vnum = 3001;
+	room->name = strdup("The Temple of Midgaard");
+	int rv = room->vnum;
+	char *rn = room->name;
+	printf("Room: [%ld] %s\n", rv, rn);
+
+	// put char in room (assigns struct pointer member)
+	char_to_room(ch, room);
+	ROOM_DATA *cur_room = ch->in_room;
+	printf("In room: %s\n", cur_room->name);
+
+	// test bitwise macros
+	int act_flags = SET_BIT(ACT_IS_NPC, ACT_SENTINEL);
+	printf("act_flags = %ld\n", act_flags);
+	printf("IS_SET(NPC) = %ld\n", IS_SET(act_flags, ACT_IS_NPC));
+
+	// MAX with ternary
+	printf("MAX(ch->hp, 100) = %ld\n", MAX(ch->hp, 100));
+
+	// strlen on char *
+	int namelen = strlen(ch->name);
+	printf("strlen(name) = %ld\n", namelen);
+
+	// strcmp
+	int cmp = strcmp(ch->name, "Gandalf");
+	printf("strcmp(name, Gandalf) = %ld\n", cmp);
+
+	// cleanup
+	free(ch->name);
+	free(room->name);
+	DISPOSE(ch);
+	DISPOSE(room);
+
+	printf("All SMAUG-like tests passed!\n");
+	return 0;
+}

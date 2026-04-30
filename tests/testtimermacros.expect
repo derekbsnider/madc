@@ -1,0 +1,5 @@
+clear 0
+isset 1
+cmp_lt 1 cmp_gt 1 cmp_eq 1
+add 4 100000
+sub 2 200000

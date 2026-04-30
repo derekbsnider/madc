@@ -1,0 +1,49 @@
+// Regression: struct initializer with a nested-brace member init —
+// `struct S v = { x, { 1, 2, 3 } }` (where one member is itself a
+// struct) — used to throw "TokenStmt::compile() unexpected token
+// type=25" because the nested brace list created a TokenStructLit
+// element, and emit_struct_init unconditionally called
+// inits[i]->compile() — TokenStructLit has no compile() and fell
+// through to TokenStmt's default-throw.
+//
+// Also a parser-side gap: the nested-brace handler inside the outer
+// initializer parser only descended ONE level. A struct-of-struct
+// init needed recursive descent so `{ "name", "color", { 0, 1, 10 } }`
+// (an array-of-struct element with a nested struct member) parses
+// correctly all the way down.
+//
+// Two fixes:
+//   1. Parser: make the nested-brace reader recursive (any `{` inside
+//      a TokenStructLit's inits is itself a TokenStructLit).
+//   2. Compiler: emit_struct_init detects `mtype is struct + element
+//      is TokenStructLit` and recurses with the member offset as the
+//      new base, instead of trying to compile the TokenStructLit.
+//
+// Surfaced at MadSMAUG `const.c:360+` (the `liq_table[]` with
+// `struct liq_type` containing a `struct affect_data` member).
+
+#include <iostream>
+
+struct Triplet { int a; int b; int c; };
+struct Liq { char *name; char *color; struct Triplet vals; };
+
+// Global array of struct with nested struct member init.
+struct Liq tab[] = {
+    { "water", "clear", { 0, 1, 10 } },
+    { "beer",  "amber", { 3, 2, 5  } },
+    { "wine",  "rose",  { 5, 2, 5  } },
+};
+
+int main()
+{
+    cout << tab[0].name << ' ' << tab[0].vals.a << endl;     // water 0
+    cout << tab[1].name << ' ' << tab[1].vals.b << endl;     // beer 2
+    cout << tab[2].vals.c << endl;                            // 5
+
+    // Local non-array struct with nested member init.
+    struct Liq one = { "milk", "white", { 7, 8, 9 } };
+    cout << one.name << ' ' << one.vals.a << ' ' << one.vals.b
+	 << ' ' << one.vals.c << endl;                       // milk 7 8 9
+
+    return 0;
+}

@@ -1,0 +1,39 @@
+// Compound-assignment operators on array subscripts: `arr[i] += n;` and
+// friends. resolveCompoundLHS previously only handled ttVariable /
+// ttMember / TokenDeref — it threw "+= on a non-variable lval" (as a
+// raw C-string throw, which itself corrupted the error-location
+// printout) for ttSubscript. Now computes the element Mem operand
+// directly from TokenSubscript's base + index and uses it as the
+// load-compute-store target.
+
+#include <stdio.h>
+
+int main()
+{
+    int arr[5] = {1, 2, 3, 4, 5};
+    arr[0] += 10;
+    arr[1] -= 1;
+    arr[2] *= 3;
+    arr[3] /= 2;
+    arr[4] |= 0x10;
+    int i;
+    for (i = 0; i < 5; i++) printf("%d ", arr[i]);
+    printf("\n");
+
+    // compound with non-constant index
+    int idx = 2;
+    arr[idx] += 100;
+    printf("idx: %d\n", arr[2]);
+
+    // compound with expression index
+    arr[idx + 1] -= 5;
+    printf("expr: %d\n", arr[3]);
+
+    // char array + bitwise
+    char flags[2] = {0, 0};
+    flags[0] |= 1;
+    flags[1] |= 2;
+    printf("flags: %d %d\n", (int)flags[0], (int)flags[1]);
+
+    return 0;
+}

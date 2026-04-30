@@ -1,4 +1,5 @@
 #!/../bin/madc
+#include <iostream>
 
 int main()
 {

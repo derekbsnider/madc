@@ -1,0 +1,44 @@
+// `map`, `vector`, `set`, `list` are container-type keywords only when
+// followed by `<`. In plain C code they may appear as struct members,
+// local variables, or parameters, and must be accepted as identifiers
+// in declaration, statement, and expression contexts.
+
+#include <stdio.h>
+
+typedef struct map_data {
+    int vnum;
+    int y;
+} MAP_DATA;
+
+typedef struct room_data {
+    int vnum;
+    MAP_DATA *map;
+    int mpactnum;
+} ROOM_DATA;
+
+int get_map_vnum(MAP_DATA *map)
+{
+    return map->vnum;
+}
+
+int main()
+{
+    MAP_DATA *map = NULL;
+    map = (MAP_DATA *) calloc(1, sizeof(MAP_DATA));
+    map->vnum = 42;
+    map->y = 7;
+
+    ROOM_DATA *room = (ROOM_DATA *) calloc(1, sizeof(ROOM_DATA));
+    room->vnum = 100;
+    room->map = map;
+    room->mpactnum = 3;
+
+    printf("map vnum=%d y=%d\n", map->vnum, map->y);
+    printf("room vnum=%d mp=%d via map vnum=%d\n",
+           room->vnum, room->mpactnum, room->map->vnum);
+    printf("fn vnum=%d\n", get_map_vnum(map));
+
+    free(room);
+    free(map);
+    return 0;
+}

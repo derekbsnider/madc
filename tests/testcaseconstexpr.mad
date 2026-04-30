@@ -1,0 +1,47 @@
+// `case` values must accept constant integer expressions, not just
+// single-token literals. SMAUG's `case EOF:` (EOF = -1) expands to a
+// multi-token form that the old parser rejected. Also verifies that
+// the switch expression is sign-extended correctly when loaded — a
+// plain `mov r64, m32` zero-extends and breaks `case -2:` matches.
+
+#include <stdio.h>
+
+int main()
+{
+    int i;
+    i = 0 - 2;
+    switch (i) {
+    case -2: printf("m2\n"); break;
+    case -1: printf("m1\n"); break;
+    case 0: printf("z\n"); break;
+    default: printf("d\n"); break;
+    }
+
+    i = 0 - 1;
+    switch (i) {
+    case EOF: printf("eof\n"); break;
+    default: printf("d\n"); break;
+    }
+
+    i = 5;
+    switch (i) {
+    case (3+2): printf("paren_add\n"); break;
+    case 1+1: printf("bare_add\n"); break;
+    default: printf("d\n"); break;
+    }
+
+    i = 2;
+    switch (i) {
+    case (3+2): printf("paren_add2\n"); break;
+    case 1+1: printf("bare_add2\n"); break;
+    default: printf("d\n"); break;
+    }
+
+    i = 97;
+    switch (i) {
+    case 'a': printf("char_lit\n"); break;
+    default: printf("d\n"); break;
+    }
+
+    return 0;
+}

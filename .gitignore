@@ -1,5 +1,15 @@
-tests/unit/test_datadef
+.mcp.json
 *.cpp~
 *.h~
 Makefile~
 *.sh~
+claude_status.json
+
+# SMAUG-derived content lives in a separate MadSMAUG repository due to
+# the Diku/Merc/SMAUG license stack (see https://github.com/derekbsnider/MadSMAUG).
+# ./MadSMAUG is a symlink to that repo for dev convenience; the tarball
+# and extracted tree also live there, not here.
+MadSMAUG
+smaug.tgz
+smaug1.8/
+ftp_game.org

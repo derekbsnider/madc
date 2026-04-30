@@ -1,0 +1,4 @@
+strcpy_idiom: result='[saw]child' final_offset=10
+while_no_braces: a=5 b=95
+if_no_braces: x=7 y=11
+three_chain: 1 2 3

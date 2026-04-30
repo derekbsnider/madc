@@ -1,0 +1,4 @@
+void main() {
+    char c = *(version.c_str());
+    putchar(c);
+}

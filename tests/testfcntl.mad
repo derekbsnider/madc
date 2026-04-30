@@ -1,0 +1,46 @@
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+
+#ifndef FNDELAY
+#define FNDELAY O_NDELAY
+#endif
+
+int main()
+{
+    int fd = open("tests/testfcntl.mad", O_RDONLY);
+    if ( fd < 0 )
+    {
+        printf("open-fail\n");
+        return 1;
+    }
+
+    int flags = fcntl(fd, F_GETFL, 0);
+    if ( flags < 0 )
+    {
+        printf("getfl-fail\n");
+        close(fd);
+        return 1;
+    }
+
+    if ( fcntl(fd, F_SETFL, flags | FNDELAY) < 0 )
+    {
+        printf("setfl-fail\n");
+        close(fd);
+        return 1;
+    }
+
+    int newflags = fcntl(fd, F_GETFL, 0);
+    if ( (newflags & O_NONBLOCK) == 0 )
+    {
+        printf("nonblock-not-set %ld\n", newflags);
+        close(fd);
+        return 1;
+    }
+
+    printf("F_GETFL=%ld F_SETFL=%ld FD_CLOEXEC=%ld O_NDELAY=%ld\n",
+           F_GETFL, F_SETFL, FD_CLOEXEC, O_NDELAY);
+    printf("done\n");
+    close(fd);
+    return 0;
+}

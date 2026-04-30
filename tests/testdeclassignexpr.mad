@@ -1,0 +1,17 @@
+#include <stdio.h>
+
+int main()
+{
+    int x = 0;
+    int y = (x = 42);
+    printf("decl_assign: x=%d y=%d\n", x, y);
+
+    int a = 1;
+    int b = ((a = 7) + 5);
+    printf("nested_expr: a=%d b=%d\n", a, b);
+
+    int p = 0, q = (p = 9);
+    printf("comma_decl: p=%d q=%d\n", p, q);
+
+    return 0;
+}

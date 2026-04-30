@@ -1,0 +1,34 @@
+// Regression: `((char *)arg)[0]` — a cast-to-pointer expression
+// followed by `[index]` — used to fail with "Expecting ] in lambda
+// expression". Root cause: parseExpression's `[` handler recognized
+// TokenMember / TokenSubscript / TokenDerefExpr / TokenDeref / a few
+// complex-pointer-arithmetic forms as valid subscript bases, but not
+// TokenCast. Top of exStack was a TokenCast of a pointer type, the
+// `[` fell to the lambda-detection fallback, and the next token (the
+// index expr) didn't match a lambda parameter list.
+//
+// Fix: also accept TokenCast-of-pointer as a subscript base. Closes
+// MadSMAUG comm.c:3112 (`((char *)arg2)[0] == '\0'` inside
+// act_string).
+
+#include <iostream>
+#include <stdio.h>
+
+void *get_buf()
+{
+    static char buf[8];
+    buf[0] = 'a'; buf[1] = 'b'; buf[2] = 'c'; buf[3] = '\0';
+    return buf;
+}
+
+int main()
+{
+    void *raw = get_buf();
+    char first = ((char *)raw)[0];
+    char third = ((char *)raw)[2];
+    cout << first << endl;     // a
+    cout << third << endl;     // c
+    if ( ((char *)raw)[3] == '\0' )
+        cout << "term" << endl;  // term
+    return 0;
+}

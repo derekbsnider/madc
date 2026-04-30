@@ -19,6 +19,7 @@
 #include <queue>
 #include <stack>
 #include <glob.h>
+#include <regex>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include <asmjit/x86.h>
 #include "datadef.h"
@@ -56,9 +57,8 @@ int64_t perl_chomp(void *ptr)
 	return count;
 }
 
-// perl::grep — filter array, keeping elements that contain needle (string match)
+// perl::grep — filter array, keeping elements that match regex pattern
 // Perl: @matches = grep { /pattern/ } @array;
-// (simplified: substring match instead of regex)
 void *perl_grep(void *dest, void *needle, void *src)
 {
 	MadArray &d = *(MadArray *)dest;
@@ -66,10 +66,20 @@ void *perl_grep(void *dest, void *needle, void *src)
 	MadArray &s = *(MadArray *)src;
 	d.data.clear();
 	d.assoc.clear();
-	for ( auto &v : s.data )
-	{
-		if ( v.is_string() && v.as_string().find(n) != std::string::npos )
-			d.data.push_back(v);
+	try {
+		std::regex re(n);
+		for ( auto &v : s.data )
+		{
+			if ( v.is_string() && std::regex_search(v.as_string(), re) )
+				d.data.push_back(v);
+		}
+	} catch (std::regex_error &) {
+		// fallback to substring match on invalid regex
+		for ( auto &v : s.data )
+		{
+			if ( v.is_string() && v.as_string().find(n) != std::string::npos )
+				d.data.push_back(v);
+		}
 	}
 	return dest;
 }
@@ -156,7 +166,7 @@ void *perl_join(void *result, void *sep, void *arr)
 	return result;
 }
 
-// perl::split — split string by delimiter into array (Perl: split(/,/, $str))
+// perl::split — split string by regex pattern into array (Perl: split(/pattern/, $str))
 void *perl_split(void *arr, void *delim, void *str)
 {
 	MadArray &a = *(MadArray *)arr;
@@ -165,13 +175,22 @@ void *perl_split(void *arr, void *delim, void *str)
 	a.data.clear();
 	a.assoc.clear();
 	if ( d.empty() ) { a.push(MadValue(s)); return arr; }
-	size_t start = 0, end;
-	while ( (end = s.find(d, start)) != std::string::npos )
-	{
-		a.push(MadValue(s.substr(start, end - start)));
-		start = end + d.length();
+	try {
+		std::regex re(d);
+		std::sregex_token_iterator it(s.begin(), s.end(), re, -1);
+		std::sregex_token_iterator end;
+		for ( ; it != end; ++it )
+			a.push(MadValue(it->str()));
+	} catch (std::regex_error &) {
+		// fallback to literal delimiter on invalid regex
+		size_t start = 0, pos;
+		while ( (pos = s.find(d, start)) != std::string::npos )
+		{
+			a.push(MadValue(s.substr(start, pos - start)));
+			start = pos + d.length();
+		}
+		a.push(MadValue(s.substr(start)));
 	}
-	a.push(MadValue(s.substr(start)));
 	return arr;
 }
 
@@ -249,6 +268,37 @@ void *perl_substr(void *result, void *str, int64_t offset, int64_t length)
 	if ( length < 0 ) length = (int64_t)s.length() + length - offset;
 	if ( length < 0 ) length = 0;
 	res = s.substr((size_t)offset, (size_t)length);
+	return result;
+}
+
+
+// ---- Regex helper functions (used by madc:: namespace) ----
+
+// madc::regex_match(string, pattern) — returns 1 if entire string matches pattern
+int64_t madc_regex_match(void *str, void *pattern)
+{
+	try {
+		return std::regex_match(*(std::string *)str, std::regex(*(std::string *)pattern)) ? 1 : 0;
+	} catch (std::regex_error &) { return 0; }
+}
+
+// madc::regex_search(string, pattern) — returns 1 if pattern found anywhere in string
+int64_t madc_regex_search(void *str, void *pattern)
+{
+	try {
+		return std::regex_search(*(std::string *)str, std::regex(*(std::string *)pattern)) ? 1 : 0;
+	} catch (std::regex_error &) { return 0; }
+}
+
+// madc::regex_replace(result, string, pattern, replacement) — regex replace, result = modified string
+void *madc_regex_replace(void *result, void *str, void *pattern, void *replacement)
+{
+	try {
+		*(std::string *)result = std::regex_replace(*(std::string *)str,
+			std::regex(*(std::string *)pattern), *(std::string *)replacement);
+	} catch (std::regex_error &) {
+		*(std::string *)result = *(std::string *)str;
+	}
 	return result;
 }
 

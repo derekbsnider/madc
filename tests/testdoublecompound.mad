@@ -1,0 +1,24 @@
+// Compound-assign on double/float lvalues used to throw
+// "safeadd() unable to add xmm to gp" because resolveCompoundLHS
+// always loaded the lval via load_mem_to_gpq — which produces a Gp,
+// not an Xmm. Mixing Xmm (RHS of a double operation) with Gp then
+// fails in safeadd / safemul / safediv etc.
+//
+// Fix: when the lval type is_real(), load the Mem into an Xmm via
+// movss (float) / movsd (double). safemov(Mem, Xmm) (landed earlier
+// this session) handles the writeback store.
+
+#include <stdio.h>
+
+int main()
+{
+    // local double compound-assign sequence
+    double x = 10.0;
+    x += 5.0;   // 15
+    x *= 2.0;   // 30
+    x -= 1.0;   // 29
+    x /= 4.0;   // 7.25
+    printf("x=%.2f\n", x);
+
+    return 0;
+}

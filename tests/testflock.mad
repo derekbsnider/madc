@@ -1,0 +1,34 @@
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/file.h>
+
+int main()
+{
+    int fd = open("tests/test.mad", O_RDONLY);
+    if ( fd < 0 )
+    {
+        printf("open-fail\n");
+        return 1;
+    }
+
+    if ( flock(fd, LOCK_SH) != 0 )
+    {
+        printf("lock-fail\n");
+        close(fd);
+        return 1;
+    }
+
+    printf("lock-ok %ld %ld\n", LOCK_SH, LOCK_UN);
+
+    if ( flock(fd, LOCK_UN) != 0 )
+    {
+        printf("unlock-fail\n");
+        close(fd);
+        return 1;
+    }
+
+    close(fd);
+    printf("done\n");
+    return 0;
+}

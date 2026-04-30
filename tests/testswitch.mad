@@ -1,0 +1,50 @@
+#!/usr/bin/env madc
+#include <iostream>
+// Test switch statement
+
+int main()
+{
+	int x = 2;
+
+	// basic switch with break
+	switch (x) {
+		case 1:
+			cout << "one" << endl;
+			break;
+		case 2:
+			cout << "two" << endl;
+			break;
+		case 3:
+			cout << "three" << endl;
+			break;
+		default:
+			cout << "other" << endl;
+			break;
+	}
+
+	// switch with default
+	x = 99;
+	switch (x) {
+		case 1:
+			cout << "one" << endl;
+			break;
+		default:
+			cout << "default" << endl;
+			break;
+	}
+
+	// fall-through (no break)
+	x = 1;
+	switch (x) {
+		case 1:
+			cout << "fall" << endl;
+		case 2:
+			cout << "through" << endl;
+			break;
+		case 3:
+			cout << "nope" << endl;
+			break;
+	}
+
+	return 0;
+}

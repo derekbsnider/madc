@@ -1,0 +1,34 @@
+// Regression: `sizeof(*ptr->member)` and `sizeof(*obj.member)` —
+// where the postfix chain produces a pointer — used to throw
+// "Expecting identifier after '*' in sizeof" because the sizeof
+// parser's `*` branch only accepted a bare identifier, not a
+// postfix-chain.
+//
+// Fix: when the next token after the `*` is followed by `.`, `->`,
+// or `[`, parse a full postfix chain and use its datadef() to
+// determine the size. Pointer chains return sizeof(pointed-to type);
+// non-pointer chains return sizeof(chain type).
+//
+// Surfaced at MadSMAUG `icec-mercbase.c:130`:
+//   c->local = imc_malloc(sizeof(*c->local));
+
+#include <iostream>
+
+struct Inner { int data[10]; };          // 80 bytes
+struct Outer { struct Inner *local; };
+
+int main()
+{
+    struct Outer o;
+    struct Inner inner;
+    o.local = &inner;
+
+    // Standard idiom: allocate sizeof of pointed-to struct.
+    cout << sizeof(*o.local) << endl;    // 80 (sizeof Inner)
+
+    // Plain identifier form (should still work — earlier session's fix).
+    int arr[8];
+    cout << sizeof(*arr) << endl;        // 8
+
+    return 0;
+}

@@ -1,0 +1,48 @@
+// Regression: classic C `(*flfunc)(args)` form for calling through a
+// function-pointer variable. Two distinct gaps surfaced together
+// while probing MadSMAUG `reset.c:985` (`value = (*flfunc)(arg);`):
+//
+// 1. The unary-`*` parser threw "cannot dereference non-pointer
+//    type" on a fn-pointer variable. C function-to-pointer decay
+//    reverses through `*` — `*fp` IS the function. Fix: in the
+//    identifier branch of unary-`*`, when the variable's type is
+//    is_function() && is_numeric() (i.e. DataDefFPTR), push the
+//    var as a value and break — same behaviour the paren branch
+//    already had for fn-ptr-typed expressions.
+//
+// 2. Even after the deref, the `(args)` call afterwards needed a
+//    fn-ptr-var-call branch parallel to the existing fn-ptr-MEMBER-
+//    call branch. Added that, scoped to suppress on a pending
+//    tighter-than-`=` operator (so `int v = (*flfunc)(args);` works
+//    with the outer `=` on opStack but `ch->fn && (something)`
+//    doesn't mis-fire).
+//
+// (Note: bare `(flfunc)(arg)` — parens around the var without `*` —
+// is a separate gap in stream-output / non-numeric-lval handling and
+// isn't covered here. SMAUG only uses the `(*fp)(args)` form.)
+
+#include <iostream>
+
+int helper_h(char *s) { return s[0]; }
+int helper_e(char *s) { return s[1]; }
+
+int main()
+{
+    int (*flfunc)(char *type);
+
+    // No parens form (already worked) — sanity check.
+    flfunc = helper_h;
+    int v0 = flfunc("hi");
+    cout << v0 << endl;                    // 104
+
+    // The classic SMAUG form: (*flfunc)(arg).
+    flfunc = helper_h;
+    int v1 = (*flfunc)("hi");
+    cout << v1 << endl;                    // 104
+
+    flfunc = helper_e;
+    int v2 = (*flfunc)("hi");
+    cout << v2 << endl;                    // 105
+
+    return 0;
+}

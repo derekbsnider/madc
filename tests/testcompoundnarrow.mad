@@ -1,0 +1,54 @@
+// Compound-assign operators on narrow (1/2/4-byte) lvalues used to
+// SIGSEGV. resolveCompoundLHS loads the Mem into a Gpq via
+// `load_mem_to_gpq`, which sign- or zero-extends the 1/2/4-byte value
+// into the full 64-bit register. But `r.type` stayed at the narrow
+// type, so `tmp = r.type->newreg()` allocated a Gp8 / Gp16 / Gp32.
+// The subsequent `safeor(Gp64, Gp8)` / `safeadd(Gp64, Gp16)` emitted
+// an illegal encoding, asmjit `finalize()` errored, and the JIT
+// executed invalid code — the crash showed up as a dereference of
+// whatever value landed in the stuck register.
+//
+// Fix: when we widen via load_mem_to_gpq, switch `r.type` to ddINT64
+// for the compute (tmp / rval / safeop all become 64-bit); the
+// writeback Mem keeps its original size, so safemov(Mem<1>, Gp64)
+// stores via r.r8() and truncates correctly.
+
+#include <stdio.h>
+
+struct byte_holder { char b; short s; int i; };
+
+int main()
+{
+    // local char variable
+    char c = 1;
+    c |= 4;
+    printf("c=%d\n", (int)c);
+
+    c += 10;
+    printf("c=%d\n", (int)c);
+
+    // local short variable
+    short sh = 100;
+    sh *= 3;
+    printf("sh=%d\n", (int)sh);
+
+    sh -= 50;
+    printf("sh=%d\n", (int)sh);
+
+    // struct char member
+    struct byte_holder h;
+    h.b = 2; h.s = 10; h.i = 100;
+    h.b |= 1;
+    h.s += 5;
+    h.i <<= 1;
+    printf("h: %d %d %d\n", (int)h.b, (int)h.s, h.i);
+
+    // char array subscript
+    char flags[3] = {0, 0, 0};
+    flags[0] |= 1;
+    flags[1] |= 2;
+    flags[2] |= 4;
+    printf("flags: %d %d %d\n", (int)flags[0], (int)flags[1], (int)flags[2]);
+
+    return 0;
+}

@@ -1,0 +1,3 @@
+decl_assign: x=42 y=42
+nested_expr: a=7 b=12
+comma_decl: p=9 q=9

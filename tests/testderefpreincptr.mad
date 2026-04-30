@@ -1,0 +1,13 @@
+#include <stdio.h>
+
+int main()
+{
+    char s[3] = "ab";
+    char *p = s;
+    char c;
+
+    c = *++p;
+    printf("%c\n", c);
+
+    return 0;
+}

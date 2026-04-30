@@ -1,0 +1,8 @@
+#!/../bin/madc
+
+const char *color_mtoi(const char *);
+
+int main()
+{
+    return 0;
+}

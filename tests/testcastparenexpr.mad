@@ -1,0 +1,49 @@
+// Regression: `cout << (int)(a - b) << endl;` — a cast whose body is
+// a parenthesized expression — used to fail with "Unexpected keyword
+// in expression" at the next statement. Root cause: the cast handler
+// in parseExpression called the recursive parseExpression on `(a-b)`
+// in plain conditional mode, which parsed past the matching `)` and
+// kept consuming the outer `<< endl;` chain (because `<<` is a binary
+// operator and conditional-mode parseExpression only stops at `;` or
+// `,`). The recursive call returned with everything consumed, so the
+// outer parseExpression saw `return` next and threw.
+//
+// Fix: when the cast body starts with `(`, consume the `(` and call
+// parseExpression with stop_on_closing_paren and initial_brackets=1
+// so it returns at the matching close-paren. The outer chain (`<<
+// endl`, pointer arithmetic, etc.) then continues to parse normally.
+
+#include <iostream>
+#include <stdio.h>
+
+int main()
+{
+    int a = 10;
+    int b = 3;
+
+    // Simple case: cast wraps parenthesized arithmetic, used inside
+    // a BSL chain.
+    cout << (int)(a - b) << endl;        // 7
+    cout << (int)(a + b) << " ok" << endl;  // 13 ok
+
+    // Cast still applies to next operand only when body is a bare
+    // identifier — the existing parsePostfixChain path. Verify that
+    // didn't regress.
+    cout << (int)a - b << endl;          // 7 (cast binds to `a`, then -b)
+
+    // Pointer-difference idiom: `(int)(p2 - p1)` in a cout chain.
+    // This is the real motivating case, used widely with strchr/
+    // strstr/strpbrk pointer-arithmetic results.
+    char buf[8];
+    buf[0]='a'; buf[1]='b'; buf[2]='c'; buf[3]='\0';
+    char *p1 = &buf[0];
+    char *p2 = &buf[2];
+    cout << (int)(p2 - p1) << endl;      // 2
+
+    // Cast wraps a multi-term parenthesized expression, then is used
+    // as the LHS of further arithmetic.
+    int x = (int)(a + b * 2) - 1;
+    cout << x << endl;                   // 15
+
+    return 0;
+}

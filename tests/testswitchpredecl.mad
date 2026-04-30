@@ -1,0 +1,33 @@
+// Regression: C allows variable declarations in a switch body before
+// any case label. The variables are unreachable (no case label leads
+// there), but the declaration is well-formed at compile time. SMAUG
+// has this pattern in `magic.c` where a branchless declaration sits
+// between `switch(...) {` and the first `default:` / `case ...:`.
+//
+// Before the fix, the parser threw "Expecting case or default in
+// switch body" on the bare type token. Now the switch parser parses
+// pre-case declarations (and ignores the trailing `;`) before
+// continuing into the case-label scan.
+
+#include <iostream>
+#include <stdio.h>
+
+int main()
+{
+    int n = 2;
+    switch (n)
+    {
+        int unused;        // pre-case declaration (unreachable)
+        char *also;        // also pre-case
+        case 1:
+            cout << "one" << endl;
+            break;
+        case 2:
+            cout << "two" << endl;
+            break;
+        default:
+            cout << "other" << endl;
+            break;
+    }
+    return 0;
+}

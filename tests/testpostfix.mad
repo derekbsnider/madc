@@ -1,0 +1,51 @@
+#include <iostream>
+// Test postfix increment/decrement (x++, x--)
+
+int main()
+{
+    int x;
+
+    // postfix ++ returns old value
+    x = 5;
+    cout << x++ << endl;  // 5
+    cout << x << endl;    // 6
+
+    // postfix -- returns old value
+    x = 10;
+    cout << x-- << endl;  // 10
+    cout << x << endl;    // 9
+
+    // prefix ++ returns new value (existing, verify still works)
+    x = 5;
+    cout << ++x << endl;  // 6
+    cout << x << endl;    // 6
+
+    // prefix -- returns new value
+    x = 10;
+    cout << --x << endl;  // 9
+    cout << x << endl;    // 9
+
+    // postfix in expression
+    x = 3;
+    int y;
+    y = x++ + 10;
+    cout << y << endl;    // 13
+    cout << x << endl;    // 4
+
+    // postfix in for loop (i++ is the standard idiom)
+    int sum;
+    sum = 0;
+    int i;
+    for ( i = 0; i < 5; i++ )
+        sum += i;
+    cout << sum << endl;  // 10
+
+    // postfix -- in while loop
+    x = 5;
+    sum = 0;
+    while ( x-- )
+        sum += x;
+    cout << sum << endl;  // 10 (4+3+2+1+0)
+
+    return 0;
+}

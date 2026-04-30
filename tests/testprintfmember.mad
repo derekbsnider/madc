@@ -1,0 +1,63 @@
+#!/usr/bin/env madc
+// Regression: parser must accept extra args for declared varargs functions,
+// including -> member expressions and macro-expanded member expressions.
+#include <stdio.h>
+#include <stdarg.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct room_data ROOM_DATA;
+typedef struct char_data CHAR_DATA;
+
+struct room_data {
+	int vnum;
+	char *name;
+};
+
+struct char_data {
+	char *name;
+	int hp;
+	ROOM_DATA *in_room;
+};
+
+#define ROOM_LABEL(ch) ((ch)->in_room->name)
+#define ROOM_VNUM(ch)  ((ch)->in_room->vnum)
+
+void wrapper(char *fmt, ...)
+{
+	char buf[256];
+	va_list args;
+	va_start(args, fmt);
+	vsprintf(buf, fmt, args);
+	va_end(args);
+	printf("%s", buf);
+}
+
+int main()
+{
+	ROOM_DATA *room;
+	CHAR_DATA *ch;
+
+	room = (ROOM_DATA *)calloc(1, sizeof(ROOM_DATA));
+	ch = (CHAR_DATA *)calloc(1, sizeof(CHAR_DATA));
+
+	room->vnum = 3001;
+	room->name = strdup("Temple");
+	ch->name = strdup("Gandalf");
+	ch->hp = 500;
+	ch->in_room = room;
+
+	printf("simple: %s %ld\n", ch->name, ch->hp);
+	printf("nested: %ld %s\n", ch->in_room->vnum, ch->in_room->name);
+	printf("mixed: %s %ld %s\n", ch->name, ch->in_room->vnum, ch->in_room->name);
+	printf("repeat: %s %s %ld %ld\n", ch->name, ch->in_room->name, ch->hp, ch->in_room->vnum);
+	printf("macro: %s %ld %s\n", ch->name, ROOM_VNUM(ch), ROOM_LABEL(ch));
+	printf("deep: %s %ld %s %ld\n", ch->in_room->name, ch->in_room->vnum, ch->name, ch->hp);
+	wrapper("wrap: %s %ld %s %ld\n", ch->name, ch->in_room->vnum, ch->in_room->name, ch->hp);
+
+	free(ch->name);
+	free(room->name);
+	free(ch);
+	free(room);
+	return 0;
+}

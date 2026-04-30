@@ -1,4 +1,5 @@
 #!/../bin/madc
+#include <iostream>
 
 #include "include_helper.mad"
 

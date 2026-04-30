@@ -1,0 +1,7 @@
+#!/../bin/madc
+#include "nested_do_outer.mah"
+
+int main()
+{
+    return 0;
+}

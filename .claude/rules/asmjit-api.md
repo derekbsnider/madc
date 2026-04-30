@@ -1,87 +1,32 @@
-# asmjit API Migration Notes (v1.14)
+# asmjit API Rules
 
-The codebase was originally written against an older asmjit API. These are the
-mappings applied during the April 2026 revival to make it build against v1.14.
+The codebase targets asmjit v1.14 installed at `/usr/local/`. The old
+API is broken in places and must not be used.
 
-## Register Type Constants
+- Never use the old enum prefixes (`BaseReg::kTypeGp*`, `BaseReg::kGroup*`,
+  `ConstPool::kScope*`, `CallConv::kId*`, `FormatOptions::kFlag*`).
+  Use the v1.14 equivalents.
+- Never use `cc.call(target, funcsig)` for compiler-level calls.
+  Use `cc.invoke(&node, target, funcsig)`.
+- Never use `FuncSignatureT<...>(CallConvId::kCDecl)` or `FuncSignatureBuilder`.
+  Use `FuncSignature::build<...>()` and `FuncSignature` directly.
+- Never use `imm.i64()` or `op.isEqual(other)`. Use `imm.value()` and
+  `op.equals(other)` (or `op == other`).
+- Never use `Operand::size()`. Use `x86RmSize()` (on asmjit operands only,
+  NOT on C++ containers).
+- Never use `cc.setArg(idx, reg)`. Use `funcnode->setArg(idx, reg)`
+  where `funcnode` is the pointer from `cc.newFunc()`.
+- Never use `cc.movsd(reg, (uintptr_t)ptr)`. Use
+  `cc.movq(reg, asmjit::x86::qword_ptr((uintptr_t)ptr))`.
+- When adjusting a stack `Mem` operand for a struct member, always use
+  `addOffset(delta)`, NEVER `setOffset(delta)` — the latter destroys the
+  base stack displacement.
+- Multi-statement `DBG(...)` blocks that share a local variable must be
+  combined into a single DBG call (each DBG is a `do { } while(0)`
+  scope).
+- Two code paths must NOT write to the same virtual register on
+  divergent branches. Use a stack-slot merge pattern (see
+  `docs/rules/ternary.md`).
 
-Old: `BaseReg::kTypeGp8Lo`, `kTypeGp8Hi`, `kTypeGp16`, `kTypeGp32`, `kTypeGp64`  
-New: `RegType::kGp8Lo`, `RegType::kGp8Hi`, `RegType::kGp16`, `RegType::kGp32`, `RegType::kGp64`
-
-Switch on `reg.type()` which returns `RegType` enum.
-
-## Register Group Constants
-
-Old: `BaseReg::kGroupVec`, `BaseReg::kGroupGp`  
-New: `RegGroup::kVec`, `RegGroup::kGp`
-
-`isGroup()` method still available on `BaseReg`.
-
-## ConstPool Scope
-
-Old: `ConstPool::kScopeLocal`  
-New: `ConstPoolScope::kLocal`
-
-## Calling Convention
-
-Old: `CallConv::kIdHost`  
-New: `CallConvId::kCDecl`
-
-## Function Invocation
-
-Old: `InvokeNode* call = cc.call(target, funcsig);`  
-New: `InvokeNode* call; cc.invoke(&call, target, funcsig);`
-
-The `cc.call(Operand)` overload still exists for the raw x86 CALL instruction.
-For compiler-level function calls with signatures, use `cc.invoke()`.
-
-## Immediate Value Access
-
-Old: `imm.i64()`  
-New: `imm.value()`
-
-## Operand Equality
-
-Old: `op.isEqual(other)`  
-New: `op.equals(other)` (or `op == other`)
-
-## Format Flags
-
-Old: `FormatOptions::kFlagMachineCode`, `kFlagDebugRA`, `kFlagDebugPasses`  
-New: `FormatFlags::kMachineCode` (kFlagDebugRA and kFlagDebugPasses removed)
-
-## movsd for non-double types (datadef.h)
-
-The `movsd` instruction only accepts `(Xmm, Xmm)` or `(Xmm, Mem)` operands.
-The old default case `cc.movsd(reg, (uintptr_t)ptr)` is invalid.
-Fixed to: `cc.movq(reg, asmjit::x86::qword_ptr((uintptr_t)ptr))`
-
-## x86::Mem Displacement: addOffset vs setOffset
-
-When adjusting a stack `Mem` operand to point to a struct member, always use
-`addOffset(delta)`, NOT `setOffset(delta)`.
-
-- `setOffset(n)` — **replaces** the entire displacement, losing the base stack offset
-- `addOffset(n)` — **adds** to the existing displacement, giving `[rbp - slot + offset]`
-
-Stack `Mem` operands from asmjit already embed a negative displacement from `rbp`.
-Using `setOffset` produces `[rbp + member_offset]` — pointing into the wrong address.
-
-## Multi-Statement DBG Blocks Across asmjit Scope
-
-When multiple DBG statements share a local variable (e.g. `FileLogger`), they must be
-combined into a single `DBG(...)` call, because `do { ... } while(0)` creates its own
-scope. A variable declared in one `DBG()` is not visible in the next.
-
-```cpp
-// CORRECT — single DBG block, logger visible throughout
-DBG(
-    static FileLogger logger(stdout);
-    logger.setFlags(FormatFlags::kMachineCode);
-    code.setLogger(&logger);
-);
-
-// WRONG — logger declared in first block, cannot be used in second
-DBG(static FileLogger logger(stdout));
-DBG(logger.setFlags(FormatFlags::kMachineCode));  // compile error
-```
+See `docs/rules/asmjit-api.md` for the full old-to-new API mapping
+table, deprecation history, and worked examples.

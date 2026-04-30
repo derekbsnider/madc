@@ -1,0 +1,37 @@
+#!/usr/bin/env madc
+#include <iostream>
+// Test class methods
+
+class Counter {
+	int count;
+
+	void inc()
+	{
+		count = count + 1;
+	}
+
+	int get()
+	{
+		return count;
+	}
+};
+
+int main()
+{
+	Counter c;
+	c.count = 0;
+	c.inc();
+	c.inc();
+	c.inc();
+	int n = c.get();
+	cout << n << endl;
+
+	// test with a different class
+	Counter d;
+	d.count = 10;
+	d.inc();
+	n = d.get();
+	cout << n << endl;
+
+	return 0;
+}

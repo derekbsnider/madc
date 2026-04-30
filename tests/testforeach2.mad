@@ -1,0 +1,25 @@
+#!/../bin/madc
+#include <iostream>
+void print_name(string name)
+{
+    cout << "Name: " << name << endl;
+}
+
+int main()
+{
+    array names;
+    php::array_push(names, "Alice");
+    php::array_push(names, "Bob");
+    php::array_push(names, "Charlie");
+
+    // std::for_each with named function pointer
+    auto fn = print_name;
+    std::for_each(names, fn);
+
+    // std::for_each with lambda
+    std::for_each(names, [](string name) {
+        cout << "Hi " << name << endl;
+    });
+
+    return 0;
+}

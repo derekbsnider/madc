@@ -1,0 +1,60 @@
+#!/../bin/madc
+// Struct-copy initialization and assignment — C's bytewise struct copy.
+// Closes the SMAUG Phase F front edge in handler.c:1284 where
+//   EXT_BV extra_flags = obj->extra_flags;
+// was rejected at parse time with
+//   Expected '{' or string literal for initializer
+// and would also have failed the compile-time assignment dispatch.
+
+#include <stdio.h>
+
+struct Point {
+    int x;
+    int y;
+    int z;
+};
+
+struct Flags {
+    int a, b, c, d;
+};
+
+struct Obj {
+    int id;
+    struct Flags f;
+};
+
+int main()
+{
+    // Same-type struct-copy at declaration.
+    struct Point a = { 1, 2, 3 };
+    struct Point b = a;
+    printf("b = %d %d %d\n", b.x, b.y, b.z);
+
+    // Plain struct-to-struct assignment.
+    struct Point c;
+    c = b;
+    printf("c = %d %d %d\n", c.x, c.y, c.z);
+
+    // Mutating the copy must not affect the source.
+    c.x = 99;
+    printf("c.x=%d b.x=%d\n", c.x, b.x);
+
+    // Struct-copy from a pointer-member (ptr->member) source —
+    // TokenMember::operand LEAs the member's address into a Gp;
+    // memcpy reads from that Gp.
+    struct Obj o;
+    o.id = 7;
+    o.f.a = 10;
+    o.f.b = 20;
+    o.f.c = 30;
+    o.f.d = 40;
+    struct Obj *p = &o;
+    struct Flags extra = p->f;
+    printf("extra = %d %d %d %d\n", extra.a, extra.b, extra.c, extra.d);
+
+    // And via explicit `*p` struct-copy init.
+    struct Obj clone = *p;
+    printf("clone.id=%d clone.f.a=%d\n", clone.id, clone.f.a);
+
+    return 0;
+}

@@ -1,0 +1,54 @@
+#!/../bin/madc
+// `(*p).member` and `(*p).member[i]` as alternatives to `p->member`.
+// Closes the SMAUG Phase F parser-crash front edge in handler.c:2989
+// where SMAUG's xIS_SET(*vector, bit) macro expands to
+//   ((*vector).bits[(bit) >> RSV] & 1 << ((bit) & XBM))
+// and the dot-after-deref form used to segfault parseExpression.
+
+#include <stdio.h>
+
+struct V { int x; int y; };
+struct W { int x; };
+
+// Reached via TokenDerefExpr — `vector` is also a madc keyword, so
+// the lexer hands the unary-`*` handler a keyword token rather than
+// an identifier. That path wraps the expression in TokenDerefExpr.
+int via_vector(struct W *vector)
+{
+    return (*vector).x;
+}
+
+// Reached via TokenDeref (plain pointer variable with non-keyword name).
+int via_p(struct V *p)
+{
+    return (*p).x + (*p).y;
+}
+
+int main()
+{
+    struct V v;
+    v.x = 10;
+    v.y = 20;
+    struct V *p = &v;
+
+    printf("via_p=%d\n", via_p(p));
+
+    // Write through (*p).member — should mutate v directly.
+    (*p).x = 99;
+    printf("v.x=%d\n", v.x);
+
+    // Condition use — was the original SMAUG context.
+    if ((*p).y > 0)
+	printf("y-positive\n");
+
+    // Declaration init from (*p).member.
+    int q = (*p).y;
+    printf("q=%d\n", q);
+
+    // And the TokenDerefExpr path via keyword identifier `vector`.
+    struct W w;
+    w.x = 42;
+    printf("via_vector=%d\n", via_vector(&w));
+
+    return 0;
+}

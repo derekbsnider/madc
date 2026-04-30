@@ -1,0 +1,32 @@
+#include <iostream>
+// Test [&] lambda capture by reference
+
+int main()
+{
+    // Basic capture: modify outer variable
+    int counter = 0;
+    auto increment = [&]() {
+        counter = counter + 1;
+    };
+    increment();
+    increment();
+    cout << counter << endl;   // 2
+
+    // Capture with parameter
+    int total = 0;
+    auto add = [&](int n) {
+        total = total + n;
+    };
+    add(10);
+    add(5);
+    cout << total << endl;     // 15
+
+    // Capture string
+    string msg = "hello";
+    auto greet = [&]() {
+        cout << msg << endl;
+    };
+    greet();                   // hello
+
+    return 0;
+}

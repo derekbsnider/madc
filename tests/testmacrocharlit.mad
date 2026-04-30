@@ -1,0 +1,41 @@
+// Regression: char literals inside function-like macro arguments
+// used to break the macro arg parser. The lexer's macro-arg loop
+// tracked `(`, `)`, `,`, `"` for nesting/escapes but NOT `'`. So
+// `stub( x, (x > 0) ? ')' : '(' )` saw the `)` inside `')'` as a
+// real close-paren, prematurely ended the macro call, then ran out
+// of input expecting `"`. Diagnostic was "Unterminated string".
+//
+// Fix: handle `'` like `"` — copy the char literal verbatim through
+// to its closing `'`, honouring backslash escapes.
+//
+// Surfaced at MadSMAUG boards.c:599-607 where pager_printf gets
+// passed nested-ternary args containing char literals like `'V'`,
+// `'B'`, `':'`, `')'`.
+
+#include <iostream>
+
+#define stub(...) ((void)0)
+#define passchar(c) c
+
+int main()
+{
+    int x = 5;
+
+    // Char literal containing `)` inside a macro arg.
+    stub( x, (x > 0) ? ')' : '(' );
+    cout << "stub-ok" << endl;
+
+    // Char literal containing `,` — must not split args.
+    char c = passchar(',');
+    cout << c << endl;            // ,
+
+    // Char literal containing `"` — must not be confused with string.
+    char q = passchar('"');
+    cout << q << endl;            // "
+
+    // Backslash escape inside char literal.
+    char nl = passchar('\n');
+    cout << (int)nl << endl;      // 10
+
+    return 0;
+}

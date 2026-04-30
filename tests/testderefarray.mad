@@ -1,0 +1,13 @@
+#include <stdio.h>
+
+int main()
+{
+    char emptybuf[4] = "";
+    char word[8] = "Hi";
+
+    if ( !*emptybuf )
+        printf("empty\n");
+
+    printf("%c\n", *word);
+    return 0;
+}

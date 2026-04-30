@@ -1,0 +1,8 @@
+#!/../bin/madc
+#include <sys/time.h>
+
+int main()
+{
+    struct fd_set readfds;
+    return 0;
+}

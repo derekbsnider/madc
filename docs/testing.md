@@ -9,21 +9,31 @@ Run a single test:
 bin/madc tests/testint.mad
 ```
 
-Run all tests and report pass/fail:
+Run all tests via the Makefile:
 ```bash
-for t in tests/*.mad; do
-    out=$(timeout 5 bin/madc "$t" 2>/dev/null)
-    ec=$?
-    if   [ $ec -eq   0 ]; then echo "PASS:    $t"
-    elif [ $ec -eq 124 ]; then echo "TIMEOUT: $t"
-    else                       echo "FAIL($ec): $t"
-    fi
-done
+make -C src fulltest
 ```
 
-Current status: **36/36 pass** (see `docs/test-status.md` for details).
+Current status: **83/83 pass** (see `docs/test-status.md` for details).
 
-Note: `tests/include_helper.mad` is not a standalone test — it's included by `testinclude.mad`. Skip it when running the test loop.
+Under the hood, `scripts/run_tests.sh` iterates `tests/*.mad` and
+discovers per-test fixtures by filename convention. For a test
+`tests/foo.mad`, the runner uses (all optional):
+
+| Fixture           | Effect                                             |
+|-------------------|----------------------------------------------------|
+| `tests/foo.input` | Redirected to stdin (`bin/madc foo.mad < foo.input`) |
+| `tests/foo.argv`  | Whitespace-split, appended as argv                 |
+| `tests/foo.expect`| Each non-empty line must appear in the output      |
+
+The runner is deliberately generic — it does not know about any
+individual test. To add stdin to an existing test, drop a `.input`
+file next to it and re-run. This keeps each test's setup and
+expected output co-located with the test itself (high cohesion,
+low coupling to the runner).
+
+Note: `tests/include_helper.mad` is not a standalone test — it's
+included by `testinclude.mad`. The runner skips it by name.
 
 ## Unit Tests
 

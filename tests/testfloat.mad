@@ -1,0 +1,65 @@
+// Float (4-byte) variables used to store garbage and print as 0.
+// Two gaps:
+//   1. safemov(Mem, Xmm) with a float-sized Mem called plain movss on
+//      a double-valued Xmm — that stores the low 32 bits of the
+//      double (mantissa bits), not a valid float32. Needs cvtsd2ss
+//      first.
+//   2. TokenCast just reinterpreted real↔real casts, so `(double)flt`
+//      passed the raw float bits (low 32 of Xmm) to variadic printf
+//      which reads it as a double and gets 0.0.
+//
+// Fixed both: safemov(Mem, Xmm) cvtsd2ss's when src is double and
+// dst is float (and cvtss2sd for the opposite direction); TokenCast
+// emits a real↔real conversion when src and dst sizes differ.
+
+#include <stdio.h>
+
+// Split across functions so each float operation runs in its own
+// compile unit — asmjit's register allocator has a separate issue
+// when multiple floats intersperse with printf calls in one
+// function, filed as a separate TODO.
+
+void test_basic()
+{
+    float f = 1.5;
+    printf("f=%f\n", (double)f);
+}
+
+void test_add()
+{
+    float f = 1.5;
+    float g = 3.0;
+    float h = f + g;
+    printf("h=%f\n", (double)h);
+}
+
+void test_mul()
+{
+    float f = 1.5;
+    float k = f * 2.0;
+    printf("k=%f\n", (double)k);
+}
+
+void test_demote()
+{
+    double d = 2.75;
+    float fd = (float)d;
+    printf("fd=%f\n", (double)fd);
+}
+
+void test_promote()
+{
+    float fx = 4.25;
+    double dx = (double)fx;
+    printf("dx=%f\n", dx);
+}
+
+int main()
+{
+    test_basic();
+    test_add();
+    test_mul();
+    test_demote();
+    test_promote();
+    return 0;
+}

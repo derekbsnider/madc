@@ -1,0 +1,63 @@
+#!/../bin/madc
+// `goto label;` + forward/backward labels. Labels are function-scoped
+// and resolve through `Program::label_map` (cleared at each
+// `TokenFunc::compile` boundary); forward references work because
+// `TokenGOTO::compile` looks-up-or-creates the asmjit Label before
+// the later `TokenLabel::compile` binds it. Needed to unlock several
+// SMAUG translation units (mud_prog.c, magic.c, tables.c, build.c,
+// mud_comm.c, ban.c, services.c) that use goto-driven exit paths.
+
+#include <stdio.h>
+
+int main()
+{
+    // Basic backward goto loop.
+    int i = 0;
+loop:
+    if (i >= 3)
+	goto after_loop;
+    printf("i=%d\n", i);
+    i = i + 1;
+    goto loop;
+after_loop:
+    printf("after_loop\n");
+
+    // Forward goto (skip over code).
+    goto skip;
+    printf("UNREACHABLE\n");
+skip:
+    printf("after_skip\n");
+
+    // SMAUG mud_prog.c `doneargs:` pattern: multiple gotos into a
+    // single exit label from different branches of a switch.
+    int x = 2;
+    switch (x) {
+	case 0:
+	    printf("zero\n");
+	    goto doneargs;
+	case 1:
+	    printf("one\n");
+	    goto doneargs;
+	case 2:
+	    printf("two\n");
+	    goto doneargs;
+	default:
+	    printf("other\n");
+	    goto doneargs;
+    }
+doneargs:
+    printf("doneargs\n");
+
+    // Labels are per-function — the same name in another function
+    // doesn't collide.
+    return 0;
+}
+
+int helper(int a)
+{
+    if (a < 0)
+	goto neg;
+    return a;
+neg:
+    return -a;
+}

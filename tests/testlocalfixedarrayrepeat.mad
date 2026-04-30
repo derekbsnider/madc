@@ -1,0 +1,36 @@
+// Regression: a local C fixed-size array used FIRST inside a branch
+// and AGAIN unconditionally after the branch. The cached Gp holds
+// the LEA of the stack slot but the LEA was emitted at the first use
+// site; if that site sits inside an `if` whose condition is false,
+// the second use reads an uninitialized vreg → NULL deref.
+//
+// SMAUG's `bug()` is the canonical victim: declares
+// `char buf[MAX_STRING_LENGTH]`, first uses it inside
+// `if (fpArea != NULL) sprintf(buf, ...)`, then runs
+// `strcpy(buf, "[*****] BUG: ")` after the if. With fpArea NULL
+// (load_vaults phase), strcpy crashed inside libc memcpy on NULL dst.
+//
+// Fix: voperand re-emits LEA on every reuse of a local fixed-size
+// array (mirrors the existing global-fixed-array re-emit).
+
+#include <stdio.h>
+#include <string.h>
+
+int flag = 0;
+
+void test()
+{
+    char buf[4096];
+    if (flag != 0)
+    {
+        sprintf(buf, "first %d", 1);
+    }
+    strcpy(buf, "second");
+    printf("buf=%s\n", buf);
+}
+
+int main()
+{
+    test();
+    return 0;
+}

@@ -1,0 +1,56 @@
+// Function-scope `static` local-variable initializers must run.
+//
+// Before this fix madc allocated heap storage for static locals
+// (vfALLOC + vfSTATIC) but TokenDecl::compile skipped the
+// `initialize` block whenever vfSTATIC was set and we weren't at
+// program scope — so the storage stayed zero-initialized and
+// `static char const *p = "literal"` left p == NULL.
+//
+// SMAUG mud_comm.c:get_color hit this on
+//     static char const * color_list = "_bla_red_dgr_..."
+// and SIGSEGV'd inside `strstr(color_list, color)`.
+//
+// Fix hoists the initializer to tkProgram->statements so it runs
+// once before main(), matching standard C semantics.
+
+#include <stdio.h>
+#include <string.h>
+
+int color_index(char *want) {
+    static char const * color_list = "_bla_red_dgr_blu";
+    char *p = strstr(color_list, want);
+    if (!p) return -1;
+    return (int)(p - color_list) / 4;
+}
+
+// Counter-style: init runs once, increments persist across calls.
+int next_id(void) {
+    static int counter = 100;
+    int r = counter;
+    counter = counter + 1;
+    return r;
+}
+
+// Mixed-type statics: pointer + int + double in same function.
+void multi_static(void) {
+    static char const * label = "tag";
+    static int call_count = 0;
+    static double scale = 2.5;
+    call_count = call_count + 1;
+    printf("multi_static: label='%s' call_count=%d scale=%g\n",
+           label, call_count, scale);
+}
+
+int main() {
+    printf("color_index(_red)=%d\n", color_index("_red"));
+    printf("color_index(_blu)=%d\n", color_index("_blu"));
+    printf("color_index(_xx)=%d\n",  color_index("_xx"));
+
+    printf("next_id=%d\n", next_id());
+    printf("next_id=%d\n", next_id());
+    printf("next_id=%d\n", next_id());
+
+    multi_static();
+    multi_static();
+    return 0;
+}

@@ -1,0 +1,40 @@
+#include <stdio.h>
+
+// Assignment as an expression that returns the assigned value.
+// Needed for SMAUG idioms like:
+//   while ((entry = readdir(d)) != NULL) { ... }
+//   if ((n = get_next()) > 0) { ... }
+
+int next_val(int base) { return base + 10; }
+
+int main()
+{
+    int x;
+    int count = 0;
+
+    // while condition: assign + compare.
+    while ((x = next_val(count)) < 35) {
+        count = x;
+    }
+    printf("while: x=%d count=%d\n", x, count);
+
+    // if condition: assign + compare.
+    int y;
+    if ((y = next_val(5)) > 10) {
+        printf("if_big: y=%d\n", y);
+    }
+
+    // Assign used where value is consumed (not inside decl init).
+    int a = 0;
+    int b = 0;
+    b = (a = 99);
+    printf("chain: a=%d b=%d\n", a, b);
+
+    // Assign to two vars, compare (used widely in comm.c style sockets).
+    int p, q;
+    if ((p = 7) == (q = 7)) {
+        printf("pair_eq: %ld %ld\n", p, q);
+    }
+
+    return 0;
+}
