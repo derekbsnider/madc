@@ -8,6 +8,7 @@
 #include <execinfo.h>
 #include <unistd.h>
 #include <ucontext.h>
+#include <sys/resource.h>
 #include <iostream>
 #include <iomanip>
 #include <fstream>
@@ -168,9 +169,51 @@ double time_diff(struct timeval x , struct timeval y)
 	return diff;
 }
 
+// Resource guards. Defaults are generous enough for normal compile +
+// execute, strict enough that a runaway JIT loop or pathological alloc
+// trips well before the host gets noticeable. All overridable via env:
+//   MADC_CPU_LIMIT=<secs>   (default 60, 0 disables)
+//   MADC_MEM_LIMIT=<MB>     (default 2048, 0 disables) — virtual address
+//                            space (RLIMIT_AS), so includes JIT mappings
+//                            and dlopen()'d shared libs.
+// Soft = limit, hard = limit+slop so the process can't extend itself.
+// Hitting RLIMIT_CPU sends SIGXCPU; hitting RLIMIT_AS makes the next
+// mmap/brk return ENOMEM (allocators usually abort()).
+static rlim_t env_rlim(const char *env_name, rlim_t fallback)
+{
+    if ( const char *env = getenv(env_name) ) {
+        char *end = NULL;
+        long v = strtol(env, &end, 10);
+        if ( end != env && v >= 0 ) return (rlim_t)v;
+    }
+    return fallback;
+}
+
+static void install_resource_guards(void)
+{
+    rlim_t cpu_secs = env_rlim("MADC_CPU_LIMIT", 60);
+    if ( cpu_secs > 0 ) {
+        struct rlimit rl;
+        rl.rlim_cur = cpu_secs;
+        rl.rlim_max = cpu_secs + 1;
+        if ( setrlimit(RLIMIT_CPU, &rl) != 0 )
+            perror("setrlimit(RLIMIT_CPU)");
+    }
+
+    rlim_t mem_mb = env_rlim("MADC_MEM_LIMIT", 2048);
+    if ( mem_mb > 0 ) {
+        struct rlimit rl;
+        rl.rlim_cur = (rlim_t)mem_mb * 1024 * 1024;
+        rl.rlim_max = rl.rlim_cur;
+        if ( setrlimit(RLIMIT_AS, &rl) != 0 )
+            perror("setrlimit(RLIMIT_AS)");
+    }
+}
+
 int main(int argc, char **argv)
 {
     install_crash_handler();
+    install_resource_guards();
 
     stringstream ss;
     Program prog;
