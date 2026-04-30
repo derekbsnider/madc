@@ -1,0 +1,33 @@
+// Regression: C/C++ translation phase 6 — adjacent string literals
+// concatenate. Without this, `SYSTEM_DIR "commands.dat"` (where
+// SYSTEM_DIR is `"../system/"`) expands to two adjacent ttString
+// tokens; the parser's exStack semantics keep only the LAST one,
+// so SMAUG's `fopen(COMMAND_FILE, "r")` opened just `commands.dat`
+// from the wrong cwd and the silent `bug() / exit(0)` path fired.
+//
+// Fix: lexer funnels every tokens.push_back through a helper that
+// merges a string-literal token with the previous one if both are
+// ttString. Applies at the top-level tokenize loop AND at the two
+// #include push paths (embedded headers + on-disk includes).
+
+#include <stdio.h>
+#include <string.h>
+
+#define DIR_A "alpha/"
+#define DIR_B "beta/"
+#define PATH1 DIR_A "one.txt"
+#define PATH2 DIR_B "two.txt"
+#define COMBO DIR_A DIR_B "three.txt"
+
+int main()
+{
+    char *p1 = PATH1;
+    char *p2 = PATH2;
+    char *p3 = COMBO;
+    char *raw = "first" "second" "third";
+    printf("p1=[%s]\n", p1);
+    printf("p2=[%s]\n", p2);
+    printf("p3=[%s]\n", p3);
+    printf("raw=[%s] len=%d\n", raw, (int)strlen(raw));
+    return 0;
+}

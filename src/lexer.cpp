@@ -216,6 +216,19 @@ TokenLPSTR	tkLPSTR;
 TokenAUTO	tkAUTO;
 
 
+void Program::push_token_with_string_concat(TokenBase *tb)
+{
+    if ( tb->type() == TokenType::ttString
+      && !tokens.empty()
+      && tokens.back()->type() == TokenType::ttString )
+    {
+	((TokenStr *)tokens.back())->str += ((TokenStr *)tb)->str;
+	delete tb;
+	return;
+    }
+    tokens.push_back(tb);
+}
+
 void Program::_tokenizer_init()
 {
 
@@ -491,7 +504,7 @@ TokenBase *Program::_getToken()
 			    while ( (itb = getRealToken()) )
 			    {
 				itb->file = _interned1;
-				tokens.push_back(itb);
+				push_token_with_string_concat(itb);
 			    }
 			    source = std::move(saved);
 			    // flag headers for deferred registration during parse init
@@ -528,7 +541,7 @@ TokenBase *Program::_getToken()
 		    while ( (itb = getRealToken()) )
 		    {
 			itb->file = _interned2;
-			tokens.push_back(itb);
+			push_token_with_string_concat(itb);
 		    }
 		    source = std::move(saved);
 		    return getToken(); // continue with current file
@@ -1811,7 +1824,7 @@ TokenProgram *Program::tokenize(const char *fname)
 	    tb->file = fname;
 //	    tb->line = source.line();
 //	    tb->column = source.column();
-	    tokens.push_back(tb);
+	    push_token_with_string_concat(tb);
         }
     }
     catch(const char *err_msg)

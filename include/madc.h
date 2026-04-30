@@ -659,6 +659,12 @@ public:
     TokenBase *getRealToken();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
+    // C/C++ translation phase 6: adjacent string literals concatenate.
+    // Funnel every tokens.push_back through this helper so an
+    // included `SYSTEM_DIR "file.dat"` (= `"../system/" "file.dat"`)
+    // ends up as one merged literal, not two adjacent tokens whose
+    // first one gets dropped by parser exStack semantics.
+    void push_token_with_string_concat(TokenBase *tb);
 
     // for debugging
     void printt(TokenBase *);

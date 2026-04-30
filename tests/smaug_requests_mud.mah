@@ -6,7 +6,10 @@
 
 #define REQUESTS 1
 #define MAX_STRING_LENGTH 4096
-#define SYSTEM_DIR "tests/"
+// Test runner cd's into tests/, so use a bare relative path; the
+// adjacent-string-literal concat that landed alongside this test
+// would otherwise turn this into "tests/tests/smaug_requests.pipe".
+#define SYSTEM_DIR ""
 #define REQUEST_PIPE SYSTEM_DIR "smaug_requests.pipe"
 
 int bug_calls = 0;

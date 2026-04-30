@@ -1,0 +1,4 @@
+p1=[alpha/one.txt]
+p2=[beta/two.txt]
+p3=[alpha/beta/three.txt]
+raw=[firstsecondthird] len=16
