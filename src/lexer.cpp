@@ -870,11 +870,37 @@ TokenBase *Program::_getToken()
 			case '\\': word += '\\'; break;
 			case '"':  word += '"';  break;
 			case '\'': word += '\''; break;
-			case '0':  word += '\0'; break;
 			case 'a':  word += '\a'; break;
 			case 'b':  word += '\b'; break;
 			case 'f':  word += '\f'; break;
 			case 'v':  word += '\v'; break;
+			case '?':  word += '\?'; break;
+			case 'x': case 'X': {
+			    // hex escape: \xHH (1-2 hex digits)
+			    int val = 0; int dig = 0;
+			    while ( dig < 2 && source.good() ) {
+				int c = source.peek();
+				int d = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:(c>='A'&&c<='F')?c-'A'+10:-1;
+				if ( d < 0 ) break;
+				val = (val << 4) | d;
+				source.get(); ++dig;
+			    }
+			    word += (char)val;
+			    break;
+			}
+			case '0': case '1': case '2': case '3':
+			case '4': case '5': case '6': case '7': {
+			    // octal escape: \NNN (1-3 octal digits, including the one already consumed)
+			    int val = esc - '0'; int dig = 1;
+			    while ( dig < 3 && source.good() ) {
+				int c = source.peek();
+				if ( c < '0' || c > '7' ) break;
+				val = (val << 3) | (c - '0');
+				source.get(); ++dig;
+			    }
+			    word += (char)val;
+			    break;
+			}
 			default:   word += '\\'; word += esc; break;
 		    }
 		}
@@ -906,11 +932,35 @@ TokenBase *Program::_getToken()
 			case '\\': word += '\\'; break;
 			case '\'': word += '\''; break;
 			case '"':  word += '"';  break;
-			case '0':  word += '\0'; break;
 			case 'a':  word += '\a'; break;
 			case 'b':  word += '\b'; break;
 			case 'f':  word += '\f'; break;
 			case 'v':  word += '\v'; break;
+			case '?':  word += '\?'; break;
+			case 'x': case 'X': {
+			    int val = 0; int dig = 0;
+			    while ( dig < 2 && source.good() ) {
+				int c = source.peek();
+				int d = (c>='0'&&c<='9')?c-'0':(c>='a'&&c<='f')?c-'a'+10:(c>='A'&&c<='F')?c-'A'+10:-1;
+				if ( d < 0 ) break;
+				val = (val << 4) | d;
+				source.get(); ++dig;
+			    }
+			    word += (char)val;
+			    break;
+			}
+			case '0': case '1': case '2': case '3':
+			case '4': case '5': case '6': case '7': {
+			    int val = esc - '0'; int dig = 1;
+			    while ( dig < 3 && source.good() ) {
+				int c = source.peek();
+				if ( c < '0' || c > '7' ) break;
+				val = (val << 3) | (c - '0');
+				source.get(); ++dig;
+			    }
+			    word += (char)val;
+			    break;
+			}
 			default:   word += '\\'; word += esc; break;
 		    }
 		    continue;
