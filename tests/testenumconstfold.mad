@@ -1,0 +1,48 @@
+// Constant-folding of arithmetic between enum constants (or any
+// vfCONSTANT integer Variable references). Before the TokenVar
+// ival()/dval() override, (TOP - BASE) folded to 0 at runtime
+// even though parse-time array-sizing read the same expression
+// correctly via read_constant_integer. SMAUG colorize.c's
+// `for (at = 0; at < AT_MAXCOLOR; ++at)` loop never ran, leaving
+// `at_color_table[i].name` NULL → DISPOSE-NULL spam.
+#include <stdio.h>
+
+enum {
+    BASE = 1024,
+    A = BASE,
+    B, C, D,
+    TOP        // = 1028
+};
+#define MAX (TOP - BASE)
+
+typedef enum {
+    TBASE = 100,
+    TA = TBASE,
+    TB, TC,
+    TTOP       // = 103
+} typedenum_t;
+#define TMAX (TTOP - TBASE)
+
+int main() {
+    // Sanity: each constant prints correctly on its own.
+    printf("BASE=%d TOP=%d\n", BASE, TOP);
+    printf("TBASE=%d TTOP=%d\n", TBASE, TTOP);
+
+    // The folded forms — these all returned wrong values before
+    // the fix.
+    printf("TOP-BASE=%d\n",    TOP - BASE);     // expect 4
+    printf("TOP-1024=%d\n",    TOP - 1024);     // expect 4
+    printf("1028-BASE=%d\n",   1028 - BASE);    // expect 4
+    printf("TOP*2=%d\n",       TOP * 2);        // expect 2056
+    printf("TOP+BASE=%d\n",    TOP + BASE);     // expect 2052
+    printf("TTOP-TBASE=%d\n",  TTOP - TBASE);   // expect 3 (typedef enum)
+    printf("MAX=%d\n",         MAX);            // expect 4
+    printf("TMAX=%d\n",        TMAX);           // expect 3
+
+    // The colorize.c regression: a for-loop bound that reduces to
+    // (TOP - BASE) must iterate the right number of times.
+    int n = 0, i;
+    for (i = 0; i < MAX; ++i) n++;
+    printf("loop_count=%d\n", n);                // expect 4
+    return 0;
+}

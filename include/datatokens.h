@@ -184,6 +184,15 @@ public:
     virtual TokenType type() const { return TokenType::ttVariable; }
     virtual int64_t get() const { return var.get<int64_t>(); }
     virtual int val() const     { return var.get<int>(); }
+    // Constant-fold path (TokenOperator::optimize → ioperate/foperate)
+    // calls ival()/dval() on each leaf. Without these overrides
+    // enum/const-var leaves report 0, so e.g. (TOPCOLOR-COLORBASE)
+    // folds to 0 at runtime even though parse-time array sizing reads
+    // them correctly via read_constant_integer.
+    virtual int ival() const override
+        { return var.is_constant() ? var.get<int>() : 0; }
+    virtual double dval() const override
+        { return var.is_constant() ? var.get<double>() : 0; }
     virtual bool is_constant() const { return var.is_constant(); }
     virtual bool is_real() const { return _datatype->is_real(); }
     virtual void set(int64_t c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
