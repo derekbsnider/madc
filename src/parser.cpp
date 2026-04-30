@@ -2719,6 +2719,30 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    if ( !cdd )
 				Throw(type_tb) << "sizeof: cannot determine type of expression" << flush;
 			    sizeof_value = cdd->size;
+			    // Fixed-array struct members carry their element
+			    // type as datadef() (so the rest of the compiler
+			    // sees `char buf[N]` accesses as char), but
+			    // `sizeof(d->buf)` should report N * elem_size,
+			    // not 1. Closes SMAUG read_from_descriptor's
+			    // `iStart >= sizeof(d->inbuf) - 10` check, which
+			    // underflowed to a negative threshold with sizeof
+			    // returning 1 — every connection's first byte
+			    // tripped the "input overflow! / PUT A LID ON IT"
+			    // path before nanny ever saw the input.
+			    if ( TokenMember *tm = dynamic_cast<TokenMember *>(chain) )
+			    {
+				if ( tm->is_fixed_array_member() )
+				{
+				    DataDef *otype = tm->object.type;
+				    if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
+					otype = opt->base_type;
+				    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype) )
+				    {
+					std::string mname = tm->var.name;
+					sizeof_value *= sdd->m_count(mname);
+				    }
+				}
+			    }
 			    var = NULL;
 			}
 			else if ( var )

@@ -1,0 +1,36 @@
+// Regression: sizeof(d->arr) for a struct member declared as a
+// fixed-size array must return the array's full byte count, not the
+// element size. SMAUG's read_from_descriptor checks
+//   if ( iStart >= sizeof(d->inbuf) - 10 )
+//     bug("input overflow"); return FALSE;
+// where d->inbuf is `char inbuf[1024]`. With sizeof returning 1
+// (the element size), the threshold underflowed to a small negative
+// and EVERY first byte of input tripped "input overflow". The user
+// got "PUT A LID ON IT" before nanny ever saw their input.
+
+#include <stdio.h>
+
+struct rec {
+    char buf[1024];
+    int  ints[8];
+    char small[3];
+};
+
+void check(struct rec *d)
+{
+    printf("sizeof(d->buf)=%d\n", (int)sizeof(d->buf));
+    printf("sizeof(d->ints)=%d\n", (int)sizeof(d->ints));
+    printf("sizeof(d->small)=%d\n", (int)sizeof(d->small));
+    int iStart = 5;
+    if (iStart >= (int)sizeof(d->buf) - 10)
+        printf("buf overflow (BUG)\n");
+    else
+        printf("buf ok\n");
+}
+
+int main()
+{
+    struct rec r;
+    check(&r);
+    return 0;
+}
