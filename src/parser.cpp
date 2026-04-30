@@ -4227,7 +4227,17 @@ TokenBase *TokenIF::parse(Program &pgm)
     if ( !(statement=pgm.parseStatement(tn)) )
 	pgm.Throw(tn) << "Failed to parse if statement" << flush;
 
-    tn = pgm.peekToken();
+    // Some statement parsers (TokenBREAK, TokenCONT, plain TokenRETURN
+    // for void) leave the trailing ';' in the stream — they're handled
+    // as no-op statements by parseCompound on the next iteration.  But
+    // here, with `if (cond) break;` (or any bare-flow-statement body),
+    // peeking for `else` finds the unconsumed ';' first and we miss
+    // attaching the else to *this* if.  C semantics require the else
+    // to bind to the nearest unmatched if (the dangling-else rule), so
+    // skip past a trailing ';' before checking.
+    while ( (tn = pgm.peekToken()) && tn->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
     if ( tn && tn->id() == TokenID::tkELSE )
     {
 	tn = pgm.nextToken(); // get the else
