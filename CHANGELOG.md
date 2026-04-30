@@ -2,6 +2,107 @@
 
 ## [Unreleased]
 
+- **SMAUG runtime is fully interactive end-to-end.** boot_db
+  completes through every load_*() phase, game_loop ticks at
+  4 Hz, area_update fires every 30-90 s with `Resetting:` log
+  lines, telnet returns the greeting, and the character-creation
+  dialog progresses through Name → "Did I get that right? (Y/N)"
+  → password prompt (with telnet IAC `ff fb 01` echo-suppression)
+  → password retype → color preference. Clean client disconnect
+  handled. First time SMAUG under madc has been genuinely
+  playable as a network-protocol MUD.
+
+- **Five real codegen / parser bugs fixed this session.** Each
+  one was a real divergence from gcc's behavior on the exact same
+  upstream source, and each had a one-line repro:
+
+  - **TokenVar enum const-fold**: `TokenOperator::optimize` calls
+    `ival()` / `dval()` on each leaf when both sides report
+    `is_constant()`. `TokenVar` reported is_constant correctly for
+    vfCONSTANT vars (enum members, `static const int`) but
+    inherited the default returning 0. So `enum { BASE=1024, ...,
+    TOP }; (TOP - BASE)` folded to **0** at runtime even though
+    parse-time array sizing read the same expression correctly via
+    `read_constant_integer`. Visible victim was SMAUG colorize.c's
+    `for (at=0; at < AT_MAXCOLOR; ++at)` running zero iterations
+    and the file-read loop's `DISPOSE` macro spamming ~57
+    `DISPOSEing NULL in colorize.c, line 40` lines per boot. Fix:
+    9-line override of `ival()` / `dval()` on `TokenVar`.
+    `tests/testenumconstfold.mad`.
+
+  - **Brace-less comma-expression statements**: `parseExpression`
+    treats `,` as a hard stop because every other caller (function
+    args, for-init/incr separators) needs it that way. So a body
+    like `while ( (*p = *i) != '\0' ) ++p, ++i;` parsed as
+    `++p;` and the `, ++i;` became a sibling statement AFTER the
+    loop. `*i` stayed at the first char forever, `p` walked off
+    the buffer, SIGSEGV — found via SMAUG mud_prog.c:2437. Fix:
+    new `parseExpression(push_back_comma=true)` flag, new
+    `parseExprStmt` helper called from parseStatement's
+    expression-statement branch, new `TokenComma::compile` that
+    evaluates left for side effects and returns right's value.
+    `tests/testcommastmt.mad`.
+
+  - **`setrlimit` resource guards**: codegen bugs that compile to
+    spinning loops (the comma-stmt bug above was one) used to pin
+    the host at 99% CPU until killed by hand. Add
+    `MADC_CPU_LIMIT=<seconds>` (default 60, RLIMIT_CPU →
+    SIGXCPU/SIGKILL) and `MADC_MEM_LIMIT=<MB>` (default 2048,
+    RLIMIT_AS — covers JIT mappings + dlopen libs). Both
+    overridable, both have a `=0` disable knob.
+
+  - **Function-scope static initializers**: TokenDecl::compile
+    skipped the inline initialize-on-every-call code for
+    vfSTATIC vars (correct C semantics — static init must fire
+    exactly once, before main), but nothing was feeding the
+    initializer into program-startup code instead. So
+    `static char const *p = "literal";` left p NULL. SMAUG
+    mud_comm.c's `get_color` SIGSEGV'd inside
+    `strstr(color_list, color)` — `color_list` was the static
+    pointer that never got its literal address. Fix: in
+    parseDeclaration, push the wrapped TokenAssign onto
+    `tkProgram->statements` when the decl is a function-scope
+    static with `=`-init. Counter-pattern statics
+    (`static int n = 5; n++;`) keep working — the init still
+    fires only once. `tests/teststaticlocalinit.mad`.
+
+  - **Real-typed global Xmm load/store via reg-base addressing**:
+    three independent gaps, all in the same TokenCpnd::movreg path.
+    (1) Missing `else` between the kVec and kGp arms: an Xmm
+    operand fell through to the Gp branch's bare `else` clause
+    which threw "unsupported operand". (2) `movsd xmm, [abs64]`
+    has no encoding — only `mov rax, [moffs64]` for the GP analog
+    (which is why integer globals worked: asmjit's reloc system
+    patches the moffs64 form, but movsd has nothing to patch). At
+    cc.finalize() asmjit aborted with `Reloc entry contains
+    address that is out of range (unencodable)` for any heap
+    pointer above the 32-bit signed range. Spill the address into
+    a Gp first and use `[gp]` addressing — always encodes. (3)
+    `movxval2mptr` (the Xmm-to-mem write-back) didn't exist, and
+    `TokenCpnd::putreg` only had a Gp branch — even when reads
+    were fixed, writes silently no-op'd and globals stayed at
+    zero. Add the helper and the kVec branch.
+
+- **MadSMAUG `act()` un-stubbed.** All four bootstrap-shim
+  function bodies that earlier sessions thought were "variadic
+  pipeline corrupts the heap" turn out to be layout-shift
+  symptoms of the comma-stmt and real-global codegen bugs above.
+  With those fixed, the upstream `act()`, `to_channel`,
+  `boot_log` definitions stand on their own. Only `slot_lookup`
+  remains stubbed (next-session blocker, see below).
+
+- **Open issue blocking slot_lookup un-stub**: a real madc bug
+  that only manifests in the SMAUG umbrella context (5800+
+  functions). Inside slot_lookup, `if (slot <= 0) return -1;`
+  fails to early-return for slot=-1. Probes confirm:
+  `sizeof(slot)=8` (madc int is 64-bit by design), low 32 bits
+  read as -1 correctly, high 32 bits are zero (NOT
+  sign-extended), the 64-bit cmp sees positive 4B and the guard
+  fails. Cannot reproduce in a small repro — SMAUG-umbrella
+  specific. Three hypotheses documented in
+  MadSMAUG/src/_bootstrap_comm_shim.c. Workaround keeps an
+  unconditional `return -1` stub.
+
 - **MadSMAUG accepts telnet connections and sends the login
   greeting** — `Welcome to MadSMAUG. By what name do you wish to
   be known?` — the first interactive frame from a JIT-compiled

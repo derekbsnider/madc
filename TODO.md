@@ -1,5 +1,32 @@
 # TODO
 
+## High Priority
+
+- **slot_lookup int-param widening bug (umbrella-only)** — In the
+  SMAUG umbrella context only, `if (slot <= 0)` inside the
+  upstream slot_lookup function fails to early-return for slot=-1.
+  Probes confirm: `sizeof(slot)=8`, low 32 = 0xFFFFFFFF (correct
+  -1 read as int), high 32 = zero (NOT sign-extended). The
+  64-bit cmp sees positive 4B and the guard fails. Cannot
+  reproduce in isolation — exact-copy slot_lookup body in a small
+  .mad sign-extends correctly. Three hypotheses documented in
+  MadSMAUG/src/_bootstrap_comm_shim.c: forward-decl signature
+  mismatch, IRBuilder Mem-load decision flip in caller's struct
+  member read, function-local extern interaction. Blocking
+  slot_lookup un-stub; current shim returns -1 unconditionally.
+
+- **Walk full character-creation flow through to in-game start**
+  — Current verified state stops at the password / color-pref
+  prompt. Next: race / class selection, stats roll, room entry,
+  basic commands (look, north, etc.). Will surface the next
+  batch of latent runtime bugs.
+
+- **comm.c:1381 NULL deref on second-connection player-data load**
+  — Observed as a SIGSEGV inside `write_to_buffer` after a
+  successful first connect+disconnect cycle. NULL deref at
+  `(nil)`. Looks like a stale or freed descriptor reference.
+  Investigate.
+
 ## Medium Priority
 
 ### Language Completeness
@@ -35,6 +62,28 @@
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
 
 ## Known Runtime Bugs (surfaced but pre-existing)
+
+- **(RESOLVED 2026-04-30)** ~~SMAUG colorize.c DISPOSE-NULL spam
+  during boot~~ — Caused by enum-constant arithmetic folding to 0
+  because TokenVar didn't override ival()/dval(). Fixed in 12fb103
+  with a 9-line override; SMAUG boot is now spam-free.
+  tests/testenumconstfold.mad covers it.
+
+- **(RESOLVED 2026-04-30)** ~~SMAUG mud_prog.c:2437 SIGSEGV during
+  area_update~~ — Caused by parseExpression treating `,` as a hard
+  stop; brace-less `while ((*p=*i)!='\0') ++p, ++i;` ran only `++p`
+  per iter, the strcpy walked off its buffer. Fixed in 731f18f with
+  parseExprStmt + TokenComma::compile. tests/testcommastmt.mad.
+
+- **(RESOLVED 2026-04-30)** ~~SMAUG mud_comm.c:371 NULL strstr deref~~
+  — Caused by function-scope `static char const *p = "literal";` not
+  having its initializer hoisted to program startup. Fixed in
+  acbfdb0; static initializers now run once before main like C
+  semantics. tests/teststaticlocalinit.mad.
+
+- **(RESOLVED 2026-04-30)** ~~Real-typed global Mem-store reloc-out-of-range~~
+  — Three independent gaps in TokenCpnd::movreg / movmptr2xval /
+  putreg. Fixed in a5f6a49.
 
 - **(RESOLVED 2026-04-29, session 11)** ~~Struct-return-by-value ABI~~
   — Fixed by TokenCallFunc small-struct spill path. SysV
