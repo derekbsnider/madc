@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **switch: emit `default:` body in source-order position** (396c147).
+  When `default:` appeared before the case labels in source order
+  (the SMAUG colorize idiom), the compiler emitted all case bodies
+  first and then the default body at the end — so a case with no
+  break would fall through into the default body, including the
+  synthetic fall-through from the unlabeled tail code that follows
+  the last explicit case.  Visible victim: SMAUG `make_color_sequence`
+  returned -1 for every &X colour code, so all `&Y/&G/&C/&w` in
+  prompts and help text came through with the `&` stripped and the
+  letter passed verbatim.  Fix tracks `default_index` — the
+  source-order position among the cases — and emits the default body
+  there.  `tests/testswitchdefaultorder.mad` covers default-first,
+  default-middle, default-last with intentional fall-through.
+  Visible result: SMAUG room titles, prompts, status-line, hint
+  banners, and help entries all render in correct ANSI colour.
+
 ## [v0.13.0] — 2026-04-30 — SMAUG 1.8 plays end-to-end on madc
 
 - **SMAUG 1.8 is a fully playable network MUD on madc.** The

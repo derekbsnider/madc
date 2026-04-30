@@ -75,6 +75,17 @@
 
 ## Known Runtime Bugs (surfaced but pre-existing)
 
+- **(RESOLVED 2026-04-30)** ~~SMAUG `&X` colour codes stripped, letters
+  passed verbatim~~ — Switch-default body was always emitted last, so
+  when `default:` was first in source order (the SMAUG colorize idiom),
+  the unlabeled tail-code that follows the last case fell through into
+  default and returned `ln = -1`.  Visible victim:
+  `make_color_sequence` returned -1 for every &Y/&G/&C/&w; prompts,
+  room titles, and help entries came through with the `&` stripped and
+  the colour letter passed verbatim.  Fixed in 396c147 by tracking
+  `default_index` in TokenSWITCH and emitting default body at its
+  source-order position.  tests/testswitchdefaultorder.mad covers it.
+
 - **(RESOLVED 2026-04-30)** ~~SMAUG colorize.c DISPOSE-NULL spam
   during boot~~ — Caused by enum-constant arithmetic folding to 0
   because TokenVar didn't override ival()/dval(). Fixed in 12fb103
