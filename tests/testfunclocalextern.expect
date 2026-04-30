@@ -1,0 +1,4 @@
+touch: counter=43 msg=hello-from-global
+main:  counter=43 msg=hello-from-global
+touch: counter=44 msg=hello-from-global
+main:  counter=44 msg=hello-from-global

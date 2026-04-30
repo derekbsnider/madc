@@ -1,0 +1,32 @@
+// Regression: function-local `extern T name;` must resolve to the
+// file-scope global with that name, not allocate a fresh local.
+//
+// SMAUG comm.c:902 hit this with
+//     extern char *help_greeting;
+//     if (help_greeting[0] == '.') ...
+// inside new_descriptor() — the local extern got a fresh
+// uninitialized char* whose deref crashed on the first incoming
+// connection, even though db.c's file-scope `char *help_greeting`
+// was non-NULL throughout.
+
+#include <stdio.h>
+
+int g_counter = 42;
+char *g_msg = "hello-from-global";
+
+void touch_globals()
+{
+    extern int g_counter;
+    extern char *g_msg;
+    g_counter += 1;
+    printf("touch: counter=%d msg=%s\n", g_counter, g_msg);
+}
+
+int main()
+{
+    touch_globals();
+    printf("main:  counter=%d msg=%s\n", g_counter, g_msg);
+    touch_globals();
+    printf("main:  counter=%d msg=%s\n", g_counter, g_msg);
+    return 0;
+}

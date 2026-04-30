@@ -1066,6 +1066,17 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
     {
 	if ( (var=code->findVariable(id)) )
 	    return var;
+	// Function-local `extern T name;` is not a fresh local — it's a
+	// reference to the file-scope global with that name. Without
+	// this, comm.c's `extern char *help_greeting;` inside
+	// new_descriptor() created an uninitialized local pointer
+	// distinct from db.c's global, and the deref crashed on the
+	// first incoming connection.
+	if ( parsing_extern_decl )
+	{
+	    if ( (var=tkProgram->findVariable(id)) )
+		return var;
+	}
 	var = new Variable(id, dd, c, init, alloc);
 	code->variables.push_back(var);
 	DBG(std::cout << "Added new variable type: " << dd.name << " size: "
