@@ -313,6 +313,13 @@ void *php_array_push_int(void *arr, int64_t val)
 	return arr;
 }
 
+// php::array_push_array — append nested array by deep copy
+void *php_array_push_array(void *arr, void *value)
+{
+	((MadArray *)arr)->push(MadValue(*(MadArray *)value));
+	return arr;
+}
+
 // php::array_pop — remove and return last element as string
 void *php_array_pop(void *result, void *arr)
 {
@@ -482,6 +489,50 @@ void *php_array_merge(void *dest, void *src)
 	return dest;
 }
 
+static bool php_array_column_value_to_string(MadValue &v, std::string &out)
+{
+	if ( v.is_string() )
+	{
+		out = v.as_string();
+		return true;
+	}
+	if ( v.is_int() )
+	{
+		out = std::to_string(v.as_int());
+		return true;
+	}
+	if ( v.is_double() )
+	{
+		out = std::to_string(v.as_double());
+		return true;
+	}
+	return false;
+}
+
+// php::array_column — extract one integer-indexed column from nested arrays
+void *php_array_column(void *dest, void *src, int64_t column_index)
+{
+	MadArray &d = *(MadArray *)dest;
+	MadArray &s = *(MadArray *)src;
+	d.data.clear();
+	d.assoc.clear();
+	if ( column_index < 0 )
+		return dest;
+	for ( auto &row : s.data )
+	{
+		if ( !row.is_array() )
+			continue;
+		MadArray &row_arr = row.as_array();
+		size_t idx = (size_t)column_index;
+		if ( idx >= row_arr.data.size() )
+			continue;
+		std::string value;
+		if ( php_array_column_value_to_string(row_arr.data[idx], value) )
+			d.push(MadValue(value));
+	}
+	return dest;
+}
+
 // ---- Namespace registration ----
 
 // std::for_each — iterate array, call function pointer per element (string version)
@@ -588,6 +639,10 @@ void Program::add_php_namespace()
 	var = addFunction("__php_array_push_int", datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_push_int);
 	if (var) php_ns["array_push_int"] = var;
 
+	// array_push_array(arr, value) — append nested array
+	var = addFunction("__php_array_push_array", datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_push_array);
+	if (var) php_ns["array_push_array"] = var;
+
 	// array_pop(result, arr) — remove last, return as string
 	var = addFunction("__php_array_pop",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_pop);
 	if (var) php_ns["array_pop"] = var;
@@ -639,6 +694,10 @@ void Program::add_php_namespace()
 	// array_merge(dest, src) — append src elements to dest
 	var = addFunction("__php_array_merge",    datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_merge);
 	if (var) php_ns["array_merge"] = var;
+
+	// array_column(dest, src, index) — extract one integer-indexed column
+	var = addFunction("__php_array_column",   datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_column);
+	if (var) php_ns["array_column"] = var;
 
 	DBG(std::cout << "add_php_namespace() registered php:: with " << php_ns.size() << " members" << std::endl);
 }

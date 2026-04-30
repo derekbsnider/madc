@@ -90,5 +90,20 @@ int main()
     php::implode(joined, delim, arr);
     cout << "sorted: " << joined << endl;
 
+    // array_column on nested arrays
+    array row1;
+    array row2;
+    array rows;
+    array col;
+    php::array_push(row1, "alice");
+    php::array_push(row1, "admin");
+    php::array_push(row2, "bob");
+    php::array_push(row2, "user");
+    php::array_push_array(rows, row1);
+    php::array_push_array(rows, row2);
+    php::array_column(col, rows, 1);
+    php::implode(joined, delim, col);
+    cout << "column: " << joined << endl;
+
     return 0;
 }

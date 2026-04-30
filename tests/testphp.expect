@@ -1,0 +1,18 @@
+trim: [Hello, World!]
+ucfirst: Mad-c is cool
+lcfirst: mad-c is cool
+repeat: **********
+replace: qux bar qux baz qux
+rot13: Uryyb
+rot13x2: Hello
+words: 5
+nl2br: line1<br>
+number: 1,234,567
+parts: 4
+piece[0]: one
+piece[2]: three
+joined: one | two | three | four
+after push: 5
+in_array: 1
+sorted: five,four,one,three,two
+column: admin,user

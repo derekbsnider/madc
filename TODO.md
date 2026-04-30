@@ -51,15 +51,6 @@
 
 - **Multi-return in brace-less if** — `if (x) return a, b;` doesn't parse. Use braces.
 
-- **Multi-return runtime output is silently truncated** — even existing
-  `tests/testmultiret.mad` produces empty stdout (its own cout writes
-  never reach the terminal). Verbose trace shows `cc.finalize() error=26`
-  during compilation; execution continues but the JITted code that
-  unpacks the return-buffer isn't finalized. Test passes only because
-  it has no `.expect` file and exits with rc=0. Same cluster as the
-  asmjit-compiler float quirk — typed-register IR work is the path
-  forward.
-
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
 
 ## Known Runtime Bugs (surfaced but pre-existing)
@@ -142,13 +133,26 @@
   order and short-circuiting earlier TokenFuncs that share a FuncDef
   with a later one.
 
-- **`ruby::chars` crashes in MadValue destructor** — `ruby::chars(arr, str);`
-  crashes at runtime inside `a.data.clear()` in `ruby_chars`. Likely an
-  ABI/layout issue with how MadArray is passed through a direct call whose
-  registered return type is `dtARRAY`. The call-in-testlang.mad was commented
-  out because the widened function-to-pointer decay (which is correct C
-  semantics) now lets it compile, exposing the crash. Other MadArray ops
-  (php::array_push, php::count) work fine. Needs separate investigation.
+- **(RESOLVED 2026-04-30)** ~~Multi-return runtime output silently truncated~~
+  — Root causes were split across both ends of the hidden `__retbuf`
+  path: the callee treated the stack-slot parameter for `__retbuf` as a
+  Gp directly when writing return slots, and the caller never injected
+  the hidden retbuf pointer as arg0 for multi-return calls. Fixed by
+  loading `__retbuf` from its parameter slot before stores and by
+  prepending the caller's retbuf pointer in `TokenCallFunc::compile()`.
+  `tests/testmultiret.expect` now asserts the runtime output.
+
+- **(RESOLVED 2026-04-30)** ~~`ruby::chars` crashes in MadValue destructor~~
+  — The stale symptom collapsed into two compiler/runtime gaps: (a)
+  namespaced call argument parsing was reusing `current_namespace`
+  inside `parseCallFunc()`, so `ruby::chars(chars, s)` resolved the
+  first argument back to `__rb_chars`; (b) nested-array values were not
+  first-class in `MadValue`, which blocked useful PHP/Ruby array-of-array
+  helpers. Fixed by suspending `current_namespace` while parsing call
+  arguments, resolving namespace members first only at expression head,
+  and teaching `MadValue` to deep-copy / destroy nested `array` values.
+  `tests/testrubycharsshadow.mad` and the uncommented `ruby::chars`
+  coverage in `tests/testlang.mad` now pass.
 
 ## Deferred / Future
 

@@ -1444,7 +1444,11 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
 	DBG(cout << "parseCallFunc() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
-	if ( !(tb=parseExpression(tb, true)) ) { break; }
+	std::string saved_namespace = current_namespace;
+	current_namespace.clear();
+	tb = parseExpression(tb, true);
+	current_namespace = saved_namespace;
+	if ( !tb ) { break; }
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
@@ -1512,7 +1516,11 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
 	DBG(cout << "parseCallMethod() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
-	if ( !(tb=parseExpression(tb, true)) ) { break; }
+	std::string saved_namespace = current_namespace;
+	current_namespace.clear();
+	tb = parseExpression(tb, true);
+	current_namespace = saved_namespace;
+	if ( !tb ) { break; }
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
@@ -2661,6 +2669,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		TokenIdent *ident_tb = tb->type() == TokenType::ttIdentifier
 		    ? (TokenIdent *)tb
 		    : &contextual_ident;
+		bool expression_head = exStack.empty() && opStack.empty();
 		// sizeof(type) — resolve to integer constant at parse time
 		if ( ident_tb->str == "sizeof" )
 		{
@@ -3200,9 +3209,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    tb = member_tb; // update tb for line/col tracking below
 		    goto ns_resolved;
 		}
-		// resolve identifier: current namespace → global scope
+		// Statement-head `ns::member(...)` should resolve the callee from
+		// the active namespace first, but once we're inside that call's
+		// arguments / subexpressions, lexical scope should win so locals
+		// can shadow same-named namespace members (`ruby::chars(chars, s)`).
 		var = NULL;
-		if ( !current_namespace.empty() )
+		if ( expression_head && !current_namespace.empty() )
 		{
 		    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
 		    if ( nsi != namespace_map.end() )
@@ -3214,6 +3226,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		}
 		if ( !var )
 		    var = findVariable(ident_tb->str);
+		if ( !var && !expression_head && !current_namespace.empty() )
+		{
+		    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
+		    if ( nsi != namespace_map.end() )
+		    {
+			variable_map_iter vmi = nsi->second.find(ident_tb->str);
+			if ( vmi != nsi->second.end() )
+			    var = vmi->second;
+		    }
+		}
 		// class method: resolve unqualified member name through __this
 		if ( !var && code && code->method && code->method->owner_class )
 		{

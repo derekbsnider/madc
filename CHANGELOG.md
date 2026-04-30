@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+- **Multi-return runtime path now executes correctly.** The original
+  `testmultiret.mad` failure was split across both sides of the hidden
+  `__retbuf` ABI: the callee wrote return slots through the stack-slot
+  parameter as if it were already a Gp, and the caller never prepended
+  the hidden retbuf pointer when invoking a multi-return function.
+  Fixed by loading `__retbuf` into a real Gp inside `TokenRETURN::compile()`
+  and prepending the caller retbuf in `TokenCallFunc::compile()`.
+  `tests/testmultiret.expect` now locks in the runtime output `3 / 2 / 7 / 42`.
+
+- **Namespace-call arguments can shadow same-named namespace members.**
+  `ruby::chars(chars, s)` previously re-resolved the first argument back
+  to `__rb_chars` because `current_namespace` leaked into `parseCallFunc()`
+  argument parsing. Namespace members now resolve first only at
+  expression head, and `parseCallFunc()` / `parseCallMethod()` suspend
+  `current_namespace` while parsing argument expressions.
+  `tests/testrubycharsshadow.mad` covers the regression, and
+  `tests/testlang.mad` now exercises `ruby::chars` again.
+
+- **php::array_column() and nested-array values.** `MadValue` can now
+  deep-copy and destroy nested `array` values, `php::array_push_array()`
+  appends nested arrays by value, and `php::array_column()` extracts an
+  integer-indexed column from an array of nested arrays.
+  `tests/testphp.mad` covers `array_column`, with `tests/testphp.expect`
+  asserting the output.
+
 - **TokenAssign: subscript-assign value is LHS-typed, honors caller
   dest** (a59adbb).  Two issues collapsed in the TokenSubscript /
   TokenSubscriptExpr branches: (a) the expression value of

@@ -4,11 +4,11 @@ Test results as of April 30, 2026 (post-v0.13.0 — switch default-position fix,
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 245 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 246 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 245 integration tests
+- Passing: 246 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR
@@ -172,7 +172,7 @@ instead of collapsing that case into a generic `FAIL`.
 | `teststruct.mad` | Struct member access | `test.name: Joe Blow`, `test.id: 2`, `test.age: d` (uint8=char in stream) |
 | `testversion.mad` | Version string | `v0.0.1` |
 | `testns.mad` | Namespace resolution (std::) | `Hello from std::cout!`, `x = 42`, stderr output, unqualified still works |
-| `testphp.mad` | php:: namespace functions | strlen, trim, upper/lower, strrev, strpos, str_replace, str_repeat, str_contains |
+| `testphp.mad` | php:: namespace functions | trim/ltrim/rtrim, ucfirst/lcfirst, str_replace, str_repeat, explode/implode, sort, nested-array `array_column` |
 | `teststruct2.mad` | User-defined structs | `p.x: 10`, `p.y: 20`, `bob.name: Bob Smith`, `bob.age: 42`, `bob.id: 1001` |
 | `testclass.mad` | Class definitions with data members | `p.x: 100`, `p.y: 200`, `bob.name: Bob`, `bob.age: 30` |
 | `testinclude.mad` | `#include` directive | `Hello, World!`, `Hello, Mad-C!`, `include works!` |
@@ -190,12 +190,13 @@ instead of collapsing that case into a generic `FAIL`.
 | `testfstream.mad` | File I/O with ifstream/ofstream/fstream | Read/write file operations |
 | `testfuncptr.mad` | Function pointers via `auto fn = func` | Calls through stored function pointer |
 | `testlambda.mad` | Lambda expressions with `auto` and `[]` | Defines and calls inline lambdas |
-| `testlang.mad` | Multi-language namespace usage in one program | php/perl/python/ruby/js functions together |
+| `testlang.mad` | Multi-language namespace usage in one program | php/perl/python/ruby/js functions together, including `ruby::chars` |
 | `testloop.mad` | Loop constructs (for, while, do-while) | Various loop patterns |
 | `testmadc_ns.mad` | `madc::` namespace (regex, array) | madc::regex_match, regex_search, regex_replace |
 | `testmap.mad` | `map<K,V>` typed STL container | Insert, find, erase, iterate |
 | `testmethod.mad` | Class methods with `this` pointer | Method call compiles and dispatches |
-| `testmultiret.mad` | Multiple return values (Go-style) | Function returns multiple values via `__retbuf` |
+| `testmultiret.mad` | Multiple return values (Go-style) | Function returns multiple values via `__retbuf`; runtime output asserted via `.expect` |
+| `testrubycharsshadow.mad` | Namespace-call argument shadowing | `ruby::chars(chars, s)` resolves local arg, not namespace function |
 | `testperl.mad` | perl:: namespace functions | chop, chomp, split, join, grep, glob |
 | `testregex.mad` | Regex functions (match, search, replace) | Pattern matching and substitution |
 | `testset.mad` | `set<T>` typed STL container | Insert, find, erase, iterate |

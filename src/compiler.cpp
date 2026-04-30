@@ -1615,6 +1615,20 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
     set_funcsig_ret(funcsig, &func->returns, func->is_multi_return());
+    if ( func->is_multi_return() )
+    {
+	if ( !regdp.object )
+	    throw "TokenCallFunc::compile() multi-return missing __retbuf object";
+	if ( regdp.object->isMem() )
+	{
+	    x86::Gp retbuf_ptr = pgm.cc.newIntPtr("__retbuf_arg");
+	    pgm.cc.lea(retbuf_ptr, regdp.object->as<x86::Mem>());
+	    append_call_param(params, funcsig, retbuf_ptr, &ddINT64);
+	}
+	else
+	    append_call_param(params, funcsig, *regdp.object, &ddINT64);
+	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(__retbuf)"));
+    }
 //#if OBJECT_SUPPORT
     // pass along object ("this") as first argument if appropriate
     if ( has_object_arg )
@@ -6838,7 +6852,8 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	if ( !rbvar )
 	    throw "multi-return: __retbuf parameter not found";
 	Operand &rb_op = pgm.tkFunction->voperand(pgm, rbvar);
-	x86::Gp rb_gp = rb_op.as<x86::Gp>();
+	x86::Gp rb_gp = pgm.cc.newIntPtr("__retbuf_gp");
+	load_var_to_gp(pgm, rb_op, rb_gp);
 	FuncDef *fdef = pgm.tkFunction && pgm.tkFunction->method
 	    ? dynamic_cast<FuncDef *>(pgm.tkFunction->method->returns.type)
 	    : NULL;

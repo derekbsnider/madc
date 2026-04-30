@@ -1,0 +1,11 @@
+#!/usr/bin/env madc
+#include <iostream>
+
+int main()
+{
+	array chars;
+	string s = "Mad";
+	ruby::chars(chars, s);
+	cout << php::count(chars) << endl;
+	return 0;
+}

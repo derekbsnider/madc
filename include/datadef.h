@@ -601,6 +601,8 @@ public:
     { cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); }
 };
 
+class MadArray;
+
 // ---- MadValue: tagged union for PHP-style mixed-type arrays ----
 
 struct MadValue
@@ -612,9 +614,10 @@ struct MadValue
 	void       *ptr;    // std::string*, MadArray*, etc.
     };
 
-    MadValue() : type(DataType::dtVOID), ival(0) {}
-    MadValue(int64_t v) : type(DataType::dtINT64), ival(v) {}
-    MadValue(double v)  : type(DataType::dtDOUBLE), dval(v) {}
+    MadValue();
+    MadValue(int64_t v);
+    MadValue(double v);
+    MadValue(const MadArray &a);
 
     // string constructor — copies the string
     MadValue(const std::string &s) : type(DataType::dtSTRING)
@@ -623,44 +626,22 @@ struct MadValue
     }
 
     // copy constructor — deep copy strings
-    MadValue(const MadValue &o) : type(o.type)
-    {
-	if ( type == DataType::dtSTRING && o.ptr )
-	    ptr = new std::string(*(std::string *)o.ptr);
-	else
-	    ival = o.ival; // covers ival, dval, and ptr (non-string)
-    }
+    MadValue(const MadValue &o);
 
     // assignment — deep copy strings
-    MadValue &operator=(const MadValue &o)
-    {
-	if ( this != &o )
-	{
-	    // clean up existing string
-	    if ( type == DataType::dtSTRING && ptr )
-		delete (std::string *)ptr;
-	    type = o.type;
-	    if ( type == DataType::dtSTRING && o.ptr )
-		ptr = new std::string(*(std::string *)o.ptr);
-	    else
-		ival = o.ival;
-	}
-	return *this;
-    }
+    MadValue &operator=(const MadValue &o);
 
-    ~MadValue()
-    {
-	if ( type == DataType::dtSTRING && ptr )
-	    delete (std::string *)ptr;
-    }
+    ~MadValue();
 
     // accessors
     int64_t      as_int()    const { return ival; }
     double       as_double() const { return dval; }
     std::string &as_string() const { return *(std::string *)ptr; }
+    MadArray    &as_array()  const { return *(MadArray *)ptr; }
     bool         is_string() const { return type == DataType::dtSTRING; }
     bool         is_int()    const { return type == DataType::dtINT64; }
     bool         is_double() const { return type == DataType::dtDOUBLE; }
+    bool         is_array()  const { return type == DataType::dtARRAY; }
 };
 
 // PHP-style array: ordered, mixed-type, supports both integer and string keys
@@ -703,6 +684,54 @@ public:
 };
 
 class DataDefARRAY:    public DDClass { public: DataDefARRAY():   DDClass("array", sizeof(MadArray), DataType::dtARRAY) {} };
+
+inline MadValue::MadValue(const MadArray &a) : type(DataType::dtARRAY)
+{
+    ptr = new MadArray(a);
+}
+
+inline MadValue::MadValue() : type(DataType::dtVOID), ival(0) {}
+
+inline MadValue::MadValue(int64_t v) : type(DataType::dtINT64), ival(v) {}
+
+inline MadValue::MadValue(double v) : type(DataType::dtDOUBLE), dval(v) {}
+
+inline MadValue::MadValue(const MadValue &o) : type(o.type)
+{
+    if ( type == DataType::dtSTRING && o.ptr )
+	ptr = new std::string(*(std::string *)o.ptr);
+    else if ( type == DataType::dtARRAY && o.ptr )
+	ptr = new MadArray(*(MadArray *)o.ptr);
+    else
+	ival = o.ival;
+}
+
+inline MadValue &MadValue::operator=(const MadValue &o)
+{
+    if ( this != &o )
+    {
+	if ( type == DataType::dtSTRING && ptr )
+	    delete (std::string *)ptr;
+	else if ( type == DataType::dtARRAY && ptr )
+	    delete (MadArray *)ptr;
+	type = o.type;
+	if ( type == DataType::dtSTRING && o.ptr )
+	    ptr = new std::string(*(std::string *)o.ptr);
+	else if ( type == DataType::dtARRAY && o.ptr )
+	    ptr = new MadArray(*(MadArray *)o.ptr);
+	else
+	    ival = o.ival;
+    }
+    return *this;
+}
+
+inline MadValue::~MadValue()
+{
+    if ( type == DataType::dtSTRING && ptr )
+	delete (std::string *)ptr;
+    else if ( type == DataType::dtARRAY && ptr )
+	delete (MadArray *)ptr;
+}
 
 // typed STL containers — parameterized types created lazily during parsing
 class DataDefVECTOR: public DDClass
