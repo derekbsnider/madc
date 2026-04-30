@@ -1,0 +1,5 @@
+PASS: got plain literal
+PASS: got true-branch
+PASS: got false-branch
+PASS: got $n hides $p beneath $P.
+PASS: got tf

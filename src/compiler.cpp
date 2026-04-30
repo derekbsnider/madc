@@ -6706,6 +6706,20 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 	emit_branch(false_expr);
 	pgm.cc.bind(L_end);
 
+	// emit_branch coerced each branch into the merge slot at
+	// regdp.second's type — that's also what we're returning.  Update
+	// the ternary's reported parse-time datadef so callers (notably
+	// compile_call_arg_normalized's want_cstr check) see the coerced
+	// type instead of the original branch type.  Without this a
+	// `cond ? "a" : "b"` passed to a `const char *` parameter got
+	// double-coerced: TokenTerQ produced a c_str pointer, then the
+	// call-site re-ran string_cstr() on it (treating the char* as a
+	// std::string*), and the resulting "pointer" was actually the
+	// first 8 bytes of the string data — a guaranteed SIGSEGV on
+	// deref.
+	if ( regdp.second )
+	    _datatype = regdp.second;
+
 	regdp.first = caller_dest;
 	return emit_ir_value(pgm, IRValue::mem(merge_slot, regdp.second), regdp, _operand, regdp.second);
     }

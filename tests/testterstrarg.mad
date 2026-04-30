@@ -1,0 +1,46 @@
+// Regression: ternary-of-string-literals as a function argument was
+// double-coerced.  TokenTerQ::compile internally coerces each branch
+// from dtSTRING to char* via string_cstr() when the merge surface is a
+// pointer type — so the value it returns is already a const char *.
+// But its `_datatype` stayed dtSTRING (the parse-time type of the
+// branches), so compile_call_arg_normalized's want_cstr check fired
+// again and ran string_cstr() on the c_str pointer — treating it as a
+// std::string* and reading 8 bytes of raw string data as the
+// "data pointer" field.  The "pointer" returned was literally the
+// first 8 bytes of the string interpreted as bits.  Any deref SEGV'd.
+//
+// SMAUG visible victim: act_obj.c does
+//     act( AT_ACTION, IS_OBJ_STAT(c, ITEM_COVERING)
+//                       ? "$n hides $p beneath $P."
+//                       : "$n puts $p in $P.",
+//          ch, obj, container, TO_ROOM );
+// The act() entry's `if (!format || format[0] == '\0')` then SEGV'd on
+// format[0] because `format` was 0x2073747570206e24 = "$n puts ".
+
+#include <stdio.h>
+#include <string.h>
+
+void take(const char *p)
+{
+    if (!p) { printf("FAIL: NULL ptr\n"); return; }
+    if (strlen(p) > 100) { printf("FAIL: bogus length %lu\n", strlen(p)); return; }
+    printf("PASS: got %s\n", p);
+}
+
+int main()
+{
+    int t = 1;
+    int f = 0;
+
+    take("plain literal");
+    take(t ? "true-branch" : "false-branch");
+    take(f ? "true-branch" : "false-branch");
+
+    /* SMAUG-shape pattern */
+    take(t ? "$n hides $p beneath $P." : "$n puts $p in $P.");
+
+    /* nested ternary */
+    take(t ? (f ? "tt" : "tf") : (t ? "ft" : "ff"));
+
+    return 0;
+}
