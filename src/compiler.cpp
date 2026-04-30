@@ -78,6 +78,8 @@ static bool is_int32_dlsym_ret(DataDef *ret_type, const std::string &fname)
 	"chown", "access", "link", "symlink", "truncate",
 	"ftruncate", "fcntl", "ioctl", "dup", "dup2", "close",
 	"open", "creat", "fsync", "pipe",
+	"stat", "fstat", "lstat", "fstatat", "statfs", "fstatfs",
+	"utime", "utimes", "futimes",
 	// process / signal
 	"kill", "fork", "exec", "execv", "execvp", "execve",
 	"wait", "waitpid", "getpid", "getppid", "getuid", "geteuid",

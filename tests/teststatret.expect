@@ -1,0 +1,3 @@
+PASS: stat() == -1 detected
+PASS: stat() < 0 detected
+PASS: stat() != 0 detected

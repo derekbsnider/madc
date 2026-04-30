@@ -1,0 +1,34 @@
+// Regression: stat()/fstat()/lstat() return int (-1 on failure).
+// madc treats int as 64-bit, so the dlsym call must sign-extend
+// the 32-bit C return. Without the whitelist entry, stat() returning
+// -1 reads as 0x00000000FFFFFFFF — `if (stat(...) == -1)` fails to
+// detect the failure and SMAUG's save.c logged a bogus
+// "Preloading player data ... (-15803487K)" before falling into a
+// bad-fopen path on every connection.
+
+#include <stdio.h>
+#include <sys/stat.h>
+
+int main()
+{
+    struct stat sb;
+    int rc = stat("/this/path/cannot/possibly/exist/zzz/qq", &sb);
+
+    if (rc == -1)
+        printf("PASS: stat() == -1 detected\n");
+    else
+        printf("FAIL: stat() == -1 NOT detected (got %d, hex 0x%016lx)\n",
+               rc, (long)rc);
+
+    if (rc < 0)
+        printf("PASS: stat() < 0 detected\n");
+    else
+        printf("FAIL: stat() < 0 NOT detected\n");
+
+    if (rc != 0)
+        printf("PASS: stat() != 0 detected\n");
+    else
+        printf("FAIL: stat() != 0 NOT detected\n");
+
+    return 0;
+}
