@@ -22,6 +22,25 @@
 
 ## Medium Priority
 
+### Performance / startup
+
+- **Phase 4.4.a — JIT code cache** — every madc boot pays full
+  lex+parse+asmjit-compile, even when the source hasn't changed.
+  For SMAUG (~158k LOC across 49 .c files) that's ~43s of pure
+  compile vs ~0.2s for actual `boot_db()`. A one-time cache of
+  the asmjit-emitted machine code + relocation table, keyed on
+  a hash of all input source files, would skip straight to
+  executing JIT'd code on cache hit and bring SMAUG boot under
+  a second on rebuilds. Design + estimated effort in
+  `docs/plans/revival-plan.md` §4.4.a (~1 day, ~300 LOC, depends
+  on §4.1–§4.3 landing first).
+
+- **Phase 4.4.b — True AOT to ELF `.so`** — the embedding-in-host
+  story (CMS / game engine / sandboxed scripting) wants madc-
+  compiled scripts shipped as ordinary shared objects, no JIT
+  pause at load time. asmjit's Object/ELF mode supports the
+  underlying primitive; design in §4.4.b. Stacks on top of 4.4.a.
+
 ### Language Completeness
 
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.

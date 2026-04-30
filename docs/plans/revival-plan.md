@@ -268,6 +268,108 @@ void madc_destroy(madc_program*);
 
 ---
 
+### 4.4 JIT code cache / AOT compilation
+
+**Problem:** Every `madc some.mad` boot pays full lex + parse + asmjit compile,
+even if the source hasn't changed. On a real-world program this dominates
+startup — for SMAUG 1.8 (~158k LOC across 49 .c files) it's ~43s of pure
+compile vs ~0.2s for the actual `boot_db()` runtime data load. Native
+gcc-compiled SMAUG starts in ~1s because the compile happened once long
+ago.
+
+**Two layered approaches, in increasing complexity:**
+
+#### 4.4.a JIT code cache — drop-in for existing CLI
+
+Cache the asmjit-emitted machine code alongside its relocation metadata,
+keyed on a hash of all input sources. On cache hit, skip lex/parse/compile
+entirely, mmap the cached `.text` blob, replay relocations against the
+current process's symbol layout, and jump.
+
+**Cache layout (one file per top-level source):**
+
+```
+.madc-cache/<hash>.code     # raw CodeBuffer bytes (mmap'd RX after patching)
+.madc-cache/<hash>.relocs   # [(offset, symbol_name, kind), …] patch table
+.madc-cache/<hash>.meta     # input source hashes, madc version, asmjit version
+```
+
+**Cache-key hash:** SHA-256 over (madc binary's own version string +
+asmjit version + every input file's contents — main + every transitive
+`#include`). Any input change invalidates.
+
+**Relocation kinds to handle:**
+- Absolute call to a libc function (`printf`, `recv`, `stat` …) — resolve
+  via current process's `dlsym(RTLD_DEFAULT, name)`
+- Absolute call to a madc runtime helper (`string_cstr`, `madc_dlopen`,
+  `__madc_sscanf`, `__madc_vsprintf`) — resolve via a built-in name table
+- Variable-data pointer (`Variable::data` for globals, including string
+  literals) — re-allocate the Variable in the same order on load and
+  patch each reference to its new `data` address
+- Function-entry label addresses — re-bind by name during cache load
+- Embedded immediate string-literal pointers — same as variable-data,
+  string literals are stored as global `__literal__N` Variables
+
+**asmjit hooks needed:**
+- `CodeHolder::sectionById(0)` gives the .text `Section` whose
+  `_buffer` is the raw bytes
+- Walk `CodeHolder::relocEntries()` for every reloc site — each entry has
+  source offset, target kind, and target value/symbol
+- For named externals, resolve via `LabelEntry::name()` (functions get
+  named via `cc.funcEntry()` etc.)
+
+**Granularity options:**
+1. **Whole-program cache (simplest):** one cache entry per top-level
+   `.mad`. Any change rebuilds everything. Probably fine for SMAUG —
+   you re-JIT once after a source edit, then boot in <1s for the rest
+   of the dev cycle.
+2. **Per-function cache:** finer grain, partial rebuilds. Significantly
+   more bookkeeping (function-level dependency graph, symbol table
+   stitching across cached + freshly-compiled functions). Defer.
+
+**Estimated effort for 4.4.a:** ~1 day, ~300 LOC. Touches:
+- `src/cache.cpp` (new) — serialize, deserialize, relocation patcher
+- `src/madc.cpp` — check cache before falling through to full compile
+- `src/parser.cpp` — emit a deterministic order of Variable allocation
+  so cache loads can recreate the same data-pointer layout
+
+**Disable knobs:** `MADC_NO_CACHE=1` env var, `--no-cache` flag.
+
+#### 4.4.b True AOT — compile to a real shared object
+
+asmjit can target ELF object output instead of in-memory JIT. The flow:
+
+```
+madc --aot myapp.mad -o libmyapp.so
+gcc -o myapp myapp_launcher.c -L. -lmyapp -lmadc
+./myapp                            # boots in milliseconds
+```
+
+The launcher is a ~10-line C program that calls `madc_run_aot()` from
+`libmadc.so`, which dlopen's the AOT'd object and jumps to its `main`.
+
+This is what makes the embedding story complete — a CMS or game engine
+ships madc-compiled scripts as ordinary `.so` files, no JIT pause at
+load time. It also dovetails with the safe-mode / sandbox direction
+(reference: `feedback project_madc_as_embedded_script.md`) since AOT
+modules can be signed and audited offline.
+
+**Effort for 4.4.b:** ~2-3 days. Most of the work is teaching the
+compiler to emit position-independent code with explicit symbol
+references rather than baked-in absolute addresses, plus a real
+relocation table per the System V ELF spec. asmjit has primitives;
+the work is wiring them up and writing a small Object/ELF writer.
+
+#### Recommended sequence
+
+1. Land 4.1 + 4.2 (libmadc.so + API) first — that's what makes 4.4.b
+   possible at all.
+2. Then 4.4.a (JIT cache) for the immediate dev-cycle and SMAUG-boot
+   wins.
+3. Then 4.4.b (AOT) for the embedding/sandbox story.
+
+---
+
 ## Implementation Order Summary
 
 | # | Item | Depends On | Priority |
@@ -285,9 +387,11 @@ void madc_destroy(madc_program*);
 | 3.1 | `php::` namespace | 2.3 | Medium |
 | 3.2 | dlopen namespace fallback | 2.3 | Medium |
 | 3.3 | First-class dlopen/dlsym | 3.2 | Low |
-| 4.1 | Decouple static globals | All Phase 2 | Low |
-| 4.2 | Public embedding API | 4.1 | Low |
-| 4.3 | Build libmadc.so | 4.1, 4.2 | Low |
+| 4.1   | Decouple static globals | All Phase 2 | Low |
+| 4.2   | Public embedding API | 4.1 | Low |
+| 4.3   | Build libmadc.so | 4.1, 4.2 | Low |
+| 4.4.a | JIT code cache (skips lex/parse/compile on cache hit) | 4.3 | Medium |
+| 4.4.b | True AOT to ELF .so | 4.3, 4.4.a | Low |
 
 ---
 
