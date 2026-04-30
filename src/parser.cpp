@@ -6467,6 +6467,20 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		wrap->right = td->initialize;
 		td->initialize = wrap;
 	    }
+	    // Function-scope static: hoist the initializer to program-startup
+	    // so it runs once, before main() — C semantics. Without this the
+	    // existing skip in TokenDecl::compile (vfSTATIC + tkFunction !=
+	    // tkProgram) drops the initializer entirely; emitting it inline
+	    // in the function body instead would re-init on every call,
+	    // breaking patterns like `static int counter = 5; counter++;`.
+	    // The Variable's storage is already heap-allocated (vfALLOC set
+	    // by addVariable for static), so the assign at program scope
+	    // writes the constant directly into that storage.
+	    if ( gotstatic && code && td->initialize && tkProgram )
+	    {
+		tkProgram->statements.push_back((TokenStmt *)td->initialize);
+		td->initialize = NULL;
+	    }
 	}
 
 	// Comma-continuation: `int a, b = 1, c;` or
