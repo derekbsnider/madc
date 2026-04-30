@@ -54,8 +54,12 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 	{
 	    if ( rs >= 8 )
 	    {
+		// Unsigned: movzx to r32 implicitly zero-extends to r64.
+		// Signed: must use movsx with r64 dest — `movsx r32, r/m8`
+		// only sign-extends to 32 bits and zero-extends to 64,
+		// which silently corrupts negative values.
 		if ( is_unsigned ) cc.movzx(r1.r32(), r2);
-		else               cc.movsx(r1.r32(), r2);
+		else               cc.movsx(r1, r2);
 	    }
 	    else
 	    {
@@ -172,8 +176,11 @@ void Program::safemov(x86::Gp &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
 	{
 	    if ( rs >= 8 )
 	    {
+		// See safemov(Gp, Gp): movsx r32, r/m16 only sign-extends
+		// to 32 bits then zero-extends to 64 — wrong for signed
+		// negative values. Use movsx r64, r/m16 for signed.
 		if ( is_unsigned ) cc.movzx(r1.r32(), r2);
-		else               cc.movsx(r1.r32(), r2);
+		else               cc.movsx(r1, r2);
 	    }
 	    else
 	    {
@@ -186,7 +193,7 @@ void Program::safemov(x86::Gp &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
 	    if ( rs >= 8 )
 	    {
 		if ( is_unsigned ) cc.movzx(r1.r32(), r2);
-		else               cc.movsx(r1.r32(), r2);
+		else               cc.movsx(r1, r2);
 	    }
 	    else
 	    {

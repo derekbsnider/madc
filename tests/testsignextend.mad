@@ -1,0 +1,48 @@
+// Regression: madc int is 64-bit; reading a signed sub-int (char/short/int32)
+// into a 64-bit register must sign-extend across the full 64 bits.
+// The safemov(Gp, Mem) and safemov(Gp, Gp) helpers used `movsx r32, r/m8`
+// which sign-extends to 32 bits and then implicitly zero-extends to 64,
+// silently corrupting the high 32 bits of negative narrow values.
+//
+// Visible victim: `int x = (c = -1);` where c is char left x at
+// 0x00000000FFFFFFFF, and `(c = EOF) == EOF` failed because the value
+// of the assignment expression compared against the int64 EOF (-1) gave
+// a positive 4B that didn't match.
+
+#include <stdio.h>
+
+int main()
+{
+    int v;
+    char c;
+    short s;
+    int rhs = -1;
+
+    // chained char assignment in expression context
+    v = (c = -1);
+    if (v == -1 && (long)v == -1L) printf("PASS: int v = (c = -1)\n");
+    else printf("FAIL: v=%d (long=0x%016lx)\n", v, (long)v);
+
+    // chained char assignment with int variable RHS
+    v = (c = rhs);
+    if (v == -1) printf("PASS: int v = (c = rhs_int)\n");
+    else printf("FAIL: v=%d\n", v);
+
+    // assignment-value compared to int sentinel — the EOF idiom
+    int x = (c = -1);
+    if (x == EOF) printf("PASS: (c = -1) compares == EOF\n");
+    else printf("FAIL: x=%d EOF=%d\n", x, EOF);
+
+    // short variant
+    int sv = (s = -1);
+    if (sv == -1) printf("PASS: short chain extends\n");
+    else printf("FAIL: short chain sv=%d\n", sv);
+
+    // unsigned char chain — must zero-extend, not sign-extend
+    unsigned char uc;
+    int uv = (uc = 255);
+    if (uv == 255) printf("PASS: unsigned char chain zero-extends\n");
+    else printf("FAIL: unsigned char chain uv=%d\n", uv);
+
+    return 0;
+}
