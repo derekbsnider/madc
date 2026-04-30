@@ -1,0 +1,36 @@
+// Regression: chained +/- and chained *///% must be left-associative.
+// Madc's general operator-stack popping was strict-greater-than on
+// precedence, so same-precedence chains kept the new operator on top
+// of the old one and the AST resolved newest-first — i.e. effectively
+// right-associative. `a - b + c` parsed as `a - (b + c)`. The bug was
+// load-bearing for SMAUG runtime: `(to - from) + 1` in number_range
+// became `to - (from + 1)`, which then divided by zero / negative on
+// `n % (to-from+1)` and SIGFPE'd on the per-pulse random rolls.
+
+#include <stdio.h>
+
+int main()
+{
+    // pure subtraction chain
+    printf("%d\n", 10 - 5 - 3);          // (10-5)-3 = 2
+
+    // sub then add
+    printf("%d\n", 10 - 5 + 3);          // (10-5)+3 = 8
+
+    // longer chain
+    printf("%d\n", 100 - 10 - 5 + 3);    // ((100-10)-5)+3 = 88
+
+    // mul/div same precedence
+    printf("%d\n", 100 / 5 / 2);         // (100/5)/2 = 10
+    printf("%d\n", 60 / 4 * 3);          // (60/4)*3 = 45
+
+    // mixed-precedence: * binds tighter than +/-, unchanged
+    printf("%d\n", 2 + 3 * 4);           // 2 + (3*4) = 14
+    printf("%d\n", 20 - 2 * 3);          // 20 - (3*2) = 14
+
+    // The exact SMAUG number_range subexpression
+    int from = 1, to = 10;
+    printf("%d\n", to - from + 1);       // (10-1)+1 = 10
+
+    return 0;
+}

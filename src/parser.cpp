@@ -2587,9 +2587,23 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// or (the operator at the top of the operator stack has equal precedence and is left associative))
 		// and (the operator at the top of the operator stack is not a left parenthesis):
 		// (Note: we don't put functions in the stack right now)
+		// Arithmetic chain at same precedence: + - * / % are
+		// left-associative, so `a - b + c` must build as
+		// `(a - b) + c`. The general operator> below uses a
+		// strict-greater comparison; when both ops have the
+		// same precedence it returns false, leaving the stack
+		// top in place — which then resolves newest-first
+		// (i.e. as if right-associative). Stream `<<` chains
+		// and other compile paths depended on that historical
+		// shape, so we keep the global behavior and only
+		// force a left-associative pop here for the four
+		// arithmetic precedences (3 = * / %, 4 = + -).
 		while ( !opStack.empty() && opStack.top()->id() != TokenID::tkOpBrk
 		&&      (opStack.top()->type() == TokenType::ttCallFunc || opStack.top()->type() == TokenType::ttCallMethod
-		||      (opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to))) )
+		||      (opStack.top()->is_operator() && (*((TokenOperator *)opStack.top()) > *to))
+		||      (opStack.top()->is_operator()
+			 && ((TokenOperator *)opStack.top())->precedence() == to->precedence()
+			 && (to->precedence() == 3 || to->precedence() == 4))) )
 		{
 		    DBG(cout << "Operator(" << (char)opStack.top()->get() << ") has precedence over operator(" << (char)to->get() << ')' << endl);
 		    popOperator(opStack, exStack);
