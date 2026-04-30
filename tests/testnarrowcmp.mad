@@ -1,0 +1,40 @@
+// Regression: comparing a sub-int64 register to an int literal.
+//
+// safecmp(Gp, Gp) used `cc.cmp(lval.r64(), rval.r64())` when the
+// operands' Gp sizes differed.  But .r64() of a sub-Gpq vreg reads
+// the parent register, whose high bytes can be stale from earlier
+// computations.  Concrete bug: `-1` as an int literal in a
+// char-typed expression context compiled to
+//     mov rax, 1
+//     neg al        ; al -> 0xFF, rax stays 0x01 in high bytes
+// then the compare against the sign-extended `c` (rcx = -1 = 0xFF..FF)
+// saw rax = 0x00000000000000FF and reported NOT EQUAL.
+//
+// SMAUG visible victim: any direct compare of a sub-int64 char/short
+// member against a small literal — including the `if (paf->modifier == -1)`
+// pattern that comes up in skill-affect loading.
+
+#include <stdio.h>
+
+int main()
+{
+    char c = -1;
+    short s = -1;
+
+    if (c == -1)        printf("PASS: char c == -1\n"); else printf("FAIL: char c == -1\n");
+    if (c != -1)        printf("FAIL: char c != -1\n"); else printf("PASS: char c != -1 false\n");
+    if (c < 0)          printf("PASS: char c < 0\n"); else printf("FAIL: char c < 0\n");
+    if (c > -2)         printf("PASS: char c > -2\n"); else printf("FAIL: char c > -2\n");
+
+    if (s == -1)        printf("PASS: short s == -1\n"); else printf("FAIL: short s == -1\n");
+    if (s < 0)          printf("PASS: short s < 0\n"); else printf("FAIL: short s < 0\n");
+
+    char d = c;
+    if (d == -1)        printf("PASS: char d (= c) == -1\n"); else printf("FAIL: char d (= c) == -1\n");
+
+    // Indirect via int — used to work before, must still work.
+    int ic = c;
+    if (ic == -1)       printf("PASS: int ic = c; ic == -1\n"); else printf("FAIL\n");
+
+    return 0;
+}

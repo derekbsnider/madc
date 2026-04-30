@@ -1,0 +1,8 @@
+PASS: char c == -1
+PASS: char c != -1 false
+PASS: char c < 0
+PASS: char c > -2
+PASS: short s == -1
+PASS: short s < 0
+PASS: char d (= c) == -1
+PASS: int ic = c; ic == -1
