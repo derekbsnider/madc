@@ -85,7 +85,12 @@ public:
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   *((char *)data) = c;
 	else if (type == &ddBOOL)   *((bool *)data) = c;
-	else if (type == &ddINT)    *((int *)data) = c;
+	// madc's `int` is 64-bit by design.  Writing only the low 4 bytes
+	// via `(int *)` left the high half at zero (calloc'd 0), so e.g.
+	// `enum { WEAR_NONE = -1 }; if (x == WEAR_NONE)` failed because
+	// WEAR_NONE round-tripped as 0x00000000FFFFFFFF, not 0xFFFF..FFFF.
+	else if (type == &ddINT)    *((int64_t *)data) = c;
+	else if (type == &ddINT64)  *((int64_t *)data) = c;
 	else if (type == &ddINT8)   *((int8_t *)data) = c;
 	else if (type == &ddINT16)  *((int16_t *)data) = c;
 	else if (type == &ddINT24)  *((int16_t *)data) = c;
@@ -94,6 +99,7 @@ public:
 	else if (type == &ddUINT16) *((uint16_t *)data) = c;
 	else if (type == &ddUINT24) *((uint16_t *)data) = c;
 	else if (type == &ddUINT32) *((uint32_t *)data) = c;
+	else if (type == &ddUINT64) *((uint64_t *)data) = c;
 	else if (type == &ddFLOAT)  *((float *)data) = c;
 	else if (type == &ddDOUBLE) *((double *)data) = c;
 	else 	     { return false; }
@@ -104,7 +110,8 @@ public:
 	if ( !data ) { return 0; }
 	if (type == &ddCHAR)   return *((char *)data) == c;
 	if (type == &ddBOOL)   return *((bool *)data) == c;
-	if (type == &ddINT)    return *((int *)data) == c;
+	if (type == &ddINT)    return *((int64_t *)data) == c;
+	if (type == &ddINT64)  return *((int64_t *)data) == c;
 	if (type == &ddINT8)   return *((int8_t *)data) == c;
 	if (type == &ddINT16)  return *((int16_t *)data) == c;
 	if (type == &ddINT24)  return *((int16_t *)data) == c;
@@ -113,6 +120,7 @@ public:
 	if (type == &ddUINT16) return *((uint16_t *)data) == c;
 	if (type == &ddUINT24) return *((uint16_t *)data) == c;
 	if (type == &ddUINT32) return *((uint32_t *)data) == c;
+	if (type == &ddUINT64) return *((uint64_t *)data) == c;
 	if (type == &ddFLOAT)  return *((float *)data) == c;
 	if (type == &ddDOUBLE) return *((double *)data) == c;
 	return 0;
@@ -126,7 +134,8 @@ public:
     {
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   --*((char *)data);
-	else if (type == &ddINT)    --*((int *)data);
+	else if (type == &ddINT)    --*((int64_t *)data);
+	else if (type == &ddINT64)  --*((int64_t *)data);
 	else if (type == &ddINT8)   --*((int8_t *)data);
 	else if (type == &ddINT16)  --*((int16_t *)data);
 	else if (type == &ddINT24)  --*((int16_t *)data);
@@ -135,6 +144,7 @@ public:
 	else if (type == &ddUINT16) --*((uint16_t *)data);
 	else if (type == &ddUINT24) --*((uint16_t *)data);
 	else if (type == &ddUINT32) --*((uint32_t *)data);
+	else if (type == &ddUINT64) --*((uint64_t *)data);
 	else if (type == &ddFLOAT)  --*((float *)data);
 	else if (type == &ddDOUBLE) --*((double *)data);
 	return true;
@@ -143,7 +153,8 @@ public:
     {
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   ++*((char *)data);
-	else if (type == &ddINT)    ++*((int *)data);
+	else if (type == &ddINT)    ++*((int64_t *)data);
+	else if (type == &ddINT64)  ++*((int64_t *)data);
 	else if (type == &ddINT8)   ++*((int8_t *)data);
 	else if (type == &ddINT16)  ++*((int16_t *)data);
 	else if (type == &ddINT24)  ++*((int16_t *)data);
@@ -152,6 +163,7 @@ public:
 	else if (type == &ddUINT16) ++*((uint16_t *)data);
 	else if (type == &ddUINT24) ++*((uint16_t *)data);
 	else if (type == &ddUINT32) ++*((uint32_t *)data);
+	else if (type == &ddUINT64) ++*((uint64_t *)data);
 	else if (type == &ddFLOAT)  ++*((float *)data);
 	else if (type == &ddDOUBLE) ++*((double *)data);
 	return true;
@@ -160,7 +172,8 @@ public:
     {
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   return *((char *)data);
-	else if (type == &ddINT)    return *((int *)data);
+	else if (type == &ddINT)    return *((int64_t *)data);
+	else if (type == &ddINT64)  return *((int64_t *)data);
 	else if (type == &ddINT8)   return *((int8_t *)data);
 	else if (type == &ddINT16)  return *((int16_t *)data);
 	else if (type == &ddINT24)  return *((int16_t *)data);
@@ -169,6 +182,7 @@ public:
 	else if (type == &ddUINT16) return *((uint16_t *)data);
 	else if (type == &ddUINT24) return *((uint16_t *)data);
 	else if (type == &ddUINT32) return *((uint32_t *)data);
+	else if (type == &ddUINT64) return *((uint64_t *)data);
 	else if (type == &ddFLOAT)  return *((float *)data);
 	else if (type == &ddDOUBLE) return *((double *)data);
 	return true;
