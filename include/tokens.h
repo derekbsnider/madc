@@ -1030,7 +1030,8 @@ public:
     TokenBase *expression;                     // switch(expr)
     std::vector<TokenCASE *> cases;            // case entries
     TokenCASE *defaultcase;                    // default entry (reuses TokenCASE with value=NULL)
-    TokenSWITCH() : TokenKeyword("switch"), expression(NULL), defaultcase(NULL) {}
+    int default_index;                         // source-order position of default among cases (-1 if none)
+    TokenSWITCH() : TokenKeyword("switch"), expression(NULL), defaultcase(NULL), default_index(-1) {}
     virtual TokenID id() const { return TokenID::tkSWITCH; }
     virtual TokenBase *clone() { return new TokenSWITCH(); }
     virtual TokenBase *parse(Program &);

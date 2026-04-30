@@ -7028,9 +7028,24 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
     // push exit label onto loopstack so break works
     pgm.loopstack.push(make_pair((Label *)NULL, &sw_exit));
 
-    // emit case bodies (fall-through between cases)
+    // emit case bodies in source order; insert default body at its
+    // source-order position so fall-through chains match what the user
+    // wrote.  If default appears after all cases (default_index ==
+    // cases.size()) it's emitted after the loop.  If no default exists
+    // (default_index == -1) it's never emitted.
+    int dflt_pos = defaultcase ? default_index : -1;
     for ( size_t i = 0; i < cases.size(); ++i )
     {
+	if ( defaultcase && (int)i == dflt_pos )
+	{
+	    pgm.cc.bind(default_label);
+	    DBG(pgm.cc.comment("default body"));
+	    for ( auto *stmt : defaultcase->statements )
+	    {
+		regdefp_t stmtrdp = {NULL, NULL, NULL};
+		stmt->compile(pgm, stmtrdp);
+	    }
+	}
 	pgm.cc.bind(case_labels[i]);
 	DBG(pgm.cc.comment("case body"));
 	for ( auto *stmt : cases[i]->statements )
@@ -7039,9 +7054,7 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
 	    stmt->compile(pgm, stmtrdp);
 	}
     }
-
-    // emit default body
-    if ( defaultcase )
+    if ( defaultcase && dflt_pos == (int)cases.size() )
     {
 	pgm.cc.bind(default_label);
 	DBG(pgm.cc.comment("default body"));

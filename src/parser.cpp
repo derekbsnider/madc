@@ -5154,6 +5154,7 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 	    defaultcase->file = tn->file;
 	    defaultcase->line = tn->line;
 	    defaultcase->column = tn->column;
+	    default_index = (int)cases.size();
 	    // parse statements until next case/}
 	    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkCASE
 		    && pgm.peekToken()->id() != TokenID::tkDEFAULT

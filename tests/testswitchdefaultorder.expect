@@ -1,0 +1,6 @@
+classify(2)=-920 (expect -920)
+classify(1)=1070 (expect 1070)
+classify(99)=-1 (expect -1)
+middle-default(5)=3 (expect 3)
+end-default(7)=99 (expect 99)
+PASS

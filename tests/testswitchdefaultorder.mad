@@ -1,0 +1,72 @@
+// Regression: when `default:` appears before the case labels in source
+// order (like SMAUG's make_color_sequence), the last case body must
+// fall out of the switch normally, NOT into the default body.
+//
+// Pre-fix, the compiler emitted all case bodies first and then the
+// default body, so a case with no break would fall through into
+// default.  See docs/rules/...
+#include <stdio.h>
+
+int classify(int x)
+{
+    int r = -99;
+    switch (x) {
+        default:
+            r = -1;
+            break;
+        case 1:
+            r = 100;
+            // intentional fall-through
+        case 2: {
+            int y = 7;
+            r = r + y;
+        }
+        // unlabeled tail at switch level
+        if (r > 1000) break;
+        r = r * 10;
+    }
+    return r;
+}
+
+int main()
+{
+    int r;
+
+    // x=2: enter case 2 → r=-99+7=-92, then r*=10 → -920
+    r = classify(2);
+    printf("classify(2)=%d (expect -920)\n", r);
+    if (r != -920) { printf("FAIL\n"); return 1; }
+
+    // x=1: case 1 → r=100, fall to case 2 → r=100+7=107, r*=10 → 1070
+    r = classify(1);
+    printf("classify(1)=%d (expect 1070)\n", r);
+    if (r != 1070) { printf("FAIL\n"); return 1; }
+
+    // x=99: default → r=-1, break
+    r = classify(99);
+    printf("classify(99)=%d (expect -1)\n", r);
+    if (r != -1) { printf("FAIL\n"); return 1; }
+
+    // Default in middle: ensure ordering still works
+    int r2 = -99;
+    switch (5) {
+        case 1: r2 = 1; break;
+        default: r2 = 2; break;
+        case 5: r2 = 3; break;
+    }
+    printf("middle-default(5)=%d (expect 3)\n", r2);
+    if (r2 != 3) { printf("FAIL\n"); return 1; }
+
+    // Default at end (the typical layout) still works
+    int r3 = 0;
+    switch (7) {
+        case 1: r3 = 1; break;
+        case 2: r3 = 2; break;
+        default: r3 = 99; break;
+    }
+    printf("end-default(7)=%d (expect 99)\n", r3);
+    if (r3 != 99) { printf("FAIL\n"); return 1; }
+
+    printf("PASS\n");
+    return 0;
+}
