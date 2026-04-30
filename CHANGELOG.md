@@ -2,6 +2,99 @@
 
 ## [Unreleased]
 
+## [v0.13.0] — 2026-04-30 — SMAUG 1.8 plays end-to-end on madc
+
+- **SMAUG 1.8 is a fully playable network MUD on madc.** The
+  158k-line C89 codebase JIT-compiles in-process, accepts telnet
+  connections, walks the full character-creation flow (name →
+  confirm → password → retype → color → sex → class → race →
+  stats roll), serves the MOTD, drops the player into "Ominous
+  Tapestries" with a newbie burlap sack, and responds to in-game
+  commands: `look`, `inventory`, movement (`n`/`s`/`e`/`w`/`u`/`d`),
+  `say`, `who`, `quit`. Returning-player `Reconnecting.` flow also
+  works. NPCs greet, bow, and offer advice.
+
+- **Four real codegen / lexer fixes this session.** Each
+  collapsed multiple SMAUG runtime symptoms into one root cause:
+
+  - **Lexer: octal (`\NNN`) and hex (`\xHH`) escape sequences.**
+    The lexer previously parsed `\033` as `\0` (NUL terminator)
+    followed by literal `"33"`, silently truncating the string.
+    SMAUG's `make_color_sequence()` then `sprintf`'d into a
+    zero-length format and the next line `buf[ln-1] = 'm'`
+    wrote 'm' (0x6D) to `buf[-1]` — out of bounds into a
+    caller's stack frame. The corruption clobbered byte 7 of
+    `nanny()`'s `DESCRIPTOR_DATA *d` slot, turning `0x55…` into
+    `0x6d0055…`, and the next `write_to_buffer` SIGSEGV'd
+    dereferencing the bogus pointer (the long-standing
+    "comm.c:1381 second-connection NULL deref"). Full C escape
+    syntax now supported: `\NNN` (1-3 octal digits), `\xHH`
+    (1-2 hex digits), plus the existing single-letter escapes.
+    `tests/testoctalescape.mad`.
+
+  - **`scanf`-family rewrites `%d` → `%ld`.** madc's `int` is
+    64-bit by design, but libc's `%d` writes only 4 bytes into
+    a destination slot — leaving the high 4 bytes of an
+    `int x = 0; sscanf("%d", &x);` round-trip stale. SMAUG
+    `db.c`'s `sscanf("%d %d ...", &x1, &x2, ...)` produced
+    `0x00000000FFFFFFFF` for negative inputs read from `.are`
+    files; that broke `slot_lookup`'s `if (slot <= 0) return -1;`
+    guard for the first negative slot during `gods.are` object
+    loading and `abort()`'d boot. Three new wrappers
+    (`__madc_sscanf` / `__madc_fscanf` / `__madc_scanf`) parse
+    the format string and prepend `l` to `%d/%i/%u/%o/%x/%X/%n`
+    that have no explicit length modifier, then forward to
+    `vsscanf`/`vfscanf`/`vscanf`. Embedded `<stdio.h>` `#define`s
+    `sscanf`/`fscanf`/`scanf` to redirect transparently — no
+    source changes needed. `tests/testsscanfwide.mad`.
+
+  - **`stat` family added to the int32-return whitelist.**
+    `stat` / `fstat` / `lstat` etc. return `int` (-1 on failure)
+    but were missing from the dlsym-int-returner whitelist that
+    triggers `movsxd` of the 32-bit result into the 64-bit RAX
+    madc reads. Without sign extension, a -1 return arrived as
+    `0x00000000FFFFFFFF` and `if (stat(p, &sb) == -1)` silently
+    fell through to the success branch. SMAUG `save.c:891`
+    logged spurious `Preloading player data ... (-15803487K)`
+    on every connection because the stat-failed path never
+    short-circuited. Added `stat`, `fstat`, `lstat`, `fstatat`,
+    `statfs`, `fstatfs`, `utime`, `utimes`, `futimes`.
+    `tests/teststatret.mad`.
+
+  - **`safemov` narrow→64 must sign-extend across the full 64
+    bits.** The signed-sub-int → 64-bit-dest path used
+    `movsx r32, r/m8` (and similar for `r/m16`). x86 `movsx` to
+    a 32-bit register sign-extends to the dest's 32 bits and
+    then implicitly zero-extends to 64 — leaving the high 32
+    bits at zero. So a signed -1 char loaded into a Gpq came out
+    as `0x00000000FFFFFFFF`. Visible victim: the chained EOF
+    idiom `int x = (c = fgetc(fp)); if (x == EOF) break;` —
+    the assignment-expression value extended through this
+    `safemov` didn't match an int64 sentinel. Fixed by using
+    `movsx r64, r/m8` (and `r64, r/m16`) directly when the dest
+    is gpq. Unsigned narrows continue to use the shorter
+    `movzx r32` form whose implicit zero-extend to 64 is
+    correct. `tests/testsignextend.mad`.
+
+- **MadSMAUG: all bootstrap shims removed.** `slot_lookup`,
+  `act`, `to_channel`, `boot_log` all run upstream definitions.
+  The `_bootstrap_comm_shim.c` is now just a doc comment.
+
+- **MadSMAUG: upstream `fgetc`-into-char-array idiom patched.**
+  `act_comm.c`'s `send_*_title` (4 sites) and `db.c`'s
+  `show_file` / `show_file_vnum` (2 sites) used the chained
+  `(buf[i] = fgetc(fp)) != EOF` idiom; this returns the unbound
+  RHS register's full int instead of the truncated-and-extended
+  char value the C standard requires, so the EOF compare never
+  matched and the loop walked off the buffer. The patch
+  (`patches/madc-fgetc-loop.patch`) substitutes an `int`
+  intermediate at the six call sites. The TokenVar variant of
+  the same pattern (`(c = fgetc(fp))`) works correctly under
+  this release; the TokenSubscript variant is queued for a
+  follow-up codegen fix and the workaround patch comes out then.
+
+## Previous unreleased work (now part of v0.13.0)
+
 - **SMAUG runtime is fully interactive end-to-end.** boot_db
   completes through every load_*() phase, game_loop ticks at
   4 Hz, area_update fires every 30-90 s with `Resetting:` log

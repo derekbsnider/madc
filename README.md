@@ -167,7 +167,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 234 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
+**Current status: 238 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -204,16 +204,16 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.12.0** (2026-04-25) — SMAUG Phase F front-edge wave. Thirteen parser / lexer / compiler fixes surfaced while probing MadSMAUG translation units one at a time. Highlights: pointer-typed `*(ptr ± N)` / `*(p = ptr + N)`, single-pass macro parameter substitution (no more cascade through later param names), `extern` libc late-bind via dlsym, `*++p` not eating trailing binops, fn-ptr-member access not mis-firing through pending operators, constant-expression `<<`/`>>`/`&`/`|`/`^`, char literals inside function-like macro args, `struct {...} *p, *q;` declarators, `type const *p` / `int * const *xpp` interleaved CV-qualifier+star chains, `vfADDRTAKEN` pointer + `&ptr->member`, and a sweep converting compound-assign / inc-dec raw `throw` sites to token-aware `Throw(...)`. 197 integration + 48 unit tests (25 datadef + 23 IR) passing.
+**v0.13.0** (2026-04-30) — **SMAUG 1.8 plays end-to-end on madc.** The 158k-line C89 codebase JIT-compiles in-process and runs as a real network MUD: telnet greeting, full character creation (name → confirm → password → color → sex → class → race), stats roll, MOTD, room entry, and in-game commands (`look`, `inventory`, movement, `say`, `who`, `quit`). Returning-player `Reconnecting.` flow also works. Four codegen / lexer fixes collapsed the cascade of SMAUG runtime symptoms (second-connection NULL deref, `slot_lookup` int-widening, fgetc EOF hangs) into single root causes: octal/hex escape sequences in the lexer, `scanf %d → %ld` rewrite for madc's 8-byte int slots, `stat()` int-return sign-extension, and `safemov` `movsx r64, r/m8` for narrow→64 sign-extension. All MadSMAUG bootstrap shims removed. 238 integration + 48 unit tests passing.
 
 ### Recent Releases
 
+- **v0.13.0** — SMAUG plays end-to-end on madc: telnet/creation/MOTD/room/commands/reconnect; lexer octal+hex escapes, scanf %d→%ld, stat sign-ext, safemov narrow→64
 - **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c)
 - **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, `expr[i].m`, compound-assign on subscripts, realpath includes, class-as-ident
 - **v0.10.1** — Typed-register IR cleanup completion: stream/multi-return/direct-call cleanup, final compiler-site IR store/load ports, dead `typesafe.cpp` surface pruned
 - **v0.10.0** — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c): 15 shared compile-site helpers, ~880 lines removed from `compiler.cpp`, three latent bugs fixed
 - **v0.9.1** — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts, constant `case`, postfix chains
-- **v0.9.0** — SMAUG Phase F continues: `->` on call results, Mem-backed arithmetic, unified control-flow parens, fn-ptr typedefs + decay, struct interop expansion, address-taken locals, assign-as-expression
 
 ## Roadmap
 
@@ -228,7 +228,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG A/B/C** | Pointers, `->`, casts, `&`, macros, unsigned/enum/static/typedef | **Complete** |
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
-| **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **In progress** (hashstr.mad first file ported) |
+| **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
 | **Phase 4** | `libmadc.so` embedding API | Planned |
 
 ---
