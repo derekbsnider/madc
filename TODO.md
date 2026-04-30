@@ -2,30 +2,23 @@
 
 ## High Priority
 
-- **slot_lookup int-param widening bug (umbrella-only)** — In the
-  SMAUG umbrella context only, `if (slot <= 0)` inside the
-  upstream slot_lookup function fails to early-return for slot=-1.
-  Probes confirm: `sizeof(slot)=8`, low 32 = 0xFFFFFFFF (correct
-  -1 read as int), high 32 = zero (NOT sign-extended). The
-  64-bit cmp sees positive 4B and the guard fails. Cannot
-  reproduce in isolation — exact-copy slot_lookup body in a small
-  .mad sign-extends correctly. Three hypotheses documented in
-  MadSMAUG/src/_bootstrap_comm_shim.c: forward-decl signature
-  mismatch, IRBuilder Mem-load decision flip in caller's struct
-  member read, function-local extern interaction. Blocking
-  slot_lookup un-stub; current shim returns -1 unconditionally.
+- **Chained subscript-assignment expression value not truncated/extended**
+  — `(BUFF[i] = X) != EOF` and `int v = (BUFF[i] = X)` for char-element
+  arrays returns the unbound RHS register's full int value instead of
+  the truncated-and-extended LHS-typed value the C standard requires.
+  The TokenVar variant (`(c = X)`) was fixed in c35824f via safemov
+  movsx-to-r64. The TokenSubscript / TokenSubscriptExpr variants need
+  the same — first attempt regressed the literal-RHS case so it was
+  reverted. Worked around in upstream MadSMAUG patches that use an
+  int intermediate (`int _c; while ((_c = fgetc(fp)) != EOF) BUFF[num++] = _c;`).
+  Real fix should land in TokenAssign's subscript LHS branches.
 
-- **Walk full character-creation flow through to in-game start**
-  — Current verified state stops at the password / color-pref
-  prompt. Next: race / class selection, stats roll, room entry,
-  basic commands (look, north, etc.). Will surface the next
-  batch of latent runtime bugs.
-
-- **comm.c:1381 NULL deref on second-connection player-data load**
-  — Observed as a SIGSEGV inside `write_to_buffer` after a
-  successful first connect+disconnect cycle. NULL deref at
-  `(nil)`. Looks like a stale or freed descriptor reference.
-  Investigate.
+- **Exercise SMAUG combat / spells / mobprogs** — Character creation
+  through in-room movement is verified. Combat (`kill <mob>`, weapon
+  damage), spells (`cast <name> <target>`, mana costs), and mobprogs
+  (NPC scripted reactions) all run upstream code paths that haven't
+  been hit yet. Likely surface another batch of latent codegen issues
+  similar to the 2026-04-30 cascade.
 
 ## Medium Priority
 
