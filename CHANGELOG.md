@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+- **MadSMAUG accepts telnet connections and sends the login
+  greeting** — `Welcome to MadSMAUG. By what name do you wish to
+  be known?` — the first interactive frame from a JIT-compiled
+  SMAUG. The path from `boot_db()` to a responsive `game_loop()`
+  surfaced one madc bug:
+
+  - **Function-local `extern T name;` resolves to the file-scope
+    global, not a fresh uninitialized local.** addVariable was
+    checking only the local scope before creating a new
+    Variable; comm.c new_descriptor()'s
+    `extern char *help_greeting; if (help_greeting[0] == '.')`
+    crashed on every incoming connection because the local
+    extern shadowed db.c's actual global with an uninitialized
+    NULL pointer. Fix: when `parsing_extern_decl`, fall through
+    to `tkProgram->findVariable(id)` and reuse the existing
+    global. Regression test
+    `tests/testfunclocalextern.mad` covers the read-and-write
+    case across two calls.
+
+  Plus bootstrap-shim peeling on the MadSMAUG side: the
+  send_to_char / write_to_buffer / send_to_pager /
+  send_to_char_color / set_char_color stubs were removed so the
+  upstream comm.c definitions win the funcnode-dedupe race;
+  slot_lookup gained a stub (the upstream version aborts during
+  boot when skill_table is empty, which exposed itself only
+  after the extern fix wired fBootDb visibility correctly inside
+  it); main() in SMAUG.mad now drives `boot_db() →
+  init_socket(port) → game_loop()` instead of `exit(0)`.
+
 - **SMAUG `boot_db()` runs end-to-end** — five compounding fixes in
   one session unstuck the post-area-loading runtime path. SMAUG now
   loads all 25 areas, fires `area_update`, finishes board / vault /
