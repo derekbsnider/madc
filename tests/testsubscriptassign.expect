@@ -1,0 +1,5 @@
+case1 buf[0]=65 r=65
+case2 buf[1]=-1 r=-1
+case3 buf[2]=69 r=69
+case4 n=3 out="Hi!"
+PASS

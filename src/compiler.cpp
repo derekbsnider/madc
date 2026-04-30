@@ -3396,7 +3396,24 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    else
 		throw "TokenAssign: unsupported RHS for subscript store";
 
-	    _operand = effective_rhs;
+	    // The expression value of `arr[i] = x` is the LHS-typed value —
+	    // truncated and (sign- / zero-) extended.  Re-load from the
+	    // slot we just wrote so safemov picks the right movsx / movzx.
+	    Operand expr_value = effective_rhs;
+	    if ( elem_type && elem_type->is_integer() && elem_type->size < 8 )
+	    {
+		x86::Gp expr_val = pgm.cc.newGpq("subx_expr");
+		pgm.safemov(expr_val, slot, &ddINT64, elem_type);
+		expr_value = expr_val;
+	    }
+	    if ( regdp.first && regdp.first != &_operand )
+	    {
+		pgm.safemov(*regdp.first, expr_value, elem_type, elem_type);
+		regdp.second = elem_type;
+		_operand = *regdp.first;
+		return *regdp.first;
+	    }
+	    _operand = expr_value;
 	    regdp.first = &_operand;
 	    regdp.second = elem_type;
 	    return _operand;
@@ -3425,7 +3442,49 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    effective_rhs = cstr;
 	}
 	tsub->compile_set(pgm, effective_rhs, rhs_rdp.second ? rhs_rdp.second : ltype);
-	_operand = effective_rhs;
+	// The expression value of `arr[i] = x` is the LHS-typed value —
+	// truncated to LHS width and (sign- / zero-) extended back to int64.
+	// For wider or non-integer LHS the RHS is already correctly typed.
+	// Without this, `(buf[i] = c) != EOF` and `r = (buf[i] = X)` see
+	// the unbound RHS register's full int.
+	Operand expr_value = effective_rhs;
+	if ( ltype && ltype->is_integer() && ltype->size < 8
+	  && effective_rhs.isReg()
+	  && effective_rhs.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Gp expr_val = pgm.cc.newGpq("subassign_expr");
+	    x86::Gp src = effective_rhs.as<x86::Gp>();
+	    bool is_unsigned = ltype->is_unsigned();
+	    if ( ltype->size == 1 )
+	    {
+		if ( is_unsigned ) pgm.cc.movzx(expr_val.r32(), src.r8());
+		else               pgm.cc.movsx(expr_val, src.r8());
+	    }
+	    else if ( ltype->size == 2 )
+	    {
+		if ( is_unsigned ) pgm.cc.movzx(expr_val.r32(), src.r16());
+		else               pgm.cc.movsx(expr_val, src.r16());
+	    }
+	    else /* size == 4 */
+	    {
+		if ( is_unsigned ) pgm.cc.mov(expr_val.r32(), src.r32());
+		else               pgm.cc.movsxd(expr_val, src.r32());
+	    }
+	    expr_value = expr_val;
+	}
+	// If the caller passed a destination via regdp.first (e.g. an outer
+	// `r = (buf[i] = x)` set it to r's storage, or `(buf[i] = c) != EOF`
+	// passed the comparison's tmp Gp), write the expression value there
+	// directly.  Otherwise expose it via _operand for consumers that
+	// read regdp's pair.
+	if ( regdp.first && regdp.first != &_operand )
+	{
+	    pgm.safemov(*regdp.first, expr_value, ltype, ltype);
+	    regdp.second = ltype;
+	    _operand = *regdp.first;
+	    return *regdp.first;
+	}
+	_operand = expr_value;
 	regdp.first = &_operand;
 	regdp.second = ltype;
 	return _operand;
