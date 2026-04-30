@@ -1,0 +1,46 @@
+// Comma-expression statements in brace-less while/if/for bodies.
+// The C comma operator is a low-precedence binary operator: `e1, e2`
+// evaluates e1 (for side effects), discards its value, evaluates e2,
+// returns e2's value. As a statement it runs both side effects.
+//
+// Before this fix madc's parseExpression stopped at `,` (so callers
+// like for-loop init/incr and call-arg lists could see comma as a
+// separator). In a brace-less while body that meant `e1, e2;` parsed
+// as `e1;` followed by an OUT-OF-LOOP `e2;` — a real codegen bug
+// found via SMAUG mud_prog.c:2437
+//     while ( (*point = *i) != '\0' ) ++point, ++i;
+// where only ++point ran in the loop, ++i never did, *i stayed at
+// the first char forever, point walked off the end → SIGSEGV.
+
+#include <stdio.h>
+#include <string.h>
+
+int main() {
+    // The exact upstream-SMAUG strcpy idiom that triggered the bug.
+    char buf[64], tmp[16];
+    char *p, *i;
+    strcpy(buf, "[saw]    "); p = buf + 5;     // place 'mark' at offset 5
+    strcpy(tmp, "child"); i = tmp;
+    while ( (*p = *i) != '\0' )
+        ++p, ++i;
+    printf("strcpy_idiom: result='%s' final_offset=%ld\n", buf, (long)(p - buf));
+
+    // Brace-less while + comma body
+    int a = 0, b = 100;
+    while ( a < 5 )
+        ++a, --b;
+    printf("while_no_braces: a=%d b=%d\n", a, b);
+
+    // Brace-less if + comma body (executed once)
+    int x = 0, y = 0;
+    if ( 1 )
+        x = 7, y = 11;
+    printf("if_no_braces: x=%d y=%d\n", x, y);
+
+    // 3-element comma chain at statement scope
+    int p1 = 0, p2 = 0, p3 = 0;
+    p1 = 1, p2 = 2, p3 = 3;
+    printf("three_chain: %d %d %d\n", p1, p2, p3);
+
+    return 0;
+}

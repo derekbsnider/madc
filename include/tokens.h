@@ -816,7 +816,13 @@ public:
 };
 
 // command operator , (perform first, second and return second result)
-class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator(',') {} virtual TokenID id() const { return TokenID::tkComma; }  virtual TokenBase *clone() { return new TokenComma(); } };
+class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator(',') {} virtual TokenID id() const { return TokenID::tkComma; }  virtual TokenBase *clone() { return new TokenComma(); }
+    // Comma operator: evaluate left for side effects, return right's value.
+    // Used by parseExprStmt to chain `e1, e2, e3;` expression-statements
+    // (notably brace-less while/for bodies like `++p, ++i;`). Without this,
+    // parseExpression stopped at the first comma and the rest was dropped.
+    virtual asmjit::Operand &compile(Program &, regdefp_t &);
+};
 
 
 // symbols

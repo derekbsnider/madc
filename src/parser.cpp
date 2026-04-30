@@ -1629,7 +1629,8 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 }
 
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
-				    bool stop_on_closing_paren, int initial_brackets)
+				    bool stop_on_closing_paren, int initial_brackets,
+				    bool push_back_comma)
 {
     TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
     TokenOperator *to;
@@ -1663,6 +1664,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	    	if ( tb->id() == TokenID::tkComma )
 		{
 		    DBG(cout << "parseExpression: found comma" << endl);
+		    if ( push_back_comma ) pushToken(tb);
 		    done = true;
 		}
 		break;
@@ -1671,6 +1673,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	    	if ( tb->id() == TokenID::tkComma )
 		{
 		    DBG(cout << "parseExpression: found comma" << endl);
+		    if ( push_back_comma ) pushToken(tb);
 		    done = true;
 		    break;
 		}
@@ -6518,6 +6521,45 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 }
 
 // parse a statement into the AST
+// Parse a statement-context expression, chaining comma-separated
+// expressions into a TokenComma right-leaning tree. parseExpression
+// always stops at `,` (function-arg / for-init separators rely on it),
+// so without this wrapper a brace-less `while (c) e1, e2;` body
+// dropped `, e2;` — it became a sibling statement after the loop, with
+// only `e1` running per iteration. Found via SMAUG mud_prog.c:2437
+// `while ((*p = *i) != '\0') ++p, ++i;` segfaulting because `++i`
+// never ran inside the loop.
+TokenBase *Program::parseExprStmt(TokenBase *tb)
+{
+    // push_back_comma=true so we can detect the chain by peeking after
+    // each parseExpression — without it, parseExpression consumes the
+    // `,` itself and the chain looks like a single expression.
+    TokenBase *expr = parseExpression(tb, /*conditional=*/false,
+                                      /*ternary_branch=*/false,
+                                      /*stop_on_closing_paren=*/false,
+                                      /*initial_brackets=*/0,
+                                      /*push_back_comma=*/true);
+    while ( expr && peekToken() && peekToken()->id() == TokenID::tkComma )
+    {
+	nextToken(); // consume the ','
+	TokenBase *next_tb = nextToken();
+	if ( !next_tb )
+	    break;
+	TokenBase *right = parseExpression(next_tb, false, false, false, 0,
+	                                   /*push_back_comma=*/true);
+	if ( !right )
+	    break;
+	TokenComma *seq = new TokenComma();
+	seq->left   = expr;
+	seq->right  = right;
+	seq->file   = expr->file;
+	seq->line   = expr->line;
+	seq->column = expr->column;
+	expr = seq;
+    }
+    return expr;
+}
+
 TokenBase *Program::parseStatement(TokenBase *tb)
 {
     DBG(cout << "parseStatement() start" << endl);
@@ -6740,9 +6782,9 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		parseFunction(*rtypes[0], id, NULL, &rtypes);
 		return NULL;
 	    }
-	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseExpression" << std::endl);
+	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseExprStmt" << std::endl);
 	    resetPrevToken();
-	    return parseExpression(tb);
+	    return parseExprStmt(tb);
 	    break;
 
 	case TokenType::ttKeyword:

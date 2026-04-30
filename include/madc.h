@@ -742,7 +742,16 @@ public:
     TokenBase *parseExpression(TokenBase *, bool conditional=false,
 			       bool ternary_branch=false,
 			       bool stop_on_closing_paren=false,
-			       int initial_brackets=0);
+			       int initial_brackets=0,
+			       bool push_back_comma=false);
+    // Statement-level expression parse: parseExpression + comma-chain.
+    // parseExpression treats `,` as a hard stop (callers like for-loop
+    // init/incr and call-arg lists rely on this). In statement contexts
+    // (`expr1, expr2;` or a brace-less `while (c) e1, e2;` body), the
+    // comma is the C comma operator and both expressions must run for
+    // side effects. parseExprStmt collects them into a TokenComma chain
+    // whose compile() evaluates left for effects and returns right.
+    TokenBase *parseExprStmt(TokenBase *);
     // Parse an identifier followed by any chain of postfix operators
     // (->ident / .ident / [expr] / ++ / --) and return the resulting
     // expression node. Stops at the first non-postfix token (binary

@@ -5272,6 +5272,22 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
+// comma operator: evaluate left for side effects, return right's value.
+// parseExprStmt chains brace-less expression-statement commas like
+// `++p, ++i;` into TokenComma nodes (left=first, right=rest), so the
+// while body in `while (cond) e1, e2;` runs both side effects per iter.
+Operand &TokenComma::compile(Program &pgm, regdefp_t &regdp)
+{
+    if ( left )
+    {
+	regdefp_t lrdp = {nullptr, nullptr, nullptr};
+	left->compile(pgm, lrdp);
+    }
+    if ( !right )
+	throw "TokenComma::compile() missing right operand";
+    return right->compile(pgm, regdp);
+}
+
 // make number negative
 Operand &TokenNeg::compile(Program &pgm, regdefp_t &regdp)
 {
