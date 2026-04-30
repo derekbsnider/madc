@@ -813,7 +813,14 @@ void Program::add_functions()
     addFunction("get_argv",	datatype_vec_t{DataType::dtCHARptr, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
     addFunction("setenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_setenv);
     addFunction("unsetenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)madc_unsetenv);
-    addFunction("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT)}, (fVOIDFUNC)__errno_location);
+    // glibc's errno is a 4-byte int.  Registering this as int*-to-int64 made
+    // madc's `*p` deref read 8 bytes — picking up 4 bytes of adjacent memory
+    // in the high half.  The stale high bits silently broke
+    // `errno == EWOULDBLOCK` (and any other errno comparison): SMAUG
+    // comm.c's read_from_descriptor() perror'd "Read_from_descriptor: <wrong>"
+    // and disconnected every player whose recv() got an EAGAIN, which on
+    // a non-blocking socket is every quiet read.
+    addFunction("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT32)}, (fVOIDFUNC)__errno_location);
     // dlopen/dlsym/dlclose — dynamic library loading
     addFunction("dlopen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlopen);
     addFunction("dlsym",	datatype_vec_t{DataType::dtINT64, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlsym);
