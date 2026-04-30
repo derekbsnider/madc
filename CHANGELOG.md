@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **TokenAssign: subscript-assign value is LHS-typed, honors caller
+  dest** (a59adbb).  Two issues collapsed in the TokenSubscript /
+  TokenSubscriptExpr branches: (a) the expression value of
+  `arr[i] = x` for narrow-integer element types was the unbound RHS
+  register's full int instead of the byte / short that was actually
+  stored, sign-/zero-extended back to int64; (b) the branch
+  unconditionally overwrote `regdp.first`, so outer
+  `r = (buf[i] = x)` had its mirror-to-caller logic confused and r
+  never got written.  Visible victim: SMAUG
+  `while ((BUFF[num]=fgetc(fp)) != EOF) num++;` in `send_*_title()`
+  and `show_file()` walked off the buffer because the EOF compare
+  saw the unbound int.  Worked around for v0.13.0 by
+  `MadSMAUG/patches/madc-fgetc-loop.patch` substituting an int
+  intermediate; that patch is now retired.
+  `tests/testsubscriptassign.mad` covers small-positive, EOF marker,
+  high-bits-truncate, and the SMAUG fgetc-loop pattern.
+
 - **switch: emit `default:` body in source-order position** (396c147).
   When `default:` appeared before the case labels in source order
   (the SMAUG colorize idiom), the compiler emitted all case bodies

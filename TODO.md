@@ -2,17 +2,6 @@
 
 ## High Priority
 
-- **Chained subscript-assignment expression value not truncated/extended**
-  — `(BUFF[i] = X) != EOF` and `int v = (BUFF[i] = X)` for char-element
-  arrays returns the unbound RHS register's full int value instead of
-  the truncated-and-extended LHS-typed value the C standard requires.
-  The TokenVar variant (`(c = X)`) was fixed in c35824f via safemov
-  movsx-to-r64. The TokenSubscript / TokenSubscriptExpr variants need
-  the same — first attempt regressed the literal-RHS case so it was
-  reverted. Worked around in upstream MadSMAUG patches that use an
-  int intermediate (`int _c; while ((_c = fgetc(fp)) != EOF) BUFF[num++] = _c;`).
-  Real fix should land in TokenAssign's subscript LHS branches.
-
 - **Exercise SMAUG combat / spells / mobprogs** — Character creation
   through in-room movement is verified. Combat (`kill <mob>`, weapon
   damage), spells (`cast <name> <target>`, mana costs), and mobprogs
@@ -74,6 +63,17 @@
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
 
 ## Known Runtime Bugs (surfaced but pre-existing)
+
+- **(RESOLVED 2026-04-30)** ~~Chained subscript-assign expression value~~
+  — `(BUFF[i] = fgetc(fp)) != EOF` returned the unbound RHS register's
+  full int instead of the byte that was actually stored,
+  sign-/zero-extended back to int64.  Fixed in a59adbb: emit
+  `movsx r64, r8/r16` from the RHS register's low bytes after the
+  store, and respect `regdp.first` so outer assignments
+  (`r = (buf[i] = x)`) get the value written into their destination.
+  MadSMAUG patches/madc-fgetc-loop.patch retired; the original
+  upstream `while ((BUFF[num]=fgetc(fp)) != EOF) num++;` pattern now
+  compiles correctly.  tests/testsubscriptassign.mad covers it.
 
 - **(RESOLVED 2026-04-30)** ~~SMAUG `&X` colour codes stripped, letters
   passed verbatim~~ — Switch-default body was always emitted last, so
