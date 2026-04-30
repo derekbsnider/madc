@@ -1,14 +1,14 @@
 # Test Status
 
-Test results as of April 29, 2026 (post-v0.12.0, session 10 — `##` token-paste support, `__attribute__((...))` skip, IRBuilder::coerce dst=void fast path, istream `getline` moved into std:: namespace).
+Test results as of April 30, 2026 (post-v0.13.0 — switch default-position fix, TokenAssign subscript-assign value/caller-dest, dropped MadSMAUG fgetc-loop workaround patch).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 225 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 245 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 225 integration tests
+- Passing: 245 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR
