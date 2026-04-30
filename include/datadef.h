@@ -349,26 +349,53 @@ public:
     }
     // move memory pointed by a pointer into an Xmm register
     // mov(reg, [mem])
+    //
+    // Heap pointers from calloc usually live above the 32-bit signed
+    // displacement range, so emitting `movss/movsd xmm, [abs64]`
+    // directly trips asmjit's reloc-out-of-range error at finalize.
+    // Spill the address into a Gp first and use register-base
+    // addressing — the encoding for `movss/movsd xmm, [reg]` exists
+    // for any 64-bit address. Float (4) needs movss; double (8) and
+    // smaller-int loads happen via movsd which reads only the low
+    // bytes of the addressed slot.
     virtual void movmptr2xval(asmjit::x86::Compiler &cc, asmjit::x86::Xmm &reg, void *ptr)
     {
+	asmjit::x86::Gp p = cc.newIntPtr("_x_addr");
+	cc.mov(p, asmjit::imm(ptr));
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtBOOL:    cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT64:   cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtINT16:   cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT24:   cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT32:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtUINT8:   cc.movsd(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT16:  cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT24:  cc.movsd(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT32:  cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtUINT64:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtFLOAT:   cc.movsd(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtDOUBLE:  cc.movsd(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtLDOUBLE: cc.movsd(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
-	default:		  cc.movq(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
+	case DataType::dtCHAR:    cc.movsd(reg, asmjit::x86::byte_ptr(p));  break;
+	case DataType::dtBOOL:    cc.movsd(reg, asmjit::x86::byte_ptr(p));  break;
+	case DataType::dtINT64:   cc.movsd(reg, asmjit::x86::qword_ptr(p)); break;
+	case DataType::dtINT16:   cc.movsd(reg, asmjit::x86::word_ptr(p));  break;
+	case DataType::dtINT24:   cc.movsd(reg, asmjit::x86::word_ptr(p));  break;
+	case DataType::dtINT32:   cc.movsd(reg, asmjit::x86::dword_ptr(p)); break;
+	case DataType::dtUINT8:   cc.movsd(reg, asmjit::x86::byte_ptr(p));  break;
+	case DataType::dtUINT16:  cc.movsd(reg, asmjit::x86::word_ptr(p));  break;
+	case DataType::dtUINT24:  cc.movsd(reg, asmjit::x86::word_ptr(p));  break;
+	case DataType::dtUINT32:  cc.movsd(reg, asmjit::x86::dword_ptr(p)); break;
+	case DataType::dtUINT64:  cc.movsd(reg, asmjit::x86::qword_ptr(p)); break;
+	case DataType::dtFLOAT:   cc.movss(reg, asmjit::x86::dword_ptr(p)); break;
+	case DataType::dtDOUBLE:  cc.movsd(reg, asmjit::x86::qword_ptr(p)); break;
+	case DataType::dtLDOUBLE: cc.movsd(reg, asmjit::x86::tword_ptr(p)); break;
+	default:		  cc.movq(reg, asmjit::x86::qword_ptr(p));   break;
 	} // switch
+    }
+    // move an Xmm register's value into the memory pointed to by a
+    // pointer. Counterpart of movmptr2xval; needed by TokenCpnd::putreg
+    // for write-back of double/float global variables. Same Gp-base
+    // trick to dodge the 32-bit-displacement reloc limit.
+    virtual void movxval2mptr(asmjit::x86::Compiler &cc, void *ptr, asmjit::x86::Xmm reg)
+    {
+	asmjit::x86::Gp p = cc.newIntPtr("_x_addr");
+	cc.mov(p, asmjit::imm(ptr));
+	switch((DataType)_type)
+	{
+	case DataType::dtFLOAT:   cc.movss(asmjit::x86::dword_ptr(p), reg); break;
+	case DataType::dtDOUBLE:  cc.movsd(asmjit::x86::qword_ptr(p), reg); break;
+	case DataType::dtLDOUBLE: cc.movsd(asmjit::x86::tword_ptr(p), reg); break;
+	default:		  cc.movsd(asmjit::x86::qword_ptr(p), reg); break;
+	}
     }
     // move memory pointed to by a register into a register
     virtual void movrptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, asmjit::x86::Gp &ptr)

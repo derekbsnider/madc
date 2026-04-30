@@ -293,6 +293,23 @@ void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
     if ( !ms && d1 ) ms = (uint32_t)d1->size;
     bool dst_is_float = (ms == 4) || (d1 && d1->size == sizeof(float));
     bool src_is_float = d2 && d2->size == sizeof(float);
+
+    // Absolute-address Mem with a 64-bit displacement (typical for
+    // heap-backed file-scope or hoisted-static globals) has no encoding
+    // for movss/movsd — the [moffs] form only exists for `mov rax, ...`.
+    // Spill the address into a Gp first and use register-base addressing.
+    x86::Mem dst = m;
+    if ( !dst.hasBase() )
+    {
+	int64_t off = dst.offset();
+	if ( (uint64_t)(off + 0x80000000ll) > 0xFFFFFFFFull )
+	{
+	    x86::Gp tmp_addr = cc.newIntPtr("_safemov_addr");
+	    cc.mov(tmp_addr, asmjit::imm(off));
+	    dst = x86::ptr(tmp_addr, 0, ms ? ms : (uint32_t)(d1 ? d1->size : 8));
+	}
+    }
+
     if ( dst_is_float )
     {
 	if ( !src_is_float )
@@ -300,10 +317,10 @@ void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 	    // dst is float, src is double — narrow.
 	    x86::Xmm tmp = cc.newXmmSs("_fx_tmp");
 	    cc.cvtsd2ss(tmp, r2);
-	    cc.movss(m, tmp);
+	    cc.movss(dst, tmp);
 	}
 	else
-	    cc.movss(m, r2);
+	    cc.movss(dst, r2);
     }
     else
     {
@@ -312,10 +329,10 @@ void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 	    // dst is double, src is float — widen.
 	    x86::Xmm tmp = cc.newXmmSd("_fx_tmp");
 	    cc.cvtss2sd(tmp, r2);
-	    cc.movsd(m, tmp);
+	    cc.movsd(dst, tmp);
 	}
 	else
-	    cc.movsd(m, r2);
+	    cc.movsd(dst, r2);
     }
 }
 

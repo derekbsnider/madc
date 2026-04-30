@@ -3965,7 +3965,7 @@ void TokenCpnd::movreg(x86::Compiler &cc, Operand &op, Variable *var)
 	DBG(cc.comment(var->name.c_str()));
 	var->type->movmptr2xval(cc, op.as<x86::Xmm>(), var->data);
     }
-    if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    else if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
 	DBG(cc.comment("TokenCpnd::movreg() calling movmptr2rval(cc, reg, var->data)"));
 	DBG(cc.comment(var->name.c_str()));
@@ -4898,6 +4898,8 @@ void TokenCpnd::putreg(asmjit::x86::Compiler &cc, Variable *var)
     DBG(cc.comment("TokenCpnd::putreg() calling cc.mov(var->data, reg)"));
     if ( rmi->second.isReg() && rmi->second.as<BaseReg>().isGroup(RegGroup::kGp) )
 	var->type->movrval2mptr(cc, var->data, rmi->second.as<x86::Gp>());
+    else if ( rmi->second.isReg() && rmi->second.as<BaseReg>().isGroup(RegGroup::kVec) )
+	var->type->movxval2mptr(cc, var->data, rmi->second.as<x86::Xmm>());
 
     var->flags &= ~vfMODIFIED;
 }

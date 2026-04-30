@@ -31,13 +31,14 @@ int next_id(void) {
     return r;
 }
 
-// Mixed-type statics: pointer + int in same function.
+// Mixed-type statics: pointer + int + double in same function.
 void multi_static(void) {
     static char const * label = "tag";
     static int call_count = 0;
+    static double scale = 2.5;
     call_count = call_count + 1;
-    printf("multi_static: label='%s' call_count=%d\n",
-           label, call_count);
+    printf("multi_static: label='%s' call_count=%d scale=%g\n",
+           label, call_count, scale);
 }
 
 int main() {
