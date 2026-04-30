@@ -11,6 +11,7 @@
 #include <cstdio>
 #include <cstring>
 #include <cstdint>
+#include <cstdarg>
 
 struct madc_timeval
 {
@@ -114,6 +115,85 @@ extern "C" int __madc_vfprintf(FILE *fp, const char *fmt, int64_t *args)
     int len = __madc_vsprintf(tmp, fmt, args);
     fputs(tmp, fp);
     return len;
+}
+
+// scanf-family format rewriter: madc's `int` is 64-bit, but C `%d` writes
+// only 4 bytes — leaving the high 4 bytes of the destination slot at
+// whatever they were before, which madc then reads back as a 64-bit value
+// and gets a corrupted positive number for negative inputs (or vice versa).
+// We rewrite each integer specifier (d/i/u/o/x/X/n) without an explicit
+// length modifier to its `l`-prefixed form (%ld, %lu, etc.), so libc writes
+// 8 bytes — matching madc's int slot width.
+//
+// Specifiers that already carry a length modifier (h, hh, l, ll, j, z, t)
+// are left alone. %s, %c, %f, %lf, %p, %% pass through unchanged.
+static void rewrite_scanf_format(const char *src, char *dst, size_t dst_size)
+{
+    const char *p = src;
+    char *q = dst;
+    char *end = dst + dst_size - 1;
+    while ( *p && q < end )
+    {
+        if ( *p != '%' ) { *q++ = *p++; continue; }
+        // copy '%'
+        *q++ = *p++;
+        // literal %%
+        if ( *p == '%' ) { if ( q < end ) *q++ = *p; p++; continue; }
+        // optional '*' suppression flag
+        if ( *p == '*' ) { if ( q < end ) *q++ = *p++; }
+        // optional max-field-width
+        while ( *p >= '0' && *p <= '9' ) { if ( q < end ) *q++ = *p++; else { p++; } }
+        // length modifier scan
+        bool has_length = false;
+        while ( *p == 'h' || *p == 'l' || *p == 'j' || *p == 'z' || *p == 't' || *p == 'L' || *p == 'q' )
+        {
+            has_length = true;
+            if ( q < end ) *q++ = *p++; else { p++; }
+        }
+        // conversion char
+        char spec = *p;
+        if ( !has_length && (spec == 'd' || spec == 'i' || spec == 'u'
+                          || spec == 'o' || spec == 'x' || spec == 'X'
+                          || spec == 'n') )
+        {
+            if ( q < end ) *q++ = 'l';
+        }
+        if ( *p ) { if ( q < end ) *q++ = *p++; else p++; }
+    }
+    *q = '\0';
+}
+
+extern "C" int __madc_sscanf(const char *str, const char *fmt, ...)
+{
+    char new_fmt[2048];
+    rewrite_scanf_format(fmt, new_fmt, sizeof(new_fmt));
+    va_list ap;
+    va_start(ap, fmt);
+    int rc = vsscanf(str, new_fmt, ap);
+    va_end(ap);
+    return rc;
+}
+
+extern "C" int __madc_fscanf(FILE *fp, const char *fmt, ...)
+{
+    char new_fmt[2048];
+    rewrite_scanf_format(fmt, new_fmt, sizeof(new_fmt));
+    va_list ap;
+    va_start(ap, fmt);
+    int rc = vfscanf(fp, new_fmt, ap);
+    va_end(ap);
+    return rc;
+}
+
+extern "C" int __madc_scanf(const char *fmt, ...)
+{
+    char new_fmt[2048];
+    rewrite_scanf_format(fmt, new_fmt, sizeof(new_fmt));
+    va_list ap;
+    va_start(ap, fmt);
+    int rc = vscanf(new_fmt, ap);
+    va_end(ap);
+    return rc;
 }
 
 // fd_set bit-array helpers. Called by the FD_ZERO/FD_SET/FD_CLR/FD_ISSET
