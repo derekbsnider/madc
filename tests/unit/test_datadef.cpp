@@ -16,6 +16,7 @@ bool madc_verbose = false;
 #include <queue>
 #include <stack>
 #include <stdint.h>
+#include <sys/stat.h>
 #include <syslog.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -912,6 +913,95 @@ TEST_SUITE("Program isolation") {
 	CHECK(contents.find("[warn] before") != std::string::npos);
 	CHECK(contents.find("[err] after")   != std::string::npos);
 	::unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine file sink rotates when size exceeds max_bytes") {
+	const std::string path = "/tmp/madc_log_sink_rotate.log";
+	::unlink(path.c_str());
+	::unlink((path + ".1").c_str());
+	::unlink((path + ".2").c_str());
+	::unlink((path + ".3").c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	REQUIRE(engine.enable_file_sink(path, 60, 3));
+
+	for ( int i = 0; i < 12; ++i )
+	    engine.write_log(MadcEngine::LogLevel::warn, std::string("line ") + std::to_string(i));
+	engine.disable_file_sink();
+
+	std::ifstream rotated(path + ".1");
+	std::string rotated_contents((std::istreambuf_iterator<char>(rotated)),
+				     std::istreambuf_iterator<char>());
+	CHECK(!rotated_contents.empty());
+	CHECK(rotated_contents.find("[warn] line") != std::string::npos);
+
+	std::ifstream live(path);
+	std::string live_contents((std::istreambuf_iterator<char>(live)),
+				  std::istreambuf_iterator<char>());
+	CHECK(live_contents.size() <= 60);
+
+	::unlink(path.c_str());
+	::unlink((path + ".1").c_str());
+	::unlink((path + ".2").c_str());
+	::unlink((path + ".3").c_str());
+    }
+
+    TEST_CASE("MadcEngine file sink rotation respects max_files cap") {
+	const std::string path = "/tmp/madc_log_sink_capcap.log";
+	for ( int i = 0; i <= 6; ++i )
+	    ::unlink((path + (i ? "." + std::to_string(i) : "")).c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	REQUIRE(engine.enable_file_sink(path, 40, 2));
+
+	for ( int i = 0; i < 30; ++i )
+	    engine.write_log(MadcEngine::LogLevel::warn, std::string("entry ") + std::to_string(i));
+	engine.disable_file_sink();
+
+	struct stat st;
+	CHECK(::stat((path + ".1").c_str(), &st) == 0);
+	CHECK(::stat((path + ".2").c_str(), &st) == 0);
+	CHECK(::stat((path + ".3").c_str(), &st) != 0);
+
+	for ( int i = 0; i <= 6; ++i )
+	    ::unlink((path + (i ? "." + std::to_string(i) : "")).c_str());
+    }
+
+    TEST_CASE("MadcEngine reopen_log_file picks up an externally rotated path") {
+	const std::string path = "/tmp/madc_log_sink_reopen.log";
+	::unlink(path.c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	REQUIRE(engine.enable_file_sink(path));
+	engine.write_log(MadcEngine::LogLevel::warn, "before rotate");
+
+	const std::string rotated = path + ".prev";
+	::rename(path.c_str(), rotated.c_str());
+	engine.reopen_log_file();
+	engine.write_log(MadcEngine::LogLevel::warn, "after rotate");
+	engine.disable_file_sink();
+
+	std::ifstream prev(rotated);
+	std::string prev_contents((std::istreambuf_iterator<char>(prev)),
+				  std::istreambuf_iterator<char>());
+	std::ifstream live(path);
+	std::string live_contents((std::istreambuf_iterator<char>(live)),
+				  std::istreambuf_iterator<char>());
+	CHECK(prev_contents.find("before rotate") != std::string::npos);
+	CHECK(live_contents.find("after rotate")  != std::string::npos);
+	CHECK(live_contents.find("before rotate") == std::string::npos);
+
+	::unlink(path.c_str());
+	::unlink(rotated.c_str());
     }
 
     TEST_CASE("MadcEngine file sink rejects unwritable paths and stays inactive") {

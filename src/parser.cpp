@@ -1413,7 +1413,9 @@ MadcEngine::MadcEngine()
       log_threshold(LogLevel::debug),
       log_to_error_stream(true),
       syslog_active(false),
-      file_sink_active(false)
+      file_sink_active(false),
+      log_file_max_bytes(0),
+      log_file_max_files(5)
 {
 }
 
@@ -1595,7 +1597,9 @@ void MadcEngine::disable_syslog_sink()
     closelog();
 }
 
-bool MadcEngine::enable_file_sink(const std::string &path)
+bool MadcEngine::enable_file_sink(const std::string &path,
+				  size_t max_bytes,
+				  int max_files)
 {
     if ( file_sink_active )
 	disable_file_sink();
@@ -1607,9 +1611,22 @@ bool MadcEngine::enable_file_sink(const std::string &path)
     }
     file_sink_active = true;
     log_file_path = path;
+    log_file_max_bytes = max_bytes;
+    log_file_max_files = max_files < 1 ? 1 : max_files;
     add_log_sink([this](LogLevel level, const std::string &msg) {
+	if ( !(file_sink_active && log_file && log_file->is_open()) )
+	    return;
+	const std::string formatted = format_log_message(level, msg);
+	if ( log_file_max_bytes > 0 )
+	{
+	    log_file->flush();
+	    std::streampos pos = log_file->tellp();
+	    if ( pos != std::streampos(-1) &&
+		 static_cast<size_t>(pos) + formatted.size() + 1 > log_file_max_bytes )
+		rotate_log_file();
+	}
 	if ( file_sink_active && log_file && log_file->is_open() )
-	    (*log_file) << format_log_message(level, msg) << std::endl;
+	    (*log_file) << formatted << std::endl;
     });
     return true;
 }
@@ -1626,6 +1643,49 @@ void MadcEngine::disable_file_sink()
 	log_file.reset();
     }
     log_file_path.clear();
+    log_file_max_bytes = 0;
+}
+
+void MadcEngine::rotate_log_file()
+{
+    if ( log_file_path.empty() )
+	return;
+    if ( log_file )
+    {
+	log_file->flush();
+	log_file->close();
+    }
+    for ( int i = log_file_max_files; i >= 2; --i )
+    {
+	std::string from = log_file_path + "." + std::to_string(i - 1);
+	std::string to   = log_file_path + "." + std::to_string(i);
+	::rename(from.c_str(), to.c_str());
+    }
+    std::string first = log_file_path + ".1";
+    ::rename(log_file_path.c_str(), first.c_str());
+    log_file.reset(new std::ofstream(log_file_path.c_str(), std::ios::app));
+    if ( !log_file->is_open() )
+    {
+	log_file.reset();
+	file_sink_active = false;
+    }
+}
+
+void MadcEngine::reopen_log_file()
+{
+    if ( log_file_path.empty() )
+	return;
+    if ( log_file )
+    {
+	log_file->flush();
+	log_file->close();
+    }
+    log_file.reset(new std::ofstream(log_file_path.c_str(), std::ios::app));
+    if ( !log_file->is_open() )
+    {
+	log_file.reset();
+	file_sink_active = false;
+    }
 }
 
 bool MadcEngine::has_output_buffer() const

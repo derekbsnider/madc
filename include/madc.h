@@ -1073,6 +1073,8 @@ public:
     bool file_sink_active;
     std::unique_ptr<std::ofstream> log_file;
     std::string log_file_path;
+    size_t log_file_max_bytes;
+    int log_file_max_files;
     std::vector<LogSink> log_sinks;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
@@ -1101,8 +1103,12 @@ public:
     static int syslog_priority_for(LogLevel level);
     void enable_syslog_sink(const char *ident = "madc", int option = -1, int facility = -1);
     void disable_syslog_sink();
-    bool enable_file_sink(const std::string &path);
+    bool enable_file_sink(const std::string &path,
+			  size_t max_bytes = 0,
+			  int max_files = 5);
     void disable_file_sink();
+    void rotate_log_file();
+    void reopen_log_file();
     bool has_output_buffer() const;
     bool has_error_buffer() const;
     std::string output_buffer_str() const;
