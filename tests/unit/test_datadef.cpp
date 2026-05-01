@@ -702,6 +702,73 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
     }
 
+    TEST_CASE("MadcEngine log_threshold filters write_log") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	engine.log_threshold = MadcEngine::LogLevel::warn;
+
+	engine.write_log(MadcEngine::LogLevel::emerg,  "must pass emerg");
+	engine.write_log(MadcEngine::LogLevel::warn,   "must pass warn");
+	engine.write_log(MadcEngine::LogLevel::notice, "must drop notice");
+	engine.write_log(MadcEngine::LogLevel::info,   "must drop info");
+	engine.write_log(MadcEngine::LogLevel::debug,  "must drop debug");
+
+	const std::string buf = engine.error_buffer_str();
+	CHECK(buf.find("must pass emerg") != std::string::npos);
+	CHECK(buf.find("must pass warn")  != std::string::npos);
+	CHECK(buf.find("must drop notice") == std::string::npos);
+	CHECK(buf.find("must drop info")   == std::string::npos);
+	CHECK(buf.find("must drop debug")  == std::string::npos);
+
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("madc level streams honor engine log_threshold") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	engine.log_threshold = MadcEngine::LogLevel::err;
+	engine.bind_log_streams();
+
+	madc::crit  << "kept crit"   << std::endl;
+	madc::err   << "kept err"    << std::endl;
+	madc::warn  << "drop warn"   << std::endl;
+	madc::info  << "drop info"   << std::endl;
+	madc::debug << "drop debug " << 42 << std::endl;
+
+	const std::string buf = engine.error_buffer_str();
+	CHECK(buf.find("kept crit") != std::string::npos);
+	CHECK(buf.find("kept err")  != std::string::npos);
+	CHECK(buf.find("drop warn")  == std::string::npos);
+	CHECK(buf.find("drop info")  == std::string::npos);
+	CHECK(buf.find("drop debug") == std::string::npos);
+
+	MadcEngine::unbind_log_streams();
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("madc level streams flush correctly after threshold raised at runtime") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	engine.log_threshold = MadcEngine::LogLevel::err;
+	engine.bind_log_streams();
+
+	madc::debug << "should not appear" << std::endl;
+	CHECK(engine.error_buffer_str().find("should not appear") == std::string::npos);
+
+	engine.log_threshold = MadcEngine::LogLevel::debug;
+	madc::debug << "now visible" << std::endl;
+	CHECK(engine.error_buffer_str().find("[debug] now visible") != std::string::npos);
+
+	MadcEngine::unbind_log_streams();
+	engine.reset_standard_streams();
+    }
+
     TEST_CASE("madc level streams route through engine error sink even when error captured later") {
 	MadcEngine engine;
 	engine.bind_log_streams();

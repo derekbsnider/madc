@@ -1408,7 +1408,8 @@ MadcEngine::MadcEngine()
       default_output_buf(std::cout.rdbuf()),
       default_error_buf(std::cerr.rdbuf()),
       log_timestamps(false),
-      log_level_prefixes(true)
+      log_level_prefixes(true),
+      log_threshold(LogLevel::debug)
 {
 }
 
@@ -1523,8 +1524,15 @@ std::string MadcEngine::format_log_message(LogLevel level, const std::string &me
     return os.str();
 }
 
+bool MadcEngine::should_log(LogLevel level) const
+{
+    return static_cast<int>(level) <= static_cast<int>(log_threshold);
+}
+
 void MadcEngine::write_log(LogLevel level, const std::string &message)
 {
+    if ( !should_log(level) )
+	return;
     error() << format_log_message(level, message) << std::endl;
 }
 
@@ -1660,6 +1668,12 @@ void MadcLogStreambuf::flush_line()
 
 int MadcLogStreambuf::overflow(int ch)
 {
+    if ( _engine && !_engine->should_log(_level) )
+    {
+	if ( !_line.empty() )
+	    _line.clear();
+	return ch == EOF ? 0 : ch;
+    }
     if ( ch == EOF )
     {
 	flush_line();
@@ -1674,6 +1688,8 @@ int MadcLogStreambuf::overflow(int ch)
 
 std::streamsize MadcLogStreambuf::xsputn(const char *s, std::streamsize n)
 {
+    if ( _engine && !_engine->should_log(_level) )
+	return n;
     for ( std::streamsize i = 0; i < n; ++i )
     {
 	if ( s[i] == '\n' )

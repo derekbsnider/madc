@@ -1062,6 +1062,7 @@ public:
     std::unique_ptr<MadcTeeBuf> error_tee_buf;
     bool log_timestamps;
     bool log_level_prefixes;
+    LogLevel log_threshold;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
     Program::NamespaceRegistry namespace_registry;
@@ -1082,6 +1083,7 @@ public:
     void tee_error_to_buffer();
     const char *log_level_name(LogLevel level) const;
     std::string format_log_message(LogLevel level, const std::string &message) const;
+    bool should_log(LogLevel level) const;
     void write_log(LogLevel level, const std::string &message);
     bool has_output_buffer() const;
     bool has_error_buffer() const;
