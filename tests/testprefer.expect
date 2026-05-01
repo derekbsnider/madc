@@ -1,4 +1,7 @@
-default: 99
-prefer: 5
+filescope: 5
 reset: 99
+fallthrough: 5
+php-first:[hi]
+rust-first:[hi]
+explicit-php:[hi]
 pragma: 5
