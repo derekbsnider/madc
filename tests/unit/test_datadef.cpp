@@ -240,4 +240,26 @@ TEST_SUITE("Program isolation") {
 	unlink(good_path.c_str());
 	unlink(bad_path.c_str());
     }
+
+    TEST_CASE("separate Program instances can use different builtin registration policies") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_builtins",
+	    "int main() { puti(42); return 0; }\n");
+	REQUIRE(!path.empty());
+
+	Program default_prog;
+	TokenProgram *default_tp = default_prog.tokenize(path.c_str());
+	CHECK(default_tp != nullptr);
+	REQUIRE(default_tp != nullptr);
+	CHECK(default_prog.parse(default_tp));
+
+	Program restricted_prog;
+	restricted_prog.registration_policy.enable_core_functions = false;
+	TokenProgram *restricted_tp = restricted_prog.tokenize(path.c_str());
+	CHECK(restricted_tp != nullptr);
+	REQUIRE(restricted_tp != nullptr);
+	CHECK_FALSE(restricted_prog.parse(restricted_tp));
+
+	unlink(path.c_str());
+    }
 }

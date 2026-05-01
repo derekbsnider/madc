@@ -1190,8 +1190,7 @@ void Program::add_fstream_methods()
     ddFSTREAM.methods.push_back(var);
 }
 
-// add system library functions
-void Program::add_functions()
+void Program::add_core_functions()
 {
     addFunction("printstarred", datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)printstarred );
     addFunction("printstr",     datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)printstring);
@@ -1218,6 +1217,10 @@ void Program::add_functions()
     addFunction("stod",		datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
     // strlen is NOT pre-registered: it resolves via dlsym fallback to libc's
     // strlen(const char *). For std::string, use str.length() or str.size().
+}
+
+void Program::add_process_functions()
+{
     // C library functions
     addFunction("system",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
     addFunction("getenv",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
@@ -1232,12 +1235,27 @@ void Program::add_functions()
     // and disconnected every player whose recv() got an EAGAIN, which on
     // a non-blocking socket is every quiet read.
     addFunction("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT32)}, (fVOIDFUNC)__errno_location);
+}
+
+void Program::add_dlfcn_functions()
+{
     // dlopen/dlsym/dlclose — dynamic library loading
     addFunction("dlopen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlopen);
     addFunction("dlsym",	datatype_vec_t{DataType::dtINT64, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlsym);
     addFunction("dlclose",	datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
     // dlcall — call through function pointer (variadic, handled specially in compiler)
     addFunction("dlcall",	datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
+}
+
+// add system library functions
+void Program::add_functions()
+{
+    if ( registration_policy.enable_core_functions )
+	add_core_functions();
+    if ( registration_policy.enable_process_functions )
+	add_process_functions();
+    if ( registration_policy.enable_dlfcn_functions )
+	add_dlfcn_functions();
 }
 
 // define some global variables
@@ -1400,14 +1418,22 @@ void Program::_parser_init()
     // populate lazy_map for included headers (actual registration deferred to first use)
     if ( _include_iostream ) add_iostream();
     if ( _include_stdio )   add_stdio();
-    add_namespaces();
-    add_madc_namespace();
-    add_php_namespace();
-    add_perl_namespace();
-    add_python_namespace();
-    add_ruby_namespace();
-    add_js_namespace();
-    add_rust_namespace();
+    if ( registration_policy.enable_std_namespace )
+	add_namespaces();
+    if ( registration_policy.enable_madc_namespace )
+	add_madc_namespace();
+    if ( registration_policy.enable_php_namespace )
+	add_php_namespace();
+    if ( registration_policy.enable_perl_namespace )
+	add_perl_namespace();
+    if ( registration_policy.enable_python_namespace )
+	add_python_namespace();
+    if ( registration_policy.enable_ruby_namespace )
+	add_ruby_namespace();
+    if ( registration_policy.enable_js_namespace )
+	add_js_namespace();
+    if ( registration_policy.enable_rust_namespace )
+	add_rust_namespace();
     _braces = 0;
 }
 

@@ -526,6 +526,21 @@ public:
 class Program
 {
 protected:
+    struct RegistrationPolicy
+    {
+	bool enable_core_functions = true;
+	bool enable_process_functions = true;
+	bool enable_dlfcn_functions = true;
+	bool enable_std_namespace = true;
+	bool enable_madc_namespace = true;
+	bool enable_php_namespace = true;
+	bool enable_perl_namespace = true;
+	bool enable_python_namespace = true;
+	bool enable_ruby_namespace = true;
+	bool enable_js_namespace = true;
+	bool enable_rust_namespace = true;
+    };
+
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
     bool evaluateIfCondition();
@@ -544,6 +559,7 @@ protected:
     Source source;
     asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
+    RegistrationPolicy registration_policy;
     keyword_map_t  keyword_map;		// reserved keywords
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
@@ -643,6 +659,9 @@ public:
     void add_string_methods();
     void add_sstream_methods();
     void add_fstream_methods();
+    void add_core_functions();
+    void add_process_functions();
+    void add_dlfcn_functions();
     void add_functions();
     void add_globals();
     void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
