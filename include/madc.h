@@ -6,11 +6,29 @@
 //////////////////////////////////////////////////////////////////////////
 #define __MADC_H 1
 
+#include <istream>
 #include <memory>
+#include <ostream>
+#include <sstream>
 
 class Method;
 class Program;
 class MadcEngine;
+
+class MadcTeeBuf : public std::streambuf
+{
+public:
+    std::streambuf *primary;
+    std::streambuf *secondary;
+
+    MadcTeeBuf(std::streambuf *p=NULL, std::streambuf *s=NULL)
+	: primary(p), secondary(s) {}
+
+protected:
+    virtual int overflow(int ch = EOF) override;
+    virtual std::streamsize xsputn(const char *s, std::streamsize n) override;
+    virtual int sync() override;
+};
 
 class MadcAsmjitErrHandler : public asmjit::ErrorHandler
 {
@@ -1028,6 +1046,8 @@ public:
     std::unique_ptr<std::istringstream> owned_input_buffer;
     std::unique_ptr<std::ostringstream> owned_output_buffer;
     std::unique_ptr<std::ostringstream> owned_error_buffer;
+    std::unique_ptr<MadcTeeBuf> output_tee_buf;
+    std::unique_ptr<MadcTeeBuf> error_tee_buf;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
     Program::NamespaceRegistry namespace_registry;
@@ -1042,6 +1062,10 @@ public:
     void bind_input_string(const std::string &text);
     void capture_output_to_buffer();
     void capture_error_to_buffer();
+    void tee_output_stream(std::ostream &os);
+    void tee_error_stream(std::ostream &os);
+    void tee_output_to_buffer();
+    void tee_error_to_buffer();
     bool has_output_buffer() const;
     bool has_error_buffer() const;
     std::string output_buffer_str() const;

@@ -1194,6 +1194,32 @@ static void register_rust_namespace_spec(Program &pgm)
     pgm.add_rust_namespace();
 }
 
+int MadcTeeBuf::overflow(int ch)
+{
+    if ( ch == EOF )
+	return sync() == 0 ? 0 : EOF;
+
+    int primary_result = primary ? primary->sputc((char)ch) : ch;
+    int secondary_result = secondary ? secondary->sputc((char)ch) : ch;
+    if ( (primary && primary_result == EOF) || (secondary && secondary_result == EOF) )
+	return EOF;
+    return ch;
+}
+
+std::streamsize MadcTeeBuf::xsputn(const char *s, std::streamsize n)
+{
+    std::streamsize primary_written = primary ? primary->sputn(s, n) : n;
+    std::streamsize secondary_written = secondary ? secondary->sputn(s, n) : n;
+    return primary_written < secondary_written ? primary_written : secondary_written;
+}
+
+int MadcTeeBuf::sync()
+{
+    int primary_sync = primary ? primary->pubsync() : 0;
+    int secondary_sync = secondary ? secondary->pubsync() : 0;
+    return (primary_sync == 0 && secondary_sync == 0) ? 0 : -1;
+}
+
 Program::Program()
     : _braces(0),
       _prv_token(NULL),
@@ -1434,6 +1460,32 @@ void MadcEngine::capture_error_to_buffer()
     bind_error_stream(*owned_error_buffer);
 }
 
+void MadcEngine::tee_output_stream(std::ostream &os)
+{
+    output_tee_buf.reset(new MadcTeeBuf(std::cout.rdbuf(), os.rdbuf()));
+    output_stream = &std::cout;
+    std::cout.rdbuf(output_tee_buf.get());
+}
+
+void MadcEngine::tee_error_stream(std::ostream &os)
+{
+    error_tee_buf.reset(new MadcTeeBuf(std::cerr.rdbuf(), os.rdbuf()));
+    error_stream = &std::cerr;
+    std::cerr.rdbuf(error_tee_buf.get());
+}
+
+void MadcEngine::tee_output_to_buffer()
+{
+    owned_output_buffer.reset(new std::ostringstream());
+    tee_output_stream(*owned_output_buffer);
+}
+
+void MadcEngine::tee_error_to_buffer()
+{
+    owned_error_buffer.reset(new std::ostringstream());
+    tee_error_stream(*owned_error_buffer);
+}
+
 bool MadcEngine::has_output_buffer() const
 {
     return owned_output_buffer.get() != NULL;
@@ -1483,6 +1535,8 @@ void MadcEngine::reset_standard_streams()
 	std::cout.rdbuf(default_output_buf);
     if ( default_error_buf )
 	std::cerr.rdbuf(default_error_buf);
+    output_tee_buf.reset();
+    error_tee_buf.reset();
     owned_input_buffer.reset();
     owned_output_buffer.reset();
     owned_error_buffer.reset();

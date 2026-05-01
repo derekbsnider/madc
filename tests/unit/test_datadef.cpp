@@ -563,4 +563,38 @@ TEST_SUITE("Program isolation") {
 
 	engine.reset_standard_streams();
     }
+
+    TEST_CASE("MadcEngine tee output duplicates to primary and buffer") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_tee_output",
+	    "int main() { puti(9); return 0; }\n");
+	REQUIRE(!path.empty());
+
+	std::ostringstream primary;
+	MadcEngine engine;
+	engine.bind_output_stream(primary);
+	engine.tee_output_to_buffer();
+	std::unique_ptr<Program> prog = engine.create_program();
+	CHECK(prog->load_file(path.c_str()));
+	prog->execute();
+	CHECK(primary.str().find("9") != std::string::npos);
+	CHECK(engine.output_buffer_str().find("9") != std::string::npos);
+
+	engine.reset_standard_streams();
+	unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine tee error duplicates to primary and buffer") {
+	std::ostringstream primary;
+	MadcEngine engine;
+	engine.bind_error_stream(primary);
+	engine.tee_error_to_buffer();
+	std::unique_ptr<Program> prog = engine.create_program();
+
+	CHECK_FALSE(prog->load_file("/tmp/madc_missing_file_should_not_exist_424242.mad"));
+	CHECK(primary.str().find("Failed to open file") != std::string::npos);
+	CHECK(engine.error_buffer_str().find("Failed to open file") != std::string::npos);
+
+	engine.reset_standard_streams();
+    }
 }
