@@ -5307,6 +5307,110 @@ TokenBase *TokenCASE::parse(Program &pgm)
     return NULL;
 }
 
+// rust::match (expr) { p1 | p2 | _ => stmt; ... }
+// v1: integer constant patterns and `_` wildcard, no fall-through, multi-
+// pattern arms via `|`. Bodies are a single statement (use `{ ... }` for
+// multiple). One wildcard arm allowed; its source-order position decides
+// where in the dispatch chain the fall-through target lands.
+TokenBase *TokenMatch::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenMatch::parse()" << std::endl);
+
+    // expect (
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkOpBrk )
+	pgm.Throw(tn) << "Expecting ( after rust::match" << flush;
+
+    expression = pgm.parseExpression(pgm.nextToken(), true);
+    if ( !expression )
+	pgm.Throw(tn) << "Failed to parse rust::match scrutinee expression" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkClBrk )
+	pgm.Throw(tn) << "Expecting ) after rust::match expression" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkOpBrc )
+	pgm.Throw(tn) << "Expecting { after rust::match()" << flush;
+
+    while ( (tn = pgm.nextToken()) )
+    {
+	if ( tn->id() == TokenID::tkClBrc )
+	    break;
+
+	MatchArm *arm = new MatchArm();
+
+	// Parse the pattern list — `_`, integer constants, or any
+	// number of those joined with `|`.
+	while ( true )
+	{
+	    if ( tn->type() == TokenType::ttIdentifier
+	      && ((TokenIdent *)tn)->str == "_" )
+	    {
+		if ( arm->is_wildcard )
+		    pgm.Throw(tn) << "duplicate _ in match arm pattern list" << flush;
+		arm->is_wildcard = true;
+	    }
+	    else
+	    {
+		// push token back and parse a constant integer pattern.
+		// Stop at `|` so the arm-separator survives — that's why
+		// this calls parse_constant_bxor (one rung below bor)
+		// rather than parse_constant_integer_expression. `&` and
+		// `^` inside a pattern still work; only `|` is reserved.
+		pgm.pushToken(tn);
+		TokenBase *anchor = pgm.peekToken();
+		int64_t pv = parse_constant_bxor(pgm);
+		TokenInt *ti = new TokenInt(pv);
+		if ( anchor )
+		{
+		    ti->file = anchor->file;
+		    ti->line = anchor->line;
+		    ti->column = anchor->column;
+		}
+		arm->patterns.push_back(ti);
+	    }
+
+	    TokenBase *sep = pgm.peekToken();
+	    if ( !sep )
+		pgm.Throw(tn) << "unexpected end of input inside rust::match arm" << flush;
+	    if ( sep->id() == TokenID::tkBor )
+	    {
+		pgm.nextToken(); // consume |
+		tn = pgm.nextToken();
+		continue;
+	    }
+	    break;
+	}
+
+	tn = pgm.nextToken();
+	if ( tn->id() != TokenID::tkFatArrow )
+	    pgm.Throw(tn) << "Expecting => after rust::match arm pattern" << flush;
+
+	// Parse a single statement body. `{ ... }` is a TokenCpnd from
+	// parseStatement, so block bodies fall out for free.
+	arm->body = pgm.parseStatement(pgm.nextToken());
+
+	// Optional trailing `;` after a non-block body.
+	TokenBase *trailing = pgm.peekToken();
+	if ( trailing && trailing->id() == TokenID::tkSemi )
+	    pgm.nextToken();
+
+	if ( arm->is_wildcard )
+	{
+	    if ( wildcard_index >= 0 )
+		pgm.Throw(tn) << "rust::match has more than one _ arm" << flush;
+	    wildcard_index = (int)arms.size();
+	}
+
+	arms.push_back(arm);
+    }
+
+    DBG(std::cout << "TokenMatch::parse() " << arms.size() << " arms"
+	    << (wildcard_index >= 0 ? " (with _)" : "") << std::endl);
+    return this;
+}
+
 // parse vector<type> — creates DataDefVECTOR and delegates to parseDeclaration
 TokenBase *TokenVECTOR::parse(Program &pgm)
 {
@@ -6784,6 +6888,26 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		if ( nsi != namespace_map.end() )
 		{
 		    nextToken(); // consume ::
+		    // rust::match — namespaced statement form, dispatched
+		    // here because `match` must remain a usable identifier
+		    // outside this context. The `::` has been consumed; if
+		    // the next token isn't `match`, fall through to the
+		    // normal namespace re-entry path below.
+		    if ( ns_name == "rust" )
+		    {
+			TokenBase *peeked = peekToken();
+			if ( peeked
+			  && peeked->type() == TokenType::ttIdentifier
+			  && ((TokenIdent *)peeked)->str == "match" )
+			{
+			    nextToken(); // consume "match"
+			    TokenMatch *tm = new TokenMatch();
+			    tm->file = tb->file;
+			    tm->line = tb->line;
+			    tm->column = tb->column;
+			    return tm->parse(*this);
+			}
+		    }
 		    current_namespace = ns_name;
 		    TokenBase *result = parseStatement(nextToken());
 		    current_namespace.clear();

@@ -4,11 +4,11 @@ Test results as of May 1, 2026 (post-v0.13.0 — rust:: namespace v1, prefer/#pr
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 248 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 249 passed, 0 failed, 0 timed out, 0 skipped
 
-Latest `scripts/run_tests.sh` result in this dirty tree:
+Latest `scripts/run_tests.sh` result:
 
-- Passing: 248 integration tests
+- Passing: 249 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **`rust::match` statement.** New namespaced statement form modeled
+  after Rust's `match`. v1 surface: integer constant patterns,
+  multi-pattern arms (`1 | 2 | 3 => ...`), `_` wildcard with free
+  source-order placement, single-statement or block bodies, and no
+  fall-through (every arm ends with an implicit jump out of the
+  match, `break` still exits early). The lexer now recognizes `=>`,
+  the parser dispatches `rust::match` at statement head only (so
+  `match` remains a usable identifier in user code), and codegen
+  emits a flat compare-and-jump chain over the patterns. Covered by
+  `tests/testrustmatch.mad`. See `docs/language/rust-match.md`.
+
 - **`ns_common` extracted from the four user-facing namespaces.** The
   `php::`, `python::`, `ruby::`, and `rust::` implementations were
   carrying duplicate copies of trim/replace-all/repeat/contains/

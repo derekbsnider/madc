@@ -420,6 +420,7 @@ TokenBase *Program::_getToken()
 		if (source.peek() == '=') { source.get(); return new Token3Eq; } // ===
 		return new TokenEquals;					// ==
 	    }
+	    if (source.peek() == '>') { source.get(); return new TokenFatArrow; } // =>
 	    return new TokenAssign;					// =
 	case '+':
 	    if (source.peek() == '+') { source.get(); return new TokenInc;   }   // ++

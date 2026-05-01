@@ -32,14 +32,15 @@
 
 ### Language Completeness
 
-- **Rust-flavored syntax (`rust::match`, maybe `rust::if let`)** —
-  `rust::` namespace helpers and the new `prefer ...;` / `#pragma
-  prefer ...` precedence layer are in place. `rust::match` is the next
-  plausible step, but it should be introduced as namespaced syntax, not
-  faked as a normal callable. Start with statement-form over primitive
-  values and `_` default arms. `rust::if let` should wait until there is
-  a concrete tagged-union / `Option` / `Result` value model to
-  destructure.
+- **Rust-flavored syntax — extend `rust::match`, plan `rust::if let`** —
+  `rust::match` v1 ships integer patterns, `|` OR-arms, and `_`
+  wildcard with no fall-through (see `docs/language/rust-match.md`).
+  Next plausible v2 work, in rough order of value: string patterns
+  (today routed through `if`/`else if`/`strcmp` chains), range
+  patterns (`1..=10 =>`), and match-as-expression with a stack-slot
+  merge similar to ternary. `rust::if let` should still wait until
+  there is a concrete tagged-union / `Option` / `Result` value model
+  to destructure.
 
 - **Rust-style "safe memory" types need a real ownership model** —
   `Box` / `Rc` / `Arc` / `RefCell` / borrow-checked references are not

@@ -1,0 +1,77 @@
+#!/usr/bin/env madc
+#include <iostream>
+
+// rust::match v1 — integer constant patterns and `_` wildcard.
+
+int classify(int n)
+{
+	int result;
+	rust::match (n)
+	{
+		// Single pattern, single statement.
+		0 => result = 100;
+		// OR-list pattern with a block body.
+		1 | 2 | 3 => {
+			result = 200;
+			result = result + n;
+		}
+		// Wildcard in the middle is legal — explicit patterns
+		// listed after still take precedence.
+		_ => result = -1;
+		10 => result = 999;
+	}
+	return result;
+}
+
+int main()
+{
+	cout << "classify(0): " << classify(0) << endl;
+	cout << "classify(1): " << classify(1) << endl;
+	cout << "classify(2): " << classify(2) << endl;
+	cout << "classify(3): " << classify(3) << endl;
+	cout << "classify(10): " << classify(10) << endl;
+	cout << "classify(7): " << classify(7) << endl;
+
+	// No fall-through: each arm body terminates with an implicit
+	// jump out of the match. After this loop, "after" prints once
+	// per iteration, never duplicated by an arm spilling into the
+	// next.
+	int i;
+	for ( i = 0; i < 4; i++ )
+	{
+		rust::match (i)
+		{
+			0 => cout << "zero" << endl;
+			1 => cout << "one" << endl;
+			_ => cout << "rest:" << i << endl;
+		}
+		cout << "after:" << i << endl;
+	}
+
+	// `break` inside an arm body exits the match the same way it
+	// exits a switch case. The surrounding for-loop keeps going.
+	for ( i = 0; i < 4; i++ )
+	{
+		rust::match (i)
+		{
+			2 => {
+				cout << "two-break" << endl;
+				break;
+			}
+			_ => cout << "loop:" << i << endl;
+		}
+	}
+
+	// No-wildcard match: scrutinee with no matching arm just
+	// falls through the entire dispatch and continues past the
+	// closing brace.
+	int hits = 0;
+	rust::match (99)
+	{
+		0 => hits = 1;
+		1 => hits = 2;
+	}
+	cout << "no-match-hits:" << hits << endl;
+
+	return 0;
+}

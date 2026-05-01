@@ -7152,6 +7152,75 @@ Operand &TokenCASE::compile(Program &pgm, regdefp_t &regdp)
     return _operand;
 }
 
+// rust::match codegen — compare-and-jump chain with no fall-through.
+// Mirrors the integer path of TokenSWITCH but emits one branch per
+// pattern (OR within an arm) and a tail `jmp match_exit` after each
+// arm body. The wildcard arm gets its own label; if no match hits, the
+// dispatch jumps directly to that label, otherwise to match_exit.
+Operand &TokenMatch::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(std::cout << "TokenMatch::compile() " << arms.size() << " arms"
+	    << (wildcard_index >= 0 ? " (with _)" : "") << std::endl);
+    DBG(pgm.cc.comment("rust::match start"));
+
+    DataDef *expr_type = expression && expression->datadef()
+		      ? expression->datadef() : &ddINT64;
+    Operand expr_storage;
+    Operand &expr_op = compile_token_gp_normalized(pgm, expression,
+						   expr_type, expr_storage);
+    x86::Gp expr_reg = expr_op.as<x86::Gp>();
+
+    Label match_exit = pgm.cc.newLabel();
+    std::vector<Label> arm_labels;
+    arm_labels.reserve(arms.size());
+    for ( size_t i = 0; i < arms.size(); ++i )
+	arm_labels.push_back(pgm.cc.newLabel());
+
+    // Dispatch: emit cmp+je for every constant pattern in every non-
+    // wildcard arm, in source order. After the chain, fall through to
+    // the wildcard arm if one exists, otherwise to the exit.
+    for ( size_t i = 0; i < arms.size(); ++i )
+    {
+	if ( arms[i]->is_wildcard )
+	    continue;
+	for ( size_t p = 0; p < arms[i]->patterns.size(); ++p )
+	{
+	    Operand val_storage;
+	    Operand &val_op = compile_token_gp_normalized(pgm,
+		    arms[i]->patterns[p], expr_type, val_storage);
+	    pgm.cc.cmp(expr_reg, val_op.as<x86::Gp>());
+	    pgm.cc.je(arm_labels[i]);
+	}
+    }
+    if ( wildcard_index >= 0 )
+	pgm.cc.jmp(arm_labels[wildcard_index]);
+    else
+	pgm.cc.jmp(match_exit);
+
+    // break inside an arm body should leave the match — push exit on
+    // loopstack the same way TokenSWITCH does.
+    pgm.loopstack.push(make_pair((Label *)NULL, &match_exit));
+
+    // Emit each arm body in source order, terminating each with an
+    // unconditional jump to match_exit so arms never fall through.
+    for ( size_t i = 0; i < arms.size(); ++i )
+    {
+	pgm.cc.bind(arm_labels[i]);
+	DBG(pgm.cc.comment("match arm body"));
+	if ( arms[i]->body )
+	{
+	    regdefp_t armrdp = {NULL, NULL, NULL};
+	    arms[i]->body->compile(pgm, armrdp);
+	}
+	pgm.cc.jmp(match_exit);
+    }
+
+    pgm.loopstack.pop();
+    pgm.cc.bind(match_exit);
+    DBG(pgm.cc.comment("rust::match end"));
+    return _operand;
+}
+
 // compile an if statement
 Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
 {

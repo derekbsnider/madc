@@ -43,7 +43,8 @@ enum class TokenID {
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
   tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT,
-  tkVECTOR, tkMAP, tkSET, tkLIST
+  tkVECTOR, tkMAP, tkSET, tkLIST,
+  tkFatArrow, tkMATCH    // => (rust::match arm) and the match statement itself
 };
 
 enum class TokenAssoc {
@@ -804,6 +805,18 @@ public:
     virtual inline int precedence() const { return 1; }
 };
 
+// fat-arrow operator => — only meaningful inside a rust::match arm.
+// Parsed by TokenMatch::parse(); the lexer just emits the token so the
+// match parser can recognize arm boundaries without leaning on local
+// `=` / `>` lookahead.
+class TokenFatArrow: public TokenMultiOp
+{
+public:
+    TokenFatArrow() : TokenMultiOp("=>") {}
+    virtual TokenID id() const { return TokenID::tkFatArrow; }
+    virtual TokenBase *clone() { return new TokenFatArrow(); }
+};
+
 // dot operator . (structure/union/class access)
 class TokenDot: public TokenPrimary
 {
@@ -1073,6 +1086,35 @@ public:
     virtual TokenID id() const { return TokenID::tkPREFER; }
     virtual TokenBase *clone() { return (TokenBase*)new TokenPREFER(); }
     virtual TokenBase *parse(Program &);
+};
+
+// rust::match arm — one or more constant patterns and a single statement
+// body.  is_wildcard distinguishes the `_` arm; patterns is empty in that
+// case.  The body is a TokenBase* (could be a TokenCpnd from a `{ ... }`
+// block, or any single statement).
+class TokenMatch;
+struct MatchArm
+{
+    std::vector<TokenBase *> patterns;  // TokenInt constants
+    bool is_wildcard;
+    TokenBase *body;
+    MatchArm() : is_wildcard(false), body(NULL) {}
+};
+
+// TokenMatch — rust::match(expr) { p1 | p2 => stmt; _ => stmt; }
+// Lowers to a compare-and-jump chain in compile().  v1 surface: integer
+// patterns + `_` wildcard, no fall-through, multi-pattern arms with `|`.
+class TokenMatch: public TokenKeyword
+{
+public:
+    TokenBase *expression;          // scrutinee
+    std::vector<MatchArm *> arms;   // source-order arms (including wildcard)
+    int wildcard_index;             // source-order position of `_` arm, -1 if none
+    TokenMatch() : TokenKeyword("match"), expression(NULL), wildcard_index(-1) {}
+    virtual TokenID id() const { return TokenID::tkMATCH; }
+    virtual TokenBase *clone() { return new TokenMatch(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 // defer keyword: register a statement to run at scope exit (LIFO)
