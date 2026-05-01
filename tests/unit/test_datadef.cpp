@@ -313,4 +313,38 @@ TEST_SUITE("Program isolation") {
 
 	unlink(path.c_str());
     }
+
+    TEST_CASE("MadcEngine seeds program policy and registries") {
+	std::string restricted_path = write_temp_mad_source(
+	    "madc_engine_restricted",
+	    "int main() { puti(42); return 0; }\n");
+	REQUIRE(!restricted_path.empty());
+
+	std::string host_path = write_temp_mad_source(
+	    "madc_engine_hostns",
+	    "int main() { host::putchar(65); return 0; }\n");
+	REQUIRE(!host_path.empty());
+
+	MadcEngine engine;
+	engine.populate_default_registries();
+	engine.registration_policy.enable_core_functions = false;
+	engine.namespace_registry.add_namespace("host", register_test_host_namespace);
+
+	Program restricted_prog(&engine);
+	TokenProgram *restricted_tp = restricted_prog.tokenize(restricted_path.c_str());
+	CHECK(restricted_tp != nullptr);
+	REQUIRE(restricted_tp != nullptr);
+	CHECK_FALSE(restricted_prog.parse(restricted_tp));
+
+	engine.registration_policy.enable_core_functions = true;
+	Program host_prog(&engine);
+	TokenProgram *host_tp = host_prog.tokenize(host_path.c_str());
+	CHECK(host_tp != nullptr);
+	REQUIRE(host_tp != nullptr);
+	CHECK(host_prog.parse(host_tp));
+	CHECK(host_prog.compile());
+
+	unlink(restricted_path.c_str());
+	unlink(host_path.c_str());
+    }
 }

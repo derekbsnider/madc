@@ -8,6 +8,7 @@
 
 class Method;
 class Program;
+class MadcEngine;
 
 class MadcAsmjitErrHandler : public asmjit::ErrorHandler
 {
@@ -525,7 +526,7 @@ public:
 // program class, keep things somewhat contained
 class Program
 {
-protected:
+public:
     struct FunctionRegistrationSpec
     {
 	std::string id;
@@ -577,6 +578,7 @@ protected:
 	bool enable_rust_namespace = true;
     };
 
+protected:
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
     bool evaluateIfCondition();
@@ -595,6 +597,7 @@ protected:
     Source source;
     asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
+    MadcEngine *engine;
     RegistrationPolicy registration_policy;
     BuiltinRegistry builtin_registry;
     NamespaceRegistry namespace_registry;
@@ -691,6 +694,10 @@ public:
     asmjit::CodeHolder code;
     asmjit::x86::Compiler cc;
     fVOIDFUNC root_fn;
+
+    Program();
+    explicit Program(MadcEngine *eng);
+    void attach_engine(MadcEngine *eng);
 
     void add_keywords();
     void add_datatypes();
@@ -944,6 +951,18 @@ public:
     Variable *findVariable(std::string &);
     Variable *addLiteral(std::string &);
 //  Method *findMethod(std::string &);
+};
+
+class MadcEngine
+{
+public:
+    Program::RegistrationPolicy registration_policy;
+    Program::BuiltinRegistry builtin_registry;
+    Program::NamespaceRegistry namespace_registry;
+
+    MadcEngine();
+    void populate_default_registries();
+    void configure_program(Program &pgm) const;
 };
 
 #define ANSI_RED "\e[1;31m"

@@ -1194,6 +1194,74 @@ static void register_rust_namespace_spec(Program &pgm)
     pgm.add_rust_namespace();
 }
 
+Program::Program()
+    : _braces(0),
+      _prv_token(NULL),
+      _cur_token(NULL),
+      engine(NULL),
+      tkProgram(NULL),
+      tkFunction(NULL),
+      script_argc(0),
+      script_argv(NULL),
+      _include_iostream(false),
+      _include_stdio(false),
+      colors(false),
+      root_fn(NULL)
+{
+}
+
+Program::Program(MadcEngine *eng)
+    : _braces(0),
+      _prv_token(NULL),
+      _cur_token(NULL),
+      engine(NULL),
+      tkProgram(NULL),
+      tkFunction(NULL),
+      script_argc(0),
+      script_argv(NULL),
+      _include_iostream(false),
+      _include_stdio(false),
+      colors(false),
+      root_fn(NULL)
+{
+    attach_engine(eng);
+}
+
+void Program::attach_engine(MadcEngine *eng)
+{
+    engine = eng;
+    if ( !engine )
+	return;
+    engine->populate_default_registries();
+    registration_policy = engine->registration_policy;
+    builtin_registry = engine->builtin_registry;
+    namespace_registry = engine->namespace_registry;
+}
+
+MadcEngine::MadcEngine()
+{
+}
+
+void MadcEngine::populate_default_registries()
+{
+    if ( builtin_registry.defaults_loaded && namespace_registry.defaults_loaded )
+	return;
+
+    Program seed;
+    seed.populate_builtin_registry();
+    seed.populate_namespace_registry();
+    builtin_registry = seed.builtin_registry;
+    namespace_registry = seed.namespace_registry;
+}
+
+void MadcEngine::configure_program(Program &pgm) const
+{
+    pgm.engine = const_cast<MadcEngine *>(this);
+    pgm.registration_policy = registration_policy;
+    pgm.builtin_registry = builtin_registry;
+    pgm.namespace_registry = namespace_registry;
+}
+
 void Program::BuiltinRegistry::add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
 {
     core_functions.push_back({id, params, extfunc, is_method});
