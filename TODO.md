@@ -32,13 +32,6 @@
 
 ### Language Completeness
 
-- **Internal namespace-helper dedupe (`ns_common`)** — `php::`,
-  `python::`, `ruby::`, and `rust::` now overlap enough that the next
-  cleanup pass should extract shared string/array helper logic into an
-  internal implementation layer. Keep the user-facing namespaces
-  distinct; dedupe trim/replace/repeat, contains/prefix/suffix checks,
-  split/join, and shared `MadValue`-to-string coercion underneath them.
-
 - **Rust-flavored syntax (`rust::match`, maybe `rust::if let`)** —
   `rust::` namespace helpers and the new `prefer ...;` / `#pragma
   prefer ...` precedence layer are in place. `rust::match` is the next
