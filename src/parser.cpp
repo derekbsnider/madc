@@ -12,6 +12,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <dlfcn.h>
 #include <unistd.h>
 #include <iostream>
@@ -1405,7 +1406,9 @@ MadcEngine::MadcEngine()
       error_stream(&std::cerr),
       default_input_buf(std::cin.rdbuf()),
       default_output_buf(std::cout.rdbuf()),
-      default_error_buf(std::cerr.rdbuf())
+      default_error_buf(std::cerr.rdbuf()),
+      log_timestamps(false),
+      log_level_prefixes(true)
 {
 }
 
@@ -1484,6 +1487,45 @@ void MadcEngine::tee_error_to_buffer()
 {
     owned_error_buffer.reset(new std::ostringstream());
     tee_error_stream(*owned_error_buffer);
+}
+
+const char *MadcEngine::log_level_name(LogLevel level) const
+{
+    switch ( level )
+    {
+	case LogLevel::emerg:  return "emerg";
+	case LogLevel::alert:  return "alert";
+	case LogLevel::crit:   return "crit";
+	case LogLevel::err:    return "err";
+	case LogLevel::warn:   return "warn";
+	case LogLevel::notice: return "notice";
+	case LogLevel::info:   return "info";
+	case LogLevel::debug:  return "debug";
+    }
+    return "info";
+}
+
+std::string MadcEngine::format_log_message(LogLevel level, const std::string &message) const
+{
+    std::ostringstream os;
+    if ( log_timestamps )
+    {
+	time_t now = time(NULL);
+	struct tm tm_now;
+	localtime_r(&now, &tm_now);
+	char tsbuf[32];
+	strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M:%S", &tm_now);
+	os << tsbuf << ' ';
+    }
+    if ( log_level_prefixes )
+	os << '[' << log_level_name(level) << "] ";
+    os << message;
+    return os.str();
+}
+
+void MadcEngine::write_log(LogLevel level, const std::string &message)
+{
+    error() << format_log_message(level, message) << std::endl;
 }
 
 bool MadcEngine::has_output_buffer() const

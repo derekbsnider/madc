@@ -597,4 +597,33 @@ TEST_SUITE("Program isolation") {
 
 	engine.reset_standard_streams();
     }
+
+    TEST_CASE("MadcEngine formats levelled log messages") {
+	MadcEngine engine;
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	CHECK(engine.format_log_message(MadcEngine::LogLevel::warn, "heads up") == "[warn] heads up");
+	CHECK(std::string(engine.log_level_name(MadcEngine::LogLevel::crit)) == "crit");
+    }
+
+    TEST_CASE("MadcEngine writes levelled logs to error buffer") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+
+	engine.write_log(MadcEngine::LogLevel::err, "disk is full");
+	CHECK(engine.error_buffer_str().find("[err] disk is full") != std::string::npos);
+
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("MadcEngine log timestamps are optional") {
+	MadcEngine engine;
+	engine.log_timestamps = true;
+	engine.log_level_prefixes = true;
+	std::string formatted = engine.format_log_message(MadcEngine::LogLevel::info, "hello");
+	CHECK(formatted.find("[info] hello") != std::string::npos);
+	CHECK(formatted.size() > std::string("[info] hello").size());
+    }
 }

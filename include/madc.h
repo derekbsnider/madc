@@ -1037,6 +1037,18 @@ public:
 class MadcEngine
 {
 public:
+    enum class LogLevel
+    {
+	emerg,
+	alert,
+	crit,
+	err,
+	warn,
+	notice,
+	info,
+	debug
+    };
+
     std::istream *input_stream;
     std::ostream *output_stream;
     std::ostream *error_stream;
@@ -1048,6 +1060,8 @@ public:
     std::unique_ptr<std::ostringstream> owned_error_buffer;
     std::unique_ptr<MadcTeeBuf> output_tee_buf;
     std::unique_ptr<MadcTeeBuf> error_tee_buf;
+    bool log_timestamps;
+    bool log_level_prefixes;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
     Program::NamespaceRegistry namespace_registry;
@@ -1066,6 +1080,9 @@ public:
     void tee_error_stream(std::ostream &os);
     void tee_output_to_buffer();
     void tee_error_to_buffer();
+    const char *log_level_name(LogLevel level) const;
+    std::string format_log_message(LogLevel level, const std::string &message) const;
+    void write_log(LogLevel level, const std::string &message);
     bool has_output_buffer() const;
     bool has_error_buffer() const;
     std::string output_buffer_str() const;
