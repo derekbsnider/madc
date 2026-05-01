@@ -750,6 +750,111 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
     }
 
+    TEST_CASE("MadcEngine fans out write_log to additional sinks") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+
+	std::vector<std::pair<MadcEngine::LogLevel, std::string>> recorded;
+	engine.add_log_sink([&recorded](MadcEngine::LogLevel lvl, const std::string &msg) {
+	    recorded.push_back({lvl, msg});
+	});
+
+	engine.write_log(MadcEngine::LogLevel::warn, "fanout works");
+	engine.write_log(MadcEngine::LogLevel::info, "info too");
+
+	CHECK(engine.error_buffer_str().find("[warn] fanout works") != std::string::npos);
+	CHECK(engine.error_buffer_str().find("[info] info too")    != std::string::npos);
+	REQUIRE(recorded.size() == 2);
+	CHECK(recorded[0].first  == MadcEngine::LogLevel::warn);
+	CHECK(recorded[0].second == "fanout works");
+	CHECK(recorded[1].first  == MadcEngine::LogLevel::info);
+	CHECK(recorded[1].second == "info too");
+
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("MadcEngine sinks receive original message and respect threshold") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_threshold = MadcEngine::LogLevel::warn;
+
+	int sink_calls = 0;
+	engine.add_log_sink([&sink_calls](MadcEngine::LogLevel, const std::string &) {
+	    ++sink_calls;
+	});
+
+	engine.write_log(MadcEngine::LogLevel::crit,   "critical");
+	engine.write_log(MadcEngine::LogLevel::warn,   "warning");
+	engine.write_log(MadcEngine::LogLevel::info,   "info filtered");
+	engine.write_log(MadcEngine::LogLevel::debug,  "debug filtered");
+
+	CHECK(sink_calls == 2);
+
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("MadcEngine log_to_error_stream toggle silences default sink") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_to_error_stream = false;
+
+	int sink_calls = 0;
+	engine.add_log_sink([&sink_calls](MadcEngine::LogLevel, const std::string &) {
+	    ++sink_calls;
+	});
+
+	engine.write_log(MadcEngine::LogLevel::warn, "no error stream");
+	CHECK(engine.error_buffer_str().empty());
+	CHECK(sink_calls == 1);
+
+	engine.log_to_error_stream = true;
+	engine.write_log(MadcEngine::LogLevel::warn, "and back");
+	CHECK(engine.error_buffer_str().find("[warn] and back") != std::string::npos);
+	CHECK(sink_calls == 2);
+
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("MadcEngine clear_log_sinks removes registered sinks") {
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+
+	int sink_calls = 0;
+	engine.add_log_sink([&sink_calls](MadcEngine::LogLevel, const std::string &) {
+	    ++sink_calls;
+	});
+	engine.write_log(MadcEngine::LogLevel::warn, "first");
+	CHECK(sink_calls == 1);
+
+	engine.clear_log_sinks();
+	engine.write_log(MadcEngine::LogLevel::warn, "second");
+	CHECK(sink_calls == 1);
+    }
+
+    TEST_CASE("madc level streams reach registered sinks unchanged") {
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.bind_log_streams();
+
+	std::vector<std::pair<MadcEngine::LogLevel, std::string>> recorded;
+	engine.add_log_sink([&recorded](MadcEngine::LogLevel lvl, const std::string &msg) {
+	    recorded.push_back({lvl, msg});
+	});
+
+	madc::warn  << "facade " << "to " << "sink"  << std::endl;
+	madc::err   << "errline " << 7 << std::endl;
+
+	REQUIRE(recorded.size() == 2);
+	CHECK(recorded[0].first  == MadcEngine::LogLevel::warn);
+	CHECK(recorded[0].second == "facade to sink");
+	CHECK(recorded[1].first  == MadcEngine::LogLevel::err);
+	CHECK(recorded[1].second == "errline 7");
+
+	MadcEngine::unbind_log_streams();
+    }
+
     TEST_CASE("madc level streams flush correctly after threshold raised at runtime") {
 	MadcEngine engine;
 	engine.capture_error_to_buffer();

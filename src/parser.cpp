@@ -1409,7 +1409,8 @@ MadcEngine::MadcEngine()
       default_error_buf(std::cerr.rdbuf()),
       log_timestamps(false),
       log_level_prefixes(true),
-      log_threshold(LogLevel::debug)
+      log_threshold(LogLevel::debug),
+      log_to_error_stream(true)
 {
 }
 
@@ -1533,7 +1534,24 @@ void MadcEngine::write_log(LogLevel level, const std::string &message)
 {
     if ( !should_log(level) )
 	return;
-    error() << format_log_message(level, message) << std::endl;
+    if ( log_to_error_stream )
+	error() << format_log_message(level, message) << std::endl;
+    for ( auto &sink : log_sinks )
+    {
+	if ( sink )
+	    sink(level, message);
+    }
+}
+
+void MadcEngine::add_log_sink(LogSink sink)
+{
+    if ( sink )
+	log_sinks.push_back(std::move(sink));
+}
+
+void MadcEngine::clear_log_sinks()
+{
+    log_sinks.clear();
 }
 
 bool MadcEngine::has_output_buffer() const

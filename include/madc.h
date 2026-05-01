@@ -6,10 +6,12 @@
 //////////////////////////////////////////////////////////////////////////
 #define __MADC_H 1
 
+#include <functional>
 #include <istream>
 #include <memory>
 #include <ostream>
 #include <sstream>
+#include <vector>
 
 class Method;
 class Program;
@@ -1049,6 +1051,8 @@ public:
 	debug
     };
 
+    typedef std::function<void(LogLevel, const std::string &)> LogSink;
+
     std::istream *input_stream;
     std::ostream *output_stream;
     std::ostream *error_stream;
@@ -1063,6 +1067,8 @@ public:
     bool log_timestamps;
     bool log_level_prefixes;
     LogLevel log_threshold;
+    bool log_to_error_stream;
+    std::vector<LogSink> log_sinks;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
     Program::NamespaceRegistry namespace_registry;
@@ -1085,6 +1091,8 @@ public:
     std::string format_log_message(LogLevel level, const std::string &message) const;
     bool should_log(LogLevel level) const;
     void write_log(LogLevel level, const std::string &message);
+    void add_log_sink(LogSink sink);
+    void clear_log_sinks();
     bool has_output_buffer() const;
     bool has_error_buffer() const;
     std::string output_buffer_str() const;
