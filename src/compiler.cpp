@@ -2465,7 +2465,7 @@ bool Program::compile()
 	    prepass_tb && prepass_tb->file ? prepass_tb->file : NULL,
 	    prepass_tb ? prepass_tb->line : 0,
 	    prepass_tb ? prepass_tb->column : 0);
-	print_last_diagnostic(cerr, "(during funcnode pre-pass)");
+	print_last_diagnostic(error(), "(during funcnode pre-pass)");
 	return false;
     }
 
@@ -2487,14 +2487,14 @@ bool Program::compile()
 	    tb && tb->file ? tb->file : NULL,
 	    tb ? tb->line : 0,
 	    tb ? tb->column : 0);
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	return false;
     }
     catch(TokenBase *tb)
     {
 	set_error(Program::DiagnosticPhase::compiler, std::string("unexpected token type ") + std::to_string((int)tb->type()),
 	    tb && tb->file ? tb->file : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	return false;
     }
     catch(std::exception &e)
@@ -2523,27 +2523,35 @@ void Program::execute()
     Method *method;
     fVOIDFUNC main_fn;
 
+    clear_diagnostics();
+    clear_error();
+
     DBG(std::cout << "Program::execute() calling root_fn()" << std::endl);
     root_fn();
 
     if ( !var )
     {
-	DBG(std::cerr << "Program::execute() cannot find main" << std::endl);
+	set_error(Program::DiagnosticPhase::runtime, "Program::execute() cannot find main");
+	DBG(error() << "Program::execute() cannot find main" << std::endl);
+	print_last_diagnostic(error());
 	return;
     }
     if ( var->type->basetype() != BaseType::btFunct )
     {
-	std::cerr << "Program::execute() main is not a function" << std::endl;
+	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main is not a function");
+	print_last_diagnostic(error());
 	return;
     }
     if ( !(method=(Method *)var->data) )
     {
-	std::cerr << "Program::execute() main method is NULL" << std::endl;
+	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main method is NULL");
+	print_last_diagnostic(error());
 	return;
     }
     if ( !(main_fn=(fVOIDFUNC)method->x86code) )
     {
-	std::cerr << "Program::execute() main has no x86 code" << std::endl;
+	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main has no x86 code");
+	print_last_diagnostic(error());
 	return;
     }
     DBG(std::cout << std::endl << "Program::execute() starts" << std::endl);

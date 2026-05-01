@@ -437,4 +437,74 @@ TEST_SUITE("Program isolation") {
 	CHECK(os.str().find("watch this") != std::string::npos);
 	CHECK(os.str().find("(test suffix)") != std::string::npos);
     }
+
+    TEST_CASE("Program diagnostics honor engine error stream") {
+	std::ostringstream errbuf;
+	MadcEngine engine;
+	engine.error_stream = &errbuf;
+	std::unique_ptr<Program> prog = engine.create_program();
+
+	CHECK_FALSE(prog->load_file("/tmp/madc_missing_file_should_not_exist_424242.mad"));
+	CHECK(errbuf.str().find("Failed to open file") != std::string::npos);
+	CHECK(errbuf.str().find("/tmp/madc_missing_file_should_not_exist_424242.mad") != std::string::npos);
+    }
+
+    TEST_CASE("Program lazy iostream globals honor engine streams") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_iostream_streams",
+	    "#include <iostream>\nint main() { return 0; }\n");
+	REQUIRE(!path.empty());
+
+	std::istringstream inbuf("hello");
+	std::ostringstream outbuf;
+	std::ostringstream errbuf;
+	MadcEngine engine;
+	engine.input_stream = &inbuf;
+	engine.output_stream = &outbuf;
+	engine.error_stream = &errbuf;
+	std::unique_ptr<Program> prog = engine.create_program();
+
+	TokenProgram *tp = prog->tokenize(path.c_str());
+	REQUIRE(tp != NULL);
+	REQUIRE(prog->parse(tp));
+	Variable *cout_var = prog->lazy_resolve("cout");
+	Variable *cin_var = prog->lazy_resolve("cin");
+	Variable *cerr_var = prog->lazy_resolve("cerr");
+	REQUIRE(cout_var != NULL);
+	REQUIRE(cin_var != NULL);
+	REQUIRE(cerr_var != NULL);
+	REQUIRE(cout_var->data != NULL);
+	REQUIRE(cin_var->data != NULL);
+	REQUIRE(cerr_var->data != NULL);
+	CHECK(((std::ostream *)cout_var->data)->rdbuf() == outbuf.rdbuf());
+	CHECK(((std::istream *)cin_var->data)->rdbuf() == inbuf.rdbuf());
+	CHECK(((std::ostream *)cerr_var->data)->rdbuf() == errbuf.rdbuf());
+
+	unlink(path.c_str());
+    }
+
+    TEST_CASE("Program execute runtime failures become diagnostics") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_no_main",
+	    "int helper() { return 0; }\n");
+	REQUIRE(!path.empty());
+
+	std::ostringstream errbuf;
+	MadcEngine engine;
+	engine.error_stream = &errbuf;
+	std::unique_ptr<Program> prog = engine.create_program();
+	CHECK(prog->load_file(path.c_str()));
+	CHECK_FALSE(prog->last_error.has_error);
+	CHECK(prog->diagnostics.empty());
+
+	prog->execute();
+	CHECK(prog->last_error.has_error);
+	REQUIRE(prog->diagnostics.size() == 1);
+	CHECK(prog->diagnostics[0].severity == Program::DiagnosticSeverity::error);
+	CHECK(prog->diagnostics[0].phase == Program::DiagnosticPhase::runtime);
+	CHECK(prog->diagnostics[0].message == "Program::execute() cannot find main");
+	CHECK(errbuf.str().find("cannot find main") != std::string::npos);
+
+	unlink(path.c_str());
+    }
 }

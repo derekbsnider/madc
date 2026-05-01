@@ -634,6 +634,9 @@ protected:
     asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
     MadcEngine *engine;
+    std::istream *input_stream;
+    std::ostream *output_stream;
+    std::ostream *error_stream;
     RegistrationPolicy registration_policy;
     BuiltinRegistry builtin_registry;
     NamespaceRegistry namespace_registry;
@@ -742,6 +745,9 @@ public:
     void ensure_registration_config();
     void clear_diagnostics();
     void clear_error();
+    std::istream &input();
+    std::ostream &output();
+    std::ostream &error();
     void add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
 	const std::string &message, const char *file=NULL, int line=0, int column=0);
     const Diagnostic *last_diagnostic() const;
@@ -1013,6 +1019,9 @@ public:
 class MadcEngine
 {
 public:
+    std::istream *input_stream;
+    std::ostream *output_stream;
+    std::ostream *error_stream;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
     Program::NamespaceRegistry namespace_registry;

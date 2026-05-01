@@ -1199,6 +1199,9 @@ Program::Program()
       _prv_token(NULL),
       _cur_token(NULL),
       engine(NULL),
+      input_stream(&std::cin),
+      output_stream(&std::cout),
+      error_stream(&std::cerr),
       tkProgram(NULL),
       tkFunction(NULL),
       script_argc(0),
@@ -1215,6 +1218,9 @@ Program::Program(MadcEngine *eng)
       _prv_token(NULL),
       _cur_token(NULL),
       engine(NULL),
+      input_stream(&std::cin),
+      output_stream(&std::cout),
+      error_stream(&std::cerr),
       tkProgram(NULL),
       tkFunction(NULL),
       script_argc(0),
@@ -1241,6 +1247,21 @@ void Program::attach_engine(MadcEngine *eng)
 void Program::clear_error()
 {
     last_error = ErrorInfo();
+}
+
+std::istream &Program::input()
+{
+    return input_stream ? *input_stream : std::cin;
+}
+
+std::ostream &Program::output()
+{
+    return output_stream ? *output_stream : std::cout;
+}
+
+std::ostream &Program::error()
+{
+    return error_stream ? *error_stream : std::cerr;
 }
 
 void Program::clear_diagnostics()
@@ -1347,6 +1368,9 @@ void Program::print_last_diagnostic(std::ostream &os, const char *suffix)
 }
 
 MadcEngine::MadcEngine()
+    : input_stream(&std::cin),
+      output_stream(&std::cout),
+      error_stream(&std::cerr)
 {
 }
 
@@ -1365,6 +1389,9 @@ void MadcEngine::populate_default_registries()
 void MadcEngine::configure_program(Program &pgm) const
 {
     pgm.engine = const_cast<MadcEngine *>(this);
+    pgm.input_stream = input_stream;
+    pgm.output_stream = output_stream;
+    pgm.error_stream = error_stream;
     pgm.registration_policy = registration_policy;
     pgm.builtin_registry = builtin_registry;
     pgm.namespace_registry = namespace_registry;
@@ -1601,11 +1628,11 @@ Variable *Program::lazy_resolve(const std::string &name)
     if ( header == LAZY_IOSTREAM )
     {
 	if ( name == "cout" )
-	    var = addGlobal(ddOSTREAM, "cout", 1, std::cout.rdbuf());
+	    var = addGlobal(ddOSTREAM, "cout", 1, output().rdbuf());
 	else if ( name == "cin" )
-	    var = addGlobal(ddISTREAM, "cin", 1, std::cin.rdbuf());
+	    var = addGlobal(ddISTREAM, "cin", 1, input().rdbuf());
 	else if ( name == "cerr" )
-	    var = addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
+	    var = addGlobal(ddOSTREAM, "cerr", 1, error().rdbuf());
 
 	if ( var )
 	    namespace_map["std"][name] = var;
@@ -7733,22 +7760,22 @@ bool Program::parse(TokenProgram *tp)
     catch(const char *err_msg)
     {
 	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)", tp ? tp->source.c_str() : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	return false;
     }
     catch(TokenIdent *ti)
     {
 	set_error(DiagnosticPhase::parser, std::string("use of undeclared identifier '") + ti->str + '\'', tp ? tp->source.c_str() : NULL, ti->line, ti->column);
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	return false;
     }
     catch(TokenBase *tb)
     {
 	set_error(DiagnosticPhase::parser, std::string("unexpected token type ") + std::to_string((int)tb->type()), tp ? tp->source.c_str() : NULL, tb->line, tb->column);
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	if ( tb->type() == TokenType::ttReal )
 	{
-	    cerr << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
+	    error() << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
 	    printf("%.14lf\n", ((TokenReal *)tb)->dval());
 	}
 	return false;

@@ -1950,7 +1950,7 @@ TokenProgram *Program::tokenize(const char *fname)
     if ( !file )
     {
 	set_error(Program::DiagnosticPhase::lexer, "Failed to open file", fname, 0, 0);
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	return NULL;
     }
 
@@ -1973,19 +1973,19 @@ TokenProgram *Program::tokenize(const char *fname)
     catch(const char *err_msg)
     {
 	set_error(Program::DiagnosticPhase::lexer, err_msg ? err_msg : "(null error message)", fname, source.line(), source.column());
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	return NULL;
     }
     catch(TokenIdent *ti)
     {
 	set_error(Program::DiagnosticPhase::lexer, std::string("use of undeclared identifier '") + ti->str + '\'', fname, source.line(), source.column());
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	return NULL;
     }
     catch(TokenBase *tb)
     {
 	set_error(Program::DiagnosticPhase::lexer, std::string("unexpected token type ") + std::to_string((int)tb->type()), fname, source.line(), source.column());
-	print_last_diagnostic(cerr);
+	print_last_diagnostic(error());
 	return NULL;
     }
     catch(std::exception &e)
