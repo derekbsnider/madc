@@ -1415,7 +1415,8 @@ MadcEngine::MadcEngine()
       syslog_active(false),
       file_sink_active(false),
       log_file_max_bytes(0),
-      log_file_max_files(5)
+      log_file_max_files(5),
+      json_sink_active(false)
 {
 }
 
@@ -1686,6 +1687,88 @@ void MadcEngine::reopen_log_file()
 	log_file.reset();
 	file_sink_active = false;
     }
+}
+
+std::string MadcEngine::json_escape(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size() + 8);
+    for ( char c : s )
+    {
+	switch ( c )
+	{
+	    case '"':  out += "\\\""; break;
+	    case '\\': out += "\\\\"; break;
+	    case '\b': out += "\\b";  break;
+	    case '\f': out += "\\f";  break;
+	    case '\n': out += "\\n";  break;
+	    case '\r': out += "\\r";  break;
+	    case '\t': out += "\\t";  break;
+	    default:
+		if ( static_cast<unsigned char>(c) < 0x20 )
+		{
+		    char buf[8];
+		    snprintf(buf, sizeof(buf), "\\u%04x", c);
+		    out += buf;
+		}
+		else
+		    out += c;
+		break;
+	}
+    }
+    return out;
+}
+
+std::string MadcEngine::format_json_log_line(LogLevel level, const std::string &message) const
+{
+    std::ostringstream os;
+    os << "{";
+    if ( log_timestamps )
+    {
+	time_t now = time(NULL);
+	struct tm tm_now;
+	localtime_r(&now, &tm_now);
+	char tsbuf[32];
+	strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%dT%H:%M:%S", &tm_now);
+	os << "\"ts\":\"" << tsbuf << "\",";
+    }
+    os << "\"level\":\"" << log_level_name(level) << "\",";
+    os << "\"message\":\"" << json_escape(message) << "\"";
+    os << "}";
+    return os.str();
+}
+
+bool MadcEngine::enable_json_sink(const std::string &path)
+{
+    if ( json_sink_active )
+	disable_json_sink();
+    json_file.reset(new std::ofstream(path.c_str(), std::ios::app));
+    if ( !json_file->is_open() )
+    {
+	json_file.reset();
+	return false;
+    }
+    json_sink_active = true;
+    json_file_path = path;
+    add_log_sink([this](LogLevel level, const std::string &msg) {
+	if ( json_sink_active && json_file && json_file->is_open() )
+	    (*json_file) << format_json_log_line(level, msg) << '\n';
+    });
+    return true;
+}
+
+void MadcEngine::disable_json_sink()
+{
+    if ( !json_sink_active )
+	return;
+    json_sink_active = false;
+    if ( json_file )
+    {
+	json_file->flush();
+	json_file->close();
+	json_file.reset();
+    }
+    json_file_path.clear();
 }
 
 bool MadcEngine::has_output_buffer() const

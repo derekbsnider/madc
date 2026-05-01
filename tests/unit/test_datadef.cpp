@@ -973,6 +973,90 @@ TEST_SUITE("Program isolation") {
 	    ::unlink((path + (i ? "." + std::to_string(i) : "")).c_str());
     }
 
+    TEST_CASE("MadcEngine json_escape handles quote, backslash, control, and unicode-low chars") {
+	CHECK(MadcEngine::json_escape("plain")             == "plain");
+	CHECK(MadcEngine::json_escape("with \"quote\"")    == "with \\\"quote\\\"");
+	CHECK(MadcEngine::json_escape("back\\slash")       == "back\\\\slash");
+	CHECK(MadcEngine::json_escape("a\nb")              == "a\\nb");
+	CHECK(MadcEngine::json_escape("a\tb")              == "a\\tb");
+	CHECK(MadcEngine::json_escape(std::string("\x01")) == "\\u0001");
+    }
+
+    TEST_CASE("MadcEngine format_json_log_line emits level + message fields") {
+	MadcEngine engine;
+	engine.log_timestamps = false;
+	const std::string line = engine.format_json_log_line(MadcEngine::LogLevel::warn, "disk \"full\"");
+	CHECK(line == "{\"level\":\"warn\",\"message\":\"disk \\\"full\\\"\"}");
+    }
+
+    TEST_CASE("MadcEngine format_json_log_line includes ts when timestamps enabled") {
+	MadcEngine engine;
+	engine.log_timestamps = true;
+	const std::string line = engine.format_json_log_line(MadcEngine::LogLevel::info, "hi");
+	CHECK(line.find("\"ts\":\"") != std::string::npos);
+	CHECK(line.find("\"level\":\"info\"")  != std::string::npos);
+	CHECK(line.find("\"message\":\"hi\"")  != std::string::npos);
+    }
+
+    TEST_CASE("MadcEngine json sink writes one JSON object per log call") {
+	const std::string path = "/tmp/madc_log_sink_json.log";
+	::unlink(path.c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	REQUIRE(engine.enable_json_sink(path));
+
+	engine.write_log(MadcEngine::LogLevel::warn, "disk full");
+	engine.write_log(MadcEngine::LogLevel::err,  "tab\there");
+	engine.disable_json_sink();
+
+	std::ifstream in(path);
+	std::vector<std::string> lines;
+	std::string line;
+	while ( std::getline(in, line) )
+	    lines.push_back(line);
+	REQUIRE(lines.size() == 2);
+	CHECK(lines[0] == "{\"level\":\"warn\",\"message\":\"disk full\"}");
+	CHECK(lines[1] == "{\"level\":\"err\",\"message\":\"tab\\there\"}");
+
+	::unlink(path.c_str());
+    }
+
+    TEST_CASE("madc level streams flow through JSON sink alongside file sink") {
+	const std::string text = "/tmp/madc_log_sink_dual_text.log";
+	const std::string json = "/tmp/madc_log_sink_dual_json.log";
+	::unlink(text.c_str());
+	::unlink(json.c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	REQUIRE(engine.enable_file_sink(text));
+	REQUIRE(engine.enable_json_sink(json));
+	engine.bind_log_streams();
+
+	madc::warn << "shared payload " << 42 << std::endl;
+
+	MadcEngine::unbind_log_streams();
+	engine.disable_json_sink();
+	engine.disable_file_sink();
+
+	std::ifstream in_text(text);
+	std::string text_contents((std::istreambuf_iterator<char>(in_text)),
+				  std::istreambuf_iterator<char>());
+	std::ifstream in_json(json);
+	std::string json_contents((std::istreambuf_iterator<char>(in_json)),
+				  std::istreambuf_iterator<char>());
+	CHECK(text_contents.find("[warn] shared payload 42") != std::string::npos);
+	CHECK(json_contents.find("\"level\":\"warn\"") != std::string::npos);
+	CHECK(json_contents.find("\"message\":\"shared payload 42\"") != std::string::npos);
+
+	::unlink(text.c_str());
+	::unlink(json.c_str());
+    }
+
     TEST_CASE("MadcEngine reopen_log_file picks up an externally rotated path") {
 	const std::string path = "/tmp/madc_log_sink_reopen.log";
 	::unlink(path.c_str());

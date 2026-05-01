@@ -1075,6 +1075,9 @@ public:
     std::string log_file_path;
     size_t log_file_max_bytes;
     int log_file_max_files;
+    bool json_sink_active;
+    std::unique_ptr<std::ofstream> json_file;
+    std::string json_file_path;
     std::vector<LogSink> log_sinks;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
@@ -1109,6 +1112,10 @@ public:
     void disable_file_sink();
     void rotate_log_file();
     void reopen_log_file();
+    bool enable_json_sink(const std::string &path);
+    void disable_json_sink();
+    static std::string json_escape(const std::string &s);
+    std::string format_json_log_line(LogLevel level, const std::string &message) const;
     bool has_output_buffer() const;
     bool has_error_buffer() const;
     std::string output_buffer_str() const;
