@@ -580,6 +580,15 @@ public:
 	bool enable_rust_namespace = true;
     };
 
+    struct ErrorInfo
+    {
+	bool has_error = false;
+	std::string message;
+	std::string file;
+	int line = 0;
+	int column = 0;
+    };
+
 protected:
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
@@ -603,6 +612,7 @@ public:
     RegistrationPolicy registration_policy;
     BuiltinRegistry builtin_registry;
     NamespaceRegistry namespace_registry;
+    ErrorInfo last_error;
     keyword_map_t  keyword_map;		// reserved keywords
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
@@ -704,6 +714,8 @@ public:
     void add_keywords();
     void add_datatypes();
     void ensure_registration_config();
+    void clear_error();
+    void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
     void add_string_methods();
     void add_sstream_methods();
     void add_fstream_methods();
@@ -814,6 +826,7 @@ public:
 	return _cur_token;
     }
     // parse tokens into AST
+    bool load_file(const char *fname);
     bool parse(TokenProgram *);
     void parseIdentifier(TokenIdent *);
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,

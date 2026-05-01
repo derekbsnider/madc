@@ -1238,6 +1238,20 @@ void Program::attach_engine(MadcEngine *eng)
     namespace_registry = engine->namespace_registry;
 }
 
+void Program::clear_error()
+{
+    last_error = ErrorInfo();
+}
+
+void Program::set_error(const std::string &message, const char *file, int line, int column)
+{
+    last_error.has_error = true;
+    last_error.message = message;
+    last_error.file = file ? file : "";
+    last_error.line = line;
+    last_error.column = column;
+}
+
 MadcEngine::MadcEngine()
 {
 }
@@ -1268,6 +1282,16 @@ std::unique_ptr<Program> MadcEngine::create_program()
     std::unique_ptr<Program> pgm(new Program());
     configure_program(*pgm);
     return pgm;
+}
+
+bool Program::load_file(const char *fname)
+{
+    TokenProgram *tp = tokenize(fname);
+    if ( !tp )
+	return false;
+    if ( !parse(tp) )
+	return false;
+    return compile();
 }
 
 void Program::BuiltinRegistry::add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
@@ -7573,9 +7597,11 @@ bool Program::parse(TokenProgram *tp)
     TokenBase *tb, *ts;
 
     DBG(cout << endl << "Program::parse() START" << endl);
+    clear_error();
 
     if ( tokens.empty() )
     {
+	set_error("Program::parse() token queue empty", tp ? tp->source.c_str() : NULL, 0, 0);
 	cerr << "Program::parse() token queue empty" << endl;
 	return false;
     }
@@ -7611,6 +7637,7 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(const char *err_msg)
     {
+	set_error(err_msg ? err_msg : "(null error message)", tp ? tp->source.c_str() : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
 	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column 
 	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
 	source.showerror(tb->line, tb->column);
@@ -7618,6 +7645,7 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(TokenIdent *ti)
     {
+	set_error(std::string("use of undeclared identifier '") + ti->str + '\'', tp ? tp->source.c_str() : NULL, ti->line, ti->column);
 	cerr << ANSI_WHITE << tp->source << ':' << ti->line << ':' << ti->column
 	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
 	source.showerror(ti->line, ti->column);
@@ -7625,6 +7653,7 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(TokenBase *tb)
     {
+	set_error(std::string("unexpected token type ") + std::to_string((int)tb->type()), tp ? tp->source.c_str() : NULL, tb->line, tb->column);
 	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
 	source.showerror(tb->line, tb->column);
@@ -7638,6 +7667,14 @@ bool Program::parse(TokenProgram *tp)
     catch(std::exception &e)
     {
 	// throwbuf::sync() already printed the formatted error to stderr before throwing
+	if ( !last_error.has_error )
+	{
+	    TokenBase *err_tb = Throw.token();
+	    set_error(Throw.str().empty() ? e.what() : Throw.str(),
+		tp ? tp->source.c_str() : NULL,
+		err_tb ? err_tb->line : 0,
+		err_tb ? err_tb->column : 0);
+	}
 	return false;
     }
 

@@ -1944,9 +1944,11 @@ TokenProgram *Program::tokenize(const char *fname)
     ifstream file(fname);
 
     DBG(cout << "Program::tokenize(" << fname << ") START" << endl);
+    clear_error();
 
     if ( !file )
     {
+	set_error("Failed to open file", fname, 0, 0);
 	cerr << "Failed to open " << fname << endl;
 	return NULL;
     }
@@ -1969,6 +1971,7 @@ TokenProgram *Program::tokenize(const char *fname)
     }
     catch(const char *err_msg)
     {
+	set_error(err_msg ? err_msg : "(null error message)", fname, source.line(), source.column());
 	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column() 
 	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
 	source.showerror(source.line(), source.column());
@@ -1976,6 +1979,7 @@ TokenProgram *Program::tokenize(const char *fname)
     }
     catch(TokenIdent *ti)
     {
+	set_error(std::string("use of undeclared identifier '") + ti->str + '\'', fname, source.line(), source.column());
 	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column()
 	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
 	source.showerror(source.line(), source.column());
@@ -1983,6 +1987,7 @@ TokenProgram *Program::tokenize(const char *fname)
     }
     catch(TokenBase *tb)
     {
+	set_error(std::string("unexpected token type ") + std::to_string((int)tb->type()), fname, source.line(), source.column());
 	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column()
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
 	source.showerror(source.line(), source.column());
@@ -1990,6 +1995,8 @@ TokenProgram *Program::tokenize(const char *fname)
     }
     catch(std::exception &e)
     {
+	if ( !last_error.has_error )
+	    set_error(Throw.str().empty() ? e.what() : Throw.str(), fname, source.line(), source.column());
 	return NULL;
     }
 

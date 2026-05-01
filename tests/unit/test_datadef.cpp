@@ -367,4 +367,45 @@ TEST_SUITE("Program isolation") {
 	unlink(restricted_path.c_str());
 	unlink(host_path.c_str());
     }
+
+    TEST_CASE("Program load_file runs tokenize parse and compile") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_load_file",
+	    "int main() { return 0; }\n");
+	REQUIRE(!path.empty());
+
+	MadcEngine engine;
+	std::unique_ptr<Program> prog = engine.create_program();
+	CHECK(prog->load_file(path.c_str()));
+	CHECK_FALSE(prog->last_error.has_error);
+
+	unlink(path.c_str());
+    }
+
+    TEST_CASE("Program captures structured error info for tokenize failure") {
+	MadcEngine engine;
+	std::unique_ptr<Program> prog = engine.create_program();
+	CHECK_FALSE(prog->load_file("/tmp/madc_missing_file_should_not_exist_424242.mad"));
+	CHECK(prog->last_error.has_error);
+	CHECK(prog->last_error.message == "Failed to open file");
+	CHECK(prog->last_error.file == "/tmp/madc_missing_file_should_not_exist_424242.mad");
+    }
+
+    TEST_CASE("Program captures structured error info for parse failure") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_parse_error",
+	    "int main() { missing_symbol = 1; return 0; }\n");
+	REQUIRE(!path.empty());
+
+	MadcEngine engine;
+	std::unique_ptr<Program> prog = engine.create_program();
+	CHECK_FALSE(prog->load_file(path.c_str()));
+	CHECK(prog->last_error.has_error);
+	CHECK(prog->last_error.file == path);
+	CHECK(prog->last_error.message.find("undeclared identifier") != std::string::npos);
+	CHECK(prog->last_error.line > 0);
+	CHECK(prog->last_error.column > 0);
+
+	unlink(path.c_str());
+    }
 }
