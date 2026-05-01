@@ -60,6 +60,27 @@ That means:
 The Node.js embedding story should treat madc as an **out-of-process
 tenant runtime**, not as an in-process extension language.
 
+### Authority model
+
+Capability belongs to the invoker, not to the script.
+
+Recommended authority modes:
+
+- `system_locked`
+  - system policy can lock settings
+  - user or script cannot widen capability
+- `user_controlled`
+  - user controls policy for a user-owned installation
+- `host_authoritative`
+  - embedding host owns the final policy
+  - script cannot widen capability
+
+This implies:
+
+- a system-installed `madc` binary can be locked down by system config
+- a user-installed/private `madc` can run with user-controlled policy
+- `libmadc` callers fully control capability when embedding
+
 ### Default safe mode
 
 - `safe_mode = true`
@@ -87,6 +108,137 @@ The key rule is:
 - Node passes data in
 - madc returns data out
 - scripts do not get ambient host authority unless explicitly granted
+
+### Policy/config model
+
+Canonical external policy format:
+
+- TOML
+
+Canonical implementation model:
+
+- C++ objects owned by `MadcEngine`
+
+Recommended layers:
+
+1. built-in defaults
+2. system TOML
+3. optional user/project TOML when allowed
+4. environment / CLI overrides
+5. explicit host API overrides
+
+Library rule:
+
+- `libmadc` should not auto-read policy files unless the caller opts in
+
+CLI rule:
+
+- the `madc` binary should auto-discover TOML config in standard locations
+  like `/etc/madc/madc.toml` and `/usr/local/etc/madc/madc.toml`
+
+Recommended precedence:
+
+1. explicit host API settings
+2. CLI flags
+3. environment overrides
+4. project-local config
+5. `/usr/local/etc/madc/madc.toml`
+6. `/etc/madc/madc.toml`
+7. built-in defaults
+
+### Capability model
+
+Policy should support broad grants plus fine-grained exceptions.
+
+Recommended grant layers:
+
+- header/module groups
+  - `stdio.h`
+  - `iostream`
+  - `string.h`
+  - `stdlib.h`
+  - `syslog.h`
+  - `dlfcn.h`
+  - `unistd.h`
+  - `fcntl.h`
+- risk categories
+  - `filesystem_read`
+  - `filesystem_write`
+  - `process_spawn`
+  - `dynamic_loading`
+  - `network`
+  - `syslog`
+  - `fd_redirect`
+  - `env_mutation`
+- per-symbol overrides
+  - `allowed_symbols`
+  - `denied_symbols`
+- namespace/builtin overrides
+  - `allowed_namespaces`
+  - `denied_namespaces`
+  - `allowed_builtins`
+  - `denied_builtins`
+
+Rule:
+
+- deny wins over allow
+
+Example:
+
+- allow all of `stdio.h`
+- deny `gets`
+
+### C surface vs curated madc surface
+
+Default safe posture should treat raw libc as high-risk and curated madc
+helpers as preferred.
+
+Recommended default:
+
+- deny most raw C / libc capability in safe mode
+- allow a curated `madc::` surface
+- selectively reopen raw libc only when host policy allows it
+
+This means the standard C interface should be policy-gated more tightly than
+engine-owned C++ or `madc::` wrappers.
+
+### Safe wrapper strategy
+
+Prefer engine-owned `madc::` helpers over raw libc when a safer wrapper can
+enforce stronger invariants.
+
+Examples:
+
+- `madc::strdup`
+  - track source size
+  - allocate `size + 1`
+  - guarantee null termination
+- `madc::puts`
+  - validate/copy into a known NUL-terminated buffer before calling libc
+- `madc::printf`
+  - use a constrained, validated formatting surface rather than raw variadic
+    passthrough
+
+These wrappers should be the preferred allowed surface in restricted modes,
+while raw libc remains optional and policy-gated.
+
+### Namespace preference as host policy
+
+The current source-level `prefer ...;` directive should also be available as
+engine/program configuration.
+
+Recommended behavior:
+
+- host can preset namespace preference before parse
+- script-level `prefer` may refine it only when policy allows
+- locked-down modes may ignore or reject source-level `prefer`
+
+This lets `libmadc` callers set a default resolution order like:
+
+- `madc, std, c`
+- `rust, madc, c`
+
+without requiring the script to contain a `prefer` directive.
 
 ## Node.js Roadmap
 
@@ -186,6 +338,40 @@ struct compile_options {
 	bool allow_load_directive = false;
 };
 
+enum class authority_mode {
+	system_locked,
+	user_controlled,
+	host_authoritative
+};
+
+template <typename T>
+struct policy_value {
+	T value;
+	bool locked = false;
+};
+
+struct security_policy {
+	authority_mode mode = authority_mode::host_authoritative;
+
+	policy_value<bool> safe_mode{true, false};
+	policy_value<bool> allow_dlopen{false, false};
+	policy_value<bool> allow_load_directive{false, false};
+	policy_value<bool> allow_file_read{true, false};
+	policy_value<bool> allow_file_write{false, false};
+	policy_value<bool> allow_process_spawn{false, false};
+	policy_value<bool> allow_fd_redirect{false, false};
+	policy_value<bool> allow_syslog{false, false};
+
+	std::set<std::string> allowed_headers;
+	std::set<std::string> denied_headers;
+	std::set<std::string> allowed_categories;
+	std::set<std::string> denied_categories;
+	std::set<std::string> allowed_symbols;
+	std::set<std::string> denied_symbols;
+	std::set<std::string> allowed_namespaces;
+	std::set<std::string> denied_namespaces;
+};
+
 struct invoke_limits {
 	uint64_t cpu_ms = 0;
 	uint64_t memory_bytes = 0;
@@ -215,6 +401,8 @@ public:
 	static std::unique_ptr<engine> create();
 	bool register_function(...);
 	bool register_namespace_function(...);
+	bool load_policy_file(...);
+	bool set_namespace_preference(...);
 	std::unique_ptr<class program> create_program();
 };
 
@@ -422,6 +610,8 @@ The smallest meaningful v1 should support:
   Worker binary
 - `src/Makefile`
   Shared library and worker build targets
+- `docs/plans/libmadc-phase4.md`
+  Authority, TOML policy, capability grouping, and safe-wrapper design
 
 Tests to add:
 
@@ -430,6 +620,9 @@ Tests to add:
 - worker request/response round-trip
 - safe-mode restrictions
 - forked child execution
+- policy merge / lock tests
+- header allow + symbol deny tests
+- host-preset namespace preference tests
 
 ## Phase 4.1 Inventory
 
@@ -643,6 +836,7 @@ Recommended target ownership:
 - extract built-in registration from `_parser_init()`
 - create a registry object that can be reused across programs
 - move policy-gated built-ins behind allow/deny configuration
+- make namespace-preference defaults engine-owned
 
 ### Step 2: kill mutable process globals
 
@@ -674,6 +868,28 @@ Once steps 1 through 4 are done:
 - add program creation/destruction API
 - add load/compile/call entrypoints
 - then build `madc_worker`
+
+### Step 6: add authority + TOML policy loading
+
+- add `MadcSecurityPolicy` and `MadcLimits` objects on `MadcEngine`
+- add TOML parsing for engine/security policy
+- support system config discovery in CLI only
+- keep library config loading explicit opt-in
+- implement lock semantics for system/host policy
+
+### Step 7: enforce capability groups and carve-outs
+
+- support header/module allow-lists
+- support header/module deny-lists
+- support symbol-level additive and subtractive overrides
+- make deny win over allow
+- gate `#load`, `dlopen`, `dlsym`, and dangerous built-ins through this model
+
+### Step 8: grow the curated `madc::` safe surface
+
+- add safe wrappers for selected libc functionality
+- prefer `madc::` wrappers in safe mode
+- keep raw libc access explicitly policy-gated
 
 ## Open Design Questions
 
