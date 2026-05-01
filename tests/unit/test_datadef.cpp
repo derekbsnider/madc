@@ -1057,6 +1057,88 @@ TEST_SUITE("Program isolation") {
 	::unlink(json.c_str());
     }
 
+    TEST_CASE("MadcEngine::Config defaults match field-by-field initial state") {
+	MadcEngine::Config cfg;
+	CHECK(cfg.threshold == MadcEngine::LogLevel::debug);
+	CHECK(cfg.timestamps == false);
+	CHECK(cfg.level_prefixes == true);
+	CHECK(cfg.error_stream == true);
+	CHECK(cfg.file_sink == false);
+	CHECK(cfg.file_max_files == 5);
+	CHECK(cfg.syslog_sink == false);
+	CHECK(cfg.syslog_ident == "madc");
+	CHECK(cfg.json_sink == false);
+    }
+
+    TEST_CASE("MadcEngine apply_log_config wires file + JSON sinks declaratively") {
+	const std::string text = "/tmp/madc_log_cfg_text.log";
+	const std::string json = "/tmp/madc_log_cfg_json.log";
+	::unlink(text.c_str());
+	::unlink(json.c_str());
+
+	MadcEngine engine;
+	MadcEngine::Config cfg;
+	cfg.threshold      = MadcEngine::LogLevel::warn;
+	cfg.error_stream   = false;
+	cfg.file_sink      = true;
+	cfg.file_path      = text;
+	cfg.file_max_bytes = 0;
+	cfg.json_sink      = true;
+	cfg.json_path      = json;
+	REQUIRE(engine.apply_log_config(cfg));
+
+	CHECK(engine.log_threshold == MadcEngine::LogLevel::warn);
+	CHECK(engine.log_to_error_stream == false);
+	CHECK(engine.file_sink_active == true);
+	CHECK(engine.json_sink_active == true);
+
+	engine.write_log(MadcEngine::LogLevel::warn, "kept");
+	engine.write_log(MadcEngine::LogLevel::info, "filtered");
+	engine.disable_file_sink();
+	engine.disable_json_sink();
+
+	std::ifstream in_text(text);
+	std::string text_contents((std::istreambuf_iterator<char>(in_text)),
+				  std::istreambuf_iterator<char>());
+	std::ifstream in_json(json);
+	std::string json_contents((std::istreambuf_iterator<char>(in_json)),
+				  std::istreambuf_iterator<char>());
+	CHECK(text_contents.find("[warn] kept") != std::string::npos);
+	CHECK(text_contents.find("filtered")    == std::string::npos);
+	CHECK(json_contents.find("\"level\":\"warn\"") != std::string::npos);
+	CHECK(json_contents.find("filtered")    == std::string::npos);
+
+	::unlink(text.c_str());
+	::unlink(json.c_str());
+    }
+
+    TEST_CASE("MadcEngine apply_log_config disables omitted sinks idempotently") {
+	const std::string path = "/tmp/madc_log_cfg_disable.log";
+	::unlink(path.c_str());
+
+	MadcEngine engine;
+	REQUIRE(engine.enable_file_sink(path));
+	CHECK(engine.file_sink_active == true);
+
+	MadcEngine::Config cfg;
+	REQUIRE(engine.apply_log_config(cfg));
+	CHECK(engine.file_sink_active == false);
+	CHECK(engine.json_sink_active == false);
+	CHECK(engine.syslog_active == false);
+
+	::unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine apply_log_config returns false when a sink path is unwritable") {
+	MadcEngine engine;
+	MadcEngine::Config cfg;
+	cfg.file_sink = true;
+	cfg.file_path = "/proc/this/path/cannot/exist/madc.log";
+	const bool ok = engine.apply_log_config(cfg);
+	CHECK(ok == false);
+	CHECK(engine.file_sink_active == false);
+    }
+
     TEST_CASE("MadcEngine reopen_log_file picks up an externally rotated path") {
 	const std::string path = "/tmp/madc_log_sink_reopen.log";
 	::unlink(path.c_str());

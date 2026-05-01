@@ -1116,6 +1116,44 @@ public:
     void disable_json_sink();
     static std::string json_escape(const std::string &s);
     std::string format_json_log_line(LogLevel level, const std::string &message) const;
+
+    struct Config
+    {
+	LogLevel threshold;
+	bool timestamps;
+	bool level_prefixes;
+	bool error_stream;
+
+	bool file_sink;
+	std::string file_path;
+	size_t file_max_bytes;
+	int file_max_files;
+
+	bool syslog_sink;
+	std::string syslog_ident;
+	int syslog_option;
+	int syslog_facility;
+
+	bool json_sink;
+	std::string json_path;
+
+	Config()
+	    : threshold(LogLevel::debug),
+	      timestamps(false),
+	      level_prefixes(true),
+	      error_stream(true),
+	      file_sink(false),
+	      file_max_bytes(0),
+	      file_max_files(5),
+	      syslog_sink(false),
+	      syslog_ident("madc"),
+	      syslog_option(-1),
+	      syslog_facility(-1),
+	      json_sink(false)
+	{}
+    };
+
+    bool apply_log_config(const Config &cfg);
     bool has_output_buffer() const;
     bool has_error_buffer() const;
     std::string output_buffer_str() const;

@@ -1771,6 +1771,39 @@ void MadcEngine::disable_json_sink()
     json_file_path.clear();
 }
 
+bool MadcEngine::apply_log_config(const Config &cfg)
+{
+    log_threshold       = cfg.threshold;
+    log_timestamps      = cfg.timestamps;
+    log_level_prefixes  = cfg.level_prefixes;
+    log_to_error_stream = cfg.error_stream;
+
+    bool ok = true;
+
+    if ( cfg.file_sink )
+    {
+	if ( !enable_file_sink(cfg.file_path, cfg.file_max_bytes, cfg.file_max_files) )
+	    ok = false;
+    }
+    else
+	disable_file_sink();
+
+    if ( cfg.syslog_sink )
+	enable_syslog_sink(cfg.syslog_ident.c_str(), cfg.syslog_option, cfg.syslog_facility);
+    else
+	disable_syslog_sink();
+
+    if ( cfg.json_sink )
+    {
+	if ( !enable_json_sink(cfg.json_path) )
+	    ok = false;
+    }
+    else
+	disable_json_sink();
+
+    return ok;
+}
+
 bool MadcEngine::has_output_buffer() const
 {
     return owned_output_buffer.get() != NULL;

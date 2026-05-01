@@ -14,15 +14,17 @@
 ### Performance / startup
 
 - **Phase 4 console/logging manager** — Stream-style level facades
-  (`madc::emerg` through `madc::debug`) now ship as line-buffered
-  `std::ostream`s that route through the engine's `write_log()`, with
-  a runtime `log_threshold` filter, a sink registry
-  (`add_log_sink` / `clear_log_sinks` / `log_to_error_stream` toggle),
-  a built-in syslog sink, and a built-in file sink. Next steps: file
-  rotation policies (size + date), a JSON / structured-fields sink for
-  log aggregators, and a host-facing `MadcLogConfig` struct so an
-  embedding host can configure all of the above declaratively without
-  walking the imperative API.
+  (`madc::emerg` through `madc::debug`) ship as line-buffered
+  `std::ostream`s with a runtime `log_threshold` filter, a sink
+  registry (`add_log_sink` / `clear_log_sinks` /
+  `log_to_error_stream` toggle), a syslog sink, a file sink with
+  size-based rotation + `reopen_log_file()` for logrotate integration,
+  a JSON-line sink for aggregators, and a declarative
+  `MadcEngine::Config` + `apply_log_config()` covering threshold +
+  flags + every sink. Next plausible work: date-based file rotation
+  (rolling daily/hourly), an in-memory ring-buffer sink for crash-time
+  postmortem dumps, and per-sink threshold overrides (so e.g. JSON
+  ships at info while file ships at warn).
 
 - **Phase 4.4.a — JIT code cache** — every madc boot pays full
   lex+parse+asmjit-compile, even when the source hasn't changed.

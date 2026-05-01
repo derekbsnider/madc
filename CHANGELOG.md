@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+- **Phase 4/libmadc log sinks: rotation, JSON, declarative config.**
+  The file sink grew optional size-based rotation
+  (`enable_file_sink(path, max_bytes, max_files)`) — when the next
+  formatted line would exceed `max_bytes`, the existing file rotates
+  through `path.1` … `path.<max_files>` and the oldest is dropped. A
+  new `reopen_log_file()` lets a host integrate with logrotate-style
+  external rotation by reopening the same path after an out-of-band
+  rename. A new structured-fields sink
+  (`enable_json_sink` / `disable_json_sink`) emits one JSON object per
+  `write_log()` call with optional `ts`, `level`, and `message` fields,
+  with a public static `json_escape()` and `format_json_log_line()` so
+  hosts can build their own variant sinks. Topping it all off, a
+  `MadcEngine::Config` struct + `apply_log_config()` give embedding
+  hosts a one-call declarative surface to set threshold, timestamps,
+  level prefixes, error-stream toggle, and any combination of file /
+  syslog / JSON sinks. Twelve new doctest cases cover internal
+  rotation + max_files cap, external rotate + reopen, json_escape
+  edge cases, JSON line shape with and without timestamps, dual file +
+  JSON routing through the `madc::<level>` facades, declarative apply
+  + disable + unwritable-path handling.
+
 - **Phase 4/libmadc log sinks.** `MadcEngine` now grows a runtime
   `log_threshold` (default `debug`, i.e. log everything) that gates
   both `write_log()` and the line buffering inside `MadcLogStreambuf`,
