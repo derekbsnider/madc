@@ -379,6 +379,11 @@ TEST_SUITE("Program isolation") {
 	CHECK(prog->load_file(path.c_str()));
 	CHECK_FALSE(prog->last_error.has_error);
 	CHECK(prog->diagnostics.empty());
+	prog->report_warning(Program::DiagnosticPhase::runtime, "test warning");
+	REQUIRE(prog->diagnostics.size() == 1);
+	CHECK(prog->diagnostics[0].severity == Program::DiagnosticSeverity::warning);
+	CHECK(prog->diagnostics[0].phase == Program::DiagnosticPhase::runtime);
+	CHECK(prog->diagnostics[0].message == "test warning");
 
 	unlink(path.c_str());
     }
@@ -390,6 +395,7 @@ TEST_SUITE("Program isolation") {
 	CHECK(prog->last_error.has_error);
 	REQUIRE(prog->diagnostics.size() == 1);
 	CHECK(prog->diagnostics[0].severity == Program::DiagnosticSeverity::error);
+	CHECK(prog->diagnostics[0].phase == Program::DiagnosticPhase::lexer);
 	CHECK(prog->diagnostics[0].message == "Failed to open file");
 	CHECK(prog->last_error.message == "Failed to open file");
 	CHECK(prog->last_error.file == "/tmp/madc_missing_file_should_not_exist_424242.mad");
@@ -407,6 +413,7 @@ TEST_SUITE("Program isolation") {
 	CHECK(prog->last_error.has_error);
 	REQUIRE(prog->diagnostics.size() == 1);
 	CHECK(prog->diagnostics[0].severity == Program::DiagnosticSeverity::error);
+	CHECK(prog->diagnostics[0].phase == Program::DiagnosticPhase::parser);
 	CHECK(prog->last_error.file == path);
 	CHECK(prog->last_error.message.find("undeclared identifier") != std::string::npos);
 	CHECK(prog->diagnostics[0].message.find("undeclared identifier") != std::string::npos);

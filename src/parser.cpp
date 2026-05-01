@@ -1248,10 +1248,11 @@ void Program::clear_diagnostics()
     diagnostics.clear();
 }
 
-void Program::add_diagnostic(DiagnosticSeverity severity, const std::string &message, const char *file, int line, int column)
+void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
 {
     Diagnostic diag;
     diag.severity = severity;
+    diag.phase = phase;
     diag.message = message;
     diag.file = file ? file : "";
     diag.line = line;
@@ -1259,14 +1260,29 @@ void Program::add_diagnostic(DiagnosticSeverity severity, const std::string &mes
     diagnostics.push_back(diag);
 }
 
-void Program::set_error(const std::string &message, const char *file, int line, int column)
+void Program::report_warning(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
 {
-    add_diagnostic(DiagnosticSeverity::error, message, file, line, column);
+    add_diagnostic(DiagnosticSeverity::warning, phase, message, file, line, column);
+}
+
+void Program::report_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+{
+    add_diagnostic(DiagnosticSeverity::error, phase, message, file, line, column);
+}
+
+void Program::set_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+{
+    report_error(phase, message, file, line, column);
     last_error.has_error = true;
     last_error.message = message;
     last_error.file = file ? file : "";
     last_error.line = line;
     last_error.column = column;
+}
+
+void Program::set_error(const std::string &message, const char *file, int line, int column)
+{
+    set_error(DiagnosticPhase::unknown, message, file, line, column);
 }
 
 MadcEngine::MadcEngine()
@@ -7619,7 +7635,7 @@ bool Program::parse(TokenProgram *tp)
 
     if ( tokens.empty() )
     {
-	set_error("Program::parse() token queue empty", tp ? tp->source.c_str() : NULL, 0, 0);
+	set_error(DiagnosticPhase::parser, "Program::parse() token queue empty", tp ? tp->source.c_str() : NULL, 0, 0);
 	cerr << "Program::parse() token queue empty" << endl;
 	return false;
     }
@@ -7655,7 +7671,7 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(const char *err_msg)
     {
-	set_error(err_msg ? err_msg : "(null error message)", tp ? tp->source.c_str() : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
+	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)", tp ? tp->source.c_str() : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
 	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column 
 	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
 	source.showerror(tb->line, tb->column);
@@ -7663,7 +7679,7 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(TokenIdent *ti)
     {
-	set_error(std::string("use of undeclared identifier '") + ti->str + '\'', tp ? tp->source.c_str() : NULL, ti->line, ti->column);
+	set_error(DiagnosticPhase::parser, std::string("use of undeclared identifier '") + ti->str + '\'', tp ? tp->source.c_str() : NULL, ti->line, ti->column);
 	cerr << ANSI_WHITE << tp->source << ':' << ti->line << ':' << ti->column
 	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
 	source.showerror(ti->line, ti->column);
@@ -7671,7 +7687,7 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(TokenBase *tb)
     {
-	set_error(std::string("unexpected token type ") + std::to_string((int)tb->type()), tp ? tp->source.c_str() : NULL, tb->line, tb->column);
+	set_error(DiagnosticPhase::parser, std::string("unexpected token type ") + std::to_string((int)tb->type()), tp ? tp->source.c_str() : NULL, tb->line, tb->column);
 	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
 	source.showerror(tb->line, tb->column);
@@ -7688,7 +7704,7 @@ bool Program::parse(TokenProgram *tp)
 	if ( !last_error.has_error )
 	{
 	    TokenBase *err_tb = Throw.token();
-	    set_error(Throw.str().empty() ? e.what() : Throw.str(),
+	    set_error(DiagnosticPhase::parser, Throw.str().empty() ? e.what() : Throw.str(),
 		tp ? tp->source.c_str() : NULL,
 		err_tb ? err_tb->line : 0,
 		err_tb ? err_tb->column : 0);

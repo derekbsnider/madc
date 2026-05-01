@@ -595,9 +595,19 @@ public:
 	error
     };
 
+    enum class DiagnosticPhase
+    {
+	unknown,
+	lexer,
+	parser,
+	compiler,
+	runtime
+    };
+
     struct Diagnostic
     {
 	DiagnosticSeverity severity = DiagnosticSeverity::error;
+	DiagnosticPhase phase = DiagnosticPhase::unknown;
 	std::string message;
 	std::string file;
 	int line = 0;
@@ -732,7 +742,13 @@ public:
     void ensure_registration_config();
     void clear_diagnostics();
     void clear_error();
-    void add_diagnostic(DiagnosticSeverity severity, const std::string &message,
+    void add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
+	const std::string &message, const char *file=NULL, int line=0, int column=0);
+    void report_warning(DiagnosticPhase phase, const std::string &message,
+	const char *file=NULL, int line=0, int column=0);
+    void report_error(DiagnosticPhase phase, const std::string &message,
+	const char *file=NULL, int line=0, int column=0);
+    void set_error(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0);
     void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
     void add_string_methods();

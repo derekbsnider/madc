@@ -2461,7 +2461,7 @@ bool Program::compile()
     }
     catch(const char *err_msg)
     {
-	set_error(err_msg ? err_msg : "(null error message)",
+	set_error(Program::DiagnosticPhase::compiler, err_msg ? err_msg : "(null error message)",
 	    prepass_tb && prepass_tb->file ? prepass_tb->file : NULL,
 	    prepass_tb ? prepass_tb->line : 0,
 	    prepass_tb ? prepass_tb->column : 0);
@@ -2493,7 +2493,7 @@ bool Program::compile()
     }
     catch(const char *err_msg)
     {
-	set_error(err_msg ? err_msg : "(null error message)",
+	set_error(Program::DiagnosticPhase::compiler, err_msg ? err_msg : "(null error message)",
 	    tb && tb->file ? tb->file : NULL,
 	    tb ? tb->line : 0,
 	    tb ? tb->column : 0);
@@ -2511,7 +2511,7 @@ bool Program::compile()
     }
     catch(TokenBase *tb)
     {
-	set_error(std::string("unexpected token type ") + std::to_string((int)tb->type()),
+	set_error(Program::DiagnosticPhase::compiler, std::string("unexpected token type ") + std::to_string((int)tb->type()),
 	    tb && tb->file ? tb->file : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
 	cerr << ANSI_WHITE << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column
 	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << " value " << (int)tb->get() << " char " << (char)tb->get() << ANSI_RESET << endl;
@@ -2523,7 +2523,7 @@ bool Program::compile()
 	if ( !last_error.has_error )
 	{
 	    TokenBase *err_tb = Throw.token();
-	    set_error(Throw.str().empty() ? e.what() : Throw.str(),
+	    set_error(Program::DiagnosticPhase::compiler, Throw.str().empty() ? e.what() : Throw.str(),
 		err_tb && err_tb->file ? err_tb->file : NULL,
 		err_tb ? err_tb->line : 0,
 		err_tb ? err_tb->column : 0);
