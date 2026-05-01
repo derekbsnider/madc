@@ -1093,7 +1093,55 @@ public:
     void populate_default_registries();
     void configure_program(Program &pgm) const;
     std::unique_ptr<Program> create_program();
+    void bind_log_streams();
+    static void unbind_log_streams();
 };
+
+class MadcLogStreambuf : public std::streambuf
+{
+public:
+    explicit MadcLogStreambuf(MadcEngine::LogLevel lvl);
+
+    void set_engine(MadcEngine *eng) { _engine = eng; }
+    MadcEngine *engine() const { return _engine; }
+    MadcEngine::LogLevel level() const { return _level; }
+
+protected:
+    virtual int overflow(int ch = EOF) override;
+    virtual std::streamsize xsputn(const char *s, std::streamsize n) override;
+    virtual int sync() override;
+
+private:
+    MadcEngine::LogLevel _level;
+    MadcEngine *_engine;
+    std::string _line;
+    void flush_line();
+};
+
+class MadcLogStream : public std::ostream
+{
+public:
+    explicit MadcLogStream(MadcEngine::LogLevel lvl);
+
+    void set_engine(MadcEngine *eng) { _buf.set_engine(eng); }
+    MadcEngine *engine() const { return _buf.engine(); }
+    MadcEngine::LogLevel level() const { return _buf.level(); }
+
+private:
+    MadcLogStreambuf _buf;
+};
+
+namespace madc
+{
+    extern MadcLogStream emerg;
+    extern MadcLogStream alert;
+    extern MadcLogStream crit;
+    extern MadcLogStream err;
+    extern MadcLogStream warn;
+    extern MadcLogStream notice;
+    extern MadcLogStream info;
+    extern MadcLogStream debug;
+}
 
 #define ANSI_RED "\e[1;31m"
 #define ANSI_WHITE "\e[1;37m"

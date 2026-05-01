@@ -11,7 +11,7 @@ Latest `scripts/run_tests.sh` result:
 - Passing: 254 integration tests
 - Failing: none
 - Timed out: none
-- Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR
+- Unit tests: all passing (doctest) — 51 datadef + 23 IR
 
 The latest IR-focused validation batch passes directly, including:
 

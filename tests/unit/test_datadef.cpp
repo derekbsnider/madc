@@ -626,4 +626,93 @@ TEST_SUITE("Program isolation") {
 	CHECK(formatted.find("[info] hello") != std::string::npos);
 	CHECK(formatted.size() > std::string("[info] hello").size());
     }
+
+    TEST_CASE("madc::warn ostream writes through bound engine") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	engine.bind_log_streams();
+
+	madc::warn << "disk " << "almost " << 95 << "% full" << std::endl;
+	CHECK(engine.error_buffer_str().find("[warn] disk almost 95% full") != std::string::npos);
+
+	MadcEngine::unbind_log_streams();
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("madc level streams flush only on newline or sync") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	engine.bind_log_streams();
+
+	madc::info << "partial line, no newline yet";
+	CHECK(engine.error_buffer_str().empty());
+	madc::info << " ... finished\n";
+	CHECK(engine.error_buffer_str().find("[info] partial line, no newline yet ... finished") != std::string::npos);
+
+	MadcEngine::unbind_log_streams();
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("madc level streams cover every LogLevel") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	engine.bind_log_streams();
+
+	madc::emerg  << "lvl emerg" << std::endl;
+	madc::alert  << "lvl alert" << std::endl;
+	madc::crit   << "lvl crit"  << std::endl;
+	madc::err    << "lvl err"   << std::endl;
+	madc::warn   << "lvl warn"  << std::endl;
+	madc::notice << "lvl notice" << std::endl;
+	madc::info   << "lvl info"  << std::endl;
+	madc::debug  << "lvl debug" << std::endl;
+
+	const std::string buf = engine.error_buffer_str();
+	CHECK(buf.find("[emerg] lvl emerg")   != std::string::npos);
+	CHECK(buf.find("[alert] lvl alert")   != std::string::npos);
+	CHECK(buf.find("[crit] lvl crit")     != std::string::npos);
+	CHECK(buf.find("[err] lvl err")       != std::string::npos);
+	CHECK(buf.find("[warn] lvl warn")     != std::string::npos);
+	CHECK(buf.find("[notice] lvl notice") != std::string::npos);
+	CHECK(buf.find("[info] lvl info")     != std::string::npos);
+	CHECK(buf.find("[debug] lvl debug")   != std::string::npos);
+
+	MadcEngine::unbind_log_streams();
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("madc level stream sync flushes pending partial line") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	engine.bind_log_streams();
+
+	madc::warn << "no newline here";
+	madc::warn.flush();
+	CHECK(engine.error_buffer_str().find("[warn] no newline here") != std::string::npos);
+
+	MadcEngine::unbind_log_streams();
+	engine.reset_standard_streams();
+    }
+
+    TEST_CASE("madc level streams route through engine error sink even when error captured later") {
+	MadcEngine engine;
+	engine.bind_log_streams();
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+
+	engine.capture_error_to_buffer();
+	madc::err << "captured after bind" << std::endl;
+	CHECK(engine.error_buffer_str().find("[err] captured after bind") != std::string::npos);
+
+	MadcEngine::unbind_log_streams();
+	engine.reset_standard_streams();
+    }
 }

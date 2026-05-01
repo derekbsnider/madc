@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+- **Phase 4/libmadc level-stream facade.** Added `madc::emerg`,
+  `madc::alert`, `madc::crit`, `madc::err`, `madc::warn`, `madc::notice`,
+  `madc::info`, and `madc::debug` — eight `std::ostream`-shaped global
+  level streams under namespace `madc`. They are line-buffered
+  `std::streambuf` instances that flush each complete line through the
+  bound engine's `write_log()` (so timestamps, level prefixes, and the
+  active error sink — buffer / tee / future syslog — all apply
+  uniformly). One call to `engine.bind_log_streams()` wires all eight
+  to that engine; `MadcEngine::unbind_log_streams()` detaches them.
+  Without an engine bound, the streams fall back to formatting through
+  `std::cerr` so unconfigured embedding hosts still see output. Covered
+  by five new doctest cases in `tests/unit/test_datadef.cpp`.
+
+- **Phase 4/libmadc console-manager groundwork.** `MadcEngine` now
+  provides standard-stream helper APIs for binding input/output/error,
+  capturing output/error to owned buffers, teeing output/error to a
+  secondary sink, and formatting levelled log messages with optional
+  timestamps and level prefixes. This is the first caller-facing
+  convenience layer for embedding hosts; it still uses standard C++
+  stream machinery underneath. Covered by new doctest coverage in
+  `tests/unit/test_datadef.cpp`.
+
 - **First-wave C23 compatibility landed.** Added compile-time
   `_Static_assert` / `static_assert`, `alignof` / `_Alignof`,
   `typeof` / `typeof_unqual`, a typed `nullptr` literal, and C23

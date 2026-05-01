@@ -1615,6 +1615,98 @@ std::unique_ptr<Program> MadcEngine::create_program()
     return pgm;
 }
 
+void MadcEngine::bind_log_streams()
+{
+    madc::emerg.set_engine(this);
+    madc::alert.set_engine(this);
+    madc::crit.set_engine(this);
+    madc::err.set_engine(this);
+    madc::warn.set_engine(this);
+    madc::notice.set_engine(this);
+    madc::info.set_engine(this);
+    madc::debug.set_engine(this);
+}
+
+void MadcEngine::unbind_log_streams()
+{
+    madc::emerg.set_engine(NULL);
+    madc::alert.set_engine(NULL);
+    madc::crit.set_engine(NULL);
+    madc::err.set_engine(NULL);
+    madc::warn.set_engine(NULL);
+    madc::notice.set_engine(NULL);
+    madc::info.set_engine(NULL);
+    madc::debug.set_engine(NULL);
+}
+
+MadcLogStreambuf::MadcLogStreambuf(MadcEngine::LogLevel lvl)
+    : _level(lvl), _engine(NULL)
+{
+}
+
+void MadcLogStreambuf::flush_line()
+{
+    if ( _line.empty() )
+	return;
+    if ( _engine )
+	_engine->write_log(_level, _line);
+    else
+    {
+	MadcEngine fallback;
+	std::cerr << fallback.format_log_message(_level, _line) << std::endl;
+    }
+    _line.clear();
+}
+
+int MadcLogStreambuf::overflow(int ch)
+{
+    if ( ch == EOF )
+    {
+	flush_line();
+	return 0;
+    }
+    if ( ch == '\n' )
+	flush_line();
+    else
+	_line.push_back((char)ch);
+    return ch;
+}
+
+std::streamsize MadcLogStreambuf::xsputn(const char *s, std::streamsize n)
+{
+    for ( std::streamsize i = 0; i < n; ++i )
+    {
+	if ( s[i] == '\n' )
+	    flush_line();
+	else
+	    _line.push_back(s[i]);
+    }
+    return n;
+}
+
+int MadcLogStreambuf::sync()
+{
+    flush_line();
+    return 0;
+}
+
+MadcLogStream::MadcLogStream(MadcEngine::LogLevel lvl)
+    : std::ostream(&_buf), _buf(lvl)
+{
+}
+
+namespace madc
+{
+    MadcLogStream emerg(MadcEngine::LogLevel::emerg);
+    MadcLogStream alert(MadcEngine::LogLevel::alert);
+    MadcLogStream crit(MadcEngine::LogLevel::crit);
+    MadcLogStream err(MadcEngine::LogLevel::err);
+    MadcLogStream warn(MadcEngine::LogLevel::warn);
+    MadcLogStream notice(MadcEngine::LogLevel::notice);
+    MadcLogStream info(MadcEngine::LogLevel::info);
+    MadcLogStream debug(MadcEngine::LogLevel::debug);
+}
+
 bool Program::load_file(const char *fname)
 {
     TokenProgram *tp = tokenize(fname);

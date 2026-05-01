@@ -13,6 +13,15 @@
 
 ### Performance / startup
 
+- **Phase 4 console/logging manager** — Stream-style level facades
+  (`madc::emerg` through `madc::debug`) now ship as line-buffered
+  `std::ostream`s that route through the engine's `write_log()`, so
+  timestamps / level prefixes / the active error sink all apply
+  uniformly. Next steps: a syslog `std::streambuf` sink as one of the
+  pluggable backends behind `bind_error_stream()`, then a file/rotating
+  sink, plus a `madc::log_level` filter so debug/info can be muted in
+  production builds.
+
 - **Phase 4.4.a — JIT code cache** — every madc boot pays full
   lex+parse+asmjit-compile, even when the source hasn't changed.
   For SMAUG (~158k LOC across 49 .c files) that's ~43s of pure
