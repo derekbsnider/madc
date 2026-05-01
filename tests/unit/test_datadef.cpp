@@ -210,6 +210,16 @@ static std::string write_temp_mad_source(const char *tag, const char *source)
     return std::string(path);
 }
 
+static void register_test_host_namespace(Program &pgm)
+{
+    Variable *var = pgm.addFunction(
+	"__host_putchar",
+	datatype_vec_t{DataType::dtINT, DataType::dtINT},
+	(fVOIDFUNC)putchar);
+    if ( var )
+	pgm.namespace_map["host"]["putchar"] = var;
+}
+
 TEST_SUITE("Program isolation") {
     TEST_CASE("separate Program instances do not leak typedefs or macros") {
 	std::string good_path = write_temp_mad_source(
@@ -275,6 +285,25 @@ TEST_SUITE("Program isolation") {
 	    "host_putchar",
 	    datatype_vec_t{DataType::dtINT, DataType::dtINT},
 	    (fVOIDFUNC)putchar);
+
+	TokenProgram *tp = prog.tokenize(path.c_str());
+	CHECK(tp != nullptr);
+	REQUIRE(tp != nullptr);
+	CHECK(prog.parse(tp));
+	CHECK(prog.compile());
+
+	unlink(path.c_str());
+    }
+
+    TEST_CASE("Program namespace registry can be extended before parse") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_host_namespace",
+	    "int main() { host::putchar(65); return 0; }\n");
+	REQUIRE(!path.empty());
+
+	Program prog;
+	prog.populate_namespace_registry();
+	prog.namespace_registry.add_namespace("host", register_test_host_namespace);
 
 	TokenProgram *tp = prog.tokenize(path.c_str());
 	CHECK(tp != nullptr);

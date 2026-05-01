@@ -1154,6 +1154,46 @@ typedef istream& (*fnGETLINE)(istream&, string&);
 // needed to add endl
 typedef ostream& (*fnENDL)(ostream&);
 
+static void register_std_namespace_spec(Program &pgm)
+{
+    pgm.add_namespaces();
+}
+
+static void register_madc_namespace_spec(Program &pgm)
+{
+    pgm.add_madc_namespace();
+}
+
+static void register_php_namespace_spec(Program &pgm)
+{
+    pgm.add_php_namespace();
+}
+
+static void register_perl_namespace_spec(Program &pgm)
+{
+    pgm.add_perl_namespace();
+}
+
+static void register_python_namespace_spec(Program &pgm)
+{
+    pgm.add_python_namespace();
+}
+
+static void register_ruby_namespace_spec(Program &pgm)
+{
+    pgm.add_ruby_namespace();
+}
+
+static void register_js_namespace_spec(Program &pgm)
+{
+    pgm.add_js_namespace();
+}
+
+static void register_rust_namespace_spec(Program &pgm)
+{
+    pgm.add_rust_namespace();
+}
+
 void Program::BuiltinRegistry::add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
 {
     core_functions.push_back({id, params, extfunc, is_method});
@@ -1167,6 +1207,11 @@ void Program::BuiltinRegistry::add_process_function(const std::string &id, const
 void Program::BuiltinRegistry::add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
 {
     dlfcn_functions.push_back({id, params, extfunc, is_method});
+}
+
+void Program::NamespaceRegistry::add_namespace(const std::string &name, namespace_init_fn_t init)
+{
+    specs.push_back({name, init});
 }
 
 // add file stream methods
@@ -1250,6 +1295,22 @@ void Program::populate_builtin_registry()
     builtin_registry.defaults_loaded = true;
 }
 
+void Program::populate_namespace_registry()
+{
+    if ( namespace_registry.defaults_loaded )
+	return;
+
+    namespace_registry.add_namespace("std", register_std_namespace_spec);
+    namespace_registry.add_namespace("madc", register_madc_namespace_spec);
+    namespace_registry.add_namespace("php", register_php_namespace_spec);
+    namespace_registry.add_namespace("perl", register_perl_namespace_spec);
+    namespace_registry.add_namespace("python", register_python_namespace_spec);
+    namespace_registry.add_namespace("ruby", register_ruby_namespace_spec);
+    namespace_registry.add_namespace("js", register_js_namespace_spec);
+    namespace_registry.add_namespace("rust", register_rust_namespace_spec);
+    namespace_registry.defaults_loaded = true;
+}
+
 void Program::register_function_specs(const std::vector<FunctionRegistrationSpec> &specs)
 {
     for ( std::vector<FunctionRegistrationSpec>::const_iterator it = specs.begin(); it != specs.end(); ++it )
@@ -1271,6 +1332,17 @@ void Program::add_process_functions()
 void Program::add_dlfcn_functions()
 {
     register_function_specs(builtin_registry.dlfcn_functions);
+}
+
+void Program::register_namespace_specs()
+{
+    for ( std::vector<NamespaceRegistrationSpec>::const_iterator it = namespace_registry.specs.begin(); it != namespace_registry.specs.end(); ++it )
+    {
+	if ( !is_namespace_registration_enabled(it->name) )
+	    continue;
+	if ( it->init )
+	    it->init(*this);
+    }
 }
 
 // add system library functions
@@ -1438,6 +1510,7 @@ void Program::add_madc_namespace()
 void Program::_parser_init()
 {
     populate_builtin_registry();
+    populate_namespace_registry();
     add_functions();
     add_string_methods();
     add_sstream_methods();
@@ -1446,23 +1519,21 @@ void Program::_parser_init()
     // populate lazy_map for included headers (actual registration deferred to first use)
     if ( _include_iostream ) add_iostream();
     if ( _include_stdio )   add_stdio();
-    if ( registration_policy.enable_std_namespace )
-	add_namespaces();
-    if ( registration_policy.enable_madc_namespace )
-	add_madc_namespace();
-    if ( registration_policy.enable_php_namespace )
-	add_php_namespace();
-    if ( registration_policy.enable_perl_namespace )
-	add_perl_namespace();
-    if ( registration_policy.enable_python_namespace )
-	add_python_namespace();
-    if ( registration_policy.enable_ruby_namespace )
-	add_ruby_namespace();
-    if ( registration_policy.enable_js_namespace )
-	add_js_namespace();
-    if ( registration_policy.enable_rust_namespace )
-	add_rust_namespace();
+    register_namespace_specs();
     _braces = 0;
+}
+
+bool Program::is_namespace_registration_enabled(const std::string &name) const
+{
+    if ( name == "std" ) return registration_policy.enable_std_namespace;
+    if ( name == "madc" ) return registration_policy.enable_madc_namespace;
+    if ( name == "php" ) return registration_policy.enable_php_namespace;
+    if ( name == "perl" ) return registration_policy.enable_perl_namespace;
+    if ( name == "python" ) return registration_policy.enable_python_namespace;
+    if ( name == "ruby" ) return registration_policy.enable_ruby_namespace;
+    if ( name == "js" ) return registration_policy.enable_js_namespace;
+    if ( name == "rust" ) return registration_policy.enable_rust_namespace;
+    return true;
 }
 
 // find variable matching id anywhere accessable from codeblock

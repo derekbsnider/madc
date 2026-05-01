@@ -546,6 +546,22 @@ protected:
 	void add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
     };
 
+    typedef void (*namespace_init_fn_t)(Program &);
+
+    struct NamespaceRegistrationSpec
+    {
+	std::string name;
+	namespace_init_fn_t init;
+    };
+
+    struct NamespaceRegistry
+    {
+	bool defaults_loaded = false;
+	std::vector<NamespaceRegistrationSpec> specs;
+
+	void add_namespace(const std::string &name, namespace_init_fn_t init);
+    };
+
     struct RegistrationPolicy
     {
 	bool enable_core_functions = true;
@@ -581,6 +597,7 @@ protected:
 public:
     RegistrationPolicy registration_policy;
     BuiltinRegistry builtin_registry;
+    NamespaceRegistry namespace_registry;
     keyword_map_t  keyword_map;		// reserved keywords
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
@@ -681,7 +698,9 @@ public:
     void add_sstream_methods();
     void add_fstream_methods();
     void populate_builtin_registry();
+    void populate_namespace_registry();
     void register_function_specs(const std::vector<FunctionRegistrationSpec> &specs);
+    void register_namespace_specs();
     void add_core_functions();
     void add_process_functions();
     void add_dlfcn_functions();
@@ -699,6 +718,7 @@ public:
     void add_ruby_namespace();
     void add_js_namespace();
     void add_rust_namespace();
+    bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_known_namespace(const std::string &name) const;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
