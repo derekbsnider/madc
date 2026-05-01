@@ -1,0 +1,25 @@
+#include <stdio.h>
+
+struct pair {
+    int left;
+    char right;
+};
+
+int seed = 41;
+typeof(seed) global_copy = 42;
+typeof(struct pair) global_pair;
+
+int main()
+{
+    typeof(seed) local = global_copy + 1;
+    typeof(global_pair.right) ch = 'Z';
+    typeof(struct pair *) ptr = &global_pair;
+
+    ptr->left = local;
+    ptr->right = ch;
+
+    printf("local=%ld\n", local);
+    printf("pair=%ld,%c\n", global_pair.left, global_pair.right);
+
+    return 0;
+}

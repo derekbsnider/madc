@@ -81,6 +81,7 @@ compile.
 - **File I/O:** `ifstream`/`ofstream` with `open`, `close`, `good`, `eof`, `getline`
 - **Subscript operator:** `a[0]`, `nums[i]`, `ages["key"]`
 - **Escape sequences:** `\n`, `\t`, `\r`, `\\`, `\"`, `\0`
+- **C23 coverage (early wave):** `_Bool`, `0b...`, `_Static_assert` / `static_assert`, `alignof` / `_Alignof`, `typeof` / `typeof_unqual`, `nullptr`, digit separators (`1'000'000`)
 
 ### Multi-Language Namespaces
 
@@ -169,7 +170,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 249 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
+**Current status: 254 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)

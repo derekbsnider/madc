@@ -227,12 +227,16 @@
   SMAUG ingestion once the runtime blocker is unstuck.
 
 - **Full C23 standard coverage** — After SMAUG 1.8 compatibility is reached, the next
-  long-term goal for the C-dialect side is full C23 (including C99/C11/C17 features along
-  the way: designated initializers, compound literals, variadic macros with `__VA_ARGS__`,
-  `_Static_assert`, `_Generic`, `_Alignas`/`_Alignof`, VLAs, digit separators,
-  `#embed`, `constexpr`, `nullptr`, typeof, etc.). `.mad` stays as the
-  naming convention for files using madc's beyond-C23 extensions (multi-language namespaces,
-  etc.); bare `.c` / `.h` files get the C-compatible subset.
+  long-term goal for the C-dialect side is full C23. The early parser-only
+  wave is now partly landed (`_Bool`, variadic macros with `__VA_ARGS__`,
+  VLAs, `_Static_assert`, `alignof` / `_Alignof`, `typeof`, `nullptr`,
+  digit separators). Remaining high-value language work is the deeper
+  compatibility surface: designated initializers, compound literals,
+  `_Generic`, `_Alignas`, `#embed`, `constexpr`, and the usual
+  preprocessor / library parity corners. `.mad` stays as the naming
+  convention for files using madc's beyond-C23 extensions
+  (multi-language namespaces, etc.); bare `.c` / `.h` files get the
+  C-compatible subset.
 
 ## Completed
 

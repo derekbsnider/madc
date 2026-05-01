@@ -38,12 +38,24 @@ static bool is_binary_prefix(int ch, Source &source)
     return ch == '0' && source.good() && (source.peek() == 'b' || source.peek() == 'B');
 }
 
+static bool is_digit_separator(int ch)
+{
+    return ch == '\'';
+}
+
 static int64_t read_binary_literal(Source &source)
 {
     int64_t bv = 0;
     source.get(); // eat 'b' / 'B'
-    while ( source.good() && (source.peek() == '0' || source.peek() == '1') )
+    while ( source.good() )
     {
+	if ( is_digit_separator(source.peek()) )
+	{
+	    source.get();
+	    continue;
+	}
+	if ( source.peek() != '0' && source.peek() != '1' )
+	    break;
 	bv <<= 1;
 	bv += source.get() - '0';
     }
@@ -1081,8 +1093,15 @@ TokenBase *Program::_getToken()
 		{
 		    source.get(); // eat 'x'
 		    long long hv = 0;
-		    while ( source.good() && isxdigit(source.peek()) )
+		    while ( source.good() )
 		    {
+			if ( is_digit_separator(source.peek()) )
+			{
+			    source.get();
+			    continue;
+			}
+			if ( !isxdigit(source.peek()) )
+			    break;
 			char hc = source.get();
 			hv *= 16;
 			if      ( hc >= '0' && hc <= '9' ) hv += hc - '0';
@@ -1094,8 +1113,15 @@ TokenBase *Program::_getToken()
 		}
 		int64_t v = (ch & 0xf);
 
-		while ( source.good() && isdigit(source.peek()) )
+		while ( source.good() )
 		{
+		    if ( is_digit_separator(source.peek()) )
+		    {
+			source.get();
+			continue;
+		    }
+		    if ( !isdigit(source.peek()) )
+			break;
 		    v *= 10;
 		    v += source.get() & 0xf;
 		}
@@ -1108,8 +1134,15 @@ TokenBase *Program::_getToken()
 		// handle floating point
 		source.get(); // eat .
 		double num = v, divisor = 10;
-		while ( source.good() && isdigit(source.peek()) )
+		while ( source.good() )
 		{
+		    if ( is_digit_separator(source.peek()) )
+		    {
+			source.get();
+			continue;
+		    }
+		    if ( !isdigit(source.peek()) )
+			break;
 		    num += (source.get() & 0xf) / divisor;
 		    divisor *= 10;
 		}

@@ -897,6 +897,18 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+class TokenNullptr: public TokenInt
+{
+public:
+    TokenNullptr() : TokenInt(0) { _datatype = &ddVOIDptr; }
+    virtual TokenBase *clone() { return new TokenNullptr(); }
+    virtual void setDataType(DataDef *d)
+    {
+	if ( d && d->is_pointer() )
+	    _datatype = d;
+    }
+};
+
 class TokenReal: public TokenBase
 {
 protected:

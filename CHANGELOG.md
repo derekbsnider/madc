@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **First-wave C23 compatibility landed.** Added compile-time
+  `_Static_assert` / `static_assert`, `alignof` / `_Alignof`,
+  `typeof` / `typeof_unqual`, a typed `nullptr` literal, and C23
+  digit separators in binary/hex/decimal/floating literals. The
+  parser now evaluates richer integer constant expressions for static
+  assertions (comparisons and logical `&&` / `||` in addition to the
+  existing arithmetic/bitwise chain), `alignof` shares the existing
+  type-query surface with `sizeof`, and `typeof(expr)` can drive
+  ordinary declarations. Covered by `tests/teststaticassert.mad`,
+  `tests/testalignof.mad`, `tests/testtypeof.mad`,
+  `tests/testnullptr.mad`, and `tests/testdigitsep.mad`.
+
 - **`rust::match` statement.** New namespaced statement form modeled
   after Rust's `match`. v1 surface: integer constant patterns,
   multi-pattern arms (`1 | 2 | 3 => ...`), `_` wildcard with free

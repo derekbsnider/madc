@@ -1,0 +1,16 @@
+#include <stdio.h>
+
+int main()
+{
+    int a = 1'234'567;
+    int b = 0xAB'CD;
+    int c = 0b1010'0101;
+    double d = 12.5'0;
+
+    printf("a=%ld\n", a);
+    printf("b=%ld\n", b);
+    printf("c=%ld\n", c);
+    printf("d=%.2f\n", d);
+
+    return 0;
+}
