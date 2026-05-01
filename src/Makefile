@@ -2,7 +2,7 @@ CXX=g++
 CXXFLAGS= -std=c++11 -Wall
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-OFILES	= lexer.o parser.o typesafe.o compiler.o madc_ir.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
+OFILES	= lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
 MADHDRS = $(wildcard ../include/madc/*)
 INCDIR	= ../include
 BINDIR	= ../bin

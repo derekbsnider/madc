@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **Phase 4.2 / libmadc public C++ API: `madc::value`.** New header
+  `include/libmadc/value.h` (and `src/madc_value.cpp`) ship the first
+  public type of the libmadc embedding API: a tagged value carrying
+  the eight host↔script kinds (`null`, `boolean`, `integer`, `real`,
+  `string`, `bytes`, `array`, `object`). `bytes` is `std::vector<uint8_t>`,
+  `array` is `std::vector<value>` (heap-owned via `unique_ptr`), and
+  `object` is `std::map<std::string, value>`. Copy is deep, move
+  leaves the source in null state, equality compares structurally,
+  and accessor mismatches throw `std::runtime_error`. `MadValue` (in
+  `datadef.h`) is unchanged; it remains the internal php:: array
+  helper. The two are deliberately separate. The umbrella public-API
+  directory lives at `include/libmadc/` (mirroring the `libmadc.so`
+  artifact name), so the existing `include/madc/` embedded-scripting
+  header tree is untouched. New doctest binary
+  `tests/unit/test_libmadc_value.cpp` (19 cases, 67 assertions)
+  covers every kind, deep-copy / move-out, nested arrays of objects,
+  equality across kinds, and accessor-mismatch throws.
+
 - **Phase 4/libmadc log sinks: rotation, JSON, declarative config.**
   The file sink grew optional size-based rotation
   (`enable_file_sink(path, max_bytes, max_files)`) — when the next

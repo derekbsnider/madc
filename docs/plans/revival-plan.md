@@ -255,9 +255,13 @@ design.  Modern C++ hosts (game engines, CMS plugins, native dev tools)
 get the natural API; the C shim in §4.3 is a thin wrapper for legacy
 hosts and FFI bindings (Python ctypes, Rust, Node-API).
 
-**New header:** `include/madc/embed.h` — public C++ surface, namespaced
-under `madc::`.  Distinct from internal headers (`madc.h`, `tokens.h`,
-`datadef.h`) which stay private.
+**New headers:** `include/libmadc/*.h` — public C++ surface, namespaced
+under `madc::` and grouped under `libmadc/` to mirror the
+`libmadc.so` artifact name. Distinct from internal headers
+(`madc.h`, `tokens.h`, `datadef.h`) which stay private, and from
+`include/madc/` which already holds embedded scripting headers
+(`stdio.h`, `iostream`, etc. baked into the binary). First
+deliverable shipped: `include/libmadc/value.h`.
 
 ```cpp
 namespace madc {
@@ -314,9 +318,9 @@ existing `throwit` / `Throw` machinery already produces source-tagged errors,
 just needs a public exception type.
 
 **Files:**
-- `include/madc/embed.h` (new, public)
-- `include/madc/value.h` (new, public)
-- `include/madc/error.h` (new, public)
+- `include/libmadc/embed.h` (new, public)
+- `include/libmadc/value.h` (new, public — shipped)
+- `include/libmadc/error.h` (new, public)
 - `src/embed.cpp` (new) — pimpl forwarding
 - existing internals stay where they are; the `madc::` namespace is purely
   the public façade.
