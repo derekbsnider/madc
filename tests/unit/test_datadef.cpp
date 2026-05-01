@@ -15,6 +15,7 @@ bool madc_verbose = false;
 #include <queue>
 #include <stack>
 #include <stdint.h>
+#include <syslog.h>
 #include <stdio.h>
 #include <unistd.h>
 #include <asmjit/x86.h>
@@ -831,6 +832,35 @@ TEST_SUITE("Program isolation") {
 	engine.clear_log_sinks();
 	engine.write_log(MadcEngine::LogLevel::warn, "second");
 	CHECK(sink_calls == 1);
+    }
+
+    TEST_CASE("MadcEngine maps every LogLevel to a distinct syslog priority") {
+	CHECK(MadcEngine::syslog_priority_for(MadcEngine::LogLevel::emerg)  == LOG_EMERG);
+	CHECK(MadcEngine::syslog_priority_for(MadcEngine::LogLevel::alert)  == LOG_ALERT);
+	CHECK(MadcEngine::syslog_priority_for(MadcEngine::LogLevel::crit)   == LOG_CRIT);
+	CHECK(MadcEngine::syslog_priority_for(MadcEngine::LogLevel::err)    == LOG_ERR);
+	CHECK(MadcEngine::syslog_priority_for(MadcEngine::LogLevel::warn)   == LOG_WARNING);
+	CHECK(MadcEngine::syslog_priority_for(MadcEngine::LogLevel::notice) == LOG_NOTICE);
+	CHECK(MadcEngine::syslog_priority_for(MadcEngine::LogLevel::info)   == LOG_INFO);
+	CHECK(MadcEngine::syslog_priority_for(MadcEngine::LogLevel::debug)  == LOG_DEBUG);
+    }
+
+    TEST_CASE("MadcEngine enable/disable syslog sink toggles state") {
+	MadcEngine engine;
+	CHECK(engine.syslog_active == false);
+	engine.disable_syslog_sink();
+	CHECK(engine.syslog_active == false);
+
+	const size_t before = engine.log_sinks.size();
+	engine.enable_syslog_sink("madc-unit-test");
+	CHECK(engine.syslog_active == true);
+	CHECK(engine.log_sinks.size() == before + 1);
+
+	engine.enable_syslog_sink("madc-unit-test");
+	CHECK(engine.log_sinks.size() == before + 1);
+
+	engine.disable_syslog_sink();
+	CHECK(engine.syslog_active == false);
     }
 
     TEST_CASE("madc level streams reach registered sinks unchanged") {

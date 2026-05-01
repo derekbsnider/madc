@@ -12,6 +12,7 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <syslog.h>
 #include <time.h>
 #include <dlfcn.h>
 #include <unistd.h>
@@ -1410,7 +1411,8 @@ MadcEngine::MadcEngine()
       log_timestamps(false),
       log_level_prefixes(true),
       log_threshold(LogLevel::debug),
-      log_to_error_stream(true)
+      log_to_error_stream(true),
+      syslog_active(false)
 {
 }
 
@@ -1552,6 +1554,44 @@ void MadcEngine::add_log_sink(LogSink sink)
 void MadcEngine::clear_log_sinks()
 {
     log_sinks.clear();
+}
+
+int MadcEngine::syslog_priority_for(LogLevel level)
+{
+    switch ( level )
+    {
+	case LogLevel::emerg:  return LOG_EMERG;
+	case LogLevel::alert:  return LOG_ALERT;
+	case LogLevel::crit:   return LOG_CRIT;
+	case LogLevel::err:    return LOG_ERR;
+	case LogLevel::warn:   return LOG_WARNING;
+	case LogLevel::notice: return LOG_NOTICE;
+	case LogLevel::info:   return LOG_INFO;
+	case LogLevel::debug:  return LOG_DEBUG;
+    }
+    return LOG_INFO;
+}
+
+void MadcEngine::enable_syslog_sink(const char *ident, int option, int facility)
+{
+    if ( syslog_active )
+	return;
+    int resolved_option   = (option   < 0) ? LOG_PID  : option;
+    int resolved_facility = (facility < 0) ? LOG_USER : facility;
+    openlog(ident, resolved_option, resolved_facility);
+    syslog_active = true;
+    add_log_sink([this](LogLevel level, const std::string &msg) {
+	if ( syslog_active )
+	    ::syslog(syslog_priority_for(level), "%s", msg.c_str());
+    });
+}
+
+void MadcEngine::disable_syslog_sink()
+{
+    if ( !syslog_active )
+	return;
+    syslog_active = false;
+    closelog();
 }
 
 bool MadcEngine::has_output_buffer() const

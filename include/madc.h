@@ -1068,6 +1068,7 @@ public:
     bool log_level_prefixes;
     LogLevel log_threshold;
     bool log_to_error_stream;
+    bool syslog_active;
     std::vector<LogSink> log_sinks;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
@@ -1093,6 +1094,9 @@ public:
     void write_log(LogLevel level, const std::string &message);
     void add_log_sink(LogSink sink);
     void clear_log_sinks();
+    static int syslog_priority_for(LogLevel level);
+    void enable_syslog_sink(const char *ident = "madc", int option = -1, int facility = -1);
+    void disable_syslog_sink();
     bool has_output_buffer() const;
     bool has_error_buffer() const;
     std::string output_buffer_str() const;
