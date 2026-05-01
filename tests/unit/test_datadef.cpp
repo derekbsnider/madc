@@ -234,82 +234,102 @@ TEST_SUITE("Program isolation") {
 	    "int main() { myint x = ANSWER; return 0; }\n");
 	REQUIRE(!bad_path.empty());
 
-	Program good_prog;
-	TokenProgram *good_tp = good_prog.tokenize(good_path.c_str());
+	MadcEngine engine;
+	std::unique_ptr<Program> good_prog = engine.create_program();
+	TokenProgram *good_tp = good_prog->tokenize(good_path.c_str());
 	CHECK(good_tp != nullptr);
 	REQUIRE(good_tp != nullptr);
-	CHECK(good_prog.parse(good_tp));
-	CHECK(good_prog.compile());
+	CHECK(good_prog->parse(good_tp));
+	CHECK(good_prog->compile());
 
-	Program bad_prog;
-	TokenProgram *bad_tp = bad_prog.tokenize(bad_path.c_str());
+	std::unique_ptr<Program> bad_prog = engine.create_program();
+	TokenProgram *bad_tp = bad_prog->tokenize(bad_path.c_str());
 	CHECK(bad_tp != nullptr);
 	REQUIRE(bad_tp != nullptr);
-	CHECK_FALSE(bad_prog.parse(bad_tp));
+	CHECK_FALSE(bad_prog->parse(bad_tp));
 
 	unlink(good_path.c_str());
 	unlink(bad_path.c_str());
     }
 
-    TEST_CASE("separate Program instances can use different builtin registration policies") {
+    TEST_CASE("separate engines can expose different builtin registration policies") {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_builtins",
 	    "int main() { puti(42); return 0; }\n");
 	REQUIRE(!path.empty());
 
-	Program default_prog;
-	TokenProgram *default_tp = default_prog.tokenize(path.c_str());
+	MadcEngine default_engine;
+	std::unique_ptr<Program> default_prog = default_engine.create_program();
+	TokenProgram *default_tp = default_prog->tokenize(path.c_str());
 	CHECK(default_tp != nullptr);
 	REQUIRE(default_tp != nullptr);
-	CHECK(default_prog.parse(default_tp));
+	CHECK(default_prog->parse(default_tp));
 
-	Program restricted_prog;
-	restricted_prog.registration_policy.enable_core_functions = false;
-	TokenProgram *restricted_tp = restricted_prog.tokenize(path.c_str());
+	MadcEngine restricted_engine;
+	restricted_engine.registration_policy.enable_core_functions = false;
+	std::unique_ptr<Program> restricted_prog = restricted_engine.create_program();
+	TokenProgram *restricted_tp = restricted_prog->tokenize(path.c_str());
 	CHECK(restricted_tp != nullptr);
 	REQUIRE(restricted_tp != nullptr);
-	CHECK_FALSE(restricted_prog.parse(restricted_tp));
+	CHECK_FALSE(restricted_prog->parse(restricted_tp));
 
 	unlink(path.c_str());
     }
 
-    TEST_CASE("Program builtin registry can be extended before parse") {
+    TEST_CASE("Engine builtin registry can be extended before parse") {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_host_builtin",
 	    "int main() { host_putchar(65); return 0; }\n");
 	REQUIRE(!path.empty());
 
-	Program prog;
-	prog.populate_builtin_registry();
-	prog.builtin_registry.add_core_function(
+	MadcEngine engine;
+	engine.populate_default_registries();
+	engine.builtin_registry.add_core_function(
 	    "host_putchar",
 	    datatype_vec_t{DataType::dtINT, DataType::dtINT},
 	    (fVOIDFUNC)putchar);
+	std::unique_ptr<Program> prog = engine.create_program();
 
-	TokenProgram *tp = prog.tokenize(path.c_str());
+	TokenProgram *tp = prog->tokenize(path.c_str());
 	CHECK(tp != nullptr);
 	REQUIRE(tp != nullptr);
-	CHECK(prog.parse(tp));
-	CHECK(prog.compile());
+	CHECK(prog->parse(tp));
+	CHECK(prog->compile());
 
 	unlink(path.c_str());
     }
 
-    TEST_CASE("Program namespace registry can be extended before parse") {
+    TEST_CASE("Engine namespace registry can be extended before parse") {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_host_namespace",
 	    "int main() { host::putchar(65); return 0; }\n");
 	REQUIRE(!path.empty());
 
-	Program prog;
-	prog.populate_namespace_registry();
-	prog.namespace_registry.add_namespace("host", register_test_host_namespace);
+	MadcEngine engine;
+	engine.populate_default_registries();
+	engine.namespace_registry.add_namespace("host", register_test_host_namespace);
+	std::unique_ptr<Program> prog = engine.create_program();
 
+	TokenProgram *tp = prog->tokenize(path.c_str());
+	CHECK(tp != nullptr);
+	REQUIRE(tp != nullptr);
+	CHECK(prog->parse(tp));
+	CHECK(prog->compile());
+
+	unlink(path.c_str());
+    }
+
+    TEST_CASE("legacy bare Program still self-seeds default builtins") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_legacy_default",
+	    "int main() { puti(42); return 0; }\n");
+	REQUIRE(!path.empty());
+
+	Program prog;
 	TokenProgram *tp = prog.tokenize(path.c_str());
 	CHECK(tp != nullptr);
 	REQUIRE(tp != nullptr);
 	CHECK(prog.parse(tp));
-	CHECK(prog.compile());
 
 	unlink(path.c_str());
     }

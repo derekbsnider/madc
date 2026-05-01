@@ -1262,8 +1262,9 @@ void MadcEngine::configure_program(Program &pgm) const
     pgm.namespace_registry = namespace_registry;
 }
 
-std::unique_ptr<Program> MadcEngine::create_program() const
+std::unique_ptr<Program> MadcEngine::create_program()
 {
+    populate_default_registries();
     std::unique_ptr<Program> pgm(new Program());
     configure_program(*pgm);
     return pgm;
@@ -1420,10 +1421,18 @@ void Program::register_namespace_specs()
     }
 }
 
+void Program::ensure_registration_config()
+{
+    if ( engine )
+	return;
+
+    populate_builtin_registry();
+    populate_namespace_registry();
+}
+
 // add system library functions
 void Program::add_functions()
 {
-    populate_builtin_registry();
     if ( registration_policy.enable_core_functions )
 	add_core_functions();
     if ( registration_policy.enable_process_functions )
@@ -1584,8 +1593,7 @@ void Program::add_madc_namespace()
 
 void Program::_parser_init()
 {
-    populate_builtin_registry();
-    populate_namespace_registry();
+    ensure_registration_config();
     add_functions();
     add_string_methods();
     add_sstream_methods();

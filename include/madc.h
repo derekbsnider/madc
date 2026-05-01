@@ -703,6 +703,7 @@ public:
 
     void add_keywords();
     void add_datatypes();
+    void ensure_registration_config();
     void add_string_methods();
     void add_sstream_methods();
     void add_fstream_methods();
@@ -965,7 +966,7 @@ public:
     MadcEngine();
     void populate_default_registries();
     void configure_program(Program &pgm) const;
-    std::unique_ptr<Program> create_program() const;
+    std::unique_ptr<Program> create_program();
 };
 
 #define ANSI_RED "\e[1;31m"
