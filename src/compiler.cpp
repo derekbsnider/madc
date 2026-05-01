@@ -2419,6 +2419,7 @@ bool Program::compile()
     regdefp_t regdp = {NULL, NULL, NULL};
 
     DBG(cout << endl << endl << "Program::compile() start" << endl << endl);
+    clear_diagnostics();
     clear_error();
     _compiler_init();
 

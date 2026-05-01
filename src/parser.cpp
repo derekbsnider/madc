@@ -1243,8 +1243,25 @@ void Program::clear_error()
     last_error = ErrorInfo();
 }
 
+void Program::clear_diagnostics()
+{
+    diagnostics.clear();
+}
+
+void Program::add_diagnostic(DiagnosticSeverity severity, const std::string &message, const char *file, int line, int column)
+{
+    Diagnostic diag;
+    diag.severity = severity;
+    diag.message = message;
+    diag.file = file ? file : "";
+    diag.line = line;
+    diag.column = column;
+    diagnostics.push_back(diag);
+}
+
 void Program::set_error(const std::string &message, const char *file, int line, int column)
 {
+    add_diagnostic(DiagnosticSeverity::error, message, file, line, column);
     last_error.has_error = true;
     last_error.message = message;
     last_error.file = file ? file : "";
@@ -7597,6 +7614,7 @@ bool Program::parse(TokenProgram *tp)
     TokenBase *tb, *ts;
 
     DBG(cout << endl << "Program::parse() START" << endl);
+    clear_diagnostics();
     clear_error();
 
     if ( tokens.empty() )

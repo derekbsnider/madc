@@ -378,6 +378,7 @@ TEST_SUITE("Program isolation") {
 	std::unique_ptr<Program> prog = engine.create_program();
 	CHECK(prog->load_file(path.c_str()));
 	CHECK_FALSE(prog->last_error.has_error);
+	CHECK(prog->diagnostics.empty());
 
 	unlink(path.c_str());
     }
@@ -387,6 +388,9 @@ TEST_SUITE("Program isolation") {
 	std::unique_ptr<Program> prog = engine.create_program();
 	CHECK_FALSE(prog->load_file("/tmp/madc_missing_file_should_not_exist_424242.mad"));
 	CHECK(prog->last_error.has_error);
+	REQUIRE(prog->diagnostics.size() == 1);
+	CHECK(prog->diagnostics[0].severity == Program::DiagnosticSeverity::error);
+	CHECK(prog->diagnostics[0].message == "Failed to open file");
 	CHECK(prog->last_error.message == "Failed to open file");
 	CHECK(prog->last_error.file == "/tmp/madc_missing_file_should_not_exist_424242.mad");
     }
@@ -401,8 +405,11 @@ TEST_SUITE("Program isolation") {
 	std::unique_ptr<Program> prog = engine.create_program();
 	CHECK_FALSE(prog->load_file(path.c_str()));
 	CHECK(prog->last_error.has_error);
+	REQUIRE(prog->diagnostics.size() == 1);
+	CHECK(prog->diagnostics[0].severity == Program::DiagnosticSeverity::error);
 	CHECK(prog->last_error.file == path);
 	CHECK(prog->last_error.message.find("undeclared identifier") != std::string::npos);
+	CHECK(prog->diagnostics[0].message.find("undeclared identifier") != std::string::npos);
 	CHECK(prog->last_error.line > 0);
 	CHECK(prog->last_error.column > 0);
 

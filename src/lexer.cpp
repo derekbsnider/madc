@@ -1944,6 +1944,7 @@ TokenProgram *Program::tokenize(const char *fname)
     ifstream file(fname);
 
     DBG(cout << "Program::tokenize(" << fname << ") START" << endl);
+    clear_diagnostics();
     clear_error();
 
     if ( !file )

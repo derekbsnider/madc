@@ -589,6 +589,21 @@ public:
 	int column = 0;
     };
 
+    enum class DiagnosticSeverity
+    {
+	warning,
+	error
+    };
+
+    struct Diagnostic
+    {
+	DiagnosticSeverity severity = DiagnosticSeverity::error;
+	std::string message;
+	std::string file;
+	int line = 0;
+	int column = 0;
+    };
+
 protected:
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
@@ -613,6 +628,7 @@ public:
     BuiltinRegistry builtin_registry;
     NamespaceRegistry namespace_registry;
     ErrorInfo last_error;
+    std::vector<Diagnostic> diagnostics;
     keyword_map_t  keyword_map;		// reserved keywords
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
@@ -714,7 +730,10 @@ public:
     void add_keywords();
     void add_datatypes();
     void ensure_registration_config();
+    void clear_diagnostics();
     void clear_error();
+    void add_diagnostic(DiagnosticSeverity severity, const std::string &message,
+	const char *file=NULL, int line=0, int column=0);
     void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
     void add_string_methods();
     void add_sstream_methods();
