@@ -217,7 +217,8 @@ int main(int argc, char **argv)
     install_resource_guards();
 
     stringstream ss;
-    Program prog;
+    MadcEngine engine;
+    Program prog(&engine);
     TokenProgram *tp;
 
     prog.colors = true;
