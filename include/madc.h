@@ -7,7 +7,17 @@
 #define __MADC_H 1
 
 class Method;
+class Program;
 
+class MadcAsmjitErrHandler : public asmjit::ErrorHandler
+{
+public:
+    Program *pgm;
+    int hits;
+    MadcAsmjitErrHandler();
+    void handleError(asmjit::Error err, const char *message,
+		     asmjit::BaseEmitter *) override;
+};
 class FuncDef: public DataDef
 {
 public:
@@ -609,6 +619,7 @@ public:
     bool jit_source_map_enabled = true;
     std::vector<std::pair<asmjit::Label, JitSourceEntry>> jit_anchor_labels;
     std::vector<JitSourceEntry> jit_source_map;
+    MadcAsmjitErrHandler asmjit_err_handler;
     void record_compile_anchor(class TokenBase *tb, const char *kind);
     std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
     int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }

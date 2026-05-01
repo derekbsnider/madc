@@ -15,11 +15,14 @@ bool madc_verbose = false;
 #include <queue>
 #include <stack>
 #include <stdint.h>
+#include <stdio.h>
+#include <unistd.h>
 #include <asmjit/x86.h>
 
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
+#include "madc.h"
 
 // Global instances are defined in parser.cpp (linked via TESTOBJ)
 
@@ -192,5 +195,49 @@ TEST_SUITE("Variable") {
         v.set(99);
         CHECK(v.cmp(99));
         CHECK(!v.cmp(100));
+    }
+}
+
+static std::string write_temp_mad_source(const char *tag, const char *source)
+{
+    char path[256];
+    snprintf(path, sizeof(path), "/tmp/%s_%ld.mad", tag, (long)getpid());
+    FILE *fp = fopen(path, "w");
+    if ( !fp )
+	return "";
+    fputs(source, fp);
+    fclose(fp);
+    return std::string(path);
+}
+
+TEST_SUITE("Program isolation") {
+    TEST_CASE("separate Program instances do not leak typedefs or macros") {
+	std::string good_path = write_temp_mad_source(
+	    "madc_prog_good",
+	    "#define ANSWER 42\n"
+	    "typedef int myint;\n"
+	    "int main() { myint x = ANSWER; return 0; }\n");
+	REQUIRE(!good_path.empty());
+
+	std::string bad_path = write_temp_mad_source(
+	    "madc_prog_bad",
+	    "int main() { myint x = ANSWER; return 0; }\n");
+	REQUIRE(!bad_path.empty());
+
+	Program good_prog;
+	TokenProgram *good_tp = good_prog.tokenize(good_path.c_str());
+	CHECK(good_tp != nullptr);
+	REQUIRE(good_tp != nullptr);
+	CHECK(good_prog.parse(good_tp));
+	CHECK(good_prog.compile());
+
+	Program bad_prog;
+	TokenProgram *bad_tp = bad_prog.tokenize(bad_path.c_str());
+	CHECK(bad_tp != nullptr);
+	REQUIRE(bad_tp != nullptr);
+	CHECK_FALSE(bad_prog.parse(bad_tp));
+
+	unlink(good_path.c_str());
+	unlink(bad_path.c_str());
     }
 }

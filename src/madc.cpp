@@ -32,12 +32,10 @@ bool madc_verbose = false;
 
 throwstream throwit;
 
-// Globals exposed by the compiler so the crash handler can map a
-// faulting JIT'd RIP back to the .mad source location that emitted it.
-extern const Program::JitSourceEntry *g_madc_jit_map;
-extern size_t g_madc_jit_map_size;
-extern const void *g_madc_jit_code_base;
-extern size_t g_madc_jit_code_size;
+// CLI-only active program pointer used by the crash handler to map a
+// faulting JIT RIP back to source. Library consumers should provide
+// their own crash/error plumbing instead of relying on process globals.
+static Program *g_active_program = NULL;
 
 // Async-signal-safe crash handler: writes signal name + backtrace to fd 2
 // (stderr) using only async-signal-safe libc calls. Re-raises the signal
@@ -69,24 +67,27 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
     // (memcpy with NULL dst, strlen on bad pointer, etc.) RIP is in
     // glibc — walk the backtrace and report the first frame whose
     // address falls in the JIT'd region.
-    if ( g_madc_jit_map && g_madc_jit_map_size
-      && g_madc_jit_code_base && g_madc_jit_code_size )
+    if ( g_active_program
+      && !g_active_program->jit_source_map.empty()
+      && g_active_program->root_fn )
     {
-	uintptr_t base = (uintptr_t)g_madc_jit_code_base;
-	uintptr_t end  = base + g_madc_jit_code_size;
+	const std::vector<Program::JitSourceEntry> &jit_map = g_active_program->jit_source_map;
+	size_t jit_map_size = jit_map.size();
+	uintptr_t base = (uintptr_t)g_active_program->root_fn;
+	uintptr_t end  = base + g_active_program->code.codeSize();
 	auto print_at = [&](uintptr_t pc, const char *header) {
 	    if ( pc < base || pc >= end ) return false;
 	    uint32_t offset = (uint32_t)(pc - base);
-	    size_t lo = 0, hi = g_madc_jit_map_size, best = SIZE_MAX;
+	    size_t lo = 0, hi = jit_map_size, best = SIZE_MAX;
 	    while ( lo < hi )
 	    {
 		size_t mid = lo + (hi - lo) / 2;
-		if ( g_madc_jit_map[mid].byte_offset <= offset )
+		if ( jit_map[mid].byte_offset <= offset )
 		{ best = mid; lo = mid + 1; }
 		else hi = mid;
 	    }
 	    if ( best == SIZE_MAX ) return false;
-	    const Program::JitSourceEntry &e = g_madc_jit_map[best];
+	    const Program::JitSourceEntry &e = jit_map[best];
 	    char buf[512];
 	    int n = snprintf(buf, sizeof(buf),
 		"%s at +0x%x — last anchor +0x%x: %s:%u:%u (%s)\n",
@@ -95,9 +96,9 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 		(unsigned)e.line, (unsigned)e.col,
 		e.kind ? e.kind : "?");
 	    write(2, buf, n);
-	    if ( best + 1 < g_madc_jit_map_size )
+	    if ( best + 1 < jit_map_size )
 	    {
-		const Program::JitSourceEntry &n2 = g_madc_jit_map[best + 1];
+		const Program::JitSourceEntry &n2 = jit_map[best + 1];
 		int n3 = snprintf(buf, sizeof(buf),
 		    "               next anchor +0x%x: %s:%u:%u (%s)\n",
 		    n2.byte_offset,
@@ -244,6 +245,7 @@ int main(int argc, char **argv)
 	// set script argc/argv after tokenize/parse/compile (tokenizer_init resets members)
 	prog.script_argc = argc - filearg;
 	prog.script_argv = argv + filearg;
+	g_active_program = &prog;
 
 	struct timeval before, after;
 
