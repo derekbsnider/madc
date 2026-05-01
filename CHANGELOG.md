@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **Phase 4/libmadc log sinks.** `MadcEngine` now grows a runtime
+  `log_threshold` (default `debug`, i.e. log everything) that gates
+  both `write_log()` and the line buffering inside `MadcLogStreambuf`,
+  so a filtered `madc::debug << ... << x` does not even accumulate
+  per-character work. Added a sink-registry layer
+  (`add_log_sink` / `clear_log_sinks` / `log_to_error_stream` toggle)
+  so `write_log()` fans out to a list of `(LogLevel, message)`
+  callbacks in addition to (or instead of) the formatted error-stream
+  output. Built two concrete backends on the registry: a syslog sink
+  (`enable_syslog_sink` / `disable_syslog_sink`, with a public static
+  `syslog_priority_for(LogLevel)` mapping every level to the matching
+  POSIX `LOG_*` priority) and a file sink (`enable_file_sink` /
+  `disable_file_sink`, append-mode, formatted text matching the error
+  stream). New doctest coverage exercises threshold filtering across
+  `write_log` and the level streams, sink fanout / clearing, the
+  syslog priority mapping for all eight levels, and the file sink for
+  cross-engine append, error handling on unwritable paths, and routing
+  through the `madc::<level>` facade streams.
+
 - **Phase 4/libmadc level-stream facade.** Added `madc::emerg`,
   `madc::alert`, `madc::crit`, `madc::err`, `madc::warn`, `madc::notice`,
   `madc::info`, and `madc::debug` — eight `std::ostream`-shaped global

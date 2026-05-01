@@ -6,6 +6,7 @@
 //////////////////////////////////////////////////////////////////////////
 #define __MADC_H 1
 
+#include <fstream>
 #include <functional>
 #include <istream>
 #include <memory>
@@ -1069,6 +1070,9 @@ public:
     LogLevel log_threshold;
     bool log_to_error_stream;
     bool syslog_active;
+    bool file_sink_active;
+    std::unique_ptr<std::ofstream> log_file;
+    std::string log_file_path;
     std::vector<LogSink> log_sinks;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
@@ -1097,6 +1101,8 @@ public:
     static int syslog_priority_for(LogLevel level);
     void enable_syslog_sink(const char *ident = "madc", int option = -1, int facility = -1);
     void disable_syslog_sink();
+    bool enable_file_sink(const std::string &path);
+    void disable_file_sink();
     bool has_output_buffer() const;
     bool has_error_buffer() const;
     std::string output_buffer_str() const;

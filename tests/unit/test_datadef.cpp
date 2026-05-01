@@ -6,6 +6,7 @@
 bool madc_verbose = false;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <fstream>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -861,6 +862,89 @@ TEST_SUITE("Program isolation") {
 
 	engine.disable_syslog_sink();
 	CHECK(engine.syslog_active == false);
+    }
+
+    TEST_CASE("MadcEngine file sink writes formatted lines to disk") {
+	const std::string path = "/tmp/madc_log_sink_test.log";
+	::unlink(path.c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	REQUIRE(engine.enable_file_sink(path));
+
+	engine.write_log(MadcEngine::LogLevel::warn, "first line");
+	engine.write_log(MadcEngine::LogLevel::info, "second line");
+	engine.disable_file_sink();
+
+	std::ifstream in(path);
+	std::string contents((std::istreambuf_iterator<char>(in)),
+			     std::istreambuf_iterator<char>());
+	CHECK(contents.find("[warn] first line")  != std::string::npos);
+	CHECK(contents.find("[info] second line") != std::string::npos);
+	::unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine file sink appends across enable cycles") {
+	const std::string path = "/tmp/madc_log_sink_append.log";
+	::unlink(path.c_str());
+
+	MadcEngine engine_a;
+	engine_a.log_to_error_stream = false;
+	engine_a.log_timestamps = false;
+	engine_a.log_level_prefixes = true;
+	REQUIRE(engine_a.enable_file_sink(path));
+	engine_a.write_log(MadcEngine::LogLevel::warn, "before");
+	engine_a.disable_file_sink();
+
+	MadcEngine engine_b;
+	engine_b.log_to_error_stream = false;
+	engine_b.log_timestamps = false;
+	engine_b.log_level_prefixes = true;
+	REQUIRE(engine_b.enable_file_sink(path));
+	engine_b.write_log(MadcEngine::LogLevel::err, "after");
+	engine_b.disable_file_sink();
+
+	std::ifstream in(path);
+	std::string contents((std::istreambuf_iterator<char>(in)),
+			     std::istreambuf_iterator<char>());
+	CHECK(contents.find("[warn] before") != std::string::npos);
+	CHECK(contents.find("[err] after")   != std::string::npos);
+	::unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine file sink rejects unwritable paths and stays inactive") {
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	const bool ok = engine.enable_file_sink("/proc/this/path/cannot/exist/madc.log");
+	CHECK(ok == false);
+	CHECK(engine.file_sink_active == false);
+    }
+
+    TEST_CASE("madc level streams flow through file sink") {
+	const std::string path = "/tmp/madc_log_sink_facade.log";
+	::unlink(path.c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	REQUIRE(engine.enable_file_sink(path));
+	engine.bind_log_streams();
+
+	madc::warn  << "via "   << "facade " << 1 << std::endl;
+	madc::debug << "trace " << 0xff      << std::endl;
+
+	MadcEngine::unbind_log_streams();
+	engine.disable_file_sink();
+
+	std::ifstream in(path);
+	std::string contents((std::istreambuf_iterator<char>(in)),
+			     std::istreambuf_iterator<char>());
+	CHECK(contents.find("[warn] via facade 1") != std::string::npos);
+	CHECK(contents.find("[debug] trace 255")   != std::string::npos);
+	::unlink(path.c_str());
     }
 
     TEST_CASE("madc level streams reach registered sinks unchanged") {

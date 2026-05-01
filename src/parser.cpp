@@ -1412,7 +1412,8 @@ MadcEngine::MadcEngine()
       log_level_prefixes(true),
       log_threshold(LogLevel::debug),
       log_to_error_stream(true),
-      syslog_active(false)
+      syslog_active(false),
+      file_sink_active(false)
 {
 }
 
@@ -1592,6 +1593,39 @@ void MadcEngine::disable_syslog_sink()
 	return;
     syslog_active = false;
     closelog();
+}
+
+bool MadcEngine::enable_file_sink(const std::string &path)
+{
+    if ( file_sink_active )
+	disable_file_sink();
+    log_file.reset(new std::ofstream(path.c_str(), std::ios::app));
+    if ( !log_file->is_open() )
+    {
+	log_file.reset();
+	return false;
+    }
+    file_sink_active = true;
+    log_file_path = path;
+    add_log_sink([this](LogLevel level, const std::string &msg) {
+	if ( file_sink_active && log_file && log_file->is_open() )
+	    (*log_file) << format_log_message(level, msg) << std::endl;
+    });
+    return true;
+}
+
+void MadcEngine::disable_file_sink()
+{
+    if ( !file_sink_active )
+	return;
+    file_sink_active = false;
+    if ( log_file )
+    {
+	log_file->flush();
+	log_file->close();
+	log_file.reset();
+    }
+    log_file_path.clear();
 }
 
 bool MadcEngine::has_output_buffer() const

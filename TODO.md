@@ -15,12 +15,14 @@
 
 - **Phase 4 console/logging manager** — Stream-style level facades
   (`madc::emerg` through `madc::debug`) now ship as line-buffered
-  `std::ostream`s that route through the engine's `write_log()`, so
-  timestamps / level prefixes / the active error sink all apply
-  uniformly. Next steps: a syslog `std::streambuf` sink as one of the
-  pluggable backends behind `bind_error_stream()`, then a file/rotating
-  sink, plus a `madc::log_level` filter so debug/info can be muted in
-  production builds.
+  `std::ostream`s that route through the engine's `write_log()`, with
+  a runtime `log_threshold` filter, a sink registry
+  (`add_log_sink` / `clear_log_sinks` / `log_to_error_stream` toggle),
+  a built-in syslog sink, and a built-in file sink. Next steps: file
+  rotation policies (size + date), a JSON / structured-fields sink for
+  log aggregators, and a host-facing `MadcLogConfig` struct so an
+  embedding host can configure all of the above declaratively without
+  walking the imperative API.
 
 - **Phase 4.4.a — JIT code cache** — every madc boot pays full
   lex+parse+asmjit-compile, even when the source hasn't changed.
