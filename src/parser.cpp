@@ -1248,6 +1248,13 @@ void Program::clear_diagnostics()
     diagnostics.clear();
 }
 
+const Program::Diagnostic *Program::last_diagnostic() const
+{
+    if ( diagnostics.empty() )
+	return NULL;
+    return &diagnostics.back();
+}
+
 void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
 {
     Diagnostic diag;
@@ -1283,6 +1290,60 @@ void Program::set_error(DiagnosticPhase phase, const std::string &message, const
 void Program::set_error(const std::string &message, const char *file, int line, int column)
 {
     set_error(DiagnosticPhase::unknown, message, file, line, column);
+}
+
+const char *Program::diagnostic_severity_name(DiagnosticSeverity severity) const
+{
+    switch ( severity )
+    {
+	case DiagnosticSeverity::warning: return "warning";
+	case DiagnosticSeverity::error:   return "error";
+    }
+    return "diagnostic";
+}
+
+const char *Program::diagnostic_phase_name(DiagnosticPhase phase) const
+{
+    switch ( phase )
+    {
+	case DiagnosticPhase::lexer:    return "lexer";
+	case DiagnosticPhase::parser:   return "parser";
+	case DiagnosticPhase::compiler: return "compiler";
+	case DiagnosticPhase::runtime:  return "runtime";
+	case DiagnosticPhase::unknown:  return "unknown";
+    }
+    return "unknown";
+}
+
+bool Program::can_show_diagnostic_source(const Diagnostic &diag) const
+{
+    return !diag.file.empty()
+	&& diag.line > 0
+	&& diag.column > 0
+	&& source.fname()
+	&& diag.file == source.fname();
+}
+
+void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix)
+{
+    if ( !diag.file.empty() )
+	os << ANSI_WHITE << diag.file << ':' << diag.line << ':' << diag.column;
+    else
+	os << ANSI_WHITE << ':';
+    os << ": \e[1;31m" << diagnostic_severity_name(diag.severity)
+       << ":\e[1;37m " << diag.message;
+    if ( suffix && *suffix )
+	os << ' ' << suffix;
+    os << ANSI_RESET << std::endl;
+    if ( can_show_diagnostic_source(diag) )
+	source.showerror(diag.line, diag.column);
+}
+
+void Program::print_last_diagnostic(std::ostream &os, const char *suffix)
+{
+    const Diagnostic *diag = last_diagnostic();
+    if ( diag )
+	print_diagnostic(os, *diag, suffix);
 }
 
 MadcEngine::MadcEngine()
@@ -7672,25 +7733,19 @@ bool Program::parse(TokenProgram *tp)
     catch(const char *err_msg)
     {
 	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)", tp ? tp->source.c_str() : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
-	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column 
-	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
-	source.showerror(tb->line, tb->column);
+	print_last_diagnostic(cerr);
 	return false;
     }
     catch(TokenIdent *ti)
     {
 	set_error(DiagnosticPhase::parser, std::string("use of undeclared identifier '") + ti->str + '\'', tp ? tp->source.c_str() : NULL, ti->line, ti->column);
-	cerr << ANSI_WHITE << tp->source << ':' << ti->line << ':' << ti->column
-	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
-	source.showerror(ti->line, ti->column);
+	print_last_diagnostic(cerr);
 	return false;
     }
     catch(TokenBase *tb)
     {
 	set_error(DiagnosticPhase::parser, std::string("unexpected token type ") + std::to_string((int)tb->type()), tp ? tp->source.c_str() : NULL, tb->line, tb->column);
-	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column
-	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
-	source.showerror(tb->line, tb->column);
+	print_last_diagnostic(cerr);
 	if ( tb->type() == TokenType::ttReal )
 	{
 	    cerr << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;

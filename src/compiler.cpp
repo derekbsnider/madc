@@ -2465,17 +2465,7 @@ bool Program::compile()
 	    prepass_tb && prepass_tb->file ? prepass_tb->file : NULL,
 	    prepass_tb ? prepass_tb->line : 0,
 	    prepass_tb ? prepass_tb->column : 0);
-	cerr << ANSI_WHITE;
-	if ( prepass_tb && prepass_tb->file )
-	    cerr << prepass_tb->file << ':' << prepass_tb->line << ':' << prepass_tb->column;
-	else
-	    cerr << ':';
-	cerr << ": \e[1;31merror:\e[1;37m "
-	     << (err_msg ? err_msg : "(null error message)")
-	     << " (during funcnode pre-pass)"
-	     << ANSI_RESET << endl;
-	if ( prepass_tb )
-	    source.showerror(prepass_tb->line, prepass_tb->column);
+	print_last_diagnostic(cerr, "(during funcnode pre-pass)");
 	return false;
     }
 
@@ -2497,25 +2487,14 @@ bool Program::compile()
 	    tb && tb->file ? tb->file : NULL,
 	    tb ? tb->line : 0,
 	    tb ? tb->column : 0);
-	cerr << ANSI_WHITE;
-	if ( tb && tb->file )
-	    cerr << tb->file << ':' << tb->line << ':' << tb->column;
-	else
-	    cerr << ':';
-	cerr << ": \e[1;31merror:\e[1;37m "
-	     << (err_msg ? err_msg : "(null error message)")
-	     << ANSI_RESET << endl;
-	if ( tb )
-	    source.showerror(tb->line, tb->column);
+	print_last_diagnostic(cerr);
 	return false;
     }
     catch(TokenBase *tb)
     {
 	set_error(Program::DiagnosticPhase::compiler, std::string("unexpected token type ") + std::to_string((int)tb->type()),
 	    tb && tb->file ? tb->file : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
-	cerr << ANSI_WHITE << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column
-	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << " value " << (int)tb->get() << " char " << (char)tb->get() << ANSI_RESET << endl;
-	source.showerror(tb->line, tb->column);
+	print_last_diagnostic(cerr);
 	return false;
     }
     catch(std::exception &e)

@@ -422,4 +422,19 @@ TEST_SUITE("Program isolation") {
 
 	unlink(path.c_str());
     }
+
+    TEST_CASE("Program formats diagnostics from structured state") {
+	MadcEngine engine;
+	std::unique_ptr<Program> prog = engine.create_program();
+	std::ostringstream os;
+
+	prog->report_warning(Program::DiagnosticPhase::runtime, "watch this");
+	const Program::Diagnostic *diag = prog->last_diagnostic();
+	REQUIRE(diag != NULL);
+	CHECK(std::string(prog->diagnostic_phase_name(diag->phase)) == "runtime");
+	prog->print_last_diagnostic(os, "(test suffix)");
+	CHECK(os.str().find("warning:") != std::string::npos);
+	CHECK(os.str().find("watch this") != std::string::npos);
+	CHECK(os.str().find("(test suffix)") != std::string::npos);
+    }
 }

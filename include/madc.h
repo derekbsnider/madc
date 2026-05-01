@@ -430,7 +430,7 @@ protected:
     std::string _fname;
 public:
     Source() { _lf = 0; _cr = 0; _column = 0; _pos = 0; }
-    const char *fname() { return _fname.c_str(); }
+    const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { _ss << sb;  }
@@ -744,6 +744,7 @@ public:
     void clear_error();
     void add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
 	const std::string &message, const char *file=NULL, int line=0, int column=0);
+    const Diagnostic *last_diagnostic() const;
     void report_warning(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0);
     void report_error(DiagnosticPhase phase, const std::string &message,
@@ -751,6 +752,11 @@ public:
     void set_error(DiagnosticPhase phase, const std::string &message,
 	const char *file=NULL, int line=0, int column=0);
     void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
+    const char *diagnostic_severity_name(DiagnosticSeverity severity) const;
+    const char *diagnostic_phase_name(DiagnosticPhase phase) const;
+    bool can_show_diagnostic_source(const Diagnostic &diag) const;
+    void print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix=NULL);
+    void print_last_diagnostic(std::ostream &os, const char *suffix=NULL);
     void add_string_methods();
     void add_sstream_methods();
     void add_fstream_methods();
