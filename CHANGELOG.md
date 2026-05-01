@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **`ns_common` extracted from the four user-facing namespaces.** The
+  `php::`, `python::`, `ruby::`, and `rust::` implementations were
+  carrying duplicate copies of trim/replace-all/repeat/contains/
+  starts_with/ends_with, the substring split/join loops, and a
+  MadValue→string helper. They now all forward to a single set of
+  helpers in `include/ns_common.h` / `src/ns_common.cpp`. The
+  user-facing namespace surfaces are unchanged; `php_str_repeat`
+  inherits the rust-side `count<=0` clear that was missing before.
+
 - **Added a new `rust::` namespace.** v1 is intentionally small-surface
   and runtime-native: string helpers (`contains`, `starts_with`,
   `ends_with`, `trim*`, `replace`, `repeat`, `len`, `is_empty`) plus

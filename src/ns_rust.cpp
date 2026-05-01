@@ -26,119 +26,58 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "ns_common.h"
 
 using namespace std;
 using namespace asmjit;
 
-static void rust_trim_chars(std::string &s, bool left, bool right)
-{
-	size_t start = 0;
-	size_t end = s.length();
-
-	if ( left )
-	{
-		start = s.find_first_not_of(" \t\n\r\f\v");
-		if ( start == std::string::npos )
-		{
-			s.clear();
-			return;
-		}
-	}
-
-	if ( right )
-	{
-		size_t last = s.find_last_not_of(" \t\n\r\f\v");
-		if ( last == std::string::npos )
-		{
-			s.clear();
-			return;
-		}
-		end = last + 1;
-	}
-
-	if ( left || right )
-		s = s.substr(start, end - start);
-}
-
-static void rust_value_to_string(std::string &out, MadValue &v)
-{
-	if ( v.is_string() )
-		out = v.as_string();
-	else if ( v.is_int() )
-		out = std::to_string(v.as_int());
-	else if ( v.is_double() )
-		out = std::to_string(v.as_double());
-	else
-		out.clear();
-}
-
 int64_t rust_contains(void *str, void *needle)
 {
-	std::string &s = *(std::string *)str;
-	std::string &n = *(std::string *)needle;
-	return s.find(n) != std::string::npos ? 1 : 0;
+	return ns_common::contains(*(std::string *)str,
+				   *(std::string *)needle) ? 1 : 0;
 }
 
 int64_t rust_starts_with(void *str, void *prefix)
 {
-	std::string &s = *(std::string *)str;
-	std::string &p = *(std::string *)prefix;
-	return s.length() >= p.length() && s.compare(0, p.length(), p) == 0 ? 1 : 0;
+	return ns_common::starts_with(*(std::string *)str,
+				      *(std::string *)prefix) ? 1 : 0;
 }
 
 int64_t rust_ends_with(void *str, void *suffix)
 {
-	std::string &s = *(std::string *)str;
-	std::string &x = *(std::string *)suffix;
-	return s.length() >= x.length() && s.compare(s.length() - x.length(), x.length(), x) == 0 ? 1 : 0;
+	return ns_common::ends_with(*(std::string *)str,
+				    *(std::string *)suffix) ? 1 : 0;
 }
 
 void *rust_trim(void *ptr)
 {
-	rust_trim_chars(*(std::string *)ptr, true, true);
+	ns_common::trim(*(std::string *)ptr, true, true);
 	return ptr;
 }
 
 void *rust_trim_start(void *ptr)
 {
-	rust_trim_chars(*(std::string *)ptr, true, false);
+	ns_common::trim(*(std::string *)ptr, true, false);
 	return ptr;
 }
 
 void *rust_trim_end(void *ptr)
 {
-	rust_trim_chars(*(std::string *)ptr, false, true);
+	ns_common::trim(*(std::string *)ptr, false, true);
 	return ptr;
 }
 
 void *rust_replace(void *ptr, void *from, void *to)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &f = *(std::string *)from;
-	std::string &r = *(std::string *)to;
-	if ( f.empty() ) return ptr;
-	size_t pos = 0;
-	while ( (pos = s.find(f, pos)) != std::string::npos )
-	{
-		s.replace(pos, f.length(), r);
-		pos += r.length();
-	}
+	ns_common::replace_all(*(std::string *)ptr,
+			       *(std::string *)from,
+			       *(std::string *)to);
 	return ptr;
 }
 
 void *rust_repeat(void *ptr, int64_t count)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string orig = s;
-	if ( count <= 0 )
-	{
-		s.clear();
-		return ptr;
-	}
-	s.clear();
-	s.reserve(orig.length() * (size_t)count);
-	for ( int64_t i = 0; i < count; ++i )
-		s += orig;
+	ns_common::repeat(*(std::string *)ptr, count);
 	return ptr;
 }
 
@@ -154,24 +93,9 @@ int64_t rust_is_empty(void *ptr)
 
 void *rust_split(void *arr, void *str, void *delim)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &s = *(std::string *)str;
-	std::string &d = *(std::string *)delim;
-	a.data.clear();
-	a.assoc.clear();
-	if ( d.empty() )
-	{
-		a.push(MadValue(s));
-		return arr;
-	}
-	size_t start = 0;
-	size_t end = 0;
-	while ( (end = s.find(d, start)) != std::string::npos )
-	{
-		a.push(MadValue(s.substr(start, end - start)));
-		start = end + d.length();
-	}
-	a.push(MadValue(s.substr(start)));
+	ns_common::split_by_delim(*(MadArray *)arr,
+				  *(std::string *)str,
+				  *(std::string *)delim);
 	return arr;
 }
 
@@ -202,17 +126,9 @@ void *rust_split_whitespace(void *arr, void *str)
 
 void *rust_join(void *result, void *arr, void *sep)
 {
-	std::string &res = *(std::string *)result;
-	MadArray &a = *(MadArray *)arr;
-	std::string &s = *(std::string *)sep;
-	std::string tmp;
-	res.clear();
-	for ( size_t i = 0; i < a.data.size(); ++i )
-	{
-		if ( i > 0 ) res += s;
-		rust_value_to_string(tmp, a.data[i]);
-		res += tmp;
-	}
+	ns_common::join_with_sep(*(std::string *)result,
+				 *(MadArray *)arr,
+				 *(std::string *)sep);
 	return result;
 }
 
@@ -220,12 +136,9 @@ void *rust_first(void *result, void *arr)
 {
 	std::string &res = *(std::string *)result;
 	MadArray &a = *(MadArray *)arr;
-	if ( a.data.empty() )
-	{
-		res.clear();
-		return result;
-	}
-	rust_value_to_string(res, a.data[0]);
+	res.clear();
+	if ( !a.data.empty() )
+		ns_common::value_to_string(a.data[0], res);
 	return result;
 }
 
@@ -233,12 +146,9 @@ void *rust_last(void *result, void *arr)
 {
 	std::string &res = *(std::string *)result;
 	MadArray &a = *(MadArray *)arr;
-	if ( a.data.empty() )
-	{
-		res.clear();
-		return result;
-	}
-	rust_value_to_string(res, a.data[a.data.size() - 1]);
+	res.clear();
+	if ( !a.data.empty() )
+		ns_common::value_to_string(a.data[a.data.size() - 1], res);
 	return result;
 }
 
@@ -246,12 +156,9 @@ void *rust_get(void *result, void *arr, int64_t idx)
 {
 	std::string &res = *(std::string *)result;
 	MadArray &a = *(MadArray *)arr;
-	if ( idx < 0 || (size_t)idx >= a.data.size() )
-	{
-		res.clear();
-		return result;
-	}
-	rust_value_to_string(res, a.data[(size_t)idx]);
+	res.clear();
+	if ( idx >= 0 && (size_t)idx < a.data.size() )
+		ns_common::value_to_string(a.data[(size_t)idx], res);
 	return result;
 }
 
@@ -265,7 +172,8 @@ void *rust_pop(void *result, void *arr)
 {
 	std::string &res = *(std::string *)result;
 	MadValue v = ((MadArray *)arr)->pop();
-	rust_value_to_string(res, v);
+	res.clear();
+	ns_common::value_to_string(v, res);
 	return result;
 }
 
