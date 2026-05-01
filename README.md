@@ -57,7 +57,7 @@ compile.
 - **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `string`, `array`
 - **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>`, `list<int>` — also as `std::vector<int>` etc.
 - **Streams:** `cout`, `cerr`, `cin`, `stringstream`, `ifstream`, `ofstream`, `fstream`
-- **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`
+- **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`, `rust::match`
 - **Range-based for:** `for (string name : names) { ... }` — works with array and vector
 - **Ternary operator:** `condition ? true_expr : false_expr`
 - **Functions:** user-defined with return values and parameters
@@ -190,6 +190,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/language/prefer.md`](docs/language/prefer.md) | Namespace precedence directive |
 | [`docs/language/modern/`](docs/language/modern/) | Range-for, function pointers, lambdas, defer |
 | [`docs/language/switch.md`](docs/language/switch.md) | Switch/case/default statement |
+| [`docs/language/rust-match.md`](docs/language/rust-match.md) | `rust::match` (integer patterns, OR-arms, `_` wildcard) |
 | [`docs/language/input-operator.md`](docs/language/input-operator.md) | cin >> input operator |
 | [`docs/language/class-methods.md`](docs/language/class-methods.md) | Class methods with this pointer |
 | [`docs/language/regex.md`](docs/language/regex.md) | Regex functions |
