@@ -218,10 +218,10 @@ int main(int argc, char **argv)
 
     stringstream ss;
     MadcEngine engine;
-    Program prog(&engine);
+    std::unique_ptr<Program> prog = engine.create_program();
     TokenProgram *tp;
 
-    prog.colors = true;
+    prog->colors = true;
 
     int filearg = 1;
     for (int i = 1; i < argc; i++) {
@@ -236,22 +236,22 @@ int main(int argc, char **argv)
 
     if ( argc >= 2 && filearg < argc )
     {
-	if ( !(tp=prog.tokenize(argv[filearg])) )
+	if ( !(tp=prog->tokenize(argv[filearg])) )
 	    return 0;
-	if ( !prog.parse(tp) )
+	if ( !prog->parse(tp) )
 	    return 0;
-	if ( !prog.compile() )
+	if ( !prog->compile() )
 	    return 0;
 
 	// set script argc/argv after tokenize/parse/compile (tokenizer_init resets members)
-	prog.script_argc = argc - filearg;
-	prog.script_argv = argv + filearg;
-	g_active_program = &prog;
+	prog->script_argc = argc - filearg;
+	prog->script_argv = argv + filearg;
+	g_active_program = prog.get();
 
 	struct timeval before, after;
 
 	gettimeofday(&before, NULL);
-	prog.execute();
+	prog->execute();
 	gettimeofday(&after, NULL);
 
 	DBG(std::cout << "Elapsed time: " << time_diff(before, after) << std::endl);

@@ -330,19 +330,19 @@ TEST_SUITE("Program isolation") {
 	engine.registration_policy.enable_core_functions = false;
 	engine.namespace_registry.add_namespace("host", register_test_host_namespace);
 
-	Program restricted_prog(&engine);
-	TokenProgram *restricted_tp = restricted_prog.tokenize(restricted_path.c_str());
+	std::unique_ptr<Program> restricted_prog = engine.create_program();
+	TokenProgram *restricted_tp = restricted_prog->tokenize(restricted_path.c_str());
 	CHECK(restricted_tp != nullptr);
 	REQUIRE(restricted_tp != nullptr);
-	CHECK_FALSE(restricted_prog.parse(restricted_tp));
+	CHECK_FALSE(restricted_prog->parse(restricted_tp));
 
 	engine.registration_policy.enable_core_functions = true;
-	Program host_prog(&engine);
-	TokenProgram *host_tp = host_prog.tokenize(host_path.c_str());
+	std::unique_ptr<Program> host_prog = engine.create_program();
+	TokenProgram *host_tp = host_prog->tokenize(host_path.c_str());
 	CHECK(host_tp != nullptr);
 	REQUIRE(host_tp != nullptr);
-	CHECK(host_prog.parse(host_tp));
-	CHECK(host_prog.compile());
+	CHECK(host_prog->parse(host_tp));
+	CHECK(host_prog->compile());
 
 	unlink(restricted_path.c_str());
 	unlink(host_path.c_str());

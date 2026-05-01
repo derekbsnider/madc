@@ -6,6 +6,8 @@
 //////////////////////////////////////////////////////////////////////////
 #define __MADC_H 1
 
+#include <memory>
+
 class Method;
 class Program;
 class MadcEngine;
@@ -963,6 +965,7 @@ public:
     MadcEngine();
     void populate_default_registries();
     void configure_program(Program &pgm) const;
+    std::unique_ptr<Program> create_program() const;
 };
 
 #define ANSI_RED "\e[1;31m"

@@ -1262,6 +1262,13 @@ void MadcEngine::configure_program(Program &pgm) const
     pgm.namespace_registry = namespace_registry;
 }
 
+std::unique_ptr<Program> MadcEngine::create_program() const
+{
+    std::unique_ptr<Program> pgm(new Program());
+    configure_program(*pgm);
+    return pgm;
+}
+
 void Program::BuiltinRegistry::add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
 {
     core_functions.push_back({id, params, extfunc, is_method});
