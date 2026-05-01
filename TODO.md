@@ -75,6 +75,12 @@
 
 - **Multi-return in brace-less if** — `if (x) return a, b;` doesn't parse. Use braces.
 
+- **Retire `get_argv()` built-in** — predates raw-pointer subscripting on
+  `char **`. `argv[i]` now works directly (Phase E raw-pointer subscript)
+  and is the documented form. Registration is kept for backward
+  compatibility with older scripts; remove once no in-tree code or
+  external scripts depend on it.
+
 - **`(type, type)` multi-return declaration syntax** — Explicit return type signatures.
 
 ## Known Runtime Bugs (surfaced but pre-existing)
