@@ -1416,6 +1416,62 @@ void MadcEngine::bind_error_stream(std::ostream &os)
     std::cerr.rdbuf(os.rdbuf());
 }
 
+void MadcEngine::bind_input_string(const std::string &text)
+{
+    owned_input_buffer.reset(new std::istringstream(text));
+    bind_input_stream(*owned_input_buffer);
+}
+
+void MadcEngine::capture_output_to_buffer()
+{
+    owned_output_buffer.reset(new std::ostringstream());
+    bind_output_stream(*owned_output_buffer);
+}
+
+void MadcEngine::capture_error_to_buffer()
+{
+    owned_error_buffer.reset(new std::ostringstream());
+    bind_error_stream(*owned_error_buffer);
+}
+
+bool MadcEngine::has_output_buffer() const
+{
+    return owned_output_buffer.get() != NULL;
+}
+
+bool MadcEngine::has_error_buffer() const
+{
+    return owned_error_buffer.get() != NULL;
+}
+
+std::string MadcEngine::output_buffer_str() const
+{
+    return owned_output_buffer ? owned_output_buffer->str() : "";
+}
+
+std::string MadcEngine::error_buffer_str() const
+{
+    return owned_error_buffer ? owned_error_buffer->str() : "";
+}
+
+void MadcEngine::clear_output_buffer()
+{
+    if ( owned_output_buffer )
+    {
+	owned_output_buffer->str("");
+	owned_output_buffer->clear();
+    }
+}
+
+void MadcEngine::clear_error_buffer()
+{
+    if ( owned_error_buffer )
+    {
+	owned_error_buffer->str("");
+	owned_error_buffer->clear();
+    }
+}
+
 void MadcEngine::reset_standard_streams()
 {
     input_stream = &std::cin;
@@ -1427,6 +1483,9 @@ void MadcEngine::reset_standard_streams()
 	std::cout.rdbuf(default_output_buf);
     if ( default_error_buf )
 	std::cerr.rdbuf(default_error_buf);
+    owned_input_buffer.reset();
+    owned_output_buffer.reset();
+    owned_error_buffer.reset();
 }
 
 void MadcEngine::populate_default_registries()

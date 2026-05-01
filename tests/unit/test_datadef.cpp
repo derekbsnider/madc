@@ -529,4 +529,38 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
 	unlink(path.c_str());
     }
+
+    TEST_CASE("MadcEngine buffer helpers capture and clear output") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_buffer_capture",
+	    "int main() { puti(7); return 0; }\n");
+	REQUIRE(!path.empty());
+
+	MadcEngine engine;
+	engine.capture_output_to_buffer();
+	CHECK(engine.has_output_buffer());
+	std::unique_ptr<Program> prog = engine.create_program();
+	CHECK(prog->load_file(path.c_str()));
+	prog->execute();
+	CHECK(engine.output_buffer_str().find("7") != std::string::npos);
+	engine.clear_output_buffer();
+	CHECK(engine.output_buffer_str().empty());
+
+	engine.reset_standard_streams();
+	unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine buffer helpers capture error diagnostics") {
+	MadcEngine engine;
+	engine.capture_error_to_buffer();
+	CHECK(engine.has_error_buffer());
+	std::unique_ptr<Program> prog = engine.create_program();
+
+	CHECK_FALSE(prog->load_file("/tmp/madc_missing_file_should_not_exist_424242.mad"));
+	CHECK(engine.error_buffer_str().find("Failed to open file") != std::string::npos);
+	engine.clear_error_buffer();
+	CHECK(engine.error_buffer_str().empty());
+
+	engine.reset_standard_streams();
+    }
 }

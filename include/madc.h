@@ -1025,6 +1025,9 @@ public:
     std::streambuf *default_input_buf;
     std::streambuf *default_output_buf;
     std::streambuf *default_error_buf;
+    std::unique_ptr<std::istringstream> owned_input_buffer;
+    std::unique_ptr<std::ostringstream> owned_output_buffer;
+    std::unique_ptr<std::ostringstream> owned_error_buffer;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
     Program::NamespaceRegistry namespace_registry;
@@ -1036,6 +1039,15 @@ public:
     void bind_input_stream(std::istream &is);
     void bind_output_stream(std::ostream &os);
     void bind_error_stream(std::ostream &os);
+    void bind_input_string(const std::string &text);
+    void capture_output_to_buffer();
+    void capture_error_to_buffer();
+    bool has_output_buffer() const;
+    bool has_error_buffer() const;
+    std::string output_buffer_str() const;
+    std::string error_buffer_str() const;
+    void clear_output_buffer();
+    void clear_error_buffer();
     void reset_standard_streams();
     void populate_default_registries();
     void configure_program(Program &pgm) const;
