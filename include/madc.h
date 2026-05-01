@@ -526,6 +526,26 @@ public:
 class Program
 {
 protected:
+    struct FunctionRegistrationSpec
+    {
+	std::string id;
+	datatype_vec_t params;
+	fVOIDFUNC extfunc;
+	bool is_method;
+    };
+
+    struct BuiltinRegistry
+    {
+	bool defaults_loaded = false;
+	std::vector<FunctionRegistrationSpec> core_functions;
+	std::vector<FunctionRegistrationSpec> process_functions;
+	std::vector<FunctionRegistrationSpec> dlfcn_functions;
+
+	void add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+	void add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+	void add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+    };
+
     struct RegistrationPolicy
     {
 	bool enable_core_functions = true;
@@ -560,6 +580,7 @@ protected:
     asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
     RegistrationPolicy registration_policy;
+    BuiltinRegistry builtin_registry;
     keyword_map_t  keyword_map;		// reserved keywords
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
@@ -659,6 +680,8 @@ public:
     void add_string_methods();
     void add_sstream_methods();
     void add_fstream_methods();
+    void populate_builtin_registry();
+    void register_function_specs(const std::vector<FunctionRegistrationSpec> &specs);
     void add_core_functions();
     void add_process_functions();
     void add_dlfcn_functions();

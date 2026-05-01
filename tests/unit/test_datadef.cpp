@@ -262,4 +262,26 @@ TEST_SUITE("Program isolation") {
 
 	unlink(path.c_str());
     }
+
+    TEST_CASE("Program builtin registry can be extended before parse") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_host_builtin",
+	    "int main() { host_putchar(65); return 0; }\n");
+	REQUIRE(!path.empty());
+
+	Program prog;
+	prog.populate_builtin_registry();
+	prog.builtin_registry.add_core_function(
+	    "host_putchar",
+	    datatype_vec_t{DataType::dtINT, DataType::dtINT},
+	    (fVOIDFUNC)putchar);
+
+	TokenProgram *tp = prog.tokenize(path.c_str());
+	CHECK(tp != nullptr);
+	REQUIRE(tp != nullptr);
+	CHECK(prog.parse(tp));
+	CHECK(prog.compile());
+
+	unlink(path.c_str());
+    }
 }
