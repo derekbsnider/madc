@@ -543,6 +543,7 @@ public:
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
     std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
+    std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
     // function-like macro definitions: #define NAME(params) body
     struct MacroDef {
@@ -560,6 +561,7 @@ public:
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
     std::queue<TokenBase *> ast;	// Abstract Syntax Tree
     std::deque<TokenBase *> tokens;	// parsed token queue
+    std::deque<TokenBase *> injected_tokens; // synthetic lexer output for lowered directives
     // User-defined function AST nodes, in source order. Parallel to the
     // ast queue. Populated by parseFunction / parseLambda; consumed by
     // Program::compile in a pre-pass to create funcnodes (labels) before
@@ -643,6 +645,11 @@ public:
     void add_python_namespace();
     void add_ruby_namespace();
     void add_js_namespace();
+    void add_rust_namespace();
+    bool is_known_namespace(const std::string &name) const;
+    void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
+    Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
+    Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
     std::string current_source_directory();
     bool include_already_seen(const std::string &path);
     std::string resolve_include_path(const std::string &incfile, bool is_system);

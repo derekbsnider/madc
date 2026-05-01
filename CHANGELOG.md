@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **Added a new `rust::` namespace.** v1 is intentionally small-surface
+  and runtime-native: string helpers (`contains`, `starts_with`,
+  `ends_with`, `trim*`, `replace`, `repeat`, `len`, `is_empty`) plus
+  array helpers (`split`, `split_whitespace`, `join`, `first`, `last`,
+  `get`, `push`, `pop`). This is Rust-flavored namespace sugar over
+  existing madc `string` / `array` semantics, not an ownership or
+  borrowing model. `tests/testrust.mad` covers the initial surface.
+
+- **Added `prefer ...;` and `#pragma prefer ...` for namespace
+  precedence.** Both forms now feed the same parser behavior and can
+  reorder unqualified identifier lookup between namespaced helpers and
+  normal C/madc lexical-global resolution. `c` is the fallback lane for
+  ordinary identifier lookup, so `prefer rust, c;` lets bare `len(...)`
+  resolve to `rust::len` before a same-named user function. Covered by
+  `tests/testprefer.mad`.
+
 - **Multi-return runtime path now executes correctly.** The original
   `testmultiret.mad` failure was split across both sides of the hidden
   `__retbuf` ABI: the callee wrote return slots through the stack-slot

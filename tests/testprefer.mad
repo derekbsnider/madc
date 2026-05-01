@@ -1,0 +1,25 @@
+#!/usr/bin/env madc
+#include <iostream>
+
+int64_t len(string s)
+{
+	return 99;
+}
+
+int main()
+{
+	string s = "hello";
+
+	cout << "default: " << len(s) << endl;
+
+	prefer rust, c;
+	cout << "prefer: " << len(s) << endl;
+
+	prefer c, rust;
+	cout << "reset: " << len(s) << endl;
+
+	#pragma prefer rust, c
+	cout << "pragma: " << len(s) << endl;
+
+	return 0;
+}

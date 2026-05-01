@@ -1,0 +1,51 @@
+#!/usr/bin/env madc
+#include <iostream>
+
+int main()
+{
+	string s = "  hello rust  ";
+	string out;
+	string sep = ",";
+	string needle = "rust";
+	string prefix = "hello";
+	string suffix = "rust";
+	string dash = "-";
+	string join_sep = "-";
+	string val;
+	array parts;
+
+	rust::trim(s);
+	cout << "trim: [" << s << "]" << endl;
+	cout << "contains: " << rust::contains(s, needle) << endl;
+	cout << "starts: " << rust::starts_with(s, prefix) << endl;
+	cout << "ends: " << rust::ends_with(s, suffix) << endl;
+	cout << "len: " << rust::len(s) << endl;
+	cout << "empty: " << rust::is_empty(s) << endl;
+
+	rust::replace(s, " ", dash);
+	cout << "replace: " << s << endl;
+	rust::repeat(dash, 5);
+	cout << "repeat: " << dash << endl;
+
+	string csv = "red,green,blue";
+	rust::split(parts, csv, sep);
+	rust::join(out, parts, join_sep);
+	cout << "join: " << out << endl;
+	rust::first(val, parts);
+	cout << "first: " << val << endl;
+	rust::last(val, parts);
+	cout << "last: " << val << endl;
+	rust::get(val, parts, 1);
+	cout << "get1: " << val << endl;
+
+	rust::push(parts, "gold");
+	rust::pop(val, parts);
+	cout << "pop: " << val << endl;
+
+	string words = "  alpha   beta\tgamma ";
+	rust::split_whitespace(parts, words);
+	rust::join(out, parts, sep);
+	cout << "words: " << out << endl;
+
+	return 0;
+}

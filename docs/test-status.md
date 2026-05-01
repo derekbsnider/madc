@@ -1,14 +1,14 @@
 # Test Status
 
-Test results as of April 30, 2026 (post-v0.13.0 — switch default-position fix, TokenAssign subscript-assign value/caller-dest, dropped MadSMAUG fgetc-loop workaround patch).
+Test results as of May 1, 2026 (post-v0.13.0 — rust:: namespace v1, prefer/#pragma prefer namespace precedence, switch default-position fix, TokenAssign subscript-assign value/caller-dest, dropped MadSMAUG fgetc-loop workaround patch).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 246 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 248 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result in this dirty tree:
 
-- Passing: 246 integration tests
+- Passing: 248 integration tests
 - Failing: none
 - Timed out: none
 - Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR
@@ -74,7 +74,7 @@ The latest IR-focused validation batch passes directly, including:
 - `testcharnoterm.mad`
 - `testgoto.mad`
 
-## Passing Tests — 183 integration (latest batch)
+## Passing Tests — 185 integration (latest batch)
 
 `scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
 hello world`) and `testargv.mad` with argv (`hello world`), asserting
@@ -196,6 +196,8 @@ instead of collapsing that case into a generic `FAIL`.
 | `testmap.mad` | `map<K,V>` typed STL container | Insert, find, erase, iterate |
 | `testmethod.mad` | Class methods with `this` pointer | Method call compiles and dispatches |
 | `testmultiret.mad` | Multiple return values (Go-style) | Function returns multiple values via `__retbuf`; runtime output asserted via `.expect` |
+| `testprefer.mad` | Namespace precedence directives | `prefer rust, c;` and `#pragma prefer rust, c` change bare identifier lookup order |
+| `testrust.mad` | rust:: namespace helpers | trim/contains/replace, split/join, first/last/get, push/pop |
 | `testrubycharsshadow.mad` | Namespace-call argument shadowing | `ruby::chars(chars, s)` resolves local arg, not namespace function |
 | `testperl.mad` | perl:: namespace functions | chop, chomp, split, join, grep, glob |
 | `testregex.mad` | Regex functions (match, search, replace) | Pattern matching and substitution |

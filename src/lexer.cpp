@@ -182,6 +182,7 @@ TokenEXTERN	tkEXTERN;
 TokenRESTRICT	tkRESTRICT;
 TokenUSING	tkUSING;
 TokenNAMESPACE	tkNAMESPACE;
+TokenPREFER	tkPREFER;
 TokenDEFER	tkDEFER;
 TokenVECTOR	tkVECTOR;
 TokenMAP	tkMAP;
@@ -318,6 +319,7 @@ void Program::add_keywords()
     keyword_map[tkRESTRICT.str] = &tkRESTRICT;
     keyword_map[tkUSING.str] = &tkUSING;
     keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
+    keyword_map[tkPREFER.str] = &tkPREFER;
     keyword_map[tkDEFER.str] = &tkDEFER;
     keyword_map[tkVECTOR.str] = &tkVECTOR;
     keyword_map[tkMAP.str] = &tkMAP;
@@ -366,6 +368,13 @@ TokenBase *Program::_getToken()
     datatype_map_iter bmi;
     string word;
     int ch, cnt, row, col;
+
+    if ( !injected_tokens.empty() )
+    {
+	TokenBase *tb = injected_tokens.front();
+	injected_tokens.pop_front();
+	return tb;
+    }
 
     if ( !source.good() || source.eof() ) { return NULL; }
 
@@ -757,6 +766,8 @@ TokenBase *Program::_getToken()
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
 		    std::string pragma;
+		    int pragma_line = source.line();
+		    int pragma_col = source.column();
 		    while ( source.good() && !source.eof() && isalpha(source.peek()) )
 			pragma += source.get();
 		    if ( pragma == "pack" )
@@ -792,13 +803,56 @@ TokenBase *Program::_getToken()
 				source.get();
 			}
 		    }
+		    else if ( pragma == "prefer" )
+		    {
+			std::vector<std::string> order;
+			while ( source.peek() == ' ' || source.peek() == '\t' )
+			    source.get();
+			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			{
+			    while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
+				source.get();
+			    if ( source.peek() == '\n' || source.peek() == '\r' || source.eof() )
+				break;
+			    std::string name;
+			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+				name += source.get();
+			    if ( !name.empty() )
+				order.push_back(name);
+			    while ( source.peek() == ' ' || source.peek() == '\t' )
+				source.get();
+			}
+
+			TokenBase *tb = new TokenPREFER();
+			tb->line = pragma_line;
+			tb->column = pragma_col;
+			injected_tokens.push_back(tb);
+			for ( size_t i = 0; i < order.size(); ++i )
+			{
+			    TokenIdent *ti = new TokenIdent(order[i]);
+			    ti->line = pragma_line;
+			    ti->column = pragma_col;
+			    injected_tokens.push_back(ti);
+			    if ( i + 1 < order.size() )
+			    {
+				tb = new TokenComma();
+				tb->line = pragma_line;
+				tb->column = pragma_col;
+				injected_tokens.push_back(tb);
+			    }
+			}
+			tb = new TokenSemi();
+			tb->line = pragma_line;
+			tb->column = pragma_col;
+			injected_tokens.push_back(tb);
+		    }
 		    else
 		    {
 			// consume rest of line for unknown pragmas
 			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 			    source.get();
 		    }
-		    return getToken();
+		    return _getToken();
 		}
 	    }
 	    return new TokenHash;
@@ -1581,10 +1635,12 @@ TokenBase *Program::getRealToken()
 {
     TokenBase *tb;
 
-    while ( (tb=getToken()) )
-    {
-	tb->line = source.line(); //_line;
-	tb->column = source.column(); //_column;
+	while ( (tb=getToken()) )
+	{
+	    if ( tb->line == 0 )
+		tb->line = source.line(); //_line;
+	    if ( tb->column == 0 )
+		tb->column = source.column(); //_column;
 
 	switch(tb->type())
 	{

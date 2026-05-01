@@ -32,6 +32,30 @@
 
 ### Language Completeness
 
+- **Internal namespace-helper dedupe (`ns_common`)** — `php::`,
+  `python::`, `ruby::`, and `rust::` now overlap enough that the next
+  cleanup pass should extract shared string/array helper logic into an
+  internal implementation layer. Keep the user-facing namespaces
+  distinct; dedupe trim/replace/repeat, contains/prefix/suffix checks,
+  split/join, and shared `MadValue`-to-string coercion underneath them.
+
+- **Rust-flavored syntax (`rust::match`, maybe `rust::if let`)** —
+  `rust::` namespace helpers and the new `prefer ...;` / `#pragma
+  prefer ...` precedence layer are in place. `rust::match` is the next
+  plausible step, but it should be introduced as namespaced syntax, not
+  faked as a normal callable. Start with statement-form over primitive
+  values and `_` default arms. `rust::if let` should wait until there is
+  a concrete tagged-union / `Option` / `Result` value model to
+  destructure.
+
+- **Rust-style "safe memory" types need a real ownership model** —
+  `Box` / `Rc` / `Arc` / `RefCell` / borrow-checked references are not
+  namespace helpers; they imply allocator policy, destructor rules,
+  aliasing rules, move semantics, and likely new type forms. Worth
+  exploring only after deciding whether madc wants lightweight runtime
+  reference-counted containers, affine move-only values, or something
+  simpler and host-oriented.
+
 - **String multi-return types** — Multi-return currently supports numeric (int64) slots only.
 
 - **Error diagnostics** — parser-side diagnostics already carry source context,

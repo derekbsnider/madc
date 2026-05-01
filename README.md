@@ -70,7 +70,8 @@ compile.
 - **`register` keyword:** explicitly register-only variables (never written to memory)
 - **User-defined structs:** `struct Point { int x; int y; };`
 - **Classes with methods:** `class Counter { int count; void inc() { count = count + 1; } };`
-- **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`
+- **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`, `rust::trim()`
+- **Dialect precedence:** `prefer rust, php, c;` or `#pragma prefer rust, php, c`
 - **Regex:** `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()`
 - **Input:** `cin >> name >> age;` reads from stdin
 - **`#include`:** `#include "file.mad"` for source inclusion
@@ -136,6 +137,7 @@ int main()
 | [`python::`](docs/language/ns-python.md) | 16 | Title case, alignment (center/ljust/rjust/zfill), format |
 | [`ruby::`](docs/language/ns-ruby.md) | 12 | squeeze, tr (transliterate), chars, rotate, compact |
 | [`js::`](docs/language/ns-js.md) | 6 | Base64 (btoa/atob), URL encoding, parseInt, JSON stringify |
+| [`rust::`](docs/language/ns-rust.md) | 18 | trim/contains/replace, split/join, first/last/get, push/pop |
 | `std::` | 5 | cin, cout, cerr, endl, for_each |
 | `madc::` | 4 | array, regex_match, regex_search, regex_replace |
 
@@ -167,7 +169,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 246 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
+**Current status: 248 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -184,6 +186,8 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/language/ns-python.md`](docs/language/ns-python.md) | python:: namespace reference |
 | [`docs/language/ns-ruby.md`](docs/language/ns-ruby.md) | ruby:: namespace reference |
 | [`docs/language/ns-js.md`](docs/language/ns-js.md) | js:: namespace reference |
+| [`docs/language/ns-rust.md`](docs/language/ns-rust.md) | rust:: namespace reference |
+| [`docs/language/prefer.md`](docs/language/prefer.md) | Namespace precedence directive |
 | [`docs/language/modern/`](docs/language/modern/) | Range-for, function pointers, lambdas, defer |
 | [`docs/language/switch.md`](docs/language/switch.md) | Switch/case/default statement |
 | [`docs/language/input-operator.md`](docs/language/input-operator.md) | cin >> input operator |

@@ -50,6 +50,35 @@ static bool is_post_pointer_qualifier_token(TokenBase *tb)
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
 
+static Variable *resolve_c_identifier(Program &pgm, TokenIdent *ident_tb, bool expression_head)
+{
+	Variable *var = NULL;
+
+	if ( expression_head && !pgm.current_namespace.empty() )
+	{
+	    namespace_map_t::iterator nsi = pgm.namespace_map.find(pgm.current_namespace);
+	    if ( nsi != pgm.namespace_map.end() )
+	    {
+		variable_map_iter vmi = nsi->second.find(ident_tb->str);
+		if ( vmi != nsi->second.end() )
+		    var = vmi->second;
+	    }
+	}
+	if ( !var )
+	    var = pgm.findVariable(ident_tb->str);
+	if ( !var && !expression_head && !pgm.current_namespace.empty() )
+	{
+	    namespace_map_t::iterator nsi = pgm.namespace_map.find(pgm.current_namespace);
+	    if ( nsi != pgm.namespace_map.end() )
+	    {
+		variable_map_iter vmi = nsi->second.find(ident_tb->str);
+		if ( vmi != nsi->second.end() )
+		    var = vmi->second;
+	    }
+	}
+	return var;
+}
+
 static bool read_constant_integer(Variable *var, int64_t &out)
 {
     if ( !var || !var->is_constant() || !var->data || !var->type || !var->type->is_integer() )
@@ -996,6 +1025,7 @@ void Program::_parser_init()
     add_python_namespace();
     add_ruby_namespace();
     add_js_namespace();
+    add_rust_namespace();
     _braces = 0;
 }
 
@@ -1041,6 +1071,61 @@ Variable *Program::findVariable(std::string &s)
     DBG(std::cout << "Program::findVariable(" << s << ") found ptr: " << var << std::endl);
 
     return var;
+}
+
+bool Program::is_known_namespace(const std::string &name) const
+{
+    return name == "c" || namespace_map.find(name) != namespace_map.end();
+}
+
+void Program::set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb)
+{
+    if ( order.empty() )
+	Throw(tb) << "Expecting at least one namespace name in prefer directive" << flush;
+    for ( size_t i = 0; i < order.size(); ++i )
+    {
+	if ( !is_known_namespace(order[i]) )
+	    Throw(tb) << "Unknown namespace '" << order[i] << "' in prefer directive" << flush;
+    }
+    namespace_preference = order;
+}
+
+Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
+{
+    namespace_map_t::const_iterator nsi = namespace_map.find(ns_name);
+    if ( nsi == namespace_map.end() )
+	return NULL;
+    variable_map_t::const_iterator vmi = nsi->second.find(member_name);
+    return vmi == nsi->second.end() ? NULL : vmi->second;
+}
+
+Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expression_head)
+{
+    if ( !ident_tb ) return NULL;
+
+    if ( expression_head && !current_namespace.empty() )
+    {
+	Variable *var = find_namespace_member(current_namespace, ident_tb->str);
+	if ( var ) return var;
+    }
+
+    if ( namespace_preference.empty() )
+	return resolve_c_identifier(*this, ident_tb, expression_head);
+
+    for ( size_t i = 0; i < namespace_preference.size(); ++i )
+    {
+	const std::string &pref = namespace_preference[i];
+	if ( pref == "c" )
+	{
+	    Variable *var = resolve_c_identifier(*this, ident_tb, expression_head);
+	    if ( var ) return var;
+	    continue;
+	}
+	Variable *var = find_namespace_member(pref, ident_tb->str);
+	if ( var ) return var;
+    }
+
+    return resolve_c_identifier(*this, ident_tb, expression_head);
 }
 
 // creates global variable named after string,
@@ -3213,29 +3298,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// the active namespace first, but once we're inside that call's
 		// arguments / subexpressions, lexical scope should win so locals
 		// can shadow same-named namespace members (`ruby::chars(chars, s)`).
-		var = NULL;
-		if ( expression_head && !current_namespace.empty() )
-		{
-		    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
-		    if ( nsi != namespace_map.end() )
-		    {
-			variable_map_iter vmi = nsi->second.find(ident_tb->str);
-			if ( vmi != nsi->second.end() )
-			    var = vmi->second;
-		    }
-		}
-		if ( !var )
-		    var = findVariable(ident_tb->str);
-		if ( !var && !expression_head && !current_namespace.empty() )
-		{
-		    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
-		    if ( nsi != namespace_map.end() )
-		    {
-			variable_map_iter vmi = nsi->second.find(ident_tb->str);
-			if ( vmi != nsi->second.end() )
-			    var = vmi->second;
-		    }
-		}
+		var = resolve_preferred_identifier(ident_tb, expression_head);
 		// class method: resolve unqualified member name through __this
 		if ( !var && code && code->method && code->method->owner_class )
 		{
@@ -3559,6 +3622,31 @@ TokenBase *TokenUSING::parse(Program &pgm)
     }
 
     pgm.Throw(tn) << "Unexpected token in using declaration" << flush;
+    return NULL;
+}
+
+TokenBase *TokenPREFER::parse(Program &pgm)
+{
+    TokenBase *tn;
+    std::vector<std::string> order;
+
+    for (;;)
+    {
+	tn = pgm.nextToken();
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting namespace name in prefer directive" << flush;
+	order.push_back(((TokenIdent *)tn)->str);
+
+	tn = pgm.nextToken();
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input in prefer directive" << flush;
+	if ( tn->id() == TokenID::tkSemi )
+	    break;
+	if ( tn->id() != TokenID::tkComma )
+	    pgm.Throw(tn) << "Expecting ',' or ';' after namespace name in prefer directive" << flush;
+    }
+
+    pgm.set_namespace_preference(order, this);
     return NULL;
 }
 
