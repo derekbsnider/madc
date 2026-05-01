@@ -441,12 +441,13 @@ TEST_SUITE("Program isolation") {
     TEST_CASE("Program diagnostics honor engine error stream") {
 	std::ostringstream errbuf;
 	MadcEngine engine;
-	engine.error_stream = &errbuf;
+	engine.bind_error_stream(errbuf);
 	std::unique_ptr<Program> prog = engine.create_program();
 
 	CHECK_FALSE(prog->load_file("/tmp/madc_missing_file_should_not_exist_424242.mad"));
 	CHECK(errbuf.str().find("Failed to open file") != std::string::npos);
 	CHECK(errbuf.str().find("/tmp/madc_missing_file_should_not_exist_424242.mad") != std::string::npos);
+	engine.reset_standard_streams();
     }
 
     TEST_CASE("Program lazy iostream globals honor engine streams") {
@@ -459,9 +460,9 @@ TEST_SUITE("Program isolation") {
 	std::ostringstream outbuf;
 	std::ostringstream errbuf;
 	MadcEngine engine;
-	engine.input_stream = &inbuf;
-	engine.output_stream = &outbuf;
-	engine.error_stream = &errbuf;
+	engine.bind_input_stream(inbuf);
+	engine.bind_output_stream(outbuf);
+	engine.bind_error_stream(errbuf);
 	std::unique_ptr<Program> prog = engine.create_program();
 
 	TokenProgram *tp = prog->tokenize(path.c_str());
@@ -480,6 +481,7 @@ TEST_SUITE("Program isolation") {
 	CHECK(((std::istream *)cin_var->data)->rdbuf() == inbuf.rdbuf());
 	CHECK(((std::ostream *)cerr_var->data)->rdbuf() == errbuf.rdbuf());
 
+	engine.reset_standard_streams();
 	unlink(path.c_str());
     }
 
@@ -491,7 +493,7 @@ TEST_SUITE("Program isolation") {
 
 	std::ostringstream errbuf;
 	MadcEngine engine;
-	engine.error_stream = &errbuf;
+	engine.bind_error_stream(errbuf);
 	std::unique_ptr<Program> prog = engine.create_program();
 	CHECK(prog->load_file(path.c_str()));
 	CHECK_FALSE(prog->last_error.has_error);
@@ -505,6 +507,26 @@ TEST_SUITE("Program isolation") {
 	CHECK(prog->diagnostics[0].message == "Program::execute() cannot find main");
 	CHECK(errbuf.str().find("cannot find main") != std::string::npos);
 
+	engine.reset_standard_streams();
+	unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine stream helpers capture script output") {
+	std::string path = write_temp_mad_source(
+	    "madc_prog_capture_output",
+	    "int main() { string s = \"ok\"; puti(42); printstr(s); return 0; }\n");
+	REQUIRE(!path.empty());
+
+	std::ostringstream outbuf;
+	MadcEngine engine;
+	engine.bind_output_stream(outbuf);
+	std::unique_ptr<Program> prog = engine.create_program();
+	CHECK(prog->load_file(path.c_str()));
+	prog->execute();
+	CHECK(outbuf.str().find("42") != std::string::npos);
+	CHECK(outbuf.str().find("ok") != std::string::npos);
+
+	engine.reset_standard_streams();
 	unlink(path.c_str());
     }
 }

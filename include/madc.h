@@ -1022,11 +1022,21 @@ public:
     std::istream *input_stream;
     std::ostream *output_stream;
     std::ostream *error_stream;
+    std::streambuf *default_input_buf;
+    std::streambuf *default_output_buf;
+    std::streambuf *default_error_buf;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
     Program::NamespaceRegistry namespace_registry;
 
     MadcEngine();
+    std::istream &input();
+    std::ostream &output();
+    std::ostream &error();
+    void bind_input_stream(std::istream &is);
+    void bind_output_stream(std::ostream &os);
+    void bind_error_stream(std::ostream &os);
+    void reset_standard_streams();
     void populate_default_registries();
     void configure_program(Program &pgm) const;
     std::unique_ptr<Program> create_program();

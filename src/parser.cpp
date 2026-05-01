@@ -1251,16 +1251,22 @@ void Program::clear_error()
 
 std::istream &Program::input()
 {
+    if ( engine )
+	return engine->input();
     return input_stream ? *input_stream : std::cin;
 }
 
 std::ostream &Program::output()
 {
+    if ( engine )
+	return engine->output();
     return output_stream ? *output_stream : std::cout;
 }
 
 std::ostream &Program::error()
 {
+    if ( engine )
+	return engine->error();
     return error_stream ? *error_stream : std::cerr;
 }
 
@@ -1370,8 +1376,57 @@ void Program::print_last_diagnostic(std::ostream &os, const char *suffix)
 MadcEngine::MadcEngine()
     : input_stream(&std::cin),
       output_stream(&std::cout),
-      error_stream(&std::cerr)
+      error_stream(&std::cerr),
+      default_input_buf(std::cin.rdbuf()),
+      default_output_buf(std::cout.rdbuf()),
+      default_error_buf(std::cerr.rdbuf())
 {
+}
+
+std::istream &MadcEngine::input()
+{
+    return input_stream ? *input_stream : std::cin;
+}
+
+std::ostream &MadcEngine::output()
+{
+    return output_stream ? *output_stream : std::cout;
+}
+
+std::ostream &MadcEngine::error()
+{
+    return error_stream ? *error_stream : std::cerr;
+}
+
+void MadcEngine::bind_input_stream(std::istream &is)
+{
+    input_stream = &is;
+    std::cin.rdbuf(is.rdbuf());
+}
+
+void MadcEngine::bind_output_stream(std::ostream &os)
+{
+    output_stream = &os;
+    std::cout.rdbuf(os.rdbuf());
+}
+
+void MadcEngine::bind_error_stream(std::ostream &os)
+{
+    error_stream = &os;
+    std::cerr.rdbuf(os.rdbuf());
+}
+
+void MadcEngine::reset_standard_streams()
+{
+    input_stream = &std::cin;
+    output_stream = &std::cout;
+    error_stream = &std::cerr;
+    if ( default_input_buf )
+	std::cin.rdbuf(default_input_buf);
+    if ( default_output_buf )
+	std::cout.rdbuf(default_output_buf);
+    if ( default_error_buf )
+	std::cerr.rdbuf(default_error_buf);
 }
 
 void MadcEngine::populate_default_registries()
