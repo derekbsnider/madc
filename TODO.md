@@ -2,6 +2,27 @@
 
 ## High Priority
 
+- **Phase 4.2 / libmadc public C++ API — next pieces.** `madc::value`
+  shipped at `include/libmadc/value.h` (8 kinds, deep-copy / move /
+  equality / accessor throws). Next up, in dependency order:
+  `madc::error` (or split into `compile_error` / `runtime_error`
+  exception types) wrapping `Program::Diagnostic`; then
+  `madc::program` as a pimpl over the internal `Program` class with
+  `exec_file` / `exec_string` / `compile_file`; then
+  `program::register_function(name, callback, signature)` for
+  host→script callbacks and `program::call(fn, args)` for
+  script-from-C++ invocations; then `compile_options`,
+  `security_policy`, and `invoke_limits`. After that, §4.3 = the
+  `libmadc.so` Makefile target plus `include/madc_api.h` C shim.
+
+- **Phase 4.1 cleanup — kill residual process globals.** State split
+  is largely landed. Remaining process-global mutable state per the
+  `docs/plans/libmadc-phase4.md` §B inventory: `madc_verbose`
+  (`src/madc.cpp:31`), `throwit` (`src/madc.cpp:33`),
+  `g_madc_asmjit_err` (compiler.cpp), `g_madc_jit_map*` JIT crash
+  source-map globals (compiler.cpp). Each becomes either an
+  engine/program field or a CLI-only concern.
+
 - **Exercise SMAUG combat / spells / mobprogs** — Character creation
   through in-room movement is verified. Combat (`kill <mob>`, weapon
   damage), spells (`cast <name> <target>`, mana costs), and mobprogs
@@ -252,6 +273,59 @@
   C-compatible subset.
 
 ## Completed
+
+### Session 2026-05-01 → 2026-05-02 (codex Phase 4 stretch on feature/c23-first-picks-codex)
+
+- ~~**Phase 4.1 state split**~~ — `MadcEngine` class with
+  `RegistrationPolicy`, `BuiltinRegistry`, `NamespaceRegistry`;
+  engine-owned `namespace_preference`; `configure_program` /
+  `create_program` / `attach_engine`; CLI routes through engine. Two
+  coexistent `Program` instances exercised by unit tests. Eight
+  commits `527706a..a4d4d39`.
+
+- ~~**Phase 4.x structured diagnostics**~~ — Engine-owned
+  `Diagnostic` / `DiagnosticSeverity` (warning|error) /
+  `DiagnosticPhase` (lexer|parser|compiler|runtime), `last_diagnostic`,
+  `set_error` / `report_warning`, `format_diagnostic`,
+  `print_diagnostic`, `can_show_diagnostic_source`, `ErrorInfo`. Four
+  commits `fef63bb..5421ce4`.
+
+- ~~**Phase 4.x engine-owned IO streams**~~ — `bind_input_stream` /
+  `output` / `error`, `bind_input_string`, `capture_*_to_buffer`,
+  `tee_*_stream` + `tee_*_to_buffer` (via `MadcTeeBuf`),
+  `reset_standard_streams`, owned in/out/err `ostringstream` buffers.
+  Four commits `cee1ff3, 8f47c80, d8504ed, 7c2f06b`.
+
+- ~~**Phase 4.x madc::level facade + log_threshold**~~ — `LogLevel`
+  enum (emerg|alert|crit|err|warn|notice|info|debug),
+  `format_log_message` (timestamps + level prefix), `write_log` to
+  error stream. `madc::emerg/alert/crit/err/warn/notice/info/debug`
+  ostream-style globals via `MadcLogStreambuf` line-buffer. Runtime
+  `log_threshold` filter short-circuits both `write_log` and the
+  streambuf so filtered levels skip per-character work. Three commits
+  `a640c10, ebd81b4, 9ce5902`.
+
+- ~~**Phase 4.x log sink registry + sinks**~~ — `add_log_sink` /
+  `clear_log_sinks` / `log_to_error_stream` toggle. Built-in sinks:
+  syslog (`enable_syslog_sink` + public static
+  `syslog_priority_for(LogLevel)` mapping all 8 levels to LOG_*),
+  file (`enable_file_sink` with optional `max_bytes` / `max_files`
+  size rotation + `reopen_log_file()` for logrotate integration),
+  JSON (`enable_json_sink` + `json_escape` + `format_json_log_line`).
+  Declarative `MadcEngine::Config` + `apply_log_config` covers
+  threshold, flags, all sinks. Six commits
+  `36af7a4, 6e1e76d, 9b0a494, 94d566a, 308d3e7, 615eff8`.
+
+- ~~**Phase 4.2 madc::value (first public type)**~~ — Public
+  embedding-API tagged container at `include/libmadc/value.h` /
+  `src/madc_value.cpp`. Eight kinds (null, boolean, integer, real,
+  string, bytes, array, object); deep-copy semantics, move leaves
+  source null, structural equality, accessor mismatch throws
+  `std::runtime_error`. Distinct from internal `MadValue`. Public
+  API headers go under `include/libmadc/` (mirrors `libmadc.so`)
+  so `include/madc/` keeps its embedded-scripting role. New unit
+  binary `tests/unit/test_libmadc_value.cpp` (19 cases, 67
+  assertions). Commit `bcceaf1`.
 
 ### Session 2026-04-26 (post-v0.12.0, session 9 — codegen cleanup)
 
