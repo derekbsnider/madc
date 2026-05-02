@@ -1,0 +1,21 @@
+#include <stdio.h>
+
+struct mixed {
+    int32_t a;
+    int64_t b;
+};
+
+int main()
+{
+    char buf[16];
+    struct mixed m;
+    struct mixed *p = &m;
+
+    printf("int=%ld\n", alignof(int));
+    printf("ptr=%ld\n", alignof(int *));
+    printf("struct=%ld\n", alignof(struct mixed));
+    printf("buf=%ld\n", alignof(buf));
+    printf("member=%ld\n", alignof(p->b));
+
+    return 0;
+}

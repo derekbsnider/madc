@@ -1,17 +1,24 @@
-CXX=g++
-CXXFLAGS= -std=c++11 -Wall
+-include ../config.mk
+
+CXX ?= g++
+CXXFLAGS ?= -std=c++11 -Wall
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-OFILES	= lexer.o parser.o typesafe.o compiler.o madc_ir.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
+OFILES	= lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o madc_error.o madc_storage.o $(MADC_STORAGE_DB_OFILES) ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
 MADHDRS = $(wildcard ../include/madc/*)
+LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
 INCDIR	= ../include
 BINDIR	= ../bin
 LIBDIR	= ../lib
 OBJDIR	= ../obj
-DEFINES	= -I$(INCDIR)
+FEATURE_DEFINES ?=
+OPTIONAL_CPPFLAGS ?=
+OPTIONAL_LIBS ?=
+MADC_STORAGE_DB_OFILES ?=
+DEFINES	= -I$(INCDIR) $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
 #LIBS	= -lreadline -lasmjit
-LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl
-DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES))
+LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl $(OPTIONAL_LIBS)
+DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS)
 OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 
 TESTDIR  = ../tests/unit
@@ -21,9 +28,9 @@ TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(TESTSRCS))
 TESTOBJ  = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 
 all:
-	make ../bin/madc
+	$(MAKE) ../bin/madc
 debug:
-	make CXXFLAGS="-std=c++11 -Wall -g -O0" ../bin/madc
+	$(MAKE) CXXFLAGS="-std=c++11 -Wall -g -O0" ../bin/madc
 clean:
 	rm -f $(OBJECTS)
 	rm -f $(TESTBINS)

@@ -205,6 +205,14 @@ public:
     	}
 	return false;
     }
+    virtual size_t alignment() const
+    {
+	if ( basetype() == BaseType::btStruct )
+	    return size;
+	if ( size == 0 )
+	    return 1;
+	return size > 8 ? 8 : size;
+    }
     virtual DataType type() const { return (DataType)_type; }
     virtual BaseType basetype() const { return BaseType::btSimple; }
     static inline DataType rawtype(DataType dt)
@@ -476,6 +484,7 @@ public:
     {
     }
     virtual BaseType basetype() const { return BaseType::btStruct; }
+    virtual size_t alignment() const { return max_align ? max_align : 1; }
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
     void addMember(std::string n, DataDef &dd, size_t cnt)
     {

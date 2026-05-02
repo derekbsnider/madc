@@ -6,8 +6,42 @@
 //////////////////////////////////////////////////////////////////////////
 #define __MADC_H 1
 
-class Method;
+#include <fstream>
+#include <functional>
+#include <istream>
+#include <memory>
+#include <ostream>
+#include <sstream>
+#include <vector>
 
+class Method;
+class Program;
+class MadcEngine;
+
+class MadcTeeBuf : public std::streambuf
+{
+public:
+    std::streambuf *primary;
+    std::streambuf *secondary;
+
+    MadcTeeBuf(std::streambuf *p=NULL, std::streambuf *s=NULL)
+	: primary(p), secondary(s) {}
+
+protected:
+    virtual int overflow(int ch = EOF) override;
+    virtual std::streamsize xsputn(const char *s, std::streamsize n) override;
+    virtual int sync() override;
+};
+
+class MadcAsmjitErrHandler : public asmjit::ErrorHandler
+{
+public:
+    Program *pgm;
+    int hits;
+    MadcAsmjitErrHandler();
+    void handleError(asmjit::Error err, const char *message,
+		     asmjit::BaseEmitter *) override;
+};
 class FuncDef: public DataDef
 {
 public:
@@ -417,7 +451,7 @@ protected:
     std::string _fname;
 public:
     Source() { _lf = 0; _cr = 0; _column = 0; _pos = 0; }
-    const char *fname() { return _fname.c_str(); }
+    const char *fname() const { return _fname.c_str(); }
     const char *fname(const char *s)  { _fname = s; return _fname.c_str(); }
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { _ss << sb;  }
@@ -515,6 +549,92 @@ public:
 // program class, keep things somewhat contained
 class Program
 {
+public:
+    struct FunctionRegistrationSpec
+    {
+	std::string id;
+	datatype_vec_t params;
+	fVOIDFUNC extfunc;
+	bool is_method;
+    };
+
+    struct BuiltinRegistry
+    {
+	bool defaults_loaded = false;
+	std::vector<FunctionRegistrationSpec> core_functions;
+	std::vector<FunctionRegistrationSpec> process_functions;
+	std::vector<FunctionRegistrationSpec> dlfcn_functions;
+
+	void add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+	void add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+	void add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method=false);
+    };
+
+    typedef void (*namespace_init_fn_t)(Program &);
+
+    struct NamespaceRegistrationSpec
+    {
+	std::string name;
+	namespace_init_fn_t init;
+    };
+
+    struct NamespaceRegistry
+    {
+	bool defaults_loaded = false;
+	std::vector<NamespaceRegistrationSpec> specs;
+
+	void add_namespace(const std::string &name, namespace_init_fn_t init);
+    };
+
+    struct RegistrationPolicy
+    {
+	bool enable_core_functions = true;
+	bool enable_process_functions = true;
+	bool enable_dlfcn_functions = true;
+	bool enable_std_namespace = true;
+	bool enable_madc_namespace = true;
+	bool enable_php_namespace = true;
+	bool enable_perl_namespace = true;
+	bool enable_python_namespace = true;
+	bool enable_ruby_namespace = true;
+	bool enable_js_namespace = true;
+	bool enable_rust_namespace = true;
+    };
+
+    struct ErrorInfo
+    {
+	bool has_error = false;
+	std::string message;
+	std::string file;
+	int line = 0;
+	int column = 0;
+    };
+
+    enum class DiagnosticSeverity
+    {
+	warning,
+	error
+    };
+
+    enum class DiagnosticPhase
+    {
+	unknown,
+	lexer,
+	parser,
+	compiler,
+	runtime
+    };
+
+    struct Diagnostic
+    {
+	DiagnosticSeverity severity = DiagnosticSeverity::error;
+	DiagnosticPhase phase = DiagnosticPhase::unknown;
+	std::string message;
+	std::string file;
+	int line = 0;
+	int column = 0;
+    };
+
 protected:
     TokenBase *_getToken();
     TokenBase *skipConditionalBlock();
@@ -534,6 +654,15 @@ protected:
     Source source;
     asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
+    MadcEngine *engine;
+    std::istream *input_stream;
+    std::ostream *output_stream;
+    std::ostream *error_stream;
+    RegistrationPolicy registration_policy;
+    BuiltinRegistry builtin_registry;
+    NamespaceRegistry namespace_registry;
+    ErrorInfo last_error;
+    std::vector<Diagnostic> diagnostics;
     keyword_map_t  keyword_map;		// reserved keywords
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
@@ -609,6 +738,7 @@ public:
     bool jit_source_map_enabled = true;
     std::vector<std::pair<asmjit::Label, JitSourceEntry>> jit_anchor_labels;
     std::vector<JitSourceEntry> jit_source_map;
+    MadcAsmjitErrHandler asmjit_err_handler;
     void record_compile_anchor(class TokenBase *tb, const char *kind);
     std::stack<int> _pack_stack;	// #pragma pack(push, N) / pop stack
     int pack_stack_top() { return _pack_stack.empty() ? 0 : _pack_stack.top(); }
@@ -627,11 +757,43 @@ public:
     asmjit::x86::Compiler cc;
     fVOIDFUNC root_fn;
 
+    Program();
+    explicit Program(MadcEngine *eng);
+    void attach_engine(MadcEngine *eng);
+
     void add_keywords();
     void add_datatypes();
+    void ensure_registration_config();
+    void clear_diagnostics();
+    void clear_error();
+    std::istream &input();
+    std::ostream &output();
+    std::ostream &error();
+    void add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase,
+	const std::string &message, const char *file=NULL, int line=0, int column=0);
+    const Diagnostic *last_diagnostic() const;
+    void report_warning(DiagnosticPhase phase, const std::string &message,
+	const char *file=NULL, int line=0, int column=0);
+    void report_error(DiagnosticPhase phase, const std::string &message,
+	const char *file=NULL, int line=0, int column=0);
+    void set_error(DiagnosticPhase phase, const std::string &message,
+	const char *file=NULL, int line=0, int column=0);
+    void set_error(const std::string &message, const char *file=NULL, int line=0, int column=0);
+    const char *diagnostic_severity_name(DiagnosticSeverity severity) const;
+    const char *diagnostic_phase_name(DiagnosticPhase phase) const;
+    bool can_show_diagnostic_source(const Diagnostic &diag) const;
+    void print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix=NULL);
+    void print_last_diagnostic(std::ostream &os, const char *suffix=NULL);
     void add_string_methods();
     void add_sstream_methods();
     void add_fstream_methods();
+    void populate_builtin_registry();
+    void populate_namespace_registry();
+    void register_function_specs(const std::vector<FunctionRegistrationSpec> &specs);
+    void register_namespace_specs();
+    void add_core_functions();
+    void add_process_functions();
+    void add_dlfcn_functions();
     void add_functions();
     void add_globals();
     void add_iostream();	// populates lazy_map for cout, cin, cerr (via #include <iostream>)
@@ -646,6 +808,7 @@ public:
     void add_ruby_namespace();
     void add_js_namespace();
     void add_rust_namespace();
+    bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_known_namespace(const std::string &name) const;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
@@ -731,6 +894,7 @@ public:
 	return _cur_token;
     }
     // parse tokens into AST
+    bool load_file(const char *fname);
     bool parse(TokenProgram *);
     void parseIdentifier(TokenIdent *);
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
@@ -872,6 +1036,190 @@ public:
     Variable *addLiteral(std::string &);
 //  Method *findMethod(std::string &);
 };
+
+class MadcEngine
+{
+public:
+    enum class LogLevel
+    {
+	emerg,
+	alert,
+	crit,
+	err,
+	warn,
+	notice,
+	info,
+	debug
+    };
+
+    typedef std::function<void(LogLevel, const std::string &)> LogSink;
+
+    std::istream *input_stream;
+    std::ostream *output_stream;
+    std::ostream *error_stream;
+    std::streambuf *default_input_buf;
+    std::streambuf *default_output_buf;
+    std::streambuf *default_error_buf;
+    std::unique_ptr<std::istringstream> owned_input_buffer;
+    std::unique_ptr<std::ostringstream> owned_output_buffer;
+    std::unique_ptr<std::ostringstream> owned_error_buffer;
+    std::unique_ptr<MadcTeeBuf> output_tee_buf;
+    std::unique_ptr<MadcTeeBuf> error_tee_buf;
+    bool log_timestamps;
+    bool log_level_prefixes;
+    LogLevel log_threshold;
+    bool log_to_error_stream;
+    bool syslog_active;
+    std::string syslog_ident;
+    int syslog_option;
+    int syslog_facility;
+    bool file_sink_active;
+    std::unique_ptr<std::ofstream> log_file;
+    std::string log_file_path;
+    size_t log_file_max_bytes;
+    int log_file_max_files;
+    bool json_sink_active;
+    std::unique_ptr<std::ofstream> json_file;
+    std::string json_file_path;
+    std::vector<LogSink> log_sinks;
+    Program::RegistrationPolicy registration_policy;
+    Program::BuiltinRegistry builtin_registry;
+    Program::NamespaceRegistry namespace_registry;
+
+    MadcEngine();
+    std::istream &input();
+    std::ostream &output();
+    std::ostream &error();
+    void bind_input_stream(std::istream &is);
+    void bind_output_stream(std::ostream &os);
+    void bind_error_stream(std::ostream &os);
+    void bind_input_string(const std::string &text);
+    void capture_output_to_buffer();
+    void capture_error_to_buffer();
+    void tee_output_stream(std::ostream &os);
+    void tee_error_stream(std::ostream &os);
+    void tee_output_to_buffer();
+    void tee_error_to_buffer();
+    const char *log_level_name(LogLevel level) const;
+    std::string format_log_message(LogLevel level, const std::string &message) const;
+    bool should_log(LogLevel level) const;
+    void write_log(LogLevel level, const std::string &message);
+    void write_builtin_sinks(LogLevel level, const std::string &message);
+    void add_log_sink(LogSink sink);
+    void clear_log_sinks();
+    static int syslog_priority_for(LogLevel level);
+    void enable_syslog_sink(const char *ident = "madc", int option = -1, int facility = -1);
+    void disable_syslog_sink();
+    bool enable_file_sink(const std::string &path,
+			  size_t max_bytes = 0,
+			  int max_files = 5);
+    void disable_file_sink();
+    void rotate_log_file();
+    void reopen_log_file();
+    bool enable_json_sink(const std::string &path);
+    void disable_json_sink();
+    static std::string json_escape(const std::string &s);
+    std::string format_json_log_line(LogLevel level, const std::string &message) const;
+    void write_syslog_sink(LogLevel level, const std::string &message);
+    void write_file_sink(LogLevel level, const std::string &message);
+    void write_json_sink(LogLevel level, const std::string &message);
+
+    struct Config
+    {
+	LogLevel threshold;
+	bool timestamps;
+	bool level_prefixes;
+	bool error_stream;
+
+	bool file_sink;
+	std::string file_path;
+	size_t file_max_bytes;
+	int file_max_files;
+
+	bool syslog_sink;
+	std::string syslog_ident;
+	int syslog_option;
+	int syslog_facility;
+
+	bool json_sink;
+	std::string json_path;
+
+	Config()
+	    : threshold(LogLevel::debug),
+	      timestamps(false),
+	      level_prefixes(true),
+	      error_stream(true),
+	      file_sink(false),
+	      file_max_bytes(0),
+	      file_max_files(5),
+	      syslog_sink(false),
+	      syslog_ident("madc"),
+	      syslog_option(-1),
+	      syslog_facility(-1),
+	      json_sink(false)
+	{}
+    };
+
+    bool apply_log_config(const Config &cfg);
+    bool has_output_buffer() const;
+    bool has_error_buffer() const;
+    std::string output_buffer_str() const;
+    std::string error_buffer_str() const;
+    void clear_output_buffer();
+    void clear_error_buffer();
+    void reset_standard_streams();
+    void populate_default_registries();
+    void configure_program(Program &pgm) const;
+    std::unique_ptr<Program> create_program();
+    void bind_log_streams();
+    static void unbind_log_streams();
+};
+
+class MadcLogStreambuf : public std::streambuf
+{
+public:
+    explicit MadcLogStreambuf(MadcEngine::LogLevel lvl);
+
+    void set_engine(MadcEngine *eng) { _engine = eng; }
+    MadcEngine *engine() const { return _engine; }
+    MadcEngine::LogLevel level() const { return _level; }
+
+protected:
+    virtual int overflow(int ch = EOF) override;
+    virtual std::streamsize xsputn(const char *s, std::streamsize n) override;
+    virtual int sync() override;
+
+private:
+    MadcEngine::LogLevel _level;
+    MadcEngine *_engine;
+    std::string _line;
+    void flush_line();
+};
+
+class MadcLogStream : public std::ostream
+{
+public:
+    explicit MadcLogStream(MadcEngine::LogLevel lvl);
+
+    void set_engine(MadcEngine *eng) { _buf.set_engine(eng); }
+    MadcEngine *engine() const { return _buf.engine(); }
+    MadcEngine::LogLevel level() const { return _buf.level(); }
+
+private:
+    MadcLogStreambuf _buf;
+};
+
+namespace madc
+{
+    extern MadcLogStream emerg;
+    extern MadcLogStream alert;
+    extern MadcLogStream crit;
+    extern MadcLogStream err;
+    extern MadcLogStream warn;
+    extern MadcLogStream notice;
+    extern MadcLogStream info;
+    extern MadcLogStream debug;
+}
 
 #define ANSI_RED "\e[1;31m"
 #define ANSI_WHITE "\e[1;37m"

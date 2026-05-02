@@ -24,6 +24,7 @@ Apply these to every change — new code, refactors, test layout, build scripts,
 - Prefer filename / type / registry conventions over hard-coded lists.
 - A change in one component should not force edits to unrelated components.
 - If adding a new X requires editing N unrelated places, the design is wrong.
+- Follow the 3R credo: reuse existing machinery, reduce duplication, recycle one implementation across surfaces.
 
 ## Object-oriented principles
 

@@ -29,6 +29,18 @@ bin/madc -v tests/testint.mad
 scripts/build_then.sh bin/madc tests/testint.mad
 ```
 
+Optional storage backends are now being wired for configure-time
+feature detection. When Autotools is installed, the intended flow is:
+
+```bash
+autoreconf -fi
+./configure --with-bdb --with-gdbm --with-qdbm --with-sqlite3
+make
+```
+
+`--with-qdbm` is intended for the Villa API layer, and each backend is
+optional rather than required for a core `madc` build.
+
 ## Multi-file Projects
 
 Single-file programs are the default. For larger projects, the convention is
@@ -81,6 +93,7 @@ compile.
 - **File I/O:** `ifstream`/`ofstream` with `open`, `close`, `good`, `eof`, `getline`
 - **Subscript operator:** `a[0]`, `nums[i]`, `ages["key"]`
 - **Escape sequences:** `\n`, `\t`, `\r`, `\\`, `\"`, `\0`
+- **C23 coverage (early wave):** `_Bool`, `0b...`, `_Static_assert` / `static_assert`, `alignof` / `_Alignof`, `typeof` / `typeof_unqual`, `nullptr`, digit separators (`1'000'000`)
 
 ### Multi-Language Namespaces
 
@@ -169,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 249 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
+**Current status: 254 integration tests pass. 145 unit tests pass (80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 3 libmadc_flr + 1 libmadc_gdbm + 1 libmadc_qdbm + 5 libmadc_error + 19 libmadc_value + 1 libmadc_vlr + 10 libmadc_storage_contract). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -197,6 +210,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/language/multiple-returns.md`](docs/language/multiple-returns.md) | Go-style multiple return values |
 | [`docs/language/ternary-operator.md`](docs/language/ternary-operator.md) | Ternary operator |
 | [`docs/build.md`](docs/build.md) | Build requirements, asmjit setup |
+| [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory typed storage/federation design (`madc::DataSource`, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends) |
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
 | [`docs/test-status.md`](docs/test-status.md) | Per-test results |
@@ -234,7 +248,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **Phase 4** | `libmadc.so` embedding API | Planned |
+| **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---
 

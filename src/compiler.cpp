@@ -1007,44 +1007,30 @@ extern void  list_int_destruct(void *);
 extern void *list_str_construct(void *);
 extern void  list_str_destruct(void *);
 
+MadcAsmjitErrHandler::MadcAsmjitErrHandler() : pgm(nullptr), hits(0) {}
+
 // Diagnostic ErrorHandler for MADC_VALIDATE: prints the asmjit error
 // at the moment of emit (kValidateIntermediate active) so the offending
 // instruction is localized to the current source token.
-class MadcAsmjitErrHandler : public asmjit::ErrorHandler
+void MadcAsmjitErrHandler::handleError(asmjit::Error err, const char *message,
+				       asmjit::BaseEmitter *)
 {
-public:
-    Program *pgm;
-    int hits;
-    MadcAsmjitErrHandler() : pgm(nullptr), hits(0) {}
-    void handleError(asmjit::Error err, const char *message,
-		     asmjit::BaseEmitter *) override
+    if ( ++hits > 30 ) return; // cap noise on cascades
+    std::cerr << "[asmjit] err=" << err << " ("
+	      << asmjit::DebugUtils::errorAsString(err) << "): "
+	      << (message ? message : "")
+	      << std::endl;
+    if ( pgm )
     {
-	if ( ++hits > 30 ) return; // cap noise on cascades
-	std::cerr << "[asmjit] err=" << err << " ("
-		  << asmjit::DebugUtils::errorAsString(err) << "): "
-		  << (message ? message : "")
-		  << std::endl;
-	if ( pgm )
-	{
-	    if ( !pgm->cur_func_name.empty() )
-		std::cerr << "  in function: " << pgm->cur_func_name << std::endl;
-	    TokenBase *tb = pgm->curToken();
-	    if ( tb )
-		std::cerr << "  at curToken file="
-			  << (tb->file ? tb->file : "(null)")
-			  << " " << tb->line << ":" << tb->column << std::endl;
-	}
+	if ( !pgm->cur_func_name.empty() )
+	    std::cerr << "  in function: " << pgm->cur_func_name << std::endl;
+	TokenBase *tb = pgm->curToken();
+	if ( tb )
+	    std::cerr << "  at curToken file="
+		      << (tb->file ? tb->file : "(null)")
+		      << " " << tb->line << ":" << tb->column << std::endl;
     }
-};
-static MadcAsmjitErrHandler g_madc_asmjit_err;
-
-// Globals that crash_handler() reads to translate a faulting JIT'd
-// instruction back to a .mad source location. set_jit_source_map_globals()
-// is called from _compiler_finalize() once the source map is built.
-const Program::JitSourceEntry *g_madc_jit_map = nullptr;
-size_t g_madc_jit_map_size = 0;
-const void *g_madc_jit_code_base = nullptr;
-size_t g_madc_jit_code_size = 0;
+}
 
 void Program::record_compile_anchor(TokenBase *tb, const char *kind)
 {
@@ -1083,9 +1069,9 @@ void Program::_compiler_init()
 	if ( env[0] && env[0] != '0' )
 	{
 	    cc.addDiagnosticOptions(asmjit::DiagnosticOptions::kValidateIntermediate);
-	    g_madc_asmjit_err.pgm = this;
-	    g_madc_asmjit_err.hits = 0;
-	    code.setErrorHandler(&g_madc_asmjit_err);
+	    asmjit_err_handler.pgm = this;
+	    asmjit_err_handler.hits = 0;
+	    code.setErrorHandler(&asmjit_err_handler);
 	}
     }
     if ( const char *envlog = ::getenv("MADC_DUMP_ASM") )
@@ -1156,9 +1142,9 @@ bool Program::_compiler_finalize()
 
     // Build the JIT-PC → source-line map. Each anchor was a label
     // bound at a Token::compile() entry; resolve each to a byte offset
-    // in the code section, sort by offset, and expose the result via
-    // the g_madc_jit_map globals so the SIGSEGV handler can binary-
-    // search it.
+    // in the code section and sort by offset. CLI/worker layers can
+    // inspect Program::jit_source_map directly when they want to map
+    // a faulting RIP back to source.
     if ( jit_source_map_enabled && !jit_anchor_labels.empty() )
     {
 	jit_source_map.clear();
@@ -1174,10 +1160,6 @@ bool Program::_compiler_finalize()
 		  [](const JitSourceEntry &a, const JitSourceEntry &b) {
 		      return a.byte_offset < b.byte_offset;
 		  });
-	g_madc_jit_map = jit_source_map.data();
-	g_madc_jit_map_size = jit_source_map.size();
-	g_madc_jit_code_base = (const void *)root_fn;
-	g_madc_jit_code_size = code.codeSize();
 	// Optional dump for debugging the source map itself
 	if ( const char *envmap = ::getenv("MADC_DUMP_SOURCEMAP") )
 	{
@@ -1187,7 +1169,7 @@ bool Program::_compiler_finalize()
 		if ( fp )
 		{
 		    fprintf(fp, "# %zu anchors, code base=%p size=%zu\n",
-			    jit_source_map.size(), g_madc_jit_code_base, g_madc_jit_code_size);
+			    jit_source_map.size(), (const void *)root_fn, code.codeSize());
 		    for ( auto &e : jit_source_map )
 			fprintf(fp, "+0x%-8x %s:%u:%u (%s)\n",
 				e.byte_offset,
@@ -2437,6 +2419,8 @@ bool Program::compile()
     regdefp_t regdp = {NULL, NULL, NULL};
 
     DBG(cout << endl << endl << "Program::compile() start" << endl << endl);
+    clear_diagnostics();
+    clear_error();
     _compiler_init();
 
     // Dedupe pre-pass: when the same function is defined more than once
@@ -2477,17 +2461,11 @@ bool Program::compile()
     }
     catch(const char *err_msg)
     {
-	cerr << ANSI_WHITE;
-	if ( prepass_tb && prepass_tb->file )
-	    cerr << prepass_tb->file << ':' << prepass_tb->line << ':' << prepass_tb->column;
-	else
-	    cerr << ':';
-	cerr << ": \e[1;31merror:\e[1;37m "
-	     << (err_msg ? err_msg : "(null error message)")
-	     << " (during funcnode pre-pass)"
-	     << ANSI_RESET << endl;
-	if ( prepass_tb )
-	    source.showerror(prepass_tb->line, prepass_tb->column);
+	set_error(Program::DiagnosticPhase::compiler, err_msg ? err_msg : "(null error message)",
+	    prepass_tb && prepass_tb->file ? prepass_tb->file : NULL,
+	    prepass_tb ? prepass_tb->line : 0,
+	    prepass_tb ? prepass_tb->column : 0);
+	print_last_diagnostic(error(), "(during funcnode pre-pass)");
 	return false;
     }
 
@@ -2505,27 +2483,30 @@ bool Program::compile()
     }
     catch(const char *err_msg)
     {
-	cerr << ANSI_WHITE;
-	if ( tb && tb->file )
-	    cerr << tb->file << ':' << tb->line << ':' << tb->column;
-	else
-	    cerr << ':';
-	cerr << ": \e[1;31merror:\e[1;37m "
-	     << (err_msg ? err_msg : "(null error message)")
-	     << ANSI_RESET << endl;
-	if ( tb )
-	    source.showerror(tb->line, tb->column);
+	set_error(Program::DiagnosticPhase::compiler, err_msg ? err_msg : "(null error message)",
+	    tb && tb->file ? tb->file : NULL,
+	    tb ? tb->line : 0,
+	    tb ? tb->column : 0);
+	print_last_diagnostic(error());
 	return false;
     }
     catch(TokenBase *tb)
     {
-	cerr << ANSI_WHITE << (tb->file ? tb->file : "NULL") << ':' << tb->line << ':' << tb->column
-	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << " value " << (int)tb->get() << " char " << (char)tb->get() << ANSI_RESET << endl;
-	source.showerror(tb->line, tb->column);
+	set_error(Program::DiagnosticPhase::compiler, std::string("unexpected token type ") + std::to_string((int)tb->type()),
+	    tb && tb->file ? tb->file : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
+	print_last_diagnostic(error());
 	return false;
     }
     catch(std::exception &e)
     {
+	if ( !last_error.has_error )
+	{
+	    TokenBase *err_tb = Throw.token();
+	    set_error(Program::DiagnosticPhase::compiler, Throw.str().empty() ? e.what() : Throw.str(),
+		err_tb && err_tb->file ? err_tb->file : NULL,
+		err_tb ? err_tb->line : 0,
+		err_tb ? err_tb->column : 0);
+	}
 	return false;
     }
 
@@ -2542,27 +2523,35 @@ void Program::execute()
     Method *method;
     fVOIDFUNC main_fn;
 
+    clear_diagnostics();
+    clear_error();
+
     DBG(std::cout << "Program::execute() calling root_fn()" << std::endl);
     root_fn();
 
     if ( !var )
     {
-	DBG(std::cerr << "Program::execute() cannot find main" << std::endl);
+	set_error(Program::DiagnosticPhase::runtime, "Program::execute() cannot find main");
+	DBG(error() << "Program::execute() cannot find main" << std::endl);
+	print_last_diagnostic(error());
 	return;
     }
     if ( var->type->basetype() != BaseType::btFunct )
     {
-	std::cerr << "Program::execute() main is not a function" << std::endl;
+	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main is not a function");
+	print_last_diagnostic(error());
 	return;
     }
     if ( !(method=(Method *)var->data) )
     {
-	std::cerr << "Program::execute() main method is NULL" << std::endl;
+	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main method is NULL");
+	print_last_diagnostic(error());
 	return;
     }
     if ( !(main_fn=(fVOIDFUNC)method->x86code) )
     {
-	std::cerr << "Program::execute() main has no x86 code" << std::endl;
+	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main has no x86 code");
+	print_last_diagnostic(error());
 	return;
     }
     DBG(std::cout << std::endl << "Program::execute() starts" << std::endl);

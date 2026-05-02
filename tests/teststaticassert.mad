@@ -1,0 +1,11 @@
+#include <stdio.h>
+
+_Static_assert(sizeof(int) == 8, "madc int should stay 8 bytes");
+static_assert(alignof(double) == 8);
+static_assert((1 << 4) == 16);
+
+int main()
+{
+    printf("static-asserts-ok\n");
+    return 0;
+}

@@ -1,17 +1,17 @@
 # Test Status
 
-Test results as of May 1, 2026 (post-v0.13.0 — rust:: namespace v1, prefer/#pragma prefer namespace precedence, switch default-position fix, TokenAssign subscript-assign value/caller-dest, dropped MadSMAUG fgetc-loop workaround patch).
+Test results as of May 2, 2026 (post-v0.13.0 plus first-wave C23 compatibility and ongoing Phase 4.2 libmadc API work: `madc::value`, `madc::error`, logging lifecycle fixes, exploratory storage/federation API contracts, working `dsv://` + `flr://` + `vlr://` + `qdbm://` + `gdbm://` + `bdb://` backend slices, FLR tombstone sidecars with pre-reap restore, and registration-based `infer_mapper()` for host C++ storage types).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 249 passed, 0 failed, 0 timed out, 0 skipped
+## Current Batch Status — 254 passed, 0 failed, 0 timed out, 0 skipped
 
 Latest `scripts/run_tests.sh` result:
 
-- Passing: 249 integration tests
+- Passing: 254 integration tests
 - Failing: none
 - Timed out: none
-- Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR
+- Unit tests: all passing (doctest) — 80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 3 libmadc_flr + 1 libmadc_gdbm + 1 libmadc_qdbm + 5 libmadc_error + 19 libmadc_value + 1 libmadc_vlr + 10 libmadc_storage_contract
 
 The latest IR-focused validation batch passes directly, including:
 
@@ -99,6 +99,11 @@ instead of collapsing that case into a generic `FAIL`.
 | `testprintfdouble.mad` | `%f` / `%e` / `%g` formatting through direct `printf` and `...` wrappers, including mixed args and multiple doubles |
 | `testsmaug_requests.mad` | Upstream SMAUG `requests.c` compatibility test with a minimal `mud.h` shim and embedded POSIX/C headers |
 | `testc23_bool.mad` | C `_Bool` keyword aliasing to madc's bool type, including scalar and fixed-array initialization |
+| `teststaticassert.mad` | `_Static_assert` / `static_assert` with arithmetic, `sizeof`, and `alignof` constant expressions |
+| `testalignof.mad` | `alignof` / `_Alignof` on primitive, pointer, struct, array, and member expressions |
+| `testtypeof.mad` | `typeof(expr)` / `typeof(type)` driving global and local declarations |
+| `testnullptr.mad` | Typed `nullptr` literal in pointer declarations and boolean tests |
+| `testdigitsep.mad` | C23 digit separators in decimal, hex, binary, and floating literals |
 | `testbinlit.mad` | C23-style binary integer literals (`0b...` / `0B...`) in assignments, expressions, and conditions |
 | `testrestrict.mad` | `restrict` as a parsed no-op qualifier in pointer declarations and function parameters |
 | `testflock.mad` | Embedded `<sys/file.h>` and `flock()`/`LOCK_*` constants via dlsym fallback |
