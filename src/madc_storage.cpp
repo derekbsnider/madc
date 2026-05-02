@@ -29,6 +29,9 @@ void register_gdbm_storage_driver(DataDriverRegistry &registry);
 #ifdef HAVE_QDBM
 void register_qdbm_storage_driver(DataDriverRegistry &registry);
 #endif
+#ifdef HAVE_SQLITE3
+void register_sqlite_storage_driver(DataDriverRegistry &registry);
+#endif
 
 namespace {
 
@@ -2032,7 +2035,10 @@ void register_optional_storage_drivers(DataDriverRegistry &registry)
 #ifdef HAVE_QDBM
     register_qdbm_storage_driver(registry);
 #endif
-#if !defined(HAVE_BDB) && !defined(HAVE_GDBM) && !defined(HAVE_QDBM)
+#ifdef HAVE_SQLITE3
+    register_sqlite_storage_driver(registry);
+#endif
+#if !defined(HAVE_BDB) && !defined(HAVE_GDBM) && !defined(HAVE_QDBM) && !defined(HAVE_SQLITE3)
     (void)registry;
 #endif
 }

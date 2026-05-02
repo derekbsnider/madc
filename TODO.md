@@ -17,19 +17,21 @@
   backend family.** The first local backends now work from ordinary host
   C++: `DataSet<T>` + registration-based `infer_mapper()` +
   built-in `DataDriverRegistry` + `DsvDriver` + `FlrDriver` +
-  `VlrDriver` + `QdbmDriver` + `GdbmDriver` + `BdbDriver`, covered by
+  `VlrDriver` + `QdbmDriver` + `GdbmDriver` + `BdbDriver` +
+  `SqliteDriver`, covered by
   `tests/unit/test_libmadc_dsv.cpp`,
   `tests/unit/test_libmadc_flr.cpp`, and
   `tests/unit/test_libmadc_vlr.cpp`, plus ordered keyed coverage in
   `tests/unit/test_libmadc_qdbm.cpp` and
   `tests/unit/test_libmadc_bdb.cpp`, plus unordered hash-backed keyed
-  coverage in `tests/unit/test_libmadc_gdbm.cpp`. FLR now also has an
+  coverage in `tests/unit/test_libmadc_gdbm.cpp`, plus SQL-backed keyed
+  coverage in `tests/unit/test_libmadc_sqlite.cpp`. FLR now also has an
   optional packed-bit tombstone sidecar plus pre-reap `restore(key)`
   coverage. Next concrete steps:
   implement FLR reap/compaction into live + dead archive files and then
   model FLR index -> VLR payload offset bindings as a first real
   cross-dataset storage pattern; after that, branch into the next
-  backend tier (`sqlite://`, `leveldb://`, `rocksdb://`, or service
+  backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,
   broaden mapper inference beyond explicit field registration
   (ideally toward struct/class metadata reuse and lower-friction
@@ -43,7 +45,7 @@
   feed feature flags into `src/Makefile` without breaking `make -C src`.
   Next work here: generate and validate the Autotools outputs on a
   machine with `autoconf` / `automake` / `libtool` installed, then
-  replace the current backend stub translation units with real driver
+  replace any remaining backend stub translation units with real driver
   implementations.
 
 - **Phase 4.1 cleanup — kill residual process globals.** State split

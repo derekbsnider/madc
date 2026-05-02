@@ -737,6 +737,10 @@ Examples:
 - `sqlite://`
 - `mysql://`
 
+Current local slice:
+
+- `sqlite://` is implemented as the first SQL-backed keyed driver
+
 Preferred defaults:
 
 - map members to columns
@@ -886,7 +890,7 @@ Why here:
 
 Add:
 
-- `sqlite://`
+- `sqlite://` (first slice implemented)
 - initial `redis://` or document-style backend
 - structured query builder
 - capability advertisement and pushdown
@@ -946,18 +950,15 @@ The implementation should therefore be:
 
 ## Recommended Next Step
 
-Do not implement backends yet.
+The Phase 4-facing API sketch and first local backend family are now in
+place. The next concrete storage step is to use the FLR tombstone sidecar
+as the first real compaction workflow:
 
-The next concrete step should be a Phase 4-facing API sketch under
-`include/libmadc/` that settles:
+- reap tombstoned FLR rows into a live file plus dead-record archive
+- preserve restore-before-reap semantics
+- define restore-after-reap by logical key reinsertion
+- then model FLR index -> VLR payload offset bindings as the first
+  cross-dataset storage relation
 
-- `madc::DataSource`
-- `madc::SchemaInfo`
-- `madc::DataMapper<T>`
-- `madc::FormatAdapter<T>`
-- `madc::DataSet<T>`
-- `madc::Relation<A, B>`
-
-Once those object shapes are coherent, early local/file backends can
-exercise the design before any query-language or network backend work
-begins.
+After that, move from single-backend CRUD toward query pushdown and
+federated planning across the SQLite and keyed local backends.

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **Fourth real keyed local DB backend: `sqlite://`.** The storage
+  layer now has a SQLite-backed keyed backend alongside `qdbm://`,
+  `gdbm://`, and `bdb://`. `src/madc_storage_sqlite.cpp` adds a
+  `SqliteDriver` that creates a schema table on first open, maps
+  registered host fields to typed SQLite columns, enforces one primary
+  key field, and supports duplicate-rejecting insert, update, erase,
+  point lookup, reopen persistence, and deterministic key-ordered scan.
+  New doctest binary `tests/unit/test_libmadc_sqlite.cpp` covers typed
+  `DataSet<T>` round-trip through an actual SQLite database file.
+
 - **FLR tombstone sidecars + pre-reap restore.** `flr://` can now bind a
   packed-bit tombstone sidecar so deletes become soft positional marks
   instead of immediate physical removal. `MappingSpec<T>` and
@@ -69,8 +79,8 @@
   when present while preserving the existing `make -C src` workflow.
   Initial `./configure` switches are wired for `--with-bdb`,
   `--with-gdbm`, `--with-qdbm` (Villa-oriented), `--with-xqdbm`, and
-  `--with-sqlite3`, with stub translation units in place so feature
-  detection can be added ahead of full backend implementation.
+  `--with-sqlite3`, with optional translation units in place so feature
+  detection can be added ahead of or alongside backend implementation.
 
 - **Third working `libmadc` storage backend: `vlr://`.** The first
   local storage family is now complete: `dsv://` for logical text

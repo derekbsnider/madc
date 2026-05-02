@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 2, 2026 (post-v0.13.0 plus first-wave C23 compatibility and ongoing Phase 4.2 libmadc API work: `madc::value`, `madc::error`, logging lifecycle fixes, exploratory storage/federation API contracts, working `dsv://` + `flr://` + `vlr://` + `qdbm://` + `gdbm://` + `bdb://` backend slices, FLR tombstone sidecars with pre-reap restore, and registration-based `infer_mapper()` for host C++ storage types).
+Test results as of May 2, 2026 (post-v0.13.0 plus first-wave C23 compatibility and ongoing Phase 4.2 libmadc API work: `madc::value`, `madc::error`, logging lifecycle fixes, exploratory storage/federation API contracts, working `dsv://` + `flr://` + `vlr://` + `qdbm://` + `gdbm://` + `bdb://` + `sqlite://` backend slices, FLR tombstone sidecars with pre-reap restore, and registration-based `infer_mapper()` for host C++ storage types).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,7 +11,7 @@ Latest `scripts/run_tests.sh` result:
 - Passing: 254 integration tests
 - Failing: none
 - Timed out: none
-- Unit tests: all passing (doctest) — 80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 3 libmadc_flr + 1 libmadc_gdbm + 1 libmadc_qdbm + 5 libmadc_error + 19 libmadc_value + 1 libmadc_vlr + 10 libmadc_storage_contract
+- Unit tests: all passing (doctest) — 80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 3 libmadc_flr + 1 libmadc_gdbm + 1 libmadc_qdbm + 1 libmadc_sqlite + 5 libmadc_error + 19 libmadc_value + 1 libmadc_vlr + 10 libmadc_storage_contract
 
 The latest IR-focused validation batch passes directly, including:
 
