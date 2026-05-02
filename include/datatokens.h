@@ -116,11 +116,11 @@ public:
 	if (type == &ddINT16)  return *((int16_t *)data) == c;
 	if (type == &ddINT24)  return *((int16_t *)data) == c;
 	if (type == &ddINT32)  return *((int32_t *)data) == c;
-	if (type == &ddUINT8)  return *((uint8_t *)data) == c;
-	if (type == &ddUINT16) return *((uint16_t *)data) == c;
-	if (type == &ddUINT24) return *((uint16_t *)data) == c;
-	if (type == &ddUINT32) return *((uint32_t *)data) == c;
-	if (type == &ddUINT64) return *((uint64_t *)data) == c;
+	if (type == &ddUINT8)  return *((uint8_t *)data) == static_cast<uint8_t>(c);
+	if (type == &ddUINT16) return *((uint16_t *)data) == static_cast<uint16_t>(c);
+	if (type == &ddUINT24) return *((uint16_t *)data) == static_cast<uint16_t>(c);
+	if (type == &ddUINT32) return *((uint32_t *)data) == static_cast<uint32_t>(c);
+	if (type == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
 	if (type == &ddFLOAT)  return *((float *)data) == c;
 	if (type == &ddDOUBLE) return *((double *)data) == c;
 	return 0;
