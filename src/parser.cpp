@@ -1413,6 +1413,9 @@ MadcEngine::MadcEngine()
       log_threshold(LogLevel::debug),
       log_to_error_stream(true),
       syslog_active(false),
+      syslog_ident("madc"),
+      syslog_option(-1),
+      syslog_facility(-1),
       file_sink_active(false),
       log_file_max_bytes(0),
       log_file_max_files(5),
@@ -1542,11 +1545,19 @@ void MadcEngine::write_log(LogLevel level, const std::string &message)
 	return;
     if ( log_to_error_stream )
 	error() << format_log_message(level, message) << std::endl;
+    write_builtin_sinks(level, message);
     for ( auto &sink : log_sinks )
     {
 	if ( sink )
 	    sink(level, message);
     }
+}
+
+void MadcEngine::write_builtin_sinks(LogLevel level, const std::string &message)
+{
+    write_syslog_sink(level, message);
+    write_file_sink(level, message);
+    write_json_sink(level, message);
 }
 
 void MadcEngine::add_log_sink(LogSink sink)
@@ -1579,15 +1590,14 @@ int MadcEngine::syslog_priority_for(LogLevel level)
 void MadcEngine::enable_syslog_sink(const char *ident, int option, int facility)
 {
     if ( syslog_active )
-	return;
+	disable_syslog_sink();
     int resolved_option   = (option   < 0) ? LOG_PID  : option;
     int resolved_facility = (facility < 0) ? LOG_USER : facility;
     openlog(ident, resolved_option, resolved_facility);
     syslog_active = true;
-    add_log_sink([this](LogLevel level, const std::string &msg) {
-	if ( syslog_active )
-	    ::syslog(syslog_priority_for(level), "%s", msg.c_str());
-    });
+    syslog_ident = ident ? ident : "madc";
+    syslog_option = resolved_option;
+    syslog_facility = resolved_facility;
 }
 
 void MadcEngine::disable_syslog_sink()
@@ -1596,6 +1606,12 @@ void MadcEngine::disable_syslog_sink()
 	return;
     syslog_active = false;
     closelog();
+}
+
+void MadcEngine::write_syslog_sink(LogLevel level, const std::string &message)
+{
+    if ( syslog_active )
+	::syslog(syslog_priority_for(level), "%s", message.c_str());
 }
 
 bool MadcEngine::enable_file_sink(const std::string &path,
@@ -1614,21 +1630,6 @@ bool MadcEngine::enable_file_sink(const std::string &path,
     log_file_path = path;
     log_file_max_bytes = max_bytes;
     log_file_max_files = max_files < 1 ? 1 : max_files;
-    add_log_sink([this](LogLevel level, const std::string &msg) {
-	if ( !(file_sink_active && log_file && log_file->is_open()) )
-	    return;
-	const std::string formatted = format_log_message(level, msg);
-	if ( log_file_max_bytes > 0 )
-	{
-	    log_file->flush();
-	    std::streampos pos = log_file->tellp();
-	    if ( pos != std::streampos(-1) &&
-		 static_cast<size_t>(pos) + formatted.size() + 1 > log_file_max_bytes )
-		rotate_log_file();
-	}
-	if ( file_sink_active && log_file && log_file->is_open() )
-	    (*log_file) << formatted << std::endl;
-    });
     return true;
 }
 
@@ -1687,6 +1688,23 @@ void MadcEngine::reopen_log_file()
 	log_file.reset();
 	file_sink_active = false;
     }
+}
+
+void MadcEngine::write_file_sink(LogLevel level, const std::string &message)
+{
+    if ( !(file_sink_active && log_file && log_file->is_open()) )
+	return;
+    const std::string formatted = format_log_message(level, message);
+    if ( log_file_max_bytes > 0 )
+    {
+	log_file->flush();
+	std::streampos pos = log_file->tellp();
+	if ( pos != std::streampos(-1) &&
+	     static_cast<size_t>(pos) + formatted.size() + 1 > log_file_max_bytes )
+	    rotate_log_file();
+    }
+    if ( file_sink_active && log_file && log_file->is_open() )
+	(*log_file) << formatted << std::endl;
 }
 
 std::string MadcEngine::json_escape(const std::string &s)
@@ -1750,10 +1768,6 @@ bool MadcEngine::enable_json_sink(const std::string &path)
     }
     json_sink_active = true;
     json_file_path = path;
-    add_log_sink([this](LogLevel level, const std::string &msg) {
-	if ( json_sink_active && json_file && json_file->is_open() )
-	    (*json_file) << format_json_log_line(level, msg) << '\n';
-    });
     return true;
 }
 
@@ -1769,6 +1783,12 @@ void MadcEngine::disable_json_sink()
 	json_file.reset();
     }
     json_file_path.clear();
+}
+
+void MadcEngine::write_json_sink(LogLevel level, const std::string &message)
+{
+    if ( json_sink_active && json_file && json_file->is_open() )
+	(*json_file) << format_json_log_line(level, message) << '\n';
 }
 
 bool MadcEngine::apply_log_config(const Config &cfg)

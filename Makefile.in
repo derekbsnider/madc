@@ -1,0 +1,17 @@
+all:
+	$(MAKE) -C src all
+
+debug:
+	$(MAKE) -C src debug
+
+clean:
+	$(MAKE) -C src clean
+
+distclean: clean
+	rm -f config.log config.status config.mk include/config.h include/config.h.in
+
+test:
+	$(MAKE) -C src test
+
+fulltest:
+	$(MAKE) -C src fulltest

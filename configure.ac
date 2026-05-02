@@ -1,0 +1,289 @@
+AC_PREREQ([2.69])
+AC_INIT([madc], m4_esyscmd_s([cat VERSION]), [https://github.com/derekbsnider/madc/issues])
+AC_CONFIG_SRCDIR([src/madc.cpp])
+AC_CONFIG_HEADERS([include/config.h])
+
+AC_PROG_CXX
+AC_PROG_CC
+AC_PROG_INSTALL
+AC_PROG_MAKE_SET
+
+OPTIONAL_CPPFLAGS=""
+OPTIONAL_LIBS=""
+MADC_STORAGE_DB_OFILES=""
+FEATURE_DEFINES=""
+MADC_QDBM_CPPFLAGS=""
+MADC_QDBM_LIBS=""
+MADC_XQDBM_CPPFLAGS=""
+MADC_XQDBM_LIBS=""
+
+HAVE_BDB=0
+HAVE_GDBM=0
+HAVE_QDBM=0
+HAVE_XQDBM=0
+HAVE_SQLITE3=0
+
+AC_SUBST([OPTIONAL_CPPFLAGS])
+AC_SUBST([OPTIONAL_LIBS])
+AC_SUBST([MADC_STORAGE_DB_OFILES])
+AC_SUBST([FEATURE_DEFINES])
+AC_SUBST([HAVE_BDB])
+AC_SUBST([HAVE_GDBM])
+AC_SUBST([HAVE_QDBM])
+AC_SUBST([HAVE_XQDBM])
+AC_SUBST([HAVE_SQLITE3])
+
+AC_ARG_WITH([bdb],
+    [AS_HELP_STRING([--with-bdb[=PREFIX]], [build Berkeley DB backend support])],
+    [with_bdb="$withval"],
+    [with_bdb=auto])
+
+AC_ARG_WITH([gdbm],
+    [AS_HELP_STRING([--with-gdbm[=PREFIX]], [build GDBM backend support])],
+    [with_gdbm="$withval"],
+    [with_gdbm=auto])
+
+AC_ARG_WITH([qdbm],
+    [AS_HELP_STRING([--with-qdbm[=PREFIX]], [build QDBM backend support])],
+    [with_qdbm="$withval"],
+    [with_qdbm=auto])
+
+AC_ARG_WITH([xqdbm],
+    [AS_HELP_STRING([--with-xqdbm[=PREFIX]], [build XQDBM C++ wrapper support])],
+    [with_xqdbm="$withval"],
+    [with_xqdbm=auto])
+
+AC_ARG_WITH([sqlite3],
+    [AS_HELP_STRING([--with-sqlite3[=PREFIX]], [build SQLite3 backend support])],
+    [with_sqlite3="$withval"],
+    [with_sqlite3=auto])
+
+AC_DEFUN([MADC_APPEND_FLAGS], [
+    if test -n "$2"; then
+	if test -n "$1"; then
+	    $1="[$]$1 $2"
+	else
+	    $1="$2"
+	fi
+    fi
+])
+
+AC_DEFUN([MADC_MARK_ENABLED], [
+    FEATURE_DEFINES="$FEATURE_DEFINES -D$1=1"
+    AC_DEFINE([$1], [1], [$2])
+])
+
+AC_DEFUN([MADC_PREPARE_PREFIX_FLAGS], [
+    madc_pkg_cppflags=""
+    madc_pkg_libs=""
+    case "$1" in
+      yes|auto) ;;
+      no) ;;
+      *)
+	madc_pkg_cppflags="-I$1/include"
+	madc_pkg_libs="-L$1/lib"
+	;;
+    esac
+])
+
+AC_DEFUN([MADC_CHECK_BDB], [
+    if test "$with_bdb" != no; then
+	AC_MSG_CHECKING([for Berkeley DB support])
+	MADC_PREPARE_PREFIX_FLAGS([$with_bdb])
+	madc_save_CPPFLAGS="$CPPFLAGS"
+	madc_save_LIBS="$LIBS"
+	CPPFLAGS="$CPPFLAGS $madc_pkg_cppflags"
+	LIBS="$madc_pkg_libs -ldb $LIBS"
+	AC_LINK_IFELSE(
+	    [AC_LANG_PROGRAM([[#include <db.h>]], [[DB *db = 0; db_create(&db, 0, 0);]])],
+	    [madc_have_bdb=yes],
+	    [madc_have_bdb=no])
+	CPPFLAGS="$madc_save_CPPFLAGS"
+	LIBS="$madc_save_LIBS"
+	if test "$madc_have_bdb" = yes; then
+	    HAVE_BDB=1
+	    OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $madc_pkg_cppflags"
+	    OPTIONAL_LIBS="$OPTIONAL_LIBS $madc_pkg_libs -ldb"
+	    MADC_MARK_ENABLED([HAVE_BDB], [Define when Berkeley DB backend support is enabled.])
+	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madc_storage_bdb.o])
+	    AC_MSG_RESULT([yes])
+	else
+	    AC_MSG_RESULT([no])
+	    case "$with_bdb" in
+	      auto) ;;
+	      *) AC_MSG_ERROR([Berkeley DB requested but db.h / libdb were not found]) ;;
+	    esac
+	fi
+    fi
+])
+
+AC_DEFUN([MADC_CHECK_GDBM], [
+    if test "$with_gdbm" != no; then
+	AC_MSG_CHECKING([for GDBM support])
+	MADC_PREPARE_PREFIX_FLAGS([$with_gdbm])
+	madc_save_CPPFLAGS="$CPPFLAGS"
+	madc_save_LIBS="$LIBS"
+	CPPFLAGS="$CPPFLAGS $madc_pkg_cppflags"
+	LIBS="$madc_pkg_libs -lgdbm $LIBS"
+	AC_LINK_IFELSE(
+	    [AC_LANG_PROGRAM([[#include <gdbm.h>]], [[GDBM_FILE db = gdbm_open((char *)"x", 0, GDBM_WRCREAT, 0600, 0);]])],
+	    [madc_have_gdbm=yes],
+	    [madc_have_gdbm=no])
+	CPPFLAGS="$madc_save_CPPFLAGS"
+	LIBS="$madc_save_LIBS"
+	if test "$madc_have_gdbm" = yes; then
+	    HAVE_GDBM=1
+	    OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $madc_pkg_cppflags"
+	    OPTIONAL_LIBS="$OPTIONAL_LIBS $madc_pkg_libs -lgdbm"
+	    MADC_MARK_ENABLED([HAVE_GDBM], [Define when GDBM backend support is enabled.])
+	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madc_storage_gdbm.o])
+	    AC_MSG_RESULT([yes])
+	else
+	    AC_MSG_RESULT([no])
+	    case "$with_gdbm" in
+	      auto) ;;
+	      *) AC_MSG_ERROR([GDBM requested but gdbm.h / libgdbm were not found]) ;;
+	    esac
+	fi
+    fi
+])
+
+AC_DEFUN([MADC_CHECK_QDBM], [
+    if test "$with_qdbm" != no; then
+	AC_MSG_CHECKING([for QDBM support])
+	MADC_PREPARE_PREFIX_FLAGS([$with_qdbm])
+	madc_qdbm_cppflags="$madc_pkg_cppflags"
+	case "$with_qdbm" in
+	  yes|auto)
+	    madc_qdbm_cppflags="$madc_qdbm_cppflags -I/usr/include/qdbm"
+	    ;;
+	  *)
+	    madc_qdbm_cppflags="$madc_qdbm_cppflags -I$with_qdbm/include/qdbm"
+	    ;;
+	esac
+	madc_save_CPPFLAGS="$CPPFLAGS"
+	madc_save_LIBS="$LIBS"
+	CPPFLAGS="$CPPFLAGS $madc_qdbm_cppflags"
+	LIBS="$madc_pkg_libs -lqdbm $LIBS"
+	AC_LINK_IFELSE(
+	    [AC_LANG_PROGRAM([[#include <villa.h>]], [[VILLA *db = vlopen("x", VL_OWRITER | VL_OCREAT, VL_CMPLEX);]])],
+	    [madc_have_qdbm=yes],
+	    [madc_have_qdbm=no])
+	CPPFLAGS="$madc_save_CPPFLAGS"
+	LIBS="$madc_save_LIBS"
+	if test "$madc_have_qdbm" = yes; then
+	    HAVE_QDBM=1
+	    MADC_QDBM_CPPFLAGS="$madc_qdbm_cppflags"
+	    MADC_QDBM_LIBS="$madc_pkg_libs -lqdbm"
+	    MADC_MARK_ENABLED([HAVE_QDBM], [Define when QDBM backend support is enabled.])
+	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madc_storage_qdbm.o])
+	    AC_MSG_RESULT([yes])
+	else
+	    AC_MSG_RESULT([no])
+	    case "$with_qdbm" in
+	      auto) ;;
+	      *) AC_MSG_ERROR([QDBM Villa requested but villa.h / libqdbm were not found]) ;;
+	    esac
+	fi
+    fi
+])
+
+AC_DEFUN([MADC_CHECK_XQDBM], [
+    if test "$with_xqdbm" != no; then
+	AC_MSG_CHECKING([for XQDBM support])
+	MADC_PREPARE_PREFIX_FLAGS([$with_xqdbm])
+	madc_xqdbm_cppflags="$madc_pkg_cppflags"
+	case "$with_xqdbm" in
+	  yes|auto)
+	    madc_xqdbm_cppflags="$madc_xqdbm_cppflags -I/usr/include/qdbm"
+	    ;;
+	  *)
+	    madc_xqdbm_cppflags="$madc_xqdbm_cppflags -I$with_xqdbm/include/qdbm"
+	    ;;
+	esac
+	madc_save_CPPFLAGS="$CPPFLAGS"
+	madc_save_LIBS="$LIBS"
+	CPPFLAGS="$CPPFLAGS $madc_xqdbm_cppflags"
+	LIBS="$madc_pkg_libs -lxqdbm -lqdbm -lpthread $LIBS"
+	AC_LANG_PUSH([C++])
+	AC_LINK_IFELSE(
+	    [AC_LANG_PROGRAM([[#include <xqdbm.h>]], [[qdbm::Depot *db = 0; return db ? 1 : 0;]])],
+	    [madc_have_xqdbm=yes],
+	    [madc_have_xqdbm=no])
+	AC_LANG_POP([C++])
+	CPPFLAGS="$madc_save_CPPFLAGS"
+	LIBS="$madc_save_LIBS"
+	if test "$madc_have_xqdbm" = yes; then
+	    HAVE_XQDBM=1
+	    MADC_XQDBM_CPPFLAGS="$madc_xqdbm_cppflags"
+	    MADC_XQDBM_LIBS="$madc_pkg_libs -lxqdbm -lqdbm -lpthread"
+	    MADC_MARK_ENABLED([HAVE_XQDBM], [Define when XQDBM C++ wrapper support is enabled.])
+	    AC_MSG_RESULT([yes])
+	else
+	    AC_MSG_RESULT([no])
+	    case "$with_xqdbm" in
+	      auto) ;;
+	      *) AC_MSG_ERROR([XQDBM requested but xqdbm.h / libxqdbm were not found]) ;;
+	    esac
+	fi
+    fi
+])
+
+AC_DEFUN([MADC_CHECK_SQLITE3], [
+    if test "$with_sqlite3" != no; then
+	AC_MSG_CHECKING([for SQLite3 support])
+	MADC_PREPARE_PREFIX_FLAGS([$with_sqlite3])
+	madc_save_CPPFLAGS="$CPPFLAGS"
+	madc_save_LIBS="$LIBS"
+	CPPFLAGS="$CPPFLAGS $madc_pkg_cppflags"
+	LIBS="$madc_pkg_libs -lsqlite3 $LIBS"
+	AC_LINK_IFELSE(
+	    [AC_LANG_PROGRAM([[#include <sqlite3.h>]], [[sqlite3 *db = 0; sqlite3_open(":memory:", &db);]])],
+	    [madc_have_sqlite3=yes],
+	    [madc_have_sqlite3=no])
+	CPPFLAGS="$madc_save_CPPFLAGS"
+	LIBS="$madc_save_LIBS"
+	if test "$madc_have_sqlite3" = yes; then
+	    HAVE_SQLITE3=1
+	    OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $madc_pkg_cppflags"
+	    OPTIONAL_LIBS="$OPTIONAL_LIBS $madc_pkg_libs -lsqlite3"
+	    MADC_MARK_ENABLED([HAVE_SQLITE3], [Define when SQLite3 backend support is enabled.])
+	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madc_storage_sqlite.o])
+	    AC_MSG_RESULT([yes])
+	else
+	    AC_MSG_RESULT([no])
+	    case "$with_sqlite3" in
+	      auto) ;;
+	      *) AC_MSG_ERROR([SQLite3 requested but sqlite3.h / libsqlite3 were not found]) ;;
+	    esac
+	fi
+    fi
+])
+
+MADC_CHECK_BDB
+MADC_CHECK_GDBM
+MADC_CHECK_QDBM
+MADC_CHECK_XQDBM
+MADC_CHECK_SQLITE3
+
+if test -n "$MADC_QDBM_CPPFLAGS"; then
+    OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $MADC_QDBM_CPPFLAGS"
+fi
+if test -n "$MADC_XQDBM_CPPFLAGS"; then
+    case " $OPTIONAL_CPPFLAGS " in
+      *" $MADC_XQDBM_CPPFLAGS "*) ;;
+      *) OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $MADC_XQDBM_CPPFLAGS" ;;
+    esac
+fi
+
+if test -n "$MADC_QDBM_LIBS"; then
+    OPTIONAL_LIBS="$OPTIONAL_LIBS $MADC_QDBM_LIBS"
+fi
+if test -n "$MADC_XQDBM_LIBS"; then
+    OPTIONAL_LIBS="$OPTIONAL_LIBS $MADC_XQDBM_LIBS"
+fi
+
+AC_MSG_NOTICE([Optional backends: bdb=$HAVE_BDB gdbm=$HAVE_GDBM qdbm=$HAVE_QDBM xqdbm=$HAVE_XQDBM sqlite3=$HAVE_SQLITE3])
+
+AC_CONFIG_FILES([Makefile config.mk])
+AC_OUTPUT

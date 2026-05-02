@@ -1070,6 +1070,9 @@ public:
     LogLevel log_threshold;
     bool log_to_error_stream;
     bool syslog_active;
+    std::string syslog_ident;
+    int syslog_option;
+    int syslog_facility;
     bool file_sink_active;
     std::unique_ptr<std::ofstream> log_file;
     std::string log_file_path;
@@ -1101,6 +1104,7 @@ public:
     std::string format_log_message(LogLevel level, const std::string &message) const;
     bool should_log(LogLevel level) const;
     void write_log(LogLevel level, const std::string &message);
+    void write_builtin_sinks(LogLevel level, const std::string &message);
     void add_log_sink(LogSink sink);
     void clear_log_sinks();
     static int syslog_priority_for(LogLevel level);
@@ -1116,6 +1120,9 @@ public:
     void disable_json_sink();
     static std::string json_escape(const std::string &s);
     std::string format_json_log_line(LogLevel level, const std::string &message) const;
+    void write_syslog_sink(LogLevel level, const std::string &message);
+    void write_file_sink(LogLevel level, const std::string &message);
+    void write_json_sink(LogLevel level, const std::string &message);
 
     struct Config
     {

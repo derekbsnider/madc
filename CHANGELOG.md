@@ -2,6 +2,157 @@
 
 ## [Unreleased]
 
+- **FLR tombstone sidecars + pre-reap restore.** `flr://` can now bind a
+  packed-bit tombstone sidecar so deletes become soft positional marks
+  instead of immediate physical removal. `MappingSpec<T>` and
+  `SchemaInfo` now carry tombstone sidecar metadata, `DataSet<T>` grows
+  `restore(key)`, and `FlrDriver` skips tombstoned rows in normal
+  lookup/scan paths while preserving the underlying fixed-record file
+  intact until a later reap/compaction phase. New coverage in
+  `tests/unit/test_libmadc_flr.cpp` proves delete/reopen/restore
+  behavior, and `tests/unit/test_libmadc_storage_contract.cpp` now
+  locks in the contract for tombstone sidecars, dataset roles, ordered
+  fixed-record metadata, and positional/offset/key/graph relation kinds.
+
+- **Third real keyed local DB backend: `bdb://`.** The storage layer
+  now has a Berkeley DB Btree-backed keyed backend alongside
+  `qdbm://` and `gdbm://`. `src/madc_storage_bdb.cpp` adds a
+  `BdbDriver` with one primary key field, typed record payload
+  storage, point lookup, insert/update/erase, and ordered scan through
+  Berkeley DB cursors. Like the Villa path, keys are canonically
+  encoded so signed and unsigned integer keys sort correctly under the
+  backend's lexical Btree ordering. New doctest binary
+  `tests/unit/test_libmadc_bdb.cpp` covers keyed round-trip, duplicate
+  rejection on insert, update, erase, and ordered iteration.
+
+- **Second real keyed local DB backend: `gdbm://`.** The storage layer
+  now has a second optional key/value backend alongside `qdbm://`.
+  `src/madc_storage_gdbm.cpp` adds a `GdbmDriver` over GNU GDBM with
+  one primary key field, typed record payload storage, point lookup,
+  insert/update/erase, and full database scan through the native key
+  iteration API. Unlike Villa, GDBM is hash-backed, so the public
+  contract deliberately does not promise ordered scans. New doctest
+  binary `tests/unit/test_libmadc_gdbm.cpp` covers keyed round-trip,
+  duplicate rejection on insert, update, erase, and unordered scan
+  membership.
+
+- **First real keyed local DB backend: `qdbm://` via Villa.** The
+  exploratory storage layer now has its first ordered key/value store
+  instead of file-shaped record stores only. `src/madc_storage_qdbm.cpp`
+  adds a `QdbmDriver` over QDBM's Villa B+ tree API with one primary key
+  field, point lookup, ordered cursor scan, insert/update/erase, and
+  typed binary record payloads stored independently from the in-memory
+  host layout. Keys are canonically encoded so integer keys sort
+  correctly under Villa's lexical comparator, and scans now come back in
+  key order rather than insertion order. New doctest binary
+  `tests/unit/test_libmadc_qdbm.cpp` covers keyed round-trip, duplicate
+  rejection on insert, update, erase, and ordered iteration.
+
+- **Registration-based `infer_mapper()` for host C++ types.** The
+  exploratory storage layer no longer requires a handwritten
+  `DataMapper<T>` class for every happy-path host type. `mapper.h` now
+  ships `MapperRegistration<T>`, `MapperBuilder<T>`, and
+  `AutoDataMapper<T>`, so a type can register its fields once and let
+  `DataSet<T>` infer a working mapper automatically at `open()`. The
+  builder derives normalized schema facts (kind, width, signedness) for
+  integers, enums, reals, bools, chars, fixed `char[N]`, and
+  `std::string`, and FLR-specific bindings can override storage offsets
+  and fixed text widths so file layout stays separate from host-memory
+  layout. The `dsv://`, `flr://`, and `vlr://` round-trip tests now use
+  this inference path instead of bespoke mapper classes.
+
+- **Autotools/configure scaffolding for optional storage backends.**
+  Added `configure.ac`, `config.mk.in`, and a top-level `Makefile.in`
+  so `madc` can grow optional backend detection without hard-linking
+  every database dependency into the core build. `src/Makefile` now
+  consumes generated feature flags and optional libs from `config.mk`
+  when present while preserving the existing `make -C src` workflow.
+  Initial `./configure` switches are wired for `--with-bdb`,
+  `--with-gdbm`, `--with-qdbm` (Villa-oriented), `--with-xqdbm`, and
+  `--with-sqlite3`, with stub translation units in place so feature
+  detection can be added ahead of full backend implementation.
+
+- **Third working `libmadc` storage backend: `vlr://`.** The first
+  local storage family is now complete: `dsv://` for logical text
+  rows, `flr://` for fixed-size binary records, and `vlr://` for
+  variable-length binary records. `src/madc_storage.cpp` now includes
+  `VlrDriver`, which persists generic object-shaped `madc::value`
+  records as length-prefixed binary payloads with native scalar widths
+  and full string preservation, avoiding the fixed-size pressure that
+  drives FLR truncation/error policy. New doctest binary
+  `tests/unit/test_libmadc_vlr.cpp` covers variable-sized record
+  round-trip, long-string preservation, update/erase, and key-based
+  retrieval through the same typed `DataSet<T>` facade ordinary host
+  C++ code uses for `dsv://` and `flr://`.
+
+- **Second working `libmadc` storage backend: `flr://`.** The storage
+  runtime now has a fixed-record binary backend alongside `dsv://`.
+  `SchemaInfo` and `SchemaField` carry record-layout metadata needed to
+  lower `MappingSpec<T>` into driver-visible storage policy: logical vs
+  fixed-record layout, record size, overflow policy, and per-field text
+  truncation behavior. `src/madc_storage.cpp` now includes `FlrDriver`,
+  which persists object-shaped `madc::value` records into fixed-size
+  binary rows, enforces strict overflow by default, supports explicit
+  truncation when configured, and normalizes cached rows through the
+  persisted fixed-record form so `get()` reflects what actually hit the
+  file. New doctest binary `tests/unit/test_libmadc_flr.cpp` covers
+  successful fixed-record round-trip plus the strict oversized-string
+  failure path.
+
+- **First working `libmadc` storage backend: `dsv://`.** The
+  exploratory storage/federation API now has a real end-to-end C++
+  vertical slice instead of sketches only. `src/madc_storage.cpp`
+  adds the first runtime pieces for this subsystem: a concrete
+  `DsvDriver`, a built-in `DataDriverRegistry`, a minimal
+  `Query`/`QueryBuilder` implementation, and generic record-oriented
+  driver operations over `madc::value` objects. `DataSet<T>` is now a
+  usable typed C++ facade that composes `DataSource`, `DataMapper<T>`,
+  `MappingSpec<T>`, and the driver registry. The first round-trip test
+  in `tests/unit/test_libmadc_dsv.cpp` proves that ordinary host C++
+  can persist and read back a mixed struct through `dsv://`, including
+  key-based `get` / `update` / `erase`, mapped field renames, filtered
+  scans, and CSV-style quoting for textual fields.
+
+- **Exploratory `libmadc` storage/federation API sketches + contract
+  tests.** Added the first public header sketches for a future typed
+  storage layer under `include/libmadc/`: `datasource.h`, `schema.h`,
+  `driver.h`, `mapper.h`, `dataset.h`, `relation.h`, and `query.h`.
+  The model is C++-first and keeps direct/programmatic access primary:
+  `madc::DataSource` is location-only, `SchemaInfo` describes inferred
+  type layout, `DataMapper<T>` / `MappingSpec<T>` handle automatic
+  mapping plus targeted overrides, `FormatAdapter<T>` covers irregular
+  legacy formats such as SMAUG-style tagged text files, and SQL/GQL are
+  planned as optional peer front-ends over a shared query layer. New
+  doctest binary `tests/unit/test_libmadc_storage_contract.cpp`
+  (now 10 cases) locks in the initial contract for `dsv://`, `flr://`, and
+  `vlr://` planning: location-only URI parsing, mixed-type schema
+  description, logical vs fixed vs variable record layouts, strict FLR
+  overflow-by-default, truncation only by explicit opt-in, tombstone
+  sidecars, and positional/offset/key/graph relation kinds.
+
+- **Phase 4.2 / libmadc public C++ API: `madc::error`.** New header
+  `include/libmadc/error.h` (and `src/madc_error.cpp`) ships the next
+  public libmadc type as a structured diagnostic container mirroring the
+  existing internal `Program::Diagnostic` shape: severity, phase, message,
+  file, line, and column. It includes enum-name helpers, equality, a
+  formatted `to_string()`, and a bridge helper
+  `make_errors_from_program_diagnostics(const Program&)` so the public API
+  can lift compiler/runtime diagnostics without exposing `Program`
+  internals. New doctest binary `tests/unit/test_libmadc_error.cpp`
+  (5 cases, 24 assertions) covers default construction, field storage,
+  formatting, equality, and conversion from real `Program` diagnostics.
+
+- **Phase 4/libmadc logging lifecycle fixes.** Built-in syslog/file/JSON
+  sinks are now engine-owned helpers instead of anonymous lambdas appended
+  into the generic `log_sinks` fanout. That fixes the re-enable / re-apply
+  regression where `disable_*(); enable_*();` or repeated
+  `apply_log_config()` calls on the same engine could accumulate stale sink
+  callbacks and duplicate every later log line. Syslog configuration now
+  also rebinds cleanly when `apply_log_config()` changes ident/option/
+  facility. Covered by new doctest cases in `tests/unit/test_datadef.cpp`
+  for file/json sink re-enable, config re-apply, and syslog reconfiguration
+  state.
+
 - **Phase 4.2 / libmadc public C++ API: `madc::value`.** New header
   `include/libmadc/value.h` (and `src/madc_value.cpp`) ship the first
   public type of the libmadc embedding API: a tagged value carrying

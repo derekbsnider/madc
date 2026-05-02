@@ -853,13 +853,16 @@ TEST_SUITE("Program isolation") {
 	engine.disable_syslog_sink();
 	CHECK(engine.syslog_active == false);
 
-	const size_t before = engine.log_sinks.size();
 	engine.enable_syslog_sink("madc-unit-test");
 	CHECK(engine.syslog_active == true);
-	CHECK(engine.log_sinks.size() == before + 1);
+	CHECK(engine.syslog_ident == "madc-unit-test");
+	CHECK(engine.syslog_option == LOG_PID);
+	CHECK(engine.syslog_facility == LOG_USER);
 
-	engine.enable_syslog_sink("madc-unit-test");
-	CHECK(engine.log_sinks.size() == before + 1);
+	engine.enable_syslog_sink("madc-unit-test-2", LOG_CONS, LOG_LOCAL0);
+	CHECK(engine.syslog_ident == "madc-unit-test-2");
+	CHECK(engine.syslog_option == LOG_CONS);
+	CHECK(engine.syslog_facility == LOG_LOCAL0);
 
 	engine.disable_syslog_sink();
 	CHECK(engine.syslog_active == false);
@@ -912,6 +915,32 @@ TEST_SUITE("Program isolation") {
 			     std::istreambuf_iterator<char>());
 	CHECK(contents.find("[warn] before") != std::string::npos);
 	CHECK(contents.find("[err] after")   != std::string::npos);
+	::unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine file sink re-enable does not duplicate writes") {
+	const std::string path = "/tmp/madc_log_sink_reenable.log";
+	::unlink(path.c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	engine.log_level_prefixes = true;
+	REQUIRE(engine.enable_file_sink(path));
+	engine.write_log(MadcEngine::LogLevel::warn, "first");
+	engine.disable_file_sink();
+	REQUIRE(engine.enable_file_sink(path));
+	engine.write_log(MadcEngine::LogLevel::warn, "second");
+	engine.disable_file_sink();
+
+	std::ifstream in(path);
+	std::vector<std::string> lines;
+	std::string line;
+	while ( std::getline(in, line) )
+	    lines.push_back(line);
+	REQUIRE(lines.size() == 2);
+	CHECK(lines[0].find("[warn] first")  != std::string::npos);
+	CHECK(lines[1].find("[warn] second") != std::string::npos);
 	::unlink(path.c_str());
     }
 
@@ -1023,6 +1052,32 @@ TEST_SUITE("Program isolation") {
 	::unlink(path.c_str());
     }
 
+    TEST_CASE("MadcEngine json sink re-enable does not duplicate writes") {
+	const std::string path = "/tmp/madc_log_sink_json_reenable.log";
+	::unlink(path.c_str());
+
+	MadcEngine engine;
+	engine.log_to_error_stream = false;
+	engine.log_timestamps = false;
+	REQUIRE(engine.enable_json_sink(path));
+	engine.write_log(MadcEngine::LogLevel::warn, "one");
+	engine.disable_json_sink();
+	REQUIRE(engine.enable_json_sink(path));
+	engine.write_log(MadcEngine::LogLevel::warn, "two");
+	engine.disable_json_sink();
+
+	std::ifstream in(path);
+	std::vector<std::string> lines;
+	std::string line;
+	while ( std::getline(in, line) )
+	    lines.push_back(line);
+	REQUIRE(lines.size() == 2);
+	CHECK(lines[0] == "{\"level\":\"warn\",\"message\":\"one\"}");
+	CHECK(lines[1] == "{\"level\":\"warn\",\"message\":\"two\"}");
+
+	::unlink(path.c_str());
+    }
+
     TEST_CASE("madc level streams flow through JSON sink alongside file sink") {
 	const std::string text = "/tmp/madc_log_sink_dual_text.log";
 	const std::string json = "/tmp/madc_log_sink_dual_json.log";
@@ -1127,6 +1182,45 @@ TEST_SUITE("Program isolation") {
 	CHECK(engine.syslog_active == false);
 
 	::unlink(path.c_str());
+    }
+
+    TEST_CASE("MadcEngine apply_log_config re-apply does not duplicate sink output") {
+	const std::string text = "/tmp/madc_log_cfg_reapply_text.log";
+	const std::string json = "/tmp/madc_log_cfg_reapply_json.log";
+	::unlink(text.c_str());
+	::unlink(json.c_str());
+
+	MadcEngine engine;
+	MadcEngine::Config cfg;
+	cfg.error_stream = false;
+	cfg.file_sink = true;
+	cfg.file_path = text;
+	cfg.json_sink = true;
+	cfg.json_path = json;
+	REQUIRE(engine.apply_log_config(cfg));
+	REQUIRE(engine.apply_log_config(cfg));
+
+	engine.write_log(MadcEngine::LogLevel::warn, "once");
+	engine.disable_file_sink();
+	engine.disable_json_sink();
+
+	std::ifstream text_in(text);
+	std::vector<std::string> text_lines;
+	std::string line;
+	while ( std::getline(text_in, line) )
+	    text_lines.push_back(line);
+	std::ifstream json_in(json);
+	std::vector<std::string> json_lines;
+	while ( std::getline(json_in, line) )
+	    json_lines.push_back(line);
+
+	REQUIRE(text_lines.size() == 1);
+	REQUIRE(json_lines.size() == 1);
+	CHECK(text_lines[0].find("[warn] once") != std::string::npos);
+	CHECK(json_lines[0] == "{\"level\":\"warn\",\"message\":\"once\"}");
+
+	::unlink(text.c_str());
+	::unlink(json.c_str());
     }
 
     TEST_CASE("MadcEngine apply_log_config returns false when a sink path is unwritable") {
