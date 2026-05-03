@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **Bounded key-range query support for builder queries.** `Query` /
+  `QueryBuilder` can now carry upper-bound metadata in addition to
+  equality and lower-bound filters, so callers can express bounded
+  `>= ... <= ...` key scans instead of only point lookups or open-ended
+  lower ranges. `DataSet<T>` applies those bounds in local fallback,
+  `sqlite://` now pushes the full bounded predicate directly, and the
+  ordered keyed `qdbm://` / `bdb://` backends now honor upper bounds by
+  stopping native cursor scans once the key range is exhausted.
+  Coverage in `tests/unit/test_libmadc_sqlite.cpp`,
+  `tests/unit/test_libmadc_qdbm.cpp`,
+  `tests/unit/test_libmadc_bdb.cpp`, and
+  `tests/unit/test_libmadc_storage_contract.cpp` locks in the new
+  bounded-range builder shape.
+
 - **First relation-aware traversal over pushed dataset queries.**
   `Relation<A,B>` can now do more than resolve one source key at a
   time: `query_related(...)` walks a filtered source `DataSet<A>` query

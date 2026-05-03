@@ -278,4 +278,24 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(built.has_limit());
 	CHECK(built.row_limit() == 3);
     }
+
+    TEST_CASE("QueryBuilder can express bounded key scans") {
+	madc::Query built = madc::query()
+	    .from("users")
+	    .where_gte("id", madc::value(int64_t(10)))
+	    .where_lte("id", madc::value(int64_t(20)))
+	    .limit(5)
+	    .build();
+
+	CHECK(built.dataset_name() == "users");
+	CHECK(built.has_lower_bound());
+	CHECK(built.lower_bound_field() == "id");
+	CHECK(built.lower_bound_value() == madc::value(int64_t(10)));
+	CHECK(built.has_upper_bound());
+	CHECK(built.upper_bound_field() == "id");
+	CHECK(built.upper_bound_value() == madc::value(int64_t(20)));
+	CHECK(built.upper_bound_inclusive());
+	CHECK(built.has_limit());
+	CHECK(built.row_limit() == 5);
+    }
 }

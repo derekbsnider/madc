@@ -225,7 +225,9 @@ public:
 	return query.query_kind() == Query::kind::builder
 	    && query.selected_fields().empty()
 	    && (!query.has_lower_bound()
-		|| (_key_field && query.lower_bound_field() == _key_field->name));
+		|| (_key_field && query.lower_bound_field() == _key_field->name))
+	    && (!query.has_upper_bound()
+		|| (_key_field && query.upper_bound_field() == _key_field->name));
     }
 
     bool insert_record(const value &record, error *err = nullptr)
@@ -395,6 +397,15 @@ public:
 	    sql += quote_identifier(field->name);
 	    sql += query.lower_bound_inclusive() ? " >= ?" : " > ?";
 	}
+	if ( query.has_upper_bound() )
+	{
+	    const SchemaField *field = find_field(query.upper_bound_field());
+	    if ( !field )
+		return fail(err, "sqlite query execution failed: unknown upper-bound field `" + query.upper_bound_field() + "`");
+	    sql += ((query.has_where_equality() || query.has_lower_bound()) ? " AND " : " WHERE ");
+	    sql += quote_identifier(field->name);
+	    sql += query.upper_bound_inclusive() ? " <= ?" : " < ?";
+	}
 	if ( _key_field )
 	    sql += " ORDER BY " + quote_identifier(_key_field->name);
 	if ( query.has_limit() )
@@ -414,6 +425,12 @@ public:
 	{
 	    const SchemaField *field = find_field(query.lower_bound_field());
 	    if ( !bind_field(stmt.get(), bind_index++, *field, query.lower_bound_value(), err) )
+		return false;
+	}
+	if ( query.has_upper_bound() )
+	{
+	    const SchemaField *field = find_field(query.upper_bound_field());
+	    if ( !bind_field(stmt.get(), bind_index++, *field, query.upper_bound_value(), err) )
 		return false;
 	}
 

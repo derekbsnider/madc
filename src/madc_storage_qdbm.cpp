@@ -67,6 +67,37 @@ bool is_supported_key_field(const SchemaField &field)
 	|| field_is_text(field);
 }
 
+int compare_query_values(const value &lhs, const value &rhs)
+{
+    if ( lhs.is_integer() || rhs.is_integer() )
+    {
+	int64_t a = lhs.as_integer();
+	int64_t b = rhs.as_integer();
+	if ( a > b )
+	    return 1;
+	if ( a == b )
+	    return 0;
+	return -1;
+    }
+    if ( lhs.is_real() || rhs.is_real() )
+    {
+	double a = lhs.as_real();
+	double b = rhs.as_real();
+	if ( a > b )
+	    return 1;
+	if ( a == b )
+	    return 0;
+	return -1;
+    }
+    const std::string &a = lhs.as_string();
+    const std::string &b = rhs.as_string();
+    if ( a > b )
+	return 1;
+    if ( a == b )
+	return 0;
+    return -1;
+}
+
 void append_be(std::string &out, uint64_t value, std::size_t width)
 {
     for ( std::size_t i = 0; i < width; ++i )
@@ -263,7 +294,9 @@ public:
 		|| query.where_field() == _key_field->name)
 	    && ((!query.has_lower_bound())
 		|| query.lower_bound_field() == _key_field->name)
-	    && (query.has_where_equality() || query.has_lower_bound());
+	    && ((!query.has_upper_bound())
+		|| query.upper_bound_field() == _key_field->name)
+	    && (query.has_where_equality() || query.has_lower_bound() || query.has_upper_bound());
     }
 
     bool insert_record(const value &record, error *err = nullptr)
@@ -411,7 +444,7 @@ public:
     {
 	out.clear();
 	if ( !can_execute(query) )
-	    return fail(err, "qdbm query execution only supports primary-key equality and lower-bound filters");
+	    return fail(err, "qdbm query execution only supports primary-key equality and key-range filters");
 	if ( query.has_where_equality() )
 	{
 	    value record;
@@ -422,9 +455,14 @@ public:
 	}
 
 	std::string encoded_key;
-	if ( !encode_lookup_key(query.lower_bound_value(), encoded_key, err) )
-	    return false;
-	if ( !vlcurjump(_db, encoded_key.data(), static_cast<int>(encoded_key.size()), VL_JFORWARD) )
+	if ( query.has_lower_bound() )
+	{
+	    if ( !encode_lookup_key(query.lower_bound_value(), encoded_key, err) )
+		return false;
+	    if ( !vlcurjump(_db, encoded_key.data(), static_cast<int>(encoded_key.size()), VL_JFORWARD) )
+		return true;
+	}
+	else if ( !vlcurfirst(_db) )
 	    return true;
 
 	while ( true )
@@ -440,6 +478,25 @@ public:
 	    value record;
 	    if ( !decode_record(bytes, record, err) )
 		return false;
+	    std::map<std::string, value>::const_iterator key_it = record.as_object().find(_key_field->name);
+	    if ( key_it == record.as_object().end() )
+		return fail(err, "qdbm range query failed: decoded record is missing key field");
+	    if ( query.has_lower_bound() )
+	    {
+		int cmp = compare_query_values(key_it->second, query.lower_bound_value());
+		if ( cmp < 0 || (!query.lower_bound_inclusive() && cmp == 0) )
+		{
+		    if ( !vlcurnext(_db) )
+			break;
+		    continue;
+		}
+	    }
+	    if ( query.has_upper_bound() )
+	    {
+		int cmp = compare_query_values(key_it->second, query.upper_bound_value());
+		if ( cmp > 0 || (!query.upper_bound_inclusive() && cmp == 0) )
+		    break;
+	    }
 	    out.push_back(record);
 	    if ( query.has_limit() && out.size() >= query.row_limit() )
 		break;

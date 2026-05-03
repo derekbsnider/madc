@@ -66,6 +66,37 @@ bool is_supported_key_field(const SchemaField &field)
 	|| field_is_text(field);
 }
 
+int compare_query_values(const value &lhs, const value &rhs)
+{
+    if ( lhs.is_integer() || rhs.is_integer() )
+    {
+	int64_t a = lhs.as_integer();
+	int64_t b = rhs.as_integer();
+	if ( a > b )
+	    return 1;
+	if ( a == b )
+	    return 0;
+	return -1;
+    }
+    if ( lhs.is_real() || rhs.is_real() )
+    {
+	double a = lhs.as_real();
+	double b = rhs.as_real();
+	if ( a > b )
+	    return 1;
+	if ( a == b )
+	    return 0;
+	return -1;
+    }
+    const std::string &a = lhs.as_string();
+    const std::string &b = rhs.as_string();
+    if ( a > b )
+	return 1;
+    if ( a == b )
+	return 0;
+    return -1;
+}
+
 void append_be(std::string &out, uint64_t value, std::size_t width)
 {
     for ( std::size_t i = 0; i < width; ++i )
@@ -264,7 +295,9 @@ public:
 		|| query.where_field() == _key_field->name)
 	    && ((!query.has_lower_bound())
 		|| query.lower_bound_field() == _key_field->name)
-	    && (query.has_where_equality() || query.has_lower_bound());
+	    && ((!query.has_upper_bound())
+		|| query.upper_bound_field() == _key_field->name)
+	    && (query.has_where_equality() || query.has_lower_bound() || query.has_upper_bound());
     }
 
     bool insert_record(const value &record, error *err = nullptr)
@@ -375,7 +408,7 @@ public:
     {
 	out.clear();
 	if ( !can_execute(query) )
-	    return fail(err, "bdb query execution only supports primary-key equality and lower-bound filters");
+	    return fail(err, "bdb query execution only supports primary-key equality and key-range filters");
 	if ( query.has_where_equality() )
 	{
 	    value record;
@@ -386,8 +419,12 @@ public:
 	}
 
 	DBT key, data;
-	if ( !build_lookup_key_dbt(query.lower_bound_value(), key, err) )
-	    return false;
+	std::memset(&key, 0, sizeof(key));
+	if ( query.has_lower_bound() )
+	{
+	    if ( !build_lookup_key_dbt(query.lower_bound_value(), key, err) )
+		return false;
+	}
 
 	DBC *cursor = nullptr;
 	int rc = _db->cursor(_db, nullptr, &cursor, 0);
@@ -396,7 +433,7 @@ public:
 
 	std::memset(&data, 0, sizeof(data));
 	data.flags = DB_DBT_MALLOC;
-	rc = cursor->get(cursor, &key, &data, DB_SET_RANGE);
+	rc = cursor->get(cursor, &key, &data, query.has_lower_bound() ? DB_SET_RANGE : DB_FIRST);
 	for ( ; rc == 0; rc = cursor->get(cursor, &key, &data, DB_NEXT) )
 	{
 	    std::vector<char> payload(static_cast<char *>(data.data),
@@ -409,6 +446,28 @@ public:
 	    {
 		cursor->close(cursor);
 		return false;
+	    }
+	    std::map<std::string, value>::const_iterator key_it = record.as_object().find(_key_field->name);
+	    if ( key_it == record.as_object().end() )
+	    {
+		cursor->close(cursor);
+		return fail(err, "bdb range query failed: decoded record is missing key field");
+	    }
+	    if ( query.has_lower_bound() )
+	    {
+		int cmp = compare_query_values(key_it->second, query.lower_bound_value());
+		if ( cmp < 0 || (!query.lower_bound_inclusive() && cmp == 0) )
+		{
+		    std::memset(&data, 0, sizeof(data));
+		    data.flags = DB_DBT_MALLOC;
+		    continue;
+		}
+	    }
+	    if ( query.has_upper_bound() )
+	    {
+		int cmp = compare_query_values(key_it->second, query.upper_bound_value());
+		if ( cmp > 0 || (!query.upper_bound_inclusive() && cmp == 0) )
+		    break;
 	    }
 	    out.push_back(record);
 	    if ( query.has_limit() && out.size() >= query.row_limit() )

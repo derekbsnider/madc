@@ -49,7 +49,9 @@
   bound key scans now push too: `sqlite://` executes `>=` + `LIMIT`
   builders in key order, and ordered keyed `qdbm://` / `bdb://`
   backends can honor the same lower-bound scans through native cursor
-  positioning. First relation-aware traversal is now there too:
+  positioning. Bounded key ranges now work too via combined `>=` / `<=`
+  builder clauses on `sqlite://`, `qdbm://`, and `bdb://`. First
+  relation-aware traversal is now there too:
   `Relation<A,B>::query_related(...)` can walk filtered source rows and
   materialize `key_match` and `offset` targets across datasets/backends.
   Next concrete steps: federated planning on top of that pushed-query

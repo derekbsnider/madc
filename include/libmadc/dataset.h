@@ -798,6 +798,13 @@ private:
 		storage_query.lower_bound_value(),
 		storage_query.lower_bound_inclusive());
 	}
+	if ( storage_query.has_upper_bound() )
+	{
+	    storage_query.set_upper_bound(
+		detail::storage_name_for_logical<T>(_mapping, storage_query.upper_bound_field()),
+		storage_query.upper_bound_value(),
+		storage_query.upper_bound_inclusive());
+	}
 	if ( !storage_query.selected_fields().empty() )
 	{
 	    std::vector<std::string> storage_fields;
@@ -841,8 +848,25 @@ private:
 		if ( it == logical.as_object().end() )
 		    continue;
 		if ( compare_query_values(it->second,
-					 query_spec.lower_bound_value(),
-					 query_spec.lower_bound_inclusive()) < 0 )
+					 query_spec.lower_bound_value()) < 0 )
+		    continue;
+		if ( !query_spec.lower_bound_inclusive()
+		  && compare_query_values(it->second, query_spec.lower_bound_value()) == 0 )
+		    continue;
+	    }
+	    if ( query_spec.has_upper_bound() )
+	    {
+		if ( !logical.is_object() )
+		    continue;
+		std::map<std::string, value>::const_iterator it =
+		    logical.as_object().find(query_spec.upper_bound_field());
+		if ( it == logical.as_object().end() )
+		    continue;
+		if ( compare_query_values(it->second,
+					 query_spec.upper_bound_value()) > 0 )
+		    continue;
+		if ( !query_spec.upper_bound_inclusive()
+		  && compare_query_values(it->second, query_spec.upper_bound_value()) == 0 )
 		    continue;
 	    }
 	    filtered.push_back(rows[i]);
@@ -853,8 +877,7 @@ private:
     }
 
     int compare_query_values(const value &lhs,
-			     const value &rhs,
-			     bool inclusive) const
+			     const value &rhs) const
     {
 	if ( lhs.is_integer() || rhs.is_integer() )
 	{
@@ -863,7 +886,7 @@ private:
 	    if ( a > b )
 		return 1;
 	    if ( a == b )
-		return inclusive ? 1 : 0;
+		return 0;
 	    return -1;
 	}
 	if ( lhs.is_real() || rhs.is_real() )
@@ -873,7 +896,7 @@ private:
 	    if ( a > b )
 		return 1;
 	    if ( a == b )
-		return inclusive ? 1 : 0;
+		return 0;
 	    return -1;
 	}
 	const std::string &a = lhs.as_string();
@@ -881,7 +904,7 @@ private:
 	if ( a > b )
 	    return 1;
 	if ( a == b )
-	    return inclusive ? 1 : 0;
+	    return 0;
 	return -1;
     }
 

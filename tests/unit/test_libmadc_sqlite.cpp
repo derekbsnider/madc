@@ -177,6 +177,14 @@ TEST_SUITE("libmadc sqlite backend") {
 	    CHECK(row.id == 3);
 	    CHECK_FALSE(ranged->next(row));
 	    ranged->close();
+
+	    std::unique_ptr<madc::Cursor<StorageProbe> > bounded =
+		ds.query(madc::query().from("users").where_gte("id", madc::value(int64_t(1))).where_lte("id", madc::value(int64_t(2))).limit(2).build(), &err);
+	    REQUIRE(static_cast<bool>(bounded));
+	    REQUIRE(bounded->next(row));
+	    CHECK(row.id == 1);
+	    CHECK_FALSE(bounded->next(row));
+	    bounded->close();
 	}
 
 	std::remove(path.c_str());
