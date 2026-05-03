@@ -212,22 +212,6 @@ public:
 			     "Relation query_related_raw failed: target query must be a builder query");
 	    return std::unique_ptr<Cursor<value>>();
 	}
-	if ( to_query.selected_fields().empty() )
-	{
-	    if ( err )
-		*err = error(error::severity::error,
-			     error::phase::runtime,
-			     "Relation query_related_raw failed: target query must select one or more fields");
-	    return std::unique_ptr<Cursor<value>>();
-	}
-	if ( !target_query_is_compatible(to_query) )
-	{
-	    if ( err )
-		*err = error(error::severity::error,
-			     error::phase::runtime,
-			     "Relation query_related_raw failed: target query must only describe dataset/selected fields");
-	    return std::unique_ptr<Cursor<value>>();
-	}
 	if ( !to_query.dataset_name().empty() && to_query.dataset_name() != _to->name() )
 	{
 	    if ( err )
@@ -246,6 +230,9 @@ public:
 	A from_row;
 	while ( source_rows->next(from_row) )
 	{
+	    if ( to_query.has_limit() && projected_rows.size() >= to_query.row_limit() )
+		break;
+
 	    value intermediate;
 	    if ( !_from->get_field_from_row(from_row, _keys[0].from_field, intermediate, err) )
 	    {
@@ -263,8 +250,11 @@ public:
 	    if ( !found )
 		continue;
 
+	    if ( !_to->row_matches_query(related_row, to_query, err) )
+		continue;
+
 	    value projected;
-	    if ( !project_related_row(related_row, to_query, projected, err) )
+	    if ( !_to->project_row(related_row, to_query, projected, err) )
 	    {
 		source_rows->close();
 		return std::unique_ptr<Cursor<value>>();
@@ -277,30 +267,6 @@ public:
     }
 
 private:
-    bool target_query_is_compatible(const Query &query) const
-    {
-	return !query.has_where_equality()
-	    && !query.has_lower_bound()
-	    && !query.has_upper_bound()
-	    && !query.has_limit();
-    }
-
-    bool project_related_row(const B &row,
-			     const Query &query,
-			     value &out,
-			     error *err) const
-    {
-	out = value::make_object();
-	for ( std::size_t i = 0; i < query.selected_fields().size(); ++i )
-	{
-	    value field_value;
-	    if ( !_to->get_field_from_row(row, query.selected_fields()[i], field_value, err) )
-		return false;
-	    out.object()[query.selected_fields()[i]] = field_value;
-	}
-	return true;
-    }
-
     bool resolve_intermediate(const value &intermediate,
 			      B &out,
 			      bool &found,

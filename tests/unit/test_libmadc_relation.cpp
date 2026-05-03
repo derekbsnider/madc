@@ -198,7 +198,11 @@ TEST_SUITE("libmadc relation backend") {
 	std::unique_ptr<madc::Cursor<madc::value> > projected =
 	    payload_relation.query_related_raw(
 		madc::query().from("payload_index").where_gte("id", madc::value(int64_t(2))).build(),
-		madc::query().from("payload_rows").select(std::vector<std::string>{"payload_id", "body"}).build(),
+		madc::query().from("payload_rows")
+		    .where_gt("payload_id", madc::value(int64_t(150)))
+		    .select(std::vector<std::string>{"payload_id", "body"})
+		    .limit(1)
+		    .build(),
 		&err);
 	REQUIRE(static_cast<bool>(projected));
 	madc::value projected_row;
@@ -211,6 +215,22 @@ TEST_SUITE("libmadc relation backend") {
 	CHECK(projected_row.as_object().at("body") == madc::value("Second payload body with more text."));
 	CHECK_FALSE(projected->next(projected_row));
 	projected->close();
+
+	std::unique_ptr<madc::Cursor<madc::value> > full_rows =
+	    payload_relation.query_related_raw(
+		madc::query().from("payload_index").where_eq("id", madc::value(int64_t(1))).build(),
+		madc::query().from("payload_rows").build(),
+		&err);
+	REQUIRE(static_cast<bool>(full_rows));
+	REQUIRE(full_rows->next(projected_row));
+	REQUIRE(projected_row.is_object());
+	CHECK(projected_row.as_object().count("payload_id") == 1);
+	CHECK(projected_row.as_object().count("body") == 1);
+	CHECK(projected_row.as_object().count("priority") == 1);
+	CHECK(projected_row.as_object().at("payload_id") == madc::value(int64_t(101)));
+	CHECK(projected_row.as_object().at("priority") == madc::value(int64_t(7)));
+	CHECK_FALSE(full_rows->next(projected_row));
+	full_rows->close();
 
 	std::remove(index_path.c_str());
 	std::remove(payload_path.c_str());
@@ -271,7 +291,11 @@ TEST_SUITE("libmadc relation backend") {
 	std::unique_ptr<madc::Cursor<madc::value> > projected =
 	    user_notes.query_related_raw(
 		madc::query().from("users").where_gte("id", madc::value(int64_t(2))).limit(2).build(),
-		madc::query().from("notes").select(std::vector<std::string>{"note"}).build(),
+		madc::query().from("notes")
+		    .where_eq("note", madc::value("charlie note"))
+		    .select(std::vector<std::string>{"note"})
+		    .limit(1)
+		    .build(),
 		&err);
 	REQUIRE(static_cast<bool>(projected));
 
@@ -280,10 +304,6 @@ TEST_SUITE("libmadc relation backend") {
 	REQUIRE(projected_row.is_object());
 	CHECK(projected_row.as_object().count("note") == 1);
 	CHECK(projected_row.as_object().count("id") == 0);
-	CHECK(projected_row.as_object().at("note") == madc::value("bravo note"));
-	REQUIRE(projected->next(projected_row));
-	REQUIRE(projected_row.is_object());
-	CHECK(projected_row.as_object().count("note") == 1);
 	CHECK(projected_row.as_object().at("note") == madc::value("charlie note"));
 	CHECK_FALSE(projected->next(projected_row));
 	projected->close();

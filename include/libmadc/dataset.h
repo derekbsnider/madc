@@ -586,6 +586,40 @@ public:
 	return true;
     }
 
+    bool row_matches_query(const T &row,
+			   const Query &query_spec,
+			   error *err = nullptr) const
+    {
+	value logical = _mapper->encode(row);
+	if ( !logical.is_object() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet row_matches_query failed: record is not an object");
+	    return false;
+	}
+	return record_matches_query(logical, query_spec);
+    }
+
+    bool project_row(const T &row,
+		     const Query &query_spec,
+		     value &out,
+		     error *err = nullptr) const
+    {
+	value logical = _mapper->encode(row);
+	if ( !logical.is_object() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet project_row failed: record is not an object");
+	    return false;
+	}
+	out = project_logical_record(logical, query_spec);
+	return true;
+    }
+
     bool get_key_from_row(const T &row,
 			  value &out,
 			  error *err = nullptr) const

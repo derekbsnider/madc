@@ -60,17 +60,19 @@
   `DataSet<T>::query_raw(...)`, so `select(...)` can return projected
   `madc::value` objects without waiting for typed partial decode, and
   strict builder bounds now exist too through `where_gt(...)` /
-  `where_lt(...)`.
+  `where_lt(...)`. `Relation<A,B>::query_related_raw(...)` now also
+  accepts target-side builder filters/limits instead of only
+  dataset+projection metadata.
   The canonical storage plan now also explicitly separates logical query
   IR from physical execution IR and treats driver capabilities as a
   coarse planning filter rather than a replacement for per-backend query
   shape validation. Next concrete steps: federated planning on top of
   that pushed-query path; decide whether projection pushdown should
   expand beyond the current keyed/SQLite drivers; decide whether
-  `Relation::query_related(...)`
-  needs richer target-side query composition before any typed partial
-  decode work; then broaden builder support beyond equality and ordered
-  bounds into richer predicates; decide whether FLR/VLR relations should grow
+  `Relation::query_related(...)` itself should learn the same target-side
+  filtering semantics before any typed partial decode work; then broaden
+  builder support beyond equality and ordered bounds into richer
+  predicates; decide whether FLR/VLR relations should grow
   helper paths for index maintenance after payload rewrites; then branch
   into the next backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,

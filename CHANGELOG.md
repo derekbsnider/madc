@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **Relation raw traversal now accepts real target-side builder
+  composition.** `Relation<A,B>::query_related_raw(...)` no longer
+  restricts the target query to just dataset name plus selected fields.
+  Target-side builder filters and limits are now honored against the
+  resolved related rows, and an empty `select(...)` now means “return
+  the full logical object” instead of hard-failing. This keeps relation
+  traversal aligned with the existing `DataSet<T>::query_raw(...)`
+  surface without inventing a separate relation-only query language.
+
 - **Strict builder bounds now have a public API.** `QueryBuilder` now
   exposes `where_gt(...)` and `where_lt(...)` in addition to the
   existing inclusive bound helpers, so callers can express exclusive
