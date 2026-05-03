@@ -1,6 +1,7 @@
 #ifndef __LIBMADC_RELATION_H
 #define __LIBMADC_RELATION_H 1
 
+#include "libmadc/dataset.h"
 #include "libmadc/error.h"
 #include "libmadc/value.h"
 
@@ -94,6 +95,60 @@ public:
     const std::string &edge_label() const { return _edge_label; }
     RelationKind relation_kind() const { return _kind; }
     const std::vector<RelationKeyPair> &keys() const { return _keys; }
+
+    bool resolve(const value &from_key, B &out, error *err = nullptr) const
+    {
+	if ( !_from || !_to )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation resolve failed: relation endpoints are not bound");
+	    return false;
+	}
+	if ( _keys.empty() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation resolve failed: relation has no key mapping");
+	    return false;
+	}
+
+	value intermediate;
+	if ( !_from->get_field(from_key, _keys[0].from_field, intermediate, err) )
+	    return false;
+
+	switch ( _kind )
+	{
+	    case RelationKind::key_match:
+		return _to->get(intermediate, out, err);
+
+	    case RelationKind::offset:
+	    {
+		if ( !intermediate.is_integer() )
+		{
+		    if ( err )
+			*err = error(error::severity::error,
+				     error::phase::runtime,
+				     "Relation resolve failed: offset field `" + _keys[0].from_field + "` is not an integer");
+		    return false;
+		}
+		RecordLocator locator =
+		    RecordLocator::at_byte_offset(static_cast<uint64_t>(intermediate.as_integer()));
+		return _to->get_by_locator(locator, out, err);
+	    }
+
+	    case RelationKind::positional:
+	    case RelationKind::graph_edge:
+	    default:
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "Relation resolve failed: relation kind is not directly resolvable yet");
+		return false;
+	}
+    }
 
 private:
     DataSet<A> *_from;

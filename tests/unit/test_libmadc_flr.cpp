@@ -14,6 +14,7 @@ bool madc_verbose = false;
 #include <memory>
 #include <string>
 #include <unistd.h>
+#include <vector>
 
 enum class StorageStatus : int32_t
 {
@@ -245,5 +246,154 @@ TEST_SUITE("libmadc flr backend") {
 
 	std::remove(path.c_str());
 	std::remove(tombstones.c_str());
+    }
+
+    TEST_CASE("flr compact reaps tombstoned rows into dead archive and shrinks live file") {
+	const std::string path =
+	    "/tmp/madc_flr_compact_" + std::to_string(static_cast<long long>(getpid())) + ".bin";
+	const std::string tombstones =
+	    "/tmp/madc_flr_compact_" + std::to_string(static_cast<long long>(getpid())) + ".bits";
+	const std::string dead =
+	    "/tmp/madc_flr_compact_" + std::to_string(static_cast<long long>(getpid())) + ".dead";
+	std::remove(path.c_str());
+	std::remove(tombstones.c_str());
+	std::remove(dead.c_str());
+
+	madc::MappingSpec<StorageProbe> live_spec;
+	live_spec.key("id")
+		 .fixed_record_size(64)
+		 .tombstone_file(tombstones)
+		 .dead_record_file(dead);
+
+	madc::MappingSpec<StorageProbe> archive_spec;
+	archive_spec.key("id")
+		    .fixed_record_size(64);
+
+	StorageProbe alice = make_probe(1, 10, 7, true, StorageStatus::active, 'A',
+					"ALPHA", "Alice Example", 1.25);
+	StorageProbe bob = make_probe(2, 20, 9, false, StorageStatus::disabled, 'B',
+				      "BRAVO", "Bob Example", 2.5);
+	StorageProbe cara = make_probe(3, 30, 11, true, StorageStatus::active, 'C',
+				       "CHARLIE", "Cara Example", 3.75);
+
+	madc::error err;
+	{
+	    madc::DataSet<StorageProbe> ds("flr://" + path);
+	    ds.mapping(live_spec).name("users");
+
+	    REQUIRE(ds.insert(alice, &err));
+	    REQUIRE(ds.insert(bob, &err));
+	    REQUIRE(ds.insert(cara, &err));
+	    REQUIRE(ds.erase(madc::value(int64_t(2)), &err));
+	    CHECK(ds.size(&err) == 2);
+
+	    REQUIRE(ds.compact(&err));
+	    CHECK(ds.size(&err) == 2);
+	    CHECK(file_size(path) == 128);
+	    CHECK(file_size(dead) == 64);
+	    CHECK(file_size(tombstones) == 1);
+
+	    StorageProbe fetched;
+	    CHECK_FALSE(ds.get(madc::value(int64_t(2)), fetched, &err));
+	    REQUIRE(ds.get(madc::value(int64_t(1)), fetched, &err));
+	    CHECK(fetched.title == "Alice Example");
+	    REQUIRE(ds.get(madc::value(int64_t(3)), fetched, &err));
+	    CHECK(fetched.title == "Cara Example");
+	}
+
+	{
+	    madc::DataSet<StorageProbe> ds("flr://" + path);
+	    ds.mapping(live_spec).name("users");
+	    madc::DataSet<StorageProbe> archive("flr://" + dead);
+	    archive.mapping(archive_spec).name("dead_users");
+
+	    madc::error archive_err;
+	    CHECK(ds.size(&err) == 2);
+	    CHECK(archive.size(&archive_err) == 1);
+
+	    StorageProbe fetched;
+	    REQUIRE(archive.get(madc::value(int64_t(2)), fetched, &archive_err));
+	    CHECK(fetched.title == "Bob Example");
+	    CHECK(short_name_string(fetched) == "BRAVO");
+	}
+
+	std::remove(path.c_str());
+	std::remove(tombstones.c_str());
+	std::remove(dead.c_str());
+    }
+
+    TEST_CASE("flr restore after reap reinserts archived row in ordered key position") {
+	const std::string path =
+	    "/tmp/madc_flr_restore_" + std::to_string(static_cast<long long>(getpid())) + ".bin";
+	const std::string tombstones =
+	    "/tmp/madc_flr_restore_" + std::to_string(static_cast<long long>(getpid())) + ".bits";
+	const std::string dead =
+	    "/tmp/madc_flr_restore_" + std::to_string(static_cast<long long>(getpid())) + ".dead";
+	std::remove(path.c_str());
+	std::remove(tombstones.c_str());
+	std::remove(dead.c_str());
+
+	madc::MappingSpec<StorageProbe> live_spec;
+	live_spec.key("id")
+		 .fixed_record_size(64)
+		 .ordered_by("id", madc::SchemaInfo::key_compare::numeric_signed)
+		 .tombstone_file(tombstones)
+		 .dead_record_file(dead);
+
+	madc::MappingSpec<StorageProbe> archive_spec;
+	archive_spec.key("id")
+		    .fixed_record_size(64)
+		    .ordered_by("id", madc::SchemaInfo::key_compare::numeric_signed);
+
+	StorageProbe one = make_probe(1, 10, 7, true, StorageStatus::active, 'A',
+				      "ALPHA", "Alice Example", 1.25);
+	StorageProbe two = make_probe(2, 20, 9, false, StorageStatus::disabled, 'B',
+				      "BRAVO", "Bob Example", 2.5);
+	StorageProbe three = make_probe(3, 30, 11, true, StorageStatus::active, 'C',
+					"CHARLIE", "Cara Example", 3.75);
+
+	madc::error err;
+	{
+	    madc::DataSet<StorageProbe> ds("flr://" + path);
+	    ds.mapping(live_spec).name("users");
+
+	    REQUIRE(ds.insert(one, &err));
+	    REQUIRE(ds.insert(two, &err));
+	    REQUIRE(ds.insert(three, &err));
+	    REQUIRE(ds.erase(madc::value(int64_t(2)), &err));
+	    REQUIRE(ds.compact(&err));
+	    CHECK(ds.size(&err) == 2);
+
+	    REQUIRE(ds.restore(madc::value(int64_t(2)), &err));
+	    CHECK(ds.size(&err) == 3);
+	}
+
+	{
+	    madc::DataSet<StorageProbe> ds("flr://" + path);
+	    ds.mapping(live_spec).name("users");
+	    madc::DataSet<StorageProbe> archive("flr://" + dead);
+	    archive.mapping(archive_spec).name("dead_users");
+
+	    CHECK(ds.size(&err) == 3);
+	    CHECK(archive.size(&err) == 0);
+
+	    StorageProbe fetched;
+	    REQUIRE(ds.get(madc::value(int64_t(2)), fetched, &err));
+	    CHECK(fetched.title == "Bob Example");
+	    CHECK(short_name_string(fetched) == "BRAVO");
+
+	    std::vector<int64_t> ids;
+	    for (madc::DataSet<StorageProbe>::iterator it = ds.begin(&err);
+		 it != ds.end(&err); ++it)
+		ids.push_back(it->id);
+	    REQUIRE(ids.size() == 3);
+	    CHECK(ids[0] == 1);
+	    CHECK(ids[1] == 2);
+	    CHECK(ids[2] == 3);
+	}
+
+	std::remove(path.c_str());
+	std::remove(tombstones.c_str());
+	std::remove(dead.c_str());
     }
 }

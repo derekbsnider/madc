@@ -193,10 +193,13 @@ TEST_SUITE("libmadc storage contract") {
 	madc::MappingSpec<StorageProbe> spec;
 	spec.key("id")
 	    .fixed_record_size(64)
-	    .tombstone_file("/tmp/users.bits");
+	    .tombstone_file("/tmp/users.bits")
+	    .dead_record_file("/tmp/users.dead");
 
 	CHECK(spec.has_tombstone_file());
 	CHECK(spec.tombstone_path() == "/tmp/users.bits");
+	CHECK(spec.has_dead_record_file());
+	CHECK(spec.dead_record_path() == "/tmp/users.dead");
     }
 
     TEST_CASE("Relation can express positional offset key and graph bindings") {

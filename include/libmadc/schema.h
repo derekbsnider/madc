@@ -165,6 +165,8 @@ public:
     key_compare ordered_key_compare() const { return _ordered_key_compare; }
     bool has_tombstone_sidecar() const { return !_tombstone_path.empty(); }
     const std::string &tombstone_path() const { return _tombstone_path; }
+    bool has_dead_record_archive() const { return !_dead_record_path.empty(); }
+    const std::string &dead_record_path() const { return _dead_record_path; }
     const std::vector<SchemaField> &fields() const { return _fields; }
 
     void set_name(const std::string &type_name) { _name = type_name; }
@@ -192,6 +194,10 @@ public:
     {
 	_tombstone_path = path;
     }
+    void set_dead_record_path(const std::string &path)
+    {
+	_dead_record_path = path;
+    }
     void add_field(const SchemaField &field) { _fields.push_back(field); }
 
 private:
@@ -207,6 +213,7 @@ private:
     std::string _ordered_key_field;
     key_compare _ordered_key_compare;
     std::string _tombstone_path;
+    std::string _dead_record_path;
     std::vector<SchemaField> _fields;
 };
 

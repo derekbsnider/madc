@@ -6,6 +6,7 @@
 #include "libmadc/schema.h"
 #include "libmadc/value.h"
 
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <vector>
@@ -33,6 +34,36 @@ struct DriverCapabilities
     bool soft_delete = false;
 };
 
+struct RecordLocator
+{
+    enum class kind
+    {
+	none,
+	byte_offset
+    };
+
+    kind locator_kind = kind::none;
+    uint64_t byte_offset = 0;
+
+    static RecordLocator none()
+    {
+	return RecordLocator();
+    }
+
+    static RecordLocator at_byte_offset(uint64_t offset)
+    {
+	RecordLocator loc;
+	loc.locator_kind = kind::byte_offset;
+	loc.byte_offset = offset;
+	return loc;
+    }
+
+    bool valid() const
+    {
+	return locator_kind != kind::none;
+    }
+};
+
 class DataDriver
 {
 public:
@@ -51,6 +82,18 @@ public:
     virtual bool can_execute(const Query &query) const = 0;
 
     virtual bool insert_record(const value &record, error *err = nullptr) = 0;
+    virtual bool insert_record_with_locator(const value &record,
+					    RecordLocator &locator,
+					    error *err = nullptr)
+    {
+	(void)record;
+	locator = RecordLocator::none();
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 std::string(name()) + " does not support record locators");
+	return false;
+    }
     virtual bool update_record(const std::string &key_field,
 			       const value &key,
 			       const value &record,
@@ -61,10 +104,23 @@ public:
     virtual bool restore_record(const std::string &key_field,
 				const value &key,
 				error *err = nullptr) = 0;
+    virtual bool compact_records(error *err = nullptr) = 0;
     virtual bool get_record(const std::string &key_field,
 			    const value &key,
 			    value &out,
 			    error *err = nullptr) const = 0;
+    virtual bool get_record_by_locator(const RecordLocator &locator,
+				       value &out,
+				       error *err = nullptr) const
+    {
+	(void)locator;
+	(void)out;
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 std::string(name()) + " does not support record locators");
+	return false;
+    }
     virtual bool scan_records(std::vector<value> &out,
 			      error *err = nullptr) const = 0;
 };

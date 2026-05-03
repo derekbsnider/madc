@@ -337,6 +337,11 @@ public:
 	return fail(err, "gdbm restore is unsupported without a tombstone sidecar");
     }
 
+    bool compact_records(error *err = nullptr)
+    {
+	return fail(err, "gdbm compact is unsupported");
+    }
+
     bool get_record(const std::string &key_field,
 			    const value &key_value,
 			    value &out,

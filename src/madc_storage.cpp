@@ -559,6 +559,15 @@ public:
 	return false;
     }
 
+    bool compact_records(error *err = nullptr)
+    {
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 "dsv compact is unsupported");
+	return false;
+    }
+
     bool get_record(const std::string &key_field,
 		    const value &key,
 		    value &out,
@@ -725,6 +734,7 @@ public:
 	_rows.clear();
 	_tombstones.clear();
 	_tombstone_path = _schema.tombstone_path();
+	_dead_record_path = _schema.dead_record_path();
 
 	std::ifstream is(_path.c_str(), std::ios::binary);
 	if ( !is.good() )
@@ -791,6 +801,7 @@ public:
 	_tombstones.clear();
 	_path.clear();
 	_tombstone_path.clear();
+	_dead_record_path.clear();
 	_opened = false;
     }
 
@@ -919,7 +930,25 @@ public:
 	    return false;
 	}
 	int idx = find_row_index(key_field, key, true);
-	if ( idx < 0 )
+	if ( idx >= 0 )
+	{
+	    std::size_t pos = static_cast<std::size_t>(idx);
+	    if ( !_tombstones[pos] )
+	    {
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "flr restore failed: record is not tombstoned");
+		return false;
+	    }
+	    _tombstones[pos] = false;
+	    if ( flush(err) )
+		return true;
+	    _tombstones[pos] = true;
+	    return false;
+	}
+
+	if ( _dead_record_path.empty() )
 	{
 	    if ( err )
 		*err = error(error::severity::error,
@@ -927,20 +956,146 @@ public:
 			     "flr restore failed: key not found");
 	    return false;
 	}
-	std::size_t pos = static_cast<std::size_t>(idx);
-	if ( !_tombstones[pos] )
+
+	std::vector<value> archive_rows;
+	if ( !read_rows_from_file(_dead_record_path, archive_rows, err, false) )
+	    return false;
+
+	int archive_idx = find_row_index_in_rows(archive_rows, key_field, key);
+	if ( archive_idx < 0 )
 	{
 	    if ( err )
 		*err = error(error::severity::error,
 			     error::phase::runtime,
-			     "flr restore failed: record is not tombstoned");
+			     "flr restore failed: key not found");
 	    return false;
 	}
-	_tombstones[pos] = false;
-	if ( flush(err) )
+
+	value restored = archive_rows[static_cast<std::size_t>(archive_idx)];
+	std::vector<value> previous_rows = _rows;
+	std::vector<bool> previous_tombstones = _tombstones;
+	std::size_t insert_pos = insertion_index_for_record(restored);
+	_rows.insert(_rows.begin() + static_cast<std::ptrdiff_t>(insert_pos), restored);
+	_tombstones.insert(_tombstones.begin() + static_cast<std::ptrdiff_t>(insert_pos), false);
+
+	if ( !flush(err) )
+	{
+	    _rows = previous_rows;
+	    _tombstones = previous_tombstones;
+	    return false;
+	}
+
+	archive_rows.erase(archive_rows.begin() + archive_idx);
+	if ( write_rows_to_file(_dead_record_path, archive_rows, err) )
 	    return true;
-	_tombstones[pos] = true;
+
+	_rows = previous_rows;
+	_tombstones = previous_tombstones;
+	flush(nullptr);
 	return false;
+    }
+
+    bool compact_records(error *err = nullptr)
+    {
+	if ( !uses_tombstones() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr compact requires a tombstone sidecar");
+	    return false;
+	}
+	if ( _dead_record_path.empty() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr compact requires a dead-record archive path");
+	    return false;
+	}
+
+	std::vector<value> live_rows;
+	std::vector<value> dead_rows;
+	live_rows.reserve(_rows.size());
+	dead_rows.reserve(_rows.size());
+	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	{
+	    if ( is_tombstoned(i) )
+		dead_rows.push_back(_rows[i]);
+	    else
+		live_rows.push_back(_rows[i]);
+	}
+
+	if ( dead_rows.empty() )
+	    return true;
+
+	std::string live_tmp = _path + ".compact.tmp";
+	std::string dead_tmp = _dead_record_path + ".compact.tmp";
+	std::string tomb_tmp = _tombstone_path + ".compact.tmp";
+
+	if ( !write_rows_to_file(live_tmp, live_rows, err) )
+	    return false;
+
+	std::vector<value> archive_rows;
+	if ( !read_rows_from_file(_dead_record_path, archive_rows, err, false) )
+	{
+	    std::remove(live_tmp.c_str());
+	    return false;
+	}
+	archive_rows.insert(archive_rows.end(), dead_rows.begin(), dead_rows.end());
+	if ( !write_rows_to_file(dead_tmp, archive_rows, err) )
+	{
+	    std::remove(live_tmp.c_str());
+	    return false;
+	}
+
+	std::vector<bool> live_tombstones(live_rows.size(), false);
+	if ( !write_packed_bits(tomb_tmp, live_tombstones, err, "flr") )
+	{
+	    std::remove(live_tmp.c_str());
+	    std::remove(dead_tmp.c_str());
+	    return false;
+	}
+
+	std::remove(_path.c_str());
+	if ( std::rename(live_tmp.c_str(), _path.c_str()) != 0 )
+	{
+	    std::remove(live_tmp.c_str());
+	    std::remove(dead_tmp.c_str());
+	    std::remove(tomb_tmp.c_str());
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr compact failed: could not replace live file");
+	    return false;
+	}
+
+	std::remove(_dead_record_path.c_str());
+	if ( std::rename(dead_tmp.c_str(), _dead_record_path.c_str()) != 0 )
+	{
+	    std::remove(dead_tmp.c_str());
+	    std::remove(tomb_tmp.c_str());
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr compact failed: could not replace dead archive");
+	    return false;
+	}
+
+	std::remove(_tombstone_path.c_str());
+	if ( std::rename(tomb_tmp.c_str(), _tombstone_path.c_str()) != 0 )
+	{
+	    std::remove(tomb_tmp.c_str());
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr compact failed: could not replace tombstone sidecar");
+	    return false;
+	}
+
+	_rows = live_rows;
+	_tombstones = live_tombstones;
+	return true;
     }
 
     bool get_record(const std::string &key_field,
@@ -1007,6 +1162,87 @@ private:
 	return uses_tombstones()
 	    && index < _tombstones.size()
 	    && _tombstones[index];
+    }
+
+    int compare_key_values(const value &lhs, const value &rhs) const
+    {
+	switch ( _schema.ordered_key_compare() )
+	{
+	    case SchemaInfo::key_compare::numeric_signed:
+	    {
+		int64_t a = lhs.as_integer();
+		int64_t b = rhs.as_integer();
+		if ( a < b )
+		    return -1;
+		if ( a > b )
+		    return 1;
+		return 0;
+	    }
+	    case SchemaInfo::key_compare::numeric_unsigned:
+	    {
+		uint64_t a = static_cast<uint64_t>(lhs.as_integer());
+		uint64_t b = static_cast<uint64_t>(rhs.as_integer());
+		if ( a < b )
+		    return -1;
+		if ( a > b )
+		    return 1;
+		return 0;
+	    }
+	    case SchemaInfo::key_compare::fixed_text:
+	    case SchemaInfo::key_compare::lexical:
+	    case SchemaInfo::key_compare::none:
+	    default:
+	    {
+		const std::string &a = lhs.as_string();
+		const std::string &b = rhs.as_string();
+		if ( a < b )
+		    return -1;
+		if ( a > b )
+		    return 1;
+		return 0;
+	    }
+	}
+    }
+
+    int find_row_index_in_rows(const std::vector<value> &rows,
+			       const std::string &key_field,
+			       const value &key) const
+    {
+	for ( std::size_t i = 0; i < rows.size(); ++i )
+	{
+	    const std::map<std::string, value> &record = rows[i].as_object();
+	    std::map<std::string, value>::const_iterator it = record.find(key_field);
+	    if ( it != record.end() && it->second == key )
+		return static_cast<int>(i);
+	}
+	return -1;
+    }
+
+    std::size_t insertion_index_for_record(const value &record) const
+    {
+	if ( _schema.record_ordering() != SchemaInfo::ordering_mode::ordered_by_key )
+	    return _rows.size();
+
+	const std::string &key_field = _schema.ordered_key_field();
+	if ( key_field.empty() )
+	    return _rows.size();
+
+	const std::map<std::string, value> &incoming = record.as_object();
+	std::map<std::string, value>::const_iterator incoming_it = incoming.find(key_field);
+	if ( incoming_it == incoming.end() )
+	    return _rows.size();
+
+	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	{
+	    const std::map<std::string, value> &existing = _rows[i].as_object();
+	    std::map<std::string, value>::const_iterator existing_it = existing.find(key_field);
+	    if ( existing_it == existing.end() )
+		continue;
+	    if ( compare_key_values(incoming_it->second, existing_it->second) < 0 )
+		return i;
+	}
+
+	return _rows.size();
     }
 
     int find_row_index(const std::string &key_field,
@@ -1239,25 +1475,87 @@ private:
 	return decode_record(encoded, out, err);
     }
 
-    bool flush(error *err)
+    bool write_rows_to_file(const std::string &path,
+			   const std::vector<value> &rows,
+			   error *err) const
     {
-	std::ofstream os(_path.c_str(), std::ios::binary | std::ios::trunc);
+	std::ofstream os(path.c_str(), std::ios::binary | std::ios::trunc);
 	if ( !os.good() )
 	{
 	    if ( err )
 		*err = error(error::severity::error,
 			     error::phase::runtime,
-			     "failed to open flr path for write: " + _path);
+			     "failed to open flr path for write: " + path);
 	    return false;
 	}
 
-	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	for ( std::size_t i = 0; i < rows.size(); ++i )
 	{
 	    std::vector<char> encoded;
-	    if ( !encode_record(_rows[i], encoded, err) )
+	    if ( !encode_record(rows[i], encoded, err) )
 		return false;
 	    os.write(&encoded[0], static_cast<std::streamsize>(encoded.size()));
 	}
+	return true;
+    }
+
+    bool read_rows_from_file(const std::string &path,
+			     std::vector<value> &rows,
+			     error *err,
+			     bool require_multiple_of_record_size) const
+    {
+	rows.clear();
+	std::ifstream is(path.c_str(), std::ios::binary);
+	if ( !is.good() )
+	    return true;
+
+	is.seekg(0, std::ios::end);
+	std::streamoff bytes = is.tellg();
+	is.seekg(0, std::ios::beg);
+	if ( bytes < 0 )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "failed to inspect flr file size");
+	    return false;
+	}
+	if ( require_multiple_of_record_size
+	  && bytes % static_cast<std::streamoff>(_schema.record_size()) != 0 )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "flr file size is not an exact multiple of record size");
+	    return false;
+	}
+
+	while ( true )
+	{
+	    std::vector<char> record(_schema.record_size(), 0);
+	    is.read(&record[0], static_cast<std::streamsize>(record.size()));
+	    if ( is.gcount() == 0 )
+		break;
+	    if ( is.gcount() != static_cast<std::streamsize>(record.size()) )
+	    {
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "short read while loading flr record");
+		return false;
+	    }
+	    value decoded;
+	    if ( !decode_record(record, decoded, err) )
+		return false;
+	    rows.push_back(decoded);
+	}
+	return true;
+    }
+
+    bool flush(error *err)
+    {
+	if ( !write_rows_to_file(_path, _rows, err) )
+	    return false;
 	if ( uses_tombstones()
 	  && !write_packed_bits(_tombstone_path, _tombstones, err, "flr") )
 	    return false;
@@ -1267,6 +1565,7 @@ private:
     SchemaInfo _schema;
     std::string _path;
     std::string _tombstone_path;
+    std::string _dead_record_path;
     std::vector<value> _rows;
     std::vector<bool> _tombstones;
     bool _opened;
@@ -1319,6 +1618,7 @@ public:
 
 	_path = source.path();
 	_rows.clear();
+	_row_offsets.clear();
 
 	std::ifstream is(_path.c_str(), std::ios::binary);
 	if ( !is.good() )
@@ -1329,6 +1629,15 @@ public:
 
 	while ( true )
 	{
+	    std::streamoff record_offset = is.tellg();
+	    if ( record_offset < 0 )
+	    {
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "failed to inspect vlr record offset");
+		return false;
+	    }
 	    uint32_t record_size = 0;
 	    is.read(reinterpret_cast<char *>(&record_size), sizeof(record_size));
 	    if ( is.gcount() == 0 )
@@ -1357,6 +1666,7 @@ public:
 	    if ( !decode_record(payload, record, err) )
 		return false;
 	    _rows.push_back(record);
+	    _row_offsets.push_back(static_cast<uint64_t>(record_offset));
 	}
 
 	_opened = true;
@@ -1366,6 +1676,7 @@ public:
     void close()
     {
 	_rows.clear();
+	_row_offsets.clear();
 	_path.clear();
 	_opened = false;
     }
@@ -1408,6 +1719,28 @@ public:
 	_rows.push_back(normalized);
 	if ( flush(err) )
 	    return true;
+	_rows.pop_back();
+	return false;
+    }
+
+    bool insert_record_with_locator(const value &record,
+				    RecordLocator &locator,
+				    error *err = nullptr)
+    {
+	if ( !ensure_record_shape(record, err) )
+	    return false;
+	value normalized;
+	if ( !normalize_record(record, normalized, err) )
+	    return false;
+	_rows.push_back(normalized);
+	if ( flush(err) )
+	{
+	    if ( _row_offsets.empty() )
+		locator = RecordLocator::none();
+	    else
+		locator = RecordLocator::at_byte_offset(_row_offsets.back());
+	    return true;
+	}
 	_rows.pop_back();
 	return false;
     }
@@ -1473,6 +1806,15 @@ public:
 	return false;
     }
 
+    bool compact_records(error *err = nullptr)
+    {
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 "vlr compact is unsupported");
+	return false;
+    }
+
     bool get_record(const std::string &key_field,
 		    const value &key,
 		    value &out,
@@ -1484,6 +1826,35 @@ public:
 	    return false;
 	out = _rows[static_cast<std::size_t>(idx)];
 	return true;
+    }
+
+    bool get_record_by_locator(const RecordLocator &locator,
+			       value &out,
+			       error *err = nullptr) const
+    {
+	if ( locator.locator_kind != RecordLocator::kind::byte_offset )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "vlr get_record_by_locator requires a byte-offset locator");
+	    return false;
+	}
+
+	for ( std::size_t i = 0; i < _row_offsets.size(); ++i )
+	{
+	    if ( _row_offsets[i] == locator.byte_offset )
+	    {
+		out = _rows[i];
+		return true;
+	    }
+	}
+
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 "vlr get_record_by_locator failed: offset not found");
+	return false;
     }
 
     bool scan_records(std::vector<value> &out,
@@ -1821,8 +2192,18 @@ private:
 	    return false;
 	}
 
+	_row_offsets.clear();
 	for ( std::size_t i = 0; i < _rows.size(); ++i )
 	{
+	    std::streamoff record_offset = os.tellp();
+	    if ( record_offset < 0 )
+	    {
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "failed to inspect vlr output offset");
+		return false;
+	    }
 	    std::vector<char> encoded;
 	    if ( !encode_record(_rows[i], encoded, err) )
 		return false;
@@ -1838,6 +2219,7 @@ private:
 	    os.write(reinterpret_cast<const char *>(&len), sizeof(len));
 	    if ( len )
 		os.write(&encoded[0], static_cast<std::streamsize>(encoded.size()));
+	    _row_offsets.push_back(static_cast<uint64_t>(record_offset));
 	}
 	return true;
     }
@@ -1845,6 +2227,7 @@ private:
     SchemaInfo _schema;
     std::string _path;
     std::vector<value> _rows;
+    std::vector<uint64_t> _row_offsets;
     bool _opened;
 };
 

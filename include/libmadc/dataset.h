@@ -143,6 +143,8 @@ SchemaInfo map_schema_for_storage(const SchemaInfo &schema, const MappingSpec<T>
     }
     if ( spec.has_tombstone_file() )
 	out.set_tombstone_path(spec.tombstone_path());
+    if ( spec.has_dead_record_file() )
+	out.set_dead_record_path(spec.dead_record_path());
     for ( std::size_t i = 0; i < fields.size(); ++i )
 	out.add_field(fields[i]);
     return out;
@@ -364,6 +366,20 @@ public:
 	return insert(input, err);
     }
 
+    bool insert_with_locator(const T &input,
+			     RecordLocator &locator,
+			     error *err = nullptr)
+    {
+	if ( !open(err) )
+	    return false;
+	value logical = _mapper->encode(input);
+	value storage = detail::logical_to_storage_record<T>(logical, _mapping);
+	if ( !_driver->insert_record_with_locator(storage, locator, err) )
+	    return false;
+	invalidate_snapshot();
+	return true;
+    }
+
     bool update(const T &input, error *err = nullptr)
     {
 	if ( !open(err) )
@@ -432,6 +448,16 @@ public:
 	return true;
     }
 
+    bool compact(error *err = nullptr)
+    {
+	if ( !open(err) )
+	    return false;
+	if ( !_driver->compact_records(err) )
+	    return false;
+	invalidate_snapshot();
+	return true;
+    }
+
     bool erase(iterator pos, error *err = nullptr)
     {
 	if ( pos == end(err) )
@@ -465,6 +491,68 @@ public:
 
 	value logical = detail::storage_to_logical_record<T>(storage_record, _mapping);
 	out = _mapper->decode(logical);
+	return true;
+    }
+
+    bool get_by_locator(const RecordLocator &locator,
+			T &out,
+			error *err = nullptr) const
+    {
+	const_cast<DataSet<T> *>(this)->open(err);
+	if ( !is_open() )
+	    return false;
+
+	value storage_record;
+	if ( !_driver->get_record_by_locator(locator, storage_record, err) )
+	    return false;
+
+	value logical = detail::storage_to_logical_record<T>(storage_record, _mapping);
+	out = _mapper->decode(logical);
+	return true;
+    }
+
+    bool get_field(const value &key,
+		   const std::string &field,
+		   value &out,
+		   error *err = nullptr) const
+    {
+	const_cast<DataSet<T> *>(this)->open(err);
+	if ( !is_open() )
+	    return false;
+	if ( storage_key_field().empty() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet get_field failed: no key field is configured");
+	    return false;
+	}
+
+	value storage_record;
+	if ( !_driver->get_record(storage_key_field(), key, storage_record, err) )
+	    return false;
+
+	value logical = detail::storage_to_logical_record<T>(storage_record, _mapping);
+	if ( !logical.is_object() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet get_field failed: record is not an object");
+	    return false;
+	}
+
+	std::map<std::string, value>::const_iterator it = logical.as_object().find(field);
+	if ( it == logical.as_object().end() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet get_field failed: field `" + field + "` not found");
+	    return false;
+	}
+
+	out = it->second;
 	return true;
     }
 

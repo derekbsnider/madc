@@ -147,6 +147,11 @@ public:
 	_tombstone_path = path;
 	return *this;
     }
+    MappingSpec &dead_record_file(const std::string &path)
+    {
+	_dead_record_path = path;
+	return *this;
+    }
 
     const std::vector<std::string> &keys() const { return _keys; }
     const std::vector<std::string> &excluded_fields() const { return _excluded_fields; }
@@ -163,6 +168,8 @@ public:
     SchemaInfo::key_compare ordered_key_compare() const { return _ordered_key_compare; }
     bool has_tombstone_file() const { return !_tombstone_path.empty(); }
     const std::string &tombstone_path() const { return _tombstone_path; }
+    bool has_dead_record_file() const { return !_dead_record_path.empty(); }
+    const std::string &dead_record_path() const { return _dead_record_path; }
 
 private:
     std::vector<std::string> _keys;
@@ -178,6 +185,7 @@ private:
     std::string _ordered_key_field;
     SchemaInfo::key_compare _ordered_key_compare;
     std::string _tombstone_path;
+    std::string _dead_record_path;
 };
 
 template <typename T>

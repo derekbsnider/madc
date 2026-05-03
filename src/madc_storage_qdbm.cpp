@@ -367,6 +367,15 @@ public:
 	return false;
     }
 
+    bool compact_records(error *err = nullptr)
+    {
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 "qdbm compact is unsupported");
+	return false;
+    }
+
     bool get_record(const std::string &key_field,
 			    const value &key,
 			    value &out,

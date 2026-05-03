@@ -27,11 +27,17 @@
   coverage in `tests/unit/test_libmadc_gdbm.cpp`, plus SQL-backed keyed
   coverage in `tests/unit/test_libmadc_sqlite.cpp`. FLR now also has an
   optional packed-bit tombstone sidecar plus pre-reap `restore(key)`
-  coverage. Next concrete steps:
-  implement FLR reap/compaction into live + dead archive files and then
-  model FLR index -> VLR payload offset bindings as a first real
-  cross-dataset storage pattern; after that, branch into the next
-  backend tier (`leveldb://`, `rocksdb://`, or service
+  coverage, and `compact()` can now reap dead rows into a parallel dead
+  archive FLR while rewriting the live FLR. Restore-after-reap is now
+  defined too: `restore(key)` can pull a row back out of the dead
+  archive and reinsert it into the live FLR, preserving ordered-key
+  sort position when the dataset is configured as ordered. The first
+  real FLR index -> VLR payload offset binding also now exists through
+  record locators plus `Relation::resolve(...)`. Next concrete steps:
+  decide the stability/update policy for VLR payload locators
+  (append-only payload mode, rewrite-aware locator remap, or explicit
+  “locator invalidation on rewrite” contract), then branch into the
+  next backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,
   broaden mapper inference beyond explicit field registration
   (ideally toward struct/class metadata reuse and lower-friction

@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+- **First concrete FLR -> VLR offset relation slice.** The storage
+  layer now has its first real cross-dataset binding, not just relation
+  metadata. `RecordLocator` is now part of the driver/runtime surface,
+  `DataSet<T>` can `insert_with_locator(...)`, `get_by_locator(...)`,
+  and `get_field(...)`, `Relation<A,B>::resolve(...)` can follow offset
+  and key-match bindings, and `vlr://` now tracks byte offsets for
+  variable-record payload rows so `flr://` index rows can point into a
+  VLR payload file by stored offset. New coverage in
+  `tests/unit/test_libmadc_relation.cpp` proves ordered FLR index rows
+  resolving VLR payload rows end-to-end.
+
+- **FLR post-reap restore by dead-archive reinsertion.** `flr://`
+  restore is no longer limited to pre-compaction tombstone clearing.
+  If a tombstoned record has already been reaped into the dead archive,
+  `DataSet<T>::restore(key)` now loads that archived row, reinserts it
+  into the live FLR, and removes it from the archive. Ordered fixed-
+  record datasets now reinsert restored rows by key order rather than
+  blindly appending. New coverage in `tests/unit/test_libmadc_flr.cpp`
+  proves restore-after-reap plus sorted reinsertion.
+
+- **FLR reap/compaction into dead archive files.** The `flr://`
+  tombstone-sidecar path now has its first cleanup workflow.
+  `MappingSpec<T>` / `SchemaInfo` can carry a dead-record archive file,
+  `DataSet<T>` now exposes `compact()`, and `FlrDriver` can reap
+  tombstoned fixed-length records into a parallel archive FLR while
+  rewriting the live FLR to contain only surviving rows and resetting
+  the tombstone bitvector to match the compacted live record count.
+  New coverage in `tests/unit/test_libmadc_flr.cpp` proves live-file
+  shrink plus dead-archive persistence through reopen.
+
 - **Fourth real keyed local DB backend: `sqlite://`.** The storage
   layer now has a SQLite-backed keyed backend alongside `qdbm://`,
   `gdbm://`, and `bdb://`. `src/madc_storage_sqlite.cpp` adds a

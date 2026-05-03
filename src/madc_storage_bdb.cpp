@@ -332,6 +332,11 @@ public:
 	return fail(err, "bdb restore is unsupported without a tombstone sidecar");
     }
 
+    bool compact_records(error *err = nullptr)
+    {
+	return fail(err, "bdb compact is unsupported");
+    }
+
     bool get_record(const std::string &key_field,
 			    const value &key_value,
 			    value &out,
