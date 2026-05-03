@@ -68,10 +68,11 @@
   coarse planning filter rather than a replacement for per-backend query
   shape validation. Next concrete steps: federated planning on top of
   that pushed-query path; decide whether projection pushdown should
-  expand beyond the current keyed/SQLite drivers; decide whether
-  `Relation::query_related(...)` itself should learn the same target-side
-  filtering semantics before any typed partial decode work; then broaden
-  builder support beyond equality and ordered bounds into richer
+  expand beyond the current keyed/SQLite drivers; typed
+  `Relation::query_related(...)` now also honors target-side filters and
+  limits, so the next open relation question is typed partial decode or
+  planner-owned projection rather than basic target filtering. Then
+  broaden builder support beyond equality and ordered bounds into richer
   predicates; decide whether FLR/VLR relations should grow
   helper paths for index maintenance after payload rewrites; then branch
   into the next backend tier (`leveldb://`, `rocksdb://`, or service

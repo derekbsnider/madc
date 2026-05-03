@@ -187,6 +187,7 @@ TEST_SUITE("libmadc relation backend") {
 	std::unique_ptr<madc::Cursor<PayloadRecord> > related =
 	    payload_relation.query_related(
 		madc::query().from("payload_index").where_gte("id", madc::value(int64_t(2))).build(),
+		madc::query().from("payload_rows").where_eq("payload_id", madc::value(int64_t(202))).limit(1).build(),
 		&err);
 	REQUIRE(static_cast<bool>(related));
 	REQUIRE(related->next(resolved));
@@ -275,13 +276,11 @@ TEST_SUITE("libmadc relation backend") {
 	std::unique_ptr<madc::Cursor<PayloadNoteRecord> > related =
 	    user_notes.query_related(
 		madc::query().from("users").where_gte("id", madc::value(int64_t(2))).limit(2).build(),
+		madc::query().from("notes").where_eq("note", madc::value("charlie note")).limit(1).build(),
 		&err);
 	REQUIRE(static_cast<bool>(related));
 
 	PayloadNoteRecord note;
-	REQUIRE(related->next(note));
-	CHECK(note.id == 2);
-	CHECK(note.note == "bravo note");
 	REQUIRE(related->next(note));
 	CHECK(note.id == 3);
 	CHECK(note.note == "charlie note");

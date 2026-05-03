@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **Typed relation traversal now accepts target-side builder filters
+  and limits.** `Relation<A,B>::query_related(...)` now has a target-
+  query overload mirroring the raw relation path, so callers can filter
+  and cap resolved target rows without dropping to `value`-shaped
+  output. Typed relation traversal still rejects `select(...)`, keeping
+  the no-partial-decode rule intact while making target-side filtering
+  semantics consistent across the typed and raw surfaces.
+
 - **Relation raw traversal now accepts real target-side builder
   composition.** `Relation<A,B>::query_related_raw(...)` no longer
   restricts the target query to just dataset name plus selected fields.

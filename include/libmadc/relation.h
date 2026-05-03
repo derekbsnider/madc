@@ -129,6 +129,15 @@ public:
     std::unique_ptr<Cursor<B>> query_related(const Query &from_query,
 					     error *err = nullptr) const
     {
+	Query to_query(Query::kind::builder);
+	to_query.set_dataset_name(_to ? _to->name() : std::string());
+	return query_related(from_query, to_query, err);
+    }
+
+    std::unique_ptr<Cursor<B>> query_related(const Query &from_query,
+					     const Query &to_query,
+					     error *err = nullptr) const
+    {
 	if ( !_from || !_to )
 	{
 	    if ( err )
@@ -145,6 +154,39 @@ public:
 			     "Relation query_related failed: relation has no key mapping");
 	    return std::unique_ptr<Cursor<B>>();
 	}
+	if ( from_query.query_kind() != Query::kind::builder )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related failed: source query must be a builder query");
+	    return std::unique_ptr<Cursor<B>>();
+	}
+	if ( to_query.query_kind() != Query::kind::builder )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related failed: target query must be a builder query");
+	    return std::unique_ptr<Cursor<B>>();
+	}
+	if ( !to_query.selected_fields().empty() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related failed: typed target query does not support projection");
+	    return std::unique_ptr<Cursor<B>>();
+	}
+	if ( !to_query.dataset_name().empty() && to_query.dataset_name() != _to->name() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related failed: target query targets dataset `" + to_query.dataset_name()
+			     + "` but relation target is `" + _to->name() + "`");
+	    return std::unique_ptr<Cursor<B>>();
+	}
 
 	std::unique_ptr<Cursor<A> > source_rows = _from->query(from_query, err);
 	if ( !source_rows.get() )
@@ -154,6 +196,9 @@ public:
 	A from_row;
 	while ( source_rows->next(from_row) )
 	{
+	    if ( to_query.has_limit() && resolved_rows.size() >= to_query.row_limit() )
+		break;
+
 	    value intermediate;
 	    if ( !_from->get_field_from_row(from_row, _keys[0].from_field, intermediate, err) )
 	    {
@@ -168,8 +213,13 @@ public:
 		source_rows->close();
 		return std::unique_ptr<Cursor<B>>();
 	    }
-	    if ( found )
-		resolved_rows.push_back(related_row);
+	    if ( !found )
+		continue;
+
+	    if ( !_to->row_matches_query(related_row, to_query, err) )
+		continue;
+
+	    resolved_rows.push_back(related_row);
 	}
 
 	source_rows->close();
