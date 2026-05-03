@@ -658,6 +658,14 @@ public:
 			     "DataSet query failed: only builder queries are supported");
 	    return std::unique_ptr<Cursor<T>>();
 	}
+	if ( query_spec.predicate_match_mode() != Query::match_mode::all )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet query failed: non-default logical composition is not implemented yet");
+	    return std::unique_ptr<Cursor<T>>();
+	}
 	if ( !query_spec.selected_fields().empty() )
 	{
 	    if ( err )
@@ -703,6 +711,14 @@ public:
 		*err = error(error::severity::error,
 			     error::phase::runtime,
 			     "DataSet query_raw failed: only builder queries are supported");
+	    return std::unique_ptr<Cursor<value> >();
+	}
+	if ( query_spec.predicate_match_mode() != Query::match_mode::all )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet query_raw failed: non-default logical composition is not implemented yet");
 	    return std::unique_ptr<Cursor<value> >();
 	}
 	if ( !query_targets_this_dataset(query_spec) )

@@ -20,10 +20,18 @@ public:
 	gql
     };
 
+    enum class match_mode
+    {
+	all,
+	any
+    };
+
     Query();
     explicit Query(kind k);
 
     kind query_kind() const;
+    match_mode predicate_match_mode() const;
+    void set_predicate_match_mode(match_mode mode);
     const std::string &text() const;
     void set_text(const std::string &text);
     const std::string &dataset_name() const;
@@ -78,6 +86,7 @@ public:
 
 private:
     kind _kind;
+    match_mode _match_mode;
     std::string _text;
     std::string _dataset_name;
     std::vector<std::string> _selected_fields;
@@ -120,6 +129,8 @@ public:
     QueryBuilder &operator=(const QueryBuilder &other) = delete;
 
     QueryBuilder &from(const std::string &dataset_name);
+    QueryBuilder &match_all();
+    QueryBuilder &match_any();
     QueryBuilder &where_eq(const std::string &field, const value &match);
     QueryBuilder &where_ne(const std::string &field, const value &match);
     QueryBuilder &where_in(const std::string &field, const std::vector<value> &matches);

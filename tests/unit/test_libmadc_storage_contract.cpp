@@ -353,6 +353,19 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(built.has_limit());
 	CHECK(built.row_limit() == 2);
 	CHECK(built.selected_fields().empty());
+	CHECK(built.predicate_match_mode() == madc::Query::match_mode::all);
+    }
+
+    TEST_CASE("QueryBuilder can switch predicate match mode metadata") {
+	madc::Query built = madc::query()
+	    .from("users")
+	    .match_any()
+	    .where_eq("short_name", madc::value("ALPHA"))
+	    .build();
+
+	CHECK(built.dataset_name() == "users");
+	CHECK(built.has_where_equality());
+	CHECK(built.predicate_match_mode() == madc::Query::match_mode::any);
     }
 
     TEST_CASE("QueryBuilder can express inequality predicates") {

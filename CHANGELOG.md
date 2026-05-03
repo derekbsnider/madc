@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **QueryBuilder now has a first logical-composition seam.** `Query`
+  now carries predicate match-mode metadata (`all` vs `any`), and
+  `QueryBuilder` exposes `match_all()` / `match_any()` so the public
+  surface can start expressing future AND-vs-OR intent without jumping
+  straight to a planner rewrite. `DataSet<T>::query(...)` and
+  `query_raw(...)` explicitly reject non-default composition for now
+  instead of silently ignoring it. Coverage in
+  `tests/unit/test_libmadc_storage_contract.cpp` locks in the builder
+  metadata shape.
+
 - **Builder queries now support `where_not_in(...)`.** `Query` /
   `QueryBuilder` can now carry one explicit negative-membership
   predicate in addition to equality, inequality, positive membership,

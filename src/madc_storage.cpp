@@ -2418,6 +2418,7 @@ public:
 
 Query::Query()
     : _kind(kind::builder),
+      _match_mode(match_mode::all),
       _has_where_equality(false),
       _has_where_inequality(false),
       _has_where_in(false),
@@ -2434,6 +2435,7 @@ Query::Query()
 
 Query::Query(kind k)
     : _kind(k),
+      _match_mode(match_mode::all),
       _has_where_equality(false),
       _has_where_inequality(false),
       _has_where_in(false),
@@ -2451,6 +2453,16 @@ Query::Query(kind k)
 Query::kind Query::query_kind() const
 {
     return _kind;
+}
+
+Query::match_mode Query::predicate_match_mode() const
+{
+    return _match_mode;
+}
+
+void Query::set_predicate_match_mode(match_mode mode)
+{
+    _match_mode = mode;
 }
 
 const std::string &Query::text() const
@@ -2729,6 +2741,7 @@ void Query::clear_limit()
 struct QueryBuilder::impl
 {
     std::string dataset_name;
+    Query::match_mode match_mode = Query::match_mode::all;
     std::vector<std::string> selects;
     std::string where_field;
     value where_value;
@@ -2780,6 +2793,18 @@ QueryBuilder &QueryBuilder::operator=(QueryBuilder &&other) noexcept
 QueryBuilder &QueryBuilder::from(const std::string &dataset_name)
 {
     _->dataset_name = dataset_name;
+    return *this;
+}
+
+QueryBuilder &QueryBuilder::match_all()
+{
+    _->match_mode = Query::match_mode::all;
+    return *this;
+}
+
+QueryBuilder &QueryBuilder::match_any()
+{
+    _->match_mode = Query::match_mode::any;
     return *this;
 }
 
@@ -2875,6 +2900,7 @@ Query QueryBuilder::build() const
 {
     Query q(Query::kind::builder);
     q.set_dataset_name(_->dataset_name);
+    q.set_predicate_match_mode(_->match_mode);
     q.set_selected_fields(_->selects);
     if ( _->has_where )
 	q.set_where_equality(_->where_field, _->where_value);
