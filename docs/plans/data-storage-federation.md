@@ -6,6 +6,42 @@ Exploratory future track. Not on the critical path ahead of the current
 Phase 4 `libmadc` embedding work, but important enough to shape that API
 so we do not paint ourselves into a corner.
 
+## Official Name
+
+This storage/federation/indexing subsystem is now officially named
+`madcdat`.
+
+That name applies to the design track and the eventual host-facing
+surface under `madc::`. It does **not** mean the physical library split
+has started yet.
+
+Current implementation reality:
+
+- the work still lives inside the existing `libmadc` codebase and build
+  surfaces
+- `madc::DataSource`, `DataSet<T>`, `Relation<A,B>`, drivers, mapping,
+  and query work remain part of the current Phase 4 repository work
+
+Core/system distinction:
+
+- `madcdis` is just a conceptual label for the core/internal madc side
+  of the system, not a separate subsystem name
+- `madcdat` is the first explicitly named outward-facing subsystem layer
+- `madc::DataSource` stays in core madc because it is a general
+  external-conduit abstraction, not just database plumbing
+
+Planned future boundary:
+
+- `libmadc`
+  - core embedding/runtime API
+  - includes `madc::DataSource`
+- `libmadcdat`
+  - optional `madcdat` companion library for storage/federation/indexing
+  - depends on core `madc::DataSource`
+
+So the name is official now, while the optional `libmadcdat`
+configure/build split remains a later implementation step.
+
 ## Intent
 
 madc should be able to work with existing in-memory types and persist or
@@ -52,7 +88,7 @@ This avoids:
 - cache invalidation complexity
 - destructor / mutation ambiguity
 
-### 2. `DataSource` identifies location only
+### 2. `DataSource` is core and identifies location only
 
 `madc::DataSource` should carry only scheme plus location.
 
@@ -66,6 +102,16 @@ Examples:
 
 Backend options belong in driver/config objects, not embedded in the
 URI. That keeps identity separate from policy and transport settings.
+
+`DataSource` stays on the core madc side because it is broader than
+storage:
+
+- files
+- databases
+- sockets / IPC
+- pipes
+- embedded host bridges
+- other external conduits that madc may need later
 
 ### 3. Mapping is inferred first, configured second
 
@@ -234,6 +280,25 @@ Responsibilities:
 - expose low-level scan/lookup/mutate hooks
 - optionally accept pushed-down query subplans
 - return structured errors when an operation does not make sense
+
+Drivers should also advertise coarse execution capabilities and a small
+set of planning-relevant traits.
+
+Examples:
+
+- scan
+- point lookup
+- range lookup
+- filter pushdown
+- projection pushdown
+- limit/sort pushdown
+- transaction support
+- locator stability guarantees
+
+Those traits are intentionally coarse. The real execution gate remains
+query-shape validation per backend, but the capability model gives the
+planner a fast first-pass filter before asking a driver to accept or
+reject a normalized subplan.
 
 Examples:
 
@@ -569,6 +634,30 @@ policy, not to any one storage driver.
 Streaming/iterative result access for direct scans and query results.
 
 This avoids forcing eager materialization of whole datasets.
+
+## Query IR and Planning Boundary
+
+madc should treat data queries the same way it treats language work in
+other parts of the system: as a compiler/planner pipeline with a clean
+intermediate representation boundary.
+
+The useful split is:
+
+- logical query IR
+  - intent-level operations such as scan, filter, project, join, and
+    relation traversal
+- physical query IR
+  - executable plan nodes such as dataset scan, keyed lookup, pushed
+    driver subplan, local join, or local projection
+
+Execution should stay cursor-oriented:
+
+- open
+- next
+- close
+
+That keeps the planner free to stream results and only materialize when
+it actually has to.
 
 ### `madc::Query`, `madc::QueryBuilder`, `madc::QueryExecutor`
 
@@ -998,6 +1087,19 @@ One higher-level query may:
 3. read supplemental fields from CSV
 4. join the results in madc
 
+The planning pipeline should stay explicit:
+
+1. query input
+2. logical IR
+3. binding/relation resolution
+4. driver capability annotation
+5. pushdown planning
+6. physical IR
+7. cursor execution
+
+That keeps the system honest about where work happens and avoids
+smuggling planner behavior into drivers or query-text front-ends.
+
 ## High-Level Query Positioning
 
 GQL and SQL should both be supported as optional high-level convenience
@@ -1103,6 +1205,16 @@ Add:
 - graph-lift of `Relation<A, B>`
 - `falkordb://`
 
+Federation V1 should stay deliberately narrow:
+
+- reuse the existing structured builder path
+- push scans/lookups/filters/projection/limit where a backend can honor
+  them
+- execute remaining joins, relation traversal glue, and projection
+  locally
+- avoid distributed aggregation, distributed sorting, or cross-source
+  transactional claims in the first cut
+
 ### V5 — Optional textual query front-ends
 
 Add:
@@ -1139,6 +1251,7 @@ The long-term physical split should reflect that layering:
 
 - `libmadc`
   - core embedding/runtime API
+  - `DataSource`
 - `libmadcdat`
   - optional data/federation/indexing subsystem
 
@@ -1146,9 +1259,10 @@ That keeps the storage/federation work available to ordinary C++ hosts
 without forcing every `libmadc` consumer to carry the full data layer.
 
 It also lines up well with future `madc::eval(...)` planning on the core
-side: the core runtime owns compilation/execution/policy, while
-`libmadcdat` owns storage/federation concerns and can be brought in only
-when the host wants that surface.
+side: the core runtime owns compilation/execution/policy plus the
+general outward-facing `DataSource` abstraction, while `libmadcdat`
+owns storage/federation concerns and can be brought in only when the
+host wants that surface.
 
 ## Open Questions
 

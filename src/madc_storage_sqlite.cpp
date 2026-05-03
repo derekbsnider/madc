@@ -86,6 +86,22 @@ std::string sqlite_type_for(const SchemaField &field)
     return "BLOB";
 }
 
+value project_record(const value &record, const Query &query)
+{
+    if ( query.selected_fields().empty() || !record.is_object() )
+	return record;
+
+    value projected = value::make_object();
+    for ( std::size_t i = 0; i < query.selected_fields().size(); ++i )
+    {
+	std::map<std::string, value>::const_iterator it =
+	    record.as_object().find(query.selected_fields()[i]);
+	if ( it != record.as_object().end() )
+	    projected.object()[query.selected_fields()[i]] = it->second;
+    }
+    return projected;
+}
+
 class Statement
 {
 public:
@@ -223,7 +239,6 @@ public:
     bool can_execute(const Query &query) const
     {
 	return query.query_kind() == Query::kind::builder
-	    && query.selected_fields().empty()
 	    && (!query.has_lower_bound()
 		|| (_key_field && query.lower_bound_field() == _key_field->name))
 	    && (!query.has_upper_bound()
@@ -366,7 +381,7 @@ public:
 
 	int rc = sqlite3_step(stmt.get());
 	if ( rc == SQLITE_ROW )
-	    return row_to_record(stmt.get(), out, err);
+	    return row_to_record(stmt.get(), std::vector<std::string>(), out, err);
 	if ( rc == SQLITE_DONE )
 	    return false;
 	return fail(err, sqlite_message("sqlite get failed"));
@@ -380,7 +395,7 @@ public:
 	if ( !can_execute(query) )
 	    return fail(err, "sqlite query execution does not support this builder shape");
 
-	std::string sql = select_all_sql();
+	std::string sql = select_sql(query.selected_fields());
 	if ( query.has_where_equality() )
 	{
 	    const SchemaField *field = find_field(query.where_field());
@@ -443,9 +458,9 @@ public:
 		return fail(err, sqlite_message("sqlite query execution failed"));
 
 	    value record;
-	    if ( !row_to_record(stmt.get(), record, err) )
+	    if ( !row_to_record(stmt.get(), query.selected_fields(), record, err) )
 		return false;
-	    out.push_back(record);
+	    out.push_back(project_record(record, query));
 	}
     }
 
@@ -468,7 +483,7 @@ public:
 		return fail(err, sqlite_message("sqlite scan failed"));
 
 	    value record;
-	    if ( !row_to_record(stmt.get(), record, err) )
+	    if ( !row_to_record(stmt.get(), std::vector<std::string>(), record, err) )
 		return false;
 	    out.push_back(record);
 	}
@@ -500,15 +515,32 @@ private:
 
     std::string select_all_sql() const
     {
+	return select_sql(std::vector<std::string>());
+    }
+
+    std::string select_sql(const std::vector<std::string> &selected_fields) const
+    {
 	std::string sql = "SELECT ";
-	for ( std::size_t i = 0; i < _schema.fields().size(); ++i )
+	const std::vector<std::string> &fields =
+	    selected_fields.empty() ? schema_field_names() : selected_fields;
+	for ( std::size_t i = 0; i < fields.size(); ++i )
 	{
 	    if ( i )
 		sql += ", ";
-	    sql += quote_identifier(_schema.fields()[i].name);
+	    sql += quote_identifier(fields[i]);
 	}
 	sql += " FROM " + quote_identifier(_table_name);
 	return sql;
+    }
+
+    const std::vector<std::string> &schema_field_names() const
+    {
+	if ( _schema_field_names.empty() )
+	{
+	    for ( std::size_t i = 0; i < _schema.fields().size(); ++i )
+		_schema_field_names.push_back(_schema.fields()[i].name);
+	}
+	return _schema_field_names;
     }
 
     const SchemaField *find_field(const std::string &field_name) const
@@ -576,38 +608,45 @@ private:
 	return true;
     }
 
-    bool row_to_record(sqlite3_stmt *stmt, value &out, error *err) const
+    bool row_to_record(sqlite3_stmt *stmt,
+		       const std::vector<std::string> &selected_fields,
+		       value &out,
+		       error *err) const
     {
 	out = value::make_object();
-	for ( std::size_t i = 0; i < _schema.fields().size(); ++i )
+	const std::vector<std::string> &fields =
+	    selected_fields.empty() ? schema_field_names() : selected_fields;
+	for ( std::size_t i = 0; i < fields.size(); ++i )
 	{
-	    const SchemaField &field = _schema.fields()[i];
+	    const SchemaField *field = find_field(fields[i]);
+	    if ( !field )
+		return fail(err, "sqlite row contains unknown field `" + fields[i] + "`");
 	    if ( sqlite3_column_type(stmt, static_cast<int>(i)) == SQLITE_NULL )
-		return fail(err, "sqlite row has NULL field `" + field.name + "`");
+		return fail(err, "sqlite row has NULL field `" + field->name + "`");
 
-	    if ( field_is_boolean(field) )
+	    if ( field_is_boolean(*field) )
 	    {
-		out.object()[field.name] =
+		out.object()[field->name] =
 		    value(sqlite3_column_int64(stmt, static_cast<int>(i)) != 0);
 		continue;
 	    }
-	    if ( field_is_integer(field) )
+	    if ( field_is_integer(*field) )
 	    {
-		out.object()[field.name] =
+		out.object()[field->name] =
 		    value(static_cast<int64_t>(sqlite3_column_int64(stmt, static_cast<int>(i))));
 		continue;
 	    }
-	    if ( field_is_real(field) )
+	    if ( field_is_real(*field) )
 	    {
-		out.object()[field.name] =
+		out.object()[field->name] =
 		    value(sqlite3_column_double(stmt, static_cast<int>(i)));
 		continue;
 	    }
-	    if ( field_is_character(field) || field_is_text(field) )
+	    if ( field_is_character(*field) || field_is_text(*field) )
 	    {
 		const unsigned char *raw = sqlite3_column_text(stmt, static_cast<int>(i));
 		int bytes = sqlite3_column_bytes(stmt, static_cast<int>(i));
-		out.object()[field.name] =
+		out.object()[field->name] =
 		    value(std::string(reinterpret_cast<const char *>(raw), bytes));
 		continue;
 	    }
@@ -642,6 +681,7 @@ private:
     sqlite3 *_db;
     bool _opened;
     const SchemaField *_key_field;
+    mutable std::vector<std::string> _schema_field_names;
 };
 
 class SqliteDriverFactory : public DataDriverRegistry::Factory

@@ -2,6 +2,50 @@
 
 ## [Unreleased]
 
+- **Storage federation plan tightened around planning boundaries.** The
+  canonical federation plan now explicitly calls out the logical-vs-
+  physical query IR boundary, a coarse driver capability model for
+  planning, and a deliberately narrow V1 federation scope. This keeps
+  the newer pushdown/relation/projection work aligned with a clear
+  planner seam without replacing the more detailed
+  source/mapping/index/reindex design already in the plan.
+
+- **Core `DataSource` classification now distinguishes storage,
+  service, and IPC families.** `madc::DataSource` now exposes both a
+  coarse domain classification layer (`storage`, `service`, `ipc`) and
+  a finer source-family layer (`record_file`, `relational_database`,
+  `keyed_database`, `graph_database`, `service_api`, `unix_socket`,
+  etc.), with helpers such as `is_storage()`, `is_database()`,
+  `is_graph_database()`, `is_service_api()`, and `is_unix_socket()`.
+  This makes the core API match the current design direction:
+  `DataSource` is a general external-conduit abstraction for storage,
+  IPC, and embedding interconnect work, not just database plumbing.
+  Coverage in `tests/unit/test_libmadc_storage_contract.cpp` now proves
+  record-file storage, remote graph storage, relational vs keyed DB
+  classification, HTTPS service, and Unix-socket IPC classification.
+
+- **Storage planning note: `madcdat` is now the official subsystem
+  name.** The storage/federation/indexing design is now explicitly
+  named `madcdat`, while the physical library split remains future
+  work. Current implementation still lives in the existing `libmadc`
+  tree; the later `libmadcdat` boundary stays a planned optional build
+  direction rather than an in-progress extraction. `madc::DataSource`
+  stays on the core side of that line as a general external-conduit
+  abstraction, not something owned exclusively by the data subsystem.
+
+- **Raw projected builder queries.** `DataSet<T>` now has a separate
+  `query_raw(...)` surface for builder queries that return projected
+  `madc::value` objects instead of pretending partial rows still decode
+  into full host `T`. `QueryBuilder::select(...)` now flows end-to-end
+  through the raw path, local fallback can project logical records, and
+  the current pushdown backends (`sqlite://`, `qdbm://`, `bdb://`,
+  `gdbm://`) now accept selected-field builder shapes and return
+  projected objects on that raw surface. Coverage in
+  `tests/unit/test_libmadc_qdbm.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_storage_contract.cpp` proves the new
+  projection path.
+
 - **Bounded key-range query support for builder queries.** `Query` /
   `QueryBuilder` can now carry upper-bound metadata in addition to
   equality and lower-bound filters, so callers can express bounded
@@ -42,13 +86,15 @@
 
 - **Phase 4 planning note: reserve the `libmadcdat` seam and treat
   `madc::eval(...)` as policy-bound execution.** The Phase 4 and storage
-  plans now explicitly reserve an optional inner `libmadcdat`
-  sublibrary for `DataSource`, drivers, mappings, relations, source
-  adapters, indexes, and federation/query planning, instead of letting
-  that complexity bleed into the core `libmadc` embedding surface. The
-  same planning pass also records `madc::eval(...)` as a future core API
-  that must honor the same security policy, parser registration, and
-  invoke limits as file-based program execution.
+  plans now explicitly reserve an optional future `libmadcdat`
+  sublibrary for the `madcdat` storage/federation/indexing subsystem:
+  `DataSource`, drivers, mappings, relations, source adapters, indexes,
+  and federation/query planning. That boundary is intentional planning,
+  not an extraction already underway, and it keeps that complexity from
+  bleeding into the core `libmadc` embedding surface. The same planning
+  pass also records `madc::eval(...)` as a future core API that must
+  honor the same security policy, parser registration, and invoke
+  limits as file-based program execution.
 
 - **Storage federation design note: keep the layers separate.** The
   storage plan in `docs/plans/data-storage-federation.md` now makes the

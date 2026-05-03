@@ -185,6 +185,20 @@ TEST_SUITE("libmadc sqlite backend") {
 	    CHECK(row.id == 1);
 	    CHECK_FALSE(bounded->next(row));
 	    bounded->close();
+
+	    std::unique_ptr<madc::Cursor<madc::value> > projected =
+		ds.query_raw(madc::query().from("users").where_eq("enabled", madc::value(true)).select(std::vector<std::string>{"id", "short_name"}).limit(1).build(), &err);
+	    REQUIRE(static_cast<bool>(projected));
+	    madc::value projected_row;
+	    REQUIRE(projected->next(projected_row));
+	    REQUIRE(projected_row.is_object());
+	    CHECK(projected_row.as_object().count("id") == 1);
+	    CHECK(projected_row.as_object().count("short_name") == 1);
+	    CHECK(projected_row.as_object().count("title") == 0);
+	    CHECK(projected_row.as_object().at("id") == madc::value(int64_t(1)));
+	    CHECK(projected_row.as_object().at("short_name") == madc::value("ALPHA"));
+	    CHECK_FALSE(projected->next(projected_row));
+	    projected->close();
 	}
 
 	std::remove(path.c_str());

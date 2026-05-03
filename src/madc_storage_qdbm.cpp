@@ -98,6 +98,22 @@ int compare_query_values(const value &lhs, const value &rhs)
     return -1;
 }
 
+value project_record(const value &record, const Query &query)
+{
+    if ( query.selected_fields().empty() || !record.is_object() )
+	return record;
+
+    value projected = value::make_object();
+    for ( std::size_t i = 0; i < query.selected_fields().size(); ++i )
+    {
+	std::map<std::string, value>::const_iterator it =
+	    record.as_object().find(query.selected_fields()[i]);
+	if ( it != record.as_object().end() )
+	    projected.object()[query.selected_fields()[i]] = it->second;
+    }
+    return projected;
+}
+
 void append_be(std::string &out, uint64_t value, std::size_t width)
 {
     for ( std::size_t i = 0; i < width; ++i )
@@ -288,7 +304,6 @@ public:
     bool can_execute(const Query &query) const
     {
 	return query.query_kind() == Query::kind::builder
-	    && query.selected_fields().empty()
 	    && _key_field
 	    && ((!query.has_where_equality())
 		|| query.where_field() == _key_field->name)
@@ -450,7 +465,7 @@ public:
 	    value record;
 	    if ( !get_record(_key_field->name, query.where_value(), record, err) )
 		return true;
-	    out.push_back(record);
+	    out.push_back(project_record(record, query));
 	    return true;
 	}
 
@@ -497,7 +512,7 @@ public:
 		if ( cmp > 0 || (!query.upper_bound_inclusive() && cmp == 0) )
 		    break;
 	    }
-	    out.push_back(record);
+	    out.push_back(project_record(record, query));
 	    if ( query.has_limit() && out.size() >= query.row_limit() )
 		break;
 	    if ( !vlcurnext(_db) )

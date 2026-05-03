@@ -64,11 +64,20 @@ Planned direction:
 
 - `libmadc`
   - core engine/runtime/embedding API
-  - `engine`, `program`, `value`, `error`, policy, invoke limits
+  - `engine`, `program`, `value`, `error`, `DataSource`, policy, invoke limits
 - `libmadcdat`
   - optional inner data/federation/indexing subsystem
-  - `DataSource`, drivers, mappings, relations, source adapters,
-    extracted-record families, indexes, reindex workflows, query/planning
+  - drivers, mappings, relations, source adapters, extracted-record
+    families, indexes, reindex workflows, query/planning
+
+The subsystem name for that future boundary is now `madcdat`. The name
+is official before the physical split: current storage/federation work
+still lands inside the existing `libmadc` tree, while `libmadcdat`
+remains a later optional-build outcome of that layering.
+
+`DataSource` stays on the core `libmadc` side of that line. It is the
+general external-conduit abstraction that `madcdat` builds on, not a
+storage-only concept to be extracted with the rest of the data layer.
 
 Why split:
 

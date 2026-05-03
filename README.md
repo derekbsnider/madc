@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 254 integration tests pass. 157 unit tests pass (80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 5 libmadc_flr + 1 libmadc_gdbm + 1 libmadc_qdbm + 2 libmadc_relation + 1 libmadc_sqlite + 5 libmadc_error + 19 libmadc_value + 3 libmadc_vlr + 14 libmadc_storage_contract). (`make -C src fulltest`)**
+**Current status: 254 integration tests pass. 162 unit tests pass (80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 5 libmadc_flr + 1 libmadc_gdbm + 1 libmadc_qdbm + 2 libmadc_relation + 1 libmadc_sqlite + 5 libmadc_error + 19 libmadc_value + 3 libmadc_vlr + 19 libmadc_storage_contract). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -210,7 +210,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/language/multiple-returns.md`](docs/language/multiple-returns.md) | Go-style multiple return values |
 | [`docs/language/ternary-operator.md`](docs/language/ternary-operator.md) | Ternary operator |
 | [`docs/build.md`](docs/build.md) | Build requirements, asmjit setup |
-| [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory typed storage/federation design (`madc::DataSource`, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends) |
+| [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory `madcdat` storage/federation design (`madc::DataSource` stays core, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends, future optional `libmadcdat` boundary) |
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
 | [`docs/test-status.md`](docs/test-status.md) | Per-test results |

@@ -14,6 +14,7 @@ bool madc_verbose = false;
 #include "libmadc/mapper.h"
 #include "libmadc/relation.h"
 #include "libmadc/schema.h"
+#include "libmadc/source_adapter.h"
 
 #include <cstdint>
 #include <string>
@@ -46,17 +47,25 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(dsv.authority().empty());
 	CHECK(dsv.path() == "/tmp/users.csv");
 	CHECK(dsv.location() == "/tmp/users.csv");
+	CHECK(dsv.source_domain() == madc::DataSource::domain::storage);
+	CHECK(dsv.source_family() == madc::DataSource::family::record_file);
+	CHECK(dsv.is_storage());
+	CHECK(dsv.is_file_like());
+	CHECK(dsv.is_record_file());
+	CHECK_FALSE(dsv.is_database());
 	CHECK(dsv.is_local());
 	CHECK_FALSE(dsv.is_remote());
 
 	madc::DataSource flr("flr:///tmp/users.flr");
 	CHECK(flr.scheme() == "flr");
 	CHECK(flr.path() == "/tmp/users.flr");
+	CHECK(flr.is_storage());
 	CHECK(flr.is_local());
 
 	madc::DataSource vlr("vlr:///tmp/users.vlr");
 	CHECK(vlr.scheme() == "vlr");
 	CHECK(vlr.path() == "/tmp/users.vlr");
+	CHECK(vlr.is_storage());
 	CHECK(vlr.is_local());
     }
 
@@ -66,8 +75,91 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(graph.authority() == "127.0.0.1:6379");
 	CHECK(graph.path() == "/social");
 	CHECK(graph.location() == "127.0.0.1:6379/social");
+	CHECK(graph.source_domain() == madc::DataSource::domain::storage);
+	CHECK(graph.source_family() == madc::DataSource::family::graph_database);
+	CHECK(graph.is_storage());
+	CHECK(graph.is_database());
+	CHECK(graph.is_graph_database());
 	CHECK(graph.is_remote());
 	CHECK_FALSE(graph.is_local());
+    }
+
+    TEST_CASE("DataSource can classify service and ipc schemes without storage ownership") {
+	madc::DataSource service("https://api.example.test/v1/users");
+	CHECK(service.source_domain() == madc::DataSource::domain::service);
+	CHECK(service.source_family() == madc::DataSource::family::service_api);
+	CHECK(service.is_service());
+	CHECK(service.is_service_api());
+	CHECK_FALSE(service.is_storage());
+	CHECK(service.is_remote());
+
+	madc::DataSource socket("unix:///tmp/madc.sock");
+	CHECK(socket.path() == "/tmp/madc.sock");
+	CHECK(socket.source_domain() == madc::DataSource::domain::ipc);
+	CHECK(socket.source_family() == madc::DataSource::family::unix_socket);
+	CHECK(socket.is_ipc());
+	CHECK(socket.is_unix_socket());
+	CHECK_FALSE(socket.is_storage());
+	CHECK(socket.is_local());
+    }
+
+    TEST_CASE("DataSource can distinguish relational and keyed database families") {
+	madc::DataSource sqlite("sqlite:///tmp/app.db");
+	CHECK(sqlite.source_domain() == madc::DataSource::domain::storage);
+	CHECK(sqlite.source_family() == madc::DataSource::family::relational_database);
+	CHECK(sqlite.is_database());
+	CHECK(sqlite.is_relational_database());
+	CHECK_FALSE(sqlite.is_keyed_database());
+
+	madc::DataSource redis("redis://127.0.0.1:6379/0");
+	CHECK(redis.source_domain() == madc::DataSource::domain::storage);
+	CHECK(redis.source_family() == madc::DataSource::family::keyed_database);
+	CHECK(redis.is_database());
+	CHECK(redis.is_keyed_database());
+	CHECK_FALSE(redis.is_relational_database());
+    }
+
+    TEST_CASE("SourceLocator can represent byte line and key-path locations") {
+	madc::SourceLocator bytes = madc::SourceLocator::at_byte_range(128, 64);
+	CHECK(bytes.valid());
+	CHECK(bytes.locator_kind == madc::SourceLocator::kind::byte_range);
+	CHECK(bytes.byte_offset == 128);
+	CHECK(bytes.byte_length == 64);
+
+	madc::SourceLocator lines = madc::SourceLocator::at_line_range(42, 3);
+	CHECK(lines.valid());
+	CHECK(lines.locator_kind == madc::SourceLocator::kind::line_range);
+	CHECK(lines.line_start == 42);
+	CHECK(lines.line_count == 3);
+
+	madc::SourceLocator path = madc::SourceLocator::at_key_path("rooms[17].name");
+	CHECK(path.valid());
+	CHECK(path.locator_kind == madc::SourceLocator::kind::key_path);
+	CHECK(path.path == "rooms[17].name");
+    }
+
+    TEST_CASE("ExtractedRecordType can describe named record families from one source") {
+	madc::SchemaInfo room_schema("RoomRecord");
+	room_schema.set_kind(madc::SchemaInfo::kind::structured);
+
+	madc::SchemaField vnum;
+	vnum.name = "vnum";
+	vnum.type_name = "int64_t";
+	vnum.field_kind = madc::SchemaField::kind::integer;
+	vnum.key = true;
+	room_schema.add_field(vnum);
+
+	madc::ExtractedRecordType rooms("RoomRecord");
+	rooms.schema(room_schema)
+	     .nested()
+	     .repeatable();
+	const madc::ExtractedRecordType &rooms_view = rooms;
+
+	CHECK(rooms.name() == "RoomRecord");
+	CHECK(rooms.schema().name() == "RoomRecord");
+	CHECK(rooms.schema().fields().size() == 1);
+	CHECK(rooms_view.nested());
+	CHECK(rooms_view.repeatable());
     }
 
     TEST_CASE("SchemaInfo can describe a mixed storage probe layout") {
@@ -297,5 +389,20 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(built.upper_bound_inclusive());
 	CHECK(built.has_limit());
 	CHECK(built.row_limit() == 5);
+    }
+
+    TEST_CASE("QueryBuilder preserves selected projection fields") {
+	madc::Query built = madc::query()
+	    .from("users")
+	    .select(std::vector<std::string>{"id", "title"})
+	    .limit(2)
+	    .build();
+
+	CHECK(built.dataset_name() == "users");
+	REQUIRE(built.selected_fields().size() == 2);
+	CHECK(built.selected_fields()[0] == "id");
+	CHECK(built.selected_fields()[1] == "title");
+	CHECK(built.has_limit());
+	CHECK(built.row_limit() == 2);
     }
 }

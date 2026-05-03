@@ -114,6 +114,22 @@ std::string encode_key_value(const value &input, const SchemaField &field)
     throw std::runtime_error("gdbm key field `" + field.name + "` uses unsupported key type");
 }
 
+value project_record(const value &record, const Query &query)
+{
+    if ( query.selected_fields().empty() || !record.is_object() )
+	return record;
+
+    value projected = value::make_object();
+    for ( std::size_t i = 0; i < query.selected_fields().size(); ++i )
+    {
+	std::map<std::string, value>::const_iterator it =
+	    record.as_object().find(query.selected_fields()[i]);
+	if ( it != record.as_object().end() )
+	    projected.object()[query.selected_fields()[i]] = it->second;
+    }
+    return projected;
+}
+
 class GdbmDriver : public DataDriver
 {
 public:
@@ -238,7 +254,6 @@ public:
     bool can_execute(const Query &query) const
     {
 	return query.query_kind() == Query::kind::builder
-	    && query.selected_fields().empty()
 	    && query.has_where_equality()
 	    && _key_field
 	    && query.where_field() == _key_field->name;
@@ -377,7 +392,7 @@ public:
 	value record;
 	if ( !get_record(_key_field->name, query.where_value(), record, err) )
 	    return true;
-	out.push_back(record);
+	out.push_back(project_record(record, query));
 	return true;
     }
 

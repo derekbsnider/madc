@@ -656,6 +656,43 @@ public:
 	return execute_query_locally(query_spec, err);
     }
 
+    std::unique_ptr<Cursor<value>> query_raw(const Query &query_spec,
+					     error *err = nullptr) const
+    {
+	const_cast<DataSet<T> *>(this)->open(err);
+	if ( !is_open() )
+	    return std::unique_ptr<Cursor<value> >();
+
+	if ( query_spec.query_kind() != Query::kind::builder )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet query_raw failed: only builder queries are supported");
+	    return std::unique_ptr<Cursor<value> >();
+	}
+	if ( !query_targets_this_dataset(query_spec) )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet query_raw failed: query targets dataset `" + query_spec.dataset_name()
+			     + "` but this DataSet is `" + _name + "`");
+	    return std::unique_ptr<Cursor<value> >();
+	}
+
+	std::vector<value> rows;
+	Query storage_query = translate_query_for_storage(query_spec);
+	if ( _driver->can_execute(storage_query) )
+	{
+	    error pushdown_err;
+	    if ( _driver->execute_query(storage_query, rows, &pushdown_err) )
+		return decode_raw_rows(std::move(rows));
+	}
+
+	return execute_query_locally_raw(query_spec, err);
+    }
+
     std::unique_ptr<Cursor<T>> where_eq(const std::string &field,
 					const value &match,
 					error *err = nullptr) const
@@ -742,6 +779,13 @@ public:
     }
 
 private:
+    bool query_targets_this_dataset(const Query &query_spec) const
+    {
+	return query_spec.dataset_name().empty()
+	    || query_spec.dataset_name() == _name
+	    || query_spec.dataset_name() == _storage_schema.name();
+    }
+
     void invalidate_snapshot() const
     {
 	_iteration_rows.reset();
@@ -778,6 +822,18 @@ private:
 	    decoded.push_back(_mapper->decode(logical));
 	}
 	return std::unique_ptr<Cursor<T> >(new detail::VectorCursor<T>(std::move(decoded)));
+    }
+
+    std::unique_ptr<Cursor<value>> decode_raw_rows(std::vector<value> rows) const
+    {
+	std::vector<value> decoded;
+	decoded.reserve(rows.size());
+	for ( std::size_t i = 0; i < rows.size(); ++i )
+	{
+	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
+	    decoded.push_back(logical);
+	}
+	return std::unique_ptr<Cursor<value> >(new detail::VectorCursor<value>(std::move(decoded)));
     }
 
     Query translate_query_for_storage(const Query &logical_query) const
@@ -830,50 +886,95 @@ private:
 	for ( std::size_t i = 0; i < rows.size(); ++i )
 	{
 	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
-	    if ( query_spec.has_where_equality() )
-	    {
-		if ( !logical.is_object() )
-		    continue;
-		std::map<std::string, value>::const_iterator it =
-		    logical.as_object().find(query_spec.where_field());
-		if ( it == logical.as_object().end() || it->second != query_spec.where_value() )
-		    continue;
-	    }
-	    if ( query_spec.has_lower_bound() )
-	    {
-		if ( !logical.is_object() )
-		    continue;
-		std::map<std::string, value>::const_iterator it =
-		    logical.as_object().find(query_spec.lower_bound_field());
-		if ( it == logical.as_object().end() )
-		    continue;
-		if ( compare_query_values(it->second,
-					 query_spec.lower_bound_value()) < 0 )
-		    continue;
-		if ( !query_spec.lower_bound_inclusive()
-		  && compare_query_values(it->second, query_spec.lower_bound_value()) == 0 )
-		    continue;
-	    }
-	    if ( query_spec.has_upper_bound() )
-	    {
-		if ( !logical.is_object() )
-		    continue;
-		std::map<std::string, value>::const_iterator it =
-		    logical.as_object().find(query_spec.upper_bound_field());
-		if ( it == logical.as_object().end() )
-		    continue;
-		if ( compare_query_values(it->second,
-					 query_spec.upper_bound_value()) > 0 )
-		    continue;
-		if ( !query_spec.upper_bound_inclusive()
-		  && compare_query_values(it->second, query_spec.upper_bound_value()) == 0 )
-		    continue;
-	    }
+	    if ( !record_matches_query(logical, query_spec) )
+		continue;
 	    filtered.push_back(rows[i]);
 	    if ( query_spec.has_limit() && filtered.size() >= query_spec.row_limit() )
 		break;
 	}
 	return decode_rows(std::move(filtered));
+    }
+
+    std::unique_ptr<Cursor<value>> execute_query_locally_raw(const Query &query_spec,
+							     error *err) const
+    {
+	std::vector<value> rows;
+	if ( !_driver->scan_records(rows, err) )
+	    return std::unique_ptr<Cursor<value> >();
+
+	std::vector<value> filtered;
+	filtered.reserve(rows.size());
+	for ( std::size_t i = 0; i < rows.size(); ++i )
+	{
+	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
+	    if ( !record_matches_query(logical, query_spec) )
+		continue;
+	    filtered.push_back(project_logical_record(logical, query_spec));
+	    if ( query_spec.has_limit() && filtered.size() >= query_spec.row_limit() )
+		break;
+	}
+	return std::unique_ptr<Cursor<value> >(new detail::VectorCursor<value>(std::move(filtered)));
+    }
+
+    bool record_matches_query(const value &logical, const Query &query_spec) const
+    {
+	if ( query_spec.has_where_equality() )
+	{
+	    if ( !logical.is_object() )
+		return false;
+	    std::map<std::string, value>::const_iterator it =
+		logical.as_object().find(query_spec.where_field());
+	    if ( it == logical.as_object().end() || it->second != query_spec.where_value() )
+		return false;
+	}
+	if ( query_spec.has_lower_bound() )
+	{
+	    if ( !logical.is_object() )
+		return false;
+	    std::map<std::string, value>::const_iterator it =
+		logical.as_object().find(query_spec.lower_bound_field());
+	    if ( it == logical.as_object().end() )
+		return false;
+	    if ( compare_query_values(it->second,
+				     query_spec.lower_bound_value()) < 0 )
+		return false;
+	    if ( !query_spec.lower_bound_inclusive()
+	      && compare_query_values(it->second, query_spec.lower_bound_value()) == 0 )
+		return false;
+	}
+	if ( query_spec.has_upper_bound() )
+	{
+	    if ( !logical.is_object() )
+		return false;
+	    std::map<std::string, value>::const_iterator it =
+		logical.as_object().find(query_spec.upper_bound_field());
+	    if ( it == logical.as_object().end() )
+		return false;
+	    if ( compare_query_values(it->second,
+				     query_spec.upper_bound_value()) > 0 )
+		return false;
+	    if ( !query_spec.upper_bound_inclusive()
+	      && compare_query_values(it->second, query_spec.upper_bound_value()) == 0 )
+		return false;
+	}
+	return true;
+    }
+
+    value project_logical_record(const value &logical,
+				 const Query &query_spec) const
+    {
+	if ( query_spec.selected_fields().empty() || !logical.is_object() )
+	    return logical;
+
+	value projected = value::make_object();
+	for ( std::size_t i = 0; i < query_spec.selected_fields().size(); ++i )
+	{
+	    const std::string &field = query_spec.selected_fields()[i];
+	    std::map<std::string, value>::const_iterator it = logical.as_object().find(field);
+	    if ( it != logical.as_object().end() )
+		projected.object()[field] = it->second;
+	}
+	return projected;
     }
 
     int compare_query_values(const value &lhs,

@@ -195,6 +195,23 @@ TEST_SUITE("libmadc relation backend") {
 	CHECK_FALSE(related->next(resolved));
 	related->close();
 
+	std::unique_ptr<madc::Cursor<madc::value> > projected =
+	    payload_relation.query_related_raw(
+		madc::query().from("payload_index").where_gte("id", madc::value(int64_t(2))).build(),
+		madc::query().from("payload_rows").select(std::vector<std::string>{"payload_id", "body"}).build(),
+		&err);
+	REQUIRE(static_cast<bool>(projected));
+	madc::value projected_row;
+	REQUIRE(projected->next(projected_row));
+	REQUIRE(projected_row.is_object());
+	CHECK(projected_row.as_object().count("payload_id") == 1);
+	CHECK(projected_row.as_object().count("body") == 1);
+	CHECK(projected_row.as_object().count("priority") == 0);
+	CHECK(projected_row.as_object().at("payload_id") == madc::value(int64_t(202)));
+	CHECK(projected_row.as_object().at("body") == madc::value("Second payload body with more text."));
+	CHECK_FALSE(projected->next(projected_row));
+	projected->close();
+
 	std::remove(index_path.c_str());
 	std::remove(payload_path.c_str());
 	std::remove(payload_tombstones.c_str());
@@ -250,6 +267,26 @@ TEST_SUITE("libmadc relation backend") {
 	CHECK(note.note == "charlie note");
 	CHECK_FALSE(related->next(note));
 	related->close();
+
+	std::unique_ptr<madc::Cursor<madc::value> > projected =
+	    user_notes.query_related_raw(
+		madc::query().from("users").where_gte("id", madc::value(int64_t(2))).limit(2).build(),
+		madc::query().from("notes").select(std::vector<std::string>{"note"}).build(),
+		&err);
+	REQUIRE(static_cast<bool>(projected));
+
+	madc::value projected_row;
+	REQUIRE(projected->next(projected_row));
+	REQUIRE(projected_row.is_object());
+	CHECK(projected_row.as_object().count("note") == 1);
+	CHECK(projected_row.as_object().count("id") == 0);
+	CHECK(projected_row.as_object().at("note") == madc::value("bravo note"));
+	REQUIRE(projected->next(projected_row));
+	REQUIRE(projected_row.is_object());
+	CHECK(projected_row.as_object().count("note") == 1);
+	CHECK(projected_row.as_object().at("note") == madc::value("charlie note"));
+	CHECK_FALSE(projected->next(projected_row));
+	projected->close();
 
 	std::remove(index_path.c_str());
 	std::remove(note_path.c_str());

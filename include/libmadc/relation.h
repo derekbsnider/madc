@@ -176,7 +176,131 @@ public:
 	return std::unique_ptr<Cursor<B> >(new detail::VectorCursor<B>(std::move(resolved_rows)));
     }
 
+    std::unique_ptr<Cursor<value>> query_related_raw(const Query &from_query,
+						     const Query &to_query,
+						     error *err = nullptr) const
+    {
+	if ( !_from || !_to )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related_raw failed: relation endpoints are not bound");
+	    return std::unique_ptr<Cursor<value>>();
+	}
+	if ( _keys.empty() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related_raw failed: relation has no key mapping");
+	    return std::unique_ptr<Cursor<value>>();
+	}
+	if ( from_query.query_kind() != Query::kind::builder )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related_raw failed: source query must be a builder query");
+	    return std::unique_ptr<Cursor<value>>();
+	}
+	if ( to_query.query_kind() != Query::kind::builder )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related_raw failed: target query must be a builder query");
+	    return std::unique_ptr<Cursor<value>>();
+	}
+	if ( to_query.selected_fields().empty() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related_raw failed: target query must select one or more fields");
+	    return std::unique_ptr<Cursor<value>>();
+	}
+	if ( !target_query_is_compatible(to_query) )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related_raw failed: target query must only describe dataset/selected fields");
+	    return std::unique_ptr<Cursor<value>>();
+	}
+	if ( !to_query.dataset_name().empty() && to_query.dataset_name() != _to->name() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related_raw failed: target query targets dataset `" + to_query.dataset_name()
+			     + "` but relation target is `" + _to->name() + "`");
+	    return std::unique_ptr<Cursor<value>>();
+	}
+
+	std::unique_ptr<Cursor<A> > source_rows = _from->query(from_query, err);
+	if ( !source_rows.get() )
+	    return std::unique_ptr<Cursor<value>>();
+
+	std::vector<value> projected_rows;
+	A from_row;
+	while ( source_rows->next(from_row) )
+	{
+	    value intermediate;
+	    if ( !_from->get_field_from_row(from_row, _keys[0].from_field, intermediate, err) )
+	    {
+		source_rows->close();
+		return std::unique_ptr<Cursor<value>>();
+	    }
+
+	    B related_row;
+	    bool found = false;
+	    if ( !resolve_intermediate(intermediate, related_row, found, err) )
+	    {
+		source_rows->close();
+		return std::unique_ptr<Cursor<value>>();
+	    }
+	    if ( !found )
+		continue;
+
+	    value projected;
+	    if ( !project_related_row(related_row, to_query, projected, err) )
+	    {
+		source_rows->close();
+		return std::unique_ptr<Cursor<value>>();
+	    }
+	    projected_rows.push_back(projected);
+	}
+
+	source_rows->close();
+	return std::unique_ptr<Cursor<value> >(new detail::VectorCursor<value>(std::move(projected_rows)));
+    }
+
 private:
+    bool target_query_is_compatible(const Query &query) const
+    {
+	return !query.has_where_equality()
+	    && !query.has_lower_bound()
+	    && !query.has_upper_bound()
+	    && !query.has_limit();
+    }
+
+    bool project_related_row(const B &row,
+			     const Query &query,
+			     value &out,
+			     error *err) const
+    {
+	out = value::make_object();
+	for ( std::size_t i = 0; i < query.selected_fields().size(); ++i )
+	{
+	    value field_value;
+	    if ( !_to->get_field_from_row(row, query.selected_fields()[i], field_value, err) )
+		return false;
+	    out.object()[query.selected_fields()[i]] = field_value;
+	}
+	return true;
+    }
+
     bool resolve_intermediate(const value &intermediate,
 			      B &out,
 			      bool &found,

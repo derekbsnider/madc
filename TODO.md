@@ -15,8 +15,10 @@
   that, §4.3 = the `libmadc.so` Makefile target plus
   `include/madc_api.h` C shim. Also keep the future subsystem split in
   view while finishing the separation: core embedding/runtime stays in
-  `libmadc`, while the storage/federation/indexing track is planned as
-  optional `libmadcdat` (`./configure --with-madcdat`).
+  `libmadc`, including core `madc::DataSource`, while the officially
+  named `madcdat` storage/federation/indexing track is only *planned*
+  as a future optional `libmadcdat` (`./configure --with-madcdat`)
+  rather than a physical split already in progress.
 
 - **Exploratory storage/federation track — move beyond the first local
   backend family.** The first local backends now work from ordinary host
@@ -54,9 +56,19 @@
   relation-aware traversal is now there too:
   `Relation<A,B>::query_related(...)` can walk filtered source rows and
   materialize `key_match` and `offset` targets across datasets/backends.
-  Next concrete steps: federated planning on top of that pushed-query
-  path; broaden builder support from equality+range into richer
-  predicates and projection; decide whether FLR/VLR relations should grow
+  Raw projected builder queries now exist too through
+  `DataSet<T>::query_raw(...)`, so `select(...)` can return projected
+  `madc::value` objects without waiting for typed partial decode.
+  The canonical storage plan now also explicitly separates logical query
+  IR from physical execution IR and treats driver capabilities as a
+  coarse planning filter rather than a replacement for per-backend query
+  shape validation. Next concrete steps: federated planning on top of
+  that pushed-query path; decide whether projection pushdown should
+  expand beyond the current keyed/SQLite drivers; decide whether
+  `Relation::query_related(...)`
+  needs a raw/projection-aware sibling before any typed partial decode
+  work; then broaden builder support from equality+range into richer
+  predicates; decide whether FLR/VLR relations should grow
   helper paths for index maintenance after payload rewrites; then branch
   into the next backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,
