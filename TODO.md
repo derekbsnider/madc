@@ -66,14 +66,19 @@
   The canonical storage plan now also explicitly separates logical query
   IR from physical execution IR and treats driver capabilities as a
   coarse planning filter rather than a replacement for per-backend query
-  shape validation. Next concrete steps: federated planning on top of
-  that pushed-query path; decide whether projection pushdown should
+  shape validation. `where_ne(...)`, `where_in(...)`,
+  `where_not_in(...)`, and `where_like(...)` now exist too: SQLite
+  pushes all four, while keyed stores deliberately fall back
+  locally. Next concrete
+  steps: federated planning on top of that pushed-query path; decide
+  whether projection pushdown should
   expand beyond the current keyed/SQLite drivers; typed
   `Relation::query_related(...)` now also honors target-side filters and
   limits, so the next open relation question is typed partial decode or
   planner-owned projection rather than basic target filtering. Then
-  broaden builder support beyond equality and ordered bounds into richer
-  predicates; decide whether FLR/VLR relations should grow
+  broaden builder support beyond simple single-field predicates and
+  ordered bounds into richer boolean/query composition; decide whether
+  FLR/VLR relations should grow
   helper paths for index maintenance after payload rewrites; then branch
   into the next backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,

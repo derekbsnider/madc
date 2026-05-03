@@ -254,6 +254,10 @@ public:
     bool can_execute(const Query &query) const
     {
 	return query.query_kind() == Query::kind::builder
+	    && !query.has_where_inequality()
+	    && !query.has_where_in()
+	    && !query.has_where_not_in()
+	    && !query.has_where_like()
 	    && query.has_where_equality()
 	    && _key_field
 	    && query.where_field() == _key_field->name;

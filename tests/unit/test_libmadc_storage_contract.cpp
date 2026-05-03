@@ -355,6 +355,76 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(built.selected_fields().empty());
     }
 
+    TEST_CASE("QueryBuilder can express inequality predicates") {
+	madc::Query built = madc::query()
+	    .from("users")
+	    .where_ne("short_name", madc::value("ALPHA"))
+	    .limit(2)
+	    .build();
+
+	CHECK(built.dataset_name() == "users");
+	CHECK(built.has_where_inequality());
+	CHECK(built.where_ne_field() == "short_name");
+	CHECK(built.where_ne_value() == madc::value("ALPHA"));
+	CHECK(built.has_limit());
+	CHECK(built.row_limit() == 2);
+    }
+
+    TEST_CASE("QueryBuilder can express IN predicates") {
+	std::vector<madc::value> ids;
+	ids.push_back(madc::value(int64_t(1)));
+	ids.push_back(madc::value(int64_t(3)));
+	madc::Query built = madc::query()
+	    .from("users")
+	    .where_in("id", ids)
+	    .limit(2)
+	    .build();
+
+	CHECK(built.dataset_name() == "users");
+	CHECK(built.has_where_in());
+	CHECK(built.where_in_field() == "id");
+	REQUIRE(built.where_in_values().size() == 2);
+	CHECK(built.where_in_values()[0] == madc::value(int64_t(1)));
+	CHECK(built.where_in_values()[1] == madc::value(int64_t(3)));
+	CHECK(built.has_limit());
+	CHECK(built.row_limit() == 2);
+    }
+
+    TEST_CASE("QueryBuilder can express NOT IN predicates") {
+	std::vector<madc::value> ids;
+	ids.push_back(madc::value(int64_t(1)));
+	ids.push_back(madc::value(int64_t(3)));
+	madc::Query built = madc::query()
+	    .from("users")
+	    .where_not_in("id", ids)
+	    .limit(2)
+	    .build();
+
+	CHECK(built.dataset_name() == "users");
+	CHECK(built.has_where_not_in());
+	CHECK(built.where_not_in_field() == "id");
+	REQUIRE(built.where_not_in_values().size() == 2);
+	CHECK(built.where_not_in_values()[0] == madc::value(int64_t(1)));
+	CHECK(built.where_not_in_values()[1] == madc::value(int64_t(3)));
+	CHECK(built.has_limit());
+	CHECK(built.row_limit() == 2);
+    }
+
+    TEST_CASE("QueryBuilder can express LIKE predicates") {
+	madc::Query built = madc::query()
+	    .from("users")
+	    .where_like("title", madc::value("C%"))
+	    .limit(1)
+	    .build();
+
+	CHECK(built.dataset_name() == "users");
+	CHECK(built.has_where_like());
+	CHECK(built.where_like_field() == "title");
+	CHECK(built.where_like_value() == madc::value("C%"));
+	CHECK(built.has_limit());
+	CHECK(built.row_limit() == 1);
+    }
+
     TEST_CASE("QueryBuilder can express lower-bound key scans") {
 	madc::Query built = madc::query()
 	    .from("users")

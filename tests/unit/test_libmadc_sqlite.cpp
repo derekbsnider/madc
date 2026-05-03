@@ -202,6 +202,47 @@ TEST_SUITE("libmadc sqlite backend") {
 	    CHECK_FALSE(bounded->next(row));
 	    bounded->close();
 
+	    std::unique_ptr<madc::Cursor<StorageProbe> > not_equal =
+		ds.query(madc::query().from("users").where_ne("short_name", madc::value("ALPHA")).limit(2).build(), &err);
+	    REQUIRE(static_cast<bool>(not_equal));
+	    REQUIRE(not_equal->next(row));
+	    CHECK(row.id == 3);
+	    CHECK(row.short_name == std::string("CHARLIE"));
+	    CHECK_FALSE(not_equal->next(row));
+	    not_equal->close();
+
+	    std::vector<madc::value> match_ids;
+	    match_ids.push_back(madc::value(int64_t(1)));
+	    match_ids.push_back(madc::value(int64_t(3)));
+	    std::unique_ptr<madc::Cursor<StorageProbe> > in_rows =
+		ds.query(madc::query().from("users").where_in("id", match_ids).limit(2).build(), &err);
+	    REQUIRE(static_cast<bool>(in_rows));
+	    REQUIRE(in_rows->next(row));
+	    CHECK(row.id == 1);
+	    REQUIRE(in_rows->next(row));
+	    CHECK(row.id == 3);
+	    CHECK_FALSE(in_rows->next(row));
+	    in_rows->close();
+
+	    std::vector<madc::value> excluded_ids;
+	    excluded_ids.push_back(madc::value(int64_t(1)));
+	    std::unique_ptr<madc::Cursor<StorageProbe> > not_in_rows =
+		ds.query(madc::query().from("users").where_not_in("id", excluded_ids).limit(2).build(), &err);
+	    REQUIRE(static_cast<bool>(not_in_rows));
+	    REQUIRE(not_in_rows->next(row));
+	    CHECK(row.id == 3);
+	    CHECK_FALSE(not_in_rows->next(row));
+	    not_in_rows->close();
+
+	    std::unique_ptr<madc::Cursor<StorageProbe> > like_rows =
+		ds.query(madc::query().from("users").where_like("title", madc::value("C%")).limit(1).build(), &err);
+	    REQUIRE(static_cast<bool>(like_rows));
+	    REQUIRE(like_rows->next(row));
+	    CHECK(row.id == 3);
+	    CHECK(row.title == "Cara Example");
+	    CHECK_FALSE(like_rows->next(row));
+	    like_rows->close();
+
 	    std::unique_ptr<madc::Cursor<madc::value> > projected =
 		ds.query_raw(madc::query().from("users").where_eq("enabled", madc::value(true)).select(std::vector<std::string>{"id", "short_name"}).limit(1).build(), &err);
 	    REQUIRE(static_cast<bool>(projected));

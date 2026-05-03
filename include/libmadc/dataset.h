@@ -881,6 +881,30 @@ private:
 		detail::storage_name_for_logical<T>(_mapping, storage_query.where_field()),
 		storage_query.where_value());
 	}
+	if ( storage_query.has_where_inequality() )
+	{
+	    storage_query.set_where_inequality(
+		detail::storage_name_for_logical<T>(_mapping, storage_query.where_ne_field()),
+		storage_query.where_ne_value());
+	}
+	if ( storage_query.has_where_in() )
+	{
+	    storage_query.set_where_in(
+		detail::storage_name_for_logical<T>(_mapping, storage_query.where_in_field()),
+		storage_query.where_in_values());
+	}
+	if ( storage_query.has_where_not_in() )
+	{
+	    storage_query.set_where_not_in(
+		detail::storage_name_for_logical<T>(_mapping, storage_query.where_not_in_field()),
+		storage_query.where_not_in_values());
+	}
+	if ( storage_query.has_where_like() )
+	{
+	    storage_query.set_where_like(
+		detail::storage_name_for_logical<T>(_mapping, storage_query.where_like_field()),
+		storage_query.where_like_value());
+	}
 	if ( storage_query.has_lower_bound() )
 	{
 	    storage_query.set_lower_bound(
@@ -959,6 +983,65 @@ private:
 	    std::map<std::string, value>::const_iterator it =
 		logical.as_object().find(query_spec.where_field());
 	    if ( it == logical.as_object().end() || it->second != query_spec.where_value() )
+		return false;
+	}
+	if ( query_spec.has_where_inequality() )
+	{
+	    if ( !logical.is_object() )
+		return false;
+	    std::map<std::string, value>::const_iterator it =
+		logical.as_object().find(query_spec.where_ne_field());
+	    if ( it == logical.as_object().end() )
+		return false;
+	    if ( it->second == query_spec.where_ne_value() )
+		return false;
+	}
+	if ( query_spec.has_where_in() )
+	{
+	    if ( !logical.is_object() )
+		return false;
+	    std::map<std::string, value>::const_iterator it =
+		logical.as_object().find(query_spec.where_in_field());
+	    if ( it == logical.as_object().end() )
+		return false;
+	    bool matched = false;
+	    for ( std::size_t i = 0; i < query_spec.where_in_values().size(); ++i )
+	    {
+		if ( it->second == query_spec.where_in_values()[i] )
+		{
+		    matched = true;
+		    break;
+		}
+	    }
+	    if ( !matched )
+		return false;
+	}
+	if ( query_spec.has_where_not_in() )
+	{
+	    if ( !logical.is_object() )
+		return false;
+	    std::map<std::string, value>::const_iterator it =
+		logical.as_object().find(query_spec.where_not_in_field());
+	    if ( it == logical.as_object().end() )
+		return false;
+	    for ( std::size_t i = 0; i < query_spec.where_not_in_values().size(); ++i )
+	    {
+		if ( it->second == query_spec.where_not_in_values()[i] )
+		    return false;
+	    }
+	}
+	if ( query_spec.has_where_like() )
+	{
+	    if ( !logical.is_object() )
+		return false;
+	    std::map<std::string, value>::const_iterator it =
+		logical.as_object().find(query_spec.where_like_field());
+	    if ( it == logical.as_object().end() )
+		return false;
+	    if ( !it->second.is_string() || !query_spec.where_like_value().is_string() )
+		return false;
+	    if ( !match_like_pattern(it->second.as_string(),
+				     query_spec.where_like_value().as_string()) )
 		return false;
 	}
 	if ( query_spec.has_lower_bound() )
@@ -1041,6 +1124,49 @@ private:
 	if ( a == b )
 	    return 0;
 	return -1;
+    }
+
+    bool match_like_pattern(const std::string &input,
+			    const std::string &pattern) const
+    {
+	return match_like_pattern_from(input, 0, pattern, 0);
+    }
+
+    bool match_like_pattern_from(const std::string &input,
+				 std::size_t input_pos,
+				 const std::string &pattern,
+				 std::size_t pattern_pos) const
+    {
+	while ( pattern_pos < pattern.size() )
+	{
+	    char p = pattern[pattern_pos];
+	    if ( p == '%' )
+	    {
+		while ( pattern_pos < pattern.size() && pattern[pattern_pos] == '%' )
+		    ++pattern_pos;
+		if ( pattern_pos == pattern.size() )
+		    return true;
+		for ( std::size_t i = input_pos; i <= input.size(); ++i )
+		{
+		    if ( match_like_pattern_from(input, i, pattern, pattern_pos) )
+			return true;
+		}
+		return false;
+	    }
+	    if ( input_pos >= input.size() )
+		return false;
+	    if ( p == '_' )
+	    {
+		++input_pos;
+		++pattern_pos;
+		continue;
+	    }
+	    if ( input[input_pos] != p )
+		return false;
+	    ++input_pos;
+	    ++pattern_pos;
+	}
+	return input_pos == input.size();
     }
 
     value record_key(const T &input) const

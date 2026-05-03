@@ -403,12 +403,68 @@ public:
 		return fail(err, "sqlite query execution failed: unknown field `" + query.where_field() + "`");
 	    sql += " WHERE " + quote_identifier(field->name) + " = ?";
 	}
+	if ( query.has_where_inequality() )
+	{
+	    const SchemaField *field = find_field(query.where_ne_field());
+	    if ( !field )
+		return fail(err, "sqlite query execution failed: unknown field `" + query.where_ne_field() + "`");
+	    sql += (query.has_where_equality() ? " AND " : " WHERE ");
+	    sql += quote_identifier(field->name) + " != ?";
+	}
+	if ( query.has_where_in() )
+	{
+	    const SchemaField *field = find_field(query.where_in_field());
+	    if ( !field )
+		return fail(err, "sqlite query execution failed: unknown field `" + query.where_in_field() + "`");
+	    sql += ((query.has_where_equality() || query.has_where_inequality()) ? " AND " : " WHERE ");
+	    if ( query.where_in_values().empty() )
+		sql += "1 = 0";
+	    else
+	    {
+		sql += quote_identifier(field->name) + " IN (";
+		for ( std::size_t i = 0; i < query.where_in_values().size(); ++i )
+		{
+		    if ( i )
+			sql += ", ";
+		    sql += "?";
+		}
+		sql += ")";
+	    }
+	}
+	if ( query.has_where_not_in() )
+	{
+	    const SchemaField *field = find_field(query.where_not_in_field());
+	    if ( !field )
+		return fail(err, "sqlite query execution failed: unknown field `" + query.where_not_in_field() + "`");
+	    sql += ((query.has_where_equality() || query.has_where_inequality() || query.has_where_in()) ? " AND " : " WHERE ");
+	    if ( query.where_not_in_values().empty() )
+		sql += "1 = 1";
+	    else
+	    {
+		sql += quote_identifier(field->name) + " NOT IN (";
+		for ( std::size_t i = 0; i < query.where_not_in_values().size(); ++i )
+		{
+		    if ( i )
+			sql += ", ";
+		    sql += "?";
+		}
+		sql += ")";
+	    }
+	}
+	if ( query.has_where_like() )
+	{
+	    const SchemaField *field = find_field(query.where_like_field());
+	    if ( !field )
+		return fail(err, "sqlite query execution failed: unknown field `" + query.where_like_field() + "`");
+	    sql += ((query.has_where_equality() || query.has_where_inequality() || query.has_where_in() || query.has_where_not_in()) ? " AND " : " WHERE ");
+	    sql += quote_identifier(field->name) + " LIKE ?";
+	}
 	if ( query.has_lower_bound() )
 	{
 	    const SchemaField *field = find_field(query.lower_bound_field());
 	    if ( !field )
 		return fail(err, "sqlite query execution failed: unknown lower-bound field `" + query.lower_bound_field() + "`");
-	    sql += (query.has_where_equality() ? " AND " : " WHERE ");
+	    sql += ((query.has_where_equality() || query.has_where_inequality() || query.has_where_in() || query.has_where_not_in() || query.has_where_like()) ? " AND " : " WHERE ");
 	    sql += quote_identifier(field->name);
 	    sql += query.lower_bound_inclusive() ? " >= ?" : " > ?";
 	}
@@ -417,7 +473,7 @@ public:
 	    const SchemaField *field = find_field(query.upper_bound_field());
 	    if ( !field )
 		return fail(err, "sqlite query execution failed: unknown upper-bound field `" + query.upper_bound_field() + "`");
-	    sql += ((query.has_where_equality() || query.has_lower_bound()) ? " AND " : " WHERE ");
+	    sql += ((query.has_where_equality() || query.has_where_inequality() || query.has_where_in() || query.has_where_not_in() || query.has_where_like() || query.has_lower_bound()) ? " AND " : " WHERE ");
 	    sql += quote_identifier(field->name);
 	    sql += query.upper_bound_inclusive() ? " <= ?" : " < ?";
 	}
@@ -434,6 +490,36 @@ public:
 	{
 	    const SchemaField *field = find_field(query.where_field());
 	    if ( !bind_field(stmt.get(), bind_index++, *field, query.where_value(), err) )
+		return false;
+	}
+	if ( query.has_where_inequality() )
+	{
+	    const SchemaField *field = find_field(query.where_ne_field());
+	    if ( !bind_field(stmt.get(), bind_index++, *field, query.where_ne_value(), err) )
+		return false;
+	}
+	if ( query.has_where_in() )
+	{
+	    const SchemaField *field = find_field(query.where_in_field());
+	    for ( std::size_t i = 0; i < query.where_in_values().size(); ++i )
+	    {
+		if ( !bind_field(stmt.get(), bind_index++, *field, query.where_in_values()[i], err) )
+		    return false;
+	    }
+	}
+	if ( query.has_where_not_in() )
+	{
+	    const SchemaField *field = find_field(query.where_not_in_field());
+	    for ( std::size_t i = 0; i < query.where_not_in_values().size(); ++i )
+	    {
+		if ( !bind_field(stmt.get(), bind_index++, *field, query.where_not_in_values()[i], err) )
+		    return false;
+	    }
+	}
+	if ( query.has_where_like() )
+	{
+	    const SchemaField *field = find_field(query.where_like_field());
+	    if ( !bind_field(stmt.get(), bind_index++, *field, query.where_like_value(), err) )
 		return false;
 	}
 	if ( query.has_lower_bound() )

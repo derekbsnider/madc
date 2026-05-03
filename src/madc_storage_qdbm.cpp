@@ -305,6 +305,10 @@ public:
     {
 	return query.query_kind() == Query::kind::builder
 	    && _key_field
+	    && !query.has_where_inequality()
+	    && !query.has_where_in()
+	    && !query.has_where_not_in()
+	    && !query.has_where_like()
 	    && ((!query.has_where_equality())
 		|| query.where_field() == _key_field->name)
 	    && ((!query.has_lower_bound())

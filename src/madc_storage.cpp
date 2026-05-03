@@ -2419,6 +2419,10 @@ public:
 Query::Query()
     : _kind(kind::builder),
       _has_where_equality(false),
+      _has_where_inequality(false),
+      _has_where_in(false),
+      _has_where_not_in(false),
+      _has_where_like(false),
       _has_lower_bound(false),
       _lower_bound_inclusive(true),
       _has_upper_bound(false),
@@ -2431,6 +2435,10 @@ Query::Query()
 Query::Query(kind k)
     : _kind(k),
       _has_where_equality(false),
+      _has_where_inequality(false),
+      _has_where_in(false),
+      _has_where_not_in(false),
+      _has_where_like(false),
       _has_lower_bound(false),
       _lower_bound_inclusive(true),
       _has_upper_bound(false),
@@ -2502,6 +2510,122 @@ void Query::clear_where_equality()
     _where_field.clear();
     _where_value = value();
     _has_where_equality = false;
+}
+
+bool Query::has_where_inequality() const
+{
+    return _has_where_inequality;
+}
+
+const std::string &Query::where_ne_field() const
+{
+    return _where_ne_field;
+}
+
+const value &Query::where_ne_value() const
+{
+    return _where_ne_value;
+}
+
+void Query::set_where_inequality(const std::string &field, const value &match)
+{
+    _where_ne_field = field;
+    _where_ne_value = match;
+    _has_where_inequality = true;
+}
+
+void Query::clear_where_inequality()
+{
+    _where_ne_field.clear();
+    _where_ne_value = value();
+    _has_where_inequality = false;
+}
+
+bool Query::has_where_in() const
+{
+    return _has_where_in;
+}
+
+const std::string &Query::where_in_field() const
+{
+    return _where_in_field;
+}
+
+const std::vector<value> &Query::where_in_values() const
+{
+    return _where_in_values;
+}
+
+void Query::set_where_in(const std::string &field, const std::vector<value> &matches)
+{
+    _where_in_field = field;
+    _where_in_values = matches;
+    _has_where_in = true;
+}
+
+void Query::clear_where_in()
+{
+    _where_in_field.clear();
+    _where_in_values.clear();
+    _has_where_in = false;
+}
+
+bool Query::has_where_not_in() const
+{
+    return _has_where_not_in;
+}
+
+const std::string &Query::where_not_in_field() const
+{
+    return _where_not_in_field;
+}
+
+const std::vector<value> &Query::where_not_in_values() const
+{
+    return _where_not_in_values;
+}
+
+void Query::set_where_not_in(const std::string &field, const std::vector<value> &matches)
+{
+    _where_not_in_field = field;
+    _where_not_in_values = matches;
+    _has_where_not_in = true;
+}
+
+void Query::clear_where_not_in()
+{
+    _where_not_in_field.clear();
+    _where_not_in_values.clear();
+    _has_where_not_in = false;
+}
+
+bool Query::has_where_like() const
+{
+    return _has_where_like;
+}
+
+const std::string &Query::where_like_field() const
+{
+    return _where_like_field;
+}
+
+const value &Query::where_like_value() const
+{
+    return _where_like_value;
+}
+
+void Query::set_where_like(const std::string &field, const value &match)
+{
+    _where_like_field = field;
+    _where_like_value = match;
+    _has_where_like = true;
+}
+
+void Query::clear_where_like()
+{
+    _where_like_field.clear();
+    _where_like_value = value();
+    _has_where_like = false;
 }
 
 bool Query::has_lower_bound() const
@@ -2609,6 +2733,18 @@ struct QueryBuilder::impl
     std::string where_field;
     value where_value;
     bool has_where = false;
+    std::string where_ne_field;
+    value where_ne_value;
+    bool has_where_ne = false;
+    std::string where_in_field;
+    std::vector<value> where_in_values;
+    bool has_where_in = false;
+    std::string where_not_in_field;
+    std::vector<value> where_not_in_values;
+    bool has_where_not_in = false;
+    std::string where_like_field;
+    value where_like_value;
+    bool has_where_like = false;
     std::string lower_bound_field;
     value lower_bound_value;
     bool has_lower_bound = false;
@@ -2652,6 +2788,38 @@ QueryBuilder &QueryBuilder::where_eq(const std::string &field, const value &matc
     _->where_field = field;
     _->where_value = match;
     _->has_where = true;
+    return *this;
+}
+
+QueryBuilder &QueryBuilder::where_ne(const std::string &field, const value &match)
+{
+    _->where_ne_field = field;
+    _->where_ne_value = match;
+    _->has_where_ne = true;
+    return *this;
+}
+
+QueryBuilder &QueryBuilder::where_in(const std::string &field, const std::vector<value> &matches)
+{
+    _->where_in_field = field;
+    _->where_in_values = matches;
+    _->has_where_in = true;
+    return *this;
+}
+
+QueryBuilder &QueryBuilder::where_not_in(const std::string &field, const std::vector<value> &matches)
+{
+    _->where_not_in_field = field;
+    _->where_not_in_values = matches;
+    _->has_where_not_in = true;
+    return *this;
+}
+
+QueryBuilder &QueryBuilder::where_like(const std::string &field, const value &match)
+{
+    _->where_like_field = field;
+    _->where_like_value = match;
+    _->has_where_like = true;
     return *this;
 }
 
@@ -2710,6 +2878,14 @@ Query QueryBuilder::build() const
     q.set_selected_fields(_->selects);
     if ( _->has_where )
 	q.set_where_equality(_->where_field, _->where_value);
+    if ( _->has_where_ne )
+	q.set_where_inequality(_->where_ne_field, _->where_ne_value);
+    if ( _->has_where_in )
+	q.set_where_in(_->where_in_field, _->where_in_values);
+    if ( _->has_where_not_in )
+	q.set_where_not_in(_->where_not_in_field, _->where_not_in_values);
+    if ( _->has_where_like )
+	q.set_where_like(_->where_like_field, _->where_like_value);
     if ( _->has_lower_bound )
 	q.set_lower_bound(_->lower_bound_field, _->lower_bound_value, _->lower_bound_inclusive);
     if ( _->has_upper_bound )
@@ -2719,13 +2895,55 @@ Query QueryBuilder::build() const
     std::ostringstream os;
     os << "FROM " << _->dataset_name;
     if ( _->has_where )
-	os << " WHERE " << _->where_field;
-    if ( _->has_lower_bound )
+	os << " WHERE " << _->where_field << " = ?";
+    if ( _->has_where_ne )
 	os << (_->has_where ? " AND " : " WHERE ")
+	   << _->where_ne_field << " != ?";
+    if ( _->has_where_in )
+    {
+	os << ((_->has_where || _->has_where_ne) ? " AND " : " WHERE ")
+	   << _->where_in_field;
+	if ( _->where_in_values.empty() )
+	    os << " IN ()";
+	else
+	{
+	    os << " IN (";
+	    for ( std::size_t i = 0; i < _->where_in_values.size(); ++i )
+	    {
+		if ( i )
+		    os << ", ";
+		os << "?";
+	    }
+	    os << ")";
+	}
+    }
+    if ( _->has_where_not_in )
+    {
+	os << ((_->has_where || _->has_where_ne || _->has_where_in) ? " AND " : " WHERE ")
+	   << _->where_not_in_field;
+	if ( _->where_not_in_values.empty() )
+	    os << " NOT IN ()";
+	else
+	{
+	    os << " NOT IN (";
+	    for ( std::size_t i = 0; i < _->where_not_in_values.size(); ++i )
+	    {
+		if ( i )
+		    os << ", ";
+		os << "?";
+	    }
+	    os << ")";
+	}
+    }
+    if ( _->has_where_like )
+	os << ((_->has_where || _->has_where_ne || _->has_where_in || _->has_where_not_in) ? " AND " : " WHERE ")
+	   << _->where_like_field << " LIKE ?";
+    if ( _->has_lower_bound )
+	os << ((_->has_where || _->has_where_ne || _->has_where_in || _->has_where_not_in || _->has_where_like) ? " AND " : " WHERE ")
 	   << _->lower_bound_field
 	   << (_->lower_bound_inclusive ? " >= ?" : " > ?");
     if ( _->has_upper_bound )
-	os << ((_->has_where || _->has_lower_bound) ? " AND " : " WHERE ")
+	os << ((_->has_where || _->has_where_ne || _->has_where_in || _->has_where_not_in || _->has_where_like || _->has_lower_bound) ? " AND " : " WHERE ")
 	   << _->upper_bound_field
 	   << (_->upper_bound_inclusive ? " <= ?" : " < ?");
     if ( _->row_limit )

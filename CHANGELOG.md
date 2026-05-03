@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+- **Builder queries now support `where_not_in(...)`.** `Query` /
+  `QueryBuilder` can now carry one explicit negative-membership
+  predicate in addition to equality, inequality, positive membership,
+  string patterns, and ordered bounds. `DataSet<T>` applies `NOT IN`
+  through local fallback, `sqlite://` pushes it natively, and the keyed
+  local stores explicitly reject that shape for pushdown so they fall
+  back locally instead of pretending to support it. Coverage in
+  `tests/unit/test_libmadc_storage_contract.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_qdbm.cpp` locks in builder metadata,
+  SQLite pushdown, and keyed-store fallback behavior.
+
+- **Builder queries now support `where_like(...)`.** `Query` /
+  `QueryBuilder` can now carry one explicit SQL-style string pattern
+  predicate in addition to equality, inequality, membership, and
+  ordered bounds. `DataSet<T>` applies `LIKE` through a string-only
+  local fallback matcher supporting `%` and `_`, `sqlite://` pushes it
+  natively, and the keyed local stores explicitly reject that shape for
+  pushdown so they fall back locally instead of pretending to support
+  it. Coverage in `tests/unit/test_libmadc_storage_contract.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_qdbm.cpp` locks in builder metadata,
+  SQLite pushdown, and keyed-store fallback behavior.
+
+- **Builder queries now support `where_in(...)`.** `Query` /
+  `QueryBuilder` can now carry one explicit membership predicate in
+  addition to equality, inequality, and ordered bounds. `DataSet<T>`
+  applies `IN` through local fallback, `sqlite://` pushes it natively,
+  and the keyed local stores explicitly reject that shape for pushdown
+  so they fall back locally instead of pretending to support it.
+  Coverage in `tests/unit/test_libmadc_storage_contract.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_qdbm.cpp` locks in builder metadata,
+  SQLite pushdown, and keyed-store fallback behavior.
+
+- **Builder queries now support `where_ne(...)`.** `Query` /
+  `QueryBuilder` can now carry one explicit not-equal predicate in
+  addition to equality and ordered bounds. `DataSet<T>` applies `!=`
+  through local fallback, `sqlite://` pushes it natively, and the keyed
+  local stores explicitly reject that shape for pushdown so they fall
+  back locally instead of pretending to support it. Coverage in
+  `tests/unit/test_libmadc_storage_contract.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_qdbm.cpp` locks in builder metadata,
+  SQLite pushdown, and keyed-store fallback behavior.
+
 - **Typed relation traversal now accepts target-side builder filters
   and limits.** `Relation<A,B>::query_related(...)` now has a target-
   query overload mirroring the raw relation path, so callers can filter
