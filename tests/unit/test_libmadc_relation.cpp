@@ -30,6 +30,12 @@ struct PayloadIndexRecord
     char short_name[16];
 };
 
+struct PayloadNoteRecord
+{
+    int64_t id;
+    std::string note;
+};
+
 namespace {
 
 void assign_short_name(PayloadIndexRecord &row, const std::string &name)
@@ -90,6 +96,19 @@ struct MapperRegistration<PayloadIndexRecord>
 	builder.field("id", &PayloadIndexRecord::id, true, 0);
 	builder.field("payload_offset", &PayloadIndexRecord::payload_offset, false, 8);
 	builder.field("short_name", &PayloadIndexRecord::short_name, false, 16);
+	return builder.build();
+    }
+};
+
+template <>
+struct MapperRegistration<PayloadNoteRecord>
+{
+    static std::shared_ptr<DataMapper<PayloadNoteRecord> > make(const MappingSpec<PayloadNoteRecord> &spec)
+    {
+	(void)spec;
+	MapperBuilder<PayloadNoteRecord> builder("PayloadNoteRecord");
+	builder.field("id", &PayloadNoteRecord::id, true);
+	builder.field("note", &PayloadNoteRecord::note);
 	return builder.build();
     }
 };
@@ -165,8 +184,75 @@ TEST_SUITE("libmadc relation backend") {
 	CHECK(resolved.body == "Second payload body with more text.");
 	CHECK(resolved.priority == 11);
 
+	std::unique_ptr<madc::Cursor<PayloadRecord> > related =
+	    payload_relation.query_related(
+		madc::query().from("payload_index").where_gte("id", madc::value(int64_t(2))).build(),
+		&err);
+	REQUIRE(static_cast<bool>(related));
+	REQUIRE(related->next(resolved));
+	CHECK(resolved.payload_id == 202);
+	CHECK(resolved.body == "Second payload body with more text.");
+	CHECK_FALSE(related->next(resolved));
+	related->close();
+
 	std::remove(index_path.c_str());
 	std::remove(payload_path.c_str());
 	std::remove(payload_tombstones.c_str());
     }
+
+#if defined(HAVE_SQLITE3) && defined(HAVE_QDBM)
+    TEST_CASE("key-match relation can traverse filtered source rows across backends") {
+	const std::string index_path =
+	    "/tmp/madc_relation_users_" + std::to_string(static_cast<long long>(getpid())) + ".db";
+	const std::string note_path =
+	    "/tmp/madc_relation_notes_" + std::to_string(static_cast<long long>(getpid())) + ".villa";
+	std::remove(index_path.c_str());
+	std::remove(note_path.c_str());
+
+	madc::MappingSpec<PayloadIndexRecord> index_spec;
+	index_spec.key("id");
+
+	madc::MappingSpec<PayloadNoteRecord> note_spec;
+	note_spec.key("id");
+
+	madc::DataSet<PayloadIndexRecord> users("sqlite://" + index_path);
+	users.mapping(index_spec).name("users");
+
+	madc::DataSet<PayloadNoteRecord> notes("qdbm://" + note_path);
+	notes.mapping(note_spec).name("notes");
+
+	madc::error err;
+	REQUIRE(users.insert(make_index(1, 0, "ALPHA"), &err));
+	REQUIRE(users.insert(make_index(2, 0, "BRAVO"), &err));
+	REQUIRE(users.insert(make_index(3, 0, "CHARLIE"), &err));
+
+	REQUIRE(notes.insert(PayloadNoteRecord{1, "alpha note"}, &err));
+	REQUIRE(notes.insert(PayloadNoteRecord{2, "bravo note"}, &err));
+	REQUIRE(notes.insert(PayloadNoteRecord{3, "charlie note"}, &err));
+
+	madc::Relation<PayloadIndexRecord, PayloadNoteRecord> user_notes =
+	    madc::relate(users, notes);
+	user_notes.name("user_notes")
+		  .key("id", "id");
+
+	std::unique_ptr<madc::Cursor<PayloadNoteRecord> > related =
+	    user_notes.query_related(
+		madc::query().from("users").where_gte("id", madc::value(int64_t(2))).limit(2).build(),
+		&err);
+	REQUIRE(static_cast<bool>(related));
+
+	PayloadNoteRecord note;
+	REQUIRE(related->next(note));
+	CHECK(note.id == 2);
+	CHECK(note.note == "bravo note");
+	REQUIRE(related->next(note));
+	CHECK(note.id == 3);
+	CHECK(note.note == "charlie note");
+	CHECK_FALSE(related->next(note));
+	related->close();
+
+	std::remove(index_path.c_str());
+	std::remove(note_path.c_str());
+    }
+#endif
 }

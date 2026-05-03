@@ -49,10 +49,12 @@
   bound key scans now push too: `sqlite://` executes `>=` + `LIMIT`
   builders in key order, and ordered keyed `qdbm://` / `bdb://`
   backends can honor the same lower-bound scans through native cursor
-  positioning. Next concrete steps: federated planning on top of that
-  pushed-query path; broaden builder support from equality+range into
-  relation traversal and richer predicates; decide whether FLR/VLR
-  relations should grow
+  positioning. First relation-aware traversal is now there too:
+  `Relation<A,B>::query_related(...)` can walk filtered source rows and
+  materialize `key_match` and `offset` targets across datasets/backends.
+  Next concrete steps: federated planning on top of that pushed-query
+  path; broaden builder support from equality+range into richer
+  predicates and projection; decide whether FLR/VLR relations should grow
   helper paths for index maintenance after payload rewrites; then branch
   into the next backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,

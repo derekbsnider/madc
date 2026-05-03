@@ -3,8 +3,10 @@
 
 #include "libmadc/dataset.h"
 #include "libmadc/error.h"
+#include "libmadc/query.h"
 #include "libmadc/value.h"
 
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -118,11 +120,88 @@ public:
 	value intermediate;
 	if ( !_from->get_field(from_key, _keys[0].from_field, intermediate, err) )
 	    return false;
+	bool found = false;
+	if ( !resolve_intermediate(intermediate, out, found, err) )
+	    return false;
+	return found;
+    }
+
+    std::unique_ptr<Cursor<B>> query_related(const Query &from_query,
+					     error *err = nullptr) const
+    {
+	if ( !_from || !_to )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related failed: relation endpoints are not bound");
+	    return std::unique_ptr<Cursor<B>>();
+	}
+	if ( _keys.empty() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "Relation query_related failed: relation has no key mapping");
+	    return std::unique_ptr<Cursor<B>>();
+	}
+
+	std::unique_ptr<Cursor<A> > source_rows = _from->query(from_query, err);
+	if ( !source_rows.get() )
+	    return std::unique_ptr<Cursor<B>>();
+
+	std::vector<B> resolved_rows;
+	A from_row;
+	while ( source_rows->next(from_row) )
+	{
+	    value intermediate;
+	    if ( !_from->get_field_from_row(from_row, _keys[0].from_field, intermediate, err) )
+	    {
+		source_rows->close();
+		return std::unique_ptr<Cursor<B>>();
+	    }
+
+	    B related_row;
+	    bool found = false;
+	    if ( !resolve_intermediate(intermediate, related_row, found, err) )
+	    {
+		source_rows->close();
+		return std::unique_ptr<Cursor<B>>();
+	    }
+	    if ( found )
+		resolved_rows.push_back(related_row);
+	}
+
+	source_rows->close();
+	return std::unique_ptr<Cursor<B> >(new detail::VectorCursor<B>(std::move(resolved_rows)));
+    }
+
+private:
+    bool resolve_intermediate(const value &intermediate,
+			      B &out,
+			      bool &found,
+			      error *err) const
+    {
+	found = false;
 
 	switch ( _kind )
 	{
 	    case RelationKind::key_match:
-		return _to->get(intermediate, out, err);
+	    {
+		error lookup_err;
+		if ( !_to->get(intermediate, out, &lookup_err) )
+		{
+		    if ( !lookup_err.message.empty() )
+		    {
+			if ( err )
+			    *err = lookup_err;
+			return false;
+		    }
+		    return true;
+		}
+		found = true;
+		return true;
+	    }
 
 	    case RelationKind::offset:
 	    {
@@ -136,7 +215,19 @@ public:
 		}
 		RecordLocator locator =
 		    RecordLocator::at_byte_offset(static_cast<uint64_t>(intermediate.as_integer()));
-		return _to->get_by_locator(locator, out, err);
+		error lookup_err;
+		if ( !_to->get_by_locator(locator, out, &lookup_err) )
+		{
+		    if ( !lookup_err.message.empty() )
+		    {
+			if ( err )
+			    *err = lookup_err;
+			return false;
+		    }
+		    return true;
+		}
+		found = true;
+		return true;
 	    }
 
 	    case RelationKind::positional:
@@ -150,7 +241,6 @@ public:
 	}
     }
 
-private:
     DataSet<A> *_from;
     DataSet<B> *_to;
     std::string _name;

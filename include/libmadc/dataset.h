@@ -557,6 +557,51 @@ public:
 	return true;
     }
 
+    bool get_field_from_row(const T &row,
+			    const std::string &field,
+			    value &out,
+			    error *err = nullptr) const
+    {
+	value logical = _mapper->encode(row);
+	if ( !logical.is_object() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet get_field_from_row failed: record is not an object");
+	    return false;
+	}
+
+	std::map<std::string, value>::const_iterator it = logical.as_object().find(field);
+	if ( it == logical.as_object().end() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet get_field_from_row failed: field `" + field + "` not found");
+	    return false;
+	}
+
+	out = it->second;
+	return true;
+    }
+
+    bool get_key_from_row(const T &row,
+			  value &out,
+			  error *err = nullptr) const
+    {
+	out = record_key(row);
+	if ( out.type() == value::kind::null )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet get_key_from_row failed: primary key is unavailable");
+	    return false;
+	}
+	return true;
+    }
+
     std::unique_ptr<Cursor<T>> scan(error *err = nullptr) const
     {
 	if ( !const_cast<DataSet<T> *>(this)->refresh_snapshot(err) )

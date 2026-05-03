@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **First relation-aware traversal over pushed dataset queries.**
+  `Relation<A,B>` can now do more than resolve one source key at a
+  time: `query_related(...)` walks a filtered source `DataSet<A>` query
+  and materializes related `B` rows for `key_match` and `offset`
+  bindings. The initial coverage proves both shapes: FLR index rows can
+  query through VLR offset locators, and a filtered `sqlite://` source
+  can traverse into a keyed `qdbm://` side dataset by shared primary
+  key. This is the first real relation-traversal layer on top of
+  `DataSet<T>::query(...)`, without pretending to be a full join
+  planner yet.
+
 - **Ordered/lower-bound query pushdown for keyed datasets.** The query
   builder path now goes beyond equality-only filters: `Query` /
   `QueryBuilder` can describe lower-bound scans, `DataSet<T>` can apply
