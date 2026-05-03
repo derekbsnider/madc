@@ -2419,6 +2419,8 @@ public:
 Query::Query()
     : _kind(kind::builder),
       _has_where_equality(false),
+      _has_lower_bound(false),
+      _lower_bound_inclusive(true),
       _row_limit(0),
       _has_limit(false)
 {
@@ -2427,6 +2429,8 @@ Query::Query()
 Query::Query(kind k)
     : _kind(k),
       _has_where_equality(false),
+      _has_lower_bound(false),
+      _lower_bound_inclusive(true),
       _row_limit(0),
       _has_limit(false)
 {
@@ -2496,6 +2500,44 @@ void Query::clear_where_equality()
     _has_where_equality = false;
 }
 
+bool Query::has_lower_bound() const
+{
+    return _has_lower_bound;
+}
+
+const std::string &Query::lower_bound_field() const
+{
+    return _lower_bound_field;
+}
+
+const value &Query::lower_bound_value() const
+{
+    return _lower_bound_value;
+}
+
+bool Query::lower_bound_inclusive() const
+{
+    return _lower_bound_inclusive;
+}
+
+void Query::set_lower_bound(const std::string &field,
+			    const value &match,
+			    bool inclusive)
+{
+    _lower_bound_field = field;
+    _lower_bound_value = match;
+    _has_lower_bound = true;
+    _lower_bound_inclusive = inclusive;
+}
+
+void Query::clear_lower_bound()
+{
+    _lower_bound_field.clear();
+    _lower_bound_value = value();
+    _has_lower_bound = false;
+    _lower_bound_inclusive = true;
+}
+
 bool Query::has_limit() const
 {
     return _has_limit;
@@ -2525,6 +2567,10 @@ struct QueryBuilder::impl
     std::string where_field;
     value where_value;
     bool has_where = false;
+    std::string lower_bound_field;
+    value lower_bound_value;
+    bool has_lower_bound = false;
+    bool lower_bound_inclusive = true;
     std::size_t row_limit = 0;
 };
 
@@ -2563,6 +2609,15 @@ QueryBuilder &QueryBuilder::where_eq(const std::string &field, const value &matc
     return *this;
 }
 
+QueryBuilder &QueryBuilder::where_gte(const std::string &field, const value &match)
+{
+    _->lower_bound_field = field;
+    _->lower_bound_value = match;
+    _->has_lower_bound = true;
+    _->lower_bound_inclusive = true;
+    return *this;
+}
+
 QueryBuilder &QueryBuilder::select(const std::vector<std::string> &fields)
 {
     _->selects = fields;
@@ -2582,12 +2637,17 @@ Query QueryBuilder::build() const
     q.set_selected_fields(_->selects);
     if ( _->has_where )
 	q.set_where_equality(_->where_field, _->where_value);
+    if ( _->has_lower_bound )
+	q.set_lower_bound(_->lower_bound_field, _->lower_bound_value, _->lower_bound_inclusive);
     if ( _->row_limit )
 	q.set_limit(_->row_limit);
     std::ostringstream os;
     os << "FROM " << _->dataset_name;
     if ( _->has_where )
 	os << " WHERE " << _->where_field;
+    if ( _->has_lower_bound )
+	os << (_->has_where ? " AND " : " WHERE ")
+	   << _->lower_bound_field << " >= ?";
     if ( _->row_limit )
 	os << " LIMIT " << _->row_limit;
     q.set_text(os.str());

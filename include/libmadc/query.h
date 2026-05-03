@@ -35,6 +35,14 @@ public:
     const value &where_value() const;
     void set_where_equality(const std::string &field, const value &match);
     void clear_where_equality();
+    bool has_lower_bound() const;
+    const std::string &lower_bound_field() const;
+    const value &lower_bound_value() const;
+    bool lower_bound_inclusive() const;
+    void set_lower_bound(const std::string &field,
+			 const value &match,
+			 bool inclusive = true);
+    void clear_lower_bound();
     bool has_limit() const;
     std::size_t row_limit() const;
     void set_limit(std::size_t count);
@@ -48,6 +56,10 @@ private:
     std::string _where_field;
     value _where_value;
     bool _has_where_equality;
+    std::string _lower_bound_field;
+    value _lower_bound_value;
+    bool _has_lower_bound;
+    bool _lower_bound_inclusive;
     std::size_t _row_limit;
     bool _has_limit;
 };
@@ -65,6 +77,7 @@ public:
 
     QueryBuilder &from(const std::string &dataset_name);
     QueryBuilder &where_eq(const std::string &field, const value &match);
+    QueryBuilder &where_gte(const std::string &field, const value &match);
     QueryBuilder &select(const std::vector<std::string> &fields);
     QueryBuilder &limit(std::size_t count);
     Query build() const;

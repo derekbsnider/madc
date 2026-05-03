@@ -164,6 +164,15 @@ TEST_SUITE("libmadc bdb backend") {
 	    CHECK(row.title == "Alice Example");
 	    CHECK_FALSE(pushed->next(row));
 	    pushed->close();
+
+	    std::unique_ptr<madc::Cursor<StorageProbe> > ranged =
+		ds.query(madc::query().from("users").where_gte("id", madc::value(int64_t(2))).limit(2).build(), &err);
+	    REQUIRE(static_cast<bool>(ranged));
+	    REQUIRE(ranged->next(row));
+	    CHECK(row.id == 3);
+	    CHECK(row.title == "Cara Example");
+	    CHECK_FALSE(ranged->next(row));
+	    ranged->close();
 	}
 
 	std::remove(path.c_str());

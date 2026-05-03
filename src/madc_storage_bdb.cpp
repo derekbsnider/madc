@@ -259,9 +259,12 @@ public:
     {
 	return query.query_kind() == Query::kind::builder
 	    && query.selected_fields().empty()
-	    && query.has_where_equality()
 	    && _key_field
-	    && query.where_field() == _key_field->name;
+	    && ((!query.has_where_equality())
+		|| query.where_field() == _key_field->name)
+	    && ((!query.has_lower_bound())
+		|| query.lower_bound_field() == _key_field->name)
+	    && (query.has_where_equality() || query.has_lower_bound());
     }
 
     bool insert_record(const value &record, error *err = nullptr)
@@ -372,11 +375,52 @@ public:
     {
 	out.clear();
 	if ( !can_execute(query) )
-	    return fail(err, "bdb query execution only supports primary-key equality filters");
-	value record;
-	if ( !get_record(_key_field->name, query.where_value(), record, err) )
+	    return fail(err, "bdb query execution only supports primary-key equality and lower-bound filters");
+	if ( query.has_where_equality() )
+	{
+	    value record;
+	    if ( !get_record(_key_field->name, query.where_value(), record, err) )
+		return true;
+	    out.push_back(record);
 	    return true;
-	out.push_back(record);
+	}
+
+	DBT key, data;
+	if ( !build_lookup_key_dbt(query.lower_bound_value(), key, err) )
+	    return false;
+
+	DBC *cursor = nullptr;
+	int rc = _db->cursor(_db, nullptr, &cursor, 0);
+	if ( rc != 0 )
+	    return fail(err, "bdb range query failed: could not open cursor");
+
+	std::memset(&data, 0, sizeof(data));
+	data.flags = DB_DBT_MALLOC;
+	rc = cursor->get(cursor, &key, &data, DB_SET_RANGE);
+	for ( ; rc == 0; rc = cursor->get(cursor, &key, &data, DB_NEXT) )
+	{
+	    std::vector<char> payload(static_cast<char *>(data.data),
+				      static_cast<char *>(data.data) + data.size);
+	    std::free(data.data);
+	    data.data = nullptr;
+
+	    value record;
+	    if ( !decode_record(payload, record, err) )
+	    {
+		cursor->close(cursor);
+		return false;
+	    }
+	    out.push_back(record);
+	    if ( query.has_limit() && out.size() >= query.row_limit() )
+		break;
+
+	    std::memset(&data, 0, sizeof(data));
+	    data.flags = DB_DBT_MALLOC;
+	}
+
+	cursor->close(cursor);
+	if ( rc != 0 && rc != DB_NOTFOUND )
+	    return fail(err, "bdb range query failed during cursor iteration");
 	return true;
     }
 

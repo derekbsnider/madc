@@ -55,6 +55,36 @@ That means:
 - **Layer 4: Node integration**
   Control plane, worker orchestration, IPC glue.
 
+### Planned optional sublibrary split
+
+The growing storage/federation subsystem should not bloat the core
+embedding library surface indefinitely.
+
+Planned direction:
+
+- `libmadc`
+  - core engine/runtime/embedding API
+  - `engine`, `program`, `value`, `error`, policy, invoke limits
+- `libmadcdat`
+  - optional inner data/federation/indexing subsystem
+  - `DataSource`, drivers, mappings, relations, source adapters,
+    extracted-record families, indexes, reindex workflows, query/planning
+
+Why split:
+
+- keep the core embedding/runtime API cohesive
+- keep optional storage/database dependencies out of the base build
+- keep the storage/federation work independently extensible
+- preserve a small, comprehensible `libmadc` surface for hosts that do
+  not need data federation at all
+
+Build direction:
+
+- `./configure --with-madcdat`
+- later optional backend flags can hang under that umbrella
+- do not block current Phase 4 embedding work on the physical split, but
+  plan for the boundary now
+
 ## Safety Model
 
 The Node.js embedding story should treat madc as an **out-of-process
@@ -411,6 +441,9 @@ public:
 	bool load_file(const std::string& path, error* err = nullptr);
 	bool load_source(const std::string& name, const std::string& src, error* err = nullptr);
 	bool compile(const compile_options&, error* err = nullptr);
+	value eval(const std::string& src,
+	           const invoke_options& opts = {},
+	           error* err = nullptr);
 
 	bool has_function(const std::string& name) const;
 	value call(const std::string& fn,
@@ -426,6 +459,33 @@ public:
 
 }
 ```
+
+### `madc::eval(...)` direction
+
+`madc::eval(...)` is worth planning explicitly because it becomes very
+powerful when combined with:
+
+- sandbox policy
+- parser/namespace restrictions
+- allowed/denied function registration
+- invoke limits
+- future specialized source/parser adapters
+
+But it must not become a side door around those controls.
+
+Rules:
+
+- `eval(...)` uses the same `security_policy` and namespace/builtin
+  restrictions as file-based program execution
+- `eval(...)` uses the same parser/registration model as ordinary
+  `load_source(...)/compile(...)`
+- `eval(...)` honors the same `invoke_limits`
+- in safe/worker modes, `eval(...)` still executes under the same
+  process-isolation story as other script execution
+
+Semantically, `eval(...)` should be treated as “compile this source
+string under the current engine/program policy, run it, and marshal a
+`madc::value` result back”, not as a privileged internal escape hatch.
 
 ## Stable C ABI
 
@@ -564,6 +624,7 @@ Tasks:
 - add `madc::engine`
 - add `madc::program`
 - add `load_source`, `compile`, `call`
+- plan `eval(...)` on the same policy/limits surface, not as a bypass
 - add value and error types
 - add host function registration
 
@@ -575,6 +636,8 @@ Tasks:
 - add `extern "C"` wrapper API
 - ensure CLI uses the same underlying engine
 - keep ABI surface smaller and more stable than the C++ surface
+- keep `libmadcdat` optional and separate from the minimal C ABI unless
+  the caller explicitly opts into the data subsystem
 
 ### Phase 4.4 — Worker model + Node
 
@@ -608,6 +671,10 @@ The smallest meaningful v1 should support:
   API wrappers / library entrypoints
 - `src/madc_worker.cpp`
   Worker binary
+- future optional split:
+  - `include/libmadcdat/`
+  - `src/madcdat_*.cpp`
+  - optional `libmadcdat` build target gated by `--with-madcdat`
 - `src/Makefile`
   Shared library and worker build targets
 - `docs/plans/libmadc-phase4.md`

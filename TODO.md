@@ -9,9 +9,14 @@
   `exec_file` / `exec_string` / `compile_file`; then
   `program::register_function(name, callback, signature)` for
   host→script callbacks and `program::call(fn, args)` for
-  script-from-C++ invocations; then `compile_options`,
-  `security_policy`, and `invoke_limits`. After that, §4.3 = the
-  `libmadc.so` Makefile target plus `include/madc_api.h` C shim.
+  script-from-C++ invocations; then `program::eval(src, ...)` on the
+  same security-policy / invoke-limit surface rather than as a bypass;
+  then `compile_options`, `security_policy`, and `invoke_limits`. After
+  that, §4.3 = the `libmadc.so` Makefile target plus
+  `include/madc_api.h` C shim. Also keep the future subsystem split in
+  view while finishing the separation: core embedding/runtime stays in
+  `libmadc`, while the storage/federation/indexing track is planned as
+  optional `libmadcdat` (`./configure --with-madcdat`).
 
 - **Exploratory storage/federation track — move beyond the first local
   backend family.** The first local backends now work from ordinary host
@@ -40,13 +45,21 @@
   pushdown path now exists too: `DataSet<T>::query(...)` executes simple
   builder queries directly on `sqlite://` and keyed `qdbm://` /
   `gdbm://` / `bdb://` backends when they can honor the requested
-  equality filter, and falls back locally otherwise. Next concrete
-  steps: federated planning on top of that pushed-query path; broaden
-  builder support beyond equality+limit into ordered/range scans and
-  relation traversal; decide whether FLR/VLR relations should grow
+  equality filter, and falls back locally otherwise. Ordered/lower-
+  bound key scans now push too: `sqlite://` executes `>=` + `LIMIT`
+  builders in key order, and ordered keyed `qdbm://` / `bdb://`
+  backends can honor the same lower-bound scans through native cursor
+  positioning. Next concrete steps: federated planning on top of that
+  pushed-query path; broaden builder support from equality+range into
+  relation traversal and richer predicates; decide whether FLR/VLR
+  relations should grow
   helper paths for index maintenance after payload rewrites; then branch
   into the next backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,
+  keep the layering from `docs/plans/data-storage-federation.md`
+  intact: `DataSource` identity separate from source parsing,
+  source/extracted-record adapters separate from dataset-local mapping,
+  and derived index/reindex policy separate from drivers. In parallel,
   broaden mapper inference beyond explicit field registration
   (ideally toward struct/class metadata reuse and lower-friction
   declarations for common host types); then decide whether an

@@ -223,7 +223,9 @@ public:
     bool can_execute(const Query &query) const
     {
 	return query.query_kind() == Query::kind::builder
-	    && query.selected_fields().empty();
+	    && query.selected_fields().empty()
+	    && (!query.has_lower_bound()
+		|| (_key_field && query.lower_bound_field() == _key_field->name));
     }
 
     bool insert_record(const value &record, error *err = nullptr)
@@ -384,6 +386,15 @@ public:
 		return fail(err, "sqlite query execution failed: unknown field `" + query.where_field() + "`");
 	    sql += " WHERE " + quote_identifier(field->name) + " = ?";
 	}
+	if ( query.has_lower_bound() )
+	{
+	    const SchemaField *field = find_field(query.lower_bound_field());
+	    if ( !field )
+		return fail(err, "sqlite query execution failed: unknown lower-bound field `" + query.lower_bound_field() + "`");
+	    sql += (query.has_where_equality() ? " AND " : " WHERE ");
+	    sql += quote_identifier(field->name);
+	    sql += query.lower_bound_inclusive() ? " >= ?" : " > ?";
+	}
 	if ( _key_field )
 	    sql += " ORDER BY " + quote_identifier(_key_field->name);
 	if ( query.has_limit() )
@@ -392,10 +403,17 @@ public:
 	Statement stmt(_db, sql);
 	if ( !stmt.ok() )
 	    return fail(err, sqlite_message("sqlite query prepare failed"));
+	int bind_index = 1;
 	if ( query.has_where_equality() )
 	{
 	    const SchemaField *field = find_field(query.where_field());
-	    if ( !bind_field(stmt.get(), 1, *field, query.where_value(), err) )
+	    if ( !bind_field(stmt.get(), bind_index++, *field, query.where_value(), err) )
+		return false;
+	}
+	if ( query.has_lower_bound() )
+	{
+	    const SchemaField *field = find_field(query.lower_bound_field());
+	    if ( !bind_field(stmt.get(), bind_index++, *field, query.lower_bound_value(), err) )
 		return false;
 	}
 

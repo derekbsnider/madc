@@ -746,6 +746,13 @@ private:
 		detail::storage_name_for_logical<T>(_mapping, storage_query.where_field()),
 		storage_query.where_value());
 	}
+	if ( storage_query.has_lower_bound() )
+	{
+	    storage_query.set_lower_bound(
+		detail::storage_name_for_logical<T>(_mapping, storage_query.lower_bound_field()),
+		storage_query.lower_bound_value(),
+		storage_query.lower_bound_inclusive());
+	}
 	if ( !storage_query.selected_fields().empty() )
 	{
 	    std::vector<std::string> storage_fields;
@@ -780,11 +787,57 @@ private:
 		if ( it == logical.as_object().end() || it->second != query_spec.where_value() )
 		    continue;
 	    }
+	    if ( query_spec.has_lower_bound() )
+	    {
+		if ( !logical.is_object() )
+		    continue;
+		std::map<std::string, value>::const_iterator it =
+		    logical.as_object().find(query_spec.lower_bound_field());
+		if ( it == logical.as_object().end() )
+		    continue;
+		if ( compare_query_values(it->second,
+					 query_spec.lower_bound_value(),
+					 query_spec.lower_bound_inclusive()) < 0 )
+		    continue;
+	    }
 	    filtered.push_back(rows[i]);
 	    if ( query_spec.has_limit() && filtered.size() >= query_spec.row_limit() )
 		break;
 	}
 	return decode_rows(std::move(filtered));
+    }
+
+    int compare_query_values(const value &lhs,
+			     const value &rhs,
+			     bool inclusive) const
+    {
+	if ( lhs.is_integer() || rhs.is_integer() )
+	{
+	    int64_t a = lhs.as_integer();
+	    int64_t b = rhs.as_integer();
+	    if ( a > b )
+		return 1;
+	    if ( a == b )
+		return inclusive ? 1 : 0;
+	    return -1;
+	}
+	if ( lhs.is_real() || rhs.is_real() )
+	{
+	    double a = lhs.as_real();
+	    double b = rhs.as_real();
+	    if ( a > b )
+		return 1;
+	    if ( a == b )
+		return inclusive ? 1 : 0;
+	    return -1;
+	}
+	const std::string &a = lhs.as_string();
+	const std::string &b = rhs.as_string();
+	if ( a > b )
+	    return 1;
+	if ( a == b )
+	    return inclusive ? 1 : 0;
+	return -1;
     }
 
     value record_key(const T &input) const

@@ -118,6 +118,72 @@ The plan should therefore distinguish:
   - the combined structure + mapping + relationship intent, whether
     type-first, schema-first, or hybrid
 
+### 6. Avoid monolithic metadata objects
+
+The system should stay explicitly layered and composable.
+
+We do not want one universal object that simultaneously owns:
+
+- source identity
+- parser rules
+- record schemas
+- storage layout policy
+- index definitions
+- relation definitions
+- query planning
+
+That would be low-cohesion and high-coupling by construction.
+
+Instead, the architecture should separate:
+
+- source identity
+- source parsing/extraction
+- dataset-local record mapping
+- cross-dataset relations
+- derived index/materialization policy
+- query/planning
+
+Those concerns must collaborate, but they must not collapse into one
+god object.
+
+### 7. One source may yield many record families
+
+Not every source is a flat row file. A single source may contain many
+different logical record types.
+
+Examples:
+
+- SMAUG area files with `#MOBILES`, `#OBJECTS`, `#ROOMS`, etc.
+- mbox files containing messages, headers, MIME parts, attachments, and
+  nested multipart sections
+- TOML/INI/tagged text files with repeated section families
+
+The design must therefore support:
+
+- one `DataSource`
+- one parser/extractor for that source family
+- many extracted record families
+- relations among those families
+- indexes over one or more extracted families
+
+This is a better fit than forcing every source into one dataset with one
+flat schema.
+
+### 8. Indexes are derived artifacts, not hidden source state
+
+For structured text sources and semi-structured legacy formats, indexes
+should be explicit companion artifacts.
+
+Typical shape:
+
+- the original file/object remains the source of truth
+- extracted records are logical views over that source
+- FLR/VLR/QDBM/BDB/SQLite indexes are derived materializations
+- reindex rebuilds or refreshes those artifacts deterministically
+
+That keeps ownership clear and makes rebuild/revalidation a first-class
+workflow instead of a side effect.
+
 ## Proposed Class Model
 
 ### `madc::DataSource`
@@ -136,6 +202,26 @@ Example:
 madc::DataSource users_src("sqlite:///tmp/app.db");
 madc::DataSource profiles_src("file:///tmp/profiles.csv");
 ```
+
+Longer-term, `DataSource` also needs enough classification to support
+heterogeneous federation cleanly:
+
+- structured-record sources
+- blob/object sources
+- remote service/object sources
+
+Examples of eventual object/blob-style schemes:
+
+- `file://`
+- `http://` / `https://`
+- `ftp://`
+- `s3://`
+- Google Drive-style file/object sources
+- `rest://`
+
+That does not mean `DataSource` should become a policy blob. It still
+identifies the source. Capability and execution policy belong in the
+driver/adapter layer.
 
 ### `madc::DataDriver`
 
@@ -276,6 +362,61 @@ Examples:
 This layer is important if madc is meant to become a serious
 data-porting tool rather than only a typed persistence/query layer.
 
+For more complex sources, the system will eventually need an adapter
+family that can extract multiple record types from one source, not only
+`T` one-record-at-a-time formatting. A simple `FormatAdapter<T>` is
+still useful, but the long-term design should make room for a higher
+level extraction layer.
+
+### `madc::SourceAdapter`
+
+Optional parser/extractor layer above dataset-local formatting.
+
+Responsibilities:
+
+- segment a `DataSource` into logical record boundaries
+- classify extracted records by family/type
+- expose nested or child records where the format allows them
+- preserve locators back into the original source
+- support simple declarative rulesets and complex parser-backed
+  implementations
+
+This is the right home for sources such as:
+
+- SMAUG tagged text files
+- mbox message archives
+- MIME multipart content
+- TOML/INI-like structured text
+- custom sectioned block formats
+
+The key distinction is:
+
+- `FormatAdapter<T>` is about reading/writing one normalized record
+- `SourceAdapter` is about discovering and classifying records within a
+  raw source
+
+Both are useful, but they solve different problems.
+
+### `madc::ExtractedRecordType`
+
+Named logical record family yielded by one `SourceAdapter`.
+
+Responsibilities:
+
+- define the logical name of a record family
+- attach the normalized `SchemaInfo` for that family
+- expose locators/boundaries for records of that family
+- support per-family indexing/materialization
+
+Examples:
+
+- `RoomRecord`
+- `MobileRecord`
+- `ObjectRecord`
+- `MessageRecord`
+- `MimePartRecord`
+- `AttachmentRecord`
+
 ### `madc::DataSet<T>`
 
 Typed storage-facing collection. This is the main direct API surface.
@@ -341,6 +482,34 @@ The first concrete relation kinds to support are:
   - semantic graph relationship between node datasets
   - example: `FRIEND_OF` between `User` nodes
 
+This relation layer should also be extensible enough to connect
+structured datasets to object/blob sources, not only row-to-row links.
+That is a separate relation shape from ordinary key-match or offset
+record bindings and should not be faked as “just another table row”.
+
+### `madc::IndexDefinition`
+
+Declares a derived index/materialization artifact over a source or
+extracted record family.
+
+Responsibilities:
+
+- define which fields or locators are indexed
+- define which backend stores the derived index
+- define whether the index is primary, secondary, positional, offset,
+  full-text, or sidecar-style
+- define rebuild/refresh/validate behavior
+
+Examples:
+
+- CSV/TOML/DSV source -> FLR sorted key index
+- structured text source -> QDBM secondary lookup index
+- FLR live file -> packed-bit tombstone sidecar
+- extracted mail messages -> SQLite searchable header index
+
+This layer is where “easy to index and re-index structured text
+sources” belongs. It should not be hidden inside the parser or driver.
+
 ### Common Sidecar Patterns
 
 The storage layer should treat several composable file/database patterns
@@ -361,9 +530,39 @@ as normal, not as odd edge cases:
   - fixed record file stores key/metadata/offset
   - variable record file stores payload bytes
   - relation kind is `offset`
+- structured text -> derived side indexes
+  - source file remains authoritative
+  - extracted record families are indexed into FLR/QDBM/BDB/SQLite
+  - reindex can rebuild the side indexes from source
 
 These patterns are central to the long-term goal of making madc a data
 porting and storage-structure tool, not just a query wrapper.
+
+### Reindex Workflows
+
+Reindexing should be a first-class workflow for structured text and
+semi-structured sources.
+
+The design should support:
+
+- full rebuild
+  - discard and rebuild all derived indexes from source
+- append-only refresh
+  - catch up from a known source locator where the format allows it
+- validate-only
+  - confirm that derived indexes still match source
+- invalidate-and-rebuild
+  - explicit fallback when incremental guarantees are not available
+
+This needs to be generic across formats such as:
+
+- DSV/CSV
+- TOML/INI/tagged text
+- MUD flat files
+- mailbox/message archives
+
+The important point is that “reindex” belongs to index/materialization
+policy, not to any one storage driver.
 
 ### `madc::Cursor<T>`
 
@@ -935,6 +1134,21 @@ The implementation should therefore be:
 - internal type metadata reuse from `DataDef`, `DataDefSTRUCT`,
   `DataDefCLASS`
 - optional language syntax later, wrapping the same API
+
+The long-term physical split should reflect that layering:
+
+- `libmadc`
+  - core embedding/runtime API
+- `libmadcdat`
+  - optional data/federation/indexing subsystem
+
+That keeps the storage/federation work available to ordinary C++ hosts
+without forcing every `libmadc` consumer to carry the full data layer.
+
+It also lines up well with future `madc::eval(...)` planning on the core
+side: the core runtime owns compilation/execution/policy, while
+`libmadcdat` owns storage/federation concerns and can be brought in only
+when the host wants that surface.
 
 ## Open Questions
 

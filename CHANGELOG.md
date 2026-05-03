@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+- **Ordered/lower-bound query pushdown for keyed datasets.** The query
+  builder path now goes beyond equality-only filters: `Query` /
+  `QueryBuilder` can describe lower-bound scans, `DataSet<T>` can apply
+  them through either backend pushdown or local fallback, `sqlite://`
+  now executes key-ordered `>=` plus `LIMIT` builders directly, and the
+  ordered keyed `qdbm://` / `bdb://` backends now use native cursor
+  positioning for the same lower-bound key scans. Coverage in
+  `tests/unit/test_libmadc_sqlite.cpp`,
+  `tests/unit/test_libmadc_qdbm.cpp`,
+  `tests/unit/test_libmadc_bdb.cpp`, and
+  `tests/unit/test_libmadc_storage_contract.cpp` locks in the new
+  builder metadata and range behavior.
+
+- **Phase 4 planning note: reserve the `libmadcdat` seam and treat
+  `madc::eval(...)` as policy-bound execution.** The Phase 4 and storage
+  plans now explicitly reserve an optional inner `libmadcdat`
+  sublibrary for `DataSource`, drivers, mappings, relations, source
+  adapters, indexes, and federation/query planning, instead of letting
+  that complexity bleed into the core `libmadc` embedding surface. The
+  same planning pass also records `madc::eval(...)` as a future core API
+  that must honor the same security policy, parser registration, and
+  invoke limits as file-based program execution.
+
+- **Storage federation design note: keep the layers separate.** The
+  storage plan in `docs/plans/data-storage-federation.md` now makes the
+  anti-monolith structure explicit: `DataSource` stays first-class,
+  `SourceAdapter` handles source segmentation/classification,
+  `FormatAdapter<T>` stays per-record, `ExtractedRecordType` models
+  multiple record families per source, `Relation<A,B>` stays distinct
+  from dataset-local mapping, and `IndexDefinition` plus reindex
+  workflows own derived indexes for CSV/TOML/tagged-text/mailbox-style
+  sources. This locks in a high-cohesion/low-coupling direction before
+  more storage backends and text-format parsers land.
+
 - **First real query pushdown path for typed datasets.** `Query` /
   `QueryBuilder` now carry structured builder metadata instead of just
   display text, `DataSet<T>` grows `query(...)`, and the runtime can now

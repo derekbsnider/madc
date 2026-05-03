@@ -258,9 +258,12 @@ public:
     {
 	return query.query_kind() == Query::kind::builder
 	    && query.selected_fields().empty()
-	    && query.has_where_equality()
 	    && _key_field
-	    && query.where_field() == _key_field->name;
+	    && ((!query.has_where_equality())
+		|| query.where_field() == _key_field->name)
+	    && ((!query.has_lower_bound())
+		|| query.lower_bound_field() == _key_field->name)
+	    && (query.has_where_equality() || query.has_lower_bound());
     }
 
     bool insert_record(const value &record, error *err = nullptr)
@@ -408,11 +411,41 @@ public:
     {
 	out.clear();
 	if ( !can_execute(query) )
-	    return fail(err, "qdbm query execution only supports primary-key equality filters");
-	value record;
-	if ( !get_record(_key_field->name, query.where_value(), record, err) )
+	    return fail(err, "qdbm query execution only supports primary-key equality and lower-bound filters");
+	if ( query.has_where_equality() )
+	{
+	    value record;
+	    if ( !get_record(_key_field->name, query.where_value(), record, err) )
+		return true;
+	    out.push_back(record);
 	    return true;
-	out.push_back(record);
+	}
+
+	std::string encoded_key;
+	if ( !encode_lookup_key(query.lower_bound_value(), encoded_key, err) )
+	    return false;
+	if ( !vlcurjump(_db, encoded_key.data(), static_cast<int>(encoded_key.size()), VL_JFORWARD) )
+	    return true;
+
+	while ( true )
+	{
+	    int size = 0;
+	    char *payload = vlcurval(_db, &size);
+	    if ( !payload )
+		return fail(err, "qdbm range query failed: cursor value fetch failed");
+
+	    std::vector<char> bytes(payload, payload + size);
+	    std::free(payload);
+
+	    value record;
+	    if ( !decode_record(bytes, record, err) )
+		return false;
+	    out.push_back(record);
+	    if ( query.has_limit() && out.size() >= query.row_limit() )
+		break;
+	    if ( !vlcurnext(_db) )
+		break;
+	}
 	return true;
     }
 
