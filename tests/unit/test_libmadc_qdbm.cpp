@@ -154,6 +154,16 @@ TEST_SUITE("libmadc qdbm backend") {
 	CHECK_FALSE(ds.contains(madc::value(int64_t(2)), &err));
 	CHECK(ds.size(&err) == 2);
 
+	std::unique_ptr<madc::Cursor<StorageProbe> > pushed =
+	    ds.query(madc::query().from("users").where_eq("id", madc::value(int64_t(1))).limit(1).build(), &err);
+	REQUIRE(static_cast<bool>(pushed));
+	StorageProbe row;
+	REQUIRE(pushed->next(row));
+	CHECK(row.id == 1);
+	CHECK(row.title == "Alice Example");
+	CHECK_FALSE(pushed->next(row));
+	pushed->close();
+
 	std::remove(path.c_str());
     }
 #else

@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+- **First real query pushdown path for typed datasets.** `Query` /
+  `QueryBuilder` now carry structured builder metadata instead of just
+  display text, `DataSet<T>` grows `query(...)`, and the runtime can now
+  push simple equality filters into backends that actually support them
+  while falling back to local scan/filter elsewhere. `sqlite://` now
+  executes scalar `WHERE field = value` plus `LIMIT` directly, and the
+  keyed `qdbm://`, `gdbm://`, and `bdb://` backends now execute primary-
+  key equality filters through the same path. New coverage in
+  `tests/unit/test_libmadc_sqlite.cpp`,
+  `tests/unit/test_libmadc_qdbm.cpp`,
+  `tests/unit/test_libmadc_gdbm.cpp`,
+  `tests/unit/test_libmadc_bdb.cpp`, and
+  `tests/unit/test_libmadc_storage_contract.cpp` locks in the builder
+  metadata and pushed-query behavior.
+
 - **Stable append-only VLR locator contract.** `vlr://` record locators
   are now an explicit opt-in contract rather than a best-effort offset
   detail. When a VLR dataset is configured with a tombstone sidecar,

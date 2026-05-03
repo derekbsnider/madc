@@ -159,6 +159,8 @@ public:
 	caps.scan = true;
 	caps.point_lookup = true;
 	caps.range_lookup = true;
+	caps.filter_pushdown = true;
+	caps.limit_pushdown = true;
 	return caps;
     }
 
@@ -254,7 +256,11 @@ public:
 
     bool can_execute(const Query &query) const
     {
-	return query.query_kind() == Query::kind::builder;
+	return query.query_kind() == Query::kind::builder
+	    && query.selected_fields().empty()
+	    && query.has_where_equality()
+	    && _key_field
+	    && query.where_field() == _key_field->name;
     }
 
     bool insert_record(const value &record, error *err = nullptr)
@@ -394,6 +400,20 @@ public:
 	std::vector<char> bytes(payload, payload + size);
 	std::free(payload);
 	return decode_record(bytes, out, err);
+    }
+
+    bool execute_query(const Query &query,
+		       std::vector<value> &out,
+		       error *err = nullptr) const
+    {
+	out.clear();
+	if ( !can_execute(query) )
+	    return fail(err, "qdbm query execution only supports primary-key equality filters");
+	value record;
+	if ( !get_record(_key_field->name, query.where_value(), record, err) )
+	    return true;
+	out.push_back(record);
+	return true;
     }
 
     bool scan_records(std::vector<value> &out,

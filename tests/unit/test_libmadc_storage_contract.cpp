@@ -245,4 +245,21 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(graph.relation_kind() == madc::RelationKind::graph_edge);
 	CHECK(graph.edge_label() == "FRIEND_OF");
     }
+
+    TEST_CASE("QueryBuilder preserves dataset equality and limit metadata") {
+	madc::Query built = madc::query()
+	    .from("users")
+	    .where_eq("short_name", madc::value("ALPHA"))
+	    .limit(2)
+	    .build();
+
+	CHECK(built.query_kind() == madc::Query::kind::builder);
+	CHECK(built.dataset_name() == "users");
+	CHECK(built.has_where_equality());
+	CHECK(built.where_field() == "short_name");
+	CHECK(built.where_value() == madc::value("ALPHA"));
+	CHECK(built.has_limit());
+	CHECK(built.row_limit() == 2);
+	CHECK(built.selected_fields().empty());
+    }
 }

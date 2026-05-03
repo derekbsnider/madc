@@ -132,6 +132,8 @@ public:
 	caps.scan = true;
 	caps.point_lookup = true;
 	caps.range_lookup = true;
+	caps.filter_pushdown = true;
+	caps.limit_pushdown = true;
 	caps.transaction = true;
 	return caps;
     }
@@ -220,7 +222,8 @@ public:
 
     bool can_execute(const Query &query) const
     {
-	return query.query_kind() == Query::kind::builder;
+	return query.query_kind() == Query::kind::builder
+	    && query.selected_fields().empty();
     }
 
     bool insert_record(const value &record, error *err = nullptr)
@@ -365,6 +368,52 @@ public:
 	return fail(err, sqlite_message("sqlite get failed"));
     }
 
+    bool execute_query(const Query &query,
+		       std::vector<value> &out,
+		       error *err = nullptr) const
+    {
+	out.clear();
+	if ( !can_execute(query) )
+	    return fail(err, "sqlite query execution does not support this builder shape");
+
+	std::string sql = select_all_sql();
+	if ( query.has_where_equality() )
+	{
+	    const SchemaField *field = find_field(query.where_field());
+	    if ( !field )
+		return fail(err, "sqlite query execution failed: unknown field `" + query.where_field() + "`");
+	    sql += " WHERE " + quote_identifier(field->name) + " = ?";
+	}
+	if ( _key_field )
+	    sql += " ORDER BY " + quote_identifier(_key_field->name);
+	if ( query.has_limit() )
+	    sql += " LIMIT " + std::to_string(static_cast<unsigned long long>(query.row_limit()));
+
+	Statement stmt(_db, sql);
+	if ( !stmt.ok() )
+	    return fail(err, sqlite_message("sqlite query prepare failed"));
+	if ( query.has_where_equality() )
+	{
+	    const SchemaField *field = find_field(query.where_field());
+	    if ( !bind_field(stmt.get(), 1, *field, query.where_value(), err) )
+		return false;
+	}
+
+	while ( true )
+	{
+	    int rc = sqlite3_step(stmt.get());
+	    if ( rc == SQLITE_DONE )
+		return true;
+	    if ( rc != SQLITE_ROW )
+		return fail(err, sqlite_message("sqlite query execution failed"));
+
+	    value record;
+	    if ( !row_to_record(stmt.get(), record, err) )
+		return false;
+	    out.push_back(record);
+	}
+    }
+
     bool scan_records(std::vector<value> &out,
 		      error *err = nullptr) const
     {
@@ -425,6 +474,16 @@ private:
 	}
 	sql += " FROM " + quote_identifier(_table_name);
 	return sql;
+    }
+
+    const SchemaField *find_field(const std::string &field_name) const
+    {
+	for ( std::size_t i = 0; i < _schema.fields().size(); ++i )
+	{
+	    if ( _schema.fields()[i].name == field_name )
+		return &_schema.fields()[i];
+	}
+	return nullptr;
     }
 
     bool ensure_record_shape(const value &record, error *err) const

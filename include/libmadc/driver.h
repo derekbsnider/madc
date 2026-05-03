@@ -121,6 +121,18 @@ public:
 			 std::string(name()) + " does not support record locators");
 	return false;
     }
+    virtual bool execute_query(const Query &query,
+			       std::vector<value> &out,
+			       error *err = nullptr) const
+    {
+	(void)query;
+	out.clear();
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 std::string(name()) + " does not support query execution");
+	return false;
+    }
     virtual bool scan_records(std::vector<value> &out,
 			      error *err = nullptr) const = 0;
 };

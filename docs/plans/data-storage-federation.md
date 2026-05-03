@@ -954,9 +954,14 @@ The Phase 4-facing API sketch and first local backend family are now in
 place. FLR tombstone/reap/restore lifecycle support is working, the
 first FLR index -> VLR payload offset relation is working, and VLR
 locator stability is now defined through an append-only tombstone-
-sidecar contract.
+sidecar contract. A first real query pushdown path now exists too:
+typed `DataSet<T>::query(...)` can carry builder metadata into the
+driver layer, and `sqlite://` plus the keyed local stores can execute
+simple equality filters directly when the query shape matches their
+capabilities.
 
 The next concrete storage step is to move from single-backend CRUD
-toward query pushdown and federated planning across the SQLite and keyed
-local backends, while deciding how relation/index maintenance should
-react to payload rewrites that intentionally tombstone old VLR rows.
+toward federated planning across the SQLite and keyed local backends,
+while broadening pushdown beyond equality+limit and deciding how
+relation/index maintenance should react to payload rewrites that
+intentionally tombstone old VLR rows.

@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 254 integration tests pass. 150 unit tests pass (80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 5 libmadc_flr + 1 libmadc_gdbm + 1 libmadc_qdbm + 1 libmadc_relation + 1 libmadc_sqlite + 5 libmadc_error + 19 libmadc_value + 1 libmadc_vlr + 10 libmadc_storage_contract). (`make -C src fulltest`)**
+**Current status: 254 integration tests pass. 154 unit tests pass (80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 5 libmadc_flr + 1 libmadc_gdbm + 1 libmadc_qdbm + 1 libmadc_relation + 1 libmadc_sqlite + 5 libmadc_error + 19 libmadc_value + 3 libmadc_vlr + 12 libmadc_storage_contract). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -248,7 +248,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/`, and the exploratory storage track now has stable append-only VLR locators for FLR->VLR relations |
+| **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/`, and the exploratory storage track now has stable append-only VLR locators for FLR->VLR relations plus first-wave pushed builder queries on SQLite and keyed local backends |
 
 ---
 

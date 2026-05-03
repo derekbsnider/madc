@@ -2417,12 +2417,18 @@ public:
 } // namespace
 
 Query::Query()
-    : _kind(kind::builder)
+    : _kind(kind::builder),
+      _has_where_equality(false),
+      _row_limit(0),
+      _has_limit(false)
 {
 }
 
 Query::Query(kind k)
-    : _kind(k)
+    : _kind(k),
+      _has_where_equality(false),
+      _row_limit(0),
+      _has_limit(false)
 {
 }
 
@@ -2441,6 +2447,77 @@ void Query::set_text(const std::string &text)
     _text = text;
 }
 
+const std::string &Query::dataset_name() const
+{
+    return _dataset_name;
+}
+
+void Query::set_dataset_name(const std::string &name)
+{
+    _dataset_name = name;
+}
+
+const std::vector<std::string> &Query::selected_fields() const
+{
+    return _selected_fields;
+}
+
+void Query::set_selected_fields(const std::vector<std::string> &fields)
+{
+    _selected_fields = fields;
+}
+
+bool Query::has_where_equality() const
+{
+    return _has_where_equality;
+}
+
+const std::string &Query::where_field() const
+{
+    return _where_field;
+}
+
+const value &Query::where_value() const
+{
+    return _where_value;
+}
+
+void Query::set_where_equality(const std::string &field, const value &match)
+{
+    _where_field = field;
+    _where_value = match;
+    _has_where_equality = true;
+}
+
+void Query::clear_where_equality()
+{
+    _where_field.clear();
+    _where_value = value();
+    _has_where_equality = false;
+}
+
+bool Query::has_limit() const
+{
+    return _has_limit;
+}
+
+std::size_t Query::row_limit() const
+{
+    return _row_limit;
+}
+
+void Query::set_limit(std::size_t count)
+{
+    _row_limit = count;
+    _has_limit = true;
+}
+
+void Query::clear_limit()
+{
+    _row_limit = 0;
+    _has_limit = false;
+}
+
 struct QueryBuilder::impl
 {
     std::string dataset_name;
@@ -2454,6 +2531,22 @@ struct QueryBuilder::impl
 QueryBuilder::QueryBuilder()
     : _(new impl())
 {
+}
+
+QueryBuilder::~QueryBuilder()
+{
+}
+
+QueryBuilder::QueryBuilder(QueryBuilder &&other) noexcept
+    : _(std::move(other._))
+{
+}
+
+QueryBuilder &QueryBuilder::operator=(QueryBuilder &&other) noexcept
+{
+    if ( this != &other )
+	_ = std::move(other._);
+    return *this;
 }
 
 QueryBuilder &QueryBuilder::from(const std::string &dataset_name)
@@ -2485,6 +2578,12 @@ QueryBuilder &QueryBuilder::limit(std::size_t count)
 Query QueryBuilder::build() const
 {
     Query q(Query::kind::builder);
+    q.set_dataset_name(_->dataset_name);
+    q.set_selected_fields(_->selects);
+    if ( _->has_where )
+	q.set_where_equality(_->where_field, _->where_value);
+    if ( _->row_limit )
+	q.set_limit(_->row_limit);
     std::ostringstream os;
     os << "FROM " << _->dataset_name;
     if ( _->has_where )

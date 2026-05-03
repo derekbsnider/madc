@@ -5,6 +5,7 @@
 #include "libmadc/driver.h"
 #include "libmadc/error.h"
 #include "libmadc/mapper.h"
+#include "libmadc/query.h"
 #include "libmadc/value.h"
 
 #include <algorithm>
@@ -563,33 +564,60 @@ public:
 	return std::unique_ptr<Cursor<T> >(new detail::VectorCursor<T>(*_iteration_rows));
     }
 
-    std::unique_ptr<Cursor<T>> where_eq(const std::string &field,
-					const value &match,
-					error *err = nullptr) const
+    std::unique_ptr<Cursor<T>> query(const Query &query_spec,
+				     error *err = nullptr) const
     {
 	const_cast<DataSet<T> *>(this)->open(err);
 	if ( !is_open() )
 	    return std::unique_ptr<Cursor<T>>();
 
-	std::vector<value> rows;
-	if ( !_driver->scan_records(rows, err) )
-	    return std::unique_ptr<Cursor<T>>();
-
-	const std::string storage_field = detail::storage_name_for_logical<T>(_mapping, field);
-	std::vector<T> decoded;
-	for ( std::size_t i = 0; i < rows.size(); ++i )
+	if ( query_spec.query_kind() != Query::kind::builder )
 	{
-	    if ( !rows[i].is_object() )
-		continue;
-	    const std::map<std::string, value> &record = rows[i].as_object();
-	    std::map<std::string, value>::const_iterator it = record.find(storage_field);
-	    if ( it == record.end() || it->second != match )
-		continue;
-	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
-	    decoded.push_back(_mapper->decode(logical));
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet query failed: only builder queries are supported");
+	    return std::unique_ptr<Cursor<T>>();
+	}
+	if ( !query_spec.selected_fields().empty() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet query failed: typed projection is not implemented yet");
+	    return std::unique_ptr<Cursor<T>>();
+	}
+	if ( !query_spec.dataset_name().empty()
+	  && query_spec.dataset_name() != _name
+	  && query_spec.dataset_name() != _storage_schema.name() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "DataSet query failed: query targets dataset `" + query_spec.dataset_name()
+			     + "` but this DataSet is `" + _name + "`");
+	    return std::unique_ptr<Cursor<T>>();
 	}
 
-	return std::unique_ptr<Cursor<T>>(new detail::VectorCursor<T>(std::move(decoded)));
+	std::vector<value> rows;
+	Query storage_query = translate_query_for_storage(query_spec);
+	if ( _driver->can_execute(storage_query) )
+	{
+	    error pushdown_err;
+	    if ( _driver->execute_query(storage_query, rows, &pushdown_err) )
+		return decode_rows(std::move(rows));
+	}
+
+	return execute_query_locally(query_spec, err);
+    }
+
+    std::unique_ptr<Cursor<T>> where_eq(const std::string &field,
+					const value &match,
+					error *err = nullptr) const
+    {
+	QueryBuilder builder = madc::query();
+	builder.from(_name).where_eq(field, match);
+	return query(builder.build(), err);
     }
 
     std::size_t size(error *err = nullptr) const
@@ -693,6 +721,70 @@ private:
 	}
 	_iteration_rows = decoded;
 	return true;
+    }
+
+    std::unique_ptr<Cursor<T>> decode_rows(std::vector<value> rows) const
+    {
+	std::vector<T> decoded;
+	decoded.reserve(rows.size());
+	for ( std::size_t i = 0; i < rows.size(); ++i )
+	{
+	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
+	    decoded.push_back(_mapper->decode(logical));
+	}
+	return std::unique_ptr<Cursor<T> >(new detail::VectorCursor<T>(std::move(decoded)));
+    }
+
+    Query translate_query_for_storage(const Query &logical_query) const
+    {
+	Query storage_query = logical_query;
+	if ( !storage_query.dataset_name().empty() )
+	    storage_query.set_dataset_name(_storage_schema.name());
+	if ( storage_query.has_where_equality() )
+	{
+	    storage_query.set_where_equality(
+		detail::storage_name_for_logical<T>(_mapping, storage_query.where_field()),
+		storage_query.where_value());
+	}
+	if ( !storage_query.selected_fields().empty() )
+	{
+	    std::vector<std::string> storage_fields;
+	    for ( std::size_t i = 0; i < storage_query.selected_fields().size(); ++i )
+	    {
+		storage_fields.push_back(
+		    detail::storage_name_for_logical<T>(_mapping, storage_query.selected_fields()[i]));
+	    }
+	    storage_query.set_selected_fields(storage_fields);
+	}
+	return storage_query;
+    }
+
+    std::unique_ptr<Cursor<T>> execute_query_locally(const Query &query_spec,
+						     error *err) const
+    {
+	std::vector<value> rows;
+	if ( !_driver->scan_records(rows, err) )
+	    return std::unique_ptr<Cursor<T>>();
+
+	std::vector<value> filtered;
+	filtered.reserve(rows.size());
+	for ( std::size_t i = 0; i < rows.size(); ++i )
+	{
+	    value logical = detail::storage_to_logical_record<T>(rows[i], _mapping);
+	    if ( query_spec.has_where_equality() )
+	    {
+		if ( !logical.is_object() )
+		    continue;
+		std::map<std::string, value>::const_iterator it =
+		    logical.as_object().find(query_spec.where_field());
+		if ( it == logical.as_object().end() || it->second != query_spec.where_value() )
+		    continue;
+	    }
+	    filtered.push_back(rows[i]);
+	    if ( query_spec.has_limit() && filtered.size() >= query_spec.row_limit() )
+		break;
+	}
+	return decode_rows(std::move(filtered));
     }
 
     value record_key(const T &input) const

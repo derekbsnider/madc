@@ -36,11 +36,16 @@
   record locators plus `Relation::resolve(...)`, and VLR locator
   stability is now defined too: locator-aware VLR datasets opt into an
   append-only tombstone-sidecar contract so live offsets survive reopen
-  and stale/tombstoned locators fail explicitly. Next concrete steps:
-  query pushdown and federated planning on top of the now-stable local
-  backend family; decide whether FLR/VLR relations should grow helper
-  paths for index maintenance after payload rewrites; then branch into
-  the next backend tier (`leveldb://`, `rocksdb://`, or service
+  and stale/tombstoned locators fail explicitly. A first real query
+  pushdown path now exists too: `DataSet<T>::query(...)` executes simple
+  builder queries directly on `sqlite://` and keyed `qdbm://` /
+  `gdbm://` / `bdb://` backends when they can honor the requested
+  equality filter, and falls back locally otherwise. Next concrete
+  steps: federated planning on top of that pushed-query path; broaden
+  builder support beyond equality+limit into ordered/range scans and
+  relation traversal; decide whether FLR/VLR relations should grow
+  helper paths for index maintenance after payload rewrites; then branch
+  into the next backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,
   broaden mapper inference beyond explicit field registration
   (ideally toward struct/class metadata reuse and lower-friction

@@ -164,6 +164,16 @@ TEST_SUITE("libmadc gdbm backend") {
 	CHECK_FALSE(ds.contains(madc::value(int64_t(2)), &err));
 	CHECK(ds.size(&err) == 2);
 
+	std::unique_ptr<madc::Cursor<StorageProbe> > pushed =
+	    ds.query(madc::query().from("users").where_eq("id", madc::value(int64_t(3))).limit(1).build(), &err);
+	REQUIRE(static_cast<bool>(pushed));
+	StorageProbe row;
+	REQUIRE(pushed->next(row));
+	CHECK(row.id == 3);
+	CHECK(row.title == "Cara Example");
+	CHECK_FALSE(pushed->next(row));
+	pushed->close();
+
 	std::remove(path.c_str());
     }
 #else

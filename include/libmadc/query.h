@@ -26,16 +26,42 @@ public:
     kind query_kind() const;
     const std::string &text() const;
     void set_text(const std::string &text);
+    const std::string &dataset_name() const;
+    void set_dataset_name(const std::string &name);
+    const std::vector<std::string> &selected_fields() const;
+    void set_selected_fields(const std::vector<std::string> &fields);
+    bool has_where_equality() const;
+    const std::string &where_field() const;
+    const value &where_value() const;
+    void set_where_equality(const std::string &field, const value &match);
+    void clear_where_equality();
+    bool has_limit() const;
+    std::size_t row_limit() const;
+    void set_limit(std::size_t count);
+    void clear_limit();
 
 private:
     kind _kind;
     std::string _text;
+    std::string _dataset_name;
+    std::vector<std::string> _selected_fields;
+    std::string _where_field;
+    value _where_value;
+    bool _has_where_equality;
+    std::size_t _row_limit;
+    bool _has_limit;
 };
 
 class QueryBuilder
 {
 public:
     QueryBuilder();
+    ~QueryBuilder();
+    QueryBuilder(QueryBuilder &&other) noexcept;
+    QueryBuilder &operator=(QueryBuilder &&other) noexcept;
+
+    QueryBuilder(const QueryBuilder &other) = delete;
+    QueryBuilder &operator=(const QueryBuilder &other) = delete;
 
     QueryBuilder &from(const std::string &dataset_name);
     QueryBuilder &where_eq(const std::string &field, const value &match);
