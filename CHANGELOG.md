@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **Strict builder bounds now have a public API.** `QueryBuilder` now
+  exposes `where_gt(...)` and `where_lt(...)` in addition to the
+  existing inclusive bound helpers, so callers can express exclusive
+  ordered scans without constructing `Query` objects manually. The
+  runtime and ordered backends already carried the inclusive/exclusive
+  flags internally; this slice makes that capability part of the
+  public builder surface and locks it in with coverage across SQLite,
+  QDBM, BDB, and the storage-contract builder tests.
+
 - **Storage federation plan tightened around planning boundaries.** The
   canonical federation plan now explicitly calls out the logical-vs-
   physical query IR boundary, a coarse driver capability model for

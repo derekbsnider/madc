@@ -58,7 +58,9 @@
   materialize `key_match` and `offset` targets across datasets/backends.
   Raw projected builder queries now exist too through
   `DataSet<T>::query_raw(...)`, so `select(...)` can return projected
-  `madc::value` objects without waiting for typed partial decode.
+  `madc::value` objects without waiting for typed partial decode, and
+  strict builder bounds now exist too through `where_gt(...)` /
+  `where_lt(...)`.
   The canonical storage plan now also explicitly separates logical query
   IR from physical execution IR and treats driver capabilities as a
   coarse planning filter rather than a replacement for per-backend query
@@ -66,9 +68,9 @@
   that pushed-query path; decide whether projection pushdown should
   expand beyond the current keyed/SQLite drivers; decide whether
   `Relation::query_related(...)`
-  needs a raw/projection-aware sibling before any typed partial decode
-  work; then broaden builder support from equality+range into richer
-  predicates; decide whether FLR/VLR relations should grow
+  needs richer target-side query composition before any typed partial
+  decode work; then broaden builder support beyond equality and ordered
+  bounds into richer predicates; decide whether FLR/VLR relations should grow
   helper paths for index maintenance after payload rewrites; then branch
   into the next backend tier (`leveldb://`, `rocksdb://`, or service
   protocols). In parallel,

@@ -89,7 +89,9 @@ public:
 
     QueryBuilder &from(const std::string &dataset_name);
     QueryBuilder &where_eq(const std::string &field, const value &match);
+    QueryBuilder &where_gt(const std::string &field, const value &match);
     QueryBuilder &where_gte(const std::string &field, const value &match);
+    QueryBuilder &where_lt(const std::string &field, const value &match);
     QueryBuilder &where_lte(const std::string &field, const value &match);
     QueryBuilder &select(const std::vector<std::string> &fields);
     QueryBuilder &limit(std::size_t count);

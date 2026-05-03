@@ -173,6 +173,24 @@ TEST_SUITE("libmadc qdbm backend") {
 	CHECK_FALSE(ranged->next(row));
 	ranged->close();
 
+	std::unique_ptr<madc::Cursor<StorageProbe> > strict_lower =
+	    ds.query(madc::query().from("users").where_gt("id", madc::value(int64_t(1))).limit(2).build(), &err);
+	REQUIRE(static_cast<bool>(strict_lower));
+	REQUIRE(strict_lower->next(row));
+	CHECK(row.id == 3);
+	CHECK(row.title == "Cara Example");
+	CHECK_FALSE(strict_lower->next(row));
+	strict_lower->close();
+
+	std::unique_ptr<madc::Cursor<StorageProbe> > strict_upper =
+	    ds.query(madc::query().from("users").where_lt("id", madc::value(int64_t(3))).limit(2).build(), &err);
+	REQUIRE(static_cast<bool>(strict_upper));
+	REQUIRE(strict_upper->next(row));
+	CHECK(row.id == 1);
+	CHECK(row.title == "Alice Example");
+	CHECK_FALSE(strict_upper->next(row));
+	strict_upper->close();
+
 	    std::unique_ptr<madc::Cursor<StorageProbe> > bounded =
 	        ds.query(madc::query().from("users").where_gte("id", madc::value(int64_t(1))).where_lte("id", madc::value(int64_t(2))).limit(2).build(), &err);
 	    REQUIRE(static_cast<bool>(bounded));

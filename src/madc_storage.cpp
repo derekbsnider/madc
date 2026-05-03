@@ -2664,12 +2664,30 @@ QueryBuilder &QueryBuilder::where_gte(const std::string &field, const value &mat
     return *this;
 }
 
+QueryBuilder &QueryBuilder::where_gt(const std::string &field, const value &match)
+{
+    _->lower_bound_field = field;
+    _->lower_bound_value = match;
+    _->has_lower_bound = true;
+    _->lower_bound_inclusive = false;
+    return *this;
+}
+
 QueryBuilder &QueryBuilder::where_lte(const std::string &field, const value &match)
 {
     _->upper_bound_field = field;
     _->upper_bound_value = match;
     _->has_upper_bound = true;
     _->upper_bound_inclusive = true;
+    return *this;
+}
+
+QueryBuilder &QueryBuilder::where_lt(const std::string &field, const value &match)
+{
+    _->upper_bound_field = field;
+    _->upper_bound_value = match;
+    _->has_upper_bound = true;
+    _->upper_bound_inclusive = false;
     return *this;
 }
 
@@ -2704,10 +2722,12 @@ Query QueryBuilder::build() const
 	os << " WHERE " << _->where_field;
     if ( _->has_lower_bound )
 	os << (_->has_where ? " AND " : " WHERE ")
-	   << _->lower_bound_field << " >= ?";
+	   << _->lower_bound_field
+	   << (_->lower_bound_inclusive ? " >= ?" : " > ?");
     if ( _->has_upper_bound )
 	os << ((_->has_where || _->has_lower_bound) ? " AND " : " WHERE ")
-	   << _->upper_bound_field << " <= ?";
+	   << _->upper_bound_field
+	   << (_->upper_bound_inclusive ? " <= ?" : " < ?");
     if ( _->row_limit )
 	os << " LIMIT " << _->row_limit;
     q.set_text(os.str());
