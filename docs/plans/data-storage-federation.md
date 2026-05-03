@@ -951,14 +951,12 @@ The implementation should therefore be:
 ## Recommended Next Step
 
 The Phase 4-facing API sketch and first local backend family are now in
-place. The next concrete storage step is to use the FLR tombstone sidecar
-as the first real compaction workflow:
+place. FLR tombstone/reap/restore lifecycle support is working, the
+first FLR index -> VLR payload offset relation is working, and VLR
+locator stability is now defined through an append-only tombstone-
+sidecar contract.
 
-- reap tombstoned FLR rows into a live file plus dead-record archive
-- preserve restore-before-reap semantics
-- define restore-after-reap by logical key reinsertion
-- then model FLR index -> VLR payload offset bindings as the first
-  cross-dataset storage relation
-
-After that, move from single-backend CRUD toward query pushdown and
-federated planning across the SQLite and keyed local backends.
+The next concrete storage step is to move from single-backend CRUD
+toward query pushdown and federated planning across the SQLite and keyed
+local backends, while deciding how relation/index maintenance should
+react to payload rewrites that intentionally tombstone old VLR rows.

@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **Stable append-only VLR locator contract.** `vlr://` record locators
+  are now an explicit opt-in contract rather than a best-effort offset
+  detail. When a VLR dataset is configured with a tombstone sidecar,
+  locator-aware writes become append-only: inserts append new payloads,
+  updates append a replacement row and tombstone the old version,
+  deletes only tombstone rows, restores clear tombstones for truly
+  deleted rows, and `get_by_locator(...)` now fails explicitly for
+  tombstoned/stale payload offsets. This keeps live locators stable
+  across reopen and non-compacting rewrites while making stale-link
+  failures visible. New coverage in `tests/unit/test_libmadc_vlr.cpp`
+  proves reopen, update, erase, restore, and no-tombstone failure
+  behavior, and `tests/unit/test_libmadc_relation.cpp` now opts the
+  payload file into the stable-locator contract.
+
 - **First concrete FLR -> VLR offset relation slice.** The storage
   layer now has its first real cross-dataset binding, not just relation
   metadata. `RecordLocator` is now part of the driver/runtime surface,

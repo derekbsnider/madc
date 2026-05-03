@@ -179,4 +179,95 @@ TEST_SUITE("libmadc vlr backend") {
 
 	std::remove(path.c_str());
     }
+
+    TEST_CASE("vlr stable locators require tombstones and survive reopen with append-only updates") {
+	const std::string path =
+	    "/tmp/madc_vlr_locator_" + std::to_string(static_cast<long long>(getpid())) + ".bin";
+	const std::string tombstones =
+	    "/tmp/madc_vlr_locator_" + std::to_string(static_cast<long long>(getpid())) + ".bits";
+	std::remove(path.c_str());
+	std::remove(tombstones.c_str());
+
+	madc::MappingSpec<StorageProbe> spec;
+	spec.key("id")
+	    .variable_record()
+	    .tombstone_file(tombstones);
+
+	madc::error err;
+	madc::RecordLocator alice_loc;
+	madc::RecordLocator bob_loc;
+	{
+	    madc::DataSet<StorageProbe> ds("vlr://" + path);
+	    ds.mapping(spec).name("users");
+
+	    StorageProbe alice = make_probe(1, 10, 7, true, StorageStatus::active, 'A',
+					    "ALPHA", "Alice title", 1.25);
+	    StorageProbe bob = make_probe(2, 42, 9, false, StorageStatus::disabled, 'B',
+					  "BRAVO", "Bob title", 9.75);
+
+	    REQUIRE(ds.insert_with_locator(alice, alice_loc, &err));
+	    REQUIRE(ds.insert_with_locator(bob, bob_loc, &err));
+	    CHECK(alice_loc.valid());
+	    CHECK(bob_loc.valid());
+	    CHECK(bob_loc.byte_offset > alice_loc.byte_offset);
+	    CHECK(file_size(tombstones) == 1);
+	}
+
+	{
+	    madc::DataSet<StorageProbe> ds("vlr://" + path);
+	    ds.mapping(spec).name("users");
+
+	    StorageProbe fetched;
+	    REQUIRE(ds.get_by_locator(bob_loc, fetched, &err));
+	    CHECK(fetched.id == 2);
+	    CHECK(fetched.title == "Bob title");
+
+	    StorageProbe bob = make_probe(2, 43, 9, true, StorageStatus::active, 'B',
+					  "BRAVO", "Bob title updated", 10.5);
+	    REQUIRE(ds.update(bob, &err));
+	    REQUIRE(ds.get(madc::value(int64_t(2)), fetched, &err));
+	    CHECK(fetched.score == 43);
+	    CHECK(fetched.title == "Bob title updated");
+
+	    CHECK_FALSE(ds.get_by_locator(bob_loc, fetched, &err));
+	    CHECK(err.message.find("tombstoned") != std::string::npos);
+
+	    REQUIRE(ds.erase(madc::value(int64_t(1)), &err));
+	    CHECK_FALSE(ds.get_by_locator(alice_loc, fetched, &err));
+	    CHECK(err.message.find("tombstoned") != std::string::npos);
+
+	    REQUIRE(ds.restore(madc::value(int64_t(1)), &err));
+	    REQUIRE(ds.get_by_locator(alice_loc, fetched, &err));
+	    CHECK(fetched.id == 1);
+	    CHECK(fetched.title == "Alice title");
+	}
+
+	std::remove(path.c_str());
+	std::remove(tombstones.c_str());
+    }
+
+    TEST_CASE("vlr locator APIs fail explicitly without append-only tombstones") {
+	const std::string path =
+	    "/tmp/madc_vlr_locator_strict_" + std::to_string(static_cast<long long>(getpid())) + ".bin";
+	std::remove(path.c_str());
+
+	madc::MappingSpec<StorageProbe> spec;
+	spec.key("id")
+	    .variable_record();
+
+	madc::DataSet<StorageProbe> ds("vlr://" + path);
+	ds.mapping(spec).name("users");
+
+	StorageProbe alice = make_probe(1, 10, 7, true, StorageStatus::active, 'A',
+					"ALPHA", "Alice title", 1.25);
+	StorageProbe fetched;
+	madc::RecordLocator locator;
+	madc::error err;
+	CHECK_FALSE(ds.insert_with_locator(alice, locator, &err));
+	CHECK(err.message.find("tombstone sidecar") != std::string::npos);
+	CHECK_FALSE(ds.get_by_locator(madc::RecordLocator::at_byte_offset(0), fetched, &err));
+	CHECK(err.message.find("tombstone sidecar") != std::string::npos);
+
+	std::remove(path.c_str());
+    }
 }

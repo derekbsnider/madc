@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 3, 2026 (post-v0.13.0 plus first-wave C23 compatibility and ongoing Phase 4.2 libmadc API work: `madc::value`, `madc::error`, logging lifecycle fixes, exploratory storage/federation API contracts, working `dsv://` + `flr://` + `vlr://` + `qdbm://` + `gdbm://` + `bdb://` + `sqlite://` backend slices, FLR tombstone sidecars with pre-reap restore plus post-reap restore-by-archive reinsertion, the first concrete FLR->VLR offset relation slice, and registration-based `infer_mapper()` for host C++ storage types).
+Test results as of May 3, 2026 (post-v0.13.0 plus first-wave C23 compatibility and ongoing Phase 4.2 libmadc API work: `madc::value`, `madc::error`, logging lifecycle fixes, exploratory storage/federation API contracts, working `dsv://` + `flr://` + `vlr://` + `qdbm://` + `gdbm://` + `bdb://` + `sqlite://` backend slices, FLR tombstone sidecars with pre-reap restore plus post-reap restore-by-archive reinsertion, the first concrete FLR->VLR offset relation slice, stable append-only VLR locators behind tombstone sidecars, and registration-based `infer_mapper()` for host C++ storage types).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 

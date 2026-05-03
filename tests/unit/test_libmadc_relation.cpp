@@ -103,8 +103,11 @@ TEST_SUITE("libmadc relation backend") {
 	    "/tmp/madc_relation_index_" + std::to_string(static_cast<long long>(getpid())) + ".flr";
 	const std::string payload_path =
 	    "/tmp/madc_relation_payload_" + std::to_string(static_cast<long long>(getpid())) + ".vlr";
+	const std::string payload_tombstones =
+	    "/tmp/madc_relation_payload_" + std::to_string(static_cast<long long>(getpid())) + ".bits";
 	std::remove(index_path.c_str());
 	std::remove(payload_path.c_str());
+	std::remove(payload_tombstones.c_str());
 
 	madc::MappingSpec<PayloadIndexRecord> index_spec;
 	index_spec.key("id")
@@ -115,6 +118,7 @@ TEST_SUITE("libmadc relation backend") {
 	madc::MappingSpec<PayloadRecord> payload_spec;
 	payload_spec.key("payload_id")
 		   .variable_record()
+		   .tombstone_file(payload_tombstones)
 		   .role(madc::SchemaInfo::role::payload);
 
 	madc::DataSet<PayloadIndexRecord> index("flr://" + index_path);
@@ -163,5 +167,6 @@ TEST_SUITE("libmadc relation backend") {
 
 	std::remove(index_path.c_str());
 	std::remove(payload_path.c_str());
+	std::remove(payload_tombstones.c_str());
     }
 }

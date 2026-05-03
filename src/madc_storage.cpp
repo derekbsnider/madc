@@ -1588,6 +1588,7 @@ public:
 	caps.write = true;
 	caps.scan = true;
 	caps.point_lookup = true;
+	caps.soft_delete = true;
 	return caps;
     }
 
@@ -1619,11 +1620,15 @@ public:
 	_path = source.path();
 	_rows.clear();
 	_row_offsets.clear();
+	_tombstones.clear();
+	_tombstone_path = _schema.tombstone_path();
 
 	std::ifstream is(_path.c_str(), std::ios::binary);
 	if ( !is.good() )
 	{
 	    _opened = true;
+	    if ( uses_tombstones() )
+		return read_packed_bits(_tombstone_path, 0, _tombstones, err, "vlr");
 	    return true;
 	}
 
@@ -1669,6 +1674,12 @@ public:
 	    _row_offsets.push_back(static_cast<uint64_t>(record_offset));
 	}
 
+	if ( uses_tombstones()
+	  && !read_packed_bits(_tombstone_path, _rows.size(), _tombstones, err, "vlr") )
+	    return false;
+	if ( !uses_tombstones() )
+	    _tombstones.assign(_rows.size(), false);
+
 	_opened = true;
 	return true;
     }
@@ -1677,7 +1688,9 @@ public:
     {
 	_rows.clear();
 	_row_offsets.clear();
+	_tombstones.clear();
 	_path.clear();
+	_tombstone_path.clear();
 	_opened = false;
     }
 
@@ -1717,9 +1730,11 @@ public:
 	if ( !normalize_record(record, normalized, err) )
 	    return false;
 	_rows.push_back(normalized);
-	if ( flush(err) )
+	_tombstones.push_back(false);
+	if ( flush_rewrite(err) )
 	    return true;
 	_rows.pop_back();
+	_tombstones.pop_back();
 	return false;
     }
 
@@ -1727,21 +1742,26 @@ public:
 				    RecordLocator &locator,
 				    error *err = nullptr)
     {
+	if ( !supports_stable_locators(err) )
+	{
+	    locator = RecordLocator::none();
+	    return false;
+	}
 	if ( !ensure_record_shape(record, err) )
 	    return false;
 	value normalized;
 	if ( !normalize_record(record, normalized, err) )
 	    return false;
 	_rows.push_back(normalized);
-	if ( flush(err) )
+	_tombstones.push_back(false);
+	if ( flush_rewrite(err) )
 	{
-	    if ( _row_offsets.empty() )
-		locator = RecordLocator::none();
-	    else
-		locator = RecordLocator::at_byte_offset(_row_offsets.back());
+	    locator = RecordLocator::at_byte_offset(_row_offsets.back());
 	    return true;
 	}
 	_rows.pop_back();
+	_tombstones.pop_back();
+	locator = RecordLocator::none();
 	return false;
     }
 
@@ -1764,9 +1784,24 @@ public:
 	value normalized;
 	if ( !normalize_record(record, normalized, err) )
 	    return false;
+	if ( uses_tombstones() )
+	{
+	    std::size_t pos = static_cast<std::size_t>(idx);
+	    value previous = _rows[pos];
+	    _rows.push_back(normalized);
+	    _tombstones.push_back(false);
+	    _tombstones[pos] = true;
+	    if ( flush_rewrite(err) )
+		return true;
+	    _tombstones[pos] = false;
+	    _rows.pop_back();
+	    _tombstones.pop_back();
+	    _rows[pos] = previous;
+	    return false;
+	}
 	value previous = _rows[static_cast<std::size_t>(idx)];
 	_rows[static_cast<std::size_t>(idx)] = normalized;
-	if ( flush(err) )
+	if ( flush_rewrite(err) )
 	    return true;
 	_rows[static_cast<std::size_t>(idx)] = previous;
 	return false;
@@ -1785,11 +1820,30 @@ public:
 			     "vlr erase failed: key not found");
 	    return false;
 	}
+	if ( uses_tombstones() )
+	{
+	    std::size_t pos = static_cast<std::size_t>(idx);
+	    if ( _tombstones[pos] )
+	    {
+		if ( err )
+		    *err = error(error::severity::error,
+				 error::phase::runtime,
+				 "vlr erase failed: record is already tombstoned");
+		return false;
+	    }
+	    _tombstones[pos] = true;
+	    if ( write_packed_bits(_tombstone_path, _tombstones, err, "vlr") )
+		return true;
+	    _tombstones[pos] = false;
+	    return false;
+	}
 	value removed = _rows[static_cast<std::size_t>(idx)];
 	_rows.erase(_rows.begin() + idx);
-	if ( flush(err) )
+	_tombstones.erase(_tombstones.begin() + idx);
+	if ( flush_rewrite(err) )
 	    return true;
 	_rows.insert(_rows.begin() + idx, removed);
+	_tombstones.insert(_tombstones.begin() + idx, false);
 	return false;
     }
 
@@ -1797,17 +1851,49 @@ public:
 			const value &key,
 			error *err = nullptr)
     {
-	(void)key_field;
-	(void)key;
-	if ( err )
-	    *err = error(error::severity::error,
-			 error::phase::runtime,
-			 "vlr restore is unsupported without a tombstone sidecar");
+	if ( !uses_tombstones() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "vlr restore requires a tombstone sidecar");
+	    return false;
+	}
+	if ( find_row_index(key_field, key) >= 0 )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "vlr restore failed: live record already exists");
+	    return false;
+	}
+	int tombstone_idx = find_tombstoned_row_index(key_field, key);
+	if ( tombstone_idx < 0 )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "vlr restore failed: tombstoned record not found");
+	    return false;
+	}
+	std::size_t pos = static_cast<std::size_t>(tombstone_idx);
+	_tombstones[pos] = false;
+	if ( write_packed_bits(_tombstone_path, _tombstones, err, "vlr") )
+	    return true;
+	_tombstones[pos] = true;
 	return false;
     }
 
     bool compact_records(error *err = nullptr)
     {
+	if ( supports_stable_locators(nullptr) )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "vlr compact is unsupported when stable locators are enabled");
+	    return false;
+	}
 	if ( err )
 	    *err = error(error::severity::error,
 			 error::phase::runtime,
@@ -1832,6 +1918,8 @@ public:
 			       value &out,
 			       error *err = nullptr) const
     {
+	if ( !supports_stable_locators(err) )
+	    return false;
 	if ( locator.locator_kind != RecordLocator::kind::byte_offset )
 	{
 	    if ( err )
@@ -1845,6 +1933,14 @@ public:
 	{
 	    if ( _row_offsets[i] == locator.byte_offset )
 	    {
+		if ( row_is_tombstoned(i) )
+		{
+		    if ( err )
+			*err = error(error::severity::error,
+				     error::phase::runtime,
+				     "vlr get_record_by_locator failed: locator points to a tombstoned record");
+		    return false;
+		}
 		out = _rows[i];
 		return true;
 	    }
@@ -1861,7 +1957,13 @@ public:
 		      error *err = nullptr) const
     {
 	(void)err;
-	out = _rows;
+	out.clear();
+	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	{
+	    if ( row_is_tombstoned(i) )
+		continue;
+	    out.push_back(_rows[i]);
+	}
 	return true;
     }
 
@@ -1892,12 +1994,30 @@ private:
 
     int find_row_index(const std::string &key_field, const value &key) const
     {
-	for ( std::size_t i = 0; i < _rows.size(); ++i )
+	for ( std::size_t i = _rows.size(); i > 0; --i )
 	{
-	    const std::map<std::string, value> &record = _rows[i].as_object();
+	    std::size_t pos = i - 1;
+	    if ( row_is_tombstoned(pos) )
+		continue;
+	    const std::map<std::string, value> &record = _rows[pos].as_object();
 	    std::map<std::string, value>::const_iterator it = record.find(key_field);
 	    if ( it != record.end() && it->second == key )
-		return static_cast<int>(i);
+		return static_cast<int>(pos);
+	}
+	return -1;
+    }
+
+    int find_tombstoned_row_index(const std::string &key_field, const value &key) const
+    {
+	for ( std::size_t i = _rows.size(); i > 0; --i )
+	{
+	    std::size_t pos = i - 1;
+	    if ( !row_is_tombstoned(pos) )
+		continue;
+	    const std::map<std::string, value> &record = _rows[pos].as_object();
+	    std::map<std::string, value>::const_iterator it = record.find(key_field);
+	    if ( it != record.end() && it->second == key )
+		return static_cast<int>(pos);
 	}
 	return -1;
     }
@@ -2180,7 +2300,7 @@ private:
 	return false;
     }
 
-    bool flush(error *err)
+    bool flush_rewrite(error *err)
     {
 	std::ofstream os(_path.c_str(), std::ios::binary | std::ios::trunc);
 	if ( !os.good() )
@@ -2192,7 +2312,8 @@ private:
 	    return false;
 	}
 
-	_row_offsets.clear();
+	std::vector<uint64_t> next_offsets;
+	next_offsets.reserve(_rows.size());
 	for ( std::size_t i = 0; i < _rows.size(); ++i )
 	{
 	    std::streamoff record_offset = os.tellp();
@@ -2219,15 +2340,50 @@ private:
 	    os.write(reinterpret_cast<const char *>(&len), sizeof(len));
 	    if ( len )
 		os.write(&encoded[0], static_cast<std::streamsize>(encoded.size()));
-	    _row_offsets.push_back(static_cast<uint64_t>(record_offset));
+	    next_offsets.push_back(static_cast<uint64_t>(record_offset));
 	}
+	if ( !os.good() )
+	{
+	    if ( err )
+		*err = error(error::severity::error,
+			     error::phase::runtime,
+			     "failed while writing vlr record payloads");
+	    return false;
+	}
+	if ( uses_tombstones()
+	  && !write_packed_bits(_tombstone_path, _tombstones, err, "vlr") )
+	    return false;
+	_row_offsets = next_offsets;
 	return true;
+    }
+
+    bool uses_tombstones() const
+    {
+	return !_tombstone_path.empty();
+    }
+
+    bool supports_stable_locators(error *err) const
+    {
+	if ( uses_tombstones() )
+	    return true;
+	if ( err )
+	    *err = error(error::severity::error,
+			 error::phase::runtime,
+			 "vlr stable locators require a tombstone sidecar");
+	return false;
+    }
+
+    bool row_is_tombstoned(std::size_t index) const
+    {
+	return index < _tombstones.size() && _tombstones[index];
     }
 
     SchemaInfo _schema;
     std::string _path;
+    std::string _tombstone_path;
     std::vector<value> _rows;
     std::vector<uint64_t> _row_offsets;
+    std::vector<bool> _tombstones;
     bool _opened;
 };
 

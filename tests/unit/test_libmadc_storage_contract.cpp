@@ -189,6 +189,19 @@ TEST_SUITE("libmadc storage contract") {
 	CHECK(spec.record_overflow_policy() == madc::MappingSpec<StorageProbe>::overflow_policy::fail);
     }
 
+    TEST_CASE("MappingSpec can express append-only VLR locator sidecars") {
+	madc::MappingSpec<StorageProbe> spec;
+	spec.key("id")
+	    .variable_record()
+	    .tombstone_file("/tmp/users.vlr.bits")
+	    .role(madc::SchemaInfo::role::payload);
+
+	CHECK(spec.record_layout() == madc::MappingSpec<StorageProbe>::layout_mode::variable_record);
+	CHECK(spec.has_tombstone_file());
+	CHECK(spec.tombstone_path() == "/tmp/users.vlr.bits");
+	CHECK(spec.dataset_role() == madc::SchemaInfo::role::payload);
+    }
+
     TEST_CASE("MappingSpec can express FLR tombstone sidecars for pre-reap deletes") {
 	madc::MappingSpec<StorageProbe> spec;
 	spec.key("id")
