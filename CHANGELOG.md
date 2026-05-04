@@ -2,6 +2,106 @@
 
 ## [Unreleased]
 
+- **Phase 4.2 / libmadc public C++ API: first `madc::program` slice.**
+  New header `include/libmadc/program.h` and implementation
+  `src/madc_program.cpp` add a C++-first pimpl facade over the internal
+  `Program` class with `compile_file`, `exec_file`, `exec_string`,
+  `diagnostics()`, `last_error()`, `has_error()`, and
+  `clear_diagnostics()`. `exec_string` writes the in-memory source to a
+  temp file for the current lexer/parser pipeline, while rewriting
+  public diagnostics back to the caller's virtual filename. Coverage in
+  `tests/unit/test_libmadc_program.cpp` locks in successful compile/run,
+  parser diagnostic filename rewriting, diagnostic reset across runs,
+  and stream cleanup on destruction.
+
+- **`madc::program` now has a first host callback registration API.**
+  `program::register_function(name, callback, signature)` now feeds the
+  existing builtin-registration path through a public C++ surface,
+  letting hosts expose global native functions to scripts before
+  compile/execute. The initial public signature model is intentionally
+  narrow: `void`, `bool`, `int64`, `double`, and `const char*`.
+  Coverage proves both integer callbacks and script-string to
+  `const char*` coercion through `tests/unit/test_libmadc_program.cpp`.
+
+- **`madc::program` now has a first script-call API too.**
+  `program::call(name, args, result)` can now invoke compiled global
+  script functions from host C++ after `compile_file(...)`, initializing
+  the compiled runtime once via `root_fn()` before the first host-side
+  call. The initial surface is intentionally narrow and explicit:
+  it supports only the scalar / C-string subset (`void`, `bool`,
+  `int64`, `double`, `const char*`), currently limits arity to 2, and
+  rejects unsupported script-side shapes like `string` object params or
+  returns, multi-return functions, and varargs with a structured public
+  runtime error instead of miscalling them. Coverage in
+  `tests/unit/test_libmadc_program.cpp` proves integer args/return,
+  host string to script `char *` args, and the current unsupported
+  `string` object rejection path.
+
+- **`madc::program` now exposes first global get/set surfaces.**
+  `program::get_global(name, result)` and
+  `program::set_global(name, value)` now let hosts read and write
+  compiled global variables after runtime initialization. The first
+  public slice is intentionally narrow and explicit: scalar globals map
+  to `madc::value` booleans / integers / reals, script `string` globals
+  map to host strings, and unsupported shapes like arrays fail with a
+  structured public runtime error instead of pretending to work.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now proves integer
+  and string global round-trips, unsupported array rejection, and a
+  64-bit integer regression where host-side writes above 32-bit range
+  must not truncate through the older `Variable::set(int)` helper path.
+
+- **`madc::program` now has a first in-memory `eval(...)` surface.**
+  `program::eval(source, result, virtual_filename)` now compiles an
+  in-memory translation unit through the same temp-file lexer/parser
+  path as `exec_string(...)`, then invokes a reserved zero-arg
+  `__madc_eval` entrypoint through the existing host-side `call(...)`
+  path. This keeps `eval(...)` on the same compile/runtime seam instead
+  of inventing a separate execution model. The first slice is
+  intentionally narrow and explicit: it is entry-function based rather
+  than free-form expression evaluation, and it inherits the same narrow
+  result marshaling as `call(...)`. Coverage in
+  `tests/unit/test_libmadc_program.cpp` proves integer and string
+  results, virtual-filename diagnostic rewriting, and the current
+  missing-entry failure path.
+
+- **`madc::program` now exposes first options/policy surfaces.**
+  `include/libmadc/options.h` now ships `compile_options`,
+  `security_policy`, `invoke_limits`, and `authority_mode`, and
+  `madc::program` now exposes setters/getters for all three. The first
+  implementation is intentionally honest about what it enforces today:
+  `compile_options` mirrors the real `Program::RegistrationPolicy`
+  booleans for builtin registration and built-in namespace registration,
+  `security_policy` is a higher-level wrapper over those same effective
+  gates, and `invoke_limits` currently round-trips as stored
+  configuration only. Coverage in `tests/unit/test_libmadc_program.cpp`
+  proves disabled core builtin registration, disabled namespace
+  registration, and invoke-limit round-tripping.
+
+- **`madc::program` policy now gates raw `#load` and fallback `dlsym`.**
+  The same `enable_dlfcn_functions` policy seam now reaches the real
+  authority escape hatches too: `#load` directives, `#load`-backed
+  namespace `dlsym`, parse-time RTLD-default symbol fallback, and
+  compiler-side extern late-bind `dlsym` now all fail explicitly when
+  that policy gate is disabled. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in the lexer, parser,
+  and compiler denial paths. The remaining policy gap is deeper
+  runtime/in-process resource enforcement rather than raw symbol-loading
+  access.
+
+- **MadcEngine now restores redirected standard streams on teardown.**
+  `MadcEngine` now resets `std::cin` / `std::cout` / `std::cerr` plus
+  built-in log sinks in its destructor, fixing the `madc::program`
+  teardown crash where `std::cerr` still pointed at a freed
+  `ostringstream` during process exit. The regression was reproduced by
+  repeated standalone runs and confirmed under both `gdb` and
+  `valgrind`.
+
+- **`make -C src test` now fails on the first crashing unit binary.**
+  The unit-test loop used to return the status of only the final test
+  binary, which could hide an earlier segfault behind a false-green
+  run. The Makefile now exits immediately when any unit binary fails, so
+  `make -C src test` and `make -C src fulltest` surface the real cause.
+
 - **`madcdat` now has its own archive and install target.**
   `make libmadcdat` now builds `lib/libmadcdat.a` from the gated
   storage/federation object set, and `make install-madcdat` now stages

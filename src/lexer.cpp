@@ -571,6 +571,8 @@ TokenBase *Program::_getToken()
 		if ( directive == "load" )
 		{
 		    // #load "libfoo.so" as namespace;
+		    if ( !is_dynamic_library_loading_enabled() )
+			Throw << "#load is disabled by registration policy" << flush;
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
 		    char delim = source.get(); // "

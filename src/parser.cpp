@@ -1423,6 +1423,14 @@ MadcEngine::MadcEngine()
 {
 }
 
+MadcEngine::~MadcEngine()
+{
+    reset_standard_streams();
+    disable_file_sink();
+    disable_json_sink();
+    disable_syslog_sink();
+}
+
 std::istream &MadcEngine::input()
 {
     return input_stream ? *input_stream : std::cin;
@@ -2368,6 +2376,16 @@ bool Program::is_namespace_registration_enabled(const std::string &name) const
     if ( name == "js" ) return registration_policy.enable_js_namespace;
     if ( name == "rust" ) return registration_policy.enable_rust_namespace;
     return true;
+}
+
+bool Program::is_dynamic_library_loading_enabled() const
+{
+    return registration_policy.enable_dlfcn_functions;
+}
+
+bool Program::is_dynamic_symbol_fallback_enabled() const
+{
+    return registration_policy.enable_dlfcn_functions;
 }
 
 // find variable matching id anywhere accessable from codeblock
@@ -4431,6 +4449,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
 			if ( dli == dlopen_map.end() )
 			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+			if ( !is_dynamic_symbol_fallback_enabled() )
+			    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
 			void *sym = dlsym(dli->second, member_name.c_str());
 			if ( !sym )
 			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
@@ -4482,6 +4502,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
 		    // dlsym fallback: try to resolve as a libc/system function
+		    if ( !is_dynamic_symbol_fallback_enabled() )
+			Throw(ident_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
 		    std::string fname = ident_tb->str;
 		    void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
 		    if ( sym )

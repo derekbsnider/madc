@@ -2,17 +2,39 @@
 
 ## High Priority
 
-- **Phase 4.2 / libmadc public C++ API — next pieces.** `madc::value`
-  and `madc::error` now ship at `include/libmadc/value.h` and
-  `include/libmadc/error.h`. Next up, in dependency order:
-  `madc::program` as a pimpl over the internal `Program` class with
-  `exec_file` / `exec_string` / `compile_file`; then
-  `program::register_function(name, callback, signature)` for
-  host→script callbacks and `program::call(fn, args)` for
-  script-from-C++ invocations; then `program::eval(src, ...)` on the
-  same security-policy / invoke-limit surface rather than as a bypass;
-  then `compile_options`, `security_policy`, and `invoke_limits`. After
-  that, §4.3 = the `libmadc.so` Makefile target plus
+- **Phase 4.2 / libmadc public C++ API — next pieces.** `madc::value`,
+  `madc::error`, and the first `madc::program` slice now ship at
+  `include/libmadc/value.h`, `include/libmadc/error.h`, and
+  `include/libmadc/program.h`. `madc::program` is now a pimpl over the
+  internal `Program` class with `compile_file`, `exec_file`,
+  `exec_string`, public diagnostics access, a first
+  `register_function(name, callback, signature)` slice for global host
+  callbacks using explicit native signatures, and a first
+  `call(name, args, result)` slice for script-from-C++ invocations plus
+  first `get_global(name, result)` / `set_global(name, value)` support
+  for scalar and `string` globals, plus a first `eval(source, result,
+  virtual_filename)` slice that compiles an in-memory translation unit
+  and calls a reserved zero-arg `__madc_eval` entrypoint, plus first
+  public `compile_options`, `security_policy`, and `invoke_limits`
+  surfaces. The options/policy seam now reaches the first real
+  authority escape hatches too: builtin-registration toggles and
+  built-in namespace registration toggles flow through
+  `Program::RegistrationPolicy`, and `enable_dlfcn_functions` now also
+  gates `#load`, `#load`-backed namespace `dlsym`, parse-time
+  RTLD-default symbol fallback, and compiler-side extern late-bind
+  `dlsym`. `invoke_limits` still round-trips as stored configuration
+  only and does not yet enforce CPU/memory/output caps in-process. These
+  public runtime-call/global surfaces are intentionally narrow for now:
+  they handle only the scalar / C-string subset (`void`, `bool`,
+  `int64`, `double`, `const char *`) plus script `string` globals,
+  `call(...)` currently caps arity at 2 while rejecting script `string`
+  object params/returns, multi-return, and varargs, and `eval(...)` is
+  still entry-function based rather than free-form expression
+  evaluation. Next up, in dependency order: finish deeper authority
+  enforcement beyond the current first-pass dlsym / `#load` gates,
+  implement real invoke/resource-limit enforcement instead of stored
+  configuration, then broaden the call/callback/global/eval surface as
+  needed. After that, §4.3 = the `libmadc.so` Makefile target plus
   `include/madc_api.h` C shim. Also keep the future subsystem split in
   view while finishing the separation: core embedding/runtime stays in
   `libmadc`, including core `madc::DataSource`. The `madcdat`
@@ -23,7 +45,9 @@
   next remaining split work is shared-library packaging plus the fuller
   eventual `libmadc`/`libmadcdat` install story, while the legacy
   `include/libmadc/*.h` data-layer paths remain temporary compatibility
-  forwarders.
+  forwarders. The test harness itself is also a little stricter now:
+  `make -C src test` stops on the first crashing/failing unit binary
+  instead of falsely returning the last test's exit code.
 
 - **Exploratory storage/federation track — move beyond the first local
   backend family.** The first local backends now work from ordinary host

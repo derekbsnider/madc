@@ -809,6 +809,8 @@ public:
     void add_js_namespace();
     void add_rust_namespace();
     bool is_namespace_registration_enabled(const std::string &name) const;
+    bool is_dynamic_library_loading_enabled() const;
+    bool is_dynamic_symbol_fallback_enabled() const;
     bool is_known_namespace(const std::string &name) const;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
@@ -1087,6 +1089,7 @@ public:
     Program::NamespaceRegistry namespace_registry;
 
     MadcEngine();
+    ~MadcEngine();
     std::istream &input();
     std::ostream &output();
     std::ostream &error();

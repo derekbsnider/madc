@@ -1473,6 +1473,8 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	// dlsym (only undeclared identifiers hit the parse-time
 	// fallback). Try resolving here so user code can typed-call
 	// any libc / system symbol just by extern-declaring it.
+	if ( !pgm.is_dynamic_symbol_fallback_enabled() )
+	    pgm.Throw(this) << "dynamic symbol fallback is disabled by registration policy" << flush;
 	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
 	if ( sym )
 	{
