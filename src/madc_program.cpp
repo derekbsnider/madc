@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 extern bool madc_verbose;
@@ -58,6 +59,77 @@ const char *eval_entry_name()
 {
     return "__madc_eval";
 }
+
+class fd_redirect_capture
+{
+public:
+    fd_redirect_capture()
+	: target_fd(-1), saved_fd(-1), temp_fd(-1)
+    {
+    }
+
+    ~fd_redirect_capture()
+    {
+	restore();
+    }
+
+    bool begin(int fd)
+    {
+	target_fd = fd;
+	saved_fd = dup(fd);
+	if ( saved_fd < 0 )
+	    return false;
+
+	std::string tmpl = "/tmp/madc_fd_capture_XXXXXX";
+	std::vector<char> writable(tmpl.begin(), tmpl.end());
+	writable.push_back('\0');
+	temp_fd = mkstemp(&writable[0]);
+	if ( temp_fd < 0 )
+	{
+	    close(saved_fd);
+	    saved_fd = -1;
+	    return false;
+	}
+
+	path.assign(&writable[0]);
+	if ( dup2(temp_fd, target_fd) < 0 )
+	{
+	    restore();
+	    return false;
+	}
+	return true;
+    }
+
+    uint64_t captured_bytes() const
+    {
+	if ( temp_fd < 0 )
+	    return 0;
+	off_t end = lseek(temp_fd, 0, SEEK_END);
+	return end >= 0 ? static_cast<uint64_t>(end) : 0;
+    }
+
+    void restore()
+    {
+	if ( saved_fd >= 0 && target_fd >= 0 )
+	    dup2(saved_fd, target_fd);
+	if ( saved_fd >= 0 )
+	    close(saved_fd);
+	if ( temp_fd >= 0 )
+	    close(temp_fd);
+	saved_fd = -1;
+	temp_fd = -1;
+	target_fd = -1;
+	if ( !path.empty() )
+	    unlink(path.c_str());
+	path.clear();
+    }
+
+private:
+    int target_fd;
+    int saved_fd;
+    int temp_fd;
+    std::string path;
+};
 
 uint64_t timeval_to_microseconds(const timeval &tv)
 {
@@ -407,7 +479,6 @@ struct program::impl
     {
 	uint64_t cpu_microseconds = 0;
 	uint64_t resident_bytes = 0;
-	uint64_t output_bytes = 0;
     };
 
     MadcEngine engine;
@@ -422,7 +493,7 @@ struct program::impl
 
     impl()
     {
-	engine.tee_output_to_buffer();
+	engine.capture_output_to_buffer();
 	engine.capture_error_to_buffer();
 	reset_program();
     }
@@ -660,13 +731,12 @@ struct program::impl
 	invoke_snapshot snap;
 	snap.cpu_microseconds = current_cpu_microseconds();
 	snap.resident_bytes = current_resident_bytes();
-	snap.output_bytes = engine.output_buffer_str().size()
-	    + engine.error_buffer_str().size();
 	return snap;
     }
 
     bool enforce_invoke_limits(const std::string &op_name,
-			       const invoke_snapshot &before)
+			       const invoke_snapshot &before,
+			       uint64_t raw_output_bytes)
     {
 	if ( current_invoke_limits.cpu_ms > 0 )
 	{
@@ -704,11 +774,9 @@ struct program::impl
 
 	if ( current_invoke_limits.output_bytes > 0 )
 	{
-	    uint64_t after_output = engine.output_buffer_str().size()
-		+ engine.error_buffer_str().size();
-	    uint64_t used_output = after_output >= before.output_bytes
-		? after_output - before.output_bytes
-		: 0;
+	    uint64_t used_output = engine.output_buffer_str().size()
+		+ engine.error_buffer_str().size()
+		+ raw_output_bytes;
 	    if ( used_output > current_invoke_limits.output_bytes )
 	    {
 		std::ostringstream os;
@@ -729,9 +797,31 @@ struct program::impl
 	engine.clear_output_buffer();
 	engine.clear_error_buffer();
 	invoke_snapshot before = capture_invoke_snapshot();
+	std::cout.flush();
+	std::cerr.flush();
+	fflush(stdout);
+	fflush(stderr);
+	fd_redirect_capture stdout_capture;
+	fd_redirect_capture stderr_capture;
+	if ( !stdout_capture.begin(STDOUT_FILENO) )
+	    return fail_runtime("program::" + op_name + " could not capture stdout");
+	if ( !stderr_capture.begin(STDERR_FILENO) )
+	    return fail_runtime("program::" + op_name + " could not capture stderr");
 	if ( !fn() )
+	{
+	    std::cout.flush();
+	    std::cerr.flush();
+	    fflush(stdout);
+	    fflush(stderr);
 	    return false;
-	return enforce_invoke_limits(op_name, before);
+	}
+	std::cout.flush();
+	std::cerr.flush();
+	fflush(stdout);
+	fflush(stderr);
+	uint64_t raw_output_bytes = stdout_capture.captured_bytes()
+	    + stderr_capture.captured_bytes();
+	return enforce_invoke_limits(op_name, before, raw_output_bytes);
     }
 
     bool ensure_runtime_initialized()

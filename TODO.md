@@ -24,10 +24,10 @@
   RTLD-default symbol fallback, and compiler-side extern late-bind
   `dlsym`. `invoke_limits` now also enforce post-invocation budgets on
   the public host API for CPU time, resident-memory growth, and
-  madc-managed output/error bytes. This is honest after-the-fact
-  accounting rather than in-process preemption, and it does not yet
-  cover raw libc `stdout`/`stderr` writes that bypass `MadcEngine`'s
-  managed streams. These
+  output/error bytes across both `MadcEngine`-managed streams and raw
+  libc `stdout`/`stderr` writes captured during invocation. This is
+  honest after-the-fact accounting rather than in-process preemption.
+  These
   public runtime-call/global surfaces are intentionally narrow for now:
   they handle only the scalar / C-string subset (`void`, `bool`,
   `int64`, `double`, `const char *`) plus script `string` globals,
@@ -36,8 +36,8 @@
   still entry-function based rather than free-form expression
   evaluation. Next up, in dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`
-  gates and post-invocation invoke-limit accounting, especially raw
-  libc output paths and any stronger/preemptive execution controls, then
+  gates and post-invocation invoke-limit accounting, especially any
+  stronger/preemptive execution controls, then
   broaden the call/callback/global/eval surface as needed. After that,
   §4.3 = the `libmadc.so` Makefile target plus
   `include/madc_api.h` C shim. Also keep the future subsystem split in

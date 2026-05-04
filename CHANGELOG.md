@@ -95,10 +95,12 @@
   output/error buffer sizes before invocation and reject the operation
   afterward if the configured `cpu_ms`, `memory_bytes`, or
   `output_bytes` budget was exceeded. This is explicit post-invocation
-  accounting rather than in-process preemption, and it currently covers
-  `MadcEngine`-managed streams rather than raw libc `stdout` /
-  `stderr`. Coverage in `tests/unit/test_libmadc_program.cpp` now
-  proves output-byte, CPU-time, and resident-growth rejection paths.
+  accounting rather than in-process preemption. A follow-up now also
+  captures raw libc `stdout` / `stderr` writes during host API
+  invocation so `output_bytes` reflects both `MadcEngine`-managed
+  buffers and direct fd-level output. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves raw-output-byte,
+  CPU-time, and resident-growth rejection paths.
 
 - **MadcEngine now restores redirected standard streams on teardown.**
   `MadcEngine` now resets `std::cin` / `std::cout` / `std::cerr` plus

@@ -290,10 +290,10 @@ TEST_SUITE("madc::program") {
     TEST_CASE("invoke_limits can reject excessive output from exec") {
 	madc::program pgm;
 	madc::invoke_limits limits;
-	limits.output_bytes = 1;
+	limits.output_bytes = 4;
 	pgm.set_invoke_limits(limits);
 
-	CHECK_FALSE(pgm.exec_string("int main() { puti(42); return 0; }\n", "limit_output.mad"));
+	CHECK_FALSE(pgm.exec_string("int main() { puts(\"abcdef\"); return 0; }\n", "limit_output.mad"));
 	REQUIRE(pgm.has_error());
 	const madc::error *err = pgm.last_error();
 	REQUIRE(err != NULL);
