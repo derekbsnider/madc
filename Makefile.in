@@ -1,6 +1,9 @@
 all:
 	$(MAKE) -C src all
 
+libmadcdat:
+	$(MAKE) -C src libmadcdat
+
 debug:
 	$(MAKE) -C src debug
 
@@ -15,3 +18,6 @@ test:
 
 fulltest:
 	$(MAKE) -C src fulltest
+
+install-madcdat:
+	$(MAKE) -C src install-madcdat DESTDIR="$(DESTDIR)"

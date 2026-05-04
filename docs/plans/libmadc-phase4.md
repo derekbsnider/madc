@@ -74,7 +74,8 @@ The subsystem name for that future boundary is now `madcdat`. The name
 is official before the full physical library split: current
 storage/federation work still lands inside the existing `libmadc` tree,
 `./configure --enable-madcdat` now gates that subsystem at build time,
-and `libmadcdat` remains the later separate-library outcome of that
+and a first separate `libmadcdat` archive/install seam now exists.
+Later shared-library packaging still remains a follow-on outcome of that
 layering.
 
 `DataSource` stays on the core `libmadc` side of that line. It is the
@@ -94,8 +95,10 @@ Build direction:
 - `./configure --enable-madcdat`
 - later optional backend flags can hang under that umbrella
 - that configure-time gate is now real in the repo build
-- the remaining future step is the separate `libmadcdat` target/install
-  surface
+- `make libmadcdat` and `make install-madcdat` now exist for the static
+  archive/install path
+- the remaining future step is shared-library/package-level
+  `libmadcdat` work
 
 ## Safety Model
 

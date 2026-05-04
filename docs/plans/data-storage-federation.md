@@ -46,8 +46,10 @@ Planned public surface split:
 - temporary forwarding compatibility headers may remain under
   `include/libmadc/` during the transition
 - `./configure --enable-madcdat` now gates the subsystem in the repo build
-- the remaining future step is a separate `libmadcdat` build/install
-  target rather than the current in-tree gated object set
+- `make libmadcdat` and `make install-madcdat` now provide a separate
+  static archive/install seam
+- the remaining future step is shared-library/package-level
+  `libmadcdat` work rather than the current in-tree gated object set
 
 So the name is official now, while the optional `libmadcdat`
 configure/build split remains a later implementation step.

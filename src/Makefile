@@ -2,6 +2,11 @@
 
 CXX ?= g++
 CXXFLAGS ?= -std=c++11 -Wall
+AR ?= ar
+ARFLAGS ?= rcs
+INSTALL ?= install
+INSTALL_DATA ?= $(INSTALL) -m 644
+INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
 CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o madc_error.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
@@ -30,6 +35,8 @@ OFILES = $(CORE_OFILES)
 endif
 
 OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
+MADDAT_OBJECTS = $(patsubst %,$(OBJDIR)/%,$(MADDAT_OFILES))
+MADDAT_ARCHIVE = $(LIBDIR)/libmadcdat.a
 
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
@@ -46,12 +53,31 @@ TESTOBJ  = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 
 all:
 	$(MAKE) ../bin/madc
+
+ifeq ($(HAVE_MADCDAT),1)
+libmadcdat:
+	$(MAKE) $(MADDAT_ARCHIVE)
+install-madcdat: libmadcdat
+	$(INSTALL_DIR) $(DESTDIR)$(libdir)
+	$(INSTALL_DIR) $(DESTDIR)$(includedir)/madcdat
+	$(INSTALL_DIR) $(DESTDIR)$(includedir)/libmadc
+	$(INSTALL_DATA) $(MADDAT_ARCHIVE) $(DESTDIR)$(libdir)/libmadcdat.a
+	@for h in $(MADDATHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/madcdat/; done
+	@for h in $(LIBMADDHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/libmadc/; done
+else
+libmadcdat:
+	@echo "madcdat is disabled; rerun ./configure --enable-madcdat to build libmadcdat."
+	@false
+install-madcdat: libmadcdat
+endif
+
 debug:
 	$(MAKE) CXXFLAGS="-std=c++11 -Wall -g -O0" ../bin/madc
 clean:
 	rm -f $(OBJECTS)
 	rm -f ../obj/madc_storage.o ../obj/madc_storage_bdb.o ../obj/madc_storage_gdbm.o ../obj/madc_storage_qdbm.o ../obj/madc_storage_sqlite.o
 	rm -f $(ALL_TESTBINS)
+	rm -f $(MADDAT_ARCHIVE)
 
 test: $(TESTBINS)
 	@for t in $(TESTBINS); do echo "Running $$t..."; $$t; done
@@ -64,6 +90,11 @@ $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
 
 ../bin/madc: $(OBJECTS)
 	$(CXX) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
+
+$(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
+	mkdir -p $(LIBDIR)
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $^
 
 embedded_headers.cpp: $(MADHDRS)
 	../scripts/gen_embedded_headers.sh

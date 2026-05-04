@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **`madcdat` now has its own archive and install target.**
+  `make libmadcdat` now builds `lib/libmadcdat.a` from the gated
+  storage/federation object set, and `make install-madcdat` now stages
+  that archive plus the canonical `include/madcdat/` headers and the
+  dependent `include/libmadc/` public headers needed to compile against
+  it. When `madcdat` is disabled, both targets now fail explicitly
+  instead of pretending the artifact exists.
+
 - **`madcdat` now has a real top-level configure gate.**
   `./configure --enable-madcdat=no` now excludes the storage/federation
   object set from the build, drops the `madcdat`-dependent unit test
@@ -17,11 +25,10 @@
   canonical public root at `include/madcdat/`, the storage/query driver
   translation units now live under the `src/madcdat_*.cpp` naming
   pattern, and the old `include/libmadc/*.h` data-layer headers are now
-  compatibility forwarders into that new header root. This makes the
-  future optional `libmadcdat` extraction concrete in the tree without
-  turning on a separate build product yet, and it also settles the
-  planned build flag direction as `./configure --enable-madcdat` rather
-  than `--with-madcdat`.
+  compatibility forwarders into that new header root. This settled the
+  public header boundary before the later archive/install split and also
+  locked in `./configure --enable-madcdat` as the top-level subsystem
+  gate rather than `--with-madcdat`.
 
 - **QueryBuilder now has a first logical-composition seam.** `Query`
   now carries predicate match-mode metadata (`all` vs `any`), and

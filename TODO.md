@@ -18,10 +18,12 @@
   `libmadc`, including core `madc::DataSource`. The `madcdat`
   storage/federation/indexing track now has a real configure-time gate
   at `./configure --enable-madcdat`, canonical data headers under
-  `include/madcdat/`, and the `src/madcdat_*.cpp` source seam. The next
-  remaining split work is the actual separate `libmadcdat` build target
-  and install surface, while the legacy `include/libmadc/*.h` data-layer
-  paths remain temporary compatibility forwarders.
+  `include/madcdat/`, the `src/madcdat_*.cpp` source seam, a standalone
+  `lib/libmadcdat.a` archive target, and `make install-madcdat`. The
+  next remaining split work is shared-library packaging plus the fuller
+  eventual `libmadc`/`libmadcdat` install story, while the legacy
+  `include/libmadc/*.h` data-layer paths remain temporary compatibility
+  forwarders.
 
 - **Exploratory storage/federation track — move beyond the first local
   backend family.** The first local backends now work from ordinary host
