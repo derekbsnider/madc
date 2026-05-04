@@ -88,6 +88,18 @@
   runtime/in-process resource enforcement rather than raw symbol-loading
   access.
 
+- **`madc::program` now enforces `invoke_limits` on public invocation paths.**
+  `exec_file(...)`, `exec_string(...)`, `eval(...)`, `call(...)`, and
+  runtime-init paths reached through `get_global(...)` / `set_global(...)`
+  now snapshot process CPU time, resident size, and madc-managed
+  output/error buffer sizes before invocation and reject the operation
+  afterward if the configured `cpu_ms`, `memory_bytes`, or
+  `output_bytes` budget was exceeded. This is explicit post-invocation
+  accounting rather than in-process preemption, and it currently covers
+  `MadcEngine`-managed streams rather than raw libc `stdout` /
+  `stderr`. Coverage in `tests/unit/test_libmadc_program.cpp` now
+  proves output-byte, CPU-time, and resident-growth rejection paths.
+
 - **MadcEngine now restores redirected standard streams on teardown.**
   `MadcEngine` now resets `std::cin` / `std::cout` / `std::cerr` plus
   built-in log sinks in its destructor, fixing the `madc::program`

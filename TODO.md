@@ -22,19 +22,24 @@
   `Program::RegistrationPolicy`, and `enable_dlfcn_functions` now also
   gates `#load`, `#load`-backed namespace `dlsym`, parse-time
   RTLD-default symbol fallback, and compiler-side extern late-bind
-  `dlsym`. `invoke_limits` still round-trips as stored configuration
-  only and does not yet enforce CPU/memory/output caps in-process. These
+  `dlsym`. `invoke_limits` now also enforce post-invocation budgets on
+  the public host API for CPU time, resident-memory growth, and
+  madc-managed output/error bytes. This is honest after-the-fact
+  accounting rather than in-process preemption, and it does not yet
+  cover raw libc `stdout`/`stderr` writes that bypass `MadcEngine`'s
+  managed streams. These
   public runtime-call/global surfaces are intentionally narrow for now:
   they handle only the scalar / C-string subset (`void`, `bool`,
   `int64`, `double`, `const char *`) plus script `string` globals,
   `call(...)` currently caps arity at 2 while rejecting script `string`
   object params/returns, multi-return, and varargs, and `eval(...)` is
   still entry-function based rather than free-form expression
-  evaluation. Next up, in dependency order: finish deeper authority
-  enforcement beyond the current first-pass dlsym / `#load` gates,
-  implement real invoke/resource-limit enforcement instead of stored
-  configuration, then broaden the call/callback/global/eval surface as
-  needed. After that, §4.3 = the `libmadc.so` Makefile target plus
+  evaluation. Next up, in dependency order: finish the remaining
+  authority/resource gaps beyond the current first-pass dlsym / `#load`
+  gates and post-invocation invoke-limit accounting, especially raw
+  libc output paths and any stronger/preemptive execution controls, then
+  broaden the call/callback/global/eval surface as needed. After that,
+  §4.3 = the `libmadc.so` Makefile target plus
   `include/madc_api.h` C shim. Also keep the future subsystem split in
   view while finishing the separation: core embedding/runtime stays in
   `libmadc`, including core `madc::DataSource`. The `madcdat`

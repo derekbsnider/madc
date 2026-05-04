@@ -31,6 +31,8 @@ namespace {
 
 int64_t g_host_sum = 0;
 int64_t g_host_strlen = 0;
+volatile int64_t g_host_spin_sink = 0;
+std::vector<char> g_host_memory;
 
 int64_t host_add(int64_t left, int64_t right)
 {
@@ -42,6 +44,24 @@ int64_t host_strlen(const char *s)
 {
     g_host_strlen = s ? static_cast<int64_t>(std::strlen(s)) : -1;
     return g_host_strlen;
+}
+
+void host_spin(int64_t iterations)
+{
+    for ( int64_t i = 0; i < iterations; ++i )
+	g_host_spin_sink += (i & 1);
+}
+
+int64_t host_hold_memory(int64_t bytes)
+{
+    if ( bytes < 0 )
+	bytes = 0;
+    g_host_memory.assign(static_cast<size_t>(bytes), 0);
+    for ( size_t i = 0; i < g_host_memory.size(); i += 4096 )
+	g_host_memory[i] = static_cast<char>(i & 0x7f);
+    if ( !g_host_memory.empty() )
+	g_host_memory[g_host_memory.size() - 1] = 1;
+    return static_cast<int64_t>(g_host_memory.size());
 }
 
 std::string make_temp_source_path()
@@ -265,6 +285,80 @@ TEST_SUITE("madc::program") {
 	REQUIRE(err != NULL);
 	CHECK(err->stage == madc::error::phase::compiler);
 	CHECK(err->message == "dynamic symbol fallback is disabled by registration policy");
+    }
+
+    TEST_CASE("invoke_limits can reject excessive output from exec") {
+	madc::program pgm;
+	madc::invoke_limits limits;
+	limits.output_bytes = 1;
+	pgm.set_invoke_limits(limits);
+
+	CHECK_FALSE(pgm.exec_string("int main() { puti(42); return 0; }\n", "limit_output.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("output_bytes limit") != std::string::npos);
+    }
+
+    TEST_CASE("invoke_limits can reject excessive cpu usage from call") {
+	madc::program pgm;
+	REQUIRE(pgm.register_function(
+	    "host_spin",
+	    reinterpret_cast<madc::program::native_function>(host_spin),
+	    madc::program::native_signature(
+		madc::program::native_type::void_type,
+		{madc::program::native_type::integer})));
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int main() { return 0; }\n");
+	REQUIRE(pgm.compile_file(path));
+
+	madc::invoke_limits limits;
+	limits.cpu_ms = 1;
+	pgm.set_invoke_limits(limits);
+
+	madc::value result;
+	CHECK_FALSE(pgm.call("host_spin", {madc::value(INT64_C(200000000))}, &result));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("cpu_ms limit") != std::string::npos);
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("invoke_limits can reject excessive resident growth from call") {
+	madc::program pgm;
+	g_host_memory.clear();
+	REQUIRE(pgm.register_function(
+	    "host_hold_memory",
+	    reinterpret_cast<madc::program::native_function>(host_hold_memory),
+	    madc::program::native_signature(
+		madc::program::native_type::integer,
+		{madc::program::native_type::integer})));
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int main() { return 0; }\n");
+	REQUIRE(pgm.compile_file(path));
+
+	madc::invoke_limits limits;
+	limits.memory_bytes = 1024 * 1024;
+	pgm.set_invoke_limits(limits);
+
+	madc::value result;
+	CHECK_FALSE(pgm.call("host_hold_memory", {madc::value(INT64_C(8) * 1024 * 1024)}, &result));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("memory_bytes limit") != std::string::npos);
+
+	g_host_memory.clear();
+	std::remove(path.c_str());
     }
 
     TEST_CASE("program destruction restores cerr stream state") {

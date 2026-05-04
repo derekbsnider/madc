@@ -7,6 +7,7 @@
 #include <cstring>
 #include <deque>
 #include <fstream>
+#include <functional>
 #include <iostream>
 #include <map>
 #include <memory>
@@ -18,6 +19,7 @@
 #include <utility>
 #include <vector>
 
+#include <sys/resource.h>
 #include <unistd.h>
 
 extern bool madc_verbose;
@@ -55,6 +57,35 @@ std::string temp_source_template()
 const char *eval_entry_name()
 {
     return "__madc_eval";
+}
+
+uint64_t timeval_to_microseconds(const timeval &tv)
+{
+    return static_cast<uint64_t>(tv.tv_sec) * UINT64_C(1000000)
+	+ static_cast<uint64_t>(tv.tv_usec);
+}
+
+uint64_t current_cpu_microseconds()
+{
+    struct rusage usage;
+    if ( getrusage(RUSAGE_SELF, &usage) != 0 )
+	return 0;
+    return timeval_to_microseconds(usage.ru_utime)
+	+ timeval_to_microseconds(usage.ru_stime);
+}
+
+uint64_t current_resident_bytes()
+{
+    std::ifstream statm("/proc/self/statm");
+    uint64_t pages_total = 0;
+    uint64_t pages_resident = 0;
+    statm >> pages_total >> pages_resident;
+    if ( !statm )
+	return 0;
+    long page_size = sysconf(_SC_PAGESIZE);
+    if ( page_size <= 0 )
+	return 0;
+    return pages_resident * static_cast<uint64_t>(page_size);
 }
 
 Program::RegistrationPolicy registration_policy_from_compile_options(const compile_options &options)
@@ -372,6 +403,13 @@ bool call_target2_void(void *fn, const value &a0, const value &a1, value *result
 
 struct program::impl
 {
+    struct invoke_snapshot
+    {
+	uint64_t cpu_microseconds = 0;
+	uint64_t resident_bytes = 0;
+	uint64_t output_bytes = 0;
+    };
+
     MadcEngine engine;
     std::unique_ptr<Program> pgm;
     std::vector<error> public_diagnostics;
@@ -384,6 +422,7 @@ struct program::impl
 
     impl()
     {
+	engine.tee_output_to_buffer();
 	engine.capture_error_to_buffer();
 	reset_program();
     }
@@ -533,13 +572,19 @@ struct program::impl
 	    return false;
 	}
 
-	pgm->execute();
-	runtime_initialized = !pgm->last_error.has_error;
+	bool ok = invoke_with_limits("exec", [this]() -> bool {
+	    pgm->execute();
+	    runtime_initialized = !pgm->last_error.has_error;
+	    sync_public_errors();
+	    return !pgm->last_error.has_error;
+	});
+	if ( !ok && has_public_last_error && !pgm->last_error.has_error )
+	    return false;
 	if ( display_file != path )
 	    sync_public_errors(display_file, path);
 	else
 	    sync_public_errors();
-	return !pgm->last_error.has_error;
+	return ok;
     }
 
     bool compile_file_with_display(const std::string &path, const std::string &display_file)
@@ -608,6 +653,85 @@ struct program::impl
 	has_public_last_error = true;
 	public_diagnostics.push_back(public_last_error);
 	return false;
+    }
+
+    invoke_snapshot capture_invoke_snapshot()
+    {
+	invoke_snapshot snap;
+	snap.cpu_microseconds = current_cpu_microseconds();
+	snap.resident_bytes = current_resident_bytes();
+	snap.output_bytes = engine.output_buffer_str().size()
+	    + engine.error_buffer_str().size();
+	return snap;
+    }
+
+    bool enforce_invoke_limits(const std::string &op_name,
+			       const invoke_snapshot &before)
+    {
+	if ( current_invoke_limits.cpu_ms > 0 )
+	{
+	    uint64_t after_cpu = current_cpu_microseconds();
+	    uint64_t used_cpu = after_cpu >= before.cpu_microseconds
+		? after_cpu - before.cpu_microseconds
+		: 0;
+	    uint64_t limit_cpu = current_invoke_limits.cpu_ms * UINT64_C(1000);
+	    if ( used_cpu > limit_cpu )
+	    {
+		std::ostringstream os;
+		os << "program::" << op_name
+		   << " exceeded cpu_ms limit (" << current_invoke_limits.cpu_ms
+		   << " ms, used " << (used_cpu / 1000) << " ms)";
+		return fail_runtime(os.str());
+	    }
+	}
+
+	if ( current_invoke_limits.memory_bytes > 0 )
+	{
+	    uint64_t after_resident = current_resident_bytes();
+	    uint64_t used_resident = after_resident >= before.resident_bytes
+		? after_resident - before.resident_bytes
+		: 0;
+	    if ( used_resident > current_invoke_limits.memory_bytes )
+	    {
+		std::ostringstream os;
+		os << "program::" << op_name
+		   << " exceeded memory_bytes limit ("
+		   << current_invoke_limits.memory_bytes
+		   << " bytes, grew " << used_resident << " bytes)";
+		return fail_runtime(os.str());
+	    }
+	}
+
+	if ( current_invoke_limits.output_bytes > 0 )
+	{
+	    uint64_t after_output = engine.output_buffer_str().size()
+		+ engine.error_buffer_str().size();
+	    uint64_t used_output = after_output >= before.output_bytes
+		? after_output - before.output_bytes
+		: 0;
+	    if ( used_output > current_invoke_limits.output_bytes )
+	    {
+		std::ostringstream os;
+		os << "program::" << op_name
+		   << " exceeded output_bytes limit ("
+		   << current_invoke_limits.output_bytes
+		   << " bytes, produced " << used_output << " bytes)";
+		return fail_runtime(os.str());
+	    }
+	}
+
+	return true;
+    }
+
+    bool invoke_with_limits(const std::string &op_name,
+			    const std::function<bool()> &fn)
+    {
+	engine.clear_output_buffer();
+	engine.clear_error_buffer();
+	invoke_snapshot before = capture_invoke_snapshot();
+	if ( !fn() )
+	    return false;
+	return enforce_invoke_limits(op_name, before);
     }
 
     bool ensure_runtime_initialized()
@@ -715,118 +839,124 @@ struct program::impl
 
     bool call(const std::string &name, const std::vector<value> &args, value *result)
     {
-	if ( !ensure_runtime_initialized() )
-	    return false;
+	return invoke_with_limits("call", [this, &name, &args, result]() -> bool {
+	    if ( !ensure_runtime_initialized() )
+		return false;
 
-	std::string id = name;
-	Variable *var = pgm->findVariable(id);
-	if ( !var )
-	    return fail_runtime("program::call cannot find function '" + name + "'");
-	if ( !var->type || var->type->basetype() != BaseType::btFunct )
-	    return fail_runtime("program::call target '" + name + "' is not a function");
+	    std::string id = name;
+	    Variable *var = pgm->findVariable(id);
+	    if ( !var )
+		return fail_runtime("program::call cannot find function '" + name + "'");
+	    if ( !var->type || var->type->basetype() != BaseType::btFunct )
+		return fail_runtime("program::call target '" + name + "' is not a function");
 
-	Method *method = static_cast<Method *>(var->data);
-	if ( !method || !method->x86code )
-	    return fail_runtime("program::call target '" + name + "' has no callable code");
+	    Method *method = static_cast<Method *>(var->data);
+	    if ( !method || !method->x86code )
+		return fail_runtime("program::call target '" + name + "' has no callable code");
 
-	FuncDef *func = static_cast<FuncDef *>(method->returns.type);
-	if ( !func )
-	    return fail_runtime("program::call target '" + name + "' has no function metadata");
-	if ( func->is_multi_return() )
-	    return fail_runtime("program::call does not support multi-return functions yet");
-	if ( func->is_varargs )
-	    return fail_runtime("program::call does not support variadic functions yet");
-	if ( args.size() != func->parameters.size() )
-	    return fail_runtime("program::call argument count mismatch for '" + name + "'");
-	if ( args.size() > 2 )
-	    return fail_runtime("program::call currently supports up to 2 arguments");
+	    FuncDef *func = static_cast<FuncDef *>(method->returns.type);
+	    if ( !func )
+		return fail_runtime("program::call target '" + name + "' has no function metadata");
+	    if ( func->is_multi_return() )
+		return fail_runtime("program::call does not support multi-return functions yet");
+	    if ( func->is_varargs )
+		return fail_runtime("program::call does not support variadic functions yet");
+	    if ( args.size() != func->parameters.size() )
+		return fail_runtime("program::call argument count mismatch for '" + name + "'");
+	    if ( args.size() > 2 )
+		return fail_runtime("program::call currently supports up to 2 arguments");
 
-	native_type ret_type;
-	if ( !native_type_from_datadef(&func->returns, ret_type) )
-	    return fail_runtime("program::call does not support this return type yet");
+	    native_type ret_type;
+	    if ( !native_type_from_datadef(&func->returns, ret_type) )
+		return fail_runtime("program::call does not support this return type yet");
 
-	std::vector<native_type> arg_types;
-	arg_types.reserve(func->parameters.size());
-	for ( std::size_t i = 0; i < func->parameters.size(); ++i )
-	{
-	    native_type arg_type;
-	    if ( !native_type_from_datadef(func->parameters[i], arg_type) )
-		return fail_runtime("program::call does not support this parameter type yet");
-	    arg_types.push_back(arg_type);
-	}
-
-	try
-	{
-	    switch ( args.size() )
+	    std::vector<native_type> arg_types;
+	    arg_types.reserve(func->parameters.size());
+	    for ( std::size_t i = 0; i < func->parameters.size(); ++i )
 	    {
-		case 0:
-		    return dispatch_call0(method->x86code, ret_type, result);
-		case 1:
-		    return dispatch_call1(method->x86code, ret_type, arg_types[0], args[0], result);
-		case 2:
-		    return dispatch_call2(method->x86code, ret_type, arg_types[0], arg_types[1],
-					  args[0], args[1], result);
-		default:
-		    break;
+		native_type arg_type;
+		if ( !native_type_from_datadef(func->parameters[i], arg_type) )
+		    return fail_runtime("program::call does not support this parameter type yet");
+		arg_types.push_back(arg_type);
 	    }
-	}
-	catch ( const std::exception &e )
-	{
-	    return fail_runtime(e.what());
-	}
 
-	return fail_runtime("program::call could not dispatch the requested signature");
+	    try
+	    {
+		switch ( args.size() )
+		{
+		    case 0:
+			return dispatch_call0(method->x86code, ret_type, result);
+		    case 1:
+			return dispatch_call1(method->x86code, ret_type, arg_types[0], args[0], result);
+		    case 2:
+			return dispatch_call2(method->x86code, ret_type, arg_types[0], arg_types[1],
+					      args[0], args[1], result);
+		    default:
+			break;
+		}
+	    }
+	    catch ( const std::exception &e )
+	    {
+		return fail_runtime(e.what());
+	    }
+
+	    return fail_runtime("program::call could not dispatch the requested signature");
+	});
     }
 
     bool get_global(const std::string &name, value *result)
     {
-	if ( !result )
-	    return fail_runtime("program::get_global requires a result destination");
-	if ( !ensure_runtime_initialized() )
-	    return false;
+	return invoke_with_limits("get_global", [this, &name, result]() -> bool {
+	    if ( !result )
+		return fail_runtime("program::get_global requires a result destination");
+	    if ( !ensure_runtime_initialized() )
+		return false;
 
-	std::string id = name;
-	Variable *var = pgm->findVariable(id);
-	if ( !var )
-	    return fail_runtime("program::get_global cannot find variable '" + name + "'");
-	if ( !var->is_global() )
-	    return fail_runtime("program::get_global target '" + name + "' is not a global");
-	if ( var->type && var->type->basetype() == BaseType::btFunct )
-	    return fail_runtime("program::get_global target '" + name + "' is a function");
+	    std::string id = name;
+	    Variable *var = pgm->findVariable(id);
+	    if ( !var )
+		return fail_runtime("program::get_global cannot find variable '" + name + "'");
+	    if ( !var->is_global() )
+		return fail_runtime("program::get_global target '" + name + "' is not a global");
+	    if ( var->type && var->type->basetype() == BaseType::btFunct )
+		return fail_runtime("program::get_global target '" + name + "' is a function");
 
-	value out;
-	if ( !value_from_variable(var, out) )
-	    return fail_runtime("program::get_global does not support this variable type yet");
-	*result = out;
-	return true;
+	    value out;
+	    if ( !value_from_variable(var, out) )
+		return fail_runtime("program::get_global does not support this variable type yet");
+	    *result = out;
+	    return true;
+	});
     }
 
     bool set_global(const std::string &name, const value &new_value)
     {
-	if ( !ensure_runtime_initialized() )
-	    return false;
+	return invoke_with_limits("set_global", [this, &name, &new_value]() -> bool {
+	    if ( !ensure_runtime_initialized() )
+		return false;
 
-	std::string id = name;
-	Variable *var = pgm->findVariable(id);
-	if ( !var )
-	    return fail_runtime("program::set_global cannot find variable '" + name + "'");
-	if ( !var->is_global() )
-	    return fail_runtime("program::set_global target '" + name + "' is not a global");
-	if ( var->is_constant() )
-	    return fail_runtime("program::set_global target '" + name + "' is constant");
-	if ( var->type && var->type->basetype() == BaseType::btFunct )
-	    return fail_runtime("program::set_global target '" + name + "' is a function");
+	    std::string id = name;
+	    Variable *var = pgm->findVariable(id);
+	    if ( !var )
+		return fail_runtime("program::set_global cannot find variable '" + name + "'");
+	    if ( !var->is_global() )
+		return fail_runtime("program::set_global target '" + name + "' is not a global");
+	    if ( var->is_constant() )
+		return fail_runtime("program::set_global target '" + name + "' is constant");
+	    if ( var->type && var->type->basetype() == BaseType::btFunct )
+		return fail_runtime("program::set_global target '" + name + "' is a function");
 
-	try
-	{
-	    if ( !set_variable_from_value(var, new_value) )
-		return fail_runtime("program::set_global does not support this variable type yet");
-	}
-	catch ( const std::exception &e )
-	{
-	    return fail_runtime(e.what());
-	}
-	return true;
+	    try
+	    {
+		if ( !set_variable_from_value(var, new_value) )
+		    return fail_runtime("program::set_global does not support this variable type yet");
+	    }
+	    catch ( const std::exception &e )
+	    {
+		return fail_runtime(e.what());
+	    }
+	    return true;
+	});
     }
 };
 
