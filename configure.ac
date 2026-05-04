@@ -105,7 +105,7 @@ AC_DEFUN([MADC_CHECK_BDB], [
 	    OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $madc_pkg_cppflags"
 	    OPTIONAL_LIBS="$OPTIONAL_LIBS $madc_pkg_libs -ldb"
 	    MADC_MARK_ENABLED([HAVE_BDB], [Define when Berkeley DB backend support is enabled.])
-	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madc_storage_bdb.o])
+	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madcdat_storage_bdb.o])
 	    AC_MSG_RESULT([yes])
 	else
 	    AC_MSG_RESULT([no])
@@ -136,7 +136,7 @@ AC_DEFUN([MADC_CHECK_GDBM], [
 	    OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $madc_pkg_cppflags"
 	    OPTIONAL_LIBS="$OPTIONAL_LIBS $madc_pkg_libs -lgdbm"
 	    MADC_MARK_ENABLED([HAVE_GDBM], [Define when GDBM backend support is enabled.])
-	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madc_storage_gdbm.o])
+	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madcdat_storage_gdbm.o])
 	    AC_MSG_RESULT([yes])
 	else
 	    AC_MSG_RESULT([no])
@@ -176,7 +176,7 @@ AC_DEFUN([MADC_CHECK_QDBM], [
 	    MADC_QDBM_CPPFLAGS="$madc_qdbm_cppflags"
 	    MADC_QDBM_LIBS="$madc_pkg_libs -lqdbm"
 	    MADC_MARK_ENABLED([HAVE_QDBM], [Define when QDBM backend support is enabled.])
-	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madc_storage_qdbm.o])
+	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madcdat_storage_qdbm.o])
 	    AC_MSG_RESULT([yes])
 	else
 	    AC_MSG_RESULT([no])
@@ -248,7 +248,7 @@ AC_DEFUN([MADC_CHECK_SQLITE3], [
 	    OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $madc_pkg_cppflags"
 	    OPTIONAL_LIBS="$OPTIONAL_LIBS $madc_pkg_libs -lsqlite3"
 	    MADC_MARK_ENABLED([HAVE_SQLITE3], [Define when SQLite3 backend support is enabled.])
-	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madc_storage_sqlite.o])
+	    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madcdat_storage_sqlite.o])
 	    AC_MSG_RESULT([yes])
 	else
 	    AC_MSG_RESULT([no])

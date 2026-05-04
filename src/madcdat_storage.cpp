@@ -3,8 +3,8 @@
 // - DataDriverRegistry
 // - built-in dsv:// driver
 
-#include "libmadc/driver.h"
-#include "libmadc/query.h"
+#include "madcdat/driver.h"
+#include "madcdat/query.h"
 
 #include <algorithm>
 #include <cctype>

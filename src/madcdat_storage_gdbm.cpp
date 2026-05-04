@@ -1,5 +1,5 @@
-#include "libmadc/driver.h"
-#include "libmadc/query.h"
+#include "madcdat/driver.h"
+#include "madcdat/query.h"
 
 #ifdef HAVE_GDBM
 

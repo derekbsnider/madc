@@ -89,7 +89,7 @@ Why split:
 
 Build direction:
 
-- `./configure --with-madcdat`
+- `./configure --enable-madcdat`
 - later optional backend flags can hang under that umbrella
 - do not block current Phase 4 embedding work on the physical split, but
   plan for the boundary now
@@ -681,9 +681,9 @@ The smallest meaningful v1 should support:
 - `src/madc_worker.cpp`
   Worker binary
 - future optional split:
-  - `include/libmadcdat/`
+  - `include/madcdat/`
   - `src/madcdat_*.cpp`
-  - optional `libmadcdat` build target gated by `--with-madcdat`
+  - optional `libmadcdat` build target gated by `--enable-madcdat`
 - `src/Makefile`
   Shared library and worker build targets
 - `docs/plans/libmadc-phase4.md`

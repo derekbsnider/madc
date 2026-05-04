@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **Prepared the physical `madcdat` tree split without changing the
+  library boundary yet.** The storage/federation headers now have a
+  canonical public root at `include/madcdat/`, the storage/query driver
+  translation units now live under the `src/madcdat_*.cpp` naming
+  pattern, and the old `include/libmadc/*.h` data-layer headers are now
+  compatibility forwarders into that new header root. This makes the
+  future optional `libmadcdat` extraction concrete in the tree without
+  turning on a separate build product yet, and it also settles the
+  planned build flag direction as `./configure --enable-madcdat` rather
+  than `--with-madcdat`.
+
 - **QueryBuilder now has a first logical-composition seam.** `Query`
   now carries predicate match-mode metadata (`all` vs `any`), and
   `QueryBuilder` exposes `match_all()` / `match_any()` so the public

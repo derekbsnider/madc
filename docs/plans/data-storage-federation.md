@@ -39,6 +39,14 @@ Planned future boundary:
   - optional `madcdat` companion library for storage/federation/indexing
   - depends on core `madc::DataSource`
 
+Planned public surface split:
+
+- core headers continue under `include/libmadc/`
+- `madcdat` headers move toward `include/madcdat/`
+- temporary forwarding compatibility headers may remain under
+  `include/libmadc/` during the transition
+- the eventual optional build switch should be `./configure --enable-madcdat`
+
 So the name is official now, while the optional `libmadcdat`
 configure/build split remains a later implementation step.
 

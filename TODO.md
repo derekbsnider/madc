@@ -17,8 +17,12 @@
   view while finishing the separation: core embedding/runtime stays in
   `libmadc`, including core `madc::DataSource`, while the officially
   named `madcdat` storage/federation/indexing track is only *planned*
-  as a future optional `libmadcdat` (`./configure --with-madcdat`)
-  rather than a physical split already in progress.
+  as a future optional `libmadcdat` (`./configure --enable-madcdat`).
+  The tree/interface prep is now underway: canonical data headers live
+  under `include/madcdat/`, storage/query sources are moving under
+  `src/madcdat_*.cpp`, and the legacy `include/libmadc/*.h` data-layer
+  paths are temporary compatibility forwarders rather than the long-term
+  public header root.
 
 - **Exploratory storage/federation track — move beyond the first local
   backend family.** The first local backends now work from ordinary host
