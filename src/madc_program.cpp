@@ -230,6 +230,7 @@ security_policy clamp_security_policy_for_authority_mode(const security_policy &
     security_policy clamped = policy;
     if ( clamped.mode == authority_mode::system_locked )
     {
+	clamped.execution = execution_mode::fork_per_invocation;
 	clamped.allow_process_functions = false;
 	clamped.allow_dlfcn_functions = false;
     }

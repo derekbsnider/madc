@@ -244,6 +244,7 @@ TEST_SUITE("madc::program") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.mode = madc::authority_mode::system_locked;
+	policy.execution = madc::execution_mode::in_process;
 	policy.allow_process_functions = true;
 	policy.allow_dlfcn_functions = true;
 	pgm.set_security_policy(policy);
@@ -251,10 +252,23 @@ TEST_SUITE("madc::program") {
 	const madc::security_policy &stored_policy = pgm.get_security_policy();
 	const madc::compile_options &stored_options = pgm.get_compile_options();
 	CHECK(stored_policy.mode == madc::authority_mode::system_locked);
+	CHECK(stored_policy.execution == madc::execution_mode::fork_per_invocation);
 	CHECK_FALSE(stored_policy.allow_process_functions);
 	CHECK_FALSE(stored_policy.allow_dlfcn_functions);
 	CHECK_FALSE(stored_options.enable_process_functions);
 	CHECK_FALSE(stored_options.enable_dlfcn_functions);
+    }
+
+    TEST_CASE("security_policy execution mode roundtrips when not locked") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.mode = madc::authority_mode::host_authoritative;
+	policy.execution = madc::execution_mode::fork_per_invocation;
+	pgm.set_security_policy(policy);
+
+	const madc::security_policy &stored_policy = pgm.get_security_policy();
+	CHECK(stored_policy.mode == madc::authority_mode::host_authoritative);
+	CHECK(stored_policy.execution == madc::execution_mode::fork_per_invocation);
     }
 
     TEST_CASE("system_locked authority mode prevents compile options from re-enabling dlfcn") {

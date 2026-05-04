@@ -27,9 +27,16 @@ enum class authority_mode
     host_authoritative
 };
 
+enum class execution_mode
+{
+    in_process,
+    fork_per_invocation
+};
+
 struct security_policy
 {
     authority_mode mode = authority_mode::host_authoritative;
+    execution_mode execution = execution_mode::in_process;
     bool allow_core_functions = true;
     bool allow_process_functions = true;
     bool allow_dlfcn_functions = true;

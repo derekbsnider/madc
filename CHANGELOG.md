@@ -98,6 +98,17 @@
   `tests/unit/test_libmadc_program.cpp` now proves both the clamped
   getters and the failed re-enable path.
 
+- **Public policy now carries an explicit execution-mode seam.**
+  `include/libmadc/options.h` now defines `execution_mode` with
+  `in_process` and `fork_per_invocation`, and `security_policy` now
+  stores that desired execution mode. This slice does not yet implement
+  child-process execution, but it does make the contract explicit:
+  under `authority_mode::system_locked`, the effective public policy now
+  clamps execution to `fork_per_invocation` so the next worker/fork
+  runtime work has a stable surface to attach to. Coverage in
+  `tests/unit/test_libmadc_program.cpp` locks in round-trip behavior for
+  unlocked mode and the locked-mode clamp.
+
 - **`madc::program` now enforces `invoke_limits` on public invocation paths.**
   `exec_file(...)`, `exec_string(...)`, `eval(...)`, `call(...)`, and
   runtime-init paths reached through `get_global(...)` / `set_global(...)`

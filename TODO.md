@@ -15,7 +15,7 @@
   for scalar and `string` globals, plus a first `eval(source, result,
   virtual_filename)` slice that compiles an in-memory translation unit
   and calls a reserved zero-arg `__madc_eval` entrypoint, plus first
-  public `compile_options`, `security_policy`, and `invoke_limits`
+  public `compile_options`, `security_policy`, `execution_mode`, and `invoke_limits`
   surfaces. The options/policy seam now reaches the first real
   authority escape hatches too: builtin-registration toggles and
   built-in namespace registration toggles flow through
@@ -25,7 +25,12 @@
   `dlsym`. `authority_mode::system_locked` is now also a real enforced
   preset on that public seam: the effective policy and compile options
   clamp process builtins and dynamic-loading paths off, and later
-  `set_compile_options(...)` calls cannot re-enable them. `invoke_limits`
+  `set_compile_options(...)` calls cannot re-enable them. The next
+  worker/isolation seam is also now explicit in public policy:
+  `security_policy.execution` carries `in_process` vs
+  `fork_per_invocation`, and locked mode clamps that effective setting
+  to `fork_per_invocation` even though the actual child-process runtime
+  is still pending. `invoke_limits`
   now also enforce post-invocation budgets on
   the public host API for CPU time, resident-memory growth, and
   output/error bytes across both `MadcEngine`-managed streams and raw
