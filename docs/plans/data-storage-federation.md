@@ -42,10 +42,12 @@ Planned future boundary:
 Planned public surface split:
 
 - core headers continue under `include/libmadc/`
-- `madcdat` headers move toward `include/madcdat/`
+- `madcdat` headers now live under `include/madcdat/`
 - temporary forwarding compatibility headers may remain under
   `include/libmadc/` during the transition
-- the eventual optional build switch should be `./configure --enable-madcdat`
+- `./configure --enable-madcdat` now gates the subsystem in the repo build
+- the remaining future step is a separate `libmadcdat` build/install
+  target rather than the current in-tree gated object set
 
 So the name is official now, while the optional `libmadcdat`
 configure/build split remains a later implementation step.

@@ -71,9 +71,11 @@ Planned direction:
     families, indexes, reindex workflows, query/planning
 
 The subsystem name for that future boundary is now `madcdat`. The name
-is official before the physical split: current storage/federation work
-still lands inside the existing `libmadc` tree, while `libmadcdat`
-remains a later optional-build outcome of that layering.
+is official before the full physical library split: current
+storage/federation work still lands inside the existing `libmadc` tree,
+`./configure --enable-madcdat` now gates that subsystem at build time,
+and `libmadcdat` remains the later separate-library outcome of that
+layering.
 
 `DataSource` stays on the core `libmadc` side of that line. It is the
 general external-conduit abstraction that `madcdat` builds on, not a
@@ -91,8 +93,9 @@ Build direction:
 
 - `./configure --enable-madcdat`
 - later optional backend flags can hang under that umbrella
-- do not block current Phase 4 embedding work on the physical split, but
-  plan for the boundary now
+- that configure-time gate is now real in the repo build
+- the remaining future step is the separate `libmadcdat` target/install
+  surface
 
 ## Safety Model
 

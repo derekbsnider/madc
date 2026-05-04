@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **`madcdat` now has a real top-level configure gate.**
+  `./configure --enable-madcdat=no` now excludes the storage/federation
+  object set from the build, drops the `madcdat`-dependent unit test
+  binaries from `make -C src test`, and still leaves the core compiler,
+  runtime, and integration suite buildable. Backend toggles like
+  `--with-bdb` / `--with-gdbm` / `--with-qdbm` / `--with-sqlite3` now
+  require `madcdat` to be enabled instead of silently pretending the
+  subsystem is present. The default enabled path remains unchanged and
+  fully green.
+
 - **Prepared the physical `madcdat` tree split without changing the
   library boundary yet.** The storage/federation headers now have a
   canonical public root at `include/madcdat/`, the storage/query driver

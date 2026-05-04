@@ -15,14 +15,13 @@
   that, §4.3 = the `libmadc.so` Makefile target plus
   `include/madc_api.h` C shim. Also keep the future subsystem split in
   view while finishing the separation: core embedding/runtime stays in
-  `libmadc`, including core `madc::DataSource`, while the officially
-  named `madcdat` storage/federation/indexing track is only *planned*
-  as a future optional `libmadcdat` (`./configure --enable-madcdat`).
-  The tree/interface prep is now underway: canonical data headers live
-  under `include/madcdat/`, storage/query sources are moving under
-  `src/madcdat_*.cpp`, and the legacy `include/libmadc/*.h` data-layer
-  paths are temporary compatibility forwarders rather than the long-term
-  public header root.
+  `libmadc`, including core `madc::DataSource`. The `madcdat`
+  storage/federation/indexing track now has a real configure-time gate
+  at `./configure --enable-madcdat`, canonical data headers under
+  `include/madcdat/`, and the `src/madcdat_*.cpp` source seam. The next
+  remaining split work is the actual separate `libmadcdat` build target
+  and install surface, while the legacy `include/libmadc/*.h` data-layer
+  paths remain temporary compatibility forwarders.
 
 - **Exploratory storage/federation track — move beyond the first local
   backend family.** The first local backends now work from ordinary host

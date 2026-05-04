@@ -210,7 +210,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/language/multiple-returns.md`](docs/language/multiple-returns.md) | Go-style multiple return values |
 | [`docs/language/ternary-operator.md`](docs/language/ternary-operator.md) | Ternary operator |
 | [`docs/build.md`](docs/build.md) | Build requirements, asmjit setup |
-| [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory `madcdat` storage/federation design (`madc::DataSource` stays core, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends, future optional `libmadcdat` boundary) |
+| [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory `madcdat` storage/federation design (`madc::DataSource` stays core, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends, current `--enable-madcdat` build gate, future separate `libmadcdat` boundary) |
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
 | [`docs/test-status.md`](docs/test-status.md) | Per-test results |

@@ -17,6 +17,7 @@ MADC_QDBM_LIBS=""
 MADC_XQDBM_CPPFLAGS=""
 MADC_XQDBM_LIBS=""
 
+HAVE_MADCDAT=1
 HAVE_BDB=0
 HAVE_GDBM=0
 HAVE_QDBM=0
@@ -27,11 +28,17 @@ AC_SUBST([OPTIONAL_CPPFLAGS])
 AC_SUBST([OPTIONAL_LIBS])
 AC_SUBST([MADC_STORAGE_DB_OFILES])
 AC_SUBST([FEATURE_DEFINES])
+AC_SUBST([HAVE_MADCDAT])
 AC_SUBST([HAVE_BDB])
 AC_SUBST([HAVE_GDBM])
 AC_SUBST([HAVE_QDBM])
 AC_SUBST([HAVE_XQDBM])
 AC_SUBST([HAVE_SQLITE3])
+
+AC_ARG_ENABLE([madcdat],
+    [AS_HELP_STRING([--enable-madcdat], [build madcdat storage/federation support @<:@default=yes@:>@])],
+    [enable_madcdat="$enableval"],
+    [enable_madcdat=yes])
 
 AC_ARG_WITH([bdb],
     [AS_HELP_STRING([--with-bdb[=PREFIX]], [build Berkeley DB backend support])],
@@ -85,6 +92,18 @@ AC_DEFUN([MADC_PREPARE_PREFIX_FLAGS], [
 	;;
     esac
 ])
+
+case "$enable_madcdat" in
+  yes)
+	MADC_MARK_ENABLED([HAVE_MADCDAT], [Define when madcdat storage/federation support is enabled.])
+	;;
+  no)
+	HAVE_MADCDAT=0
+	;;
+  *)
+	AC_MSG_ERROR([bad value '$enable_madcdat' for --enable-madcdat])
+	;;
+esac
 
 AC_DEFUN([MADC_CHECK_BDB], [
     if test "$with_bdb" != no; then
@@ -260,11 +279,35 @@ AC_DEFUN([MADC_CHECK_SQLITE3], [
     fi
 ])
 
-MADC_CHECK_BDB
-MADC_CHECK_GDBM
-MADC_CHECK_QDBM
-MADC_CHECK_XQDBM
-MADC_CHECK_SQLITE3
+if test "$HAVE_MADCDAT" = 1; then
+    MADC_APPEND_FLAGS([MADC_STORAGE_DB_OFILES], [madcdat_storage.o])
+    MADC_CHECK_BDB
+    MADC_CHECK_GDBM
+    MADC_CHECK_QDBM
+    MADC_CHECK_XQDBM
+    MADC_CHECK_SQLITE3
+else
+    case "$with_bdb" in
+      auto|no) ;;
+      *) AC_MSG_ERROR([--with-bdb requires --enable-madcdat]) ;;
+    esac
+    case "$with_gdbm" in
+      auto|no) ;;
+      *) AC_MSG_ERROR([--with-gdbm requires --enable-madcdat]) ;;
+    esac
+    case "$with_qdbm" in
+      auto|no) ;;
+      *) AC_MSG_ERROR([--with-qdbm requires --enable-madcdat]) ;;
+    esac
+    case "$with_xqdbm" in
+      auto|no) ;;
+      *) AC_MSG_ERROR([--with-xqdbm requires --enable-madcdat]) ;;
+    esac
+    case "$with_sqlite3" in
+      auto|no) ;;
+      *) AC_MSG_ERROR([--with-sqlite3 requires --enable-madcdat]) ;;
+    esac
+fi
 
 if test -n "$MADC_QDBM_CPPFLAGS"; then
     OPTIONAL_CPPFLAGS="$OPTIONAL_CPPFLAGS $MADC_QDBM_CPPFLAGS"
@@ -283,7 +326,7 @@ if test -n "$MADC_XQDBM_LIBS"; then
     OPTIONAL_LIBS="$OPTIONAL_LIBS $MADC_XQDBM_LIBS"
 fi
 
-AC_MSG_NOTICE([Optional backends: bdb=$HAVE_BDB gdbm=$HAVE_GDBM qdbm=$HAVE_QDBM xqdbm=$HAVE_XQDBM sqlite3=$HAVE_SQLITE3])
+AC_MSG_NOTICE([madcdat=$HAVE_MADCDAT optional backends: bdb=$HAVE_BDB gdbm=$HAVE_GDBM qdbm=$HAVE_QDBM xqdbm=$HAVE_XQDBM sqlite3=$HAVE_SQLITE3])
 
 AC_CONFIG_FILES([Makefile config.mk])
 AC_OUTPUT
