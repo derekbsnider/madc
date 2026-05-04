@@ -240,6 +240,57 @@ TEST_SUITE("madc::program") {
 	CHECK(stored.output_bytes == 512);
     }
 
+    TEST_CASE("system_locked authority mode clamps dangerous policy gates") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.mode = madc::authority_mode::system_locked;
+	policy.allow_process_functions = true;
+	policy.allow_dlfcn_functions = true;
+	pgm.set_security_policy(policy);
+
+	const madc::security_policy &stored_policy = pgm.get_security_policy();
+	const madc::compile_options &stored_options = pgm.get_compile_options();
+	CHECK(stored_policy.mode == madc::authority_mode::system_locked);
+	CHECK_FALSE(stored_policy.allow_process_functions);
+	CHECK_FALSE(stored_policy.allow_dlfcn_functions);
+	CHECK_FALSE(stored_options.enable_process_functions);
+	CHECK_FALSE(stored_options.enable_dlfcn_functions);
+    }
+
+    TEST_CASE("system_locked authority mode prevents compile options from re-enabling dlfcn") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.mode = madc::authority_mode::system_locked;
+	pgm.set_security_policy(policy);
+
+	madc::compile_options options = pgm.get_compile_options();
+	options.enable_dlfcn_functions = true;
+	pgm.set_compile_options(options);
+
+	CHECK_FALSE(pgm.get_compile_options().enable_dlfcn_functions);
+	CHECK_FALSE(pgm.exec_string("#load \"libm.so.6\" as libm;\n"
+				    "int main() { return 0; }\n",
+				    "system_locked_load.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::lexer);
+	CHECK(err->message == "#load is disabled by registration policy");
+    }
+
+    TEST_CASE("system_locked authority mode disables process builtins") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.mode = madc::authority_mode::system_locked;
+	pgm.set_security_policy(policy);
+
+	CHECK_FALSE(pgm.exec_string("int main() { return system(\"true\"); }\n",
+				    "system_locked_process.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+    }
+
     TEST_CASE("compile_options can disable #load directives") {
 	madc::program pgm;
 	madc::compile_options options = pgm.get_compile_options();

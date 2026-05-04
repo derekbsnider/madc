@@ -88,6 +88,16 @@
   runtime/in-process resource enforcement rather than raw symbol-loading
   access.
 
+- **`authority_mode::system_locked` now clamps dangerous capability back on the public API seam.**
+  `system_locked` is no longer descriptive-only metadata. On the
+  effective `madc::program` policy surface it now forces process
+  builtins and dynamic-loading paths off, keeps the derived
+  `compile_options` / `security_policy` views in sync, and prevents
+  later `set_compile_options(...)` calls from re-enabling `#load`,
+  dlsym fallback, or process builtins. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves both the clamped
+  getters and the failed re-enable path.
+
 - **`madc::program` now enforces `invoke_limits` on public invocation paths.**
   `exec_file(...)`, `exec_string(...)`, `eval(...)`, `call(...)`, and
   runtime-init paths reached through `get_global(...)` / `set_global(...)`

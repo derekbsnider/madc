@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 254 integration tests pass. 196 unit tests pass (80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 5 libmadc_flr + 1 libmadc_gdbm + 28 libmadc_program + 1 libmadc_qdbm + 2 libmadc_relation + 1 libmadc_sqlite + 5 libmadc_error + 19 libmadc_value + 3 libmadc_vlr + 25 libmadc_storage_contract). (`make -C src fulltest`)**
+**Current status: 254 integration tests pass. 199 unit tests pass (80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 5 libmadc_flr + 1 libmadc_gdbm + 31 libmadc_program + 1 libmadc_qdbm + 2 libmadc_relation + 1 libmadc_sqlite + 5 libmadc_error + 19 libmadc_value + 3 libmadc_vlr + 25 libmadc_storage_contract). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)

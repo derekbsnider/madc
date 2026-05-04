@@ -213,6 +213,29 @@ security_policy security_policy_from_compile_options(const compile_options &opti
     return policy;
 }
 
+compile_options clamp_compile_options_for_authority_mode(const compile_options &options,
+							 authority_mode mode)
+{
+    compile_options clamped = options;
+    if ( mode == authority_mode::system_locked )
+    {
+	clamped.enable_process_functions = false;
+	clamped.enable_dlfcn_functions = false;
+    }
+    return clamped;
+}
+
+security_policy clamp_security_policy_for_authority_mode(const security_policy &policy)
+{
+    security_policy clamped = policy;
+    if ( clamped.mode == authority_mode::system_locked )
+    {
+	clamped.allow_process_functions = false;
+	clamped.allow_dlfcn_functions = false;
+    }
+    return clamped;
+}
+
 DataType datatype_from_native_type(program::native_type type)
 {
     switch ( type )
@@ -508,16 +531,20 @@ struct program::impl
 
     void set_compile_options(const compile_options &options)
     {
-	current_compile_options = options;
-	current_security_policy = security_policy_from_compile_options(options,
-								 current_security_policy.mode);
+	current_compile_options = clamp_compile_options_for_authority_mode(options,
+									 current_security_policy.mode);
+	current_security_policy = clamp_security_policy_for_authority_mode(
+	    security_policy_from_compile_options(current_compile_options,
+						 current_security_policy.mode));
 	reset_program();
     }
 
     void set_security_policy(const security_policy &policy)
     {
-	current_security_policy = policy;
-	current_compile_options = compile_options_from_security_policy(policy);
+	current_security_policy = clamp_security_policy_for_authority_mode(policy);
+	current_compile_options = clamp_compile_options_for_authority_mode(
+	    compile_options_from_security_policy(current_security_policy),
+	    current_security_policy.mode);
 	reset_program();
     }
 

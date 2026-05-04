@@ -22,7 +22,11 @@
   `Program::RegistrationPolicy`, and `enable_dlfcn_functions` now also
   gates `#load`, `#load`-backed namespace `dlsym`, parse-time
   RTLD-default symbol fallback, and compiler-side extern late-bind
-  `dlsym`. `invoke_limits` now also enforce post-invocation budgets on
+  `dlsym`. `authority_mode::system_locked` is now also a real enforced
+  preset on that public seam: the effective policy and compile options
+  clamp process builtins and dynamic-loading paths off, and later
+  `set_compile_options(...)` calls cannot re-enable them. `invoke_limits`
+  now also enforce post-invocation budgets on
   the public host API for CPU time, resident-memory growth, and
   output/error bytes across both `MadcEngine`-managed streams and raw
   libc `stdout`/`stderr` writes captured during invocation. This is
