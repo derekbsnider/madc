@@ -64,6 +64,164 @@
   results, virtual-filename diagnostic rewriting, and the current
   missing-entry failure path.
 
+- **`madc::` now has a first convenience wrapper tier over `madc::program`.**
+  New header `include/libmadc/api.h` now exposes free-function
+  `madc::eval(...)`, `madc::exec_string(...)`, and `madc::exec_file(...)`
+  as thin wrappers over a temporary `madc::program`. This gives simple
+  embedders a script-like entry convention without introducing a second
+  execution model or changing where policy/runtime state really lives.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now proves the
+  wrapper layer for eval, string exec, and file exec.
+
+- **`madc::program` now has a first expression-only evaluation surface.**
+  `program::eval_expression(expression, result, virtual_filename)` now
+  evaluates a single expression through a dedicated expression parse /
+  compile seam rather than exposing the full general-purpose `eval(...)`
+  surface. The first slice is intentionally narrow and explicit: it
+  routes through the existing policy seam, builds a synthetic hidden
+  function around the parsed expression instead of widening the old
+  `__madc_eval` path, and introduces the first public allowlist
+  surfaces for embedded headers and dynamic symbols. `math.h` is the
+  first real header-group case, enabling libm-backed expressions
+  without reopening unrestricted `#load` / fallback symbol access. The
+  result-type inference for operator expressions now also follows the
+  expression AST instead of trusting `TokenOperator`'s default
+  `_datatype`, so real-valued libm expressions like
+  `sqrt(9.0) + cos(0.0)` stay on the dedicated expression path instead
+  of falling back to the older translation-unit route.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now proves plain
+  arithmetic, statement-shaped rejection, direct symbol allowlists,
+  string-literal return marshaling, forked scalar expression results,
+  `math.h` header-group use, and the top-level
+  `madc::eval_expression(...)` wrapper.
+
+- **Expression authority is now explicit on `madc::program`.**
+  `include/libmadc/options.h` now adds `expression_policy`, and
+  `madc::program` now exposes `set_expression_policy(...)` /
+  `get_expression_policy()`. `eval_expression(...)` no longer depends on
+  the broader `security_policy` symbol/header fields for expression
+  calls: function calls are denied by default, allowed calls can be
+  granted either by explicit function name or by header-group expansion
+  such as `math.h`, and out-of-policy calls now fail with a public
+  runtime error before compilation. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves default call denial,
+  explicit allowlist acceptance, allowlist rejection, and policy
+  roundtrip.
+
+- **`eval_expression(...)` now rejects breakout-oriented source forms
+  before compilation.** The generated-expression path now validates the
+  supplied text up front and fails explicitly on `;`, block braces,
+  preprocessor directives, assignment operators, increment/decrement,
+  and reserved `__madc_*` identifiers instead of relying on accidental
+  parser/compiler rejection after code generation. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves breakout-token and
+  mutation-operator rejection.
+
+- **`eval_expression(...)` now validates parsed AST shape too.**
+  The dedicated expression seam no longer relies only on source-text
+  guards before building its synthetic hidden function. Parsed
+  expressions are now walked through an explicit whitelist of allowed
+  node families, while mutation/sequencing forms remain rejected.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now adds ternary
+  acceptance and explicit rejection for comma sequencing in expression
+  mode.
+
+- **`expression_policy` now gates pointer/lvalue-style expression forms explicitly.**
+  The dedicated expression path no longer treats member access,
+  subscript access, and pointer operations as accidental byproducts of
+  the AST whitelist. `expression_policy` now has separate booleans for
+  function calls, member access, subscript access, and pointer
+  operations, with the non-call lvalue/pointer-style forms disabled by
+  default. Coverage in `tests/unit/test_libmadc_program.cpp` now proves
+  default rejection and explicit opt-in for subscript and pointer
+  expressions, plus roundtrip of the richer policy surface.
+
+- **`eval_expression(...)` now supports first host-supplied bindings.**
+  `madc::program` now exposes `set_expression_bindings(...)`,
+  `get_expression_bindings()`, and `clear_expression_bindings()` for a
+  narrow first binding model. The dedicated expression path installs
+  explicit host-provided scalar/string bindings into the temporary
+  expression program before parsing, so hosts can evaluate expressions
+  against scoped input data without routing through globals. This first
+  slice is intentionally narrow: only boolean, integer, real, and
+  string bindings are accepted, while arrays/objects/bytes fail
+  explicitly. Coverage in `tests/unit/test_libmadc_program.cpp` now
+  proves integer bindings, string binding roundtrip, unsupported-kind
+  rejection, and program-state roundtrip for the binding map.
+
+- **`eval_expression(...)` now supports first object-backed host context.**
+  `madc::program` now also exposes `set_expression_context(...)`,
+  `get_expression_context()`, and `clear_expression_context()`. The
+  first slice is intentionally conservative: a host `madc::value`
+  object becomes the source of top-level expression bindings, with
+  explicit rejection for non-object contexts and explicit collision
+  rejection when a context field name overlaps a direct binding name.
+  This gives expression mode a scoped object/struct-style host surface
+  without committing yet to nested member reflection. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves integer field use,
+  non-object rejection, collision rejection, and state roundtrip.
+
+- **Nested object-context primitive traversal now works in `eval_expression(...)`.**
+  Safe expression mode still does not allow pointer dereference or
+  general host-member semantics, but it now supports static nested
+  primitive leaf traversal from object context values such as
+  `user.stats.level`. This is implemented conservatively by rewriting
+  matching dotted context paths to synthetic scoped bindings before
+  parse/compile, keeping the existing no-pointer boundary intact.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now proves nested
+  object traversal through `user.stats.level + 1`.
+
+- **Nested expression-context lookup now fails path-by-path with explicit diagnostics.**
+  The object-backed `eval_expression(...)` context seam no longer
+  rejects a whole context just because it contains an unrelated
+  unsupported leaf. Instead, context validation now follows the
+  expression's referenced identifier paths: missing nested fields,
+  descent through non-object leaves, and terminal object/unsupported
+  values now fail with path-specific runtime errors, while unrelated
+  array/bytes/object leaves are ignored unless the expression actually
+  touches them. Coverage in `tests/unit/test_libmadc_program.cpp` now
+  proves explicit missing-field and bad-descent diagnostics plus the
+  non-referenced unsupported-leaf case.
+
+- **`eval_expression(...)` now leans more on madc's own token/parser pipeline.**
+  Expression call restrictions are now checked from lexer tokens before
+  parse instead of by rescanning raw source text, which keeps blocked
+  calls on the public runtime-error path even when the callee would
+  otherwise be undeclared at parse time. The remaining nested
+  object-context seam is also closer to the parser now: dotted context
+  paths tolerate parser-legal whitespace and comments around `.`
+  separators. Coverage in `tests/unit/test_libmadc_program.cpp` now
+  proves nested context traversal through spaced/commented dotted
+  paths.
+
+- **`eval_expression(...)` object context now resolves through a parser-owned named-root model.**
+  Object-backed expression context is no longer implemented by
+  pre-rewriting nested dotted paths onto synthetic bindings before
+  parse. Unresolved identifiers and subsequent `.` chains can now
+  resolve directly against a parser-visible context root, so
+  `user.stats.level` is modeled inside madc's own parse pipeline while
+  still staying limited to static primitive leaves. Coverage in
+  `tests/unit/test_libmadc_program.cpp` continues to prove top-level
+  context fields, nested primitive traversal, path-specific missing-
+  field/bad-descent diagnostics, and parser-legal trivia around dotted
+  paths.
+
+- **Synthetic expression-function wrapping now lives on `Program`.**
+  The AST surgery that turns a parsed expression into a compilable
+  hidden function is no longer embedded only inside the `libmadc`
+  wrapper flow. `Program` now owns a `build_expression_function(...)`
+  helper that attaches the parsed expression to the normal AST /
+  pending-function pipeline, leaving `madc::program::eval_expression(...)`
+  focused on policy, bindings/context setup, and result marshaling.
+
+- **Full in-memory eval/exec no longer require temporary source files.**
+  `Program` now has an in-memory translation-unit tokenization path, so
+  `madc::program::eval(...)` and `madc::program::exec_string(...)`
+  compile source buffers directly through the normal lexer/parser/
+  compiler pipeline instead of writing temp files first. This keeps the
+  full-source eval path aligned with the same core compiler machinery
+  that the expression lane has been moving toward.
+
 - **`madc::program` now exposes first options/policy surfaces.**
   `include/libmadc/options.h` now ships `compile_options`,
   `security_policy`, `invoke_limits`, and `authority_mode`, and
@@ -108,6 +266,24 @@
   runtime work has a stable surface to attach to. Coverage in
   `tests/unit/test_libmadc_program.cpp` locks in round-trip behavior for
   unlocked mode and the locked-mode clamp.
+
+- **`fork_per_invocation` now reaches real child-process execution on the public runtime seam.**
+  When the effective public policy execution mode is
+  `fork_per_invocation`, `exec_file(...)` / `exec_string(...)` now
+  compile in the parent and fork a child for `Program::execute()`,
+  while `call(...)` and entry-function-based `eval(...)` now also run
+  their actual invocation inside a child. The host side captures child
+  stdout/stderr into temp files, serializes public diagnostics back to
+  the parent, replays output/error, and now also marshals the existing
+  narrow scalar / C-string result subset back for forked `call(...)` /
+  `eval(...)`. This is still an intentionally narrow worker slice:
+  globals stay in-process, result marshaling does not widen beyond the
+  existing scalar / C-string contract, and limit enforcement remains
+  honest post-invocation accounting rather than preemption. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves fork-mode exec
+  success/error propagation, child stdout/stderr contribution to
+  output-limit enforcement, plus forked scalar/string `call(...)` and
+  `eval(...)` results.
 
 - **`madc::program` now enforces `invoke_limits` on public invocation paths.**
   `exec_file(...)`, `exec_string(...)`, `eval(...)`, `call(...)`, and

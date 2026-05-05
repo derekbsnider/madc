@@ -6,6 +6,7 @@
 #include "libmadc/value.h"
 
 #include <initializer_list>
+#include <map>
 #include <memory>
 #include <string>
 #include <vector>
@@ -58,6 +59,9 @@ public:
     bool eval(const std::string &source,
 	      value *result = NULL,
 	      const std::string &virtual_filename = std::string());
+    bool eval_expression(const std::string &expression,
+			 value *result = NULL,
+			 const std::string &virtual_filename = std::string());
     bool register_function(const std::string &name,
 			   native_function callback,
 			   const native_signature &signature);
@@ -70,6 +74,14 @@ public:
     const compile_options &get_compile_options() const;
     void set_security_policy(const security_policy &policy);
     const security_policy &get_security_policy() const;
+    void set_expression_policy(const expression_policy &policy);
+    const expression_policy &get_expression_policy() const;
+    void set_expression_bindings(const std::map<std::string, value> &bindings);
+    const std::map<std::string, value> &get_expression_bindings() const;
+    void clear_expression_bindings();
+    void set_expression_context(const value &context);
+    const value &get_expression_context() const;
+    void clear_expression_context();
     void set_invoke_limits(const invoke_limits &limits);
     const invoke_limits &get_invoke_limits() const;
 

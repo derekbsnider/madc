@@ -594,6 +594,8 @@ static void set_funcsig_ret(FuncSignature &funcsig, DataDef *ret_type, bool is_m
 	case DataType::dtUINT24:	funcsig.setRetT<uint16_t>();		break;
 	case DataType::dtUINT32:	funcsig.setRetT<uint32_t>();		break;
 	case DataType::dtUINT64:	funcsig.setRetT<uint64_t>();		break;
+	case DataType::dtFLOAT:		funcsig.setRetT<float>();		break;
+	case DataType::dtDOUBLE:	funcsig.setRetT<double>();		break;
 	case DataType::dtCHARptr:	funcsig.setRetT<const char *>();	break;
 	case DataType::dtSTRING:	funcsig.setRetT<void *>();		break;
 	default:			funcsig.setRetT<void *>();		break;
@@ -1475,6 +1477,9 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	// any libc / system symbol just by extern-declaring it.
 	if ( !pgm.is_dynamic_symbol_fallback_enabled() )
 	    pgm.Throw(this) << "dynamic symbol fallback is disabled by registration policy" << flush;
+	if ( !pgm.is_dynamic_symbol_allowed(var.name) )
+	    pgm.Throw(this) << "dynamic symbol '" << var.name
+			    << "' is not allowed by registration policy" << flush;
 	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
 	if ( sym )
 	{
@@ -1729,6 +1734,9 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
     if ( use_c_version && !fnd )
     {
+	if ( !pgm.is_dynamic_symbol_allowed(var.name) )
+	    pgm.Throw(this) << "dynamic symbol '" << var.name
+			    << "' is not allowed by registration policy" << flush;
 	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
 	if ( sym )
 	{

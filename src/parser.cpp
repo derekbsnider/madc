@@ -146,6 +146,41 @@ static bool read_constant_integer(Variable *var, int64_t &out)
     }
 }
 
+static void copy_token_location(TokenBase *dst, TokenBase *src)
+{
+    if ( !dst || !src )
+	return;
+    dst->file = src->file;
+    dst->line = src->line;
+    dst->column = src->column;
+}
+
+static TokenBase *make_expression_context_literal(const madc::value &resolved, TokenBase *src)
+{
+    TokenBase *tb = NULL;
+
+    switch ( resolved.type() )
+    {
+	case madc::value::kind::boolean:
+	    tb = new TokenInt(resolved.as_boolean() ? 1 : 0);
+	    break;
+	case madc::value::kind::integer:
+	    tb = new TokenInt(resolved.as_integer());
+	    break;
+	case madc::value::kind::real:
+	    tb = new TokenReal(resolved.as_real());
+	    break;
+	case madc::value::kind::string:
+	    tb = new TokenStr(resolved.as_string());
+	    break;
+	default:
+	    return NULL;
+    }
+
+    copy_token_location(tb, src);
+    return tb;
+}
+
 static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
 {
     if ( !tb )
@@ -1230,6 +1265,7 @@ Program::Program()
       input_stream(&std::cin),
       output_stream(&std::cout),
       error_stream(&std::cerr),
+      expression_context_root(NULL),
       tkProgram(NULL),
       tkFunction(NULL),
       script_argc(0),
@@ -1249,6 +1285,7 @@ Program::Program(MadcEngine *eng)
       input_stream(&std::cin),
       output_stream(&std::cout),
       error_stream(&std::cerr),
+      expression_context_root(NULL),
       tkProgram(NULL),
       tkFunction(NULL),
       script_argc(0),
@@ -2029,6 +2066,17 @@ bool Program::load_file(const char *fname)
     return compile();
 }
 
+bool Program::load_buffer(const std::string &source_text,
+			  const std::string &display_name)
+{
+    TokenProgram *tp = tokenize_buffer(source_text, display_name);
+    if ( !tp )
+	return false;
+    if ( !parse(tp) )
+	return false;
+    return compile();
+}
+
 void Program::BuiltinRegistry::add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
 {
     core_functions.push_back({id, params, extfunc, is_method});
@@ -2166,7 +2214,13 @@ void Program::add_process_functions()
 
 void Program::add_dlfcn_functions()
 {
-    register_function_specs(builtin_registry.dlfcn_functions);
+    for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.dlfcn_functions.begin();
+	  it != builtin_registry.dlfcn_functions.end(); ++it )
+    {
+	if ( !is_dynamic_symbol_allowed(it->id) )
+	    continue;
+	addFunction(it->id, it->params, it->extfunc, it->is_method);
+    }
 }
 
 void Program::register_namespace_specs()
@@ -2388,6 +2442,30 @@ bool Program::is_dynamic_symbol_fallback_enabled() const
     return registration_policy.enable_dlfcn_functions;
 }
 
+bool Program::is_embedded_header_allowed(const std::string &name) const
+{
+    if ( registration_policy.allowed_headers.empty() )
+	return true;
+    for ( std::size_t i = 0; i < registration_policy.allowed_headers.size(); ++i )
+    {
+	if ( registration_policy.allowed_headers[i] == name )
+	    return true;
+    }
+    return false;
+}
+
+bool Program::is_dynamic_symbol_allowed(const std::string &name) const
+{
+    if ( registration_policy.allowed_dlfcn_symbols.empty() )
+	return true;
+    for ( std::size_t i = 0; i < registration_policy.allowed_dlfcn_symbols.size(); ++i )
+    {
+	if ( registration_policy.allowed_dlfcn_symbols[i] == name )
+	    return true;
+    }
+    return false;
+}
+
 // find variable matching id anywhere accessable from codeblock
 Variable *Program::findVariable(TokenCpnd *code, std::string &id)
 {
@@ -2485,6 +2563,72 @@ Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expre
     }
 
     return resolve_c_identifier(*this, ident_tb, expression_head);
+}
+
+void Program::set_expression_context_root(const madc::value *root)
+{
+    expression_context_root = root;
+}
+
+void Program::clear_expression_context_root()
+{
+    expression_context_root = NULL;
+}
+
+bool Program::has_expression_context_root() const
+{
+    return expression_context_root != NULL && expression_context_root->is_object();
+}
+
+TokenBase *Program::resolve_expression_context_identifier(TokenIdent *ident_tb)
+{
+    if ( !ident_tb || !has_expression_context_root() )
+	return NULL;
+
+    const std::map<std::string, madc::value> &fields = expression_context_root->as_object();
+    std::map<std::string, madc::value>::const_iterator it = fields.find(ident_tb->str);
+    if ( it == fields.end() )
+	return NULL;
+
+    if ( it->second.is_object() )
+    {
+	TokenExprContextObject *obj = new TokenExprContextObject(ident_tb->str, &it->second);
+	copy_token_location(obj, ident_tb);
+	return obj;
+    }
+
+    return make_expression_context_literal(it->second, ident_tb);
+}
+
+TokenBase *Program::resolve_expression_context_member(TokenBase *lhs, TokenIdent *member_tb)
+{
+    if ( !lhs || !member_tb )
+	return NULL;
+
+    TokenExprContextObject *obj = dynamic_cast<TokenExprContextObject *>(lhs);
+    if ( !obj || !obj->context_value || !obj->context_value->is_object() )
+	return NULL;
+
+    const std::map<std::string, madc::value> &fields = obj->context_value->as_object();
+    std::map<std::string, madc::value>::const_iterator it = fields.find(member_tb->str);
+    if ( it == fields.end() )
+	Throw(member_tb) << "context path '" << obj->path << "." << member_tb->str
+			 << "' cannot find field '" << member_tb->str << "'" << flush;
+
+    if ( it->second.is_object() )
+    {
+	TokenExprContextObject *next = new TokenExprContextObject(obj->path + "." + member_tb->str,
+								  &it->second);
+	copy_token_location(next, member_tb);
+	return next;
+    }
+
+    TokenBase *resolved = make_expression_context_literal(it->second, member_tb);
+    if ( !resolved )
+	Throw(member_tb) << "context path '" << obj->path << "." << member_tb->str
+			 << "' resolves to unsupported value kind '"
+			 << madc::value::kind_name(it->second.type()) << "'" << flush;
+    return resolved;
 }
 
 // creates global variable named after string,
@@ -2999,13 +3143,20 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 
     std::string name = ((TokenIdent *)head)->str;
     Variable *var = findVariable(name);
-    if ( !var )
-	Throw(head) << "undeclared identifier '" << name << "'" << flush;
-
-    TokenBase *result = new TokenVar(*var);
-    result->file = head->file;
-    result->line = head->line;
-    result->column = head->column;
+    TokenBase *result = NULL;
+    if ( var )
+    {
+	result = new TokenVar(*var);
+	result->file = head->file;
+	result->line = head->line;
+	result->column = head->column;
+    }
+    else
+    {
+	result = resolve_expression_context_identifier((TokenIdent *)head);
+	if ( !result )
+	    Throw(head) << "undeclared identifier '" << name << "'" << flush;
+    }
 
     while ( peekToken() )
     {
@@ -3019,6 +3170,17 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		Throw(mtb ? mtb : op_tb) << "expected member name after '"
 		    << (is_arrow ? "->" : ".") << "'" << flush;
 	    std::string mname = contextual_identifier_name(mtb);
+	    TokenIdent member_ident(mname);
+	    copy_token_location(&member_ident, mtb);
+
+	    if ( !is_arrow )
+	    {
+		if ( TokenBase *ctx_member = resolve_expression_context_member(result, &member_ident) )
+		{
+		    result = ctx_member;
+		    continue;
+		}
+	    }
 
 	    DataDef *obj_type = result->datadef();
 	    if ( is_arrow )
@@ -3054,6 +3216,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    tm->line = op_tb->line;
 	    tm->column = op_tb->column;
 	    result = tm;
+	    var = mvar;
 	    continue;
 	}
 	if ( pid == TokenID::tkOpSqr )
@@ -3085,6 +3248,63 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	break;
     }
     return result;
+}
+
+TokenFunc *Program::build_expression_function(TokenProgram *tp,
+					      TokenBase *expr,
+					      DataDef *return_type,
+					      const std::string &function_name,
+					      bool have_result,
+					      const std::string &result_name)
+{
+    if ( !expr || !return_type || function_name.empty() )
+	return NULL;
+
+    std::string fn_name = function_name;
+    FuncDef *func = new FuncDef(*return_type);
+    Variable *fn_var = addVariable(NULL, *func, fn_name, 1, NULL, false);
+    Method *method = new Method(*fn_var);
+    fn_var->data = (void *)method;
+
+    TokenFunc *tf = new TokenFunc(*fn_var);
+    tf->method = method;
+    copy_token_location(tf, expr);
+
+    if ( have_result )
+    {
+	std::string local_result_name = result_name;
+	Variable *result_var = addVariable(tf, *return_type, local_result_name, 1, NULL, true);
+	TokenAssign *assign = new TokenAssign();
+	TokenVar *lhs = new TokenVar(*result_var);
+	copy_token_location(lhs, expr);
+	assign->left = lhs;
+	assign->right = expr;
+	copy_token_location(assign, expr);
+	lhs->parent = assign;
+	expr->parent = assign;
+	tf->statements.push_back((TokenStmt *)assign);
+
+	TokenRETURN *ret = new TokenRETURN();
+	TokenVar *ret_value = new TokenVar(*result_var);
+	copy_token_location(ret_value, expr);
+	ret->returns = ret_value;
+	copy_token_location(ret, expr);
+	ret_value->parent = ret;
+	tf->statements.push_back((TokenStmt *)ret);
+    }
+    else
+    {
+	expr->parent = tf;
+	tf->statements.push_back((TokenStmt *)expr);
+	TokenRETURN *ret = new TokenRETURN();
+	copy_token_location(ret, expr);
+	tf->statements.push_back((TokenStmt *)ret);
+    }
+
+    ast.push(tp);
+    ast.push(tf);
+    pending_funcs.push_back(tf);
+    return tf;
 }
 
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
@@ -4199,6 +4419,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // Accept TokenVar, TokenMember, or TokenSubscript as LHS for dot access.
 		    // Subscript case: tab[i].member for an array of structs.
 		    TokenBase *lhs_dot = exStack.top();
+		    if ( TokenBase *ctx_member = resolve_expression_context_member(lhs_dot, ident_tb) )
+		    {
+			exStack.pop();
+			exStack.push(ctx_member);
+			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			    opStack.pop();
+			break;
+		    }
 		    if ( lhs_dot->type() != TokenType::ttVariable
 		      && lhs_dot->type() != TokenType::ttMember
 		      && lhs_dot->type() != TokenType::ttSubscript )
@@ -4451,6 +4679,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
 			if ( !is_dynamic_symbol_fallback_enabled() )
 			    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
+			if ( !is_dynamic_symbol_allowed(member_name) )
+			    Throw(member_tb) << "dynamic symbol '" << member_name
+					     << "' is not allowed by registration policy" << flush;
 			void *sym = dlsym(dli->second, member_name.c_str());
 			if ( !sym )
 			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
@@ -4499,12 +4730,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// lazy-load check: symbol registered by #include but not yet created
 		if ( !var )
 		    var = lazy_resolve(ident_tb->str);
+		if ( !var )
+		{
+		    TokenBase *ctx_value = resolve_expression_context_identifier(ident_tb);
+		    if ( ctx_value )
+		    {
+			exStack.push(ctx_value);
+			break;
+		    }
+		}
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
 		    // dlsym fallback: try to resolve as a libc/system function
 		    if ( !is_dynamic_symbol_fallback_enabled() )
 			Throw(ident_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
 		    std::string fname = ident_tb->str;
+		    if ( !is_dynamic_symbol_allowed(fname) )
+			Throw(ident_tb) << "dynamic symbol '" << fname
+					<< "' is not allowed by registration policy" << flush;
 		    void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
 		    if ( sym )
 		    {
@@ -8425,4 +8668,79 @@ bool Program::parse(TokenProgram *tp)
     DBG(std::cout << "Program::parse() finished parsing" << std::endl);
     
     return true;
+}
+
+TokenBase *Program::parse_expression_unit(TokenProgram *tp)
+{
+    TokenBase *tb = NULL;
+    TokenBase *expr = NULL;
+
+    DBG(cout << endl << "Program::parse_expression_unit() START" << endl);
+    clear_diagnostics();
+    clear_error();
+
+    if ( tokens.empty() )
+    {
+	set_error(DiagnosticPhase::parser, "Program::parse_expression_unit() token queue empty",
+		  tp ? tp->source.c_str() : NULL, 0, 0);
+	error() << "Program::parse_expression_unit() token queue empty" << endl;
+	return NULL;
+    }
+
+    _parser_init();
+
+    try
+    {
+	tb = nextToken();
+	expr = parseExpression(tb);
+	if ( !expr )
+	    Throw(tb) << "Failed to parse expression" << flush;
+
+	TokenBase *stop = curToken();
+	if ( !stop || stop->id() != TokenID::tkSemi )
+	    Throw(stop ? stop : tb) << "Expecting ';' after expression" << flush;
+	if ( !tokens.empty() )
+	{
+	    TokenBase *extra = nextToken();
+	    Throw(extra) << "unexpected token after expression" << flush;
+	}
+    }
+    catch(const char *err_msg)
+    {
+	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)",
+		  tp ? tp->source.c_str() : NULL,
+		  tb ? tb->line : 0, tb ? tb->column : 0);
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(TokenIdent *ti)
+    {
+	set_error(DiagnosticPhase::parser,
+		  std::string("use of undeclared identifier '") + ti->str + '\'',
+		  tp ? tp->source.c_str() : NULL, ti->line, ti->column);
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(TokenBase *err_tb)
+    {
+	set_error(DiagnosticPhase::parser,
+		  std::string("unexpected token type ") + std::to_string((int)err_tb->type()),
+		  tp ? tp->source.c_str() : NULL, err_tb->line, err_tb->column);
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(std::exception &e)
+    {
+	if ( !last_error.has_error )
+	{
+	    TokenBase *err_tb = Throw.token();
+	    set_error(DiagnosticPhase::parser, Throw.str().empty() ? e.what() : Throw.str(),
+		      tp ? tp->source.c_str() : NULL,
+		      err_tb ? err_tb->line : 0,
+		      err_tb ? err_tb->column : 0);
+	}
+	return NULL;
+    }
+
+    return expr;
 }

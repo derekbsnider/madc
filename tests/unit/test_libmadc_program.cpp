@@ -21,6 +21,7 @@ bool madc_verbose = false;
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "libmadc/api.h"
 #include "libmadc/program.h"
 
 #include <cstdio>
@@ -198,6 +199,402 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message == "program::call cannot find function '__madc_eval'");
     }
 
+    TEST_CASE("madc::eval convenience wrapper mirrors program eval") {
+	madc::value result;
+
+	CHECK(madc::eval("int helper() { return 6; }\n"
+			 "int __madc_eval() { return helper() * 7; }\n",
+			 &result,
+			 "api_eval.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+    }
+
+    TEST_CASE("eval_expression evaluates a plain arithmetic expression") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK(pgm.eval_expression("1 + 2 * 3", &result, "expr_ok.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 7);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rejects statement-shaped input") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK_FALSE(pgm.eval_expression("1; return 2", &result, "expr_bad.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("statement separators are not allowed") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression rejects breakout tokens before compilation") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK_FALSE(pgm.eval_expression("0); puti(1); (0", &result, "expr_breakout.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("statement separators are not allowed") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression rejects mutation-oriented operators") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK_FALSE(pgm.eval_expression("(__madc_expr_value = 7)", &result, "expr_assign.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK((err->message.find("assignment operators are not allowed") != std::string::npos
+	    || err->message.find("reserved madc implementation identifiers are not allowed") != std::string::npos));
+
+	pgm.clear_diagnostics();
+	CHECK_FALSE(pgm.eval_expression("++5", &result, "expr_inc.mad"));
+	REQUIRE(pgm.has_error());
+	err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("increment and decrement operators are not allowed") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression rejects comma sequencing") {
+	madc::program pgm;
+	madc::value result;
+
+    CHECK_FALSE(pgm.eval_expression("(1, 2)", &result, "expr_comma.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+    }
+
+    TEST_CASE("eval_expression still allows ternary expressions through the AST validator") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK(pgm.eval_expression("1 ? 40 + 2 : 0", &result, "expr_ternary.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rejects subscript access by default") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK_FALSE(pgm.eval_expression("\"abc\"[1]", &result, "expr_subscript_blocked.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("subscript access is disabled by expression policy") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression can enable subscript access explicitly") {
+	madc::program pgm;
+	madc::expression_policy policy;
+	policy.allow_subscript_access = true;
+	pgm.set_expression_policy(policy);
+
+	madc::value result;
+	CHECK(pgm.eval_expression("\"abc\"[1]", &result, "expr_subscript_ok.mad"));
+	REQUIRE(result.is_integer());
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rejects pointer operations by default") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK_FALSE(pgm.eval_expression("*((char *)\"abc\")", &result, "expr_ptr_blocked.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("pointer operations are disabled by expression policy") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression can enable pointer operations explicitly") {
+	madc::program pgm;
+	madc::expression_policy policy;
+	policy.allow_pointer_operations = true;
+	pgm.set_expression_policy(policy);
+
+	madc::value result;
+	CHECK(pgm.eval_expression("*((char *)\"abc\")", &result, "expr_ptr_ok.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == static_cast<int>('a'));
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression can use host-supplied integer bindings") {
+	madc::program pgm;
+	std::map<std::string, madc::value> bindings;
+	bindings["x"] = madc::value(static_cast<int64_t>(6));
+	bindings["y"] = madc::value(static_cast<int64_t>(7));
+	pgm.set_expression_bindings(bindings);
+
+	madc::value result;
+	CHECK(pgm.eval_expression("x * y", &result, "expr_bindings_int.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression can return host-supplied string bindings") {
+	madc::program pgm;
+	std::map<std::string, madc::value> bindings;
+	bindings["name"] = madc::value("echo");
+	pgm.set_expression_bindings(bindings);
+
+	madc::value result;
+	CHECK(pgm.eval_expression("name", &result, "expr_bindings_string.mad"));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "echo");
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rejects unsupported binding kinds") {
+	madc::program pgm;
+	std::map<std::string, madc::value> bindings;
+	bindings["items"] = madc::value::make_array();
+	pgm.set_expression_bindings(bindings);
+
+	madc::value result;
+	CHECK_FALSE(pgm.eval_expression("items", &result, "expr_bindings_array.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("cannot bind value kind 'array'") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression can use object context fields as bindings") {
+	madc::program pgm;
+	std::map<std::string, madc::value> fields;
+	fields["x"] = madc::value(static_cast<int64_t>(6));
+	fields["y"] = madc::value(static_cast<int64_t>(7));
+	pgm.set_expression_context(madc::value::make_object(fields));
+
+	madc::value result;
+	CHECK(pgm.eval_expression("x * y", &result, "expr_context_int.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression can traverse nested object context primitives") {
+	madc::program pgm;
+	std::map<std::string, madc::value> stats_fields;
+	stats_fields["level"] = madc::value(static_cast<int64_t>(41));
+	std::map<std::string, madc::value> user_fields;
+	user_fields["stats"] = madc::value::make_object(stats_fields);
+	std::map<std::string, madc::value> root_fields;
+	root_fields["user"] = madc::value::make_object(user_fields);
+	pgm.set_expression_context(madc::value::make_object(root_fields));
+
+	madc::value result;
+	CHECK(pgm.eval_expression("user.stats.level + 1", &result, "expr_context_nested.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rewrites nested object context paths with parser-legal trivia") {
+	madc::program pgm;
+	std::map<std::string, madc::value> stats_fields;
+	stats_fields["level"] = madc::value(static_cast<int64_t>(41));
+	std::map<std::string, madc::value> user_fields;
+	user_fields["stats"] = madc::value::make_object(stats_fields);
+	std::map<std::string, madc::value> root_fields;
+	root_fields["user"] = madc::value::make_object(user_fields);
+	pgm.set_expression_context(madc::value::make_object(root_fields));
+
+	madc::value result;
+	CHECK(pgm.eval_expression("user /* root */ . stats\n.\tlevel + 1",
+				  &result,
+				  "expr_context_nested_trivia.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rejects missing nested object context fields explicitly") {
+	madc::program pgm;
+	std::map<std::string, madc::value> stats_fields;
+	stats_fields["level"] = madc::value(static_cast<int64_t>(41));
+	std::map<std::string, madc::value> user_fields;
+	user_fields["stats"] = madc::value::make_object(stats_fields);
+	std::map<std::string, madc::value> root_fields;
+	root_fields["user"] = madc::value::make_object(user_fields);
+	pgm.set_expression_context(madc::value::make_object(root_fields));
+
+	madc::value result;
+	CHECK_FALSE(pgm.eval_expression("user.stats.rank + 1", &result, "expr_context_missing.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("cannot find field 'rank'") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression rejects nested descent through primitive context fields explicitly") {
+	madc::program pgm;
+	std::map<std::string, madc::value> user_fields;
+	user_fields["name"] = madc::value("echo");
+	std::map<std::string, madc::value> root_fields;
+	root_fields["user"] = madc::value::make_object(user_fields);
+	pgm.set_expression_context(madc::value::make_object(root_fields));
+
+	madc::value result;
+	CHECK_FALSE(pgm.eval_expression("user.name.first", &result, "expr_context_bad_descent.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("cannot descend through non-object field 'user.name'") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression ignores unrelated unsupported context fields") {
+	madc::program pgm;
+	std::map<std::string, madc::value> root_fields;
+	root_fields["x"] = madc::value(static_cast<int64_t>(6));
+	root_fields["items"] = madc::value::make_array();
+	pgm.set_expression_context(madc::value::make_object(root_fields));
+
+	madc::value result;
+	CHECK(pgm.eval_expression("x * 7", &result, "expr_context_unused_array.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rejects non-object context values") {
+	madc::program pgm;
+	pgm.set_expression_context(madc::value(static_cast<int64_t>(7)));
+
+	madc::value result;
+	CHECK_FALSE(pgm.eval_expression("x", &result, "expr_context_bad.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("context must be an object value") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression rejects context and explicit binding collisions") {
+	madc::program pgm;
+	std::map<std::string, madc::value> fields;
+	fields["x"] = madc::value(static_cast<int64_t>(6));
+	pgm.set_expression_context(madc::value::make_object(fields));
+
+	std::map<std::string, madc::value> bindings;
+	bindings["x"] = madc::value(static_cast<int64_t>(7));
+	pgm.set_expression_bindings(bindings);
+
+	madc::value result;
+	CHECK_FALSE(pgm.eval_expression("x", &result, "expr_context_collision.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("collides with an explicit binding") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression rejects function calls by default") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK_FALSE(pgm.eval_expression("strlen(\"abcd\")", &result, "expr_calls_blocked.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("function calls are not allowed") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression can use math.h header groups for libm functions") {
+	madc::program pgm;
+	madc::expression_policy policy;
+	policy.allow_function_calls = true;
+	policy.allowed_headers.push_back("math.h");
+	pgm.set_expression_policy(policy);
+
+	madc::value result;
+	CHECK(pgm.eval_expression("sqrt(9.0) + cos(0.0)", &result, "expr_math.mad"));
+	REQUIRE(result.is_real());
+	CHECK(result.as_real() == doctest::Approx(4.0));
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression can use direct symbol allowlists without headers") {
+	madc::program pgm;
+	madc::expression_policy policy;
+	policy.allow_function_calls = true;
+	policy.allowed_functions.push_back("strlen");
+	pgm.set_expression_policy(policy);
+
+	madc::value result;
+	CHECK(pgm.eval_expression("strlen(\"abcd\")", &result, "expr_strlen.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 4);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression rejects calls outside the expression allowlist") {
+	madc::program pgm;
+	madc::expression_policy policy;
+	policy.allow_function_calls = true;
+	policy.allowed_functions.push_back("strlen");
+	pgm.set_expression_policy(policy);
+
+	madc::value result;
+	CHECK_FALSE(pgm.eval_expression("strcmp(\"a\", \"b\")", &result, "expr_call_reject.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("rejected function call to 'strcmp'") != std::string::npos);
+    }
+
+    TEST_CASE("eval_expression returns string literals through c_string marshaling") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK(pgm.eval_expression("\"hello\"", &result, "expr_string.mad"));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "hello");
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("madc::eval_expression convenience wrapper mirrors program eval_expression") {
+	madc::value result;
+
+	CHECK(madc::eval_expression("6 * 7", &result, "api_eval_expr.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+    }
+
+    TEST_CASE("madc::exec_string convenience wrapper mirrors program exec") {
+	CHECK(madc::exec_string("int main() { return 0; }\n", "api_exec_string.mad"));
+    }
+
+    TEST_CASE("madc::exec_file convenience wrapper mirrors program exec") {
+	std::string path = make_temp_source_path();
+	write_file(path, "int main() { return 0; }\n");
+
+	CHECK(madc::exec_file(path));
+
+	std::remove(path.c_str());
+    }
+
     TEST_CASE("compile_options can disable core builtin registration") {
 	madc::program pgm;
 	madc::compile_options options = pgm.get_compile_options();
@@ -269,6 +666,59 @@ TEST_SUITE("madc::program") {
 	const madc::security_policy &stored_policy = pgm.get_security_policy();
 	CHECK(stored_policy.mode == madc::authority_mode::host_authoritative);
 	CHECK(stored_policy.execution == madc::execution_mode::fork_per_invocation);
+    }
+
+    TEST_CASE("expression_policy roundtrips explicit call allowlists") {
+	madc::program pgm;
+	madc::expression_policy policy;
+	policy.allow_function_calls = true;
+	policy.allow_member_access = true;
+	policy.allow_subscript_access = true;
+	policy.allow_pointer_operations = true;
+	policy.allowed_headers.push_back("math.h");
+	policy.allowed_functions.push_back("strlen");
+	pgm.set_expression_policy(policy);
+
+	const madc::expression_policy &stored = pgm.get_expression_policy();
+	CHECK(stored.allow_function_calls);
+	CHECK(stored.allow_member_access);
+	CHECK(stored.allow_subscript_access);
+	CHECK(stored.allow_pointer_operations);
+	REQUIRE(stored.allowed_headers.size() == 1);
+	CHECK(stored.allowed_headers[0] == "math.h");
+	REQUIRE(stored.allowed_functions.size() == 1);
+	CHECK(stored.allowed_functions[0] == "strlen");
+    }
+
+    TEST_CASE("expression bindings roundtrip through program state") {
+	madc::program pgm;
+	std::map<std::string, madc::value> bindings;
+	bindings["count"] = madc::value(static_cast<int64_t>(2));
+	bindings["label"] = madc::value("ok");
+	pgm.set_expression_bindings(bindings);
+
+	const std::map<std::string, madc::value> &stored = pgm.get_expression_bindings();
+	REQUIRE(stored.size() == 2);
+	CHECK(stored.find("count") != stored.end());
+	CHECK(stored.find("label") != stored.end());
+	CHECK(stored.find("count")->second == madc::value(static_cast<int64_t>(2)));
+	CHECK(stored.find("label")->second == madc::value("ok"));
+
+	pgm.clear_expression_bindings();
+	CHECK(pgm.get_expression_bindings().empty());
+    }
+
+    TEST_CASE("expression context roundtrips through program state") {
+	madc::program pgm;
+	std::map<std::string, madc::value> fields;
+	fields["count"] = madc::value(static_cast<int64_t>(2));
+	fields["label"] = madc::value("ok");
+	madc::value context = madc::value::make_object(fields);
+	pgm.set_expression_context(context);
+
+	CHECK(pgm.get_expression_context() == context);
+	pgm.clear_expression_context();
+	CHECK(pgm.get_expression_context().is_null());
     }
 
     TEST_CASE("system_locked authority mode prevents compile options from re-enabling dlfcn") {
@@ -424,6 +874,123 @@ TEST_SUITE("madc::program") {
 
 	g_host_memory.clear();
 	std::remove(path.c_str());
+    }
+
+    TEST_CASE("fork_per_invocation exec_string succeeds for a simple program") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.execution = madc::execution_mode::fork_per_invocation;
+	pgm.set_security_policy(policy);
+
+	CHECK(pgm.exec_string("int main() { return 0; }\n", "fork_ok.mad"));
+	CHECK_FALSE(pgm.has_error());
+	CHECK(pgm.diagnostics().empty());
+    }
+
+    TEST_CASE("fork_per_invocation exec_file reports runtime errors") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.execution = madc::execution_mode::fork_per_invocation;
+	pgm.set_security_policy(policy);
+
+	std::string path = make_temp_source_path();
+	write_file(path, "int helper() { return 1; }\n");
+
+	CHECK_FALSE(pgm.exec_file(path));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message == "Program::execute() cannot find main");
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("fork_per_invocation exec_string counts stdout toward output limits") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.execution = madc::execution_mode::fork_per_invocation;
+	pgm.set_security_policy(policy);
+	madc::invoke_limits limits;
+	limits.output_bytes = 4;
+	pgm.set_invoke_limits(limits);
+
+	CHECK_FALSE(pgm.exec_string("int main() { puts(\"fork stdout\"); return 0; }\n",
+				    "fork_stdout_limit.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("output_bytes limit") != std::string::npos);
+    }
+
+    TEST_CASE("fork_per_invocation exec_string counts stderr toward output limits") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.execution = madc::execution_mode::fork_per_invocation;
+	pgm.set_security_policy(policy);
+	madc::invoke_limits limits;
+	limits.output_bytes = 4;
+	pgm.set_invoke_limits(limits);
+
+	CHECK_FALSE(pgm.exec_string("#include <iostream>\n"
+				    "int main() { cerr << \"fork stderr\"; return 0; }\n",
+				    "fork_stderr_limit.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->stage == madc::error::phase::runtime);
+	CHECK(err->message.find("output_bytes limit") != std::string::npos);
+    }
+
+    TEST_CASE("fork_per_invocation call returns scalar results from child execution") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.execution = madc::execution_mode::fork_per_invocation;
+	pgm.set_security_policy(policy);
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int add(int a, int b) { return a + b; }\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+	madc::value result;
+	CHECK(pgm.call("add", {madc::value(int64_t(5)), madc::value(int64_t(8))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 13);
+	CHECK_FALSE(pgm.has_error());
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("fork_per_invocation eval returns string results from child execution") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.execution = madc::execution_mode::fork_per_invocation;
+	pgm.set_security_policy(policy);
+
+	madc::value result;
+	CHECK(pgm.eval("string name = \"echo\";\n"
+		       "char * __madc_eval() { return name.c_str(); }\n",
+		       &result,
+		       "fork_eval_string.mad"));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "echo");
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("fork_per_invocation eval_expression returns scalar results from child execution") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.execution = madc::execution_mode::fork_per_invocation;
+	pgm.set_security_policy(policy);
+
+	madc::value result;
+	CHECK(pgm.eval_expression("6 * 7", &result, "fork_expr_eval.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+	CHECK_FALSE(pgm.has_error());
     }
 
     TEST_CASE("program destruction restores cerr stream state") {

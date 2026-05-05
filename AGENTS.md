@@ -60,6 +60,12 @@ make -C src test     # build and run doctest unit tests
 make -C src fulltest # build + unit tests + all integration tests
 ```
 
+When the task is clearly limited to core `madc` / `libmadc` / parser /
+compiler work and does not touch `madcdat` or shared storage-facing
+surfaces, prefer `./configure --enable-madcdat=no` first to shrink the
+rebuild/test footprint. Re-enable `madcdat` before final validation when
+working on storage/federation code or any shared surface that may affect it.
+
 Source lives in `src/`, headers in `include/`, output in `bin/` and
 `obj/`.
 

@@ -516,6 +516,9 @@ TokenBase *Program::_getToken()
 			const std::string *embedded = find_embedded_header(incfile);
 			if ( embedded )
 			{
+			    if ( !is_embedded_header_allowed(incfile) )
+				Throw << "embedded header '" << incfile
+				      << "' is not allowed by registration policy" << flush;
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
 			    Source saved = std::move(source);
 			    source = Source();
@@ -2008,6 +2011,76 @@ TokenProgram *Program::tokenize(const char *fname)
     tkProgram->is = new ifstream(fname);
     tkProgram->lines = source.line()-1;
     tkProgram->bytes = file.tellg();
+
+    return tkProgram;
+}
+
+TokenProgram *Program::tokenize_buffer(const std::string &source_text,
+				       const std::string &display_name)
+{
+    TokenBase *tb;
+    std::string effective_name = display_name.empty() ? "<memory>" : display_name;
+    const char *fname = intern_file(effective_name);
+
+    DBG(cout << "Program::tokenize_buffer(" << effective_name << ") START" << endl);
+    clear_diagnostics();
+    clear_error();
+
+    _tokenizer_init();
+
+    source.fname(fname);
+    source.str(source_text);
+    Throw.source(source);
+
+    try
+    {
+	while ( (tb=getRealToken()) )
+	{
+	    tb->file = fname;
+	    push_token_with_string_concat(tb);
+	}
+    }
+    catch(const char *err_msg)
+    {
+	set_error(Program::DiagnosticPhase::lexer, err_msg ? err_msg : "(null error message)",
+		  fname, source.line(), source.column());
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(TokenIdent *ti)
+    {
+	set_error(Program::DiagnosticPhase::lexer,
+		  std::string("use of undeclared identifier '") + ti->str + '\'',
+		  fname, source.line(), source.column());
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(TokenBase *tb)
+    {
+	set_error(Program::DiagnosticPhase::lexer,
+		  std::string("unexpected token type ") + std::to_string((int)tb->type()),
+		  fname, source.line(), source.column());
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(std::exception &e)
+    {
+	if ( !last_error.has_error )
+	    set_error(Program::DiagnosticPhase::lexer,
+		      Throw.str().empty() ? e.what() : Throw.str(),
+		      fname, source.line(), source.column());
+	return NULL;
+    }
+
+    DBG(std::cout << "Program::tokenize_buffer() finished tokenizing" << std::endl);
+
+    tkProgram = new TokenProgram();
+    tkFunction = tkProgram;
+
+    tkProgram->source = effective_name;
+    tkProgram->is = new std::stringstream(source_text);
+    tkProgram->lines = source.line()-1;
+    tkProgram->bytes = source_text.size();
 
     return tkProgram;
 }

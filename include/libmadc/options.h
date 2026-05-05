@@ -2,6 +2,8 @@
 #define __LIBMADC_OPTIONS_H 1
 
 #include <cstdint>
+#include <string>
+#include <vector>
 
 namespace madc {
 
@@ -18,6 +20,8 @@ struct compile_options
     bool enable_ruby_namespace = true;
     bool enable_js_namespace = true;
     bool enable_rust_namespace = true;
+    std::vector<std::string> allowed_headers;
+    std::vector<std::string> allowed_dlfcn_symbols;
 };
 
 enum class authority_mode
@@ -48,6 +52,18 @@ struct security_policy
     bool allow_ruby_namespace = true;
     bool allow_js_namespace = true;
     bool allow_rust_namespace = true;
+    std::vector<std::string> allowed_headers;
+    std::vector<std::string> allowed_dlfcn_symbols;
+};
+
+struct expression_policy
+{
+    bool allow_function_calls = false;
+    bool allow_member_access = false;
+    bool allow_subscript_access = false;
+    bool allow_pointer_operations = false;
+    std::vector<std::string> allowed_headers;
+    std::vector<std::string> allowed_functions;
 };
 
 struct invoke_limits

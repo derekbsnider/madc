@@ -9,7 +9,7 @@ INSTALL_DATA ?= $(INSTALL) -m 644
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o madc_error.o madc_program.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
+CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o madc_error.o madc_program.o madc_api.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)

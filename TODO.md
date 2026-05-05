@@ -4,8 +4,9 @@
 
 - **Phase 4.2 / libmadc public C++ API — next pieces.** `madc::value`,
   `madc::error`, and the first `madc::program` slice now ship at
-  `include/libmadc/value.h`, `include/libmadc/error.h`, and
-  `include/libmadc/program.h`. `madc::program` is now a pimpl over the
+  `include/libmadc/value.h`, `include/libmadc/error.h`,
+  `include/libmadc/program.h`, and a first convenience wrapper tier in
+  `include/libmadc/api.h`. `madc::program` is now a pimpl over the
   internal `Program` class with `compile_file`, `exec_file`,
   `exec_string`, public diagnostics access, a first
   `register_function(name, callback, signature)` slice for global host
@@ -14,9 +15,16 @@
   first `get_global(name, result)` / `set_global(name, value)` support
   for scalar and `string` globals, plus a first `eval(source, result,
   virtual_filename)` slice that compiles an in-memory translation unit
-  and calls a reserved zero-arg `__madc_eval` entrypoint, plus first
-  public `compile_options`, `security_policy`, `execution_mode`, and `invoke_limits`
-  surfaces. The options/policy seam now reaches the first real
+  and calls a reserved zero-arg `__madc_eval` entrypoint. The
+  convenience layer now exposes top-level `madc::eval(...)`,
+  `madc::exec_string(...)`, and `madc::exec_file(...)` as thin wrappers
+  over a temporary `madc::program` for default-program use cases, while
+  the real stateful surface stays on `madc::program`. A first
+  `eval_expression(...)` path is now there too, backed by the same
+  stateful API and now with a dedicated `expression_policy` surface for
+  expression-only header/function allowlists, with `math.h` as the
+  first real header group. The first public `compile_options`, `security_policy`,
+  `execution_mode`, and `invoke_limits` surfaces are also in place. The options/policy seam now reaches the first real
   authority escape hatches too: builtin-registration toggles and
   built-in namespace registration toggles flow through
   `Program::RegistrationPolicy`, and `enable_dlfcn_functions` now also
@@ -28,25 +36,68 @@
   `set_compile_options(...)` calls cannot re-enable them. The next
   worker/isolation seam is also now explicit in public policy:
   `security_policy.execution` carries `in_process` vs
-  `fork_per_invocation`, and locked mode clamps that effective setting
-  to `fork_per_invocation` even though the actual child-process runtime
-  is still pending. `invoke_limits`
+  `fork_per_invocation`, and real child-process runtime is now attached
+  to that seam for `exec_file(...)` / `exec_string(...)` plus the
+  current narrow scalar/C-string `call(...)` and entry-function-based
+  `eval(...)` result path, with success/failure, diagnostics, and
+  stdout/stderr propagation. `invoke_limits`
   now also enforce post-invocation budgets on
   the public host API for CPU time, resident-memory growth, and
   output/error bytes across both `MadcEngine`-managed streams and raw
-  libc `stdout`/`stderr` writes captured during invocation. This is
-  honest after-the-fact accounting rather than in-process preemption.
-  These
+  libc `stdout`/`stderr` writes captured during invocation, including
+  fork-mode output captured from the child plus child `wait4()` rusage
+  accounting. This is honest
+  after-the-fact accounting rather than in-process preemption. These
   public runtime-call/global surfaces are intentionally narrow for now:
   they handle only the scalar / C-string subset (`void`, `bool`,
   `int64`, `double`, `const char *`) plus script `string` globals,
   `call(...)` currently caps arity at 2 while rejecting script `string`
   object params/returns, multi-return, and varargs, and `eval(...)` is
   still entry-function based rather than free-form expression
-  evaluation. Next up, in dependency order: finish the remaining
+  evaluation. `eval_expression(...)` is now the dedicated expression
+  path, and the default execution route now lexes/parses a single
+  expression into a synthetic hidden function instead of synthesizing a
+  whole translation unit. It is still intentionally narrow: `math.h` is
+  the only first-class header group, but libm-backed expressions now run
+  through that dedicated AST path without the earlier compatibility
+  fallback. Parsed expressions now also pass through a first explicit
+  AST whitelist on that dedicated seam, but there is still not yet a
+  broader dedicated expression-sandbox grammar. The semantic policy is
+  also now more explicit: function calls, member access, subscript
+  access, and pointer operations are separate `expression_policy`
+  levers instead of being implicitly allowed by AST shape alone. A
+  first host-supplied binding seam is now there too: expression
+  evaluation can read explicit host-provided scalar/string bindings
+  without routing through globals, which gives us the clean base for a
+  later object/struct-backed context surface. That next layer is now
+  also partially real: `set_expression_context(...)` can take a host
+  `madc::value::object` and treat its top-level fields as the source of
+  expression bindings, with explicit collision checks against direct
+  bindings. The next narrow layer on top of that is now there too:
+  nested object fields can now be traversed for static primitive leaves
+  (e.g. `user.stats.level`) through a parser-owned named-root/context-
+  object model instead of pre-parse dotted-path rewriting, while raw
+  pointer dereference/member semantics remain out of bounds. The
+  nested-context seam is also now path-aware instead of
+  all-or-nothing: missing nested fields and bad descent through a
+  primitive leaf fail with explicit runtime diagnostics, while
+  unrelated unsupported context leaves no longer poison the whole
+  context up front unless the expression actually references them. The
+  synthetic hidden-function build step is now also owned by
+  `Program::build_expression_function(...)` instead of only by the
+  embedding wrapper, and full in-memory `eval(...)` / `exec_string(...)`
+  now also compile source buffers directly through a `Program` in-memory
+  translation-unit tokenize/parse/compile seam instead of writing temp
+  files first. The next internal-facing step is to expose a cleaner
+  direct `Program` expression-compile/eval seam instead of routing
+  everything through temporary `madc::program` instances.
+  Deeper syntax restrictions / richer sandbox categories still need
+  follow-up. Next up, in
+  dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`
-  gates and post-invocation invoke-limit accounting, especially any
-  stronger/preemptive execution controls, then
+  gates and post-invocation invoke-limit accounting, especially
+  broader fork-mode execution coverage beyond the current narrow
+  call/eval subset and any stronger/preemptive execution controls, then
   broaden the call/callback/global/eval surface as needed. After that,
   §4.3 = the `libmadc.so` Makefile target plus
   `include/madc_api.h` C shim. Also keep the future subsystem split in
@@ -62,6 +113,14 @@
   forwarders. The test harness itself is also a little stricter now:
   `make -C src test` stops on the first crashing/failing unit binary
   instead of falsely returning the last test's exit code.
+
+- **Core-work validation default — keep `madcdat` disabled unless it is relevant.**
+  The repo now has a real top-level `./configure --enable-madcdat`
+  gate, so core parser/compiler/`libmadc` work should normally run in a
+  workspace configured with `--enable-madcdat=no` to reduce rebuild and
+  unit-test scope. Re-enable it before final validation when touching
+  storage/federation code, shared public headers, build wiring, or any
+  surface that may affect `madcdat`.
 
 - **Exploratory storage/federation track — move beyond the first local
   backend family.** The first local backends now work from ordinary host

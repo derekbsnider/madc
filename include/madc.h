@@ -14,6 +14,8 @@
 #include <sstream>
 #include <vector>
 
+#include "libmadc/value.h"
+
 class Method;
 class Program;
 class MadcEngine;
@@ -197,6 +199,7 @@ public:
             return returns();
         return _datatype;
     }
+    virtual bool is_real() const override { return datadef() && datadef()->is_real(); }
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::Operand &operand(Program &);
@@ -259,6 +262,17 @@ public:
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
     virtual TokenType type() const { return TokenType::ttBase; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+class TokenExprContextObject: public TokenBase
+{
+public:
+    std::string path;
+    const madc::value *context_value;
+    TokenExprContextObject(const std::string &p, const madc::value *v)
+	: path(p), context_value(v) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenBase *clone() { return new TokenExprContextObject(path, context_value); }
 };
 
 // *ptr dereference — reads/writes the value at the address held by a pointer
@@ -599,6 +613,8 @@ public:
 	bool enable_ruby_namespace = true;
 	bool enable_js_namespace = true;
 	bool enable_rust_namespace = true;
+	std::vector<std::string> allowed_headers;
+	std::vector<std::string> allowed_dlfcn_symbols;
     };
 
     struct ErrorInfo
@@ -658,6 +674,7 @@ public:
     std::istream *input_stream;
     std::ostream *output_stream;
     std::ostream *error_stream;
+    const madc::value *expression_context_root;
     RegistrationPolicy registration_policy;
     BuiltinRegistry builtin_registry;
     NamespaceRegistry namespace_registry;
@@ -811,10 +828,17 @@ public:
     bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_dynamic_symbol_fallback_enabled() const;
+    bool is_embedded_header_allowed(const std::string &name) const;
+    bool is_dynamic_symbol_allowed(const std::string &name) const;
     bool is_known_namespace(const std::string &name) const;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
+    void set_expression_context_root(const madc::value *root);
+    void clear_expression_context_root();
+    bool has_expression_context_root() const;
+    TokenBase *resolve_expression_context_identifier(class TokenIdent *ident_tb);
+    TokenBase *resolve_expression_context_member(TokenBase *lhs, class TokenIdent *member_tb);
     std::string current_source_directory();
     bool include_already_seen(const std::string &path);
     std::string resolve_include_path(const std::string &incfile, bool is_system);
@@ -831,6 +855,8 @@ public:
     TokenBase *getRealToken();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
+    TokenProgram *tokenize_buffer(const std::string &source_text,
+				  const std::string &display_name);
     // C/C++ translation phase 6: adjacent string literals concatenate.
     // Funnel every tokens.push_back through this helper so an
     // included `SYSTEM_DIR "file.dat"` (= `"../system/" "file.dat"`)
@@ -897,7 +923,10 @@ public:
     }
     // parse tokens into AST
     bool load_file(const char *fname);
+    bool load_buffer(const std::string &source_text,
+		     const std::string &display_name);
     bool parse(TokenProgram *);
+    TokenBase *parse_expression_unit(TokenProgram *);
     void parseIdentifier(TokenIdent *);
     void parseFunction(DataDef &, std::string &, DataDefCLASS *owner_class = NULL,
 		       std::vector<DataDef *> *multi_ret = NULL);
@@ -932,6 +961,12 @@ public:
     // token stream. Used by unary `*` and `&` to avoid
     // parseExpression's greedy consumption of trailing binary ops.
     TokenBase *parsePostfixChain(TokenBase *head);
+    TokenFunc *build_expression_function(TokenProgram *tp,
+					 TokenBase *expr,
+					 DataDef *return_type,
+					 const std::string &function_name,
+					 bool have_result,
+					 const std::string &result_name = "__madc_expr_value");
     TokenBase *parseLambda();  // parse [](params) { body } lambda expression
 
     // perform cc.mov with size casting
