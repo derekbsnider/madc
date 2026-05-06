@@ -3154,6 +3154,8 @@ void Program::add_madc_namespace()
 	(fVOIDFUNC)madc_runtime_eval_ctx);
     if (var) madc_ns["eval"] =
 	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+    if (var) madc_ns["eval_unit"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
 
     var = addFunction("__madc_eval_bool_runtime",
 	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING},

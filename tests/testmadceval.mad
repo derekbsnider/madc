@@ -7,7 +7,7 @@ int main()
 	"int helper() { return 40; }\n"
 	"int __madc_eval() { return helper() + 2; }\n";
     string rendered;
-    madc::eval(rendered, src_int);
+    madc::eval_unit(rendered, src_int);
     cout << "rendered=" << rendered << endl;
     cout << "int=" << madc::eval_int("return 40 + 2;") << endl;
 

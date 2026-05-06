@@ -2,6 +2,13 @@
 
 ## [Unreleased]
 
+- **In-language `madc::eval_unit(...)` now mirrors the host-side full-source alias.**
+  The madc script namespace now exposes `eval_unit(...)` as the explicit
+  full-source alias alongside the older `eval(...)` name, so script-side
+  and host-side runtime-eval examples can use the same terminology for
+  the full translation-unit lane. `tests/testmadceval.mad` now uses the
+  explicit alias directly.
+
 - **Host-side C++ full-source eval now has an explicit `eval_unit(...)` alias.**
   `madc::program` and the top-level `madc::` convenience wrappers now
   expose `eval_unit(...)` as the explicit name for the existing

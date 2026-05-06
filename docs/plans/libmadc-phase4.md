@@ -475,10 +475,10 @@ public:
 }
 ```
 
-### `madc::eval(...)` direction
+### Runtime-eval direction
 
-`madc::eval(...)` is worth planning explicitly because it becomes very
-powerful when combined with:
+The runtime-eval surface is worth planning explicitly because it becomes
+very powerful when combined with:
 
 - sandbox policy
 - parser/namespace restrictions
@@ -490,17 +490,25 @@ But it must not become a side door around those controls.
 
 Rules:
 
-- `eval(...)` uses the same `security_policy` and namespace/builtin
+- `eval_unit(...)` uses the same `security_policy` and namespace/builtin
   restrictions as file-based program execution
-- `eval(...)` uses the same parser/registration model as ordinary
+- `eval_unit(...)` uses the same parser/registration model as ordinary
   `load_source(...)/compile(...)`
-- `eval(...)` honors the same `invoke_limits`
-- in safe/worker modes, `eval(...)` still executes under the same
-  process-isolation story as other script execution
+- `eval_unit(...)`, `eval_body(...)`, and `eval_expression(...)` honor
+  the same `invoke_limits`
+- in safe/worker modes, every runtime-eval lane still executes under the
+  same process-isolation story as other script execution
 
-Semantically, `eval(...)` should be treated as “compile this source
-string under the current engine/program policy, run it, and marshal a
-`madc::value` result back”, not as a privileged internal escape hatch.
+The public shape should stay explicit:
+
+- `eval_expression(...)` = one expression
+- `eval_body(...)` = generated entry-function body
+- `eval_unit(...)` = full translation unit
+- `eval(...)` = compatibility alias for the full-unit lane
+
+Semantically, runtime eval should be treated as “compile this supplied
+source form under the current engine/program policy, run it, and
+marshal a result back”, not as a privileged internal escape hatch.
 
 ## Stable C ABI
 

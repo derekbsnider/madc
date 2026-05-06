@@ -56,6 +56,9 @@ public:
     bool exec_file(const std::string &path);
     bool exec_string(const std::string &source,
 		     const std::string &virtual_filename = std::string());
+    // Full translation unit: caller supplies the complete source and
+    // either defines __madc_eval(...) explicitly or relies on the
+    // existing full-unit contract.
     bool eval_unit(const std::string &source,
 		   value *result = NULL,
 		   const std::string &virtual_filename = std::string());
@@ -86,6 +89,8 @@ public:
     bool eval(const std::string &source,
 	      std::string &result,
 	      const std::string &virtual_filename = std::string());
+    // Function-body text: wraps into __madc_eval(...) when the caller
+    // does not provide an explicit entry function.
     bool eval_body(const std::string &source,
 		   value *result,
 		   native_type return_type,
@@ -102,6 +107,7 @@ public:
     bool eval_body(const std::string &source,
 		   std::string &result,
 		   const std::string &virtual_filename = std::string());
+    // Single-expression lane with the dedicated expression policy.
     bool eval_expression(const std::string &expression,
 			 value *result = NULL,
 			 const std::string &virtual_filename = std::string());
