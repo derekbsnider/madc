@@ -82,17 +82,53 @@
   all-or-nothing: missing nested fields and bad descent through a
   primitive leaf fail with explicit runtime diagnostics, while
   unrelated unsupported context leaves no longer poison the whole
-  context up front unless the expression actually references them. The
-  synthetic hidden-function build step is now also owned by
+  context up front unless the expression actually references them. A
+  first in-language bridge is now there too: script code can call
+  `madc::eval_expression(out, expr)` inside madc itself for
+  stringified scalar/string output, and can now also use typed helpers
+  `madc::eval_expression_int(expr)`,
+  `madc::eval_expression_bool(expr)`,
+  `madc::eval_expression_double(expr)`, plus exact-string
+  `madc::eval_expression_string(out, expr)`, all layered on top of the
+  same libmadc expression runtime and allowing libm-backed calls
+  through `math.h` when dlfcn policy is enabled. Madc script code can
+  now also build `MadArray`-backed associative context objects via
+  `madc::context_set_int/real/string/array(...)` and evaluate against
+  them through `madc::eval_expression_ctx(...)` plus typed `_ctx`
+  helpers. Full in-language `madc::eval(out, source)` is now also
+  present for entry-function-based runtime evaluation of whole source
+  strings, with typed `eval_int/bool/double` and exact-string
+  `eval_string(...)` helpers layered on the same host eval seam. The
+  parser/runtime bridges now hang off `Program`-owned internal
+  `runtime_eval_source(...)` / `runtime_eval_expression(...)` helpers
+  instead of orchestrating temporary wrapper programs directly, and
+  those helpers now also execute their own internal compile/validate/
+  zero-arg-call path instead of routing back through the public
+  `madc::program` facade. The synthetic
+  hidden-function build step is now also owned by
   `Program::build_expression_function(...)` instead of only by the
   embedding wrapper, and full in-memory `eval(...)` / `exec_string(...)`
   now also compile source buffers directly through a `Program` in-memory
   translation-unit tokenize/parse/compile seam instead of writing temp
-  files first. The next internal-facing step is to expose a cleaner
-  direct `Program` expression-compile/eval seam instead of routing
-  everything through temporary `madc::program` instances.
-  Deeper syntax restrictions / richer sandbox categories still need
-  follow-up. Next up, in
+  files first. Script-side runtime eval can now also capture the current
+  visible madc scope through a compiler-synthesized `MadArray` context
+  carrier, and that capability is independently gated by
+  separate source-vs-expression policy bits
+  (`compile_options.enable_runtime_eval_source_scope_access` /
+  `security_policy.allow_runtime_eval_source_scope_access` and
+  `compile_options.enable_runtime_eval_expression_scope_access` /
+  `security_policy.allow_runtime_eval_expression_scope_access`)
+  instead of being tied to the broader full-program sandbox. Full
+  script-side `eval(...)` now also has its own child-program sandbox
+  surface through `runtime_eval_policy`, so the remaining policy work is
+  about refinement rather than first extraction. The next internal-facing
+  step is to decide how much richer that scope model should become:
+  today it handles current visible variables through a hidden context
+  object and child-program global injection for full `eval(...)`, but
+  deeper lexical/symbol fidelity, richer non-primitive scope values, and
+  any finer-grained runtime-eval child capabilities still need
+  follow-up.
+  Next up, in
   dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`
   gates and post-invocation invoke-limit accounting, especially

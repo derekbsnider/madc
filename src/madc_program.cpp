@@ -57,6 +57,13 @@ std::string temp_source_template()
     return "/tmp/madc_program_XXXXXX";
 }
 
+std::string ensure_trailing_newline(const std::string &source)
+{
+    if ( source.empty() || source[source.size() - 1] == '\n' )
+	return source;
+    return source + "\n";
+}
+
 const char *eval_entry_name()
 {
     return "__madc_eval";
@@ -339,6 +346,193 @@ bool read_exec_child_report(const std::string &path, exec_child_report &report)
     return true;
 }
 
+struct expression_function_spec
+{
+    const char *name;
+    datatype_vec_t signature;
+};
+bool string_list_contains(const std::vector<std::string> &items, const std::string &value);
+std::vector<expression_function_spec> expression_header_function_specs(const std::string &header);
+std::vector<std::string> expression_allowed_function_names(const expression_policy &policy);
+std::vector<std::string> collect_expression_token_calls(const std::deque<TokenBase *> &tokens);
+void append_unique_strings(std::vector<std::string> &dst,
+			   const std::vector<std::string> &src);
+std::vector<std::string> expand_header_symbol_groups(const std::vector<std::string> &headers);
+bool native_type_from_datadef(DataDef *type, program::native_type &out);
+template <typename R>
+bool call_target0(void *fn, value *result);
+
+void copy_program_public_error(Program &dst, const Program &src)
+{
+    dst.diagnostics = src.diagnostics;
+    dst.last_error = src.last_error;
+}
+
+bool fail_program_runtime(Program &dst,
+			  const std::string &message,
+			  const char *file = NULL,
+			  int line = 0,
+			  int column = 0)
+{
+    dst.clear_diagnostics();
+    dst.clear_error();
+    dst.set_error(Program::DiagnosticPhase::runtime, message, file, line, column);
+    return false;
+}
+
+std::string build_expression_input_from_policy(const expression_policy &policy,
+					       const std::string &expression)
+{
+    std::ostringstream source;
+    for ( std::size_t i = 0; i < policy.allowed_headers.size(); ++i )
+	source << "#include <" << policy.allowed_headers[i] << ">\n";
+    source << expression << ";\n";
+    return source.str();
+}
+
+DataDef *expression_result_datadef_internal(DataDef *expr_type, bool have_result)
+{
+    if ( !have_result )
+	return &ddVOID;
+    if ( !expr_type )
+	return NULL;
+    if ( expr_type->rawtype() == DataType::dtSTRING )
+	return &ddCHARptr;
+    program::native_type native;
+    return native_type_from_datadef(expr_type, native) ? expr_type : NULL;
+}
+
+bool register_expression_header_functions(Program &pgm,
+					  const expression_policy &policy,
+					  const std::string &display_file)
+{
+    for ( std::size_t i = 0; i < policy.allowed_headers.size(); ++i )
+    {
+	std::vector<expression_function_spec> specs =
+	    expression_header_function_specs(policy.allowed_headers[i]);
+	for ( std::size_t j = 0; j < specs.size(); ++j )
+	{
+	    std::string name = specs[j].name;
+	    if ( pgm.findVariable(name) )
+		continue;
+	    if ( !pgm.is_dynamic_symbol_allowed(name) )
+		continue;
+	    void *sym = dlsym(RTLD_DEFAULT, name.c_str());
+	    if ( !sym )
+		return fail_program_runtime(pgm,
+					    std::string("program::eval_expression could not resolve symbol '")
+					    + name + "' for header-group registration",
+					    display_file.c_str());
+	    pgm.addFunction(name, specs[j].signature, (fVOIDFUNC)sym);
+	}
+    }
+    return true;
+}
+
+bool validate_expression_function_policy(Program &pgm,
+					 const expression_policy &policy,
+					 const std::deque<TokenBase *> &tokens,
+					 const std::string &display_file)
+{
+    std::vector<std::string> calls = collect_expression_token_calls(tokens);
+    if ( calls.empty() )
+	return true;
+    if ( !policy.allow_function_calls )
+	return fail_program_runtime(pgm,
+				    "program::eval_expression rejected input: function calls are not allowed",
+				    display_file.c_str());
+
+    std::vector<std::string> allowed = expression_allowed_function_names(policy);
+    for ( std::size_t i = 0; i < calls.size(); ++i )
+    {
+	if ( string_list_contains(allowed, calls[i]) )
+	    continue;
+	return fail_program_runtime(pgm,
+				    std::string("program::eval_expression rejected function call to '")
+				    + calls[i] + "'",
+				    display_file.c_str());
+    }
+    return true;
+}
+
+bool invoke_program_zero_arg_function(Program &pgm,
+				      const std::string &name,
+				      value &result)
+{
+    std::string id = name;
+    Variable *var = pgm.findVariable(id);
+    if ( !var )
+	return fail_program_runtime(pgm,
+				    "program::call cannot find function '" + name + "'");
+    if ( !var->type || var->type->basetype() != BaseType::btFunct )
+	return fail_program_runtime(pgm,
+				    "program::call target '" + name + "' is not a function");
+
+    Method *method = static_cast<Method *>(var->data);
+    if ( !method || !method->x86code )
+	return fail_program_runtime(pgm,
+				    "program::call target '" + name + "' has no callable code");
+
+    FuncDef *func = static_cast<FuncDef *>(method->returns.type);
+    if ( !func )
+	return fail_program_runtime(pgm,
+				    "program::call target '" + name + "' has no function metadata");
+    if ( func->is_multi_return() )
+	return fail_program_runtime(pgm,
+				    "program::call does not support multi-return functions yet");
+    if ( func->is_varargs )
+	return fail_program_runtime(pgm,
+				    "program::call does not support variadic functions yet");
+    if ( !func->parameters.empty() )
+	return fail_program_runtime(pgm,
+				    "program::call argument count mismatch for '" + name + "'");
+
+    program::native_type ret_type;
+    if ( !native_type_from_datadef(&func->returns, ret_type) )
+	return fail_program_runtime(pgm,
+				    "program::call does not support this return type yet");
+
+    pgm.clear_diagnostics();
+    pgm.clear_error();
+    pgm.push_runtime_scope();
+    pgm.root_fn();
+    pgm.pop_runtime_scope();
+    if ( pgm.last_error.has_error )
+	return false;
+
+    try
+    {
+	pgm.push_runtime_scope();
+	bool ok = false;
+	switch ( ret_type )
+	{
+	    case program::native_type::void_type:
+	    {
+		typedef void (*fn_t)();
+		reinterpret_cast<fn_t>(method->x86code)();
+		result = value();
+		ok = true;
+		break;
+	    }
+	    case program::native_type::boolean:   ok = call_target0<bool>(method->x86code, &result); break;
+	    case program::native_type::integer:   ok = call_target0<int64_t>(method->x86code, &result); break;
+	    case program::native_type::real:      ok = call_target0<double>(method->x86code, &result); break;
+	    case program::native_type::c_string:  ok = call_target0<const char *>(method->x86code, &result); break;
+	}
+	pgm.pop_runtime_scope();
+	if ( ok )
+	    return true;
+    }
+    catch ( const std::exception &e )
+    {
+	pgm.pop_runtime_scope();
+	return fail_program_runtime(pgm, e.what());
+    }
+
+    return fail_program_runtime(pgm,
+				"program::call could not dispatch the requested signature");
+}
+
 std::string read_text_file(const std::string &path)
 {
     std::ifstream is(path.c_str(), std::ios::binary);
@@ -387,12 +581,6 @@ std::vector<std::string> expand_header_symbol_groups(const std::vector<std::stri
 	append_unique_strings(expanded, header_symbol_group(headers[i]));
     return expanded;
 }
-
-struct expression_function_spec
-{
-    const char *name;
-    datatype_vec_t signature;
-};
 
 DataDef *expression_binding_datadef(const value &v);
 
@@ -1374,12 +1562,76 @@ uint64_t current_resident_bytes()
     return pages_resident * static_cast<uint64_t>(page_size);
 }
 
+Program::RegistrationPolicy::RuntimeEvalChildPolicy
+runtime_eval_child_policy_from_public(const runtime_eval_policy &policy)
+{
+    Program::RegistrationPolicy::RuntimeEvalChildPolicy out;
+    out.enable_core_functions = policy.allow_core_functions;
+    out.enable_process_functions = policy.allow_process_functions;
+    out.enable_dlfcn_functions = policy.allow_dlfcn_functions;
+    out.enable_std_namespace = policy.allow_std_namespace;
+    out.enable_madc_namespace = policy.allow_madc_namespace;
+    out.enable_php_namespace = policy.allow_php_namespace;
+    out.enable_perl_namespace = policy.allow_perl_namespace;
+    out.enable_python_namespace = policy.allow_python_namespace;
+    out.enable_ruby_namespace = policy.allow_ruby_namespace;
+    out.enable_js_namespace = policy.allow_js_namespace;
+    out.enable_rust_namespace = policy.allow_rust_namespace;
+    out.restrict_headers_to_allowlist = policy.restrict_headers_to_allowlist;
+    out.restrict_dlfcn_symbols_to_allowlist = policy.restrict_dlfcn_symbols_to_allowlist;
+    out.allowed_headers = policy.allowed_headers;
+    out.allowed_dlfcn_symbols = policy.allowed_dlfcn_symbols;
+    append_unique_strings(out.allowed_dlfcn_symbols,
+			  expand_header_symbol_groups(out.allowed_headers));
+    return out;
+}
+
+runtime_eval_policy clamp_runtime_eval_policy_for_authority_mode(const runtime_eval_policy &policy,
+								 authority_mode mode)
+{
+    runtime_eval_policy clamped = policy;
+    if ( mode == authority_mode::system_locked )
+    {
+	clamped.allow_process_functions = false;
+	clamped.allow_dlfcn_functions = false;
+    }
+    return clamped;
+}
+
+Program::RegistrationPolicy
+runtime_eval_registration_policy_for_source_child(const Program::RegistrationPolicy &parent)
+{
+    Program::RegistrationPolicy child;
+    const Program::RegistrationPolicy::RuntimeEvalChildPolicy &source = parent.runtime_eval_source_policy;
+    child.enable_core_functions = source.enable_core_functions;
+    child.enable_process_functions = source.enable_process_functions;
+    child.enable_dlfcn_functions = source.enable_dlfcn_functions;
+    child.enable_runtime_eval_source_scope_access = parent.enable_runtime_eval_source_scope_access;
+    child.enable_runtime_eval_expression_scope_access = parent.enable_runtime_eval_expression_scope_access;
+    child.enable_std_namespace = source.enable_std_namespace;
+    child.enable_madc_namespace = source.enable_madc_namespace;
+    child.enable_php_namespace = source.enable_php_namespace;
+    child.enable_perl_namespace = source.enable_perl_namespace;
+    child.enable_python_namespace = source.enable_python_namespace;
+    child.enable_ruby_namespace = source.enable_ruby_namespace;
+    child.enable_js_namespace = source.enable_js_namespace;
+    child.enable_rust_namespace = source.enable_rust_namespace;
+    child.restrict_headers_to_allowlist = source.restrict_headers_to_allowlist;
+    child.restrict_dlfcn_symbols_to_allowlist = source.restrict_dlfcn_symbols_to_allowlist;
+    child.allowed_headers = source.allowed_headers;
+    child.allowed_dlfcn_symbols = source.allowed_dlfcn_symbols;
+    child.runtime_eval_source_policy = parent.runtime_eval_source_policy;
+    return child;
+}
+
 Program::RegistrationPolicy registration_policy_from_compile_options(const compile_options &options)
 {
     Program::RegistrationPolicy policy;
     policy.enable_core_functions = options.enable_core_functions;
     policy.enable_process_functions = options.enable_process_functions;
     policy.enable_dlfcn_functions = options.enable_dlfcn_functions;
+    policy.enable_runtime_eval_source_scope_access = options.enable_runtime_eval_source_scope_access;
+    policy.enable_runtime_eval_expression_scope_access = options.enable_runtime_eval_expression_scope_access;
     policy.enable_std_namespace = options.enable_std_namespace;
     policy.enable_madc_namespace = options.enable_madc_namespace;
     policy.enable_php_namespace = options.enable_php_namespace;
@@ -1388,10 +1640,13 @@ Program::RegistrationPolicy registration_policy_from_compile_options(const compi
     policy.enable_ruby_namespace = options.enable_ruby_namespace;
     policy.enable_js_namespace = options.enable_js_namespace;
     policy.enable_rust_namespace = options.enable_rust_namespace;
+    policy.restrict_headers_to_allowlist = false;
+    policy.restrict_dlfcn_symbols_to_allowlist = false;
     policy.allowed_headers = options.allowed_headers;
     policy.allowed_dlfcn_symbols = options.allowed_dlfcn_symbols;
     append_unique_strings(policy.allowed_dlfcn_symbols,
 			  expand_header_symbol_groups(policy.allowed_headers));
+    policy.runtime_eval_source_policy = runtime_eval_child_policy_from_public(runtime_eval_policy());
     return policy;
 }
 
@@ -1401,6 +1656,8 @@ compile_options compile_options_from_security_policy(const security_policy &poli
     options.enable_core_functions = policy.allow_core_functions;
     options.enable_process_functions = policy.allow_process_functions;
     options.enable_dlfcn_functions = policy.allow_dlfcn_functions;
+    options.enable_runtime_eval_source_scope_access = policy.allow_runtime_eval_source_scope_access;
+    options.enable_runtime_eval_expression_scope_access = policy.allow_runtime_eval_expression_scope_access;
     options.enable_std_namespace = policy.allow_std_namespace;
     options.enable_madc_namespace = policy.allow_madc_namespace;
     options.enable_php_namespace = policy.allow_php_namespace;
@@ -1422,6 +1679,8 @@ security_policy security_policy_from_compile_options(const compile_options &opti
     policy.allow_core_functions = options.enable_core_functions;
     policy.allow_process_functions = options.enable_process_functions;
     policy.allow_dlfcn_functions = options.enable_dlfcn_functions;
+    policy.allow_runtime_eval_source_scope_access = options.enable_runtime_eval_source_scope_access;
+    policy.allow_runtime_eval_expression_scope_access = options.enable_runtime_eval_expression_scope_access;
     policy.allow_std_namespace = options.enable_std_namespace;
     policy.allow_madc_namespace = options.enable_madc_namespace;
     policy.allow_php_namespace = options.enable_php_namespace;
@@ -1443,6 +1702,8 @@ compile_options clamp_compile_options_for_authority_mode(const compile_options &
     {
 	clamped.enable_process_functions = false;
 	clamped.enable_dlfcn_functions = false;
+	clamped.enable_runtime_eval_source_scope_access = false;
+	clamped.enable_runtime_eval_expression_scope_access = false;
     }
     return clamped;
 }
@@ -1455,6 +1716,8 @@ security_policy clamp_security_policy_for_authority_mode(const security_policy &
 	clamped.execution = execution_mode::fork_per_invocation;
 	clamped.allow_process_functions = false;
 	clamped.allow_dlfcn_functions = false;
+	clamped.allow_runtime_eval_source_scope_access = false;
+	clamped.allow_runtime_eval_expression_scope_access = false;
     }
     return clamped;
 }
@@ -1675,6 +1938,44 @@ DataDef *expression_binding_datadef(const value &v)
     return NULL;
 }
 
+bool install_runtime_eval_scope_globals(Program &pgm,
+					const value *context,
+					const std::string &display_file)
+{
+    if ( !context || !context->is_object() )
+	return true;
+
+    const std::map<std::string, value> &fields = context->as_object();
+    for ( std::map<std::string, value>::const_iterator it = fields.begin();
+	  it != fields.end(); ++it )
+    {
+	const std::string &name = it->first;
+	const value &bound = it->second;
+	DataDef *dt = expression_binding_datadef(bound);
+	if ( !dt )
+	    continue;
+	if ( !is_valid_expression_binding_name(name) )
+	    return fail_program_runtime(pgm,
+					std::string("program::eval rejected scope binding name '")
+					+ name + "'",
+					display_file.c_str());
+	std::string mutable_name = name;
+	if ( pgm.findVariable(mutable_name) )
+	    return fail_program_runtime(pgm,
+					std::string("program::eval scope binding name '")
+					+ name + "' collides with an existing symbol",
+					display_file.c_str());
+	Variable *var = pgm.addVariable(NULL, *dt, mutable_name, 1, NULL, true);
+	if ( !var || !set_variable_from_value(var, bound) )
+	    return fail_program_runtime(pgm,
+					std::string("program::eval failed to install scope binding '")
+					+ name + "'",
+					display_file.c_str());
+	var->makeconstant();
+    }
+    return true;
+}
+
 template <typename R>
 bool call_target0(void *fn, value *result)
 {
@@ -1754,6 +2055,7 @@ struct program::impl
     compile_options current_compile_options;
     security_policy current_security_policy;
     expression_policy current_expression_policy;
+    runtime_eval_policy current_runtime_eval_policy;
     std::map<std::string, value> current_expression_bindings;
     value current_expression_context;
     std::map<std::string, value> active_expression_bindings;
@@ -1769,6 +2071,8 @@ struct program::impl
     void reset_program()
     {
 	engine.registration_policy = registration_policy_from_compile_options(current_compile_options);
+	engine.registration_policy.runtime_eval_source_policy =
+	    runtime_eval_child_policy_from_public(current_runtime_eval_policy);
 	pgm = engine.create_program();
 	runtime_initialized = false;
 	clear_public_errors();
@@ -1781,6 +2085,9 @@ struct program::impl
 	current_security_policy = clamp_security_policy_for_authority_mode(
 	    security_policy_from_compile_options(current_compile_options,
 						 current_security_policy.mode));
+	current_runtime_eval_policy = clamp_runtime_eval_policy_for_authority_mode(
+	    current_runtime_eval_policy,
+	    current_security_policy.mode);
 	reset_program();
     }
 
@@ -1790,12 +2097,23 @@ struct program::impl
 	current_compile_options = clamp_compile_options_for_authority_mode(
 	    compile_options_from_security_policy(current_security_policy),
 	    current_security_policy.mode);
+	current_runtime_eval_policy = clamp_runtime_eval_policy_for_authority_mode(
+	    current_runtime_eval_policy,
+	    current_security_policy.mode);
 	reset_program();
     }
 
     void set_expression_policy(const expression_policy &policy)
     {
 	current_expression_policy = policy;
+    }
+
+    void set_runtime_eval_policy(const runtime_eval_policy &policy)
+    {
+	current_runtime_eval_policy = clamp_runtime_eval_policy_for_authority_mode(
+	    policy,
+	    current_security_policy.mode);
+	reset_program();
     }
 
     void set_expression_bindings(const std::map<std::string, value> &bindings)
@@ -1880,7 +2198,7 @@ struct program::impl
     bool compile_loaded_source(const std::string &source,
 			       const std::string &display_file)
     {
-	if ( !pgm->load_buffer(source, display_file) )
+	if ( !pgm->load_buffer(ensure_trailing_newline(source), display_file) )
 	{
 	    sync_public_errors();
 	    return false;
@@ -2702,7 +3020,9 @@ struct program::impl
 
 	pgm->clear_diagnostics();
 	pgm->clear_error();
+	pgm->push_runtime_scope();
 	pgm->root_fn();
+	pgm->pop_runtime_scope();
 	sync_public_errors();
 	if ( pgm->last_error.has_error )
 	    return false;
@@ -2845,21 +3165,30 @@ struct program::impl
 
 	try
 	{
+	    bool ok = false;
+	    pgm->push_runtime_scope();
 	    switch ( args.size() )
 	    {
 		case 0:
-		    return dispatch_call0(method->x86code, ret_type, result);
+		    ok = dispatch_call0(method->x86code, ret_type, result);
+		    break;
 		case 1:
-		    return dispatch_call1(method->x86code, ret_type, arg_types[0], args[0], result);
+		    ok = dispatch_call1(method->x86code, ret_type, arg_types[0], args[0], result);
+		    break;
 		case 2:
-		    return dispatch_call2(method->x86code, ret_type, arg_types[0], arg_types[1],
-					  args[0], args[1], result);
+		    ok = dispatch_call2(method->x86code, ret_type, arg_types[0], arg_types[1],
+					args[0], args[1], result);
+		    break;
 		default:
 		    break;
 	    }
+	    pgm->pop_runtime_scope();
+	    if ( ok )
+		return true;
 	}
 	catch ( const std::exception &e )
 	{
+	    pgm->pop_runtime_scope();
 	    return fail_runtime(e.what());
 	}
 
@@ -3130,6 +3459,171 @@ bool program::eval_expression(const std::string &expression,
     return _impl->eval_expression(expression, result, virtual_filename);
 }
 
+bool internal_program_runtime_eval_source(::Program &self,
+					  const std::string &source_text,
+					  madc::value &result,
+					  const std::string &display_name,
+					  const madc::value *context)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+
+    Program child(self.engine);
+    child.registration_policy = runtime_eval_registration_policy_for_source_child(self.registration_policy);
+    std::string normalized_source = ensure_trailing_newline(source_text);
+    TokenProgram *tp = child.tokenize_buffer(normalized_source, display_name);
+    if ( !tp )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    if ( !install_runtime_eval_scope_globals(child, context, display_name) )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    if ( !child.parse(tp) )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    if ( !child.compile() )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    if ( !invoke_program_zero_arg_function(child, eval_entry_name(), result) )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    return true;
+}
+
+bool internal_program_runtime_eval_expression(::Program &self,
+					      const std::string &expression,
+					      madc::value &result,
+					      const std::string &display_name,
+					      const madc::value *context)
+{
+    self.clear_diagnostics();
+    self.clear_error();
+
+    std::string validation_error;
+    if ( expression.empty() )
+	return fail_program_runtime(self,
+				    "program::eval_expression requires a non-empty expression");
+    if ( !validate_expression_source(expression, validation_error) )
+	return fail_program_runtime(self,
+				    std::string("program::eval_expression rejected input: ")
+				    + validation_error,
+				    display_name.c_str());
+    if ( context )
+    {
+	if ( !context->is_object() )
+	    return fail_program_runtime(self,
+					"program::eval_expression rejected context: context must be an object value",
+					display_name.c_str());
+	std::string context_error;
+	if ( !validate_expression_context_paths(*context, expression, context_error) )
+	    return fail_program_runtime(self,
+					std::string("program::eval_expression rejected context: ")
+					+ context_error,
+					display_name.c_str());
+    }
+
+    expression_policy policy;
+    if ( self.registration_policy.enable_dlfcn_functions )
+    {
+	policy.allow_function_calls = true;
+	policy.allowed_headers.push_back("math.h");
+    }
+
+    Program child(self.engine);
+    child.registration_policy = self.registration_policy;
+    child.registration_policy.allowed_headers = policy.allowed_headers;
+    child.registration_policy.allowed_dlfcn_symbols = policy.allowed_functions;
+    append_unique_strings(child.registration_policy.allowed_dlfcn_symbols,
+			  expand_header_symbol_groups(policy.allowed_headers));
+    child.set_expression_context_root(context && context->is_object() ? context : NULL);
+
+    std::string source_text = build_expression_input_from_policy(policy, expression);
+    TokenProgram *tp = child.tokenize_buffer(source_text, display_name);
+    if ( !tp )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    if ( !validate_expression_function_policy(child, policy, child.tokens, display_name) )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    if ( !register_expression_header_functions(child, policy, display_name) )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+
+    TokenBase *expr = child.parse_expression_unit(tp);
+    if ( !expr )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+
+    std::string ast_validation_error;
+    if ( !validate_expression_ast(policy, expr, ast_validation_error) )
+    {
+	fail_program_runtime(child,
+			     std::string("program::eval_expression rejected parsed expression: ")
+			     + ast_validation_error,
+			     display_name.c_str(),
+			     expr->line,
+			     expr->column);
+	copy_program_public_error(self, child);
+	return false;
+    }
+
+    DataDef *return_type = expression_result_datadef_internal(infer_expression_result_type(expr), true);
+    if ( !return_type )
+    {
+	fail_program_runtime(child,
+			     "program::eval_expression cannot marshal this result type",
+			     display_name.c_str(),
+			     expr->line,
+			     expr->column);
+	copy_program_public_error(self, child);
+	return false;
+    }
+
+    if ( !child.build_expression_function(tp,
+					  expr,
+					  return_type,
+					  expression_eval_name(),
+					  true) )
+    {
+	fail_program_runtime(child,
+			     "program::eval_expression failed to build synthetic expression function",
+			     display_name.c_str(),
+			     expr->line,
+			     expr->column);
+	copy_program_public_error(self, child);
+	return false;
+    }
+    if ( !child.compile() )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    if ( !invoke_program_zero_arg_function(child, expression_eval_name(), result) )
+    {
+	copy_program_public_error(self, child);
+	return false;
+    }
+    return true;
+}
+
 bool program::register_function(const std::string &name,
 				native_function callback,
 				const native_signature &signature)
@@ -3182,6 +3676,16 @@ void program::set_expression_policy(const expression_policy &policy)
 const expression_policy &program::get_expression_policy() const
 {
     return _impl->current_expression_policy;
+}
+
+void program::set_runtime_eval_policy(const runtime_eval_policy &policy)
+{
+    _impl->set_runtime_eval_policy(policy);
+}
+
+const runtime_eval_policy &program::get_runtime_eval_policy() const
+{
+    return _impl->current_runtime_eval_policy;
 }
 
 void program::set_expression_bindings(const std::map<std::string, value> &bindings)

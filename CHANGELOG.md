@@ -2,6 +2,87 @@
 
 ## [Unreleased]
 
+- **Full script-side `madc::eval(...)` now has its own child-program sandbox policy.**
+  `madc::program` now exposes `runtime_eval_policy` as a separate public
+  control surface for full in-language source eval child programs. Hosts
+  can independently restrict child `madc::eval(...)` builtin,
+  namespace, header, and dynamic-symbol capability without changing the
+  parent program's main compile surface or the narrower
+  `eval_expression(...)` policy lane. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in policy
+  roundtrip plus a restricted-child case where parent compilation stays
+  permissive but child full eval cannot resolve `puti(...)`.
+
+- **Script-side runtime eval can now capture current scope under its own sandbox gate.**
+  In-language `madc::eval*` and `madc::eval_expression*` calls can now
+  see the current visible madc scope through a compiler-synthesized
+  `MadArray` context object when runtime-eval scope access is enabled.
+  This is controlled independently from broader full-program sandboxing
+  through dedicated source-vs-expression gates:
+  `compile_options.enable_runtime_eval_source_scope_access`,
+  `compile_options.enable_runtime_eval_expression_scope_access`,
+  `security_policy.allow_runtime_eval_source_scope_access`, and
+  `security_policy.allow_runtime_eval_expression_scope_access`, and
+  `authority_mode::system_locked` clamps it off. Coverage in
+  `tests/testmadcevalscope.mad` plus
+  `tests/unit/test_libmadc_program.cpp` now locks in both the allowed
+  path, the full disable path, and independent source-vs-expression
+  disable behavior.
+
+- **Full in-memory runtime eval now normalizes trailing-newline-sensitive source and installs scope globals at parse time.**
+  The internal full-source eval path now normalizes in-memory source
+  buffers so a missing trailing newline no longer breaks
+  `madc::eval_int("int __madc_eval() { ... }")`, and the child
+  translation-unit path now injects primitive/string scope fields after
+  tokenization and before parse so scope-backed full `eval(...)` sees
+  the expected globals. This same slice also fixed an off-by-one filter
+  in runtime-scope capture so hidden `__literal__*` backing variables no
+  longer leak into generated context objects.
+
+- **Madc script code can now call full in-language `madc::eval(...)`.**
+  The `madc::` namespace now exposes `madc::eval(out, source)` for
+  entry-function-based runtime evaluation of full in-memory madc source
+  strings, plus typed helpers `madc::eval_int(source)`,
+  `madc::eval_bool(source)`, `madc::eval_double(source)`, and exact
+  string helper `madc::eval_string(out, source)`. These layer on the
+  same host `program::eval(...)` path used by the public embedding API,
+  including normal lexer/parser/compiler flow and reserved
+  `__madc_eval` entrypoint semantics. Coverage in
+  `tests/testmadceval.mad` now locks in integer, boolean, double, and
+  string runtime evaluation from script code itself.
+
+- **In-language runtime eval bridges now hang off `Program` internals.**
+  `Program` now owns internal `runtime_eval_source(...)` and
+  `runtime_eval_expression(...)` helpers, and the parser/runtime
+  `madc::eval*` plus `madc::eval_expression*` bridges are now thin
+  callers into that seam instead of directly orchestrating temporary
+  wrapper programs themselves. The remaining internal wrapper hop is
+  now gone too: those helpers compile and invoke through `Program`
+  child instances plus the same internal expression/source validation
+  and zero-arg call marshaling rules, without bouncing back through the
+  public `madc::program` facade. This is still an ownership cleanup;
+  the validated behavior and test baseline are unchanged.
+
+- **In-language `madc::eval_expression(...)` now supports `MadArray` context objects.**
+  Madc script code can now build associative expression context objects
+  through `madc::context_set_int(...)`, `madc::context_set_real(...)`,
+  `madc::context_set_string(...)`, and `madc::context_set_array(...)`,
+  then evaluate runtime expressions against that context through
+  `madc::eval_expression_ctx(...)` plus typed `_ctx` helpers for
+  `bool`, `int`, `double`, and exact-string results. Coverage in
+  `tests/testmadcevalexprctx.mad` now locks in nested numeric and
+  string context traversal from script code itself.
+
+- **Parser-owned expression context now lowers string leaves correctly.**
+  Context-resolved string fields were previously injected as raw
+  `TokenStr` nodes after parse-time identifier/member resolution, which
+  bypassed the usual string-literal lowering path in `parseExpression()`
+  and left top-level/nested string context results empty. String
+  context leaves now lower through `Program::addLiteral(...)` the same
+  way lexer-produced string tokens do. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves both top-level and
+  nested host-side string context evaluation.
+
 - **Phase 4.2 / libmadc public C++ API: first `madc::program` slice.**
   New header `include/libmadc/program.h` and implementation
   `src/madc_program.cpp` add a C++-first pimpl facade over the internal
@@ -182,6 +263,28 @@
   touches them. Coverage in `tests/unit/test_libmadc_program.cpp` now
   proves explicit missing-field and bad-descent diagnostics plus the
   non-referenced unsupported-leaf case.
+
+- **madc script code can now call a first in-language `madc::eval_expression(...)`.**
+  The `madc::` namespace now exposes `madc::eval_expression(out, expr)`
+  for use inside madc programs themselves. This first slice is narrow
+  on purpose: it evaluates the runtime expression string through the
+  existing libmadc expression seam, stringifies scalar/string results
+  into a caller-supplied `string`, and currently allows libm-backed
+  calls through `math.h` when the active program's dlfcn policy allows
+  them. Coverage in `tests/testmadcevalexpr.mad` now locks in integer,
+  string, and libm-backed runtime expression results from inside madc
+  itself.
+
+- **In-language `madc::eval_expression(...)` now has typed helpers.**
+  Madc script code can now evaluate runtime expressions directly into
+  scalar types via `madc::eval_expression_int(expr)`,
+  `madc::eval_expression_bool(expr)`, and
+  `madc::eval_expression_double(expr)`, plus an exact-string helper
+  `madc::eval_expression_string(out, expr)` that keeps the existing
+  string-out calling convention instead of stringifying non-string
+  results. Coverage in `tests/testmadcevalexprtyped.mad` locks in the
+  typed runtime path for integer, boolean, double, and exact-string
+  expression evaluation inside madc itself.
 
 - **`eval_expression(...)` now leans more on madc's own token/parser pipeline.**
   Expression call restrictions are now checked from lexer tokens before

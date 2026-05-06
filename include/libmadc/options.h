@@ -12,6 +12,8 @@ struct compile_options
     bool enable_core_functions = true;
     bool enable_process_functions = true;
     bool enable_dlfcn_functions = true;
+    bool enable_runtime_eval_source_scope_access = true;
+    bool enable_runtime_eval_expression_scope_access = true;
     bool enable_std_namespace = true;
     bool enable_madc_namespace = true;
     bool enable_php_namespace = true;
@@ -44,6 +46,8 @@ struct security_policy
     bool allow_core_functions = true;
     bool allow_process_functions = true;
     bool allow_dlfcn_functions = true;
+    bool allow_runtime_eval_source_scope_access = true;
+    bool allow_runtime_eval_expression_scope_access = true;
     bool allow_std_namespace = true;
     bool allow_madc_namespace = true;
     bool allow_php_namespace = true;
@@ -64,6 +68,25 @@ struct expression_policy
     bool allow_pointer_operations = false;
     std::vector<std::string> allowed_headers;
     std::vector<std::string> allowed_functions;
+};
+
+struct runtime_eval_policy
+{
+    bool allow_core_functions = true;
+    bool allow_process_functions = true;
+    bool allow_dlfcn_functions = true;
+    bool allow_std_namespace = true;
+    bool allow_madc_namespace = true;
+    bool allow_php_namespace = true;
+    bool allow_perl_namespace = true;
+    bool allow_python_namespace = true;
+    bool allow_ruby_namespace = true;
+    bool allow_js_namespace = true;
+    bool allow_rust_namespace = true;
+    bool restrict_headers_to_allowlist = false;
+    bool restrict_dlfcn_symbols_to_allowlist = false;
+    std::vector<std::string> allowed_headers;
+    std::vector<std::string> allowed_dlfcn_symbols;
 };
 
 struct invoke_limits

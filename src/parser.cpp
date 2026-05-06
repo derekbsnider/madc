@@ -28,6 +28,7 @@
 #include <functional>
 #include <queue>
 #include <stack>
+#include "libmadc/program.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include <asmjit/x86.h>
 #include "datadef.h"
@@ -37,6 +38,737 @@
 
 using namespace std;
 using namespace asmjit;
+
+namespace madc {
+bool internal_program_runtime_eval_source(::Program &self,
+					  const std::string &source_text,
+					  value &result,
+					  const std::string &display_name,
+					  const value *context = NULL);
+bool internal_program_runtime_eval_expression(::Program &self,
+					      const std::string &expression,
+					      value &result,
+					      const std::string &display_name,
+					      const value *context);
+}
+
+namespace {
+
+thread_local Program *g_runtime_program = NULL;
+
+std::string stringify_runtime_eval_value(const madc::value &resolved)
+{
+    switch ( resolved.type() )
+    {
+	case madc::value::kind::null:
+	    return std::string();
+	case madc::value::kind::boolean:
+	    return resolved.as_boolean() ? "true" : "false";
+	case madc::value::kind::integer:
+	    return std::to_string(resolved.as_integer());
+	case madc::value::kind::real:
+	    return std::to_string(resolved.as_real());
+	case madc::value::kind::string:
+	    return resolved.as_string();
+	default:
+	    break;
+    }
+    return std::string();
+}
+
+bool value_from_madarray_context(const MadArray &arr,
+				 madc::value &out,
+				 std::string &reason);
+
+bool value_from_madvalue_context(const MadValue &in,
+				 madc::value &out,
+				 std::string &reason)
+{
+    switch ( in.type )
+    {
+	case DataType::dtINT64:
+	    out = madc::value(static_cast<int64_t>(in.as_int()));
+	    return true;
+	case DataType::dtDOUBLE:
+	    out = madc::value(in.as_double());
+	    return true;
+	case DataType::dtSTRING:
+	    out = madc::value(in.as_string());
+	    return true;
+	case DataType::dtARRAY:
+	    return value_from_madarray_context(in.as_array(), out, reason);
+	default:
+	    break;
+    }
+
+    reason = std::string("unsupported context value kind '")
+	+ std::to_string((int)in.type) + "'";
+    return false;
+}
+
+bool value_from_madarray_context(const MadArray &arr,
+				 madc::value &out,
+				 std::string &reason)
+{
+    if ( !arr.data.empty() )
+    {
+	reason = "context arrays cannot contain positional elements";
+	return false;
+    }
+
+    std::map<std::string, madc::value> fields;
+    for ( std::size_t i = 0; i < arr.assoc.size(); ++i )
+    {
+	madc::value field_value;
+	if ( !value_from_madvalue_context(arr.assoc[i].second, field_value, reason) )
+	{
+	    reason = std::string("context field '") + arr.assoc[i].first + "': " + reason;
+	    return false;
+	}
+	fields[arr.assoc[i].first] = field_value;
+    }
+
+    out = madc::value::make_object(fields);
+    return true;
+}
+
+bool build_runtime_expression_context(const MadArray *ctx_array,
+				      Program &active,
+				      const char *helper_name,
+				      madc::value &context)
+{
+    context = madc::value();
+    if ( !ctx_array )
+	return true;
+
+    std::string reason;
+    if ( !value_from_madarray_context(*ctx_array, context, reason) )
+    {
+	active.set_error(Program::DiagnosticPhase::runtime,
+			 std::string(helper_name)
+			 + " rejected context: "
+			 + reason);
+	active.print_last_diagnostic(active.error());
+	return false;
+    }
+    return true;
+}
+
+void report_runtime_eval_expression_type_error(Program &active,
+					       const char *helper_name,
+					       const char *expected_kind,
+					       const madc::value &resolved)
+{
+    active.set_error(Program::DiagnosticPhase::runtime,
+		     std::string(helper_name)
+		     + " requires a "
+		     + expected_kind
+		     + " expression result, got "
+		     + madc::value::kind_name(resolved.type()));
+    active.print_last_diagnostic(active.error());
+}
+
+bool coerce_runtime_expression_bool(Program &active,
+				    const madc::value &resolved,
+				    const char *helper_name,
+				    bool &out)
+{
+    switch ( resolved.type() )
+    {
+	case madc::value::kind::boolean:
+	    out = resolved.as_boolean();
+	    return true;
+	case madc::value::kind::integer:
+	    out = resolved.as_integer() != 0;
+	    return true;
+	default:
+	    break;
+    }
+
+    report_runtime_eval_expression_type_error(active, helper_name, "boolean", resolved);
+    return false;
+}
+
+bool coerce_runtime_expression_int(Program &active,
+				   const madc::value &resolved,
+				   const char *helper_name,
+				   int64_t &out)
+{
+    if ( resolved.is_integer() )
+    {
+	out = resolved.as_integer();
+	return true;
+    }
+
+    report_runtime_eval_expression_type_error(active, helper_name, "integer", resolved);
+    return false;
+}
+
+bool coerce_runtime_expression_double(Program &active,
+				      const madc::value &resolved,
+				      const char *helper_name,
+				      double &out)
+{
+    if ( resolved.is_real() )
+    {
+	out = resolved.as_real();
+	return true;
+    }
+    if ( resolved.is_integer() )
+    {
+	out = (double)resolved.as_integer();
+	return true;
+    }
+
+    report_runtime_eval_expression_type_error(active, helper_name, "real", resolved);
+    return false;
+}
+
+bool coerce_runtime_expression_string(Program &active,
+				      const madc::value &resolved,
+				      const char *helper_name,
+				      std::string &out)
+{
+    if ( resolved.is_string() )
+    {
+	out = resolved.as_string();
+	return true;
+    }
+
+    report_runtime_eval_expression_type_error(active, helper_name, "string", resolved);
+    return false;
+}
+
+Program *require_active_runtime_program()
+{
+    return Program::active_runtime_program();
+}
+
+bool is_runtime_eval_scope_helper_name(const std::string &name)
+{
+    return name == "__madc_eval_runtime"
+	|| name == "__madc_eval_bool_runtime"
+	|| name == "__madc_eval_int_runtime"
+	|| name == "__madc_eval_double_runtime"
+	|| name == "__madc_eval_string_runtime"
+	|| name == "__madc_eval_expression_runtime"
+	|| name == "__madc_eval_expression_bool_runtime"
+	|| name == "__madc_eval_expression_int_runtime"
+	|| name == "__madc_eval_expression_double_runtime"
+	|| name == "__madc_eval_expression_string_runtime";
+}
+
+bool is_runtime_eval_scope_ctx_helper_name(const std::string &name)
+{
+    return name == "__madc_eval_ctx_runtime"
+	|| name == "__madc_eval_bool_ctx_runtime"
+	|| name == "__madc_eval_int_ctx_runtime"
+	|| name == "__madc_eval_double_ctx_runtime"
+	|| name == "__madc_eval_string_ctx_runtime"
+	|| name == "__madc_eval_expression_ctx_runtime"
+	|| name == "__madc_eval_expression_bool_ctx_runtime"
+	|| name == "__madc_eval_expression_int_ctx_runtime"
+	|| name == "__madc_eval_expression_double_ctx_runtime"
+	|| name == "__madc_eval_expression_string_ctx_runtime";
+}
+
+bool is_runtime_eval_scope_public_name(const std::string &name)
+{
+    return name == "eval"
+	|| name == "eval_bool"
+	|| name == "eval_int"
+	|| name == "eval_double"
+	|| name == "eval_string"
+	|| name == "eval_expression"
+	|| name == "eval_expression_bool"
+	|| name == "eval_expression_int"
+	|| name == "eval_expression_double"
+	|| name == "eval_expression_string";
+}
+
+bool is_runtime_eval_source_helper_name(const std::string &name)
+{
+    return name == "__madc_eval_runtime"
+	|| name == "__madc_eval_bool_runtime"
+	|| name == "__madc_eval_int_runtime"
+	|| name == "__madc_eval_double_runtime"
+	|| name == "__madc_eval_string_runtime";
+}
+
+bool is_runtime_eval_expression_helper_name(const std::string &name)
+{
+    return name == "__madc_eval_expression_runtime"
+	|| name == "__madc_eval_expression_bool_runtime"
+	|| name == "__madc_eval_expression_int_runtime"
+	|| name == "__madc_eval_expression_double_runtime"
+	|| name == "__madc_eval_expression_string_runtime";
+}
+
+void *madc_runtime_eval_expression(void *result, void *expr)
+{
+    std::string &out = *(std::string *)result;
+    std::string &expression = *(std::string *)expr;
+    out.clear();
+
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+
+    out = stringify_runtime_eval_value(resolved);
+    return result;
+}
+
+void *madc_runtime_eval_expression_ctx(void *result, void *expr, void *ctx)
+{
+    std::string &out = *(std::string *)result;
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    out.clear();
+
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return result;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_ctx", context) )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+
+    out = stringify_runtime_eval_value(resolved);
+    return result;
+}
+
+void *madc_runtime_eval(void *result, void *source)
+{
+    std::string &out = *(std::string *)result;
+    std::string &program_source = *(std::string *)source;
+    out.clear();
+
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+
+    out = stringify_runtime_eval_value(resolved);
+    return result;
+}
+
+bool madc_runtime_eval_bool(void *source)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return false;
+
+    std::string &program_source = *(std::string *)source;
+    madc::value resolved;
+    bool out = false;
+
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+	return false;
+    if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_bool", out) )
+	return false;
+    return out;
+}
+
+int64_t madc_runtime_eval_int(void *source)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return 0;
+
+    std::string &program_source = *(std::string *)source;
+    madc::value resolved;
+    int64_t out = 0;
+
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+	return 0;
+    if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_int", out) )
+	return 0;
+    return out;
+}
+
+double madc_runtime_eval_double(void *source)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return 0.0;
+
+    std::string &program_source = *(std::string *)source;
+    madc::value resolved;
+    double out = 0.0;
+
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+	return 0.0;
+    if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_double", out) )
+	return 0.0;
+    return out;
+}
+
+void *madc_runtime_eval_string(void *result, void *source)
+{
+    std::string &out = *(std::string *)result;
+    std::string &program_source = *(std::string *)source;
+    out.clear();
+
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+	return result;
+    if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_string", out) )
+	return result;
+    return result;
+}
+
+void *madc_runtime_eval_ctx(void *result, void *source, void *ctx)
+{
+    std::string &out = *(std::string *)result;
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    out.clear();
+
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return result;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval", context) )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+
+    out = stringify_runtime_eval_value(resolved);
+    return result;
+}
+
+bool madc_runtime_eval_bool_ctx(void *source, void *ctx)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return false;
+
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value context;
+    madc::value resolved;
+    bool out = false;
+
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_bool", context) )
+	return false;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    {
+	active->print_last_diagnostic(active->error());
+	return false;
+    }
+    if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_bool", out) )
+	return false;
+    return out;
+}
+
+int64_t madc_runtime_eval_int_ctx(void *source, void *ctx)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return 0;
+
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value context;
+    madc::value resolved;
+    int64_t out = 0;
+
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_int", context) )
+	return 0;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    {
+	active->print_last_diagnostic(active->error());
+	return 0;
+    }
+    if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_int", out) )
+	return 0;
+    return out;
+}
+
+double madc_runtime_eval_double_ctx(void *source, void *ctx)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return 0.0;
+
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value context;
+    madc::value resolved;
+    double out = 0.0;
+
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_double", context) )
+	return 0.0;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    {
+	active->print_last_diagnostic(active->error());
+	return 0.0;
+    }
+    if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_double", out) )
+	return 0.0;
+    return out;
+}
+
+void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
+{
+    std::string &out = *(std::string *)result;
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    out.clear();
+
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return result;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_string", context) )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+    if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_string", out) )
+	return result;
+    return result;
+}
+
+bool madc_runtime_eval_expression_bool(void *expr)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return false;
+
+    std::string &expression = *(std::string *)expr;
+    madc::value resolved;
+    bool out = false;
+
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+	return false;
+    if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_expression_bool", out) )
+	return false;
+    return out;
+}
+
+bool madc_runtime_eval_expression_bool_ctx(void *expr, void *ctx)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return false;
+
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value resolved;
+    bool out = false;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_bool_ctx", context) )
+	return false;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+	return false;
+    if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_expression_bool_ctx", out) )
+	return false;
+    return out;
+}
+
+int64_t madc_runtime_eval_expression_int(void *expr)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return 0;
+
+    std::string &expression = *(std::string *)expr;
+    madc::value resolved;
+    int64_t out = 0;
+
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+	return 0;
+    if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_expression_int", out) )
+	return 0;
+    return out;
+}
+
+int64_t madc_runtime_eval_expression_int_ctx(void *expr, void *ctx)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return 0;
+
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value resolved;
+    int64_t out = 0;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_int_ctx", context) )
+	return 0;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+	return 0;
+    if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_expression_int_ctx", out) )
+	return 0;
+    return out;
+}
+
+double madc_runtime_eval_expression_double(void *expr)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return 0.0;
+
+    std::string &expression = *(std::string *)expr;
+    madc::value resolved;
+    double out = 0.0;
+
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+	return 0.0;
+    if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_expression_double", out) )
+	return 0.0;
+    return out;
+}
+
+double madc_runtime_eval_expression_double_ctx(void *expr, void *ctx)
+{
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return 0.0;
+
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value resolved;
+    double out = 0.0;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_double_ctx", context) )
+	return 0.0;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+	return 0.0;
+    if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_expression_double_ctx", out) )
+	return 0.0;
+    return out;
+}
+
+void *madc_runtime_eval_expression_string(void *result, void *expr)
+{
+    std::string &out = *(std::string *)result;
+    std::string &expression = *(std::string *)expr;
+    out.clear();
+
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+	return result;
+    if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_expression_string", out) )
+	return result;
+    return result;
+}
+
+void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ctx)
+{
+    std::string &out = *(std::string *)result;
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    out.clear();
+
+    Program *active = require_active_runtime_program();
+    if ( !active )
+	return result;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_string_ctx", context) )
+	return result;
+    madc::value resolved;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+	return result;
+    if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_expression_string_ctx", out) )
+	return result;
+    return result;
+}
+
+void *madc_context_set_int(void *ctx, void *key, int64_t value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(value));
+    return ctx;
+}
+
+void *madc_context_set_real(void *ctx, void *key, double value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(value));
+    return ctx;
+}
+
+void *madc_context_set_string(void *ctx, void *key, const char *value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(std::string(value ? value : "")));
+    return ctx;
+}
+
+void *madc_context_set_array(void *ctx, void *key, void *value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(*(MadArray *)value));
+    return ctx;
+}
+
+} // namespace
 
 static bool is_restrict_token(TokenBase *tb)
 {
@@ -155,7 +887,9 @@ static void copy_token_location(TokenBase *dst, TokenBase *src)
     dst->column = src->column;
 }
 
-static TokenBase *make_expression_context_literal(const madc::value &resolved, TokenBase *src)
+static TokenBase *make_expression_context_literal(Program &pgm,
+						  const madc::value &resolved,
+						  TokenBase *src)
 {
     TokenBase *tb = NULL;
 
@@ -171,8 +905,14 @@ static TokenBase *make_expression_context_literal(const madc::value &resolved, T
 	    tb = new TokenReal(resolved.as_real());
 	    break;
 	case madc::value::kind::string:
-	    tb = new TokenStr(resolved.as_string());
+	{
+	    std::string literal = resolved.as_string();
+	    Variable *literal_var = pgm.addLiteral(literal);
+	    if ( !literal_var )
+		return NULL;
+	    tb = new TokenVar(*literal_var);
 	    break;
+	}
 	default:
 	    return NULL;
     }
@@ -1262,6 +2002,7 @@ Program::Program()
       _prv_token(NULL),
       _cur_token(NULL),
       engine(NULL),
+      runtime_scope_prev(NULL),
       input_stream(&std::cin),
       output_stream(&std::cout),
       error_stream(&std::cerr),
@@ -1282,6 +2023,7 @@ Program::Program(MadcEngine *eng)
       _prv_token(NULL),
       _cur_token(NULL),
       engine(NULL),
+      runtime_scope_prev(NULL),
       input_stream(&std::cin),
       output_stream(&std::cout),
       error_stream(&std::cerr),
@@ -2401,6 +3143,124 @@ void Program::add_madc_namespace()
 	(fVOIDFUNC)madc_regex_replace);
     if (var) madc_ns["regex_replace"] = var;
 
+    Variable *scope_var = NULL;
+
+    var = addFunction("__madc_eval_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval);
+    scope_var = addFunction("__madc_eval_ctx_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_ctx);
+    if (var) madc_ns["eval"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_bool_runtime",
+	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_bool);
+    scope_var = addFunction("__madc_eval_bool_ctx_runtime",
+	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_bool_ctx);
+    if (var) madc_ns["eval_bool"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_int_runtime",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_int);
+    scope_var = addFunction("__madc_eval_int_ctx_runtime",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_int_ctx);
+    if (var) madc_ns["eval_int"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_double_runtime",
+	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_double);
+    scope_var = addFunction("__madc_eval_double_ctx_runtime",
+	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_double_ctx);
+    if (var) madc_ns["eval_double"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_string_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_string);
+    scope_var = addFunction("__madc_eval_string_ctx_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_string_ctx);
+    if (var) madc_ns["eval_string"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_expression_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression);
+    scope_var = addFunction("__madc_eval_expression_ctx_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_ctx);
+    if (var) madc_ns["eval_expression"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+
+    if (scope_var) madc_ns["eval_expression_ctx"] = scope_var;
+
+    var = addFunction("__madc_eval_expression_bool_runtime",
+	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression_bool);
+    scope_var = addFunction("__madc_eval_expression_bool_ctx_runtime",
+	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_bool_ctx);
+    if (var) madc_ns["eval_expression_bool"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+    if (scope_var) madc_ns["eval_expression_bool_ctx"] = scope_var;
+
+    var = addFunction("__madc_eval_expression_int_runtime",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression_int);
+    scope_var = addFunction("__madc_eval_expression_int_ctx_runtime",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_int_ctx);
+    if (var) madc_ns["eval_expression_int"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+    if (scope_var) madc_ns["eval_expression_int_ctx"] = scope_var;
+
+    var = addFunction("__madc_eval_expression_double_runtime",
+	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression_double);
+    scope_var = addFunction("__madc_eval_expression_double_ctx_runtime",
+	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_double_ctx);
+    if (var) madc_ns["eval_expression_double"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+    if (scope_var) madc_ns["eval_expression_double_ctx"] = scope_var;
+
+    var = addFunction("__madc_eval_expression_string_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression_string);
+    scope_var = addFunction("__madc_eval_expression_string_ctx_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_string_ctx);
+    if (var) madc_ns["eval_expression_string"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+    if (scope_var) madc_ns["eval_expression_string_ctx"] = scope_var;
+
+    var = addFunction("__madc_context_set_int_runtime",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtINT64},
+	(fVOIDFUNC)madc_context_set_int);
+    if (var) madc_ns["context_set_int"] = var;
+
+    var = addFunction("__madc_context_set_real_runtime",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtDOUBLE},
+	(fVOIDFUNC)madc_context_set_real);
+    if (var) madc_ns["context_set_real"] = var;
+
+    var = addFunction("__madc_context_set_string_runtime",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtCHARptr},
+	(fVOIDFUNC)madc_context_set_string);
+    if (var) madc_ns["context_set_string"] = var;
+
+    var = addFunction("__madc_context_set_array_runtime",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_context_set_array);
+    if (var) madc_ns["context_set_array"] = var;
+
     DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
 }
 
@@ -2442,9 +3302,20 @@ bool Program::is_dynamic_symbol_fallback_enabled() const
     return registration_policy.enable_dlfcn_functions;
 }
 
+bool Program::is_runtime_eval_source_scope_access_enabled() const
+{
+    return registration_policy.enable_runtime_eval_source_scope_access;
+}
+
+bool Program::is_runtime_eval_expression_scope_access_enabled() const
+{
+    return registration_policy.enable_runtime_eval_expression_scope_access;
+}
+
 bool Program::is_embedded_header_allowed(const std::string &name) const
 {
-    if ( registration_policy.allowed_headers.empty() )
+    if ( !registration_policy.restrict_headers_to_allowlist
+      && registration_policy.allowed_headers.empty() )
 	return true;
     for ( std::size_t i = 0; i < registration_policy.allowed_headers.size(); ++i )
     {
@@ -2456,7 +3327,8 @@ bool Program::is_embedded_header_allowed(const std::string &name) const
 
 bool Program::is_dynamic_symbol_allowed(const std::string &name) const
 {
-    if ( registration_policy.allowed_dlfcn_symbols.empty() )
+    if ( !registration_policy.restrict_dlfcn_symbols_to_allowlist
+      && registration_policy.allowed_dlfcn_symbols.empty() )
 	return true;
     for ( std::size_t i = 0; i < registration_policy.allowed_dlfcn_symbols.size(); ++i )
     {
@@ -2464,6 +3336,111 @@ bool Program::is_dynamic_symbol_allowed(const std::string &name) const
 	    return true;
     }
     return false;
+}
+
+Variable *Program::runtime_eval_scope_target(Variable *var) const
+{
+    if ( !var )
+	return var;
+
+    if ( is_runtime_eval_source_helper_name(var->name)
+      && !is_runtime_eval_source_scope_access_enabled() )
+	return var;
+
+    if ( is_runtime_eval_expression_helper_name(var->name)
+      && !is_runtime_eval_expression_scope_access_enabled() )
+	return var;
+
+    std::string target_name;
+    if ( var->name == "__madc_eval_runtime" )
+	target_name = "__madc_eval_ctx_runtime";
+    else if ( var->name == "__madc_eval_bool_runtime" )
+	target_name = "__madc_eval_bool_ctx_runtime";
+    else if ( var->name == "__madc_eval_int_runtime" )
+	target_name = "__madc_eval_int_ctx_runtime";
+    else if ( var->name == "__madc_eval_double_runtime" )
+	target_name = "__madc_eval_double_ctx_runtime";
+    else if ( var->name == "__madc_eval_string_runtime" )
+	target_name = "__madc_eval_string_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_runtime" )
+	target_name = "__madc_eval_expression_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_bool_runtime" )
+	target_name = "__madc_eval_expression_bool_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_int_runtime" )
+	target_name = "__madc_eval_expression_int_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_double_runtime" )
+	target_name = "__madc_eval_expression_double_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_string_runtime" )
+	target_name = "__madc_eval_expression_string_ctx_runtime";
+    else
+	return var;
+
+    std::string lookup = target_name;
+    Variable *mapped = tkProgram ? tkProgram->findVariable(lookup) : NULL;
+    return mapped ? mapped : var;
+}
+
+namespace {
+
+bool is_runtime_eval_scope_supported_variable(Variable *var)
+{
+    if ( !var || !var->type )
+	return false;
+    if ( var->type->is_function() )
+	return false;
+    if ( var->count != 1 || var->is_fixed_array() || var->is_vla() )
+	return false;
+    if ( var->name.compare(0, 7, "__madc_") == 0 )
+	return false;
+    if ( var->name.compare(0, 11, "__literal__") == 0 )
+	return false;
+    if ( is_runtime_eval_scope_helper_name(var->name) )
+	return false;
+
+    DataType raw = var->type->rawtype();
+    return raw == DataType::dtBOOL
+	|| var->type->is_integer()
+	|| var->type->is_real()
+	|| raw == DataType::dtSTRING
+	|| raw == DataType::dtARRAY;
+}
+
+void append_runtime_eval_scope_variable(std::vector<Variable *> &out,
+					std::set<std::string> &seen,
+					Variable *var)
+{
+    if ( !is_runtime_eval_scope_supported_variable(var) )
+	return;
+    if ( seen.insert(var->name).second )
+	out.push_back(var);
+}
+
+} // namespace
+
+void Program::collect_runtime_eval_scope_variables(std::vector<Variable *> &out) const
+{
+    out.clear();
+    std::set<std::string> seen;
+    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+
+    for ( TokenCpnd *scope = code; scope; scope = scope->parent )
+    {
+	for ( variable_vec_iter it = scope->variables.begin(); it != scope->variables.end(); ++it )
+	    append_runtime_eval_scope_variable(out, seen, *it);
+    }
+
+    if ( code && code->method )
+    {
+	for ( variable_vec_iter it = code->method->parameters.begin();
+	      it != code->method->parameters.end(); ++it )
+	    append_runtime_eval_scope_variable(out, seen, *it);
+    }
+
+    if ( tkProgram )
+    {
+	for ( variable_vec_iter it = tkProgram->variables.begin(); it != tkProgram->variables.end(); ++it )
+	    append_runtime_eval_scope_variable(out, seen, *it);
+    }
 }
 
 // find variable matching id anywhere accessable from codeblock
@@ -2580,6 +3557,44 @@ bool Program::has_expression_context_root() const
     return expression_context_root != NULL && expression_context_root->is_object();
 }
 
+void Program::push_runtime_scope()
+{
+    runtime_scope_prev = g_runtime_program;
+    g_runtime_program = this;
+}
+
+void Program::pop_runtime_scope()
+{
+    if ( g_runtime_program == this )
+	g_runtime_program = runtime_scope_prev;
+    runtime_scope_prev = NULL;
+}
+
+Program *Program::active_runtime_program()
+{
+    return g_runtime_program;
+}
+
+bool Program::runtime_eval_source(const std::string &source_text,
+				  madc::value &result,
+				  const std::string &display_name,
+				  const madc::value *context)
+{
+    return madc::internal_program_runtime_eval_source(*this, source_text, result, display_name, context);
+}
+
+bool Program::runtime_eval_expression(const std::string &expression,
+				      madc::value &result,
+				      const std::string &display_name,
+				      const madc::value *context)
+{
+    return madc::internal_program_runtime_eval_expression(*this,
+							 expression,
+							 result,
+							 display_name,
+							 context);
+}
+
 TokenBase *Program::resolve_expression_context_identifier(TokenIdent *ident_tb)
 {
     if ( !ident_tb || !has_expression_context_root() )
@@ -2597,7 +3612,7 @@ TokenBase *Program::resolve_expression_context_identifier(TokenIdent *ident_tb)
 	return obj;
     }
 
-    return make_expression_context_literal(it->second, ident_tb);
+    return make_expression_context_literal(*this, it->second, ident_tb);
 }
 
 TokenBase *Program::resolve_expression_context_member(TokenBase *lhs, TokenIdent *member_tb)
@@ -2623,7 +3638,7 @@ TokenBase *Program::resolve_expression_context_member(TokenBase *lhs, TokenIdent
 	return next;
     }
 
-    TokenBase *resolved = make_expression_context_literal(it->second, member_tb);
+    TokenBase *resolved = make_expression_context_literal(*this, it->second, member_tb);
     if ( !resolved )
 	Throw(member_tb) << "context path '" << obj->path << "." << member_tb->str
 			 << "' resolves to unsupported value kind '"
@@ -3042,6 +4057,36 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
 	tc->parameters.push_back(tb);
     }
+
+    bool needs_runtime_scope_context = tc->auto_scope_context;
+    if ( !needs_runtime_scope_context && is_runtime_eval_scope_ctx_helper_name(tc->var.name) )
+    {
+	FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+	Method *md = (Method *)tc->var.data;
+	if ( fd && !fd->is_varargs
+	  && !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
+	{
+	    size_t expected = fd->parameters.size()
+		- (fd->has_captures ? 1 : 0)
+		- (md && md->owner_class ? 1 : 0);
+	    needs_runtime_scope_context = (tc->argc() + 1 == expected);
+	}
+    }
+
+    if ( needs_runtime_scope_context )
+    {
+	TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
+	if ( !scope )
+	    Throw(tc) << "runtime eval scope capture requires an active compound scope" << flush;
+	static uint64_t runtime_eval_scope_serial = 0;
+	std::string ctx_name = "__madc_eval_scope_ctx_"
+	    + std::to_string(++runtime_eval_scope_serial);
+	Variable *ctx_var = addVariable(scope, ddARRAY, ctx_name, 1, NULL, false);
+	TokenScopeContext *ctx_token = new TokenScopeContext(*ctx_var);
+	collect_runtime_eval_scope_variables(ctx_token->scope_vars);
+	tc->parameters.push_back(ctx_token);
+    }
+
     // (need check for optional parameters)
     // skip arg count check for dlopen functions (0 declared params = variadic-like)
     {
@@ -4846,7 +5891,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    break;
 			}
 		    }
-		    TokenCallFunc *tc = new TokenCallFunc(*var);
+		    Variable *call_var = runtime_eval_scope_target(var);
+		    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+		    tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
+			&& is_runtime_eval_scope_public_name(ident_tb->str);
 		    tb = nextToken();
 		    tc->line = tb->line;
 		    tc->column = tb->column;

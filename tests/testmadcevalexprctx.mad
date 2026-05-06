@@ -1,0 +1,40 @@
+#!/usr/bin/env madc
+#include <iostream>
+
+int main()
+{
+    madc::array ctx;
+    madc::array user;
+    madc::array stats;
+
+    string level_key = "level";
+    string user_key = "user";
+    string stats_key = "stats";
+    string name_key = "name";
+    string radius_key = "radius";
+
+    madc::context_set_int(stats, level_key, 41);
+    madc::context_set_array(user, stats_key, stats);
+
+    madc::context_set_string(user, name_key, "echo");
+    madc::context_set_array(ctx, user_key, user);
+    madc::context_set_real(ctx, radius_key, 1.5);
+
+    string rendered;
+    madc::eval_expression_ctx(rendered, "user.stats.level + 1", ctx);
+    cout << "rendered=" << rendered << endl;
+
+    cout << "int=" << madc::eval_expression_int_ctx("user.stats.level + 1", ctx) << endl;
+    cout << "bool=" << madc::eval_expression_bool_ctx("user.stats.level > 40", ctx) << endl;
+    cout << "name_ok=" << madc::eval_expression_bool_ctx("user.name == \"echo\"", ctx) << endl;
+    cout << "double=" << madc::eval_expression_double_ctx("radius * 2.0", ctx) << endl;
+
+    string rendered_name;
+    madc::eval_expression_ctx(rendered_name, "user.name", ctx);
+    cout << "rendered_name=" << rendered_name << endl;
+
+    string exact;
+    madc::eval_expression_string_ctx(exact, "user.name", ctx);
+    cout << "string=" << exact << endl;
+    return 0;
+}

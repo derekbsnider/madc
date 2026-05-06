@@ -76,6 +76,8 @@ public:
     const security_policy &get_security_policy() const;
     void set_expression_policy(const expression_policy &policy);
     const expression_policy &get_expression_policy() const;
+    void set_runtime_eval_policy(const runtime_eval_policy &policy);
+    const runtime_eval_policy &get_runtime_eval_policy() const;
     void set_expression_bindings(const std::map<std::string, value> &bindings);
     const std::map<std::string, value> &get_expression_bindings() const;
     void clear_expression_bindings();

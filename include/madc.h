@@ -192,6 +192,7 @@ public:
     // When set, TokenCallFunc::compile loads the fn-ptr by compiling src_node
     // instead of calling voperand(var). var.type must still be DataDefFPTR.
     TokenBase *src_node = nullptr;
+    bool auto_scope_context = false;
     TokenCallFunc(Variable &v) : TokenVar(v) { if (v.type->is_function()) _datatype = returns(); }
     virtual DataDef *returns()  const { return &((FuncDef *)var.type)->returns; }
     virtual DataDef *datadef()  const override {
@@ -203,6 +204,17 @@ public:
     virtual size_t argc() const { return parameters.size(); }
     virtual TokenType type() const { return TokenType::ttCallFunc; }
     virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+class TokenScopeContext: public TokenBase
+{
+public:
+    Variable &context_var;
+    std::vector<Variable *> scope_vars;
+    TokenScopeContext(Variable &ctx) : TokenBase(), context_var(ctx) { _datatype = &ddARRAY; }
+    virtual TokenType type() const { return TokenType::ttVariable; }
+    virtual DataDef *datadef() const override { return &ddARRAY; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -602,9 +614,30 @@ public:
 
     struct RegistrationPolicy
     {
+	struct RuntimeEvalChildPolicy
+	{
+	    bool enable_core_functions = true;
+	    bool enable_process_functions = true;
+	    bool enable_dlfcn_functions = true;
+	    bool enable_std_namespace = true;
+	    bool enable_madc_namespace = true;
+	    bool enable_php_namespace = true;
+	    bool enable_perl_namespace = true;
+	    bool enable_python_namespace = true;
+	    bool enable_ruby_namespace = true;
+	    bool enable_js_namespace = true;
+	    bool enable_rust_namespace = true;
+	    bool restrict_headers_to_allowlist = false;
+	    bool restrict_dlfcn_symbols_to_allowlist = false;
+	    std::vector<std::string> allowed_headers;
+	    std::vector<std::string> allowed_dlfcn_symbols;
+	};
+
 	bool enable_core_functions = true;
 	bool enable_process_functions = true;
 	bool enable_dlfcn_functions = true;
+	bool enable_runtime_eval_source_scope_access = true;
+	bool enable_runtime_eval_expression_scope_access = true;
 	bool enable_std_namespace = true;
 	bool enable_madc_namespace = true;
 	bool enable_php_namespace = true;
@@ -613,8 +646,11 @@ public:
 	bool enable_ruby_namespace = true;
 	bool enable_js_namespace = true;
 	bool enable_rust_namespace = true;
+	bool restrict_headers_to_allowlist = false;
+	bool restrict_dlfcn_symbols_to_allowlist = false;
 	std::vector<std::string> allowed_headers;
 	std::vector<std::string> allowed_dlfcn_symbols;
+	RuntimeEvalChildPolicy runtime_eval_source_policy;
     };
 
     struct ErrorInfo
@@ -671,6 +707,7 @@ protected:
     asmjit::x86::Mem __const_double_1;	// const double of 1.0
 public:
     MadcEngine *engine;
+    Program *runtime_scope_prev;
     std::istream *input_stream;
     std::ostream *output_stream;
     std::ostream *error_stream;
@@ -828,9 +865,13 @@ public:
     bool is_namespace_registration_enabled(const std::string &name) const;
     bool is_dynamic_library_loading_enabled() const;
     bool is_dynamic_symbol_fallback_enabled() const;
+    bool is_runtime_eval_source_scope_access_enabled() const;
+    bool is_runtime_eval_expression_scope_access_enabled() const;
     bool is_embedded_header_allowed(const std::string &name) const;
     bool is_dynamic_symbol_allowed(const std::string &name) const;
     bool is_known_namespace(const std::string &name) const;
+    Variable *runtime_eval_scope_target(Variable *var) const;
+    void collect_runtime_eval_scope_variables(std::vector<Variable *> &out) const;
     void set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb = NULL);
     Variable *find_namespace_member(const std::string &ns_name, const std::string &member_name);
     Variable *resolve_preferred_identifier(class TokenIdent *ident_tb, bool expression_head);
@@ -843,6 +884,17 @@ public:
     bool include_already_seen(const std::string &path);
     std::string resolve_include_path(const std::string &incfile, bool is_system);
     bool should_tokenize_include(const std::string &path);
+    void push_runtime_scope();
+    void pop_runtime_scope();
+    static Program *active_runtime_program();
+    bool runtime_eval_source(const std::string &source_text,
+			     madc::value &result,
+			     const std::string &display_name = "__madc_runtime_eval",
+			     const madc::value *context = NULL);
+    bool runtime_eval_expression(const std::string &expression,
+				 madc::value &result,
+				 const std::string &display_name = "__madc_runtime_eval_expression",
+				 const madc::value *context = NULL);
 
     Variable *addFunction(std::string, datatype_vec_t, fVOIDFUNC, bool isMethod=false);
 

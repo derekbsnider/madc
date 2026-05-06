@@ -407,6 +407,34 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
+    TEST_CASE("eval_expression can return top-level string context fields") {
+	madc::program pgm;
+	std::map<std::string, madc::value> fields;
+	fields["name"] = madc::value("echo");
+	pgm.set_expression_context(madc::value::make_object(fields));
+
+	madc::value result;
+	CHECK(pgm.eval_expression("name", &result, "expr_context_string.mad"));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "echo");
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_expression can traverse nested object context string fields") {
+	madc::program pgm;
+	std::map<std::string, madc::value> user_fields;
+	user_fields["name"] = madc::value("echo");
+	std::map<std::string, madc::value> root_fields;
+	root_fields["user"] = madc::value::make_object(user_fields);
+	pgm.set_expression_context(madc::value::make_object(root_fields));
+
+	madc::value result;
+	CHECK(pgm.eval_expression("user.name", &result, "expr_context_nested_string.mad"));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "echo");
+	CHECK_FALSE(pgm.has_error());
+    }
+
     TEST_CASE("eval_expression rewrites nested object context paths with parser-legal trivia") {
 	madc::program pgm;
 	std::map<std::string, madc::value> stats_fields;
@@ -644,6 +672,8 @@ TEST_SUITE("madc::program") {
 	policy.execution = madc::execution_mode::in_process;
 	policy.allow_process_functions = true;
 	policy.allow_dlfcn_functions = true;
+	policy.allow_runtime_eval_source_scope_access = true;
+	policy.allow_runtime_eval_expression_scope_access = true;
 	pgm.set_security_policy(policy);
 
 	const madc::security_policy &stored_policy = pgm.get_security_policy();
@@ -652,8 +682,12 @@ TEST_SUITE("madc::program") {
 	CHECK(stored_policy.execution == madc::execution_mode::fork_per_invocation);
 	CHECK_FALSE(stored_policy.allow_process_functions);
 	CHECK_FALSE(stored_policy.allow_dlfcn_functions);
+	CHECK_FALSE(stored_policy.allow_runtime_eval_source_scope_access);
+	CHECK_FALSE(stored_policy.allow_runtime_eval_expression_scope_access);
 	CHECK_FALSE(stored_options.enable_process_functions);
 	CHECK_FALSE(stored_options.enable_dlfcn_functions);
+	CHECK_FALSE(stored_options.enable_runtime_eval_source_scope_access);
+	CHECK_FALSE(stored_options.enable_runtime_eval_expression_scope_access);
     }
 
     TEST_CASE("security_policy execution mode roundtrips when not locked") {
@@ -688,6 +722,34 @@ TEST_SUITE("madc::program") {
 	CHECK(stored.allowed_headers[0] == "math.h");
 	REQUIRE(stored.allowed_functions.size() == 1);
 	CHECK(stored.allowed_functions[0] == "strlen");
+    }
+
+    TEST_CASE("runtime_eval_policy roundtrips explicit child-program capability settings") {
+	madc::program pgm;
+	madc::runtime_eval_policy policy;
+	policy.allow_core_functions = false;
+	policy.allow_process_functions = false;
+	policy.allow_dlfcn_functions = false;
+	policy.allow_std_namespace = false;
+	policy.allow_php_namespace = false;
+	policy.restrict_headers_to_allowlist = true;
+	policy.restrict_dlfcn_symbols_to_allowlist = true;
+	policy.allowed_headers.push_back("math.h");
+	policy.allowed_dlfcn_symbols.push_back("strlen");
+	pgm.set_runtime_eval_policy(policy);
+
+	const madc::runtime_eval_policy &stored = pgm.get_runtime_eval_policy();
+	CHECK_FALSE(stored.allow_core_functions);
+	CHECK_FALSE(stored.allow_process_functions);
+	CHECK_FALSE(stored.allow_dlfcn_functions);
+	CHECK_FALSE(stored.allow_std_namespace);
+	CHECK_FALSE(stored.allow_php_namespace);
+	CHECK(stored.restrict_headers_to_allowlist);
+	CHECK(stored.restrict_dlfcn_symbols_to_allowlist);
+	REQUIRE(stored.allowed_headers.size() == 1);
+	CHECK(stored.allowed_headers[0] == "math.h");
+	REQUIRE(stored.allowed_dlfcn_symbols.size() == 1);
+	CHECK(stored.allowed_dlfcn_symbols[0] == "strlen");
     }
 
     TEST_CASE("expression bindings roundtrip through program state") {
@@ -1065,6 +1127,154 @@ TEST_SUITE("madc::program") {
 	REQUIRE(result.is_integer());
 	CHECK(result.as_integer() == int64_t('h'));
 	CHECK_FALSE(pgm.has_error());
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("script-side runtime eval sees current scope when allowed") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int probe_expr(int base) {\n"
+		   "    int bonus = 2;\n"
+		   "    return madc::eval_expression_int(\"base + bonus\");\n"
+		   "}\n"
+		   "int probe_eval(int base) {\n"
+		   "    int bonus = 2;\n"
+		   "    return madc::eval_int(\"int __madc_eval() { return base + bonus; }\");\n"
+		   "}\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+
+	madc::value result;
+	REQUIRE(pgm.call("probe_expr", {madc::value(int64_t(40))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+
+	REQUIRE(pgm.call("probe_eval", {madc::value(int64_t(40))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("script-side runtime eval scope access can be disabled independently") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.allow_runtime_eval_source_scope_access = false;
+	policy.allow_runtime_eval_expression_scope_access = false;
+	pgm.set_security_policy(policy);
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int probe_expr(int base) {\n"
+		   "    int bonus = 2;\n"
+		   "    return madc::eval_expression_int(\"base + bonus\");\n"
+		   "}\n"
+		   "int probe_eval(int base) {\n"
+		   "    int bonus = 2;\n"
+		   "    return madc::eval_int(\"int __madc_eval() { return base + bonus; }\");\n"
+		   "}\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+
+	madc::value result;
+	REQUIRE(pgm.call("probe_expr", {madc::value(int64_t(40))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 0);
+
+	REQUIRE(pgm.call("probe_eval", {madc::value(int64_t(40))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 0);
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("script-side runtime expression scope access can be disabled without affecting full eval") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.allow_runtime_eval_expression_scope_access = false;
+	pgm.set_security_policy(policy);
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int probe_expr(int base) {\n"
+		   "    int bonus = 2;\n"
+		   "    return madc::eval_expression_int(\"base + bonus\");\n"
+		   "}\n"
+		   "int probe_eval(int base) {\n"
+		   "    int bonus = 2;\n"
+		   "    return madc::eval_int(\"int __madc_eval() { return base + bonus; }\");\n"
+		   "}\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+
+	madc::value result;
+	REQUIRE(pgm.call("probe_expr", {madc::value(int64_t(40))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 0);
+
+	REQUIRE(pgm.call("probe_eval", {madc::value(int64_t(40))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("script-side full eval scope access can be disabled without affecting runtime expression eval") {
+	madc::program pgm;
+	madc::security_policy policy = pgm.get_security_policy();
+	policy.allow_runtime_eval_source_scope_access = false;
+	pgm.set_security_policy(policy);
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int probe_expr(int base) {\n"
+		   "    int bonus = 2;\n"
+		   "    return madc::eval_expression_int(\"base + bonus\");\n"
+		   "}\n"
+		   "int probe_eval(int base) {\n"
+		   "    int bonus = 2;\n"
+		   "    return madc::eval_int(\"int __madc_eval() { return base + bonus; }\");\n"
+		   "}\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+
+	madc::value result;
+	REQUIRE(pgm.call("probe_expr", {madc::value(int64_t(40))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+
+	REQUIRE(pgm.call("probe_eval", {madc::value(int64_t(40))}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 0);
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("runtime_eval_policy can restrict child full eval independently of the parent program") {
+	madc::program pgm;
+	madc::runtime_eval_policy policy = pgm.get_runtime_eval_policy();
+	policy.allow_core_functions = false;
+	pgm.set_runtime_eval_policy(policy);
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int probe_eval() {\n"
+		   "    return madc::eval_int(\"int __madc_eval() { puti(7); return 42; }\");\n"
+		   "}\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+
+	madc::value result;
+	REQUIRE(pgm.call("probe_eval", std::vector<madc::value>(), &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 0);
 
 	std::remove(path.c_str());
     }

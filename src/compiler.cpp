@@ -732,6 +732,115 @@ static void validate_call_arg_type(Program &pgm, TokenBase *tn, DataDef *ptype,
 	pgm.cc.comment("tnreg is Imm");
 }
 
+void *runtime_eval_scope_context_set_int(void *ctx, void *key, int64_t value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(value));
+    return ctx;
+}
+
+void *runtime_eval_scope_context_set_real(void *ctx, void *key, double value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(value));
+    return ctx;
+}
+
+void *runtime_eval_scope_context_set_string(void *ctx, void *key, void *value)
+{
+    const char *s = (const char *)value;
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(std::string(s ? s : "")));
+    return ctx;
+}
+
+void *runtime_eval_scope_context_set_array(void *ctx, void *key, void *value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(*(MadArray *)value));
+    return ctx;
+}
+
+static void emit_runtime_eval_scope_setter(Program &pgm,
+					   x86::Gp ctx_ptr,
+					   Variable *scope_var,
+					   Variable *key_var)
+{
+    if ( !scope_var || !scope_var->type || !key_var )
+	return;
+
+    TokenVar key_token(*key_var);
+    Operand key_storage;
+    DataDef *key_type = NULL;
+    Operand &key_arg = compile_call_arg_normalized(pgm, &key_token, &ddSTRING, false, key_storage, key_type);
+
+    DataType raw = scope_var->type->rawtype();
+    TokenVar value_token(*scope_var);
+
+    if ( raw == DataType::dtBOOL || scope_var->type->is_integer() )
+    {
+	Operand value_storage;
+	DataDef *value_type = NULL;
+	Operand &value_arg = compile_call_arg_normalized(pgm, &value_token, &ddINT64, false, value_storage, value_type);
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(runtime_eval_scope_context_set_int), FuncSignature::build<void *, void *, void *, int64_t>());
+	call->setArg(0, ctx_ptr);
+	call->setArg(1, key_arg.as<x86::Gp>());
+	if ( value_arg.isReg() )
+	    call->setArg(2, value_arg.as<x86::Gp>());
+	else if ( value_arg.isImm() )
+	    call->setArg(2, value_arg.as<Imm>());
+	else
+	{
+	    x86::Gp tmp = pgm.cc.newGpq("__scope_i64");
+	    pgm.cc.mov(tmp, value_arg.as<x86::Mem>());
+	    call->setArg(2, tmp);
+	}
+	return;
+    }
+
+    if ( scope_var->type->is_real() )
+    {
+	Operand value_storage;
+	DataDef *value_type = NULL;
+	Operand &value_arg = compile_call_arg_normalized(pgm, &value_token, &ddDOUBLE, false, value_storage, value_type);
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(runtime_eval_scope_context_set_real), FuncSignature::build<void *, void *, void *, double>());
+	call->setArg(0, ctx_ptr);
+	call->setArg(1, key_arg.as<x86::Gp>());
+	if ( value_arg.isReg() )
+	    call->setArg(2, value_arg.as<x86::Xmm>());
+	else
+	{
+	    x86::Xmm tmp = newScalarXmm(pgm, &ddDOUBLE, "__scope_f64");
+	    pgm.cc.movsd(tmp, value_arg.as<x86::Mem>());
+	    call->setArg(2, tmp);
+	}
+	return;
+    }
+
+    if ( raw == DataType::dtSTRING )
+    {
+	Operand value_storage;
+	DataDef *value_type = NULL;
+	Operand &value_arg = compile_call_arg_normalized(pgm, &value_token, &ddCHARptr, false, value_storage, value_type);
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(runtime_eval_scope_context_set_string), FuncSignature::build<void *, void *, void *, void *>());
+	call->setArg(0, ctx_ptr);
+	call->setArg(1, key_arg.as<x86::Gp>());
+	call->setArg(2, value_arg.as<x86::Gp>());
+	return;
+    }
+
+    if ( raw == DataType::dtARRAY )
+    {
+	Operand value_storage;
+	DataDef *value_type = NULL;
+	Operand &value_arg = compile_call_arg_normalized(pgm, &value_token, &ddARRAY, false, value_storage, value_type);
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(runtime_eval_scope_context_set_array), FuncSignature::build<void *, void *, void *, void *>());
+	call->setArg(0, ctx_ptr);
+	call->setArg(1, key_arg.as<x86::Gp>());
+	call->setArg(2, value_arg.as<x86::Gp>());
+    }
+}
+
 static Operand &compile_condition_operand(Program &pgm, TokenBase *condition, Operand &storage)
 {
     regdefp_t condrdp = {NULL, NULL, NULL};
@@ -1834,6 +1943,36 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     return _operand;
 }
 
+Operand &TokenScopeContext::compile(Program &pgm, regdefp_t &regdp)
+{
+    Operand &ctx = pgm.tkFunction->voperand(pgm, &context_var);
+    if ( !ctx.isReg() || !ctx.as<BaseReg>().isGroup(RegGroup::kGp) )
+	pgm.Throw(this) << "runtime eval scope context requires an addressable array object" << flush;
+
+    x86::Gp ctx_ptr = ctx.as<x86::Gp>();
+    InvokeNode *reset_dtor;
+    pgm.cc.invoke(&reset_dtor, imm(madarray_destruct), FuncSignature::build<void, void *>());
+    reset_dtor->setArg(0, ctx_ptr);
+    InvokeNode *reset_ctor;
+    pgm.cc.invoke(&reset_ctor, imm(madarray_construct), FuncSignature::build<void *, void *>());
+    reset_ctor->setArg(0, ctx_ptr);
+
+    for ( std::size_t i = 0; i < scope_vars.size(); ++i )
+    {
+	Variable *scope_var = scope_vars[i];
+	if ( !scope_var )
+	    continue;
+	std::string key = scope_var->name;
+	Variable *key_var = pgm.addLiteral(key);
+	emit_runtime_eval_scope_setter(pgm, ctx_ptr, scope_var, key_var);
+    }
+
+    _operand = ctx_ptr;
+    regdp.first = &_operand;
+    regdp.second = &ddARRAY;
+    return _operand;
+}
+
 Operand &TokenCpnd::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") TOP" << endl);
@@ -2536,6 +2675,7 @@ void Program::execute()
     clear_diagnostics();
     clear_error();
 
+    push_runtime_scope();
     DBG(std::cout << "Program::execute() calling root_fn()" << std::endl);
     root_fn();
 
@@ -2544,24 +2684,28 @@ void Program::execute()
 	set_error(Program::DiagnosticPhase::runtime, "Program::execute() cannot find main");
 	DBG(error() << "Program::execute() cannot find main" << std::endl);
 	print_last_diagnostic(error());
+	pop_runtime_scope();
 	return;
     }
     if ( var->type->basetype() != BaseType::btFunct )
     {
 	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main is not a function");
 	print_last_diagnostic(error());
+	pop_runtime_scope();
 	return;
     }
     if ( !(method=(Method *)var->data) )
     {
 	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main method is NULL");
 	print_last_diagnostic(error());
+	pop_runtime_scope();
 	return;
     }
     if ( !(main_fn=(fVOIDFUNC)method->x86code) )
     {
 	set_error(Program::DiagnosticPhase::runtime, "Program::execute() main has no x86 code");
 	print_last_diagnostic(error());
+	pop_runtime_scope();
 	return;
     }
     DBG(std::cout << std::endl << "Program::execute() starts" << std::endl);
@@ -2577,6 +2721,7 @@ void Program::execute()
     }
     else
 	main_fn();
+    pop_runtime_scope();
 
     DBG(std::cout << std::endl << "Program::execute() main() returns" << std::endl);
     DBG(std::cout << "Program::execute() ends" << std::endl);
