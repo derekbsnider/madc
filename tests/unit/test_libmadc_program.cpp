@@ -1463,7 +1463,24 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("call rejects unsupported string object parameters for now") {
+    TEST_CASE("call supports std::string arguments for script string parameters") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int length_of(string s) { return s.length(); }\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+	madc::value result;
+	REQUIRE(pgm.call("length_of", {madc::value("hello")}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 5);
+	CHECK_FALSE(pgm.has_error());
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("call still rejects string object returns for now") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1479,6 +1496,22 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message == "program::call does not support this return type yet");
 
 	std::remove(path.c_str());
+    }
+
+    TEST_CASE("register_function still rejects std::string object signatures") {
+	madc::program pgm;
+	auto host_echo = +[](std::string s) -> std::string { return s + "!"; };
+
+	CHECK_FALSE(pgm.register_function("host_echo",
+					  reinterpret_cast<madc::program::native_function>(host_echo),
+					  madc::program::native_signature(
+					      madc::program::native_type::string_object,
+					      {madc::program::native_type::string_object})));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->message == "register_function does not support std::string return signatures yet");
+
     }
 
     TEST_CASE("get_global and set_global roundtrip integer globals") {

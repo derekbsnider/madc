@@ -22,7 +22,8 @@ public:
 	boolean,
 	integer,
 	real,
-	c_string
+	c_string,
+	string_object
     };
 
     struct native_signature

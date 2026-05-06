@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **Host-side `madc::program::call(...)` now accepts `std::string` arguments for script `string` parameters.**
+  The host call bridge now recognizes compiled script `string`
+  parameters and passes temporary `std::string` object pointers through
+  the existing non-scalar pointer ABI, so host `madc::value("...")`
+  inputs can drive script functions like `int f(string s)`. This slice
+  is intentionally narrow: script `string` object returns are still
+  rejected on `call(...)`, and `register_function(...)` still rejects
+  `std::string` object signatures until there is a dedicated safe
+  bridge for that ABI. Coverage in `tests/unit/test_libmadc_program.cpp`
+  now locks in the working parameter path plus the explicit rejection
+  paths.
+
 - **`madc::program::call(...)` now supports up to four arguments.**
   The host-side call dispatcher no longer stops at arity 2 for the
   existing supported native subset. `program::call(...)` now supports up

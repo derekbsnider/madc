@@ -18,7 +18,7 @@ Latest `scripts/run_tests.sh` result:
 - Passing: 259 integration tests
 - Failing: none
 - Timed out: none
-- Unit tests: all passing (doctest, core-only `--enable-madcdat=no` workspace) — 80 datadef + 23 IR + 92 libmadc_program + 5 libmadc_error + 19 libmadc_value (219 total)
+- Unit tests: all passing (doctest, core-only `--enable-madcdat=no` workspace) — 80 datadef + 23 IR + 94 libmadc_program + 5 libmadc_error + 19 libmadc_value (221 total)
 
 The latest IR-focused validation batch passes directly, including:
 

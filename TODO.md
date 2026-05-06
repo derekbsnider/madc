@@ -51,10 +51,13 @@
   public runtime-call/global surfaces are intentionally narrow for now:
   they handle only the scalar / C-string subset (`void`, `bool`,
   `int64`, `double`, `const char *`) plus script `string` globals,
-  `call(...)` currently caps arity at 2 while rejecting script `string`
-  object params/returns, multi-return, and varargs, and `eval(...)` is
-  still entry-function based rather than free-form expression
-  evaluation. `eval_expression(...)` is now the dedicated expression
+  while `call(...)` now supports up to four arguments on that subset
+  and also accepts host `std::string` values for script `string`
+  parameters. It still intentionally rejects script `string` object
+  returns, `register_function(...)` `std::string` signatures,
+  multi-return, and varargs, and `eval(...)` is still entry-function
+  based rather than free-form expression evaluation.
+  `eval_expression(...)` is now the dedicated expression
   path, and the default execution route now lexes/parses a single
   expression into a synthetic hidden function instead of synthesizing a
   whole translation unit. It is still intentionally narrow: `math.h` is
