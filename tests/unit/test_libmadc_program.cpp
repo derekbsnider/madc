@@ -210,6 +210,64 @@ TEST_SUITE("madc::program") {
 	CHECK(result.as_integer() == 42);
     }
 
+    TEST_CASE("typed eval overloads write directly into host destinations") {
+	madc::program pgm;
+	int64_t i = 0;
+	std::string s;
+
+	CHECK(pgm.eval("int __madc_eval() { return 42; }\n",
+		       i,
+		       "typed_eval_int.mad"));
+	CHECK(i == 42);
+
+	CHECK(pgm.eval("char * __madc_eval() { return \"echo\"; }\n",
+		       s,
+		       "typed_eval_string.mad"));
+	CHECK(s == "echo");
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("typed eval_expression overloads write directly into host destinations") {
+	madc::program pgm;
+	int64_t i = 0;
+	std::string s;
+
+	CHECK(pgm.eval_expression("6 * 7", i, "typed_expr_int.mad"));
+	CHECK(i == 42);
+
+	CHECK(pgm.eval_expression("\"echo\"", s, "typed_expr_string.mad"));
+	CHECK(s == "echo");
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("typed convenience wrappers mirror typed program eval") {
+	int64_t eval_result = 0;
+	int64_t expr_result = 0;
+
+	CHECK(madc::eval("int __madc_eval() { return 42; }\n",
+			 eval_result,
+			 "api_typed_eval.mad"));
+	CHECK(eval_result == 42);
+
+	CHECK(madc::eval_expression("6 * 7",
+				    expr_result,
+				    "api_typed_eval_expr.mad"));
+	CHECK(expr_result == 42);
+    }
+
+    TEST_CASE("typed eval overloads reject incompatible result kinds") {
+	madc::program pgm;
+	std::string s;
+
+	CHECK_FALSE(pgm.eval("int __madc_eval() { return 42; }\n",
+			     s,
+			     "typed_eval_bad.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->message.find("requires a string result") != std::string::npos);
+    }
+
     TEST_CASE("eval_expression evaluates a plain arithmetic expression") {
 	madc::program pgm;
 	madc::value result;

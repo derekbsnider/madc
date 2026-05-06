@@ -3538,6 +3538,64 @@ struct program::impl
 	    return true;
 	});
     }
+
+    bool coerce_eval_bool(const value &resolved,
+			  const std::string &label,
+			  bool &out)
+    {
+	if ( resolved.is_boolean() )
+	{
+	    out = resolved.as_boolean();
+	    return true;
+	}
+	if ( resolved.is_integer() )
+	{
+	    out = resolved.as_integer() != 0;
+	    return true;
+	}
+	return fail_runtime(label + " requires a boolean-compatible result");
+    }
+
+    bool coerce_eval_int(const value &resolved,
+			 const std::string &label,
+			 int64_t &out)
+    {
+	if ( resolved.is_integer() )
+	{
+	    out = resolved.as_integer();
+	    return true;
+	}
+	return fail_runtime(label + " requires an integer result");
+    }
+
+    bool coerce_eval_double(const value &resolved,
+			    const std::string &label,
+			    double &out)
+    {
+	if ( resolved.is_real() )
+	{
+	    out = resolved.as_real();
+	    return true;
+	}
+	if ( resolved.is_integer() )
+	{
+	    out = (double)resolved.as_integer();
+	    return true;
+	}
+	return fail_runtime(label + " requires a real-compatible result");
+    }
+
+    bool coerce_eval_string(const value &resolved,
+			    const std::string &label,
+			    std::string &out)
+    {
+	if ( resolved.is_string() )
+	{
+	    out = resolved.as_string();
+	    return true;
+	}
+	return fail_runtime(label + " requires a string result");
+    }
 };
 
 program::program()
@@ -3585,11 +3643,91 @@ bool program::eval(const std::string &source,
     return _impl->eval_source_with_display(source, display_name, result);
 }
 
+bool program::eval(const std::string &source,
+		   bool &result,
+		   const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval(source, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_bool(resolved, "program::eval", result);
+}
+
+bool program::eval(const std::string &source,
+		   int64_t &result,
+		   const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval(source, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_int(resolved, "program::eval", result);
+}
+
+bool program::eval(const std::string &source,
+		   double &result,
+		   const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval(source, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_double(resolved, "program::eval", result);
+}
+
+bool program::eval(const std::string &source,
+		   std::string &result,
+		   const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval(source, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_string(resolved, "program::eval", result);
+}
+
 bool program::eval_expression(const std::string &expression,
 			      value *result,
 			      const std::string &virtual_filename)
 {
     return _impl->eval_expression(expression, result, virtual_filename);
+}
+
+bool program::eval_expression(const std::string &expression,
+			      bool &result,
+			      const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_expression(expression, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_bool(resolved, "program::eval_expression", result);
+}
+
+bool program::eval_expression(const std::string &expression,
+			      int64_t &result,
+			      const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_expression(expression, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_int(resolved, "program::eval_expression", result);
+}
+
+bool program::eval_expression(const std::string &expression,
+			      double &result,
+			      const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_expression(expression, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_double(resolved, "program::eval_expression", result);
+}
+
+bool program::eval_expression(const std::string &expression,
+			      std::string &result,
+			      const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_expression(expression, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_string(resolved, "program::eval_expression", result);
 }
 
 bool internal_program_runtime_eval_source(::Program &self,

@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+- **Host-side C++ eval helpers now have typed overloads.**
+  `madc::program::eval(...)` and `madc::program::eval_expression(...)`
+  now have overloads that write directly into `bool`, `int64_t`,
+  `double`, and `std::string`, and the top-level `madc::eval(...)` /
+  `madc::eval_expression(...)` convenience wrappers mirror the same
+  surface. This keeps the explicit `madc::value` path available while
+  removing boilerplate for the common scalar/string embedding cases.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now locks in typed
+  program wrappers, top-level convenience wrappers, and incompatible
+  result-kind rejection.
+
 - **Typed script-side `madc::eval_*` helpers now auto-wrap body text by default.**
   `madc::eval_bool(...)`, `madc::eval_int(...)`,
   `madc::eval_double(...)`, and `madc::eval_string(...)` now treat

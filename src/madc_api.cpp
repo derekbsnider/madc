@@ -22,8 +22,64 @@ bool eval(const std::string &source, value *result, const std::string &virtual_f
     return pgm.eval(source, result, virtual_filename);
 }
 
+bool eval(const std::string &source, bool &result, const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval(source, result, virtual_filename);
+}
+
+bool eval(const std::string &source, int64_t &result, const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval(source, result, virtual_filename);
+}
+
+bool eval(const std::string &source, double &result, const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval(source, result, virtual_filename);
+}
+
+bool eval(const std::string &source, std::string &result, const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval(source, result, virtual_filename);
+}
+
 bool eval_expression(const std::string &expression,
 		     value *result,
+		     const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval_expression(expression, result, virtual_filename);
+}
+
+bool eval_expression(const std::string &expression,
+		     bool &result,
+		     const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval_expression(expression, result, virtual_filename);
+}
+
+bool eval_expression(const std::string &expression,
+		     int64_t &result,
+		     const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval_expression(expression, result, virtual_filename);
+}
+
+bool eval_expression(const std::string &expression,
+		     double &result,
+		     const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval_expression(expression, result, virtual_filename);
+}
+
+bool eval_expression(const std::string &expression,
+		     std::string &result,
 		     const std::string &virtual_filename)
 {
     program pgm;

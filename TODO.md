@@ -132,7 +132,11 @@
   body text when the helper already knows the return type. The remaining
   explicit-entry awkwardness is now concentrated in the generic
   value-typed eval surfaces, which still lack a reliable wrapper return
-  type.
+  type. Host-side C++ ergonomics are now better too: `madc::program`
+  and the top-level `madc::eval(...)` / `madc::eval_expression(...)`
+  wrappers both have typed overloads for `bool`, `int64_t`, `double`,
+  and `std::string`, so common embedding call sites no longer need to
+  unpack `madc::value` manually.
   Next up, in
   dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`
