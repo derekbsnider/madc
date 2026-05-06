@@ -9,7 +9,7 @@ int probe_expr(int base)
 int probe_eval(int base)
 {
 	int bonus = 2;
-	return madc::eval_int("int __madc_eval() { return base + bonus; }");
+	return madc::eval_int("return base + bonus;");
 }
 
 int main()

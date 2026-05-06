@@ -890,7 +890,8 @@ public:
     bool runtime_eval_source(const std::string &source_text,
 			     madc::value &result,
 			     const std::string &display_name = "__madc_runtime_eval",
-			     const madc::value *context = NULL);
+			     const madc::value *context = NULL,
+			     const char *wrapper_return_type = NULL);
     bool runtime_eval_expression(const std::string &expression,
 				 madc::value &result,
 				 const std::string &display_name = "__madc_runtime_eval_expression",

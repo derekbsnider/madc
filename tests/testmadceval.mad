@@ -9,19 +9,19 @@ int main()
     string rendered;
     madc::eval(rendered, src_int);
     cout << "rendered=" << rendered << endl;
-    cout << "int=" << madc::eval_int(src_int) << endl;
+    cout << "int=" << madc::eval_int("return 40 + 2;") << endl;
 
     string src_bool =
-	"bool __madc_eval() { return 6 > 3; }\n";
+	"return 6 > 3;\n";
     cout << "bool=" << madc::eval_bool(src_bool) << endl;
 
     string src_double =
 	"#include <math.h>\n"
-	"double __madc_eval() { return sqrt(9.0) + cos(0.0); }\n";
+	"return sqrt(9.0) + cos(0.0);\n";
     cout << "double=" << madc::eval_double(src_double) << endl;
 
     string src_string =
-	"char * __madc_eval() { return \"echo\"; }\n";
+	"return \"echo\";\n";
     string exact;
     madc::eval_string(exact, src_string);
     cout << "string=" << exact << endl;

@@ -44,7 +44,8 @@ bool internal_program_runtime_eval_source(::Program &self,
 					  const std::string &source_text,
 					  value &result,
 					  const std::string &display_name,
-					  const value *context = NULL);
+					  const value *context = NULL,
+					  const char *wrapper_return_type = NULL);
 bool internal_program_runtime_eval_expression(::Program &self,
 					      const std::string &expression,
 					      value &result,
@@ -387,7 +388,7 @@ bool madc_runtime_eval_bool(void *source)
     madc::value resolved;
     bool out = false;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "bool") )
 	return false;
     if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_bool", out) )
 	return false;
@@ -404,7 +405,7 @@ int64_t madc_runtime_eval_int(void *source)
     madc::value resolved;
     int64_t out = 0;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "int") )
 	return 0;
     if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_int", out) )
 	return 0;
@@ -421,7 +422,7 @@ double madc_runtime_eval_double(void *source)
     madc::value resolved;
     double out = 0.0;
 
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "double") )
 	return 0.0;
     if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_double", out) )
 	return 0.0;
@@ -439,7 +440,7 @@ void *madc_runtime_eval_string(void *result, void *source)
 	return result;
 
     madc::value resolved;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "char *") )
 	return result;
     if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_string", out) )
 	return result;
@@ -486,7 +487,7 @@ bool madc_runtime_eval_bool_ctx(void *source, void *ctx)
 
     if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_bool", context) )
 	return false;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "bool") )
     {
 	active->print_last_diagnostic(active->error());
 	return false;
@@ -510,7 +511,7 @@ int64_t madc_runtime_eval_int_ctx(void *source, void *ctx)
 
     if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_int", context) )
 	return 0;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "int") )
     {
 	active->print_last_diagnostic(active->error());
 	return 0;
@@ -534,7 +535,7 @@ double madc_runtime_eval_double_ctx(void *source, void *ctx)
 
     if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_double", context) )
 	return 0.0;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "double") )
     {
 	active->print_last_diagnostic(active->error());
 	return 0.0;
@@ -560,7 +561,7 @@ void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
 	return result;
 
     madc::value resolved;
-    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "char *") )
     {
 	active->print_last_diagnostic(active->error());
 	return result;
@@ -3578,9 +3579,10 @@ Program *Program::active_runtime_program()
 bool Program::runtime_eval_source(const std::string &source_text,
 				  madc::value &result,
 				  const std::string &display_name,
-				  const madc::value *context)
+				  const madc::value *context,
+				  const char *wrapper_return_type)
 {
-    return madc::internal_program_runtime_eval_source(*this, source_text, result, display_name, context);
+    return madc::internal_program_runtime_eval_source(*this, source_text, result, display_name, context, wrapper_return_type);
 }
 
 bool Program::runtime_eval_expression(const std::string &expression,

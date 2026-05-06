@@ -1141,7 +1141,7 @@ TEST_SUITE("madc::program") {
 		   "}\n"
 		   "int probe_eval(int base) {\n"
 		   "    int bonus = 2;\n"
-		   "    return madc::eval_int(\"int __madc_eval() { return base + bonus; }\");\n"
+		   "    return madc::eval_int(\"return base + bonus;\");\n"
 		   "}\n"
 		   "int main() { return 0; }\n");
 
@@ -1174,7 +1174,7 @@ TEST_SUITE("madc::program") {
 		   "}\n"
 		   "int probe_eval(int base) {\n"
 		   "    int bonus = 2;\n"
-		   "    return madc::eval_int(\"int __madc_eval() { return base + bonus; }\");\n"
+		   "    return madc::eval_int(\"return base + bonus;\");\n"
 		   "}\n"
 		   "int main() { return 0; }\n");
 
@@ -1206,7 +1206,7 @@ TEST_SUITE("madc::program") {
 		   "}\n"
 		   "int probe_eval(int base) {\n"
 		   "    int bonus = 2;\n"
-		   "    return madc::eval_int(\"int __madc_eval() { return base + bonus; }\");\n"
+		   "    return madc::eval_int(\"return base + bonus;\");\n"
 		   "}\n"
 		   "int main() { return 0; }\n");
 
@@ -1238,7 +1238,7 @@ TEST_SUITE("madc::program") {
 		   "}\n"
 		   "int probe_eval(int base) {\n"
 		   "    int bonus = 2;\n"
-		   "    return madc::eval_int(\"int __madc_eval() { return base + bonus; }\");\n"
+		   "    return madc::eval_int(\"return base + bonus;\");\n"
 		   "}\n"
 		   "int main() { return 0; }\n");
 
@@ -1265,7 +1265,7 @@ TEST_SUITE("madc::program") {
 	std::string path = make_temp_source_path();
 	write_file(path,
 		   "int probe_eval() {\n"
-		   "    return madc::eval_int(\"int __madc_eval() { puti(7); return 42; }\");\n"
+		   "    return madc::eval_int(\"puti(7); return 42;\");\n"
 		   "}\n"
 		   "int main() { return 0; }\n");
 

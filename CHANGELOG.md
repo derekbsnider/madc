@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **Typed script-side `madc::eval_*` helpers now auto-wrap body text by default.**
+  `madc::eval_bool(...)`, `madc::eval_int(...)`,
+  `madc::eval_double(...)`, and `madc::eval_string(...)` now treat
+  their source input as `__madc_eval` body text when no explicit
+  `__madc_eval(...)` definition is present, generating the wrapper
+  automatically from the known typed return contract. This removes the
+  explicit reserved-entry requirement from the common typed script-side
+  path while preserving compatibility for callers that still provide the
+  full entry function explicitly. Coverage in `tests/testmadceval.mad`,
+  `tests/testmadcevalscope.mad`, and
+  `tests/unit/test_libmadc_program.cpp` now exercises the body-mode
+  path directly.
+
 - **Full script-side `madc::eval(...)` now has its own child-program sandbox policy.**
   `madc::program` now exposes `runtime_eval_policy` as a separate public
   control surface for full in-language source eval child programs. Hosts

@@ -127,7 +127,12 @@
   object and child-program global injection for full `eval(...)`, but
   deeper lexical/symbol fidelity, richer non-primitive scope values, and
   any finer-grained runtime-eval child capabilities still need
-  follow-up.
+  follow-up. The common typed script-side `madc::eval_*` path no longer
+  requires an explicit `__madc_eval(...)` wrapper either: it auto-wraps
+  body text when the helper already knows the return type. The remaining
+  explicit-entry awkwardness is now concentrated in the generic
+  value-typed eval surfaces, which still lack a reliable wrapper return
+  type.
   Next up, in
   dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`

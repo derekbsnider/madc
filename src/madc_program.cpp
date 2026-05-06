@@ -671,6 +671,139 @@ bool is_reserved_expression_identifier(const std::string &identifier)
     return identifier.compare(0, 7, "__madc_") == 0;
 }
 
+bool source_contains_explicit_eval_entry(const std::string &source)
+{
+    enum class scan_state
+    {
+	normal,
+	single_quote,
+	double_quote,
+	line_comment,
+	block_comment
+    };
+
+    auto skip_trivia = [&](std::size_t pos) -> std::size_t {
+	while ( pos < source.size() )
+	{
+	    char sch = source[pos];
+	    char snext = (pos + 1 < source.size()) ? source[pos + 1] : '\0';
+	    if ( sch == ' ' || sch == '\t' || sch == '\r' || sch == '\n' )
+	    {
+		++pos;
+		continue;
+	    }
+	    if ( sch == '/' && snext == '/' )
+	    {
+		pos += 2;
+		while ( pos < source.size() && source[pos] != '\n' )
+		    ++pos;
+		continue;
+	    }
+	    if ( sch == '/' && snext == '*' )
+	    {
+		pos += 2;
+		while ( pos + 1 < source.size()
+		     && !(source[pos] == '*' && source[pos + 1] == '/') )
+		    ++pos;
+		if ( pos + 1 < source.size() )
+		    pos += 2;
+		continue;
+	    }
+	    break;
+	}
+	return pos;
+    };
+
+    scan_state state = scan_state::normal;
+    for ( std::size_t i = 0; i < source.size(); ++i )
+    {
+	char ch = source[i];
+	char next = (i + 1 < source.size()) ? source[i + 1] : '\0';
+	switch ( state )
+	{
+	    case scan_state::normal:
+		if ( ch == '"' )
+		{
+		    state = scan_state::double_quote;
+		    continue;
+		}
+		if ( ch == '\'' )
+		{
+		    state = scan_state::single_quote;
+		    continue;
+		}
+		if ( ch == '/' && next == '/' )
+		{
+		    state = scan_state::line_comment;
+		    ++i;
+		    continue;
+		}
+		if ( ch == '/' && next == '*' )
+		{
+		    state = scan_state::block_comment;
+		    ++i;
+		    continue;
+		}
+		if ( !is_identifier_start_char(ch) )
+		    continue;
+		{
+		    std::size_t start = i;
+		    while ( i + 1 < source.size() && is_identifier_char(source[i + 1]) )
+			++i;
+		    std::string identifier = source.substr(start, i - start + 1);
+		    if ( identifier != eval_entry_name() )
+			continue;
+		    std::size_t probe = skip_trivia(i + 1);
+		    if ( probe < source.size() && source[probe] == '(' )
+			return true;
+		}
+		break;
+	    case scan_state::single_quote:
+		if ( ch == '\\' && next != '\0' )
+		{
+		    ++i;
+		    continue;
+		}
+		if ( ch == '\'' )
+		    state = scan_state::normal;
+		break;
+	    case scan_state::double_quote:
+		if ( ch == '\\' && next != '\0' )
+		{
+		    ++i;
+		    continue;
+		}
+		if ( ch == '"' )
+		    state = scan_state::normal;
+		break;
+	    case scan_state::line_comment:
+		if ( ch == '\n' )
+		    state = scan_state::normal;
+		break;
+	    case scan_state::block_comment:
+		if ( ch == '*' && next == '/' )
+		{
+		    state = scan_state::normal;
+		    ++i;
+		}
+		break;
+	}
+    }
+    return false;
+}
+
+std::string build_eval_body_wrapper_source(const std::string &source,
+					   const char *return_type)
+{
+    std::ostringstream wrapped;
+    wrapped << return_type << " " << eval_entry_name() << "() {\n"
+	    << source;
+    if ( source.empty() || source[source.size() - 1] != '\n' )
+	wrapped << "\n";
+    wrapped << "}\n";
+    return wrapped.str();
+}
+
 bool is_valid_expression_binding_name(const std::string &identifier)
 {
     if ( identifier.empty() )
@@ -3463,14 +3596,19 @@ bool internal_program_runtime_eval_source(::Program &self,
 					  const std::string &source_text,
 					  madc::value &result,
 					  const std::string &display_name,
-					  const madc::value *context)
+					  const madc::value *context,
+					  const char *wrapper_return_type)
 {
     self.clear_diagnostics();
     self.clear_error();
 
     Program child(self.engine);
     child.registration_policy = runtime_eval_registration_policy_for_source_child(self.registration_policy);
-    std::string normalized_source = ensure_trailing_newline(source_text);
+    std::string effective_source = source_text;
+    if ( wrapper_return_type
+      && !source_contains_explicit_eval_entry(source_text) )
+	effective_source = build_eval_body_wrapper_source(source_text, wrapper_return_type);
+    std::string normalized_source = ensure_trailing_newline(effective_source);
     TokenProgram *tp = child.tokenize_buffer(normalized_source, display_name);
     if ( !tp )
     {
