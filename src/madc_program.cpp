@@ -3668,52 +3668,87 @@ bool program::exec_string(const std::string &source, const std::string &virtual_
     return _impl->exec_source_with_display(source, display_name);
 }
 
+bool program::eval_unit(const std::string &source,
+			value *result,
+			const std::string &virtual_filename)
+{
+    std::string display_name = virtual_filename.empty() ? std::string("<memory>") : virtual_filename;
+    return _impl->eval_source_with_display(source, display_name, result);
+}
+
+bool program::eval_unit(const std::string &source,
+			bool &result,
+			const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_unit(source, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_bool(resolved, "program::eval_unit", result);
+}
+
+bool program::eval_unit(const std::string &source,
+			int64_t &result,
+			const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_unit(source, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_int(resolved, "program::eval_unit", result);
+}
+
+bool program::eval_unit(const std::string &source,
+			double &result,
+			const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_unit(source, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_double(resolved, "program::eval_unit", result);
+}
+
+bool program::eval_unit(const std::string &source,
+			std::string &result,
+			const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_unit(source, &resolved, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_string(resolved, "program::eval_unit", result);
+}
+
 bool program::eval(const std::string &source,
 		   value *result,
 		   const std::string &virtual_filename)
 {
-    std::string display_name = virtual_filename.empty() ? std::string("<memory>") : virtual_filename;
-    return _impl->eval_source_with_display(source, display_name, result);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool program::eval(const std::string &source,
 		   bool &result,
 		   const std::string &virtual_filename)
 {
-    value resolved;
-    if ( !eval(source, &resolved, virtual_filename) )
-	return false;
-    return _impl->coerce_eval_bool(resolved, "program::eval", result);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool program::eval(const std::string &source,
 		   int64_t &result,
 		   const std::string &virtual_filename)
 {
-    value resolved;
-    if ( !eval(source, &resolved, virtual_filename) )
-	return false;
-    return _impl->coerce_eval_int(resolved, "program::eval", result);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool program::eval(const std::string &source,
 		   double &result,
 		   const std::string &virtual_filename)
 {
-    value resolved;
-    if ( !eval(source, &resolved, virtual_filename) )
-	return false;
-    return _impl->coerce_eval_double(resolved, "program::eval", result);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool program::eval(const std::string &source,
 		   std::string &result,
 		   const std::string &virtual_filename)
 {
-    value resolved;
-    if ( !eval(source, &resolved, virtual_filename) )
-	return false;
-    return _impl->coerce_eval_string(resolved, "program::eval", result);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool program::eval_body(const std::string &source,

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **Host-side C++ full-source eval now has an explicit `eval_unit(...)` alias.**
+  `madc::program` and the top-level `madc::` convenience wrappers now
+  expose `eval_unit(...)` as the explicit name for the existing
+  full-translation-unit runtime-eval contract. This keeps `eval(...)`
+  working as a compatibility alias while making the public surface read
+  cleanly as `eval_expression(...)`, `eval_body(...)`, and
+  `eval_unit(...)`. Coverage in `tests/unit/test_libmadc_program.cpp`
+  now locks in both the stateful and convenience-wrapper `eval_unit(...)`
+  path.
+
 - **Host-side C++ runtime eval now has an explicit `eval_body(...)` lane.**
   `madc::program` and the top-level `madc::` convenience wrappers now
   expose `eval_body(...)` for the common case where the caller wants to

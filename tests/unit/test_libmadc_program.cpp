@@ -210,6 +210,28 @@ TEST_SUITE("madc::program") {
 	CHECK(result.as_integer() == 42);
     }
 
+    TEST_CASE("eval_unit names the explicit full-translation-unit lane") {
+	madc::program pgm;
+	int64_t result = 0;
+
+	CHECK(pgm.eval_unit("int helper() { return 40; }\n"
+			    "int __madc_eval() { return helper() + 2; }\n",
+			    result,
+			    "eval_unit_ok.mad"));
+	CHECK(result == 42);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("madc::eval_unit convenience wrapper mirrors program eval_unit") {
+	int64_t result = 0;
+
+	CHECK(madc::eval_unit("int helper() { return 6; }\n"
+			      "int __madc_eval() { return helper() * 7; }\n",
+			      result,
+			      "api_eval_unit.mad"));
+	CHECK(result == 42);
+    }
+
     TEST_CASE("typed eval overloads write directly into host destinations") {
 	madc::program pgm;
 	int64_t i = 0;

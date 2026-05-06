@@ -141,6 +141,10 @@
   and a generic `program::native_type` contract, so the remaining
   awkwardness is mostly about whether generic full-source `eval(...)`
   should ever grow beyond its current explicit-entry semantics.
+  `eval_unit(...)` now names that explicit full-source lane directly,
+  leaving the open question more about long-term compatibility and
+  whether `eval(...)` should eventually become only a compatibility
+  alias in docs/examples.
   Next up, in
   dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`

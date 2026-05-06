@@ -16,34 +16,59 @@ bool exec_string(const std::string &source, const std::string &virtual_filename)
     return pgm.exec_string(source, virtual_filename);
 }
 
-bool eval(const std::string &source, value *result, const std::string &virtual_filename)
+bool eval_unit(const std::string &source, value *result, const std::string &virtual_filename)
 {
     program pgm;
-    return pgm.eval(source, result, virtual_filename);
+    return pgm.eval_unit(source, result, virtual_filename);
+}
+
+bool eval_unit(const std::string &source, bool &result, const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval_unit(source, result, virtual_filename);
+}
+
+bool eval_unit(const std::string &source, int64_t &result, const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval_unit(source, result, virtual_filename);
+}
+
+bool eval_unit(const std::string &source, double &result, const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval_unit(source, result, virtual_filename);
+}
+
+bool eval_unit(const std::string &source, std::string &result, const std::string &virtual_filename)
+{
+    program pgm;
+    return pgm.eval_unit(source, result, virtual_filename);
+}
+
+bool eval(const std::string &source, value *result, const std::string &virtual_filename)
+{
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool eval(const std::string &source, bool &result, const std::string &virtual_filename)
 {
-    program pgm;
-    return pgm.eval(source, result, virtual_filename);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool eval(const std::string &source, int64_t &result, const std::string &virtual_filename)
 {
-    program pgm;
-    return pgm.eval(source, result, virtual_filename);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool eval(const std::string &source, double &result, const std::string &virtual_filename)
 {
-    program pgm;
-    return pgm.eval(source, result, virtual_filename);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool eval(const std::string &source, std::string &result, const std::string &virtual_filename)
 {
-    program pgm;
-    return pgm.eval(source, result, virtual_filename);
+    return eval_unit(source, result, virtual_filename);
 }
 
 bool eval_body(const std::string &source,
