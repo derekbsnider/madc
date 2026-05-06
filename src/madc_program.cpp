@@ -804,6 +804,24 @@ std::string build_eval_body_wrapper_source(const std::string &source,
     return wrapped.str();
 }
 
+const char *eval_body_wrapper_return_type(madc::program::native_type return_type)
+{
+    switch ( return_type )
+    {
+	case madc::program::native_type::boolean:
+	    return "bool";
+	case madc::program::native_type::integer:
+	    return "int";
+	case madc::program::native_type::real:
+	    return "double";
+	case madc::program::native_type::c_string:
+	    return "char *";
+	case madc::program::native_type::void_type:
+	    break;
+    }
+    return NULL;
+}
+
 bool is_valid_expression_binding_name(const std::string &identifier)
 {
     if ( identifier.empty() )
@@ -2654,6 +2672,21 @@ struct program::impl
 	return call(eval_entry_name(), std::vector<value>(), result);
     }
 
+    bool eval_body_with_display(const std::string &source,
+				const std::string &display_file,
+				value *result,
+				program::native_type return_type)
+    {
+	const char *wrapper_return_type = eval_body_wrapper_return_type(return_type);
+	if ( !wrapper_return_type )
+	    return fail_runtime("program::eval_body requires a non-void scalar or string return type");
+
+	std::string effective_source = source;
+	if ( !source_contains_explicit_eval_entry(source) )
+	    effective_source = build_eval_body_wrapper_source(source, wrapper_return_type);
+	return eval_source_with_display(effective_source, display_file, result);
+    }
+
     bool exec_source_with_display(const std::string &source,
 				  const std::string &display_file)
     {
@@ -3681,6 +3714,55 @@ bool program::eval(const std::string &source,
     if ( !eval(source, &resolved, virtual_filename) )
 	return false;
     return _impl->coerce_eval_string(resolved, "program::eval", result);
+}
+
+bool program::eval_body(const std::string &source,
+			value *result,
+			native_type return_type,
+			const std::string &virtual_filename)
+{
+    std::string display_name = virtual_filename.empty() ? std::string("<memory>") : virtual_filename;
+    return _impl->eval_body_with_display(source, display_name, result, return_type);
+}
+
+bool program::eval_body(const std::string &source,
+			bool &result,
+			const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_body(source, &resolved, native_type::boolean, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_bool(resolved, "program::eval_body", result);
+}
+
+bool program::eval_body(const std::string &source,
+			int64_t &result,
+			const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_body(source, &resolved, native_type::integer, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_int(resolved, "program::eval_body", result);
+}
+
+bool program::eval_body(const std::string &source,
+			double &result,
+			const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_body(source, &resolved, native_type::real, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_double(resolved, "program::eval_body", result);
+}
+
+bool program::eval_body(const std::string &source,
+			std::string &result,
+			const std::string &virtual_filename)
+{
+    value resolved;
+    if ( !eval_body(source, &resolved, native_type::c_string, virtual_filename) )
+	return false;
+    return _impl->coerce_eval_string(resolved, "program::eval_body", result);
 }
 
 bool program::eval_expression(const std::string &expression,

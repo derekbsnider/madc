@@ -25,6 +25,22 @@ bool eval(const std::string &source,
 bool eval(const std::string &source,
 	  std::string &result,
 	  const std::string &virtual_filename = std::string());
+bool eval_body(const std::string &source,
+	       value *result,
+	       program::native_type return_type,
+	       const std::string &virtual_filename = std::string());
+bool eval_body(const std::string &source,
+	       bool &result,
+	       const std::string &virtual_filename = std::string());
+bool eval_body(const std::string &source,
+	       int64_t &result,
+	       const std::string &virtual_filename = std::string());
+bool eval_body(const std::string &source,
+	       double &result,
+	       const std::string &virtual_filename = std::string());
+bool eval_body(const std::string &source,
+	       std::string &result,
+	       const std::string &virtual_filename = std::string());
 bool eval_expression(const std::string &expression,
 		     value *result = NULL,
 		     const std::string &virtual_filename = std::string());

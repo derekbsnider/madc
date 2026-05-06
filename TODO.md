@@ -136,7 +136,11 @@
   and the top-level `madc::eval(...)` / `madc::eval_expression(...)`
   wrappers both have typed overloads for `bool`, `int64_t`, `double`,
   and `std::string`, so common embedding call sites no longer need to
-  unpack `madc::value` manually.
+  unpack `madc::value` manually. The host API now also has an explicit
+  `eval_body(...)` lane for body-text runtime eval with typed overloads
+  and a generic `program::native_type` contract, so the remaining
+  awkwardness is mostly about whether generic full-source `eval(...)`
+  should ever grow beyond its current explicit-entry semantics.
   Next up, in
   dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`

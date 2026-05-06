@@ -255,6 +255,60 @@ TEST_SUITE("madc::program") {
 	CHECK(expr_result == 42);
     }
 
+    TEST_CASE("eval_body wraps typed host bodies automatically") {
+	madc::program pgm;
+	int64_t i = 0;
+	std::string s;
+
+	CHECK(pgm.eval_body("return 42;", i, "typed_eval_body_int.mad"));
+	CHECK(i == 42);
+
+	CHECK(pgm.eval_body("int helper() { return 40; }\nreturn helper() + 2;",
+			   i,
+			   "typed_eval_body_helper.mad"));
+	CHECK(i == 42);
+
+	CHECK(pgm.eval_body("return \"echo\";", s, "typed_eval_body_string.mad"));
+	CHECK(s == "echo");
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_body still accepts explicit eval entry source") {
+	madc::program pgm;
+	int64_t i = 0;
+
+	CHECK(pgm.eval_body("int __madc_eval() { return 42; }\n",
+			   i,
+			   "typed_eval_body_explicit.mad"));
+	CHECK(i == 42);
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("eval_body supports explicit return contract for madc::value") {
+	madc::value result;
+
+	CHECK(madc::eval_body("return 42;",
+			      &result,
+			      madc::program::native_type::integer,
+			      "api_eval_body_value.mad"));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+    }
+
+    TEST_CASE("eval_body rejects void return contracts") {
+	madc::program pgm;
+	madc::value result;
+
+	CHECK_FALSE(pgm.eval_body("return 0;",
+				  &result,
+				  madc::program::native_type::void_type,
+				  "eval_body_void_bad.mad"));
+	REQUIRE(pgm.has_error());
+	const madc::error *err = pgm.last_error();
+	REQUIRE(err != NULL);
+	CHECK(err->message.find("requires a non-void scalar or string return type") != std::string::npos);
+    }
+
     TEST_CASE("typed eval overloads reject incompatible result kinds") {
 	madc::program pgm;
 	std::string s;

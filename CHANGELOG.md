@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **Host-side C++ runtime eval now has an explicit `eval_body(...)` lane.**
+  `madc::program` and the top-level `madc::` convenience wrappers now
+  expose `eval_body(...)` for the common case where the caller wants to
+  supply function-body text instead of writing a full
+  `__madc_eval(...)` wrapper manually. Typed overloads for `bool`,
+  `int64_t`, `double`, and `std::string` auto-wrap the body when no
+  explicit `__madc_eval(...)` definition is present, while the generic
+  `madc::value` path stays explicit by requiring a declared
+  `program::native_type` return contract. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in wrapped-body
+  success, explicit-entry passthrough, generic typed-contract use, and
+  void-contract rejection.
+
 - **Host-side C++ eval helpers now have typed overloads.**
   `madc::program::eval(...)` and `madc::program::eval_expression(...)`
   now have overloads that write directly into `bool`, `int64_t`,
