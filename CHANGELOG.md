@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **`madc::program::call(...)` now supports up to four arguments.**
+  The host-side call dispatcher no longer stops at arity 2 for the
+  existing supported native subset. `program::call(...)` now supports up
+  to four arguments for `void`, `bool`, `int64_t`, `double`, and
+  `const char *` signatures, and the unit coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in both a four-arg
+  compiled-script call and a four-arg registered host callback.
+
 - **In-language `madc::eval_unit(...)` now mirrors the host-side full-source alias.**
   The madc script namespace now exposes `eval_unit(...)` as the explicit
   full-source alias alongside the older `eval(...)` name, so script-side

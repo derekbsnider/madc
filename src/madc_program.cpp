@@ -2187,6 +2187,66 @@ bool call_target2_void(void *fn, const value &a0, const value &a1, value *result
     return true;
 }
 
+template <typename R, typename A0, typename A1, typename A2>
+bool call_target3(void *fn, const value &a0, const value &a1, const value &a2, value *result)
+{
+    typedef R (*fn_t)(A0, A1, A2);
+    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
+				       value_as<A1>(a1),
+				       value_as<A2>(a2));
+    if ( result )
+	*result = value_from<R>(ret);
+    return true;
+}
+
+template <typename A0, typename A1, typename A2>
+bool call_target3_void(void *fn, const value &a0, const value &a1, const value &a2, value *result)
+{
+    typedef void (*fn_t)(A0, A1, A2);
+    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
+			       value_as<A1>(a1),
+			       value_as<A2>(a2));
+    if ( result )
+	*result = value();
+    return true;
+}
+
+template <typename R, typename A0, typename A1, typename A2, typename A3>
+bool call_target4(void *fn,
+		  const value &a0,
+		  const value &a1,
+		  const value &a2,
+		  const value &a3,
+		  value *result)
+{
+    typedef R (*fn_t)(A0, A1, A2, A3);
+    R ret = reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
+				       value_as<A1>(a1),
+				       value_as<A2>(a2),
+				       value_as<A3>(a3));
+    if ( result )
+	*result = value_from<R>(ret);
+    return true;
+}
+
+template <typename A0, typename A1, typename A2, typename A3>
+bool call_target4_void(void *fn,
+		       const value &a0,
+		       const value &a1,
+		       const value &a2,
+		       const value &a3,
+		       value *result)
+{
+    typedef void (*fn_t)(A0, A1, A2, A3);
+    reinterpret_cast<fn_t>(fn)(value_as<A0>(a0),
+			       value_as<A1>(a1),
+			       value_as<A2>(a2),
+			       value_as<A3>(a3));
+    if ( result )
+	*result = value();
+    return true;
+}
+
 } // namespace
 
 struct program::impl
@@ -3287,6 +3347,196 @@ struct program::impl
 	return false;
     }
 
+    template <typename A0, typename A1, typename A2>
+    bool dispatch_call3_ret(void *fn,
+			    native_type ret_type,
+			    const value &arg0,
+			    const value &arg1,
+			    const value &arg2,
+			    value *result)
+    {
+	switch ( ret_type )
+	{
+	    case native_type::void_type: return call_target3_void<A0, A1, A2>(fn, arg0, arg1, arg2, result);
+	    case native_type::boolean:   return call_target3<bool, A0, A1, A2>(fn, arg0, arg1, arg2, result);
+	    case native_type::integer:   return call_target3<int64_t, A0, A1, A2>(fn, arg0, arg1, arg2, result);
+	    case native_type::real:      return call_target3<double, A0, A1, A2>(fn, arg0, arg1, arg2, result);
+	    case native_type::c_string:  return call_target3<const char *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
+	}
+	return false;
+    }
+
+    template <typename A0, typename A1>
+    bool dispatch_call3_arg2(void *fn,
+			     native_type ret_type,
+			     native_type arg2_type,
+			     const value &arg0,
+			     const value &arg1,
+			     const value &arg2,
+			     value *result)
+    {
+	switch ( arg2_type )
+	{
+	    case native_type::boolean: return dispatch_call3_ret<A0, A1, bool>(fn, ret_type, arg0, arg1, arg2, result);
+	    case native_type::integer: return dispatch_call3_ret<A0, A1, int64_t>(fn, ret_type, arg0, arg1, arg2, result);
+	    case native_type::real:    return dispatch_call3_ret<A0, A1, double>(fn, ret_type, arg0, arg1, arg2, result);
+	    case native_type::c_string:return dispatch_call3_ret<A0, A1, const char *>(fn, ret_type, arg0, arg1, arg2, result);
+	    case native_type::void_type: break;
+	}
+	return false;
+    }
+
+    template <typename A0>
+    bool dispatch_call3_arg1(void *fn,
+			     native_type ret_type,
+			     native_type arg1_type,
+			     native_type arg2_type,
+			     const value &arg0,
+			     const value &arg1,
+			     const value &arg2,
+			     value *result)
+    {
+	switch ( arg1_type )
+	{
+	    case native_type::boolean: return dispatch_call3_arg2<A0, bool>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::integer: return dispatch_call3_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::real:    return dispatch_call3_arg2<A0, double>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::c_string:return dispatch_call3_arg2<A0, const char *>(fn, ret_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::void_type: break;
+	}
+	return false;
+    }
+
+    bool dispatch_call3(void *fn,
+			native_type ret_type,
+			native_type arg0_type,
+			native_type arg1_type,
+			native_type arg2_type,
+			const value &arg0,
+			const value &arg1,
+			const value &arg2,
+			value *result)
+    {
+	switch ( arg0_type )
+	{
+	    case native_type::boolean: return dispatch_call3_arg1<bool>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::integer: return dispatch_call3_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::real:    return dispatch_call3_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::c_string:return dispatch_call3_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg0, arg1, arg2, result);
+	    case native_type::void_type: break;
+	}
+	return false;
+    }
+
+    template <typename A0, typename A1, typename A2, typename A3>
+    bool dispatch_call4_ret(void *fn,
+			    native_type ret_type,
+			    const value &arg0,
+			    const value &arg1,
+			    const value &arg2,
+			    const value &arg3,
+			    value *result)
+    {
+	switch ( ret_type )
+	{
+	    case native_type::void_type: return call_target4_void<A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
+	    case native_type::boolean:   return call_target4<bool, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
+	    case native_type::integer:   return call_target4<int64_t, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
+	    case native_type::real:      return call_target4<double, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
+	    case native_type::c_string:  return call_target4<const char *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
+	}
+	return false;
+    }
+
+    template <typename A0, typename A1, typename A2>
+    bool dispatch_call4_arg3(void *fn,
+			     native_type ret_type,
+			     native_type arg3_type,
+			     const value &arg0,
+			     const value &arg1,
+			     const value &arg2,
+			     const value &arg3,
+			     value *result)
+    {
+	switch ( arg3_type )
+	{
+	    case native_type::boolean: return dispatch_call4_ret<A0, A1, A2, bool>(fn, ret_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::integer: return dispatch_call4_ret<A0, A1, A2, int64_t>(fn, ret_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::real:    return dispatch_call4_ret<A0, A1, A2, double>(fn, ret_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::c_string:return dispatch_call4_ret<A0, A1, A2, const char *>(fn, ret_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::void_type: break;
+	}
+	return false;
+    }
+
+    template <typename A0, typename A1>
+    bool dispatch_call4_arg2(void *fn,
+			     native_type ret_type,
+			     native_type arg2_type,
+			     native_type arg3_type,
+			     const value &arg0,
+			     const value &arg1,
+			     const value &arg2,
+			     const value &arg3,
+			     value *result)
+    {
+	switch ( arg2_type )
+	{
+	    case native_type::boolean: return dispatch_call4_arg3<A0, A1, bool>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::integer: return dispatch_call4_arg3<A0, A1, int64_t>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::real:    return dispatch_call4_arg3<A0, A1, double>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::c_string:return dispatch_call4_arg3<A0, A1, const char *>(fn, ret_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::void_type: break;
+	}
+	return false;
+    }
+
+    template <typename A0>
+    bool dispatch_call4_arg1(void *fn,
+			     native_type ret_type,
+			     native_type arg1_type,
+			     native_type arg2_type,
+			     native_type arg3_type,
+			     const value &arg0,
+			     const value &arg1,
+			     const value &arg2,
+			     const value &arg3,
+			     value *result)
+    {
+	switch ( arg1_type )
+	{
+	    case native_type::boolean: return dispatch_call4_arg2<A0, bool>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::integer: return dispatch_call4_arg2<A0, int64_t>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::real:    return dispatch_call4_arg2<A0, double>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::c_string:return dispatch_call4_arg2<A0, const char *>(fn, ret_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::void_type: break;
+	}
+	return false;
+    }
+
+    bool dispatch_call4(void *fn,
+			native_type ret_type,
+			native_type arg0_type,
+			native_type arg1_type,
+			native_type arg2_type,
+			native_type arg3_type,
+			const value &arg0,
+			const value &arg1,
+			const value &arg2,
+			const value &arg3,
+			value *result)
+    {
+	switch ( arg0_type )
+	{
+	    case native_type::boolean: return dispatch_call4_arg1<bool>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::integer: return dispatch_call4_arg1<int64_t>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::real:    return dispatch_call4_arg1<double>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::c_string:return dispatch_call4_arg1<const char *>(fn, ret_type, arg1_type, arg2_type, arg3_type, arg0, arg1, arg2, arg3, result);
+	    case native_type::void_type: break;
+	}
+	return false;
+    }
+
     bool perform_call(const std::string &name, const std::vector<value> &args, value *result)
     {
 	if ( !ensure_runtime_initialized() )
@@ -3312,8 +3562,8 @@ struct program::impl
 	    return fail_runtime("program::call does not support variadic functions yet");
 	if ( args.size() != func->parameters.size() )
 	    return fail_runtime("program::call argument count mismatch for '" + name + "'");
-	if ( args.size() > 2 )
-	    return fail_runtime("program::call currently supports up to 2 arguments");
+	if ( args.size() > 4 )
+	    return fail_runtime("program::call currently supports up to 4 arguments");
 
 	native_type ret_type;
 	if ( !native_type_from_datadef(&func->returns, ret_type) )
@@ -3344,6 +3594,15 @@ struct program::impl
 		case 2:
 		    ok = dispatch_call2(method->x86code, ret_type, arg_types[0], arg_types[1],
 					args[0], args[1], result);
+		    break;
+		case 3:
+		    ok = dispatch_call3(method->x86code, ret_type, arg_types[0], arg_types[1], arg_types[2],
+					args[0], args[1], args[2], result);
+		    break;
+		case 4:
+		    ok = dispatch_call4(method->x86code, ret_type, arg_types[0], arg_types[1],
+					arg_types[2], arg_types[3],
+					args[0], args[1], args[2], args[3], result);
 		    break;
 		default:
 		    break;

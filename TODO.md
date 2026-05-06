@@ -144,7 +144,11 @@
   `eval_unit(...)` now names that explicit full-source lane directly,
   leaving the open question more about long-term compatibility and
   whether `eval(...)` should eventually become only a compatibility
-  alias in docs/examples.
+  alias in docs/examples. The host-side `call(...)` surface is also a
+  bit less narrow now: the existing scalar/C-string subset supports up
+  to four arguments instead of stopping at arity 2, so the next call-
+  surface questions are more about richer types and result shapes than
+  about the very first arity ceiling.
   Next up, in
   dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`

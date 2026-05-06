@@ -47,6 +47,12 @@ int64_t host_strlen(const char *s)
     return g_host_strlen;
 }
 
+int64_t host_sum4(int64_t a, int64_t b, int64_t c, int64_t d)
+{
+    g_host_sum = a + b + c + d;
+    return g_host_sum;
+}
+
 void host_spin(int64_t iterations)
 {
     for ( int64_t i = 0; i < iterations; ++i )
@@ -1263,6 +1269,50 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
 
 	std::remove(path.c_str());
+    }
+
+    TEST_CASE("call invokes a compiled script function with four integer args") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int add4(int a, int b, int c, int d) { return a + b + c + d; }\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+	madc::value result;
+	CHECK(pgm.call("add4",
+		       {madc::value(int64_t(10)),
+			madc::value(int64_t(20)),
+			madc::value(int64_t(5)),
+			madc::value(int64_t(7))},
+		       &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 42);
+	CHECK_FALSE(pgm.has_error());
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("register_function supports four integer parameters") {
+	madc::program pgm;
+	g_host_sum = 0;
+
+	REQUIRE(pgm.register_function(
+	    "host_sum4",
+	    reinterpret_cast<madc::program::native_function>(host_sum4),
+	    madc::program::native_signature(
+		madc::program::native_type::integer,
+		{
+		    madc::program::native_type::integer,
+		    madc::program::native_type::integer,
+		    madc::program::native_type::integer,
+		    madc::program::native_type::integer
+		})));
+
+	CHECK(pgm.exec_string("int main() { host_sum4(10, 20, 5, 7); return 0; }\n",
+			      "host_sum4.mad"));
+	CHECK(g_host_sum == 42);
+	CHECK_FALSE(pgm.has_error());
     }
 
     TEST_CASE("script-side runtime eval sees current scope when allowed") {
