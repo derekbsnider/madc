@@ -1480,7 +1480,7 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("call still rejects string object returns for now") {
+    TEST_CASE("call supports script string object returns") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
@@ -1489,28 +1489,42 @@ TEST_SUITE("madc::program") {
 
 	REQUIRE(pgm.compile_file(path));
 	madc::value result;
-	CHECK_FALSE(pgm.call("echo", {madc::value("hello")}, &result));
-	REQUIRE(pgm.has_error());
-	const madc::error *err = pgm.last_error();
-	REQUIRE(err != NULL);
-	CHECK(err->message == "program::call does not support this return type yet");
+	REQUIRE(pgm.call("echo", {madc::value("hello")}, &result));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "hello");
+	CHECK_FALSE(pgm.has_error());
 
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("register_function still rejects std::string object signatures") {
+    TEST_CASE("register_function supports std::string object signatures") {
 	madc::program pgm;
-	auto host_echo = +[](std::string s) -> std::string { return s + "!"; };
+	auto host_echo = +[](std::string *s) -> std::string * {
+	    static std::string out;
+	    out = *s + "!";
+	    return &out;
+	};
 
-	CHECK_FALSE(pgm.register_function("host_echo",
-					  reinterpret_cast<madc::program::native_function>(host_echo),
-					  madc::program::native_signature(
-					      madc::program::native_type::string_object,
-					      {madc::program::native_type::string_object})));
-	REQUIRE(pgm.has_error());
-	const madc::error *err = pgm.last_error();
-	REQUIRE(err != NULL);
-	CHECK(err->message == "register_function does not support std::string return signatures yet");
+	REQUIRE(pgm.register_function("host_echo",
+				      reinterpret_cast<madc::program::native_function>(host_echo),
+				      madc::program::native_signature(
+					  madc::program::native_type::string_object,
+					  {madc::program::native_type::string_object})));
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "string call_host() { return host_echo(\"hi\"); }\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+
+	madc::value result;
+	REQUIRE(pgm.call("call_host", {}, &result));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "hi!");
+	CHECK_FALSE(pgm.has_error());
+
+	std::remove(path.c_str());
 
     }
 

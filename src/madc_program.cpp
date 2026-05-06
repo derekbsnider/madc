@@ -359,7 +359,6 @@ void append_unique_strings(std::vector<std::string> &dst,
 			   const std::vector<std::string> &src);
 std::vector<std::string> expand_header_symbol_groups(const std::vector<std::string> &headers);
 bool native_type_from_datadef(DataDef *type, program::native_type &out);
-bool native_call_return_type_from_datadef(DataDef *type, program::native_type &out);
 template <typename R>
 bool call_target0(void *fn, value *result);
 
@@ -489,7 +488,7 @@ bool invoke_program_zero_arg_function(Program &pgm,
 				    "program::call argument count mismatch for '" + name + "'");
 
     program::native_type ret_type;
-    if ( !native_call_return_type_from_datadef(&func->returns, ret_type) )
+    if ( !native_type_from_datadef(&func->returns, ret_type) )
 	return fail_program_runtime(pgm,
 				    "program::call does not support this return type yet");
 
@@ -519,7 +518,7 @@ bool invoke_program_zero_arg_function(Program &pgm,
 	    case program::native_type::integer:   ok = call_target0<int64_t>(method->x86code, &result); break;
 	    case program::native_type::real:      ok = call_target0<double>(method->x86code, &result); break;
 	    case program::native_type::c_string:  ok = call_target0<const char *>(method->x86code, &result); break;
-	    case program::native_type::string_object: break;
+	    case program::native_type::string_object: ok = call_target0<std::string *>(method->x86code, &result); break;
 	}
 	pgm.pop_runtime_scope();
 	if ( ok )
@@ -1926,13 +1925,6 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
     return false;
 }
 
-bool native_call_return_type_from_datadef(DataDef *type, program::native_type &out)
-{
-    if ( !native_type_from_datadef(type, out) )
-	return false;
-    return out != program::native_type::string_object;
-}
-
 template <typename T>
 T value_as(const value &v);
 
@@ -1995,6 +1987,12 @@ template <>
 value value_from<const char *>(const char *v)
 {
     return value(v);
+}
+
+template <>
+value value_from<std::string *>(std::string *v)
+{
+    return value(v ? *v : std::string());
 }
 
 bool value_from_variable(Variable *var, value &out)
@@ -3133,14 +3131,6 @@ struct program::impl
 	    public_diagnostics.push_back(public_last_error);
 	    return false;
 	}
-	if ( signature.returns == native_type::string_object )
-	    return fail_runtime("register_function does not support std::string return signatures yet");
-	for ( std::size_t i = 0; i < signature.parameters.size(); ++i )
-	{
-	    if ( signature.parameters[i] == native_type::string_object )
-		return fail_runtime("register_function does not support std::string parameter signatures yet");
-	}
-
 	engine.populate_default_registries();
 
 	datatype_vec_t params;
@@ -3297,7 +3287,7 @@ struct program::impl
 	    case native_type::integer:   return call_target0<int64_t>(fn, result);
 	    case native_type::real:      return call_target0<double>(fn, result);
 	    case native_type::c_string:  return call_target0<const char *>(fn, result);
-	    case native_type::string_object: break;
+	    case native_type::string_object: return call_target0<std::string *>(fn, result);
 	}
 	return false;
     }
@@ -3312,7 +3302,7 @@ struct program::impl
 	    case native_type::integer:   return call_target1<int64_t, A0>(fn, arg0, result);
 	    case native_type::real:      return call_target1<double, A0>(fn, arg0, result);
 	    case native_type::c_string:  return call_target1<const char *, A0>(fn, arg0, result);
-	    case native_type::string_object: break;
+	    case native_type::string_object: return call_target1<std::string *, A0>(fn, arg0, result);
 	}
 	return false;
     }
@@ -3343,7 +3333,7 @@ struct program::impl
 	    case native_type::integer:   return call_target2<int64_t, A0, A1>(fn, arg0, arg1, result);
 	    case native_type::real:      return call_target2<double, A0, A1>(fn, arg0, arg1, result);
 	    case native_type::c_string:  return call_target2<const char *, A0, A1>(fn, arg0, arg1, result);
-	    case native_type::string_object: break;
+	    case native_type::string_object: return call_target2<std::string *, A0, A1>(fn, arg0, arg1, result);
 	}
 	return false;
     }
@@ -3395,7 +3385,7 @@ struct program::impl
 	    case native_type::integer:   return call_target3<int64_t, A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	    case native_type::real:      return call_target3<double, A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	    case native_type::c_string:  return call_target3<const char *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
-	    case native_type::string_object: break;
+	    case native_type::string_object: return call_target3<std::string *, A0, A1, A2>(fn, arg0, arg1, arg2, result);
 	}
 	return false;
     }
@@ -3481,7 +3471,7 @@ struct program::impl
 	    case native_type::integer:   return call_target4<int64_t, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	    case native_type::real:      return call_target4<double, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	    case native_type::c_string:  return call_target4<const char *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
-	    case native_type::string_object: break;
+	    case native_type::string_object: return call_target4<std::string *, A0, A1, A2, A3>(fn, arg0, arg1, arg2, arg3, result);
 	}
 	return false;
     }
@@ -3608,7 +3598,7 @@ struct program::impl
 	    return fail_runtime("program::call currently supports up to 4 arguments");
 
 	native_type ret_type;
-	if ( !native_call_return_type_from_datadef(&func->returns, ret_type) )
+	if ( !native_type_from_datadef(&func->returns, ret_type) )
 	    return fail_runtime("program::call does not support this return type yet");
 
 	std::vector<native_type> arg_types;
