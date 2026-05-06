@@ -161,15 +161,21 @@
   (capturing lambdas / functors, richer diagnostics for unsupported
   signatures, or more result/argument shapes) without muddying the core
   ABI surface.
-  Next up, in
-  dependency order: finish the remaining
+  Phase 4.3 is no longer just planned: the repo now has a first
+  `lib/libmadc.so` target built from a dedicated PIC object set, an
+  `install-libmadc` path, and a first thin C ABI in
+  `include/madc_api.h` / `src/madc_c_api.cpp` for opaque program
+  handles plus scalar/string value exchange. The next work is to widen
+  that C shim carefully without duplicating the C++ API wholesale:
+  policy setters, diagnostics enumeration beyond last-error text, and
+  any deliberately stable value/callback conventions should come before
+  larger convenience growth. In parallel, finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`
   gates and post-invocation invoke-limit accounting, especially
   broader fork-mode execution coverage beyond the current narrow
   call/eval subset and any stronger/preemptive execution controls, then
-  broaden the call/callback/global/eval surface as needed. After that,
-  §4.3 = the `libmadc.so` Makefile target plus
-  `include/madc_api.h` C shim. Also keep the future subsystem split in
+  broaden the call/callback/global/eval surface as needed. Also keep
+  the future subsystem split in
   view while finishing the separation: core embedding/runtime stays in
   `libmadc`, including core `madc::DataSource`. The `madcdat`
   storage/federation/indexing track now has a real configure-time gate

@@ -2,6 +2,7 @@
 
 CXX ?= g++
 CXXFLAGS ?= -std=c++11 -Wall
+PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar
 ARFLAGS ?= rcs
 INSTALL ?= install
@@ -9,7 +10,7 @@ INSTALL_DATA ?= $(INSTALL) -m 644
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o madc_error.o madc_program.o madc_api.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
+CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
@@ -18,6 +19,7 @@ INCDIR	= ../include
 BINDIR	= ../bin
 LIBDIR	= ../lib
 OBJDIR	= ../obj
+PICOBJDIR = ../obj/pic
 FEATURE_DEFINES ?=
 OPTIONAL_CPPFLAGS ?=
 OPTIONAL_LIBS ?=
@@ -35,8 +37,10 @@ OFILES = $(CORE_OFILES)
 endif
 
 OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
+PIC_OBJECTS = $(patsubst %,$(PICOBJDIR)/%,$(OFILES))
 MADDAT_OBJECTS = $(patsubst %,$(OBJDIR)/%,$(MADDAT_OFILES))
 MADDAT_ARCHIVE = $(LIBDIR)/libmadcdat.a
+LIBMADC_SHARED = $(LIBDIR)/libmadc.so
 
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
@@ -50,9 +54,21 @@ ALL_TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(TESTSRCS))
 TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(ACTIVE_TESTSRCS))
 # Link tests against all objects except madc.o (which has main())
 TESTOBJ  = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
+LIBMADC_OBJECTS = $(filter-out $(PICOBJDIR)/madc.o, $(PIC_OBJECTS))
 
 all:
 	$(MAKE) ../bin/madc
+
+libmadc:
+	$(MAKE) $(LIBMADC_SHARED)
+
+install-libmadc: libmadc
+	$(INSTALL_DIR) $(DESTDIR)$(libdir)
+	$(INSTALL_DIR) $(DESTDIR)$(includedir)
+	$(INSTALL_DIR) $(DESTDIR)$(includedir)/libmadc
+	$(INSTALL_DATA) $(LIBMADC_SHARED) $(DESTDIR)$(libdir)/libmadc.so
+	$(INSTALL_DATA) ../include/madc_api.h $(DESTDIR)$(includedir)/madc_api.h
+	@for h in $(LIBMADDHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/libmadc/; done
 
 ifeq ($(HAVE_MADCDAT),1)
 libmadcdat:
@@ -76,8 +92,10 @@ debug:
 clean:
 	rm -f $(OBJECTS)
 	rm -f ../obj/madc_storage.o ../obj/madc_storage_bdb.o ../obj/madc_storage_gdbm.o ../obj/madc_storage_qdbm.o ../obj/madc_storage_sqlite.o
+	rm -f ../obj/pic/*.o
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
+	rm -f $(LIBMADC_SHARED)
 
 test: $(TESTBINS)
 	@for t in $(TESTBINS); do echo "Running $$t..."; $$t || exit $$?; done
@@ -91,6 +109,10 @@ $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
 ../bin/madc: $(OBJECTS)
 	$(CXX) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
 
+$(LIBMADC_SHARED): $(LIBMADC_OBJECTS)
+	mkdir -p $(LIBDIR)
+	$(CXX) -shared -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
+
 $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 	mkdir -p $(LIBDIR)
 	rm -f $@
@@ -101,3 +123,7 @@ embedded_headers.cpp: $(MADHDRS)
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) $<
+
+$(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
+	mkdir -p $(PICOBJDIR)
+	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) $<

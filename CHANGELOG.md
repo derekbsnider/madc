@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **Phase 4.3 now has a first `libmadc.so` target and thin C ABI.**
+  `src/Makefile` now builds `lib/libmadc.so` from a dedicated PIC object
+  set and exposes `install-libmadc` for the shared library plus public
+  headers. A first C-facing wrapper now also ships in
+  `include/madc_api.h` and `src/madc_c_api.cpp`, centered on opaque
+  `madc_program` handles and scalar/string `madc_value` exchange for
+  compile/exec/eval/call plus last-error retrieval. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in basic C-API
+  compile/call behavior and error-text retrieval.
+
 - **Host-side `register_function(...)` can now deduce normal C++ callback signatures, including `std::string`.**
   `madc::program` now has a typed callback-registration helper for
   ordinary host function pointers, so embedders can register callbacks

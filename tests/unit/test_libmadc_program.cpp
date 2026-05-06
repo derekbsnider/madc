@@ -21,6 +21,7 @@ bool madc_verbose = false;
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_api.h"
 #include "libmadc/api.h"
 #include "libmadc/program.h"
 
@@ -1566,6 +1567,53 @@ TEST_SUITE("madc::program") {
 
 	std::remove(path.c_str());
 
+    }
+
+    TEST_CASE("madc C API can compile and call scalar and string results") {
+	madc_program *pgm = madc_program_create();
+	REQUIRE(pgm != NULL);
+
+	madc_value args[2];
+	madc_value result;
+	madc_value_init(&args[0]);
+	madc_value_init(&args[1]);
+	madc_value_init(&result);
+
+	REQUIRE(madc_program_exec_string(
+	    pgm,
+	    "int add(int a, int b) { return a + b; }\n"
+	    "string greet() { return \"hello\"; }\n"
+	    "int main() { return 0; }\n",
+	    "c_api_exec.mad") == MADC_OK);
+
+	REQUIRE(madc_value_set_integer(&args[0], 19) == MADC_OK);
+	REQUIRE(madc_value_set_integer(&args[1], 23) == MADC_OK);
+	REQUIRE(madc_program_call(pgm, "add", args, 2, &result) == MADC_OK);
+	CHECK(result.kind == MADC_VALUE_INTEGER);
+	CHECK(result.integer_value == 42);
+
+	madc_value_clear(&result);
+	REQUIRE(madc_program_call(pgm, "greet", NULL, 0, &result) == MADC_OK);
+	CHECK(result.kind == MADC_VALUE_STRING);
+	REQUIRE(result.string_value != NULL);
+	CHECK(std::string(result.string_value, result.string_length) == "hello");
+
+	madc_value_clear(&args[0]);
+	madc_value_clear(&args[1]);
+	madc_value_clear(&result);
+	madc_program_destroy(pgm);
+    }
+
+    TEST_CASE("madc C API exposes last error text") {
+	madc_program *pgm = madc_program_create();
+	REQUIRE(pgm != NULL);
+
+	CHECK(madc_program_call(pgm, "missing_fn", NULL, 0, NULL) == MADC_ERROR);
+	const char *err = madc_program_last_error(pgm);
+	REQUIRE(err != NULL);
+	CHECK(std::string(err).empty() == false);
+
+	madc_program_destroy(pgm);
     }
 
     TEST_CASE("get_global and set_global roundtrip integer globals") {
