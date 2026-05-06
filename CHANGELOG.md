@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **The C shim now covers scalar policy mirrors, invoke limits, and diagnostics enumeration.**
+  `include/madc_api.h` and `src/madc_c_api.cpp` now expose C-facing
+  mirrors for the scalar portions of `compile_options`,
+  `security_policy`, `runtime_eval_policy`, and `invoke_limits`, plus
+  diagnostics counting and copy-out through `madc_error`. This keeps the
+  C ABI thin, but it is now useful for policy-controlled hosts that need
+  more than fire-and-forget compile/call entrypoints. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in policy roundtrip
+  and diagnostics enumeration.
+
 - **Phase 4.3 now has a first `libmadc.so` target and thin C ABI.**
   `src/Makefile` now builds `lib/libmadc.so` from a dedicated PIC object
   set and exposes `install-libmadc` for the shared library plus public

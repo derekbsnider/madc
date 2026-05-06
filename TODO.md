@@ -165,11 +165,13 @@
   `lib/libmadc.so` target built from a dedicated PIC object set, an
   `install-libmadc` path, and a first thin C ABI in
   `include/madc_api.h` / `src/madc_c_api.cpp` for opaque program
-  handles plus scalar/string value exchange. The next work is to widen
-  that C shim carefully without duplicating the C++ API wholesale:
-  policy setters, diagnostics enumeration beyond last-error text, and
-  any deliberately stable value/callback conventions should come before
-  larger convenience growth. In parallel, finish the remaining
+  handles plus scalar/string value exchange. That shim now also covers
+  scalar policy / invoke-limit mirrors and diagnostics enumeration, so
+  the next work is to widen it carefully without duplicating the C++
+  API wholesale: stable allowlist/vector handling, any deliberately
+  supported callback conventions, and clearer install/consumer
+  documentation should come before larger convenience growth. In
+  parallel, finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`
   gates and post-invocation invoke-limit accounting, especially
   broader fork-mode execution coverage beyond the current narrow

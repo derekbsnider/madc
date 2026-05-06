@@ -1616,6 +1616,84 @@ TEST_SUITE("madc::program") {
 	madc_program_destroy(pgm);
     }
 
+    TEST_CASE("madc C API policy mirrors roundtrip through program state") {
+	madc_program *pgm = madc_program_create();
+	REQUIRE(pgm != NULL);
+
+	madc_compile_options options;
+	madc_compile_options_init(&options);
+	options.enable_core_functions = 0;
+	options.enable_js_namespace = 0;
+	REQUIRE(madc_program_set_compile_options(pgm, &options) == MADC_OK);
+
+	madc_compile_options read_options;
+	madc_compile_options_init(&read_options);
+	REQUIRE(madc_program_get_compile_options(pgm, &read_options) == MADC_OK);
+	CHECK(read_options.enable_core_functions == 0);
+	CHECK(read_options.enable_js_namespace == 0);
+
+	madc_security_policy policy;
+	madc_security_policy_init(&policy);
+	policy.mode = MADC_AUTHORITY_SYSTEM_LOCKED;
+	policy.execution = MADC_EXECUTION_FORK_PER_INVOCATION;
+	policy.allow_process_functions = 0;
+	REQUIRE(madc_program_set_security_policy(pgm, &policy) == MADC_OK);
+
+	madc_security_policy read_policy;
+	madc_security_policy_init(&read_policy);
+	REQUIRE(madc_program_get_security_policy(pgm, &read_policy) == MADC_OK);
+	CHECK(read_policy.execution == MADC_EXECUTION_FORK_PER_INVOCATION);
+	CHECK(read_policy.allow_process_functions == 0);
+
+	madc_runtime_eval_policy eval_policy;
+	madc_runtime_eval_policy_init(&eval_policy);
+	eval_policy.allow_dlfcn_functions = 0;
+	eval_policy.restrict_headers_to_allowlist = 1;
+	REQUIRE(madc_program_set_runtime_eval_policy(pgm, &eval_policy) == MADC_OK);
+
+	madc_runtime_eval_policy read_eval_policy;
+	madc_runtime_eval_policy_init(&read_eval_policy);
+	REQUIRE(madc_program_get_runtime_eval_policy(pgm, &read_eval_policy) == MADC_OK);
+	CHECK(read_eval_policy.allow_dlfcn_functions == 0);
+	CHECK(read_eval_policy.restrict_headers_to_allowlist == 1);
+
+	madc_invoke_limits limits;
+	madc_invoke_limits_init(&limits);
+	limits.cpu_ms = 7;
+	limits.memory_bytes = 11;
+	limits.output_bytes = 13;
+	REQUIRE(madc_program_set_invoke_limits(pgm, &limits) == MADC_OK);
+
+	madc_invoke_limits read_limits;
+	madc_invoke_limits_init(&read_limits);
+	REQUIRE(madc_program_get_invoke_limits(pgm, &read_limits) == MADC_OK);
+	CHECK(read_limits.cpu_ms == 7);
+	CHECK(read_limits.memory_bytes == 11);
+	CHECK(read_limits.output_bytes == 13);
+
+	madc_program_destroy(pgm);
+    }
+
+    TEST_CASE("madc C API can enumerate diagnostics") {
+	madc_program *pgm = madc_program_create();
+	REQUIRE(pgm != NULL);
+
+	CHECK(madc_program_exec_string(pgm, "int main( { return 0; }\n", "c_api_bad.mad") == MADC_ERROR);
+	REQUIRE(madc_program_diagnostic_count(pgm) >= 1);
+
+	madc_error diagnostic;
+	madc_error_init(&diagnostic);
+	REQUIRE(madc_program_get_diagnostic(pgm, 0, &diagnostic) == MADC_OK);
+	CHECK(diagnostic.phase == MADC_PHASE_PARSER);
+	REQUIRE(diagnostic.file != NULL);
+	CHECK(std::string(diagnostic.file, diagnostic.file_length) == "c_api_bad.mad");
+	REQUIRE(diagnostic.message != NULL);
+	CHECK(diagnostic.message_length > 0);
+	madc_error_clear(&diagnostic);
+
+	madc_program_destroy(pgm);
+    }
+
     TEST_CASE("get_global and set_global roundtrip integer globals") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
