@@ -151,7 +151,16 @@
   bit less narrow now: the existing scalar/C-string subset supports up
   to four arguments instead of stopping at arity 2, so the next call-
   surface questions are more about richer types and result shapes than
-  about the very first arity ceiling.
+  about the very first arity ceiling. Host callback ergonomics are
+  better too: `madc::program::register_function(name, fn)` can now
+  deduce supported plain C++ function-pointer signatures, including
+  `std::string`-backed callback parameters and returns, by lowering
+  through the existing low-level `native_signature` / `string_object`
+  ABI. The next callback-facing work is therefore no longer the first
+  ergonomic layer, but whether to add broader wrapper coverage
+  (capturing lambdas / functors, richer diagnostics for unsupported
+  signatures, or more result/argument shapes) without muddying the core
+  ABI surface.
   Next up, in
   dependency order: finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`

@@ -53,6 +53,17 @@ int64_t host_sum4(int64_t a, int64_t b, int64_t c, int64_t d)
     return g_host_sum;
 }
 
+int64_t host_word_length(const std::string &s)
+{
+    g_host_strlen = static_cast<int64_t>(s.size());
+    return g_host_strlen;
+}
+
+std::string host_echo_value(std::string s)
+{
+    return s + "!";
+}
+
 void host_spin(int64_t iterations)
 {
     for ( int64_t i = 0; i < iterations; ++i )
@@ -1313,6 +1324,35 @@ TEST_SUITE("madc::program") {
 			      "host_sum4.mad"));
 	CHECK(g_host_sum == 42);
 	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("register_function deduces std::string callback signatures") {
+	madc::program pgm;
+	g_host_strlen = 0;
+
+	REQUIRE(pgm.register_function("host_word_length", host_word_length));
+	REQUIRE(pgm.register_function("host_echo_value", host_echo_value));
+
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int measure() { return host_word_length(\"hello\"); }\n"
+		   "string shout() { return host_echo_value(\"hi\"); }\n"
+		   "int main() { return 0; }\n");
+
+	REQUIRE(pgm.compile_file(path));
+
+	madc::value result;
+	REQUIRE(pgm.call("measure", {}, &result));
+	REQUIRE(result.is_integer());
+	CHECK(result.as_integer() == 5);
+	CHECK(g_host_strlen == 5);
+
+	REQUIRE(pgm.call("shout", {}, &result));
+	REQUIRE(result.is_string());
+	CHECK(result.as_string() == "hi!");
+	CHECK_FALSE(pgm.has_error());
+
+	std::remove(path.c_str());
     }
 
     TEST_CASE("script-side runtime eval sees current scope when allowed") {

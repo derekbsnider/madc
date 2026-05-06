@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **Host-side `register_function(...)` can now deduce normal C++ callback signatures, including `std::string`.**
+  `madc::program` now has a typed callback-registration helper for
+  ordinary host function pointers, so embedders can register callbacks
+  like `int64_t(const std::string &)` or `std::string(std::string)`
+  without spelling out the low-level `native_signature` or manually
+  handling the compiler's `std::string*` callback ABI. Internally this
+  lowers through a generated trampoline onto the existing explicit
+  signature path, keeping the ABI stable while making the public C++
+  surface less error-prone. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in deduced
+  `std::string` parameter and return callbacks.
+
 - **Host-side `madc::program::call(...)` and `register_function(...)` now support script `string` object signatures on the real `std::string*` ABI.**
   The host call bridge now recognizes compiled script `string`
   parameters and returns, passing `std::string` object pointers through

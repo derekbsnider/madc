@@ -9,6 +9,7 @@
 #include <map>
 #include <memory>
 #include <string>
+#include <type_traits>
 #include <vector>
 
 namespace madc {
@@ -124,6 +125,8 @@ public:
     bool eval_expression(const std::string &expression,
 			 std::string &result,
 			 const std::string &virtual_filename = std::string());
+    template <typename Ret, typename... Args>
+    bool register_function(const std::string &name, Ret (*callback)(Args...));
     bool register_function(const std::string &name,
 			   native_function callback,
 			   const native_signature &signature);
@@ -155,9 +158,128 @@ public:
     void clear_diagnostics();
 
 private:
+    bool register_cpp_callback(const std::string &name,
+			       void *callback_ptr,
+			       const native_signature &signature,
+			       native_function adapter_entry);
     struct impl;
     std::unique_ptr<impl> _impl;
 };
+
+namespace detail {
+
+template <typename T>
+struct callback_type_map;
+
+template <>
+struct callback_type_map<bool>
+{
+    typedef bool low_type;
+    static program::native_type native() { return program::native_type::boolean; }
+    static bool from_low(bool v) { return v; }
+    static bool to_low(bool v) { return v; }
+};
+
+template <>
+struct callback_type_map<int64_t>
+{
+    typedef int64_t low_type;
+    static program::native_type native() { return program::native_type::integer; }
+    static int64_t from_low(int64_t v) { return v; }
+    static int64_t to_low(int64_t v) { return v; }
+};
+
+template <>
+struct callback_type_map<double>
+{
+    typedef double low_type;
+    static program::native_type native() { return program::native_type::real; }
+    static double from_low(double v) { return v; }
+    static double to_low(double v) { return v; }
+};
+
+template <>
+struct callback_type_map<const char *>
+{
+    typedef const char *low_type;
+    static program::native_type native() { return program::native_type::c_string; }
+    static const char *from_low(const char *v) { return v; }
+    static const char *to_low(const char *v) { return v; }
+};
+
+template <>
+struct callback_type_map<std::string>
+{
+    typedef std::string *low_type;
+    static program::native_type native() { return program::native_type::string_object; }
+    static std::string from_low(std::string *v) { return v ? *v : std::string(); }
+    static std::string *to_low(const std::string &v)
+    {
+	static thread_local std::string storage;
+	storage = v;
+	return &storage;
+    }
+};
+
+template <>
+struct callback_type_map<const std::string &>
+{
+    typedef std::string *low_type;
+    static program::native_type native() { return program::native_type::string_object; }
+    static const std::string &from_low(std::string *v)
+    {
+	static const std::string empty;
+	return v ? *v : empty;
+    }
+};
+
+template <typename Ret, typename... Args>
+struct callback_adapter
+{
+    typedef Ret (*callback_ptr)(Args...);
+    typedef typename callback_type_map<Ret>::low_type low_ret_type;
+
+    static low_ret_type entry(uintptr_t raw, typename callback_type_map<Args>::low_type... args)
+    {
+	callback_ptr fn = reinterpret_cast<callback_ptr>(raw);
+	return callback_type_map<Ret>::to_low(fn(callback_type_map<Args>::from_low(args)...));
+    }
+};
+
+template <typename... Args>
+struct callback_adapter<void, Args...>
+{
+    typedef void (*callback_ptr)(Args...);
+
+    static void entry(uintptr_t raw, typename callback_type_map<Args>::low_type... args)
+    {
+	callback_ptr fn = reinterpret_cast<callback_ptr>(raw);
+	fn(callback_type_map<Args>::from_low(args)...);
+    }
+};
+
+template <typename Ret, typename... Args>
+program::native_signature make_callback_signature()
+{
+    program::native_signature sig(std::is_void<Ret>::value
+				      ? program::native_type::void_type
+				      : callback_type_map<Ret>::native());
+    int unused[] = {0, (sig.parameters.push_back(callback_type_map<Args>::native()), 0)...};
+    (void)unused;
+    return sig;
+}
+
+} // namespace detail
+
+template <typename Ret, typename... Args>
+bool program::register_function(const std::string &name, Ret (*callback)(Args...))
+{
+    native_function adapter = reinterpret_cast<native_function>(&detail::callback_adapter<Ret, Args...>::entry);
+    return register_cpp_callback(name,
+				 reinterpret_cast<void *>(callback),
+				 detail::make_callback_signature<Ret, Args...>(),
+				 adapter);
+}
 
 } // namespace madc
 

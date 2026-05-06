@@ -2265,6 +2265,36 @@ bool call_target4_void(void *fn,
     return true;
 }
 
+bool build_cpp_callback_trampoline(asmjit::JitRuntime &runtime,
+				   void *callback_ptr,
+				   program::native_function adapter_entry,
+				   program::native_function &out)
+{
+    out = NULL;
+    if ( !callback_ptr || !adapter_entry )
+	return false;
+
+    asmjit::CodeHolder code;
+    code.init(runtime.environment());
+    asmjit::x86::Assembler a(&code);
+
+    // Insert the original callback pointer as a hidden first GP argument:
+    // rdi <- callback, rsi <- old rdi, rdx <- old rsi, rcx <- old rdx, r8 <- old rcx.
+    a.mov(asmjit::x86::r8, asmjit::x86::rcx);
+    a.mov(asmjit::x86::rcx, asmjit::x86::rdx);
+    a.mov(asmjit::x86::rdx, asmjit::x86::rsi);
+    a.mov(asmjit::x86::rsi, asmjit::x86::rdi);
+    a.mov(asmjit::x86::rdi, asmjit::imm(reinterpret_cast<uint64_t>(callback_ptr)));
+    a.mov(asmjit::x86::rax, asmjit::imm(reinterpret_cast<uint64_t>(adapter_entry)));
+    a.jmp(asmjit::x86::rax);
+
+    void *fn = NULL;
+    if ( runtime.add(&fn, &code) != asmjit::kErrorOk )
+	return false;
+    out = reinterpret_cast<program::native_function>(fn);
+    return true;
+}
+
 } // namespace
 
 struct program::impl
@@ -2289,12 +2319,20 @@ struct program::impl
     value current_expression_context;
     std::map<std::string, value> active_expression_bindings;
     invoke_limits current_invoke_limits;
+    asmjit::JitRuntime callback_trampoline_runtime;
+    std::vector<void *> callback_trampolines;
 
     impl()
     {
 	engine.capture_output_to_buffer();
 	engine.capture_error_to_buffer();
 	reset_program();
+    }
+
+    ~impl()
+    {
+	for ( std::size_t i = 0; i < callback_trampolines.size(); ++i )
+	    callback_trampoline_runtime.release(callback_trampolines[i]);
     }
 
     void reset_program()
@@ -3143,6 +3181,21 @@ struct program::impl
 						  reinterpret_cast<fVOIDFUNC>(callback));
 	reset_program();
 	return true;
+    }
+
+    bool register_cpp_callback(const std::string &name,
+			       void *callback_ptr,
+			       const native_signature &signature,
+			       native_function adapter_entry)
+    {
+	native_function trampoline = NULL;
+	if ( !build_cpp_callback_trampoline(callback_trampoline_runtime,
+					    callback_ptr,
+					    adapter_entry,
+					    trampoline) )
+	    return fail_runtime("register_function could not build callback trampoline");
+	callback_trampolines.push_back(reinterpret_cast<void *>(trampoline));
+	return register_function(name, trampoline, signature);
     }
 
     bool fail_runtime(const std::string &message)
@@ -4314,6 +4367,14 @@ bool program::register_function(const std::string &name,
 				const native_signature &signature)
 {
     return _impl->register_function(name, callback, signature);
+}
+
+bool program::register_cpp_callback(const std::string &name,
+				    void *callback_ptr,
+				    const native_signature &signature,
+				    native_function adapter_entry)
+{
+    return _impl->register_cpp_callback(name, callback_ptr, signature, adapter_entry);
 }
 
 bool program::call(const std::string &name,
