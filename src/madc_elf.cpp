@@ -1171,8 +1171,8 @@ bool Program::save_executable(const std::string &path)
 		}
 	}
 
-	// Always need libc if there are any external symbols.
-	if ( !extern_syms.empty() && needed_lib_set.find("libc.so.6") == needed_lib_set.end() )
+	// Always need libc (for __libc_start_main at minimum).
+	if ( needed_lib_set.find("libc.so.6") == needed_lib_set.end() )
 	{
 		needed_lib nl;
 		nl.name = "libc.so.6";
@@ -1325,7 +1325,7 @@ bool Program::save_executable(const std::string &path)
 		emit_val(out, versym[i]);
 
 	// .gnu.version_r (VERNEED): one entry for libc.so.6.
-	size_t verneed_offset = align_to(out, 4);
+	size_t verneed_offset = align_to(out, 8);
 	// Verneed header: version(2), cnt(2), file(4), aux(4), next(4)
 	emit_val<uint16_t>(out, 1);         // vn_version
 	emit_val<uint16_t>(out, 2);         // vn_cnt (2 aux entries)
@@ -1914,6 +1914,7 @@ bool Program::save_executable(const std::string &path)
 		if ( extern_rela_count > 0 )
 			emit_dyn(DT_TEXTREL, 0);
 	}
+	emit_dyn(0x6ffffff0, BASE_ADDR + versym_offset);  // DT_VERSYM
 	emit_dyn(0x6ffffffe, BASE_ADDR + verneed_offset); // DT_VERNEED
 	emit_dyn(0x6fffffff, 1);                         // DT_VERNEEDNUM
 	emit_dyn(DT_NULL, 0);
@@ -2088,7 +2089,7 @@ bool Program::save_executable(const std::string &path)
 	// [6] .gnu.version_r
 	emit_shdr(shname_verneed, 0x6ffffffe /*SHT_GNU_verneed*/, SHF_ALLOC,
 		  BASE_ADDR + verneed_offset, verneed_offset, verneed_size,
-		  SEC_DYNSTR, 1, 4, 0);
+		  SEC_DYNSTR, 1, 8, 0);
 
 	// [7] .rela.dyn
 	emit_shdr(shname_rela, SHT_RELA, SHF_ALLOC,
