@@ -28,10 +28,6 @@
 
 using namespace std;
 
-bool madc_verbose = false;
-
-throwstream throwit;
-
 // CLI-only active program pointer used by the crash handler to map a
 // faulting JIT RIP back to source. Library consumers should provide
 // their own crash/error plumbing instead of relying on process globals.

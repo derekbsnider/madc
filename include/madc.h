@@ -1172,6 +1172,7 @@ public:
     std::unique_ptr<std::ofstream> json_file;
     std::string json_file_path;
     std::vector<LogSink> log_sinks;
+    bool verbose = false;
     Program::RegistrationPolicy registration_policy;
     Program::BuiltinRegistry builtin_registry;
     Program::NamespaceRegistry namespace_registry;

@@ -6,7 +6,7 @@
 //////////////////////////////////////////////////////////////////////////
 #define __DATADEF_H 1
 
-extern bool madc_verbose;
+extern thread_local bool madc_verbose;
 
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };

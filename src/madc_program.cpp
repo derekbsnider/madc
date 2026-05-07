@@ -26,7 +26,7 @@
 #include <sys/wait.h>
 #include <unistd.h>
 
-extern bool madc_verbose;
+extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
 #include <asmjit/x86.h>
@@ -2306,6 +2306,13 @@ struct program::impl
 	uint64_t resident_bytes = 0;
     };
 
+    struct verbose_scope
+    {
+	bool saved;
+	verbose_scope(bool v) : saved(madc_verbose) { madc_verbose = v; }
+	~verbose_scope() { madc_verbose = saved; }
+    };
+
     MadcEngine owned_engine;
     MadcEngine *eng;
     std::unique_ptr<Program> pgm;
@@ -2463,6 +2470,7 @@ struct program::impl
 
     bool compile_loaded_file(const std::string &path)
     {
+	verbose_scope vs(eng->verbose);
 	TokenProgram *tp = pgm->tokenize(path.c_str());
 	if ( !tp )
 	{
@@ -2486,6 +2494,7 @@ struct program::impl
     bool compile_loaded_source(const std::string &source,
 			       const std::string &display_file)
     {
+	verbose_scope vs(eng->verbose);
 	if ( !pgm->load_buffer(ensure_trailing_newline(source), display_file) )
 	{
 	    sync_public_errors();
@@ -2584,6 +2593,7 @@ struct program::impl
 
     bool exec_file_with_display(const std::string &path, const std::string &display_file)
     {
+	verbose_scope vs(eng->verbose);
 	reset_program();
 	if ( !compile_loaded_file(path) )
 	{
@@ -2804,6 +2814,7 @@ struct program::impl
 				  const std::string &display_file,
 				  value *result)
     {
+	verbose_scope vs(eng->verbose);
 	if ( !compile_source_with_display(source, display_file) )
 	    return false;
 	return call(eval_entry_name(), std::vector<value>(), result);
@@ -2827,6 +2838,7 @@ struct program::impl
     bool exec_source_with_display(const std::string &source,
 				  const std::string &display_file)
     {
+	verbose_scope vs(eng->verbose);
 	if ( !compile_source_with_display(source, display_file) )
 	    return false;
 	return exec_compiled_with_display(display_file, display_file);
@@ -3117,6 +3129,7 @@ struct program::impl
 			 value *result,
 			 const std::string &virtual_filename)
     {
+	verbose_scope vs(eng->verbose);
 	std::string validation_error;
 	std::string effective_expression = expression;
 	std::map<std::string, value> effective_bindings;
@@ -3888,6 +3901,7 @@ struct program::impl
 
     bool call(const std::string &name, const std::vector<value> &args, value *result)
     {
+	verbose_scope vs(eng->verbose);
 	if ( should_fork_invocation() )
 	    return call_in_child(name, args, result);
 	return invoke_with_limits("call", [this, &name, &args, result]() -> bool {
@@ -4594,6 +4608,16 @@ engine &engine::operator=(engine &&other) noexcept
 program engine::create_program()
 {
     return program(*this);
+}
+
+void engine::set_verbose(bool v)
+{
+    _impl->eng.verbose = v;
+}
+
+bool engine::get_verbose() const
+{
+    return _impl->eng.verbose;
 }
 
 void engine::set_compile_options(const compile_options &options)

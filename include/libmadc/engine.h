@@ -25,6 +25,10 @@ public:
     /// defaults, and logging configuration.
     program create_program();
 
+    /// Enable verbose diagnostic output for this engine's programs.
+    void set_verbose(bool v);
+    bool get_verbose() const;
+
     /// Policy defaults applied to every program created from this engine.
     void set_compile_options(const compile_options &options);
     const compile_options &get_compile_options() const;
