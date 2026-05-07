@@ -7,10 +7,11 @@ AR ?= ar
 ARFLAGS ?= rcs
 INSTALL ?= install
 INSTALL_DATA ?= $(INSTALL) -m 644
+INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
+CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
@@ -40,7 +41,10 @@ OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 PIC_OBJECTS = $(patsubst %,$(PICOBJDIR)/%,$(OFILES))
 MADDAT_OBJECTS = $(patsubst %,$(OBJDIR)/%,$(MADDAT_OFILES))
 MADDAT_ARCHIVE = $(LIBDIR)/libmadcdat.a
+MADC_VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo 0.0.0)
+MADC_SOVERSION ?= $(firstword $(subst ., ,$(MADC_VERSION)))
 LIBMADC_SHARED = $(LIBDIR)/libmadc.so
+pkgconfigdir ?= $(libdir)/pkgconfig
 
 TESTDIR  = ../tests/unit
 TESTSRCS = $(wildcard $(TESTDIR)/*.cpp)
@@ -55,6 +59,9 @@ TESTBINS = $(patsubst $(TESTDIR)/%.cpp,$(BINDIR)/%,$(ACTIVE_TESTSRCS))
 # Link tests against all objects except madc.o (which has main())
 TESTOBJ  = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 LIBMADC_OBJECTS = $(filter-out $(PICOBJDIR)/madc.o, $(PIC_OBJECTS))
+LIBMADC_STAGE_ROOT ?= /tmp/madc-libstage
+LIBMADC_STAGE_CPP_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_cpp_smoke
+LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 
 all:
 	$(MAKE) ../bin/madc
@@ -62,13 +69,24 @@ all:
 libmadc:
 	$(MAKE) $(LIBMADC_SHARED)
 
+libmadc-smoke:
+	rm -rf $(LIBMADC_STAGE_ROOT)
+	$(MAKE) install-libmadc DESTDIR=$(LIBMADC_STAGE_ROOT)
+	$(CXX) -o $(LIBMADC_STAGE_CPP_SMOKE) $(CXXFLAGS) -I$(LIBMADC_STAGE_ROOT)$(includedir) ../tests/libmadc_cpp_smoke.cpp -L$(LIBMADC_STAGE_ROOT)$(libdir) -Wl,-rpath,$(LIBMADC_STAGE_ROOT)$(libdir) -lmadc
+	$(CC) -o $(LIBMADC_STAGE_C_SMOKE) -I$(LIBMADC_STAGE_ROOT)$(includedir) ../tests/libmadc_c_smoke.c -L$(LIBMADC_STAGE_ROOT)$(libdir) -Wl,-rpath,$(LIBMADC_STAGE_ROOT)$(libdir) -lmadc
+	$(LIBMADC_STAGE_CPP_SMOKE)
+	$(LIBMADC_STAGE_C_SMOKE)
+
 install-libmadc: libmadc
 	$(INSTALL_DIR) $(DESTDIR)$(libdir)
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)
 	$(INSTALL_DIR) $(DESTDIR)$(includedir)/libmadc
-	$(INSTALL_DATA) $(LIBMADC_SHARED) $(DESTDIR)$(libdir)/libmadc.so
+	$(INSTALL_PROGRAM) $(LIBMADC_SHARED) $(DESTDIR)$(libdir)/libmadc.so.$(MADC_VERSION)
+	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_VERSION) libmadc.so.$(MADC_SOVERSION)
+	cd $(DESTDIR)$(libdir) && ln -sf libmadc.so.$(MADC_SOVERSION) libmadc.so
 	$(INSTALL_DATA) ../include/madc_api.h $(DESTDIR)$(includedir)/madc_api.h
 	@for h in $(LIBMADDHDRS); do $(INSTALL_DATA) $$h $(DESTDIR)$(includedir)/libmadc/; done
+	@if [ -f ../libmadc.pc ]; then $(INSTALL_DIR) $(DESTDIR)$(pkgconfigdir) && $(INSTALL_DATA) ../libmadc.pc $(DESTDIR)$(pkgconfigdir)/libmadc.pc; fi
 
 ifeq ($(HAVE_MADCDAT),1)
 libmadcdat:
@@ -111,7 +129,7 @@ $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
 
 $(LIBMADC_SHARED): $(LIBMADC_OBJECTS)
 	mkdir -p $(LIBDIR)
-	$(CXX) -shared -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
+	$(CXX) -shared -Wl,-soname,libmadc.so.$(MADC_SOVERSION) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
 
 $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 	mkdir -p $(LIBDIR)

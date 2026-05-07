@@ -328,5 +328,5 @@ fi
 
 AC_MSG_NOTICE([madcdat=$HAVE_MADCDAT optional backends: bdb=$HAVE_BDB gdbm=$HAVE_GDBM qdbm=$HAVE_QDBM xqdbm=$HAVE_XQDBM sqlite3=$HAVE_SQLITE3])
 
-AC_CONFIG_FILES([Makefile config.mk])
+AC_CONFIG_FILES([Makefile config.mk libmadc.pc])
 AC_OUTPUT
