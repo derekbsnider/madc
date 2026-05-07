@@ -643,6 +643,34 @@ int madc_program_call(madc_program *program,
     });
 }
 
+int madc_program_get_global(madc_program *program,
+			    const char *name,
+			    madc_value *result)
+{
+    if ( !program || !name || !result )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::value cpp_result;
+	if ( !program->program.get_global(name, &cpp_result) )
+	    return false;
+	return from_cpp_value(cpp_result, result);
+    });
+}
+
+int madc_program_set_global(madc_program *program,
+			    const char *name,
+			    const madc_value *new_value)
+{
+    if ( !program || !name || !new_value )
+	return MADC_ERROR;
+    madc::value cpp_val;
+    if ( !to_cpp_value(*new_value, cpp_val) )
+	return return_failure(program, "madc C API does not support that value kind for set_global");
+    return run_program_call(program, [=, &cpp_val]() {
+	return program->program.set_global(name, cpp_val);
+    });
+}
+
 void madc_compile_options_init(madc_compile_options *options)
 {
     if ( options == NULL )

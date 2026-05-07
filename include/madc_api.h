@@ -176,6 +176,13 @@ int madc_program_call(madc_program *program,
 		      size_t nargs,
 		      madc_value *result);
 
+int madc_program_get_global(madc_program *program,
+			    const char *name,
+			    madc_value *result);
+int madc_program_set_global(madc_program *program,
+			    const char *name,
+			    const madc_value *new_value);
+
 void madc_compile_options_init(madc_compile_options *options);
 void madc_security_policy_init(madc_security_policy *policy);
 void madc_runtime_eval_policy_init(madc_runtime_eval_policy *policy);
