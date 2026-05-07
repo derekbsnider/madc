@@ -170,7 +170,12 @@
   the next work is to widen it carefully without duplicating the C++
   API wholesale: stable allowlist/vector handling, any deliberately
   supported callback conventions, and clearer install/consumer
-  documentation should come before larger convenience growth. In
+  documentation should come before larger convenience growth. The
+  staged install/use smoke path is now also real through
+  `make -C src libmadc-smoke`, so the next library-readiness work is to
+  audit the installed public header surface and decide what should stay
+  first-class versus remain internal/provisional before the C shim grows
+  much further. In
   parallel, finish the remaining
   authority/resource gaps beyond the current first-pass dlsym / `#load`
   gates and post-invocation invoke-limit accounting, especially
