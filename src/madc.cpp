@@ -220,15 +220,30 @@ int main(int argc, char **argv)
     prog->colors = true;
 
     int filearg = 1;
+    const char *emit_object_path = NULL;
+    const char *emit_executable_path = NULL;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             madc_verbose = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {
+            emit_object_path = argv[++i];
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-executable") == 0 && i + 1 < argc) {
+            emit_executable_path = argv[++i];
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            emit_executable_path = argv[++i];
             filearg = i + 1;
         } else {
             filearg = i;
             break;
         }
     }
+
+    if ( emit_object_path || emit_executable_path )
+	prog->aot_tracking = true;
 
     if ( argc >= 2 && filearg < argc )
     {
@@ -238,6 +253,24 @@ int main(int argc, char **argv)
 	    return 0;
 	if ( !prog->compile() )
 	    return 0;
+
+	if ( emit_object_path )
+	{
+	    if ( prog->save_object(emit_object_path) )
+		cerr << "wrote " << emit_object_path << endl;
+	    else
+		cerr << "failed to write " << emit_object_path << endl;
+	    return 0;
+	}
+
+	if ( emit_executable_path )
+	{
+	    if ( prog->save_executable(emit_executable_path) )
+		cerr << "wrote " << emit_executable_path << endl;
+	    else
+		cerr << "failed to write " << emit_executable_path << endl;
+	    return 0;
+	}
 
 	// set script argc/argv after tokenize/parse/compile (tokenizer_init resets members)
 	prog->script_argc = argc - filearg;

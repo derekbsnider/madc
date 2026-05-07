@@ -1256,10 +1256,12 @@ bool Program::save_executable(const std::string &path)
 		if ( rela_entries[i].is_extern )
 			++extern_rela_count;
 	size_t total_rela_count = extern_rela_count + addrtab_data_relas.size();
-	size_t rela_dyn_size = total_rela_count * sizeof(Elf64_Rela);
+	// Reserve extra space for PLT GOT relas that may be added later.
+	size_t max_plt_relas = extern_syms.size() + external_symbol_map.size();
+	size_t rela_dyn_size = (total_rela_count + max_plt_relas) * sizeof(Elf64_Rela);
 
 	size_t rela_dyn_offset = align_to(out, 8);
-	// Emit placeholder relas — we'll patch them once we know the text vaddr.
+	// Emit placeholder relas — we'll patch them later.
 	size_t rela_dyn_data_start = out.size();
 	emit_zeros(out, rela_dyn_size);
 
@@ -1332,16 +1334,172 @@ bool Program::save_executable(const std::string &path)
 	// The addrtab itself lives in .data and will be patched by the
 	// dynamic linker via .rela.dyn entries.
 
-	// TODO: scan for direct call rel32 to external functions that
-	// asmjit encoded without the address table (when the target was
-	// within ±2GB of the JIT code at compile time). These need to
-	// be converted to indirect calls through the addrtab/data section,
-	// or the rela section needs to be grown dynamically to include
-	// R_X86_64_PC32 entries for the dynamic linker. This affects
-	// programs compiled from host binaries where madc internal
-	// helpers are in the same address space. SMAUG (compiled via
-	// the CLI) is not affected since all its external calls go
-	// through the address table.
+	// Scan for direct call rel32 to external functions that asmjit
+	// encoded without the address table. Build a mini-PLT: for each
+	// unique external target, create a trampoline stub (jmp *[rip+N])
+	// that jumps through a GOT slot. Rewrite the call rel32 to target
+	// the trampoline. The dynamic linker fills the GOT slots.
+	struct plt_entry { uintptr_t target_addr; uint32_t dynsym_index; size_t got_offset; };
+	std::vector<plt_entry> plt_entries;
+	std::map<uintptr_t, size_t> plt_index_map; // target → index into plt_entries
+
+	// First pass: find all call rel32 to external targets.
+	struct call_patch { size_t code_offset; size_t plt_idx; };
+	std::vector<call_patch> call_patches;
+	{
+		for ( size_t i = 0; i + 5 <= total_code_size; ++i )
+		{
+			bool has_rex = false;
+			size_t call_off = i;
+
+			if ( text_copy[i] == 0xE8 )
+				call_off = i;
+			else if ( text_copy[i] >= 0x40 && text_copy[i] <= 0x4F
+				&& i + 6 <= total_code_size && text_copy[i+1] == 0xE8 )
+			{
+				has_rex = true;
+				call_off = i + 1;
+			}
+			else
+				continue;
+
+			int32_t disp;
+			std::memcpy(&disp, &text_copy[call_off + 1], 4);
+			int64_t rip = static_cast<int64_t>(code_vaddr + call_off + 5);
+			int64_t target = rip + disp;
+
+			if ( target >= (int64_t)code_vaddr
+			  && target < (int64_t)(code_vaddr + total_code_size) )
+				continue; // internal
+
+			uintptr_t taddr = static_cast<uintptr_t>(target);
+			std::map<uintptr_t, std::string>::const_iterator eit =
+			    external_symbol_map.find(taddr);
+			if ( eit == external_symbol_map.end() )
+				continue;
+
+			size_t plt_idx;
+			std::map<uintptr_t, size_t>::const_iterator pit =
+			    plt_index_map.find(taddr);
+			if ( pit != plt_index_map.end() )
+			{
+				plt_idx = pit->second;
+			}
+			else
+			{
+				// Find or create dynsym entry.
+				uint32_t dsym;
+				std::map<uintptr_t, uint32_t>::const_iterator dit =
+				    extern_indices.find(taddr);
+				if ( dit != extern_indices.end() )
+				{
+					dsym = dit->second;
+				}
+				else
+				{
+					dsym = static_cast<uint32_t>(extern_syms.size() + 1);
+					ext_sym es;
+					es.name = eit->second;
+					extern_syms.push_back(es);
+					extern_indices[taddr] = dsym;
+				}
+
+				plt_idx = plt_entries.size();
+				plt_entry pe;
+				pe.target_addr = taddr;
+				pe.dynsym_index = dsym;
+				pe.got_offset = 0; // computed later
+				plt_entries.push_back(pe);
+				plt_index_map[taddr] = plt_idx;
+			}
+
+			call_patch cp;
+			cp.code_offset = call_off;
+			cp.plt_idx = plt_idx;
+			call_patches.push_back(cp);
+		}
+	}
+
+	// Build PLT stub + GOT data.
+	// Layout: [stubs: 6 bytes each] [GOT slots: 8 bytes each]
+	// jmp *[rip+N] = FF 25 <disp32>
+	size_t plt_stub_size = plt_entries.size() * 6;
+	size_t plt_got_offset_base = plt_stub_size; // GOT starts after stubs
+	std::vector<uint8_t> plt_data;
+
+	if ( !plt_entries.empty() )
+	{
+		// Emit stubs.
+		for ( size_t i = 0; i < plt_entries.size(); ++i )
+		{
+			size_t stub_off = plt_data.size();
+			size_t got_off = plt_got_offset_base + i * 8;
+			// RIP after this instruction = stub_off + 6
+			int32_t got_disp = static_cast<int32_t>(got_off - (stub_off + 6));
+			uint8_t stub[6] = { 0xFF, 0x25, 0, 0, 0, 0 };
+			std::memcpy(&stub[2], &got_disp, 4);
+			plt_data.insert(plt_data.end(), stub, stub + 6);
+		}
+		// Emit GOT slots (zeroed — dynamic linker fills them).
+		for ( size_t i = 0; i < plt_entries.size(); ++i )
+		{
+			plt_entries[i].got_offset = plt_data.size();
+			uint64_t zero = 0;
+			const uint8_t *p = reinterpret_cast<const uint8_t *>(&zero);
+			plt_data.insert(plt_data.end(), p, p + 8);
+		}
+
+		// Append PLT to text_copy.
+		size_t plt_file_start = total_code_size;
+		text_copy.insert(text_copy.end(), plt_data.begin(), plt_data.end());
+		total_code_size += plt_data.size();
+
+		// Rewrite call rel32 instructions to target PLT stubs.
+		for ( size_t i = 0; i < call_patches.size(); ++i )
+		{
+			size_t co = call_patches[i].code_offset;
+			size_t pi = call_patches[i].plt_idx;
+			size_t plt_stub_addr = code_vaddr + plt_file_start + pi * 6;
+			int64_t rip = static_cast<int64_t>(code_vaddr + co + 5);
+			int32_t new_disp = static_cast<int32_t>(
+			    static_cast<int64_t>(plt_stub_addr) - rip);
+			std::memcpy(&text_copy[co + 1], &new_disp, 4);
+		}
+
+		// Add R_X86_64_64 relocations for GOT slots.
+		for ( size_t i = 0; i < plt_entries.size(); ++i )
+		{
+			addrtab_rela ar;
+			ar.func_addr = plt_entries[i].target_addr;
+			// Create a data_rela for the GOT slot in the PLT area.
+			data_rela dr;
+			dr.data_offset = 0; // not in .data — handled separately
+			dr.dynsym_index = plt_entries[i].dynsym_index;
+
+			// We'll emit these relas directly; store info for later.
+			rela_entry re;
+			re.source_offset = plt_file_start + plt_entries[i].got_offset;
+			re.dynsym_index = plt_entries[i].dynsym_index;
+			re.elf_type = R_X86_64_64;
+			re.is_extern = true;
+			re.raw_addend = 0;
+			rela_entries.push_back(re);
+		}
+
+		// Recount extern relas.
+		extern_rela_count = 0;
+		for ( size_t i = 0; i < rela_entries.size(); ++i )
+			if ( rela_entries[i].is_extern )
+				++extern_rela_count;
+		total_rela_count = extern_rela_count + addrtab_data_relas.size();
+		rela_dyn_size = total_rela_count * sizeof(Elf64_Rela);
+
+		data_patches += call_patches.size();
+
+		DBG(std::cout << "save_executable: built PLT with "
+			      << plt_entries.size() << " entries, patched "
+			      << call_patches.size() << " direct calls" << std::endl);
+	}
 
 	// Scan for absolute address patterns in the relocated code.
 	// After relocateToBase, addrtab references are correct, but
