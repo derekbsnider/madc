@@ -132,6 +132,66 @@ static const size_t START_STUB_CALL_OFFSET = 4; // offset of the rel32 in the ca
 
 } // namespace
 
+std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
+{
+	std::vector<GlobalDataEntry> entries;
+	std::set<void *> seen;
+
+	if ( !tkProgram )
+		return entries;
+
+	// Collect global variables from the top-level compound.
+	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
+	{
+		Variable *var = tkProgram->variables[i];
+		if ( !var || !var->data || !var->type )
+			continue;
+		if ( !var->is_global() )
+			continue;
+		// Skip function variables (their data is a Method*).
+		if ( var->type->basetype() == BaseType::btFunct )
+			continue;
+
+		size_t sz = var->type->size;
+		if ( var->is_fixed_array() )
+			sz *= var->total_elements();
+		if ( sz == 0 )
+			continue;
+
+		if ( seen.count(var->data) )
+			continue;
+		seen.insert(var->data);
+
+		GlobalDataEntry e;
+		e.name = var->name;
+		e.address = var->data;
+		e.size = sz;
+		entries.push_back(e);
+	}
+
+	// Collect string literals from literal_map.
+	for ( variable_map_t::const_iterator it = literal_map.begin();
+	      it != literal_map.end(); ++it )
+	{
+		Variable *var = it->second;
+		if ( !var || !var->data )
+			continue;
+		// String literals have their data pointing to std::string objects.
+		size_t sz = sizeof(std::string);
+		if ( seen.count(var->data) )
+			continue;
+		seen.insert(var->data);
+
+		GlobalDataEntry e;
+		e.name = "__literal_" + it->first;
+		e.address = var->data;
+		e.size = sz;
+		entries.push_back(e);
+	}
+
+	return entries;
+}
+
 bool Program::save_object(const std::string &path) const
 {
 	if ( !root_fn )
@@ -756,6 +816,25 @@ bool Program::save_executable(const std::string &path) const
 	if ( !text_data || text_size == 0 )
 		return false;
 
+	// --- Collect global data for .data section ---
+
+	std::vector<GlobalDataEntry> globals = collect_global_data();
+	std::map<uintptr_t, size_t> data_offset_map; // old addr → offset in .data
+	std::vector<uint8_t> data_section_buf;
+
+	for ( size_t i = 0; i < globals.size(); ++i )
+	{
+		// Align each entry to 8 bytes.
+		size_t pad = (8 - (data_section_buf.size() % 8)) % 8;
+		data_section_buf.insert(data_section_buf.end(), pad, 0);
+
+		size_t offset = data_section_buf.size();
+		data_offset_map[reinterpret_cast<uintptr_t>(globals[i].address)] = offset;
+
+		const uint8_t *src = static_cast<const uint8_t *>(globals[i].address);
+		data_section_buf.insert(data_section_buf.end(), src, src + globals[i].size);
+	}
+
 	// --- Find main() entry point offset ---
 
 	int64_t main_offset = -1;
@@ -1038,7 +1117,7 @@ bool Program::save_executable(const std::string &path) const
 
 	// .rela.dyn — build and emit external relocations.
 	// Text will start at a known offset; compute it now.
-	size_t pre_rela_size = out.size();
+	(void)0; // rela follows
 	// Reserve space: we'll compute text_file_offset after rela.
 	// External relas need the text virtual address to compute offsets.
 	// Two-pass: first compute sizes, then lay out.
@@ -1067,7 +1146,7 @@ bool Program::save_executable(const std::string &path) const
 	// Compiled code
 	size_t code_file_offset = out.size();
 	uint64_t code_vaddr = BASE_ADDR + code_file_offset;
-	// Make a mutable copy so we can pre-patch internal relocations.
+	// Make a mutable copy so we can pre-patch relocations and data refs.
 	std::vector<uint8_t> text_copy(text_data, text_data + text_size);
 
 	// Pre-patch internal relocations (non-extern) into the code copy.
@@ -1093,6 +1172,48 @@ bool Program::save_executable(const std::string &path) const
 				std::memcpy(&text_copy[off], &rel, 4);
 		}
 	}
+
+	// Compute .data virtual address (follows .text, page-aligned).
+	size_t data_file_offset_est = text_file_offset + START_STUB_SIZE + text_size;
+	data_file_offset_est = (data_file_offset_est + 15) & ~(size_t)15; // align 16
+	uint64_t data_vaddr = BASE_ADDR + data_file_offset_est;
+
+	// Scan text for movabs instructions whose immediate matches a
+	// known global data address. Patch to reference the .data section.
+	// movabs encoding: REX.W (0x48 or 0x49) + 0xB8+reg (8 bytes imm)
+	size_t data_patches = 0;
+	if ( !data_offset_map.empty() )
+	{
+		for ( size_t i = 0; i + 10 <= text_size; ++i )
+		{
+			uint8_t b0 = text_copy[i];
+			uint8_t b1 = text_copy[i + 1];
+			// REX.W prefix (0x48 for r0-r7, 0x49 for r8-r15)
+			if ( b0 != 0x48 && b0 != 0x49 )
+				continue;
+			// movabs opcode: 0xB8 + register (0-7)
+			if ( b1 < 0xB8 || b1 > 0xBF )
+				continue;
+			// Read the 8-byte immediate.
+			uint64_t imm_val;
+			std::memcpy(&imm_val, &text_copy[i + 2], 8);
+			uintptr_t addr = static_cast<uintptr_t>(imm_val);
+			std::map<uintptr_t, size_t>::const_iterator dit =
+			    data_offset_map.find(addr);
+			if ( dit != data_offset_map.end() )
+			{
+				// Patch to new .data address.
+				uint64_t new_addr = data_vaddr + dit->second;
+				std::memcpy(&text_copy[i + 2], &new_addr, 8);
+				++data_patches;
+			}
+		}
+	}
+
+	DBG(std::cout << "save_executable: patched " << data_patches
+		      << " global data references (" << globals.size()
+		      << " globals, " << data_section_buf.size()
+		      << " bytes in .data)" << std::endl);
 
 	emit(out, text_copy.data(), text_size);
 	size_t total_text_size = START_STUB_SIZE + text_size;
@@ -1122,6 +1243,17 @@ bool Program::save_executable(const std::string &path) const
 			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
 			rela_pos += sizeof(rela);
 		}
+	}
+
+	// .data (global variables and string literals)
+	size_t data_file_offset = 0;
+	size_t data_section_size = data_section_buf.size();
+	if ( data_section_size > 0 )
+	{
+		data_file_offset = align_to(out, 16);
+		emit(out, data_section_buf.data(), data_section_size);
+		// Recalculate actual data vaddr for section header.
+		data_vaddr = BASE_ADDR + data_file_offset;
 	}
 
 	// .dynamic
@@ -1161,6 +1293,7 @@ bool Program::save_executable(const std::string &path) const
 	uint32_t shname_dynstr   = shstrtab.add(".dynstr");
 	uint32_t shname_rela     = shstrtab.add(".rela.dyn");
 	uint32_t shname_text     = shstrtab.add(".text");
+	uint32_t shname_data     = shstrtab.add(".data");
 	uint32_t shname_dynamic  = shstrtab.add(".dynamic");
 	uint32_t shname_shstrtab = shstrtab.add(".shstrtab");
 
@@ -1169,7 +1302,8 @@ bool Program::save_executable(const std::string &path) const
 	emit(out, shstrtab.data.data(), shstrtab_size);
 
 	size_t shdr_offset = align_to(out, 8);
-	size_t total_file_size = out.size() + 9 * sizeof(Elf64_Shdr); // 9 sections
+	int num_sections = data_section_size > 0 ? 10 : 9;
+	size_t total_file_size = out.size() + num_sections * sizeof(Elf64_Shdr);
 
 	// Total loadable size for PT_LOAD.
 	size_t load_filesz = total_file_size;
@@ -1195,8 +1329,8 @@ bool Program::save_executable(const std::string &path) const
 	ehdr.e_phentsize = sizeof(Elf64_Phdr);
 	ehdr.e_phnum = NUM_PHDRS;
 	ehdr.e_shentsize = sizeof(Elf64_Shdr);
-	ehdr.e_shnum = 9;
-	ehdr.e_shstrndx = 8; // .shstrtab is section 8
+	ehdr.e_shnum = num_sections;
+	ehdr.e_shstrndx = num_sections - 1; // .shstrtab is last
 	std::memcpy(&out[0], &ehdr, sizeof(ehdr));
 
 	// --- Fill in program headers ---
@@ -1255,9 +1389,12 @@ bool Program::save_executable(const std::string &path) const
 	const int SEC_DYNSTR   = 4;
 	const int SEC_RELA     = 5;
 	const int SEC_TEXT     = 6;
-	const int SEC_DYNAMIC  = 7;
-	const int SEC_SHSTRTAB = 8;
-	(void)SEC_NULL; (void)SEC_INTERP; (void)SEC_RELA;
+	const int SEC_DATA     = 7;
+	const int SEC_DYNAMIC  = data_section_size > 0 ? 8 : 7;
+	const int SEC_SHSTRTAB_IDX = num_sections - 1;
+	(void)SEC_NULL; (void)SEC_INTERP; (void)SEC_HASH;
+	(void)SEC_RELA; (void)SEC_TEXT;
+	(void)SEC_DATA; (void)SEC_DYNAMIC; (void)SEC_SHSTRTAB_IDX;
 
 	auto emit_shdr = [&](uint32_t name, uint32_t type, uint64_t flags,
 			     uint64_t addr, uint64_t offset, uint64_t size,
@@ -1311,12 +1448,20 @@ bool Program::save_executable(const std::string &path) const
 		  text_vaddr, text_file_offset, total_text_size,
 		  0, 0, 16, 0);
 
-	// [7] .dynamic
+	// [7] .data (if present)
+	if ( data_section_size > 0 )
+	{
+		emit_shdr(shname_data, SHT_PROGBITS, SHF_ALLOC | SHF_WRITE,
+			  data_vaddr, data_file_offset, data_section_size,
+			  0, 0, 16, 0);
+	}
+
+	// .dynamic
 	emit_shdr(shname_dynamic, SHT_DYNAMIC, SHF_ALLOC | SHF_WRITE,
 		  dynamic_vaddr, dynamic_offset, dynamic_size,
 		  SEC_DYNSTR, 0, 8, sizeof(Elf64_Dyn));
 
-	// [8] .shstrtab
+	// .shstrtab
 	emit_shdr(shname_shstrtab, SHT_STRTAB, 0,
 		  0, shstrtab_offset, shstrtab_size,
 		  0, 0, 1, 0);

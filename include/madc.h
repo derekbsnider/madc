@@ -1112,6 +1112,14 @@ public:
     // compile code
     bool compile();
 
+    struct GlobalDataEntry
+    {
+	std::string name;
+	void *address;
+	size_t size;
+    };
+    std::vector<GlobalDataEntry> collect_global_data() const;
+
     // write compiled code to an ELF relocatable object file
     bool save_object(const std::string &path) const;
 
