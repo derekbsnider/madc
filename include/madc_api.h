@@ -166,6 +166,11 @@ int madc_program_eval_unit(madc_program *program,
 			   const char *source,
 			   madc_value *result,
 			   const char *virtual_filename);
+int madc_program_eval_body(madc_program *program,
+			   const char *source,
+			   madc_value *result,
+			   madc_value_kind return_kind,
+			   const char *virtual_filename);
 int madc_program_eval_expression(madc_program *program,
 				 const char *expression,
 				 madc_value *result,
@@ -175,6 +180,25 @@ int madc_program_call(madc_program *program,
 		      const madc_value *args,
 		      size_t nargs,
 		      madc_value *result);
+
+typedef void (*madc_native_function)(void);
+
+typedef enum madc_native_type
+{
+    MADC_NATIVE_VOID = 0,
+    MADC_NATIVE_BOOLEAN = 1,
+    MADC_NATIVE_INTEGER = 2,
+    MADC_NATIVE_REAL = 3,
+    MADC_NATIVE_C_STRING = 4,
+    MADC_NATIVE_STRING_OBJECT = 5
+} madc_native_type;
+
+int madc_program_register_function(madc_program *program,
+				   const char *name,
+				   madc_native_function callback,
+				   madc_native_type return_type,
+				   const madc_native_type *param_types,
+				   size_t param_count);
 
 int madc_program_get_global(madc_program *program,
 			    const char *name,

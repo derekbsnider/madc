@@ -597,6 +597,35 @@ int madc_program_eval_unit(madc_program *program,
     });
 }
 
+int madc_program_eval_body(madc_program *program,
+			   const char *source,
+			   madc_value *result,
+			   madc_value_kind return_kind,
+			   const char *virtual_filename)
+{
+    if ( !program || !source )
+	return MADC_ERROR;
+    madc::program::native_type ret = madc::program::native_type::void_type;
+    switch ( return_kind )
+    {
+	case MADC_VALUE_BOOLEAN: ret = madc::program::native_type::boolean; break;
+	case MADC_VALUE_INTEGER: ret = madc::program::native_type::integer; break;
+	case MADC_VALUE_REAL:    ret = madc::program::native_type::real; break;
+	case MADC_VALUE_STRING:  ret = madc::program::native_type::c_string; break;
+	default: break;
+    }
+    return run_program_call(program, [=]() {
+	madc::value cpp_result;
+	bool ok = program->program.eval_body(source,
+					     result ? &cpp_result : NULL,
+					     ret,
+					     virtual_filename ? virtual_filename : "");
+	if ( !ok || result == NULL )
+	    return ok;
+	return from_cpp_value(cpp_result, result);
+    });
+}
+
 int madc_program_eval_expression(madc_program *program,
 				 const char *expression,
 				 madc_value *result,
@@ -641,6 +670,43 @@ int madc_program_call(madc_program *program,
 	    return ok;
 	return from_cpp_value(cpp_result, result);
     });
+}
+
+int madc_program_register_function(madc_program *program,
+				   const char *name,
+				   madc_native_function callback,
+				   madc_native_type return_type,
+				   const madc_native_type *param_types,
+				   size_t param_count)
+{
+    if ( !program || !name || !callback )
+	return MADC_ERROR;
+    try
+    {
+	auto to_nt = [](madc_native_type t) -> madc::program::native_type {
+	    switch ( t )
+	    {
+		case MADC_NATIVE_BOOLEAN:       return madc::program::native_type::boolean;
+		case MADC_NATIVE_INTEGER:       return madc::program::native_type::integer;
+		case MADC_NATIVE_REAL:          return madc::program::native_type::real;
+		case MADC_NATIVE_C_STRING:      return madc::program::native_type::c_string;
+		case MADC_NATIVE_STRING_OBJECT: return madc::program::native_type::string_object;
+		default:                        return madc::program::native_type::void_type;
+	    }
+	};
+	madc::program::native_signature sig(to_nt(return_type));
+	for ( size_t i = 0; i < param_count; ++i )
+	    sig.parameters.push_back(to_nt(param_types[i]));
+	madc::program::native_function fn =
+	    reinterpret_cast<madc::program::native_function>(callback);
+	if ( !program->program.register_function(name, fn, sig) )
+	    return MADC_ERROR;
+	return MADC_OK;
+    }
+    catch ( ... )
+    {
+	return MADC_EXCEPTION;
+    }
 }
 
 int madc_program_get_global(madc_program *program,
