@@ -4049,6 +4049,22 @@ bool program::compile_file(const std::string &path)
     return _impl->compile_file_with_display(path, path);
 }
 
+bool program::compile_string(const std::string &source, const std::string &virtual_filename)
+{
+    std::string display_name = virtual_filename.empty() ? std::string("<memory>") : virtual_filename;
+    return _impl->compile_source_with_display(source, display_name);
+}
+
+bool program::is_compiled() const
+{
+    return _impl->pgm && _impl->pgm->root_fn;
+}
+
+bool program::exec()
+{
+    return _impl->exec_compiled_with_display("<compiled>", "<compiled>");
+}
+
 bool program::exec_file(const std::string &path)
 {
     return _impl->exec_file_with_display(path, path);

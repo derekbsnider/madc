@@ -58,6 +58,10 @@ public:
     program &operator=(const program &) = delete;
 
     bool compile_file(const std::string &path);
+    bool compile_string(const std::string &source,
+			const std::string &virtual_filename = std::string());
+    bool is_compiled() const;
+    bool exec();
     bool exec_file(const std::string &path);
     bool exec_string(const std::string &source,
 		     const std::string &virtual_filename = std::string());

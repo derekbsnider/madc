@@ -731,6 +731,31 @@ int madc_program_compile_file(madc_program *program, const char *path)
     });
 }
 
+int madc_program_compile_string(madc_program *program,
+				const char *source,
+				const char *virtual_filename)
+{
+    return run_program_call(program, [=]() {
+	return program->program.compile_string(
+	    source ? source : "",
+	    virtual_filename ? virtual_filename : "");
+    });
+}
+
+int madc_program_is_compiled(madc_program *program)
+{
+    if ( !program )
+	return 0;
+    return program->program.is_compiled() ? 1 : 0;
+}
+
+int madc_program_exec(madc_program *program)
+{
+    return run_program_call(program, [=]() {
+	return program->program.exec();
+    });
+}
+
 int madc_program_has_function(madc_program *program, const char *name)
 {
     if ( !program || !name )

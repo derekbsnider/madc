@@ -1792,6 +1792,95 @@ TEST_SUITE("madc::program") {
 }
 
 // ---------------------------------------------------------------------------
+// compile-once-run-many tests
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("compile_string / exec") {
+
+    TEST_CASE("compile_string compiles without executing") {
+	madc::program pgm;
+	REQUIRE(pgm.compile_string(
+	    "int add(int a, int b) { return a + b; }\n"
+	    "int main() { return 0; }\n",
+	    "compile_test.mad"));
+	CHECK(pgm.is_compiled());
+	CHECK(pgm.has_function("add"));
+	CHECK(pgm.has_function("main"));
+	CHECK_FALSE(pgm.has_error());
+    }
+
+    TEST_CASE("is_compiled returns false before compile") {
+	madc::program pgm;
+	CHECK_FALSE(pgm.is_compiled());
+    }
+
+    TEST_CASE("exec runs main on already-compiled program") {
+	madc::program pgm;
+	REQUIRE(pgm.compile_string(
+	    "int counter = 0;\n"
+	    "int get_counter() { return counter; }\n"
+	    "int main() { counter = 42; return 0; }\n",
+	    "exec_test.mad"));
+	REQUIRE(pgm.exec());
+
+	madc::value result;
+	REQUIRE(pgm.call("get_counter", {}, &result));
+	CHECK(result.as_integer() == 42);
+    }
+
+    TEST_CASE("call works multiple times on compiled program") {
+	madc::program pgm;
+	REQUIRE(pgm.compile_string(
+	    "int add(int a, int b) { return a + b; }\n"
+	    "int main() { return 0; }\n",
+	    "multi_call.mad"));
+
+	madc::value r1, r2, r3;
+	REQUIRE(pgm.call("add", {madc::value(int64_t(1)), madc::value(int64_t(2))}, &r1));
+	REQUIRE(pgm.call("add", {madc::value(int64_t(10)), madc::value(int64_t(20))}, &r2));
+	REQUIRE(pgm.call("add", {madc::value(int64_t(100)), madc::value(int64_t(200))}, &r3));
+	CHECK(r1.as_integer() == 3);
+	CHECK(r2.as_integer() == 30);
+	CHECK(r3.as_integer() == 300);
+    }
+
+    TEST_CASE("compile_file then call multiple times") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int mul(int a, int b) { return a * b; }\n"
+		   "int main() { return 0; }\n");
+	REQUIRE(pgm.compile_file(path));
+	CHECK(pgm.is_compiled());
+
+	madc::value r1, r2;
+	REQUIRE(pgm.call("mul", {madc::value(int64_t(6)), madc::value(int64_t(7))}, &r1));
+	REQUIRE(pgm.call("mul", {madc::value(int64_t(3)), madc::value(int64_t(4))}, &r2));
+	CHECK(r1.as_integer() == 42);
+	CHECK(r2.as_integer() == 12);
+
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("compile_string with engine callback then call") {
+	madc::engine eng;
+	g_host_sum = 0;
+	REQUIRE(eng.register_function("host_add", host_add));
+
+	madc::program pgm = eng.create_program();
+	REQUIRE(pgm.compile_string(
+	    "int do_add(int a, int b) { return host_add(a, b); }\n"
+	    "int main() { return 0; }\n",
+	    "eng_compile.mad"));
+
+	madc::value result;
+	REQUIRE(pgm.call("do_add", {madc::value(int64_t(100)), madc::value(int64_t(23))}, &result));
+	CHECK(result.as_integer() == 123);
+	CHECK(g_host_sum == 123);
+    }
+}
+
+// ---------------------------------------------------------------------------
 // program::has_function tests
 // ---------------------------------------------------------------------------
 
