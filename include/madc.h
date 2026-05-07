@@ -1114,6 +1114,20 @@ public:
     // write compiled code to an ELF relocatable object file
     bool save_object(const std::string &path) const;
 
+    // load a previously saved ELF .o and map it for execution
+    struct LoadedObject
+    {
+	void *code_base;
+	size_t code_size;
+	std::map<std::string, void *> functions;
+	LoadedObject() : code_base(NULL), code_size(0) {}
+    };
+    LoadedObject loaded_object;
+    bool load_object(const std::string &path);
+    bool has_loaded_function(const std::string &name) const;
+    void *loaded_function_ptr(const std::string &name) const;
+    void unload_object();
+
     // execute the resulting code
     void execute();
 

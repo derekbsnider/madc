@@ -19,6 +19,9 @@
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
+#include <dlfcn.h>
+#include <sys/mman.h>
+
 #include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
@@ -409,4 +412,199 @@ bool Program::save_object(const std::string &path) const
 		      << rela_entries.size() << " relocations)" << std::endl);
 
 	return written == out.size();
+}
+
+// ---------------------------------------------------------------------------
+// ELF .o loader
+// ---------------------------------------------------------------------------
+
+bool Program::load_object(const std::string &path)
+{
+	unload_object();
+
+	// --- Read the file ---
+
+	FILE *fp = std::fopen(path.c_str(), "rb");
+	if ( !fp )
+		return false;
+	std::fseek(fp, 0, SEEK_END);
+	long file_size = std::ftell(fp);
+	std::fseek(fp, 0, SEEK_SET);
+	if ( file_size < (long)sizeof(Elf64_Ehdr) )
+	{
+		std::fclose(fp);
+		return false;
+	}
+	std::vector<uint8_t> buf(file_size);
+	if ( std::fread(buf.data(), 1, file_size, fp) != (size_t)file_size )
+	{
+		std::fclose(fp);
+		return false;
+	}
+	std::fclose(fp);
+
+	// --- Validate ELF header ---
+
+	const Elf64_Ehdr *ehdr = reinterpret_cast<const Elf64_Ehdr *>(buf.data());
+	if ( ehdr->e_ident[EI_MAG0] != ELFMAG0
+	  || ehdr->e_ident[EI_MAG1] != ELFMAG1
+	  || ehdr->e_ident[EI_MAG2] != ELFMAG2
+	  || ehdr->e_ident[EI_MAG3] != ELFMAG3 )
+		return false;
+	if ( ehdr->e_ident[EI_CLASS] != ELFCLASS64 )
+		return false;
+	if ( ehdr->e_type != ET_REL )
+		return false;
+	if ( ehdr->e_machine != EM_X86_64 )
+		return false;
+
+	// --- Parse section headers ---
+
+	if ( ehdr->e_shoff == 0 || ehdr->e_shnum == 0 )
+		return false;
+
+	const Elf64_Shdr *shdrs = reinterpret_cast<const Elf64_Shdr *>(
+	    buf.data() + ehdr->e_shoff);
+
+	// Find .text, .symtab, .strtab, .rela.text sections.
+	const Elf64_Shdr *text_shdr = NULL;
+	const Elf64_Shdr *symtab_shdr = NULL;
+	const Elf64_Shdr *strtab_shdr = NULL;
+	const Elf64_Shdr *rela_shdr = NULL;
+
+	// Get section name string table.
+	const char *shstrtab = NULL;
+	if ( ehdr->e_shstrndx < ehdr->e_shnum )
+		shstrtab = reinterpret_cast<const char *>(
+		    buf.data() + shdrs[ehdr->e_shstrndx].sh_offset);
+
+	for ( uint16_t i = 0; i < ehdr->e_shnum; ++i )
+	{
+		const Elf64_Shdr *sh = &shdrs[i];
+		const char *name = shstrtab ? shstrtab + sh->sh_name : "";
+
+		if ( sh->sh_type == SHT_PROGBITS
+		  && (sh->sh_flags & SHF_EXECINSTR)
+		  && std::strcmp(name, ".text") == 0 )
+			text_shdr = sh;
+		else if ( sh->sh_type == SHT_SYMTAB )
+			symtab_shdr = sh;
+		else if ( sh->sh_type == SHT_STRTAB
+			&& std::strcmp(name, ".strtab") == 0 )
+			strtab_shdr = sh;
+		else if ( sh->sh_type == SHT_RELA
+			&& std::strcmp(name, ".rela.text") == 0 )
+			rela_shdr = sh;
+	}
+
+	if ( !text_shdr || text_shdr->sh_size == 0 )
+		return false;
+
+	// --- Allocate executable memory and copy .text ---
+
+	size_t code_size = text_shdr->sh_size;
+	void *code_mem = mmap(NULL, code_size,
+			      PROT_READ | PROT_WRITE | PROT_EXEC,
+			      MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if ( code_mem == MAP_FAILED )
+		return false;
+
+	std::memcpy(code_mem, buf.data() + text_shdr->sh_offset, code_size);
+
+	// --- Apply relocations ---
+
+	if ( rela_shdr && rela_shdr->sh_size > 0 )
+	{
+		size_t rela_count = rela_shdr->sh_size / sizeof(Elf64_Rela);
+		const Elf64_Rela *relas = reinterpret_cast<const Elf64_Rela *>(
+		    buf.data() + rela_shdr->sh_offset);
+
+		for ( size_t i = 0; i < rela_count; ++i )
+		{
+			const Elf64_Rela *r = &relas[i];
+			uint32_t r_type = ELF64_R_TYPE(r->r_info);
+			uint8_t *patch_addr = static_cast<uint8_t *>(code_mem) + r->r_offset;
+
+			if ( r->r_offset >= code_size )
+				continue;
+
+			if ( r_type == R_X86_64_64 )
+			{
+				// Absolute 64-bit: write target address.
+				uint64_t target = static_cast<uint64_t>(r->r_addend);
+				std::memcpy(patch_addr, &target, 8);
+			}
+			else if ( r_type == R_X86_64_PC32 )
+			{
+				// PC-relative 32-bit.
+				int64_t target = r->r_addend;
+				int64_t pc = reinterpret_cast<int64_t>(patch_addr) + 4;
+				int32_t rel = static_cast<int32_t>(target - pc);
+				std::memcpy(patch_addr, &rel, 4);
+			}
+		}
+	}
+
+	// --- Resolve function symbols ---
+
+	loaded_object.code_base = code_mem;
+	loaded_object.code_size = code_size;
+
+	if ( symtab_shdr && strtab_shdr )
+	{
+		const char *str_data = reinterpret_cast<const char *>(
+		    buf.data() + strtab_shdr->sh_offset);
+		size_t sym_count = symtab_shdr->sh_size / sizeof(Elf64_Sym);
+		const Elf64_Sym *syms = reinterpret_cast<const Elf64_Sym *>(
+		    buf.data() + symtab_shdr->sh_offset);
+
+		for ( size_t i = 0; i < sym_count; ++i )
+		{
+			const Elf64_Sym *sym = &syms[i];
+			if ( ELF64_ST_TYPE(sym->st_info) != STT_FUNC )
+				continue;
+			if ( ELF64_ST_BIND(sym->st_info) != STB_GLOBAL )
+				continue;
+			if ( sym->st_shndx == SHN_UNDEF )
+				continue;
+
+			const char *name = str_data + sym->st_name;
+			if ( !name[0] )
+				continue;
+
+			void *entry = static_cast<uint8_t *>(code_mem) + sym->st_value;
+			loaded_object.functions[name] = entry;
+		}
+	}
+
+	DBG(std::cout << "load_object: loaded " << code_size << " bytes from "
+		      << path << " (" << loaded_object.functions.size()
+		      << " functions)" << std::endl);
+
+	return !loaded_object.functions.empty();
+}
+
+bool Program::has_loaded_function(const std::string &name) const
+{
+	return loaded_object.functions.count(name) > 0;
+}
+
+void *Program::loaded_function_ptr(const std::string &name) const
+{
+	std::map<std::string, void *>::const_iterator it =
+	    loaded_object.functions.find(name);
+	if ( it == loaded_object.functions.end() )
+		return NULL;
+	return it->second;
+}
+
+void Program::unload_object()
+{
+	if ( loaded_object.code_base )
+	{
+		munmap(loaded_object.code_base, loaded_object.code_size);
+		loaded_object.code_base = NULL;
+		loaded_object.code_size = 0;
+	}
+	loaded_object.functions.clear();
 }

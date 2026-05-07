@@ -62,6 +62,7 @@ public:
 			const std::string &virtual_filename = std::string());
     bool is_compiled() const;
     bool save_object(const std::string &path);
+    bool load_object(const std::string &path);
     bool exec();
     bool exec_file(const std::string &path);
     bool exec_string(const std::string &source,

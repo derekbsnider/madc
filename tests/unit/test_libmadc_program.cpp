@@ -1858,6 +1858,101 @@ TEST_SUITE("save_object") {
 }
 
 // ---------------------------------------------------------------------------
+// load_object (ELF .o round-trip) tests
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("load_object") {
+
+    TEST_CASE("save then load round-trip calls produce correct results") {
+	std::string obj_path = "/tmp/madc_test_roundtrip.o";
+
+	// Compile and save.
+	{
+	    madc::program pgm;
+	    REQUIRE(pgm.compile_string(
+		"int add(int a, int b) { return a + b; }\n"
+		"int mul(int a, int b) { return a * b; }\n"
+		"int main() { return 0; }\n",
+		"roundtrip.mad"));
+	    REQUIRE(pgm.save_object(obj_path));
+	}
+
+	// Load into a fresh program and call.
+	{
+	    madc::program pgm2;
+	    REQUIRE(pgm2.load_object(obj_path));
+	    CHECK(pgm2.has_function("add"));
+	    CHECK(pgm2.has_function("mul"));
+	    CHECK(pgm2.has_function("main"));
+
+	    madc::value r1, r2;
+	    REQUIRE(pgm2.call("add", {madc::value(int64_t(10)), madc::value(int64_t(32))}, &r1));
+	    CHECK(r1.as_integer() == 42);
+	    REQUIRE(pgm2.call("mul", {madc::value(int64_t(6)), madc::value(int64_t(7))}, &r2));
+	    CHECK(r2.as_integer() == 42);
+	}
+
+	std::remove(obj_path.c_str());
+    }
+
+    TEST_CASE("load_object reports missing file") {
+	madc::program pgm;
+	CHECK_FALSE(pgm.load_object("/tmp/madc_no_such_file_42.o"));
+	CHECK(pgm.has_error());
+    }
+
+    TEST_CASE("loaded function callable multiple times") {
+	std::string obj_path = "/tmp/madc_test_multi_load.o";
+
+	{
+	    madc::program pgm;
+	    REQUIRE(pgm.compile_string(
+		"int square(int n) { return n * n; }\n"
+		"int main() { return 0; }\n",
+		"multi.mad"));
+	    REQUIRE(pgm.save_object(obj_path));
+	}
+
+	{
+	    madc::program pgm2;
+	    REQUIRE(pgm2.load_object(obj_path));
+
+	    madc::value r;
+	    REQUIRE(pgm2.call("square", {madc::value(int64_t(5))}, &r));
+	    CHECK(r.as_integer() == 25);
+	    REQUIRE(pgm2.call("square", {madc::value(int64_t(9))}, &r));
+	    CHECK(r.as_integer() == 81);
+	    REQUIRE(pgm2.call("square", {madc::value(int64_t(0))}, &r));
+	    CHECK(r.as_integer() == 0);
+	}
+
+	std::remove(obj_path.c_str());
+    }
+
+    TEST_CASE("has_function returns false for absent symbol in loaded object") {
+	std::string obj_path = "/tmp/madc_test_absent.o";
+
+	{
+	    madc::program pgm;
+	    REQUIRE(pgm.compile_string(
+		"int foo() { return 1; }\n"
+		"int main() { return 0; }\n",
+		"absent.mad"));
+	    REQUIRE(pgm.save_object(obj_path));
+	}
+
+	{
+	    madc::program pgm2;
+	    REQUIRE(pgm2.load_object(obj_path));
+	    CHECK(pgm2.has_function("foo"));
+	    CHECK_FALSE(pgm2.has_function("bar"));
+	}
+
+	std::remove(obj_path.c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // compile-once-run-many tests
 // ---------------------------------------------------------------------------
 

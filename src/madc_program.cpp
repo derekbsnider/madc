@@ -3658,6 +3658,8 @@ struct program::impl
 
     bool has_function(const std::string &name) const
     {
+	if ( pgm && pgm->has_loaded_function(name) )
+	    return true;
 	if ( !pgm || !pgm->tkProgram )
 	    return false;
 	std::string id = name;
@@ -3668,8 +3670,76 @@ struct program::impl
 	return method && method->x86code;
     }
 
+    bool load_object(const std::string &path)
+    {
+	verbose_scope vs(eng->verbose);
+	if ( !pgm )
+	    return fail_runtime("program::load_object has no program");
+	if ( !pgm->load_object(path) )
+	    return fail_runtime("program::load_object failed to load " + path);
+	return true;
+    }
+
+    bool call_loaded_function(const std::string &name,
+			      const std::vector<value> &args,
+			      value *result)
+    {
+	void *fn = pgm->loaded_function_ptr(name);
+	if ( !fn )
+	    return fail_runtime("program::call cannot find loaded function '" + name + "'");
+	if ( args.size() > 4 )
+	    return fail_runtime("program::call currently supports up to 4 arguments");
+
+	// All loaded functions use the SysV x86-64 integer ABI.
+	// Convert value args to int64_t for dispatch.
+	int64_t iargs[4] = {0, 0, 0, 0};
+	for ( std::size_t i = 0; i < args.size(); ++i )
+	{
+	    switch ( args[i].type() )
+	    {
+		case value::kind::boolean:
+		    iargs[i] = args[i].as_boolean() ? 1 : 0;
+		    break;
+		case value::kind::integer:
+		    iargs[i] = args[i].as_integer();
+		    break;
+		case value::kind::real:
+		    // reinterpret double bits as int64 for register passing
+		    { double d = args[i].as_real();
+		      std::memcpy(&iargs[i], &d, sizeof(d)); }
+		    break;
+		default:
+		    return fail_runtime("program::call loaded function: unsupported argument type");
+	    }
+	}
+
+	typedef int64_t (*fn0_t)();
+	typedef int64_t (*fn1_t)(int64_t);
+	typedef int64_t (*fn2_t)(int64_t, int64_t);
+	typedef int64_t (*fn3_t)(int64_t, int64_t, int64_t);
+	typedef int64_t (*fn4_t)(int64_t, int64_t, int64_t, int64_t);
+
+	int64_t rv = 0;
+	switch ( args.size() )
+	{
+	    case 0: rv = reinterpret_cast<fn0_t>(fn)(); break;
+	    case 1: rv = reinterpret_cast<fn1_t>(fn)(iargs[0]); break;
+	    case 2: rv = reinterpret_cast<fn2_t>(fn)(iargs[0], iargs[1]); break;
+	    case 3: rv = reinterpret_cast<fn3_t>(fn)(iargs[0], iargs[1], iargs[2]); break;
+	    case 4: rv = reinterpret_cast<fn4_t>(fn)(iargs[0], iargs[1], iargs[2], iargs[3]); break;
+	}
+
+	if ( result )
+	    *result = value(rv);
+	return true;
+    }
+
     bool perform_call(const std::string &name, const std::vector<value> &args, value *result)
     {
+	// Check loaded-object functions first.
+	if ( pgm && pgm->has_loaded_function(name) )
+	    return call_loaded_function(name, args, result);
+
 	if ( !ensure_runtime_initialized() )
 	    return false;
 
@@ -4083,6 +4153,11 @@ bool program::save_object(const std::string &path)
 	return false;
     }
     return true;
+}
+
+bool program::load_object(const std::string &path)
+{
+    return _impl->load_object(path);
 }
 
 bool program::exec()
