@@ -1950,6 +1950,37 @@ TEST_SUITE("load_object") {
 
 	std::remove(obj_path.c_str());
     }
+
+    TEST_CASE("save_object emits UNDEF symbols for external calls") {
+	// Compile a script that calls abs() — a libc function resolved
+	// via dlsym at compile time. The .o should contain an UNDEF
+	// symbol for "abs".
+	madc::program pgm;
+	REQUIRE(pgm.compile_string(
+	    "#include <stdlib.h>\n"
+	    "int my_abs(int x) { return abs(x); }\n"
+	    "int main() { return 0; }\n",
+	    "extern_test.mad"));
+
+	std::string obj_path = "/tmp/madc_test_extern.o";
+	REQUIRE(pgm.save_object(obj_path));
+
+	// Check that readelf shows an UNDEF symbol.
+	std::string cmd = "readelf -s " + obj_path + " 2>&1";
+	FILE *fp = popen(cmd.c_str(), "r");
+	REQUIRE(fp != NULL);
+	char buf[4096];
+	std::string output;
+	while ( fgets(buf, sizeof(buf), fp) )
+	    output += buf;
+	pclose(fp);
+
+	// abs should appear as UND (undefined).
+	CHECK(output.find("abs") != std::string::npos);
+	CHECK(output.find("UND") != std::string::npos);
+
+	std::remove(obj_path.c_str());
+    }
 }
 
 // ---------------------------------------------------------------------------

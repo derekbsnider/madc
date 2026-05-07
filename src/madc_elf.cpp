@@ -189,7 +189,7 @@ bool Program::save_object(const std::string &path) const
 		symbols.push_back(sym);
 	}
 
-	// --- Build ELF relocation entries ---
+	// --- Build external (UNDEF) symbols and relocation entries ---
 
 	struct elf_rela
 	{
@@ -200,6 +200,9 @@ bool Program::save_object(const std::string &path) const
 	};
 
 	std::vector<elf_rela> rela_entries;
+
+	// Map from external address to symbol index (for dedup).
+	std::map<uintptr_t, uint32_t> extern_sym_indices;
 
 	if ( code.hasRelocEntries() )
 	{
@@ -214,12 +217,54 @@ bool Program::save_object(const std::string &path) const
 			if ( elf_type == R_X86_64_NONE )
 				continue;
 
-			elf_rela entry;
-			entry.offset = re->sourceOffset();
-			entry.sym_index = 0; // relative to .text section symbol
-			entry.type = elf_type;
-			entry.addend = static_cast<int64_t>(re->payload());
-			rela_entries.push_back(entry);
+			uintptr_t payload = static_cast<uintptr_t>(re->payload());
+
+			// Try to resolve the payload address to a named
+			// external symbol via the map built during compilation.
+			std::map<uintptr_t, std::string>::const_iterator it =
+			    external_symbol_map.find(payload);
+
+			if ( it != external_symbol_map.end() )
+			{
+				// Known external symbol — emit as UNDEF + named reloc.
+				uint32_t sym_idx;
+				std::map<uintptr_t, uint32_t>::const_iterator eit =
+				    extern_sym_indices.find(payload);
+				if ( eit != extern_sym_indices.end() )
+				{
+					sym_idx = eit->second;
+				}
+				else
+				{
+					sym_idx = static_cast<uint32_t>(symbols.size());
+					elf_sym ext;
+					ext.name = it->second;
+					ext.value = 0;
+					ext.size = 0;
+					ext.binding = STB_GLOBAL;
+					ext.type = STT_NOTYPE;
+					ext.section_index = SHN_UNDEF;
+					symbols.push_back(ext);
+					extern_sym_indices[payload] = sym_idx;
+				}
+
+				elf_rela entry;
+				entry.offset = re->sourceOffset();
+				entry.sym_index = sym_idx;
+				entry.type = elf_type;
+				entry.addend = 0; // resolved at link/load time
+				rela_entries.push_back(entry);
+			}
+			else
+			{
+				// Unknown address — emit with raw addend (internal reloc).
+				elf_rela entry;
+				entry.offset = re->sourceOffset();
+				entry.sym_index = 1; // .text section symbol
+				entry.type = elf_type;
+				entry.addend = static_cast<int64_t>(re->payload());
+				rela_entries.push_back(entry);
+			}
 		}
 	}
 
@@ -511,6 +556,21 @@ bool Program::load_object(const std::string &path)
 
 	std::memcpy(code_mem, buf.data() + text_shdr->sh_offset, code_size);
 
+	// --- Parse symbol table for relocation resolution ---
+
+	const Elf64_Sym *elf_syms = NULL;
+	size_t elf_sym_count = 0;
+	const char *elf_strtab = NULL;
+
+	if ( symtab_shdr && strtab_shdr )
+	{
+		elf_syms = reinterpret_cast<const Elf64_Sym *>(
+		    buf.data() + symtab_shdr->sh_offset);
+		elf_sym_count = symtab_shdr->sh_size / sizeof(Elf64_Sym);
+		elf_strtab = reinterpret_cast<const char *>(
+		    buf.data() + strtab_shdr->sh_offset);
+	}
+
 	// --- Apply relocations ---
 
 	if ( rela_shdr && rela_shdr->sh_size > 0 )
@@ -523,23 +583,64 @@ bool Program::load_object(const std::string &path)
 		{
 			const Elf64_Rela *r = &relas[i];
 			uint32_t r_type = ELF64_R_TYPE(r->r_info);
+			uint32_t r_sym = ELF64_R_SYM(r->r_info);
 			uint8_t *patch_addr = static_cast<uint8_t *>(code_mem) + r->r_offset;
 
 			if ( r->r_offset >= code_size )
 				continue;
 
+			// Resolve the target address for this relocation.
+			uint64_t target = 0;
+			bool resolved = false;
+
+			if ( r_sym > 0 && r_sym < elf_sym_count && elf_syms && elf_strtab )
+			{
+				const Elf64_Sym *sym = &elf_syms[r_sym];
+				if ( sym->st_shndx == SHN_UNDEF && sym->st_name > 0 )
+				{
+					// External symbol — resolve via dlsym.
+					const char *sym_name = elf_strtab + sym->st_name;
+					void *resolved_addr = dlsym(RTLD_DEFAULT, sym_name);
+					if ( resolved_addr )
+					{
+						target = reinterpret_cast<uint64_t>(resolved_addr)
+							 + static_cast<uint64_t>(r->r_addend);
+						resolved = true;
+						DBG(std::cout << "load_object: resolved '"
+							      << sym_name << "' -> "
+							      << resolved_addr << std::endl);
+					}
+					else
+					{
+						DBG(std::cout << "load_object: WARNING: unresolved symbol '"
+							      << sym_name << "'" << std::endl);
+					}
+				}
+				else if ( sym->st_shndx != SHN_UNDEF )
+				{
+					// Defined symbol — offset within .text.
+					target = reinterpret_cast<uint64_t>(code_mem)
+						 + sym->st_value
+						 + static_cast<uint64_t>(r->r_addend);
+					resolved = true;
+				}
+			}
+
+			if ( !resolved )
+			{
+				// Fallback: use raw addend as absolute address.
+				target = static_cast<uint64_t>(r->r_addend);
+			}
+
 			if ( r_type == R_X86_64_64 )
 			{
-				// Absolute 64-bit: write target address.
-				uint64_t target = static_cast<uint64_t>(r->r_addend);
 				std::memcpy(patch_addr, &target, 8);
 			}
 			else if ( r_type == R_X86_64_PC32 )
 			{
-				// PC-relative 32-bit.
-				int64_t target = r->r_addend;
 				int64_t pc = reinterpret_cast<int64_t>(patch_addr) + 4;
-				int32_t rel = static_cast<int32_t>(target - pc);
+				int32_t rel = static_cast<int32_t>(
+				    static_cast<int64_t>(target) - pc);
 				std::memcpy(patch_addr, &rel, 4);
 			}
 		}

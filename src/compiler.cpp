@@ -1593,6 +1593,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	if ( sym )
 	{
 	    method->x86code = sym;
+	    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = var.name;
 	    fnd = NULL; // intentional — fall into the typed-call path below
 	    DBG(pgm.cc.comment("TokenCallFunc::compile() dlsym late-bind"));
 	}
@@ -1850,6 +1851,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	if ( sym )
 	{
 	    call_target = sym;
+	    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = var.name;
 	    DBG(cout << "TokenCallFunc::compile() redirecting " << var.name << " to C library version" << endl);
 	}
     }

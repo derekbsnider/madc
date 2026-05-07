@@ -806,6 +806,7 @@ public:
     std::map<std::string, asmjit::Label> label_map;
 
     bool colors;
+    std::map<uintptr_t, std::string> external_symbol_map;
     asmjit::JitRuntime jit;
     asmjit::CodeHolder code;
     asmjit::x86::Compiler cc;
