@@ -118,17 +118,20 @@ uint32_t elf_hash(const char *name)
 	return h;
 }
 
-// Minimal _start stub: xor rbp,rbp; call <disp32>; mov rdi,rax; mov rax,60; syscall
-// Total: 20 bytes. The call displacement at offset 4 must be patched.
+// _start stub with argc/argv: xor rbp; mov rdi,[rsp]; lea rsi,[rsp+8];
+// call <disp32>; mov rdi,rax; mov rax,60; syscall
+// Total: 29 bytes. The call displacement at offset 13 must be patched.
 static const uint8_t start_stub[] = {
 	0x48, 0x31, 0xed,                         // xor %rbp, %rbp
+	0x48, 0x8b, 0x3c, 0x24,                   // mov (%rsp), %rdi  [argc]
+	0x48, 0x8d, 0x74, 0x24, 0x08,             // lea 8(%rsp), %rsi [argv]
 	0xe8, 0x00, 0x00, 0x00, 0x00,             // call <rel32> (patched)
 	0x48, 0x89, 0xc7,                         // mov %rax, %rdi
 	0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00, // mov $60, %rax
 	0x0f, 0x05                                 // syscall
 };
 static const size_t START_STUB_SIZE = sizeof(start_stub);
-static const size_t START_STUB_CALL_OFFSET = 4; // offset of the rel32 in the call
+static const size_t START_STUB_CALL_OFFSET = 13; // offset of the rel32 in the call
 
 } // namespace
 
