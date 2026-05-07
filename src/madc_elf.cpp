@@ -819,6 +819,46 @@ bool Program::save_executable(const std::string &path) const
 	if ( !text_data || text_size == 0 )
 		return false;
 
+	// --- Collect .addrtab section (asmjit's 64-bit address table) ---
+	const uint8_t *addrtab_data = NULL;
+	size_t addrtab_size = 0;
+	{
+		const ZoneVector<Section *> &secs = code.sections();
+		for ( uint32_t i = 0; i < secs.size(); ++i )
+		{
+			if ( std::strcmp(secs[i]->name(), ".addrtab") == 0 )
+			{
+				addrtab_data = secs[i]->data();
+				addrtab_size = secs[i]->buffer().size();
+				break;
+			}
+		}
+	}
+
+	// --- Build addrtab → symbol mapping ---
+	struct addrtab_slot_info { size_t slot_index; uintptr_t address; };
+	std::vector<addrtab_slot_info> addrtab_slots;
+	uintptr_t old_addrtab_base = 0;
+
+	if ( addrtab_data && addrtab_size > 0 )
+	{
+		Section *addrtab_section = code.addressTableSection();
+		if ( addrtab_section )
+			old_addrtab_base = reinterpret_cast<uintptr_t>(root_fn)
+			    + addrtab_section->offset();
+
+		size_t slot_count = addrtab_size / 8;
+		for ( size_t i = 0; i < slot_count; ++i )
+		{
+			uint64_t addr;
+			std::memcpy(&addr, addrtab_data + i * 8, 8);
+			addrtab_slot_info info;
+			info.slot_index = i;
+			info.address = static_cast<uintptr_t>(addr);
+			addrtab_slots.push_back(info);
+		}
+	}
+
 	// --- Collect global data for .data section ---
 
 	std::vector<GlobalDataEntry> globals = collect_global_data();
@@ -836,6 +876,38 @@ bool Program::save_executable(const std::string &path) const
 
 		const uint8_t *src = static_cast<const uint8_t *>(globals[i].address);
 		data_section_buf.insert(data_section_buf.end(), src, src + globals[i].size);
+	}
+
+	// Append .addrtab slots to .data section so the movabs scanner
+	// can patch .text references to the addrtab. Record which data
+	// offsets are addrtab slots needing dynamic symbol resolution.
+	struct addrtab_rela { size_t data_offset; uintptr_t func_addr; };
+	std::vector<addrtab_rela> addrtab_relas;
+
+	if ( old_addrtab_base && !addrtab_slots.empty() )
+	{
+		// Align to 8 bytes.
+		size_t pad = (8 - (data_section_buf.size() % 8)) % 8;
+		data_section_buf.insert(data_section_buf.end(), pad, 0);
+
+		size_t addrtab_data_start = data_section_buf.size();
+
+		// Map old addrtab slot addresses → data section offsets.
+		for ( size_t i = 0; i < addrtab_slots.size(); ++i )
+		{
+			uintptr_t old_slot_addr = old_addrtab_base + i * 8;
+			size_t slot_data_offset = addrtab_data_start + i * 8;
+			data_offset_map[old_slot_addr] = slot_data_offset;
+
+			addrtab_rela ar;
+			ar.data_offset = slot_data_offset;
+			ar.func_addr = addrtab_slots[i].address;
+			addrtab_relas.push_back(ar);
+		}
+
+		// Copy the raw addrtab data (will be overwritten by dynamic linker).
+		data_section_buf.insert(data_section_buf.end(),
+		    addrtab_data, addrtab_data + addrtab_size);
 	}
 
 	// --- Find main() entry point offset ---
@@ -932,6 +1004,43 @@ bool Program::save_executable(const std::string &path) const
 				rela_entries.push_back(re_entry);
 			}
 		}
+	}
+
+	// --- Add addrtab slot relocations ---
+	// Each addrtab slot is a function pointer that needs to be resolved
+	// by the dynamic linker. Emit as UNDEF symbol + R_X86_64_64 on
+	// the .data section offset where the slot lives.
+	struct data_rela { size_t data_offset; uint32_t dynsym_index; };
+	std::vector<data_rela> addrtab_data_relas;
+
+	for ( size_t i = 0; i < addrtab_relas.size(); ++i )
+	{
+		uintptr_t func_addr = addrtab_relas[i].func_addr;
+		std::map<uintptr_t, std::string>::const_iterator it =
+		    external_symbol_map.find(func_addr);
+		if ( it == external_symbol_map.end() )
+			continue;
+
+		uint32_t dynsym_idx;
+		std::map<uintptr_t, uint32_t>::const_iterator eit =
+		    extern_indices.find(func_addr);
+		if ( eit != extern_indices.end() )
+		{
+			dynsym_idx = eit->second;
+		}
+		else
+		{
+			dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
+			ext_sym es;
+			es.name = it->second;
+			extern_syms.push_back(es);
+			extern_indices[func_addr] = dynsym_idx;
+		}
+
+		data_rela dr;
+		dr.data_offset = addrtab_relas[i].data_offset;
+		dr.dynsym_index = dynsym_idx;
+		addrtab_data_relas.push_back(dr);
 	}
 
 	// --- Discover required shared libraries via dladdr ---
@@ -1125,12 +1234,13 @@ bool Program::save_executable(const std::string &path) const
 	// External relas need the text virtual address to compute offsets.
 	// Two-pass: first compute sizes, then lay out.
 
-	// Compute rela size.
+	// Compute rela size (text relocs + addrtab relocs).
 	size_t extern_rela_count = 0;
 	for ( size_t i = 0; i < rela_entries.size(); ++i )
 		if ( rela_entries[i].is_extern )
 			++extern_rela_count;
-	size_t rela_dyn_size = extern_rela_count * sizeof(Elf64_Rela);
+	size_t total_rela_count = extern_rela_count + addrtab_data_relas.size();
+	size_t rela_dyn_size = total_rela_count * sizeof(Elf64_Rela);
 
 	size_t rela_dyn_offset = align_to(out, 8);
 	// Emit placeholder relas — we'll patch them once we know the text vaddr.
@@ -1276,6 +1386,7 @@ bool Program::save_executable(const std::string &path) const
 		std::memcpy(&out[patch_pos], &disp, 4);
 	}
 
+	size_t addrtab_rela_start = 0;
 	// Now patch .rela.dyn entries with correct virtual addresses.
 	// For each relocation, inspect the instruction encoding to
 	// determine the correct ELF relocation type:
@@ -1318,6 +1429,19 @@ bool Program::save_executable(const std::string &path) const
 			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
 			rela_pos += sizeof(rela);
 		}
+		// Addrtab slot relas: R_X86_64_64 on .data offsets.
+		// These will be patched after we know data_vaddr.
+		addrtab_rela_start = rela_pos;
+		for ( size_t i = 0; i < addrtab_data_relas.size(); ++i )
+		{
+			Elf64_Rela rela;
+			rela.r_offset = 0; // placeholder — patched below
+			rela.r_info = ELF64_R_INFO(addrtab_data_relas[i].dynsym_index,
+						    R_X86_64_64);
+			rela.r_addend = 0;
+			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
+			rela_pos += sizeof(rela);
+		}
 	}
 
 	// .data (global variables and string literals)
@@ -1329,6 +1453,15 @@ bool Program::save_executable(const std::string &path) const
 		emit(out, data_section_buf.data(), data_section_size);
 		// Recalculate actual data vaddr for section header.
 		data_vaddr = BASE_ADDR + data_file_offset;
+
+		// Patch addrtab rela offsets now that data_vaddr is known.
+		size_t rela_pos = addrtab_rela_start;
+		for ( size_t i = 0; i < addrtab_data_relas.size(); ++i )
+		{
+			uint64_t offset = data_vaddr + addrtab_data_relas[i].data_offset;
+			std::memcpy(&out[rela_pos], &offset, 8);
+			rela_pos += sizeof(Elf64_Rela);
+		}
 	}
 
 	// .dynamic
@@ -1349,12 +1482,14 @@ bool Program::save_executable(const std::string &path) const
 	emit_dyn(DT_SYMTAB, BASE_ADDR + dynsym_offset);
 	emit_dyn(DT_SYMENT, sizeof(Elf64_Sym));
 	emit_dyn(DT_HASH, BASE_ADDR + hash_offset);
-	if ( extern_rela_count > 0 )
+	if ( total_rela_count > 0 )
 	{
 		emit_dyn(DT_RELA, BASE_ADDR + rela_dyn_offset);
 		emit_dyn(DT_RELASZ, rela_dyn_size);
 		emit_dyn(DT_RELAENT, sizeof(Elf64_Rela));
-		emit_dyn(DT_TEXTREL, 0);
+		// TEXTREL needed if any relocs target .text (not just .data).
+		if ( extern_rela_count > 0 )
+			emit_dyn(DT_TEXTREL, 0);
 	}
 	emit_dyn(DT_NULL, 0);
 
