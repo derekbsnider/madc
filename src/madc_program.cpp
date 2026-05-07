@@ -3643,6 +3643,18 @@ struct program::impl
 	return false;
     }
 
+    bool has_function(const std::string &name) const
+    {
+	if ( !pgm || !pgm->tkProgram )
+	    return false;
+	std::string id = name;
+	Variable *var = pgm->findVariable(id);
+	if ( !var || !var->type || var->type->basetype() != BaseType::btFunct )
+	    return false;
+	Method *method = static_cast<Method *>(var->data);
+	return method && method->x86code;
+    }
+
     bool perform_call(const std::string &name, const std::vector<value> &args, value *result)
     {
 	if ( !ensure_runtime_initialized() )
@@ -4396,6 +4408,11 @@ bool program::register_cpp_callback(const std::string &name,
 				    native_function adapter_entry)
 {
     return _impl->register_cpp_callback(name, callback_ptr, signature, adapter_entry);
+}
+
+bool program::has_function(const std::string &name) const
+{
+    return _impl->has_function(name);
 }
 
 bool program::call(const std::string &name,

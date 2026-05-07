@@ -550,6 +550,20 @@ int madc_program_compile_file(madc_program *program, const char *path)
     });
 }
 
+int madc_program_has_function(madc_program *program, const char *name)
+{
+    if ( !program || !name )
+	return 0;
+    try
+    {
+	return program->program.has_function(name) ? 1 : 0;
+    }
+    catch ( ... )
+    {
+	return 0;
+    }
+}
+
 int madc_program_exec_file(madc_program *program, const char *path)
 {
     return run_program_call(program, [=]() {

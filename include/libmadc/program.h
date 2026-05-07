@@ -133,6 +133,7 @@ public:
     bool register_function(const std::string &name,
 			   native_function callback,
 			   const native_signature &signature);
+    bool has_function(const std::string &name) const;
     bool call(const std::string &name,
 	      const std::vector<value> &args,
 	      value *result = NULL);

@@ -1792,6 +1792,50 @@ TEST_SUITE("madc::program") {
 }
 
 // ---------------------------------------------------------------------------
+// program::has_function tests
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("program::has_function") {
+
+    TEST_CASE("has_function returns true for compiled function") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int add(int a, int b) { return a + b; }\n"
+		   "int main() { return 0; }\n");
+	REQUIRE(pgm.compile_file(path));
+	CHECK(pgm.has_function("add"));
+	CHECK(pgm.has_function("main"));
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("has_function returns false for nonexistent function") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path, "int main() { return 0; }\n");
+	REQUIRE(pgm.compile_file(path));
+	CHECK_FALSE(pgm.has_function("no_such_fn"));
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("has_function returns false for global variable") {
+	madc::program pgm;
+	std::string path = make_temp_source_path();
+	write_file(path,
+		   "int counter = 0;\n"
+		   "int main() { return 0; }\n");
+	REQUIRE(pgm.compile_file(path));
+	CHECK_FALSE(pgm.has_function("counter"));
+	std::remove(path.c_str());
+    }
+
+    TEST_CASE("has_function returns false before compile") {
+	madc::program pgm;
+	CHECK_FALSE(pgm.has_function("main"));
+    }
+}
+
+// ---------------------------------------------------------------------------
 // madc::engine tests
 // ---------------------------------------------------------------------------
 
