@@ -1202,33 +1202,74 @@ bool Program::save_executable(const std::string &path)
 		dynsym_name_offsets.push_back(dynstr.add(extern_syms[i].name));
 
 	// --- Build .gnu.version and .gnu.version_r ---
-	// We define two version entries:
-	//   version 2 = GLIBC_2.34 (for __libc_start_main)
-	//   version 3 = GLIBC_2.2.5 (for everything else from libc)
-	// NULL symbol gets version 0 (*local*).
-	// __libc_start_main gets version 2.
-	// All other symbols get version 3.
-	uint32_t ver_glibc_234 = dynstr.add("GLIBC_2.34");
-	uint32_t ver_glibc_225 = dynstr.add("GLIBC_2.2.5");
-	uint32_t ver_libc_name = 0; // will use DT_NEEDED offset for libc.so.6
+	// Detect the glibc version each symbol needs by trying dlvsym
+	// with common version strings. Build the version tables dynamically.
+
+	uint32_t ver_libc_name = 0;
 	for ( size_t i = 0; i < needed_libs.size(); ++i )
 		if ( needed_libs[i].name == "libc.so.6" )
 			ver_libc_name = needed_libs[i].dynstr_offset;
 
-	size_t dynsym_count = 1 + extern_syms.size(); // NULL + externals
+	size_t dynsym_count = 1 + extern_syms.size();
 
-	// .gnu.version: 2 bytes per dynsym entry.
-	std::vector<uint16_t> versym(dynsym_count, 3); // default: GLIBC_2.2.5
+	// Discover which glibc versions our symbols actually need.
+	// version_index 2+ maps to entries in vernaux_versions.
+	struct vernaux_entry { std::string name; uint32_t hash; uint32_t dynstr_off; };
+	std::vector<vernaux_entry> vernaux_versions;
+	std::map<std::string, uint16_t> version_index_map; // version_string → index
+
+	// Common glibc versions to probe (newest first for priority).
+	static const char *glibc_versions[] = {
+		"GLIBC_2.38", "GLIBC_2.37", "GLIBC_2.36", "GLIBC_2.35",
+		"GLIBC_2.34", "GLIBC_2.33", "GLIBC_2.32", "GLIBC_2.31",
+		"GLIBC_2.30", "GLIBC_2.29", "GLIBC_2.28", "GLIBC_2.27",
+		"GLIBC_2.17", "GLIBC_2.14", "GLIBC_2.4", "GLIBC_2.3.4",
+		"GLIBC_2.3", "GLIBC_2.2.5", NULL
+	};
+
+	void *libc_handle = dlopen("libc.so.6", RTLD_LAZY | RTLD_NOLOAD);
+
+	std::vector<uint16_t> versym(dynsym_count, 0);
 	versym[0] = 0; // NULL symbol = *local*
-	for ( size_t i = 0; i < extern_syms.size(); ++i )
-		if ( extern_syms[i].name == "__libc_start_main" )
-			versym[i + 1] = 2;
 
-	// .gnu.version_r: one Verneed entry for libc.so.6 with two Vernaux
-	// entries (GLIBC_2.34 and GLIBC_2.2.5).
-	// Verneed: { version=1, cnt=2, file=libc_name, aux=16, next=0 }
-	// Vernaux[0]: { hash, flags=0, other=2, name=GLIBC_2.34, next=16 }
-	// Vernaux[1]: { hash, flags=0, other=3, name=GLIBC_2.2.5, next=0 }
+	for ( size_t i = 0; i < extern_syms.size(); ++i )
+	{
+		const std::string &sym_name = extern_syms[i].name;
+		uint16_t ver_idx = 1; // default: *global* (unversioned)
+
+		if ( libc_handle )
+		{
+			for ( const char **vp = glibc_versions; *vp; ++vp )
+			{
+				void *resolved = dlvsym(libc_handle, sym_name.c_str(), *vp);
+				if ( resolved )
+				{
+					std::string ver_str = *vp;
+					std::map<std::string, uint16_t>::iterator vit =
+					    version_index_map.find(ver_str);
+					if ( vit != version_index_map.end() )
+					{
+						ver_idx = vit->second;
+					}
+					else
+					{
+						ver_idx = static_cast<uint16_t>(vernaux_versions.size() + 2);
+						vernaux_entry ve;
+						ve.name = ver_str;
+						ve.hash = elf_hash(ver_str.c_str());
+						ve.dynstr_off = dynstr.add(ver_str);
+						vernaux_versions.push_back(ve);
+						version_index_map[ver_str] = ver_idx;
+					}
+					break;
+				}
+			}
+		}
+		versym[i + 1] = ver_idx;
+	}
+
+	if ( libc_handle )
+		dlclose(libc_handle);
 
 	// --- Build .dynsym ---
 
@@ -1324,26 +1365,24 @@ bool Program::save_executable(const std::string &path)
 	for ( size_t i = 0; i < versym.size(); ++i )
 		emit_val(out, versym[i]);
 
-	// .gnu.version_r (VERNEED): one entry for libc.so.6.
+	// .gnu.version_r (VERNEED): one entry for libc.so.6 with N aux entries.
 	size_t verneed_offset = align_to(out, 8);
-	// Verneed header: version(2), cnt(2), file(4), aux(4), next(4)
-	emit_val<uint16_t>(out, 1);         // vn_version
-	emit_val<uint16_t>(out, 2);         // vn_cnt (2 aux entries)
-	emit_val<uint32_t>(out, ver_libc_name); // vn_file (dynstr offset)
-	emit_val<uint32_t>(out, 16);        // vn_aux (offset to first vernaux)
-	emit_val<uint32_t>(out, 0);         // vn_next (no more verneed)
-	// Vernaux[0]: GLIBC_2.34 = version index 2
-	emit_val<uint32_t>(out, elf_hash("GLIBC_2.34")); // vna_hash
-	emit_val<uint16_t>(out, 0);         // vna_flags
-	emit_val<uint16_t>(out, 2);         // vna_other (version index)
-	emit_val<uint32_t>(out, ver_glibc_234); // vna_name (dynstr offset)
-	emit_val<uint32_t>(out, 16);        // vna_next (offset to next vernaux)
-	// Vernaux[1]: GLIBC_2.2.5 = version index 3
-	emit_val<uint32_t>(out, elf_hash("GLIBC_2.2.5")); // vna_hash
-	emit_val<uint16_t>(out, 0);         // vna_flags
-	emit_val<uint16_t>(out, 3);         // vna_other (version index)
-	emit_val<uint32_t>(out, ver_glibc_225); // vna_name (dynstr offset)
-	emit_val<uint32_t>(out, 0);         // vna_next (no more vernaux)
+	uint16_t vernaux_cnt = static_cast<uint16_t>(vernaux_versions.size());
+	// Verneed header
+	emit_val<uint16_t>(out, 1);             // vn_version
+	emit_val<uint16_t>(out, vernaux_cnt);   // vn_cnt
+	emit_val<uint32_t>(out, ver_libc_name); // vn_file
+	emit_val<uint32_t>(out, 16);            // vn_aux (offset to first vernaux)
+	emit_val<uint32_t>(out, 0);             // vn_next (no more verneed entries)
+	// Vernaux entries
+	for ( size_t i = 0; i < vernaux_versions.size(); ++i )
+	{
+		emit_val<uint32_t>(out, vernaux_versions[i].hash);
+		emit_val<uint16_t>(out, 0);                                    // vna_flags
+		emit_val<uint16_t>(out, static_cast<uint16_t>(i + 2));         // vna_other (version index)
+		emit_val<uint32_t>(out, vernaux_versions[i].dynstr_off);       // vna_name
+		emit_val<uint32_t>(out, (i + 1 < vernaux_versions.size()) ? 16 : 0); // vna_next
+	}
 	size_t verneed_size = out.size() - verneed_offset;
 
 	// .rela.dyn — build and emit external relocations.
