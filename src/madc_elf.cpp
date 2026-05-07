@@ -208,6 +208,22 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 		}
 	}
 
+	// Collect AOT string constants (raw character buffers allocated
+	// during compilation when aot_tracking is on).
+	for ( size_t i = 0; i < aot_string_constants.size(); ++i )
+	{
+		char *buf = aot_string_constants[i];
+		if ( !buf || seen.count(buf) )
+			continue;
+		seen.insert(buf);
+		size_t len = std::strlen(buf) + 1;
+		GlobalDataEntry e;
+		e.name = "__aot_str_" + std::to_string(i);
+		e.address = buf;
+		e.size = len;
+		entries.push_back(e);
+	}
+
 	return entries;
 }
 

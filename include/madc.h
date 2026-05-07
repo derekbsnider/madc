@@ -809,6 +809,7 @@ public:
     bool aot_tracking;
     struct AotDataRef { uint32_t label_id; uintptr_t address; };
     std::vector<AotDataRef> aot_data_refs;
+    std::vector<char *> aot_string_constants;
     std::map<uintptr_t, std::string> external_symbol_map;
     asmjit::JitRuntime jit;
     asmjit::CodeHolder code;

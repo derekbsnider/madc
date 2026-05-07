@@ -514,6 +514,42 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
 		      && token->datadef() && token->datadef()->rawtype() == DataType::dtSTRING);
     if ( want_cstr )
     {
+	// AOT optimization: for string LITERALS, emit the raw character
+	// data as a constant and load the pointer directly — no
+	// string_cstr() call needed. This matches how gcc handles
+	// string constants (lea rdi, [rip+.LC0] in .rodata).
+	TokenVar *aot_tv = dynamic_cast<TokenVar *>(token);
+	if ( pgm.aot_tracking
+	  && (token->type() == TokenType::ttString
+	   || (token->type() == TokenType::ttVariable
+	       && aot_tv
+	       && aot_tv->var.is_constant()
+	       && aot_tv->var.type && aot_tv->var.type->is_string()
+	       && aot_tv->var.data)) )
+	{
+	    // Get the string content — either from a TokenStr or a
+	    // string literal Variable.
+	    const char *cstr = NULL;
+	    if ( token->type() == TokenType::ttString )
+		cstr = static_cast<TokenStr *>(token)->str.c_str();
+	    else
+	    {
+		std::string *sobj = static_cast<std::string *>(aot_tv->var.data);
+		cstr = sobj->c_str();
+	    }
+	    // Store the raw characters as a global data entry for .data.
+	    size_t len = strlen(cstr);
+	    char *buf = new char[len + 1];
+	    memcpy(buf, cstr, len + 1);
+	    pgm.aot_string_constants.push_back(buf);
+
+	    x86::Gp cstr_reg = pgm.cc.newIntPtr("aot_cstr");
+	    pgm.emit_data_mov(cstr_reg, buf);
+	    storage = cstr_reg;
+	    out_type = &ddCHARptr;
+	    return storage;
+	}
+
 	x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
 	InvokeNode *cstr_call;
 	pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignature::build<const char *, void *>());
