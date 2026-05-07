@@ -1150,6 +1150,8 @@ bool Program::save_executable(const std::string &path) const
 	std::vector<uint8_t> text_copy(text_data, text_data + text_size);
 
 	// Pre-patch internal relocations (non-extern) into the code copy.
+	// Inspect the instruction byte before the patch offset to
+	// determine if this is a 4-byte relative or 8-byte absolute.
 	for ( size_t i = 0; i < rela_entries.size(); ++i )
 	{
 		if ( rela_entries[i].is_extern )
@@ -1158,18 +1160,27 @@ bool Program::save_executable(const std::string &path) const
 		if ( off >= text_size )
 			continue;
 		uint64_t target = static_cast<uint64_t>(rela_entries[i].raw_addend);
-		if ( rela_entries[i].elf_type == R_X86_64_64 )
+
+		// Check for call rel32 (E8) before the patch offset.
+		bool is_rel32 = false;
+		if ( off > 0 )
 		{
-			if ( off + 8 <= text_size )
-				std::memcpy(&text_copy[off], &target, 8);
+			uint8_t prev = text_copy[off - 1];
+			if ( prev == 0xE8 )
+				is_rel32 = true;
 		}
-		else if ( rela_entries[i].elf_type == R_X86_64_PC32 )
+
+		if ( is_rel32 )
 		{
 			uint64_t pc = code_vaddr + off + 4;
 			int32_t rel = static_cast<int32_t>(
 			    static_cast<int64_t>(target) - static_cast<int64_t>(pc));
 			if ( off + 4 <= text_size )
 				std::memcpy(&text_copy[off], &rel, 4);
+		}
+		else if ( off + 8 <= text_size )
+		{
+			std::memcpy(&text_copy[off], &target, 8);
 		}
 	}
 
@@ -1263,17 +1274,44 @@ bool Program::save_executable(const std::string &path) const
 	}
 
 	// Now patch .rela.dyn entries with correct virtual addresses.
+	// For each relocation, inspect the instruction encoding to
+	// determine the correct ELF relocation type:
+	// - call rel32 (E8 xx xx xx xx): R_X86_64_PC32, addend = -4
+	// - movabs (48 B8+r / 48 A1/A3): R_X86_64_64, addend = 0
 	{
 		size_t rela_pos = rela_dyn_data_start;
 		for ( size_t i = 0; i < rela_entries.size(); ++i )
 		{
 			if ( !rela_entries[i].is_extern )
 				continue;
+
+			size_t src_off = rela_entries[i].source_offset;
+			uint32_t elf_type = rela_entries[i].elf_type;
+			int64_t addend = 0;
+
+			// Check instruction byte before the patch offset.
+			// asmjit's sourceOffset points to the value being
+			// patched. For call rel32, that's the byte after E8.
+			// For movabs, it's the byte after REX+opcode.
+			if ( src_off > 0 && src_off < text_size )
+			{
+				uint8_t prev = text_copy[src_off - 1];
+				uint8_t prev2 = (src_off > 1) ? text_copy[src_off - 2] : 0;
+
+				// E8 = call rel32 (no REX prefix)
+				// 40-4F E8 = REX call rel32
+				if ( prev == 0xE8
+				  || (prev == 0xE8 && prev2 >= 0x40 && prev2 <= 0x4F) )
+				{
+					elf_type = R_X86_64_PC32;
+					addend = -4;
+				}
+			}
+
 			Elf64_Rela rela;
-			rela.r_offset = code_vaddr + rela_entries[i].source_offset;
-			rela.r_info = ELF64_R_INFO(rela_entries[i].dynsym_index,
-						    rela_entries[i].elf_type);
-			rela.r_addend = 0;
+			rela.r_offset = code_vaddr + src_off;
+			rela.r_info = ELF64_R_INFO(rela_entries[i].dynsym_index, elf_type);
+			rela.r_addend = addend;
 			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
 			rela_pos += sizeof(rela);
 		}
