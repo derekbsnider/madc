@@ -1126,6 +1126,9 @@ public:
     // AOT helper: emit mov reg, imm(data_ptr) with optional tracking
     void emit_data_mov(asmjit::x86::Gp &dst, void *data_ptr);
 
+    // AOT helper: track absolute address used in cc.invoke(imm(addr))
+    void track_invoke_target(void *addr);
+
     // write compiled code to an ELF relocatable object file
     bool save_object(const std::string &path) const;
 

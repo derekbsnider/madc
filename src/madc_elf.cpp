@@ -978,6 +978,11 @@ bool Program::save_executable(const std::string &path)
 			if ( elf_type == R_X86_64_NONE )
 				continue;
 
+			// kX64AddressEntry: code-side reference is handled by
+			// relocateToBase. GOT slot patching is via addrtab_data_relas.
+			// Still collect the symbol but don't emit a code-side rela.
+			bool skip_code_rela = (re->relocType() == RelocType::kX64AddressEntry);
+
 			uintptr_t payload = static_cast<uintptr_t>(re->payload());
 			std::map<uintptr_t, std::string>::const_iterator it =
 			    external_symbol_map.find(payload);
@@ -1000,13 +1005,16 @@ bool Program::save_executable(const std::string &path)
 					extern_syms.push_back(es);
 					extern_indices[payload] = dynsym_idx;
 				}
-				rela_entry re_entry;
-				re_entry.source_offset = re->sourceOffset();
-				re_entry.dynsym_index = dynsym_idx;
-				re_entry.elf_type = elf_type;
-				re_entry.is_extern = true;
-				re_entry.raw_addend = 0;
-				rela_entries.push_back(re_entry);
+				if ( !skip_code_rela )
+				{
+					rela_entry re_entry;
+					re_entry.source_offset = re->sourceOffset();
+					re_entry.dynsym_index = dynsym_idx;
+					re_entry.elf_type = elf_type;
+					re_entry.is_extern = true;
+					re_entry.raw_addend = 0;
+					rela_entries.push_back(re_entry);
+				}
 			}
 			else
 			{
@@ -1035,7 +1043,18 @@ bool Program::save_executable(const std::string &path)
 		std::map<uintptr_t, std::string>::const_iterator it =
 		    external_symbol_map.find(func_addr);
 		if ( it == external_symbol_map.end() )
-			continue;
+		{
+			// Try to resolve via dladdr as a fallback.
+			Dl_info info;
+			if ( dladdr(reinterpret_cast<void *>(func_addr), &info)
+			  && info.dli_sname && info.dli_sname[0] )
+			{
+				external_symbol_map[func_addr] = info.dli_sname;
+				it = external_symbol_map.find(func_addr);
+			}
+			else
+				continue;
+		}
 
 		uint32_t dynsym_idx;
 		std::map<uintptr_t, uint32_t>::const_iterator eit =
@@ -1091,19 +1110,13 @@ bool Program::save_executable(const std::string &path)
 			  && libname.find("lib") != 0 )
 			{
 				// From the main executable. Classify by name.
-				if ( sym_name == "crypt" || sym_name == "crypt_r" )
+				if ( sym_name.find("crypt") != std::string::npos
+				  && sym_name.find("crypt") < 5 )
 					libname = "libcrypt.so.1";
-				else if ( sym_name.find("__madc_") == 0
-				       || sym_name == "printstring"
-				       || sym_name == "printstarred"
-				       || sym_name == "printstream"
-				       || sym_name == "printinteger"
-				       || sym_name == "printuinteger"
-				       || sym_name == "printdouble"
-				       || sym_name == "string_construct"
-				       || sym_name == "string_destruct"
-				       || sym_name == "string_assign"
-				       || sym_name == "string_cstr" )
+				else if ( sym_name.find("__madc_") != std::string::npos
+				       || sym_name.find("print") != std::string::npos
+				       || sym_name.find("string_") != std::string::npos
+				       || sym_name.find("_Z") == 0 )
 					libname = "libmadc.so";
 				else
 					libname = "libc.so.6";
@@ -1294,10 +1307,8 @@ bool Program::save_executable(const std::string &path)
 	// total_code_size includes .text + any padding + .addrtab.
 	size_t total_code_size = flat_size;
 
-	// Compute .data virtual address (follows .text+addrtab, aligned).
-	size_t data_file_offset_est = text_file_offset + START_STUB_SIZE + total_code_size;
-	data_file_offset_est = (data_file_offset_est + 15) & ~(size_t)15; // align 16
-	uint64_t data_vaddr = BASE_ADDR + data_file_offset_est;
+	// data_vaddr will be computed after PLT scan (which may grow total_code_size).
+	uint64_t data_vaddr = 0;
 
 	// Patch data references using compile-time tracked labels.
 	// Each aot_data_ref records the label bound BEFORE the movabs
@@ -1365,18 +1376,34 @@ bool Program::save_executable(const std::string &path)
 
 			int32_t disp;
 			std::memcpy(&disp, &text_copy[call_off + 1], 4);
-			int64_t rip = static_cast<int64_t>(code_vaddr + call_off + 5);
+			// The displacement is relative to the ORIGINAL JIT
+			// address (root_fn), not code_vaddr. relocateToBase
+			// doesn't touch call rel32 without relocation entries.
+			uintptr_t jit_base = reinterpret_cast<uintptr_t>(root_fn);
+			int64_t rip = static_cast<int64_t>(jit_base + call_off + 5);
 			int64_t target = rip + disp;
 
-			if ( target >= (int64_t)code_vaddr
-			  && target < (int64_t)(code_vaddr + total_code_size) )
-				continue; // internal
+			// Check if target is within the original JIT code range.
+			int64_t jit_start = static_cast<int64_t>(jit_base);
+			int64_t jit_end = jit_start + static_cast<int64_t>(total_code_size);
+			if ( target >= jit_start && target < jit_end )
+				continue; // internal call
 
 			uintptr_t taddr = static_cast<uintptr_t>(target);
 			std::map<uintptr_t, std::string>::const_iterator eit =
 			    external_symbol_map.find(taddr);
 			if ( eit == external_symbol_map.end() )
-				continue;
+			{
+				Dl_info info;
+				if ( dladdr(reinterpret_cast<void *>(taddr), &info)
+				  && info.dli_sname && info.dli_sname[0] )
+				{
+					external_symbol_map[taddr] = info.dli_sname;
+					eit = external_symbol_map.find(taddr);
+				}
+				else
+					continue;
+			}
 
 			size_t plt_idx;
 			std::map<uintptr_t, size_t>::const_iterator pit =
@@ -1501,6 +1528,35 @@ bool Program::save_executable(const std::string &path)
 			      << call_patches.size() << " direct calls" << std::endl);
 	}
 
+	// Recalculate data_vaddr now that total_code_size is final
+	// (includes text + addrtab + PLT).
+	{
+		size_t data_file_offset_est = text_file_offset + START_STUB_SIZE + total_code_size;
+		data_file_offset_est = (data_file_offset_est + 15) & ~(size_t)15;
+		data_vaddr = BASE_ADDR + data_file_offset_est;
+	}
+
+	// Re-run the label-based data patching with the correct data_vaddr.
+	if ( !data_offset_map.empty() && !aot_data_refs.empty() )
+	{
+		for ( size_t i = 0; i < aot_data_refs.size(); ++i )
+		{
+			const AotDataRef &ref = aot_data_refs[i];
+			if ( !code.isLabelBound(ref.label_id) )
+				continue;
+			std::map<uintptr_t, size_t>::const_iterator dit =
+			    data_offset_map.find(ref.address);
+			if ( dit == data_offset_map.end() )
+				continue;
+			uint64_t label_off = code.labelOffset(ref.label_id);
+			size_t imm_off = static_cast<size_t>(label_off) + 2;
+			if ( imm_off + 8 > total_code_size )
+				continue;
+			uint64_t new_addr = data_vaddr + dit->second;
+			std::memcpy(&text_copy[imm_off], &new_addr, 8);
+		}
+	}
+
 	// Scan for absolute address patterns in the relocated code.
 	// After relocateToBase, addrtab references are correct, but
 	// global variable loads/stores (0xA1/0xA3 moffs) and string
@@ -1595,9 +1651,11 @@ bool Program::save_executable(const std::string &path)
 			rela_pos += sizeof(rela);
 		}
 		// Addrtab slot relas: R_X86_64_64 on .text offsets
-		// where the addrtab lives (contiguous after the code).
-		// The addrtab starts at code_vaddr + text_size.
-		uint64_t addrtab_vaddr_in_text = code_vaddr + text_size;
+		// where the addrtab lives (contiguous in the flattened code).
+		// Use the addrtab section's offset from code.flatten().
+		Section *ats = code.addressTableSection();
+		uint64_t ats_offset = ats ? ats->offset() : text_size;
+		uint64_t addrtab_vaddr_in_text = code_vaddr + ats_offset;
 		for ( size_t i = 0; i < addrtab_data_relas.size(); ++i )
 		{
 			// Find the slot index from the data_offset.

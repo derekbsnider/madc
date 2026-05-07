@@ -1168,6 +1168,19 @@ void Program::emit_data_mov(x86::Gp &dst, void *data_ptr)
     cc.mov(dst, imm(data_ptr));
 }
 
+void Program::track_invoke_target(void *addr)
+{
+    if ( !aot_tracking || !addr )
+	return;
+    uintptr_t a = reinterpret_cast<uintptr_t>(addr);
+    if ( external_symbol_map.count(a) )
+	return;
+    // Try to find the name via dladdr.
+    Dl_info info;
+    if ( dladdr(addr, &info) && info.dli_sname && info.dli_sname[0] )
+	external_symbol_map[a] = info.dli_sname;
+}
+
 void Program::_compiler_init()
 {
     code.reset();
