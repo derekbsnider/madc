@@ -118,9 +118,9 @@ uint32_t elf_hash(const char *name)
 	return h;
 }
 
-// _start stub with argc/argv: xor rbp; mov rdi,[rsp]; lea rsi,[rsp+8];
-// call <disp32>; mov rdi,rax; mov rax,60; syscall
-// Total: 29 bytes. The call displacement at offset 13 must be patched.
+// _start stub with argc/argv: calls main(argc, argv), then exit(retval)
+// via syscall. TODO: call __libc_start_main for proper libc init.
+// 29 bytes. The call displacement at offset 13 must be patched.
 static const uint8_t start_stub[] = {
 	0x48, 0x31, 0xed,                         // xor %rbp, %rbp
 	0x48, 0x8b, 0x3c, 0x24,                   // mov (%rsp), %rdi  [argc]
@@ -945,6 +945,7 @@ bool Program::save_executable(const std::string &path)
 	// --- Find main() entry point offset ---
 
 	int64_t main_offset = -1;
+	uint32_t libc_start_main_dynsym = 0;
 	for ( size_t i = 0; i < pending_funcs.size(); ++i )
 	{
 		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[i]);
