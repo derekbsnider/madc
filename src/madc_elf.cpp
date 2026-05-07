@@ -1,6 +1,7 @@
 // ELF x86-64 relocatable object writer for compiled madc programs.
 // Reads from a finalized asmjit::CodeHolder and writes a .o file.
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdint>
 #include <cstring>
@@ -178,6 +179,69 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 		e.address = var->data;
 		e.size = sz;
 		entries.push_back(e);
+
+		// For string globals, also collect the c_str() buffer.
+		if ( var->type->is_string() && sz == sizeof(std::string) )
+		{
+			std::string *str = static_cast<std::string *>(var->data);
+			const char *cstr = str->c_str();
+			if ( cstr && !seen.count((void *)cstr) )
+			{
+				seen.insert((void *)cstr);
+				GlobalDataEntry ce;
+				ce.name = "__cstr_" + var->name;
+				ce.address = (void *)cstr;
+				ce.size = str->size() + 1;
+				entries.push_back(ce);
+			}
+		}
+	}
+
+	// Also collect static variables from function scopes.
+	// Walk pending_funcs to find TokenFunc compounds with variables.
+	for ( size_t fi = 0; fi < pending_funcs.size(); ++fi )
+	{
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[fi]);
+		if ( !tf )
+			continue;
+		for ( size_t vi = 0; vi < tf->variables.size(); ++vi )
+		{
+			Variable *var = tf->variables[vi];
+			if ( !var || !var->data || !var->type )
+				continue;
+			if ( !var->is_global() ) // is_global() checks vfSTATIC
+				continue;
+			if ( var->type->basetype() == BaseType::btFunct )
+				continue;
+			size_t sz = var->type->size;
+			if ( var->is_fixed_array() )
+				sz *= var->total_elements();
+			if ( sz == 0 )
+				continue;
+			if ( seen.count(var->data) )
+				continue;
+			seen.insert(var->data);
+			GlobalDataEntry e;
+			e.name = "__static_" + var->name;
+			e.address = var->data;
+			e.size = sz;
+			entries.push_back(e);
+
+			if ( var->type->is_string() && sz == sizeof(std::string) )
+			{
+				std::string *str = static_cast<std::string *>(var->data);
+				const char *cstr = str->c_str();
+				if ( cstr && !seen.count((void *)cstr) )
+				{
+					seen.insert((void *)cstr);
+					GlobalDataEntry ce;
+					ce.name = "__cstr_static_" + var->name;
+					ce.address = (void *)cstr;
+					ce.size = str->size() + 1;
+					entries.push_back(ce);
+				}
+			}
+		}
 	}
 
 	// Collect string literals from literal_map.
@@ -905,6 +969,10 @@ bool Program::save_executable(const std::string &path)
 	std::map<uintptr_t, size_t> data_offset_map; // old addr → offset in .data
 	std::vector<uint8_t> data_section_buf;
 
+	// Also build range lookup: sorted by address for sub-offset matching.
+	struct data_range { uintptr_t start; size_t size; size_t data_off; };
+	std::vector<data_range> data_ranges;
+
 	for ( size_t i = 0; i < globals.size(); ++i )
 	{
 		// Align each entry to 8 bytes.
@@ -912,11 +980,50 @@ bool Program::save_executable(const std::string &path)
 		data_section_buf.insert(data_section_buf.end(), pad, 0);
 
 		size_t offset = data_section_buf.size();
-		data_offset_map[reinterpret_cast<uintptr_t>(globals[i].address)] = offset;
+		uintptr_t addr = reinterpret_cast<uintptr_t>(globals[i].address);
+		data_offset_map[addr] = offset;
+
+		data_range dr;
+		dr.start = addr;
+		dr.size = globals[i].size;
+		dr.data_off = offset;
+		data_ranges.push_back(dr);
 
 		const uint8_t *src = static_cast<const uint8_t *>(globals[i].address);
 		data_section_buf.insert(data_section_buf.end(), src, src + globals[i].size);
 	}
+
+	// Sort ranges by start address for binary search.
+	std::sort(data_ranges.begin(), data_ranges.end(),
+		  [](const data_range &a, const data_range &b) { return a.start < b.start; });
+
+	// Helper: find the data offset for an address that may be WITHIN
+	// a collected range (not just at the start).
+	auto find_data_offset = [&](uintptr_t addr) -> std::pair<bool, size_t> {
+		// First try exact match.
+		std::map<uintptr_t, size_t>::const_iterator it = data_offset_map.find(addr);
+		if ( it != data_offset_map.end() )
+			return std::make_pair(true, it->second);
+		// Range search: find the largest range.start <= addr.
+		if ( data_ranges.empty() )
+			return std::make_pair(false, (size_t)0);
+		data_range key;
+		key.start = addr;
+		key.size = 0;
+		key.data_off = 0;
+		auto rit = std::upper_bound(data_ranges.begin(), data_ranges.end(), key,
+			[](const data_range &a, const data_range &b) { return a.start < b.start; });
+		if ( rit != data_ranges.begin() )
+		{
+			--rit;
+			if ( addr >= rit->start && addr < rit->start + rit->size )
+			{
+				size_t inner_offset = static_cast<size_t>(addr - rit->start);
+				return std::make_pair(true, rit->data_off + inner_offset);
+			}
+		}
+		return std::make_pair(false, (size_t)0);
+	};
 
 	// Append .addrtab slots to .data section so the movabs scanner
 	// can patch .text references to the addrtab. Record which data
@@ -1727,11 +1834,10 @@ bool Program::save_executable(const std::string &path)
 			std::memcpy(&imm_val, &text_copy[i + addr_off], 8);
 			uintptr_t addr = static_cast<uintptr_t>(imm_val);
 
-			std::map<uintptr_t, size_t>::const_iterator dit =
-			    data_offset_map.find(addr);
-			if ( dit != data_offset_map.end() )
+			auto match = find_data_offset(addr);
+			if ( match.first )
 			{
-				uint64_t new_addr = data_vaddr + dit->second;
+				uint64_t new_addr = data_vaddr + match.second;
 				std::memcpy(&text_copy[i + addr_off], &new_addr, 8);
 				++data_patches;
 			}
@@ -1843,11 +1949,10 @@ bool Program::save_executable(const std::string &path)
 			uint64_t imm_val;
 			std::memcpy(&imm_val, &out[file_pos + addr_off], 8);
 			uintptr_t addr = static_cast<uintptr_t>(imm_val);
-			std::map<uintptr_t, size_t>::const_iterator dit =
-			    data_offset_map.find(addr);
-			if ( dit != data_offset_map.end() )
+			auto match = find_data_offset(addr);
+			if ( match.first )
 			{
-				uint64_t new_addr = data_vaddr + dit->second;
+				uint64_t new_addr = data_vaddr + match.second;
 				std::memcpy(&out[file_pos + addr_off], &new_addr, 8);
 			}
 		}
