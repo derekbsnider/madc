@@ -1219,13 +1219,20 @@ bool Program::save_executable(const std::string &path)
 		static const char *extern_data_syms[] = {
 			"stderr", "stdout", "stdin", NULL
 		};
-		for ( size_t gi = 0; gi < globals.size(); ++gi )
+		// For each extern data symbol, find the address the COMPILER
+		// uses (from tkProgram's variable table) and look up its
+		// data_offset_map entry. This matches what the movabs scanner
+		// patched in the code.
+		for ( const char **sp = extern_data_syms; *sp; ++sp )
 		{
-			for ( const char **sp = extern_data_syms; *sp; ++sp )
-			{
-				if ( globals[gi].name == *sp )
+			if ( !tkProgram )
+				continue;
+			std::string sym_id = *sp;
+			Variable *sym_var = tkProgram->findVariable(sym_id);
+			if ( !sym_var || !sym_var->data )
+				continue;
 				{
-					uintptr_t addr = reinterpret_cast<uintptr_t>(globals[gi].address);
+					uintptr_t addr = reinterpret_cast<uintptr_t>(sym_var->data);
 					std::map<uintptr_t, size_t>::const_iterator dit =
 					    data_offset_map.find(addr);
 					if ( dit == data_offset_map.end() )
@@ -1247,10 +1254,8 @@ bool Program::save_executable(const std::string &path)
 					copy_rela cr;
 					cr.data_offset = dit->second;
 					cr.dynsym_index = dsym;
-					cr.sym_size = globals[gi].size;
+					cr.sym_size = sym_var->type ? sym_var->type->size : 8;
 					copy_relas.push_back(cr);
-					break;
-				}
 			}
 		}
 	}
