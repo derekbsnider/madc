@@ -4114,6 +4114,12 @@ program &program::operator=(program &&other) noexcept
     return *this;
 }
 
+void program::set_aot_mode(bool enabled)
+{
+    if ( _impl->pgm )
+	_impl->pgm->aot_tracking = enabled;
+}
+
 bool program::compile_file(const std::string &path)
 {
     return _impl->compile_file_with_display(path, path);

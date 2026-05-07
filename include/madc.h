@@ -806,6 +806,9 @@ public:
     std::map<std::string, asmjit::Label> label_map;
 
     bool colors;
+    bool aot_tracking;
+    struct AotDataRef { uint32_t label_id; uintptr_t address; };
+    std::vector<AotDataRef> aot_data_refs;
     std::map<uintptr_t, std::string> external_symbol_map;
     asmjit::JitRuntime jit;
     asmjit::CodeHolder code;
@@ -1119,6 +1122,9 @@ public:
 	size_t size;
     };
     std::vector<GlobalDataEntry> collect_global_data() const;
+
+    // AOT helper: emit mov reg, imm(data_ptr) with optional tracking
+    void emit_data_mov(asmjit::x86::Gp &dst, void *data_ptr);
 
     // write compiled code to an ELF relocatable object file
     bool save_object(const std::string &path) const;

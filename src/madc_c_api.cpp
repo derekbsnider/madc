@@ -724,6 +724,12 @@ void madc_program_destroy(madc_program *program)
     delete program;
 }
 
+void madc_program_set_aot_mode(madc_program *program, int enabled)
+{
+    if ( program )
+	program->program.set_aot_mode(enabled != 0);
+}
+
 int madc_program_compile_file(madc_program *program, const char *path)
 {
     return run_program_call(program, [=]() {

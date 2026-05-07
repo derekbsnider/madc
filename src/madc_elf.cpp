@@ -1178,31 +1178,65 @@ bool Program::save_executable(const std::string &path) const
 	data_file_offset_est = (data_file_offset_est + 15) & ~(size_t)15; // align 16
 	uint64_t data_vaddr = BASE_ADDR + data_file_offset_est;
 
-	// Scan text for movabs instructions whose immediate matches a
-	// known global data address. Patch to reference the .data section.
-	// movabs encoding: REX.W (0x48 or 0x49) + 0xB8+reg (8 bytes imm)
+	// Patch data references using compile-time tracked labels.
+	// Each aot_data_ref records the label bound BEFORE the movabs
+	// instruction and the original data address. The movabs is
+	// 10 bytes: REX(1) + opcode(1) + imm64(8). The immediate
+	// starts at label_offset + 2.
 	size_t data_patches = 0;
+	if ( !data_offset_map.empty() && !aot_data_refs.empty() )
+	{
+		for ( size_t i = 0; i < aot_data_refs.size(); ++i )
+		{
+			const AotDataRef &ref = aot_data_refs[i];
+			if ( !code.isLabelBound(ref.label_id) )
+				continue;
+
+			std::map<uintptr_t, size_t>::const_iterator dit =
+			    data_offset_map.find(ref.address);
+			if ( dit == data_offset_map.end() )
+				continue;
+
+			uint64_t label_off = code.labelOffset(ref.label_id);
+			size_t imm_off = static_cast<size_t>(label_off) + 2;
+			if ( imm_off + 8 > text_size )
+				continue;
+
+			uint64_t new_addr = data_vaddr + dit->second;
+			std::memcpy(&text_copy[imm_off], &new_addr, 8);
+			++data_patches;
+		}
+	}
+
+	// Also scan for movabs memory-indirect patterns that asmjit's
+	// register allocator generates for global variable loads/stores.
+	// These use opcodes 0xA1 (mov rax,[moffs64]) and 0xA3 (mov [moffs64],rax)
+	// with a REX.W prefix: 48 A1/A3 + 8-byte absolute address.
+	// Also scan for REX.W + B8-BF (mov reg,imm64) patterns that
+	// the compiler emits via cc.mov(reg, imm(ptr)) but which may
+	// not have been tracked via emit_data_mov (e.g. from asmjit's
+	// own code generation paths).
 	if ( !data_offset_map.empty() )
 	{
 		for ( size_t i = 0; i + 10 <= text_size; ++i )
 		{
 			uint8_t b0 = text_copy[i];
 			uint8_t b1 = text_copy[i + 1];
-			// REX.W prefix (0x48 for r0-r7, 0x49 for r8-r15)
-			if ( b0 != 0x48 && b0 != 0x49 )
+
+			bool is_moffs = (b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3));
+			bool is_movabs = ((b0 == 0x48 || b0 == 0x49) && b1 >= 0xB8 && b1 <= 0xBF);
+
+			if ( !is_moffs && !is_movabs )
 				continue;
-			// movabs opcode: 0xB8 + register (0-7)
-			if ( b1 < 0xB8 || b1 > 0xBF )
-				continue;
-			// Read the 8-byte immediate.
+
 			uint64_t imm_val;
 			std::memcpy(&imm_val, &text_copy[i + 2], 8);
 			uintptr_t addr = static_cast<uintptr_t>(imm_val);
+
 			std::map<uintptr_t, size_t>::const_iterator dit =
 			    data_offset_map.find(addr);
 			if ( dit != data_offset_map.end() )
 			{
-				// Patch to new .data address.
 				uint64_t new_addr = data_vaddr + dit->second;
 				std::memcpy(&text_copy[i + 2], &new_addr, 8);
 				++data_patches;

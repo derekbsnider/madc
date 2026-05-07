@@ -219,6 +219,7 @@ void madc_program_destroy(madc_program *program);
 /* Compile / execute / eval / call                                    */
 /* ------------------------------------------------------------------ */
 
+void madc_program_set_aot_mode(madc_program *program, int enabled);
 int madc_program_compile_file(madc_program *program, const char *path);
 int madc_program_compile_string(madc_program *program,
 				const char *source,

@@ -2015,6 +2015,7 @@ Program::Program()
       _include_iostream(false),
       _include_stdio(false),
       colors(false),
+      aot_tracking(false),
       root_fn(NULL)
 {
 }
@@ -2036,6 +2037,7 @@ Program::Program(MadcEngine *eng)
       _include_iostream(false),
       _include_stdio(false),
       colors(false),
+      aot_tracking(false),
       root_fn(NULL)
 {
     attach_engine(eng);

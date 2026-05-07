@@ -1157,6 +1157,17 @@ void Program::record_compile_anchor(TokenBase *tb, const char *kind)
     jit_anchor_labels.push_back(std::make_pair(l, e));
 }
 
+void Program::emit_data_mov(x86::Gp &dst, void *data_ptr)
+{
+    if ( aot_tracking )
+    {
+	Label lbl = cc.newLabel();
+	cc.bind(lbl);
+	aot_data_refs.push_back({lbl.id(), reinterpret_cast<uintptr_t>(data_ptr)});
+    }
+    cc.mov(dst, imm(data_ptr));
+}
+
 void Program::_compiler_init()
 {
     code.reset();
@@ -4668,7 +4679,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    // branch (e.g. the `then`) and the `else` branch reads an
 	    // uninitialized vreg.
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() re-emit fixed-array base"));
-	    pgm.cc.mov(rmi->second.as<x86::Gp>(), imm(var->data));
+	    pgm.emit_data_mov(rmi->second.as<x86::Gp>(), var->data);
         }
 	else if ( var->is_fixed_array() && rmi->second.isReg()
 		  && fixed_array_stack.count(var) )
@@ -4699,7 +4710,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    {
 		// We allocated the base as IntPtr (Gpq). Reconstruct.
 		x86::Gpq base_gp(mem.baseId());
-		pgm.cc.mov(base_gp, imm(var->data));
+		pgm.emit_data_mov(base_gp, var->data);
 	    }
         }
 	return rmi->second;
@@ -4800,7 +4811,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    // Global or static-local: parseDeclaration calloc'd the backing
 	    // storage. Load its absolute address.
 	    DBG(pgm.cc.comment("voperand fixed-size array (global/static)"));
-	    pgm.cc.mov(reg, imm(var->data));
+	    pgm.emit_data_mov(reg, var->data);
 	}
 	else
 	{
@@ -5021,7 +5032,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    {
 			DBG(pgm.cc.comment("voperand global struct: load absolute base"));
 			x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-			pgm.cc.mov(base_reg, imm(var->data));
+			pgm.emit_data_mov(base_reg, var->data);
 			x86::Mem mem = x86::ptr(base_reg, 0, (uint32_t)var->type->size);
 			operand_map[var] = mem;
 			var->flags |= vfREGSET;
@@ -6656,7 +6667,7 @@ Operand &TokenAddrOf::compile(Program &pgm, regdefp_t &regdp)
 
     x86::Gp addr = pgm.cc.newIntPtr("%s", ("&" + var.name).c_str());
     if ( var.is_global() && var.data && !var.is_fixed_array() )
-	pgm.cc.mov(addr, imm(var.data));
+	pgm.emit_data_mov(addr, var.data);
     else
     if ( obj.isMem() )
 	pgm.cc.lea(addr, obj.as<x86::Mem>());
@@ -6686,7 +6697,7 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	Variable &v = tv->var;
 	Operand &obj = pgm.tkFunction->voperand(pgm, &v);
 	if ( v.is_global() && v.data && !v.is_fixed_array() )
-	    pgm.cc.mov(addr, imm(v.data));
+	    pgm.emit_data_mov(addr, v.data);
 	else if ( obj.isMem() )
 	    pgm.cc.lea(addr, obj.as<x86::Mem>());
 	else

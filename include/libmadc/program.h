@@ -57,6 +57,7 @@ public:
     program(const program &) = delete;
     program &operator=(const program &) = delete;
 
+    void set_aot_mode(bool enabled);
     bool compile_file(const std::string &path);
     bool compile_string(const std::string &source,
 			const std::string &virtual_filename = std::string());
