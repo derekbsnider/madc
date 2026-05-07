@@ -1711,14 +1711,20 @@ bool Program::save_executable(const std::string &path)
 			uint8_t b0 = text_copy[i];
 			uint8_t b1 = text_copy[i + 1];
 
-			bool is_moffs = (b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3));
-			bool is_movabs = ((b0 == 0x48 || b0 == 0x49) && b1 >= 0xB8 && b1 <= 0xBF);
+			bool is_moffs64 = (b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3));
+			bool is_moffs8  = (b0 == 0xA0 || b0 == 0xA2);
+			bool is_movabs  = ((b0 == 0x48 || b0 == 0x49) && b1 >= 0xB8 && b1 <= 0xBF);
 
-			if ( !is_moffs && !is_movabs )
+			if ( !is_moffs64 && !is_moffs8 && !is_movabs )
+				continue;
+
+			// Address starts at offset +1 for A0/A2, +2 for REX variants.
+			size_t addr_off = is_moffs8 ? 1 : 2;
+			if ( i + addr_off + 8 > total_code_size )
 				continue;
 
 			uint64_t imm_val;
-			std::memcpy(&imm_val, &text_copy[i + 2], 8);
+			std::memcpy(&imm_val, &text_copy[i + addr_off], 8);
 			uintptr_t addr = static_cast<uintptr_t>(imm_val);
 
 			std::map<uintptr_t, size_t>::const_iterator dit =
@@ -1726,7 +1732,7 @@ bool Program::save_executable(const std::string &path)
 			if ( dit != data_offset_map.end() )
 			{
 				uint64_t new_addr = data_vaddr + dit->second;
-				std::memcpy(&text_copy[i + 2], &new_addr, 8);
+				std::memcpy(&text_copy[i + addr_off], &new_addr, 8);
 				++data_patches;
 			}
 		}
@@ -1820,24 +1826,29 @@ bool Program::save_executable(const std::string &path)
 	// Re-run moffs scanner with final data_vaddr.
 	if ( !data_offset_map.empty() )
 	{
-		for ( size_t i = 0; i + 10 <= total_code_size; ++i )
+		for ( size_t i = 0; i + 9 <= total_code_size; ++i )
 		{
 			size_t file_pos = code_file_offset + i;
 			if ( file_pos + 10 > out.size() )
 				break;
 			uint8_t b0 = out[file_pos];
 			uint8_t b1 = out[file_pos + 1];
-			if ( !(b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3)) )
+			bool is_moffs64 = (b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3));
+			bool is_moffs8  = (b0 == 0xA0 || b0 == 0xA2);
+			if ( !is_moffs64 && !is_moffs8 )
+				continue;
+			size_t addr_off = is_moffs8 ? 1 : 2;
+			if ( file_pos + addr_off + 8 > out.size() )
 				continue;
 			uint64_t imm_val;
-			std::memcpy(&imm_val, &out[file_pos + 2], 8);
+			std::memcpy(&imm_val, &out[file_pos + addr_off], 8);
 			uintptr_t addr = static_cast<uintptr_t>(imm_val);
 			std::map<uintptr_t, size_t>::const_iterator dit =
 			    data_offset_map.find(addr);
 			if ( dit != data_offset_map.end() )
 			{
 				uint64_t new_addr = data_vaddr + dit->second;
-				std::memcpy(&out[file_pos + 2], &new_addr, 8);
+				std::memcpy(&out[file_pos + addr_off], &new_addr, 8);
 			}
 		}
 	}
