@@ -1210,6 +1210,51 @@ bool Program::save_executable(const std::string &path)
 		addrtab_data_relas.push_back(dr);
 	}
 
+	// --- Add R_X86_64_COPY relocations for extern libc data symbols ---
+	// stderr, stdout, stdin are extern data symbols that the dynamic
+	// linker must copy from libc into our .data at load time.
+	struct copy_rela { size_t data_offset; uint32_t dynsym_index; size_t sym_size; };
+	std::vector<copy_rela> copy_relas;
+	{
+		static const char *extern_data_syms[] = {
+			"stderr", "stdout", "stdin", NULL
+		};
+		for ( size_t gi = 0; gi < globals.size(); ++gi )
+		{
+			for ( const char **sp = extern_data_syms; *sp; ++sp )
+			{
+				if ( globals[gi].name == *sp )
+				{
+					uintptr_t addr = reinterpret_cast<uintptr_t>(globals[gi].address);
+					std::map<uintptr_t, size_t>::const_iterator dit =
+					    data_offset_map.find(addr);
+					if ( dit == data_offset_map.end() )
+						continue;
+
+					// Check we haven't already added this symbol.
+					bool already = false;
+					for ( size_t ci = 0; ci < copy_relas.size(); ++ci )
+						if ( extern_syms[copy_relas[ci].dynsym_index - 1].name == *sp )
+							{ already = true; break; }
+					if ( already )
+						break;
+
+					uint32_t dsym = static_cast<uint32_t>(extern_syms.size() + 1);
+					ext_sym es;
+					es.name = *sp;
+					extern_syms.push_back(es);
+
+					copy_rela cr;
+					cr.data_offset = dit->second;
+					cr.dynsym_index = dsym;
+					cr.sym_size = globals[gi].size;
+					copy_relas.push_back(cr);
+					break;
+				}
+			}
+		}
+	}
+
 	// --- Discover required shared libraries via dladdr ---
 
 	struct needed_lib { std::string name; uint32_t dynstr_offset; };
@@ -1456,7 +1501,20 @@ bool Program::save_executable(const std::string &path)
 		Elf64_Sym sym;
 		std::memset(&sym, 0, sizeof(sym));
 		sym.st_name = dynsym_name_offsets[i + 1];
-		sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
+		// Check if this is a COPY relocation target (data symbol).
+		bool is_copy = false;
+		for ( size_t ci = 0; ci < copy_relas.size(); ++ci )
+		{
+			if ( copy_relas[ci].dynsym_index == i + 1 )
+			{
+				sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_OBJECT);
+				sym.st_size = copy_relas[ci].sym_size;
+				is_copy = true;
+				break;
+			}
+		}
+		if ( !is_copy )
+			sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
 		sym.st_shndx = SHN_UNDEF;
 		emit(out, &sym, sizeof(sym));
 	}
@@ -1504,7 +1562,7 @@ bool Program::save_executable(const std::string &path)
 	for ( size_t i = 0; i < rela_entries.size(); ++i )
 		if ( rela_entries[i].is_extern )
 			++extern_rela_count;
-	size_t total_rela_count = extern_rela_count + addrtab_data_relas.size();
+	size_t total_rela_count = extern_rela_count + addrtab_data_relas.size() + copy_relas.size();
 	// Reserve extra space for PLT GOT relas that may be added later.
 	size_t max_plt_relas = extern_syms.size() + external_symbol_map.size();
 	size_t rela_dyn_size = (total_rela_count + max_plt_relas) * sizeof(Elf64_Rela);
@@ -1768,7 +1826,7 @@ bool Program::save_executable(const std::string &path)
 		for ( size_t i = 0; i < rela_entries.size(); ++i )
 			if ( rela_entries[i].is_extern )
 				++extern_rela_count;
-		total_rela_count = extern_rela_count + addrtab_data_relas.size();
+		total_rela_count = extern_rela_count + addrtab_data_relas.size() + copy_relas.size();
 		rela_dyn_size = total_rela_count * sizeof(Elf64_Rela);
 
 		data_patches += call_patches.size();
@@ -1894,7 +1952,7 @@ bool Program::save_executable(const std::string &path)
 		for ( size_t i = 0; i < rela_entries.size(); ++i )
 			if ( rela_entries[i].is_extern )
 				++extern_rela_count;
-		total_rela_count = extern_rela_count + addrtab_data_relas.size();
+		total_rela_count = extern_rela_count + addrtab_data_relas.size() + copy_relas.size();
 		rela_dyn_size = total_rela_count * sizeof(Elf64_Rela);
 	}
 
@@ -1959,6 +2017,7 @@ bool Program::save_executable(const std::string &path)
 	}
 
 	size_t addrtab_rela_start = 0;
+	size_t copy_rela_start = 0;
 	// Now patch .rela.dyn entries with correct virtual addresses.
 	// For each relocation, inspect the instruction encoding to
 	// determine the correct ELF relocation type:
@@ -2029,6 +2088,17 @@ bool Program::save_executable(const std::string &path)
 			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
 			rela_pos += sizeof(rela);
 		}
+		// COPY relas for extern data symbols (stderr, stdout, stdin).
+		copy_rela_start = rela_pos;
+		for ( size_t i = 0; i < copy_relas.size(); ++i )
+		{
+			Elf64_Rela rela;
+			rela.r_offset = 0; // placeholder — patched after data_vaddr known
+			rela.r_info = ELF64_R_INFO(copy_relas[i].dynsym_index, R_X86_64_COPY);
+			rela.r_addend = 0;
+			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
+			rela_pos += sizeof(rela);
+		}
 	}
 
 	// .data (global variables and string literals)
@@ -2040,6 +2110,17 @@ bool Program::save_executable(const std::string &path)
 		emit(out, data_section_buf.data(), data_section_size);
 		// Recalculate actual data vaddr for section header.
 		data_vaddr = BASE_ADDR + data_file_offset;
+
+		// Patch COPY rela offsets now that data_vaddr is known.
+		{
+			size_t rp = copy_rela_start;
+			for ( size_t i = 0; i < copy_relas.size(); ++i )
+			{
+				uint64_t offset = data_vaddr + copy_relas[i].data_offset;
+				std::memcpy(&out[rp], &offset, 8);
+				rp += sizeof(Elf64_Rela);
+			}
+		}
 	}
 
 	// .dynamic
