@@ -1972,16 +1972,78 @@ bool Program::save_executable(const std::string &path)
 	uint32_t shname_text     = shstrtab.add(".text");
 	uint32_t shname_data     = shstrtab.add(".data");
 	uint32_t shname_dynamic  = shstrtab.add(".dynamic");
+	uint32_t shname_symtab   = shstrtab.add(".symtab");
+	uint32_t shname_strtab   = shstrtab.add(".strtab");
 	uint32_t shname_shstrtab = shstrtab.add(".shstrtab");
 
+	// Build .symtab + .strtab with user-defined function symbols.
+	strtab_builder sym_strtab;
+	struct sym_entry { std::string name; uint64_t value; };
+	std::vector<sym_entry> func_syms;
+
+	for ( size_t i = 0; i < pending_funcs.size(); ++i )
+	{
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[i]);
+		if ( !tf || !tf->var.data || tf->is_overridden )
+			continue;
+		Method *method = static_cast<Method *>(tf->var.data);
+		if ( !method )
+			continue;
+		FuncDef *func = dynamic_cast<FuncDef *>(method->returns.type);
+		if ( !func || !func->funcnode )
+			continue;
+		uint32_t label_id = func->funcnode->label().id();
+		if ( !code.isLabelBound(label_id) )
+			continue;
+		sym_entry se;
+		se.name = tf->var.name;
+		se.value = code.labelOffset(label_id);
+		func_syms.push_back(se);
+	}
+
+	// Emit .symtab data: NULL + section sym + func syms.
+	size_t symtab_offset = align_to(out, 8);
+	size_t first_global_sym = 2; // after NULL + section
+	{
+		// [0] NULL
+		Elf64_Sym null_sym;
+		std::memset(&null_sym, 0, sizeof(null_sym));
+		emit(out, &null_sym, sizeof(null_sym));
+		// [1] .text section symbol
+		Elf64_Sym sec_sym;
+		std::memset(&sec_sym, 0, sizeof(sec_sym));
+		sec_sym.st_info = ELF64_ST_INFO(STB_LOCAL, STT_SECTION);
+		sec_sym.st_shndx = 8; // .text section index
+		emit(out, &sec_sym, sizeof(sec_sym));
+		// [2+] function symbols
+		for ( size_t i = 0; i < func_syms.size(); ++i )
+		{
+			Elf64_Sym sym;
+			std::memset(&sym, 0, sizeof(sym));
+			sym.st_name = sym_strtab.add(func_syms[i].name);
+			sym.st_value = text_vaddr + START_STUB_SIZE + func_syms[i].value;
+			sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
+			sym.st_shndx = 8; // .text section index
+			emit(out, &sym, sizeof(sym));
+		}
+	}
+	size_t symtab_size = out.size() - symtab_offset;
+
+	// Emit .strtab data.
+	size_t strtab_offset = out.size();
+	size_t strtab_size = sym_strtab.data.size();
+	emit(out, sym_strtab.data.data(), strtab_size);
+
+	// Section indices computed in the section header block below.
 	size_t shstrtab_offset = out.size();
 	size_t shstrtab_size = shstrtab.data.size();
 	emit(out, shstrtab.data.data(), shstrtab_size);
 
 	size_t shdr_offset = align_to(out, 8);
 	// Sections: NULL, .interp, .hash, .dynsym, .dynstr, .gnu.version,
-	//   .gnu.version_r, .rela.dyn, .text, [.data], .dynamic, .shstrtab
-	int num_sections = data_section_size > 0 ? 12 : 11;
+	//   .gnu.version_r, .rela.dyn, .text, [.data], .dynamic,
+	//   .symtab, .strtab, .shstrtab
+	int num_sections = (data_section_size > 0 ? 12 : 11) + 2;
 	size_t total_file_size = out.size() + num_sections * sizeof(Elf64_Shdr);
 
 	// Total loadable size for PT_LOAD.
@@ -2072,11 +2134,14 @@ bool Program::save_executable(const std::string &path)
 	const int SEC_TEXT     = 8;
 	const int SEC_DATA     = 9;
 	const int SEC_DYNAMIC  = data_section_size > 0 ? 10 : 9;
+	const int SEC_SYMTAB2  = SEC_DYNAMIC + 1;
+	const int SEC_STRTAB2  = SEC_DYNAMIC + 2;
 	const int SEC_SHSTRTAB_IDX = num_sections - 1;
 	(void)SEC_NULL; (void)SEC_INTERP; (void)SEC_HASH;
 	(void)SEC_VERSYM; (void)SEC_VERNEED;
 	(void)SEC_RELA; (void)SEC_TEXT;
-	(void)SEC_DATA; (void)SEC_DYNAMIC; (void)SEC_SHSTRTAB_IDX;
+	(void)SEC_DATA; (void)SEC_DYNAMIC;
+	(void)SEC_SYMTAB2; (void)SEC_STRTAB2; (void)SEC_SHSTRTAB_IDX;
 
 	auto emit_shdr = [&](uint32_t name, uint32_t type, uint64_t flags,
 			     uint64_t addr, uint64_t offset, uint64_t size,
@@ -2152,6 +2217,17 @@ bool Program::save_executable(const std::string &path)
 	emit_shdr(shname_dynamic, SHT_DYNAMIC, SHF_ALLOC | SHF_WRITE,
 		  dynamic_vaddr, dynamic_offset, dynamic_size,
 		  SEC_DYNSTR, 0, 8, sizeof(Elf64_Dyn));
+
+	// .symtab
+	emit_shdr(shname_symtab, SHT_SYMTAB, 0,
+		  0, symtab_offset, symtab_size,
+		  SEC_STRTAB2, static_cast<uint32_t>(first_global_sym),
+		  8, sizeof(Elf64_Sym));
+
+	// .strtab
+	emit_shdr(shname_strtab, SHT_STRTAB, 0,
+		  0, strtab_offset, strtab_size,
+		  0, 0, 1, 0);
 
 	// .shstrtab
 	emit_shdr(shname_shstrtab, SHT_STRTAB, 0,
