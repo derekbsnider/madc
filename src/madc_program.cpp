@@ -2320,6 +2320,7 @@ struct program::impl
     error public_last_error;
     bool has_public_last_error = false;
     bool runtime_initialized = false;
+    bool aot_mode = false;
     compile_options current_compile_options;
     security_policy current_security_policy;
     expression_policy current_expression_policy;
@@ -2369,6 +2370,7 @@ struct program::impl
 	eng->registration_policy.runtime_eval_source_policy =
 	    runtime_eval_child_policy_from_public(current_runtime_eval_policy);
 	pgm = eng->create_program();
+	pgm->aot_tracking = aot_mode;
 	runtime_initialized = false;
 	clear_public_errors();
     }
@@ -4116,6 +4118,7 @@ program &program::operator=(program &&other) noexcept
 
 void program::set_aot_mode(bool enabled)
 {
+    _impl->aot_mode = enabled;
     if ( _impl->pgm )
 	_impl->pgm->aot_tracking = enabled;
 }

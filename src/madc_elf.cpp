@@ -1332,6 +1332,17 @@ bool Program::save_executable(const std::string &path)
 	// The addrtab itself lives in .data and will be patched by the
 	// dynamic linker via .rela.dyn entries.
 
+	// TODO: scan for direct call rel32 to external functions that
+	// asmjit encoded without the address table (when the target was
+	// within ±2GB of the JIT code at compile time). These need to
+	// be converted to indirect calls through the addrtab/data section,
+	// or the rela section needs to be grown dynamically to include
+	// R_X86_64_PC32 entries for the dynamic linker. This affects
+	// programs compiled from host binaries where madc internal
+	// helpers are in the same address space. SMAUG (compiled via
+	// the CLI) is not affected since all its external calls go
+	// through the address table.
+
 	// Scan for absolute address patterns in the relocated code.
 	// After relocateToBase, addrtab references are correct, but
 	// global variable loads/stores (0xA1/0xA3 moffs) and string
