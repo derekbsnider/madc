@@ -389,6 +389,37 @@ int run_program_call(madc_program *program, Fn fn)
     }
 }
 
+void to_c_expression_policy(const madc::expression_policy &src, madc_expression_policy *dst)
+{
+    if ( dst == NULL )
+	return;
+    dst->allow_function_calls = src.allow_function_calls ? 1 : 0;
+    dst->allow_member_access = src.allow_member_access ? 1 : 0;
+    dst->allow_subscript_access = src.allow_subscript_access ? 1 : 0;
+    dst->allow_pointer_operations = src.allow_pointer_operations ? 1 : 0;
+}
+
+void from_c_expression_policy(const madc_expression_policy &src, madc::expression_policy &dst)
+{
+    dst.allow_function_calls = src.allow_function_calls != 0;
+    dst.allow_member_access = src.allow_member_access != 0;
+    dst.allow_subscript_access = src.allow_subscript_access != 0;
+    dst.allow_pointer_operations = src.allow_pointer_operations != 0;
+}
+
+madc::program::native_type to_cpp_native_type(madc_native_type t)
+{
+    switch ( t )
+    {
+	case MADC_NATIVE_BOOLEAN:       return madc::program::native_type::boolean;
+	case MADC_NATIVE_INTEGER:       return madc::program::native_type::integer;
+	case MADC_NATIVE_REAL:          return madc::program::native_type::real;
+	case MADC_NATIVE_C_STRING:      return madc::program::native_type::c_string;
+	case MADC_NATIVE_STRING_OBJECT: return madc::program::native_type::string_object;
+	default:                        return madc::program::native_type::void_type;
+    }
+}
+
 } // namespace
 
 extern "C" {
@@ -524,6 +555,156 @@ int madc_engine_get_invoke_limits(madc_engine *engine,
     {
 	return MADC_EXCEPTION;
     }
+}
+
+int madc_engine_set_verbose(madc_engine *engine, int verbose)
+{
+    if ( !engine )
+	return MADC_ERROR;
+    try { engine->engine.set_verbose(verbose != 0); return MADC_OK; }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_get_verbose(madc_engine *engine)
+{
+    if ( !engine )
+	return 0;
+    return engine->engine.get_verbose() ? 1 : 0;
+}
+
+int madc_engine_set_expression_policy(madc_engine *engine,
+				      const madc_expression_policy *policy)
+{
+    if ( !engine || !policy )
+	return MADC_ERROR;
+    try
+    {
+	madc::expression_policy cpp;
+	from_c_expression_policy(*policy, cpp);
+	engine->engine.set_expression_policy(cpp);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_get_expression_policy(madc_engine *engine,
+				      madc_expression_policy *policy)
+{
+    if ( !engine || !policy )
+	return MADC_ERROR;
+    try
+    {
+	to_c_expression_policy(engine->engine.get_expression_policy(), policy);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_set_runtime_eval_policy(madc_engine *engine,
+					const madc_runtime_eval_policy *policy)
+{
+    if ( !engine || !policy )
+	return MADC_ERROR;
+    try
+    {
+	madc::runtime_eval_policy cpp;
+	from_c_runtime_eval_policy(*policy, cpp);
+	engine->engine.set_runtime_eval_policy(cpp);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_get_runtime_eval_policy(madc_engine *engine,
+					madc_runtime_eval_policy *policy)
+{
+    if ( !engine || !policy )
+	return MADC_ERROR;
+    try
+    {
+	to_c_runtime_eval_policy(engine->engine.get_runtime_eval_policy(), policy);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_register_function(madc_engine *engine,
+				  const char *name,
+				  madc_native_function callback,
+				  madc_native_type return_type,
+				  const madc_native_type *param_types,
+				  size_t param_count)
+{
+    if ( !engine || !name || !callback )
+	return MADC_ERROR;
+    try
+    {
+	madc::program::native_signature sig(to_cpp_native_type(return_type));
+	for ( size_t i = 0; i < param_count; ++i )
+	    sig.parameters.push_back(to_cpp_native_type(param_types[i]));
+	madc::program::native_function fn =
+	    reinterpret_cast<madc::program::native_function>(callback);
+	if ( !engine->engine.register_function(name, fn, sig) )
+	    return MADC_ERROR;
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_add_allowed_header(madc_engine *engine, const char *header)
+{
+    if ( !engine || !header )
+	return MADC_ERROR;
+    try
+    {
+	madc::compile_options opts = engine->engine.get_compile_options();
+	opts.allowed_headers.push_back(header);
+	engine->engine.set_compile_options(opts);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_clear_allowed_headers(madc_engine *engine)
+{
+    if ( !engine )
+	return MADC_ERROR;
+    try
+    {
+	madc::compile_options opts = engine->engine.get_compile_options();
+	opts.allowed_headers.clear();
+	engine->engine.set_compile_options(opts);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_add_allowed_dlfcn_symbol(madc_engine *engine, const char *symbol)
+{
+    if ( !engine || !symbol )
+	return MADC_ERROR;
+    try
+    {
+	madc::compile_options opts = engine->engine.get_compile_options();
+	opts.allowed_dlfcn_symbols.push_back(symbol);
+	engine->engine.set_compile_options(opts);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_engine_clear_allowed_dlfcn_symbols(madc_engine *engine)
+{
+    if ( !engine )
+	return MADC_ERROR;
+    try
+    {
+	madc::compile_options opts = engine->engine.get_compile_options();
+	opts.allowed_dlfcn_symbols.clear();
+	engine->engine.set_compile_options(opts);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
 }
 
 madc_program *madc_program_create(void)
@@ -683,20 +864,9 @@ int madc_program_register_function(madc_program *program,
 	return MADC_ERROR;
     try
     {
-	auto to_nt = [](madc_native_type t) -> madc::program::native_type {
-	    switch ( t )
-	    {
-		case MADC_NATIVE_BOOLEAN:       return madc::program::native_type::boolean;
-		case MADC_NATIVE_INTEGER:       return madc::program::native_type::integer;
-		case MADC_NATIVE_REAL:          return madc::program::native_type::real;
-		case MADC_NATIVE_C_STRING:      return madc::program::native_type::c_string;
-		case MADC_NATIVE_STRING_OBJECT: return madc::program::native_type::string_object;
-		default:                        return madc::program::native_type::void_type;
-	    }
-	};
-	madc::program::native_signature sig(to_nt(return_type));
+	madc::program::native_signature sig(to_cpp_native_type(return_type));
 	for ( size_t i = 0; i < param_count; ++i )
-	    sig.parameters.push_back(to_nt(param_types[i]));
+	    sig.parameters.push_back(to_cpp_native_type(param_types[i]));
 	madc::program::native_function fn =
 	    reinterpret_cast<madc::program::native_function>(callback);
 	if ( !program->program.register_function(name, fn, sig) )
@@ -872,6 +1042,13 @@ int madc_program_get_diagnostic(madc_program *program,
     return from_cpp_error(errors[index], diagnostic) ? MADC_OK : MADC_ERROR;
 }
 
+int madc_program_has_error(madc_program *program)
+{
+    if ( !program )
+	return 0;
+    return program->program.has_error() ? 1 : 0;
+}
+
 void madc_program_clear_diagnostics(madc_program *program)
 {
     if ( program == NULL )
@@ -974,6 +1151,226 @@ int madc_value_set_string_n(madc_value *value,
     if ( value == NULL )
 	return MADC_ERROR;
     return set_c_string(value, string_value, string_length) ? MADC_OK : MADC_ERROR;
+}
+
+void madc_expression_policy_init(madc_expression_policy *policy)
+{
+    if ( policy == NULL )
+	return;
+    to_c_expression_policy(madc::expression_policy(), policy);
+}
+
+int madc_program_set_expression_policy(madc_program *program,
+				       const madc_expression_policy *policy)
+{
+    if ( !program || !policy )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::expression_policy cpp;
+	from_c_expression_policy(*policy, cpp);
+	program->program.set_expression_policy(cpp);
+	return true;
+    });
+}
+
+int madc_program_get_expression_policy(madc_program *program,
+				       madc_expression_policy *policy)
+{
+    if ( !program || !policy )
+	return MADC_ERROR;
+    try
+    {
+	to_c_expression_policy(program->program.get_expression_policy(), policy);
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_program_add_allowed_header(madc_program *program, const char *header)
+{
+    if ( !program || !header )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::compile_options opts = program->program.get_compile_options();
+	opts.allowed_headers.push_back(header);
+	program->program.set_compile_options(opts);
+	return true;
+    });
+}
+
+int madc_program_clear_allowed_headers(madc_program *program)
+{
+    if ( !program )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::compile_options opts = program->program.get_compile_options();
+	opts.allowed_headers.clear();
+	program->program.set_compile_options(opts);
+	return true;
+    });
+}
+
+int madc_program_add_allowed_dlfcn_symbol(madc_program *program, const char *symbol)
+{
+    if ( !program || !symbol )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::compile_options opts = program->program.get_compile_options();
+	opts.allowed_dlfcn_symbols.push_back(symbol);
+	program->program.set_compile_options(opts);
+	return true;
+    });
+}
+
+int madc_program_clear_allowed_dlfcn_symbols(madc_program *program)
+{
+    if ( !program )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::compile_options opts = program->program.get_compile_options();
+	opts.allowed_dlfcn_symbols.clear();
+	program->program.set_compile_options(opts);
+	return true;
+    });
+}
+
+int madc_program_add_allowed_expression_header(madc_program *program, const char *header)
+{
+    if ( !program || !header )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::expression_policy ep = program->program.get_expression_policy();
+	ep.allowed_headers.push_back(header);
+	program->program.set_expression_policy(ep);
+	return true;
+    });
+}
+
+int madc_program_clear_allowed_expression_headers(madc_program *program)
+{
+    if ( !program )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::expression_policy ep = program->program.get_expression_policy();
+	ep.allowed_headers.clear();
+	program->program.set_expression_policy(ep);
+	return true;
+    });
+}
+
+int madc_program_add_allowed_expression_function(madc_program *program, const char *function_name)
+{
+    if ( !program || !function_name )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::expression_policy ep = program->program.get_expression_policy();
+	ep.allowed_functions.push_back(function_name);
+	program->program.set_expression_policy(ep);
+	return true;
+    });
+}
+
+int madc_program_clear_allowed_expression_functions(madc_program *program)
+{
+    if ( !program )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::expression_policy ep = program->program.get_expression_policy();
+	ep.allowed_functions.clear();
+	program->program.set_expression_policy(ep);
+	return true;
+    });
+}
+
+int madc_program_set_expression_binding(madc_program *program,
+					const char *name,
+					const madc_value *value)
+{
+    if ( !program || !name || !value )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::value cpp_val;
+	if ( !to_cpp_value(*value, cpp_val) )
+	    return false;
+	std::map<std::string, madc::value> bindings = program->program.get_expression_bindings();
+	bindings[name] = cpp_val;
+	program->program.set_expression_bindings(bindings);
+	return true;
+    });
+}
+
+int madc_program_clear_expression_bindings(madc_program *program)
+{
+    if ( !program )
+	return MADC_ERROR;
+    try
+    {
+	program->program.clear_expression_bindings();
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+int madc_program_set_expression_context(madc_program *program,
+					const madc_value *context)
+{
+    if ( !program || !context )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	madc::value cpp_val;
+	if ( !to_cpp_value(*context, cpp_val) )
+	    return false;
+	program->program.set_expression_context(cpp_val);
+	return true;
+    });
+}
+
+int madc_program_clear_expression_context(madc_program *program)
+{
+    if ( !program )
+	return MADC_ERROR;
+    try
+    {
+	program->program.clear_expression_context();
+	return MADC_OK;
+    }
+    catch ( ... ) { return MADC_EXCEPTION; }
+}
+
+const char *madc_value_kind_name(madc_value_kind kind)
+{
+    switch ( kind )
+    {
+	case MADC_VALUE_NULL:    return "null";
+	case MADC_VALUE_BOOLEAN: return "boolean";
+	case MADC_VALUE_INTEGER: return "integer";
+	case MADC_VALUE_REAL:    return "real";
+	case MADC_VALUE_STRING:  return "string";
+    }
+    return "unknown";
+}
+
+const char *madc_error_severity_name(madc_error_severity severity)
+{
+    switch ( severity )
+    {
+	case MADC_SEVERITY_WARNING: return "warning";
+	case MADC_SEVERITY_ERROR:   return "error";
+    }
+    return "unknown";
+}
+
+const char *madc_error_phase_name(madc_error_phase phase)
+{
+    switch ( phase )
+    {
+	case MADC_PHASE_UNKNOWN:  return "unknown";
+	case MADC_PHASE_LEXER:    return "lexer";
+	case MADC_PHASE_PARSER:   return "parser";
+	case MADC_PHASE_COMPILER: return "compiler";
+	case MADC_PHASE_RUNTIME:  return "runtime";
+    }
+    return "unknown";
 }
 
 } // extern "C"
