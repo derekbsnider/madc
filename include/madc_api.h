@@ -9,6 +9,7 @@ extern "C" {
 #endif
 
 typedef struct madc_program_opaque madc_program;
+typedef struct madc_engine_opaque madc_engine;
 
 typedef enum madc_result_code
 {
@@ -135,6 +136,22 @@ typedef struct madc_error
     int line;
     int column;
 } madc_error;
+
+madc_engine *madc_engine_create(void);
+void madc_engine_destroy(madc_engine *engine);
+madc_program *madc_engine_create_program(madc_engine *engine);
+int madc_engine_set_compile_options(madc_engine *engine,
+				    const madc_compile_options *options);
+int madc_engine_get_compile_options(madc_engine *engine,
+				    madc_compile_options *options);
+int madc_engine_set_security_policy(madc_engine *engine,
+				    const madc_security_policy *policy);
+int madc_engine_get_security_policy(madc_engine *engine,
+				    madc_security_policy *policy);
+int madc_engine_set_invoke_limits(madc_engine *engine,
+				  const madc_invoke_limits *limits);
+int madc_engine_get_invoke_limits(madc_engine *engine,
+				  madc_invoke_limits *limits);
 
 madc_program *madc_program_create(void);
 void madc_program_destroy(madc_program *program);

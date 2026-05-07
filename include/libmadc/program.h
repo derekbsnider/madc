@@ -14,6 +14,8 @@
 
 namespace madc {
 
+class engine;
+
 class program
 {
 public:
@@ -46,6 +48,7 @@ public:
     typedef void (*native_function)();
 
     program();
+    explicit program(engine &eng);
     ~program();
 
     program(program &&other) noexcept;

@@ -1,5 +1,6 @@
 #include "madc_api.h"
 
+#include "libmadc/engine.h"
 #include "libmadc/program.h"
 
 #include <cstdlib>
@@ -12,6 +13,14 @@ struct madc_program_opaque
 {
     madc::program program;
     std::string last_error_text;
+
+    madc_program_opaque() {}
+    explicit madc_program_opaque(madc::engine &eng) : program(eng) {}
+};
+
+struct madc_engine_opaque
+{
+    madc::engine engine;
 };
 
 namespace {
@@ -383,6 +392,139 @@ int run_program_call(madc_program *program, Fn fn)
 } // namespace
 
 extern "C" {
+
+madc_engine *madc_engine_create(void)
+{
+    try
+    {
+	return new madc_engine;
+    }
+    catch ( ... )
+    {
+	return NULL;
+    }
+}
+
+void madc_engine_destroy(madc_engine *engine)
+{
+    delete engine;
+}
+
+madc_program *madc_engine_create_program(madc_engine *engine)
+{
+    if ( !engine )
+	return NULL;
+    try
+    {
+	return new madc_program_opaque(engine->engine);
+    }
+    catch ( ... )
+    {
+	return NULL;
+    }
+}
+
+int madc_engine_set_compile_options(madc_engine *engine,
+				    const madc_compile_options *options)
+{
+    if ( !engine || !options )
+	return MADC_ERROR;
+    try
+    {
+	madc::compile_options cpp;
+	from_c_compile_options(*options, cpp);
+	engine->engine.set_compile_options(cpp);
+	return MADC_OK;
+    }
+    catch ( ... )
+    {
+	return MADC_EXCEPTION;
+    }
+}
+
+int madc_engine_get_compile_options(madc_engine *engine,
+				    madc_compile_options *options)
+{
+    if ( !engine || !options )
+	return MADC_ERROR;
+    try
+    {
+	to_c_compile_options(engine->engine.get_compile_options(), options);
+	return MADC_OK;
+    }
+    catch ( ... )
+    {
+	return MADC_EXCEPTION;
+    }
+}
+
+int madc_engine_set_security_policy(madc_engine *engine,
+				    const madc_security_policy *policy)
+{
+    if ( !engine || !policy )
+	return MADC_ERROR;
+    try
+    {
+	madc::security_policy cpp;
+	from_c_security_policy(*policy, cpp);
+	engine->engine.set_security_policy(cpp);
+	return MADC_OK;
+    }
+    catch ( ... )
+    {
+	return MADC_EXCEPTION;
+    }
+}
+
+int madc_engine_get_security_policy(madc_engine *engine,
+				    madc_security_policy *policy)
+{
+    if ( !engine || !policy )
+	return MADC_ERROR;
+    try
+    {
+	to_c_security_policy(engine->engine.get_security_policy(), policy);
+	return MADC_OK;
+    }
+    catch ( ... )
+    {
+	return MADC_EXCEPTION;
+    }
+}
+
+int madc_engine_set_invoke_limits(madc_engine *engine,
+				  const madc_invoke_limits *limits)
+{
+    if ( !engine || !limits )
+	return MADC_ERROR;
+    try
+    {
+	madc::invoke_limits cpp;
+	from_c_invoke_limits(*limits, cpp);
+	engine->engine.set_invoke_limits(cpp);
+	return MADC_OK;
+    }
+    catch ( ... )
+    {
+	return MADC_EXCEPTION;
+    }
+}
+
+int madc_engine_get_invoke_limits(madc_engine *engine,
+				  madc_invoke_limits *limits)
+{
+    if ( !engine || !limits )
+	return MADC_ERROR;
+    try
+    {
+	to_c_invoke_limits(engine->engine.get_invoke_limits(), limits);
+	return MADC_OK;
+    }
+    catch ( ... )
+    {
+	return MADC_EXCEPTION;
+    }
+}
 
 madc_program *madc_program_create(void)
 {

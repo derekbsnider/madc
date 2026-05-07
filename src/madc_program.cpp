@@ -1,5 +1,6 @@
-// madc::program — see include/libmadc/program.h
+// madc::program and madc::engine — see include/libmadc/program.h, engine.h
 
+#include "libmadc/engine.h"
 #include "libmadc/program.h"
 
 #include <cstdio>
@@ -2305,7 +2306,8 @@ struct program::impl
 	uint64_t resident_bytes = 0;
     };
 
-    MadcEngine engine;
+    MadcEngine owned_engine;
+    MadcEngine *eng;
     std::unique_ptr<Program> pgm;
     std::vector<error> public_diagnostics;
     error public_last_error;
@@ -2323,9 +2325,26 @@ struct program::impl
     std::vector<void *> callback_trampolines;
 
     impl()
+	: eng(&owned_engine)
     {
-	engine.capture_output_to_buffer();
-	engine.capture_error_to_buffer();
+	eng->capture_output_to_buffer();
+	eng->capture_error_to_buffer();
+	reset_program();
+    }
+
+    explicit impl(MadcEngine *external_engine,
+		  const compile_options &opts,
+		  const security_policy &sec,
+		  const expression_policy &expr,
+		  const runtime_eval_policy &rteval,
+		  const invoke_limits &limits)
+	: eng(external_engine),
+	  current_compile_options(opts),
+	  current_security_policy(sec),
+	  current_expression_policy(expr),
+	  current_runtime_eval_policy(rteval),
+	  current_invoke_limits(limits)
+    {
 	reset_program();
     }
 
@@ -2335,12 +2354,14 @@ struct program::impl
 	    callback_trampoline_runtime.release(callback_trampolines[i]);
     }
 
+    MadcEngine &engine() { return *eng; }
+
     void reset_program()
     {
-	engine.registration_policy = registration_policy_from_compile_options(current_compile_options);
-	engine.registration_policy.runtime_eval_source_policy =
+	eng->registration_policy = registration_policy_from_compile_options(current_compile_options);
+	eng->registration_policy.runtime_eval_source_policy =
 	    runtime_eval_child_policy_from_public(current_runtime_eval_policy);
-	pgm = engine.create_program();
+	pgm = eng->create_program();
 	runtime_initialized = false;
 	clear_public_errors();
     }
@@ -2636,7 +2657,7 @@ struct program::impl
 	    if ( report_fd < 0 )
 		_exit(121);
 
-	    engine.reset_standard_streams();
+	    engine().reset_standard_streams();
 	    pgm->execute();
 	    runtime_initialized = !pgm->last_error.has_error;
 	    if ( display_file != path )
@@ -2680,13 +2701,13 @@ struct program::impl
 	std::string stderr_text = read_text_file(child_stderr.path());
 	if ( !stdout_text.empty() )
 	{
-	    engine.output() << stdout_text;
-	    engine.output().flush();
+	    engine().output() << stdout_text;
+	    engine().output().flush();
 	}
 	if ( !stderr_text.empty() )
 	{
-	    engine.error() << stderr_text;
-	    engine.error().flush();
+	    engine().error() << stderr_text;
+	    engine().error().flush();
 	}
 
 	exec_child_report report;
@@ -3169,16 +3190,16 @@ struct program::impl
 	    public_diagnostics.push_back(public_last_error);
 	    return false;
 	}
-	engine.populate_default_registries();
+	engine().populate_default_registries();
 
 	datatype_vec_t params;
 	params.push_back(datatype_from_native_type(signature.returns));
 	for ( std::size_t i = 0; i < signature.parameters.size(); ++i )
 	    params.push_back(datatype_from_native_type(signature.parameters[i]));
 
-	engine.builtin_registry.add_core_function(name,
-						  params,
-						  reinterpret_cast<fVOIDFUNC>(callback));
+	engine().builtin_registry.add_core_function(name,
+						    params,
+						    reinterpret_cast<fVOIDFUNC>(callback));
 	reset_program();
 	return true;
     }
@@ -3257,8 +3278,8 @@ struct program::impl
 
 	if ( current_invoke_limits.output_bytes > 0 )
 	{
-	    uint64_t used_output = engine.output_buffer_str().size()
-		+ engine.error_buffer_str().size()
+	    uint64_t used_output = engine().output_buffer_str().size()
+		+ engine().error_buffer_str().size()
 		+ raw_output_bytes;
 	    if ( used_output > current_invoke_limits.output_bytes )
 	    {
@@ -3277,8 +3298,8 @@ struct program::impl
     bool invoke_with_limits(const std::string &op_name,
 			    const std::function<bool()> &fn)
     {
-	engine.clear_output_buffer();
-	engine.clear_error_buffer();
+	engine().clear_output_buffer();
+	engine().clear_error_buffer();
 	invoke_snapshot before = capture_invoke_snapshot();
 	std::cout.flush();
 	std::cerr.flush();
@@ -3732,7 +3753,7 @@ struct program::impl
 	    if ( report_fd < 0 )
 		_exit(121);
 
-	    engine.reset_standard_streams();
+	    engine().reset_standard_streams();
 	    value child_result;
 	    bool ok = perform_call(name, args, result ? &child_result : NULL);
 
@@ -3777,13 +3798,13 @@ struct program::impl
 	std::string stderr_text = read_text_file(child_stderr.path());
 	if ( !stdout_text.empty() )
 	{
-	    engine.output() << stdout_text;
-	    engine.output().flush();
+	    engine().output() << stdout_text;
+	    engine().output().flush();
 	}
 	if ( !stderr_text.empty() )
 	{
-	    engine.error() << stderr_text;
-	    engine.error().flush();
+	    engine().error() << stderr_text;
+	    engine().error().flush();
 	}
 
 	exec_child_report report;
@@ -4494,6 +4515,181 @@ bool program::has_error() const
 void program::clear_diagnostics()
 {
     _impl->clear_public_errors();
+}
+
+// ---------------------------------------------------------------------------
+// madc::engine
+// ---------------------------------------------------------------------------
+
+struct engine::impl
+{
+    MadcEngine eng;
+    compile_options current_compile_options;
+    security_policy current_security_policy;
+    expression_policy current_expression_policy;
+    runtime_eval_policy current_runtime_eval_policy;
+    invoke_limits current_invoke_limits;
+    asmjit::JitRuntime callback_trampoline_runtime;
+    std::vector<void *> callback_trampolines;
+
+    impl()
+    {
+	eng.capture_output_to_buffer();
+	eng.capture_error_to_buffer();
+    }
+
+    ~impl()
+    {
+	for ( std::size_t i = 0; i < callback_trampolines.size(); ++i )
+	    callback_trampoline_runtime.release(callback_trampolines[i]);
+    }
+
+    void sync_registration_policy()
+    {
+	eng.registration_policy =
+	    registration_policy_from_compile_options(current_compile_options);
+	eng.registration_policy.runtime_eval_source_policy =
+	    runtime_eval_child_policy_from_public(current_runtime_eval_policy);
+    }
+};
+
+engine::engine()
+    : _impl(new impl())
+{
+}
+
+engine::~engine()
+{
+}
+
+engine::engine(engine &&other) noexcept
+    : _impl(std::move(other._impl))
+{
+}
+
+engine &engine::operator=(engine &&other) noexcept
+{
+    if ( this != &other )
+	_impl = std::move(other._impl);
+    return *this;
+}
+
+program engine::create_program()
+{
+    return program(*this);
+}
+
+void engine::set_compile_options(const compile_options &options)
+{
+    _impl->current_compile_options = clamp_compile_options_for_authority_mode(
+	options, _impl->current_security_policy.mode);
+    _impl->current_security_policy = clamp_security_policy_for_authority_mode(
+	security_policy_from_compile_options(_impl->current_compile_options,
+					     _impl->current_security_policy.mode));
+    _impl->current_runtime_eval_policy = clamp_runtime_eval_policy_for_authority_mode(
+	_impl->current_runtime_eval_policy,
+	_impl->current_security_policy.mode);
+    _impl->sync_registration_policy();
+}
+
+const compile_options &engine::get_compile_options() const
+{
+    return _impl->current_compile_options;
+}
+
+void engine::set_security_policy(const security_policy &policy)
+{
+    _impl->current_security_policy = clamp_security_policy_for_authority_mode(policy);
+    _impl->current_compile_options = clamp_compile_options_for_authority_mode(
+	compile_options_from_security_policy(_impl->current_security_policy),
+	_impl->current_security_policy.mode);
+    _impl->current_runtime_eval_policy = clamp_runtime_eval_policy_for_authority_mode(
+	_impl->current_runtime_eval_policy,
+	_impl->current_security_policy.mode);
+    _impl->sync_registration_policy();
+}
+
+const security_policy &engine::get_security_policy() const
+{
+    return _impl->current_security_policy;
+}
+
+void engine::set_expression_policy(const expression_policy &policy)
+{
+    _impl->current_expression_policy = policy;
+}
+
+const expression_policy &engine::get_expression_policy() const
+{
+    return _impl->current_expression_policy;
+}
+
+void engine::set_runtime_eval_policy(const runtime_eval_policy &policy)
+{
+    _impl->current_runtime_eval_policy = clamp_runtime_eval_policy_for_authority_mode(
+	policy, _impl->current_security_policy.mode);
+    _impl->sync_registration_policy();
+}
+
+const runtime_eval_policy &engine::get_runtime_eval_policy() const
+{
+    return _impl->current_runtime_eval_policy;
+}
+
+void engine::set_invoke_limits(const invoke_limits &limits)
+{
+    _impl->current_invoke_limits = limits;
+}
+
+const invoke_limits &engine::get_invoke_limits() const
+{
+    return _impl->current_invoke_limits;
+}
+
+bool engine::register_function(const std::string &name,
+			       program::native_function callback,
+			       const program::native_signature &signature)
+{
+    if ( name.empty() || !callback )
+	return false;
+
+    _impl->eng.populate_default_registries();
+
+    datatype_vec_t params;
+    params.push_back(datatype_from_native_type(signature.returns));
+    for ( std::size_t i = 0; i < signature.parameters.size(); ++i )
+	params.push_back(datatype_from_native_type(signature.parameters[i]));
+
+    _impl->eng.builtin_registry.add_core_function(name,
+						   params,
+						   reinterpret_cast<fVOIDFUNC>(callback));
+    return true;
+}
+
+bool engine::register_cpp_callback(const std::string &name,
+				   void *callback_ptr,
+				   const program::native_signature &signature,
+				   program::native_function adapter_entry)
+{
+    program::native_function trampoline = NULL;
+    if ( !build_cpp_callback_trampoline(_impl->callback_trampoline_runtime,
+					callback_ptr,
+					adapter_entry,
+					trampoline) )
+	return false;
+    _impl->callback_trampolines.push_back(reinterpret_cast<void *>(trampoline));
+    return register_function(name, trampoline, signature);
+}
+
+// Deferred: needs engine::impl to be complete.
+program::program(engine &eng)
+    : _impl(new impl(&eng._impl->eng,
+		     eng._impl->current_compile_options,
+		     eng._impl->current_security_policy,
+		     eng._impl->current_expression_policy,
+		     eng._impl->current_runtime_eval_policy,
+		     eng._impl->current_invoke_limits))
+{
 }
 
 } // namespace madc

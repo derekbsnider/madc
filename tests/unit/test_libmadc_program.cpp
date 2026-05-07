@@ -23,6 +23,7 @@ bool madc_verbose = false;
 #include "madc.h"
 #include "madc_api.h"
 #include "libmadc/api.h"
+#include "libmadc/engine.h"
 #include "libmadc/program.h"
 
 #include <cstdio>
@@ -1787,5 +1788,135 @@ TEST_SUITE("madc::program") {
 	CHECK(err->message == "program::get_global does not support this variable type yet");
 
 	std::remove(path.c_str());
+    }
+}
+
+// ---------------------------------------------------------------------------
+// madc::engine tests
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("madc::engine") {
+
+    TEST_CASE("engine creates a program that compiles and runs") {
+	madc::engine eng;
+	madc::program pgm = eng.create_program();
+	int64_t result = 0;
+	REQUIRE(pgm.eval_expression("6 * 7", result));
+	CHECK(result == 42);
+    }
+
+    TEST_CASE("engine policy defaults propagate to created programs") {
+	madc::engine eng;
+	madc::compile_options opts;
+	opts.enable_process_functions = false;
+	eng.set_compile_options(opts);
+
+	madc::program pgm = eng.create_program();
+	const madc::compile_options &pgm_opts = pgm.get_compile_options();
+	CHECK_FALSE(pgm_opts.enable_process_functions);
+    }
+
+    TEST_CASE("engine invoke limits propagate to created programs") {
+	madc::engine eng;
+	madc::invoke_limits limits;
+	limits.cpu_ms = 500;
+	limits.output_bytes = 4096;
+	eng.set_invoke_limits(limits);
+
+	madc::program pgm = eng.create_program();
+	const madc::invoke_limits &pgm_limits = pgm.get_invoke_limits();
+	CHECK(pgm_limits.cpu_ms == 500);
+	CHECK(pgm_limits.output_bytes == 4096);
+    }
+
+    TEST_CASE("two programs from the same engine have independent state") {
+	madc::engine eng;
+	madc::program p1 = eng.create_program();
+	madc::program p2 = eng.create_program();
+
+	int64_t r1 = 0, r2 = 0;
+	REQUIRE(p1.eval_expression("3 + 4", r1));
+	REQUIRE(p2.eval_expression("10 + 20", r2));
+	CHECK(r1 == 7);
+	CHECK(r2 == 30);
+    }
+
+    TEST_CASE("engine-registered callback is available to created programs") {
+	madc::engine eng;
+	g_host_sum = 0;
+	REQUIRE(eng.register_function("host_add", host_add));
+
+	madc::program pgm = eng.create_program();
+	CHECK(pgm.exec_string(
+	    "int main() { host_add(10, 32); return 0; }\n",
+	    "eng_callback.mad"));
+	CHECK(g_host_sum == 42);
+    }
+
+    TEST_CASE("engine-registered callback is available to multiple programs") {
+	madc::engine eng;
+	g_host_sum = 0;
+	REQUIRE(eng.register_function("host_add", host_add));
+
+	madc::program p1 = eng.create_program();
+	madc::program p2 = eng.create_program();
+
+	CHECK(p1.exec_string(
+	    "int main() { host_add(1, 2); return 0; }\n",
+	    "eng_cb1.mad"));
+	CHECK(g_host_sum == 3);
+
+	CHECK(p2.exec_string(
+	    "int main() { host_add(10, 20); return 0; }\n",
+	    "eng_cb2.mad"));
+	CHECK(g_host_sum == 30);
+    }
+
+    TEST_CASE("program created from engine can still register its own callbacks") {
+	madc::engine eng;
+	madc::program pgm = eng.create_program();
+	g_host_sum = 0;
+	REQUIRE(pgm.register_function("host_add", host_add));
+
+	CHECK(pgm.exec_string(
+	    "int main() { host_add(100, 200); return 0; }\n",
+	    "pgm_own_cb.mad"));
+	CHECK(g_host_sum == 300);
+    }
+
+    TEST_CASE("engine security policy propagates to programs") {
+	madc::engine eng;
+	madc::security_policy sec;
+	sec.allow_process_functions = false;
+	sec.allow_dlfcn_functions = false;
+	eng.set_security_policy(sec);
+
+	madc::program pgm = eng.create_program();
+	const madc::security_policy &pgm_sec = pgm.get_security_policy();
+	CHECK_FALSE(pgm_sec.allow_process_functions);
+	CHECK_FALSE(pgm_sec.allow_dlfcn_functions);
+    }
+
+    TEST_CASE("engine expression policy propagates to programs") {
+	madc::engine eng;
+	madc::expression_policy ep;
+	ep.allow_function_calls = true;
+	ep.allow_member_access = true;
+	eng.set_expression_policy(ep);
+
+	madc::program pgm = eng.create_program();
+	const madc::expression_policy &pgm_ep = pgm.get_expression_policy();
+	CHECK(pgm_ep.allow_function_calls);
+	CHECK(pgm_ep.allow_member_access);
+    }
+
+    TEST_CASE("engine is move-constructible") {
+	madc::engine eng1;
+	madc::invoke_limits limits;
+	limits.cpu_ms = 999;
+	eng1.set_invoke_limits(limits);
+
+	madc::engine eng2(std::move(eng1));
+	CHECK(eng2.get_invoke_limits().cpu_ms == 999);
     }
 }
