@@ -3850,6 +3850,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	method = new Method(*var);
 	var->data = (void *)method;
 	method->x86code = (void *)extfunc;
+	if ( extfunc )
+	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
 
 	return var;
     }
@@ -3866,6 +3868,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	var->data = (void *)method;
     }
     method->x86code = (void *)extfunc;
+    if ( extfunc )
+	external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
 
     return var;
 }

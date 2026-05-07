@@ -852,14 +852,74 @@ bool Program::save_executable(const std::string &path) const
 		}
 	}
 
+	// --- Discover required shared libraries via dladdr ---
+
+	struct needed_lib { std::string name; uint32_t dynstr_offset; };
+	std::vector<needed_lib> needed_libs;
+	std::set<std::string> needed_lib_set;
+
+	for ( std::map<uintptr_t, uint32_t>::const_iterator eit = extern_indices.begin();
+	      eit != extern_indices.end(); ++eit )
+	{
+		Dl_info info;
+		if ( dladdr(reinterpret_cast<void *>(eit->first), &info) && info.dli_fname )
+		{
+			// Extract basename from the library path.
+			std::string libpath = info.dli_fname;
+			std::string libname = libpath;
+			size_t slash = libpath.rfind('/');
+			if ( slash != std::string::npos )
+				libname = libpath.substr(slash + 1);
+			// Map known library names to their SONAME form.
+			// Symbols from the main executable (madc binary or
+			// test harness) come from the madc runtime — map
+			// them to libmadc.so so the generated binary can
+			// resolve them at runtime.
+			if ( libname.find(".so") == std::string::npos
+			  && libname.find("lib") != 0 )
+				libname = "libmadc.so";
+			else if ( libname.find("libmadc") == 0 )
+				libname = "libmadc.so";
+			else if ( libname.find("libc") == 0 )
+				libname = "libc.so.6";
+			else if ( libname.find("libm") == 0 )
+				libname = "libm.so.6";
+			else if ( libname.find("libdl") == 0 )
+				libname = "libdl.so.2";
+			else if ( libname.find("libpthread") == 0 )
+				libname = "libpthread.so.0";
+			else if ( libname.find("libcrypt") == 0 )
+				libname = "libcrypt.so.1";
+			// Skip kernel virtual DSOs.
+			if ( libname.find("vdso") != std::string::npos )
+				continue;
+			if ( needed_lib_set.find(libname) == needed_lib_set.end() )
+			{
+				needed_lib_set.insert(libname);
+				needed_lib nl;
+				nl.name = libname;
+				needed_libs.push_back(nl);
+			}
+		}
+	}
+
+	// Always need libc if there are any external symbols.
+	if ( !extern_syms.empty() && needed_lib_set.find("libc.so.6") == needed_lib_set.end() )
+	{
+		needed_lib nl;
+		nl.name = "libc.so.6";
+		needed_libs.push_back(nl);
+	}
+
 	// --- Build .dynstr ---
 
 	strtab_builder dynstr;
 	std::vector<uint32_t> dynsym_name_offsets;
 	dynsym_name_offsets.push_back(0); // NULL symbol
 
-	// DT_NEEDED string for libc.
-	uint32_t libc_name_offset = dynstr.add("libc.so.6");
+	// DT_NEEDED strings.
+	for ( size_t i = 0; i < needed_libs.size(); ++i )
+		needed_libs[i].dynstr_offset = dynstr.add(needed_libs[i].name);
 
 	for ( size_t i = 0; i < extern_syms.size(); ++i )
 		dynsym_name_offsets.push_back(dynstr.add(extern_syms[i].name));
@@ -1052,8 +1112,8 @@ bool Program::save_executable(const std::string &path) const
 		emit(out, &d, sizeof(d));
 	};
 
-	if ( !extern_syms.empty() )
-		emit_dyn(DT_NEEDED, libc_name_offset);
+	for ( size_t i = 0; i < needed_libs.size(); ++i )
+		emit_dyn(DT_NEEDED, needed_libs[i].dynstr_offset);
 	emit_dyn(DT_STRTAB, BASE_ADDR + dynstr_offset);
 	emit_dyn(DT_STRSZ, dynstr_size);
 	emit_dyn(DT_SYMTAB, BASE_ADDR + dynsym_offset);
