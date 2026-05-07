@@ -4155,6 +4155,31 @@ bool program::save_object(const std::string &path)
     return true;
 }
 
+bool program::save_executable(const std::string &path)
+{
+    if ( !_impl->pgm || !_impl->pgm->root_fn )
+    {
+	_impl->clear_public_errors();
+	_impl->public_last_error = error(error::severity::error,
+					 error::phase::compiler,
+					 "program::save_executable requires a successfully compiled program");
+	_impl->has_public_last_error = true;
+	_impl->public_diagnostics.push_back(_impl->public_last_error);
+	return false;
+    }
+    if ( !_impl->pgm->save_executable(path) )
+    {
+	_impl->clear_public_errors();
+	_impl->public_last_error = error(error::severity::error,
+					 error::phase::compiler,
+					 "program::save_executable failed to write " + path);
+	_impl->has_public_last_error = true;
+	_impl->public_diagnostics.push_back(_impl->public_last_error);
+	return false;
+    }
+    return true;
+}
+
 bool program::load_object(const std::string &path)
 {
     return _impl->load_object(path);

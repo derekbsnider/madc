@@ -1115,6 +1115,9 @@ public:
     // write compiled code to an ELF relocatable object file
     bool save_object(const std::string &path) const;
 
+    // write a standalone ELF executable (dynamically linked)
+    bool save_executable(const std::string &path) const;
+
     // load a previously saved ELF .o and map it for execution
     struct LoadedObject
     {

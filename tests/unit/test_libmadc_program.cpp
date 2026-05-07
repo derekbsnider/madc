@@ -1850,6 +1850,41 @@ TEST_SUITE("save_object") {
 	std::remove(obj_path.c_str());
     }
 
+    TEST_CASE("save_executable writes a runnable ELF binary") {
+	madc::program pgm;
+	REQUIRE(pgm.compile_string(
+	    "int main() { return 42; }\n",
+	    "exec_test.mad"));
+
+	std::string exe_path = "/tmp/madc_test_exe";
+	REQUIRE(pgm.save_executable(exe_path));
+
+	// Verify it's a valid ELF executable.
+	std::string cmd = "readelf -h " + exe_path + " 2>&1";
+	FILE *fp = popen(cmd.c_str(), "r");
+	REQUIRE(fp != NULL);
+	char buf[4096];
+	std::string output;
+	while ( fgets(buf, sizeof(buf), fp) )
+	    output += buf;
+	pclose(fp);
+	CHECK(output.find("EXEC") != std::string::npos);
+	CHECK(output.find("X86-64") != std::string::npos);
+
+	// Run it and check exit code.
+	int status = system(exe_path.c_str());
+	int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	CHECK(exit_code == 42);
+
+	std::remove(exe_path.c_str());
+    }
+
+    TEST_CASE("save_executable fails before compile") {
+	madc::program pgm;
+	CHECK_FALSE(pgm.save_executable("/tmp/madc_test_noexe"));
+	CHECK(pgm.has_error());
+    }
+
     TEST_CASE("save_object fails before compile") {
 	madc::program pgm;
 	CHECK_FALSE(pgm.save_object("/tmp/madc_test_nocompile.o"));

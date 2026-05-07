@@ -758,6 +758,15 @@ int madc_program_save_object(madc_program *program, const char *path)
     });
 }
 
+int madc_program_save_executable(madc_program *program, const char *path)
+{
+    if ( !program || !path )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	return program->program.save_executable(path);
+    });
+}
+
 int madc_program_load_object(madc_program *program, const char *path)
 {
     if ( !program || !path )

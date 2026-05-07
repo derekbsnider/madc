@@ -21,6 +21,7 @@ extern thread_local bool madc_verbose;
 
 #include <dlfcn.h>
 #include <sys/mman.h>
+#include <sys/stat.h>
 
 #include <asmjit/x86.h>
 #include "datadef.h"
@@ -101,6 +102,33 @@ uint32_t madc_elf_reloc_type(RelocType rt)
 		default:                          return R_X86_64_NONE;
 	}
 }
+
+// SysV ELF hash function.
+uint32_t elf_hash(const char *name)
+{
+	uint32_t h = 0, g;
+	for ( ; *name; ++name )
+	{
+		h = (h << 4) + static_cast<uint8_t>(*name);
+		g = h & 0xf0000000;
+		if ( g )
+			h ^= g >> 24;
+		h &= ~g;
+	}
+	return h;
+}
+
+// Minimal _start stub: xor rbp,rbp; call <disp32>; mov rdi,rax; mov rax,60; syscall
+// Total: 20 bytes. The call displacement at offset 4 must be patched.
+static const uint8_t start_stub[] = {
+	0x48, 0x31, 0xed,                         // xor %rbp, %rbp
+	0xe8, 0x00, 0x00, 0x00, 0x00,             // call <rel32> (patched)
+	0x48, 0x89, 0xc7,                         // mov %rax, %rdi
+	0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00, // mov $60, %rax
+	0x0f, 0x05                                 // syscall
+};
+static const size_t START_STUB_SIZE = sizeof(start_stub);
+static const size_t START_STUB_CALL_OFFSET = 4; // offset of the rel32 in the call
 
 } // namespace
 
@@ -708,4 +736,524 @@ void Program::unload_object()
 		loaded_object.code_size = 0;
 	}
 	loaded_object.functions.clear();
+}
+
+// ---------------------------------------------------------------------------
+// ELF executable writer
+// ---------------------------------------------------------------------------
+
+bool Program::save_executable(const std::string &path) const
+{
+	if ( !root_fn )
+		return false;
+
+	Section *text_section = code.textSection();
+	if ( !text_section )
+		return false;
+
+	const uint8_t *text_data = text_section->data();
+	size_t text_size = text_section->buffer().size();
+	if ( !text_data || text_size == 0 )
+		return false;
+
+	// --- Find main() entry point offset ---
+
+	int64_t main_offset = -1;
+	for ( size_t i = 0; i < pending_funcs.size(); ++i )
+	{
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[i]);
+		if ( !tf || !tf->var.data || tf->is_overridden )
+			continue;
+		if ( tf->var.name != "main" )
+			continue;
+		Method *method = static_cast<Method *>(tf->var.data);
+		if ( !method )
+			continue;
+		FuncDef *func = dynamic_cast<FuncDef *>(method->returns.type);
+		if ( !func || !func->funcnode )
+			continue;
+		uint32_t label_id = func->funcnode->label().id();
+		if ( code.isLabelBound(label_id) )
+			main_offset = static_cast<int64_t>(code.labelOffset(label_id));
+		break;
+	}
+	if ( main_offset < 0 )
+		return false;
+
+	// --- Collect external symbols from relocations ---
+
+	struct ext_sym { std::string name; };
+	std::vector<ext_sym> extern_syms;
+	std::map<uintptr_t, uint32_t> extern_indices; // addr -> dynsym index
+
+	struct rela_entry
+	{
+		uint64_t source_offset; // in .text (relative to text start)
+		uint32_t dynsym_index;
+		uint32_t elf_type;
+		bool is_extern;
+		int64_t raw_addend;
+	};
+	std::vector<rela_entry> rela_entries;
+
+	if ( code.hasRelocEntries() )
+	{
+		const ZoneVector<RelocEntry *> &relocs = code.relocEntries();
+		for ( uint32_t i = 0; i < relocs.size(); ++i )
+		{
+			const RelocEntry *re = relocs[i];
+			if ( !re || re->relocType() == RelocType::kNone )
+				continue;
+			uint32_t elf_type = madc_elf_reloc_type(re->relocType());
+			if ( elf_type == R_X86_64_NONE )
+				continue;
+
+			uintptr_t payload = static_cast<uintptr_t>(re->payload());
+			std::map<uintptr_t, std::string>::const_iterator it =
+			    external_symbol_map.find(payload);
+
+			if ( it != external_symbol_map.end() )
+			{
+				uint32_t dynsym_idx;
+				std::map<uintptr_t, uint32_t>::const_iterator eit =
+				    extern_indices.find(payload);
+				if ( eit != extern_indices.end() )
+				{
+					dynsym_idx = eit->second;
+				}
+				else
+				{
+					// dynsym[0] is NULL, so first real symbol is index 1
+					dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
+					ext_sym es;
+					es.name = it->second;
+					extern_syms.push_back(es);
+					extern_indices[payload] = dynsym_idx;
+				}
+				rela_entry re_entry;
+				re_entry.source_offset = re->sourceOffset();
+				re_entry.dynsym_index = dynsym_idx;
+				re_entry.elf_type = elf_type;
+				re_entry.is_extern = true;
+				re_entry.raw_addend = 0;
+				rela_entries.push_back(re_entry);
+			}
+			else
+			{
+				// Internal relocation — patch with raw addend.
+				rela_entry re_entry;
+				re_entry.source_offset = re->sourceOffset();
+				re_entry.dynsym_index = 0;
+				re_entry.elf_type = elf_type;
+				re_entry.is_extern = false;
+				re_entry.raw_addend = static_cast<int64_t>(re->payload());
+				rela_entries.push_back(re_entry);
+			}
+		}
+	}
+
+	// --- Build .dynstr ---
+
+	strtab_builder dynstr;
+	std::vector<uint32_t> dynsym_name_offsets;
+	dynsym_name_offsets.push_back(0); // NULL symbol
+
+	// DT_NEEDED string for libc.
+	uint32_t libc_name_offset = dynstr.add("libc.so.6");
+
+	for ( size_t i = 0; i < extern_syms.size(); ++i )
+		dynsym_name_offsets.push_back(dynstr.add(extern_syms[i].name));
+
+	// --- Build .dynsym ---
+
+	size_t dynsym_count = 1 + extern_syms.size(); // NULL + externals
+	size_t dynsym_size = dynsym_count * sizeof(Elf64_Sym);
+
+	// --- Build .hash (SysV) ---
+
+	uint32_t nbucket = dynsym_count > 1 ? static_cast<uint32_t>(dynsym_count) : 1;
+	uint32_t nchain = static_cast<uint32_t>(dynsym_count);
+	size_t hash_size = (2 + nbucket + nchain) * sizeof(uint32_t);
+
+	std::vector<uint32_t> hash_buckets(nbucket, 0);
+	std::vector<uint32_t> hash_chains(nchain, 0);
+
+	for ( size_t i = 1; i < dynsym_count; ++i )
+	{
+		const char *name = extern_syms[i - 1].name.c_str();
+		uint32_t h = elf_hash(name) % nbucket;
+		hash_chains[i] = hash_buckets[h];
+		hash_buckets[h] = static_cast<uint32_t>(i);
+	}
+
+	// --- Build .rela.dyn (only external relocations) ---
+
+	std::vector<Elf64_Rela> elf_relas;
+	// We'll also need to handle internal relocs by pre-patching the code.
+
+	// --- Layout ---
+	// Everything in one PT_LOAD segment for simplicity.
+
+	const uint64_t BASE_ADDR = 0x400000;
+	const char *interp_str = "/lib64/ld-linux-x86-64.so.2";
+	size_t interp_size = std::strlen(interp_str) + 1;
+
+	// We need 3 program headers: PT_LOAD, PT_INTERP, PT_DYNAMIC.
+	const int NUM_PHDRS = 3;
+
+	std::vector<uint8_t> out;
+
+	// --- Pass 1: write everything, record offsets ---
+
+	// ELF header placeholder.
+	Elf64_Ehdr ehdr;
+	std::memset(&ehdr, 0, sizeof(ehdr));
+	emit(out, &ehdr, sizeof(ehdr));
+
+	// Program headers placeholder.
+	size_t phdr_offset = out.size();
+	Elf64_Phdr phdr_placeholder;
+	std::memset(&phdr_placeholder, 0, sizeof(phdr_placeholder));
+	for ( int i = 0; i < NUM_PHDRS; ++i )
+		emit(out, &phdr_placeholder, sizeof(phdr_placeholder));
+
+	// .interp
+	size_t interp_offset = out.size();
+	emit(out, interp_str, interp_size);
+
+	// .hash
+	size_t hash_offset = align_to(out, 4);
+	emit_val(out, nbucket);
+	emit_val(out, nchain);
+	for ( uint32_t i = 0; i < nbucket; ++i )
+		emit_val(out, hash_buckets[i]);
+	for ( uint32_t i = 0; i < nchain; ++i )
+		emit_val(out, hash_chains[i]);
+
+	// .dynsym
+	size_t dynsym_offset = align_to(out, 8);
+	// NULL symbol.
+	{
+		Elf64_Sym sym;
+		std::memset(&sym, 0, sizeof(sym));
+		emit(out, &sym, sizeof(sym));
+	}
+	for ( size_t i = 0; i < extern_syms.size(); ++i )
+	{
+		Elf64_Sym sym;
+		std::memset(&sym, 0, sizeof(sym));
+		sym.st_name = dynsym_name_offsets[i + 1];
+		sym.st_info = ELF64_ST_INFO(STB_GLOBAL, STT_FUNC);
+		sym.st_shndx = SHN_UNDEF;
+		emit(out, &sym, sizeof(sym));
+	}
+
+	// .dynstr
+	size_t dynstr_offset = out.size();
+	size_t dynstr_size = dynstr.data.size();
+	emit(out, dynstr.data.data(), dynstr_size);
+
+	// .rela.dyn — build and emit external relocations.
+	// Text will start at a known offset; compute it now.
+	size_t pre_rela_size = out.size();
+	// Reserve space: we'll compute text_file_offset after rela.
+	// External relas need the text virtual address to compute offsets.
+	// Two-pass: first compute sizes, then lay out.
+
+	// Compute rela size.
+	size_t extern_rela_count = 0;
+	for ( size_t i = 0; i < rela_entries.size(); ++i )
+		if ( rela_entries[i].is_extern )
+			++extern_rela_count;
+	size_t rela_dyn_size = extern_rela_count * sizeof(Elf64_Rela);
+
+	size_t rela_dyn_offset = align_to(out, 8);
+	// Emit placeholder relas — we'll patch them once we know the text vaddr.
+	size_t rela_dyn_data_start = out.size();
+	emit_zeros(out, rela_dyn_size);
+
+	// .text (stub + compiled code)
+	size_t text_file_offset = align_to(out, 16);
+	uint64_t text_vaddr = BASE_ADDR + text_file_offset;
+
+	// _start stub
+	size_t start_file_offset = out.size();
+	uint64_t start_vaddr = BASE_ADDR + start_file_offset;
+	emit(out, start_stub, START_STUB_SIZE);
+
+	// Compiled code
+	size_t code_file_offset = out.size();
+	uint64_t code_vaddr = BASE_ADDR + code_file_offset;
+	// Make a mutable copy so we can pre-patch internal relocations.
+	std::vector<uint8_t> text_copy(text_data, text_data + text_size);
+
+	// Pre-patch internal relocations (non-extern) into the code copy.
+	for ( size_t i = 0; i < rela_entries.size(); ++i )
+	{
+		if ( rela_entries[i].is_extern )
+			continue;
+		size_t off = rela_entries[i].source_offset;
+		if ( off >= text_size )
+			continue;
+		uint64_t target = static_cast<uint64_t>(rela_entries[i].raw_addend);
+		if ( rela_entries[i].elf_type == R_X86_64_64 )
+		{
+			if ( off + 8 <= text_size )
+				std::memcpy(&text_copy[off], &target, 8);
+		}
+		else if ( rela_entries[i].elf_type == R_X86_64_PC32 )
+		{
+			uint64_t pc = code_vaddr + off + 4;
+			int32_t rel = static_cast<int32_t>(
+			    static_cast<int64_t>(target) - static_cast<int64_t>(pc));
+			if ( off + 4 <= text_size )
+				std::memcpy(&text_copy[off], &rel, 4);
+		}
+	}
+
+	emit(out, text_copy.data(), text_size);
+	size_t total_text_size = START_STUB_SIZE + text_size;
+
+	// Patch _start stub call displacement to main.
+	{
+		uint64_t main_vaddr = code_vaddr + static_cast<uint64_t>(main_offset);
+		uint64_t call_pc = start_vaddr + START_STUB_CALL_OFFSET + 4;
+		int32_t disp = static_cast<int32_t>(
+		    static_cast<int64_t>(main_vaddr) - static_cast<int64_t>(call_pc));
+		size_t patch_pos = start_file_offset + START_STUB_CALL_OFFSET;
+		std::memcpy(&out[patch_pos], &disp, 4);
+	}
+
+	// Now patch .rela.dyn entries with correct virtual addresses.
+	{
+		size_t rela_pos = rela_dyn_data_start;
+		for ( size_t i = 0; i < rela_entries.size(); ++i )
+		{
+			if ( !rela_entries[i].is_extern )
+				continue;
+			Elf64_Rela rela;
+			rela.r_offset = code_vaddr + rela_entries[i].source_offset;
+			rela.r_info = ELF64_R_INFO(rela_entries[i].dynsym_index,
+						    rela_entries[i].elf_type);
+			rela.r_addend = 0;
+			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
+			rela_pos += sizeof(rela);
+		}
+	}
+
+	// .dynamic
+	size_t dynamic_offset = align_to(out, 8);
+	uint64_t dynamic_vaddr = BASE_ADDR + dynamic_offset;
+
+	auto emit_dyn = [&](int64_t tag, uint64_t val) {
+		Elf64_Dyn d;
+		d.d_tag = tag;
+		d.d_un.d_val = val;
+		emit(out, &d, sizeof(d));
+	};
+
+	if ( !extern_syms.empty() )
+		emit_dyn(DT_NEEDED, libc_name_offset);
+	emit_dyn(DT_STRTAB, BASE_ADDR + dynstr_offset);
+	emit_dyn(DT_STRSZ, dynstr_size);
+	emit_dyn(DT_SYMTAB, BASE_ADDR + dynsym_offset);
+	emit_dyn(DT_SYMENT, sizeof(Elf64_Sym));
+	emit_dyn(DT_HASH, BASE_ADDR + hash_offset);
+	if ( extern_rela_count > 0 )
+	{
+		emit_dyn(DT_RELA, BASE_ADDR + rela_dyn_offset);
+		emit_dyn(DT_RELASZ, rela_dyn_size);
+		emit_dyn(DT_RELAENT, sizeof(Elf64_Rela));
+		emit_dyn(DT_TEXTREL, 0);
+	}
+	emit_dyn(DT_NULL, 0);
+
+	size_t dynamic_size = out.size() - dynamic_offset;
+
+	// Section headers (optional but helpful for readelf/objdump).
+	strtab_builder shstrtab;
+	uint32_t shname_interp   = shstrtab.add(".interp");
+	uint32_t shname_hash     = shstrtab.add(".hash");
+	uint32_t shname_dynsym   = shstrtab.add(".dynsym");
+	uint32_t shname_dynstr   = shstrtab.add(".dynstr");
+	uint32_t shname_rela     = shstrtab.add(".rela.dyn");
+	uint32_t shname_text     = shstrtab.add(".text");
+	uint32_t shname_dynamic  = shstrtab.add(".dynamic");
+	uint32_t shname_shstrtab = shstrtab.add(".shstrtab");
+
+	size_t shstrtab_offset = out.size();
+	size_t shstrtab_size = shstrtab.data.size();
+	emit(out, shstrtab.data.data(), shstrtab_size);
+
+	size_t shdr_offset = align_to(out, 8);
+	size_t total_file_size = out.size() + 9 * sizeof(Elf64_Shdr); // 9 sections
+
+	// Total loadable size for PT_LOAD.
+	size_t load_filesz = total_file_size;
+
+	// --- Fill in ELF header ---
+
+	std::memset(&ehdr, 0, sizeof(ehdr));
+	ehdr.e_ident[EI_MAG0] = ELFMAG0;
+	ehdr.e_ident[EI_MAG1] = ELFMAG1;
+	ehdr.e_ident[EI_MAG2] = ELFMAG2;
+	ehdr.e_ident[EI_MAG3] = ELFMAG3;
+	ehdr.e_ident[EI_CLASS] = ELFCLASS64;
+	ehdr.e_ident[EI_DATA] = ELFDATA2LSB;
+	ehdr.e_ident[EI_VERSION] = EV_CURRENT;
+	ehdr.e_ident[EI_OSABI] = ELFOSABI_NONE;
+	ehdr.e_type = ET_EXEC;
+	ehdr.e_machine = EM_X86_64;
+	ehdr.e_version = EV_CURRENT;
+	ehdr.e_entry = start_vaddr;
+	ehdr.e_phoff = phdr_offset;
+	ehdr.e_shoff = shdr_offset;
+	ehdr.e_ehsize = sizeof(Elf64_Ehdr);
+	ehdr.e_phentsize = sizeof(Elf64_Phdr);
+	ehdr.e_phnum = NUM_PHDRS;
+	ehdr.e_shentsize = sizeof(Elf64_Shdr);
+	ehdr.e_shnum = 9;
+	ehdr.e_shstrndx = 8; // .shstrtab is section 8
+	std::memcpy(&out[0], &ehdr, sizeof(ehdr));
+
+	// --- Fill in program headers ---
+
+	// PT_LOAD: map entire file RWX at BASE_ADDR.
+	{
+		Elf64_Phdr ph;
+		std::memset(&ph, 0, sizeof(ph));
+		ph.p_type = PT_LOAD;
+		ph.p_flags = PF_R | PF_W | PF_X;
+		ph.p_offset = 0;
+		ph.p_vaddr = BASE_ADDR;
+		ph.p_paddr = BASE_ADDR;
+		ph.p_filesz = load_filesz;
+		ph.p_memsz = load_filesz;
+		ph.p_align = 0x200000;
+		std::memcpy(&out[phdr_offset], &ph, sizeof(ph));
+	}
+
+	// PT_INTERP
+	{
+		Elf64_Phdr ph;
+		std::memset(&ph, 0, sizeof(ph));
+		ph.p_type = PT_INTERP;
+		ph.p_flags = PF_R;
+		ph.p_offset = interp_offset;
+		ph.p_vaddr = BASE_ADDR + interp_offset;
+		ph.p_paddr = BASE_ADDR + interp_offset;
+		ph.p_filesz = interp_size;
+		ph.p_memsz = interp_size;
+		ph.p_align = 1;
+		std::memcpy(&out[phdr_offset + sizeof(Elf64_Phdr)], &ph, sizeof(ph));
+	}
+
+	// PT_DYNAMIC
+	{
+		Elf64_Phdr ph;
+		std::memset(&ph, 0, sizeof(ph));
+		ph.p_type = PT_DYNAMIC;
+		ph.p_flags = PF_R | PF_W;
+		ph.p_offset = dynamic_offset;
+		ph.p_vaddr = dynamic_vaddr;
+		ph.p_paddr = dynamic_vaddr;
+		ph.p_filesz = dynamic_size;
+		ph.p_memsz = dynamic_size;
+		ph.p_align = 8;
+		std::memcpy(&out[phdr_offset + 2 * sizeof(Elf64_Phdr)], &ph, sizeof(ph));
+	}
+
+	// --- Section headers ---
+
+	const int SEC_NULL     = 0;
+	const int SEC_INTERP   = 1;
+	const int SEC_HASH     = 2;
+	const int SEC_DYNSYM   = 3;
+	const int SEC_DYNSTR   = 4;
+	const int SEC_RELA     = 5;
+	const int SEC_TEXT     = 6;
+	const int SEC_DYNAMIC  = 7;
+	const int SEC_SHSTRTAB = 8;
+	(void)SEC_NULL; (void)SEC_INTERP; (void)SEC_RELA;
+
+	auto emit_shdr = [&](uint32_t name, uint32_t type, uint64_t flags,
+			     uint64_t addr, uint64_t offset, uint64_t size,
+			     uint32_t link, uint32_t info,
+			     uint64_t addralign, uint64_t entsize) {
+		Elf64_Shdr sh;
+		std::memset(&sh, 0, sizeof(sh));
+		sh.sh_name = name;
+		sh.sh_type = type;
+		sh.sh_flags = flags;
+		sh.sh_addr = addr;
+		sh.sh_offset = offset;
+		sh.sh_size = size;
+		sh.sh_link = link;
+		sh.sh_info = info;
+		sh.sh_addralign = addralign;
+		sh.sh_entsize = entsize;
+		emit(out, &sh, sizeof(sh));
+	};
+
+	// [0] NULL
+	emit_shdr(0, SHT_NULL, 0, 0, 0, 0, 0, 0, 0, 0);
+
+	// [1] .interp
+	emit_shdr(shname_interp, SHT_PROGBITS, SHF_ALLOC,
+		  BASE_ADDR + interp_offset, interp_offset, interp_size,
+		  0, 0, 1, 0);
+
+	// [2] .hash
+	emit_shdr(shname_hash, SHT_HASH, SHF_ALLOC,
+		  BASE_ADDR + hash_offset, hash_offset, hash_size,
+		  SEC_DYNSYM, 0, 4, 4);
+
+	// [3] .dynsym
+	emit_shdr(shname_dynsym, SHT_DYNSYM, SHF_ALLOC,
+		  BASE_ADDR + dynsym_offset, dynsym_offset, dynsym_size,
+		  SEC_DYNSTR, 1, 8, sizeof(Elf64_Sym));
+
+	// [4] .dynstr
+	emit_shdr(shname_dynstr, SHT_STRTAB, SHF_ALLOC,
+		  BASE_ADDR + dynstr_offset, dynstr_offset, dynstr_size,
+		  0, 0, 1, 0);
+
+	// [5] .rela.dyn
+	emit_shdr(shname_rela, SHT_RELA, SHF_ALLOC,
+		  BASE_ADDR + rela_dyn_offset, rela_dyn_offset, rela_dyn_size,
+		  SEC_DYNSYM, 0, 8, sizeof(Elf64_Rela));
+
+	// [6] .text
+	emit_shdr(shname_text, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR,
+		  text_vaddr, text_file_offset, total_text_size,
+		  0, 0, 16, 0);
+
+	// [7] .dynamic
+	emit_shdr(shname_dynamic, SHT_DYNAMIC, SHF_ALLOC | SHF_WRITE,
+		  dynamic_vaddr, dynamic_offset, dynamic_size,
+		  SEC_DYNSTR, 0, 8, sizeof(Elf64_Dyn));
+
+	// [8] .shstrtab
+	emit_shdr(shname_shstrtab, SHT_STRTAB, 0,
+		  0, shstrtab_offset, shstrtab_size,
+		  0, 0, 1, 0);
+
+	// --- Write to file ---
+
+	FILE *fp = std::fopen(path.c_str(), "wb");
+	if ( !fp )
+		return false;
+	size_t written = std::fwrite(out.data(), 1, out.size(), fp);
+	std::fclose(fp);
+
+	// Make executable.
+	chmod(path.c_str(), 0755);
+
+	DBG(std::cout << "save_executable: wrote " << written << " bytes to "
+		      << path << " (entry=" << std::hex << start_vaddr
+		      << ", main=" << code_vaddr + main_offset
+		      << ", " << extern_syms.size() << " external symbols)"
+		      << std::dec << std::endl);
+
+	return written == out.size();
 }
