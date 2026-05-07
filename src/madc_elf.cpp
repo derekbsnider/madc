@@ -118,20 +118,28 @@ uint32_t elf_hash(const char *name)
 	return h;
 }
 
-// _start stub with argc/argv: calls main(argc, argv), then exit(retval)
-// via syscall. TODO: call __libc_start_main for proper libc init.
-// 29 bytes. The call displacement at offset 13 must be patched.
+// _start stub matching gcc's CRT: calls __libc_start_main(main, argc, argv, ...)
+// which initializes libc (stdio, malloc, atexit) then calls main, then exit.
+// 31 bytes. Patch points:
+//   offset 0x15: 4-byte main address (imm32 in mov edi)
+//   offset 0x19: e8 opcode — rel32 at offset 0x1a for __libc_start_main
 static const uint8_t start_stub[] = {
-	0x48, 0x31, 0xed,                         // xor %rbp, %rbp
-	0x48, 0x8b, 0x3c, 0x24,                   // mov (%rsp), %rdi  [argc]
-	0x48, 0x8d, 0x74, 0x24, 0x08,             // lea 8(%rsp), %rsi [argv]
-	0xe8, 0x00, 0x00, 0x00, 0x00,             // call <rel32> (patched)
-	0x48, 0x89, 0xc7,                         // mov %rax, %rdi
-	0x48, 0xc7, 0xc0, 0x3c, 0x00, 0x00, 0x00, // mov $60, %rax
-	0x0f, 0x05                                 // syscall
+	0x31, 0xed,                               // xor %ebp, %ebp
+	0x49, 0x89, 0xd1,                         // mov %rdx, %r9 (rtld_fini)
+	0x5e,                                     // pop %rsi (argc)
+	0x48, 0x89, 0xe2,                         // mov %rsp, %rdx (argv)
+	0x48, 0x83, 0xe4, 0xf0,                   // and $-16, %rsp (align)
+	0x50,                                     // push %rax (padding)
+	0x54,                                     // push %rsp (stack_end)
+	0x45, 0x31, 0xc0,                         // xor %r8d, %r8d (fini=0)
+	0x31, 0xc9,                               // xor %ecx, %ecx (init=0)
+	0xbf, 0x00, 0x00, 0x00, 0x00,             // mov $main, %edi (patched)
+	0xe8, 0x00, 0x00, 0x00, 0x00,             // call __libc_start_main (patched)
+	0xf4                                      // hlt
 };
 static const size_t START_STUB_SIZE = sizeof(start_stub);
-static const size_t START_STUB_CALL_OFFSET = 13; // offset of the rel32 in the call
+static const size_t START_STUB_MAIN_IMM_OFFSET = 0x15;  // imm32 in mov edi
+static const size_t START_STUB_CALL_REL_OFFSET = 0x1a;  // rel32 after e8
 
 } // namespace
 
@@ -1171,6 +1179,15 @@ bool Program::save_executable(const std::string &path)
 		needed_libs.push_back(nl);
 	}
 
+	// Always add __libc_start_main (needed by the _start stub).
+	{
+		ext_sym es;
+		es.name = "__libc_start_main";
+		extern_syms.push_back(es);
+		libc_start_main_dynsym = static_cast<uint32_t>(extern_syms.size());
+		// dynsym index = extern_syms.size() because dynsym[0] is NULL
+	}
+
 	// --- Build .dynstr ---
 
 	strtab_builder dynstr;
@@ -1184,9 +1201,37 @@ bool Program::save_executable(const std::string &path)
 	for ( size_t i = 0; i < extern_syms.size(); ++i )
 		dynsym_name_offsets.push_back(dynstr.add(extern_syms[i].name));
 
-	// --- Build .dynsym ---
+	// --- Build .gnu.version and .gnu.version_r ---
+	// We define two version entries:
+	//   version 2 = GLIBC_2.34 (for __libc_start_main)
+	//   version 3 = GLIBC_2.2.5 (for everything else from libc)
+	// NULL symbol gets version 0 (*local*).
+	// __libc_start_main gets version 2.
+	// All other symbols get version 3.
+	uint32_t ver_glibc_234 = dynstr.add("GLIBC_2.34");
+	uint32_t ver_glibc_225 = dynstr.add("GLIBC_2.2.5");
+	uint32_t ver_libc_name = 0; // will use DT_NEEDED offset for libc.so.6
+	for ( size_t i = 0; i < needed_libs.size(); ++i )
+		if ( needed_libs[i].name == "libc.so.6" )
+			ver_libc_name = needed_libs[i].dynstr_offset;
 
 	size_t dynsym_count = 1 + extern_syms.size(); // NULL + externals
+
+	// .gnu.version: 2 bytes per dynsym entry.
+	std::vector<uint16_t> versym(dynsym_count, 3); // default: GLIBC_2.2.5
+	versym[0] = 0; // NULL symbol = *local*
+	for ( size_t i = 0; i < extern_syms.size(); ++i )
+		if ( extern_syms[i].name == "__libc_start_main" )
+			versym[i + 1] = 2;
+
+	// .gnu.version_r: one Verneed entry for libc.so.6 with two Vernaux
+	// entries (GLIBC_2.34 and GLIBC_2.2.5).
+	// Verneed: { version=1, cnt=2, file=libc_name, aux=16, next=0 }
+	// Vernaux[0]: { hash, flags=0, other=2, name=GLIBC_2.34, next=16 }
+	// Vernaux[1]: { hash, flags=0, other=3, name=GLIBC_2.2.5, next=0 }
+
+	// --- Build .dynsym ---
+
 	size_t dynsym_size = dynsym_count * sizeof(Elf64_Sym);
 
 	// --- Build .hash (SysV) ---
@@ -1272,6 +1317,34 @@ bool Program::save_executable(const std::string &path)
 	size_t dynstr_offset = out.size();
 	size_t dynstr_size = dynstr.data.size();
 	emit(out, dynstr.data.data(), dynstr_size);
+
+	// .gnu.version (VERSYM): 2 bytes per dynsym entry.
+	size_t versym_offset = align_to(out, 2);
+	size_t versym_size = versym.size() * 2;
+	for ( size_t i = 0; i < versym.size(); ++i )
+		emit_val(out, versym[i]);
+
+	// .gnu.version_r (VERNEED): one entry for libc.so.6.
+	size_t verneed_offset = align_to(out, 4);
+	// Verneed header: version(2), cnt(2), file(4), aux(4), next(4)
+	emit_val<uint16_t>(out, 1);         // vn_version
+	emit_val<uint16_t>(out, 2);         // vn_cnt (2 aux entries)
+	emit_val<uint32_t>(out, ver_libc_name); // vn_file (dynstr offset)
+	emit_val<uint32_t>(out, 16);        // vn_aux (offset to first vernaux)
+	emit_val<uint32_t>(out, 0);         // vn_next (no more verneed)
+	// Vernaux[0]: GLIBC_2.34 = version index 2
+	emit_val<uint32_t>(out, elf_hash("GLIBC_2.34")); // vna_hash
+	emit_val<uint16_t>(out, 0);         // vna_flags
+	emit_val<uint16_t>(out, 2);         // vna_other (version index)
+	emit_val<uint32_t>(out, ver_glibc_234); // vna_name (dynstr offset)
+	emit_val<uint32_t>(out, 16);        // vna_next (offset to next vernaux)
+	// Vernaux[1]: GLIBC_2.2.5 = version index 3
+	emit_val<uint32_t>(out, elf_hash("GLIBC_2.2.5")); // vna_hash
+	emit_val<uint16_t>(out, 0);         // vna_flags
+	emit_val<uint16_t>(out, 3);         // vna_other (version index)
+	emit_val<uint32_t>(out, ver_glibc_225); // vna_name (dynstr offset)
+	emit_val<uint32_t>(out, 0);         // vna_next (no more vernaux)
+	size_t verneed_size = out.size() - verneed_offset;
 
 	// .rela.dyn — build and emit external relocations.
 	// Text will start at a known offset; compute it now.
@@ -1628,14 +1701,106 @@ bool Program::save_executable(const std::string &path)
 	emit(out, text_copy.data(), total_code_size);
 	size_t total_text_size = START_STUB_SIZE + total_code_size;
 
-	// Patch _start stub call displacement to main.
+	// Patch _start stub: main address and __libc_start_main PLT.
 	{
 		uint64_t main_vaddr = code_vaddr + static_cast<uint64_t>(main_offset);
-		uint64_t call_pc = start_vaddr + START_STUB_CALL_OFFSET + 4;
+
+		// Patch mov $main, %edi (imm32).
+		uint32_t main32 = static_cast<uint32_t>(main_vaddr);
+		std::memcpy(&out[start_file_offset + START_STUB_MAIN_IMM_OFFSET],
+			    &main32, 4);
+
+		// Build PLT stub + GOT slot for __libc_start_main.
+		// Append directly to `out` since text_copy was already emitted.
+		size_t lsm_plt_off = total_code_size;
+		uint8_t jmp_stub[6] = { 0xFF, 0x25, 0x00, 0x00, 0x00, 0x00 };
+		emit(out, jmp_stub, 6);
+		total_code_size += 6;
+		total_text_size += 6;
+		size_t lsm_got_off = total_code_size;
+		emit_zeros(out, 8);
+		total_code_size += 8;
+		total_text_size += 8;
+
+		// Patch call rel32 to PLT stub.
+		uint64_t plt_vaddr = code_vaddr + lsm_plt_off;
+		uint64_t call_rip = start_vaddr + START_STUB_CALL_REL_OFFSET + 4;
 		int32_t disp = static_cast<int32_t>(
-		    static_cast<int64_t>(main_vaddr) - static_cast<int64_t>(call_pc));
-		size_t patch_pos = start_file_offset + START_STUB_CALL_OFFSET;
-		std::memcpy(&out[patch_pos], &disp, 4);
+		    static_cast<int64_t>(plt_vaddr) - static_cast<int64_t>(call_rip));
+		std::memcpy(&out[start_file_offset + START_STUB_CALL_REL_OFFSET], &disp, 4);
+
+		// Emit rela for GOT slot.
+		rela_entry re;
+		re.source_offset = lsm_got_off;
+		re.dynsym_index = libc_start_main_dynsym;
+		re.elf_type = R_X86_64_64;
+		re.is_extern = true;
+		re.raw_addend = 0;
+		rela_entries.push_back(re);
+
+		// Recount.
+		extern_rela_count = 0;
+		for ( size_t i = 0; i < rela_entries.size(); ++i )
+			if ( rela_entries[i].is_extern )
+				++extern_rela_count;
+		total_rela_count = extern_rela_count + addrtab_data_relas.size();
+		rela_dyn_size = total_rela_count * sizeof(Elf64_Rela);
+	}
+
+	// Recalculate data_vaddr after __libc_start_main PLT.
+	{
+		size_t est = text_file_offset + total_text_size;
+		est = (est + 15) & ~(size_t)15;
+		data_vaddr = BASE_ADDR + est;
+	}
+
+	// Re-patch data references with final data_vaddr (emit_data_mov labels).
+	if ( !data_offset_map.empty() && !aot_data_refs.empty() )
+	{
+		for ( size_t i = 0; i < aot_data_refs.size(); ++i )
+		{
+			const AotDataRef &ref = aot_data_refs[i];
+			if ( !code.isLabelBound(ref.label_id) )
+				continue;
+			std::map<uintptr_t, size_t>::const_iterator dit =
+			    data_offset_map.find(ref.address);
+			if ( dit == data_offset_map.end() )
+				continue;
+			uint64_t label_off = code.labelOffset(ref.label_id);
+			size_t imm_off = static_cast<size_t>(label_off) + 2;
+			if ( imm_off + 8 > total_code_size )
+				continue;
+			uint64_t new_addr = data_vaddr + dit->second;
+			// Patch in `out` (text was already emitted).
+			size_t file_pos = code_file_offset + imm_off;
+			if ( file_pos + 8 <= out.size() )
+				std::memcpy(&out[file_pos], &new_addr, 8);
+		}
+	}
+
+	// Re-run moffs scanner with final data_vaddr.
+	if ( !data_offset_map.empty() )
+	{
+		for ( size_t i = 0; i + 10 <= total_code_size; ++i )
+		{
+			size_t file_pos = code_file_offset + i;
+			if ( file_pos + 10 > out.size() )
+				break;
+			uint8_t b0 = out[file_pos];
+			uint8_t b1 = out[file_pos + 1];
+			if ( !(b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3)) )
+				continue;
+			uint64_t imm_val;
+			std::memcpy(&imm_val, &out[file_pos + 2], 8);
+			uintptr_t addr = static_cast<uintptr_t>(imm_val);
+			std::map<uintptr_t, size_t>::const_iterator dit =
+			    data_offset_map.find(addr);
+			if ( dit != data_offset_map.end() )
+			{
+				uint64_t new_addr = data_vaddr + dit->second;
+				std::memcpy(&out[file_pos + 2], &new_addr, 8);
+			}
+		}
 	}
 
 	size_t addrtab_rela_start = 0;
@@ -1749,6 +1914,8 @@ bool Program::save_executable(const std::string &path)
 		if ( extern_rela_count > 0 )
 			emit_dyn(DT_TEXTREL, 0);
 	}
+	emit_dyn(0x6ffffffe, BASE_ADDR + verneed_offset); // DT_VERNEED
+	emit_dyn(0x6fffffff, 1);                         // DT_VERNEEDNUM
 	emit_dyn(DT_NULL, 0);
 
 	size_t dynamic_size = out.size() - dynamic_offset;
@@ -1759,6 +1926,8 @@ bool Program::save_executable(const std::string &path)
 	uint32_t shname_hash     = shstrtab.add(".hash");
 	uint32_t shname_dynsym   = shstrtab.add(".dynsym");
 	uint32_t shname_dynstr   = shstrtab.add(".dynstr");
+	uint32_t shname_versym   = shstrtab.add(".gnu.version");
+	uint32_t shname_verneed  = shstrtab.add(".gnu.version_r");
 	uint32_t shname_rela     = shstrtab.add(".rela.dyn");
 	uint32_t shname_text     = shstrtab.add(".text");
 	uint32_t shname_data     = shstrtab.add(".data");
@@ -1770,7 +1939,9 @@ bool Program::save_executable(const std::string &path)
 	emit(out, shstrtab.data.data(), shstrtab_size);
 
 	size_t shdr_offset = align_to(out, 8);
-	int num_sections = data_section_size > 0 ? 10 : 9;
+	// Sections: NULL, .interp, .hash, .dynsym, .dynstr, .gnu.version,
+	//   .gnu.version_r, .rela.dyn, .text, [.data], .dynamic, .shstrtab
+	int num_sections = data_section_size > 0 ? 12 : 11;
 	size_t total_file_size = out.size() + num_sections * sizeof(Elf64_Shdr);
 
 	// Total loadable size for PT_LOAD.
@@ -1855,12 +2026,15 @@ bool Program::save_executable(const std::string &path)
 	const int SEC_HASH     = 2;
 	const int SEC_DYNSYM   = 3;
 	const int SEC_DYNSTR   = 4;
-	const int SEC_RELA     = 5;
-	const int SEC_TEXT     = 6;
-	const int SEC_DATA     = 7;
-	const int SEC_DYNAMIC  = data_section_size > 0 ? 8 : 7;
+	const int SEC_VERSYM   = 5;
+	const int SEC_VERNEED  = 6;
+	const int SEC_RELA     = 7;
+	const int SEC_TEXT     = 8;
+	const int SEC_DATA     = 9;
+	const int SEC_DYNAMIC  = data_section_size > 0 ? 10 : 9;
 	const int SEC_SHSTRTAB_IDX = num_sections - 1;
 	(void)SEC_NULL; (void)SEC_INTERP; (void)SEC_HASH;
+	(void)SEC_VERSYM; (void)SEC_VERNEED;
 	(void)SEC_RELA; (void)SEC_TEXT;
 	(void)SEC_DATA; (void)SEC_DYNAMIC; (void)SEC_SHSTRTAB_IDX;
 
@@ -1906,12 +2080,22 @@ bool Program::save_executable(const std::string &path)
 		  BASE_ADDR + dynstr_offset, dynstr_offset, dynstr_size,
 		  0, 0, 1, 0);
 
-	// [5] .rela.dyn
+	// [5] .gnu.version
+	emit_shdr(shname_versym, 0x6fffffff /*SHT_GNU_versym*/, SHF_ALLOC,
+		  BASE_ADDR + versym_offset, versym_offset, versym_size,
+		  SEC_DYNSYM, 0, 2, 2);
+
+	// [6] .gnu.version_r
+	emit_shdr(shname_verneed, 0x6ffffffe /*SHT_GNU_verneed*/, SHF_ALLOC,
+		  BASE_ADDR + verneed_offset, verneed_offset, verneed_size,
+		  SEC_DYNSTR, 1, 4, 0);
+
+	// [7] .rela.dyn
 	emit_shdr(shname_rela, SHT_RELA, SHF_ALLOC,
 		  BASE_ADDR + rela_dyn_offset, rela_dyn_offset, rela_dyn_size,
 		  SEC_DYNSYM, 0, 8, sizeof(Elf64_Rela));
 
-	// [6] .text
+	// [8] .text
 	emit_shdr(shname_text, SHT_PROGBITS, SHF_ALLOC | SHF_EXECINSTR,
 		  text_vaddr, text_file_offset, total_text_size,
 		  0, 0, 16, 0);
