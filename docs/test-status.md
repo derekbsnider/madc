@@ -18,7 +18,11 @@ Latest `scripts/run_tests.sh` result:
 - Passing: 259 integration tests
 - Failing: none
 - Timed out: none
-- Unit tests: all passing (doctest, core-only `--enable-madcdat=no` workspace) — 80 datadef + 23 IR + 99 libmadc_program + 5 libmadc_error + 19 libmadc_value (226 total)
+- Unit tests: all passing (doctest, core-only `--enable-madcdat=no` workspace) — 80 datadef + 23 IR + 129 libmadc_program + 5 libmadc_error + 19 libmadc_value (256 total)
+- Installed-library smoke: `make -C src libmadc-smoke` passes, staging
+  `libmadc.so` plus public headers under `/tmp/madc-libstage/usr/local/`
+  and then compiling/running both `tests/libmadc_cpp_smoke.cpp` and
+  `tests/libmadc_c_smoke.c` against that staged install.
 
 The latest IR-focused validation batch passes directly, including:
 

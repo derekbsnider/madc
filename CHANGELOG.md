@@ -2,6 +2,54 @@
 
 ## [Unreleased]
 
+- **Standalone native executables from madc scripts.**
+  `bin/madc -o binary script.mad` generates a self-contained ELF x86-64
+  executable with no madc runtime dependency (only libc). The `_start`
+  stub calls `__libc_start_main` for proper libc initialization (stdio,
+  malloc, atexit). ELF symbol versioning (.gnu.version / .gnu.version_r)
+  uses `dlvsym`-based detection — no hardcoded glibc versions. Function
+  symbols emitted in `.symtab` for gdb debugging.
+
+- **`madc::engine` public class for shared program configuration.**
+  Engine owns registry, policy defaults, and logging. Programs created
+  from an engine share its state. C API: `madc_engine_create/destroy`.
+
+- **C API at near-parity with C++ embedding surface.**
+  `expression_policy`, allowlist vectors, expression bindings/context,
+  `register_function`, `has_function`, `get/set_global`, `eval_body`,
+  `has_error`, helper functions. 354-line header, 60+ functions.
+
+- **Process globals cleaned up for multi-instance embedding.**
+  `madc_verbose` is now `thread_local`. Dead `throwit` global removed.
+  All Phase 4.1 global state blockers closed.
+
+- **Compile-once-run-many and .o cache.**
+  `compile_string()` / `compile_file()` + `call()` reuse JIT code.
+  `.o` cache via `save_object()` / `load_object()`: SMAUG loads in
+  9.5ms from cache vs 26s compile (2,700x speedup).
+
+- **ELF .o writer and loader.**
+  `save_object()` emits standard ELF x86-64 relocatable objects with
+  function symbols and external symbol relocations. `load_object()`
+  reads them back with dlsym resolution and mmap(PROT_EXEC).
+
+- **pkg-config and SONAME versioning.**
+  `libmadc.pc` template, `libmadc.so.0` SONAME, versioned install
+  with symlinks. `pkg-config --cflags --libs libmadc` works.
+
+- **Embedding examples.**
+  `examples/embed_hello.cpp` (C++) and `examples/embed_hello.c` (C).
+
+- **`libmadc.so` install/use validation is now a first-class build path.**
+  `src/Makefile` now installs `libmadc.so` with executable/shared-library
+  mode through `INSTALL_PROGRAM`, carries a library-owned weak default
+  `madc_verbose` definition in `src/madc_globals.cpp` so external
+  consumers do not depend on the CLI binary for that symbol, and exposes
+  `make -C src libmadc-smoke` to stage-install the library and compile
+  plus run both `tests/libmadc_cpp_smoke.cpp` and
+  `tests/libmadc_c_smoke.c` against the staged headers and shared
+  library.
+
 - **The C shim now covers scalar policy mirrors, invoke limits, and diagnostics enumeration.**
   `include/madc_api.h` and `src/madc_c_api.cpp` now expose C-facing
   mirrors for the scalar portions of `compile_options`,
