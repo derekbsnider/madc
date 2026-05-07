@@ -185,7 +185,14 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 		{
 			std::string *str = static_cast<std::string *>(var->data);
 			const char *cstr = str->c_str();
-			if ( cstr && !seen.count((void *)cstr) )
+			// Only add c_str if it's NOT inside the parent object
+			// (SSO strings store characters inline — adding them
+			// would create overlapping data_offset_map entries).
+			uintptr_t obj_start = reinterpret_cast<uintptr_t>(var->data);
+			uintptr_t cstr_addr = reinterpret_cast<uintptr_t>(cstr);
+			bool is_internal = (cstr_addr >= obj_start
+					 && cstr_addr < obj_start + sizeof(std::string));
+			if ( cstr && !is_internal && !seen.count((void *)cstr) )
 			{
 				seen.insert((void *)cstr);
 				GlobalDataEntry ce;
@@ -231,7 +238,10 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 			{
 				std::string *str = static_cast<std::string *>(var->data);
 				const char *cstr = str->c_str();
-				if ( cstr && !seen.count((void *)cstr) )
+				uintptr_t so = reinterpret_cast<uintptr_t>(var->data);
+				uintptr_t ca = reinterpret_cast<uintptr_t>(cstr);
+				bool internal = (ca >= so && ca < so + sizeof(std::string));
+				if ( cstr && !internal && !seen.count((void *)cstr) )
 				{
 					seen.insert((void *)cstr);
 					GlobalDataEntry ce;
@@ -269,7 +279,10 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 		// via movabs for C function calls like puts/printf.
 		std::string *str = static_cast<std::string *>(var->data);
 		const char *cstr = str->c_str();
-		if ( cstr && !seen.count((void *)cstr) )
+		uintptr_t lo = reinterpret_cast<uintptr_t>(var->data);
+		uintptr_t lca = reinterpret_cast<uintptr_t>(cstr);
+		bool lit_internal = (lca >= lo && lca < lo + sizeof(std::string));
+		if ( cstr && !lit_internal && !seen.count((void *)cstr) )
 		{
 			seen.insert((void *)cstr);
 			GlobalDataEntry e;
@@ -1219,32 +1232,28 @@ bool Program::save_executable(const std::string &path)
 		static const char *extern_data_syms[] = {
 			"stderr", "stdout", "stdin", NULL
 		};
-		// For each extern data symbol, find the address the COMPILER
-		// uses (from tkProgram's variable table) and look up its
-		// data_offset_map entry. This matches what the movabs scanner
-		// patched in the code.
-		for ( const char **sp = extern_data_syms; *sp; ++sp )
+		// For each extern data symbol, find the FIRST Variable in
+		// tkProgram->variables with that name. This matches the
+		// order collect_global_data iterates, which matches the
+		// data_offset_map entry the movabs scanner used to patch
+		// the code. DON'T use findVariable() — it returns the
+		// last-registered Variable which may have a different
+		// data address.
+		if ( tkProgram )
 		{
-			if ( !tkProgram )
-				continue;
-			std::string sym_id = *sp;
-			Variable *sym_var = tkProgram->findVariable(sym_id);
-			if ( !sym_var || !sym_var->data )
-				continue;
+			for ( const char **sp = extern_data_syms; *sp; ++sp )
+			{
+				for ( size_t vi = 0; vi < tkProgram->variables.size(); ++vi )
 				{
-					uintptr_t addr = reinterpret_cast<uintptr_t>(sym_var->data);
+					Variable *v = tkProgram->variables[vi];
+					if ( !v || !v->data || v->name != *sp )
+						continue;
+
+					uintptr_t addr = reinterpret_cast<uintptr_t>(v->data);
 					std::map<uintptr_t, size_t>::const_iterator dit =
 					    data_offset_map.find(addr);
 					if ( dit == data_offset_map.end() )
 						continue;
-
-					// Check we haven't already added this symbol.
-					bool already = false;
-					for ( size_t ci = 0; ci < copy_relas.size(); ++ci )
-						if ( extern_syms[copy_relas[ci].dynsym_index - 1].name == *sp )
-							{ already = true; break; }
-					if ( already )
-						break;
 
 					uint32_t dsym = static_cast<uint32_t>(extern_syms.size() + 1);
 					ext_sym es;
@@ -1254,8 +1263,10 @@ bool Program::save_executable(const std::string &path)
 					copy_rela cr;
 					cr.data_offset = dit->second;
 					cr.dynsym_index = dsym;
-					cr.sym_size = sym_var->type ? sym_var->type->size : 8;
+					cr.sym_size = v->type ? v->type->size : 8;
 					copy_relas.push_back(cr);
+					break; // first match only
+				}
 			}
 		}
 	}
@@ -1897,10 +1908,11 @@ bool Program::save_executable(const std::string &path)
 			std::memcpy(&imm_val, &text_copy[i + addr_off], 8);
 			uintptr_t addr = static_cast<uintptr_t>(imm_val);
 
-			auto match = find_data_offset(addr);
-			if ( match.first )
+			std::map<uintptr_t, size_t>::const_iterator dit2 =
+			    data_offset_map.find(addr);
+			if ( dit2 != data_offset_map.end() )
 			{
-				uint64_t new_addr = data_vaddr + match.second;
+				uint64_t new_addr = data_vaddr + dit2->second;
 				std::memcpy(&text_copy[i + addr_off], &new_addr, 8);
 				++data_patches;
 			}
@@ -2012,10 +2024,11 @@ bool Program::save_executable(const std::string &path)
 			uint64_t imm_val;
 			std::memcpy(&imm_val, &out[file_pos + addr_off], 8);
 			uintptr_t addr = static_cast<uintptr_t>(imm_val);
-			auto match = find_data_offset(addr);
-			if ( match.first )
+			std::map<uintptr_t, size_t>::const_iterator dit2 =
+			    data_offset_map.find(addr);
+			if ( dit2 != data_offset_map.end() )
 			{
-				uint64_t new_addr = data_vaddr + match.second;
+				uint64_t new_addr = data_vaddr + dit2->second;
 				std::memcpy(&out[file_pos + addr_off], &new_addr, 8);
 			}
 		}
@@ -2093,7 +2106,41 @@ bool Program::save_executable(const std::string &path)
 			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
 			rela_pos += sizeof(rela);
 		}
-		// COPY relas for extern data symbols (stderr, stdout, stdin).
+		// COPY relas: scan the PATCHED code (in `out`) for movabs/moffs
+		// that access .data addresses, and find which .data offset
+		// corresponds to each extern data symbol. This is the only
+		// reliable way because the same name can have multiple
+		// Variable registrations at different addresses.
+		for ( size_t ci = 0; ci < copy_relas.size(); ++ci )
+		{
+			std::string sym_name = extern_syms[copy_relas[ci].dynsym_index - 1].name;
+			// Find ALL Variables with this name and collect their data_offset_map entries.
+			std::vector<size_t> candidate_offsets;
+			if ( tkProgram )
+			{
+				for ( size_t vi = 0; vi < tkProgram->variables.size(); ++vi )
+				{
+					Variable *v = tkProgram->variables[vi];
+					if ( !v || !v->data || v->name != sym_name )
+						continue;
+					uintptr_t addr = reinterpret_cast<uintptr_t>(v->data);
+					std::map<uintptr_t, size_t>::const_iterator dit =
+					    data_offset_map.find(addr);
+					if ( dit != data_offset_map.end() )
+						candidate_offsets.push_back(dit->second);
+				}
+			}
+			// Use the SMALLEST offset (first in .data = first registered = what code uses).
+			if ( !candidate_offsets.empty() )
+			{
+				size_t best = candidate_offsets[0];
+				for ( size_t j = 1; j < candidate_offsets.size(); ++j )
+					if ( candidate_offsets[j] < best )
+						best = candidate_offsets[j];
+				copy_relas[ci].data_offset = best;
+			}
+		}
+
 		copy_rela_start = rela_pos;
 		for ( size_t i = 0; i < copy_relas.size(); ++i )
 		{
