@@ -224,6 +224,7 @@ int madc_program_compile_string(madc_program *program,
 				const char *source,
 				const char *virtual_filename);
 int madc_program_is_compiled(madc_program *program);
+int madc_program_save_object(madc_program *program, const char *path);
 int madc_program_exec(madc_program *program);
 int madc_program_has_function(madc_program *program, const char *name);
 int madc_program_exec_file(madc_program *program, const char *path);

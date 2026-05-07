@@ -4060,6 +4060,31 @@ bool program::is_compiled() const
     return _impl->pgm && _impl->pgm->root_fn;
 }
 
+bool program::save_object(const std::string &path)
+{
+    if ( !_impl->pgm || !_impl->pgm->root_fn )
+    {
+	_impl->clear_public_errors();
+	_impl->public_last_error = error(error::severity::error,
+					 error::phase::compiler,
+					 "program::save_object requires a successfully compiled program");
+	_impl->has_public_last_error = true;
+	_impl->public_diagnostics.push_back(_impl->public_last_error);
+	return false;
+    }
+    if ( !_impl->pgm->save_object(path) )
+    {
+	_impl->clear_public_errors();
+	_impl->public_last_error = error(error::severity::error,
+					 error::phase::compiler,
+					 "program::save_object failed to write " + path);
+	_impl->has_public_last_error = true;
+	_impl->public_diagnostics.push_back(_impl->public_last_error);
+	return false;
+    }
+    return true;
+}
+
 bool program::exec()
 {
     return _impl->exec_compiled_with_display("<compiled>", "<compiled>");

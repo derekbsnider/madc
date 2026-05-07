@@ -1111,6 +1111,9 @@ public:
     // compile code
     bool compile();
 
+    // write compiled code to an ELF relocatable object file
+    bool save_object(const std::string &path) const;
+
     // execute the resulting code
     void execute();
 

@@ -749,6 +749,15 @@ int madc_program_is_compiled(madc_program *program)
     return program->program.is_compiled() ? 1 : 0;
 }
 
+int madc_program_save_object(madc_program *program, const char *path)
+{
+    if ( !program || !path )
+	return MADC_ERROR;
+    return run_program_call(program, [=]() {
+	return program->program.save_object(path);
+    });
+}
+
 int madc_program_exec(madc_program *program)
 {
     return run_program_call(program, [=]() {

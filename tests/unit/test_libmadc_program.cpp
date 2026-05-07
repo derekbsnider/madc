@@ -1792,6 +1792,72 @@ TEST_SUITE("madc::program") {
 }
 
 // ---------------------------------------------------------------------------
+// save_object (ELF .o output) tests
+// ---------------------------------------------------------------------------
+
+TEST_SUITE("save_object") {
+
+    TEST_CASE("save_object writes a valid ELF relocatable") {
+	madc::program pgm;
+	REQUIRE(pgm.compile_string(
+	    "int add(int a, int b) { return a + b; }\n"
+	    "int main() { return 0; }\n",
+	    "elf_test.mad"));
+
+	std::string obj_path = "/tmp/madc_test_elf.o";
+	REQUIRE(pgm.save_object(obj_path));
+
+	// Verify it's valid ELF with readelf.
+	std::string cmd = "readelf -h " + obj_path + " 2>&1";
+	FILE *fp = popen(cmd.c_str(), "r");
+	REQUIRE(fp != NULL);
+	char buf[4096];
+	std::string output;
+	while ( fgets(buf, sizeof(buf), fp) )
+	    output += buf;
+	int status = pclose(fp);
+	CHECK(status == 0);
+	CHECK(output.find("ELF Header:") != std::string::npos);
+	CHECK(output.find("REL") != std::string::npos);          // ET_REL
+	CHECK(output.find("X86-64") != std::string::npos);       // EM_X86_64
+
+	std::remove(obj_path.c_str());
+    }
+
+    TEST_CASE("save_object includes function symbols") {
+	madc::program pgm;
+	REQUIRE(pgm.compile_string(
+	    "int mul(int a, int b) { return a * b; }\n"
+	    "int main() { return 0; }\n",
+	    "sym_test.mad"));
+
+	std::string obj_path = "/tmp/madc_test_sym.o";
+	REQUIRE(pgm.save_object(obj_path));
+
+	// Check symbols with readelf -s.
+	std::string cmd = "readelf -s " + obj_path + " 2>&1";
+	FILE *fp = popen(cmd.c_str(), "r");
+	REQUIRE(fp != NULL);
+	char buf[4096];
+	std::string output;
+	while ( fgets(buf, sizeof(buf), fp) )
+	    output += buf;
+	pclose(fp);
+	CHECK(output.find("mul") != std::string::npos);
+	CHECK(output.find("main") != std::string::npos);
+	CHECK(output.find("FUNC") != std::string::npos);
+
+	std::remove(obj_path.c_str());
+    }
+
+    TEST_CASE("save_object fails before compile") {
+	madc::program pgm;
+	CHECK_FALSE(pgm.save_object("/tmp/madc_test_nocompile.o"));
+	CHECK(pgm.has_error());
+    }
+}
+
+// ---------------------------------------------------------------------------
 // compile-once-run-many tests
 // ---------------------------------------------------------------------------
 
