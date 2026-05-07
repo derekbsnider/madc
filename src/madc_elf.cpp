@@ -173,23 +173,39 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 	}
 
 	// Collect string literals from literal_map.
+	// We need both the std::string object AND its character data,
+	// because the compiler passes c_str() addresses to C functions.
 	for ( variable_map_t::const_iterator it = literal_map.begin();
 	      it != literal_map.end(); ++it )
 	{
 		Variable *var = it->second;
 		if ( !var || !var->data )
 			continue;
-		// String literals have their data pointing to std::string objects.
-		size_t sz = sizeof(std::string);
-		if ( seen.count(var->data) )
-			continue;
-		seen.insert(var->data);
 
-		GlobalDataEntry e;
-		e.name = "__literal_" + it->first;
-		e.address = var->data;
-		e.size = sz;
-		entries.push_back(e);
+		// The std::string object itself.
+		if ( !seen.count(var->data) )
+		{
+			seen.insert(var->data);
+			GlobalDataEntry e;
+			e.name = "__literal_" + it->first;
+			e.address = var->data;
+			e.size = sizeof(std::string);
+			entries.push_back(e);
+		}
+
+		// The character buffer (c_str) — this is what gets loaded
+		// via movabs for C function calls like puts/printf.
+		std::string *str = static_cast<std::string *>(var->data);
+		const char *cstr = str->c_str();
+		if ( cstr && !seen.count((void *)cstr) )
+		{
+			seen.insert((void *)cstr);
+			GlobalDataEntry e;
+			e.name = "__cstr_" + it->first;
+			e.address = (void *)cstr;
+			e.size = str->size() + 1; // include NUL terminator
+			entries.push_back(e);
+		}
 	}
 
 	return entries;
@@ -1272,12 +1288,12 @@ bool Program::save_executable(const std::string &path)
 	std::vector<uint8_t> text_copy(flat_size, 0);
 	code.copyFlattenedData(text_copy.data(), flat_size);
 	// The flattened data includes .text + .addrtab contiguously.
-	// We only need .text for the executable (addrtab is in .data).
-	// Trim to text_size.
-	text_copy.resize(text_size);
+	// Keep both so the RIP-relative addrtab references work.
+	// total_code_size includes .text + any padding + .addrtab.
+	size_t total_code_size = flat_size;
 
-	// Compute .data virtual address (follows .text, page-aligned).
-	size_t data_file_offset_est = text_file_offset + START_STUB_SIZE + text_size;
+	// Compute .data virtual address (follows .text+addrtab, aligned).
+	size_t data_file_offset_est = text_file_offset + START_STUB_SIZE + total_code_size;
 	data_file_offset_est = (data_file_offset_est + 15) & ~(size_t)15; // align 16
 	uint64_t data_vaddr = BASE_ADDR + data_file_offset_est;
 
@@ -1316,17 +1332,21 @@ bool Program::save_executable(const std::string &path)
 	// The addrtab itself lives in .data and will be patched by the
 	// dynamic linker via .rela.dyn entries.
 
-	// Scan for movabs memory-indirect patterns (0xA1/0xA3) for
-	// global variable loads/stores. These are NOT tracked by asmjit
-	// as relocations. Only match the specific moffs pattern.
+	// Scan for absolute address patterns in the relocated code.
+	// After relocateToBase, addrtab references are correct, but
+	// global variable loads/stores (0xA1/0xA3 moffs) and string
+	// constant loads (0xB8-0xBF movabs) still have old addresses.
 	if ( !data_offset_map.empty() )
 	{
-		for ( size_t i = 0; i + 10 <= text_size; ++i )
+		for ( size_t i = 0; i + 10 <= total_code_size; ++i )
 		{
 			uint8_t b0 = text_copy[i];
 			uint8_t b1 = text_copy[i + 1];
 
-			if ( !(b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3)) )
+			bool is_moffs = (b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3));
+			bool is_movabs = ((b0 == 0x48 || b0 == 0x49) && b1 >= 0xB8 && b1 <= 0xBF);
+
+			if ( !is_moffs && !is_movabs )
 				continue;
 
 			uint64_t imm_val;
@@ -1349,8 +1369,8 @@ bool Program::save_executable(const std::string &path)
 		      << " globals, " << data_section_buf.size()
 		      << " bytes in .data)" << std::endl);
 
-	emit(out, text_copy.data(), text_size);
-	size_t total_text_size = START_STUB_SIZE + text_size;
+	emit(out, text_copy.data(), total_code_size);
+	size_t total_text_size = START_STUB_SIZE + total_code_size;
 
 	// Patch _start stub call displacement to main.
 	{
@@ -1405,13 +1425,26 @@ bool Program::save_executable(const std::string &path)
 			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
 			rela_pos += sizeof(rela);
 		}
-		// Addrtab slot relas: R_X86_64_64 on .data offsets.
-		// These will be patched after we know data_vaddr.
-		addrtab_rela_start = rela_pos;
+		// Addrtab slot relas: R_X86_64_64 on .text offsets
+		// where the addrtab lives (contiguous after the code).
+		// The addrtab starts at code_vaddr + text_size.
+		uint64_t addrtab_vaddr_in_text = code_vaddr + text_size;
 		for ( size_t i = 0; i < addrtab_data_relas.size(); ++i )
 		{
+			// Find the slot index from the data_offset.
+			// Each slot is 8 bytes from the start of addrtab.
+			size_t slot_idx = 0;
+			for ( size_t j = 0; j < addrtab_slots.size(); ++j )
+			{
+				if ( addrtab_slots[j].address == addrtab_relas[i].func_addr )
+				{
+					slot_idx = j;
+					break;
+				}
+			}
+
 			Elf64_Rela rela;
-			rela.r_offset = 0; // placeholder — patched below
+			rela.r_offset = addrtab_vaddr_in_text + slot_idx * 8;
 			rela.r_info = ELF64_R_INFO(addrtab_data_relas[i].dynsym_index,
 						    R_X86_64_64);
 			rela.r_addend = 0;
@@ -1429,15 +1462,6 @@ bool Program::save_executable(const std::string &path)
 		emit(out, data_section_buf.data(), data_section_size);
 		// Recalculate actual data vaddr for section header.
 		data_vaddr = BASE_ADDR + data_file_offset;
-
-		// Patch addrtab rela offsets now that data_vaddr is known.
-		size_t rela_pos = addrtab_rela_start;
-		for ( size_t i = 0; i < addrtab_data_relas.size(); ++i )
-		{
-			uint64_t offset = data_vaddr + addrtab_data_relas[i].data_offset;
-			std::memcpy(&out[rela_pos], &offset, 8);
-			rela_pos += sizeof(Elf64_Rela);
-		}
 	}
 
 	// .dynamic
