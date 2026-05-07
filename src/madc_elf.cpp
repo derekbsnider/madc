@@ -871,13 +871,36 @@ bool Program::save_executable(const std::string &path) const
 			if ( slash != std::string::npos )
 				libname = libpath.substr(slash + 1);
 			// Map known library names to their SONAME form.
-			// Symbols from the main executable (madc binary or
-			// test harness) come from the madc runtime — map
-			// them to libmadc.so so the generated binary can
-			// resolve them at runtime.
+			// When dladdr reports the main executable, the
+			// symbol could be a madc runtime helper or a
+			// libc-family function that was statically resolved
+			// during link. Check the symbol name to classify.
+			std::map<uintptr_t, std::string>::const_iterator sym_it =
+			    external_symbol_map.find(eit->first);
+			std::string sym_name = (sym_it != external_symbol_map.end())
+			    ? sym_it->second : "";
+
 			if ( libname.find(".so") == std::string::npos
 			  && libname.find("lib") != 0 )
-				libname = "libmadc.so";
+			{
+				// From the main executable. Classify by name.
+				if ( sym_name == "crypt" || sym_name == "crypt_r" )
+					libname = "libcrypt.so.1";
+				else if ( sym_name.find("__madc_") == 0
+				       || sym_name == "printstring"
+				       || sym_name == "printstarred"
+				       || sym_name == "printstream"
+				       || sym_name == "printinteger"
+				       || sym_name == "printuinteger"
+				       || sym_name == "printdouble"
+				       || sym_name == "string_construct"
+				       || sym_name == "string_destruct"
+				       || sym_name == "string_assign"
+				       || sym_name == "string_cstr" )
+					libname = "libmadc.so";
+				else
+					libname = "libc.so.6";
+			}
 			else if ( libname.find("libmadc") == 0 )
 				libname = "libmadc.so";
 			else if ( libname.find("libc") == 0 )
