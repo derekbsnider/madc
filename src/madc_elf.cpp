@@ -1312,12 +1312,26 @@ bool Program::save_executable(const std::string &path)
 	// correctly, including RIP-relative displacements.
 	// The addrtab function addresses will still point to the
 	// compiling process's libc — we fix those via .rela.dyn.
+	// Copy .text + .addrtab directly. We handle all relocations
+	// ourselves (addrtab GOT relas + PLT + data patching).
+	// The addrtab follows .text at the section's natural offset.
 	code.flatten();
-	code.relocateToBase(code_vaddr);
-
 	size_t flat_size = code.codeSize();
 	std::vector<uint8_t> text_copy(flat_size, 0);
-	code.copyFlattenedData(text_copy.data(), flat_size);
+	// Copy each section's data at its offset.
+	{
+		const ZoneVector<Section *> &secs = code.sectionsByOrder();
+		for ( uint32_t si = 0; si < secs.size(); ++si )
+		{
+			Section *s = secs[si];
+			if ( s->buffer().size() == 0 )
+				continue;
+			size_t off = s->offset();
+			size_t sz = s->buffer().size();
+			if ( off + sz <= flat_size )
+				std::memcpy(&text_copy[off], s->data(), sz);
+		}
+	}
 	// The flattened data includes .text + .addrtab contiguously.
 	// Keep both so the RIP-relative addrtab references work.
 	// total_code_size includes .text + any padding + .addrtab.
