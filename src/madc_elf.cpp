@@ -805,7 +805,7 @@ void Program::unload_object()
 // ELF executable writer
 // ---------------------------------------------------------------------------
 
-bool Program::save_executable(const std::string &path) const
+bool Program::save_executable(const std::string &path)
 {
 	if ( !root_fn )
 		return false;
@@ -1259,43 +1259,22 @@ bool Program::save_executable(const std::string &path) const
 	// Compiled code
 	size_t code_file_offset = out.size();
 	uint64_t code_vaddr = BASE_ADDR + code_file_offset;
-	// Make a mutable copy so we can pre-patch relocations and data refs.
-	std::vector<uint8_t> text_copy(text_data, text_data + text_size);
+	// Use asmjit's own relocation engine to produce properly
+	// relocated code at our target virtual address. This handles
+	// all internal relocations (kX64AddressEntry, kAbsToAbs, etc.)
+	// correctly, including RIP-relative displacements.
+	// The addrtab function addresses will still point to the
+	// compiling process's libc — we fix those via .rela.dyn.
+	code.flatten();
+	code.relocateToBase(code_vaddr);
 
-	// Pre-patch internal relocations (non-extern) into the code copy.
-	// Inspect the instruction byte before the patch offset to
-	// determine if this is a 4-byte relative or 8-byte absolute.
-	for ( size_t i = 0; i < rela_entries.size(); ++i )
-	{
-		if ( rela_entries[i].is_extern )
-			continue;
-		size_t off = rela_entries[i].source_offset;
-		if ( off >= text_size )
-			continue;
-		uint64_t target = static_cast<uint64_t>(rela_entries[i].raw_addend);
-
-		// Check for call rel32 (E8) before the patch offset.
-		bool is_rel32 = false;
-		if ( off > 0 )
-		{
-			uint8_t prev = text_copy[off - 1];
-			if ( prev == 0xE8 )
-				is_rel32 = true;
-		}
-
-		if ( is_rel32 )
-		{
-			uint64_t pc = code_vaddr + off + 4;
-			int32_t rel = static_cast<int32_t>(
-			    static_cast<int64_t>(target) - static_cast<int64_t>(pc));
-			if ( off + 4 <= text_size )
-				std::memcpy(&text_copy[off], &rel, 4);
-		}
-		else if ( off + 8 <= text_size )
-		{
-			std::memcpy(&text_copy[off], &target, 8);
-		}
-	}
+	size_t flat_size = code.codeSize();
+	std::vector<uint8_t> text_copy(flat_size, 0);
+	code.copyFlattenedData(text_copy.data(), flat_size);
+	// The flattened data includes .text + .addrtab contiguously.
+	// We only need .text for the executable (addrtab is in .data).
+	// Trim to text_size.
+	text_copy.resize(text_size);
 
 	// Compute .data virtual address (follows .text, page-aligned).
 	size_t data_file_offset_est = text_file_offset + START_STUB_SIZE + text_size;
@@ -1332,14 +1311,14 @@ bool Program::save_executable(const std::string &path) const
 		}
 	}
 
-	// Also scan for movabs memory-indirect patterns that asmjit's
-	// register allocator generates for global variable loads/stores.
-	// These use opcodes 0xA1 (mov rax,[moffs64]) and 0xA3 (mov [moffs64],rax)
-	// with a REX.W prefix: 48 A1/A3 + 8-byte absolute address.
-	// Also scan for REX.W + B8-BF (mov reg,imm64) patterns that
-	// the compiler emits via cc.mov(reg, imm(ptr)) but which may
-	// not have been tracked via emit_data_mov (e.g. from asmjit's
-	// own code generation paths).
+	// Note: addrtab references are already patched by relocateToBase
+	// above — they point to the correct (virtual) addrtab location.
+	// The addrtab itself lives in .data and will be patched by the
+	// dynamic linker via .rela.dyn entries.
+
+	// Scan for movabs memory-indirect patterns (0xA1/0xA3) for
+	// global variable loads/stores. These are NOT tracked by asmjit
+	// as relocations. Only match the specific moffs pattern.
 	if ( !data_offset_map.empty() )
 	{
 		for ( size_t i = 0; i + 10 <= text_size; ++i )
@@ -1347,10 +1326,7 @@ bool Program::save_executable(const std::string &path) const
 			uint8_t b0 = text_copy[i];
 			uint8_t b1 = text_copy[i + 1];
 
-			bool is_moffs = (b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3));
-			bool is_movabs = ((b0 == 0x48 || b0 == 0x49) && b1 >= 0xB8 && b1 <= 0xBF);
-
-			if ( !is_moffs && !is_movabs )
+			if ( !(b0 == 0x48 && (b1 == 0xA1 || b1 == 0xA3)) )
 				continue;
 
 			uint64_t imm_val;

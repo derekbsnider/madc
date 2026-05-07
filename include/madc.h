@@ -1130,7 +1130,7 @@ public:
     bool save_object(const std::string &path) const;
 
     // write a standalone ELF executable (dynamically linked)
-    bool save_executable(const std::string &path) const;
+    bool save_executable(const std::string &path);
 
     // load a previously saved ELF .o and map it for execution
     struct LoadedObject
