@@ -11,18 +11,23 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 220 passed, 56 failed, 0 timed out, 0 skipped
+## Current Batch Status — 276 passed, 0 failed, 0 timed out, 0 skipped
 
-Latest `scripts/run_tests.sh` result (2026-05-08, post sign-extension fix):
+Latest `scripts/run_tests.sh` result (2026-05-08):
 
-- Passing: 220 integration tests
-- Failing: 56 pre-existing (from Codex AOT/native ELF work on develop)
+- Passing: 276 integration tests
+- Failing: none
 - Timed out: none
-- Note: baseline before sign-extension fix was 75 pass / 200 fail;
-  the fix recovered 145 tests
+- Note: baseline before this session was 75 pass / 200 fail;
+  four fixes recovered all 201 tests plus added testshortidxsignext
 - Unit tests: 80 datadef + 23 IR + 133 libmadc_program + 5 libmadc_error + 19 libmadc_value (260 total)
 - test_datadef: 1 ordering-dependent flake (passes individually)
 - test_libmadc_program: hangs when run as full suite (pre-existing)
+
+Note: SMAUG native executable (AOT `-o` path) has a known startup
+regression from the BSL/dtRESERVED fixes. The working native binary
+was built from commit e8c4543 (sign-ext only). See known_issues in
+claude_status.json.
 - Installed-library smoke: `make -C src libmadc-smoke` passes, staging
   `libmadc.so` plus public headers under `/tmp/madc-libstage/usr/local/`
   and then compiling/running both `tests/libmadc_cpp_smoke.cpp` and
