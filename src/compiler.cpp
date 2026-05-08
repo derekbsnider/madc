@@ -5109,8 +5109,14 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     }
     if ( var->is_global() && var->data
       && (var->type->basetype() == BaseType::btStruct
-       || var->type->basetype() == BaseType::btClass) )
+       || var->type->basetype() == BaseType::btClass)
+      && var->type->type() == DataType::dtRESERVED )
     {
+	// User-defined struct/class globals: use Mem operand so member
+	// access works as [base + offset]. Built-in opaque classes
+	// (string, ostream, vector, etc.) stay as Gp registers — they
+	// are accessed through function calls that take a pointer, not
+	// through direct member offsets.
 	DBG(pgm.cc.comment("voperand global struct/class: load absolute base"));
 	x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 	pgm.emit_data_mov(base_reg, var);
