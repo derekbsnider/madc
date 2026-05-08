@@ -39,6 +39,87 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret=false);
 const char *string_cstr(void *ptr);
 
+static bool token_has_constant_cstring(TokenBase *token)
+{
+    if ( !token )
+	return false;
+    if ( token->type() == TokenType::ttString )
+	return true;
+    TokenVar *tv = dynamic_cast<TokenVar *>(token);
+    return tv
+	&& tv->var.is_constant()
+	&& tv->var.type
+	&& tv->var.type->is_string()
+	&& tv->var.data;
+}
+
+static bool token_is_charptr_expr(TokenBase *token)
+{
+    if ( !token )
+	return false;
+    if ( token_has_constant_cstring(token) )
+	return true;
+    DataDef *dd = token->datadef();
+    if ( dd )
+    {
+	if ( dd->is_string() )
+	    return true;
+	if ( dd->is_pointer() && dd->rawtype() == DataType::dtCHAR )
+	    return true;
+    }
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
+    {
+	if ( tv->var.is_fixed_array()
+	  && tv->var.type
+	  && tv->var.type->rawtype() == DataType::dtCHAR )
+	    return true;
+    }
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
+    {
+	if ( tm->is_fixed_array_member()
+	  && tm->var.type
+	  && tm->var.type->rawtype() == DataType::dtCHAR )
+	    return true;
+    }
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(token) )
+	return token_is_charptr_expr(tq->true_expr) && token_is_charptr_expr(tq->false_expr);
+    return false;
+}
+
+static const char *token_constant_cstring(TokenBase *token)
+{
+    if ( !token )
+	return NULL;
+    if ( token->type() == TokenType::ttString )
+	return static_cast<TokenStr *>(token)->str.c_str();
+    TokenVar *tv = dynamic_cast<TokenVar *>(token);
+    if ( tv
+      && tv->var.is_constant()
+      && tv->var.type
+      && tv->var.type->is_string()
+      && tv->var.data )
+	return static_cast<std::string *>(tv->var.data)->c_str();
+    return NULL;
+}
+
+static bool emit_constant_cstring_ptr(Program &pgm, TokenBase *token, x86::Gp &out)
+{
+    const char *cstr = token_constant_cstring(token);
+    if ( !cstr )
+	return false;
+    if ( pgm.aot_tracking )
+    {
+	size_t len = strlen(cstr);
+	char *buf = new char[len + 1];
+	memcpy(buf, cstr, len + 1);
+	pgm.aot_string_constants.push_back(buf);
+	pgm.emit_data_mov(out, buf);
+    }
+    else
+	pgm.cc.mov(out, imm((uint64_t)cstr));
+    return true;
+}
+
 // Allocate an Xmm with a scalar-real type hint (kFloat32x1 or
 // kFloat64x1) so asmjit's Compiler register allocator treats it
 // correctly as a scalar float / double rather than the default
@@ -161,15 +242,38 @@ static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right)
 static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					 Operand *preferred_dest, Operand &storage)
 {
-    regdefp_t tmp_rdp = {preferred_dest, target_type, nullptr};
+    bool decay_token = false;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
+	if ( tv->var.is_fixed_array() )
+	    decay_token = true;
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
+	if ( tm->is_fixed_array_member() )
+	    decay_token = true;
+
     if ( target_type
       && target_type->is_pointer()
       && target_type->rawtype() == DataType::dtCHAR
-      && token && token->datadef()
-      && token->datadef()->rawtype() == DataType::dtSTRING )
+      && token_has_constant_cstring(token) )
+    {
+	x86::Gp cstr = pgm.cc.newIntPtr("norm_cstr");
+	emit_constant_cstring_ptr(pgm, token, cstr);
+	storage = cstr;
+	return storage;
+    }
+
+    regdefp_t tmp_rdp = {preferred_dest, target_type, nullptr};
+    if ( target_type
+      && target_type->is_pointer()
+      && ((target_type->rawtype() == DataType::dtCHAR && token_has_constant_cstring(token))
+       || decay_token) )
 	tmp_rdp.second = nullptr;
     Operand &raw = token->compile(pgm, tmp_rdp);
     DataDef *raw_type = tmp_rdp.second ? tmp_rdp.second : (token && token->datadef() ? token->datadef() : target_type);
+    if ( target_type && target_type->is_pointer() )
+    {
+	if ( decay_token && raw_type && !raw_type->is_pointer() )
+	    raw_type = &ddLPSTR;
+    }
     IRBuilder ir(pgm.cc);
     IRValue out = ir.coerce(ir_from_operand(raw, raw_type), target_type);
     out = ir.load(out);
@@ -325,7 +429,14 @@ static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand 
     }
     if ( src.isMem() )
     {
-	pgm.cc.mov(dst, src.as<asmjit::x86::Mem>());
+	asmjit::x86::Mem m = src.as<asmjit::x86::Mem>();
+	uint32_t msz = m.x86RmSize();
+	if ( msz > 0 && msz < 4 )
+	    pgm.cc.movsx(dst, m);            // 8/16→64 sign-extend
+	else if ( msz == 4 )
+	    pgm.cc.movsxd(dst, m);           // 32→64 sign-extend
+	else
+	    pgm.cc.mov(dst, m);
 	return;
     }
     if ( !src.isReg() || !src.as<asmjit::BaseReg>().isGroup(asmjit::RegGroup::kGp) )
@@ -337,7 +448,7 @@ static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand 
     else if ( sz == 4 )
 	pgm.cc.movsxd(dst, s);          // 32→64 sign-extend
     else if ( sz == 2 || sz == 1 )
-	pgm.cc.movsx(dst.r32(), s);     // 16/8→32 sign-extend (implicit zero-ext to 64)
+	pgm.cc.movsx(dst, s);           // 16/8→64 sign-extend
     else
 	pgm.cc.mov(dst, s);
 }
@@ -506,6 +617,18 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
 					    bool variadic_real_promotion,
 					    Operand &storage, DataDef *&out_type)
 {
+    bool early_want_cstr = (target_type && target_type->type() == DataType::dtCHARptr
+			    && token_is_charptr_expr(token))
+		       || (variadic_real_promotion
+			   && token_is_charptr_expr(token));
+    if ( early_want_cstr )
+    {
+	Operand &cstr = compile_token_normalized(pgm, token, &ddCHARptr, nullptr, storage);
+	storage = cstr;
+	out_type = &ddCHARptr;
+	return storage;
+    }
+
     regdefp_t argrdp = {nullptr, nullptr, nullptr};
     if ( target_type && !(target_type->is_string() && token->datadef() && token->datadef()->is_pointer()) )
 	argrdp.second = target_type;
@@ -520,48 +643,8 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
 		      && token->datadef() && token->datadef()->rawtype() == DataType::dtSTRING);
     if ( want_cstr )
     {
-	// AOT optimization: for string LITERALS, emit the raw character
-	// data as a constant and load the pointer directly — no
-	// string_cstr() call needed. This matches how gcc handles
-	// string constants (lea rdi, [rip+.LC0] in .rodata).
-	TokenVar *aot_tv = dynamic_cast<TokenVar *>(token);
-	if ( pgm.aot_tracking
-	  && (token->type() == TokenType::ttString
-	   || (token->type() == TokenType::ttVariable
-	       && aot_tv
-	       && aot_tv->var.is_constant()
-	       && aot_tv->var.type && aot_tv->var.type->is_string()
-	       && aot_tv->var.data)) )
-	{
-	    // Get the string content — either from a TokenStr or a
-	    // string literal Variable.
-	    const char *cstr = NULL;
-	    if ( token->type() == TokenType::ttString )
-		cstr = static_cast<TokenStr *>(token)->str.c_str();
-	    else
-	    {
-		std::string *sobj = static_cast<std::string *>(aot_tv->var.data);
-		cstr = sobj->c_str();
-	    }
-	    // Store the raw characters as a global data entry for .data.
-	    size_t len = strlen(cstr);
-	    char *buf = new char[len + 1];
-	    memcpy(buf, cstr, len + 1);
-	    pgm.aot_string_constants.push_back(buf);
-
-	    x86::Gp cstr_reg = pgm.cc.newIntPtr("aot_cstr");
-	    pgm.emit_data_mov(cstr_reg, buf);
-	    storage = cstr_reg;
-	    out_type = &ddCHARptr;
-	    return storage;
-	}
-
-	x86::Gp cstr_reg = pgm.cc.newIntPtr("cstr");
-	InvokeNode *cstr_call;
-	pgm.cc.invoke(&cstr_call, imm(string_cstr), FuncSignature::build<const char *, void *>());
-	cstr_call->setArg(0, arg.as<x86::Gp>());
-	cstr_call->setRet(0, cstr_reg);
-	storage = cstr_reg;
+	Operand &cstr = compile_token_normalized(pgm, token, &ddCHARptr, nullptr, storage);
+	storage = cstr;
 	out_type = &ddCHARptr;
 	return storage;
     }
@@ -3866,45 +3949,9 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     if ( ltype->is_pointer() && ltype->rawtype() == DataType::dtCHAR
       && right->datadef() && right->datadef()->rawtype() == DataType::dtSTRING )
     {
-	TokenVar *rhs_tv = dynamic_cast<TokenVar *>(right);
-	if ( rhs_tv && rhs_tv->var.is_constant()
-	  && rhs_tv->var.type && rhs_tv->var.type->is_string()
-	  && rhs_tv->var.data )
-	{
-	    std::string *sobj = static_cast<std::string *>(rhs_tv->var.data);
-	    x86::Gp cstr = pgm.cc.newIntPtr("cstr");
-	    if ( pgm.aot_tracking )
-	    {
-		const char *lit = sobj->c_str();
-		size_t len = strlen(lit);
-		char *buf = new char[len + 1];
-		memcpy(buf, lit, len + 1);
-		pgm.aot_string_constants.push_back(buf);
-		pgm.emit_data_mov(cstr, buf);
-	    }
-	    else
-		pgm.cc.mov(cstr, imm((uint64_t)sobj->c_str()));
-	    if ( _operand.isReg() && _operand.as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.cc.mov(_operand.as<x86::Gp>(), cstr);
-	    else if ( _operand.isMem() )
-		pgm.cc.mov(_operand.as<x86::Mem>(), cstr);
-	    if ( tvl ) { tvl->var.modified(); tvl->putreg(pgm); }
-	    regdp.first = &_operand;
-	    regdp.second = ltype;
-	    return *regdp.first;
-	}
-
-	regdefp_t rhs_rdp = {NULL, NULL, NULL};
-	Operand &str_op = right->compile(pgm, rhs_rdp);
-	x86::Gp cstr = pgm.cc.newIntPtr("cstr");
-	InvokeNode *call;
-	pgm.cc.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
-	call->setArg(0, str_op.as<x86::Gp>());
-	call->setRet(0, cstr);
-	if ( _operand.isReg() && _operand.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.cc.mov(_operand.as<x86::Gp>(), cstr);
-	else if ( _operand.isMem() )
-	    pgm.cc.mov(_operand.as<x86::Mem>(), cstr);
+	Operand rhs_storage;
+	Operand &cstr = compile_token_normalized(pgm, right, ltype, nullptr, rhs_storage);
+	pgm.safemov(_operand, cstr, ltype, ltype);
 	if ( tvl ) { tvl->var.modified(); tvl->putreg(pgm); }
 	regdp.first = &_operand;
 	regdp.second = ltype;
@@ -6832,22 +6879,12 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	&& cast_type->rawtype() == DataType::dtCHAR;
     if ( str_to_cstr )
     {
-	regdefp_t inner_rdp = {NULL, NULL, NULL};
-	Operand &str_op = expr->compile(pgm, inner_rdp);
-	x86::Gp cstr = pgm.cc.newIntPtr("cast_cstr");
-	InvokeNode *call;
-	pgm.cc.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
-	call->setArg(0, str_op.as<x86::Gp>());
-	call->setRet(0, cstr);
+	Operand cstr_storage;
+	Operand &cstr = compile_token_normalized(pgm, expr, cast_type, nullptr, cstr_storage);
 	regdp.second = cast_type;
-	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+	if ( regdp.first )
 	{
-	    pgm.cc.mov(regdp.first->as<x86::Gp>(), cstr);
-	    return *regdp.first;
-	}
-	if ( regdp.first && regdp.first->isMem() )
-	{
-	    pgm.cc.mov(regdp.first->as<x86::Mem>(), cstr);
+	    pgm.safemov(*regdp.first, cstr, cast_type, cast_type);
 	    return *regdp.first;
 	}
 	_operand = cstr;
@@ -7152,6 +7189,17 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 	merge_slot.setSize(merge_size);
 
 	auto emit_branch = [&](TokenBase *expr) {
+	    if ( regdp.second
+	      && regdp.second->is_pointer()
+	      && regdp.second->rawtype() == DataType::dtCHAR )
+	    {
+		Operand branch_storage;
+		Operand &norm = compile_token_normalized(pgm, expr, regdp.second, nullptr, branch_storage);
+		IRBuilder ir(pgm.cc);
+		ir.store(IRValue::mem(merge_slot, regdp.second), ir_from_operand(norm, regdp.second));
+		return;
+	    }
+
 	    regdefp_t brdp = {NULL, NULL, NULL};
 	    Operand &raw = expr->compile(pgm, brdp);
 	    DataDef *raw_type = brdp.second
@@ -7327,37 +7375,8 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	  && ret_type->rawtype() == DataType::dtCHAR
 	  && returns->datadef() && returns->datadef()->rawtype() == DataType::dtSTRING )
 	{
-	    TokenVar *ret_tv = dynamic_cast<TokenVar *>(returns);
-	    if ( ret_tv && ret_tv->var.is_constant()
-	      && ret_tv->var.type && ret_tv->var.type->is_string()
-	      && ret_tv->var.data )
-	    {
-		std::string *sobj = static_cast<std::string *>(ret_tv->var.data);
-		x86::Gp cstr_gp = pgm.cc.newIntPtr("__ret_cstr");
-		if ( pgm.aot_tracking )
-		{
-		    const char *cstr = sobj->c_str();
-		    size_t len = strlen(cstr);
-		    char *buf = new char[len + 1];
-		    memcpy(buf, cstr, len + 1);
-		    pgm.aot_string_constants.push_back(buf);
-		    pgm.emit_data_mov(cstr_gp, buf);
-		}
-		else
-		    pgm.cc.mov(cstr_gp, imm((uint64_t)sobj->c_str()));
-		_operand = cstr_gp;
-		pgm.saferet(cstr_gp);
-		return _operand;
-	    }
-
-	    regdefp_t rhs_rdp = {NULL, NULL, NULL};
-	    Operand &str_obj = returns->compile(pgm, rhs_rdp);
-	    x86::Gp str_gp = str_obj.as<x86::Gp>();
-	    InvokeNode *call;
-	    pgm.cc.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
-	    call->setArg(0, str_gp);
-	    x86::Gp cstr_gp = pgm.cc.newIntPtr("__ret_cstr");
-	    call->setRet(0, cstr_gp);
+	    Operand ret_storage;
+	    Operand &cstr_gp = compile_token_normalized(pgm, returns, ret_type, nullptr, ret_storage);
 	    _operand = cstr_gp;
 	    pgm.saferet(cstr_gp);
 	    return _operand;
@@ -7535,6 +7554,23 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
     // push exit label onto loopstack so break works
     pgm.loopstack.push(make_pair((Label *)NULL, &sw_exit));
 
+    auto invalidate_rematerializable_globals = [&]() {
+	for ( std::map<Variable *, Operand>::iterator it = pgm.tkFunction->operand_map.begin();
+	      it != pgm.tkFunction->operand_map.end(); )
+	{
+	    Variable *var = it->first;
+	    if ( var && var->is_global() && var->data
+	      && (var->is_fixed_array()
+	       || var->type->basetype() == BaseType::btStruct
+	       || var->type->basetype() == BaseType::btClass) )
+	    {
+		it = pgm.tkFunction->operand_map.erase(it);
+		continue;
+	    }
+	    ++it;
+	}
+    };
+
     // emit case bodies in source order; insert default body at its
     // source-order position so fall-through chains match what the user
     // wrote.  If default appears after all cases (default_index ==
@@ -7549,6 +7585,7 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(pgm.cc.comment("default body"));
 	    for ( auto *stmt : defaultcase->statements )
 	    {
+		invalidate_rematerializable_globals();
 		regdefp_t stmtrdp = {NULL, NULL, NULL};
 		stmt->compile(pgm, stmtrdp);
 	    }
@@ -7557,6 +7594,7 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("case body"));
 	for ( auto *stmt : cases[i]->statements )
 	{
+	    invalidate_rematerializable_globals();
 	    regdefp_t stmtrdp = {NULL, NULL, NULL};
 	    stmt->compile(pgm, stmtrdp);
 	}
@@ -7567,6 +7605,7 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("default body"));
 	for ( auto *stmt : defaultcase->statements )
 	{
+	    invalidate_rematerializable_globals();
 	    regdefp_t stmtrdp = {NULL, NULL, NULL};
 	    stmt->compile(pgm, stmtrdp);
 	}

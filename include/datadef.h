@@ -250,16 +250,21 @@ public:
 	// to avoid garbage deref on the unmatched format spec.
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    return n ? cc.newGpb("%s", n) : cc.newGpb();
-	case DataType::dtBOOL:    return n ? cc.newGpb("%s", n) : cc.newGpb();
-	case DataType::dtINT64:   return n ? cc.newGpq("%s", n) : cc.newGpq();
-	case DataType::dtINT16:   return n ? cc.newGpw("%s", n) : cc.newGpw();
-	case DataType::dtINT24:   return n ? cc.newGpw("%s", n) : cc.newGpw();
-	case DataType::dtINT32:   return n ? cc.newGpd("%s", n) : cc.newGpd();
-	case DataType::dtUINT8:   return n ? cc.newGpb("%s", n) : cc.newGpb();
-	case DataType::dtUINT16:  return n ? cc.newGpw("%s", n) : cc.newGpw();
-	case DataType::dtUINT24:  return n ? cc.newGpw("%s", n) : cc.newGpw();
-	case DataType::dtUINT32:  return n ? cc.newGpd("%s", n) : cc.newGpd();
+	// All integer types use 64-bit registers. Sub-64-bit values are
+	// sign/zero-extended on load (movmptr2rval, movrptr2rval, safemov).
+	// Using sub-register types (newGpw, newGpd) leaves upper bits
+	// undefined, which corrupts values passed as function arguments or
+	// used as array indices.
+	case DataType::dtCHAR:
+	case DataType::dtBOOL:
+	case DataType::dtINT64:
+	case DataType::dtINT16:
+	case DataType::dtINT24:
+	case DataType::dtINT32:
+	case DataType::dtUINT8:
+	case DataType::dtUINT16:
+	case DataType::dtUINT24:
+	case DataType::dtUINT32:
 	case DataType::dtUINT64:  return n ? cc.newGpq("%s", n) : cc.newGpq();
 	case DataType::dtFLOAT:   return n ? cc.newXmm("%s", n) : cc.newXmm();
 	case DataType::dtDOUBLE:  return n ? cc.newXmm("%s", n) : cc.newXmm();
@@ -336,24 +341,60 @@ public:
     // mov(reg, [mem])
     virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
     {
+	// Sub-64-bit loads from absolute addresses need a two-step approach:
+	// load the address into a temp, then movsx/movzx from [temp].
+	// Direct absolute-address movsx can't encode 64-bit displacements,
+	// and the moffs mov only writes the sub-register (leaving upper
+	// bits stale).
+	using namespace asmjit;
+	using namespace asmjit::x86;
+	bool need_extend = false;
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtFLOAT:   cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtDOUBLE:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtLDOUBLE: cc.mov(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
-	default:		  cc.mov(reg, asmjit::imm(ptr));		       break;
-	} // switch
+	case DataType::dtCHAR:
+	case DataType::dtBOOL:
+	case DataType::dtINT16:
+	case DataType::dtINT24:
+	case DataType::dtINT32:
+	case DataType::dtUINT8:
+	case DataType::dtUINT16:
+	case DataType::dtUINT24:
+	case DataType::dtUINT32:
+	    need_extend = true;
+	    break;
+	default:
+	    break;
+	}
+	if ( need_extend )
+	{
+	    Gp tmp = cc.newIntPtr("mptr_base");
+	    cc.mov(tmp, imm((uintptr_t)ptr));
+	    switch((DataType)_type)
+	    {
+	    case DataType::dtCHAR:    cc.movsx(reg, byte_ptr(tmp));   break;
+	    case DataType::dtBOOL:    cc.movzx(reg, byte_ptr(tmp));   break;
+	    case DataType::dtINT16:
+	    case DataType::dtINT24:   cc.movsx(reg, word_ptr(tmp));   break;
+	    case DataType::dtINT32:   cc.movsxd(reg, dword_ptr(tmp)); break;
+	    case DataType::dtUINT8:   cc.movzx(reg, byte_ptr(tmp));   break;
+	    case DataType::dtUINT16:
+	    case DataType::dtUINT24:  cc.movzx(reg, word_ptr(tmp));   break;
+	    case DataType::dtUINT32:  cc.mov(reg.r32(), dword_ptr(tmp)); break;
+	    default: break;
+	    }
+	}
+	else
+	{
+	    switch((DataType)_type)
+	    {
+	    case DataType::dtINT64:   cc.mov(reg, qword_ptr((uintptr_t)ptr)); break;
+	    case DataType::dtUINT64:  cc.mov(reg, qword_ptr((uintptr_t)ptr)); break;
+	    case DataType::dtFLOAT:   cc.mov(reg, dword_ptr((uintptr_t)ptr)); break;
+	    case DataType::dtDOUBLE:  cc.mov(reg, qword_ptr((uintptr_t)ptr)); break;
+	    case DataType::dtLDOUBLE: cc.mov(reg, tword_ptr((uintptr_t)ptr)); break;
+	    default:		      cc.mov(reg, imm(ptr));		      break;
+	    }
+	}
     }
     // move memory pointed by a pointer into an Xmm register
     // mov(reg, [mem])
@@ -410,18 +451,18 @@ public:
     {
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr(ptr));  break;
-	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr(ptr));  break;
-	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr)); break;
-	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr(ptr));  break;
-	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr(ptr));  break;
-	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr(ptr)); break;
-	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr(ptr));  break;
-	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr(ptr));  break;
-	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr(ptr));  break;
-	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr(ptr)); break;
-	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr)); break;
-	default:		  cc.mov(reg, asmjit::x86::ptr(ptr));            break;
+	case DataType::dtCHAR:    cc.movsx(reg, asmjit::x86::byte_ptr(ptr));  break;
+	case DataType::dtBOOL:    cc.movzx(reg, asmjit::x86::byte_ptr(ptr));  break;
+	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr));   break;
+	case DataType::dtINT16:   cc.movsx(reg, asmjit::x86::word_ptr(ptr));  break;
+	case DataType::dtINT24:   cc.movsx(reg, asmjit::x86::word_ptr(ptr));  break;
+	case DataType::dtINT32:   cc.movsxd(reg, asmjit::x86::dword_ptr(ptr));break;
+	case DataType::dtUINT8:   cc.movzx(reg, asmjit::x86::byte_ptr(ptr));  break;
+	case DataType::dtUINT16:  cc.movzx(reg, asmjit::x86::word_ptr(ptr));  break;
+	case DataType::dtUINT24:  cc.movzx(reg, asmjit::x86::word_ptr(ptr));  break;
+	case DataType::dtUINT32:  cc.mov(reg.r32(), asmjit::x86::dword_ptr(ptr)); break;
+	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr));   break;
+	default:		  cc.mov(reg, asmjit::x86::ptr(ptr));          break;
 	} // switch
     }
     // move memory pointed to by a register and an offset, into a register
@@ -429,18 +470,18 @@ public:
     {
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
-	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
-	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs)); break;
-	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
-	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
-	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr(ptr, ofs)); break;
-	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
-	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
-	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
-	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr(ptr, ofs)); break;
-	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs)); break;
-	default:		  cc.mov(reg, asmjit::x86::ptr(ptr, ofs));       break;
+	case DataType::dtCHAR:    cc.movsx(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtBOOL:    cc.movzx(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs));   break;
+	case DataType::dtINT16:   cc.movsx(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtINT24:   cc.movsx(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtINT32:   cc.movsxd(reg, asmjit::x86::dword_ptr(ptr, ofs));break;
+	case DataType::dtUINT8:   cc.movzx(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtUINT16:  cc.movzx(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtUINT24:  cc.movzx(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtUINT32:  cc.mov(reg.r32(), asmjit::x86::dword_ptr(ptr, ofs)); break;
+	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs));   break;
+	default:		  cc.mov(reg, asmjit::x86::ptr(ptr, ofs));          break;
 	} // switch
     }
 };
