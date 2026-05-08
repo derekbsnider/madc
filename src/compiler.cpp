@@ -267,6 +267,17 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
       && ((target_type->rawtype() == DataType::dtCHAR && token_has_constant_cstring(token))
        || decay_token) )
 	tmp_rdp.second = nullptr;
+    // String→charptr coercion for non-constant strings: let the token
+    // compile with its natural dtSTRING type so ir.coerce can call
+    // string_cstr. Setting tmp_rdp.second to ddCHARptr makes the raw
+    // type look like it's already a char*, skipping the coercion.
+    if ( target_type
+      && target_type->is_pointer()
+      && target_type->rawtype() == DataType::dtCHAR
+      && token && token->datadef()
+      && token->datadef()->is_string()
+      && !token_has_constant_cstring(token) )
+	tmp_rdp.second = nullptr;
     Operand &raw = token->compile(pgm, tmp_rdp);
     DataDef *raw_type = tmp_rdp.second ? tmp_rdp.second : (token && token->datadef() ? token->datadef() : target_type);
     if ( target_type && target_type->is_pointer() )
