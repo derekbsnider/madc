@@ -5980,6 +5980,15 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenBSL::compile() (ostream &)tvl->getreg(pgm)"));
 	Operand &lval = tvl->operand(pgm); // get ostream register
 
+	// Global streams may be stored as Mem operands (from the
+	// global-struct Mem path). Load into a Gp for the ostream
+	// call convention.
+	if ( lval.isMem() )
+	{
+	    x86::Gp tmp = pgm.cc.newIntPtr("ostream_ptr");
+	    pgm.cc.lea(tmp, lval.as<x86::Mem>());
+	    lval = tmp;
+	}
 	if ( !lval.isReg() )
 	    throw "TokenBSL::compile() tval operand not a register";
 
