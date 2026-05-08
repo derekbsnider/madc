@@ -56,6 +56,8 @@ public:
     std::string name;
     DataDef *type;
     void *data;
+    size_t aot_data_offset;
+    size_t aot_cstr_offset;
     uint32_t count;
     uint16_t flags;
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
@@ -66,11 +68,13 @@ public:
     // dims[0] holds the element-count contribution from the FIRST dim
     // (always 1 for the runtime path; multiply by vla_size_expr at runtime).
     class TokenBase *vla_size_expr;
-    Variable() { type = &ddINT; data = NULL; flags = 0; count = 0; vla_size_expr = nullptr; }
+    Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; vla_size_expr = nullptr; }
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
+    inline bool has_aot_data() const { return aot_data_offset != (size_t)-1; }
+    inline bool has_aot_cstr() const { return aot_cstr_offset != (size_t)-1; }
     inline uint32_t total_elements() const {
 	uint32_t n = 1;
 	for ( auto d : dims ) n *= d;

@@ -130,8 +130,8 @@ public:
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
-    void movreg(asmjit::x86::Compiler &, asmjit::Operand &, Variable *);
-    void putreg(asmjit::x86::Compiler &, Variable *);
+    void movreg(Program &, asmjit::Operand &, Variable *);
+    void putreg(Program &, Variable *);
     void cleanup(Program &);
     void clear_operand_map() { operand_map.clear(); }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
@@ -807,9 +807,28 @@ public:
 
     bool colors;
     bool aot_tracking;
-    struct AotDataRef { uint32_t label_id; uintptr_t address; };
+    struct AotDataRef {
+	uint32_t label_id;
+	uintptr_t address;
+	size_t data_offset;
+	uint8_t imm_offset;
+    };
     std::vector<AotDataRef> aot_data_refs;
     std::vector<char *> aot_string_constants;
+    struct AotDiscoveredData {
+	std::string name;
+	void *address;
+	size_t size;
+    };
+    std::vector<AotDiscoveredData> aot_discovered_data;
+    std::map<uintptr_t, size_t> aot_discovered_data_index;
+    struct AotDataRange {
+	uintptr_t start;
+	size_t size;
+	size_t data_offset;
+    };
+    std::map<uintptr_t, size_t> aot_layout_offsets;
+    std::vector<AotDataRange> aot_layout_ranges;
     std::map<uintptr_t, std::string> external_symbol_map;
     asmjit::JitRuntime jit;
     asmjit::CodeHolder code;
@@ -819,6 +838,9 @@ public:
     Program();
     explicit Program(MadcEngine *eng);
     void attach_engine(MadcEngine *eng);
+    bool lookup_aot_data_offset(uintptr_t address, size_t &out_offset) const;
+    size_t aot_variable_storage_size(const Variable *var) const;
+    void record_aot_variable_data(Variable *var);
 
     void add_keywords();
     void add_datatypes();
@@ -1123,9 +1145,11 @@ public:
 	size_t size;
     };
     std::vector<GlobalDataEntry> collect_global_data() const;
+    void prepare_aot_data_layout();
 
     // AOT helper: emit mov reg, imm(data_ptr) with optional tracking
     void emit_data_mov(asmjit::x86::Gp &dst, void *data_ptr);
+    void emit_data_mov(asmjit::x86::Gp &dst, Variable *var, size_t extra_offset = 0);
 
     // AOT helper: track absolute address used in cc.invoke(imm(addr))
     void track_invoke_target(void *addr);

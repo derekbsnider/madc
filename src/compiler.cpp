@@ -162,6 +162,12 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 					 Operand *preferred_dest, Operand &storage)
 {
     regdefp_t tmp_rdp = {preferred_dest, target_type, nullptr};
+    if ( target_type
+      && target_type->is_pointer()
+      && target_type->rawtype() == DataType::dtCHAR
+      && token && token->datadef()
+      && token->datadef()->rawtype() == DataType::dtSTRING )
+	tmp_rdp.second = nullptr;
     Operand &raw = token->compile(pgm, tmp_rdp);
     DataDef *raw_type = tmp_rdp.second ? tmp_rdp.second : (token && token->datadef() ? token->datadef() : target_type);
     IRBuilder ir(pgm.cc);
@@ -573,6 +579,30 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
 	IRValue out = ir.coerce(ir_from_operand(arg, actual_type), final_type);
 	out = ir.load(out);
 	storage = out.op;
+	// Call arguments should not keep a Mem operand with a caller-saved
+	// base register live across unrelated calls/statements. Materialize
+	// numeric/pointer Mem args into fresh registers now so later uses
+	// don't depend on a cached base surviving through the surrounding
+	// function body. This closes the SMAUG native `bug()` path where
+	// `sysdata.log_level` was compiled once, spilled, and its saved
+	// base slot was overwritten before the second log_string_plus call.
+	if ( storage.isMem() )
+	{
+	    if ( final_type->is_real() )
+	    {
+		x86::Xmm tmp = newScalarXmm(pgm, final_type, "__call_arg_f");
+		pgm.safemov(tmp, storage.as<x86::Mem>(), final_type, final_type);
+		storage = tmp;
+	    }
+	    else
+	    {
+		x86::Gp tmp = final_type->is_pointer()
+		    ? pgm.cc.newIntPtr("__call_arg_p")
+		    : pgm.cc.newGpq("__call_arg_i");
+		pgm.safemov(tmp, storage.as<x86::Mem>(), final_type, final_type);
+		storage = tmp;
+	    }
+	}
 	out_type = final_type;
 	return storage;
     }
@@ -1199,7 +1229,62 @@ void Program::emit_data_mov(x86::Gp &dst, void *data_ptr)
     {
 	Label lbl = cc.newLabel();
 	cc.bind(lbl);
-	aot_data_refs.push_back({lbl.id(), reinterpret_cast<uintptr_t>(data_ptr)});
+	AotDataRef ref;
+	ref.label_id = lbl.id();
+	ref.address = reinterpret_cast<uintptr_t>(data_ptr);
+	ref.data_offset = (size_t)-1;
+	ref.imm_offset = 2;
+	aot_data_refs.push_back(ref);
+    }
+    cc.mov(dst, imm(data_ptr));
+}
+
+void Program::emit_data_mov(x86::Gp &dst, Variable *var, size_t extra_offset)
+{
+    void *data_ptr = (var && var->data)
+	? reinterpret_cast<void *>(reinterpret_cast<uintptr_t>(var->data) + extra_offset)
+	: NULL;
+    if ( aot_tracking && var )
+	record_aot_variable_data(var);
+    if ( var )
+    {
+	const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
+	if ( debug_var && var->name == debug_var )
+	{
+	    size_t layout_offset = 0;
+	    bool layout_found = data_ptr
+		? lookup_aot_data_offset(reinterpret_cast<uintptr_t>(data_ptr), layout_offset)
+		: false;
+	    std::fprintf(stderr,
+		"[aot] emit_data_mov var=%s data=%p has_aot=%d aot_off=%zu extra=%zu layout_found=%d layout_off=%zu\n",
+		var->name.c_str(), data_ptr, var->has_aot_data() ? 1 : 0,
+		var->aot_data_offset, extra_offset, layout_found ? 1 : 0, layout_offset);
+	}
+    }
+    if ( aot_tracking && var )
+    {
+	Label lbl = cc.newLabel();
+	cc.bind(lbl);
+	AotDataRef ref;
+	ref.label_id = lbl.id();
+	ref.address = reinterpret_cast<uintptr_t>(data_ptr);
+	ref.data_offset = (size_t)-1;
+	if ( var->has_aot_data() )
+	    ref.data_offset = var->aot_data_offset + extra_offset;
+	else
+	{
+	    size_t layout_offset = 0;
+	    if ( data_ptr && lookup_aot_data_offset(reinterpret_cast<uintptr_t>(data_ptr), layout_offset) )
+		ref.data_offset = layout_offset;
+	    else if ( tkProgram )
+	    {
+		Variable *canon = tkProgram->findVariable(var->name);
+		if ( canon && canon->has_aot_data() )
+		    ref.data_offset = canon->aot_data_offset + extra_offset;
+	    }
+	}
+	ref.imm_offset = 2;
+	aot_data_refs.push_back(ref);
     }
     cc.mov(dst, imm(data_ptr));
 }
@@ -2038,12 +2123,29 @@ Operand &TokenScopeContext::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenCpnd::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") TOP" << endl);
+    auto invalidate_rematerializable_globals = [&]() {
+	for ( std::map<Variable *, Operand>::iterator it = operand_map.begin();
+	      it != operand_map.end(); )
+	{
+	    Variable *var = it->first;
+	    if ( var && var->is_global() && var->data
+	      && (var->is_fixed_array()
+	       || var->type->basetype() == BaseType::btStruct
+	       || var->type->basetype() == BaseType::btClass) )
+	    {
+		it = operand_map.erase(it);
+		continue;
+	    }
+	    ++it;
+	}
+    };
     for ( vector<TokenStmt *>::iterator vti = statements.begin(); vti != statements.end(); ++vti )
     {
 	// each new statement starts with a clean slate
 	regdp = {NULL, NULL, NULL};
 	pgm.record_compile_anchor(*vti, "stmt");
 	(*vti)->compile(pgm, regdp);
+	invalidate_rematerializable_globals();
     }
     DBG(cout << "TokenCpnd::compile(" << (method ? method->returns.name : "") << ") END" << endl);
 
@@ -2066,12 +2168,30 @@ Operand &TokenProgram::compile(Program &pgm, regdefp_t &regdp)
 
     pgm.cc.addFunc(FuncSignature::build<void>());
 
+    auto invalidate_rematerializable_globals = [&]() {
+	for ( std::map<Variable *, Operand>::iterator it = operand_map.begin();
+	      it != operand_map.end(); )
+	{
+	    Variable *var = it->first;
+	    if ( var && var->is_global() && var->data
+	      && (var->is_fixed_array()
+	       || var->type->basetype() == BaseType::btStruct
+	       || var->type->basetype() == BaseType::btClass) )
+	    {
+		it = operand_map.erase(it);
+		continue;
+	    }
+	    ++it;
+	}
+    };
+
     for ( vector<TokenStmt *>::iterator si = statements.begin(); si != statements.end(); ++si )
     {
 	// each new statement starts with a clean slate
 	regdp = {NULL, NULL, NULL};
 	pgm.record_compile_anchor(*si, "init");
 	(*si)->compile(pgm, regdp);
+	invalidate_rematerializable_globals();
     }
 
     pgm.tkFunction->cleanup(pgm);	// cleanup stack
@@ -2602,12 +2722,30 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	}
     }
 
+    auto invalidate_rematerializable_globals = [&]() {
+	for ( std::map<Variable *, Operand>::iterator it = operand_map.begin();
+	      it != operand_map.end(); )
+	{
+	    Variable *var = it->first;
+	    if ( var && var->is_global() && var->data
+	      && (var->is_fixed_array()
+	       || var->type->basetype() == BaseType::btStruct
+	       || var->type->basetype() == BaseType::btClass) )
+	    {
+		it = operand_map.erase(it);
+		continue;
+	    }
+	    ++it;
+	}
+    };
+
     for ( vector<TokenStmt *>::iterator si = statements.begin(); si != statements.end(); ++si )
     {
 	// each new statement starts with a clean slate
 	regdp = {NULL, NULL, NULL};
 	pgm.record_compile_anchor(*si, "stmt");
 	(*si)->compile(pgm, regdp);
+	invalidate_rematerializable_globals();
     }
 
     cleanup(pgm);	// cleanup stack
@@ -2633,6 +2771,8 @@ bool Program::compile()
     clear_diagnostics();
     clear_error();
     _compiler_init();
+    if ( aot_tracking )
+	prepare_aot_data_layout();
 
     // Dedupe pre-pass: when the same function is defined more than once
     // (e.g. shim stubs that override an upstream definition), every
@@ -3726,6 +3866,34 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     if ( ltype->is_pointer() && ltype->rawtype() == DataType::dtCHAR
       && right->datadef() && right->datadef()->rawtype() == DataType::dtSTRING )
     {
+	TokenVar *rhs_tv = dynamic_cast<TokenVar *>(right);
+	if ( rhs_tv && rhs_tv->var.is_constant()
+	  && rhs_tv->var.type && rhs_tv->var.type->is_string()
+	  && rhs_tv->var.data )
+	{
+	    std::string *sobj = static_cast<std::string *>(rhs_tv->var.data);
+	    x86::Gp cstr = pgm.cc.newIntPtr("cstr");
+	    if ( pgm.aot_tracking )
+	    {
+		const char *lit = sobj->c_str();
+		size_t len = strlen(lit);
+		char *buf = new char[len + 1];
+		memcpy(buf, lit, len + 1);
+		pgm.aot_string_constants.push_back(buf);
+		pgm.emit_data_mov(cstr, buf);
+	    }
+	    else
+		pgm.cc.mov(cstr, imm((uint64_t)sobj->c_str()));
+	    if ( _operand.isReg() && _operand.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(_operand.as<x86::Gp>(), cstr);
+	    else if ( _operand.isMem() )
+		pgm.cc.mov(_operand.as<x86::Mem>(), cstr);
+	    if ( tvl ) { tvl->var.modified(); tvl->putreg(pgm); }
+	    regdp.first = &_operand;
+	    regdp.second = ltype;
+	    return *regdp.first;
+	}
+
 	regdefp_t rhs_rdp = {NULL, NULL, NULL};
 	Operand &str_op = right->compile(pgm, rhs_rdp);
 	x86::Gp cstr = pgm.cc.newIntPtr("cstr");
@@ -3921,7 +4089,7 @@ Operand &TokenVar::operand(Program &pgm)
 // variable also needs to be able to write the register back to variable
 void TokenVar::putreg(Program &pgm)
 {
-    pgm.tkFunction->putreg(pgm.cc, &var);
+    pgm.tkFunction->putreg(pgm, &var);
 }
 
 Operand &TokenMember::operand(Program &pgm)
@@ -4110,7 +4278,7 @@ x86::Gp &TokenMember::getreg(Program &pgm)
 void TokenMember::putreg(Program &pgm)
 {
     DBG(pgm.cc.comment("TokenMember::putreg()"));
-    pgm.tkFunction->putreg(pgm.cc, &var);
+    pgm.tkFunction->putreg(pgm, &var);
 }
 
 Operand &TokenCallFunc::operand(Program &pgm)
@@ -4233,24 +4401,40 @@ x86::Gp &TokenCallFunc::getreg(Program &pgm)
 }
 #endif
 
-void TokenCpnd::movreg(x86::Compiler &cc, Operand &op, Variable *var)
+void TokenCpnd::movreg(Program &pgm, Operand &op, Variable *var)
 {
     if ( !op.isReg() )
     {
-	DBG(cc.comment("TokenCpnd::movreg() operand is not a register"));
+	DBG(pgm.cc.comment("TokenCpnd::movreg() operand is not a register"));
 	return;
+    }
+    if ( pgm.aot_tracking && var && var->has_aot_data() )
+    {
+	x86::Gp base = pgm.cc.newIntPtr("%s_aot_base", var->name.c_str());
+	pgm.emit_data_mov(base, var);
+	x86::Mem src = x86::ptr(base, 0, (uint32_t)var->type->size);
+	if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    pgm.safemov(op.as<x86::Xmm>(), src, var->type, var->type);
+	    return;
+	}
+	if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    pgm.safemov(op.as<x86::Gp>(), src, var->type, var->type);
+	    return;
+	}
     }
     if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	DBG(cc.comment("TokenCpnd::movreg() calling movmptr2xval(cc, reg, var->data)"));
-	DBG(cc.comment(var->name.c_str()));
-	var->type->movmptr2xval(cc, op.as<x86::Xmm>(), var->data);
+	DBG(pgm.cc.comment("TokenCpnd::movreg() calling movmptr2xval(cc, reg, var->data)"));
+	DBG(pgm.cc.comment(var->name.c_str()));
+	var->type->movmptr2xval(pgm.cc, op.as<x86::Xmm>(), var->data);
     }
     else if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
-	DBG(cc.comment("TokenCpnd::movreg() calling movmptr2rval(cc, reg, var->data)"));
-	DBG(cc.comment(var->name.c_str()));
-	var->type->movmptr2rval(cc, op.as<x86::Gp>(), var->data);
+	DBG(pgm.cc.comment("TokenCpnd::movreg() calling movmptr2rval(cc, reg, var->data)"));
+	DBG(pgm.cc.comment(var->name.c_str()));
+	var->type->movmptr2rval(pgm.cc, op.as<x86::Gp>(), var->data);
     }
     else
     {
@@ -4715,7 +4899,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	if ( var->is_global() && var->data && !var->is_fixed_array() )
 	{
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() variable found, var->is_global() && var->data"));
-	    movreg(pgm.cc, rmi->second, var);
+	    movreg(pgm, rmi->second, var);
         }
 	else if ( var->is_global() && var->data && var->is_fixed_array()
 		  && rmi->second.isReg() )
@@ -4728,7 +4912,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    // branch (e.g. the `then`) and the `else` branch reads an
 	    // uninitialized vreg.
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() re-emit fixed-array base"));
-	    pgm.emit_data_mov(rmi->second.as<x86::Gp>(), var->data);
+	    pgm.emit_data_mov(rmi->second.as<x86::Gp>(), var);
         }
 	else if ( var->is_fixed_array() && rmi->second.isReg()
 		  && fixed_array_stack.count(var) )
@@ -4759,7 +4943,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    {
 		// We allocated the base as IntPtr (Gpq). Reconstruct.
 		x86::Gpq base_gp(mem.baseId());
-		pgm.emit_data_mov(base_gp, var->data);
+		pgm.emit_data_mov(base_gp, var);
 	    }
         }
 	return rmi->second;
@@ -4860,7 +5044,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    // Global or static-local: parseDeclaration calloc'd the backing
 	    // storage. Load its absolute address.
 	    DBG(pgm.cc.comment("voperand fixed-size array (global/static)"));
-	    pgm.emit_data_mov(reg, var->data);
+	    pgm.emit_data_mov(reg, var);
 	}
 	else
 	{
@@ -4873,6 +5057,17 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    fixed_array_stack[var] = stack;
 	}
 	operand_map[var] = reg;
+	var->flags |= vfREGSET;
+	return operand_map[var];
+    }
+    if ( var->is_global() && var->data
+      && (var->type->basetype() == BaseType::btStruct
+       || var->type->basetype() == BaseType::btClass) )
+    {
+	DBG(pgm.cc.comment("voperand global struct/class: load absolute base"));
+	x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
+	pgm.emit_data_mov(base_reg, var);
+	operand_map[var] = x86::ptr(base_reg, 0, (uint32_t)var->type->size);
 	var->flags |= vfREGSET;
 	return operand_map[var];
     }
@@ -5081,7 +5276,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    {
 			DBG(pgm.cc.comment("voperand global struct: load absolute base"));
 			x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-			pgm.emit_data_mov(base_reg, var->data);
+			pgm.emit_data_mov(base_reg, var);
 			x86::Mem mem = x86::ptr(base_reg, 0, (uint32_t)var->type->size);
 			operand_map[var] = mem;
 			var->flags |= vfREGSET;
@@ -5135,7 +5330,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	{
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() variable reg init, calling movreg on"));
 	    DBG(pgm.cc.comment(var->name.c_str()));
-	    movreg(pgm.cc, rmi->second, var); // first initialization of non-stack register (regset)
+	    movreg(pgm, rmi->second, var); // first initialization of non-stack register (regset)
         }
 	else
 	if ( !(var->flags & vfPARAM) )
@@ -5160,7 +5355,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 
 
 // only used for global varibles -- move register back into variable data
-void TokenCpnd::putreg(asmjit::x86::Compiler &cc, Variable *var)
+void TokenCpnd::putreg(Program &pgm, Variable *var)
 {
     // shortcut out if we can't work with this variable
     if ( !(var->is_global() && var->data && (var->flags & vfREGSET) && (var->flags & vfMODIFIED) && var->type->is_numeric()) )
@@ -5176,11 +5371,18 @@ void TokenCpnd::putreg(asmjit::x86::Compiler &cc, Variable *var)
     // copy register to global variable -- needs to happen
     // every time we modify a numeric global variable
     DBG(std::cout << "TokenCpnd::putreg[" << (uint64_t)this << "](" << var->name << ") calling cc->mov(data, reg)" << std::endl);
-    DBG(cc.comment("TokenCpnd::putreg() calling cc.mov(var->data, reg)"));
-    if ( rmi->second.isReg() && rmi->second.as<BaseReg>().isGroup(RegGroup::kGp) )
-	var->type->movrval2mptr(cc, var->data, rmi->second.as<x86::Gp>());
+    DBG(pgm.cc.comment("TokenCpnd::putreg() calling cc.mov(var->data, reg)"));
+    if ( pgm.aot_tracking && var->has_aot_data() )
+    {
+	x86::Gp base = pgm.cc.newIntPtr("%s_aot_store", var->name.c_str());
+	pgm.emit_data_mov(base, var);
+	x86::Mem dst = x86::ptr(base, 0, (uint32_t)var->type->size);
+	pgm.safemov(dst, rmi->second, var->type, var->type);
+    }
+    else if ( rmi->second.isReg() && rmi->second.as<BaseReg>().isGroup(RegGroup::kGp) )
+	var->type->movrval2mptr(pgm.cc, var->data, rmi->second.as<x86::Gp>());
     else if ( rmi->second.isReg() && rmi->second.as<BaseReg>().isGroup(RegGroup::kVec) )
-	var->type->movxval2mptr(cc, var->data, rmi->second.as<x86::Xmm>());
+	var->type->movxval2mptr(pgm.cc, var->data, rmi->second.as<x86::Xmm>());
 
     var->flags &= ~vfMODIFIED;
 }
@@ -6457,7 +6659,9 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
 	regdp.second = _datatype;
 
     if ( (_datatype->is_numeric() || _datatype->is_pointer()) && (reg.isMem() || reg.isReg() || reg.isImm()) )
+    {
 	return emit_ir_value(pgm, ir_from_operand(reg, _datatype), regdp, _operand, _datatype);
+    }
 
     if ( regdp.first )
     {
@@ -6716,7 +6920,7 @@ Operand &TokenAddrOf::compile(Program &pgm, regdefp_t &regdp)
 
     x86::Gp addr = pgm.cc.newIntPtr("%s", ("&" + var.name).c_str());
     if ( var.is_global() && var.data && !var.is_fixed_array() )
-	pgm.emit_data_mov(addr, var.data);
+	pgm.emit_data_mov(addr, &var);
     else
     if ( obj.isMem() )
 	pgm.cc.lea(addr, obj.as<x86::Mem>());
@@ -6746,7 +6950,7 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	Variable &v = tv->var;
 	Operand &obj = pgm.tkFunction->voperand(pgm, &v);
 	if ( v.is_global() && v.data && !v.is_fixed_array() )
-	    pgm.emit_data_mov(addr, v.data);
+	    pgm.emit_data_mov(addr, &v);
 	else if ( obj.isMem() )
 	    pgm.cc.lea(addr, obj.as<x86::Mem>());
 	else
@@ -7123,6 +7327,29 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	  && ret_type->rawtype() == DataType::dtCHAR
 	  && returns->datadef() && returns->datadef()->rawtype() == DataType::dtSTRING )
 	{
+	    TokenVar *ret_tv = dynamic_cast<TokenVar *>(returns);
+	    if ( ret_tv && ret_tv->var.is_constant()
+	      && ret_tv->var.type && ret_tv->var.type->is_string()
+	      && ret_tv->var.data )
+	    {
+		std::string *sobj = static_cast<std::string *>(ret_tv->var.data);
+		x86::Gp cstr_gp = pgm.cc.newIntPtr("__ret_cstr");
+		if ( pgm.aot_tracking )
+		{
+		    const char *cstr = sobj->c_str();
+		    size_t len = strlen(cstr);
+		    char *buf = new char[len + 1];
+		    memcpy(buf, cstr, len + 1);
+		    pgm.aot_string_constants.push_back(buf);
+		    pgm.emit_data_mov(cstr_gp, buf);
+		}
+		else
+		    pgm.cc.mov(cstr_gp, imm((uint64_t)sobj->c_str()));
+		_operand = cstr_gp;
+		pgm.saferet(cstr_gp);
+		return _operand;
+	    }
+
 	    regdefp_t rhs_rdp = {NULL, NULL, NULL};
 	    Operand &str_obj = returns->compile(pgm, rhs_rdp);
 	    x86::Gp str_gp = str_obj.as<x86::Gp>();

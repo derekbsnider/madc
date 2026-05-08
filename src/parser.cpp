@@ -950,6 +950,14 @@ static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
     return read_constant_integer(var, out);
 }
 
+static bool is_shared_global_extern_reference(Program &pgm, TokenCpnd *code, Variable *var)
+{
+    return pgm.parsing_extern_decl
+	&& code
+	&& var
+	&& var->is_global();
+}
+
 static int64_t parse_constant_integer_expression(Program &pgm);
 static int64_t parse_constant_rel(Program &pgm);
 static int64_t parse_constant_eq(Program &pgm);
@@ -1520,6 +1528,8 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
     count = c;
     flags = 0;
     data = NULL;
+    aot_data_offset = (size_t)-1;
+    aot_cstr_offset = (size_t)-1;
     vla_size_expr = nullptr;
     if ( init ) { alloc = true; }
     if ( !alloc ) { flags |= vfSTACK; }
@@ -3452,11 +3462,20 @@ void Program::collect_runtime_eval_scope_variables(std::vector<Variable *> &out)
 Variable *Program::findVariable(TokenCpnd *code, std::string &id)
 {
     Variable *var;
+    const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
 
     if ( code )
     {
 	if ( (var=code->findVariable(id)) )
+	{
+	    if ( debug_var && id == debug_var )
+		std::fprintf(stderr,
+		    "[aot] findVariable local id=%s var=%p data=%p flags=%u count=%u fixed=%d code=%p\n",
+		    id.c_str(), (void *)var, var ? var->data : NULL,
+		    var ? (unsigned)var->flags : 0, var ? (unsigned)var->count : 0,
+		    (var && var->is_fixed_array()) ? 1 : 0, (void *)code);
 	    return var;
+	}
 	if ( (var=code->findParameter(id)) )
 	    return var;
     }
@@ -3465,6 +3484,13 @@ Variable *Program::findVariable(TokenCpnd *code, std::string &id)
 	DBG(std::cout << "Program::findVariable(code, " << id << ") not found" << std::endl);
 	return NULL;
     }
+
+    if ( debug_var && id == debug_var )
+	std::fprintf(stderr,
+	    "[aot] findVariable global id=%s var=%p data=%p flags=%u count=%u fixed=%d code=%p\n",
+	    id.c_str(), (void *)var, var ? var->data : NULL,
+	    var ? (unsigned)var->flags : 0, var ? (unsigned)var->count : 0,
+	    (var && var->is_fixed_array()) ? 1 : 0, (void *)code);
 
     DBG(std::cout << "Program::findVariable(code, " << id << ") found ptr: " << var << std::endl);
 
@@ -9138,9 +9164,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	uint32_t elem_count = 1;
 	for ( auto d : arr_dims ) elem_count *= (d == 0 ? 1 : d);
 	var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
+	bool shared_global_extern_ref =
+	    is_shared_global_extern_reference(*this, code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
-	if ( parsing_extern_decl )
+	if ( parsing_extern_decl && !shared_global_extern_ref )
 	    var->flags |= vfEXTERN;
 	else
 	{
@@ -9163,6 +9191,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	if ( !arr_dims.empty() )
 	{
+	    if ( shared_global_extern_ref )
+	    {
+		// Function-scope `extern T name[...]` is only a redeclaration
+		// of an existing file-scope object. Do not overwrite the
+		// canonical global's array shape or storage metadata with a
+		// later incomplete declaration like `extern char buf[];`.
+	    }
+	    else
 	    if ( vla_size_expr )
 	    {
 		// C99 VLA: the variable is really a pointer-to-element. Don't

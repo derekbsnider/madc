@@ -1852,6 +1852,7 @@ TEST_SUITE("save_object") {
 
     TEST_CASE("save_executable writes a runnable ELF binary") {
 	madc::program pgm;
+	pgm.set_aot_mode(true);
 	REQUIRE(pgm.compile_string(
 	    "int main() { return 42; }\n",
 	    "exec_test.mad"));
@@ -1875,6 +1876,116 @@ TEST_SUITE("save_object") {
 	int status = system(exe_path.c_str());
 	int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 	CHECK(exit_code == 42);
+
+	std::remove(exe_path.c_str());
+    }
+
+    TEST_CASE("save_executable runs global initialization before main and supports stderr") {
+	madc::program pgm;
+	pgm.set_aot_mode(true);
+	REQUIRE(pgm.compile_string(
+	    "#include <stdio.h>\n"
+	    "int g = 7;\n"
+	    "int main() { fprintf(stderr, \"%d\\n\", g); return 0; }\n",
+	    "exec_stderr_global_init.mad"));
+
+	std::string exe_path = "/tmp/madc_test_exe_stderr";
+	REQUIRE(pgm.save_executable(exe_path));
+
+	std::string cmd = exe_path + " 2>&1";
+	FILE *fp = popen(cmd.c_str(), "r");
+	REQUIRE(fp != NULL);
+	char buf[4096];
+	std::string output;
+	while ( fgets(buf, sizeof(buf), fp) )
+	    output += buf;
+	int status = pclose(fp);
+	int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	CHECK(exit_code == 0);
+	CHECK(output == "7\n");
+
+	std::remove(exe_path.c_str());
+    }
+
+    TEST_CASE("save_executable preserves global array layout across function-scope extern redeclarations") {
+	madc::program pgm;
+	pgm.set_aot_mode(true);
+	REQUIRE(pgm.compile_string(
+	    "#include <stdio.h>\n"
+	    "#include <string.h>\n"
+	    "char buf[16];\n"
+	    "void set_buf() { extern char buf[]; strcpy(buf, \"ok\"); }\n"
+	    "int main() { set_buf(); printf(\"%s\\n\", buf); return 0; }\n",
+	    "exec_global_array_extern.mad"));
+
+	std::string exe_path = "/tmp/madc_test_exe_global_array_extern";
+	REQUIRE(pgm.save_executable(exe_path));
+
+	std::string cmd = exe_path + " 2>&1";
+	FILE *fp = popen(cmd.c_str(), "r");
+	REQUIRE(fp != NULL);
+	char buf[4096];
+	std::string output;
+	while ( fgets(buf, sizeof(buf), fp) )
+	    output += buf;
+	int status = pclose(fp);
+	int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	CHECK(exit_code == 0);
+	CHECK(output == "ok\n");
+
+	std::remove(exe_path.c_str());
+    }
+
+    TEST_CASE("save_executable returns char pointers from string literals") {
+	madc::program pgm;
+	pgm.set_aot_mode(true);
+	REQUIRE(pgm.compile_string(
+	    "#include <stdio.h>\n"
+	    "char *get_msg() { return \"hello\"; }\n"
+	    "int main() { putchar(*get_msg()); return 0; }\n",
+	    "exec_return_cstr_literal.mad"));
+
+	std::string exe_path = "/tmp/madc_test_exe_return_cstr_literal";
+	REQUIRE(pgm.save_executable(exe_path));
+
+	std::string cmd = exe_path + " 2>&1";
+	FILE *fp = popen(cmd.c_str(), "r");
+	REQUIRE(fp != NULL);
+	char buf[4096];
+	std::string output;
+	while ( fgets(buf, sizeof(buf), fp) )
+	    output += buf;
+	int status = pclose(fp);
+	int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	CHECK(exit_code == 0);
+	CHECK(output == "h");
+
+	std::remove(exe_path.c_str());
+    }
+
+    TEST_CASE("save_executable assigns char pointers from string literals") {
+	madc::program pgm;
+	pgm.set_aot_mode(true);
+	REQUIRE(pgm.compile_string(
+	    "#include <stdio.h>\n"
+	    "char *msg;\n"
+	    "int main() { msg = \"hello\"; putchar(*msg); return 0; }\n",
+	    "exec_assign_cstr_literal.mad"));
+
+	std::string exe_path = "/tmp/madc_test_exe_assign_cstr_literal";
+	REQUIRE(pgm.save_executable(exe_path));
+
+	std::string cmd = exe_path + " 2>&1";
+	FILE *fp = popen(cmd.c_str(), "r");
+	REQUIRE(fp != NULL);
+	char buf[4096];
+	std::string output;
+	while ( fgets(buf, sizeof(buf), fp) )
+	    output += buf;
+	int status = pclose(fp);
+	int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+	CHECK(exit_code == 0);
+	CHECK(output == "h");
 
 	std::remove(exe_path.c_str());
     }

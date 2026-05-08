@@ -119,6 +119,102 @@ uint32_t elf_hash(const char *name)
 	return h;
 }
 
+std::string basename_of(const std::string &path)
+{
+	size_t slash = path.rfind('/');
+	if ( slash == std::string::npos )
+		return path;
+	return path.substr(slash + 1);
+}
+
+bool is_madc_runtime_symbol(const std::string &sym_name)
+{
+	return sym_name.find("__madc_") != std::string::npos
+	    || sym_name.find("print") != std::string::npos
+	    || sym_name.find("string_") != std::string::npos
+	    || sym_name.find("_Z") == 0;
+}
+
+std::string canonical_library_for_symbol(const std::string &sym_name,
+					 const std::string &raw_libname)
+{
+	std::string libname = basename_of(raw_libname);
+
+	if ( sym_name == "__libc_start_main" )
+		return "libc.so.6";
+	if ( sym_name == "crypt" || sym_name == "crypt_r" )
+		return "libcrypt.so.1";
+	if ( is_madc_runtime_symbol(sym_name) )
+		return "libmadc.so";
+
+	if ( libname.find("libmadc") == 0 )
+		return "libmadc.so";
+	if ( libname.find("libcrypt") == 0 )
+		return "libcrypt.so.1";
+	if ( libname.find("libc") == 0 )
+		return "libc.so.6";
+	if ( libname.find("libm") == 0 )
+		return "libm.so.6";
+	if ( libname.find("libdl") == 0 )
+		return "libdl.so.2";
+	if ( libname.find("libpthread") == 0 )
+		return "libpthread.so.0";
+	if ( libname.find("vdso") != std::string::npos )
+		return "";
+	if ( libname.find(".so") == std::string::npos && libname.find("lib") != 0 )
+		return "libc.so.6";
+
+	return libname;
+}
+
+const char *const *candidate_versions_for_library(const std::string &libname)
+{
+	static const char *glibc_versions[] = {
+		"GLIBC_2.38", "GLIBC_2.37", "GLIBC_2.36", "GLIBC_2.35",
+		"GLIBC_2.34", "GLIBC_2.33", "GLIBC_2.32", "GLIBC_2.31",
+		"GLIBC_2.30", "GLIBC_2.29", "GLIBC_2.28", "GLIBC_2.27",
+		"GLIBC_2.17", "GLIBC_2.14", "GLIBC_2.4", "GLIBC_2.3.4",
+		"GLIBC_2.3", "GLIBC_2.2.5", NULL
+	};
+	static const char *xcrypt_versions[] = {
+		"XCRYPT_4.4", "XCRYPT_4.3", "XCRYPT_4.2", "XCRYPT_4.1",
+		"XCRYPT_2.0", NULL
+	};
+
+	if ( libname == "libcrypt.so.1" )
+		return xcrypt_versions;
+	if ( libname == "libc.so.6"
+	  || libname == "libm.so.6"
+	  || libname == "libdl.so.2"
+	  || libname == "libpthread.so.0" )
+		return glibc_versions;
+
+	return NULL;
+}
+
+void *open_version_probe_handle(const std::string &libname, bool &opened_here)
+{
+	opened_here = false;
+	void *handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_NOLOAD);
+	if ( handle )
+		return handle;
+	handle = dlopen(libname.c_str(), RTLD_LAZY | RTLD_LOCAL);
+	if ( handle )
+		opened_here = true;
+	return handle;
+}
+
+bool is_emit_data_mov_site(const std::vector<uint8_t> &buf, size_t label_off, uint8_t imm_offset)
+{
+	if ( label_off + 2 > buf.size() )
+		return false;
+	if ( imm_offset != 2 )
+		return false;
+	uint8_t rex = buf[label_off];
+	uint8_t op = buf[label_off + 1];
+	return (rex == 0x48 || rex == 0x49) && op >= 0xB8 && op <= 0xBF;
+}
+
 // _start stub matching gcc's CRT: calls __libc_start_main(main, argc, argv, ...)
 // which initializes libc (stdio, malloc, atexit) then calls main, then exit.
 // 31 bytes. Patch points:
@@ -143,6 +239,56 @@ static const size_t START_STUB_MAIN_IMM_OFFSET = 0x15;  // imm32 in mov edi
 static const size_t START_STUB_CALL_REL_OFFSET = 0x1a;  // rel32 after e8
 
 } // namespace
+
+size_t Program::aot_variable_storage_size(const Variable *var) const
+{
+	if ( !var || !var->type )
+		return 0;
+	size_t sz = var->type->size;
+	if ( var->is_fixed_array() )
+		sz *= var->total_elements();
+	return sz;
+}
+
+void Program::record_aot_variable_data(Variable *var)
+{
+	if ( !var || !var->data || !var->type )
+		return;
+
+	size_t sz = aot_variable_storage_size(var);
+	if ( sz == 0 )
+		return;
+
+	uintptr_t addr = reinterpret_cast<uintptr_t>(var->data);
+	if ( aot_discovered_data_index.count(addr) )
+		return;
+
+	AotDiscoveredData entry;
+	entry.name = "__aot_var_" + var->name;
+	entry.address = var->data;
+	entry.size = sz;
+	aot_discovered_data_index[addr] = aot_discovered_data.size();
+	aot_discovered_data.push_back(entry);
+
+	if ( var->type->is_string() && sz == sizeof(std::string) )
+	{
+		std::string *str = static_cast<std::string *>(var->data);
+		const char *cstr = str->c_str();
+		uintptr_t obj_start = reinterpret_cast<uintptr_t>(var->data);
+		uintptr_t cstr_addr = reinterpret_cast<uintptr_t>(cstr);
+		bool is_internal = (cstr_addr >= obj_start
+				 && cstr_addr < obj_start + sizeof(std::string));
+		if ( cstr && !is_internal && !aot_discovered_data_index.count(cstr_addr) )
+		{
+			AotDiscoveredData centry;
+			centry.name = "__aot_cstr_" + var->name;
+			centry.address = (void *)cstr;
+			centry.size = str->size() + 1;
+			aot_discovered_data_index[cstr_addr] = aot_discovered_data.size();
+			aot_discovered_data.push_back(centry);
+		}
+	}
+}
 
 std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 {
@@ -216,7 +362,9 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 			Variable *var = tf->variables[vi];
 			if ( !var || !var->data || !var->type )
 				continue;
-			if ( !var->is_global() ) // is_global() checks vfSTATIC
+			if ( (var->flags & vfPARAM) )
+				continue;
+			if ( (var->flags & vfSTACK) && !(var->flags & vfSTATIC) )
 				continue;
 			if ( var->type->basetype() == BaseType::btFunct )
 				continue;
@@ -309,7 +457,182 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 		entries.push_back(e);
 	}
 
+	for ( size_t i = 0; i < aot_discovered_data.size(); ++i )
+	{
+		const AotDiscoveredData &entry = aot_discovered_data[i];
+		if ( !entry.address || entry.size == 0 || seen.count(entry.address) )
+			continue;
+		seen.insert(entry.address);
+		GlobalDataEntry e;
+		e.name = entry.name;
+		e.address = entry.address;
+		e.size = entry.size;
+		entries.push_back(e);
+	}
+
 	return entries;
+}
+
+void Program::prepare_aot_data_layout()
+{
+	std::vector<GlobalDataEntry> entries = collect_global_data();
+	std::map<void *, size_t> offsets_by_addr;
+	size_t offset = 0;
+	aot_layout_offsets.clear();
+	aot_layout_ranges.clear();
+	const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
+
+	for ( size_t i = 0; i < entries.size(); ++i )
+	{
+		size_t pad = (8 - (offset % 8)) % 8;
+		offset += pad;
+		offsets_by_addr[entries[i].address] = offset;
+		aot_layout_offsets[reinterpret_cast<uintptr_t>(entries[i].address)] = offset;
+		AotDataRange range;
+		range.start = reinterpret_cast<uintptr_t>(entries[i].address);
+		range.size = entries[i].size;
+		range.data_offset = offset;
+		aot_layout_ranges.push_back(range);
+		offset += entries[i].size;
+	}
+
+	std::sort(aot_layout_ranges.begin(), aot_layout_ranges.end(),
+		  [](const AotDataRange &a, const AotDataRange &b) { return a.start < b.start; });
+
+	if ( !tkProgram )
+		return;
+
+	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
+	{
+		Variable *var = tkProgram->variables[i];
+		if ( !var || !var->data || !var->type )
+			continue;
+		var->aot_data_offset = (size_t)-1;
+		var->aot_cstr_offset = (size_t)-1;
+		std::map<void *, size_t>::const_iterator it = offsets_by_addr.find(var->data);
+		if ( it != offsets_by_addr.end() )
+			var->aot_data_offset = it->second;
+		if ( var->type->is_string() && var->aot_data_offset != (size_t)-1 )
+		{
+			std::string *str = static_cast<std::string *>(var->data);
+			void *cstr = (void *)str->c_str();
+			std::map<void *, size_t>::const_iterator cit = offsets_by_addr.find(cstr);
+			if ( cit != offsets_by_addr.end() )
+				var->aot_cstr_offset = cit->second;
+		}
+		if ( debug_var && var->name == debug_var )
+		{
+			std::fprintf(stderr,
+			    "[aot] global-layout var=%s ptr=%p flags=%u count=%u fixed=%d off=%zu dims=%zu\n",
+			    var->name.c_str(), var->data, (unsigned)var->flags, (unsigned)var->count,
+			    var->is_fixed_array() ? 1 : 0, var->aot_data_offset, var->dims.size());
+		}
+	}
+
+	for ( size_t fi = 0; fi < pending_funcs.size(); ++fi )
+	{
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[fi]);
+		if ( !tf )
+			continue;
+		for ( size_t vi = 0; vi < tf->variables.size(); ++vi )
+		{
+			Variable *var = tf->variables[vi];
+			if ( !var || !var->data || !var->type )
+				continue;
+			if ( (var->flags & vfPARAM) )
+				continue;
+			if ( (var->flags & vfSTACK) && !(var->flags & vfSTATIC) )
+				continue;
+			var->aot_data_offset = (size_t)-1;
+			var->aot_cstr_offset = (size_t)-1;
+			std::map<void *, size_t>::const_iterator it = offsets_by_addr.find(var->data);
+			if ( it != offsets_by_addr.end() )
+				var->aot_data_offset = it->second;
+			if ( var->type->is_string() && var->aot_data_offset != (size_t)-1 )
+			{
+				std::string *str = static_cast<std::string *>(var->data);
+				void *cstr = (void *)str->c_str();
+				std::map<void *, size_t>::const_iterator cit = offsets_by_addr.find(cstr);
+				if ( cit != offsets_by_addr.end() )
+					var->aot_cstr_offset = cit->second;
+			}
+			if ( debug_var && var->name == debug_var )
+			{
+				std::fprintf(stderr,
+				    "[aot] func-layout var=%s ptr=%p flags=%u count=%u fixed=%d off=%zu dims=%zu fn=%s\n",
+				    var->name.c_str(), var->data, (unsigned)var->flags, (unsigned)var->count,
+				    var->is_fixed_array() ? 1 : 0, var->aot_data_offset, var->dims.size(),
+				    tf->var.name.c_str());
+			}
+		}
+	}
+
+	std::map<std::string, std::pair<size_t, size_t> > canonical_offsets;
+	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
+	{
+		Variable *var = tkProgram->variables[i];
+		if ( !var || !var->type || !var->is_global() )
+			continue;
+		if ( !var->has_aot_data() )
+			continue;
+		canonical_offsets[var->name] =
+		    std::make_pair(var->aot_data_offset, var->aot_cstr_offset);
+	}
+
+	auto propagate_offsets = [&](Variable *var) {
+		if ( !var || !var->type || !var->is_global() || var->has_aot_data() )
+			return;
+		std::map<std::string, std::pair<size_t, size_t> >::const_iterator it =
+		    canonical_offsets.find(var->name);
+		if ( it == canonical_offsets.end() )
+			return;
+		var->aot_data_offset = it->second.first;
+		var->aot_cstr_offset = it->second.second;
+	};
+
+	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
+		propagate_offsets(tkProgram->variables[i]);
+
+	for ( size_t fi = 0; fi < pending_funcs.size(); ++fi )
+	{
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[fi]);
+		if ( !tf )
+			continue;
+		for ( size_t vi = 0; vi < tf->variables.size(); ++vi )
+			propagate_offsets(tf->variables[vi]);
+	}
+}
+
+bool Program::lookup_aot_data_offset(uintptr_t address, size_t &out_offset) const
+{
+	std::map<uintptr_t, size_t>::const_iterator it = aot_layout_offsets.find(address);
+	if ( it != aot_layout_offsets.end() )
+	{
+		out_offset = it->second;
+		return true;
+	}
+
+	if ( aot_layout_ranges.empty() )
+		return false;
+
+	AotDataRange key;
+	key.start = address;
+	key.size = 0;
+	key.data_offset = 0;
+	std::vector<AotDataRange>::const_iterator rit =
+	    std::upper_bound(aot_layout_ranges.begin(), aot_layout_ranges.end(), key,
+		[](const AotDataRange &a, const AotDataRange &b) { return a.start < b.start; });
+	if ( rit != aot_layout_ranges.begin() )
+	{
+		--rit;
+		if ( address >= rit->start && address < rit->start + rit->size )
+		{
+			out_offset = rit->data_offset + static_cast<size_t>(address - rit->start);
+			return true;
+		}
+	}
+
+	return false;
 }
 
 bool Program::save_object(const std::string &path) const
@@ -981,6 +1304,11 @@ bool Program::save_executable(const std::string &path)
 	std::vector<GlobalDataEntry> globals = collect_global_data();
 	std::map<uintptr_t, size_t> data_offset_map; // old addr → offset in .data
 	std::vector<uint8_t> data_section_buf;
+	struct string_object_patch {
+		size_t object_offset;
+		size_t cstr_offset;
+	};
+	std::vector<string_object_patch> string_object_patches;
 
 	// Also build range lookup: sorted by address for sub-offset matching.
 	struct data_range { uintptr_t start; size_t size; size_t data_off; };
@@ -1038,6 +1366,76 @@ bool Program::save_executable(const std::string &path)
 		return std::make_pair(false, (size_t)0);
 	};
 
+	auto queue_string_patch = [&](std::string *str) {
+		if ( !str )
+			return;
+		uintptr_t obj_addr = reinterpret_cast<uintptr_t>(str);
+		std::map<uintptr_t, size_t>::const_iterator oit =
+		    data_offset_map.find(obj_addr);
+		if ( oit == data_offset_map.end() )
+			return;
+
+		const char *cstr = str->c_str();
+		if ( !cstr )
+			return;
+
+		uintptr_t cstr_addr = reinterpret_cast<uintptr_t>(cstr);
+		size_t cstr_offset = (size_t)-1;
+		if ( cstr_addr >= obj_addr && cstr_addr < obj_addr + sizeof(std::string) )
+		{
+			cstr_offset = oit->second + static_cast<size_t>(cstr_addr - obj_addr);
+		}
+		else
+		{
+			std::map<uintptr_t, size_t>::const_iterator cit =
+			    data_offset_map.find(cstr_addr);
+			if ( cit == data_offset_map.end() )
+				return;
+			cstr_offset = cit->second;
+		}
+
+		string_object_patch sop;
+		sop.object_offset = oit->second;
+		sop.cstr_offset = cstr_offset;
+		string_object_patches.push_back(sop);
+	};
+
+	if ( tkProgram )
+	{
+		for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
+		{
+			Variable *var = tkProgram->variables[i];
+			if ( !var || !var->data || !var->type || !var->is_global() )
+				continue;
+			if ( var->type->is_string() && var->type->size == sizeof(std::string) )
+				queue_string_patch(static_cast<std::string *>(var->data));
+		}
+	}
+
+	for ( size_t fi = 0; fi < pending_funcs.size(); ++fi )
+	{
+		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[fi]);
+		if ( !tf )
+			continue;
+		for ( size_t vi = 0; vi < tf->variables.size(); ++vi )
+		{
+			Variable *var = tf->variables[vi];
+			if ( !var || !var->data || !var->type || !var->is_global() )
+				continue;
+			if ( var->type->is_string() && var->type->size == sizeof(std::string) )
+				queue_string_patch(static_cast<std::string *>(var->data));
+		}
+	}
+
+	for ( variable_map_t::const_iterator it = literal_map.begin();
+	      it != literal_map.end(); ++it )
+	{
+		Variable *var = it->second;
+		if ( !var || !var->data )
+			continue;
+		queue_string_patch(static_cast<std::string *>(var->data));
+	}
+
 	// Append .addrtab slots to .data section so the movabs scanner
 	// can patch .text references to the addrtab. Record which data
 	// offsets are addrtab slots needing dynamic symbol resolution.
@@ -1073,6 +1471,7 @@ bool Program::save_executable(const std::string &path)
 	// --- Find main() entry point offset ---
 
 	int64_t main_offset = -1;
+	bool main_takes_args = false;
 	uint32_t libc_start_main_dynsym = 0;
 	for ( size_t i = 0; i < pending_funcs.size(); ++i )
 	{
@@ -1087,6 +1486,7 @@ bool Program::save_executable(const std::string &path)
 		FuncDef *func = dynamic_cast<FuncDef *>(method->returns.type);
 		if ( !func || !func->funcnode )
 			continue;
+		main_takes_args = func->parameters.size() >= 2;
 		uint32_t label_id = func->funcnode->label().id();
 		if ( code.isLabelBound(label_id) )
 			main_offset = static_cast<int64_t>(code.labelOffset(label_id));
@@ -1097,7 +1497,10 @@ bool Program::save_executable(const std::string &path)
 
 	// --- Collect external symbols from relocations ---
 
-	struct ext_sym { std::string name; };
+	struct ext_sym {
+		std::string name;
+		std::string needed_lib;
+	};
 	std::vector<ext_sym> extern_syms;
 	std::map<uintptr_t, uint32_t> extern_indices; // addr -> dynsym index
 
@@ -1232,41 +1635,25 @@ bool Program::save_executable(const std::string &path)
 		static const char *extern_data_syms[] = {
 			"stderr", "stdout", "stdin", NULL
 		};
-		// For each extern data symbol, find the FIRST Variable in
-		// tkProgram->variables with that name. This matches the
-		// order collect_global_data iterates, which matches the
-		// data_offset_map entry the movabs scanner used to patch
-		// the code. DON'T use findVariable() — it returns the
-		// last-registered Variable which may have a different
-		// data address.
 		if ( tkProgram )
 		{
 			for ( const char **sp = extern_data_syms; *sp; ++sp )
 			{
-				for ( size_t vi = 0; vi < tkProgram->variables.size(); ++vi )
-				{
-					Variable *v = tkProgram->variables[vi];
-					if ( !v || !v->data || v->name != *sp )
-						continue;
+				std::string sym_name(*sp);
+				Variable *v = tkProgram->findVariable(sym_name);
+				if ( !v || !v->has_aot_data() )
+					continue;
 
-					uintptr_t addr = reinterpret_cast<uintptr_t>(v->data);
-					std::map<uintptr_t, size_t>::const_iterator dit =
-					    data_offset_map.find(addr);
-					if ( dit == data_offset_map.end() )
-						continue;
+				uint32_t dsym = static_cast<uint32_t>(extern_syms.size() + 1);
+				ext_sym es;
+				es.name = *sp;
+				extern_syms.push_back(es);
 
-					uint32_t dsym = static_cast<uint32_t>(extern_syms.size() + 1);
-					ext_sym es;
-					es.name = *sp;
-					extern_syms.push_back(es);
-
-					copy_rela cr;
-					cr.data_offset = dit->second;
-					cr.dynsym_index = dsym;
-					cr.sym_size = v->type ? v->type->size : 8;
-					copy_relas.push_back(cr);
-					break; // first match only
-				}
+				copy_rela cr;
+				cr.data_offset = v->aot_data_offset;
+				cr.dynsym_index = dsym;
+				cr.sym_size = v->type ? v->type->size : 8;
+				copy_relas.push_back(cr);
 			}
 		}
 	}
@@ -1277,65 +1664,32 @@ bool Program::save_executable(const std::string &path)
 	std::vector<needed_lib> needed_libs;
 	std::set<std::string> needed_lib_set;
 
-	for ( std::map<uintptr_t, uint32_t>::const_iterator eit = extern_indices.begin();
-	      eit != extern_indices.end(); ++eit )
+	for ( size_t i = 0; i < extern_syms.size(); ++i )
 	{
-		Dl_info info;
-		if ( dladdr(reinterpret_cast<void *>(eit->first), &info) && info.dli_fname )
+		std::string raw_libname;
+		for ( std::map<uintptr_t, uint32_t>::const_iterator eit = extern_indices.begin();
+		      eit != extern_indices.end(); ++eit )
 		{
-			// Extract basename from the library path.
-			std::string libpath = info.dli_fname;
-			std::string libname = libpath;
-			size_t slash = libpath.rfind('/');
-			if ( slash != std::string::npos )
-				libname = libpath.substr(slash + 1);
-			// Map known library names to their SONAME form.
-			// When dladdr reports the main executable, the
-			// symbol could be a madc runtime helper or a
-			// libc-family function that was statically resolved
-			// during link. Check the symbol name to classify.
-			std::map<uintptr_t, std::string>::const_iterator sym_it =
-			    external_symbol_map.find(eit->first);
-			std::string sym_name = (sym_it != external_symbol_map.end())
-			    ? sym_it->second : "";
-
-			if ( libname.find(".so") == std::string::npos
-			  && libname.find("lib") != 0 )
-			{
-				// From the main executable. Classify by name.
-				if ( sym_name.find("crypt") != std::string::npos
-				  && sym_name.find("crypt") < 5 )
-					libname = "libcrypt.so.1";
-				else if ( sym_name.find("__madc_") != std::string::npos
-				       || sym_name.find("print") != std::string::npos
-				       || sym_name.find("string_") != std::string::npos
-				       || sym_name.find("_Z") == 0 )
-					libname = "libmadc.so";
-				else
-					libname = "libc.so.6";
-			}
-			else if ( libname.find("libmadc") == 0 )
-				libname = "libmadc.so";
-			else if ( libname.find("libc") == 0 )
-				libname = "libc.so.6";
-			else if ( libname.find("libm") == 0 )
-				libname = "libm.so.6";
-			else if ( libname.find("libdl") == 0 )
-				libname = "libdl.so.2";
-			else if ( libname.find("libpthread") == 0 )
-				libname = "libpthread.so.0";
-			else if ( libname.find("libcrypt") == 0 )
-				libname = "libcrypt.so.1";
-			// Skip kernel virtual DSOs.
-			if ( libname.find("vdso") != std::string::npos )
+			if ( eit->second != i + 1 )
 				continue;
-			if ( needed_lib_set.find(libname) == needed_lib_set.end() )
+			Dl_info info;
+			if ( dladdr(reinterpret_cast<void *>(eit->first), &info) && info.dli_fname )
 			{
-				needed_lib_set.insert(libname);
-				needed_lib nl;
-				nl.name = libname;
-				needed_libs.push_back(nl);
+				raw_libname = info.dli_fname;
 			}
+			break;
+		}
+
+		extern_syms[i].needed_lib =
+		    canonical_library_for_symbol(extern_syms[i].name, raw_libname);
+		if ( extern_syms[i].needed_lib.empty() )
+			continue;
+		if ( needed_lib_set.find(extern_syms[i].needed_lib) == needed_lib_set.end() )
+		{
+			needed_lib_set.insert(extern_syms[i].needed_lib);
+			needed_lib nl;
+			nl.name = extern_syms[i].needed_lib;
+			needed_libs.push_back(nl);
 		}
 	}
 
@@ -1351,6 +1705,7 @@ bool Program::save_executable(const std::string &path)
 	{
 		ext_sym es;
 		es.name = "__libc_start_main";
+		es.needed_lib = "libc.so.6";
 		extern_syms.push_back(es);
 		libc_start_main_dynsym = static_cast<uint32_t>(extern_syms.size());
 		// dynsym index = extern_syms.size() because dynsym[0] is NULL
@@ -1373,71 +1728,90 @@ bool Program::save_executable(const std::string &path)
 	// Detect the glibc version each symbol needs by trying dlvsym
 	// with common version strings. Build the version tables dynamically.
 
-	uint32_t ver_libc_name = 0;
-	for ( size_t i = 0; i < needed_libs.size(); ++i )
-		if ( needed_libs[i].name == "libc.so.6" )
-			ver_libc_name = needed_libs[i].dynstr_offset;
-
 	size_t dynsym_count = 1 + extern_syms.size();
 
-	// Discover which glibc versions our symbols actually need.
-	// version_index 2+ maps to entries in vernaux_versions.
-	struct vernaux_entry { std::string name; uint32_t hash; uint32_t dynstr_off; };
-	std::vector<vernaux_entry> vernaux_versions;
-	std::map<std::string, uint16_t> version_index_map; // version_string → index
-
-	// Common glibc versions to probe (newest first for priority).
-	static const char *glibc_versions[] = {
-		"GLIBC_2.38", "GLIBC_2.37", "GLIBC_2.36", "GLIBC_2.35",
-		"GLIBC_2.34", "GLIBC_2.33", "GLIBC_2.32", "GLIBC_2.31",
-		"GLIBC_2.30", "GLIBC_2.29", "GLIBC_2.28", "GLIBC_2.27",
-		"GLIBC_2.17", "GLIBC_2.14", "GLIBC_2.4", "GLIBC_2.3.4",
-		"GLIBC_2.3", "GLIBC_2.2.5", NULL
+	struct vernaux_entry {
+		std::string name;
+		uint32_t hash;
+		uint32_t dynstr_off;
+		uint16_t index;
 	};
+	struct verneed_lib {
+		std::string name;
+		uint32_t dynstr_off;
+		std::vector<vernaux_entry> versions;
+		std::map<std::string, uint16_t> version_index_map;
+	};
+	std::map<std::string, size_t> verneed_lib_map;
+	std::vector<verneed_lib> verneed_libs;
 
-	void *libc_handle = dlopen("libc.so.6", RTLD_LAZY | RTLD_NOLOAD);
+	for ( size_t i = 0; i < needed_libs.size(); ++i )
+	{
+		if ( candidate_versions_for_library(needed_libs[i].name) == NULL )
+			continue;
+		verneed_lib_map[needed_libs[i].name] = verneed_libs.size();
+		verneed_lib vl;
+		vl.name = needed_libs[i].name;
+		vl.dynstr_off = needed_libs[i].dynstr_offset;
+		verneed_libs.push_back(vl);
+	}
 
 	std::vector<uint16_t> versym(dynsym_count, 0);
 	versym[0] = 0; // NULL symbol = *local*
+	uint16_t next_version_index = 2;
 
 	for ( size_t i = 0; i < extern_syms.size(); ++i )
 	{
-		const std::string &sym_name = extern_syms[i].name;
+		const ext_sym &sym = extern_syms[i];
 		uint16_t ver_idx = 1; // default: *global* (unversioned)
 
-		if ( libc_handle )
+		std::map<std::string, size_t>::iterator lit =
+		    verneed_lib_map.find(sym.needed_lib);
+		if ( lit != verneed_lib_map.end() )
 		{
-			for ( const char **vp = glibc_versions; *vp; ++vp )
+			verneed_lib &vl = verneed_libs[lit->second];
+			const char *const *versions =
+			    candidate_versions_for_library(vl.name);
+			bool opened_here = false;
+			void *handle = open_version_probe_handle(vl.name, opened_here);
+			if ( handle && versions )
 			{
-				void *resolved = dlvsym(libc_handle, sym_name.c_str(), *vp);
-				if ( resolved )
+				for ( const char *const *vp = versions; *vp; ++vp )
 				{
-					std::string ver_str = *vp;
-					std::map<std::string, uint16_t>::iterator vit =
-					    version_index_map.find(ver_str);
-					if ( vit != version_index_map.end() )
+					if ( dlvsym(handle, sym.name.c_str(), *vp) )
 					{
-						ver_idx = vit->second;
+						std::string ver_str = *vp;
+						std::map<std::string, uint16_t>::iterator vit =
+						    vl.version_index_map.find(ver_str);
+						if ( vit != vl.version_index_map.end() )
+						{
+							ver_idx = vit->second;
+						}
+						else
+						{
+							ver_idx = next_version_index++;
+							vernaux_entry ve;
+							ve.name = ver_str;
+							ve.hash = elf_hash(ver_str.c_str());
+							ve.dynstr_off = dynstr.add(ver_str);
+							ve.index = ver_idx;
+							vl.versions.push_back(ve);
+							vl.version_index_map[ver_str] = ver_idx;
+						}
+						break;
 					}
-					else
-					{
-						ver_idx = static_cast<uint16_t>(vernaux_versions.size() + 2);
-						vernaux_entry ve;
-						ve.name = ver_str;
-						ve.hash = elf_hash(ver_str.c_str());
-						ve.dynstr_off = dynstr.add(ver_str);
-						vernaux_versions.push_back(ve);
-						version_index_map[ver_str] = ver_idx;
-					}
-					break;
 				}
+			}
+			if ( handle && opened_here )
+				dlclose(handle);
+			if ( handle && !opened_here )
+			{
+				// RTLD_NOLOAD returns a real handle that should still be closed.
+				dlclose(handle);
 			}
 		}
 		versym[i + 1] = ver_idx;
 	}
-
-	if ( libc_handle )
-		dlclose(libc_handle);
 
 	// --- Build .dynsym ---
 
@@ -1546,23 +1920,41 @@ bool Program::save_executable(const std::string &path)
 	for ( size_t i = 0; i < versym.size(); ++i )
 		emit_val(out, versym[i]);
 
-	// .gnu.version_r (VERNEED): one entry for libc.so.6 with N aux entries.
+	// .gnu.version_r (VERNEED): one entry per versioned needed library.
 	size_t verneed_offset = align_to(out, 8);
-	uint16_t vernaux_cnt = static_cast<uint16_t>(vernaux_versions.size());
-	// Verneed header
-	emit_val<uint16_t>(out, 1);             // vn_version
-	emit_val<uint16_t>(out, vernaux_cnt);   // vn_cnt
-	emit_val<uint32_t>(out, ver_libc_name); // vn_file
-	emit_val<uint32_t>(out, 16);            // vn_aux (offset to first vernaux)
-	emit_val<uint32_t>(out, 0);             // vn_next (no more verneed entries)
-	// Vernaux entries
-	for ( size_t i = 0; i < vernaux_versions.size(); ++i )
+	size_t verneed_lib_count = 0;
+	for ( size_t i = 0; i < verneed_libs.size(); ++i )
 	{
-		emit_val<uint32_t>(out, vernaux_versions[i].hash);
-		emit_val<uint16_t>(out, 0);                                    // vna_flags
-		emit_val<uint16_t>(out, static_cast<uint16_t>(i + 2));         // vna_other (version index)
-		emit_val<uint32_t>(out, vernaux_versions[i].dynstr_off);       // vna_name
-		emit_val<uint32_t>(out, (i + 1 < vernaux_versions.size()) ? 16 : 0); // vna_next
+		if ( verneed_libs[i].versions.empty() )
+			continue;
+		++verneed_lib_count;
+		uint16_t vernaux_cnt =
+		    static_cast<uint16_t>(verneed_libs[i].versions.size());
+		uint32_t vn_next = 0;
+		for ( size_t j = i + 1; j < verneed_libs.size(); ++j )
+		{
+			if ( !verneed_libs[j].versions.empty() )
+			{
+				vn_next = static_cast<uint32_t>(sizeof(Elf64_Verneed)
+					+ vernaux_cnt * sizeof(Elf64_Vernaux));
+				break;
+			}
+		}
+		emit_val<uint16_t>(out, 1);
+		emit_val<uint16_t>(out, vernaux_cnt);
+		emit_val<uint32_t>(out, verneed_libs[i].dynstr_off);
+		emit_val<uint32_t>(out, sizeof(Elf64_Verneed));
+		emit_val<uint32_t>(out, vn_next);
+		for ( size_t j = 0; j < verneed_libs[i].versions.size(); ++j )
+		{
+			emit_val<uint32_t>(out, verneed_libs[i].versions[j].hash);
+			emit_val<uint16_t>(out, 0);
+			emit_val<uint16_t>(out, verneed_libs[i].versions[j].index);
+			emit_val<uint32_t>(out, verneed_libs[i].versions[j].dynstr_off);
+			emit_val<uint32_t>(out,
+			    (j + 1 < verneed_libs[i].versions.size())
+				? sizeof(Elf64_Vernaux) : 0);
+		}
 	}
 	size_t verneed_size = out.size() - verneed_offset;
 
@@ -1630,6 +2022,15 @@ bool Program::save_executable(const std::string &path)
 	// Keep both so the RIP-relative addrtab references work.
 	// total_code_size includes .text + any padding + .addrtab.
 	size_t total_code_size = flat_size;
+	if ( ::getenv("MADC_DEBUG_TEXTCOPY")
+	  && total_code_size > 0x65da0 )
+	{
+		std::fprintf(stderr,
+		    "[aot] text_copy raw @0x65d8c: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+		    text_copy[0x65d8c], text_copy[0x65d8d], text_copy[0x65d8e], text_copy[0x65d8f],
+		    text_copy[0x65d90], text_copy[0x65d91], text_copy[0x65d92], text_copy[0x65d93],
+		    text_copy[0x65d94], text_copy[0x65d95], text_copy[0x65d96], text_copy[0x65d97]);
+	}
 
 	// data_vaddr will be computed after PLT scan (which may grow total_code_size).
 	uint64_t data_vaddr = 0;
@@ -1648,17 +2049,30 @@ bool Program::save_executable(const std::string &path)
 			if ( !code.isLabelBound(ref.label_id) )
 				continue;
 
-			std::map<uintptr_t, size_t>::const_iterator dit =
-			    data_offset_map.find(ref.address);
-			if ( dit == data_offset_map.end() )
-				continue;
-
 			uint64_t label_off = code.labelOffset(ref.label_id);
-			size_t imm_off = static_cast<size_t>(label_off) + 2;
+			size_t imm_off = static_cast<size_t>(label_off) + ref.imm_offset;
 			if ( imm_off + 8 > text_size )
 				continue;
+			if ( !is_emit_data_mov_site(text_copy, static_cast<size_t>(label_off), ref.imm_offset) )
+				continue;
 
-			uint64_t new_addr = data_vaddr + dit->second;
+			size_t data_offset = ref.data_offset;
+			if ( data_offset == (size_t)-1 )
+			{
+				std::pair<bool, size_t> found = find_data_offset(ref.address);
+				if ( !found.first )
+					continue;
+				data_offset = found.second;
+			}
+			uint64_t new_addr = data_vaddr + data_offset;
+			if ( ::getenv("MADC_DEBUG_AOT_PATCHES")
+			  && imm_off >= 0x65d80 && imm_off < 0x65da0 )
+			{
+				std::fprintf(stderr,
+				    "[aot] pre-emit patch ref=%zu label=%u imm_off=0x%zx old_addr=0x%zx data_off=0x%zx new_addr=0x%llx\n",
+				    i, ref.label_id, imm_off, (size_t)ref.address, data_offset,
+				    (unsigned long long)new_addr);
+			}
 			std::memcpy(&text_copy[imm_off], &new_addr, 8);
 			++data_patches;
 		}
@@ -1852,6 +2266,60 @@ bool Program::save_executable(const std::string &path)
 			      << call_patches.size() << " direct calls" << std::endl);
 	}
 
+	// Build a wrapper that mirrors Program::execute():
+	// run the root program entry first for file-scope initialization,
+	// then call the user-defined main.
+	size_t entry_wrapper_offset = total_code_size;
+	{
+		std::vector<uint8_t> wrapper;
+		uint64_t root_vaddr = code_vaddr;
+		uint64_t main_vaddr = code_vaddr + static_cast<uint64_t>(main_offset);
+		if ( main_takes_args )
+		{
+			static const uint8_t prefix[] = {
+				0x48, 0x83, 0xEC, 0x18,       // sub rsp, 24
+				0x48, 0x89, 0x3C, 0x24,       // mov [rsp], rdi
+				0x48, 0x89, 0x74, 0x24, 0x08, // mov [rsp+8], rsi
+				0xE8, 0x00, 0x00, 0x00, 0x00, // call root_fn
+				0x48, 0x8B, 0x3C, 0x24,       // mov rdi, [rsp]
+				0x48, 0x8B, 0x74, 0x24, 0x08, // mov rsi, [rsp+8]
+				0xE8, 0x00, 0x00, 0x00, 0x00, // call main
+				0x48, 0x83, 0xC4, 0x18,       // add rsp, 24
+				0xC3                                // ret
+			};
+			wrapper.insert(wrapper.end(), prefix, prefix + sizeof(prefix));
+			int64_t root_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset + 18);
+			int32_t root_disp = static_cast<int32_t>(
+			    static_cast<int64_t>(root_vaddr) - root_rip);
+			std::memcpy(&wrapper[14], &root_disp, 4);
+			int64_t main_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset + 32);
+			int32_t main_disp = static_cast<int32_t>(
+			    static_cast<int64_t>(main_vaddr) - main_rip);
+			std::memcpy(&wrapper[28], &main_disp, 4);
+		}
+		else
+		{
+			static const uint8_t prefix[] = {
+				0x48, 0x83, 0xEC, 0x08,       // sub rsp, 8
+				0xE8, 0x00, 0x00, 0x00, 0x00, // call root_fn
+				0xE8, 0x00, 0x00, 0x00, 0x00, // call main
+				0x48, 0x83, 0xC4, 0x08,       // add rsp, 8
+				0xC3                                // ret
+			};
+			wrapper.insert(wrapper.end(), prefix, prefix + sizeof(prefix));
+			int64_t root_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset + 9);
+			int32_t root_disp = static_cast<int32_t>(
+			    static_cast<int64_t>(root_vaddr) - root_rip);
+			std::memcpy(&wrapper[5], &root_disp, 4);
+			int64_t main_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset + 14);
+			int32_t main_disp = static_cast<int32_t>(
+			    static_cast<int64_t>(main_vaddr) - main_rip);
+			std::memcpy(&wrapper[10], &main_disp, 4);
+		}
+		text_copy.insert(text_copy.end(), wrapper.begin(), wrapper.end());
+		total_code_size += wrapper.size();
+	}
+
 	// Recalculate data_vaddr now that total_code_size is final
 	// (includes text + addrtab + PLT).
 	{
@@ -1868,15 +2336,21 @@ bool Program::save_executable(const std::string &path)
 			const AotDataRef &ref = aot_data_refs[i];
 			if ( !code.isLabelBound(ref.label_id) )
 				continue;
-			std::map<uintptr_t, size_t>::const_iterator dit =
-			    data_offset_map.find(ref.address);
-			if ( dit == data_offset_map.end() )
-				continue;
 			uint64_t label_off = code.labelOffset(ref.label_id);
-			size_t imm_off = static_cast<size_t>(label_off) + 2;
+			size_t imm_off = static_cast<size_t>(label_off) + ref.imm_offset;
 			if ( imm_off + 8 > total_code_size )
 				continue;
-			uint64_t new_addr = data_vaddr + dit->second;
+			if ( !is_emit_data_mov_site(text_copy, static_cast<size_t>(label_off), ref.imm_offset) )
+				continue;
+			size_t data_offset = ref.data_offset;
+			if ( data_offset == (size_t)-1 )
+			{
+				std::pair<bool, size_t> found = find_data_offset(ref.address);
+				if ( !found.first )
+					continue;
+				data_offset = found.second;
+			}
+			uint64_t new_addr = data_vaddr + data_offset;
 			std::memcpy(&text_copy[imm_off], &new_addr, 8);
 		}
 	}
@@ -1924,12 +2398,27 @@ bool Program::save_executable(const std::string &path)
 		      << " globals, " << data_section_buf.size()
 		      << " bytes in .data)" << std::endl);
 
+	auto debug_dump_out_text = [&](const char *tag) {
+		if ( !::getenv("MADC_DEBUG_TEXTCOPY") )
+			return;
+		size_t base = code_file_offset + 0x65d8c;
+		if ( base + 12 > out.size() )
+			return;
+		std::fprintf(stderr,
+		    "[aot] %s @0x65d8c: %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x\n",
+		    tag,
+		    out[base + 0], out[base + 1], out[base + 2], out[base + 3],
+		    out[base + 4], out[base + 5], out[base + 6], out[base + 7],
+		    out[base + 8], out[base + 9], out[base + 10], out[base + 11]);
+	};
+
 	emit(out, text_copy.data(), total_code_size);
 	size_t total_text_size = START_STUB_SIZE + total_code_size;
+	debug_dump_out_text("after emit text_copy");
 
 	// Patch _start stub: main address and __libc_start_main PLT.
 	{
-		uint64_t main_vaddr = code_vaddr + static_cast<uint64_t>(main_offset);
+		uint64_t main_vaddr = code_vaddr + static_cast<uint64_t>(entry_wrapper_offset);
 
 		// Patch mov $main, %edi (imm32).
 		uint32_t main32 = static_cast<uint32_t>(main_vaddr);
@@ -1988,21 +2477,36 @@ bool Program::save_executable(const std::string &path)
 			const AotDataRef &ref = aot_data_refs[i];
 			if ( !code.isLabelBound(ref.label_id) )
 				continue;
-			std::map<uintptr_t, size_t>::const_iterator dit =
-			    data_offset_map.find(ref.address);
-			if ( dit == data_offset_map.end() )
-				continue;
 			uint64_t label_off = code.labelOffset(ref.label_id);
-			size_t imm_off = static_cast<size_t>(label_off) + 2;
+			size_t imm_off = static_cast<size_t>(label_off) + ref.imm_offset;
 			if ( imm_off + 8 > total_code_size )
 				continue;
-			uint64_t new_addr = data_vaddr + dit->second;
+			if ( !is_emit_data_mov_site(text_copy, static_cast<size_t>(label_off), ref.imm_offset) )
+				continue;
+			size_t data_offset = ref.data_offset;
+			if ( data_offset == (size_t)-1 )
+			{
+				std::pair<bool, size_t> found = find_data_offset(ref.address);
+				if ( !found.first )
+					continue;
+				data_offset = found.second;
+			}
+			uint64_t new_addr = data_vaddr + data_offset;
 			// Patch in `out` (text was already emitted).
 			size_t file_pos = code_file_offset + imm_off;
+			if ( ::getenv("MADC_DEBUG_AOT_PATCHES")
+			  && imm_off >= 0x65d80 && imm_off < 0x65da0 )
+			{
+				std::fprintf(stderr,
+				    "[aot] final patch ref=%zu label=%u imm_off=0x%zx file_pos=0x%zx old_addr=0x%zx data_off=0x%zx new_addr=0x%llx\n",
+				    i, ref.label_id, imm_off, file_pos, (size_t)ref.address, data_offset,
+				    (unsigned long long)new_addr);
+			}
 			if ( file_pos + 8 <= out.size() )
 				std::memcpy(&out[file_pos], &new_addr, 8);
 		}
 	}
+	debug_dump_out_text("after final aot patch");
 
 	// Re-run moffs scanner with final data_vaddr.
 	if ( !data_offset_map.empty() )
@@ -2033,6 +2537,7 @@ bool Program::save_executable(const std::string &path)
 			}
 		}
 	}
+	debug_dump_out_text("after moffs patch");
 
 	size_t addrtab_rela_start = 0;
 	size_t copy_rela_start = 0;
@@ -2106,41 +2611,6 @@ bool Program::save_executable(const std::string &path)
 			std::memcpy(&out[rela_pos], &rela, sizeof(rela));
 			rela_pos += sizeof(rela);
 		}
-		// COPY relas: scan the PATCHED code (in `out`) for movabs/moffs
-		// that access .data addresses, and find which .data offset
-		// corresponds to each extern data symbol. This is the only
-		// reliable way because the same name can have multiple
-		// Variable registrations at different addresses.
-		for ( size_t ci = 0; ci < copy_relas.size(); ++ci )
-		{
-			std::string sym_name = extern_syms[copy_relas[ci].dynsym_index - 1].name;
-			// Find ALL Variables with this name and collect their data_offset_map entries.
-			std::vector<size_t> candidate_offsets;
-			if ( tkProgram )
-			{
-				for ( size_t vi = 0; vi < tkProgram->variables.size(); ++vi )
-				{
-					Variable *v = tkProgram->variables[vi];
-					if ( !v || !v->data || v->name != sym_name )
-						continue;
-					uintptr_t addr = reinterpret_cast<uintptr_t>(v->data);
-					std::map<uintptr_t, size_t>::const_iterator dit =
-					    data_offset_map.find(addr);
-					if ( dit != data_offset_map.end() )
-						candidate_offsets.push_back(dit->second);
-				}
-			}
-			// Use the SMALLEST offset (first in .data = first registered = what code uses).
-			if ( !candidate_offsets.empty() )
-			{
-				size_t best = candidate_offsets[0];
-				for ( size_t j = 1; j < candidate_offsets.size(); ++j )
-					if ( candidate_offsets[j] < best )
-						best = candidate_offsets[j];
-				copy_relas[ci].data_offset = best;
-			}
-		}
-
 		copy_rela_start = rela_pos;
 		for ( size_t i = 0; i < copy_relas.size(); ++i )
 		{
@@ -2152,6 +2622,7 @@ bool Program::save_executable(const std::string &path)
 			rela_pos += sizeof(rela);
 		}
 	}
+	debug_dump_out_text("after rela patch");
 
 	// .data (global variables and string literals)
 	size_t data_file_offset = 0;
@@ -2162,6 +2633,14 @@ bool Program::save_executable(const std::string &path)
 		emit(out, data_section_buf.data(), data_section_size);
 		// Recalculate actual data vaddr for section header.
 		data_vaddr = BASE_ADDR + data_file_offset;
+
+		for ( size_t i = 0; i < string_object_patches.size(); ++i )
+		{
+			uint64_t cstr_vaddr = data_vaddr + string_object_patches[i].cstr_offset;
+			size_t ptr_pos = data_file_offset + string_object_patches[i].object_offset;
+			if ( ptr_pos + sizeof(uint64_t) <= out.size() )
+				std::memcpy(&out[ptr_pos], &cstr_vaddr, sizeof(cstr_vaddr));
+		}
 
 		// Patch COPY rela offsets now that data_vaddr is known.
 		{
@@ -2174,6 +2653,7 @@ bool Program::save_executable(const std::string &path)
 			}
 		}
 	}
+	debug_dump_out_text("after data emit");
 
 	// .dynamic
 	size_t dynamic_offset = align_to(out, 8);
@@ -2204,7 +2684,7 @@ bool Program::save_executable(const std::string &path)
 	}
 	emit_dyn(0x6ffffff0, BASE_ADDR + versym_offset);  // DT_VERSYM
 	emit_dyn(0x6ffffffe, BASE_ADDR + verneed_offset); // DT_VERNEED
-	emit_dyn(0x6fffffff, 1);                         // DT_VERNEEDNUM
+	emit_dyn(0x6fffffff, verneed_lib_count);         // DT_VERNEEDNUM
 	emit_dyn(DT_NULL, 0);
 
 	size_t dynamic_size = out.size() - dynamic_offset;
