@@ -3879,7 +3879,13 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	var->data = (void *)method;
 	method->x86code = (void *)extfunc;
 	if ( extfunc )
-	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
+	{
+	    Dl_info _dli;
+	    if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
+		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
+	    else
+		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
+	}
 
 	return var;
     }
@@ -3897,7 +3903,13 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     }
     method->x86code = (void *)extfunc;
     if ( extfunc )
-	external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
+    {
+	Dl_info _dli;
+	if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
+	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
+	else
+	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
+    }
 
     return var;
 }
