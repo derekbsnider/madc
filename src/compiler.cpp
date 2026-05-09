@@ -39,6 +39,21 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret=false);
 const char *string_cstr(void *ptr);
 
+// Materialize an operand into a Gp register. If already Gp, return it.
+// If Mem (global struct/class), LEA the address into a fresh Gp.
+static x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr")
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	return op.as<x86::Gp>();
+    if ( op.isMem() )
+    {
+	x86::Gp tmp = pgm.cc.newIntPtr("%s", name);
+	pgm.cc.lea(tmp, op.as<x86::Mem>());
+	return tmp;
+    }
+    throw "as_gp_ptr: operand is neither Gp nor Mem";
+}
+
 static bool token_has_constant_cstring(TokenBase *token)
 {
     if ( !token )
@@ -269,9 +284,11 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	tmp_rdp.second = nullptr;
     // String→charptr coercion for non-constant strings: let the token
     // compile with its natural dtSTRING type so ir.coerce can call
-    // string_cstr. Setting tmp_rdp.second to ddCHARptr makes the raw
-    // type look like it's already a char*, skipping the coercion.
-    if ( target_type
+    // string_cstr. Only apply in JIT mode — in AOT mode the existing
+    // coercion path handles the string→cstr conversion correctly and
+    // changing the type hint here breaks the native ELF code path.
+    if ( !pgm.aot_tracking
+      && target_type
       && target_type->is_pointer()
       && target_type->rawtype() == DataType::dtCHAR
       && token && token->datadef()
@@ -701,6 +718,14 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
 	return storage;
     }
 
+    if ( arg.isMem() && actual_type
+      && (actual_type->basetype() == BaseType::btStruct
+       || actual_type->basetype() == BaseType::btClass) )
+    {
+	storage = as_gp_ptr(pgm, arg, "__call_arg_cls");
+	out_type = actual_type;
+	return storage;
+    }
     storage = arg;
     out_type = actual_type;
     return storage;
@@ -5120,14 +5145,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     }
     if ( var->is_global() && var->data
       && (var->type->basetype() == BaseType::btStruct
-       || var->type->basetype() == BaseType::btClass)
-      && var->type->type() == DataType::dtRESERVED )
+       || var->type->basetype() == BaseType::btClass) )
     {
-	// User-defined struct/class globals: use Mem operand so member
-	// access works as [base + offset]. Built-in opaque classes
-	// (string, ostream, vector, etc.) stay as Gp registers — they
-	// are accessed through function calls that take a pointer, not
-	// through direct member offsets.
 	DBG(pgm.cc.comment("voperand global struct/class: load absolute base"));
 	x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 	pgm.emit_data_mov(base_reg, var);
@@ -5997,9 +6016,6 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenBSL::compile() (ostream &)tvl->getreg(pgm)"));
 	Operand &lval = tvl->operand(pgm); // get ostream register
 
-	// Global streams may be stored as Mem operands (from the
-	// global-struct Mem path). Load into a Gp for the ostream
-	// call convention.
 	if ( lval.isMem() )
 	{
 	    x86::Gp tmp = pgm.cc.newIntPtr("ostream_ptr");
