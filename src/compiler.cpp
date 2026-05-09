@@ -2136,15 +2136,21 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment(var.name.c_str()));
     InvokeNode *call;
     DBG(cout << "invoke: argCount=" << funcsig.argCount() << " hasRet=" << funcsig.hasRet() << " is_variadic=" << is_variadic << endl);
-    if ( fnd && !use_c_version ) pgm.cc.invoke(&call, fnd->label(), funcsig);
+    // AOT mode: builtin functions with x86code addresses must be called
+    // via imm(x86code) — not via fnd->label() — so the address enters
+    // the addrtab/relocation system and gets resolved to the real symbol
+    // name (mangled) in libmadc.so. Label-based calls are JIT-internal
+    // and don't create external symbol relocations.
+    if ( fnd && !use_c_version && !(pgm.aot_tracking && method->x86code) )
+	pgm.cc.invoke(&call, fnd->label(), funcsig);
     else if ( is_variadic )
     {
-	// variadic dlsym: load function pointer into Gp register for invoke
 	x86::Gp fn_ptr = pgm.cc.newIntPtr("dl_fn");
 	pgm.cc.mov(fn_ptr, imm(call_target));
 	pgm.cc.invoke(&call, fn_ptr, funcsig);
     }
-    else pgm.cc.invoke(&call, imm(call_target), funcsig);
+    else
+	pgm.cc.invoke(&call, imm(call_target), funcsig);
     if ( call_target )
 	pgm.track_invoke_target(call_target);
     DBG(pgm.cc.comment("TokenCallFunc::compile() looping over params"));
