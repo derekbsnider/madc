@@ -2481,7 +2481,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		InvokeNode *cstr_call;
 		pgm.cc.invoke(&cstr_call, imm(string_cstr),
 		    FuncSignature::build<const char *, void *>());
-		cstr_call->setArg(0, val_op.as<x86::Gp>());
+		cstr_call->setArg(0, as_gp_ptr(pgm, val_op, "_si_strptr"));
 		cstr_call->setRet(0, cstr_gp);
 		eff_val = cstr_gp;
 	    }
@@ -2518,7 +2518,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		pgm.cc.invoke(&call, imm(string_assign),
 		    FuncSignature::build<void, void *, void *>());
 		call->setArg(0, m_addr);
-		call->setArg(1, val_op.as<x86::Gp>());
+		call->setArg(1, as_gp_ptr(pgm, val_op, "str_val"));
 	    }
 	}
 	else
@@ -2657,7 +2657,7 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 		InvokeNode *cstr_call;
 		pgm.cc.invoke(&cstr_call, imm(string_cstr),
 		    FuncSignature::build<const char *, void *>());
-		cstr_call->setArg(0, val_op.as<x86::Gp>());
+		cstr_call->setArg(0, as_gp_ptr(pgm, val_op, "_si_strptr"));
 		cstr_call->setRet(0, cstr);
 		pgm.cc.mov(slot, cstr);
 		continue;
@@ -3674,7 +3674,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 		pgm.cc.mov(src_ptr, x86::qword_ptr(retbuf_ptr, (int32_t)(i * 8)));
 		InvokeNode *scall;
 		pgm.cc.invoke(&scall, imm(string_assign), FuncSignature::build<void, void *, void *>());
-		scall->setArg(0, var_op.as<x86::Gp>());
+		scall->setArg(0, as_gp_ptr(pgm, var_op, "mret_dst"));
 		scall->setArg(1, src_ptr);
 	    }
 	}
@@ -3817,7 +3817,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 		InvokeNode *cstr_call;
 		pgm.cc.invoke(&cstr_call, imm(string_cstr),
 		    FuncSignature::build<const char *, void *>());
-		cstr_call->setArg(0, rhs_op.as<x86::Gp>());
+		cstr_call->setArg(0, as_gp_ptr(pgm, rhs_op, "sub_strptr"));
 		cstr_call->setRet(0, cstr);
 		effective_rhs = cstr;
 	    }
@@ -3916,7 +3916,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    InvokeNode *cstr_call;
 	    pgm.cc.invoke(&cstr_call, imm(string_cstr),
 		FuncSignature::build<const char *, void *>());
-	    cstr_call->setArg(0, rhs_op.as<x86::Gp>());
+	    cstr_call->setArg(0, as_gp_ptr(pgm, rhs_op, "sub_strptr"));
 	    cstr_call->setRet(0, cstr);
 	    effective_rhs = cstr;
 	}
@@ -4056,8 +4056,8 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 */
 	DBG(pgm.cc.comment("string_assign"));
         InvokeNode* call; pgm.cc.invoke(&call, imm(string_assign), FuncSignature::build<void, const char*, const char *>());
-	call->setArg(0, _operand.as<x86::Gp>());
-	call->setArg(1, r_operand->as<x86::Gp>());
+	call->setArg(0, as_gp_ptr(pgm, _operand, "str_dst"));
+	call->setArg(1, as_gp_ptr(pgm, *r_operand, "str_src"));
 	if ( tvl )
 	{
 	    tvl->var.modified();
@@ -5521,19 +5521,19 @@ void TokenCpnd::cleanup(Program &pgm)
 			{
 			    DBG(std::cout << "TokenCpnd::cleanup(" << var->name << ") calling string_destruct[" << (uint64_t)string_destruct << ']' << std::endl);
                             InvokeNode* call; cc.invoke(&call, imm(string_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
+			    call->setArg(0, as_gp_ptr(pgm, reg, "str_dtor"));
 			}
 			break;
 		    case DataType::dtSSTREAM:
 			{
                             InvokeNode* call; cc.invoke(&call, imm(stringstream_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
+			    call->setArg(0, as_gp_ptr(pgm, reg, "ss_dtor"));
 			}
 			break;
 		    case DataType::dtARRAY:
 			{
                             InvokeNode* call; cc.invoke(&call, imm(madarray_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
+			    call->setArg(0, as_gp_ptr(pgm, reg, "arr_dtor"));
 			}
 			break;
 		    case DataType::dtVECTOR:
@@ -5542,7 +5542,7 @@ void TokenCpnd::cleanup(Program &pgm)
 			    void *dtor = vdd->element_type->is_string()
 				? (void *)vector_str_destruct : (void *)vector_int_destruct;
 			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
+			    call->setArg(0, as_gp_ptr(pgm, reg, "vec_dtor"));
 			}
 			break;
 		    case DataType::dtMAP:
@@ -5551,7 +5551,7 @@ void TokenCpnd::cleanup(Program &pgm)
 			    void *dtor = mdd->val_type->is_string()
 				? (void *)map_str_str_destruct : (void *)map_str_int_destruct;
 			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
+			    call->setArg(0, as_gp_ptr(pgm, reg, "map_dtor"));
 			}
 			break;
 		    case DataType::dtSET:
@@ -5560,7 +5560,7 @@ void TokenCpnd::cleanup(Program &pgm)
 			    void *dtor = sdd->element_type->is_string()
 				? (void *)set_str_destruct : (void *)set_int_destruct;
 			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
+			    call->setArg(0, as_gp_ptr(pgm, reg, "set_dtor"));
 			}
 			break;
 		    case DataType::dtLIST:
