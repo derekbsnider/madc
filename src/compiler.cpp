@@ -1857,7 +1857,13 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	if ( sym )
 	{
 	    method->x86code = sym;
-	    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = var.name;
+	    // Use the real dynamic symbol name (may be mangled) so the
+	    // native ELF linker can resolve it from shared libraries.
+	    Dl_info dli;
+	    if ( dladdr(sym, &dli) && dli.dli_sname && dli.dli_sname[0] )
+		pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = dli.dli_sname;
+	    else
+		pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = var.name;
 	    fnd = NULL; // intentional — fall into the typed-call path below
 	    DBG(pgm.cc.comment("TokenCallFunc::compile() dlsym late-bind"));
 	}
@@ -1929,6 +1935,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    // invoke
 	    InvokeNode *call;
 	    pgm.cc.invoke(&call, imm(method->x86code), funcsig);
+	    pgm.track_invoke_target(method->x86code);
 	    set_invoke_args(pgm, call, params, false);
 
 	    // capture return value
@@ -2115,7 +2122,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	if ( sym )
 	{
 	    call_target = sym;
-	    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = var.name;
+	    Dl_info dli;
+	    if ( dladdr(sym, &dli) && dli.dli_sname && dli.dli_sname[0] )
+		pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = dli.dli_sname;
+	    else
+		pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = var.name;
 	    DBG(cout << "TokenCallFunc::compile() redirecting " << var.name << " to C library version" << endl);
 	}
     }
@@ -2134,6 +2145,8 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	pgm.cc.invoke(&call, fn_ptr, funcsig);
     }
     else pgm.cc.invoke(&call, imm(call_target), funcsig);
+    if ( call_target )
+	pgm.track_invoke_target(call_target);
     DBG(pgm.cc.comment("TokenCallFunc::compile() looping over params"));
     set_invoke_args(pgm, call, params, false);
 

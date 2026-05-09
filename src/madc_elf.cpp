@@ -1599,6 +1599,8 @@ bool Program::save_executable(const std::string &path)
 			{
 				external_symbol_map[func_addr] = info.dli_sname;
 				it = external_symbol_map.find(func_addr);
+				DBG(std::fprintf(stderr, "[aot] addrtab dladdr 0x%zx -> %s\n",
+				    (size_t)func_addr, info.dli_sname));
 			}
 			else
 				continue;
