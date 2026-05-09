@@ -5145,8 +5145,13 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     }
     if ( var->is_global() && var->data
       && (var->type->basetype() == BaseType::btStruct
-       || var->type->basetype() == BaseType::btClass) )
+       || var->type->basetype() == BaseType::btClass)
+      && (var->type->type() == DataType::dtRESERVED || pgm.aot_tracking) )
     {
+	// Mem operand for member access. In JIT mode, only user-defined
+	// structs (dtRESERVED) need this; built-in opaque classes use Gp.
+	// In AOT mode, ALL struct/class globals use Mem for operand
+	// stability across large functions (re-emit via invalidation).
 	DBG(pgm.cc.comment("voperand global struct/class: load absolute base"));
 	x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 	pgm.emit_data_mov(base_reg, var);
