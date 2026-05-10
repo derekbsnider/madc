@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **Additional SMAUG-shaped runtime regressions now stay in-tree.**
+  Promoted deterministic probes for branch-skipped buffer writes,
+  variadic bug logging, `sprintf` with multiple `%s` arguments,
+  repeated ternary string arguments inside variadic formatting, typedef
+  pointer-member chains, and a simplified `set_char_color()` formatting
+  path into real integration tests so these runtime shapes stay covered
+  instead of living as scratch files.
+
 - **Local variables and parameters now stay local across JIT/native codegen.**
   Parser-created locals now set `vfLOCAL`, and function/lambda
   parameters now set `vfPARAM | vfLOCAL`, so block-local names and

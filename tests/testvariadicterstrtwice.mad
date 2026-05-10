@@ -1,0 +1,23 @@
+#include <stdio.h>
+#include <string.h>
+
+int calls = 0;
+
+char *hit(char *s)
+{
+	calls++;
+	return s;
+}
+
+int main()
+{
+	char buf[32];
+	int flags = 8;
+
+	sprintf(buf, "%s%s",
+		flags & 8 ? hit("1;") : "",
+		flags & 16 ? hit("5;") : "");
+
+	printf("calls=%d buf=[%s]\n", calls, buf);
+	return 0;
+}

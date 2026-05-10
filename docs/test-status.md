@@ -170,6 +170,12 @@ instead of collapsing that case into a generic `FAIL`.
 | `testaotdamageextern.mad` | AOT/native executable path keeps function-scope global pointer-table lookups stable across repeated branches, matching SMAUG `damage()`-style access |
 | `testaotexternarray.mad` | AOT/native executable path preserves global struct-array layout and function-scope extern access across repeated lookups |
 | `testaotsysdataextern.mad` | AOT/native executable path preserves `sysdata`-style extern struct storage and member reads across branchy control flow |
+| `testbugbufbranch.mad` | Branch-skipped buffer write followed by later `strcpy`/`strcat` on the same stack buffer |
+| `testsetcharcolor_noprint.mad` | Simplified `set_char_color()` `sprintf` formatting path across two color modes |
+| `testsprintf4str.mad` | `sprintf` with four `%s` arguments in one formatting call |
+| `testtypedefptrmemberchain.mad` | Typedef-backed pointer-member chain through `pcdata->learned[idx]` |
+| `testtypedefptrmemberchain_smaugshape.mad` | Deeper SMAUG-shaped typedef pointer-member chain through a larger `CHAR_DATA` layout |
+| `testvariadicterstrtwice.mad` | Repeated ternary string arguments inside a variadic `sprintf` call evaluate once per live branch |
 
 ### Notes
 
