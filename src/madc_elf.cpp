@@ -1342,6 +1342,13 @@ bool Program::save_executable(const std::string &path)
 
 		const uint8_t *src = static_cast<const uint8_t *>(globals[i].address);
 		data_section_buf.insert(data_section_buf.end(), src, src + globals[i].size);
+
+		if ( ::getenv("MADC_DEBUG_AOT_LAYOUT_NAMES") )
+		{
+			std::fprintf(stderr,
+			    "[aot-layout] global[%zu] name=%s addr=%p off=%zu size=%zu\n",
+			    i, globals[i].name.c_str(), globals[i].address, offset, globals[i].size);
+		}
 	}
 
 	// Sort ranges by start address for binary search.
@@ -1389,20 +1396,13 @@ bool Program::save_executable(const std::string &path)
 		if ( !cstr )
 			return;
 
-		uintptr_t cstr_addr = reinterpret_cast<uintptr_t>(cstr);
-		size_t cstr_offset = (size_t)-1;
-		if ( cstr_addr >= obj_addr && cstr_addr < obj_addr + sizeof(std::string) )
-		{
-			cstr_offset = oit->second + static_cast<size_t>(cstr_addr - obj_addr);
-		}
-		else
-		{
-			std::map<uintptr_t, size_t>::const_iterator cit =
-			    data_offset_map.find(cstr_addr);
-			if ( cit == data_offset_map.end() )
-				return;
-			cstr_offset = cit->second;
-		}
+		// Reconstruct std::string globals from a stable copied C-string
+		// source, not from bytes inside the copied string object itself.
+		// Some libstdc++ layouts use SSO and return c_str() pointers that
+		// alias the object storage; placement-new construction from that
+		// overlapping source is not reliable in native executables.
+		size_t cstr_offset = data_section_buf.size();
+		data_section_buf.insert(data_section_buf.end(), cstr, cstr + std::strlen(cstr) + 1);
 
 		string_object_patch sop;
 		sop.object_offset = oit->second;
@@ -2022,32 +2022,15 @@ bool Program::save_executable(const std::string &path)
 	// Compiled code
 	size_t code_file_offset = out.size();
 	uint64_t code_vaddr = BASE_ADDR + code_file_offset;
-	// Use asmjit's own relocation engine to produce properly
-	// relocated code at our target virtual address. This handles
-	// all internal relocations (kX64AddressEntry, kAbsToAbs, etc.)
-	// correctly, including RIP-relative displacements.
-	// The addrtab function addresses will still point to the
-	// compiling process's libc — we fix those via .rela.dyn.
-	// Copy .text + .addrtab directly. We handle all relocations
-	// ourselves (addrtab GOT relas + PLT + data patching).
-	// The addrtab follows .text at the section's natural offset.
+	// Seed the exported text image from the finalized JIT buffer, not
+	// directly from section buffers. The live `root_fn` image is the
+	// actual post-finalize machine code that just executed correctly;
+	// rebuilding from flattened section buffers can diverge for invoke-
+	// lowered top-level code, which breaks JIT/EXE parity.
 	code.flatten();
 	size_t flat_size = code.codeSize();
 	std::vector<uint8_t> text_copy(flat_size, 0);
-	// Copy each section's data at its offset.
-	{
-		const ZoneVector<Section *> &secs = code.sectionsByOrder();
-		for ( uint32_t si = 0; si < secs.size(); ++si )
-		{
-			Section *s = secs[si];
-			if ( s->buffer().size() == 0 )
-				continue;
-			size_t off = s->offset();
-			size_t sz = s->buffer().size();
-			if ( off + sz <= flat_size )
-				std::memcpy(&text_copy[off], s->data(), sz);
-		}
-	}
+	std::memcpy(text_copy.data(), reinterpret_cast<const void *>(root_fn), flat_size);
 	// The flattened data includes .text + .addrtab contiguously.
 	// Keep both so the RIP-relative addrtab references work.
 	// total_code_size includes .text + any padding + .addrtab.
@@ -2087,14 +2070,23 @@ bool Program::save_executable(const std::string &path)
 				continue;
 
 			size_t data_offset = ref.data_offset;
-			if ( data_offset == (size_t)-1 )
-			{
-				std::pair<bool, size_t> found = find_data_offset(ref.address);
-				if ( !found.first )
-					continue;
+			std::pair<bool, size_t> found = find_data_offset(ref.address);
+			if ( found.first )
 				data_offset = found.second;
-			}
+			else if ( data_offset == (size_t)-1 )
+				continue;
 			uint64_t new_addr = data_vaddr + data_offset;
+			if ( ::getenv("MADC_DEBUG_AOT_REFS") )
+			{
+				std::fprintf(stderr,
+				    "[aot-ref] prepass label=%u label_off=0x%llx imm_off=0x%zx addr=%p data_off=%zu new=0x%llx\n",
+				    ref.label_id,
+				    (unsigned long long)label_off,
+				    imm_off,
+				    (void *)ref.address,
+				    data_offset,
+				    (unsigned long long)new_addr);
+			}
 			if ( ::getenv("MADC_DEBUG_AOT_PATCHES")
 			  && imm_off >= 0x65d80 && imm_off < 0x65da0 )
 			{
@@ -2464,14 +2456,23 @@ bool Program::save_executable(const std::string &path)
 			if ( !is_emit_data_mov_site(text_copy, static_cast<size_t>(label_off), ref.imm_offset) )
 				continue;
 			size_t data_offset = ref.data_offset;
-			if ( data_offset == (size_t)-1 )
-			{
-				std::pair<bool, size_t> found = find_data_offset(ref.address);
-				if ( !found.first )
-					continue;
+			std::pair<bool, size_t> found = find_data_offset(ref.address);
+			if ( found.first )
 				data_offset = found.second;
-			}
+			else if ( data_offset == (size_t)-1 )
+				continue;
 			uint64_t new_addr = data_vaddr + data_offset;
+			if ( ::getenv("MADC_DEBUG_AOT_REFS") )
+			{
+				std::fprintf(stderr,
+				    "[aot-ref] finalpass label=%u label_off=0x%llx imm_off=0x%zx addr=%p data_off=%zu new=0x%llx\n",
+				    ref.label_id,
+				    (unsigned long long)label_off,
+				    imm_off,
+				    (void *)ref.address,
+				    data_offset,
+				    (unsigned long long)new_addr);
+			}
 			std::memcpy(&text_copy[imm_off], &new_addr, 8);
 		}
 	}
@@ -2605,13 +2606,11 @@ bool Program::save_executable(const std::string &path)
 			if ( !is_emit_data_mov_site(text_copy, static_cast<size_t>(label_off), ref.imm_offset) )
 				continue;
 			size_t data_offset = ref.data_offset;
-			if ( data_offset == (size_t)-1 )
-			{
-				std::pair<bool, size_t> found = find_data_offset(ref.address);
-				if ( !found.first )
-					continue;
+			std::pair<bool, size_t> found = find_data_offset(ref.address);
+			if ( found.first )
 				data_offset = found.second;
-			}
+			else if ( data_offset == (size_t)-1 )
+				continue;
 			uint64_t new_addr = data_vaddr + data_offset;
 			// Patch in `out` (text was already emitted).
 			size_t file_pos = code_file_offset + imm_off;
@@ -2632,10 +2631,12 @@ bool Program::save_executable(const std::string &path)
 	{
 		uint64_t obj_vaddr = data_vaddr + aot_string_init_refs[i].object_data_offset;
 		uint64_t cstr_vaddr = data_vaddr + aot_string_init_refs[i].cstr_data_offset;
-		std::memcpy(&out[code_file_offset + aot_string_init_refs[i].wrapper_text_offset
+		std::memcpy(&out[code_file_offset
+				 + aot_string_init_refs[i].wrapper_text_offset
 				 + aot_string_init_refs[i].object_imm_offset],
 			    &obj_vaddr, 8);
-		std::memcpy(&out[code_file_offset + aot_string_init_refs[i].wrapper_text_offset
+		std::memcpy(&out[code_file_offset
+				 + aot_string_init_refs[i].wrapper_text_offset
 				 + aot_string_init_refs[i].cstr_imm_offset],
 			    &cstr_vaddr, 8);
 	}

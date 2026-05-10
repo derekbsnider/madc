@@ -296,6 +296,19 @@ TEST_SUITE("IRBuilder::coerce") {
 	CHECK_FALSE(contains(asm_out, "lea "));
     }
 
+    TEST_CASE("string Mem → char* takes object address before string_cstr") {
+	IRFixture f;
+	IRBuilder ir(f.cc);
+	x86::Mem m = f.makeStack((uint32_t)ddSTRING.size);
+	IRValue src = IRValue::mem(m, &ddSTRING);
+	IRValue out = ir.coerce(src, &ddCHARptr);
+	CHECK(out.isReg());
+	CHECK(out.type == &ddCHARptr);
+	std::string asm_out = f.finishAndGetAsm();
+	CHECK(contains(asm_out, "lea "));
+	CHECK_FALSE(contains(asm_out, "mov qword ptr"));
+    }
+
     TEST_CASE("int64 → double emits cvtsi2sd") {
 	IRFixture f;
 	IRBuilder ir(f.cc);

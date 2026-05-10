@@ -54,6 +54,14 @@ static x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr"
     throw "as_gp_ptr: operand is neither Gp nor Mem";
 }
 
+static x86::Gp materialize_gp_ptr_arg(Program &pgm, Operand &op, const char *name)
+{
+    x86::Gp src = as_gp_ptr(pgm, op, name);
+    x86::Gp arg = pgm.cc.newIntPtr("%s_arg", name);
+    pgm.cc.mov(arg, src);
+    return arg;
+}
+
 static bool token_has_constant_cstring(TokenBase *token)
 {
     if ( !token )
@@ -366,11 +374,10 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	tmp_rdp.second = nullptr;
     // String→charptr coercion for non-constant strings: let the token
     // compile with its natural dtSTRING type so ir.coerce can call
-    // string_cstr. Only apply in JIT mode — in AOT mode the existing
-    // coercion path handles the string→cstr conversion correctly and
-    // changing the type hint here breaks the native ELF code path.
-    if ( !pgm.aot_tracking
-      && target_type
+    // string_cstr. This must hold in both JIT and AOT mode; forcing
+    // the char* target type too early makes AOT call lowering pass a
+    // string object's first word directly to libc instead of its c_str().
+    if ( target_type
       && target_type->is_pointer()
       && target_type->rawtype() == DataType::dtCHAR
       && token && token->datadef()
@@ -4157,14 +4164,22 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    << '(' << (tvr->var.data ? ((string *)(tvr->var.data))->c_str() : "") << ')' << endl);
 */
 	DBG(pgm.cc.comment("string_assign"));
-        InvokeNode* call; pgm.cc.invoke(&call, imm(string_assign), FuncSignature::build<void, const char*, const char *>());
-	call->setArg(0, as_gp_ptr(pgm, _operand, "str_dst"));
-	call->setArg(1, as_gp_ptr(pgm, *r_operand, "str_src"));
+	x86::Gp dst_arg = materialize_gp_ptr_arg(pgm, _operand, "str_dst");
+	x86::Gp src_arg = materialize_gp_ptr_arg(pgm, *r_operand, "str_src");
+        InvokeNode* call; pgm.cc.invoke(&call, imm(string_assign), FuncSignature::build<void, void *, void *>());
+	call->setArg(0, dst_arg);
+	call->setArg(1, src_arg);
 	if ( tvl )
 	{
 	    tvl->var.modified();
 	    tvl->putreg(pgm);
 	}
+	// String assignment expressions evaluate to the LHS object. Keep the
+	// destination operand live and drop the RHS from the outward regdp
+	// pair so call lowering does not preserve a stale source operand
+	// across the assignment call.
+	regdp.first = &_operand;
+	regdp.second = ltype;
     }
     else
     if ( ltype->basetype() == BaseType::btStruct
@@ -4605,7 +4620,15 @@ void TokenCpnd::movreg(Program &pgm, Operand &op, Variable *var)
 	}
 	if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
 	{
-	    pgm.safemov(op.as<x86::Gp>(), src, var->type, var->type);
+	    // For aggregate-like globals (std::string, streams, arrays,
+	    // structs/classes), the Gp operand convention is "address of the
+	    // object", not "load the first machine word from the object".
+	    // JIT mode gets this right through movmptr2rval()'s default
+	    // non-numeric path; keep AOT-tracking mode aligned with that.
+	    if ( !var->type->is_numeric() && !var->type->is_pointer() )
+		pgm.cc.mov(op.as<x86::Gp>(), base);
+	    else
+		pgm.safemov(op.as<x86::Gp>(), src, var->type, var->type);
 	    return;
 	}
     }

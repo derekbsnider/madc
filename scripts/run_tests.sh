@@ -20,6 +20,10 @@ if [ "$1" = "--exe" ]; then
     shift
 fi
 
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
+REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
+EXE_LD_LIBRARY_PATH="$REPO_ROOT/lib:/usr/local/lib"
+
 PASS=0
 FAIL=0
 TIMEOUTS=0
@@ -79,9 +83,9 @@ for t in tests/*.mad; do
         exe_path="/tmp/madc_test_exe_${base}"
         if bin/madc -o "$exe_path" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
-                exe_out=$(timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else
-                exe_out=$(timeout 5 "$exe_path" "${args[@]}" 2>/dev/null)
+                exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" 2>/dev/null)
             fi
             exe_rc=$?
             exe_ok=1
