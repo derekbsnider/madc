@@ -1710,6 +1710,108 @@ bool Program::save_executable(const std::string &path)
 		}
 	}
 
+	// Seed the exported text image from the finalized JIT buffer early so
+	// direct external calls discovered here become part of dynsym/dynstr
+	// before those tables are emitted.
+	code.flatten();
+	size_t flat_size = code.codeSize();
+	std::vector<uint8_t> text_copy(flat_size, 0);
+	std::memcpy(text_copy.data(), reinterpret_cast<const void *>(root_fn), flat_size);
+	size_t total_code_size = flat_size;
+
+	// Discover direct call rel32 sites that target external functions.
+	// These calls don't always come with asmjit relocation entries, so
+	// they must be surfaced before dynsym construction or later PLT GOT
+	// relocs will refer to missing symbol indices.
+	struct plt_entry { uintptr_t target_addr; uint32_t dynsym_index; size_t got_offset; };
+	std::vector<plt_entry> plt_entries;
+	std::map<uintptr_t, size_t> plt_index_map; // target → index into plt_entries
+	struct call_patch { size_t code_offset; size_t plt_idx; };
+	std::vector<call_patch> call_patches;
+	{
+		for ( size_t i = 0; i + 5 <= total_code_size; ++i )
+		{
+			size_t call_off = i;
+
+			if ( text_copy[i] == 0xE8 )
+				call_off = i;
+			else if ( text_copy[i] >= 0x40 && text_copy[i] <= 0x4F
+				&& i + 6 <= total_code_size && text_copy[i+1] == 0xE8 )
+			{
+				call_off = i + 1;
+			}
+			else
+				continue;
+
+			int32_t disp;
+			std::memcpy(&disp, &text_copy[call_off + 1], 4);
+			uintptr_t jit_base = reinterpret_cast<uintptr_t>(root_fn);
+			int64_t rip = static_cast<int64_t>(jit_base + call_off + 5);
+			int64_t target = rip + disp;
+
+			int64_t jit_start = static_cast<int64_t>(jit_base);
+			int64_t jit_end = jit_start + static_cast<int64_t>(total_code_size);
+			if ( target >= jit_start && target < jit_end )
+				continue;
+
+			uintptr_t taddr = static_cast<uintptr_t>(target);
+			std::map<uintptr_t, std::string>::const_iterator eit =
+			    external_symbol_map.find(taddr);
+			if ( eit == external_symbol_map.end() )
+			{
+				Dl_info info;
+				if ( dladdr(reinterpret_cast<void *>(taddr), &info)
+				  && info.dli_sname && info.dli_sname[0] )
+				{
+					external_symbol_map[taddr] =
+					    normalize_elf_symbol_name(info.dli_sname);
+					eit = external_symbol_map.find(taddr);
+				}
+				else
+					continue;
+			}
+
+			size_t plt_idx;
+			std::map<uintptr_t, size_t>::const_iterator pit =
+			    plt_index_map.find(taddr);
+			if ( pit != plt_index_map.end() )
+			{
+				plt_idx = pit->second;
+			}
+			else
+			{
+				uint32_t dsym;
+				std::map<uintptr_t, uint32_t>::const_iterator dit =
+				    extern_indices.find(taddr);
+				if ( dit != extern_indices.end() )
+				{
+					dsym = dit->second;
+				}
+				else
+				{
+					dsym = static_cast<uint32_t>(extern_syms.size() + 1);
+					ext_sym es;
+					es.name = normalize_elf_symbol_name(eit->second);
+					extern_syms.push_back(es);
+					extern_indices[taddr] = dsym;
+				}
+
+				plt_idx = plt_entries.size();
+				plt_entry pe;
+				pe.target_addr = taddr;
+				pe.dynsym_index = dsym;
+				pe.got_offset = 0;
+				plt_entries.push_back(pe);
+				plt_index_map[taddr] = plt_idx;
+			}
+
+			call_patch cp;
+			cp.code_offset = call_off;
+			cp.plt_idx = plt_idx;
+			call_patches.push_back(cp);
+		}
+	}
+
 	// --- Discover required shared libraries via dladdr ---
 
 	struct needed_lib { std::string name; uint32_t dynstr_offset; };
@@ -2074,19 +2176,9 @@ bool Program::save_executable(const std::string &path)
 	// Compiled code
 	size_t code_file_offset = out.size();
 	uint64_t code_vaddr = BASE_ADDR + code_file_offset;
-	// Seed the exported text image from the finalized JIT buffer, not
-	// directly from section buffers. The live `root_fn` image is the
-	// actual post-finalize machine code that just executed correctly;
-	// rebuilding from flattened section buffers can diverge for invoke-
-	// lowered top-level code, which breaks JIT/EXE parity.
-	code.flatten();
-	size_t flat_size = code.codeSize();
-	std::vector<uint8_t> text_copy(flat_size, 0);
-	std::memcpy(text_copy.data(), reinterpret_cast<const void *>(root_fn), flat_size);
 	// The flattened data includes .text + .addrtab contiguously.
 	// Keep both so the RIP-relative addrtab references work.
 	// total_code_size includes .text + any padding + .addrtab.
-	size_t total_code_size = flat_size;
 	if ( ::getenv("MADC_DEBUG_TEXTCOPY")
 	  && total_code_size > 0x65da0 )
 	{
@@ -2157,108 +2249,6 @@ bool Program::save_executable(const std::string &path)
 	// The addrtab itself lives in .data and will be patched by the
 	// dynamic linker via .rela.dyn entries.
 
-	// Scan for direct call rel32 to external functions that asmjit
-	// encoded without the address table. Build a mini-PLT: for each
-	// unique external target, create a trampoline stub (jmp *[rip+N])
-	// that jumps through a GOT slot. Rewrite the call rel32 to target
-	// the trampoline. The dynamic linker fills the GOT slots.
-	struct plt_entry { uintptr_t target_addr; uint32_t dynsym_index; size_t got_offset; };
-	std::vector<plt_entry> plt_entries;
-	std::map<uintptr_t, size_t> plt_index_map; // target → index into plt_entries
-
-	// First pass: find all call rel32 to external targets.
-	struct call_patch { size_t code_offset; size_t plt_idx; };
-	std::vector<call_patch> call_patches;
-	{
-		for ( size_t i = 0; i + 5 <= total_code_size; ++i )
-		{
-			bool has_rex = false;
-			size_t call_off = i;
-
-			if ( text_copy[i] == 0xE8 )
-				call_off = i;
-			else if ( text_copy[i] >= 0x40 && text_copy[i] <= 0x4F
-				&& i + 6 <= total_code_size && text_copy[i+1] == 0xE8 )
-			{
-				has_rex = true;
-				call_off = i + 1;
-			}
-			else
-				continue;
-
-			int32_t disp;
-			std::memcpy(&disp, &text_copy[call_off + 1], 4);
-			// The displacement is relative to the ORIGINAL JIT
-			// address (root_fn), not code_vaddr. relocateToBase
-			// doesn't touch call rel32 without relocation entries.
-			uintptr_t jit_base = reinterpret_cast<uintptr_t>(root_fn);
-			int64_t rip = static_cast<int64_t>(jit_base + call_off + 5);
-			int64_t target = rip + disp;
-
-			// Check if target is within the original JIT code range.
-			int64_t jit_start = static_cast<int64_t>(jit_base);
-			int64_t jit_end = jit_start + static_cast<int64_t>(total_code_size);
-			if ( target >= jit_start && target < jit_end )
-				continue; // internal call
-
-			uintptr_t taddr = static_cast<uintptr_t>(target);
-			std::map<uintptr_t, std::string>::const_iterator eit =
-			    external_symbol_map.find(taddr);
-			if ( eit == external_symbol_map.end() )
-			{
-				Dl_info info;
-				if ( dladdr(reinterpret_cast<void *>(taddr), &info)
-				  && info.dli_sname && info.dli_sname[0] )
-				{
-					external_symbol_map[taddr] = info.dli_sname;
-					eit = external_symbol_map.find(taddr);
-				}
-				else
-					continue;
-			}
-
-			size_t plt_idx;
-			std::map<uintptr_t, size_t>::const_iterator pit =
-			    plt_index_map.find(taddr);
-			if ( pit != plt_index_map.end() )
-			{
-				plt_idx = pit->second;
-			}
-			else
-			{
-				// Find or create dynsym entry.
-				uint32_t dsym;
-				std::map<uintptr_t, uint32_t>::const_iterator dit =
-				    extern_indices.find(taddr);
-				if ( dit != extern_indices.end() )
-				{
-					dsym = dit->second;
-				}
-				else
-				{
-					dsym = static_cast<uint32_t>(extern_syms.size() + 1);
-					ext_sym es;
-					es.name = eit->second;
-					extern_syms.push_back(es);
-					extern_indices[taddr] = dsym;
-				}
-
-				plt_idx = plt_entries.size();
-				plt_entry pe;
-				pe.target_addr = taddr;
-				pe.dynsym_index = dsym;
-				pe.got_offset = 0; // computed later
-				plt_entries.push_back(pe);
-				plt_index_map[taddr] = plt_idx;
-			}
-
-			call_patch cp;
-			cp.code_offset = call_off;
-			cp.plt_idx = plt_idx;
-			call_patches.push_back(cp);
-		}
-	}
-
 	// Build PLT stub + GOT data.
 	// Layout: [stubs: 6 bytes each] [GOT slots: 8 bytes each]
 	// jmp *[rip+N] = FF 25 <disp32>
@@ -2308,13 +2298,6 @@ bool Program::save_executable(const std::string &path)
 		// Add R_X86_64_64 relocations for GOT slots.
 		for ( size_t i = 0; i < plt_entries.size(); ++i )
 		{
-			addrtab_rela ar;
-			ar.func_addr = plt_entries[i].target_addr;
-			// Create a data_rela for the GOT slot in the PLT area.
-			data_rela dr;
-			dr.data_offset = 0; // not in .data — handled separately
-			dr.dynsym_index = plt_entries[i].dynsym_index;
-
 			// We'll emit these relas directly; store info for later.
 			rela_entry re;
 			re.source_offset = plt_file_start + plt_entries[i].got_offset;
@@ -2773,8 +2756,7 @@ bool Program::save_executable(const std::string &path)
 	}
 	debug_dump_out_text("after moffs patch");
 
-	size_t addrtab_rela_start = 0;
-	size_t copy_rela_start = 0;
+		size_t copy_rela_start = 0;
 	// Now patch .rela.dyn entries with correct virtual addresses.
 	// For each relocation, inspect the instruction encoding to
 	// determine the correct ELF relocation type:
