@@ -6414,6 +6414,15 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenBSR::compile() istream >>"));
 	Operand &lval = tvl->operand(pgm); // get istream register
 
+	if ( lval.isMem() )
+	{
+	    x86::Gp tmp = pgm.cc.newIntPtr("istream_ptr");
+	    pgm.cc.lea(tmp, lval.as<x86::Mem>());
+	    lval = tmp;
+	}
+	if ( !lval.isReg() )
+	    throw "TokenBSR::compile() lval operand not a register";
+
 	// converge chained >>: cin >> a >> b
 	if ( right->id() == TokenID::tkBSR && !right->is_bracketed() )
 	{
