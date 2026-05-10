@@ -241,10 +241,11 @@ editing — don't try to memorize all of them.
 | [ternary.md](.claude/rules/ternary.md)           |    30 | Ternary parsing + stack-slot merge pattern     |
 | [embedded-headers.md](.claude/rules/embedded-headers.md) |  53 | `include/madc/` headers, lazy registration, `#load` |
 | [typed-register-ir.md](.claude/rules/typed-register-ir.md) |  32 | IR layer between tokens and asmjit; Load/Store/Coerce; per-token migration |
+| [gcc-parity.md](.claude/rules/gcc-parity.md)     |     8 | Use GCC as the reference baseline for JIT vs EXE / AOT parity work |
 
 ### Total rule footprint
 
-- **22 rules, 521 lines** in `.claude/rules/`.
+- **23 rules, 529 lines** in `.claude/rules/`.
 - **This file (AGENTS.md): ~290 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
 - **Grand total loaded by Claude Code per turn: ~819 lines.**
