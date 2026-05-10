@@ -246,25 +246,226 @@ madc was last touched ~7 years ago. The asmjit v1.14 migration has been complete
 
 ---
 
-### 4.2 Public API design
+### 4.2 Public C++ API
+
+The C++ API is the primary embedding surface. madc is implemented in
+C++ already — exposing a stable C++ class is a small refactor of the
+existing `Program` class plus some hardening, not a from-scratch
+design.  Modern C++ hosts (game engines, CMS plugins, native dev tools)
+get the natural API; the C shim in §4.3 is a thin wrapper for legacy
+hosts and FFI bindings (Python ctypes, Rust, Node-API).
+
+**New headers:** `include/libmadc/*.h` — public C++ surface, namespaced
+under `madc::` and grouped under `libmadc/` to mirror the
+`libmadc.so` artifact name. Distinct from internal headers
+(`madc.h`, `tokens.h`, `datadef.h`) which stay private, and from
+`include/madc/` which already holds embedded scripting headers
+(`stdio.h`, `iostream`, etc. baked into the binary). First
+deliverable shipped: `include/libmadc/value.h`.
+
+```cpp
+namespace madc {
+
+class value;          // tagged union: int64 / double / string / pointer
+class error;          // structured: code, message, source location
+class program;        // one madc execution context — replaces today's Program
+
+class program {
+public:
+    program();
+    ~program();
+
+    // Loading
+    void exec_file(const std::string &path);
+    void exec_string(const std::string &source);
+    void compile_file(const std::string &path);   // load + JIT, don't run
+
+    // Calling into a script
+    value call(const std::string &fn_name, std::initializer_list<value> args);
+
+    // Calling out of a script — register a C++ callable under a name
+    // the script can invoke.
+    using callback = std::function<value(std::vector<value> &)>;
+    void register_function(const std::string &name, callback fn,
+                           const std::string &signature);
+
+    // Globals
+    value get_global(const std::string &name);
+    void  set_global(const std::string &name, const value &v);
+
+    // Sandbox / resource limits
+    void set_cpu_limit(unsigned seconds);
+    void set_mem_limit_mb(unsigned mb);
+    void set_dlsym_allowlist(const std::vector<std::string> &names);
+    void disable_dlsym();
+
+    // Diagnostics
+    void set_verbose(bool v);
+    const std::vector<error> &errors() const;
+
+private:
+    struct impl;             // pimpl — internal Program lives here
+    std::unique_ptr<impl> _;
+};
+
+} // namespace madc
+```
+
+**Implementation:** the existing `Program` becomes `madc::program::impl`.
+Public methods forward through.  `exec_file` etc. throw `madc::compile_error`
+or `madc::runtime_error` (subclasses of `std::exception`) on failure — the
+existing `throwit` / `Throw` machinery already produces source-tagged errors,
+just needs a public exception type.
+
+**Files:**
+- `include/libmadc/embed.h` (new, public)
+- `include/libmadc/value.h` (new, public — shipped)
+- `include/libmadc/error.h` (new, public)
+- `src/embed.cpp` (new) — pimpl forwarding
+- existing internals stay where they are; the `madc::` namespace is purely
+  the public façade.
+
+### 4.3 C shim (`madc_api.h`) + libmadc.so build
+
+Thin `extern "C"` wrappers over §4.2's C++ API for hosts that can't link
+C++ directly (legacy C codebases, FFI bindings).  Hand-written, ~200 LOC,
+each function is roughly:
+
+```c
+extern "C" int madc_exec_file(madc_program *p, const char *path) {
+    try { reinterpret_cast<madc::program *>(p)->exec_file(path); return 0; }
+    catch (const madc::compile_error &e) { /* stash */ return -1; }
+    catch (...) { return -2; }
+}
+```
 
 **New header:** `include/madc_api.h`
 
-```cpp
-// Minimal embedding API
-madc_program* madc_create();
-int madc_exec_file(madc_program*, const char* path);
-int madc_exec_string(madc_program*, const char* source);
-void madc_set_verbose(madc_program*, bool verbose);
-void madc_destroy(madc_program*);
+```c
+typedef struct madc_program_opaque madc_program;
+
+madc_program *madc_create(void);
+void          madc_destroy(madc_program *);
+int           madc_exec_file   (madc_program *, const char *path);
+int           madc_exec_string (madc_program *, const char *src);
+int           madc_call        (madc_program *, const char *fn,
+                                const madc_value *args, int nargs,
+                                madc_value *result);
+int           madc_register    (madc_program *, const char *name,
+                                madc_func_t fn, const char *signature);
+const char   *madc_last_error  (madc_program *);
+/* … resource-limit / sandbox setters mirror the C++ class … */
 ```
 
-### 4.3 Build system changes
-
 **`src/Makefile` additions:**
-- `lib/libmadc.so` target (shared library from all .o files except madc.o)
-- `bin/madc` links against `lib/libmadc.so` (thin wrapper)
-- `make install` copies headers and library to `/usr/local/`
+- `lib/libmadc.so` target — shared library from all `.o` files except
+  `madc.o` (the CLI driver).  Includes `embed.o` (C++ API) and
+  `madc_api.o` (C shim).
+- `bin/madc` links against `lib/libmadc.so` as a thin wrapper.
+- `make install` copies headers (`include/madc/`, `include/madc_api.h`)
+  and library to `/usr/local/`.
+
+---
+
+### 4.4 JIT code cache / AOT compilation
+
+**Problem:** Every `madc some.mad` boot pays full lex + parse + asmjit compile,
+even if the source hasn't changed. On a real-world program this dominates
+startup — for SMAUG 1.8 (~158k LOC across 49 .c files) it's ~43s of pure
+compile vs ~0.2s for the actual `boot_db()` runtime data load. Native
+gcc-compiled SMAUG starts in ~1s because the compile happened once long
+ago.
+
+**Two layered approaches, in increasing complexity:**
+
+#### 4.4.a JIT code cache — drop-in for existing CLI
+
+Cache the asmjit-emitted machine code alongside its relocation metadata,
+keyed on a hash of all input sources. On cache hit, skip lex/parse/compile
+entirely, mmap the cached `.text` blob, replay relocations against the
+current process's symbol layout, and jump.
+
+**Cache layout (one file per top-level source):**
+
+```
+.madc-cache/<hash>.code     # raw CodeBuffer bytes (mmap'd RX after patching)
+.madc-cache/<hash>.relocs   # [(offset, symbol_name, kind), …] patch table
+.madc-cache/<hash>.meta     # input source hashes, madc version, asmjit version
+```
+
+**Cache-key hash:** SHA-256 over (madc binary's own version string +
+asmjit version + every input file's contents — main + every transitive
+`#include`). Any input change invalidates.
+
+**Relocation kinds to handle:**
+- Absolute call to a libc function (`printf`, `recv`, `stat` …) — resolve
+  via current process's `dlsym(RTLD_DEFAULT, name)`
+- Absolute call to a madc runtime helper (`string_cstr`, `madc_dlopen`,
+  `__madc_sscanf`, `__madc_vsprintf`) — resolve via a built-in name table
+- Variable-data pointer (`Variable::data` for globals, including string
+  literals) — re-allocate the Variable in the same order on load and
+  patch each reference to its new `data` address
+- Function-entry label addresses — re-bind by name during cache load
+- Embedded immediate string-literal pointers — same as variable-data,
+  string literals are stored as global `__literal__N` Variables
+
+**asmjit hooks needed:**
+- `CodeHolder::sectionById(0)` gives the .text `Section` whose
+  `_buffer` is the raw bytes
+- Walk `CodeHolder::relocEntries()` for every reloc site — each entry has
+  source offset, target kind, and target value/symbol
+- For named externals, resolve via `LabelEntry::name()` (functions get
+  named via `cc.funcEntry()` etc.)
+
+**Granularity options:**
+1. **Whole-program cache (simplest):** one cache entry per top-level
+   `.mad`. Any change rebuilds everything. Probably fine for SMAUG —
+   you re-JIT once after a source edit, then boot in <1s for the rest
+   of the dev cycle.
+2. **Per-function cache:** finer grain, partial rebuilds. Significantly
+   more bookkeeping (function-level dependency graph, symbol table
+   stitching across cached + freshly-compiled functions). Defer.
+
+**Estimated effort for 4.4.a:** ~1 day, ~300 LOC. Touches:
+- `src/cache.cpp` (new) — serialize, deserialize, relocation patcher
+- `src/madc.cpp` — check cache before falling through to full compile
+- `src/parser.cpp` — emit a deterministic order of Variable allocation
+  so cache loads can recreate the same data-pointer layout
+
+**Disable knobs:** `MADC_NO_CACHE=1` env var, `--no-cache` flag.
+
+#### 4.4.b True AOT — compile to a real shared object
+
+asmjit can target ELF object output instead of in-memory JIT. The flow:
+
+```
+madc --aot myapp.mad -o libmyapp.so
+gcc -o myapp myapp_launcher.c -L. -lmyapp -lmadc
+./myapp                            # boots in milliseconds
+```
+
+The launcher is a ~10-line C program that calls `madc_run_aot()` from
+`libmadc.so`, which dlopen's the AOT'd object and jumps to its `main`.
+
+This is what makes the embedding story complete — a CMS or game engine
+ships madc-compiled scripts as ordinary `.so` files, no JIT pause at
+load time. It also dovetails with the safe-mode / sandbox direction
+(reference: `feedback project_madc_as_embedded_script.md`) since AOT
+modules can be signed and audited offline.
+
+**Effort for 4.4.b:** ~2-3 days. Most of the work is teaching the
+compiler to emit position-independent code with explicit symbol
+references rather than baked-in absolute addresses, plus a real
+relocation table per the System V ELF spec. asmjit has primitives;
+the work is wiring them up and writing a small Object/ELF writer.
+
+#### Recommended sequence
+
+1. Land 4.1 + 4.2 (libmadc.so + API) first — that's what makes 4.4.b
+   possible at all.
+2. Then 4.4.a (JIT cache) for the immediate dev-cycle and SMAUG-boot
+   wins.
+3. Then 4.4.b (AOT) for the embedding/sandbox story.
 
 ---
 
@@ -285,9 +486,11 @@ void madc_destroy(madc_program*);
 | 3.1 | `php::` namespace | 2.3 | Medium |
 | 3.2 | dlopen namespace fallback | 2.3 | Medium |
 | 3.3 | First-class dlopen/dlsym | 3.2 | Low |
-| 4.1 | Decouple static globals | All Phase 2 | Low |
-| 4.2 | Public embedding API | 4.1 | Low |
-| 4.3 | Build libmadc.so | 4.1, 4.2 | Low |
+| 4.1   | Decouple static globals | All Phase 2 | Low |
+| 4.2   | C++ embedding API (`madc::program`) | 4.1 | Low |
+| 4.3   | C shim (`madc_api.h`) + libmadc.so build | 4.2 | Low |
+| 4.4.a | JIT code cache (skips lex/parse/compile on cache hit) | 4.3 | Medium |
+| 4.4.b | True AOT to ELF .so | 4.3, 4.4.a | Low |
 
 ---
 

@@ -29,6 +29,18 @@ bin/madc -v tests/testint.mad
 scripts/build_then.sh bin/madc tests/testint.mad
 ```
 
+Optional storage backends are now being wired for configure-time
+feature detection. When Autotools is installed, the intended flow is:
+
+```bash
+autoreconf -fi
+./configure --with-bdb --with-gdbm --with-qdbm --with-sqlite3
+make
+```
+
+`--with-qdbm` is intended for the Villa API layer, and each backend is
+optional rather than required for a core `madc` build.
+
 ## Multi-file Projects
 
 Single-file programs are the default. For larger projects, the convention is
@@ -57,7 +69,7 @@ compile.
 - **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `string`, `array`
 - **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>`, `list<int>` — also as `std::vector<int>` etc.
 - **Streams:** `cout`, `cerr`, `cin`, `stringstream`, `ifstream`, `ofstream`, `fstream`
-- **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`
+- **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`, `rust::match`
 - **Range-based for:** `for (string name : names) { ... }` — works with array and vector
 - **Ternary operator:** `condition ? true_expr : false_expr`
 - **Functions:** user-defined with return values and parameters
@@ -70,7 +82,8 @@ compile.
 - **`register` keyword:** explicitly register-only variables (never written to memory)
 - **User-defined structs:** `struct Point { int x; int y; };`
 - **Classes with methods:** `class Counter { int count; void inc() { count = count + 1; } };`
-- **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`
+- **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`, `rust::trim()`
+- **Dialect precedence:** `prefer rust, php, c;` or `#pragma prefer rust, php, c`
 - **Regex:** `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()`
 - **Input:** `cin >> name >> age;` reads from stdin
 - **`#include`:** `#include "file.mad"` for source inclusion
@@ -80,6 +93,7 @@ compile.
 - **File I/O:** `ifstream`/`ofstream` with `open`, `close`, `good`, `eof`, `getline`
 - **Subscript operator:** `a[0]`, `nums[i]`, `ages["key"]`
 - **Escape sequences:** `\n`, `\t`, `\r`, `\\`, `\"`, `\0`
+- **C23 coverage (early wave):** `_Bool`, `0b...`, `_Static_assert` / `static_assert`, `alignof` / `_Alignof`, `typeof` / `typeof_unqual`, `nullptr`, digit separators (`1'000'000`)
 
 ### Multi-Language Namespaces
 
@@ -136,6 +150,7 @@ int main()
 | [`python::`](docs/language/ns-python.md) | 16 | Title case, alignment (center/ljust/rjust/zfill), format |
 | [`ruby::`](docs/language/ns-ruby.md) | 12 | squeeze, tr (transliterate), chars, rotate, compact |
 | [`js::`](docs/language/ns-js.md) | 6 | Base64 (btoa/atob), URL encoding, parseInt, JSON stringify |
+| [`rust::`](docs/language/ns-rust.md) | 18 | trim/contains/replace, split/join, first/last/get, push/pop |
 | `std::` | 5 | cin, cout, cerr, endl, for_each |
 | `madc::` | 4 | array, regex_match, regex_search, regex_replace |
 
@@ -167,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 238 integration tests pass. 48 unit tests pass (25 datadef + 23 IR). (`make -C src fulltest`)**
+**Current status: 271 integration tests pass. 261 unit tests pass (80 datadef + 24 IR + 133 libmadc_program + 5 libmadc_error + 19 libmadc_value). Native EXE parity is also green at 271/271, and `smaug.exe` now survives the first serpent combat path. (`make -C src fulltest`, `scripts/run_tests.sh --exe`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -184,14 +199,18 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/language/ns-python.md`](docs/language/ns-python.md) | python:: namespace reference |
 | [`docs/language/ns-ruby.md`](docs/language/ns-ruby.md) | ruby:: namespace reference |
 | [`docs/language/ns-js.md`](docs/language/ns-js.md) | js:: namespace reference |
+| [`docs/language/ns-rust.md`](docs/language/ns-rust.md) | rust:: namespace reference |
+| [`docs/language/prefer.md`](docs/language/prefer.md) | Namespace precedence directive |
 | [`docs/language/modern/`](docs/language/modern/) | Range-for, function pointers, lambdas, defer |
 | [`docs/language/switch.md`](docs/language/switch.md) | Switch/case/default statement |
+| [`docs/language/rust-match.md`](docs/language/rust-match.md) | `rust::match` (integer patterns, OR-arms, `_` wildcard) |
 | [`docs/language/input-operator.md`](docs/language/input-operator.md) | cin >> input operator |
 | [`docs/language/class-methods.md`](docs/language/class-methods.md) | Class methods with this pointer |
 | [`docs/language/regex.md`](docs/language/regex.md) | Regex functions |
 | [`docs/language/multiple-returns.md`](docs/language/multiple-returns.md) | Go-style multiple return values |
 | [`docs/language/ternary-operator.md`](docs/language/ternary-operator.md) | Ternary operator |
 | [`docs/build.md`](docs/build.md) | Build requirements, asmjit setup |
+| [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory `madcdat` storage/federation design (`madc::DataSource` stays core, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends, current `--enable-madcdat` build gate, future separate `libmadcdat` boundary) |
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
 | [`docs/test-status.md`](docs/test-status.md) | Per-test results |
@@ -204,10 +223,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.13.0** (2026-04-30) — **SMAUG 1.8 plays end-to-end on madc.** The 158k-line C89 codebase JIT-compiles in-process and runs as a real network MUD: telnet greeting, full character creation (name → confirm → password → color → sex → class → race), stats roll, MOTD, room entry, and in-game commands (`look`, `inventory`, movement, `say`, `who`, `quit`). Returning-player `Reconnecting.` flow also works. Four codegen / lexer fixes collapsed the cascade of SMAUG runtime symptoms (second-connection NULL deref, `slot_lookup` int-widening, fgetc EOF hangs) into single root causes: octal/hex escape sequences in the lexer, `scanf %d → %ld` rewrite for madc's 8-byte int slots, `stat()` int-return sign-extension, and `safemov` `movsx r64, r/m8` for narrow→64 sign-extension. All MadSMAUG bootstrap shims removed. 238 integration + 48 unit tests passing.
+**v0.14.1** (2026-05-10) — **SMAUG native executables now survive the first real combat path.** `smaug.exe` now boots, accepts telnet, completes character creation, reaches Newgate room 109, enters combat with the serpent, survives repeated damage rounds, and can kill the serpent cleanly in the standalone native executable lane. The load-bearing compiler fix was correct 1..16 byte struct return-by-value codegen: small aggregates now return through `rax`/`rdx` like GCC and no longer leak a dead stack address or mis-treat the first machine word of a local struct as a pointer. Release baseline: 271 integration + 261 unit tests, with native EXE parity green at 271/271.
 
 ### Recent Releases
 
+- **v0.14.1** — SMAUG native EXEs survive the first real combat path; small 1..16 byte struct returns now follow the SysV x86-64 ABI in both JIT and EXE mode
 - **v0.13.0** — SMAUG plays end-to-end on madc: telnet/creation/MOTD/room/commands/reconnect; lexer octal+hex escapes, scanf %d→%ld, stat sign-ext, safemov narrow→64
 - **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c)
 - **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, `expr[i].m`, compound-assign on subscripts, realpath includes, class-as-ident
@@ -229,7 +249,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **Phase 4** | `libmadc.so` embedding API | Planned |
+| **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/`, and the exploratory storage track now has stable append-only VLR locators for FLR->VLR relations plus first-wave pushed builder queries on SQLite and keyed local backends |
 
 ---
 

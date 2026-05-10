@@ -1,0 +1,14 @@
+#include <stdio.h>
+
+int main()
+{
+    char buf[256];
+    char *a = "Testone";
+    char *b = "127.0.0.1";
+    char *c = "Human";
+    char *d = "Warrior";
+
+    sprintf(buf, "%s@%s new %s %s.", a, b, c, d);
+    printf("%s\n", buf);
+    return 0;
+}

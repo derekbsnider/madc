@@ -53,6 +53,10 @@ friction for out-of-workspace, network, or destructive operations.
   decisions, and any relevant rule nodes.
 - Read `claude_status.json`, `TODO.md`, and `CHANGELOG.md` as mirrors of that
   state and as repo-local working summaries.
+- Decide early whether the task is core-only or `madcdat`-affecting.
+  For core-only work, prefer a workspace configured with
+  `./configure --enable-madcdat=no`; for storage/shared-surface work,
+  re-enable `madcdat` before final validation.
 
 ## Default Work Split
 

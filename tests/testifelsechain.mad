@@ -1,0 +1,109 @@
+// Regression: dangling-else binding for bare-statement-body inner ifs.
+//
+// In `if (A) S1; else if (B) break; else S3;` the C grammar binds
+// `else S3;` to the inner if (the dangling-else rule).  madc's
+// TokenIF::parse() peeked for `else` after parseStatement(break)
+// returned, but the trailing ';' had not been consumed by TokenBREAK,
+// so peek saw ';' and the inner if got no else.  `else S3;` then
+// became dangling at the outer scope — emitted as an orphan statement
+// that ran every time, which made the outer-then *and* outer-else
+// branches both fire.
+//
+// SMAUG comm.c read_from_descriptor() was the visible victim:
+//     if ( nRead > 0 )      { iStart += nRead; if (newline) break; }
+//     else if ( nRead == 0 ){ ... }
+//     else if ( iErr == EWB ) break;       <- bare-break body
+//     else { perror; return FALSE; }
+// The perror branch fired every time recv() returned >0 with no
+// newline — i.e., every quiet input — so every connection got
+// disconnected mid-input, most visibly at the password-creation prompt.
+
+#include <stdio.h>
+
+int paths[3] = {0, 0, 0};
+
+void chain1(int n)
+{
+    /* Fails before the fix when n > 0: paths[0]++ AND paths[2]++ both run. */
+    for (int i = 0; i < 1; i++)
+    {
+	if (n > 0)
+	    paths[0]++;
+	else if (n == 0)
+	    break;          /* bare-statement break body */
+	else
+	    paths[2]++;
+    }
+}
+
+int chain2(int n)
+{
+    /* Same shape with `continue` instead of `break`. */
+    int hits = 0;
+    for (int i = 0; i < 1; i++)
+    {
+	if (n > 0)
+	    hits++;
+	else if (n == 0)
+	    continue;
+	else
+	    hits += 100;
+    }
+    return hits;
+}
+
+int chain3(int n)
+{
+    /* Same shape with `return` (no enclosing loop needed). */
+    int local = 0;
+    if (n > 0)
+	local = 1;
+    else if (n == 0)
+	return 99;
+    else
+	local = 2;
+    return local;
+}
+
+int main()
+{
+    paths[0] = paths[1] = paths[2] = 0;
+    chain1(5);                  /* n>0 -> only paths[0]++ */
+    if (paths[0] == 1 && paths[2] == 0)
+	printf("PASS: chain1 n>0 binds else correctly\n");
+    else
+	printf("FAIL: chain1 n>0 paths=[%d,%d,%d]\n", paths[0], paths[1], paths[2]);
+
+    paths[0] = paths[2] = 0;
+    chain1(-3);                 /* n<0 -> only paths[2]++ */
+    if (paths[0] == 0 && paths[2] == 1)
+	printf("PASS: chain1 n<0 binds else correctly\n");
+    else
+	printf("FAIL: chain1 n<0 paths=[%d,_,%d]\n", paths[0], paths[2]);
+
+    int r2 = chain2(7);
+    if (r2 == 1)
+	printf("PASS: chain2 n>0 = %d\n", r2);
+    else
+	printf("FAIL: chain2 n>0 = %d\n", r2);
+
+    int r3 = chain3(7);
+    if (r3 == 1)
+	printf("PASS: chain3 n>0 = %d\n", r3);
+    else
+	printf("FAIL: chain3 n>0 = %d\n", r3);
+
+    int r3b = chain3(-1);
+    if (r3b == 2)
+	printf("PASS: chain3 n<0 = %d\n", r3b);
+    else
+	printf("FAIL: chain3 n<0 = %d\n", r3b);
+
+    int r3c = chain3(0);
+    if (r3c == 99)
+	printf("PASS: chain3 n==0 = %d\n", r3c);
+    else
+	printf("FAIL: chain3 n==0 = %d\n", r3c);
+
+    return 0;
+}

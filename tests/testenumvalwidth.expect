@@ -1,0 +1,6 @@
+PASS: WEAR_NONE == -1
+PASS: (long)WEAR_NONE == -1L
+PASS: WEAR_NONE < 0
+PASS: int x = WEAR_NONE; x == -1
+PASS: int wear = -1; wear == WEAR_NONE
+PASS: int neg2 == -2

@@ -1,0 +1,59 @@
+#!/usr/bin/env madc
+#include <iostream>
+
+// Prefer-directive coverage: this lives at file scope and must
+// affect identifier resolution inside main() below.
+prefer rust, c;
+
+int64_t len(string s)
+{
+	return 99;
+}
+
+string trim(string s)
+{
+	return "USER_TRIM";
+}
+
+int main()
+{
+	string s = "hello";
+
+	// File-scope `prefer rust, c;` carried in: bare len() -> rust::len
+	cout << "filescope: " << len(s) << endl;
+
+	// Reset to plain c-lane resolution: user-defined len wins.
+	prefer c;
+	cout << "reset: " << len(s) << endl;
+
+	// Leftmost-wins via fall-through: perl has no `len`, rust does.
+	// If iteration didn't continue past perl, the user len would win.
+	prefer perl, rust, c;
+	cout << "fallthrough: " << len(s) << endl;
+
+	// Leftmost-wins between overlapping namespaces: both php and rust
+	// define `trim`. With php first, php::trim wins; flipping the order
+	// makes rust::trim win. Behaviorally identical for whitespace, but
+	// either way the user-defined trim() must NOT be called -- that's
+	// the observable: "USER_TRIM" appearing here would prove the bare
+	// name fell through to c instead of stopping at the first match.
+	string spaced = "  hi  ";
+	prefer php, rust, c;
+	string a = trim(spaced);
+	cout << "php-first:[" << a << "]" << endl;
+
+	prefer rust, php, c;
+	string b = trim(spaced);
+	cout << "rust-first:[" << b << "]" << endl;
+
+	// Explicit qualification always wins, regardless of `prefer`.
+	prefer rust, c;
+	string c1 = php::trim(spaced);
+	cout << "explicit-php:[" << c1 << "]" << endl;
+
+	// #pragma form is equivalent to prefer.
+	#pragma prefer rust, c
+	cout << "pragma: " << len(s) << endl;
+
+	return 0;
+}

@@ -1,0 +1,6 @@
+PASS: chain1 n>0 binds else correctly
+PASS: chain1 n<0 binds else correctly
+PASS: chain2 n>0 = 1
+PASS: chain3 n>0 = 1
+PASS: chain3 n<0 = 2
+PASS: chain3 n==0 = 99

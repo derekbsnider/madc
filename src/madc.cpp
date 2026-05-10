@@ -28,16 +28,10 @@
 
 using namespace std;
 
-bool madc_verbose = false;
-
-throwstream throwit;
-
-// Globals exposed by the compiler so the crash handler can map a
-// faulting JIT'd RIP back to the .mad source location that emitted it.
-extern const Program::JitSourceEntry *g_madc_jit_map;
-extern size_t g_madc_jit_map_size;
-extern const void *g_madc_jit_code_base;
-extern size_t g_madc_jit_code_size;
+// CLI-only active program pointer used by the crash handler to map a
+// faulting JIT RIP back to source. Library consumers should provide
+// their own crash/error plumbing instead of relying on process globals.
+static Program *g_active_program = NULL;
 
 // Async-signal-safe crash handler: writes signal name + backtrace to fd 2
 // (stderr) using only async-signal-safe libc calls. Re-raises the signal
@@ -69,24 +63,27 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
     // (memcpy with NULL dst, strlen on bad pointer, etc.) RIP is in
     // glibc — walk the backtrace and report the first frame whose
     // address falls in the JIT'd region.
-    if ( g_madc_jit_map && g_madc_jit_map_size
-      && g_madc_jit_code_base && g_madc_jit_code_size )
+    if ( g_active_program
+      && !g_active_program->jit_source_map.empty()
+      && g_active_program->root_fn )
     {
-	uintptr_t base = (uintptr_t)g_madc_jit_code_base;
-	uintptr_t end  = base + g_madc_jit_code_size;
+	const std::vector<Program::JitSourceEntry> &jit_map = g_active_program->jit_source_map;
+	size_t jit_map_size = jit_map.size();
+	uintptr_t base = (uintptr_t)g_active_program->root_fn;
+	uintptr_t end  = base + g_active_program->code.codeSize();
 	auto print_at = [&](uintptr_t pc, const char *header) {
 	    if ( pc < base || pc >= end ) return false;
 	    uint32_t offset = (uint32_t)(pc - base);
-	    size_t lo = 0, hi = g_madc_jit_map_size, best = SIZE_MAX;
+	    size_t lo = 0, hi = jit_map_size, best = SIZE_MAX;
 	    while ( lo < hi )
 	    {
 		size_t mid = lo + (hi - lo) / 2;
-		if ( g_madc_jit_map[mid].byte_offset <= offset )
+		if ( jit_map[mid].byte_offset <= offset )
 		{ best = mid; lo = mid + 1; }
 		else hi = mid;
 	    }
 	    if ( best == SIZE_MAX ) return false;
-	    const Program::JitSourceEntry &e = g_madc_jit_map[best];
+	    const Program::JitSourceEntry &e = jit_map[best];
 	    char buf[512];
 	    int n = snprintf(buf, sizeof(buf),
 		"%s at +0x%x — last anchor +0x%x: %s:%u:%u (%s)\n",
@@ -95,9 +92,9 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 		(unsigned)e.line, (unsigned)e.col,
 		e.kind ? e.kind : "?");
 	    write(2, buf, n);
-	    if ( best + 1 < g_madc_jit_map_size )
+	    if ( best + 1 < jit_map_size )
 	    {
-		const Program::JitSourceEntry &n2 = g_madc_jit_map[best + 1];
+		const Program::JitSourceEntry &n2 = jit_map[best + 1];
 		int n3 = snprintf(buf, sizeof(buf),
 		    "               next anchor +0x%x: %s:%u:%u (%s)\n",
 		    n2.byte_offset,
@@ -216,15 +213,28 @@ int main(int argc, char **argv)
     install_resource_guards();
 
     stringstream ss;
-    Program prog;
+    MadcEngine engine;
+    std::unique_ptr<Program> prog = engine.create_program();
     TokenProgram *tp;
 
-    prog.colors = true;
+    prog->colors = true;
 
     int filearg = 1;
+    const char *emit_object_path = NULL;
+    const char *emit_executable_path = NULL;
+
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
             madc_verbose = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-object") == 0 && i + 1 < argc) {
+            emit_object_path = argv[++i];
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-executable") == 0 && i + 1 < argc) {
+            emit_executable_path = argv[++i];
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
+            emit_executable_path = argv[++i];
             filearg = i + 1;
         } else {
             filearg = i;
@@ -232,23 +242,45 @@ int main(int argc, char **argv)
         }
     }
 
+    if ( emit_object_path || emit_executable_path )
+	prog->aot_tracking = true;
+
     if ( argc >= 2 && filearg < argc )
     {
-	if ( !(tp=prog.tokenize(argv[filearg])) )
+	if ( !(tp=prog->tokenize(argv[filearg])) )
 	    return 0;
-	if ( !prog.parse(tp) )
+	if ( !prog->parse(tp) )
 	    return 0;
-	if ( !prog.compile() )
+	if ( !prog->compile() )
 	    return 0;
 
+	if ( emit_object_path )
+	{
+	    if ( prog->save_object(emit_object_path) )
+		cerr << "wrote " << emit_object_path << endl;
+	    else
+		cerr << "failed to write " << emit_object_path << endl;
+	    return 0;
+	}
+
+	if ( emit_executable_path )
+	{
+	    if ( prog->save_executable(emit_executable_path) )
+		cerr << "wrote " << emit_executable_path << endl;
+	    else
+		cerr << "failed to write " << emit_executable_path << endl;
+	    return 0;
+	}
+
 	// set script argc/argv after tokenize/parse/compile (tokenizer_init resets members)
-	prog.script_argc = argc - filearg;
-	prog.script_argv = argv + filearg;
+	prog->script_argc = argc - filearg;
+	prog->script_argv = argv + filearg;
+	g_active_program = prog.get();
 
 	struct timeval before, after;
 
 	gettimeofday(&before, NULL);
-	prog.execute();
+	prog->execute();
 	gettimeofday(&after, NULL);
 
 	DBG(std::cout << "Elapsed time: " << time_diff(before, after) << std::endl);

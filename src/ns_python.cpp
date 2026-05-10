@@ -25,6 +25,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "ns_common.h"
 
 using namespace std;
 using namespace asmjit;
@@ -130,17 +131,15 @@ int64_t python_count(void *haystack, void *needle)
 // python::startswith
 int64_t python_startswith(void *str, void *prefix)
 {
-	std::string &s = *(std::string *)str;
-	std::string &p = *(std::string *)prefix;
-	return s.length() >= p.length() && s.compare(0, p.length(), p) == 0 ? 1 : 0;
+	return ns_common::starts_with(*(std::string *)str,
+				      *(std::string *)prefix) ? 1 : 0;
 }
 
 // python::endswith
 int64_t python_endswith(void *str, void *suffix)
 {
-	std::string &s = *(std::string *)str;
-	std::string &x = *(std::string *)suffix;
-	return s.length() >= x.length() && s.compare(s.length() - x.length(), x.length(), x) == 0 ? 1 : 0;
+	return ns_common::ends_with(*(std::string *)str,
+				    *(std::string *)suffix) ? 1 : 0;
 }
 
 // python::isdigit — check if all characters are digits
@@ -186,16 +185,9 @@ int64_t python_isspace(void *ptr)
 // python::replace — like str_replace but Python naming (returns modified string)
 void *python_replace(void *ptr, void *old_str, void *new_str)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &o = *(std::string *)old_str;
-	std::string &n = *(std::string *)new_str;
-	if ( o.empty() ) return ptr;
-	size_t pos = 0;
-	while ( (pos = s.find(o, pos)) != std::string::npos )
-	{
-		s.replace(pos, o.length(), n);
-		pos += n.length();
-	}
+	ns_common::replace_all(*(std::string *)ptr,
+			       *(std::string *)old_str,
+			       *(std::string *)new_str);
 	return ptr;
 }
 

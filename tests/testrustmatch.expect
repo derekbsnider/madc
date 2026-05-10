@@ -1,0 +1,19 @@
+classify(0): 100
+classify(1): 201
+classify(2): 202
+classify(3): 203
+classify(10): 999
+classify(7): -1
+zero
+after:0
+one
+after:1
+rest:2
+after:2
+rest:3
+after:3
+loop:0
+loop:1
+two-break
+loop:3
+no-match-hits:0

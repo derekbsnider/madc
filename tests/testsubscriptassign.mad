@@ -1,0 +1,42 @@
+// Regression: chained subscript-assignment expression value must be the
+// LHS-typed value (truncated and sign-/zero-extended), not the unbound
+// RHS register.  SMAUG idiom:
+//   while ((BUFF[num] = fgetc(fp)) != EOF) num++;
+// is the load-bearing case — pre-fix the comparison saw the full int
+// returned by fgetc and the loop never terminated.
+#include <stdio.h>
+
+int main()
+{
+    char buf[16];
+    int r;
+
+    // Small positive: byte 65 → r=65
+    r = (buf[0] = 65);
+    printf("case1 buf[0]=%d r=%d\n", (int)buf[0], r);
+    if (r != 65 || (int)buf[0] != 65) { printf("FAIL\n"); return 1; }
+
+    // EOF marker: byte 0xff → signed -1 → r=-1
+    r = (buf[1] = -1);
+    printf("case2 buf[1]=%d r=%d\n", (int)buf[1], r);
+    if (r != -1 || (int)buf[1] != -1) { printf("FAIL\n"); return 1; }
+
+    // High bits set in RHS: 0x12345 → low byte 0x45=69 → r=69
+    r = (buf[2] = 0x12345);
+    printf("case3 buf[2]=%d r=%d\n", (int)buf[2], r);
+    if (r != 69 || (int)buf[2] != 69) { printf("FAIL\n"); return 1; }
+
+    // The SMAUG fgetc-into-char loop pattern.
+    static int stream[6] = {72, 105, 33, -1, 99, 99};
+    int sp = 0;
+    char out[8];
+    int n = 0;
+    while ((out[n] = stream[sp++]) != -1)
+        n++;
+    out[n] = 0;
+    printf("case4 n=%d out=\"%s\"\n", n, out);
+    if (n != 3) { printf("FAIL\n"); return 1; }
+
+    printf("PASS\n");
+    return 0;
+}

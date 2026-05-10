@@ -1,0 +1,14 @@
+#include <stdio.h>
+
+char *name;
+
+int bar(char *name)
+{
+    printf("%c\n", name[3]);
+    return 0;
+}
+
+int main()
+{
+    return bar("do_say");
+}

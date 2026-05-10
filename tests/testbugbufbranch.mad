@@ -1,0 +1,22 @@
+#!/usr/bin/env madc
+
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+
+FILE *fpArea = NULL;
+
+int main()
+{
+	char buf[4096];
+	char *str = strdup("hello");
+
+	if (fpArea != NULL)
+		sprintf(&buf[0], "FILE: %s", str);
+
+	strcpy(&buf[0], "BUG: ");
+	strcat(&buf[0], str);
+	puts(&buf[0]);
+	free(str);
+	return 0;
+}

@@ -1,0 +1,18 @@
+#include <iostream>
+
+int main()
+{
+    int ival = madc::eval_expression_int("6 * 7");
+    cout << "int=" << ival << endl;
+
+    bool bval = madc::eval_expression_bool("6 > 3");
+    cout << "bool=" << bval << endl;
+
+    double dval = madc::eval_expression_double("sqrt(9.0) + cos(0.0)");
+    cout << "double=" << dval << endl;
+
+    string sval;
+    madc::eval_expression_string(sval, "\"echo\"");
+    cout << "string=" << sval << endl;
+    return 0;
+}

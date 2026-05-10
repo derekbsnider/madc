@@ -4,6 +4,8 @@
 - Use `make -C src clean` then `make -C src` for a full rebuild
 - The binary lands at `bin/madc`
 - All object files go to `obj/`
+- When work is focused on core madc / libmadc / parser / compiler code and does not touch `madcdat` or shared storage-facing surfaces, prefer `./configure --enable-madcdat=no` first to shrink rebuild and unit-test scope.
+- Re-enable `madcdat` before final validation when the task touches `madcdat`, shared public headers, build wiring, or any surface that may affect storage/federation code.
 
 ## asmjit Library
 

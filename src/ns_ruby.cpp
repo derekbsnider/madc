@@ -24,6 +24,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "ns_common.h"
 
 using namespace std;
 using namespace asmjit;
@@ -169,34 +170,25 @@ int64_t ruby_count(void *str, void *chars)
 // ruby::include — check if string includes substring (returns 1 or 0)
 int64_t ruby_include(void *str, void *substr)
 {
-	return ((std::string *)str)->find(*(std::string *)substr) != std::string::npos ? 1 : 0;
+	return ns_common::contains(*(std::string *)str,
+				   *(std::string *)substr) ? 1 : 0;
 }
 
 // ruby::gsub — global substitution (same as str_replace but Ruby naming)
 void *ruby_gsub(void *ptr, void *pattern, void *replacement)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &p = *(std::string *)pattern;
-	std::string &r = *(std::string *)replacement;
-	if ( p.empty() ) return ptr;
-	size_t pos = 0;
-	while ( (pos = s.find(p, pos)) != std::string::npos )
-	{
-		s.replace(pos, p.length(), r);
-		pos += r.length();
-	}
+	ns_common::replace_all(*(std::string *)ptr,
+			       *(std::string *)pattern,
+			       *(std::string *)replacement);
 	return ptr;
 }
 
 // ruby::sub — substitute first occurrence only
 void *ruby_sub(void *ptr, void *pattern, void *replacement)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string &p = *(std::string *)pattern;
-	std::string &r = *(std::string *)replacement;
-	size_t pos = s.find(p);
-	if ( pos != std::string::npos )
-		s.replace(pos, p.length(), r);
+	ns_common::replace_first(*(std::string *)ptr,
+				 *(std::string *)pattern,
+				 *(std::string *)replacement);
 	return ptr;
 }
 

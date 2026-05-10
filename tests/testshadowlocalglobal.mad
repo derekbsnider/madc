@@ -1,0 +1,14 @@
+#include <stdio.h>
+
+int port;
+
+int main(int argc, char **argv)
+{
+    int port = 4000;
+    if (argc > 1)
+        port = atoi(argv[1]);
+    if (port <= 1024)
+        port = 4000;
+    printf("%d\n", port);
+    return 0;
+}

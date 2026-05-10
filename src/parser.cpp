@@ -12,6 +12,8 @@
 #include <string.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <syslog.h>
+#include <time.h>
 #include <dlfcn.h>
 #include <unistd.h>
 #include <iostream>
@@ -26,6 +28,7 @@
 #include <functional>
 #include <queue>
 #include <stack>
+#include "libmadc/program.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include <asmjit/x86.h>
 #include "datadef.h"
@@ -35,6 +38,893 @@
 
 using namespace std;
 using namespace asmjit;
+
+namespace madc {
+bool internal_program_runtime_eval_source(::Program &self,
+					  const std::string &source_text,
+					  value &result,
+					  const std::string &display_name,
+					  const value *context = NULL,
+					  const char *wrapper_return_type = NULL);
+bool internal_program_runtime_eval_expression(::Program &self,
+					      const std::string &expression,
+					      value &result,
+					      const std::string &display_name,
+					      const value *context);
+}
+
+namespace {
+
+thread_local Program *g_runtime_program = NULL;
+
+std::string stringify_runtime_eval_value(const madc::value &resolved)
+{
+    switch ( resolved.type() )
+    {
+	case madc::value::kind::null:
+	    return std::string();
+	case madc::value::kind::boolean:
+	    return resolved.as_boolean() ? "true" : "false";
+	case madc::value::kind::integer:
+	    return std::to_string(resolved.as_integer());
+	case madc::value::kind::real:
+	    return std::to_string(resolved.as_real());
+	case madc::value::kind::string:
+	    return resolved.as_string();
+	default:
+	    break;
+    }
+    return std::string();
+}
+
+bool value_from_madarray_context(const MadArray &arr,
+				 madc::value &out,
+				 std::string &reason);
+
+bool value_from_madvalue_context(const MadValue &in,
+				 madc::value &out,
+				 std::string &reason)
+{
+    switch ( in.type )
+    {
+	case DataType::dtINT64:
+	    out = madc::value(static_cast<int64_t>(in.as_int()));
+	    return true;
+	case DataType::dtDOUBLE:
+	    out = madc::value(in.as_double());
+	    return true;
+	case DataType::dtSTRING:
+	    out = madc::value(in.as_string());
+	    return true;
+	case DataType::dtARRAY:
+	    return value_from_madarray_context(in.as_array(), out, reason);
+	default:
+	    break;
+    }
+
+    reason = std::string("unsupported context value kind '")
+	+ std::to_string((int)in.type) + "'";
+    return false;
+}
+
+bool value_from_madarray_context(const MadArray &arr,
+				 madc::value &out,
+				 std::string &reason)
+{
+    if ( !arr.data.empty() )
+    {
+	reason = "context arrays cannot contain positional elements";
+	return false;
+    }
+
+    std::map<std::string, madc::value> fields;
+    for ( std::size_t i = 0; i < arr.assoc.size(); ++i )
+    {
+	madc::value field_value;
+	if ( !value_from_madvalue_context(arr.assoc[i].second, field_value, reason) )
+	{
+	    reason = std::string("context field '") + arr.assoc[i].first + "': " + reason;
+	    return false;
+	}
+	fields[arr.assoc[i].first] = field_value;
+    }
+
+    out = madc::value::make_object(fields);
+    return true;
+}
+
+bool build_runtime_expression_context(const MadArray *ctx_array,
+				      Program &active,
+				      const char *helper_name,
+				      madc::value &context)
+{
+    context = madc::value();
+    if ( !ctx_array )
+	return true;
+
+    std::string reason;
+    if ( !value_from_madarray_context(*ctx_array, context, reason) )
+    {
+	active.set_error(Program::DiagnosticPhase::runtime,
+			 std::string(helper_name)
+			 + " rejected context: "
+			 + reason);
+	active.print_last_diagnostic(active.error());
+	return false;
+    }
+    return true;
+}
+
+void report_runtime_eval_expression_type_error(Program &active,
+					       const char *helper_name,
+					       const char *expected_kind,
+					       const madc::value &resolved)
+{
+    active.set_error(Program::DiagnosticPhase::runtime,
+		     std::string(helper_name)
+		     + " requires a "
+		     + expected_kind
+		     + " expression result, got "
+		     + madc::value::kind_name(resolved.type()));
+    active.print_last_diagnostic(active.error());
+}
+
+bool coerce_runtime_expression_bool(Program &active,
+				    const madc::value &resolved,
+				    const char *helper_name,
+				    bool &out)
+{
+    switch ( resolved.type() )
+    {
+	case madc::value::kind::boolean:
+	    out = resolved.as_boolean();
+	    return true;
+	case madc::value::kind::integer:
+	    out = resolved.as_integer() != 0;
+	    return true;
+	default:
+	    break;
+    }
+
+    report_runtime_eval_expression_type_error(active, helper_name, "boolean", resolved);
+    return false;
+}
+
+bool coerce_runtime_expression_int(Program &active,
+				   const madc::value &resolved,
+				   const char *helper_name,
+				   int64_t &out)
+{
+    if ( resolved.is_integer() )
+    {
+	out = resolved.as_integer();
+	return true;
+    }
+
+    report_runtime_eval_expression_type_error(active, helper_name, "integer", resolved);
+    return false;
+}
+
+bool coerce_runtime_expression_double(Program &active,
+				      const madc::value &resolved,
+				      const char *helper_name,
+				      double &out)
+{
+    if ( resolved.is_real() )
+    {
+	out = resolved.as_real();
+	return true;
+    }
+    if ( resolved.is_integer() )
+    {
+	out = (double)resolved.as_integer();
+	return true;
+    }
+
+    report_runtime_eval_expression_type_error(active, helper_name, "real", resolved);
+    return false;
+}
+
+bool coerce_runtime_expression_string(Program &active,
+				      const madc::value &resolved,
+				      const char *helper_name,
+				      std::string &out)
+{
+    if ( resolved.is_string() )
+    {
+	out = resolved.as_string();
+	return true;
+    }
+
+    report_runtime_eval_expression_type_error(active, helper_name, "string", resolved);
+    return false;
+}
+
+Program *require_active_runtime_program()
+{
+    return Program::active_runtime_program();
+}
+
+Program *require_runtime_eval_program(std::unique_ptr<Program> &owned)
+{
+    Program *active = require_active_runtime_program();
+    if ( active )
+	return active;
+
+    static MadcEngine engine;
+    owned = engine.create_program();
+    return owned.get();
+}
+
+bool is_runtime_eval_scope_helper_name(const std::string &name)
+{
+    return name == "__madc_eval_runtime"
+	|| name == "__madc_eval_bool_runtime"
+	|| name == "__madc_eval_int_runtime"
+	|| name == "__madc_eval_double_runtime"
+	|| name == "__madc_eval_string_runtime"
+	|| name == "__madc_eval_expression_runtime"
+	|| name == "__madc_eval_expression_bool_runtime"
+	|| name == "__madc_eval_expression_int_runtime"
+	|| name == "__madc_eval_expression_double_runtime"
+	|| name == "__madc_eval_expression_string_runtime";
+}
+
+bool is_runtime_eval_scope_ctx_helper_name(const std::string &name)
+{
+    return name == "__madc_eval_ctx_runtime"
+	|| name == "__madc_eval_bool_ctx_runtime"
+	|| name == "__madc_eval_int_ctx_runtime"
+	|| name == "__madc_eval_double_ctx_runtime"
+	|| name == "__madc_eval_string_ctx_runtime"
+	|| name == "__madc_eval_expression_ctx_runtime"
+	|| name == "__madc_eval_expression_bool_ctx_runtime"
+	|| name == "__madc_eval_expression_int_ctx_runtime"
+	|| name == "__madc_eval_expression_double_ctx_runtime"
+	|| name == "__madc_eval_expression_string_ctx_runtime";
+}
+
+bool is_runtime_eval_scope_public_name(const std::string &name)
+{
+    return name == "eval"
+	|| name == "eval_bool"
+	|| name == "eval_int"
+	|| name == "eval_double"
+	|| name == "eval_string"
+	|| name == "eval_expression"
+	|| name == "eval_expression_bool"
+	|| name == "eval_expression_int"
+	|| name == "eval_expression_double"
+	|| name == "eval_expression_string";
+}
+
+bool is_runtime_eval_source_helper_name(const std::string &name)
+{
+    return name == "__madc_eval_runtime"
+	|| name == "__madc_eval_bool_runtime"
+	|| name == "__madc_eval_int_runtime"
+	|| name == "__madc_eval_double_runtime"
+	|| name == "__madc_eval_string_runtime";
+}
+
+bool is_runtime_eval_expression_helper_name(const std::string &name)
+{
+    return name == "__madc_eval_expression_runtime"
+	|| name == "__madc_eval_expression_bool_runtime"
+	|| name == "__madc_eval_expression_int_runtime"
+	|| name == "__madc_eval_expression_double_runtime"
+	|| name == "__madc_eval_expression_string_runtime";
+}
+
+void *madc_runtime_eval_expression(void *result, void *expr)
+{
+    std::string &out = *(std::string *)result;
+    std::string &expression = *(std::string *)expr;
+    out.clear();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+
+    out = stringify_runtime_eval_value(resolved);
+    return result;
+}
+
+void *madc_runtime_eval_expression_ctx(void *result, void *expr, void *ctx)
+{
+    std::string &out = *(std::string *)result;
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    out.clear();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_ctx", context) )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+
+    out = stringify_runtime_eval_value(resolved);
+    return result;
+}
+
+void *madc_runtime_eval(void *result, void *source)
+{
+    std::string &out = *(std::string *)result;
+    std::string &program_source = *(std::string *)source;
+    out.clear();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval") )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+
+    out = stringify_runtime_eval_value(resolved);
+    return result;
+}
+
+bool madc_runtime_eval_bool(void *source)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+
+    std::string &program_source = *(std::string *)source;
+    madc::value resolved;
+    bool out = false;
+
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "bool") )
+	return false;
+    if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_bool", out) )
+	return false;
+    return out;
+}
+
+int64_t madc_runtime_eval_int(void *source)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+
+    std::string &program_source = *(std::string *)source;
+    madc::value resolved;
+    int64_t out = 0;
+
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "int") )
+	return 0;
+    if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_int", out) )
+	return 0;
+    return out;
+}
+
+double madc_runtime_eval_double(void *source)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0.0;
+
+    std::string &program_source = *(std::string *)source;
+    madc::value resolved;
+    double out = 0.0;
+
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "double") )
+	return 0.0;
+    if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_double", out) )
+	return 0.0;
+    return out;
+}
+
+void *madc_runtime_eval_string(void *result, void *source)
+{
+    std::string &out = *(std::string *)result;
+    std::string &program_source = *(std::string *)source;
+    out.clear();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", NULL, "char *") )
+	return result;
+    if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_string", out) )
+	return result;
+    return result;
+}
+
+void *madc_runtime_eval_ctx(void *result, void *source, void *ctx)
+{
+    std::string &out = *(std::string *)result;
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    out.clear();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval", context) )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context) )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+
+    out = stringify_runtime_eval_value(resolved);
+    return result;
+}
+
+bool madc_runtime_eval_bool_ctx(void *source, void *ctx)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value context;
+    madc::value resolved;
+    bool out = false;
+
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_bool", context) )
+	return false;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "bool") )
+    {
+	active->print_last_diagnostic(active->error());
+	return false;
+    }
+    if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_bool", out) )
+	return false;
+    return out;
+}
+
+int64_t madc_runtime_eval_int_ctx(void *source, void *ctx)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value context;
+    madc::value resolved;
+    int64_t out = 0;
+
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_int", context) )
+	return 0;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "int") )
+    {
+	active->print_last_diagnostic(active->error());
+	return 0;
+    }
+    if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_int", out) )
+	return 0;
+    return out;
+}
+
+double madc_runtime_eval_double_ctx(void *source, void *ctx)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0.0;
+
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value context;
+    madc::value resolved;
+    double out = 0.0;
+
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_double", context) )
+	return 0.0;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "double") )
+    {
+	active->print_last_diagnostic(active->error());
+	return 0.0;
+    }
+    if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_double", out) )
+	return 0.0;
+    return out;
+}
+
+void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
+{
+    std::string &out = *(std::string *)result;
+    std::string &program_source = *(std::string *)source;
+    MadArray &context_array = *(MadArray *)ctx;
+    out.clear();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_string", context) )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_source(program_source, resolved, "__madc_runtime_eval", &context, "char *") )
+    {
+	active->print_last_diagnostic(active->error());
+	return result;
+    }
+    if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_string", out) )
+	return result;
+    return result;
+}
+
+bool madc_runtime_eval_expression_bool(void *expr)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+
+    std::string &expression = *(std::string *)expr;
+    madc::value resolved;
+    bool out = false;
+
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+	return false;
+    if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_expression_bool", out) )
+	return false;
+    return out;
+}
+
+bool madc_runtime_eval_expression_bool_ctx(void *expr, void *ctx)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return false;
+
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value resolved;
+    bool out = false;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_bool_ctx", context) )
+	return false;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+	return false;
+    if ( !coerce_runtime_expression_bool(*active, resolved, "madc::eval_expression_bool_ctx", out) )
+	return false;
+    return out;
+}
+
+int64_t madc_runtime_eval_expression_int(void *expr)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+
+    std::string &expression = *(std::string *)expr;
+    madc::value resolved;
+    int64_t out = 0;
+
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+	return 0;
+    if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_expression_int", out) )
+	return 0;
+    return out;
+}
+
+int64_t madc_runtime_eval_expression_int_ctx(void *expr, void *ctx)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0;
+
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value resolved;
+    int64_t out = 0;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_int_ctx", context) )
+	return 0;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+	return 0;
+    if ( !coerce_runtime_expression_int(*active, resolved, "madc::eval_expression_int_ctx", out) )
+	return 0;
+    return out;
+}
+
+double madc_runtime_eval_expression_double(void *expr)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0.0;
+
+    std::string &expression = *(std::string *)expr;
+    madc::value resolved;
+    double out = 0.0;
+
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+	return 0.0;
+    if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_expression_double", out) )
+	return 0.0;
+    return out;
+}
+
+double madc_runtime_eval_expression_double_ctx(void *expr, void *ctx)
+{
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return 0.0;
+
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    madc::value resolved;
+    double out = 0.0;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_double_ctx", context) )
+	return 0.0;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+	return 0.0;
+    if ( !coerce_runtime_expression_double(*active, resolved, "madc::eval_expression_double_ctx", out) )
+	return 0.0;
+    return out;
+}
+
+void *madc_runtime_eval_expression_string(void *result, void *expr)
+{
+    std::string &out = *(std::string *)result;
+    std::string &expression = *(std::string *)expr;
+    out.clear();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    madc::value resolved;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression") )
+	return result;
+    if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_expression_string", out) )
+	return result;
+    return result;
+}
+
+void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ctx)
+{
+    std::string &out = *(std::string *)result;
+    std::string &expression = *(std::string *)expr;
+    MadArray &context_array = *(MadArray *)ctx;
+    out.clear();
+
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
+    if ( !active )
+	return result;
+
+    madc::value context;
+    if ( !build_runtime_expression_context(&context_array, *active, "madc::eval_expression_string_ctx", context) )
+	return result;
+    madc::value resolved;
+    if ( !active->runtime_eval_expression(expression,
+					  resolved,
+					  "__madc_runtime_eval_expression",
+					  &context) )
+	return result;
+    if ( !coerce_runtime_expression_string(*active, resolved, "madc::eval_expression_string_ctx", out) )
+	return result;
+    return result;
+}
+
+void *madc_context_set_int(void *ctx, void *key, int64_t value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(value));
+    return ctx;
+}
+
+void *madc_context_set_real(void *ctx, void *key, double value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(value));
+    return ctx;
+}
+
+void *madc_context_set_string(void *ctx, void *key, const char *value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(std::string(value ? value : "")));
+    return ctx;
+}
+
+void *madc_context_set_array(void *ctx, void *key, void *value)
+{
+    ((MadArray *)ctx)->set(*(std::string *)key, MadValue(*(MadArray *)value));
+    return ctx;
+}
+
+} // namespace
+
+extern "C" {
+
+void *__madc_eval_runtime(void *result, void *source)
+{
+    return madc_runtime_eval(result, source);
+}
+
+bool __madc_eval_bool_runtime(void *source)
+{
+    return madc_runtime_eval_bool(source);
+}
+
+int64_t __madc_eval_int_runtime(void *source)
+{
+    return madc_runtime_eval_int(source);
+}
+
+double __madc_eval_double_runtime(void *source)
+{
+    return madc_runtime_eval_double(source);
+}
+
+void *__madc_eval_string_runtime(void *result, void *source)
+{
+    return madc_runtime_eval_string(result, source);
+}
+
+void *__madc_eval_ctx_runtime(void *result, void *source, void *ctx)
+{
+    return madc_runtime_eval_ctx(result, source, ctx);
+}
+
+bool __madc_eval_bool_ctx_runtime(void *source, void *ctx)
+{
+    return madc_runtime_eval_bool_ctx(source, ctx);
+}
+
+int64_t __madc_eval_int_ctx_runtime(void *source, void *ctx)
+{
+    return madc_runtime_eval_int_ctx(source, ctx);
+}
+
+double __madc_eval_double_ctx_runtime(void *source, void *ctx)
+{
+    return madc_runtime_eval_double_ctx(source, ctx);
+}
+
+void *__madc_eval_string_ctx_runtime(void *result, void *source, void *ctx)
+{
+    return madc_runtime_eval_string_ctx(result, source, ctx);
+}
+
+void *__madc_eval_expression_runtime(void *result, void *expr)
+{
+    return madc_runtime_eval_expression(result, expr);
+}
+
+bool __madc_eval_expression_bool_runtime(void *expr)
+{
+    return madc_runtime_eval_expression_bool(expr);
+}
+
+int64_t __madc_eval_expression_int_runtime(void *expr)
+{
+    return madc_runtime_eval_expression_int(expr);
+}
+
+double __madc_eval_expression_double_runtime(void *expr)
+{
+    return madc_runtime_eval_expression_double(expr);
+}
+
+void *__madc_eval_expression_string_runtime(void *result, void *expr)
+{
+    return madc_runtime_eval_expression_string(result, expr);
+}
+
+void *__madc_eval_expression_ctx_runtime(void *result, void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_ctx(result, expr, ctx);
+}
+
+bool __madc_eval_expression_bool_ctx_runtime(void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_bool_ctx(expr, ctx);
+}
+
+int64_t __madc_eval_expression_int_ctx_runtime(void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_int_ctx(expr, ctx);
+}
+
+double __madc_eval_expression_double_ctx_runtime(void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_double_ctx(expr, ctx);
+}
+
+void *__madc_eval_expression_string_ctx_runtime(void *result, void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_string_ctx(result, expr, ctx);
+}
+
+void *__madc_context_set_int_runtime(void *ctx, void *key, int64_t value)
+{
+    return madc_context_set_int(ctx, key, value);
+}
+
+void *__madc_context_set_real_runtime(void *ctx, void *key, double value)
+{
+    return madc_context_set_real(ctx, key, value);
+}
+
+void *__madc_context_set_string_runtime(void *ctx, void *key, const char *value)
+{
+    return madc_context_set_string(ctx, key, value);
+}
+
+void *__madc_context_set_array_runtime(void *ctx, void *key, void *value)
+{
+    return madc_context_set_array(ctx, key, value);
+}
+
+}
 
 static bool is_restrict_token(TokenBase *tb)
 {
@@ -49,6 +939,79 @@ static bool is_post_pointer_qualifier_token(TokenBase *tb)
 
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
+
+static bool is_typeof_identifier(const std::string &name)
+{
+    return name == "typeof" || name == "typeof_unqual";
+}
+
+static bool is_alignof_identifier(const std::string &name)
+{
+    return name == "alignof" || name == "_Alignof";
+}
+
+static bool is_static_assert_identifier(const std::string &name)
+{
+    return name == "_Static_assert" || name == "static_assert";
+}
+
+static bool is_nullptr_identifier(const std::string &name)
+{
+    return name == "nullptr";
+}
+
+static DataDef *resolve_named_datadef(Program &pgm, const std::string &name)
+{
+    datadef_map_iter dmi = pgm.struct_map.find(name);
+    if ( dmi != pgm.struct_map.end() )
+	return dmi->second;
+
+    datatype_map_iter bmi = pgm.datatype_map.find(name);
+    if ( bmi != pgm.datatype_map.end() )
+	return &bmi->second->definition;
+
+    return pgm.lazy_resolve_type(name);
+}
+
+static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
+{
+    if ( !dd )
+	return 0;
+    return want_alignof ? dd->alignment() : dd->size;
+}
+
+static TokenDataType *parse_typeof_datatype(Program &pgm, TokenBase *op_tb);
+static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::string &op_name);
+static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb);
+
+static Variable *resolve_c_identifier(Program &pgm, TokenIdent *ident_tb, bool expression_head)
+{
+	Variable *var = NULL;
+
+	if ( expression_head && !pgm.current_namespace.empty() )
+	{
+	    namespace_map_t::iterator nsi = pgm.namespace_map.find(pgm.current_namespace);
+	    if ( nsi != pgm.namespace_map.end() )
+	    {
+		variable_map_iter vmi = nsi->second.find(ident_tb->str);
+		if ( vmi != nsi->second.end() )
+		    var = vmi->second;
+	    }
+	}
+	if ( !var )
+	    var = pgm.findVariable(ident_tb->str);
+	if ( !var && !expression_head && !pgm.current_namespace.empty() )
+	{
+	    namespace_map_t::iterator nsi = pgm.namespace_map.find(pgm.current_namespace);
+	    if ( nsi != pgm.namespace_map.end() )
+	    {
+		variable_map_iter vmi = nsi->second.find(ident_tb->str);
+		if ( vmi != nsi->second.end() )
+		    var = vmi->second;
+	    }
+	}
+	return var;
+}
 
 static bool read_constant_integer(Variable *var, int64_t &out)
 {
@@ -69,6 +1032,49 @@ static bool read_constant_integer(Variable *var, int64_t &out)
 	default:
 	    return false;
     }
+}
+
+static void copy_token_location(TokenBase *dst, TokenBase *src)
+{
+    if ( !dst || !src )
+	return;
+    dst->file = src->file;
+    dst->line = src->line;
+    dst->column = src->column;
+}
+
+static TokenBase *make_expression_context_literal(Program &pgm,
+						  const madc::value &resolved,
+						  TokenBase *src)
+{
+    TokenBase *tb = NULL;
+
+    switch ( resolved.type() )
+    {
+	case madc::value::kind::boolean:
+	    tb = new TokenInt(resolved.as_boolean() ? 1 : 0);
+	    break;
+	case madc::value::kind::integer:
+	    tb = new TokenInt(resolved.as_integer());
+	    break;
+	case madc::value::kind::real:
+	    tb = new TokenReal(resolved.as_real());
+	    break;
+	case madc::value::kind::string:
+	{
+	    std::string literal = resolved.as_string();
+	    Variable *literal_var = pgm.addLiteral(literal);
+	    if ( !literal_var )
+		return NULL;
+	    tb = new TokenVar(*literal_var);
+	    break;
+	}
+	default:
+	    return NULL;
+    }
+
+    copy_token_location(tb, src);
+    return tb;
 }
 
 static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
@@ -99,7 +1105,17 @@ static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
     return read_constant_integer(var, out);
 }
 
+static bool is_shared_global_extern_reference(Program &pgm, TokenCpnd *code, Variable *var)
+{
+    return pgm.parsing_extern_decl
+	&& code
+	&& var
+	&& var->is_global();
+}
+
 static int64_t parse_constant_integer_expression(Program &pgm);
+static int64_t parse_constant_rel(Program &pgm);
+static int64_t parse_constant_eq(Program &pgm);
 
 static TokenBase *parse_parenthesized_expression(Program &pgm, const char *context,
 						 bool stop_on_closing_paren)
@@ -116,6 +1132,271 @@ static TokenBase *parse_parenthesized_expression(Program &pgm, const char *conte
     return expr;
 }
 
+static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
+					   const std::string &op_name,
+					   bool &have_value, size_t &query_value)
+{
+    bool want_alignof = is_alignof_identifier(op_name);
+    DataDef *dd = NULL;
+    Variable *var = NULL;
+
+    if ( type_tb->type() == TokenType::ttDataType )
+	dd = &((TokenDataType *)type_tb)->definition;
+    else if ( type_tb->type() == TokenType::ttIdentifier )
+    {
+	std::string tname = ((TokenIdent *)type_tb)->str;
+	var = pgm.findVariable(tname);
+	if ( var && pgm.peekToken()
+	  && (pgm.peekToken()->id() == TokenID::tkOpSqr
+	   || pgm.peekToken()->id() == TokenID::tkDot
+	   || pgm.peekToken()->id() == TokenID::tkDeRef) )
+	{
+	    TokenBase *chain = pgm.parsePostfixChain(type_tb);
+	    DataDef *cdd = chain ? chain->datadef() : NULL;
+	    if ( !cdd )
+		pgm.Throw(type_tb) << op_name << ": cannot determine type of expression" << flush;
+	    query_value = query_datadef_measure(cdd, want_alignof);
+	    if ( !want_alignof )
+	    {
+		if ( TokenMember *tm = dynamic_cast<TokenMember *>(chain) )
+		{
+		    if ( tm->is_fixed_array_member() )
+		    {
+			DataDef *otype = tm->object.type;
+			if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
+			    otype = opt->base_type;
+			if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype) )
+			{
+			    std::string mname = tm->var.name;
+			    query_value *= sdd->m_count(mname);
+			}
+		    }
+		}
+	    }
+	    have_value = true;
+	    var = NULL;
+	}
+	else if ( var )
+	{
+	    query_value = query_datadef_measure(var->type, want_alignof);
+	    if ( !want_alignof && var->is_fixed_array() )
+		query_value *= var->total_elements();
+	    have_value = true;
+	}
+	else
+	    dd = resolve_named_datadef(pgm, tname);
+    }
+    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkSTRUCT )
+    {
+	TokenBase *tag_tb = pgm.nextToken();
+	if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
+	    dd = resolve_named_datadef(pgm, ((TokenIdent *)tag_tb)->str);
+	if ( !dd )
+	    pgm.Throw(tag_tb) << "Unknown struct type in " << op_name << flush;
+    }
+    else if ( type_tb->id() == TokenID::tkMul )
+    {
+	TokenBase *deref_tb = pgm.nextToken();
+	if ( !deref_tb || !is_contextual_identifier_token(deref_tb) )
+	    pgm.Throw(type_tb) << "Expecting identifier after '*' in " << op_name << flush;
+	DataDef *deref_base = NULL;
+	if ( pgm.peekToken()
+	  && (pgm.peekToken()->id() == TokenID::tkDot
+	   || pgm.peekToken()->id() == TokenID::tkDeRef
+	   || pgm.peekToken()->id() == TokenID::tkOpSqr) )
+	{
+	    TokenBase *chain = pgm.parsePostfixChain(deref_tb);
+	    DataDef *cdd = chain ? chain->datadef() : NULL;
+	    if ( !cdd )
+		pgm.Throw(deref_tb) << op_name << "(*expr): cannot determine type" << flush;
+	    if ( cdd->is_pointer() )
+	    {
+		DataDefPTR *cdp = dynamic_cast<DataDefPTR *>(cdd);
+		deref_base = (cdp && cdp->base_type) ? cdp->base_type : &ddINT64;
+	    }
+	    else
+		deref_base = cdd;
+	}
+	else
+	{
+	    std::string dname = contextual_identifier_name(deref_tb);
+	    Variable *dvar = pgm.findVariable(dname);
+	    if ( !dvar )
+		pgm.Throw(deref_tb) << "undeclared identifier '" << dname << "' in " << op_name << "(*...)" << flush;
+	    if ( dvar->is_fixed_array() )
+		deref_base = dvar->type;
+	    else if ( dvar->type->is_pointer() )
+	    {
+		DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dvar->type);
+		deref_base = (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
+	    }
+	    else
+		pgm.Throw(deref_tb) << op_name << "(*" << dname << "): not a pointer or array" << flush;
+	}
+	query_value = query_datadef_measure(deref_base, want_alignof);
+	have_value = true;
+    }
+
+    return dd;
+}
+
+static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::string &op_name)
+{
+    bool want_alignof = is_alignof_identifier(op_name);
+
+    if ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkOpBrk )
+    {
+	TokenBase *probe = pgm.peekToken();
+	bool deref = (probe->id() == TokenID::tkMul);
+	if ( deref )
+	{
+	    pgm.nextToken();
+	    probe = pgm.peekToken();
+	}
+	if ( !probe || !is_contextual_identifier_token(probe) )
+	    pgm.Throw(op_tb) << "Expecting '(' or identifier after " << op_name << flush;
+	TokenBase *id_tb = pgm.nextToken();
+	TokenBase *chain = pgm.parsePostfixChain(id_tb);
+	DataDef *cdd = chain ? chain->datadef() : NULL;
+	if ( !cdd )
+	    pgm.Throw(id_tb) << op_name << ": cannot determine type of expression" << flush;
+	size_t value = query_datadef_measure(cdd, want_alignof);
+	if ( deref && cdd->is_pointer() )
+	{
+	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(cdd);
+	    if ( pdd && pdd->base_type )
+		value = query_datadef_measure(pdd->base_type, want_alignof);
+	}
+	else if ( !want_alignof )
+	{
+	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(chain) )
+		if ( tv->var.is_fixed_array() )
+		    value = tv->var.type->size * tv->var.total_elements();
+	}
+	return value;
+    }
+
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	pgm.Throw(op_tb) << "Expecting '(' after " << op_name << flush;
+    pgm.nextToken();
+    TokenBase *type_tb = pgm.nextToken();
+    DataDef *dd = NULL;
+    size_t value = 0;
+    bool have_value = false;
+
+    dd = resolve_type_query_datadef(pgm, type_tb, op_name, have_value, value);
+    if ( !have_value && !dd )
+	pgm.Throw(type_tb) << "Unknown type in " << op_name << flush;
+
+    while ( !have_value && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+    {
+	pgm.nextToken();
+	dd = pgm.getPointerType(dd);
+    }
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+	pgm.Throw(type_tb) << "Expecting ')' after " << op_name << " type" << flush;
+    pgm.nextToken();
+
+    if ( !have_value && dd )
+	value = query_datadef_measure(dd, want_alignof);
+
+    return value;
+}
+
+static TokenDataType *parse_typeof_datatype(Program &pgm, TokenBase *op_tb)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	pgm.Throw(op_tb) << "Expecting '(' after typeof" << flush;
+    pgm.nextToken();
+
+    TokenBase *type_tb = pgm.nextToken();
+    if ( !type_tb )
+	pgm.Throw(op_tb) << "Unexpected end of input in typeof" << flush;
+
+    DataDef *dd = NULL;
+    bool closed_paren = false;
+    if ( type_tb->type() == TokenType::ttDataType )
+	dd = &((TokenDataType *)type_tb)->definition;
+    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkSTRUCT )
+    {
+	TokenBase *tag_tb = pgm.nextToken();
+	if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
+	    dd = resolve_named_datadef(pgm, ((TokenIdent *)tag_tb)->str);
+	if ( !dd )
+	    pgm.Throw(tag_tb) << "Unknown struct type in typeof" << flush;
+    }
+    else if ( type_tb->type() == TokenType::ttIdentifier )
+    {
+	std::string tname = ((TokenIdent *)type_tb)->str;
+	dd = resolve_named_datadef(pgm, tname);
+	if ( !dd )
+	{
+	    TokenBase *expr = pgm.parseExpression(type_tb, true, false, true, 1);
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
+		pgm.nextToken();
+	    else if ( (!pgm.curToken() || pgm.curToken()->id() != TokenID::tkClBrk)
+		   && (!pgm.prevToken() || pgm.prevToken()->id() != TokenID::tkClBrk) )
+		pgm.Throw(type_tb) << "Expecting ')' after typeof expression" << flush;
+	    dd = expr ? expr->datadef() : NULL;
+	    closed_paren = true;
+	}
+    }
+    else
+    {
+	TokenBase *expr = pgm.parseExpression(type_tb, true, false, true, 1);
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
+	    pgm.nextToken();
+	else if ( (!pgm.curToken() || pgm.curToken()->id() != TokenID::tkClBrk)
+	       && (!pgm.prevToken() || pgm.prevToken()->id() != TokenID::tkClBrk) )
+	    pgm.Throw(type_tb) << "Expecting ')' after typeof expression" << flush;
+	dd = expr ? expr->datadef() : NULL;
+	closed_paren = true;
+    }
+
+    while ( !closed_paren && dd && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+    {
+	pgm.nextToken();
+	dd = pgm.getPointerType(dd);
+    }
+    if ( !closed_paren && (!pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk) )
+	pgm.Throw(type_tb) << "Expecting ')' after typeof" << flush;
+    if ( !closed_paren )
+	pgm.nextToken();
+
+    if ( !dd )
+	pgm.Throw(type_tb) << "typeof: cannot determine operand type" << flush;
+
+    return new TokenDataType(dd->name.c_str(), *dd);
+}
+
+static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb)
+{
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	pgm.Throw(tb) << "Expecting '(' after " << ((TokenIdent *)tb)->str << flush;
+    pgm.nextToken();
+
+    int64_t cond = parse_constant_integer_expression(pgm);
+    std::string message = "static assertion failed";
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
+    {
+	pgm.nextToken();
+	TokenBase *msg_tb = pgm.nextToken();
+	if ( !msg_tb || msg_tb->type() != TokenType::ttString )
+	    pgm.Throw(msg_tb ? msg_tb : tb) << "Expecting string literal in static assertion" << flush;
+	message = ((TokenStr *)msg_tb)->str;
+    }
+
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+	pgm.Throw(tb) << "Expecting ')' after static assertion" << flush;
+    pgm.nextToken();
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
+    if ( !cond )
+	pgm.Throw(tb) << message << flush;
+    return NULL;
+}
+
 static int64_t parse_constant_primary(Program &pgm)
 {
     TokenBase *tb = pgm.nextToken();
@@ -123,8 +1404,20 @@ static int64_t parse_constant_primary(Program &pgm)
 
     if ( resolve_integer_constant(pgm, tb, out) )
 	return out;
+    if ( tb && tb->type() == TokenType::ttIdentifier )
+    {
+	std::string name = ((TokenIdent *)tb)->str;
+	if ( name == "sizeof" || is_alignof_identifier(name) )
+	    return (int64_t)evaluate_type_query(pgm, tb, name);
+	if ( is_nullptr_identifier(name) )
+	    return 0;
+    }
     if ( tb && tb->id() == TokenID::tkNeg )
 	return -parse_constant_primary(pgm);
+    if ( tb && tb->id() == TokenID::tkAdd )
+	return parse_constant_primary(pgm);
+    if ( tb && tb->id() == TokenID::tkLnot )
+	return !parse_constant_primary(pgm);
     if ( tb && tb->id() == TokenID::tkOpBrk )
     {
 	out = parse_constant_integer_expression(pgm);
@@ -207,11 +1500,11 @@ static int64_t parse_constant_shift(Program &pgm)
 // bitwise-and / xor / or: same precedence order as C.
 static int64_t parse_constant_band(Program &pgm)
 {
-    int64_t lhs = parse_constant_shift(pgm);
+    int64_t lhs = parse_constant_eq(pgm);
     while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBand )
     {
 	pgm.nextToken();
-	lhs &= parse_constant_shift(pgm);
+	lhs &= parse_constant_eq(pgm);
     }
     return lhs;
 }
@@ -238,9 +1531,68 @@ static int64_t parse_constant_bor(Program &pgm)
     return lhs;
 }
 
+static int64_t parse_constant_rel(Program &pgm)
+{
+    int64_t lhs = parse_constant_shift(pgm);
+    while ( pgm.peekToken() )
+    {
+	TokenBase *op = pgm.peekToken();
+	if ( op->id() != TokenID::tkLT && op->id() != TokenID::tkGT
+	  && op->id() != TokenID::tkLE && op->id() != TokenID::tkGE )
+	    break;
+	pgm.nextToken();
+	int64_t rhs = parse_constant_shift(pgm);
+	switch ( op->id() )
+	{
+	    case TokenID::tkLT: lhs = lhs < rhs; break;
+	    case TokenID::tkGT: lhs = lhs > rhs; break;
+	    case TokenID::tkLE: lhs = lhs <= rhs; break;
+	    default:            lhs = lhs >= rhs; break;
+	}
+    }
+    return lhs;
+}
+
+static int64_t parse_constant_eq(Program &pgm)
+{
+    int64_t lhs = parse_constant_rel(pgm);
+    while ( pgm.peekToken() )
+    {
+	TokenBase *op = pgm.peekToken();
+	if ( op->id() != TokenID::tkEquals && op->id() != TokenID::tkNotEq )
+	    break;
+	pgm.nextToken();
+	int64_t rhs = parse_constant_rel(pgm);
+	lhs = (op->id() == TokenID::tkEquals) ? (lhs == rhs) : (lhs != rhs);
+    }
+    return lhs;
+}
+
+static int64_t parse_constant_land(Program &pgm)
+{
+    int64_t lhs = parse_constant_bor(pgm);
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLand )
+    {
+	pgm.nextToken();
+	lhs = lhs && parse_constant_bor(pgm);
+    }
+    return lhs;
+}
+
+static int64_t parse_constant_lor(Program &pgm)
+{
+    int64_t lhs = parse_constant_land(pgm);
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkLor )
+    {
+	pgm.nextToken();
+	lhs = lhs || parse_constant_land(pgm);
+    }
+    return lhs;
+}
+
 static int64_t parse_constant_integer_expression(Program &pgm)
 {
-    return parse_constant_bor(pgm);
+    return parse_constant_lor(pgm);
 }
 
 DataDefVOID ddVOID;
@@ -331,6 +1683,8 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
     count = c;
     flags = 0;
     data = NULL;
+    aot_data_offset = (size_t)-1;
+    aot_cstr_offset = (size_t)-1;
     vla_size_expr = nullptr;
     if ( init ) { alloc = true; }
     if ( !alloc ) { flags |= vfSTACK; }
@@ -743,6 +2097,916 @@ typedef istream& (*fnGETLINE)(istream&, string&);
 // needed to add endl
 typedef ostream& (*fnENDL)(ostream&);
 
+static void register_std_namespace_spec(Program &pgm)
+{
+    pgm.add_namespaces();
+}
+
+static void register_madc_namespace_spec(Program &pgm)
+{
+    pgm.add_madc_namespace();
+}
+
+static void register_php_namespace_spec(Program &pgm)
+{
+    pgm.add_php_namespace();
+}
+
+static void register_perl_namespace_spec(Program &pgm)
+{
+    pgm.add_perl_namespace();
+}
+
+static void register_python_namespace_spec(Program &pgm)
+{
+    pgm.add_python_namespace();
+}
+
+static void register_ruby_namespace_spec(Program &pgm)
+{
+    pgm.add_ruby_namespace();
+}
+
+static void register_js_namespace_spec(Program &pgm)
+{
+    pgm.add_js_namespace();
+}
+
+static void register_rust_namespace_spec(Program &pgm)
+{
+    pgm.add_rust_namespace();
+}
+
+int MadcTeeBuf::overflow(int ch)
+{
+    if ( ch == EOF )
+	return sync() == 0 ? 0 : EOF;
+
+    int primary_result = primary ? primary->sputc((char)ch) : ch;
+    int secondary_result = secondary ? secondary->sputc((char)ch) : ch;
+    if ( (primary && primary_result == EOF) || (secondary && secondary_result == EOF) )
+	return EOF;
+    return ch;
+}
+
+std::streamsize MadcTeeBuf::xsputn(const char *s, std::streamsize n)
+{
+    std::streamsize primary_written = primary ? primary->sputn(s, n) : n;
+    std::streamsize secondary_written = secondary ? secondary->sputn(s, n) : n;
+    return primary_written < secondary_written ? primary_written : secondary_written;
+}
+
+int MadcTeeBuf::sync()
+{
+    int primary_sync = primary ? primary->pubsync() : 0;
+    int secondary_sync = secondary ? secondary->pubsync() : 0;
+    return (primary_sync == 0 && secondary_sync == 0) ? 0 : -1;
+}
+
+Program::Program()
+    : _braces(0),
+      _prv_token(NULL),
+      _cur_token(NULL),
+      engine(NULL),
+      runtime_scope_prev(NULL),
+      input_stream(&std::cin),
+      output_stream(&std::cout),
+      error_stream(&std::cerr),
+      expression_context_root(NULL),
+      tkProgram(NULL),
+      tkFunction(NULL),
+      script_argc(0),
+      script_argv(NULL),
+      _include_iostream(false),
+      _include_stdio(false),
+      colors(false),
+      aot_tracking(false),
+      root_fn(NULL)
+{
+}
+
+Program::Program(MadcEngine *eng)
+    : _braces(0),
+      _prv_token(NULL),
+      _cur_token(NULL),
+      engine(NULL),
+      runtime_scope_prev(NULL),
+      input_stream(&std::cin),
+      output_stream(&std::cout),
+      error_stream(&std::cerr),
+      expression_context_root(NULL),
+      tkProgram(NULL),
+      tkFunction(NULL),
+      script_argc(0),
+      script_argv(NULL),
+      _include_iostream(false),
+      _include_stdio(false),
+      colors(false),
+      aot_tracking(false),
+      root_fn(NULL)
+{
+    attach_engine(eng);
+}
+
+void Program::attach_engine(MadcEngine *eng)
+{
+    engine = eng;
+    if ( !engine )
+	return;
+    engine->populate_default_registries();
+    registration_policy = engine->registration_policy;
+    builtin_registry = engine->builtin_registry;
+    namespace_registry = engine->namespace_registry;
+}
+
+void Program::clear_error()
+{
+    last_error = ErrorInfo();
+}
+
+std::istream &Program::input()
+{
+    if ( engine )
+	return engine->input();
+    return input_stream ? *input_stream : std::cin;
+}
+
+std::ostream &Program::output()
+{
+    if ( engine )
+	return engine->output();
+    return output_stream ? *output_stream : std::cout;
+}
+
+std::ostream &Program::error()
+{
+    if ( engine )
+	return engine->error();
+    return error_stream ? *error_stream : std::cerr;
+}
+
+void Program::clear_diagnostics()
+{
+    diagnostics.clear();
+}
+
+const Program::Diagnostic *Program::last_diagnostic() const
+{
+    if ( diagnostics.empty() )
+	return NULL;
+    return &diagnostics.back();
+}
+
+void Program::add_diagnostic(DiagnosticSeverity severity, DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+{
+    Diagnostic diag;
+    diag.severity = severity;
+    diag.phase = phase;
+    diag.message = message;
+    diag.file = file ? file : "";
+    diag.line = line;
+    diag.column = column;
+    diagnostics.push_back(diag);
+}
+
+void Program::report_warning(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+{
+    add_diagnostic(DiagnosticSeverity::warning, phase, message, file, line, column);
+}
+
+void Program::report_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+{
+    add_diagnostic(DiagnosticSeverity::error, phase, message, file, line, column);
+}
+
+void Program::set_error(DiagnosticPhase phase, const std::string &message, const char *file, int line, int column)
+{
+    report_error(phase, message, file, line, column);
+    last_error.has_error = true;
+    last_error.message = message;
+    last_error.file = file ? file : "";
+    last_error.line = line;
+    last_error.column = column;
+}
+
+void Program::set_error(const std::string &message, const char *file, int line, int column)
+{
+    set_error(DiagnosticPhase::unknown, message, file, line, column);
+}
+
+const char *Program::diagnostic_severity_name(DiagnosticSeverity severity) const
+{
+    switch ( severity )
+    {
+	case DiagnosticSeverity::warning: return "warning";
+	case DiagnosticSeverity::error:   return "error";
+    }
+    return "diagnostic";
+}
+
+const char *Program::diagnostic_phase_name(DiagnosticPhase phase) const
+{
+    switch ( phase )
+    {
+	case DiagnosticPhase::lexer:    return "lexer";
+	case DiagnosticPhase::parser:   return "parser";
+	case DiagnosticPhase::compiler: return "compiler";
+	case DiagnosticPhase::runtime:  return "runtime";
+	case DiagnosticPhase::unknown:  return "unknown";
+    }
+    return "unknown";
+}
+
+bool Program::can_show_diagnostic_source(const Diagnostic &diag) const
+{
+    return !diag.file.empty()
+	&& diag.line > 0
+	&& diag.column > 0
+	&& source.fname()
+	&& diag.file == source.fname();
+}
+
+void Program::print_diagnostic(std::ostream &os, const Diagnostic &diag, const char *suffix)
+{
+    if ( !diag.file.empty() )
+	os << ANSI_WHITE << diag.file << ':' << diag.line << ':' << diag.column;
+    else
+	os << ANSI_WHITE << ':';
+    os << ": \e[1;31m" << diagnostic_severity_name(diag.severity)
+       << ":\e[1;37m " << diag.message;
+    if ( suffix && *suffix )
+	os << ' ' << suffix;
+    os << ANSI_RESET << std::endl;
+    if ( can_show_diagnostic_source(diag) )
+	source.showerror(diag.line, diag.column);
+}
+
+void Program::print_last_diagnostic(std::ostream &os, const char *suffix)
+{
+    const Diagnostic *diag = last_diagnostic();
+    if ( diag )
+	print_diagnostic(os, *diag, suffix);
+}
+
+MadcEngine::MadcEngine()
+    : input_stream(&std::cin),
+      output_stream(&std::cout),
+      error_stream(&std::cerr),
+      default_input_buf(std::cin.rdbuf()),
+      default_output_buf(std::cout.rdbuf()),
+      default_error_buf(std::cerr.rdbuf()),
+      log_timestamps(false),
+      log_level_prefixes(true),
+      log_threshold(LogLevel::debug),
+      log_to_error_stream(true),
+      syslog_active(false),
+      syslog_ident("madc"),
+      syslog_option(-1),
+      syslog_facility(-1),
+      file_sink_active(false),
+      log_file_max_bytes(0),
+      log_file_max_files(5),
+      json_sink_active(false)
+{
+}
+
+MadcEngine::~MadcEngine()
+{
+    reset_standard_streams();
+    disable_file_sink();
+    disable_json_sink();
+    disable_syslog_sink();
+}
+
+std::istream &MadcEngine::input()
+{
+    return input_stream ? *input_stream : std::cin;
+}
+
+std::ostream &MadcEngine::output()
+{
+    return output_stream ? *output_stream : std::cout;
+}
+
+std::ostream &MadcEngine::error()
+{
+    return error_stream ? *error_stream : std::cerr;
+}
+
+void MadcEngine::bind_input_stream(std::istream &is)
+{
+    input_stream = &is;
+    std::cin.rdbuf(is.rdbuf());
+}
+
+void MadcEngine::bind_output_stream(std::ostream &os)
+{
+    output_stream = &os;
+    std::cout.rdbuf(os.rdbuf());
+}
+
+void MadcEngine::bind_error_stream(std::ostream &os)
+{
+    error_stream = &os;
+    std::cerr.rdbuf(os.rdbuf());
+}
+
+void MadcEngine::bind_input_string(const std::string &text)
+{
+    owned_input_buffer.reset(new std::istringstream(text));
+    bind_input_stream(*owned_input_buffer);
+}
+
+void MadcEngine::capture_output_to_buffer()
+{
+    owned_output_buffer.reset(new std::ostringstream());
+    bind_output_stream(*owned_output_buffer);
+}
+
+void MadcEngine::capture_error_to_buffer()
+{
+    owned_error_buffer.reset(new std::ostringstream());
+    bind_error_stream(*owned_error_buffer);
+}
+
+void MadcEngine::tee_output_stream(std::ostream &os)
+{
+    output_tee_buf.reset(new MadcTeeBuf(std::cout.rdbuf(), os.rdbuf()));
+    output_stream = &std::cout;
+    std::cout.rdbuf(output_tee_buf.get());
+}
+
+void MadcEngine::tee_error_stream(std::ostream &os)
+{
+    error_tee_buf.reset(new MadcTeeBuf(std::cerr.rdbuf(), os.rdbuf()));
+    error_stream = &std::cerr;
+    std::cerr.rdbuf(error_tee_buf.get());
+}
+
+void MadcEngine::tee_output_to_buffer()
+{
+    owned_output_buffer.reset(new std::ostringstream());
+    tee_output_stream(*owned_output_buffer);
+}
+
+void MadcEngine::tee_error_to_buffer()
+{
+    owned_error_buffer.reset(new std::ostringstream());
+    tee_error_stream(*owned_error_buffer);
+}
+
+const char *MadcEngine::log_level_name(LogLevel level) const
+{
+    switch ( level )
+    {
+	case LogLevel::emerg:  return "emerg";
+	case LogLevel::alert:  return "alert";
+	case LogLevel::crit:   return "crit";
+	case LogLevel::err:    return "err";
+	case LogLevel::warn:   return "warn";
+	case LogLevel::notice: return "notice";
+	case LogLevel::info:   return "info";
+	case LogLevel::debug:  return "debug";
+    }
+    return "info";
+}
+
+std::string MadcEngine::format_log_message(LogLevel level, const std::string &message) const
+{
+    std::ostringstream os;
+    if ( log_timestamps )
+    {
+	time_t now = time(NULL);
+	struct tm tm_now;
+	localtime_r(&now, &tm_now);
+	char tsbuf[32];
+	strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%d %H:%M:%S", &tm_now);
+	os << tsbuf << ' ';
+    }
+    if ( log_level_prefixes )
+	os << '[' << log_level_name(level) << "] ";
+    os << message;
+    return os.str();
+}
+
+bool MadcEngine::should_log(LogLevel level) const
+{
+    return static_cast<int>(level) <= static_cast<int>(log_threshold);
+}
+
+void MadcEngine::write_log(LogLevel level, const std::string &message)
+{
+    if ( !should_log(level) )
+	return;
+    if ( log_to_error_stream )
+	error() << format_log_message(level, message) << std::endl;
+    write_builtin_sinks(level, message);
+    for ( auto &sink : log_sinks )
+    {
+	if ( sink )
+	    sink(level, message);
+    }
+}
+
+void MadcEngine::write_builtin_sinks(LogLevel level, const std::string &message)
+{
+    write_syslog_sink(level, message);
+    write_file_sink(level, message);
+    write_json_sink(level, message);
+}
+
+void MadcEngine::add_log_sink(LogSink sink)
+{
+    if ( sink )
+	log_sinks.push_back(std::move(sink));
+}
+
+void MadcEngine::clear_log_sinks()
+{
+    log_sinks.clear();
+}
+
+int MadcEngine::syslog_priority_for(LogLevel level)
+{
+    switch ( level )
+    {
+	case LogLevel::emerg:  return LOG_EMERG;
+	case LogLevel::alert:  return LOG_ALERT;
+	case LogLevel::crit:   return LOG_CRIT;
+	case LogLevel::err:    return LOG_ERR;
+	case LogLevel::warn:   return LOG_WARNING;
+	case LogLevel::notice: return LOG_NOTICE;
+	case LogLevel::info:   return LOG_INFO;
+	case LogLevel::debug:  return LOG_DEBUG;
+    }
+    return LOG_INFO;
+}
+
+void MadcEngine::enable_syslog_sink(const char *ident, int option, int facility)
+{
+    if ( syslog_active )
+	disable_syslog_sink();
+    int resolved_option   = (option   < 0) ? LOG_PID  : option;
+    int resolved_facility = (facility < 0) ? LOG_USER : facility;
+    openlog(ident, resolved_option, resolved_facility);
+    syslog_active = true;
+    syslog_ident = ident ? ident : "madc";
+    syslog_option = resolved_option;
+    syslog_facility = resolved_facility;
+}
+
+void MadcEngine::disable_syslog_sink()
+{
+    if ( !syslog_active )
+	return;
+    syslog_active = false;
+    closelog();
+}
+
+void MadcEngine::write_syslog_sink(LogLevel level, const std::string &message)
+{
+    if ( syslog_active )
+	::syslog(syslog_priority_for(level), "%s", message.c_str());
+}
+
+bool MadcEngine::enable_file_sink(const std::string &path,
+				  size_t max_bytes,
+				  int max_files)
+{
+    if ( file_sink_active )
+	disable_file_sink();
+    log_file.reset(new std::ofstream(path.c_str(), std::ios::app));
+    if ( !log_file->is_open() )
+    {
+	log_file.reset();
+	return false;
+    }
+    file_sink_active = true;
+    log_file_path = path;
+    log_file_max_bytes = max_bytes;
+    log_file_max_files = max_files < 1 ? 1 : max_files;
+    return true;
+}
+
+void MadcEngine::disable_file_sink()
+{
+    if ( !file_sink_active )
+	return;
+    file_sink_active = false;
+    if ( log_file )
+    {
+	log_file->flush();
+	log_file->close();
+	log_file.reset();
+    }
+    log_file_path.clear();
+    log_file_max_bytes = 0;
+}
+
+void MadcEngine::rotate_log_file()
+{
+    if ( log_file_path.empty() )
+	return;
+    if ( log_file )
+    {
+	log_file->flush();
+	log_file->close();
+    }
+    for ( int i = log_file_max_files; i >= 2; --i )
+    {
+	std::string from = log_file_path + "." + std::to_string(i - 1);
+	std::string to   = log_file_path + "." + std::to_string(i);
+	::rename(from.c_str(), to.c_str());
+    }
+    std::string first = log_file_path + ".1";
+    ::rename(log_file_path.c_str(), first.c_str());
+    log_file.reset(new std::ofstream(log_file_path.c_str(), std::ios::app));
+    if ( !log_file->is_open() )
+    {
+	log_file.reset();
+	file_sink_active = false;
+    }
+}
+
+void MadcEngine::reopen_log_file()
+{
+    if ( log_file_path.empty() )
+	return;
+    if ( log_file )
+    {
+	log_file->flush();
+	log_file->close();
+    }
+    log_file.reset(new std::ofstream(log_file_path.c_str(), std::ios::app));
+    if ( !log_file->is_open() )
+    {
+	log_file.reset();
+	file_sink_active = false;
+    }
+}
+
+void MadcEngine::write_file_sink(LogLevel level, const std::string &message)
+{
+    if ( !(file_sink_active && log_file && log_file->is_open()) )
+	return;
+    const std::string formatted = format_log_message(level, message);
+    if ( log_file_max_bytes > 0 )
+    {
+	log_file->flush();
+	std::streampos pos = log_file->tellp();
+	if ( pos != std::streampos(-1) &&
+	     static_cast<size_t>(pos) + formatted.size() + 1 > log_file_max_bytes )
+	    rotate_log_file();
+    }
+    if ( file_sink_active && log_file && log_file->is_open() )
+	(*log_file) << formatted << std::endl;
+}
+
+std::string MadcEngine::json_escape(const std::string &s)
+{
+    std::string out;
+    out.reserve(s.size() + 8);
+    for ( char c : s )
+    {
+	switch ( c )
+	{
+	    case '"':  out += "\\\""; break;
+	    case '\\': out += "\\\\"; break;
+	    case '\b': out += "\\b";  break;
+	    case '\f': out += "\\f";  break;
+	    case '\n': out += "\\n";  break;
+	    case '\r': out += "\\r";  break;
+	    case '\t': out += "\\t";  break;
+	    default:
+		if ( static_cast<unsigned char>(c) < 0x20 )
+		{
+		    char buf[8];
+		    snprintf(buf, sizeof(buf), "\\u%04x", c);
+		    out += buf;
+		}
+		else
+		    out += c;
+		break;
+	}
+    }
+    return out;
+}
+
+std::string MadcEngine::format_json_log_line(LogLevel level, const std::string &message) const
+{
+    std::ostringstream os;
+    os << "{";
+    if ( log_timestamps )
+    {
+	time_t now = time(NULL);
+	struct tm tm_now;
+	localtime_r(&now, &tm_now);
+	char tsbuf[32];
+	strftime(tsbuf, sizeof(tsbuf), "%Y-%m-%dT%H:%M:%S", &tm_now);
+	os << "\"ts\":\"" << tsbuf << "\",";
+    }
+    os << "\"level\":\"" << log_level_name(level) << "\",";
+    os << "\"message\":\"" << json_escape(message) << "\"";
+    os << "}";
+    return os.str();
+}
+
+bool MadcEngine::enable_json_sink(const std::string &path)
+{
+    if ( json_sink_active )
+	disable_json_sink();
+    json_file.reset(new std::ofstream(path.c_str(), std::ios::app));
+    if ( !json_file->is_open() )
+    {
+	json_file.reset();
+	return false;
+    }
+    json_sink_active = true;
+    json_file_path = path;
+    return true;
+}
+
+void MadcEngine::disable_json_sink()
+{
+    if ( !json_sink_active )
+	return;
+    json_sink_active = false;
+    if ( json_file )
+    {
+	json_file->flush();
+	json_file->close();
+	json_file.reset();
+    }
+    json_file_path.clear();
+}
+
+void MadcEngine::write_json_sink(LogLevel level, const std::string &message)
+{
+    if ( json_sink_active && json_file && json_file->is_open() )
+	(*json_file) << format_json_log_line(level, message) << '\n';
+}
+
+bool MadcEngine::apply_log_config(const Config &cfg)
+{
+    log_threshold       = cfg.threshold;
+    log_timestamps      = cfg.timestamps;
+    log_level_prefixes  = cfg.level_prefixes;
+    log_to_error_stream = cfg.error_stream;
+
+    bool ok = true;
+
+    if ( cfg.file_sink )
+    {
+	if ( !enable_file_sink(cfg.file_path, cfg.file_max_bytes, cfg.file_max_files) )
+	    ok = false;
+    }
+    else
+	disable_file_sink();
+
+    if ( cfg.syslog_sink )
+	enable_syslog_sink(cfg.syslog_ident.c_str(), cfg.syslog_option, cfg.syslog_facility);
+    else
+	disable_syslog_sink();
+
+    if ( cfg.json_sink )
+    {
+	if ( !enable_json_sink(cfg.json_path) )
+	    ok = false;
+    }
+    else
+	disable_json_sink();
+
+    return ok;
+}
+
+bool MadcEngine::has_output_buffer() const
+{
+    return owned_output_buffer.get() != NULL;
+}
+
+bool MadcEngine::has_error_buffer() const
+{
+    return owned_error_buffer.get() != NULL;
+}
+
+std::string MadcEngine::output_buffer_str() const
+{
+    return owned_output_buffer ? owned_output_buffer->str() : "";
+}
+
+std::string MadcEngine::error_buffer_str() const
+{
+    return owned_error_buffer ? owned_error_buffer->str() : "";
+}
+
+void MadcEngine::clear_output_buffer()
+{
+    if ( owned_output_buffer )
+    {
+	owned_output_buffer->str("");
+	owned_output_buffer->clear();
+    }
+}
+
+void MadcEngine::clear_error_buffer()
+{
+    if ( owned_error_buffer )
+    {
+	owned_error_buffer->str("");
+	owned_error_buffer->clear();
+    }
+}
+
+void MadcEngine::reset_standard_streams()
+{
+    input_stream = &std::cin;
+    output_stream = &std::cout;
+    error_stream = &std::cerr;
+    if ( default_input_buf )
+	std::cin.rdbuf(default_input_buf);
+    if ( default_output_buf )
+	std::cout.rdbuf(default_output_buf);
+    if ( default_error_buf )
+	std::cerr.rdbuf(default_error_buf);
+    output_tee_buf.reset();
+    error_tee_buf.reset();
+    owned_input_buffer.reset();
+    owned_output_buffer.reset();
+    owned_error_buffer.reset();
+}
+
+void MadcEngine::populate_default_registries()
+{
+    if ( builtin_registry.defaults_loaded && namespace_registry.defaults_loaded )
+	return;
+
+    Program seed;
+    seed.populate_builtin_registry();
+    seed.populate_namespace_registry();
+    builtin_registry = seed.builtin_registry;
+    namespace_registry = seed.namespace_registry;
+}
+
+void MadcEngine::configure_program(Program &pgm) const
+{
+    pgm.engine = const_cast<MadcEngine *>(this);
+    pgm.input_stream = input_stream;
+    pgm.output_stream = output_stream;
+    pgm.error_stream = error_stream;
+    pgm.registration_policy = registration_policy;
+    pgm.builtin_registry = builtin_registry;
+    pgm.namespace_registry = namespace_registry;
+}
+
+std::unique_ptr<Program> MadcEngine::create_program()
+{
+    populate_default_registries();
+    std::unique_ptr<Program> pgm(new Program());
+    configure_program(*pgm);
+    return pgm;
+}
+
+void MadcEngine::bind_log_streams()
+{
+    madc::emerg.set_engine(this);
+    madc::alert.set_engine(this);
+    madc::crit.set_engine(this);
+    madc::err.set_engine(this);
+    madc::warn.set_engine(this);
+    madc::notice.set_engine(this);
+    madc::info.set_engine(this);
+    madc::debug.set_engine(this);
+}
+
+void MadcEngine::unbind_log_streams()
+{
+    madc::emerg.set_engine(NULL);
+    madc::alert.set_engine(NULL);
+    madc::crit.set_engine(NULL);
+    madc::err.set_engine(NULL);
+    madc::warn.set_engine(NULL);
+    madc::notice.set_engine(NULL);
+    madc::info.set_engine(NULL);
+    madc::debug.set_engine(NULL);
+}
+
+MadcLogStreambuf::MadcLogStreambuf(MadcEngine::LogLevel lvl)
+    : _level(lvl), _engine(NULL)
+{
+}
+
+void MadcLogStreambuf::flush_line()
+{
+    if ( _line.empty() )
+	return;
+    if ( _engine )
+	_engine->write_log(_level, _line);
+    else
+    {
+	MadcEngine fallback;
+	std::cerr << fallback.format_log_message(_level, _line) << std::endl;
+    }
+    _line.clear();
+}
+
+int MadcLogStreambuf::overflow(int ch)
+{
+    if ( _engine && !_engine->should_log(_level) )
+    {
+	if ( !_line.empty() )
+	    _line.clear();
+	return ch == EOF ? 0 : ch;
+    }
+    if ( ch == EOF )
+    {
+	flush_line();
+	return 0;
+    }
+    if ( ch == '\n' )
+	flush_line();
+    else
+	_line.push_back((char)ch);
+    return ch;
+}
+
+std::streamsize MadcLogStreambuf::xsputn(const char *s, std::streamsize n)
+{
+    if ( _engine && !_engine->should_log(_level) )
+	return n;
+    for ( std::streamsize i = 0; i < n; ++i )
+    {
+	if ( s[i] == '\n' )
+	    flush_line();
+	else
+	    _line.push_back(s[i]);
+    }
+    return n;
+}
+
+int MadcLogStreambuf::sync()
+{
+    flush_line();
+    return 0;
+}
+
+MadcLogStream::MadcLogStream(MadcEngine::LogLevel lvl)
+    : std::ostream(&_buf), _buf(lvl)
+{
+}
+
+namespace madc
+{
+    MadcLogStream emerg(MadcEngine::LogLevel::emerg);
+    MadcLogStream alert(MadcEngine::LogLevel::alert);
+    MadcLogStream crit(MadcEngine::LogLevel::crit);
+    MadcLogStream err(MadcEngine::LogLevel::err);
+    MadcLogStream warn(MadcEngine::LogLevel::warn);
+    MadcLogStream notice(MadcEngine::LogLevel::notice);
+    MadcLogStream info(MadcEngine::LogLevel::info);
+    MadcLogStream debug(MadcEngine::LogLevel::debug);
+}
+
+bool Program::load_file(const char *fname)
+{
+    TokenProgram *tp = tokenize(fname);
+    if ( !tp )
+	return false;
+    if ( !parse(tp) )
+	return false;
+    return compile();
+}
+
+bool Program::load_buffer(const std::string &source_text,
+			  const std::string &display_name)
+{
+    TokenProgram *tp = tokenize_buffer(source_text, display_name);
+    if ( !tp )
+	return false;
+    if ( !parse(tp) )
+	return false;
+    return compile();
+}
+
+void Program::BuiltinRegistry::add_core_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
+{
+    core_functions.push_back({id, params, extfunc, is_method});
+}
+
+void Program::BuiltinRegistry::add_process_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
+{
+    process_functions.push_back({id, params, extfunc, is_method});
+}
+
+void Program::BuiltinRegistry::add_dlfcn_function(const std::string &id, const datatype_vec_t &params, fVOIDFUNC extfunc, bool is_method)
+{
+    dlfcn_functions.push_back({id, params, extfunc, is_method});
+}
+
+void Program::NamespaceRegistry::add_namespace(const std::string &name, namespace_init_fn_t init)
+{
+    specs.push_back({name, init});
+}
+
 // add file stream methods
 void Program::add_fstream_methods()
 {
@@ -779,18 +3043,20 @@ void Program::add_fstream_methods()
     ddFSTREAM.methods.push_back(var);
 }
 
-// add system library functions
-void Program::add_functions()
+void Program::populate_builtin_registry()
 {
-    addFunction("printstarred", datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)printstarred );
-    addFunction("printstr",     datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)printstring);
-    addFunction("printstream",  datatype_vec_t{DataType::dtVOID, DataType::dtSSTREAM}, (fVOIDFUNC)printstream);
-    addFunction("puts",		datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)puts);
-    addFunction("puti",		datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
-    addFunction("putu",		datatype_vec_t{DataType::dtVOID, DataType::dtUINT64}, (fVOIDFUNC)printuinteger);
-    addFunction("putd",		datatype_vec_t{DataType::dtVOID, DataType::dtDOUBLE}, (fVOIDFUNC)printdouble);
-    addFunction("putf",		datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
-    addFunction("putchar",	datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
+    if ( builtin_registry.defaults_loaded )
+	return;
+
+    builtin_registry.add_core_function("printstarred", datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)printstarred);
+    builtin_registry.add_core_function("printstr",     datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)printstring);
+    builtin_registry.add_core_function("printstream",  datatype_vec_t{DataType::dtVOID, DataType::dtSSTREAM}, (fVOIDFUNC)printstream);
+    builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)puts);
+    builtin_registry.add_core_function("puti",	 datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
+    builtin_registry.add_core_function("putu",	 datatype_vec_t{DataType::dtVOID, DataType::dtUINT64}, (fVOIDFUNC)printuinteger);
+    builtin_registry.add_core_function("putd",	 datatype_vec_t{DataType::dtVOID, DataType::dtDOUBLE}, (fVOIDFUNC)printdouble);
+    builtin_registry.add_core_function("putf",	 datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
+    builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     // istream `getline(istream&, string&)` lives in std:: — moved out of
     // the global symbol table so user code defining its own `getline`
     // (e.g. SMAUG IMC's `static const char *getline(char *buffer)`)
@@ -798,28 +3064,104 @@ void Program::add_functions()
     // bare `getline` falls back to the user-defined function or libc
     // dlsym. Registered under `__std_getline` and aliased into
     // namespace_map["std"]["getline"] in add_namespaces().
-    addFunction("__std_getline",	datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
-    addFunction("endl",		datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
-    // type conversion functions
-    addFunction("to_string",	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
-    addFunction("to_string_d",	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtDOUBLE}, (fVOIDFUNC)madc_to_string_d);
-    addFunction("stoi",		datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_stoi);
-    addFunction("stod",		datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
+    builtin_registry.add_core_function("__std_getline", datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
+    builtin_registry.add_core_function("endl", datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
+    builtin_registry.add_core_function("to_string", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
+    builtin_registry.add_core_function("to_string_d", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtDOUBLE}, (fVOIDFUNC)madc_to_string_d);
+    builtin_registry.add_core_function("stoi", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_stoi);
+    builtin_registry.add_core_function("stod", datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
     // strlen is NOT pre-registered: it resolves via dlsym fallback to libc's
     // strlen(const char *). For std::string, use str.length() or str.size().
-    // C library functions
-    addFunction("system",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
-    addFunction("getenv",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
-    addFunction("get_argv",	datatype_vec_t{DataType::dtCHARptr, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
-    addFunction("setenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_setenv);
-    addFunction("unsetenv",	datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)madc_unsetenv);
-    addFunction("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT)}, (fVOIDFUNC)__errno_location);
-    // dlopen/dlsym/dlclose — dynamic library loading
-    addFunction("dlopen",	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlopen);
-    addFunction("dlsym",	datatype_vec_t{DataType::dtINT64, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlsym);
-    addFunction("dlclose",	datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
-    // dlcall — call through function pointer (variadic, handled specially in compiler)
-    addFunction("dlcall",	datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
+
+    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
+    builtin_registry.add_process_function("getenv", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
+    builtin_registry.add_process_function("get_argv", datatype_vec_t{DataType::dtCHARptr, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
+    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_setenv);
+    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)madc_unsetenv);
+    builtin_registry.add_process_function("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT32)}, (fVOIDFUNC)__errno_location);
+
+    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlopen);
+    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlsym);
+    builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
+    builtin_registry.add_dlfcn_function("dlcall", datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
+
+    builtin_registry.defaults_loaded = true;
+}
+
+void Program::populate_namespace_registry()
+{
+    if ( namespace_registry.defaults_loaded )
+	return;
+
+    namespace_registry.add_namespace("std", register_std_namespace_spec);
+    namespace_registry.add_namespace("madc", register_madc_namespace_spec);
+    namespace_registry.add_namespace("php", register_php_namespace_spec);
+    namespace_registry.add_namespace("perl", register_perl_namespace_spec);
+    namespace_registry.add_namespace("python", register_python_namespace_spec);
+    namespace_registry.add_namespace("ruby", register_ruby_namespace_spec);
+    namespace_registry.add_namespace("js", register_js_namespace_spec);
+    namespace_registry.add_namespace("rust", register_rust_namespace_spec);
+    namespace_registry.defaults_loaded = true;
+}
+
+void Program::register_function_specs(const std::vector<FunctionRegistrationSpec> &specs)
+{
+    for ( std::vector<FunctionRegistrationSpec>::const_iterator it = specs.begin(); it != specs.end(); ++it )
+	addFunction(it->id, it->params, it->extfunc, it->is_method);
+}
+
+void Program::add_core_functions()
+{
+    register_function_specs(builtin_registry.core_functions);
+}
+
+void Program::add_process_functions()
+{
+    // glibc's errno is a 4-byte int. Registering this as int*-to-int64 made
+    // madc's `*p` deref read 8 bytes and silently broke errno comparisons.
+    register_function_specs(builtin_registry.process_functions);
+}
+
+void Program::add_dlfcn_functions()
+{
+    for ( std::vector<FunctionRegistrationSpec>::const_iterator it = builtin_registry.dlfcn_functions.begin();
+	  it != builtin_registry.dlfcn_functions.end(); ++it )
+    {
+	if ( !is_dynamic_symbol_allowed(it->id) )
+	    continue;
+	addFunction(it->id, it->params, it->extfunc, it->is_method);
+    }
+}
+
+void Program::register_namespace_specs()
+{
+    for ( std::vector<NamespaceRegistrationSpec>::const_iterator it = namespace_registry.specs.begin(); it != namespace_registry.specs.end(); ++it )
+    {
+	if ( !is_namespace_registration_enabled(it->name) )
+	    continue;
+	if ( it->init )
+	    it->init(*this);
+    }
+}
+
+void Program::ensure_registration_config()
+{
+    if ( engine )
+	return;
+
+    populate_builtin_registry();
+    populate_namespace_registry();
+}
+
+// add system library functions
+void Program::add_functions()
+{
+    if ( registration_policy.enable_core_functions )
+	add_core_functions();
+    if ( registration_policy.enable_process_functions )
+	add_process_functions();
+    if ( registration_policy.enable_dlfcn_functions )
+	add_dlfcn_functions();
 }
 
 // define some global variables
@@ -864,11 +3206,11 @@ Variable *Program::lazy_resolve(const std::string &name)
     if ( header == LAZY_IOSTREAM )
     {
 	if ( name == "cout" )
-	    var = addGlobal(ddOSTREAM, "cout", 1, std::cout.rdbuf());
+	    var = addGlobal(ddOSTREAM, "cout", 1, output().rdbuf());
 	else if ( name == "cin" )
-	    var = addGlobal(ddISTREAM, "cin", 1, std::cin.rdbuf());
+	    var = addGlobal(ddISTREAM, "cin", 1, input().rdbuf());
 	else if ( name == "cerr" )
-	    var = addGlobal(ddOSTREAM, "cerr", 1, std::cerr.rdbuf());
+	    var = addGlobal(ddOSTREAM, "cerr", 1, error().rdbuf());
 
 	if ( var )
 	    namespace_map["std"][name] = var;
@@ -935,6 +3277,10 @@ void Program::add_namespaces()
     var = findVariable(gl_name);
     if (var) std_ns["getline"] = var;
 
+    std::string endl_name = "endl";
+    var = findVariable(endl_name);
+    if (var) std_ns["endl"] = var;
+
     DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
 }
 
@@ -969,11 +3315,132 @@ void Program::add_madc_namespace()
 	(fVOIDFUNC)madc_regex_replace);
     if (var) madc_ns["regex_replace"] = var;
 
+    Variable *scope_var = NULL;
+
+    var = addFunction("__madc_eval_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval);
+    scope_var = addFunction("__madc_eval_ctx_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_ctx);
+    if (var) madc_ns["eval"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+    if (var) madc_ns["eval_unit"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_bool_runtime",
+	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_bool);
+    scope_var = addFunction("__madc_eval_bool_ctx_runtime",
+	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_bool_ctx);
+    if (var) madc_ns["eval_bool"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_int_runtime",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_int);
+    scope_var = addFunction("__madc_eval_int_ctx_runtime",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_int_ctx);
+    if (var) madc_ns["eval_int"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_double_runtime",
+	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_double);
+    scope_var = addFunction("__madc_eval_double_ctx_runtime",
+	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_double_ctx);
+    if (var) madc_ns["eval_double"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_string_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_string);
+    scope_var = addFunction("__madc_eval_string_ctx_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_string_ctx);
+    if (var) madc_ns["eval_string"] =
+	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
+
+    var = addFunction("__madc_eval_expression_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression);
+    scope_var = addFunction("__madc_eval_expression_ctx_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_ctx);
+    if (var) madc_ns["eval_expression"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+
+    if (scope_var) madc_ns["eval_expression_ctx"] = scope_var;
+
+    var = addFunction("__madc_eval_expression_bool_runtime",
+	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression_bool);
+    scope_var = addFunction("__madc_eval_expression_bool_ctx_runtime",
+	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_bool_ctx);
+    if (var) madc_ns["eval_expression_bool"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+    if (scope_var) madc_ns["eval_expression_bool_ctx"] = scope_var;
+
+    var = addFunction("__madc_eval_expression_int_runtime",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression_int);
+    scope_var = addFunction("__madc_eval_expression_int_ctx_runtime",
+	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_int_ctx);
+    if (var) madc_ns["eval_expression_int"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+    if (scope_var) madc_ns["eval_expression_int_ctx"] = scope_var;
+
+    var = addFunction("__madc_eval_expression_double_runtime",
+	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression_double);
+    scope_var = addFunction("__madc_eval_expression_double_ctx_runtime",
+	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_double_ctx);
+    if (var) madc_ns["eval_expression_double"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+    if (scope_var) madc_ns["eval_expression_double_ctx"] = scope_var;
+
+    var = addFunction("__madc_eval_expression_string_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	(fVOIDFUNC)madc_runtime_eval_expression_string);
+    scope_var = addFunction("__madc_eval_expression_string_ctx_runtime",
+	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_runtime_eval_expression_string_ctx);
+    if (var) madc_ns["eval_expression_string"] =
+	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
+    if (scope_var) madc_ns["eval_expression_string_ctx"] = scope_var;
+
+    var = addFunction("__madc_context_set_int_runtime",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtINT64},
+	(fVOIDFUNC)madc_context_set_int);
+    if (var) madc_ns["context_set_int"] = var;
+
+    var = addFunction("__madc_context_set_real_runtime",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtDOUBLE},
+	(fVOIDFUNC)madc_context_set_real);
+    if (var) madc_ns["context_set_real"] = var;
+
+    var = addFunction("__madc_context_set_string_runtime",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtCHARptr},
+	(fVOIDFUNC)madc_context_set_string);
+    if (var) madc_ns["context_set_string"] = var;
+
+    var = addFunction("__madc_context_set_array_runtime",
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtARRAY},
+	(fVOIDFUNC)madc_context_set_array);
+    if (var) madc_ns["context_set_array"] = var;
+
     DBG(std::cout << "add_madc_namespace() registered madc:: with " << madc_ns.size() << " members" << std::endl);
 }
 
 void Program::_parser_init()
 {
+    ensure_registration_config();
     add_functions();
     add_string_methods();
     add_sstream_methods();
@@ -982,25 +3449,192 @@ void Program::_parser_init()
     // populate lazy_map for included headers (actual registration deferred to first use)
     if ( _include_iostream ) add_iostream();
     if ( _include_stdio )   add_stdio();
-    add_namespaces();
-    add_madc_namespace();
-    add_php_namespace();
-    add_perl_namespace();
-    add_python_namespace();
-    add_ruby_namespace();
-    add_js_namespace();
+    register_namespace_specs();
     _braces = 0;
+}
+
+bool Program::is_namespace_registration_enabled(const std::string &name) const
+{
+    if ( name == "std" ) return registration_policy.enable_std_namespace;
+    if ( name == "madc" ) return registration_policy.enable_madc_namespace;
+    if ( name == "php" ) return registration_policy.enable_php_namespace;
+    if ( name == "perl" ) return registration_policy.enable_perl_namespace;
+    if ( name == "python" ) return registration_policy.enable_python_namespace;
+    if ( name == "ruby" ) return registration_policy.enable_ruby_namespace;
+    if ( name == "js" ) return registration_policy.enable_js_namespace;
+    if ( name == "rust" ) return registration_policy.enable_rust_namespace;
+    return true;
+}
+
+bool Program::is_dynamic_library_loading_enabled() const
+{
+    return registration_policy.enable_dlfcn_functions;
+}
+
+bool Program::is_dynamic_symbol_fallback_enabled() const
+{
+    return registration_policy.enable_dlfcn_functions;
+}
+
+bool Program::is_runtime_eval_source_scope_access_enabled() const
+{
+    return registration_policy.enable_runtime_eval_source_scope_access;
+}
+
+bool Program::is_runtime_eval_expression_scope_access_enabled() const
+{
+    return registration_policy.enable_runtime_eval_expression_scope_access;
+}
+
+bool Program::is_embedded_header_allowed(const std::string &name) const
+{
+    if ( !registration_policy.restrict_headers_to_allowlist
+      && registration_policy.allowed_headers.empty() )
+	return true;
+    for ( std::size_t i = 0; i < registration_policy.allowed_headers.size(); ++i )
+    {
+	if ( registration_policy.allowed_headers[i] == name )
+	    return true;
+    }
+    return false;
+}
+
+bool Program::is_dynamic_symbol_allowed(const std::string &name) const
+{
+    if ( !registration_policy.restrict_dlfcn_symbols_to_allowlist
+      && registration_policy.allowed_dlfcn_symbols.empty() )
+	return true;
+    for ( std::size_t i = 0; i < registration_policy.allowed_dlfcn_symbols.size(); ++i )
+    {
+	if ( registration_policy.allowed_dlfcn_symbols[i] == name )
+	    return true;
+    }
+    return false;
+}
+
+Variable *Program::runtime_eval_scope_target(Variable *var) const
+{
+    if ( !var )
+	return var;
+
+    if ( is_runtime_eval_source_helper_name(var->name)
+      && !is_runtime_eval_source_scope_access_enabled() )
+	return var;
+
+    if ( is_runtime_eval_expression_helper_name(var->name)
+      && !is_runtime_eval_expression_scope_access_enabled() )
+	return var;
+
+    std::string target_name;
+    if ( var->name == "__madc_eval_runtime" )
+	target_name = "__madc_eval_ctx_runtime";
+    else if ( var->name == "__madc_eval_bool_runtime" )
+	target_name = "__madc_eval_bool_ctx_runtime";
+    else if ( var->name == "__madc_eval_int_runtime" )
+	target_name = "__madc_eval_int_ctx_runtime";
+    else if ( var->name == "__madc_eval_double_runtime" )
+	target_name = "__madc_eval_double_ctx_runtime";
+    else if ( var->name == "__madc_eval_string_runtime" )
+	target_name = "__madc_eval_string_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_runtime" )
+	target_name = "__madc_eval_expression_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_bool_runtime" )
+	target_name = "__madc_eval_expression_bool_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_int_runtime" )
+	target_name = "__madc_eval_expression_int_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_double_runtime" )
+	target_name = "__madc_eval_expression_double_ctx_runtime";
+    else if ( var->name == "__madc_eval_expression_string_runtime" )
+	target_name = "__madc_eval_expression_string_ctx_runtime";
+    else
+	return var;
+
+    std::string lookup = target_name;
+    Variable *mapped = tkProgram ? tkProgram->findVariable(lookup) : NULL;
+    return mapped ? mapped : var;
+}
+
+namespace {
+
+bool is_runtime_eval_scope_supported_variable(Variable *var)
+{
+    if ( !var || !var->type )
+	return false;
+    if ( var->type->is_function() )
+	return false;
+    if ( var->count != 1 || var->is_fixed_array() || var->is_vla() )
+	return false;
+    if ( var->name.compare(0, 7, "__madc_") == 0 )
+	return false;
+    if ( var->name.compare(0, 11, "__literal__") == 0 )
+	return false;
+    if ( is_runtime_eval_scope_helper_name(var->name) )
+	return false;
+
+    DataType raw = var->type->rawtype();
+    return raw == DataType::dtBOOL
+	|| var->type->is_integer()
+	|| var->type->is_real()
+	|| raw == DataType::dtSTRING
+	|| raw == DataType::dtARRAY;
+}
+
+void append_runtime_eval_scope_variable(std::vector<Variable *> &out,
+					std::set<std::string> &seen,
+					Variable *var)
+{
+    if ( !is_runtime_eval_scope_supported_variable(var) )
+	return;
+    if ( seen.insert(var->name).second )
+	out.push_back(var);
+}
+
+} // namespace
+
+void Program::collect_runtime_eval_scope_variables(std::vector<Variable *> &out) const
+{
+    out.clear();
+    std::set<std::string> seen;
+    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+
+    for ( TokenCpnd *scope = code; scope; scope = scope->parent )
+    {
+	for ( variable_vec_iter it = scope->variables.begin(); it != scope->variables.end(); ++it )
+	    append_runtime_eval_scope_variable(out, seen, *it);
+    }
+
+    if ( code && code->method )
+    {
+	for ( variable_vec_iter it = code->method->parameters.begin();
+	      it != code->method->parameters.end(); ++it )
+	    append_runtime_eval_scope_variable(out, seen, *it);
+    }
+
+    if ( tkProgram )
+    {
+	for ( variable_vec_iter it = tkProgram->variables.begin(); it != tkProgram->variables.end(); ++it )
+	    append_runtime_eval_scope_variable(out, seen, *it);
+    }
 }
 
 // find variable matching id anywhere accessable from codeblock
 Variable *Program::findVariable(TokenCpnd *code, std::string &id)
 {
     Variable *var;
+    const char *debug_var = ::getenv("MADC_DEBUG_AOT_VAR");
 
     if ( code )
     {
 	if ( (var=code->findVariable(id)) )
+	{
+	    if ( debug_var && id == debug_var )
+		std::fprintf(stderr,
+		    "[aot] findVariable local id=%s var=%p data=%p flags=%u count=%u fixed=%d code=%p\n",
+		    id.c_str(), (void *)var, var ? var->data : NULL,
+		    var ? (unsigned)var->flags : 0, var ? (unsigned)var->count : 0,
+		    (var && var->is_fixed_array()) ? 1 : 0, (void *)code);
 	    return var;
+	}
 	if ( (var=code->findParameter(id)) )
 	    return var;
     }
@@ -1009,6 +3643,13 @@ Variable *Program::findVariable(TokenCpnd *code, std::string &id)
 	DBG(std::cout << "Program::findVariable(code, " << id << ") not found" << std::endl);
 	return NULL;
     }
+
+    if ( debug_var && id == debug_var )
+	std::fprintf(stderr,
+	    "[aot] findVariable global id=%s var=%p data=%p flags=%u count=%u fixed=%d code=%p\n",
+	    id.c_str(), (void *)var, var ? var->data : NULL,
+	    var ? (unsigned)var->flags : 0, var ? (unsigned)var->count : 0,
+	    (var && var->is_fixed_array()) ? 1 : 0, (void *)code);
 
     DBG(std::cout << "Program::findVariable(code, " << id << ") found ptr: " << var << std::endl);
 
@@ -1034,6 +3675,166 @@ Variable *Program::findVariable(std::string &s)
     DBG(std::cout << "Program::findVariable(" << s << ") found ptr: " << var << std::endl);
 
     return var;
+}
+
+bool Program::is_known_namespace(const std::string &name) const
+{
+    return name == "c" || namespace_map.find(name) != namespace_map.end();
+}
+
+void Program::set_namespace_preference(const std::vector<std::string> &order, TokenBase *tb)
+{
+    if ( order.empty() )
+	Throw(tb) << "Expecting at least one namespace name in prefer directive" << flush;
+    for ( size_t i = 0; i < order.size(); ++i )
+    {
+	if ( !is_known_namespace(order[i]) )
+	    Throw(tb) << "Unknown namespace '" << order[i] << "' in prefer directive" << flush;
+    }
+    namespace_preference = order;
+}
+
+Variable *Program::find_namespace_member(const std::string &ns_name, const std::string &member_name)
+{
+    namespace_map_t::const_iterator nsi = namespace_map.find(ns_name);
+    if ( nsi == namespace_map.end() )
+	return NULL;
+    variable_map_t::const_iterator vmi = nsi->second.find(member_name);
+    return vmi == nsi->second.end() ? NULL : vmi->second;
+}
+
+Variable *Program::resolve_preferred_identifier(TokenIdent *ident_tb, bool expression_head)
+{
+    if ( !ident_tb ) return NULL;
+
+    if ( expression_head && !current_namespace.empty() )
+    {
+	Variable *var = find_namespace_member(current_namespace, ident_tb->str);
+	if ( var ) return var;
+    }
+
+    if ( namespace_preference.empty() )
+	return resolve_c_identifier(*this, ident_tb, expression_head);
+
+    for ( size_t i = 0; i < namespace_preference.size(); ++i )
+    {
+	const std::string &pref = namespace_preference[i];
+	if ( pref == "c" )
+	{
+	    Variable *var = resolve_c_identifier(*this, ident_tb, expression_head);
+	    if ( var ) return var;
+	    continue;
+	}
+	Variable *var = find_namespace_member(pref, ident_tb->str);
+	if ( var ) return var;
+    }
+
+    return resolve_c_identifier(*this, ident_tb, expression_head);
+}
+
+void Program::set_expression_context_root(const madc::value *root)
+{
+    expression_context_root = root;
+}
+
+void Program::clear_expression_context_root()
+{
+    expression_context_root = NULL;
+}
+
+bool Program::has_expression_context_root() const
+{
+    return expression_context_root != NULL && expression_context_root->is_object();
+}
+
+void Program::push_runtime_scope()
+{
+    runtime_scope_prev = g_runtime_program;
+    g_runtime_program = this;
+}
+
+void Program::pop_runtime_scope()
+{
+    if ( g_runtime_program == this )
+	g_runtime_program = runtime_scope_prev;
+    runtime_scope_prev = NULL;
+}
+
+Program *Program::active_runtime_program()
+{
+    return g_runtime_program;
+}
+
+bool Program::runtime_eval_source(const std::string &source_text,
+				  madc::value &result,
+				  const std::string &display_name,
+				  const madc::value *context,
+				  const char *wrapper_return_type)
+{
+    return madc::internal_program_runtime_eval_source(*this, source_text, result, display_name, context, wrapper_return_type);
+}
+
+bool Program::runtime_eval_expression(const std::string &expression,
+				      madc::value &result,
+				      const std::string &display_name,
+				      const madc::value *context)
+{
+    return madc::internal_program_runtime_eval_expression(*this,
+							 expression,
+							 result,
+							 display_name,
+							 context);
+}
+
+TokenBase *Program::resolve_expression_context_identifier(TokenIdent *ident_tb)
+{
+    if ( !ident_tb || !has_expression_context_root() )
+	return NULL;
+
+    const std::map<std::string, madc::value> &fields = expression_context_root->as_object();
+    std::map<std::string, madc::value>::const_iterator it = fields.find(ident_tb->str);
+    if ( it == fields.end() )
+	return NULL;
+
+    if ( it->second.is_object() )
+    {
+	TokenExprContextObject *obj = new TokenExprContextObject(ident_tb->str, &it->second);
+	copy_token_location(obj, ident_tb);
+	return obj;
+    }
+
+    return make_expression_context_literal(*this, it->second, ident_tb);
+}
+
+TokenBase *Program::resolve_expression_context_member(TokenBase *lhs, TokenIdent *member_tb)
+{
+    if ( !lhs || !member_tb )
+	return NULL;
+
+    TokenExprContextObject *obj = dynamic_cast<TokenExprContextObject *>(lhs);
+    if ( !obj || !obj->context_value || !obj->context_value->is_object() )
+	return NULL;
+
+    const std::map<std::string, madc::value> &fields = obj->context_value->as_object();
+    std::map<std::string, madc::value>::const_iterator it = fields.find(member_tb->str);
+    if ( it == fields.end() )
+	Throw(member_tb) << "context path '" << obj->path << "." << member_tb->str
+			 << "' cannot find field '" << member_tb->str << "'" << flush;
+
+    if ( it->second.is_object() )
+    {
+	TokenExprContextObject *next = new TokenExprContextObject(obj->path + "." + member_tb->str,
+								  &it->second);
+	copy_token_location(next, member_tb);
+	return next;
+    }
+
+    TokenBase *resolved = make_expression_context_literal(*this, it->second, member_tb);
+    if ( !resolved )
+	Throw(member_tb) << "context path '" << obj->path << "." << member_tb->str
+			 << "' resolves to unsupported value kind '"
+			 << madc::value::kind_name(it->second.type()) << "'" << flush;
+    return resolved;
 }
 
 // creates global variable named after string,
@@ -1078,6 +3879,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 		return var;
 	}
 	var = new Variable(id, dd, c, init, alloc);
+	var->flags |= vfLOCAL;
 	code->variables.push_back(var);
 	DBG(std::cout << "Added new variable type: " << dd.name << " size: "
 		<< dd.size << " name: " << id << " ptr: " << var << " to codeblock: " << code << std::endl);
@@ -1236,6 +4038,14 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	method = new Method(*var);
 	var->data = (void *)method;
 	method->x86code = (void *)extfunc;
+	if ( extfunc )
+	{
+	    Dl_info _dli;
+	    if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
+		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
+	    else
+		external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
+	}
 
 	return var;
     }
@@ -1252,6 +4062,14 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	var->data = (void *)method;
     }
     method->x86code = (void *)extfunc;
+    if ( extfunc )
+    {
+	Dl_info _dli;
+	if ( dladdr((void *)extfunc, &_dli) && _dli.dli_sname && _dli.dli_sname[0] )
+	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = _dli.dli_sname;
+	else
+	    external_symbol_map[reinterpret_cast<uintptr_t>(extfunc)] = id;
+    }
 
     return var;
 }
@@ -1437,12 +4255,46 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
 	DBG(cout << "parseCallFunc() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
-	if ( !(tb=parseExpression(tb, true)) ) { break; }
+	std::string saved_namespace = current_namespace;
+	current_namespace.clear();
+	tb = parseExpression(tb, true);
+	current_namespace = saved_namespace;
+	if ( !tb ) { break; }
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
 	tc->parameters.push_back(tb);
     }
+
+    bool needs_runtime_scope_context = tc->auto_scope_context;
+    if ( !needs_runtime_scope_context && is_runtime_eval_scope_ctx_helper_name(tc->var.name) )
+    {
+	FuncDef *fd = dynamic_cast<FuncDef *>(tc->var.type);
+	Method *md = (Method *)tc->var.data;
+	if ( fd && !fd->is_varargs
+	  && !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
+	{
+	    size_t expected = fd->parameters.size()
+		- (fd->has_captures ? 1 : 0)
+		- (md && md->owner_class ? 1 : 0);
+	    needs_runtime_scope_context = (tc->argc() + 1 == expected);
+	}
+    }
+
+    if ( needs_runtime_scope_context )
+    {
+	TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
+	if ( !scope )
+	    Throw(tc) << "runtime eval scope capture requires an active compound scope" << flush;
+	static uint64_t runtime_eval_scope_serial = 0;
+	std::string ctx_name = "__madc_eval_scope_ctx_"
+	    + std::to_string(++runtime_eval_scope_serial);
+	Variable *ctx_var = addVariable(scope, ddARRAY, ctx_name, 1, NULL, false);
+	TokenScopeContext *ctx_token = new TokenScopeContext(*ctx_var);
+	collect_runtime_eval_scope_variables(ctx_token->scope_vars);
+	tc->parameters.push_back(ctx_token);
+    }
+
     // (need check for optional parameters)
     // skip arg count check for dlopen functions (0 declared params = variadic-like)
     {
@@ -1505,7 +4357,11 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 	}
 	if ( tb->id() == TokenID::tkSemi ) { break; }
 	DBG(cout << "parseCallMethod() brackets: " << brackets << " tokenID(" << (char)tb->get() << "): " << (int)tb->id() << " calling parseExpression" << endl);
-	if ( !(tb=parseExpression(tb, true)) ) { break; }
+	std::string saved_namespace = current_namespace;
+	current_namespace.clear();
+	tb = parseExpression(tb, true);
+	current_namespace = saved_namespace;
+	if ( !tb ) { break; }
 	if ( tb->id() == TokenID::tkClBrk ) { --brackets; continue; }
 	DBG(cout << "parseExpression returned type(): " << (int)tb->type() << " id(): " << (int)tb->id() << endl);
 	DBG(cout << "calling tc(" << tc->var.name << ")[" << (uint64_t)tc << "]->parameters.push_back(tb[" << (uint64_t)tb << "])" << endl);
@@ -1540,13 +4396,20 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 
     std::string name = ((TokenIdent *)head)->str;
     Variable *var = findVariable(name);
-    if ( !var )
-	Throw(head) << "undeclared identifier '" << name << "'" << flush;
-
-    TokenBase *result = new TokenVar(*var);
-    result->file = head->file;
-    result->line = head->line;
-    result->column = head->column;
+    TokenBase *result = NULL;
+    if ( var )
+    {
+	result = new TokenVar(*var);
+	result->file = head->file;
+	result->line = head->line;
+	result->column = head->column;
+    }
+    else
+    {
+	result = resolve_expression_context_identifier((TokenIdent *)head);
+	if ( !result )
+	    Throw(head) << "undeclared identifier '" << name << "'" << flush;
+    }
 
     while ( peekToken() )
     {
@@ -1560,6 +4423,17 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		Throw(mtb ? mtb : op_tb) << "expected member name after '"
 		    << (is_arrow ? "->" : ".") << "'" << flush;
 	    std::string mname = contextual_identifier_name(mtb);
+	    TokenIdent member_ident(mname);
+	    copy_token_location(&member_ident, mtb);
+
+	    if ( !is_arrow )
+	    {
+		if ( TokenBase *ctx_member = resolve_expression_context_member(result, &member_ident) )
+		{
+		    result = ctx_member;
+		    continue;
+		}
+	    }
 
 	    DataDef *obj_type = result->datadef();
 	    if ( is_arrow )
@@ -1595,6 +4469,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    tm->line = op_tb->line;
 	    tm->column = op_tb->column;
 	    result = tm;
+	    var = mvar;
 	    continue;
 	}
 	if ( pid == TokenID::tkOpSqr )
@@ -1626,6 +4501,63 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	break;
     }
     return result;
+}
+
+TokenFunc *Program::build_expression_function(TokenProgram *tp,
+					      TokenBase *expr,
+					      DataDef *return_type,
+					      const std::string &function_name,
+					      bool have_result,
+					      const std::string &result_name)
+{
+    if ( !expr || !return_type || function_name.empty() )
+	return NULL;
+
+    std::string fn_name = function_name;
+    FuncDef *func = new FuncDef(*return_type);
+    Variable *fn_var = addVariable(NULL, *func, fn_name, 1, NULL, false);
+    Method *method = new Method(*fn_var);
+    fn_var->data = (void *)method;
+
+    TokenFunc *tf = new TokenFunc(*fn_var);
+    tf->method = method;
+    copy_token_location(tf, expr);
+
+    if ( have_result )
+    {
+	std::string local_result_name = result_name;
+	Variable *result_var = addVariable(tf, *return_type, local_result_name, 1, NULL, true);
+	TokenAssign *assign = new TokenAssign();
+	TokenVar *lhs = new TokenVar(*result_var);
+	copy_token_location(lhs, expr);
+	assign->left = lhs;
+	assign->right = expr;
+	copy_token_location(assign, expr);
+	lhs->parent = assign;
+	expr->parent = assign;
+	tf->statements.push_back((TokenStmt *)assign);
+
+	TokenRETURN *ret = new TokenRETURN();
+	TokenVar *ret_value = new TokenVar(*result_var);
+	copy_token_location(ret_value, expr);
+	ret->returns = ret_value;
+	copy_token_location(ret, expr);
+	ret_value->parent = ret;
+	tf->statements.push_back((TokenStmt *)ret);
+    }
+    else
+    {
+	expr->parent = tf;
+	tf->statements.push_back((TokenStmt *)expr);
+	TokenRETURN *ret = new TokenRETURN();
+	copy_token_location(ret, expr);
+	tf->statements.push_back((TokenStmt *)ret);
+    }
+
+    ast.push(tp);
+    ast.push(tf);
+    pending_funcs.push_back(tf);
+    return tf;
 }
 
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
@@ -2654,208 +5586,25 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		TokenIdent *ident_tb = tb->type() == TokenType::ttIdentifier
 		    ? (TokenIdent *)tb
 		    : &contextual_ident;
-		// sizeof(type) — resolve to integer constant at parse time
-		if ( ident_tb->str == "sizeof" )
+		bool expression_head = exStack.empty() && opStack.empty();
+		// sizeof / alignof — resolve to integer constant at parse time.
+		if ( ident_tb->str == "sizeof" || is_alignof_identifier(ident_tb->str) )
 		{
-		    // C also accepts `sizeof expr` (no parens) for unary
-		    // expressions: `sizeof ok_otype`, `sizeof *a`, `sizeof r`.
-		    // When the follower isn't `(`, parse a postfix chain (or
-		    // a `*` deref of one) and use the result's datadef size.
-		    if ( peekToken() && peekToken()->id() != TokenID::tkOpBrk )
-		    {
-			TokenBase *probe = peekToken();
-			bool deref = (probe->id() == TokenID::tkMul);
-			if ( deref )
-			{
-			    nextToken(); // consume `*`
-			    probe = peekToken();
-			}
-			if ( !probe || !is_contextual_identifier_token(probe) )
-			    Throw(tb) << "Expecting '(' or identifier after sizeof" << flush;
-			TokenBase *id_tb = nextToken();
-			TokenBase *chain = parsePostfixChain(id_tb);
-			DataDef *cdd = chain ? chain->datadef() : NULL;
-			if ( !cdd )
-			    Throw(id_tb) << "sizeof: cannot determine type of expression" << flush;
-			size_t sz = cdd->size;
-			if ( deref && cdd->is_pointer() )
-			{
-			    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(cdd);
-			    if ( pdd && pdd->base_type )
-				sz = pdd->base_type->size;
-			}
-			else if ( !deref )
-			{
-			    if ( TokenVar *tv = dynamic_cast<TokenVar *>(chain) )
-			    {
-				if ( tv->var.is_fixed_array() )
-				    sz = tv->var.type->size * tv->var.total_elements();
-			    }
-			}
-			TokenInt *ti = new TokenInt((int64_t)sz);
-			ti->file = tb->file; ti->line = tb->line; ti->column = tb->column;
-			exStack.push(ti);
-			break;
-		    }
-		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
-			Throw(tb) << "Expecting '(' after sizeof" << flush;
-		    nextToken(); // consume (
-		    TokenBase *type_tb = nextToken(); // consume type
-		    DataDef *dd = NULL;
-		    Variable *var = NULL;
-		    size_t sizeof_value = 0;
-		    if ( type_tb->type() == TokenType::ttDataType )
-			dd = &((TokenDataType *)type_tb)->definition;
-		    else if ( type_tb->type() == TokenType::ttIdentifier )
-		    {
-			std::string tname = ((TokenIdent *)type_tb)->str;
-			var = findVariable(tname);
-			// sizeof(expr) — postfix chain (`buf[0]`, `obj.field`,
-			// `ptr->field`). Take the chain's result datadef's size.
-			if ( var && peekToken()
-			  && (peekToken()->id() == TokenID::tkOpSqr
-			   || peekToken()->id() == TokenID::tkDot
-			   || peekToken()->id() == TokenID::tkDeRef) )
-			{
-			    TokenBase *chain = parsePostfixChain(type_tb);
-			    DataDef *cdd = chain ? chain->datadef() : NULL;
-			    if ( !cdd )
-				Throw(type_tb) << "sizeof: cannot determine type of expression" << flush;
-			    sizeof_value = cdd->size;
-			    // Fixed-array struct members carry their element
-			    // type as datadef() (so the rest of the compiler
-			    // sees `char buf[N]` accesses as char), but
-			    // `sizeof(d->buf)` should report N * elem_size,
-			    // not 1. Closes SMAUG read_from_descriptor's
-			    // `iStart >= sizeof(d->inbuf) - 10` check, which
-			    // underflowed to a negative threshold with sizeof
-			    // returning 1 — every connection's first byte
-			    // tripped the "input overflow! / PUT A LID ON IT"
-			    // path before nanny ever saw the input.
-			    if ( TokenMember *tm = dynamic_cast<TokenMember *>(chain) )
-			    {
-				if ( tm->is_fixed_array_member() )
-				{
-				    DataDef *otype = tm->object.type;
-				    if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
-					otype = opt->base_type;
-				    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype) )
-				    {
-					std::string mname = tm->var.name;
-					sizeof_value *= sdd->m_count(mname);
-				    }
-				}
-			    }
-			    var = NULL;
-			}
-			else if ( var )
-			{
-			    sizeof_value = var->type->size;
-			    if ( var->is_fixed_array() )
-				sizeof_value *= var->total_elements();
-			}
-			// check struct_map
-			if ( !var && !sizeof_value )
-			{
-			    datadef_map_iter dmi = struct_map.find(tname);
-			    if ( dmi != struct_map.end() )
-				dd = dmi->second;
-			    // check datatype_map
-			    if ( !dd )
-			    {
-				datatype_map_iter bmi = datatype_map.find(tname);
-				if ( bmi != datatype_map.end() )
-				    dd = &bmi->second->definition;
-			    }
-			    // check lazy types
-			    if ( !dd )
-				dd = lazy_resolve_type(tname);
-			}
-		    }
-		    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkSTRUCT )
-		    {
-			// sizeof(struct tag)
-			TokenBase *tag_tb = nextToken();
-			if ( tag_tb->type() == TokenType::ttIdentifier )
-			{
-			    std::string tname = ((TokenIdent *)tag_tb)->str;
-			    datadef_map_iter dmi = struct_map.find(tname);
-			    if ( dmi != struct_map.end() )
-				dd = dmi->second;
-			}
-			if ( !dd )
-			    Throw(tag_tb) << "Unknown struct type in sizeof" << flush;
-		    }
-		    else if ( type_tb->id() == TokenID::tkMul )
-		    {
-			// sizeof(*identifier) and sizeof(*expr->member) — element
-			// size of a pointer or fixed array. Standard C idioms:
-			//   sizeof(arr) / sizeof(*arr)        — count elements
-			//   imc_malloc(sizeof(*c->local))     — allocate one
-			TokenBase *deref_tb = nextToken();
-			if ( !deref_tb || !is_contextual_identifier_token(deref_tb) )
-			    Throw(type_tb) << "Expecting identifier after '*' in sizeof" << flush;
-			DataDef *deref_base = NULL;
-			// `*ident.member` / `*ident->member` / `*ident[i]` — postfix
-			// chain. parsePostfixChain hands back a fully resolved node
-			// whose datadef() is the chain's value type. For
-			// sizeof(*chain) we want the dereffed type's size — if the
-			// chain is a pointer, sizeof(*chain) = sizeof(pointed-to);
-			// if it's a fixed array, sizeof(*chain) = sizeof(element).
-			if ( peekToken()
-			  && (peekToken()->id() == TokenID::tkDot
-			   || peekToken()->id() == TokenID::tkDeRef
-			   || peekToken()->id() == TokenID::tkOpSqr) )
-			{
-			    TokenBase *chain = parsePostfixChain(deref_tb);
-			    DataDef *cdd = chain ? chain->datadef() : NULL;
-			    if ( !cdd )
-				Throw(deref_tb) << "sizeof(*expr): cannot determine type" << flush;
-			    if ( cdd->is_pointer() )
-			    {
-				DataDefPTR *cdp = dynamic_cast<DataDefPTR *>(cdd);
-				deref_base = (cdp && cdp->base_type) ? cdp->base_type : &ddINT64;
-			    }
-			    else
-				deref_base = cdd;
-			    sizeof_value = deref_base ? deref_base->size : 8;
-			}
-			else
-			{
-			    std::string dname = contextual_identifier_name(deref_tb);
-			    Variable *dvar = findVariable(dname);
-			    if ( !dvar )
-				Throw(deref_tb) << "undeclared identifier '" << dname << "' in sizeof(*...)" << flush;
-			    if ( dvar->is_fixed_array() )
-			    {
-				// *arr where arr is a fixed array: element type size.
-				sizeof_value = dvar->type->size;
-			    }
-			    else if ( dvar->type->is_pointer() )
-			    {
-				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dvar->type);
-				DataDef *base = (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
-				sizeof_value = base->size;
-			    }
-			    else
-				Throw(deref_tb) << "sizeof(*" << dname << "): not a pointer or array" << flush;
-			}
-		    }
-		    if ( !var && !dd && !sizeof_value )
-			Throw(type_tb) << "Unknown type in sizeof" << flush;
-		    // handle pointer: sizeof(type *)
-		    while ( !var && peekToken() && peekToken()->id() == TokenID::tkMul )
-		    {
-			nextToken(); // consume '*'
-			dd = getPointerType(dd);
-		    }
-		    // consume closing )
-		    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
-			Throw(type_tb) << "Expecting ')' after sizeof type" << flush;
-		    nextToken(); // consume )
-		    if ( !var && !sizeof_value && dd )
-			sizeof_value = dd->size;
-		    exStack.push(new TokenInt((int)sizeof_value));
+		    size_t query_value = evaluate_type_query(*this, tb, ident_tb->str);
+		    TokenInt *ti = new TokenInt((int64_t)query_value);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
+		    break;
+		}
+		if ( is_nullptr_identifier(ident_tb->str) )
+		{
+		    TokenNullptr *tnp = new TokenNullptr();
+		    tnp->file = tb->file;
+		    tnp->line = tb->line;
+		    tnp->column = tb->column;
+		    exStack.push(tnp);
 		    break;
 		}
 		// va_arg(ap, type) — compiler intrinsic for reading variadic args
@@ -2923,6 +5672,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // Accept TokenVar, TokenMember, or TokenSubscript as LHS for dot access.
 		    // Subscript case: tab[i].member for an array of structs.
 		    TokenBase *lhs_dot = exStack.top();
+		    if ( TokenBase *ctx_member = resolve_expression_context_member(lhs_dot, ident_tb) )
+		    {
+			exStack.pop();
+			exStack.push(ctx_member);
+			if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
+			    opStack.pop();
+			break;
+		    }
 		    if ( lhs_dot->type() != TokenType::ttVariable
 		      && lhs_dot->type() != TokenType::ttMember
 		      && lhs_dot->type() != TokenType::ttSubscript )
@@ -3173,6 +5930,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			std::map<std::string, void *>::iterator dli = dlopen_map.find(ns_name);
 			if ( dli == dlopen_map.end() )
 			    Throw(member_tb) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
+			if ( !is_dynamic_symbol_fallback_enabled() )
+			    Throw(member_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
+			if ( !is_dynamic_symbol_allowed(member_name) )
+			    Throw(member_tb) << "dynamic symbol '" << member_name
+					     << "' is not allowed by registration policy" << flush;
 			void *sym = dlsym(dli->second, member_name.c_str());
 			if ( !sym )
 			    Throw(member_tb) << "dlsym failed for '" << member_name << "' in '" << ns_name << "': " << dlerror() << flush;
@@ -3193,20 +5955,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    tb = member_tb; // update tb for line/col tracking below
 		    goto ns_resolved;
 		}
-		// resolve identifier: current namespace → global scope
-		var = NULL;
-		if ( !current_namespace.empty() )
-		{
-		    namespace_map_t::iterator nsi = namespace_map.find(current_namespace);
-		    if ( nsi != namespace_map.end() )
-		    {
-			variable_map_iter vmi = nsi->second.find(ident_tb->str);
-			if ( vmi != nsi->second.end() )
-			    var = vmi->second;
-		    }
-		}
-		if ( !var )
-		    var = findVariable(ident_tb->str);
+		// Statement-head `ns::member(...)` should resolve the callee from
+		// the active namespace first, but once we're inside that call's
+		// arguments / subexpressions, lexical scope should win so locals
+		// can shadow same-named namespace members (`ruby::chars(chars, s)`).
+		var = resolve_preferred_identifier(ident_tb, expression_head);
 		// class method: resolve unqualified member name through __this
 		if ( !var && code && code->method && code->method->owner_class )
 		{
@@ -3230,10 +5983,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// lazy-load check: symbol registered by #include but not yet created
 		if ( !var )
 		    var = lazy_resolve(ident_tb->str);
+		if ( !var )
+		{
+		    TokenBase *ctx_value = resolve_expression_context_identifier(ident_tb);
+		    if ( ctx_value )
+		    {
+			exStack.push(ctx_value);
+			break;
+		    }
+		}
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
 		    // dlsym fallback: try to resolve as a libc/system function
+		    if ( !is_dynamic_symbol_fallback_enabled() )
+			Throw(ident_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
 		    std::string fname = ident_tb->str;
+		    if ( !is_dynamic_symbol_allowed(fname) )
+			Throw(ident_tb) << "dynamic symbol '" << fname
+					<< "' is not allowed by registration policy" << flush;
 		    void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
 		    if ( sym )
 		    {
@@ -3332,7 +6099,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    break;
 			}
 		    }
-		    TokenCallFunc *tc = new TokenCallFunc(*var);
+		    Variable *call_var = runtime_eval_scope_target(var);
+		    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+		    tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
+			&& is_runtime_eval_scope_public_name(ident_tb->str);
 		    tb = nextToken();
 		    tc->line = tb->line;
 		    tc->column = tb->column;
@@ -3530,6 +6300,31 @@ TokenBase *TokenUSING::parse(Program &pgm)
     }
 
     pgm.Throw(tn) << "Unexpected token in using declaration" << flush;
+    return NULL;
+}
+
+TokenBase *TokenPREFER::parse(Program &pgm)
+{
+    TokenBase *tn;
+    std::vector<std::string> order;
+
+    for (;;)
+    {
+	tn = pgm.nextToken();
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting namespace name in prefer directive" << flush;
+	order.push_back(((TokenIdent *)tn)->str);
+
+	tn = pgm.nextToken();
+	if ( !tn )
+	    pgm.Throw << "Unexpected end of input in prefer directive" << flush;
+	if ( tn->id() == TokenID::tkSemi )
+	    break;
+	if ( tn->id() != TokenID::tkComma )
+	    pgm.Throw(tn) << "Expecting ',' or ';' after namespace name in prefer directive" << flush;
+    }
+
+    pgm.set_namespace_preference(order, this);
     return NULL;
 }
 
@@ -4220,7 +7015,17 @@ TokenBase *TokenIF::parse(Program &pgm)
     if ( !(statement=pgm.parseStatement(tn)) )
 	pgm.Throw(tn) << "Failed to parse if statement" << flush;
 
-    tn = pgm.peekToken();
+    // Some statement parsers (TokenBREAK, TokenCONT, plain TokenRETURN
+    // for void) leave the trailing ';' in the stream — they're handled
+    // as no-op statements by parseCompound on the next iteration.  But
+    // here, with `if (cond) break;` (or any bare-flow-statement body),
+    // peeking for `else` finds the unconsumed ';' first and we miss
+    // attaching the else to *this* if.  C semantics require the else
+    // to bind to the nearest unmatched if (the dangling-else rule), so
+    // skip past a trailing ';' before checking.
+    while ( (tn = pgm.peekToken()) && tn->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
     if ( tn && tn->id() == TokenID::tkELSE )
     {
 	tn = pgm.nextToken(); // get the else
@@ -4510,6 +7315,14 @@ TokenBase *TokenREGISTER::parse(Program &pgm)
     if ( tn->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)tn)->str;
+	if ( is_typeof_identifier(tname) )
+	{
+	    pgm.nextToken();
+	    TokenBase *decl = pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	    if ( decl && decl->type() == TokenType::ttDeclare )
+		dynamic_cast<TokenDecl *>(decl)->var.flags |= vfREGISTER;
+	    return decl;
+	}
 	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
@@ -4910,6 +7723,13 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	if ( tn->type() == TokenType::ttIdentifier )
 	{
 	    std::string tname = ((TokenIdent *)tn)->str;
+	    if ( is_typeof_identifier(tname) )
+	    {
+		pgm.nextToken();
+		result = pgm.parseDeclaration(parse_typeof_datatype(pgm, tn), true);
+	    }
+	    else
+	    {
 	    datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	    if ( tdmi != pgm.datatype_map.end() )
 	    {
@@ -4918,6 +7738,7 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 	    }
 	    else
 		pgm.Throw(tn) << "Expecting type after 'static'" << flush;
+	    }
 	}
 	else
 	    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
@@ -4949,6 +7770,11 @@ TokenBase *TokenCONST::parse(Program &pgm)
     if ( tn->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)tn)->str;
+	if ( is_typeof_identifier(tname) )
+	{
+	    pgm.nextToken();
+	    return pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	}
 	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
@@ -4987,12 +7813,21 @@ TokenBase *TokenEXTERN::parse(Program &pgm)
 	else if ( tn->type() == TokenType::ttIdentifier )
 	{
 	    std::string tname = ((TokenIdent *)tn)->str;
+	    if ( is_typeof_identifier(tname) )
+	    {
+		handled = true;
+		pgm.nextToken();
+		result = pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	    }
+	    else
+	    {
 	    datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	    if ( tdmi != pgm.datatype_map.end() )
 	    {
 		handled = true;
 		pgm.nextToken();
 		result = pgm.parseDeclaration(tdmi->second);
+	    }
 	    }
 	}
 	if ( !handled )
@@ -5023,6 +7858,11 @@ TokenBase *TokenRESTRICT::parse(Program &pgm)
     if ( tn->type() == TokenType::ttIdentifier )
     {
 	std::string tname = ((TokenIdent *)tn)->str;
+	if ( is_typeof_identifier(tname) )
+	{
+	    pgm.nextToken();
+	    return pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	}
 	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
 	if ( tdmi != pgm.datatype_map.end() )
 	{
@@ -5137,6 +7977,7 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 	    defaultcase->file = tn->file;
 	    defaultcase->line = tn->line;
 	    defaultcase->column = tn->column;
+	    default_index = (int)cases.size();
 	    // parse statements until next case/}
 	    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkCASE
 		    && pgm.peekToken()->id() != TokenID::tkDEFAULT
@@ -5177,6 +8018,110 @@ TokenBase *TokenCASE::parse(Program &pgm)
 {
     pgm.Throw(this) << "case outside of switch" << flush;
     return NULL;
+}
+
+// rust::match (expr) { p1 | p2 | _ => stmt; ... }
+// v1: integer constant patterns and `_` wildcard, no fall-through, multi-
+// pattern arms via `|`. Bodies are a single statement (use `{ ... }` for
+// multiple). One wildcard arm allowed; its source-order position decides
+// where in the dispatch chain the fall-through target lands.
+TokenBase *TokenMatch::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenMatch::parse()" << std::endl);
+
+    // expect (
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkOpBrk )
+	pgm.Throw(tn) << "Expecting ( after rust::match" << flush;
+
+    expression = pgm.parseExpression(pgm.nextToken(), true);
+    if ( !expression )
+	pgm.Throw(tn) << "Failed to parse rust::match scrutinee expression" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkClBrk )
+	pgm.Throw(tn) << "Expecting ) after rust::match expression" << flush;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkOpBrc )
+	pgm.Throw(tn) << "Expecting { after rust::match()" << flush;
+
+    while ( (tn = pgm.nextToken()) )
+    {
+	if ( tn->id() == TokenID::tkClBrc )
+	    break;
+
+	MatchArm *arm = new MatchArm();
+
+	// Parse the pattern list — `_`, integer constants, or any
+	// number of those joined with `|`.
+	while ( true )
+	{
+	    if ( tn->type() == TokenType::ttIdentifier
+	      && ((TokenIdent *)tn)->str == "_" )
+	    {
+		if ( arm->is_wildcard )
+		    pgm.Throw(tn) << "duplicate _ in match arm pattern list" << flush;
+		arm->is_wildcard = true;
+	    }
+	    else
+	    {
+		// push token back and parse a constant integer pattern.
+		// Stop at `|` so the arm-separator survives — that's why
+		// this calls parse_constant_bxor (one rung below bor)
+		// rather than parse_constant_integer_expression. `&` and
+		// `^` inside a pattern still work; only `|` is reserved.
+		pgm.pushToken(tn);
+		TokenBase *anchor = pgm.peekToken();
+		int64_t pv = parse_constant_bxor(pgm);
+		TokenInt *ti = new TokenInt(pv);
+		if ( anchor )
+		{
+		    ti->file = anchor->file;
+		    ti->line = anchor->line;
+		    ti->column = anchor->column;
+		}
+		arm->patterns.push_back(ti);
+	    }
+
+	    TokenBase *sep = pgm.peekToken();
+	    if ( !sep )
+		pgm.Throw(tn) << "unexpected end of input inside rust::match arm" << flush;
+	    if ( sep->id() == TokenID::tkBor )
+	    {
+		pgm.nextToken(); // consume |
+		tn = pgm.nextToken();
+		continue;
+	    }
+	    break;
+	}
+
+	tn = pgm.nextToken();
+	if ( tn->id() != TokenID::tkFatArrow )
+	    pgm.Throw(tn) << "Expecting => after rust::match arm pattern" << flush;
+
+	// Parse a single statement body. `{ ... }` is a TokenCpnd from
+	// parseStatement, so block bodies fall out for free.
+	arm->body = pgm.parseStatement(pgm.nextToken());
+
+	// Optional trailing `;` after a non-block body.
+	TokenBase *trailing = pgm.peekToken();
+	if ( trailing && trailing->id() == TokenID::tkSemi )
+	    pgm.nextToken();
+
+	if ( arm->is_wildcard )
+	{
+	    if ( wildcard_index >= 0 )
+		pgm.Throw(tn) << "rust::match has more than one _ arm" << flush;
+	    wildcard_index = (int)arms.size();
+	}
+
+	arms.push_back(arm);
+    }
+
+    DBG(std::cout << "TokenMatch::parse() " << arms.size() << " arms"
+	    << (wildcard_index >= 0 ? " (with _)" : "") << std::endl);
+    return this;
 }
 
 // parse vector<type> — creates DataDefVECTOR and delegates to parseDeclaration
@@ -5816,7 +8761,7 @@ paramdecl:
 	    : std::string("__synthetic_p") + std::to_string(i);
 	DBG(cout << "parseFunction() adding parameter variable " << pname << endl);
 	v = new Variable(pname, *d, 1, NULL, false);
-	v->flags |= vfPARAM;
+	v->flags |= vfPARAM | vfLOCAL;
 	method->parameters.push_back(v);
 	DBG(cout << "parseFunction() pushed param, method->parameters.size()=" << method->parameters.size() << endl);
     }
@@ -5971,7 +8916,7 @@ TokenBase *Program::parseLambda()
     {
 	std::string env_name = "__env";
 	Variable *env_pv = new Variable(env_name, ddINT64, 1, NULL, false);
-	env_pv->flags |= vfPARAM;
+	env_pv->flags |= vfPARAM | vfLOCAL;
 	method->env_param = env_pv;
 	method->parameters.push_back(env_pv); // will be moved to front below
     }
@@ -5982,7 +8927,7 @@ TokenBase *Program::parseLambda()
 	// user params start at index 1 in func->parameters when capturing (0 is env)
 	size_t fi = is_capturing ? i + 1 : i;
 	Variable *pv = new Variable(param_ids[i], *func->parameters[fi], 1, NULL, false);
-	pv->flags |= vfPARAM;
+	pv->flags |= vfPARAM | vfLOCAL;
 	method->parameters.push_back(pv);
     }
 
@@ -6391,9 +9336,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	uint32_t elem_count = 1;
 	for ( auto d : arr_dims ) elem_count *= (d == 0 ? 1 : d);
 	var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
+	bool shared_global_extern_ref =
+	    is_shared_global_extern_reference(*this, code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
-	if ( parsing_extern_decl )
+	if ( parsing_extern_decl && !shared_global_extern_ref )
 	    var->flags |= vfEXTERN;
 	else
 	{
@@ -6416,6 +9363,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	if ( !arr_dims.empty() )
 	{
+	    if ( shared_global_extern_ref )
+	    {
+		// Function-scope `extern T name[...]` is only a redeclaration
+		// of an existing file-scope object. Do not overwrite the
+		// canonical global's array shape or storage metadata with a
+		// later incomplete declaration like `extern char buf[];`.
+	    }
+	    else
 	    if ( vla_size_expr )
 	    {
 		// C99 VLA: the variable is really a pointer-to-element. Don't
@@ -6628,6 +9583,10 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		DBG(std::cout << "parseStatement() label definition: " << lname << std::endl);
 		return new TokenLabel(lname);
 	    }
+	    if ( is_static_assert_identifier(((TokenIdent *)tb)->str) )
+		return parse_static_assert_statement(*this, tb);
+	    if ( is_typeof_identifier(((TokenIdent *)tb)->str) )
+		return parseDeclaration(parse_typeof_datatype(*this, tb));
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {
 		std::string tname = ((TokenIdent *)tb)->str;
@@ -6656,6 +9615,26 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		if ( nsi != namespace_map.end() )
 		{
 		    nextToken(); // consume ::
+		    // rust::match — namespaced statement form, dispatched
+		    // here because `match` must remain a usable identifier
+		    // outside this context. The `::` has been consumed; if
+		    // the next token isn't `match`, fall through to the
+		    // normal namespace re-entry path below.
+		    if ( ns_name == "rust" )
+		    {
+			TokenBase *peeked = peekToken();
+			if ( peeked
+			  && peeked->type() == TokenType::ttIdentifier
+			  && ((TokenIdent *)peeked)->str == "match" )
+			{
+			    nextToken(); // consume "match"
+			    TokenMatch *tm = new TokenMatch();
+			    tm->file = tb->file;
+			    tm->line = tb->line;
+			    tm->column = tb->column;
+			    return tm->parse(*this);
+			}
+		    }
 		    current_namespace = ns_name;
 		    TokenBase *result = parseStatement(nextToken());
 		    current_namespace.clear();
@@ -6876,9 +9855,12 @@ bool Program::parse(TokenProgram *tp)
     TokenBase *tb, *ts;
 
     DBG(cout << endl << "Program::parse() START" << endl);
+    clear_diagnostics();
+    clear_error();
 
     if ( tokens.empty() )
     {
+	set_error(DiagnosticPhase::parser, "Program::parse() token queue empty", tp ? tp->source.c_str() : NULL, 0, 0);
 	cerr << "Program::parse() token queue empty" << endl;
 	return false;
     }
@@ -6914,26 +9896,23 @@ bool Program::parse(TokenProgram *tp)
     }
     catch(const char *err_msg)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column 
-	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
-	source.showerror(tb->line, tb->column);
+	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)", tp ? tp->source.c_str() : NULL, tb ? tb->line : 0, tb ? tb->column : 0);
+	print_last_diagnostic(error());
 	return false;
     }
     catch(TokenIdent *ti)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << ti->line << ':' << ti->column
-	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
-	source.showerror(ti->line, ti->column);
+	set_error(DiagnosticPhase::parser, std::string("use of undeclared identifier '") + ti->str + '\'', tp ? tp->source.c_str() : NULL, ti->line, ti->column);
+	print_last_diagnostic(error());
 	return false;
     }
     catch(TokenBase *tb)
     {
-	cerr << ANSI_WHITE << tp->source << ':' << tb->line << ':' << tb->column
-	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
-	source.showerror(tb->line, tb->column);
+	set_error(DiagnosticPhase::parser, std::string("unexpected token type ") + std::to_string((int)tb->type()), tp ? tp->source.c_str() : NULL, tb->line, tb->column);
+	print_last_diagnostic(error());
 	if ( tb->type() == TokenType::ttReal )
 	{
-	    cerr << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
+	    error() << "TokenReal value: " << ((TokenReal *)tb)->dval() << endl;
 	    printf("%.14lf\n", ((TokenReal *)tb)->dval());
 	}
 	return false;
@@ -6941,10 +9920,93 @@ bool Program::parse(TokenProgram *tp)
     catch(std::exception &e)
     {
 	// throwbuf::sync() already printed the formatted error to stderr before throwing
+	if ( !last_error.has_error )
+	{
+	    TokenBase *err_tb = Throw.token();
+	    set_error(DiagnosticPhase::parser, Throw.str().empty() ? e.what() : Throw.str(),
+		tp ? tp->source.c_str() : NULL,
+		err_tb ? err_tb->line : 0,
+		err_tb ? err_tb->column : 0);
+	}
 	return false;
     }
 
     DBG(std::cout << "Program::parse() finished parsing" << std::endl);
     
     return true;
+}
+
+TokenBase *Program::parse_expression_unit(TokenProgram *tp)
+{
+    TokenBase *tb = NULL;
+    TokenBase *expr = NULL;
+
+    DBG(cout << endl << "Program::parse_expression_unit() START" << endl);
+    clear_diagnostics();
+    clear_error();
+
+    if ( tokens.empty() )
+    {
+	set_error(DiagnosticPhase::parser, "Program::parse_expression_unit() token queue empty",
+		  tp ? tp->source.c_str() : NULL, 0, 0);
+	error() << "Program::parse_expression_unit() token queue empty" << endl;
+	return NULL;
+    }
+
+    _parser_init();
+
+    try
+    {
+	tb = nextToken();
+	expr = parseExpression(tb);
+	if ( !expr )
+	    Throw(tb) << "Failed to parse expression" << flush;
+
+	TokenBase *stop = curToken();
+	if ( !stop || stop->id() != TokenID::tkSemi )
+	    Throw(stop ? stop : tb) << "Expecting ';' after expression" << flush;
+	if ( !tokens.empty() )
+	{
+	    TokenBase *extra = nextToken();
+	    Throw(extra) << "unexpected token after expression" << flush;
+	}
+    }
+    catch(const char *err_msg)
+    {
+	set_error(DiagnosticPhase::parser, err_msg ? err_msg : "(null error message)",
+		  tp ? tp->source.c_str() : NULL,
+		  tb ? tb->line : 0, tb ? tb->column : 0);
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(TokenIdent *ti)
+    {
+	set_error(DiagnosticPhase::parser,
+		  std::string("use of undeclared identifier '") + ti->str + '\'',
+		  tp ? tp->source.c_str() : NULL, ti->line, ti->column);
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(TokenBase *err_tb)
+    {
+	set_error(DiagnosticPhase::parser,
+		  std::string("unexpected token type ") + std::to_string((int)err_tb->type()),
+		  tp ? tp->source.c_str() : NULL, err_tb->line, err_tb->column);
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(std::exception &e)
+    {
+	if ( !last_error.has_error )
+	{
+	    TokenBase *err_tb = Throw.token();
+	    set_error(DiagnosticPhase::parser, Throw.str().empty() ? e.what() : Throw.str(),
+		      tp ? tp->source.c_str() : NULL,
+		      err_tb ? err_tb->line : 0,
+		      err_tb ? err_tb->column : 0);
+	}
+	return NULL;
+    }
+
+    return expr;
 }

@@ -56,6 +56,8 @@ public:
     std::string name;
     DataDef *type;
     void *data;
+    size_t aot_data_offset;
+    size_t aot_cstr_offset;
     uint32_t count;
     uint16_t flags;
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
@@ -66,11 +68,13 @@ public:
     // dims[0] holds the element-count contribution from the FIRST dim
     // (always 1 for the runtime path; multiply by vla_size_expr at runtime).
     class TokenBase *vla_size_expr;
-    Variable() { type = &ddINT; data = NULL; flags = 0; count = 0; vla_size_expr = nullptr; }
+    Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; vla_size_expr = nullptr; }
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
     inline bool is_fixed_array() const { return (flags & vfFIXEDARRAY) != 0; }
+    inline bool has_aot_data() const { return aot_data_offset != (size_t)-1; }
+    inline bool has_aot_cstr() const { return aot_cstr_offset != (size_t)-1; }
     inline uint32_t total_elements() const {
 	uint32_t n = 1;
 	for ( auto d : dims ) n *= d;
@@ -85,7 +89,12 @@ public:
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   *((char *)data) = c;
 	else if (type == &ddBOOL)   *((bool *)data) = c;
-	else if (type == &ddINT)    *((int *)data) = c;
+	// madc's `int` is 64-bit by design.  Writing only the low 4 bytes
+	// via `(int *)` left the high half at zero (calloc'd 0), so e.g.
+	// `enum { WEAR_NONE = -1 }; if (x == WEAR_NONE)` failed because
+	// WEAR_NONE round-tripped as 0x00000000FFFFFFFF, not 0xFFFF..FFFF.
+	else if (type == &ddINT)    *((int64_t *)data) = c;
+	else if (type == &ddINT64)  *((int64_t *)data) = c;
 	else if (type == &ddINT8)   *((int8_t *)data) = c;
 	else if (type == &ddINT16)  *((int16_t *)data) = c;
 	else if (type == &ddINT24)  *((int16_t *)data) = c;
@@ -94,6 +103,7 @@ public:
 	else if (type == &ddUINT16) *((uint16_t *)data) = c;
 	else if (type == &ddUINT24) *((uint16_t *)data) = c;
 	else if (type == &ddUINT32) *((uint32_t *)data) = c;
+	else if (type == &ddUINT64) *((uint64_t *)data) = c;
 	else if (type == &ddFLOAT)  *((float *)data) = c;
 	else if (type == &ddDOUBLE) *((double *)data) = c;
 	else 	     { return false; }
@@ -104,15 +114,17 @@ public:
 	if ( !data ) { return 0; }
 	if (type == &ddCHAR)   return *((char *)data) == c;
 	if (type == &ddBOOL)   return *((bool *)data) == c;
-	if (type == &ddINT)    return *((int *)data) == c;
+	if (type == &ddINT)    return *((int64_t *)data) == c;
+	if (type == &ddINT64)  return *((int64_t *)data) == c;
 	if (type == &ddINT8)   return *((int8_t *)data) == c;
 	if (type == &ddINT16)  return *((int16_t *)data) == c;
 	if (type == &ddINT24)  return *((int16_t *)data) == c;
 	if (type == &ddINT32)  return *((int32_t *)data) == c;
-	if (type == &ddUINT8)  return *((uint8_t *)data) == c;
-	if (type == &ddUINT16) return *((uint16_t *)data) == c;
-	if (type == &ddUINT24) return *((uint16_t *)data) == c;
-	if (type == &ddUINT32) return *((uint32_t *)data) == c;
+	if (type == &ddUINT8)  return *((uint8_t *)data) == static_cast<uint8_t>(c);
+	if (type == &ddUINT16) return *((uint16_t *)data) == static_cast<uint16_t>(c);
+	if (type == &ddUINT24) return *((uint16_t *)data) == static_cast<uint16_t>(c);
+	if (type == &ddUINT32) return *((uint32_t *)data) == static_cast<uint32_t>(c);
+	if (type == &ddUINT64) return *((uint64_t *)data) == static_cast<uint64_t>(c);
 	if (type == &ddFLOAT)  return *((float *)data) == c;
 	if (type == &ddDOUBLE) return *((double *)data) == c;
 	return 0;
@@ -126,7 +138,8 @@ public:
     {
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   --*((char *)data);
-	else if (type == &ddINT)    --*((int *)data);
+	else if (type == &ddINT)    --*((int64_t *)data);
+	else if (type == &ddINT64)  --*((int64_t *)data);
 	else if (type == &ddINT8)   --*((int8_t *)data);
 	else if (type == &ddINT16)  --*((int16_t *)data);
 	else if (type == &ddINT24)  --*((int16_t *)data);
@@ -135,6 +148,7 @@ public:
 	else if (type == &ddUINT16) --*((uint16_t *)data);
 	else if (type == &ddUINT24) --*((uint16_t *)data);
 	else if (type == &ddUINT32) --*((uint32_t *)data);
+	else if (type == &ddUINT64) --*((uint64_t *)data);
 	else if (type == &ddFLOAT)  --*((float *)data);
 	else if (type == &ddDOUBLE) --*((double *)data);
 	return true;
@@ -143,7 +157,8 @@ public:
     {
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   ++*((char *)data);
-	else if (type == &ddINT)    ++*((int *)data);
+	else if (type == &ddINT)    ++*((int64_t *)data);
+	else if (type == &ddINT64)  ++*((int64_t *)data);
 	else if (type == &ddINT8)   ++*((int8_t *)data);
 	else if (type == &ddINT16)  ++*((int16_t *)data);
 	else if (type == &ddINT24)  ++*((int16_t *)data);
@@ -152,6 +167,7 @@ public:
 	else if (type == &ddUINT16) ++*((uint16_t *)data);
 	else if (type == &ddUINT24) ++*((uint16_t *)data);
 	else if (type == &ddUINT32) ++*((uint32_t *)data);
+	else if (type == &ddUINT64) ++*((uint64_t *)data);
 	else if (type == &ddFLOAT)  ++*((float *)data);
 	else if (type == &ddDOUBLE) ++*((double *)data);
 	return true;
@@ -160,7 +176,8 @@ public:
     {
 	if ( !data ) { return false; }
 	/**/ if (type == &ddCHAR)   return *((char *)data);
-	else if (type == &ddINT)    return *((int *)data);
+	else if (type == &ddINT)    return *((int64_t *)data);
+	else if (type == &ddINT64)  return *((int64_t *)data);
 	else if (type == &ddINT8)   return *((int8_t *)data);
 	else if (type == &ddINT16)  return *((int16_t *)data);
 	else if (type == &ddINT24)  return *((int16_t *)data);
@@ -169,6 +186,7 @@ public:
 	else if (type == &ddUINT16) return *((uint16_t *)data);
 	else if (type == &ddUINT24) return *((uint16_t *)data);
 	else if (type == &ddUINT32) return *((uint32_t *)data);
+	else if (type == &ddUINT64) return *((uint64_t *)data);
 	else if (type == &ddFLOAT)  return *((float *)data);
 	else if (type == &ddDOUBLE) return *((double *)data);
 	return true;

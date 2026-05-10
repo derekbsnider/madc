@@ -45,3 +45,8 @@ void check_requests( )
   }
 #endif
 }
+
+int main()
+{
+    return 0;
+}

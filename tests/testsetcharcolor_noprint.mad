@@ -1,0 +1,56 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+struct desc_data {
+	struct char_data *original;
+	int prevcolor;
+};
+
+struct char_data {
+	struct desc_data *desc;
+	int act;
+};
+
+typedef struct char_data CHAR_DATA;
+typedef struct desc_data DESC_DATA;
+
+int figure_color(int atype, CHAR_DATA *och)
+{
+	return atype;
+}
+
+void set_char_color(int AType, CHAR_DATA *ch)
+{
+	char buf[16];
+	CHAR_DATA *och;
+	int nc;
+
+	if ( !ch || !ch->desc )
+		return;
+
+	och = ( ch->desc->original ? ch->desc->original : ch );
+	AType = figure_color(AType, och);
+	ch->desc->prevcolor = ( AType & 0x0F ) | ( AType & 16 ? 0x80 : 0 );
+	nc = sprintf(buf, "\033[0;%s%s3%dm",
+		AType & 8 ? "1;" : "",
+		AType & 16 ? "5;" : "",
+		AType & 7 );
+	printf("done %d\n", nc);
+}
+
+int main()
+{
+	CHAR_DATA *ch = (CHAR_DATA *)calloc(1, sizeof(CHAR_DATA));
+	DESC_DATA *desc = (DESC_DATA *)calloc(1, sizeof(DESC_DATA));
+	CHAR_DATA *orig = (CHAR_DATA *)calloc(1, sizeof(CHAR_DATA));
+
+	ch->desc = desc;
+	set_char_color(10, ch);
+	desc->original = orig;
+	set_char_color(26, ch);
+
+	free(orig);
+	free(desc);
+	free(ch);
+	return 0;
+}

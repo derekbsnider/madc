@@ -1,0 +1,56 @@
+#include <stdio.h>
+
+typedef struct skill_type SKILLTYPE;
+
+struct skill_type {
+	char *imm_char;
+	char *imm_vict;
+	char *imm_room;
+};
+
+extern SKILLTYPE *skill_table[4];
+extern int top_sn;
+
+int immune_like(int dam, int dt)
+{
+	if ( dam == -1 )
+	{
+		if ( dt >= 0 && dt < top_sn )
+		{
+			SKILLTYPE *skill = skill_table[dt];
+			int found = 0;
+
+			if ( skill->imm_char && skill->imm_char[0] != '\0' )
+				found = 1;
+			if ( skill->imm_vict && skill->imm_vict[0] != '\0' )
+				found = 2;
+			if ( skill->imm_room && skill->imm_room[0] != '\0' )
+				found = 3;
+			if ( found )
+				return found;
+		}
+		dam = 0;
+	}
+	return dam;
+}
+
+char c0[] = "char";
+char v0[] = "vict";
+char r0[] = "room";
+
+SKILLTYPE skill0;
+SKILLTYPE skill1;
+SKILLTYPE skill2;
+SKILLTYPE skill3;
+
+SKILLTYPE *skill_table[4] = { &skill0, &skill1, &skill2, &skill3 };
+int top_sn = 4;
+
+int main()
+{
+	skill2.imm_char = c0;
+	skill2.imm_vict = v0;
+	skill2.imm_room = r0;
+	printf("%d\n", immune_like(-1, 2));
+	return 0;
+}

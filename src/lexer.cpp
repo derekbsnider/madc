@@ -38,12 +38,24 @@ static bool is_binary_prefix(int ch, Source &source)
     return ch == '0' && source.good() && (source.peek() == 'b' || source.peek() == 'B');
 }
 
+static bool is_digit_separator(int ch)
+{
+    return ch == '\'';
+}
+
 static int64_t read_binary_literal(Source &source)
 {
     int64_t bv = 0;
     source.get(); // eat 'b' / 'B'
-    while ( source.good() && (source.peek() == '0' || source.peek() == '1') )
+    while ( source.good() )
     {
+	if ( is_digit_separator(source.peek()) )
+	{
+	    source.get();
+	    continue;
+	}
+	if ( source.peek() != '0' && source.peek() != '1' )
+	    break;
 	bv <<= 1;
 	bv += source.get() - '0';
     }
@@ -182,6 +194,7 @@ TokenEXTERN	tkEXTERN;
 TokenRESTRICT	tkRESTRICT;
 TokenUSING	tkUSING;
 TokenNAMESPACE	tkNAMESPACE;
+TokenPREFER	tkPREFER;
 TokenDEFER	tkDEFER;
 TokenVECTOR	tkVECTOR;
 TokenMAP	tkMAP;
@@ -318,6 +331,7 @@ void Program::add_keywords()
     keyword_map[tkRESTRICT.str] = &tkRESTRICT;
     keyword_map[tkUSING.str] = &tkUSING;
     keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
+    keyword_map[tkPREFER.str] = &tkPREFER;
     keyword_map[tkDEFER.str] = &tkDEFER;
     keyword_map[tkVECTOR.str] = &tkVECTOR;
     keyword_map[tkMAP.str] = &tkMAP;
@@ -367,6 +381,13 @@ TokenBase *Program::_getToken()
     string word;
     int ch, cnt, row, col;
 
+    if ( !injected_tokens.empty() )
+    {
+	TokenBase *tb = injected_tokens.front();
+	injected_tokens.pop_front();
+	return tb;
+    }
+
     if ( !source.good() || source.eof() ) { return NULL; }
 
     switch( (ch=source.get()) )
@@ -411,6 +432,7 @@ TokenBase *Program::_getToken()
 		if (source.peek() == '=') { source.get(); return new Token3Eq; } // ===
 		return new TokenEquals;					// ==
 	    }
+	    if (source.peek() == '>') { source.get(); return new TokenFatArrow; } // =>
 	    return new TokenAssign;					// =
 	case '+':
 	    if (source.peek() == '+') { source.get(); return new TokenInc;   }   // ++
@@ -494,6 +516,9 @@ TokenBase *Program::_getToken()
 			const std::string *embedded = find_embedded_header(incfile);
 			if ( embedded )
 			{
+			    if ( !is_embedded_header_allowed(incfile) )
+				Throw << "embedded header '" << incfile
+				      << "' is not allowed by registration policy" << flush;
 			    DBG(std::cout << "#include <" << incfile << "> (embedded)" << std::endl);
 			    Source saved = std::move(source);
 			    source = Source();
@@ -549,6 +574,8 @@ TokenBase *Program::_getToken()
 		if ( directive == "load" )
 		{
 		    // #load "libfoo.so" as namespace;
+		    if ( !is_dynamic_library_loading_enabled() )
+			Throw << "#load is disabled by registration policy" << flush;
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
 		    char delim = source.get(); // "
@@ -757,6 +784,8 @@ TokenBase *Program::_getToken()
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
 		    std::string pragma;
+		    int pragma_line = source.line();
+		    int pragma_col = source.column();
 		    while ( source.good() && !source.eof() && isalpha(source.peek()) )
 			pragma += source.get();
 		    if ( pragma == "pack" )
@@ -792,13 +821,56 @@ TokenBase *Program::_getToken()
 				source.get();
 			}
 		    }
+		    else if ( pragma == "prefer" )
+		    {
+			std::vector<std::string> order;
+			while ( source.peek() == ' ' || source.peek() == '\t' )
+			    source.get();
+			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			{
+			    while ( source.peek() == ' ' || source.peek() == '\t' || source.peek() == ',' )
+				source.get();
+			    if ( source.peek() == '\n' || source.peek() == '\r' || source.eof() )
+				break;
+			    std::string name;
+			    while ( source.good() && !source.eof() && (isalnum(source.peek()) || source.peek() == '_') )
+				name += source.get();
+			    if ( !name.empty() )
+				order.push_back(name);
+			    while ( source.peek() == ' ' || source.peek() == '\t' )
+				source.get();
+			}
+
+			TokenBase *tb = new TokenPREFER();
+			tb->line = pragma_line;
+			tb->column = pragma_col;
+			injected_tokens.push_back(tb);
+			for ( size_t i = 0; i < order.size(); ++i )
+			{
+			    TokenIdent *ti = new TokenIdent(order[i]);
+			    ti->line = pragma_line;
+			    ti->column = pragma_col;
+			    injected_tokens.push_back(ti);
+			    if ( i + 1 < order.size() )
+			    {
+				tb = new TokenComma();
+				tb->line = pragma_line;
+				tb->column = pragma_col;
+				injected_tokens.push_back(tb);
+			    }
+			}
+			tb = new TokenSemi();
+			tb->line = pragma_line;
+			tb->column = pragma_col;
+			injected_tokens.push_back(tb);
+		    }
 		    else
 		    {
 			// consume rest of line for unknown pragmas
 			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 			    source.get();
 		    }
-		    return getToken();
+		    return _getToken();
 		}
 	    }
 	    return new TokenHash;
@@ -1026,8 +1098,15 @@ TokenBase *Program::_getToken()
 		{
 		    source.get(); // eat 'x'
 		    long long hv = 0;
-		    while ( source.good() && isxdigit(source.peek()) )
+		    while ( source.good() )
 		    {
+			if ( is_digit_separator(source.peek()) )
+			{
+			    source.get();
+			    continue;
+			}
+			if ( !isxdigit(source.peek()) )
+			    break;
 			char hc = source.get();
 			hv *= 16;
 			if      ( hc >= '0' && hc <= '9' ) hv += hc - '0';
@@ -1039,8 +1118,15 @@ TokenBase *Program::_getToken()
 		}
 		int64_t v = (ch & 0xf);
 
-		while ( source.good() && isdigit(source.peek()) )
+		while ( source.good() )
 		{
+		    if ( is_digit_separator(source.peek()) )
+		    {
+			source.get();
+			continue;
+		    }
+		    if ( !isdigit(source.peek()) )
+			break;
 		    v *= 10;
 		    v += source.get() & 0xf;
 		}
@@ -1053,8 +1139,15 @@ TokenBase *Program::_getToken()
 		// handle floating point
 		source.get(); // eat .
 		double num = v, divisor = 10;
-		while ( source.good() && isdigit(source.peek()) )
+		while ( source.good() )
 		{
+		    if ( is_digit_separator(source.peek()) )
+		    {
+			source.get();
+			continue;
+		    }
+		    if ( !isdigit(source.peek()) )
+			break;
 		    num += (source.get() & 0xf) / divisor;
 		    divisor *= 10;
 		}
@@ -1581,10 +1674,12 @@ TokenBase *Program::getRealToken()
 {
     TokenBase *tb;
 
-    while ( (tb=getToken()) )
-    {
-	tb->line = source.line(); //_line;
-	tb->column = source.column(); //_column;
+	while ( (tb=getToken()) )
+	{
+	    if ( tb->line == 0 )
+		tb->line = source.line(); //_line;
+	    if ( tb->column == 0 )
+		tb->column = source.column(); //_column;
 
 	switch(tb->type())
 	{
@@ -1854,10 +1949,13 @@ TokenProgram *Program::tokenize(const char *fname)
     ifstream file(fname);
 
     DBG(cout << "Program::tokenize(" << fname << ") START" << endl);
+    clear_diagnostics();
+    clear_error();
 
     if ( !file )
     {
-	cerr << "Failed to open " << fname << endl;
+	set_error(Program::DiagnosticPhase::lexer, "Failed to open file", fname, 0, 0);
+	print_last_diagnostic(error());
 	return NULL;
     }
 
@@ -1879,27 +1977,26 @@ TokenProgram *Program::tokenize(const char *fname)
     }
     catch(const char *err_msg)
     {
-	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column() 
-	     << ": \e[1;31merror:\e[1;37m " << err_msg << ANSI_RESET << endl;
-	source.showerror(source.line(), source.column());
+	set_error(Program::DiagnosticPhase::lexer, err_msg ? err_msg : "(null error message)", fname, source.line(), source.column());
+	print_last_diagnostic(error());
 	return NULL;
     }
     catch(TokenIdent *ti)
     {
-	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column()
-	     << ": \e[1;31merror:\e[1;37m use of undeclared identifier '" << ti->str << '\'' << ANSI_RESET << endl;
-	source.showerror(source.line(), source.column());
+	set_error(Program::DiagnosticPhase::lexer, std::string("use of undeclared identifier '") + ti->str + '\'', fname, source.line(), source.column());
+	print_last_diagnostic(error());
 	return NULL;
     }
     catch(TokenBase *tb)
     {
-	cerr << ANSI_WHITE << fname << ':' << source.line() << ':' << source.column()
-	     << ": \e[1;31merror:\e[1;37m unexpected token type " << (int)tb->type() << ANSI_RESET << endl;
-	source.showerror(source.line(), source.column());
+	set_error(Program::DiagnosticPhase::lexer, std::string("unexpected token type ") + std::to_string((int)tb->type()), fname, source.line(), source.column());
+	print_last_diagnostic(error());
 	return NULL;
     }
     catch(std::exception &e)
     {
+	if ( !last_error.has_error )
+	    set_error(Program::DiagnosticPhase::lexer, Throw.str().empty() ? e.what() : Throw.str(), fname, source.line(), source.column());
 	return NULL;
     }
 
@@ -1914,6 +2011,76 @@ TokenProgram *Program::tokenize(const char *fname)
     tkProgram->is = new ifstream(fname);
     tkProgram->lines = source.line()-1;
     tkProgram->bytes = file.tellg();
+
+    return tkProgram;
+}
+
+TokenProgram *Program::tokenize_buffer(const std::string &source_text,
+				       const std::string &display_name)
+{
+    TokenBase *tb;
+    std::string effective_name = display_name.empty() ? "<memory>" : display_name;
+    const char *fname = intern_file(effective_name);
+
+    DBG(cout << "Program::tokenize_buffer(" << effective_name << ") START" << endl);
+    clear_diagnostics();
+    clear_error();
+
+    _tokenizer_init();
+
+    source.fname(fname);
+    source.str(source_text);
+    Throw.source(source);
+
+    try
+    {
+	while ( (tb=getRealToken()) )
+	{
+	    tb->file = fname;
+	    push_token_with_string_concat(tb);
+	}
+    }
+    catch(const char *err_msg)
+    {
+	set_error(Program::DiagnosticPhase::lexer, err_msg ? err_msg : "(null error message)",
+		  fname, source.line(), source.column());
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(TokenIdent *ti)
+    {
+	set_error(Program::DiagnosticPhase::lexer,
+		  std::string("use of undeclared identifier '") + ti->str + '\'',
+		  fname, source.line(), source.column());
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(TokenBase *tb)
+    {
+	set_error(Program::DiagnosticPhase::lexer,
+		  std::string("unexpected token type ") + std::to_string((int)tb->type()),
+		  fname, source.line(), source.column());
+	print_last_diagnostic(error());
+	return NULL;
+    }
+    catch(std::exception &e)
+    {
+	if ( !last_error.has_error )
+	    set_error(Program::DiagnosticPhase::lexer,
+		      Throw.str().empty() ? e.what() : Throw.str(),
+		      fname, source.line(), source.column());
+	return NULL;
+    }
+
+    DBG(std::cout << "Program::tokenize_buffer() finished tokenizing" << std::endl);
+
+    tkProgram = new TokenProgram();
+    tkFunction = tkProgram;
+
+    tkProgram->source = effective_name;
+    tkProgram->is = new std::stringstream(source_text);
+    tkProgram->lines = source.line()-1;
+    tkProgram->bytes = source_text.size();
 
     return tkProgram;
 }

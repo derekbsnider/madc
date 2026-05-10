@@ -1,0 +1,17 @@
+#include <iostream>
+
+int main()
+{
+    string ival;
+    madc::eval_expression(ival, "6 * 7");
+    cout << "int=" << ival << endl;
+
+    string sval;
+    madc::eval_expression(sval, "\"echo\"");
+    cout << "str=" << sval << endl;
+
+    string dval;
+    madc::eval_expression(dval, "sqrt(9.0) + cos(0.0)");
+    cout << "real=" << dval << endl;
+    return 0;
+}

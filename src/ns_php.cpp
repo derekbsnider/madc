@@ -26,6 +26,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "ns_common.h"
 
 using namespace std;
 using namespace asmjit;
@@ -35,37 +36,21 @@ using namespace asmjit;
 // php::trim — trim whitespace from both ends (no C/C++ equivalent)
 void *php_trim(void *ptr)
 {
-	std::string &s = *(std::string *)ptr;
-	size_t start = s.find_first_not_of(" \t\n\r\f\v");
-	size_t end = s.find_last_not_of(" \t\n\r\f\v");
-	if ( start == std::string::npos )
-		s.clear();
-	else
-		s = s.substr(start, end - start + 1);
+	ns_common::trim(*(std::string *)ptr, true, true);
 	return ptr;
 }
 
 // php::ltrim — trim whitespace from left
 void *php_ltrim(void *ptr)
 {
-	std::string &s = *(std::string *)ptr;
-	size_t start = s.find_first_not_of(" \t\n\r\f\v");
-	if ( start == std::string::npos )
-		s.clear();
-	else
-		s.erase(0, start);
+	ns_common::trim(*(std::string *)ptr, true, false);
 	return ptr;
 }
 
 // php::rtrim — trim whitespace from right
 void *php_rtrim(void *ptr)
 {
-	std::string &s = *(std::string *)ptr;
-	size_t end = s.find_last_not_of(" \t\n\r\f\v");
-	if ( end == std::string::npos )
-		s.clear();
-	else
-		s.erase(end + 1);
+	ns_common::trim(*(std::string *)ptr, false, true);
 	return ptr;
 }
 
@@ -90,28 +75,16 @@ void *php_lcfirst(void *ptr)
 // php::str_repeat — repeat string n times
 void *php_str_repeat(void *ptr, int64_t count)
 {
-	std::string &s = *(std::string *)ptr;
-	std::string orig = s;
-	s.clear();
-	s.reserve(orig.length() * count);
-	for ( int64_t i = 0; i < count; ++i )
-		s += orig;
+	ns_common::repeat(*(std::string *)ptr, count);
 	return ptr;
 }
 
 // php::str_replace — replace all occurrences of search with replace in subject
 void *php_str_replace(void *search, void *replace, void *subject)
 {
-	std::string &srch = *(std::string *)search;
-	std::string &repl = *(std::string *)replace;
-	std::string &subj = *(std::string *)subject;
-	if ( srch.empty() ) return subject;
-	size_t pos = 0;
-	while ( (pos = subj.find(srch, pos)) != std::string::npos )
-	{
-		subj.replace(pos, srch.length(), repl);
-		pos += repl.length();
-	}
+	ns_common::replace_all(*(std::string *)subject,
+			       *(std::string *)search,
+			       *(std::string *)replace);
 	return subject;
 }
 
@@ -257,39 +230,18 @@ void *php_wordwrap(void *ptr, int64_t width, void *brk)
 // php::explode — split string by delimiter into array
 void *php_explode(void *arr, void *delim, void *str)
 {
-	MadArray &a = *(MadArray *)arr;
-	std::string &d = *(std::string *)delim;
-	std::string &s = *(std::string *)str;
-	a.data.clear();
-	a.assoc.clear();
-	if ( d.empty() ) { a.push(MadValue(s)); return arr; }
-	size_t start = 0, end;
-	while ( (end = s.find(d, start)) != std::string::npos )
-	{
-		a.push(MadValue(s.substr(start, end - start)));
-		start = end + d.length();
-	}
-	a.push(MadValue(s.substr(start)));
+	ns_common::split_by_delim(*(MadArray *)arr,
+				  *(std::string *)str,
+				  *(std::string *)delim);
 	return arr;
 }
 
 // php::implode — join array elements with glue string
 void *php_implode(void *result, void *glue, void *arr)
 {
-	std::string &res = *(std::string *)result;
-	std::string &g = *(std::string *)glue;
-	MadArray &a = *(MadArray *)arr;
-	res.clear();
-	for ( size_t i = 0; i < a.data.size(); ++i )
-	{
-		if ( i > 0 ) res += g;
-		if ( a.data[i].is_string() )
-			res += a.data[i].as_string();
-		else if ( a.data[i].is_int() )
-			res += std::to_string(a.data[i].as_int());
-		else if ( a.data[i].is_double() )
-			res += std::to_string(a.data[i].as_double());
-	}
+	ns_common::join_with_sep(*(std::string *)result,
+				 *(MadArray *)arr,
+				 *(std::string *)glue);
 	return result;
 }
 
@@ -310,6 +262,13 @@ void *php_array_push_str(void *arr, void *str)
 void *php_array_push_int(void *arr, int64_t val)
 {
 	((MadArray *)arr)->push(MadValue(val));
+	return arr;
+}
+
+// php::array_push_array — append nested array by deep copy
+void *php_array_push_array(void *arr, void *value)
+{
+	((MadArray *)arr)->push(MadValue(*(MadArray *)value));
 	return arr;
 }
 
@@ -482,6 +441,31 @@ void *php_array_merge(void *dest, void *src)
 	return dest;
 }
 
+
+// php::array_column — extract one integer-indexed column from nested arrays
+void *php_array_column(void *dest, void *src, int64_t column_index)
+{
+	MadArray &d = *(MadArray *)dest;
+	MadArray &s = *(MadArray *)src;
+	d.data.clear();
+	d.assoc.clear();
+	if ( column_index < 0 )
+		return dest;
+	for ( auto &row : s.data )
+	{
+		if ( !row.is_array() )
+			continue;
+		MadArray &row_arr = row.as_array();
+		size_t idx = (size_t)column_index;
+		if ( idx >= row_arr.data.size() )
+			continue;
+		std::string value;
+		if ( ns_common::value_to_string(row_arr.data[idx], value) )
+			d.push(MadValue(value));
+	}
+	return dest;
+}
+
 // ---- Namespace registration ----
 
 // std::for_each — iterate array, call function pointer per element (string version)
@@ -588,6 +572,10 @@ void Program::add_php_namespace()
 	var = addFunction("__php_array_push_int", datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_push_int);
 	if (var) php_ns["array_push_int"] = var;
 
+	// array_push_array(arr, value) — append nested array
+	var = addFunction("__php_array_push_array", datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_push_array);
+	if (var) php_ns["array_push_array"] = var;
+
 	// array_pop(result, arr) — remove last, return as string
 	var = addFunction("__php_array_pop",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_pop);
 	if (var) php_ns["array_pop"] = var;
@@ -639,6 +627,10 @@ void Program::add_php_namespace()
 	// array_merge(dest, src) — append src elements to dest
 	var = addFunction("__php_array_merge",    datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)php_array_merge);
 	if (var) php_ns["array_merge"] = var;
+
+	// array_column(dest, src, index) — extract one integer-indexed column
+	var = addFunction("__php_array_column",   datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_column);
+	if (var) php_ns["array_column"] = var;
 
 	DBG(std::cout << "add_php_namespace() registered php:: with " << php_ns.size() << " members" << std::endl);
 }

@@ -1,0 +1,3 @@
+PASS: saved errno == 2 (ENOENT)
+PASS: direct errno == 2
+PASS: int constant compare

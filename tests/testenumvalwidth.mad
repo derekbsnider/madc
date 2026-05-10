@@ -1,0 +1,44 @@
+// Regression: storage of constant values into ddINT-typed Variable.data
+//
+// madc's `int` is 64-bit (DataDefINT, size=8) but Variable::set() was
+// writing only 4 bytes via `*((int *)data) = c;` — leaving the high
+// half of the 8-byte storage at zero.  Reading back as int64 then
+// produced 0x00000000FFFFFFFF instead of 0xFFFFFFFFFFFFFFFF for -1.
+//
+// Visible victims:
+//   - `enum { WEAR_NONE = -1 }; if (x == WEAR_NONE)` never matched
+//     (WEAR_NONE round-tripped as +4B, not -1).
+//   - SMAUG character creation: `obj->wear_loc == WEAR_NONE` failed
+//     in obj_to_char, so carry_number wasn't incremented when the
+//     newbie sack was given but WAS decremented when it was equipped,
+//     leaving the new player at carry_number = -1.  `get sack`
+//     refused to pick anything up: "Uh oh ... better contact an
+//     immortal about your number or weight of items carried."
+//
+// The fix in include/datatokens.h widens Variable::set/get/inc/dec
+// for ddINT and ddINT64 to use int64_t* (and adds the missing ddINT64
+// / ddUINT64 / ddINT64 cases that were silently absent from those
+// dispatch ladders).
+
+#include <stdio.h>
+
+enum { WEAR_NONE = -1, WEAR_LIGHT = 0, WEAR_FINGER = 1 };
+
+int main()
+{
+    if (WEAR_NONE == -1)        printf("PASS: WEAR_NONE == -1\n"); else printf("FAIL: WEAR_NONE != -1\n");
+    if ((long)WEAR_NONE == -1L) printf("PASS: (long)WEAR_NONE == -1L\n"); else printf("FAIL\n");
+    if (WEAR_NONE < 0)          printf("PASS: WEAR_NONE < 0\n"); else printf("FAIL\n");
+
+    int x = WEAR_NONE;
+    if (x == -1)                printf("PASS: int x = WEAR_NONE; x == -1\n"); else printf("FAIL\n");
+
+    int wear = -1;
+    if (wear == WEAR_NONE)      printf("PASS: int wear = -1; wear == WEAR_NONE\n"); else printf("FAIL\n");
+
+    /* Negative values for unsigned int — should round-trip cleanly */
+    int neg2 = -2;
+    if (neg2 == -2)             printf("PASS: int neg2 == -2\n"); else printf("FAIL\n");
+
+    return 0;
+}

@@ -62,6 +62,21 @@ IRValue IRBuilder::newReg(DataDef *type, const char *name_hint)
     return IRValue::reg(gp, type);
 }
 
+static x86::Gp materialize_string_object_ptr(x86::Compiler &cc, const IRValue &src)
+{
+    if ( src.isMem() )
+    {
+	x86::Gp gp = cc.newIntPtr("ir_str_obj");
+	cc.lea(gp, src.op.as<x86::Mem>());
+	return gp;
+    }
+    if ( src.isReg() )
+	return src.op.as<x86::Gp>();
+    if ( src.isAddr() )
+	return src.op.as<x86::Gp>();
+    throw "materialize_string_object_ptr() unsupported string operand shape";
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // load — normalize to Reg shape                                           //
 /////////////////////////////////////////////////////////////////////////////
@@ -355,6 +370,16 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return IRValue::reg(r.op, to);
     }
 
+    // Some host helpers still model function-pointer payloads as raw
+    // int64 slots (for example std::for_each's callback trampoline).
+    // A function reference is still just an 8-byte address in a Gp, so
+    // allow a relabel into a same-width integer destination.
+    if ( src.type->is_function() && to->is_integer() && to->size >= src.type->size )
+    {
+	IRValue r = load(src);
+	return IRValue::reg(r.op, to);
+    }
+
     // char* ↔ string transient relabel: ternary branches sometimes
     // mix a string literal (dtSTRING) with a char*-yielding pointer
     // expression (e.g. SMAUG `!CAN_PKILL(victim) ? "&W<Peaceful>" :
@@ -391,8 +416,7 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
     if ( src.type->is_string() && to->is_pointer() )
     {
 	extern const char *string_cstr(void *);
-	IRValue r = load(src);
-	x86::Gp str_gp = r.op.as<x86::Gp>();
+	x86::Gp str_gp = materialize_string_object_ptr(cc_, src);
 	InvokeNode *call;
 	cc_.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
 	call->setArg(0, str_gp);

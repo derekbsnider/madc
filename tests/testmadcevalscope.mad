@@ -1,0 +1,24 @@
+#include <stdio.h>
+
+int probe_expr(int base)
+{
+	int bonus = 2;
+	return madc::eval_expression_int("base + bonus");
+}
+
+int probe_eval(int base)
+{
+	int bonus = 2;
+	return madc::eval_int("return base + bonus;");
+}
+
+int main()
+{
+	string who = "echo";
+	string out;
+	printf("%d\n", probe_expr(40));
+	printf("%d\n", probe_eval(40));
+	madc::eval_expression_string(out, "who");
+	printf("%s\n", out.c_str());
+	return 0;
+}

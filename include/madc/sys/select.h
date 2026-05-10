@@ -6,6 +6,9 @@
 
 #define FD_SETSIZE 1024
 
+#ifndef __MADC_FD_SET_DEFINED
+#define __MADC_FD_SET_DEFINED
+
 // 128-byte bit array laid out as 16 int64_t slots. Field names are internal
 // and not intended for direct access — use the FD_* macros.
 struct fd_set {
@@ -31,6 +34,8 @@ struct fd_set {
 // most network code. Without it, `fd_set in_set;` fails with "use of
 // undeclared identifier 'fd_set'".
 typedef struct fd_set fd_set;
+
+#endif
 
 // FD_* macros take a `fd_set *` (a pointer), matching glibc. Callers
 // pass either `&local_set` or an existing `fd_set *` parameter; both

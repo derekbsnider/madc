@@ -1,0 +1,44 @@
+// Regression: __errno_location() returns `int*`, where C's int is 4 bytes
+// but madc's int is 8 bytes by design.  The deref `*p` was reading 8 bytes
+// — the low 4 holding errno, the high 4 picking up adjacent memory — and
+// the stale high half silently broke `errno == X` comparisons.
+//
+// Visible victim: SMAUG comm.c read_from_descriptor() did
+//     int iErr = errno;
+//     ...
+//     else if (iErr == EWOULDBLOCK) break;
+//     else { perror("Read_from_descriptor"); return FALSE; }
+// Quiet recv()s on a non-blocking socket return -1 with errno=EAGAIN
+// (which == EWOULDBLOCK on Linux).  With the bad deref, the EWOULDBLOCK
+// branch never matched, perror printed whatever stale errno-low was, and
+// every player got disconnected mid-input.
+
+#include <stdio.h>
+#include <errno.h>
+
+int main()
+{
+    FILE *fp = fopen("/this/cannot/possibly/exist/zzz/qq", "r");
+    if (fp != 0) { printf("FAIL: fopen of nonexistent succeeded\n"); return 1; }
+
+    int saved = errno;
+
+    if (saved == 2)
+        printf("PASS: saved errno == 2 (ENOENT)\n");
+    else
+        printf("FAIL: saved errno = %d (long 0x%016lx)\n", saved, (long)saved);
+
+    if (errno == 2)
+        printf("PASS: direct errno == 2\n");
+    else
+        printf("FAIL: direct errno != 2 (got %d)\n", errno);
+
+    // EWOULDBLOCK==EAGAIN==11 on Linux — make sure constant compares work
+    int eagain = 11;
+    if (eagain == 11)
+        printf("PASS: int constant compare\n");
+    else
+        printf("FAIL: int compare\n");
+
+    return 0;
+}

@@ -13,6 +13,9 @@
 // <sys/time.h> can still declare select() sets.
 #define FD_SETSIZE 1024
 
+#ifndef __MADC_FD_SET_DEFINED
+#define __MADC_FD_SET_DEFINED
+
 struct fd_set {
     int64_t __b0;
     int64_t __b1;
@@ -32,6 +35,8 @@ struct fd_set {
     int64_t __b15;
 };
 typedef struct fd_set fd_set;
+
+#endif
 
 // FD_* macros take a `fd_set *` (pointer), matching glibc — see
 // sys/select.h for rationale.

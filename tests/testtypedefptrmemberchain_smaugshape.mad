@@ -1,0 +1,93 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef short sh_int;
+typedef struct char_data CHAR_DATA;
+typedef struct pc_data PC_DATA;
+typedef struct fight_data FIGHT_DATA;
+typedef struct hhf_data HHF_DATA;
+typedef struct mob_index_data MOB_INDEX_DATA;
+typedef struct descriptor_data DESCRIPTOR_DATA;
+typedef struct affect_data AFFECT_DATA;
+typedef struct note_data NOTE_DATA;
+typedef struct obj_data OBJ_DATA;
+typedef struct room_index_data ROOM_INDEX_DATA;
+typedef struct editor_data EDITOR_DATA;
+typedef struct timer_data TIMER;
+typedef struct char_morph CHAR_MORPH;
+typedef struct variable_data VARIABLE_DATA;
+typedef struct mprog_act_list MPROG_ACT_LIST;
+typedef int DO_FUN();
+typedef int SPEC_FUN();
+
+struct pc_data {
+	short learned[16];
+};
+
+struct char_data {
+	CHAR_DATA *next;
+	CHAR_DATA *prev;
+	CHAR_DATA *next_in_room;
+	CHAR_DATA *prev_in_room;
+	CHAR_DATA *master;
+	CHAR_DATA *leader;
+	FIGHT_DATA *fighting;
+	CHAR_DATA *reply;
+	CHAR_DATA *retell;
+	CHAR_DATA *switched;
+	CHAR_DATA *mount;
+	HHF_DATA *hunting;
+	HHF_DATA *fearing;
+	HHF_DATA *hating;
+	SPEC_FUN *spec_fun;
+	MPROG_ACT_LIST *mpact;
+	int mpactnum;
+	sh_int mpscriptpos;
+	MOB_INDEX_DATA *pIndexData;
+	DESCRIPTOR_DATA *desc;
+	AFFECT_DATA *first_affect;
+	AFFECT_DATA *last_affect;
+	NOTE_DATA *pnote;
+	NOTE_DATA *comments;
+	OBJ_DATA *first_carrying;
+	OBJ_DATA *last_carrying;
+	ROOM_INDEX_DATA *in_room;
+	ROOM_INDEX_DATA *was_in_room;
+	PC_DATA *pcdata;
+	DO_FUN *last_cmd;
+	DO_FUN *prev_cmd;
+	void *dest_buf;
+	char *alloc_ptr;
+	void *spare_ptr;
+	int tempnum;
+	EDITOR_DATA *editor;
+	TIMER *first_timer;
+	TIMER *last_timer;
+	CHAR_MORPH *morph;
+	VARIABLE_DATA *variables;
+	char *name;
+	sh_int stance;
+};
+
+short gsn_dual_wield = 3;
+
+int could_dual(CHAR_DATA *ch)
+{
+	if ( ch->stance )
+		return 0;
+	if ( ch->pcdata->learned[gsn_dual_wield] )
+		return 1;
+	return 0;
+}
+
+int main()
+{
+	CHAR_DATA *ch = (CHAR_DATA *)calloc(1, sizeof(CHAR_DATA));
+	PC_DATA *pc = (PC_DATA *)calloc(1, sizeof(PC_DATA));
+	ch->pcdata = pc;
+	pc->learned[3] = 77;
+	printf("dual=%d val=%d\n", could_dual(ch), ch->pcdata->learned[3]);
+	free(pc);
+	free(ch);
+	return 0;
+}

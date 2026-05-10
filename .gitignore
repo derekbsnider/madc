@@ -1,9 +1,16 @@
 .mcp.json
-*.cpp~
-*.h~
-Makefile~
-*.sh~
+.claude/settings.local.json
+*~
 claude_status.json
+Makefile
+config.log
+config.status
+config.mk
+autom4te.cache/
+aclocal.m4
+configure
+include/config.h
+include/config.h.in
 
 # SMAUG-derived content lives in a separate MadSMAUG repository due to
 # the Diku/Merc/SMAUG license stack (see https://github.com/derekbsnider/MadSMAUG).
@@ -13,3 +20,4 @@ MadSMAUG
 smaug.tgz
 smaug1.8/
 ftp_game.org
+inbox/

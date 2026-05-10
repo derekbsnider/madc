@@ -2,6 +2,1273 @@
 
 ## [Unreleased]
 
+- **JIT/native EXE parity is now green across the full integration suite.**
+  `scripts/run_tests.sh --exe` now passes all 271 JIT-backed integration
+  tests. The closing fixes were: exporting runtime `eval` and
+  `context_set_*` helpers with C linkage for standalone AOT executables,
+  falling back to a temporary runtime `Program` when script-side eval
+  helpers run without an active host program, aliasing `std::endl` into
+  the `std::` namespace, guarding embedded `fd_set` definitions across
+  `sys/time.h` and `sys/select.h`, allowing function references to
+  coerce into raw `int64_t` callback slots for `std::for_each`, and
+  materializing lambda-capture `__env` parameters into a Gp before
+  building captured-variable operands. Coverage also gained explicit
+  `.expect` oracles for lambda capture, `std::for_each`, namespace IO,
+  and struct/time/select interop, and the `smaug_requests_source`
+  compatibility body now carries a trivial harness `main()` so it
+  participates cleanly in the runner.
+
+- **Additional SMAUG-shaped runtime regressions now stay in-tree.**
+  Promoted deterministic probes for branch-skipped buffer writes,
+  variadic bug logging, `sprintf` with multiple `%s` arguments,
+  repeated ternary string arguments inside variadic formatting, typedef
+  pointer-member chains, and a simplified `set_char_color()` formatting
+  path into real integration tests so these runtime shapes stay covered
+  instead of living as scratch files.
+
+- **Local variables and parameters now stay local across JIT/native codegen.**
+  Parser-created locals now set `vfLOCAL`, and function/lambda
+  parameters now set `vfPARAM | vfLOCAL`, so block-local names and
+  parameters no longer alias unrelated global storage during later
+  codegen. This closes the native/JIT shadowing cases behind SMAUG's
+  `damage()` path and adds explicit regressions for a local/global name
+  collision plus a `char *` parameter shadowing a global.
+
+- **AOT/global-data parity coverage expanded around SMAUG-shaped extern access.**
+  New regressions now exercise function-scope access to global pointer
+  tables, struct arrays, and `sysdata`-style extern storage so the
+  native executable lane keeps the same observable layout/lookup
+  behavior as the JIT path.
+
+## [v0.14.1] - 2026-05-10
+
+- **SMAUG native executable runtime now survives the first real combat path.**
+  `smaug.exe` now boots, accepts telnet, completes character creation,
+  reaches Newgate room 109, enters combat with the serpent, survives
+  repeated damage rounds, and can kill the serpent cleanly in the
+  standalone native executable lane.
+
+- **Small 1..16 byte struct returns now follow the SysV x86-64 ABI in both JIT and native EXE mode.**
+  `return some_struct;` no longer leaks a dead stack address or treats
+  the first machine word of a local struct as a pointer. The compiler
+  now marshals the low 8 bytes into `rax` and the high 8 bytes into
+  `rdx`, matching GCC and fixing SMAUG's `EXT_BV multimeb(...)` login
+  path plus the broader small-aggregate return-by-value lane.
+
+- **Release baseline now includes the first proven native SMAUG combat run.**
+  `make -C src fulltest` is green at 271 integration and 261 unit, and
+  the `smaug.exe` runtime probe now advances from startup/login through
+  a full serpent fight in room 109.
+
+## [v0.14.0] - 2026-05-08
+
+- **Native `save_executable()` SMAUG path now survives real startup and login.**
+  The standalone ELF path now preserves rematerializable global
+  struct/class and fixed-array operands across statements without
+  reusing stale cached bases, so native SMAUG no longer crashes in
+  `bug()` on malformed `vault.lst` EOF handling.
+
+- **`char *` assignments from string literals now emit real C-string pointers.**
+  Post-declaration assignments like `char *p; p = "hello";` no longer
+  route the literal through `string_cstr(void*)` as if it were a
+  `std::string` object. This fixes SMAUG's `alarm_section =
+  "new_descriptor::accept";` login-path crash and restores the telnet
+  greeting / name-prompt flow in native executables.
+
+- **Native executable coverage expanded around AOT parity regressions.**
+  `tests/unit/test_libmadc_program.cpp` now locks in:
+  top-level init before `main`, `stderr` support, preserved global array
+  layout across function-scope `extern` redeclarations, `char *` returns
+  from string literals, and `char *` assignments from string literals.
+
+- **Standalone native executables from madc scripts.**
+  `bin/madc -o binary script.mad` generates a self-contained ELF x86-64
+  executable with no madc runtime dependency (only libc). The `_start`
+  stub calls `__libc_start_main` for proper libc initialization (stdio,
+  malloc, atexit). ELF symbol versioning (.gnu.version / .gnu.version_r)
+  uses `dlvsym`-based detection — no hardcoded glibc versions. Function
+  symbols emitted in `.symtab` for gdb debugging.
+
+- **`madc::engine` public class for shared program configuration.**
+  Engine owns registry, policy defaults, and logging. Programs created
+  from an engine share its state. C API: `madc_engine_create/destroy`.
+
+- **C API at near-parity with C++ embedding surface.**
+  `expression_policy`, allowlist vectors, expression bindings/context,
+  `register_function`, `has_function`, `get/set_global`, `eval_body`,
+  `has_error`, helper functions. 354-line header, 60+ functions.
+
+- **Process globals cleaned up for multi-instance embedding.**
+  `madc_verbose` is now `thread_local`. Dead `throwit` global removed.
+  All Phase 4.1 global state blockers closed.
+
+- **Compile-once-run-many and .o cache.**
+  `compile_string()` / `compile_file()` + `call()` reuse JIT code.
+  `.o` cache via `save_object()` / `load_object()`: SMAUG loads in
+  9.5ms from cache vs 26s compile (2,700x speedup).
+
+- **ELF .o writer and loader.**
+  `save_object()` emits standard ELF x86-64 relocatable objects with
+  function symbols and external symbol relocations. `load_object()`
+  reads them back with dlsym resolution and mmap(PROT_EXEC).
+
+- **pkg-config and SONAME versioning.**
+  `libmadc.pc` template, `libmadc.so.0` SONAME, versioned install
+  with symlinks. `pkg-config --cflags --libs libmadc` works.
+
+- **Embedding examples.**
+  `examples/embed_hello.cpp` (C++) and `examples/embed_hello.c` (C).
+
+- **`libmadc.so` install/use validation is now a first-class build path.**
+  `src/Makefile` now installs `libmadc.so` with executable/shared-library
+  mode through `INSTALL_PROGRAM`, carries a library-owned weak default
+  `madc_verbose` definition in `src/madc_globals.cpp` so external
+  consumers do not depend on the CLI binary for that symbol, and exposes
+  `make -C src libmadc-smoke` to stage-install the library and compile
+  plus run both `tests/libmadc_cpp_smoke.cpp` and
+  `tests/libmadc_c_smoke.c` against the staged headers and shared
+  library.
+
+- **The C shim now covers scalar policy mirrors, invoke limits, and diagnostics enumeration.**
+  `include/madc_api.h` and `src/madc_c_api.cpp` now expose C-facing
+  mirrors for the scalar portions of `compile_options`,
+  `security_policy`, `runtime_eval_policy`, and `invoke_limits`, plus
+  diagnostics counting and copy-out through `madc_error`. This keeps the
+  C ABI thin, but it is now useful for policy-controlled hosts that need
+  more than fire-and-forget compile/call entrypoints. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in policy roundtrip
+  and diagnostics enumeration.
+
+- **Phase 4.3 now has a first `libmadc.so` target and thin C ABI.**
+  `src/Makefile` now builds `lib/libmadc.so` from a dedicated PIC object
+  set and exposes `install-libmadc` for the shared library plus public
+  headers. A first C-facing wrapper now also ships in
+  `include/madc_api.h` and `src/madc_c_api.cpp`, centered on opaque
+  `madc_program` handles and scalar/string `madc_value` exchange for
+  compile/exec/eval/call plus last-error retrieval. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in basic C-API
+  compile/call behavior and error-text retrieval.
+
+- **Host-side `register_function(...)` can now deduce normal C++ callback signatures, including `std::string`.**
+  `madc::program` now has a typed callback-registration helper for
+  ordinary host function pointers, so embedders can register callbacks
+  like `int64_t(const std::string &)` or `std::string(std::string)`
+  without spelling out the low-level `native_signature` or manually
+  handling the compiler's `std::string*` callback ABI. Internally this
+  lowers through a generated trampoline onto the existing explicit
+  signature path, keeping the ABI stable while making the public C++
+  surface less error-prone. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in deduced
+  `std::string` parameter and return callbacks.
+
+- **Host-side `madc::program::call(...)` and `register_function(...)` now support script `string` object signatures on the real `std::string*` ABI.**
+  The host call bridge now recognizes compiled script `string`
+  parameters and returns, passing `std::string` object pointers through
+  the existing dtSTRING pointer ABI and copying returned string objects
+  back into host `madc::value` strings. `register_function(...)` now
+  accepts `native_type::string_object` signatures on that same ABI, so
+  host callbacks can participate in script string-object calls without a
+  separate shim type. Coverage in `tests/unit/test_libmadc_program.cpp`
+  now locks in host-to-script string parameters, script string returns,
+  and string-object host callbacks.
+
+- **`madc::program::call(...)` now supports up to four arguments.**
+  The host-side call dispatcher no longer stops at arity 2 for the
+  existing supported native subset. `program::call(...)` now supports up
+  to four arguments for `void`, `bool`, `int64_t`, `double`, and
+  `const char *` signatures, and the unit coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in both a four-arg
+  compiled-script call and a four-arg registered host callback.
+
+- **In-language `madc::eval_unit(...)` now mirrors the host-side full-source alias.**
+  The madc script namespace now exposes `eval_unit(...)` as the explicit
+  full-source alias alongside the older `eval(...)` name, so script-side
+  and host-side runtime-eval examples can use the same terminology for
+  the full translation-unit lane. `tests/testmadceval.mad` now uses the
+  explicit alias directly.
+
+- **Host-side C++ full-source eval now has an explicit `eval_unit(...)` alias.**
+  `madc::program` and the top-level `madc::` convenience wrappers now
+  expose `eval_unit(...)` as the explicit name for the existing
+  full-translation-unit runtime-eval contract. This keeps `eval(...)`
+  working as a compatibility alias while making the public surface read
+  cleanly as `eval_expression(...)`, `eval_body(...)`, and
+  `eval_unit(...)`. Coverage in `tests/unit/test_libmadc_program.cpp`
+  now locks in both the stateful and convenience-wrapper `eval_unit(...)`
+  path.
+
+- **Host-side C++ runtime eval now has an explicit `eval_body(...)` lane.**
+  `madc::program` and the top-level `madc::` convenience wrappers now
+  expose `eval_body(...)` for the common case where the caller wants to
+  supply function-body text instead of writing a full
+  `__madc_eval(...)` wrapper manually. Typed overloads for `bool`,
+  `int64_t`, `double`, and `std::string` auto-wrap the body when no
+  explicit `__madc_eval(...)` definition is present, while the generic
+  `madc::value` path stays explicit by requiring a declared
+  `program::native_type` return contract. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in wrapped-body
+  success, explicit-entry passthrough, generic typed-contract use, and
+  void-contract rejection.
+
+- **Host-side C++ eval helpers now have typed overloads.**
+  `madc::program::eval(...)` and `madc::program::eval_expression(...)`
+  now have overloads that write directly into `bool`, `int64_t`,
+  `double`, and `std::string`, and the top-level `madc::eval(...)` /
+  `madc::eval_expression(...)` convenience wrappers mirror the same
+  surface. This keeps the explicit `madc::value` path available while
+  removing boilerplate for the common scalar/string embedding cases.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now locks in typed
+  program wrappers, top-level convenience wrappers, and incompatible
+  result-kind rejection.
+
+- **Typed script-side `madc::eval_*` helpers now auto-wrap body text by default.**
+  `madc::eval_bool(...)`, `madc::eval_int(...)`,
+  `madc::eval_double(...)`, and `madc::eval_string(...)` now treat
+  their source input as `__madc_eval` body text when no explicit
+  `__madc_eval(...)` definition is present, generating the wrapper
+  automatically from the known typed return contract. This removes the
+  explicit reserved-entry requirement from the common typed script-side
+  path while preserving compatibility for callers that still provide the
+  full entry function explicitly. Coverage in `tests/testmadceval.mad`,
+  `tests/testmadcevalscope.mad`, and
+  `tests/unit/test_libmadc_program.cpp` now exercises the body-mode
+  path directly.
+
+- **Full script-side `madc::eval(...)` now has its own child-program sandbox policy.**
+  `madc::program` now exposes `runtime_eval_policy` as a separate public
+  control surface for full in-language source eval child programs. Hosts
+  can independently restrict child `madc::eval(...)` builtin,
+  namespace, header, and dynamic-symbol capability without changing the
+  parent program's main compile surface or the narrower
+  `eval_expression(...)` policy lane. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in policy
+  roundtrip plus a restricted-child case where parent compilation stays
+  permissive but child full eval cannot resolve `puti(...)`.
+
+- **Script-side runtime eval can now capture current scope under its own sandbox gate.**
+  In-language `madc::eval*` and `madc::eval_expression*` calls can now
+  see the current visible madc scope through a compiler-synthesized
+  `MadArray` context object when runtime-eval scope access is enabled.
+  This is controlled independently from broader full-program sandboxing
+  through dedicated source-vs-expression gates:
+  `compile_options.enable_runtime_eval_source_scope_access`,
+  `compile_options.enable_runtime_eval_expression_scope_access`,
+  `security_policy.allow_runtime_eval_source_scope_access`, and
+  `security_policy.allow_runtime_eval_expression_scope_access`, and
+  `authority_mode::system_locked` clamps it off. Coverage in
+  `tests/testmadcevalscope.mad` plus
+  `tests/unit/test_libmadc_program.cpp` now locks in both the allowed
+  path, the full disable path, and independent source-vs-expression
+  disable behavior.
+
+- **Full in-memory runtime eval now normalizes trailing-newline-sensitive source and installs scope globals at parse time.**
+  The internal full-source eval path now normalizes in-memory source
+  buffers so a missing trailing newline no longer breaks
+  `madc::eval_int("int __madc_eval() { ... }")`, and the child
+  translation-unit path now injects primitive/string scope fields after
+  tokenization and before parse so scope-backed full `eval(...)` sees
+  the expected globals. This same slice also fixed an off-by-one filter
+  in runtime-scope capture so hidden `__literal__*` backing variables no
+  longer leak into generated context objects.
+
+- **Madc script code can now call full in-language `madc::eval(...)`.**
+  The `madc::` namespace now exposes `madc::eval(out, source)` for
+  entry-function-based runtime evaluation of full in-memory madc source
+  strings, plus typed helpers `madc::eval_int(source)`,
+  `madc::eval_bool(source)`, `madc::eval_double(source)`, and exact
+  string helper `madc::eval_string(out, source)`. These layer on the
+  same host `program::eval(...)` path used by the public embedding API,
+  including normal lexer/parser/compiler flow and reserved
+  `__madc_eval` entrypoint semantics. Coverage in
+  `tests/testmadceval.mad` now locks in integer, boolean, double, and
+  string runtime evaluation from script code itself.
+
+- **In-language runtime eval bridges now hang off `Program` internals.**
+  `Program` now owns internal `runtime_eval_source(...)` and
+  `runtime_eval_expression(...)` helpers, and the parser/runtime
+  `madc::eval*` plus `madc::eval_expression*` bridges are now thin
+  callers into that seam instead of directly orchestrating temporary
+  wrapper programs themselves. The remaining internal wrapper hop is
+  now gone too: those helpers compile and invoke through `Program`
+  child instances plus the same internal expression/source validation
+  and zero-arg call marshaling rules, without bouncing back through the
+  public `madc::program` facade. This is still an ownership cleanup;
+  the validated behavior and test baseline are unchanged.
+
+- **In-language `madc::eval_expression(...)` now supports `MadArray` context objects.**
+  Madc script code can now build associative expression context objects
+  through `madc::context_set_int(...)`, `madc::context_set_real(...)`,
+  `madc::context_set_string(...)`, and `madc::context_set_array(...)`,
+  then evaluate runtime expressions against that context through
+  `madc::eval_expression_ctx(...)` plus typed `_ctx` helpers for
+  `bool`, `int`, `double`, and exact-string results. Coverage in
+  `tests/testmadcevalexprctx.mad` now locks in nested numeric and
+  string context traversal from script code itself.
+
+- **Parser-owned expression context now lowers string leaves correctly.**
+  Context-resolved string fields were previously injected as raw
+  `TokenStr` nodes after parse-time identifier/member resolution, which
+  bypassed the usual string-literal lowering path in `parseExpression()`
+  and left top-level/nested string context results empty. String
+  context leaves now lower through `Program::addLiteral(...)` the same
+  way lexer-produced string tokens do. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves both top-level and
+  nested host-side string context evaluation.
+
+- **Phase 4.2 / libmadc public C++ API: first `madc::program` slice.**
+  New header `include/libmadc/program.h` and implementation
+  `src/madc_program.cpp` add a C++-first pimpl facade over the internal
+  `Program` class with `compile_file`, `exec_file`, `exec_string`,
+  `diagnostics()`, `last_error()`, `has_error()`, and
+  `clear_diagnostics()`. `exec_string` writes the in-memory source to a
+  temp file for the current lexer/parser pipeline, while rewriting
+  public diagnostics back to the caller's virtual filename. Coverage in
+  `tests/unit/test_libmadc_program.cpp` locks in successful compile/run,
+  parser diagnostic filename rewriting, diagnostic reset across runs,
+  and stream cleanup on destruction.
+
+- **`madc::program` now has a first host callback registration API.**
+  `program::register_function(name, callback, signature)` now feeds the
+  existing builtin-registration path through a public C++ surface,
+  letting hosts expose global native functions to scripts before
+  compile/execute. The initial public signature model is intentionally
+  narrow: `void`, `bool`, `int64`, `double`, and `const char*`.
+  Coverage proves both integer callbacks and script-string to
+  `const char*` coercion through `tests/unit/test_libmadc_program.cpp`.
+
+- **`madc::program` now has a first script-call API too.**
+  `program::call(name, args, result)` can now invoke compiled global
+  script functions from host C++ after `compile_file(...)`, initializing
+  the compiled runtime once via `root_fn()` before the first host-side
+  call. The initial surface is intentionally narrow and explicit:
+  it supports only the scalar / C-string subset (`void`, `bool`,
+  `int64`, `double`, `const char*`), currently limits arity to 2, and
+  rejects unsupported script-side shapes like `string` object params or
+  returns, multi-return functions, and varargs with a structured public
+  runtime error instead of miscalling them. Coverage in
+  `tests/unit/test_libmadc_program.cpp` proves integer args/return,
+  host string to script `char *` args, and the current unsupported
+  `string` object rejection path.
+
+- **`madc::program` now exposes first global get/set surfaces.**
+  `program::get_global(name, result)` and
+  `program::set_global(name, value)` now let hosts read and write
+  compiled global variables after runtime initialization. The first
+  public slice is intentionally narrow and explicit: scalar globals map
+  to `madc::value` booleans / integers / reals, script `string` globals
+  map to host strings, and unsupported shapes like arrays fail with a
+  structured public runtime error instead of pretending to work.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now proves integer
+  and string global round-trips, unsupported array rejection, and a
+  64-bit integer regression where host-side writes above 32-bit range
+  must not truncate through the older `Variable::set(int)` helper path.
+
+- **`madc::program` now has a first in-memory `eval(...)` surface.**
+  `program::eval(source, result, virtual_filename)` now compiles an
+  in-memory translation unit through the same temp-file lexer/parser
+  path as `exec_string(...)`, then invokes a reserved zero-arg
+  `__madc_eval` entrypoint through the existing host-side `call(...)`
+  path. This keeps `eval(...)` on the same compile/runtime seam instead
+  of inventing a separate execution model. The first slice is
+  intentionally narrow and explicit: it is entry-function based rather
+  than free-form expression evaluation, and it inherits the same narrow
+  result marshaling as `call(...)`. Coverage in
+  `tests/unit/test_libmadc_program.cpp` proves integer and string
+  results, virtual-filename diagnostic rewriting, and the current
+  missing-entry failure path.
+
+- **`madc::` now has a first convenience wrapper tier over `madc::program`.**
+  New header `include/libmadc/api.h` now exposes free-function
+  `madc::eval(...)`, `madc::exec_string(...)`, and `madc::exec_file(...)`
+  as thin wrappers over a temporary `madc::program`. This gives simple
+  embedders a script-like entry convention without introducing a second
+  execution model or changing where policy/runtime state really lives.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now proves the
+  wrapper layer for eval, string exec, and file exec.
+
+- **`madc::program` now has a first expression-only evaluation surface.**
+  `program::eval_expression(expression, result, virtual_filename)` now
+  evaluates a single expression through a dedicated expression parse /
+  compile seam rather than exposing the full general-purpose `eval(...)`
+  surface. The first slice is intentionally narrow and explicit: it
+  routes through the existing policy seam, builds a synthetic hidden
+  function around the parsed expression instead of widening the old
+  `__madc_eval` path, and introduces the first public allowlist
+  surfaces for embedded headers and dynamic symbols. `math.h` is the
+  first real header-group case, enabling libm-backed expressions
+  without reopening unrestricted `#load` / fallback symbol access. The
+  result-type inference for operator expressions now also follows the
+  expression AST instead of trusting `TokenOperator`'s default
+  `_datatype`, so real-valued libm expressions like
+  `sqrt(9.0) + cos(0.0)` stay on the dedicated expression path instead
+  of falling back to the older translation-unit route.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now proves plain
+  arithmetic, statement-shaped rejection, direct symbol allowlists,
+  string-literal return marshaling, forked scalar expression results,
+  `math.h` header-group use, and the top-level
+  `madc::eval_expression(...)` wrapper.
+
+- **Expression authority is now explicit on `madc::program`.**
+  `include/libmadc/options.h` now adds `expression_policy`, and
+  `madc::program` now exposes `set_expression_policy(...)` /
+  `get_expression_policy()`. `eval_expression(...)` no longer depends on
+  the broader `security_policy` symbol/header fields for expression
+  calls: function calls are denied by default, allowed calls can be
+  granted either by explicit function name or by header-group expansion
+  such as `math.h`, and out-of-policy calls now fail with a public
+  runtime error before compilation. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves default call denial,
+  explicit allowlist acceptance, allowlist rejection, and policy
+  roundtrip.
+
+- **`eval_expression(...)` now rejects breakout-oriented source forms
+  before compilation.** The generated-expression path now validates the
+  supplied text up front and fails explicitly on `;`, block braces,
+  preprocessor directives, assignment operators, increment/decrement,
+  and reserved `__madc_*` identifiers instead of relying on accidental
+  parser/compiler rejection after code generation. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves breakout-token and
+  mutation-operator rejection.
+
+- **`eval_expression(...)` now validates parsed AST shape too.**
+  The dedicated expression seam no longer relies only on source-text
+  guards before building its synthetic hidden function. Parsed
+  expressions are now walked through an explicit whitelist of allowed
+  node families, while mutation/sequencing forms remain rejected.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now adds ternary
+  acceptance and explicit rejection for comma sequencing in expression
+  mode.
+
+- **`expression_policy` now gates pointer/lvalue-style expression forms explicitly.**
+  The dedicated expression path no longer treats member access,
+  subscript access, and pointer operations as accidental byproducts of
+  the AST whitelist. `expression_policy` now has separate booleans for
+  function calls, member access, subscript access, and pointer
+  operations, with the non-call lvalue/pointer-style forms disabled by
+  default. Coverage in `tests/unit/test_libmadc_program.cpp` now proves
+  default rejection and explicit opt-in for subscript and pointer
+  expressions, plus roundtrip of the richer policy surface.
+
+- **`eval_expression(...)` now supports first host-supplied bindings.**
+  `madc::program` now exposes `set_expression_bindings(...)`,
+  `get_expression_bindings()`, and `clear_expression_bindings()` for a
+  narrow first binding model. The dedicated expression path installs
+  explicit host-provided scalar/string bindings into the temporary
+  expression program before parsing, so hosts can evaluate expressions
+  against scoped input data without routing through globals. This first
+  slice is intentionally narrow: only boolean, integer, real, and
+  string bindings are accepted, while arrays/objects/bytes fail
+  explicitly. Coverage in `tests/unit/test_libmadc_program.cpp` now
+  proves integer bindings, string binding roundtrip, unsupported-kind
+  rejection, and program-state roundtrip for the binding map.
+
+- **`eval_expression(...)` now supports first object-backed host context.**
+  `madc::program` now also exposes `set_expression_context(...)`,
+  `get_expression_context()`, and `clear_expression_context()`. The
+  first slice is intentionally conservative: a host `madc::value`
+  object becomes the source of top-level expression bindings, with
+  explicit rejection for non-object contexts and explicit collision
+  rejection when a context field name overlaps a direct binding name.
+  This gives expression mode a scoped object/struct-style host surface
+  without committing yet to nested member reflection. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves integer field use,
+  non-object rejection, collision rejection, and state roundtrip.
+
+- **Nested object-context primitive traversal now works in `eval_expression(...)`.**
+  Safe expression mode still does not allow pointer dereference or
+  general host-member semantics, but it now supports static nested
+  primitive leaf traversal from object context values such as
+  `user.stats.level`. This is implemented conservatively by rewriting
+  matching dotted context paths to synthetic scoped bindings before
+  parse/compile, keeping the existing no-pointer boundary intact.
+  Coverage in `tests/unit/test_libmadc_program.cpp` now proves nested
+  object traversal through `user.stats.level + 1`.
+
+- **Nested expression-context lookup now fails path-by-path with explicit diagnostics.**
+  The object-backed `eval_expression(...)` context seam no longer
+  rejects a whole context just because it contains an unrelated
+  unsupported leaf. Instead, context validation now follows the
+  expression's referenced identifier paths: missing nested fields,
+  descent through non-object leaves, and terminal object/unsupported
+  values now fail with path-specific runtime errors, while unrelated
+  array/bytes/object leaves are ignored unless the expression actually
+  touches them. Coverage in `tests/unit/test_libmadc_program.cpp` now
+  proves explicit missing-field and bad-descent diagnostics plus the
+  non-referenced unsupported-leaf case.
+
+- **madc script code can now call a first in-language `madc::eval_expression(...)`.**
+  The `madc::` namespace now exposes `madc::eval_expression(out, expr)`
+  for use inside madc programs themselves. This first slice is narrow
+  on purpose: it evaluates the runtime expression string through the
+  existing libmadc expression seam, stringifies scalar/string results
+  into a caller-supplied `string`, and currently allows libm-backed
+  calls through `math.h` when the active program's dlfcn policy allows
+  them. Coverage in `tests/testmadcevalexpr.mad` now locks in integer,
+  string, and libm-backed runtime expression results from inside madc
+  itself.
+
+- **In-language `madc::eval_expression(...)` now has typed helpers.**
+  Madc script code can now evaluate runtime expressions directly into
+  scalar types via `madc::eval_expression_int(expr)`,
+  `madc::eval_expression_bool(expr)`, and
+  `madc::eval_expression_double(expr)`, plus an exact-string helper
+  `madc::eval_expression_string(out, expr)` that keeps the existing
+  string-out calling convention instead of stringifying non-string
+  results. Coverage in `tests/testmadcevalexprtyped.mad` locks in the
+  typed runtime path for integer, boolean, double, and exact-string
+  expression evaluation inside madc itself.
+
+- **`eval_expression(...)` now leans more on madc's own token/parser pipeline.**
+  Expression call restrictions are now checked from lexer tokens before
+  parse instead of by rescanning raw source text, which keeps blocked
+  calls on the public runtime-error path even when the callee would
+  otherwise be undeclared at parse time. The remaining nested
+  object-context seam is also closer to the parser now: dotted context
+  paths tolerate parser-legal whitespace and comments around `.`
+  separators. Coverage in `tests/unit/test_libmadc_program.cpp` now
+  proves nested context traversal through spaced/commented dotted
+  paths.
+
+- **`eval_expression(...)` object context now resolves through a parser-owned named-root model.**
+  Object-backed expression context is no longer implemented by
+  pre-rewriting nested dotted paths onto synthetic bindings before
+  parse. Unresolved identifiers and subsequent `.` chains can now
+  resolve directly against a parser-visible context root, so
+  `user.stats.level` is modeled inside madc's own parse pipeline while
+  still staying limited to static primitive leaves. Coverage in
+  `tests/unit/test_libmadc_program.cpp` continues to prove top-level
+  context fields, nested primitive traversal, path-specific missing-
+  field/bad-descent diagnostics, and parser-legal trivia around dotted
+  paths.
+
+- **Synthetic expression-function wrapping now lives on `Program`.**
+  The AST surgery that turns a parsed expression into a compilable
+  hidden function is no longer embedded only inside the `libmadc`
+  wrapper flow. `Program` now owns a `build_expression_function(...)`
+  helper that attaches the parsed expression to the normal AST /
+  pending-function pipeline, leaving `madc::program::eval_expression(...)`
+  focused on policy, bindings/context setup, and result marshaling.
+
+- **Full in-memory eval/exec no longer require temporary source files.**
+  `Program` now has an in-memory translation-unit tokenization path, so
+  `madc::program::eval(...)` and `madc::program::exec_string(...)`
+  compile source buffers directly through the normal lexer/parser/
+  compiler pipeline instead of writing temp files first. This keeps the
+  full-source eval path aligned with the same core compiler machinery
+  that the expression lane has been moving toward.
+
+- **`madc::program` now exposes first options/policy surfaces.**
+  `include/libmadc/options.h` now ships `compile_options`,
+  `security_policy`, `invoke_limits`, and `authority_mode`, and
+  `madc::program` now exposes setters/getters for all three. The first
+  implementation is intentionally honest about what it enforces today:
+  `compile_options` mirrors the real `Program::RegistrationPolicy`
+  booleans for builtin registration and built-in namespace registration,
+  `security_policy` is a higher-level wrapper over those same effective
+  gates, and `invoke_limits` currently round-trips as stored
+  configuration only. Coverage in `tests/unit/test_libmadc_program.cpp`
+  proves disabled core builtin registration, disabled namespace
+  registration, and invoke-limit round-tripping.
+
+- **`madc::program` policy now gates raw `#load` and fallback `dlsym`.**
+  The same `enable_dlfcn_functions` policy seam now reaches the real
+  authority escape hatches too: `#load` directives, `#load`-backed
+  namespace `dlsym`, parse-time RTLD-default symbol fallback, and
+  compiler-side extern late-bind `dlsym` now all fail explicitly when
+  that policy gate is disabled. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now locks in the lexer, parser,
+  and compiler denial paths. The remaining policy gap is deeper
+  runtime/in-process resource enforcement rather than raw symbol-loading
+  access.
+
+- **`authority_mode::system_locked` now clamps dangerous capability back on the public API seam.**
+  `system_locked` is no longer descriptive-only metadata. On the
+  effective `madc::program` policy surface it now forces process
+  builtins and dynamic-loading paths off, keeps the derived
+  `compile_options` / `security_policy` views in sync, and prevents
+  later `set_compile_options(...)` calls from re-enabling `#load`,
+  dlsym fallback, or process builtins. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves both the clamped
+  getters and the failed re-enable path.
+
+- **Public policy now carries an explicit execution-mode seam.**
+  `include/libmadc/options.h` now defines `execution_mode` with
+  `in_process` and `fork_per_invocation`, and `security_policy` now
+  stores that desired execution mode. This slice does not yet implement
+  child-process execution, but it does make the contract explicit:
+  under `authority_mode::system_locked`, the effective public policy now
+  clamps execution to `fork_per_invocation` so the next worker/fork
+  runtime work has a stable surface to attach to. Coverage in
+  `tests/unit/test_libmadc_program.cpp` locks in round-trip behavior for
+  unlocked mode and the locked-mode clamp.
+
+- **`fork_per_invocation` now reaches real child-process execution on the public runtime seam.**
+  When the effective public policy execution mode is
+  `fork_per_invocation`, `exec_file(...)` / `exec_string(...)` now
+  compile in the parent and fork a child for `Program::execute()`,
+  while `call(...)` and entry-function-based `eval(...)` now also run
+  their actual invocation inside a child. The host side captures child
+  stdout/stderr into temp files, serializes public diagnostics back to
+  the parent, replays output/error, and now also marshals the existing
+  narrow scalar / C-string result subset back for forked `call(...)` /
+  `eval(...)`. This is still an intentionally narrow worker slice:
+  globals stay in-process, result marshaling does not widen beyond the
+  existing scalar / C-string contract, and limit enforcement remains
+  honest post-invocation accounting rather than preemption. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves fork-mode exec
+  success/error propagation, child stdout/stderr contribution to
+  output-limit enforcement, plus forked scalar/string `call(...)` and
+  `eval(...)` results.
+
+- **`madc::program` now enforces `invoke_limits` on public invocation paths.**
+  `exec_file(...)`, `exec_string(...)`, `eval(...)`, `call(...)`, and
+  runtime-init paths reached through `get_global(...)` / `set_global(...)`
+  now snapshot process CPU time, resident size, and madc-managed
+  output/error buffer sizes before invocation and reject the operation
+  afterward if the configured `cpu_ms`, `memory_bytes`, or
+  `output_bytes` budget was exceeded. This is explicit post-invocation
+  accounting rather than in-process preemption. A follow-up now also
+  captures raw libc `stdout` / `stderr` writes during host API
+  invocation so `output_bytes` reflects both `MadcEngine`-managed
+  buffers and direct fd-level output. Coverage in
+  `tests/unit/test_libmadc_program.cpp` now proves raw-output-byte,
+  CPU-time, and resident-growth rejection paths.
+
+- **MadcEngine now restores redirected standard streams on teardown.**
+  `MadcEngine` now resets `std::cin` / `std::cout` / `std::cerr` plus
+  built-in log sinks in its destructor, fixing the `madc::program`
+  teardown crash where `std::cerr` still pointed at a freed
+  `ostringstream` during process exit. The regression was reproduced by
+  repeated standalone runs and confirmed under both `gdb` and
+  `valgrind`.
+
+- **`make -C src test` now fails on the first crashing unit binary.**
+  The unit-test loop used to return the status of only the final test
+  binary, which could hide an earlier segfault behind a false-green
+  run. The Makefile now exits immediately when any unit binary fails, so
+  `make -C src test` and `make -C src fulltest` surface the real cause.
+
+- **`madcdat` now has its own archive and install target.**
+  `make libmadcdat` now builds `lib/libmadcdat.a` from the gated
+  storage/federation object set, and `make install-madcdat` now stages
+  that archive plus the canonical `include/madcdat/` headers and the
+  dependent `include/libmadc/` public headers needed to compile against
+  it. When `madcdat` is disabled, both targets now fail explicitly
+  instead of pretending the artifact exists.
+
+- **`madcdat` now has a real top-level configure gate.**
+  `./configure --enable-madcdat=no` now excludes the storage/federation
+  object set from the build, drops the `madcdat`-dependent unit test
+  binaries from `make -C src test`, and still leaves the core compiler,
+  runtime, and integration suite buildable. Backend toggles like
+  `--with-bdb` / `--with-gdbm` / `--with-qdbm` / `--with-sqlite3` now
+  require `madcdat` to be enabled instead of silently pretending the
+  subsystem is present. The default enabled path remains unchanged and
+  fully green.
+
+- **Prepared the physical `madcdat` tree split without changing the
+  library boundary yet.** The storage/federation headers now have a
+  canonical public root at `include/madcdat/`, the storage/query driver
+  translation units now live under the `src/madcdat_*.cpp` naming
+  pattern, and the old `include/libmadc/*.h` data-layer headers are now
+  compatibility forwarders into that new header root. This settled the
+  public header boundary before the later archive/install split and also
+  locked in `./configure --enable-madcdat` as the top-level subsystem
+  gate rather than `--with-madcdat`.
+
+- **QueryBuilder now has a first logical-composition seam.** `Query`
+  now carries predicate match-mode metadata (`all` vs `any`), and
+  `QueryBuilder` exposes `match_all()` / `match_any()` so the public
+  surface can start expressing future AND-vs-OR intent without jumping
+  straight to a planner rewrite. `DataSet<T>::query(...)` and
+  `query_raw(...)` explicitly reject non-default composition for now
+  instead of silently ignoring it. Coverage in
+  `tests/unit/test_libmadc_storage_contract.cpp` locks in the builder
+  metadata shape.
+
+- **Builder queries now support `where_not_in(...)`.** `Query` /
+  `QueryBuilder` can now carry one explicit negative-membership
+  predicate in addition to equality, inequality, positive membership,
+  string patterns, and ordered bounds. `DataSet<T>` applies `NOT IN`
+  through local fallback, `sqlite://` pushes it natively, and the keyed
+  local stores explicitly reject that shape for pushdown so they fall
+  back locally instead of pretending to support it. Coverage in
+  `tests/unit/test_libmadc_storage_contract.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_qdbm.cpp` locks in builder metadata,
+  SQLite pushdown, and keyed-store fallback behavior.
+
+- **Builder queries now support `where_like(...)`.** `Query` /
+  `QueryBuilder` can now carry one explicit SQL-style string pattern
+  predicate in addition to equality, inequality, membership, and
+  ordered bounds. `DataSet<T>` applies `LIKE` through a string-only
+  local fallback matcher supporting `%` and `_`, `sqlite://` pushes it
+  natively, and the keyed local stores explicitly reject that shape for
+  pushdown so they fall back locally instead of pretending to support
+  it. Coverage in `tests/unit/test_libmadc_storage_contract.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_qdbm.cpp` locks in builder metadata,
+  SQLite pushdown, and keyed-store fallback behavior.
+
+- **Builder queries now support `where_in(...)`.** `Query` /
+  `QueryBuilder` can now carry one explicit membership predicate in
+  addition to equality, inequality, and ordered bounds. `DataSet<T>`
+  applies `IN` through local fallback, `sqlite://` pushes it natively,
+  and the keyed local stores explicitly reject that shape for pushdown
+  so they fall back locally instead of pretending to support it.
+  Coverage in `tests/unit/test_libmadc_storage_contract.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_qdbm.cpp` locks in builder metadata,
+  SQLite pushdown, and keyed-store fallback behavior.
+
+- **Builder queries now support `where_ne(...)`.** `Query` /
+  `QueryBuilder` can now carry one explicit not-equal predicate in
+  addition to equality and ordered bounds. `DataSet<T>` applies `!=`
+  through local fallback, `sqlite://` pushes it natively, and the keyed
+  local stores explicitly reject that shape for pushdown so they fall
+  back locally instead of pretending to support it. Coverage in
+  `tests/unit/test_libmadc_storage_contract.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_qdbm.cpp` locks in builder metadata,
+  SQLite pushdown, and keyed-store fallback behavior.
+
+- **Typed relation traversal now accepts target-side builder filters
+  and limits.** `Relation<A,B>::query_related(...)` now has a target-
+  query overload mirroring the raw relation path, so callers can filter
+  and cap resolved target rows without dropping to `value`-shaped
+  output. Typed relation traversal still rejects `select(...)`, keeping
+  the no-partial-decode rule intact while making target-side filtering
+  semantics consistent across the typed and raw surfaces.
+
+- **Relation raw traversal now accepts real target-side builder
+  composition.** `Relation<A,B>::query_related_raw(...)` no longer
+  restricts the target query to just dataset name plus selected fields.
+  Target-side builder filters and limits are now honored against the
+  resolved related rows, and an empty `select(...)` now means “return
+  the full logical object” instead of hard-failing. This keeps relation
+  traversal aligned with the existing `DataSet<T>::query_raw(...)`
+  surface without inventing a separate relation-only query language.
+
+- **Strict builder bounds now have a public API.** `QueryBuilder` now
+  exposes `where_gt(...)` and `where_lt(...)` in addition to the
+  existing inclusive bound helpers, so callers can express exclusive
+  ordered scans without constructing `Query` objects manually. The
+  runtime and ordered backends already carried the inclusive/exclusive
+  flags internally; this slice makes that capability part of the
+  public builder surface and locks it in with coverage across SQLite,
+  QDBM, BDB, and the storage-contract builder tests.
+
+- **Storage federation plan tightened around planning boundaries.** The
+  canonical federation plan now explicitly calls out the logical-vs-
+  physical query IR boundary, a coarse driver capability model for
+  planning, and a deliberately narrow V1 federation scope. This keeps
+  the newer pushdown/relation/projection work aligned with a clear
+  planner seam without replacing the more detailed
+  source/mapping/index/reindex design already in the plan.
+
+- **Core `DataSource` classification now distinguishes storage,
+  service, and IPC families.** `madc::DataSource` now exposes both a
+  coarse domain classification layer (`storage`, `service`, `ipc`) and
+  a finer source-family layer (`record_file`, `relational_database`,
+  `keyed_database`, `graph_database`, `service_api`, `unix_socket`,
+  etc.), with helpers such as `is_storage()`, `is_database()`,
+  `is_graph_database()`, `is_service_api()`, and `is_unix_socket()`.
+  This makes the core API match the current design direction:
+  `DataSource` is a general external-conduit abstraction for storage,
+  IPC, and embedding interconnect work, not just database plumbing.
+  Coverage in `tests/unit/test_libmadc_storage_contract.cpp` now proves
+  record-file storage, remote graph storage, relational vs keyed DB
+  classification, HTTPS service, and Unix-socket IPC classification.
+
+- **Storage planning note: `madcdat` is now the official subsystem
+  name.** The storage/federation/indexing design is now explicitly
+  named `madcdat`, while the physical library split remains future
+  work. Current implementation still lives in the existing `libmadc`
+  tree; the later `libmadcdat` boundary stays a planned optional build
+  direction rather than an in-progress extraction. `madc::DataSource`
+  stays on the core side of that line as a general external-conduit
+  abstraction, not something owned exclusively by the data subsystem.
+
+- **Raw projected builder queries.** `DataSet<T>` now has a separate
+  `query_raw(...)` surface for builder queries that return projected
+  `madc::value` objects instead of pretending partial rows still decode
+  into full host `T`. `QueryBuilder::select(...)` now flows end-to-end
+  through the raw path, local fallback can project logical records, and
+  the current pushdown backends (`sqlite://`, `qdbm://`, `bdb://`,
+  `gdbm://`) now accept selected-field builder shapes and return
+  projected objects on that raw surface. Coverage in
+  `tests/unit/test_libmadc_qdbm.cpp`,
+  `tests/unit/test_libmadc_sqlite.cpp`, and
+  `tests/unit/test_libmadc_storage_contract.cpp` proves the new
+  projection path.
+
+- **Bounded key-range query support for builder queries.** `Query` /
+  `QueryBuilder` can now carry upper-bound metadata in addition to
+  equality and lower-bound filters, so callers can express bounded
+  `>= ... <= ...` key scans instead of only point lookups or open-ended
+  lower ranges. `DataSet<T>` applies those bounds in local fallback,
+  `sqlite://` now pushes the full bounded predicate directly, and the
+  ordered keyed `qdbm://` / `bdb://` backends now honor upper bounds by
+  stopping native cursor scans once the key range is exhausted.
+  Coverage in `tests/unit/test_libmadc_sqlite.cpp`,
+  `tests/unit/test_libmadc_qdbm.cpp`,
+  `tests/unit/test_libmadc_bdb.cpp`, and
+  `tests/unit/test_libmadc_storage_contract.cpp` locks in the new
+  bounded-range builder shape.
+
+- **First relation-aware traversal over pushed dataset queries.**
+  `Relation<A,B>` can now do more than resolve one source key at a
+  time: `query_related(...)` walks a filtered source `DataSet<A>` query
+  and materializes related `B` rows for `key_match` and `offset`
+  bindings. The initial coverage proves both shapes: FLR index rows can
+  query through VLR offset locators, and a filtered `sqlite://` source
+  can traverse into a keyed `qdbm://` side dataset by shared primary
+  key. This is the first real relation-traversal layer on top of
+  `DataSet<T>::query(...)`, without pretending to be a full join
+  planner yet.
+
+- **Ordered/lower-bound query pushdown for keyed datasets.** The query
+  builder path now goes beyond equality-only filters: `Query` /
+  `QueryBuilder` can describe lower-bound scans, `DataSet<T>` can apply
+  them through either backend pushdown or local fallback, `sqlite://`
+  now executes key-ordered `>=` plus `LIMIT` builders directly, and the
+  ordered keyed `qdbm://` / `bdb://` backends now use native cursor
+  positioning for the same lower-bound key scans. Coverage in
+  `tests/unit/test_libmadc_sqlite.cpp`,
+  `tests/unit/test_libmadc_qdbm.cpp`,
+  `tests/unit/test_libmadc_bdb.cpp`, and
+  `tests/unit/test_libmadc_storage_contract.cpp` locks in the new
+  builder metadata and range behavior.
+
+- **Phase 4 planning note: reserve the `libmadcdat` seam and treat
+  `madc::eval(...)` as policy-bound execution.** The Phase 4 and storage
+  plans now explicitly reserve an optional future `libmadcdat`
+  sublibrary for the `madcdat` storage/federation/indexing subsystem:
+  `DataSource`, drivers, mappings, relations, source adapters, indexes,
+  and federation/query planning. That boundary is intentional planning,
+  not an extraction already underway, and it keeps that complexity from
+  bleeding into the core `libmadc` embedding surface. The same planning
+  pass also records `madc::eval(...)` as a future core API that must
+  honor the same security policy, parser registration, and invoke
+  limits as file-based program execution.
+
+- **Storage federation design note: keep the layers separate.** The
+  storage plan in `docs/plans/data-storage-federation.md` now makes the
+  anti-monolith structure explicit: `DataSource` stays first-class,
+  `SourceAdapter` handles source segmentation/classification,
+  `FormatAdapter<T>` stays per-record, `ExtractedRecordType` models
+  multiple record families per source, `Relation<A,B>` stays distinct
+  from dataset-local mapping, and `IndexDefinition` plus reindex
+  workflows own derived indexes for CSV/TOML/tagged-text/mailbox-style
+  sources. This locks in a high-cohesion/low-coupling direction before
+  more storage backends and text-format parsers land.
+
+- **First real query pushdown path for typed datasets.** `Query` /
+  `QueryBuilder` now carry structured builder metadata instead of just
+  display text, `DataSet<T>` grows `query(...)`, and the runtime can now
+  push simple equality filters into backends that actually support them
+  while falling back to local scan/filter elsewhere. `sqlite://` now
+  executes scalar `WHERE field = value` plus `LIMIT` directly, and the
+  keyed `qdbm://`, `gdbm://`, and `bdb://` backends now execute primary-
+  key equality filters through the same path. New coverage in
+  `tests/unit/test_libmadc_sqlite.cpp`,
+  `tests/unit/test_libmadc_qdbm.cpp`,
+  `tests/unit/test_libmadc_gdbm.cpp`,
+  `tests/unit/test_libmadc_bdb.cpp`, and
+  `tests/unit/test_libmadc_storage_contract.cpp` locks in the builder
+  metadata and pushed-query behavior.
+
+- **Stable append-only VLR locator contract.** `vlr://` record locators
+  are now an explicit opt-in contract rather than a best-effort offset
+  detail. When a VLR dataset is configured with a tombstone sidecar,
+  locator-aware writes become append-only: inserts append new payloads,
+  updates append a replacement row and tombstone the old version,
+  deletes only tombstone rows, restores clear tombstones for truly
+  deleted rows, and `get_by_locator(...)` now fails explicitly for
+  tombstoned/stale payload offsets. This keeps live locators stable
+  across reopen and non-compacting rewrites while making stale-link
+  failures visible. New coverage in `tests/unit/test_libmadc_vlr.cpp`
+  proves reopen, update, erase, restore, and no-tombstone failure
+  behavior, and `tests/unit/test_libmadc_relation.cpp` now opts the
+  payload file into the stable-locator contract.
+
+- **First concrete FLR -> VLR offset relation slice.** The storage
+  layer now has its first real cross-dataset binding, not just relation
+  metadata. `RecordLocator` is now part of the driver/runtime surface,
+  `DataSet<T>` can `insert_with_locator(...)`, `get_by_locator(...)`,
+  and `get_field(...)`, `Relation<A,B>::resolve(...)` can follow offset
+  and key-match bindings, and `vlr://` now tracks byte offsets for
+  variable-record payload rows so `flr://` index rows can point into a
+  VLR payload file by stored offset. New coverage in
+  `tests/unit/test_libmadc_relation.cpp` proves ordered FLR index rows
+  resolving VLR payload rows end-to-end.
+
+- **FLR post-reap restore by dead-archive reinsertion.** `flr://`
+  restore is no longer limited to pre-compaction tombstone clearing.
+  If a tombstoned record has already been reaped into the dead archive,
+  `DataSet<T>::restore(key)` now loads that archived row, reinserts it
+  into the live FLR, and removes it from the archive. Ordered fixed-
+  record datasets now reinsert restored rows by key order rather than
+  blindly appending. New coverage in `tests/unit/test_libmadc_flr.cpp`
+  proves restore-after-reap plus sorted reinsertion.
+
+- **FLR reap/compaction into dead archive files.** The `flr://`
+  tombstone-sidecar path now has its first cleanup workflow.
+  `MappingSpec<T>` / `SchemaInfo` can carry a dead-record archive file,
+  `DataSet<T>` now exposes `compact()`, and `FlrDriver` can reap
+  tombstoned fixed-length records into a parallel archive FLR while
+  rewriting the live FLR to contain only surviving rows and resetting
+  the tombstone bitvector to match the compacted live record count.
+  New coverage in `tests/unit/test_libmadc_flr.cpp` proves live-file
+  shrink plus dead-archive persistence through reopen.
+
+- **Fourth real keyed local DB backend: `sqlite://`.** The storage
+  layer now has a SQLite-backed keyed backend alongside `qdbm://`,
+  `gdbm://`, and `bdb://`. `src/madc_storage_sqlite.cpp` adds a
+  `SqliteDriver` that creates a schema table on first open, maps
+  registered host fields to typed SQLite columns, enforces one primary
+  key field, and supports duplicate-rejecting insert, update, erase,
+  point lookup, reopen persistence, and deterministic key-ordered scan.
+  New doctest binary `tests/unit/test_libmadc_sqlite.cpp` covers typed
+  `DataSet<T>` round-trip through an actual SQLite database file.
+
+- **FLR tombstone sidecars + pre-reap restore.** `flr://` can now bind a
+  packed-bit tombstone sidecar so deletes become soft positional marks
+  instead of immediate physical removal. `MappingSpec<T>` and
+  `SchemaInfo` now carry tombstone sidecar metadata, `DataSet<T>` grows
+  `restore(key)`, and `FlrDriver` skips tombstoned rows in normal
+  lookup/scan paths while preserving the underlying fixed-record file
+  intact until a later reap/compaction phase. New coverage in
+  `tests/unit/test_libmadc_flr.cpp` proves delete/reopen/restore
+  behavior, and `tests/unit/test_libmadc_storage_contract.cpp` now
+  locks in the contract for tombstone sidecars, dataset roles, ordered
+  fixed-record metadata, and positional/offset/key/graph relation kinds.
+
+- **Third real keyed local DB backend: `bdb://`.** The storage layer
+  now has a Berkeley DB Btree-backed keyed backend alongside
+  `qdbm://` and `gdbm://`. `src/madc_storage_bdb.cpp` adds a
+  `BdbDriver` with one primary key field, typed record payload
+  storage, point lookup, insert/update/erase, and ordered scan through
+  Berkeley DB cursors. Like the Villa path, keys are canonically
+  encoded so signed and unsigned integer keys sort correctly under the
+  backend's lexical Btree ordering. New doctest binary
+  `tests/unit/test_libmadc_bdb.cpp` covers keyed round-trip, duplicate
+  rejection on insert, update, erase, and ordered iteration.
+
+- **Second real keyed local DB backend: `gdbm://`.** The storage layer
+  now has a second optional key/value backend alongside `qdbm://`.
+  `src/madc_storage_gdbm.cpp` adds a `GdbmDriver` over GNU GDBM with
+  one primary key field, typed record payload storage, point lookup,
+  insert/update/erase, and full database scan through the native key
+  iteration API. Unlike Villa, GDBM is hash-backed, so the public
+  contract deliberately does not promise ordered scans. New doctest
+  binary `tests/unit/test_libmadc_gdbm.cpp` covers keyed round-trip,
+  duplicate rejection on insert, update, erase, and unordered scan
+  membership.
+
+- **First real keyed local DB backend: `qdbm://` via Villa.** The
+  exploratory storage layer now has its first ordered key/value store
+  instead of file-shaped record stores only. `src/madc_storage_qdbm.cpp`
+  adds a `QdbmDriver` over QDBM's Villa B+ tree API with one primary key
+  field, point lookup, ordered cursor scan, insert/update/erase, and
+  typed binary record payloads stored independently from the in-memory
+  host layout. Keys are canonically encoded so integer keys sort
+  correctly under Villa's lexical comparator, and scans now come back in
+  key order rather than insertion order. New doctest binary
+  `tests/unit/test_libmadc_qdbm.cpp` covers keyed round-trip, duplicate
+  rejection on insert, update, erase, and ordered iteration.
+
+- **Registration-based `infer_mapper()` for host C++ types.** The
+  exploratory storage layer no longer requires a handwritten
+  `DataMapper<T>` class for every happy-path host type. `mapper.h` now
+  ships `MapperRegistration<T>`, `MapperBuilder<T>`, and
+  `AutoDataMapper<T>`, so a type can register its fields once and let
+  `DataSet<T>` infer a working mapper automatically at `open()`. The
+  builder derives normalized schema facts (kind, width, signedness) for
+  integers, enums, reals, bools, chars, fixed `char[N]`, and
+  `std::string`, and FLR-specific bindings can override storage offsets
+  and fixed text widths so file layout stays separate from host-memory
+  layout. The `dsv://`, `flr://`, and `vlr://` round-trip tests now use
+  this inference path instead of bespoke mapper classes.
+
+- **Autotools/configure scaffolding for optional storage backends.**
+  Added `configure.ac`, `config.mk.in`, and a top-level `Makefile.in`
+  so `madc` can grow optional backend detection without hard-linking
+  every database dependency into the core build. `src/Makefile` now
+  consumes generated feature flags and optional libs from `config.mk`
+  when present while preserving the existing `make -C src` workflow.
+  Initial `./configure` switches are wired for `--with-bdb`,
+  `--with-gdbm`, `--with-qdbm` (Villa-oriented), `--with-xqdbm`, and
+  `--with-sqlite3`, with optional translation units in place so feature
+  detection can be added ahead of or alongside backend implementation.
+
+- **Third working `libmadc` storage backend: `vlr://`.** The first
+  local storage family is now complete: `dsv://` for logical text
+  rows, `flr://` for fixed-size binary records, and `vlr://` for
+  variable-length binary records. `src/madc_storage.cpp` now includes
+  `VlrDriver`, which persists generic object-shaped `madc::value`
+  records as length-prefixed binary payloads with native scalar widths
+  and full string preservation, avoiding the fixed-size pressure that
+  drives FLR truncation/error policy. New doctest binary
+  `tests/unit/test_libmadc_vlr.cpp` covers variable-sized record
+  round-trip, long-string preservation, update/erase, and key-based
+  retrieval through the same typed `DataSet<T>` facade ordinary host
+  C++ code uses for `dsv://` and `flr://`.
+
+- **Second working `libmadc` storage backend: `flr://`.** The storage
+  runtime now has a fixed-record binary backend alongside `dsv://`.
+  `SchemaInfo` and `SchemaField` carry record-layout metadata needed to
+  lower `MappingSpec<T>` into driver-visible storage policy: logical vs
+  fixed-record layout, record size, overflow policy, and per-field text
+  truncation behavior. `src/madc_storage.cpp` now includes `FlrDriver`,
+  which persists object-shaped `madc::value` records into fixed-size
+  binary rows, enforces strict overflow by default, supports explicit
+  truncation when configured, and normalizes cached rows through the
+  persisted fixed-record form so `get()` reflects what actually hit the
+  file. New doctest binary `tests/unit/test_libmadc_flr.cpp` covers
+  successful fixed-record round-trip plus the strict oversized-string
+  failure path.
+
+- **First working `libmadc` storage backend: `dsv://`.** The
+  exploratory storage/federation API now has a real end-to-end C++
+  vertical slice instead of sketches only. `src/madc_storage.cpp`
+  adds the first runtime pieces for this subsystem: a concrete
+  `DsvDriver`, a built-in `DataDriverRegistry`, a minimal
+  `Query`/`QueryBuilder` implementation, and generic record-oriented
+  driver operations over `madc::value` objects. `DataSet<T>` is now a
+  usable typed C++ facade that composes `DataSource`, `DataMapper<T>`,
+  `MappingSpec<T>`, and the driver registry. The first round-trip test
+  in `tests/unit/test_libmadc_dsv.cpp` proves that ordinary host C++
+  can persist and read back a mixed struct through `dsv://`, including
+  key-based `get` / `update` / `erase`, mapped field renames, filtered
+  scans, and CSV-style quoting for textual fields.
+
+- **Exploratory `libmadc` storage/federation API sketches + contract
+  tests.** Added the first public header sketches for a future typed
+  storage layer under `include/libmadc/`: `datasource.h`, `schema.h`,
+  `driver.h`, `mapper.h`, `dataset.h`, `relation.h`, and `query.h`.
+  The model is C++-first and keeps direct/programmatic access primary:
+  `madc::DataSource` is location-only, `SchemaInfo` describes inferred
+  type layout, `DataMapper<T>` / `MappingSpec<T>` handle automatic
+  mapping plus targeted overrides, `FormatAdapter<T>` covers irregular
+  legacy formats such as SMAUG-style tagged text files, and SQL/GQL are
+  planned as optional peer front-ends over a shared query layer. New
+  doctest binary `tests/unit/test_libmadc_storage_contract.cpp`
+  (now 10 cases) locks in the initial contract for `dsv://`, `flr://`, and
+  `vlr://` planning: location-only URI parsing, mixed-type schema
+  description, logical vs fixed vs variable record layouts, strict FLR
+  overflow-by-default, truncation only by explicit opt-in, tombstone
+  sidecars, and positional/offset/key/graph relation kinds.
+
+- **Phase 4.2 / libmadc public C++ API: `madc::error`.** New header
+  `include/libmadc/error.h` (and `src/madc_error.cpp`) ships the next
+  public libmadc type as a structured diagnostic container mirroring the
+  existing internal `Program::Diagnostic` shape: severity, phase, message,
+  file, line, and column. It includes enum-name helpers, equality, a
+  formatted `to_string()`, and a bridge helper
+  `make_errors_from_program_diagnostics(const Program&)` so the public API
+  can lift compiler/runtime diagnostics without exposing `Program`
+  internals. New doctest binary `tests/unit/test_libmadc_error.cpp`
+  (5 cases, 24 assertions) covers default construction, field storage,
+  formatting, equality, and conversion from real `Program` diagnostics.
+
+- **Phase 4/libmadc logging lifecycle fixes.** Built-in syslog/file/JSON
+  sinks are now engine-owned helpers instead of anonymous lambdas appended
+  into the generic `log_sinks` fanout. That fixes the re-enable / re-apply
+  regression where `disable_*(); enable_*();` or repeated
+  `apply_log_config()` calls on the same engine could accumulate stale sink
+  callbacks and duplicate every later log line. Syslog configuration now
+  also rebinds cleanly when `apply_log_config()` changes ident/option/
+  facility. Covered by new doctest cases in `tests/unit/test_datadef.cpp`
+  for file/json sink re-enable, config re-apply, and syslog reconfiguration
+  state.
+
+- **Phase 4.2 / libmadc public C++ API: `madc::value`.** New header
+  `include/libmadc/value.h` (and `src/madc_value.cpp`) ship the first
+  public type of the libmadc embedding API: a tagged value carrying
+  the eight host↔script kinds (`null`, `boolean`, `integer`, `real`,
+  `string`, `bytes`, `array`, `object`). `bytes` is `std::vector<uint8_t>`,
+  `array` is `std::vector<value>` (heap-owned via `unique_ptr`), and
+  `object` is `std::map<std::string, value>`. Copy is deep, move
+  leaves the source in null state, equality compares structurally,
+  and accessor mismatches throw `std::runtime_error`. `MadValue` (in
+  `datadef.h`) is unchanged; it remains the internal php:: array
+  helper. The two are deliberately separate. The umbrella public-API
+  directory lives at `include/libmadc/` (mirroring the `libmadc.so`
+  artifact name), so the existing `include/madc/` embedded-scripting
+  header tree is untouched. New doctest binary
+  `tests/unit/test_libmadc_value.cpp` (19 cases, 67 assertions)
+  covers every kind, deep-copy / move-out, nested arrays of objects,
+  equality across kinds, and accessor-mismatch throws.
+
+- **Phase 4/libmadc log sinks: rotation, JSON, declarative config.**
+  The file sink grew optional size-based rotation
+  (`enable_file_sink(path, max_bytes, max_files)`) — when the next
+  formatted line would exceed `max_bytes`, the existing file rotates
+  through `path.1` … `path.<max_files>` and the oldest is dropped. A
+  new `reopen_log_file()` lets a host integrate with logrotate-style
+  external rotation by reopening the same path after an out-of-band
+  rename. A new structured-fields sink
+  (`enable_json_sink` / `disable_json_sink`) emits one JSON object per
+  `write_log()` call with optional `ts`, `level`, and `message` fields,
+  with a public static `json_escape()` and `format_json_log_line()` so
+  hosts can build their own variant sinks. Topping it all off, a
+  `MadcEngine::Config` struct + `apply_log_config()` give embedding
+  hosts a one-call declarative surface to set threshold, timestamps,
+  level prefixes, error-stream toggle, and any combination of file /
+  syslog / JSON sinks. Twelve new doctest cases cover internal
+  rotation + max_files cap, external rotate + reopen, json_escape
+  edge cases, JSON line shape with and without timestamps, dual file +
+  JSON routing through the `madc::<level>` facades, declarative apply
+  + disable + unwritable-path handling.
+
+- **Phase 4/libmadc log sinks.** `MadcEngine` now grows a runtime
+  `log_threshold` (default `debug`, i.e. log everything) that gates
+  both `write_log()` and the line buffering inside `MadcLogStreambuf`,
+  so a filtered `madc::debug << ... << x` does not even accumulate
+  per-character work. Added a sink-registry layer
+  (`add_log_sink` / `clear_log_sinks` / `log_to_error_stream` toggle)
+  so `write_log()` fans out to a list of `(LogLevel, message)`
+  callbacks in addition to (or instead of) the formatted error-stream
+  output. Built two concrete backends on the registry: a syslog sink
+  (`enable_syslog_sink` / `disable_syslog_sink`, with a public static
+  `syslog_priority_for(LogLevel)` mapping every level to the matching
+  POSIX `LOG_*` priority) and a file sink (`enable_file_sink` /
+  `disable_file_sink`, append-mode, formatted text matching the error
+  stream). New doctest coverage exercises threshold filtering across
+  `write_log` and the level streams, sink fanout / clearing, the
+  syslog priority mapping for all eight levels, and the file sink for
+  cross-engine append, error handling on unwritable paths, and routing
+  through the `madc::<level>` facade streams.
+
+- **Phase 4/libmadc level-stream facade.** Added `madc::emerg`,
+  `madc::alert`, `madc::crit`, `madc::err`, `madc::warn`, `madc::notice`,
+  `madc::info`, and `madc::debug` — eight `std::ostream`-shaped global
+  level streams under namespace `madc`. They are line-buffered
+  `std::streambuf` instances that flush each complete line through the
+  bound engine's `write_log()` (so timestamps, level prefixes, and the
+  active error sink — buffer / tee / future syslog — all apply
+  uniformly). One call to `engine.bind_log_streams()` wires all eight
+  to that engine; `MadcEngine::unbind_log_streams()` detaches them.
+  Without an engine bound, the streams fall back to formatting through
+  `std::cerr` so unconfigured embedding hosts still see output. Covered
+  by five new doctest cases in `tests/unit/test_datadef.cpp`.
+
+- **Phase 4/libmadc console-manager groundwork.** `MadcEngine` now
+  provides standard-stream helper APIs for binding input/output/error,
+  capturing output/error to owned buffers, teeing output/error to a
+  secondary sink, and formatting levelled log messages with optional
+  timestamps and level prefixes. This is the first caller-facing
+  convenience layer for embedding hosts; it still uses standard C++
+  stream machinery underneath. Covered by new doctest coverage in
+  `tests/unit/test_datadef.cpp`.
+
+- **First-wave C23 compatibility landed.** Added compile-time
+  `_Static_assert` / `static_assert`, `alignof` / `_Alignof`,
+  `typeof` / `typeof_unqual`, a typed `nullptr` literal, and C23
+  digit separators in binary/hex/decimal/floating literals. The
+  parser now evaluates richer integer constant expressions for static
+  assertions (comparisons and logical `&&` / `||` in addition to the
+  existing arithmetic/bitwise chain), `alignof` shares the existing
+  type-query surface with `sizeof`, and `typeof(expr)` can drive
+  ordinary declarations. Covered by `tests/teststaticassert.mad`,
+  `tests/testalignof.mad`, `tests/testtypeof.mad`,
+  `tests/testnullptr.mad`, and `tests/testdigitsep.mad`.
+
+- **`rust::match` statement.** New namespaced statement form modeled
+  after Rust's `match`. v1 surface: integer constant patterns,
+  multi-pattern arms (`1 | 2 | 3 => ...`), `_` wildcard with free
+  source-order placement, single-statement or block bodies, and no
+  fall-through (every arm ends with an implicit jump out of the
+  match, `break` still exits early). The lexer now recognizes `=>`,
+  the parser dispatches `rust::match` at statement head only (so
+  `match` remains a usable identifier in user code), and codegen
+  emits a flat compare-and-jump chain over the patterns. Covered by
+  `tests/testrustmatch.mad`. See `docs/language/rust-match.md`.
+
+- **`ns_common` extracted from the four user-facing namespaces.** The
+  `php::`, `python::`, `ruby::`, and `rust::` implementations were
+  carrying duplicate copies of trim/replace-all/repeat/contains/
+  starts_with/ends_with, the substring split/join loops, and a
+  MadValue→string helper. They now all forward to a single set of
+  helpers in `include/ns_common.h` / `src/ns_common.cpp`. The
+  user-facing namespace surfaces are unchanged; `php_str_repeat`
+  inherits the rust-side `count<=0` clear that was missing before.
+
+- **Added a new `rust::` namespace.** v1 is intentionally small-surface
+  and runtime-native: string helpers (`contains`, `starts_with`,
+  `ends_with`, `trim*`, `replace`, `repeat`, `len`, `is_empty`) plus
+  array helpers (`split`, `split_whitespace`, `join`, `first`, `last`,
+  `get`, `push`, `pop`). This is Rust-flavored namespace sugar over
+  existing madc `string` / `array` semantics, not an ownership or
+  borrowing model. `tests/testrust.mad` covers the initial surface.
+
+- **Added `prefer ...;` and `#pragma prefer ...` for namespace
+  precedence.** Both forms now feed the same parser behavior and can
+  reorder unqualified identifier lookup between namespaced helpers and
+  normal C/madc lexical-global resolution. `c` is the fallback lane for
+  ordinary identifier lookup, so `prefer rust, c;` lets bare `len(...)`
+  resolve to `rust::len` before a same-named user function. Covered by
+  `tests/testprefer.mad`.
+
+- **Multi-return runtime path now executes correctly.** The original
+  `testmultiret.mad` failure was split across both sides of the hidden
+  `__retbuf` ABI: the callee wrote return slots through the stack-slot
+  parameter as if it were already a Gp, and the caller never prepended
+  the hidden retbuf pointer when invoking a multi-return function.
+  Fixed by loading `__retbuf` into a real Gp inside `TokenRETURN::compile()`
+  and prepending the caller retbuf in `TokenCallFunc::compile()`.
+  `tests/testmultiret.expect` now locks in the runtime output `3 / 2 / 7 / 42`.
+
+- **Namespace-call arguments can shadow same-named namespace members.**
+  `ruby::chars(chars, s)` previously re-resolved the first argument back
+  to `__rb_chars` because `current_namespace` leaked into `parseCallFunc()`
+  argument parsing. Namespace members now resolve first only at
+  expression head, and `parseCallFunc()` / `parseCallMethod()` suspend
+  `current_namespace` while parsing argument expressions.
+  `tests/testrubycharsshadow.mad` covers the regression, and
+  `tests/testlang.mad` now exercises `ruby::chars` again.
+
+- **php::array_column() and nested-array values.** `MadValue` can now
+  deep-copy and destroy nested `array` values, `php::array_push_array()`
+  appends nested arrays by value, and `php::array_column()` extracts an
+  integer-indexed column from an array of nested arrays.
+  `tests/testphp.mad` covers `array_column`, with `tests/testphp.expect`
+  asserting the output.
+
+- **TokenAssign: subscript-assign value is LHS-typed, honors caller
+  dest** (a59adbb).  Two issues collapsed in the TokenSubscript /
+  TokenSubscriptExpr branches: (a) the expression value of
+  `arr[i] = x` for narrow-integer element types was the unbound RHS
+  register's full int instead of the byte / short that was actually
+  stored, sign-/zero-extended back to int64; (b) the branch
+  unconditionally overwrote `regdp.first`, so outer
+  `r = (buf[i] = x)` had its mirror-to-caller logic confused and r
+  never got written.  Visible victim: SMAUG
+  `while ((BUFF[num]=fgetc(fp)) != EOF) num++;` in `send_*_title()`
+  and `show_file()` walked off the buffer because the EOF compare
+  saw the unbound int.  Worked around for v0.13.0 by
+  `MadSMAUG/patches/madc-fgetc-loop.patch` substituting an int
+  intermediate; that patch is now retired.
+  `tests/testsubscriptassign.mad` covers small-positive, EOF marker,
+  high-bits-truncate, and the SMAUG fgetc-loop pattern.
+
+- **switch: emit `default:` body in source-order position** (396c147).
+  When `default:` appeared before the case labels in source order
+  (the SMAUG colorize idiom), the compiler emitted all case bodies
+  first and then the default body at the end — so a case with no
+  break would fall through into the default body, including the
+  synthetic fall-through from the unlabeled tail code that follows
+  the last explicit case.  Visible victim: SMAUG `make_color_sequence`
+  returned -1 for every &X colour code, so all `&Y/&G/&C/&w` in
+  prompts and help text came through with the `&` stripped and the
+  letter passed verbatim.  Fix tracks `default_index` — the
+  source-order position among the cases — and emits the default body
+  there.  `tests/testswitchdefaultorder.mad` covers default-first,
+  default-middle, default-last with intentional fall-through.
+  Visible result: SMAUG room titles, prompts, status-line, hint
+  banners, and help entries all render in correct ANSI colour.
+
 ## [v0.13.0] — 2026-04-30 — SMAUG 1.8 plays end-to-end on madc
 
 - **SMAUG 1.8 is a fully playable network MUD on madc.** The

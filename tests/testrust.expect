@@ -1,0 +1,14 @@
+trim: [hello rust]
+contains: 1
+starts: 1
+ends: 1
+len: 10
+empty: 0
+replace: hello-rust
+repeat: -----
+join: red-green-blue
+first: red
+last: blue
+get1: green
+pop: gold
+words: alpha,beta,gamma

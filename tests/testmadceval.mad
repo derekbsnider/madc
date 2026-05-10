@@ -1,0 +1,29 @@
+#!/usr/bin/env madc
+#include <iostream>
+
+int main()
+{
+    string src_int =
+	"int helper() { return 40; }\n"
+	"int __madc_eval() { return helper() + 2; }\n";
+    string rendered;
+    madc::eval_unit(rendered, src_int);
+    cout << "rendered=" << rendered << endl;
+    cout << "int=" << madc::eval_int("return 40 + 2;") << endl;
+
+    string src_bool =
+	"return 6 > 3;\n";
+    cout << "bool=" << madc::eval_bool(src_bool) << endl;
+
+    string src_double =
+	"#include <math.h>\n"
+	"return sqrt(9.0) + cos(0.0);\n";
+    cout << "double=" << madc::eval_double(src_double) << endl;
+
+    string src_string =
+	"return \"echo\";\n";
+    string exact;
+    madc::eval_string(exact, src_string);
+    cout << "string=" << exact << endl;
+    return 0;
+}

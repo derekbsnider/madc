@@ -1,0 +1,23 @@
+all:
+	$(MAKE) -C src all
+
+libmadcdat:
+	$(MAKE) -C src libmadcdat
+
+debug:
+	$(MAKE) -C src debug
+
+clean:
+	$(MAKE) -C src clean
+
+distclean: clean
+	rm -f config.log config.status config.mk include/config.h include/config.h.in
+
+test:
+	$(MAKE) -C src test
+
+fulltest:
+	$(MAKE) -C src fulltest
+
+install-madcdat:
+	$(MAKE) -C src install-madcdat DESTDIR="$(DESTDIR)"

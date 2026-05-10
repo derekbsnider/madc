@@ -1154,10 +1154,48 @@ void Program::safesetae(Operand &op)
 // compare two registers even if they are different sizes
 void Program::safecmp(x86::Gp &lval, x86::Gp &rval)
 {
-    if ( lval.x86RmSize() != rval.x86RmSize() )
-	cc.cmp(lval.r64(), rval.r64());
-    else
+    uint32_t ls = lval.x86RmSize();
+    uint32_t rs = rval.x86RmSize();
+    if ( ls == rs )
+    {
 	cc.cmp(lval, rval);
+	return;
+    }
+    // Sub-Gpq operand: the parent Gpq's high bytes are stale (e.g. from
+    // a `neg al` after `mov rax, 1` — the low byte is correct but bits
+    // 8..63 still hold the unrelated `1`).  Comparing as r64()'s of the
+    // parent vregs would read those stale bits.  Sign-extend the
+    // narrower operand into a fresh Gpq so the compare sees its true
+    // value.  Default to signed extension — that's the C-standard
+    // semantic for `int x = c;` style widening, and unsigned values
+    // happen to agree on the low byte either way at the cmp site.
+    auto extend = [&](x86::Gp &g) -> x86::Gp {
+	x86::Gp t = cc.newGpq("_cmpext");
+	switch ( g.x86RmSize() )
+	{
+	    case 1: cc.movsx(t, g.r8());  break;
+	    case 2: cc.movsx(t, g.r16()); break;
+	    case 4: cc.movsxd(t, g.r32()); break;
+	    default: cc.mov(t, g.r64());  break;
+	}
+	return t;
+    };
+    if ( ls < 8 && rs < 8 )
+    {
+	x86::Gp lt = extend(lval);
+	x86::Gp rt = extend(rval);
+	cc.cmp(lt, rt);
+    }
+    else if ( ls < 8 )
+    {
+	x86::Gp lt = extend(lval);
+	cc.cmp(lt, rval.r64());
+    }
+    else
+    {
+	x86::Gp rt = extend(rval);
+	cc.cmp(lval.r64(), rt);
+    }
 }
 
 void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2)

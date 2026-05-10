@@ -60,6 +60,12 @@ separation of concerns at every level.
   the concrete type.
 - The embedded-headers system: adding a new header means dropping a
   file in `include/madc/`. The build regenerates; no C++ changes.
+- The current `libmadc` direction reuses one C++ implementation across
+  three surfaces: CLI, native embedding, and the future C shim. That is
+  the project-level form of the 3R credo: **reuse, reduce, recycle**.
+  Reuse existing machinery before inventing parallel abstractions,
+  reduce duplicated logic and policy models, and recycle one coherent
+  implementation across user-facing surfaces.
 
 ### Bad (anti-pattern)
 

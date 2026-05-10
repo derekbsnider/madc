@@ -6,7 +6,7 @@
 //////////////////////////////////////////////////////////////////////////
 #define __DATADEF_H 1
 
-extern bool madc_verbose;
+extern thread_local bool madc_verbose;
 
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
@@ -205,6 +205,14 @@ public:
     	}
 	return false;
     }
+    virtual size_t alignment() const
+    {
+	if ( basetype() == BaseType::btStruct )
+	    return size;
+	if ( size == 0 )
+	    return 1;
+	return size > 8 ? 8 : size;
+    }
     virtual DataType type() const { return (DataType)_type; }
     virtual BaseType basetype() const { return BaseType::btSimple; }
     static inline DataType rawtype(DataType dt)
@@ -242,16 +250,21 @@ public:
 	// to avoid garbage deref on the unmatched format spec.
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    return n ? cc.newGpb("%s", n) : cc.newGpb();
-	case DataType::dtBOOL:    return n ? cc.newGpb("%s", n) : cc.newGpb();
-	case DataType::dtINT64:   return n ? cc.newGpq("%s", n) : cc.newGpq();
-	case DataType::dtINT16:   return n ? cc.newGpw("%s", n) : cc.newGpw();
-	case DataType::dtINT24:   return n ? cc.newGpw("%s", n) : cc.newGpw();
-	case DataType::dtINT32:   return n ? cc.newGpd("%s", n) : cc.newGpd();
-	case DataType::dtUINT8:   return n ? cc.newGpb("%s", n) : cc.newGpb();
-	case DataType::dtUINT16:  return n ? cc.newGpw("%s", n) : cc.newGpw();
-	case DataType::dtUINT24:  return n ? cc.newGpw("%s", n) : cc.newGpw();
-	case DataType::dtUINT32:  return n ? cc.newGpd("%s", n) : cc.newGpd();
+	// All integer types use 64-bit registers. Sub-64-bit values are
+	// sign/zero-extended on load (movmptr2rval, movrptr2rval, safemov).
+	// Using sub-register types (newGpw, newGpd) leaves upper bits
+	// undefined, which corrupts values passed as function arguments or
+	// used as array indices.
+	case DataType::dtCHAR:
+	case DataType::dtBOOL:
+	case DataType::dtINT64:
+	case DataType::dtINT16:
+	case DataType::dtINT24:
+	case DataType::dtINT32:
+	case DataType::dtUINT8:
+	case DataType::dtUINT16:
+	case DataType::dtUINT24:
+	case DataType::dtUINT32:
 	case DataType::dtUINT64:  return n ? cc.newGpq("%s", n) : cc.newGpq();
 	case DataType::dtFLOAT:   return n ? cc.newXmm("%s", n) : cc.newXmm();
 	case DataType::dtDOUBLE:  return n ? cc.newXmm("%s", n) : cc.newXmm();
@@ -328,24 +341,60 @@ public:
     // mov(reg, [mem])
     virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
     {
+	// Sub-64-bit loads from absolute addresses need a two-step approach:
+	// load the address into a temp, then movsx/movzx from [temp].
+	// Direct absolute-address movsx can't encode 64-bit displacements,
+	// and the moffs mov only writes the sub-register (leaving upper
+	// bits stale).
+	using namespace asmjit;
+	using namespace asmjit::x86;
+	bool need_extend = false;
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr((uintptr_t)ptr));  break;
-	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtFLOAT:   cc.mov(reg, asmjit::x86::dword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtDOUBLE:  cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); break;
-	case DataType::dtLDOUBLE: cc.mov(reg, asmjit::x86::tword_ptr((uintptr_t)ptr)); break;
-	default:		  cc.mov(reg, asmjit::imm(ptr));		       break;
-	} // switch
+	case DataType::dtCHAR:
+	case DataType::dtBOOL:
+	case DataType::dtINT16:
+	case DataType::dtINT24:
+	case DataType::dtINT32:
+	case DataType::dtUINT8:
+	case DataType::dtUINT16:
+	case DataType::dtUINT24:
+	case DataType::dtUINT32:
+	    need_extend = true;
+	    break;
+	default:
+	    break;
+	}
+	if ( need_extend )
+	{
+	    Gp tmp = cc.newIntPtr("mptr_base");
+	    cc.mov(tmp, imm((uintptr_t)ptr));
+	    switch((DataType)_type)
+	    {
+	    case DataType::dtCHAR:    cc.movsx(reg, byte_ptr(tmp));   break;
+	    case DataType::dtBOOL:    cc.movzx(reg, byte_ptr(tmp));   break;
+	    case DataType::dtINT16:
+	    case DataType::dtINT24:   cc.movsx(reg, word_ptr(tmp));   break;
+	    case DataType::dtINT32:   cc.movsxd(reg, dword_ptr(tmp)); break;
+	    case DataType::dtUINT8:   cc.movzx(reg, byte_ptr(tmp));   break;
+	    case DataType::dtUINT16:
+	    case DataType::dtUINT24:  cc.movzx(reg, word_ptr(tmp));   break;
+	    case DataType::dtUINT32:  cc.mov(reg.r32(), dword_ptr(tmp)); break;
+	    default: break;
+	    }
+	}
+	else
+	{
+	    switch((DataType)_type)
+	    {
+	    case DataType::dtINT64:   cc.mov(reg, qword_ptr((uintptr_t)ptr)); break;
+	    case DataType::dtUINT64:  cc.mov(reg, qword_ptr((uintptr_t)ptr)); break;
+	    case DataType::dtFLOAT:   cc.mov(reg, dword_ptr((uintptr_t)ptr)); break;
+	    case DataType::dtDOUBLE:  cc.mov(reg, qword_ptr((uintptr_t)ptr)); break;
+	    case DataType::dtLDOUBLE: cc.mov(reg, tword_ptr((uintptr_t)ptr)); break;
+	    default:		      cc.mov(reg, imm(ptr));		      break;
+	    }
+	}
     }
     // move memory pointed by a pointer into an Xmm register
     // mov(reg, [mem])
@@ -402,18 +451,18 @@ public:
     {
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr(ptr));  break;
-	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr(ptr));  break;
-	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr)); break;
-	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr(ptr));  break;
-	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr(ptr));  break;
-	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr(ptr)); break;
-	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr(ptr));  break;
-	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr(ptr));  break;
-	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr(ptr));  break;
-	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr(ptr)); break;
-	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr)); break;
-	default:		  cc.mov(reg, asmjit::x86::ptr(ptr));            break;
+	case DataType::dtCHAR:    cc.movsx(reg, asmjit::x86::byte_ptr(ptr));  break;
+	case DataType::dtBOOL:    cc.movzx(reg, asmjit::x86::byte_ptr(ptr));  break;
+	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr));   break;
+	case DataType::dtINT16:   cc.movsx(reg, asmjit::x86::word_ptr(ptr));  break;
+	case DataType::dtINT24:   cc.movsx(reg, asmjit::x86::word_ptr(ptr));  break;
+	case DataType::dtINT32:   cc.movsxd(reg, asmjit::x86::dword_ptr(ptr));break;
+	case DataType::dtUINT8:   cc.movzx(reg, asmjit::x86::byte_ptr(ptr));  break;
+	case DataType::dtUINT16:  cc.movzx(reg, asmjit::x86::word_ptr(ptr));  break;
+	case DataType::dtUINT24:  cc.movzx(reg, asmjit::x86::word_ptr(ptr));  break;
+	case DataType::dtUINT32:  cc.mov(reg.r32(), asmjit::x86::dword_ptr(ptr)); break;
+	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr));   break;
+	default:		  cc.mov(reg, asmjit::x86::ptr(ptr));          break;
 	} // switch
     }
     // move memory pointed to by a register and an offset, into a register
@@ -421,18 +470,18 @@ public:
     {
 	switch((DataType)_type)
 	{
-	case DataType::dtCHAR:    cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
-	case DataType::dtBOOL:    cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
-	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs)); break;
-	case DataType::dtINT16:   cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
-	case DataType::dtINT24:   cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
-	case DataType::dtINT32:   cc.mov(reg, asmjit::x86::dword_ptr(ptr, ofs)); break;
-	case DataType::dtUINT8:   cc.mov(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
-	case DataType::dtUINT16:  cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
-	case DataType::dtUINT24:  cc.mov(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
-	case DataType::dtUINT32:  cc.mov(reg, asmjit::x86::dword_ptr(ptr, ofs)); break;
-	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs)); break;
-	default:		  cc.mov(reg, asmjit::x86::ptr(ptr, ofs));       break;
+	case DataType::dtCHAR:    cc.movsx(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtBOOL:    cc.movzx(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtINT64:   cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs));   break;
+	case DataType::dtINT16:   cc.movsx(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtINT24:   cc.movsx(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtINT32:   cc.movsxd(reg, asmjit::x86::dword_ptr(ptr, ofs));break;
+	case DataType::dtUINT8:   cc.movzx(reg, asmjit::x86::byte_ptr(ptr, ofs));  break;
+	case DataType::dtUINT16:  cc.movzx(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtUINT24:  cc.movzx(reg, asmjit::x86::word_ptr(ptr, ofs));  break;
+	case DataType::dtUINT32:  cc.mov(reg.r32(), asmjit::x86::dword_ptr(ptr, ofs)); break;
+	case DataType::dtUINT64:  cc.mov(reg, asmjit::x86::qword_ptr(ptr, ofs));   break;
+	default:		  cc.mov(reg, asmjit::x86::ptr(ptr, ofs));          break;
 	} // switch
     }
 };
@@ -476,6 +525,7 @@ public:
     {
     }
     virtual BaseType basetype() const { return BaseType::btStruct; }
+    virtual size_t alignment() const { return max_align ? max_align : 1; }
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
     void addMember(std::string n, DataDef &dd, size_t cnt)
     {
@@ -601,6 +651,8 @@ public:
     { cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); }
 };
 
+class MadArray;
+
 // ---- MadValue: tagged union for PHP-style mixed-type arrays ----
 
 struct MadValue
@@ -612,9 +664,10 @@ struct MadValue
 	void       *ptr;    // std::string*, MadArray*, etc.
     };
 
-    MadValue() : type(DataType::dtVOID), ival(0) {}
-    MadValue(int64_t v) : type(DataType::dtINT64), ival(v) {}
-    MadValue(double v)  : type(DataType::dtDOUBLE), dval(v) {}
+    MadValue();
+    MadValue(int64_t v);
+    MadValue(double v);
+    MadValue(const MadArray &a);
 
     // string constructor — copies the string
     MadValue(const std::string &s) : type(DataType::dtSTRING)
@@ -623,44 +676,22 @@ struct MadValue
     }
 
     // copy constructor — deep copy strings
-    MadValue(const MadValue &o) : type(o.type)
-    {
-	if ( type == DataType::dtSTRING && o.ptr )
-	    ptr = new std::string(*(std::string *)o.ptr);
-	else
-	    ival = o.ival; // covers ival, dval, and ptr (non-string)
-    }
+    MadValue(const MadValue &o);
 
     // assignment — deep copy strings
-    MadValue &operator=(const MadValue &o)
-    {
-	if ( this != &o )
-	{
-	    // clean up existing string
-	    if ( type == DataType::dtSTRING && ptr )
-		delete (std::string *)ptr;
-	    type = o.type;
-	    if ( type == DataType::dtSTRING && o.ptr )
-		ptr = new std::string(*(std::string *)o.ptr);
-	    else
-		ival = o.ival;
-	}
-	return *this;
-    }
+    MadValue &operator=(const MadValue &o);
 
-    ~MadValue()
-    {
-	if ( type == DataType::dtSTRING && ptr )
-	    delete (std::string *)ptr;
-    }
+    ~MadValue();
 
     // accessors
     int64_t      as_int()    const { return ival; }
     double       as_double() const { return dval; }
     std::string &as_string() const { return *(std::string *)ptr; }
+    MadArray    &as_array()  const { return *(MadArray *)ptr; }
     bool         is_string() const { return type == DataType::dtSTRING; }
     bool         is_int()    const { return type == DataType::dtINT64; }
     bool         is_double() const { return type == DataType::dtDOUBLE; }
+    bool         is_array()  const { return type == DataType::dtARRAY; }
 };
 
 // PHP-style array: ordered, mixed-type, supports both integer and string keys
@@ -703,6 +734,54 @@ public:
 };
 
 class DataDefARRAY:    public DDClass { public: DataDefARRAY():   DDClass("array", sizeof(MadArray), DataType::dtARRAY) {} };
+
+inline MadValue::MadValue(const MadArray &a) : type(DataType::dtARRAY)
+{
+    ptr = new MadArray(a);
+}
+
+inline MadValue::MadValue() : type(DataType::dtVOID), ival(0) {}
+
+inline MadValue::MadValue(int64_t v) : type(DataType::dtINT64), ival(v) {}
+
+inline MadValue::MadValue(double v) : type(DataType::dtDOUBLE), dval(v) {}
+
+inline MadValue::MadValue(const MadValue &o) : type(o.type)
+{
+    if ( type == DataType::dtSTRING && o.ptr )
+	ptr = new std::string(*(std::string *)o.ptr);
+    else if ( type == DataType::dtARRAY && o.ptr )
+	ptr = new MadArray(*(MadArray *)o.ptr);
+    else
+	ival = o.ival;
+}
+
+inline MadValue &MadValue::operator=(const MadValue &o)
+{
+    if ( this != &o )
+    {
+	if ( type == DataType::dtSTRING && ptr )
+	    delete (std::string *)ptr;
+	else if ( type == DataType::dtARRAY && ptr )
+	    delete (MadArray *)ptr;
+	type = o.type;
+	if ( type == DataType::dtSTRING && o.ptr )
+	    ptr = new std::string(*(std::string *)o.ptr);
+	else if ( type == DataType::dtARRAY && o.ptr )
+	    ptr = new MadArray(*(MadArray *)o.ptr);
+	else
+	    ival = o.ival;
+    }
+    return *this;
+}
+
+inline MadValue::~MadValue()
+{
+    if ( type == DataType::dtSTRING && ptr )
+	delete (std::string *)ptr;
+    else if ( type == DataType::dtARRAY && ptr )
+	delete (MadArray *)ptr;
+}
 
 // typed STL containers — parameterized types created lazily during parsing
 class DataDefVECTOR: public DDClass

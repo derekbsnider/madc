@@ -1,17 +1,40 @@
 # Test Status
 
-Test results as of April 29, 2026 (post-v0.12.0, session 10 — `##` token-paste support, `__attribute__((...))` skip, IRBuilder::coerce dst=void fast path, istream `getline` moved into std:: namespace).
+Test results as of May 10, 2026 (post-v0.14.1 small-struct-return ABI fix and first native-SMAUG serpent-combat milestone, on top of the ongoing Phase 4.2/4.3 libmadc API work and the current storage/query exploration track).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
-## Current Batch Status — 225 passed, 0 failed, 0 timed out, 0 skipped
+Operational default: when work is clearly limited to core `madc` /
+  `libmadc` / parser / compiler surfaces, prefer a workspace configured
+with `./configure --enable-madcdat=no` so builds and unit validation
+stay on the smaller core footprint. Re-enable `madcdat` before final
+validation when storage/federation code or shared surfaces may be
+affected.
 
-Latest `scripts/run_tests.sh` result in this dirty tree:
+## Current Batch Status — 271 JIT pass / 0 fail, 271 EXE pass / 0 fail
 
-- Passing: 225 integration tests
+Latest results (2026-05-10):
+
+### JIT mode (`scripts/run_tests.sh`)
+- Passing: 271 integration tests
 - Failing: none
-- Timed out: none
-- Unit tests: 48/48 passing (doctest) — 25 datadef + 23 IR
+- The integration runner is currently fully green.
+
+### Native EXE mode (`scripts/run_tests.sh --exe`)
+- Passing: 271 (of 271 JIT-passing tests)
+- Failing: none
+- Requires: `sudo make -C src install-libmadc` and
+  `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so
+- The native EXE parity lane is currently fully green.
+- A fresh `smaug.exe` probe also now survives the room 109 serpent fight
+  and serpent death on the standalone executable path.
+
+### Unit tests
+- 80 datadef + 24 IR + 133 libmadc_program + 5 libmadc_error + 19 libmadc_value (261 total)
+- Installed-library smoke: `make -C src libmadc-smoke` passes, staging
+  `libmadc.so` plus public headers under `/tmp/madc-libstage/usr/local/`
+  and then compiling/running both `tests/libmadc_cpp_smoke.cpp` and
+  `tests/libmadc_c_smoke.c` against that staged install.
 
 The latest IR-focused validation batch passes directly, including:
 
@@ -73,8 +96,9 @@ The latest IR-focused validation batch passes directly, including:
 - `testnegbraceInit.mad`
 - `testcharnoterm.mad`
 - `testgoto.mad`
+- `testmadcevalscope.mad`
 
-## Passing Tests — 183 integration (latest batch)
+## Passing Tests — 185 integration (latest batch)
 
 `scripts/run_tests.sh` drives `testcin.mad` with piped stdin (`Alice 42
 hello world`) and `testargv.mad` with argv (`hello world`), asserting
@@ -99,6 +123,11 @@ instead of collapsing that case into a generic `FAIL`.
 | `testprintfdouble.mad` | `%f` / `%e` / `%g` formatting through direct `printf` and `...` wrappers, including mixed args and multiple doubles |
 | `testsmaug_requests.mad` | Upstream SMAUG `requests.c` compatibility test with a minimal `mud.h` shim and embedded POSIX/C headers |
 | `testc23_bool.mad` | C `_Bool` keyword aliasing to madc's bool type, including scalar and fixed-array initialization |
+| `teststaticassert.mad` | `_Static_assert` / `static_assert` with arithmetic, `sizeof`, and `alignof` constant expressions |
+| `testalignof.mad` | `alignof` / `_Alignof` on primitive, pointer, struct, array, and member expressions |
+| `testtypeof.mad` | `typeof(expr)` / `typeof(type)` driving global and local declarations |
+| `testnullptr.mad` | Typed `nullptr` literal in pointer declarations and boolean tests |
+| `testdigitsep.mad` | C23 digit separators in decimal, hex, binary, and floating literals |
 | `testbinlit.mad` | C23-style binary integer literals (`0b...` / `0B...`) in assignments, expressions, and conditions |
 | `testrestrict.mad` | `restrict` as a parsed no-op qualifier in pointer declarations and function parameters |
 | `testflock.mad` | Embedded `<sys/file.h>` and `flock()`/`LOCK_*` constants via dlsym fallback |
@@ -135,6 +164,17 @@ instead of collapsing that case into a generic `FAIL`.
 | `testargv.mad` | int main(int argc, char **argv) — requires cmd args (manual) |
 | `teststruct3.mad` | C ABI alignment, __attribute__((packed)), mixed field sizes |
 | `testsizeof.mad` | sizeof(type), sizeof(struct), sizeof in expressions |
+| `testshadowlocalglobal.mad` | A local variable may shadow a same-named global without rebinding later codegen to the global slot |
+| `testparamshadowglobalcharptr.mad` | A `char *` parameter may shadow a same-named global pointer without aliasing the global |
+| `testaotdamageextern.mad` | AOT/native executable path keeps function-scope global pointer-table lookups stable across repeated branches, matching SMAUG `damage()`-style access |
+| `testaotexternarray.mad` | AOT/native executable path preserves global struct-array layout and function-scope extern access across repeated lookups |
+| `testaotsysdataextern.mad` | AOT/native executable path preserves `sysdata`-style extern struct storage and member reads across branchy control flow |
+| `testbugbufbranch.mad` | Branch-skipped buffer write followed by later `strcpy`/`strcat` on the same stack buffer |
+| `testsetcharcolor_noprint.mad` | Simplified `set_char_color()` `sprintf` formatting path across two color modes |
+| `testsprintf4str.mad` | `sprintf` with four `%s` arguments in one formatting call |
+| `testtypedefptrmemberchain.mad` | Typedef-backed pointer-member chain through `pcdata->learned[idx]` |
+| `testtypedefptrmemberchain_smaugshape.mad` | Deeper SMAUG-shaped typedef pointer-member chain through a larger `CHAR_DATA` layout |
+| `testvariadicterstrtwice.mad` | Repeated ternary string arguments inside a variadic `sprintf` call evaluate once per live branch |
 
 ### Notes
 
@@ -172,7 +212,7 @@ instead of collapsing that case into a generic `FAIL`.
 | `teststruct.mad` | Struct member access | `test.name: Joe Blow`, `test.id: 2`, `test.age: d` (uint8=char in stream) |
 | `testversion.mad` | Version string | `v0.0.1` |
 | `testns.mad` | Namespace resolution (std::) | `Hello from std::cout!`, `x = 42`, stderr output, unqualified still works |
-| `testphp.mad` | php:: namespace functions | strlen, trim, upper/lower, strrev, strpos, str_replace, str_repeat, str_contains |
+| `testphp.mad` | php:: namespace functions | trim/ltrim/rtrim, ucfirst/lcfirst, str_replace, str_repeat, explode/implode, sort, nested-array `array_column` |
 | `teststruct2.mad` | User-defined structs | `p.x: 10`, `p.y: 20`, `bob.name: Bob Smith`, `bob.age: 42`, `bob.id: 1001` |
 | `testclass.mad` | Class definitions with data members | `p.x: 100`, `p.y: 200`, `bob.name: Bob`, `bob.age: 30` |
 | `testinclude.mad` | `#include` directive | `Hello, World!`, `Hello, Mad-C!`, `include works!` |
@@ -190,12 +230,15 @@ instead of collapsing that case into a generic `FAIL`.
 | `testfstream.mad` | File I/O with ifstream/ofstream/fstream | Read/write file operations |
 | `testfuncptr.mad` | Function pointers via `auto fn = func` | Calls through stored function pointer |
 | `testlambda.mad` | Lambda expressions with `auto` and `[]` | Defines and calls inline lambdas |
-| `testlang.mad` | Multi-language namespace usage in one program | php/perl/python/ruby/js functions together |
+| `testlang.mad` | Multi-language namespace usage in one program | php/perl/python/ruby/js functions together, including `ruby::chars` |
 | `testloop.mad` | Loop constructs (for, while, do-while) | Various loop patterns |
 | `testmadc_ns.mad` | `madc::` namespace (regex, array) | madc::regex_match, regex_search, regex_replace |
 | `testmap.mad` | `map<K,V>` typed STL container | Insert, find, erase, iterate |
 | `testmethod.mad` | Class methods with `this` pointer | Method call compiles and dispatches |
-| `testmultiret.mad` | Multiple return values (Go-style) | Function returns multiple values via `__retbuf` |
+| `testmultiret.mad` | Multiple return values (Go-style) | Function returns multiple values via `__retbuf`; runtime output asserted via `.expect` |
+| `testprefer.mad` | Namespace precedence directives | `prefer rust, c;` and `#pragma prefer rust, c` change bare identifier lookup order |
+| `testrust.mad` | rust:: namespace helpers | trim/contains/replace, split/join, first/last/get, push/pop |
+| `testrubycharsshadow.mad` | Namespace-call argument shadowing | `ruby::chars(chars, s)` resolves local arg, not namespace function |
 | `testperl.mad` | perl:: namespace functions | chop, chomp, split, join, grep, glob |
 | `testregex.mad` | Regex functions (match, search, replace) | Pattern matching and substitution |
 | `testset.mad` | `set<T>` typed STL container | Insert, find, erase, iterate |

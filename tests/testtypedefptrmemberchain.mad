@@ -1,0 +1,36 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+typedef struct pc_data PC_DATA;
+typedef struct char_data CHAR_DATA;
+
+struct pc_data {
+	short learned[16];
+	int flags;
+};
+
+struct char_data {
+	int pad0[56];
+	PC_DATA *pcdata;
+};
+
+short gsn_dual_wield = 3;
+
+int could_dual(CHAR_DATA *ch)
+{
+	if ( ch->pcdata->learned[gsn_dual_wield] )
+		return 1;
+	return 0;
+}
+
+int main()
+{
+	CHAR_DATA *ch = (CHAR_DATA *)calloc(1, sizeof(CHAR_DATA));
+	PC_DATA *pc = (PC_DATA *)calloc(1, sizeof(PC_DATA));
+	ch->pcdata = pc;
+	pc->learned[3] = 77;
+	printf("dual=%d val=%d\n", could_dual(ch), ch->pcdata->learned[3]);
+	free(pc);
+	free(ch);
+	return 0;
+}
