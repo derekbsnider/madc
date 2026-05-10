@@ -11,14 +11,14 @@ Upstream total: **158,537 lines** across `MadSMAUG/upstream/smaug1.8/src/*.{c,h}
 (including IMC sources, which will be skipped on the first-pass
 bootstrap).
 
-## Current state — 2026-04-29 (session 12)
+## Current state — 2026-05-10
 
 | Phase            | % | Notes |
 |------------------|--:|-------|
 | **Parse**        | ~86% | 136,166 / 158,537 lines ingested. 49 upstream TUs + `_bootstrap_comm_shim.c`. (IMC headers guarded under `#ifdef IMC` and not counted.) |
 | **Compile**      | ~86% | Every ingested TU compiles cleanly post-session-10 lexer fixes (`##` token paste, `__attribute__` skip, IRBuilder::coerce dst=void fast path). |
 | **Link**         | ~95% | Post-session-11 funcnode dedupe — all 1878 user-defined functions now bind labels. Previously only 168 / 1878 (9%) survived finalize. |
-| **Runtime**      | ~98% | **MadSMAUG listens on TCP, accepts telnet, sends the login greeting** — `Welcome to MadSMAUG. By what name do you wish to be known?` is the first interactive frame from a JIT-compiled SMAUG. game_loop() runs, descriptor management works, the idle-disconnect path works. One madc fix opened this surface: function-local `extern T name;` now resolves to the file-scope global instead of allocating an uninitialized local (comm.c new_descriptor()'s `extern char *help_greeting;` was the load-bearing victim; first connection segfaulted on `help_greeting[0]` because the local extern shadowed db.c's actual global). MadSMAUG-side bootstrap-shim peeling: send_to_char / write_to_buffer / send_to_pager / send_to_char_color / set_char_color un-stubbed; slot_lookup stubbed (its upstream `if (fBootDb) abort()` only fires now that extern visibility into fBootDb is fixed and skill_table is still empty). Earlier session-12 day fixes (still load-bearing): mixed string-literal / char-pointer ternary unification, TokenTerQ merge_slot rewrite around emit_branch + IRBuilder::coerce, dtSTRING ↔ pointer-to-char and 8-byte int ↔ dtSTRING coerce extensions, local C fixed-size array LEA re-emit on every reuse, crash-handler backtrace() walk for non-JIT faulting RIPs. |
+| **Runtime**      | ~99% | **MadSMAUG now survives the first real native executable combat path.** JIT and native EXE both reach telnet greeting, full character creation, room entry, and the Newgate room 109 serpent fight; the standalone `smaug.exe` lane now survives repeated combat rounds and can kill the serpent cleanly. The load-bearing compiler fix was correct 1..16 byte aggregate return-by-value codegen (`rax`/`rdx` per SysV x86-64), which fixed SMAUG's `EXT_BV multimeb(...)` login-state path. Earlier runtime-opening fixes remain load-bearing too: function-local `extern` visibility, mixed string-literal / char-pointer ternary unification, `dtSTRING ↔ char *` coercion, local fixed-array LEA re-emit, and better non-JIT crash backtraces. |
 
 ## Reproducing the runtime
 

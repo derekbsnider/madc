@@ -62,6 +62,39 @@ static x86::Gp materialize_gp_ptr_arg(Program &pgm, Operand &op, const char *nam
     return arg;
 }
 
+static void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type)
+{
+    if ( !ret_type || ret_type->basetype() != BaseType::btStruct )
+	throw "emit_small_struct_return() requires struct return type";
+    if ( ret_type->size <= 0 || ret_type->size > 16 )
+	throw "emit_small_struct_return() requires 1..16 byte struct";
+
+    x86::Gp base_ptr = x86::rcx;
+    if ( src.isMem() )
+	pgm.cc.lea(base_ptr, src.as<x86::Mem>());
+    else if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	x86::Gp src_gp = src.as<x86::Gp>();
+	if ( src_gp.id() != base_ptr.id() )
+	    pgm.cc.mov(base_ptr, src_gp);
+    }
+    else
+	throw "emit_small_struct_return() unsupported source operand";
+
+    x86::Mem lo = x86::qword_ptr(base_ptr);
+    lo.setSize(8);
+    pgm.cc.mov(x86::rax, lo);
+
+    if ( ret_type->size > 8 )
+    {
+	x86::Mem hi = x86::qword_ptr(base_ptr, 8);
+	hi.setSize(8);
+	pgm.cc.mov(x86::rdx, hi);
+    }
+
+    pgm.cc.ret(x86::rax);
+}
+
 static bool token_has_constant_cstring(TokenBase *token)
 {
     if ( !token )
@@ -7733,6 +7766,15 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	Operand &reg = (ret_type && (ret_type->is_numeric() || ret_type->is_pointer()))
 	    ? compile_token_normalized(pgm, returns, ret_type, NULL, ret_storage)
 	    : returns->compile(pgm, regdp);
+
+	if ( ret_type
+	  && ret_type->basetype() == BaseType::btStruct
+	  && ret_type->size > 0 && ret_type->size <= 16 )
+	{
+	    emit_small_struct_return(pgm, reg, ret_type);
+	    return reg;
+	}
+
 	pgm.saferet(reg);
 	return reg;
     }

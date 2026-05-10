@@ -40,6 +40,26 @@
   native executable lane keeps the same observable layout/lookup
   behavior as the JIT path.
 
+## [v0.14.1] - 2026-05-10
+
+- **SMAUG native executable runtime now survives the first real combat path.**
+  `smaug.exe` now boots, accepts telnet, completes character creation,
+  reaches Newgate room 109, enters combat with the serpent, survives
+  repeated damage rounds, and can kill the serpent cleanly in the
+  standalone native executable lane.
+
+- **Small 1..16 byte struct returns now follow the SysV x86-64 ABI in both JIT and native EXE mode.**
+  `return some_struct;` no longer leaks a dead stack address or treats
+  the first machine word of a local struct as a pointer. The compiler
+  now marshals the low 8 bytes into `rax` and the high 8 bytes into
+  `rdx`, matching GCC and fixing SMAUG's `EXT_BV multimeb(...)` login
+  path plus the broader small-aggregate return-by-value lane.
+
+- **Release baseline now includes the first proven native SMAUG combat run.**
+  `make -C src fulltest` is green at 271 integration and 261 unit, and
+  the `smaug.exe` runtime probe now advances from startup/login through
+  a full serpent fight in room 109.
+
 ## [v0.14.0] - 2026-05-08
 
 - **Native `save_executable()` SMAUG path now survives real startup and login.**

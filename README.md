@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 254 integration tests pass. 200 unit tests pass (80 datadef + 23 IR + 1 libmadc_bdb + 2 libmadc_dsv + 5 libmadc_flr + 1 libmadc_gdbm + 32 libmadc_program + 1 libmadc_qdbm + 2 libmadc_relation + 1 libmadc_sqlite + 5 libmadc_error + 19 libmadc_value + 3 libmadc_vlr + 25 libmadc_storage_contract). (`make -C src fulltest`)**
+**Current status: 271 integration tests pass. 261 unit tests pass (80 datadef + 24 IR + 133 libmadc_program + 5 libmadc_error + 19 libmadc_value). Native EXE parity is also green at 271/271, and `smaug.exe` now survives the first serpent combat path. (`make -C src fulltest`, `scripts/run_tests.sh --exe`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -223,10 +223,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.13.0** (2026-04-30) — **SMAUG 1.8 plays end-to-end on madc.** The 158k-line C89 codebase JIT-compiles in-process and runs as a real network MUD: telnet greeting, full character creation (name → confirm → password → color → sex → class → race), stats roll, MOTD, room entry, and in-game commands (`look`, `inventory`, movement, `say`, `who`, `quit`). Returning-player `Reconnecting.` flow also works. Four codegen / lexer fixes collapsed the cascade of SMAUG runtime symptoms (second-connection NULL deref, `slot_lookup` int-widening, fgetc EOF hangs) into single root causes: octal/hex escape sequences in the lexer, `scanf %d → %ld` rewrite for madc's 8-byte int slots, `stat()` int-return sign-extension, and `safemov` `movsx r64, r/m8` for narrow→64 sign-extension. All MadSMAUG bootstrap shims removed. 238 integration + 48 unit tests passing.
+**v0.14.1** (2026-05-10) — **SMAUG native executables now survive the first real combat path.** `smaug.exe` now boots, accepts telnet, completes character creation, reaches Newgate room 109, enters combat with the serpent, survives repeated damage rounds, and can kill the serpent cleanly in the standalone native executable lane. The load-bearing compiler fix was correct 1..16 byte struct return-by-value codegen: small aggregates now return through `rax`/`rdx` like GCC and no longer leak a dead stack address or mis-treat the first machine word of a local struct as a pointer. Release baseline: 271 integration + 261 unit tests, with native EXE parity green at 271/271.
 
 ### Recent Releases
 
+- **v0.14.1** — SMAUG native EXEs survive the first real combat path; small 1..16 byte struct returns now follow the SysV x86-64 ABI in both JIT and EXE mode
 - **v0.13.0** — SMAUG plays end-to-end on madc: telnet/creation/MOTD/room/commands/reconnect; lexer octal+hex escapes, scanf %d→%ld, stat sign-ext, safemov narrow→64
 - **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c)
 - **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, `expr[i].m`, compound-assign on subscripts, realpath includes, class-as-ident

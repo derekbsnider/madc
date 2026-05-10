@@ -2,10 +2,12 @@
 
 ## High Priority
 
-- **Native executable next step: try full SMAUG EXE again on the now-green parity lane.**
-  `scripts/run_tests.sh --exe` is fully green at 271/271, so the next
-  practical native-runtime milestone is another real `smaug.exe` pass
-  rather than more synthetic parity cleanup.
+- **Native SMAUG next step: move beyond the first serpent combat path.**
+  `smaug.exe` now survives startup, login, room 109 serpent combat, and
+  serpent death on the standalone native executable lane. The next
+  practical runtime milestone is broader post-combat gameplay:
+  additional newbie-path encounters, spells, mobprogs, and longer
+  session stability on the native runtime.
 
 - **Phase 4.2 / libmadc public C++ API — next pieces.** `madc::value`,
   `madc::error`, and the first `madc::program` slice now ship at
