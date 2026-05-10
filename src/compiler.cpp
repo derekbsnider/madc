@@ -1203,6 +1203,24 @@ extern "C" void *__madc_aot_init_string(void *ptr, const char *src)
     return new(ptr) std::string(src ? src : "");
 }
 
+extern "C" void *__madc_aot_init_cout(void *ptr)
+{
+    DBG(cout << "__madc_aot_init_cout(" << (uint64_t)ptr << ')' << endl);
+    return new(ptr) std::ostream(std::cout.rdbuf());
+}
+
+extern "C" void *__madc_aot_init_cerr(void *ptr)
+{
+    DBG(cout << "__madc_aot_init_cerr(" << (uint64_t)ptr << ')' << endl);
+    return new(ptr) std::ostream(std::cerr.rdbuf());
+}
+
+extern "C" void *__madc_aot_init_cin(void *ptr)
+{
+    DBG(cout << "__madc_aot_init_cin(" << (uint64_t)ptr << ')' << endl);
+    return new(ptr) std::istream(std::cin.rdbuf());
+}
+
 // construct a stringstream at ptr address
 void *stringstream_construct(void *ptr)
 {
