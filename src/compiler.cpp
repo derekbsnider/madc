@@ -6917,6 +6917,19 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
 	regdp.second = _datatype;
 
+    // Object-like globals in AOT mode materialize as Mem so their backing
+    // addresses remain patchable across large functions. As expression
+    // values, though, strings/streams/struct-like objects are passed around
+    // by address, not by loading the first machine word from the object.
+    if ( reg.isMem() && !var.type->is_numeric() && !var.type->is_pointer() )
+    {
+	x86::Gp addr = pgm.cc.newIntPtr("%s_obj", var.name.c_str());
+	pgm.cc.lea(addr, reg.as<x86::Mem>());
+	_operand = addr;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
     DBG(cout << "TokenVar::compile() name=" << var.name << " regdp.second.name " << regdp.second->name << endl);
 
     if ( (var.type->is_numeric() || var.type->is_pointer()) && (reg.isMem() || reg.isReg() || reg.isImm()) )
@@ -6953,6 +6966,15 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
 
     if ( !regdp.second )
 	regdp.second = _datatype;
+
+    if ( reg.isMem() && !_datatype->is_numeric() && !_datatype->is_pointer() )
+    {
+	x86::Gp addr = pgm.cc.newIntPtr("%s_obj", var.name.c_str());
+	pgm.cc.lea(addr, reg.as<x86::Mem>());
+	_operand = addr;
+	regdp.first = &_operand;
+	return _operand;
+    }
 
     if ( (_datatype->is_numeric() || _datatype->is_pointer()) && (reg.isMem() || reg.isReg() || reg.isImm()) )
     {
