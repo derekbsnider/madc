@@ -11,27 +11,24 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 278 JIT pass / 0 fail, 169 EXE pass / 109 fail
+## Current Batch Status — 271 JIT pass / 0 fail, 271 EXE pass / 0 fail
 
-Latest results (2026-05-09):
+Latest results (2026-05-10):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 278 integration tests
+- Passing: 271 integration tests
 - Failing: none
-- Baseline was 75/200 before this session
+- The integration runner is currently fully green.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 169 (of 278 JIT-passing tests)
-- Failing: 109
+- Passing: 271 (of 271 JIT-passing tests)
+- Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so
-- Remaining failures: mostly AOT codegen crashes (operand caching,
-  struct member access, switch/ternary paths)
+- The native EXE parity lane is currently fully green.
 
 ### Unit tests
-- 80 datadef + 23 IR + 133 libmadc_program + 5 libmadc_error + 19 libmadc_value (260 total)
-- test_datadef: 1 ordering-dependent flake (passes individually)
-- test_libmadc_program: hangs when run as full suite (pre-existing)
+- 80 datadef + 24 IR + 133 libmadc_program + 5 libmadc_error + 19 libmadc_value (261 total)
 - Installed-library smoke: `make -C src libmadc-smoke` passes, staging
   `libmadc.so` plus public headers under `/tmp/madc-libstage/usr/local/`
   and then compiling/running both `tests/libmadc_cpp_smoke.cpp` and

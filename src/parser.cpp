@@ -3277,6 +3277,10 @@ void Program::add_namespaces()
     var = findVariable(gl_name);
     if (var) std_ns["getline"] = var;
 
+    std::string endl_name = "endl";
+    var = findVariable(endl_name);
+    if (var) std_ns["endl"] = var;
+
     DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
 }
 

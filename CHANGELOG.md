@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **JIT/native EXE parity is now green across the full integration suite.**
+  `scripts/run_tests.sh --exe` now passes all 271 JIT-backed integration
+  tests. The closing fixes were: exporting runtime `eval` and
+  `context_set_*` helpers with C linkage for standalone AOT executables,
+  falling back to a temporary runtime `Program` when script-side eval
+  helpers run without an active host program, aliasing `std::endl` into
+  the `std::` namespace, guarding embedded `fd_set` definitions across
+  `sys/time.h` and `sys/select.h`, allowing function references to
+  coerce into raw `int64_t` callback slots for `std::for_each`, and
+  materializing lambda-capture `__env` parameters into a Gp before
+  building captured-variable operands. Coverage also gained explicit
+  `.expect` oracles for lambda capture, `std::for_each`, namespace IO,
+  and struct/time/select interop, and the `smaug_requests_source`
+  compatibility body now carries a trivial harness `main()` so it
+  participates cleanly in the runner.
+
 - **Additional SMAUG-shaped runtime regressions now stay in-tree.**
   Promoted deterministic probes for branch-skipped buffer writes,
   variadic bug logging, `sprintf` with multiple `%s` arguments,

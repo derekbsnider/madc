@@ -1,0 +1,17 @@
+tm_year=125 (since 1900)
+tm_mon=0 (0=Jan)
+tm_mday=1
+tm_hour=0
+tm_min=0
+tm_sec=0
+tv_sec looks recent: 1
+tv_usec in range: 1
+FD_ISSET(0) = 1
+FD_ISSET(1) = 0
+FD_ISSET(5) = 1
+FD_ISSET(63) = 1
+FD_ISSET(64) = 1
+FD_ISSET(1000) = 1
+after FD_CLR(5): 0
+after FD_ZERO, 1000 set? 0
+select(empty, 0ms) = 0

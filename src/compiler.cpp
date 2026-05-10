@@ -5280,7 +5280,11 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    }
 	    // Load env pointer (the hidden first param of this lambda)
 	    Operand &env_op = voperand(pgm, method->env_param);
-	    x86::Gp env_gp = env_op.as<x86::Gp>();
+	    x86::Gp env_gp = pgm.cc.newIntPtr("__env_gp");
+	    if ( env_op.isMem() )
+		pgm.cc.mov(env_gp, env_op.as<x86::Mem>());
+	    else
+		env_gp = env_op.as<x86::Gp>();
 	    // Build operand: numeric → direct Mem in env[cap_idx]; string → loaded pointer
 	    if ( var->type->is_numeric() )
 		operand_map[var] = x86::ptr(env_gp, (int64_t)cap_idx * 8, (uint32_t)var->type->size);

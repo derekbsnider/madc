@@ -370,6 +370,16 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return IRValue::reg(r.op, to);
     }
 
+    // Some host helpers still model function-pointer payloads as raw
+    // int64 slots (for example std::for_each's callback trampoline).
+    // A function reference is still just an 8-byte address in a Gp, so
+    // allow a relabel into a same-width integer destination.
+    if ( src.type->is_function() && to->is_integer() && to->size >= src.type->size )
+    {
+	IRValue r = load(src);
+	return IRValue::reg(r.op, to);
+    }
+
     // char* ↔ string transient relabel: ternary branches sometimes
     // mix a string literal (dtSTRING) with a char*-yielding pointer
     // expression (e.g. SMAUG `!CAN_PKILL(victim) ? "&W<Peaceful>" :

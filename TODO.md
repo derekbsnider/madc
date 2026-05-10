@@ -2,6 +2,11 @@
 
 ## High Priority
 
+- **Native executable next step: try full SMAUG EXE again on the now-green parity lane.**
+  `scripts/run_tests.sh --exe` is fully green at 271/271, so the next
+  practical native-runtime milestone is another real `smaug.exe` pass
+  rather than more synthetic parity cleanup.
+
 - **Phase 4.2 / libmadc public C++ API — next pieces.** `madc::value`,
   `madc::error`, and the first `madc::program` slice now ship at
   `include/libmadc/value.h`, `include/libmadc/error.h`,
