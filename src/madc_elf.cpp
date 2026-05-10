@@ -316,8 +316,11 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 			continue;
 		if ( !var->is_global() )
 			continue;
-		// Skip function variables (their data is a Method*).
-		if ( var->type->basetype() == BaseType::btFunct )
+		// Skip real function variables (their data is a Method*), but keep
+		// function-pointer variables — DataDefFPTR is btFunct too, yet it owns
+		// a real 8-byte global data slot that AOT needs to copy and patch.
+		if ( var->type->basetype() == BaseType::btFunct
+		  && dynamic_cast<DataDefFPTR *>(var->type) == NULL )
 			continue;
 
 		size_t sz = var->type->size;
@@ -376,7 +379,8 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 				continue;
 			if ( (var->flags & vfSTACK) && !(var->flags & vfSTATIC) )
 				continue;
-			if ( var->type->basetype() == BaseType::btFunct )
+			if ( var->type->basetype() == BaseType::btFunct
+			  && dynamic_cast<DataDefFPTR *>(var->type) == NULL )
 				continue;
 			size_t sz = var->type->size;
 			if ( var->is_fixed_array() )
