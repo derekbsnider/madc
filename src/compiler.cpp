@@ -4245,12 +4245,14 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     if ( ltype->basetype() == BaseType::btStruct
       || ltype->basetype() == BaseType::btClass )
     {
-	// struct-to-struct copy: emit memcpy(&dest, &src, sizeof(S)).
-	// Both sides expose their struct storage either as a Mem (stack
-	// slot for a local struct variable) or as a Gp holding a LEA'd
-	// address (e.g. `obj->member` through TokenMember::operand for a
-	// non-numeric member). LEA the Mem form into a Gp; use the Gp
-	// form directly.
+	// Struct/class copy: emit direct chunked loads/stores instead of a
+	// helper call. This preserves the existing raw-byte-copy semantics
+	// while avoiding an AOT-only external-call edge for small fixed-size
+	// copies like `T copy = *(T*)p;`.
+	// Both sides expose their storage either as a Mem (stack slot for a
+	// local struct variable) or as a Gp holding a LEA'd address (for
+	// member-access shapes). LEA the Mem form into a Gp; use the Gp form
+	// directly.
 	if ( ltype != regdp.second )
 	    throw "TokenAssign struct: lhs/rhs struct types differ";
 	DBG(cout << "TokenAssign::compile() struct to struct (" << ltype->name << ", " << ltype->size << " bytes)" << endl);
@@ -4269,12 +4271,43 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.mov(src_gp, r_operand->as<x86::Gp>());
 	else
 	    throw "TokenAssign struct: unsupported RHS operand shape";
-	InvokeNode *mcall;
-	pgm.cc.invoke(&mcall, imm((void *)memcpy),
-	    FuncSignature::build<void *, void *, void *, size_t>());
-	mcall->setArg(0, dst_gp);
-	mcall->setArg(1, src_gp);
-	mcall->setArg(2, imm((size_t)ltype->size));
+	x86::Gp tmp = pgm.cc.newGpq("struct_copy_tmp");
+	size_t copy_off = 0;
+	size_t remaining = (size_t)ltype->size;
+	while ( remaining >= 8 )
+	{
+	    x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 8);
+	    x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 8);
+	    pgm.cc.mov(tmp, src_mem);
+	    pgm.cc.mov(dst_mem, tmp.r64());
+	    copy_off += 8;
+	    remaining -= 8;
+	}
+	if ( remaining >= 4 )
+	{
+	    x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 4);
+	    x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 4);
+	    pgm.cc.mov(tmp.r32(), src_mem);
+	    pgm.cc.mov(dst_mem, tmp.r32());
+	    copy_off += 4;
+	    remaining -= 4;
+	}
+	if ( remaining >= 2 )
+	{
+	    x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 2);
+	    x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 2);
+	    pgm.cc.mov(tmp.r16(), src_mem);
+	    pgm.cc.mov(dst_mem, tmp.r16());
+	    copy_off += 2;
+	    remaining -= 2;
+	}
+	if ( remaining )
+	{
+	    x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 1);
+	    x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 1);
+	    pgm.cc.mov(tmp.r8(), src_mem);
+	    pgm.cc.mov(dst_mem, tmp.r8());
+	}
 	if ( tvl )
 	{
 	    tvl->var.modified();
