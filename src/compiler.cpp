@@ -101,6 +101,75 @@ static bool token_is_charptr_expr(TokenBase *token)
     return false;
 }
 
+static bool global_has_compilable_address(Program &pgm, Variable *var)
+{
+    if ( !var || !var->is_global() )
+	return false;
+    if ( var->data || var->has_aot_data() )
+	return true;
+    if ( pgm.tkProgram )
+    {
+	Variable *canon = pgm.tkProgram->findVariable(var->name);
+	if ( canon && (canon->data || canon->has_aot_data()) )
+	{
+	    if ( !var->data )
+		var->data = canon->data;
+	    if ( !var->has_aot_data() && canon->has_aot_data() )
+	    {
+		var->aot_data_offset = canon->aot_data_offset;
+		var->aot_cstr_offset = canon->aot_cstr_offset;
+	    }
+	    return true;
+	}
+    }
+    return false;
+}
+
+static Variable *canonical_scope_variable(TokenCpnd *scope, Variable *var)
+{
+    if ( !scope || !var )
+	return var;
+
+    if ( !(var->flags & vfSTACK) && !(var->flags & vfPARAM) )
+	return var;
+
+    Variable *found = scope->findVariable(var->name);
+    if ( found && found != var && found->type == var->type )
+	return found;
+
+    if ( scope->method )
+    {
+	found = scope->method->findParameter(var->name);
+	if ( found && found != var && found->type == var->type )
+	    return found;
+    }
+
+    return var;
+}
+
+static const char *token_constant_cstring(TokenBase *token);
+
+static bool global_string_initializer_is_static_data(Program &pgm, Variable &var, TokenBase *initialize)
+{
+    if ( !initialize || pgm.tkFunction != pgm.tkProgram )
+	return false;
+    if ( !var.is_global() || !var.type || !var.type->is_string() )
+	return false;
+
+    TokenAssign *assign = dynamic_cast<TokenAssign *>(initialize);
+    if ( !assign || !assign->right )
+	return false;
+
+    const char *cstr = token_constant_cstring(assign->right);
+    if ( !cstr )
+	return false;
+
+    if ( var.data )
+	*static_cast<std::string *>(var.data) = cstr;
+
+    return true;
+}
+
 static const char *token_constant_cstring(TokenBase *token)
 {
     if ( !token )
@@ -133,6 +202,19 @@ static bool emit_constant_cstring_ptr(Program &pgm, TokenBase *token, x86::Gp &o
     else
 	pgm.cc.mov(out, imm((uint64_t)cstr));
     return true;
+}
+
+static std::string external_symbol_export_name(const std::string &requested_name, void *sym)
+{
+    Dl_info dli;
+    if ( dladdr(sym, &dli) && dli.dli_sname && dli.dli_sname[0] )
+    {
+	std::string actual_name = dli.dli_sname;
+	if ( actual_name.find("__vdso_") == 0 )
+	    return requested_name;
+	return actual_name;
+    }
+    return requested_name;
 }
 
 // Allocate an Xmm with a scalar-real type hint (kFloat32x1 or
@@ -1076,6 +1158,13 @@ void *string_construct(void *ptr)
     return new(ptr) std::string;
 }
 
+extern "C" void *__madc_aot_init_string(void *ptr, const char *src)
+{
+    DBG(cout << "__madc_aot_init_string(" << (uint64_t)ptr
+	     << ", " << (uint64_t)src << ')' << endl);
+    return new(ptr) std::string(src ? src : "");
+}
+
 // construct a stringstream at ptr address
 void *stringstream_construct(void *ptr)
 {
@@ -1854,19 +1943,14 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.Throw(this) << "dynamic symbol '" << var.name
 			    << "' is not allowed by registration policy" << flush;
 	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
-	if ( sym )
-	{
-	    method->x86code = sym;
-	    // Use the real dynamic symbol name (may be mangled) so the
-	    // native ELF linker can resolve it from shared libraries.
-	    Dl_info dli;
-	    if ( dladdr(sym, &dli) && dli.dli_sname && dli.dli_sname[0] )
-		pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = dli.dli_sname;
-	    else
-		pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = var.name;
-	    fnd = NULL; // intentional — fall into the typed-call path below
-	    DBG(pgm.cc.comment("TokenCallFunc::compile() dlsym late-bind"));
-	}
+		if ( sym )
+		{
+		    method->x86code = sym;
+		    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] =
+			external_symbol_export_name(var.name, sym);
+		    fnd = NULL; // intentional — fall into the typed-call path below
+		    DBG(pgm.cc.comment("TokenCallFunc::compile() dlsym late-bind"));
+		}
 	else
 	    pgm.Throw(this) << "TokenCallFunc::compile(" << var.name
 			    << ") method has neither FuncNode nor x86code" << flush;
@@ -2119,16 +2203,13 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.Throw(this) << "dynamic symbol '" << var.name
 			    << "' is not allowed by registration policy" << flush;
 	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
-	if ( sym )
-	{
-	    call_target = sym;
-	    Dl_info dli;
-	    if ( dladdr(sym, &dli) && dli.dli_sname && dli.dli_sname[0] )
-		pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = dli.dli_sname;
-	    else
-		pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] = var.name;
-	    DBG(cout << "TokenCallFunc::compile() redirecting " << var.name << " to C library version" << endl);
-	}
+		if ( sym )
+		{
+		    call_target = sym;
+		    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] =
+			external_symbol_export_name(var.name, sym);
+		    DBG(cout << "TokenCallFunc::compile() redirecting " << var.name << " to C library version" << endl);
+		}
     }
 
     // now we should have all we need to call the function
@@ -2266,7 +2347,7 @@ Operand &TokenCpnd::compile(Program &pgm, regdefp_t &regdp)
 	      it != operand_map.end(); )
 	{
 	    Variable *var = it->first;
-	    if ( var && var->is_global() && var->data
+	    if ( var && var->is_global() && (var->data || var->has_aot_data())
 	      && (var->is_fixed_array()
 	       || var->type->basetype() == BaseType::btStruct
 	       || var->type->basetype() == BaseType::btClass) )
@@ -2311,7 +2392,7 @@ Operand &TokenProgram::compile(Program &pgm, regdefp_t &regdp)
 	      it != operand_map.end(); )
 	{
 	    Variable *var = it->first;
-	    if ( var && var->is_global() && var->data
+	    if ( var && var->is_global() && (var->data || var->has_aot_data())
 	      && (var->is_fixed_array()
 	       || var->type->basetype() == BaseType::btStruct
 	       || var->type->basetype() == BaseType::btClass) )
@@ -2578,7 +2659,9 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     // Top-level program declarations still need their initializer code emitted
     // so file-scope C globals like `static char *p = "x";` and static tables
     // are materialized before `main()` runs. Only local statics skip here.
-    if ( initialize && (!(var.flags & vfSTATIC) || pgm.tkFunction == pgm.tkProgram) )
+    if ( initialize
+      && (!(var.flags & vfSTATIC) || pgm.tkFunction == pgm.tkProgram)
+      && !global_string_initializer_is_static_data(pgm, var, initialize) )
 	initialize->compile(pgm, regdp);
 
     // brace-enclosed initializer for standalone structs: struct Foo x = { v0, v1, ... }
@@ -2865,7 +2948,7 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	      it != operand_map.end(); )
 	{
 	    Variable *var = it->first;
-	    if ( var && var->is_global() && var->data
+	    if ( var && var->is_global() && (var->data || var->has_aot_data())
 	      && (var->is_fixed_array()
 	       || var->type->basetype() == BaseType::btStruct
 	       || var->type->basetype() == BaseType::btClass) )
@@ -4981,7 +5064,11 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
 // Manage operands/registers for use on local as well as global variables
 Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 {
+    var = canonical_scope_variable(this, var);
     std::map<Variable *, Operand>::iterator rmi;
+    if ( var->is_global() && !var->data && !var->has_aot_data() )
+	global_has_compilable_address(pgm, var);
+    bool global_addrable = var->is_global() && (var->data || var->has_aot_data());
 
     DBG(pgm.cc.comment("TokenCpnd::voperand() on"));
     DBG(pgm.cc.comment(var->name.c_str()));
@@ -4998,14 +5085,15 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	// Fixed arrays still skip this: the register already holds the base
 	// pointer (a program-lifetime constant), and movreg would reload the
 	// numeric element zero as if it were the pointer value.
-	if ( var->is_global() && var->data && !var->is_fixed_array() )
-	{
-	    DBG(pgm.cc.comment("TokenCpnd::voperand() variable found, var->is_global() && var->data"));
-	    movreg(pgm, rmi->second, var);
-        }
-	else if ( var->is_global() && var->data && var->is_fixed_array()
+		if ( global_addrable && !var->is_fixed_array()
 		  && rmi->second.isReg() )
-	{
+		{
+		    DBG(pgm.cc.comment("TokenCpnd::voperand() variable found, var->is_global() && var->data"));
+		    movreg(pgm, rmi->second, var);
+	        }
+		else if ( global_addrable && var->is_fixed_array()
+			  && rmi->second.isReg() )
+		{
 	    // Global fixed-arrays: cached Gp holds the base pointer (a
 	    // program-lifetime constant). Re-emit the immediate load so
 	    // every reuse — including ones on a branch the original mov
@@ -5031,9 +5119,9 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	    DBG(pgm.cc.comment("TokenCpnd::voperand() re-emit local-fixed-array LEA"));
 	    pgm.cc.lea(rmi->second.as<x86::Gp>(), fixed_array_stack[var]);
 	}
-	else if ( var->is_global() && var->data && rmi->second.isMem()
-		  && (var->type->basetype() == BaseType::btStruct
-		   || var->type->basetype() == BaseType::btClass) )
+		else if ( global_addrable && rmi->second.isMem()
+			  && (var->type->basetype() == BaseType::btStruct
+			   || var->type->basetype() == BaseType::btClass) )
 	{
 	    // Global structs: cached Mem uses a base register. Re-emit
 	    // the absolute-address load into that base reg so the Mem
@@ -5141,10 +5229,10 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     if ( var->is_fixed_array() )
     {
 	x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-	if ( var->data )
-	{
-	    // Global or static-local: parseDeclaration calloc'd the backing
-	    // storage. Load its absolute address.
+		if ( global_addrable )
+		{
+		    // Global or static-local: parseDeclaration calloc'd the backing
+		    // storage. Load its absolute address.
 	    DBG(pgm.cc.comment("voperand fixed-size array (global/static)"));
 	    pgm.emit_data_mov(reg, var);
 	}
@@ -5162,10 +5250,10 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	var->flags |= vfREGSET;
 	return operand_map[var];
     }
-    if ( var->is_global() && var->data
-      && (var->type->basetype() == BaseType::btStruct
-       || var->type->basetype() == BaseType::btClass)
-      && (var->type->type() == DataType::dtRESERVED || pgm.aot_tracking) )
+	    if ( global_addrable
+	      && (var->type->basetype() == BaseType::btStruct
+	       || var->type->basetype() == BaseType::btClass)
+	      && (var->type->type() == DataType::dtRESERVED || pgm.aot_tracking) )
     {
 	// Mem operand for member access. In JIT mode, only user-defined
 	// structs (dtRESERVED) need this; built-in opaque classes use Gp.
@@ -5379,9 +5467,9 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    // semantics are lost — `static struct X x` becomes
 		    // observably stack-resident and `&x` returns a stack
 		    // address, breaking persistence across calls.
-		    if ( var->is_global() && var->data )
-		    {
-			DBG(pgm.cc.comment("voperand global struct: load absolute base"));
+			    if ( global_addrable )
+			    {
+				DBG(pgm.cc.comment("voperand global struct: load absolute base"));
 			x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 			pgm.emit_data_mov(base_reg, var);
 			x86::Mem mem = x86::ptr(base_reg, 0, (uint32_t)var->type->size);
@@ -5464,8 +5552,10 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 // only used for global varibles -- move register back into variable data
 void TokenCpnd::putreg(Program &pgm, Variable *var)
 {
+    var = canonical_scope_variable(this, var);
     // shortcut out if we can't work with this variable
-    if ( !(var->is_global() && var->data && (var->flags & vfREGSET) && (var->flags & vfMODIFIED) && var->type->is_numeric()) )
+    if ( !(global_has_compilable_address(pgm, var)
+	&& (var->flags & vfREGSET) && (var->flags & vfMODIFIED) && var->type->is_numeric()) )
 	return;
 
     std::map<Variable *, Operand>::iterator rmi;

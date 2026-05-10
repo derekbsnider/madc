@@ -28,6 +28,8 @@ thread_local bool madc_verbose = false;
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <limits.h>
 #include <unistd.h>
 
 namespace {
@@ -99,6 +101,30 @@ void write_file(const std::string &path, const std::string &contents)
     REQUIRE(out.good());
     out << contents;
     out.close();
+}
+
+std::string resolve_repo_lib_dir()
+{
+    char resolved[PATH_MAX];
+    if ( realpath("lib", resolved) )
+    {
+	std::string candidate = std::string(resolved) + "/libmadc.so";
+	if ( access(candidate.c_str(), R_OK) == 0 )
+	    return std::string(resolved);
+    }
+    if ( realpath("../lib", resolved) )
+    {
+	std::string candidate = std::string(resolved) + "/libmadc.so";
+	if ( access(candidate.c_str(), R_OK) == 0 )
+	    return std::string(resolved);
+    }
+    return "/usr/local/lib";
+}
+
+std::string executable_command(const std::string &exe_path)
+{
+    return "env LD_LIBRARY_PATH=" + resolve_repo_lib_dir() + ":/usr/local/lib "
+	+ exe_path;
 }
 
 } // namespace
@@ -1873,7 +1899,7 @@ TEST_SUITE("save_object") {
 	CHECK(output.find("X86-64") != std::string::npos);
 
 	// Run it and check exit code.
-	int status = system(exe_path.c_str());
+	int status = system(executable_command(exe_path).c_str());
 	int exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
 	CHECK(exit_code == 42);
 
@@ -1892,7 +1918,7 @@ TEST_SUITE("save_object") {
 	std::string exe_path = "/tmp/madc_test_exe_stderr";
 	REQUIRE(pgm.save_executable(exe_path));
 
-	std::string cmd = exe_path + " 2>&1";
+	std::string cmd = executable_command(exe_path) + " 2>&1";
 	FILE *fp = popen(cmd.c_str(), "r");
 	REQUIRE(fp != NULL);
 	char buf[4096];
@@ -1921,7 +1947,7 @@ TEST_SUITE("save_object") {
 	std::string exe_path = "/tmp/madc_test_exe_global_array_extern";
 	REQUIRE(pgm.save_executable(exe_path));
 
-	std::string cmd = exe_path + " 2>&1";
+	std::string cmd = executable_command(exe_path) + " 2>&1";
 	FILE *fp = popen(cmd.c_str(), "r");
 	REQUIRE(fp != NULL);
 	char buf[4096];
@@ -1948,7 +1974,7 @@ TEST_SUITE("save_object") {
 	std::string exe_path = "/tmp/madc_test_exe_return_cstr_literal";
 	REQUIRE(pgm.save_executable(exe_path));
 
-	std::string cmd = exe_path + " 2>&1";
+	std::string cmd = executable_command(exe_path) + " 2>&1";
 	FILE *fp = popen(cmd.c_str(), "r");
 	REQUIRE(fp != NULL);
 	char buf[4096];
@@ -1975,7 +2001,7 @@ TEST_SUITE("save_object") {
 	std::string exe_path = "/tmp/madc_test_exe_assign_cstr_literal";
 	REQUIRE(pgm.save_executable(exe_path));
 
-	std::string cmd = exe_path + " 2>&1";
+	std::string cmd = executable_command(exe_path) + " 2>&1";
 	FILE *fp = popen(cmd.c_str(), "r");
 	REQUIRE(fp != NULL);
 	char buf[4096];

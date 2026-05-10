@@ -135,17 +135,27 @@ bool is_madc_runtime_symbol(const std::string &sym_name)
 	    || sym_name.find("_Z") == 0;
 }
 
+std::string normalize_elf_symbol_name(const std::string &sym_name)
+{
+	if ( sym_name.find("__vdso_") == 0 )
+		return sym_name.substr(7);
+	return sym_name;
+}
+
 std::string canonical_library_for_symbol(const std::string &sym_name,
 					 const std::string &raw_libname)
 {
+	std::string normalized_name = normalize_elf_symbol_name(sym_name);
 	std::string libname = basename_of(raw_libname);
 
-	if ( sym_name == "__libc_start_main" )
+	if ( normalized_name == "__libc_start_main" )
 		return "libc.so.6";
-	if ( sym_name == "crypt" || sym_name == "crypt_r" )
+	if ( normalized_name == "crypt" || normalized_name == "crypt_r" )
 		return "libcrypt.so.1";
-	if ( is_madc_runtime_symbol(sym_name) )
+	if ( is_madc_runtime_symbol(normalized_name) )
 		return "libmadc.so";
+	if ( sym_name.find("__vdso_") == 0 )
+		return "libc.so.6";
 
 	if ( libname.find("libmadc") == 0 )
 		return "libmadc.so";
@@ -1473,6 +1483,7 @@ bool Program::save_executable(const std::string &path)
 	int64_t main_offset = -1;
 	bool main_takes_args = false;
 	uint32_t libc_start_main_dynsym = 0;
+	uint32_t aot_init_string_dynsym = 0;
 	for ( size_t i = 0; i < pending_funcs.size(); ++i )
 	{
 		TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[i]);
@@ -1549,7 +1560,7 @@ bool Program::save_executable(const std::string &path)
 					// dynsym[0] is NULL, so first real symbol is index 1
 					dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
 					ext_sym es;
-					es.name = it->second;
+					es.name = normalize_elf_symbol_name(it->second);
 					extern_syms.push_back(es);
 					extern_indices[payload] = dynsym_idx;
 				}
@@ -1597,7 +1608,8 @@ bool Program::save_executable(const std::string &path)
 			if ( dladdr(reinterpret_cast<void *>(func_addr), &info)
 			  && info.dli_sname && info.dli_sname[0] )
 			{
-				external_symbol_map[func_addr] = info.dli_sname;
+				external_symbol_map[func_addr] =
+				    normalize_elf_symbol_name(info.dli_sname);
 				it = external_symbol_map.find(func_addr);
 				DBG(std::fprintf(stderr, "[aot] addrtab dladdr 0x%zx -> %s\n",
 				    (size_t)func_addr, info.dli_sname));
@@ -1617,7 +1629,7 @@ bool Program::save_executable(const std::string &path)
 		{
 			dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
 			ext_sym es;
-			es.name = it->second;
+			es.name = normalize_elf_symbol_name(it->second);
 			extern_syms.push_back(es);
 			extern_indices[func_addr] = dynsym_idx;
 		}
@@ -1711,6 +1723,22 @@ bool Program::save_executable(const std::string &path)
 		extern_syms.push_back(es);
 		libc_start_main_dynsym = static_cast<uint32_t>(extern_syms.size());
 		// dynsym index = extern_syms.size() because dynsym[0] is NULL
+	}
+
+	if ( !string_object_patches.empty() )
+	{
+		if ( needed_lib_set.find("libmadc.so") == needed_lib_set.end() )
+		{
+			needed_lib_set.insert("libmadc.so");
+			needed_lib nl;
+			nl.name = "libmadc.so";
+			needed_libs.push_back(nl);
+		}
+		ext_sym es;
+		es.name = "__madc_aot_init_string";
+		es.needed_lib = "libmadc.so";
+		extern_syms.push_back(es);
+		aot_init_string_dynsym = static_cast<uint32_t>(extern_syms.size());
 	}
 
 	// --- Build .dynstr ---
@@ -2272,54 +2300,145 @@ bool Program::save_executable(const std::string &path)
 	// run the root program entry first for file-scope initialization,
 	// then call the user-defined main.
 	size_t entry_wrapper_offset = total_code_size;
+	struct aot_string_init_ref {
+		size_t wrapper_text_offset;
+		size_t object_imm_offset;
+		size_t cstr_imm_offset;
+		size_t object_data_offset;
+		size_t cstr_data_offset;
+	};
+	std::vector<aot_string_init_ref> aot_string_init_refs;
 	{
 		std::vector<uint8_t> wrapper;
 		uint64_t root_vaddr = code_vaddr;
 		uint64_t main_vaddr = code_vaddr + static_cast<uint64_t>(main_offset);
+		size_t init_call_rel_offset = 0;
+		size_t helper_plt_off = 0;
+		auto append_string_init = [&](size_t object_data_offset, size_t cstr_data_offset) {
+			aot_string_init_ref ref;
+			ref.wrapper_text_offset = entry_wrapper_offset;
+			ref.object_imm_offset = wrapper.size() + 2;
+			ref.cstr_imm_offset = wrapper.size() + 12;
+			ref.object_data_offset = object_data_offset;
+			ref.cstr_data_offset = cstr_data_offset;
+			aot_string_init_refs.push_back(ref);
+
+			wrapper.push_back(0x48); // movabs rdi, imm64
+			wrapper.push_back(0xBF);
+			for ( int i = 0; i < 8; ++i )
+				wrapper.push_back(0x00);
+			wrapper.push_back(0x48); // movabs rsi, imm64
+			wrapper.push_back(0xBE);
+			for ( int i = 0; i < 8; ++i )
+				wrapper.push_back(0x00);
+			wrapper.push_back(0xE8); // call helper
+			init_call_rel_offset = wrapper.size();
+			for ( int i = 0; i < 4; ++i )
+				wrapper.push_back(0x00);
+		};
 		if ( main_takes_args )
 		{
 			static const uint8_t prefix[] = {
 				0x48, 0x83, 0xEC, 0x18,       // sub rsp, 24
 				0x48, 0x89, 0x3C, 0x24,       // mov [rsp], rdi
 				0x48, 0x89, 0x74, 0x24, 0x08, // mov [rsp+8], rsi
-				0xE8, 0x00, 0x00, 0x00, 0x00, // call root_fn
+				0xE8, 0x00, 0x00, 0x00, 0x00, // call root_fn (patched later)
 				0x48, 0x8B, 0x3C, 0x24,       // mov rdi, [rsp]
 				0x48, 0x8B, 0x74, 0x24, 0x08, // mov rsi, [rsp+8]
-				0xE8, 0x00, 0x00, 0x00, 0x00, // call main
+				0xE8, 0x00, 0x00, 0x00, 0x00, // call main (patched later)
 				0x48, 0x83, 0xC4, 0x18,       // add rsp, 24
 				0xC3                                // ret
 			};
-			wrapper.insert(wrapper.end(), prefix, prefix + sizeof(prefix));
-			int64_t root_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset + 18);
+			wrapper.insert(wrapper.end(), prefix, prefix + 13);
+			for ( size_t i = 0; i < string_object_patches.size(); ++i )
+				append_string_init(string_object_patches[i].object_offset,
+						   string_object_patches[i].cstr_offset);
+			size_t root_call_imm = wrapper.size() + 1;
+			wrapper.insert(wrapper.end(), prefix + 13, prefix + sizeof(prefix));
+				if ( aot_init_string_dynsym && !string_object_patches.empty() )
+				{
+					helper_plt_off = entry_wrapper_offset + wrapper.size();
+				}
+				for ( size_t i = 0; i < aot_string_init_refs.size(); ++i )
+				{
+					int64_t call_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset
+						+ aot_string_init_refs[i].cstr_imm_offset + 9 + 4);
+					int32_t disp = static_cast<int32_t>(
+					    static_cast<int64_t>(code_vaddr + helper_plt_off) - call_rip);
+					std::memcpy(&wrapper[aot_string_init_refs[i].cstr_imm_offset + 9], &disp, 4);
+				}
+			int64_t root_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset
+				+ root_call_imm + 4);
 			int32_t root_disp = static_cast<int32_t>(
 			    static_cast<int64_t>(root_vaddr) - root_rip);
-			std::memcpy(&wrapper[14], &root_disp, 4);
-			int64_t main_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset + 32);
+			std::memcpy(&wrapper[root_call_imm], &root_disp, 4);
+			size_t main_call_imm = root_call_imm + 14;
+			int64_t main_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset
+				+ main_call_imm + 4);
 			int32_t main_disp = static_cast<int32_t>(
 			    static_cast<int64_t>(main_vaddr) - main_rip);
-			std::memcpy(&wrapper[28], &main_disp, 4);
+			std::memcpy(&wrapper[main_call_imm], &main_disp, 4);
 		}
 		else
 		{
 			static const uint8_t prefix[] = {
 				0x48, 0x83, 0xEC, 0x08,       // sub rsp, 8
-				0xE8, 0x00, 0x00, 0x00, 0x00, // call root_fn
-				0xE8, 0x00, 0x00, 0x00, 0x00, // call main
+				0xE8, 0x00, 0x00, 0x00, 0x00, // call root_fn (patched later)
+				0xE8, 0x00, 0x00, 0x00, 0x00, // call main (patched later)
 				0x48, 0x83, 0xC4, 0x08,       // add rsp, 8
 				0xC3                                // ret
 			};
-			wrapper.insert(wrapper.end(), prefix, prefix + sizeof(prefix));
-			int64_t root_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset + 9);
+			wrapper.insert(wrapper.end(), prefix, prefix + 4);
+			for ( size_t i = 0; i < string_object_patches.size(); ++i )
+				append_string_init(string_object_patches[i].object_offset,
+						   string_object_patches[i].cstr_offset);
+			size_t root_call_imm = wrapper.size() + 1;
+			wrapper.insert(wrapper.end(), prefix + 4, prefix + sizeof(prefix));
+				if ( aot_init_string_dynsym && !string_object_patches.empty() )
+				{
+					helper_plt_off = entry_wrapper_offset + wrapper.size();
+				}
+				for ( size_t i = 0; i < aot_string_init_refs.size(); ++i )
+				{
+					int64_t call_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset
+						+ aot_string_init_refs[i].cstr_imm_offset + 9 + 4);
+					int32_t disp = static_cast<int32_t>(
+					    static_cast<int64_t>(code_vaddr + helper_plt_off) - call_rip);
+					std::memcpy(&wrapper[aot_string_init_refs[i].cstr_imm_offset + 9], &disp, 4);
+				}
+			int64_t root_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset
+				+ root_call_imm + 4);
 			int32_t root_disp = static_cast<int32_t>(
 			    static_cast<int64_t>(root_vaddr) - root_rip);
-			std::memcpy(&wrapper[5], &root_disp, 4);
-			int64_t main_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset + 14);
+			std::memcpy(&wrapper[root_call_imm], &root_disp, 4);
+			size_t main_call_imm = root_call_imm + 5;
+			int64_t main_rip = static_cast<int64_t>(code_vaddr + entry_wrapper_offset
+				+ main_call_imm + 4);
 			int32_t main_disp = static_cast<int32_t>(
 			    static_cast<int64_t>(main_vaddr) - main_rip);
-			std::memcpy(&wrapper[10], &main_disp, 4);
+			std::memcpy(&wrapper[main_call_imm], &main_disp, 4);
+		}
+		if ( aot_init_string_dynsym && !string_object_patches.empty() )
+		{
+			static const uint8_t plt_stub[] = {
+				0xFF, 0x25, 0x00, 0x00, 0x00, 0x00
+			};
+			wrapper.insert(wrapper.end(), plt_stub, plt_stub + sizeof(plt_stub));
+			for ( int i = 0; i < 8; ++i )
+				wrapper.push_back(0x00);
 		}
 		text_copy.insert(text_copy.end(), wrapper.begin(), wrapper.end());
 		total_code_size += wrapper.size();
+		if ( aot_init_string_dynsym && !string_object_patches.empty() )
+		{
+			rela_entry re;
+			re.source_offset = entry_wrapper_offset + wrapper.size() - 8;
+			re.dynsym_index = aot_init_string_dynsym;
+			re.elf_type = R_X86_64_64;
+			re.is_extern = true;
+			re.raw_addend = 0;
+			rela_entries.push_back(re);
+		}
 	}
 
 	// Recalculate data_vaddr now that total_code_size is final
@@ -2507,6 +2626,18 @@ bool Program::save_executable(const std::string &path)
 			if ( file_pos + 8 <= out.size() )
 				std::memcpy(&out[file_pos], &new_addr, 8);
 		}
+	}
+
+	for ( size_t i = 0; i < aot_string_init_refs.size(); ++i )
+	{
+		uint64_t obj_vaddr = data_vaddr + aot_string_init_refs[i].object_data_offset;
+		uint64_t cstr_vaddr = data_vaddr + aot_string_init_refs[i].cstr_data_offset;
+		std::memcpy(&out[code_file_offset + aot_string_init_refs[i].wrapper_text_offset
+				 + aot_string_init_refs[i].object_imm_offset],
+			    &obj_vaddr, 8);
+		std::memcpy(&out[code_file_offset + aot_string_init_refs[i].wrapper_text_offset
+				 + aot_string_init_refs[i].cstr_imm_offset],
+			    &cstr_vaddr, 8);
 	}
 	debug_dump_out_text("after final aot patch");
 

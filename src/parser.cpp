@@ -3720,6 +3720,7 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 		return var;
 	}
 	var = new Variable(id, dd, c, init, alloc);
+	var->flags |= vfLOCAL;
 	code->variables.push_back(var);
 	DBG(std::cout << "Added new variable type: " << dd.name << " size: "
 		<< dd.size << " name: " << id << " ptr: " << var << " to codeblock: " << code << std::endl);
@@ -8601,7 +8602,7 @@ paramdecl:
 	    : std::string("__synthetic_p") + std::to_string(i);
 	DBG(cout << "parseFunction() adding parameter variable " << pname << endl);
 	v = new Variable(pname, *d, 1, NULL, false);
-	v->flags |= vfPARAM;
+	v->flags |= vfPARAM | vfLOCAL;
 	method->parameters.push_back(v);
 	DBG(cout << "parseFunction() pushed param, method->parameters.size()=" << method->parameters.size() << endl);
     }
@@ -8756,7 +8757,7 @@ TokenBase *Program::parseLambda()
     {
 	std::string env_name = "__env";
 	Variable *env_pv = new Variable(env_name, ddINT64, 1, NULL, false);
-	env_pv->flags |= vfPARAM;
+	env_pv->flags |= vfPARAM | vfLOCAL;
 	method->env_param = env_pv;
 	method->parameters.push_back(env_pv); // will be moved to front below
     }
@@ -8767,7 +8768,7 @@ TokenBase *Program::parseLambda()
 	// user params start at index 1 in func->parameters when capturing (0 is env)
 	size_t fi = is_capturing ? i + 1 : i;
 	Variable *pv = new Variable(param_ids[i], *func->parameters[fi], 1, NULL, false);
-	pv->flags |= vfPARAM;
+	pv->flags |= vfPARAM | vfLOCAL;
 	method->parameters.push_back(pv);
     }
 

@@ -296,12 +296,13 @@
   source-map globals (compiler.cpp). Each becomes either an
   engine/program field or a CLI-only concern.
 
-- **Exercise SMAUG combat / spells / mobprogs** — Character creation
-  through in-room movement is verified. Combat (`kill <mob>`, weapon
-  damage), spells (`cast <name> <target>`, mana costs), and mobprogs
-  (NPC scripted reactions) all run upstream code paths that haven't
-  been hit yet. Likely surface another batch of latent codegen issues
-  similar to the 2026-04-30 cascade.
+- **Exercise SMAUG spells / mobprogs beyond the first combat path** —
+  Character creation through in-room movement is verified, and the
+  first live combat path now survives into repeated damage rounds
+  without the earlier `damage()` crash. Spells (`cast <name> <target>`,
+  mana costs) and mobprogs (NPC scripted reactions) still need focused
+  runtime coverage and will likely surface the next batch of latent
+  codegen issues.
 
 ## Medium Priority
 

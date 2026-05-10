@@ -1,0 +1,52 @@
+#include <stdio.h>
+
+typedef struct skill_type SKILLTYPE;
+
+struct skill_type {
+	char *name;
+	int type;
+};
+
+extern SKILLTYPE *skill_table[4];
+extern int top_sn;
+
+int damage_like(int dt, int first_branch)
+{
+	int out = 0;
+
+	if ( first_branch && dt >= 0 && dt < top_sn )
+		out += skill_table[dt]->type;
+
+	if ( dt >= 0 && dt < top_sn && skill_table[dt] && skill_table[dt]->name )
+	{
+		SKILLTYPE *skill = skill_table[dt];
+		out += skill->name[0];
+		out += skill->name[1];
+		out += skill->type;
+	}
+
+	return out;
+}
+
+char name0[] = "zero";
+char name1[] = "one";
+char name2[] = "two";
+char name3[] = "three";
+
+SKILLTYPE skill0;
+SKILLTYPE skill1;
+SKILLTYPE skill2;
+SKILLTYPE skill3;
+
+SKILLTYPE *skill_table[4] = { &skill0, &skill1, &skill2, &skill3 };
+int top_sn = 4;
+
+int main()
+{
+	skill0.name = name0; skill0.type = 10;
+	skill1.name = name1; skill1.type = 20;
+	skill2.name = name2; skill2.type = 30;
+	skill3.name = name3; skill3.type = 40;
+	printf("%d\n", damage_like(2, 0));
+	return 0;
+}

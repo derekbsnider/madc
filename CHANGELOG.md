@@ -2,6 +2,41 @@
 
 ## [Unreleased]
 
+- **Local variables and parameters now stay local across JIT/native codegen.**
+  Parser-created locals now set `vfLOCAL`, and function/lambda
+  parameters now set `vfPARAM | vfLOCAL`, so block-local names and
+  parameters no longer alias unrelated global storage during later
+  codegen. This closes the native/JIT shadowing cases behind SMAUG's
+  `damage()` path and adds explicit regressions for a local/global name
+  collision plus a `char *` parameter shadowing a global.
+
+- **AOT/global-data parity coverage expanded around SMAUG-shaped extern access.**
+  New regressions now exercise function-scope access to global pointer
+  tables, struct arrays, and `sysdata`-style extern storage so the
+  native executable lane keeps the same observable layout/lookup
+  behavior as the JIT path.
+
+## [v0.14.0] - 2026-05-08
+
+- **Native `save_executable()` SMAUG path now survives real startup and login.**
+  The standalone ELF path now preserves rematerializable global
+  struct/class and fixed-array operands across statements without
+  reusing stale cached bases, so native SMAUG no longer crashes in
+  `bug()` on malformed `vault.lst` EOF handling.
+
+- **`char *` assignments from string literals now emit real C-string pointers.**
+  Post-declaration assignments like `char *p; p = "hello";` no longer
+  route the literal through `string_cstr(void*)` as if it were a
+  `std::string` object. This fixes SMAUG's `alarm_section =
+  "new_descriptor::accept";` login-path crash and restores the telnet
+  greeting / name-prompt flow in native executables.
+
+- **Native executable coverage expanded around AOT parity regressions.**
+  `tests/unit/test_libmadc_program.cpp` now locks in:
+  top-level init before `main`, `stderr` support, preserved global array
+  layout across function-scope `extern` redeclarations, `char *` returns
+  from string literals, and `char *` assignments from string literals.
+
 - **Standalone native executables from madc scripts.**
   `bin/madc -o binary script.mad` generates a self-contained ELF x86-64
   executable with no madc runtime dependency (only libc). The `_start`

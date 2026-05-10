@@ -1,0 +1,67 @@
+#include <stdio.h>
+
+typedef struct system_data SYSTEM_DATA;
+
+struct system_data {
+	short dam_mob_vs_mob;
+	short dam_mob_vs_nonav;
+	short dam_mob_vs_plr;
+	short dam_nonav_vs_mob;
+	short dam_plr_vs_mob;
+	short dam_plr_vs_plr;
+};
+
+extern SYSTEM_DATA sysdata;
+
+int damage_like(int is_npc, int npcvict, int level)
+{
+	short dampmod = 0;
+
+	if (is_npc)
+	{
+		if (npcvict)
+			dampmod = sysdata.dam_mob_vs_mob;
+		else
+		{
+			if (level < 50)
+				dampmod = sysdata.dam_mob_vs_nonav;
+			else
+				dampmod = sysdata.dam_mob_vs_plr;
+		}
+	}
+	else
+	{
+		if (npcvict)
+		{
+			if (level < 50)
+				dampmod = sysdata.dam_nonav_vs_mob;
+			else
+				dampmod = sysdata.dam_plr_vs_mob;
+		}
+		else
+			dampmod = sysdata.dam_plr_vs_plr;
+	}
+
+	return dampmod;
+}
+
+SYSTEM_DATA sysdata;
+
+int main()
+{
+	sysdata.dam_mob_vs_mob = 11;
+	sysdata.dam_mob_vs_nonav = 22;
+	sysdata.dam_mob_vs_plr = 33;
+	sysdata.dam_nonav_vs_mob = 44;
+	sysdata.dam_plr_vs_mob = 55;
+	sysdata.dam_plr_vs_plr = 66;
+
+	printf("%d %d %d %d %d %d\n",
+		damage_like(1, 1, 1),
+		damage_like(1, 0, 1),
+		damage_like(1, 0, 99),
+		damage_like(0, 1, 1),
+		damage_like(0, 1, 99),
+		damage_like(0, 0, 1));
+	return 0;
+}
