@@ -245,6 +245,17 @@ Program *require_active_runtime_program()
     return Program::active_runtime_program();
 }
 
+Program *require_runtime_eval_program(std::unique_ptr<Program> &owned)
+{
+    Program *active = require_active_runtime_program();
+    if ( active )
+	return active;
+
+    static MadcEngine engine;
+    owned = engine.create_program();
+    return owned.get();
+}
+
 bool is_runtime_eval_scope_helper_name(const std::string &name)
 {
     return name == "__madc_eval_runtime"
@@ -311,7 +322,8 @@ void *madc_runtime_eval_expression(void *result, void *expr)
     std::string &expression = *(std::string *)expr;
     out.clear();
 
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return result;
 
@@ -335,7 +347,8 @@ void *madc_runtime_eval_expression_ctx(void *result, void *expr, void *ctx)
     MadArray &context_array = *(MadArray *)ctx;
     out.clear();
 
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return result;
 
@@ -363,7 +376,8 @@ void *madc_runtime_eval(void *result, void *source)
     std::string &program_source = *(std::string *)source;
     out.clear();
 
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return result;
 
@@ -380,7 +394,8 @@ void *madc_runtime_eval(void *result, void *source)
 
 bool madc_runtime_eval_bool(void *source)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return false;
 
@@ -397,7 +412,8 @@ bool madc_runtime_eval_bool(void *source)
 
 int64_t madc_runtime_eval_int(void *source)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return 0;
 
@@ -414,7 +430,8 @@ int64_t madc_runtime_eval_int(void *source)
 
 double madc_runtime_eval_double(void *source)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return 0.0;
 
@@ -435,7 +452,8 @@ void *madc_runtime_eval_string(void *result, void *source)
     std::string &program_source = *(std::string *)source;
     out.clear();
 
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return result;
 
@@ -454,7 +472,8 @@ void *madc_runtime_eval_ctx(void *result, void *source, void *ctx)
     MadArray &context_array = *(MadArray *)ctx;
     out.clear();
 
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return result;
 
@@ -475,7 +494,8 @@ void *madc_runtime_eval_ctx(void *result, void *source, void *ctx)
 
 bool madc_runtime_eval_bool_ctx(void *source, void *ctx)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return false;
 
@@ -499,7 +519,8 @@ bool madc_runtime_eval_bool_ctx(void *source, void *ctx)
 
 int64_t madc_runtime_eval_int_ctx(void *source, void *ctx)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return 0;
 
@@ -523,7 +544,8 @@ int64_t madc_runtime_eval_int_ctx(void *source, void *ctx)
 
 double madc_runtime_eval_double_ctx(void *source, void *ctx)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return 0.0;
 
@@ -552,7 +574,8 @@ void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
     MadArray &context_array = *(MadArray *)ctx;
     out.clear();
 
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return result;
 
@@ -573,7 +596,8 @@ void *madc_runtime_eval_string_ctx(void *result, void *source, void *ctx)
 
 bool madc_runtime_eval_expression_bool(void *expr)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return false;
 
@@ -592,7 +616,8 @@ bool madc_runtime_eval_expression_bool(void *expr)
 
 bool madc_runtime_eval_expression_bool_ctx(void *expr, void *ctx)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return false;
 
@@ -616,7 +641,8 @@ bool madc_runtime_eval_expression_bool_ctx(void *expr, void *ctx)
 
 int64_t madc_runtime_eval_expression_int(void *expr)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return 0;
 
@@ -635,7 +661,8 @@ int64_t madc_runtime_eval_expression_int(void *expr)
 
 int64_t madc_runtime_eval_expression_int_ctx(void *expr, void *ctx)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return 0;
 
@@ -659,7 +686,8 @@ int64_t madc_runtime_eval_expression_int_ctx(void *expr, void *ctx)
 
 double madc_runtime_eval_expression_double(void *expr)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return 0.0;
 
@@ -678,7 +706,8 @@ double madc_runtime_eval_expression_double(void *expr)
 
 double madc_runtime_eval_expression_double_ctx(void *expr, void *ctx)
 {
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return 0.0;
 
@@ -706,7 +735,8 @@ void *madc_runtime_eval_expression_string(void *result, void *expr)
     std::string &expression = *(std::string *)expr;
     out.clear();
 
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return result;
 
@@ -727,7 +757,8 @@ void *madc_runtime_eval_expression_string_ctx(void *result, void *expr, void *ct
     MadArray &context_array = *(MadArray *)ctx;
     out.clear();
 
-    Program *active = require_active_runtime_program();
+    std::unique_ptr<Program> owned;
+    Program *active = require_runtime_eval_program(owned);
     if ( !active )
 	return result;
 
@@ -770,6 +801,130 @@ void *madc_context_set_array(void *ctx, void *key, void *value)
 }
 
 } // namespace
+
+extern "C" {
+
+void *__madc_eval_runtime(void *result, void *source)
+{
+    return madc_runtime_eval(result, source);
+}
+
+bool __madc_eval_bool_runtime(void *source)
+{
+    return madc_runtime_eval_bool(source);
+}
+
+int64_t __madc_eval_int_runtime(void *source)
+{
+    return madc_runtime_eval_int(source);
+}
+
+double __madc_eval_double_runtime(void *source)
+{
+    return madc_runtime_eval_double(source);
+}
+
+void *__madc_eval_string_runtime(void *result, void *source)
+{
+    return madc_runtime_eval_string(result, source);
+}
+
+void *__madc_eval_ctx_runtime(void *result, void *source, void *ctx)
+{
+    return madc_runtime_eval_ctx(result, source, ctx);
+}
+
+bool __madc_eval_bool_ctx_runtime(void *source, void *ctx)
+{
+    return madc_runtime_eval_bool_ctx(source, ctx);
+}
+
+int64_t __madc_eval_int_ctx_runtime(void *source, void *ctx)
+{
+    return madc_runtime_eval_int_ctx(source, ctx);
+}
+
+double __madc_eval_double_ctx_runtime(void *source, void *ctx)
+{
+    return madc_runtime_eval_double_ctx(source, ctx);
+}
+
+void *__madc_eval_string_ctx_runtime(void *result, void *source, void *ctx)
+{
+    return madc_runtime_eval_string_ctx(result, source, ctx);
+}
+
+void *__madc_eval_expression_runtime(void *result, void *expr)
+{
+    return madc_runtime_eval_expression(result, expr);
+}
+
+bool __madc_eval_expression_bool_runtime(void *expr)
+{
+    return madc_runtime_eval_expression_bool(expr);
+}
+
+int64_t __madc_eval_expression_int_runtime(void *expr)
+{
+    return madc_runtime_eval_expression_int(expr);
+}
+
+double __madc_eval_expression_double_runtime(void *expr)
+{
+    return madc_runtime_eval_expression_double(expr);
+}
+
+void *__madc_eval_expression_string_runtime(void *result, void *expr)
+{
+    return madc_runtime_eval_expression_string(result, expr);
+}
+
+void *__madc_eval_expression_ctx_runtime(void *result, void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_ctx(result, expr, ctx);
+}
+
+bool __madc_eval_expression_bool_ctx_runtime(void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_bool_ctx(expr, ctx);
+}
+
+int64_t __madc_eval_expression_int_ctx_runtime(void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_int_ctx(expr, ctx);
+}
+
+double __madc_eval_expression_double_ctx_runtime(void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_double_ctx(expr, ctx);
+}
+
+void *__madc_eval_expression_string_ctx_runtime(void *result, void *expr, void *ctx)
+{
+    return madc_runtime_eval_expression_string_ctx(result, expr, ctx);
+}
+
+void *__madc_context_set_int_runtime(void *ctx, void *key, int64_t value)
+{
+    return madc_context_set_int(ctx, key, value);
+}
+
+void *__madc_context_set_real_runtime(void *ctx, void *key, double value)
+{
+    return madc_context_set_real(ctx, key, value);
+}
+
+void *__madc_context_set_string_runtime(void *ctx, void *key, const char *value)
+{
+    return madc_context_set_string(ctx, key, value);
+}
+
+void *__madc_context_set_array_runtime(void *ctx, void *key, void *value)
+{
+    return madc_context_set_array(ctx, key, value);
+}
+
+}
 
 static bool is_restrict_token(TokenBase *tb)
 {
