@@ -130,6 +130,12 @@ static bool token_compiles_naturally_as_charptr(TokenBase *token)
     return false;
 }
 
+static void emit_zeroed_void_return(Program &pgm)
+{
+    pgm.cc.xor_(x86::eax, x86::eax);
+    pgm.cc.ret();
+}
+
 static bool global_has_compilable_address(Program &pgm, Variable *var)
 {
     if ( !var || !var->is_global() )
@@ -3009,6 +3015,9 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	pgm.cc.xor_(ret0, ret0);
 	pgm.cc.ret(ret0);
     }
+    else
+    if ( func->returns.rawtype() == DataType::dtVOID && !func->returns.is_pointer() )
+	emit_zeroed_void_return(pgm);
     else
 	pgm.cc.ret();	// always add return in case source doesn't have one
     pgm.cc.endFunc();	// end function
@@ -7630,7 +7639,7 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	    // pointer path.
 	    regdefp_t void_rdp = {NULL, NULL, NULL};
 	    returns->compile(pgm, void_rdp);
-	    pgm.cc.ret();
+	    emit_zeroed_void_return(pgm);
 	    return _reg;
 	}
 
