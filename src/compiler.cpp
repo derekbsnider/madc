@@ -109,6 +109,27 @@ static bool token_is_charptr_expr(TokenBase *token)
     return false;
 }
 
+static bool token_compiles_naturally_as_charptr(TokenBase *token)
+{
+    if ( !token )
+	return false;
+    DataDef *dd = token->datadef();
+    if ( dd && dd->is_pointer() && dd->rawtype() == DataType::dtCHAR )
+	return true;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
+	return tv->var.is_fixed_array()
+	    && tv->var.type
+	    && tv->var.type->rawtype() == DataType::dtCHAR;
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
+	return tm->is_fixed_array_member()
+	    && tm->var.type
+	    && tm->var.type->rawtype() == DataType::dtCHAR;
+    if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(token) )
+	return token_is_charptr_expr(tq->true_expr)
+	    && token_is_charptr_expr(tq->false_expr);
+    return false;
+}
+
 static bool global_has_compilable_address(Program &pgm, Variable *var)
 {
     if ( !var || !var->is_global() )
@@ -374,15 +395,19 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	tmp_rdp.second = nullptr;
     // String→charptr coercion for non-constant strings: let the token
     // compile with its natural dtSTRING type so ir.coerce can call
-    // string_cstr. This must hold in both JIT and AOT mode; forcing
-    // the char* target type too early makes AOT call lowering pass a
-    // string object's first word directly to libc instead of its c_str().
+    // string_cstr. But keep true char*-flavored expressions (notably
+    // ternaries of string literals / char* branches) on the requested
+    // char* target so they lower like GCC: raw pointers end to end,
+    // no transient std::string merge object. That avoids native EXE
+    // paths reloading the first machine word of a copied string object
+    // before the eventual c_str() call.
     if ( target_type
       && target_type->is_pointer()
       && target_type->rawtype() == DataType::dtCHAR
       && token && token->datadef()
       && token->datadef()->is_string()
-      && !token_has_constant_cstring(token) )
+      && !token_has_constant_cstring(token)
+      && !token_compiles_naturally_as_charptr(token) )
 	tmp_rdp.second = nullptr;
     Operand &raw = token->compile(pgm, tmp_rdp);
     DataDef *raw_type = tmp_rdp.second ? tmp_rdp.second : (token && token->datadef() ? token->datadef() : target_type);
@@ -2977,7 +3002,15 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 
     cleanup(pgm);	// cleanup stack
-    pgm.cc.ret();	// always add return in case source doesn't have one
+    if ( var.name == "main" && !method.owner_class
+      && func->returns.rawtype() != DataType::dtVOID )
+    {
+	x86::Gp ret0 = pgm.cc.newGpq("__main_ret0");
+	pgm.cc.xor_(ret0, ret0);
+	pgm.cc.ret(ret0);
+    }
+    else
+	pgm.cc.ret();	// always add return in case source doesn't have one
     pgm.cc.endFunc();	// end function
 
     clear_operand_map();// clear operand map
@@ -4608,7 +4641,7 @@ void TokenCpnd::movreg(Program &pgm, Operand &op, Variable *var)
 	DBG(pgm.cc.comment("TokenCpnd::movreg() operand is not a register"));
 	return;
     }
-    if ( pgm.aot_tracking && var && var->has_aot_data() )
+    if ( pgm.aot_tracking && var && (var->data || var->has_aot_data()) )
     {
 	x86::Gp base = pgm.cc.newIntPtr("%s_aot_base", var->name.c_str());
 	pgm.emit_data_mov(base, var);
@@ -4623,8 +4656,9 @@ void TokenCpnd::movreg(Program &pgm, Operand &op, Variable *var)
 	    // For aggregate-like globals (std::string, streams, arrays,
 	    // structs/classes), the Gp operand convention is "address of the
 	    // object", not "load the first machine word from the object".
-	    // JIT mode gets this right through movmptr2rval()'s default
-	    // non-numeric path; keep AOT-tracking mode aligned with that.
+	    // AOT mode must honor that for every addressable global, not just
+	    // ones routed through has_aot_data(); literal-map strings and
+	    // other raw-data globals still live in the exported .data image.
 	    if ( !var->type->is_numeric() && !var->type->is_pointer() )
 		pgm.cc.mov(op.as<x86::Gp>(), base);
 	    else
@@ -6951,7 +6985,25 @@ Operand &TokenDerefExpr::operand(Program &pgm)
 {
     regdefp_t sub = {nullptr, nullptr, nullptr};
     Operand &ptr_op = expr->compile(pgm, sub);
-    x86::Gp ptr_gp = ptr_op.as<x86::Gp>();
+    x86::Gp ptr_gp;
+    if ( ptr_op.isMem() )
+    {
+	// Expression-produced pointers can live in a stack slot (for
+	// example temporaries or address-taken pointer locals). Load the
+	// pointer value before using it as the base of a dereferenced Mem;
+	// reinterpreting a Mem as Gp produces invalid assignments at
+	// asmjit finalize time.
+	ptr_gp = pgm.cc.newIntPtr("*expr");
+	pgm.cc.mov(ptr_gp, ptr_op.as<x86::Mem>());
+    }
+    else
+    if ( ptr_op.isImm() )
+    {
+	ptr_gp = pgm.cc.newIntPtr("*expr_imm");
+	pgm.cc.mov(ptr_gp, ptr_op.as<Imm>());
+    }
+    else
+	ptr_gp = ptr_op.as<x86::Gp>();
     if ( deref_type->is_numeric() )
 	_operand = x86::ptr(ptr_gp, 0, (uint32_t)deref_type->size);
     else
