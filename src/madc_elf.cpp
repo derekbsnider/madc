@@ -1463,7 +1463,11 @@ bool Program::save_executable(const std::string &path)
 		for ( size_t vi = 0; vi < tf->variables.size(); ++vi )
 		{
 			Variable *var = tf->variables[vi];
-			if ( !var || !var->data || !var->type || !var->is_global() )
+			if ( !var || !var->data || !var->type )
+				continue;
+			if ( (var->flags & vfPARAM) )
+				continue;
+			if ( (var->flags & vfSTACK) && !(var->flags & vfSTATIC) )
 				continue;
 			if ( var->type->is_string() && var->type->size == sizeof(std::string) )
 				queue_string_patch(static_cast<std::string *>(var->data));
