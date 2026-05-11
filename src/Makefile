@@ -24,7 +24,7 @@ PICOBJDIR = ../obj/pic
 FEATURE_DEFINES ?=
 OPTIONAL_CPPFLAGS ?=
 OPTIONAL_LIBS ?=
-MADC_STORAGE_DB_OFILES ?=
+MADC_STORAGE_DB_OFILES ?= madcdat_storage.o
 HAVE_MADCDAT ?= 1
 DEFINES	= -I$(INCDIR) $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
 #LIBS	= -lreadline -lasmjit
@@ -109,7 +109,7 @@ debug:
 	$(MAKE) CXXFLAGS="-std=c++11 -Wall -g -O0" ../bin/madc
 clean:
 	rm -f $(OBJECTS)
-	rm -f ../obj/madc_storage.o ../obj/madc_storage_bdb.o ../obj/madc_storage_gdbm.o ../obj/madc_storage_qdbm.o ../obj/madc_storage_sqlite.o
+	rm -f ../obj/madcdat_storage.o ../obj/madcdat_storage_bdb.o ../obj/madcdat_storage_gdbm.o ../obj/madcdat_storage_qdbm.o ../obj/madcdat_storage_sqlite.o
 	rm -f ../obj/pic/*.o
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
