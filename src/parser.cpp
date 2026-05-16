@@ -10089,6 +10089,36 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		DBG(std::cout << "parseStatement() ':=' declared '" << first_id << "' type=" << inferred->name << std::endl);
 		return td;
 	    }
+	// C89 implicit-int function definition: `name(params) { body }`
+	// at file scope with no return type defaults to int.
+	if ( tb->type() == TokenType::ttIdentifier
+	    && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    std::string fname = ((TokenIdent *)tb)->str;
+	    if ( !datatype_map.count(fname) && !struct_map.count(fname) )
+	    {
+		std::vector<TokenBase *> saved;
+		saved.push_back(nextToken()); // consume (
+		int depth = 1;
+		while ( depth > 0 )
+		{
+		    TokenBase *t = nextToken();
+		    if ( !t ) break;
+		    saved.push_back(t);
+		    if ( t->id() == TokenID::tkOpBrk ) ++depth;
+		    else if ( t->id() == TokenID::tkClBrk ) --depth;
+		}
+		bool found_brace = peekToken() && peekToken()->id() == TokenID::tkOpBrc;
+		for ( auto it = saved.rbegin(); it != saved.rend(); ++it )
+		    pushToken(*it);
+		if ( found_brace )
+		{
+		    nextToken(); // re-consume (
+		    parseFunction(ddINT, fname, NULL);
+		    return NULL;
+		}
+	    }
+	}
 	case TokenType::ttOperator:
 	case TokenType::ttMultiOp:
 	    // multi-return function declaration: (type, type) funcname(...)
