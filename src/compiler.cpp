@@ -2697,6 +2697,48 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 	    throw "TokenStmt::compile() tb->type() == TokenType::ttStatement";
 	case TokenType::ttCompound:
 	    return dynamic_cast<TokenCpnd *>(this)->compile(pgm, regdp);
+	case TokenType::ttStructLit:
+	{
+	    // C99 compound literal: (type){ init_list }
+	    // Allocate a temporary on the stack, initialize members, return address.
+	    TokenStructLit *slit = dynamic_cast<TokenStructLit *>(this);
+	    DataDef *dd = slit->datadef();
+	    DataDefSTRUCT *sdd = dd ? dynamic_cast<DataDefSTRUCT *>(dd) : NULL;
+	    if ( sdd && sdd->size > 0 )
+	    {
+		x86::Mem tmp = pgm.cc.newStack((uint32_t)sdd->size, 8);
+		// Zero-initialize the stack memory
+		x86::Gp base = pgm.cc.newIntPtr("_compound_lit");
+		pgm.cc.lea(base, tmp);
+		// Initialize members from the init list
+		for ( size_t i = 0; i < slit->inits.size() && i < sdd->members.size(); ++i )
+		{
+		    size_t offset = sdd->member_offsets[i];
+		    DataDef *mdd = sdd->members[i].second;
+		    regdefp_t mrdp = {NULL, mdd, NULL};
+		    Operand &val = slit->inits[i]->compile(pgm, mrdp);
+		    x86::Mem dest = x86::ptr(base, (int32_t)offset, (uint32_t)mdd->size);
+		    if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kGp) )
+			pgm.cc.mov(dest, val.as<x86::Gp>());
+		    else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
+			pgm.cc.movsd(dest, val.as<x86::Xmm>());
+		    else if ( val.isImm() )
+			pgm.cc.mov(dest, val.as<Imm>());
+		    else if ( val.isMem() )
+		    {
+			x86::Gp t = pgm.cc.newGpq("_clit_mv");
+			pgm.cc.mov(t, val.as<x86::Mem>());
+			pgm.cc.mov(dest, t);
+		    }
+		}
+		_operand = base;
+		if ( !regdp.second )
+		    regdp.second = pgm.getPointerType(dd);
+		regdp.first = &_operand;
+		return _operand;
+	    }
+	    throw "compound literal: unsupported type";
+	}
 	case TokenType::ttProgram:
 	    return dynamic_cast<TokenProgram *>(this)->compile(pgm, regdp);
 	case TokenType::ttSymbol:
