@@ -9628,7 +9628,23 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			    if ( iln->id() == TokenID::tkOpBrc )
 				slit->inits.push_back(read_struct_lit());
 			    else
-				slit->inits.push_back(parseExpression(nextToken()));
+			    {
+				TokenBase *ni = nextToken();
+				// Skip designator `.field =` in nested init
+				if ( ni->id() == TokenID::tkDot )
+				{
+				    nextToken(); // field name
+				    nextToken(); // '='
+				    ni = nextToken();
+				}
+				if ( ni->id() == TokenID::tkOpBrc )
+				{
+				    pushToken(ni);
+				    slit->inits.push_back(read_struct_lit());
+				}
+				else
+				    slit->inits.push_back(parseExpression(ni));
+			    }
 			    TokenBase *isep = peekToken();
 			    if ( isep && isep->id() == TokenID::tkComma )
 				nextToken();
@@ -9639,7 +9655,31 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		}
 		else
 		{
-		    TokenBase *expr = parseExpression(nextToken());
+		    // C99 designated initializer: `.field = value`
+		    // Skip the designator and use the value expression.
+		    TokenBase *next_init = nextToken();
+		    if ( next_init->id() == TokenID::tkDot )
+		    {
+			nextToken(); // consume field name
+			TokenBase *eq = nextToken(); // consume '='
+			if ( eq->id() != TokenID::tkAssign )
+			    Throw(eq) << "Expecting '=' after designated initializer" << flush;
+			next_init = nextToken();
+		    }
+		    // Array designator: [index] = value
+		    else if ( next_init->id() == TokenID::tkOpSqr )
+		    {
+			int sqd = 1;
+			while ( sqd > 0 ) {
+			    TokenBase *t = nextToken();
+			    if ( !t ) break;
+			    if ( t->id() == TokenID::tkOpSqr ) ++sqd;
+			    else if ( t->id() == TokenID::tkClSqr ) --sqd;
+			}
+			nextToken(); // consume '='
+			next_init = nextToken();
+		    }
+		    TokenBase *expr = parseExpression(next_init);
 		    init_list.push_back(expr);
 		}
 		TokenBase *sep = peekToken();
