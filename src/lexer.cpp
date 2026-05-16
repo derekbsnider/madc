@@ -317,6 +317,32 @@ void Program::_tokenizer_init()
     define_map["__builtin_labs"] = "labs";
     define_map["__builtin_fabs"] = "fabs";
     define_map["__builtin_trap"] = "abort";
+
+    // __builtin_expect(expr, val) is a branch-prediction hint — just
+    // return expr. Implemented as a function-like macro.
+    {
+	MacroDef m;
+	m.params = {"__expr", "__val"};
+	m.body = "__expr";
+	macro_map["__builtin_expect"] = m;
+    }
+    // __builtin_prefetch is a no-op hint
+    {
+	MacroDef m;
+	m.params = {"__addr"};
+	m.body = "((void)0)";
+	m.variadic = true;
+	macro_map["__builtin_prefetch"] = m;
+    }
+    // __builtin_constant_p(expr) — always return 0 (not a constant)
+    {
+	MacroDef m;
+	m.params = {"__expr"};
+	m.body = "0";
+	macro_map["__builtin_constant_p"] = m;
+    }
+    // __builtin_unreachable() — map to abort()
+    define_map["__builtin_unreachable"] = "abort";
 }
 
 bool Program::include_already_seen(const std::string &path)

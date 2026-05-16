@@ -309,8 +309,14 @@ struct dirent {
 #define INT_MIN   -2147483648
 #define INT_MAX   2147483647
 #define UINT_MAX  4294967295
-#define LONG_MIN  -9223372036854775807
-#define LONG_MAX  9223372036854775807
+#define LONG_MIN  -9223372036854775807L
+#define LONG_MAX  9223372036854775807L
+#define ULONG_MAX 18446744073709551615UL
+#define LLONG_MIN -9223372036854775807LL
+#define LLONG_MAX 9223372036854775807LL
+#define ULLONG_MAX 18446744073709551615ULL
+#define CHAR_MIN  -128
+#define CHAR_MAX  127
 #define PATH_MAX  4096
 #define NAME_MAX  255
 )EMBED"},
@@ -619,6 +625,13 @@ typedef long va_list;
 #define vsnprintf __madc_vsnprintf
 #define vfprintf __madc_vfprintf
 )EMBED"},
+    {"stdbool.h", R"EMBED(// madc embedded stdbool.h
+
+#define bool _Bool
+#define true 1
+#define false 0
+#define __bool_true_false_are_defined 1
+)EMBED"},
     {"stdint.h", R"EMBED(// madc embedded stdint.h — exact-width integer types
 // Note: int8_t through uint64_t are native madc types
 // This header provides the min/max constants for completeness
@@ -653,15 +666,6 @@ typedef long va_list;
 #define BUFSIZ 8192
 #define NULL 0
 #define FILE void
-
-// scanf-family redirect: madc int is 64-bit, but libc's %d writes only 4
-// bytes, leaving the high 4 bytes of the destination slot uninitialized
-// and madc then reads garbage as the high half. The __madc_*scanf wrappers
-// rewrite %d/%i/%u/%o/%x/%X/%n (without an explicit length modifier) to
-// their l-prefixed form so libc writes the full 8 bytes. See va_helpers.cpp.
-#define sscanf  __madc_sscanf
-#define fscanf  __madc_fscanf
-#define scanf   __madc_scanf
 )EMBED"},
     {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
 // Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback
