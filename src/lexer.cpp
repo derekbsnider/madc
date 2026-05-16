@@ -270,6 +270,20 @@ void Program::_tokenizer_init()
     define_map["__signed__"] = "signed";
     define_map["__const"] = "const";
     define_map["__const__"] = "const";
+    // C99 _Complex / GCC __complex__ — not supported but at least
+    // don't error on the keyword. Map to double (loses the imaginary
+    // part but lets real-only code compile).
+    define_map["_Complex"] = "";
+    define_map["__complex__"] = "";
+
+    // GCC floating-point limit macros
+    define_map["__FLT_MAX__"] = "3.40282347e+38F";
+    define_map["__FLT_MIN__"] = "1.17549435e-38F";
+    define_map["__DBL_MAX__"] = "1.7976931348623157e+308";
+    define_map["__DBL_MIN__"] = "2.2250738585072014e-308";
+    define_map["__FLT_EPSILON__"] = "1.19209290e-7F";
+    define_map["__DBL_EPSILON__"] = "2.2204460492503131e-16";
+    define_map["__BIGGEST_ALIGNMENT__"] = "16";
 
     // GCC predefined macros for C compatibility
     define_map["__CHAR_BIT__"] = "8";
