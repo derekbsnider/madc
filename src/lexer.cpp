@@ -256,6 +256,67 @@ void Program::_tokenizer_init()
     add_keywords();
     add_datatypes();
     struct_map["teststruct"] = &ddTESTSTRUCT;
+
+    // Ignored C qualifiers — consumed as empty defines so they
+    // don't trip the "undeclared identifier" path.
+    define_map["volatile"] = "";
+    define_map["__volatile__"] = "";
+    define_map["inline"] = "";
+    define_map["__inline__"] = "";
+    define_map["__inline"] = "";
+    define_map["__extension__"] = "";
+
+    // GCC predefined macros for C compatibility
+    define_map["__CHAR_BIT__"] = "8";
+    define_map["__SIZEOF_SHORT__"] = "2";
+    define_map["__SIZEOF_INT__"] = "4";
+    define_map["__SIZEOF_LONG__"] = "8";
+    define_map["__SIZEOF_LONG_LONG__"] = "8";
+    define_map["__SIZEOF_POINTER__"] = "8";
+    define_map["__SIZEOF_FLOAT__"] = "4";
+    define_map["__SIZEOF_DOUBLE__"] = "8";
+    define_map["__INT_MAX__"] = "2147483647";
+    define_map["__LONG_MAX__"] = "9223372036854775807L";
+    define_map["__LONG_LONG_MAX__"] = "9223372036854775807LL";
+    define_map["__SHRT_MAX__"] = "32767";
+    define_map["__SCHAR_MAX__"] = "127";
+    define_map["__PTRDIFF_TYPE__"] = "long";
+    define_map["__SIZE_TYPE__"] = "unsigned long";
+    define_map["__INTPTR_TYPE__"] = "long";
+    define_map["__UINTPTR_TYPE__"] = "unsigned long";
+    define_map["__UINT32_TYPE__"] = "unsigned int";
+    define_map["__INT32_TYPE__"] = "int";
+    define_map["__UINT64_TYPE__"] = "unsigned long";
+    define_map["__INT64_TYPE__"] = "long";
+    define_map["__x86_64__"] = "1";
+    define_map["__LP64__"] = "1";
+    define_map["__BYTE_ORDER__"] = "1234";
+    define_map["__ORDER_LITTLE_ENDIAN__"] = "1234";
+
+    // GCC __builtin_* → libc function aliases.
+    // Most GCC builtins have the same signature as their libc counterpart.
+    define_map["__builtin_abort"] = "abort";
+    define_map["__builtin_exit"] = "exit";
+    define_map["__builtin_malloc"] = "malloc";
+    define_map["__builtin_calloc"] = "calloc";
+    define_map["__builtin_free"] = "free";
+    define_map["__builtin_memcpy"] = "memcpy";
+    define_map["__builtin_memset"] = "memset";
+    define_map["__builtin_memcmp"] = "memcmp";
+    define_map["__builtin_memmove"] = "memmove";
+    define_map["__builtin_strcmp"] = "strcmp";
+    define_map["__builtin_strncmp"] = "strncmp";
+    define_map["__builtin_strcpy"] = "strcpy";
+    define_map["__builtin_strncpy"] = "strncpy";
+    define_map["__builtin_strlen"] = "strlen";
+    define_map["__builtin_printf"] = "printf";
+    define_map["__builtin_sprintf"] = "sprintf";
+    define_map["__builtin_puts"] = "puts";
+    define_map["__builtin_putchar"] = "putchar";
+    define_map["__builtin_abs"] = "abs";
+    define_map["__builtin_labs"] = "labs";
+    define_map["__builtin_fabs"] = "fabs";
+    define_map["__builtin_trap"] = "abort";
 }
 
 bool Program::include_already_seen(const std::string &path)
