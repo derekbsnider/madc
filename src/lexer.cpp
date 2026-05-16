@@ -362,6 +362,12 @@ void Program::_tokenizer_init()
     }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
+    define_map["__builtin_alloca"] = "alloca";
+    define_map["__builtin_ffs"] = "ffs";
+    define_map["__builtin_bswap32"] = "__bswap_32";
+    define_map["__builtin_bswap64"] = "__bswap_64";
+    define_map["__builtin_clz"] = "__builtin_clz"; // will fall through to dlsym
+    define_map["__builtin_ctz"] = "__builtin_ctz";
 
     // __builtin_offsetof(type, member) — compute struct member offset.
     // Implemented as a function-like macro using the null-pointer trick.
