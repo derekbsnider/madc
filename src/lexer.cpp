@@ -265,6 +265,11 @@ void Program::_tokenizer_init()
     define_map["__inline__"] = "";
     define_map["__inline"] = "";
     define_map["__extension__"] = "";
+    define_map["__restrict"] = "";
+    define_map["__restrict__"] = "";
+    define_map["__signed__"] = "signed";
+    define_map["__const"] = "const";
+    define_map["__const__"] = "const";
 
     // GCC predefined macros for C compatibility
     define_map["__CHAR_BIT__"] = "8";
@@ -343,6 +348,31 @@ void Program::_tokenizer_init()
     }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
+
+    // __builtin_offsetof(type, member) — compute struct member offset.
+    // Implemented as a function-like macro using the null-pointer trick.
+    {
+	MacroDef m;
+	m.params = {"__type", "__member"};
+	m.body = "((long)&((__type *)0)->__member)";
+	macro_map["__builtin_offsetof"] = m;
+    }
+
+    // __builtin_types_compatible_p(t1, t2) — always return 0 for now
+    {
+	MacroDef m;
+	m.params = {"__t1", "__t2"};
+	m.body = "0";
+	macro_map["__builtin_types_compatible_p"] = m;
+    }
+
+    // __builtin_classify_type(x) — return 0 (void type) as placeholder
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "0";
+	macro_map["__builtin_classify_type"] = m;
+    }
 }
 
 bool Program::include_already_seen(const std::string &path)
