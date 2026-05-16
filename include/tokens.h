@@ -260,8 +260,20 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int64_t ioperate() const { return - right->ival(); }
+    inline int64_t ioperate() const {
+	int64_t v = - right->ival();
+	// Mask to operand width: -1U must yield 0xFFFFFFFF, not -1 as int64
+	if ( right->datadef() && right->datadef()->is_unsigned() && right->datadef()->size < 8 )
+	    v &= (int64_t)((1ULL << (right->datadef()->size * 8)) - 1);
+	return v;
+    }
     inline double foperate() const { return - right->dval(); }
+    // Propagate unsigned operand type so -1U is uint32, not ddINT
+    virtual DataDef *datadef() const override {
+	if ( right && right->datadef() && right->datadef()->is_unsigned() )
+	    return right->datadef();
+	return TokenOperator::datadef();
+    }
 };
 
 // multiply operator *

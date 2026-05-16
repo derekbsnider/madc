@@ -6457,6 +6457,41 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     Operand &rval = right->compile(pgm, regdp);
     emit_pointer_arith_scale(pgm, left, right, rval);	 // ptr - n → ptr - n*sizeof(*ptr)
     pgm.safesub(lval, rval, regdp.second);
+    // ptr - ptr: C requires element count, not byte count.
+    // Divide the raw byte difference by sizeof(element).
+    {
+	DataDef *ltype = left  ? left->datadef()  : nullptr;
+	DataDef *rtype = right ? right->datadef() : nullptr;
+	if ( ltype && ltype->is_pointer() && rtype && rtype->is_pointer() )
+	{
+	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ltype);
+	    size_t elem_size = pdd && pdd->base_type ? pdd->base_type->size : 0;
+	    if ( elem_size > 1 && lval.isReg() )
+	    {
+		// Use SAR for power-of-2 element sizes (common case),
+		// otherwise emit a full idiv sequence.
+		x86::Gp diff = lval.as<x86::Gp>();
+		bool is_pow2 = (elem_size & (elem_size - 1)) == 0;
+		if ( is_pow2 )
+		{
+		    int shift = 0;
+		    for (size_t s = elem_size; s > 1; s >>= 1) ++shift;
+		    pgm.cc.sar(diff, shift);
+		}
+		else
+		{
+		    x86::Gp divisor = pgm.cc.newGpq("_ptrdiff_d");
+		    pgm.cc.mov(divisor, (int64_t)elem_size);
+		    // x86 idiv: sign-extend diff into rdx:rax, divide
+		    x86::Gp rdx_hi = pgm.cc.newGpq("_ptrdiff_hi");
+		    pgm.cc.mov(rdx_hi, diff);
+		    pgm.cc.sar(rdx_hi, 63);
+		    pgm.cc.idiv(rdx_hi, diff, divisor);
+		}
+		regdp.second = &ddINT64;
+	    }
+	}
+    }
     return finish_general_binop(pgm, regdp, lval, c);
 }
 

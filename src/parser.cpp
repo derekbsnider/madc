@@ -940,6 +940,14 @@ static bool is_post_pointer_qualifier_token(TokenBase *tb)
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
 
+static bool token_origin_allows_c89_implicit_function(TokenBase *tb)
+{
+    if ( !tb || !tb->file )
+	return false;
+    std::string path(tb->file);
+    return path.size() >= 2 && path.substr(path.size() - 2) == ".c";
+}
+
 static bool is_typeof_identifier(const std::string &name)
 {
     return name == "typeof" || name == "typeof_unqual";
@@ -947,7 +955,7 @@ static bool is_typeof_identifier(const std::string &name)
 
 static bool is_alignof_identifier(const std::string &name)
 {
-    return name == "alignof" || name == "_Alignof";
+    return name == "alignof" || name == "_Alignof" || name == "__alignof__";
 }
 
 static bool is_static_assert_identifier(const std::string &name)
@@ -1288,10 +1296,42 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
     if ( !have_value && !dd )
 	pgm.Throw(type_tb) << "Unknown type in " << op_name << flush;
 
-    while ( !have_value && pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+    while ( !have_value && pgm.peekToken() )
     {
-	pgm.nextToken();
-	dd = pgm.getPointerType(dd);
+	if ( pgm.peekToken()->id() == TokenID::tkMul )
+	{
+	    pgm.nextToken();
+	    dd = pgm.getPointerType(dd);
+	    continue;
+	}
+	if ( pgm.peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    TokenBase *open = pgm.nextToken();
+	    TokenBase *star = pgm.nextToken();
+	    if ( !star || star->id() != TokenID::tkMul )
+		pgm.Throw(star ? star : open) << "Unsupported parenthesized declarator in " << op_name << flush;
+	    dd = pgm.getPointerType(dd);
+	    TokenBase *close = pgm.nextToken();
+	    if ( !close || close->id() != TokenID::tkClBrk )
+		pgm.Throw(close ? close : open) << "Expecting ')' in " << op_name << " function pointer type" << flush;
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	    {
+		pgm.nextToken();
+		int depth = 1;
+		while ( depth > 0 )
+		{
+		    TokenBase *pt = pgm.nextToken();
+		    if ( !pt )
+			pgm.Throw(open) << "Unexpected end of input in " << op_name << " function pointer parameter list" << flush;
+		    if ( pt->id() == TokenID::tkOpBrk )
+			++depth;
+		    else if ( pt->id() == TokenID::tkClBrk )
+			--depth;
+		}
+	    }
+	    continue;
+	}
+	break;
     }
     if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
 	pgm.Throw(type_tb) << "Expecting ')' after " << op_name << " type" << flush;
@@ -1661,7 +1701,7 @@ void EatSpaces(istream &is)
 }
 
 
-int TokenAssign::ioperate() const
+int64_t TokenAssign::ioperate() const
 {
     DBG(std::cout << "TokenAssign" << std::endl);
     if ( left->type() != TokenType::ttVariable )
@@ -3057,6 +3097,8 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("putd",	 datatype_vec_t{DataType::dtVOID, DataType::dtDOUBLE}, (fVOIDFUNC)printdouble);
     builtin_registry.add_core_function("putf",	 datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
     builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
+    builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
+    builtin_registry.add_core_function("__builtin_memset", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtINT, DataType::dtUINT64}, (fVOIDFUNC)memset);
     // istream `getline(istream&, string&)` lives in std:: — moved out of
     // the global symbol table so user code defining its own `getline`
     // (e.g. SMAUG IMC's `static const char *getline(char *buffer)`)
@@ -4780,17 +4822,34 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		}
 		if ( tb->id() == TokenID::tkOpBrk )
 		{
+		    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
+		    {
+			nextToken(); // consume '{'
+			pushCompound();
+			TokenBase *stmt_expr = parseCompound();
+			TokenBase *close = nextToken();
+			if ( !close || close->id() != TokenID::tkClBrk )
+			    Throw(close ? close : tb) << "Expected ')' after statement expression" << flush;
+			exStack.push(stmt_expr);
+			break;
+		    }
 		    // check for cast expression: (TYPE [*...]) expr
 		    TokenBase *peek1 = peekToken();
 		    DataDef *cast_dd = NULL;
+		    TokenBase *cast_qualifier = NULL;
 		    if ( peek1 )
 		    {
+			if ( peek1->id() == TokenID::tkCONST )
+			{
+			    cast_qualifier = nextToken();
+			    peek1 = peekToken();
+			}
 			if ( peek1->type() == TokenType::ttDataType )
 			    cast_dd = &((TokenDataType *)peek1)->definition;
-			else if ( peek1->id() == TokenID::tkSTRUCT )
+			else if ( peek1->id() == TokenID::tkSTRUCT || peek1->id() == TokenID::tkUNION )
 			{
-			    // (struct Tag *) — peek further
-			    TokenBase *save1 = nextToken(); // consume 'struct'
+			    // (struct/union Tag *) — peek further
+			    TokenBase *save1 = nextToken(); // consume 'struct' / 'union'
 			    TokenBase *save2 = peekToken();
 			    if ( save2 && save2->type() == TokenType::ttIdentifier )
 			    {
@@ -4817,6 +4876,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				cast_dd = &tdmi->second->definition;
 			}
 		    }
+		    if ( !cast_dd && cast_qualifier )
+			pushToken(cast_qualifier);
 		    if ( cast_dd )
 		    {
 			// speculatively consume the type token (if not struct, which was already consumed)
@@ -5994,20 +6055,34 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		}
 		if ( !var && peekToken() && peekToken()->id() == TokenID::tkOpBrk )
 		{
-		    // dlsym fallback: try to resolve as a libc/system function
-		    if ( !is_dynamic_symbol_fallback_enabled() )
-			Throw(ident_tb) << "dynamic symbol fallback is disabled by registration policy" << flush;
 		    std::string fname = ident_tb->str;
-		    if ( !is_dynamic_symbol_allowed(fname) )
-			Throw(ident_tb) << "dynamic symbol '" << fname
-					<< "' is not allowed by registration policy" << flush;
-		    void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
-		    if ( sym )
+		    // dlsym fallback: resolve known libc/system functions early.
+		    // If that fails, C89 still permits an implicit `int f()`
+		    // declaration for calls to functions defined later in the file.
+		    if ( is_dynamic_symbol_fallback_enabled()
+		      && is_dynamic_symbol_allowed(fname) )
 		    {
-			var = addFunction(fname,
-			    datatype_vec_t{DataType::dtINT64},
-			    (fVOIDFUNC)sym);
-			DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
+			void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
+			if ( sym )
+			{
+			    var = addFunction(fname,
+				datatype_vec_t{DataType::dtINT64},
+				(fVOIDFUNC)sym);
+			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
+			}
+		    }
+		    if ( !var && token_origin_allows_c89_implicit_function(ident_tb) )
+		    {
+			FuncDef *implicit_func = new FuncDef(ddINT);
+			// No prototype exists yet, so accept any argument count.
+			// The real later definition replaces var->type before
+			// TokenCallFunc compiles calls to this variable.
+			implicit_func->is_varargs = true;
+			implicit_func->parameters.push_back(&ddINT64);
+			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
+			Method *implicit_method = new Method(*var);
+			var->data = (void *)implicit_method;
+			DBG(cout << "parseExpression() created implicit function declaration for " << fname << endl);
 		    }
 		}
 		if ( !var )
@@ -6345,6 +6420,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     TokenBase *tn;
     TokenDataType *tdt;
     bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false;
+    bool is_union = id() == TokenID::tkUNION;
+    const char *aggregate_kw = is_union ? "union" : "struct";
     datatype_map_iter bmi; // TokenDataType map
     datadef_map_iter dmi;  // DataDef map
 
@@ -6389,7 +6466,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	DBG(cout << "TokenSTRUCT::parse() got tag " << tag->str << endl);
 	tn = pgm.peekToken(); // peek at what follows the tag
 	if ( !tn )
-	    pgm.Throw << "Unexpected end of input after struct tag" << flush;
+	    pgm.Throw << "Unexpected end of input after " << aggregate_kw << " tag" << flush;
     }
 
     // __attribute__ can also appear after the tag name
@@ -6400,7 +6477,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( tn->id() != TokenID::tkOpBrc )
     {
 	if ( !tag )
-	    pgm.Throw(tn) << "Expecting '{' or identifier after struct" << flush;
+	    pgm.Throw(tn) << "Expecting '{' or identifier after " << aggregate_kw << flush;
 	dmi = pgm.struct_map.find(tag->str);
 
 	// plain forward declaration: struct tag;
@@ -6409,6 +6486,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    if ( dmi == pgm.struct_map.end() )
 	    {
 		DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->str, 0);
+		fwd->union_layout = is_union;
 		pgm.struct_map[tag->str] = fwd;
 	    }
 	    pgm.nextToken(); // consume ';'
@@ -6421,6 +6499,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	{
 	    // create placeholder struct (size 0, no members) for forward declaration
 	    DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->str, 0);
+	    fwd->union_layout = is_union;
 	    pgm.struct_map[tag->str] = fwd;
 	    dmi = pgm.struct_map.find(tag->str);
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
@@ -6442,7 +6521,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 
 	// struct tag variable; — declare variable of existing struct type
-	string tname("struct ");
+	string tname(aggregate_kw);
+	tname.append(" ");
 	tname.append(tag->str);
 	tdt = new TokenDataType(tname.c_str(), *dmi->second);
 	return pgm.parseDeclaration(tdt);
@@ -6453,11 +6533,27 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     pgm.nextToken(); // consume '{'
 
     DataDefSTRUCT *dds = new DataDefSTRUCT(tag ? tag->str : "anonymous", 0);
+    dds->union_layout = is_union;
     if ( is_packed || pgm.pack_stack_top() == 1 )
 	dds->pack = 1;
     else if ( pgm.pack_stack_top() > 0 )
 	dds->pack = pgm.pack_stack_top();
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
+
+    auto parse_bitfield_width = [&](TokenBase *loc, DataDef *member_dd, bool named) -> size_t
+    {
+	if ( !member_dd || member_dd->is_pointer() || !member_dd->is_integer() )
+	    pgm.Throw(loc) << "Bit-field type must be an integer type" << flush;
+	int64_t width = parse_constant_integer_expression(pgm);
+	if ( width < 0 )
+	    pgm.Throw(loc) << "Bit-field width must be non-negative" << flush;
+	if ( named && width == 0 )
+	    pgm.Throw(loc) << "Named bit-field width must be positive" << flush;
+	size_t storage_bits = dds->bitfield_storage_size(*member_dd) * 8;
+	if ( (size_t)width > storage_bits )
+	    pgm.Throw(loc) << "Bit-field width exceeds storage type width" << flush;
+	return (size_t)width;
+    };
 
     // Pre-register the tag (if any) before parsing the body so fields like
     // `struct hashstr_data *next;` inside `struct hashstr_data { ... }` can
@@ -6496,9 +6592,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    else
 		pgm.Throw(tn) << "Expecting type in struct definition, got '" << tname << "'" << flush;
 	}
-	else if ( tn->id() == TokenID::tkSTRUCT )
+	else if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkUNION )
 	{
-	    pgm.nextToken(); // consume 'struct'
+	    bool nested_union_kw = tn->id() == TokenID::tkUNION;
+	    pgm.nextToken(); // consume 'struct' / 'union'
 	    TokenBase *stag = pgm.peekToken();
 	    if ( stag && stag->id() == TokenID::tkOpBrc )
 	    {
@@ -6506,6 +6603,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		//   struct { int x; char y[8]; } member;
 		pgm.nextToken(); // consume '{'
 		DataDefSTRUCT *inner = new DataDefSTRUCT("anonymous", 0);
+		inner->union_layout = nested_union_kw;
 		while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 		{
 		    TokenDataType *inner_type = NULL;
@@ -6520,7 +6618,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			pgm.nextToken();
 			inner_type = tdmi->second;
 		    }
-		    else if ( tn->id() == TokenID::tkSTRUCT )
+		    else if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkUNION )
 		    {
 			pgm.nextToken();
 			TokenBase *inner_tag = pgm.nextToken();
@@ -6581,6 +6679,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( sdmi == pgm.struct_map.end() )
 		{
 		    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
+		    fwd->union_layout = nested_union_kw;
 		    pgm.struct_map[sname] = fwd;
 		    sdmi = pgm.struct_map.find(sname);
 		}
@@ -6607,6 +6706,20 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
 		    // expect member name
 		    tn = pgm.nextToken();
+		    if ( tn && tn->id() == TokenID::tkColon )
+		    {
+			size_t bit_width = parse_bitfield_width(tn, member_dd, false);
+			dds->addUnnamedBitField(*member_dd, bit_width);
+			tn = pgm.nextToken();
+			if ( !tn )
+			    pgm.Throw << "Unexpected end of input after unnamed bit-field" << flush;
+			if ( tn->id() == TokenID::tkComma )
+			    continue;
+			if ( tn->id() != TokenID::tkSemi )
+			    pgm.Throw(tn) << "Expecting ';' after unnamed bit-field" << flush;
+			done_members = true;
+			continue;
+		    }
 		    if ( tn && tn->id() == TokenID::tkOpBrk )
 		    {
 			TokenBase *inner = pgm.nextToken();
@@ -6665,10 +6778,24 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			member_count *= (size_t)n;
 		    }
 
-		    dds->addMember(mname, *member_dd, member_count);
-		    DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
-			<< " (size " << member_dd->size << " x " << member_count
-			<< ", total " << dds->size << ')' << endl);
+		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
+		    {
+			pgm.nextToken();
+			if ( member_count != 1 )
+			    pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
+			size_t bit_width = parse_bitfield_width(tn, member_dd, true);
+			dds->addBitField(mname, *member_dd, bit_width);
+			DBG(cout << "TokenSTRUCT::parse() added bit-field " << member_dd->name << ' ' << mname
+			    << ':' << bit_width << " (storage offset " << dds->member_offsets.back()
+			    << ", total " << dds->size << ')' << endl);
+		    }
+		    else
+		    {
+			dds->addMember(mname, *member_dd, member_count);
+			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
+			    << " (size " << member_dd->size << " x " << member_count
+			    << ", total " << dds->size << ')' << endl);
+		    }
 
 		    tn = pgm.nextToken();
 		    if ( !tn )
@@ -6704,9 +6831,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// Complete a forward-declared struct in place.
 		existing->members = dds->members;
 		existing->member_counts = dds->member_counts;
+		existing->member_offsets = dds->member_offsets;
+		existing->member_bitfields = dds->member_bitfields;
 		existing->size = dds->size;
 		existing->pack = dds->pack;
 		existing->max_align = dds->max_align;
+		existing->union_layout = dds->union_layout;
 		DBG(cout << "TokenSTRUCT::parse() completed forward-declared struct " << tag->str << " size=" << existing->size << endl);
 		delete dds;
 		dds = existing;
@@ -6746,7 +6876,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( tn && (tn->type() == TokenType::ttIdentifier
 	     || tn->id() == TokenID::tkMul) )
     {
-	string tname("struct ");
+	string tname(aggregate_kw);
+	tname.append(" ");
 	tname.append(tag ? tag->str : "anonymous");
 	tdt = new TokenDataType(tname.c_str(), *dds);
 	return pgm.parseDeclaration(tdt);
@@ -8416,6 +8547,129 @@ TokenBase *Program::parseCompound()
     return code;
 }
 
+static bool old_style_param_name_exists(const std::vector<std::string> &ids,
+					const std::string &name)
+{
+    for ( std::vector<std::string>::const_iterator it = ids.begin();
+	  it != ids.end(); ++it )
+	if ( *it == name )
+	    return true;
+    return false;
+}
+
+static bool is_old_style_parameter_head(Program &pgm, TokenBase *tb)
+{
+    if ( !is_contextual_identifier_token(tb) )
+	return false;
+
+    std::string name = contextual_identifier_name(tb);
+    if ( resolve_named_datadef(pgm, name) )
+	return false;
+
+    TokenBase *peek = pgm.peekToken();
+    return peek && (peek->id() == TokenID::tkComma || peek->id() == TokenID::tkClBrk);
+}
+
+static DataDef *parse_old_style_parameter_base(Program &pgm, TokenBase *&nt)
+{
+    while ( nt && (nt->id() == TokenID::tkCONST
+	       || nt->id() == TokenID::tkREGISTER
+	       || is_restrict_token(nt)) )
+	nt = pgm.nextToken();
+
+    if ( !nt )
+	pgm.Throw << "Unexpected end of input in K&R parameter declaration" << flush;
+
+    if ( nt->id() == TokenID::tkSTRUCT )
+    {
+	TokenBase *tag = pgm.nextToken();
+	if ( !tag || !is_contextual_identifier_token(tag) )
+	    pgm.Throw(tag ? tag : nt) << "Expecting struct name in K&R parameter declaration" << flush;
+	std::string sname = contextual_identifier_name(tag);
+	datadef_map_iter sdmi = pgm.struct_map.find(sname);
+	if ( sdmi == pgm.struct_map.end() )
+	{
+	    DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
+	    pgm.struct_map[sname] = fwd;
+	    sdmi = pgm.struct_map.find(sname);
+	}
+	return sdmi->second;
+    }
+
+    if ( nt->type() == TokenType::ttDataType )
+	return &((TokenDataType *)nt)->definition;
+
+    if ( nt->type() == TokenType::ttIdentifier )
+    {
+	std::string tname = ((TokenIdent *)nt)->str;
+	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	if ( tdmi != pgm.datatype_map.end() )
+	    return &tdmi->second->definition;
+    }
+
+    pgm.Throw(nt) << "Expecting type in K&R parameter declaration" << flush;
+    return NULL;
+}
+
+static void parse_old_style_parameter_declaration(Program &pgm,
+						  TokenBase *nt,
+						  const std::vector<std::string> &param_ids,
+						  std::map<std::string, DataDef *> &param_types)
+{
+    DataDef *base_type = parse_old_style_parameter_base(pgm, nt);
+    nt = pgm.nextToken();
+
+    while ( nt )
+    {
+	DataDef *decl_type = base_type;
+	while ( nt && (nt->id() == TokenID::tkMul || is_post_pointer_qualifier_token(nt)) )
+	{
+	    if ( nt->id() == TokenID::tkMul )
+		decl_type = pgm.getPointerType(decl_type);
+	    nt = pgm.nextToken();
+	}
+
+	if ( !nt || !is_contextual_identifier_token(nt) )
+	    pgm.Throw(nt) << "Expecting parameter name in K&R parameter declaration" << flush;
+
+	std::string name = contextual_identifier_name(nt);
+	if ( !old_style_param_name_exists(param_ids, name) )
+	    pgm.Throw(nt) << "K&R declaration for non-parameter '" << name << "'" << flush;
+	if ( param_types.find(name) != param_types.end() )
+	    pgm.Throw(nt) << "Duplicate K&R parameter declaration for '" << name << "'" << flush;
+
+	nt = pgm.nextToken();
+	while ( nt && nt->id() == TokenID::tkOpSqr )
+	{
+	    int depth = 1;
+	    while ( depth > 0 )
+	    {
+		nt = pgm.nextToken();
+		if ( !nt )
+		    pgm.Throw << "Unexpected end of input in K&R array parameter declarator" << flush;
+		if ( nt->id() == TokenID::tkOpSqr )
+		    ++depth;
+		else if ( nt->id() == TokenID::tkClSqr )
+		    --depth;
+	    }
+	    decl_type = pgm.getPointerType(decl_type);
+	    nt = pgm.nextToken();
+	}
+
+	param_types[name] = decl_type;
+
+	if ( !nt )
+	    pgm.Throw << "Unexpected end of input in K&R parameter declaration" << flush;
+	if ( nt->id() == TokenID::tkSemi )
+	    return;
+	if ( nt->id() != TokenID::tkComma )
+	    pgm.Throw(nt) << "Expecting ',' or ';' in K&R parameter declaration" << flush;
+	nt = pgm.nextToken();
+    }
+
+    pgm.Throw << "Unexpected end of input in K&R parameter declaration" << flush;
+}
+
 // parse a function definition, can be a forward declaration, or function definition
 void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_class,
 			    std::vector<DataDef *> *multi_ret)
@@ -8432,6 +8686,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     std::string pid;          // parameter id
     RefType rtype = RefType::rtNone;
     int anon_param_index = 0;
+    bool old_style_params = false;
+    std::vector<std::string> old_style_ids;
 
     DBG(cout << "parseFunction(" << dd.name << ' ' << id << ") START" << endl);
 
@@ -8471,6 +8727,29 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     // look for parameters
     while ( (nt=nextToken()) && nt->id() != TokenID::tkClBrk )
     {
+	if ( is_old_style_parameter_head(*this, nt) )
+	{
+	    old_style_params = true;
+	    while ( true )
+	    {
+		if ( !is_contextual_identifier_token(nt) )
+		    Throw(nt) << "Expecting identifier in K&R parameter list" << flush;
+		pid = contextual_identifier_name(nt);
+		if ( old_style_param_name_exists(old_style_ids, pid) )
+		    Throw(nt) << "Duplicate K&R parameter name" << flush;
+		ids.push_back(pid);
+		old_style_ids.push_back(pid);
+
+		nt = nextToken();
+		if ( nt->id() == TokenID::tkClBrk )
+		    break;
+		if ( nt->id() != TokenID::tkComma )
+		    Throw(nt) << "Expecting ',' or ')' in K&R parameter list" << flush;
+		nt = nextToken();
+	    }
+	    break;
+	}
+
 	// tolerate C qualifiers/storage hints in parameter lists such as
 	// `const char *s` and `register char *s`
 	while ( nt && (nt->id() == TokenID::tkCONST || nt->id() == TokenID::tkREGISTER) )
@@ -8693,6 +8972,30 @@ paramdecl:
     }
 
     nt = nextToken();
+
+    if ( old_style_params )
+    {
+	std::map<std::string, DataDef *> old_style_param_types;
+	while ( nt && nt->id() != TokenID::tkOpBrc )
+	{
+	    parse_old_style_parameter_declaration(*this, nt, old_style_ids,
+						  old_style_param_types);
+	    nt = nextToken();
+	}
+
+	if ( !func_already_declared )
+	{
+	    for ( std::vector<std::string>::const_iterator it = old_style_ids.begin();
+		  it != old_style_ids.end(); ++it )
+	    {
+		std::map<std::string, DataDef *>::iterator pti =
+		    old_style_param_types.find(*it);
+		func->parameters.push_back(pti == old_style_param_types.end()
+		    ? &ddINT
+		    : pti->second);
+	    }
+	}
+    }
 
     Method *method;
 
@@ -9223,10 +9526,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( !peek0 )
 		Throw(nt) << "Expected initializer after '='" << flush;
 
-	    // String-literal char-array init: char buf[] = "hello";
+	    // String-literal byte-array init:
+	    // char / signed char / unsigned char buf[] = "hello";
 	    if ( !arr_dims.empty()
 	      && peek0->type() == TokenType::ttString
-	      && decl_type == &ddCHAR && arr_dims.size() == 1 )
+	      && (decl_type->rawtype() == DataType::dtCHAR
+	       || decl_type->rawtype() == DataType::dtUINT8)
+	      && arr_dims.size() == 1 )
 	    {
 		// C concatenates adjacent string literals, so consume all
 		// immediately consecutive ttString tokens here.
@@ -9467,6 +9773,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		// Push back a synthetic base-type token so the next parseStatement
 		// sees it as the start of a new declaration.
 		pushToken(tb->clone());
+		if ( parsing_extern_decl )
+		    pushToken(new TokenEXTERN());
 	    }
 	}
 
@@ -9587,6 +9895,39 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return parse_static_assert_statement(*this, tb);
 	    if ( is_typeof_identifier(((TokenIdent *)tb)->str) )
 		return parseDeclaration(parse_typeof_datatype(*this, tb));
+	    // asm / __asm__ / __asm: skip the entire statement.
+	    // GCC testsuite uses asm("" : ...) as an optimizer barrier;
+	    // madc has no inline assembly support, so consume and discard.
+	    {
+		std::string &id = ((TokenIdent *)tb)->str;
+		if ( id == "asm" || id == "__asm__" || id == "__asm" )
+		{
+		    // optional volatile qualifier
+		    if ( peekToken() && peekToken()->type() == TokenType::ttIdentifier )
+		    {
+			std::string &q = ((TokenIdent *)peekToken())->str;
+			if ( q == "volatile" || q == "__volatile__" )
+			    nextToken();
+		    }
+		    // consume balanced parentheses
+		    TokenBase *ob = nextToken();
+		    if ( ob && ob->id() == TokenID::tkOpBrk )
+		    {
+			int depth = 1;
+			while ( depth > 0 )
+			{
+			    TokenBase *t = nextToken();
+			    if ( !t ) break;
+			    if ( t->id() == TokenID::tkOpBrk ) ++depth;
+			    else if ( t->id() == TokenID::tkClBrk ) --depth;
+			}
+		    }
+		    // consume trailing semicolon if present
+		    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+			nextToken();
+		    return NULL;
+		}
+	    }
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
 	    {
 		std::string tname = ((TokenIdent *)tb)->str;
