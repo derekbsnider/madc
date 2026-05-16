@@ -1568,12 +1568,38 @@ TokenBase *Program::_getToken()
 		    }
 		    return getToken();
 		}
-		// compound type keywords: unsigned/signed/long/short [type]
-		// C allows up to three words: `unsigned short int`, `signed long
-		// int`, `long long int`, `unsigned long long`. Read up to two
-		// lookahead words and pick the longest match.
-		if ( word == "unsigned" || word == "signed" || word == "long" || word == "short" )
+		// Compound type specifiers: any mix of unsigned/signed/long/
+		// short/int/char/double in any order (C99 6.7.2).
+		// Uses a bitmap accumulator (chibicc-style) so order doesn't
+		// matter: `unsigned long long int` = `long unsigned int long`.
+		if ( word == "unsigned" || word == "signed" || word == "long"
+		  || word == "short"   || word == "int"    || word == "char"
+		  || word == "double"  || word == "float" )
 		{
+		    enum {
+			TS_VOID     = 1 << 0,
+			TS_CHAR     = 1 << 2,
+			TS_SHORT    = 1 << 4,
+			TS_INT      = 1 << 6,
+			TS_LONG     = 1 << 8,  // two LONGs = LONG+LONG
+			TS_FLOAT    = 1 << 10,
+			TS_DOUBLE   = 1 << 12,
+			TS_SIGNED   = 1 << 14,
+			TS_UNSIGNED = 1 << 16,
+		    };
+		    auto word_to_flag = [](const std::string &w) -> int {
+			if (w == "char")     return TS_CHAR;
+			if (w == "short")    return TS_SHORT;
+			if (w == "int")      return TS_INT;
+			if (w == "long")     return TS_LONG;
+			if (w == "float")    return TS_FLOAT;
+			if (w == "double")   return TS_DOUBLE;
+			if (w == "signed")   return TS_SIGNED;
+			if (w == "unsigned") return TS_UNSIGNED;
+			return 0;
+		    };
+		    int counter = word_to_flag(word);
+		    // Accumulate subsequent type-specifier keywords
 		    auto read_word = [&]() -> std::string {
 			while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
 			    source.get();
@@ -1582,66 +1608,63 @@ TokenBase *Program::_getToken()
 			    w += source.get();
 			return w;
 		    };
-		    std::string next = read_word();
-		    std::string peek2;
-		    if ( next == "short" || next == "long" )
-			peek2 = read_word();
-		    // C allows at most 4 words: `unsigned long long int`.
-		    // Read a potential 4th word so we can consume it.
-		    std::string peek3;
-		    if ( (next == "long" && peek2 == "long")
-		      || (next == "long" && (peek2 == "unsigned" || peek2 == "signed")) )
-			peek3 = read_word();
-		    auto unget = [&](const std::string &a, const std::string &b) {
-			if ( !b.empty() ) source.pushback(std::string(" ") + b);
-			if ( !a.empty() ) source.pushback(std::string(" ") + a);
-		    };
-		    auto unget3 = [&](const std::string &a, const std::string &b, const std::string &c) {
-			if ( !c.empty() ) source.pushback(std::string(" ") + c);
-			unget(a, b);
-		    };
-		    if ( word == "unsigned" )
+		    // Read ahead, accumulating type specifier keywords
+		    std::vector<std::string> consumed;
+		    while ( true )
 		    {
-			if ( next == "char" )                     { unget("", peek2); return new TokenDataType("unsigned char", ddUINT8); }
-			if ( next == "short" && peek2 == "int" )  return new TokenDataType("unsigned short int", ddUINT16);
-			if ( next == "short" )                    { unget("", peek2); return new TokenDataType("unsigned short", ddUINT16); }
-			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("unsigned int", ddUINT32); }
-			if ( next == "long" && peek2 == "long" )  { if (peek3 != "int" && !peek3.empty()) source.pushback(std::string(" ") + peek3); return new TokenDataType("unsigned long long", ddUINT64); }
-			if ( next == "long" && peek2 == "int" )   return new TokenDataType("unsigned long int", ddUINT64);
-			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("unsigned long", ddUINT64); }
-			unget(next, peek2);
-			return new TokenDataType("unsigned", ddUINT32);
+			std::string w = read_word();
+			int flag = word_to_flag(w);
+			if ( flag )
+			{
+			    counter += flag;
+			    consumed.push_back(w);
+			}
+			else
+			{
+			    // Not a type specifier — push it back
+			    if ( !w.empty() )
+				source.pushback(std::string(" ") + w);
+			    break;
+			}
 		    }
-		    if ( word == "signed" )
+		    // Resolve accumulated type specifiers to DataDef
+		    switch ( counter )
 		    {
-			if ( next == "char" )                     { unget("", peek2); return new TokenDataType("signed char", ddINT8); }
-			if ( next == "short" && peek2 == "int" )  return new TokenDataType("signed short int", ddINT16);
-			if ( next == "short" )                    { unget("", peek2); return new TokenDataType("signed short", ddINT16); }
-			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("signed int", ddINT32); }
-			if ( next == "long" && peek2 == "long" )  { if (peek3 != "int" && !peek3.empty()) source.pushback(std::string(" ") + peek3); return new TokenDataType("signed long long", ddINT64); }
-			if ( next == "long" && peek2 == "int" )   return new TokenDataType("signed long int", ddINT64);
-			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("signed long", ddINT64); }
-			unget(next, peek2);
-			return new TokenDataType("signed", ddINT32);
-		    }
-		    if ( word == "long" )
-		    {
-			if ( next == "long" && peek2 == "int" )   return new TokenDataType("long long int", ddINT64);
-			if ( next == "long" && peek2 == "unsigned" ) { if (peek3 != "int" && !peek3.empty()) source.pushback(std::string(" ") + peek3); return new TokenDataType("unsigned long long", ddUINT64); }
-			if ( next == "long" && peek2 == "signed" )   { if (peek3 != "int" && !peek3.empty()) source.pushback(std::string(" ") + peek3); return new TokenDataType("signed long long", ddINT64); }
-			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("long long", ddINT64); }
-			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("long int", ddINT64); }
-			if ( next == "double" )                   { unget("", peek2); return new TokenDataType("long double", ddDOUBLE); }
-			if ( next == "unsigned" && peek2 == "int" )  return new TokenDataType("unsigned long", ddUINT64);
-			if ( next == "unsigned" )                  { unget("", peek2); return new TokenDataType("unsigned long", ddUINT64); }
-			unget(next, peek2);
-			return new TokenDataType("long", ddINT64);
-		    }
-		    if ( word == "short" )
-		    {
-			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("short int", ddINT16); }
-			unget(next, peek2);
-			return new TokenDataType("short", ddINT16);
+			case TS_CHAR:                                   return new TokenDataType("char", ddCHAR);
+			case TS_SIGNED + TS_CHAR:                       return new TokenDataType("signed char", ddINT8);
+			case TS_UNSIGNED + TS_CHAR:                     return new TokenDataType("unsigned char", ddUINT8);
+			case TS_SHORT:
+			case TS_SHORT + TS_INT:
+			case TS_SIGNED + TS_SHORT:
+			case TS_SIGNED + TS_SHORT + TS_INT:             return new TokenDataType("short", ddINT16);
+			case TS_UNSIGNED + TS_SHORT:
+			case TS_UNSIGNED + TS_SHORT + TS_INT:           return new TokenDataType("unsigned short", ddUINT16);
+			case TS_INT:
+			case TS_SIGNED:
+			case TS_SIGNED + TS_INT:                        return new TokenDataType("int", ddINT32);
+			case TS_UNSIGNED:
+			case TS_UNSIGNED + TS_INT:                      return new TokenDataType("unsigned int", ddUINT32);
+			case TS_LONG:
+			case TS_LONG + TS_INT:
+			case TS_SIGNED + TS_LONG:
+			case TS_SIGNED + TS_LONG + TS_INT:              return new TokenDataType("long", ddINT64);
+			case TS_UNSIGNED + TS_LONG:
+			case TS_UNSIGNED + TS_LONG + TS_INT:            return new TokenDataType("unsigned long", ddUINT64);
+			case TS_LONG + TS_LONG:
+			case TS_LONG + TS_LONG + TS_INT:
+			case TS_SIGNED + TS_LONG + TS_LONG:
+			case TS_SIGNED + TS_LONG + TS_LONG + TS_INT:   return new TokenDataType("long long", ddINT64);
+			case TS_UNSIGNED + TS_LONG + TS_LONG:
+			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:  return new TokenDataType("unsigned long long", ddUINT64);
+			case TS_FLOAT:                                  return new TokenDataType("float", ddFLOAT);
+			case TS_DOUBLE:                                 return new TokenDataType("double", ddDOUBLE);
+			case TS_LONG + TS_DOUBLE:                       return new TokenDataType("long double", ddDOUBLE);
+			default:
+			    // Unrecognized combination — push back consumed words
+			    // in reverse and fall through to identifier/keyword lookup.
+			    for ( auto it = consumed.rbegin(); it != consumed.rend(); ++it )
+				source.pushback(std::string(" ") + *it);
+			    break;
 		    }
 		}
 		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
