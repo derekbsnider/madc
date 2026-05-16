@@ -8801,12 +8801,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    break;
 	}
 
-	// handle 'struct Tag' as parameter type
-	if ( nt->id() == TokenID::tkSTRUCT )
+	// handle 'struct Tag' / 'union Tag' / 'enum Tag' as parameter type
+	if ( nt->id() == TokenID::tkSTRUCT || nt->id() == TokenID::tkUNION )
 	{
+	    const char *kw = (nt->id() == TokenID::tkUNION) ? "union" : "struct";
 	    TokenBase *tag_nt = nextToken();
 	    if ( tag_nt->type() != TokenType::ttIdentifier )
-		Throw(tag_nt) << "Expecting struct name after 'struct' in parameters" << flush;
+		Throw(tag_nt) << "Expecting " << kw << " name after '" << kw << "' in parameters" << flush;
 	    std::string sname = ((TokenIdent *)tag_nt)->str;
 	    datadef_map_iter sdmi = struct_map.find(sname);
 	    if ( sdmi == struct_map.end() )
@@ -8814,12 +8815,24 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		// C permits pointers/references to incomplete struct types in
 		// parameter lists, so synthesize a forward declaration on demand.
 		DataDefSTRUCT *fwd = new DataDefSTRUCT(sname, 0);
+		if ( nt->id() == TokenID::tkUNION )
+		    fwd->union_layout = true;
 		struct_map[sname] = fwd;
 		sdmi = struct_map.find(sname);
 	    }
-	    std::string tname("struct ");
+	    std::string tname(kw);
+	    tname += " ";
 	    tname.append(sname);
 	    pb = new TokenDataType(tname.c_str(), *sdmi->second);
+	}
+	else
+	if ( nt->id() == TokenID::tkENUM )
+	{
+	    // enum parameter — consume tag, treat as int
+	    TokenBase *tag_nt = peekToken();
+	    if ( tag_nt && tag_nt->type() == TokenType::ttIdentifier )
+		nextToken(); // consume tag name
+	    pb = new TokenDataType("int", ddINT);
 	}
 	else
 	if ( nt->type() != TokenType::ttDataType )
