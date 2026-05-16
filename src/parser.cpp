@@ -7537,8 +7537,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'typedef'" << flush;
 
-    // typedef struct ... or typedef class ... — handled by struct/class parse via prevToken
-    if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkCLASS )
+    // typedef struct/union/class ... — handled by struct/class parse via prevToken
+    if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkCLASS || tn->id() == TokenID::tkUNION )
 	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
     if ( tn->id() == TokenID::tkENUM )
     {
