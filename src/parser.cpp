@@ -5721,6 +5721,29 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				target_dd = sdmi->second;
 			}
 		    }
+		    // handle 'struct Tag' or 'union Tag' as va_arg type
+		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
+			&& (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
+		    {
+			TokenBase *tag_tb = nextToken();
+			if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
+			{
+			    std::string sname = ((TokenIdent *)tag_tb)->str;
+			    datadef_map_iter sdmi = struct_map.find(sname);
+			    if ( sdmi != struct_map.end() )
+				target_dd = sdmi->second;
+			}
+		    }
+		    // handle 'enum Tag' — treat as int
+		    if ( !target_dd && type_tb->type() == TokenType::ttKeyword
+			&& type_tb->id() == TokenID::tkENUM )
+		    {
+			nextToken(); // consume tag name
+			target_dd = &ddINT;
+		    }
+		    // handle compound type specifiers: unsigned, long, etc.
+		    if ( !target_dd && type_tb->type() == TokenType::ttDataType )
+			target_dd = &((TokenDataType *)type_tb)->definition;
 		    if ( !target_dd )
 			Throw(type_tb) << "Unknown type in va_arg" << flush;
 		    // handle pointer: va_arg(ap, char *)
