@@ -183,6 +183,7 @@ TokenSWITCH	tkSWITCH;
 TokenWHILE	tkWHILE;
 TokenCLASS	tkCLASS;
 TokenSTRUCT	tkSTRUCT;
+TokenUNION	tkUNION;
 TokenDEFAULT	tkDEFAULT;
 TokenTYPEDEF	tkTYPEDEF;
 TokenOPEROVER	tkOPEROVER;
@@ -320,6 +321,7 @@ void Program::add_keywords()
     keyword_map[tkWHILE.str] = &tkWHILE;
     keyword_map[tkCLASS.str] = &tkCLASS;
     keyword_map[tkSTRUCT.str] = &tkSTRUCT;
+    keyword_map[tkUNION.str] = &tkUNION;
     keyword_map[tkDEFAULT.str] = &tkDEFAULT;
     keyword_map[tkTYPEDEF.str] = &tkTYPEDEF;
     keyword_map[tkOPEROVER.str] = &tkOPEROVER;
@@ -1073,15 +1075,21 @@ TokenBase *Program::_getToken()
 	    if ( isdigit(ch) )
 	    {
 		// Consume C integer-literal suffixes (u/U, l/L, ll/LL, combos
-		// like ul/ULL/Lu). madc's int is 64-bit so the size hints are
-		// informational only, and we don't currently propagate
-		// signedness from the suffix — but the lexer must strip them
-		// or the next token (identifier) starts inside the number.
+		// like ul/ULL/Lu) and return true when the U flag is present.
+		// madc's int is 64-bit so the L/LL size hints are
+		// informational only, but signedness (U) matters for bitwise
+		// operators and comparisons.
+		bool has_u_suffix = false;
 		auto eat_int_suffix = [&]() {
 		    for (int i = 0; i < 3; ++i)
 		    {
 			int c = source.peek();
-			if (c == 'u' || c == 'U' || c == 'l' || c == 'L')
+			if (c == 'u' || c == 'U')
+			{
+			    has_u_suffix = true;
+			    source.get();
+			}
+			else if (c == 'l' || c == 'L')
 			    source.get();
 			else
 			    break;
@@ -1091,7 +1099,9 @@ TokenBase *Program::_getToken()
 		{
 		    int64_t bv = read_binary_literal(source);
 		    eat_int_suffix();
-		    return new TokenInt(bv);
+		    TokenInt *ti = new TokenInt(bv);
+		    if (has_u_suffix) ti->setDataType(&ddUINT32);
+		    return ti;
 		}
 		// hex literal: 0x... or 0X...
 		if ( ch == '0' && source.good() && (source.peek() == 'x' || source.peek() == 'X') )
@@ -1114,7 +1124,11 @@ TokenBase *Program::_getToken()
 			else                               hv += hc - 'A' + 10;
 		    }
 		    eat_int_suffix();
-		    return new TokenInt((int64_t)hv);
+		    {
+			TokenInt *ti = new TokenInt((int64_t)hv);
+			if (has_u_suffix) ti->setDataType(&ddUINT32);
+			return ti;
+		    }
 		}
 		int64_t v = (ch & 0xf);
 
@@ -1134,7 +1148,9 @@ TokenBase *Program::_getToken()
 		if ( source.peek() != '.' )
 		{
 		    eat_int_suffix();
-		    return new TokenInt(v);
+		    TokenInt *ti = new TokenInt(v);
+		    if (has_u_suffix) ti->setDataType(&ddUINT32);
+		    return ti;
 		}
 		// handle floating point
 		source.get(); // eat .
@@ -1174,7 +1190,8 @@ TokenBase *Program::_getToken()
 		// Suppressed when the preceding tokens form a declaration /
 		// definition head (`void bug(const char *, ...)` must not
 		// be eaten by a prior `#define bug(...) ((void)0)`).
-		if ( macro_map.count(word) && !looks_like_decl_head(tokens)
+		if ( macro_map.count(word) && !source.macro_disabled(word)
+		     && !looks_like_decl_head(tokens)
 		     && consume_macro_call_open(source) )
 		{
 		    MacroDef &macro = macro_map[word];
@@ -1237,12 +1254,62 @@ TokenBase *Program::_getToken()
 		    std::map<std::string, const std::string *> param_map;
 		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
 			param_map[macro.params[i]] = &args[i];
+		    auto stringify_macro_arg = [](const std::string &raw) -> std::string {
+			std::string out("\"");
+			bool pending_space = false;
+			bool wrote = false;
+			for ( char c : raw )
+			{
+			    if ( c == ' ' || c == '\t' || c == '\n' || c == '\r' )
+			    {
+				if ( wrote )
+				    pending_space = true;
+				continue;
+			    }
+			    if ( pending_space )
+			    {
+				out += ' ';
+				pending_space = false;
+			    }
+			    if ( c == '"' || c == '\\' )
+				out += '\\';
+			    out += c;
+			    wrote = true;
+			}
+			out += '"';
+			return out;
+		    };
 		    std::string expanded;
 		    expanded.reserve(macro.body.size());
 		    for ( size_t p = 0; p < macro.body.size(); )
 		    {
 			char bc = macro.body[p];
-			if ( bc == '_' || isalpha((unsigned char)bc) )
+			if ( bc == '#' && !(p + 1 < macro.body.size() && macro.body[p+1] == '#') )
+			{
+			    size_t q = p + 1;
+			    while ( q < macro.body.size()
+				 && (macro.body[q] == ' ' || macro.body[q] == '\t') )
+				++q;
+			    if ( q < macro.body.size()
+			      && (macro.body[q] == '_' || isalpha((unsigned char)macro.body[q])) )
+			    {
+				size_t start = q;
+				while ( q < macro.body.size()
+				     && (macro.body[q] == '_' || isalnum((unsigned char)macro.body[q])) )
+				    ++q;
+				std::string ident = macro.body.substr(start, q - start);
+				auto it = param_map.find(ident);
+				if ( it != param_map.end() )
+				{
+				    expanded += stringify_macro_arg(*it->second);
+				    p = q;
+				    continue;
+				}
+			    }
+			    expanded += bc;
+			    ++p;
+			}
+			else if ( bc == '_' || isalpha((unsigned char)bc) )
 			{
 			    size_t start = p;
 			    while ( p < macro.body.size()
@@ -1303,16 +1370,16 @@ TokenBase *Program::_getToken()
 			}
 		    }
 		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
-		    source.pushback(expanded);
+		    source.pushback_macro(expanded, word);
 		    return getToken();
 		}
 		// #define substitution: inject the define value into the source stream
-		if ( define_map.count(word) )
+		if ( define_map.count(word) && !source.macro_disabled(word) )
 		{
 		    std::string &val = define_map[word];
 		    if ( !val.empty() )
 		    {
-			source.pushback(val);
+			source.pushback_macro(val, word);
 			return getToken(); // re-tokenize the substituted text
 		    }
 		    // empty define — skip and get next token

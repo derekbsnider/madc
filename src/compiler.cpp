@@ -393,14 +393,154 @@ static Operand &emit_ir_value(Program &pgm, IRValue value, regdefp_t &regdp,
     return storage;
 }
 
+static x86::Gp emit_bitfield_store_reg(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, x86::Gp value, const char *hint);
+static x86::Gp emit_bitfield_store_operand(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, Operand &value, DataDef *value_type,
+    DataDef *field_type, const char *hint);
+
+static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right);
+
+static bool is_arithmetic_result_operator(TokenBase *token)
+{
+    if ( !token || !token->is_operator() )
+	return false;
+    switch ( token->id() )
+    {
+	case TokenID::tkAdd:
+	case TokenID::tkSub:
+	case TokenID::tkMul:
+	case TokenID::tkDiv:
+	case TokenID::tkMod:
+	case TokenID::tkBand:
+	case TokenID::tkBor:
+	case TokenID::tkXor:
+	case TokenID::tkBSL:
+	case TokenID::tkBSR:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
+static DataDef *token_numeric_type(TokenBase *token)
+{
+    if ( !token )
+	return NULL;
+    DataDef *dd = token->datadef();
+    if ( dd && dd->is_pointer() )
+	return NULL;
+    if ( is_arithmetic_result_operator(token) )
+    {
+	TokenOperator *op = dynamic_cast<TokenOperator *>(token);
+	if ( op && (op->left || op->right) )
+	    return infer_numeric_type(op->left, op->right);
+    }
+    if ( dd && dd->is_numeric() )
+	return dd;
+    return NULL;
+}
+
+static uint64_t unsigned_max_for_size(size_t size)
+{
+    if ( size >= 8 )
+	return UINT64_MAX;
+    return (uint64_t(1) << (size * 8)) - 1;
+}
+
+static bool integer_literal_fits_type(TokenBase *token, DataDef *type)
+{
+    TokenInt *literal = dynamic_cast<TokenInt *>(token);
+    if ( !literal || !type || !type->is_integer() )
+	return false;
+
+    int64_t value = literal->get();
+    if ( type->is_unsigned() )
+	return value >= 0 && (uint64_t)value <= unsigned_max_for_size(type->size);
+
+    if ( type->size >= 8 )
+	return true;
+    size_t bits = type->size * 8;
+    int64_t max_value = (int64_t(1) << (bits - 1)) - 1;
+    int64_t min_value = -(int64_t(1) << (bits - 1));
+    return value >= min_value && value <= max_value;
+}
+
+static DataDef *choose_integer_type(TokenBase *left, DataDef *lt,
+				    TokenBase *right, DataDef *rt)
+{
+    if ( !lt )
+	return rt;
+    if ( !rt )
+	return lt;
+    if ( lt == rt )
+	return lt;
+
+    // Unsuffixed integer literals are currently represented by madc's
+    // historical 64-bit ddINT. When paired with an explicitly narrower C
+    // type and the value fits, use the explicit type so `uint32 + 1`
+    // follows C's 32-bit unsigned wrap semantics.
+    if ( integer_literal_fits_type(left, rt) && lt == &ddINT && rt != &ddINT )
+	return rt;
+    if ( integer_literal_fits_type(right, lt) && rt == &ddINT && lt != &ddINT )
+	return lt;
+
+    bool lu = lt->is_unsigned();
+    bool ru = rt->is_unsigned();
+    if ( lu != ru )
+    {
+	if ( lt->size == rt->size )
+	    return lu ? lt : rt;
+	if ( lu && lt->size > rt->size )
+	    return lt;
+	if ( ru && rt->size > lt->size )
+	    return rt;
+	return lt->size > rt->size ? lt : rt;
+    }
+
+    if ( lt->size != rt->size )
+	return lt->size > rt->size ? lt : rt;
+    return lt;
+}
+
+// For binary arithmetic, ensure the result type is at least 64-bit.
+// madc uses 64-bit Gp registers; sub-64-bit result types leave upper
+// register bits undefined, which corrupts pointer arithmetic and
+// comparisons. The unary ~ operator handles its own sub-64-bit masking.
+static DataDef *choose_binop_integer_type(TokenBase *left, DataDef *lt,
+					   TokenBase *right, DataDef *rt)
+{
+    DataDef *result = choose_integer_type(left, lt, right, rt);
+    if ( result && result->size < 8 )
+    {
+	if ( result->is_unsigned() )
+	    return &ddUINT64;
+	return &ddINT;
+    }
+    return result;
+}
+
 static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right)
 {
     if ( (left && left->is_real()) || (right && right->is_real()) )
 	return &ddDOUBLE;
-    if ( left && left->datadef() && left->datadef()->is_integer() )
-	return left->datadef();
-    if ( right && right->datadef() && right->datadef()->is_integer() )
-	return right->datadef();
+    DataDef *lt = token_numeric_type(left);
+    DataDef *rt = token_numeric_type(right);
+    if ( lt && lt->is_real() )
+	return lt;
+    if ( rt && rt->is_real() )
+	return rt;
+    // Binary case: ensure the result is at least 64-bit so sub-64-bit
+    // intermediate types don't corrupt pointer arithmetic or comparisons
+    // on madc's 64-bit register model.
+    if ( lt && lt->is_integer() && rt && rt->is_integer() )
+	return choose_binop_integer_type(left, lt, right, rt);
+    // Unary / single-operand case: preserve the exact type so callers
+    // like TokenBnot can mask correctly.
+    if ( lt && lt->is_integer() )
+	return choose_integer_type(left, lt, right, NULL);
+    if ( rt && rt->is_integer() )
+	return choose_integer_type(left, NULL, right, rt);
     return &ddINT;
 }
 
@@ -2583,14 +2723,26 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc)
 {
-    size_t ofs = 0;
     for ( size_t i = 0; i < inits.size() && i < dds->members.size(); ++i )
     {
 	auto &mp = dds->members[i];
 	DataDef *mtype = mp.second;
-	size_t fa = dds->field_align(*mtype);
-	ofs = DataDefSTRUCT::align_up(ofs, fa);
-	int32_t addr = base_ofs + (int32_t)ofs;
+	int32_t addr = base_ofs + (int32_t)((i < dds->member_offsets.size())
+	    ? dds->member_offsets[i] : 0);
+
+	if ( i < dds->member_bitfields.size()
+	  && dds->member_bitfields[i].is_bitfield )
+	{
+	    regdefp_t bf_rdp = {nullptr, nullptr, nullptr};
+	    bf_rdp.second = mtype;
+	    Operand &bf_val = inits[i]->compile(pgm, bf_rdp);
+	    const DataDefSTRUCT::BitFieldInfo &bf = dds->member_bitfields[i];
+	    x86::Mem storage = x86::ptr(base_reg, addr, (uint32_t)bf.storage_size);
+	    emit_bitfield_store_operand(pgm, storage, bf, bf_val,
+		bf_rdp.second ? bf_rdp.second : inits[i]->datadef(),
+		mtype, "init_bf");
+	    continue;
+	}
 
 	// Nested struct-member init: `{ ..., { 0, 1, 10 }, ... }` where
 	// the member is itself a struct value. TokenStructLit has no
@@ -2604,7 +2756,6 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    if ( !ndds )
 		pgm.Throw(err_loc) << "Nested initializer for non-struct member type" << flush;
 	    emit_struct_init(pgm, base_reg, addr, ndds, nested->inits, err_loc);
-	    ofs += mtype->size;
 	    continue;
 	}
 
@@ -2643,7 +2794,6 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
 		    pgm.cc.mov(em, imm(0));
 		}
-		ofs += esize * mcount;
 		continue;
 	    }
 	}
@@ -2714,22 +2864,29 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	{
 	    pgm.Throw(err_loc) << "Unsupported struct member type in initializer: " << mtype->name << flush;
 	}
-
-	ofs += mtype->size;
     }
     // Zero-fill remaining numeric/pointer members
     for ( size_t i = inits.size(); i < dds->members.size(); ++i )
     {
 	auto &mp = dds->members[i];
 	DataDef *mtype = mp.second;
-	size_t fa = dds->field_align(*mtype);
-	ofs = DataDefSTRUCT::align_up(ofs, fa);
+	int32_t addr = base_ofs + (int32_t)((i < dds->member_offsets.size())
+	    ? dds->member_offsets[i] : 0);
+	if ( i < dds->member_bitfields.size()
+	  && dds->member_bitfields[i].is_bitfield )
+	{
+	    const DataDefSTRUCT::BitFieldInfo &bf = dds->member_bitfields[i];
+	    x86::Gp zero = pgm.cc.newGpq("init_bf_zero");
+	    pgm.cc.xor_(zero, zero);
+	    x86::Mem storage = x86::ptr(base_reg, addr, (uint32_t)bf.storage_size);
+	    emit_bitfield_store_reg(pgm, storage, bf, zero, "init_bf_zero");
+	    continue;
+	}
 	if ( mtype->is_numeric() || mtype->is_pointer() )
 	{
-	    x86::Mem mm = x86::ptr(base_reg, base_ofs + (int32_t)ofs, (uint32_t)mtype->size);
+	    x86::Mem mm = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
 	    pgm.cc.mov(mm, imm(0));
 	}
-	ofs += mtype->size;
     }
 }
 
@@ -3250,6 +3407,131 @@ void Program::execute()
     DBG(std::cout << "Program::execute() ends" << std::endl);
 }
 
+static uint64_t bitfield_mask(size_t width)
+{
+    if ( width >= 64 )
+	return UINT64_MAX;
+    if ( width == 0 )
+	return 0;
+    return (UINT64_C(1) << width) - 1;
+}
+
+static void emit_and_u64(Program &pgm, x86::Gp &gp, uint64_t mask, const char *hint)
+{
+    if ( mask == UINT64_MAX )
+	return;
+    if ( mask == 0 )
+    {
+	pgm.cc.xor_(gp, gp);
+	return;
+    }
+    if ( mask <= 0x7fffffffULL )
+    {
+	pgm.cc.and_(gp, imm((int64_t)mask));
+	return;
+    }
+    x86::Gp mask_gp = pgm.cc.newGpq("%s_mask", hint ? hint : "bf");
+    pgm.cc.mov(mask_gp, imm((uint64_t)mask));
+    pgm.cc.and_(gp, mask_gp);
+}
+
+static x86::Gp emit_bitfield_load_storage(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, const char *hint)
+{
+    storage.setSize((uint32_t)bf.storage_size);
+    x86::Gp out = pgm.cc.newGpq("%s_storage", hint ? hint : "bf");
+    if ( bf.storage_size == 8 )
+	pgm.cc.mov(out, storage);
+    else if ( bf.storage_size == 4 )
+	pgm.cc.mov(out.r32(), storage);
+    else if ( bf.storage_size == 2 )
+	pgm.cc.movzx(out, storage);
+    else
+	pgm.cc.movzx(out, storage);
+    return out;
+}
+
+static void emit_bitfield_store_storage(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, x86::Gp value)
+{
+    storage.setSize((uint32_t)bf.storage_size);
+    if ( bf.storage_size == 8 )
+	pgm.cc.mov(storage, value.r64());
+    else if ( bf.storage_size == 4 )
+	pgm.cc.mov(storage, value.r32());
+    else if ( bf.storage_size == 2 )
+	pgm.cc.mov(storage, value.r16());
+    else
+	pgm.cc.mov(storage, value.r8());
+}
+
+static void emit_bitfield_sign_extend(Program &pgm, x86::Gp &value,
+    const DataDefSTRUCT::BitFieldInfo &bf)
+{
+    if ( bf.is_unsigned || bf.bit_width == 0 || bf.bit_width >= 64 )
+	return;
+    uint32_t shift = (uint32_t)(64 - bf.bit_width);
+    pgm.cc.shl(value, imm(shift));
+    pgm.cc.sar(value, imm(shift));
+}
+
+static x86::Gp emit_bitfield_load(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, const char *hint)
+{
+    x86::Gp out = emit_bitfield_load_storage(pgm, storage, bf, hint);
+    if ( bf.bit_offset )
+	pgm.cc.shr(out, imm((uint32_t)bf.bit_offset));
+    emit_and_u64(pgm, out, bitfield_mask(bf.bit_width), hint);
+    emit_bitfield_sign_extend(pgm, out, bf);
+    return out;
+}
+
+static x86::Gp emit_bitfield_store_reg(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, x86::Gp value, const char *hint)
+{
+    uint64_t value_mask = bitfield_mask(bf.bit_width);
+    uint64_t storage_full_mask = bitfield_mask(bf.storage_size * 8);
+    uint64_t storage_mask = (bf.bit_width >= 64)
+	? UINT64_MAX : ((value_mask << bf.bit_offset) & storage_full_mask);
+
+    x86::Gp bits = pgm.cc.newGpq("%s_bits", hint ? hint : "bf");
+    pgm.cc.mov(bits, value);
+    emit_and_u64(pgm, bits, value_mask, hint);
+
+    x86::Gp result = pgm.cc.newGpq("%s_result", hint ? hint : "bf");
+    pgm.cc.mov(result, bits);
+    emit_bitfield_sign_extend(pgm, result, bf);
+
+    if ( bf.bit_offset )
+	pgm.cc.shl(bits, imm((uint32_t)bf.bit_offset));
+
+    x86::Gp merged;
+    if ( storage_mask == storage_full_mask )
+	merged = bits;
+    else
+    {
+	merged = emit_bitfield_load_storage(pgm, storage, bf, hint);
+	emit_and_u64(pgm, merged, storage_full_mask & ~storage_mask, hint);
+	pgm.cc.or_(merged, bits);
+    }
+    emit_bitfield_store_storage(pgm, storage, bf, merged);
+    return result;
+}
+
+static x86::Gp emit_bitfield_store_operand(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, Operand &value, DataDef *value_type,
+    DataDef *field_type, const char *hint)
+{
+    IRBuilder ir(pgm.cc);
+    DataDef *source_type = value_type ? value_type : field_type;
+    IRValue source = ir_from_operand(value, source_type);
+    IRValue coerced = ir.coerce(source, field_type);
+    IRValue loaded = ir.load(coerced);
+    if ( !loaded.op.isReg() || !loaded.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	throw "emit_bitfield_store_operand() expected a Gp value";
+    return emit_bitfield_store_reg(pgm, storage, bf, loaded.op.as<x86::Gp>(), hint);
+}
+
 // LHS resolver shared by inc/dec and compound-assignment operators.
 // Handles plain variables and struct members (via -> or .) and *ptr derefs.
 // For member/deref, loads the Mem into a Gp and records the Mem for writeback.
@@ -3259,6 +3541,8 @@ struct CompoundLHS {
     x86::Mem writeback;  // Mem to write back to (for members); invalid if variable
     TokenVar *tv;        // variable token (for modified/putreg); NULL for members
     bool is_member;
+    bool is_bitfield;
+    DataDefSTRUCT::BitFieldInfo bitfield;
 
     void finish(Program &pgm)
     {
@@ -3266,6 +3550,12 @@ struct CompoundLHS {
 	{
 	    tv->var.modified();
 	    tv->putreg(pgm);
+	}
+	if ( is_bitfield && writeback.hasBase() )
+	{
+	    lval = emit_bitfield_store_reg(pgm, writeback, bitfield,
+		lval.as<x86::Gp>(), "cmpd_bf");
+	    return;
 	}
 	if ( is_member && writeback.hasBase() )
 	{
@@ -3323,6 +3613,7 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
     CompoundLHS r;
     r.tv = NULL;
     r.is_member = false;
+    r.is_bitfield = false;
     r.type = NULL;
 
     if ( left->type() == TokenType::ttVariable )
@@ -3368,6 +3659,19 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	{
 	    r.type = tm->var.type;
 	    Operand &mem = tm->operand(pgm);
+	    if ( const DataDefSTRUCT::BitFieldInfo *bf = tm->bitfield_info() )
+	    {
+		if ( !mem.isMem() )
+		    pgm.Throw(left) << "compound assignment " << op_name << " on bit-field with non-memory storage" << flush;
+		x86::Mem storage = mem.as<x86::Mem>();
+		storage.setSize((uint32_t)bf->storage_size);
+		r.lval = emit_bitfield_load(pgm, storage, *bf, "member_bf_lhs");
+		r.writeback = storage;
+		r.is_member = true;
+		r.is_bitfield = true;
+		r.bitfield = *bf;
+		return r;
+	    }
 	    if ( mem.isMem() )
 	    {
 		if ( r.type && r.type->is_real() )
@@ -3563,6 +3867,37 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 // Shared shape for safeinc / safedec: in-place on the register/Mem.
 typedef void (Program::*SafeUnaryStep)(asmjit::Operand &);
 
+static int pointer_step_size(DataDef *type)
+{
+    DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(type);
+    if ( !ptr || !ptr->base_type )
+	return 1;
+    int step = (int)ptr->base_type->size;
+    return step > 0 ? step : 1;
+}
+
+static void apply_inc_dec_step(Program &pgm, Operand &op, DataDef *type,
+			       bool increment, SafeUnaryStep fallback)
+{
+    int step = pointer_step_size(type);
+    if ( type && type->is_pointer() && step != 1 )
+    {
+	if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( increment ) pgm.cc.add(op.as<x86::Gp>(), imm(step));
+	    else             pgm.cc.sub(op.as<x86::Gp>(), imm(step));
+	    return;
+	}
+	if ( op.isMem() )
+	{
+	    if ( increment ) pgm.cc.add(op.as<x86::Mem>(), imm(step));
+	    else             pgm.cc.sub(op.as<x86::Mem>(), imm(step));
+	    return;
+	}
+    }
+    (pgm.*fallback)(op);
+}
+
 // Emit ++target or --target, depending on `step`. Handles all four
 // combinations of target shape (plain variable vs. member/deref lvalue)
 // and position (postfix — return old value — vs. prefix — return new).
@@ -3573,6 +3908,7 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 			     const char *old_name_hint, const char *new_name_hint,
 			     const char *op_name)
 {
+    bool increment = op_name && op_name[0] == '+';
     // Fast path: plain variable — apply step to its register/Mem directly.
     if ( target->type() == TokenType::ttVariable )
     {
@@ -3584,11 +3920,11 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 	    {
 		_operand = tv->var.type->newreg(pgm.cc, old_name_hint);
 		pgm.safemov(_operand, reg, tv->var.type, tv->var.type);
-		(pgm.*step)(reg);
+		apply_inc_dec_step(pgm, reg, tv->var.type, increment, step);
 	    }
 	    else
 	    {
-		(pgm.*step)(reg);
+		apply_inc_dec_step(pgm, reg, tv->var.type, increment, step);
 		_operand = tv->var.type->newreg(pgm.cc, new_name_hint);
 		pgm.safemov(_operand, reg, tv->var.type, tv->var.type);
 	    }
@@ -3611,11 +3947,11 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 		pgm.safemov(_operand, reg);
 		regdp.first = &_operand;
 	    }
-	    (pgm.*step)(reg);
+	    apply_inc_dec_step(pgm, reg, tv->var.type, increment, step);
 	}
 	else
 	{
-	    (pgm.*step)(reg);
+	    apply_inc_dec_step(pgm, reg, tv->var.type, increment, step);
 	    if ( regdp.first )
 		pgm.safemov(*regdp.first, reg);
 	    else
@@ -3634,12 +3970,8 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 	_operand = lhs.type->newreg(pgm.cc, old_name_hint);
 	pgm.safemov(_operand, lhs.lval);
     }
-    (pgm.*step)(lhs.lval);
-    if ( lhs.is_member && lhs.writeback.hasBase() )
-    {
-	IRBuilder ir(pgm.cc);
-	ir.store(IRValue::mem(lhs.writeback, lhs.type), ir_from_operand(lhs.lval, lhs.type));
-    }
+    apply_inc_dec_step(pgm, lhs.lval, lhs.type, increment, step);
+    lhs.finish(pgm);
     if ( !postfix )
 	_operand = lhs.lval;  // stash new value on the node for pointer stability
     if ( regdp.first )
@@ -3967,6 +4299,32 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     {
 	tml = dynamic_cast<TokenMember *>(left);
 	ltype = tml->var.type;
+	if ( const DataDefSTRUCT::BitFieldInfo *bf = tml->bitfield_info() )
+	{
+	    DBG(pgm.cc.comment("TokenAssign::compile() bit-field assignment"));
+	    Operand &storage_op = tml->operand(pgm);
+	    if ( !storage_op.isMem() )
+		pgm.Throw(left) << "Assignment to bit-field with non-memory storage" << flush;
+
+	    regdefp_t rhs_rdp = {NULL, NULL, NULL};
+	    rhs_rdp.second = ltype;
+	    Operand &rhs_op = right->compile(pgm, rhs_rdp);
+	    x86::Mem storage = storage_op.as<x86::Mem>();
+	    storage.setSize((uint32_t)bf->storage_size);
+	    x86::Gp assigned = emit_bitfield_store_operand(pgm, storage, *bf,
+		rhs_op, rhs_rdp.second ? rhs_rdp.second : right->datadef(),
+		ltype, "assign_bf");
+
+	    _operand = assigned;
+	    regdp.second = ltype;
+	    if ( regdp.first && regdp.first != &_operand )
+	    {
+		pgm.safemov(*regdp.first, _operand, ltype, ltype);
+		return *regdp.first;
+	    }
+	    regdp.first = &_operand;
+	    return _operand;
+	}
 	DBG(cout << "TokenAssign::compile() assignment to " << tml->var.name << " type " << ltype->name << endl);
 	DBG(pgm.cc.comment("TokenAssign::compile() assignment to:"));
 	DBG(pgm.cc.comment(tml->var.name.c_str()));
@@ -5974,15 +6332,9 @@ void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
 	    if ( rv->var.is_fixed_array() && rv->var.type )
 		regdp.second = pgm.getPointerType(rv->var.type);
     }
-    if ( regdp.second )
-	;
-    else
-    if ( (left && left->datadef()->is_integer() ) )
-	regdp.second = left->datadef();
-    else
-    if ( (right && right->datadef()->is_integer() ) )
-	regdp.second = right->datadef();
-    else
+    if ( !regdp.second )
+	regdp.second = infer_numeric_type(left, right);
+    if ( !regdp.second )
     {
 	DBG(pgm.cc.comment("settype() regdp.second = &ddINT"));
 	regdp.second = &ddINT;
@@ -6667,8 +7019,13 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     {
 	Operand *caller_dest = regdp.first;
 	Operand out_norm;
+	DataDef *rtype = right->datadef() ? right->datadef() : regdp.second;
 	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, out_norm);
 	pgm.safenot(rval);
+	// Mask result to semantic type width for sub-64-bit types.
+	// ~0U must produce 0xFFFFFFFF, not 0xFFFFFFFFFFFFFFFF.
+	if ( rtype && rtype->size < 8 && rval.isReg() )
+	    pgm.cc.and_(rval.as<x86::Gp>(), (int64_t)((1ULL << (rtype->size * 8)) - 1));
 	_operand = rval;
 	regdp.first = &_operand;
 	if ( caller_dest )
@@ -6686,6 +7043,9 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
     if ( !regdp.second ) { throw "TokenBnot::compile() right->compile cleared datatype"; }
     pgm.safenot(rval);					 // type safe bitwise not
+    // Mask result to semantic type width for sub-64-bit types.
+    if ( regdp.second && regdp.second->size < 8 && rval.isReg() )
+	pgm.cc.and_(rval.as<x86::Gp>(), (int64_t)((1ULL << (regdp.second->size * 8)) - 1));
     regdp.first = &rval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -6984,6 +7344,14 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("TokenVar::compile() reg = operand()"));
     Operand &reg = operand(pgm);
 
+    if ( var.is_fixed_array() && (reg.isReg() || reg.isMem()) )
+    {
+	DataDefPTR *ptr_type = pgm.getPointerType(var.type);
+	if ( !regdp.second || regdp.second->is_pointer() )
+	    regdp.second = ptr_type;
+	return emit_ir_value(pgm, ir_from_operand(reg, ptr_type), regdp, _operand, ptr_type);
+    }
+
     if ( !regdp.second )
 	regdp.second = _datatype;
 
@@ -7037,6 +7405,17 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
 	regdp.second = _datatype;
 
+    if ( const DataDefSTRUCT::BitFieldInfo *bf = bitfield_info() )
+    {
+	if ( !reg.isMem() )
+	    pgm.Throw(this) << "Bit-field member does not have memory storage" << flush;
+	x86::Mem storage = reg.as<x86::Mem>();
+	storage.setSize((uint32_t)bf->storage_size);
+	x86::Gp value = emit_bitfield_load(pgm, storage, *bf, "member_bf");
+	return emit_ir_value(pgm, IRValue::reg(value, _datatype),
+	    regdp, _operand, _datatype);
+    }
+
     if ( reg.isMem() && !_datatype->is_numeric() && !_datatype->is_pointer() )
     {
 	x86::Gp addr = pgm.cc.newIntPtr("%s_obj", var.name.c_str());
@@ -7048,7 +7427,18 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
 
     if ( (_datatype->is_numeric() || _datatype->is_pointer()) && (reg.isMem() || reg.isReg() || reg.isImm()) )
     {
-	return emit_ir_value(pgm, ir_from_operand(reg, _datatype), regdp, _operand, _datatype);
+	// Fixed-array member accessed without subscript: array-to-pointer decay.
+	// operand() returned an LEA-computed Gp (64-bit address) but _datatype
+	// is the element type (e.g. ddCHAR, 1 byte). Use a pointer type so
+	// emit_ir_value doesn't truncate the 64-bit address.
+	DataDef *emit_type = _datatype;
+	if ( is_fixed_array_member() && reg.isReg() )
+	{
+	    emit_type = pgm.getPointerType(_datatype);
+	    if ( !regdp.second || regdp.second == _datatype )
+		regdp.second = emit_type;
+	}
+	return emit_ir_value(pgm, ir_from_operand(reg, emit_type), regdp, _operand, emit_type);
     }
 
     if ( regdp.first )
@@ -7333,8 +7723,10 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
     x86::Gp addr = pgm.cc.newIntPtr("addr_expr");
     // TokenMember inherits from TokenVar, but its address must come from the
     // member lvalue operand, not the detached member symbol.
-    if ( dynamic_cast<TokenMember *>(expr) )
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
     {
+	if ( tm->is_bitfield_member() )
+	    pgm.Throw(expr) << "Cannot take address of bit-field member" << flush;
 	Operand &obj = expr->operand(pgm);
 	if ( obj.isMem() )
 	    pgm.cc.lea(addr, obj.as<x86::Mem>());
