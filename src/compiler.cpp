@@ -7826,6 +7826,16 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 
     if ( !regdp.second )
 	regdp.second = target_type;
+
+    // For real types (double/float), the buffer holds IEEE 754 bits in a
+    // Gp register. Reinterpret via movq into an Xmm so downstream code
+    // sees a proper floating-point value instead of raw integer bits.
+    if ( target_type && target_type->is_real() )
+    {
+	x86::Xmm xmm_result = pgm.cc.newXmm("va_dbl");
+	pgm.cc.movq(xmm_result, result);
+	return emit_ir_value(pgm, IRValue::reg(xmm_result, target_type), regdp, _operand, target_type);
+    }
     return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, target_type);
 }
 
