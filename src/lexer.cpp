@@ -1464,6 +1464,14 @@ TokenBase *Program::_getToken()
 		    source.pushback(std::to_string(source.line()));
 		    return getToken();
 		}
+		// __FUNCTION__ / __func__ / __PRETTY_FUNCTION__: GCC
+		// predefined identifiers that expand to the current function
+		// name. madc tokenizes the whole file before parsing, so the
+		// function name isn't known at lex time. Return an empty
+		// string literal for now to avoid parse errors.
+		if ( word == "__FUNCTION__" || word == "__func__"
+		  || word == "__PRETTY_FUNCTION__" )
+		    return new TokenStr("");
 		// GCC `__attribute__((...))` is a no-op for madc — the
 		// attribute payload (alignment, format checks, visibility,
 		// etc.) doesn't change the call ABI we care about. Skip the

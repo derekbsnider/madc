@@ -8690,6 +8690,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     std::vector<std::string> old_style_ids;
 
     DBG(cout << "parseFunction(" << dd.name << ' ' << id << ") START" << endl);
+    cur_func_name = id; // for __FUNCTION__/__func__ expansion in the lexer
 
     // may have already been declared (e.g. forward decl → definition)
     bool func_already_declared = false;
