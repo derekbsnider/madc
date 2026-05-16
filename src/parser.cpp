@@ -4946,19 +4946,33 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    }
 			    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkOpBrk )
 			    {
-				// Cast body is a parenthesized primary, e.g.
-				// `(int)(a - b)` inside `cout << (int)(a-b) << endl`.
-				// The cast binds to that primary only — anything
-				// after the matching ')' (a binary `<<`, etc.) belongs
-				// to the enclosing expression, not the cast body.
-				// Consume the '(' and parse with stop_on_closing_paren
-				// so parseExpression returns after the matching ')'.
-				// (postfix follow-ups like `(MyType*)(p+1)->m` keep
-				// parsing because postfix `->` binds tighter than the
-				// cast — that path is already handled inside
-				// parseExpression's close-paren branch.)
-				TokenBase *first_inner = nextToken();
-				cast_expr = parseExpression(first_inner, true, false, true, 1);
+				// The cast body starts with `(`.  Two possibilities:
+				// a) Chained cast: `(long)(int)x` — the inner `(`
+				//    starts another `(type)expr` cast. Detected by
+				//    peeking for a type token inside the parens.
+				// b) Parenthesized expression: `(int)(a - b)`.
+				// For (a), push `(` back and let parseExpression
+				// handle the inner cast naturally. For (b), consume
+				// `(` and use stop_on_closing_paren.
+				TokenBase *inner_peek = peekToken();
+				bool inner_is_cast = inner_peek
+				    && (inner_peek->type() == TokenType::ttDataType
+					|| (inner_peek->type() == TokenType::ttIdentifier
+					    && (datatype_map.count(((TokenIdent *)inner_peek)->str)
+						|| struct_map.count(((TokenIdent *)inner_peek)->str))));
+				if ( inner_is_cast )
+				{
+				    // Push `(` back — parseExpression will handle it
+				    // as a cast via the normal `(type)expr` path.
+				    pushToken(cast_expr_tb);
+				    _prv_token = NULL;
+				    cast_expr = parseExpression(nextToken(), true);
+				}
+				else
+				{
+				    TokenBase *first_inner = nextToken();
+				    cast_expr = parseExpression(first_inner, true, false, true, 1);
+				}
 			    }
 			    else
 			    {
