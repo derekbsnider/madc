@@ -7496,7 +7496,8 @@ static bool is_contextual_identifier_token(TokenBase *tb)
     if ( tb->type() == TokenType::ttDataType )
     {
 	TokenDataType *td = static_cast<TokenDataType *>(tb);
-	if ( &td->definition == &ddSTRING )
+	if ( &td->definition == &ddSTRING
+	  || &td->definition == &ddARRAY )
 	    return true;
     }
     if ( tb->type() != TokenType::ttKeyword )
@@ -9921,6 +9922,20 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	// if we start with a type (i.e. int), then this could
 	// either be a function or a variable declaration
 	case TokenType::ttDataType:
+	    // Contextual type names (array, string) that shadow a variable in
+	    // scope: treat as expression when followed by an operator or [.
+	    if ( is_contextual_identifier_token(tb) )
+	    {
+		std::string ctx = contextual_identifier_name(tb);
+		Variable *ctx_var = findVariable(ctx);
+		if ( ctx_var && peekToken()
+		  && peekToken()->id() != TokenID::tkMul  // not a pointer decl
+		  && peekToken()->type() != TokenType::ttIdentifier ) // not a decl
+		{
+		    resetPrevToken();
+		    return parseExprStmt(tb);
+		}
+	    }
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseDeclaration" << std::endl);
 	    return parseDeclaration((TokenDataType *)tb);
 //	    break;
