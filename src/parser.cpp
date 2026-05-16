@@ -4938,6 +4938,50 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
 			{
 			    nextToken(); // consume )
+			    // C99 compound literal: (type){ init_list }
+			    // After (type), if '{' follows, parse as a temporary
+			    // struct/array initialization rather than a cast.
+			    if ( peekToken() && peekToken()->id() == TokenID::tkOpBrc )
+			    {
+				// For now, parse the brace-init and push as a
+				// struct literal with the given type. This is a
+				// simplified implementation that handles the
+				// common case of struct compound literals.
+				nextToken(); // consume '{'
+				TokenStructLit *slit = new TokenStructLit();
+				slit->setDataType(cast_dd);
+				while ( peekToken() && peekToken()->id() != TokenID::tkClBrc )
+				{
+				    TokenBase *elem = nextToken();
+				    // Skip designators .field =
+				    if ( elem->id() == TokenID::tkDot )
+				    {
+					nextToken(); // field name
+					nextToken(); // '='
+					elem = nextToken();
+				    }
+				    if ( elem->id() == TokenID::tkOpBrc )
+				    {
+					// nested brace list
+					TokenStructLit *nested = new TokenStructLit();
+					while ( peekToken() && peekToken()->id() != TokenID::tkClBrc )
+					{
+					    nested->inits.push_back(parseExpression(nextToken()));
+					    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+						nextToken();
+					}
+					if ( peekToken() ) nextToken(); // consume '}'
+					slit->inits.push_back(nested);
+				    }
+				    else
+					slit->inits.push_back(parseExpression(elem));
+				    if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+					nextToken();
+				}
+				if ( peekToken() ) nextToken(); // consume '}'
+				exStack.push(slit);
+				break;
+			    }
 			    TokenBase *cast_expr_tb = nextToken();
 			    // Null out _prv_token so unary operators at the head of
 			    // the cast body (`&addr`, `*ptr`, `-x`) see a unary
