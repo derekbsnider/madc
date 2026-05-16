@@ -1566,9 +1566,19 @@ TokenBase *Program::_getToken()
 		    std::string peek2;
 		    if ( next == "short" || next == "long" )
 			peek2 = read_word();
+		    // C allows at most 4 words: `unsigned long long int`.
+		    // Read a potential 4th word so we can consume it.
+		    std::string peek3;
+		    if ( (next == "long" && peek2 == "long")
+		      || (next == "long" && (peek2 == "unsigned" || peek2 == "signed")) )
+			peek3 = read_word();
 		    auto unget = [&](const std::string &a, const std::string &b) {
 			if ( !b.empty() ) source.pushback(std::string(" ") + b);
 			if ( !a.empty() ) source.pushback(std::string(" ") + a);
+		    };
+		    auto unget3 = [&](const std::string &a, const std::string &b, const std::string &c) {
+			if ( !c.empty() ) source.pushback(std::string(" ") + c);
+			unget(a, b);
 		    };
 		    if ( word == "unsigned" )
 		    {
@@ -1576,7 +1586,7 @@ TokenBase *Program::_getToken()
 			if ( next == "short" && peek2 == "int" )  return new TokenDataType("unsigned short int", ddUINT16);
 			if ( next == "short" )                    { unget("", peek2); return new TokenDataType("unsigned short", ddUINT16); }
 			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("unsigned int", ddUINT32); }
-			if ( next == "long" && peek2 == "long" )  return new TokenDataType("unsigned long long", ddUINT64);
+			if ( next == "long" && peek2 == "long" )  { if (peek3 != "int" && !peek3.empty()) source.pushback(std::string(" ") + peek3); return new TokenDataType("unsigned long long", ddUINT64); }
 			if ( next == "long" && peek2 == "int" )   return new TokenDataType("unsigned long int", ddUINT64);
 			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("unsigned long", ddUINT64); }
 			unget(next, peek2);
@@ -1588,7 +1598,7 @@ TokenBase *Program::_getToken()
 			if ( next == "short" && peek2 == "int" )  return new TokenDataType("signed short int", ddINT16);
 			if ( next == "short" )                    { unget("", peek2); return new TokenDataType("signed short", ddINT16); }
 			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("signed int", ddINT32); }
-			if ( next == "long" && peek2 == "long" )  return new TokenDataType("signed long long", ddINT64);
+			if ( next == "long" && peek2 == "long" )  { if (peek3 != "int" && !peek3.empty()) source.pushback(std::string(" ") + peek3); return new TokenDataType("signed long long", ddINT64); }
 			if ( next == "long" && peek2 == "int" )   return new TokenDataType("signed long int", ddINT64);
 			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("signed long", ddINT64); }
 			unget(next, peek2);
@@ -1597,9 +1607,13 @@ TokenBase *Program::_getToken()
 		    if ( word == "long" )
 		    {
 			if ( next == "long" && peek2 == "int" )   return new TokenDataType("long long int", ddINT64);
+			if ( next == "long" && peek2 == "unsigned" ) { if (peek3 != "int" && !peek3.empty()) source.pushback(std::string(" ") + peek3); return new TokenDataType("unsigned long long", ddUINT64); }
+			if ( next == "long" && peek2 == "signed" )   { if (peek3 != "int" && !peek3.empty()) source.pushback(std::string(" ") + peek3); return new TokenDataType("signed long long", ddINT64); }
 			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("long long", ddINT64); }
 			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("long int", ddINT64); }
 			if ( next == "double" )                   { unget("", peek2); return new TokenDataType("long double", ddDOUBLE); }
+			if ( next == "unsigned" && peek2 == "int" )  return new TokenDataType("unsigned long", ddUINT64);
+			if ( next == "unsigned" )                  { unget("", peek2); return new TokenDataType("unsigned long", ddUINT64); }
 			unget(next, peek2);
 			return new TokenDataType("long", ddINT64);
 		    }
