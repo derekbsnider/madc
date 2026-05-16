@@ -1293,8 +1293,25 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
     bool have_value = false;
 
     dd = resolve_type_query_datadef(pgm, type_tb, op_name, have_value, value);
+    // Fallback: sizeof(expression) — parse as expression, use its type
     if ( !have_value && !dd )
-	pgm.Throw(type_tb) << "Unknown type in " << op_name << flush;
+    {
+	TokenBase *expr = pgm.parseExpression(type_tb, true, false, true, 1);
+	if ( expr && expr->datadef() )
+	{
+	    dd = expr->datadef();
+	    // For fixed arrays accessed as expressions, use element size
+	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+		if ( tv->var.is_fixed_array() )
+		    value = tv->var.type->size * tv->var.total_elements();
+	    if ( !value )
+		value = query_datadef_measure(dd, want_alignof);
+	    have_value = true;
+	    dd = NULL; // have_value is set, skip the pointer/array loop below
+	}
+	if ( !have_value )
+	    pgm.Throw(type_tb) << "Unknown type in " << op_name << flush;
+    }
 
     while ( !have_value && pgm.peekToken() )
     {
