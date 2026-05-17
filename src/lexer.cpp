@@ -2114,10 +2114,64 @@ bool Program::evaluateIfCondition()
 	return parse_primary();
     };
 
-    // Shift operators (between unary and comparison in C precedence)
+    // Multiplicative operators (*, /, %)
+    std::function<int64_t()> parse_multiplicative;
+    parse_multiplicative = [&]() -> int64_t {
+	int64_t value = parse_unary();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == '*' )
+	    {
+		pos += 1;
+		value *= parse_unary();
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '/' )
+	    {
+		pos += 1;
+		int64_t rhs = parse_unary();
+		value = rhs ? value / rhs : 0;
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '%' )
+	    {
+		pos += 1;
+		int64_t rhs = parse_unary();
+		value = rhs ? value % rhs : 0;
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    // Additive operators (+, -)
+    std::function<int64_t()> parse_additive;
+    parse_additive = [&]() -> int64_t {
+	int64_t value = parse_multiplicative();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == '+' )
+	    {
+		pos += 1;
+		value += parse_multiplicative();
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '-' )
+	    {
+		pos += 1;
+		value -= parse_multiplicative();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    // Shift operators (between additive and comparison in C precedence)
     std::function<int64_t()> parse_shift;
     parse_shift = [&]() -> int64_t {
-	int64_t value = parse_unary();
+	int64_t value = parse_additive();
 	for (;;)
 	{
 	    skip_ws();
