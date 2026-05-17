@@ -1104,6 +1104,23 @@ TokenBase *Program::_getToken()
 		    num += (source.get() & 0xf) / divisor;
 		    divisor *= 10;
 		}
+		// exponent
+		if ( source.good() && (source.peek() == 'e' || source.peek() == 'E') )
+		{
+		    source.get();
+		    int esign = 1;
+		    if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
+		    {
+			if ( source.peek() == '-' ) esign = -1;
+			source.get();
+		    }
+		    int ev = 0;
+		    while ( source.good() && isdigit(source.peek()) )
+			ev = ev * 10 + (source.get() & 0xf);
+		    double f = 1.0;
+		    for ( int i = 0; i < ev; ++i ) f *= 10.0;
+		    if ( esign > 0 ) num *= f; else num /= f;
+		}
 		if ( source.good() )
 		{
 		    int c = source.peek();
@@ -1353,6 +1370,27 @@ TokenBase *Program::_getToken()
 			break;
 		    num += (source.get() & 0xf) / divisor;
 		    divisor *= 10;
+		}
+		// Scientific notation exponent: e/E followed by optional +/- and digits
+		if ( source.good() && (source.peek() == 'e' || source.peek() == 'E') )
+		{
+		    source.get(); // consume e/E
+		    int exp_sign = 1;
+		    if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
+		    {
+			if ( source.peek() == '-' ) exp_sign = -1;
+			source.get();
+		    }
+		    int exp_val = 0;
+		    while ( source.good() && isdigit(source.peek()) )
+		    {
+			exp_val = exp_val * 10 + (source.get() & 0xf);
+		    }
+		    double factor = 1.0;
+		    for ( int i = 0; i < exp_val; ++i )
+			factor *= 10.0;
+		    if ( exp_sign > 0 ) num *= factor;
+		    else num /= factor;
 		}
 		// C float literal suffixes (f/F, l/L). f marks a float (4-byte
 		// real); madc doesn't currently distinguish float-vs-double
