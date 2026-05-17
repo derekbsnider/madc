@@ -4871,6 +4871,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		}
 	    	if ( tb->id() == TokenID::tkComma )
 		{
+		    // C comma operator inside parenthesized expression:
+		    // evaluate left, discard, continue with right side.
+		    if ( brackets > 0 )
+		    {
+			DBG(cout << "parseExpression: comma operator (brackets=" << brackets << ")" << endl);
+			// Flush pending operators above the last '(' so the
+			// left-side expression is fully reduced, then discard it.
+			while ( !opStack.empty() && opStack.top()->get() != '(' )
+			    popOperator(opStack, exStack);
+			if ( !exStack.empty() )
+			    exStack.pop(); // discard left operand
+			break;
+		    }
 		    DBG(cout << "parseExpression: found comma" << endl);
 		    if ( push_back_comma ) pushToken(tb);
 		    done = true;
@@ -4880,6 +4893,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	    case TokenType::ttOperator:
 	    	if ( tb->id() == TokenID::tkComma )
 		{
+		    // C comma operator inside parenthesized expression
+		    if ( brackets > 0 )
+		    {
+			DBG(cout << "parseExpression: comma operator (brackets=" << brackets << ")" << endl);
+			while ( !opStack.empty() && opStack.top()->get() != '(' )
+			    popOperator(opStack, exStack);
+			if ( !exStack.empty() )
+			    exStack.pop();
+			break;
+		    }
 		    DBG(cout << "parseExpression: found comma" << endl);
 		    if ( push_back_comma ) pushToken(tb);
 		    done = true;
@@ -6557,7 +6580,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	// Without this, `strcpy((char *)h + 8, "x")` lets the cast's inner
 	// parseExpression eat the comma, and the outer parseExpression then
 	// merges `"x"` into the first arg's expression.
-	if ( conditional && tb->id() == TokenID::tkComma )
+	if ( conditional && tb->id() == TokenID::tkComma && !brackets )
 	    break;
 	tb = nextToken();
     }
