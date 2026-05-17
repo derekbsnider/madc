@@ -260,6 +260,8 @@ void Program::_tokenizer_init()
     // Ignored C qualifiers — consumed as empty defines so they
     // don't trip the "undeclared identifier" path.
     define_map["volatile"] = "";
+    define_map["__volatile"] = "";
+    define_map["__volatile__"] = "";
     define_map["__volatile__"] = "";
     define_map["inline"] = "";
     define_map["__inline__"] = "";
@@ -269,6 +271,8 @@ void Program::_tokenizer_init()
     define_map["__restrict__"] = "";
     define_map["__signed__"] = "signed";
     define_map["__const"] = "const";
+    define_map["__signed"] = "signed";
+    define_map["__signed__"] = "signed";
     define_map["__const__"] = "const";
     // C99 _Complex / GCC __complex__ — not supported but at least
     // don't error on the keyword. Map to double (loses the imaginary
