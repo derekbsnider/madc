@@ -1348,9 +1348,34 @@ TokenBase *Program::_getToken()
 		    v *= 10;
 		    v += source.get() & 0xf;
 		}
-		// no decimal means integer
+		// no decimal means integer — unless followed by e/E (scientific)
 		if ( source.peek() != '.' )
 		{
+		    if ( source.peek() == 'e' || source.peek() == 'E' )
+		    {
+			// Scientific notation without decimal: 1e5, 2E-3
+			source.get(); // consume e/E
+			double num = (double)v;
+			int exp_sign = 1;
+			if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
+			{
+			    if ( source.peek() == '-' ) exp_sign = -1;
+			    source.get();
+			}
+			int exp_val = 0;
+			while ( source.good() && isdigit(source.peek()) )
+			    exp_val = exp_val * 10 + (source.get() & 0xf);
+			double factor = 1.0;
+			for ( int i = 0; i < exp_val; ++i ) factor *= 10.0;
+			if ( exp_sign > 0 ) num *= factor; else num /= factor;
+			if ( source.good() )
+			{
+			    int c = source.peek();
+			    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
+				source.get();
+			}
+			return new TokenReal(num);
+		    }
 		    eat_int_suffix();
 		    TokenInt *ti = new TokenInt(v);
 		    if (has_u_suffix) ti->setDataType(&ddUINT32);
