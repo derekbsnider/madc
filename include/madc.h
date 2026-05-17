@@ -12,6 +12,7 @@
 #include <memory>
 #include <ostream>
 #include <sstream>
+#include <deque>
 #include <vector>
 
 #include "libmadc/value.h"
@@ -134,6 +135,11 @@ public:
     void putreg(Program &, Variable *);
     void cleanup(Program &);
     void clear_operand_map() { operand_map.clear(); }
+    virtual DataDef *datadef() const override {
+	if ( statements.empty() ) return &ddVOID;
+	DataDef *dd = statements.back()->datadef();
+	return dd ? dd : &ddVOID;
+    }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
@@ -242,13 +248,27 @@ public:
     {
 	// For `obj->member` access, object.type is the pointer-to-struct,
 	// not the struct itself. Walk through any pointer wrapper.
-	DataDef *otype = object.type;
-	if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
-	    otype = opt->base_type;
-	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype);
+	DataDefSTRUCT *sdd = owner_struct_type();
 	if ( !sdd ) return false;
 	std::string mname = var.name;
 	return sdd->m_count(mname) > 1;
+    }
+    DataDefSTRUCT *owner_struct_type() const
+    {
+	DataDef *otype = object.type;
+	if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
+	    otype = opt->base_type;
+	return dynamic_cast<DataDefSTRUCT *>(otype);
+    }
+    const DataDefSTRUCT::BitFieldInfo *bitfield_info() const
+    {
+	DataDefSTRUCT *sdd = owner_struct_type();
+	if ( !sdd ) return NULL;
+	return sdd->m_bitfield(var.name);
+    }
+    bool is_bitfield_member() const
+    {
+	return bitfield_info() != NULL;
     }
 };
 
@@ -261,6 +281,7 @@ public:
     asmjit::Operand _operand;
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
     virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -273,6 +294,7 @@ public:
     asmjit::Operand _operand;
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
     virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -374,6 +396,8 @@ public:
             DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(o.type);
             _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         }
+	else if ( o.type->is_string() )
+	    _datatype = &ddCHAR;
         else if ( o.type->type() == DataType::dtVECTOR )
             _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
         else if ( o.type->type() == DataType::dtMAP )
@@ -470,11 +494,26 @@ const std::string *find_embedded_header(const std::string &name);
 class Source
 {
 protected:
+    struct PushbackFrame
+    {
+	size_t remaining;
+	std::string disabled_macro;
+    };
     std::stringstream _ss;
     std::string _pushback;		// pushback buffer for #define substitution
+    std::deque<PushbackFrame> _pushback_frames;
     int _lf, _cr, _column;
     std::streampos _pos;
     std::string _fname;
+    void add_pushback_frame(const std::string &s, const std::string &disabled_macro)
+    {
+	if ( s.empty() )
+	    return;
+	PushbackFrame frame;
+	frame.remaining = s.size();
+	frame.disabled_macro = disabled_macro;
+	_pushback_frames.push_front(frame);
+    }
 public:
     Source() { _lf = 0; _cr = 0; _column = 0; _pos = 0; }
     const char *fname() const { return _fname.c_str(); }
@@ -482,7 +521,19 @@ public:
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { _ss << sb;  }
     void str(const std::string &s) { _ss.str(s); }
-    void pushback(const std::string &s) { _pushback = s + _pushback; }
+    void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
+    void pushback_macro(const std::string &s, const std::string &disabled_macro)
+    {
+	_pushback = s + _pushback;
+	add_pushback_frame(s, disabled_macro);
+    }
+    bool macro_disabled(const std::string &name) const
+    {
+	for ( const PushbackFrame &frame : _pushback_frames )
+	    if ( frame.disabled_macro == name )
+		return true;
+	return false;
+    }
     bool good() { return !_pushback.empty() || _ss.good(); }
     bool eof()  { return _pushback.empty() && _ss.eof(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
@@ -493,6 +544,13 @@ public:
 	{
 	    int ch = (unsigned char)_pushback[0];
 	    _pushback.erase(0, 1);
+	    if ( !_pushback_frames.empty() )
+	    {
+		if ( _pushback_frames.front().remaining > 0 )
+		    --_pushback_frames.front().remaining;
+		if ( _pushback_frames.front().remaining == 0 )
+		    _pushback_frames.pop_front();
+	    }
 	    ++_column;
 	    return ch;
 	}
@@ -1041,6 +1099,9 @@ public:
     // token stream. Used by unary `*` and `&` to avoid
     // parseExpression's greedy consumption of trailing binary ops.
     TokenBase *parsePostfixChain(TokenBase *head);
+    // Parse the operand after unary `&`, preserving C precedence by
+    // stopping before trailing binary operators.
+    TokenBase *parseAddressOfExpression(TokenBase *ampersand);
     TokenFunc *build_expression_function(TokenProgram *tp,
 					 TokenBase *expr,
 					 DataDef *return_type,

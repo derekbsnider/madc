@@ -493,26 +493,51 @@ class Variable; // forward dec
 class DataDefSTRUCT: public DataDef
 {
 public:
+    struct BitFieldInfo
+    {
+	bool is_bitfield;
+	size_t storage_offset;
+	size_t storage_size;
+	size_t bit_offset;
+	size_t bit_width;
+	bool is_unsigned;
+	BitFieldInfo()
+	    : is_bitfield(false), storage_offset(0), storage_size(0),
+	      bit_offset(0), bit_width(0), is_unsigned(false) {}
+    };
+
     std::vector<memberpair_t> members;
     std::vector<size_t> member_counts;	// per-member count for fixed arrays (1 for scalars)
+    std::vector<size_t> member_offsets;	// per-member byte offset in the finalized layout
+    std::vector<BitFieldInfo> member_bitfields;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
+    bool union_layout;	// true: all members start at offset 0; size is max member size
+    bool bitfield_active;
+    size_t bitfield_unit_offset;
+    size_t bitfield_unit_size;
+    size_t bitfield_next_bit;
 
     static size_t align_up(size_t v, size_t a) { return a ? ((v + a - 1) & ~(a - 1)) : v; }
 
     // compute alignment for a field: natural alignment capped by pack setting
     size_t field_align(const DataDef &dd) const
     {
-	size_t natural = dd.size > 8 ? 8 : dd.size;  // x86-64: max natural alignment is 8
+	size_t natural = dd.alignment();
+	if ( natural == 0 ) natural = 1;
 	if ( pack == 0 ) return natural;              // C ABI default
 	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
     }
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
-	: DataDef(n, s, d), pack(0), max_align(1) {}
+	: DataDef(n, s, d), pack(0), max_align(1), union_layout(false), bitfield_active(false),
+	  bitfield_unit_offset(0), bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
-	: DataDef(n, 0, DataType::dtRESERVED), pack(0), max_align(1)
+	: DataDef(n, 0, DataType::dtRESERVED), pack(0), max_align(1),
+	  union_layout(false),
+	  bitfield_active(false), bitfield_unit_offset(0),
+	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);
 	std::vector<memberpair_t>::iterator dvpi;
@@ -527,34 +552,107 @@ public:
     virtual BaseType basetype() const { return BaseType::btStruct; }
     virtual size_t alignment() const { return max_align ? max_align : 1; }
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
+    void endBitFieldRun()
+    {
+	bitfield_active = false;
+	bitfield_unit_offset = 0;
+	bitfield_unit_size = 0;
+	bitfield_next_bit = 0;
+    }
     void addMember(std::string n, DataDef &dd, size_t cnt)
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
+	endBitFieldRun();
 	size_t fa = field_align(dd);
+	if ( union_layout )
+	{
+	    if ( fa > max_align ) max_align = fa;
+	    members.emplace_back(n, &dd);
+	    member_counts.push_back(cnt);
+	    member_offsets.push_back(0);
+	    member_bitfields.push_back(BitFieldInfo());
+	    size_t member_size = dd.size * cnt;
+	    if ( member_size > size ) size = member_size;
+	    return;
+	}
 	size = align_up(size, fa);	// pad to field's alignment
 	if ( fa > max_align ) max_align = fa;
 	members.emplace_back(n, &dd);
 	member_counts.push_back(cnt);
+	member_offsets.push_back(size);
+	member_bitfields.push_back(BitFieldInfo());
 	size += dd.size * cnt;
+    }
+    size_t bitfield_storage_size(const DataDef &dd) const
+    {
+	size_t storage_size = dd.size ? dd.size : 4;
+	return storage_size > 8 ? 8 : storage_size;
+    }
+    BitFieldInfo allocateBitField(DataDef &dd, size_t width)
+    {
+	size_t storage_size = bitfield_storage_size(dd);
+	size_t storage_bits = storage_size * 8;
+	if ( !bitfield_active
+	  || bitfield_unit_size != storage_size
+	  || bitfield_next_bit + width > storage_bits )
+	{
+	    size_t fa = field_align(dd);
+	    size = align_up(size, fa);
+	    if ( fa > max_align ) max_align = fa;
+	    bitfield_active = true;
+	    bitfield_unit_offset = size;
+	    bitfield_unit_size = storage_size;
+	    bitfield_next_bit = 0;
+	    size += storage_size;
+	}
+
+	BitFieldInfo info;
+	info.is_bitfield = true;
+	info.storage_offset = bitfield_unit_offset;
+	info.storage_size = storage_size;
+	info.bit_offset = bitfield_next_bit;
+	info.bit_width = width;
+	info.is_unsigned = dd.is_unsigned();
+	bitfield_next_bit += width;
+	if ( bitfield_next_bit >= storage_bits )
+	    endBitFieldRun();
+	return info;
+    }
+    void addBitField(std::string n, DataDef &dd, size_t width)
+    {
+	BitFieldInfo info = allocateBitField(dd, width);
+	members.emplace_back(n, &dd);
+	member_counts.push_back(1);
+	member_offsets.push_back(info.storage_offset);
+	member_bitfields.push_back(info);
+    }
+    void addUnnamedBitField(DataDef &dd, size_t width)
+    {
+	if ( width == 0 )
+	{
+	    endBitFieldRun();
+	    size_t fa = field_align(dd);
+	    size = align_up(size, fa);
+	    if ( fa > max_align ) max_align = fa;
+	    return;
+	}
+	(void)allocateBitField(dd, width);
     }
     // round struct size up to its overall alignment (for arrays of structs)
     void finalize()
     {
+	endBitFieldRun();
 	size = align_up(size, max_align);
     }
     ssize_t m_offset(std::string &member)
     {
-	ssize_t ofs = 0;
 	DBG(std::cout << "DataDefSTRUCT::offset(" << member << ')' << std::endl);
 	for ( size_t i = 0; i < members.size(); ++i )
 	{
-	    size_t fa = field_align(*members[i].second);
-	    ofs = (ssize_t)align_up((size_t)ofs, fa);
+	    size_t ofs = (i < member_offsets.size()) ? member_offsets[i] : 0;
 	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << members[i].first << " ofs=" << ofs << std::endl);
 	    if ( !member.compare(members[i].first) )
-		return ofs;
-	    size_t cnt = (i < member_counts.size()) ? member_counts[i] : 1;
-	    ofs += members[i].second->size * cnt;
+		return (ssize_t)ofs;
 	}
 	return -1;
     }
@@ -581,6 +679,18 @@ public:
 	}
 	DBG(std::cout << "DataDefSTRUCT::type() returning NULL" << std::endl);
 	return NULL;
+    }
+    const BitFieldInfo *m_bitfield(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_bitfields.size() && member_bitfields[i].is_bitfield)
+		    ? &member_bitfields[i] : NULL;
+	return NULL;
+    }
+    bool m_is_bitfield(const std::string &member) const
+    {
+	return m_bitfield(member) != NULL;
     }
 };
 

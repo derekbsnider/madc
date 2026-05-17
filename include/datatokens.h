@@ -207,8 +207,8 @@ public:
     // enum/const-var leaves report 0, so e.g. (TOPCOLOR-COLORBASE)
     // folds to 0 at runtime even though parse-time array sizing reads
     // them correctly via read_constant_integer.
-    virtual int ival() const override
-        { return var.is_constant() ? var.get<int>() : 0; }
+    virtual int64_t ival() const override
+        { return var.is_constant() ? var.get<int64_t>() : 0; }
     virtual double dval() const override
         { return var.is_constant() ? var.get<double>() : 0; }
     virtual bool is_constant() const { return var.is_constant(); }

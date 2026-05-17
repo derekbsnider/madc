@@ -622,6 +622,8 @@ TokenBase *Program::_getToken()
 		    word += source.get();
 		return new TokenREM(word);
 	    }
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
 	    // #include directive
 	    if ( isalpha(source.peek()) )
 	    {
@@ -831,6 +833,12 @@ TokenBase *Program::_getToken()
 		    macro_map.erase(name);
 		    DBG(std::cout << "#undef " << name << std::endl);
 		    // consume rest of line
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			source.get();
+		    return getToken();
+		}
+		if ( directive == "line" )
+		{
 		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 			source.get();
 		    return getToken();
@@ -1323,6 +1331,9 @@ TokenBase *Program::_getToken()
 
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 		    word += source.get();
+		if ( word == "L" && source.good()
+		  && (source.peek() == '"' || source.peek() == '\'') )
+		    return getToken();
 		// function-like macro expansion: NAME(args) or NAME (args)
 		// Suppressed when the preceding tokens form a declaration /
 		// definition head (`void bug(const char *, ...)` must not
@@ -1421,7 +1432,12 @@ TokenBase *Program::_getToken()
 		    for ( size_t p = 0; p < macro.body.size(); )
 		    {
 			char bc = macro.body[p];
-			if ( bc == '#' && !(p + 1 < macro.body.size() && macro.body[p+1] == '#') )
+			if ( bc == '#' && p + 1 < macro.body.size() && macro.body[p+1] == '#' )
+			{
+			    expanded += "##";
+			    p += 2;
+			}
+			else if ( bc == '#' )
 			{
 			    size_t q = p + 1;
 			    while ( q < macro.body.size()
@@ -1540,31 +1556,35 @@ TokenBase *Program::_getToken()
 		    source.pushback(std::to_string(source.line()));
 		    return getToken();
 		}
-		// __FUNCTION__ / __func__ / __PRETTY_FUNCTION__: GCC
-		// predefined identifiers that expand to the current function
-		// name. madc tokenizes the whole file before parsing, so the
-		// function name isn't known at lex time. Return an empty
-		// string literal for now to avoid parse errors.
+		// __FUNCTION__ / __func__ / __PRETTY_FUNCTION__: keep these
+		// as magic identifiers. madc tokenizes the whole file before
+		// parsing, so parseExpression resolves them after cur_func_name
+		// is known.
 		if ( word == "__FUNCTION__" || word == "__func__"
 		  || word == "__PRETTY_FUNCTION__" )
-		    return new TokenStr("");
-		// GCC `__attribute__((...))` is a no-op for madc — the
-		// attribute payload (alignment, format checks, visibility,
-		// etc.) doesn't change the call ABI we care about. Skip the
-		// keyword and its matching outer parens, then re-enter the
-		// tokenizer so the lexer sees the next real token.
+		    return new TokenIdent(word);
+		// Most GCC attributes are no-ops for madc. Preserve `packed`
+		// so the struct parser can select packed layout; skip the rest.
 		if ( word == "__attribute__" )
 		{
 		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
 			source.get();
+		    std::string attr_text;
 		    if ( source.peek() == '(' )
 		    {
 			int depth = 0;
 			do {
 			    char c = source.get();
+			    attr_text += c;
 			    if ( c == '(' ) ++depth;
 			    else if ( c == ')' ) --depth;
 			} while ( source.good() && depth > 0 );
+		    }
+		    if ( attr_text.find("packed") != std::string::npos
+		      || attr_text.find("aligned") != std::string::npos )
+		    {
+			source.pushback(attr_text);
+			return new TokenIdent(word);
 		    }
 		    return getToken();
 		}

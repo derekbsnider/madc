@@ -77,6 +77,49 @@ static x86::Gp materialize_string_object_ptr(x86::Compiler &cc, const IRValue &s
     throw "materialize_string_object_ptr() unsupported string operand shape";
 }
 
+static IRValue canonicalize_narrow_integer_reg(x86::Compiler &cc, const IRValue &src,
+					       DataDef *type)
+{
+    if ( !type || !type->is_integer() || type->size >= 8 )
+	return IRValue::reg(src.op, type ? type : src.type);
+    if ( !src.isReg() || !src.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	return IRValue::reg(src.op, type);
+
+    x86::Gp in = src.op.as<x86::Gp>();
+    x86::Gp out = cc.newGpq("ir_narrow");
+    bool is_unsigned = type->is_unsigned();
+    switch ( type->size )
+    {
+	case 1:
+	    if ( is_unsigned ) cc.movzx(out, in.r8());
+	    else               cc.movsx(out, in.r8());
+	    break;
+	case 2:
+	    if ( is_unsigned ) cc.movzx(out, in.r16());
+	    else               cc.movsx(out, in.r16());
+	    break;
+	case 3:
+	    cc.mov(out.r32(), in.r32());
+	    if ( is_unsigned )
+		cc.and_(out.r32(), imm(0x00ffffff));
+	    else
+	    {
+		cc.shl(out.r32(), imm(8));
+		cc.sar(out.r32(), imm(8));
+		cc.movsxd(out, out.r32());
+	    }
+	    break;
+	case 4:
+	    if ( is_unsigned ) cc.mov(out.r32(), in.r32());
+	    else               cc.movsxd(out, in.r32());
+	    break;
+	default:
+	    cc.mov(out, in);
+	    break;
+    }
+    return IRValue::reg(out, type);
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // load — normalize to Reg shape                                           //
 /////////////////////////////////////////////////////////////////////////////
@@ -86,9 +129,15 @@ IRValue IRBuilder::load(const IRValue &src)
     if ( !src.valid() )
 	throw "IRBuilder::load() invalid src";
 
-    // Reg of the same shape: no-op passthrough.
+    // Reg of the same shape: canonicalize narrow integer values. The
+    // virtual register is Gpq, but C int32/uint32 arithmetic wraps in the
+    // low 32 bits before later comparisons or promotions consume it.
     if ( src.isReg() )
+    {
+	if ( src.type && src.type->is_integer() && src.type->size < 8 )
+	    return canonicalize_narrow_integer_reg(cc_, src, src.type);
 	return src;
+    }
 
     // Mem: size-aware load with sign/zero extension for narrow ints.
     if ( src.isMem() )
@@ -303,12 +352,14 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return IRValue::reg(r.op, to);
     }
 
-    // Integer narrowing: the low bytes of the Gpq already hold the
-    // truncated value. Downstream store() picks the right sub-reg.
+    // Integer narrowing: truncate to the destination width immediately
+    // and sign-/zero-extend back to canonical Gpq form. Otherwise an
+    // expression like uint32_t(0xffffffff) + 1 would stay 0x100000000 in
+    // a 64-bit vreg until a later store happened to truncate it.
     if ( both_int && to->size < src.type->size )
     {
 	IRValue r = load(src);
-	return IRValue::reg(r.op, to);
+	return canonicalize_narrow_integer_reg(cc_, r, to);
     }
 
     // Real ↔ real size change (float ↔ double).
