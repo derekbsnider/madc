@@ -1748,8 +1748,8 @@ TEST_SUITE("madc::program") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
-		   "int counter = 0;\n"
-		   "int read_counter() { return counter; }\n"
+		   "long counter = 0;\n"
+		   "long read_counter() { return counter; }\n"
 		   "int main() { return 0; }\n");
 
 	REQUIRE(pgm.compile_file(path));
