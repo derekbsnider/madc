@@ -267,6 +267,9 @@ void Program::_tokenizer_init()
     define_map["__inline__"] = "";
     define_map["__inline"] = "";
     define_map["__extension__"] = "";
+    // _Alignas(N) is a C11 keyword — consume like __attribute__
+    // The lexer handles it by stripping the specifier and its parens.
+    define_map["_Alignas"] = "__attribute__";
     define_map["__restrict"] = "";
     define_map["__restrict__"] = "";
     define_map["__signed__"] = "signed";

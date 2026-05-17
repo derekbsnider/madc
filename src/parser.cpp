@@ -9826,6 +9826,32 @@ paramdecl:
 	return;
     }
 
+    // Skip __attribute__((...)) between function params and body/semicolon
+    if ( nt->type() == TokenType::ttIdentifier
+	&& ((TokenIdent *)nt)->str == "__attribute__" )
+    {
+	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    int adepth = 0;
+	    do {
+		TokenBase *at = nextToken();
+		if ( !at ) break;
+		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
+		else if ( at->id() == TokenID::tkClBrk ) --adepth;
+	    } while ( adepth > 0 );
+	}
+	nt = nextToken();
+	// Check again for forward declaration after __attribute__
+	if ( nt->id() == TokenID::tkSemi )
+	{
+	    method = new Method(*var);
+	    var->data = (void *)method;
+	    if ( owner_class )
+		method->owner_class = owner_class;
+	    return;
+	}
+    }
+
     // Definitions must own a fresh Method instance. Some prior declaration
     // paths (notably SMAUG macro expansions) leave a non-null var->data that
     // is not a valid Method object, so reusing it corrupts method->parameters.
