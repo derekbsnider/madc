@@ -378,6 +378,39 @@ void Program::_tokenizer_init()
     define_map["__builtin_alloca"] = "alloca";
     define_map["__builtin_bzero"] = "bzero";
     define_map["__builtin_bcopy"] = "bcopy";
+    define_map["__builtin_copysign"] = "copysign";
+    define_map["__builtin_copysignf"] = "copysignf";
+    define_map["__builtin_copysignl"] = "copysignl";
+    define_map["__builtin_sqrtf"] = "sqrtf";
+    define_map["__builtin_sqrt"] = "sqrt";
+    define_map["__builtin_sqrtl"] = "sqrtl";
+    define_map["__builtin_logf"] = "logf";
+    define_map["__builtin_log"] = "log";
+    define_map["__builtin_expf"] = "expf";
+    define_map["__builtin_exp"] = "exp";
+    define_map["__builtin_sinf"] = "sinf";
+    define_map["__builtin_sin"] = "sin";
+    define_map["__builtin_cosf"] = "cosf";
+    define_map["__builtin_cos"] = "cos";
+    define_map["__builtin_floorf"] = "floorf";
+    define_map["__builtin_floor"] = "floor";
+    define_map["__builtin_ceilf"] = "ceilf";
+    define_map["__builtin_ceil"] = "ceil";
+    define_map["__builtin_roundf"] = "roundf";
+    define_map["__builtin_round"] = "round";
+    define_map["__builtin_powf"] = "powf";
+    define_map["__builtin_pow"] = "pow";
+    define_map["__builtin_fmaf"] = "fmaf";
+    define_map["__builtin_fma"] = "fma";
+    define_map["__builtin_llabs"] = "llabs";
+    define_map["__builtin_stpcpy"] = "stpcpy";
+    define_map["__builtin_stpncpy"] = "stpncpy";
+    define_map["__builtin_strdup"] = "strdup";
+    define_map["__builtin_strndup"] = "strndup";
+    define_map["__builtin_strnlen"] = "strnlen";
+    define_map["__builtin_bswap16"] = "__bswap_16";
+    define_map["__builtin_bswap32"] = "__bswap_32";
+    define_map["__builtin_bswap64"] = "__bswap_64";
 
     // __builtin_expect(expr, val) is a branch-prediction hint — just
     // return expr. Implemented as a function-like macro.
@@ -404,6 +437,22 @@ void Program::_tokenizer_init()
     }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
+    // __builtin_signbit(x) → (x < 0.0) — simplified
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "((__x) < 0.0 ? 1 : 0)";
+	macro_map["__builtin_signbit"] = m;
+	macro_map["__builtin_signbitf"] = m;
+	macro_map["__builtin_signbitl"] = m;
+    }
+    // __builtin_classify_type(x) → 0 (integer type, simplified)
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "0";
+	macro_map["__builtin_classify_type"] = m;
+    }
     define_map["__builtin_alloca"] = "malloc"; // alloca = stack alloc, map to malloc for now
     define_map["__builtin_ffs"] = "ffs";
     define_map["__builtin_bswap32"] = "__bswap_32";
