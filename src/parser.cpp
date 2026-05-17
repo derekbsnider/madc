@@ -8104,6 +8104,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'typedef'" << flush;
 
+    // skip const/restrict qualifiers: `typedef const struct X *const_ptr;`
+    while ( tn && (tn->id() == TokenID::tkCONST || tn->id() == TokenID::tkRESTRICT) )
+    {
+	pgm.nextToken();
+	tn = pgm.peekToken();
+    }
+
     // typedef struct/union/class ... — handled by struct/class parse via prevToken
     if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkCLASS || tn->id() == TokenID::tkUNION )
 	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));

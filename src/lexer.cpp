@@ -316,7 +316,23 @@ void Program::_tokenizer_init()
     define_map["__SIG_ATOMIC_TYPE__"] = "int";
     define_map["__INTMAX_TYPE__"] = "long";
     define_map["__UINTMAX_TYPE__"] = "unsigned long";
-    define_map["__builtin_va_list"] = "va_list";
+    define_map["__INT_LEAST8_TYPE__"] = "char";
+    define_map["__UINT_LEAST8_TYPE__"] = "unsigned char";
+    define_map["__INT_LEAST16_TYPE__"] = "short";
+    define_map["__UINT_LEAST16_TYPE__"] = "unsigned short";
+    define_map["__INT_LEAST32_TYPE__"] = "int";
+    define_map["__UINT_LEAST32_TYPE__"] = "unsigned int";
+    define_map["__INT_LEAST64_TYPE__"] = "long";
+    define_map["__UINT_LEAST64_TYPE__"] = "unsigned long";
+    define_map["__INT_FAST8_TYPE__"] = "char";
+    define_map["__UINT_FAST8_TYPE__"] = "unsigned char";
+    define_map["__INT_FAST16_TYPE__"] = "long";
+    define_map["__UINT_FAST16_TYPE__"] = "unsigned long";
+    define_map["__INT_FAST32_TYPE__"] = "long";
+    define_map["__UINT_FAST32_TYPE__"] = "unsigned long";
+    define_map["__INT_FAST64_TYPE__"] = "long";
+    define_map["__UINT_FAST64_TYPE__"] = "unsigned long";
+    define_map["__builtin_va_list"] = "long";
     define_map["__x86_64__"] = "1";
     define_map["__LP64__"] = "1";
     define_map["__BYTE_ORDER__"] = "1234";
@@ -345,7 +361,23 @@ void Program::_tokenizer_init()
     define_map["__builtin_abs"] = "abs";
     define_map["__builtin_labs"] = "labs";
     define_map["__builtin_fabs"] = "fabs";
+    define_map["__builtin_fabsf"] = "fabsf";
+    define_map["__builtin_fabsl"] = "fabsl";
     define_map["__builtin_trap"] = "abort";
+    define_map["__builtin_memchr"] = "memchr";
+    define_map["__builtin_strchr"] = "strchr";
+    define_map["__builtin_strrchr"] = "strrchr";
+    define_map["__builtin_strstr"] = "strstr";
+    define_map["__builtin_strncat"] = "strncat";
+    define_map["__builtin_strcat"] = "strcat";
+    define_map["__builtin_snprintf"] = "snprintf";
+    define_map["__builtin_fprintf"] = "fprintf";
+    define_map["__builtin_sscanf"] = "sscanf";
+    define_map["__builtin_fscanf"] = "fscanf";
+    define_map["__builtin_realloc"] = "realloc";
+    define_map["__builtin_alloca"] = "alloca";
+    define_map["__builtin_bzero"] = "bzero";
+    define_map["__builtin_bcopy"] = "bcopy";
 
     // __builtin_expect(expr, val) is a branch-prediction hint — just
     // return expr. Implemented as a function-like macro.
