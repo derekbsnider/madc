@@ -4,6 +4,10 @@
 // extern declarations below give the parser proper return types so
 // `*(strchr(...)) = 0` works without explicit user-side `extern`.
 
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
 extern char *strchr(char *s, int c);
 extern char *strrchr(char *s, int c);
 extern char *strstr(char *haystack, char *needle);

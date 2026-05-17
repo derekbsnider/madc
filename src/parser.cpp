@@ -10289,6 +10289,24 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    Throw(tb) << "Unexpected end of data in array declaration" << flush;
     }
 
+    // Skip __attribute__((...)) after variable declarator (GCC extension)
+    if ( nt && nt->type() == TokenType::ttIdentifier
+	&& ((TokenIdent *)nt)->str == "__attribute__" )
+    {
+	nextToken(); // consume __attribute__
+	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    int adepth = 0;
+	    do {
+		TokenBase *at = nextToken();
+		if ( !at ) break;
+		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
+		else if ( at->id() == TokenID::tkClBrk ) --adepth;
+	    } while ( adepth > 0 );
+	}
+	nt = peekToken();
+    }
+
     // Preserve pointer semantics for `char *p = "literal";`.
     // Only real array declarators (`char buf[] = "literal";`) should take the
     // char-array string-initializer path below.
