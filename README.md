@@ -223,17 +223,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.14.1** (2026-05-10) — **SMAUG native executables now survive the first real combat path.** `smaug.exe` now boots, accepts telnet, completes character creation, reaches Newgate room 109, enters combat with the serpent, survives repeated damage rounds, and can kill the serpent cleanly in the standalone native executable lane. The load-bearing compiler fix was correct 1..16 byte struct return-by-value codegen: small aggregates now return through `rax`/`rdx` like GCC and no longer leak a dead stack address or mis-treat the first machine word of a local struct as a pointer. Release baseline: 271 integration + 261 unit tests, with native EXE parity green at 271/271.
+**v0.15.0** (2026-05-17) — **GCC torture test suite parity initiative.** Pass rate nearly doubled from 627/1685 (37%) to 1245/1685 (74%) through 96 compile-failure fixes. Key features: C comma operator, full `#if` evaluator with integer arithmetic and C operator precedence, scientific notation in float literals, mixed int*double arithmetic promotion (C99 usual arithmetic conversions), K&R empty-parens function semantics, bitfields in anonymous structs, 50+ `__builtin_*` aliases, embedded stddef.h/assert.h, `#error`/`#warning` directives, and comprehensive `__attribute__` consumption.
 
 ### Recent Releases
 
+- **v0.15.0** — GCC torture test parity: 627 → 1245 (37% → 74%); comma operator, full #if evaluator, scientific notation, mixed arithmetic promotion, K&R functions, 50+ builtins
 - **v0.14.1** — SMAUG native EXEs survive the first real combat path; small 1..16 byte struct returns now follow the SysV x86-64 ABI in both JIT and EXE mode
 - **v0.13.0** — SMAUG plays end-to-end on madc: telnet/creation/MOTD/room/commands/reconnect; lexer octal+hex escapes, scanf %d→%ld, stat sign-ext, safemov narrow→64
-- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c)
-- **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, `expr[i].m`, compound-assign on subscripts, realpath includes, class-as-ident
-- **v0.10.1** — Typed-register IR cleanup completion: stream/multi-return/direct-call cleanup, final compiler-site IR store/load ports, dead `typesafe.cpp` surface pruned
-- **v0.10.0** — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c): 15 shared compile-site helpers, ~880 lines removed from `compiler.cpp`, three latent bugs fixed
-- **v0.9.1** — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts, constant `case`, postfix chains
+- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs
+- **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, compound-assign on subscripts
 
 ## Roadmap
 

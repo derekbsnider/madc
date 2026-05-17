@@ -2,43 +2,90 @@
 
 ## [Unreleased]
 
-- **JIT/native EXE parity is now green across the full integration suite.**
-  `scripts/run_tests.sh --exe` now passes all 271 JIT-backed integration
-  tests. The closing fixes were: exporting runtime `eval` and
-  `context_set_*` helpers with C linkage for standalone AOT executables,
-  falling back to a temporary runtime `Program` when script-side eval
-  helpers run without an active host program, aliasing `std::endl` into
-  the `std::` namespace, guarding embedded `fd_set` definitions across
-  `sys/time.h` and `sys/select.h`, allowing function references to
-  coerce into raw `int64_t` callback slots for `std::for_each`, and
-  materializing lambda-capture `__env` parameters into a Gp before
-  building captured-variable operands. Coverage also gained explicit
-  `.expect` oracles for lambda capture, `std::for_each`, namespace IO,
-  and struct/time/select interop, and the `smaug_requests_source`
-  compatibility body now carries a trivial harness `main()` so it
-  participates cleanly in the runner.
+## [v0.15.0] - 2026-05-17
 
-- **Additional SMAUG-shaped runtime regressions now stay in-tree.**
-  Promoted deterministic probes for branch-skipped buffer writes,
-  variadic bug logging, `sprintf` with multiple `%s` arguments,
-  repeated ternary string arguments inside variadic formatting, typedef
-  pointer-member chains, and a simplified `set_char_color()` formatting
-  path into real integration tests so these runtime shapes stay covered
-  instead of living as scratch files.
+GCC torture test suite parity initiative: pass rate 627 → 1245 (37% → 74%).
 
-- **Local variables and parameters now stay local across JIT/native codegen.**
-  Parser-created locals now set `vfLOCAL`, and function/lambda
-  parameters now set `vfPARAM | vfLOCAL`, so block-local names and
-  parameters no longer alias unrelated global storage during later
-  codegen. This closes the native/JIT shadowing cases behind SMAUG's
-  `damage()` path and adds explicit regressions for a local/global name
-  collision plus a `char *` parameter shadowing a global.
+- **GCC torture test suite runner and 96 compile-failure fixes.**
+  New `scripts/run_gcc_testsuite.py` drives GCC's `gcc.c-torture/execute`
+  tests through madc. 24 commits across parser, lexer, compiler, and
+  typesafe took the pass rate from 627/1685 to 1245/1685, closing 96
+  compile failures. Compile failures dropped from 320 to 221; 22 newly
+  compilable tests now hit runtime issues instead.
 
-- **AOT/global-data parity coverage expanded around SMAUG-shaped extern access.**
-  New regressions now exercise function-scope access to global pointer
-  tables, struct arrays, and `sysdata`-style extern storage so the
-  native executable lane keeps the same observable layout/lookup
-  behavior as the JIT path.
+- **C comma operator in parenthesized expressions.**
+  `(expr1, expr2)` now evaluates `expr1` for side effects, discards it,
+  and returns `expr2`. Works inside `if()` conditions, assignments, and
+  nested expressions.
+
+- **Full C operator precedence in the `#if` preprocessor evaluator.**
+  The `#if` condition evaluator now uses integer arithmetic (was boolean)
+  with the full C precedence chain: unary → multiplicative → additive →
+  shift → relational → equality → bitwise AND/XOR/OR → logical AND/OR.
+  Also adds `#error` and `#warning` directives.
+
+- **Scientific notation in float literals.**
+  Both `1.5e-3` and `1e5` (no decimal point) now parse correctly.
+  Exponent signs (+/-) and float suffixes (f/F/l/L) are handled.
+
+- **Mixed int*double arithmetic promotion (C99 6.3.1.8).**
+  When one operand of `*` is integer and the other is floating-point,
+  the integer is promoted to double for the computation and the result
+  is truncated back to int if the destination requires it. Re-implements
+  the lost RoD mixed-arithmetic fix.
+
+- **K&R empty-parens functions: `f()` vs `f(void)`.**
+  Added `is_void_params` flag to `FuncDef`. Functions declared with
+  empty parens accept any number of arguments; `f(void)` means exactly
+  zero. Applies to both regular functions and function pointers.
+
+- **Zero-length arrays and flexible array members.**
+  `int arr[0]` and `int arr[]` in struct members are now accepted.
+  `int arr[0]` in variable declarations is treated as a 1-element
+  placeholder.
+
+- **Bitfields in anonymous struct/union members.**
+  Named bitfields (`int x : 4;`), unnamed bitfields (`int : 4;`), and
+  comma-separated members (`int f1, f2, f3;`) now work inside anonymous
+  struct/union bodies.
+
+- **Forward enum references.**
+  `enum X var;` where X was previously defined is now treated as `int`.
+
+- **Embedded headers: `stddef.h`, `assert.h`.**
+  `stddef.h` provides `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`,
+  `offsetof`. `assert.h` provides the `assert()` macro. `NULL` also
+  added to `stdlib.h` and `string.h`.
+
+- **50+ GCC `__builtin_*` aliases and type macros.**
+  Covers math functions (sqrt, sin, cos, pow, fma, etc.), string
+  functions (memchr, strchr, strdup, strnlen), `__builtin_va_arg/start/end`,
+  `__builtin_signbit`, `__builtin_classify_type`, bswap16/32, and
+  GCC predefined type macros (`__UINT8_TYPE__`, `__WCHAR_TYPE__`,
+  `__INT_LEAST*_TYPE__`, `__INT_FAST*_TYPE__`, etc.).
+
+- **Comprehensive `__attribute__` consumption.**
+  `__attribute__((...))` is now consumed in variable declarations,
+  typedef aliases, struct member types, function definitions (after
+  param list), and the single-underscore `__attribute` variant.
+  `_Alignas` maps to `__attribute__` for C11 alignment specifiers.
+
+- **`typedef const struct`, `const` after type in struct members.**
+  `typedef const struct X *alias;` now works via `parsing_typedef_decl`
+  flag. `char const *p;` in struct members is accepted.
+
+- **Flat struct initialization.**
+  `struct { int f[4]; } s = {1,2,3,4};` distributes values into array
+  members instead of requiring nested braces.
+
+- **`asm`/`volatile` as if-body, `va_arg(*ptr, type)`.**
+  `if (...) asm(...)` no longer fails. `va_arg(*ap, type)` for pointer-
+  to-va_list parameters is accepted.
+
+- **`static` implicit-int for C89 K&R functions.**
+  `static funcname(...)` is treated as returning `int`.
+
+- **GCC extension aliases: `__volatile__`, `__signed__`.**
 
 ## [v0.14.1] - 2026-05-10
 
