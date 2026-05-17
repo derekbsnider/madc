@@ -6719,7 +6719,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     TokenIdent *tag = NULL;
     TokenBase *tn;
     TokenDataType *tdt;
-    bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false;
+    bool do_typedef = pgm.parsing_typedef_decl
+	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
     bool is_union = id() == TokenID::tkUNION;
     const char *aggregate_kw = is_union ? "union" : "struct";
     datatype_map_iter bmi; // TokenDataType map
@@ -7505,7 +7506,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     TokenIdent *tag = NULL;
     TokenBase *tn;
     TokenDataType *tdt;
-    bool do_typedef = pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false;
+    bool do_typedef = pgm.parsing_typedef_decl
+	|| (pgm.prevToken() ? pgm.prevToken()->id() == TokenID::tkTYPEDEF : false);
     datatype_map_iter bmi;
     datadef_map_iter dmi;
 
@@ -8147,8 +8149,15 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
 
     // typedef struct/union/class ... — handled by struct/class parse via prevToken
+    // Set parsing_typedef_decl so struct/class parser knows to register a typedef
+    // even when const/restrict qualifiers separate typedef from struct keyword
     if ( tn->id() == TokenID::tkSTRUCT || tn->id() == TokenID::tkCLASS || tn->id() == TokenID::tkUNION )
-	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+    {
+	pgm.parsing_typedef_decl = true;
+	TokenBase *result = pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+	pgm.parsing_typedef_decl = false;
+	return result;
+    }
     if ( tn->id() == TokenID::tkENUM )
     {
 	pgm.nextToken(); // consume enum

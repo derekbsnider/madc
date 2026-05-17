@@ -832,6 +832,7 @@ public:
 
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
+    bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
 
     // JIT crash → source location map. Populated during compile by
     // record_compile_anchor() and finalized into jit_source_map after
