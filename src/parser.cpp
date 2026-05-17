@@ -1394,9 +1394,15 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 	}
 	break;
     }
-    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-	pgm.Throw(type_tb) << "Expecting ')' after " << op_name << " type" << flush;
-    pgm.nextToken();
+    // The expression fallback (sizeof(expr)) already consumed the closing
+    // paren via parseExpression's stop_on_closing_paren. Only consume it
+    // here for the type-name path.
+    if ( !have_value || (pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk) )
+    {
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+	    pgm.Throw(type_tb) << "Expecting ')' after " << op_name << " type" << flush;
+	pgm.nextToken();
+    }
 
     if ( !have_value && dd )
 	value = query_datadef_measure(dd, want_alignof);
