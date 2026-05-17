@@ -5919,6 +5919,23 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    nextToken(); // consume (
 		    // first arg: the va_list variable name
 		    TokenBase *ap_tb = nextToken();
+		    // Handle *ptr form: va_arg(*ap, type)
+		    bool deref_ap = false;
+		    if ( ap_tb->id() == TokenID::tkMul )
+		    {
+			deref_ap = true;
+			ap_tb = nextToken();
+			// consume optional () around function call: va_arg(*foo(), type)
+			if ( ap_tb->type() == TokenType::ttIdentifier && peekToken()
+			  && peekToken()->id() == TokenID::tkOpBrk )
+			{
+			    // function call — parse as expression and get the result
+			    // For now, just consume the call and use the name
+			    nextToken(); // consume (
+			    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
+				nextToken(); // consume )
+			}
+		    }
 		    if ( ap_tb->type() != TokenType::ttIdentifier )
 			Throw(ap_tb) << "Expecting va_list variable name in va_arg" << flush;
 		    std::string ap_name = ((TokenIdent *)ap_tb)->str;
@@ -10898,10 +10915,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			    else if ( t->id() == TokenID::tkClBrk ) --depth;
 			}
 		    }
-		    // consume trailing semicolon if present
+		    // Return the semicolon as the statement (no-op).
+		    // If the asm is the body of `if (...) asm(...);`, the
+		    // caller needs a non-NULL return.
 		    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
-			nextToken();
-		    return NULL;
+			return nextToken();
+		    return tb;
 		}
 	    }
 	    // check if identifier is a user-defined type (class/struct registered in datatype_map)
