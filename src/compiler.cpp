@@ -6602,8 +6602,6 @@ void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
 {
     if ( regdp.second )
 	return;
-    if ( (left && left->is_real()) || (right && right->is_real()) )
-	regdp.second = &ddDOUBLE;
     else
     // Pointer / fixed-array operand: propagate its pointer type. Without
     // this the result of `buf + n` (buf=char[N]) keeps `regdp.second` as
@@ -6864,15 +6862,23 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "* missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+    // Skip the plain-binop fast path when operands are mixed int/real —
+    // emit_plain_binop3 would force both to the destination type before
+    // the multiply, truncating the float. The general path below handles
+    // promotion per C99 usual arithmetic conversions.
+    bool mixed_real = (left && left->is_real()) != (right && right->is_real());
+    if ( !mixed_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safemul, regdp, _operand, "_mul_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenMul::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
-    regdp.first = &tmp;
-    Operand &rval = right->compile(pgm, regdp);
-    pgm.safemul(lval, rval, regdp.second);
+    DataDef *ltype = regdp.second;
+    // Compile RHS with its natural type (not forced to LHS type)
+    // so int*double keeps the double in Xmm instead of truncating
+    regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
+    Operand &rval = right->compile(pgm, rhs_rdp);
+    DataDef *rtype = rhs_rdp.second ? rhs_rdp.second : ltype;
+    pgm.safemul(lval, rval, ltype, rtype);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 

@@ -513,6 +513,16 @@ void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     else
     if ( op1.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    // Mixed Gp + Xmm: promote Gp to Xmm, add, convert back to Gp
+	    DBG(cc.comment("safeadd() Gp + Xmm promotion"));
+	    x86::Xmm tmp = cc.newXmmSd("__add_lhs_xmm");
+	    cc.cvtsi2sd(tmp, op1.as<x86::Gp>().r64());
+	    cc.addsd(tmp, op2.as<x86::Xmm>());
+	    cc.cvttsd2si(op1.as<x86::Gp>().r64(), tmp);
+	}
+	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    safeadd(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
@@ -574,12 +584,26 @@ void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	    safesub(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), d1, d2);
+	else if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Xmm tmp = cc.newXmmSd("__sub_rhs_xmm");
+	    cc.cvtsi2sd(tmp, op2.as<x86::Gp>().r64());
+	    safesub(op1.as<x86::Xmm>(), tmp, d1, d1);
+	}
 	else
 	    throw "safesub() Xmm arithmetic expects an Xmm rhs";
     }
     else
     if ( op1.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    x86::Xmm tmp = cc.newXmmSd("__sub_lhs_xmm");
+	    cc.cvtsi2sd(tmp, op1.as<x86::Gp>().r64());
+	    cc.subsd(tmp, op2.as<x86::Xmm>());
+	    cc.cvttsd2si(op1.as<x86::Gp>().r64(), tmp);
+	}
+	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    safesub(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
@@ -616,8 +640,31 @@ void Program::safeneg(Operand &op)
 // perform cc.mul with size casting
 void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
-    if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec)
-    &&   op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
+    // Mixed int/float promotion: convert the integer operand to Xmm
+    // and perform floating-point multiplication
+    bool lhs_is_gp = op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kGp);
+    bool rhs_is_gp = op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp);
+    bool lhs_is_xmm = op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec);
+    bool rhs_is_xmm = op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec);
+
+    if ( lhs_is_gp && rhs_is_xmm )
+    {
+	// Usual arithmetic conversion: int * double → promote int to double,
+	// multiply as doubles, convert back to int (truncate)
+	x86::Xmm tmp = cc.newXmm("_mul_promote");
+	cc.cvtsi2sd(tmp, op1.as<x86::Gp>());
+	cc.mulsd(tmp, op2.as<x86::Xmm>());
+	cc.cvttsd2si(op1.as<x86::Gp>().r64(), tmp);
+	return;
+    }
+    if ( lhs_is_xmm && rhs_is_gp )
+    {
+	x86::Xmm tmp = cc.newXmm("_mul_promote");
+	cc.cvtsi2sd(tmp, op2.as<x86::Gp>());
+	cc.mulsd(op1.as<x86::Xmm>(), tmp);
+	return;
+    }
+    if ( lhs_is_xmm && rhs_is_xmm )
     {
 	if ( d1 && d1->size == sizeof(float) )
 	    cc.mulss(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
@@ -625,9 +672,9 @@ void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	    cc.mulsd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
 	return;
     }
-    if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
+    if ( !op1.isReg() || !lhs_is_gp )
 	throw "safemul() left operand is not a Gp register";
-    if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
+    if ( !op2.isImm() && !rhs_is_gp )
 	throw "safemul() right operand is not a Gp register or immediate value";
     // asmjit's imul requires both Gp operands at the same width; mixed
     // gpw/gpq combinations come up when small-typed (sh_int, char)
