@@ -362,7 +362,7 @@ void Program::_tokenizer_init()
     }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
-    define_map["__builtin_alloca"] = "alloca";
+    define_map["__builtin_alloca"] = "malloc"; // alloca = stack alloc, map to malloc for now
     define_map["__builtin_ffs"] = "ffs";
     define_map["__builtin_bswap32"] = "__bswap_32";
     define_map["__builtin_bswap64"] = "__bswap_64";

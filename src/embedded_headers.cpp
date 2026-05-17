@@ -3,6 +3,11 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
+    {"alloca.h", R"EMBED(// madc embedded alloca.h
+// alloca() allocates on the stack — madc maps it to malloc for now.
+// True stack allocation would need compiler intrinsic support.
+#define alloca(size) malloc(size)
+)EMBED"},
     {"arpa/inet.h", R"EMBED(// madc embedded arpa/inet.h — IPv4/IPv6 address conversion
 // Functions (inet_addr, inet_aton, inet_ntoa, inet_pton, inet_ntop,
 //            htons, htonl, ntohs, ntohl) available via dlsym fallback
