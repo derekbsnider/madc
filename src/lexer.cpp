@@ -337,6 +337,26 @@ void Program::_tokenizer_init()
     define_map["__INT_FAST64_TYPE__"] = "long";
     define_map["__UINT_FAST64_TYPE__"] = "unsigned long";
     define_map["__builtin_va_list"] = "long";
+    define_map["__builtin_va_arg"] = "va_arg";
+    // __builtin_va_start/end — need to be function-like macros
+    {
+	MacroDef m;
+	m.params = {"__ap", "__last"};
+	m.body = "__ap = __va_args";
+	macro_map["__builtin_va_start"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__ap"};
+	m.body = "__ap = 0";
+	macro_map["__builtin_va_end"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__dest", "__src"};
+	m.body = "__dest = __src";
+	macro_map["__builtin_va_copy"] = m;
+    }
     define_map["__x86_64__"] = "1";
     define_map["__LP64__"] = "1";
     define_map["__BYTE_ORDER__"] = "1234";
