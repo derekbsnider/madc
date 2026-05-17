@@ -1305,6 +1305,12 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 	    pgm.nextToken();
 	    probe = pgm.peekToken();
 	}
+	// sizeof "literal" — string literal without parens
+	if ( probe && probe->type() == TokenType::ttString )
+	{
+	    TokenStr *ts = static_cast<TokenStr *>(pgm.nextToken());
+	    return ts->str.size() + 1; // include NUL terminator
+	}
 	if ( !probe || !is_contextual_identifier_token(probe) )
 	    pgm.Throw(op_tb) << "Expecting '(' or identifier after " << op_name << flush;
 	TokenBase *id_tb = pgm.nextToken();
@@ -4424,7 +4430,9 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	{
 	    FuncDef *fd = (FuncDef *)tc->var.type;
 	    Method *md = (Method *)tc->var.data;
-	    if ( !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
+	    // In C, f() with no params accepts any number of arguments (K&R style).
+	    // Only f(void) means exactly zero. Skip the check for empty-param functions.
+	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
 	    {
 		size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0)
 			- (md && md->owner_class ? 1 : 0)
@@ -6982,7 +6990,21 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			inner_member_dd = pgm.getPointerType(inner_member_dd);
 		    }
 
+		    // Check for unnamed bitfield: `int : 4;`
 		    tn = pgm.nextToken();
+		    if ( tn && tn->id() == TokenID::tkColon )
+		    {
+			size_t bit_width = parse_bitfield_width(tn, inner_member_dd, false);
+			inner->addUnnamedBitField(*inner_member_dd, bit_width);
+			tn = pgm.nextToken();
+			if ( !tn || (tn->id() != TokenID::tkSemi && tn->id() != TokenID::tkComma) )
+			    pgm.Throw(tn ? tn : loc) << "Expecting ';' after unnamed bit-field" << flush;
+			if ( tn->id() == TokenID::tkComma )
+			    continue;
+			// semicolon consumed — fall through to done_members check
+		    }
+		    else
+		    {
 		    if ( !is_contextual_identifier_token(tn) )
 			pgm.Throw(tn) << "Expecting member name in anonymous struct definition" << flush;
 		    std::string inner_name = contextual_identifier_name(tn);
@@ -6999,18 +7021,32 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			}
 			pgm.pushToken(cl);
 			int64_t n = parse_constant_integer_expression(pgm);
-			if ( n <= 0 )
-			    pgm.Throw(tn) << "Fixed-size array dimension must be positive" << flush;
+			if ( n < 0 )
+			    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
 			cl = pgm.nextToken();
 			if ( !cl || cl->id() != TokenID::tkClSqr )
 			    pgm.Throw(cl ? cl : tn) << "Expected ']' in anonymous struct member array declaration" << flush;
+			if ( n == 0 ) { inner_count = 0; break; }
 			inner_count *= (size_t)n;
 		    }
 
-		    inner->addMember(inner_name, *inner_member_dd, inner_count);
+		    // Check for named bitfield: `int x : 4;`
+		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
+		    {
+			pgm.nextToken();
+			if ( inner_count != 1 )
+			    pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
+			size_t bit_width = parse_bitfield_width(tn, inner_member_dd, true);
+			inner->addBitField(inner_name, *inner_member_dd, bit_width);
+		    }
+		    else
+		    {
+			inner->addMember(inner_name, *inner_member_dd, inner_count);
+		    }
 		    tn = pgm.nextToken();
 		    if ( !tn || tn->id() != TokenID::tkSemi )
 			pgm.Throw(tn ? tn : loc) << "Expecting ';' after anonymous struct member" << flush;
+		    } // end named member branch
 		}
 		if ( !tn || tn->id() != TokenID::tkClBrc )
 		    pgm.Throw(tn ? tn : loc) << "Unexpected end of input in anonymous struct definition" << flush;
@@ -7078,6 +7114,22 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
 
 		DataDef *base_member_dd = &mtype->definition;
+		// skip __attribute__((...)) after struct/union/enum type before member name
+		if ( pgm.peekToken() && pgm.peekToken()->type() == TokenType::ttIdentifier
+		    && ((TokenIdent *)pgm.peekToken())->str == "__attribute__" )
+		{
+		    pgm.nextToken(); // consume __attribute__
+		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			int adepth = 0;
+			do {
+			    TokenBase *at = pgm.nextToken();
+			    if ( !at ) break;
+			    if ( at->id() == TokenID::tkOpBrk ) ++adepth;
+			    else if ( at->id() == TokenID::tkClBrk ) --adepth;
+			} while ( adepth > 0 );
+		    }
+		}
 		bool done_members = false;
 		while ( !done_members )
 		{
@@ -7091,6 +7143,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			if ( !mem_fnptr_base )
 			    member_dd = pgm.getPointerType(member_dd);
 		    }
+
+		    // skip trailing const/restrict qualifiers (e.g. `char const *p;`)
+		    while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
+			    || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+			pgm.nextToken();
 
 		    // expect member name
 		    tn = pgm.nextToken();
@@ -7165,11 +7222,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			}
 			pgm.pushToken(cl);
 			int64_t n = parse_constant_integer_expression(pgm);
-			if ( n <= 0 )
-			    pgm.Throw(tn) << "Fixed-size array dimension must be positive" << flush;
+			if ( n < 0 )
+			    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
 			cl = pgm.nextToken();
 			if ( !cl || cl->id() != TokenID::tkClSqr )
 			    pgm.Throw(cl ? cl : tn) << "Expected ']' in struct member array declaration" << flush;
+			if ( n == 0 ) { member_count = 0; break; }
 			member_count *= (size_t)n;
 		    }
 
@@ -8131,6 +8189,20 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	return NULL;
     }
 
+    // Handle array typedef: typedef int NAME[N]; — treat as pointer to base
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+    {
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	{
+	    pgm.nextToken(); // consume '['
+	    // skip dimension (may be empty for [])
+	    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClSqr )
+		pgm.nextToken();
+	    pgm.nextToken(); // consume ']'
+	}
+	base_dd = pgm.getPointerType(base_dd);
+    }
+
     // register in datatype_map
     TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
     pgm.datatype_map[alias] = tdt;
@@ -8162,6 +8234,7 @@ FuncDef *Program::parseFnPtrParams(DataDef &returns)
       && &((TokenDataType *)nt)->definition == &ddVOID
       && peekToken() && peekToken()->id() == TokenID::tkClBrk )
     {
+	func->is_void_params = true;
 	nextToken(); // consume ')'
 	return func;
     }
@@ -8259,12 +8332,25 @@ TokenBase *TokenENUM::parse(Program &pgm)
     TokenBase *tn = pgm.peekToken();
 
     // optional tag name: enum colors { ... }
+    std::string enum_tag;
     if ( tn && tn->type() == TokenType::ttIdentifier )
-	pgm.nextToken(); // consume tag name (ignored for now)
+    {
+	enum_tag = ((TokenIdent *)tn)->str;
+	pgm.nextToken(); // consume tag name
+    }
 
     tn = pgm.peekToken();
     if ( !tn || tn->id() != TokenID::tkOpBrc )
+    {
+	// No '{' — this is a forward reference like `enum X var;`
+	// Treat enum as int and let the caller parse the variable declaration
+	if ( !enum_tag.empty() )
+	{
+	    pgm.pushToken(new TokenDataType("int", ddINT));
+	    return NULL;
+	}
 	pgm.Throw(tn) << "Expecting '{' after enum" << flush;
+    }
     pgm.nextToken(); // consume '{'
 
     int64_t val = 0;
@@ -8339,7 +8425,19 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 		result = pgm.parseDeclaration(tdmi->second, true);
 	    }
 	    else
-		pgm.Throw(tn) << "Expecting type after 'static'" << flush;
+	    {
+		// C89 implicit int: `static funcname(...)` — treat as int
+		TokenBase *id_tok = pgm.nextToken();
+		TokenBase *peek2 = pgm.peekToken();
+		pgm.pushToken(id_tok);
+		if ( peek2 && peek2->id() == TokenID::tkOpBrk )
+		{
+		    TokenDataType tdt("int", ddINT);
+		    result = pgm.parseDeclaration(&tdt, true);
+		}
+		else
+		    pgm.Throw(tn) << "Expecting type after 'static'" << flush;
+	    }
 	    }
 	}
 	else
@@ -9290,6 +9388,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	  && &((TokenDataType *)nt)->definition == &ddVOID
 	  && peekToken() && peekToken()->id() == TokenID::tkClBrk )
 	{
+	    func->is_void_params = true;
 	    nextToken(); // consume ')'
 	    break;
 	}
@@ -10176,8 +10275,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    else
 	    {
 		int64_t n = parse_constant_integer_expression(*this);
-		if ( n <= 0 )
-		    Throw(tb) << "Fixed-size array dimension must be positive" << flush;
+		if ( n < 0 )
+		    Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
+		if ( n == 0 ) n = 1; // treat [0] as flexible array member (1 element placeholder)
 		arr_dims.push_back((uint32_t)n);
 		TokenBase *cl = nextToken();
 		if ( !cl || cl->id() != TokenID::tkClSqr )

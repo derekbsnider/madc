@@ -2416,7 +2416,9 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 //#endif
 
     size_t expected_argc = explicit_expected_argc(func);
-    if ( !is_variadic && !func->is_varargs && argc() > expected_argc )
+    // K&R functions with empty param list (not `void`) accept any number of args
+    bool knr_unspecified = func->parameters.empty() && !func->is_void_params;
+    if ( !is_variadic && !func->is_varargs && !knr_unspecified && argc() > expected_argc )
 	throw_too_many_call_args(pgm, this, parameters.data(), argc());
 
     size_t param_offset = (func->is_multi_return() || has_object_arg) ? 1 : 0;
