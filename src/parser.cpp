@@ -7186,6 +7186,24 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    tn = pgm.nextToken();
 		    if ( !tn )
 			pgm.Throw << "Unexpected end of input in struct definition" << flush;
+		    // Skip __attribute__((...)) on struct members
+		    if ( tn->type() == TokenType::ttIdentifier
+			&& ((TokenIdent *)tn)->str == "__attribute__" )
+		    {
+			if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+			{
+			    int adepth = 0;
+			    do {
+				TokenBase *at = pgm.nextToken();
+				if ( !at ) break;
+				if ( at->id() == TokenID::tkOpBrk ) ++adepth;
+				else if ( at->id() == TokenID::tkClBrk ) --adepth;
+			    } while ( adepth > 0 );
+			}
+			tn = pgm.nextToken();
+			if ( !tn )
+			    pgm.Throw << "Unexpected end after __attribute__ in struct" << flush;
+		    }
 		    if ( tn->id() == TokenID::tkComma )
 			continue;
 		    if ( tn->id() != TokenID::tkSemi )
