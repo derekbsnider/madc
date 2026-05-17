@@ -412,9 +412,12 @@ void Program::_tokenizer_init()
     define_map["__builtin_strdup"] = "strdup";
     define_map["__builtin_strndup"] = "strndup";
     define_map["__builtin_strnlen"] = "strnlen";
-    define_map["__builtin_bswap16"] = "__bswap_16";
-    define_map["__builtin_bswap32"] = "__bswap_32";
-    define_map["__builtin_bswap64"] = "__bswap_64";
+    // bswap builtins: these don't exist in glibc as functions, but the
+    // GCC testsuite uses them. Map to htonl/htons for now (works on LE).
+    define_map["__builtin_bswap16"] = "htons";
+    define_map["__builtin_bswap32"] = "htonl";
+    define_map["__bswap_16"] = "htons";
+    define_map["__bswap_32"] = "htonl";
 
     // __builtin_expect(expr, val) is a branch-prediction hint — just
     // return expr. Implemented as a function-like macro.
