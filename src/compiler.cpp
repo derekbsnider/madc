@@ -2863,12 +2863,47 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc)
 {
-    for ( size_t i = 0; i < inits.size() && i < dds->members.size(); ++i )
+    size_t init_idx = 0;
+    for ( size_t mi = 0; mi < dds->members.size() && init_idx < inits.size(); ++mi )
     {
-	auto &mp = dds->members[i];
+	auto &mp = dds->members[mi];
 	DataDef *mtype = mp.second;
-	int32_t addr = base_ofs + (int32_t)((i < dds->member_offsets.size())
-	    ? dds->member_offsets[i] : 0);
+	int32_t addr = base_ofs + (int32_t)((mi < dds->member_offsets.size())
+	    ? dds->member_offsets[mi] : 0);
+	size_t i = init_idx;
+	size_t member_count = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
+
+	// Flat init for array members: distribute consecutive initializers
+	if ( member_count > 1 && dynamic_cast<TokenStructLit *>(inits[init_idx]) == NULL )
+	{
+	    size_t esize = mtype->size;
+	    for ( size_t ai = 0; ai < member_count && init_idx < inits.size(); ++ai, ++init_idx )
+	    {
+		int32_t elem_addr = addr + (int32_t)(ai * esize);
+		if ( !inits[init_idx] )
+		{
+		    x86::Mem mm = x86::ptr(base_reg, elem_addr, (uint32_t)esize);
+		    pgm.cc.mov(mm, imm(0));
+		    continue;
+		}
+		regdefp_t rdp = {nullptr, nullptr, nullptr};
+		rdp.second = mtype;
+		Operand &val = inits[init_idx]->compile(pgm, rdp);
+		x86::Mem mm = x86::ptr(base_reg, elem_addr, (uint32_t)esize);
+		if ( val.isImm() )
+		    pgm.cc.mov(mm, val.as<Imm>());
+		else if ( val.isReg() )
+		    pgm.cc.mov(mm, val.as<x86::Gp>());
+		else if ( val.isMem() )
+		{
+		    x86::Gp tmp = pgm.cc.newGpq("flat_arr_tmp");
+		    pgm.cc.mov(tmp, val.as<x86::Mem>());
+		    pgm.cc.mov(mm, tmp);
+		}
+	    }
+	    continue;
+	}
+	init_idx++;
 
 	if ( !inits[i] )
 	{
@@ -3097,8 +3132,19 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     {
 	DBG(pgm.cc.comment("TokenDecl struct init_list"));
 	DataDefSTRUCT *dds = static_cast<DataDefSTRUCT *>(var.type);
-	if ( init_list.size() > dds->members.size() )
-	    pgm.Throw(this) << "Too many initializers for struct " << dds->name << flush;
+	// Allow flat initialization: `struct { int f[4]; } s = {1,2,3,4};`
+	// Count total scalar slots (expanding fixed arrays) for the check.
+	{
+	    size_t total_slots = 0;
+	    for ( auto &mp : dds->members )
+	    {
+		size_t mi = &mp - &dds->members[0];
+		size_t count = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
+		total_slots += (count > 0) ? count : 1;
+	    }
+	    if ( init_list.size() > total_slots )
+		pgm.Throw(this) << "Too many initializers for struct " << dds->name << flush;
+	}
 
 	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
 	x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var.name + ".init_base").c_str());

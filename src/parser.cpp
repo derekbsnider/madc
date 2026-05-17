@@ -8254,6 +8254,23 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     else
 	pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 
+    // Skip __attribute__((...)) after alias name in typedef
+    if ( pgm.peekToken() && pgm.peekToken()->type() == TokenType::ttIdentifier
+	&& ((TokenIdent *)pgm.peekToken())->str == "__attribute__" )
+    {
+	pgm.nextToken();
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    int adepth = 0;
+	    do {
+		TokenBase *at = pgm.nextToken();
+		if ( !at ) break;
+		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
+		else if ( at->id() == TokenID::tkClBrk ) --adepth;
+	    } while ( adepth > 0 );
+	}
+    }
+
     // Function-pointer typedef Form 1: typedef RET NAME(params);
     TokenBase *post = pgm.peekToken();
     if ( post && post->id() == TokenID::tkOpBrk )
