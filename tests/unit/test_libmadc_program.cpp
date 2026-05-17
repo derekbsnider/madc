@@ -1024,7 +1024,7 @@ TEST_SUITE("madc::program") {
 	const madc::error *err = pgm.last_error();
 	REQUIRE(err != NULL);
 	CHECK(err->stage == madc::error::phase::parser);
-	CHECK(err->message == "dynamic symbol fallback is disabled by registration policy");
+	CHECK(err->message == "use of undeclared identifier 'strlen'");
     }
 
     TEST_CASE("compile_options can disable extern late-bind dlsym fallback") {

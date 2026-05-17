@@ -1858,9 +1858,9 @@ TokenBase *Program::_getToken()
 			case TS_UNSIGNED + TS_SHORT + TS_INT:           return new TokenDataType("unsigned short", ddUINT16);
 			case TS_INT:
 			case TS_SIGNED:
-			case TS_SIGNED + TS_INT:                        return new TokenDataType("int", ddINT32);
+			case TS_SIGNED + TS_INT:                        return new TokenDataType("int", ddINT);
 			case TS_UNSIGNED:
-			case TS_UNSIGNED + TS_INT:                      return new TokenDataType("unsigned int", ddUINT32);
+			case TS_UNSIGNED + TS_INT:                      return new TokenDataType("unsigned int", ddUINT64);
 			case TS_LONG:
 			case TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG:
