@@ -64,7 +64,7 @@ LIBMADC_STAGE_CPP_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_cpp_smoke
 LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 
 all:
-	$(MAKE) ../bin/madc
+	$(MAKE) ../bin/madc $(LIBMADC_SHARED)
 
 libmadc:
 	$(MAKE) $(LIBMADC_SHARED)
