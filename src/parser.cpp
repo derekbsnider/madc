@@ -7188,6 +7188,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
 
 		DataDef *base_member_dd = &mtype->definition;
+		// skip const/restrict qualifiers between type and pointer stars
+		// e.g. `char const *p;`
+		while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
+			|| pgm.peekToken()->id() == TokenID::tkRESTRICT) )
+		    pgm.nextToken();
 		// skip __attribute__((...)) after struct/union/enum type before member name
 		if ( pgm.peekToken() && pgm.peekToken()->type() == TokenType::ttIdentifier
 		    && ((TokenIdent *)pgm.peekToken())->str == "__attribute__" )
