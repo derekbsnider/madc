@@ -7044,6 +7044,44 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			inner->addMember(inner_name, *inner_member_dd, inner_count);
 		    }
 		    tn = pgm.nextToken();
+		    // Handle comma-separated members: `int f1, f2, f3;`
+		    while ( tn && tn->id() == TokenID::tkComma )
+		    {
+			tn = pgm.nextToken();
+			// pointer stars for this declarator
+			DataDef *comma_dd = inner_member_dd;
+			while ( tn && tn->id() == TokenID::tkMul )
+			{
+			    comma_dd = pgm.getPointerType(comma_dd);
+			    tn = pgm.nextToken();
+			}
+			if ( !is_contextual_identifier_token(tn) )
+			    pgm.Throw(tn ? tn : loc) << "Expecting member name after ',' in anonymous struct" << flush;
+			std::string cname = contextual_identifier_name(tn);
+			size_t ccount = 1;
+			while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+			{
+			    pgm.nextToken();
+			    TokenBase *cl = pgm.nextToken();
+			    if ( cl && cl->id() == TokenID::tkClSqr ) { ccount = 0; break; }
+			    pgm.pushToken(cl);
+			    int64_t n = parse_constant_integer_expression(pgm);
+			    cl = pgm.nextToken();
+			    if ( !cl || cl->id() != TokenID::tkClSqr )
+				pgm.Throw(cl ? cl : tn) << "Expected ']'" << flush;
+			    if ( n <= 0 ) { ccount = 0; break; }
+			    ccount *= (size_t)n;
+			}
+			if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
+			{
+			    pgm.nextToken();
+			    size_t bw = parse_bitfield_width(tn, comma_dd, true);
+			    inner->addBitField(cname, *comma_dd, bw);
+			}
+			else
+			    inner->addMember(cname, *comma_dd, ccount);
+			tn = pgm.nextToken();
+		    }
 		    if ( !tn || tn->id() != TokenID::tkSemi )
 			pgm.Throw(tn ? tn : loc) << "Expecting ';' after anonymous struct member" << flush;
 		    } // end named member branch
