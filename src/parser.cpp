@@ -4436,10 +4436,14 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	{
 	    DataDefFPTR *fptr = static_cast<DataDefFPTR *>(tc->var.type);
 	    FuncDef *fd = fptr->target;
-	    // don't count hidden env param for [&] lambdas
-	    size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0);
-	    if ( tc->argc() != expected )
-		Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
+	    // K&R: empty param list (not void) accepts any number of args
+	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
+	    {
+		// don't count hidden env param for [&] lambdas
+		size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0);
+		if ( tc->argc() != expected )
+		    Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
+	    }
 	}
 	else
 	{
