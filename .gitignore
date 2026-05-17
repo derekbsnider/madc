@@ -12,6 +12,8 @@ configure
 include/config.h
 include/config.h.in
 
+tmp/
+
 # SMAUG-derived content lives in a separate MadSMAUG repository due to
 # the Diku/Merc/SMAUG license stack (see https://github.com/derekbsnider/MadSMAUG).
 # ./MadSMAUG is a symlink to that repo for dev convenience; the tarball
