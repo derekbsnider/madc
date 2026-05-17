@@ -2114,45 +2114,122 @@ bool Program::evaluateIfCondition()
 	return parse_primary();
     };
 
-    parse_comparison = [&]() -> int64_t {
+    // Shift operators (between unary and comparison in C precedence)
+    std::function<int64_t()> parse_shift;
+    parse_shift = [&]() -> int64_t {
 	int64_t value = parse_unary();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos + 1 < expr.size() && expr[pos] == '<' && expr[pos+1] == '<' )
+	    {
+		pos += 2;
+		value <<= parse_unary();
+		continue;
+	    }
+	    if ( pos + 1 < expr.size() && expr[pos] == '>' && expr[pos+1] == '>' )
+	    {
+		pos += 2;
+		value >>= parse_unary();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_comparison = [&]() -> int64_t {
+	int64_t value = parse_shift();
 	for (;;)
 	{
 	    skip_ws();
 	    if ( pos + 1 < expr.size() && expr[pos] == '=' && expr[pos+1] == '=' )
 	    {
 		pos += 2;
-		value = (value == parse_unary()) ? 1 : 0;
+		value = (value == parse_shift()) ? 1 : 0;
 		continue;
 	    }
 	    if ( pos + 1 < expr.size() && expr[pos] == '!' && expr[pos+1] == '=' )
 	    {
 		pos += 2;
-		value = (value != parse_unary()) ? 1 : 0;
+		value = (value != parse_shift()) ? 1 : 0;
 		continue;
 	    }
 	    if ( pos + 1 < expr.size() && expr[pos] == '<' && expr[pos+1] == '=' )
 	    {
 		pos += 2;
-		value = (value <= parse_unary()) ? 1 : 0;
+		value = (value <= parse_shift()) ? 1 : 0;
 		continue;
 	    }
 	    if ( pos + 1 < expr.size() && expr[pos] == '>' && expr[pos+1] == '=' )
 	    {
 		pos += 2;
-		value = (value >= parse_unary()) ? 1 : 0;
+		value = (value >= parse_shift()) ? 1 : 0;
 		continue;
 	    }
 	    if ( pos < expr.size() && expr[pos] == '<' && (pos + 1 >= expr.size() || expr[pos+1] != '<') )
 	    {
 		pos += 1;
-		value = (value < parse_unary()) ? 1 : 0;
+		value = (value < parse_shift()) ? 1 : 0;
 		continue;
 	    }
 	    if ( pos < expr.size() && expr[pos] == '>' && (pos + 1 >= expr.size() || expr[pos+1] != '>') )
 	    {
 		pos += 1;
-		value = (value > parse_unary()) ? 1 : 0;
+		value = (value > parse_shift()) ? 1 : 0;
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    // Bitwise AND (&), XOR (^), OR (|) — between comparison and logical
+    std::function<int64_t()> parse_bitand;
+    std::function<int64_t()> parse_bitxor;
+    std::function<int64_t()> parse_bitor;
+
+    parse_bitand = [&]() -> int64_t {
+	int64_t value = parse_comparison();
+	for (;;)
+	{
+	    skip_ws();
+	    // single & (not &&)
+	    if ( pos < expr.size() && expr[pos] == '&'
+	      && (pos + 1 >= expr.size() || expr[pos+1] != '&') )
+	    {
+		pos += 1;
+		value &= parse_comparison();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_bitxor = [&]() -> int64_t {
+	int64_t value = parse_bitand();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == '^' )
+	    {
+		pos += 1;
+		value ^= parse_bitand();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_bitor = [&]() -> int64_t {
+	int64_t value = parse_bitxor();
+	for (;;)
+	{
+	    skip_ws();
+	    // single | (not ||)
+	    if ( pos < expr.size() && expr[pos] == '|'
+	      && (pos + 1 >= expr.size() || expr[pos+1] != '|') )
+	    {
+		pos += 1;
+		value |= parse_bitxor();
 		continue;
 	    }
 	    return value;
@@ -2160,14 +2237,14 @@ bool Program::evaluateIfCondition()
     };
 
     parse_and = [&]() -> int64_t {
-	int64_t value = parse_comparison();
+	int64_t value = parse_bitor();
 	for (;;)
 	{
 	    skip_ws();
 	    if ( pos + 1 < expr.size() && expr[pos] == '&' && expr[pos + 1] == '&' )
 	    {
 		pos += 2;
-		int64_t rhs = parse_comparison();
+		int64_t rhs = parse_bitor();
 		value = (value && rhs) ? 1 : 0;
 		continue;
 	    }
