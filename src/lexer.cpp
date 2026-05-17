@@ -1021,6 +1021,19 @@ TokenBase *Program::_getToken()
 			source.get();
 		    return getToken();
 		}
+		if ( directive == "error" || directive == "warning" )
+		{
+		    // #error message — emit compile error with the message text
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string msg;
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			msg += source.get();
+		    if ( directive == "error" )
+			Throw << "#error " << msg << flush;
+		    // #warning is just a diagnostic, skip it
+		    return getToken();
+		}
 		if ( directive == "pragma" )
 		{
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
@@ -1974,35 +1987,62 @@ bool Program::evaluateIfCondition()
 	    ++pos;
     };
 
-    std::function<bool()> parse_or;
-    std::function<bool()> parse_and;
-    std::function<bool()> parse_unary;
-    std::function<bool()> parse_primary;
+    // Integer-valued recursive descent so comparisons work correctly.
+    std::function<int64_t()> parse_or;
+    std::function<int64_t()> parse_and;
+    std::function<int64_t()> parse_comparison;
+    std::function<int64_t()> parse_unary;
+    std::function<int64_t()> parse_primary;
 
-    parse_primary = [&]() -> bool {
+    parse_primary = [&]() -> int64_t {
 	skip_ws();
 	if ( pos >= expr.size() )
-	    return false;
+	    return 0;
 
 	if ( expr[pos] == '(' )
 	{
 	    ++pos;
-	    bool value = parse_or();
+	    int64_t value = parse_or();
 	    skip_ws();
 	    if ( pos < expr.size() && expr[pos] == ')' )
 		++pos;
 	    return value;
 	}
 
+	// hex literal 0x...
+	if ( pos + 1 < expr.size() && expr[pos] == '0'
+	  && (expr[pos+1] == 'x' || expr[pos+1] == 'X') )
+	{
+	    pos += 2;
+	    int64_t val = 0;
+	    while ( pos < expr.size() && isxdigit((unsigned char)expr[pos]) )
+	    {
+		val <<= 4;
+		char c = expr[pos++];
+		if ( c >= '0' && c <= '9' ) val += c - '0';
+		else if ( c >= 'a' && c <= 'f' ) val += c - 'a' + 10;
+		else if ( c >= 'A' && c <= 'F' ) val += c - 'A' + 10;
+	    }
+	    // skip integer suffix
+	    while ( pos < expr.size() && (expr[pos] == 'u' || expr[pos] == 'U'
+		 || expr[pos] == 'l' || expr[pos] == 'L') )
+		++pos;
+	    return val;
+	}
+
 	if ( isdigit((unsigned char)expr[pos]) )
 	{
-	    int val = 0;
+	    int64_t val = 0;
 	    while ( pos < expr.size() && isdigit((unsigned char)expr[pos]) )
 	    {
 		val *= 10;
 		val += expr[pos++] - '0';
 	    }
-	    return val != 0;
+	    // skip integer suffix (U, L, LL, ULL, etc.)
+	    while ( pos < expr.size() && (expr[pos] == 'u' || expr[pos] == 'U'
+		 || expr[pos] == 'l' || expr[pos] == 'L') )
+		++pos;
+	    return val;
 	}
 
 	if ( isalpha((unsigned char)expr[pos]) || expr[pos] == '_' )
@@ -2029,63 +2069,126 @@ bool Program::evaluateIfCondition()
 		skip_ws();
 		if ( has_paren && pos < expr.size() && expr[pos] == ')' )
 		    ++pos;
-		return define_map.count(name) > 0 || macro_map.count(name) > 0;
+		return (define_map.count(name) > 0 || macro_map.count(name) > 0) ? 1 : 0;
 	    }
 
-	    bool result = define_map.count(word) > 0 || macro_map.count(word) > 0;
-	    if ( result )
+	    auto it = define_map.find(word);
+	    if ( it != define_map.end() )
 	    {
-		std::string &val = define_map[word];
-		if ( !val.empty() )
-		    result = (atoi(val.c_str()) != 0);
+		if ( !it->second.empty() )
+		    return strtoll(it->second.c_str(), NULL, 0);
+		return 1;
 	    }
-	    return result;
+	    if ( macro_map.count(word) > 0 )
+		return 1;
+	    return 0;
 	}
 
-	return false;
+	// skip single character like ',' or unknown
+	++pos;
+	return 0;
     };
 
-    parse_unary = [&]() -> bool {
+    parse_unary = [&]() -> int64_t {
 	skip_ws();
 	if ( pos < expr.size() && expr[pos] == '!' )
 	{
 	    ++pos;
-	    return !parse_unary();
+	    return parse_unary() ? 0 : 1;
+	}
+	if ( pos < expr.size() && expr[pos] == '~' )
+	{
+	    ++pos;
+	    return ~parse_unary();
+	}
+	if ( pos < expr.size() && expr[pos] == '-'
+	  && (pos + 1 < expr.size() && (isdigit((unsigned char)expr[pos+1])
+		|| expr[pos+1] == '(' || isalpha((unsigned char)expr[pos+1]))) )
+	{
+	    ++pos;
+	    return -parse_unary();
 	}
 	return parse_primary();
     };
 
-    parse_and = [&]() -> bool {
-	bool value = parse_unary();
+    parse_comparison = [&]() -> int64_t {
+	int64_t value = parse_unary();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos + 1 < expr.size() && expr[pos] == '=' && expr[pos+1] == '=' )
+	    {
+		pos += 2;
+		value = (value == parse_unary()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos + 1 < expr.size() && expr[pos] == '!' && expr[pos+1] == '=' )
+	    {
+		pos += 2;
+		value = (value != parse_unary()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos + 1 < expr.size() && expr[pos] == '<' && expr[pos+1] == '=' )
+	    {
+		pos += 2;
+		value = (value <= parse_unary()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos + 1 < expr.size() && expr[pos] == '>' && expr[pos+1] == '=' )
+	    {
+		pos += 2;
+		value = (value >= parse_unary()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '<' && (pos + 1 >= expr.size() || expr[pos+1] != '<') )
+	    {
+		pos += 1;
+		value = (value < parse_unary()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '>' && (pos + 1 >= expr.size() || expr[pos+1] != '>') )
+	    {
+		pos += 1;
+		value = (value > parse_unary()) ? 1 : 0;
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_and = [&]() -> int64_t {
+	int64_t value = parse_comparison();
 	for (;;)
 	{
 	    skip_ws();
 	    if ( pos + 1 < expr.size() && expr[pos] == '&' && expr[pos + 1] == '&' )
 	    {
 		pos += 2;
-		value = value && parse_unary();
+		int64_t rhs = parse_comparison();
+		value = (value && rhs) ? 1 : 0;
 		continue;
 	    }
 	    return value;
 	}
     };
 
-    parse_or = [&]() -> bool {
-	bool value = parse_and();
+    parse_or = [&]() -> int64_t {
+	int64_t value = parse_and();
 	for (;;)
 	{
 	    skip_ws();
 	    if ( pos + 1 < expr.size() && expr[pos] == '|' && expr[pos + 1] == '|' )
 	    {
 		pos += 2;
-		value = value || parse_and();
+		int64_t rhs = parse_and();
+		value = (value || rhs) ? 1 : 0;
 		continue;
 	    }
 	    return value;
 	}
     };
 
-    return parse_or();
+    return parse_or() != 0;
 }
 
 TokenBase *Program::getToken()
