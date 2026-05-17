@@ -1607,7 +1607,7 @@ TokenBase *Program::_getToken()
 		    return new TokenIdent(word);
 		// Most GCC attributes are no-ops for madc. Preserve `packed`
 		// so the struct parser can select packed layout; skip the rest.
-		if ( word == "__attribute__" )
+		if ( word == "__attribute__" || word == "__attribute" )
 		{
 		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
 			source.get();

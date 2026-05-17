@@ -1238,13 +1238,28 @@ static DataDef *resolve_type_query_datadef(Program &pgm, TokenBase *type_tb,
 	else
 	    dd = resolve_named_datadef(pgm, tname);
     }
-    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkSTRUCT )
+    else if ( type_tb->type() == TokenType::ttKeyword
+	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
     {
 	TokenBase *tag_tb = pgm.nextToken();
 	if ( tag_tb && tag_tb->type() == TokenType::ttIdentifier )
 	    dd = resolve_named_datadef(pgm, ((TokenIdent *)tag_tb)->str);
 	if ( !dd )
-	    pgm.Throw(tag_tb) << "Unknown struct type in " << op_name << flush;
+	    pgm.Throw(tag_tb) << "Unknown struct/union type in " << op_name << flush;
+    }
+    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkENUM )
+    {
+	// sizeof(enum X) — enums are int-sized
+	if ( pgm.peekToken() && is_contextual_identifier_token(pgm.peekToken()) )
+	    pgm.nextToken(); // consume tag
+	query_value = sizeof(int);
+	have_value = true;
+    }
+    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkCONST )
+    {
+	// sizeof(const type) — skip const qualifier
+	TokenBase *inner = pgm.nextToken();
+	return resolve_type_query_datadef(pgm, inner, op_name, have_value, query_value);
     }
     else if ( type_tb->id() == TokenID::tkMul )
     {
@@ -5585,6 +5600,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    && ( peek_inner->type() == TokenType::ttDataType
 			      || peek_inner->id() == TokenID::tkSTRUCT
 			      || peek_inner->id() == TokenID::tkCLASS
+			      || peek_inner->id() == TokenID::tkCONST
+			      || peek_inner->id() == TokenID::tkRESTRICT
+			      || peek_inner->id() == TokenID::tkENUM
 			      || ( peek_inner->type() == TokenType::ttIdentifier
 				&& datatype_map.count(((TokenIdent *)peek_inner)->str) ) );
 			TokenBase *deref_expr;
