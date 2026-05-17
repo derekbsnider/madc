@@ -6080,10 +6080,17 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     if ( (var->flags & vfSTACK) && var->type->is_numeric()
       && (!var->type->is_pointer() || (var->flags & vfADDRTAKEN)) )
     {
-	uint32_t align = (uint32_t)(var->type->size < 8 ? var->type->size : 8);
+	// Allocate at least 8 bytes for integer/pointer stack slots.
+	// The JIT uses 64-bit (Gpq) registers throughout; writing a
+	// Gpq to a 4-byte slot overwrites 4 bytes of adjacent stack.
+	// GCC does the same — stack locals are pointer-aligned.
+	uint32_t slot_size = (uint32_t)var->type->size;
+	if ( var->type->is_integer() && slot_size < 8 )
+	    slot_size = 8;
+	uint32_t align = slot_size < 8 ? (uint32_t)var->type->size : 8;
 	if ( align == 0 )
 	    align = 8;
-	x86::Mem stack = pgm.cc.newStack((uint32_t)var->type->size, align);
+	x86::Mem stack = pgm.cc.newStack(slot_size, align);
 	stack.setSize((uint32_t)var->type->size);
 	operand_map[var] = stack;
 	var->flags |= vfSTACKSET;

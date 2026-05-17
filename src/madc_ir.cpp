@@ -129,15 +129,14 @@ IRValue IRBuilder::load(const IRValue &src)
     if ( !src.valid() )
 	throw "IRBuilder::load() invalid src";
 
-    // Reg of the same shape: canonicalize narrow integer values. The
-    // virtual register is Gpq, but C int32/uint32 arithmetic wraps in the
-    // low 32 bits before later comparisons or promotions consume it.
+    // Reg values: all integer virtual registers are Gpq (64-bit) and
+    // are sign/zero-extended at the point they were loaded from memory.
+    // Re-canonicalizing here would create redundant intermediate vregs
+    // that confuse asmjit's RA (spill-before-write), so just pass
+    // through.  Narrowing arithmetic (int32 wrap) is handled at the
+    // store path by writing only the low N bytes.
     if ( src.isReg() )
-    {
-	if ( src.type && src.type->is_integer() && src.type->size < 8 )
-	    return canonicalize_narrow_integer_reg(cc_, src, src.type);
 	return src;
-    }
 
     // Mem: size-aware load with sign/zero extension for narrow ints.
     if ( src.isMem() )
