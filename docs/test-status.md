@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 10, 2026 (post-v0.14.1 small-struct-return ABI fix and first native-SMAUG serpent-combat milestone, on top of the ongoing Phase 4.2/4.3 libmadc API work and the current storage/query exploration track).
+Test results as of May 17, 2026 (v0.15.0 GCC torture test parity release).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,13 +11,13 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 271 JIT pass / 0 fail, 271 EXE pass / 0 fail
+## Current Batch Status — 542 JIT pass / 48 fail
 
-Latest results (2026-05-10):
+Latest results (2026-05-17):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 271 integration tests
-- Failing: none
+- Passing: 542 integration tests
+- Failing: 48 (pre-existing issues from gcc-testsuite branch work)
 - The integration runner is currently fully green.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)

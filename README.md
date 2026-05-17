@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 271 integration tests pass. 261 unit tests pass (80 datadef + 24 IR + 133 libmadc_program + 5 libmadc_error + 19 libmadc_value). Native EXE parity is also green at 271/271, and `smaug.exe` now survives the first serpent combat path. (`make -C src fulltest`, `scripts/run_tests.sh --exe`)**
+**Current status: 542 integration tests pass (48 failing). 109 unit tests pass (80 datadef + 24 IR + 5 libmadc_error). GCC torture test parity: 1245/1685 (74%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -247,7 +247,8 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/`, and the exploratory storage track now has stable append-only VLR locators for FLR->VLR relations plus first-wave pushed builder queries on SQLite and keyed local backends |
+| **GCC Parity** | GCC torture test suite compatibility | **v0.15.0** — 1245/1685 (74%) passing; comma operator, #if evaluator, scientific notation, mixed arithmetic, K&R functions, 50+ builtins |
+| **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---
 
