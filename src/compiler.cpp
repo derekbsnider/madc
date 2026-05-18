@@ -993,6 +993,33 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
     Operand right_norm;
     Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
     Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
+    // C usual arithmetic conversions: when comparing int with unsigned int,
+    // both convert to unsigned int (32-bit). Truncate 64-bit register values
+    // to 32 bits so -1 (0xFFFFFFFFFFFFFFFF) becomes UINT_MAX (0xFFFFFFFF).
+    if ( is_unsigned && cmp_type && cmp_type->size == 4 )
+    {
+	if ( lval.isReg() && lval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Gp l32 = pgm.cc.newGpd("cmp32_l");
+	    pgm.cc.mov(l32, lval.as<x86::Gp>().r32());
+	    left_norm = l32;
+	    lval = left_norm;
+	}
+	if ( rval.isReg() && rval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Gp r32 = pgm.cc.newGpd("cmp32_r");
+	    pgm.cc.mov(r32, rval.as<x86::Gp>().r32());
+	    right_norm = r32;
+	    rval = right_norm;
+	}
+	// Imm truncation: mask to 32 bits
+	if ( rval.isImm() )
+	{
+	    int64_t v = rval.as<Imm>().value();
+	    right_norm = imm((int64_t)(uint32_t)v);
+	    rval = right_norm;
+	}
+    }
     x86::Gp result = pgm.cc.newGpq("_cmp");
     pgm.safecmp(lval, rval);
     switch(op)
