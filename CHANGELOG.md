@@ -153,6 +153,29 @@
   `(unsigned char *)"str"` now produces a valid c_str pointer instead
   of garbage.
 
+- **Integer literal source text preserved through macro arg pre-expansion.**
+  `TokenInt` now carries `source_text` so hex representation and L/U/LL
+  suffixes survive the tokenize→reserialize round-trip during
+  function-like macro argument pre-expansion. Fixes `sizeof()` on
+  macro-substituted literals like `0x12345678LU` returning 4 instead of 8.
+
+- **Unsigned char/short use signed comparison after integer promotion.**
+  C usual arithmetic conversions: `unsigned char` and `unsigned short`
+  fit in `int`, so relational comparisons use signed `setl`/`setg`
+  instead of unsigned `setb`/`seta`. Only types >= `sizeof(int)` force
+  unsigned comparison.
+
+- **Float arithmetic in integer-destination context.**
+  `add`/`sub`/`mul`/`div` now skip the plain-binop fast path when
+  the destination type is integer but operands are float, preventing
+  float literals from being truncated to int before the operation.
+
+- **Integer→real cast compiles inner expression at natural type.**
+  The `(float)expr` / `(double)expr` cast no longer forces the inner
+  expression's `regdp.second` to the pre-inferred signed type. Unsigned
+  operators like `>>` now correctly use SHR instead of SAR when the
+  source operand is unsigned.
+
 ## [v0.16.0] - 2026-05-18
 
 sizeof(int) = 4: LP64 ABI alignment and GCC torture suite 75% milestone.

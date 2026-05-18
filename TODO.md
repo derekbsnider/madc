@@ -2,10 +2,10 @@
 
 ## High Priority
 
-- **GCC torture test suite: push past 80%.** Currently 1300/1685 (77.1%).
-  Remaining targets: operator `_datatype` defaults to ddINT32 instead
-  of computing from operands (causes 32-bit shift wrapping regressions),
-  cast-operand parser precedence (`(type)*p | x` binds too greedily),
+- **GCC torture test suite: push past 80%.** Currently 1306/1685 (77.5%).
+  Remaining targets: cast-operand parser precedence (`(type)*p | x`
+  binds too greedily), long-vs-float comparison semantics (C usual
+  arithmetic conversions for mixed int/float comparisons),
   struct pass-by-value for function args (~8 compile failures).
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
