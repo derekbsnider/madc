@@ -9484,6 +9484,21 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	func = fmi->second;
 	func_already_declared = true;
+	// Return type mismatch (e.g. forward decl `void f()` → definition
+	// `bool f()`): FuncDef::returns is a C++ reference and cannot be
+	// reseated, so replace the FuncDef with a fresh one carrying the
+	// correct return type.
+	if ( &func->returns != &dd )
+	{
+	    DBG(std::cout << "parseFunction() return type refresh: " << func->returns.name << " → " << dd.name << " for " << id << std::endl);
+	    FuncDef *fresh = new FuncDef(dd);
+	    fresh->parameters   = func->parameters;
+	    fresh->is_varargs   = func->is_varargs;
+	    fresh->is_void_params = func->is_void_params;
+	    fresh->return_types = func->return_types;
+	    funcdef_map[id] = fresh;
+	    func = fresh;
+	}
     }
     else
     {
@@ -10131,6 +10146,34 @@ static bool literal_integer_value(TokenBase *tb, int64_t &out)
     {
 	out = tb->ival();
 	return true;
+    }
+    // Unary minus: -N
+    if ( tb->id() == TokenID::tkNeg )
+    {
+	int64_t inner;
+	TokenOperator *op = static_cast<TokenOperator *>(tb);
+	if ( literal_integer_value(op->right, inner) )
+	{
+	    out = -inner;
+	    return true;
+	}
+    }
+    // Unary plus: +N (no-op)
+    if ( tb->id() == TokenID::tkAdd && static_cast<TokenOperator *>(tb)->left == nullptr )
+    {
+	TokenOperator *op = static_cast<TokenOperator *>(tb);
+	return literal_integer_value(op->right, out);
+    }
+    // Bitwise NOT: ~N
+    if ( tb->id() == TokenID::tkBnot )
+    {
+	int64_t inner;
+	TokenOperator *op = static_cast<TokenOperator *>(tb);
+	if ( literal_integer_value(op->right, inner) )
+	{
+	    out = ~inner;
+	    return true;
+	}
     }
     return false;
 }
