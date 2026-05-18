@@ -629,10 +629,10 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	if ( tm->is_fixed_array_member() )
 	    decay_token = true;
 
-    if ( target_type
-      && target_type->is_pointer()
-      && target_type->rawtype() == DataType::dtCHAR
-      && token_has_constant_cstring(token) )
+    bool target_is_charptr = target_type && target_type->is_pointer()
+	&& (target_type->rawtype() == DataType::dtCHAR
+	 || target_type->rawtype() == DataType::dtUINT8);
+    if ( target_is_charptr && token_has_constant_cstring(token) )
     {
 	x86::Gp cstr = pgm.cc.newIntPtr("norm_cstr");
 	emit_constant_cstring_ptr(pgm, token, cstr);
@@ -643,7 +643,7 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     regdefp_t tmp_rdp = {preferred_dest, target_type, nullptr};
     if ( target_type
       && target_type->is_pointer()
-      && ((target_type->rawtype() == DataType::dtCHAR && token_has_constant_cstring(token))
+      && ((target_is_charptr && token_has_constant_cstring(token))
        || decay_token) )
 	tmp_rdp.second = nullptr;
     // String→charptr coercion for non-constant strings: let the token
@@ -654,9 +654,7 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     // no transient std::string merge object. That avoids native EXE
     // paths reloading the first machine word of a copied string object
     // before the eventual c_str() call.
-    if ( target_type
-      && target_type->is_pointer()
-      && target_type->rawtype() == DataType::dtCHAR
+    if ( target_is_charptr
       && token && token->datadef()
       && token->datadef()->is_string()
       && !token_has_constant_cstring(token)
@@ -8132,7 +8130,8 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     bool str_to_cstr = expr && expr->datadef()
 	&& expr->datadef()->rawtype() == DataType::dtSTRING
 	&& cast_type && cast_type->is_pointer()
-	&& cast_type->rawtype() == DataType::dtCHAR;
+	&& (cast_type->rawtype() == DataType::dtCHAR
+	 || cast_type->rawtype() == DataType::dtUINT8);
     if ( str_to_cstr )
     {
 	Operand cstr_storage;
