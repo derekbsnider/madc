@@ -175,6 +175,12 @@ extern "C" int __madc_mul_overflow(long a, long b, long *res)
     return r != (long)r;
 }
 
+// __builtin_bswap64: byte-swap a 64-bit value.
+extern "C" uint64_t __madc_bswap64(uint64_t x)
+{
+    return __builtin_bswap64(x);
+}
+
 // __builtin_*_overflow_p: predicate-only versions (no result pointer).
 // The third argument is a type indicator — its value is ignored.
 extern "C" int __madc_add_overflow_p(long a, long b, long /*type_zero*/)
