@@ -1144,15 +1144,15 @@ public:
     // perform cc.div with size casting
     void safediv(asmjit::Operand &,  asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL, DataDef *d3=NULL);
     // perform cc.shl with size casting
-    void safeshl(asmjit::Operand &,  asmjit::Operand &);
+    void safeshl(asmjit::Operand &,  asmjit::Operand &, DataDef *type = NULL);
     // perform cc.shr with size casting
-    void safeshr(asmjit::Operand &,  asmjit::Operand &);
+    void safeshr(asmjit::Operand &,  asmjit::Operand &, DataDef *type = NULL);
     // perform cc.or_ with size casting
-    void safeor(asmjit::Operand &,   asmjit::Operand &);
+    void safeor(asmjit::Operand &,   asmjit::Operand &, DataDef *type = NULL);
     // perform cc.and_ with size casting
-    void safeand(asmjit::Operand &,  asmjit::Operand &);
+    void safeand(asmjit::Operand &,  asmjit::Operand &, DataDef *type = NULL);
     // perform cc.xor_ with size casting
-    void safexor(asmjit::Operand &,  asmjit::Operand &);
+    void safexor(asmjit::Operand &,  asmjit::Operand &, DataDef *type = NULL);
     // perform cc.not_ with size casting
     void safenot(asmjit::Operand &);
 

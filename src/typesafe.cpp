@@ -770,20 +770,33 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
 }
 
 // perform cc.shl with size casting
-void Program::safeshl(Operand &op1, Operand &op2)
+void Program::safeshl(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeshl() left operand is not a Gp register";
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safeshl() right operand is not a Gp register or immediate value";
+    // Use 32-bit shift for sub-64-bit types so the result wraps at the
+    // correct width (x86: 32-bit ops implicitly zero-extend to 64).
+    bool use32 = type && type->is_integer() && type->size == 4;
     if ( op2.isImm() )
-	cc.shl(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    {
+	if ( use32 )
+	    cc.shl(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else
+	    cc.shl(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    }
     else
-	cc.shl(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+    {
+	if ( use32 )
+	    cc.shl(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r8());
+	else
+	    cc.shl(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+    }
 }
 
 // perform cc.shr with size casting
-void Program::safeshr(Operand &op1, Operand &op2)
+void Program::safeshr(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeshr() left operand is not a Gp register";
@@ -796,7 +809,7 @@ void Program::safeshr(Operand &op1, Operand &op2)
 }
 
 // perform cc.or_ with size casting
-void Program::safeor(Operand &op1, Operand &op2)
+void Program::safeor(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
@@ -822,7 +835,7 @@ void Program::safeor(Operand &op1, Operand &op2)
 }
 
 // perform cc.and_ with size casting
-void Program::safeand(Operand &op1, Operand &op2)
+void Program::safeand(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
@@ -848,7 +861,7 @@ void Program::safeand(Operand &op1, Operand &op2)
 }
 
 // perform cc.xor_ with size casting
-void Program::safexor(Operand &op1, Operand &op2)
+void Program::safexor(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {

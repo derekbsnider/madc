@@ -701,7 +701,7 @@ typedef void (Program::*SafeBinOp3)(asmjit::Operand &, asmjit::Operand &, DataDe
 // safeand / safexor / safeshl / safeshr): in-place on lval. No
 // DataDef arg because these are type-agnostic (they operate on Gp
 // registers regardless of integer width).
-typedef void (Program::*SafeBitOp2)(asmjit::Operand &, asmjit::Operand &);
+typedef void (Program::*SafeBitOp2)(asmjit::Operand &, asmjit::Operand &, DataDef *);
 
 // Normalize both sides through the IR to Reg-of-result_type, run the
 // given safe* helper in place on the left Reg, then route the result
@@ -746,7 +746,7 @@ static Operand &emit_plain_bitop2(Program &pgm, TokenBase *left, TokenBase *righ
     Operand &rval = right_must_be_gp
 	? compile_token_gp_normalized(pgm, right, result_type, right_norm)
 	: compile_token_normalized(pgm, right, result_type, nullptr, right_norm);
-    (pgm.*op)(lval, rval);
+    (pgm.*op)(lval, rval, result_type);
     IRBuilder ir(pgm.cc);
     IRValue result = ir.load(IRValue::reg(lval, result_type));
     storage = result.op;
@@ -4320,7 +4320,7 @@ static Operand &emit_compound_bitop2(Program &pgm, TokenBase *left, TokenBase *r
     regdp.second = lhs.type;
     regdp.first  = nullptr;
     Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
-    (pgm.*op)(lhs.lval, rval);
+    (pgm.*op)(lhs.lval, rval, lhs.type);
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
@@ -7196,7 +7196,7 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeshl(lval, rval);
+    pgm.safeshl(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -7315,7 +7315,7 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeshr(lval, rval);
+    pgm.safeshr(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -7337,7 +7337,7 @@ Operand &TokenBor::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeor(lval, rval);
+    pgm.safeor(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -7359,7 +7359,7 @@ Operand &TokenXor::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safexor(lval, rval);
+    pgm.safexor(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -7381,7 +7381,7 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeand(lval, rval);
+    pgm.safeand(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
