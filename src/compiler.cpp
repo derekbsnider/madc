@@ -996,10 +996,19 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
     // seta/setae) to read its flags correctly.
     bool is_unsigned = false;
     if ( op != CmpKind::Eq && op != CmpKind::Ne )
-	is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
-		   || (right->datadef() && right->datadef()->is_unsigned())
-		   || (cmp_type && cmp_type->is_unsigned())
+    {
+	// C usual arithmetic conversions: unsigned char/short promote to
+	// (signed) int, so only unsigned types >= sizeof(int) force
+	// unsigned comparison.  Floats use ucomisd which sets CF/PF/ZF,
+	// requiring unsigned setcc variants (setb/seta).
+	auto forces_unsigned = [](DataDef *dd) {
+	    return dd && dd->is_unsigned() && dd->size >= 4;
+	};
+	is_unsigned = forces_unsigned(left->datadef())
+		   || forces_unsigned(right->datadef())
+		   || (cmp_type && cmp_type->is_unsigned() && cmp_type->size >= 4)
 		   || (cmp_type && cmp_type->is_real());
+    }
 
     Operand left_norm;
     Operand right_norm;
