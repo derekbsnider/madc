@@ -1718,9 +1718,25 @@ static int64_t parse_constant_lor(Program &pgm)
     return lhs;
 }
 
+static int64_t parse_constant_ternary(Program &pgm)
+{
+    int64_t cond = parse_constant_lor(pgm);
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkQmark )
+    {
+	pgm.nextToken(); // consume '?'
+	int64_t true_val = parse_constant_integer_expression(pgm);
+	TokenBase *colon = pgm.nextToken();
+	if ( !colon || colon->id() != TokenID::tkColon )
+	    pgm.Throw(colon) << "Expecting ':' in ternary constant expression" << flush;
+	int64_t false_val = parse_constant_ternary(pgm);
+	return cond ? true_val : false_val;
+    }
+    return cond;
+}
+
 static int64_t parse_constant_integer_expression(Program &pgm)
 {
-    return parse_constant_lor(pgm);
+    return parse_constant_ternary(pgm);
 }
 
 DataDefVOID ddVOID;
