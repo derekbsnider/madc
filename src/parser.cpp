@@ -6915,7 +6915,21 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
 	    TokenIdent *alias = (TokenIdent *)tn;
 	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
+	    {
+		// C allows identical typedef redeclarations — silently accept
+		// when the alias maps to the same underlying type.
+		DataDef *existing = &bmi->second->definition;
+		if ( existing == alias_dd
+		  || (existing->is_pointer() && alias_dd->is_pointer()
+		      && existing->rawtype() == alias_dd->rawtype()) )
+		{
+		    // consume trailing ';' and return
+		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+			pgm.nextToken();
+		    return NULL;
+		}
 		pgm.Throw(tn) << "Identifier already defined" << flush;
+	    }
 	    tdt = new TokenDataType(alias->str.c_str(), *alias_dd);
 	    pgm.datatype_map[alias->str] = tdt;
 	    // also register tag in struct_map so "struct tag" works
@@ -7607,7 +7621,12 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		pgm.Throw(tn) << "Expecting identifier in typedef" << flush;
 	    TokenIdent *alias = (TokenIdent *)tn;
 	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
-		pgm.Throw(tn) << "Identifier already defined" << flush;
+	    {
+		// C allows identical typedef redeclarations
+		if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+		    pgm.nextToken();
+		return NULL;
+	    }
 	    tdt = new TokenDataType(alias->str.c_str(), *dmi->second);
 	    pgm.datatype_map[alias->str] = tdt;
 	    return NULL;
