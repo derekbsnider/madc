@@ -553,7 +553,17 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 
     if ( is_system )
     {
-	// <file.h>: system include paths only
+	// <file.h>: -I paths first (GCC searches -I for both "" and <>),
+	// then system include paths.
+	for ( size_t i = 0; i < include_paths.size(); ++i )
+	{
+	    std::string &dir = include_paths[i];
+	    std::string candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
+	    std::ifstream probe(candidate.c_str());
+	    if ( probe.good() )
+		return candidate;
+	}
+	// TODO: these paths should come from ./configure
 	static const char *sys_paths[] = {
 	    "/usr/local/include/",
 	    "/usr/include/",
