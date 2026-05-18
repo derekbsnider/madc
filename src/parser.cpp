@@ -1561,6 +1561,20 @@ static int64_t parse_constant_primary(Program &pgm)
 	return !parse_constant_primary(pgm);
     if ( tb && tb->id() == TokenID::tkOpBrk )
     {
+	// Check for cast: (type)value — e.g. (char)SB
+	TokenBase *inner = pgm.peekToken();
+	if ( inner && (inner->type() == TokenType::ttDataType
+	  || inner->id() == TokenID::tkCONST
+	  || inner->id() == TokenID::tkRESTRICT) )
+	{
+	    // Skip type and qualifiers, then consume closing paren
+	    while ( pgm.peekToken()
+	         && pgm.peekToken()->id() != TokenID::tkClBrk )
+		pgm.nextToken();
+	    if ( pgm.peekToken() )
+		pgm.nextToken(); // consume ')'
+	    return parse_constant_primary(pgm);
+	}
 	out = parse_constant_integer_expression(pgm);
 	tb = pgm.nextToken();
 	if ( !tb || tb->id() != TokenID::tkClBrk )
@@ -4489,7 +4503,8 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
 		{
 		    DBG(std::cout << "parseCallFunc: argument count: " << tc->argc() << " expected: " << expected << std::endl);
-		    Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
+		    Throw(tc) << "Incorrect number of parameters for '" << tc->var.name
+		        << "': expected " << expected << " got " << tc->argc() << flush;
 		}
 	    }
 	}
@@ -5209,11 +5224,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( peekToken() && (peekToken()->type() == TokenType::ttDataType
 			||  (peekToken()->type() == TokenType::ttIdentifier && datatype_map.count(((TokenIdent *)peekToken())->str))) )
 			    nextToken();
-			// consume pointer stars
-			while ( peekToken() && peekToken()->id() == TokenID::tkMul )
+			// consume pointer stars (skip const/restrict qualifiers)
+			while ( peekToken()
+			     && (peekToken()->id() == TokenID::tkMul
+			      || peekToken()->id() == TokenID::tkCONST
+			      || peekToken()->id() == TokenID::tkRESTRICT) )
 			{
-			    nextToken();
-			    cast_dd = getPointerType(cast_dd);
+			    TokenBase *pt = nextToken();
+			    if ( pt->id() == TokenID::tkMul )
+				cast_dd = getPointerType(cast_dd);
+			    // const/restrict are skipped — no JIT effect
 			}
 			// Function-pointer cast: `(RET (*)(PARAMS)) expr`. After the
 			// return type (plus any pointer stars) we may see `(*)` and
@@ -5330,6 +5350,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				TokenBase *inner_peek = peekToken();
 				bool inner_is_cast = inner_peek
 				    && (inner_peek->type() == TokenType::ttDataType
+					|| inner_peek->id() == TokenID::tkCONST
 					|| (inner_peek->type() == TokenType::ttIdentifier
 					    && (datatype_map.count(((TokenIdent *)inner_peek)->str)
 						|| struct_map.count(((TokenIdent *)inner_peek)->str))));
@@ -5652,11 +5673,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    tb = ts;
 		}
 		// Unary `+` (no-op): just consume and continue.
-		// Only treat as unary when exStack is empty — otherwise
-		// `x++ + 10` would lose the `+` (isUnaryPosition sees
-		// the `++` operator as a unary context).
+		// Treat as unary when there's no value-producing operand
+		// on exStack, or when the previous token is a binary/assign
+		// operator (so `x = +20` works). Exclude postfix `++`/`--`
+		// so `x++ + 10` stays binary.
 		if ( tb->id() == TokenID::tkAdd && isUnaryPosition()
-		  && exStack.empty() )
+		  && (exStack.empty()
+		   || (_prv_token && (_prv_token->id() == TokenID::tkAssign
+		     || _prv_token->id() == TokenID::tkComma
+		     || _prv_token->id() == TokenID::tkOpBrk
+		     || _prv_token->id() == TokenID::tkOpSqr
+		     || _prv_token->id() == TokenID::tkSemi))) )
 		    break;
 		// & address-of in unary position
 		if ( tb->id() == TokenID::tkBand && isUnaryPosition() )
@@ -6001,6 +6028,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		exStack.push(new TokenVar(*var));
 		break;
 	    case TokenType::ttKeyword:
+		// const/volatile/restrict qualifiers are compile-time
+		// annotations — skip them in expression context (casts,
+		// sizeof, etc.)
+		if ( tb->id() == TokenID::tkCONST
+		  || tb->id() == TokenID::tkRESTRICT )
+		{
+		    tb = nextToken();
+		    if ( !tb ) { done = true; break; }
+		    continue;
+		}
 		if ( !is_contextual_identifier_token(tb) )
 		    Throw(tb) << "Unexpected keyword in expression" << flush;
 	    case TokenType::ttIdentifier:
