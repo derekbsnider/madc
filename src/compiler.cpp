@@ -8222,7 +8222,45 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    gp = src_op.as<x86::Gp>(); // fallback
 
-	if ( cast_type->size == sizeof(float) )
+	// Unsigned 64-bit needs special handling: cvtsi2sd treats the
+	// value as signed. For uint64 with high bit set, use the GCC
+	// pattern: test sign, if negative shift right by 1, OR in the
+	// low bit, convert, then double the result.
+	bool src_unsigned = src_type && src_type->is_unsigned();
+	if ( src_unsigned && src_type->size == 8 )
+	{
+	    Label lbl_positive = pgm.cc.newLabel();
+	    Label lbl_done = pgm.cc.newLabel();
+	    pgm.cc.test(gp.r64(), gp.r64());
+	    pgm.cc.jns(lbl_positive);
+	    // High bit set: (double)(val >> 1 | (val & 1)) * 2.0
+	    x86::Gp tmp = pgm.cc.newGpq("u64_halved");
+	    pgm.cc.mov(tmp, gp.r64());
+	    x86::Gp low_bit = pgm.cc.newGpq("u64_low");
+	    pgm.cc.mov(low_bit, gp.r64());
+	    pgm.cc.and_(low_bit, imm(1));
+	    pgm.cc.shr(tmp, imm(1));
+	    pgm.cc.or_(tmp, low_bit);
+	    if ( cast_type->size == sizeof(float) )
+	    {
+		pgm.cc.cvtsi2ss(out, tmp.r64());
+		pgm.cc.addss(out, out);
+	    }
+	    else
+	    {
+		pgm.cc.cvtsi2sd(out, tmp.r64());
+		pgm.cc.addsd(out, out);
+	    }
+	    pgm.cc.jmp(lbl_done);
+	    // Positive: simple signed conversion
+	    pgm.cc.bind(lbl_positive);
+	    if ( cast_type->size == sizeof(float) )
+		pgm.cc.cvtsi2ss(out, gp.r64());
+	    else
+		pgm.cc.cvtsi2sd(out, gp.r64());
+	    pgm.cc.bind(lbl_done);
+	}
+	else if ( cast_type->size == sizeof(float) )
 	    pgm.cc.cvtsi2ss(out, gp.r64());
 	else
 	    pgm.cc.cvtsi2sd(out, gp.r64());
