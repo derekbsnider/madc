@@ -1526,19 +1526,36 @@ TokenBase *Program::_getToken()
 			return ti;
 		    }
 		}
+		// Octal literal: starts with 0, digits 0-7
+		bool is_octal = (ch == '0') && source.good()
+		    && source.peek() >= '0' && source.peek() <= '7';
 		int64_t v = (ch & 0xf);
 
-		while ( source.good() )
+		if ( is_octal )
 		{
-		    if ( is_digit_separator(source.peek()) )
+		    while ( source.good() )
 		    {
-			source.get();
-			continue;
+			if ( is_digit_separator(source.peek()) )
+			    { source.get(); continue; }
+			if ( source.peek() < '0' || source.peek() > '7' )
+			    break;
+			v = v * 8 + (source.get() & 0xf);
 		    }
-		    if ( !isdigit(source.peek()) )
-			break;
-		    v *= 10;
-		    v += source.get() & 0xf;
+		}
+		else
+		{
+		    while ( source.good() )
+		    {
+			if ( is_digit_separator(source.peek()) )
+			{
+			    source.get();
+			    continue;
+			}
+			if ( !isdigit(source.peek()) )
+			    break;
+			v *= 10;
+			v += source.get() & 0xf;
+		    }
 		}
 		// no decimal means integer — unless followed by e/E (scientific)
 		if ( source.peek() != '.' )
