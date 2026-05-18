@@ -2415,11 +2415,12 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     TokenBase *tn;
     bool is_variadic = func->parameters.empty() && method->x86code;
 
-    if ( !regdp.second )
-    {
-	DBG(cout << "TokenCallFunc::compile(" << var.name << ") regdp.second = " << func->returns.name << endl);
-	regdp.second = &func->returns;
-    }
+    // Always set regdp.second to the function's actual return type.
+    // The caller may have set it to a target type (e.g. ddDOUBLE for
+    // a float-returning function), but callers like compile_token_normalized
+    // need the real return type to know what the register actually holds.
+    DBG(cout << "TokenCallFunc::compile(" << var.name << ") regdp.second = " << func->returns.name << endl);
+    regdp.second = &func->returns;
 
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
