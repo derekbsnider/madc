@@ -8067,6 +8067,87 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	return _operand;
     }
 
+    // Real → integer cast: compile inner as its natural float/double type,
+    // then convert to Gp via cvttss2si / cvttsd2si.  The fallthrough
+    // "reinterpret" path below is wrong here: it passes regdp.second =
+    // int to the inner compile, which may write to a caller-supplied Xmm
+    // destination and then compile_token_normalized double-converts the
+    // result (cvtsi2ss on an Xmm register misinterpreted as Gp).
+    if ( src_is_real && cast_type && cast_type->is_integer() )
+    {
+	regdefp_t inner_rdp = {NULL, src_type, NULL};
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	x86::Gp out = pgm.cc.newGpq("cast_r2i");
+	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    if ( src_type->size == sizeof(float) )
+		pgm.cc.cvttss2si(out, src_op.as<x86::Xmm>());
+	    else
+		pgm.cc.cvttsd2si(out, src_op.as<x86::Xmm>());
+	}
+	else if ( src_op.isMem() )
+	{
+	    if ( src_type->size == sizeof(float) )
+		pgm.cc.cvttss2si(out, src_op.as<x86::Mem>());
+	    else
+		pgm.cc.cvttsd2si(out, src_op.as<x86::Mem>());
+	}
+	else
+	{
+	    // Non-real operand (int masquerading as real) — just mov.
+	    pgm.cc.mov(out, src_op.isReg() ? src_op.as<x86::Gp>()
+					    : src_op.as<x86::Gp>());
+	}
+	// Narrow-integer canonicalization (e.g. int32 → movsxd).
+	IRBuilder ir(pgm.cc);
+	IRValue result = ir.coerce(IRValue::reg(out, &ddINT64), cast_type);
+	result = ir.load(result);
+	regdp.second = cast_type;
+	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    pgm.safemov(*regdp.first, result.op, cast_type, cast_type);
+	    return *regdp.first;
+	}
+	_operand = result.op;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
+    // Integer → real cast: compile inner as int, convert to Xmm.
+    if ( dst_is_real && src_type && src_type->is_integer() )
+    {
+	regdefp_t inner_rdp = {NULL, src_type, NULL};
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	x86::Xmm out = newScalarXmm(pgm, cast_type, "cast_i2r");
+	x86::Gp gp;
+	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    gp = src_op.as<x86::Gp>();
+	else if ( src_op.isMem() )
+	{
+	    gp = pgm.cc.newGpq("cast_i2r_tmp");
+	    pgm.cc.mov(gp, src_op.as<x86::Mem>());
+	}
+	else
+	    gp = src_op.as<x86::Gp>(); // fallback
+
+	if ( cast_type->size == sizeof(float) )
+	    pgm.cc.cvtsi2ss(out, gp.r64());
+	else
+	    pgm.cc.cvtsi2sd(out, gp.r64());
+	regdp.second = cast_type;
+	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    if ( cast_type->size == sizeof(float) )
+		pgm.cc.movss(regdp.first->as<x86::Xmm>(), out);
+	    else
+		pgm.cc.movsd(regdp.first->as<x86::Xmm>(), out);
+	    return *regdp.first;
+	}
+	_operand = out;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
     // set the result type to the cast target
     regdp.second = cast_type;
     // compile the inner expression — for pointer/integer casts, the value
