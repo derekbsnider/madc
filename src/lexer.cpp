@@ -986,7 +986,7 @@ TokenBase *Program::_getToken()
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
 		    ifdef_done_stack.push(active);
-		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << std::endl);
+		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // consume rest of line
 		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 			source.get();
@@ -1038,7 +1038,7 @@ TokenBase *Program::_getToken()
 		    ifdef_stack.push(active);
 		    if ( active )
 			ifdef_done_stack.top() = true;
-		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << std::endl);
+		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // consume rest of line
 		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 			source.get();
@@ -1165,6 +1165,7 @@ TokenBase *Program::_getToken()
 		    return _getToken();
 		}
 	    }
+	    DBG(std::cout << "# fell through to TokenHash, peek=" << (int)source.peek() << " file=" << source.fname() << std::endl);
 	    return new TokenHash;
 	case '{': return new TokenOpBrc;
 	case '}': return new TokenClBrc;
@@ -1962,11 +1963,13 @@ TokenBase *Program::skipConditionalBlock()
 	    // consume rest of line
 	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 		source.get();
+	    DBG(std::cout << "skipConditionalBlock: #endif depth=" << depth << " stack=" << ifdef_stack.size() << std::endl);
 	    if ( depth == 0 )
 	    {
 		// this #endif closes our block
 		ifdef_stack.pop();
 		ifdef_done_stack.pop();
+		DBG(std::cout << "skipConditionalBlock: popped, stack now=" << ifdef_stack.size() << std::endl);
 		return getToken();
 	    }
 	    depth--;
