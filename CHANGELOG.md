@@ -2,6 +2,59 @@
 
 ## [Unreleased]
 
+- **TokenCast: proper real↔integer and narrowing cast codegen.**
+  Float→int, int→float, and integer-narrowing casts now emit correct
+  conversion instructions instead of falling through to the
+  "reinterpret" path. Fixes double `cvtsi2ss` when `(int)flt_expr`
+  appeared inside float arithmetic, and `(unsigned char)-10` keeping
+  the full 64-bit value.
+
+- **Narrow-integer promotion for assignments and compound ops.**
+  `x = x / -5` where `x` is `unsigned char` now computes the division
+  in `int` (C integer promotion), not in unsigned char where `-5`
+  wraps to 251. Compound ops (`/=`, `+=`, etc.) promote similarly.
+
+- **L/LL integer literal suffix selects 64-bit type.**
+  `1ULL` now has type `uint64_t` (was `uint32_t`). `1L`/`1LL` →
+  `int64_t`. Fixes `(int)(-1ULL >> 15)` producing 131071 instead of -1.
+
+- **`sizeof("string literal")` returns char-array size.**
+  Parenthesized form now returns `strlen(s)+1` (was `sizeof(std::string)=32`).
+
+- **Static array init with negative values.**
+  `literal_integer_value` now handles unary minus (`-N`), plus (`+N`),
+  and bitwise NOT (`~N`). Fixes `static int arr[] = {1, -1}` leaving
+  negative elements as zero.
+
+- **Forward-declaration return type refresh.**
+  When a function is forward-declared with one return type and later
+  defined with another, the FuncDef is replaced with the correct type.
+
+- **Preprocessor: `#if`/`#elif` macro expansion.**
+  `expandIfMacros()` iteratively replaces define names in `#if`
+  conditions before evaluation. Fixes OpenSSL `macros.h` checks.
+
+- **Preprocessor: `#ifdef`/`#else`/`#endif` inside macro arguments.**
+  Conditional directives inside function-like macro arg lists are now
+  processed (GCC extension). Fixes RoD `act_obj.c` `ch_printf` call.
+
+- **Preprocessor: backslash-newline line splicing.**
+  `\` + optional trailing whitespace + newline joins physical lines
+  at the `Source::get()`/`peek()` level.
+
+- **Preprocessor: multi-line function-like macro calls.**
+  `(` on the next line after a macro name is now recognized.
+
+- **`#include <>` searches system paths + `-I` flag.**
+  Angle-bracket includes search `-I` paths, then `/usr/local/include`,
+  `/usr/include`, `/usr/include/x86_64-linux-gnu`. Quoted includes
+  search source dir then `-I` paths. Adds `-I`/`-Ipath` CLI flag.
+
+- **Duplicate typedef redeclarations accepted.**
+  `typedef struct foo FOO;` repeated is now silently accepted (C std).
+
+- **Embedded headers: `strings.h`, `malloc.h`, `sys/vfs.h`, `resolv.h`.**
+
 ## [v0.16.0] - 2026-05-18
 
 sizeof(int) = 4: LP64 ABI alignment and GCC torture suite 75% milestone.

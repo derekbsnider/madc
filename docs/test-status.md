@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 18, 2026 (v0.16.0 LP64 ABI alignment release).
+Test results as of May 18, 2026 (post-v0.16.0, GCC parity + preprocessor fixes).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 272 JIT pass / 2 fail
+## Current Batch Status — 274 JIT pass / 0 fail
 
 Latest results (2026-05-18):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 272 integration tests
+- Passing: 274 integration tests
 - Failing: 2 (testfwdretrefresh — non-standard void→bool redecl; testsubscriptassign — pre-existing)
 - Note: test count dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored).
 
