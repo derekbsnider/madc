@@ -548,18 +548,27 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 
     if ( is_system )
     {
-	// System includes: try the current source directory as a fallback
-	// (GCC also searches -I paths; this covers the common case of a
-	// system header copied next to the source).
+	// System includes: search source directory, then standard system
+	// include paths. Embedded headers are checked before this function
+	// is called, so this only runs for non-embedded headers.
+	static const char *sys_paths[] = {
+	    NULL, // placeholder for current source directory
+	    "/usr/local/include/",
+	    "/usr/include/",
+	    "/usr/include/x86_64-linux-gnu/",
+	    NULL
+	};
 	std::string cur_dir = current_source_directory();
-	if ( !cur_dir.empty() )
+	for ( int i = 0; sys_paths[i] || i == 0; ++i )
 	{
-	    std::string local = cur_dir + incfile;
-	    std::ifstream probe(local.c_str());
+	    std::string dir = (i == 0) ? cur_dir : sys_paths[i];
+	    if ( dir.empty() ) continue;
+	    std::string candidate = dir + incfile;
+	    std::ifstream probe(candidate.c_str());
 	    if ( probe.good() )
-		return local;
+		return candidate;
 	}
-	return incfile;
+	return incfile; // not found — will fail at open
     }
 
     std::string cur_dir = current_source_directory();
