@@ -33,7 +33,7 @@ TEST_SUITE("DataType enum") {
     TEST_CASE("primitive types have expected values") {
         CHECK((int)DataType::dtVOID == 0);
         CHECK((int)DataType::dtBOOL == 1);
-        CHECK(DataType::dtINT == DataType::dtINT64);
+        CHECK(DataType::dtINT == DataType::dtINT32);
         CHECK(DataType::dtCHAR == DataType::dtINT8);
     }
 
@@ -152,7 +152,7 @@ TEST_SUITE("DataDefSTRUCT") {
         std::string name_s = "name", id_s = "id", age_s = "age";
         CHECK(ddTESTSTRUCT.m_offset(name_s) == 0);
         CHECK(ddTESTSTRUCT.m_offset(id_s) == (ssize_t)sizeof(std::string));
-        CHECK(ddTESTSTRUCT.m_offset(age_s) == (ssize_t)(sizeof(std::string) + 8));
+        CHECK(ddTESTSTRUCT.m_offset(age_s) == (ssize_t)(sizeof(std::string) + 4));
     }
 
     TEST_CASE("m_type returns correct DataDef pointer") {
