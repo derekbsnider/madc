@@ -223,15 +223,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.15.0** (2026-05-17) — **GCC torture test suite parity initiative.** Pass rate nearly doubled from 627/1685 (37%) to 1245/1685 (74%) through 96 compile-failure fixes. Key features: C comma operator, full `#if` evaluator with integer arithmetic and C operator precedence, scientific notation in float literals, mixed int*double arithmetic promotion (C99 usual arithmetic conversions), K&R empty-parens function semantics, bitfields in anonymous structs, 50+ `__builtin_*` aliases, embedded stddef.h/assert.h, `#error`/`#warning` directives, and comprehensive `__attribute__` consumption.
+**v0.16.0** (2026-05-18) — **sizeof(int) = 4: LP64 ABI alignment.** madc's `int` now matches GCC at 4 bytes, fixing struct layouts, printf format specifiers, and dlsym'd function arguments. GCC torture test suite reaches 75% (1264/1685). Float/double brace initializers, overflow builtins, ternary in constant expressions, C23 `[[attribute]]` consumption, and the scanf format-rewriting shim removed.
 
 ### Recent Releases
 
+- **v0.16.0** — sizeof(int)=4 LP64 ABI alignment; GCC torture suite 75% (1264/1685); float init, overflow builtins, ternary const-expr, C23 attributes
 - **v0.15.0** — GCC torture test parity: 627 → 1245 (37% → 74%); comma operator, full #if evaluator, scientific notation, mixed arithmetic promotion, K&R functions, 50+ builtins
-- **v0.14.1** — SMAUG native EXEs survive the first real combat path; small 1..16 byte struct returns now follow the SysV x86-64 ABI in both JIT and EXE mode
-- **v0.13.0** — SMAUG plays end-to-end on madc: telnet/creation/MOTD/room/commands/reconnect; lexer octal+hex escapes, scanf %d→%ld, stat sign-ext, safemov narrow→64
-- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs
-- **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, compound-assign on subscripts
+- **v0.14.1** — SMAUG native EXEs survive the first real combat path; small struct returns follow SysV x86-64 ABI
+- **v0.13.0** — SMAUG plays end-to-end on madc; octal/hex escapes, scanf widening, stat sign-ext
+- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes
 
 ## Roadmap
 
@@ -247,7 +247,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **GCC Parity** | GCC torture test suite compatibility | **v0.15.0** — 1245/1685 (74%) passing; comma operator, #if evaluator, scientific notation, mixed arithmetic, K&R functions, 50+ builtins |
+| **GCC Parity** | GCC torture test suite compatibility | **v0.16.0** — 1264/1685 (75%) passing; sizeof(int)=4 LP64 ABI, float init, overflow builtins, ternary const-expr, C23 attributes |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---

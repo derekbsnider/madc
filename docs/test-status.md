@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 17, 2026 (v0.15.0 GCC torture test parity release).
+Test results as of May 18, 2026 (v0.16.0 LP64 ABI alignment release).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,14 +11,14 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 542 JIT pass / 48 fail
+## Current Batch Status — 272 JIT pass / 2 fail
 
-Latest results (2026-05-17):
+Latest results (2026-05-18):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 542 integration tests
-- Failing: 48 (pre-existing issues from gcc-testsuite branch work)
-- The integration runner is currently fully green.
+- Passing: 272 integration tests
+- Failing: 2 (testfwdretrefresh — non-standard void→bool redecl; testsubscriptassign — pre-existing)
+- Note: test count dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored).
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
 - Passing: 271 (of 271 JIT-passing tests)

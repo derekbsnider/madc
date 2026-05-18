@@ -2,6 +2,11 @@
 
 ## High Priority
 
+- **GCC torture test suite: push past 75%.** Currently 1264/1685 (75.0%).
+  Remaining targets: 32-bit integer truncation in arithmetic/casts
+  (~33% of runtime failures), struct pass-by-value for function args
+  (~8 compile failures), and complex C declarators like `int *(p[25])`.
+
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and
   serpent death on the standalone native executable lane. The next

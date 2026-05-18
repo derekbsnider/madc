@@ -2,6 +2,61 @@
 
 ## [Unreleased]
 
+## [v0.16.0] - 2026-05-18
+
+sizeof(int) = 4: LP64 ABI alignment and GCC torture suite 75% milestone.
+
+- **`sizeof(int)` = 4 bytes, matching GCC and the LP64 ABI.**
+  The bitmap type-specifier accumulator now maps `int` to `ddINT32`
+  (4 bytes) and `unsigned int` to `ddUINT32`. `long` remains 8 bytes.
+  All type sizes now match GCC on x86-64 (except `long double`, which
+  is 8 bytes in madc vs 16 in GCC).
+
+- **Codegen fixes for 4-byte int.**
+  Integer stack slots allocate at least 8 bytes for safe 64-bit register
+  writes. IR narrow-integer canonicalization extended in-place (reusing
+  the same vreg) to avoid confusing asmjit's register allocator. 32-bit
+  shift operations (`safeshl`) now use `shl r32` so results wrap at
+  the correct width.
+
+- **Float/double brace initializers in arrays and struct members.**
+  `TokenReal::compile` now emits `newFloatConst` when the target type
+  is float-sized, and init-store paths handle Xmm (Vec) registers via
+  `movss`/`movsd` instead of assuming all values are in Gp registers.
+
+- **Removed scanf `%d` → `%ld` format-rewriting shim.**
+  With `sizeof(int)` = 4, libc's `%d` writes the correct 4 bytes into
+  a standard int slot. The `__madc_sscanf`/`__madc_fscanf` wrappers
+  now pass through to the real libc functions.
+
+- **`__builtin_add/sub/mul_overflow` and `_overflow_p` predicates.**
+  Overflow-checking arithmetic builtins implemented via `__int128`
+  helper functions in `va_helpers.cpp`.
+
+- **Ternary operator in constant expressions.**
+  `sizeof(int) >= 4 ? 0x4000 : 4` now works in array dimensions and
+  other compile-time contexts.
+
+- **C23 `[[attribute]]` consumption.**
+  Double-bracket attributes (`[[gnu::noipa]]`, `[[nodiscard]]`, etc.)
+  are now consumed and skipped at the lexer level.
+
+- **Unary `+` operator support.**
+  `f(+1)` and `+42` are now parsed as no-op unary `+`.
+
+- **Zero-length arrays: `sizeof(arr[0])` = 0.**
+  `int arr[0]` now has sizeof 0, matching GCC.
+
+- **Embedded headers: `stddef.h` and `assert.h` now registered.**
+
+- **`__builtin_bswap64` mapped to helper function.**
+
+- **Build: `make -C src` now builds `lib/libmadc.so` alongside `bin/madc`.**
+
+- **Expression sandbox: comma-operator rejection for `eval_expression`.**
+  `(1, 2)` is now rejected by the pre-lex text scanner, while commas
+  inside function-call parentheses are still allowed.
+
 ## [v0.15.0] - 2026-05-17
 
 GCC torture test suite parity initiative: pass rate 627 → 1245 (37% → 74%).
