@@ -1927,8 +1927,27 @@ TokenBase *Program::_getToken()
 			a = expanded_arg;
 		    }
 		    std::map<std::string, const std::string *> param_map;
+		    // For GNU named variadic params (e.g. args...),
+		    // join all remaining call-site arguments into that
+		    // last named parameter so the body can use the name
+		    // directly instead of __VA_ARGS__.
+		    std::string named_varargs;
 		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
-			param_map[macro.params[i]] = &args[i];
+		    {
+			if ( macro.variadic && i == macro.params.size() - 1
+			  && args.size() > macro.params.size() )
+			{
+			    named_varargs = args[i];
+			    for ( size_t j = i + 1; j < args.size(); ++j )
+			    {
+				named_varargs += ", ";
+				named_varargs += args[j];
+			    }
+			    param_map[macro.params[i]] = &named_varargs;
+			}
+			else
+			    param_map[macro.params[i]] = &args[i];
+		    }
 		    auto stringify_macro_arg = [](const std::string &raw) -> std::string {
 			std::string out("\"");
 			bool pending_space = false;
