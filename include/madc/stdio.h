@@ -9,3 +9,7 @@
 #define BUFSIZ 8192
 #define NULL 0
 #define FILE void
+#ifndef _SIZE_T_DEFINED
+#define _SIZE_T_DEFINED
+#define size_t uint64_t
+#endif

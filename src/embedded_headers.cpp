@@ -751,6 +751,10 @@ typedef unsigned long int uintptr_t;
 #define BUFSIZ 8192
 #define NULL 0
 #define FILE void
+#ifndef _SIZE_T_DEFINED
+#define _SIZE_T_DEFINED
+#define size_t uint64_t
+#endif
 )EMBED"},
     {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
 // Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback

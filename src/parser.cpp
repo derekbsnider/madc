@@ -9770,8 +9770,8 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		}
 		else
 		{
-		    DBG(std::cerr << "parseFunction() params: failed to obtain basetype" << std::endl);
-		    Throw(nt) << "Failed to find type when parsing function parameters" << flush;
+		    DBG(std::cerr << "parseFunction() params: failed to obtain basetype for '" << tname << "'" << std::endl);
+		    Throw(nt) << "Failed to find type '" << tname << "' when parsing function parameters" << flush;
 		}
 	    }
 	    else
