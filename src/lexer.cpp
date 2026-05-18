@@ -571,7 +571,29 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	return incfile; // not found — will fail at open
     }
 
+    // Quoted includes: try current source directory first.
     std::string cur_dir = current_source_directory();
+    if ( !cur_dir.empty() )
+    {
+	std::string local = cur_dir + incfile;
+	std::ifstream probe(local.c_str());
+	if ( probe.good() )
+	    return local;
+    }
+    // Fall back to system paths (GCC does the same for #include "").
+    static const char *sys_paths[] = {
+	"/usr/local/include/",
+	"/usr/include/",
+	"/usr/include/x86_64-linux-gnu/",
+	NULL
+    };
+    for ( int i = 0; sys_paths[i]; ++i )
+    {
+	std::string candidate = std::string(sys_paths[i]) + incfile;
+	std::ifstream probe(candidate.c_str());
+	if ( probe.good() )
+	    return candidate;
+    }
     return cur_dir.empty() ? incfile : cur_dir + incfile;
 }
 
