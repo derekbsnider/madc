@@ -1112,6 +1112,11 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
 
 static void add_funcsig_arg(FuncSignature &funcsig, DataDef *arg_type)
 {
+    // asmjit caps FuncSignature at kMaxFuncArgs (32). Extra varargs
+    // are still passed correctly via the params vector — they just
+    // don't need type declarations in the signature.
+    if ( funcsig.argCount() >= 32 )
+	return;
     if ( !arg_type )
     {
 	funcsig.addArgT<void *>();
@@ -1176,6 +1181,14 @@ static void append_call_param(std::vector<Operand> &params, FuncSignature &funcs
 static void set_invoke_arg(Program &pgm, InvokeNode *call, uint32_t &index,
 			   const Operand &arg, bool mem_as_address)
 {
+    // asmjit InvokeNode only has slots for kMaxFuncArgs (32).
+    // Extra varargs beyond the signature are still on the stack
+    // per the calling convention — just skip setArg for them.
+    if ( index >= 32 )
+    {
+	++index;
+	return;
+    }
     if ( arg.isReg() && arg.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
 	call->setArg(index++, arg.as<x86::Xmm>());
