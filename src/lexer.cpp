@@ -448,6 +448,10 @@ void Program::_tokenizer_init()
     define_map["__builtin_sub_overflow"] = "__madc_sub_overflow";
     define_map["__builtin_mul_overflow"] = "__madc_mul_overflow";
 
+    define_map["__builtin_add_overflow_p"] = "__madc_add_overflow_p";
+    define_map["__builtin_sub_overflow_p"] = "__madc_sub_overflow_p";
+    define_map["__builtin_mul_overflow_p"] = "__madc_mul_overflow_p";
+
     // __builtin_expect(expr, val) is a branch-prediction hint — just
     // return expr. Implemented as a function-like macro.
     {
@@ -1165,7 +1169,21 @@ TokenBase *Program::_getToken()
 	case '}': return new TokenClBrc;
 	case '(': return new TokenOpBrk;
 	case ')': return new TokenClBrk;
-	case '[': return new TokenOpSqr;
+	case '[':
+	    // C23 [[attribute]] syntax: consume [[...]] and skip
+	    if ( source.peek() == '[' )
+	    {
+		source.get(); // consume second '['
+		int depth = 1;
+		while ( source.good() && depth > 0 )
+		{
+		    char c = source.get();
+		    if ( c == '[' ) ++depth;
+		    else if ( c == ']' ) --depth;
+		}
+		return getToken();
+	    }
+	    return new TokenOpSqr;
 	case ']': return new TokenClSqr;
 	case '~': return new TokenBnot;
 	case '!': if (source.peek() != '=') return new TokenLnot;		// !

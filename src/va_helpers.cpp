@@ -175,6 +175,24 @@ extern "C" int __madc_mul_overflow(long a, long b, long *res)
     return r != (long)r;
 }
 
+// __builtin_*_overflow_p: predicate-only versions (no result pointer).
+// The third argument is a type indicator — its value is ignored.
+extern "C" int __madc_add_overflow_p(long a, long b, long /*type_zero*/)
+{
+    __int128 r = (__int128)a + (__int128)b;
+    return r != (long)r;
+}
+extern "C" int __madc_sub_overflow_p(long a, long b, long /*type_zero*/)
+{
+    __int128 r = (__int128)a - (__int128)b;
+    return r != (long)r;
+}
+extern "C" int __madc_mul_overflow_p(long a, long b, long /*type_zero*/)
+{
+    __int128 r = (__int128)a * (__int128)b;
+    return r != (long)r;
+}
+
 // fd_set bit-array helpers. Called by the FD_ZERO/FD_SET/FD_CLR/FD_ISSET
 // macros in the embedded <sys/select.h>. The "set" pointer is the address
 // of a `struct fd_set` (128 bytes, laid out as 16 int64s — identical to
