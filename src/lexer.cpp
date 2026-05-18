@@ -547,7 +547,20 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	return incfile;
 
     if ( is_system )
+    {
+	// System includes: try the current source directory as a fallback
+	// (GCC also searches -I paths; this covers the common case of a
+	// system header copied next to the source).
+	std::string cur_dir = current_source_directory();
+	if ( !cur_dir.empty() )
+	{
+	    std::string local = cur_dir + incfile;
+	    std::ifstream probe(local.c_str());
+	    if ( probe.good() )
+		return local;
+	}
 	return incfile;
+    }
 
     std::string cur_dir = current_source_directory();
     return cur_dir.empty() ? incfile : cur_dir + incfile;
