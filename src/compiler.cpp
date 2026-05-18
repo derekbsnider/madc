@@ -6894,8 +6894,12 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     if ( (lptr_type || rptr_type) && regdp.second && !regdp.second->is_pointer() )
 	regdp.second = lptr_type ? lptr_type : rptr_type;
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safeadd, regdp, _operand, "_add_l");
+    {
+	bool real_ops = (left && left->is_real()) || (right && right->is_real());
+	bool dest_int_real = real_ops && regdp.second && regdp.second->is_integer();
+	if ( !dest_int_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+	    return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safeadd, regdp, _operand, "_add_l");
+    }
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
@@ -6918,8 +6922,12 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     if ( lptr_type && regdp.second && !regdp.second->is_pointer() )
 	regdp.second = lptr_type;
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safesub, regdp, _operand, "_sub_l");
+    {
+	bool real_ops = (left && left->is_real()) || (right && right->is_real());
+	bool dest_int_real = real_ops && regdp.second && regdp.second->is_integer();
+	if ( !dest_int_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+	    return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safesub, regdp, _operand, "_sub_l");
+    }
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenSub::compile() left->compile() cleared datatype!"; }
@@ -7036,9 +7044,14 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     // Skip the plain-binop fast path when operands are mixed int/real —
     // emit_plain_binop3 would force both to the destination type before
     // the multiply, truncating the float. The general path below handles
-    // promotion per C99 usual arithmetic conversions.
+    // promotion per C99 usual arithmetic conversions.  Also skip when
+    // destination type is integer but any operand is real — the multiply
+    // must compute in float and convert to int afterward, not truncate
+    // the float literal to int before multiplying.
+    bool any_real = (left && left->is_real()) || (right && right->is_real());
     bool mixed_real = (left && left->is_real()) != (right && right->is_real());
-    if ( !mixed_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+    bool dest_int_but_real_ops = any_real && regdp.second && regdp.second->is_integer();
+    if ( !mixed_real && !dest_int_but_real_ops && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safemul, regdp, _operand, "_mul_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
@@ -7061,8 +7074,12 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) { throw "/ missing rval operand"; }
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-	return emit_plain_divmod(pgm, left, right, regdp.second, /*return_remainder=*/false, regdp, _operand, "_div_l");
+    {
+	bool real_ops = (left && left->is_real()) || (right && right->is_real());
+	bool dest_int_real = real_ops && regdp.second && regdp.second->is_integer();
+	if ( !dest_int_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+	    return emit_plain_divmod(pgm, left, right, regdp.second, /*return_remainder=*/false, regdp, _operand, "_div_l");
+    }
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand remainder = regdp.second->newreg(pgm.cc, "remainder");
     Operand &dividend = left->compile(pgm, regdp);
