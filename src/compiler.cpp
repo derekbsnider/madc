@@ -8189,10 +8189,14 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
       && cast_type && cast_type->is_integer()
       && cast_type->size < src_type->size )
     {
-	regdefp_t inner_rdp = {NULL, src_type, NULL};
+	// Do NOT pass src_type as regdp.second: that would override the
+	// inner expression's natural type inference (e.g. unsigned division
+	// inside a (int)ull_expr / 8 cast would become signed).
+	regdefp_t inner_rdp = {NULL, NULL, NULL};
 	Operand &src_op = expr->compile(pgm, inner_rdp);
+	DataDef *actual_src = inner_rdp.second ? inner_rdp.second : src_type;
 	IRBuilder ir(pgm.cc);
-	IRValue out = ir.coerce(ir_from_operand(src_op, src_type), cast_type);
+	IRValue out = ir.coerce(ir_from_operand(src_op, actual_src), cast_type);
 	out = ir.load(out);
 	regdp.second = cast_type;
 	if ( regdp.first )
