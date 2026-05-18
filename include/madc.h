@@ -971,6 +971,7 @@ public:
     std::string current_source_directory();
     bool include_already_seen(const std::string &path);
     std::string resolve_include_path(const std::string &incfile, bool is_system);
+    std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
     void push_runtime_scope();
     void pop_runtime_scope();

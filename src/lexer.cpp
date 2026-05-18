@@ -2240,11 +2240,70 @@ TokenBase *Program::skipConditionalBlock()
 // evaluate #if condition: supports defined(NAME), !, &&, ||, identifiers,
 // and integer constants. This is enough for the header guards and platform
 // feature checks used by the imported SMAUG sources.
+// Expand all #define macros in a #if/#elif expression string.
+// Simple defines are replaced with their values; undefined identifiers
+// (other than 'defined') become 0 per the C standard. Runs up to
+// max_depth iterations to handle chained expansions.
+std::string Program::expandIfMacros(const std::string &raw)
+{
+    std::string expr = raw;
+    for ( int depth = 0; depth < 32; ++depth )
+    {
+	std::string out;
+	bool changed = false;
+	size_t i = 0;
+	while ( i < expr.size() )
+	{
+	    // Copy non-identifier characters
+	    if ( !isalpha((unsigned char)expr[i]) && expr[i] != '_' )
+	    {
+		out += expr[i++];
+		continue;
+	    }
+	    // Extract identifier
+	    size_t start = i;
+	    std::string word;
+	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
+		word += expr[i++];
+	    // Don't expand 'defined' — it's a #if operator
+	    if ( word == "defined" )
+	    {
+		out += word;
+		continue;
+	    }
+	    // Look up in define_map
+	    auto it = define_map.find(word);
+	    if ( it != define_map.end() )
+	    {
+		out += it->second.empty() ? "1" : it->second;
+		changed = true;
+	    }
+	    else if ( macro_map.count(word) > 0 )
+	    {
+		// Function-like macro without args in #if context → treat as defined (1)
+		out += "1";
+		changed = true;
+	    }
+	    else
+		out += word; // leave as-is (will become 0 in the evaluator)
+	}
+	expr = out;
+	if ( !changed ) break;
+    }
+    return expr;
+}
+
 bool Program::evaluateIfCondition()
 {
-    std::string expr;
+    std::string raw_expr;
     while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-	expr += source.get();
+	raw_expr += source.get();
+
+    // Expand macros before evaluation so expressions like
+    // OPENSSL_VERSION_MAJOR * 10000 + OPENSSL_VERSION_MINOR * 100
+    // resolve to numeric values.
+    std::string expr = expandIfMacros(raw_expr);
+    DBG(std::cout << "#if expand: " << raw_expr << " → " << expr << std::endl);
 
     size_t pos = 0;
 
