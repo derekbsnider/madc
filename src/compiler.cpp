@@ -8167,12 +8167,9 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    pgm.cc.cvtsi2sd(out, gp.r64());
 	regdp.second = cast_type;
-	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	if ( regdp.first )
 	{
-	    if ( cast_type->size == sizeof(float) )
-		pgm.cc.movss(regdp.first->as<x86::Xmm>(), out);
-	    else
-		pgm.cc.movsd(regdp.first->as<x86::Xmm>(), out);
+	    pgm.safemov(*regdp.first, *(Operand *)&out, cast_type, cast_type);
 	    return *regdp.first;
 	}
 	_operand = out;
