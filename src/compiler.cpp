@@ -8317,14 +8317,16 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	return _operand;
     }
 
-    // Integer narrowing cast (e.g. int → unsigned char): compile at the
-    // source width, then truncate via IR coerce so the canonical 64-bit
-    // register holds the correctly masked/sign-extended narrow value.
-    // Without this, `(unsigned char)-10` keeps the full -10 (0xFFF…F6)
-    // instead of producing 246 (0xF6 zero-extended).
+    // Integer narrowing / truncation cast (e.g. int → unsigned char,
+    // or signed int → unsigned int): compile at the source width, then
+    // truncate via IR coerce so the canonical 64-bit register holds the
+    // correctly masked/sign-extended narrow value.  Also handles
+    // same-size sign-change casts like (unsigned int)(signed int)x:
+    // the 64-bit register may hold sign-extended bits that need masking.
     if ( src_type && src_type->is_integer()
       && cast_type && cast_type->is_integer()
-      && cast_type->size < src_type->size )
+      && (cast_type->size < src_type->size
+       || (cast_type->size < 8 && cast_type->is_unsigned() != src_type->is_unsigned())) )
     {
 	// Do NOT pass src_type as regdp.second: that would override the
 	// inner expression's natural type inference (e.g. unsigned division

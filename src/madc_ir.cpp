@@ -373,9 +373,14 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 
     // Integer widening: load src into a Gpq first (load() picks the
     // right sign/zero extend based on src.type), then relabel.
+    // Exception: signed→unsigned of the same size (e.g. int32→uint32)
+    // needs truncation to clear the upper sign-extended bits.
     if ( both_int && to->size >= src.type->size )
     {
 	IRValue r = load(src);
+	if ( to->size == src.type->size && to->size < 8
+	  && !src.type->is_unsigned() && to->is_unsigned() )
+	    return canonicalize_narrow_integer_reg(cc_, r, to);
 	return IRValue::reg(r.op, to);
     }
 
