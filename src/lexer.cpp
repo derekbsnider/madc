@@ -1466,6 +1466,8 @@ TokenBase *Program::_getToken()
 		// controls signedness.
 		bool has_u_suffix = false;
 		int  long_count   = 0;
+		std::string lit_text;
+		lit_text += ch;
 		auto eat_int_suffix = [&]() {
 		    for (int i = 0; i < 3; ++i)
 		    {
@@ -1473,12 +1475,12 @@ TokenBase *Program::_getToken()
 			if (c == 'u' || c == 'U')
 			{
 			    has_u_suffix = true;
-			    source.get();
+			    lit_text += (char)source.get();
 			}
 			else if (c == 'l' || c == 'L')
 			{
 			    ++long_count;
-			    source.get();
+			    lit_text += (char)source.get();
 			}
 			else
 			    break;
@@ -1497,12 +1499,13 @@ TokenBase *Program::_getToken()
 		    eat_int_suffix();
 		    TokenInt *ti = new TokenInt(bv);
 		    { DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
+		    // binary prefix source_text not critical for macro round-trip
 		    return ti;
 		}
 		// hex literal: 0x... or 0X...
 		if ( ch == '0' && source.good() && (source.peek() == 'x' || source.peek() == 'X') )
 		{
-		    source.get(); // eat 'x'
+		    lit_text += (char)source.get(); // eat 'x'/'X'
 		    long long hv = 0;
 		    while ( source.good() )
 		    {
@@ -1514,6 +1517,7 @@ TokenBase *Program::_getToken()
 			if ( !isxdigit(source.peek()) )
 			    break;
 			char hc = source.get();
+			lit_text += hc;
 			hv *= 16;
 			if      ( hc >= '0' && hc <= '9' ) hv += hc - '0';
 			else if ( hc >= 'a' && hc <= 'f' ) hv += hc - 'a' + 10;
@@ -1522,6 +1526,7 @@ TokenBase *Program::_getToken()
 		    eat_int_suffix();
 		    {
 			TokenInt *ti = new TokenInt((int64_t)hv);
+			ti->source_text = lit_text;
 			{ DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
 			return ti;
 		    }
@@ -1539,7 +1544,9 @@ TokenBase *Program::_getToken()
 			    { source.get(); continue; }
 			if ( source.peek() < '0' || source.peek() > '7' )
 			    break;
-			v = v * 8 + (source.get() & 0xf);
+			char oc = source.get();
+			lit_text += oc;
+			v = v * 8 + (oc & 0xf);
 		    }
 		}
 		else
@@ -1553,8 +1560,10 @@ TokenBase *Program::_getToken()
 			}
 			if ( !isdigit(source.peek()) )
 			    break;
+			char dc = source.get();
+			lit_text += dc;
 			v *= 10;
-			v += source.get() & 0xf;
+			v += dc & 0xf;
 		    }
 		}
 		// no decimal means integer — unless followed by e/E (scientific)
@@ -1587,6 +1596,7 @@ TokenBase *Program::_getToken()
 		    }
 		    eat_int_suffix();
 		    TokenInt *ti = new TokenInt(v);
+		    ti->source_text = lit_text;
 		    { DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
 		    return ti;
 		}
@@ -1875,12 +1885,23 @@ TokenBase *Program::_getToken()
 		    for ( size_t i = 0; i < args.size(); ++i )
 		    {
 			std::string &a = args[i];
-			// Quick check: does the argument contain any potential macro?
-			bool has_ident = false;
-			for ( size_t j = 0; j < a.size(); ++j )
-			    if ( isalpha((unsigned char)a[j]) || a[j] == '_' )
-				{ has_ident = true; break; }
-			if ( !has_ident ) continue;
+			// Quick check: does the argument contain any known macro name?
+			// A naive alpha check triggers on hex literals (0x1F) and
+			// integer suffixes (LU/ULL), whose round-trip through the
+			// tokenizer loses the original representation.  Scan for
+			// actual identifier words and see if any match a define.
+			bool has_macro = false;
+			for ( size_t j = 0; j < a.size() && !has_macro; ++j )
+			{
+			    if ( !(isalpha((unsigned char)a[j]) || a[j] == '_') )
+				continue;
+			    std::string id;
+			    while ( j < a.size() && (isalnum((unsigned char)a[j]) || a[j] == '_') )
+				id += a[j++];
+			    if ( define_map.count(id) || macro_map.count(id) )
+				has_macro = true;
+			}
+			if ( !has_macro ) continue;
 			// Push arg text through the tokenizer to expand macros
 			Source saved = std::move(source);
 			source = Source();
@@ -1914,9 +1935,15 @@ TokenBase *Program::_getToken()
 					expanded_arg += ti->str;
 				    else if ( at->type() == TokenType::ttInteger )
 				    {
-					char buf[32];
-					snprintf(buf, sizeof(buf), "%ld", (long)at->get());
-					expanded_arg += buf;
+					TokenInt *tki = static_cast<TokenInt *>(at);
+					if ( !tki->source_text.empty() )
+					    expanded_arg += tki->source_text;
+					else
+					{
+					    char buf[32];
+					    snprintf(buf, sizeof(buf), "%ld", (long)at->get());
+					    expanded_arg += buf;
+					}
 				    }
 				    else
 					expanded_arg += (char)at->get();

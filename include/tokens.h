@@ -908,13 +908,15 @@ public:
 class TokenInt: public TokenBase
 {
 public:
+    std::string source_text;   // original literal text (hex, suffixes)
     TokenInt() : TokenBase()            { _datatype = &ddINT; }
     TokenInt(int64_t v) : TokenBase(v) { _datatype = &ddINT; }
+    TokenInt(int64_t v, const std::string &src) : TokenBase(v), source_text(src) { _datatype = &ddINT; }
     virtual int64_t ival() const        { return _token; }
     virtual double dval() const    { return (double)_token; }
     virtual TokenType type() const { return TokenType::ttInteger; }
     virtual TokenID   id()   const { return TokenID::tkInt; }
-    virtual TokenBase *clone()     { return new TokenInt(_token); }
+    virtual TokenBase *clone()     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; return c; }
     virtual bool is_constant() const override { return true; }
     virtual void setDataType(DataDef *d) { if (d && d->is_integer()) _datatype = d; }
 //  virtual asmjit::x86::Gp &getreg(Program &);
