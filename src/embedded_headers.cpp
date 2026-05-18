@@ -71,6 +71,21 @@ static std::map<std::string, std::string> embedded_headers = {
 #define NTELOPTS         40
 #define TELOPT_EXOPL     255
 )EMBED"},
+    {"assert.h", R"EMBED(// madc embedded assert.h — runtime assertions
+
+#ifndef __MADC_ASSERT_H
+#define __MADC_ASSERT_H 1
+
+#load "libc.so.6" as __libc;
+
+#ifdef NDEBUG
+#define assert(expr) ((void)0)
+#else
+#define assert(expr) ((expr) ? (void)0 : abort())
+#endif
+
+#endif
+)EMBED"},
     {"crypt.h", R"EMBED(// madc embedded crypt.h — POSIX password crypt
 // libcrypt.so isn't part of glibc's RTLD_DEFAULT search, so #load it
 // explicitly. Once loaded with RTLD_GLOBAL, dlsym(RTLD_DEFAULT, "crypt")
@@ -637,6 +652,25 @@ typedef long va_list;
 #define false 0
 #define __bool_true_false_are_defined 1
 )EMBED"},
+    {"stddef.h", R"EMBED(// madc embedded stddef.h — standard definitions
+// size_t and ptrdiff_t are already native madc types via typedef
+// This header provides NULL, offsetof, and max_align_t
+
+#ifndef __MADC_STDDEF_H
+#define __MADC_STDDEF_H 1
+
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
+#define offsetof(type, member) ((unsigned long)&((type *)0)->member)
+
+typedef long ptrdiff_t;
+typedef unsigned long size_t;
+typedef int wchar_t;
+
+#endif
+)EMBED"},
     {"stdint.h", R"EMBED(// madc embedded stdint.h — exact-width integer types
 // Note: int8_t through uint64_t are native madc types
 // This header provides the min/max constants for completeness
@@ -675,6 +709,10 @@ typedef long va_list;
     {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
 // Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback
 
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
 #define RAND_MAX     2147483647
@@ -684,6 +722,10 @@ typedef long va_list;
 // (which registers them with a generic int64 return signature). The
 // extern declarations below give the parser proper return types so
 // `*(strchr(...)) = 0` works without explicit user-side `extern`.
+
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
 
 extern char *strchr(char *s, int c);
 extern char *strrchr(char *s, int c);

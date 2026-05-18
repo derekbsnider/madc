@@ -144,7 +144,7 @@ IRValue IRBuilder::load(const IRValue &src)
 	    if ( src.type->size == 4 )
 	    {
 		if ( is_unsigned )
-		    cc_.mov(g.r32(), g.r32());  // implicit zero-extend
+		    cc_.mov(g.r32(), g.r32());
 		else
 		    cc_.movsxd(g, g.r32());
 	    }
