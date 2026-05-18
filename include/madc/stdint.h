@@ -20,3 +20,6 @@
 #define UINTMAX_MAX 0xFFFFFFFFFFFFFFFF
 #define PTRDIFF_MIN -9223372036854775807
 #define PTRDIFF_MAX 9223372036854775807
+
+typedef long int intptr_t;
+typedef unsigned long int uintptr_t;

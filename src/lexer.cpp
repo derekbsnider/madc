@@ -558,7 +558,8 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
     if ( is_system )
     {
 	// <file.h>: -I paths first (GCC searches -I for both "" and <>),
-	// then system include paths.
+	// then system include paths, then current source directory as
+	// last resort (needed for local header copies in project trees).
 	for ( size_t i = 0; i < include_paths.size(); ++i )
 	{
 	    std::string &dir = include_paths[i];
@@ -580,6 +581,16 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	    std::ifstream probe(candidate.c_str());
 	    if ( probe.good() )
 		return candidate;
+	}
+	// Fall back to current source directory — handles local header
+	// copies (e.g. libpq-fe.h sitting next to the .c that includes it)
+	std::string cur_dir = current_source_directory();
+	if ( !cur_dir.empty() )
+	{
+	    std::string local = cur_dir + incfile;
+	    std::ifstream probe(local.c_str());
+	    if ( probe.good() )
+		return local;
 	}
 	return incfile; // not found — will fail at open
     }
@@ -712,7 +723,9 @@ TokenBase *Program::_getToken()
 
     if ( !source.good() || source.eof() ) { return NULL; }
 
-    switch( (ch=source.get()) )
+    ch = source.get();
+    if ( ch == -1 ) { return NULL; }  // EOF after last char (no trailing newline)
+    switch( ch )
     {
 	case ' ':
 	    cnt = 1;

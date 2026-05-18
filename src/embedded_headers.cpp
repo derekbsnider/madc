@@ -566,7 +566,25 @@ struct sockaddr_in {
     {"pwd.h", R"EMBED(// madc embedded pwd.h — password database
 // Functions (getpwuid, getpwnam, getpwent, setpwent, endpwent, getlogin)
 // available via dlsym fallback
-// struct passwd access deferred
+
+#ifndef _PWD_H
+#define _PWD_H 1
+
+typedef unsigned int __uid_t;
+typedef unsigned int __gid_t;
+
+struct passwd
+{
+  char *pw_name;
+  char *pw_passwd;
+  __uid_t pw_uid;
+  __gid_t pw_gid;
+  char *pw_gecos;
+  char *pw_dir;
+  char *pw_shell;
+};
+
+#endif
 )EMBED"},
     {"regex.h", R"EMBED(#ifndef __MADC_REGEX_H
 #define __MADC_REGEX_H 1
@@ -718,6 +736,9 @@ typedef int wchar_t;
 #define UINTMAX_MAX 0xFFFFFFFFFFFFFFFF
 #define PTRDIFF_MIN -9223372036854775807
 #define PTRDIFF_MAX 9223372036854775807
+
+typedef long int intptr_t;
+typedef unsigned long int uintptr_t;
 )EMBED"},
     {"stdio.h", R"EMBED(// madc embedded stdio.h — C standard I/O
 // printf/fprintf/sprintf/snprintf are available via dlsym fallback (libc is always loaded)
@@ -1486,6 +1507,8 @@ struct tm {
 #define dev_t    int64_t
 #define ino_t    uint64_t
 #define nlink_t  int64_t
+#define intptr_t  int64_t
+#define uintptr_t uint64_t
 )EMBED"},
     {"zlib.h", R"EMBED(// madc embedded zlib.h — minimal stub for z_stream pointer members.
 // Full zlib functionality requires linking against libz.

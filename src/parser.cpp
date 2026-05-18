@@ -5105,6 +5105,32 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			break;
 		    }
+		    // General fallback: any expression with a pointer datadef
+		    // can be subscripted — covers ternary results, function
+		    // call results, and other complex expressions.
+		    if ( !exStack.empty() )
+		    {
+			DataDef *dd = exStack.top()->datadef();
+			if ( dd && (dd->is_pointer() || dd->is_string()
+			  || dd->type() == DataType::dtCHARptr) )
+			{
+			    TokenBase *base_expr = exStack.top();
+			    exStack.pop();
+			    TokenBase *idx = parseExpression(nextToken());
+			    TokenBase *clsqr = nextToken();
+			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
+				Throw(tb) << "Expected ] in subscript expression" << flush;
+			    DataDef *elem_type = dd;
+			    if ( elem_type->is_pointer() )
+			    {
+				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
+				elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
+			    }
+			    DBG(cout << "parseExpression: subscript on generic expression" << endl);
+			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
+			    break;
+			}
+		    }
 		    DBG(cout << "parseExpression: detected [ — parsing lambda" << endl);
 		    TokenBase *lambda = parseLambda();
 		    exStack.push(lambda);
@@ -5697,7 +5723,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    break;
 			}
 			if ( !dtype->is_pointer() )
+			{
+			    // Allow dereference of fixed-array struct members —
+			    // they decay to pointers (e.g. *edit->line for char line[N])
+			    TokenMember *tm_deref = dynamic_cast<TokenMember *>(deref_expr);
+			    if ( tm_deref && tm_deref->is_fixed_array_member() )
+			    {
+				exStack.push(new TokenDerefExpr(deref_expr, dtype));
+				break;
+			    }
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+			}
 			DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 			DataDef *base = dptr ? dptr->base_type : &ddINT64;
 			exStack.push(new TokenDerefExpr(deref_expr, base));
@@ -5850,7 +5886,35 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    break;
 				}
 				if ( !dtype->is_pointer() )
+				{
+				    // Fixed-array struct members decay to pointers
+				    TokenMember *tm_d = dynamic_cast<TokenMember *>(deref_expr);
+				    if ( tm_d && tm_d->is_fixed_array_member() )
+				    {
+					exStack.push(new TokenDerefExpr(deref_expr, dtype));
+					break;
+				    }
+				    // Multi-dim array subscripts decay to pointers:
+				    // *argv[i] where argv is char[N][M]
+				    TokenSubscript *ts_d = dynamic_cast<TokenSubscript *>(deref_expr);
+				    if ( ts_d && ts_d->object.is_fixed_array() )
+				    {
+					exStack.push(new TokenDerefExpr(deref_expr, dtype));
+					break;
+				    }
+				    // Also handle TokenSubscriptExpr from parsePostfixChain
+				    TokenSubscriptExpr *tse_d = dynamic_cast<TokenSubscriptExpr *>(deref_expr);
+				    if ( tse_d )
+				    {
+					TokenVar *base_tv = dynamic_cast<TokenVar *>(tse_d->base_expr);
+					if ( base_tv && base_tv->var.is_fixed_array() )
+					{
+					    exStack.push(new TokenDerefExpr(deref_expr, dtype));
+					    break;
+					}
+				    }
 				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+				}
 				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 				DataDef *base = dptr ? dptr->base_type : &ddINT64;
 				exStack.push(new TokenDerefExpr(deref_expr, base));
