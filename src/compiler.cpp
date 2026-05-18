@@ -4917,7 +4917,47 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     }
     else
     {
-	pgm.Throw(this) << "Assignment on a non-variable lval" << flush;
+	// *(*p)++ = c  —  post-increment wrapping a dereference-expression.
+	// The parser produces TokenInc(TokenDerefExpr(inner)) because postfix
+	// ++ binds after the outer unary *.  Semantics: capture old pointer,
+	// step the pointer, store rhs at [old_ptr].
+	TokenOperator *inc_dec = dynamic_cast<TokenOperator *>(left);
+	TokenDerefExpr *inner_deref = inc_dec
+	    ? dynamic_cast<TokenDerefExpr *>(inc_dec->right ? inc_dec->right : inc_dec->left)
+	    : NULL;
+	if ( inner_deref && (left->id() == TokenID::tkInc || left->id() == TokenID::tkDec) )
+	{
+	    ltype = inner_deref->deref_type;
+	    // Get the memory location of the pointer (e.g. [p] for *(*p)++)
+	    // so we can both read AND write-back the incremented value.
+	    Operand &ptr_mem = inner_deref->expr->operand(pgm);
+	    x86::Gp ptr_val = pgm.cc.newIntPtr("deref_inc_ptr");
+	    if ( ptr_mem.isReg() )
+		pgm.cc.mov(ptr_val, ptr_mem.as<x86::Gp>());
+	    else if ( ptr_mem.isMem() )
+		pgm.cc.mov(ptr_val, ptr_mem.as<x86::Mem>());
+	    else
+		throw "deref-inc assign: unexpected operand type";
+	    // Save old pointer value for the store target
+	    x86::Gp old_ptr = pgm.cc.newIntPtr("deref_inc_old");
+	    pgm.cc.mov(old_ptr, ptr_val);
+	    // Post-increment/decrement
+	    int step = ltype ? (int)ltype->size : 1;
+	    if ( step <= 0 ) step = 1;
+	    if ( left->id() == TokenID::tkInc )
+		pgm.cc.add(ptr_val, imm(step));
+	    else
+		pgm.cc.sub(ptr_val, imm(step));
+	    // Write incremented value back to the memory location
+	    if ( ptr_mem.isMem() )
+		pgm.cc.mov(ptr_mem.as<x86::Mem>(), ptr_val);
+	    else if ( ptr_mem.isReg() )
+		pgm.cc.mov(ptr_mem.as<x86::Gp>(), ptr_val);
+	    // The assignment target is [old_ptr]
+	    _operand = x86::ptr(old_ptr, 0, ltype ? (uint32_t)ltype->size : 1);
+	}
+	else
+	    pgm.Throw(this) << "Assignment on a non-variable lval" << flush;
     }
 
     if ( !regdp.first || !regdp.second )
