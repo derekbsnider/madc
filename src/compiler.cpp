@@ -4299,12 +4299,26 @@ static Operand &emit_compound_binop3(Program &pgm, TokenBase *left, TokenBase *r
 				     const char *op_name)
 {
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
+    // C requires compound assignments to promote narrow integers before
+    // the operation (e.g. `unsigned char x; x += -5;` computes in int).
+    DataDef *op_type = promote_c_integer_type(lhs.type);
     Operand tmp;
     Operand *out = regdp.first;
-    regdp.second = lhs.type;
+    regdp.second = op_type;
     regdp.first  = nullptr;
-    Operand &rval = compile_compound_rhs_normalized(pgm, right, lhs.type, tmp);
-    (pgm.*op)(lhs.lval, rval, lhs.type, nullptr);
+    Operand &rval = compile_compound_rhs_normalized(pgm, right, op_type, tmp);
+    if ( op_type != lhs.type && lhs.lval.isReg() )
+    {
+	// Widen LHS value to operation width before the binop.
+	x86::Gp wide = pgm.cc.newGpq("_cmpd_wide");
+	pgm.safemov(wide, lhs.lval, op_type, lhs.type);
+	(pgm.*op)(*(Operand *)&wide, rval, op_type, nullptr);
+	pgm.safemov(lhs.lval, wide, lhs.type, op_type);
+    }
+    else
+    {
+	(pgm.*op)(lhs.lval, rval, op_type, nullptr);
+    }
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
@@ -4332,18 +4346,21 @@ static Operand &emit_compound_divmod(Program &pgm, TokenBase *left, TokenBase *r
 				     Operand &_operand, const char *op_name)
 {
     CompoundLHS lhs  = resolveCompoundLHS(pgm, left, op_name);
-    Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
-    Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
+    // C requires compound assignments to promote narrow integers.
+    DataDef *op_type = promote_c_integer_type(lhs.type);
+    Operand dividend  = op_type->newreg(pgm.cc, "dividend");
+    Operand remainder = op_type->newreg(pgm.cc, "remainder");
     Operand divisor;
     Operand *out = regdp.first;
-    pgm.safemov(dividend, lhs.lval);
-    regdp.second = lhs.type;
+    pgm.safemov(dividend, lhs.lval, op_type, lhs.type);
+    regdp.second = op_type;
     regdp.first  = nullptr;
-    compile_compound_rhs_normalized(pgm, right, lhs.type, divisor);
-    if ( lhs.type->is_integer() )
+    compile_compound_rhs_normalized(pgm, right, op_type, divisor);
+    if ( op_type->is_integer() )
 	pgm.safexor(remainder, remainder);
-    pgm.safediv(remainder, dividend, divisor, lhs.type);
-    pgm.safemov(lhs.lval, return_remainder ? remainder : dividend);
+    pgm.safediv(remainder, dividend, divisor, op_type);
+    Operand &result = return_remainder ? remainder : dividend;
+    pgm.safemov(lhs.lval, result, lhs.type, op_type);
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
@@ -4891,7 +4908,17 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     }
 
     if ( !regdp.first || !regdp.second )
-	regdp.second = ltype; // set type if not set
+    {
+	// For narrow integer LHS (char/short), don't propagate the LHS type
+	// to the RHS compilation — the RHS expression must apply C integer
+	// promotions (e.g. `unsigned char x; x = x / -5;` must compute the
+	// division in int, not in unsigned char where -5 wraps to 251).
+	// The LHS type is applied only at the final store.
+	if ( ltype->is_integer() && ltype->size < 4 )
+	    ; // leave regdp.second = NULL → RHS infers its own type
+	else
+	    regdp.second = ltype;
+    }
 
     // Post-declaration string-literal → char* assignment: `char *p; p =
     // "literal";`. The LHS is a char* (pointer, so is_numeric), but the
@@ -8144,6 +8171,31 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	    return *regdp.first;
 	}
 	_operand = out;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
+    // Integer narrowing cast (e.g. int → unsigned char): compile at the
+    // source width, then truncate via IR coerce so the canonical 64-bit
+    // register holds the correctly masked/sign-extended narrow value.
+    // Without this, `(unsigned char)-10` keeps the full -10 (0xFFF…F6)
+    // instead of producing 246 (0xF6 zero-extended).
+    if ( src_type && src_type->is_integer()
+      && cast_type && cast_type->is_integer()
+      && cast_type->size < src_type->size )
+    {
+	regdefp_t inner_rdp = {NULL, src_type, NULL};
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	IRBuilder ir(pgm.cc);
+	IRValue out = ir.coerce(ir_from_operand(src_op, src_type), cast_type);
+	out = ir.load(out);
+	regdp.second = cast_type;
+	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
+	    return *regdp.first;
+	}
+	_operand = out.op;
 	regdp.first = &_operand;
 	return _operand;
     }
