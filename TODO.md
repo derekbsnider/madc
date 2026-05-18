@@ -2,10 +2,11 @@
 
 ## High Priority
 
-- **GCC torture test suite: push past 75%.** Currently 1264/1685 (75.0%).
-  Remaining targets: 32-bit integer truncation in arithmetic/casts
-  (~33% of runtime failures), struct pass-by-value for function args
-  (~8 compile failures), and complex C declarators like `int *(p[25])`.
+- **GCC torture test suite: push past 80%.** Currently 1300/1685 (77.1%).
+  Remaining targets: operator `_datatype` defaults to ddINT32 instead
+  of computing from operands (causes 32-bit shift wrapping regressions),
+  cast-operand parser precedence (`(type)*p | x` binds too greedily),
+  struct pass-by-value for function args (~8 compile failures).
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and

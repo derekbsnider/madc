@@ -113,6 +113,46 @@
 - **Embedded headers: `struct passwd` in `pwd.h`, `intptr_t`/`uintptr_t`,
   `size_t` in `stdio.h`.**
 
+- **GNU named variadic macro parameter expansion.**
+  `#define test(ret, args...) fprintf(stdout, args)` now joins all
+  trailing call-site arguments into the named variadic parameter.
+
+- **Float-precision negation and comparison.**
+  `safeneg()` uses `subss`/`xorps` for float (was `subsd`/`xorpd`).
+  `safecmp()` uses `ucomiss` for float comparisons. Fixes `-1.0f`
+  producing `1.0f` and float comparison wrong answers.
+
+- **C usual-arithmetic float promotion.**
+  `infer_numeric_type()` returns the actual floating type (float or
+  double) instead of always `ddDOUBLE`. Matches GCC's usual arithmetic
+  conversions for int-vs-float expressions.
+
+- **Function return type always set in regdp.**
+  `TokenCallFunc::compile()` now unconditionally sets `regdp.second`
+  to the function's actual return type, fixing float→double coercion
+  when comparing float function returns directly.
+
+- **`ddINT = ddINT32`: LP64 ABI completion at the type-system level.**
+  `dtINT`, `dtINTptr`, `dtINTref` now alias 32-bit variants. Unsuffixed
+  integer literals, unqualified `int` variables, and `TokenOperator`
+  default types are all 4 bytes. `dtFLOAT` explicitly pinned to avoid
+  enum collision.
+
+- **Integer cast compiles inner at natural width.**
+  `TokenCast` for sub-64-bit integer targets compiles the inner
+  expression with NULL type when it detects an operator whose datadef
+  may underreport width. Fixes `(int)(LL_expr >> n)` truncating the
+  LL literal before the shift.
+
+- **Signed→unsigned same-size cast truncation.**
+  `(unsigned int)(signed int)x` now masks the upper 32 bits via
+  `canonicalize_narrow_integer_reg`. IR coerce handles signed→unsigned
+  same-size conversions.
+
+- **`unsigned char *` treated as charptr for string coercion.**
+  `(unsigned char *)"str"` now produces a valid c_str pointer instead
+  of garbage.
+
 ## [v0.16.0] - 2026-05-18
 
 sizeof(int) = 4: LP64 ABI alignment and GCC torture suite 75% milestone.

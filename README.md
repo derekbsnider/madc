@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 274 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1294/1685 (76.8%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status: 274 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1300/1685 (77.1%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -247,7 +247,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **GCC Parity** | GCC torture test suite compatibility | **v0.16.0+** — 1294/1685 (76.8%) passing; nested macro expansion, octal literals, SAR for signed right-shift, unsigned int64→double, cast tightness, static brace-init, 32-bit unsigned comparison |
+| **GCC Parity** | GCC torture test suite compatibility | **v0.16.0+** — 1300/1685 (77.1%) passing; ddINT=ddINT32 LP64 completion, float-precision negation/comparison, GNU named variadic macros, cast natural-width compile, unsigned char* coercion |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---
