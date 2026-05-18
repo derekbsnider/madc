@@ -2892,6 +2892,13 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		x86::Mem mm = x86::ptr(base_reg, elem_addr, (uint32_t)esize);
 		if ( val.isImm() )
 		    pgm.cc.mov(mm, val.as<Imm>());
+		else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
+		{
+		    if ( esize == sizeof(float) )
+			pgm.cc.movss(mm, val.as<x86::Xmm>());
+		    else
+			pgm.cc.movsd(mm, val.as<x86::Xmm>());
+		}
 		else if ( val.isReg() )
 		    pgm.cc.mov(mm, val.as<x86::Gp>());
 		else if ( val.isMem() )
@@ -2981,6 +2988,13 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
 		    if ( elem_val.isImm() )
 			pgm.cc.mov(em, elem_val.as<Imm>());
+		    else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kVec) )
+		    {
+			if ( esize == sizeof(float) )
+			    pgm.cc.movss(em, elem_val.as<x86::Xmm>());
+			else
+			    pgm.cc.movsd(em, elem_val.as<x86::Xmm>());
+		    }
 		    else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kGp) )
 		    {
 			x86::Gp src = elem_val.as<x86::Gp>();
@@ -3002,7 +3016,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    }
 	}
 
-	regdefp_t it_rdp = {nullptr, nullptr, nullptr};
+	regdefp_t it_rdp = {nullptr, mtype->is_real() ? mtype : nullptr, nullptr};
 	Operand &val_op = inits[i]->compile(pgm, it_rdp);
 
 	if ( mtype->is_numeric() || mtype->is_pointer() )
@@ -3033,6 +3047,13 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    x86::Mem mm = x86::ptr(base_reg, addr, (uint32_t)esize);
 	    if ( eff_val.isImm() )
 		pgm.cc.mov(mm, eff_val.as<Imm>());
+	    else if ( eff_val.isReg() && eff_val.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		if ( esize == sizeof(float) )
+		    pgm.cc.movss(mm, eff_val.as<x86::Xmm>());
+		else
+		    pgm.cc.movsd(mm, eff_val.as<x86::Xmm>());
+	    }
 	    else if ( eff_val.isReg() )
 	    {
 		x86::Gp vgp = eff_val.as<x86::Gp>();
@@ -3217,7 +3238,7 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    && var.type->rawtype() == DataType::dtCHAR;
 	for ( size_t i = 0; i < flat_inits.size(); ++i )
 	{
-	    regdefp_t it_rdp = {nullptr, nullptr, nullptr};
+	    regdefp_t it_rdp = {nullptr, var.type->is_real() ? var.type : nullptr, nullptr};
 	    Operand &val_op = flat_inits[i]->compile(pgm, it_rdp);
 	    x86::Mem slot = x86::ptr(base_reg, (int32_t)(i * elem_size), (uint32_t)elem_size);
 	    // char *arr[] = {"alice", ...}: each string-literal init yields a
@@ -3238,6 +3259,13 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    }
 	    if ( val_op.isImm() )
 		pgm.cc.mov(slot, val_op.as<Imm>());
+	    else if ( val_op.isReg() && val_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		if ( elem_size == sizeof(float) )
+		    pgm.cc.movss(slot, val_op.as<x86::Xmm>());
+		else
+		    pgm.cc.movsd(slot, val_op.as<x86::Xmm>());
+	    }
 	    else if ( val_op.isReg() )
 	    {
 		x86::Gp vgp = val_op.as<x86::Gp>();
@@ -8199,14 +8227,21 @@ Operand &TokenReal::compile(Program &pgm, regdefp_t &regdp)
 	regdp.second = _datatype;
 	DBG(pgm.cc.comment("TokenReal::compile() setting _datatype to double"));
     }
-    _const = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, _val);
-    if ( _datatype->size == sizeof(float) )
+    DataDef *effective_type = (regdp.second && regdp.second->is_real())
+	? regdp.second : _datatype;
+    if ( effective_type->size == sizeof(float) )
+    {
+	_const = pgm.cc.newFloatConst(ConstPoolScope::kLocal, (float)_val);
 	_const.setSize(sizeof(float));
+    }
     else
+    {
+	_const = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, _val);
 	_const.setSize(sizeof(double));
+    }
     DBG(pgm.cc.comment("TokenReal::compile() emitting through IRBuilder"));
     DBG(cout << "TokenReal::compile() emitting through IRBuilder const[" << _val << "]" << endl);
-    return emit_ir_value(pgm, IRValue::mem(_const, _datatype), regdp, _operand, _datatype);
+    return emit_ir_value(pgm, IRValue::mem(_const, effective_type), regdp, _operand, effective_type);
 }
 
 // load integer into register
