@@ -7313,6 +7313,10 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	throw "rval is non-numeric";
 
     settype(pgm, regdp);				 // set regdp.second type
+    // C standard: shift result type is the promoted left operand type,
+    // NOT the wider of both sides. Override regdp.second when the
+    // caller's target is wider than the natural shift type to get
+    // correct 32-bit wrapping (e.g. 2U << 31 must wrap at 32 bits).
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshl,
