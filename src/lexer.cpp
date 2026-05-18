@@ -1851,6 +1851,64 @@ TokenBase *Program::_getToken()
 		    // named `type` (macro's first arg), substituting
 		    // `result→type` first and `type→T` next would rewrite
 		    // the user's variable and corrupt the expansion.
+		    // C standard: pre-expand macros in arguments before
+		    // substitution (except for # and ## operands, but we
+		    // expand uniformly for simplicity). This handles nested
+		    // macro calls like UMIN(x, UMIN(y, z)).
+		    for ( size_t i = 0; i < args.size(); ++i )
+		    {
+			std::string &a = args[i];
+			// Quick check: does the argument contain any potential macro?
+			bool has_ident = false;
+			for ( size_t j = 0; j < a.size(); ++j )
+			    if ( isalpha((unsigned char)a[j]) || a[j] == '_' )
+				{ has_ident = true; break; }
+			if ( !has_ident ) continue;
+			// Push arg text through the tokenizer to expand macros
+			Source saved = std::move(source);
+			source = Source();
+			source.str(a);
+			std::string expanded_arg;
+			TokenBase *at;
+			while ( (at = getToken()) )
+			{
+			    switch ( at->type() )
+			    {
+				case TokenType::ttSpace: expanded_arg += ' '; break;
+				case TokenType::ttTab:   expanded_arg += '\t'; break;
+				case TokenType::ttEOL:   expanded_arg += '\n'; break;
+				case TokenType::ttOperator:
+				case TokenType::ttSymbol:
+				    expanded_arg += (char)at->get(); break;
+				case TokenType::ttMultiOp:
+				    expanded_arg += ((TokenMultiOp *)at)->str; break;
+				case TokenType::ttString:
+				    expanded_arg += '"';
+				    expanded_arg += ((TokenIdent *)at)->str;
+				    expanded_arg += '"';
+				    break;
+				case TokenType::ttChar:
+				    expanded_arg += '\'';
+				    expanded_arg += (char)at->get();
+				    expanded_arg += '\'';
+				    break;
+				default:
+				    if ( auto *ti = dynamic_cast<TokenIdent *>(at) )
+					expanded_arg += ti->str;
+				    else if ( at->type() == TokenType::ttInteger )
+				    {
+					char buf[32];
+					snprintf(buf, sizeof(buf), "%ld", (long)at->get());
+					expanded_arg += buf;
+				    }
+				    else
+					expanded_arg += (char)at->get();
+				    break;
+			    }
+			}
+			source = std::move(saved);
+			a = expanded_arg;
+		    }
 		    std::map<std::string, const std::string *> param_map;
 		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
 			param_map[macro.params[i]] = &args[i];
