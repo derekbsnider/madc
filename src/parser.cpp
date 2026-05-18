@@ -1561,19 +1561,42 @@ static int64_t parse_constant_primary(Program &pgm)
 	return !parse_constant_primary(pgm);
     if ( tb && tb->id() == TokenID::tkOpBrk )
     {
-	// Check for cast: (type)value — e.g. (char)SB
+	// Check for cast: (type)value — e.g. (char)SB, (unsigned char)~0
 	TokenBase *inner = pgm.peekToken();
 	if ( inner && (inner->type() == TokenType::ttDataType
 	  || inner->id() == TokenID::tkCONST
 	  || inner->id() == TokenID::tkRESTRICT) )
 	{
-	    // Skip type and qualifiers, then consume closing paren
+	    // Extract the cast target type for truncation
+	    DataDef *cast_dd = NULL;
+	    bool is_unsigned = false;
 	    while ( pgm.peekToken()
 	         && pgm.peekToken()->id() != TokenID::tkClBrk )
-		pgm.nextToken();
+	    {
+		TokenBase *ct = pgm.nextToken();
+		if ( ct->type() == TokenType::ttDataType )
+		    cast_dd = &((TokenDataType *)ct)->definition;
+		if ( ct->type() == TokenType::ttIdentifier )
+		{
+		    std::string tname = ((TokenIdent *)ct)->str;
+		    if ( tname == "unsigned" ) is_unsigned = true;
+		}
+	    }
 	    if ( pgm.peekToken() )
 		pgm.nextToken(); // consume ')'
-	    return parse_constant_primary(pgm);
+	    int64_t val = parse_constant_primary(pgm);
+	    // Apply truncation for the cast type
+	    if ( cast_dd )
+	    {
+		int sz = cast_dd->size;
+		if ( sz == 1 )
+		    val = is_unsigned ? (int64_t)(uint8_t)val : (int64_t)(int8_t)val;
+		else if ( sz == 2 )
+		    val = is_unsigned ? (int64_t)(uint16_t)val : (int64_t)(int16_t)val;
+		else if ( sz == 4 )
+		    val = is_unsigned ? (int64_t)(uint32_t)val : (int64_t)(int32_t)val;
+	    }
+	    return val;
 	}
 	out = parse_constant_integer_expression(pgm);
 	tb = pgm.nextToken();
@@ -5368,6 +5391,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    TokenBase *first_inner = nextToken();
 				    cast_expr = parseExpression(first_inner, true, false, true, 1);
 				}
+			    }
+			    else if ( cast_expr_tb
+				   && (cast_expr_tb->id() == TokenID::tkBnot  // ~
+				    || cast_expr_tb->id() == TokenID::tkNeg   // -
+				    || cast_expr_tb->id() == TokenID::tkLnot  // !
+				    || cast_expr_tb->id() == TokenID::tkAdd)  // +
+				   && peekToken()
+				   && (peekToken()->type() == TokenType::ttInteger
+				    || peekToken()->type() == TokenType::ttReal) )
+			    {
+				// Unary operator + literal: cast binds tightly.
+				// (unsigned char)~0 consumes only ~0, not * ' '.
+				TokenBase *operand_tb = nextToken();
+				TokenOperator *uop = dynamic_cast<TokenOperator *>(cast_expr_tb);
+				if ( uop ) { uop->right = operand_tb; cast_expr = uop; }
+				else cast_expr = operand_tb;
 			    }
 			    else
 			    {
