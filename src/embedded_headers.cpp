@@ -351,6 +351,17 @@ struct dirent {
 #define LC_NUMERIC   1
 #define LC_TIME      2
 )EMBED"},
+    {"malloc.h", R"EMBED(// madc embedded malloc.h — memory allocation
+// malloc/free/realloc/calloc are already available via dlsym fallback.
+// This stub satisfies #include <malloc.h>.
+
+#ifndef __MADC_MALLOC_H
+#define __MADC_MALLOC_H 1
+
+#include <stdlib.h>
+
+#endif
+)EMBED"},
     {"math.h", R"EMBED(// madc embedded math.h — auto-loads libm and defines math constants
 #load "libm.so.6" as libm;
 
@@ -601,6 +612,20 @@ void regfree(regex_t *preg);
 
 #endif
 )EMBED"},
+    {"resolv.h", R"EMBED(// madc embedded resolv.h — DNS resolver
+// b64_ntop / b64_pton and resolver functions available via dlsym.
+
+#ifndef __MADC_RESOLV_H
+#define __MADC_RESOLV_H 1
+
+#include <sys/types.h>
+
+extern int b64_ntop(const unsigned char *src, int srclength,
+                    char *target, int targsize);
+extern int b64_pton(const char *src, unsigned char *target, int targsize);
+
+#endif
+)EMBED"},
     {"signal.h", R"EMBED(// madc embedded signal.h — POSIX signal constants (Linux values)
 // Functions (kill, signal, raise, sigaction) available via dlsym fallback
 
@@ -734,6 +759,22 @@ extern char *strdup(char *s);
 extern char *strpbrk(char *s, char *accept);
 extern char *strtok(char *s, char *delim);
 extern char *strndup(char *s, int n);
+)EMBED"},
+    {"strings.h", R"EMBED(// madc embedded strings.h — POSIX string functions
+// Most functions resolve through the dlsym fallback.
+// This stub satisfies #include <strings.h> for code that uses
+// bcopy, bzero, strcasecmp, strncasecmp, etc.
+
+#ifndef __MADC_STRINGS_H
+#define __MADC_STRINGS_H 1
+
+#include <string.h>
+
+// POSIX strings.h functions — available via dlsym fallback
+extern int strcasecmp(const char *s1, const char *s2);
+extern int strncasecmp(const char *s1, const char *s2, int n);
+
+#endif
 )EMBED"},
     {"sys/cdefs.h", R"EMBED(#ifndef __MADC_SYS_CDEFS_H
 #define __MADC_SYS_CDEFS_H 1
@@ -1212,6 +1253,33 @@ struct timezone {
 // AF_UNIX / AF_LOCAL = 1 (defined in sys/socket.h)
 // struct sockaddr_un access deferred (requires struct interop)
 // Functions via dlsym fallback (same as sys/socket.h: socket, bind, connect, etc.)
+)EMBED"},
+    {"sys/vfs.h", R"EMBED(// madc embedded sys/vfs.h — filesystem statistics
+// statfs() is available via dlsym fallback.
+
+#ifndef __MADC_SYS_VFS_H
+#define __MADC_SYS_VFS_H 1
+
+#include <sys/types.h>
+
+struct statfs {
+    long f_type;
+    long f_bsize;
+    long f_blocks;
+    long f_bfree;
+    long f_bavail;
+    long f_files;
+    long f_ffree;
+    long f_fsid[2];
+    long f_namelen;
+    long f_frsize;
+    long f_flags;
+    long f_spare[4];
+};
+
+extern int statfs(const char *path, struct statfs *buf);
+
+#endif
 )EMBED"},
     {"sys/wait.h", R"EMBED(// madc embedded sys/wait.h — process wait constants
 // Functions (wait, waitpid) available via dlsym fallback
