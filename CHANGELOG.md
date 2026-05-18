@@ -55,6 +55,64 @@
 
 - **Embedded headers: `strings.h`, `malloc.h`, `sys/vfs.h`, `resolv.h`.**
 
+- **Lexer: EOF without trailing newline.**
+  Files ending without `\n` no longer produce a spurious TokenChar(-1).
+
+- **Lexer: angle-bracket include fallback to source directory.**
+  `#include <file.h>` now searches the current source directory as last
+  resort, fixing local header copies like libpq-fe.h → postgres_ext.h.
+
+- **Lexer: octal integer literal support.**
+  `010` now correctly parses as 8 (octal), not 10 (decimal).
+
+- **Preprocessor: nested function-like macro expansion.**
+  Macro arguments are now pre-expanded before substitution (C standard
+  behavior). Fixes `UMIN(x, UMIN(y, z))` and similar nested calls.
+
+- **Parser: subscript on generic pointer expressions.**
+  `NAME(ch)[0]` where NAME expands to a ternary now subscripts correctly.
+
+- **Parser: `const`/`restrict` in cast expressions.**
+  `(const OBJ_DATA * const *)expr` and `(char)CONST` in case labels.
+
+- **Parser: cast-expression tightness.**
+  `(unsigned char)~0 * ' '` now parses as `((unsigned char)(~0)) * ' '`,
+  not `(unsigned char)(~0 * ' ')`.
+
+- **Parser: unary `+` after assignment.**
+  `x = +20` no longer fails with "Missing operand".
+
+- **Parser: `sizeof` / `parsePostfixChain` for keyword identifiers.**
+  `sizeof(class->member)` works when `class` is used as a C identifier.
+
+- **Compiler: `*(*p)++ = value` assignment.**
+  Post-incremented dereference as assignment LHS now captures old pointer,
+  stores RHS, then increments. Matches GCC codegen.
+
+- **Compiler: asmjit 32-arg limit.**
+  FuncSignature/InvokeNode capped at 32 args. Varargs calls with many
+  format arguments no longer abort.
+
+- **Compiler: static struct/array brace-init.**
+  Local `static` variables with brace initializers are now initialized
+  at first entry, not left zeroed.
+
+- **Compiler: unsigned int64 → double/float (GCC pattern).**
+  `(double)UINT64_MAX` now gives ~1.84e19, not -1.0. Uses the
+  test/jns/shr/or/cvtsi2sd/addsd pattern matching GCC.
+
+- **Compiler: 32-bit unsigned comparison.**
+  `int` vs `unsigned int` comparisons now truncate to 32 bits before
+  the unsigned compare. UINT_MAX in limits.h now has the U suffix.
+
+- **Typesafe: SAR for signed right-shift.**
+  `safeshr` now uses SAR (arithmetic shift) for signed types instead
+  of SHR (logical shift). Fixes `-2147483648 >> 1` producing a
+  positive number.
+
+- **Embedded headers: `struct passwd` in `pwd.h`, `intptr_t`/`uintptr_t`,
+  `size_t` in `stdio.h`.**
+
 ## [v0.16.0] - 2026-05-18
 
 sizeof(int) = 4: LP64 ABI alignment and GCC torture suite 75% milestone.
