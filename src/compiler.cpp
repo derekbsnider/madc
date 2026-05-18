@@ -8130,7 +8130,12 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	IRValue result = ir.coerce(IRValue::reg(out, &ddINT64), cast_type);
 	result = ir.load(result);
 	regdp.second = cast_type;
-	if ( regdp.first )
+	// Write to caller dest if compatible. Skip Xmm destinations:
+	// safemov(Xmm, Gp) does cvtsi2ss, but the caller (e.g.
+	// compile_token_normalized) will do its own int→float coerce
+	// and would double-convert if we wrote here.
+	if ( regdp.first
+	  && !(regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec)) )
 	{
 	    pgm.safemov(*regdp.first, result.op, cast_type, cast_type);
 	    return *regdp.first;
