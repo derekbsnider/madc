@@ -129,14 +129,42 @@ IRValue IRBuilder::load(const IRValue &src)
     if ( !src.valid() )
 	throw "IRBuilder::load() invalid src";
 
-    // Reg values: all integer virtual registers are Gpq (64-bit) and
-    // are sign/zero-extended at the point they were loaded from memory.
-    // Re-canonicalizing here would create redundant intermediate vregs
-    // that confuse asmjit's RA (spill-before-write), so just pass
-    // through.  Narrowing arithmetic (int32 wrap) is handled at the
-    // store path by writing only the low N bytes.
+    // Reg values: all integer virtual registers are Gpq (64-bit).
+    // Sub-8 integer types need in-place sign/zero extension so that
+    // comparisons and casts see the correct value in the full 64 bits.
+    // We extend in-place (reusing the same vreg) to avoid creating
+    // intermediate vregs that confuse asmjit's register allocator.
     if ( src.isReg() )
+    {
+	if ( src.type && src.type->is_integer() && src.type->size < 8
+	  && src.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Gp g = src.op.as<x86::Gp>();
+	    bool is_unsigned = src.type->is_unsigned();
+	    if ( src.type->size == 4 )
+	    {
+		if ( is_unsigned )
+		    cc_.mov(g.r32(), g.r32());  // implicit zero-extend
+		else
+		    cc_.movsxd(g, g.r32());
+	    }
+	    else if ( src.type->size == 2 )
+	    {
+		if ( is_unsigned )
+		    cc_.movzx(g, g.r16());
+		else
+		    cc_.movsx(g, g.r16());
+	    }
+	    else if ( src.type->size == 1 )
+	    {
+		if ( is_unsigned )
+		    cc_.movzx(g, g.r8());
+		else
+		    cc_.movsx(g, g.r8());
+	    }
+	}
 	return src;
+    }
 
     // Mem: size-aware load with sign/zero extension for narrow ints.
     if ( src.isMem() )
