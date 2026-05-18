@@ -1397,11 +1397,11 @@ TokenBase *Program::_getToken()
 	    if ( isdigit(ch) )
 	    {
 		// Consume C integer-literal suffixes (u/U, l/L, ll/LL, combos
-		// like ul/ULL/Lu) and return true when the U flag is present.
-		// madc's int is 64-bit so the L/LL size hints are
-		// informational only, but signedness (U) matters for bitwise
-		// operators and comparisons.
+		// like ul/ULL/Lu) and set type accordingly. With sizeof(int)=4,
+		// the L/LL suffix widens to 64-bit (long/long long), and U
+		// controls signedness.
 		bool has_u_suffix = false;
+		int  long_count   = 0;
 		auto eat_int_suffix = [&]() {
 		    for (int i = 0; i < 3; ++i)
 		    {
@@ -1412,17 +1412,27 @@ TokenBase *Program::_getToken()
 			    source.get();
 			}
 			else if (c == 'l' || c == 'L')
+			{
+			    ++long_count;
 			    source.get();
+			}
 			else
 			    break;
 		    }
+		};
+		auto resolve_int_suffix_type = [&]() -> DataDef * {
+		    if ( long_count >= 1 )
+			return has_u_suffix ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
+		    if ( has_u_suffix )
+			return &ddUINT32;
+		    return nullptr; // no suffix → default type
 		};
 		if ( is_binary_prefix(ch, source) )
 		{
 		    int64_t bv = read_binary_literal(source);
 		    eat_int_suffix();
 		    TokenInt *ti = new TokenInt(bv);
-		    if (has_u_suffix) ti->setDataType(&ddUINT32);
+		    { DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
 		    return ti;
 		}
 		// hex literal: 0x... or 0X...
@@ -1448,7 +1458,7 @@ TokenBase *Program::_getToken()
 		    eat_int_suffix();
 		    {
 			TokenInt *ti = new TokenInt((int64_t)hv);
-			if (has_u_suffix) ti->setDataType(&ddUINT32);
+			{ DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
 			return ti;
 		    }
 		}
@@ -1496,7 +1506,7 @@ TokenBase *Program::_getToken()
 		    }
 		    eat_int_suffix();
 		    TokenInt *ti = new TokenInt(v);
-		    if (has_u_suffix) ti->setDataType(&ddUINT32);
+		    { DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
 		    return ti;
 		}
 		// handle floating point
