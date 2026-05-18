@@ -5596,6 +5596,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // should we delete tb ?
 		    tb = ts;
 		}
+		// Unary `+` (no-op): just consume and continue.
+		// Only treat as unary when exStack is empty — otherwise
+		// `x++ + 10` would lose the `+` (isUnaryPosition sees
+		// the `++` operator as a unary context).
+		if ( tb->id() == TokenID::tkAdd && isUnaryPosition()
+		  && exStack.empty() )
+		    break;
 		// & address-of in unary position
 		if ( tb->id() == TokenID::tkBand && isUnaryPosition() )
 		{
