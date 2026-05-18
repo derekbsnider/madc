@@ -1361,21 +1361,34 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
     // Fallback: sizeof(expression) — parse as expression, use its type
     if ( !have_value && !dd )
     {
-	TokenBase *expr = pgm.parseExpression(type_tb, true, false, true, 1);
-	if ( expr && expr->datadef() )
+	// sizeof("literal") — C string literals are char arrays, not
+	// std::string objects. Check type_tb before parseExpression
+	// transforms it.
+	if ( type_tb && type_tb->type() == TokenType::ttString )
 	{
-	    dd = expr->datadef();
-	    // For fixed arrays accessed as expressions, use element size
-	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
-		if ( tv->var.is_fixed_array() )
-		    value = tv->var.type->size * tv->var.total_elements();
-	    if ( !value )
-		value = query_datadef_measure(dd, want_alignof);
+	    TokenStr *ts = static_cast<TokenStr *>(type_tb);
+	    value = ts->str.size() + 1; // include NUL terminator
 	    have_value = true;
-	    dd = NULL; // have_value is set, skip the pointer/array loop below
+	    dd = NULL;
 	}
-	if ( !have_value )
-	    pgm.Throw(type_tb) << "Unknown type in " << op_name << flush;
+	else
+	{
+	    TokenBase *expr = pgm.parseExpression(type_tb, true, false, true, 1);
+	    if ( expr && expr->datadef() )
+	    {
+		dd = expr->datadef();
+		// For fixed arrays accessed as expressions, use element size
+		if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+		    if ( tv->var.is_fixed_array() )
+			value = tv->var.type->size * tv->var.total_elements();
+		if ( !value )
+		    value = query_datadef_measure(dd, want_alignof);
+		have_value = true;
+		dd = NULL; // have_value is set, skip the pointer/array loop below
+	    }
+	    if ( !have_value )
+		pgm.Throw(type_tb) << "Unknown type in " << op_name << flush;
+	}
     }
 
     while ( !have_value && pgm.peekToken() )
