@@ -798,6 +798,7 @@ public:
     struct LazyEntry { int header; LazyKind kind; };
     std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration
     std::map<std::string, std::string> define_map;	// #define name value
+    std::vector<std::string> include_paths;	// -I include search paths (for #include "file.h")
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken

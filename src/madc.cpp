@@ -236,6 +236,18 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) {
             emit_executable_path = argv[++i];
             filearg = i + 1;
+        } else if (strncmp(argv[i], "-I", 2) == 0) {
+            // -Ipath or -I path
+            const char *path = argv[i] + 2;
+            if ( *path == '\0' && i + 1 < argc )
+                path = argv[++i];
+            if ( *path )
+            {
+                std::string p = path;
+                if ( p.back() != '/' ) p += '/';
+                prog->include_paths.push_back(p);
+            }
+            filearg = i + 1;
         } else {
             filearg = i;
             break;

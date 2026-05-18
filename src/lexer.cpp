@@ -546,24 +546,23 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
     if ( incfile.empty() || incfile[0] == '/' )
 	return incfile;
 
+    // Standard C include search order:
+    //   #include <file.h>  → embedded headers (checked before this),
+    //                        then system paths
+    //   #include "file.h"  → current source directory, then -I paths
+
     if ( is_system )
     {
-	// System includes: search source directory, then standard system
-	// include paths. Embedded headers are checked before this function
-	// is called, so this only runs for non-embedded headers.
+	// <file.h>: system include paths only
 	static const char *sys_paths[] = {
-	    NULL, // placeholder for current source directory
 	    "/usr/local/include/",
 	    "/usr/include/",
 	    "/usr/include/x86_64-linux-gnu/",
 	    NULL
 	};
-	std::string cur_dir = current_source_directory();
-	for ( int i = 0; sys_paths[i] || i == 0; ++i )
+	for ( int i = 0; sys_paths[i]; ++i )
 	{
-	    std::string dir = (i == 0) ? cur_dir : sys_paths[i];
-	    if ( dir.empty() ) continue;
-	    std::string candidate = dir + incfile;
+	    std::string candidate = std::string(sys_paths[i]) + incfile;
 	    std::ifstream probe(candidate.c_str());
 	    if ( probe.good() )
 		return candidate;
@@ -571,7 +570,7 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	return incfile; // not found — will fail at open
     }
 
-    // Quoted includes: try current source directory first.
+    // "file.h": current source directory, then -I paths
     std::string cur_dir = current_source_directory();
     if ( !cur_dir.empty() )
     {
@@ -580,16 +579,10 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
 	if ( probe.good() )
 	    return local;
     }
-    // Fall back to system paths (GCC does the same for #include "").
-    static const char *sys_paths[] = {
-	"/usr/local/include/",
-	"/usr/include/",
-	"/usr/include/x86_64-linux-gnu/",
-	NULL
-    };
-    for ( int i = 0; sys_paths[i]; ++i )
+    for ( size_t i = 0; i < include_paths.size(); ++i )
     {
-	std::string candidate = std::string(sys_paths[i]) + incfile;
+	std::string &dir = include_paths[i];
+	std::string candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
 	std::ifstream probe(candidate.c_str());
 	if ( probe.good() )
 	    return candidate;
