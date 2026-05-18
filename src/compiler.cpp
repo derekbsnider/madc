@@ -3142,6 +3142,13 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenDecl::compile(" << var.name << " regdp.second: " << (regdp.second ? regdp.second->name : "")<<  ") TOP" << endl);
     bool emit_initializer = !(var.flags & vfSTATIC) || pgm.tkFunction == pgm.tkProgram;
 
+    // Local statics with brace-init lists (struct/array initializers) still
+    // need their init code emitted — static placement only zeroes the memory.
+    // Emit init unconditionally (static vars are only initialized once since
+    // they live in the data section — the function is only JIT'd once).
+    if ( !emit_initializer && !init_list.empty() )
+	emit_initializer = true;
+
     // VLAs need their malloc-init emitted at the declaration point — not
     // lazily on first use. Lazy emission would put the malloc inside the
     // enclosing loop body if the first subscript appears in a loop, and
