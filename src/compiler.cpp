@@ -8317,35 +8317,59 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	return _operand;
     }
 
-    // Integer narrowing / truncation cast (e.g. int → unsigned char,
-    // or signed int → unsigned int): compile at the source width, then
-    // truncate via IR coerce so the canonical 64-bit register holds the
-    // correctly masked/sign-extended narrow value.  Also handles
-    // same-size sign-change casts like (unsigned int)(signed int)x:
-    // the 64-bit register may hold sign-extended bits that need masking.
-    if ( src_type && src_type->is_integer()
-      && cast_type && cast_type->is_integer()
-      && (cast_type->size < src_type->size
-       || (cast_type->size < 8 && cast_type->is_unsigned() != src_type->is_unsigned())) )
+    // Integer narrowing / truncation cast: compile at the source width,
+    // then truncate via IR coerce.  Handles explicit narrowing (int64 →
+    // int32) and same-size sign changes (signed → unsigned).
+    //
+    // When src_type is known and wider than cast_type, or signedness
+    // differs at the same sub-8 width, use the narrowing path.
+    // When src_type is unknown or equals cast_type AND the inner expr
+    // is an operator (which always reports ddINT, now 4 bytes, regardless
+    // of actual operand widths), compile with NULL type so the inner
+    // expression computes at its natural width, then truncate.
     {
-	// Do NOT pass src_type as regdp.second: that would override the
-	// inner expression's natural type inference (e.g. unsigned division
-	// inside a (int)ull_expr / 8 cast would become signed).
-	regdefp_t inner_rdp = {NULL, NULL, NULL};
-	Operand &src_op = expr->compile(pgm, inner_rdp);
-	DataDef *actual_src = inner_rdp.second ? inner_rdp.second : src_type;
-	IRBuilder ir(pgm.cc);
-	IRValue out = ir.coerce(ir_from_operand(src_op, actual_src), cast_type);
-	out = ir.load(out);
-	regdp.second = cast_type;
-	if ( regdp.first )
+	bool known_narrow = src_type && src_type->is_integer()
+	    && cast_type && cast_type->is_integer()
+	    && (cast_type->size < src_type->size
+	     || (cast_type->size < 8 && cast_type->size == src_type->size
+		 && cast_type->is_unsigned() != src_type->is_unsigned()));
+	// Operator expressions always report ddINT as their datadef, but
+	// may compute wider values (e.g. LL_literal >> n).  Detect this
+	// and force the natural-width compile path.
+	bool operator_may_be_wider = !known_narrow
+	    && cast_type && cast_type->is_integer() && cast_type->size < 8
+	    && src_type == &ddINT
+	    && dynamic_cast<TokenOperator *>(expr) != nullptr;
+
+	if ( known_narrow || operator_may_be_wider )
 	{
-	    pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
-	    return *regdp.first;
+	    regdefp_t inner_rdp = {NULL, NULL, NULL};
+	    Operand &src_op = expr->compile(pgm, inner_rdp);
+	    DataDef *actual_src = inner_rdp.second ? inner_rdp.second
+				: (src_type && src_type->is_integer() ? src_type : &ddINT64);
+	    if ( actual_src->size > cast_type->size
+	      || (actual_src->size == cast_type->size && actual_src->size < 8
+		  && actual_src->is_unsigned() != cast_type->is_unsigned()) )
+	    {
+		IRBuilder ir(pgm.cc);
+		IRValue out = ir.coerce(ir_from_operand(src_op, actual_src), cast_type);
+		out = ir.load(out);
+		regdp.second = cast_type;
+		if ( regdp.first )
+		{
+		    pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
+		    return *regdp.first;
+		}
+		_operand = out.op;
+		regdp.first = &_operand;
+		return _operand;
+	    }
+	    // No truncation needed — just relabel.
+	    regdp.second = cast_type;
+	    if ( !regdp.first )
+		regdp.first = &src_op;
+	    return src_op;
 	}
-	_operand = out.op;
-	regdp.first = &_operand;
-	return _operand;
     }
 
     // set the result type to the cast target
