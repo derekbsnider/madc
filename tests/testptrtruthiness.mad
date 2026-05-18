@@ -1,0 +1,25 @@
+#include <stdio.h>
+
+int main()
+{
+    char *p = nullptr;
+
+    if ( !p )
+        printf("not-null\n");
+
+    if ( p || 0 )
+        printf("bad-or\n");
+
+    if ( 0 && p )
+        printf("bad-and\n");
+
+    p = "ok";
+
+    if ( p && p[0] == 'o' )
+        printf("and-live\n");
+
+    if ( p || 0 )
+        printf("or-live\n");
+
+    return 0;
+}
