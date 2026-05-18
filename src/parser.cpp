@@ -4574,10 +4574,11 @@ TokenBase *Program::parseCallMethod(TokenCallMethod *tc)
 // trailing binary operators such as `== '$'`.
 TokenBase *Program::parsePostfixChain(TokenBase *head)
 {
-    if ( !head || head->type() != TokenType::ttIdentifier )
+    if ( !head || (!is_contextual_identifier_token(head)
+		 && head->type() != TokenType::ttIdentifier) )
 	return NULL;
 
-    std::string name = ((TokenIdent *)head)->str;
+    std::string name = contextual_identifier_name(head);
     Variable *var = findVariable(name);
     TokenBase *result = NULL;
     if ( var )
