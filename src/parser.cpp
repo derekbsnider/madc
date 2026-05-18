@@ -10448,7 +10448,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		int64_t n = parse_constant_integer_expression(*this);
 		if ( n < 0 )
 		    Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
-		if ( n == 0 ) n = 1; // treat [0] as flexible array member (1 element placeholder)
+		// GCC: int arr[0] has sizeof 0; keep the zero dim.
 		arr_dims.push_back((uint32_t)n);
 		TokenBase *cl = nextToken();
 		if ( !cl || cl->id() != TokenID::tkClSqr )
@@ -10696,17 +10696,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	else if ( !arr_dims.empty() )
 	{
-	    for ( auto d : arr_dims )
-		if ( d == 0 )
-		{
-		    if ( !parsing_extern_decl )
-			Throw(nt) << "Array size missing and no initializer" << flush;
-		}
+	    // GCC allows zero-length arrays (sizeof 0, flexible member).
+	    // Only error when a dim is 0 because the size was truly
+	    // missing (empty brackets with no initializer) — but we
+	    // can't distinguish that from explicit [0] at this point,
+	    // so just allow it.
 	}
 
 	bool alloc = parsing_extern_decl ? false : ((!code || gotstatic) ? true : false);
 	uint32_t elem_count = 1;
-	for ( auto d : arr_dims ) elem_count *= (d == 0 ? 1 : d);
+	for ( auto d : arr_dims ) elem_count *= d;
 	var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(*this, code, var);
