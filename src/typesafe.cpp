@@ -1282,13 +1282,15 @@ void Program::safecmp(x86::Gp &lval, x86::Gp &rval)
     }
 }
 
-void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2)
+void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2, DataDef *dd)
 {
-   cc.ucomisd(r1, r2);
-//   cc.cmpsd(r1, r2, 0);
+    if ( dd && dd->size == sizeof(float) )
+	cc.ucomiss(r1, r2);
+    else
+	cc.ucomisd(r1, r2);
 }
 
-void Program::safecmp(Operand &op1, Operand &op2)
+void Program::safecmp(Operand &op1, Operand &op2, DataDef *dd)
 {
     if ( !op1.isReg() ) { throw "safecmp() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() && !op2.isMem() )
@@ -1296,7 +1298,7 @@ void Program::safecmp(Operand &op1, Operand &op2)
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
-	    safecmp(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	    safecmp(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), dd);
 	else
 	    throw "safecmp() Xmm compare expects an Xmm rhs";
     }
@@ -1322,12 +1324,19 @@ void Program::safecmp(Operand &op1, Operand &op2)
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
-	    // Gp vs Xmm: convert the integer to double via cvtsi2sd, then
-	    // ucomisd. SMAUG idioms compare an int member against a real
-	    // expression, e.g. `victim->stances[i] > STANCE_GRAND_MASTER * .75`.
-	    x86::Xmm tmp = cc.newXmmSd("__cmp_int_as_dbl");
-	    cc.cvtsi2sd(tmp, op1.as<x86::Gp>());
-	    cc.ucomisd(tmp, op2.as<x86::Xmm>());
+	    // Gp vs Xmm: convert the integer to the matching real type.
+	    if ( dd && dd->size == sizeof(float) )
+	    {
+		x86::Xmm tmp = cc.newXmmSs("__cmp_int_as_flt");
+		cc.cvtsi2ss(tmp, op1.as<x86::Gp>());
+		cc.ucomiss(tmp, op2.as<x86::Xmm>());
+	    }
+	    else
+	    {
+		x86::Xmm tmp = cc.newXmmSd("__cmp_int_as_dbl");
+		cc.cvtsi2sd(tmp, op1.as<x86::Gp>());
+		cc.ucomisd(tmp, op2.as<x86::Xmm>());
+	    }
 	}
 	else
 	    throw "safecmp() rval is unsupported";

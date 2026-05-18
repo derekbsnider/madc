@@ -585,14 +585,28 @@ static DataDef *usual_binary_integer_type(TokenBase *left, DataDef *lt,
 
 static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right)
 {
-    if ( (left && left->is_real()) || (right && right->is_real()) )
-	return &ddDOUBLE;
     DataDef *lt = token_numeric_type(left);
     DataDef *rt = token_numeric_type(right);
-    if ( lt && lt->is_real() )
-	return lt;
-    if ( rt && rt->is_real() )
-	return rt;
+    // C usual arithmetic conversions for floating types:
+    // pick the highest-ranked real type present.  If only one side
+    // is real, the integer side converts to that real type — NOT
+    // unconditionally to double.
+    bool l_real = (lt && lt->is_real()) || (left && left->is_real());
+    bool r_real = (rt && rt->is_real()) || (right && right->is_real());
+    if ( l_real || r_real )
+    {
+	DataDef *ld = lt && lt->is_real() ? lt : (left ? left->datadef() : nullptr);
+	DataDef *rd = rt && rt->is_real() ? rt : (right ? right->datadef() : nullptr);
+	bool l_is_real = ld && ld->is_real();
+	bool r_is_real = rd && rd->is_real();
+	if ( l_is_real && r_is_real )
+	    return ld->size >= rd->size ? ld : rd;
+	if ( l_is_real )
+	    return ld;
+	if ( r_is_real )
+	    return rd;
+	return &ddDOUBLE;  // fallback
+    }
     if ( lt && lt->is_integer() && rt && rt->is_integer() )
 	return usual_binary_integer_type(left, lt, right, rt);
     // Unary / single-operand case: preserve the exact type so callers
@@ -1021,7 +1035,7 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
 	}
     }
     x86::Gp result = pgm.cc.newGpq("_cmp");
-    pgm.safecmp(lval, rval);
+    pgm.safecmp(lval, rval, cmp_type);
     switch(op)
     {
 	case CmpKind::Eq: pgm.safesete(result);                                          break;
@@ -7731,7 +7745,7 @@ Operand &Token3Way::compile(Program &pgm, regdefp_t &regdp)
     Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
     x86::Gp result = pgm.cc.newGpq("_cmp_3way");
     DBG(pgm.cc.comment("Token3Way::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);				 // typesafe comparison
+    pgm.safecmp(lval, rval, cmp_type);			 // typesafe comparison
 
     pgm.safesetg(result);					 // set result to 1 if >
     pgm.cc.jg(done);					 // if >, jump to done

@@ -1240,8 +1240,8 @@ public:
 
     // perform cc.cmp with size casting
     void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    void safecmp(asmjit::Operand &,  asmjit::Operand &);
+    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *dd = nullptr);
+    void safecmp(asmjit::Operand &,  asmjit::Operand &, DataDef *dd = nullptr);
 
     // compile code
     bool compile();
