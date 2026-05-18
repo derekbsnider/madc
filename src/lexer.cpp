@@ -1580,9 +1580,96 @@ TokenBase *Program::_getToken()
 		    std::vector<std::string> args;
 		    std::string arg;
 		    int depth = 1;
+		    bool at_line_start = false; // track whether next non-ws char is start of line
+		    int macro_ifdef_skip = 0; // >0 means we're skipping a false #ifdef/#else branch
+		    int macro_ifdef_depth = 0; // tracks #ifdef nesting inside macro args
 		    while ( source.good() && depth > 0 )
 		    {
 			char mc = source.get();
+			// Handle #ifdef/#ifndef/#else/#endif inside macro args
+			// (GCC extension: conditional directives in macro args).
+			if ( mc == '#' && at_line_start )
+			{
+			    // Read directive name
+			    std::string dir;
+			    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+				source.get();
+			    while ( source.good() && isalpha(source.peek()) )
+				dir += source.get();
+			    if ( dir == "ifdef" || dir == "ifndef" )
+			    {
+				while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+				    source.get();
+				std::string name;
+				while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
+				    name += source.get();
+				bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+				bool active = (dir == "ifdef") ? defined : !defined;
+				++macro_ifdef_depth;
+				if ( !active )
+				    ++macro_ifdef_skip;
+				// consume rest of line
+				while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+				    source.get();
+				continue;
+			    }
+			    else if ( dir == "if" )
+			    {
+				// Evaluate #if condition
+				bool active = evaluateIfCondition();
+				++macro_ifdef_depth;
+				if ( !active )
+				    ++macro_ifdef_skip;
+				continue;
+			    }
+			    else if ( dir == "else" )
+			    {
+				if ( macro_ifdef_skip > 0 )
+				    --macro_ifdef_skip; // was skipping → now active
+				else
+				    ++macro_ifdef_skip; // was active → now skip
+				while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+				    source.get();
+				continue;
+			    }
+			    else if ( dir == "elif" )
+			    {
+				if ( macro_ifdef_skip > 0 )
+				{
+				    --macro_ifdef_skip;
+				    bool active = evaluateIfCondition();
+				    if ( !active )
+					++macro_ifdef_skip;
+				}
+				else
+				    ++macro_ifdef_skip; // was active → skip
+				continue;
+			    }
+			    else if ( dir == "endif" )
+			    {
+				--macro_ifdef_depth;
+				if ( macro_ifdef_skip > 0 )
+				    --macro_ifdef_skip;
+				while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+				    source.get();
+				continue;
+			    }
+			    else
+			    {
+				// Not a conditional directive — put # + dir back as arg text
+				arg += '#';
+				arg += dir;
+			    }
+			    at_line_start = false;
+			    continue;
+			}
+			at_line_start = (mc == '\n' || mc == '\r');
+			// Skip content in false #ifdef/#else branch
+			if ( macro_ifdef_skip > 0 )
+			{
+			    // Still need to track nested #ifdef/#endif in skipped text
+			    continue;
+			}
 			if ( mc == '(' ) { ++depth; arg += mc; }
 			else if ( mc == ')' ) { --depth; if (depth > 0) arg += mc; }
 			else if ( mc == ',' && depth == 1 )
@@ -1618,6 +1705,74 @@ TokenBase *Program::_getToken()
 			    if ( source.peek() == '\'' ) arg += source.get();
 			}
 			else arg += mc;
+		    }
+		    // If the active #ifdef branch contained the closing `)`,
+		    // the remaining #else/#endif directives are still in the
+		    // source. Buffer active content (before #else) and push
+		    // it back; skip #else...#endif blocks entirely.
+		    if ( macro_ifdef_depth > 0 )
+		    {
+			std::string preserved;
+			while ( macro_ifdef_depth > 0 && source.good() )
+			{
+			    // Buffer content until a line starting with `#`
+			    std::string line;
+			    while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+				line += source.get();
+			    // consume newline
+			    std::string nl;
+			    while ( source.good() && (source.peek() == '\n' || source.peek() == '\r') )
+				nl += source.get();
+			    // check if line is a directive
+			    size_t p = 0;
+			    while ( p < line.size() && (line[p] == ' ' || line[p] == '\t') ) ++p;
+			    if ( p < line.size() && line[p] == '#' )
+			    {
+				++p;
+				while ( p < line.size() && (line[p] == ' ' || line[p] == '\t') ) ++p;
+				std::string dir2;
+				while ( p < line.size() && isalpha(line[p]) ) dir2 += line[p++];
+				if ( dir2 == "endif" )
+				{
+				    --macro_ifdef_depth;
+				    // don't preserve the #endif line
+				}
+				else if ( dir2 == "else" || dir2 == "elif" )
+				{
+				    // Skip from #else/#elif to the matching #endif
+				    int skip_depth = 1;
+				    while ( skip_depth > 0 && source.good() )
+				    {
+					std::string sline;
+					while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+					    sline += source.get();
+					while ( source.good() && (source.peek() == '\n' || source.peek() == '\r') )
+					    source.get();
+					size_t sp = 0;
+					while ( sp < sline.size() && (sline[sp] == ' ' || sline[sp] == '\t') ) ++sp;
+					if ( sp < sline.size() && sline[sp] == '#' )
+					{
+					    ++sp;
+					    while ( sp < sline.size() && (sline[sp] == ' ' || sline[sp] == '\t') ) ++sp;
+					    std::string d3;
+					    while ( sp < sline.size() && isalpha(sline[sp]) ) d3 += sline[sp++];
+					    if ( d3 == "endif" ) --skip_depth;
+					    else if ( d3 == "ifdef" || d3 == "ifndef" || d3 == "if" ) ++skip_depth;
+					}
+				    }
+				    --macro_ifdef_depth;
+				}
+				else if ( dir2 == "ifdef" || dir2 == "ifndef" || dir2 == "if" )
+				    ++macro_ifdef_depth;
+			    }
+			    else
+			    {
+				// Not a directive — preserve for the tokenizer
+				preserved += line + nl;
+			    }
+			}
+			if ( !preserved.empty() )
+			    source.pushback(preserved);
 		    }
 		    // last argument
 		    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
