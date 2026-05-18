@@ -1207,7 +1207,7 @@ public:
     void safedec(asmjit::Operand &);
 
     // negate the operand
-    void safeneg(asmjit::Operand &);
+    void safeneg(asmjit::Operand &, DataDef *dd = nullptr);
 
     // return the operand
     void saferet(asmjit::Operand &);

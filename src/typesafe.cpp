@@ -618,15 +618,26 @@ void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     }
 }
 
-void Program::safeneg(Operand &op)
+void Program::safeneg(Operand &op, DataDef *dd)
 {
     if ( !op.isReg() ) { throw "safeneg() lval is not a register"; }
     if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	x86::Xmm tmp = cc.newXmmSd("safeneg_tmp");
-	cc.xorpd(tmp, tmp);
-	cc.subsd(tmp, op.as<x86::Xmm>());
-	cc.movsd(op.as<x86::Xmm>(), tmp);
+	bool is_float = dd && dd->size == sizeof(float);
+	if ( is_float )
+	{
+	    x86::Xmm tmp = cc.newXmmSs("safeneg_tmp");
+	    cc.xorps(tmp, tmp);
+	    cc.subss(tmp, op.as<x86::Xmm>());
+	    cc.movss(op.as<x86::Xmm>(), tmp);
+	}
+	else
+	{
+	    x86::Xmm tmp = cc.newXmmSd("safeneg_tmp");
+	    cc.xorpd(tmp, tmp);
+	    cc.subsd(tmp, op.as<x86::Xmm>());
+	    cc.movsd(op.as<x86::Xmm>(), tmp);
+	}
     }
     else
     if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
