@@ -442,6 +442,12 @@ void Program::_tokenizer_init()
     define_map["__bswap_16"] = "htons";
     define_map["__bswap_32"] = "htonl";
 
+    // __builtin_*_overflow: overflow-checking arithmetic (GCC extension).
+    // Mapped to helper functions in va_helpers.cpp that use __int128.
+    define_map["__builtin_add_overflow"] = "__madc_add_overflow";
+    define_map["__builtin_sub_overflow"] = "__madc_sub_overflow";
+    define_map["__builtin_mul_overflow"] = "__madc_mul_overflow";
+
     // __builtin_expect(expr, val) is a branch-prediction hint — just
     // return expr. Implemented as a function-like macro.
     {

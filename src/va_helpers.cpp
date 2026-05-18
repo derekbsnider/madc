@@ -151,6 +151,30 @@ extern "C" int __madc_scanf(const char *fmt, ...)
     return rc;
 }
 
+// __builtin_add/sub/mul_overflow: write a+b/a-b/a*b to *res and
+// return 1 on overflow, 0 otherwise.  These use __int128 to detect
+// overflow in 64-bit arithmetic.  The GCC torture tests use the
+// type-generic builtins; madc aliases them to these long-width
+// implementations via the lexer's define_map.
+extern "C" int __madc_add_overflow(long a, long b, long *res)
+{
+    __int128 r = (__int128)a + (__int128)b;
+    *res = (long)r;
+    return r != (long)r;
+}
+extern "C" int __madc_sub_overflow(long a, long b, long *res)
+{
+    __int128 r = (__int128)a - (__int128)b;
+    *res = (long)r;
+    return r != (long)r;
+}
+extern "C" int __madc_mul_overflow(long a, long b, long *res)
+{
+    __int128 r = (__int128)a * (__int128)b;
+    *res = (long)r;
+    return r != (long)r;
+}
+
 // fd_set bit-array helpers. Called by the FD_ZERO/FD_SET/FD_CLR/FD_ISSET
 // macros in the embedded <sys/select.h>. The "set" pointer is the address
 // of a `struct fd_set` (128 bytes, laid out as 16 int64s — identical to
