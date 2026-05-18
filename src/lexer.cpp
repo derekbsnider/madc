@@ -66,9 +66,13 @@ static bool consume_macro_call_open(Source &source)
 {
     std::string spacing;
 
-    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+    // C preprocessor: function-like macro calls allow whitespace
+    // INCLUDING newlines between the macro name and '('.
+    while ( source.good()
+	 && (source.peek() == ' ' || source.peek() == '\t'
+	  || source.peek() == '\n' || source.peek() == '\r') )
 	spacing += source.get();
-    if ( source.peek() == '(' )
+    if ( source.good() && source.peek() == '(' )
     {
 	source.get(); // consume '('
 	return true;

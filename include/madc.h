@@ -557,6 +557,25 @@ public:
 	}
 	int ch = _ss.get();
 	if ( ch == -1 ) { return -1; }
+	// C line splice: backslash + optional trailing whitespace + newline
+	if ( ch == '\\' )
+	{
+	    std::streampos splice_start = _ss.tellg();
+	    // skip optional trailing spaces/tabs after backslash
+	    while ( _ss.peek() == ' ' || _ss.peek() == '\t' )
+		_ss.get();
+	    int next = _ss.peek();
+	    if ( next == '\n' || next == '\r' )
+	    {
+		_ss.get();
+		if ( next == '\r' && _ss.peek() == '\n' )
+		    _ss.get();
+		++_lf; _column = 0; _pos = _ss.tellg();
+		return get(); // recurse to get next real char
+	    }
+	    // not a line splice — rewind
+	    _ss.seekg(splice_start);
+	}
 	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
 	else if ( ch == '\r' ) { ++_cr; _column = 0; _pos = _ss.tellg(); }
 	else { ++_column; }
@@ -566,7 +585,31 @@ public:
     {
 	if ( !_pushback.empty() )
 	    return (unsigned char)_pushback[0];
-	return _ss.peek();
+	// C line splice: skip backslash + optional whitespace + newline in peek
+	int ch = _ss.peek();
+	if ( ch == '\\' )
+	{
+	    std::streampos saved = _ss.tellg();
+	    _ss.get(); // consume '\'
+	    // skip optional trailing spaces/tabs
+	    while ( _ss.peek() == ' ' || _ss.peek() == '\t' )
+		_ss.get();
+	    int next = _ss.peek();
+	    if ( next == '\n' || next == '\r' )
+	    {
+		// There IS a line splice — consume it and peek the real char
+		_ss.get();
+		if ( next == '\r' && _ss.peek() == '\n' )
+		    _ss.get();
+		++_lf; _column = 0;
+		ch = _ss.peek();
+		_pos = _ss.tellg();
+		return ch;
+	    }
+	    // Not a line splice — rewind
+	    _ss.seekg(saved);
+	}
+	return ch;
     }
     bool getline(std::string &s)
     {
