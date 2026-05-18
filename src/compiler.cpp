@@ -8277,10 +8277,15 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     }
 
     // Integer → real cast: compile inner as int, convert to Xmm.
+    // Do NOT force the inner expression to src_type — that would
+    // override an unsigned operand's type with signed ddINT32 and
+    // make `>>` use SAR instead of SHR.  Let the expression infer
+    // its own type; we pick up the actual type afterward.
     if ( dst_is_real && src_type && src_type->is_integer() )
     {
-	regdefp_t inner_rdp = {NULL, src_type, NULL};
+	regdefp_t inner_rdp = {NULL, NULL, NULL};
 	Operand &src_op = expr->compile(pgm, inner_rdp);
+	DataDef *actual_src = inner_rdp.second ? inner_rdp.second : src_type;
 	x86::Xmm out = newScalarXmm(pgm, cast_type, "cast_i2r");
 	x86::Gp gp;
 	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
@@ -8297,8 +8302,8 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	// value as signed. For uint64 with high bit set, use the GCC
 	// pattern: test sign, if negative shift right by 1, OR in the
 	// low bit, convert, then double the result.
-	bool src_unsigned = src_type && src_type->is_unsigned();
-	if ( src_unsigned && src_type->size == 8 )
+	bool src_unsigned = actual_src && actual_src->is_unsigned();
+	if ( src_unsigned && actual_src->size == 8 )
 	{
 	    Label lbl_positive = pgm.cc.newLabel();
 	    Label lbl_done = pgm.cc.newLabel();
