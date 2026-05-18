@@ -1,6 +1,6 @@
 #include <stdio.h>
 
-_Static_assert(sizeof(int) == 8, "madc int should stay 8 bytes");
+_Static_assert(sizeof(int) == 4, "int should be 4 bytes (GCC parity)");
 static_assert(alignof(double) == 8);
 static_assert((1 << 4) == 16);
 

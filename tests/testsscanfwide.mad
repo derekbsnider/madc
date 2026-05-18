@@ -1,12 +1,7 @@
-// Regression: madc int is 64-bit, but C `%d` writes only 4 bytes. The
-// __madc_sscanf wrapper rewrites %d/%i/%u/%o/%x/%X/%n -> %ld/etc. so
-// libc writes the full 8 bytes into the int slot.
-//
-// Before this fix, `int x = 0; sscanf("-1", "%d", &x);` left x with the
-// low 4 bytes set to 0xFFFFFFFF and the high 4 at 0 — reading x as
-// int64 gave a positive 4B, which broke the SMAUG slot_lookup
-// guard `if (slot <= 0) return -1;` for negative slots from area
-// data.
+// Regression test: sscanf with standard 4-byte int slots.
+// Verifies that %d reads/writes correctly, negative values sign-extend
+// when cast to long, hex values compare correctly, and mixed %s/%d
+// parsing works.
 
 #include <stdio.h>
 
@@ -35,7 +30,7 @@ int main()
     // Hex
     int h = 0;
     sscanf("ffffffff", "%x", &h);
-    if (h == 0xffffffff)
+    if (h == -1)
         printf("PASS: hex %%x reads 0xffffffff\n");
     else
         printf("FAIL: hex got 0x%08x\n", h);

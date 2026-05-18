@@ -4,8 +4,8 @@
 int main()
 {
     string libname = "libc.so.6";
-    int handle;
-    int fn;
+    long handle;
+    long fn;
     int result;
 
     // dlopen

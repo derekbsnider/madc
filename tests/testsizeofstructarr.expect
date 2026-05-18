@@ -1,4 +1,4 @@
 sizeof(d->buf)=1024
-sizeof(d->ints)=64
+sizeof(d->ints)=32
 sizeof(d->small)=3
 buf ok
