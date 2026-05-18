@@ -8130,7 +8130,7 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	IRValue result = ir.coerce(IRValue::reg(out, &ddINT64), cast_type);
 	result = ir.load(result);
 	regdp.second = cast_type;
-	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+	if ( regdp.first )
 	{
 	    pgm.safemov(*regdp.first, result.op, cast_type, cast_type);
 	    return *regdp.first;
@@ -8190,7 +8190,7 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	IRValue out = ir.coerce(ir_from_operand(src_op, src_type), cast_type);
 	out = ir.load(out);
 	regdp.second = cast_type;
-	if ( regdp.first && regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+	if ( regdp.first )
 	{
 	    pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
 	    return *regdp.first;
