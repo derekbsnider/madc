@@ -802,10 +802,23 @@ void Program::safeshr(Operand &op1, Operand &op2, DataDef *type)
 	throw "safeshr() left operand is not a Gp register";
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safeshr() right operand is not a Gp register or immediate value";
+    // Use SAR (arithmetic shift) for signed types to preserve the sign
+    // bit. Use SHR (logical shift) for unsigned types.
+    bool use_sar = type && !type->is_unsigned();
     if ( op2.isImm() )
-	cc.shr(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    {
+	if ( use_sar )
+	    cc.sar(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	else
+	    cc.shr(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    }
     else
-	cc.shr(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+    {
+	if ( use_sar )
+	    cc.sar(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+	else
+	    cc.shr(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+    }
 }
 
 // perform cc.or_ with size casting
