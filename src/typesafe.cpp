@@ -30,6 +30,13 @@
 using namespace std;
 using namespace asmjit;
 
+// Returns true when the type is a 32-bit integer (int / unsigned int).
+// 32-bit x86 ops automatically zero-extend to 64 bits, so using r32
+// gives correct wrapping at 2^32 for free.
+static inline bool use32(DataDef *type) {
+    return type && type->is_integer() && type->size == 4;
+}
+
 // simple for now, should have different versions for signed vs unsigned
 // small to big vs big to small, etc, as we need to ensure that moving
 // small to big doesn't leave unwanted data in the other part of the register
@@ -72,13 +79,14 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
     }
     else
     {
-	// Same-or-narrower-dest path. asmjit's intermediate validator
-	// rejects `mov gpw, gpq` even when r2 is narrowed via `.r16()` —
-	// it inspects the vreg's natural allocation width, not the view.
-	// Force both ends to r64() so the encoder sees `mov gpq, gpq`;
-	// asmjit's Compiler treats the 64-bit view of a sub-word vreg
-	// as the same vreg (matches the safemul/shl/or/and/xor pattern).
-	cc.mov(r1.r64(), r2.r64());
+	// Same-or-narrower-dest path. When both operands are the same
+	// width, use their natural width so 32-bit ops stay 32-bit.
+	// When widths differ, promote both to r64 to satisfy asmjit's
+	// validator (it rejects `mov gpw, gpq` with mismatched widths).
+	if ( rs == ms )
+	    cc.mov(r1, r2);
+	else
+	    cc.mov(r1.r64(), r2.r64());
     }
 }
 
@@ -702,13 +710,18 @@ void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	throw "safemul() left operand is not a Gp register";
     if ( !op2.isImm() && !rhs_is_gp )
 	throw "safemul() right operand is not a Gp register or immediate value";
-    // asmjit's imul requires both Gp operands at the same width; mixed
-    // gpw/gpq combinations come up when small-typed (sh_int, char)
-    // multiplications meet a wider promotion. Force both sides to r64.
+    // Use 32-bit imul for 32-bit types so results wrap at 2^32.
+    bool w32 = use32(d1);
     if ( op2.isImm() )
-	cc.imul(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    {
+	if ( w32 ) cc.imul(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else       cc.imul(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    }
     else
-	cc.imul(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+    {
+	if ( w32 ) cc.imul(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	else       cc.imul(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+    }
 }
 
 #if 0
@@ -851,20 +864,34 @@ void Program::safeshr(Operand &op1, Operand &op2, DataDef *type)
 	throw "safeshr() right operand is not a Gp register or immediate value";
     // Use SAR (arithmetic shift) for signed types to preserve the sign
     // bit. Use SHR (logical shift) for unsigned types.
+    // Use 32-bit shift for 32-bit types so results wrap correctly.
     bool use_sar = type && !type->is_unsigned();
+    bool w32 = use32(type);
     if ( op2.isImm() )
     {
 	if ( use_sar )
-	    cc.sar(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	{
+	    if ( w32 ) cc.sar(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	    else       cc.sar(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	}
 	else
-	    cc.shr(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	{
+	    if ( w32 ) cc.shr(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	    else       cc.shr(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	}
     }
     else
     {
 	if ( use_sar )
-	    cc.sar(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+	{
+	    if ( w32 ) cc.sar(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r8());
+	    else       cc.sar(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+	}
 	else
-	    cc.shr(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+	{
+	    if ( w32 ) cc.shr(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r8());
+	    else       cc.shr(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+	}
     }
 }
 
@@ -882,15 +909,16 @@ void Program::safeor(Operand &op1, Operand &op2, DataDef *type)
 	throw "safeor() right operand is not a Gp register or immediate value";
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeor() left operand is not a Gp register";
+    bool w32 = use32(type);
     if ( op2.isImm() )
     {
-	cc.comment("cc.or_(gp, imm)");
-	cc.or_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	if ( w32 ) cc.or_(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else       cc.or_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
-	cc.comment("cc.or_(gp, gp)");
-	cc.or_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+	if ( w32 ) cc.or_(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	else       cc.or_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 
@@ -908,15 +936,16 @@ void Program::safeand(Operand &op1, Operand &op2, DataDef *type)
 	throw "safeand() right operand is not a Gp register and immediate value";
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeand() left operand is not a Gp register";
+    bool w32 = use32(type);
     if ( op2.isImm() )
     {
-	cc.comment("cc.and_(gp, imm)");
-	cc.and_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	if ( w32 ) cc.and_(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else       cc.and_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
-	cc.comment("cc.and_(gp, gp)");
-	cc.and_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+	if ( w32 ) cc.and_(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	else       cc.and_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 
@@ -934,15 +963,16 @@ void Program::safexor(Operand &op1, Operand &op2, DataDef *type)
 	throw "safexor() right operand is not a Gp register or immediate value";
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safexor() left operand is not a Gp register";
+    bool w32 = use32(type);
     if ( op2.isImm() )
     {
-	cc.comment("cc.xor_(gp, imm)");
-	cc.xor_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	if ( w32 ) cc.xor_(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else       cc.xor_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
-	cc.comment("cc.xor_(gp, gp)");
-	cc.xor_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+	if ( w32 ) cc.xor_(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	else       cc.xor_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 

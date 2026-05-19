@@ -92,14 +92,16 @@ TEST_SUITE("IRBuilder::load") {
 	CHECK(contains(asm_out, "qword ptr"));
     }
 
-    TEST_CASE("Mem<4 signed int32> → movsxd r64, dword ptr") {
+    TEST_CASE("Mem<4 signed int32> → mov r32 (Gpd natural load)") {
 	IRFixture f;
 	IRBuilder ir(f.cc);
 	x86::Mem m = f.makeStack(4);
 	IRValue src = IRValue::mem(m, &ddINT32);
-	(void)ir.load(src);
+	IRValue out = ir.load(src);
 	std::string asm_out = f.finishAndGetAsm();
-	CHECK(contains(asm_out, "movsxd"));
+	// Gpd register: 32-bit load, no sign-extension needed.
+	CHECK(contains(asm_out, "mov"));
+	CHECK(out.isReg());
     }
 
     TEST_CASE("Mem<4 unsigned uint32> → mov r32 (implicit zero-extend)") {

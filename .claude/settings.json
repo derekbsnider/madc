@@ -1,0 +1,6 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "sh /workspace/madc/.claude/statusline-command.sh"
+  }
+}

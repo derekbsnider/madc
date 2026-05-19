@@ -3812,6 +3812,15 @@ static x86::Gp emit_bitfield_load(Program &pgm, x86::Mem storage,
 static x86::Gp emit_bitfield_store_reg(Program &pgm, x86::Mem storage,
     const DataDefSTRUCT::BitFieldInfo &bf, x86::Gp value, const char *hint)
 {
+    // Bitfield operations need consistent register widths. Widen Gpd→Gpq
+    // to match the Gpq temporaries used for masking and shifting.
+    if ( value.isGpd() )
+    {
+	x86::Gp wide = pgm.cc.newGpq("bf_widen");
+	pgm.cc.mov(wide.r32(), value);  // zero-extend 32→64
+	value = wide;
+    }
+
     uint64_t value_mask = bitfield_mask(bf.bit_width);
     uint64_t storage_full_mask = bitfield_mask(bf.storage_size * 8);
     uint64_t storage_mask = (bf.bit_width >= 64)
@@ -9074,18 +9083,13 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
 	if ( normalized_switch )
 	{
 	    Operand &val_op = compile_token_gp_normalized(pgm, cases[i]->value, expr_type, val_storage);
-	    pgm.cc.cmp(expr_reg, val_op.as<x86::Gp>());
+	    pgm.safecmp(*(Operand *)&expr_reg, val_op, expr_type);
 	}
 	else
 	{
 	    regdefp_t valrdp = {NULL, NULL, NULL};
 	    Operand &val_op = cases[i]->value->compile(pgm, valrdp);
-	    if ( val_op.isReg() && val_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.cc.cmp(expr_reg, val_op.as<x86::Gp>());
-	    else if ( val_op.isImm() )
-		pgm.cc.cmp(expr_reg, val_op.as<Imm>());
-	    else if ( val_op.isMem() )
-		pgm.cc.cmp(expr_reg, val_op.as<x86::Mem>());
+	    pgm.safecmp(*(Operand *)&expr_reg, val_op, expr_type);
 	}
 	pgm.cc.je(case_labels[i]);
     }

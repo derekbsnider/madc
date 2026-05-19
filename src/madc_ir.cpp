@@ -54,10 +54,15 @@ IRValue IRBuilder::newReg(DataDef *type, const char *name_hint)
 	    xm = cc_.newXmmSd("%s", name_hint ? name_hint : "ir_xmm_sd");
 	return IRValue::reg(xm, type);
     }
-    // Integer or pointer — always allocate a Gpq. Narrower moves still
-    // store only the low N bytes, but the vreg lives in a 64-bit slot
-    // so downstream widening is free and zero-extended mov to r32
-    // gets the full r64 cleared.
+    // 32-bit integer types use Gpd so arithmetic wraps at 2^32 naturally.
+    // Sub-32-bit types (char, short) and 64-bit types use Gpq — 8/16-bit
+    // x86 ops don't clear upper bits, so those need explicit extension.
+    // Pointers always use Gpq (64-bit addresses).
+    if ( type && type->is_integer() && type->size == 4 )
+    {
+	x86::Gp gp = cc_.newGpd("%s", name_hint ? name_hint : "ir_gp32");
+	return IRValue::reg(gp, type);
+    }
     x86::Gp gp = cc_.newGpq("%s", name_hint ? name_hint : "ir_gp");
     return IRValue::reg(gp, type);
 }
@@ -86,7 +91,9 @@ static IRValue canonicalize_narrow_integer_reg(x86::Compiler &cc, const IRValue 
 	return IRValue::reg(src.op, type);
 
     x86::Gp in = src.op.as<x86::Gp>();
-    x86::Gp out = cc.newGpq("ir_narrow");
+    // Use Gpd for 4-byte types, Gpq for everything else.
+    x86::Gp out = (type->size == 4)
+	? cc.newGpd("ir_narrow32") : cc.newGpq("ir_narrow");
     bool is_unsigned = type->is_unsigned();
     switch ( type->size )
     {
@@ -106,12 +113,12 @@ static IRValue canonicalize_narrow_integer_reg(x86::Compiler &cc, const IRValue 
 	    {
 		cc.shl(out.r32(), imm(8));
 		cc.sar(out.r32(), imm(8));
-		cc.movsxd(out, out.r32());
+		if ( out.isGpq() ) cc.movsxd(out, out.r32());
 	    }
 	    break;
 	case 4:
-	    if ( is_unsigned ) cc.mov(out.r32(), in.r32());
-	    else               cc.movsxd(out, in.r32());
+	    // Gpd output: mov r32,r32 truncates and zero-extends.
+	    cc.mov(out.r32(), in.r32());
 	    break;
 	default:
 	    cc.mov(out, in);
@@ -129,11 +136,8 @@ IRValue IRBuilder::load(const IRValue &src)
     if ( !src.valid() )
 	throw "IRBuilder::load() invalid src";
 
-    // Reg values: all integer virtual registers are Gpq (64-bit).
-    // Sub-8 integer types need in-place sign/zero extension so that
-    // comparisons and casts see the correct value in the full 64 bits.
-    // We extend in-place (reusing the same vreg) to avoid creating
-    // intermediate vregs that confuse asmjit's register allocator.
+    // Reg values: integer virtual registers are Gpq (64-bit) or Gpd
+    // (32-bit for int/uint). Sub-width types need sign/zero extension.
     if ( src.isReg() )
     {
 	if ( src.type && src.type->is_integer() && src.type->size < 8
@@ -143,7 +147,10 @@ IRValue IRBuilder::load(const IRValue &src)
 	    bool is_unsigned = src.type->is_unsigned();
 	    if ( src.type->size == 4 )
 	    {
-		if ( is_unsigned )
+		// Gpd vregs are already canonical — skip extension.
+		if ( g.isGpd() )
+		    { /* already canonical 32-bit */ }
+		else if ( is_unsigned )
 		    cc_.mov(g.r32(), g.r32());
 		else
 		    cc_.movsxd(g, g.r32());
@@ -202,10 +209,12 @@ IRValue IRBuilder::load(const IRValue &src)
 	}
 	else if ( msz == 4 )
 	{
-	    if ( is_unsigned )
-		cc_.mov(g.r32(), m);     // implicit zero-extend 32→64
+	    if ( g.isGpd() )
+		cc_.mov(g, m);           // Gpd: natural 32-bit load
+	    else if ( is_unsigned )
+		cc_.mov(g.r32(), m);     // Gpq: zero-extend 32→64
 	    else
-		cc_.movsxd(g, m);
+		cc_.movsxd(g, m);        // Gpq: sign-extend 32→64
 	}
 	else if ( msz == 2 )
 	{
@@ -371,8 +380,7 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	return IRValue::reg(r.op, to);
     }
 
-    // Integer widening: load src into a Gpq first (load() picks the
-    // right sign/zero extend based on src.type), then relabel.
+    // Integer widening: load src, then widen to Gpq if needed.
     // Exception: signed→unsigned of the same size (e.g. int32→uint32)
     // needs truncation to clear the upper sign-extended bits.
     if ( both_int && to->size >= src.type->size )
@@ -381,6 +389,17 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
 	if ( to->size == src.type->size && to->size < 8
 	  && !src.type->is_unsigned() && to->is_unsigned() )
 	    return canonicalize_narrow_integer_reg(cc_, r, to);
+	// Widen Gpd → Gpq when destination is 64-bit.
+	if ( to->size > src.type->size && src.type->size == 4
+	  && r.isReg() && r.op.as<x86::Gp>().isGpd() )
+	{
+	    x86::Gp wide = cc_.newGpq("ir_widen");
+	    if ( src.type->is_unsigned() )
+		cc_.mov(wide.r32(), r.op.as<x86::Gp>());
+	    else
+		cc_.movsxd(wide, r.op.as<x86::Gp>());
+	    return IRValue::reg(wide, to);
+	}
 	return IRValue::reg(r.op, to);
     }
 
