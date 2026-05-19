@@ -6242,7 +6242,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( lhs_dot->type() != TokenType::ttVariable
 		      && lhs_dot->type() != TokenType::ttMember
 		      && lhs_dot->type() != TokenType::ttSubscript
-		      && lhs_dot->type() != TokenType::ttStructLit )
+		      && lhs_dot->type() != TokenType::ttStructLit
+		      && lhs_dot->type() != TokenType::ttCallFunc )
 			Throw(tb) << "member reference is not a structure or union" << flush;
 		    Variable *tv_var;
 		    DataDef  *struct_type;
@@ -6311,6 +6312,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    if ( !struct_type )
 				Throw(tb) << "compound literal has no type" << flush;
 			    tv_var = new Variable("__compound_lit", *struct_type, 1, NULL, false);
+			}
+			else if ( lhs_dot->type() == TokenType::ttCallFunc )
+			{
+			    // f().member — function returning a struct, immediate member access.
+			    // The function call's return type is the struct type.
+			    TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(lhs_dot);
+			    DataDef *ret_type = tcf ? tcf->returns() : NULL;
+			    if ( !ret_type )
+				Throw(tb) << "function call has no return type for member access" << flush;
+			    struct_type = ret_type;
+			    tv_var = new Variable("__call_expr", *struct_type, 1, NULL, false);
 			}
 			else
 			    Throw(tb) << "member reference '.' on unsupported subscript form" << flush;
@@ -6381,7 +6393,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    bool is_deref_lhs = (dynamic_cast<TokenDeref *>(lhs_dot) != NULL);
 		    bool is_derefexpr_lhs = (dynamic_cast<TokenDerefExpr *>(lhs_dot) != NULL);
 		    bool is_compound_lit_lhs = (dynamic_cast<TokenStructLit *>(lhs_dot) != NULL);
-		    if ( is_derefexpr_lhs || is_compound_lit_lhs )
+		    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc);
+		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_callfunc_lhs )
 			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
 		    else if ( !is_deref_lhs
 		      && (lhs_dot->type() == TokenType::ttMember
