@@ -1486,19 +1486,29 @@ TokenBase *Program::_getToken()
 			    break;
 		    }
 		};
-		auto resolve_int_suffix_type = [&]() -> DataDef * {
+		auto resolve_int_suffix_type = [&](int64_t val, bool is_hex_or_octal) -> DataDef * {
 		    if ( long_count >= 1 )
 			return has_u_suffix ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
 		    if ( has_u_suffix )
 			return &ddUINT32;
-		    return nullptr; // no suffix → default type
+		    // C integer literal type rules (no suffix):
+		    // Hex/octal: int → unsigned int → long → unsigned long
+		    // Decimal:   int → long → long long (never unsigned)
+		    uint64_t uval = (uint64_t)val;
+		    if ( uval <= 0x7FFFFFFF )
+			return nullptr; // fits in int32 — use default
+		    if ( is_hex_or_octal && uval <= 0xFFFFFFFF )
+			return &ddUINT32;
+		    if ( (int64_t)uval >= 0 )
+			return &ddINT64;
+		    return is_hex_or_octal ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
 		};
 		if ( is_binary_prefix(ch, source) )
 		{
 		    int64_t bv = read_binary_literal(source);
 		    eat_int_suffix();
 		    TokenInt *ti = new TokenInt(bv);
-		    { DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
+		    { DataDef *st = resolve_int_suffix_type(bv, true); if (st) ti->setDataType(st); }
 		    // binary prefix source_text not critical for macro round-trip
 		    return ti;
 		}
@@ -1527,7 +1537,7 @@ TokenBase *Program::_getToken()
 		    {
 			TokenInt *ti = new TokenInt((int64_t)hv);
 			ti->source_text = lit_text;
-			{ DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
+			{ DataDef *st = resolve_int_suffix_type((int64_t)hv, true); if (st) ti->setDataType(st); }
 			return ti;
 		    }
 		}
@@ -1597,7 +1607,7 @@ TokenBase *Program::_getToken()
 		    eat_int_suffix();
 		    TokenInt *ti = new TokenInt(v);
 		    ti->source_text = lit_text;
-		    { DataDef *st = resolve_int_suffix_type(); if (st) ti->setDataType(st); }
+		    { DataDef *st = resolve_int_suffix_type(v, is_octal); if (st) ti->setDataType(st); }
 		    return ti;
 		}
 		// handle floating point
