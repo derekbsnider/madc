@@ -2,6 +2,43 @@
 
 ## [Unreleased]
 
+## [v0.17.0] - 2026-05-19
+
+GCC parity push: 1305 → 1316/1685 (78.1%), cast chain fixes, struct init, preprocessor features.
+
+- **Local variable zero-init at function entry.**
+  Stack-slot zero-init now emitted at function prologue via `prologue_cursor`
+  instead of at first-use. Fixes variables modified in one loop branch
+  being re-zeroed on the next iteration when the first reference was
+  inside a conditional.
+
+- **Empty struct/union brace-init (`struct X x = {}`).**
+  Direct qword zero-fill instead of the assignment path which self-copied
+  (source == destination pointed to same stack slot).
+
+- **Constant-fold register width matches semantic type.**
+  `optimize()` now uses `regdp.second->newreg()` instead of hardcoded
+  `newGpq()`. Fixes `~0U` (32-bit) comparisons failing against 32-bit
+  variables due to 64-bit vs 32-bit register mismatch.
+
+- **`#pragma push_macro` / `pop_macro` support.**
+  Save and restore individual `#define` macro definitions. Per-macro-name
+  stack with sentinel for "macro was undefined".
+
+- **`f().member` — dot access on struct-returning function calls.**
+  `TokenCallFunc` is now an allowed LHS for dot-member access in
+  `parseExpression`. The function call becomes `parent_expr` of the
+  resulting `TokenMember`.
+
+- **`list` removed from keyword map.**
+  `list` no longer shadows C identifiers. `char *list; *list` now
+  parses correctly. Use `std::list<T>` for the container type.
+
+- **Nested integer cast chains: `(long long)(int)x`.**
+  The generic cast fallback now compiles inner expressions with a fresh
+  `regdp` so nested narrowing casts produce independent results. Widening
+  step added when inner produces a narrower register than the outer target.
+
 - **TokenCast: proper real↔integer and narrowing cast codegen.**
   Float→int, int→float, and integer-narrowing casts now emit correct
   conversion instructions instead of falling through to the

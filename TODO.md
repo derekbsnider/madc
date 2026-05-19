@@ -2,12 +2,13 @@
 
 ## High Priority
 
-- **GCC torture test suite: push past 80%.** Currently 1305/1685 (77.4%).
-  Major progress: 32-bit registers (Gpd) for int/unsigned int now give
-  correct arithmetic wrapping. Remaining targets: extern-declared
-  function call/variadic bugs (~8 regressions vs pre-Gpd baseline),
+- **GCC torture test suite: push past 80%.** Currently 1316/1685 (78.1%).
+  Recent fixes: local var zero-init, constant-fold register width, nested
+  cast chains, `f().member`, `#pragma push/pop_macro`. Remaining targets:
   struct pass-by-value for function args (~8 compile failures),
-  32-bit arithmetic wrapping in cast contexts (`(long)(uint_a + uint_b)`).
+  32-bit arithmetic wrapping in widening cast contexts
+  (`(long)(uint_a + uint_b)`), compound assignment evaluation order,
+  `-0.0` preservation, triple dereference (`***p`), inline asm.
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and

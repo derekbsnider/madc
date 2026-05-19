@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 274 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1306/1685 (77.5%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status: 274 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1316/1685 (78.1%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -223,10 +223,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.16.0** (2026-05-18) — **sizeof(int) = 4: LP64 ABI alignment.** madc's `int` now matches GCC at 4 bytes, fixing struct layouts, printf format specifiers, and dlsym'd function arguments. GCC torture test suite reaches 75% (1264/1685). Float/double brace initializers, overflow builtins, ternary in constant expressions, C23 `[[attribute]]` consumption, and the scanf format-rewriting shim removed.
+**v0.17.0** (2026-05-19) — **GCC parity push: 1316/1685 (78.1%).** Cast chain fixes (`(long long)(int)x`), empty struct brace-init zero-fill, constant-fold register-width consistency, `f().member` support, `#pragma push_macro`/`pop_macro`, `list` keyword removed to fix C identifier shadowing.
 
 ### Recent Releases
 
+- **v0.17.0** — GCC parity 78.1% (1316/1685); nested cast chains, empty brace-init, `f().member`, `#pragma push/pop_macro`
 - **v0.16.0** — sizeof(int)=4 LP64 ABI alignment; GCC torture suite 75% (1264/1685); float init, overflow builtins, ternary const-expr, C23 attributes
 - **v0.15.0** — GCC torture test parity: 627 → 1245 (37% → 74%); comma operator, full #if evaluator, scientific notation, mixed arithmetic promotion, K&R functions, 50+ builtins
 - **v0.14.1** — SMAUG native EXEs survive the first real combat path; small struct returns follow SysV x86-64 ABI
