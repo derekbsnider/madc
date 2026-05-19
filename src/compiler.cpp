@@ -6193,7 +6193,13 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	Operand &sz_op = var->vla_size_expr->compile(pgm, sz_rdp);
 	x86::Gp sz_reg = pgm.cc.newGpq("__vla_n");
 	if ( sz_op.isReg() && sz_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.cc.mov(sz_reg, sz_op.as<x86::Gp>());
+	{
+	    // Widen 32-bit int result to 64-bit for malloc size argument.
+	    if ( sz_op.as<x86::Gp>().isGpd() )
+		pgm.cc.movsxd(sz_reg, sz_op.as<x86::Gp>());
+	    else
+		pgm.cc.mov(sz_reg, sz_op.as<x86::Gp>());
+	}
 	else if ( sz_op.isImm() )
 	    pgm.cc.mov(sz_reg, sz_op.as<Imm>());
 	else if ( sz_op.isMem() )

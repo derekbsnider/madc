@@ -790,12 +790,29 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
     // for unsigned, wrong for signed. Use `cqo` to sign-extend rax into
     // rdx for signed types; for unsigned divisions we still want rdx=0,
     // which the caller already arranged via safexor.
+    // Pick 32-bit or 64-bit division to match the operand width.
+    // 32-bit: cdq (sign-extend eax→edx:eax) + idiv r32, or div r32.
+    // 64-bit: cqo (sign-extend rax→rdx:rax) + idiv r64, or div r64.
+    bool use32 = d2 && d2->is_integer() && d2->size == 4;
     if ( d2 && d2->is_unsigned() )
-	cc.div(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+    {
+	if ( use32 )
+	    cc.div(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32(), divisor_gp.r32());
+	else
+	    cc.div(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+    }
     else
     {
-	cc.cqo(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
-	cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+	if ( use32 )
+	{
+	    cc.cdq(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	    cc.idiv(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32(), divisor_gp.r32());
+	}
+	else
+	{
+	    cc.cqo(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+	    cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+	}
     }
 }
 

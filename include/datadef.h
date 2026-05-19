@@ -250,22 +250,22 @@ public:
 	// to avoid garbage deref on the unmatched format spec.
 	switch((DataType)_type)
 	{
-	// All integer types use 64-bit registers. Sub-64-bit values are
-	// sign/zero-extended on load (movmptr2rval, movrptr2rval, safemov).
-	// Using sub-register types (newGpw, newGpd) leaves upper bits
-	// undefined, which corrupts values passed as function arguments or
-	// used as array indices.
+	// Sub-32-bit types use 64-bit registers with sign/zero-extension
+	// on load because 8-bit and 16-bit x86 ops do NOT clear upper bits.
 	case DataType::dtCHAR:
 	case DataType::dtBOOL:
-	case DataType::dtINT64:
 	case DataType::dtINT16:
 	case DataType::dtINT24:
-	case DataType::dtINT32:
 	case DataType::dtUINT8:
 	case DataType::dtUINT16:
 	case DataType::dtUINT24:
-	case DataType::dtUINT32:
+	case DataType::dtINT64:
 	case DataType::dtUINT64:  return n ? cc.newGpq("%s", n) : cc.newGpq();
+	// 32-bit types use 32-bit registers. On x86-64 all 32-bit ops
+	// automatically zero-extend to 64 bits, so wrapping at 2^32 is
+	// free and upper bits are always clean.
+	case DataType::dtINT32:
+	case DataType::dtUINT32:  return n ? cc.newGpd("%s", n) : cc.newGpd();
 	case DataType::dtFLOAT:   return n ? cc.newXmm("%s", n) : cc.newXmm();
 	case DataType::dtDOUBLE:  return n ? cc.newXmm("%s", n) : cc.newXmm();
 	case DataType::dtLDOUBLE: return n ? cc.newXmm("%s", n) : cc.newXmm();
