@@ -1142,7 +1142,7 @@ TokenBase *Program::_getToken()
 		    std::string pragma;
 		    int pragma_line = source.line();
 		    int pragma_col = source.column();
-		    while ( source.good() && !source.eof() && isalpha(source.peek()) )
+		    while ( source.good() && !source.eof() && (isalpha(source.peek()) || source.peek() == '_') )
 			pragma += source.get();
 		    if ( pragma == "pack" )
 		    {
@@ -1176,6 +1176,52 @@ TokenBase *Program::_getToken()
 			    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 				source.get();
 			}
+		    }
+		    else if ( pragma == "push_macro" || pragma == "pop_macro" )
+		    {
+			bool is_push = (pragma == "push_macro");
+			while ( source.peek() == ' ' || source.peek() == '\t' )
+			    source.get();
+			if ( source.peek() == '(' )
+			{
+			    source.get(); // consume (
+			    while ( source.peek() == ' ' || source.peek() == '\t' )
+				source.get();
+			    // Expect "macro_name"
+			    if ( source.peek() == '"' )
+			    {
+				source.get(); // consume opening "
+				std::string mname;
+				while ( source.good() && !source.eof() && source.peek() != '"' )
+				    mname += source.get();
+				if ( source.peek() == '"' )
+				    source.get(); // consume closing "
+				if ( is_push )
+				{
+				    auto it = define_map.find(mname);
+				    std::string val = (it != define_map.end()) ? it->second : std::string("\x01");
+				    _macro_save_stack[mname].push(val);
+				    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
+				}
+				else
+				{
+				    auto sit = _macro_save_stack.find(mname);
+				    if ( sit != _macro_save_stack.end() && !sit->second.empty() )
+				    {
+					std::string val = sit->second.top();
+					sit->second.pop();
+					if ( val == "\x01" )
+					    define_map.erase(mname);
+					else
+					    define_map[mname] = val;
+					DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored=\"" << val << "\"" << std::endl);
+				    }
+				}
+			    }
+			}
+			// consume rest of line
+			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			    source.get();
 		    }
 		    else if ( pragma == "prefer" )
 		    {
