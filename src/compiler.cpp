@@ -7343,6 +7343,14 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     // NOT the wider of both sides. Override regdp.second when the
     // caller's target is wider than the natural shift type to get
     // correct 32-bit wrapping (e.g. 2U << 31 must wrap at 32 bits).
+    {
+	DataDef *left_type = token_numeric_type(left);
+	// Only override when the left operand is already int-sized (4 bytes).
+	// Sub-int types (char, short) promote to int before shifting.
+	if ( left_type && left_type->is_integer() && left_type->size == 4
+	  && regdp.second && regdp.second->is_integer() && regdp.second->size > 4 )
+	    regdp.second = left_type;
+    }
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshl,
@@ -7462,6 +7470,15 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
     // bitwise right-shift
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
+    // C standard: shift result type is the promoted left operand type.
+    {
+	DataDef *left_type = token_numeric_type(left);
+	// Only override when the left operand is already int-sized (4 bytes).
+	// Sub-int types (char, short) promote to int before shifting.
+	if ( left_type && left_type->is_integer() && left_type->size == 4
+	  && regdp.second && regdp.second->is_integer() && regdp.second->size > 4 )
+	    regdp.second = left_type;
+    }
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshr,
