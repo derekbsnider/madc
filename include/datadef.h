@@ -18,7 +18,7 @@ enum class DataType : uint16_t {
 	dtUINT16, dtINT16, dtSHORT=dtINT16, dtUINT24, dtINT24,
 	dtUINT32, dtINT32, dtUINT64, dtINT64, dtINT=dtINT32,
 	dtFLOAT=12, dtFLOAT32=dtFLOAT, dtDOUBLE, dtDOUBLE64=dtDOUBLE,
-	dtLDOUBLE, dtDOUBLE80 = dtLDOUBLE, dtRESERVED = 255,
+	dtLDOUBLE, dtDOUBLE80 = dtLDOUBLE, dtSIMD, dtRESERVED = 255,
 	// complex and valarray
 	// some Standard C++ classes
 	dtSTRING, dtISTREAM, dtOSTREAM, dtISSTREAM, dtOSSTREAM, dtSSTREAM,
@@ -122,6 +122,7 @@ public:
 	    return true;
 	return false;
     }
+    virtual bool is_simd() const { return false; }
     virtual bool is_unsigned() const
     {
     	switch(rawtype())
@@ -270,6 +271,7 @@ public:
 	case DataType::dtFLOAT:   return n ? cc.newXmm("%s", n) : cc.newXmm();
 	case DataType::dtDOUBLE:  return n ? cc.newXmm("%s", n) : cc.newXmm();
 	case DataType::dtLDOUBLE: return n ? cc.newXmm("%s", n) : cc.newXmm();
+	case DataType::dtSIMD:    return n ? cc.newXmm("%s", n) : cc.newXmm();
 	default:		  return n ? cc.newIntPtr("%s", n) : cc.newIntPtr();
 	}
     }
@@ -959,6 +961,27 @@ public:
     DataDef *element_type;
     DataDefVECTOR(DataDef *elem, const std::string &name, size_t sz)
 	: DDClass(name, sz, DataType::dtVECTOR), element_type(elem) {}
+};
+
+class DataDefSIMD: public DataDef
+{
+public:
+    DataDef *element_type;
+    size_t vector_bytes;
+    size_t lane_count;
+    DataDefSIMD(DataDef *elem, const std::string &name, size_t bytes)
+	: DataDef(name, bytes, DataType::dtSIMD), element_type(elem),
+	  vector_bytes(bytes), lane_count((elem && elem->size) ? (bytes / elem->size) : 0) {}
+    virtual bool is_numeric() const { return true; }
+    virtual bool is_integer() const { return element_type && element_type->is_integer(); }
+    virtual bool is_real() const { return element_type && element_type->is_real(); }
+    virtual bool is_simd() const { return true; }
+    virtual size_t alignment() const
+    {
+	if ( size >= 16 ) return 16;
+	if ( size >= 8 ) return 8;
+	return size ? size : 1;
+    }
 };
 
 class DataDefMAP: public DDClass

@@ -71,12 +71,16 @@ static x86::Gp materialize_gp_ptr_arg(Program &pgm, Operand &op, const char *nam
 
 static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc);
+static void emit_simd_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
+    DataDefSIMD *vdd, const std::vector<TokenBase *> &inits, TokenBase *err_loc);
 static void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
 				    DataDef *copy_type, const char *name);
 static x86::Gp emit_runtime_aggregate_size(Program &pgm, DataDef *copy_type, const char *name);
 static void emit_runtime_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
 					x86::Gp &size_gp, const char *name);
 static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand &src);
+static void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem, DataDef *type);
+static void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm, DataDef *type);
 
 static size_t count_struct_init_slots(DataDefSTRUCT *dds)
 {
@@ -3088,6 +3092,52 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 		regdp.first = &_operand;
 		return _operand;
 	    }
+	    if ( dd && dd->is_simd() && dd->size > 0 )
+	    {
+		DataDefSIMD *vdd = dynamic_cast<DataDefSIMD *>(dd);
+		if ( !vdd )
+		    throw "compound literal: invalid SIMD type";
+		x86::Gp base = pgm.cc.newIntPtr("_compound_simd");
+		if ( pgm.tkFunction == pgm.tkProgram )
+		{
+		    void *storage = calloc(1, dd->size);
+		    if ( pgm.aot_tracking )
+		    {
+			std::string name = "__aot_compound_simd_"
+			    + std::to_string(pgm.aot_discovered_data.size());
+			pgm.record_aot_data(name, storage, dd->size, dd);
+		    }
+		    pgm.emit_data_mov(base, storage);
+		}
+		else
+		{
+		    x86::Mem tmp = pgm.cc.newStack((uint32_t)dd->size, (uint32_t)vdd->alignment());
+		    pgm.cc.lea(base, tmp);
+		}
+		emit_zero_fill_region(pgm, base, 0, dd->size);
+		emit_simd_init(pgm, base, 0, vdd, slit->inits, this);
+		if ( regdp.second && !regdp.second->is_simd()
+		  && regdp.second->is_integer() && regdp.second->size <= dd->size )
+		{
+		    x86::Gp gp = pgm.cc.newGpq("_compound_simd_int");
+		    pgm.cc.mov(gp, x86::qword_ptr(base));
+		    _operand = gp;
+		    regdp.first = &_operand;
+		    return _operand;
+		}
+		x86::Xmm xmm = pgm.cc.newXmm("_compound_simd_xmm");
+		x86::Mem src = x86::ptr(base, 0, (uint32_t)dd->size);
+		load_mem_to_xmm(pgm, xmm, src, dd);
+		_operand = xmm;
+		regdp.second = dd;
+		if ( regdp.first && regdp.first != &_operand )
+		{
+		    pgm.safemov(*regdp.first, _operand, dd, dd);
+		    return *regdp.first;
+		}
+		regdp.first = &_operand;
+		return _operand;
+	    }
 	    throw "compound literal: unsupported type";
 	}
 	case TokenType::ttProgram:
@@ -3113,6 +3163,45 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 
 // Emit per-member writes for a struct init block into [base_reg + base_ofs + member_ofs].
 // Used for both standalone struct init and each element of an array-of-structs.
+static void emit_simd_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
+    DataDefSIMD *vdd, const std::vector<TokenBase *> &inits, TokenBase *err_loc)
+{
+    if ( !vdd || !vdd->element_type || vdd->element_type->size == 0 )
+	pgm.Throw(err_loc) << "invalid SIMD type in initializer" << flush;
+    size_t elem_size = vdd->element_type->size;
+    for ( size_t i = 0; i < vdd->lane_count; ++i )
+    {
+	x86::Mem slot = x86::ptr(base_reg, base_ofs + (int32_t)(i * elem_size), (uint32_t)elem_size);
+	if ( i >= inits.size() )
+	{
+	    pgm.cc.mov(slot, imm(0));
+	    continue;
+	}
+	regdefp_t elem_rdp = {nullptr, vdd->element_type, nullptr};
+	Operand &val = inits[i]->compile(pgm, elem_rdp);
+	if ( val.isImm() )
+	    pgm.cc.mov(slot, val.as<Imm>());
+	else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    x86::Xmm xmm = val.as<x86::Xmm>();
+	    if ( elem_size == sizeof(float) )
+		pgm.cc.movss(slot, xmm);
+	    else
+		pgm.cc.movsd(slot, xmm);
+	}
+	else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Gp gp = val.as<x86::Gp>();
+	    if ( elem_size == 8 ) pgm.cc.mov(slot, gp.r64());
+	    else if ( elem_size == 4 ) pgm.cc.mov(slot, gp.r32());
+	    else if ( elem_size == 2 ) pgm.cc.mov(slot, gp.r16());
+	    else pgm.cc.mov(slot, gp.r8());
+	}
+	else
+	    pgm.Throw(err_loc) << "unsupported SIMD literal element" << flush;
+    }
+}
+
 static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc)
 {
@@ -4236,8 +4325,16 @@ struct CompoundLHS {
 	}
 	if ( is_member && writeback.hasBase() )
 	{
-	    IRBuilder ir(pgm.cc);
-	    ir.store(IRValue::mem(writeback, type), ir_from_operand(lval, type));
+	    if ( type && type->is_simd() )
+	    {
+		x86::Xmm xmm = lval.as<x86::Xmm>();
+		store_xmm_to_mem(pgm, writeback, xmm, type);
+	    }
+	    else
+	    {
+		IRBuilder ir(pgm.cc);
+		ir.store(IRValue::mem(writeback, type), ir_from_operand(lval, type));
+	    }
 	}
     }
 };
@@ -4285,6 +4382,32 @@ static void load_mem_to_gpq(Program &pgm, x86::Gp &gp, const x86::Mem &mem, Data
 	pgm.cc.mov(gp, mem);
 }
 
+static void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem, DataDef *type)
+{
+    if ( type && type->is_simd() )
+    {
+	if ( type->size <= 8 )
+	    pgm.cc.movq(xmm, mem);
+	else
+	    pgm.cc.movups(xmm, mem);
+	return;
+    }
+    pgm.safemov(xmm, *(x86::Mem *)&mem, type, type);
+}
+
+static void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm, DataDef *type)
+{
+    if ( type && type->is_simd() )
+    {
+	if ( type->size <= 8 )
+	    pgm.cc.movq(mem, xmm);
+	else
+	    pgm.cc.movups(mem, xmm);
+	return;
+    }
+    pgm.safemov(mem, xmm, type, type);
+}
+
 static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char *op_name)
 {
     CompoundLHS r;
@@ -4300,15 +4423,13 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	Operand &op = r.tv->operand(pgm);
 	if ( op.isMem() )
 	{
-	    if ( r.type && r.type->is_real() )
+	    if ( r.type && (r.type->is_real() || r.type->is_simd()) )
 	    {
-		// Double/float lval on stack — load into Xmm so the
-		// subsequent safeadd / safemul / etc. all work with
-		// matching-type operands.
-		IRBuilder ir(pgm.cc);
-		IRValue lhs = ir.load(IRValue::mem(op.as<x86::Mem>(), r.type));
-		r.writeback = op.as<x86::Mem>();
-		r.lval = lhs.op;
+		x86::Xmm xmm = pgm.cc.newXmm("var_lhs_xmm");
+		x86::Mem mem = op.as<x86::Mem>();
+		load_mem_to_xmm(pgm, xmm, mem, r.type);
+		r.writeback = mem;
+		r.lval = xmm;
 		r.is_member = true;
 	    }
 	    else
@@ -4349,12 +4470,12 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	tds->var.modified();
 
 	x86::Mem mem = x86::ptr(old_ptr, 0, (uint32_t)(r.type && r.type->size ? r.type->size : 8));
-	if ( r.type && r.type->is_real() )
+	if ( r.type && (r.type->is_real() || r.type->is_simd()) )
 	{
-	    IRBuilder ir(pgm.cc);
-	    IRValue lhs = ir.load(IRValue::mem(mem, r.type));
 	    r.writeback = mem;
-	    r.lval = lhs.op;
+	    x86::Xmm xmm = pgm.cc.newXmm("deref_step_lhs_xmm");
+	    load_mem_to_xmm(pgm, xmm, mem, r.type);
+	    r.lval = xmm;
 	    r.is_member = true;
 	}
 	else
@@ -4391,14 +4512,13 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	    }
 	    if ( mem.isMem() )
 	    {
-		if ( r.type && r.type->is_real() )
+		if ( r.type && (r.type->is_real() || r.type->is_simd()) )
 		{
-		    // Double/float struct member — load into Xmm so the
-		    // subsequent safeadd / safemul / etc. use Xmm/Xmm paths.
-		    IRBuilder ir(pgm.cc);
-		    IRValue lhs = ir.load(IRValue::mem(mem.as<x86::Mem>(), r.type));
-		    r.writeback = mem.as<x86::Mem>();
-		    r.lval = lhs.op;
+		    x86::Mem mm = mem.as<x86::Mem>();
+		    x86::Xmm xmm = pgm.cc.newXmm("member_lhs_xmm");
+		    load_mem_to_xmm(pgm, xmm, mm, r.type);
+		    r.writeback = mm;
+		    r.lval = xmm;
 		    r.is_member = true;
 		}
 		else
@@ -4427,12 +4547,13 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		Operand &mem = td ? td->operand(pgm) : tde->operand(pgm);
 		if ( mem.isMem() )
 		{
-		    if ( r.type && r.type->is_real() )
+		    if ( r.type && (r.type->is_real() || r.type->is_simd()) )
 		    {
-			IRBuilder ir(pgm.cc);
-			IRValue lhs = ir.load(IRValue::mem(mem.as<x86::Mem>(), r.type));
-			r.writeback = mem.as<x86::Mem>();
-			r.lval = lhs.op;
+			x86::Mem mm = mem.as<x86::Mem>();
+			x86::Xmm xmm = pgm.cc.newXmm("deref_lhs_xmm");
+			load_mem_to_xmm(pgm, xmm, mm, r.type);
+			r.writeback = mm;
+			r.lval = xmm;
 			r.is_member = true;
 		    }
 		    else
@@ -4470,12 +4591,12 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		tds->var.modified();
 
 		x86::Mem mem = x86::ptr(old_ptr, 0, (uint32_t)(r.type && r.type->size ? r.type->size : 8));
-		if ( r.type && r.type->is_real() )
+		if ( r.type && (r.type->is_real() || r.type->is_simd()) )
 		{
-		    IRBuilder ir(pgm.cc);
-		    IRValue lhs = ir.load(IRValue::mem(mem, r.type));
 		    r.writeback = mem;
-		    r.lval = lhs.op;
+		    x86::Xmm xmm = pgm.cc.newXmm("deref_step_lhs_xmm");
+		    load_mem_to_xmm(pgm, xmm, mem, r.type);
+		    r.lval = xmm;
 		    r.is_member = true;
 		}
 		else

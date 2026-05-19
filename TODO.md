@@ -2,7 +2,7 @@
 
 ## High Priority
 
-- **GCC torture test suite: push past 80%.** Currently 1330/1685 (78.9%).
+- **GCC torture test suite: push past 80%.** Currently 1332/1685 (79.1%).
   Recent fixes: function-pointer array declarators, repeated aggregate
   `__attribute`, GNU statement-expression member access, nested struct
   flat initializers, local var zero-init, constant-fold register width,
@@ -10,7 +10,7 @@
   `20060420-1.c`, the EXE/AOT file-scope compound-literal global-
   pointer relocation path, plain `_Complex` / `iF` compatibility,
   `20070919-1.c`, `20010122-1.c`, `930513-1.c`, `20041124-1.c`,
-  `20041214-1.c`, and `20050502-1.c`.
+  `20041214-1.c`, `20050502-1.c`, `20050604-1.c`, and `20050607-1.c`.
   Remaining targets: `__builtin_return_address`, `__real__` / `__imag__` / fuller complex support,
   VLA members in local anonymous structs,
   struct pass-by-value for function args (~8 compile failures),

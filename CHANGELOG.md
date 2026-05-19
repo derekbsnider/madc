@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `20050604-1.c` and `20050607-1.c` now pass.**
+  GNU `vector_size(...)` attributes now survive lexing and attach to
+  typedef aliases as real SIMD datadefs, SIMD compound literals now
+  materialize stack/global backing storage and preserve XMM values for
+  vector arithmetic, and integer/float vector `+=` now lower through
+  `paddw` / `addps` instead of falling back into scalar conversion
+  paths. Casting a vector literal to `long long` still preserves the
+  low-qword shape needed by `20050607-1.c`. Added
+  `tests/testgccvectorlit.mad` as the regression.
+
 - **GCC torture `20050502-1.c` now passes.**
   Unary `*(`...`)` parsing now honors trailing postfix `++/--`, so
   `*(*x)++` lowers as dereference-of-old-pointer instead of collapsing
@@ -97,8 +107,8 @@
   `tests/testderefpostincread.mad` for the `20050502-1.c` deref-postinc
   read shape.
   Removed the `std::list` expectation from `tests/testmadc_ns.mad`,
-  refreshed the current integration / EXE pass counts to `296/296`, and
-  refreshed GCC torture parity to `1330/1685` (78.9%).
+  refreshed the current integration / EXE pass counts to `297/297`, and
+  refreshed GCC torture parity to `1332/1685` (79.1%).
 
 ## [v0.17.0] - 2026-05-19
 

@@ -2303,8 +2303,9 @@ TokenBase *Program::_getToken()
 		if ( word == "__FUNCTION__" || word == "__func__"
 		  || word == "__PRETTY_FUNCTION__" )
 		    return new TokenIdent(word);
-		// Most GCC attributes are no-ops for madc. Preserve `packed`
-		// so the struct parser can select packed layout; skip the rest.
+		// Most GCC attributes are no-ops for madc. Preserve the few
+		// layout/type-shaping ones the parser understands and skip
+		// the rest.
 		if ( word == "__attribute__" || word == "__attribute" )
 		{
 		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
@@ -2321,7 +2322,8 @@ TokenBase *Program::_getToken()
 			} while ( source.good() && depth > 0 );
 		    }
 		    if ( attr_text.find("packed") != std::string::npos
-		      || attr_text.find("aligned") != std::string::npos )
+		      || attr_text.find("aligned") != std::string::npos
+		      || attr_text.find("vector_size") != std::string::npos )
 		    {
 			source.pushback(attr_text);
 			return new TokenIdent(word);

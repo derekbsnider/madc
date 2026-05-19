@@ -956,6 +956,34 @@ static bool is_attribute_identifier_token(TokenBase *tb)
     return name == "__attribute__" || name == "__attribute";
 }
 
+static size_t parse_gnu_vector_size_attribute(Program &pgm)
+{
+    if ( !is_attribute_identifier_token(pgm.peekToken()) )
+	return 0;
+    pgm.nextToken(); // consume __attribute__
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	return 0;
+    int depth = 0;
+    bool saw_vector_size = false;
+    size_t vector_bytes = 0;
+    do {
+	TokenBase *at = pgm.nextToken();
+	if ( !at ) break;
+	if ( at->id() == TokenID::tkOpBrk ) ++depth;
+	else if ( at->id() == TokenID::tkClBrk ) --depth;
+	else if ( at->type() == TokenType::ttIdentifier
+	       && ((TokenIdent *)at)->str == "vector_size" )
+	    saw_vector_size = true;
+	else if ( saw_vector_size && at->type() == TokenType::ttInteger )
+	{
+	    int64_t n = at->ival();
+	    if ( n > 0 )
+		vector_bytes = (size_t)n;
+	}
+    } while ( depth > 0 );
+    return vector_bytes;
+}
+
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
 
@@ -8859,21 +8887,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     else
 	pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 
-    // Skip __attribute__((...)) after alias name in typedef
+    size_t gnu_vector_bytes = 0;
     if ( is_attribute_identifier_token(pgm.peekToken()) )
-    {
-	pgm.nextToken();
-	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-	{
-	    int adepth = 0;
-	    do {
-		TokenBase *at = pgm.nextToken();
-		if ( !at ) break;
-		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
-		else if ( at->id() == TokenID::tkClBrk ) --adepth;
-	    } while ( adepth > 0 );
-	}
-    }
+	gnu_vector_bytes = parse_gnu_vector_size_attribute(pgm);
 
     // Function-pointer typedef Form 1: typedef RET NAME(params);
     TokenBase *post = pgm.peekToken();
@@ -8905,6 +8921,8 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
 
     // register in datatype_map
+    if ( gnu_vector_bytes > 0 )
+	base_dd = new DataDefSIMD(base_dd, alias, gnu_vector_bytes);
     TokenDataType *tdt = new TokenDataType(alias.c_str(), *base_dd);
     pgm.datatype_map[alias] = tdt;
     DBG(std::cout << "TokenTYPEDEF::parse() " << alias << " = " << base_dd->name << std::endl);

@@ -123,6 +123,12 @@ void Program::safemov(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Xmm, Xmm)"));
+    if ( d1 && d1->is_simd() )
+    {
+	if ( d1->size <= 8 ) cc.movq(r1, r2);
+	else                 cc.movaps(r1, r2);
+	return;
+    }
     if ( d1 && d1->size == sizeof(float) )
     {
 	if ( d2 && d2->size == sizeof(float) )
@@ -141,6 +147,12 @@ void Program::safemov(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Xmm &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Xmm, Mem)"));
+    if ( d1 && d1->is_simd() )
+    {
+	if ( d1->size <= 8 ) cc.movq(r1, r2);
+	else                 cc.movups(r1, r2);
+	return;
+    }
     // When d2 isn't supplied, fall back to the Mem's actual size so a
     // 3-arg safemov that just says "destination is float" doesn't
     // misread a 4-byte Mem as a double (the old default blindly used
@@ -298,6 +310,12 @@ void Program::safemov(x86::Mem &m, x86::Gp &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Mem, Xmm)"));
+    if ( d1 && d1->is_simd() )
+    {
+	if ( d1->size <= 8 ) cc.movq(m, r2);
+	else                 cc.movups(m, r2);
+	return;
+    }
 
     // Integer destination: convert Xmm → Gp, then store as integer.
     // Handles `unsigned short s = double_expr;` etc.
@@ -488,6 +506,20 @@ void Program::safeadd(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 
 void Program::safeadd(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
+    if ( d1 && d1->is_simd() )
+    {
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(d1);
+	if ( vdd->element_type->is_real() )
+	{
+	    if ( vdd->element_type->size == sizeof(float) ) cc.addps(r1, r2);
+	    else                                            cc.addpd(r1, r2);
+	}
+	else if ( vdd->element_type->size == 2 ) cc.paddw(r1, r2);
+	else if ( vdd->element_type->size == 4 ) cc.paddd(r1, r2);
+	else if ( vdd->element_type->size == 8 ) cc.paddq(r1, r2);
+	else throw "Program::safeadd() unsupported SIMD element size";
+	return;
+    }
     if ( d1 && d1->size == sizeof(float) )
     {
 	DBG(cc.comment("Program::safeadd(r1, r2, float)"));
