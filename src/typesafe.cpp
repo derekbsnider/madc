@@ -775,9 +775,13 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
     // for unsigned, wrong for signed. Use `cqo` to sign-extend rax into
     // rdx for signed types; for unsigned divisions we still want rdx=0,
     // which the caller already arranged via safexor.
-    if ( !d2 || !d2->is_unsigned() )
+    if ( d2 && d2->is_unsigned() )
+	cc.div(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+    else
+    {
 	cc.cqo(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
-    cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+	cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+    }
 }
 
 // perform cc.shl with size casting
