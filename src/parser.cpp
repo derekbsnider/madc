@@ -5393,6 +5393,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				}
 			    }
 			    else if ( cast_expr_tb
+				   && (cast_expr_tb->type() == TokenType::ttInteger
+				    || cast_expr_tb->type() == TokenType::ttReal
+				    || cast_expr_tb->type() == TokenType::ttChar
+				    || cast_expr_tb->type() == TokenType::ttString) )
+			    {
+				// Simple literal: cast binds tightly.
+				// (double)5 consumes only 5, not < 3.0.
+				cast_expr = cast_expr_tb;
+			    }
+			    else if ( cast_expr_tb
 				   && (cast_expr_tb->id() == TokenID::tkBnot  // ~
 				    || cast_expr_tb->id() == TokenID::tkNeg   // -
 				    || cast_expr_tb->id() == TokenID::tkLnot  // !
