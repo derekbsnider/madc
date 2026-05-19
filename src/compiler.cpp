@@ -6948,7 +6948,7 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
     }
     if ( !regdp.first )
     {
-	_operand = pgm.cc.newGpq("_operand_Gpq_");
+	_operand = regdp.second->newreg(pgm.cc, "_cf_");
 	regdp.first = &_operand;
     }
     pgm.safemov(*regdp.first, ioperate(), regdp.second);
@@ -7666,11 +7666,22 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
 	Operand *caller_dest = regdp.first;
 	Operand out_norm;
 	DataDef *rtype = right->datadef() ? right->datadef() : regdp.second;
+	DBG(std::cout << "TokenBnot: integer path, rtype=" << (rtype ? rtype->name : "null") << " size=" << (rtype ? (int)rtype->size : -1) << std::endl);
 	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, out_norm);
 	pgm.safenot(rval);
-	// Mask result to semantic type width for sub-64-bit types.
-	// ~0U must produce 0xFFFFFFFF, not 0xFFFFFFFFFFFFFFFF.
-	if ( rtype && rtype->size < 8 && rval.isReg() )
+	// Narrow result to semantic type width for sub-64-bit types.
+	// ~0U must produce a 32-bit 0xFFFFFFFF, not 64-bit 0xFFFFFFFFFFFFFFFF.
+	// Using mov r32,r32 to truncate (implicit zero-extend to 64-bit) so
+	// subsequent comparisons use the right register width.
+	if ( rtype && rtype->size == 4 && rval.isReg()
+	  && rval.as<x86::Gp>().isGpq() )
+	{
+	    DBG(std::cout << "TokenBnot: narrowing to Gpd" << std::endl);
+	    x86::Gp narrow = pgm.cc.newGpd("~narrow");
+	    pgm.cc.mov(narrow, rval.as<x86::Gp>().r32());
+	    rval = narrow;
+	}
+	else if ( rtype && rtype->size < 4 && rval.isReg() )
 	    pgm.cc.and_(rval.as<x86::Gp>(), (int64_t)((1ULL << (rtype->size * 8)) - 1));
 	_operand = rval;
 	regdp.first = &_operand;
@@ -7689,8 +7700,16 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
     if ( !regdp.second ) { throw "TokenBnot::compile() right->compile cleared datatype"; }
     pgm.safenot(rval);					 // type safe bitwise not
-    // Mask result to semantic type width for sub-64-bit types.
-    if ( regdp.second && regdp.second->size < 8 && rval.isReg() )
+    // Narrow result to semantic type width for sub-64-bit types.
+    if ( regdp.second && regdp.second->size == 4 && rval.isReg()
+      && rval.as<x86::Gp>().isGpq() )
+    {
+	x86::Gp narrow = pgm.cc.newGpd("~narrow");
+	pgm.cc.mov(narrow, rval.as<x86::Gp>().r32());
+	_operand = narrow;
+	rval = _operand;
+    }
+    else if ( regdp.second && regdp.second->size < 4 && rval.isReg() )
 	pgm.cc.and_(rval.as<x86::Gp>(), (int64_t)((1ULL << (regdp.second->size * 8)) - 1));
     regdp.first = &rval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
