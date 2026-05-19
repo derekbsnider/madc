@@ -290,6 +290,21 @@ void Program::safemov(x86::Mem &m, x86::Gp &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Mem, Xmm)"));
+
+    // Integer destination: convert Xmm → Gp, then store as integer.
+    // Handles `unsigned short s = double_expr;` etc.
+    if ( d1 && d1->is_integer() )
+    {
+	x86::Gp tmp = cc.newGpq("_xmm2int");
+	bool src_is_float = d2 && d2->size == sizeof(float);
+	if ( src_is_float )
+	    cc.cvttss2si(tmp, r2);
+	else
+	    cc.cvttsd2si(tmp, r2);
+	safemov(m, tmp, d1, d1);
+	return;
+    }
+
     // Destination is a float (4 byte) or double (8 byte) slot. The
     // source Xmm holds the value in whichever precision produced it —
     // if the destination is narrower we must cvtsd2ss down to float

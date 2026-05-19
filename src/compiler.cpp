@@ -5055,6 +5055,28 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	Operand *orig_operand = regdp.first;
 	regdp.first = &_operand;
 	r_operand = &right->compile(pgm, regdp);
+	// Real → integer assignment: the RHS compiled with its natural
+	// type (double/float) and may have stored raw float bits into the
+	// integer LHS Mem via emit_ir_value. Fix by converting now.
+	if ( ltype->is_integer() && regdp.second && regdp.second->is_real()
+	  && _operand.isMem() )
+	{
+	    IRBuilder ir(pgm.cc);
+	    // Reload the raw double from the Mem, convert to int, store back.
+	    x86::Xmm tmp_xmm = (regdp.second->size == sizeof(float))
+		? pgm.cc.newXmmSs("_r2i_tmp") : pgm.cc.newXmmSd("_r2i_tmp");
+	    if ( regdp.second->size == sizeof(float) )
+		pgm.cc.movss(tmp_xmm, _operand.as<x86::Mem>());
+	    else
+		pgm.cc.movsd(tmp_xmm, _operand.as<x86::Mem>());
+	    x86::Gp tmp_gp = pgm.cc.newGpq("_r2i_gp");
+	    if ( regdp.second->size == sizeof(float) )
+		pgm.cc.cvttss2si(tmp_gp, tmp_xmm);
+	    else
+		pgm.cc.cvttsd2si(tmp_gp, tmp_xmm);
+	    pgm.safemov(_operand.as<x86::Mem>(), tmp_gp, ltype, ltype);
+	    regdp.second = ltype;
+	}
 	if ( orig_operand )
 	    regdp.first = orig_operand;
     }
