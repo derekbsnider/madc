@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+- **GCC torture `20050502-1.c` now passes.**
+  Unary `*(`...`)` parsing now honors trailing postfix `++/--`, so
+  `*(*x)++` lowers as dereference-of-old-pointer instead of collapsing
+  into `(*x)++`. Pointer-valued dereferences also now materialize as
+  memory loads instead of treating the pointer slot address as the
+  pointee value, and the postfix deref increment fast path is narrowed
+  back to the real `*(*p++)++` shape. Added
+  `tests/testderefpostincread.mad` as the regression.
+
+- **GCC torture `20041124-1.c` now passes.**
+  `_Complex` / `__complex__` now participate in the lexer's normal
+  type-specifier accumulator instead of being force-rewritten to
+  `double`, so declarations like `_Complex unsigned short` keep the base
+  type's own width. The imaginary-literal compatibility lane now also
+  accepts bare integer suffixes like `200i` in addition to float forms
+  like `1.0iF`. Added `tests/testcomplexushort.mad` as the regression.
+
+- **GCC torture `930513-1.c` now passes.**
+  K&R old-style parameter declarations now accept function-pointer
+  parameters with explicit prototypes and varargs, `&name` can late-bind
+  allowed extern function symbols at parse time, indirect varargs calls
+  now preserve their fixed-argument boundary and variadic ABI setup, and
+  native EXE emission now records external function-address `movabs`
+  loads as real `R_X86_64_64` relocations instead of freezing host
+  process addresses into the binary. Added
+  `tests/testkrfnptrvarargs.mad` as the regression.
+
+- **GCC torture `20010122-1.c` now passes.**
+  Function-pointer array elements now stay callable after subscript
+  parsing, so `funcs[i]()` and similar shapes lower through the existing
+  indirect-call path instead of collapsing to the raw function pointer
+  value. Pointer-returning indirect calls now also treat `void *` as a
+  real return value instead of dropping the `RAX` bind because its raw
+  pointee type is `void`. Added `tests/testfnptrarraycall.mad` as the
+  regression.
+
 - **GCC torture `20070919-1.c` now passes.**
   Local block-scope struct tags can now shadow earlier tags in the GCC
   parity lane, struct members can carry runtime-sized array counts, and
@@ -36,8 +72,7 @@
 - **Function-pointer array declarations now parse as plain C.**
   Declarations like `void *(*funcs[3])(void)` now flow through the
   normal declaration/initializer path instead of failing at the `)`
-  after the name. This moves GCC torture `20010122-1.c` past parsing
-  and into the next real blocker (`__builtin_return_address`).
+  after the name.
 
 - **Aggregate attribute parser now accepts repeated `__attribute`.**
   `struct ... } __attribute((packed)) __attribute((aligned));` now stays
@@ -52,10 +87,18 @@
   `tests/testcompoundlitglobalptr.mad` for native file-scope
   compound-literal relocation and `tests/testglobalarrayptrcastloop.mad`
   for the `20060420-1.c` address-cast loop shape, plus
-  `tests/testcomplexkw.mad` for the `_Complex` / `iF` compatibility lane.
+  `tests/testcomplexkw.mad` for the `_Complex` / `iF` compatibility lane,
+  `tests/testfnptrarraycall.mad` for indirect calls through
+  function-pointer array elements, `tests/testkrfnptrvarargs.mad`
+  for K&R-declared varargs function pointers, and
+  `tests/testcomplexushort.mad` for `_Complex unsigned short` plus
+  integer imaginary-suffix compatibility, plus
+  `tests/testcomputedgoto.mad` for GNU computed goto and
+  `tests/testderefpostincread.mad` for the `20050502-1.c` deref-postinc
+  read shape.
   Removed the `std::list` expectation from `tests/testmadc_ns.mad`,
-  refreshed the current integration / EXE pass counts to `286/286`, and
-  refreshed GCC torture parity to `1326/1685` (78.7%).
+  refreshed the current integration / EXE pass counts to `296/296`, and
+  refreshed GCC torture parity to `1330/1685` (78.9%).
 
 ## [v0.17.0] - 2026-05-19
 

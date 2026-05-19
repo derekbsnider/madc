@@ -262,7 +262,7 @@ public:
 	DataDefSTRUCT *sdd = owner_struct_type();
 	if ( !sdd ) return false;
 	std::string mname = var.name;
-	return sdd->m_count(mname) != 1 || sdd->m_count_expr(mname) != NULL;
+	return sdd->m_is_array_decl(mname);
     }
     DataDefSTRUCT *owner_struct_type() const
     {
@@ -305,6 +305,20 @@ public:
     asmjit::Operand _operand;
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
     virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// GNU computed-goto label address: `&&label`
+class TokenLabelAddr: public TokenBase
+{
+public:
+    std::string name;
+    DataDef *ptr_type;
+    asmjit::Operand _operand;
+    TokenLabelAddr(const std::string &n, DataDef *pt) : name(n), ptr_type(pt) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenBase *clone() { return new TokenLabelAddr(name, ptr_type); }
     virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };

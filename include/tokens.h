@@ -1044,7 +1044,8 @@ class TokenGOTO: public TokenKeyword
 {
 public:
     std::string target;   // label name (set by parse)
-    TokenGOTO() : TokenKeyword("goto") {}
+    TokenBase *indirect_target;
+    TokenGOTO() : TokenKeyword("goto"), indirect_target(NULL) {}
     virtual TokenID id() const { return TokenID::tkGOTO; }
     virtual TokenBase *clone() { return (TokenBase*)new TokenGOTO(); }
     virtual TokenBase *parse(Program &);

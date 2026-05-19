@@ -1,0 +1,34 @@
+#!/../bin/madc
+
+typedef struct descriptor_dimension
+{
+    int stride;
+    int lbound;
+    int ubound;
+} descriptor_dimension;
+
+typedef struct {
+    int *data;
+    int dtype;
+    descriptor_dimension dim[7];
+} gfc_array_i4;
+
+int main(void)
+{
+    int rdata[3];
+    gfc_array_i4 retarray = { rdata, 265, { { 1, 1, 3 } } };
+    if (retarray.data != rdata)
+	return 1;
+    if (retarray.dtype != 265)
+	return 1;
+    if (retarray.dim[0].stride != 1)
+	return 1;
+    if (retarray.dim[0].lbound != 1)
+	return 1;
+    if (retarray.dim[0].ubound != 3)
+	return 1;
+    if (retarray.dim[1].stride != 0 || retarray.dim[1].lbound != 0 || retarray.dim[1].ubound != 0)
+	return 1;
+    puts("ok\n");
+    return 0;
+}

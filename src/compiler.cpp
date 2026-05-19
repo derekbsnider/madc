@@ -59,6 +59,8 @@ static x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr"
     throw "as_gp_ptr: operand is neither Gp nor Mem";
 }
 
+static asmjit::Label &lookup_or_make_label(Program &pgm, const std::string &name);
+
 static x86::Gp materialize_gp_ptr_arg(Program &pgm, Operand &op, const char *name)
 {
     x86::Gp src = as_gp_ptr(pgm, op, name);
@@ -114,9 +116,9 @@ static size_t count_initializer_entries(const std::vector<TokenBase *> &inits)
 	    ++total;
 	    continue;
 	}
-	if ( TokenStructLit *slit = dynamic_cast<TokenStructLit *>(node) )
+	if ( dynamic_cast<TokenStructLit *>(node) != NULL )
 	{
-	    total += count_initializer_entries(slit->inits);
+	    ++total;
 	    continue;
 	}
 	++total;
@@ -2289,7 +2291,15 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("function pointer call"));
 
 	DataDefFPTR *fptr = static_cast<DataDefFPTR *>(var.type);
-	FuncDef *func = fptr->target;
+	FuncDef *func = fptr ? fptr->target : NULL;
+	if ( !func && src_node )
+	{
+	    DataDefFPTR *src_fptr = dynamic_cast<DataDefFPTR *>(src_node->datadef());
+	    if ( src_fptr )
+		func = src_fptr->target;
+	}
+	if ( !func )
+	    pgm.Throw(this) << "function pointer call missing target signature" << flush;
 	FuncSignature funcsig(CallConvId::kCDecl);
 	bool ret_is_variadic = false;
 
@@ -2370,7 +2380,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    params.push_back(env_ptr);
 	}
 
-	for ( size_t i = 0; i < argc(); ++i )
+	size_t expected_argc = explicit_expected_argc(func);
+	if ( !func->is_varargs && argc() > expected_argc )
+	    throw_too_many_call_args(pgm, this, parameters.data(), argc());
+	size_t fixed_argc = func->is_varargs ? expected_argc : argc();
+	for ( size_t i = 0; i < fixed_argc; ++i )
 	{
 	    // skip env param (index 0 in func->parameters) when capturing
 	    size_t fi = func->has_captures ? i + 1 : i;
@@ -2379,6 +2393,20 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    Operand arg_storage;
 	    Operand &areg = compile_call_arg_normalized(pgm, parameters[i], ptype, false, arg_storage, arg_type);
 	    append_call_param(params, funcsig, areg, arg_type);
+	}
+	if ( func->is_varargs )
+	{
+	    if ( argc() < fixed_argc )
+		pgm.Throw(this) << "function pointer varargs call missing fixed arguments" << flush;
+	    if ( funcsig.argCount() >= 1 )
+		funcsig.setVaIndex((uint32_t)funcsig.argCount());
+	    for ( size_t i = fixed_argc; i < argc(); ++i )
+	    {
+		DataDef *arg_type = NULL;
+		Operand arg_storage;
+		Operand &areg = compile_call_arg_normalized(pgm, parameters[i], NULL, true, arg_storage, arg_type);
+		append_call_param(params, funcsig, areg, arg_type);
+	    }
 	}
 
 	// invoke through register
@@ -2404,7 +2432,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	}
 
 	// capture return value
-	if ( retdd.rawtype() != DataType::dtVOID )
+	if ( retdd.type() != DataType::dtVOID )
 	{
 	    if ( !regdp.first )
 	    {
@@ -3199,11 +3227,14 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    continue;
 	}
 
+	std::string mname = mp.first;
+	bool is_array_decl = dds->m_is_array_decl(mname);
+
 	// Nested struct-member init: `{ ..., { 0, 1, 10 }, ... }` where
 	// the member is itself a struct value. TokenStructLit has no
 	// compile() — recurse here instead of letting it fall through to
 	// TokenStmt's default-throw branch.
-	if ( mtype->basetype() == BaseType::btStruct
+	if ( mtype->basetype() == BaseType::btStruct && !is_array_decl
 	  && dynamic_cast<TokenStructLit *>(inits[i]) != NULL )
 	{
 	    TokenStructLit *nested = static_cast<TokenStructLit *>(inits[i]);
@@ -3213,7 +3244,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    emit_struct_init(pgm, base_reg, addr, ndds, nested->inits, err_loc);
 	    continue;
 	}
-	if ( mtype->basetype() == BaseType::btStruct
+	if ( mtype->basetype() == BaseType::btStruct && !is_array_decl
 	  && inits[i]->datadef()
 	  && inits[i]->datadef()->basetype() == BaseType::btStruct )
 	{
@@ -3223,7 +3254,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    emit_raw_aggregate_copy(pgm, dst_slot, sval, mtype, "init_struct_copy");
 	    continue;
 	}
-	if ( mtype->basetype() == BaseType::btStruct )
+	if ( mtype->basetype() == BaseType::btStruct && !is_array_decl )
 	{
 	    DataDefSTRUCT *ndds = dynamic_cast<DataDefSTRUCT *>(mtype);
 	    if ( !ndds )
@@ -3242,14 +3273,74 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	// the element type. Per-element write at `[base + addr + j*esize]`.
 	// Member's per-member count lives on the parent struct.
 	{
-	    std::string mname = mp.first;
 	    size_t mcount = dds->m_count(mname);
 	    TokenStructLit *nested_arr = dynamic_cast<TokenStructLit *>(inits[i]);
-	    if ( nested_arr != NULL && mcount > 1 )
+	    if ( nested_arr != NULL && is_array_decl && mcount == 0 )
+	    {
+		if ( !nested_arr->inits.empty() )
+		    pgm.Throw(err_loc) << "Too many initializers for member " << mname << flush;
+		continue;
+	    }
+	    if ( nested_arr != NULL && is_array_decl && mcount == 1 )
+	    {
+		if ( nested_arr->inits.size() > 1 )
+		    pgm.Throw(err_loc) << "Too many initializers for member " << mname << flush;
+		if ( nested_arr->inits.empty() )
+		{
+		    x86::Mem mm = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
+		    pgm.cc.mov(mm, imm(0));
+		    continue;
+		}
+		regdefp_t arr_rdp = {nullptr, nullptr, nullptr};
+		Operand &elem_val = nested_arr->inits[0]->compile(pgm, arr_rdp);
+		x86::Mem em = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
+		if ( elem_val.isImm() )
+		    pgm.cc.mov(em, elem_val.as<Imm>());
+		else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kVec) )
+		{
+		    if ( mtype->size == sizeof(float) )
+			pgm.cc.movss(em, elem_val.as<x86::Xmm>());
+		    else
+			pgm.cc.movsd(em, elem_val.as<x86::Xmm>());
+		}
+		else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kGp) )
+		{
+		    x86::Gp src = elem_val.as<x86::Gp>();
+		    if ( mtype->size == 8 ) pgm.cc.mov(em, src.r64());
+		    else if ( mtype->size == 4 ) pgm.cc.mov(em, src.r32());
+		    else if ( mtype->size == 2 ) pgm.cc.mov(em, src.r16());
+		    else pgm.cc.mov(em, src.r8());
+		}
+		else
+		    pgm.Throw(err_loc) << "Unsupported nested-array initializer element" << flush;
+		continue;
+	    }
+	    if ( nested_arr != NULL && is_array_decl && mcount > 1 )
 	    {
 		size_t esize = mtype->size;
 		for ( size_t j = 0; j < nested_arr->inits.size() && j < mcount; ++j )
 		{
+		    if ( mtype->basetype() == BaseType::btStruct )
+		    {
+			DataDefSTRUCT *elem_dds = dynamic_cast<DataDefSTRUCT *>(mtype);
+			if ( !elem_dds )
+			    pgm.Throw(err_loc) << "Nested initializer for non-struct array member type" << flush;
+			if ( TokenStructLit *elem_slit = dynamic_cast<TokenStructLit *>(nested_arr->inits[j]) )
+			{
+			    emit_struct_init(pgm, base_reg,
+				addr + (int32_t)(j * esize), elem_dds, elem_slit->inits, err_loc);
+			    continue;
+			}
+			if ( nested_arr->inits[j]->datadef()
+			  && nested_arr->inits[j]->datadef()->basetype() == BaseType::btStruct )
+			{
+			    regdefp_t elem_rdp = {nullptr, mtype, nullptr};
+			    Operand &elem_val = nested_arr->inits[j]->compile(pgm, elem_rdp);
+			    Operand dst_slot = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
+			    emit_raw_aggregate_copy(pgm, dst_slot, elem_val, mtype, "init_struct_array_copy");
+			    continue;
+			}
+		    }
 		    regdefp_t arr_rdp = {nullptr, nullptr, nullptr};
 		    Operand &elem_val = nested_arr->inits[j]->compile(pgm, arr_rdp);
 		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
@@ -3276,6 +3367,17 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		// Zero remaining slots
 		for ( size_t j = nested_arr->inits.size(); j < mcount; ++j )
 		{
+		    if ( mtype->basetype() == BaseType::btStruct )
+		    {
+			DataDefSTRUCT *elem_dds = dynamic_cast<DataDefSTRUCT *>(mtype);
+			if ( elem_dds )
+			{
+			    std::vector<TokenBase *> empty_init;
+			    emit_struct_init(pgm, base_reg,
+				addr + (int32_t)(j * esize), elem_dds, empty_init, err_loc);
+			    continue;
+			}
+		    }
 		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
 		    pgm.cc.mov(em, imm(0));
 		}
@@ -4599,6 +4701,7 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
     bool increment = op_name && op_name[0] == '+';
     TokenDerefExpr *postfix_deref = postfix ? dynamic_cast<TokenDerefExpr *>(target) : NULL;
     if ( postfix_deref
+      && dynamic_cast<TokenDerefStep *>(postfix_deref->expr) != NULL
       && postfix_deref->expr
       && postfix_deref->expr->datadef()
       && postfix_deref->expr->datadef()->is_pointer()
@@ -8359,8 +8462,27 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	x86::Gp addr_gp = pgm.cc.newGpq("%s", var.name.c_str());
 	if ( func->funcnode )
 	    pgm.cc.lea(addr_gp, x86::ptr(func->funcnode->label()));
-	else if ( method->x86code )
-	    pgm.cc.mov(addr_gp, imm(method->x86code));
+	else
+	{
+	    void *func_addr = method->x86code;
+	    if ( !func_addr && pgm.is_dynamic_symbol_allowed(var.name) )
+	    {
+		func_addr = dlsym(RTLD_DEFAULT, var.name.c_str());
+		if ( func_addr )
+		{
+		    method->x86code = func_addr;
+		    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(func_addr)] =
+			external_symbol_export_name(var.name, func_addr);
+		}
+	    }
+	    if ( func_addr )
+	    {
+		if ( pgm.aot_tracking )
+		    pgm.emit_data_mov(addr_gp, func_addr);
+		else
+		    pgm.cc.mov(addr_gp, imm(func_addr));
+	    }
+	}
 
 	if ( !regdp.second )
 	    regdp.second = var.type;
@@ -8495,11 +8617,13 @@ Operand &TokenDeref::operand(Program &pgm)
     }
     else
 	ptr_gp = ptr_op.as<x86::Gp>();
-    // return Mem operand [ptr] for numeric types (enables read/write)
-    if ( deref_type->is_numeric() )
+    // Numeric and pointer pointees both live in memory at [ptr]. Only
+    // aggregate / non-scalar dereferences use the pointer value itself as
+    // the address of the object.
+    if ( deref_type->is_numeric() || deref_type->is_pointer() )
 	_operand = x86::ptr(ptr_gp, 0, (uint32_t)deref_type->size);
     else
-	_operand = ptr_gp; // non-numeric: pointer value IS the address
+	_operand = ptr_gp; // non-scalar: pointer value IS the object address
     return _operand;
 }
 
@@ -8548,7 +8672,7 @@ Operand &TokenDerefExpr::operand(Program &pgm)
     }
     else
 	ptr_gp = ptr_op.as<x86::Gp>();
-    if ( deref_type->is_numeric() )
+    if ( deref_type->is_numeric() || deref_type->is_pointer() )
 	_operand = x86::ptr(ptr_gp, 0, (uint32_t)deref_type->size);
     else
 	_operand = ptr_gp;
@@ -9071,6 +9195,15 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
     return emit_ir_value(pgm, IRValue::reg(addr, ptr_type), regdp, _operand, ptr_type);
 }
 
+Operand &TokenLabelAddr::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenLabelAddr::compile()"));
+    asmjit::Label &L = lookup_or_make_label(pgm, name);
+    x86::Gp addr = pgm.cc.newIntPtr("%s", name.c_str());
+    pgm.cc.lea(addr, x86::ptr(L));
+    return emit_ir_value(pgm, IRValue::reg(addr, ptr_type), regdp, _operand, ptr_type);
+}
+
 // va_arg(ap, type) — read next variadic argument from packed buffer and advance
 Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 {
@@ -9517,6 +9650,17 @@ static asmjit::Label &lookup_or_make_label(Program &pgm, const std::string &name
 // compile a goto statement
 Operand &TokenGOTO::compile(Program &pgm, regdefp_t &regdp)
 {
+    if ( indirect_target )
+    {
+	DBG(std::cout << "TokenGOTO::compile(*expr)" << std::endl);
+	regdefp_t jump_rdp = {NULL, NULL, NULL};
+	Operand &jump_op = indirect_target->compile(pgm, jump_rdp);
+	x86::Gp jump_gp = as_gp_ptr(pgm, jump_op, "goto_indirect");
+	DBG(pgm.cc.comment("goto *expr"));
+	pgm.cc.jmp(jump_gp);
+	return _reg;
+    }
+
     DBG(std::cout << "TokenGOTO::compile(" << target << ")" << std::endl);
     asmjit::Label &L = lookup_or_make_label(pgm, target);
     DBG(pgm.cc.comment(("goto " + target).c_str()));

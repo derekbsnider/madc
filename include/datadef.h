@@ -509,6 +509,7 @@ public:
 
     std::vector<memberpair_t> members;
     std::vector<size_t> member_counts;	// per-member count for fixed arrays (1 for scalars)
+    std::vector<bool> member_array_flags;	// true when declarator used [] even if count folded to 1
     std::vector<size_t> member_offsets;	// per-member byte offset in the finalized layout
     std::vector<BitFieldInfo> member_bitfields;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
@@ -561,7 +562,8 @@ public:
 	bitfield_unit_size = 0;
 	bitfield_next_bit = 0;
     }
-    void addMember(std::string n, DataDef &dd, size_t cnt, TokenBase *count_expr = NULL)
+    void addMember(std::string n, DataDef &dd, size_t cnt, TokenBase *count_expr = NULL,
+	bool is_array_decl = false)
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
 	endBitFieldRun();
@@ -571,6 +573,7 @@ public:
 	    if ( fa > max_align ) max_align = fa;
 	    members.emplace_back(n, &dd);
 	    member_counts.push_back(cnt);
+	    member_array_flags.push_back(is_array_decl || count_expr != NULL);
 	    member_offsets.push_back(0);
 	    member_bitfields.push_back(BitFieldInfo());
 	    member_count_exprs.push_back(count_expr);
@@ -582,6 +585,7 @@ public:
 	if ( fa > max_align ) max_align = fa;
 	members.emplace_back(n, &dd);
 	member_counts.push_back(cnt);
+	member_array_flags.push_back(is_array_decl || count_expr != NULL);
 	member_offsets.push_back(size);
 	member_bitfields.push_back(BitFieldInfo());
 	member_count_exprs.push_back(count_expr);
@@ -628,6 +632,7 @@ public:
 	BitFieldInfo info = allocateBitField(dd, width);
 	members.emplace_back(n, &dd);
 	member_counts.push_back(1);
+	member_array_flags.push_back(false);
 	member_offsets.push_back(info.storage_offset);
 	member_bitfields.push_back(info);
 	member_count_exprs.push_back(NULL);
@@ -654,6 +659,7 @@ public:
 	{
 	    members.push_back(agg.members[i]);
 	    member_counts.push_back(i < agg.member_counts.size() ? agg.member_counts[i] : 1);
+	    member_array_flags.push_back(i < agg.member_array_flags.size() ? agg.member_array_flags[i] : false);
 	    size_t child_offset = i < agg.member_offsets.size() ? agg.member_offsets[i] : 0;
 	    member_offsets.push_back(base_offset + child_offset);
 	    BitFieldInfo info = i < agg.member_bitfields.size() ? agg.member_bitfields[i] : BitFieldInfo();
@@ -702,6 +708,13 @@ public:
 	    if ( !member.compare(members[i].first) )
 		return (i < member_count_exprs.size()) ? member_count_exprs[i] : NULL;
 	return NULL;
+    }
+    bool m_is_array_decl(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_array_flags.size()) ? member_array_flags[i] : false;
+	return false;
     }
     bool has_runtime_size() const
     {

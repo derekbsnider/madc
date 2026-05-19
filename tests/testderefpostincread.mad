@@ -1,0 +1,61 @@
+#!/../bin/madc
+
+#include <stdio.h>
+#include <string.h>
+
+int bar(const char **x)
+{
+    return *(*x)++;
+}
+
+int baz(int c)
+{
+    return c != '@';
+}
+
+void foo(const char **w, char *x, bool y, bool z)
+{
+    char c = bar(w);
+    int i = 0;
+
+    while (1)
+    {
+	x[i++] = c;
+	c = bar(w);
+	if (y && c == '\'')
+	    break;
+	if (z && c == '\"')
+	    break;
+	if (!y && !z && !baz(c))
+	    break;
+    }
+    x[i] = 0;
+}
+
+int main()
+{
+    char buf[64];
+    const char *p;
+
+    p = "abcde'fgh";
+    foo(&p, buf, 1, 0);
+    printf("%s %s\n", buf, p);
+
+    p = "ABCDEFG\"HI";
+    foo(&p, buf, 0, 1);
+    printf("%s %s\n", buf, p);
+
+    p = "abcd\"e'fgh";
+    foo(&p, buf, 1, 1);
+    printf("%s %s\n", buf, p);
+
+    p = "ABCDEF'G\"HI";
+    foo(&p, buf, 1, 1);
+    printf("%s %s\n", buf, p);
+
+    p = "abcdef@gh";
+    foo(&p, buf, 0, 0);
+    printf("%s %s\n", buf, p);
+
+    return 0;
+}

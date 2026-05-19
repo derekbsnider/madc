@@ -1,0 +1,19 @@
+#!/../bin/madc
+
+struct a {
+    unsigned b;
+    int c;
+    int d;
+} static g = {9, 5};
+
+int main(void)
+{
+    if (g.b != 9)
+	return 1;
+    if (g.c != 5)
+	return 1;
+    if (g.d != 0)
+	return 1;
+    puts("ok\n");
+    return 0;
+}

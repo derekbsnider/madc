@@ -1566,6 +1566,19 @@ bool Program::save_executable(const std::string &path)
 	};
 	std::vector<ext_sym> extern_syms;
 	std::map<uintptr_t, uint32_t> extern_indices; // addr -> dynsym index
+	auto ensure_external_dynsym = [&](uintptr_t addr, const std::string &name) -> uint32_t {
+		std::map<uintptr_t, uint32_t>::const_iterator eit =
+		    extern_indices.find(addr);
+		if ( eit != extern_indices.end() )
+			return eit->second;
+
+		uint32_t dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
+		ext_sym es;
+		es.name = normalize_elf_symbol_name(name);
+		extern_syms.push_back(es);
+		extern_indices[addr] = dynsym_idx;
+		return dynsym_idx;
+	};
 
 	struct rela_entry
 	{
@@ -1600,22 +1613,8 @@ bool Program::save_executable(const std::string &path)
 
 			if ( it != external_symbol_map.end() )
 			{
-				uint32_t dynsym_idx;
-				std::map<uintptr_t, uint32_t>::const_iterator eit =
-				    extern_indices.find(payload);
-				if ( eit != extern_indices.end() )
-				{
-					dynsym_idx = eit->second;
-				}
-				else
-				{
-					// dynsym[0] is NULL, so first real symbol is index 1
-					dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
-					ext_sym es;
-					es.name = normalize_elf_symbol_name(it->second);
-					extern_syms.push_back(es);
-					extern_indices[payload] = dynsym_idx;
-				}
+				uint32_t dynsym_idx =
+				    ensure_external_dynsym(payload, it->second);
 				if ( !skip_code_rela )
 				{
 					rela_entry re_entry;
@@ -1639,6 +1638,31 @@ bool Program::save_executable(const std::string &path)
 				rela_entries.push_back(re_entry);
 			}
 		}
+	}
+
+	// --- Add relocations for tracked movabs external address loads ---
+	// emit_data_mov() marks these sites because asmjit won't surface a
+	// reloc entry for mov reg, imm64. In AOT they must become
+	// R_X86_64_64 references to the external symbol, not frozen host
+	// addresses from the JIT process.
+	for ( size_t i = 0; i < aot_data_refs.size(); ++i )
+	{
+		const AotDataRef &ref = aot_data_refs[i];
+		if ( !code.isLabelBound(ref.label_id) )
+			continue;
+		std::map<uintptr_t, std::string>::const_iterator it =
+		    external_symbol_map.find(ref.address);
+		if ( it == external_symbol_map.end() )
+			continue;
+
+		rela_entry re_entry;
+		re_entry.source_offset =
+		    static_cast<uint64_t>(code.labelOffset(ref.label_id)) + ref.imm_offset;
+		re_entry.dynsym_index = ensure_external_dynsym(ref.address, it->second);
+		re_entry.elf_type = R_X86_64_64;
+		re_entry.is_extern = true;
+		re_entry.raw_addend = 0;
+		rela_entries.push_back(re_entry);
 	}
 
 	// --- Add addrtab slot relocations ---
@@ -1670,21 +1694,7 @@ bool Program::save_executable(const std::string &path)
 				continue;
 		}
 
-		uint32_t dynsym_idx;
-		std::map<uintptr_t, uint32_t>::const_iterator eit =
-		    extern_indices.find(func_addr);
-		if ( eit != extern_indices.end() )
-		{
-			dynsym_idx = eit->second;
-		}
-		else
-		{
-			dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
-			ext_sym es;
-			es.name = normalize_elf_symbol_name(it->second);
-			extern_syms.push_back(es);
-			extern_indices[func_addr] = dynsym_idx;
-		}
+		uint32_t dynsym_idx = ensure_external_dynsym(func_addr, it->second);
 
 		data_rela dr;
 		dr.data_offset = addrtab_relas[i].data_offset;
@@ -1794,21 +1804,8 @@ bool Program::save_executable(const std::string &path)
 			}
 			else
 			{
-				uint32_t dsym;
-				std::map<uintptr_t, uint32_t>::const_iterator dit =
-				    extern_indices.find(taddr);
-				if ( dit != extern_indices.end() )
-				{
-					dsym = dit->second;
-				}
-				else
-				{
-					dsym = static_cast<uint32_t>(extern_syms.size() + 1);
-					ext_sym es;
-					es.name = normalize_elf_symbol_name(eit->second);
-					extern_syms.push_back(es);
-					extern_indices[taddr] = dsym;
-				}
+				uint32_t dsym =
+				    ensure_external_dynsym(taddr, eit->second);
 
 				plt_idx = plt_entries.size();
 				plt_entry pe;

@@ -1,0 +1,18 @@
+#!/../bin/madc
+
+struct X
+{
+    int a;
+    int b;
+    int z[];
+};
+
+struct X x = { .b = 40, .z = {} };
+
+int main(void)
+{
+    if (x.b != 40)
+	return 1;
+    puts("ok\n");
+    return 0;
+}

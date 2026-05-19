@@ -318,12 +318,6 @@ void Program::_tokenizer_init()
     define_map["__signed"] = "signed";
     define_map["__signed__"] = "signed";
     define_map["__const__"] = "const";
-    // C99 _Complex / GCC __complex__ — lower to double for now so
-    // declarations and calls compile on the GCC parity lane even
-    // though full complex semantics are still pending.
-    define_map["_Complex"] = "double";
-    define_map["__complex__"] = "double";
-
     // GCC floating-point limit macros
     define_map["__FLT_MAX__"] = "3.40282347e+38F";
     define_map["__FLT_MIN__"] = "1.17549435e-38F";
@@ -1748,6 +1742,12 @@ TokenBase *Program::_getToken()
 			eat_imag_suffix();
 			return new TokenReal(num);
 		    }
+		    if ( eat_imag_suffix() )
+		    {
+			TokenInt *ti = new TokenInt(v);
+			ti->source_text = lit_text;
+			return ti;
+		    }
 		    eat_int_suffix();
 		    TokenInt *ti = new TokenInt(v);
 		    ti->source_text = lit_text;
@@ -2332,9 +2332,11 @@ TokenBase *Program::_getToken()
 		// short/int/char/double in any order (C99 6.7.2).
 		// Uses a bitmap accumulator (chibicc-style) so order doesn't
 		// matter: `unsigned long long int` = `long unsigned int long`.
-		if ( word == "unsigned" || word == "signed" || word == "long"
-		  || word == "short"   || word == "int"    || word == "char"
-		  || word == "double"  || word == "float" )
+		if ( word == "unsigned"   || word == "signed"
+		  || word == "long"       || word == "short"
+		  || word == "int"        || word == "char"
+		  || word == "double"     || word == "float"
+		  || word == "_Complex"   || word == "__complex__" )
 		{
 		    enum {
 			TS_VOID     = 1 << 0,
@@ -2346,6 +2348,7 @@ TokenBase *Program::_getToken()
 			TS_DOUBLE   = 1 << 12,
 			TS_SIGNED   = 1 << 14,
 			TS_UNSIGNED = 1 << 16,
+			TS_COMPLEX  = 1 << 18,
 		    };
 		    auto word_to_flag = [](const std::string &w) -> int {
 			if (w == "char")     return TS_CHAR;
@@ -2356,6 +2359,7 @@ TokenBase *Program::_getToken()
 			if (w == "double")   return TS_DOUBLE;
 			if (w == "signed")   return TS_SIGNED;
 			if (w == "unsigned") return TS_UNSIGNED;
+			if (w == "_Complex" || w == "__complex__") return TS_COMPLEX;
 			return 0;
 		    };
 		    int counter = word_to_flag(word);
@@ -2388,8 +2392,13 @@ TokenBase *Program::_getToken()
 			}
 		    }
 		    // Resolve accumulated type specifiers to DataDef
-		    switch ( counter )
+		    int normalized_counter = counter & ~TS_COMPLEX;
+		    switch ( normalized_counter )
 		    {
+			case 0:
+			    if ( counter & TS_COMPLEX )
+				return new TokenDataType("double", ddDOUBLE);
+			    break;
 			case TS_CHAR:                                   return new TokenDataType("char", ddCHAR);
 			case TS_SIGNED + TS_CHAR:                       return new TokenDataType("signed char", ddINT8);
 			case TS_UNSIGNED + TS_CHAR:                     return new TokenDataType("unsigned char", ddUINT8);
