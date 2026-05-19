@@ -3214,6 +3214,33 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
       && !global_string_initializer_is_static_data(pgm, var, initialize) )
 	initialize->compile(pgm, regdp);
 
+    // Empty brace initializer for structs/unions: `struct X x = {};`
+    // Zero-fill the stack slot directly instead of going through the
+    // assignment path, which would self-copy (source == dest).
+    if ( emit_initializer
+      && init_list.empty() && has_brace_init && !var.is_fixed_array()
+      && dynamic_cast<DataDefSTRUCT *>(var.type) != NULL
+      && var.type->type() == DataType::dtRESERVED )
+    {
+	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
+	x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var.name + ".zero").c_str());
+	if ( base_op.isMem() )
+	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+	size_t total = var.type->size;
+	// Zero-fill using qword stores, then any remainder.
+	size_t ofs = 0;
+	for ( ; ofs + 8 <= total; ofs += 8 )
+	    pgm.cc.mov(x86::qword_ptr(base_reg, (int32_t)ofs), imm(0));
+	for ( ; ofs + 4 <= total; ofs += 4 )
+	    pgm.cc.mov(x86::dword_ptr(base_reg, (int32_t)ofs), imm(0));
+	for ( ; ofs < total; ofs++ )
+	    pgm.cc.mov(x86::byte_ptr(base_reg, (int32_t)ofs), imm(0));
+	regdp.first = &base_op;
+	regdp.second = var.type;
+    }
+
     // brace-enclosed initializer for standalone structs: struct Foo x = { v0, v1, ... }
     if ( emit_initializer
       && !init_list.empty() && !var.is_fixed_array()
@@ -3511,6 +3538,12 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(cout << "    " << (*vvi)->type->name << ' ' << (*vvi)->name << endl);
 	}
     }
+
+    // Save the cursor position right after parameter setup. Local
+    // numeric stack-slot zero-inits will be inserted here (via
+    // setCursor) so they execute once at function entry instead of at
+    // first-use, which could be inside a conditional branch.
+    prologue_cursor = pgm.cc.cursor();
 
     auto invalidate_rematerializable_globals = [&]() {
 	for ( std::map<Variable *, Operand>::iterator it = operand_map.begin();
@@ -6298,14 +6331,38 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 
 	if ( !(var->flags & vfPARAM) )
 	{
-	    Operand tmp = var->type->newreg(pgm.cc, var->name.c_str());
-	    if ( var->type->is_integer() && tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.safexor(tmp, tmp);
-	    else
-	    if ( var->type->is_real() && tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kVec) )
-		pgm.cc.xorps(tmp.as<x86::Xmm>(), tmp.as<x86::Xmm>());
-	    IRBuilder ir(pgm.cc);
-	    ir.store(IRValue::mem(stack, var->type), ir_from_operand(tmp, var->type));
+	    // Emit the zero-init at the function prologue (before any
+	    // branches) so it runs exactly once per function entry.
+	    // Without this, the init lands at the first-use site which
+	    // may be inside a conditional branch — re-zeroing the slot
+	    // every time that branch is taken across loop iterations.
+	    // Use a dedicated temporary whose lifetime is confined to
+	    // the prologue region to avoid register-pressure interference
+	    // with later code (e.g. union/struct brace-init memcpy).
+	    BaseNode *saved_cursor = NULL;
+	    if ( pgm.tkFunction && pgm.tkFunction->prologue_cursor )
+		saved_cursor = pgm.cc.setCursor(pgm.tkFunction->prologue_cursor);
+
+	    // Use a qword-sized mov-immediate to zero the entire slot.
+	    // This avoids creating a virtual register whose lifetime
+	    // could interfere with later code.
+	    x86::Mem dst = stack;
+	    if ( var->type->is_integer() )
+	    {
+		dst.setSize(8);
+		pgm.cc.mov(dst, imm(0));
+	    }
+	    else if ( var->type->is_real() )
+	    {
+		dst.setSize(8);
+		pgm.cc.mov(dst, imm(0));
+	    }
+
+	    if ( saved_cursor )
+	    {
+		pgm.tkFunction->prologue_cursor = pgm.cc.cursor();
+		pgm.cc.setCursor(saved_cursor);
+	    }
 	}
 	var->flags |= vfREGSET;
 	return operand_map[var];

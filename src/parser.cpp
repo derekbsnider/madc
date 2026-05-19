@@ -10730,6 +10730,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     {
 	// parse brace-enclosed initializer list for fixed-size arrays and structs
 	std::vector<TokenBase *> init_list;
+	bool saw_brace_init = false;
 	// Only real user-defined structs/classes accept brace init.
 	// Built-in class types (std::string, ostream, etc.) use DataDefCLASS
 	// but have a concrete DataType; user-defined structs/classes use
@@ -10783,6 +10784,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( peek0->id() != TokenID::tkOpBrc )
 		Throw(nt) << "Expected '{' or string literal for initializer" << flush;
 	    nextToken(); // consume '{'
+	    saw_brace_init = true;
 	    // parse comma-separated elements up to '}'. Each element may itself
 	    // be a brace-list (for array-of-structs or nested struct members).
 	    while ( true )
@@ -11010,6 +11012,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	}
 	TokenDecl *td = new TokenDecl(*var);
+	td->has_brace_init = saw_brace_init;
 
 	td->file = tb->file;
 	td->line = tb->line;

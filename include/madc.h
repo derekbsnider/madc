@@ -129,7 +129,12 @@ public:
     // the first use's LEA can sit inside a branch the second use does
     // not dominate, leaving the cached Gp uninitialized → NULL deref.
     std::map<Variable *, asmjit::x86::Mem> fixed_array_stack;
-    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
+    // Cursor position right after function parameter setup. Stack-slot
+    // zero-inits for local numeric variables are inserted here via
+    // setCursor() so they execute once at function entry, not at
+    // first-use (which may be inside a loop/branch).
+    asmjit::BaseNode *prologue_cursor;
+    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; prologue_cursor = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
     void movreg(Program &, asmjit::Operand &, Variable *);
@@ -175,7 +180,8 @@ class TokenDecl: public TokenVar
 public:
     TokenBase *initialize;
     std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
-    TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
+    bool has_brace_init;               // true when `= { ... }` syntax was used
+    TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
