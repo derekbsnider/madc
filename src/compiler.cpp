@@ -8536,13 +8536,45 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	}
     }
 
-    // set the result type to the cast target
-    regdp.second = cast_type;
-    // compile the inner expression — for pointer/integer casts, the value
-    // is the same (all 64-bit), so just compile and reinterpret the type
-    Operand &result = expr->compile(pgm, regdp);
-    regdp.second = cast_type; // ensure type is set after compile
-    return result;
+    // Compile the inner expression into a fresh regdp so nested casts
+    // (e.g. (long long)(int)a) don't leak the caller's destination and
+    // skip the narrowing step.
+    {
+	Operand *caller_dest = regdp.first;
+	regdefp_t inner_rdp = {NULL, cast_type, NULL};
+	Operand &result = expr->compile(pgm, inner_rdp);
+	DataDef *actual_inner = inner_rdp.second ? inner_rdp.second : cast_type;
+	regdp.second = cast_type;
+
+	// Widen if the inner produced a narrower register (e.g. Gpd from
+	// an inner (int) cast needs sign-extension to Gpq for (long long)).
+	if ( cast_type->is_integer() && actual_inner->is_integer()
+	  && actual_inner->size < cast_type->size
+	  && result.isReg() && result.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    IRBuilder ir(pgm.cc);
+	    IRValue widened = ir.coerce(IRValue::reg(result, actual_inner), cast_type);
+	    widened = ir.load(widened);
+	    if ( caller_dest )
+	    {
+		pgm.safemov(*caller_dest, widened.op, cast_type, cast_type);
+		regdp.first = caller_dest;
+		return *caller_dest;
+	    }
+	    _operand = widened.op;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+
+	if ( caller_dest )
+	{
+	    pgm.safemov(*caller_dest, result, cast_type, cast_type);
+	    regdp.first = caller_dest;
+	    return *caller_dest;
+	}
+	regdp.first = &result;
+	return result;
+    }
 }
 
 // & address-of operator: emit LEA to get address of variable
