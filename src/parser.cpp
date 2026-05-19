@@ -1799,6 +1799,28 @@ static int64_t parse_constant_integer_expression(Program &pgm)
     return parse_constant_ternary(pgm);
 }
 
+static bool bracket_dim_uses_runtime_value(Program &pgm)
+{
+    int depth = 1;
+    for ( auto it = pgm.tokens.begin(); it != pgm.tokens.end() && depth > 0; ++it )
+    {
+	TokenBase *t = *it;
+	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
+	if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
+	if ( t->id() == TokenID::tkSemi || t->id() == TokenID::tkOpBrc ) break;
+	std::string name;
+	if ( t->type() == TokenType::ttIdentifier )
+	    name = ((TokenIdent *)t)->str;
+	else
+	    continue;
+	Variable *v = pgm.findVariable(name);
+	if ( !v || v->is_constant() )
+	    continue;
+	return true;
+    }
+    return false;
+}
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;
@@ -7027,6 +7049,25 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( !(tn=pgm.peekToken()) )
 	pgm.Throw << "Unexpected end of input" << flush;
 
+    auto scoped_struct_tag = [&](const std::string &name) -> std::string
+    {
+	TokenCpnd *scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	if ( scope && scope != pgm.tkProgram && !pgm.cur_func_name.empty() )
+	    return pgm.cur_func_name + "::" + name;
+	return name;
+    };
+    auto find_visible_struct_tag = [&](const std::string &name) -> datadef_map_iter
+    {
+	std::string scoped = scoped_struct_tag(name);
+	if ( scoped != name )
+	{
+	    datadef_map_iter scoped_it = pgm.struct_map.find(scoped);
+	    if ( scoped_it != pgm.struct_map.end() )
+		return scoped_it;
+	}
+	return pgm.struct_map.find(name);
+    };
+
     // check for __attribute__((packed)) before or after tag
     bool is_packed = false;
     size_t explicit_align = 0;
@@ -7108,7 +7149,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     {
 	if ( !tag )
 	    pgm.Throw(tn) << "Expecting '{' or identifier after " << aggregate_kw << flush;
-	dmi = pgm.struct_map.find(tag->str);
+	dmi = find_visible_struct_tag(tag->str);
 
 	// plain forward declaration: struct tag;
 	if ( tn->id() == TokenID::tkSemi )
@@ -7117,7 +7158,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    {
 		DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->str, 0);
 		fwd->union_layout = is_union;
-		pgm.struct_map[tag->str] = fwd;
+		pgm.struct_map[scoped_struct_tag(tag->str)] = fwd;
 	    }
 	    pgm.nextToken(); // consume ';'
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
@@ -7130,8 +7171,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // create placeholder struct (size 0, no members) for forward declaration
 	    DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->str, 0);
 	    fwd->union_layout = is_union;
-	    pgm.struct_map[tag->str] = fwd;
-	    dmi = pgm.struct_map.find(tag->str);
+	    pgm.struct_map[scoped_struct_tag(tag->str)] = fwd;
+	    dmi = find_visible_struct_tag(tag->str);
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
 	}
 	// typedef struct tag alias
@@ -7184,6 +7225,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     pgm.nextToken(); // consume '{'
 
     DataDefSTRUCT *dds = new DataDefSTRUCT(tag ? tag->str : "anonymous", 0);
+    std::string tag_store_key = tag ? tag->str : "";
+    if ( tag )
+    {
+	std::string scoped = scoped_struct_tag(tag->str);
+	if ( scoped != tag->str && pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
+	    tag_store_key = scoped;
+    }
     dds->union_layout = is_union;
     if ( is_packed || pgm.pack_stack_top() == 1 )
 	dds->pack = 1;
@@ -7214,11 +7262,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // this point (size 0 members none); pointer-to-incomplete works because
     // DataDefPTR only needs an 8-byte pointer size.
     bool was_pre_registered = false;
-    if ( tag && pgm.struct_map.find(tag->str) == pgm.struct_map.end() )
+    if ( tag && pgm.struct_map.find(tag_store_key) == pgm.struct_map.end() )
     {
-	pgm.struct_map[tag->str] = dds;
+	pgm.struct_map[tag_store_key] = dds;
 	was_pre_registered = true;
-	DBG(cout << "TokenSTRUCT::parse() pre-registered " << tag->str << " for self-reference" << endl);
+	DBG(cout << "TokenSTRUCT::parse() pre-registered " << tag_store_key << " for self-reference" << endl);
     }
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
@@ -7365,6 +7413,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    std::string inner_name = contextual_identifier_name(tn);
 
 		    size_t inner_count = 1;
+		    TokenBase *inner_count_expr = NULL;
 		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 		    {
 			pgm.nextToken();
@@ -7375,6 +7424,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    break;
 			}
 			pgm.pushToken(cl);
+			if ( !inner_count_expr && bracket_dim_uses_runtime_value(pgm) )
+			{
+			    inner_count_expr = pgm.parseExpression(pgm.nextToken(), true);
+			    cl = pgm.nextToken();
+			    if ( !cl || cl->id() != TokenID::tkClSqr )
+				pgm.Throw(cl ? cl : tn) << "Expected ']' in anonymous struct member array declaration" << flush;
+			    continue;
+			}
 			int64_t n = parse_constant_integer_expression(pgm);
 			if ( n < 0 )
 			    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
@@ -7389,14 +7446,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 		    {
 			pgm.nextToken();
-			if ( inner_count != 1 )
+			if ( inner_count != 1 || inner_count_expr )
 			    pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
 			size_t bit_width = parse_bitfield_width(tn, inner_member_dd, true);
 			inner->addBitField(inner_name, *inner_member_dd, bit_width);
 		    }
 		    else
 		    {
-			inner->addMember(inner_name, *inner_member_dd, inner_count);
+			inner->addMember(inner_name, *inner_member_dd, inner_count, inner_count_expr);
 		    }
 		    tn = pgm.nextToken();
 		    // Handle comma-separated members: `int f1, f2, f3;`
@@ -7414,12 +7471,21 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    pgm.Throw(tn ? tn : loc) << "Expecting member name after ',' in anonymous struct" << flush;
 			std::string cname = contextual_identifier_name(tn);
 			size_t ccount = 1;
+			TokenBase *ccount_expr = NULL;
 			while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 			{
 			    pgm.nextToken();
 			    TokenBase *cl = pgm.nextToken();
 			    if ( cl && cl->id() == TokenID::tkClSqr ) { ccount = 0; break; }
 			    pgm.pushToken(cl);
+			    if ( !ccount_expr && bracket_dim_uses_runtime_value(pgm) )
+			    {
+				ccount_expr = pgm.parseExpression(pgm.nextToken(), true);
+				cl = pgm.nextToken();
+				if ( !cl || cl->id() != TokenID::tkClSqr )
+				    pgm.Throw(cl ? cl : tn) << "Expected ']'" << flush;
+				continue;
+			    }
 			    int64_t n = parse_constant_integer_expression(pgm);
 			    cl = pgm.nextToken();
 			    if ( !cl || cl->id() != TokenID::tkClSqr )
@@ -7430,11 +7496,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 			{
 			    pgm.nextToken();
+			    if ( ccount_expr )
+				pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
 			    size_t bw = parse_bitfield_width(tn, comma_dd, true);
 			    inner->addBitField(cname, *comma_dd, bw);
 			}
 			else
-			    inner->addMember(cname, *comma_dd, ccount);
+			    inner->addMember(cname, *comma_dd, ccount, ccount_expr);
 			tn = pgm.nextToken();
 		    }
 		    if ( !tn || tn->id() != TokenID::tkSemi )
@@ -7618,6 +7686,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    // N*sizeof(base) bytes inline. Access via `&obj.member` yields a pointer
 		    // to the start of the inline buffer.
 		    size_t member_count = 1;
+		    TokenBase *member_count_expr = NULL;
 		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 		    {
 			pgm.nextToken(); // consume '['
@@ -7628,6 +7697,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    break;
 			}
 			pgm.pushToken(cl);
+			if ( !member_count_expr && bracket_dim_uses_runtime_value(pgm) )
+			{
+			    member_count_expr = pgm.parseExpression(pgm.nextToken(), true);
+			    cl = pgm.nextToken();
+			    if ( !cl || cl->id() != TokenID::tkClSqr )
+				pgm.Throw(cl ? cl : tn) << "Expected ']' in struct member array declaration" << flush;
+			    continue;
+			}
 			int64_t n = parse_constant_integer_expression(pgm);
 			if ( n < 0 )
 			    pgm.Throw(tn) << "Fixed-size array dimension must be non-negative" << flush;
@@ -7641,7 +7718,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkColon )
 		    {
 			pgm.nextToken();
-			if ( member_count != 1 )
+			if ( member_count != 1 || member_count_expr )
 			    pgm.Throw(tn) << "Bit-field member cannot be an array" << flush;
 			size_t bit_width = parse_bitfield_width(tn, member_dd, true);
 			dds->addBitField(mname, *member_dd, bit_width);
@@ -7651,7 +7728,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    }
 		    else
 		    {
-			dds->addMember(mname, *member_dd, member_count);
+			dds->addMember(mname, *member_dd, member_count, member_count_expr);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
 			    << " (size " << member_dd->size << " x " << member_count
 			    << ", total " << dds->size << ')' << endl);
@@ -7732,7 +7809,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // register the struct type
     if ( tag )
     {
-	dmi = pgm.struct_map.find(tag->str);
+	dmi = pgm.struct_map.find(tag_store_key);
 	if ( dmi != pgm.struct_map.end() )
 	{
 	    DataDefSTRUCT *existing = static_cast<DataDefSTRUCT *>(dmi->second);
@@ -7762,8 +7839,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
 	else
 	{
-	    pgm.struct_map[tag->str] = dds;
-	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag->str << " size=" << dds->size << endl);
+	    pgm.struct_map[tag_store_key] = dds;
+	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag_store_key << " size=" << dds->size << endl);
 	}
     }
 

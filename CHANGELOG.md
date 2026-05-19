@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **GCC torture `20070919-1.c` now passes.**
+  Local block-scope struct tags can now shadow earlier tags in the GCC
+  parity lane, struct members can carry runtime-sized array counts, and
+  the compiler now uses runtime aggregate sizes for local struct backing
+  storage, pointer subscript scaling, and aggregate copies. The struct
+  initializer path also now accepts array-of-struct string shorthand like
+  `{ "abcdefg", ... }` when the element is a single char-array member.
+  Added `tests/testvlastructmember.mad` as the regression.
+
 - **GCC torture `20070614-1.c` now passes.**
   The lexer now lowers `_Complex` / `__complex__` declarations to a
   temporary `double` compatibility path and accepts `i`/`j` imaginary
@@ -45,8 +54,8 @@
   for the `20060420-1.c` address-cast loop shape, plus
   `tests/testcomplexkw.mad` for the `_Complex` / `iF` compatibility lane.
   Removed the `std::list` expectation from `tests/testmadc_ns.mad`,
-  refreshed the current integration / EXE pass counts to `285/285`, and
-  refreshed GCC torture parity to `1325/1685` (78.6%).
+  refreshed the current integration / EXE pass counts to `286/286`, and
+  refreshed GCC torture parity to `1326/1685` (78.7%).
 
 ## [v0.17.0] - 2026-05-19
 

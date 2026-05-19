@@ -262,7 +262,7 @@ public:
 	DataDefSTRUCT *sdd = owner_struct_type();
 	if ( !sdd ) return false;
 	std::string mname = var.name;
-	return sdd->m_count(mname) > 1;
+	return sdd->m_count(mname) != 1 || sdd->m_count_expr(mname) != NULL;
     }
     DataDefSTRUCT *owner_struct_type() const
     {

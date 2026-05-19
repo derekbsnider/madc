@@ -7,6 +7,7 @@
 #define __DATADEF_H 1
 
 extern thread_local bool madc_verbose;
+class TokenBase;
 
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
@@ -510,6 +511,7 @@ public:
     std::vector<size_t> member_counts;	// per-member count for fixed arrays (1 for scalars)
     std::vector<size_t> member_offsets;	// per-member byte offset in the finalized layout
     std::vector<BitFieldInfo> member_bitfields;
+    std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
     bool union_layout;	// true: all members start at offset 0; size is max member size
@@ -559,7 +561,7 @@ public:
 	bitfield_unit_size = 0;
 	bitfield_next_bit = 0;
     }
-    void addMember(std::string n, DataDef &dd, size_t cnt)
+    void addMember(std::string n, DataDef &dd, size_t cnt, TokenBase *count_expr = NULL)
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
 	endBitFieldRun();
@@ -571,7 +573,8 @@ public:
 	    member_counts.push_back(cnt);
 	    member_offsets.push_back(0);
 	    member_bitfields.push_back(BitFieldInfo());
-	    size_t member_size = dd.size * cnt;
+	    member_count_exprs.push_back(count_expr);
+	    size_t member_size = count_expr ? 0 : (dd.size * cnt);
 	    if ( member_size > size ) size = member_size;
 	    return;
 	}
@@ -581,7 +584,9 @@ public:
 	member_counts.push_back(cnt);
 	member_offsets.push_back(size);
 	member_bitfields.push_back(BitFieldInfo());
-	size += dd.size * cnt;
+	member_count_exprs.push_back(count_expr);
+	if ( !count_expr )
+	    size += dd.size * cnt;
     }
     size_t bitfield_storage_size(const DataDef &dd) const
     {
@@ -625,6 +630,7 @@ public:
 	member_counts.push_back(1);
 	member_offsets.push_back(info.storage_offset);
 	member_bitfields.push_back(info);
+	member_count_exprs.push_back(NULL);
     }
     void addUnnamedBitField(DataDef &dd, size_t width)
     {
@@ -654,6 +660,7 @@ public:
 	    if ( info.is_bitfield )
 		info.storage_offset += base_offset;
 	    member_bitfields.push_back(info);
+	    member_count_exprs.push_back(i < agg.member_count_exprs.size() ? agg.member_count_exprs[i] : NULL);
 	}
 	size_t end = base_offset + agg.size;
 	if ( union_layout )
@@ -688,6 +695,20 @@ public:
 	    if ( !member.compare(members[i].first) )
 		return (i < member_counts.size()) ? member_counts[i] : 1;
 	return 1;
+    }
+    TokenBase *m_count_expr(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_count_exprs.size()) ? member_count_exprs[i] : NULL;
+	return NULL;
+    }
+    bool has_runtime_size() const
+    {
+	for ( size_t i = 0; i < member_count_exprs.size(); ++i )
+	    if ( member_count_exprs[i] != NULL )
+		return true;
+	return false;
     }
     DataDef *m_type(std::string &member)
     {

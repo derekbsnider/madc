@@ -39,6 +39,11 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret=false);
 const char *string_cstr(void *ptr);
 
+extern "C" void *madc_runtime_memcpy(void *dst, const void *src, size_t n)
+{
+    return ::memcpy(dst, src, n);
+}
+
 // Materialize an operand into a Gp register. If already Gp, return it.
 // If Mem (global struct/class), LEA the address into a fresh Gp.
 static x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr")
@@ -66,6 +71,10 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc);
 static void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
 				    DataDef *copy_type, const char *name);
+static x86::Gp emit_runtime_aggregate_size(Program &pgm, DataDef *copy_type, const char *name);
+static void emit_runtime_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+					x86::Gp &size_gp, const char *name);
+static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand &src);
 
 static size_t count_struct_init_slots(DataDefSTRUCT *dds)
 {
@@ -126,6 +135,59 @@ static void emit_zero_fill_region(Program &pgm, x86::Gp &base_reg, int32_t base_
 	pgm.cc.mov(x86::byte_ptr(base_reg, base_ofs + (int32_t)ofs), imm(0));
 }
 
+static bool aggregate_has_runtime_size(DataDef *copy_type)
+{
+    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(copy_type);
+    return sdd && sdd->has_runtime_size();
+}
+
+static x86::Gp emit_runtime_struct_size(Program &pgm, DataDefSTRUCT *sdd, const char *name)
+{
+    if ( !sdd )
+	throw "emit_runtime_struct_size: missing struct type";
+    x86::Gp total = pgm.cc.newGpq("%s", name ? name : "runtime_struct_size");
+    pgm.cc.mov(total, imm((int64_t)sdd->size));
+    for ( size_t i = 0; i < sdd->members.size(); ++i )
+    {
+	TokenBase *count_expr = (i < sdd->member_count_exprs.size()) ? sdd->member_count_exprs[i] : NULL;
+	if ( !count_expr )
+	    continue;
+	DataDef *member_type = sdd->members[i].second;
+	size_t fixed_mult = (i < sdd->member_counts.size()) ? sdd->member_counts[i] : 1;
+	size_t elem_bytes = member_type ? member_type->size * fixed_mult : 0;
+	regdefp_t count_rdp = {NULL, NULL, NULL};
+	Operand &count_op = count_expr->compile(pgm, count_rdp);
+	x86::Gp count_gp = pgm.cc.newGpq("runtime_member_count");
+	load_idx_to_gpq(pgm, count_gp, count_op);
+	if ( elem_bytes > 1 )
+	    pgm.cc.imul(count_gp, count_gp, imm((int64_t)elem_bytes));
+	pgm.cc.add(total, count_gp);
+    }
+    return total;
+}
+
+static x86::Gp emit_runtime_aggregate_size(Program &pgm, DataDef *copy_type, const char *name)
+{
+    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(copy_type) )
+	return emit_runtime_struct_size(pgm, sdd, name);
+    x86::Gp total = pgm.cc.newGpq("%s", name ? name : "runtime_aggregate_size");
+    pgm.cc.mov(total, imm((int64_t)(copy_type ? copy_type->size : 0)));
+    return total;
+}
+
+static void emit_runtime_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+					x86::Gp &size_gp, const char *name)
+{
+    x86::Gp dst_gp = as_gp_ptr(pgm, dst, name ? name : "aggregate_copy_dst");
+    x86::Gp src_gp = as_gp_ptr(pgm, src, name ? name : "aggregate_copy_src");
+    InvokeNode *call;
+    pgm.cc.invoke(&call, imm((void *)madc_runtime_memcpy),
+	FuncSignature::build<void *, void *, const void *, size_t>());
+    call->setArg(0, dst_gp);
+    call->setArg(1, src_gp);
+    call->setArg(2, size_gp);
+}
+
 static void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type)
 {
     if ( !ret_type || ret_type->basetype() != BaseType::btStruct )
@@ -171,6 +233,28 @@ static bool token_has_constant_cstring(TokenBase *token)
 	&& tv->var.type
 	&& tv->var.type->is_string()
 	&& tv->var.data;
+}
+
+static bool token_get_constant_cstring(TokenBase *token, std::string &out)
+{
+    if ( !token )
+	return false;
+    if ( token->type() == TokenType::ttString )
+    {
+	out = static_cast<TokenStr *>(token)->str;
+	return true;
+    }
+    TokenVar *tv = dynamic_cast<TokenVar *>(token);
+    if ( tv
+      && tv->var.is_constant()
+      && tv->var.type
+      && tv->var.type->is_string()
+      && tv->var.data )
+    {
+	out = *((std::string *)tv->var.data);
+	return true;
+    }
+    return false;
 }
 
 static bool token_is_charptr_expr(TokenBase *token)
@@ -914,6 +998,24 @@ static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand 
 	pgm.cc.movsx(dst, s);           // 16/8→64 sign-extend
     else
 	pgm.cc.mov(dst, s);
+}
+
+static uint32_t scale_index_by_element_size(Program &pgm, asmjit::x86::Gp &idx_reg,
+					    DataDef *elem_type, const char *name)
+{
+    size_t elem_size = elem_type && elem_type->size ? elem_type->size : 8;
+    if ( aggregate_has_runtime_size(elem_type) )
+    {
+	x86::Gp stride = emit_runtime_aggregate_size(pgm, elem_type, name);
+	pgm.cc.imul(idx_reg, stride);
+	return 0;
+    }
+    if ( elem_size == 8 ) return 3;
+    if ( elem_size == 4 ) return 2;
+    if ( elem_size == 2 ) return 1;
+    if ( elem_size != 1 )
+	pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+    return 0;
 }
 
 // Helper: load the address-of a variable into `dst_gp` — mov from Gp
@@ -2999,6 +3101,26 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	// Flat init for array members: distribute consecutive initializers
 	if ( member_count > 1 && dynamic_cast<TokenStructLit *>(inits[init_idx]) == NULL )
 	{
+	    std::string char_array_init;
+	    if ( mtype->rawtype() == DataType::dtCHAR
+	      && token_get_constant_cstring(inits[init_idx], char_array_init) )
+	    {
+		size_t copy_n = char_array_init.size();
+		if ( copy_n > member_count )
+		    copy_n = member_count;
+		for ( size_t ai = 0; ai < copy_n; ++ai )
+		{
+		    x86::Mem mm = x86::ptr(base_reg, addr + (int32_t)ai, 1);
+		    pgm.cc.mov(mm, imm((int32_t)(unsigned char)char_array_init[ai]));
+		}
+		for ( size_t ai = copy_n; ai < member_count; ++ai )
+		{
+		    x86::Mem mm = x86::ptr(base_reg, addr + (int32_t)ai, 1);
+		    pgm.cc.mov(mm, imm(0));
+		}
+		++init_idx;
+		continue;
+	    }
 	    size_t esize = mtype->size;
 	    for ( size_t ai = 0; ai < member_count && init_idx < inits.size(); ++ai, ++init_idx )
 	    {
@@ -3290,6 +3412,8 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     // voperand now so the buffer is allocated exactly once at decl time.
     if ( var.is_vla() )
 	pgm.tkFunction->voperand(pgm, &var);
+    if ( aggregate_has_runtime_size(var.type) )
+	pgm.tkFunction->voperand(pgm, &var);
 
     // Top-level program declarations still need their initializer code emitted
     // so file-scope C globals like `static char *p = "x";` and static tables
@@ -3372,10 +3496,16 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    for ( size_t i = 0; i < init_list.size(); ++i )
 	    {
 		TokenStructLit *slit = dynamic_cast<TokenStructLit *>(init_list[i]);
-		if ( !slit )
-		    pgm.Throw(this) << "Array-of-structs element must be a brace list { ... }" << flush;
+		if ( slit )
+		{
+		    emit_struct_init(pgm, base_reg, (int32_t)(i * struct_size),
+			elem_dds, slit->inits, this);
+		    continue;
+		}
+		std::vector<TokenBase *> scalar_init;
+		scalar_init.push_back(init_list[i]);
 		emit_struct_init(pgm, base_reg, (int32_t)(i * struct_size),
-		    elem_dds, slit->inits, this);
+		    elem_dds, scalar_init, this);
 	    }
 	    // Zero-fill remaining element slots byte by byte (8 bytes at a time)
 	    uint32_t total = var.total_elements();
@@ -4733,6 +4863,12 @@ static void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
 {
     if ( !copy_type )
 	throw "emit_raw_aggregate_copy: missing type";
+    if ( aggregate_has_runtime_size(copy_type) )
+    {
+	x86::Gp size_gp = emit_runtime_aggregate_size(pgm, copy_type, name);
+	emit_runtime_aggregate_copy(pgm, dst, src, size_gp, name);
+	return;
+    }
     x86::Gp dst_gp = pgm.cc.newIntPtr("%s", name ? name : "aggregate_copy_dst");
     if ( dst.isMem() )
 	pgm.cc.lea(dst_gp, dst.as<x86::Mem>());
@@ -5088,12 +5224,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    // SIB scale only covers 1/2/4/8 — for any other element size (e.g.
 	    // sizeof(struct K) == 16) fold the element stride into the index
 	    // via imul and access with scale = 1.
-	    uint32_t shift = 0;
-	    if      ( elem_size == 8 ) shift = 3;
-	    else if ( elem_size == 4 ) shift = 2;
-	    else if ( elem_size == 2 ) shift = 1;
-	    else if ( elem_size != 1 )
-		pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+	    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, elem_type, "subx_size");
 	    x86::Mem slot = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
 
 	    if ( elem_type && (elem_type->basetype() == BaseType::btStruct
@@ -5492,8 +5623,11 @@ Operand &TokenMember::operand(Program &pgm)
 	else
 	    parent_op_ptr = &parent_expr->compile(pgm, parent_regdp);
 	Operand &parent_op = *parent_op_ptr;
+	bool parent_is_struct_value =
+	    dynamic_cast<TokenSubscript *>(parent_expr) != NULL
+	 || dynamic_cast<TokenSubscriptExpr *>(parent_expr) != NULL;
 
-	if ( object.type->is_pointer() )
+	if ( object.type->is_pointer() && !parent_is_struct_value )
 	{
 	    // Arrow chain: parent member holds a POINTER VALUE — load it into a Gp.
 	    // e.g. ch->in_room->name: parent_op = Mem [ch + in_room_offset],
@@ -5914,13 +6048,31 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     {
         DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(object.type);
         DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
-        size_t elem_size = base->size ? base->size : 8;
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
+        uint32_t shift = scale_index_by_element_size(pgm, idx_reg, base, "ptr_sub_size");
         DBG(pgm.cc.comment("pointer subscript read"));
+        size_t elem_size = base && base->size ? base->size : 8;
+        if ( aggregate_has_runtime_size(base)
+          && (base->basetype() == BaseType::btStruct || base->basetype() == BaseType::btClass) )
+        {
+            x86::Gp addr = pgm.cc.newIntPtr("sub_addr");
+            pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, shift, 0));
+            _operand = addr;
+            if ( !regdp.second )
+                regdp.second = _datatype;
+            regdp.first = &_operand;
+            return _operand;
+        }
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( base && (base->basetype() == BaseType::btStruct || base->basetype() == BaseType::btClass) )
+        {
+            x86::Gp addr = pgm.cc.newIntPtr("sub_addr");
+            pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, shift, 0));
+            _operand = addr;
+            if ( !regdp.second )
+                regdp.second = _datatype;
+            regdp.first = &_operand;
+            return _operand;
+        }
         if ( !regdp.second )
             regdp.second = _datatype;
         return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
@@ -6079,17 +6231,7 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     load_idx_to_gpq(pgm, idx_reg, idx_op);
 
     size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
-    // SIB scale only covers 1/2/4/8; any other element size (notably struct
-    // elements like sizeof(struct K) == 16) must be folded into the index
-    // register via imul, then accessed with SIB scale = 1.
-    uint32_t shift = 0;
-    if      ( elem_size == 8 ) shift = 3;
-    else if ( elem_size == 4 ) shift = 2;
-    else if ( elem_size == 2 ) shift = 1;
-    else if ( elem_size != 1 )
-    {
-	pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
-    }
+    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, _datatype, "subexpr_size");
 
     x86::Mem elem_mem = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     if ( !regdp.second )
@@ -6152,12 +6294,7 @@ Operand &TokenSubscriptExpr::operand(Program &pgm)
     load_idx_to_gpq(pgm, idx_reg, idx_op);
 
     size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
-    uint32_t shift = 0;
-    if      ( elem_size == 8 ) shift = 3;
-    else if ( elem_size == 4 ) shift = 2;
-    else if ( elem_size == 2 ) shift = 1;
-    else if ( elem_size != 1 )
-	pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, _datatype, "subexpr_size");
 
     _operand = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     return _operand;
@@ -6227,12 +6364,15 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
         DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(object.type);
         DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         size_t elem_size = base->size ? base->size : 8;
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
+        uint32_t shift = scale_index_by_element_size(pgm, idx_reg, base, "ptr_sub_size");
         DBG(pgm.cc.comment("pointer subscript write"));
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( base && (base->basetype() == BaseType::btStruct || base->basetype() == BaseType::btClass) )
+        {
+	    Operand dst_slot = elem_mem;
+	    emit_raw_aggregate_copy(pgm, dst_slot, val_op, base, "ptr_sub_struct_copy");
+	    return;
+        }
         ir.store(IRValue::mem(elem_mem, base), ir_from_operand(val_op, val_type ? val_type : base));
         return;
     }
@@ -6735,8 +6875,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    // semantics are lost — `static struct X x` becomes
 		    // observably stack-resident and `&x` returns a stack
 		    // address, breaking persistence across calls.
-			    if ( global_addrable )
-			    {
+		    if ( global_addrable )
+		    {
 				DBG(pgm.cc.comment("voperand global struct: load absolute base"));
 			x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 			pgm.emit_data_mov(base_reg, var);
@@ -6745,15 +6885,27 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 			var->flags |= vfREGSET;
 			return operand_map[var];
 		    }
+		    DataDefSTRUCT *dds = dynamic_cast<DataDefSTRUCT *>(var->type);
+		    if ( dds && dds->has_runtime_size() )
+		    {
+			x86::Gp total_bytes = emit_runtime_struct_size(pgm, dds, (var->name + "_bytes").c_str());
+			x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
+			InvokeNode *call;
+			pgm.cc.invoke(&call, imm((void *)::malloc),
+			    FuncSignature::build<void *, size_t>());
+			call->setArg(0, total_bytes);
+			call->setRet(0, reg);
+			operand_map[var] = reg;
+			break;
+		    }
 		    // align stack to struct's max member alignment (C ABI compatible)
 		    size_t struct_align = 8;
-		    if ( var->type->basetype() == BaseType::btStruct )
-			struct_align = static_cast<DataDefSTRUCT *>(var->type)->max_align;
+		    if ( dds )
+			struct_align = dds->max_align;
 		    x86::Mem stack = pgm.cc.newStack(var->type->size, (uint32_t)struct_align);
 		    operand_map[var] = stack;
 
 		    // Construct any non-trivial members (strings, streams) inside the struct
-		    DataDefSTRUCT *dds = static_cast<DataDefSTRUCT *>(var->type);
 		    if ( !dds->members.empty() )
 		    {
 			x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var->name + ".base").c_str());
@@ -6889,12 +7041,25 @@ void TokenCpnd::cleanup(Program &pgm)
 	}
 	if ( (rmi->first->flags & vfSTACK) )
 	{
+	    Operand &reg = rmi->second;
 	    // Don't destruct parameter objects — the caller owns them
 	    if ( (rmi->first->flags & vfPARAM) )
 		continue;
+	    if ( (rmi->first->type->basetype() == BaseType::btStruct
+		|| rmi->first->type->basetype() == BaseType::btClass)
+	      && aggregate_has_runtime_size(rmi->first->type) )
+	    {
+		if ( reg.isReg() && reg.as<BaseReg>().isGroup(RegGroup::kGp) )
+		{
+		    InvokeNode *call;
+		    cc.invoke(&call, imm((void *)::free),
+			FuncSignature::build<void, void *>());
+		    call->setArg(0, reg.as<x86::Gp>());
+		}
+		continue;
+	    }
 	    if ( rmi->first->type->type() > DataType::dtRESERVED )
 	    {
-		Operand &reg = rmi->second;
 		Variable *var = rmi->first;
 
 		switch(var->type->type())
@@ -8876,6 +9041,9 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(obj_var.type);
 	    DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
 	    if ( base->size ) elem_size = base->size;
+	    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, base, "addr_sub_size");
+	    pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, shift, 0));
+	    return emit_ir_value(pgm, IRValue::reg(addr, ptr_type), regdp, _operand, ptr_type);
 	}
 
 	if ( elem_size == 1 || elem_size == 2 || elem_size == 4 || elem_size == 8 )
