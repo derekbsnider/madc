@@ -2,11 +2,12 @@
 
 ## High Priority
 
-- **GCC torture test suite: push past 80%.** Currently 1306/1685 (77.5%).
-  Remaining targets: cast-operand parser precedence (`(type)*p | x`
-  binds too greedily), long-vs-float comparison semantics (C usual
-  arithmetic conversions for mixed int/float comparisons),
-  struct pass-by-value for function args (~8 compile failures).
+- **GCC torture test suite: push past 80%.** Currently 1305/1685 (77.4%).
+  Major progress: 32-bit registers (Gpd) for int/unsigned int now give
+  correct arithmetic wrapping. Remaining targets: extern-declared
+  function call/variadic bugs (~8 regressions vs pre-Gpd baseline),
+  struct pass-by-value for function args (~8 compile failures),
+  32-bit arithmetic wrapping in cast contexts (`(long)(uint_a + uint_b)`).
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and

@@ -176,6 +176,29 @@
   operators like `>>` now correctly use SHR instead of SAR when the
   source operand is unsigned.
 
+- **32-bit registers (Gpd) for int/unsigned int types.**
+  `DataDef::newreg()` and `IRBuilder::newReg()` now return `newGpd()`
+  for 32-bit integer types. On x86-64, 32-bit ops automatically
+  zero-extend to 64 bits, giving correct wrapping at 2^32 for free.
+  All typesafe arithmetic helpers (`safemul`, `safeor`, `safeand`,
+  `safexor`, `safeshr`, `safediv`) dispatch between r32/r64 forms.
+  Matches GCC's code shape (`addl`, `imull`, `shll` instead of `addq`).
+
+- **Cast operand binds tightly over simple literals.**
+  `(double)5 < 3.0` now parses as `((double)5) < 3.0` instead of
+  `(double)(5 < 3.0)`.
+
+- **C integer literal type rules for hex/octal without suffix.**
+  Hex constant `0x80000081` now typed as `unsigned int` per C §6.4.4.1.
+
+- **Unsigned `div` for unsigned integer division/modulo.**
+  `safediv()` now uses the x86 `div` instruction (unsigned) instead of
+  `idiv` (signed) for unsigned operands.
+
+- **Real→integer assignment for narrow int types.**
+  `unsigned short s = double_expr` now converts via `cvttsd2si` instead
+  of storing raw double bits.
+
 ## [v0.16.0] - 2026-05-18
 
 sizeof(int) = 4: LP64 ABI alignment and GCC torture suite 75% milestone.
