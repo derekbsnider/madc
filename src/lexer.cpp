@@ -669,7 +669,9 @@ void Program::add_keywords()
     keyword_map[tkVECTOR.str] = &tkVECTOR;
     keyword_map[tkMAP.str] = &tkMAP;
     keyword_map[tkSET.str] = &tkSET;
-    keyword_map[tkLIST.str] = &tkLIST;
+    // `list` intentionally omitted from keyword_map so it doesn't shadow
+    // the C identifier `list`. Use `std::list<T>` instead.
+    // keyword_map[tkLIST.str] = &tkLIST;
 }
 
 // add static tokens for base data types
