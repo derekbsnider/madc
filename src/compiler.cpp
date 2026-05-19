@@ -62,6 +62,70 @@ static x86::Gp materialize_gp_ptr_arg(Program &pgm, Operand &op, const char *nam
     return arg;
 }
 
+static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
+    DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc);
+static void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+				    DataDef *copy_type, const char *name);
+
+static size_t count_struct_init_slots(DataDefSTRUCT *dds)
+{
+    if ( !dds )
+	return 0;
+    size_t total = 0;
+    for ( size_t mi = 0; mi < dds->members.size(); ++mi )
+    {
+	DataDef *mtype = dds->members[mi].second;
+	size_t count = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
+	if ( mtype && mtype->basetype() == BaseType::btStruct )
+	{
+	    DataDefSTRUCT *nested = dynamic_cast<DataDefSTRUCT *>(mtype);
+	    total += count_struct_init_slots(nested);
+	}
+	else
+	    total += (count > 0) ? count : 1;
+    }
+    return total;
+}
+
+static bool is_compound_literal_value(TokenBase *node)
+{
+    TokenStructLit *slit = dynamic_cast<TokenStructLit *>(node);
+    return slit && slit->datadef() && slit->datadef()->basetype() == BaseType::btStruct;
+}
+
+static size_t count_initializer_entries(const std::vector<TokenBase *> &inits)
+{
+    size_t total = 0;
+    for ( TokenBase *node : inits )
+    {
+	if ( !node )
+	    continue;
+	if ( is_compound_literal_value(node) )
+	{
+	    ++total;
+	    continue;
+	}
+	if ( TokenStructLit *slit = dynamic_cast<TokenStructLit *>(node) )
+	{
+	    total += count_initializer_entries(slit->inits);
+	    continue;
+	}
+	++total;
+    }
+    return total;
+}
+
+static void emit_zero_fill_region(Program &pgm, x86::Gp &base_reg, int32_t base_ofs, size_t total)
+{
+    size_t ofs = 0;
+    for ( ; ofs + 8 <= total; ofs += 8 )
+	pgm.cc.mov(x86::qword_ptr(base_reg, base_ofs + (int32_t)ofs), imm(0));
+    for ( ; ofs + 4 <= total; ofs += 4 )
+	pgm.cc.mov(x86::dword_ptr(base_reg, base_ofs + (int32_t)ofs), imm(0));
+    for ( ; ofs < total; ++ofs )
+	pgm.cc.mov(x86::byte_ptr(base_reg, base_ofs + (int32_t)ofs), imm(0));
+}
+
 static void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type)
 {
     if ( !ret_type || ret_type->basetype() != BaseType::btStruct )
@@ -1474,20 +1538,20 @@ static Operand &compile_condition_operand(Program &pgm, TokenBase *condition, Op
 	? condrdp.second
 	: (condition && condition->datadef() ? condition->datadef() : &ddINT64);
 
+    // Preserve literal conditions as immediates so TokenIF/WHILE/FOR can
+    // short-circuit dead branches like `if (0) ...` before compiling them.
+    if ( raw.isImm() )
+    {
+	storage = raw;
+	return storage;
+    }
+
     if ( cond_type && (cond_type->is_numeric() || cond_type->is_pointer())
-      && (raw.isReg() || raw.isMem() || raw.isImm()) )
+      && (raw.isReg() || raw.isMem()) )
     {
 	IRBuilder ir(pgm.cc);
 	IRValue cond_value = ir.load(ir.coerce(ir_from_operand(raw, cond_type), cond_type));
 	storage = cond_value.op;
-	return storage;
-    }
-
-    if ( raw.isImm() )
-    {
-	x86::Gp cond_gp = pgm.cc.newGpq("__cond");
-	pgm.cc.mov(cond_gp, raw.as<Imm>());
-	storage = cond_gp;
 	return storage;
     }
 
@@ -2856,31 +2920,28 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 	    DataDefSTRUCT *sdd = dd ? dynamic_cast<DataDefSTRUCT *>(dd) : NULL;
 	    if ( sdd && sdd->size > 0 )
 	    {
-		x86::Mem tmp = pgm.cc.newStack((uint32_t)sdd->size, 8);
-		// Zero-initialize the stack memory
 		x86::Gp base = pgm.cc.newIntPtr("_compound_lit");
-		pgm.cc.lea(base, tmp);
-		// Initialize members from the init list
-		for ( size_t i = 0; i < slit->inits.size() && i < sdd->members.size(); ++i )
+		if ( pgm.tkFunction == pgm.tkProgram )
 		{
-		    size_t offset = sdd->member_offsets[i];
-		    DataDef *mdd = sdd->members[i].second;
-		    regdefp_t mrdp = {NULL, mdd, NULL};
-		    Operand &val = slit->inits[i]->compile(pgm, mrdp);
-		    x86::Mem dest = x86::ptr(base, (int32_t)offset, (uint32_t)mdd->size);
-		    if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kGp) )
-			pgm.cc.mov(dest, val.as<x86::Gp>());
-		    else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
-			pgm.cc.movsd(dest, val.as<x86::Xmm>());
-		    else if ( val.isImm() )
-			pgm.cc.mov(dest, val.as<Imm>());
-		    else if ( val.isMem() )
+		    // File-scope compound literals have static storage duration.
+		    // Stack temps here leave globals holding dead addresses once
+		    // startup init finishes.
+		    void *storage = calloc(1, (size_t)sdd->size);
+		    if ( pgm.aot_tracking )
 		    {
-			x86::Gp t = pgm.cc.newGpq("_clit_mv");
-			pgm.cc.mov(t, val.as<x86::Mem>());
-			pgm.cc.mov(dest, t);
+			std::string name = "__aot_compound_lit_"
+			    + std::to_string(pgm.aot_discovered_data.size());
+			pgm.record_aot_data(name, storage, (size_t)sdd->size, dd);
 		    }
+		    pgm.emit_data_mov(base, storage);
 		}
+		else
+		{
+		    x86::Mem tmp = pgm.cc.newStack((uint32_t)sdd->size, 8);
+		    pgm.cc.lea(base, tmp);
+		}
+		emit_zero_fill_region(pgm, base, 0, sdd->size);
+		emit_struct_init(pgm, base, 0, sdd, slit->inits, this);
 		_operand = base;
 		DataDef *ptr_type = pgm.getPointerType(dd);
 		bool want_struct_value =
@@ -3030,6 +3091,29 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    emit_struct_init(pgm, base_reg, addr, ndds, nested->inits, err_loc);
 	    continue;
 	}
+	if ( mtype->basetype() == BaseType::btStruct
+	  && inits[i]->datadef()
+	  && inits[i]->datadef()->basetype() == BaseType::btStruct )
+	{
+	    regdefp_t srdp = {nullptr, mtype, nullptr};
+	    Operand &sval = inits[i]->compile(pgm, srdp);
+	    Operand dst_slot = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
+	    emit_raw_aggregate_copy(pgm, dst_slot, sval, mtype, "init_struct_copy");
+	    continue;
+	}
+	if ( mtype->basetype() == BaseType::btStruct )
+	{
+	    DataDefSTRUCT *ndds = dynamic_cast<DataDefSTRUCT *>(mtype);
+	    if ( !ndds )
+		pgm.Throw(err_loc) << "Nested initializer for non-struct member type" << flush;
+	    size_t nested_slots = count_struct_init_slots(ndds);
+	    std::vector<TokenBase *> flat_nested;
+	    for ( size_t ni = i; ni < inits.size() && flat_nested.size() < nested_slots; ++ni )
+		flat_nested.push_back(inits[ni]);
+	    emit_struct_init(pgm, base_reg, addr, ndds, flat_nested, err_loc);
+	    init_idx = i + flat_nested.size();
+	    continue;
+	}
 
 	// Nested fixed-array member init: `{ ..., { 0, 1, 10 }, ... }`
 	// where the member is `sh_int liq_affect[3]` — a fixed array of
@@ -3039,8 +3123,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    std::string mname = mp.first;
 	    size_t mcount = dds->m_count(mname);
 	    TokenStructLit *nested_arr = dynamic_cast<TokenStructLit *>(inits[i]);
-	    if ( nested_arr != NULL
-	      && (mcount > 1 || mtype->is_numeric() || mtype->is_pointer()) )
+	    if ( nested_arr != NULL && mcount > 1 )
 	    {
 		size_t esize = mtype->size;
 		for ( size_t j = 0; j < nested_arr->inits.size() && j < mcount; ++j )
@@ -3152,6 +3235,8 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    pgm.Throw(err_loc) << "Unsupported struct member type in initializer: " << mtype->name << flush;
 	}
     }
+    if ( dds->union_layout )
+	return;
     // Zero-fill remaining numeric/pointer members
     for ( size_t i = inits.size(); i < dds->members.size(); ++i )
     {
@@ -3252,14 +3337,9 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	// Allow flat initialization: `struct { int f[4]; } s = {1,2,3,4};`
 	// Count total scalar slots (expanding fixed arrays) for the check.
 	{
-	    size_t total_slots = 0;
-	    for ( auto &mp : dds->members )
-	    {
-		size_t mi = &mp - &dds->members[0];
-		size_t count = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
-		total_slots += (count > 0) ? count : 1;
-	    }
-	    if ( init_list.size() > total_slots )
+	    size_t total_slots = count_struct_init_slots(dds);
+	    size_t used_slots = count_initializer_entries(init_list);
+	    if ( used_slots > total_slots )
 		pgm.Throw(this) << "Too many initializers for struct " << dds->name << flush;
 	}
 
@@ -4016,6 +4096,46 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	else
 	    r.lval = op;
     }
+    else if ( TokenDerefStep *tds = dynamic_cast<TokenDerefStep *>(left) )
+    {
+	r.type = tds->deref_type;
+	Operand &ptr_op = pgm.tkFunction->voperand(pgm, &tds->var);
+	if ( !ptr_op.isReg() || !ptr_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    throw "resolveCompoundLHS(TokenDerefStep): pointer operand is not a gp register";
+
+	x86::Gp ptr_reg = ptr_op.as<x86::Gp>();
+	x86::Gp old_ptr = pgm.cc.newIntPtr(tds->increment ? "cmpd_deref_postinc_ptr" : "cmpd_deref_postdec_ptr");
+	pgm.safemov(old_ptr, ptr_reg);
+
+	int step = r.type ? (int)r.type->size : 1;
+	if ( step <= 0 )
+	    step = 1;
+	if ( tds->increment )
+	    pgm.safeadd(ptr_reg, step, tds->var.type, r.type);
+	else
+	    pgm.safesub(ptr_reg, step, tds->var.type, r.type);
+	tds->var.modified();
+
+	x86::Mem mem = x86::ptr(old_ptr, 0, (uint32_t)(r.type && r.type->size ? r.type->size : 8));
+	if ( r.type && r.type->is_real() )
+	{
+	    IRBuilder ir(pgm.cc);
+	    IRValue lhs = ir.load(IRValue::mem(mem, r.type));
+	    r.writeback = mem;
+	    r.lval = lhs.op;
+	    r.is_member = true;
+	}
+	else
+	{
+	    x86::Gp gp = pgm.cc.newGpq("deref_step_lhs");
+	    load_mem_to_gpq(pgm, gp, mem, r.type);
+	    r.writeback = mem;
+	    r.lval = gp;
+	    r.is_member = true;
+	    if ( r.type && r.type->size && r.type->size < 8 )
+		r.type = &ddINT64;
+	}
+    }
     else if ( left->type() == TokenType::ttMember )
     {
 	// struct member via . or -> : load Mem into temp register
@@ -4096,6 +4216,46 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		}
 		else
 		    r.lval = mem;
+	    }
+	    else if ( TokenDerefStep *tds = dynamic_cast<TokenDerefStep *>(left) )
+	    {
+		r.type = tds->deref_type;
+		Operand &ptr_op = pgm.tkFunction->voperand(pgm, &tds->var);
+		if ( !ptr_op.isReg() || !ptr_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		    throw "resolveCompoundLHS(TokenDerefStep): pointer operand is not a gp register";
+
+		x86::Gp ptr_reg = ptr_op.as<x86::Gp>();
+		x86::Gp old_ptr = pgm.cc.newIntPtr(tds->increment ? "cmpd_deref_postinc_ptr" : "cmpd_deref_postdec_ptr");
+		pgm.safemov(old_ptr, ptr_reg);
+
+		int step = r.type ? (int)r.type->size : 1;
+		if ( step <= 0 )
+		    step = 1;
+		if ( tds->increment )
+		    pgm.safeadd(ptr_reg, step, tds->var.type, r.type);
+		else
+		    pgm.safesub(ptr_reg, step, tds->var.type, r.type);
+		tds->var.modified();
+
+		x86::Mem mem = x86::ptr(old_ptr, 0, (uint32_t)(r.type && r.type->size ? r.type->size : 8));
+		if ( r.type && r.type->is_real() )
+		{
+		    IRBuilder ir(pgm.cc);
+		    IRValue lhs = ir.load(IRValue::mem(mem, r.type));
+		    r.writeback = mem;
+		    r.lval = lhs.op;
+		    r.is_member = true;
+		}
+		else
+		{
+		    x86::Gp gp = pgm.cc.newGpq("deref_step_lhs");
+		    load_mem_to_gpq(pgm, gp, mem, r.type);
+		    r.writeback = mem;
+		    r.lval = gp;
+		    r.is_member = true;
+		    if ( r.type && r.type->size && r.type->size < 8 )
+			r.type = &ddINT64;
+		}
 	    }
 	    else
 		pgm.Throw(left) << "compound assignment " << op_name << " on unsupported member type" << flush;
@@ -4307,6 +4467,29 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 			     const char *op_name)
 {
     bool increment = op_name && op_name[0] == '+';
+    TokenDerefExpr *postfix_deref = postfix ? dynamic_cast<TokenDerefExpr *>(target) : NULL;
+    if ( postfix_deref
+      && postfix_deref->expr
+      && postfix_deref->expr->datadef()
+      && postfix_deref->expr->datadef()->is_pointer()
+      && postfix_deref->deref_type
+      && !postfix_deref->deref_type->is_pointer() )
+    {
+	// `*(*p++)++` parses as postfix++ wrapped around the final deref.
+	// The actual increment target is the inner pointer lvalue `*p++`;
+	// the surrounding `*` only dereferences the OLD pointer result.
+	CompoundLHS lhs = resolveCompoundLHS(pgm, postfix_deref->expr, op_name);
+	_operand = lhs.type->newreg(pgm.cc, old_name_hint);
+	pgm.safemov(_operand, lhs.lval, lhs.type, lhs.type);
+	apply_inc_dec_step(pgm, lhs.lval, lhs.type, increment, step);
+	lhs.finish(pgm);
+	if ( regdp.first )
+	    pgm.safemov(*regdp.first, _operand, lhs.type, lhs.type);
+	else
+	    regdp.first = &_operand;
+	regdp.second = lhs.type;
+	return *regdp.first;
+    }
     // Fast path: plain variable — apply step to its register/Mem directly.
     if ( target->type() == TokenType::ttVariable )
     {
@@ -4863,7 +5046,21 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    // the load-first-element-into-Gp path via emit_ir_value, and we'd
 	    // end up indexing off the element value instead of the array
 	    // base address. operand() returns the raw Mem/Gp.
-	    Operand &base_op = tse->base_expr->operand(pgm);
+	    bool base_needs_compile =
+		dynamic_cast<TokenAdd *>(tse->base_expr) != NULL
+	     || dynamic_cast<TokenSub *>(tse->base_expr) != NULL
+	     || dynamic_cast<TokenAssign *>(tse->base_expr) != NULL
+	     || dynamic_cast<TokenCast *>(tse->base_expr) != NULL;
+	    Operand base_storage;
+	    Operand *base_ptr;
+	    if ( base_needs_compile )
+	    {
+		regdefp_t base_rdp = {nullptr, tse->base_expr->datadef(), nullptr};
+		base_ptr = &tse->base_expr->compile(pgm, base_rdp);
+	    }
+	    else
+		base_ptr = &tse->base_expr->operand(pgm);
+	    Operand &base_op = *base_ptr;
 	    x86::Gp base_reg = pgm.cc.newIntPtr("subx_base");
 	    if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
 		pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
@@ -4909,16 +5106,12 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 		regdp.second = elem_type;
 		return _operand;
 	    }
-	    if ( effective_rhs.isReg() && effective_rhs.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    {
 		IRBuilder ir(pgm.cc);
+		DataDef *rhs_type = rhs_rdp.second ? rhs_rdp.second : elem_type;
 		ir.store(IRValue::mem(slot, elem_type),
-			 ir_from_operand(effective_rhs.as<x86::Gp>(), elem_type));
+			 ir_from_operand(effective_rhs, rhs_type));
 	    }
-	    else if ( effective_rhs.isImm() )
-		pgm.cc.mov(slot, effective_rhs.as<Imm>());
-	    else
-		throw "TokenAssign: unsupported RHS for subscript store";
 
 	    // The expression value of `arr[i] = x` is the LHS-typed value —
 	    // truncated and (sign- / zero-) extended.  Re-load from the
@@ -5025,17 +5218,13 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    : NULL;
 	if ( inner_deref && (left->id() == TokenID::tkInc || left->id() == TokenID::tkDec) )
 	{
+	    // Reuse the same lvalue materialization used by standalone
+	    // `*p++` / `(*p++)++`: for `*(*p++)++ = rhs`, the increment
+	    // target is the pointer lvalue produced by the inner `*p++`,
+	    // not the final `*(*p++)` int lvalue.
+	    CompoundLHS ptr_lhs = resolveCompoundLHS(pgm, inner_deref->expr, "deref-inc assign");
 	    ltype = inner_deref->deref_type;
-	    // Get the memory location of the pointer (e.g. [p] for *(*p)++)
-	    // so we can both read AND write-back the incremented value.
-	    Operand &ptr_mem = inner_deref->expr->operand(pgm);
-	    x86::Gp ptr_val = pgm.cc.newIntPtr("deref_inc_ptr");
-	    if ( ptr_mem.isReg() )
-		pgm.cc.mov(ptr_val, ptr_mem.as<x86::Gp>());
-	    else if ( ptr_mem.isMem() )
-		pgm.cc.mov(ptr_val, ptr_mem.as<x86::Mem>());
-	    else
-		throw "deref-inc assign: unexpected operand type";
+	    x86::Gp ptr_val = ptr_lhs.lval.as<x86::Gp>();
 	    // Save old pointer value for the store target
 	    x86::Gp old_ptr = pgm.cc.newIntPtr("deref_inc_old");
 	    pgm.cc.mov(old_ptr, ptr_val);
@@ -5046,11 +5235,8 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 		pgm.cc.add(ptr_val, imm(step));
 	    else
 		pgm.cc.sub(ptr_val, imm(step));
-	    // Write incremented value back to the memory location
-	    if ( ptr_mem.isMem() )
-		pgm.cc.mov(ptr_mem.as<x86::Mem>(), ptr_val);
-	    else if ( ptr_mem.isReg() )
-		pgm.cc.mov(ptr_mem.as<x86::Gp>(), ptr_val);
+	    // Write incremented value back to the pointer lvalue (`*p++`).
+	    ptr_lhs.finish(pgm);
 	    // The assignment target is [old_ptr]
 	    _operand = x86::ptr(old_ptr, 0, ltype ? (uint32_t)ltype->size : 1);
 	}
@@ -5656,7 +5842,12 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
     x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
     if ( obj_op.isMem() )
-	pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    {
+	if ( object.is_fixed_array() )
+	    pgm.cc.lea(obj_reg, obj_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    }
     else
 	pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
 
@@ -5983,7 +6174,12 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
     Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
     x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
     if ( obj_op.isMem() )
-	pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    {
+	if ( object.is_fixed_array() )
+	    pgm.cc.lea(obj_reg, obj_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    }
     else
 	pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
 
@@ -8306,6 +8502,36 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	regdp.first = &_operand;
 	return _operand;
     }
+    DataDef *src_ptr_type = effective_pointer_type_for_arith(pgm, expr);
+    if ( src_ptr_type && cast_type && (cast_type->is_pointer() || cast_type->is_integer()) )
+    {
+	regdefp_t inner_rdp = {NULL, src_ptr_type, NULL};
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	DataDef *actual_inner = inner_rdp.second ? inner_rdp.second : src_ptr_type;
+	regdp.second = cast_type;
+	if ( cast_type->is_integer() )
+	{
+	    IRBuilder ir(pgm.cc);
+	    IRValue out = ir.coerce(ir_from_operand(src_op, &ddUINT64), cast_type);
+	    out = ir.load(out);
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    _operand = out.op;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+	if ( regdp.first )
+	{
+	    pgm.safemov(*regdp.first, src_op, cast_type, actual_inner);
+	    return *regdp.first;
+	}
+	_operand = src_op;
+	regdp.first = &_operand;
+	return _operand;
+    }
     // Real ↔ real cast: `(double)flt_expr` / `(float)dbl_expr` need a
     // cvtss2sd / cvtsd2ss. A bare reinterpret leaves the Xmm holding
     // raw bits in the source precision, so subsequent variadic-arg
@@ -9361,6 +9587,26 @@ Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
     // Reset regdp first so the condition's compile doesn't inherit a
     // stale destination register from the caller — same rule applied in
     // TokenFOR / TokenWHILE / TokenDO (see .claude/rules/regdp-reset.md).
+    if ( condition
+      && (condition->type() == TokenType::ttInteger
+       || condition->type() == TokenType::ttChar) )
+    {
+	if ( condition->ival() )
+	{
+	    pgm.cc.bind(thendo);
+	    regdp.first = NULL; regdp.second = NULL;
+	    statement->compile(pgm, regdp);
+	}
+	else if ( elsestmt )
+	{
+	    pgm.cc.bind(elsedo);
+	    regdp.first = NULL; regdp.second = NULL;
+	    elsestmt->compile(pgm, regdp);
+	}
+	pgm.cc.bind(iftail);
+	pgm.ifstack.pop();
+	return _operand;
+    }
     DBG(pgm.cc.comment("TokenIF::compile() reg = condition->compile()"));
     regdp.first  = NULL;
     regdp.second = NULL;

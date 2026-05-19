@@ -207,7 +207,11 @@ public:
     TokenBase *src_node = nullptr;
     bool auto_scope_context = false;
     TokenCallFunc(Variable &v) : TokenVar(v) { if (v.type->is_function()) _datatype = returns(); }
-    virtual DataDef *returns()  const { return &((FuncDef *)var.type)->returns; }
+    virtual DataDef *returns()  const {
+	if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(var.type) )
+	    return (fptr->target != NULL) ? &fptr->target->returns : &ddVOID;
+	return &((FuncDef *)var.type)->returns;
+    }
     virtual DataDef *datadef()  const override {
         if ( var.type->is_function() )
             return returns();
@@ -930,6 +934,8 @@ public:
 	std::string name;
 	void *address;
 	size_t size;
+	DataDef *type;
+	uint32_t count;
     };
     std::vector<AotDiscoveredData> aot_discovered_data;
     std::map<uintptr_t, size_t> aot_discovered_data_index;
@@ -952,6 +958,8 @@ public:
     bool lookup_aot_data_offset(uintptr_t address, size_t &out_offset) const;
     size_t aot_variable_storage_size(const Variable *var) const;
     void record_aot_variable_data(Variable *var);
+    void record_aot_data(const std::string &name, void *address, size_t size,
+	DataDef *type = NULL, uint32_t count = 1);
 
     void add_keywords();
     void add_datatypes();

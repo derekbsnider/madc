@@ -1,0 +1,40 @@
+#!/../bin/madc
+
+#include <stdio.h>
+
+void foo(int **p, int *q)
+{
+    *(*p++)++ = *q++;
+}
+
+void bar(int **p, int *q)
+{
+    **p = *q++;
+    *(*p++)++;
+}
+
+void baz(int **p, int *q)
+{
+    **p = *q++;
+    (*p++)++;
+}
+
+int main()
+{
+    int i = 42, j = 0;
+    int *p = &i;
+    foo(&p, &j);
+    printf("foo %d %ld\n", i, (long)(p - &i));
+
+    i = 43;
+    p = &i;
+    bar(&p, &j);
+    printf("bar %d %ld\n", i, (long)(p - &i));
+
+    i = 44;
+    p = &i;
+    baz(&p, &j);
+    printf("baz %d %ld\n", i, (long)(p - &i));
+
+    return 0;
+}

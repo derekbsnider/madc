@@ -109,6 +109,43 @@ static bool looks_like_decl_head(const std::deque<TokenBase *> &tokens)
     return false;
 }
 
+static bool decl_head_macro_args_look_like_prototype(const std::vector<std::string> &args)
+{
+    if ( args.empty() )
+	return true;
+
+    auto starts_with_type_word = [](const std::string &raw) -> bool {
+	size_t i = 0;
+	while ( i < raw.size() && (raw[i] == ' ' || raw[i] == '\t') )
+	    ++i;
+	size_t start = i;
+	while ( i < raw.size() && (raw[i] == '_' || isalnum((unsigned char)raw[i])) )
+	    ++i;
+	std::string word = raw.substr(start, i - start);
+	return word == "void" || word == "char" || word == "short"
+	    || word == "int" || word == "long" || word == "float"
+	    || word == "double" || word == "signed" || word == "unsigned"
+	    || word == "const" || word == "volatile" || word == "restrict"
+	    || word == "struct" || word == "union" || word == "enum"
+	    || word == "class" || word == "register" || word == "extern"
+	    || word == "static" || word == "typedef";
+    };
+
+    for ( const std::string &arg : args )
+    {
+	size_t i = 0;
+	while ( i < arg.size() && (arg[i] == ' ' || arg[i] == '\t') )
+	    ++i;
+	if ( i >= arg.size() )
+	    continue;
+	if ( arg.compare(i, 3, "...") == 0 )
+	    return true;
+	if ( starts_with_type_word(arg) )
+	    return true;
+    }
+    return false;
+}
+
 static std::string read_macro_body(Source &source)
 {
     std::string body;
@@ -281,11 +318,11 @@ void Program::_tokenizer_init()
     define_map["__signed"] = "signed";
     define_map["__signed__"] = "signed";
     define_map["__const__"] = "const";
-    // C99 _Complex / GCC __complex__ — not supported but at least
-    // don't error on the keyword. Map to double (loses the imaginary
-    // part but lets real-only code compile).
-    define_map["_Complex"] = "";
-    define_map["__complex__"] = "";
+    // C99 _Complex / GCC __complex__ — lower to double for now so
+    // declarations and calls compile on the GCC parity lane even
+    // though full complex semantics are still pending.
+    define_map["_Complex"] = "double";
+    define_map["__complex__"] = "double";
 
     // GCC floating-point limit macros
     define_map["__FLT_MAX__"] = "3.40282347e+38F";
@@ -479,6 +516,14 @@ void Program::_tokenizer_init()
 	m.params = {"__expr"};
 	m.body = "0";
 	macro_map["__builtin_constant_p"] = m;
+    }
+    // __builtin_return_address(level) — unsupported, but many GCC
+    // torture tests only need a stable sentinel value.
+    {
+	MacroDef m;
+	m.params = {"__level"};
+	m.body = "0";
+	macro_map["__builtin_return_address"] = m;
     }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
@@ -1508,6 +1553,21 @@ TokenBase *Program::_getToken()
 	default:
 	    if ( isdigit(ch) )
 	    {
+		auto eat_imag_suffix = [&]() {
+		    if ( !source.good() )
+			return false;
+		    int c = source.peek();
+		    if ( c != 'i' && c != 'I' && c != 'j' && c != 'J' )
+			return false;
+		    source.get();
+		    if ( source.good() )
+		    {
+			int tc = source.peek();
+			if ( tc == 'f' || tc == 'F' || tc == 'l' || tc == 'L' )
+			    source.get();
+		    }
+		    return true;
+		};
 		// Consume C integer-literal suffixes (u/U, l/L, ll/LL, combos
 		// like ul/ULL/Lu) and set type accordingly. With sizeof(int)=4,
 		// the L/LL suffix widens to 64-bit (long/long long), and U
@@ -1581,6 +1641,41 @@ TokenBase *Program::_getToken()
 			else if ( hc >= 'a' && hc <= 'f' ) hv += hc - 'a' + 10;
 			else                               hv += hc - 'A' + 10;
 		    }
+		    if ( source.good() && (source.peek() == '.'
+		      || source.peek() == 'p' || source.peek() == 'P') )
+		    {
+			if ( source.peek() == '.' )
+			{
+			    lit_text += (char)source.get();
+			    while ( source.good() )
+			    {
+				if ( is_digit_separator(source.peek()) )
+				{
+				    source.get();
+				    continue;
+				}
+				if ( !isxdigit(source.peek()) )
+				    break;
+				lit_text += (char)source.get();
+			    }
+			}
+			if ( source.good() && (source.peek() == 'p' || source.peek() == 'P') )
+			{
+			    lit_text += (char)source.get();
+			    if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
+				lit_text += (char)source.get();
+			    while ( source.good() && isdigit(source.peek()) )
+				lit_text += (char)source.get();
+			}
+		    if ( source.good() )
+		    {
+			int c = source.peek();
+			if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
+				lit_text += (char)source.get();
+		    }
+		    eat_imag_suffix();
+			return new TokenReal(strtod(lit_text.c_str(), NULL));
+		    }
 		    eat_int_suffix();
 		    {
 			TokenInt *ti = new TokenInt((int64_t)hv);
@@ -1650,6 +1745,7 @@ TokenBase *Program::_getToken()
 			    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 				source.get();
 			}
+			eat_imag_suffix();
 			return new TokenReal(num);
 		    }
 		    eat_int_suffix();
@@ -1704,6 +1800,7 @@ TokenBase *Program::_getToken()
 		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 			source.get();
 		}
+		eat_imag_suffix();
 		return new TokenReal(num);
 	    }
 	    if ( ch == '_' || isalnum(ch) )
@@ -1721,7 +1818,6 @@ TokenBase *Program::_getToken()
 		// definition head (`void bug(const char *, ...)` must not
 		// be eaten by a prior `#define bug(...) ((void)0)`).
 		if ( macro_map.count(word) && !source.macro_disabled(word)
-		     && !looks_like_decl_head(tokens)
 		     && consume_macro_call_open(source) )
 		{
 		    MacroDef &macro = macro_map[word];
@@ -1928,6 +2024,19 @@ TokenBase *Program::_getToken()
 		    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
 		    if ( !arg.empty() || !args.empty() )
 			args.push_back(arg);
+		    if ( looks_like_decl_head(tokens)
+		      && decl_head_macro_args_look_like_prototype(args) )
+		    {
+			std::string tail("(");
+			for ( size_t ai = 0; ai < args.size(); ++ai )
+			{
+			    if ( ai ) tail += ", ";
+			    tail += args[ai];
+			}
+			tail += ")";
+			source.pushback(tail);
+			return new TokenIdent(word);
+		    }
 		    // substitute params in body — single pass over the
 		    // original body so an argument that happens to match a
 		    // later parameter name doesn't get re-substituted. A

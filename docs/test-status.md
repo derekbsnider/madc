@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 19, 2026 (v0.17.0, GCC parity session 6 — 1316/1685).
+Test results as of May 19, 2026 (v0.17.0, GCC parity session 9 — 1325/1685).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,21 +11,29 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 274 JIT pass / 0 fail
+## Current Batch Status — 285 JIT pass / 0 fail
 
-Latest results (2026-05-18):
+Latest results (2026-05-19):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 274 integration tests
-- Failing: 2 (testfwdretrefresh — non-standard void→bool redecl; testsubscriptassign — pre-existing)
-- Note: test count dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored).
+- Passing: 285 integration tests
+- Failing: none
+- Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
+  Additional tracked regressions for GNU designated initializers,
+  nested designated initializers, file-scope compound-literal global
+  pointers, struct-copy compound literals, union compound literals,
+  nested deref post-increment, and the `20060420-1.c` global array
+  pointer-cast loop, plus `_Complex` / `iF` compatibility via
+  `testcomplexkw.mad`, now bring the tracked integration count to 285.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 271 (of 271 JIT-passing tests)
+- Passing: 285 (of 285 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so
 - The native EXE parity lane is currently fully green.
+- File-scope compound literals that feed global pointer initializers now
+  also relocate correctly in the EXE/AOT lane.
 - A fresh `smaug.exe` probe also now survives the room 109 serpent fight
   and serpent death on the standalone executable path.
 

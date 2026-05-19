@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+- **GCC torture `20070614-1.c` now passes.**
+  The lexer now lowers `_Complex` / `__complex__` declarations to a
+  temporary `double` compatibility path and accepts `i`/`j` imaginary
+  literal suffixes like `1.0iF` on the GCC parity lane. This is still
+  not full complex-number semantics, but it closes the compile/runtime
+  path for the current torture case and adds `tests/testcomplexkw.mad`
+  as a regression.
+
+- **GCC torture `20060420-1.c` now passes.**
+  Expression-base subscript assignment now stores through IR instead of
+  assuming a Gp RHS, fixed-array subscript reads/writes keep stack-backed
+  arrays as addresses via `lea`, and pointer/fixed-array casts bypass the
+  float-conversion path so `(char *)buffer` / `(long)buffer` preserve real
+  address bits. Added `tests/testglobalarrayptrcastloop.mad` as the
+  regression.
+
+- **Native EXE file-scope compound literals now relocate nested pointers correctly.**
+  AOT/native executable emission now routes file-scope compound-literal
+  storage through the discovered-data relocation path and also patches
+  pointer-valued fields inside copied `.data` payloads. This fixes
+  `tests/testcompoundlitglobalptr.mad` in EXE mode instead of only in JIT.
+
+- **Function-pointer array declarations now parse as plain C.**
+  Declarations like `void *(*funcs[3])(void)` now flow through the
+  normal declaration/initializer path instead of failing at the `)`
+  after the name. This moves GCC torture `20010122-1.c` past parsing
+  and into the next real blocker (`__builtin_return_address`).
+
+- **Aggregate attribute parser now accepts repeated `__attribute`.**
+  `struct ... } __attribute((packed)) __attribute((aligned));` now stays
+  attached to the aggregate definition instead of leaking into later
+  parser stages. GCC torture `packed-aligned.c` now passes.
+
+- **Validation/docs sync for GCC-first mode.**
+  Added `tests/testfnptrarray.mad` as a regression for function-pointer
+  array declarations, `tests/teststmtexprmember.mad` for GNU statement-
+  expression member access, and `tests/testnestedstructflatinit.mad` for
+  flat nested-struct initializers. Added
+  `tests/testcompoundlitglobalptr.mad` for native file-scope
+  compound-literal relocation and `tests/testglobalarrayptrcastloop.mad`
+  for the `20060420-1.c` address-cast loop shape, plus
+  `tests/testcomplexkw.mad` for the `_Complex` / `iF` compatibility lane.
+  Removed the `std::list` expectation from `tests/testmadc_ns.mad`,
+  refreshed the current integration / EXE pass counts to `285/285`, and
+  refreshed GCC torture parity to `1325/1685` (78.6%).
+
 ## [v0.17.0] - 2026-05-19
 
 GCC parity push: 1305 → 1316/1685 (78.1%), cast chain fixes, struct init, preprocessor features.

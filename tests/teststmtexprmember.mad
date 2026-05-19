@@ -1,0 +1,19 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+struct large {
+    int x, y[9];
+};
+
+int main()
+{
+    int fixed;
+
+    fixed = ({ struct large temp3; temp3.x = 2; temp3; }).x
+          - ({ struct large temp4; temp4.x = 1; temp4; }).x;
+    if (fixed != 1)
+        abort();
+
+    printf("ok\n");
+    return 0;
+}

@@ -638,6 +638,31 @@ public:
 	}
 	(void)allocateBitField(dd, width);
     }
+    void addAnonymousAggregate(const DataDefSTRUCT &agg)
+    {
+	endBitFieldRun();
+	size_t fa = field_align(agg);
+	size_t base_offset = union_layout ? 0 : align_up(size, fa);
+	if ( fa > max_align ) max_align = fa;
+	for ( size_t i = 0; i < agg.members.size(); ++i )
+	{
+	    members.push_back(agg.members[i]);
+	    member_counts.push_back(i < agg.member_counts.size() ? agg.member_counts[i] : 1);
+	    size_t child_offset = i < agg.member_offsets.size() ? agg.member_offsets[i] : 0;
+	    member_offsets.push_back(base_offset + child_offset);
+	    BitFieldInfo info = i < agg.member_bitfields.size() ? agg.member_bitfields[i] : BitFieldInfo();
+	    if ( info.is_bitfield )
+		info.storage_offset += base_offset;
+	    member_bitfields.push_back(info);
+	}
+	size_t end = base_offset + agg.size;
+	if ( union_layout )
+	{
+	    if ( end > size ) size = end;
+	}
+	else
+	    size = end;
+    }
     // round struct size up to its overall alignment (for arrays of structs)
     void finalize()
     {

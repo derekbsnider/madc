@@ -1,0 +1,14 @@
+#include <stdlib.h>
+#include <stdio.h>
+
+struct A { int i; int j; int k; int l; };
+struct B { struct A a; int r[1]; };
+
+int main()
+{
+    struct B b = { .a.j = 5 };
+    if (b.a.i != 0 || b.a.j != 5 || b.a.k != 0 || b.a.l != 0)
+        abort();
+    printf("ok\n");
+    return 0;
+}

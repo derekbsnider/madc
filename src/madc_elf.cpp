@@ -269,16 +269,8 @@ void Program::record_aot_variable_data(Variable *var)
 	if ( sz == 0 )
 		return;
 
-	uintptr_t addr = reinterpret_cast<uintptr_t>(var->data);
-	if ( aot_discovered_data_index.count(addr) )
-		return;
-
-	AotDiscoveredData entry;
-	entry.name = "__aot_var_" + var->name;
-	entry.address = var->data;
-	entry.size = sz;
-	aot_discovered_data_index[addr] = aot_discovered_data.size();
-	aot_discovered_data.push_back(entry);
+	record_aot_data("__aot_var_" + var->name,
+	    var->data, sz, var->type, var->is_fixed_array() ? var->total_elements() : 1);
 
 	if ( var->type->is_string() && sz == sizeof(std::string) )
 	{
@@ -294,10 +286,32 @@ void Program::record_aot_variable_data(Variable *var)
 			centry.name = "__aot_cstr_" + var->name;
 			centry.address = (void *)cstr;
 			centry.size = str->size() + 1;
+			centry.type = NULL;
+			centry.count = 0;
 			aot_discovered_data_index[cstr_addr] = aot_discovered_data.size();
 			aot_discovered_data.push_back(centry);
 		}
 	}
+}
+
+void Program::record_aot_data(const std::string &name, void *address, size_t size,
+	DataDef *type, uint32_t count)
+{
+	if ( !address || size == 0 )
+		return;
+
+	uintptr_t addr = reinterpret_cast<uintptr_t>(address);
+	if ( aot_discovered_data_index.count(addr) )
+		return;
+
+	AotDiscoveredData entry;
+	entry.name = name;
+	entry.address = address;
+	entry.size = size;
+	entry.type = type;
+	entry.count = count;
+	aot_discovered_data_index[addr] = aot_discovered_data.size();
+	aot_discovered_data.push_back(entry);
 }
 
 std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
@@ -2849,6 +2863,116 @@ bool Program::save_executable(const std::string &path)
 		emit(out, data_section_buf.data(), data_section_size);
 		// Recalculate actual data vaddr for section header.
 		data_vaddr = BASE_ADDR + data_file_offset;
+
+		auto patch_data_pointer_slot = [&](size_t file_pos) {
+			if ( file_pos + sizeof(uint64_t) > out.size() )
+				return;
+			uint64_t raw = 0;
+			std::memcpy(&raw, &out[file_pos], sizeof(raw));
+			std::pair<bool, size_t> found =
+			    find_data_offset(static_cast<uintptr_t>(raw));
+			if ( !found.first )
+				return;
+			uint64_t new_addr = data_vaddr + found.second;
+			std::memcpy(&out[file_pos], &new_addr, sizeof(new_addr));
+		};
+
+		std::function<void(size_t, DataDef *, uint32_t)> patch_data_region;
+		patch_data_region = [&](size_t file_pos, DataDef *dd, uint32_t count) {
+			if ( !dd || count == 0 )
+				return;
+			if ( dd->is_pointer() )
+			{
+				size_t step = dd->size ? dd->size : sizeof(uint64_t);
+				if ( step < sizeof(uint64_t) )
+					step = sizeof(uint64_t);
+				for ( uint32_t i = 0; i < count; ++i )
+				    patch_data_pointer_slot(file_pos + i * step);
+				return;
+			}
+			if ( dd->basetype() != BaseType::btStruct )
+				return;
+
+			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+			if ( !sdd || sdd->union_layout )
+				return;
+
+			size_t struct_size = sdd->size ? sdd->size : dd->size;
+			for ( uint32_t ci = 0; ci < count; ++ci )
+			{
+				size_t base = file_pos + ci * struct_size;
+				for ( size_t mi = 0; mi < sdd->members.size(); ++mi )
+				{
+				    DataDef *member_dd = sdd->members[mi].second;
+				    if ( !member_dd )
+					continue;
+				    size_t member_count =
+					(mi < sdd->member_counts.size()) ? sdd->member_counts[mi] : 1;
+				    size_t member_ofs =
+					(mi < sdd->member_offsets.size()) ? sdd->member_offsets[mi] : 0;
+				    patch_data_region(base + member_ofs, member_dd,
+					(uint32_t)member_count);
+				}
+			}
+		};
+
+		auto patch_variable_region = [&](Variable *var) {
+			if ( !var || !var->data || !var->type )
+				return;
+			size_t offset = 0;
+			if ( var->has_aot_data() )
+				offset = var->aot_data_offset;
+			else
+			{
+				std::pair<bool, size_t> found =
+				    find_data_offset(reinterpret_cast<uintptr_t>(var->data));
+				if ( !found.first )
+					return;
+				offset = found.second;
+			}
+			uint32_t count = var->is_fixed_array() ? var->total_elements() : 1;
+			patch_data_region(data_file_offset + offset, var->type, count);
+		};
+
+		if ( tkProgram )
+		{
+			for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
+			{
+				Variable *var = tkProgram->variables[i];
+				if ( !var || !var->is_global() )
+					continue;
+				patch_variable_region(var);
+			}
+		}
+
+		for ( size_t fi = 0; fi < pending_funcs.size(); ++fi )
+		{
+			TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[fi]);
+			if ( !tf )
+				continue;
+			for ( size_t vi = 0; vi < tf->variables.size(); ++vi )
+			{
+				Variable *var = tf->variables[vi];
+				if ( !var || (var->flags & vfPARAM) )
+					continue;
+				if ( (var->flags & vfSTACK) && !(var->flags & vfSTATIC) )
+					continue;
+				patch_variable_region(var);
+			}
+		}
+
+		for ( size_t i = 0; i < aot_discovered_data.size(); ++i )
+		{
+			const AotDiscoveredData &entry = aot_discovered_data[i];
+			if ( !entry.address || !entry.type || entry.count == 0 )
+				continue;
+			std::pair<bool, size_t> found =
+			    find_data_offset(reinterpret_cast<uintptr_t>(entry.address));
+			if ( !found.first )
+				continue;
+			patch_data_region(data_file_offset + found.second,
+			    entry.type, entry.count);
+		}
 
 		for ( size_t i = 0; i < string_object_patches.size(); ++i )
 		{
