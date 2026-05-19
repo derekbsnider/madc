@@ -936,6 +936,25 @@ public:
     }
 };
 
+class TokenTypeQuery: public TokenBase
+{
+public:
+    DataDef *query_type;
+    bool want_alignof;
+    bool use_cached_runtime_size;
+
+    TokenTypeQuery(DataDef *dd = NULL, bool want_align = false,
+		   bool use_cached_size = true)
+	: TokenBase(), query_type(dd), want_alignof(want_align),
+	  use_cached_runtime_size(use_cached_size)
+    {
+	_datatype = &ddUINT64;
+    }
+    virtual TokenBase *clone() { return new TokenTypeQuery(query_type, want_alignof, use_cached_runtime_size); }
+    virtual TokenID id() const { return TokenID::tkInt; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 class TokenReal: public TokenBase
 {
 protected:

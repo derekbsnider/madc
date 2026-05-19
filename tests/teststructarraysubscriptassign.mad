@@ -1,0 +1,18 @@
+#!/../bin/madc
+
+#include <stdio.h>
+
+struct pair {
+    unsigned short a;
+    unsigned short b;
+};
+
+int main()
+{
+    struct pair rt[2];
+    rt[0].a = 12;
+    rt[0].b = 7;
+    rt[1] = rt[0];
+    printf("%d %d\n", (int)rt[1].a, (int)rt[1].b);
+    return 0;
+}

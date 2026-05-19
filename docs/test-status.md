@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 19, 2026 (v0.17.0, GCC parity session 12 — 1332/1685).
+Test results as of May 19, 2026 (v0.17.0, GCC parity session 13 — 1335/1685).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 297 JIT pass / 0 fail
+## Current Batch Status — 306 JIT pass / 0 fail
 
 Latest results (2026-05-19):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 297 integration tests
+- Passing: 306 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -32,10 +32,14 @@ Latest results (2026-05-19):
   `testcomputedgoto.mad`, plus the `20050502-1.c` deref-postinc read
   shape via `testderefpostincread.mad`, plus GNU `vector_size`
   compound-literal coverage via `testgccvectorlit.mad`, now bring the
-  tracked integration count to 297.
+  tracked integration count to 297. Additional tracked regressions for
+  typedef'd VLA `sizeof(type)` handling via `testtypedefvlasizeof.mad`
+  and SIMD integer/float vector cast lane preservation via
+  `testgccvectorcasts.mad` now bring the tracked integration count to
+  306.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 297 (of 297 JIT-passing tests)
+- Passing: 306 (of 306 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so

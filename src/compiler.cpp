@@ -82,6 +82,54 @@ static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand 
 static void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem, DataDef *type);
 static void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm, DataDef *type);
 
+static TypeId simd_type_id(DataDefSIMD *vdd)
+{
+    if ( !vdd || !vdd->element_type )
+	return TypeId::kVoid;
+    bool is_real = vdd->element_type->is_real();
+    bool is_unsigned = vdd->element_type->is_unsigned();
+    size_t elem = vdd->element_type->size;
+    size_t bytes = vdd->size;
+
+    if ( bytes == 4 )
+    {
+	if ( elem == 1 ) return is_unsigned ? TypeId::kUInt8x4  : TypeId::kInt8x4;
+	if ( elem == 2 ) return is_unsigned ? TypeId::kUInt16x2 : TypeId::kInt16x2;
+	if ( elem == 4 ) return is_unsigned ? TypeId::kUInt32x1 : TypeId::kInt32x1;
+    }
+    if ( bytes == 8 )
+    {
+	if ( is_real )
+	{
+	    if ( elem == 4 ) return TypeId::kFloat32x2;
+	    if ( elem == 8 ) return TypeId::kFloat64x1;
+	}
+	else
+	{
+	    if ( elem == 1 ) return is_unsigned ? TypeId::kUInt8x8  : TypeId::kInt8x8;
+	    if ( elem == 2 ) return is_unsigned ? TypeId::kUInt16x4 : TypeId::kInt16x4;
+	    if ( elem == 4 ) return is_unsigned ? TypeId::kUInt32x2 : TypeId::kInt32x2;
+	    if ( elem == 8 ) return is_unsigned ? TypeId::kUInt64x1 : TypeId::kInt64x1;
+	}
+    }
+    if ( bytes == 16 )
+    {
+	if ( is_real )
+	{
+	    if ( elem == 4 ) return TypeId::kFloat32x4;
+	    if ( elem == 8 ) return TypeId::kFloat64x2;
+	}
+	else
+	{
+	    if ( elem == 1 ) return is_unsigned ? TypeId::kUInt8x16  : TypeId::kInt8x16;
+	    if ( elem == 2 ) return is_unsigned ? TypeId::kUInt16x8 : TypeId::kInt16x8;
+	    if ( elem == 4 ) return is_unsigned ? TypeId::kUInt32x4 : TypeId::kInt32x4;
+	    if ( elem == 8 ) return is_unsigned ? TypeId::kUInt64x2 : TypeId::kInt64x2;
+	}
+    }
+    return TypeId::kVoid;
+}
+
 static size_t count_struct_init_slots(DataDefSTRUCT *dds)
 {
     if ( !dds )
@@ -520,6 +568,59 @@ static IRValue ir_from_operand(const Operand &op, DataDef *type)
 static Operand &emit_ir_value(Program &pgm, IRValue value, regdefp_t &regdp,
 			      Operand &storage, DataDef *fallback_type)
 {
+    auto materialize_simd = [&](IRValue src, DataDef *dst_type, x86::Xmm &dst) {
+	DataDef *src_type = src.type ? src.type : dst_type;
+	if ( src.isReg() && src.op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    pgm.safemov(dst, src.op.as<x86::Xmm>(), dst_type, src_type);
+	    return;
+	}
+	if ( src.isMem() )
+	{
+	    load_mem_to_xmm(pgm, dst, src.op.as<x86::Mem>(), src_type);
+	    return;
+	}
+	if ( src.isReg() && src.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( dst_type && dst_type->size <= 8 )
+		pgm.cc.movq(dst, src.op.as<x86::Gp>());
+	    else
+		throw "emit_ir_value() SIMD materialization cannot widen gp source beyond 64 bits";
+	    return;
+	}
+	if ( src.isImm() )
+	{
+	    x86::Gp gp = pgm.cc.newGpq("ir_simd_imm");
+	    pgm.cc.mov(gp, src.op.as<Imm>());
+	    pgm.cc.movq(dst, gp);
+	    return;
+	}
+	throw "emit_ir_value() unsupported SIMD source";
+    };
+
+    if ( regdp.second && regdp.second->is_simd() )
+    {
+	x86::Xmm xmm = regdp.second->newreg(pgm.cc, "ir_simd").as<x86::Xmm>();
+	materialize_simd(value, regdp.second, xmm);
+	if ( regdp.first )
+	{
+	    if ( regdp.first->isMem() )
+	    {
+		x86::Mem dst = regdp.first->as<x86::Mem>();
+		store_xmm_to_mem(pgm, dst, xmm, regdp.second);
+		return *regdp.first;
+	    }
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		pgm.safemov(*regdp.first, xmm, regdp.second, regdp.second);
+		return *regdp.first;
+	    }
+	}
+	storage = xmm;
+	regdp.first = &storage;
+	return storage;
+    }
+
     IRBuilder ir(pgm.cc);
     if ( !regdp.second )
 	regdp.second = fallback_type ? fallback_type : value.type;
@@ -820,6 +921,37 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     {
 	if ( decay_token && raw_type && !raw_type->is_pointer() )
 	    raw_type = &ddLPSTR;
+    }
+    if ( target_type && target_type->is_simd() )
+    {
+	Operand simd_dst = preferred_dest ? *preferred_dest : target_type->newreg(pgm.cc, "norm_simd");
+	if ( !simd_dst.isReg() || !simd_dst.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    throw "compile_token_normalized() SIMD target needs Xmm destination";
+	x86::Xmm xmm = simd_dst.as<x86::Xmm>();
+	if ( raw.isReg() && raw.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(xmm, raw.as<x86::Xmm>(), target_type, raw_type);
+	else if ( raw.isMem() )
+	{
+	    x86::Mem mem = raw.as<x86::Mem>();
+	    load_mem_to_xmm(pgm, xmm, mem, raw_type ? raw_type : target_type);
+	}
+	else if ( raw.isReg() && raw.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( target_type->size <= 8 )
+		pgm.cc.movq(xmm, raw.as<x86::Gp>());
+	    else
+		throw "compile_token_normalized() SIMD target cannot widen gp source beyond 64 bits";
+	}
+	else if ( raw.isImm() )
+	{
+	    x86::Gp gp = pgm.cc.newGpq("norm_simd_imm");
+	    pgm.cc.mov(gp, raw.as<Imm>());
+	    pgm.cc.movq(xmm, gp);
+	}
+	else
+	    throw "compile_token_normalized() unsupported SIMD source operand";
+	storage = simd_dst;
+	return storage;
     }
     IRBuilder ir(pgm.cc);
     IRValue out = ir.coerce(ir_from_operand(raw, raw_type), target_type);
@@ -1282,6 +1414,14 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     else if ( target_type && (target_type->is_numeric() || target_type->is_pointer()) )
 	final_type = target_type;
 
+    if ( final_type->is_simd() )
+    {
+	Operand &simd = compile_token_normalized(pgm, token, final_type, nullptr, storage);
+	storage = simd;
+	out_type = final_type;
+	return storage;
+    }
+
     if ( (final_type->is_numeric() || final_type->is_pointer())
       && (arg.isReg() || arg.isMem() || arg.isImm()) )
     {
@@ -1342,6 +1482,15 @@ static void add_funcsig_arg(FuncSignature &funcsig, DataDef *arg_type)
 	funcsig.addArgT<void *>();
 	return;
     }
+    if ( arg_type->is_simd() )
+    {
+	TypeId tid = simd_type_id(static_cast<DataDefSIMD *>(arg_type));
+	if ( tid != TypeId::kVoid )
+	{
+	    funcsig.addArg(tid);
+	    return;
+	}
+    }
     switch(arg_type->type())
     {
 	case DataType::dtCHAR:    funcsig.addArgT<char>(); break;
@@ -1368,6 +1517,15 @@ static void set_funcsig_ret(FuncSignature &funcsig, DataDef *ret_type, bool is_m
     {
 	funcsig.setRetT<void>();
 	return;
+    }
+    if ( ret_type->is_simd() )
+    {
+	TypeId tid = simd_type_id(static_cast<DataDefSIMD *>(ret_type));
+	if ( tid != TypeId::kVoid )
+	{
+	    funcsig.setRet(tid);
+	    return;
+	}
     }
     switch(ret_type->type())
     {
@@ -1502,6 +1660,8 @@ static void validate_call_arg_type(Program &pgm, TokenBase *tn, DataDef *ptype,
 	DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)arg_type->type() << endl);
 	pgm.Throw(tn) << "Expecting floating point argument" << flush;
     }
+    if ( ptype->is_simd() && !arg_type->is_simd() )
+	pgm.Throw(tn) << "Expecting SIMD argument" << flush;
     if ( ptype->is_string() && !arg_type->is_string() && !arg_type->is_pointer() )
 	pgm.Throw(tn) << "Expecting string argument" << flush;
     if ( ptype->is_object() && !arg_type->is_pointer() )
@@ -1513,13 +1673,13 @@ static void validate_call_arg_type(Program &pgm, TokenBase *tn, DataDef *ptype,
     }
     if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	if ( !ptype->is_real() )
+	if ( !ptype->is_real() && !ptype->is_simd() )
 	    pgm.Throw(tn) << "Not expecting floating point argument" << flush;
 	DBG(pgm.cc.comment("tnreg is Xmm"));
     }
     if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
-	if ( ptype->is_real() )
+	if ( ptype->is_real() || ptype->is_simd() )
 	    pgm.Throw(tn) << "Expecting floating point argument" << flush;
 	DBG(pgm.cc.comment("tnreg is Gp"));
 	DBG(cout << "tnreg size=" << tnreg.x86RmSize() << " regdp.second->size="
@@ -2438,12 +2598,12 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	// capture return value
 	if ( retdd.type() != DataType::dtVOID )
 	{
-	    if ( !regdp.first )
-	    {
-		if ( retdd.is_real() )
-		    _operand = newScalarXmm(pgm, &retdd, "fptr_ret");
-		else
-		    _operand = pgm.cc.newGpq("fptr_ret");
+		if ( !regdp.first )
+		{
+		    if ( retdd.is_real() || retdd.is_simd() )
+			_operand = retdd.newreg(pgm.cc, "fptr_ret");
+		    else
+			_operand = pgm.cc.newGpq("fptr_ret");
 		regdp.first = &_operand;
 	    }
 	    bind_call_return(pgm, call, regdp.first, &retdd, _operand, ret_is_variadic);
@@ -3668,6 +3828,25 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	emit_struct_init(pgm, base_reg, 0, dds, init_list, this);
     }
 
+    // brace-enclosed initializer for standalone SIMD vectors:
+    // V2SI x = { 2, 2 };
+    if ( emit_initializer
+      && !init_list.empty() && !var.is_fixed_array()
+      && var.type && var.type->is_simd() )
+    {
+	DBG(pgm.cc.comment("TokenDecl simd init_list"));
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(var.type);
+	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
+	x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var.name + ".simd_init_base").c_str());
+	if ( base_op.isMem() )
+	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+
+	emit_zero_fill_region(pgm, base_reg, 0, var.type->size);
+	emit_simd_init(pgm, base_reg, 0, vdd, init_list, this);
+    }
+
     // brace-enclosed initializer for fixed-size arrays: arr[N] = { v0, v1, ... }
     if ( emit_initializer && !init_list.empty() && var.is_fixed_array() )
     {
@@ -3909,9 +4088,15 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 		if ( tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kVec) )
 		{
 		    func->funcnode->setArg(argc++, tmp.as<x86::Xmm>());
-		    IRBuilder ir(pgm.cc);
-		    ir.store(IRValue::mem(reg.as<x86::Mem>(), (*vvi)->type),
-			     ir_from_operand(tmp, (*vvi)->type));
+		    x86::Mem dst = reg.as<x86::Mem>();
+		    if ( (*vvi)->type && (*vvi)->type->is_simd() )
+			store_xmm_to_mem(pgm, dst, tmp.as<x86::Xmm>(), (*vvi)->type);
+		    else
+		    {
+			IRBuilder ir(pgm.cc);
+			ir.store(IRValue::mem(dst, (*vvi)->type),
+				 ir_from_operand(tmp, (*vvi)->type));
+		    }
 		}
 		else
 		if ( tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kGp) )
@@ -6038,6 +6223,7 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 {
     if ( !ret_type || ret_type->type() == DataType::dtVOID )
 	return;
+    bool ret_in_xmm = ret_type->is_real() || ret_type->is_simd();
 
     // narrow_int_ret: libc dlsym functions that return a 32-bit int (strcmp,
     // memcmp, printf, fcntl, ...) place the result in EAX; the upper 32 bits
@@ -6074,10 +6260,10 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
     if ( !dest )
     {
 	if ( !fallback_operand.isReg()
-	  || (ret_type->is_real() && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kVec))
-	  || (!ret_type->is_real() && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kGp)) )
+	  || (ret_in_xmm && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kVec))
+	  || (!ret_in_xmm && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	    fallback_operand = ret_type->newreg(pgm.cc, "call_ret");
-	if ( ret_type->is_real() )
+	if ( ret_in_xmm )
 	    call->setRet(0, fallback_operand.as<x86::Xmm>());
 	else
 	    call->setRet(0, fallback_operand.as<x86::Gp>());
@@ -6088,7 +6274,7 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
     {
 	if ( dest->as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
-	    if ( is_variadic )
+	    if ( is_variadic && ret_type->is_real() )
 	    {
 		x86::Xmm ret_xmm = newScalarXmm(pgm, ret_type, "dl_ret");
 		call->setRet(0, ret_xmm);
@@ -6108,12 +6294,20 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 
     if ( dest->isMem() )
     {
-	if ( ret_type->is_real() )
+	if ( ret_in_xmm )
 	{
-	    x86::Xmm ret_xmm = newScalarXmm(pgm, ret_type, "call_ret");
+	    x86::Xmm ret_xmm = ret_type->newreg(pgm.cc, "call_ret").as<x86::Xmm>();
 	    call->setRet(0, ret_xmm);
-	    IRBuilder ir(pgm.cc);
-	    ir.store(IRValue::mem(dest->as<x86::Mem>(), ret_type), ir_from_operand(ret_xmm, ret_type));
+	    if ( ret_type->is_simd() )
+	    {
+		x86::Mem mem = dest->as<x86::Mem>();
+		store_xmm_to_mem(pgm, mem, ret_xmm, ret_type);
+	    }
+	    else
+	    {
+		IRBuilder ir(pgm.cc);
+		ir.store(IRValue::mem(dest->as<x86::Mem>(), ret_type), ir_from_operand(ret_xmm, ret_type));
+	    }
 	}
 	else
 	{
@@ -6578,6 +6772,14 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
             }
         }
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+	if ( _datatype && (_datatype->basetype() == BaseType::btStruct
+			|| _datatype->basetype() == BaseType::btClass) )
+	{
+	    Operand dst_slot = elem_mem;
+	    emit_raw_aggregate_copy(pgm, dst_slot, val_op,
+		_datatype, "fixed_sub_struct_copy");
+	    return;
+	}
         ir.store(IRValue::mem(elem_mem, _datatype), ir_from_operand(val_op, val_type ? val_type : _datatype));
         return;
     }
@@ -8756,6 +8958,35 @@ Operand &TokenDeref::compile(Program &pgm, regdefp_t &regdp)
 
     Operand &mem = operand(pgm);
 
+    if ( deref_type && deref_type->is_simd() )
+    {
+	x86::Xmm xmm = deref_type->newreg(pgm.cc, "deref_simd").as<x86::Xmm>();
+	if ( mem.isMem() )
+	    load_mem_to_xmm(pgm, xmm, mem.as<x86::Mem>(), deref_type);
+	else if ( mem.isReg() && mem.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(xmm, mem.as<x86::Xmm>(), deref_type, deref_type);
+	else
+	    throw "TokenDeref::compile() SIMD dereference expects memory or Xmm source";
+	regdp.second = deref_type;
+	if ( regdp.first )
+	{
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		pgm.safemov(*regdp.first, xmm, deref_type, deref_type);
+		return *regdp.first;
+	    }
+	    if ( regdp.first->isMem() )
+	    {
+		x86::Mem dst = regdp.first->as<x86::Mem>();
+		store_xmm_to_mem(pgm, dst, xmm, deref_type);
+		return *regdp.first;
+	    }
+	}
+	_operand = xmm;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
     if ( (deref_type->is_numeric() || deref_type->is_pointer())
       && (mem.isMem() || mem.isReg() || mem.isImm()) )
 	return emit_ir_value(pgm, ir_from_operand(mem, deref_type), regdp, _operand, deref_type);
@@ -8807,6 +9038,35 @@ Operand &TokenDerefExpr::compile(Program &pgm, regdefp_t &regdp)
 	regdp.second = deref_type;
 
     Operand &mem = operand(pgm);
+
+    if ( deref_type && deref_type->is_simd() )
+    {
+	x86::Xmm xmm = deref_type->newreg(pgm.cc, "derefexpr_simd").as<x86::Xmm>();
+	if ( mem.isMem() )
+	    load_mem_to_xmm(pgm, xmm, mem.as<x86::Mem>(), deref_type);
+	else if ( mem.isReg() && mem.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(xmm, mem.as<x86::Xmm>(), deref_type, deref_type);
+	else
+	    throw "TokenDerefExpr::compile() SIMD dereference expects memory or Xmm source";
+	regdp.second = deref_type;
+	if ( regdp.first )
+	{
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		pgm.safemov(*regdp.first, xmm, deref_type, deref_type);
+		return *regdp.first;
+	    }
+	    if ( regdp.first->isMem() )
+	    {
+		x86::Mem dst = regdp.first->as<x86::Mem>();
+		store_xmm_to_mem(pgm, dst, xmm, deref_type);
+		return *regdp.first;
+	    }
+	}
+	_operand = xmm;
+	regdp.first = &_operand;
+	return _operand;
+    }
 
     if ( (deref_type->is_numeric() || deref_type->is_pointer())
       && (mem.isMem() || mem.isReg() || mem.isImm()) )
@@ -9002,6 +9262,18 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	regdefp_t inner_rdp = {NULL, src_type, NULL};
 	Operand &src_op = expr->compile(pgm, inner_rdp);
 	x86::Gp out = pgm.cc.newGpq("cast_r2i");
+	if ( src_type->is_simd() )
+	{
+	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.cc.movq(out, src_op.as<x86::Xmm>());
+	    else if ( src_op.isMem() )
+		pgm.cc.mov(out, src_op.as<x86::Mem>());
+	    else if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(out, src_op.as<x86::Gp>());
+	    else
+		throw "TokenCast::compile() SIMD real->int expects Xmm/Mem/Gp source";
+	}
+	else
 	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
 	    if ( src_type->size == sizeof(float) )
@@ -9052,6 +9324,30 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	regdefp_t inner_rdp = {NULL, NULL, NULL};
 	Operand &src_op = expr->compile(pgm, inner_rdp);
 	DataDef *actual_src = inner_rdp.second ? inner_rdp.second : src_type;
+	if ( cast_type->is_simd() && actual_src && actual_src->is_simd() )
+	{
+	    x86::Xmm out = cast_type->newreg(pgm.cc, "cast_simd_i2r").as<x86::Xmm>();
+	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.safemov(out, src_op.as<x86::Xmm>(), cast_type, actual_src);
+	    else if ( src_op.isMem() )
+	    {
+		x86::Mem mem = src_op.as<x86::Mem>();
+		load_mem_to_xmm(pgm, out, mem, actual_src);
+	    }
+	    else if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.movq(out, src_op.as<x86::Gp>());
+	    else
+		throw "TokenCast::compile() SIMD int->real expects Xmm/Mem/Gp source";
+	    regdp.second = cast_type;
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, *(Operand *)&out, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    _operand = out;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
 	x86::Xmm out = newScalarXmm(pgm, cast_type, "cast_i2r");
 	x86::Gp gp;
 	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
@@ -9391,6 +9687,50 @@ Operand &TokenReal::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("TokenReal::compile() emitting through IRBuilder"));
     DBG(cout << "TokenReal::compile() emitting through IRBuilder const[" << _val << "]" << endl);
     return emit_ir_value(pgm, IRValue::mem(_const, effective_type), regdp, _operand, effective_type);
+}
+
+Operand &TokenTypeQuery::compile(Program &pgm, regdefp_t &regdp)
+{
+    if ( !regdp.second )
+	regdp.second = &ddUINT64;
+
+    if ( !query_type || want_alignof )
+	return emit_ir_value(pgm,
+	    IRValue::imm(Imm((int64_t)(query_type ? query_type->alignment() : 0)), &ddUINT64),
+	    regdp, _operand, &ddUINT64);
+
+    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(query_type) )
+    {
+	if ( use_cached_runtime_size && sdd->runtime_size_expr )
+	{
+	    regdefp_t size_rdp = {NULL, &ddUINT64, NULL};
+	    Operand &size_op = sdd->runtime_size_expr->compile(pgm, size_rdp);
+	    return emit_ir_value(pgm, ir_from_operand(size_op, &ddUINT64), regdp, _operand, &ddUINT64);
+	}
+	if ( sdd->has_runtime_size() )
+	{
+	    x86::Gp total = emit_runtime_struct_size(pgm, sdd, "sizeof_dyn_struct");
+	    return emit_ir_value(pgm, IRValue::reg(total, &ddUINT64), regdp, _operand, &ddUINT64);
+	}
+    }
+    else if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(query_type) )
+    {
+	if ( add->count_expr )
+	{
+	    regdefp_t count_rdp = {NULL, NULL, NULL};
+	    Operand &count_op = add->count_expr->compile(pgm, count_rdp);
+	    x86::Gp total = pgm.cc.newGpq("sizeof_dyn_array");
+	    load_idx_to_gpq(pgm, total, count_op);
+	    size_t elem_size = add->element_type ? add->element_type->size : 0;
+	    if ( elem_size > 1 )
+		pgm.cc.imul(total, total, imm((int64_t)elem_size));
+	    return emit_ir_value(pgm, IRValue::reg(total, &ddUINT64), regdp, _operand, &ddUINT64);
+	}
+    }
+
+    return emit_ir_value(pgm,
+	IRValue::imm(Imm((int64_t)query_type->size), &ddUINT64),
+	regdp, _operand, &ddUINT64);
 }
 
 // load integer into register

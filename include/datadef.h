@@ -515,6 +515,7 @@ public:
     std::vector<size_t> member_offsets;	// per-member byte offset in the finalized layout
     std::vector<BitFieldInfo> member_bitfields;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
+    TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
     bool union_layout;	// true: all members start at offset 0; size is max member size
@@ -536,10 +537,10 @@ public:
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
-	: DataDef(n, s, d), pack(0), max_align(1), union_layout(false), bitfield_active(false),
+	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), union_layout(false), bitfield_active(false),
 	  bitfield_unit_offset(0), bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
-	: DataDef(n, 0, DataType::dtRESERVED), pack(0), max_align(1),
+	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1),
 	  union_layout(false),
 	  bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
@@ -820,6 +821,26 @@ public:
     { cc.mov(asmjit::x86::qword_ptr(ptr), rval); }
     virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
     { cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); }
+};
+
+class DataDefCArray : public DataDef
+{
+public:
+    DataDef *element_type;
+    size_t count;
+    TokenBase *count_expr;
+
+    DataDefCArray(DataDef &elem, const std::string &alias_name,
+		  size_t cnt, TokenBase *expr = NULL)
+	: DataDef(alias_name, expr ? 0 : (elem.size * cnt), DataType::dtRESERVED),
+	  element_type(&elem), count(cnt), count_expr(expr) {}
+
+    virtual size_t alignment() const
+    {
+	return element_type ? element_type->alignment() : DataDef::alignment();
+    }
+
+    bool has_runtime_size() const { return count_expr != NULL; }
 };
 
 class MadArray;

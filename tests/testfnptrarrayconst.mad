@@ -1,0 +1,16 @@
+#!/../bin/madc
+
+extern void abort(void);
+
+double f(double a) { return a; }
+double (* const arr[])(double) = { &f };
+
+int main(void)
+{
+    double (*p)();
+    p = &f;
+    if (p != arr[0])
+	abort();
+    puts("ok");
+    return 0;
+}

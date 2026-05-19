@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `20040411-1.c`, `20040423-1.c`, and `20041218-2.c` now pass.**
+  Typedef'd arrays now preserve their full array shape instead of
+  collapsing immediately to pointers, `sizeof(type)` can now materialize
+  runtime VLA-backed typedef and aggregate extents, packed runtime-sized
+  struct layout no longer double-counts dynamic members in its fixed
+  base size, and stack-backed SIMD parameters now spill through the SIMD
+  store helper instead of the scalar IR store path so upper lanes survive
+  function entry intact. Added `tests/testtypedefvlasizeof.mad` and
+  `tests/testgccvectorcasts.mad` as regressions.
+
 - **GCC torture `20050604-1.c` and `20050607-1.c` now pass.**
   GNU `vector_size(...)` attributes now survive lexing and attach to
   typedef aliases as real SIMD datadefs, SIMD compound literals now
@@ -107,8 +117,8 @@
   `tests/testderefpostincread.mad` for the `20050502-1.c` deref-postinc
   read shape.
   Removed the `std::list` expectation from `tests/testmadc_ns.mad`,
-  refreshed the current integration / EXE pass counts to `297/297`, and
-  refreshed GCC torture parity to `1332/1685` (79.1%).
+  refreshed the current integration / EXE pass counts to `306/306`, and
+  refreshed GCC torture parity to `1335/1685` (79.2%).
 
 ## [v0.17.0] - 2026-05-19
 
