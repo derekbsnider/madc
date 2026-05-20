@@ -2814,6 +2814,7 @@ std::string Program::expandIfMacros(const std::string &raw)
 	std::string out;
 	bool changed = false;
 	size_t i = 0;
+	bool preserve_defined_operand = false;
 	while ( i < expr.size() )
 	{
 	    // Copy non-identifier characters
@@ -2823,7 +2824,6 @@ std::string Program::expandIfMacros(const std::string &raw)
 		continue;
 	    }
 	    // Extract identifier
-	    size_t start = i;
 	    std::string word;
 	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
 		word += expr[i++];
@@ -2831,6 +2831,13 @@ std::string Program::expandIfMacros(const std::string &raw)
 	    if ( word == "defined" )
 	    {
 		out += word;
+		preserve_defined_operand = true;
+		continue;
+	    }
+	    if ( preserve_defined_operand )
+	    {
+		out += word;
+		preserve_defined_operand = false;
 		continue;
 	    }
 	    // Look up in define_map

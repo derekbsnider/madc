@@ -215,6 +215,10 @@ static void emit_zero_fill_region(Program &pgm, x86::Gp &base_reg, int32_t base_
 
 static bool aggregate_has_runtime_size(DataDef *copy_type)
 {
+    DataDefCArray *add = dynamic_cast<DataDefCArray *>(copy_type);
+    if ( add )
+	return add->has_runtime_size()
+	    || aggregate_has_runtime_size(add->element_type);
     DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(copy_type);
     return sdd && sdd->has_runtime_size();
 }
@@ -246,6 +250,25 @@ static x86::Gp emit_runtime_struct_size(Program &pgm, DataDefSTRUCT *sdd, const 
 
 static x86::Gp emit_runtime_aggregate_size(Program &pgm, DataDef *copy_type, const char *name)
 {
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(copy_type) )
+    {
+	x86::Gp total = aggregate_has_runtime_size(add->element_type)
+	    ? emit_runtime_aggregate_size(pgm, add->element_type, "runtime_array_elem")
+	    : pgm.cc.newGpq("%s", name ? name : "runtime_array_size");
+	if ( !aggregate_has_runtime_size(add->element_type) )
+	    pgm.cc.mov(total, imm((int64_t)(add->element_type ? add->element_type->size : 0)));
+	if ( add->count_expr )
+	{
+	    regdefp_t count_rdp = {NULL, NULL, NULL};
+	    Operand &count_op = add->count_expr->compile(pgm, count_rdp);
+	    x86::Gp count_gp = pgm.cc.newGpq("runtime_array_count");
+	    load_idx_to_gpq(pgm, count_gp, count_op);
+	    pgm.cc.imul(total, count_gp);
+	}
+	else if ( add->count != 1 )
+	    pgm.cc.imul(total, total, imm((int64_t)add->count));
+	return total;
+    }
     if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(copy_type) )
 	return emit_runtime_struct_size(pgm, sdd, name);
     x86::Gp total = pgm.cc.newGpq("%s", name ? name : "runtime_aggregate_size");
@@ -8339,7 +8362,6 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     {
 	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(var->type);
 	DataDef *elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
-	size_t elem_size = elem_type->size ? elem_type->size : 8;
 
 	x86::Mem slot = pgm.cc.newStack(8, 8);
 	slot.setSize(8);
@@ -8365,8 +8387,17 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	else
 	    throw "TokenCpnd::voperand VLA: size expression yields unsupported operand";
 
-	if ( elem_size > 1 )
-	    pgm.cc.imul(sz_reg, sz_reg, imm((int64_t)elem_size));
+	if ( aggregate_has_runtime_size(elem_type) )
+	{
+	    x86::Gp elem_size_gp = emit_runtime_aggregate_size(pgm, elem_type, "__vla_elem");
+	    pgm.cc.imul(sz_reg, elem_size_gp);
+	}
+	else
+	{
+	    size_t elem_size = elem_type->size ? elem_type->size : 8;
+	    if ( elem_size > 1 )
+		pgm.cc.imul(sz_reg, sz_reg, imm((int64_t)elem_size));
+	}
 
 	// malloc(total_bytes)
 	x86::Gp buf = pgm.cc.newIntPtr("%s_vla", var->name.c_str());
@@ -11060,7 +11091,14 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     // skip the narrowing step.
     {
 	Operand *caller_dest = regdp.first;
-	regdefp_t inner_rdp = {NULL, cast_type, NULL};
+	DataDef *inner_hint = cast_type;
+	// Integer casts apply after the source expression's own arithmetic.
+	// Do not force the inner expression to the destination width here,
+	// or `(long)(u32_a + u32_b)` stops wrapping in 32 bits before widen.
+	if ( cast_type && cast_type->is_integer() && !cast_type->is_simd()
+	  && src_type && src_type->is_integer() && !src_type->is_simd() )
+	    inner_hint = NULL;
+	regdefp_t inner_rdp = {NULL, inner_hint, NULL};
 	Operand &result = expr->compile(pgm, inner_rdp);
 	DataDef *actual_inner = inner_rdp.second ? inner_rdp.second : cast_type;
 	regdp.second = cast_type;

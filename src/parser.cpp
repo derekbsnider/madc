@@ -2115,6 +2115,49 @@ static bool bracket_dim_uses_runtime_value(Program &pgm)
     return false;
 }
 
+static DataDef *parse_typedef_array_suffix(Program &pgm, DataDef *base_dd,
+					   const std::string &alias_name,
+					   TokenBase *err_tok)
+{
+    if ( !base_dd )
+	return base_dd;
+    if ( !(pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr) )
+	return base_dd;
+
+    size_t alias_count = 1;
+    TokenBase *alias_count_expr = NULL;
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+    {
+	pgm.nextToken(); // consume '['
+	TokenBase *cl = pgm.nextToken();
+	if ( cl && cl->id() == TokenID::tkClSqr )
+	{
+	    alias_count = 0;
+	    continue;
+	}
+	pgm.pushToken(cl);
+	if ( !alias_count_expr && bracket_dim_uses_runtime_value(pgm) )
+	{
+	    alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
+	    cl = pgm.nextToken();
+	    if ( !cl || cl->id() != TokenID::tkClSqr )
+		pgm.Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
+	    continue;
+	}
+	int64_t n = parse_constant_integer_expression(pgm);
+	if ( n < 0 )
+	    pgm.Throw(err_tok) << "Typedef array dimension must be non-negative" << flush;
+	cl = pgm.nextToken();
+	if ( !cl || cl->id() != TokenID::tkClSqr )
+	    pgm.Throw(cl ? cl : err_tok) << "Expected ] in typedef array declaration" << flush;
+	if ( n == 0 )
+	    alias_count = 0;
+	else
+	    alias_count *= (size_t)n;
+    }
+    return new DataDefCArray(*base_dd, alias_name, alias_count, alias_count_expr);
+}
+
 DataDefVOID ddVOID;
 DataDefVOIDref ddVOIDref;
 DataDefBOOL ddBOOL;
@@ -7705,6 +7748,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    if ( tn->type() != TokenType::ttIdentifier )
 		pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
 	    TokenIdent *alias = (TokenIdent *)tn;
+	    alias_dd = parse_typedef_array_suffix(pgm, alias_dd, alias->str, tn);
 	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
 	    {
 		// C allows identical typedef redeclarations — silently accept
@@ -8379,19 +8423,20 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     if ( do_typedef )
     {
 	bool done_aliases = false;
-	while ( !done_aliases )
-	{
-	    DataDef *alias_dd = dds;
-	    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	    while ( !done_aliases )
 	    {
+		DataDef *alias_dd = dds;
+		while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+		{
 		pgm.nextToken();
 		alias_dd = pgm.getPointerType(alias_dd);
 	    }
 	    tn = pgm.nextToken();
-	    if ( !tn || tn->type() != TokenType::ttIdentifier )
-		pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
-	    TokenIdent *alias = (TokenIdent *)tn;
-	    bmi = pgm.datatype_map.find(alias->str);
+		if ( !tn || tn->type() != TokenType::ttIdentifier )
+		    pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
+		TokenIdent *alias = (TokenIdent *)tn;
+		alias_dd = parse_typedef_array_suffix(pgm, alias_dd, alias->str, tn);
+		bmi = pgm.datatype_map.find(alias->str);
 	    if ( bmi != pgm.datatype_map.end() && pgm.compounds.empty() )
 		pgm.Throw(tn) << "Identifier '" << alias->str << "' already defined" << flush;
 	    tdt = new TokenDataType(alias->str.c_str(), *alias_dd);
@@ -11399,6 +11444,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     Variable *var;
     string id;
     std::vector<uint32_t> arr_dims;
+    std::vector<TokenBase *> arr_dim_exprs;
     TokenBase *vla_size_expr = NULL;
     bool have_decl_id = false;
     Variable *provisional_decl_var = NULL;
@@ -11636,6 +11682,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // [] — size to be inferred from initializer
 	    nextToken(); // consume ]
 	    arr_dims.push_back(0);
+	    arr_dim_exprs.push_back(NULL);
 	}
 	else
 	{
@@ -11676,6 +11723,23 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		if ( !cl || cl->id() != TokenID::tkClSqr )
 		    Throw(cl ? cl : tb) << "Expected ] after VLA size expression" << flush;
 		arr_dims.push_back(1); // sentinel; real count is runtime
+		arr_dim_exprs.push_back(vla_size_expr);
+	    }
+	    else if ( is_vla )
+	    {
+		TokenBase *dim_expr = parseExpression(nextToken(), true);
+		TokenBase *cl = nextToken();
+		if ( !cl || cl->id() != TokenID::tkClSqr )
+		    Throw(cl ? cl : tb) << "Expected ] after VLA size expression" << flush;
+		if ( !vla_size_expr )
+		{
+		    if ( !arr_dims.empty() )
+			vla_size_expr = new TokenInt((int64_t)arr_dims[0]);
+		    else
+			vla_size_expr = dim_expr;
+		}
+		arr_dims.push_back(1); // runtime count carried by arr_dim_exprs
+		arr_dim_exprs.push_back(dim_expr);
 	    }
 	    else
 	    {
@@ -11684,6 +11748,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    Throw(tb) << "Fixed-size array dimension must be non-negative" << flush;
 		// GCC: int arr[0] has sizeof 0; keep the zero dim.
 		arr_dims.push_back((uint32_t)n);
+		arr_dim_exprs.push_back(NULL);
 		TokenBase *cl = nextToken();
 		if ( !cl || cl->id() != TokenID::tkClSqr )
 		    Throw(cl ? cl : tb) << "Expected ] in array declaration" << flush;
@@ -12051,7 +12116,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		// set vfFIXEDARRAY — let pointer-subscript handling cover
 		// `arr[i]` access paths. voperand emits the malloc at scope
 		// entry; the parent TokenCpnd's cleanup emits the free.
-		var->type = getPointerType(decl_type);
+		DataDef *vla_elem_type = decl_type;
+		for ( size_t i = arr_dims.size(); i-- > 1; )
+		    vla_elem_type = new DataDefCArray(*vla_elem_type,
+						      vla_elem_type->name,
+						      arr_dims[i],
+						      i < arr_dim_exprs.size()
+						      ? arr_dim_exprs[i] : NULL);
+		var->type = getPointerType(vla_elem_type);
 		var->vla_size_expr = vla_size_expr;
 	    }
 	    else
