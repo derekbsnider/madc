@@ -8012,11 +8012,9 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
     // C fixed-size array: store element directly to [base + linear_idx*elem_size]
     if ( object.is_fixed_array() )
     {
-        size_t elem_size = object.type->size ? object.type->size : 8;
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
+        size_t consumed_dims = 1 + extra_indices.size();
+        DataDef *result_type = fixed_array_subscript_result_type(object, consumed_dims);
+        size_t elem_size = fixed_array_subscript_stride(object, consumed_dims);
         DBG(pgm.cc.comment("fixed-array subscript write"));
         // Fold extra indices into idx_reg using dims: linear = ((i0*d1)+i1)*d2 + i2 ...
         for ( size_t k = 0; k < extra_indices.size(); ++k )
@@ -8034,6 +8032,7 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
                 pgm.cc.add(idx_reg, ex_widened);
             }
         }
+        uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "fixed_sub_size");
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
 	if ( _datatype && _datatype->is_complex() )
 	{

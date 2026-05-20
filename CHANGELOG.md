@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `pr93434.c` now passes.**
+  Fixed-array struct assignment now scales write-side indices with the
+  same full element stride as the read path, so copies like
+  `t2[i] = t2[k]` land on the correct element for 16-byte struct array
+  members instead of writing at raw byte offsets. Added
+  `tests/testfixedarraystructcopy.mad` as the regression. Full
+  validation is green at `329/329` JIT and `329/329` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1408/1685` (83.6%).
+
 - **Embedded standard headers now auto-include on first use of common names.**
   Unresolved identifiers such as `size_t`, `intptr_t`, `DBL_MIN`, and
   `FLT_RADIX` now trigger tokenization of the owning embedded header in
