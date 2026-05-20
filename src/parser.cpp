@@ -1072,6 +1072,25 @@ static size_t parse_gnu_vector_size_attribute(Program &pgm)
     return vector_bytes;
 }
 
+static bool host_is_little_endian()
+{
+#if defined(__BYTE_ORDER__) && defined(__ORDER_LITTLE_ENDIAN__)
+    return __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__;
+#else
+    const uint16_t probe = 0x0100;
+    return *((const uint8_t *)&probe) == 0;
+#endif
+}
+
+static bool reverse_scalar_storage_requested(const std::string &order_name)
+{
+    if ( order_name == "big-endian" )
+	return host_is_little_endian();
+    if ( order_name == "little-endian" )
+	return !host_is_little_endian();
+    return false;
+}
+
 static bool is_contextual_identifier_token(TokenBase *tb);
 static std::string contextual_identifier_name(TokenBase *tb);
 
@@ -7631,6 +7650,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // check for __attribute__((packed)) before or after tag
     bool is_packed = false;
     size_t explicit_align = 0;
+    bool have_scalar_storage_order = false;
+    bool reverse_scalar_storage = false;
     auto consume_attribute = [&]()
     {
 	while ( is_attribute_identifier_token(tn) )
@@ -7661,6 +7682,23 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    int64_t aval = parse_constant_integer_expression(pgm);
 				    if ( aval > 0 )
 					explicit_align = (size_t)aval;
+				}
+				if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
+				    pgm.nextToken();
+			    }
+			}
+			else if ( attr->type() == TokenType::ttIdentifier
+			       && ((TokenIdent *)attr)->str == "scalar_storage_order" )
+			{
+			    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+			    {
+				pgm.nextToken();
+				TokenBase *order_tb = pgm.nextToken();
+				if ( order_tb && order_tb->type() == TokenType::ttString )
+				{
+				    have_scalar_storage_order = true;
+				    reverse_scalar_storage =
+					reverse_scalar_storage_requested(((TokenStr *)order_tb)->str);
 				}
 				if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk )
 				    pgm.nextToken();
@@ -7798,6 +7836,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	dds->pack = 1;
     else if ( pgm.pack_stack_top() > 0 )
 	dds->pack = pgm.pack_stack_top();
+    if ( have_scalar_storage_order )
+	dds->setReverseScalarStorage(reverse_scalar_storage);
     if ( explicit_align > dds->max_align )
 	dds->max_align = explicit_align;
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
@@ -8334,6 +8374,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     tn = pgm.peekToken();
     consume_attribute();
+    if ( have_scalar_storage_order )
+	dds->setReverseScalarStorage(reverse_scalar_storage);
     if ( is_packed )
 	dds->pack = 1;
 

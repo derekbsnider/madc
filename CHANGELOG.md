@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `20230630-2.c` and `20230630-4.c` now pass.**
+  `__attribute__((scalar_storage_order(...)))` now survives lexing as a
+  layout-affecting attribute, struct parsing records reversed scalar
+  storage order for bit-field aggregates, and bit-field load/store
+  lowering now byte-swaps multi-byte storage units when the requested
+  scalar storage order differs from the host endianness. Full
+  validation is green at `337/337` JIT and `337/337` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1411/1685` (83.7%).
+
 - **GCC torture `eeprof-1.c` now passes.**
   `scripts/run_gcc_testsuite.py` now respects the testsuite's
   `dg-options "-finstrument-functions"` lane by forwarding

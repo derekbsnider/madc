@@ -5568,6 +5568,23 @@ static uint64_t bitfield_mask(size_t width)
     return (UINT64_C(1) << width) - 1;
 }
 
+static void emit_bitfield_byteswap(Program &pgm, x86::Gp &gp, size_t storage_size)
+{
+    if ( storage_size <= 1 )
+	return;
+    if ( storage_size == 2 )
+    {
+	pgm.cc.rol(gp.r16(), imm(8));
+	return;
+    }
+    if ( storage_size == 4 )
+    {
+	pgm.cc.bswap(gp.r32());
+	return;
+    }
+    pgm.cc.bswap(gp.r64());
+}
+
 static void emit_and_u64(Program &pgm, x86::Gp &gp, uint64_t mask, const char *hint)
 {
     if ( mask == UINT64_MAX )
@@ -5600,21 +5617,30 @@ static x86::Gp emit_bitfield_load_storage(Program &pgm, x86::Mem storage,
 	pgm.cc.movzx(out, storage);
     else
 	pgm.cc.movzx(out, storage);
+    if ( bf.reverse_storage )
+	emit_bitfield_byteswap(pgm, out, bf.storage_size);
     return out;
 }
 
 static void emit_bitfield_store_storage(Program &pgm, x86::Mem storage,
     const DataDefSTRUCT::BitFieldInfo &bf, x86::Gp value)
 {
+    x86::Gp stored = value;
+    if ( bf.reverse_storage )
+    {
+	stored = pgm.cc.newGpq("bf_store_swapped");
+	pgm.cc.mov(stored, value);
+	emit_bitfield_byteswap(pgm, stored, bf.storage_size);
+    }
     storage.setSize((uint32_t)bf.storage_size);
     if ( bf.storage_size == 8 )
-	pgm.cc.mov(storage, value.r64());
+	pgm.cc.mov(storage, stored.r64());
     else if ( bf.storage_size == 4 )
-	pgm.cc.mov(storage, value.r32());
+	pgm.cc.mov(storage, stored.r32());
     else if ( bf.storage_size == 2 )
-	pgm.cc.mov(storage, value.r16());
+	pgm.cc.mov(storage, stored.r16());
     else
-	pgm.cc.mov(storage, value.r8());
+	pgm.cc.mov(storage, stored.r8());
 }
 
 static void emit_bitfield_sign_extend(Program &pgm, x86::Gp &value,

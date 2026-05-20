@@ -505,9 +505,11 @@ public:
 	size_t bit_offset;
 	size_t bit_width;
 	bool is_unsigned;
+	bool reverse_storage;
 	BitFieldInfo()
 	    : is_bitfield(false), storage_offset(0), storage_size(0),
-	      bit_offset(0), bit_width(0), is_unsigned(false) {}
+	      bit_offset(0), bit_width(0), is_unsigned(false),
+	      reverse_storage(false) {}
     };
 
     std::vector<memberpair_t> members;
@@ -520,6 +522,7 @@ public:
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
     bool union_layout;	// true: all members start at offset 0; size is max member size
+    bool reverse_scalar_storage;
     bool bitfield_active;
     size_t bitfield_unit_offset;
     size_t bitfield_unit_size;
@@ -538,12 +541,13 @@ public:
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
-	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), union_layout(false), bitfield_active(false),
-	  bitfield_unit_offset(0), bitfield_unit_size(0), bitfield_next_bit(0) {}
+	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), union_layout(false),
+	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
+	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1),
 	  union_layout(false),
-	  bitfield_active(false), bitfield_unit_offset(0),
+	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);
@@ -559,6 +563,31 @@ public:
     virtual BaseType basetype() const { return BaseType::btStruct; }
     virtual size_t alignment() const { return max_align ? max_align : 1; }
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
+    void setReverseScalarStorage(bool reverse)
+    {
+	reverse_scalar_storage = reverse;
+	size_t unit_offset = (size_t)-1;
+	size_t unit_size = 0;
+	size_t unit_next_bit = 0;
+	for ( size_t i = 0; i < member_bitfields.size(); ++i )
+	{
+	    BitFieldInfo &info = member_bitfields[i];
+	    if ( !info.is_bitfield )
+		continue;
+	    if ( info.storage_offset != unit_offset || info.storage_size != unit_size )
+	    {
+		unit_offset = info.storage_offset;
+		unit_size = info.storage_size;
+		unit_next_bit = 0;
+	    }
+	    size_t storage_bits = info.storage_size * 8;
+	    info.bit_offset = reverse_scalar_storage
+		? (storage_bits - unit_next_bit - info.bit_width)
+		: unit_next_bit;
+	    info.reverse_storage = reverse_scalar_storage;
+	    unit_next_bit += info.bit_width;
+	}
+    }
     void endBitFieldRun()
     {
 	bitfield_active = false;
@@ -630,7 +659,9 @@ public:
 	info.is_bitfield = true;
 	info.storage_offset = bitfield_unit_offset;
 	info.storage_size = storage_size;
-	info.bit_offset = bitfield_next_bit;
+	info.bit_offset = reverse_scalar_storage
+	    ? (storage_bits - bitfield_next_bit - width)
+	    : bitfield_next_bit;
 	info.bit_width = width;
 	bool alias_like_int =
 	    dd.rawtype() == DataType::dtINT32
@@ -638,6 +669,7 @@ public:
 	info.is_unsigned = dd.is_unsigned()
 	    || dd.rawtype() == DataType::dtBOOL
 	    || alias_like_int;
+	info.reverse_storage = reverse_scalar_storage;
 	bitfield_next_bit += width;
 	if ( bitfield_next_bit >= storage_bits )
 	    endBitFieldRun();

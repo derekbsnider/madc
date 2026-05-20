@@ -2,7 +2,7 @@
 
 ## High Priority
 
-- **GCC torture test suite: keep pushing toward GCC parity.** Currently at least 1409/1685 (83.6%) from focused reruns.
+- **GCC torture test suite: keep pushing toward GCC parity.** Currently at least 1411/1685 (83.7%) from focused reruns.
   Recent fixes: function-pointer array declarators, repeated aggregate
   `__attribute`, GNU statement-expression member access, nested struct
   flat initializers, local var zero-init, constant-fold register width,
@@ -16,18 +16,15 @@
   `20061220-1.c`, `20080424-1.c`, `20080519-1.c`, `20050121-1.c`,
   `20070614-1.c`, `complex-1.c` through `complex-7.c`, `20030910-1.c`,
   `pr56837.c`, `20020227-1.c`, `pr49644.c`, `pr104604.c`, and
-  `960512-1.c`, `pr93434.c`, and `eeprof-1.c`.
+  `960512-1.c`, `pr93434.c`, `eeprof-1.c`, `20230630-2.c`, and
+  `20230630-4.c`.
   Remaining targets: `__builtin_return_address`, fuller complex support,
   struct pass-by-value for function args (~8 compile failures),
   32-bit arithmetic wrapping in widening cast contexts
   (`(long)(uint_a + uint_b)`), compound assignment evaluation order,
   `-0.0` preservation, triple dereference (`***p`), inline asm.
-  `_Complex` remains an active front: the plain keyword / imaginary-
-  suffix compatibility lane, GNU `__real__` / `__imag__` component
-  access, complex equality, `&(__real expr)`, pure-imaginary literals,
-  scalar-to-complex casts, conjugation, and component-wise `+`, `-`,
-  `+=`, `-=` are landed, but fuller `_Complex` semantics are still
-  open.
+  The focused `_Complex` execute lane is currently green; the active
+  fronts have shifted back to the remaining non-complex GCC gaps.
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and

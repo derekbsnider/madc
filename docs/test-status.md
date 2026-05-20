@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 20, 2026 (v0.17.0, GCC parity session 20 — at least 1409/1685 from focused reruns).
+Test results as of May 20, 2026 (v0.17.0, GCC parity session 20 — at least 1411/1685 from focused reruns).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 330 JIT pass / 0 fail
+## Current Batch Status — 337 JIT pass / 0 fail
 
 Latest results (2026-05-20):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 330 integration tests
+- Passing: 337 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -63,10 +63,19 @@ Latest results (2026-05-20):
   count to 329. An additional tracked regression for
   `-finstrument-functions` plus `no_instrument_function` handling via
   `testfinstrumentfunctions.mad` now brings the tracked integration
-  count to 330.
+  count to 330. Additional tracked regressions for typedef'd struct
+  array aliases via `testtypedefstructarrayalias.mad`, nested
+  multidimensional VLA locals via `testmultidimvla.mad`, preserving
+  `defined(...)` operands in `#if` via `testifdefdefinedoperand.mad`,
+  integer wrap-before-widen casts via `testuint32wrapbeforecast.mad`,
+  nested VLA parameter declarators via `testnestedvlaparam.mad`,
+  fixed-array struct assignment via `testfixedarraystructcopy.mad`, and
+  `-finstrument-functions` / `no_instrument_function` coverage via
+  `testfinstrumentfunctions.mad` now bring the tracked integration
+  count to 337.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 330 (of 330 JIT-passing tests)
+- Passing: 337 (of 337 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so
