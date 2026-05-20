@@ -46,6 +46,13 @@ static DataDef *get_complex_compat_type(DataDef *base_type)
     return complex_type;
 }
 
+static bool builtin_alias_needs_retokenize(const std::string &word,
+					   const std::string &val)
+{
+    (void)val;
+    return word == "__builtin_va_list";
+}
+
 static bool is_binary_prefix(int ch, Source &source)
 {
     return ch == '0' && source.good() && (source.peek() == 'b' || source.peek() == 'B');
@@ -2498,7 +2505,8 @@ TokenBase *Program::_getToken()
 			// of re-entering the macro rescanner. Otherwise user macros
 			// like `#define strcmp __builtin_strcmp` recurse forever.
 			if ( word.compare(0, 10, "__builtin_") == 0
-			  && is_identifier_spelling(val) )
+			  && is_identifier_spelling(val)
+			  && !builtin_alias_needs_retokenize(word, val) )
 			    return new TokenIdent(val);
 			source.pushback_macro(val, word);
 			return getToken(); // re-tokenize the substituted text

@@ -1895,6 +1895,37 @@ static Operand &emit_complex_value_from_expr(Program &pgm, TokenBase *expr,
     return storage;
 }
 
+static Operand &emit_union_from_scalar(Program &pgm, TokenBase *expr,
+				       DataDefSTRUCT *union_type,
+				       regdefp_t &regdp, Operand &storage)
+{
+    if ( !expr || !union_type || !union_type->union_layout || union_type->members.empty() )
+	throw "emit_union_from_scalar() invalid union cast";
+
+    DataDef *member_type = union_type->members[0].second;
+    if ( !member_type || (!member_type->is_numeric() && !member_type->is_pointer()) )
+	throw "emit_union_from_scalar() unsupported first union member type";
+
+    Operand value_storage;
+    Operand &value = compile_token_normalized(pgm, expr, member_type, nullptr, value_storage);
+
+    size_t align = union_type->alignment();
+    if ( align == 0 )
+	align = 8;
+    x86::Mem slot = pgm.cc.newStack((uint32_t)union_type->size, (uint32_t)align);
+    x86::Mem member_mem = slot;
+    member_mem.setSize((uint32_t)member_type->size);
+
+    IRBuilder ir(pgm.cc);
+    IRValue coerced = ir.load(ir.coerce(ir_from_operand(value, member_type), member_type));
+    ir.store(IRValue::mem(member_mem, member_type), coerced);
+
+    storage = as_gp_ptr(pgm, slot, "__union_cast");
+    regdp.first = &storage;
+    regdp.second = union_type;
+    return storage;
+}
+
 static DataDef *builtin_complex_compat_type(DataDef *base_type)
 {
     static std::map<DataDef *, DataDefCOMPLEX *> cache;
@@ -10796,6 +10827,10 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     bool scalar_to_complex = expr && expr->datadef()
 	&& !expr->datadef()->is_complex()
 	&& cast_type && cast_type->is_complex();
+    bool scalar_to_union = expr && expr->datadef()
+	&& cast_type && cast_type->basetype() == BaseType::btStruct
+	&& !expr->datadef()->is_complex()
+	&& (expr->datadef()->is_numeric() || expr->datadef()->is_pointer());
     bool complex_to_complex = expr && expr->datadef()
 	&& expr->datadef()->is_complex()
 	&& cast_type && cast_type->is_complex();
@@ -10805,6 +10840,12 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	&& cast_type && (cast_type->is_numeric() || cast_type->is_pointer());
     if ( complex_to_complex )
 	return emit_complex_value_from_expr(pgm, expr, cast_type, regdp, _operand);
+    if ( scalar_to_union )
+    {
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(cast_type);
+	if ( sdd && sdd->union_layout )
+	    return emit_union_from_scalar(pgm, expr, sdd, regdp, _operand);
+    }
     if ( scalar_to_complex )
     {
 	regdefp_t inner_rdp = {NULL, expr->datadef(), NULL};
