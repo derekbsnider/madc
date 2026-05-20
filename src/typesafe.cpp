@@ -1398,6 +1398,31 @@ void Program::safecmp(Operand &op1, Operand &op2, DataDef *dd)
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	    safecmp(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), dd);
 	else
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( dd && dd->size == sizeof(float) )
+	    {
+		x86::Xmm tmp = cc.newXmmSs("__cmp_rhs_as_flt");
+		cc.cvtsi2ss(tmp, op2.as<x86::Gp>());
+		cc.ucomiss(op1.as<x86::Xmm>(), tmp);
+	    }
+	    else
+	    {
+		x86::Xmm tmp = cc.newXmmSd("__cmp_rhs_as_dbl");
+		cc.cvtsi2sd(tmp, op2.as<x86::Gp>());
+		cc.ucomisd(op1.as<x86::Xmm>(), tmp);
+	    }
+	}
+	else
+	if ( op2.isMem() )
+	{
+	    x86::Xmm tmp = (dd && dd->size == sizeof(float))
+		? cc.newXmmSs("__cmp_rhs_flt")
+		: cc.newXmmSd("__cmp_rhs_dbl");
+	    safemov(tmp, op2.as<x86::Mem>());
+	    safecmp(op1.as<x86::Xmm>(), tmp, dd);
+	}
+	else
 	    throw "safecmp() Xmm compare expects an Xmm rhs";
     }
     else
