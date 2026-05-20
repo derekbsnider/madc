@@ -2,7 +2,7 @@
 
 ## High Priority
 
-- **GCC torture test suite: push past 80%.** Currently 1335/1685 (79.2%).
+- **GCC torture test suite: push past 80%.** Currently 1343/1685 (79.7%).
   Recent fixes: function-pointer array declarators, repeated aggregate
   `__attribute`, GNU statement-expression member access, nested struct
   flat initializers, local var zero-init, constant-fold register width,
@@ -11,12 +11,17 @@
   pointer relocation path, plain `_Complex` / `iF` compatibility,
   `20070919-1.c`, `20010122-1.c`, `930513-1.c`, `20041124-1.c`,
   `20041214-1.c`, `20040411-1.c`, `20040423-1.c`, `20041218-2.c`,
-  `20050502-1.c`, `20050604-1.c`, and `20050607-1.c`.
+  `20050502-1.c`, `20050604-1.c`, `20050607-1.c`, `20040520-1.c`, and
+  `930406-1.c`, `20030222-1.c`, `20030714-1.c`, `20030928-1.c`,
+  `20061220-1.c`, `20080424-1.c`, and `20080519-1.c`.
   Remaining targets: `__builtin_return_address`, `__real__` / `__imag__` / fuller complex support,
   struct pass-by-value for function args (~8 compile failures),
   32-bit arithmetic wrapping in widening cast contexts
   (`(long)(uint_a + uint_b)`), compound assignment evaluation order,
   `-0.0` preservation, triple dereference (`***p`), inline asm.
+  `_Complex` remains an active front: the plain keyword / imaginary-
+  suffix compatibility lane is landed, but GNU component access and
+  fuller `_Complex` semantics are still open.
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and

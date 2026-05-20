@@ -1,0 +1,22 @@
+enum EPosition
+{
+    STATIC,
+    RELATIVE,
+    ABSOLUTE,
+    FIXED
+};
+typedef enum EPosition EPosition;
+
+struct Flags
+{
+    EPosition position : 2;
+};
+
+int main(void)
+{
+    struct Flags flags;
+    flags.position = FIXED;
+    puti((int)flags.position);
+    puts("\n");
+    return 0;
+}

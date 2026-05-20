@@ -891,6 +891,14 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     {
 	x86::Gp cstr = pgm.cc.newIntPtr("norm_cstr");
 	emit_constant_cstring_ptr(pgm, token, cstr);
+	if ( preferred_dest && preferred_dest->isReg()
+	  && preferred_dest->as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( !cstr.equals(*preferred_dest) )
+		pgm.safemov(*preferred_dest, cstr, target_type, target_type);
+	    storage = *preferred_dest;
+	    return storage;
+	}
 	storage = cstr;
 	return storage;
     }
@@ -1241,6 +1249,36 @@ static bool is_fixed_array_struct_member(TokenBase *tb)
     return tm && tm->is_fixed_array_member();
 }
 
+static DataDef *build_fixed_array_result_type(DataDef *base_type,
+					      const std::vector<uint32_t> &dims,
+					      size_t consumed_dims)
+{
+    if ( !base_type )
+	return &ddINT64;
+    if ( consumed_dims >= dims.size() )
+	return base_type;
+
+    DataDef *result = base_type;
+    for ( size_t i = dims.size(); i-- > consumed_dims; )
+	result = new DataDefCArray(*result, result->name, dims[i], NULL);
+    return result;
+}
+
+static DataDef *fixed_array_subscript_result_type(const Variable &object,
+						  size_t consumed_dims)
+{
+    if ( !object.is_fixed_array() )
+	return object.type ? object.type : &ddINT64;
+    return build_fixed_array_result_type(object.type, object.dims, consumed_dims);
+}
+
+static size_t fixed_array_subscript_stride(const Variable &object,
+					   size_t consumed_dims)
+{
+    DataDef *result_type = fixed_array_subscript_result_type(object, consumed_dims);
+    return (result_type && result_type->size) ? result_type->size : 8;
+}
+
 static DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb)
 {
     if ( !tb )
@@ -1476,10 +1514,30 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     }
 
     if ( arg.isMem() && actual_type
-      && (actual_type->basetype() == BaseType::btStruct
-       || actual_type->basetype() == BaseType::btClass) )
+      && actual_type->basetype() == BaseType::btStruct )
     {
-	storage = as_gp_ptr(pgm, arg, "__call_arg_cls");
+	if ( !aggregate_has_runtime_size(actual_type) && actual_type->size > 0 )
+	{
+	    x86::Mem byval_slot = pgm.cc.newStack((uint32_t)actual_type->size, 8);
+	    emit_raw_aggregate_copy(pgm, byval_slot, arg, actual_type, "__call_arg_copy");
+	    storage = as_gp_ptr(pgm, byval_slot, "__call_arg_cls");
+	}
+	else
+	    storage = as_gp_ptr(pgm, arg, "__call_arg_cls");
+	out_type = actual_type;
+	return storage;
+    }
+    if ( arg.isReg() && actual_type
+      && actual_type->basetype() == BaseType::btStruct )
+    {
+	if ( !aggregate_has_runtime_size(actual_type) && actual_type->size > 0 )
+	{
+	    x86::Mem byval_slot = pgm.cc.newStack((uint32_t)actual_type->size, 8);
+	    emit_raw_aggregate_copy(pgm, byval_slot, arg, actual_type, "__call_arg_copy");
+	    storage = as_gp_ptr(pgm, byval_slot, "__call_arg_cls");
+	}
+	else
+	    storage = arg;
 	out_type = actual_type;
 	return storage;
     }
@@ -6558,7 +6616,9 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     // C fixed-size array: load element directly from [base + linear_idx*elem_size]
     if ( object.is_fixed_array() )
     {
-        size_t elem_size = object.type->size ? object.type->size : 8;
+        size_t consumed_dims = 1 + extra_indices.size();
+        DataDef *result_type = fixed_array_subscript_result_type(object, consumed_dims);
+        size_t elem_size = fixed_array_subscript_stride(object, consumed_dims);
         // Fold any extra indices (multi-dim): linear = ((i0*d1) + i1)*d2 + i2 ...
         for ( size_t k = 0; k < extra_indices.size(); ++k )
         {
@@ -6592,15 +6652,20 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             return _operand;
         }
 
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
+        uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "fixed_sub_size");
         DBG(pgm.cc.comment("fixed-array subscript read"));
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
         if ( !regdp.second )
-            regdp.second = _datatype;
-        return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
+            regdp.second = result_type;
+        if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(result_type) )
+        {
+            DataDef *elem_base = add->element_type ? add->element_type : &ddINT64;
+            DataDef *decay_type = pgm.getPointerType(elem_base);
+            regdp.second = decay_type;
+            x86::Gp addr = as_gp_ptr(pgm, elem_mem, "sub_arr");
+            return emit_ir_value(pgm, IRValue::reg(addr, decay_type), regdp, _operand, decay_type);
+        }
+        return emit_ir_value(pgm, IRValue::mem(elem_mem, result_type), regdp, _operand, result_type);
     }
 
     // Raw pointer subscript: ptr[i] == *(ptr + i).
@@ -6637,6 +6702,14 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
         }
         if ( !regdp.second )
             regdp.second = _datatype;
+        if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(_datatype) )
+        {
+            DataDef *elem_base = add->element_type ? add->element_type : &ddINT64;
+            DataDef *decay_type = pgm.getPointerType(elem_base);
+            regdp.second = decay_type;
+            x86::Gp addr = as_gp_ptr(pgm, elem_mem, "sub_arr");
+            return emit_ir_value(pgm, IRValue::reg(addr, decay_type), regdp, _operand, decay_type);
+        }
         return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
     }
 
@@ -6798,6 +6871,19 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     x86::Mem elem_mem = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     if ( !regdp.second )
 	regdp.second = _datatype;
+    // C array-to-pointer decay in value context: `arr2[i]` where the
+    // element itself is an array (e.g. `unsigned long x[2][2];
+    // x[i]`) yields a pointer to the first element, not the first
+    // scalar value loaded from that subarray. Keep operand() as the raw
+    // lvalue Mem for address-taking/chaining, but compile() must decay.
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(_datatype) )
+    {
+	DataDef *elem_base = add->element_type ? add->element_type : &ddINT64;
+	DataDef *decay_type = pgm.getPointerType(elem_base);
+	regdp.second = decay_type;
+	x86::Gp addr = as_gp_ptr(pgm, elem_mem, "subexpr_arr");
+	return emit_ir_value(pgm, IRValue::reg(addr, decay_type), regdp, _operand, decay_type);
+    }
     // Struct/class element: return the Mem directly. emit_ir_value assumes
     // a numeric-sized value it can coerce/load; a struct element isn't a
     // value that fits in a register. Callers (e.g. TokenMember::operand
@@ -6811,6 +6897,13 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
 	return _operand;
     }
     return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
+}
+
+DataDef *TokenSubscript::datadef() const
+{
+    if ( object.is_fixed_array() )
+	return fixed_array_subscript_result_type(object, 1 + extra_indices.size());
+    return _datatype;
 }
 
 // Lvalue path — return the Mem pointing at the element address. Mirrors
@@ -7913,9 +8006,9 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenAdd::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "+ missing lval operand"; }
     if ( !right ) { throw "+ missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
     DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
+    if ( !lptr_type && !rptr_type && can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     if ( (lptr_type || rptr_type) && regdp.second && !regdp.second->is_pointer() )
 	regdp.second = lptr_type ? lptr_type : rptr_type;
     settype(pgm, regdp);				 // set regdp.second type
@@ -7970,8 +8063,8 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenSub::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "- missing lval operand"; }
     if ( !right ) { throw "- missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
+    if ( !lptr_type && can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     if ( lptr_type && regdp.second && !regdp.second->is_pointer() )
 	regdp.second = lptr_type;
     settype(pgm, regdp);				 // set regdp.second type

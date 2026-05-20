@@ -1,0 +1,29 @@
+int printf(const char*, ...);
+
+typedef struct S {
+    unsigned int high;
+    unsigned int low;
+    int u;
+    int o;
+} S;
+
+S f(S s, unsigned int n)
+{
+    s.low >>= n;
+    return s;
+}
+
+S g(S s)
+{
+    S t = f(s, 16);
+    printf("%u %u\n", s.low, t.low);
+    return s;
+}
+
+int main()
+{
+    S s = {0, 196608, 0, 0};
+    S r = g(s);
+    printf("%u\n", r.low);
+    return 0;
+}

@@ -602,6 +602,13 @@ public:
     }
     BitFieldInfo allocateBitField(DataDef &dd, size_t width)
     {
+	auto is_builtin_signed_integer_name = [](const std::string &name) -> bool {
+	    return name == "char"
+		|| name == "short"
+		|| name == "int"
+		|| name == "long"
+		|| name == "long long";
+	};
 	size_t storage_size = bitfield_storage_size(dd);
 	size_t storage_bits = storage_size * 8;
 	if ( !bitfield_active
@@ -624,7 +631,12 @@ public:
 	info.storage_size = storage_size;
 	info.bit_offset = bitfield_next_bit;
 	info.bit_width = width;
-	info.is_unsigned = dd.is_unsigned();
+	bool alias_like_int =
+	    dd.rawtype() == DataType::dtINT32
+	    && !is_builtin_signed_integer_name(dd.name);
+	info.is_unsigned = dd.is_unsigned()
+	    || dd.rawtype() == DataType::dtBOOL
+	    || alias_like_int;
 	bitfield_next_bit += width;
 	if ( bitfield_next_bit >= storage_bits )
 	    endBitFieldRun();

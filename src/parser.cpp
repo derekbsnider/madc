@@ -1015,6 +1015,32 @@ static bool is_nullptr_identifier(const std::string &name)
     return name == "nullptr";
 }
 
+static bool is_realpart_identifier(const std::string &name)
+{
+    return name == "__real" || name == "__real__";
+}
+
+static std::string make_nested_function_name(TokenCpnd *scope,
+					     const std::string &local_name)
+{
+    static size_t nested_counter = 0;
+    std::string owner = "nested";
+    if ( scope && scope->method )
+	owner = scope->method->returns.name;
+    return owner + "__" + local_name + "__" + std::to_string(++nested_counter);
+}
+
+static DataDef *unwrap_subscript_element_type(DataDef *base_type)
+{
+    if ( !base_type )
+	return &ddINT64;
+    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(base_type) )
+	return pdd->base_type ? pdd->base_type : &ddINT64;
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(base_type) )
+	return add->element_type ? add->element_type : &ddINT64;
+    return base_type;
+}
+
 static DataDef *resolve_named_datadef(Program &pgm, const std::string &name)
 {
     datadef_map_iter dmi = pgm.struct_map.find(name);
@@ -4905,11 +4931,8 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		fixed_array = tv->var.is_fixed_array();
 	    if ( fixed_array )
 		elem_type = base_type ? base_type : &ddINT64;
-	    else if ( base_type && base_type->is_pointer() )
-	    {
-		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(base_type);
-		elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
-	    }
+	    else if ( base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
+		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
 	    continue;
 	}
@@ -5320,11 +5343,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			// derefs the pointer to its base type.
 			TokenMember *tm = dynamic_cast<TokenMember *>(base_expr);
 			bool member_is_fixed_array = tm && tm->is_fixed_array_member();
-			if ( !member_is_fixed_array && elem_type && elem_type->is_pointer() )
-			{
-			    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
-			    elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
-			}
+			if ( !member_is_fixed_array && elem_type
+			  && (elem_type->is_pointer() || dynamic_cast<DataDefCArray *>(elem_type) != NULL) )
+			    elem_type = unwrap_subscript_element_type(elem_type);
 			// Fixed-array decay: when the base was widened via the
 			// fixed-array fallback, the chain's datadef() reports the
 			// element type (TokenVar of fixed-array does so), and
@@ -6489,6 +6510,26 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		{
 		    var = addLiteral(cur_func_name);
 		    exStack.push(new TokenVar(*var));
+		    break;
+		}
+		if ( is_realpart_identifier(ident_tb->str) )
+		{
+		    TokenBase *next_tb = nextToken();
+		    if ( !next_tb )
+			Throw(tb) << "Expecting expression after " << ident_tb->str << flush;
+		    TokenBase *real_expr = NULL;
+		    if ( next_tb->id() == TokenID::tkOpBrk )
+		    {
+			TokenBase *inner_tb = nextToken();
+			real_expr = parseExpression(inner_tb, true, false, true, 1);
+		    }
+		    else if ( is_contextual_identifier_token(next_tb) || next_tb->type() == TokenType::ttIdentifier )
+		    {
+			real_expr = parsePostfixChain(next_tb);
+		    }
+		    if ( !real_expr )
+			Throw(next_tb) << "Unsupported operand for " << ident_tb->str << flush;
+		    exStack.push(real_expr);
 		    break;
 		}
 		// sizeof / alignof — resolve to integer constant at parse time.
@@ -8986,7 +9027,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	else
 	    pgm.Throw(tn) << "Expecting alias name in typedef enum" << flush;
 
-	TokenDataType *tdt = new TokenDataType(alias.c_str(), ddINT);
+	DataDef *enum_alias_dd = new DataDef(ddINT);
+	enum_alias_dd->name = alias;
+	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
 	pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() enum alias " << alias << " = int" << std::endl);
 
@@ -10272,6 +10315,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
     bool is_nested_function = !compounds.empty() && compounds.top() && compounds.top()->method;
+    std::string nested_local_name = id;
+    TokenCpnd *nested_owner_scope = is_nested_function ? compounds.top() : NULL;
+    if ( is_nested_function )
+	id = make_nested_function_name(nested_owner_scope, id);
 
     DBG(cout << "parseFunction(" << dd.name << ' ' << id << ") START" << endl);
     cur_func_name = id; // for __FUNCTION__/__func__ expansion in the lexer
@@ -10356,6 +10403,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	{
 	    nt = nextToken();
 	}
+	std::vector<uint32_t> param_array_dims;
 
 	// C `void` as sole parameter means no parameters (e.g. `int f(void)`).
 	if ( nt->type() == TokenType::ttDataType
@@ -10542,25 +10590,37 @@ grabnt:
 
 	nt = nextToken();
 
-	// Array parameters decay to pointers in C, so accept declarators like
-	// `char * const argv[]` by consuming each [] suffix and promoting the
-	// parameter type by one pointer level.
+	// Array parameters decay only once in C: `T a[]` -> `T *`, and
+	// `T a[][3][4]` -> `T (*)[3][4]`. Preserve the trailing extents as a
+	// nested array type under a single pointer instead of promoting one
+	// pointer level per `[]`.
 	while ( nt && nt->id() == TokenID::tkOpSqr )
 	{
-	    int sq_depth = 1;
-	    while ( sq_depth > 0 )
+	    TokenBase *peek_dim = peekToken();
+	    if ( peek_dim && peek_dim->id() == TokenID::tkClSqr )
 	    {
-		nt = nextToken();
-		if ( !nt )
-		    Throw(peekToken()) << "Expected ']' in parameter array declarator" << flush;
-		if ( nt->id() == TokenID::tkOpSqr )
-		    ++sq_depth;
-		else if ( nt->id() == TokenID::tkClSqr )
-		    --sq_depth;
+		nextToken(); // consume ']'
+		param_array_dims.push_back(0);
 	    }
-	    param_dd = getPointerType(param_dd);
-	    rtype = RefType::rtPointer;
+	    else
+	    {
+		int64_t n = parse_constant_integer_expression(*this);
+		if ( n < 0 )
+		    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
+		param_array_dims.push_back((uint32_t)n);
+		TokenBase *cl = nextToken();
+		if ( !cl || cl->id() != TokenID::tkClSqr )
+		    Throw(cl ? cl : nt) << "Expected ']' in parameter array declarator" << flush;
+	    }
 	    nt = nextToken();
+	}
+	if ( !param_array_dims.empty() )
+	{
+	    DataDef *array_elem = param_dd;
+	    for ( size_t i = param_array_dims.size(); i-- > 1; )
+		array_elem = new DataDefCArray(*array_elem, array_elem->name, param_array_dims[i], NULL);
+	    param_dd = getPointerType(array_elem);
+	    rtype = RefType::rtPointer;
 	}
 
 paramdecl:
@@ -10719,6 +10779,12 @@ paramdecl:
 
     method = new Method(*var);
     var->data = (void *)method;
+    if ( is_nested_function && nested_owner_scope )
+    {
+	Variable *local_alias =
+	    addVariable(nested_owner_scope, *func, nested_local_name, 1, NULL, false);
+	local_alias->data = (void *)method;
+    }
 
     // need to see a brace to define a function
     if ( nt->id() != TokenID::tkOpBrc )
@@ -12081,17 +12147,78 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			if ( q == "volatile" || q == "__volatile__" )
 			    nextToken();
 		    }
-		    // consume balanced parentheses
 		    TokenBase *ob = nextToken();
 		    if ( ob && ob->id() == TokenID::tkOpBrk )
 		    {
-			int depth = 1;
-			while ( depth > 0 )
+			TokenBase *tmpl = nextToken();
+			bool parsed_simple_copy = false;
+			if ( tmpl && tmpl->type() == TokenType::ttString
+			  && ((TokenStr *)tmpl)->str.empty()
+			  && peekToken() && peekToken()->id() == TokenID::tkColon )
 			{
-			    TokenBase *t = nextToken();
-			    if ( !t ) break;
-			    if ( t->id() == TokenID::tkOpBrk ) ++depth;
-			    else if ( t->id() == TokenID::tkClBrk ) --depth;
+			    nextToken(); // ':'
+			    TokenBase *out_c = nextToken();
+			    TokenBase *out_ob = nextToken();
+			    if ( out_c && out_c->type() == TokenType::ttString
+			      && out_ob && out_ob->id() == TokenID::tkOpBrk )
+			    {
+				TokenBase *out_tb = nextToken();
+				TokenBase *out_expr = out_tb ? parseExpression(out_tb, true) : NULL;
+				TokenBase *out_cb = nextToken();
+				TokenBase *in_colon = nextToken();
+				TokenBase *in_c = nextToken();
+				TokenBase *in_ob = nextToken();
+				if ( out_expr
+				  && out_cb && out_cb->id() == TokenID::tkClBrk
+				  && in_colon && in_colon->id() == TokenID::tkColon
+				  && in_c && in_c->type() == TokenType::ttString
+				  && in_ob && in_ob->id() == TokenID::tkOpBrk )
+				{
+				    TokenBase *in_tb = nextToken();
+				    TokenBase *in_expr = in_tb ? parseExpression(in_tb, true) : NULL;
+				    TokenBase *in_cb = nextToken();
+				    TokenBase *close = nextToken();
+				    std::string out_constraint = ((TokenStr *)out_c)->str;
+				    std::string in_constraint = ((TokenStr *)in_c)->str;
+				    if ( in_expr
+				      && in_cb && in_cb->id() == TokenID::tkClBrk
+				      && close && close->id() == TokenID::tkClBrk
+				      && out_constraint == "=r"
+				      && in_constraint == "0" )
+				    {
+					TokenAssign *assign = new TokenAssign();
+					assign->file = tb->file;
+					assign->line = tb->line;
+					assign->column = tb->column;
+					assign->left = out_expr;
+					assign->right = in_expr;
+					if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+					    nextToken();
+					return assign;
+				    }
+				    if ( in_expr
+				      && in_cb && in_cb->id() == TokenID::tkClBrk
+				      && close && close->id() == TokenID::tkClBrk
+				      && out_constraint == "=m"
+				      && in_constraint == "m" )
+				    {
+					if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+					    return nextToken();
+					return tb;
+				    }
+				}
+			    }
+			}
+			if ( !parsed_simple_copy )
+			{
+			    int depth = 1;
+			    while ( depth > 0 )
+			    {
+				TokenBase *t = nextToken();
+				if ( !t ) break;
+				if ( t->id() == TokenID::tkOpBrk ) ++depth;
+				else if ( t->id() == TokenID::tkClBrk ) --depth;
+			    }
 			}
 		    }
 		    // Return the semicolon as the statement (no-op).

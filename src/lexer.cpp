@@ -2338,7 +2338,8 @@ TokenBase *Program::_getToken()
 		  || word == "long"       || word == "short"
 		  || word == "int"        || word == "char"
 		  || word == "double"     || word == "float"
-		  || word == "_Complex"   || word == "__complex__" )
+		  || word == "_Complex"   || word == "__complex__"
+		  || word == "__complex" )
 		{
 		    enum {
 			TS_VOID     = 1 << 0,
@@ -2361,7 +2362,7 @@ TokenBase *Program::_getToken()
 			if (w == "double")   return TS_DOUBLE;
 			if (w == "signed")   return TS_SIGNED;
 			if (w == "unsigned") return TS_UNSIGNED;
-			if (w == "_Complex" || w == "__complex__") return TS_COMPLEX;
+			if (w == "_Complex" || w == "__complex__" || w == "__complex") return TS_COMPLEX;
 			return 0;
 		    };
 		    int counter = word_to_flag(word);

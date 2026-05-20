@@ -1,0 +1,11 @@
+void abort (void);
+
+int main()
+{
+  __complex double dc;
+  double *dp = &(__real dc);
+  *dp = 3.14;
+  if ((__real dc) != 3.14)
+    abort();
+  return 0;
+}

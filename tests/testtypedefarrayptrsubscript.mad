@@ -1,0 +1,25 @@
+void abort (void);
+
+typedef unsigned long HARD_REG_SET[2];
+HARD_REG_SET global_sets[2];
+
+void check(HARD_REG_SET *p)
+{
+    if ((*p)[0] != 11 || (*p)[1] != 22)
+        abort();
+}
+
+int main()
+{
+    HARD_REG_SET x;
+    unsigned long *scan_fp_;
+    x[0] = 11;
+    x[1] = 22;
+    global_sets[0][0] = 33;
+    global_sets[0][1] = 44;
+    scan_fp_ = global_sets[0];
+    if (scan_fp_[0] != 33 || scan_fp_[1] != 44)
+        abort();
+    check(&x);
+    return 0;
+}

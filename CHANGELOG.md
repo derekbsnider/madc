@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **GCC torture `20030222-1.c`, `20030714-1.c`, `20030928-1.c`, `20061220-1.c`, `20080424-1.c`, and `20080519-1.c` now pass.**
+  Typedef enum aliases now preserve their alias spelling well enough for
+  narrow unsigned bitfield extraction heuristics, nested local function
+  definitions now mangle their internal symbol names so repeated
+  `nested` / `nested2` bodies do not collide across outer functions, the
+  inline-asm parser now safely treats GCC's empty-template `"=m"` /
+  `"m"` barrier form as a no-op, and struct-by-value call-argument
+  copying is constrained back to plain C structs instead of raw-copying
+  runtime class objects like `string` and `array`. Added
+  `tests/testenumbitfieldalias.mad` and `tests/testnestedasmbarrier.mad`
+  as regressions, and refreshed integration / EXE counts to `315/315`
+  plus GCC parity to `1343/1685` (79.7%).
+
+- **GCC torture `20040520-1.c` and `930406-1.c` now pass.**
+  Ordinary nested function definitions now get an explicit environment
+  parameter/capture plumbing path instead of only the lambda-only
+  closure lane, and parser statement handling now accepts local
+  `__label__` declarations as a GNU extension. The remaining `_Complex`
+  work is still intentionally out of this diff.
+
 - **GCC torture `20040411-1.c`, `20040423-1.c`, and `20041218-2.c` now pass.**
   Typedef'd arrays now preserve their full array shape instead of
   collapsing immediately to pointers, `sizeof(type)` can now materialize
@@ -118,7 +138,7 @@
   read shape.
   Removed the `std::list` expectation from `tests/testmadc_ns.mad`,
   refreshed the current integration / EXE pass counts to `306/306`, and
-  refreshed GCC torture parity to `1335/1685` (79.2%).
+  refreshed GCC torture parity to `1337/1685` (79.3%).
 
 ## [v0.17.0] - 2026-05-19
 

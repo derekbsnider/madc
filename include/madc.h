@@ -432,6 +432,7 @@ public:
     }
     virtual TokenType type() const { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
+    virtual DataDef *datadef() const override;
     virtual asmjit::Operand &operand(Program &pgm) {
         regdefp_t r = {nullptr, nullptr, nullptr};
         return compile(pgm, r);
