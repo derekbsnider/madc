@@ -97,68 +97,70 @@ static bool consume_macro_call_open(Source &source)
 
 static const char *auto_include_embedded_header_for_identifier(const std::string &word)
 {
-    if ( word == "size_t"
-      || word == "ptrdiff_t"
-      || word == "wchar_t"
-      || word == "NULL"
-      || word == "offsetof" )
-	return "stddef.h";
+    static const std::map<std::string, std::string> identifier_headers = {
+	{"size_t", "stddef.h"},
+	{"ptrdiff_t", "stddef.h"},
+	{"wchar_t", "stddef.h"},
+	{"NULL", "stddef.h"},
+	{"offsetof", "stddef.h"},
 
-    if ( word == "intptr_t"
-      || word == "uintptr_t"
-      || word == "INT8_MIN"
-      || word == "INT8_MAX"
-      || word == "UINT8_MAX"
-      || word == "INT16_MIN"
-      || word == "INT16_MAX"
-      || word == "UINT16_MAX"
-      || word == "INT32_MIN"
-      || word == "INT32_MAX"
-      || word == "UINT32_MAX"
-      || word == "INT64_MIN"
-      || word == "INT64_MAX"
-      || word == "UINT64_MAX"
-      || word == "SIZE_MAX"
-      || word == "INTMAX_MIN"
-      || word == "INTMAX_MAX"
-      || word == "UINTMAX_MAX"
-      || word == "PTRDIFF_MIN"
-      || word == "PTRDIFF_MAX" )
-	return "stdint.h";
+	{"intptr_t", "stdint.h"},
+	{"uintptr_t", "stdint.h"},
+	{"INT8_MIN", "stdint.h"},
+	{"INT8_MAX", "stdint.h"},
+	{"UINT8_MAX", "stdint.h"},
+	{"INT16_MIN", "stdint.h"},
+	{"INT16_MAX", "stdint.h"},
+	{"UINT16_MAX", "stdint.h"},
+	{"INT32_MIN", "stdint.h"},
+	{"INT32_MAX", "stdint.h"},
+	{"UINT32_MAX", "stdint.h"},
+	{"INT64_MIN", "stdint.h"},
+	{"INT64_MAX", "stdint.h"},
+	{"UINT64_MAX", "stdint.h"},
+	{"SIZE_MAX", "stdint.h"},
+	{"INTMAX_MIN", "stdint.h"},
+	{"INTMAX_MAX", "stdint.h"},
+	{"UINTMAX_MAX", "stdint.h"},
+	{"PTRDIFF_MIN", "stdint.h"},
+	{"PTRDIFF_MAX", "stdint.h"},
 
-    if ( word == "FLT_RADIX"
-      || word == "FLT_EVAL_METHOD"
-      || word == "DECIMAL_DIG"
-      || word == "FLT_MANT_DIG"
-      || word == "DBL_MANT_DIG"
-      || word == "LDBL_MANT_DIG"
-      || word == "FLT_DIG"
-      || word == "DBL_DIG"
-      || word == "LDBL_DIG"
-      || word == "FLT_MIN_EXP"
-      || word == "DBL_MIN_EXP"
-      || word == "LDBL_MIN_EXP"
-      || word == "FLT_MIN_10_EXP"
-      || word == "DBL_MIN_10_EXP"
-      || word == "LDBL_MIN_10_EXP"
-      || word == "FLT_MAX_EXP"
-      || word == "DBL_MAX_EXP"
-      || word == "LDBL_MAX_EXP"
-      || word == "FLT_MAX_10_EXP"
-      || word == "DBL_MAX_10_EXP"
-      || word == "LDBL_MAX_10_EXP"
-      || word == "FLT_MAX"
-      || word == "DBL_MAX"
-      || word == "LDBL_MAX"
-      || word == "FLT_MIN"
-      || word == "DBL_MIN"
-      || word == "LDBL_MIN"
-      || word == "FLT_EPSILON"
-      || word == "DBL_EPSILON"
-      || word == "LDBL_EPSILON" )
-	return "float.h";
+	{"FLT_RADIX", "float.h"},
+	{"FLT_EVAL_METHOD", "float.h"},
+	{"DECIMAL_DIG", "float.h"},
+	{"FLT_MANT_DIG", "float.h"},
+	{"DBL_MANT_DIG", "float.h"},
+	{"LDBL_MANT_DIG", "float.h"},
+	{"FLT_DIG", "float.h"},
+	{"DBL_DIG", "float.h"},
+	{"LDBL_DIG", "float.h"},
+	{"FLT_MIN_EXP", "float.h"},
+	{"DBL_MIN_EXP", "float.h"},
+	{"LDBL_MIN_EXP", "float.h"},
+	{"FLT_MIN_10_EXP", "float.h"},
+	{"DBL_MIN_10_EXP", "float.h"},
+	{"LDBL_MIN_10_EXP", "float.h"},
+	{"FLT_MAX_EXP", "float.h"},
+	{"DBL_MAX_EXP", "float.h"},
+	{"LDBL_MAX_EXP", "float.h"},
+	{"FLT_MAX_10_EXP", "float.h"},
+	{"DBL_MAX_10_EXP", "float.h"},
+	{"LDBL_MAX_10_EXP", "float.h"},
+	{"FLT_MAX", "float.h"},
+	{"DBL_MAX", "float.h"},
+	{"LDBL_MAX", "float.h"},
+	{"FLT_MIN", "float.h"},
+	{"DBL_MIN", "float.h"},
+	{"LDBL_MIN", "float.h"},
+	{"FLT_EPSILON", "float.h"},
+	{"DBL_EPSILON", "float.h"},
+	{"LDBL_EPSILON", "float.h"}
+    };
 
-    return NULL;
+    std::map<std::string, std::string>::const_iterator it = identifier_headers.find(word);
+    if ( it == identifier_headers.end() )
+	return NULL;
+    return it->second.c_str();
 }
 
 void Program::mark_embedded_include_flag(const std::string &incfile)
