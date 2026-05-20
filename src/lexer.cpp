@@ -95,6 +95,115 @@ static bool consume_macro_call_open(Source &source)
     return false;
 }
 
+static const char *auto_include_embedded_header_for_identifier(const std::string &word)
+{
+    if ( word == "size_t"
+      || word == "ptrdiff_t"
+      || word == "wchar_t"
+      || word == "NULL"
+      || word == "offsetof" )
+	return "stddef.h";
+
+    if ( word == "intptr_t"
+      || word == "uintptr_t"
+      || word == "INT8_MIN"
+      || word == "INT8_MAX"
+      || word == "UINT8_MAX"
+      || word == "INT16_MIN"
+      || word == "INT16_MAX"
+      || word == "UINT16_MAX"
+      || word == "INT32_MIN"
+      || word == "INT32_MAX"
+      || word == "UINT32_MAX"
+      || word == "INT64_MIN"
+      || word == "INT64_MAX"
+      || word == "UINT64_MAX"
+      || word == "SIZE_MAX"
+      || word == "INTMAX_MIN"
+      || word == "INTMAX_MAX"
+      || word == "UINTMAX_MAX"
+      || word == "PTRDIFF_MIN"
+      || word == "PTRDIFF_MAX" )
+	return "stdint.h";
+
+    if ( word == "FLT_RADIX"
+      || word == "FLT_EVAL_METHOD"
+      || word == "DECIMAL_DIG"
+      || word == "FLT_MANT_DIG"
+      || word == "DBL_MANT_DIG"
+      || word == "LDBL_MANT_DIG"
+      || word == "FLT_DIG"
+      || word == "DBL_DIG"
+      || word == "LDBL_DIG"
+      || word == "FLT_MIN_EXP"
+      || word == "DBL_MIN_EXP"
+      || word == "LDBL_MIN_EXP"
+      || word == "FLT_MIN_10_EXP"
+      || word == "DBL_MIN_10_EXP"
+      || word == "LDBL_MIN_10_EXP"
+      || word == "FLT_MAX_EXP"
+      || word == "DBL_MAX_EXP"
+      || word == "LDBL_MAX_EXP"
+      || word == "FLT_MAX_10_EXP"
+      || word == "DBL_MAX_10_EXP"
+      || word == "LDBL_MAX_10_EXP"
+      || word == "FLT_MAX"
+      || word == "DBL_MAX"
+      || word == "LDBL_MAX"
+      || word == "FLT_MIN"
+      || word == "DBL_MIN"
+      || word == "LDBL_MIN"
+      || word == "FLT_EPSILON"
+      || word == "DBL_EPSILON"
+      || word == "LDBL_EPSILON" )
+	return "float.h";
+
+    return NULL;
+}
+
+void Program::mark_embedded_include_flag(const std::string &incfile)
+{
+    if ( incfile == "iostream" )
+	_include_iostream = true;
+    if ( incfile == "stdio.h" )
+	_include_stdio = true;
+}
+
+bool Program::auto_include_standard_identifier(const std::string &word)
+{
+    const char *header = auto_include_embedded_header_for_identifier(word);
+    if ( !header )
+	return false;
+
+    std::string include_key = std::string("<") + header + ">";
+    if ( !should_tokenize_include(include_key) )
+	return false;
+
+    const std::string *embedded = find_embedded_header(header);
+    if ( !embedded )
+	return false;
+    if ( !is_embedded_header_allowed(header) )
+	Throw << "embedded header '" << header
+	      << "' is not allowed by registration policy" << flush;
+
+    source.pushback(word);
+
+    Source saved = std::move(source);
+    source = Source();
+    source.fname(header);
+    source.str(*embedded);
+    TokenBase *itb;
+    const char *interned = intern_file(header);
+    while ( (itb = getRealToken()) )
+    {
+	itb->file = interned;
+	push_token_with_string_concat(itb);
+    }
+    source = std::move(saved);
+    mark_embedded_include_flag(header);
+    return true;
+}
+
 // Walk back through recently emitted tokens to decide whether the
 // current identifier is at a declaration / definition head, i.e.
 // `<type> [*...] <ident> (...)`. When so, we must suppress
@@ -936,8 +1045,7 @@ TokenBase *Program::_getToken()
 			    }
 			    source = std::move(saved);
 			    // flag headers for deferred registration during parse init
-			    if ( incfile == "iostream" ) _include_iostream = true;
-			    if ( incfile == "stdio.h" )  _include_stdio = true;
+			    mark_embedded_include_flag(incfile);
 			    return getToken();
 			}
 		    }
@@ -2542,6 +2650,8 @@ TokenBase *Program::_getToken()
 		    return kmi->second->clone();
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
 		    return bmi->second->clone();
+		if ( auto_include_standard_identifier(word) )
+		    return getToken();
 		return new TokenIdent(word);
 	    }
 	    return new TokenChar(ch);

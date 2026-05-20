@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **Embedded standard headers now auto-include on first use of common names.**
+  Unresolved identifiers such as `size_t`, `intptr_t`, `DBL_MIN`, and
+  `FLT_RADIX` now trigger tokenization of the owning embedded header in
+  the lexer, so typedefs and macros come from the embedded header
+  surface instead of a parallel ambient-builtin path. Added
+  `tests/testautoincludestdheaders.mad` as the regression. Full
+  validation is green at `328/328` JIT and `328/328` EXE.
+
 - **GCC torture `960512-1.c` now passes.**
   The lexer now keeps compound type-specifier accumulation alive across
   line breaks, so split declarations like `__complex__` newline

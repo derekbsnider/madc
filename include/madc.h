@@ -1062,6 +1062,8 @@ public:
     std::string resolve_include_path(const std::string &incfile, bool is_system);
     std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
+    bool auto_include_standard_identifier(const std::string &word);
+    void mark_embedded_include_flag(const std::string &incfile);
     void push_runtime_scope();
     void pop_runtime_scope();
     static Program *active_runtime_program();

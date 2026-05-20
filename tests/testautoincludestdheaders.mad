@@ -1,0 +1,15 @@
+int printf(const char *, ...);
+
+int main()
+{
+    size_t n = 7;
+    intptr_t p = -3;
+
+    if ( FLT_RADIX != 2 )
+	return 1;
+    if ( DBL_MIN <= 0.0 )
+	return 2;
+
+    printf("%lu %ld %.17g\n", (unsigned long)n, (long)p, DBL_MIN);
+    return 0;
+}
