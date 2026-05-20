@@ -2534,6 +2534,30 @@ static void emit_runtime_eval_scope_setter(Program &pgm,
     }
 }
 
+static Operand &compile_complex_condition_operand(Program &pgm, TokenBase *condition,
+						  DataDefCOMPLEX *cdd, Operand &storage)
+{
+    DataDef *component_type = cdd && cdd->element_type ? cdd->element_type : &ddDOUBLE;
+    TokenComplexPart real_part(condition, false);
+    TokenComplexPart imag_part(condition, true);
+    Operand real_storage;
+    Operand imag_storage;
+    Operand &real_op = compile_token_normalized(pgm, &real_part, component_type, nullptr, real_storage);
+    Operand &imag_op = compile_token_normalized(pgm, &imag_part, component_type, nullptr, imag_storage);
+
+    pgm.testzero(real_op);
+    x86::Gp real_nonzero = pgm.cc.newGpq("__complex_cond_re");
+    pgm.safesetne(real_nonzero);
+
+    pgm.testzero(imag_op);
+    x86::Gp imag_nonzero = pgm.cc.newGpq("__complex_cond_im");
+    pgm.safesetne(imag_nonzero);
+
+    pgm.safeor(real_nonzero, imag_nonzero, &ddINT64);
+    storage = real_nonzero;
+    return storage;
+}
+
 static Operand &compile_condition_operand(Program &pgm, TokenBase *condition, Operand &storage)
 {
     regdefp_t condrdp = {NULL, NULL, NULL};
@@ -2541,6 +2565,9 @@ static Operand &compile_condition_operand(Program &pgm, TokenBase *condition, Op
     DataDef *cond_type = condrdp.second
 	? condrdp.second
 	: (condition && condition->datadef() ? condition->datadef() : &ddINT64);
+
+    if ( DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(cond_type) )
+	return compile_complex_condition_operand(pgm, condition, cdd, storage);
 
     // Preserve literal conditions as immediates so TokenIF/WHILE/FOR can
     // short-circuit dead branches like `if (0) ...` before compiling them.

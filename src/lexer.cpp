@@ -2400,7 +2400,9 @@ TokenBase *Program::_getToken()
 		    int counter = word_to_flag(word);
 		    // Accumulate subsequent type-specifier keywords
 		    auto read_word = [&]() -> std::string {
-			while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+			while ( source.good()
+			     && (source.peek() == ' ' || source.peek() == '\t'
+			      || source.peek() == '\n' || source.peek() == '\r') )
 			    source.get();
 			std::string w;
 			while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )

@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **GCC torture `960512-1.c` now passes.**
+  The lexer now keeps compound type-specifier accumulation alive across
+  line breaks, so split declarations like `__complex__` newline
+  `double f(void)` parse as a single `_Complex double` type instead of
+  prematurely defaulting to plain `double _Complex`. Complex conditions
+  now also lower to a real boolean by testing whether either real or
+  imaginary lane is non-zero, which fixes `if (c = f())` truthiness for
+  complex assignment expressions. Added
+  `tests/testcomplexsplitdeclcond.mad` as the regression. Full
+  validation is green at `323/323` JIT and `323/323` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1407/1685` (83.5%).
+
 - **GCC torture `pr49644.c` and `pr104604.c` now pass.**
   Complex `*`, `/`, `*=`, and `/=` now lower component-wise through the
   compiler's internal complex pair representation, and pointer-aware
