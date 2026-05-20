@@ -173,6 +173,32 @@ void Program::mark_embedded_include_flag(const std::string &incfile)
 
 bool Program::auto_include_standard_identifier(const std::string &word)
 {
+    // `typedef unsigned long size_t;` and similar declaration heads are
+    // defining the identifier, not using the standard header surface.
+    // Auto-including here injects the embedded header in the middle of
+    // the declarator and leaves a duplicate alias token behind.
+    for ( std::deque<TokenBase *>::reverse_iterator it = tokens.rbegin();
+	  it != tokens.rend(); ++it )
+    {
+	TokenBase *t = *it;
+	TokenID tid = t->id();
+	TokenType tt = t->type();
+	if ( tid == TokenID::tkMul )
+	    continue;
+	if ( tt == TokenType::ttDataType
+	  || tid == TokenID::tkSTRUCT
+	  || tid == TokenID::tkCLASS
+	  || tid == TokenID::tkENUM
+	  || tid == TokenID::tkCONST
+	  || tid == TokenID::tkEXTERN
+	  || tid == TokenID::tkSTATIC
+	  || tid == TokenID::tkREGISTER
+	  || tid == TokenID::tkTYPEDEF
+	  || tid == TokenID::tkRESTRICT )
+	    return false;
+	break;
+    }
+
     const char *header = auto_include_embedded_header_for_identifier(word);
     if ( !header )
 	return false;

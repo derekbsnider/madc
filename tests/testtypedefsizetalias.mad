@@ -1,0 +1,8 @@
+typedef unsigned long size_t;
+
+int main()
+{
+    size_t n = 7;
+    putu(n);
+    return 0;
+}
