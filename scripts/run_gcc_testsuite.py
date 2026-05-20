@@ -9,9 +9,11 @@ runtime failure.
 """
 
 import argparse
+import os
 import re
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
@@ -81,10 +83,33 @@ def classify_output(returncode, output):
 	return "PASS", ""
 
 
+def builtin_multifile_source(path):
+	path = Path(path)
+	if path.parent.name != "builtins":
+		return None
+	companion = path.with_name(path.stem + "-lib.c")
+	main_driver = path.parent / "lib" / "main.c"
+	if not companion.exists() or not main_driver.exists():
+		return None
+	tmp = tempfile.NamedTemporaryFile(
+		mode="w",
+		suffix=".c",
+		prefix="madc-gcc-builtins-",
+		delete=False,
+	)
+	with tmp:
+		tmp.write('#include "' + companion.resolve().as_posix() + '"\n')
+		tmp.write('#include "' + path.resolve().as_posix() + '"\n')
+		tmp.write('#include "' + main_driver.resolve().as_posix() + '"\n')
+	return Path(tmp.name)
+
+
 def run_one(path, madc, timeout):
+	temp_source = builtin_multifile_source(path)
+	input_path = temp_source if temp_source else path
 	try:
 		completed = subprocess.run(
-			[str(madc), str(path)],
+			[str(madc), str(input_path)],
 			stdout=subprocess.PIPE,
 			stderr=subprocess.STDOUT,
 			text=True,
@@ -95,9 +120,25 @@ def run_one(path, madc, timeout):
 		output = exc.stdout or ""
 		if exc.stderr:
 			output += exc.stderr
+		if temp_source:
+			try:
+				os.unlink(temp_source)
+			except OSError:
+				pass
 		return Result(path, "TIMEOUT", str(timeout) + "s", output)
 	except OSError as exc:
+		if temp_source:
+			try:
+				os.unlink(temp_source)
+			except OSError:
+				pass
 		return Result(path, "FAIL(harness)", str(exc), "")
+	finally:
+		if temp_source:
+			try:
+				os.unlink(temp_source)
+			except OSError:
+				pass
 
 	status, reason = classify_output(completed.returncode, completed.stdout)
 	return Result(path, status, reason, completed.stdout)

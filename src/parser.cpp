@@ -59,6 +59,72 @@ namespace {
 
 thread_local Program *g_runtime_program = NULL;
 
+DataDef *complex_builtin_type(DataDef *base_type)
+{
+    static std::map<DataDef *, DataDefCOMPLEX *> cache;
+    if ( !base_type )
+	return &ddVOID;
+    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(base_type);
+    if ( it != cache.end() )
+	return it->second;
+    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*base_type);
+    cache[base_type] = complex_type;
+    return complex_type;
+}
+
+FuncDef *make_implicit_complex_builtin_func(const std::string &fname)
+{
+    DataDef *arg_type = &ddINT64;
+    DataDef *ret_type = &ddINT32;
+
+    if ( fname == "__builtin_conjf" || fname == "conjf" )
+	arg_type = ret_type = complex_builtin_type(&ddFLOAT);
+    else if ( fname == "__builtin_conj" || fname == "conj"
+	   || fname == "__builtin_conjl" || fname == "conjl" )
+	arg_type = ret_type = complex_builtin_type(&ddDOUBLE);
+    else if ( fname == "__builtin_crealf" || fname == "crealf"
+	   || fname == "__builtin_cimagf" || fname == "cimagf" )
+    {
+	arg_type = complex_builtin_type(&ddFLOAT);
+	ret_type = &ddFLOAT;
+    }
+    else if ( fname == "__builtin_creal" || fname == "creal"
+	   || fname == "__builtin_creall" || fname == "creall"
+	   || fname == "__builtin_cimag" || fname == "cimag"
+	   || fname == "__builtin_cimagl" || fname == "cimagl" )
+    {
+	arg_type = complex_builtin_type(&ddDOUBLE);
+	ret_type = &ddDOUBLE;
+    }
+
+    FuncDef *func = new FuncDef(*ret_type);
+    func->is_varargs = true;
+    func->parameters.push_back(arg_type);
+    return func;
+}
+
+bool is_implicit_complex_builtin_name(const std::string &fname)
+{
+    return fname == "__builtin_conj"
+	|| fname == "__builtin_conjf"
+	|| fname == "__builtin_conjl"
+	|| fname == "__builtin_creal"
+	|| fname == "__builtin_crealf"
+	|| fname == "__builtin_creall"
+	|| fname == "__builtin_cimag"
+	|| fname == "__builtin_cimagf"
+	|| fname == "__builtin_cimagl"
+	|| fname == "conj"
+	|| fname == "conjf"
+	|| fname == "conjl"
+	|| fname == "creal"
+	|| fname == "crealf"
+	|| fname == "creall"
+	|| fname == "cimag"
+	|| fname == "cimagf"
+	|| fname == "cimagl";
+}
+
 std::string stringify_runtime_eval_value(const madc::value &resolved)
 {
     switch ( resolved.type() )
@@ -7088,7 +7154,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // dlsym fallback: resolve known libc/system functions early.
 		    // If that fails, C89 still permits an implicit `int f()`
 		    // declaration for calls to functions defined later in the file.
+		    if ( !var && is_implicit_complex_builtin_name(fname) )
+		    {
+			FuncDef *implicit_func = make_implicit_complex_builtin_func(fname);
+			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
+			Method *implicit_method = new Method(*var);
+			var->data = (void *)implicit_method;
+			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
+		    }
 		    if ( is_dynamic_symbol_fallback_enabled()
+		      && !is_implicit_complex_builtin_name(fname)
 		      && is_dynamic_symbol_allowed(fname) )
 		    {
 			void *sym = dlsym(RTLD_DEFAULT, fname.c_str());
@@ -7100,16 +7175,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
 		    }
-		    if ( !var && (fname == "__builtin_conj"
-			       || fname == "__builtin_conjf"
-			       || fname == "__builtin_conjl"
-			       || fname == "conj"
-			       || fname == "conjf"
-			       || fname == "conjl") )
+		    if ( !var && is_implicit_complex_builtin_name(fname) )
 		    {
-			FuncDef *implicit_func = new FuncDef(ddINT32);
-			implicit_func->is_varargs = true;
-			implicit_func->parameters.push_back(&ddINT64);
+			FuncDef *implicit_func = make_implicit_complex_builtin_func(fname);
 			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
 			Method *implicit_method = new Method(*var);
 			var->data = (void *)implicit_method;

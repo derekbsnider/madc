@@ -1653,6 +1653,78 @@ static void prepare_complex_component_pair(Program &pgm, TokenBase *expr, DataDe
     real_type = imag_type = target_cdd->element_type;
 }
 
+static Operand &emit_complex_value_from_expr(Program &pgm, TokenBase *expr,
+					     DataDef *target_complex_type,
+					     regdefp_t &regdp, Operand &storage)
+{
+    DataDefCOMPLEX *target_cdd = dynamic_cast<DataDefCOMPLEX *>(target_complex_type);
+    if ( !target_cdd || !target_cdd->element_type )
+	throw "emit_complex_value_from_expr() invalid target complex type";
+
+    Operand base_storage;
+    Operand real_storage;
+    Operand imag_storage;
+    Operand *real_part = NULL;
+    Operand *imag_part = NULL;
+    DataDef *real_type = NULL;
+    DataDef *imag_type = NULL;
+    prepare_complex_component_pair(pgm, expr, target_complex_type, base_storage,
+				   real_part, real_type, imag_part, imag_type,
+				   real_storage, imag_storage);
+
+    Operand *caller_dest = regdp.first;
+    bool use_caller_dest = caller_dest && (!regdp.second || regdp.second->is_complex());
+    Operand dest_base;
+    if ( use_caller_dest )
+	dest_base = *caller_dest;
+    else
+	dest_base = pgm.cc.newStack((uint32_t)target_complex_type->size, 8);
+
+    x86::Mem dst_real = complex_component_mem(pgm, dest_base, target_cdd, false, "__complex_cast_dst");
+    x86::Mem dst_imag = complex_component_mem(pgm, dest_base, target_cdd, true, "__complex_cast_dst");
+
+    IRBuilder ir(pgm.cc);
+    IRValue real_val = ir.load(ir.coerce(ir_from_operand(*real_part, real_type),
+					 target_cdd->element_type));
+    IRValue imag_val = ir.load(ir.coerce(ir_from_operand(*imag_part, imag_type),
+					 target_cdd->element_type));
+    ir.store(IRValue::mem(dst_real, target_cdd->element_type), real_val);
+    ir.store(IRValue::mem(dst_imag, target_cdd->element_type), imag_val);
+
+    regdp.second = target_complex_type;
+    if ( use_caller_dest )
+	return *regdp.first;
+
+    storage = dest_base;
+    regdp.first = &storage;
+    return storage;
+}
+
+static DataDef *builtin_complex_compat_type(DataDef *base_type)
+{
+    static std::map<DataDef *, DataDefCOMPLEX *> cache;
+    if ( !base_type )
+	return &ddVOID;
+    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(base_type);
+    if ( it != cache.end() )
+	return it->second;
+    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*base_type);
+    cache[base_type] = complex_type;
+    return complex_type;
+}
+
+static DataDef *builtin_complex_arg_type(TokenCallFunc *call)
+{
+    if ( !call )
+	return NULL;
+    DataDef *ret_type = call->returns();
+    if ( ret_type && ret_type->is_complex() )
+	return ret_type;
+    if ( ret_type && ret_type->is_real() )
+	return builtin_complex_compat_type(ret_type);
+    return call->argc() == 1 && call->parameters[0] ? call->parameters[0]->datadef() : NULL;
+}
+
 static Operand &emit_complex_addsub(Program &pgm, TokenBase *left, TokenBase *right,
 				    bool subtract, regdefp_t &regdp, Operand &storage)
 {
@@ -2167,29 +2239,33 @@ static Operand &emit_complex_conjugate_expr(Program &pgm, TokenBase *arg_token,
 	throw "emit_complex_conjugate_expr() invalid complex type";
 
     Operand arg_base_storage;
-    Operand &arg_base = compile_complex_compare_base(pgm, arg_token, complex_type, arg_base_storage);
+    Operand arg_real_storage;
+    Operand arg_imag_storage;
+    Operand *arg_real = NULL;
+    Operand *arg_imag = NULL;
+    DataDef *arg_real_type = NULL;
+    DataDef *arg_imag_type = NULL;
+    prepare_complex_component_pair(pgm, arg_token, complex_type, arg_base_storage,
+				   arg_real, arg_real_type, arg_imag, arg_imag_type,
+				   arg_real_storage, arg_imag_storage);
 
     bool use_caller_dest = regdp.first && (!regdp.second || regdp.second->is_complex());
-    Operand dest_base_storage;
     Operand dest_base;
     if ( use_caller_dest )
 	dest_base = *regdp.first;
     else
-    {
-	x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
-	dest_base = as_gp_ptr(pgm, slot, "__complex_conj_ret");
-    }
+	dest_base = pgm.cc.newStack((uint32_t)complex_type->size, 8);
 
-    x86::Mem src_real = complex_component_mem(pgm, arg_base, cdd, false, "__complex_conj_src");
-    x86::Mem src_imag = complex_component_mem(pgm, arg_base, cdd, true, "__complex_conj_src");
     x86::Mem dst_real = complex_component_mem(pgm, dest_base, cdd, false, "__complex_conj_dst");
     x86::Mem dst_imag = complex_component_mem(pgm, dest_base, cdd, true, "__complex_conj_dst");
 
     IRBuilder ir(pgm.cc);
-    IRValue real_val = ir.load(IRValue::mem(src_real, cdd->element_type));
+    IRValue real_val = ir.load(ir.coerce(ir_from_operand(*arg_real, arg_real_type),
+					 cdd->element_type));
     ir.store(IRValue::mem(dst_real, cdd->element_type), real_val);
 
-    IRValue imag_val = ir.load(IRValue::mem(src_imag, cdd->element_type));
+    IRValue imag_val = ir.load(ir.coerce(ir_from_operand(*arg_imag, arg_imag_type),
+					 cdd->element_type));
     Operand neg_imag = imag_val.op;
     pgm.safeneg(neg_imag, cdd->element_type);
     ir.store(IRValue::mem(dst_imag, cdd->element_type),
@@ -2214,10 +2290,39 @@ static Operand &emit_builtin_complex_conjugate(Program &pgm, TokenCallFunc *call
 	throw "emit_builtin_complex_conjugate() expects one argument";
 
     TokenBase *arg_token = call->parameters[0];
-    DataDef *complex_type = arg_token ? arg_token->datadef() : NULL;
+    DataDef *complex_type = builtin_complex_arg_type(call);
     if ( !complex_type || !complex_type->is_complex() )
 	throw "emit_builtin_complex_conjugate() expects complex argument";
     return emit_complex_conjugate_expr(pgm, arg_token, complex_type, regdp, storage);
+}
+
+static Operand &emit_builtin_complex_component(Program &pgm, TokenCallFunc *call,
+					       bool imag_part,
+					       regdefp_t &regdp, Operand &storage)
+{
+    if ( !call || call->argc() != 1 )
+	throw "emit_builtin_complex_component() expects one argument";
+
+    TokenBase *arg_token = call->parameters[0];
+    DataDef *complex_type = builtin_complex_arg_type(call);
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_builtin_complex_component() expects complex argument";
+
+    Operand base_storage;
+    Operand real_storage;
+    Operand imag_storage;
+    Operand *real_part = NULL;
+    Operand *imag_part_op = NULL;
+    DataDef *real_type = NULL;
+    DataDef *imag_type = NULL;
+    prepare_complex_component_pair(pgm, arg_token, complex_type, base_storage,
+				   real_part, real_type, imag_part_op, imag_type,
+				   real_storage, imag_storage);
+    Operand &part = imag_part ? *imag_part_op : *real_part;
+    DataDef *part_type = imag_part ? imag_type : real_type;
+    return emit_ir_value(pgm, ir_from_operand(part, part_type), regdp, storage,
+			 cdd->element_type);
 }
 
 static void add_funcsig_arg(FuncSignature &funcsig, DataDef *arg_type)
@@ -3232,6 +3337,20 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		      || var.name == "conjf"
 		      || var.name == "conjl") )
 	return emit_builtin_complex_conjugate(pgm, this, regdp, _operand);
+    if ( argc() == 1 && (var.name == "__builtin_creal"
+		      || var.name == "__builtin_crealf"
+		      || var.name == "__builtin_creall"
+		      || var.name == "creal"
+		      || var.name == "crealf"
+		      || var.name == "creall") )
+	return emit_builtin_complex_component(pgm, this, false, regdp, _operand);
+    if ( argc() == 1 && (var.name == "__builtin_cimag"
+		      || var.name == "__builtin_cimagf"
+		      || var.name == "__builtin_cimagl"
+		      || var.name == "cimag"
+		      || var.name == "cimagf"
+		      || var.name == "cimagl") )
+	return emit_builtin_complex_component(pgm, this, true, regdp, _operand);
 
     // GCC builtin parity: direct llabs calls keep builtin semantics even
     // when a same-name function is defined in the translation unit.
@@ -10388,10 +10507,15 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     bool scalar_to_complex = expr && expr->datadef()
 	&& !expr->datadef()->is_complex()
 	&& cast_type && cast_type->is_complex();
+    bool complex_to_complex = expr && expr->datadef()
+	&& expr->datadef()->is_complex()
+	&& cast_type && cast_type->is_complex();
     bool complex_to_scalar = expr && expr->datadef()
 	&& expr->datadef()->is_complex()
 	&& !effective_pointer_type_for_arith(pgm, expr)
 	&& cast_type && (cast_type->is_numeric() || cast_type->is_pointer());
+    if ( complex_to_complex )
+	return emit_complex_value_from_expr(pgm, expr, cast_type, regdp, _operand);
     if ( scalar_to_complex )
     {
 	regdefp_t inner_rdp = {NULL, expr->datadef(), NULL};

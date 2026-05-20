@@ -480,6 +480,12 @@ void Program::_tokenizer_init()
     define_map["__builtin_conj"] = "conj";
     define_map["__builtin_conjf"] = "conjf";
     define_map["__builtin_conjl"] = "conjl";
+    define_map["__builtin_creal"] = "creal";
+    define_map["__builtin_crealf"] = "crealf";
+    define_map["__builtin_creall"] = "creall";
+    define_map["__builtin_cimag"] = "cimag";
+    define_map["__builtin_cimagf"] = "cimagf";
+    define_map["__builtin_cimagl"] = "cimagl";
     define_map["__builtin_llabs"] = "llabs";
     define_map["__builtin_stpcpy"] = "stpcpy";
     define_map["__builtin_stpncpy"] = "stpncpy";
@@ -1563,7 +1569,14 @@ TokenBase *Program::_getToken()
 	default:
 	    if ( isdigit(ch) )
 	    {
+		auto complex_real_type_for_suffix = [&](char suffix) -> DataDef * {
+		    if ( suffix == 'f' || suffix == 'F' )
+			return &ddFLOAT;
+		    return &ddDOUBLE;
+		};
+		char imag_type_suffix = 0;
 		auto eat_imag_suffix = [&]() {
+		    imag_type_suffix = 0;
 		    if ( !source.good() )
 			return false;
 		    int c = source.peek();
@@ -1574,7 +1587,10 @@ TokenBase *Program::_getToken()
 		    {
 			int tc = source.peek();
 			if ( tc == 'f' || tc == 'F' || tc == 'l' || tc == 'L' )
+			{
+			    imag_type_suffix = (char)tc;
 			    source.get();
+			}
 		    }
 		    return true;
 		};
@@ -1677,16 +1693,21 @@ TokenBase *Program::_getToken()
 			    while ( source.good() && isdigit(source.peek()) )
 				lit_text += (char)source.get();
 			}
+		    char real_type_suffix = 0;
 		    if ( source.good() )
 		    {
 			int c = source.peek();
 			if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
-				lit_text += (char)source.get();
+			{
+			    real_type_suffix = (char)c;
+			    lit_text += (char)source.get();
+			}
 		    }
 		    if ( eat_imag_suffix() )
 		    {
 			TokenReal *tr = new TokenReal(strtod(lit_text.c_str(), NULL));
-			tr->setDataType(get_complex_compat_type(&ddDOUBLE));
+			char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
+			tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
 			return tr;
 		    }
 		    return new TokenReal(strtod(lit_text.c_str(), NULL));
@@ -1754,16 +1775,21 @@ TokenBase *Program::_getToken()
 			double factor = 1.0;
 			for ( int i = 0; i < exp_val; ++i ) factor *= 10.0;
 			if ( exp_sign > 0 ) num *= factor; else num /= factor;
+			char real_type_suffix = 0;
 			if ( source.good() )
 			{
 			    int c = source.peek();
 			    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
+			    {
+				real_type_suffix = (char)c;
 				source.get();
+			    }
 			}
 			if ( eat_imag_suffix() )
 			{
 			    TokenReal *tr = new TokenReal(num);
-			    tr->setDataType(get_complex_compat_type(&ddDOUBLE));
+			    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
+			    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
 			    return tr;
 			}
 			return new TokenReal(num);
@@ -1821,16 +1847,21 @@ TokenBase *Program::_getToken()
 		// real); madc doesn't currently distinguish float-vs-double
 		// literals at lex time (TokenReal is always double-precision),
 		// so we just consume the suffix char.
+		char real_type_suffix = 0;
 		if ( source.good() )
 		{
 		    int c = source.peek();
 		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
+		    {
+			real_type_suffix = (char)c;
 			source.get();
+		    }
 		}
 		if ( eat_imag_suffix() )
 		{
 		    TokenReal *tr = new TokenReal(num);
-		    tr->setDataType(get_complex_compat_type(&ddDOUBLE));
+		    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
+		    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
 		    return tr;
 		}
 		return new TokenReal(num);
