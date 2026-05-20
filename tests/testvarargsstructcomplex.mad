@@ -1,0 +1,37 @@
+#include <stdarg.h>
+
+struct S
+{
+	unsigned int a;
+	_Complex int b;
+};
+
+struct S expected;
+int fails;
+
+void check(int z, ...)
+{
+	struct S arg;
+	va_list ap;
+
+	va_start(ap, z);
+	arg = va_arg(ap, struct S);
+
+	if (expected.a != arg.a)
+		fails = fails + 1;
+	if (expected.b != arg.b)
+		fails = fails + 1;
+
+	va_end(ap);
+}
+
+int main()
+{
+	expected.a = 4027477739U;
+	expected.b = (723419448 + -218144346 * __extension__ 1i);
+
+	check(1, expected);
+	puti(fails);
+	puts("\n");
+	return 0;
+}
