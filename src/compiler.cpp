@@ -2448,6 +2448,39 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !var.type->is_function() )
 	pgm.Throw(this) << "TokenCallFunc::compile() called on non-function" << flush;
 
+    // GCC builtin parity: direct llabs calls keep builtin semantics even
+    // when a same-name function is defined in the translation unit.
+    if ( argc() == 1 && var.name == "llabs" )
+    {
+	DataDef *builtin_type = &ddINT64;
+	FuncSignature funcsig(CallConvId::kCDecl);
+	funcsig.setRetT<int64_t>();
+	add_funcsig_arg(funcsig, &ddINT64);
+
+	Operand arg_storage;
+	DataDef *arg_type = NULL;
+	Operand &arg = compile_call_arg_normalized(pgm, parameters[0], builtin_type, true, arg_storage, arg_type);
+	std::vector<Operand> params;
+	append_call_param(params, funcsig, arg, builtin_type);
+
+	void *builtin_target = (void *)(intptr_t)(long long(*)(long long))::llabs;
+
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(builtin_target), funcsig);
+	pgm.track_invoke_target(builtin_target);
+	set_invoke_args(pgm, call, params, false);
+
+	if ( !regdp.first )
+	{
+	    _operand = pgm.cc.newGpq("builtin_abs_ret");
+	    regdp.first = &_operand;
+	}
+	bind_call_return(pgm, call, regdp.first, builtin_type, _operand,
+			 /*is_variadic=*/false, false);
+	regdp.second = builtin_type;
+	return *regdp.first;
+    }
+
     // function pointer call — indirect invoke through address in variable
     if ( var.type->is_function() && var.type->is_numeric() )
     {
