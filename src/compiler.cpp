@@ -6316,7 +6316,8 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenAssign: subscript write"));
 	// compile right side independently
 	regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
-	rhs_rdp.second = ltype;
+	if ( !ltype->is_complex() )
+	    rhs_rdp.second = ltype;
 	Operand &rhs_op = right->compile(pgm, rhs_rdp);
 	// Coerce dtSTRING → char*: storing a string literal into a
 	// `char *arr[N]` slot used to write the std::string object's

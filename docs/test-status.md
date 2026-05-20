@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 20, 2026 (v0.17.0, GCC parity session 18 — at least 1402/1685 from focused reruns).
+Test results as of May 20, 2026 (v0.17.0, GCC parity session 19 — at least 1403/1685 from focused reruns).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 

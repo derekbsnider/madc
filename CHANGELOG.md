@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **GCC torture `pr56837.c` now passes.**
+  Complex subscript assignment no longer forces scalar RHS values
+  through a bogus `regdp.second = complex_type` path before the
+  dedicated complex-element store logic runs, so `_Complex int a[i];
+  a[i] = -1;` now lowers cleanly. Full validation remains green at
+  `320/320` JIT and `320/320` EXE, and focused GCC reruns bring the
+  conservative parity floor to at least `1403/1685` (83.3%).
+
 - **The `_Complex` arithmetic / builtin lane moved forward again.**
   Pure-imaginary literals like `1.0i`, `2.2if`, and `10iL` now
   materialize as real complex values instead of collapsing to scalars,
