@@ -247,6 +247,8 @@ static size_t internal_vararg_static_slot_size(DataDef *type)
 {
     if ( !type )
 	return 8;
+    if ( aggregate_has_runtime_size(type) )
+	return 8;
     if ( type->is_numeric() || type->is_pointer() || type->is_real() )
 	return 8;
     if ( type->size > 0 )
@@ -3764,8 +3766,6 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    DataDef *va_type = parameters[fixed_argc + i]
 		? parameters[fixed_argc + i]->datadef() : NULL;
-	    if ( va_type && aggregate_has_runtime_size(va_type) )
-		throw "variadic aggregate packing does not support runtime-sized types";
 	    va_buf_size += internal_vararg_static_slot_size(va_type);
 	}
 	x86::Mem va_buf = pgm.cc.newStack((uint32_t)va_buf_size, 8);
@@ -3782,6 +3782,13 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    x86::Mem slot = va_buf;
 	    slot.addOffset((int64_t)va_off);
 	    size_t slot_size = internal_vararg_static_slot_size(va_type);
+	    if ( va_type && aggregate_has_runtime_size(va_type) )
+	    {
+		x86::Gp src_ptr = materialize_gp_ptr_arg(pgm, va_reg, "__va_pack_dyn");
+		slot.setSize(8);
+		pgm.cc.mov(slot, src_ptr);
+	    }
+	    else
 	    if ( va_type && !va_type->is_numeric() && !va_type->is_pointer() && !va_type->is_real() )
 	    {
 		slot.setSize((uint32_t)slot_size);
@@ -10970,11 +10977,25 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 
     if ( target_type && !target_type->is_numeric() && !target_type->is_pointer() && !target_type->is_real() )
     {
-	if ( aggregate_has_runtime_size(target_type) )
-	    throw "va_arg() does not support runtime-sized aggregate types";
-	x86::Mem slot = pgm.cc.newStack((uint32_t)target_type->size, 8);
-	slot.setSize((uint32_t)target_type->size);
-	emit_raw_aggregate_copy(pgm, slot, ptr, target_type, "__va_arg_copy");
+	bool runtime_sized = aggregate_has_runtime_size(target_type);
+	Operand src_storage;
+	Operand *src_ptr = NULL;
+	x86::Mem slot;
+	if ( runtime_sized )
+	{
+	    x86::Gp dyn_src = pgm.cc.newIntPtr("__va_arg_dyn");
+	    pgm.cc.mov(dyn_src, x86::qword_ptr(ptr));
+	    src_storage = dyn_src;
+	    src_ptr = &src_storage;
+	}
+	else
+	{
+	    slot = pgm.cc.newStack((uint32_t)target_type->size, 8);
+	    slot.setSize((uint32_t)target_type->size);
+	    emit_raw_aggregate_copy(pgm, slot, ptr, target_type, "__va_arg_copy");
+	    src_storage = as_gp_ptr(pgm, slot, "__va_arg_val");
+	    src_ptr = &src_storage;
+	}
 
 	size_t advance = internal_vararg_static_slot_size(target_type);
 	pgm.cc.add(ptr, (int64_t)advance);
@@ -10989,17 +11010,22 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    if ( regdp.first->isMem() )
 	    {
-		emit_raw_aggregate_copy(pgm, *regdp.first, slot, target_type, "__va_arg_store");
+		if ( runtime_sized )
+		{
+		    x86::Gp size_gp = emit_runtime_aggregate_size(pgm, target_type, "__va_arg_size");
+		    emit_runtime_aggregate_copy(pgm, *regdp.first, *src_ptr, size_gp, "__va_arg_store");
+		}
+		else
+		    emit_raw_aggregate_copy(pgm, *regdp.first, *src_ptr, target_type, "__va_arg_store");
 		return *regdp.first;
 	    }
 	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
 	    {
-		x86::Gp src_ptr = as_gp_ptr(pgm, slot, "__va_arg_ptr");
-		pgm.cc.mov(regdp.first->as<x86::Gp>(), src_ptr);
+		pgm.cc.mov(regdp.first->as<x86::Gp>(), src_ptr->as<x86::Gp>());
 		return *regdp.first;
 	    }
 	}
-	_operand = as_gp_ptr(pgm, slot, "__va_arg_val");
+	_operand = src_ptr->as<x86::Gp>();
 	regdp.first = &_operand;
 	return _operand;
     }
