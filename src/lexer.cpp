@@ -878,6 +878,10 @@ void Program::add_keywords()
 // add static tokens for base data types
 void Program::add_datatypes()
 {
+    static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
+    static TokenDataType tkSIZE_T("size_t", ddUINT64);
+    static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+
     datatype_map[tkVOID.str] = &tkVOID;
     datatype_map[tkBOOL.str] = &tkBOOL;
     datatype_map[tkC23BOOL.str] = &tkC23BOOL;
@@ -903,6 +907,9 @@ void Program::add_datatypes()
     datatype_map[tkFSTREAM.str] = &tkFSTREAM;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
     datatype_map[tkAUTO.str] = &tkAUTO;
+    datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
+    datatype_map[tkSIZE_T.str] = &tkSIZE_T;
+    datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
 }
 
 
