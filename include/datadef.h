@@ -98,6 +98,7 @@ public:
 	return false;
     }
     virtual bool is_string() const { if (rawtype() == DataType::dtSTRING) return true; return false; }
+    virtual bool is_complex() const { return false; }
     virtual bool is_numeric() const
     {
 	if ( basetype() != BaseType::btSimple )
@@ -853,6 +854,35 @@ public:
     }
 
     bool has_runtime_size() const { return count_expr != NULL; }
+};
+
+class DataDefCOMPLEX : public DataDefSTRUCT
+{
+public:
+    DataDef *element_type;
+
+    DataDefCOMPLEX(DataDef &elem)
+	: DataDefSTRUCT(elem.name + " _Complex", 0), element_type(&elem)
+    {
+	addMember("__real", elem, 1);
+	addMember("__imag", elem, 1);
+    }
+
+    virtual bool is_complex() const { return true; }
+
+    virtual bool is_compatible(DataDef &d)
+    {
+	if ( &d == this )
+	    return true;
+	DataDefCOMPLEX *other = dynamic_cast<DataDefCOMPLEX *>(&d);
+	return other && other->element_type == element_type;
+    }
+
+    size_t component_offset(bool imag_part) const
+    {
+	std::string member = imag_part ? "__imag" : "__real";
+	return const_cast<DataDefCOMPLEX *>(this)->m_offset(member);
+    }
 };
 
 class MadArray;

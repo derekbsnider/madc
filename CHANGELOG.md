@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **GCC torture `20050121-1.c` now passes.**
+  `_Complex` / `__complex__` declarations now preserve a real internal
+  complex pair type instead of collapsing immediately to scalar storage,
+  GNU `__real__` / `__imag__` now parse as component expressions,
+  complex-to-scalar casts route through the real lane, equality / `!=`
+  compare complex values component-wise without double-evaluating their
+  operands, and `&(__real expr)` now lowers as an addressable lvalue.
+  The branch-local complex regressions `tests/testcomplexkw.mad`,
+  `tests/testcomplexushort.mad`, and `tests/testcomplexrealaddr.mad`
+  are green, integration / EXE remain `315/315`, and GCC parity is now
+  `1344/1685` (79.8%).
+
 - **GCC torture `20030222-1.c`, `20030714-1.c`, `20030928-1.c`, `20061220-1.c`, `20080424-1.c`, and `20080519-1.c` now pass.**
   Typedef enum aliases now preserve their alias spelling well enough for
   narrow unsigned bitfield extraction heuristics, nested local function

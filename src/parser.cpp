@@ -1020,6 +1020,16 @@ static bool is_realpart_identifier(const std::string &name)
     return name == "__real" || name == "__real__";
 }
 
+static bool is_imagpart_identifier(const std::string &name)
+{
+    return name == "__imag" || name == "__imag__";
+}
+
+static TokenBase *make_complex_component_token(TokenBase *expr, bool imag_part)
+{
+    return new TokenComplexPart(expr, imag_part);
+}
+
 static std::string make_nested_function_name(TokenCpnd *scope,
 					     const std::string &local_name)
 {
@@ -5054,6 +5064,8 @@ static bool next_parenthesized_type_is_compound_literal(Program &pgm)
 
 static bool is_addressable_expression(TokenBase *expr)
 {
+    if ( TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(expr) )
+	return tcp->expr && tcp->expr->datadef() && tcp->expr->datadef()->is_complex();
     return dynamic_cast<TokenMember *>(expr)
 	|| dynamic_cast<TokenDeref *>(expr)
 	|| dynamic_cast<TokenSubscript *>(expr)
@@ -6512,24 +6524,38 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    exStack.push(new TokenVar(*var));
 		    break;
 		}
-		if ( is_realpart_identifier(ident_tb->str) )
+		if ( is_realpart_identifier(ident_tb->str)
+		  || is_imagpart_identifier(ident_tb->str) )
 		{
+		    bool want_imag = is_imagpart_identifier(ident_tb->str);
 		    TokenBase *next_tb = nextToken();
 		    if ( !next_tb )
 			Throw(tb) << "Expecting expression after " << ident_tb->str << flush;
-		    TokenBase *real_expr = NULL;
+		    TokenBase *component_expr = NULL;
 		    if ( next_tb->id() == TokenID::tkOpBrk )
 		    {
 			TokenBase *inner_tb = nextToken();
-			real_expr = parseExpression(inner_tb, true, false, true, 1);
+			component_expr = parseExpression(inner_tb, true, false, true, 1);
 		    }
 		    else if ( is_contextual_identifier_token(next_tb) || next_tb->type() == TokenType::ttIdentifier )
 		    {
-			real_expr = parsePostfixChain(next_tb);
+			component_expr = parsePostfixChain(next_tb);
+			TokenVar *tv = dynamic_cast<TokenVar *>(component_expr);
+			if ( tv && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+			  && tv->var.type && tv->var.type->is_function() )
+			{
+			    Variable *call_var = runtime_eval_scope_target(&tv->var);
+			    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+			    TokenBase *call_tb = nextToken();
+			    tc->line = call_tb->line;
+			    tc->column = call_tb->column;
+			    parseCallFunc(tc);
+			    component_expr = tc;
+			}
 		    }
-		    if ( !real_expr )
+		    if ( !component_expr )
 			Throw(next_tb) << "Unsupported operand for " << ident_tb->str << flush;
-		    exStack.push(real_expr);
+		    exStack.push(make_complex_component_token(component_expr, want_imag));
 		    break;
 		}
 		// sizeof / alignof — resolve to integer constant at parse time.

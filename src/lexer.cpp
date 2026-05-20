@@ -33,6 +33,19 @@
 using namespace std;
 using namespace asmjit;
 
+static DataDef *get_complex_compat_type(DataDef *base_type)
+{
+    static std::map<DataDef *, DataDefCOMPLEX *> cache;
+    if ( !base_type )
+	base_type = &ddDOUBLE;
+    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(base_type);
+    if ( it != cache.end() )
+	return it->second;
+    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*base_type);
+    cache[base_type] = complex_type;
+    return complex_type;
+}
+
 static bool is_binary_prefix(int ch, Source &source)
 {
     return ch == '0' && source.good() && (source.peek() == 'b' || source.peek() == 'B');
@@ -2400,37 +2413,68 @@ TokenBase *Program::_getToken()
 		    {
 			case 0:
 			    if ( counter & TS_COMPLEX )
-				return new TokenDataType("double", ddDOUBLE);
+			    {
+				DataDef *complex_dd = get_complex_compat_type(&ddDOUBLE);
+				return new TokenDataType(complex_dd->name.c_str(), *complex_dd);
+			    }
 			    break;
-			case TS_CHAR:                                   return new TokenDataType("char", ddCHAR);
-			case TS_SIGNED + TS_CHAR:                       return new TokenDataType("signed char", ddINT8);
-			case TS_UNSIGNED + TS_CHAR:                     return new TokenDataType("unsigned char", ddUINT8);
+			case TS_CHAR:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddCHAR); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("char", ddCHAR);
+			case TS_SIGNED + TS_CHAR:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT8); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("signed char", ddINT8);
+			case TS_UNSIGNED + TS_CHAR:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT8); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned char", ddUINT8);
 			case TS_SHORT:
 			case TS_SHORT + TS_INT:
 			case TS_SIGNED + TS_SHORT:
-			case TS_SIGNED + TS_SHORT + TS_INT:             return new TokenDataType("short", ddINT16);
+			case TS_SIGNED + TS_SHORT + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT16); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("short", ddINT16);
 			case TS_UNSIGNED + TS_SHORT:
-			case TS_UNSIGNED + TS_SHORT + TS_INT:           return new TokenDataType("unsigned short", ddUINT16);
+			case TS_UNSIGNED + TS_SHORT + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT16); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned short", ddUINT16);
 			case TS_INT:
 			case TS_SIGNED:
-			case TS_SIGNED + TS_INT:                        return new TokenDataType("int", ddINT32);
+			case TS_SIGNED + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT32); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("int", ddINT32);
 			case TS_UNSIGNED:
-			case TS_UNSIGNED + TS_INT:                      return new TokenDataType("unsigned int", ddUINT32);
+			case TS_UNSIGNED + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT32); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned int", ddUINT32);
 			case TS_LONG:
 			case TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG:
-			case TS_SIGNED + TS_LONG + TS_INT:              return new TokenDataType("long", ddINT64);
+			case TS_SIGNED + TS_LONG + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("long", ddINT64);
 			case TS_UNSIGNED + TS_LONG:
-			case TS_UNSIGNED + TS_LONG + TS_INT:            return new TokenDataType("unsigned long", ddUINT64);
+			case TS_UNSIGNED + TS_LONG + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned long", ddUINT64);
 			case TS_LONG + TS_LONG:
 			case TS_LONG + TS_LONG + TS_INT:
 			case TS_SIGNED + TS_LONG + TS_LONG:
-			case TS_SIGNED + TS_LONG + TS_LONG + TS_INT:   return new TokenDataType("long long", ddINT64);
+			case TS_SIGNED + TS_LONG + TS_LONG + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("long long", ddINT64);
 			case TS_UNSIGNED + TS_LONG + TS_LONG:
-			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:  return new TokenDataType("unsigned long long", ddUINT64);
-			case TS_FLOAT:                                  return new TokenDataType("float", ddFLOAT);
-			case TS_DOUBLE:                                 return new TokenDataType("double", ddDOUBLE);
-			case TS_LONG + TS_DOUBLE:                       return new TokenDataType("long double", ddDOUBLE);
+			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned long long", ddUINT64);
+			case TS_FLOAT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("float", ddFLOAT);
+			case TS_DOUBLE:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("double", ddDOUBLE);
+			case TS_LONG + TS_DOUBLE:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("long double", ddDOUBLE);
 			default:
 			    // Unrecognized combination — push back consumed words
 			    // in reverse and fall through to identifier/keyword lookup.

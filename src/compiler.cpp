@@ -655,6 +655,7 @@ static x86::Gp emit_bitfield_store_operand(Program &pgm, x86::Mem storage,
     DataDef *field_type, const char *hint);
 
 static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right);
+static DataDef *complex_component_type(DataDef *dd);
 
 static bool is_arithmetic_result_operator(TokenBase *token)
 {
@@ -1336,6 +1337,150 @@ static Operand &compile_pointer_offset_operand(Program &pgm, TokenBase *offset_e
 
 enum class CmpKind : uint8_t { Eq, Ne, Lt, Le, Gt, Ge };
 
+static Operand &compile_complex_compare_base(Program &pgm, TokenBase *expr, DataDef *expr_type,
+					     Operand &storage)
+{
+    regdefp_t sub = {nullptr, expr_type, nullptr};
+    Operand &base = expr->compile(pgm, sub);
+    storage = base;
+    return storage;
+}
+
+static x86::Mem complex_component_mem(Program &pgm, const Operand &base_op,
+				      DataDefCOMPLEX *cdd, bool imag_part,
+				      const char *tmp_name)
+{
+    DataDef *part_type = cdd && cdd->element_type ? cdd->element_type : &ddINT64;
+    size_t ofs = cdd ? cdd->component_offset(imag_part) : 0;
+    if ( base_op.isMem() )
+    {
+	x86::Mem part = base_op.as<x86::Mem>();
+	part.addOffset((int64_t)ofs);
+	part.setSize((uint32_t)part_type->size);
+	return part;
+    }
+
+    x86::Gp base_gp;
+    if ( base_op.isImm() )
+    {
+	base_gp = pgm.cc.newIntPtr(tmp_name);
+	pgm.cc.mov(base_gp, base_op.as<Imm>());
+    }
+    else
+	base_gp = base_op.as<x86::Gp>();
+    return x86::ptr(base_gp, (int32_t)ofs, (uint32_t)part_type->size);
+}
+
+static x86::Gp emit_complex_cmp_bit(Program &pgm, const Operand &lhs, DataDef *lhs_type,
+				    const Operand &rhs, DataDef *rhs_type,
+				    DataDef *cmp_type, CmpKind op,
+				    const char *name)
+{
+    IRBuilder ir(pgm.cc);
+    IRValue left_val = ir.load(ir.coerce(ir_from_operand(lhs, lhs_type), cmp_type));
+    IRValue right_val = ir.load(ir.coerce(ir_from_operand(rhs, rhs_type), cmp_type));
+    x86::Gp result = pgm.cc.newGpq(name);
+    pgm.safecmp(left_val.op, right_val.op, cmp_type);
+    if ( op == CmpKind::Eq )
+	pgm.safesete(result);
+    else
+	pgm.safesetne(result);
+    return result;
+}
+
+static Operand &emit_complex_compare(Program &pgm, TokenBase *left, TokenBase *right, CmpKind op,
+				     regdefp_t &regdp, Operand &storage)
+{
+    Operand *caller_dest = regdp.first;
+    DataDef *left_type = left ? left->datadef() : nullptr;
+    DataDef *right_type = right ? right->datadef() : nullptr;
+    bool left_complex = left_type && left_type->is_complex();
+    bool right_complex = right_type && right_type->is_complex();
+    DataDef *component_type = complex_component_type(left_complex ? left_type : right_type);
+    if ( !component_type )
+	component_type = &ddINT;
+
+    Operand left_base;
+    Operand right_base;
+    Operand left_real_storage;
+    Operand left_imag_storage;
+    Operand right_real_storage;
+    Operand right_imag_storage;
+    Operand left_scalar_storage;
+    Operand left_zero_storage;
+    Operand right_scalar_storage;
+    Operand right_zero_storage;
+    TokenInt zero(0);
+
+    Operand *left_real = nullptr;
+    Operand *left_imag = nullptr;
+    Operand *right_real = nullptr;
+    Operand *right_imag = nullptr;
+    DataDef *left_real_type = component_type;
+    DataDef *left_imag_type = component_type;
+    DataDef *right_real_type = component_type;
+    DataDef *right_imag_type = component_type;
+
+    if ( left_complex )
+    {
+	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(left_type);
+	if ( cdd && cdd->element_type )
+	    left_real_type = left_imag_type = cdd->element_type;
+	Operand &base = compile_complex_compare_base(pgm, left, left_type, left_base);
+	left_real_storage = complex_component_mem(pgm, base, cdd, false, "__complex_cmp_l");
+	left_imag_storage = complex_component_mem(pgm, base, cdd, true, "__complex_cmp_l");
+	left_real = &left_real_storage;
+	left_imag = &left_imag_storage;
+    }
+    else
+    {
+	left_real = &compile_token_normalized(pgm, left, component_type, nullptr, left_scalar_storage);
+	left_real_type = component_type;
+	left_imag = &compile_token_normalized(pgm, &zero, component_type, nullptr, left_zero_storage);
+	left_imag_type = component_type;
+    }
+
+    if ( right_complex )
+    {
+	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(right_type);
+	if ( cdd && cdd->element_type )
+	    right_real_type = right_imag_type = cdd->element_type;
+	Operand &base = compile_complex_compare_base(pgm, right, right_type, right_base);
+	right_real_storage = complex_component_mem(pgm, base, cdd, false, "__complex_cmp_r");
+	right_imag_storage = complex_component_mem(pgm, base, cdd, true, "__complex_cmp_r");
+	right_real = &right_real_storage;
+	right_imag = &right_imag_storage;
+    }
+    else
+    {
+	right_real = &compile_token_normalized(pgm, right, component_type, nullptr, right_scalar_storage);
+	right_real_type = component_type;
+	right_imag = &compile_token_normalized(pgm, &zero, component_type, nullptr, right_zero_storage);
+	right_imag_type = component_type;
+    }
+
+    x86::Gp real_cmp = emit_complex_cmp_bit(pgm, *left_real, left_real_type,
+					    *right_real, right_real_type,
+					    component_type, op, "__complex_cmp_re");
+    x86::Gp imag_cmp = emit_complex_cmp_bit(pgm, *left_imag, left_imag_type,
+					    *right_imag, right_imag_type,
+					    component_type, op, "__complex_cmp_im");
+    if ( op == CmpKind::Eq )
+	pgm.safeand(real_cmp, imag_cmp, &ddINT64);
+    else
+	pgm.safeor(real_cmp, imag_cmp, &ddINT64);
+
+    regdp.second = &ddINT64;
+    storage = real_cmp;
+    regdp.first = &storage;
+    if ( caller_dest )
+    {
+	regdp.first = caller_dest;
+	return emit_ir_value(pgm, IRValue::reg(real_cmp, &ddINT64), regdp, storage, &ddINT64);
+    }
+    return storage;
+}
+
 // Central implementation of `lval <cmp> rval` -> 0/1 int64 result.
 // Both sides normalize through compile_token_normalized to a Reg of the
 // inferred cmp_type; safecmp + the right safeset produce the flag and
@@ -1345,6 +1490,10 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
 			     regdefp_t &regdp, Operand &storage)
 {
     Operand *caller_dest = regdp.first;
+    if ( (op == CmpKind::Eq || op == CmpKind::Ne)
+      && ((left && left->datadef() && left->datadef()->is_complex())
+       || (right && right->datadef() && right->datadef()->is_complex())) )
+	return emit_complex_compare(pgm, left, right, op, regdp, storage);
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
     DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
     DataDef *cmp_type = (lptr_type || rptr_type)
@@ -5648,6 +5797,20 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	DBG(cout << "     tvl->var.type() " << (int)ltype->type() << " name: " << ltype->name << endl);
     }
     else
+    if ( dynamic_cast<TokenComplexPart *>(left) )
+    {
+	TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(left);
+	ltype = tcp->datadef();
+	_operand = tcp->operand(pgm);
+	if ( regdp.second && regdp.second != ltype
+	&&  !regdp.second->is_compatible(*ltype) )
+	{
+	    cerr << "regdp.second->type() " << (int)regdp.second->type() << " name: " << regdp.second->name << endl;
+	    cerr << "     complex-part type() " << (int)ltype->type() << " name: " << ltype->name << endl;
+	    throw "incompatible assignment";
+	}
+    }
+    else
     // handle *ptr dereference on LHS
     if ( dynamic_cast<TokenDeref *>(left) )
     {
@@ -6057,11 +6220,50 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     {
 	Operand *orig_operand = regdp.first;
 	regdp.first = NULL;
-	if ( ltype->basetype() == BaseType::btStruct
-	  || ltype->basetype() == BaseType::btClass )
+	regdp.second = NULL;
+	if ( (ltype->basetype() == BaseType::btStruct
+	   || ltype->basetype() == BaseType::btClass)
+	  && !ltype->is_complex() )
 	    regdp.second = ltype;
 	r_operand = &right->compile(pgm, regdp);
 	regdp.first = orig_operand ? orig_operand : r_operand;
+    }
+
+    if ( ltype->is_complex() && regdp.second && regdp.second->is_numeric() )
+    {
+	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(ltype);
+	if ( !cdd )
+	    throw "TokenAssign: expected complex datadef";
+	IRBuilder ir(pgm.cc);
+	Operand real_mem = _operand;
+	if ( real_mem.isMem() )
+	    real_mem.as<x86::Mem>().setSize((uint32_t)cdd->element_type->size);
+	else
+	    real_mem = x86::ptr(real_mem.as<x86::Gp>(), 0, (uint32_t)cdd->element_type->size);
+	ir.store(IRValue::mem(real_mem.as<x86::Mem>(), cdd->element_type),
+		 ir_from_operand(*r_operand, regdp.second));
+	Operand imag_mem = _operand;
+	if ( imag_mem.isMem() )
+	{
+	    imag_mem.as<x86::Mem>().addOffset((int64_t)cdd->component_offset(true));
+	    imag_mem.as<x86::Mem>().setSize((uint32_t)cdd->element_type->size);
+	}
+	else
+	    imag_mem = x86::ptr(imag_mem.as<x86::Gp>(),
+				(int32_t)cdd->component_offset(true),
+				(uint32_t)cdd->element_type->size);
+	x86::Gp zero = pgm.cc.newGpq("__complex_imag_zero");
+	pgm.cc.xor_(zero, zero);
+	ir.store(IRValue::mem(imag_mem.as<x86::Mem>(), cdd->element_type),
+		 IRValue::reg(zero, cdd->element_type));
+	if ( tvl )
+	{
+	    tvl->var.modified();
+	    tvl->putreg(pgm);
+	}
+	regdp.first = &_operand;
+	regdp.second = ltype;
+	return _operand;
     }
 
     if ( !regdp.second )
@@ -9347,6 +9549,85 @@ Operand &TokenDerefExpr::compile(Program &pgm, regdefp_t &regdp)
     return _operand;
 }
 
+static DataDef *complex_component_type(DataDef *dd)
+{
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(dd);
+    return cdd && cdd->element_type ? cdd->element_type : dd;
+}
+
+DataDef *TokenComplexPart::datadef() const
+{
+    DataDef *expr_dd = expr ? expr->datadef() : NULL;
+    if ( expr_dd && expr_dd->is_complex() )
+	return complex_component_type(expr_dd);
+    if ( imag_part )
+	return expr_dd && expr_dd->is_real() ? expr_dd : &ddINT64;
+    return expr_dd ? expr_dd : &ddINT64;
+}
+
+Operand &TokenComplexPart::operand(Program &pgm)
+{
+    DataDef *expr_dd = expr ? expr->datadef() : NULL;
+    if ( !expr_dd || !expr_dd->is_complex() )
+	throw "TokenComplexPart::operand() requires a complex lvalue";
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(expr_dd);
+    if ( !cdd )
+	throw "TokenComplexPart::operand() expected complex datadef";
+    regdefp_t sub = {nullptr, expr_dd, nullptr};
+    Operand &base_op = expr->compile(pgm, sub);
+    size_t ofs = cdd->component_offset(imag_part);
+    DataDef *part_dd = datadef();
+
+    if ( base_op.isMem() )
+    {
+	_operand = base_op.as<x86::Mem>();
+	_operand.as<x86::Mem>().addOffset((int64_t)ofs);
+	_operand.as<x86::Mem>().setSize((uint32_t)part_dd->size);
+	return _operand;
+    }
+
+    x86::Gp base_gp;
+    if ( base_op.isImm() )
+    {
+	base_gp = pgm.cc.newIntPtr(imag_part ? "__imag_imm" : "__real_imm");
+	pgm.cc.mov(base_gp, base_op.as<Imm>());
+    }
+    else
+	base_gp = base_op.as<x86::Gp>();
+
+    _operand = x86::ptr(base_gp, (int32_t)ofs, (uint32_t)part_dd->size);
+    return _operand;
+}
+
+Operand &TokenComplexPart::compile(Program &pgm, regdefp_t &regdp)
+{
+    DataDef *expr_dd = expr ? expr->datadef() : NULL;
+    DataDef *part_dd = datadef();
+
+    if ( expr_dd && expr_dd->is_complex() )
+    {
+	Operand &part_mem = operand(pgm);
+	return emit_ir_value(pgm, IRValue::mem(part_mem.as<x86::Mem>(), part_dd),
+			     regdp, _operand, part_dd);
+    }
+
+    if ( imag_part )
+    {
+	x86::Gp zero = pgm.cc.newGpq("__imag_zero");
+	pgm.cc.xor_(zero, zero);
+	_operand = zero;
+	regdp.first = &_operand;
+	regdp.second = part_dd;
+	return _operand;
+    }
+
+    regdefp_t inner = {regdp.first, regdp.second, regdp.object};
+    Operand &result = expr->compile(pgm, inner);
+    regdp.first = &result;
+    regdp.second = part_dd;
+    return result;
+}
+
 Operand &TokenDerefStep::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(pgm.cc.comment(increment ? "TokenDerefStep::compile(*ptr++)" : "TokenDerefStep::compile(*ptr--)"));
@@ -9423,6 +9704,39 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	&& cast_type && cast_type->is_pointer()
 	&& (cast_type->rawtype() == DataType::dtCHAR
 	 || cast_type->rawtype() == DataType::dtUINT8);
+    bool complex_to_scalar = expr && expr->datadef()
+	&& expr->datadef()->is_complex()
+	&& cast_type && (cast_type->is_numeric() || cast_type->is_pointer());
+    if ( complex_to_scalar )
+    {
+	TokenComplexPart real_part(expr, false);
+	regdefp_t inner_rdp = {NULL, complex_component_type(expr->datadef()), NULL};
+	Operand &real_op = real_part.compile(pgm, inner_rdp);
+	DataDef *real_type = inner_rdp.second ? inner_rdp.second : real_part.datadef();
+	regdp.second = cast_type;
+	if ( cast_type->is_pointer() && real_type && real_type->is_pointer() )
+	{
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, real_op, cast_type, real_type);
+		return *regdp.first;
+	    }
+	    _operand = real_op;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+	IRBuilder ir(pgm.cc);
+	IRValue out = ir.coerce(ir_from_operand(real_op, real_type), cast_type);
+	out = ir.load(out);
+	if ( regdp.first )
+	{
+	    pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
+	    return *regdp.first;
+	}
+	_operand = out.op;
+	regdp.first = &_operand;
+	return _operand;
+    }
     if ( str_to_cstr )
     {
 	Operand cstr_storage;
@@ -9862,6 +10176,14 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	if ( tm->is_bitfield_member() )
 	    pgm.Throw(expr) << "Cannot take address of bit-field member" << flush;
 	Operand &obj = expr->operand(pgm);
+	if ( obj.isMem() )
+	    pgm.cc.lea(addr, obj.as<x86::Mem>());
+	else
+	    pgm.cc.mov(addr, obj.as<x86::Gp>());
+    }
+    else if ( TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(expr) )
+    {
+	Operand &obj = tcp->operand(pgm);
 	if ( obj.isMem() )
 	    pgm.cc.lea(addr, obj.as<x86::Mem>());
 	else

@@ -362,6 +362,22 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+class TokenComplexPart: public TokenBase
+{
+public:
+    TokenBase *expr;
+    bool imag_part;
+    asmjit::Operand _operand;
+
+    TokenComplexPart(TokenBase *e, bool imag)
+	: expr(e), imag_part(imag) {}
+
+    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual DataDef *datadef() const override;
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 // *ptr++ / *ptr-- — dereference the current pointer value, then advance
 // or rewind the pointer variable itself.
 class TokenDerefStep: public TokenBase
