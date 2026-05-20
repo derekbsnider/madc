@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <functional>
+#include <complex>
 #include <map>
 #include <set>
 #include <list>
@@ -42,6 +43,28 @@ const char *string_cstr(void *ptr);
 extern "C" void *madc_runtime_memcpy(void *dst, const void *src, size_t n)
 {
     return ::memcpy(dst, src, n);
+}
+
+extern "C" void madc_runtime_complex_div_float(void *out,
+					       float ar, float ai,
+					       float br, float bi)
+{
+    std::complex<float> result = std::complex<float>(ar, ai)
+			       / std::complex<float>(br, bi);
+    float *parts = static_cast<float *>(out);
+    parts[0] = result.real();
+    parts[1] = result.imag();
+}
+
+extern "C" void madc_runtime_complex_div_double(void *out,
+					        double ar, double ai,
+					        double br, double bi)
+{
+    std::complex<double> result = std::complex<double>(ar, ai)
+				/ std::complex<double>(br, bi);
+    double *parts = static_cast<double *>(out);
+    parts[0] = result.real();
+    parts[1] = result.imag();
 }
 
 // Materialize an operand into a Gp register. If already Gp, return it.
@@ -1868,6 +1891,34 @@ static Operand &emit_complex_muldiv(Program &pgm, TokenBase *left, TokenBase *ri
     }
     else
     {
+	if ( cdd->element_type->is_real() )
+	{
+	    x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+	    x86::Gp out_ptr = as_gp_ptr(pgm, slot, "__complex_div_out");
+	    void *helper = cdd->element_type->size == sizeof(float)
+		? (void *)madc_runtime_complex_div_float
+		: (void *)madc_runtime_complex_div_double;
+
+	    InvokeNode *call;
+	    if ( cdd->element_type->size == sizeof(float) )
+		pgm.cc.invoke(&call, imm(helper),
+			      FuncSignature::build<void, void *, float, float, float, float>());
+	    else
+		pgm.cc.invoke(&call, imm(helper),
+			      FuncSignature::build<void, void *, double, double, double, double>());
+	    pgm.track_invoke_target(helper);
+	    call->setArg(0, out_ptr);
+	    call->setArg(1, a.as<x86::Xmm>());
+	    call->setArg(2, b.as<x86::Xmm>());
+	    call->setArg(3, c.as<x86::Xmm>());
+	    call->setArg(4, d.as<x86::Xmm>());
+
+	    storage = as_gp_ptr(pgm, slot, "__complex_div");
+	    regdp.first = &storage;
+	    regdp.second = complex_type;
+	    return storage;
+	}
+
 	Operand denom_cc, denom_dd, denom, num_re, num_im;
 	copy_typed_value(pgm, c, cdd->element_type, denom_cc, "__complex_cc");
 	pgm.safemul(denom_cc, c, cdd->element_type);

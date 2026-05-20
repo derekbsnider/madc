@@ -473,6 +473,9 @@ void Program::_tokenizer_init()
     define_map["__builtin_ceil"] = "ceil";
     define_map["__builtin_roundf"] = "roundf";
     define_map["__builtin_round"] = "round";
+    define_map["__builtin_fmaxf"] = "fmaxf";
+    define_map["__builtin_fmax"] = "fmax";
+    define_map["__builtin_fmaxl"] = "fmaxl";
     define_map["__builtin_powf"] = "powf";
     define_map["__builtin_pow"] = "pow";
     define_map["__builtin_fmaf"] = "fmaf";
