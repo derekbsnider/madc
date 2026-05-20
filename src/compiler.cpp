@@ -2835,13 +2835,43 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 //#endif
 
+    x86::Gp env_ptr = pgm.cc.newIntPtr("__env_ptr");
+    pgm.cc.xor_(env_ptr, env_ptr);
+    if ( func->has_captures )
+    {
+	add_funcsig_arg(funcsig, NULL);
+	size_t n = func->captures.size();
+	if ( n > 0 )
+	{
+	    x86::Mem env_stack = pgm.cc.newStack((uint32_t)(n * 8), 8);
+	    pgm.cc.lea(env_ptr, env_stack);
+	    for ( size_t ci = 0; ci < n; ++ci )
+	    {
+		std::string cap_name = func->captures[ci].name;
+		Variable *cap_var = pgm.tkFunction->findVariable(cap_name);
+		if ( !cap_var ) continue;
+		Operand &cap_op = pgm.tkFunction->voperand(pgm, cap_var);
+		DataDef *cap_type = func->captures[ci].type;
+		x86::Gp slot_val = pgm.cc.newGpq(cap_type->is_numeric() ? "__cap_val" : "__cap_str");
+		if ( cap_type->is_numeric() )
+		    load_var_to_gp(pgm, cap_op, slot_val);
+		else
+		    lea_var_to_gp(pgm, cap_op, slot_val);
+		pgm.cc.mov(x86::qword_ptr(env_ptr, (int64_t)ci * 8), slot_val);
+	    }
+	}
+	append_call_param(params, funcsig, env_ptr, &ddINT64);
+    }
+
     size_t expected_argc = explicit_expected_argc(func);
     // K&R functions with empty param list (not `void`) accept any number of args
     bool knr_unspecified = func->parameters.empty() && !func->is_void_params;
     if ( !is_variadic && !func->is_varargs && !knr_unspecified && argc() > expected_argc )
 	throw_too_many_call_args(pgm, this, parameters.data(), argc());
 
-    size_t param_offset = (func->is_multi_return() || has_object_arg) ? 1 : 0;
+    size_t param_offset = (func->is_multi_return() ? 1 : 0)
+	+ (has_object_arg ? 1 : 0)
+	+ (func->has_captures ? 1 : 0);
     size_t fixed_argc = func->is_varargs ? expected_argc : argc();
     for ( size_t i = 0; i < fixed_argc; ++i )
     {
@@ -2973,6 +3003,22 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	pgm.track_invoke_target(call_target);
     DBG(pgm.cc.comment("TokenCallFunc::compile() looping over params"));
     set_invoke_args(pgm, call, params, false);
+
+    if ( func->has_captures )
+    {
+	for ( size_t ci = 0; ci < func->captures.size(); ++ci )
+	{
+	    DataDef *cap_type = func->captures[ci].type;
+	    if ( !cap_type->is_numeric() ) continue;
+	    std::string cap_name = func->captures[ci].name;
+	    Variable *cap_var = pgm.tkFunction->findVariable(cap_name);
+	    if ( !cap_var ) continue;
+	    Operand &cap_op = pgm.tkFunction->voperand(pgm, cap_var);
+	    x86::Gp val = pgm.cc.newGpq("__cap_reload");
+	    pgm.cc.mov(val, x86::qword_ptr(env_ptr, (int64_t)ci * 8));
+	    store_gp_to_var(pgm, val, cap_op);
+	}
+    }
 
     DBG(std::cout << "TokenCallFunc::compile() END" << std::endl);
 

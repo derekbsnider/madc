@@ -1543,6 +1543,8 @@ static TokenBase *materialize_runtime_struct_size_captures(Program &pgm, TokenCp
     return td;
 }
 
+static void configure_nested_function_captures(Program &pgm, FuncDef *func);
+
 static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
 					       const std::string &op_name)
 {
@@ -10269,6 +10271,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     int anon_param_index = 0;
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
+    bool is_nested_function = !compounds.empty() && compounds.top() && compounds.top()->method;
 
     DBG(cout << "parseFunction(" << dd.name << ' ' << id << ") START" << endl);
     cur_func_name = id; // for __FUNCTION__/__func__ expansion in the lexer
@@ -10711,6 +10714,9 @@ paramdecl:
     // Definitions must own a fresh Method instance. Some prior declaration
     // paths (notably SMAUG macro expansions) leave a non-null var->data that
     // is not a valid Method object, so reusing it corrupts method->parameters.
+    if ( is_nested_function )
+	configure_nested_function_captures(*this, func);
+
     method = new Method(*var);
     var->data = (void *)method;
 
@@ -10727,6 +10733,16 @@ paramdecl:
     DataDef *d;
     Variable *v;
     int i = 0;
+    int user_param_index = 0;
+
+    if ( is_nested_function )
+    {
+	std::string env_name = "__env";
+	Variable *env_pv = new Variable(env_name, ddINT64, 1, NULL, false);
+	env_pv->flags |= vfPARAM | vfLOCAL;
+	method->env_param = env_pv;
+	method->parameters.push_back(env_pv);
+    }
 
     DBG(cout << "parseFunction() param loop: func->parameters.size()=" << func->parameters.size()
 	<< " ids.size()=" << ids.size() << " method=" << (void*)method << endl);
@@ -10743,14 +10759,17 @@ paramdecl:
     for ( dvi = func->parameters.begin(); dvi != func->parameters.end(); ++dvi, ++i )
     {
 	d = *dvi;
-	std::string pname = (size_t)i < ids.size()
-	    ? ids[i]
-	    : std::string("__synthetic_p") + std::to_string(i);
+	if ( is_nested_function && i == 0 )
+	    continue;
+	std::string pname = (size_t)user_param_index < ids.size()
+	    ? ids[user_param_index]
+	    : std::string("__synthetic_p") + std::to_string(user_param_index);
 	DBG(cout << "parseFunction() adding parameter variable " << pname << endl);
 	v = new Variable(pname, *d, 1, NULL, false);
 	v->flags |= vfPARAM | vfLOCAL;
 	method->parameters.push_back(v);
 	DBG(cout << "parseFunction() pushed param, method->parameters.size()=" << method->parameters.size() << endl);
+	++user_param_index;
     }
     (void)n;
 
@@ -10951,6 +10970,29 @@ TokenBase *Program::parseLambda()
     // return a TokenVar that references the lambda function variable
     // When compiled, TokenVar::compile() emits the function's address
     return new TokenVar(*var);
+}
+
+static void configure_nested_function_captures(Program &pgm, FuncDef *func)
+{
+    if ( !func )
+	return;
+
+    func->has_captures = true;
+    func->potential_captures.clear();
+
+    TokenCpnd *outer = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+    while ( outer )
+    {
+	for ( auto *v : outer->variables )
+	    func->potential_captures.push_back(v);
+	if ( outer->method )
+	    for ( auto *p : outer->method->parameters )
+		func->potential_captures.push_back(p);
+	outer = outer->parent;
+    }
+
+    if ( func->parameters.empty() || func->parameters.front() != &ddINT64 )
+	func->parameters.insert(func->parameters.begin(), &ddINT64);
 }
 
 static bool literal_integer_value(TokenBase *tb, int64_t &out)
@@ -12005,6 +12047,26 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		return parse_static_assert_statement(*this, tb);
 	    if ( is_typeof_identifier(((TokenIdent *)tb)->str) )
 		return parseDeclaration(parse_typeof_datatype(*this, tb));
+	    if ( ((TokenIdent *)tb)->str == "__label__" )
+	    {
+		TokenBase *tn = nextToken();
+		bool expect_ident = true;
+		while ( tn && tn->id() != TokenID::tkSemi )
+		{
+		    if ( expect_ident )
+		    {
+			if ( !is_contextual_identifier_token(tn) )
+			    Throw(tn) << "expected local label name after '__label__'" << flush;
+		    }
+		    else if ( tn->id() != TokenID::tkComma )
+			Throw(tn) << "expected ',' or ';' after local label declaration" << flush;
+		    expect_ident = !expect_ident;
+		    tn = nextToken();
+		}
+		if ( !tn || tn->id() != TokenID::tkSemi )
+		    Throw(tb) << "expected ';' after '__label__' declaration" << flush;
+		return tn;
+	    }
 	    // asm / __asm__ / __asm: skip the entire statement.
 	    // GCC testsuite uses asm("" : ...) as an optimizer barrier;
 	    // madc has no inline assembly support, so consume and discard.
