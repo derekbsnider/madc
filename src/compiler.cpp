@@ -1245,6 +1245,8 @@ static DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb)
 {
     if ( !tb )
 	return nullptr;
+    if ( token_has_constant_cstring(tb) )
+	return &ddLPSTR;
     DataDef *dd = tb->datadef();
     if ( dd && dd->is_pointer() )
 	return dd;
@@ -1276,6 +1278,22 @@ static void emit_pointer_arith_scale(Program &pgm, TokenBase *left, TokenBase *r
     if ( !rval.isReg() || !rval.as<BaseReg>().isGroup(RegGroup::kGp) )
 	return;
     pgm.cc.imul(rval.as<x86::Gp>(), rval.as<x86::Gp>(), imm((int64_t)elem_size));
+}
+
+static Operand &compile_pointer_offset_operand(Program &pgm, TokenBase *offset_expr,
+					       Operand &storage, DataDef *&offset_type)
+{
+    regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
+    Operand &raw = offset_expr->compile(pgm, rhs_rdp);
+    offset_type = rhs_rdp.second
+	? rhs_rdp.second
+	: (offset_expr && offset_expr->datadef() ? offset_expr->datadef() : &ddINT);
+    IRBuilder ir(pgm.cc);
+    IRValue widened = ir.coerce(ir_from_operand(raw, offset_type), &ddINT64);
+    widened = ir.load(widened);
+    storage = widened.op;
+    offset_type = &ddINT64;
+    return storage;
 }
 
 enum class CmpKind : uint8_t { Eq, Ne, Lt, Le, Gt, Ge };
@@ -7906,6 +7924,34 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
 	bool dest_int_real = real_ops && regdp.second && regdp.second->is_integer();
 	if ( !dest_int_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	    return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safeadd, regdp, _operand, "_add_l");
+    }
+    if ( lptr_type && !rptr_type )
+    {
+	GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+	Operand &lval = compile_token_normalized(pgm, left, regdp.second,
+						 regdp.first, _operand);
+	regdp.first = &lval;
+	if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
+	Operand rhs_storage;
+	DataDef *rhs_type = NULL;
+	Operand &rval = compile_pointer_offset_operand(pgm, right, rhs_storage, rhs_type);
+	emit_pointer_arith_scale(pgm, left, right, rval);
+	pgm.safeadd(lval, rval, regdp.second);
+	return finish_general_binop(pgm, regdp, lval, c);
+    }
+    if ( rptr_type && !lptr_type )
+    {
+	GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+	Operand &lval = compile_token_normalized(pgm, right, regdp.second,
+						 regdp.first, _operand);
+	regdp.first = &lval;
+	if ( !regdp.second ) { throw "TokenAdd::compile() right->compile() cleared datatype!"; }
+	Operand rhs_storage;
+	DataDef *rhs_type = NULL;
+	Operand &rval = compile_pointer_offset_operand(pgm, left, rhs_storage, rhs_type);
+	emit_pointer_arith_scale(pgm, right, left, rval);
+	pgm.safeadd(lval, rval, regdp.second);
+	return finish_general_binop(pgm, regdp, lval, c);
     }
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
