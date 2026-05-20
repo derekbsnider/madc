@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+- **GCC torture `20070614-1.c` now passes.**
+  Complex-by-value call lowering now repacks scalar expressions passed
+  to `_Complex` parameters into the compiler's internal complex pair
+  storage before argument validation and call setup, which closes the
+  pure-imaginary multiply call lane behind `bar (1.0iF * i)`. Full
+  validation remains green at `315/315` JIT, `315/315` EXE, and GCC
+  parity is now `1397/1685` (82.9%).
+
 - **GCC torture `20050121-1.c` now passes.**
   `_Complex` / `__complex__` declarations now preserve a real internal
   complex pair type instead of collapsing immediately to scalar storage,

@@ -1589,7 +1589,9 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     }
 
     regdefp_t argrdp = {nullptr, nullptr, nullptr};
-    if ( target_type && !(target_type->is_string() && token->datadef() && token->datadef()->is_pointer()) )
+    if ( target_type
+      && !(target_type->is_string() && token->datadef() && token->datadef()->is_pointer())
+      && !(target_type->is_complex() && token->datadef() && !token->datadef()->is_complex()) )
 	argrdp.second = target_type;
     Operand &arg = token->compile(pgm, argrdp);
     DataDef *actual_type = argrdp.second ? argrdp.second : (token->datadef() ? token->datadef() : target_type);
@@ -1616,8 +1618,30 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     DataDef *final_type = actual_type;
     if ( variadic_real_promotion && actual_type->is_real() )
 	final_type = &ddDOUBLE;
+    else if ( target_type && target_type->is_complex() )
+	final_type = target_type;
     else if ( target_type && (target_type->is_numeric() || target_type->is_pointer()) )
 	final_type = target_type;
+
+    if ( final_type && final_type->is_complex()
+      && actual_type && !actual_type->is_complex() )
+    {
+	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(final_type);
+	if ( !cdd || !cdd->element_type )
+	    throw "compile_call_arg_normalized() invalid complex target type";
+	x86::Mem byval_slot = pgm.cc.newStack((uint32_t)final_type->size, 8);
+	IRBuilder ir(pgm.cc);
+	x86::Mem real_mem = byval_slot;
+	real_mem.setSize((uint32_t)cdd->element_type->size);
+	ir.store(IRValue::mem(real_mem, cdd->element_type), ir_from_operand(arg, actual_type));
+	x86::Mem imag_mem = byval_slot;
+	imag_mem.addOffset((int64_t)cdd->component_offset(true));
+	imag_mem.setSize((uint32_t)cdd->element_type->size);
+	ir.store(IRValue::mem(imag_mem, cdd->element_type), IRValue::imm(Imm(0), &ddINT));
+	storage = as_gp_ptr(pgm, byval_slot, "__call_arg_complex");
+	out_type = final_type;
+	return storage;
+    }
 
     if ( final_type->is_simd() )
     {
