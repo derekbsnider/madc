@@ -477,6 +477,9 @@ void Program::_tokenizer_init()
     define_map["__builtin_pow"] = "pow";
     define_map["__builtin_fmaf"] = "fmaf";
     define_map["__builtin_fma"] = "fma";
+    define_map["__builtin_conj"] = "conj";
+    define_map["__builtin_conjf"] = "conjf";
+    define_map["__builtin_conjl"] = "conjl";
     define_map["__builtin_llabs"] = "llabs";
     define_map["__builtin_stpcpy"] = "stpcpy";
     define_map["__builtin_stpncpy"] = "stpncpy";
@@ -1680,8 +1683,13 @@ TokenBase *Program::_getToken()
 			if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 				lit_text += (char)source.get();
 		    }
-		    eat_imag_suffix();
-			return new TokenReal(strtod(lit_text.c_str(), NULL));
+		    if ( eat_imag_suffix() )
+		    {
+			TokenReal *tr = new TokenReal(strtod(lit_text.c_str(), NULL));
+			tr->setDataType(get_complex_compat_type(&ddDOUBLE));
+			return tr;
+		    }
+		    return new TokenReal(strtod(lit_text.c_str(), NULL));
 		    }
 		    eat_int_suffix();
 		    {
@@ -1752,13 +1760,19 @@ TokenBase *Program::_getToken()
 			    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 				source.get();
 			}
-			eat_imag_suffix();
+			if ( eat_imag_suffix() )
+			{
+			    TokenReal *tr = new TokenReal(num);
+			    tr->setDataType(get_complex_compat_type(&ddDOUBLE));
+			    return tr;
+			}
 			return new TokenReal(num);
 		    }
 		    if ( eat_imag_suffix() )
 		    {
 			TokenInt *ti = new TokenInt(v);
 			ti->source_text = lit_text;
+			ti->setDataType(get_complex_compat_type(&ddINT64));
 			return ti;
 		    }
 		    eat_int_suffix();
@@ -1813,7 +1827,12 @@ TokenBase *Program::_getToken()
 		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 			source.get();
 		}
-		eat_imag_suffix();
+		if ( eat_imag_suffix() )
+		{
+		    TokenReal *tr = new TokenReal(num);
+		    tr->setDataType(get_complex_compat_type(&ddDOUBLE));
+		    return tr;
+		}
 		return new TokenReal(num);
 	    }
 	    if ( ch == '_' || isalnum(ch) )

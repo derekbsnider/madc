@@ -1572,6 +1572,141 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
     return storage;
 }
 
+static void prepare_complex_component_pair(Program &pgm, TokenBase *expr, DataDef *target_complex_type,
+					   Operand &base_storage,
+					   Operand *&real_part, DataDef *&real_type,
+					   Operand *&imag_part, DataDef *&imag_type,
+					   Operand &real_storage, Operand &imag_storage)
+{
+    DataDefCOMPLEX *target_cdd = dynamic_cast<DataDefCOMPLEX *>(target_complex_type);
+    if ( !target_cdd || !target_cdd->element_type )
+	throw "prepare_complex_component_pair() invalid target complex type";
+
+    TokenInt zero(0);
+    if ( expr && expr->datadef() && expr->datadef()->is_complex() )
+    {
+	DataDef *expr_type = expr->datadef();
+	DataDefCOMPLEX *expr_cdd = dynamic_cast<DataDefCOMPLEX *>(expr_type);
+	if ( !expr_cdd || !expr_cdd->element_type )
+	    throw "prepare_complex_component_pair() invalid complex expression type";
+	Operand &base = compile_complex_compare_base(pgm, expr, expr_type, base_storage);
+	real_storage = complex_component_mem(pgm, base, expr_cdd, false, "__complex_part");
+	imag_storage = complex_component_mem(pgm, base, expr_cdd, true, "__complex_part");
+	real_part = &real_storage;
+	imag_part = &imag_storage;
+	real_type = imag_type = expr_cdd->element_type;
+	return;
+    }
+
+    real_part = &compile_token_normalized(pgm, expr, target_cdd->element_type, nullptr, real_storage);
+    imag_part = &compile_token_normalized(pgm, &zero, target_cdd->element_type, nullptr, imag_storage);
+    real_type = imag_type = target_cdd->element_type;
+}
+
+static Operand &emit_complex_addsub(Program &pgm, TokenBase *left, TokenBase *right,
+				    bool subtract, regdefp_t &regdp, Operand &storage)
+{
+    DataDef *left_type = left ? left->datadef() : NULL;
+    DataDef *right_type = right ? right->datadef() : NULL;
+    DataDef *complex_type = left_type && left_type->is_complex() ? left_type : right_type;
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_addsub() invalid complex type";
+
+    Operand left_base_storage, right_base_storage;
+    Operand left_real_storage, left_imag_storage, right_real_storage, right_imag_storage;
+    Operand *left_real = NULL, *left_imag = NULL, *right_real = NULL, *right_imag = NULL;
+    DataDef *left_real_type = NULL, *left_imag_type = NULL, *right_real_type = NULL, *right_imag_type = NULL;
+
+    prepare_complex_component_pair(pgm, left, complex_type, left_base_storage,
+				   left_real, left_real_type, left_imag, left_imag_type,
+				   left_real_storage, left_imag_storage);
+    prepare_complex_component_pair(pgm, right, complex_type, right_base_storage,
+				   right_real, right_real_type, right_imag, right_imag_type,
+				   right_real_storage, right_imag_storage);
+
+    IRBuilder ir(pgm.cc);
+    IRValue lhs_real_val = ir.load(ir.coerce(ir_from_operand(*left_real, left_real_type), cdd->element_type));
+    IRValue lhs_imag_val = ir.load(ir.coerce(ir_from_operand(*left_imag, left_imag_type), cdd->element_type));
+    IRValue rhs_real_val = ir.load(ir.coerce(ir_from_operand(*right_real, right_real_type), cdd->element_type));
+    IRValue rhs_imag_val = ir.load(ir.coerce(ir_from_operand(*right_imag, right_imag_type), cdd->element_type));
+
+    Operand real_out = lhs_real_val.op;
+    Operand imag_out = lhs_imag_val.op;
+    if ( subtract )
+    {
+	pgm.safesub(real_out, rhs_real_val.op, cdd->element_type);
+	pgm.safesub(imag_out, rhs_imag_val.op, cdd->element_type);
+    }
+    else
+    {
+	pgm.safeadd(real_out, rhs_real_val.op, cdd->element_type);
+	pgm.safeadd(imag_out, rhs_imag_val.op, cdd->element_type);
+    }
+
+    x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+    x86::Mem real_mem = slot;
+    real_mem.setSize((uint32_t)cdd->element_type->size);
+    x86::Mem imag_mem = slot;
+    imag_mem.addOffset((int64_t)cdd->component_offset(true));
+    imag_mem.setSize((uint32_t)cdd->element_type->size);
+    ir.store(IRValue::mem(real_mem, cdd->element_type), ir_from_operand(real_out, cdd->element_type));
+    ir.store(IRValue::mem(imag_mem, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
+
+    storage = as_gp_ptr(pgm, slot, subtract ? "__complex_sub" : "__complex_add");
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &emit_complex_compound_addsub(Program &pgm, TokenBase *left, TokenBase *right,
+					     bool subtract, regdefp_t &regdp, Operand &storage)
+{
+    DataDef *complex_type = left ? left->datadef() : NULL;
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_compound_addsub() invalid complex lhs";
+
+    regdefp_t lhs_rdp = {NULL, complex_type, NULL};
+    Operand &lhs_base = left->compile(pgm, lhs_rdp);
+    x86::Mem lhs_real = complex_component_mem(pgm, lhs_base, cdd, false, "__complex_lhs");
+    x86::Mem lhs_imag = complex_component_mem(pgm, lhs_base, cdd, true, "__complex_lhs");
+
+    Operand rhs_base_storage, rhs_real_storage, rhs_imag_storage;
+    Operand *rhs_real = NULL, *rhs_imag = NULL;
+    DataDef *rhs_real_type = NULL, *rhs_imag_type = NULL;
+    prepare_complex_component_pair(pgm, right, complex_type, rhs_base_storage,
+				   rhs_real, rhs_real_type, rhs_imag, rhs_imag_type,
+				   rhs_real_storage, rhs_imag_storage);
+
+    IRBuilder ir(pgm.cc);
+    IRValue lhs_real_val = ir.load(IRValue::mem(lhs_real, cdd->element_type));
+    IRValue lhs_imag_val = ir.load(IRValue::mem(lhs_imag, cdd->element_type));
+    IRValue rhs_real_val = ir.load(ir.coerce(ir_from_operand(*rhs_real, rhs_real_type), cdd->element_type));
+    IRValue rhs_imag_val = ir.load(ir.coerce(ir_from_operand(*rhs_imag, rhs_imag_type), cdd->element_type));
+
+    Operand real_out = lhs_real_val.op;
+    Operand imag_out = lhs_imag_val.op;
+    if ( subtract )
+    {
+	pgm.safesub(real_out, rhs_real_val.op, cdd->element_type);
+	pgm.safesub(imag_out, rhs_imag_val.op, cdd->element_type);
+    }
+    else
+    {
+	pgm.safeadd(real_out, rhs_real_val.op, cdd->element_type);
+	pgm.safeadd(imag_out, rhs_imag_val.op, cdd->element_type);
+    }
+
+    ir.store(IRValue::mem(lhs_real, cdd->element_type), ir_from_operand(real_out, cdd->element_type));
+    ir.store(IRValue::mem(lhs_imag, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
+
+    storage = lhs_base;
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
 static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					    bool variadic_real_promotion,
 					    Operand &storage, DataDef *&out_type)
@@ -1717,6 +1852,106 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     storage = arg;
     out_type = actual_type;
     return storage;
+}
+
+static Operand &emit_complex_from_scalar(Program &pgm, Operand &scalar_op, DataDef *scalar_type,
+					 DataDef *complex_type, bool imag_value,
+					 regdefp_t &regdp, Operand &storage,
+					 const char *slot_name)
+{
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_from_scalar() invalid complex type";
+
+    x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+    x86::Mem real_mem = slot;
+    real_mem.setSize((uint32_t)cdd->element_type->size);
+    x86::Mem imag_mem = slot;
+    imag_mem.addOffset((int64_t)cdd->component_offset(true));
+    imag_mem.setSize((uint32_t)cdd->element_type->size);
+
+    IRBuilder ir(pgm.cc);
+    IRValue scalar_val = ir.load(ir.coerce(ir_from_operand(scalar_op, scalar_type), cdd->element_type));
+    if ( imag_value )
+    {
+	ir.store(IRValue::mem(real_mem, cdd->element_type), IRValue::imm(Imm(0), &ddINT));
+	ir.store(IRValue::mem(imag_mem, cdd->element_type), scalar_val);
+    }
+    else
+    {
+	ir.store(IRValue::mem(real_mem, cdd->element_type), scalar_val);
+	ir.store(IRValue::mem(imag_mem, cdd->element_type), IRValue::imm(Imm(0), &ddINT));
+    }
+
+    storage = as_gp_ptr(pgm, slot, slot_name);
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &emit_complex_conjugate_expr(Program &pgm, TokenBase *arg_token,
+					    DataDef *complex_type,
+					    regdefp_t &regdp, Operand &storage)
+{
+    if ( !arg_token || !complex_type || !complex_type->is_complex() )
+	throw "emit_complex_conjugate_expr() expects complex expression";
+
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_conjugate_expr() invalid complex type";
+
+    Operand arg_base_storage;
+    Operand &arg_base = compile_complex_compare_base(pgm, arg_token, complex_type, arg_base_storage);
+
+    bool use_caller_dest = regdp.first && (!regdp.second || regdp.second->is_complex());
+    Operand dest_base_storage;
+    Operand dest_base;
+    if ( use_caller_dest )
+	dest_base = *regdp.first;
+    else
+    {
+	x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+	dest_base = as_gp_ptr(pgm, slot, "__complex_conj_ret");
+    }
+
+    x86::Mem src_real = complex_component_mem(pgm, arg_base, cdd, false, "__complex_conj_src");
+    x86::Mem src_imag = complex_component_mem(pgm, arg_base, cdd, true, "__complex_conj_src");
+    x86::Mem dst_real = complex_component_mem(pgm, dest_base, cdd, false, "__complex_conj_dst");
+    x86::Mem dst_imag = complex_component_mem(pgm, dest_base, cdd, true, "__complex_conj_dst");
+
+    IRBuilder ir(pgm.cc);
+    IRValue real_val = ir.load(IRValue::mem(src_real, cdd->element_type));
+    ir.store(IRValue::mem(dst_real, cdd->element_type), real_val);
+
+    IRValue imag_val = ir.load(IRValue::mem(src_imag, cdd->element_type));
+    Operand neg_imag = imag_val.op;
+    pgm.safeneg(neg_imag, cdd->element_type);
+    ir.store(IRValue::mem(dst_imag, cdd->element_type),
+	     IRValue::reg(neg_imag, cdd->element_type));
+
+    if ( use_caller_dest )
+    {
+	regdp.second = complex_type;
+	return *regdp.first;
+    }
+
+    storage = dest_base;
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &emit_builtin_complex_conjugate(Program &pgm, TokenCallFunc *call,
+					       regdefp_t &regdp, Operand &storage)
+{
+    if ( !call || call->argc() != 1 )
+	throw "emit_builtin_complex_conjugate() expects one argument";
+
+    TokenBase *arg_token = call->parameters[0];
+    DataDef *complex_type = arg_token ? arg_token->datadef() : NULL;
+    if ( !complex_type || !complex_type->is_complex() )
+	throw "emit_builtin_complex_conjugate() expects complex argument";
+    return emit_complex_conjugate_expr(pgm, arg_token, complex_type, regdp, storage);
 }
 
 static void add_funcsig_arg(FuncSignature &funcsig, DataDef *arg_type)
@@ -2696,6 +2931,14 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     if ( !var.type->is_function() )
 	pgm.Throw(this) << "TokenCallFunc::compile() called on non-function" << flush;
+
+    if ( argc() == 1 && (var.name == "__builtin_conj"
+		      || var.name == "__builtin_conjf"
+		      || var.name == "__builtin_conjl"
+		      || var.name == "conj"
+		      || var.name == "conjf"
+		      || var.name == "conjl") )
+	return emit_builtin_complex_conjugate(pgm, this, regdp, _operand);
 
     // GCC builtin parity: direct llabs calls keep builtin semantics even
     // when a same-name function is defined in the translation unit.
@@ -5576,6 +5819,8 @@ Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "+= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "+= missing rval operand" << flush;
+    if ( left->datadef() && left->datadef()->is_complex() )
+	return emit_complex_compound_addsub(pgm, left, right, /*subtract=*/false, regdp, _operand);
     return emit_compound_binop3(pgm, left, right, &Program::safeadd, regdp, _operand, "+=");
 }
 
@@ -5583,6 +5828,8 @@ Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "-= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "-= missing rval operand" << flush;
+    if ( left->datadef() && left->datadef()->is_complex() )
+	return emit_complex_compound_addsub(pgm, left, right, /*subtract=*/true, regdp, _operand);
     return emit_compound_binop3(pgm, left, right, &Program::safesub, regdp, _operand, "-=");
 }
 
@@ -6253,7 +6500,8 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	regdp.first = orig_operand ? orig_operand : r_operand;
     }
 
-    if ( ltype->is_complex() && regdp.second && regdp.second->is_numeric() )
+    if ( ltype->is_complex() && regdp.second
+      && (regdp.second->is_numeric() || regdp.second->is_complex()) )
     {
 	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(ltype);
 	if ( !cdd )
@@ -6264,8 +6512,6 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    real_mem.as<x86::Mem>().setSize((uint32_t)cdd->element_type->size);
 	else
 	    real_mem = x86::ptr(real_mem.as<x86::Gp>(), 0, (uint32_t)cdd->element_type->size);
-	ir.store(IRValue::mem(real_mem.as<x86::Mem>(), cdd->element_type),
-		 ir_from_operand(*r_operand, regdp.second));
 	Operand imag_mem = _operand;
 	if ( imag_mem.isMem() )
 	{
@@ -6276,10 +6522,44 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    imag_mem = x86::ptr(imag_mem.as<x86::Gp>(),
 				(int32_t)cdd->component_offset(true),
 				(uint32_t)cdd->element_type->size);
-	x86::Gp zero = pgm.cc.newGpq("__complex_imag_zero");
-	pgm.cc.xor_(zero, zero);
-	ir.store(IRValue::mem(imag_mem.as<x86::Mem>(), cdd->element_type),
-		 IRValue::reg(zero, cdd->element_type));
+	if ( regdp.second->is_complex() )
+	{
+	    DataDefCOMPLEX *src_cdd = dynamic_cast<DataDefCOMPLEX *>(regdp.second);
+	    if ( !src_cdd || !src_cdd->element_type )
+		throw "TokenAssign: expected complex rhs datadef";
+	    Operand src_real = *r_operand;
+	    if ( src_real.isMem() )
+	    {
+		src_real.as<x86::Mem>().setSize((uint32_t)src_cdd->element_type->size);
+	    }
+	    else
+		src_real = x86::ptr(src_real.as<x86::Gp>(), 0, (uint32_t)src_cdd->element_type->size);
+	    Operand src_imag = *r_operand;
+	    if ( src_imag.isMem() )
+	    {
+		src_imag.as<x86::Mem>().addOffset((int64_t)src_cdd->component_offset(true));
+		src_imag.as<x86::Mem>().setSize((uint32_t)src_cdd->element_type->size);
+	    }
+	    else
+		src_imag = x86::ptr(src_imag.as<x86::Gp>(),
+				(int32_t)src_cdd->component_offset(true),
+				(uint32_t)src_cdd->element_type->size);
+	    IRValue real_val = ir.load(ir.coerce(ir_from_operand(src_real, src_cdd->element_type),
+						 cdd->element_type));
+	    IRValue imag_val = ir.load(ir.coerce(ir_from_operand(src_imag, src_cdd->element_type),
+						 cdd->element_type));
+	    ir.store(IRValue::mem(real_mem.as<x86::Mem>(), cdd->element_type), real_val);
+	    ir.store(IRValue::mem(imag_mem.as<x86::Mem>(), cdd->element_type), imag_val);
+	}
+	else
+	{
+	    ir.store(IRValue::mem(real_mem.as<x86::Mem>(), cdd->element_type),
+		     ir_from_operand(*r_operand, regdp.second));
+	    x86::Gp zero = pgm.cc.newGpq("__complex_imag_zero");
+	    pgm.cc.xor_(zero, zero);
+	    ir.store(IRValue::mem(imag_mem.as<x86::Mem>(), cdd->element_type),
+		     IRValue::reg(zero, cdd->element_type));
+	}
 	if ( tvl )
 	{
 	    tvl->var.modified();
@@ -7186,6 +7466,36 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
 {
     DBG(pgm.cc.comment("TokenSubscript::compile_set()"));
     IRBuilder ir(pgm.cc);
+    auto store_complex_value = [&](x86::Mem dst_mem, DataDef *dst_type) -> bool {
+	DataDefCOMPLEX *dst_cdd = dynamic_cast<DataDefCOMPLEX *>(dst_type);
+	if ( !dst_cdd || !dst_cdd->element_type )
+	    return false;
+
+	x86::Mem dst_real = complex_component_mem(pgm, dst_mem, dst_cdd, false, "sub_complex_dst");
+	x86::Mem dst_imag = complex_component_mem(pgm, dst_mem, dst_cdd, true, "sub_complex_dst");
+
+	if ( val_type && val_type->is_complex() )
+	{
+	    DataDefCOMPLEX *src_cdd = dynamic_cast<DataDefCOMPLEX *>(val_type);
+	    if ( !src_cdd || !src_cdd->element_type )
+		throw "TokenSubscript::compile_set() invalid complex source type";
+	    x86::Mem src_real = complex_component_mem(pgm, val_op, src_cdd, false, "sub_complex_src");
+	    x86::Mem src_imag = complex_component_mem(pgm, val_op, src_cdd, true, "sub_complex_src");
+	    IRValue real_val = ir.load(ir.coerce(IRValue::mem(src_real, src_cdd->element_type),
+						 dst_cdd->element_type));
+	    IRValue imag_val = ir.load(ir.coerce(IRValue::mem(src_imag, src_cdd->element_type),
+						 dst_cdd->element_type));
+	    ir.store(IRValue::mem(dst_real, dst_cdd->element_type), real_val);
+	    ir.store(IRValue::mem(dst_imag, dst_cdd->element_type), imag_val);
+	    return true;
+	}
+
+	IRValue scalar_val = ir.load(ir.coerce(ir_from_operand(val_op, val_type ? val_type : dst_cdd->element_type),
+						dst_cdd->element_type));
+	ir.store(IRValue::mem(dst_real, dst_cdd->element_type), scalar_val);
+	ir.store(IRValue::mem(dst_imag, dst_cdd->element_type), IRValue::imm(Imm(0), &ddINT));
+	return true;
+    };
 
     // get container pointer. VLAs and address-taken pointer locals live
     // in a stack-resident slot — load the pointer value before indexing.
@@ -7235,6 +7545,11 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
             }
         }
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+	if ( _datatype && _datatype->is_complex() )
+	{
+	    store_complex_value(elem_mem, _datatype);
+	    return;
+	}
 	if ( _datatype && (_datatype->basetype() == BaseType::btStruct
 			|| _datatype->basetype() == BaseType::btClass) )
 	{
@@ -7256,6 +7571,11 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
         uint32_t shift = scale_index_by_element_size(pgm, idx_reg, base, "ptr_sub_size");
         DBG(pgm.cc.comment("pointer subscript write"));
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( base && base->is_complex() )
+        {
+	    store_complex_value(elem_mem, base);
+	    return;
+        }
         if ( base && (base->basetype() == BaseType::btStruct || base->basetype() == BaseType::btClass) )
         {
 	    Operand dst_slot = elem_mem;
@@ -8232,6 +8552,9 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenAdd::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "+ missing lval operand"; }
     if ( !right ) { throw "+ missing rval operand"; }
+    if ( (left->datadef() && left->datadef()->is_complex())
+      || (right->datadef() && right->datadef()->is_complex()) )
+	return emit_complex_addsub(pgm, left, right, /*subtract=*/false, regdp, _operand);
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
     DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
     if ( !lptr_type && !rptr_type && can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
@@ -8289,6 +8612,9 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenSub::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "- missing lval operand"; }
     if ( !right ) { throw "- missing rval operand"; }
+    if ( (left->datadef() && left->datadef()->is_complex())
+      || (right->datadef() && right->datadef()->is_complex()) )
+	return emit_complex_addsub(pgm, left, right, /*subtract=*/true, regdp, _operand);
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
     if ( !lptr_type && can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     if ( lptr_type && regdp.second && !regdp.second->is_pointer() )
@@ -8937,6 +9263,8 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenBnot::Compile() TOP" << endl);
     if ( left )   { throw "Bitwise not has lval!"; }
     if ( !right ) { throw "~ missing rval operand"; }
+    if ( right->datadef() && right->datadef()->is_complex() )
+	return emit_complex_conjugate_expr(pgm, right, right->datadef(), regdp, _operand);
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     if ( right && right->datadef() && right->datadef()->is_integer() )
@@ -9728,9 +10056,21 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	&& cast_type && cast_type->is_pointer()
 	&& (cast_type->rawtype() == DataType::dtCHAR
 	 || cast_type->rawtype() == DataType::dtUINT8);
+    bool scalar_to_complex = expr && expr->datadef()
+	&& !expr->datadef()->is_complex()
+	&& cast_type && cast_type->is_complex();
     bool complex_to_scalar = expr && expr->datadef()
 	&& expr->datadef()->is_complex()
 	&& cast_type && (cast_type->is_numeric() || cast_type->is_pointer());
+    if ( scalar_to_complex )
+    {
+	regdefp_t inner_rdp = {NULL, expr->datadef(), NULL};
+	Operand &scalar_op = expr->compile(pgm, inner_rdp);
+	DataDef *actual_src = inner_rdp.second ? inner_rdp.second : expr->datadef();
+	return emit_complex_from_scalar(pgm, scalar_op, actual_src, cast_type,
+					/*imag_value=*/false, regdp, _operand,
+					"__cast_complex");
+    }
     if ( complex_to_scalar )
     {
 	TokenComplexPart real_part(expr, false);
@@ -10335,6 +10675,14 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenReal::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(pgm.cc.comment("TokenReal::compile()"));
+    if ( _datatype && _datatype->is_complex() )
+    {
+	_const = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, _val);
+	_const.setSize(sizeof(double));
+	return emit_complex_from_scalar(pgm, _const, &ddDOUBLE, _datatype,
+					/*imag_value=*/true, regdp, _operand,
+					"__imag_real");
+    }
     if ( !regdp.second )
     {
 	if ( !_datatype ) { throw "TokenReal has NULL _datatype"; }
@@ -10405,6 +10753,13 @@ Operand &TokenTypeQuery::compile(Program &pgm, regdefp_t &regdp)
 // load integer into register
 Operand &TokenInt::compile(Program &pgm, regdefp_t &regdp)
 {
+    if ( _datatype && _datatype->is_complex() )
+    {
+	_operand = imm(_token);
+	return emit_complex_from_scalar(pgm, _operand, &ddINT64, _datatype,
+					/*imag_value=*/true, regdp, _operand,
+					"__imag_int");
+    }
     if ( !regdp.second )
     {
 	if ( !_datatype ) { throw "TokenInt has NULL _datatype"; }

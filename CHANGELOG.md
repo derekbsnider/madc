@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **The `_Complex` arithmetic / builtin lane moved forward again.**
+  Pure-imaginary literals like `1.0i`, `2.2if`, and `10iL` now
+  materialize as real complex values instead of collapsing to scalars,
+  scalar-to-complex casts now build the internal complex pair form,
+  `~x` on complex values lowers as conjugation, and complex `+`, `-`,
+  `+=`, and `-=` now run component-wise with width coercion instead of
+  raw-copying mismatched layouts. `__builtin_conj[f|l]` / `conj[f|l]`
+  also route through a builtin conjugate path, old-style forward
+  declarations like `void foo(), bar(), baz();` now rebuild cleanly
+  when the complex-typed definitions arrive later, and
+  `tests/testcomplexkw.expect` now matches GCC's result instead of the
+  old broken behavior. Added `tests/testcompleximagadd.mad`,
+  `tests/testcomplexconjop.mad`, `tests/testcomplexaddeq.mad`,
+  `tests/testbuiltinconjf.mad`, and `tests/testcomplexfwddeclparams.mad`
+  as regressions. Validation is green at `320/320` JIT and `320/320`
+  EXE, and focused GCC reruns confirm at least `1402/1685` (83.2%)
+  parity pending a fresh full-suite pass.
+
 - **GCC torture `20070614-1.c` now passes.**
   Complex-by-value call lowering now repacks scalar expressions passed
   to `_Complex` parameters into the compiler's internal complex pair

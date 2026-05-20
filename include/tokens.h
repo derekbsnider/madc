@@ -209,6 +209,8 @@ public:
     {
 	if ( left  && left->datadef()  && left->datadef()->is_pointer()  ) return left->datadef();
 	if ( right && right->datadef() && right->datadef()->is_pointer() ) return right->datadef();
+	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
     }
     inline int64_t ioperate() const { return left->ival() + right->ival(); }
@@ -243,6 +245,8 @@ public:
 		return TokenOperator::datadef();
 	    return left->datadef();
 	}
+	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
     }
     inline int64_t ioperate() const { return left->ival() - right->ival(); }
@@ -918,7 +922,7 @@ public:
     virtual TokenID   id()   const { return TokenID::tkInt; }
     virtual TokenBase *clone()     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; return c; }
     virtual bool is_constant() const override { return true; }
-    virtual void setDataType(DataDef *d) { if (d && d->is_integer()) _datatype = d; }
+    virtual void setDataType(DataDef *d) { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
 //  virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
@@ -970,7 +974,7 @@ public:
     virtual TokenBase *clone()        { return new TokenReal(_val); }
     virtual bool is_constant() const override { return true; }
     virtual bool is_real()     const override { return true; }
-    virtual void setDataType(DataDef *d) { if (d && d->is_real()) _datatype = d; }
+    virtual void setDataType(DataDef *d) { if (d && (d->is_real() || d->is_complex())) _datatype = d; }
 //  virtual asmjit::x86::Gp &getreg(Program &) { throw "TokenReal::getreg(): Use TokenReal::operand()!"; }
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);

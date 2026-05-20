@@ -1,0 +1,15 @@
+void abort(void);
+void exit(int);
+
+int main(void)
+{
+  __complex__ double x, y;
+
+  x = 1.0 + 2.0i;
+  y = ~x;
+
+  if (y != 1.0 - 2.0i)
+    abort();
+
+  exit(0);
+}

@@ -1,0 +1,20 @@
+void abort(void);
+void exit(int);
+
+int main(void)
+{
+  __complex__ double a, b, c;
+
+  a = 1.0 + 1.0i;
+  b = -2.0 + 2.0i;
+  c = a + b;
+
+  if (a != 1.0 + 1.0i)
+    abort();
+  if (b != -2.0 + 2.0i)
+    abort();
+  if (c != -1.0 + 3.0i)
+    abort();
+
+  exit(0);
+}

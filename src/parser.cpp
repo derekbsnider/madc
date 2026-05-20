@@ -6539,7 +6539,26 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    else if ( is_contextual_identifier_token(next_tb) || next_tb->type() == TokenType::ttIdentifier )
 		    {
-			component_expr = parsePostfixChain(next_tb);
+			bool has_postfix_chain = peekToken()
+			    && (peekToken()->id() == TokenID::tkDot
+			     || peekToken()->id() == TokenID::tkDeRef
+			     || peekToken()->id() == TokenID::tkOpSqr);
+			if ( has_postfix_chain )
+			    component_expr = parsePostfixChain(next_tb);
+			else
+			{
+			    std::string name = contextual_identifier_name(next_tb);
+			    TokenIdent component_ident(name);
+			    copy_token_location(&component_ident, next_tb);
+			    Variable *component_var = findVariable(name);
+			    if ( component_var )
+			    {
+				component_expr = new TokenVar(*component_var);
+				copy_token_location(component_expr, next_tb);
+			    }
+			    else
+				component_expr = resolve_expression_context_identifier(&component_ident);
+			}
 			TokenVar *tv = dynamic_cast<TokenVar *>(component_expr);
 			if ( tv && peekToken() && peekToken()->id() == TokenID::tkOpBrk
 			  && tv->var.type && tv->var.type->is_function() )
@@ -7080,6 +7099,21 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				(fVOIDFUNC)sym);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
+		    }
+		    if ( !var && (fname == "__builtin_conj"
+			       || fname == "__builtin_conjf"
+			       || fname == "__builtin_conjl"
+			       || fname == "conj"
+			       || fname == "conjf"
+			       || fname == "conjl") )
+		    {
+			FuncDef *implicit_func = new FuncDef(ddINT32);
+			implicit_func->is_varargs = true;
+			implicit_func->parameters.push_back(&ddINT64);
+			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
+			Method *implicit_method = new Method(*var);
+			var->data = (void *)implicit_method;
+			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
 		    }
 		    if ( !var && token_origin_allows_c89_implicit_function(ident_tb) )
 		    {
@@ -10355,6 +10389,18 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     {
 	func = fmi->second;
 	func_already_declared = true;
+	// C `f()` is an old-style declaration with unspecified parameters,
+	// not a real zero-parameter prototype. When the later definition
+	// provides the actual parameter list, rebuild the FuncDef from
+	// scratch so the body binds those names normally.
+	if ( !func->is_void_params && func->parameters.empty() )
+	{
+	    FuncDef *fresh = new FuncDef(dd);
+	    fresh->return_types = func->return_types;
+	    funcdef_map[id] = fresh;
+	    func = fresh;
+	    func_already_declared = false;
+	}
 	// Return type mismatch (e.g. forward decl `void f()` → definition
 	// `bool f()`): FuncDef::returns is a C++ reference and cannot be
 	// reseated, so replace the FuncDef with a fresh one carrying the
@@ -10655,8 +10701,6 @@ paramdecl:
 	{
 	    // If this is a definition following a forward declaration, the
 	    // function already has its parameter DataDefs — don't re-push.
-	    // Just record the name so the body's `ids[]` / variable binding
-	    // stays aligned.
 	    if ( func_already_declared )
 	    {
 		ids.push_back(pid);

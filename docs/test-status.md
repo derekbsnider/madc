@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 20, 2026 (v0.17.0, GCC parity session 17 — 1397/1685).
+Test results as of May 20, 2026 (v0.17.0, GCC parity session 18 — at least 1402/1685 from focused reruns).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 315 JIT pass / 0 fail
+## Current Batch Status — 320 JIT pass / 0 fail
 
 Latest results (2026-05-20):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 315 integration tests
+- Passing: 320 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -42,16 +42,24 @@ Latest results (2026-05-20):
   address-taking via `testcomplexrealaddr.mad`, typedef-enum bitfield
   extraction via `testenumbitfieldalias.mad`, and repeated nested-
   function inline-asm barriers via `testnestedasmbarrier.mad` now bring
-  the tracked integration count to 315.
+  the tracked integration count to 315. Additional tracked regressions
+  for pure-imaginary complex literals via `testcompleximagadd.mad`,
+  builtin/`~` conjugation via `testcomplexconjop.mad` and
+  `testbuiltinconjf.mad`, component-wise complex `+=` via
+  `testcomplexaddeq.mad`, and old-style forward declarations with
+  complex-typed later definitions via `testcomplexfwddeclparams.mad`
+  now bring the tracked integration count to 320.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 315 (of 315 JIT-passing tests)
+- Passing: 320 (of 320 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so
 - The native EXE parity lane is currently fully green.
 - File-scope compound literals that feed global pointer initializers now
   also relocate correctly in the EXE/AOT lane.
+- The new `_Complex` arithmetic / conjugation regressions are green in
+  native EXE mode too.
 - A fresh `smaug.exe` probe also now survives the room 109 serpent fight
   and serpent death on the standalone executable path.
 
