@@ -1,0 +1,53 @@
+#include <stdarg.h>
+
+struct tiny
+{
+	char c;
+	char d;
+	char e;
+};
+
+void check(struct tiny x, int base)
+{
+	if (x.c != base)
+		putchar('F');
+	if (x.d != base + 10)
+		putchar('F');
+	if (x.e != base + 20)
+		putchar('F');
+}
+
+void checkv(int n, ...)
+{
+	va_list ap;
+	va_start(ap, n);
+	for (int i = 0; i < n; i++)
+	{
+		struct tiny x = va_arg(ap, struct tiny);
+		check(x, i + 10);
+	}
+	long tail = va_arg(ap, long);
+	if (tail != 123)
+		putchar('F');
+	va_end(ap);
+}
+
+int main()
+{
+	struct tiny x[3];
+	x[0].c = 10;
+	x[1].c = 11;
+	x[2].c = 12;
+	x[0].d = 20;
+	x[1].d = 21;
+	x[2].d = 22;
+	x[0].e = 30;
+	x[1].e = 31;
+	x[2].e = 32;
+
+	check(x[0], 10);
+	check(x[1], 11);
+	check(x[2], 12);
+	checkv(3, x[0], x[1], x[2], (long)123);
+	putchar('O');
+}

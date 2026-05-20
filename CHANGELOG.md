@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `931004-11.c` and `931004-12.c` now pass.**
+  Local fixed-size arrays now allocate stack slots using the element
+  type's actual alignment instead of the raw element size, which fixes
+  odd-sized struct arrays like `struct tiny x[3]` where `newStack(..., 3)`
+  was producing invalid stack slots before direct and varargs struct-by-
+  value calls. Added `tests/testsmallstructarraycall.mad` as the local
+  regression. Full validation is green at `342/342` JIT and `342/342`
+  EXE, and focused GCC reruns bring the conservative parity floor to at
+  least `1417/1685` (84.1%).
+
 - **GCC torture `921007-1.c`, `921016-1.c`, `921019-1.c`, and `930628-1.c` now pass.**
   The lexer now breaks the `strcmp` / `__builtin_strcmp` macro-expansion
   cycle at the builtin alias boundary, typedef-enum / alias bitfield

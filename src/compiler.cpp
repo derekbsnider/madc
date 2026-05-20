@@ -8550,7 +8550,11 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	{
 	    size_t elem_size = var->type->size ? var->type->size : 8;
 	    size_t total = elem_size * var->total_elements();
-	    uint32_t align = (uint32_t)(elem_size < 8 ? elem_size : 8);
+	    uint32_t align = (uint32_t)(var->type ? var->type->alignment() : 1);
+	    if ( align == 0 )
+		align = 1;
+	    if ( align > 8 )
+		align = 8;
 	    DBG(pgm.cc.comment("voperand fixed-size array (stack)"));
 	    x86::Mem stack = pgm.cc.newStack((uint32_t)total, align);
 	    pgm.cc.lea(reg, stack);
