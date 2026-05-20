@@ -2723,6 +2723,53 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 			    << ") method has neither FuncNode nor x86code" << flush;
     }
 
+    // External C varargs (`extern int sprintf(char*, const char*, ...);`)
+    // must use the platform varargs ABI, not madc's internal hidden
+    // __va_args packing convention. Build a real variadic signature
+    // from the declared fixed params plus the actual trailing args.
+    if ( !fnd && method->x86code && ((FuncDef *)method->returns.type)->is_varargs )
+    {
+	FuncDef *func = (FuncDef *)method->returns.type;
+	FuncSignature funcsig(CallConvId::kCDecl);
+	set_funcsig_ret(funcsig, &func->returns, false);
+
+	std::vector<Operand> params;
+	size_t fixed_argc = explicit_expected_argc(func);
+	for ( size_t i = 0; i < argc(); ++i )
+	{
+	    DataDef *ptype = i < fixed_argc && i < func->parameters.size()
+		? func->parameters[i] : NULL;
+	    TokenBase *tn = parameters[i];
+	    DataDef *arg_type = NULL;
+	    Operand arg_storage;
+	    Operand &areg = compile_call_arg_normalized(pgm, tn, ptype,
+		i >= fixed_argc, arg_storage, arg_type);
+	    append_call_param(params, funcsig, areg, arg_type);
+	}
+	funcsig.setVaIndex((uint32_t)fixed_argc);
+
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(method->x86code), funcsig);
+	pgm.track_invoke_target(method->x86code);
+	set_invoke_args(pgm, call, params, false);
+
+	bool is_narrow_int_ret = is_int32_dlsym_ret(&func->returns, var.name);
+	if ( !regdp.first )
+	{
+	    if ( func->returns.is_real() )
+		_operand = newScalarXmm(pgm, &func->returns, "dl_ret");
+	    else
+		_operand = pgm.cc.newGpq("dl_ret");
+	    regdp.first = &_operand;
+	}
+	bind_call_return(pgm, call, regdp.first, &func->returns, _operand,
+			 /*is_variadic=*/func->returns.is_real(),
+			 is_narrow_int_ret);
+	if ( !regdp.second )
+	    regdp.second = &func->returns;
+	return *regdp.first;
+    }
+
     // variadic dlsym call: no funcnode, has x86code, 0 declared params
     // build signature from actual arg types (like dlcall)
     if ( !fnd && method->x86code )
@@ -9340,7 +9387,10 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     {
 	regdefp_t inner_rdp = {NULL, src_type, NULL};
 	Operand &src_op = expr->compile(pgm, inner_rdp);
-	x86::Gp out = pgm.cc.newGpq("cast_r2i");
+	bool preserve_simd_bits = src_type->is_simd() || cast_type->is_simd();
+	x86::Gp out = preserve_simd_bits
+	    ? pgm.cc.newGpq("cast_r2i")
+	    : cast_type->newreg(pgm.cc, "cast_r2i").as<x86::Gp>();
 	if ( src_type->is_simd() )
 	{
 	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
@@ -9355,17 +9405,72 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	else
 	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
+	    bool clamp_positive_i32 = !cast_type->is_unsigned() && cast_type->size == 4;
+	    Label clamp_done = pgm.cc.newLabel();
+	    Label do_convert = pgm.cc.newLabel();
+	    if ( clamp_positive_i32 )
+	    {
+		if ( src_type->size == sizeof(float) )
+		{
+		    x86::Mem limit = pgm.cc.newFloatConst(ConstPoolScope::kLocal, 2147483648.0f);
+		    limit.setSize(sizeof(float));
+		    pgm.cc.ucomiss(src_op.as<x86::Xmm>(), limit);
+		}
+		else
+		{
+		    x86::Mem limit = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, 2147483648.0);
+		    limit.setSize(sizeof(double));
+		    pgm.cc.ucomisd(src_op.as<x86::Xmm>(), limit);
+		}
+		pgm.cc.jp(do_convert);
+		pgm.cc.jb(do_convert);
+		pgm.cc.mov(out.r32(), imm(INT32_MAX));
+		pgm.cc.jmp(clamp_done);
+		pgm.cc.bind(do_convert);
+	    }
 	    if ( src_type->size == sizeof(float) )
 		pgm.cc.cvttss2si(out, src_op.as<x86::Xmm>());
 	    else
 		pgm.cc.cvttsd2si(out, src_op.as<x86::Xmm>());
+	    if ( clamp_positive_i32 )
+		pgm.cc.bind(clamp_done);
 	}
 	else if ( src_op.isMem() )
 	{
+	    bool clamp_positive_i32 = !cast_type->is_unsigned() && cast_type->size == 4;
+	    Label clamp_done = pgm.cc.newLabel();
+	    Label do_convert = pgm.cc.newLabel();
+	    if ( clamp_positive_i32 )
+	    {
+		x86::Xmm src_tmp = newScalarXmm(pgm, src_type, "cast_r2i_cmp");
+		if ( src_type->size == sizeof(float) )
+		    pgm.cc.movss(src_tmp, src_op.as<x86::Mem>());
+		else
+		    pgm.cc.movsd(src_tmp, src_op.as<x86::Mem>());
+		if ( src_type->size == sizeof(float) )
+		{
+		    x86::Mem limit = pgm.cc.newFloatConst(ConstPoolScope::kLocal, 2147483648.0f);
+		    limit.setSize(sizeof(float));
+		    pgm.cc.ucomiss(src_tmp, limit);
+		}
+		else
+		{
+		    x86::Mem limit = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, 2147483648.0);
+		    limit.setSize(sizeof(double));
+		    pgm.cc.ucomisd(src_tmp, limit);
+		}
+		pgm.cc.jp(do_convert);
+		pgm.cc.jb(do_convert);
+		pgm.cc.mov(out.r32(), imm(INT32_MAX));
+		pgm.cc.jmp(clamp_done);
+		pgm.cc.bind(do_convert);
+	    }
 	    if ( src_type->size == sizeof(float) )
 		pgm.cc.cvttss2si(out, src_op.as<x86::Mem>());
 	    else
 		pgm.cc.cvttsd2si(out, src_op.as<x86::Mem>());
+	    if ( clamp_positive_i32 )
+		pgm.cc.bind(clamp_done);
 	}
 	else
 	{

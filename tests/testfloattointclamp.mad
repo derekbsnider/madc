@@ -1,0 +1,18 @@
+int f1()
+{
+	return (int)2147483648.0f;
+}
+
+int f2()
+{
+	return (int)(float)(2147483647);
+}
+
+int main()
+{
+	puti(f1());
+	puts("\n");
+	puti(f2());
+	puts("\n");
+	return 0;
+}
