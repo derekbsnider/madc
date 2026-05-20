@@ -289,6 +289,12 @@ public:
     virtual TokenID id() const { return TokenID::tkMul; }
     virtual inline int precedence() const { return 3; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    virtual DataDef *datadef() const override
+    {
+	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	return TokenOperator::datadef();
+    }
     inline int64_t ioperate() const { return left->ival() * right->ival(); }
     inline double foperate() const { return left->dval() * right->dval(); }
 };
@@ -302,6 +308,12 @@ public:
     virtual TokenID id() const { return TokenID::tkDiv; }
     virtual inline int precedence() const { return 3; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+    virtual DataDef *datadef() const override
+    {
+	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	return TokenOperator::datadef();
+    }
     inline int64_t ioperate() const { return left->ival() / right->ival(); }
     inline double foperate() const { return left->dval() / right->dval(); }
 };

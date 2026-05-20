@@ -874,6 +874,8 @@ static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right)
     return &ddINT;
 }
 
+static DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb);
+
 static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					 Operand *preferred_dest, Operand &storage)
 {
@@ -901,6 +903,32 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	    return storage;
 	}
 	storage = cstr;
+	return storage;
+    }
+
+    DataDef *effective_ptr_type = effective_pointer_type_for_arith(pgm, token);
+
+    if ( target_type && token && token->datadef()
+      && token->datadef()->is_complex()
+      && !effective_ptr_type
+      && !target_type->is_complex()
+      && (target_type->is_numeric() || target_type->is_pointer()) )
+    {
+	TokenComplexPart real_part(token, false);
+	regdefp_t inner_rdp = {nullptr, complex_component_type(token->datadef()), nullptr};
+	Operand &real_op = real_part.compile(pgm, inner_rdp);
+	DataDef *real_type = inner_rdp.second ? inner_rdp.second : real_part.datadef();
+	IRBuilder ir(pgm.cc);
+	IRValue out = ir.coerce(ir_from_operand(real_op, real_type), target_type);
+	out = ir.load(out);
+	if ( preferred_dest && preferred_dest->isReg() )
+	{
+	    if ( !out.op.equals(*preferred_dest) )
+		pgm.safemov(*preferred_dest, out.op, target_type, out.type);
+	    storage = *preferred_dest;
+	    return storage;
+	}
+	storage = out.op;
 	return storage;
     }
 
@@ -1295,6 +1323,13 @@ static DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb)
     if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
 	if ( tm->is_fixed_array_member() && tm->var.type )
 	    return pgm.getPointerType(tm->var.type);
+    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
+    {
+	DataDef *lptr = effective_pointer_type_for_arith(pgm, op->left);
+	DataDef *rptr = effective_pointer_type_for_arith(pgm, op->right);
+	if ( op->id() == TokenID::tkAdd || op->id() == TokenID::tkSub )
+	    return lptr ? lptr : rptr;
+    }
     return nullptr;
 }
 
@@ -1490,12 +1525,13 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
 			     regdefp_t &regdp, Operand &storage)
 {
     Operand *caller_dest = regdp.first;
-    if ( (op == CmpKind::Eq || op == CmpKind::Ne)
+    DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
+    DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
+    if ( !lptr_type && !rptr_type
+      && (op == CmpKind::Eq || op == CmpKind::Ne)
       && ((left && left->datadef() && left->datadef()->is_complex())
        || (right && right->datadef() && right->datadef()->is_complex())) )
 	return emit_complex_compare(pgm, left, right, op, regdp, storage);
-    DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
-    DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
     DataDef *cmp_type = (lptr_type || rptr_type)
 	? (lptr_type ? lptr_type : rptr_type)
 	: infer_numeric_type(left, right);
@@ -1654,6 +1690,222 @@ static Operand &emit_complex_addsub(Program &pgm, TokenBase *left, TokenBase *ri
     ir.store(IRValue::mem(imag_mem, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
 
     storage = as_gp_ptr(pgm, slot, subtract ? "__complex_sub" : "__complex_add");
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &copy_typed_value(Program &pgm, const Operand &src, DataDef *type,
+				 Operand &storage, const char *name)
+{
+    storage = type->newreg(pgm.cc, name);
+    if ( storage.isReg() && storage.as<BaseReg>().isGroup(RegGroup::kVec) )
+    {
+	if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(storage.as<x86::Xmm>(), ((Operand &)src).as<x86::Xmm>(), type, type);
+	else if ( src.isMem() )
+	    pgm.safemov(storage.as<x86::Xmm>(), ((Operand &)src).as<x86::Mem>(), type, type);
+	else if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.safemov(storage.as<x86::Xmm>(), ((Operand &)src).as<x86::Gp>(), type, type);
+	else
+	    throw "copy_typed_value() unsupported Xmm source";
+    }
+    else if ( storage.isReg() && storage.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.safemov(storage.as<x86::Gp>(), ((Operand &)src).as<x86::Gp>(), type, type);
+	else if ( src.isMem() )
+	    pgm.safemov(storage.as<x86::Gp>(), ((Operand &)src).as<x86::Mem>(), type, type);
+	else if ( src.isImm() )
+	    pgm.cc.mov(storage.as<x86::Gp>(), ((Operand &)src).as<Imm>());
+	else if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(storage.as<x86::Gp>(), ((Operand &)src).as<x86::Xmm>(), type, type);
+	else
+	    throw "copy_typed_value() unsupported Gp source";
+    }
+    else
+	throw "copy_typed_value() unsupported destination";
+    return storage;
+}
+
+static Operand &emit_complex_muldiv(Program &pgm, TokenBase *left, TokenBase *right,
+				    bool divide, regdefp_t &regdp, Operand &storage)
+{
+    DataDef *left_type = left ? left->datadef() : NULL;
+    DataDef *right_type = right ? right->datadef() : NULL;
+    DataDef *complex_type = left_type && left_type->is_complex() ? left_type : right_type;
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_muldiv() invalid complex type";
+
+    Operand left_base_storage, right_base_storage;
+    Operand left_real_storage, left_imag_storage, right_real_storage, right_imag_storage;
+    Operand *left_real = NULL, *left_imag = NULL, *right_real = NULL, *right_imag = NULL;
+    DataDef *left_real_type = NULL, *left_imag_type = NULL, *right_real_type = NULL, *right_imag_type = NULL;
+
+    prepare_complex_component_pair(pgm, left, complex_type, left_base_storage,
+				   left_real, left_real_type, left_imag, left_imag_type,
+				   left_real_storage, left_imag_storage);
+    prepare_complex_component_pair(pgm, right, complex_type, right_base_storage,
+				   right_real, right_real_type, right_imag, right_imag_type,
+				   right_real_storage, right_imag_storage);
+
+    IRBuilder ir(pgm.cc);
+    IRValue lre = ir.load(ir.coerce(ir_from_operand(*left_real, left_real_type), cdd->element_type));
+    IRValue lim = ir.load(ir.coerce(ir_from_operand(*left_imag, left_imag_type), cdd->element_type));
+    IRValue rre = ir.load(ir.coerce(ir_from_operand(*right_real, right_real_type), cdd->element_type));
+    IRValue rim = ir.load(ir.coerce(ir_from_operand(*right_imag, right_imag_type), cdd->element_type));
+
+    Operand a, b, c, d;
+    copy_typed_value(pgm, lre.op, cdd->element_type, a, "__complex_a");
+    copy_typed_value(pgm, lim.op, cdd->element_type, b, "__complex_b");
+    copy_typed_value(pgm, rre.op, cdd->element_type, c, "__complex_c");
+    copy_typed_value(pgm, rim.op, cdd->element_type, d, "__complex_d");
+
+    Operand ac, bd, ad, bc;
+    copy_typed_value(pgm, a, cdd->element_type, ac, "__complex_ac");
+    pgm.safemul(ac, c, cdd->element_type);
+    copy_typed_value(pgm, b, cdd->element_type, bd, "__complex_bd");
+    pgm.safemul(bd, d, cdd->element_type);
+    copy_typed_value(pgm, a, cdd->element_type, ad, "__complex_ad");
+    pgm.safemul(ad, d, cdd->element_type);
+    copy_typed_value(pgm, b, cdd->element_type, bc, "__complex_bc");
+    pgm.safemul(bc, c, cdd->element_type);
+
+    Operand real_out, imag_out;
+    if ( !divide )
+    {
+	copy_typed_value(pgm, ac, cdd->element_type, real_out, "__complex_mul_re");
+	pgm.safesub(real_out, bd, cdd->element_type);
+	copy_typed_value(pgm, ad, cdd->element_type, imag_out, "__complex_mul_im");
+	pgm.safeadd(imag_out, bc, cdd->element_type);
+    }
+    else
+    {
+	Operand denom_cc, denom_dd, denom, num_re, num_im;
+	copy_typed_value(pgm, c, cdd->element_type, denom_cc, "__complex_cc");
+	pgm.safemul(denom_cc, c, cdd->element_type);
+	copy_typed_value(pgm, d, cdd->element_type, denom_dd, "__complex_dd");
+	pgm.safemul(denom_dd, d, cdd->element_type);
+	copy_typed_value(pgm, denom_cc, cdd->element_type, denom, "__complex_den");
+	pgm.safeadd(denom, denom_dd, cdd->element_type);
+
+	copy_typed_value(pgm, ac, cdd->element_type, num_re, "__complex_num_re");
+	pgm.safeadd(num_re, bd, cdd->element_type);
+	copy_typed_value(pgm, bc, cdd->element_type, num_im, "__complex_num_im");
+	pgm.safesub(num_im, ad, cdd->element_type);
+
+	Operand rem_re, rem_im;
+	rem_re = cdd->element_type->newreg(pgm.cc, "__complex_rem_re");
+	rem_im = cdd->element_type->newreg(pgm.cc, "__complex_rem_im");
+	if ( cdd->element_type->is_integer() )
+	{
+	    pgm.safexor(rem_re, rem_re);
+	    pgm.safexor(rem_im, rem_im);
+	}
+	pgm.safediv(rem_re, num_re, denom, cdd->element_type);
+	pgm.safediv(rem_im, num_im, denom, cdd->element_type);
+	real_out = num_re;
+	imag_out = num_im;
+    }
+
+    x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+    x86::Mem real_mem = slot;
+    real_mem.setSize((uint32_t)cdd->element_type->size);
+    x86::Mem imag_mem = slot;
+    imag_mem.addOffset((int64_t)cdd->component_offset(true));
+    imag_mem.setSize((uint32_t)cdd->element_type->size);
+    ir.store(IRValue::mem(real_mem, cdd->element_type), ir_from_operand(real_out, cdd->element_type));
+    ir.store(IRValue::mem(imag_mem, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
+
+    storage = as_gp_ptr(pgm, slot, divide ? "__complex_div" : "__complex_mul");
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &emit_complex_compound_muldiv(Program &pgm, TokenBase *left, TokenBase *right,
+					     bool divide, regdefp_t &regdp, Operand &storage)
+{
+    DataDef *complex_type = left ? left->datadef() : NULL;
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_compound_muldiv() invalid complex lhs";
+
+    regdefp_t lhs_rdp = {NULL, complex_type, NULL};
+    Operand &lhs_base = left->compile(pgm, lhs_rdp);
+    x86::Mem lhs_real = complex_component_mem(pgm, lhs_base, cdd, false, "__complex_lhs");
+    x86::Mem lhs_imag = complex_component_mem(pgm, lhs_base, cdd, true, "__complex_lhs");
+
+    Operand right_base_storage, right_real_storage, right_imag_storage;
+    Operand *right_real = NULL, *right_imag = NULL;
+    DataDef *right_real_type = NULL, *right_imag_type = NULL;
+    prepare_complex_component_pair(pgm, right, complex_type, right_base_storage,
+				   right_real, right_real_type, right_imag, right_imag_type,
+				   right_real_storage, right_imag_storage);
+
+    IRBuilder ir(pgm.cc);
+    IRValue lre = ir.load(IRValue::mem(lhs_real, cdd->element_type));
+    IRValue lim = ir.load(IRValue::mem(lhs_imag, cdd->element_type));
+    IRValue rre = ir.load(ir.coerce(ir_from_operand(*right_real, right_real_type), cdd->element_type));
+    IRValue rim = ir.load(ir.coerce(ir_from_operand(*right_imag, right_imag_type), cdd->element_type));
+
+    Operand a, b, c, d;
+    copy_typed_value(pgm, lre.op, cdd->element_type, a, "__complex_ca");
+    copy_typed_value(pgm, lim.op, cdd->element_type, b, "__complex_cb");
+    copy_typed_value(pgm, rre.op, cdd->element_type, c, "__complex_cc");
+    copy_typed_value(pgm, rim.op, cdd->element_type, d, "__complex_cd");
+
+    Operand ac, bd, ad, bc;
+    copy_typed_value(pgm, a, cdd->element_type, ac, "__complex_cac");
+    pgm.safemul(ac, c, cdd->element_type);
+    copy_typed_value(pgm, b, cdd->element_type, bd, "__complex_cbd");
+    pgm.safemul(bd, d, cdd->element_type);
+    copy_typed_value(pgm, a, cdd->element_type, ad, "__complex_cad");
+    pgm.safemul(ad, d, cdd->element_type);
+    copy_typed_value(pgm, b, cdd->element_type, bc, "__complex_cbc");
+    pgm.safemul(bc, c, cdd->element_type);
+
+    Operand real_out, imag_out;
+    if ( !divide )
+    {
+	copy_typed_value(pgm, ac, cdd->element_type, real_out, "__complex_cmre");
+	pgm.safesub(real_out, bd, cdd->element_type);
+	copy_typed_value(pgm, ad, cdd->element_type, imag_out, "__complex_cmim");
+	pgm.safeadd(imag_out, bc, cdd->element_type);
+    }
+    else
+    {
+	Operand denom_cc, denom_dd, denom, num_re, num_im;
+	copy_typed_value(pgm, c, cdd->element_type, denom_cc, "__complex_cdcc");
+	pgm.safemul(denom_cc, c, cdd->element_type);
+	copy_typed_value(pgm, d, cdd->element_type, denom_dd, "__complex_cddd");
+	pgm.safemul(denom_dd, d, cdd->element_type);
+	copy_typed_value(pgm, denom_cc, cdd->element_type, denom, "__complex_cden");
+	pgm.safeadd(denom, denom_dd, cdd->element_type);
+
+	copy_typed_value(pgm, ac, cdd->element_type, num_re, "__complex_cnre");
+	pgm.safeadd(num_re, bd, cdd->element_type);
+	copy_typed_value(pgm, bc, cdd->element_type, num_im, "__complex_cnim");
+	pgm.safesub(num_im, ad, cdd->element_type);
+
+	Operand rem_re, rem_im;
+	rem_re = cdd->element_type->newreg(pgm.cc, "__complex_crem_re");
+	rem_im = cdd->element_type->newreg(pgm.cc, "__complex_crem_im");
+	if ( cdd->element_type->is_integer() )
+	{
+	    pgm.safexor(rem_re, rem_re);
+	    pgm.safexor(rem_im, rem_im);
+	}
+	pgm.safediv(rem_re, num_re, denom, cdd->element_type);
+	pgm.safediv(rem_im, num_im, denom, cdd->element_type);
+	real_out = num_re;
+	imag_out = num_im;
+    }
+
+    ir.store(IRValue::mem(lhs_real, cdd->element_type), ir_from_operand(real_out, cdd->element_type));
+    ir.store(IRValue::mem(lhs_imag, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
+    storage = lhs_base;
     regdp.first = &storage;
     regdp.second = complex_type;
     return storage;
@@ -5837,6 +6089,8 @@ Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "*= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "*= missing rval operand" << flush;
+    if ( left->datadef() && left->datadef()->is_complex() )
+	return emit_complex_compound_muldiv(pgm, left, right, /*divide=*/false, regdp, _operand);
     return emit_compound_binop3(pgm, left, right, &Program::safemul, regdp, _operand, "*=");
 }
 
@@ -5844,6 +6098,8 @@ Operand &TokenDivEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "/= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "/= missing rval operand" << flush;
+    if ( left->datadef() && left->datadef()->is_complex() )
+	return emit_complex_compound_muldiv(pgm, left, right, /*divide=*/true, regdp, _operand);
     return emit_compound_divmod(pgm, left, right, /*return_remainder=*/false, regdp, _operand, "/=");
 }
 
@@ -8551,11 +8807,12 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenAdd::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "+ missing lval operand"; }
     if ( !right ) { throw "+ missing rval operand"; }
-    if ( (left->datadef() && left->datadef()->is_complex())
-      || (right->datadef() && right->datadef()->is_complex()) )
-	return emit_complex_addsub(pgm, left, right, /*subtract=*/false, regdp, _operand);
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
     DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
+    if ( !lptr_type && !rptr_type
+      && ((left->datadef() && left->datadef()->is_complex())
+       || (right->datadef() && right->datadef()->is_complex())) )
+	return emit_complex_addsub(pgm, left, right, /*subtract=*/false, regdp, _operand);
     if ( !lptr_type && !rptr_type && can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     if ( (lptr_type || rptr_type) && regdp.second && !regdp.second->is_pointer() )
 	regdp.second = lptr_type ? lptr_type : rptr_type;
@@ -8611,10 +8868,12 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenSub::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "- missing lval operand"; }
     if ( !right ) { throw "- missing rval operand"; }
-    if ( (left->datadef() && left->datadef()->is_complex())
-      || (right->datadef() && right->datadef()->is_complex()) )
-	return emit_complex_addsub(pgm, left, right, /*subtract=*/true, regdp, _operand);
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
+    DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
+    if ( !lptr_type && !rptr_type
+      && ((left->datadef() && left->datadef()->is_complex())
+       || (right->datadef() && right->datadef()->is_complex())) )
+	return emit_complex_addsub(pgm, left, right, /*subtract=*/true, regdp, _operand);
     if ( !lptr_type && can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     if ( lptr_type && regdp.second && !regdp.second->is_pointer() )
 	regdp.second = lptr_type;
@@ -8736,6 +8995,9 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenMul::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "* missing lval operand"; }
     if ( !right ) { throw "* missing rval operand"; }
+    if ( (left->datadef() && left->datadef()->is_complex())
+      || (right->datadef() && right->datadef()->is_complex()) )
+	return emit_complex_muldiv(pgm, left, right, /*divide=*/false, regdp, _operand);
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     // Skip the plain-binop fast path when operands are mixed int/real —
@@ -8769,6 +9031,9 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenDiv::Compile() TOP" << endl);
     if ( !left )  { throw "/ missing lval operand"; } 
     if ( !right ) { throw "/ missing rval operand"; }
+    if ( (left->datadef() && left->datadef()->is_complex())
+      || (right->datadef() && right->datadef()->is_complex()) )
+	return emit_complex_muldiv(pgm, left, right, /*divide=*/true, regdp, _operand);
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     {
@@ -10060,6 +10325,7 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	&& cast_type && cast_type->is_complex();
     bool complex_to_scalar = expr && expr->datadef()
 	&& expr->datadef()->is_complex()
+	&& !effective_pointer_type_for_arith(pgm, expr)
 	&& cast_type && (cast_type->is_numeric() || cast_type->is_pointer());
     if ( scalar_to_complex )
     {

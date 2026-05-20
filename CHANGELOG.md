@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **GCC torture `pr49644.c` and `pr104604.c` now pass.**
+  Complex `*`, `/`, `*=`, and `/=` now lower component-wise through the
+  compiler's internal complex pair representation, and pointer-aware
+  normalization no longer strips fixed-array decay off complex-typed
+  expressions before compare/cast lowering. That closes the
+  `_Complex double a[12], *c = a; if (c != a + 6)` pointer-arithmetic
+  lane and the `_Complex unsigned t = 42; t /= c; return v + t;`
+  unsigned complex division lane. Added
+  `tests/testcomplexptrcmpdecay.mad` and
+  `tests/testcomplexunsigneddiveq.mad` as regressions. Full validation
+  is green at `322/322` JIT and `322/322` EXE, and focused GCC reruns
+  bring the conservative parity floor to at least `1406/1685` (83.4%).
+
 - **GCC torture `20020227-1.c` now passes.**
   Scalar assignment into packed complex struct members now zeroes the
   imaginary lane via an immediate store instead of routing the zero
