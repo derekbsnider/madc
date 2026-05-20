@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **GCC torture `921007-1.c`, `921016-1.c`, `921019-1.c`, and `930628-1.c` now pass.**
+  The lexer now breaks the `strcmp` / `__builtin_strcmp` macro-expansion
+  cycle at the builtin alias boundary, typedef-enum / alias bitfield
+  extraction no longer wrongly forces signed fixed-width aliases like
+  `int32_t` through the unsigned path, fixed-array struct members now
+  preserve multidimensional shape for decay/subscript lowering, and
+  native EXE global pointer initializers can now materialize constant
+  string-subscript addresses like `(void *)&("X"[0])` directly in copied
+  `.data` instead of relying on runtime `string_cstr` setup. Added
+  `tests/testbuiltinstrcmpmacrocycle.mad`,
+  `tests/testsignedbitfieldassignexpr.mad`,
+  `tests/teststrlitaddrsubscriptglobal.mad`, and
+  `tests/teststructmembermultidimdecay.mad` as regressions. Full
+  validation is green at `341/341` JIT and `341/341` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1415/1685` (84.0%).
+
 - **GCC torture `20230630-2.c` and `20230630-4.c` now pass.**
   `__attribute__((scalar_storage_order(...)))` now survives lexing as a
   layout-affecting attribute, struct parsing records reversed scalar

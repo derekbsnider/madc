@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 20, 2026 (v0.17.0, GCC parity session 20 — at least 1411/1685 from focused reruns).
+Test results as of May 20, 2026 (v0.17.0, GCC parity session 20 — at least 1415/1685 from focused reruns).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 337 JIT pass / 0 fail
+## Current Batch Status — 341 JIT pass / 0 fail
 
 Latest results (2026-05-20):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 337 integration tests
+- Passing: 341 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -72,10 +72,17 @@ Latest results (2026-05-20):
   fixed-array struct assignment via `testfixedarraystructcopy.mad`, and
   `-finstrument-functions` / `no_instrument_function` coverage via
   `testfinstrumentfunctions.mad` now bring the tracked integration
-  count to 337.
+  count to 337. Additional tracked regressions for the builtin
+  `strcmp` macro cycle via `testbuiltinstrcmpmacrocycle.mad`, signed
+  bitfield assignment-expression extraction via
+  `testsignedbitfieldassignexpr.mad`, native string-literal subscript
+  global pointer initialization via `teststrlitaddrsubscriptglobal.mad`,
+  and multidimensional struct-member array decay via
+  `teststructmembermultidimdecay.mad` now bring the tracked integration
+  count to 341.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 337 (of 337 JIT-passing tests)
+- Passing: 341 (of 341 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so

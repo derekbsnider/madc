@@ -1,0 +1,14 @@
+int ok = 1;
+
+void f(double x[2], double y[2])
+{
+	if (x == y)
+		ok = 0;
+}
+
+int main()
+{
+	struct { int f[3]; double x[1][2]; } tp[4][2];
+	f(tp[0][0].x[0], tp[1][0].x[0]);
+	puti(ok);
+}

@@ -1425,7 +1425,21 @@ bool Program::save_executable(const std::string &path)
 		// alias the object storage; placement-new construction from that
 		// overlapping source is not reliable in native executables.
 		size_t cstr_offset = data_section_buf.size();
-		data_section_buf.insert(data_section_buf.end(), cstr, cstr + std::strlen(cstr) + 1);
+		size_t cstr_size = std::strlen(cstr) + 1;
+		data_section_buf.insert(data_section_buf.end(), cstr, cstr + cstr_size);
+
+		// Global initializers can also bake direct c_str() pointers like
+		// `&("X"[0])` into copied .data. Teach the generic pointer-slot
+		// patcher that those host addresses map to the stable copied
+		// character buffer we just appended.
+		data_offset_map[reinterpret_cast<uintptr_t>(cstr)] = cstr_offset;
+		data_range cstr_range;
+		cstr_range.start = reinterpret_cast<uintptr_t>(cstr);
+		cstr_range.size = cstr_size;
+		cstr_range.data_off = cstr_offset;
+		data_ranges.push_back(cstr_range);
+		std::sort(data_ranges.begin(), data_ranges.end(),
+			  [](const data_range &a, const data_range &b) { return a.start < b.start; });
 
 		string_object_patch sop;
 		sop.object_offset = oit->second;

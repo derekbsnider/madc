@@ -1,0 +1,12 @@
+struct S {
+	signed int m:11;
+};
+
+int main()
+{
+	int j = 1081;
+	struct S s;
+	puti(s.m = j);
+	putchar('\n');
+	puti(s.m);
+}

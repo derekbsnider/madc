@@ -517,6 +517,7 @@ public:
     std::vector<bool> member_array_flags;	// true when declarator used [] even if count folded to 1
     std::vector<size_t> member_offsets;	// per-member byte offset in the finalized layout
     std::vector<BitFieldInfo> member_bitfields;
+    std::vector<std::vector<uint32_t>> member_dims;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
@@ -596,7 +597,7 @@ public:
 	bitfield_next_bit = 0;
     }
     void addMember(std::string n, DataDef &dd, size_t cnt, TokenBase *count_expr = NULL,
-	bool is_array_decl = false)
+	bool is_array_decl = false, const std::vector<uint32_t> *dims = NULL)
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
 	endBitFieldRun();
@@ -609,6 +610,7 @@ public:
 	    member_array_flags.push_back(is_array_decl || count_expr != NULL);
 	    member_offsets.push_back(0);
 	    member_bitfields.push_back(BitFieldInfo());
+	    member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
 	    member_count_exprs.push_back(count_expr);
 	    size_t member_size = count_expr ? 0 : (dd.size * cnt);
 	    if ( member_size > size ) size = member_size;
@@ -621,6 +623,7 @@ public:
 	member_array_flags.push_back(is_array_decl || count_expr != NULL);
 	member_offsets.push_back(size);
 	member_bitfields.push_back(BitFieldInfo());
+	member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
 	member_count_exprs.push_back(count_expr);
 	if ( !count_expr )
 	    size += dd.size * cnt;
@@ -637,7 +640,12 @@ public:
 		|| name == "short"
 		|| name == "int"
 		|| name == "long"
-		|| name == "long long";
+		|| name == "long long"
+		|| name == "int8_t"
+		|| name == "int16_t"
+		|| name == "int24_t"
+		|| name == "int32_t"
+		|| name == "int64_t";
 	};
 	size_t storage_size = bitfield_storage_size(dd);
 	size_t storage_bits = storage_size * 8;
@@ -683,6 +691,7 @@ public:
 	member_array_flags.push_back(false);
 	member_offsets.push_back(info.storage_offset);
 	member_bitfields.push_back(info);
+	member_dims.push_back(std::vector<uint32_t>());
 	member_count_exprs.push_back(NULL);
     }
     void addUnnamedBitField(DataDef &dd, size_t width)
@@ -714,6 +723,7 @@ public:
 	    if ( info.is_bitfield )
 		info.storage_offset += base_offset;
 	    member_bitfields.push_back(info);
+	    member_dims.push_back(i < agg.member_dims.size() ? agg.member_dims[i] : std::vector<uint32_t>());
 	    member_count_exprs.push_back(i < agg.member_count_exprs.size() ? agg.member_count_exprs[i] : NULL);
 	}
 	size_t end = base_offset + agg.size;
@@ -763,6 +773,13 @@ public:
 	    if ( !member.compare(members[i].first) )
 		return (i < member_array_flags.size()) ? member_array_flags[i] : false;
 	return false;
+    }
+    const std::vector<uint32_t> *m_dims(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_dims.size()) ? &member_dims[i] : NULL;
+	return NULL;
     }
     bool has_runtime_size() const
     {

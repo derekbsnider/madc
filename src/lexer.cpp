@@ -95,6 +95,18 @@ static bool consume_macro_call_open(Source &source)
     return false;
 }
 
+static bool is_identifier_spelling(const std::string &s)
+{
+    if ( s.empty() )
+	return false;
+    if ( s[0] != '_' && !isalpha((unsigned char)s[0]) )
+	return false;
+    for ( size_t i = 1; i < s.size(); ++i )
+	if ( s[i] != '_' && !isalnum((unsigned char)s[i]) )
+	    return false;
+    return true;
+}
+
 static const char *auto_include_embedded_header_for_identifier(const std::string &word)
 {
     static const std::map<std::string, std::string> identifier_headers = {
@@ -2481,6 +2493,13 @@ TokenBase *Program::_getToken()
 		    std::string &val = define_map[word];
 		    if ( !val.empty() )
 		    {
+			// Builtin libc aliases such as __builtin_strcmp -> strcmp
+			// should resolve to the target identifier directly instead
+			// of re-entering the macro rescanner. Otherwise user macros
+			// like `#define strcmp __builtin_strcmp` recurse forever.
+			if ( word.compare(0, 10, "__builtin_") == 0
+			  && is_identifier_spelling(val) )
+			    return new TokenIdent(val);
 			source.pushback_macro(val, word);
 			return getToken(); // re-tokenize the substituted text
 		    }

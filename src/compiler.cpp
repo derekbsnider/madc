@@ -105,6 +105,7 @@ static size_t internal_vararg_static_slot_size(DataDef *type);
 static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand &src);
 static void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem, DataDef *type);
 static void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm, DataDef *type);
+static const char *token_constant_cstring(TokenBase *token);
 
 static TypeId simd_type_id(DataDefSIMD *vdd)
 {
@@ -368,6 +369,53 @@ static bool token_get_constant_cstring(TokenBase *token, std::string &out)
 	out = *((std::string *)tv->var.data);
 	return true;
     }
+    return false;
+}
+
+static bool token_get_constant_cstring_address(TokenBase *token, const char *&out)
+{
+    out = NULL;
+    if ( !token )
+	return false;
+
+    const char *cstr = token_constant_cstring(token);
+    if ( cstr )
+    {
+	out = cstr;
+	return true;
+    }
+
+    if ( TokenCast *tc = dynamic_cast<TokenCast *>(token) )
+	return token_get_constant_cstring_address(tc->expr, out);
+
+    auto index_into_cstring = [&](const char *base_cstr, TokenBase *index) -> bool {
+	if ( !base_cstr || !index || !index->is_constant() )
+	    return false;
+	int64_t idx = index->ival();
+	if ( idx < 0 )
+	    return false;
+	size_t len = strlen(base_cstr);
+	if ( static_cast<size_t>(idx) > len )
+	    return false;
+	out = base_cstr + idx;
+	return true;
+    };
+
+    TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(token);
+    if ( !tae || !tae->expr )
+	return false;
+
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(tae->expr) )
+    {
+	if ( !ts->object.type || !ts->object.type->is_string() || !ts->object.data )
+	    return false;
+	std::string *str = static_cast<std::string *>(ts->object.data);
+	return index_into_cstring(str->c_str(), ts->index);
+    }
+
+    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tae->expr) )
+	return index_into_cstring(token_constant_cstring(tse->base_expr), tse->index);
+
     return false;
 }
 
@@ -1413,6 +1461,30 @@ static bool is_fixed_array_struct_member(TokenBase *tb)
 {
     TokenMember *tm = dynamic_cast<TokenMember *>(tb);
     return tm && tm->is_fixed_array_member();
+}
+
+static DataDef *build_fixed_array_result_type(DataDef *base_type,
+					      const std::vector<uint32_t> &dims,
+					      size_t consumed_dims);
+
+static const std::vector<uint32_t> *fixed_array_member_dims(TokenMember *tm)
+{
+    if ( !tm )
+	return NULL;
+    DataDefSTRUCT *sdd = tm->owner_struct_type();
+    if ( !sdd )
+	return NULL;
+    return sdd->m_dims(tm->var.name);
+}
+
+static DataDef *fixed_array_member_result_type(TokenMember *tm, size_t consumed_dims)
+{
+    if ( !tm || !tm->var.type )
+	return &ddINT64;
+    const std::vector<uint32_t> *dims = fixed_array_member_dims(tm);
+    if ( !dims || dims->empty() )
+	return tm->var.type;
+    return build_fixed_array_result_type(tm->var.type, *dims, consumed_dims);
 }
 
 static DataDef *build_fixed_array_result_type(DataDef *base_type,
@@ -5117,8 +5189,27 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	size_t elem_size = var.type->size ? var.type->size : 8;
 	bool elem_is_charptr = var.type->is_pointer()
 	    && var.type->rawtype() == DataType::dtCHAR;
+	Variable *static_data_var = &var;
+	if ( pgm.tkProgram && var.is_global() )
+	{
+	    Variable *canon = pgm.tkProgram->findVariable(var.name);
+	    if ( canon && canon->data )
+		static_data_var = canon;
+	}
 	for ( size_t i = 0; i < flat_inits.size(); ++i )
 	{
+	    const char *static_cstr_addr = NULL;
+	    if ( pgm.tkFunction == pgm.tkProgram
+	      && static_data_var && static_data_var->data
+	      && var.type
+	      && var.type->is_pointer()
+	      && token_get_constant_cstring_address(flat_inits[i], static_cstr_addr) )
+	    {
+		memcpy(static_cast<uint8_t *>(static_data_var->data) + i * elem_size,
+		       &static_cstr_addr, sizeof(static_cstr_addr));
+		continue;
+	    }
+
 	    regdefp_t it_rdp = {nullptr, var.type->is_real() ? var.type : nullptr, nullptr};
 	    Operand &val_op = flat_inits[i]->compile(pgm, it_rdp);
 	    x86::Mem slot = x86::ptr(base_reg, (int32_t)(i * elem_size), (uint32_t)elem_size);
@@ -7992,18 +8083,23 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     x86::Gp idx_reg = pgm.cc.newGpq("subexpr_idx");
     load_idx_to_gpq(pgm, idx_reg, idx_op);
 
-    size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
-    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, _datatype, "subexpr_size");
+    DataDef *result_type = _datatype;
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(base_expr) )
+	if ( tm->is_fixed_array_member() )
+	    result_type = fixed_array_member_result_type(tm, 1);
+
+    size_t elem_size = result_type && result_type->size ? result_type->size : 8;
+    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "subexpr_size");
 
     x86::Mem elem_mem = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     if ( !regdp.second )
-	regdp.second = _datatype;
+	regdp.second = result_type;
     // C array-to-pointer decay in value context: `arr2[i]` where the
     // element itself is an array (e.g. `unsigned long x[2][2];
     // x[i]`) yields a pointer to the first element, not the first
     // scalar value loaded from that subarray. Keep operand() as the raw
     // lvalue Mem for address-taking/chaining, but compile() must decay.
-    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(_datatype) )
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(result_type) )
     {
 	DataDef *elem_base = add->element_type ? add->element_type : &ddINT64;
 	DataDef *decay_type = pgm.getPointerType(elem_base);
@@ -8015,15 +8111,15 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     // a numeric-sized value it can coerce/load; a struct element isn't a
     // value that fits in a register. Callers (e.g. TokenMember::operand
     // for `s[i].member`) read the Mem and add the member offset.
-    if ( _datatype && (_datatype->basetype() == BaseType::btStruct
-		    || _datatype->basetype() == BaseType::btClass) )
+    if ( result_type && (result_type->basetype() == BaseType::btStruct
+		      || result_type->basetype() == BaseType::btClass) )
     {
 	_operand = elem_mem;
 	if ( !regdp.first )
 	    regdp.first = &_operand;
 	return _operand;
     }
-    return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
+    return emit_ir_value(pgm, IRValue::mem(elem_mem, result_type), regdp, _operand, result_type);
 }
 
 DataDef *TokenSubscript::datadef() const
@@ -11227,6 +11323,15 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
 	else
 	    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+	if ( obj_var.type && obj_var.type->is_string() )
+	{
+	    InvokeNode *call;
+	    pgm.cc.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+	    call->setArg(0, obj_reg);
+	    x86::Gp cstr = pgm.cc.newIntPtr("addr_sub_cstr");
+	    call->setRet(0, cstr);
+	    obj_reg = cstr;
+	}
 
 	regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
 	Operand &idx_op = ts->index->compile(pgm, idx_rdp);
@@ -11234,7 +11339,9 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	load_idx_to_gpq(pgm, idx_reg, idx_op);
 
 	size_t elem_size = 8;
-	if ( obj_var.is_fixed_array() && obj_var.type->size )
+	if ( obj_var.type && obj_var.type->is_string() )
+	    elem_size = 1;
+	else if ( obj_var.is_fixed_array() && obj_var.type->size )
 	    elem_size = obj_var.type->size;
 	else if ( obj_var.type->is_pointer() )
 	{

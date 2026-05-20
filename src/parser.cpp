@@ -8291,6 +8291,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    size_t member_count = 1;
 		    bool member_is_array_decl = false;
 		    TokenBase *member_count_expr = NULL;
+		    std::vector<uint32_t> member_dims;
 		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 		    {
 			member_is_array_decl = true;
@@ -8299,6 +8300,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			if ( cl && cl->id() == TokenID::tkClSqr )
 			{
 			    member_count = 0;
+			    member_dims.push_back(0);
 			    break;
 			}
 			pgm.pushToken(cl);
@@ -8316,6 +8318,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			cl = pgm.nextToken();
 			if ( !cl || cl->id() != TokenID::tkClSqr )
 			    pgm.Throw(cl ? cl : tn) << "Expected ']' in struct member array declaration" << flush;
+			member_dims.push_back((uint32_t)n);
 			if ( n == 0 ) { member_count = 0; break; }
 			member_count *= (size_t)n;
 		    }
@@ -8334,7 +8337,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    else
 		    {
 			dds->addMember(mname, *member_dd, member_count,
-			    member_count_expr, member_is_array_decl);
+			    member_count_expr, member_is_array_decl, &member_dims);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
 			    << " (size " << member_dd->size << " x " << member_count
 			    << ", total " << dds->size << ')' << endl);
