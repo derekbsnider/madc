@@ -10570,6 +10570,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    nt = nextToken();
 	}
 	std::vector<uint32_t> param_array_dims;
+	std::vector<TokenBase *> param_array_dim_exprs;
 
 	// C `void` as sole parameter means no parameters (e.g. `int f(void)`).
 	if ( nt->type() == TokenType::ttDataType
@@ -10767,13 +10768,24 @@ grabnt:
 	    {
 		nextToken(); // consume ']'
 		param_array_dims.push_back(0);
+		param_array_dim_exprs.push_back(NULL);
 	    }
 	    else
 	    {
-		int64_t n = parse_constant_integer_expression(*this);
-		if ( n < 0 )
-		    Throw(nt) << "Parameter array dimension must be non-negative" << flush;
-		param_array_dims.push_back((uint32_t)n);
+		TokenBase *dim_expr = NULL;
+		if ( bracket_dim_uses_runtime_value(*this) )
+		{
+		    dim_expr = parseExpression(nextToken(), true);
+		    param_array_dims.push_back(0);
+		}
+		else
+		{
+		    int64_t n = parse_constant_integer_expression(*this);
+		    if ( n < 0 )
+			Throw(nt) << "Parameter array dimension must be non-negative" << flush;
+		    param_array_dims.push_back((uint32_t)n);
+		}
+		param_array_dim_exprs.push_back(dim_expr);
 		TokenBase *cl = nextToken();
 		if ( !cl || cl->id() != TokenID::tkClSqr )
 		    Throw(cl ? cl : nt) << "Expected ']' in parameter array declarator" << flush;
@@ -10784,7 +10796,10 @@ grabnt:
 	{
 	    DataDef *array_elem = param_dd;
 	    for ( size_t i = param_array_dims.size(); i-- > 1; )
-		array_elem = new DataDefCArray(*array_elem, array_elem->name, param_array_dims[i], NULL);
+		array_elem = new DataDefCArray(*array_elem, array_elem->name,
+					       param_array_dims[i],
+					       i < param_array_dim_exprs.size()
+					       ? param_array_dim_exprs[i] : NULL);
 	    param_dd = getPointerType(array_elem);
 	    rtype = RefType::rtPointer;
 	}
