@@ -58,11 +58,12 @@ public:
     std::vector<CaptureEntry> captures;         // populated during lambda body compilation
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
-    FuncDef(DataDef &d) : returns(d), has_captures(false), is_varargs(false), is_void_params(false) { funcnode = NULL; }
+    FuncDef(DataDef &d) : returns(d), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     bool is_varargs;  // function declared with ... (variadic)
     bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
+    bool no_instrument_function;
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 
@@ -953,6 +954,7 @@ public:
 
     bool colors;
     bool aot_tracking;
+    bool instrument_functions;
     struct AotDataRef {
 	uint32_t label_id;
 	uintptr_t address;

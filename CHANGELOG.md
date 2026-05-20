@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **GCC torture `eeprof-1.c` now passes.**
+  `scripts/run_gcc_testsuite.py` now respects the testsuite's
+  `dg-options "-finstrument-functions"` lane by forwarding
+  `--finstrument-functions` into madc, the CLI/compiler now support
+  `--finstrument-functions` directly, and GNU
+  `__attribute__((no_instrument_function))` now survives lexing/parsing
+  so instrumentation hooks skip the expected profiling helpers. Added a
+  generic `tests/foo.flags` fixture convention to `scripts/run_tests.sh`
+  and `tests/testfinstrumentfunctions.mad` as the local regression. Full
+  validation is green at `330/330` JIT and `330/330` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1409/1685` (83.6%).
+
 - **GCC torture `pr93434.c` now passes.**
   Fixed-array struct assignment now scales write-side indices with the
   same full element stride as the read path, so copies like

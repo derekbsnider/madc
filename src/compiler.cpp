@@ -408,6 +408,83 @@ static void emit_zeroed_void_return(Program &pgm)
     pgm.cc.ret();
 }
 
+static bool should_instrument_function(Program &pgm, FuncDef *func)
+{
+    if ( !pgm.instrument_functions || !func || func->no_instrument_function )
+	return false;
+    return pgm.cur_func_name != "__cyg_profile_func_enter"
+	&& pgm.cur_func_name != "__cyg_profile_func_exit";
+}
+
+static bool resolve_function_address(Program &pgm, Variable *var, x86::Gp &addr_gp)
+{
+    if ( !var || !var->data )
+	return false;
+
+    Method *method = (Method *)var->data;
+    FuncDef *func = dynamic_cast<FuncDef *>(method->returns.type);
+    if ( func && func->funcnode )
+    {
+	pgm.cc.lea(addr_gp, x86::ptr(func->funcnode->label()));
+	return true;
+    }
+
+    void *func_addr = method->x86code;
+    if ( !func_addr && pgm.is_dynamic_symbol_allowed(var->name) )
+    {
+	func_addr = dlsym(RTLD_DEFAULT, var->name.c_str());
+	if ( func_addr )
+	    method->x86code = func_addr;
+    }
+    if ( !func_addr )
+	return false;
+
+    pgm.cc.mov(addr_gp, imm((uint64_t)func_addr));
+    return true;
+}
+
+static void emit_function_instrument_hook(Program &pgm, FuncDef *current_func,
+					  const char *hook_name)
+{
+    if ( !should_instrument_function(pgm, current_func)
+      || !pgm.tkProgram || !hook_name )
+	return;
+
+    std::string hook(hook_name);
+    Variable *hook_var = pgm.tkProgram->findVariable(hook);
+    if ( !hook_var || !hook_var->data )
+	return;
+
+    x86::Gp hook_gp = pgm.cc.newIntPtr("%s", hook_name);
+    if ( !resolve_function_address(pgm, hook_var, hook_gp) )
+	return;
+
+    x86::Gp current_gp = pgm.cc.newIntPtr("instrument_this_fn");
+    if ( current_func->funcnode )
+	pgm.cc.lea(current_gp, x86::ptr(current_func->funcnode->label()));
+    else
+	return;
+
+    x86::Gp parent_gp = pgm.cc.newIntPtr("instrument_parent_fn");
+    pgm.cc.xor_(parent_gp, parent_gp);
+
+    InvokeNode *call;
+    pgm.cc.invoke(&call, hook_gp,
+	FuncSignature::build<void, void *, void *>());
+    call->setArg(0, current_gp);
+    call->setArg(1, parent_gp);
+}
+
+static void emit_function_instrument_enter(Program &pgm, FuncDef *current_func)
+{
+    emit_function_instrument_hook(pgm, current_func, "__cyg_profile_func_enter");
+}
+
+static void emit_function_instrument_exit(Program &pgm, FuncDef *current_func)
+{
+    emit_function_instrument_hook(pgm, current_func, "__cyg_profile_func_exit");
+}
+
 static bool global_has_compilable_address(Program &pgm, Variable *var)
 {
     if ( !var || !var->is_global() )
@@ -5084,6 +5161,9 @@ void TokenFunc::prepareFuncNode(Program &pgm)
     if ( !var.data ) return; // not a real function (edge case)
     Method &method = *((Method *)var.data);
     FuncDef *func = (FuncDef *)method.returns.type;
+    if ( pgm.instrument_functions )
+	std::cerr << "[instrument] " << var.name << " no_instrument="
+		  << (func->no_instrument_function ? 1 : 0) << std::endl;
     if ( func->funcnode ) return; // already prepared
 
     FuncSignature funcsig(CallConvId::kCDecl);
@@ -5145,7 +5225,6 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 
     Method &method = *((Method *)var.data);
     FuncDef *func = (FuncDef *)method.returns.type;
-
     // Pre-pass in Program::compile usually already prepared this function's
     // funcnode so global fn-pointer inits could LEA its label. If not
     // (e.g. a late-compiled lambda), do it now.
@@ -5221,6 +5300,8 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	}
     }
 
+    emit_function_instrument_enter(pgm, func);
+
     if ( variables.size() )
     {
 	DBG(cout << "Local variables:" << endl);
@@ -5263,6 +5344,7 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 
     cleanup(pgm);	// cleanup stack
+    emit_function_instrument_exit(pgm, func);
     if ( var.name == "main" && !method.owner_class
       && func->returns.rawtype() != DataType::dtVOID )
     {
@@ -11516,6 +11598,10 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 // compile a return statement
 Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 {
+    FuncDef *current_func = pgm.tkFunction && pgm.tkFunction->method
+	? dynamic_cast<FuncDef *>(pgm.tkFunction->method->returns.type)
+	: NULL;
+
     // multi-return: write values to __retbuf and return without cleanup
     // (cleanup runs destructors which can't be called multiple times
     //  when there are multiple return paths in if/else branches)
@@ -11569,6 +11655,7 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), tmp);
 	    }
 	}
+	emit_function_instrument_exit(pgm, current_func);
 	pgm.cc.ret();
 	return _reg;
     }
@@ -11596,6 +11683,7 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	    Operand ret_storage;
 	    Operand &cstr_gp = compile_token_normalized(pgm, returns, ret_type, nullptr, ret_storage);
 	    _operand = cstr_gp;
+	    emit_function_instrument_exit(pgm, current_func);
 	    pgm.saferet(cstr_gp);
 	    return _operand;
 	}
@@ -11617,6 +11705,7 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	    // pointer path.
 	    regdefp_t void_rdp = {NULL, NULL, NULL};
 	    returns->compile(pgm, void_rdp);
+	    emit_function_instrument_exit(pgm, current_func);
 	    emit_zeroed_void_return(pgm);
 	    return _reg;
 	}
@@ -11630,13 +11719,16 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	  && ret_type->basetype() == BaseType::btStruct
 	  && ret_type->size > 0 && ret_type->size <= 16 )
 	{
+	    emit_function_instrument_exit(pgm, current_func);
 	    emit_small_struct_return(pgm, reg, ret_type);
 	    return reg;
 	}
 
+	emit_function_instrument_exit(pgm, current_func);
 	pgm.saferet(reg);
 	return reg;
     }
+    emit_function_instrument_exit(pgm, current_func);
     pgm.cc.ret();
 
     return _reg;

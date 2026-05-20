@@ -11,6 +11,7 @@ runtime failure.
 import argparse
 import os
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -32,6 +33,7 @@ RUNTIME_ERROR_PATTERNS = (
 )
 
 SKIP_DIRECTIVE_RE = re.compile(r"dg-require-effective-target\s+([A-Za-z0-9_-]+)")
+DG_OPTIONS_RE = re.compile(r'dg-options\s+"([^"]*)"')
 DEFAULT_UNSUPPORTED_TARGETS = {
 	"label_values",
 	"trampolines",
@@ -71,6 +73,16 @@ def skip_reason(path, unsupported_targets):
 	return ""
 
 
+def madc_args_from_directives(path):
+	text = read_text(path)
+	args = []
+	for match in DG_OPTIONS_RE.finditer(text):
+		for opt in shlex.split(match.group(1)):
+			if opt == "-finstrument-functions":
+				args.append("--finstrument-functions")
+	return args
+
+
 def classify_output(returncode, output):
 	if any(pattern in output for pattern in RUNTIME_ERROR_PATTERNS):
 		return "FAIL(runtime)", "madc runtime diagnostic"
@@ -107,9 +119,10 @@ def builtin_multifile_source(path):
 def run_one(path, madc, timeout):
 	temp_source = builtin_multifile_source(path)
 	input_path = temp_source if temp_source else path
+	madc_args = madc_args_from_directives(path)
 	try:
 		completed = subprocess.run(
-			[str(madc), str(input_path)],
+			[str(madc)] + madc_args + [str(input_path)],
 			stdout=subprocess.PIPE,
 			stderr=subprocess.STDOUT,
 			text=True,

@@ -2499,7 +2499,8 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( attr_text.find("packed") != std::string::npos
 		      || attr_text.find("aligned") != std::string::npos
-		      || attr_text.find("vector_size") != std::string::npos )
+		      || attr_text.find("vector_size") != std::string::npos
+		      || attr_text.find("no_instrument_function") != std::string::npos )
 		    {
 			source.pushback(attr_text);
 			return new TokenIdent(word);

@@ -1022,6 +1022,28 @@ static bool is_attribute_identifier_token(TokenBase *tb)
     return name == "__attribute__" || name == "__attribute";
 }
 
+static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
+					 std::set<std::string> *attrs = NULL)
+{
+    while ( nt && is_attribute_identifier_token(nt) )
+    {
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+	{
+	    int adepth = 0;
+	    do {
+		TokenBase *at = pgm.nextToken();
+		if ( !at ) break;
+		if ( attrs && adepth >= 2 && at->type() == TokenType::ttIdentifier )
+		    attrs->insert(((TokenIdent *)at)->str);
+		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
+		else if ( at->id() == TokenID::tkClBrk ) --adepth;
+	    } while ( adepth > 0 );
+	}
+	nt = pgm.nextToken();
+    }
+    return nt;
+}
+
 static size_t parse_gnu_vector_size_attribute(Program &pgm)
 {
     if ( !is_attribute_identifier_token(pgm.peekToken()) )
@@ -2679,6 +2701,7 @@ Program::Program()
       _include_stdio(false),
       colors(false),
       aot_tracking(false),
+      instrument_functions(false),
       root_fn(NULL)
 {
 }
@@ -2701,6 +2724,7 @@ Program::Program(MadcEngine *eng)
       _include_stdio(false),
       colors(false),
       aot_tracking(false),
+      instrument_functions(false),
       root_fn(NULL)
 {
     attach_engine(eng);
@@ -10465,6 +10489,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	{
 	    FuncDef *fresh = new FuncDef(dd);
 	    fresh->return_types = func->return_types;
+	    fresh->no_instrument_function = func->no_instrument_function;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	    func_already_declared = false;
@@ -10481,6 +10506,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_varargs   = func->is_varargs;
 	    fresh->is_void_params = func->is_void_params;
 	    fresh->return_types = func->return_types;
+	    fresh->no_instrument_function = func->no_instrument_function;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}
@@ -10884,29 +10910,19 @@ paramdecl:
 	return;
     }
 
-    // Skip __attribute__((...)) between function params and body/semicolon
-    if ( is_attribute_identifier_token(nt) )
+    std::set<std::string> func_attrs;
+    nt = consume_gnu_attributes(*this, nt, &func_attrs);
+    if ( func_attrs.count("no_instrument_function")
+      || func_attrs.count("__no_instrument_function__") )
+	func->no_instrument_function = true;
+    // Check again for forward declaration after __attribute__
+    if ( nt->id() == TokenID::tkSemi )
     {
-	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-	{
-	    int adepth = 0;
-	    do {
-		TokenBase *at = nextToken();
-		if ( !at ) break;
-		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
-		else if ( at->id() == TokenID::tkClBrk ) --adepth;
-	    } while ( adepth > 0 );
-	}
-	nt = nextToken();
-	// Check again for forward declaration after __attribute__
-	if ( nt->id() == TokenID::tkSemi )
-	{
-	    method = new Method(*var);
-	    var->data = (void *)method;
-	    if ( owner_class )
-		method->owner_class = owner_class;
-	    return;
-	}
+	method = new Method(*var);
+	var->data = (void *)method;
+	if ( owner_class )
+	    method->owner_class = owner_class;
+	return;
     }
 
     // Definitions must own a fresh Method instance. Some prior declaration

@@ -248,6 +248,9 @@ int main(int argc, char **argv)
                 prog->include_paths.push_back(p);
             }
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
+            prog->instrument_functions = true;
+            filearg = i + 1;
         } else {
             filearg = i;
             break;
@@ -299,7 +302,7 @@ int main(int argc, char **argv)
 
 	return 0;
     }
-    std::cout << "Usage: madc [-v|--verbose] <file.mad>" << std::endl;
+    std::cout << "Usage: madc [-v|--verbose] [--finstrument-functions] <file.mad>" << std::endl;
 
     return 0;
 }
