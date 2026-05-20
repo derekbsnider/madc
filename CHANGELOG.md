@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **GCC torture `20020227-1.c` now passes.**
+  Scalar assignment into packed complex struct members now zeroes the
+  imaginary lane via an immediate store instead of routing the zero
+  through a register-typed float value, which had been duplicating the
+  real lane in packed layouts like `struct { char c; _Complex float f; }`.
+  Full validation remains green at `320/320` JIT and `320/320` EXE, and
+  focused GCC reruns bring the conservative parity floor to at least
+  `1404/1685` (83.3%).
+
 - **GCC torture `pr56837.c` now passes.**
   Complex subscript assignment no longer forces scalar RHS values
   through a bogus `regdp.second = complex_type` path before the

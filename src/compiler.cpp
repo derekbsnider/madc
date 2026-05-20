@@ -6556,10 +6556,8 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    ir.store(IRValue::mem(real_mem.as<x86::Mem>(), cdd->element_type),
 		     ir_from_operand(*r_operand, regdp.second));
-	    x86::Gp zero = pgm.cc.newGpq("__complex_imag_zero");
-	    pgm.cc.xor_(zero, zero);
 	    ir.store(IRValue::mem(imag_mem.as<x86::Mem>(), cdd->element_type),
-		     IRValue::reg(zero, cdd->element_type));
+		     IRValue::imm(Imm(0), &ddINT));
 	}
 	if ( tvl )
 	{
