@@ -1,5 +1,6 @@
 #!/usr/bin/env madc
 #include <iostream>
+using namespace std;
 
 // rust::match v1 — integer constant patterns and `_` wildcard.
 

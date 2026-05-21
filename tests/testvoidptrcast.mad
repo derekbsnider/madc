@@ -1,4 +1,6 @@
 #!/../bin/madc
+#include <iostream>
+using namespace std;
 // `(void *)expr` — explicit cast to a void pointer. DataDef::rawtype()
 // strips the pointer ref bias, so `void *` and bare `void` share
 // `rawtype() == dtVOID`. TokenCast's "(void) discards the value"

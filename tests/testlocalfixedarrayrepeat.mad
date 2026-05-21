@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Regression: a local C fixed-size array used FIRST inside a branch
 // and AGAIN unconditionally after the branch. The cached Gp holds
 // the LEA of the stack slot but the LEA was emitted at the first use

@@ -23,6 +23,7 @@
 // `struct liq_type` containing a `struct affect_data` member).
 
 #include <iostream>
+using namespace std;
 
 struct Triplet { int a; int b; int c; };
 struct Liq { char *name; char *color; struct Triplet vals; };

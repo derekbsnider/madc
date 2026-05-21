@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Storing a string literal into a `char *` array element used to
 // write the std::string object's address into the slot instead of
 // its c_str() pointer. TokenAssign's ttSubscript path compiled the

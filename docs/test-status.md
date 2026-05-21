@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.19.0, GCC parity 1505/1685 = 89.3%).
+Test results as of May 21, 2026 (v0.19.0, latest live GCC parity sweep 1514/1685 = 89.9%, with one 5s timeout).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 379 JIT pass / 0 fail
+## Current Batch Status — 410 JIT pass / 0 fail
 
 Latest results (2026-05-21):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 379 integration tests
+- Passing: 410 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -140,9 +140,17 @@ Latest results (2026-05-21):
   limit macros `__PTRDIFF_MAX__` and `__SIZE_MAX__` via
   `testgcclimitmacros.mad` now brings the tracked integration count to
   379.
+  The std-surface cleanup updated legacy snippets to import std names
+  explicitly and added `teststdstringconv.mad` for direct
+  `std::string` / `std::to_string` / `std::stoi` / `std::stod`
+  coverage, bringing the tracked integration count to 405. Additional
+  focused regressions for volatile token-paste preservation, nested
+  packed struct members, nested variadic function calls, multi-level
+  pointer dereference chains, and output-only inline-asm operands bring
+  the tracked integration count to 410.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 379 (of 379 JIT-passing tests)
+- Passing: 410 (of 410 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so
@@ -307,7 +315,9 @@ instead of collapsing that case into a generic `FAIL`.
 - `testargv.mad` is driven by `scripts/run_tests.sh` with argv
 - `include_helper.mad` is not standalone (included by testinclude.mad)
 - `include_once_helper.mah` is not standalone (included by testincludeonce.mad)
-- All tests that use `cout`/`cin`/`cerr`/`endl` now require `#include <iostream>`
+- All tests that use `cout`/`cin`/`cerr`/`endl` now require
+  `#include <iostream>` plus explicit `std::` qualification or `using`
+  import.
 
 ## Previously Passing Tests — 54/54 integration + 25/25 unit
 
@@ -336,7 +346,7 @@ instead of collapsing that case into a generic `FAIL`.
 | `testsstream.mad` | Stringstream | `456`, `123`, `5`, stream content, `This is a test to cout: 5` |
 | `teststruct.mad` | Struct member access | `test.name: Joe Blow`, `test.id: 2`, `test.age: d` (uint8=char in stream) |
 | `testversion.mad` | Version string | `v0.0.1` |
-| `testns.mad` | Namespace resolution (std::) | `Hello from std::cout!`, `x = 42`, stderr output, unqualified still works |
+| `testns.mad` | Namespace resolution (std::) | `Hello from std::cout!`, `x = 42`, stderr output, `using namespace std` imports unqualified stream names |
 | `testphp.mad` | php:: namespace functions | trim/ltrim/rtrim, ucfirst/lcfirst, str_replace, str_repeat, explode/implode, sort, nested-array `array_column` |
 | `teststruct2.mad` | User-defined structs | `p.x: 10`, `p.y: 20`, `bob.name: Bob Smith`, `bob.age: 42`, `bob.id: 1001` |
 | `testclass.mad` | Class definitions with data members | `p.x: 100`, `p.y: 200`, `bob.name: Bob`, `bob.age: 30` |

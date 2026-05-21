@@ -19,6 +19,7 @@
 // symbol resolvable through RTLD_DEFAULT.
 
 #include <iostream>
+using namespace std;
 
 extern int strcmp(char *a, char *b);
 extern int strncmp(char *a, char *b, int n);

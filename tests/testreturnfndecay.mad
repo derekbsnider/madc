@@ -15,6 +15,7 @@
 
 #include <stdio.h>
 #include <iostream>
+using namespace std;
 
 typedef void DO_FUN(int x);
 typedef int  IFN_FUN(int x);

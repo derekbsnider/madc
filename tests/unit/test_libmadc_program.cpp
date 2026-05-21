@@ -206,11 +206,12 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    TEST_CASE("eval returns string results through char pointer marshaling") {
+	TEST_CASE("eval returns string results through char pointer marshaling") {
 	madc::program pgm;
 	madc::value result;
 
-	CHECK(pgm.eval("string name = \"echo\";\n"
+	CHECK(pgm.eval("#include <string>\n"
+		       "std::string name = \"echo\";\n"
 		       "char * __madc_eval() { return name.c_str(); }\n",
 		       &result,
 		       "eval_string.mad"));
@@ -1175,6 +1176,7 @@ TEST_SUITE("madc::program") {
 	pgm.set_invoke_limits(limits);
 
 	CHECK_FALSE(pgm.exec_string("#include <iostream>\n"
+				    "using namespace std;\n"
 				    "int main() { cerr << \"fork stderr\"; return 0; }\n",
 				    "fork_stderr_limit.mad"));
 	REQUIRE(pgm.has_error());
@@ -1205,14 +1207,15 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("fork_per_invocation eval returns string results from child execution") {
+	TEST_CASE("fork_per_invocation eval returns string results from child execution") {
 	madc::program pgm;
 	madc::security_policy policy = pgm.get_security_policy();
 	policy.execution = madc::execution_mode::fork_per_invocation;
 	pgm.set_security_policy(policy);
 
 	madc::value result;
-	CHECK(pgm.eval("string name = \"echo\";\n"
+	CHECK(pgm.eval("#include <string>\n"
+		       "std::string name = \"echo\";\n"
 		       "char * __madc_eval() { return name.c_str(); }\n",
 		       &result,
 		       "fork_eval_string.mad"));
@@ -1354,7 +1357,7 @@ TEST_SUITE("madc::program") {
 	CHECK_FALSE(pgm.has_error());
     }
 
-    TEST_CASE("register_function deduces std::string callback signatures") {
+	TEST_CASE("register_function deduces std::string callback signatures") {
 	madc::program pgm;
 	g_host_strlen = 0;
 
@@ -1364,7 +1367,8 @@ TEST_SUITE("madc::program") {
 	std::string path = make_temp_source_path();
 	write_file(path,
 		   "int measure() { return host_word_length(\"hello\"); }\n"
-		   "string shout() { return host_echo_value(\"hi\"); }\n"
+		   "#include <string>\n"
+		   "std::string shout() { return host_echo_value(\"hi\"); }\n"
 		   "int main() { return 0; }\n");
 
 	REQUIRE(pgm.compile_file(path));
@@ -1531,11 +1535,12 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("call supports std::string arguments for script string parameters") {
+	TEST_CASE("call supports std::string arguments for script string parameters") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
-		   "int length_of(string s) { return s.length(); }\n"
+		   "#include <string>\n"
+		   "int length_of(std::string s) { return s.length(); }\n"
 		   "int main() { return 0; }\n");
 
 	REQUIRE(pgm.compile_file(path));
@@ -1548,11 +1553,12 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("call supports script string object returns") {
+	TEST_CASE("call supports script string object returns") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
-		   "string echo(string s) { return s; }\n"
+		   "#include <string>\n"
+		   "std::string echo(std::string s) { return s; }\n"
 		   "int main() { return 0; }\n");
 
 	REQUIRE(pgm.compile_file(path));
@@ -1581,7 +1587,8 @@ TEST_SUITE("madc::program") {
 
 	std::string path = make_temp_source_path();
 	write_file(path,
-		   "string call_host() { return host_echo(\"hi\"); }\n"
+		   "#include <string>\n"
+		   "std::string call_host() { return host_echo(\"hi\"); }\n"
 		   "int main() { return 0; }\n");
 
 	REQUIRE(pgm.compile_file(path));
@@ -1609,7 +1616,8 @@ TEST_SUITE("madc::program") {
 	REQUIRE(madc_program_exec_string(
 	    pgm,
 	    "int add(int a, int b) { return a + b; }\n"
-	    "string greet() { return \"hello\"; }\n"
+	    "#include <string>\n"
+	    "std::string greet() { return \"hello\"; }\n"
 	    "int main() { return 0; }\n",
 	    "c_api_exec.mad") == MADC_OK);
 
@@ -1769,11 +1777,12 @@ TEST_SUITE("madc::program") {
 	std::remove(path.c_str());
     }
 
-    TEST_CASE("get_global and set_global roundtrip string globals") {
+	TEST_CASE("get_global and set_global roundtrip string globals") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
-		   "string name = \"alice\";\n"
+		   "#include <string>\n"
+		   "std::string name = \"alice\";\n"
 		   "char *first_name_char() { return name.c_str(); }\n"
 		   "int main() { return 0; }\n");
 

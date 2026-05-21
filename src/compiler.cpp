@@ -2122,6 +2122,12 @@ static bool is_fixed_array_struct_member(TokenBase *tb)
     return tm && tm->is_fixed_array_member();
 }
 
+static bool subscript_object_uses_inplace_storage(const Variable &object)
+{
+    return object.is_fixed_array()
+	|| (object.type && object.type->is_simd());
+}
+
 static DataDef *build_fixed_array_result_type(DataDef *base_type,
 					      const std::vector<uint32_t> &dims,
 					      size_t consumed_dims);
@@ -2389,6 +2395,96 @@ static Operand &emit_complex_compare(Program &pgm, TokenBase *left, TokenBase *r
     return storage;
 }
 
+static DataDefSIMD *compare_simd_type(TokenBase *left, TokenBase *right, DataDef *requested_type)
+{
+    if ( requested_type && requested_type->is_simd() )
+	return static_cast<DataDefSIMD *>(requested_type);
+    if ( left && left->datadef() && left->datadef()->is_simd() )
+	return static_cast<DataDefSIMD *>(left->datadef());
+    if ( right && right->datadef() && right->datadef()->is_simd() )
+	return static_cast<DataDefSIMD *>(right->datadef());
+    return NULL;
+}
+
+static x86::Xmm emit_simd_all_ones(Program &pgm, const char *name)
+{
+    x86::Xmm all_ones = pgm.cc.newXmm(name);
+    pgm.cc.pxor(all_ones, all_ones);
+    pgm.cc.pcmpeqb(all_ones, all_ones);
+    return all_ones;
+}
+
+static void emit_simd_integer_eq_mask(Program &pgm, x86::Xmm &dst, x86::Xmm &rhs, DataDefSIMD *vdd)
+{
+    size_t elem_size = (vdd && vdd->element_type) ? vdd->element_type->size : 0;
+    if ( elem_size == 1 )
+    {
+	pgm.cc.pcmpeqb(dst, rhs);
+	return;
+    }
+    if ( elem_size == 2 )
+    {
+	pgm.cc.pcmpeqw(dst, rhs);
+	return;
+    }
+    if ( elem_size == 4 )
+    {
+	pgm.cc.pcmpeqd(dst, rhs);
+	return;
+    }
+    if ( elem_size == 8 )
+    {
+	pgm.cc.pcmpeqd(dst, rhs);
+	x86::Xmm paired = pgm.cc.newXmm("simd_eq64_pair");
+	pgm.cc.movdqa(paired, dst);
+	pgm.cc.pshufd(paired, paired, 0xB1);
+	pgm.cc.pand(dst, paired);
+	return;
+    }
+    throw "emit_simd_integer_eq_mask() unsupported SIMD element size";
+}
+
+static Operand &emit_simd_compare(Program &pgm, TokenBase *left, TokenBase *right, CmpKind op,
+				  DataDefSIMD *simd_type, regdefp_t &regdp, Operand &storage)
+{
+    if ( !simd_type || !simd_type->element_type )
+	throw "emit_simd_compare() invalid SIMD compare type";
+
+    Operand *caller_dest = regdp.first;
+    Operand left_storage = pgm.cc.newXmm("simd_cmp_l");
+    Operand right_storage = pgm.cc.newXmm("simd_cmp_r");
+    Operand &left_val = compile_token_normalized(pgm, left, simd_type, &left_storage, left_storage);
+    Operand &right_val = compile_token_normalized(pgm, right, simd_type, &right_storage, right_storage);
+    x86::Xmm result = pgm.cc.newXmm("simd_cmp");
+    pgm.cc.movdqa(result, left_val.as<x86::Xmm>());
+
+    if ( simd_type->element_type->is_real() )
+    {
+	if ( simd_type->element_type->size == sizeof(float) )
+	    pgm.cc.cmpps(result, right_val.as<x86::Xmm>(), x86::CmpImm::kEQ);
+	else
+	    pgm.cc.cmppd(result, right_val.as<x86::Xmm>(), x86::CmpImm::kEQ);
+    }
+    else
+	emit_simd_integer_eq_mask(pgm, result, right_val.as<x86::Xmm>(), simd_type);
+
+    if ( op == CmpKind::Ne )
+    {
+	x86::Xmm all_ones = emit_simd_all_ones(pgm, "simd_cmp_not");
+	pgm.cc.pxor(result, all_ones);
+    }
+
+    regdp.second = simd_type;
+    storage = result;
+    regdp.first = &storage;
+    if ( caller_dest )
+    {
+	regdp.first = caller_dest;
+	return emit_ir_value(pgm, IRValue::reg(result, simd_type), regdp, storage, simd_type);
+    }
+    return storage;
+}
+
 // Central implementation of `lval <cmp> rval` -> 0/1 int64 result.
 // Both sides normalize through compile_token_normalized to a Reg of the
 // inferred cmp_type; safecmp + the right safeset produce the flag and
@@ -2398,6 +2494,9 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
 			     regdefp_t &regdp, Operand &storage)
 {
     Operand *caller_dest = regdp.first;
+    DataDefSIMD *simd_type = compare_simd_type(left, right, regdp.second);
+    if ( simd_type && (op == CmpKind::Eq || op == CmpKind::Ne) )
+	return emit_simd_compare(pgm, left, right, op, simd_type, regdp, storage);
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
     DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
     if ( !lptr_type && !rptr_type
@@ -3430,6 +3529,26 @@ static size_t explicit_expected_argc(FuncDef *func)
     size_t expected_argc = func->parameters.size();
     if ( func->is_multi_return() ) expected_argc--;
     if ( func->is_varargs ) expected_argc--;
+    return expected_argc;
+}
+
+static size_t visible_expected_argc(FuncDef *func, bool has_object_arg)
+{
+    size_t hidden_argc = 0;
+    if ( func->is_multi_return() )
+	++hidden_argc;
+    if ( has_object_arg )
+	++hidden_argc;
+    if ( func->has_captures )
+	++hidden_argc;
+
+    size_t expected_argc = func->parameters.size();
+    if ( expected_argc <= hidden_argc )
+	expected_argc = 0;
+    else
+	expected_argc -= hidden_argc;
+    if ( func->is_varargs && expected_argc > 0 )
+	--expected_argc;
     return expected_argc;
 }
 
@@ -5143,7 +5262,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	append_call_param(params, funcsig, env_ptr, &ddINT64);
     }
 
-    size_t expected_argc = explicit_expected_argc(func);
+    size_t expected_argc = visible_expected_argc(func, has_object_arg);
     // K&R functions with empty param list (not `void`) accept any number of args
     bool knr_unspecified = func->parameters.empty() && !func->is_void_params;
     if ( !is_variadic && !func->is_varargs && !knr_unspecified && argc() > expected_argc )
@@ -8898,7 +9017,7 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
     if ( obj_op.isMem() )
     {
-	if ( object.is_fixed_array() )
+	if ( subscript_object_uses_inplace_storage(object) )
 	    pgm.cc.lea(obj_reg, obj_op.as<x86::Mem>());
 	else
 	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
@@ -9012,6 +9131,18 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             return emit_ir_value(pgm, IRValue::reg(addr, decay_type), regdp, _operand, decay_type);
         }
         return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
+    }
+
+    if ( ctype == DataType::dtSIMD )
+    {
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(object.type);
+	DataDef *elem_type = (vdd && vdd->element_type) ? vdd->element_type : &ddINT64;
+	size_t elem_size = elem_type->size ? elem_type->size : 8;
+	uint32_t shift = scale_index_by_element_size(pgm, idx_reg, elem_type, "simd_sub_size");
+	x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+	if ( !regdp.second )
+	    regdp.second = elem_type;
+	return emit_ir_value(pgm, IRValue::mem(elem_mem, elem_type), regdp, _operand, elem_type);
     }
 
     if ( ctype == DataType::dtSTRING )
@@ -9131,7 +9262,8 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
 	dynamic_cast<TokenAdd *>(base_expr) != NULL
      || dynamic_cast<TokenSub *>(base_expr) != NULL
      || dynamic_cast<TokenAssign *>(base_expr) != NULL
-     || dynamic_cast<TokenCast *>(base_expr) != NULL;
+     || dynamic_cast<TokenCast *>(base_expr) != NULL
+     || dynamic_cast<TokenComma *>(base_expr) != NULL;
     Operand op_storage;
     Operand *op_ptr;
     if ( base_needs_compile )
@@ -9224,7 +9356,8 @@ Operand &TokenSubscriptExpr::operand(Program &pgm)
 	dynamic_cast<TokenAdd *>(base_expr) != NULL
      || dynamic_cast<TokenSub *>(base_expr) != NULL
      || dynamic_cast<TokenAssign *>(base_expr) != NULL
-     || dynamic_cast<TokenCast *>(base_expr) != NULL;
+     || dynamic_cast<TokenCast *>(base_expr) != NULL
+     || dynamic_cast<TokenComma *>(base_expr) != NULL;
     Operand op_storage;
     Operand *op_ptr;
     if ( base_needs_compile )
@@ -9303,7 +9436,7 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
     x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
     if ( obj_op.isMem() )
     {
-	if ( object.is_fixed_array() )
+	if ( subscript_object_uses_inplace_storage(object) )
 	    pgm.cc.lea(obj_reg, obj_op.as<x86::Mem>());
 	else
 	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());

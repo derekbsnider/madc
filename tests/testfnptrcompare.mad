@@ -18,6 +18,7 @@
 // (`t->do_fun == do_cast && tmp->tempnum == sn`).
 
 #include <iostream>
+using namespace std;
 #include <stdio.h>
 
 typedef int (*INTFN)(int);

@@ -2,9 +2,30 @@
 
 ## [Unreleased]
 
+- **C++ std surface stays namespace-owned.**
+  Embedded `<string>` now exposes `std::string` as the canonical type,
+  and `<iostream>` keeps `std::cout`, `std::cin`, `std::cerr`, and
+  `std::endl` under `std`. Bare `string` / stream names now require an
+  explicit `using namespace std;` or `using std::<name>;`. Parser
+  namespace-owned type handling now covers declarations, class members,
+  lambda params / returns, container template arguments, and range-for
+  declarations. Added embedded `<string>` plus
+  `tests/teststdstringconv.mad`.
+- **GCC front-edge closures continued.**
+  `volatile` now remains a real qualifier token through macro
+  token-paste, nested packed anonymous aggregate members preserve their
+  layout attributes, nested variadic calls count only visible fixed
+  parameters when packing `__va_args`, chained unary dereference handles
+  `***p` forms, and output-only inline asm operands such as `"+m"` stop
+  cleanly at the statement boundary. Focused GCC validation is green for
+  `minmaxcmp-1.c`, `misalign.c`, `nest-stdar-1.c`, `pr103209.c`, and
+  `pr103376.c`. Full validation is green at `410/410` JIT and
+  `410/410` EXE; a live full GCC sweep reports `1514/1685` (89.9%) with
+  one 5s timeout.
+
 ## [v0.19.0] - 2026-05-21
 
-GCC parity reaches 90%: 1496 → 1505/1685 (88.8% → 89.3%), `__builtin_frame_address`, stdio/string builtin aliases, pointer dereference typing fixes.
+GCC parity push: 1496 → 1505/1685 (88.8% → 89.3%), `__builtin_frame_address`, stdio/string builtin aliases, pointer dereference typing fixes.
 
 - **GCC builtins stdio and string-alias lane moved forward.**
   Fixed fixed-array pointer dereference typing for `const char *arr[]`

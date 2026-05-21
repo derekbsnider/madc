@@ -16,6 +16,7 @@
 // where ICE_LISTEN macro-expands to `((ch)->pcdata->ice_listen)`).
 
 #include <iostream>
+using namespace std;
 
 struct Inner { int v; };
 struct Outer { struct Inner *p; };

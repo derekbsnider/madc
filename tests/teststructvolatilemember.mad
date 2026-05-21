@@ -1,0 +1,26 @@
+#include <stdio.h>
+
+int test_plain()
+{
+    union S {
+        double d;
+        unsigned long u[2];
+    } s;
+    s.d = 10;
+    return s.u[0] != 0 ? 1 : 0;
+}
+
+int test_volatile()
+{
+    union S {
+        volatile double d;
+        volatile long u[2];
+    } s;
+    s.d = 10;
+    return s.u[0] != 0 ? 1 : 0;
+}
+
+int main() {
+    printf("%d %d\n", test_plain(), test_volatile());
+    return 0;
+}

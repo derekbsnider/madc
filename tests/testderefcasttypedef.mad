@@ -13,6 +13,7 @@
 // mud_prog.c.
 
 #include <iostream>
+using namespace std;
 
 typedef struct extended_bitvector EXT_BV;
 struct extended_bitvector {

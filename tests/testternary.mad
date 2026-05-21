@@ -1,5 +1,6 @@
 #!/usr/bin/env madc
 #include <iostream>
+using namespace std;
 // Test ternary operator
 
 int main()

@@ -1,0 +1,13 @@
+#include <stdio.h>
+
+void store_it(int v, volatile int *p)
+{
+    *p = v;
+}
+
+int main() {
+    volatile int x = 0;
+    store_it(17, &x);
+    printf("%d\n", x);
+    return 0;
+}

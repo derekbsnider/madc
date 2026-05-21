@@ -1,0 +1,20 @@
+#!/usr/bin/env madc
+#include <stdarg.h>
+#include <stdio.h>
+
+int main()
+{
+	double pick(int x, ...)
+	{
+		va_list args;
+		double value;
+
+		va_start(args, x);
+		value = va_arg(args, double);
+		va_end(args);
+		return value;
+	}
+
+	printf("%.1f\n", pick(1, 2.5));
+	return 0;
+}

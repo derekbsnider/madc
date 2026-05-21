@@ -16,6 +16,7 @@
 // auction_data is forward-typedef'd in mud.h ahead of its definition.
 
 #include <iostream>
+using namespace std;
 #include <stdio.h>
 #include <stdlib.h>
 

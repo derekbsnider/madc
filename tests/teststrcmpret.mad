@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // dlsym-resolved libc functions that return `int` (int32) write
 // their result in EAX only; the upper 32 bits of RAX are left
 // indeterminate (on Linux typically zero-extended). madc treats

@@ -30,12 +30,17 @@ bin/madc -v tests/testint.mad
 | `uint8_t` .. `uint64_t` | Unsigned integers |
 | `float`, `double` | Floating point |
 | `char` | 8-bit character |
-| `string` | C++ std::string |
-| `stringstream` | C++ std::stringstream |
-| `ifstream` | File input stream |
-| `ofstream` | File output stream |
-| `fstream` | File input/output stream |
+| `std::string` | C++ std::string (`string` after explicit `using`) |
+| `std::stringstream` | C++ std::stringstream |
+| `std::ifstream` | File input stream |
+| `std::ofstream` | File output stream |
+| `std::fstream` | File input/output stream |
 | `array` | Mixed-type array (MadValue-based) |
+
+Including `<string>` or `<iostream>` makes the std surface available
+under `std::`; it does not create bare global names. Use `std::string`
+and `std::cout`, or import names explicitly with `using namespace std;`
+or `using std::string;`.
 
 ## User-Defined Types
 
@@ -272,9 +277,9 @@ in.close();
 | `putchar(c)` | Print a character |
 | `puti(i)` | Print integer |
 | `printstr(s)` | Print string (no newline) |
-| `to_string(result, int)` | Integer to string |
-| `stoi(str)` | String to integer |
-| `stod(str)` | String to double |
+| `std::to_string(result, int)` | Integer to string |
+| `std::stoi(str)` | String to integer |
+| `std::stod(str)` | String to double |
 | `strlen(str)` | String length |
 | `system(cmd)` | Run shell command |
 | `getenv(result, name)` | Get environment variable |
@@ -302,6 +307,7 @@ Import with `using`:
 ```c
 using namespace std;       // import all members
 using std::cout;           // import one member
+using std::string;         // import one type
 ```
 
 ### madc:: Namespace

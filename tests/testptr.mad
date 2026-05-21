@@ -1,4 +1,6 @@
 #!/usr/bin/env madc
+#include <iostream>
+using namespace std;
 // Test pointer type declarations, -> operator, & address-of, forward typedef
 #include <stdio.h>
 #include <stdlib.h>

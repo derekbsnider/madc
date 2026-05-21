@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Compound-assignment operators on array subscripts: `arr[i] += n;` and
 // friends. resolveCompoundLHS previously only handled ttVariable /
 // ttMember / TokenDeref — it threw "+= on a non-variable lval" (as a

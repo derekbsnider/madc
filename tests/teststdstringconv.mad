@@ -1,0 +1,20 @@
+#!/../bin/madc
+#include <stdio.h>
+#include <string>
+
+int main()
+{
+    std::string s;
+    std::to_string(s, 42);
+    printf("%s\n", s.c_str());
+
+    std::string num = "12345";
+    int n = std::stoi(num);
+    printf("%d\n", n);
+
+    std::string dbl = "3.5";
+    double d = std::stod(dbl);
+    printf("%g\n", d);
+
+    return 0;
+}

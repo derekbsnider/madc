@@ -66,9 +66,9 @@ compile.
 
 ## Language Features
 
-- **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `string`, `array`
+- **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `std::string`, `array`
 - **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>` — also as `std::vector<int>` etc.
-- **Streams:** `cout`, `cerr`, `cin`, `stringstream`, `ifstream`, `ofstream`, `fstream`
+- **Streams:** `std::cout`, `std::cerr`, `std::cin`, `std::stringstream`, `std::ifstream`, `std::ofstream`, `std::fstream`
 - **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`, `rust::match`
 - **Range-based for:** `for (string name : names) { ... }` — works with array and vector
 - **Ternary operator:** `condition ? true_expr : false_expr`
@@ -85,9 +85,9 @@ compile.
 - **Namespaces:** `std::cout`, `madc::regex_match()`, `php::explode()`, `perl::grep()`, `python::title()`, `ruby::tr()`, `js::btoa()`, `rust::trim()`
 - **Dialect precedence:** `prefer rust, php, c;` or `#pragma prefer rust, php, c`
 - **Regex:** `madc::regex_match()`, `madc::regex_search()`, `madc::regex_replace()`
-- **Input:** `cin >> name >> age;` reads from stdin
+- **Input:** `std::cin >> name >> age;` reads from stdin
 - **`#include`:** `#include "file.mad"` for source inclusion
-- **`using`:** `using namespace std;` or `using std::cout;`
+- **`using`:** `using namespace std;` or `using std::cout;` imports std names into the unqualified surface
 - **`#load`:** `#load "libfoo.so" as foo;` for dynamic library loading
 - **`dlopen`/`dlsym`/`dlcall`:** first-class dynamic linking
 - **File I/O:** `ifstream`/`ofstream` with `open`, `close`, `good`, `eof`, `getline`
@@ -101,6 +101,9 @@ The signature feature of madc — use the best functions from each language:
 
 ```c
 #!/usr/bin/env madc
+#include <iostream>
+#include <string>
+using namespace std;
 
 int main()
 {
@@ -151,7 +154,7 @@ int main()
 | [`ruby::`](docs/language/ns-ruby.md) | 12 | squeeze, tr (transliterate), chars, rotate, compact |
 | [`js::`](docs/language/ns-js.md) | 6 | Base64 (btoa/atob), URL encoding, parseInt, JSON stringify |
 | [`rust::`](docs/language/ns-rust.md) | 18 | trim/contains/replace, split/join, first/last/get, push/pop |
-| `std::` | 5 | cin, cout, cerr, endl, for_each |
+| `std::` | 9 + types | cin, cout, cerr, endl, getline, string conversions, for_each, stream/string types |
 | `madc::` | 4 | array, regex_match, regex_search, regex_replace |
 
 Plus `#load` for any shared library via dlopen.
@@ -182,7 +185,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 379 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1505/1685 (89.3%), crossing the 90% milestone. (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status: 410 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). Latest live GCC torture sweep: 1514/1685 (89.9%) with one 5s timeout. (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -223,11 +226,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.19.0** (2026-05-21) — **GCC parity crosses 90%: 1505/1685 (89.3%).** `__builtin_frame_address`, stdio/string builtin aliases, pointer dereference typing fixes.
+**v0.19.0** (2026-05-21) — **GCC parity push: 1505/1685 (89.3%).** `__builtin_frame_address`, stdio/string builtin aliases, pointer dereference typing fixes.
 
 ### Recent Releases
 
-- **v0.19.0** — GCC parity 89.3% (1505/1685); crosses 90% milestone, frame_address, stdio/string builtins
+- **v0.19.0** — GCC parity 89.3% (1505/1685); frame_address, stdio/string builtins
 - **v0.18.0** — GCC parity 88.8% (1496/1685); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers
 - **v0.17.0** — GCC parity 78.1% (1316/1685); nested cast chains, empty brace-init, `f().member`, `#pragma push/pop_macro`
 - **v0.16.0** — sizeof(int)=4 LP64 ABI alignment; GCC torture suite 75% (1264/1685); float init, overflow builtins, ternary const-expr, C23 attributes
@@ -250,7 +253,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **GCC Parity** | GCC torture test suite compatibility | **v0.19.0** — 1505/1685 (89.3%); 90% milestone crossed |
+| **GCC Parity** | GCC torture test suite compatibility | **v0.19.0** — latest live sweep 1514/1685 (89.9%); next milestone is 90%+ stable |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---

@@ -17,6 +17,7 @@
 // `const char *string` parameter and assigns from it.
 
 #include <iostream>
+using namespace std;
 
 static void parsekeys(char *string)
 {

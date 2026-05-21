@@ -181,6 +181,7 @@ static int compound_type_specifier_flag(const std::string &w)
 	TS_SIGNED   = 1 << 14,
 	TS_UNSIGNED = 1 << 16,
 	TS_COMPLEX  = 1 << 18,
+	TS_INT128   = 1 << 20,
     };
     if ( w == "char" ) return TS_CHAR;
     if ( w == "short" ) return TS_SHORT;
@@ -190,6 +191,7 @@ static int compound_type_specifier_flag(const std::string &w)
     if ( w == "double" ) return TS_DOUBLE;
     if ( w == "signed" ) return TS_SIGNED;
     if ( w == "unsigned" ) return TS_UNSIGNED;
+    if ( w == "__int128" ) return TS_INT128;
     if ( w == "_Complex" || w == "__complex__" || w == "__complex" ) return TS_COMPLEX;
     return 0;
 }
@@ -290,9 +292,14 @@ static const char *auto_include_embedded_header_for_identifier(const std::string
 void Program::mark_embedded_include_flag(const std::string &incfile)
 {
     if ( incfile == "iostream" )
+    {
 	_include_iostream = true;
+	_include_string = true;
+    }
     if ( incfile == "stdio.h" )
 	_include_stdio = true;
+    if ( incfile == "string" )
+	_include_string = true;
 }
 
 bool Program::auto_include_standard_identifier(const std::string &word)
@@ -508,6 +515,7 @@ TokenENUM	tkENUM;
 TokenCONST	tkCONST;
 TokenEXTERN	tkEXTERN;
 TokenRESTRICT	tkRESTRICT;
+TokenVOLATILE	tkVOLATILE;
 TokenUSING	tkUSING;
 TokenNAMESPACE	tkNAMESPACE;
 TokenPREFER	tkPREFER;
@@ -567,17 +575,14 @@ void Program::_tokenizer_init()
     _prv_token = NULL;
     _include_iostream = false;
     _include_stdio = false;
+    _include_string = false;
     included_files.clear();
     add_keywords();
     add_datatypes();
     struct_map["teststruct"] = &ddTESTSTRUCT;
 
-    // Ignored C qualifiers — consumed as empty defines so they
-    // don't trip the "undeclared identifier" path.
-    define_map["volatile"] = "";
-    define_map["__volatile"] = "";
-    define_map["__volatile__"] = "";
-    define_map["__volatile__"] = "";
+    // Ignored C storage hints. Type qualifiers are real tokens so
+    // macro token-pasting can still see their spelling.
     define_map["inline"] = "";
     define_map["__inline__"] = "";
     define_map["__inline"] = "";
@@ -790,12 +795,13 @@ void Program::_tokenizer_init()
     define_map["__builtin_sub_overflow_p"] = "__madc_sub_overflow_p";
     define_map["__builtin_mul_overflow_p"] = "__madc_mul_overflow_p";
 
-    // __builtin_expect(expr, val) is a branch-prediction hint — just
-    // return expr. Implemented as a function-like macro.
+    // __builtin_expect(expr, val) is a branch-prediction hint. Preserve
+    // evaluation of the expected-value operand for GCC torture cases
+    // that attach side effects there, but return expr.
     {
 	MacroDef m;
 	m.params = {"__expr", "__val"};
-	m.body = "__expr";
+	m.body = "((void)(__val), (__expr))";
 	macro_map["__builtin_expect"] = m;
     }
     // __builtin_prefetch is a no-op hint
@@ -1088,6 +1094,9 @@ void Program::add_keywords()
     keyword_map[tkCONST.str] = &tkCONST;
     keyword_map[tkEXTERN.str] = &tkEXTERN;
     keyword_map[tkRESTRICT.str] = &tkRESTRICT;
+    keyword_map[tkVOLATILE.str] = &tkVOLATILE;
+    keyword_map["__volatile"] = &tkVOLATILE;
+    keyword_map["__volatile__"] = &tkVOLATILE;
     keyword_map[tkUSING.str] = &tkUSING;
     keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
     keyword_map[tkPREFER.str] = &tkPREFER;
@@ -1124,12 +1133,7 @@ void Program::add_datatypes()
     datatype_map[tkUINT64.str] = &tkUINT64;
     datatype_map[tkFLOAT.str] = &tkFLOAT;
     datatype_map[tkDOUBLE.str] = &tkDOUBLE;
-    datatype_map[tkSTRING.str] = &tkSTRING;
-    datatype_map[tkSSTREAM.str] = &tkSSTREAM;
     datatype_map[tkARRAY.str] = &tkARRAY;
-    datatype_map[tkIFSTREAM.str] = &tkIFSTREAM;
-    datatype_map[tkOFSTREAM.str] = &tkOFSTREAM;
-    datatype_map[tkFSTREAM.str] = &tkFSTREAM;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
     datatype_map[tkAUTO.str] = &tkAUTO;
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
@@ -2780,6 +2784,7 @@ TokenBase *Program::_getToken()
 		  || word == "long"       || word == "short"
 		  || word == "int"        || word == "char"
 		  || word == "double"     || word == "float"
+		  || word == "__int128"
 		  || word == "_Complex"   || word == "__complex__"
 		  || word == "__complex" )
 		{
@@ -2794,6 +2799,7 @@ TokenBase *Program::_getToken()
 			TS_SIGNED   = 1 << 14,
 			TS_UNSIGNED = 1 << 16,
 			TS_COMPLEX  = 1 << 18,
+			TS_INT128   = 1 << 20,
 		    };
 		    int counter = compound_type_specifier_flag(word);
 		    // Accumulate subsequent type-specifier keywords
@@ -2899,6 +2905,13 @@ TokenBase *Program::_getToken()
 			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
 			    return new TokenDataType("unsigned long long", ddUINT64);
+			case TS_INT128:
+			case TS_SIGNED + TS_INT128:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("__int128", ddINT64);
+			case TS_UNSIGNED + TS_INT128:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned __int128", ddUINT64);
 			case TS_FLOAT:
 			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return new TokenDataType(dd->name.c_str(), *dd); }
 			    return new TokenDataType("float", ddFLOAT);

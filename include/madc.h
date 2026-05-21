@@ -445,6 +445,8 @@ public:
         }
 	else if ( o.type->is_string() )
 	    _datatype = &ddCHAR;
+        else if ( o.type->type() == DataType::dtSIMD )
+            _datatype = static_cast<DataDefSIMD *>(o.type)->element_type;
         else if ( o.type->type() == DataType::dtVECTOR )
             _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
         else if ( o.type->type() == DataType::dtMAP )
@@ -513,6 +515,7 @@ typedef std::map<std::string, DataDef *> datadef_map_t;
 typedef std::map<std::string, FuncDef *> funcdef_map_t;
 typedef std::map<std::string, Variable *> variable_map_t;
 typedef std::map<std::string, variable_map_t> namespace_map_t;
+typedef std::map<std::string, datatype_map_t> namespace_datatype_map_t;
 
 // map-iterators
 typedef std::map<std::string, TokenKeyword *>::iterator keyword_map_iter;
@@ -874,6 +877,7 @@ public:
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals
     namespace_map_t namespace_map;	// namespace registries (std::, etc.)
+    namespace_datatype_map_t namespace_datatype_map; // namespace-owned type names
     std::string current_namespace;	// active namespace for resolution (set by ns:: prefix)
     std::vector<std::string> namespace_preference; // ordered namespace lookup; "c" means normal lexical/global resolution
     std::map<std::string, void *> dlopen_map;	// dlopen handles for loaded libraries
@@ -916,6 +920,7 @@ public:
     char **script_argv;			// argv for the .mad script
     bool _include_iostream;		// #include <iostream> was seen during tokenization
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
+    bool _include_string;		// #include <string> was seen during tokenization
     // Intern file paths so TokenBase::file pointers stay stable for
     // the program's lifetime. Lexer used to store `c_str()` of a
     // stack-local std::string into tokens — the pointer dangled the

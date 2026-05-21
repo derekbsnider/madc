@@ -1,0 +1,22 @@
+#include <stdio.h>
+
+typedef unsigned __int128 __attribute__((__vector_size__ (16))) V;
+
+void
+foo (V v, V *r)
+{
+  *r = v != 0;
+}
+
+int
+main ()
+{
+  V r;
+  foo ((V) {5}, &r);
+  printf("%llu\n", (unsigned long long) r[0]);
+  foo ((V) {0x500000005ULL}, &r);
+  printf("%llu\n", (unsigned long long) r[0]);
+  foo ((V) {0}, &r);
+  printf("%llu\n", (unsigned long long) r[0]);
+  return 0;
+}

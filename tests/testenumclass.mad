@@ -15,6 +15,7 @@
 //      { name, sex, class, race, level, room, gold, ... };
 
 #include <iostream>
+using namespace std;
 
 enum gr_field_type {
     name, sex, class, race, level, room, gold, clan, council

@@ -1,0 +1,20 @@
+#!/usr/bin/env madc
+#include <stdint.h>
+#include <stdio.h>
+
+int32_t value = 7;
+int32_t *p = &value;
+int32_t **pp = &p;
+int32_t **const *ppp = &pp;
+int32_t **const **pppp = &ppp;
+
+int32_t *pick()
+{
+	return ***pppp;
+}
+
+int main()
+{
+	printf("%d\n", *pick());
+	return 0;
+}

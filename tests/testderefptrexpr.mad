@@ -15,6 +15,7 @@
 // does `*(start - 1) == ' '` and `*(end = start + strlen(a)) == ' '`.
 
 #include <iostream>
+using namespace std;
 #include <string.h>
 
 int main()

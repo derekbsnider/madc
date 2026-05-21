@@ -453,7 +453,7 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
     }
 
-    TEST_CASE("Program lazy iostream globals honor engine streams") {
+    TEST_CASE("Program std iostream namespace honors engine streams without bare globals") {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_iostream_streams",
 	    "#include <iostream>\nint main() { return 0; }\n");
@@ -471,9 +471,19 @@ TEST_SUITE("Program isolation") {
 	TokenProgram *tp = prog->tokenize(path.c_str());
 	REQUIRE(tp != NULL);
 	REQUIRE(prog->parse(tp));
-	Variable *cout_var = prog->lazy_resolve("cout");
-	Variable *cin_var = prog->lazy_resolve("cin");
-	Variable *cerr_var = prog->lazy_resolve("cerr");
+	std::string cout_name = "cout";
+	std::string cin_name = "cin";
+	std::string cerr_name = "cerr";
+	Variable *cout_var = prog->findVariable(cout_name);
+	Variable *cin_var = prog->findVariable(cin_name);
+	Variable *cerr_var = prog->findVariable(cerr_name);
+	CHECK(cout_var == NULL);
+	CHECK(cin_var == NULL);
+	CHECK(cerr_var == NULL);
+	variable_map_t &std_ns = prog->namespace_map["std"];
+	cout_var = std_ns["cout"];
+	cin_var = std_ns["cin"];
+	cerr_var = std_ns["cerr"];
 	REQUIRE(cout_var != NULL);
 	REQUIRE(cin_var != NULL);
 	REQUIRE(cerr_var != NULL);
@@ -514,10 +524,11 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("MadcEngine stream helpers capture script output") {
+	TEST_CASE("MadcEngine stream helpers capture script output") {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_capture_output",
-	    "int main() { string s = \"ok\"; puti(42); printstr(s); return 0; }\n");
+	    "#include <string>\n"
+	    "int main() { std::string s = \"ok\"; puti(42); printstr(s); return 0; }\n");
 	REQUIRE(!path.empty());
 
 	std::ostringstream outbuf;

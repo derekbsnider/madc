@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Function-scope `static` local-variable initializers must run.
 //
 // Before this fix madc allocated heap storage for static locals

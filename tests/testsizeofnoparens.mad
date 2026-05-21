@@ -11,6 +11,7 @@
 // pointers yield pointed-to size; deref yields pointed-to size.
 
 #include <iostream>
+using namespace std;
 #include <stdio.h>
 
 struct row

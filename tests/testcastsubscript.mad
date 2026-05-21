@@ -12,6 +12,7 @@
 // act_string).
 
 #include <iostream>
+using namespace std;
 #include <stdio.h>
 
 void *get_buf()

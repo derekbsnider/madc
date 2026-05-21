@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Comma-expression statements in brace-less while/if/for bodies.
 // The C comma operator is a low-precedence binary operator: `e1, e2`
 // evaluates e1 (for side effects), discards its value, evaluates e2,

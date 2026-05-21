@@ -25,6 +25,7 @@
 // ->name`).
 
 #include <iostream>
+using namespace std;
 #include <stdio.h>
 
 struct SKILLTYPE

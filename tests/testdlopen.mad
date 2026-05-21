@@ -1,5 +1,6 @@
 #!/../bin/madc
 #include <iostream>
+using namespace std;
 
 #load "libc.so.6" as libc;
 

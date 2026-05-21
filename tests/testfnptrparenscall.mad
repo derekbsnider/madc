@@ -22,6 +22,7 @@
 // isn't covered here. SMAUG only uses the `(*fp)(args)` form.)
 
 #include <iostream>
+using namespace std;
 
 int helper_h(char *s) { return s[0]; }
 int helper_e(char *s) { return s[1]; }

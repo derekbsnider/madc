@@ -1,0 +1,2 @@
+// madc embedded <string> — std::string helpers and conversions
+// The actual registration is handled by add_namespaces() callbacks.

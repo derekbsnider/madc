@@ -13,6 +13,7 @@
 //   c->local = imc_malloc(sizeof(*c->local));
 
 #include <iostream>
+using namespace std;
 
 struct Inner { int data[10]; };          // 80 bytes
 struct Outer { struct Inner *local; };

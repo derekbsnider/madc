@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Post-declaration string-literal assignment.
 // `char *p; p = "literal";` and `ptr->name = "literal";` need to extract
 // the literal's data pointer via string_cstr rather than copy the

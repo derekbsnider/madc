@@ -1002,7 +1002,9 @@ static bool is_restrict_token(TokenBase *tb)
 static bool is_post_pointer_qualifier_token(TokenBase *tb)
 {
     return tb && tb->type() == TokenType::ttKeyword
-        && (tb->id() == TokenID::tkRESTRICT || tb->id() == TokenID::tkCONST);
+        && (tb->id() == TokenID::tkRESTRICT
+	 || tb->id() == TokenID::tkCONST
+	 || tb->id() == TokenID::tkVOLATILE);
 }
 
 static bool is_type_qualifier_token(TokenBase *tb)
@@ -1010,6 +1012,7 @@ static bool is_type_qualifier_token(TokenBase *tb)
     return tb && tb->type() == TokenType::ttKeyword
 	&& (tb->id() == TokenID::tkCONST
 	 || tb->id() == TokenID::tkRESTRICT
+	 || tb->id() == TokenID::tkVOLATILE
 	 || tb->id() == TokenID::tkSTATIC
 	 || tb->id() == TokenID::tkEXTERN);
 }
@@ -1110,7 +1113,8 @@ static size_t parse_gnu_vector_size_attribute(Program &pgm)
 	if ( at->id() == TokenID::tkOpBrk ) ++depth;
 	else if ( at->id() == TokenID::tkClBrk ) --depth;
 	else if ( at->type() == TokenType::ttIdentifier
-	       && ((TokenIdent *)at)->str == "vector_size" )
+	       && (((TokenIdent *)at)->str == "vector_size"
+		|| ((TokenIdent *)at)->str == "__vector_size__") )
 	    saw_vector_size = true;
 	else if ( saw_vector_size && at->type() == TokenType::ttInteger )
 	{
@@ -1145,7 +1149,8 @@ static void consume_typedef_gnu_attributes(Program &pgm,
 		   && ((TokenIdent *)at)->str == "mode" )
 		saw_mode = true;
 	    else if ( at->type() == TokenType::ttIdentifier
-		   && ((TokenIdent *)at)->str == "vector_size" )
+		   && (((TokenIdent *)at)->str == "vector_size"
+		    || ((TokenIdent *)at)->str == "__vector_size__") )
 		saw_vector_size = true;
 	    else if ( mode_name && saw_mode && at->type() == TokenType::ttIdentifier )
 	    {
@@ -1389,6 +1394,63 @@ static DataDef *resolve_named_datadef(Program &pgm, const std::string &name)
     return pgm.lazy_resolve_type(name);
 }
 
+static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb, bool consume_tokens)
+{
+    if ( !tb || tb->type() != TokenType::ttIdentifier || !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkNS )
+	return NULL;
+
+    std::string ns_name = ((TokenIdent *)tb)->str;
+    namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
+    if ( nti == pgm.namespace_datatype_map.end() )
+	return NULL;
+
+    if ( pgm.tokens.size() < 2 )
+	return NULL;
+    TokenBase *member_tb = pgm.tokens[1];
+    if ( !member_tb || member_tb->type() != TokenType::ttIdentifier )
+	return NULL;
+
+    std::string member_name = ((TokenIdent *)member_tb)->str;
+    datatype_map_iter dti = nti->second.find(member_name);
+    if ( dti == nti->second.end() )
+	return NULL;
+
+    if ( consume_tokens )
+    {
+	pgm.nextToken(); // consume ::
+	pgm.nextToken(); // consume member
+    }
+    return dti->second;
+}
+
+static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
+						  bool consume_ns_tokens,
+						  bool allow_lazy_types)
+{
+    if ( !tb )
+	return NULL;
+    if ( tb->type() == TokenType::ttDataType )
+	return (TokenDataType *)tb;
+    if ( !is_contextual_identifier_token(tb) )
+	return NULL;
+
+    std::string tname = contextual_identifier_name(tb);
+    datatype_map_iter dmi = pgm.datatype_map.find(tname);
+    if ( dmi != pgm.datatype_map.end() )
+	return dmi->second;
+
+    if ( TokenDataType *ns_type = resolve_namespaced_type_token(pgm, tb, consume_ns_tokens) )
+	return ns_type;
+
+    if ( !allow_lazy_types || pgm.findVariable(tname) )
+	return NULL;
+
+    DataDef *dd = pgm.lazy_resolve_type(tname);
+    if ( !dd )
+	return NULL;
+    return new TokenDataType(dd->name.c_str(), *dd);
+}
+
 static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
 {
     if ( !dd )
@@ -1401,6 +1463,7 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
 					       const std::string &op_name);
 static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb);
+static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb, bool consume_tokens);
 
 static std::string canonical_builtin_simple_type_name(DataDef *dd)
 {
@@ -3495,6 +3558,19 @@ static void register_rust_namespace_spec(Program &pgm)
     pgm.add_rust_namespace();
 }
 
+static Variable *make_hidden_std_global(Program &pgm,
+					DataDef &dd,
+					const std::string &hidden_name,
+					void *init)
+{
+    return pgm.addGlobal(dd, hidden_name, 1, init);
+}
+
+static TokenDataType *make_namespace_type_token(const char *name, DataDef &dd)
+{
+    return new TokenDataType(name, dd);
+}
+
 int MadcTeeBuf::overflow(int ch)
 {
     if ( ch == EOF )
@@ -3537,6 +3613,7 @@ Program::Program()
       script_argv(NULL),
       _include_iostream(false),
       _include_stdio(false),
+      _include_string(false),
       colors(false),
       aot_tracking(false),
       instrument_functions(false),
@@ -3560,6 +3637,7 @@ Program::Program(MadcEngine *eng)
       script_argv(NULL),
       _include_iostream(false),
       _include_stdio(false),
+      _include_string(false),
       colors(false),
       aot_tracking(false),
       instrument_functions(false),
@@ -4436,11 +4514,10 @@ void Program::populate_builtin_registry()
     // dlsym. Registered under `__std_getline` and aliased into
     // namespace_map["std"]["getline"] in add_namespaces().
     builtin_registry.add_core_function("__std_getline", datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
-    builtin_registry.add_core_function("endl", datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
-    builtin_registry.add_core_function("to_string", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
-    builtin_registry.add_core_function("to_string_d", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtDOUBLE}, (fVOIDFUNC)madc_to_string_d);
-    builtin_registry.add_core_function("stoi", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_stoi);
-    builtin_registry.add_core_function("stod", datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
+    builtin_registry.add_core_function("__std_endl", datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
+    builtin_registry.add_core_function("__std_to_string", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
+    builtin_registry.add_core_function("__std_stoi", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_stoi);
+    builtin_registry.add_core_function("__std_stod", datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
     // strlen is NOT pre-registered: it resolves via dlsym fallback to libc's
     // strlen(const char *). For std::string, use str.length() or str.size().
 
@@ -4541,14 +4618,11 @@ void Program::add_globals()
     addGlobal(ddSTRING,  "version", 1, (void *)"v0.0.1");
 }
 
-enum { LAZY_IOSTREAM = 1, LAZY_STDIO = 2, LAZY_MATHH = 3 };
+enum { LAZY_STDIO = 2, LAZY_MATHH = 3 };
 
 // populates lazy_map — symbols are registered on first use via lazy_resolve()
 void Program::add_iostream()
 {
-    lazy_map["cout"] = {LAZY_IOSTREAM, Program::lkVariable};
-    lazy_map["cin"]  = {LAZY_IOSTREAM, Program::lkVariable};
-    lazy_map["cerr"] = {LAZY_IOSTREAM, Program::lkVariable};
 }
 
 void Program::add_stdio()
@@ -4574,19 +4648,7 @@ Variable *Program::lazy_resolve(const std::string &name)
     int header = it->second.header;
     lazy_map.erase(it);
 
-    if ( header == LAZY_IOSTREAM )
-    {
-	if ( name == "cout" )
-	    var = addGlobal(ddOSTREAM, "cout", 1, output().rdbuf());
-	else if ( name == "cin" )
-	    var = addGlobal(ddISTREAM, "cin", 1, input().rdbuf());
-	else if ( name == "cerr" )
-	    var = addGlobal(ddOSTREAM, "cerr", 1, error().rdbuf());
-
-	if ( var )
-	    namespace_map["std"][name] = var;
-    }
-    else if ( header == LAZY_STDIO )
+    if ( header == LAZY_STDIO )
     {
 	// dlsym the libc symbol and copy the current FILE* value into our
 	// backing slot. Note: dlsym("stderr") returns the address of the
@@ -4632,8 +4694,27 @@ void Program::add_namespaces()
 
     // std:: namespace — map to existing global variables and functions
     variable_map_t &std_ns = namespace_map["std"];
+    datatype_map_t &std_types = namespace_datatype_map["std"];
 
-    // cout/cin/cerr/endl are registered by add_iostream() when #include <iostream> is processed
+    if ( _include_iostream )
+    {
+	var = make_hidden_std_global(*this, ddOSTREAM, "__std_cout", output().rdbuf());
+	if (var) std_ns["cout"] = var;
+
+	var = make_hidden_std_global(*this, ddISTREAM, "__std_cin", input().rdbuf());
+	if (var) std_ns["cin"] = var;
+
+	var = make_hidden_std_global(*this, ddOSTREAM, "__std_cerr", error().rdbuf());
+	if (var) std_ns["cerr"] = var;
+
+	std_types["stringstream"] = make_namespace_type_token("stringstream", ddSSTREAM);
+	std_types["ifstream"] = make_namespace_type_token("ifstream", ddIFSTREAM);
+	std_types["ofstream"] = make_namespace_type_token("ofstream", ddOFSTREAM);
+	std_types["fstream"] = make_namespace_type_token("fstream", ddFSTREAM);
+    }
+
+    if ( _include_string )
+	std_types["string"] = make_namespace_type_token("string", ddSTRING);
 
     // std::for_each(array, func_ptr) — iterate array calling function per element
     extern void std_for_each(void *, int64_t);
@@ -4644,13 +4725,31 @@ void Program::add_namespaces()
 
     // std::getline(istream&, string&) — registered as __std_getline at
     // the top of _parser_init(); alias into the std namespace here.
-    std::string gl_name = "__std_getline";
-    var = findVariable(gl_name);
-    if (var) std_ns["getline"] = var;
+    if ( _include_iostream )
+    {
+	std::string gl_name = "__std_getline";
+	var = findVariable(gl_name);
+	if (var) std_ns["getline"] = var;
 
-    std::string endl_name = "endl";
-    var = findVariable(endl_name);
-    if (var) std_ns["endl"] = var;
+	std::string endl_name = "__std_endl";
+	var = findVariable(endl_name);
+	if (var) std_ns["endl"] = var;
+    }
+
+    if ( _include_string )
+    {
+	std::string to_string_name = "__std_to_string";
+	var = findVariable(to_string_name);
+	if (var) std_ns["to_string"] = var;
+
+	std::string stoi_name = "__std_stoi";
+	var = findVariable(stoi_name);
+	if (var) std_ns["stoi"] = var;
+
+	std::string stod_name = "__std_stod";
+	var = findVariable(stod_name);
+	if (var) std_ns["stod"] = var;
+    }
 
     DBG(std::cout << "add_namespaces() registered std:: with " << std_ns.size() << " members" << std::endl);
 }
@@ -6155,16 +6254,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 	    	if ( tb->id() == TokenID::tkComma )
 		{
 		    // C comma operator inside parenthesized expression:
-		    // evaluate left, discard, continue with right side.
+		    // build a real comma-expression node so left-side side
+		    // effects are preserved and the whole expression returns
+		    // the right-side value.
 		    if ( brackets > 0 )
 		    {
 			DBG(cout << "parseExpression: comma operator (brackets=" << brackets << ")" << endl);
 			// Flush pending operators above the last '(' so the
-			// left-side expression is fully reduced, then discard it.
+			// left-side expression is fully reduced, then push the
+			// comma operator at the lowest precedence within the
+			// parenthesized sub-expression.
 			while ( !opStack.empty() && opStack.top()->get() != '(' )
 			    popOperator(opStack, exStack);
-			if ( !exStack.empty() )
-			    exStack.pop(); // discard left operand
+			TokenOperator *comma = (TokenOperator *)tb;
+			comma->left = NULL;
+			comma->right = NULL;
+			opStack.push(comma);
 			break;
 		    }
 		    DBG(cout << "parseExpression: found comma" << endl);
@@ -6182,8 +6287,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			DBG(cout << "parseExpression: comma operator (brackets=" << brackets << ")" << endl);
 			while ( !opStack.empty() && opStack.top()->get() != '(' )
 			    popOperator(opStack, exStack);
-			if ( !exStack.empty() )
-			    exStack.pop();
+			TokenOperator *comma = (TokenOperator *)tb;
+			comma->left = NULL;
+			comma->right = NULL;
+			opStack.push(comma);
 			break;
 		    }
 		    DBG(cout << "parseExpression: found comma" << endl);
@@ -6359,8 +6466,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( !exStack.empty() )
 		    {
 			DataDef *dd = exStack.top()->datadef();
+			TokenComma *top_comma = dynamic_cast<TokenComma *>(exStack.top());
+			TokenVar *comma_fixed_array = NULL;
+			if ( top_comma )
+			    comma_fixed_array = dynamic_cast<TokenVar *>(top_comma->right);
+			bool comma_returns_fixed_array = comma_fixed_array
+			    && comma_fixed_array->var.is_fixed_array()
+			    && comma_fixed_array->var.type;
 			if ( dd && (dd->is_pointer() || dd->is_string()
-			  || dd->type() == DataType::dtCHARptr) )
+			  || dd->type() == DataType::dtCHARptr
+			  || comma_returns_fixed_array) )
 			{
 			    TokenBase *base_expr = exStack.top();
 			    exStack.pop();
@@ -6368,8 +6483,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    TokenBase *clsqr = nextToken();
 			    if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 				Throw(tb) << "Expected ] in subscript expression" << flush;
-			    DataDef *elem_type = dd;
-			    if ( elem_type->is_pointer() )
+			    DataDef *elem_type = comma_returns_fixed_array
+				? comma_fixed_array->var.type : dd;
+			    if ( elem_type && elem_type->is_pointer() )
 			    {
 				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(elem_type);
 				elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
@@ -6405,7 +6521,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    TokenBase *cast_qualifier = NULL;
 		    if ( peek1 )
 		    {
-			if ( peek1->id() == TokenID::tkCONST )
+			if ( peek1->id() == TokenID::tkCONST
+			  || peek1->id() == TokenID::tkVOLATILE )
 			{
 			    cast_qualifier = nextToken();
 			    peek1 = peekToken();
@@ -6461,6 +6578,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			while ( peekToken()
 			     && (peekToken()->id() == TokenID::tkMul
 			      || peekToken()->id() == TokenID::tkCONST
+			      || peekToken()->id() == TokenID::tkVOLATILE
 			      || peekToken()->id() == TokenID::tkRESTRICT) )
 			{
 			    TokenBase *pt = nextToken();
@@ -7198,7 +7316,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    TokenBase *inner_tb = nextToken();
 				    if ( !inner_tb )
 					Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-				    if ( inner_tb->id() == TokenID::tkOpBrk )
+				    if ( inner_tb->id() == TokenID::tkMul )
+				    {
+					pushToken(inner_tb);
+					deref_expr = parseExpression(deref_tb, true);
+				    }
+				    else if ( inner_tb->id() == TokenID::tkOpBrk )
 				    {
 					TokenBase *inner_expr_tb = nextToken();
 					TokenBase *inner_expr = parseExpression(inner_expr_tb, true);
@@ -7466,7 +7589,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// annotations — skip them in expression context (casts,
 		// sizeof, etc.)
 		if ( tb->id() == TokenID::tkCONST
-		  || tb->id() == TokenID::tkRESTRICT )
+		  || tb->id() == TokenID::tkRESTRICT
+		  || tb->id() == TokenID::tkVOLATILE )
 		{
 		    tb = nextToken();
 		    if ( !tb ) { done = true; break; }
@@ -8343,6 +8467,33 @@ TokenBase *TokenUSING::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'using'" << flush;
 
+    auto import_namespace_member = [&](const std::string &name, Variable *src)
+    {
+	std::string alias_name = name;
+	if ( pgm.findVariable(alias_name) )
+	    return;
+	if ( src->name != name )
+	{
+	    Variable *alias = new Variable();
+	    alias->name = name;
+	    alias->type = src->type;
+	    alias->data = src->data;
+	    alias->count = src->count;
+	    alias->flags = src->flags;
+	    pgm.tkProgram->variables.push_back(alias);
+	    return;
+	}
+	pgm.tkProgram->variables.push_back(src);
+    };
+    auto import_namespace_type = [&](const std::string &name, TokenDataType *src)
+    {
+	if ( !src )
+	    return;
+	if ( pgm.datatype_map.find(name) != pgm.datatype_map.end() )
+	    return;
+	pgm.datatype_map[name] = src;
+    };
+
     // using namespace std;
     if ( tn->id() == TokenID::tkNAMESPACE )
     {
@@ -8359,29 +8510,13 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	    std::string name = vmi->first;
 	    // only import if not already defined
 	    if ( !pgm.findVariable(name) )
-	    {
-		// If the original Variable's name doesn't match the
-		// namespace key (e.g. std::getline keyed as "getline"
-		// but the underlying Variable is named "__std_getline"),
-		// register an alias Variable so unqualified `getline(...)`
-		// lookups resolve. Otherwise the imported Variable's name
-		// must match — push it through unchanged.
-		Variable *src = vmi->second;
-		if ( src->name != name )
-		{
-		    Variable *alias = new Variable();
-		    alias->name = name;
-		    alias->type = src->type;
-		    alias->data = src->data;
-		    alias->count = src->count;
-		    alias->flags = src->flags;
-		    pgm.tkProgram->variables.push_back(alias);
-		}
-		else
-		    pgm.tkProgram->variables.push_back(src);
-	    }
+		import_namespace_member(name, vmi->second);
 	    DBG(std::cout << "TokenUSING::parse() imported " << ns_name << "::" << name << std::endl);
 	}
+	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
+	if ( nti != pgm.namespace_datatype_map.end() )
+	    for ( datatype_map_iter dti = nti->second.begin(); dti != nti->second.end(); ++dti )
+		import_namespace_type(dti->first, dti->second);
 	// expect semicolon
 	tn = pgm.nextToken();
 	if ( !tn || tn->id() != TokenID::tkSemi )
@@ -8404,12 +8539,19 @@ TokenBase *TokenUSING::parse(Program &pgm)
 	if ( nsi == pgm.namespace_map.end() )
 	    pgm.Throw(tn) << "Unknown namespace '" << ns_name << "'" << flush;
 	variable_map_iter vmi = nsi->second.find(member_name);
-	if ( vmi == nsi->second.end() )
+	namespace_datatype_map_t::iterator nti = pgm.namespace_datatype_map.find(ns_name);
+	datatype_map_iter dti = nti == pgm.namespace_datatype_map.end()
+	    ? datatype_map_t::iterator()
+	    : nti->second.find(member_name);
+	if ( vmi == nsi->second.end()
+	  && (nti == pgm.namespace_datatype_map.end() || dti == nti->second.end()) )
 	    pgm.Throw(tn) << "'" << member_name << "' is not a member of namespace '" << ns_name << "'" << flush;
-	// import into global scope
+	// import into global scope / datatype map
 	std::string name = member_name;
-	if ( !pgm.findVariable(name) )
-	    pgm.tkProgram->variables.push_back(vmi->second);
+	if ( vmi != nsi->second.end() && !pgm.findVariable(name) )
+	    import_namespace_member(name, vmi->second);
+	if ( nti != pgm.namespace_datatype_map.end() && dti != nti->second.end() )
+	    import_namespace_type(name, dti->second);
 	// expect semicolon
 	tn = pgm.nextToken();
 	if ( !tn || tn->id() != TokenID::tkSemi )
@@ -8722,7 +8864,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
-	while ( tn && (tn->id() == TokenID::tkCONST) )
+	while ( tn && (tn->id() == TokenID::tkCONST
+	            || tn->id() == TokenID::tkVOLATILE) )
 	{
 	    pgm.nextToken(); // consume qualifier
 	    tn = pgm.peekToken();
@@ -8748,6 +8891,29 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	{
 	    bool nested_union_kw = tn->id() == TokenID::tkUNION;
 	    pgm.nextToken(); // consume 'struct' / 'union'
+	    auto consume_nested_attributes = [&]() -> bool
+	    {
+		bool packed = false;
+		while ( is_attribute_identifier_token(pgm.peekToken()) )
+		{
+		    pgm.nextToken();
+		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+		    {
+			int depth = 0;
+			do {
+			    TokenBase *at = pgm.nextToken();
+			    if ( !at ) break;
+			    if ( at->id() == TokenID::tkOpBrk ) ++depth;
+			    else if ( at->id() == TokenID::tkClBrk ) --depth;
+			    else if ( at->type() == TokenType::ttIdentifier
+				   && ((TokenIdent *)at)->str == "packed" )
+				packed = true;
+			} while ( depth > 0 );
+		    }
+		}
+		return packed;
+	    };
+	    bool nested_packed = consume_nested_attributes();
 	    TokenBase *stag = pgm.peekToken();
 	    std::function<void(DataDefSTRUCT *, TokenBase *)> parse_nested_aggregate_body;
 	    parse_nested_aggregate_body = [&](DataDefSTRUCT *inner, TokenBase *loc) -> void
@@ -8770,12 +8936,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			bool inner_union_kw = tn->id() == TokenID::tkUNION;
 			pgm.nextToken();
+			bool inner_packed = consume_nested_attributes();
 			TokenBase *inner_tag = pgm.peekToken();
 			if ( inner_tag && inner_tag->id() == TokenID::tkOpBrc )
 			{
 			    pgm.nextToken();
 			    DataDefSTRUCT *nested = new DataDefSTRUCT("anonymous", 0);
 			    nested->union_layout = inner_union_kw;
+			    if ( inner_packed )
+				nested->pack = 1;
 			    parse_nested_aggregate_body(nested, inner_tag);
 			    inner_type = new TokenDataType("anonymous", *nested);
 			}
@@ -8792,6 +8961,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				if ( sdmi == pgm.struct_map.end() )
 				{
 				    nested = new DataDefSTRUCT(sname, 0);
+				    if ( inner_packed )
+					nested->pack = 1;
 				    pgm.struct_map[sname] = nested;
 				}
 				else
@@ -8801,6 +8972,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 					pgm.Throw(inner_tag) << "Struct '" << sname << "' already defined" << flush;
 				}
 				nested->union_layout = inner_union_kw;
+				if ( inner_packed )
+				    nested->pack = 1;
 				pgm.nextToken();
 				parse_nested_aggregate_body(nested, inner_tag);
 				inner_type = new TokenDataType(sname.c_str(), *nested);
@@ -8974,6 +9147,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.nextToken(); // consume '{'
 		DataDefSTRUCT *inner = new DataDefSTRUCT("anonymous", 0);
 		inner->union_layout = nested_union_kw;
+		if ( nested_packed )
+		    inner->pack = 1;
 		parse_nested_aggregate_body(inner, stag);
 		mtype = new TokenDataType("anonymous", *inner);
 	    }
@@ -9031,6 +9206,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// skip const/restrict qualifiers between type and pointer stars
 		// e.g. `char const *p;`
 		while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
+			|| pgm.peekToken()->id() == TokenID::tkVOLATILE
 			|| pgm.peekToken()->id() == TokenID::tkRESTRICT) )
 		    pgm.nextToken();
 		// skip __attribute__((...)) after struct/union/enum type before member name
@@ -9064,6 +9240,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
 		    // skip trailing const/restrict qualifiers (e.g. `char const *p;`)
 		    while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
+			    || pgm.peekToken()->id() == TokenID::tkVOLATILE
 			    || pgm.peekToken()->id() == TokenID::tkRESTRICT) )
 			pgm.nextToken();
 
@@ -9460,9 +9637,10 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
 	// expect a data type token
-	if ( tn->type() != TokenType::ttDataType )
+	TokenDataType *mtype = resolve_declared_type_token(pgm, tn, true, true);
+	if ( !mtype )
 	    pgm.Throw(tn) << "Expecting type in class definition" << flush;
-	TokenDataType *mtype = (TokenDataType *)pgm.nextToken();
+	pgm.nextToken();
 
 	// check for pointer declarator(s): type * [*...] member_name
 	DataDef *cmember_dd = &mtype->definition;
@@ -9704,11 +9882,10 @@ TokenBase *TokenFOR::parse(Program &pgm)
 
     // detect range-based for: for (type var : container)
     bool typed_for_init = false;
-    if ( tn->type() == TokenType::ttDataType )
+    if ( TokenDataType *dt = resolve_declared_type_token(pgm, tn, true, true) )
     {
-	TokenDataType *dt = (TokenDataType *)tn;
 	TokenBase *tn2 = pgm.nextToken();
-	if ( tn2->type() == TokenType::ttIdentifier )
+	if ( tn2 && is_contextual_identifier_token(tn2) )
 	{
 	    TokenBase *tn3 = pgm.peekToken();
 	    if ( tn3 && tn3->id() == TokenID::tkTerC )
@@ -9720,7 +9897,7 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		fe->line = this->line;
 		fe->column = this->column;
 		fe->elemtype = &dt->definition;
-		fe->elemname = ((TokenIdent *)tn2)->str;
+		fe->elemname = contextual_identifier_name(tn2);
 
 		DBG(cout << "TokenFOR::parse() range-for detected: " << dt->definition.name << ' ' << fe->elemname << endl);
 
@@ -10073,7 +10250,9 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.Throw << "Unexpected end of input after 'typedef'" << flush;
 
     // skip const/restrict qualifiers: `typedef const struct X *const_ptr;`
-    while ( tn && (tn->id() == TokenID::tkCONST || tn->id() == TokenID::tkRESTRICT) )
+    while ( tn && (tn->id() == TokenID::tkCONST
+		|| tn->id() == TokenID::tkRESTRICT
+		|| tn->id() == TokenID::tkVOLATILE) )
     {
 	pgm.nextToken();
 	tn = pgm.peekToken();
@@ -10156,9 +10335,10 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     }
 
     std::string gnu_mode_name;
+    size_t gnu_vector_bytes = 0;
     if ( is_attribute_identifier_token(pgm.peekToken()) )
     {
-	consume_typedef_gnu_attributes(pgm, &gnu_mode_name);
+	consume_typedef_gnu_attributes(pgm, &gnu_mode_name, &gnu_vector_bytes);
 	base_dd = apply_gnu_mode_alias(base_dd, gnu_mode_name);
     }
 
@@ -10202,7 +10382,6 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     else
 	pgm.Throw(tn) << "Expecting alias name in typedef" << flush;
 
-    size_t gnu_vector_bytes = 0;
     if ( is_attribute_identifier_token(pgm.peekToken()) )
 	gnu_vector_bytes = parse_gnu_vector_size_attribute(pgm);
 
@@ -10632,6 +10811,38 @@ TokenBase *TokenRESTRICT::parse(Program &pgm)
     return NULL;
 }
 
+TokenBase *TokenVOLATILE::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenVOLATILE::parse() — consuming volatile" << std::endl);
+    TokenBase *tn = pgm.peekToken();
+    if ( !tn )
+	pgm.Throw << "Unexpected end of input after 'volatile'" << flush;
+    if ( tn->type() == TokenType::ttKeyword )
+	return pgm.parseKeyword(static_cast<TokenKeyword *>(pgm.nextToken()));
+    if ( tn->type() == TokenType::ttDataType )
+    {
+	tn = pgm.nextToken();
+	return pgm.parseDeclaration(static_cast<TokenDataType *>(tn));
+    }
+    if ( tn->type() == TokenType::ttIdentifier )
+    {
+	std::string tname = ((TokenIdent *)tn)->str;
+	if ( is_typeof_identifier(tname) )
+	{
+	    pgm.nextToken();
+	    return pgm.parseDeclaration(parse_typeof_datatype(pgm, tn));
+	}
+	datatype_map_iter tdmi = pgm.datatype_map.find(tname);
+	if ( tdmi != pgm.datatype_map.end() )
+	{
+	    pgm.nextToken();
+	    return pgm.parseDeclaration(tdmi->second);
+	}
+    }
+    pgm.Throw(tn) << "Expecting type after 'volatile'" << flush;
+    return NULL;
+}
+
 TokenBase *TokenDEFER::parse(Program &pgm)
 {
     DBG(std::cout << "TokenDEFER::parse()" << std::endl);
@@ -10920,10 +11131,11 @@ TokenBase *TokenVECTOR::parse(Program &pgm)
 	pgm.Throw(tn) << "Expecting < after vector" << flush;
 
     tn = pgm.nextToken();
-    if ( tn->type() != TokenType::ttDataType )
+    TokenDataType *elem_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !elem_td )
 	pgm.Throw(tn) << "Expecting type inside vector<>" << flush;
 
-    DataDef *elem = &((TokenDataType *)tn)->definition;
+    DataDef *elem = &elem_td->definition;
 
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkGT )
@@ -10990,18 +11202,20 @@ TokenBase *TokenMAP::parse(Program &pgm)
 	pgm.Throw(tn) << "Expecting < after map" << flush;
 
     tn = pgm.nextToken();
-    if ( tn->type() != TokenType::ttDataType )
+    TokenDataType *key_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !key_td )
 	pgm.Throw(tn) << "Expecting key type inside map<>" << flush;
-    DataDef *key = &((TokenDataType *)tn)->definition;
+    DataDef *key = &key_td->definition;
 
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkComma )
 	pgm.Throw(tn) << "Expecting , between key and value types in map<k, v>" << flush;
 
     tn = pgm.nextToken();
-    if ( tn->type() != TokenType::ttDataType )
+    TokenDataType *val_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !val_td )
 	pgm.Throw(tn) << "Expecting value type inside map<k, v>" << flush;
-    DataDef *val = &((TokenDataType *)tn)->definition;
+    DataDef *val = &val_td->definition;
 
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkGT )
@@ -11062,9 +11276,10 @@ TokenBase *TokenSET::parse(Program &pgm)
 	pgm.Throw(tn) << "Expecting < after set" << flush;
 
     tn = pgm.nextToken();
-    if ( tn->type() != TokenType::ttDataType )
+    TokenDataType *elem_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !elem_td )
 	pgm.Throw(tn) << "Expecting type inside set<>" << flush;
-    DataDef *elem = &((TokenDataType *)tn)->definition;
+    DataDef *elem = &elem_td->definition;
 
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkGT )
@@ -11120,9 +11335,10 @@ TokenBase *TokenLIST::parse(Program &pgm)
 	pgm.Throw(tn) << "Expecting < after list" << flush;
 
     tn = pgm.nextToken();
-    if ( tn->type() != TokenType::ttDataType )
+    TokenDataType *elem_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !elem_td )
 	pgm.Throw(tn) << "Expecting type inside list<>" << flush;
-    DataDef *elem = &((TokenDataType *)tn)->definition;
+    DataDef *elem = &elem_td->definition;
 
     tn = pgm.nextToken();
     if ( tn->id() != TokenID::tkGT )
@@ -11605,7 +11821,9 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
 	// tolerate C qualifiers/storage hints in parameter lists such as
 	// `const char *s` and `register char *s`
-	while ( nt && (nt->id() == TokenID::tkCONST || nt->id() == TokenID::tkREGISTER) )
+	while ( nt && (nt->id() == TokenID::tkCONST
+	            || nt->id() == TokenID::tkVOLATILE
+	            || nt->id() == TokenID::tkREGISTER) )
 	{
 	    nt = nextToken();
 	}
@@ -11687,6 +11905,10 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		{
 		    pb = tdmi->second;
 		}
+		else if ( TokenDataType *ns_type = resolve_namespaced_type_token(*this, nt, true) )
+		{
+		    pb = ns_type;
+		}
 		else
 		{
 		    DBG(std::cerr << "parseFunction() params: failed to obtain basetype for '" << tname << "'" << std::endl);
@@ -11724,7 +11946,9 @@ grabnt:
 	    DBG(std::cout << "parseFunction() pointer param: " << param_dd->name << std::endl);
 	    goto grabnt;
 	}
-	if ( is_restrict_token(nt) || nt->id() == TokenID::tkCONST )
+	if ( is_restrict_token(nt)
+	  || nt->id() == TokenID::tkCONST
+	  || nt->id() == TokenID::tkVOLATILE )
 	    goto grabnt;
 	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
 	{
@@ -11737,7 +11961,9 @@ grabnt:
 	    if ( inner && inner->id() == TokenID::tkStar )
 	    {
 		nt = nextToken();
-		while ( nt && (is_restrict_token(nt) || nt->id() == TokenID::tkCONST) )
+		while ( nt && (is_restrict_token(nt)
+		           || nt->id() == TokenID::tkCONST
+		           || nt->id() == TokenID::tkVOLATILE) )
 		    nt = nextToken();
 		if ( !is_contextual_identifier_token(nt) )
 		    Throw(nt) << "Expecting identifier in function pointer parameter" << flush;
@@ -12160,6 +12386,10 @@ TokenBase *Program::parseLambda()
 
     DBG(cout << "parseLambda() START" << endl);
 
+    auto resolve_lambda_param_type = [&](TokenBase *type_tb) -> TokenDataType * {
+	return resolve_declared_type_token(*this, type_tb, true, true);
+    };
+
     // we already consumed '[', peek at next token
     // [](params) { body }       — pure lambda (no capture)
     // [int](params) { body }    — pure lambda with return type
@@ -12174,9 +12404,9 @@ TokenBase *Program::parseLambda()
 	is_capturing = true;
 	tn = nextToken(); // consume &, expect ]
     }
-    else if ( tn->type() == TokenType::ttDataType )
+    else if ( TokenDataType *ret_type = resolve_lambda_param_type(tn) )
     {
-	rettype = &((TokenDataType *)tn)->definition;
+	rettype = &ret_type->definition;
 	DBG(cout << "parseLambda() return type: " << rettype->name << endl);
 	tn = nextToken();
     }
@@ -12225,10 +12455,10 @@ TokenBase *Program::parseLambda()
 
     while ( (tn=nextToken()) && tn->id() != TokenID::tkClBrk )
     {
-	if ( tn->type() != TokenType::ttDataType )
+	pb = resolve_lambda_param_type(tn);
+	if ( !pb )
 	    Throw(tn) << "Expecting type in lambda parameter list" << flush;
 
-	pb = (TokenDataType *)tn;
 	tn = nextToken();
 
 	if ( !is_contextual_identifier_token(tn) )
@@ -12607,7 +12837,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	else if ( inner && inner->id() == TokenID::tkMul )
 	{
 	    TokenBase *name_tok = nextToken();
-	    while ( name_tok && (is_restrict_token(name_tok) || name_tok->id() == TokenID::tkCONST) )
+	    while ( name_tok && (is_restrict_token(name_tok)
+	                      || name_tok->id() == TokenID::tkCONST
+	                      || name_tok->id() == TokenID::tkVOLATILE) )
 		name_tok = nextToken();
 	    if ( !name_tok || !is_contextual_identifier_token(name_tok) )
 		Throw(name_tok ? name_tok : open) << "Expecting identifier in function pointer declaration" << flush;
@@ -13475,7 +13707,11 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		if ( id == "asm" || id == "__asm__" || id == "__asm" )
 		{
 		    // optional volatile qualifier
-		    if ( peekToken() && peekToken()->type() == TokenType::ttIdentifier )
+		    if ( peekToken()
+		      && peekToken()->type() == TokenType::ttKeyword
+		      && peekToken()->id() == TokenID::tkVOLATILE )
+			nextToken();
+		    else if ( peekToken() && peekToken()->type() == TokenType::ttIdentifier )
 		    {
 			std::string &q = ((TokenIdent *)peekToken())->str;
 			if ( q == "volatile" || q == "__volatile__" )
@@ -13496,10 +13732,32 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 			    if ( out_c && out_c->type() == TokenType::ttString
 			      && out_ob && out_ob->id() == TokenID::tkOpBrk )
 			    {
+				std::string out_constraint = ((TokenStr *)out_c)->str;
+				if ( out_constraint == "+m" )
+				{
+				    int out_depth = 1;
+				    while ( out_depth > 0 )
+				    {
+					TokenBase *t = nextToken();
+					if ( !t ) break;
+					if ( t->id() == TokenID::tkOpBrk ) ++out_depth;
+					else if ( t->id() == TokenID::tkClBrk ) --out_depth;
+				    }
+				    int asm_depth = 1;
+				    while ( asm_depth > 0 )
+				    {
+					TokenBase *t = nextToken();
+					if ( !t ) break;
+					if ( t->id() == TokenID::tkOpBrk ) ++asm_depth;
+					else if ( t->id() == TokenID::tkClBrk ) --asm_depth;
+				    }
+				    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+					return nextToken();
+				    return tb;
+				}
 				TokenBase *out_tb = nextToken();
 				TokenBase *out_expr = out_tb ? parseExpression(out_tb, true) : NULL;
 				TokenBase *out_cb = nextToken();
-				std::string out_constraint = ((TokenStr *)out_c)->str;
 				TokenBase *next_clause = nextToken();
 				if ( out_expr
 				  && out_cb && out_cb->id() == TokenID::tkClBrk
@@ -13509,6 +13767,14 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 					nextToken();
 				    return out_expr;
+				}
+				if ( out_expr
+				  && out_cb && out_cb->id() == TokenID::tkClBrk
+				  && next_clause && next_clause->id() == TokenID::tkSemi )
+				{
+				    if ( out_constraint == "+r" )
+					return out_expr;
+				    return next_clause;
 				}
 				TokenBase *in_c = nextToken();
 				TokenBase *in_ob = nextToken();
@@ -13578,6 +13844,11 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		datatype_map_iter dmi = datatype_map.find(tname);
 		if ( dmi == datatype_map.end() )
 		{
+		    if ( TokenDataType *ns_type = resolve_namespaced_type_token(*this, tb, true) )
+		    {
+			DBG(std::cout << "parseStatement() namespaced identifier is a registered type, calling parseDeclaration" << std::endl);
+			return parseDeclaration(ns_type);
+		    }
 		    // try lazy type registration from #include headers
 		    DataDef *dd = lazy_resolve_type(tname);
 		    if ( dd )

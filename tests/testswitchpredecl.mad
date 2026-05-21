@@ -10,6 +10,7 @@
 // continuing into the case-label scan.
 
 #include <iostream>
+using namespace std;
 #include <stdio.h>
 
 int main()
