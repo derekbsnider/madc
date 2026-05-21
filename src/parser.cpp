@@ -6135,9 +6135,13 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
       && next_parenthesized_type_is_compound_literal(*this) )
     {
 	TokenBase *compound = parseExpression(nextToken(), true, false, false);
-	// Accept compound literal or any expression derived from one
-	// (e.g. subscript, cast wrapper, member access).
-	return compound;
+	// Plain struct compound literals already compile to their
+	// address. Only wrap derived expressions (subscript, cast)
+	// in TokenAddrExpr.
+	if ( dynamic_cast<TokenStructLit *>(compound) )
+	    return compound;
+	DataDefPTR *aptr = getPointerType(compound->datadef());
+	return new TokenAddrExpr(compound, aptr);
     }
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
     {
