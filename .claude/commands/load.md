@@ -22,9 +22,9 @@ Read all key project files to understand current state, then report a summary.
    - Commits ahead/behind of origin
    - Last 5 commit messages on current branch
 
-4. **Check build state**:
-   - Run `make -C src fulltest` to verify current build + test status
-   - Note any failures or warnings
+4. **Suggest running tests** (do NOT run them automatically):
+   - Mention that the user can run `make -C src fulltest` to verify build + test status before starting work
+   - Only run tests if the user explicitly asks or passes `--test` / `--fulltest`
 
 5. **Read project rules**:
    - List all files in `.claude/rules/`
@@ -36,7 +36,6 @@ Read all key project files to understand current state, then report a summary.
 
 7. **Report a session briefing** with:
    - Current version and branch
-   - Build/test status
    - What was done in the last release (from CHANGELOG)
    - Top priority items from TODO.md
    - Known issues that might affect current work

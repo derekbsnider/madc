@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.18.0] - 2026-05-21
+
+GCC parity push: 1327 → 1496/1685 (78.8% → 88.8%), _Complex arithmetic, IEEE floating-point, bitfield promotions, auto-include headers.
+
 - **GCC torture `ieee/mzero2.c` now passes.**
   Floating-point unary negation now flips the sign bit directly
   instead of computing `0 - x`, which preserves `-0.0` during

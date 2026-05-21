@@ -2,36 +2,10 @@
 
 ## High Priority
 
-- **GCC torture test suite: keep pushing toward GCC parity.** Currently at least 1504/1685 (89.3%) from the latest full sweep plus focused reruns.
-  Recent fixes: function-pointer array declarators, repeated aggregate
-  `__attribute`, GNU statement-expression member access, nested struct
-  flat initializers, local var zero-init, constant-fold register width,
-  nested cast chains, `f().member`, `#pragma push/pop_macro`,
-  `20060420-1.c`, the EXE/AOT file-scope compound-literal global-
-  pointer relocation path, plain `_Complex` / `iF` compatibility,
-  `20070919-1.c`, `20010122-1.c`, `930513-1.c`, `20041124-1.c`,
-  `20041214-1.c`, `20040411-1.c`, `20040423-1.c`, `20041218-2.c`,
-  `20050502-1.c`, `20050604-1.c`, `20050607-1.c`, `20040520-1.c`, and
-  `930406-1.c`, `20030222-1.c`, `20030714-1.c`, `20030928-1.c`,
-  `20061220-1.c`, `20080424-1.c`, `20080519-1.c`, `20050121-1.c`,
-  `20070614-1.c`, `complex-1.c` through `complex-7.c`, `20030910-1.c`,
-  `pr56837.c`, `20020227-1.c`, `pr49644.c`, `pr104604.c`, and
-  `960512-1.c`, `pr93434.c`, `eeprof-1.c`, `20230630-2.c`,
-  `20230630-4.c`, `921007-1.c`, `921016-1.c`, `921019-1.c`,
-  `930628-1.c`, `931004-11.c`, `931004-12.c`,
-  `builtin-prefetch-4.c`, `builtin-types-compatible-p.c`,
-  `compndlit-1.c`, `const-addr-expr-1.c`, `conversion.c`,
-  `ieee/compare-fp-1.c`, `ieee/fp-cmp-1.c`,
-  `ieee/hugeval.c`, `ieee/inf-1.c`, `ieee/inf-3.c`,
-  `ieee/inf-4.c`,
-  `20041214-1.c`,
-  `960416-1.c`, `970214-2.c`, `970217-1.c`, `980506-3.c`,
-  `990130-1.c`, `991014-1.c`, `991030-1.c`, `alias-2.c`, `alias-3.c`,
-  `align-3.c`, `align-nest.c`, `arith-rand-ll.c`, `bitfld-1.c`,
-  `bitfld-3.c`, `alias-1.c`, `bswap-3.c`, `built-in-setjmp.c`,
-  `builtin-bitops-1.c`, `pr60003.c`, `pr84521.c`, and related unsigned
-  shift-result typing fixes, plus `ieee/fp-cmp-8f.c`, and
-  `ieee/mzero2.c`.
+- **GCC torture test suite: push past 90%.** Currently 1496/1685 (88.8%).
+  v0.18.0 closed 169 new tests via _Complex arithmetic, IEEE FP
+  semantics, bitfield promotions, auto-include headers, alias support,
+  setjmp, bswap, and dozens of individual fixes.
   Remaining targets: `__builtin_return_address`, fuller complex support,
   struct pass-by-value for function args (~8 compile failures),
   32-bit arithmetic wrapping in widening cast contexts
