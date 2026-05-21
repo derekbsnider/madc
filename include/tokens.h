@@ -1107,8 +1107,9 @@ class TokenCASE: public TokenKeyword
 {
 public:
     TokenBase *value;                          // case constant expression
+    TokenBase *range_high;                     // GNU case range: case LOW ... HIGH
     std::vector<TokenBase *> statements;       // statements until next case/default/}
-    TokenCASE() : TokenKeyword("case"), value(NULL) {}
+    TokenCASE() : TokenKeyword("case"), value(NULL), range_high(NULL) {}
     virtual TokenID id() const { return TokenID::tkCASE; }
     virtual TokenBase *clone() { return new TokenCASE(); }
     virtual TokenBase *parse(Program &);

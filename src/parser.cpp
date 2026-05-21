@@ -11032,6 +11032,18 @@ static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *t
 	}
 	tc->value = val_tok;
 	tn = pgm.nextToken();
+	// GNU case range extension: case LOW ... HIGH:
+	if ( tn->id() == TokenID::tkDot )
+	{
+	    TokenBase *d2 = pgm.nextToken();
+	    TokenBase *d3 = pgm.nextToken();
+	    if ( !d2 || d2->id() != TokenID::tkDot
+	      || !d3 || d3->id() != TokenID::tkDot )
+		pgm.Throw(tn) << "Expecting '...' in case range" << flush;
+	    int64_t high_val = parse_constant_integer_expression(pgm);
+	    tc->range_high = new TokenInt(high_val);
+	    tn = pgm.nextToken();
+	}
 	if ( tn->id() != TokenID::tkTerC )
 	    pgm.Throw(tn) << "Expecting : after case value" << flush;
 	sw->cases.push_back(tc);

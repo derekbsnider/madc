@@ -9381,6 +9381,13 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
     }
+    else if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kVec)
+	   && base_expr->datadef() && base_expr->datadef()->is_simd() )
+    {
+	x86::Mem slot = pgm.cc.newStack((uint32_t)base_expr->datadef()->size, 16);
+	store_xmm_to_mem(pgm, slot, base_op.as<x86::Xmm>(), base_expr->datadef());
+	pgm.cc.lea(base_reg, slot);
+    }
     else if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
 	pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
     else
@@ -9469,6 +9476,13 @@ Operand &TokenSubscriptExpr::operand(Program &pgm)
 	    pgm.cc.mov(base_reg, base_op.as<x86::Mem>());
 	else
 	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+    }
+    else if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kVec)
+	   && base_expr->datadef() && base_expr->datadef()->is_simd() )
+    {
+	x86::Mem slot = pgm.cc.newStack((uint32_t)base_expr->datadef()->size, 16);
+	store_xmm_to_mem(pgm, slot, base_op.as<x86::Xmm>(), base_expr->datadef());
+	pgm.cc.lea(base_reg, slot);
     }
     else if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
 	pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
@@ -13472,6 +13486,40 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
     for ( size_t i = 0; i < cases.size(); ++i )
     {
 	Operand val_storage;
+	if ( cases[i]->range_high )
+	{
+	    // GNU case range: case LOW ... HIGH:
+	    // Check LOW <= expr <= HIGH
+	    Label skip = pgm.cc.newLabel();
+	    Operand lo_storage, hi_storage;
+	    if ( normalized_switch )
+	    {
+		Operand &lo_op = compile_token_gp_normalized(pgm, cases[i]->value, expr_type, lo_storage);
+		pgm.safecmp(*(Operand *)&expr_reg, lo_op, expr_type);
+	    }
+	    else
+	    {
+		regdefp_t lordp = {NULL, NULL, NULL};
+		Operand &lo_op = cases[i]->value->compile(pgm, lordp);
+		pgm.safecmp(*(Operand *)&expr_reg, lo_op, expr_type);
+	    }
+	    pgm.cc.jb(skip);
+	    if ( normalized_switch )
+	    {
+		Operand &hi_op = compile_token_gp_normalized(pgm, cases[i]->range_high, expr_type, hi_storage);
+		pgm.safecmp(*(Operand *)&expr_reg, hi_op, expr_type);
+	    }
+	    else
+	    {
+		regdefp_t hirdp = {NULL, NULL, NULL};
+		Operand &hi_op = cases[i]->range_high->compile(pgm, hirdp);
+		pgm.safecmp(*(Operand *)&expr_reg, hi_op, expr_type);
+	    }
+	    pgm.cc.jbe(case_labels[i]);
+	    pgm.cc.bind(skip);
+	}
+	else
+	{
 	if ( normalized_switch )
 	{
 	    Operand &val_op = compile_token_gp_normalized(pgm, cases[i]->value, expr_type, val_storage);
@@ -13484,6 +13532,7 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.safecmp(*(Operand *)&expr_reg, val_op, expr_type);
 	}
 	pgm.cc.je(case_labels[i]);
+	}
     }
     // fall through to default or exit
     pgm.cc.jmp(defaultcase ? default_label : sw_exit);
