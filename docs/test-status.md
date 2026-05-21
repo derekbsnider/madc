@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.18.0, GCC parity 1506/1685 = 89.4%).
+Test results as of May 21, 2026 (v0.18.0, GCC parity 1505/1685 = 89.3%).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 370 JIT pass / 0 fail
+## Current Batch Status — 379 JIT pass / 0 fail
 
 Latest results (2026-05-21):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 370 integration tests
+- Passing: 379 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -128,9 +128,21 @@ Latest results (2026-05-21):
   366. An additional tracked regression for IEEE huge-value, infinity,
   finite, and NaN builtins via `testieeehugeval.mad` now brings the
   tracked integration count to 367.
+  Subsequent GCC builtin and stdio regression coverage, including
+  `testbuiltinunsignedabs.mad`, `testmacrovariadicfixedargs.mad`,
+  `testconstptrarrayderef.mad`, and
+  `teststdiobuiltinredirects.mad`, now brings the tracked integration
+  count to 376.
+  Additional tracked regressions for fixed-array pointer arithmetic over
+  pointer elements via `teststrpbrklocal.mad` and postfix `++` / `--`
+  before bitwise `&` via `testpostincbitand.mad` now bring the tracked
+  integration count to 378. An additional tracked regression for GCC
+  limit macros `__PTRDIFF_MAX__` and `__SIZE_MAX__` via
+  `testgcclimitmacros.mad` now brings the tracked integration count to
+  379.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 367 (of 367 JIT-passing tests)
+- Passing: 379 (of 379 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so

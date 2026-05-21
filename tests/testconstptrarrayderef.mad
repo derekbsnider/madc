@@ -1,0 +1,9 @@
+int main(void)
+{
+	const char *const s1 = "hello";
+	const char *const s2[] = { s1, 0 };
+	const char *const *s3 = s2;
+
+	printf("%c %c\n", **s2, **s3);
+	return 0;
+}

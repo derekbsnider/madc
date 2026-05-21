@@ -1,0 +1,11 @@
+#!/usr/bin/env madc
+#include <string.h>
+#include <stdio.h>
+
+int main()
+{
+	char dst[8];
+	(void) memcpy(dst, "abc", 4);
+	printf("%s\n", dst);
+	return 0;
+}

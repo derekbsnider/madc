@@ -1,0 +1,14 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+static const char s5_3[3][5] = { "12345", "6789", "01234" };
+
+int main()
+{
+	const char *p = &s5_3[0][0];
+	printf("%c%c%c%c%c %c%c%c%c %d %c%c%c%c%c\n",
+		p[0], p[1], p[2], p[3], p[4],
+		p[5], p[6], p[7], p[8], (int)(unsigned char)p[9],
+		p[10], p[11], p[12], p[13], p[14]);
+	return 0;
+}

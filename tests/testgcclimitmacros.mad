@@ -1,0 +1,10 @@
+extern int printf(const char *, ...);
+
+int main(void)
+{
+	long ptrdiff_max = __PTRDIFF_MAX__;
+	unsigned long size_max = __SIZE_MAX__;
+	printf("%d\n", ptrdiff_max > 0);
+	printf("%d\n", size_max > (unsigned long)ptrdiff_max);
+	return 0;
+}

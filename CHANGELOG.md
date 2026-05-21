@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+- **GCC builtins stdio and string-alias lane moved forward.**
+  Fixed fixed-array pointer dereference typing for `const char *arr[]`
+  shapes, added the `vprintf` packed-varargs bridge, and expanded
+  GCC builtin aliases for unlocked stdio, `fputc` / `fwrite`,
+  `mempcpy`, `index`, `strcspn`, `strspn`, and `rindex`. Fixed
+  pointer arithmetic scaling for fixed arrays whose element type is
+  itself a pointer, and kept postfix `++` / `--` from making a
+  following `&` parse as unary address-of. Added
+  `tests/testconstptrarrayderef.mad` and
+  `tests/teststdiobuiltinredirects.mad`, plus
+  `tests/teststrpbrklocal.mad`, `tests/testpostincbitand.mad`, and
+  `tests/testgcclimitmacros.mad`.
+  Focused GCC validation is
+  green for `builtins/fprintf.c`, `printf.c`, `fputs.c`,
+  `mempcpy.c`, `mempcpy-2.c`, `strchr.c`, `strcspn.c`, and
+  `strspn.c`, plus `builtins/strpbrk.c`, `strrchr.c`, `strlen.c`,
+  and `strlen-3.c`; full validation is green at `379/379` JIT and
+  `379/379` EXE. A live full GCC sweep reports `1505/1685` (89.3%).
+
 ## [v0.18.0] - 2026-05-21
 
 GCC parity push: 1327 → 1496/1685 (78.8% → 88.8%), _Complex arithmetic, IEEE floating-point, bitfield promotions, auto-include headers.

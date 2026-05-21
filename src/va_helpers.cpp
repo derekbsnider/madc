@@ -153,6 +153,12 @@ extern "C" int __madc_vfprintf(FILE *fp, const char *fmt, int64_t *args)
     return len;
 }
 
+// vprintf replacement
+extern "C" int __madc_vprintf(const char *fmt, int64_t *args)
+{
+    return __madc_vfprintf(stdout, fmt, args);
+}
+
 // With sizeof(int)==4 (LP64 ABI), libc's %d writes the correct 4 bytes
 // into a standard int slot. No format rewriting is needed.
 // The old rewrite_scanf_format shim was required when madc's int was

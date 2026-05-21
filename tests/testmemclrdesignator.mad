@@ -1,0 +1,17 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+typedef union
+{
+	unsigned char v[88];
+} a1_t;
+
+static a1_t dst = {{ [0 ... 87] = 0xaa }};
+
+int main()
+{
+	printf("%u %u %u\n", dst.v[0], dst.v[8], dst.v[87]);
+	__builtin_memset(dst.v + 8, 0, 1);
+	printf("%u %u %u %u\n", dst.v[0], dst.v[7], dst.v[8], dst.v[9]);
+	return 0;
+}

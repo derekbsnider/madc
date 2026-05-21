@@ -1,0 +1,12 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+static const char s4_2[2][4] = { "1234", "5678" };
+static const char s5_3[3][5] = { "12345", "6789", "01234" };
+
+int main()
+{
+	printf("%c%c %c%c\n", s4_2[0][0], s4_2[0][3], s4_2[1][0], s4_2[1][3]);
+	printf("%d %c %c\n", (int)s5_3[1][4], s5_3[1][3], s5_3[2][4]);
+	return 0;
+}

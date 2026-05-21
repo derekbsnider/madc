@@ -1,0 +1,49 @@
+#!/usr/bin/env madc
+
+extern void *memmove(void *, const void *, unsigned long);
+extern int printf(const char *, ...);
+
+static const struct foo {
+  char *s;
+  double d;
+  long l;
+} foo[] = {
+  { "hello1", 3.14159, 201L },
+  { "hello2", 3.14159, 202L },
+  { "hello3", 3.14159, 203L }
+};
+
+static const struct bar {
+  char *s;
+  const struct foo f[3];
+} bar[] = {
+  {
+    "hello world10",
+    {
+      { "hello1", 3.14159, 201L },
+      { "hello2", 3.14159, 202L },
+      { "hello3", 3.14159, 203L },
+    }
+  },
+  {
+    "hello world11",
+    {
+      { "hello4", 3.14159, 204L },
+      { "hello5", 3.14159, 205L },
+      { "hello6", 3.14159, 206L },
+    }
+  }
+};
+
+void copyit(void)
+{
+  struct bar b1[sizeof bar / sizeof *bar];
+  memmove(b1, bar, sizeof(bar));
+  printf("%zu %ld\n", sizeof b1 / sizeof *b1, b1[1].f[2].l);
+}
+
+int main(void)
+{
+  copyit();
+  return 0;
+}

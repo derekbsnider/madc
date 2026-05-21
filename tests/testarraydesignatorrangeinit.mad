@@ -1,0 +1,14 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+typedef union
+{
+	unsigned char v[1];
+} one_t;
+
+int main()
+{
+	static one_t u = {{ [0 ... 0] = 0xaa }};
+	printf("%u\n", u.v[0]);
+	return 0;
+}

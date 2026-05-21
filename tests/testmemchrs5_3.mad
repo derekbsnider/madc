@@ -1,0 +1,21 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+#include <string.h>
+
+int i0 = 0;
+int i1 = 1;
+int i2 = 2;
+int i4 = 4;
+
+static const char s5_3[3][5] = { "12345", "6789", "01234" };
+
+int main()
+{
+	if (memchr(s5_3, 0, sizeof s5_3) == &s5_3[1][4]) printf("a\n"); else printf("A\n");
+	if (memchr(&s5_3[0][0] + i0, 0, sizeof s5_3 - i0) == &s5_3[1][4]) printf("b\n"); else printf("B\n");
+	if (memchr(&s5_3[0][0] + i1, 0, sizeof s5_3 - i1) == &s5_3[1][4]) printf("c\n"); else printf("C\n");
+	if (memchr(&s5_3[0][0] + i2, 0, sizeof s5_3 - i2) == &s5_3[1][4]) printf("d\n"); else printf("D\n");
+	if (memchr(&s5_3[0][0] + i4, 0, sizeof s5_3 - i4) == &s5_3[1][4]) printf("e\n"); else printf("E\n");
+	if (memchr(&s5_3[1][i0], 0, sizeof s5_3[1] - i0) == &s5_3[1][4]) printf("f\n"); else printf("F\n");
+	return 0;
+}

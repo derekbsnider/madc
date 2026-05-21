@@ -1,0 +1,36 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+typedef unsigned long long int64_t;
+typedef unsigned int int32_t;
+typedef unsigned short int16_t;
+typedef union { unsigned char v[88]; int16_t a; } a2_t;
+typedef union { unsigned char v[88]; int32_t a; } a4_t;
+typedef union { unsigned char v[88]; int64_t a; } a8_t;
+
+static void check2(void)
+{
+	static a2_t dst = {{ [0 ... 87] = 0xaa }};
+	__builtin_memset(dst.v + 8 + 7, 0, 64);
+}
+
+static void check4(void)
+{
+	static a4_t dst = {{ [0 ... 87] = 0xaa }};
+	__builtin_memset(dst.v + 8 + 7, 0, 64);
+}
+
+static void check8(void)
+{
+	static a8_t dst = {{ [0 ... 87] = 0xaa }};
+	__builtin_memset(dst.v + 8 + 7, 0, 64);
+}
+
+int main()
+{
+	check2();
+	check4();
+	check8();
+	printf("ok\n");
+	return 0;
+}

@@ -1,0 +1,15 @@
+#include <stdio.h>
+
+int sink(const char *dst, int len, int flag, int size, const char *fmt)
+{
+	printf("%s %d %d %d %s\n", dst, len, flag, size, fmt);
+	return 0;
+}
+
+#define WRAP(dst, len, ...) sink(dst, len, 0, 77, __VA_ARGS__)
+
+int main()
+{
+	WRAP("buf", 4, "fmt");
+	return 0;
+}

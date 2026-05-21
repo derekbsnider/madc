@@ -1,0 +1,18 @@
+extern unsigned long __builtin_object_size(void *ptr, int mode);
+extern char *__builtin___strcpy_chk(char *dst, const char *src, unsigned long size);
+extern char *__builtin___stpcpy_chk(char *dst, const char *src, unsigned long size);
+extern char *__builtin___stpncpy_chk(char *dst, const char *src, unsigned long n, unsigned long size);
+extern char *__builtin___strcat_chk(char *dst, const char *src, unsigned long size);
+
+int main()
+{
+	char buf[16];
+	char buf2[16];
+
+	printf("%s\n", __builtin___strcpy_chk(buf, "abc", __builtin_object_size(buf, 0)));
+	printf("%ld\n", __builtin___stpcpy_chk(buf2, "xy", __builtin_object_size(buf2, 0)) - buf2);
+	printf("%ld\n", __builtin___stpncpy_chk(buf2, "hello", 3, __builtin_object_size(buf2, 0)) - buf2);
+	__builtin___strcpy_chk(buf, "a", __builtin_object_size(buf, 0));
+	printf("%s\n", __builtin___strcat_chk(buf, "bc", __builtin_object_size(buf, 0)));
+	return 0;
+}

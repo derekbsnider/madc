@@ -251,6 +251,11 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
             prog->instrument_functions = true;
             filearg = i + 1;
+        } else if (strncmp(argv[i], "-fno-builtin-", strlen("-fno-builtin-")) == 0) {
+            const char *name = argv[i] + strlen("-fno-builtin-");
+            if ( *name )
+                prog->disabled_builtin_names.insert(name);
+            filearg = i + 1;
         } else {
             filearg = i;
             break;
@@ -302,7 +307,7 @@ int main(int argc, char **argv)
 
 	return 0;
     }
-    std::cout << "Usage: madc [-v|--verbose] [--finstrument-functions] <file.mad>" << std::endl;
+    std::cout << "Usage: madc [-v|--verbose] [--finstrument-functions] [-fno-builtin-name] <file.mad>" << std::endl;
 
     return 0;
 }

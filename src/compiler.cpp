@@ -69,6 +69,31 @@ extern "C" void madc_runtime_complex_div_double(void *out,
     parts[1] = result.imag();
 }
 
+extern "C" long madc_builtin_imaxabs(long x)
+{
+    return x < 0 ? -x : x;
+}
+
+extern "C" unsigned int madc_builtin_uabs(int x)
+{
+    return x < 0 ? -(unsigned int)x : (unsigned int)x;
+}
+
+extern "C" unsigned long madc_builtin_ulabs(long x)
+{
+    return x < 0 ? -(unsigned long)x : (unsigned long)x;
+}
+
+extern "C" unsigned long long madc_builtin_ullabs(long long x)
+{
+    return x < 0 ? -(unsigned long long)x : (unsigned long long)x;
+}
+
+extern "C" unsigned long madc_builtin_umaxabs(long x)
+{
+    return x < 0 ? -(unsigned long)x : (unsigned long)x;
+}
+
 // Materialize an operand into a Gp register. If already Gp, return it.
 // If Mem (global struct/class), LEA the address into a fresh Gp.
 static x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr")
@@ -108,6 +133,378 @@ static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand 
 static void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem, DataDef *type);
 static void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm, DataDef *type);
 static const char *token_constant_cstring(TokenBase *token);
+static bool try_eval_const_i64(TokenBase *tb, int64_t &out);
+static int64_t estimate_object_size(TokenBase *expr, int mode);
+
+static bool is_direct_abs_builtin_name(const std::string &name)
+{
+    return name == "abs"
+	|| name == "labs"
+	|| name == "llabs"
+	|| name == "imaxabs"
+	|| name == "uabs"
+	|| name == "ulabs"
+	|| name == "ullabs"
+	|| name == "umaxabs"
+	|| name == "__builtin_abs"
+	|| name == "__builtin_labs"
+	|| name == "__builtin_llabs"
+	|| name == "__builtin_imaxabs"
+	|| name == "__builtin_uabs"
+	|| name == "__builtin_ulabs"
+	|| name == "__builtin_ullabs"
+	|| name == "__builtin_umaxabs";
+}
+
+static bool direct_abs_builtin_disabled(Program &pgm, const std::string &name)
+{
+    if ( name.compare(0, 10, "__builtin_") == 0 )
+	return false;
+    return pgm.is_builtin_disabled(name);
+}
+
+static DataDef *direct_abs_builtin_type(const std::string &name)
+{
+    if ( name == "abs" || name == "__builtin_abs" )
+	return &ddINT32;
+    if ( name == "uabs" || name == "__builtin_uabs" )
+	return &ddUINT32;
+    if ( name == "ulabs" || name == "__builtin_ulabs" || name == "umaxabs" || name == "__builtin_umaxabs" )
+	return &ddUINT64;
+    if ( name == "ullabs" || name == "__builtin_ullabs" )
+	return &ddUINT64;
+    return &ddINT64;
+}
+
+static bool direct_abs_builtin_returns_32bit(const std::string &name)
+{
+    return name == "abs"
+	|| name == "__builtin_abs"
+	|| name == "uabs"
+	|| name == "__builtin_uabs";
+}
+
+static void *direct_abs_builtin_target(const std::string &name)
+{
+    if ( name == "abs" || name == "__builtin_abs" )
+	return (void *)(intptr_t)(int(*)(int))::abs;
+    if ( name == "labs" || name == "__builtin_labs" )
+	return (void *)(intptr_t)(long(*)(long))::labs;
+    if ( name == "llabs" || name == "__builtin_llabs" )
+	return (void *)(intptr_t)(long long(*)(long long))::llabs;
+    if ( name == "imaxabs" || name == "__builtin_imaxabs" )
+	return (void *)(intptr_t)(long(*)(long))madc_builtin_imaxabs;
+    if ( name == "uabs" || name == "__builtin_uabs" )
+	return (void *)(intptr_t)(unsigned int(*)(int))madc_builtin_uabs;
+    if ( name == "ulabs" || name == "__builtin_ulabs" )
+	return (void *)(intptr_t)(unsigned long(*)(long))madc_builtin_ulabs;
+    if ( name == "ullabs" || name == "__builtin_ullabs" )
+	return (void *)(intptr_t)(unsigned long long(*)(long long))madc_builtin_ullabs;
+    if ( name == "umaxabs" || name == "__builtin_umaxabs" )
+	return (void *)(intptr_t)(unsigned long(*)(long))madc_builtin_umaxabs;
+    return (void *)(intptr_t)(long long(*)(long long))::llabs;
+}
+
+static int64_t token_pointer_element_size(TokenBase *tb)
+{
+    if ( !tb )
+	return 1;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
+    {
+	if ( tv->var.is_fixed_array() && tv->var.type )
+	    return tv->var.type->size ? (int64_t)tv->var.type->size : 1;
+    }
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
+    {
+	if ( tm->is_fixed_array_member() && tm->var.type )
+	    return tm->var.type->size ? (int64_t)tm->var.type->size : 1;
+    }
+    DataDef *dd = tb->datadef();
+    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) )
+	return (pdd->base_type && pdd->base_type->size) ? (int64_t)pdd->base_type->size : 1;
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+	return (add->element_type && add->element_type->size) ? (int64_t)add->element_type->size : 1;
+    return (dd && dd->size) ? (int64_t)dd->size : 1;
+}
+
+static int64_t fixed_array_object_size(const Variable &var)
+{
+    if ( !var.is_fixed_array() || !var.type || !var.type->size )
+	return -1;
+    return (int64_t)var.type->size * (int64_t)var.total_elements();
+}
+
+static int64_t remaining_object_size(int64_t base_size, int64_t index, int64_t elem_size)
+{
+    if ( base_size < 0 || index < 0 || elem_size <= 0 )
+	return -1;
+    int64_t used = index * elem_size;
+    if ( used >= base_size )
+	return 0;
+    return base_size - used;
+}
+
+static bool try_eval_const_i64(TokenBase *tb, int64_t &out)
+{
+    if ( !tb )
+	return false;
+    if ( TokenInt *ti = dynamic_cast<TokenInt *>(tb) )
+    {
+	out = ti->ival();
+	return true;
+    }
+    if ( TokenChar *tc = dynamic_cast<TokenChar *>(tb) )
+    {
+	out = tc->ival();
+	return true;
+    }
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
+    {
+	if ( tv->var.is_constant() )
+	{
+	    out = tv->var.get<int64_t>();
+	    return true;
+	}
+	return false;
+    }
+    if ( TokenNeg *tn = dynamic_cast<TokenNeg *>(tb) )
+    {
+	int64_t rhs = 0;
+	if ( try_eval_const_i64(tn->right, rhs) )
+	{
+	    out = -rhs;
+	    return true;
+	}
+	return false;
+    }
+    if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(tb) )
+    {
+	int64_t lhs = 0, rhs = 0;
+	if ( try_eval_const_i64(ta->left, lhs) && try_eval_const_i64(ta->right, rhs) )
+	{
+	    out = lhs + rhs;
+	    return true;
+	}
+	return false;
+    }
+    if ( TokenSub *ts = dynamic_cast<TokenSub *>(tb) )
+    {
+	int64_t lhs = 0, rhs = 0;
+	if ( try_eval_const_i64(ts->left, lhs) && try_eval_const_i64(ts->right, rhs) )
+	{
+	    out = lhs - rhs;
+	    return true;
+	}
+	return false;
+    }
+    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tb) )
+    {
+	if ( tcf->var.name == "__builtin_object_size" && tcf->argc() == 2 )
+	{
+	    int64_t mode = 0;
+	    if ( !try_eval_const_i64(tcf->parameters[1], mode) )
+		mode = 0;
+	    int64_t size = estimate_object_size(tcf->parameters[0], (int)mode);
+	    out = size >= 0 ? size : -1;
+	    return true;
+	}
+    }
+    return false;
+}
+
+static int64_t estimate_lvalue_object_size(TokenBase *expr, int mode)
+{
+    if ( !expr )
+	return -1;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+    {
+	int64_t array_size = fixed_array_object_size(tv->var);
+	if ( array_size >= 0 )
+	    return array_size;
+	return tv->var.type ? (int64_t)tv->var.type->size : -1;
+    }
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
+    {
+	if ( tm->is_fixed_array_member() )
+	{
+	    DataDefSTRUCT *sdd = tm->owner_struct_type();
+	    std::string mname = tm->var.name;
+	    if ( sdd && tm->var.type )
+		return (int64_t)sdd->m_count(mname) * (int64_t)tm->var.type->size;
+	}
+	return tm->var.type ? (int64_t)tm->var.type->size : -1;
+    }
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(expr) )
+    {
+	int64_t index = 0;
+	if ( !try_eval_const_i64(ts->index, index) )
+	    return -1;
+	int64_t base_size = ts->object.is_fixed_array()
+	    ? fixed_array_object_size(ts->object)
+	    : ts->object.object_size_hint;
+	return remaining_object_size(base_size, index, ts->datadef() ? (int64_t)ts->datadef()->size : 1);
+    }
+    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(expr) )
+    {
+	int64_t index = 0;
+	if ( !try_eval_const_i64(tse->index, index) )
+	    return -1;
+	int64_t base_size = estimate_object_size(tse->base_expr, mode);
+	return remaining_object_size(base_size, index, tse->datadef() ? (int64_t)tse->datadef()->size : 1);
+    }
+    return expr->datadef() ? (int64_t)expr->datadef()->size : -1;
+}
+
+static int64_t estimate_object_size(TokenBase *expr, int mode)
+{
+    if ( !expr )
+	return -1;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+    {
+	int64_t array_size = fixed_array_object_size(tv->var);
+	if ( array_size >= 0 )
+	    return array_size;
+	return tv->var.object_size_hint;
+    }
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
+    {
+	if ( tm->is_fixed_array_member() )
+	{
+	    DataDefSTRUCT *sdd = tm->owner_struct_type();
+	    std::string mname = tm->var.name;
+	    if ( sdd && tm->var.type )
+		return (int64_t)sdd->m_count(mname) * (int64_t)tm->var.type->size;
+	}
+	return tm->var.object_size_hint;
+    }
+    if ( TokenAddrOf *tao = dynamic_cast<TokenAddrOf *>(expr) )
+    {
+	int64_t array_size = fixed_array_object_size(tao->var);
+	if ( array_size >= 0 )
+	    return array_size;
+	return tao->var.type ? (int64_t)tao->var.type->size : -1;
+    }
+    if ( TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(expr) )
+	return estimate_lvalue_object_size(tae->expr, mode);
+    if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(expr) )
+    {
+	int64_t offset = 0;
+	if ( try_eval_const_i64(ta->right, offset) )
+	{
+	    int64_t base_size = estimate_object_size(ta->left, mode);
+	    return remaining_object_size(base_size, offset, token_pointer_element_size(ta->left));
+	}
+	if ( try_eval_const_i64(ta->left, offset) )
+	{
+	    int64_t base_size = estimate_object_size(ta->right, mode);
+	    return remaining_object_size(base_size, offset, token_pointer_element_size(ta->right));
+	}
+	return -1;
+    }
+    if ( TokenSub *ts = dynamic_cast<TokenSub *>(expr) )
+    {
+	int64_t offset = 0;
+	if ( try_eval_const_i64(ts->right, offset) )
+	{
+	    int64_t base_size = estimate_object_size(ts->left, mode);
+	    return remaining_object_size(base_size, offset, token_pointer_element_size(ts->left));
+	}
+	return -1;
+    }
+    if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+    {
+	int64_t true_size = estimate_object_size(tt->true_expr, mode);
+	int64_t false_size = estimate_object_size(tt->false_expr, mode);
+	if ( true_size < 0 || false_size < 0 )
+	    return -1;
+	return mode == 1 ? std::min(true_size, false_size)
+			 : std::max(true_size, false_size);
+    }
+    if ( TokenCast *tc = dynamic_cast<TokenCast *>(expr) )
+	return estimate_object_size(tc->expr, mode);
+    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
+    {
+	if ( (tcf->var.name == "__builtin_alloca" || tcf->var.name == "alloca" || tcf->var.name == "malloc")
+	  && tcf->argc() == 1 )
+	{
+	    int64_t size = 0;
+	    if ( try_eval_const_i64(tcf->parameters[0], size) && size >= 0 )
+		return size;
+	}
+    }
+    return -1;
+}
+
+static Operand &redirect_builtin_call(Program &pgm, const std::string &target_name,
+				      const std::vector<TokenBase *> &args,
+				      regdefp_t &regdp, TokenCallFunc *site,
+				      Operand &site_operand)
+{
+    std::string lookup = target_name;
+    Variable *target = pgm.findVariable(lookup);
+    if ( (!target || !target->type || !target->type->is_function())
+      && pgm.is_dynamic_symbol_fallback_enabled()
+      && pgm.is_dynamic_symbol_allowed(target_name) )
+    {
+	void *sym = dlsym(RTLD_DEFAULT, target_name.c_str());
+	if ( sym )
+	{
+	    target = pgm.addFunction(target_name,
+		datatype_vec_t{DataType::dtINT64},
+		(fVOIDFUNC)sym);
+	    if ( !target )
+		target = pgm.findVariable(lookup);
+	}
+    }
+    if ( !target || !target->type || !target->type->is_function() )
+	pgm.Throw(site) << "missing target for " << site->var.name << flush;
+    TokenCallFunc redirected(*target);
+    redirected.file = site->file;
+    redirected.line = site->line;
+    redirected.column = site->column;
+    redirected.parameters = args;
+    Operand &redirected_result = redirected.compile(pgm, regdp);
+    if ( regdp.first == &redirected_result || !regdp.first )
+    {
+	site_operand = redirected_result;
+	regdp.first = &site_operand;
+	return site_operand;
+    }
+    return *regdp.first;
+}
+
+static std::string runtime_symbol_name(const Variable &var)
+{
+    return var.storage_alias_name.empty() ? var.name : var.storage_alias_name;
+}
+
+static const char *simple_libc_builtin_redirect_target(const std::string &name)
+{
+    struct Redirect
+    {
+	const char *builtin;
+	const char *target;
+    };
+    static const Redirect redirects[] = {
+	{ "__builtin_printf", "printf" },
+	{ "__builtin_fprintf", "fprintf" },
+	{ "__builtin_sprintf", "sprintf" },
+	{ "__builtin_snprintf", "snprintf" },
+	{ "__builtin_printf_unlocked", "printf_unlocked" },
+	{ "__builtin_fprintf_unlocked", "fprintf_unlocked" },
+	{ "__builtin_putchar", "putchar" },
+	{ "__builtin_puts", "puts" },
+	{ "__builtin_fputc", "fputc" },
+	{ "__builtin_fputs", "fputs" },
+	{ "__builtin_fputs_unlocked", "fputs_unlocked" },
+	{ "__builtin_fwrite", "fwrite" },
+	{ NULL, NULL }
+    };
+    for ( const Redirect *it = redirects; it->builtin; ++it )
+	if ( name == it->builtin )
+	    return it->target;
+    return NULL;
+}
 
 static TypeId simd_type_id(DataDefSIMD *vdd)
 {
@@ -372,6 +769,84 @@ static bool token_get_constant_cstring(TokenBase *token, std::string &out)
 	return true;
     }
     return false;
+}
+
+static int64_t estimate_constant_printf_output(TokenBase *fmt_token,
+					       const std::vector<TokenBase *> &args,
+					       size_t arg_index)
+{
+    std::string fmt;
+    if ( !token_get_constant_cstring(fmt_token, fmt) )
+	return -1;
+
+    int64_t total = 0;
+    for ( size_t i = 0; i < fmt.size(); ++i )
+    {
+	if ( fmt[i] != '%' )
+	{
+	    ++total;
+	    continue;
+	}
+	if ( i + 1 < fmt.size() && fmt[i + 1] == '%' )
+	{
+	    ++total;
+	    ++i;
+	    continue;
+	}
+
+	size_t spec = i + 1;
+	while ( spec < fmt.size() && strchr("-+ #0", fmt[spec]) )
+	    ++spec;
+	while ( spec < fmt.size() && isdigit((unsigned char)fmt[spec]) )
+	    ++spec;
+	if ( spec < fmt.size() && fmt[spec] == '.' )
+	{
+	    ++spec;
+	    while ( spec < fmt.size() && isdigit((unsigned char)fmt[spec]) )
+		++spec;
+	}
+	while ( spec < fmt.size() && strchr("hlLzjt", fmt[spec]) )
+	    ++spec;
+	if ( spec >= fmt.size() || arg_index >= args.size() )
+	    return -1;
+
+	char conv = fmt[spec];
+	if ( conv == 's' )
+	{
+	    std::string s;
+	    if ( !token_get_constant_cstring(args[arg_index++], s) )
+		return -1;
+	    total += (int64_t)s.size();
+	}
+	else if ( conv == 'c' )
+	{
+	    int64_t ch = 0;
+	    if ( !try_eval_const_i64(args[arg_index++], ch) )
+		return -1;
+	    (void)ch;
+	    ++total;
+	}
+	else if ( conv == 'd' || conv == 'i' )
+	{
+	    int64_t val = 0;
+	    if ( !try_eval_const_i64(args[arg_index++], val) )
+		return -1;
+	    total += (int64_t)std::to_string(val).size();
+	}
+	else if ( conv == 'u' )
+	{
+	    int64_t val = 0;
+	    if ( !try_eval_const_i64(args[arg_index++], val) )
+		return -1;
+	    total += (int64_t)std::to_string((uint64_t)val).size();
+	}
+	else
+	    return -1;
+
+	i = spec;
+    }
+
+    return total;
 }
 
 static bool token_get_constant_cstring_address(TokenBase *token, const char *&out)
@@ -1707,15 +2182,20 @@ static DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb)
 	return nullptr;
     if ( token_has_constant_cstring(tb) )
 	return &ddLPSTR;
-    DataDef *dd = tb->datadef();
-    if ( dd && dd->is_pointer() )
-	return dd;
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
 	if ( tv->var.is_fixed_array() && tv->var.type )
 	    return pgm.getPointerType(tv->var.type);
     if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
 	if ( tm->is_fixed_array_member() && tm->var.type )
 	    return pgm.getPointerType(tm->var.type);
+    DataDef *dd = tb->datadef();
+    if ( dd && dd->is_pointer() )
+	return dd;
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+    {
+	DataDef *elem = add->element_type ? add->element_type : &ddINT64;
+	return pgm.getPointerType(elem);
+    }
     if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
     {
 	DataDef *lptr = effective_pointer_type_for_arith(pgm, op->left);
@@ -3895,6 +4375,239 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !var.type->is_function() )
 	pgm.Throw(this) << "TokenCallFunc::compile() called on non-function" << flush;
 
+    if ( const char *target_name = simple_libc_builtin_redirect_target(var.name) )
+	return redirect_builtin_call(pgm, target_name, parameters, regdp, this, _operand);
+
+    if ( argc() == 2 && var.name == "__builtin_object_size" )
+    {
+	int64_t mode = 0;
+	try_eval_const_i64(parameters[1], mode);
+	int64_t size = estimate_object_size(parameters[0], (int)mode);
+	regdp.second = &ddUINT64;
+	return emit_ir_value(pgm,
+	    IRValue::imm(Imm(size >= 0 ? size : -1), &ddUINT64),
+	    regdp, _operand, &ddUINT64);
+    }
+
+    if ( argc() == 6 && var.name == "__builtin___vsnprintf_chk" )
+    {
+	int64_t flag = 0;
+	int64_t len = -1;
+	int64_t size = -1;
+	bool flag_const = try_eval_const_i64(parameters[2], flag);
+	bool len_const = try_eval_const_i64(parameters[1], len);
+	bool size_const = try_eval_const_i64(parameters[3], size);
+	bool use_plain = flag_const && flag == 0
+	    && ((size_const && size < 0)
+	     || (len_const && size_const && len >= 0 && size >= 0
+	      && (uint64_t)len <= (uint64_t)size));
+
+	std::string target_name = use_plain ? "vsnprintf" : "__vsnprintf_chk";
+	std::vector<TokenBase *> redirected_args;
+	redirected_args.push_back(parameters[0]);
+	redirected_args.push_back(parameters[1]);
+	if ( use_plain )
+	{
+	    redirected_args.push_back(parameters[4]);
+	    redirected_args.push_back(parameters[5]);
+	}
+	else
+	{
+	    redirected_args.push_back(parameters[2]);
+	    redirected_args.push_back(parameters[3]);
+	    redirected_args.push_back(parameters[4]);
+	    redirected_args.push_back(parameters[5]);
+	}
+	return redirect_builtin_call(pgm, target_name, redirected_args, regdp, this, _operand);
+    }
+
+    if ( argc() == 5 && var.name == "__builtin___vsprintf_chk" )
+    {
+	int64_t flag = 0;
+	int64_t size = -1;
+	bool flag_const = try_eval_const_i64(parameters[1], flag);
+	bool size_const = try_eval_const_i64(parameters[2], size);
+	int64_t est_len = estimate_constant_printf_output(parameters[3], parameters, 4);
+	bool use_plain = flag_const && flag == 0
+	    && ((size_const && size < 0)
+	     || (size_const && est_len >= 0 && size >= 0
+	      && (uint64_t)est_len < (uint64_t)size));
+
+	std::string target_name = use_plain ? "vsprintf" : "__vsprintf_chk";
+	std::vector<TokenBase *> redirected_args;
+	redirected_args.push_back(parameters[0]);
+	if ( use_plain )
+	{
+	    redirected_args.push_back(parameters[3]);
+	    redirected_args.push_back(parameters[4]);
+	}
+	else
+	{
+	    redirected_args.push_back(parameters[1]);
+	    redirected_args.push_back(parameters[2]);
+	    redirected_args.push_back(parameters[3]);
+	    redirected_args.push_back(parameters[4]);
+	}
+	return redirect_builtin_call(pgm, target_name, redirected_args, regdp, this, _operand);
+    }
+
+    if ( argc() >= 4 && var.name == "__builtin___sprintf_chk" )
+    {
+	int64_t flag = 0;
+	int64_t size = -1;
+	bool flag_const = try_eval_const_i64(parameters[1], flag);
+	bool size_const = try_eval_const_i64(parameters[2], size);
+	int64_t est_len = estimate_constant_printf_output(parameters[3], parameters, 4);
+	bool use_plain = flag_const && flag == 0
+	    && ((size_const && size < 0)
+	     || (size_const && est_len >= 0 && size >= 0
+	      && (uint64_t)est_len < (uint64_t)size));
+
+	std::string target_name = use_plain ? "sprintf" : "__sprintf_chk";
+	std::vector<TokenBase *> redirected_args;
+	redirected_args.push_back(parameters[0]);
+	if ( use_plain )
+	{
+	    for ( size_t i = 3; i < parameters.size(); ++i )
+		redirected_args.push_back(parameters[i]);
+	}
+	else
+	{
+	    redirected_args.push_back(parameters[1]);
+	    redirected_args.push_back(parameters[2]);
+	    for ( size_t i = 3; i < parameters.size(); ++i )
+		redirected_args.push_back(parameters[i]);
+	}
+	return redirect_builtin_call(pgm, target_name, redirected_args, regdp, this, _operand);
+    }
+
+    if ( argc() >= 5 && var.name == "__builtin___snprintf_chk" )
+    {
+	int64_t flag = 0;
+	int64_t len = -1;
+	int64_t size = -1;
+	bool flag_const = try_eval_const_i64(parameters[2], flag);
+	bool len_const = try_eval_const_i64(parameters[1], len);
+	bool size_const = try_eval_const_i64(parameters[3], size);
+	bool use_plain = flag_const && flag == 0
+	    && ((size_const && size < 0)
+	     || (len_const && size_const && len >= 0 && size >= 0
+	      && (uint64_t)len <= (uint64_t)size));
+
+	std::string target_name = use_plain ? "snprintf" : "__snprintf_chk";
+	std::vector<TokenBase *> redirected_args;
+	redirected_args.push_back(parameters[0]);
+	redirected_args.push_back(parameters[1]);
+	if ( use_plain )
+	{
+	    for ( size_t i = 4; i < parameters.size(); ++i )
+		redirected_args.push_back(parameters[i]);
+	}
+	else
+	{
+	    redirected_args.push_back(parameters[2]);
+	    redirected_args.push_back(parameters[3]);
+	    for ( size_t i = 4; i < parameters.size(); ++i )
+		redirected_args.push_back(parameters[i]);
+	}
+	return redirect_builtin_call(pgm, target_name, redirected_args, regdp, this, _operand);
+    }
+
+    if ( argc() == 4 && (var.name == "__builtin___memset_chk"
+		      || var.name == "__builtin___memcpy_chk"
+		      || var.name == "__builtin___memmove_chk"
+		      || var.name == "__builtin___mempcpy_chk") )
+    {
+	int64_t len = -1;
+	int64_t size = -1;
+	bool len_const = try_eval_const_i64(parameters[2], len);
+	bool size_const = try_eval_const_i64(parameters[3], size);
+	bool use_plain = (size_const && size < 0)
+	    || (len_const && size_const && len >= 0 && size >= 0
+	     && (uint64_t)len <= (uint64_t)size);
+	std::string target_name;
+	if ( var.name == "__builtin___memset_chk" )
+	    target_name = use_plain ? "memset" : "__memset_chk";
+	else if ( var.name == "__builtin___memcpy_chk" )
+	    target_name = use_plain ? "memcpy" : "__memcpy_chk";
+	else if ( var.name == "__builtin___memmove_chk" )
+	    target_name = use_plain ? "memmove" : "__memmove_chk";
+	else
+	    target_name = use_plain ? "mempcpy" : "__mempcpy_chk";
+	std::vector<TokenBase *> redirected_args;
+	redirected_args.push_back(parameters[0]);
+	redirected_args.push_back(parameters[1]);
+	redirected_args.push_back(parameters[2]);
+	if ( !use_plain )
+	    redirected_args.push_back(parameters[3]);
+	return redirect_builtin_call(pgm, target_name, redirected_args, regdp, this, _operand);
+    }
+
+    if ( argc() == 4 && (var.name == "__builtin___strncpy_chk"
+		      || var.name == "__builtin___strncat_chk") )
+    {
+	int64_t len = -1;
+	int64_t size = -1;
+	bool len_const = try_eval_const_i64(parameters[2], len);
+	bool size_const = try_eval_const_i64(parameters[3], size);
+	bool use_plain = (size_const && size < 0)
+	    || (len_const && size_const && len >= 0 && size >= 0
+	     && (uint64_t)len <= (uint64_t)size);
+	std::string target_name;
+	if ( var.name == "__builtin___strncpy_chk" )
+	    target_name = use_plain ? "strncpy" : "__strncpy_chk";
+	else
+	    target_name = use_plain ? "strncat" : "__strncat_chk";
+	std::vector<TokenBase *> redirected_args;
+	redirected_args.push_back(parameters[0]);
+	redirected_args.push_back(parameters[1]);
+	redirected_args.push_back(parameters[2]);
+	if ( !use_plain )
+	    redirected_args.push_back(parameters[3]);
+	return redirect_builtin_call(pgm, target_name, redirected_args, regdp, this, _operand);
+    }
+
+    if ( argc() == 3 && (var.name == "__builtin___strcpy_chk"
+		      || var.name == "__builtin___stpcpy_chk"
+		      || var.name == "__builtin___strcat_chk") )
+    {
+	int64_t size = -1;
+	bool size_const = try_eval_const_i64(parameters[2], size);
+	bool use_plain = size_const && size < 0;
+	std::string target_name;
+	if ( var.name == "__builtin___strcpy_chk" )
+	    target_name = use_plain ? "strcpy" : "__strcpy_chk";
+	else if ( var.name == "__builtin___stpcpy_chk" )
+	    target_name = use_plain ? "stpcpy" : "__stpcpy_chk";
+	else
+	    target_name = use_plain ? "strcat" : "__strcat_chk";
+	std::vector<TokenBase *> redirected_args;
+	redirected_args.push_back(parameters[0]);
+	redirected_args.push_back(parameters[1]);
+	if ( !use_plain )
+	    redirected_args.push_back(parameters[2]);
+	return redirect_builtin_call(pgm, target_name, redirected_args, regdp, this, _operand);
+    }
+
+    if ( argc() == 4 && var.name == "__builtin___stpncpy_chk" )
+    {
+	int64_t len = -1;
+	int64_t size = -1;
+	bool len_const = try_eval_const_i64(parameters[2], len);
+	bool size_const = try_eval_const_i64(parameters[3], size);
+	bool use_plain = (size_const && size < 0)
+	    || (len_const && size_const && len >= 0 && size >= 0
+	     && (uint64_t)len <= (uint64_t)size);
+	std::vector<TokenBase *> redirected_args;
+	redirected_args.push_back(parameters[0]);
+	redirected_args.push_back(parameters[1]);
+	redirected_args.push_back(parameters[2]);
+	if ( use_plain )
+	    return redirect_builtin_call(pgm, "stpncpy", redirected_args, regdp, this, _operand);
+	redirected_args.push_back(parameters[3]);
+	return redirect_builtin_call(pgm, "__stpncpy_chk", redirected_args, regdp, this, _operand);
+    }
+
     if ( argc() == 1 && (var.name == "__builtin_conj"
 		      || var.name == "__builtin_conjf"
 		      || var.name == "__builtin_conjl"
@@ -3929,14 +4642,20 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( var.name == "__builtin_longjmp" )
 	return emit_builtin_longjmp(pgm, this, regdp, _operand);
 
-    // GCC builtin parity: direct llabs calls keep builtin semantics even
-    // when a same-name function is defined in the translation unit.
-    if ( argc() == 1 && var.name == "llabs" )
+    // GCC builtin parity: direct abs-family calls keep builtin semantics
+    // unless the specific plain-name builtin is disabled (e.g.
+    // -fno-builtin-abs). __builtin_* forms always keep builtin behavior.
+    if ( argc() == 1
+      && is_direct_abs_builtin_name(var.name)
+      && !direct_abs_builtin_disabled(pgm, var.name) )
     {
-	DataDef *builtin_type = &ddINT64;
+	DataDef *builtin_type = direct_abs_builtin_type(var.name);
 	FuncSignature funcsig(CallConvId::kCDecl);
-	funcsig.setRetT<int64_t>();
-	add_funcsig_arg(funcsig, &ddINT64);
+	if ( direct_abs_builtin_returns_32bit(var.name) )
+	    funcsig.setRetT<int>();
+	else
+	    funcsig.setRetT<int64_t>();
+	add_funcsig_arg(funcsig, builtin_type);
 
 	Operand arg_storage;
 	DataDef *arg_type = NULL;
@@ -3944,7 +4663,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	std::vector<Operand> params;
 	append_call_param(params, funcsig, arg, builtin_type);
 
-	void *builtin_target = (void *)(intptr_t)(long long(*)(long long))::llabs;
+	void *builtin_target = direct_abs_builtin_target(var.name);
 
 	InvokeNode *call;
 	pgm.cc.invoke(&call, imm(builtin_target), funcsig);
@@ -4186,15 +4905,16 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	// any libc / system symbol just by extern-declaring it.
 	if ( !pgm.is_dynamic_symbol_fallback_enabled() )
 	    pgm.Throw(this) << "dynamic symbol fallback is disabled by registration policy" << flush;
-	if ( !pgm.is_dynamic_symbol_allowed(var.name) )
+	std::string symbol_name = runtime_symbol_name(var);
+	if ( !pgm.is_dynamic_symbol_allowed(symbol_name) )
 	    pgm.Throw(this) << "dynamic symbol '" << var.name
 			    << "' is not allowed by registration policy" << flush;
-	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
+	void *sym = dlsym(RTLD_DEFAULT, symbol_name.c_str());
 		if ( sym )
 		{
 		    method->x86code = sym;
 		    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] =
-			external_symbol_export_name(var.name, sym);
+			external_symbol_export_name(symbol_name, sym);
 		    fnd = NULL; // intentional — fall into the typed-call path below
 		    DBG(pgm.cc.comment("TokenCallFunc::compile() dlsym late-bind"));
 		}
@@ -4550,15 +5270,16 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
     if ( use_c_version && !fnd )
     {
-	if ( !pgm.is_dynamic_symbol_allowed(var.name) )
+	std::string symbol_name = runtime_symbol_name(var);
+	if ( !pgm.is_dynamic_symbol_allowed(symbol_name) )
 	    pgm.Throw(this) << "dynamic symbol '" << var.name
 			    << "' is not allowed by registration policy" << flush;
-	void *sym = dlsym(RTLD_DEFAULT, var.name.c_str());
+	void *sym = dlsym(RTLD_DEFAULT, symbol_name.c_str());
 		if ( sym )
 		{
 		    call_target = sym;
 		    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] =
-			external_symbol_export_name(var.name, sym);
+			external_symbol_export_name(symbol_name, sym);
 		    DBG(cout << "TokenCallFunc::compile() redirecting " << var.name << " to C library version" << endl);
 		}
     }
@@ -9533,24 +10254,10 @@ void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
     // this the result of `buf + n` (buf=char[N]) keeps `regdp.second` as
     // bare `char` and downstream arg-packing for variadic calls truncates
     // the 64-bit address to a single byte, since dtCHAR maps to addArgT<char>().
-    if ( left && left->datadef() && left->datadef()->is_pointer() )
-	regdp.second = left->datadef();
-    else
-    if ( right && right->datadef() && right->datadef()->is_pointer() )
-	regdp.second = right->datadef();
-    else
-    if ( left )
-    {
-	if ( TokenVar *lv = dynamic_cast<TokenVar *>(left) )
-	    if ( lv->var.is_fixed_array() && lv->var.type )
-		regdp.second = pgm.getPointerType(lv->var.type);
-    }
-    if ( !regdp.second && right )
-    {
-	if ( TokenVar *rv = dynamic_cast<TokenVar *>(right) )
-	    if ( rv->var.is_fixed_array() && rv->var.type )
-		regdp.second = pgm.getPointerType(rv->var.type);
-    }
+    if ( DataDef *lptr = effective_pointer_type_for_arith(pgm, left) )
+	regdp.second = lptr;
+    else if ( DataDef *rptr = effective_pointer_type_for_arith(pgm, right) )
+	regdp.second = rptr;
     if ( !regdp.second )
 	regdp.second = infer_numeric_type(left, right);
     if ( !regdp.second )
@@ -11109,7 +11816,7 @@ Operand &TokenDerefStep::compile(Program &pgm, regdefp_t &regdp)
 	pgm.safesub(ptr_reg, step, var.type, deref_type);
     var.modified();
 
-    if ( deref_type->is_numeric() )
+    if ( deref_type->is_numeric() || deref_type->is_pointer() )
     {
 	x86::Mem mem = x86::ptr(old_ptr, 0, (uint32_t)deref_type->size);
 	return emit_ir_value(pgm, IRValue::mem(mem, deref_type), regdp, _operand, deref_type);
@@ -11799,9 +12506,46 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	Operand &obj_op = pgm.tkFunction->voperand(pgm, &obj_var);
 	x86::Gp obj_reg = pgm.cc.newIntPtr("addr_sub_base");
 	if ( obj_op.isMem() )
-	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+	{
+	    if ( obj_var.is_fixed_array() )
+		pgm.cc.lea(obj_reg, obj_op.as<x86::Mem>());
+	    else
+		pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+	}
 	else
 	    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+
+	regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
+	Operand &idx_op = ts->index->compile(pgm, idx_rdp);
+	x86::Gp idx_reg = pgm.cc.newGpq("addr_sub_idx");
+	load_idx_to_gpq(pgm, idx_reg, idx_op);
+
+	if ( obj_var.is_fixed_array() )
+	{
+	    size_t consumed_dims = 1 + ts->extra_indices.size();
+	    DataDef *result_type = fixed_array_subscript_result_type(obj_var, consumed_dims);
+	    size_t elem_size = fixed_array_subscript_stride(obj_var, consumed_dims);
+	    for ( size_t k = 0; k < ts->extra_indices.size(); ++k )
+	    {
+		uint32_t dim_k = obj_var.dims[k + 1];
+		pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)dim_k));
+		regdefp_t ex_rdp = {nullptr, nullptr, nullptr};
+		Operand &ex_op = ts->extra_indices[k]->compile(pgm, ex_rdp);
+		if ( ex_op.isImm() )
+		    pgm.cc.add(idx_reg, ex_op.as<Imm>());
+		else
+		{
+		    x86::Gp ex_widened = pgm.cc.newGpq("addr_sub_exidx");
+		    load_idx_to_gpq(pgm, ex_widened, ex_op);
+		    pgm.cc.add(idx_reg, ex_widened);
+		}
+	    }
+	    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "addr_sub_size");
+	    x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+	    pgm.cc.lea(addr, elem_mem);
+	    return emit_ir_value(pgm, IRValue::reg(addr, ptr_type), regdp, _operand, ptr_type);
+	}
+
 	if ( obj_var.type && obj_var.type->is_string() )
 	{
 	    InvokeNode *call;
@@ -11812,16 +12556,9 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	    obj_reg = cstr;
 	}
 
-	regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
-	Operand &idx_op = ts->index->compile(pgm, idx_rdp);
-	x86::Gp idx_reg = pgm.cc.newGpq("addr_sub_idx");
-	load_idx_to_gpq(pgm, idx_reg, idx_op);
-
 	size_t elem_size = 8;
 	if ( obj_var.type && obj_var.type->is_string() )
 	    elem_size = 1;
-	else if ( obj_var.is_fixed_array() && obj_var.type->size )
-	    elem_size = obj_var.type->size;
 	else if ( obj_var.type->is_pointer() )
 	{
 	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(obj_var.type);

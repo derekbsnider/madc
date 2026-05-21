@@ -34,6 +34,7 @@ RUNTIME_ERROR_PATTERNS = (
 
 SKIP_DIRECTIVE_RE = re.compile(r"dg-require-effective-target\s+([A-Za-z0-9_-]+)")
 DG_OPTIONS_RE = re.compile(r'dg-options\s+"([^"]*)"')
+ADDITIONAL_FLAGS_RE = re.compile(r'set\s+additional_flags\s+"?([^"\n]+)"?')
 DEFAULT_UNSUPPORTED_TARGETS = {
 	"label_values",
 	"trampolines",
@@ -76,10 +77,18 @@ def skip_reason(path, unsupported_targets):
 def madc_args_from_directives(path):
 	text = read_text(path)
 	args = []
+	sidecar = Path(path).with_suffix(".x")
+	if sidecar.exists():
+		for match in ADDITIONAL_FLAGS_RE.finditer(read_text(sidecar)):
+			for opt in shlex.split(match.group(1)):
+				if opt.startswith("-fno-builtin-"):
+					args.append(opt)
 	for match in DG_OPTIONS_RE.finditer(text):
 		for opt in shlex.split(match.group(1)):
 			if opt == "-finstrument-functions":
 				args.append("--finstrument-functions")
+			elif opt.startswith("-fno-builtin-"):
+				args.append(opt)
 	return args
 
 
@@ -95,14 +104,84 @@ def classify_output(returncode, output):
 	return "PASS", ""
 
 
+def is_builtin_companion_source(path):
+	path = Path(path)
+	if path.parent.name == "lib" and path.parent.parent.name == "builtins":
+		return True
+	return path.parent.name == "builtins" and path.name.endswith("-lib.c")
+
+
+def filter_duplicate_aggregate_defs(body, seen_defs):
+	lines = body.splitlines(keepends=True)
+	out = []
+	i = 0
+	while i < len(lines):
+		line = lines[i]
+		stripped = line.lstrip()
+		if stripped.startswith("struct ") or stripped.startswith("union "):
+			block = [line]
+			j = i + 1
+			brace_balance = line.count("{") - line.count("}")
+			while j < len(lines):
+				block.append(lines[j])
+				brace_balance += lines[j].count("{") - lines[j].count("}")
+				if brace_balance <= 0 and lines[j].strip().endswith(";"):
+					break
+				j += 1
+			block_text = "".join(block)
+			if "{" in block_text and block_text.strip().endswith(";"):
+				key = "".join(block_text.split())
+				if key in seen_defs:
+					i = j + 1
+					continue
+				seen_defs.add(key)
+			out.extend(block)
+			i = j + 1
+			continue
+		out.append(line)
+		i += 1
+	return "".join(out)
+
+
+def absolutize_local_includes(body, base_dir):
+	out = []
+	for line in body.splitlines(keepends=True):
+		stripped = line.strip()
+		if stripped.startswith('#include "') and '"' in stripped[10:]:
+			rel = stripped[len('#include "') : stripped.rfind('"')]
+			resolved = (Path(base_dir) / rel).resolve()
+			line = '#include "' + resolved.as_posix() + '"\n'
+		out.append(line)
+	return "".join(out)
+
+
 def builtin_multifile_source(path):
 	path = Path(path)
 	if path.parent.name != "builtins":
+		return None
+	if path.name.endswith("-lib.c"):
 		return None
 	companion = path.with_name(path.stem + "-lib.c")
 	main_driver = path.parent / "lib" / "main.c"
 	if not companion.exists() or not main_driver.exists():
 		return None
+	companion_text = absolutize_local_includes(read_text(companion), companion.parent)
+	test_text = absolutize_local_includes(read_text(path), path.parent)
+	main_wrapper = """
+int __madc_builtin_fail;
+void abort(void) { if (!__madc_builtin_fail) __madc_builtin_fail = 1; }
+void link_error(void) { if (!__madc_builtin_fail) __madc_builtin_fail = 2; }
+extern void main_test(void);
+int inside_main;
+int main(void)
+{
+  inside_main = 1;
+  main_test();
+  inside_main = 0;
+  return __madc_builtin_fail;
+}
+"""
+	seen_defs = set()
 	tmp = tempfile.NamedTemporaryFile(
 		mode="w",
 		suffix=".c",
@@ -110,9 +189,11 @@ def builtin_multifile_source(path):
 		delete=False,
 	)
 	with tmp:
-		tmp.write('#include "' + companion.resolve().as_posix() + '"\n')
-		tmp.write('#include "' + path.resolve().as_posix() + '"\n')
-		tmp.write('#include "' + main_driver.resolve().as_posix() + '"\n')
+		tmp.write(filter_duplicate_aggregate_defs(companion_text, seen_defs))
+		tmp.write("\n")
+		tmp.write(filter_duplicate_aggregate_defs(test_text, seen_defs))
+		tmp.write("\n")
+		tmp.write(main_wrapper)
 	return Path(tmp.name)
 
 
@@ -228,6 +309,8 @@ def main(argv):
 	for test in tests:
 		if not test.exists():
 			result = Result(test, "FAIL(harness)", "missing file")
+		elif is_builtin_companion_source(test):
+			result = Result(test, "SKIP", "builtin companion source")
 		else:
 			reason = skip_reason(test, unsupported_targets)
 			if reason:
