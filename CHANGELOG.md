@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [v0.19.0] - 2026-05-21
+
+GCC parity reaches 90%: 1496 → 1505/1685 (88.8% → 89.3%), `__builtin_frame_address`, stdio/string builtin aliases, pointer dereference typing fixes.
+
+- **GCC builtins stdio and string-alias lane moved forward.**
+  Fixed fixed-array pointer dereference typing for `const char *arr[]`
+  shapes, added the `vprintf` packed-varargs bridge, and expanded
+  GCC builtin aliases for unlocked stdio, `fputc` / `fwrite`,
+  `mempcpy`, `index`, `strcspn`, `strspn`, and `rindex`. Fixed
+  pointer arithmetic scaling for fixed arrays whose element type is
+  itself a pointer, and kept postfix `++` / `--` from making a
+  following `&` parse as unary address-of. Added
+  `tests/testconstptrarrayderef.mad` and
+  `tests/teststdiobuiltinredirects.mad`, plus
+  `tests/teststrpbrklocal.mad`, `tests/testpostincbitand.mad`, and
+  `tests/testgcclimitmacros.mad`.
+  Focused GCC validation is
+  green for `builtins/fprintf.c`, `printf.c`, `fputs.c`,
+  `mempcpy.c`, `mempcpy-2.c`, `strchr.c`, `strcspn.c`, and
+  `strspn.c`, plus `builtins/strpbrk.c`, `strrchr.c`, `strlen.c`,
+  and `strlen-3.c`; full validation is green at `379/379` JIT and
+  `379/379` EXE. A live full GCC sweep reports `1505/1685` (89.3%).
+
 ## [v0.18.0] - 2026-05-21
 
 GCC parity push: 1327 → 1496/1685 (78.8% → 88.8%), _Complex arithmetic, IEEE floating-point, bitfield promotions, auto-include headers.
@@ -14,6 +37,16 @@ GCC parity push: 1327 → 1496/1685 (78.8% → 88.8%), _Complex arithmetic, IEEE
   regression. Full validation is green at `370/370` JIT and
   `370/370` EXE, and the conservative GCC parity floor rises to at
   least `1504/1685` (89.3%).
+
+- **GCC torture `921013-1.c` and `frame-address.c` now pass.**
+  `*ptr++` now preserves real pointee types instead of forcing float
+  dereferences through integer Gp temporaries, fixing float-equality
+  stores like `*d++ = *x++ == *y++;`. `__builtin_frame_address(0)` is
+  now registered as a builtin and lowered to the current stack frame
+  address. Added `tests/testderefstepptrrealcmp.mad` and
+  `tests/testbuiltinframeaddress.mad` as local regressions. Full
+  validation is green at `372/372` JIT and `372/372` EXE, and the
+  conservative GCC parity floor rises to at least `1506/1685` (89.4%).
 
 - **GCC torture `ieee/fp-cmp-8f.c` now passes.**
   Contextual identifiers like `struct try` now parse correctly in

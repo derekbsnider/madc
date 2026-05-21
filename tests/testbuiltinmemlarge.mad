@@ -1,0 +1,21 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+unsigned char src[88];
+unsigned char dst[88];
+
+int main()
+{
+	int i;
+	for (i = 0; i < 88; i++)
+		src[i] = i, dst[i] = 0xaa;
+
+	__builtin_memset(dst + 8, 0, 64);
+	printf("%u %u %u %u\n", dst[7], dst[8], dst[71], dst[72]);
+
+	for (i = 0; i < 88; i++)
+		dst[i] = 0xaa;
+	__builtin_memcpy(dst + 8, src + 8, 64);
+	printf("%u %u %u %u\n", dst[7], dst[8], dst[71], dst[72]);
+	return 0;
+}

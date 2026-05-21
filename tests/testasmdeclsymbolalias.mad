@@ -1,0 +1,9 @@
+#!/usr/bin/env madc
+
+extern int myputs(const char *) __asm("puts");
+
+int main(void)
+{
+  myputs("ok");
+  return 0;
+}

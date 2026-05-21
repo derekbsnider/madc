@@ -13,6 +13,7 @@
 #include <ostream>
 #include <sstream>
 #include <deque>
+#include <set>
 #include <vector>
 
 #include "libmadc/value.h"
@@ -20,6 +21,8 @@
 class Method;
 class Program;
 class MadcEngine;
+class TokenSWITCH;
+class TokenCASE;
 
 class MadcTeeBuf : public std::streambuf
 {
@@ -878,6 +881,7 @@ public:
     struct MacroDef {
 	std::vector<std::string> params;  // parameter names
 	bool variadic = false;           // trailing ... / __VA_ARGS__
+	std::string variadic_param;       // GNU named varargs parameter (`args...`)
 	std::string body;                 // body template with param names as placeholders
     };
     std::map<std::string, MacroDef> macro_map;	// function-like macros
@@ -885,6 +889,7 @@ public:
     struct LazyEntry { int header; LazyKind kind; };
     std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration
     std::map<std::string, std::string> define_map;	// #define name value
+    std::set<std::string> disabled_builtin_names;	// -fno-builtin-foo from CLI/tests
     std::map<std::string, std::stack<std::string>> _macro_save_stack; // #pragma push_macro / pop_macro
     std::vector<std::string> include_paths;	// -I include search paths (for #include "file.h")
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
@@ -901,6 +906,8 @@ public:
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::stack<l_shortcut_t> loopstack;	// stack to manage break/continue for loops
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
+    std::vector<TokenSWITCH *> switch_stack; // active switch parse contexts for nested case/default hoisting
+    std::vector<TokenCASE *> switch_case_stack; // current active case/default while parsing each switch
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
     std::string cur_func_name;		// name of current function being compiled (for diagnostics)
@@ -1023,6 +1030,7 @@ public:
     void add_sstream_methods();
     void add_fstream_methods();
     void populate_builtin_registry();
+    bool is_builtin_disabled(const std::string &name) const;
     void populate_namespace_registry();
     void register_function_specs(const std::vector<FunctionRegistrationSpec> &specs);
     void register_namespace_specs();
@@ -1113,7 +1121,8 @@ public:
     inline void pushToken(TokenBase *t) { tokens.push_front(t); }
 
     // helper: is prevToken in a position where the next operator would be unary?
-    // true when prevToken is NULL, ;, {, (, ,, =, or any operator except ) and ]
+    // true when prevToken is NULL, ;, {, (, ,, =, or any operator except ) ],
+    // and postfix ++/--
     inline bool isUnaryPosition()
     {
 	if ( !_prv_token ) return true;
@@ -1122,7 +1131,8 @@ public:
 	||   id == TokenID::tkOpBrk || id == TokenID::tkComma
 	||   id == TokenID::tkAssign ) return true;
 	if ( _prv_token->is_operator()
-	&&   id != TokenID::tkClBrk && id != TokenID::tkClSqr ) return true;
+	&&   id != TokenID::tkClBrk && id != TokenID::tkClSqr
+	&&   id != TokenID::tkInc && id != TokenID::tkDec ) return true;
 	// Keywords like `return`, `if`, `while`, `case` open an expression
 	// context — the following `-` should be unary negation, not binary
 	// subtraction with a missing left operand.

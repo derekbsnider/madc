@@ -1,0 +1,18 @@
+#!/usr/bin/env madc
+
+typedef unsigned long size_t;
+extern int printf(const char *, ...);
+
+void f(size_t x)
+{
+  if (x != 0)
+    printf("ok\n");
+  else
+    printf("bad\n");
+}
+
+int main(void)
+{
+  f((size_t)"");
+  return 0;
+}

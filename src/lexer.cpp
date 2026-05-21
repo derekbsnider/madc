@@ -169,6 +169,56 @@ static bool gnu_attribute_text_has_name(const std::string &text,
     return false;
 }
 
+static int compound_type_specifier_flag(const std::string &w)
+{
+    enum {
+	TS_CHAR     = 1 << 2,
+	TS_SHORT    = 1 << 4,
+	TS_INT      = 1 << 6,
+	TS_LONG     = 1 << 8,
+	TS_FLOAT    = 1 << 10,
+	TS_DOUBLE   = 1 << 12,
+	TS_SIGNED   = 1 << 14,
+	TS_UNSIGNED = 1 << 16,
+	TS_COMPLEX  = 1 << 18,
+    };
+    if ( w == "char" ) return TS_CHAR;
+    if ( w == "short" ) return TS_SHORT;
+    if ( w == "int" ) return TS_INT;
+    if ( w == "long" ) return TS_LONG;
+    if ( w == "float" ) return TS_FLOAT;
+    if ( w == "double" ) return TS_DOUBLE;
+    if ( w == "signed" ) return TS_SIGNED;
+    if ( w == "unsigned" ) return TS_UNSIGNED;
+    if ( w == "_Complex" || w == "__complex__" || w == "__complex" ) return TS_COMPLEX;
+    return 0;
+}
+
+static bool expansion_is_compound_type_specifiers(const std::string &text, int &flags)
+{
+    flags = 0;
+    size_t i = 0;
+    bool saw_any = false;
+    while ( i < text.size() )
+    {
+	while ( i < text.size() && isspace((unsigned char)text[i]) )
+	    ++i;
+	if ( i >= text.size() )
+	    break;
+	if ( text[i] != '_' && !isalpha((unsigned char)text[i]) )
+	    return false;
+	std::string word;
+	while ( i < text.size() && (text[i] == '_' || isalnum((unsigned char)text[i])) )
+	    word += text[i++];
+	int flag = compound_type_specifier_flag(word);
+	if ( !flag )
+	    return false;
+	flags += flag;
+	saw_any = true;
+    }
+    return saw_any;
+}
+
 static const char *auto_include_embedded_header_for_identifier(const std::string &word)
 {
     static const std::map<std::string, std::string> identifier_headers = {
@@ -563,10 +613,14 @@ void Program::_tokenizer_init()
     define_map["__INT_MAX__"] = "2147483647";
     define_map["__LONG_MAX__"] = "9223372036854775807L";
     define_map["__LONG_LONG_MAX__"] = "9223372036854775807LL";
+    define_map["__INTMAX_MAX__"] = "9223372036854775807L";
+    define_map["__UINTMAX_MAX__"] = "18446744073709551615UL";
     define_map["__SHRT_MAX__"] = "32767";
     define_map["__SCHAR_MAX__"] = "127";
     define_map["__PTRDIFF_TYPE__"] = "long";
+    define_map["__PTRDIFF_MAX__"] = "9223372036854775807L";
     define_map["__SIZE_TYPE__"] = "unsigned long";
+    define_map["__SIZE_MAX__"] = "18446744073709551615UL";
     define_map["__INTPTR_TYPE__"] = "long";
     define_map["__UINTPTR_TYPE__"] = "unsigned long";
     define_map["__UINT8_TYPE__"] = "unsigned char";
@@ -641,6 +695,7 @@ void Program::_tokenizer_init()
     define_map["__builtin_strncpy"] = "strncpy";
     define_map["__builtin_strlen"] = "strlen";
     define_map["__builtin_printf"] = "printf";
+    define_map["__builtin_printf_unlocked"] = "printf_unlocked";
     define_map["__builtin_sprintf"] = "sprintf";
     define_map["__builtin_puts"] = "puts";
     define_map["__builtin_putchar"] = "putchar";
@@ -651,13 +706,24 @@ void Program::_tokenizer_init()
     define_map["__builtin_fabsl"] = "fabsl";
     define_map["__builtin_trap"] = "abort";
     define_map["__builtin_memchr"] = "memchr";
+    define_map["__builtin_mempcpy"] = "mempcpy";
     define_map["__builtin_strchr"] = "strchr";
     define_map["__builtin_strrchr"] = "strrchr";
+    define_map["__builtin_rindex"] = "rindex";
     define_map["__builtin_strstr"] = "strstr";
+    define_map["__builtin_index"] = "index";
     define_map["__builtin_strncat"] = "strncat";
     define_map["__builtin_strcat"] = "strcat";
+    define_map["__builtin_strcspn"] = "strcspn";
+    define_map["__builtin_strpbrk"] = "strpbrk";
+    define_map["__builtin_strspn"] = "strspn";
     define_map["__builtin_snprintf"] = "snprintf";
     define_map["__builtin_fprintf"] = "fprintf";
+    define_map["__builtin_fprintf_unlocked"] = "fprintf_unlocked";
+    define_map["__builtin_fputc"] = "fputc";
+    define_map["__builtin_fputs"] = "fputs";
+    define_map["__builtin_fputs_unlocked"] = "fputs_unlocked";
+    define_map["__builtin_fwrite"] = "fwrite";
     define_map["__builtin_sscanf"] = "sscanf";
     define_map["__builtin_fscanf"] = "fscanf";
     define_map["__builtin_realloc"] = "realloc";
@@ -1359,10 +1425,27 @@ TokenBase *Program::_getToken()
 			    std::string param;
 			    while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 				param += source.get();
-			    if ( !param.empty() )
-				macro.params.push_back(param);
-			    else
+			    if ( param.empty() )
 				Throw << "Expecting macro parameter name" << flush;
+			    if ( source.peek() == '.' )
+			    {
+				source.get();
+				if ( source.peek() != '.' )
+				    Throw << "Expecting '...' after named variadic macro parameter" << flush;
+				source.get();
+				if ( source.peek() != '.' )
+				    Throw << "Expecting '...' after named variadic macro parameter" << flush;
+				source.get();
+				macro.variadic = true;
+				macro.variadic_param = param;
+				macro.params.push_back(param);
+				while ( source.peek() == ' ' || source.peek() == '\t' )
+				    source.get();
+				if ( source.peek() != ')' )
+				    Throw << "Variadic macro '...' must be the last parameter" << flush;
+				break;
+			    }
+			    macro.params.push_back(param);
 			}
 			if ( source.peek() == ')' ) source.get(); // consume ')'
 			// skip whitespace before body
@@ -2468,15 +2551,14 @@ TokenBase *Program::_getToken()
 			a = expanded_arg;
 		    }
 		    std::map<std::string, const std::string *> param_map;
-		    // For GNU named variadic params (e.g. args...),
-		    // join all remaining call-site arguments into that
-		    // last named parameter so the body can use the name
-		    // directly instead of __VA_ARGS__.
 		    std::string named_varargs;
+		    bool has_named_varargs = macro.variadic && !macro.variadic_param.empty();
+		    size_t fixed_param_count = macro.params.size();
+		    if ( has_named_varargs && fixed_param_count > 0 )
+			--fixed_param_count;
 		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
 		    {
-			if ( macro.variadic && i == macro.params.size() - 1
-			  && args.size() > macro.params.size() )
+			if ( has_named_varargs && i == macro.params.size() - 1 )
 			{
 			    named_varargs = args[i];
 			    for ( size_t j = i + 1; j < args.size(); ++j )
@@ -2597,7 +2679,7 @@ TokenBase *Program::_getToken()
 		    if ( macro.variadic )
 		    {
 			std::string varargs;
-			for ( size_t i = macro.params.size(); i < args.size(); ++i )
+			for ( size_t i = fixed_param_count; i < args.size(); ++i )
 			{
 			    if ( !varargs.empty() )
 				varargs += ", ";
@@ -2679,6 +2761,7 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( gnu_attribute_text_has_name(attr_text, "packed")
 		      || gnu_attribute_text_has_name(attr_text, "aligned")
+		      || gnu_attribute_text_has_name(attr_text, "mode")
 		      || gnu_attribute_text_has_name(attr_text, "scalar_storage_order")
 		      || gnu_attribute_text_has_name(attr_text, "vector_size")
 		      || gnu_attribute_text_has_name(attr_text, "alias")
@@ -2712,19 +2795,7 @@ TokenBase *Program::_getToken()
 			TS_UNSIGNED = 1 << 16,
 			TS_COMPLEX  = 1 << 18,
 		    };
-		    auto word_to_flag = [](const std::string &w) -> int {
-			if (w == "char")     return TS_CHAR;
-			if (w == "short")    return TS_SHORT;
-			if (w == "int")      return TS_INT;
-			if (w == "long")     return TS_LONG;
-			if (w == "float")    return TS_FLOAT;
-			if (w == "double")   return TS_DOUBLE;
-			if (w == "signed")   return TS_SIGNED;
-			if (w == "unsigned") return TS_UNSIGNED;
-			if (w == "_Complex" || w == "__complex__" || w == "__complex") return TS_COMPLEX;
-			return 0;
-		    };
-		    int counter = word_to_flag(word);
+		    int counter = compound_type_specifier_flag(word);
 		    // Accumulate subsequent type-specifier keywords
 		    auto read_word = [&]() -> std::string {
 			while ( source.good()
@@ -2741,11 +2812,25 @@ TokenBase *Program::_getToken()
 		    while ( true )
 		    {
 			std::string w = read_word();
-			int flag = word_to_flag(w);
+			int flag = compound_type_specifier_flag(w);
 			if ( flag )
 			{
 			    counter += flag;
 			    consumed.push_back(w);
+			}
+			else if ( define_map.find(w) != define_map.end() )
+			{
+			    int expanded_flags = 0;
+			    if ( expansion_is_compound_type_specifiers(define_map[w], expanded_flags) )
+			    {
+				counter += expanded_flags;
+				consumed.push_back(w);
+			    }
+			    else
+			    {
+				source.pushback(std::string(" ") + w);
+				break;
+			    }
 			}
 			else
 			{

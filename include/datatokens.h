@@ -62,6 +62,7 @@ public:
     uint16_t flags;
     std::string storage_alias_name;
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
+    int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as
     // `T name[expr]` with a runtime-valued size. The variable acts as a
     // pointer (slot holds the malloc'd buffer); voperand emits the malloc
@@ -72,7 +73,7 @@ public:
     // Parameter array bounds like `int a[n++]` decay to pointers but still
     // evaluate their runtime bound expressions on function entry.
     class TokenBase *param_vla_side_effect_expr;
-    Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; vla_size_expr = nullptr; param_vla_side_effect_expr = nullptr; }
+    Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; object_size_hint = -1; vla_size_expr = nullptr; param_vla_side_effect_expr = nullptr; }
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }

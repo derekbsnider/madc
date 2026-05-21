@@ -1,0 +1,15 @@
+#include <limits.h>
+
+typedef __INTMAX_TYPE__ intmax_t;
+typedef unsigned __INTMAX_TYPE__ uintmax_t;
+#define INTMAX_MAX __INTMAX_MAX__
+
+extern unsigned int __builtin_uabs(int);
+extern uintmax_t __builtin_umaxabs(intmax_t);
+
+int main() {
+    uintmax_t x = __builtin_umaxabs(-INTMAX_MAX - 1);
+    printf("%u\n", __builtin_uabs(-INT_MAX - 1));
+    printf("%lu\n", x);
+    return 0;
+}

@@ -1,0 +1,31 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+typedef union
+{
+	unsigned char v[88];
+} a1_t;
+
+static void check_one(void)
+{
+	static a1_t dst = {{ [0 ... 87] = 0xaa }};
+	int i;
+
+	__builtin_memset(dst.v + 8 + 7, 0, 64);
+	for (i = 0; i < 8 + 7; i++)
+		if (dst.v[i] != 0xaa)
+			printf("pre %d %u\n", i, dst.v[i]);
+	for (; i < 8 + 7 + 64; i++)
+		if (dst.v[i] != 0x00)
+			printf("mid %d %u\n", i, dst.v[i]);
+	for (; i < sizeof(dst.v); i++)
+		if (dst.v[i] != 0xaa)
+			printf("post %d %u\n", i, dst.v[i]);
+}
+
+int main()
+{
+	check_one();
+	printf("ok\n");
+	return 0;
+}

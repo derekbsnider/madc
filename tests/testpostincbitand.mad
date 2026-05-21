@@ -1,0 +1,13 @@
+extern int printf(const char *, ...);
+
+int main(void)
+{
+	const char *text = "hello world";
+	int x = 7;
+	printf("%s\n", text + (x++ & 7));
+	printf("%d\n", x);
+	x = 5;
+	printf("%s\n", text + (x-- & 3));
+	printf("%d\n", x);
+	return 0;
+}

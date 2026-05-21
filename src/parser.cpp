@@ -1066,6 +1066,34 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
     return nt;
 }
 
+static bool is_gnu_asm_identifier_token(TokenBase *tb)
+{
+    TokenIdent *ident = dynamic_cast<TokenIdent *>(tb);
+    if ( !ident )
+	return false;
+    std::string name = ident->str;
+    return name == "asm" || name == "__asm" || name == "__asm__";
+}
+
+static TokenBase *consume_gnu_asm_label(Program &pgm, TokenBase *nt,
+					std::string *alias_target)
+{
+    while ( nt && is_gnu_asm_identifier_token(nt) )
+    {
+	TokenBase *open = pgm.nextToken();
+	if ( !open || open->id() != TokenID::tkOpBrk )
+	    pgm.Throw(open ? open : nt) << "Expecting '(' after asm label" << flush;
+	TokenBase *label = pgm.nextToken();
+	if ( alias_target && label && label->type() == TokenType::ttString )
+	    *alias_target = ((TokenStr *)label)->str;
+	TokenBase *close = pgm.nextToken();
+	if ( !close || close->id() != TokenID::tkClBrk )
+	    pgm.Throw(close ? close : label) << "Expecting ')' after asm label" << flush;
+	nt = pgm.nextToken();
+    }
+    return nt;
+}
+
 static size_t parse_gnu_vector_size_attribute(Program &pgm)
 {
     if ( !is_attribute_identifier_token(pgm.peekToken()) )
@@ -1092,6 +1120,78 @@ static size_t parse_gnu_vector_size_attribute(Program &pgm)
 	}
     } while ( depth > 0 );
     return vector_bytes;
+}
+
+static void consume_typedef_gnu_attributes(Program &pgm,
+					   std::string *mode_name = NULL,
+					   size_t *vector_bytes = NULL)
+{
+    while ( is_attribute_identifier_token(pgm.peekToken()) )
+    {
+	pgm.nextToken(); // consume __attribute__
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	    continue;
+	int depth = 0;
+	bool saw_mode = false;
+	bool saw_vector_size = false;
+	do {
+	    TokenBase *at = pgm.nextToken();
+	    if ( !at ) break;
+	    if ( at->id() == TokenID::tkOpBrk )
+		++depth;
+	    else if ( at->id() == TokenID::tkClBrk )
+		--depth;
+	    else if ( at->type() == TokenType::ttIdentifier
+		   && ((TokenIdent *)at)->str == "mode" )
+		saw_mode = true;
+	    else if ( at->type() == TokenType::ttIdentifier
+		   && ((TokenIdent *)at)->str == "vector_size" )
+		saw_vector_size = true;
+	    else if ( mode_name && saw_mode && at->type() == TokenType::ttIdentifier )
+	    {
+		*mode_name = ((TokenIdent *)at)->str;
+		saw_mode = false;
+	    }
+	    else if ( vector_bytes && saw_vector_size && at->type() == TokenType::ttInteger )
+	    {
+		int64_t n = at->ival();
+		if ( n > 0 )
+		    *vector_bytes = (size_t)n;
+		saw_vector_size = false;
+	    }
+	} while ( depth > 0 );
+    }
+}
+
+static DataDef *apply_gnu_mode_alias(DataDef *base_dd, const std::string &mode_name)
+{
+    if ( !base_dd || mode_name.empty() )
+	return base_dd;
+
+    bool is_unsigned = false;
+    switch ( base_dd->rawtype() )
+    {
+	case DataType::dtUINT8:
+	case DataType::dtUINT16:
+	case DataType::dtUINT24:
+	case DataType::dtUINT32:
+	case DataType::dtUINT64:
+	    is_unsigned = true;
+	    break;
+	default:
+	    break;
+    }
+
+    if ( mode_name == "QI" )
+	return is_unsigned ? static_cast<DataDef *>(&ddUINT8) : static_cast<DataDef *>(&ddINT8);
+    if ( mode_name == "HI" )
+	return is_unsigned ? static_cast<DataDef *>(&ddUINT16) : static_cast<DataDef *>(&ddINT16);
+    if ( mode_name == "SI" )
+	return is_unsigned ? static_cast<DataDef *>(&ddUINT32) : static_cast<DataDef *>(&ddINT32);
+    if ( mode_name == "DI" )
+	return is_unsigned ? static_cast<DataDef *>(&ddUINT64) : static_cast<DataDef *>(&ddINT64);
+
+    return base_dd;
 }
 
 static bool host_is_little_endian()
@@ -1179,6 +1279,23 @@ static DataDef *effective_pointer_type_for_member_access(Program &pgm, TokenBase
     return NULL;
 }
 
+static DataDef *deref_type_for_variable(Variable *var)
+{
+    if ( !var || !var->type )
+	return NULL;
+
+    if ( var->is_fixed_array() )
+	return var->type;
+
+    if ( var->type->is_pointer() )
+    {
+	DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(var->type);
+	return (dptr && dptr->base_type) ? dptr->base_type : &ddINT64;
+    }
+
+    return NULL;
+}
+
 static TokenBase *skip_expression_whitespace(Program &pgm)
 {
     while ( pgm.peekToken()
@@ -1223,6 +1340,40 @@ static DataDef *unwrap_subscript_element_type(DataDef *base_type)
     if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(base_type) )
 	return add->element_type ? add->element_type : &ddINT64;
     return base_type;
+}
+
+static DataDef *build_fixed_array_query_type(DataDef *base_type,
+					     const std::vector<uint32_t> &dims,
+					     size_t consumed_dims)
+{
+    if ( !base_type )
+	return &ddINT64;
+    if ( consumed_dims >= dims.size() )
+	return base_type;
+
+    DataDef *result = base_type;
+    for ( size_t i = dims.size(); i-- > consumed_dims; )
+	result = new DataDefCArray(*result, result->name, dims[i], NULL);
+    return result;
+}
+
+static DataDef *type_query_chain_datadef(TokenBase *chain)
+{
+    if ( !chain )
+	return NULL;
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(chain) )
+    {
+	if ( ts->object.is_fixed_array() )
+	    return build_fixed_array_query_type(ts->object.type, ts->object.dims,
+						1 + ts->extra_indices.size());
+    }
+    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(chain) )
+    {
+	if ( TokenVar *tv = dynamic_cast<TokenVar *>(tse->base_expr) )
+	    if ( tv->var.is_fixed_array() )
+		return build_fixed_array_query_type(tv->var.type, tv->var.dims, 1);
+    }
+    return chain->datadef();
 }
 
 static DataDef *resolve_named_datadef(Program &pgm, const std::string &name)
@@ -1601,6 +1752,7 @@ static bool is_shared_global_extern_reference(Program &pgm, TokenCpnd *code, Var
 static int64_t parse_constant_integer_expression(Program &pgm);
 static int64_t parse_constant_rel(Program &pgm);
 static int64_t parse_constant_eq(Program &pgm);
+static size_t query_fixed_array_sizeof_value(TokenVar *tv, bool want_alignof, bool deref);
 
 static TokenBase *parse_parenthesized_expression(Program &pgm, const char *context,
 						 bool stop_on_closing_paren)
@@ -1807,7 +1959,7 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 	    pgm.Throw(op_tb) << "Expecting '(' or identifier after " << op_name << flush;
 	TokenBase *id_tb = pgm.nextToken();
 	TokenBase *chain = pgm.parsePostfixChain(id_tb);
-	DataDef *cdd = chain ? chain->datadef() : NULL;
+	DataDef *cdd = type_query_chain_datadef(chain);
 	if ( !cdd )
 	    pgm.Throw(id_tb) << op_name << ": cannot determine type of expression" << flush;
 	size_t value = query_datadef_measure(cdd, want_alignof);
@@ -1817,11 +1969,10 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 	    if ( pdd && pdd->base_type )
 		value = query_datadef_measure(pdd->base_type, want_alignof);
 	}
-	else if ( !want_alignof )
+	else if ( TokenVar *tv = dynamic_cast<TokenVar *>(chain) )
 	{
-	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(chain) )
-		if ( tv->var.is_fixed_array() )
-		    value = tv->var.type->size * tv->var.total_elements();
+	    if ( tv->var.is_fixed_array() )
+		value = query_fixed_array_sizeof_value(tv, want_alignof, deref);
 	}
 	return value;
     }
@@ -1857,7 +2008,7 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 		// For fixed arrays accessed as expressions, use element size
 		if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
 		    if ( tv->var.is_fixed_array() )
-			value = tv->var.type->size * tv->var.total_elements();
+			value = query_fixed_array_sizeof_value(tv, want_alignof, false);
 		if ( !value )
 		    value = query_datadef_measure(dd, want_alignof);
 		have_value = true;
@@ -1947,6 +2098,286 @@ static TokenBase *make_type_query_token(TokenBase *op_tb, DataDef *dd, bool want
     result->line = op_tb ? op_tb->line : 0;
     result->column = op_tb ? op_tb->column : 0;
     return result;
+}
+
+static size_t query_fixed_array_sizeof_value(TokenVar *tv, bool want_alignof, bool deref)
+{
+    if ( !tv || !tv->var.type )
+	return 0;
+    size_t value = query_datadef_measure(tv->var.type, want_alignof);
+    if ( !want_alignof && !deref )
+	value *= tv->var.total_elements();
+    return value;
+}
+
+static bool try_eval_known_integer(TokenBase *tb, int64_t &out)
+{
+    if ( !tb )
+	return false;
+    if ( TokenInt *ti = dynamic_cast<TokenInt *>(tb) )
+    {
+	out = ti->ival();
+	return true;
+    }
+    if ( TokenChar *tc = dynamic_cast<TokenChar *>(tb) )
+    {
+	out = tc->ival();
+	return true;
+    }
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
+    {
+	if ( tv->var.is_constant() )
+	{
+	    out = tv->var.get<int64_t>();
+	    return true;
+	}
+	return false;
+    }
+    if ( TokenNeg *tn = dynamic_cast<TokenNeg *>(tb) )
+    {
+	int64_t rhs = 0;
+	if ( try_eval_known_integer(tn->right, rhs) )
+	{
+	    out = -rhs;
+	    return true;
+	}
+	return false;
+    }
+    if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(tb) )
+    {
+	int64_t lhs = 0, rhs = 0;
+	if ( try_eval_known_integer(ta->left, lhs) && try_eval_known_integer(ta->right, rhs) )
+	{
+	    out = lhs + rhs;
+	    return true;
+	}
+	return false;
+    }
+    if ( TokenSub *ts = dynamic_cast<TokenSub *>(tb) )
+    {
+	int64_t lhs = 0, rhs = 0;
+	if ( try_eval_known_integer(ts->left, lhs) && try_eval_known_integer(ts->right, rhs) )
+	{
+	    out = lhs - rhs;
+	    return true;
+	}
+	return false;
+    }
+    return false;
+}
+
+static TokenBase *materialize_cast_literal_operand(Program &pgm, TokenBase *tb)
+{
+    if ( !tb )
+	return tb;
+    if ( tb->type() != TokenType::ttString )
+	return tb;
+
+    std::string literal = static_cast<TokenStr *>(tb)->str;
+    while ( pgm.peekToken() && pgm.peekToken()->type() == TokenType::ttString )
+	literal += static_cast<TokenStr *>(pgm.nextToken())->str;
+
+    Variable *var = pgm.addLiteral(literal);
+    TokenVar *tv = new TokenVar(*var);
+    tv->file = tb->file;
+    tv->line = tb->line;
+    tv->column = tb->column;
+    return tv;
+}
+
+static int64_t fixed_array_object_size(const Variable &var)
+{
+    if ( !var.is_fixed_array() || !var.type || !var.type->size )
+	return -1;
+    return (int64_t)var.type->size * (int64_t)var.total_elements();
+}
+
+static int64_t token_pointer_element_size(TokenBase *tb)
+{
+    if ( !tb )
+	return 1;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
+    {
+	if ( tv->var.is_fixed_array() && tv->var.type )
+	    return tv->var.type->size ? (int64_t)tv->var.type->size : 1;
+    }
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
+    {
+	if ( tm->is_fixed_array_member() && tm->var.type )
+	    return tm->var.type->size ? (int64_t)tm->var.type->size : 1;
+    }
+    DataDef *dd = tb->datadef();
+    if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd) )
+	return (pdd->base_type && pdd->base_type->size) ? (int64_t)pdd->base_type->size : 1;
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+	return (add->element_type && add->element_type->size) ? (int64_t)add->element_type->size : 1;
+    return (dd && dd->size) ? (int64_t)dd->size : 1;
+}
+
+static int64_t known_object_size_for_expr(TokenBase *expr, int mode);
+
+static int64_t remaining_object_size(int64_t base_size, int64_t index, int64_t elem_size)
+{
+    if ( base_size < 0 || index < 0 || elem_size <= 0 )
+	return -1;
+    int64_t used = index * elem_size;
+    if ( used >= base_size )
+	return 0;
+    return base_size - used;
+}
+
+static int64_t known_object_size_for_lvalue(TokenBase *expr, int mode)
+{
+    if ( !expr )
+	return -1;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+    {
+	int64_t array_size = fixed_array_object_size(tv->var);
+	if ( array_size >= 0 )
+	    return array_size;
+	return tv->var.type ? (int64_t)tv->var.type->size : -1;
+    }
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
+    {
+	if ( tm->is_fixed_array_member() )
+	{
+	    DataDefSTRUCT *sdd = tm->owner_struct_type();
+	    std::string mname = tm->var.name;
+	    if ( sdd && tm->var.type )
+		return (int64_t)sdd->m_count(mname) * (int64_t)tm->var.type->size;
+	}
+	return tm->var.type ? (int64_t)tm->var.type->size : -1;
+    }
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(expr) )
+    {
+	int64_t index = 0;
+	if ( !try_eval_known_integer(ts->index, index) )
+	    return -1;
+	int64_t base_size = -1;
+	if ( ts->object.is_fixed_array() )
+	    base_size = fixed_array_object_size(ts->object);
+	else
+	    base_size = ts->object.object_size_hint;
+	return remaining_object_size(base_size, index, ts->datadef() ? (int64_t)ts->datadef()->size : 1);
+    }
+    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(expr) )
+    {
+	int64_t index = 0;
+	if ( !try_eval_known_integer(tse->index, index) )
+	    return -1;
+	int64_t base_size = known_object_size_for_expr(tse->base_expr, mode);
+	return remaining_object_size(base_size, index, tse->datadef() ? (int64_t)tse->datadef()->size : 1);
+    }
+    return expr->datadef() ? (int64_t)expr->datadef()->size : -1;
+}
+
+static int64_t known_object_size_for_expr(TokenBase *expr, int mode)
+{
+    if ( !expr )
+	return -1;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
+    {
+	int64_t array_size = fixed_array_object_size(tv->var);
+	if ( array_size >= 0 )
+	    return array_size;
+	return tv->var.object_size_hint;
+    }
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
+    {
+	if ( tm->is_fixed_array_member() )
+	{
+	    DataDefSTRUCT *sdd = tm->owner_struct_type();
+	    std::string mname = tm->var.name;
+	    if ( sdd && tm->var.type )
+		return (int64_t)sdd->m_count(mname) * (int64_t)tm->var.type->size;
+	}
+	return tm->var.object_size_hint;
+    }
+    if ( TokenAddrOf *tao = dynamic_cast<TokenAddrOf *>(expr) )
+    {
+	int64_t array_size = fixed_array_object_size(tao->var);
+	if ( array_size >= 0 )
+	    return array_size;
+	return tao->var.type ? (int64_t)tao->var.type->size : -1;
+    }
+    if ( TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(expr) )
+	return known_object_size_for_lvalue(tae->expr, mode);
+    if ( TokenAdd *ta = dynamic_cast<TokenAdd *>(expr) )
+    {
+	int64_t offset = 0;
+	if ( try_eval_known_integer(ta->right, offset) )
+	{
+	    int64_t base_size = known_object_size_for_expr(ta->left, mode);
+	    return remaining_object_size(base_size, offset, token_pointer_element_size(ta->left));
+	}
+	if ( try_eval_known_integer(ta->left, offset) )
+	{
+	    int64_t base_size = known_object_size_for_expr(ta->right, mode);
+	    return remaining_object_size(base_size, offset, token_pointer_element_size(ta->right));
+	}
+	return -1;
+    }
+    if ( TokenSub *ts = dynamic_cast<TokenSub *>(expr) )
+    {
+	int64_t offset = 0;
+	if ( try_eval_known_integer(ts->right, offset) )
+	{
+	    int64_t base_size = known_object_size_for_expr(ts->left, mode);
+	    return remaining_object_size(base_size, offset, token_pointer_element_size(ts->left));
+	}
+	return -1;
+    }
+    if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+    {
+	int64_t true_size = known_object_size_for_expr(tt->true_expr, mode);
+	int64_t false_size = known_object_size_for_expr(tt->false_expr, mode);
+	if ( true_size < 0 || false_size < 0 )
+	    return -1;
+	return mode == 1 ? std::min(true_size, false_size)
+			 : std::max(true_size, false_size);
+    }
+    if ( TokenCast *tc = dynamic_cast<TokenCast *>(expr) )
+	return known_object_size_for_expr(tc->expr, mode);
+    if ( TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(expr) )
+    {
+	if ( (tcf->var.name == "__builtin_alloca" || tcf->var.name == "alloca" || tcf->var.name == "malloc")
+	  && tcf->argc() == 1 )
+	{
+	    int64_t size = 0;
+	    if ( try_eval_known_integer(tcf->parameters[0], size) && size >= 0 )
+		return size;
+	}
+    }
+    return -1;
+}
+
+static void update_pointer_object_size_hints(TokenBase *expr)
+{
+    if ( !expr )
+	return;
+    if ( TokenAssign *ta = dynamic_cast<TokenAssign *>(expr) )
+    {
+	if ( TokenVar *lhs = dynamic_cast<TokenVar *>(ta->left) )
+	{
+	    if ( lhs->var.type && lhs->var.type->is_pointer() && !lhs->var.is_fixed_array() )
+		lhs->var.object_size_hint = known_object_size_for_expr(ta->right, 0);
+	}
+	update_pointer_object_size_hints(ta->left);
+	update_pointer_object_size_hints(ta->right);
+	return;
+    }
+    if ( TokenComma *tc = dynamic_cast<TokenComma *>(expr) )
+    {
+	update_pointer_object_size_hints(tc->left);
+	update_pointer_object_size_hints(tc->right);
+	return;
+    }
+    if ( TokenTerQ *tt = dynamic_cast<TokenTerQ *>(expr) )
+    {
+	update_pointer_object_size_hints(tt->condition);
+	update_pointer_object_size_hints(tt->true_expr);
+	update_pointer_object_size_hints(tt->false_expr);
+    }
 }
 
 static TokenBase *materialize_runtime_struct_size_captures(Program &pgm, TokenCpnd *code,
@@ -2401,6 +2832,29 @@ static int64_t parse_constant_integer_expression(Program &pgm)
     return parse_constant_ternary(pgm);
 }
 
+static bool bracket_dim_constant_expression_parses(Program &pgm)
+{
+    auto saved_tokens = pgm.tokens;
+    size_t saved_diag_count = pgm.diagnostics.size();
+    Program::ErrorInfo saved_error = pgm.last_error;
+    try
+    {
+	int64_t n = parse_constant_integer_expression(pgm);
+	TokenBase *cl = pgm.nextToken();
+	pgm.tokens = saved_tokens;
+	pgm.diagnostics.resize(saved_diag_count);
+	pgm.last_error = saved_error;
+	return n >= 0 && cl && cl->id() == TokenID::tkClSqr;
+    }
+    catch ( ... )
+    {
+	pgm.tokens = saved_tokens;
+	pgm.diagnostics.resize(saved_diag_count);
+	pgm.last_error = saved_error;
+	return false;
+    }
+}
+
 static bool bracket_dim_uses_runtime_value(Program &pgm,
 					   const std::set<std::string> *runtime_names = NULL)
 {
@@ -2426,6 +2880,35 @@ static bool bracket_dim_uses_runtime_value(Program &pgm,
     return false;
 }
 
+static bool bracket_dim_has_constant_fold_query(Program &pgm)
+{
+    int depth = 1;
+    for ( auto it = pgm.tokens.begin(); it != pgm.tokens.end() && depth > 0; ++it )
+    {
+	TokenBase *t = *it;
+	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
+	if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
+	if ( depth != 1 )
+	    continue;
+	if ( t->type() != TokenType::ttIdentifier )
+	    continue;
+	std::string name = ((TokenIdent *)t)->str;
+	if ( name == "sizeof" || is_alignof_identifier(name) )
+	    return true;
+    }
+    return false;
+}
+
+static bool bracket_dim_needs_runtime_value(Program &pgm,
+					    const std::set<std::string> *runtime_names = NULL)
+{
+    if ( !bracket_dim_uses_runtime_value(pgm, runtime_names) )
+	return false;
+    if ( !bracket_dim_has_constant_fold_query(pgm) )
+	return true;
+    return !bracket_dim_constant_expression_parses(pgm);
+}
+
 static DataDef *parse_typedef_array_suffix(Program &pgm, DataDef *base_dd,
 					   const std::string &alias_name,
 					   TokenBase *err_tok)
@@ -2447,7 +2930,7 @@ static DataDef *parse_typedef_array_suffix(Program &pgm, DataDef *base_dd,
 	    continue;
 	}
 	pgm.pushToken(cl);
-	if ( !alias_count_expr && bracket_dim_uses_runtime_value(pgm) )
+	if ( !alias_count_expr && bracket_dim_needs_runtime_value(pgm) )
 	{
 	    alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
 	    cl = pgm.nextToken();
@@ -3094,6 +3577,11 @@ void Program::attach_engine(MadcEngine *eng)
     registration_policy = engine->registration_policy;
     builtin_registry = engine->builtin_registry;
     namespace_registry = engine->namespace_registry;
+}
+
+bool Program::is_builtin_disabled(const std::string &name) const
+{
+    return disabled_builtin_names.count(name) != 0;
 }
 
 void Program::clear_error()
@@ -3935,6 +4423,7 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("putf",	 datatype_vec_t{DataType::dtVOID, DataType::dtFLOAT}, (fVOIDFUNC)printfloat);
     builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
+    builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{rtPtr(DataType::dtCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
     // alloca() is a compiler intrinsic, not a real libc function.
     // Map to malloc for now (true stack alloca needs JIT intrinsic support).
     builtin_registry.add_core_function("alloca", datatype_vec_t{rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)malloc);
@@ -5403,10 +5892,11 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    // `struct node *` in `struct node *arr[2]` is already the element),
 	    // whereas raw-pointer subscripts dereference one level.
 	    bool fixed_array = false;
-	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
+	    TokenVar *tv = dynamic_cast<TokenVar *>(result);
+	    if ( tv )
 		fixed_array = tv->var.is_fixed_array();
 	    if ( fixed_array )
-		elem_type = base_type ? base_type : &ddINT64;
+		elem_type = build_fixed_array_query_type(tv->var.type, tv->var.dims, 1);
 	    else if ( base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
@@ -5634,6 +6124,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
     Variable *var;
     bool done = false;
     int brackets = initial_brackets;
+    auto awaiting_prefix_step_operand = [&]() -> bool
+    {
+	return exStack.empty()
+	    && !opStack.empty()
+	    && (opStack.top()->id() == TokenID::tkInc
+	     || opStack.top()->id() == TokenID::tkDec);
+    };
 
     DBG(std::cout << tb->line << ':' << tb->column << ":Program::parseExpression(" << tb->get() << " type: " << (int)tb->type() << ") start" << (conditional ? " conditional" : "") << std::endl);
 
@@ -6173,7 +6670,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    {
 				// Simple literal: cast binds tightly.
 				// (double)5 consumes only 5, not < 3.0.
-				cast_expr = cast_expr_tb;
+				cast_expr = materialize_cast_literal_operand(*this, cast_expr_tb);
 			    }
 			    else if ( cast_expr_tb
 				   && (cast_expr_tb->id() == TokenID::tkBnot  // ~
@@ -6531,7 +7028,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// on exStack, or when the previous token is a binary/assign
 		// operator (so `x = +20` works). Exclude postfix `++`/`--`
 		// so `x++ + 10` stays binary.
-		if ( tb->id() == TokenID::tkAdd && isUnaryPosition()
+		if ( tb->id() == TokenID::tkAdd && (isUnaryPosition() || awaiting_prefix_step_operand())
 		  && (exStack.empty()
 		   || (_prv_token && (_prv_token->id() == TokenID::tkAssign
 		     || _prv_token->id() == TokenID::tkComma
@@ -6540,13 +7037,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		     || _prv_token->id() == TokenID::tkSemi))) )
 		    break;
 		// & address-of in unary position
-		if ( tb->id() == TokenID::tkBand && isUnaryPosition() )
+		if ( tb->id() == TokenID::tkBand && (isUnaryPosition() || awaiting_prefix_step_operand()) )
 		{
 		    exStack.push(parseAddressOfExpression(tb));
 		    break;
 		}
 		// GNU computed-goto label address: `&&label`
-		if ( tb->id() == TokenID::tkLand && isUnaryPosition() )
+		if ( tb->id() == TokenID::tkLand && (isUnaryPosition() || awaiting_prefix_step_operand()) )
 		{
 		    TokenBase *label_tb = nextToken();
 		    if ( !label_tb || !is_contextual_identifier_token(label_tb) )
@@ -6557,7 +7054,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    break;
 		}
 			// * dereference in unary position
-			if ( tb->id() == TokenID::tkMul && isUnaryPosition() )
+			if ( tb->id() == TokenID::tkMul && (isUnaryPosition() || awaiting_prefix_step_operand()) )
 			{
 			    TokenBase *deref_tb = nextToken();
 			    if ( deref_tb->id() == TokenID::tkOpBrk )
@@ -6680,14 +7177,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					exStack.push(new TokenVar(*dvar));
 					break;
 				    }
-				    if ( !dvar->type->is_pointer() && !dvar->is_fixed_array() )
+				    DataDef *base = deref_type_for_variable(dvar);
+				    if ( !base )
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-				    DataDef *base = dvar->type;
-				    if ( dvar->type->is_pointer() )
-				    {
-					DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dvar->type);
-					base = dptr ? dptr->base_type : &ddINT64;
-				    }
 				    if ( peekToken() && (peekToken()->id() == TokenID::tkInc || peekToken()->id() == TokenID::tkDec) )
 				    {
 					TokenBase *step_tb = nextToken();
@@ -6752,14 +7244,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					Variable *inner_var = findVariable(inner_name);
 					if ( !inner_var )
 					    Throw(inner_tb) << "undeclared identifier '" << inner_name << "'" << flush;
-					if ( !inner_var->type->is_pointer() && !inner_var->is_fixed_array() )
+					DataDef *inner_base = deref_type_for_variable(inner_var);
+					if ( !inner_base )
 					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
-					DataDef *inner_base = inner_var->type;
-					if ( inner_var->type->is_pointer() )
-					{
-					    DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_var->type);
-					    inner_base = inner_dptr ? inner_dptr->base_type : &ddINT64;
-					}
 					deref_expr = new TokenDeref(*inner_var, inner_base);
 				    }
 				    else
@@ -8388,7 +8875,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    break;
 			}
 			pgm.pushToken(cl);
-			if ( !inner_count_expr && bracket_dim_uses_runtime_value(pgm) )
+			if ( !inner_count_expr && bracket_dim_needs_runtime_value(pgm) )
 			{
 			    inner_count_expr = pgm.parseExpression(pgm.nextToken(), true);
 			    cl = pgm.nextToken();
@@ -8443,7 +8930,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    TokenBase *cl = pgm.nextToken();
 			    if ( cl && cl->id() == TokenID::tkClSqr ) { ccount = 0; break; }
 			    pgm.pushToken(cl);
-			    if ( !ccount_expr && bracket_dim_uses_runtime_value(pgm) )
+			    if ( !ccount_expr && bracket_dim_needs_runtime_value(pgm) )
 			    {
 				ccount_expr = pgm.parseExpression(pgm.nextToken(), true);
 				cl = pgm.nextToken();
@@ -8667,7 +9154,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    break;
 			}
 			pgm.pushToken(cl);
-			if ( !member_count_expr && bracket_dim_uses_runtime_value(pgm) )
+			if ( !member_count_expr && bracket_dim_needs_runtime_value(pgm) )
 			{
 			    member_count_expr = pgm.parseExpression(pgm.nextToken(), true);
 			    cl = pgm.nextToken();
@@ -9668,6 +10155,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	base_dd = pgm.getPointerType(base_dd);
     }
 
+    std::string gnu_mode_name;
+    if ( is_attribute_identifier_token(pgm.peekToken()) )
+    {
+	consume_typedef_gnu_attributes(pgm, &gnu_mode_name);
+	base_dd = apply_gnu_mode_alias(base_dd, gnu_mode_name);
+    }
+
     // Function-pointer typedef Form 2: typedef RET (*NAME)(params);
     TokenBase *peek = pgm.peekToken();
     if ( peek && peek->id() == TokenID::tkOpBrk )
@@ -9743,7 +10237,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 		continue;
 	    }
 	    pgm.pushToken(cl);
-	    if ( !alias_count_expr && bracket_dim_uses_runtime_value(pgm) )
+	    if ( !alias_count_expr && bracket_dim_needs_runtime_value(pgm) )
 	    {
 		alias_count_expr = pgm.parseExpression(pgm.nextToken(), true);
 		cl = pgm.nextToken();
@@ -10165,6 +10659,64 @@ TokenBase *TokenDEFER::parse(Program &pgm)
 }
 
 // parse switch(expr) { case val: ...; break; default: ...; }
+static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *tn)
+{
+    TokenCASE *target = NULL;
+
+    if ( tn->id() == TokenID::tkCASE )
+    {
+	TokenCASE *tc = new TokenCASE();
+	tc->file = tn->file;
+	tc->line = tn->line;
+	tc->column = tn->column;
+	TokenBase *val_anchor = pgm.peekToken();
+	int64_t case_val = parse_constant_integer_expression(pgm);
+	TokenInt *val_tok = new TokenInt(case_val);
+	if ( val_anchor )
+	{
+	    val_tok->file = val_anchor->file;
+	    val_tok->line = val_anchor->line;
+	    val_tok->column = val_anchor->column;
+	}
+	tc->value = val_tok;
+	tn = pgm.nextToken();
+	if ( tn->id() != TokenID::tkTerC )
+	    pgm.Throw(tn) << "Expecting : after case value" << flush;
+	sw->cases.push_back(tc);
+	target = tc;
+    }
+    else
+    {
+	tn = pgm.nextToken();
+	if ( tn->id() != TokenID::tkTerC )
+	    pgm.Throw(tn) << "Expecting : after default" << flush;
+	if ( sw->defaultcase )
+	    pgm.Throw(tn) << "duplicate default label in switch" << flush;
+	sw->defaultcase = new TokenCASE();
+	sw->defaultcase->value = NULL;
+	sw->defaultcase->file = tn->file;
+	sw->defaultcase->line = tn->line;
+	sw->defaultcase->column = tn->column;
+	sw->default_index = (int)sw->cases.size();
+	target = sw->defaultcase;
+    }
+
+    while ( pgm.peekToken()
+	 && pgm.peekToken()->id() != TokenID::tkCASE
+	 && pgm.peekToken()->id() != TokenID::tkDEFAULT
+	 && pgm.peekToken()->id() != TokenID::tkClBrc )
+    {
+	TokenBase *stmt = pgm.parseStatement(pgm.nextToken());
+	if ( stmt )
+	    target->statements.push_back(stmt);
+    }
+
+    if ( !pgm.switch_case_stack.empty() )
+	pgm.switch_case_stack.back() = target;
+
+    return target;
+}
+
 TokenBase *TokenSWITCH::parse(Program &pgm)
 {
     DBG(std::cout << "TokenSWITCH::parse()" << std::endl);
@@ -10189,89 +10741,60 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
     if ( tn->id() != TokenID::tkOpBrc )
 	pgm.Throw(tn) << "Expecting { after switch()" << flush;
 
-    // parse case/default blocks until }
+    pgm.switch_stack.push_back(this);
+    pgm.switch_case_stack.push_back(NULL);
+
+    // Parse the switch body as one linear statement stream. Case/default
+    // labels can legally appear inside nested compounds; those nested
+    // parses hoist the label into this switch and update
+    // switch_case_stack.back() so later statements attach to the newest
+    // active label.
     while ( (tn = pgm.nextToken()) )
     {
 	if ( tn->id() == TokenID::tkClBrc )
 	    break;
 	if ( tn->id() == TokenID::tkCASE )
 	{
-	    TokenCASE *tc = new TokenCASE();
-	    tc->file = tn->file;
-	    tc->line = tn->line;
-	    tc->column = tn->column;
-	    // Parse case value as a constant integer expression. This accepts
-	    // plain literals (`case 42:`, `case 'a':`), enum constants, and
-	    // parenthesized / negated forms such as `case EOF:` where EOF
-	    // expands to `(-1)`. The evaluated int64 is wrapped in a TokenInt
-	    // for downstream compile().
-	    TokenBase *val_anchor = pgm.peekToken();
-	    int64_t case_val = parse_constant_integer_expression(pgm);
-	    TokenInt *val_tok = new TokenInt(case_val);
-	    if ( val_anchor )
-	    {
-		val_tok->file = val_anchor->file;
-		val_tok->line = val_anchor->line;
-		val_tok->column = val_anchor->column;
-	    }
-	    tc->value = val_tok;
-	    // expect : after case value
-	    tn = pgm.nextToken();
-	    if ( tn->id() != TokenID::tkTerC )
-		pgm.Throw(tn) << "Expecting : after case value" << flush;
-	    // parse statements until next case/default/}
-	    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkCASE
-		    && pgm.peekToken()->id() != TokenID::tkDEFAULT
-		    && pgm.peekToken()->id() != TokenID::tkClBrc )
-	    {
-		TokenBase *stmt = pgm.parseStatement(pgm.nextToken());
-		if ( stmt )
-		    tc->statements.push_back(stmt);
-	    }
-	    cases.push_back(tc);
+	    parse_switch_label(pgm, this, tn);
+	    continue;
 	}
 	else if ( tn->id() == TokenID::tkDEFAULT )
 	{
-	    // expect : after default
-	    tn = pgm.nextToken();
-	    if ( tn->id() != TokenID::tkTerC )
-		pgm.Throw(tn) << "Expecting : after default" << flush;
-	    defaultcase = new TokenCASE();
-	    defaultcase->value = NULL;
-	    defaultcase->file = tn->file;
-	    defaultcase->line = tn->line;
-	    defaultcase->column = tn->column;
-	    default_index = (int)cases.size();
-	    // parse statements until next case/}
-	    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkCASE
-		    && pgm.peekToken()->id() != TokenID::tkDEFAULT
-		    && pgm.peekToken()->id() != TokenID::tkClBrc )
-	    {
-		TokenBase *stmt = pgm.parseStatement(pgm.nextToken());
-		if ( stmt )
-		    defaultcase->statements.push_back(stmt);
-	    }
-	}
-	else if ( tn->type() == TokenType::ttDataType
-	       || tn->type() == TokenType::ttIdentifier )
-	{
-	    // C allows variable declarations in a switch body before any
-	    // case label — they're unreachable (no case path enters
-	    // there) but valid as compile-time declarations. SMAUG's
-	    // `switch(SPELL_POWER(skill)) { OBJ_DATA *clone; default: ... }`
-	    // is a common form. Parse and discard.
-	    DBG(std::cout << "TokenSWITCH::parse() skipping pre-case declaration" << std::endl);
-	    pgm.parseStatement(tn);
-	}
-	else if ( tn->id() == TokenID::tkSemi )
-	{
-	    // Stray `;` between pre-case declarations and the first case
-	    // label — also an empty statement at switch body scope.
+	    parse_switch_label(pgm, this, tn);
 	    continue;
 	}
+
+	TokenCASE *active_case = pgm.switch_case_stack.back();
+	if ( !active_case )
+	{
+	    if ( tn->type() == TokenType::ttDataType
+	      || tn->type() == TokenType::ttIdentifier )
+	    {
+		// C allows variable declarations in a switch body before any
+		// case label — they're unreachable (no case path enters
+		// there) but valid as compile-time declarations. SMAUG's
+		// `switch(SPELL_POWER(skill)) { OBJ_DATA *clone; default: ... }`
+		// is a common form. Parse and discard.
+		DBG(std::cout << "TokenSWITCH::parse() skipping pre-case declaration" << std::endl);
+		pgm.parseStatement(tn);
+	    }
+	    else if ( tn->id() == TokenID::tkSemi )
+	    {
+		continue;
+	    }
+	    else
+		pgm.Throw(tn) << "Expecting case or default in switch body" << flush;
+	}
 	else
-	    pgm.Throw(tn) << "Expecting case or default in switch body" << flush;
+	{
+	    TokenBase *stmt = pgm.parseStatement(tn);
+	    if ( stmt )
+		active_case->statements.push_back(stmt);
+	}
     }
+
+    pgm.switch_case_stack.pop_back();
+    pgm.switch_stack.pop_back();
 
     DBG(std::cout << "TokenSWITCH::parse() " << cases.size() << " cases" << (defaultcase ? " + default" : "") << std::endl);
     return this;
@@ -10668,6 +11191,13 @@ TokenBase *Program::parseCompound()
 	    return code;
 	}
 
+	if ( !switch_stack.empty()
+	  && (tb->id() == TokenID::tkCASE || tb->id() == TokenID::tkDEFAULT) )
+	{
+	    parse_switch_label(*this, switch_stack.back(), tb);
+	    continue;
+	}
+
 	if ( (tb=parseStatement(tb)) )
 	{
 	    DBG(std::cout << "parseStatement() returns token" << std::endl);
@@ -10701,6 +11231,54 @@ static bool is_old_style_parameter_head(Program &pgm, TokenBase *tb)
 
     TokenBase *peek = pgm.peekToken();
     return peek && (peek->id() == TokenID::tkComma || peek->id() == TokenID::tkClBrk);
+}
+
+static bool parse_array_designator_initializer(Program &pgm, TokenBase *&next_init,
+					       size_t &first_index, size_t &last_index)
+{
+    if ( !next_init || next_init->id() != TokenID::tkOpSqr )
+	return false;
+
+    TokenBase *first_tok = pgm.nextToken();
+    if ( !first_tok )
+	pgm.Throw(next_init) << "Unexpected end of input in array designator" << flush;
+    pgm.pushToken(first_tok);
+
+    int64_t first = parse_constant_integer_expression(pgm);
+    if ( first < 0 )
+	pgm.Throw(next_init) << "Array designator index must be non-negative" << flush;
+
+    int64_t last = first;
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkDot )
+    {
+	TokenBase *dot1 = pgm.nextToken();
+	TokenBase *dot2 = pgm.nextToken();
+	TokenBase *dot3 = pgm.nextToken();
+	if ( !dot1 || !dot2 || !dot3
+	  || dot1->id() != TokenID::tkDot
+	  || dot2->id() != TokenID::tkDot
+	  || dot3->id() != TokenID::tkDot )
+	    pgm.Throw(dot1 ? dot1 : next_init) << "Expecting '...' in array designator range" << flush;
+	last = parse_constant_integer_expression(pgm);
+	if ( last < first )
+	    pgm.Throw(next_init) << "Array designator range end precedes start" << flush;
+    }
+
+    TokenBase *close = pgm.nextToken();
+    if ( !close || close->id() != TokenID::tkClSqr )
+	pgm.Throw(close ? close : next_init) << "Expecting ']' after array designator" << flush;
+
+    TokenBase *eq = pgm.nextToken();
+    if ( !eq || eq->id() != TokenID::tkAssign )
+	pgm.Throw(eq ? eq : close) << "Expecting '=' after array designator" << flush;
+
+    first_index = (size_t)first;
+    last_index = (size_t)last;
+    next_init = pgm.nextToken();
+    if ( !next_init )
+	pgm.Throw(eq) << "Expected value after array designator" << flush;
+
+    return true;
 }
 
 static DataDef *parse_old_style_parameter_base(Program &pgm, TokenBase *&nt)
@@ -11239,7 +11817,7 @@ grabnt:
 		param_runtime_names.insert(pid);
 		for ( size_t ii = 0; ii < ids.size(); ++ii )
 		    param_runtime_names.insert(ids[ii]);
-		if ( bracket_dim_uses_runtime_value(*this, &param_runtime_names) )
+		if ( bracket_dim_needs_runtime_value(*this, &param_runtime_names) )
 		{
 		    dim_expr = parseExpression(nextToken(), true);
 		    param_array_dims.push_back(0);
@@ -11391,6 +11969,9 @@ paramdecl:
 	method = NULL;
     }
 
+    std::string func_alias_name;
+    nt = consume_gnu_asm_label(*this, nt, &func_alias_name);
+
     // Semicolon ends a function declaration; comma continues another
     // function declarator with the same return type: `void a(), b();`.
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkComma )
@@ -11400,6 +11981,8 @@ paramdecl:
 	    method = new Method(*var);
 	    var->data = (void *)method;
 	}
+	if ( !func_alias_name.empty() )
+	    var->storage_alias_name = func_alias_name;
 	if ( owner_class )
 	    method->owner_class = owner_class;
 	DBG(std::cout << "parseFunction() forward declaration of function " << id << std::endl);
@@ -11436,6 +12019,8 @@ paramdecl:
     std::set<std::string> func_attrs;
     size_t func_align = 0;
     nt = consume_gnu_attributes(*this, nt, &func_attrs, NULL, &func_align);
+    if ( !func_alias_name.empty() )
+	var->storage_alias_name = func_alias_name;
     if ( func_attrs.count("no_instrument_function")
       || func_attrs.count("__no_instrument_function__") )
 	func->no_instrument_function = true;
@@ -11878,6 +12463,17 @@ static void append_string_literal_chars(TokenStructLit *slit, TokenStr *strtok)
 	slit->inits.push_back(new TokenInt((int64_t)(unsigned char)c));
 }
 
+static void assign_initializer_range(std::vector<TokenBase *> &inits,
+				     size_t first_index,
+				     size_t last_index,
+				     TokenBase *value)
+{
+    if ( inits.size() <= last_index )
+	inits.resize(last_index + 1, NULL);
+    for ( size_t idx = first_index; idx <= last_index; ++idx )
+	inits[idx] = (idx == first_index) ? value : (value ? value->clone() : NULL);
+}
+
 static void infer_flexible_array_member_counts(DataDefSTRUCT *sdd,
 					       const std::vector<TokenBase *> &init_list)
 {
@@ -12160,30 +12756,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // Constants (enum values, vfCONSTANT vars, typedef'd integer
 	    // constants) stay on the parse_constant_integer_expression path
 	    // because resolve_integer_constant handles them.
-	    bool is_vla = false;
-	    int depth = 1;
-	    for ( auto it = tokens.begin(); it != tokens.end() && depth > 0; ++it )
-	    {
-		TokenBase *t = *it;
-		if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
-		if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
-		if ( t->id() == TokenID::tkSemi || t->id() == TokenID::tkOpBrc ) break;
-		std::string name;
-		if ( t->type() == TokenType::ttIdentifier )
-		    name = ((TokenIdent *)t)->str;
-		else
-		    continue;
-		Variable *v = findVariable(name);
-		// No matching variable → assume it'll resolve via some
-		// other route (typedef, enum, lookup retry). NOT a VLA marker.
-		if ( !v )
-		    continue;
-		// Constant variable → still a fixed dim.
-		if ( v->is_constant() )
-		    continue;
-		is_vla = true;
-		break;
-	    }
+	    bool is_vla = bracket_dim_needs_runtime_value(*this);
 	    if ( is_vla && arr_dims.empty() && !vla_size_expr )
 	    {
 		// First-dim VLA: capture the runtime expression.
@@ -12339,19 +12912,35 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    {
 			TokenBase *ni = nextToken();
 			// Skip designator `.field =` in nested init
+			size_t design_first = 0;
+			size_t design_last = 0;
+			bool array_designator = false;
 			if ( ni->id() == TokenID::tkDot )
 			{
 			    nextToken(); // field name
 			    nextToken(); // '='
 			    ni = nextToken();
 			}
+			else
+			    array_designator = parse_array_designator_initializer(*this, ni,
+				design_first, design_last);
 			if ( ni->id() == TokenID::tkOpBrc )
 			{
 			    pushToken(ni);
-			    slit->inits.push_back(read_struct_lit());
+			    TokenBase *nested = read_struct_lit();
+			    if ( array_designator )
+				assign_initializer_range(slit->inits, design_first, design_last, nested);
+			    else
+				slit->inits.push_back(nested);
 			}
 			else
-			    slit->inits.push_back(parseExpression(ni));
+			{
+			    TokenBase *expr = parseExpression(ni);
+			    if ( array_designator )
+				assign_initializer_range(slit->inits, design_first, design_last, expr);
+			    else
+				slit->inits.push_back(expr);
+			}
 		    }
 		    TokenBase *isep = peekToken();
 		    if ( isep && isep->id() == TokenID::tkComma )
@@ -12466,15 +13055,23 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		    // Array designator: [index] = value
 		    else if ( next_init->id() == TokenID::tkOpSqr )
 		    {
-			int sqd = 1;
-			while ( sqd > 0 ) {
-			    TokenBase *t = nextToken();
-			    if ( !t ) break;
-			    if ( t->id() == TokenID::tkOpSqr ) ++sqd;
-			    else if ( t->id() == TokenID::tkClSqr ) --sqd;
+			size_t first_index = 0;
+			size_t last_index = 0;
+			parse_array_designator_initializer(*this, next_init,
+			    first_index, last_index);
+			TokenBase *design_value = NULL;
+			if ( next_init->id() == TokenID::tkOpBrc )
+			{
+			    pushToken(next_init);
+			    design_value = read_struct_lit();
 			}
-			nextToken(); // consume '='
-			next_init = nextToken();
+			else
+			    design_value = parseExpression(next_init);
+			assign_initializer_range(init_list, first_index, last_index, design_value);
+			TokenBase *sep = peekToken();
+			if ( sep && sep->id() == TokenID::tkComma )
+			    nextToken();
+			continue;
 		    }
 		    if ( is_struct_init && next_init->type() == TokenType::ttString )
 		    {
@@ -12492,8 +13089,28 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			    if ( member_count == 0 || member_count > slit->inits.size() )
 				slit->inits.push_back(new TokenInt(0));
 			    init_list.push_back(slit);
+			    TokenBase *sep = peekToken();
+			    if ( sep && sep->id() == TokenID::tkComma )
+				nextToken();
 			    continue;
 			}
+		    }
+		    if ( !arr_dims.empty()
+		      && arr_dims.size() > 1
+		      && next_init->type() == TokenType::ttString
+		      && is_char_array_element_type(decl_type) )
+		    {
+			TokenStructLit *slit = string_literal_to_char_init((TokenStr *)next_init, false);
+			while ( peekToken() && peekToken()->type() == TokenType::ttString )
+			    append_string_literal_chars(slit, (TokenStr *)nextToken());
+			size_t inner_count = arr_dims[1];
+			if ( inner_count == 0 || inner_count > slit->inits.size() )
+			    slit->inits.push_back(new TokenInt(0));
+			init_list.push_back(slit);
+			TokenBase *sep = peekToken();
+			if ( sep && sep->id() == TokenID::tkComma )
+			    nextToken();
+			continue;
 		    }
 		    TokenBase *expr = parseExpression(next_init);
 		    init_list.push_back(expr);
@@ -12662,6 +13279,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		td->initialize = NULL;
 	    }
 	}
+	update_pointer_object_size_hints(td->initialize);
 
 	// Comma-continuation: `int a, b = 1, c;` or
 	// `char a[8], b[16];` — after the first declarator, if the next token is
@@ -12753,6 +13371,7 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 	seq->column = expr->column;
 	expr = seq;
     }
+    update_pointer_object_size_hints(expr);
     return expr;
 }
 
@@ -13156,6 +13775,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    {
 		std::vector<DataDef *> rtypes;
 		std::vector<TokenBase *> saved;
+		bool saw_multi_return_comma = false;
 		while ( true )
 		{
 		    TokenBase *rt = nextToken();
@@ -13168,6 +13788,16 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    if ( sep->id() == TokenID::tkClBrk ) break;
 		    if ( sep->id() != TokenID::tkComma )
 			Throw(sep) << "Expecting , or ) in multi-return type list" << flush;
+		    saw_multi_return_comma = true;
+		}
+		if ( !saw_multi_return_comma )
+		{
+		    for ( std::vector<TokenBase *>::reverse_iterator it = saved.rbegin();
+			  it != saved.rend(); ++it )
+			if ( *it )
+			    pushToken(*it);
+		    resetPrevToken();
+		    return parseExprStmt(tb);
 		}
 		TokenBase *fname = nextToken();
 		saved.push_back(fname);

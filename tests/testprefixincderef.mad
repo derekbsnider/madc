@@ -1,0 +1,8 @@
+int main()
+{
+	int y = 5;
+	int *p = &y;
+	++*p;
+	printf("%d\n", y);
+	return 0;
+}
