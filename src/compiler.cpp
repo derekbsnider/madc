@@ -4082,7 +4082,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	// invoke through register
 	InvokeNode *call;
 	pgm.cc.invoke(&call, ptr_op.as<x86::Gp>(), funcsig);
-	set_invoke_args(pgm, call, params, true);
+	set_invoke_args(pgm, call, params, false);
 
 	// reload numeric captures from env back to outer variables (copy-out semantics)
 	if ( func->has_captures )
@@ -4104,18 +4104,17 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	// capture return value
 	if ( retdd.type() != DataType::dtVOID )
 	{
-		if ( !regdp.first )
-		{
-		    if ( retdd.is_real() || retdd.is_simd() )
-			_operand = retdd.newreg(pgm.cc, "fptr_ret");
-		    else
-			_operand = pgm.cc.newGpq("fptr_ret");
+	    if ( !regdp.first )
+	    {
+		if ( retdd.is_real() || retdd.is_simd() )
+		    _operand = retdd.newreg(pgm.cc, "fptr_ret");
+		else
+		    _operand = pgm.cc.newGpq("fptr_ret");
 		regdp.first = &_operand;
 	    }
 	    bind_call_return(pgm, call, regdp.first, &retdd, _operand, ret_is_variadic);
 	}
-	if ( !regdp.second )
-	    regdp.second = &func->returns;
+	regdp.second = &func->returns;
 
 	return *regdp.first;
     }

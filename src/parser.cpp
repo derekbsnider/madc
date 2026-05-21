@@ -6333,6 +6333,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			TokenVar *tv = var_call_base;
 			exStack.pop();
 			TokenCallFunc *tc = new TokenCallFunc(tv->var);
+			tc->src_node = tv;
 			tc->file = tb->file;
 			tc->line = tb->line;
 			tc->column = tb->column;
@@ -8086,9 +8087,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     consume_attribute();
 
     // optional struct tag name
-    if ( tn->type() == TokenType::ttIdentifier )
+    if ( is_contextual_identifier_token(tn) )
     {
-	tag = (TokenIdent *)pgm.nextToken(); // consume tag
+	TokenBase *tag_tb = pgm.nextToken(); // consume tag
+	std::string tag_name = contextual_identifier_name(tag_tb);
+	tag = new TokenIdent(tag_name);
+	tag->file = tag_tb->file;
+	tag->line = tag_tb->line;
+	tag->column = tag_tb->column;
 	DBG(cout << "TokenSTRUCT::parse() got tag " << tag->str << endl);
 	tn = pgm.peekToken(); // peek at what follows the tag
 	if ( !tn )
@@ -8140,11 +8146,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		alias_dd = pgm.getPointerType(alias_dd);
 	    }
 	    tn = pgm.nextToken(); // consume the alias identifier
-	    if ( tn->type() != TokenType::ttIdentifier )
+	    if ( !is_contextual_identifier_token(tn) )
 		pgm.Throw(tn) << "Expecting identifier after struct tag in typedef" << flush;
-	    TokenIdent *alias = (TokenIdent *)tn;
-	    alias_dd = parse_typedef_array_suffix(pgm, alias_dd, alias->str, tn);
-	    if ( (bmi=pgm.datatype_map.find(alias->str)) != pgm.datatype_map.end() )
+	    std::string alias_name = contextual_identifier_name(tn);
+	    alias_dd = parse_typedef_array_suffix(pgm, alias_dd, alias_name, tn);
+	    if ( (bmi=pgm.datatype_map.find(alias_name)) != pgm.datatype_map.end() )
 	    {
 		// C allows identical typedef redeclarations — silently accept
 		// when the alias maps to the same underlying type.
@@ -8160,11 +8166,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		}
 		pgm.Throw(tn) << "Identifier already defined" << flush;
 	    }
-	    tdt = new TokenDataType(alias->str.c_str(), *alias_dd);
-	    pgm.datatype_map[alias->str] = tdt;
+	    tdt = new TokenDataType(alias_name.c_str(), *alias_dd);
+	    pgm.datatype_map[alias_name] = tdt;
 	    // also register tag in struct_map so "struct tag" works
 	    if ( !alias_dd->is_pointer() )
-		pgm.struct_map[alias->str] = dmi->second;
+		pgm.struct_map[alias_name] = dmi->second;
 	    return NULL;
 	}
 

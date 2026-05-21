@@ -1,0 +1,19 @@
+void putu(unsigned long v);
+
+int main()
+{
+	struct try
+	{
+		int x;
+		int y[2];
+	};
+
+	static struct try const data[] =
+	{
+		{ 7, { 11, 13 } }
+	};
+
+	putu(data[0].x);
+	putu(data[0].y[1]);
+	return 0;
+}

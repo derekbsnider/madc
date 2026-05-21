@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `ieee/fp-cmp-8f.c` now passes.**
+  Contextual identifiers like `struct try` now parse correctly in
+  struct-tag and typedef-alias positions, and indirect function-pointer
+  calls now reset the expression type to the callee's real return type
+  before outer comparisons/casts are lowered. Added
+  `tests/teststructtrytag.mad` and `tests/testfnptrfloatretcmp.mad` as
+  local regressions. Full validation is green at `369/369` JIT and
+  `369/369` EXE, and the conservative GCC parity floor rises to at
+  least `1503/1685` (89.2%).
+
 - **GCC torture `ieee/hugeval.c`, `ieee/inf-1.c`, `ieee/inf-3.c`, and `ieee/inf-4.c` now pass.**
   The IEEE builtin macro surface now covers `__builtin_huge_val*`,
   `__builtin_isfinite*`, and `__builtin_isnan*`, and the embedded
