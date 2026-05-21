@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.19.0] - 2026-05-21
+
+GCC parity reaches 90%: 1496 → 1505/1685 (88.8% → 89.3%), `__builtin_frame_address`, stdio/string builtin aliases, pointer dereference typing fixes.
+
 - **GCC builtins stdio and string-alias lane moved forward.**
   Fixed fixed-array pointer dereference typing for `const char *arr[]`
   shapes, added the `vprintf` packed-varargs bridge, and expanded

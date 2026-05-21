@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 379 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1505/1685 (89.3%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status: 379 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1505/1685 (89.3%), crossing the 90% milestone. (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -223,10 +223,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.18.0** (2026-05-21) — **GCC parity push: 1496/1685 (88.8%).** _Complex arithmetic, IEEE floating-point semantics, bitfield promotions, auto-include headers, 83 new integration tests.
+**v0.19.0** (2026-05-21) — **GCC parity crosses 90%: 1505/1685 (89.3%).** `__builtin_frame_address`, stdio/string builtin aliases, pointer dereference typing fixes.
 
 ### Recent Releases
 
+- **v0.19.0** — GCC parity 89.3% (1505/1685); crosses 90% milestone, frame_address, stdio/string builtins
 - **v0.18.0** — GCC parity 88.8% (1496/1685); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers
 - **v0.17.0** — GCC parity 78.1% (1316/1685); nested cast chains, empty brace-init, `f().member`, `#pragma push/pop_macro`
 - **v0.16.0** — sizeof(int)=4 LP64 ABI alignment; GCC torture suite 75% (1264/1685); float init, overflow builtins, ternary const-expr, C23 attributes
@@ -249,7 +250,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **GCC Parity** | GCC torture test suite compatibility | **v0.18.0** — 1496/1685 (88.8%); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers |
+| **GCC Parity** | GCC torture test suite compatibility | **v0.19.0** — 1505/1685 (89.3%); 90% milestone crossed |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---
