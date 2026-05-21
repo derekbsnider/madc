@@ -1651,7 +1651,11 @@ static TokenBase *make_type_query_token(TokenBase *op_tb, DataDef *dd, bool want
 {
     TokenBase *result = NULL;
     if ( want_alignof || !is_runtime_sized_type(dd) )
-	result = new TokenInt((int64_t)query_datadef_measure(dd, want_alignof));
+    {
+	TokenInt *ti = new TokenInt((int64_t)query_datadef_measure(dd, want_alignof));
+	ti->setDataType(&ddUINT64);
+	result = ti;
+    }
     else
 	result = new TokenTypeQuery(dd, want_alignof);
     result->file = op_tb ? op_tb->file : NULL;
@@ -6742,6 +6746,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    {
 			size_t query_value = evaluate_type_query(*this, tb, ident_tb->str);
 			TokenInt *ti = new TokenInt((int64_t)query_value);
+			ti->setDataType(&ddUINT64);
 			ti->file = tb->file;
 			ti->line = tb->line;
 			ti->column = tb->column;
