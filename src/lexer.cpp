@@ -53,6 +53,18 @@ static bool builtin_alias_needs_retokenize(const std::string &word,
     return word == "__builtin_va_list";
 }
 
+static bool is_prefixed_literal_token(const std::string &ident,
+				      const std::string &body,
+				      size_t pos)
+{
+    if ( pos >= body.size() )
+	return false;
+    char next = body[pos];
+    if ( next != '\'' && next != '"' )
+	return false;
+    return ident == "L" || ident == "u" || ident == "U" || ident == "u8";
+}
+
 static bool is_binary_prefix(int ch, Source &source)
 {
     return ch == '0' && source.good() && (source.peek() == 'b' || source.peek() == 'B');
@@ -2438,7 +2450,8 @@ TokenBase *Program::_getToken()
 				++p;
 			    std::string ident = macro.body.substr(start, p - start);
 			    auto it = param_map.find(ident);
-			    if ( it != param_map.end() )
+			    if ( it != param_map.end()
+			      && !is_prefixed_literal_token(ident, macro.body, p) )
 				expanded += *it->second;
 			    else
 				expanded += ident;
