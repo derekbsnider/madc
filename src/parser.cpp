@@ -12512,12 +12512,22 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				TokenBase *out_tb = nextToken();
 				TokenBase *out_expr = out_tb ? parseExpression(out_tb, true) : NULL;
 				TokenBase *out_cb = nextToken();
-				TokenBase *in_colon = nextToken();
+				std::string out_constraint = ((TokenStr *)out_c)->str;
+				TokenBase *next_clause = nextToken();
+				if ( out_expr
+				  && out_cb && out_cb->id() == TokenID::tkClBrk
+				  && next_clause && next_clause->id() == TokenID::tkClBrk
+				  && out_constraint == "+r" )
+				{
+				    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+					nextToken();
+				    return out_expr;
+				}
 				TokenBase *in_c = nextToken();
 				TokenBase *in_ob = nextToken();
 				if ( out_expr
 				  && out_cb && out_cb->id() == TokenID::tkClBrk
-				  && in_colon && in_colon->id() == TokenID::tkColon
+				  && next_clause && next_clause->id() == TokenID::tkColon
 				  && in_c && in_c->type() == TokenType::ttString
 				  && in_ob && in_ob->id() == TokenID::tkOpBrk )
 				{
@@ -12525,7 +12535,6 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				    TokenBase *in_expr = in_tb ? parseExpression(in_tb, true) : NULL;
 				    TokenBase *in_cb = nextToken();
 				    TokenBase *close = nextToken();
-				    std::string out_constraint = ((TokenStr *)out_c)->str;
 				    std::string in_constraint = ((TokenStr *)in_c)->str;
 				    if ( in_expr
 				      && in_cb && in_cb->id() == TokenID::tkClBrk
