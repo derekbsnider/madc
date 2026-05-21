@@ -1280,6 +1280,30 @@ void Program::safesetne(Operand &op)
 	throw "safesetne() operand not supported";
 }
 
+void Program::safesetp(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	cc.setp(op.as<x86::Gp>().r8());
+	if ( op.x86RmSize() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
+    else
+	throw "safesetp() operand not supported";
+}
+
+void Program::safesetnp(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	cc.setnp(op.as<x86::Gp>().r8());
+	if ( op.x86RmSize() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
+    else
+	throw "safesetnp() operand not supported";
+}
+
 // Unsigned comparison setcc — setb/setbe/seta/setae. Used when either
 // operand of a < / <= / > / >= comparison is unsigned; picking the signed
 // variant in that case miscategorises values with the high bit set.

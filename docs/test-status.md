@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.17.0, GCC parity session 23 — at least 1496/1685 from the latest full sweep plus focused reruns).
+Test results as of May 21, 2026 (v0.17.0, GCC parity session 23 — at least 1498/1685 from the latest full sweep plus focused reruns).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 365 JIT pass / 0 fail
+## Current Batch Status — 366 JIT pass / 0 fail
 
 Latest results (2026-05-21):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 365 integration tests
+- Passing: 366 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -115,10 +115,13 @@ Latest results (2026-05-21):
   integration count to 364. An additional tracked regression for
   pointer-arithmetic member-address expressions like
   `&((array + 1)->field)` via `testconstaddrexprarrow.mad` now brings
-  the tracked integration count to 365.
+  the tracked integration count to 365. An additional tracked
+  regression for IEEE NaN comparisons and builtin predicates via
+  `testieeefpcompare.mad` now brings the tracked integration count to
+  366.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 365 (of 365 JIT-passing tests)
+- Passing: 366 (of 366 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so

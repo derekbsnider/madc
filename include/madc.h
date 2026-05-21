@@ -1280,6 +1280,8 @@ public:
     void safesetl(asmjit::Operand &);
     void safesetle(asmjit::Operand &);
     void safesetne(asmjit::Operand &);
+    void safesetp(asmjit::Operand &);
+    void safesetnp(asmjit::Operand &);
     // Unsigned variants — use when either comparison operand is unsigned.
     // C's "usual arithmetic conversions" treat mixed unsigned/signed as
     // unsigned, so signed setl/setg give wrong results when compared

@@ -1981,14 +1981,50 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
     }
     x86::Gp result = pgm.cc.newGpq("_cmp");
     pgm.safecmp(lval, rval, cmp_type);
-    switch(op)
+    if ( cmp_type && cmp_type->is_real() )
     {
-	case CmpKind::Eq: pgm.safesete(result);                                          break;
-	case CmpKind::Ne: pgm.safesetne(result);                                         break;
-	case CmpKind::Lt: if ( is_unsigned ) pgm.safesetb(result);  else pgm.safesetl(result);  break;
-	case CmpKind::Le: if ( is_unsigned ) pgm.safesetbe(result); else pgm.safesetle(result); break;
-	case CmpKind::Gt: if ( is_unsigned ) pgm.safeseta(result);  else pgm.safesetg(result);  break;
-	case CmpKind::Ge: if ( is_unsigned ) pgm.safesetae(result); else pgm.safesetge(result); break;
+	x86::Gp aux = pgm.cc.newGpq("_cmp_aux");
+	switch(op)
+	{
+	    case CmpKind::Eq:
+		pgm.safesete(result);
+		pgm.safesetnp(aux);
+		pgm.safeand(result, aux, &ddINT64);
+		break;
+	    case CmpKind::Ne:
+		pgm.safesetne(result);
+		pgm.safesetp(aux);
+		pgm.safeor(result, aux, &ddINT64);
+		break;
+	    case CmpKind::Lt:
+		pgm.safesetb(result);
+		pgm.safesetnp(aux);
+		pgm.safeand(result, aux, &ddINT64);
+		break;
+	    case CmpKind::Le:
+		pgm.safesetbe(result);
+		pgm.safesetnp(aux);
+		pgm.safeand(result, aux, &ddINT64);
+		break;
+	    case CmpKind::Gt:
+		pgm.safeseta(result);
+		break;
+	    case CmpKind::Ge:
+		pgm.safesetae(result);
+		break;
+	}
+    }
+    else
+    {
+	switch(op)
+	{
+	    case CmpKind::Eq: pgm.safesete(result);                                              break;
+	    case CmpKind::Ne: pgm.safesetne(result);                                             break;
+	    case CmpKind::Lt: if ( is_unsigned ) pgm.safesetb(result);  else pgm.safesetl(result);  break;
+	    case CmpKind::Le: if ( is_unsigned ) pgm.safesetbe(result); else pgm.safesetle(result); break;
+	    case CmpKind::Gt: if ( is_unsigned ) pgm.safeseta(result);  else pgm.safesetg(result);  break;
+	    case CmpKind::Ge: if ( is_unsigned ) pgm.safesetae(result); else pgm.safesetge(result); break;
+	}
     }
     regdp.second = &ddINT64;
     storage = result;

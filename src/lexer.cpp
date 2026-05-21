@@ -765,6 +765,68 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_signbitf"] = m;
 	macro_map["__builtin_signbitl"] = m;
     }
+    // IEEE floating-point comparison builtins.
+    {
+	MacroDef unordered;
+	unordered.params = {"__a", "__b"};
+	unordered.body = "(((__a) != (__a)) || ((__b) != (__b)))";
+	macro_map["__builtin_isunordered"] = unordered;
+    }
+    {
+	MacroDef lessgreater;
+	lessgreater.params = {"__a", "__b"};
+	lessgreater.body = "(((__a) < (__b)) || ((__a) > (__b)))";
+	macro_map["__builtin_islessgreater"] = lessgreater;
+    }
+    {
+	MacroDef greater;
+	greater.params = {"__a", "__b"};
+	greater.body = "((__a) > (__b))";
+	macro_map["__builtin_isgreater"] = greater;
+    }
+    {
+	MacroDef greaterequal;
+	greaterequal.params = {"__a", "__b"};
+	greaterequal.body = "((__a) >= (__b))";
+	macro_map["__builtin_isgreaterequal"] = greaterequal;
+    }
+    {
+	MacroDef less;
+	less.params = {"__a", "__b"};
+	less.body = "((__a) < (__b))";
+	macro_map["__builtin_isless"] = less;
+    }
+    {
+	MacroDef lessequal;
+	lessequal.params = {"__a", "__b"};
+	lessequal.body = "((__a) <= (__b))";
+	macro_map["__builtin_islessequal"] = lessequal;
+    }
+    {
+	MacroDef inf;
+	inf.body = "(1.0 / 0.0)";
+	macro_map["__builtin_inf"] = inf;
+	MacroDef inff;
+	inff.body = "(1.0f / 0.0f)";
+	macro_map["__builtin_inff"] = inff;
+	MacroDef infl;
+	infl.body = "(1.0L / 0.0L)";
+	macro_map["__builtin_infl"] = infl;
+    }
+    {
+	MacroDef nan;
+	nan.params = {"__tag"};
+	nan.body = "(0.0 / 0.0)";
+	macro_map["__builtin_nan"] = nan;
+	MacroDef nanf;
+	nanf.params = {"__tag"};
+	nanf.body = "(0.0f / 0.0f)";
+	macro_map["__builtin_nanf"] = nanf;
+	MacroDef nanl;
+	nanl.params = {"__tag"};
+	nanl.body = "(0.0L / 0.0L)";
+	macro_map["__builtin_nanl"] = nanl;
+    }
     // __builtin_classify_type(x) → 0 (integer type, simplified)
     {
 	MacroDef m;

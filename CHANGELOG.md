@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `ieee/compare-fp-1.c` and `ieee/fp-cmp-1.c` now pass.**
+  Real floating-point comparisons now honor IEEE unordered semantics:
+  `==`, `!=`, `<`, and `<=` no longer treat NaN cases as ordered truths
+  just because `ucomis*` set `ZF`/`CF`, and the IEEE builtin predicate
+  family now has macro coverage for `__builtin_isunordered`,
+  `__builtin_islessgreater`, and the matching `inf` / `nan` helpers
+  those tests expect. Added `tests/testieeefpcompare.mad` as the local
+  regression. Focused validation is green, and the conservative GCC
+  parity floor rises to at least `1498/1685` (88.9%).
+
 - **GCC torture `const-addr-expr-1.c` and `conversion.c` now pass.**
   Parser-side `->` validation now accepts pointer-shaped expressions
   produced by fixed-array decay and pointer arithmetic such as
