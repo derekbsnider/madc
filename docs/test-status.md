@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.17.0, GCC parity session 21 — at least 1430/1685 from focused reruns).
+Test results as of May 21, 2026 (v0.17.0, GCC parity session 21 — at least 1431/1685 from focused reruns).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 354 JIT pass / 0 fail
+## Current Batch Status — 355 JIT pass / 0 fail
 
 Latest results (2026-05-21):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 354 integration tests
+- Passing: 355 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -63,7 +63,9 @@ Latest results (2026-05-21):
   integration count to 353. An additional tracked regression for
   `long long` ternary width preservation under casts via
   `testternaryllcast.mad` now brings the tracked integration count to
-  354. An additional tracked
+  354. An additional tracked regression for C integer-promotion rules
+  on signed/unsigned bitfield arithmetic via `testbitfieldpromote.mad`
+  now brings the tracked integration count to 355. An additional tracked
   regression for fixed-array struct assignment via
   `testfixedarraystructcopy.mad` now brings the tracked integration
   count to 329. An additional tracked regression for

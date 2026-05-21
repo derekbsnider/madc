@@ -893,10 +893,29 @@ static bool is_arithmetic_result_operator(TokenBase *token)
     }
 }
 
+static DataDef *promoted_bitfield_numeric_type(TokenBase *token)
+{
+    TokenMember *tm = dynamic_cast<TokenMember *>(token);
+    if ( !tm )
+	return NULL;
+    const DataDefSTRUCT::BitFieldInfo *bf = tm->bitfield_info();
+    if ( !bf || bf->bit_width == 0 )
+	return NULL;
+
+    size_t int_bits = ddINT.size * 8;
+    if ( !bf->is_unsigned || bf->bit_width < int_bits )
+	return &ddINT;
+    if ( bf->bit_width == int_bits )
+	return &ddUINT32;
+    return NULL;
+}
+
 static DataDef *token_numeric_type(TokenBase *token)
 {
     if ( !token )
 	return NULL;
+    if ( DataDef *bf_type = promoted_bitfield_numeric_type(token) )
+	return bf_type;
     DataDef *dd = token->datadef();
     if ( dd && dd->is_pointer() )
 	return NULL;

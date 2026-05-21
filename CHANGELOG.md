@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `bitfld-1.c` now passes.**
+  Bitfield expressions now follow C's integer-promotion rules before
+  arithmetic: narrow unsigned bitfields like `unsigned int u:7` promote
+  to `int` until an explicit cast forces `unsigned int`, which restores
+  the correct signed-vs-unsigned remainder behavior in mixed bitfield
+  expressions. Added `tests/testbitfieldpromote.mad` as the local
+  regression. Full validation is green at `355/355` JIT and `355/355`
+  EXE, and focused GCC reruns bring the conservative parity floor to at
+  least `1431/1685` (84.9%).
+
 - **GCC torture `arith-rand-ll.c` now passes.**
   The parser's ternary-type fallback no longer treats real `int64_t` /
   `long long` branches as if they were the generic default `int` case,

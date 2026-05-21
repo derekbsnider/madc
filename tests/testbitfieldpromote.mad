@@ -1,0 +1,15 @@
+int main()
+{
+	struct x { signed int i : 7; unsigned int u : 7; } bit;
+	unsigned int unsigned_result = -13U % 61;
+	int signed_result = -13 % 61;
+
+	bit.u = 61;
+	bit.i = -13;
+
+	printf("%d\n", bit.i % bit.u);
+	printf("%u\n", bit.i % (unsigned int)bit.u);
+	printf("%d\n", signed_result);
+	printf("%u\n", unsigned_result);
+	return 0;
+}
