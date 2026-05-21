@@ -13038,6 +13038,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     {
 	TokenBase *attr = nextToken();
 	nt = consume_gnu_attributes(*this, attr, NULL, &storage_alias_name);
+	if ( nt )
+	{
+	    pushToken(nt);
+	    nt = peekToken();
+	}
     }
 
     // Preserve pointer semantics for `char *p = "literal";`.

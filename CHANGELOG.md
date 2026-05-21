@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **GCC front-edge closures continued.**
+  `__builtin_*_overflow_p` now dispatches through typed fixed-signature
+  helpers instead of the unprototyped dynamic-symbol path, so the
+  type-indicator argument once again selects the intended C width for
+  `pr105777.c`. Variable declarations also now preserve the real token
+  after post-declarator `__attribute__((...))` blocks, which restores
+  GCC-style array declarations like `short a[4] __attribute__((aligned
+  (16))) = { ... };` from `pr108064.c`. Added
+  `tests/testbuiltinmuloverflowp.mad` and
+  `tests/testalignedarrayattrinit.mad`. Full validation is green at
+  `418/418` JIT and `418/418` EXE, and the current GCC floor is at
+  least `1536/1685` (91.2%).
+
 - **C++ std surface stays namespace-owned.**
   Embedded `<string>` now exposes `std::string` as the canonical type,
   and `<iostream>` keeps `std::cout`, `std::cin`, `std::cerr`, and

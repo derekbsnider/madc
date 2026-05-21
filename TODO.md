@@ -2,15 +2,16 @@
 
 ## High Priority
 
-- **GCC torture test suite: stabilize past 90%, then push toward 95%.** Latest live sweep: 1514/1685 (89.9%) with one 5s timeout.
+- **GCC torture test suite: stabilize past 90%, then push toward 95%.** Latest live sweep: 1535/1685 (91.1%), with focused reruns now bringing the floor to at least 1536/1685 (91.2%).
   v0.18.0 closed 169 new tests via _Complex arithmetic, IEEE FP
   semantics, bitfield promotions, auto-include headers, alias support,
   setjmp, bswap, and dozens of individual fixes.
-  Remaining targets: `__builtin_return_address`, fuller complex support,
-  struct pass-by-value for function args (~8 compile failures),
-  32-bit arithmetic wrapping in widening cast contexts
-  (`(long)(uint_a + uint_b)`), compound assignment evaluation order,
-  deeper inline-asm operand coverage.
+  Remaining targets: `__builtin_return_address`, struct pass-by-value
+  for function args (~8 compile failures), 32-bit arithmetic wrapping
+  in widening cast contexts (`(long)(uint_a + uint_b)`), compound
+  assignment evaluation order, deeper inline-asm operand coverage, and
+  the remaining parser/runtime fronts after `pr105777.c` and
+  `pr108064.c`.
   The focused `_Complex` execute lane is currently green; the active
   fronts have shifted back to the remaining non-complex GCC gaps.
 

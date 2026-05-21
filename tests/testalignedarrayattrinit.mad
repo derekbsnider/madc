@@ -1,0 +1,10 @@
+int main()
+{
+	short a[4] __attribute__((aligned (16))) = { 0xff, 0, 0, 0 };
+	short b[4] __attribute__((aligned (16)));
+	short c[4] __attribute__((aligned (16)));
+
+	b[0] = ((a[0] >> 8) & 0xff) | ((a[0] & 0xff) << 8);
+	c[0] = ((b[0] >> 8) & 0xff) | ((b[0] & 0xff) << 8);
+	return a[0] != c[0];
+}
