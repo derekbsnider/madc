@@ -1938,20 +1938,11 @@ TokenBase *Program::_getToken()
 		    if ( source.peek() == 'e' || source.peek() == 'E' )
 		    {
 			// Scientific notation without decimal: 1e5, 2E-3
-			source.get(); // consume e/E
-			double num = (double)v;
-			int exp_sign = 1;
+			lit_text += (char)source.get(); // consume e/E
 			if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
-			{
-			    if ( source.peek() == '-' ) exp_sign = -1;
-			    source.get();
-			}
-			int exp_val = 0;
+			    lit_text += (char)source.get();
 			while ( source.good() && isdigit(source.peek()) )
-			    exp_val = exp_val * 10 + (source.get() & 0xf);
-			double factor = 1.0;
-			for ( int i = 0; i < exp_val; ++i ) factor *= 10.0;
-			if ( exp_sign > 0 ) num *= factor; else num /= factor;
+			    lit_text += (char)source.get();
 			char real_type_suffix = 0;
 			if ( source.good() )
 			{
@@ -1959,9 +1950,10 @@ TokenBase *Program::_getToken()
 			    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 			    {
 				real_type_suffix = (char)c;
-				source.get();
+				lit_text += (char)source.get();
 			    }
 			}
+			double num = strtod(lit_text.c_str(), NULL);
 			if ( eat_imag_suffix() )
 			{
 			    TokenReal *tr = new TokenReal(num);
@@ -1985,8 +1977,7 @@ TokenBase *Program::_getToken()
 		    return ti;
 		}
 		// handle floating point
-		source.get(); // eat .
-		double num = v, divisor = 10;
+		lit_text += (char)source.get(); // eat .
 		while ( source.good() )
 		{
 		    if ( is_digit_separator(source.peek()) )
@@ -1996,29 +1987,16 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( !isdigit(source.peek()) )
 			break;
-		    num += (source.get() & 0xf) / divisor;
-		    divisor *= 10;
+		    lit_text += (char)source.get();
 		}
 		// Scientific notation exponent: e/E followed by optional +/- and digits
 		if ( source.good() && (source.peek() == 'e' || source.peek() == 'E') )
 		{
-		    source.get(); // consume e/E
-		    int exp_sign = 1;
+		    lit_text += (char)source.get(); // consume e/E
 		    if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
-		    {
-			if ( source.peek() == '-' ) exp_sign = -1;
-			source.get();
-		    }
-		    int exp_val = 0;
+			lit_text += (char)source.get();
 		    while ( source.good() && isdigit(source.peek()) )
-		    {
-			exp_val = exp_val * 10 + (source.get() & 0xf);
-		    }
-		    double factor = 1.0;
-		    for ( int i = 0; i < exp_val; ++i )
-			factor *= 10.0;
-		    if ( exp_sign > 0 ) num *= factor;
-		    else num /= factor;
+			lit_text += (char)source.get();
 		}
 		// C float literal suffixes (f/F, l/L). f marks a float (4-byte
 		// real); madc doesn't currently distinguish float-vs-double
@@ -2031,9 +2009,10 @@ TokenBase *Program::_getToken()
 		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
 		    {
 			real_type_suffix = (char)c;
-			source.get();
+			lit_text += (char)source.get();
 		    }
 		}
+		double num = strtod(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
 		{
 		    TokenReal *tr = new TokenReal(num);
