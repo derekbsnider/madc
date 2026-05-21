@@ -579,6 +579,19 @@ static bool global_has_compilable_address(Program &pgm, Variable *var)
 	return true;
     if ( pgm.tkProgram )
     {
+	Variable *alias_target = pgm.resolve_global_storage_variable(var);
+	if ( alias_target && alias_target != var
+	  && (alias_target->data || alias_target->has_aot_data()) )
+	{
+	    if ( !var->data )
+		var->data = alias_target->data;
+	    if ( !var->has_aot_data() && alias_target->has_aot_data() )
+	    {
+		var->aot_data_offset = alias_target->aot_data_offset;
+		var->aot_cstr_offset = alias_target->aot_cstr_offset;
+	    }
+	    return true;
+	}
 	Variable *canon = pgm.tkProgram->findVariable(var->name);
 	if ( canon && (canon->data || canon->has_aot_data()) )
 	{

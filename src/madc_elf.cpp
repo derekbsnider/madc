@@ -326,9 +326,14 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
 	{
 		Variable *var = tkProgram->variables[i];
-		if ( !var || !var->data || !var->type )
+		if ( !var || !var->type )
 			continue;
 		if ( !var->is_global() )
+			continue;
+		Variable *storage = resolve_global_storage_variable(var);
+		if ( storage && storage != var && !var->data )
+			var->data = storage->data;
+		if ( !var->data )
 			continue;
 		// Skip real function variables (their data is a Method*), but keep
 		// function-pointer variables — DataDefFPTR is btFunct too, yet it owns
@@ -610,6 +615,13 @@ void Program::prepare_aot_data_layout()
 	auto propagate_offsets = [&](Variable *var) {
 		if ( !var || !var->type || !var->is_global() || var->has_aot_data() )
 			return;
+		Variable *storage = resolve_global_storage_variable(var);
+		if ( storage && storage != var && storage->has_aot_data() )
+		{
+			var->aot_data_offset = storage->aot_data_offset;
+			var->aot_cstr_offset = storage->aot_cstr_offset;
+			return;
+		}
 		std::map<std::string, std::pair<size_t, size_t> >::const_iterator it =
 		    canonical_offsets.find(var->name);
 		if ( it == canonical_offsets.end() )

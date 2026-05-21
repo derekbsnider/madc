@@ -1023,18 +1023,28 @@ static bool is_attribute_identifier_token(TokenBase *tb)
 }
 
 static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
-					 std::set<std::string> *attrs = NULL)
+					 std::set<std::string> *attrs = NULL,
+					 std::string *alias_target = NULL)
 {
     while ( nt && is_attribute_identifier_token(nt) )
     {
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
 	{
 	    int adepth = 0;
+	    bool saw_alias = false;
 	    do {
 		TokenBase *at = pgm.nextToken();
 		if ( !at ) break;
 		if ( attrs && adepth >= 2 && at->type() == TokenType::ttIdentifier )
 		    attrs->insert(((TokenIdent *)at)->str);
+		if ( at->type() == TokenType::ttIdentifier
+		  && ((TokenIdent *)at)->str == "alias" )
+		    saw_alias = true;
+		else if ( alias_target && saw_alias && at->type() == TokenType::ttString )
+		{
+		    *alias_target = ((TokenStr *)at)->str;
+		    saw_alias = false;
+		}
 		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
 		else if ( at->id() == TokenID::tkClBrk ) --adepth;
 	    } while ( adepth > 0 );
@@ -4503,6 +4513,25 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
     DBG(std::cout << "Data address: " << (uint64_t)var->data << std::endl);
 
     return var;
+}
+
+Variable *Program::resolve_global_storage_variable(Variable *var) const
+{
+    if ( !var || !tkProgram || !var->is_global() )
+	return var;
+
+    std::set<Variable *> seen;
+    Variable *resolved = var;
+    while ( resolved && !resolved->storage_alias_name.empty()
+	 && !seen.count(resolved) )
+    {
+	seen.insert(resolved);
+	Variable *target = tkProgram->findVariable(resolved->storage_alias_name);
+	if ( !target || target == resolved )
+	    break;
+	resolved = target;
+    }
+    return resolved;
 }
 
 // get or create a pointer-to-T DataDef
@@ -11870,21 +11899,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    Throw(tb) << "Unexpected end of data in array declaration" << flush;
     }
 
-    // Skip __attribute__((...)) after variable declarator (GCC extension)
+    std::string storage_alias_name;
     if ( is_attribute_identifier_token(nt) )
     {
-	nextToken(); // consume __attribute__
-	if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
-	{
-	    int adepth = 0;
-	    do {
-		TokenBase *at = nextToken();
-		if ( !at ) break;
-		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
-		else if ( at->id() == TokenID::tkClBrk ) --adepth;
-	    } while ( adepth > 0 );
-	}
-	nt = peekToken();
+	TokenBase *attr = nextToken();
+	nt = consume_gnu_attributes(*this, attr, NULL, &storage_alias_name);
     }
 
     // Preserve pointer semantics for `char *p = "literal";`.
@@ -12210,6 +12229,20 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		var->flags &= ~vfSTACK;
 	    }
 	    var->flags &= ~vfEXTERN;
+	}
+	if ( !storage_alias_name.empty() )
+	{
+	    var->storage_alias_name = storage_alias_name;
+	    Variable *alias_target = resolve_global_storage_variable(var);
+	    if ( alias_target && alias_target != var )
+	    {
+		var->data = alias_target->data;
+		if ( alias_target->has_aot_data() )
+		{
+		    var->aot_data_offset = alias_target->aot_data_offset;
+		    var->aot_cstr_offset = alias_target->aot_cstr_offset;
+		}
+	    }
 	}
 	if ( !arr_dims.empty() )
 	{

@@ -60,6 +60,7 @@ public:
     size_t aot_cstr_offset;
     uint32_t count;
     uint16_t flags;
+    std::string storage_alias_name;
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
     // C99 variable-length array: when non-NULL, the local was declared as
     // `T name[expr]` with a runtime-valued size. The variable acts as a

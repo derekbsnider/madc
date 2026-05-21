@@ -2553,6 +2553,7 @@ TokenBase *Program::_getToken()
 		      || attr_text.find("aligned") != std::string::npos
 		      || attr_text.find("scalar_storage_order") != std::string::npos
 		      || attr_text.find("vector_size") != std::string::npos
+		      || attr_text.find("alias") != std::string::npos
 		      || attr_text.find("no_instrument_function") != std::string::npos )
 		    {
 			source.pushback(attr_text);

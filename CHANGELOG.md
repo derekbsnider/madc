@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `alias-2.c` now passes.**
+  GNU `__attribute__((alias("target")))` now survives lexing on
+  declarators, the parser records global storage aliases, and both JIT
+  and AOT global-address resolution now follow that alias to the
+  canonical backing storage instead of creating a distinct global slot.
+  Added `tests/testglobalaliasarray.mad` as the local regression. Full
+  validation is green at `351/351` JIT and `351/351` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1426/1685` (84.6%).
+
 - **GCC torture `931004-11.c` and `931004-12.c` now pass.**
   Local fixed-size arrays now allocate stack slots using the element
   type's actual alignment instead of the raw element size, which fixes

@@ -1338,6 +1338,7 @@ public:
     // data management
     DataDef *findType(std::string &);
     Variable *addVariable(TokenCpnd *, DataDef &, std::string &, int c=1, void *init=NULL, bool alloc=true);
+    Variable *resolve_global_storage_variable(Variable *var) const;
     Variable *addGlobal(DataDef &d, std::string str, int c=1, void *init=NULL)
     {
 	return addVariable(NULL, d, str, c, init, true);
