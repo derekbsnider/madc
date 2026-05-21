@@ -1024,7 +1024,8 @@ static bool is_attribute_identifier_token(TokenBase *tb)
 
 static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 					 std::set<std::string> *attrs = NULL,
-					 std::string *alias_target = NULL)
+					 std::string *alias_target = NULL,
+					 size_t *explicit_align = NULL)
 {
     while ( nt && is_attribute_identifier_token(nt) )
     {
@@ -1032,6 +1033,7 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 	{
 	    int adepth = 0;
 	    bool saw_alias = false;
+	    bool saw_aligned = false;
 	    do {
 		TokenBase *at = pgm.nextToken();
 		if ( !at ) break;
@@ -1044,6 +1046,16 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 		{
 		    *alias_target = ((TokenStr *)at)->str;
 		    saw_alias = false;
+		}
+		else if ( at->type() == TokenType::ttIdentifier
+		  && ((TokenIdent *)at)->str == "aligned" )
+		    saw_aligned = true;
+		else if ( explicit_align && saw_aligned && at->type() == TokenType::ttInteger )
+		{
+		    int64_t aval = static_cast<TokenInt *>(at)->ival();
+		    if ( aval > 0 )
+			*explicit_align = static_cast<size_t>(aval);
+		    saw_aligned = false;
 		}
 		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
 		else if ( at->id() == TokenID::tkClBrk ) --adepth;
@@ -10619,6 +10631,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    FuncDef *fresh = new FuncDef(dd);
 	    fresh->return_types = func->return_types;
 	    fresh->no_instrument_function = func->no_instrument_function;
+	    fresh->explicit_alignment = func->explicit_alignment;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	    func_already_declared = false;
@@ -10636,6 +10649,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    fresh->is_void_params = func->is_void_params;
 	    fresh->return_types = func->return_types;
 	    fresh->no_instrument_function = func->no_instrument_function;
+	    fresh->explicit_alignment = func->explicit_alignment;
 	    funcdef_map[id] = fresh;
 	    func = fresh;
 	}
@@ -11108,10 +11122,13 @@ paramdecl:
     }
 
     std::set<std::string> func_attrs;
-    nt = consume_gnu_attributes(*this, nt, &func_attrs);
+    size_t func_align = 0;
+    nt = consume_gnu_attributes(*this, nt, &func_attrs, NULL, &func_align);
     if ( func_attrs.count("no_instrument_function")
       || func_attrs.count("__no_instrument_function__") )
 	func->no_instrument_function = true;
+    if ( func_align > 0 )
+	func->explicit_alignment = func_align;
     // Check again for forward declaration after __attribute__
     if ( nt->id() == TokenID::tkSemi )
     {

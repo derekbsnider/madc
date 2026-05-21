@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+- **GCC torture `align-3.c` and `align-nest.c` now pass.**
+  Function declarations now preserve GNU `__attribute__((aligned(N)))`
+  as an explicit function alignment override, so `__alignof__(func)`
+  reports the declared function alignment instead of the generic
+  function-type fallback. Cleanup for stack-backed runtime-sized
+  aggregates also now skips fixed arrays of those aggregates, which
+  avoids freeing stack storage in cases like packed/aligned local arrays
+  of VLA-sized structs. Added `tests/testfunctionalignof.mad` as the
+  local regression. Full validation is green at `353/353` JIT and
+  `353/353` EXE, and focused GCC reruns bring the conservative parity
+  floor to at least `1429/1685` (84.8%).
+
 - **GCC torture `alias-3.c` now passes.**
   File-scope `extern` aliases that resolve to real global storage now
   clear the temporary stack-backed flag inherited from the non-allocating

@@ -9051,7 +9051,8 @@ void TokenCpnd::cleanup(Program &pgm)
 		continue;
 	    if ( (rmi->first->type->basetype() == BaseType::btStruct
 		|| rmi->first->type->basetype() == BaseType::btClass)
-	      && aggregate_has_runtime_size(rmi->first->type) )
+	      && aggregate_has_runtime_size(rmi->first->type)
+	      && !rmi->first->is_fixed_array() )
 	    {
 		if ( reg.isReg() && reg.as<BaseReg>().isGroup(RegGroup::kGp) )
 		{
