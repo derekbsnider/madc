@@ -1,4 +1,6 @@
 #!/usr/bin/env madc
+#include <iostream>
+using namespace std;
 // Mini SMAUG-like test — exercises all Phase A/B/C features
 #include <stdio.h>
 #include <stdlib.h>

@@ -42,7 +42,7 @@ enum class TokenID {
   tkDO, tkIF, tkFOR, tkELSE, tkRETURN, tkGOTO, tkCASE, tkBREAK, tkCONT, tkTRY, tkCATCH, tkTHROW,
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
-  tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT,
+  tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT, tkVOLATILE,
   tkVECTOR, tkMAP, tkSET, tkLIST,
   tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
   tkUNION
@@ -875,6 +875,11 @@ class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator('
     // Used by parseExprStmt to chain `e1, e2, e3;` expression-statements
     // (notably brace-less while/for bodies like `++p, ++i;`). Without this,
     // parseExpression stopped at the first comma and the rest was dropped.
+    virtual DataDef *datadef() const override {
+	if ( right && right->datadef() )
+	    return right->datadef();
+	return TokenOperator::datadef();
+    }
     virtual asmjit::Operand &compile(Program &, regdefp_t &);
 };
 
@@ -1270,6 +1275,15 @@ public:
     TokenRESTRICT() : TokenKeyword("restrict") {}
     virtual TokenID id() const { return TokenID::tkRESTRICT; }
     virtual TokenBase *clone() { return new TokenRESTRICT(); }
+    virtual TokenBase *parse(Program &pgm);
+};
+
+class TokenVOLATILE: public TokenKeyword
+{
+public:
+    TokenVOLATILE() : TokenKeyword("volatile") {}
+    virtual TokenID id() const { return TokenID::tkVOLATILE; }
+    virtual TokenBase *clone() { return new TokenVOLATILE(); }
     virtual TokenBase *parse(Program &pgm);
 };
 

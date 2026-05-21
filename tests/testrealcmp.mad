@@ -4,6 +4,7 @@
 // variants (setb/setbe/seta/setae) whenever the compare type is real.
 
 #include <iostream>
+using namespace std;
 
 int main()
 {

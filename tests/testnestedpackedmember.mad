@@ -1,0 +1,30 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+typedef unsigned int __attribute__ ((mode (QI))) intw1_t;
+typedef unsigned int __attribute__ ((mode (HI))) intw2_t;
+
+int main()
+{
+	union {
+		intw1_t v[4];
+		struct __attribute__ ((packed)) {
+			intw1_t pad;
+			intw2_t x;
+		} packed_member;
+	} u;
+
+	u.v[0] = 0xaa;
+	u.v[1] = 0xbb;
+	u.v[2] = 0xcc;
+	u.v[3] = 0xdd;
+	u.packed_member.x = 0x1234;
+
+	printf("%u %u %u %u %u\n",
+		(unsigned int)sizeof(u.packed_member),
+		(unsigned int)u.v[0],
+		(unsigned int)u.v[1],
+		(unsigned int)u.v[2],
+		(unsigned int)u.v[3]);
+	return 0;
+}

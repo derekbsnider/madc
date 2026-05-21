@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <iostream>
+using namespace std;
 
 // Test struct initializer lists
 

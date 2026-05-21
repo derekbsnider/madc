@@ -1,4 +1,5 @@
 #include <iostream>
+using namespace std;
 // Test C preprocessor directives: #define, #undef, #ifdef, #ifndef, #if, #else, #elif, #endif
 
 #define MAX 100

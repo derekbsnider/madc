@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Regression: ternary-of-string-literals as a function argument was
 // double-coerced.  TokenTerQ::compile internally coerces each branch
 // from dtSTRING to char* via string_cstr() when the merge surface is a

@@ -18,6 +18,7 @@
 // Surfaced in MadSMAUG misc.c:2149 (`*srcptr == '%' && *++srcptr == 's'`).
 
 #include <iostream>
+using namespace std;
 
 int main()
 {

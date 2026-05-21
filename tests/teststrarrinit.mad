@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // `char *names[] = {"alice", "bob", ...};` — string-literal
 // initialisers for a char*-element array used to store the
 // std::string object's address, not its c_str() pointer, because

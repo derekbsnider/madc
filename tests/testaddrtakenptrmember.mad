@@ -15,6 +15,7 @@
 // plain variable name so the `class` fix wasn't involved.
 
 #include <iostream>
+using namespace std;
 
 struct X { int v; };
 struct Y { struct X ext; int tail; };

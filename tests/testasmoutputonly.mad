@@ -1,0 +1,16 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+long long value = 0x123456789abcdef0LL;
+long long out;
+long long out2;
+
+int main()
+{
+	long long copy = value;
+	out = value ^ copy;
+	out2 = 11;
+	asm volatile ("" : "+m" (out), "+m" (out2));
+	printf("%lld %lld\n", out, out2);
+	return 0;
+}

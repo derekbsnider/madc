@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // C pointer arithmetic: `p + n` on a typed pointer `T *` must add
 // `n * sizeof(T)` bytes, not `n` bytes. Previously TokenAdd emitted
 // a raw byte add, so `int *q = p + 2;` advanced q by 2 bytes

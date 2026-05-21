@@ -1,4 +1,6 @@
 #!/../bin/madc
+#include <iostream>
+using namespace std;
 // C89: a char-array with an explicit size that exactly matches the
 // string-literal length does NOT require room for a trailing null
 // terminator. `char c[3] = "abc";` is valid C — no implicit '\0'.

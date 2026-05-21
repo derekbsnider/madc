@@ -1,0 +1,12 @@
+#include <stdio.h>
+
+int ok(void) { return 7; }
+
+int (* volatile bad_t0[])(void) = {
+    ok
+};
+
+int main() {
+    printf("%d\n", (*bad_t0[0])());
+    return 0;
+}

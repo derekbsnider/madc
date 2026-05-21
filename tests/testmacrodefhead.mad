@@ -15,6 +15,7 @@
 // still expand as before.
 
 #include <iostream>
+using namespace std;
 
 #define bug(...)  ((void)0)
 

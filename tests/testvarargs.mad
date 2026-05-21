@@ -1,4 +1,6 @@
 #!/usr/bin/env madc
+#include <iostream>
+using namespace std;
 // testvarargs.mad — test va_list / stdarg.h support
 
 #include <stdio.h>

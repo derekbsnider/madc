@@ -815,6 +815,9 @@ typedef unsigned long int uintptr_t;
 #define EXIT_FAILURE 1
 #define RAND_MAX     2147483647
 )EMBED"},
+    {"string", R"EMBED(// madc embedded <string> — std::string helpers and conversions
+// The actual registration is handled by add_namespaces() callbacks.
+)EMBED"},
     {"string.h", R"EMBED(// madc embedded string.h — C string functions
 // Most functions resolve through the dlsym fallback at parse time
 // (which registers them with a generic int64 return signature). The

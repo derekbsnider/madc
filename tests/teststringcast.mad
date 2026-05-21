@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Casting a std::string expression to `char *` needs a real
 // string_cstr conversion — a bare `reinterpret` (madc's default
 // TokenCast behavior) leaves the caller with the std::string

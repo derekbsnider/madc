@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Global literals / constants are cached per-function in voperand's
 // operand_map. On a cache hit, the cache-refresh branch used to skip
 // `is_constant()` vars, so the initial `mov reg, imm` that loads the

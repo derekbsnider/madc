@@ -13,6 +13,7 @@
 //   fprintf(..., print_bitvector(&class->affected));
 
 #include <iostream>
+using namespace std;
 
 struct X { int v; };
 struct Y { struct X ext; };

@@ -1,0 +1,21 @@
+#!/../bin/madc
+#include <stdio.h>
+
+#define func(vol, op1, op2) \
+int op1##_##op2##_##vol(int a, int b) \
+{ \
+    vol int x = (a) < (b) ? (a) : (b); \
+    return x < a; \
+}
+
+#define funcs1(a, b) \
+func(, a, b) \
+func(volatile, a, b)
+
+funcs1(min, lt)
+
+int main()
+{
+    printf("%d %d\n", min_lt_(2, 3), min_lt_volatile(2, 3));
+    return 0;
+}

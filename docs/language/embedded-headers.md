@@ -14,15 +14,33 @@ baked into the binary at build time so no external files are needed at runtime.
 
 ### `<iostream>`
 
-Registers `cout`, `cin`, `cerr`, `endl`. Uses lazy registration — symbols are only
-created when first referenced by the parser.
+Registers `std::cout`, `std::cin`, `std::cerr`, and `std::endl`.
+Including the header does not add bare global names; use `std::` or
+import the names explicitly with `using`.
 
 ```c
 #include <iostream>
 
 int main()
 {
-    cout << "Hello, world!" << endl;
+    std::cout << "Hello, world!" << std::endl;
+    return 0;
+}
+```
+
+### `<string>`
+
+Registers the `std::string` type plus `std::to_string`,
+`std::stoi`, and `std::stod`. Bare `string` is available only after
+`using namespace std;` or `using std::string;`.
+
+```c
+#include <string>
+
+int main()
+{
+    std::string value;
+    std::to_string(value, 42);
     return 0;
 }
 ```
@@ -81,8 +99,10 @@ this file when any header in `include/madc/` changes.
 3. If the header needs to register built-in globals/functions:
    - Add a flag (`_include_xxx`) to the Program class in `include/madc.h`
    - Set the flag in the lexer's `#include` handler
-   - Add an `add_xxx()` function that populates `lazy_map`
-   - Add cases in `lazy_resolve()` / `lazy_resolve_type()`
+   - Add namespace registrations or an `add_xxx()` function that
+     populates `lazy_map`
+   - Add cases in `add_namespaces()`, `lazy_resolve()`, or
+     `lazy_resolve_type()`
 4. Run `make -C src` — the gen script runs automatically
 
 ## dlsym Fallback

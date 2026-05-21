@@ -11,6 +11,7 @@
 // Surfaced at MadSMAUG act_info.c:3074 (`char const *class;`).
 
 #include <iostream>
+using namespace std;
 
 int main()
 {

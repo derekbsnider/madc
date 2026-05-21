@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Regression test: sscanf with standard 4-byte int slots.
 // Verifies that %d reads/writes correctly, negative values sign-extend
 // when cast to long, hex values compare correctly, and mixed %s/%d

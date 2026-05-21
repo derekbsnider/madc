@@ -1,5 +1,6 @@
 #!/usr/bin/env madc
 #include <iostream>
+using namespace std;
 
 // Prefer-directive coverage: this lives at file scope and must
 // affect identifier resolution inside main() below.

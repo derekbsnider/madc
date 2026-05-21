@@ -1,0 +1,8 @@
+#include <stdio.h>
+
+int main() {
+    int z = 10;
+    int v = ((void)(z++), 7);
+    printf("%d %d\n", z, v);
+    return 0;
+}

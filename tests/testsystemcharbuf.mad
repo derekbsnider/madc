@@ -1,4 +1,6 @@
 #!/usr/bin/env madc
+#include <iostream>
+using namespace std;
 
 #include <stdlib.h>
 #include <string.h>

@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Regression: C/C++ translation phase 6 — adjacent string literals
 // concatenate. Without this, `SYSTEM_DIR "commands.dat"` (where
 // SYSTEM_DIR is `"../system/"`) expands to two adjacent ttString

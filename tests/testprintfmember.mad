@@ -1,4 +1,6 @@
 #!/usr/bin/env madc
+#include <iostream>
+using namespace std;
 // Regression: parser must accept extra args for declared varargs functions,
 // including -> member expressions and macro-expanded member expressions.
 #include <stdio.h>

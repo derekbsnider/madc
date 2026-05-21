@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 // Regression: madc lexer must support multi-digit octal and hex escapes
 // in string and char literals. \033 = 0x1b (ESC), \x1b same, \0 still NUL.
 //

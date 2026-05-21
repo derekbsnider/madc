@@ -13,6 +13,7 @@
 // `'B'`, `':'`, `')'`.
 
 #include <iostream>
+using namespace std;
 
 #define stub(...) ((void)0)
 #define passchar(c) c

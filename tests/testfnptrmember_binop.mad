@@ -17,6 +17,7 @@
 // ACT_RUNNING) && ch->spec_fun && !IS_AFFECTED(ch, AFF_POSSESS)`).
 
 #include <iostream>
+using namespace std;
 #include <stdio.h>
 #include <stdlib.h>
 

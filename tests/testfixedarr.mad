@@ -1,3 +1,5 @@
+#include <iostream>
+using namespace std;
 #include <stdio.h>
 
 // Test C fixed-size arrays (1D and multi-dim)
