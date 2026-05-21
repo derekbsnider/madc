@@ -1,0 +1,23 @@
+int main(void)
+{
+	unsigned int x = 0x10u;
+	unsigned long xl = 0x100000000ul;
+	unsigned long long xll = 0x100000000ull;
+
+	printf("%d %d %d %d %d %d\n",
+		__builtin_ffs(x),
+		__builtin_clz(x),
+		__builtin_ctz(x),
+		__builtin_clrsb(0),
+		__builtin_popcount(0xa5u),
+		__builtin_parity(0xa5u));
+	printf("%d %d %d\n",
+		__builtin_clzl(xl),
+		__builtin_ctzl(xl),
+		__builtin_popcountl(xl));
+	printf("%d %d %d\n",
+		__builtin_clzll(xll),
+		__builtin_ctzll(xll),
+		__builtin_popcountll(xll));
+	return 0;
+}

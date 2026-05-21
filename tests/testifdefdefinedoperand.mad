@@ -1,0 +1,13 @@
+#if !defined __x86_64__
+#error broken defined operator handling
+#endif
+
+#if defined(__LP64__)
+int main()
+{
+	puts("ok");
+	return 0;
+}
+#else
+#error missing __LP64__
+#endif

@@ -11,5 +11,5 @@
 #define M_LN10     2.30258509299404568402
 #define M_SQRT2    1.41421356237309504880
 #define M_SQRT1_2  0.70710678118654752440
-#define HUGE_VAL   1e308
-#define INFINITY   1e309
+#define HUGE_VAL   __builtin_huge_val()
+#define INFINITY   __builtin_inf()

@@ -1,0 +1,27 @@
+void putu(unsigned long v);
+
+typedef struct foo
+{
+	int uaattrid;
+	char *name;
+} FOO;
+
+FOO Upgrade_items[] =
+{
+	{1, "1"},
+	{2, "2"},
+	{0, 0}
+};
+
+int *Upgd_minor_ID =
+	(int *) &((Upgrade_items + 1)->uaattrid);
+
+int *Upgd_minor_ID1 =
+	(int *) &((Upgrade_items)->uaattrid);
+
+int main()
+{
+	putu(*Upgd_minor_ID);
+	putu(*Upgd_minor_ID1);
+	return 0;
+}

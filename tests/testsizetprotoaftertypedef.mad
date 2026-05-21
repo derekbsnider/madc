@@ -1,0 +1,16 @@
+typedef unsigned long size_t;
+
+extern int check_size(size_t n);
+
+int check_size(size_t n)
+{
+    return n == 4;
+}
+
+int main()
+{
+    if ( !check_size(4) )
+	return 1;
+    puti(0);
+    return 0;
+}

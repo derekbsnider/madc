@@ -1,0 +1,22 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+struct A
+{
+    long x;
+};
+
+struct R
+{
+    struct A a, b;
+};
+
+struct R r = { 100, 200 };
+
+int main(void)
+{
+    if (r.a.x != 100 || r.b.x != 200)
+        abort();
+    printf("ok\n");
+    return 0;
+}

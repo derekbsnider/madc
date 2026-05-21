@@ -2,6 +2,18 @@
 
 ## High Priority
 
+- **GCC torture test suite: push past 90%.** Currently 1496/1685 (88.8%).
+  v0.18.0 closed 169 new tests via _Complex arithmetic, IEEE FP
+  semantics, bitfield promotions, auto-include headers, alias support,
+  setjmp, bswap, and dozens of individual fixes.
+  Remaining targets: `__builtin_return_address`, fuller complex support,
+  struct pass-by-value for function args (~8 compile failures),
+  32-bit arithmetic wrapping in widening cast contexts
+  (`(long)(uint_a + uint_b)`), compound assignment evaluation order,
+  triple dereference (`***p`), inline asm.
+  The focused `_Complex` execute lane is currently green; the active
+  fronts have shifted back to the remaining non-complex GCC gaps.
+
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and
   serpent death on the standalone native executable lane. The next

@@ -1,0 +1,27 @@
+char *pick(int value, int base, const char *label)
+{
+	return label + (value - base) * 2;
+}
+
+int main()
+{
+	const char *x[4];
+	int y[4];
+	int i;
+
+	for (i = 0; i < 4; i++)
+		y[i] = 0x10000 * (i + 1);
+
+	puts("a1111" + (y[0] - 0x10000) * 2);
+	puts("a1112" + (y[1] - 0x20000) * 2);
+
+	x[0] = pick(y[0], 0x10000, "a1111");
+	x[1] = pick(y[1], 0x20000, "a1112");
+	x[2] = pick(y[2], 0x30000, "a1113");
+	x[3] = pick(y[3], 0x40000, "a1114");
+
+	for (i = 0; i < 4; i++)
+		puts(x[i]);
+
+	return 0;
+}

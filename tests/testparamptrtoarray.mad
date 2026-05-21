@@ -1,0 +1,25 @@
+#!/../bin/madc
+
+int i;
+
+int bar(int *a)
+{
+    return *a;
+}
+
+int foo(int (*a)[2])
+{
+    return bar(&(*a)[i]);
+}
+
+int main(void)
+{
+    int a[2];
+    a[0] = -1;
+    a[1] = 42;
+    i = 1;
+    if (foo(&a) != 42)
+	return 1;
+    puts("ok\n");
+    return 0;
+}

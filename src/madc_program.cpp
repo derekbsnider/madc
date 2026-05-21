@@ -859,6 +859,13 @@ enum class expression_scan_state
 bool validate_expression_source(const std::string &expression, std::string &reason)
 {
     expression_scan_state state = expression_scan_state::normal;
+    int paren_depth = 0;
+    // Track whether each paren nesting level was preceded by an
+    // identifier (i.e. is a function call).  Commas are allowed
+    // inside function-call parens (argument separators) but not
+    // inside grouping parens (comma operator).
+    std::vector<bool> paren_is_call;
+    bool prev_was_identifier = false;
     for ( std::size_t i = 0; i < expression.size(); ++i )
     {
 	char ch = expression[i];
@@ -866,6 +873,17 @@ bool validate_expression_source(const std::string &expression, std::string &reas
 	switch ( state )
 	{
 	    case expression_scan_state::normal:
+		if ( ch == '(' )
+		{
+		    ++paren_depth;
+		    paren_is_call.push_back(prev_was_identifier);
+		}
+		else if ( ch == ')' && paren_depth > 0 )
+		{
+		    --paren_depth;
+		    if ( !paren_is_call.empty() )
+			paren_is_call.pop_back();
+		}
 		if ( ch == '"' )
 		{
 		    state = expression_scan_state::double_quote;
@@ -913,6 +931,17 @@ bool validate_expression_source(const std::string &expression, std::string &reas
 		    reason = "increment and decrement operators are not allowed";
 		    return false;
 		}
+		if ( ch == ',' )
+		{
+		    bool in_call = paren_depth > 0
+			&& !paren_is_call.empty()
+			&& paren_is_call.back();
+		    if ( !in_call )
+		    {
+			reason = "comma sequencing is not allowed";
+			return false;
+		    }
+		}
 		if ( is_identifier_start_char(ch) )
 		{
 		    std::size_t start = i;
@@ -924,7 +953,10 @@ bool validate_expression_source(const std::string &expression, std::string &reas
 			reason = "reserved madc implementation identifiers are not allowed";
 			return false;
 		    }
+		    prev_was_identifier = !is_expression_keyword_identifier(identifier);
+		    break;
 		}
+		prev_was_identifier = false;
 		break;
 	    case expression_scan_state::single_quote:
 		if ( ch == '\\' && next != '\0' )

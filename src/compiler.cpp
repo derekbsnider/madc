@@ -17,6 +17,7 @@
 #include <sstream>
 #include <string>
 #include <functional>
+#include <complex>
 #include <map>
 #include <set>
 #include <list>
@@ -38,6 +39,35 @@ using namespace asmjit;
 static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, DataDef *ret_type,
 			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret=false);
 const char *string_cstr(void *ptr);
+extern "C" void *__madc_jmpbuf_for(void *user_buf);
+extern "C" void __madc_builtin_longjmp(void *user_buf, int value);
+
+extern "C" void *madc_runtime_memcpy(void *dst, const void *src, size_t n)
+{
+    return ::memcpy(dst, src, n);
+}
+
+extern "C" void madc_runtime_complex_div_float(void *out,
+					       float ar, float ai,
+					       float br, float bi)
+{
+    std::complex<float> result = std::complex<float>(ar, ai)
+			       / std::complex<float>(br, bi);
+    float *parts = static_cast<float *>(out);
+    parts[0] = result.real();
+    parts[1] = result.imag();
+}
+
+extern "C" void madc_runtime_complex_div_double(void *out,
+					        double ar, double ai,
+					        double br, double bi)
+{
+    std::complex<double> result = std::complex<double>(ar, ai)
+				/ std::complex<double>(br, bi);
+    double *parts = static_cast<double *>(out);
+    parts[0] = result.real();
+    parts[1] = result.imag();
+}
 
 // Materialize an operand into a Gp register. If already Gp, return it.
 // If Mem (global struct/class), LEA the address into a fresh Gp.
@@ -54,12 +84,225 @@ static x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr"
     throw "as_gp_ptr: operand is neither Gp nor Mem";
 }
 
+static asmjit::Label &lookup_or_make_label(Program &pgm, const std::string &name);
+
 static x86::Gp materialize_gp_ptr_arg(Program &pgm, Operand &op, const char *name)
 {
     x86::Gp src = as_gp_ptr(pgm, op, name);
     x86::Gp arg = pgm.cc.newIntPtr("%s_arg", name);
     pgm.cc.mov(arg, src);
     return arg;
+}
+
+static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
+    DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc);
+static void emit_simd_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
+    DataDefSIMD *vdd, const std::vector<TokenBase *> &inits, TokenBase *err_loc);
+static void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+				    DataDef *copy_type, const char *name);
+static x86::Gp emit_runtime_aggregate_size(Program &pgm, DataDef *copy_type, const char *name);
+static void emit_runtime_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+					x86::Gp &size_gp, const char *name);
+static size_t internal_vararg_static_slot_size(DataDef *type);
+static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand &src);
+static void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem, DataDef *type);
+static void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm, DataDef *type);
+static const char *token_constant_cstring(TokenBase *token);
+
+static TypeId simd_type_id(DataDefSIMD *vdd)
+{
+    if ( !vdd || !vdd->element_type )
+	return TypeId::kVoid;
+    bool is_real = vdd->element_type->is_real();
+    bool is_unsigned = vdd->element_type->is_unsigned();
+    size_t elem = vdd->element_type->size;
+    size_t bytes = vdd->size;
+
+    if ( bytes == 4 )
+    {
+	if ( elem == 1 ) return is_unsigned ? TypeId::kUInt8x4  : TypeId::kInt8x4;
+	if ( elem == 2 ) return is_unsigned ? TypeId::kUInt16x2 : TypeId::kInt16x2;
+	if ( elem == 4 ) return is_unsigned ? TypeId::kUInt32x1 : TypeId::kInt32x1;
+    }
+    if ( bytes == 8 )
+    {
+	if ( is_real )
+	{
+	    if ( elem == 4 ) return TypeId::kFloat32x2;
+	    if ( elem == 8 ) return TypeId::kFloat64x1;
+	}
+	else
+	{
+	    if ( elem == 1 ) return is_unsigned ? TypeId::kUInt8x8  : TypeId::kInt8x8;
+	    if ( elem == 2 ) return is_unsigned ? TypeId::kUInt16x4 : TypeId::kInt16x4;
+	    if ( elem == 4 ) return is_unsigned ? TypeId::kUInt32x2 : TypeId::kInt32x2;
+	    if ( elem == 8 ) return is_unsigned ? TypeId::kUInt64x1 : TypeId::kInt64x1;
+	}
+    }
+    if ( bytes == 16 )
+    {
+	if ( is_real )
+	{
+	    if ( elem == 4 ) return TypeId::kFloat32x4;
+	    if ( elem == 8 ) return TypeId::kFloat64x2;
+	}
+	else
+	{
+	    if ( elem == 1 ) return is_unsigned ? TypeId::kUInt8x16  : TypeId::kInt8x16;
+	    if ( elem == 2 ) return is_unsigned ? TypeId::kUInt16x8 : TypeId::kInt16x8;
+	    if ( elem == 4 ) return is_unsigned ? TypeId::kUInt32x4 : TypeId::kInt32x4;
+	    if ( elem == 8 ) return is_unsigned ? TypeId::kUInt64x2 : TypeId::kInt64x2;
+	}
+    }
+    return TypeId::kVoid;
+}
+
+static size_t count_struct_init_slots(DataDefSTRUCT *dds)
+{
+    if ( !dds )
+	return 0;
+    size_t total = 0;
+    for ( size_t mi = 0; mi < dds->members.size(); ++mi )
+    {
+	DataDef *mtype = dds->members[mi].second;
+	size_t count = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
+	if ( mtype && mtype->basetype() == BaseType::btStruct )
+	{
+	    DataDefSTRUCT *nested = dynamic_cast<DataDefSTRUCT *>(mtype);
+	    total += count_struct_init_slots(nested);
+	}
+	else
+	    total += (count > 0) ? count : 1;
+    }
+    return total;
+}
+
+static bool is_compound_literal_value(TokenBase *node)
+{
+    TokenStructLit *slit = dynamic_cast<TokenStructLit *>(node);
+    return slit && slit->datadef() && slit->datadef()->basetype() == BaseType::btStruct;
+}
+
+static size_t count_initializer_entries(const std::vector<TokenBase *> &inits)
+{
+    size_t total = 0;
+    for ( TokenBase *node : inits )
+    {
+	if ( !node )
+	    continue;
+	if ( is_compound_literal_value(node) )
+	{
+	    ++total;
+	    continue;
+	}
+	if ( dynamic_cast<TokenStructLit *>(node) != NULL )
+	{
+	    ++total;
+	    continue;
+	}
+	++total;
+    }
+    return total;
+}
+
+static void emit_zero_fill_region(Program &pgm, x86::Gp &base_reg, int32_t base_ofs, size_t total)
+{
+    size_t ofs = 0;
+    for ( ; ofs + 8 <= total; ofs += 8 )
+	pgm.cc.mov(x86::qword_ptr(base_reg, base_ofs + (int32_t)ofs), imm(0));
+    for ( ; ofs + 4 <= total; ofs += 4 )
+	pgm.cc.mov(x86::dword_ptr(base_reg, base_ofs + (int32_t)ofs), imm(0));
+    for ( ; ofs < total; ++ofs )
+	pgm.cc.mov(x86::byte_ptr(base_reg, base_ofs + (int32_t)ofs), imm(0));
+}
+
+static bool aggregate_has_runtime_size(DataDef *copy_type)
+{
+    DataDefCArray *add = dynamic_cast<DataDefCArray *>(copy_type);
+    if ( add )
+	return add->has_runtime_size()
+	    || aggregate_has_runtime_size(add->element_type);
+    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(copy_type);
+    return sdd && sdd->has_runtime_size();
+}
+
+static x86::Gp emit_runtime_struct_size(Program &pgm, DataDefSTRUCT *sdd, const char *name)
+{
+    if ( !sdd )
+	throw "emit_runtime_struct_size: missing struct type";
+    x86::Gp total = pgm.cc.newGpq("%s", name ? name : "runtime_struct_size");
+    pgm.cc.mov(total, imm((int64_t)sdd->size));
+    for ( size_t i = 0; i < sdd->members.size(); ++i )
+    {
+	TokenBase *count_expr = (i < sdd->member_count_exprs.size()) ? sdd->member_count_exprs[i] : NULL;
+	if ( !count_expr )
+	    continue;
+	DataDef *member_type = sdd->members[i].second;
+	size_t fixed_mult = (i < sdd->member_counts.size()) ? sdd->member_counts[i] : 1;
+	size_t elem_bytes = member_type ? member_type->size * fixed_mult : 0;
+	regdefp_t count_rdp = {NULL, NULL, NULL};
+	Operand &count_op = count_expr->compile(pgm, count_rdp);
+	x86::Gp count_gp = pgm.cc.newGpq("runtime_member_count");
+	load_idx_to_gpq(pgm, count_gp, count_op);
+	if ( elem_bytes > 1 )
+	    pgm.cc.imul(count_gp, count_gp, imm((int64_t)elem_bytes));
+	pgm.cc.add(total, count_gp);
+    }
+    return total;
+}
+
+static x86::Gp emit_runtime_aggregate_size(Program &pgm, DataDef *copy_type, const char *name)
+{
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(copy_type) )
+    {
+	x86::Gp total = aggregate_has_runtime_size(add->element_type)
+	    ? emit_runtime_aggregate_size(pgm, add->element_type, "runtime_array_elem")
+	    : pgm.cc.newGpq("%s", name ? name : "runtime_array_size");
+	if ( !aggregate_has_runtime_size(add->element_type) )
+	    pgm.cc.mov(total, imm((int64_t)(add->element_type ? add->element_type->size : 0)));
+	if ( add->count_expr )
+	{
+	    regdefp_t count_rdp = {NULL, NULL, NULL};
+	    Operand &count_op = add->count_expr->compile(pgm, count_rdp);
+	    x86::Gp count_gp = pgm.cc.newGpq("runtime_array_count");
+	    load_idx_to_gpq(pgm, count_gp, count_op);
+	    pgm.cc.imul(total, count_gp);
+	}
+	else if ( add->count != 1 )
+	    pgm.cc.imul(total, total, imm((int64_t)add->count));
+	return total;
+    }
+    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(copy_type) )
+	return emit_runtime_struct_size(pgm, sdd, name);
+    x86::Gp total = pgm.cc.newGpq("%s", name ? name : "runtime_aggregate_size");
+    pgm.cc.mov(total, imm((int64_t)(copy_type ? copy_type->size : 0)));
+    return total;
+}
+
+static void emit_runtime_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+					x86::Gp &size_gp, const char *name)
+{
+    x86::Gp dst_gp = as_gp_ptr(pgm, dst, name ? name : "aggregate_copy_dst");
+    x86::Gp src_gp = as_gp_ptr(pgm, src, name ? name : "aggregate_copy_src");
+    InvokeNode *call;
+    pgm.cc.invoke(&call, imm((void *)madc_runtime_memcpy),
+	FuncSignature::build<void *, void *, const void *, size_t>());
+    call->setArg(0, dst_gp);
+    call->setArg(1, src_gp);
+    call->setArg(2, size_gp);
+}
+
+static size_t internal_vararg_static_slot_size(DataDef *type)
+{
+    if ( !type )
+	return 8;
+    if ( aggregate_has_runtime_size(type) )
+	return 8;
+    if ( type->is_numeric() || type->is_pointer() || type->is_real() )
+	return 8;
+    if ( type->size > 0 )
+	return (size_t)type->size;
+    return 8;
 }
 
 static void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type)
@@ -109,6 +352,90 @@ static bool token_has_constant_cstring(TokenBase *token)
 	&& tv->var.data;
 }
 
+static bool token_get_constant_cstring(TokenBase *token, std::string &out)
+{
+    if ( !token )
+	return false;
+    if ( token->type() == TokenType::ttString )
+    {
+	out = static_cast<TokenStr *>(token)->str;
+	return true;
+    }
+    TokenVar *tv = dynamic_cast<TokenVar *>(token);
+    if ( tv
+      && tv->var.is_constant()
+      && tv->var.type
+      && tv->var.type->is_string()
+      && tv->var.data )
+    {
+	out = *((std::string *)tv->var.data);
+	return true;
+    }
+    return false;
+}
+
+static bool token_get_constant_cstring_address(TokenBase *token, const char *&out)
+{
+    out = NULL;
+    if ( !token )
+	return false;
+
+    const char *cstr = token_constant_cstring(token);
+    if ( cstr )
+    {
+	out = cstr;
+	return true;
+    }
+
+    if ( TokenCast *tc = dynamic_cast<TokenCast *>(token) )
+	return token_get_constant_cstring_address(tc->expr, out);
+
+    auto index_into_cstring = [&](const char *base_cstr, TokenBase *index) -> bool {
+	if ( !base_cstr || !index || !index->is_constant() )
+	    return false;
+	int64_t idx = index->ival();
+	if ( idx < 0 )
+	    return false;
+	size_t len = strlen(base_cstr);
+	if ( static_cast<size_t>(idx) > len )
+	    return false;
+	out = base_cstr + idx;
+	return true;
+    };
+
+    TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(token);
+    if ( !tae || !tae->expr )
+	return false;
+
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(tae->expr) )
+    {
+	if ( !ts->object.type || !ts->object.type->is_string() || !ts->object.data )
+	    return false;
+	std::string *str = static_cast<std::string *>(ts->object.data);
+	return index_into_cstring(str->c_str(), ts->index);
+    }
+
+    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tae->expr) )
+	return index_into_cstring(token_constant_cstring(tse->base_expr), tse->index);
+
+    return false;
+}
+
+static bool type_is_cstr_pointer(DataDef *dd)
+{
+    return dd
+	&& dd->is_pointer()
+	&& (dd->rawtype() == DataType::dtCHAR
+	 || dd->rawtype() == DataType::dtUINT8);
+}
+
+static bool type_is_cstr_element(DataDef *dd)
+{
+    return dd
+	&& (dd->rawtype() == DataType::dtCHAR
+	 || dd->rawtype() == DataType::dtUINT8);
+}
+
 static bool token_is_charptr_expr(TokenBase *token)
 {
     if ( !token )
@@ -120,21 +447,21 @@ static bool token_is_charptr_expr(TokenBase *token)
     {
 	if ( dd->is_string() )
 	    return true;
-	if ( dd->is_pointer() && dd->rawtype() == DataType::dtCHAR )
+	if ( type_is_cstr_pointer(dd) )
 	    return true;
     }
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
     {
 	if ( tv->var.is_fixed_array()
 	  && tv->var.type
-	  && tv->var.type->rawtype() == DataType::dtCHAR )
+	  && type_is_cstr_element(tv->var.type) )
 	    return true;
     }
     if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
     {
 	if ( tm->is_fixed_array_member()
 	  && tm->var.type
-	  && tm->var.type->rawtype() == DataType::dtCHAR )
+	  && type_is_cstr_element(tm->var.type) )
 	    return true;
     }
     if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(token) )
@@ -147,16 +474,16 @@ static bool token_compiles_naturally_as_charptr(TokenBase *token)
     if ( !token )
 	return false;
     DataDef *dd = token->datadef();
-    if ( dd && dd->is_pointer() && dd->rawtype() == DataType::dtCHAR )
+    if ( type_is_cstr_pointer(dd) )
 	return true;
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
 	return tv->var.is_fixed_array()
 	    && tv->var.type
-	    && tv->var.type->rawtype() == DataType::dtCHAR;
+	    && type_is_cstr_element(tv->var.type);
     if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
 	return tm->is_fixed_array_member()
 	    && tm->var.type
-	    && tm->var.type->rawtype() == DataType::dtCHAR;
+	    && type_is_cstr_element(tm->var.type);
     if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(token) )
 	return token_is_charptr_expr(tq->true_expr)
 	    && token_is_charptr_expr(tq->false_expr);
@@ -169,6 +496,83 @@ static void emit_zeroed_void_return(Program &pgm)
     pgm.cc.ret();
 }
 
+static bool should_instrument_function(Program &pgm, FuncDef *func)
+{
+    if ( !pgm.instrument_functions || !func || func->no_instrument_function )
+	return false;
+    return pgm.cur_func_name != "__cyg_profile_func_enter"
+	&& pgm.cur_func_name != "__cyg_profile_func_exit";
+}
+
+static bool resolve_function_address(Program &pgm, Variable *var, x86::Gp &addr_gp)
+{
+    if ( !var || !var->data )
+	return false;
+
+    Method *method = (Method *)var->data;
+    FuncDef *func = dynamic_cast<FuncDef *>(method->returns.type);
+    if ( func && func->funcnode )
+    {
+	pgm.cc.lea(addr_gp, x86::ptr(func->funcnode->label()));
+	return true;
+    }
+
+    void *func_addr = method->x86code;
+    if ( !func_addr && pgm.is_dynamic_symbol_allowed(var->name) )
+    {
+	func_addr = dlsym(RTLD_DEFAULT, var->name.c_str());
+	if ( func_addr )
+	    method->x86code = func_addr;
+    }
+    if ( !func_addr )
+	return false;
+
+    pgm.cc.mov(addr_gp, imm((uint64_t)func_addr));
+    return true;
+}
+
+static void emit_function_instrument_hook(Program &pgm, FuncDef *current_func,
+					  const char *hook_name)
+{
+    if ( !should_instrument_function(pgm, current_func)
+      || !pgm.tkProgram || !hook_name )
+	return;
+
+    std::string hook(hook_name);
+    Variable *hook_var = pgm.tkProgram->findVariable(hook);
+    if ( !hook_var || !hook_var->data )
+	return;
+
+    x86::Gp hook_gp = pgm.cc.newIntPtr("%s", hook_name);
+    if ( !resolve_function_address(pgm, hook_var, hook_gp) )
+	return;
+
+    x86::Gp current_gp = pgm.cc.newIntPtr("instrument_this_fn");
+    if ( current_func->funcnode )
+	pgm.cc.lea(current_gp, x86::ptr(current_func->funcnode->label()));
+    else
+	return;
+
+    x86::Gp parent_gp = pgm.cc.newIntPtr("instrument_parent_fn");
+    pgm.cc.xor_(parent_gp, parent_gp);
+
+    InvokeNode *call;
+    pgm.cc.invoke(&call, hook_gp,
+	FuncSignature::build<void, void *, void *>());
+    call->setArg(0, current_gp);
+    call->setArg(1, parent_gp);
+}
+
+static void emit_function_instrument_enter(Program &pgm, FuncDef *current_func)
+{
+    emit_function_instrument_hook(pgm, current_func, "__cyg_profile_func_enter");
+}
+
+static void emit_function_instrument_exit(Program &pgm, FuncDef *current_func)
+{
+    emit_function_instrument_hook(pgm, current_func, "__cyg_profile_func_exit");
+}
+
 static bool global_has_compilable_address(Program &pgm, Variable *var)
 {
     if ( !var || !var->is_global() )
@@ -177,6 +581,20 @@ static bool global_has_compilable_address(Program &pgm, Variable *var)
 	return true;
     if ( pgm.tkProgram )
     {
+	Variable *alias_target = pgm.resolve_global_storage_variable(var);
+	if ( alias_target && alias_target != var
+	  && (alias_target->data || alias_target->has_aot_data()) )
+	{
+	    if ( !var->data )
+		var->data = alias_target->data;
+	    var->flags &= ~vfSTACK;
+	    if ( !var->has_aot_data() && alias_target->has_aot_data() )
+	    {
+		var->aot_data_offset = alias_target->aot_data_offset;
+		var->aot_cstr_offset = alias_target->aot_cstr_offset;
+	    }
+	    return true;
+	}
 	Variable *canon = pgm.tkProgram->findVariable(var->name);
 	if ( canon && (canon->data || canon->has_aot_data()) )
 	{
@@ -366,6 +784,59 @@ static IRValue ir_from_operand(const Operand &op, DataDef *type)
 static Operand &emit_ir_value(Program &pgm, IRValue value, regdefp_t &regdp,
 			      Operand &storage, DataDef *fallback_type)
 {
+    auto materialize_simd = [&](IRValue src, DataDef *dst_type, x86::Xmm &dst) {
+	DataDef *src_type = src.type ? src.type : dst_type;
+	if ( src.isReg() && src.op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    pgm.safemov(dst, src.op.as<x86::Xmm>(), dst_type, src_type);
+	    return;
+	}
+	if ( src.isMem() )
+	{
+	    load_mem_to_xmm(pgm, dst, src.op.as<x86::Mem>(), src_type);
+	    return;
+	}
+	if ( src.isReg() && src.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( dst_type && dst_type->size <= 8 )
+		pgm.cc.movq(dst, src.op.as<x86::Gp>());
+	    else
+		throw "emit_ir_value() SIMD materialization cannot widen gp source beyond 64 bits";
+	    return;
+	}
+	if ( src.isImm() )
+	{
+	    x86::Gp gp = pgm.cc.newGpq("ir_simd_imm");
+	    pgm.cc.mov(gp, src.op.as<Imm>());
+	    pgm.cc.movq(dst, gp);
+	    return;
+	}
+	throw "emit_ir_value() unsupported SIMD source";
+    };
+
+    if ( regdp.second && regdp.second->is_simd() )
+    {
+	x86::Xmm xmm = regdp.second->newreg(pgm.cc, "ir_simd").as<x86::Xmm>();
+	materialize_simd(value, regdp.second, xmm);
+	if ( regdp.first )
+	{
+	    if ( regdp.first->isMem() )
+	    {
+		x86::Mem dst = regdp.first->as<x86::Mem>();
+		store_xmm_to_mem(pgm, dst, xmm, regdp.second);
+		return *regdp.first;
+	    }
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		pgm.safemov(*regdp.first, xmm, regdp.second, regdp.second);
+		return *regdp.first;
+	    }
+	}
+	storage = xmm;
+	regdp.first = &storage;
+	return storage;
+    }
+
     IRBuilder ir(pgm.cc);
     if ( !regdp.second )
 	regdp.second = fallback_type ? fallback_type : value.type;
@@ -393,16 +864,379 @@ static Operand &emit_ir_value(Program &pgm, IRValue value, regdefp_t &regdp,
     return storage;
 }
 
+static x86::Gp emit_bitfield_store_reg(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, x86::Gp value, const char *hint);
+static x86::Gp emit_bitfield_store_operand(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, Operand &value, DataDef *value_type,
+    DataDef *field_type, const char *hint);
+static uint64_t bitfield_mask(size_t width);
+static void emit_and_u64(Program &pgm, x86::Gp &gp, uint64_t mask, const char *hint);
+
+static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right);
+static DataDef *complex_component_type(DataDef *dd);
+
+static bool is_arithmetic_result_operator(TokenBase *token)
+{
+    if ( !token || !token->is_operator() )
+	return false;
+    switch ( token->id() )
+    {
+	case TokenID::tkAdd:
+	case TokenID::tkSub:
+	case TokenID::tkMul:
+	case TokenID::tkDiv:
+	case TokenID::tkMod:
+	case TokenID::tkBand:
+	case TokenID::tkBor:
+	case TokenID::tkXor:
+	case TokenID::tkBSL:
+	case TokenID::tkBSR:
+	    return true;
+	default:
+	    return false;
+    }
+}
+
+static DataDef *promoted_bitfield_numeric_type(TokenBase *token)
+{
+    TokenMember *tm = dynamic_cast<TokenMember *>(token);
+    if ( !tm )
+	return NULL;
+    const DataDefSTRUCT::BitFieldInfo *bf = tm->bitfield_info();
+    if ( !bf || bf->bit_width == 0 )
+	return NULL;
+
+    size_t int_bits = ddINT.size * 8;
+    if ( bf->bit_width < int_bits )
+	return &ddINT;
+    if ( bf->bit_width == int_bits )
+	return bf->is_unsigned ? (DataDef *)&ddUINT32 : (DataDef *)&ddINT;
+    return NULL;
+}
+
+struct IntegerPrecision {
+    bool valid;
+    bool bitfield_derived;
+    size_t bits;
+    bool is_unsigned;
+
+    IntegerPrecision()
+	: valid(false), bitfield_derived(false), bits(0), is_unsigned(false) {}
+    IntegerPrecision(size_t b, bool u, bool derived)
+	: valid(true), bitfield_derived(derived), bits(b), is_unsigned(u) {}
+};
+
+static IntegerPrecision integer_precision_for_token(TokenBase *token);
+
+static IntegerPrecision promoted_bitfield_precision(const DataDefSTRUCT::BitFieldInfo &bf)
+{
+    if ( bf.bit_width == 0 )
+	return IntegerPrecision();
+
+    size_t int_bits = ddINT.size * 8;
+    if ( bf.bit_width < int_bits )
+	return IntegerPrecision(int_bits, false, true);
+    if ( bf.bit_width == int_bits )
+	return IntegerPrecision(int_bits, bf.is_unsigned, true);
+    return IntegerPrecision(bf.bit_width, bf.is_unsigned, true);
+}
+
+static IntegerPrecision binary_integer_precision(TokenBase *left, TokenBase *right,
+						 DataDef *result_type)
+{
+    IntegerPrecision lp = integer_precision_for_token(left);
+    IntegerPrecision rp = integer_precision_for_token(right);
+    if ( !lp.valid && !rp.valid )
+	return IntegerPrecision();
+
+    size_t result_bits = (result_type && result_type->is_integer())
+	? result_type->size * 8 : 64;
+    size_t bits = 0;
+    if ( lp.valid && lp.bits > bits )
+	bits = lp.bits;
+    if ( rp.valid && rp.bits > bits )
+	bits = rp.bits;
+    if ( bits == 0 )
+	bits = result_bits;
+    if ( bits > result_bits )
+	bits = result_bits;
+
+    bool is_unsigned = result_type ? result_type->is_unsigned()
+	: ((lp.valid && lp.is_unsigned) || (rp.valid && rp.is_unsigned));
+    return IntegerPrecision(bits, is_unsigned,
+	lp.bitfield_derived || rp.bitfield_derived);
+}
+
+static IntegerPrecision integer_precision_for_token(TokenBase *token)
+{
+    if ( !token )
+	return IntegerPrecision();
+
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
+    {
+	if ( const DataDefSTRUCT::BitFieldInfo *bf = tm->bitfield_info() )
+	    return promoted_bitfield_precision(*bf);
+    }
+
+    if ( is_arithmetic_result_operator(token) )
+    {
+	TokenOperator *op = dynamic_cast<TokenOperator *>(token);
+	if ( op && (op->left || op->right) )
+	    return binary_integer_precision(op->left, op->right,
+		infer_numeric_type(op->left, op->right));
+    }
+
+    DataDef *dd = token->datadef();
+    if ( dd && dd->is_integer() )
+	return IntegerPrecision(dd->size * 8, dd->is_unsigned(), false);
+    return IntegerPrecision();
+}
+
+static void apply_integer_precision(Program &pgm, Operand &value,
+				    const IntegerPrecision &precision,
+				    DataDef *result_type, const char *hint)
+{
+    if ( !precision.valid || !precision.bitfield_derived
+      || !result_type || !result_type->is_integer() )
+	return;
+    size_t result_bits = result_type->size * 8;
+    if ( precision.bits >= result_bits || precision.bits >= 64 )
+	return;
+    if ( !value.isReg() || !value.as<BaseReg>().isGroup(RegGroup::kGp) )
+	throw "apply_integer_precision() expected a Gp result";
+
+    x86::Gp gp = value.as<x86::Gp>();
+    if ( precision.is_unsigned )
+	emit_and_u64(pgm, gp, bitfield_mask(precision.bits), hint);
+    else
+    {
+	uint32_t shift = (uint32_t)(64 - precision.bits);
+	pgm.cc.shl(gp, imm(shift));
+	pgm.cc.sar(gp, imm(shift));
+    }
+}
+
+static void apply_binary_integer_precision(Program &pgm, Operand &value,
+					   TokenBase *left, TokenBase *right,
+					   DataDef *result_type,
+					   bool left_precision_only,
+					   const char *hint)
+{
+    IntegerPrecision precision = left_precision_only
+	? integer_precision_for_token(left)
+	: binary_integer_precision(left, right, result_type);
+    if ( left_precision_only && precision.valid )
+	precision.is_unsigned = result_type ? result_type->is_unsigned()
+	    : precision.is_unsigned;
+    apply_integer_precision(pgm, value, precision, result_type, hint);
+}
+
+static DataDef *token_numeric_type(TokenBase *token)
+{
+    if ( !token )
+	return NULL;
+    if ( DataDef *bf_type = promoted_bitfield_numeric_type(token) )
+	return bf_type;
+    DataDef *dd = token->datadef();
+    if ( dd && dd->is_pointer() )
+	return NULL;
+    if ( is_arithmetic_result_operator(token) )
+    {
+	TokenOperator *op = dynamic_cast<TokenOperator *>(token);
+	if ( op && (op->left || op->right) )
+	    return infer_numeric_type(op->left, op->right);
+    }
+    if ( dd && dd->is_numeric() )
+	return dd;
+    return NULL;
+}
+
+static uint64_t unsigned_max_for_size(size_t size)
+{
+    if ( size >= 8 )
+	return UINT64_MAX;
+    return (uint64_t(1) << (size * 8)) - 1;
+}
+
+static bool integer_literal_fits_type(TokenBase *token, DataDef *type)
+{
+    TokenInt *literal = dynamic_cast<TokenInt *>(token);
+    if ( !literal || !type || !type->is_integer() )
+	return false;
+
+    int64_t value = literal->get();
+    if ( type->is_unsigned() )
+	return value >= 0 && (uint64_t)value <= unsigned_max_for_size(type->size);
+
+    if ( type->size >= 8 )
+	return true;
+    size_t bits = type->size * 8;
+    int64_t max_value = (int64_t(1) << (bits - 1)) - 1;
+    int64_t min_value = -(int64_t(1) << (bits - 1));
+    return value >= min_value && value <= max_value;
+}
+
+static DataDef *choose_integer_type(TokenBase *left, DataDef *lt,
+				    TokenBase *right, DataDef *rt)
+{
+    if ( !lt )
+	return rt;
+    if ( !rt )
+	return lt;
+    if ( lt == rt )
+	return lt;
+
+    // Unsuffixed integer literals are currently represented by madc's
+    // historical 64-bit ddINT. When paired with an explicitly narrower C
+    // type and the value fits, use the explicit type so `uint32 + 1`
+    // follows C's 32-bit unsigned wrap semantics.
+    if ( integer_literal_fits_type(left, rt) && lt == &ddINT && rt != &ddINT )
+	return rt;
+    if ( integer_literal_fits_type(right, lt) && rt == &ddINT && lt != &ddINT )
+	return lt;
+
+    bool lu = lt->is_unsigned();
+    bool ru = rt->is_unsigned();
+    if ( lu != ru )
+    {
+	if ( lt->size == rt->size )
+	    return lu ? lt : rt;
+	if ( lu && lt->size > rt->size )
+	    return lt;
+	if ( ru && rt->size > lt->size )
+	    return rt;
+	return lt->size > rt->size ? lt : rt;
+    }
+
+    if ( lt->size != rt->size )
+	return lt->size > rt->size ? lt : rt;
+    return lt;
+}
+
+static int integer_rank(DataDef *type)
+{
+    if ( !type )
+	return 0;
+    if ( type->size <= 1 )
+	return 1;
+    if ( type->size <= 2 )
+	return 2;
+    if ( type->size <= 3 )
+	return 3;
+    if ( type->size <= 4 )
+	return 4;
+    return 5;
+}
+
+static DataDef *unsigned_integer_type_for_size(size_t size)
+{
+    if ( size <= 1 ) return &ddUINT8;
+    if ( size <= 2 ) return &ddUINT16;
+    if ( size <= 3 ) return &ddUINT24;
+    if ( size <= 4 ) return &ddUINT32;
+    return &ddUINT64;
+}
+
+static DataDef *promote_c_integer_type(DataDef *type)
+{
+    if ( !type || !type->is_integer() )
+	return type;
+    if ( type->size < 4 )
+	return &ddINT32;
+    return type;
+}
+
+static DataDef *promoted_shift_result_type(TokenBase *left)
+{
+    DataDef *left_type = token_numeric_type(left);
+    if ( !left_type || !left_type->is_integer() )
+	return left_type;
+    return promote_c_integer_type(left_type);
+}
+
+static bool signed_type_can_represent_unsigned(DataDef *signed_type, DataDef *unsigned_type)
+{
+    return signed_type && unsigned_type
+	&& !signed_type->is_unsigned()
+	&& unsigned_type->is_unsigned()
+	&& signed_type->size > unsigned_type->size;
+}
+
+static DataDef *usual_binary_integer_type(TokenBase *left, DataDef *lt,
+					  TokenBase *right, DataDef *rt)
+{
+    if ( !lt || !rt )
+	return choose_integer_type(left, lt, right, rt);
+
+    // madc's unsuffixed integer literals historically parse as 64-bit
+    // ddINT. When paired with an explicit C int/long-width operand and
+    // the value fits, treat the literal as that C type before promotions.
+    if ( integer_literal_fits_type(left, rt) && lt == &ddINT && rt != &ddINT && rt->size >= 4 )
+	lt = rt;
+    if ( integer_literal_fits_type(right, lt) && rt == &ddINT && lt != &ddINT && lt->size >= 4 )
+	rt = lt;
+
+    lt = promote_c_integer_type(lt);
+    rt = promote_c_integer_type(rt);
+    if ( lt == rt )
+	return lt;
+
+    bool lu = lt->is_unsigned();
+    bool ru = rt->is_unsigned();
+    int lr = integer_rank(lt);
+    int rr = integer_rank(rt);
+
+    if ( lu == ru )
+	return lr >= rr ? lt : rt;
+
+    DataDef *ut = lu ? lt : rt;
+    DataDef *st = lu ? rt : lt;
+    int ur = lu ? lr : rr;
+    int sr = lu ? rr : lr;
+
+    if ( ur >= sr )
+	return ut;
+    if ( signed_type_can_represent_unsigned(st, ut) )
+	return st;
+    return unsigned_integer_type_for_size(st->size);
+}
+
 static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right)
 {
-    if ( (left && left->is_real()) || (right && right->is_real()) )
-	return &ddDOUBLE;
-    if ( left && left->datadef() && left->datadef()->is_integer() )
-	return left->datadef();
-    if ( right && right->datadef() && right->datadef()->is_integer() )
-	return right->datadef();
+    DataDef *lt = token_numeric_type(left);
+    DataDef *rt = token_numeric_type(right);
+    // C usual arithmetic conversions for floating types:
+    // pick the highest-ranked real type present.  If only one side
+    // is real, the integer side converts to that real type — NOT
+    // unconditionally to double.
+    bool l_real = (lt && lt->is_real()) || (left && left->is_real());
+    bool r_real = (rt && rt->is_real()) || (right && right->is_real());
+    if ( l_real || r_real )
+    {
+	DataDef *ld = lt && lt->is_real() ? lt : (left ? left->datadef() : nullptr);
+	DataDef *rd = rt && rt->is_real() ? rt : (right ? right->datadef() : nullptr);
+	bool l_is_real = ld && ld->is_real();
+	bool r_is_real = rd && rd->is_real();
+	if ( l_is_real && r_is_real )
+	    return ld->size >= rd->size ? ld : rd;
+	if ( l_is_real )
+	    return ld;
+	if ( r_is_real )
+	    return rd;
+	return &ddDOUBLE;  // fallback
+    }
+    if ( lt && lt->is_integer() && rt && rt->is_integer() )
+	return usual_binary_integer_type(left, lt, right, rt);
+    // Unary / single-operand case: preserve the exact type so callers
+    // like TokenBnot can mask correctly.
+    if ( lt && lt->is_integer() )
+	return choose_integer_type(left, lt, right, NULL);
+    if ( rt && rt->is_integer() )
+	return choose_integer_type(left, NULL, right, rt);
     return &ddINT;
 }
+
+static DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb);
 
 static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					 Operand *preferred_dest, Operand &storage)
@@ -415,21 +1249,55 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	if ( tm->is_fixed_array_member() )
 	    decay_token = true;
 
-    if ( target_type
-      && target_type->is_pointer()
-      && target_type->rawtype() == DataType::dtCHAR
-      && token_has_constant_cstring(token) )
+    bool target_is_charptr = target_type && target_type->is_pointer()
+	&& (target_type->rawtype() == DataType::dtCHAR
+	 || target_type->rawtype() == DataType::dtUINT8);
+    if ( target_is_charptr && token_has_constant_cstring(token) )
     {
 	x86::Gp cstr = pgm.cc.newIntPtr("norm_cstr");
 	emit_constant_cstring_ptr(pgm, token, cstr);
+	if ( preferred_dest && preferred_dest->isReg()
+	  && preferred_dest->as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( !cstr.equals(*preferred_dest) )
+		pgm.safemov(*preferred_dest, cstr, target_type, target_type);
+	    storage = *preferred_dest;
+	    return storage;
+	}
 	storage = cstr;
+	return storage;
+    }
+
+    DataDef *effective_ptr_type = effective_pointer_type_for_arith(pgm, token);
+
+    if ( target_type && token && token->datadef()
+      && token->datadef()->is_complex()
+      && !effective_ptr_type
+      && !target_type->is_complex()
+      && (target_type->is_numeric() || target_type->is_pointer()) )
+    {
+	TokenComplexPart real_part(token, false);
+	regdefp_t inner_rdp = {nullptr, complex_component_type(token->datadef()), nullptr};
+	Operand &real_op = real_part.compile(pgm, inner_rdp);
+	DataDef *real_type = inner_rdp.second ? inner_rdp.second : real_part.datadef();
+	IRBuilder ir(pgm.cc);
+	IRValue out = ir.coerce(ir_from_operand(real_op, real_type), target_type);
+	out = ir.load(out);
+	if ( preferred_dest && preferred_dest->isReg() )
+	{
+	    if ( !out.op.equals(*preferred_dest) )
+		pgm.safemov(*preferred_dest, out.op, target_type, out.type);
+	    storage = *preferred_dest;
+	    return storage;
+	}
+	storage = out.op;
 	return storage;
     }
 
     regdefp_t tmp_rdp = {preferred_dest, target_type, nullptr};
     if ( target_type
       && target_type->is_pointer()
-      && ((target_type->rawtype() == DataType::dtCHAR && token_has_constant_cstring(token))
+      && ((target_is_charptr && token_has_constant_cstring(token))
        || decay_token) )
 	tmp_rdp.second = nullptr;
     // String→charptr coercion for non-constant strings: let the token
@@ -440,9 +1308,7 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     // no transient std::string merge object. That avoids native EXE
     // paths reloading the first machine word of a copied string object
     // before the eventual c_str() call.
-    if ( target_type
-      && target_type->is_pointer()
-      && target_type->rawtype() == DataType::dtCHAR
+    if ( target_is_charptr
       && token && token->datadef()
       && token->datadef()->is_string()
       && !token_has_constant_cstring(token)
@@ -454,6 +1320,37 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     {
 	if ( decay_token && raw_type && !raw_type->is_pointer() )
 	    raw_type = &ddLPSTR;
+    }
+    if ( target_type && target_type->is_simd() )
+    {
+	Operand simd_dst = preferred_dest ? *preferred_dest : target_type->newreg(pgm.cc, "norm_simd");
+	if ( !simd_dst.isReg() || !simd_dst.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    throw "compile_token_normalized() SIMD target needs Xmm destination";
+	x86::Xmm xmm = simd_dst.as<x86::Xmm>();
+	if ( raw.isReg() && raw.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(xmm, raw.as<x86::Xmm>(), target_type, raw_type);
+	else if ( raw.isMem() )
+	{
+	    x86::Mem mem = raw.as<x86::Mem>();
+	    load_mem_to_xmm(pgm, xmm, mem, raw_type ? raw_type : target_type);
+	}
+	else if ( raw.isReg() && raw.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( target_type->size <= 8 )
+		pgm.cc.movq(xmm, raw.as<x86::Gp>());
+	    else
+		throw "compile_token_normalized() SIMD target cannot widen gp source beyond 64 bits";
+	}
+	else if ( raw.isImm() )
+	{
+	    x86::Gp gp = pgm.cc.newGpq("norm_simd_imm");
+	    pgm.cc.mov(gp, raw.as<Imm>());
+	    pgm.cc.movq(xmm, gp);
+	}
+	else
+	    throw "compile_token_normalized() unsupported SIMD source operand";
+	storage = simd_dst;
+	return storage;
     }
     IRBuilder ir(pgm.cc);
     IRValue out = ir.coerce(ir_from_operand(raw, raw_type), target_type);
@@ -501,7 +1398,7 @@ typedef void (Program::*SafeBinOp3)(asmjit::Operand &, asmjit::Operand &, DataDe
 // safeand / safexor / safeshl / safeshr): in-place on lval. No
 // DataDef arg because these are type-agnostic (they operate on Gp
 // registers regardless of integer width).
-typedef void (Program::*SafeBitOp2)(asmjit::Operand &, asmjit::Operand &);
+typedef void (Program::*SafeBitOp2)(asmjit::Operand &, asmjit::Operand &, DataDef *);
 
 // Normalize both sides through the IR to Reg-of-result_type, run the
 // given safe* helper in place on the left Reg, then route the result
@@ -518,7 +1415,11 @@ static Operand &emit_plain_binop3(Program &pgm, TokenBase *left, TokenBase *righ
     Operand &lval = compile_token_normalized(pgm, left, result_type, &left_reg, left_norm);
     Operand &rval = compile_token_normalized(pgm, right, result_type, nullptr, right_norm);
     (pgm.*op)(lval, rval, result_type, nullptr);
-    storage = lval;
+    apply_binary_integer_precision(pgm, lval, left, right, result_type,
+	false, name_hint);
+    IRBuilder ir(pgm.cc);
+    IRValue result = ir.load(IRValue::reg(lval, result_type));
+    storage = result.op;
     regdp.first = &storage;
     if ( caller_dest )
     {
@@ -534,6 +1435,7 @@ static Operand &emit_plain_binop3(Program &pgm, TokenBase *left, TokenBase *righ
 static Operand &emit_plain_bitop2(Program &pgm, TokenBase *left, TokenBase *right,
 				  DataDef *result_type, SafeBitOp2 op,
 				  bool right_must_be_gp,
+				  bool left_precision_only,
 				  regdefp_t &regdp, Operand &storage, const char *name_hint)
 {
     Operand *caller_dest = regdp.first;
@@ -544,8 +1446,12 @@ static Operand &emit_plain_bitop2(Program &pgm, TokenBase *left, TokenBase *righ
     Operand &rval = right_must_be_gp
 	? compile_token_gp_normalized(pgm, right, result_type, right_norm)
 	: compile_token_normalized(pgm, right, result_type, nullptr, right_norm);
-    (pgm.*op)(lval, rval);
-    storage = lval;
+    (pgm.*op)(lval, rval, result_type);
+    apply_binary_integer_precision(pgm, lval, left, right, result_type,
+	left_precision_only, name_hint);
+    IRBuilder ir(pgm.cc);
+    IRValue result = ir.load(IRValue::reg(lval, result_type));
+    storage = result.op;
     regdp.first = &storage;
     if ( caller_dest )
     {
@@ -573,7 +1479,11 @@ static Operand &emit_plain_divmod(Program &pgm, TokenBase *left, TokenBase *righ
 	pgm.safexor(remainder, remainder);
     pgm.safediv(remainder, dividend, divisor, result_type, result_type, result_type);
     Operand &result = return_remainder ? remainder : dividend;
-    storage = result;
+    apply_binary_integer_precision(pgm, result, left, right, result_type,
+	false, name_hint);
+    IRBuilder ir(pgm.cc);
+    IRValue normalized = ir.load(IRValue::reg(result, result_type));
+    storage = normalized.op;
     regdp.first = &storage;
     if ( caller_dest )
     {
@@ -632,6 +1542,24 @@ static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand 
 	pgm.cc.movsx(dst, s);           // 16/8→64 sign-extend
     else
 	pgm.cc.mov(dst, s);
+}
+
+static uint32_t scale_index_by_element_size(Program &pgm, asmjit::x86::Gp &idx_reg,
+					    DataDef *elem_type, const char *name)
+{
+    size_t elem_size = elem_type && elem_type->size ? elem_type->size : 8;
+    if ( aggregate_has_runtime_size(elem_type) )
+    {
+	x86::Gp stride = emit_runtime_aggregate_size(pgm, elem_type, name);
+	pgm.cc.imul(idx_reg, stride);
+	return 0;
+    }
+    if ( elem_size == 8 ) return 3;
+    if ( elem_size == 4 ) return 2;
+    if ( elem_size == 2 ) return 1;
+    if ( elem_size != 1 )
+	pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+    return 0;
 }
 
 // Helper: load the address-of a variable into `dst_gp` — mov from Gp
@@ -719,24 +1647,98 @@ static bool is_fixed_array_struct_member(TokenBase *tb)
     return tm && tm->is_fixed_array_member();
 }
 
+static DataDef *build_fixed_array_result_type(DataDef *base_type,
+					      const std::vector<uint32_t> &dims,
+					      size_t consumed_dims);
+
+static const std::vector<uint32_t> *fixed_array_member_dims(TokenMember *tm)
+{
+    if ( !tm )
+	return NULL;
+    DataDefSTRUCT *sdd = tm->owner_struct_type();
+    if ( !sdd )
+	return NULL;
+    return sdd->m_dims(tm->var.name);
+}
+
+static DataDef *fixed_array_member_result_type(TokenMember *tm, size_t consumed_dims)
+{
+    if ( !tm || !tm->var.type )
+	return &ddINT64;
+    const std::vector<uint32_t> *dims = fixed_array_member_dims(tm);
+    if ( !dims || dims->empty() )
+	return tm->var.type;
+    return build_fixed_array_result_type(tm->var.type, *dims, consumed_dims);
+}
+
+static DataDef *build_fixed_array_result_type(DataDef *base_type,
+					      const std::vector<uint32_t> &dims,
+					      size_t consumed_dims)
+{
+    if ( !base_type )
+	return &ddINT64;
+    if ( consumed_dims >= dims.size() )
+	return base_type;
+
+    DataDef *result = base_type;
+    for ( size_t i = dims.size(); i-- > consumed_dims; )
+	result = new DataDefCArray(*result, result->name, dims[i], NULL);
+    return result;
+}
+
+static DataDef *fixed_array_subscript_result_type(const Variable &object,
+						  size_t consumed_dims)
+{
+    if ( !object.is_fixed_array() )
+	return object.type ? object.type : &ddINT64;
+    return build_fixed_array_result_type(object.type, object.dims, consumed_dims);
+}
+
+static size_t fixed_array_subscript_stride(const Variable &object,
+					   size_t consumed_dims)
+{
+    DataDef *result_type = fixed_array_subscript_result_type(object, consumed_dims);
+    return (result_type && result_type->size) ? result_type->size : 8;
+}
+
+static DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb)
+{
+    if ( !tb )
+	return nullptr;
+    if ( token_has_constant_cstring(tb) )
+	return &ddLPSTR;
+    DataDef *dd = tb->datadef();
+    if ( dd && dd->is_pointer() )
+	return dd;
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
+	if ( tv->var.is_fixed_array() && tv->var.type )
+	    return pgm.getPointerType(tv->var.type);
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
+	if ( tm->is_fixed_array_member() && tm->var.type )
+	    return pgm.getPointerType(tm->var.type);
+    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
+    {
+	DataDef *lptr = effective_pointer_type_for_arith(pgm, op->left);
+	DataDef *rptr = effective_pointer_type_for_arith(pgm, op->right);
+	if ( op->id() == TokenID::tkAdd || op->id() == TokenID::tkSub )
+	    return lptr ? lptr : rptr;
+    }
+    return nullptr;
+}
+
 static void emit_pointer_arith_scale(Program &pgm, TokenBase *left, TokenBase *right,
 				     Operand &rval)
 {
-    DataDef *rtype = right ? right->datadef() : nullptr;
-    if ( rtype && rtype->is_pointer() )
+    DataDef *rtype = effective_pointer_type_for_arith(pgm, right);
+    if ( rtype )
 	return;  // ptr ± ptr: raw byte arithmetic, no scale
     size_t elem_size = 0;
-    DataDef *ltype = left ? left->datadef() : nullptr;
-    if ( ltype && ltype->is_pointer() )
+    DataDef *ltype = effective_pointer_type_for_arith(pgm, left);
+    if ( ltype )
     {
 	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ltype);
 	if ( pdd && pdd->base_type )
 	    elem_size = pdd->base_type->size;
-    }
-    else if ( TokenVar *lvar = dynamic_cast<TokenVar *>(left) )
-    {
-	if ( lvar->var.is_fixed_array() && lvar->var.type )
-	    elem_size = lvar->var.type->size;
     }
     if ( elem_size <= 1 )
 	return;
@@ -745,7 +1747,167 @@ static void emit_pointer_arith_scale(Program &pgm, TokenBase *left, TokenBase *r
     pgm.cc.imul(rval.as<x86::Gp>(), rval.as<x86::Gp>(), imm((int64_t)elem_size));
 }
 
+static Operand &compile_pointer_offset_operand(Program &pgm, TokenBase *offset_expr,
+					       Operand &storage, DataDef *&offset_type)
+{
+    regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
+    Operand &raw = offset_expr->compile(pgm, rhs_rdp);
+    offset_type = rhs_rdp.second
+	? rhs_rdp.second
+	: (offset_expr && offset_expr->datadef() ? offset_expr->datadef() : &ddINT);
+    IRBuilder ir(pgm.cc);
+    IRValue widened = ir.coerce(ir_from_operand(raw, offset_type), &ddINT64);
+    widened = ir.load(widened);
+    storage = widened.op;
+    offset_type = &ddINT64;
+    return storage;
+}
+
 enum class CmpKind : uint8_t { Eq, Ne, Lt, Le, Gt, Ge };
+
+static Operand &compile_complex_compare_base(Program &pgm, TokenBase *expr, DataDef *expr_type,
+					     Operand &storage)
+{
+    regdefp_t sub = {nullptr, expr_type, nullptr};
+    Operand &base = expr->compile(pgm, sub);
+    storage = base;
+    return storage;
+}
+
+static x86::Mem complex_component_mem(Program &pgm, const Operand &base_op,
+				      DataDefCOMPLEX *cdd, bool imag_part,
+				      const char *tmp_name)
+{
+    DataDef *part_type = cdd && cdd->element_type ? cdd->element_type : &ddINT64;
+    size_t ofs = cdd ? cdd->component_offset(imag_part) : 0;
+    if ( base_op.isMem() )
+    {
+	x86::Mem part = base_op.as<x86::Mem>();
+	part.addOffset((int64_t)ofs);
+	part.setSize((uint32_t)part_type->size);
+	return part;
+    }
+
+    x86::Gp base_gp;
+    if ( base_op.isImm() )
+    {
+	base_gp = pgm.cc.newIntPtr(tmp_name);
+	pgm.cc.mov(base_gp, base_op.as<Imm>());
+    }
+    else
+	base_gp = base_op.as<x86::Gp>();
+    return x86::ptr(base_gp, (int32_t)ofs, (uint32_t)part_type->size);
+}
+
+static x86::Gp emit_complex_cmp_bit(Program &pgm, const Operand &lhs, DataDef *lhs_type,
+				    const Operand &rhs, DataDef *rhs_type,
+				    DataDef *cmp_type, CmpKind op,
+				    const char *name)
+{
+    IRBuilder ir(pgm.cc);
+    IRValue left_val = ir.load(ir.coerce(ir_from_operand(lhs, lhs_type), cmp_type));
+    IRValue right_val = ir.load(ir.coerce(ir_from_operand(rhs, rhs_type), cmp_type));
+    x86::Gp result = pgm.cc.newGpq(name);
+    pgm.safecmp(left_val.op, right_val.op, cmp_type);
+    if ( op == CmpKind::Eq )
+	pgm.safesete(result);
+    else
+	pgm.safesetne(result);
+    return result;
+}
+
+static Operand &emit_complex_compare(Program &pgm, TokenBase *left, TokenBase *right, CmpKind op,
+				     regdefp_t &regdp, Operand &storage)
+{
+    Operand *caller_dest = regdp.first;
+    DataDef *left_type = left ? left->datadef() : nullptr;
+    DataDef *right_type = right ? right->datadef() : nullptr;
+    bool left_complex = left_type && left_type->is_complex();
+    bool right_complex = right_type && right_type->is_complex();
+    DataDef *component_type = complex_component_type(left_complex ? left_type : right_type);
+    if ( !component_type )
+	component_type = &ddINT;
+
+    Operand left_base;
+    Operand right_base;
+    Operand left_real_storage;
+    Operand left_imag_storage;
+    Operand right_real_storage;
+    Operand right_imag_storage;
+    Operand left_scalar_storage;
+    Operand left_zero_storage;
+    Operand right_scalar_storage;
+    Operand right_zero_storage;
+    TokenInt zero(0);
+
+    Operand *left_real = nullptr;
+    Operand *left_imag = nullptr;
+    Operand *right_real = nullptr;
+    Operand *right_imag = nullptr;
+    DataDef *left_real_type = component_type;
+    DataDef *left_imag_type = component_type;
+    DataDef *right_real_type = component_type;
+    DataDef *right_imag_type = component_type;
+
+    if ( left_complex )
+    {
+	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(left_type);
+	if ( cdd && cdd->element_type )
+	    left_real_type = left_imag_type = cdd->element_type;
+	Operand &base = compile_complex_compare_base(pgm, left, left_type, left_base);
+	left_real_storage = complex_component_mem(pgm, base, cdd, false, "__complex_cmp_l");
+	left_imag_storage = complex_component_mem(pgm, base, cdd, true, "__complex_cmp_l");
+	left_real = &left_real_storage;
+	left_imag = &left_imag_storage;
+    }
+    else
+    {
+	left_real = &compile_token_normalized(pgm, left, component_type, nullptr, left_scalar_storage);
+	left_real_type = component_type;
+	left_imag = &compile_token_normalized(pgm, &zero, component_type, nullptr, left_zero_storage);
+	left_imag_type = component_type;
+    }
+
+    if ( right_complex )
+    {
+	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(right_type);
+	if ( cdd && cdd->element_type )
+	    right_real_type = right_imag_type = cdd->element_type;
+	Operand &base = compile_complex_compare_base(pgm, right, right_type, right_base);
+	right_real_storage = complex_component_mem(pgm, base, cdd, false, "__complex_cmp_r");
+	right_imag_storage = complex_component_mem(pgm, base, cdd, true, "__complex_cmp_r");
+	right_real = &right_real_storage;
+	right_imag = &right_imag_storage;
+    }
+    else
+    {
+	right_real = &compile_token_normalized(pgm, right, component_type, nullptr, right_scalar_storage);
+	right_real_type = component_type;
+	right_imag = &compile_token_normalized(pgm, &zero, component_type, nullptr, right_zero_storage);
+	right_imag_type = component_type;
+    }
+
+    x86::Gp real_cmp = emit_complex_cmp_bit(pgm, *left_real, left_real_type,
+					    *right_real, right_real_type,
+					    component_type, op, "__complex_cmp_re");
+    x86::Gp imag_cmp = emit_complex_cmp_bit(pgm, *left_imag, left_imag_type,
+					    *right_imag, right_imag_type,
+					    component_type, op, "__complex_cmp_im");
+    if ( op == CmpKind::Eq )
+	pgm.safeand(real_cmp, imag_cmp, &ddINT64);
+    else
+	pgm.safeor(real_cmp, imag_cmp, &ddINT64);
+
+    regdp.second = &ddINT64;
+    storage = real_cmp;
+    regdp.first = &storage;
+    if ( caller_dest )
+    {
+	regdp.first = caller_dest;
+	return emit_ir_value(pgm, IRValue::reg(real_cmp, &ddINT64), regdp, storage, &ddINT64);
+    }
+    return storage;
+}
 
 // Central implementation of `lval <cmp> rval` -> 0/1 int64 result.
 // Both sides normalize through compile_token_normalized to a Reg of the
@@ -756,32 +1918,113 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
 			     regdefp_t &regdp, Operand &storage)
 {
     Operand *caller_dest = regdp.first;
-    DataDef *cmp_type = infer_numeric_type(left, right);
+    DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
+    DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
+    if ( !lptr_type && !rptr_type
+      && (op == CmpKind::Eq || op == CmpKind::Ne)
+      && ((left && left->datadef() && left->datadef()->is_complex())
+       || (right && right->datadef() && right->datadef()->is_complex())) )
+	return emit_complex_compare(pgm, left, right, op, regdp, storage);
+    DataDef *cmp_type = (lptr_type || rptr_type)
+	? (lptr_type ? lptr_type : rptr_type)
+	: infer_numeric_type(left, right);
     // Real comparisons use ucomisd which sets CF/PF/ZF, not SF/OF,
     // so setl/setle/setg/setge are meaningless after ucomisd. The
     // x86 manual mandates the unsigned setcc variants (setb/setbe/
     // seta/setae) to read its flags correctly.
     bool is_unsigned = false;
     if ( op != CmpKind::Eq && op != CmpKind::Ne )
-	is_unsigned = (left->datadef()  && left->datadef()->is_unsigned())
-		   || (right->datadef() && right->datadef()->is_unsigned())
-		   || (cmp_type && cmp_type->is_unsigned())
+    {
+	// C usual arithmetic conversions: unsigned char/short promote to
+	// (signed) int, so only unsigned types >= sizeof(int) force
+	// unsigned comparison.  Floats use ucomisd which sets CF/PF/ZF,
+	// requiring unsigned setcc variants (setb/seta).
+	auto forces_unsigned = [](DataDef *dd) {
+	    return dd && dd->is_unsigned() && dd->size >= 4;
+	};
+	is_unsigned = forces_unsigned(left->datadef())
+		   || forces_unsigned(right->datadef())
+		   || (cmp_type && cmp_type->is_unsigned() && cmp_type->size >= 4)
 		   || (cmp_type && cmp_type->is_real());
+    }
 
     Operand left_norm;
     Operand right_norm;
     Operand &lval = compile_token_normalized(pgm, left, cmp_type, nullptr, left_norm);
     Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
-    x86::Gp result = pgm.cc.newGpq("_cmp");
-    pgm.safecmp(lval, rval);
-    switch(op)
+    // C usual arithmetic conversions: when comparing int with unsigned int,
+    // both convert to unsigned int (32-bit). Truncate 64-bit register values
+    // to 32 bits so -1 (0xFFFFFFFFFFFFFFFF) becomes UINT_MAX (0xFFFFFFFF).
+    if ( is_unsigned && cmp_type && cmp_type->size == 4 )
     {
-	case CmpKind::Eq: pgm.safesete(result);                                          break;
-	case CmpKind::Ne: pgm.safesetne(result);                                         break;
-	case CmpKind::Lt: if ( is_unsigned ) pgm.safesetb(result);  else pgm.safesetl(result);  break;
-	case CmpKind::Le: if ( is_unsigned ) pgm.safesetbe(result); else pgm.safesetle(result); break;
-	case CmpKind::Gt: if ( is_unsigned ) pgm.safeseta(result);  else pgm.safesetg(result);  break;
-	case CmpKind::Ge: if ( is_unsigned ) pgm.safesetae(result); else pgm.safesetge(result); break;
+	if ( lval.isReg() && lval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Gp l32 = pgm.cc.newGpd("cmp32_l");
+	    pgm.cc.mov(l32, lval.as<x86::Gp>().r32());
+	    left_norm = l32;
+	    lval = left_norm;
+	}
+	if ( rval.isReg() && rval.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Gp r32 = pgm.cc.newGpd("cmp32_r");
+	    pgm.cc.mov(r32, rval.as<x86::Gp>().r32());
+	    right_norm = r32;
+	    rval = right_norm;
+	}
+	// Imm truncation: mask to 32 bits
+	if ( rval.isImm() )
+	{
+	    int64_t v = rval.as<Imm>().value();
+	    right_norm = imm((int64_t)(uint32_t)v);
+	    rval = right_norm;
+	}
+    }
+    x86::Gp result = pgm.cc.newGpq("_cmp");
+    pgm.safecmp(lval, rval, cmp_type);
+    if ( cmp_type && cmp_type->is_real() )
+    {
+	x86::Gp aux = pgm.cc.newGpq("_cmp_aux");
+	switch(op)
+	{
+	    case CmpKind::Eq:
+		pgm.safesete(result);
+		pgm.safesetnp(aux);
+		pgm.safeand(result, aux, &ddINT64);
+		break;
+	    case CmpKind::Ne:
+		pgm.safesetne(result);
+		pgm.safesetp(aux);
+		pgm.safeor(result, aux, &ddINT64);
+		break;
+	    case CmpKind::Lt:
+		pgm.safesetb(result);
+		pgm.safesetnp(aux);
+		pgm.safeand(result, aux, &ddINT64);
+		break;
+	    case CmpKind::Le:
+		pgm.safesetbe(result);
+		pgm.safesetnp(aux);
+		pgm.safeand(result, aux, &ddINT64);
+		break;
+	    case CmpKind::Gt:
+		pgm.safeseta(result);
+		break;
+	    case CmpKind::Ge:
+		pgm.safesetae(result);
+		break;
+	}
+    }
+    else
+    {
+	switch(op)
+	{
+	    case CmpKind::Eq: pgm.safesete(result);                                              break;
+	    case CmpKind::Ne: pgm.safesetne(result);                                             break;
+	    case CmpKind::Lt: if ( is_unsigned ) pgm.safesetb(result);  else pgm.safesetl(result);  break;
+	    case CmpKind::Le: if ( is_unsigned ) pgm.safesetbe(result); else pgm.safesetle(result); break;
+	    case CmpKind::Gt: if ( is_unsigned ) pgm.safeseta(result);  else pgm.safesetg(result);  break;
+	    case CmpKind::Ge: if ( is_unsigned ) pgm.safesetae(result); else pgm.safesetge(result); break;
+	}
     }
     regdp.second = &ddINT64;
     storage = result;
@@ -791,6 +2034,488 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
 	regdp.first = caller_dest;
 	return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, storage, &ddINT64);
     }
+    return storage;
+}
+
+static void prepare_complex_component_pair(Program &pgm, TokenBase *expr, DataDef *target_complex_type,
+					   Operand &base_storage,
+					   Operand *&real_part, DataDef *&real_type,
+					   Operand *&imag_part, DataDef *&imag_type,
+					   Operand &real_storage, Operand &imag_storage)
+{
+    DataDefCOMPLEX *target_cdd = dynamic_cast<DataDefCOMPLEX *>(target_complex_type);
+    if ( !target_cdd || !target_cdd->element_type )
+	throw "prepare_complex_component_pair() invalid target complex type";
+
+    TokenInt zero(0);
+    if ( expr && expr->datadef() && expr->datadef()->is_complex() )
+    {
+	DataDef *expr_type = expr->datadef();
+	DataDefCOMPLEX *expr_cdd = dynamic_cast<DataDefCOMPLEX *>(expr_type);
+	if ( !expr_cdd || !expr_cdd->element_type )
+	    throw "prepare_complex_component_pair() invalid complex expression type";
+	Operand &base = compile_complex_compare_base(pgm, expr, expr_type, base_storage);
+	real_storage = complex_component_mem(pgm, base, expr_cdd, false, "__complex_part");
+	imag_storage = complex_component_mem(pgm, base, expr_cdd, true, "__complex_part");
+	real_part = &real_storage;
+	imag_part = &imag_storage;
+	real_type = imag_type = expr_cdd->element_type;
+	return;
+    }
+
+    real_part = &compile_token_normalized(pgm, expr, target_cdd->element_type, nullptr, real_storage);
+    imag_part = &compile_token_normalized(pgm, &zero, target_cdd->element_type, nullptr, imag_storage);
+    real_type = imag_type = target_cdd->element_type;
+}
+
+static Operand &emit_complex_value_from_expr(Program &pgm, TokenBase *expr,
+					     DataDef *target_complex_type,
+					     regdefp_t &regdp, Operand &storage)
+{
+    DataDefCOMPLEX *target_cdd = dynamic_cast<DataDefCOMPLEX *>(target_complex_type);
+    if ( !target_cdd || !target_cdd->element_type )
+	throw "emit_complex_value_from_expr() invalid target complex type";
+
+    Operand base_storage;
+    Operand real_storage;
+    Operand imag_storage;
+    Operand *real_part = NULL;
+    Operand *imag_part = NULL;
+    DataDef *real_type = NULL;
+    DataDef *imag_type = NULL;
+    prepare_complex_component_pair(pgm, expr, target_complex_type, base_storage,
+				   real_part, real_type, imag_part, imag_type,
+				   real_storage, imag_storage);
+
+    Operand *caller_dest = regdp.first;
+    bool use_caller_dest = caller_dest && (!regdp.second || regdp.second->is_complex());
+    Operand dest_base;
+    if ( use_caller_dest )
+	dest_base = *caller_dest;
+    else
+	dest_base = pgm.cc.newStack((uint32_t)target_complex_type->size, 8);
+
+    x86::Mem dst_real = complex_component_mem(pgm, dest_base, target_cdd, false, "__complex_cast_dst");
+    x86::Mem dst_imag = complex_component_mem(pgm, dest_base, target_cdd, true, "__complex_cast_dst");
+
+    IRBuilder ir(pgm.cc);
+    IRValue real_val = ir.load(ir.coerce(ir_from_operand(*real_part, real_type),
+					 target_cdd->element_type));
+    IRValue imag_val = ir.load(ir.coerce(ir_from_operand(*imag_part, imag_type),
+					 target_cdd->element_type));
+    ir.store(IRValue::mem(dst_real, target_cdd->element_type), real_val);
+    ir.store(IRValue::mem(dst_imag, target_cdd->element_type), imag_val);
+
+    regdp.second = target_complex_type;
+    if ( use_caller_dest )
+	return *regdp.first;
+
+    storage = dest_base;
+    regdp.first = &storage;
+    return storage;
+}
+
+static Operand &emit_union_from_scalar(Program &pgm, TokenBase *expr,
+				       DataDefSTRUCT *union_type,
+				       regdefp_t &regdp, Operand &storage)
+{
+    if ( !expr || !union_type || !union_type->union_layout || union_type->members.empty() )
+	throw "emit_union_from_scalar() invalid union cast";
+
+    DataDef *member_type = union_type->members[0].second;
+    if ( !member_type || (!member_type->is_numeric() && !member_type->is_pointer()) )
+	throw "emit_union_from_scalar() unsupported first union member type";
+
+    Operand value_storage;
+    Operand &value = compile_token_normalized(pgm, expr, member_type, nullptr, value_storage);
+
+    size_t align = union_type->alignment();
+    if ( align == 0 )
+	align = 8;
+    x86::Mem slot = pgm.cc.newStack((uint32_t)union_type->size, (uint32_t)align);
+    x86::Mem member_mem = slot;
+    member_mem.setSize((uint32_t)member_type->size);
+
+    IRBuilder ir(pgm.cc);
+    IRValue coerced = ir.load(ir.coerce(ir_from_operand(value, member_type), member_type));
+    ir.store(IRValue::mem(member_mem, member_type), coerced);
+
+    storage = as_gp_ptr(pgm, slot, "__union_cast");
+    regdp.first = &storage;
+    regdp.second = union_type;
+    return storage;
+}
+
+static DataDef *builtin_complex_compat_type(DataDef *base_type)
+{
+    static std::map<DataDef *, DataDefCOMPLEX *> cache;
+    if ( !base_type )
+	return &ddVOID;
+    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(base_type);
+    if ( it != cache.end() )
+	return it->second;
+    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*base_type);
+    cache[base_type] = complex_type;
+    return complex_type;
+}
+
+static DataDef *builtin_complex_arg_type(TokenCallFunc *call)
+{
+    if ( !call )
+	return NULL;
+    DataDef *ret_type = call->returns();
+    if ( ret_type && ret_type->is_complex() )
+	return ret_type;
+    if ( ret_type && ret_type->is_real() )
+	return builtin_complex_compat_type(ret_type);
+    return call->argc() == 1 && call->parameters[0] ? call->parameters[0]->datadef() : NULL;
+}
+
+static Operand &emit_complex_addsub(Program &pgm, TokenBase *left, TokenBase *right,
+				    bool subtract, regdefp_t &regdp, Operand &storage)
+{
+    DataDef *left_type = left ? left->datadef() : NULL;
+    DataDef *right_type = right ? right->datadef() : NULL;
+    DataDef *complex_type = left_type && left_type->is_complex() ? left_type : right_type;
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_addsub() invalid complex type";
+
+    Operand left_base_storage, right_base_storage;
+    Operand left_real_storage, left_imag_storage, right_real_storage, right_imag_storage;
+    Operand *left_real = NULL, *left_imag = NULL, *right_real = NULL, *right_imag = NULL;
+    DataDef *left_real_type = NULL, *left_imag_type = NULL, *right_real_type = NULL, *right_imag_type = NULL;
+
+    prepare_complex_component_pair(pgm, left, complex_type, left_base_storage,
+				   left_real, left_real_type, left_imag, left_imag_type,
+				   left_real_storage, left_imag_storage);
+    prepare_complex_component_pair(pgm, right, complex_type, right_base_storage,
+				   right_real, right_real_type, right_imag, right_imag_type,
+				   right_real_storage, right_imag_storage);
+
+    IRBuilder ir(pgm.cc);
+    IRValue lhs_real_val = ir.load(ir.coerce(ir_from_operand(*left_real, left_real_type), cdd->element_type));
+    IRValue lhs_imag_val = ir.load(ir.coerce(ir_from_operand(*left_imag, left_imag_type), cdd->element_type));
+    IRValue rhs_real_val = ir.load(ir.coerce(ir_from_operand(*right_real, right_real_type), cdd->element_type));
+    IRValue rhs_imag_val = ir.load(ir.coerce(ir_from_operand(*right_imag, right_imag_type), cdd->element_type));
+
+    Operand real_out = lhs_real_val.op;
+    Operand imag_out = lhs_imag_val.op;
+    if ( subtract )
+    {
+	pgm.safesub(real_out, rhs_real_val.op, cdd->element_type);
+	pgm.safesub(imag_out, rhs_imag_val.op, cdd->element_type);
+    }
+    else
+    {
+	pgm.safeadd(real_out, rhs_real_val.op, cdd->element_type);
+	pgm.safeadd(imag_out, rhs_imag_val.op, cdd->element_type);
+    }
+
+    x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+    x86::Mem real_mem = slot;
+    real_mem.setSize((uint32_t)cdd->element_type->size);
+    x86::Mem imag_mem = slot;
+    imag_mem.addOffset((int64_t)cdd->component_offset(true));
+    imag_mem.setSize((uint32_t)cdd->element_type->size);
+    ir.store(IRValue::mem(real_mem, cdd->element_type), ir_from_operand(real_out, cdd->element_type));
+    ir.store(IRValue::mem(imag_mem, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
+
+    storage = as_gp_ptr(pgm, slot, subtract ? "__complex_sub" : "__complex_add");
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &copy_typed_value(Program &pgm, const Operand &src, DataDef *type,
+				 Operand &storage, const char *name)
+{
+    storage = type->newreg(pgm.cc, name);
+    if ( storage.isReg() && storage.as<BaseReg>().isGroup(RegGroup::kVec) )
+    {
+	if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(storage.as<x86::Xmm>(), ((Operand &)src).as<x86::Xmm>(), type, type);
+	else if ( src.isMem() )
+	    pgm.safemov(storage.as<x86::Xmm>(), ((Operand &)src).as<x86::Mem>(), type, type);
+	else if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.safemov(storage.as<x86::Xmm>(), ((Operand &)src).as<x86::Gp>(), type, type);
+	else
+	    throw "copy_typed_value() unsupported Xmm source";
+    }
+    else if ( storage.isReg() && storage.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    pgm.safemov(storage.as<x86::Gp>(), ((Operand &)src).as<x86::Gp>(), type, type);
+	else if ( src.isMem() )
+	    pgm.safemov(storage.as<x86::Gp>(), ((Operand &)src).as<x86::Mem>(), type, type);
+	else if ( src.isImm() )
+	    pgm.cc.mov(storage.as<x86::Gp>(), ((Operand &)src).as<Imm>());
+	else if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(storage.as<x86::Gp>(), ((Operand &)src).as<x86::Xmm>(), type, type);
+	else
+	    throw "copy_typed_value() unsupported Gp source";
+    }
+    else
+	throw "copy_typed_value() unsupported destination";
+    return storage;
+}
+
+static Operand &emit_complex_muldiv(Program &pgm, TokenBase *left, TokenBase *right,
+				    bool divide, regdefp_t &regdp, Operand &storage)
+{
+    DataDef *left_type = left ? left->datadef() : NULL;
+    DataDef *right_type = right ? right->datadef() : NULL;
+    DataDef *complex_type = left_type && left_type->is_complex() ? left_type : right_type;
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_muldiv() invalid complex type";
+
+    Operand left_base_storage, right_base_storage;
+    Operand left_real_storage, left_imag_storage, right_real_storage, right_imag_storage;
+    Operand *left_real = NULL, *left_imag = NULL, *right_real = NULL, *right_imag = NULL;
+    DataDef *left_real_type = NULL, *left_imag_type = NULL, *right_real_type = NULL, *right_imag_type = NULL;
+
+    prepare_complex_component_pair(pgm, left, complex_type, left_base_storage,
+				   left_real, left_real_type, left_imag, left_imag_type,
+				   left_real_storage, left_imag_storage);
+    prepare_complex_component_pair(pgm, right, complex_type, right_base_storage,
+				   right_real, right_real_type, right_imag, right_imag_type,
+				   right_real_storage, right_imag_storage);
+
+    IRBuilder ir(pgm.cc);
+    IRValue lre = ir.load(ir.coerce(ir_from_operand(*left_real, left_real_type), cdd->element_type));
+    IRValue lim = ir.load(ir.coerce(ir_from_operand(*left_imag, left_imag_type), cdd->element_type));
+    IRValue rre = ir.load(ir.coerce(ir_from_operand(*right_real, right_real_type), cdd->element_type));
+    IRValue rim = ir.load(ir.coerce(ir_from_operand(*right_imag, right_imag_type), cdd->element_type));
+
+    Operand a, b, c, d;
+    copy_typed_value(pgm, lre.op, cdd->element_type, a, "__complex_a");
+    copy_typed_value(pgm, lim.op, cdd->element_type, b, "__complex_b");
+    copy_typed_value(pgm, rre.op, cdd->element_type, c, "__complex_c");
+    copy_typed_value(pgm, rim.op, cdd->element_type, d, "__complex_d");
+
+    Operand ac, bd, ad, bc;
+    copy_typed_value(pgm, a, cdd->element_type, ac, "__complex_ac");
+    pgm.safemul(ac, c, cdd->element_type);
+    copy_typed_value(pgm, b, cdd->element_type, bd, "__complex_bd");
+    pgm.safemul(bd, d, cdd->element_type);
+    copy_typed_value(pgm, a, cdd->element_type, ad, "__complex_ad");
+    pgm.safemul(ad, d, cdd->element_type);
+    copy_typed_value(pgm, b, cdd->element_type, bc, "__complex_bc");
+    pgm.safemul(bc, c, cdd->element_type);
+
+    Operand real_out, imag_out;
+    if ( !divide )
+    {
+	copy_typed_value(pgm, ac, cdd->element_type, real_out, "__complex_mul_re");
+	pgm.safesub(real_out, bd, cdd->element_type);
+	copy_typed_value(pgm, ad, cdd->element_type, imag_out, "__complex_mul_im");
+	pgm.safeadd(imag_out, bc, cdd->element_type);
+    }
+    else
+    {
+	if ( cdd->element_type->is_real() )
+	{
+	    x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+	    x86::Gp out_ptr = as_gp_ptr(pgm, slot, "__complex_div_out");
+	    void *helper = cdd->element_type->size == sizeof(float)
+		? (void *)madc_runtime_complex_div_float
+		: (void *)madc_runtime_complex_div_double;
+
+	    InvokeNode *call;
+	    if ( cdd->element_type->size == sizeof(float) )
+		pgm.cc.invoke(&call, imm(helper),
+			      FuncSignature::build<void, void *, float, float, float, float>());
+	    else
+		pgm.cc.invoke(&call, imm(helper),
+			      FuncSignature::build<void, void *, double, double, double, double>());
+	    pgm.track_invoke_target(helper);
+	    call->setArg(0, out_ptr);
+	    call->setArg(1, a.as<x86::Xmm>());
+	    call->setArg(2, b.as<x86::Xmm>());
+	    call->setArg(3, c.as<x86::Xmm>());
+	    call->setArg(4, d.as<x86::Xmm>());
+
+	    storage = as_gp_ptr(pgm, slot, "__complex_div");
+	    regdp.first = &storage;
+	    regdp.second = complex_type;
+	    return storage;
+	}
+
+	Operand denom_cc, denom_dd, denom, num_re, num_im;
+	copy_typed_value(pgm, c, cdd->element_type, denom_cc, "__complex_cc");
+	pgm.safemul(denom_cc, c, cdd->element_type);
+	copy_typed_value(pgm, d, cdd->element_type, denom_dd, "__complex_dd");
+	pgm.safemul(denom_dd, d, cdd->element_type);
+	copy_typed_value(pgm, denom_cc, cdd->element_type, denom, "__complex_den");
+	pgm.safeadd(denom, denom_dd, cdd->element_type);
+
+	copy_typed_value(pgm, ac, cdd->element_type, num_re, "__complex_num_re");
+	pgm.safeadd(num_re, bd, cdd->element_type);
+	copy_typed_value(pgm, bc, cdd->element_type, num_im, "__complex_num_im");
+	pgm.safesub(num_im, ad, cdd->element_type);
+
+	Operand rem_re, rem_im;
+	rem_re = cdd->element_type->newreg(pgm.cc, "__complex_rem_re");
+	rem_im = cdd->element_type->newreg(pgm.cc, "__complex_rem_im");
+	if ( cdd->element_type->is_integer() )
+	{
+	    pgm.safexor(rem_re, rem_re);
+	    pgm.safexor(rem_im, rem_im);
+	}
+	pgm.safediv(rem_re, num_re, denom, cdd->element_type);
+	pgm.safediv(rem_im, num_im, denom, cdd->element_type);
+	real_out = num_re;
+	imag_out = num_im;
+    }
+
+    x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+    x86::Mem real_mem = slot;
+    real_mem.setSize((uint32_t)cdd->element_type->size);
+    x86::Mem imag_mem = slot;
+    imag_mem.addOffset((int64_t)cdd->component_offset(true));
+    imag_mem.setSize((uint32_t)cdd->element_type->size);
+    ir.store(IRValue::mem(real_mem, cdd->element_type), ir_from_operand(real_out, cdd->element_type));
+    ir.store(IRValue::mem(imag_mem, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
+
+    storage = as_gp_ptr(pgm, slot, divide ? "__complex_div" : "__complex_mul");
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &emit_complex_compound_muldiv(Program &pgm, TokenBase *left, TokenBase *right,
+					     bool divide, regdefp_t &regdp, Operand &storage)
+{
+    DataDef *complex_type = left ? left->datadef() : NULL;
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_compound_muldiv() invalid complex lhs";
+
+    regdefp_t lhs_rdp = {NULL, complex_type, NULL};
+    Operand &lhs_base = left->compile(pgm, lhs_rdp);
+    x86::Mem lhs_real = complex_component_mem(pgm, lhs_base, cdd, false, "__complex_lhs");
+    x86::Mem lhs_imag = complex_component_mem(pgm, lhs_base, cdd, true, "__complex_lhs");
+
+    Operand right_base_storage, right_real_storage, right_imag_storage;
+    Operand *right_real = NULL, *right_imag = NULL;
+    DataDef *right_real_type = NULL, *right_imag_type = NULL;
+    prepare_complex_component_pair(pgm, right, complex_type, right_base_storage,
+				   right_real, right_real_type, right_imag, right_imag_type,
+				   right_real_storage, right_imag_storage);
+
+    IRBuilder ir(pgm.cc);
+    IRValue lre = ir.load(IRValue::mem(lhs_real, cdd->element_type));
+    IRValue lim = ir.load(IRValue::mem(lhs_imag, cdd->element_type));
+    IRValue rre = ir.load(ir.coerce(ir_from_operand(*right_real, right_real_type), cdd->element_type));
+    IRValue rim = ir.load(ir.coerce(ir_from_operand(*right_imag, right_imag_type), cdd->element_type));
+
+    Operand a, b, c, d;
+    copy_typed_value(pgm, lre.op, cdd->element_type, a, "__complex_ca");
+    copy_typed_value(pgm, lim.op, cdd->element_type, b, "__complex_cb");
+    copy_typed_value(pgm, rre.op, cdd->element_type, c, "__complex_cc");
+    copy_typed_value(pgm, rim.op, cdd->element_type, d, "__complex_cd");
+
+    Operand ac, bd, ad, bc;
+    copy_typed_value(pgm, a, cdd->element_type, ac, "__complex_cac");
+    pgm.safemul(ac, c, cdd->element_type);
+    copy_typed_value(pgm, b, cdd->element_type, bd, "__complex_cbd");
+    pgm.safemul(bd, d, cdd->element_type);
+    copy_typed_value(pgm, a, cdd->element_type, ad, "__complex_cad");
+    pgm.safemul(ad, d, cdd->element_type);
+    copy_typed_value(pgm, b, cdd->element_type, bc, "__complex_cbc");
+    pgm.safemul(bc, c, cdd->element_type);
+
+    Operand real_out, imag_out;
+    if ( !divide )
+    {
+	copy_typed_value(pgm, ac, cdd->element_type, real_out, "__complex_cmre");
+	pgm.safesub(real_out, bd, cdd->element_type);
+	copy_typed_value(pgm, ad, cdd->element_type, imag_out, "__complex_cmim");
+	pgm.safeadd(imag_out, bc, cdd->element_type);
+    }
+    else
+    {
+	Operand denom_cc, denom_dd, denom, num_re, num_im;
+	copy_typed_value(pgm, c, cdd->element_type, denom_cc, "__complex_cdcc");
+	pgm.safemul(denom_cc, c, cdd->element_type);
+	copy_typed_value(pgm, d, cdd->element_type, denom_dd, "__complex_cddd");
+	pgm.safemul(denom_dd, d, cdd->element_type);
+	copy_typed_value(pgm, denom_cc, cdd->element_type, denom, "__complex_cden");
+	pgm.safeadd(denom, denom_dd, cdd->element_type);
+
+	copy_typed_value(pgm, ac, cdd->element_type, num_re, "__complex_cnre");
+	pgm.safeadd(num_re, bd, cdd->element_type);
+	copy_typed_value(pgm, bc, cdd->element_type, num_im, "__complex_cnim");
+	pgm.safesub(num_im, ad, cdd->element_type);
+
+	Operand rem_re, rem_im;
+	rem_re = cdd->element_type->newreg(pgm.cc, "__complex_crem_re");
+	rem_im = cdd->element_type->newreg(pgm.cc, "__complex_crem_im");
+	if ( cdd->element_type->is_integer() )
+	{
+	    pgm.safexor(rem_re, rem_re);
+	    pgm.safexor(rem_im, rem_im);
+	}
+	pgm.safediv(rem_re, num_re, denom, cdd->element_type);
+	pgm.safediv(rem_im, num_im, denom, cdd->element_type);
+	real_out = num_re;
+	imag_out = num_im;
+    }
+
+    ir.store(IRValue::mem(lhs_real, cdd->element_type), ir_from_operand(real_out, cdd->element_type));
+    ir.store(IRValue::mem(lhs_imag, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
+    storage = lhs_base;
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &emit_complex_compound_addsub(Program &pgm, TokenBase *left, TokenBase *right,
+					     bool subtract, regdefp_t &regdp, Operand &storage)
+{
+    DataDef *complex_type = left ? left->datadef() : NULL;
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_compound_addsub() invalid complex lhs";
+
+    regdefp_t lhs_rdp = {NULL, complex_type, NULL};
+    Operand &lhs_base = left->compile(pgm, lhs_rdp);
+    x86::Mem lhs_real = complex_component_mem(pgm, lhs_base, cdd, false, "__complex_lhs");
+    x86::Mem lhs_imag = complex_component_mem(pgm, lhs_base, cdd, true, "__complex_lhs");
+
+    Operand rhs_base_storage, rhs_real_storage, rhs_imag_storage;
+    Operand *rhs_real = NULL, *rhs_imag = NULL;
+    DataDef *rhs_real_type = NULL, *rhs_imag_type = NULL;
+    prepare_complex_component_pair(pgm, right, complex_type, rhs_base_storage,
+				   rhs_real, rhs_real_type, rhs_imag, rhs_imag_type,
+				   rhs_real_storage, rhs_imag_storage);
+
+    IRBuilder ir(pgm.cc);
+    IRValue lhs_real_val = ir.load(IRValue::mem(lhs_real, cdd->element_type));
+    IRValue lhs_imag_val = ir.load(IRValue::mem(lhs_imag, cdd->element_type));
+    IRValue rhs_real_val = ir.load(ir.coerce(ir_from_operand(*rhs_real, rhs_real_type), cdd->element_type));
+    IRValue rhs_imag_val = ir.load(ir.coerce(ir_from_operand(*rhs_imag, rhs_imag_type), cdd->element_type));
+
+    Operand real_out = lhs_real_val.op;
+    Operand imag_out = lhs_imag_val.op;
+    if ( subtract )
+    {
+	pgm.safesub(real_out, rhs_real_val.op, cdd->element_type);
+	pgm.safesub(imag_out, rhs_imag_val.op, cdd->element_type);
+    }
+    else
+    {
+	pgm.safeadd(real_out, rhs_real_val.op, cdd->element_type);
+	pgm.safeadd(imag_out, rhs_imag_val.op, cdd->element_type);
+    }
+
+    ir.store(IRValue::mem(lhs_real, cdd->element_type), ir_from_operand(real_out, cdd->element_type));
+    ir.store(IRValue::mem(lhs_imag, cdd->element_type), ir_from_operand(imag_out, cdd->element_type));
+
+    storage = lhs_base;
+    regdp.first = &storage;
+    regdp.second = complex_type;
     return storage;
 }
 
@@ -811,14 +2536,20 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     }
 
     regdefp_t argrdp = {nullptr, nullptr, nullptr};
-    if ( target_type && !(target_type->is_string() && token->datadef() && token->datadef()->is_pointer()) )
+    if ( target_type
+      && !(target_type->is_string() && token->datadef() && token->datadef()->is_pointer())
+      && !(target_type->is_complex() && token->datadef() && !token->datadef()->is_complex()) )
 	argrdp.second = target_type;
     Operand &arg = token->compile(pgm, argrdp);
     DataDef *actual_type = argrdp.second ? argrdp.second : (token->datadef() ? token->datadef() : target_type);
     if ( !actual_type )
 	throw "compile_call_arg_normalized() missing argument type";
 
-    bool want_cstr = (target_type && target_type->type() == DataType::dtCHARptr
+    bool target_accepts_cstr = type_is_cstr_pointer(target_type)
+	|| (target_type
+	 && target_type->is_pointer()
+	 && target_type->rawtype() == DataType::dtVOID);
+    bool want_cstr = (target_accepts_cstr
 		      && token->datadef() && token->datadef()->rawtype() == DataType::dtSTRING)
 		  || (variadic_real_promotion
 		      && token->datadef() && token->datadef()->rawtype() == DataType::dtSTRING);
@@ -826,15 +2557,46 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     {
 	Operand &cstr = compile_token_normalized(pgm, token, &ddCHARptr, nullptr, storage);
 	storage = cstr;
-	out_type = &ddCHARptr;
+	out_type = target_type && target_type->rawtype() == DataType::dtVOID
+	    ? target_type : &ddCHARptr;
 	return storage;
     }
 
     DataDef *final_type = actual_type;
     if ( variadic_real_promotion && actual_type->is_real() )
 	final_type = &ddDOUBLE;
+    else if ( target_type && target_type->is_complex() )
+	final_type = target_type;
     else if ( target_type && (target_type->is_numeric() || target_type->is_pointer()) )
 	final_type = target_type;
+
+    if ( final_type && final_type->is_complex()
+      && actual_type && !actual_type->is_complex() )
+    {
+	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(final_type);
+	if ( !cdd || !cdd->element_type )
+	    throw "compile_call_arg_normalized() invalid complex target type";
+	x86::Mem byval_slot = pgm.cc.newStack((uint32_t)final_type->size, 8);
+	IRBuilder ir(pgm.cc);
+	x86::Mem real_mem = byval_slot;
+	real_mem.setSize((uint32_t)cdd->element_type->size);
+	ir.store(IRValue::mem(real_mem, cdd->element_type), ir_from_operand(arg, actual_type));
+	x86::Mem imag_mem = byval_slot;
+	imag_mem.addOffset((int64_t)cdd->component_offset(true));
+	imag_mem.setSize((uint32_t)cdd->element_type->size);
+	ir.store(IRValue::mem(imag_mem, cdd->element_type), IRValue::imm(Imm(0), &ddINT));
+	storage = as_gp_ptr(pgm, byval_slot, "__call_arg_complex");
+	out_type = final_type;
+	return storage;
+    }
+
+    if ( final_type->is_simd() )
+    {
+	Operand &simd = compile_token_normalized(pgm, token, final_type, nullptr, storage);
+	storage = simd;
+	out_type = final_type;
+	return storage;
+    }
 
     if ( (final_type->is_numeric() || final_type->is_pointer())
       && (arg.isReg() || arg.isMem() || arg.isImm()) )
@@ -872,10 +2634,30 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     }
 
     if ( arg.isMem() && actual_type
-      && (actual_type->basetype() == BaseType::btStruct
-       || actual_type->basetype() == BaseType::btClass) )
+      && actual_type->basetype() == BaseType::btStruct )
     {
-	storage = as_gp_ptr(pgm, arg, "__call_arg_cls");
+	if ( !aggregate_has_runtime_size(actual_type) && actual_type->size > 0 )
+	{
+	    x86::Mem byval_slot = pgm.cc.newStack((uint32_t)actual_type->size, 8);
+	    emit_raw_aggregate_copy(pgm, byval_slot, arg, actual_type, "__call_arg_copy");
+	    storage = as_gp_ptr(pgm, byval_slot, "__call_arg_cls");
+	}
+	else
+	    storage = as_gp_ptr(pgm, arg, "__call_arg_cls");
+	out_type = actual_type;
+	return storage;
+    }
+    if ( arg.isReg() && actual_type
+      && actual_type->basetype() == BaseType::btStruct )
+    {
+	if ( !aggregate_has_runtime_size(actual_type) && actual_type->size > 0 )
+	{
+	    x86::Mem byval_slot = pgm.cc.newStack((uint32_t)actual_type->size, 8);
+	    emit_raw_aggregate_copy(pgm, byval_slot, arg, actual_type, "__call_arg_copy");
+	    storage = as_gp_ptr(pgm, byval_slot, "__call_arg_cls");
+	}
+	else
+	    storage = arg;
 	out_type = actual_type;
 	return storage;
     }
@@ -884,12 +2666,159 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     return storage;
 }
 
+static Operand &emit_complex_from_scalar(Program &pgm, Operand &scalar_op, DataDef *scalar_type,
+					 DataDef *complex_type, bool imag_value,
+					 regdefp_t &regdp, Operand &storage,
+					 const char *slot_name)
+{
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_from_scalar() invalid complex type";
+
+    x86::Mem slot = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+    x86::Mem real_mem = slot;
+    real_mem.setSize((uint32_t)cdd->element_type->size);
+    x86::Mem imag_mem = slot;
+    imag_mem.addOffset((int64_t)cdd->component_offset(true));
+    imag_mem.setSize((uint32_t)cdd->element_type->size);
+
+    IRBuilder ir(pgm.cc);
+    IRValue scalar_val = ir.load(ir.coerce(ir_from_operand(scalar_op, scalar_type), cdd->element_type));
+    if ( imag_value )
+    {
+	ir.store(IRValue::mem(real_mem, cdd->element_type), IRValue::imm(Imm(0), &ddINT));
+	ir.store(IRValue::mem(imag_mem, cdd->element_type), scalar_val);
+    }
+    else
+    {
+	ir.store(IRValue::mem(real_mem, cdd->element_type), scalar_val);
+	ir.store(IRValue::mem(imag_mem, cdd->element_type), IRValue::imm(Imm(0), &ddINT));
+    }
+
+    storage = as_gp_ptr(pgm, slot, slot_name);
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &emit_complex_conjugate_expr(Program &pgm, TokenBase *arg_token,
+					    DataDef *complex_type,
+					    regdefp_t &regdp, Operand &storage)
+{
+    if ( !arg_token || !complex_type || !complex_type->is_complex() )
+	throw "emit_complex_conjugate_expr() expects complex expression";
+
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_complex_conjugate_expr() invalid complex type";
+
+    Operand arg_base_storage;
+    Operand arg_real_storage;
+    Operand arg_imag_storage;
+    Operand *arg_real = NULL;
+    Operand *arg_imag = NULL;
+    DataDef *arg_real_type = NULL;
+    DataDef *arg_imag_type = NULL;
+    prepare_complex_component_pair(pgm, arg_token, complex_type, arg_base_storage,
+				   arg_real, arg_real_type, arg_imag, arg_imag_type,
+				   arg_real_storage, arg_imag_storage);
+
+    bool use_caller_dest = regdp.first && (!regdp.second || regdp.second->is_complex());
+    Operand dest_base;
+    if ( use_caller_dest )
+	dest_base = *regdp.first;
+    else
+	dest_base = pgm.cc.newStack((uint32_t)complex_type->size, 8);
+
+    x86::Mem dst_real = complex_component_mem(pgm, dest_base, cdd, false, "__complex_conj_dst");
+    x86::Mem dst_imag = complex_component_mem(pgm, dest_base, cdd, true, "__complex_conj_dst");
+
+    IRBuilder ir(pgm.cc);
+    IRValue real_val = ir.load(ir.coerce(ir_from_operand(*arg_real, arg_real_type),
+					 cdd->element_type));
+    ir.store(IRValue::mem(dst_real, cdd->element_type), real_val);
+
+    IRValue imag_val = ir.load(ir.coerce(ir_from_operand(*arg_imag, arg_imag_type),
+					 cdd->element_type));
+    Operand neg_imag = imag_val.op;
+    pgm.safeneg(neg_imag, cdd->element_type);
+    ir.store(IRValue::mem(dst_imag, cdd->element_type),
+	     IRValue::reg(neg_imag, cdd->element_type));
+
+    if ( use_caller_dest )
+    {
+	regdp.second = complex_type;
+	return *regdp.first;
+    }
+
+    storage = dest_base;
+    regdp.first = &storage;
+    regdp.second = complex_type;
+    return storage;
+}
+
+static Operand &emit_builtin_complex_conjugate(Program &pgm, TokenCallFunc *call,
+					       regdefp_t &regdp, Operand &storage)
+{
+    if ( !call || call->argc() != 1 )
+	throw "emit_builtin_complex_conjugate() expects one argument";
+
+    TokenBase *arg_token = call->parameters[0];
+    DataDef *complex_type = builtin_complex_arg_type(call);
+    if ( !complex_type || !complex_type->is_complex() )
+	throw "emit_builtin_complex_conjugate() expects complex argument";
+    return emit_complex_conjugate_expr(pgm, arg_token, complex_type, regdp, storage);
+}
+
+static Operand &emit_builtin_complex_component(Program &pgm, TokenCallFunc *call,
+					       bool imag_part,
+					       regdefp_t &regdp, Operand &storage)
+{
+    if ( !call || call->argc() != 1 )
+	throw "emit_builtin_complex_component() expects one argument";
+
+    TokenBase *arg_token = call->parameters[0];
+    DataDef *complex_type = builtin_complex_arg_type(call);
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_type);
+    if ( !cdd || !cdd->element_type )
+	throw "emit_builtin_complex_component() expects complex argument";
+
+    Operand base_storage;
+    Operand real_storage;
+    Operand imag_storage;
+    Operand *real_part = NULL;
+    Operand *imag_part_op = NULL;
+    DataDef *real_type = NULL;
+    DataDef *imag_type = NULL;
+    prepare_complex_component_pair(pgm, arg_token, complex_type, base_storage,
+				   real_part, real_type, imag_part_op, imag_type,
+				   real_storage, imag_storage);
+    Operand &part = imag_part ? *imag_part_op : *real_part;
+    DataDef *part_type = imag_part ? imag_type : real_type;
+    return emit_ir_value(pgm, ir_from_operand(part, part_type), regdp, storage,
+			 cdd->element_type);
+}
+
 static void add_funcsig_arg(FuncSignature &funcsig, DataDef *arg_type)
 {
+    // asmjit caps FuncSignature at kMaxFuncArgs (32). Extra varargs
+    // are still passed correctly via the params vector — they just
+    // don't need type declarations in the signature.
+    if ( funcsig.argCount() >= 32 )
+	return;
     if ( !arg_type )
     {
 	funcsig.addArgT<void *>();
 	return;
+    }
+    if ( arg_type->is_simd() )
+    {
+	TypeId tid = simd_type_id(static_cast<DataDefSIMD *>(arg_type));
+	if ( tid != TypeId::kVoid )
+	{
+	    funcsig.addArg(tid);
+	    return;
+	}
     }
     switch(arg_type->type())
     {
@@ -917,6 +2846,15 @@ static void set_funcsig_ret(FuncSignature &funcsig, DataDef *ret_type, bool is_m
     {
 	funcsig.setRetT<void>();
 	return;
+    }
+    if ( ret_type->is_simd() )
+    {
+	TypeId tid = simd_type_id(static_cast<DataDefSIMD *>(ret_type));
+	if ( tid != TypeId::kVoid )
+	{
+	    funcsig.setRet(tid);
+	    return;
+	}
     }
     switch(ret_type->type())
     {
@@ -950,6 +2888,14 @@ static void append_call_param(std::vector<Operand> &params, FuncSignature &funcs
 static void set_invoke_arg(Program &pgm, InvokeNode *call, uint32_t &index,
 			   const Operand &arg, bool mem_as_address)
 {
+    // asmjit InvokeNode only has slots for kMaxFuncArgs (32).
+    // Extra varargs beyond the signature are still on the stack
+    // per the calling convention — just skip setArg for them.
+    if ( index >= 32 )
+    {
+	++index;
+	return;
+    }
     if ( arg.isReg() && arg.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
 	call->setArg(index++, arg.as<x86::Xmm>());
@@ -1023,6 +2969,97 @@ static void throw_too_many_call_args(Program &pgm, TokenCallFunc *call, TokenBas
     pgm.Throw(call) << "TokenCallFunc::compile() called with too many parameters" << flush;
 }
 
+static void *resolve_setjmp_target()
+{
+    void *target = dlsym(RTLD_DEFAULT, "_setjmp");
+    if ( !target )
+	target = dlsym(RTLD_DEFAULT, "setjmp");
+    return target;
+}
+
+static Operand &emit_builtin_setjmp(Program &pgm, TokenCallFunc *call,
+				    regdefp_t &regdp, Operand &fallback_operand)
+{
+    if ( call->argc() != 1 )
+	pgm.Throw(call) << "__builtin_setjmp expects one argument" << flush;
+
+    DataDef *buf_type = NULL;
+    Operand buf_storage;
+    Operand &buf_arg = compile_call_arg_normalized(pgm, call->parameters[0],
+	&ddVOIDptr, false, buf_storage, buf_type);
+
+    FuncSignature env_sig(CallConvId::kCDecl);
+    env_sig.setRetT<void *>();
+    std::vector<Operand> env_params;
+    append_call_param(env_params, env_sig, buf_arg, &ddVOIDptr);
+
+    void *env_target = (void *)(intptr_t)__madc_jmpbuf_for;
+    InvokeNode *env_call;
+    pgm.cc.invoke(&env_call, imm(env_target), env_sig);
+    pgm.track_invoke_target(env_target);
+    set_invoke_args(pgm, env_call, env_params, false);
+
+    x86::Gp env_ptr = pgm.cc.newIntPtr("__builtin_setjmp_env");
+    env_call->setRet(0, env_ptr);
+
+    void *setjmp_target = resolve_setjmp_target();
+    if ( !setjmp_target )
+	pgm.Throw(call) << "__builtin_setjmp could not resolve _setjmp" << flush;
+
+    FuncSignature setjmp_sig(CallConvId::kCDecl);
+    setjmp_sig.setRetT<int>();
+    std::vector<Operand> setjmp_params;
+    append_call_param(setjmp_params, setjmp_sig, env_ptr, &ddVOIDptr);
+
+    InvokeNode *setjmp_call;
+    pgm.cc.invoke(&setjmp_call, imm(setjmp_target), setjmp_sig);
+    pgm.track_invoke_target(setjmp_target);
+    set_invoke_args(pgm, setjmp_call, setjmp_params, false);
+
+    if ( !regdp.first )
+    {
+	fallback_operand = pgm.cc.newGpq("__builtin_setjmp_ret");
+	regdp.first = &fallback_operand;
+    }
+    bind_call_return(pgm, setjmp_call, regdp.first, &ddINT32,
+		     fallback_operand, false, true);
+    regdp.second = &ddINT32;
+    return *regdp.first;
+}
+
+static Operand &emit_builtin_longjmp(Program &pgm, TokenCallFunc *call,
+				     regdefp_t &regdp, Operand &fallback_operand)
+{
+    if ( call->argc() != 2 )
+	pgm.Throw(call) << "__builtin_longjmp expects two arguments" << flush;
+
+    FuncSignature funcsig(CallConvId::kCDecl);
+    funcsig.setRetT<void>();
+    std::vector<Operand> params;
+
+    DataDef *buf_type = NULL;
+    Operand buf_storage;
+    Operand &buf_arg = compile_call_arg_normalized(pgm, call->parameters[0],
+	&ddVOIDptr, false, buf_storage, buf_type);
+    append_call_param(params, funcsig, buf_arg, &ddVOIDptr);
+
+    DataDef *value_type = NULL;
+    Operand value_storage;
+    Operand &value_arg = compile_call_arg_normalized(pgm, call->parameters[1],
+	&ddINT32, false, value_storage, value_type);
+    append_call_param(params, funcsig, value_arg, &ddINT32);
+
+    void *target = (void *)(intptr_t)__madc_builtin_longjmp;
+    InvokeNode *invoke;
+    pgm.cc.invoke(&invoke, imm(target), funcsig);
+    pgm.track_invoke_target(target);
+    set_invoke_args(pgm, invoke, params, false);
+
+    regdp.second = &ddVOID;
+    fallback_operand = imm(0);
+    return fallback_operand;
+}
+
 static void validate_call_arg_type(Program &pgm, TokenBase *tn, DataDef *ptype,
 				   DataDef *arg_type, const Operand &tnreg)
 {
@@ -1043,6 +3080,8 @@ static void validate_call_arg_type(Program &pgm, TokenBase *tn, DataDef *ptype,
 	DBG(cerr << "ptype: " << (int)ptype->type() << " var.type: " << (int)arg_type->type() << endl);
 	pgm.Throw(tn) << "Expecting floating point argument" << flush;
     }
+    if ( ptype->is_simd() && !arg_type->is_simd() )
+	pgm.Throw(tn) << "Expecting SIMD argument" << flush;
     if ( ptype->is_string() && !arg_type->is_string() && !arg_type->is_pointer() )
 	pgm.Throw(tn) << "Expecting string argument" << flush;
     if ( ptype->is_object() && !arg_type->is_pointer() )
@@ -1054,13 +3093,13 @@ static void validate_call_arg_type(Program &pgm, TokenBase *tn, DataDef *ptype,
     }
     if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	if ( !ptype->is_real() )
+	if ( !ptype->is_real() && !ptype->is_simd() )
 	    pgm.Throw(tn) << "Not expecting floating point argument" << flush;
 	DBG(pgm.cc.comment("tnreg is Xmm"));
     }
     if ( tnreg.isReg() && tnreg.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
-	if ( ptype->is_real() )
+	if ( ptype->is_real() || ptype->is_simd() )
 	    pgm.Throw(tn) << "Expecting floating point argument" << flush;
 	DBG(pgm.cc.comment("tnreg is Gp"));
 	DBG(cout << "tnreg size=" << tnreg.x86RmSize() << " regdp.second->size="
@@ -1179,6 +3218,30 @@ static void emit_runtime_eval_scope_setter(Program &pgm,
     }
 }
 
+static Operand &compile_complex_condition_operand(Program &pgm, TokenBase *condition,
+						  DataDefCOMPLEX *cdd, Operand &storage)
+{
+    DataDef *component_type = cdd && cdd->element_type ? cdd->element_type : &ddDOUBLE;
+    TokenComplexPart real_part(condition, false);
+    TokenComplexPart imag_part(condition, true);
+    Operand real_storage;
+    Operand imag_storage;
+    Operand &real_op = compile_token_normalized(pgm, &real_part, component_type, nullptr, real_storage);
+    Operand &imag_op = compile_token_normalized(pgm, &imag_part, component_type, nullptr, imag_storage);
+
+    pgm.testzero(real_op);
+    x86::Gp real_nonzero = pgm.cc.newGpq("__complex_cond_re");
+    pgm.safesetne(real_nonzero);
+
+    pgm.testzero(imag_op);
+    x86::Gp imag_nonzero = pgm.cc.newGpq("__complex_cond_im");
+    pgm.safesetne(imag_nonzero);
+
+    pgm.safeor(real_nonzero, imag_nonzero, &ddINT64);
+    storage = real_nonzero;
+    return storage;
+}
+
 static Operand &compile_condition_operand(Program &pgm, TokenBase *condition, Operand &storage)
 {
     regdefp_t condrdp = {NULL, NULL, NULL};
@@ -1187,20 +3250,23 @@ static Operand &compile_condition_operand(Program &pgm, TokenBase *condition, Op
 	? condrdp.second
 	: (condition && condition->datadef() ? condition->datadef() : &ddINT64);
 
+    if ( DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(cond_type) )
+	return compile_complex_condition_operand(pgm, condition, cdd, storage);
+
+    // Preserve literal conditions as immediates so TokenIF/WHILE/FOR can
+    // short-circuit dead branches like `if (0) ...` before compiling them.
+    if ( raw.isImm() )
+    {
+	storage = raw;
+	return storage;
+    }
+
     if ( cond_type && (cond_type->is_numeric() || cond_type->is_pointer())
-      && (raw.isReg() || raw.isMem() || raw.isImm()) )
+      && (raw.isReg() || raw.isMem()) )
     {
 	IRBuilder ir(pgm.cc);
 	IRValue cond_value = ir.load(ir.coerce(ir_from_operand(raw, cond_type), cond_type));
 	storage = cond_value.op;
-	return storage;
-    }
-
-    if ( raw.isImm() )
-    {
-	x86::Gp cond_gp = pgm.cc.newGpq("__cond");
-	pgm.cc.mov(cond_gp, raw.as<Imm>());
-	storage = cond_gp;
 	return storage;
     }
 
@@ -1829,6 +3895,65 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( !var.type->is_function() )
 	pgm.Throw(this) << "TokenCallFunc::compile() called on non-function" << flush;
 
+    if ( argc() == 1 && (var.name == "__builtin_conj"
+		      || var.name == "__builtin_conjf"
+		      || var.name == "__builtin_conjl"
+		      || var.name == "conj"
+		      || var.name == "conjf"
+		      || var.name == "conjl") )
+	return emit_builtin_complex_conjugate(pgm, this, regdp, _operand);
+    if ( argc() == 1 && (var.name == "__builtin_creal"
+		      || var.name == "__builtin_crealf"
+		      || var.name == "__builtin_creall"
+		      || var.name == "creal"
+		      || var.name == "crealf"
+		      || var.name == "creall") )
+	return emit_builtin_complex_component(pgm, this, false, regdp, _operand);
+    if ( argc() == 1 && (var.name == "__builtin_cimag"
+		      || var.name == "__builtin_cimagf"
+		      || var.name == "__builtin_cimagl"
+		      || var.name == "cimag"
+		      || var.name == "cimagf"
+		      || var.name == "cimagl") )
+	return emit_builtin_complex_component(pgm, this, true, regdp, _operand);
+    if ( var.name == "__builtin_setjmp" )
+	return emit_builtin_setjmp(pgm, this, regdp, _operand);
+    if ( var.name == "__builtin_longjmp" )
+	return emit_builtin_longjmp(pgm, this, regdp, _operand);
+
+    // GCC builtin parity: direct llabs calls keep builtin semantics even
+    // when a same-name function is defined in the translation unit.
+    if ( argc() == 1 && var.name == "llabs" )
+    {
+	DataDef *builtin_type = &ddINT64;
+	FuncSignature funcsig(CallConvId::kCDecl);
+	funcsig.setRetT<int64_t>();
+	add_funcsig_arg(funcsig, &ddINT64);
+
+	Operand arg_storage;
+	DataDef *arg_type = NULL;
+	Operand &arg = compile_call_arg_normalized(pgm, parameters[0], builtin_type, true, arg_storage, arg_type);
+	std::vector<Operand> params;
+	append_call_param(params, funcsig, arg, builtin_type);
+
+	void *builtin_target = (void *)(intptr_t)(long long(*)(long long))::llabs;
+
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(builtin_target), funcsig);
+	pgm.track_invoke_target(builtin_target);
+	set_invoke_args(pgm, call, params, false);
+
+	if ( !regdp.first )
+	{
+	    _operand = pgm.cc.newGpq("builtin_abs_ret");
+	    regdp.first = &_operand;
+	}
+	bind_call_return(pgm, call, regdp.first, builtin_type, _operand,
+			 /*is_variadic=*/false, false);
+	regdp.second = builtin_type;
+	return *regdp.first;
+    }
+
     // function pointer call — indirect invoke through address in variable
     if ( var.type->is_function() && var.type->is_numeric() )
     {
@@ -1836,7 +3961,15 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("function pointer call"));
 
 	DataDefFPTR *fptr = static_cast<DataDefFPTR *>(var.type);
-	FuncDef *func = fptr->target;
+	FuncDef *func = fptr ? fptr->target : NULL;
+	if ( !func && src_node )
+	{
+	    DataDefFPTR *src_fptr = dynamic_cast<DataDefFPTR *>(src_node->datadef());
+	    if ( src_fptr )
+		func = src_fptr->target;
+	}
+	if ( !func )
+	    pgm.Throw(this) << "function pointer call missing target signature" << flush;
 	FuncSignature funcsig(CallConvId::kCDecl);
 	bool ret_is_variadic = false;
 
@@ -1917,7 +4050,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    params.push_back(env_ptr);
 	}
 
-	for ( size_t i = 0; i < argc(); ++i )
+	size_t expected_argc = explicit_expected_argc(func);
+	if ( !func->is_varargs && argc() > expected_argc )
+	    throw_too_many_call_args(pgm, this, parameters.data(), argc());
+	size_t fixed_argc = func->is_varargs ? expected_argc : argc();
+	for ( size_t i = 0; i < fixed_argc; ++i )
 	{
 	    // skip env param (index 0 in func->parameters) when capturing
 	    size_t fi = func->has_captures ? i + 1 : i;
@@ -1927,11 +4064,25 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    Operand &areg = compile_call_arg_normalized(pgm, parameters[i], ptype, false, arg_storage, arg_type);
 	    append_call_param(params, funcsig, areg, arg_type);
 	}
+	if ( func->is_varargs )
+	{
+	    if ( argc() < fixed_argc )
+		pgm.Throw(this) << "function pointer varargs call missing fixed arguments" << flush;
+	    if ( funcsig.argCount() >= 1 )
+		funcsig.setVaIndex((uint32_t)funcsig.argCount());
+	    for ( size_t i = fixed_argc; i < argc(); ++i )
+	    {
+		DataDef *arg_type = NULL;
+		Operand arg_storage;
+		Operand &areg = compile_call_arg_normalized(pgm, parameters[i], NULL, true, arg_storage, arg_type);
+		append_call_param(params, funcsig, areg, arg_type);
+	    }
+	}
 
 	// invoke through register
 	InvokeNode *call;
 	pgm.cc.invoke(&call, ptr_op.as<x86::Gp>(), funcsig);
-	set_invoke_args(pgm, call, params, true);
+	set_invoke_args(pgm, call, params, false);
 
 	// reload numeric captures from env back to outer variables (copy-out semantics)
 	if ( func->has_captures )
@@ -1951,20 +4102,19 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	}
 
 	// capture return value
-	if ( retdd.rawtype() != DataType::dtVOID )
+	if ( retdd.type() != DataType::dtVOID )
 	{
 	    if ( !regdp.first )
 	    {
-		if ( retdd.is_real() )
-		    _operand = newScalarXmm(pgm, &retdd, "fptr_ret");
+		if ( retdd.is_real() || retdd.is_simd() )
+		    _operand = retdd.newreg(pgm.cc, "fptr_ret");
 		else
 		    _operand = pgm.cc.newGpq("fptr_ret");
 		regdp.first = &_operand;
 	    }
 	    bind_call_return(pgm, call, regdp.first, &retdd, _operand, ret_is_variadic);
 	}
-	if ( !regdp.second )
-	    regdp.second = &func->returns;
+	regdp.second = &func->returns;
 
 	return *regdp.first;
     }
@@ -2043,6 +4193,53 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    pgm.Throw(this) << "TokenCallFunc::compile(" << var.name
 			    << ") method has neither FuncNode nor x86code" << flush;
+    }
+
+    // External C varargs (`extern int sprintf(char*, const char*, ...);`)
+    // must use the platform varargs ABI, not madc's internal hidden
+    // __va_args packing convention. Build a real variadic signature
+    // from the declared fixed params plus the actual trailing args.
+    if ( !fnd && method->x86code && ((FuncDef *)method->returns.type)->is_varargs )
+    {
+	FuncDef *func = (FuncDef *)method->returns.type;
+	FuncSignature funcsig(CallConvId::kCDecl);
+	set_funcsig_ret(funcsig, &func->returns, false);
+
+	std::vector<Operand> params;
+	size_t fixed_argc = explicit_expected_argc(func);
+	for ( size_t i = 0; i < argc(); ++i )
+	{
+	    DataDef *ptype = i < fixed_argc && i < func->parameters.size()
+		? func->parameters[i] : NULL;
+	    TokenBase *tn = parameters[i];
+	    DataDef *arg_type = NULL;
+	    Operand arg_storage;
+	    Operand &areg = compile_call_arg_normalized(pgm, tn, ptype,
+		i >= fixed_argc, arg_storage, arg_type);
+	    append_call_param(params, funcsig, areg, arg_type);
+	}
+	funcsig.setVaIndex((uint32_t)fixed_argc);
+
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(method->x86code), funcsig);
+	pgm.track_invoke_target(method->x86code);
+	set_invoke_args(pgm, call, params, false);
+
+	bool is_narrow_int_ret = is_int32_dlsym_ret(&func->returns, var.name);
+	if ( !regdp.first )
+	{
+	    if ( func->returns.is_real() )
+		_operand = newScalarXmm(pgm, &func->returns, "dl_ret");
+	    else
+		_operand = pgm.cc.newGpq("dl_ret");
+	    regdp.first = &_operand;
+	}
+	bind_call_return(pgm, call, regdp.first, &func->returns, _operand,
+			 /*is_variadic=*/func->returns.is_real(),
+			 is_narrow_int_ret);
+	if ( !regdp.second )
+	    regdp.second = &func->returns;
+	return *regdp.first;
     }
 
     // variadic dlsym call: no funcnode, has x86code, 0 declared params
@@ -2149,11 +4346,12 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     TokenBase *tn;
     bool is_variadic = func->parameters.empty() && method->x86code;
 
-    if ( !regdp.second )
-    {
-	DBG(cout << "TokenCallFunc::compile(" << var.name << ") regdp.second = " << func->returns.name << endl);
-	regdp.second = &func->returns;
-    }
+    // Always set regdp.second to the function's actual return type.
+    // The caller may have set it to a target type (e.g. ddDOUBLE for
+    // a float-returning function), but callers like compile_token_normalized
+    // need the real return type to know what the register actually holds.
+    DBG(cout << "TokenCallFunc::compile(" << var.name << ") regdp.second = " << func->returns.name << endl);
+    regdp.second = &func->returns;
 
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
@@ -2189,11 +4387,43 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 //#endif
 
+    x86::Gp env_ptr = pgm.cc.newIntPtr("__env_ptr");
+    pgm.cc.xor_(env_ptr, env_ptr);
+    if ( func->has_captures )
+    {
+	add_funcsig_arg(funcsig, NULL);
+	size_t n = func->captures.size();
+	if ( n > 0 )
+	{
+	    x86::Mem env_stack = pgm.cc.newStack((uint32_t)(n * 8), 8);
+	    pgm.cc.lea(env_ptr, env_stack);
+	    for ( size_t ci = 0; ci < n; ++ci )
+	    {
+		std::string cap_name = func->captures[ci].name;
+		Variable *cap_var = pgm.tkFunction->findVariable(cap_name);
+		if ( !cap_var ) continue;
+		Operand &cap_op = pgm.tkFunction->voperand(pgm, cap_var);
+		DataDef *cap_type = func->captures[ci].type;
+		x86::Gp slot_val = pgm.cc.newGpq(cap_type->is_numeric() ? "__cap_val" : "__cap_str");
+		if ( cap_type->is_numeric() )
+		    load_var_to_gp(pgm, cap_op, slot_val);
+		else
+		    lea_var_to_gp(pgm, cap_op, slot_val);
+		pgm.cc.mov(x86::qword_ptr(env_ptr, (int64_t)ci * 8), slot_val);
+	    }
+	}
+	append_call_param(params, funcsig, env_ptr, &ddINT64);
+    }
+
     size_t expected_argc = explicit_expected_argc(func);
-    if ( !is_variadic && !func->is_varargs && argc() > expected_argc )
+    // K&R functions with empty param list (not `void`) accept any number of args
+    bool knr_unspecified = func->parameters.empty() && !func->is_void_params;
+    if ( !is_variadic && !func->is_varargs && !knr_unspecified && argc() > expected_argc )
 	throw_too_many_call_args(pgm, this, parameters.data(), argc());
 
-    size_t param_offset = (func->is_multi_return() || has_object_arg) ? 1 : 0;
+    size_t param_offset = (func->is_multi_return() ? 1 : 0)
+	+ (has_object_arg ? 1 : 0)
+	+ (func->has_captures ? 1 : 0);
     size_t fixed_argc = func->is_varargs ? expected_argc : argc();
     for ( size_t i = 0; i < fixed_argc; ++i )
     {
@@ -2218,9 +4448,17 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     if ( func->is_varargs && argc() > fixed_argc )
     {
 	size_t nvarargs = argc() - fixed_argc;
-	x86::Mem va_buf = pgm.cc.newStack((uint32_t)(nvarargs * 8), 8);
+	size_t va_buf_size = 0;
+	for ( size_t i = 0; i < nvarargs; ++i )
+	{
+	    DataDef *va_type = parameters[fixed_argc + i]
+		? parameters[fixed_argc + i]->datadef() : NULL;
+	    va_buf_size += internal_vararg_static_slot_size(va_type);
+	}
+	x86::Mem va_buf = pgm.cc.newStack((uint32_t)va_buf_size, 8);
 	x86::Gp va_ptr = pgm.cc.newIntPtr("__va_buf");
 	pgm.cc.lea(va_ptr, va_buf);
+	size_t va_off = 0;
 
 	for ( size_t i = 0; i < nvarargs; ++i )
 	{
@@ -2228,35 +4466,51 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    DataDef *va_type = NULL;
 	    Operand va_storage;
 	    Operand &va_reg = compile_call_arg_normalized(pgm, tn_va, NULL, true, va_storage, va_type);
-
-	    x86::Gp val = pgm.cc.newGpq("va_pack");
-	    if ( va_reg.isReg() && va_reg.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    {
-		x86::Gp gp = va_reg.as<x86::Gp>();
-		if ( gp.size() < 8 )
-		{
-		    if ( va_type && va_type->is_unsigned() )
-			pgm.cc.movzx(val, gp);
-		    else
-			pgm.cc.movsx(val, gp);
-		}
-		else
-		    pgm.cc.mov(val, gp);
-	    }
-	    else if ( va_reg.isReg() && va_reg.as<BaseReg>().isGroup(RegGroup::kVec) )
-	    {
-		// varargs reals are normalized to double; store raw 8 bytes
-		pgm.cc.movq(val, va_reg.as<x86::Xmm>());
-	    }
-	    else if ( va_reg.isMem() )
-		pgm.cc.mov(val, va_reg.as<x86::Mem>());
-	    else if ( va_reg.isImm() )
-		pgm.cc.mov(val, va_reg.as<Imm>());
-
 	    x86::Mem slot = va_buf;
-	    slot.addOffset((int64_t)(i * 8));
-	    slot.setSize(8);
-	    pgm.cc.mov(slot, val);
+	    slot.addOffset((int64_t)va_off);
+	    size_t slot_size = internal_vararg_static_slot_size(va_type);
+	    if ( va_type && aggregate_has_runtime_size(va_type) )
+	    {
+		x86::Gp src_ptr = materialize_gp_ptr_arg(pgm, va_reg, "__va_pack_dyn");
+		slot.setSize(8);
+		pgm.cc.mov(slot, src_ptr);
+	    }
+	    else
+	    if ( va_type && !va_type->is_numeric() && !va_type->is_pointer() && !va_type->is_real() )
+	    {
+		slot.setSize((uint32_t)slot_size);
+		emit_raw_aggregate_copy(pgm, slot, va_reg, va_type, "__va_pack_copy");
+	    }
+	    else
+	    {
+		x86::Gp val = pgm.cc.newGpq("va_pack");
+		if ( va_reg.isReg() && va_reg.as<BaseReg>().isGroup(RegGroup::kGp) )
+		{
+		    x86::Gp gp = va_reg.as<x86::Gp>();
+		    if ( gp.size() < 8 )
+		    {
+			if ( va_type && va_type->is_unsigned() )
+			    pgm.cc.movzx(val, gp);
+			else
+			    pgm.cc.movsx(val, gp);
+		    }
+		    else
+			pgm.cc.mov(val, gp);
+		}
+		else if ( va_reg.isReg() && va_reg.as<BaseReg>().isGroup(RegGroup::kVec) )
+		{
+		    // varargs reals are normalized to double; store raw 8 bytes
+		    pgm.cc.movq(val, va_reg.as<x86::Xmm>());
+		}
+		else if ( va_reg.isMem() )
+		    pgm.cc.mov(val, va_reg.as<x86::Mem>());
+		else if ( va_reg.isImm() )
+		    pgm.cc.mov(val, va_reg.as<Imm>());
+
+		slot.setSize(8);
+		pgm.cc.mov(slot, val);
+	    }
+	    va_off += slot_size;
 	}
 
 	append_call_param(params, funcsig, va_ptr, &ddINT64); // __va_args: pointer to packed buffer
@@ -2325,6 +4579,22 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	pgm.track_invoke_target(call_target);
     DBG(pgm.cc.comment("TokenCallFunc::compile() looping over params"));
     set_invoke_args(pgm, call, params, false);
+
+    if ( func->has_captures )
+    {
+	for ( size_t ci = 0; ci < func->captures.size(); ++ci )
+	{
+	    DataDef *cap_type = func->captures[ci].type;
+	    if ( !cap_type->is_numeric() ) continue;
+	    std::string cap_name = func->captures[ci].name;
+	    Variable *cap_var = pgm.tkFunction->findVariable(cap_name);
+	    if ( !cap_var ) continue;
+	    Operand &cap_op = pgm.tkFunction->voperand(pgm, cap_var);
+	    x86::Gp val = pgm.cc.newGpq("__cap_reload");
+	    pgm.cc.mov(val, x86::qword_ptr(env_ptr, (int64_t)ci * 8));
+	    store_gp_to_var(pgm, val, cap_op);
+	}
+    }
 
     DBG(std::cout << "TokenCallFunc::compile() END" << std::endl);
 
@@ -2557,6 +4827,101 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 	    throw "TokenStmt::compile() tb->type() == TokenType::ttStatement";
 	case TokenType::ttCompound:
 	    return dynamic_cast<TokenCpnd *>(this)->compile(pgm, regdp);
+	case TokenType::ttStructLit:
+	{
+	    // C99 compound literal: (type){ init_list }
+	    // Allocate a temporary on the stack, initialize members, return address.
+	    TokenStructLit *slit = dynamic_cast<TokenStructLit *>(this);
+	    DataDef *dd = slit->datadef();
+	    DataDefSTRUCT *sdd = dd ? dynamic_cast<DataDefSTRUCT *>(dd) : NULL;
+	    if ( sdd && sdd->size > 0 )
+	    {
+		x86::Gp base = pgm.cc.newIntPtr("_compound_lit");
+		if ( pgm.tkFunction == pgm.tkProgram )
+		{
+		    // File-scope compound literals have static storage duration.
+		    // Stack temps here leave globals holding dead addresses once
+		    // startup init finishes.
+		    void *storage = calloc(1, (size_t)sdd->size);
+		    if ( pgm.aot_tracking )
+		    {
+			std::string name = "__aot_compound_lit_"
+			    + std::to_string(pgm.aot_discovered_data.size());
+			pgm.record_aot_data(name, storage, (size_t)sdd->size, dd);
+		    }
+		    pgm.emit_data_mov(base, storage);
+		}
+		else
+		{
+		    x86::Mem tmp = pgm.cc.newStack((uint32_t)sdd->size, 8);
+		    pgm.cc.lea(base, tmp);
+		}
+		emit_zero_fill_region(pgm, base, 0, sdd->size);
+		emit_struct_init(pgm, base, 0, sdd, slit->inits, this);
+		_operand = base;
+		DataDef *ptr_type = pgm.getPointerType(dd);
+		bool want_struct_value =
+		    regdp.second
+		    && regdp.second->basetype() == BaseType::btStruct
+		    && dd->basetype() == BaseType::btStruct;
+		if ( !want_struct_value && regdp.first && regdp.first != &_operand )
+		{
+		    pgm.safemov(*regdp.first, _operand, ptr_type, ptr_type);
+		    regdp.second = ptr_type;
+		    return *regdp.first;
+		}
+		regdp.second = want_struct_value ? dd : ptr_type;
+		regdp.first = &_operand;
+		return _operand;
+	    }
+	    if ( dd && dd->is_simd() && dd->size > 0 )
+	    {
+		DataDefSIMD *vdd = dynamic_cast<DataDefSIMD *>(dd);
+		if ( !vdd )
+		    throw "compound literal: invalid SIMD type";
+		x86::Gp base = pgm.cc.newIntPtr("_compound_simd");
+		if ( pgm.tkFunction == pgm.tkProgram )
+		{
+		    void *storage = calloc(1, dd->size);
+		    if ( pgm.aot_tracking )
+		    {
+			std::string name = "__aot_compound_simd_"
+			    + std::to_string(pgm.aot_discovered_data.size());
+			pgm.record_aot_data(name, storage, dd->size, dd);
+		    }
+		    pgm.emit_data_mov(base, storage);
+		}
+		else
+		{
+		    x86::Mem tmp = pgm.cc.newStack((uint32_t)dd->size, (uint32_t)vdd->alignment());
+		    pgm.cc.lea(base, tmp);
+		}
+		emit_zero_fill_region(pgm, base, 0, dd->size);
+		emit_simd_init(pgm, base, 0, vdd, slit->inits, this);
+		if ( regdp.second && !regdp.second->is_simd()
+		  && regdp.second->is_integer() && regdp.second->size <= dd->size )
+		{
+		    x86::Gp gp = pgm.cc.newGpq("_compound_simd_int");
+		    pgm.cc.mov(gp, x86::qword_ptr(base));
+		    _operand = gp;
+		    regdp.first = &_operand;
+		    return _operand;
+		}
+		x86::Xmm xmm = pgm.cc.newXmm("_compound_simd_xmm");
+		x86::Mem src = x86::ptr(base, 0, (uint32_t)dd->size);
+		load_mem_to_xmm(pgm, xmm, src, dd);
+		_operand = xmm;
+		regdp.second = dd;
+		if ( regdp.first && regdp.first != &_operand )
+		{
+		    pgm.safemov(*regdp.first, _operand, dd, dd);
+		    return *regdp.first;
+		}
+		regdp.first = &_operand;
+		return _operand;
+	    }
+	    throw "compound literal: unsupported type";
+	}
 	case TokenType::ttProgram:
 	    return dynamic_cast<TokenProgram *>(this)->compile(pgm, regdp);
 	case TokenType::ttSymbol:
@@ -2580,23 +4945,167 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 
 // Emit per-member writes for a struct init block into [base_reg + base_ofs + member_ofs].
 // Used for both standalone struct init and each element of an array-of-structs.
+static void emit_simd_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
+    DataDefSIMD *vdd, const std::vector<TokenBase *> &inits, TokenBase *err_loc)
+{
+    if ( !vdd || !vdd->element_type || vdd->element_type->size == 0 )
+	pgm.Throw(err_loc) << "invalid SIMD type in initializer" << flush;
+    size_t elem_size = vdd->element_type->size;
+    for ( size_t i = 0; i < vdd->lane_count; ++i )
+    {
+	x86::Mem slot = x86::ptr(base_reg, base_ofs + (int32_t)(i * elem_size), (uint32_t)elem_size);
+	if ( i >= inits.size() )
+	{
+	    pgm.cc.mov(slot, imm(0));
+	    continue;
+	}
+	regdefp_t elem_rdp = {nullptr, vdd->element_type, nullptr};
+	Operand &val = inits[i]->compile(pgm, elem_rdp);
+	if ( val.isImm() )
+	    pgm.cc.mov(slot, val.as<Imm>());
+	else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    x86::Xmm xmm = val.as<x86::Xmm>();
+	    if ( elem_size == sizeof(float) )
+		pgm.cc.movss(slot, xmm);
+	    else
+		pgm.cc.movsd(slot, xmm);
+	}
+	else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Gp gp = val.as<x86::Gp>();
+	    if ( elem_size == 8 ) pgm.cc.mov(slot, gp.r64());
+	    else if ( elem_size == 4 ) pgm.cc.mov(slot, gp.r32());
+	    else if ( elem_size == 2 ) pgm.cc.mov(slot, gp.r16());
+	    else pgm.cc.mov(slot, gp.r8());
+	}
+	else
+	    pgm.Throw(err_loc) << "unsupported SIMD literal element" << flush;
+    }
+}
+
 static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc)
 {
-    size_t ofs = 0;
-    for ( size_t i = 0; i < inits.size() && i < dds->members.size(); ++i )
+    size_t init_idx = 0;
+    for ( size_t mi = 0; mi < dds->members.size() && init_idx < inits.size(); ++mi )
     {
-	auto &mp = dds->members[i];
+	auto &mp = dds->members[mi];
 	DataDef *mtype = mp.second;
-	size_t fa = dds->field_align(*mtype);
-	ofs = DataDefSTRUCT::align_up(ofs, fa);
-	int32_t addr = base_ofs + (int32_t)ofs;
+	int32_t addr = base_ofs + (int32_t)((mi < dds->member_offsets.size())
+	    ? dds->member_offsets[mi] : 0);
+	size_t i = init_idx;
+	size_t member_count = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
+
+	// Flat init for array members: distribute consecutive initializers
+	if ( member_count > 1 && dynamic_cast<TokenStructLit *>(inits[init_idx]) == NULL )
+	{
+	    std::string char_array_init;
+	    if ( type_is_cstr_element(mtype)
+	      && token_get_constant_cstring(inits[init_idx], char_array_init) )
+	    {
+		size_t copy_n = char_array_init.size();
+		if ( copy_n > member_count )
+		    copy_n = member_count;
+		for ( size_t ai = 0; ai < copy_n; ++ai )
+		{
+		    x86::Mem mm = x86::ptr(base_reg, addr + (int32_t)ai, 1);
+		    pgm.cc.mov(mm, imm((int32_t)(unsigned char)char_array_init[ai]));
+		}
+		for ( size_t ai = copy_n; ai < member_count; ++ai )
+		{
+		    x86::Mem mm = x86::ptr(base_reg, addr + (int32_t)ai, 1);
+		    pgm.cc.mov(mm, imm(0));
+		}
+		++init_idx;
+		continue;
+	    }
+	    size_t esize = mtype->size;
+	    for ( size_t ai = 0; ai < member_count && init_idx < inits.size(); ++ai, ++init_idx )
+	    {
+		int32_t elem_addr = addr + (int32_t)(ai * esize);
+		if ( !inits[init_idx] )
+		{
+		    x86::Mem mm = x86::ptr(base_reg, elem_addr, (uint32_t)esize);
+		    pgm.cc.mov(mm, imm(0));
+		    continue;
+		}
+		regdefp_t rdp = {nullptr, nullptr, nullptr};
+		rdp.second = mtype;
+		Operand &val = inits[init_idx]->compile(pgm, rdp);
+		x86::Mem mm = x86::ptr(base_reg, elem_addr, (uint32_t)esize);
+		if ( val.isImm() )
+		    pgm.cc.mov(mm, val.as<Imm>());
+		else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
+		{
+		    if ( esize == sizeof(float) )
+			pgm.cc.movss(mm, val.as<x86::Xmm>());
+		    else
+			pgm.cc.movsd(mm, val.as<x86::Xmm>());
+		}
+		else if ( val.isReg() )
+		    pgm.cc.mov(mm, val.as<x86::Gp>());
+		else if ( val.isMem() )
+		{
+		    x86::Gp tmp = pgm.cc.newGpq("flat_arr_tmp");
+		    pgm.cc.mov(tmp, val.as<x86::Mem>());
+		    pgm.cc.mov(mm, tmp);
+		}
+	    }
+	    continue;
+	}
+	init_idx++;
+
+	if ( !inits[i] )
+	{
+	    if ( i < dds->member_bitfields.size()
+	      && dds->member_bitfields[i].is_bitfield )
+	    {
+		const DataDefSTRUCT::BitFieldInfo &bf = dds->member_bitfields[i];
+		x86::Gp zero = pgm.cc.newGpq("init_bf_zero");
+		pgm.cc.xor_(zero, zero);
+		x86::Mem storage = x86::ptr(base_reg, addr, (uint32_t)bf.storage_size);
+		emit_bitfield_store_reg(pgm, storage, bf, zero, "init_bf_zero");
+	    }
+	    else if ( mtype->is_numeric() || mtype->is_pointer() )
+	    {
+		x86::Mem mm = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
+		pgm.cc.mov(mm, imm(0));
+	    }
+	    else if ( mtype->basetype() == BaseType::btStruct )
+	    {
+		DataDefSTRUCT *ndds = dynamic_cast<DataDefSTRUCT *>(mtype);
+		if ( ndds )
+		{
+		    std::vector<TokenBase *> empty_init;
+		    emit_struct_init(pgm, base_reg, addr, ndds, empty_init, err_loc);
+		}
+	    }
+	    continue;
+	}
+
+	if ( i < dds->member_bitfields.size()
+	  && dds->member_bitfields[i].is_bitfield )
+	{
+	    regdefp_t bf_rdp = {nullptr, nullptr, nullptr};
+	    bf_rdp.second = mtype;
+	    Operand &bf_val = inits[i]->compile(pgm, bf_rdp);
+	    const DataDefSTRUCT::BitFieldInfo &bf = dds->member_bitfields[i];
+	    x86::Mem storage = x86::ptr(base_reg, addr, (uint32_t)bf.storage_size);
+	    emit_bitfield_store_operand(pgm, storage, bf, bf_val,
+		bf_rdp.second ? bf_rdp.second : inits[i]->datadef(),
+		mtype, "init_bf");
+	    continue;
+	}
+
+	std::string mname = mp.first;
+	bool is_array_decl = dds->m_is_array_decl(mname);
 
 	// Nested struct-member init: `{ ..., { 0, 1, 10 }, ... }` where
 	// the member is itself a struct value. TokenStructLit has no
 	// compile() — recurse here instead of letting it fall through to
 	// TokenStmt's default-throw branch.
-	if ( mtype->basetype() == BaseType::btStruct
+	if ( mtype->basetype() == BaseType::btStruct && !is_array_decl
 	  && dynamic_cast<TokenStructLit *>(inits[i]) != NULL )
 	{
 	    TokenStructLit *nested = static_cast<TokenStructLit *>(inits[i]);
@@ -2604,7 +5113,29 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    if ( !ndds )
 		pgm.Throw(err_loc) << "Nested initializer for non-struct member type" << flush;
 	    emit_struct_init(pgm, base_reg, addr, ndds, nested->inits, err_loc);
-	    ofs += mtype->size;
+	    continue;
+	}
+	if ( mtype->basetype() == BaseType::btStruct && !is_array_decl
+	  && inits[i]->datadef()
+	  && inits[i]->datadef()->basetype() == BaseType::btStruct )
+	{
+	    regdefp_t srdp = {nullptr, mtype, nullptr};
+	    Operand &sval = inits[i]->compile(pgm, srdp);
+	    Operand dst_slot = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
+	    emit_raw_aggregate_copy(pgm, dst_slot, sval, mtype, "init_struct_copy");
+	    continue;
+	}
+	if ( mtype->basetype() == BaseType::btStruct && !is_array_decl )
+	{
+	    DataDefSTRUCT *ndds = dynamic_cast<DataDefSTRUCT *>(mtype);
+	    if ( !ndds )
+		pgm.Throw(err_loc) << "Nested initializer for non-struct member type" << flush;
+	    size_t nested_slots = count_struct_init_slots(ndds);
+	    std::vector<TokenBase *> flat_nested;
+	    for ( size_t ni = i; ni < inits.size() && flat_nested.size() < nested_slots; ++ni )
+		flat_nested.push_back(inits[ni]);
+	    emit_struct_init(pgm, base_reg, addr, ndds, flat_nested, err_loc);
+	    init_idx = i + flat_nested.size();
 	    continue;
 	}
 
@@ -2613,19 +5144,86 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	// the element type. Per-element write at `[base + addr + j*esize]`.
 	// Member's per-member count lives on the parent struct.
 	{
-	    std::string mname = mp.first;
 	    size_t mcount = dds->m_count(mname);
 	    TokenStructLit *nested_arr = dynamic_cast<TokenStructLit *>(inits[i]);
-	    if ( mcount > 1 && nested_arr != NULL )
+	    if ( nested_arr != NULL && is_array_decl && mcount == 0 )
+	    {
+		if ( !nested_arr->inits.empty() )
+		    pgm.Throw(err_loc) << "Too many initializers for member " << mname << flush;
+		continue;
+	    }
+	    if ( nested_arr != NULL && is_array_decl && mcount == 1 )
+	    {
+		if ( nested_arr->inits.size() > 1 )
+		    pgm.Throw(err_loc) << "Too many initializers for member " << mname << flush;
+		if ( nested_arr->inits.empty() )
+		{
+		    x86::Mem mm = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
+		    pgm.cc.mov(mm, imm(0));
+		    continue;
+		}
+		regdefp_t arr_rdp = {nullptr, nullptr, nullptr};
+		Operand &elem_val = nested_arr->inits[0]->compile(pgm, arr_rdp);
+		x86::Mem em = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
+		if ( elem_val.isImm() )
+		    pgm.cc.mov(em, elem_val.as<Imm>());
+		else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kVec) )
+		{
+		    if ( mtype->size == sizeof(float) )
+			pgm.cc.movss(em, elem_val.as<x86::Xmm>());
+		    else
+			pgm.cc.movsd(em, elem_val.as<x86::Xmm>());
+		}
+		else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kGp) )
+		{
+		    x86::Gp src = elem_val.as<x86::Gp>();
+		    if ( mtype->size == 8 ) pgm.cc.mov(em, src.r64());
+		    else if ( mtype->size == 4 ) pgm.cc.mov(em, src.r32());
+		    else if ( mtype->size == 2 ) pgm.cc.mov(em, src.r16());
+		    else pgm.cc.mov(em, src.r8());
+		}
+		else
+		    pgm.Throw(err_loc) << "Unsupported nested-array initializer element" << flush;
+		continue;
+	    }
+	    if ( nested_arr != NULL && is_array_decl && mcount > 1 )
 	    {
 		size_t esize = mtype->size;
 		for ( size_t j = 0; j < nested_arr->inits.size() && j < mcount; ++j )
 		{
+		    if ( mtype->basetype() == BaseType::btStruct )
+		    {
+			DataDefSTRUCT *elem_dds = dynamic_cast<DataDefSTRUCT *>(mtype);
+			if ( !elem_dds )
+			    pgm.Throw(err_loc) << "Nested initializer for non-struct array member type" << flush;
+			if ( TokenStructLit *elem_slit = dynamic_cast<TokenStructLit *>(nested_arr->inits[j]) )
+			{
+			    emit_struct_init(pgm, base_reg,
+				addr + (int32_t)(j * esize), elem_dds, elem_slit->inits, err_loc);
+			    continue;
+			}
+			if ( nested_arr->inits[j]->datadef()
+			  && nested_arr->inits[j]->datadef()->basetype() == BaseType::btStruct )
+			{
+			    regdefp_t elem_rdp = {nullptr, mtype, nullptr};
+			    Operand &elem_val = nested_arr->inits[j]->compile(pgm, elem_rdp);
+			    Operand dst_slot = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
+			    emit_raw_aggregate_copy(pgm, dst_slot, elem_val, mtype, "init_struct_array_copy");
+			    continue;
+			}
+		    }
 		    regdefp_t arr_rdp = {nullptr, nullptr, nullptr};
 		    Operand &elem_val = nested_arr->inits[j]->compile(pgm, arr_rdp);
 		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
 		    if ( elem_val.isImm() )
 			pgm.cc.mov(em, elem_val.as<Imm>());
+		    else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kVec) )
+		    {
+			if ( esize == sizeof(float) )
+			    pgm.cc.movss(em, elem_val.as<x86::Xmm>());
+			else
+			    pgm.cc.movsd(em, elem_val.as<x86::Xmm>());
+		    }
 		    else if ( elem_val.isReg() && elem_val.as<BaseReg>().isGroup(RegGroup::kGp) )
 		    {
 			x86::Gp src = elem_val.as<x86::Gp>();
@@ -2640,15 +5238,25 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		// Zero remaining slots
 		for ( size_t j = nested_arr->inits.size(); j < mcount; ++j )
 		{
+		    if ( mtype->basetype() == BaseType::btStruct )
+		    {
+			DataDefSTRUCT *elem_dds = dynamic_cast<DataDefSTRUCT *>(mtype);
+			if ( elem_dds )
+			{
+			    std::vector<TokenBase *> empty_init;
+			    emit_struct_init(pgm, base_reg,
+				addr + (int32_t)(j * esize), elem_dds, empty_init, err_loc);
+			    continue;
+			}
+		    }
 		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
 		    pgm.cc.mov(em, imm(0));
 		}
-		ofs += esize * mcount;
 		continue;
 	    }
 	}
 
-	regdefp_t it_rdp = {nullptr, nullptr, nullptr};
+	regdefp_t it_rdp = {nullptr, mtype->is_real() ? mtype : nullptr, nullptr};
 	Operand &val_op = inits[i]->compile(pgm, it_rdp);
 
 	if ( mtype->is_numeric() || mtype->is_pointer() )
@@ -2679,6 +5287,13 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    x86::Mem mm = x86::ptr(base_reg, addr, (uint32_t)esize);
 	    if ( eff_val.isImm() )
 		pgm.cc.mov(mm, eff_val.as<Imm>());
+	    else if ( eff_val.isReg() && eff_val.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		if ( esize == sizeof(float) )
+		    pgm.cc.movss(mm, eff_val.as<x86::Xmm>());
+		else
+		    pgm.cc.movsd(mm, eff_val.as<x86::Xmm>());
+	    }
 	    else if ( eff_val.isReg() )
 	    {
 		x86::Gp vgp = eff_val.as<x86::Gp>();
@@ -2714,28 +5329,54 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	{
 	    pgm.Throw(err_loc) << "Unsupported struct member type in initializer: " << mtype->name << flush;
 	}
-
-	ofs += mtype->size;
     }
+    if ( dds->union_layout )
+	return;
     // Zero-fill remaining numeric/pointer members
     for ( size_t i = inits.size(); i < dds->members.size(); ++i )
     {
 	auto &mp = dds->members[i];
 	DataDef *mtype = mp.second;
-	size_t fa = dds->field_align(*mtype);
-	ofs = DataDefSTRUCT::align_up(ofs, fa);
+	int32_t addr = base_ofs + (int32_t)((i < dds->member_offsets.size())
+	    ? dds->member_offsets[i] : 0);
+	if ( i < dds->member_bitfields.size()
+	  && dds->member_bitfields[i].is_bitfield )
+	{
+	    const DataDefSTRUCT::BitFieldInfo &bf = dds->member_bitfields[i];
+	    x86::Gp zero = pgm.cc.newGpq("init_bf_zero");
+	    pgm.cc.xor_(zero, zero);
+	    x86::Mem storage = x86::ptr(base_reg, addr, (uint32_t)bf.storage_size);
+	    emit_bitfield_store_reg(pgm, storage, bf, zero, "init_bf_zero");
+	    continue;
+	}
 	if ( mtype->is_numeric() || mtype->is_pointer() )
 	{
-	    x86::Mem mm = x86::ptr(base_reg, base_ofs + (int32_t)ofs, (uint32_t)mtype->size);
+	    x86::Mem mm = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
 	    pgm.cc.mov(mm, imm(0));
 	}
-	ofs += mtype->size;
+	else if ( mtype->basetype() == BaseType::btStruct )
+	{
+	    DataDefSTRUCT *ndds = dynamic_cast<DataDefSTRUCT *>(mtype);
+	    if ( ndds )
+	    {
+		std::vector<TokenBase *> empty_init;
+		emit_struct_init(pgm, base_reg, addr, ndds, empty_init, err_loc);
+	    }
+	}
     }
 }
 
 Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDecl::compile(" << var.name << " regdp.second: " << (regdp.second ? regdp.second->name : "")<<  ") TOP" << endl);
+    bool emit_initializer = !(var.flags & vfSTATIC) || pgm.tkFunction == pgm.tkProgram;
+
+    // Local statics with brace-init lists (struct/array initializers) still
+    // need their init code emitted — static placement only zeroes the memory.
+    // Emit init unconditionally (static vars are only initialized once since
+    // they live in the data section — the function is only JIT'd once).
+    if ( !emit_initializer && !init_list.empty() )
+	emit_initializer = true;
 
     // VLAs need their malloc-init emitted at the declaration point — not
     // lazily on first use. Lazy emission would put the malloc inside the
@@ -2744,24 +5385,60 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     // voperand now so the buffer is allocated exactly once at decl time.
     if ( var.is_vla() )
 	pgm.tkFunction->voperand(pgm, &var);
+    if ( aggregate_has_runtime_size(var.type) )
+	pgm.tkFunction->voperand(pgm, &var);
 
     // Top-level program declarations still need their initializer code emitted
     // so file-scope C globals like `static char *p = "x";` and static tables
     // are materialized before `main()` runs. Only local statics skip here.
     if ( initialize
-      && (!(var.flags & vfSTATIC) || pgm.tkFunction == pgm.tkProgram)
+      && emit_initializer
       && !global_string_initializer_is_static_data(pgm, var, initialize) )
 	initialize->compile(pgm, regdp);
 
+    // Empty brace initializer for structs/unions: `struct X x = {};`
+    // Zero-fill the stack slot directly instead of going through the
+    // assignment path, which would self-copy (source == dest).
+    if ( emit_initializer
+      && init_list.empty() && has_brace_init && !var.is_fixed_array()
+      && dynamic_cast<DataDefSTRUCT *>(var.type) != NULL
+      && var.type->type() == DataType::dtRESERVED )
+    {
+	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
+	x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var.name + ".zero").c_str());
+	if ( base_op.isMem() )
+	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+	size_t total = var.type->size;
+	// Zero-fill using qword stores, then any remainder.
+	size_t ofs = 0;
+	for ( ; ofs + 8 <= total; ofs += 8 )
+	    pgm.cc.mov(x86::qword_ptr(base_reg, (int32_t)ofs), imm(0));
+	for ( ; ofs + 4 <= total; ofs += 4 )
+	    pgm.cc.mov(x86::dword_ptr(base_reg, (int32_t)ofs), imm(0));
+	for ( ; ofs < total; ofs++ )
+	    pgm.cc.mov(x86::byte_ptr(base_reg, (int32_t)ofs), imm(0));
+	regdp.first = &base_op;
+	regdp.second = var.type;
+    }
+
     // brace-enclosed initializer for standalone structs: struct Foo x = { v0, v1, ... }
-    if ( !init_list.empty() && !var.is_fixed_array()
+    if ( emit_initializer
+      && !init_list.empty() && !var.is_fixed_array()
       && dynamic_cast<DataDefSTRUCT *>(var.type) != NULL
       && var.type->type() == DataType::dtRESERVED )
     {
 	DBG(pgm.cc.comment("TokenDecl struct init_list"));
 	DataDefSTRUCT *dds = static_cast<DataDefSTRUCT *>(var.type);
-	if ( init_list.size() > dds->members.size() )
-	    pgm.Throw(this) << "Too many initializers for struct " << dds->name << flush;
+	// Allow flat initialization: `struct { int f[4]; } s = {1,2,3,4};`
+	// Count total scalar slots (expanding fixed arrays) for the check.
+	{
+	    size_t total_slots = count_struct_init_slots(dds);
+	    size_t used_slots = count_initializer_entries(init_list);
+	    if ( used_slots > total_slots )
+		pgm.Throw(this) << "Too many initializers for struct " << dds->name << flush;
+	}
 
 	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
 	x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var.name + ".init_base").c_str());
@@ -2773,8 +5450,27 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	emit_struct_init(pgm, base_reg, 0, dds, init_list, this);
     }
 
+    // brace-enclosed initializer for standalone SIMD vectors:
+    // V2SI x = { 2, 2 };
+    if ( emit_initializer
+      && !init_list.empty() && !var.is_fixed_array()
+      && var.type && var.type->is_simd() )
+    {
+	DBG(pgm.cc.comment("TokenDecl simd init_list"));
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(var.type);
+	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
+	x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var.name + ".simd_init_base").c_str());
+	if ( base_op.isMem() )
+	    pgm.cc.lea(base_reg, base_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
+
+	emit_zero_fill_region(pgm, base_reg, 0, var.type->size);
+	emit_simd_init(pgm, base_reg, 0, vdd, init_list, this);
+    }
+
     // brace-enclosed initializer for fixed-size arrays: arr[N] = { v0, v1, ... }
-    if ( !init_list.empty() && var.is_fixed_array() )
+    if ( emit_initializer && !init_list.empty() && var.is_fixed_array() )
     {
 	DBG(pgm.cc.comment("TokenDecl fixed-array init_list"));
 	Operand &base_op = pgm.tkFunction->voperand(pgm, &var);
@@ -2792,10 +5488,16 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    for ( size_t i = 0; i < init_list.size(); ++i )
 	    {
 		TokenStructLit *slit = dynamic_cast<TokenStructLit *>(init_list[i]);
-		if ( !slit )
-		    pgm.Throw(this) << "Array-of-structs element must be a brace list { ... }" << flush;
+		if ( slit )
+		{
+		    emit_struct_init(pgm, base_reg, (int32_t)(i * struct_size),
+			elem_dds, slit->inits, this);
+		    continue;
+		}
+		std::vector<TokenBase *> scalar_init;
+		scalar_init.push_back(init_list[i]);
 		emit_struct_init(pgm, base_reg, (int32_t)(i * struct_size),
-		    elem_dds, slit->inits, this);
+		    elem_dds, scalar_init, this);
 	    }
 	    // Zero-fill remaining element slots byte by byte (8 bytes at a time)
 	    uint32_t total = var.total_elements();
@@ -2830,11 +5532,29 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    flatten_init(node);
 
 	size_t elem_size = var.type->size ? var.type->size : 8;
-	bool elem_is_charptr = var.type->is_pointer()
-	    && var.type->rawtype() == DataType::dtCHAR;
+	bool elem_is_charptr = type_is_cstr_pointer(var.type);
+	Variable *static_data_var = &var;
+	if ( pgm.tkProgram && var.is_global() )
+	{
+	    Variable *canon = pgm.tkProgram->findVariable(var.name);
+	    if ( canon && canon->data )
+		static_data_var = canon;
+	}
 	for ( size_t i = 0; i < flat_inits.size(); ++i )
 	{
-	    regdefp_t it_rdp = {nullptr, nullptr, nullptr};
+	    const char *static_cstr_addr = NULL;
+	    if ( pgm.tkFunction == pgm.tkProgram
+	      && static_data_var && static_data_var->data
+	      && var.type
+	      && var.type->is_pointer()
+	      && token_get_constant_cstring_address(flat_inits[i], static_cstr_addr) )
+	    {
+		memcpy(static_cast<uint8_t *>(static_data_var->data) + i * elem_size,
+		       &static_cstr_addr, sizeof(static_cstr_addr));
+		continue;
+	    }
+
+	    regdefp_t it_rdp = {nullptr, var.type->is_real() ? var.type : nullptr, nullptr};
 	    Operand &val_op = flat_inits[i]->compile(pgm, it_rdp);
 	    x86::Mem slot = x86::ptr(base_reg, (int32_t)(i * elem_size), (uint32_t)elem_size);
 	    // char *arr[] = {"alice", ...}: each string-literal init yields a
@@ -2855,6 +5575,13 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    }
 	    if ( val_op.isImm() )
 		pgm.cc.mov(slot, val_op.as<Imm>());
+	    else if ( val_op.isReg() && val_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		if ( elem_size == sizeof(float) )
+		    pgm.cc.movss(slot, val_op.as<x86::Xmm>());
+		else
+		    pgm.cc.movsd(slot, val_op.as<x86::Xmm>());
+	    }
 	    else if ( val_op.isReg() )
 	    {
 		x86::Gp vgp = val_op.as<x86::Gp>();
@@ -2892,6 +5619,9 @@ void TokenFunc::prepareFuncNode(Program &pgm)
     if ( !var.data ) return; // not a real function (edge case)
     Method &method = *((Method *)var.data);
     FuncDef *func = (FuncDef *)method.returns.type;
+    if ( pgm.instrument_functions )
+	std::cerr << "[instrument] " << var.name << " no_instrument="
+		  << (func->no_instrument_function ? 1 : 0) << std::endl;
     if ( func->funcnode ) return; // already prepared
 
     FuncSignature funcsig(CallConvId::kCDecl);
@@ -2953,7 +5683,6 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 
     Method &method = *((Method *)var.data);
     FuncDef *func = (FuncDef *)method.returns.type;
-
     // Pre-pass in Program::compile usually already prepared this function's
     // funcnode so global fn-pointer inits could LEA its label. If not
     // (e.g. a late-compiled lambda), do it now.
@@ -3001,9 +5730,15 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 		if ( tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kVec) )
 		{
 		    func->funcnode->setArg(argc++, tmp.as<x86::Xmm>());
-		    IRBuilder ir(pgm.cc);
-		    ir.store(IRValue::mem(reg.as<x86::Mem>(), (*vvi)->type),
-			     ir_from_operand(tmp, (*vvi)->type));
+		    x86::Mem dst = reg.as<x86::Mem>();
+		    if ( (*vvi)->type && (*vvi)->type->is_simd() )
+			store_xmm_to_mem(pgm, dst, tmp.as<x86::Xmm>(), (*vvi)->type);
+		    else
+		    {
+			IRBuilder ir(pgm.cc);
+			ir.store(IRValue::mem(dst, (*vvi)->type),
+				 ir_from_operand(tmp, (*vvi)->type));
+		    }
 		}
 		else
 		if ( tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kGp) )
@@ -3023,6 +5758,17 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	}
     }
 
+    for ( variable_vec_iter vvi = method.parameters.begin();
+	  vvi != method.parameters.end(); ++vvi )
+    {
+	if ( !(*vvi)->param_vla_side_effect_expr )
+	    continue;
+	regdefp_t sidefx_rdp = {NULL, NULL, NULL};
+	(*vvi)->param_vla_side_effect_expr->compile(pgm, sidefx_rdp);
+    }
+
+    emit_function_instrument_enter(pgm, func);
+
     if ( variables.size() )
     {
 	DBG(cout << "Local variables:" << endl);
@@ -3031,6 +5777,12 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	    DBG(cout << "    " << (*vvi)->type->name << ' ' << (*vvi)->name << endl);
 	}
     }
+
+    // Save the cursor position right after parameter setup. Local
+    // numeric stack-slot zero-inits will be inserted here (via
+    // setCursor) so they execute once at function entry instead of at
+    // first-use, which could be inside a conditional branch.
+    prologue_cursor = pgm.cc.cursor();
 
     auto invalidate_rematerializable_globals = [&]() {
 	for ( std::map<Variable *, Operand>::iterator it = operand_map.begin();
@@ -3059,6 +5811,7 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
     }
 
     cleanup(pgm);	// cleanup stack
+    emit_function_instrument_exit(pgm, func);
     if ( var.name == "main" && !method.owner_class
       && func->returns.rawtype() != DataType::dtVOID )
     {
@@ -3250,6 +6003,166 @@ void Program::execute()
     DBG(std::cout << "Program::execute() ends" << std::endl);
 }
 
+static uint64_t bitfield_mask(size_t width)
+{
+    if ( width >= 64 )
+	return UINT64_MAX;
+    if ( width == 0 )
+	return 0;
+    return (UINT64_C(1) << width) - 1;
+}
+
+static void emit_bitfield_byteswap(Program &pgm, x86::Gp &gp, size_t storage_size)
+{
+    if ( storage_size <= 1 )
+	return;
+    if ( storage_size == 2 )
+    {
+	pgm.cc.rol(gp.r16(), imm(8));
+	return;
+    }
+    if ( storage_size == 4 )
+    {
+	pgm.cc.bswap(gp.r32());
+	return;
+    }
+    pgm.cc.bswap(gp.r64());
+}
+
+static void emit_and_u64(Program &pgm, x86::Gp &gp, uint64_t mask, const char *hint)
+{
+    if ( mask == UINT64_MAX )
+	return;
+    if ( mask == 0 )
+    {
+	pgm.cc.xor_(gp, gp);
+	return;
+    }
+    if ( mask <= 0x7fffffffULL )
+    {
+	pgm.cc.and_(gp, imm((int64_t)mask));
+	return;
+    }
+    x86::Gp mask_gp = pgm.cc.newGpq("%s_mask", hint ? hint : "bf");
+    pgm.cc.mov(mask_gp, imm((uint64_t)mask));
+    pgm.cc.and_(gp, mask_gp);
+}
+
+static x86::Gp emit_bitfield_load_storage(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, const char *hint)
+{
+    storage.setSize((uint32_t)bf.storage_size);
+    x86::Gp out = pgm.cc.newGpq("%s_storage", hint ? hint : "bf");
+    if ( bf.storage_size == 8 )
+	pgm.cc.mov(out, storage);
+    else if ( bf.storage_size == 4 )
+	pgm.cc.mov(out.r32(), storage);
+    else if ( bf.storage_size == 2 )
+	pgm.cc.movzx(out, storage);
+    else
+	pgm.cc.movzx(out, storage);
+    if ( bf.reverse_storage )
+	emit_bitfield_byteswap(pgm, out, bf.storage_size);
+    return out;
+}
+
+static void emit_bitfield_store_storage(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, x86::Gp value)
+{
+    x86::Gp stored = value;
+    if ( bf.reverse_storage )
+    {
+	stored = pgm.cc.newGpq("bf_store_swapped");
+	pgm.cc.mov(stored, value);
+	emit_bitfield_byteswap(pgm, stored, bf.storage_size);
+    }
+    storage.setSize((uint32_t)bf.storage_size);
+    if ( bf.storage_size == 8 )
+	pgm.cc.mov(storage, stored.r64());
+    else if ( bf.storage_size == 4 )
+	pgm.cc.mov(storage, stored.r32());
+    else if ( bf.storage_size == 2 )
+	pgm.cc.mov(storage, stored.r16());
+    else
+	pgm.cc.mov(storage, stored.r8());
+}
+
+static void emit_bitfield_sign_extend(Program &pgm, x86::Gp &value,
+    const DataDefSTRUCT::BitFieldInfo &bf)
+{
+    if ( bf.is_unsigned || bf.bit_width == 0 || bf.bit_width >= 64 )
+	return;
+    uint32_t shift = (uint32_t)(64 - bf.bit_width);
+    pgm.cc.shl(value, imm(shift));
+    pgm.cc.sar(value, imm(shift));
+}
+
+static x86::Gp emit_bitfield_load(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, const char *hint)
+{
+    x86::Gp out = emit_bitfield_load_storage(pgm, storage, bf, hint);
+    if ( bf.bit_offset )
+	pgm.cc.shr(out, imm((uint32_t)bf.bit_offset));
+    emit_and_u64(pgm, out, bitfield_mask(bf.bit_width), hint);
+    emit_bitfield_sign_extend(pgm, out, bf);
+    return out;
+}
+
+static x86::Gp emit_bitfield_store_reg(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, x86::Gp value, const char *hint)
+{
+    // Bitfield operations need consistent register widths. Widen Gpd→Gpq
+    // to match the Gpq temporaries used for masking and shifting.
+    if ( value.isGpd() )
+    {
+	x86::Gp wide = pgm.cc.newGpq("bf_widen");
+	pgm.cc.mov(wide.r32(), value);  // zero-extend 32→64
+	value = wide;
+    }
+
+    uint64_t value_mask = bitfield_mask(bf.bit_width);
+    uint64_t storage_full_mask = bitfield_mask(bf.storage_size * 8);
+    uint64_t storage_mask = (bf.bit_width >= 64)
+	? UINT64_MAX : ((value_mask << bf.bit_offset) & storage_full_mask);
+
+    x86::Gp bits = pgm.cc.newGpq("%s_bits", hint ? hint : "bf");
+    pgm.cc.mov(bits, value);
+    emit_and_u64(pgm, bits, value_mask, hint);
+
+    x86::Gp result = pgm.cc.newGpq("%s_result", hint ? hint : "bf");
+    pgm.cc.mov(result, bits);
+    emit_bitfield_sign_extend(pgm, result, bf);
+
+    if ( bf.bit_offset )
+	pgm.cc.shl(bits, imm((uint32_t)bf.bit_offset));
+
+    x86::Gp merged;
+    if ( storage_mask == storage_full_mask )
+	merged = bits;
+    else
+    {
+	merged = emit_bitfield_load_storage(pgm, storage, bf, hint);
+	emit_and_u64(pgm, merged, storage_full_mask & ~storage_mask, hint);
+	pgm.cc.or_(merged, bits);
+    }
+    emit_bitfield_store_storage(pgm, storage, bf, merged);
+    return result;
+}
+
+static x86::Gp emit_bitfield_store_operand(Program &pgm, x86::Mem storage,
+    const DataDefSTRUCT::BitFieldInfo &bf, Operand &value, DataDef *value_type,
+    DataDef *field_type, const char *hint)
+{
+    IRBuilder ir(pgm.cc);
+    DataDef *source_type = value_type ? value_type : field_type;
+    IRValue source = ir_from_operand(value, source_type);
+    IRValue coerced = ir.coerce(source, field_type);
+    IRValue loaded = ir.load(coerced);
+    if ( !loaded.op.isReg() || !loaded.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	throw "emit_bitfield_store_operand() expected a Gp value";
+    return emit_bitfield_store_reg(pgm, storage, bf, loaded.op.as<x86::Gp>(), hint);
+}
+
 // LHS resolver shared by inc/dec and compound-assignment operators.
 // Handles plain variables and struct members (via -> or .) and *ptr derefs.
 // For member/deref, loads the Mem into a Gp and records the Mem for writeback.
@@ -3259,6 +6172,8 @@ struct CompoundLHS {
     x86::Mem writeback;  // Mem to write back to (for members); invalid if variable
     TokenVar *tv;        // variable token (for modified/putreg); NULL for members
     bool is_member;
+    bool is_bitfield;
+    DataDefSTRUCT::BitFieldInfo bitfield;
 
     void finish(Program &pgm)
     {
@@ -3267,10 +6182,24 @@ struct CompoundLHS {
 	    tv->var.modified();
 	    tv->putreg(pgm);
 	}
+	if ( is_bitfield && writeback.hasBase() )
+	{
+	    lval = emit_bitfield_store_reg(pgm, writeback, bitfield,
+		lval.as<x86::Gp>(), "cmpd_bf");
+	    return;
+	}
 	if ( is_member && writeback.hasBase() )
 	{
-	    IRBuilder ir(pgm.cc);
-	    ir.store(IRValue::mem(writeback, type), ir_from_operand(lval, type));
+	    if ( type && type->is_simd() )
+	    {
+		x86::Xmm xmm = lval.as<x86::Xmm>();
+		store_xmm_to_mem(pgm, writeback, xmm, type);
+	    }
+	    else
+	    {
+		IRBuilder ir(pgm.cc);
+		ir.store(IRValue::mem(writeback, type), ir_from_operand(lval, type));
+	    }
 	}
     }
 };
@@ -3318,11 +6247,38 @@ static void load_mem_to_gpq(Program &pgm, x86::Gp &gp, const x86::Mem &mem, Data
 	pgm.cc.mov(gp, mem);
 }
 
+static void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem, DataDef *type)
+{
+    if ( type && type->is_simd() )
+    {
+	if ( type->size <= 8 )
+	    pgm.cc.movq(xmm, mem);
+	else
+	    pgm.cc.movups(xmm, mem);
+	return;
+    }
+    pgm.safemov(xmm, *(x86::Mem *)&mem, type, type);
+}
+
+static void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm, DataDef *type)
+{
+    if ( type && type->is_simd() )
+    {
+	if ( type->size <= 8 )
+	    pgm.cc.movq(mem, xmm);
+	else
+	    pgm.cc.movups(mem, xmm);
+	return;
+    }
+    pgm.safemov(mem, xmm, type, type);
+}
+
 static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char *op_name)
 {
     CompoundLHS r;
     r.tv = NULL;
     r.is_member = false;
+    r.is_bitfield = false;
     r.type = NULL;
 
     if ( left->type() == TokenType::ttVariable )
@@ -3332,15 +6288,13 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	Operand &op = r.tv->operand(pgm);
 	if ( op.isMem() )
 	{
-	    if ( r.type && r.type->is_real() )
+	    if ( r.type && (r.type->is_real() || r.type->is_simd()) )
 	    {
-		// Double/float lval on stack — load into Xmm so the
-		// subsequent safeadd / safemul / etc. all work with
-		// matching-type operands.
-		IRBuilder ir(pgm.cc);
-		IRValue lhs = ir.load(IRValue::mem(op.as<x86::Mem>(), r.type));
-		r.writeback = op.as<x86::Mem>();
-		r.lval = lhs.op;
+		x86::Xmm xmm = pgm.cc.newXmm("var_lhs_xmm");
+		x86::Mem mem = op.as<x86::Mem>();
+		load_mem_to_xmm(pgm, xmm, mem, r.type);
+		r.writeback = mem;
+		r.lval = xmm;
 		r.is_member = true;
 	    }
 	    else
@@ -3360,6 +6314,46 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	else
 	    r.lval = op;
     }
+    else if ( TokenDerefStep *tds = dynamic_cast<TokenDerefStep *>(left) )
+    {
+	r.type = tds->deref_type;
+	Operand &ptr_op = pgm.tkFunction->voperand(pgm, &tds->var);
+	if ( !ptr_op.isReg() || !ptr_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    throw "resolveCompoundLHS(TokenDerefStep): pointer operand is not a gp register";
+
+	x86::Gp ptr_reg = ptr_op.as<x86::Gp>();
+	x86::Gp old_ptr = pgm.cc.newIntPtr(tds->increment ? "cmpd_deref_postinc_ptr" : "cmpd_deref_postdec_ptr");
+	pgm.safemov(old_ptr, ptr_reg);
+
+	int step = r.type ? (int)r.type->size : 1;
+	if ( step <= 0 )
+	    step = 1;
+	if ( tds->increment )
+	    pgm.safeadd(ptr_reg, step, tds->var.type, r.type);
+	else
+	    pgm.safesub(ptr_reg, step, tds->var.type, r.type);
+	tds->var.modified();
+
+	x86::Mem mem = x86::ptr(old_ptr, 0, (uint32_t)(r.type && r.type->size ? r.type->size : 8));
+	if ( r.type && (r.type->is_real() || r.type->is_simd()) )
+	{
+	    r.writeback = mem;
+	    x86::Xmm xmm = pgm.cc.newXmm("deref_step_lhs_xmm");
+	    load_mem_to_xmm(pgm, xmm, mem, r.type);
+	    r.lval = xmm;
+	    r.is_member = true;
+	}
+	else
+	{
+	    x86::Gp gp = pgm.cc.newGpq("deref_step_lhs");
+	    load_mem_to_gpq(pgm, gp, mem, r.type);
+	    r.writeback = mem;
+	    r.lval = gp;
+	    r.is_member = true;
+	    if ( r.type && r.type->size && r.type->size < 8 )
+		r.type = &ddINT64;
+	}
+    }
     else if ( left->type() == TokenType::ttMember )
     {
 	// struct member via . or -> : load Mem into temp register
@@ -3368,16 +6362,28 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 	{
 	    r.type = tm->var.type;
 	    Operand &mem = tm->operand(pgm);
+	    if ( const DataDefSTRUCT::BitFieldInfo *bf = tm->bitfield_info() )
+	    {
+		if ( !mem.isMem() )
+		    pgm.Throw(left) << "compound assignment " << op_name << " on bit-field with non-memory storage" << flush;
+		x86::Mem storage = mem.as<x86::Mem>();
+		storage.setSize((uint32_t)bf->storage_size);
+		r.lval = emit_bitfield_load(pgm, storage, *bf, "member_bf_lhs");
+		r.writeback = storage;
+		r.is_member = true;
+		r.is_bitfield = true;
+		r.bitfield = *bf;
+		return r;
+	    }
 	    if ( mem.isMem() )
 	    {
-		if ( r.type && r.type->is_real() )
+		if ( r.type && (r.type->is_real() || r.type->is_simd()) )
 		{
-		    // Double/float struct member — load into Xmm so the
-		    // subsequent safeadd / safemul / etc. use Xmm/Xmm paths.
-		    IRBuilder ir(pgm.cc);
-		    IRValue lhs = ir.load(IRValue::mem(mem.as<x86::Mem>(), r.type));
-		    r.writeback = mem.as<x86::Mem>();
-		    r.lval = lhs.op;
+		    x86::Mem mm = mem.as<x86::Mem>();
+		    x86::Xmm xmm = pgm.cc.newXmm("member_lhs_xmm");
+		    load_mem_to_xmm(pgm, xmm, mm, r.type);
+		    r.writeback = mm;
+		    r.lval = xmm;
 		    r.is_member = true;
 		}
 		else
@@ -3406,12 +6412,13 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		Operand &mem = td ? td->operand(pgm) : tde->operand(pgm);
 		if ( mem.isMem() )
 		{
-		    if ( r.type && r.type->is_real() )
+		    if ( r.type && (r.type->is_real() || r.type->is_simd()) )
 		    {
-			IRBuilder ir(pgm.cc);
-			IRValue lhs = ir.load(IRValue::mem(mem.as<x86::Mem>(), r.type));
-			r.writeback = mem.as<x86::Mem>();
-			r.lval = lhs.op;
+			x86::Mem mm = mem.as<x86::Mem>();
+			x86::Xmm xmm = pgm.cc.newXmm("deref_lhs_xmm");
+			load_mem_to_xmm(pgm, xmm, mm, r.type);
+			r.writeback = mm;
+			r.lval = xmm;
 			r.is_member = true;
 		    }
 		    else
@@ -3427,6 +6434,46 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 		}
 		else
 		    r.lval = mem;
+	    }
+	    else if ( TokenDerefStep *tds = dynamic_cast<TokenDerefStep *>(left) )
+	    {
+		r.type = tds->deref_type;
+		Operand &ptr_op = pgm.tkFunction->voperand(pgm, &tds->var);
+		if ( !ptr_op.isReg() || !ptr_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		    throw "resolveCompoundLHS(TokenDerefStep): pointer operand is not a gp register";
+
+		x86::Gp ptr_reg = ptr_op.as<x86::Gp>();
+		x86::Gp old_ptr = pgm.cc.newIntPtr(tds->increment ? "cmpd_deref_postinc_ptr" : "cmpd_deref_postdec_ptr");
+		pgm.safemov(old_ptr, ptr_reg);
+
+		int step = r.type ? (int)r.type->size : 1;
+		if ( step <= 0 )
+		    step = 1;
+		if ( tds->increment )
+		    pgm.safeadd(ptr_reg, step, tds->var.type, r.type);
+		else
+		    pgm.safesub(ptr_reg, step, tds->var.type, r.type);
+		tds->var.modified();
+
+		x86::Mem mem = x86::ptr(old_ptr, 0, (uint32_t)(r.type && r.type->size ? r.type->size : 8));
+		if ( r.type && (r.type->is_real() || r.type->is_simd()) )
+		{
+		    r.writeback = mem;
+		    x86::Xmm xmm = pgm.cc.newXmm("deref_step_lhs_xmm");
+		    load_mem_to_xmm(pgm, xmm, mem, r.type);
+		    r.lval = xmm;
+		    r.is_member = true;
+		}
+		else
+		{
+		    x86::Gp gp = pgm.cc.newGpq("deref_step_lhs");
+		    load_mem_to_gpq(pgm, gp, mem, r.type);
+		    r.writeback = mem;
+		    r.lval = gp;
+		    r.is_member = true;
+		    if ( r.type && r.type->size && r.type->size < 8 )
+			r.type = &ddINT64;
+		}
 	    }
 	    else
 		pgm.Throw(left) << "compound assignment " << op_name << " on unsupported member type" << flush;
@@ -3563,6 +6610,70 @@ static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char 
 // Shared shape for safeinc / safedec: in-place on the register/Mem.
 typedef void (Program::*SafeUnaryStep)(asmjit::Operand &);
 
+static int pointer_step_size(DataDef *type)
+{
+    DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(type);
+    if ( !ptr || !ptr->base_type )
+	return 1;
+    int step = (int)ptr->base_type->size;
+    return step > 0 ? step : 1;
+}
+
+static void apply_inc_dec_step(Program &pgm, Operand &op, DataDef *type,
+			       bool increment, SafeUnaryStep fallback)
+{
+    if ( type && type->is_real() )
+    {
+	x86::Xmm value;
+	bool writeback_mem = op.isMem();
+	if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    value = op.as<x86::Xmm>();
+	else if ( writeback_mem )
+	{
+	    value = newScalarXmm(pgm, type, increment ? "real_inc" : "real_dec");
+	    pgm.safemov(value, op.as<x86::Mem>(), type, type);
+	}
+	else
+	    pgm.Throw << "real ++/-- operand is not an Xmm register or memory" << flush;
+
+	x86::Gp one_i = pgm.cc.newGpq("real_one_i");
+	x86::Xmm one = newScalarXmm(pgm, type, "real_one");
+	pgm.cc.mov(one_i, 1);
+	pgm.safemov(one, one_i, type, &ddINT64);
+	if ( type->size == sizeof(float) )
+	{
+	    if ( increment ) pgm.cc.addss(value, one);
+	    else             pgm.cc.subss(value, one);
+	}
+	else
+	{
+	    if ( increment ) pgm.cc.addsd(value, one);
+	    else             pgm.cc.subsd(value, one);
+	}
+	if ( writeback_mem )
+	    pgm.safemov(op.as<x86::Mem>(), value, type, type);
+	return;
+    }
+
+    int step = pointer_step_size(type);
+    if ( type && type->is_pointer() && step != 1 )
+    {
+	if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( increment ) pgm.cc.add(op.as<x86::Gp>(), imm(step));
+	    else             pgm.cc.sub(op.as<x86::Gp>(), imm(step));
+	    return;
+	}
+	if ( op.isMem() )
+	{
+	    if ( increment ) pgm.cc.add(op.as<x86::Mem>(), imm(step));
+	    else             pgm.cc.sub(op.as<x86::Mem>(), imm(step));
+	    return;
+	}
+    }
+    (pgm.*fallback)(op);
+}
+
 // Emit ++target or --target, depending on `step`. Handles all four
 // combinations of target shape (plain variable vs. member/deref lvalue)
 // and position (postfix — return old value — vs. prefix — return new).
@@ -3573,6 +6684,31 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 			     const char *old_name_hint, const char *new_name_hint,
 			     const char *op_name)
 {
+    bool increment = op_name && op_name[0] == '+';
+    TokenDerefExpr *postfix_deref = postfix ? dynamic_cast<TokenDerefExpr *>(target) : NULL;
+    if ( postfix_deref
+      && dynamic_cast<TokenDerefStep *>(postfix_deref->expr) != NULL
+      && postfix_deref->expr
+      && postfix_deref->expr->datadef()
+      && postfix_deref->expr->datadef()->is_pointer()
+      && postfix_deref->deref_type
+      && !postfix_deref->deref_type->is_pointer() )
+    {
+	// `*(*p++)++` parses as postfix++ wrapped around the final deref.
+	// The actual increment target is the inner pointer lvalue `*p++`;
+	// the surrounding `*` only dereferences the OLD pointer result.
+	CompoundLHS lhs = resolveCompoundLHS(pgm, postfix_deref->expr, op_name);
+	_operand = lhs.type->newreg(pgm.cc, old_name_hint);
+	pgm.safemov(_operand, lhs.lval, lhs.type, lhs.type);
+	apply_inc_dec_step(pgm, lhs.lval, lhs.type, increment, step);
+	lhs.finish(pgm);
+	if ( regdp.first )
+	    pgm.safemov(*regdp.first, _operand, lhs.type, lhs.type);
+	else
+	    regdp.first = &_operand;
+	regdp.second = lhs.type;
+	return *regdp.first;
+    }
     // Fast path: plain variable — apply step to its register/Mem directly.
     if ( target->type() == TokenType::ttVariable )
     {
@@ -3584,11 +6720,11 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 	    {
 		_operand = tv->var.type->newreg(pgm.cc, old_name_hint);
 		pgm.safemov(_operand, reg, tv->var.type, tv->var.type);
-		(pgm.*step)(reg);
+		apply_inc_dec_step(pgm, reg, tv->var.type, increment, step);
 	    }
 	    else
 	    {
-		(pgm.*step)(reg);
+		apply_inc_dec_step(pgm, reg, tv->var.type, increment, step);
 		_operand = tv->var.type->newreg(pgm.cc, new_name_hint);
 		pgm.safemov(_operand, reg, tv->var.type, tv->var.type);
 	    }
@@ -3611,11 +6747,11 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 		pgm.safemov(_operand, reg);
 		regdp.first = &_operand;
 	    }
-	    (pgm.*step)(reg);
+	    apply_inc_dec_step(pgm, reg, tv->var.type, increment, step);
 	}
 	else
 	{
-	    (pgm.*step)(reg);
+	    apply_inc_dec_step(pgm, reg, tv->var.type, increment, step);
 	    if ( regdp.first )
 		pgm.safemov(*regdp.first, reg);
 	    else
@@ -3634,12 +6770,8 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 	_operand = lhs.type->newreg(pgm.cc, old_name_hint);
 	pgm.safemov(_operand, lhs.lval);
     }
-    (pgm.*step)(lhs.lval);
-    if ( lhs.is_member && lhs.writeback.hasBase() )
-    {
-	IRBuilder ir(pgm.cc);
-	ir.store(IRValue::mem(lhs.writeback, lhs.type), ir_from_operand(lhs.lval, lhs.type));
-    }
+    apply_inc_dec_step(pgm, lhs.lval, lhs.type, increment, step);
+    lhs.finish(pgm);
     if ( !postfix )
 	_operand = lhs.lval;  // stash new value on the node for pointer stability
     if ( regdp.first )
@@ -3680,12 +6812,26 @@ static Operand &emit_compound_binop3(Program &pgm, TokenBase *left, TokenBase *r
 				     const char *op_name)
 {
     CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
+    // C requires compound assignments to promote narrow integers before
+    // the operation (e.g. `unsigned char x; x += -5;` computes in int).
+    DataDef *op_type = promote_c_integer_type(lhs.type);
     Operand tmp;
     Operand *out = regdp.first;
-    regdp.second = lhs.type;
+    regdp.second = op_type;
     regdp.first  = nullptr;
-    Operand &rval = compile_compound_rhs_normalized(pgm, right, lhs.type, tmp);
-    (pgm.*op)(lhs.lval, rval, lhs.type, nullptr);
+    Operand &rval = compile_compound_rhs_normalized(pgm, right, op_type, tmp);
+    if ( op_type != lhs.type && lhs.lval.isReg() )
+    {
+	// Widen LHS value to operation width before the binop.
+	x86::Gp wide = pgm.cc.newGpq("_cmpd_wide");
+	pgm.safemov(wide, lhs.lval, op_type, lhs.type);
+	(pgm.*op)(*(Operand *)&wide, rval, op_type, nullptr);
+	pgm.safemov(lhs.lval, wide, lhs.type, op_type);
+    }
+    else
+    {
+	(pgm.*op)(lhs.lval, rval, op_type, nullptr);
+    }
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
@@ -3701,7 +6847,7 @@ static Operand &emit_compound_bitop2(Program &pgm, TokenBase *left, TokenBase *r
     regdp.second = lhs.type;
     regdp.first  = nullptr;
     Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
-    (pgm.*op)(lhs.lval, rval);
+    (pgm.*op)(lhs.lval, rval, lhs.type);
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
@@ -3713,18 +6859,21 @@ static Operand &emit_compound_divmod(Program &pgm, TokenBase *left, TokenBase *r
 				     Operand &_operand, const char *op_name)
 {
     CompoundLHS lhs  = resolveCompoundLHS(pgm, left, op_name);
-    Operand dividend  = lhs.type->newreg(pgm.cc, "dividend");
-    Operand remainder = lhs.type->newreg(pgm.cc, "remainder");
+    // C requires compound assignments to promote narrow integers.
+    DataDef *op_type = promote_c_integer_type(lhs.type);
+    Operand dividend  = op_type->newreg(pgm.cc, "dividend");
+    Operand remainder = op_type->newreg(pgm.cc, "remainder");
     Operand divisor;
     Operand *out = regdp.first;
-    pgm.safemov(dividend, lhs.lval);
-    regdp.second = lhs.type;
+    pgm.safemov(dividend, lhs.lval, op_type, lhs.type);
+    regdp.second = op_type;
     regdp.first  = nullptr;
-    compile_compound_rhs_normalized(pgm, right, lhs.type, divisor);
-    if ( lhs.type->is_integer() )
+    compile_compound_rhs_normalized(pgm, right, op_type, divisor);
+    if ( op_type->is_integer() )
 	pgm.safexor(remainder, remainder);
-    pgm.safediv(remainder, dividend, divisor, lhs.type);
-    pgm.safemov(lhs.lval, return_remainder ? remainder : dividend);
+    pgm.safediv(remainder, dividend, divisor, op_type);
+    Operand &result = return_remainder ? remainder : dividend;
+    pgm.safemov(lhs.lval, result, lhs.type, op_type);
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
 
@@ -3732,6 +6881,8 @@ Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "+= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "+= missing rval operand" << flush;
+    if ( left->datadef() && left->datadef()->is_complex() )
+	return emit_complex_compound_addsub(pgm, left, right, /*subtract=*/false, regdp, _operand);
     return emit_compound_binop3(pgm, left, right, &Program::safeadd, regdp, _operand, "+=");
 }
 
@@ -3739,6 +6890,8 @@ Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "-= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "-= missing rval operand" << flush;
+    if ( left->datadef() && left->datadef()->is_complex() )
+	return emit_complex_compound_addsub(pgm, left, right, /*subtract=*/true, regdp, _operand);
     return emit_compound_binop3(pgm, left, right, &Program::safesub, regdp, _operand, "-=");
 }
 
@@ -3746,6 +6899,8 @@ Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "*= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "*= missing rval operand" << flush;
+    if ( left->datadef() && left->datadef()->is_complex() )
+	return emit_complex_compound_muldiv(pgm, left, right, /*divide=*/false, regdp, _operand);
     return emit_compound_binop3(pgm, left, right, &Program::safemul, regdp, _operand, "*=");
 }
 
@@ -3753,6 +6908,8 @@ Operand &TokenDivEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "/= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "/= missing rval operand" << flush;
+    if ( left->datadef() && left->datadef()->is_complex() )
+	return emit_complex_compound_muldiv(pgm, left, right, /*divide=*/true, regdp, _operand);
     return emit_compound_divmod(pgm, left, right, /*return_remainder=*/false, regdp, _operand, "/=");
 }
 
@@ -3796,6 +6953,72 @@ Operand &TokenXorEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !left )  pgm.Throw(this) << "^= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "^= missing rval operand" << flush;
     return emit_compound_bitop2(pgm, left, right, &Program::safexor, regdp, _operand, "^=");
+}
+
+static void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+				    DataDef *copy_type, const char *name)
+{
+    if ( !copy_type )
+	throw "emit_raw_aggregate_copy: missing type";
+    if ( aggregate_has_runtime_size(copy_type) )
+    {
+	x86::Gp size_gp = emit_runtime_aggregate_size(pgm, copy_type, name);
+	emit_runtime_aggregate_copy(pgm, dst, src, size_gp, name);
+	return;
+    }
+    x86::Gp dst_gp = pgm.cc.newIntPtr("%s", name ? name : "aggregate_copy_dst");
+    if ( dst.isMem() )
+	pgm.cc.lea(dst_gp, dst.as<x86::Mem>());
+    else if ( dst.isReg() && dst.as<BaseReg>().isGroup(RegGroup::kGp) )
+	pgm.cc.mov(dst_gp, dst.as<x86::Gp>());
+    else
+	throw "emit_raw_aggregate_copy: unsupported destination operand";
+
+    x86::Gp src_gp = pgm.cc.newIntPtr("%s", name ? name : "aggregate_copy_src");
+    if ( src.isMem() )
+	pgm.cc.lea(src_gp, src.as<x86::Mem>());
+    else if ( src.isReg() && src.as<BaseReg>().isGroup(RegGroup::kGp) )
+	pgm.cc.mov(src_gp, src.as<x86::Gp>());
+    else
+	throw "emit_raw_aggregate_copy: unsupported source operand";
+
+    x86::Gp tmp = pgm.cc.newGpq("aggregate_copy_tmp");
+    size_t copy_off = 0;
+    size_t remaining = (size_t)copy_type->size;
+    while ( remaining >= 8 )
+    {
+	x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 8);
+	x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 8);
+	pgm.cc.mov(tmp, src_mem);
+	pgm.cc.mov(dst_mem, tmp.r64());
+	copy_off += 8;
+	remaining -= 8;
+    }
+    if ( remaining >= 4 )
+    {
+	x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 4);
+	x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 4);
+	pgm.cc.mov(tmp.r32(), src_mem);
+	pgm.cc.mov(dst_mem, tmp.r32());
+	copy_off += 4;
+	remaining -= 4;
+    }
+    if ( remaining >= 2 )
+    {
+	x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 2);
+	x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 2);
+	pgm.cc.mov(tmp.r16(), src_mem);
+	pgm.cc.mov(dst_mem, tmp.r16());
+	copy_off += 2;
+	remaining -= 2;
+    }
+    if ( remaining )
+    {
+	x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 1);
+	x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 1);
+	pgm.cc.mov(tmp.r8(), src_mem);
+	pgm.cc.mov(dst_mem, tmp.r8());
+    }
 }
 
 // Basic assignment left = right
@@ -3911,6 +7134,20 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	DBG(cout << "     tvl->var.type() " << (int)ltype->type() << " name: " << ltype->name << endl);
     }
     else
+    if ( dynamic_cast<TokenComplexPart *>(left) )
+    {
+	TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(left);
+	ltype = tcp->datadef();
+	_operand = tcp->operand(pgm);
+	if ( regdp.second && regdp.second != ltype
+	&&  !regdp.second->is_compatible(*ltype) )
+	{
+	    cerr << "regdp.second->type() " << (int)regdp.second->type() << " name: " << regdp.second->name << endl;
+	    cerr << "     complex-part type() " << (int)ltype->type() << " name: " << ltype->name << endl;
+	    throw "incompatible assignment";
+	}
+    }
+    else
     // handle *ptr dereference on LHS
     if ( dynamic_cast<TokenDeref *>(left) )
     {
@@ -3967,6 +7204,32 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     {
 	tml = dynamic_cast<TokenMember *>(left);
 	ltype = tml->var.type;
+	if ( const DataDefSTRUCT::BitFieldInfo *bf = tml->bitfield_info() )
+	{
+	    DBG(pgm.cc.comment("TokenAssign::compile() bit-field assignment"));
+	    Operand &storage_op = tml->operand(pgm);
+	    if ( !storage_op.isMem() )
+		pgm.Throw(left) << "Assignment to bit-field with non-memory storage" << flush;
+
+	    regdefp_t rhs_rdp = {NULL, NULL, NULL};
+	    rhs_rdp.second = ltype;
+	    Operand &rhs_op = right->compile(pgm, rhs_rdp);
+	    x86::Mem storage = storage_op.as<x86::Mem>();
+	    storage.setSize((uint32_t)bf->storage_size);
+	    x86::Gp assigned = emit_bitfield_store_operand(pgm, storage, *bf,
+		rhs_op, rhs_rdp.second ? rhs_rdp.second : right->datadef(),
+		ltype, "assign_bf");
+
+	    _operand = assigned;
+	    regdp.second = ltype;
+	    if ( regdp.first && regdp.first != &_operand )
+	    {
+		pgm.safemov(*regdp.first, _operand, ltype, ltype);
+		return *regdp.first;
+	    }
+	    regdp.first = &_operand;
+	    return _operand;
+	}
 	DBG(cout << "TokenAssign::compile() assignment to " << tml->var.name << " type " << ltype->name << endl);
 	DBG(pgm.cc.comment("TokenAssign::compile() assignment to:"));
 	DBG(pgm.cc.comment(tml->var.name.c_str()));
@@ -4010,8 +7273,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    rhs_rdp.second = elem_type;
 	    Operand &rhs_op = right->compile(pgm, rhs_rdp);
 	    Operand effective_rhs = rhs_op;
-	    if ( elem_type && elem_type->is_pointer()
-	      && elem_type->rawtype() == DataType::dtCHAR
+	    if ( type_is_cstr_pointer(elem_type)
 	      && right->datadef()
 	      && right->datadef()->rawtype() == DataType::dtSTRING )
 	    {
@@ -4030,7 +7292,21 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    // the load-first-element-into-Gp path via emit_ir_value, and we'd
 	    // end up indexing off the element value instead of the array
 	    // base address. operand() returns the raw Mem/Gp.
-	    Operand &base_op = tse->base_expr->operand(pgm);
+	    bool base_needs_compile =
+		dynamic_cast<TokenAdd *>(tse->base_expr) != NULL
+	     || dynamic_cast<TokenSub *>(tse->base_expr) != NULL
+	     || dynamic_cast<TokenAssign *>(tse->base_expr) != NULL
+	     || dynamic_cast<TokenCast *>(tse->base_expr) != NULL;
+	    Operand base_storage;
+	    Operand *base_ptr;
+	    if ( base_needs_compile )
+	    {
+		regdefp_t base_rdp = {nullptr, tse->base_expr->datadef(), nullptr};
+		base_ptr = &tse->base_expr->compile(pgm, base_rdp);
+	    }
+	    else
+		base_ptr = &tse->base_expr->operand(pgm);
+	    Operand &base_op = *base_ptr;
 	    x86::Gp base_reg = pgm.cc.newIntPtr("subx_base");
 	    if ( base_op.isReg() && base_op.as<BaseReg>().isGroup(RegGroup::kGp) )
 		pgm.cc.mov(base_reg, base_op.as<x86::Gp>());
@@ -4058,24 +7334,25 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    // SIB scale only covers 1/2/4/8 — for any other element size (e.g.
 	    // sizeof(struct K) == 16) fold the element stride into the index
 	    // via imul and access with scale = 1.
-	    uint32_t shift = 0;
-	    if      ( elem_size == 8 ) shift = 3;
-	    else if ( elem_size == 4 ) shift = 2;
-	    else if ( elem_size == 2 ) shift = 1;
-	    else if ( elem_size != 1 )
-		pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+	    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, elem_type, "subx_size");
 	    x86::Mem slot = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
 
-	    if ( effective_rhs.isReg() && effective_rhs.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    if ( elem_type && (elem_type->basetype() == BaseType::btStruct
+			    || elem_type->basetype() == BaseType::btClass) )
+	    {
+		Operand dst_slot = slot;
+		emit_raw_aggregate_copy(pgm, dst_slot, effective_rhs, elem_type, "subx_struct_copy");
+		_operand = slot;
+		regdp.first = &_operand;
+		regdp.second = elem_type;
+		return _operand;
+	    }
 	    {
 		IRBuilder ir(pgm.cc);
+		DataDef *rhs_type = rhs_rdp.second ? rhs_rdp.second : elem_type;
 		ir.store(IRValue::mem(slot, elem_type),
-			 ir_from_operand(effective_rhs.as<x86::Gp>(), elem_type));
+			 ir_from_operand(effective_rhs, rhs_type));
 	    }
-	    else if ( effective_rhs.isImm() )
-		pgm.cc.mov(slot, effective_rhs.as<Imm>());
-	    else
-		throw "TokenAssign: unsupported RHS for subscript store";
 
 	    // The expression value of `arr[i] = x` is the LHS-typed value —
 	    // truncated and (sign- / zero-) extended.  Re-load from the
@@ -4104,14 +7381,15 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	DBG(pgm.cc.comment("TokenAssign: subscript write"));
 	// compile right side independently
 	regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
-	rhs_rdp.second = ltype;
+	if ( !ltype->is_complex() )
+	    rhs_rdp.second = ltype;
 	Operand &rhs_op = right->compile(pgm, rhs_rdp);
 	// Coerce dtSTRING → char*: storing a string literal into a
 	// `char *arr[N]` slot used to write the std::string object's
 	// address into the slot (not its c_str()). Match the same
 	// coercion TokenAssign applies for plain `char *p = "literal";`.
 	Operand effective_rhs = rhs_op;
-	if ( ltype->is_pointer() && ltype->rawtype() == DataType::dtCHAR
+	if ( type_is_cstr_pointer(ltype)
 	  && right->datadef() && right->datadef()->rawtype() == DataType::dtSTRING )
 	{
 	    x86::Gp cstr = pgm.cc.newIntPtr("sub_cstr");
@@ -4172,11 +7450,54 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     }
     else
     {
-	pgm.Throw(this) << "Assignment on a non-variable lval" << flush;
+	// *(*p)++ = c  —  post-increment wrapping a dereference-expression.
+	// The parser produces TokenInc(TokenDerefExpr(inner)) because postfix
+	// ++ binds after the outer unary *.  Semantics: capture old pointer,
+	// step the pointer, store rhs at [old_ptr].
+	TokenOperator *inc_dec = dynamic_cast<TokenOperator *>(left);
+	TokenDerefExpr *inner_deref = inc_dec
+	    ? dynamic_cast<TokenDerefExpr *>(inc_dec->right ? inc_dec->right : inc_dec->left)
+	    : NULL;
+	if ( inner_deref && (left->id() == TokenID::tkInc || left->id() == TokenID::tkDec) )
+	{
+	    // Reuse the same lvalue materialization used by standalone
+	    // `*p++` / `(*p++)++`: for `*(*p++)++ = rhs`, the increment
+	    // target is the pointer lvalue produced by the inner `*p++`,
+	    // not the final `*(*p++)` int lvalue.
+	    CompoundLHS ptr_lhs = resolveCompoundLHS(pgm, inner_deref->expr, "deref-inc assign");
+	    ltype = inner_deref->deref_type;
+	    x86::Gp ptr_val = ptr_lhs.lval.as<x86::Gp>();
+	    // Save old pointer value for the store target
+	    x86::Gp old_ptr = pgm.cc.newIntPtr("deref_inc_old");
+	    pgm.cc.mov(old_ptr, ptr_val);
+	    // Post-increment/decrement
+	    int step = ltype ? (int)ltype->size : 1;
+	    if ( step <= 0 ) step = 1;
+	    if ( left->id() == TokenID::tkInc )
+		pgm.cc.add(ptr_val, imm(step));
+	    else
+		pgm.cc.sub(ptr_val, imm(step));
+	    // Write incremented value back to the pointer lvalue (`*p++`).
+	    ptr_lhs.finish(pgm);
+	    // The assignment target is [old_ptr]
+	    _operand = x86::ptr(old_ptr, 0, ltype ? (uint32_t)ltype->size : 1);
+	}
+	else
+	    pgm.Throw(this) << "Assignment on a non-variable lval" << flush;
     }
 
     if ( !regdp.first || !regdp.second )
-	regdp.second = ltype; // set type if not set
+    {
+	// For narrow integer LHS (char/short), don't propagate the LHS type
+	// to the RHS compilation — the RHS expression must apply C integer
+	// promotions (e.g. `unsigned char x; x = x / -5;` must compute the
+	// division in int, not in unsigned char where -5 wraps to 251).
+	// The LHS type is applied only at the final store.
+	if ( ltype->is_integer() && ltype->size < 4 )
+	    ; // leave regdp.second = NULL → RHS infers its own type
+	else
+	    regdp.second = ltype;
+    }
 
     // Post-declaration string-literal → char* assignment: `char *p; p =
     // "literal";`. The LHS is a char* (pointer, so is_numeric), but the
@@ -4184,7 +7505,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     // regdp.first would write the std::string pointer into p instead of
     // its data. Compile the RHS into a tmp, pass it through string_cstr,
     // then store the resulting char* into p's register.
-    if ( ltype->is_pointer() && ltype->rawtype() == DataType::dtCHAR
+    if ( type_is_cstr_pointer(ltype)
       && right->datadef() && right->datadef()->rawtype() == DataType::dtSTRING )
     {
 	Operand rhs_storage;
@@ -4204,6 +7525,28 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	Operand *orig_operand = regdp.first;
 	regdp.first = &_operand;
 	r_operand = &right->compile(pgm, regdp);
+	// Real → integer assignment: the RHS compiled with its natural
+	// type (double/float) and may have stored raw float bits into the
+	// integer LHS Mem via emit_ir_value. Fix by converting now.
+	if ( ltype->is_integer() && regdp.second && regdp.second->is_real()
+	  && _operand.isMem() )
+	{
+	    IRBuilder ir(pgm.cc);
+	    // Reload the raw double from the Mem, convert to int, store back.
+	    x86::Xmm tmp_xmm = (regdp.second->size == sizeof(float))
+		? pgm.cc.newXmmSs("_r2i_tmp") : pgm.cc.newXmmSd("_r2i_tmp");
+	    if ( regdp.second->size == sizeof(float) )
+		pgm.cc.movss(tmp_xmm, _operand.as<x86::Mem>());
+	    else
+		pgm.cc.movsd(tmp_xmm, _operand.as<x86::Mem>());
+	    x86::Gp tmp_gp = pgm.cc.newGpq("_r2i_gp");
+	    if ( regdp.second->size == sizeof(float) )
+		pgm.cc.cvttss2si(tmp_gp, tmp_xmm);
+	    else
+		pgm.cc.cvttsd2si(tmp_gp, tmp_xmm);
+	    pgm.safemov(_operand.as<x86::Mem>(), tmp_gp, ltype, ltype);
+	    regdp.second = ltype;
+	}
 	if ( orig_operand )
 	    regdp.first = orig_operand;
     }
@@ -4214,8 +7557,81 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     {
 	Operand *orig_operand = regdp.first;
 	regdp.first = NULL;
+	regdp.second = NULL;
+	if ( (ltype->basetype() == BaseType::btStruct
+	   || ltype->basetype() == BaseType::btClass)
+	  && !ltype->is_complex() )
+	    regdp.second = ltype;
 	r_operand = &right->compile(pgm, regdp);
 	regdp.first = orig_operand ? orig_operand : r_operand;
+    }
+
+    if ( ltype->is_complex() && regdp.second
+      && (regdp.second->is_numeric() || regdp.second->is_complex()) )
+    {
+	DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(ltype);
+	if ( !cdd )
+	    throw "TokenAssign: expected complex datadef";
+	IRBuilder ir(pgm.cc);
+	Operand real_mem = _operand;
+	if ( real_mem.isMem() )
+	    real_mem.as<x86::Mem>().setSize((uint32_t)cdd->element_type->size);
+	else
+	    real_mem = x86::ptr(real_mem.as<x86::Gp>(), 0, (uint32_t)cdd->element_type->size);
+	Operand imag_mem = _operand;
+	if ( imag_mem.isMem() )
+	{
+	    imag_mem.as<x86::Mem>().addOffset((int64_t)cdd->component_offset(true));
+	    imag_mem.as<x86::Mem>().setSize((uint32_t)cdd->element_type->size);
+	}
+	else
+	    imag_mem = x86::ptr(imag_mem.as<x86::Gp>(),
+				(int32_t)cdd->component_offset(true),
+				(uint32_t)cdd->element_type->size);
+	if ( regdp.second->is_complex() )
+	{
+	    DataDefCOMPLEX *src_cdd = dynamic_cast<DataDefCOMPLEX *>(regdp.second);
+	    if ( !src_cdd || !src_cdd->element_type )
+		throw "TokenAssign: expected complex rhs datadef";
+	    Operand src_real = *r_operand;
+	    if ( src_real.isMem() )
+	    {
+		src_real.as<x86::Mem>().setSize((uint32_t)src_cdd->element_type->size);
+	    }
+	    else
+		src_real = x86::ptr(src_real.as<x86::Gp>(), 0, (uint32_t)src_cdd->element_type->size);
+	    Operand src_imag = *r_operand;
+	    if ( src_imag.isMem() )
+	    {
+		src_imag.as<x86::Mem>().addOffset((int64_t)src_cdd->component_offset(true));
+		src_imag.as<x86::Mem>().setSize((uint32_t)src_cdd->element_type->size);
+	    }
+	    else
+		src_imag = x86::ptr(src_imag.as<x86::Gp>(),
+				(int32_t)src_cdd->component_offset(true),
+				(uint32_t)src_cdd->element_type->size);
+	    IRValue real_val = ir.load(ir.coerce(ir_from_operand(src_real, src_cdd->element_type),
+						 cdd->element_type));
+	    IRValue imag_val = ir.load(ir.coerce(ir_from_operand(src_imag, src_cdd->element_type),
+						 cdd->element_type));
+	    ir.store(IRValue::mem(real_mem.as<x86::Mem>(), cdd->element_type), real_val);
+	    ir.store(IRValue::mem(imag_mem.as<x86::Mem>(), cdd->element_type), imag_val);
+	}
+	else
+	{
+	    ir.store(IRValue::mem(real_mem.as<x86::Mem>(), cdd->element_type),
+		     ir_from_operand(*r_operand, regdp.second));
+	    ir.store(IRValue::mem(imag_mem.as<x86::Mem>(), cdd->element_type),
+		     IRValue::imm(Imm(0), &ddINT));
+	}
+	if ( tvl )
+	{
+	    tvl->var.modified();
+	    tvl->putreg(pgm);
+	}
+	regdp.first = &_operand;
+	regdp.second = ltype;
+	return _operand;
     }
 
     if ( !regdp.second )
@@ -4290,57 +7706,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    throw "TokenAssign struct: lhs/rhs struct types differ";
 	DBG(cout << "TokenAssign::compile() struct to struct (" << ltype->name << ", " << ltype->size << " bytes)" << endl);
 	DBG(pgm.cc.comment("TokenAssign::compile() struct memcpy"));
-	x86::Gp dst_gp = pgm.cc.newIntPtr("struct_copy_dst");
-	if ( _operand.isMem() )
-	    pgm.cc.lea(dst_gp, _operand.as<x86::Mem>());
-	else if ( _operand.isReg() && _operand.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.cc.mov(dst_gp, _operand.as<x86::Gp>());
-	else
-	    throw "TokenAssign struct: unsupported LHS operand shape";
-	x86::Gp src_gp = pgm.cc.newIntPtr("struct_copy_src");
-	if ( r_operand->isMem() )
-	    pgm.cc.lea(src_gp, r_operand->as<x86::Mem>());
-	else if ( r_operand->isReg() && r_operand->as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.cc.mov(src_gp, r_operand->as<x86::Gp>());
-	else
-	    throw "TokenAssign struct: unsupported RHS operand shape";
-	x86::Gp tmp = pgm.cc.newGpq("struct_copy_tmp");
-	size_t copy_off = 0;
-	size_t remaining = (size_t)ltype->size;
-	while ( remaining >= 8 )
-	{
-	    x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 8);
-	    x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 8);
-	    pgm.cc.mov(tmp, src_mem);
-	    pgm.cc.mov(dst_mem, tmp.r64());
-	    copy_off += 8;
-	    remaining -= 8;
-	}
-	if ( remaining >= 4 )
-	{
-	    x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 4);
-	    x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 4);
-	    pgm.cc.mov(tmp.r32(), src_mem);
-	    pgm.cc.mov(dst_mem, tmp.r32());
-	    copy_off += 4;
-	    remaining -= 4;
-	}
-	if ( remaining >= 2 )
-	{
-	    x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 2);
-	    x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 2);
-	    pgm.cc.mov(tmp.r16(), src_mem);
-	    pgm.cc.mov(dst_mem, tmp.r16());
-	    copy_off += 2;
-	    remaining -= 2;
-	}
-	if ( remaining )
-	{
-	    x86::Mem src_mem = x86::ptr(src_gp, (int32_t)copy_off, 1);
-	    x86::Mem dst_mem = x86::ptr(dst_gp, (int32_t)copy_off, 1);
-	    pgm.cc.mov(tmp.r8(), src_mem);
-	    pgm.cc.mov(dst_mem, tmp.r8());
-	}
+	emit_raw_aggregate_copy(pgm, _operand, *r_operand, ltype, "struct_copy");
 	if ( tvl )
 	{
 	    tvl->var.modified();
@@ -4438,8 +7804,11 @@ Operand &TokenMember::operand(Program &pgm)
 	else
 	    parent_op_ptr = &parent_expr->compile(pgm, parent_regdp);
 	Operand &parent_op = *parent_op_ptr;
+	bool parent_is_struct_value =
+	    dynamic_cast<TokenSubscript *>(parent_expr) != NULL
+	 || dynamic_cast<TokenSubscriptExpr *>(parent_expr) != NULL;
 
-	if ( object.type->is_pointer() )
+	if ( object.type->is_pointer() && !parent_is_struct_value )
 	{
 	    // Arrow chain: parent member holds a POINTER VALUE — load it into a Gp.
 	    // e.g. ch->in_room->name: parent_op = Mem [ch + in_room_offset],
@@ -4626,6 +7995,7 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 {
     if ( !ret_type || ret_type->type() == DataType::dtVOID )
 	return;
+    bool ret_in_xmm = ret_type->is_real() || ret_type->is_simd();
 
     // narrow_int_ret: libc dlsym functions that return a 32-bit int (strcmp,
     // memcmp, printf, fcntl, ...) place the result in EAX; the upper 32 bits
@@ -4662,10 +8032,10 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
     if ( !dest )
     {
 	if ( !fallback_operand.isReg()
-	  || (ret_type->is_real() && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kVec))
-	  || (!ret_type->is_real() && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kGp)) )
+	  || (ret_in_xmm && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kVec))
+	  || (!ret_in_xmm && !fallback_operand.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	    fallback_operand = ret_type->newreg(pgm.cc, "call_ret");
-	if ( ret_type->is_real() )
+	if ( ret_in_xmm )
 	    call->setRet(0, fallback_operand.as<x86::Xmm>());
 	else
 	    call->setRet(0, fallback_operand.as<x86::Gp>());
@@ -4676,7 +8046,7 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
     {
 	if ( dest->as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
-	    if ( is_variadic )
+	    if ( is_variadic && ret_type->is_real() )
 	    {
 		x86::Xmm ret_xmm = newScalarXmm(pgm, ret_type, "dl_ret");
 		call->setRet(0, ret_xmm);
@@ -4696,12 +8066,20 @@ static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, Data
 
     if ( dest->isMem() )
     {
-	if ( ret_type->is_real() )
+	if ( ret_in_xmm )
 	{
-	    x86::Xmm ret_xmm = newScalarXmm(pgm, ret_type, "call_ret");
+	    x86::Xmm ret_xmm = ret_type->newreg(pgm.cc, "call_ret").as<x86::Xmm>();
 	    call->setRet(0, ret_xmm);
-	    IRBuilder ir(pgm.cc);
-	    ir.store(IRValue::mem(dest->as<x86::Mem>(), ret_type), ir_from_operand(ret_xmm, ret_type));
+	    if ( ret_type->is_simd() )
+	    {
+		x86::Mem mem = dest->as<x86::Mem>();
+		store_xmm_to_mem(pgm, mem, ret_xmm, ret_type);
+	    }
+	    else
+	    {
+		IRBuilder ir(pgm.cc);
+		ir.store(IRValue::mem(dest->as<x86::Mem>(), ret_type), ir_from_operand(ret_xmm, ret_type));
+	    }
 	}
 	else
 	{
@@ -4788,7 +8166,12 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
     x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
     if ( obj_op.isMem() )
-	pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    {
+	if ( object.is_fixed_array() )
+	    pgm.cc.lea(obj_reg, obj_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    }
     else
 	pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
 
@@ -4803,7 +8186,9 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     // C fixed-size array: load element directly from [base + linear_idx*elem_size]
     if ( object.is_fixed_array() )
     {
-        size_t elem_size = object.type->size ? object.type->size : 8;
+        size_t consumed_dims = 1 + extra_indices.size();
+        DataDef *result_type = fixed_array_subscript_result_type(object, consumed_dims);
+        size_t elem_size = fixed_array_subscript_stride(object, consumed_dims);
         // Fold any extra indices (multi-dim): linear = ((i0*d1) + i1)*d2 + i2 ...
         for ( size_t k = 0; k < extra_indices.size(); ++k )
         {
@@ -4837,15 +8222,20 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
             return _operand;
         }
 
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
+        uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "fixed_sub_size");
         DBG(pgm.cc.comment("fixed-array subscript read"));
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
         if ( !regdp.second )
-            regdp.second = _datatype;
-        return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
+            regdp.second = result_type;
+        if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(result_type) )
+        {
+            DataDef *elem_base = add->element_type ? add->element_type : &ddINT64;
+            DataDef *decay_type = pgm.getPointerType(elem_base);
+            regdp.second = decay_type;
+            x86::Gp addr = as_gp_ptr(pgm, elem_mem, "sub_arr");
+            return emit_ir_value(pgm, IRValue::reg(addr, decay_type), regdp, _operand, decay_type);
+        }
+        return emit_ir_value(pgm, IRValue::mem(elem_mem, result_type), regdp, _operand, result_type);
     }
 
     // Raw pointer subscript: ptr[i] == *(ptr + i).
@@ -4855,16 +8245,55 @@ Operand &TokenSubscript::compile(Program &pgm, regdefp_t &regdp)
     {
         DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(object.type);
         DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
-        size_t elem_size = base->size ? base->size : 8;
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
+        uint32_t shift = scale_index_by_element_size(pgm, idx_reg, base, "ptr_sub_size");
         DBG(pgm.cc.comment("pointer subscript read"));
+        size_t elem_size = base && base->size ? base->size : 8;
+        if ( aggregate_has_runtime_size(base)
+          && (base->basetype() == BaseType::btStruct || base->basetype() == BaseType::btClass) )
+        {
+            x86::Gp addr = pgm.cc.newIntPtr("sub_addr");
+            pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, shift, 0));
+            _operand = addr;
+            if ( !regdp.second )
+                regdp.second = _datatype;
+            regdp.first = &_operand;
+            return _operand;
+        }
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( base && (base->basetype() == BaseType::btStruct || base->basetype() == BaseType::btClass) )
+        {
+            x86::Gp addr = pgm.cc.newIntPtr("sub_addr");
+            pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, shift, 0));
+            _operand = addr;
+            if ( !regdp.second )
+                regdp.second = _datatype;
+            regdp.first = &_operand;
+            return _operand;
+        }
         if ( !regdp.second )
             regdp.second = _datatype;
+        if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(_datatype) )
+        {
+            DataDef *elem_base = add->element_type ? add->element_type : &ddINT64;
+            DataDef *decay_type = pgm.getPointerType(elem_base);
+            regdp.second = decay_type;
+            x86::Gp addr = as_gp_ptr(pgm, elem_mem, "sub_arr");
+            return emit_ir_value(pgm, IRValue::reg(addr, decay_type), regdp, _operand, decay_type);
+        }
         return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
+    }
+
+    if ( ctype == DataType::dtSTRING )
+    {
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+	call->setArg(0, obj_reg);
+	x86::Gp cstr = pgm.cc.newIntPtr("sub_str_cstr");
+	call->setRet(0, cstr);
+	x86::Mem elem_mem = x86::ptr(cstr, idx_reg, 0, 0, 1);
+	if ( !regdp.second )
+	    regdp.second = _datatype;
+	return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
     }
 
     if ( ctype == DataType::dtVECTOR )
@@ -5006,35 +8435,50 @@ Operand &TokenSubscriptExpr::compile(Program &pgm, regdefp_t &regdp)
     x86::Gp idx_reg = pgm.cc.newGpq("subexpr_idx");
     load_idx_to_gpq(pgm, idx_reg, idx_op);
 
-    size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
-    // SIB scale only covers 1/2/4/8; any other element size (notably struct
-    // elements like sizeof(struct K) == 16) must be folded into the index
-    // register via imul, then accessed with SIB scale = 1.
-    uint32_t shift = 0;
-    if      ( elem_size == 8 ) shift = 3;
-    else if ( elem_size == 4 ) shift = 2;
-    else if ( elem_size == 2 ) shift = 1;
-    else if ( elem_size != 1 )
-    {
-	pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
-    }
+    DataDef *result_type = _datatype;
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(base_expr) )
+	if ( tm->is_fixed_array_member() )
+	    result_type = fixed_array_member_result_type(tm, 1);
+
+    size_t elem_size = result_type && result_type->size ? result_type->size : 8;
+    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "subexpr_size");
 
     x86::Mem elem_mem = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     if ( !regdp.second )
-	regdp.second = _datatype;
+	regdp.second = result_type;
+    // C array-to-pointer decay in value context: `arr2[i]` where the
+    // element itself is an array (e.g. `unsigned long x[2][2];
+    // x[i]`) yields a pointer to the first element, not the first
+    // scalar value loaded from that subarray. Keep operand() as the raw
+    // lvalue Mem for address-taking/chaining, but compile() must decay.
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(result_type) )
+    {
+	DataDef *elem_base = add->element_type ? add->element_type : &ddINT64;
+	DataDef *decay_type = pgm.getPointerType(elem_base);
+	regdp.second = decay_type;
+	x86::Gp addr = as_gp_ptr(pgm, elem_mem, "subexpr_arr");
+	return emit_ir_value(pgm, IRValue::reg(addr, decay_type), regdp, _operand, decay_type);
+    }
     // Struct/class element: return the Mem directly. emit_ir_value assumes
     // a numeric-sized value it can coerce/load; a struct element isn't a
     // value that fits in a register. Callers (e.g. TokenMember::operand
     // for `s[i].member`) read the Mem and add the member offset.
-    if ( _datatype && (_datatype->basetype() == BaseType::btStruct
-		    || _datatype->basetype() == BaseType::btClass) )
+    if ( result_type && (result_type->basetype() == BaseType::btStruct
+		      || result_type->basetype() == BaseType::btClass) )
     {
 	_operand = elem_mem;
 	if ( !regdp.first )
 	    regdp.first = &_operand;
 	return _operand;
     }
-    return emit_ir_value(pgm, IRValue::mem(elem_mem, _datatype), regdp, _operand, _datatype);
+    return emit_ir_value(pgm, IRValue::mem(elem_mem, result_type), regdp, _operand, result_type);
+}
+
+DataDef *TokenSubscript::datadef() const
+{
+    if ( object.is_fixed_array() )
+	return fixed_array_subscript_result_type(object, 1 + extra_indices.size());
+    return _datatype;
 }
 
 // Lvalue path — return the Mem pointing at the element address. Mirrors
@@ -5080,12 +8524,7 @@ Operand &TokenSubscriptExpr::operand(Program &pgm)
     load_idx_to_gpq(pgm, idx_reg, idx_op);
 
     size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
-    uint32_t shift = 0;
-    if      ( elem_size == 8 ) shift = 3;
-    else if ( elem_size == 4 ) shift = 2;
-    else if ( elem_size == 2 ) shift = 1;
-    else if ( elem_size != 1 )
-	pgm.cc.imul(idx_reg, idx_reg, imm((int64_t)elem_size));
+    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, _datatype, "subexpr_size");
 
     _operand = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     return _operand;
@@ -5096,13 +8535,48 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
 {
     DBG(pgm.cc.comment("TokenSubscript::compile_set()"));
     IRBuilder ir(pgm.cc);
+    auto store_complex_value = [&](x86::Mem dst_mem, DataDef *dst_type) -> bool {
+	DataDefCOMPLEX *dst_cdd = dynamic_cast<DataDefCOMPLEX *>(dst_type);
+	if ( !dst_cdd || !dst_cdd->element_type )
+	    return false;
+
+	x86::Mem dst_real = complex_component_mem(pgm, dst_mem, dst_cdd, false, "sub_complex_dst");
+	x86::Mem dst_imag = complex_component_mem(pgm, dst_mem, dst_cdd, true, "sub_complex_dst");
+
+	if ( val_type && val_type->is_complex() )
+	{
+	    DataDefCOMPLEX *src_cdd = dynamic_cast<DataDefCOMPLEX *>(val_type);
+	    if ( !src_cdd || !src_cdd->element_type )
+		throw "TokenSubscript::compile_set() invalid complex source type";
+	    x86::Mem src_real = complex_component_mem(pgm, val_op, src_cdd, false, "sub_complex_src");
+	    x86::Mem src_imag = complex_component_mem(pgm, val_op, src_cdd, true, "sub_complex_src");
+	    IRValue real_val = ir.load(ir.coerce(IRValue::mem(src_real, src_cdd->element_type),
+						 dst_cdd->element_type));
+	    IRValue imag_val = ir.load(ir.coerce(IRValue::mem(src_imag, src_cdd->element_type),
+						 dst_cdd->element_type));
+	    ir.store(IRValue::mem(dst_real, dst_cdd->element_type), real_val);
+	    ir.store(IRValue::mem(dst_imag, dst_cdd->element_type), imag_val);
+	    return true;
+	}
+
+	IRValue scalar_val = ir.load(ir.coerce(ir_from_operand(val_op, val_type ? val_type : dst_cdd->element_type),
+						dst_cdd->element_type));
+	ir.store(IRValue::mem(dst_real, dst_cdd->element_type), scalar_val);
+	ir.store(IRValue::mem(dst_imag, dst_cdd->element_type), IRValue::imm(Imm(0), &ddINT));
+	return true;
+    };
 
     // get container pointer. VLAs and address-taken pointer locals live
     // in a stack-resident slot — load the pointer value before indexing.
     Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
     x86::Gp obj_reg = pgm.cc.newIntPtr("sub_obj");
     if ( obj_op.isMem() )
-	pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    {
+	if ( object.is_fixed_array() )
+	    pgm.cc.lea(obj_reg, obj_op.as<x86::Mem>());
+	else
+	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
+    }
     else
 	pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
 
@@ -5117,11 +8591,9 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
     // C fixed-size array: store element directly to [base + linear_idx*elem_size]
     if ( object.is_fixed_array() )
     {
-        size_t elem_size = object.type->size ? object.type->size : 8;
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
+        size_t consumed_dims = 1 + extra_indices.size();
+        DataDef *result_type = fixed_array_subscript_result_type(object, consumed_dims);
+        size_t elem_size = fixed_array_subscript_stride(object, consumed_dims);
         DBG(pgm.cc.comment("fixed-array subscript write"));
         // Fold extra indices into idx_reg using dims: linear = ((i0*d1)+i1)*d2 + i2 ...
         for ( size_t k = 0; k < extra_indices.size(); ++k )
@@ -5139,7 +8611,21 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
                 pgm.cc.add(idx_reg, ex_widened);
             }
         }
+        uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "fixed_sub_size");
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+	if ( _datatype && _datatype->is_complex() )
+	{
+	    store_complex_value(elem_mem, _datatype);
+	    return;
+	}
+	if ( _datatype && (_datatype->basetype() == BaseType::btStruct
+			|| _datatype->basetype() == BaseType::btClass) )
+	{
+	    Operand dst_slot = elem_mem;
+	    emit_raw_aggregate_copy(pgm, dst_slot, val_op,
+		_datatype, "fixed_sub_struct_copy");
+	    return;
+	}
         ir.store(IRValue::mem(elem_mem, _datatype), ir_from_operand(val_op, val_type ? val_type : _datatype));
         return;
     }
@@ -5150,12 +8636,20 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
         DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(object.type);
         DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         size_t elem_size = base->size ? base->size : 8;
-        uint32_t shift = 0;
-        if      ( elem_size == 8 ) shift = 3;
-        else if ( elem_size == 4 ) shift = 2;
-        else if ( elem_size == 2 ) shift = 1;
+        uint32_t shift = scale_index_by_element_size(pgm, idx_reg, base, "ptr_sub_size");
         DBG(pgm.cc.comment("pointer subscript write"));
         x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+        if ( base && base->is_complex() )
+        {
+	    store_complex_value(elem_mem, base);
+	    return;
+        }
+        if ( base && (base->basetype() == BaseType::btStruct || base->basetype() == BaseType::btClass) )
+        {
+	    Operand dst_slot = elem_mem;
+	    emit_raw_aggregate_copy(pgm, dst_slot, val_op, base, "ptr_sub_struct_copy");
+	    return;
+        }
         ir.store(IRValue::mem(elem_mem, base), ir_from_operand(val_op, val_type ? val_type : base));
         return;
     }
@@ -5342,7 +8836,6 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     {
 	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(var->type);
 	DataDef *elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
-	size_t elem_size = elem_type->size ? elem_type->size : 8;
 
 	x86::Mem slot = pgm.cc.newStack(8, 8);
 	slot.setSize(8);
@@ -5354,7 +8847,13 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	Operand &sz_op = var->vla_size_expr->compile(pgm, sz_rdp);
 	x86::Gp sz_reg = pgm.cc.newGpq("__vla_n");
 	if ( sz_op.isReg() && sz_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.cc.mov(sz_reg, sz_op.as<x86::Gp>());
+	{
+	    // Widen 32-bit int result to 64-bit for malloc size argument.
+	    if ( sz_op.as<x86::Gp>().isGpd() )
+		pgm.cc.movsxd(sz_reg, sz_op.as<x86::Gp>());
+	    else
+		pgm.cc.mov(sz_reg, sz_op.as<x86::Gp>());
+	}
 	else if ( sz_op.isImm() )
 	    pgm.cc.mov(sz_reg, sz_op.as<Imm>());
 	else if ( sz_op.isMem() )
@@ -5362,8 +8861,17 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	else
 	    throw "TokenCpnd::voperand VLA: size expression yields unsupported operand";
 
-	if ( elem_size > 1 )
-	    pgm.cc.imul(sz_reg, sz_reg, imm((int64_t)elem_size));
+	if ( aggregate_has_runtime_size(elem_type) )
+	{
+	    x86::Gp elem_size_gp = emit_runtime_aggregate_size(pgm, elem_type, "__vla_elem");
+	    pgm.cc.imul(sz_reg, elem_size_gp);
+	}
+	else
+	{
+	    size_t elem_size = elem_type->size ? elem_type->size : 8;
+	    if ( elem_size > 1 )
+		pgm.cc.imul(sz_reg, sz_reg, imm((int64_t)elem_size));
+	}
 
 	// malloc(total_bytes)
 	x86::Gp buf = pgm.cc.newIntPtr("%s_vla", var->name.c_str());
@@ -5394,7 +8902,11 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	{
 	    size_t elem_size = var->type->size ? var->type->size : 8;
 	    size_t total = elem_size * var->total_elements();
-	    uint32_t align = (uint32_t)(elem_size < 8 ? elem_size : 8);
+	    uint32_t align = (uint32_t)(var->type ? var->type->alignment() : 1);
+	    if ( align == 0 )
+		align = 1;
+	    if ( align > 8 )
+		align = 8;
 	    DBG(pgm.cc.comment("voperand fixed-size array (stack)"));
 	    x86::Mem stack = pgm.cc.newStack((uint32_t)total, align);
 	    pgm.cc.lea(reg, stack);
@@ -5427,24 +8939,55 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
     if ( (var->flags & vfSTACK) && var->type->is_numeric()
       && (!var->type->is_pointer() || (var->flags & vfADDRTAKEN)) )
     {
-	uint32_t align = (uint32_t)(var->type->size < 8 ? var->type->size : 8);
+	// Allocate at least 8 bytes for integer/pointer stack slots.
+	// The JIT uses 64-bit (Gpq) registers throughout; writing a
+	// Gpq to a 4-byte slot overwrites 4 bytes of adjacent stack.
+	// GCC does the same — stack locals are pointer-aligned.
+	uint32_t slot_size = (uint32_t)var->type->size;
+	if ( var->type->is_integer() && slot_size < 8 )
+	    slot_size = 8;
+	uint32_t align = slot_size < 8 ? (uint32_t)var->type->size : 8;
 	if ( align == 0 )
 	    align = 8;
-	x86::Mem stack = pgm.cc.newStack((uint32_t)var->type->size, align);
+	x86::Mem stack = pgm.cc.newStack(slot_size, align);
 	stack.setSize((uint32_t)var->type->size);
 	operand_map[var] = stack;
 	var->flags |= vfSTACKSET;
 
 	if ( !(var->flags & vfPARAM) )
 	{
-	    Operand tmp = var->type->newreg(pgm.cc, var->name.c_str());
-	    if ( var->type->is_integer() && tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.safexor(tmp, tmp);
-	    else
-	    if ( var->type->is_real() && tmp.isReg() && tmp.as<BaseReg>().isGroup(RegGroup::kVec) )
-		pgm.cc.xorps(tmp.as<x86::Xmm>(), tmp.as<x86::Xmm>());
-	    IRBuilder ir(pgm.cc);
-	    ir.store(IRValue::mem(stack, var->type), ir_from_operand(tmp, var->type));
+	    // Emit the zero-init at the function prologue (before any
+	    // branches) so it runs exactly once per function entry.
+	    // Without this, the init lands at the first-use site which
+	    // may be inside a conditional branch — re-zeroing the slot
+	    // every time that branch is taken across loop iterations.
+	    // Use a dedicated temporary whose lifetime is confined to
+	    // the prologue region to avoid register-pressure interference
+	    // with later code (e.g. union/struct brace-init memcpy).
+	    BaseNode *saved_cursor = NULL;
+	    if ( pgm.tkFunction && pgm.tkFunction->prologue_cursor )
+		saved_cursor = pgm.cc.setCursor(pgm.tkFunction->prologue_cursor);
+
+	    // Use a qword-sized mov-immediate to zero the entire slot.
+	    // This avoids creating a virtual register whose lifetime
+	    // could interfere with later code.
+	    x86::Mem dst = stack;
+	    if ( var->type->is_integer() )
+	    {
+		dst.setSize(8);
+		pgm.cc.mov(dst, imm(0));
+	    }
+	    else if ( var->type->is_real() )
+	    {
+		dst.setSize(8);
+		pgm.cc.mov(dst, imm(0));
+	    }
+
+	    if ( saved_cursor )
+	    {
+		pgm.tkFunction->prologue_cursor = pgm.cc.cursor();
+		pgm.cc.setCursor(saved_cursor);
+	    }
 	}
 	var->flags |= vfREGSET;
 	return operand_map[var];
@@ -5621,8 +9164,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    // semantics are lost — `static struct X x` becomes
 		    // observably stack-resident and `&x` returns a stack
 		    // address, breaking persistence across calls.
-			    if ( global_addrable )
-			    {
+		    if ( global_addrable )
+		    {
 				DBG(pgm.cc.comment("voperand global struct: load absolute base"));
 			x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 			pgm.emit_data_mov(base_reg, var);
@@ -5631,15 +9174,27 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 			var->flags |= vfREGSET;
 			return operand_map[var];
 		    }
+		    DataDefSTRUCT *dds = dynamic_cast<DataDefSTRUCT *>(var->type);
+		    if ( dds && dds->has_runtime_size() )
+		    {
+			x86::Gp total_bytes = emit_runtime_struct_size(pgm, dds, (var->name + "_bytes").c_str());
+			x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
+			InvokeNode *call;
+			pgm.cc.invoke(&call, imm((void *)::malloc),
+			    FuncSignature::build<void *, size_t>());
+			call->setArg(0, total_bytes);
+			call->setRet(0, reg);
+			operand_map[var] = reg;
+			break;
+		    }
 		    // align stack to struct's max member alignment (C ABI compatible)
 		    size_t struct_align = 8;
-		    if ( var->type->basetype() == BaseType::btStruct )
-			struct_align = static_cast<DataDefSTRUCT *>(var->type)->max_align;
+		    if ( dds )
+			struct_align = dds->max_align;
 		    x86::Mem stack = pgm.cc.newStack(var->type->size, (uint32_t)struct_align);
 		    operand_map[var] = stack;
 
 		    // Construct any non-trivial members (strings, streams) inside the struct
-		    DataDefSTRUCT *dds = static_cast<DataDefSTRUCT *>(var->type);
 		    if ( !dds->members.empty() )
 		    {
 			x86::Gp base_reg = pgm.cc.newIntPtr("%s", (var->name + ".base").c_str());
@@ -5775,12 +9330,26 @@ void TokenCpnd::cleanup(Program &pgm)
 	}
 	if ( (rmi->first->flags & vfSTACK) )
 	{
+	    Operand &reg = rmi->second;
 	    // Don't destruct parameter objects — the caller owns them
 	    if ( (rmi->first->flags & vfPARAM) )
 		continue;
+	    if ( (rmi->first->type->basetype() == BaseType::btStruct
+		|| rmi->first->type->basetype() == BaseType::btClass)
+	      && aggregate_has_runtime_size(rmi->first->type)
+	      && !rmi->first->is_fixed_array() )
+	    {
+		if ( reg.isReg() && reg.as<BaseReg>().isGroup(RegGroup::kGp) )
+		{
+		    InvokeNode *call;
+		    cc.invoke(&call, imm((void *)::free),
+			FuncSignature::build<void, void *>());
+		    call->setArg(0, reg.as<x86::Gp>());
+		}
+		continue;
+	    }
 	    if ( rmi->first->type->type() > DataType::dtRESERVED )
 	    {
-		Operand &reg = rmi->second;
 		Variable *var = rmi->first;
 
 		switch(var->type->type())
@@ -5949,8 +9518,6 @@ void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
 {
     if ( regdp.second )
 	return;
-    if ( (left && left->is_real()) || (right && right->is_real()) )
-	regdp.second = &ddDOUBLE;
     else
     // Pointer / fixed-array operand: propagate its pointer type. Without
     // this the result of `buf + n` (buf=char[N]) keeps `regdp.second` as
@@ -5974,15 +9541,9 @@ void TokenOperator::settype(Program &pgm, regdefp_t &regdp)
 	    if ( rv->var.is_fixed_array() && rv->var.type )
 		regdp.second = pgm.getPointerType(rv->var.type);
     }
-    if ( regdp.second )
-	;
-    else
-    if ( (left && left->datadef()->is_integer() ) )
-	regdp.second = left->datadef();
-    else
-    if ( (right && right->datadef()->is_integer() ) )
-	regdp.second = right->datadef();
-    else
+    if ( !regdp.second )
+	regdp.second = infer_numeric_type(left, right);
+    if ( !regdp.second )
     {
 	DBG(pgm.cc.comment("settype() regdp.second = &ddINT"));
 	regdp.second = &ddINT;
@@ -6034,11 +9595,12 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
     {
 	DBG(pgm.cc.comment("optimize() regdp.second = &ddINT"));
-	regdp.second = &ddINT;
+	DataDef *folded_type = datadef();
+	regdp.second = (folded_type && folded_type->is_integer()) ? folded_type : &ddINT;
     }
     if ( !regdp.first )
     {
-	_operand = pgm.cc.newGpq("_operand_Gpq_");
+	_operand = regdp.second->newreg(pgm.cc, "_cf_");
 	regdp.first = &_operand;
     }
     pgm.safemov(*regdp.first, ioperate(), regdp.second);
@@ -6072,10 +9634,50 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenAdd::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "+ missing lval operand"; }
     if ( !right ) { throw "+ missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
+    DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
+    if ( !lptr_type && !rptr_type
+      && ((left->datadef() && left->datadef()->is_complex())
+       || (right->datadef() && right->datadef()->is_complex())) )
+	return emit_complex_addsub(pgm, left, right, /*subtract=*/false, regdp, _operand);
+    if ( !lptr_type && !rptr_type && can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    if ( (lptr_type || rptr_type) && regdp.second && !regdp.second->is_pointer() )
+	regdp.second = lptr_type ? lptr_type : rptr_type;
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safeadd, regdp, _operand, "_add_l");
+    {
+	bool real_ops = (left && left->is_real()) || (right && right->is_real());
+	bool dest_int_real = real_ops && regdp.second && regdp.second->is_integer();
+	if ( !dest_int_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+	    return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safeadd, regdp, _operand, "_add_l");
+    }
+    if ( lptr_type && !rptr_type )
+    {
+	GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+	Operand &lval = compile_token_normalized(pgm, left, regdp.second,
+						 regdp.first, _operand);
+	regdp.first = &lval;
+	if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
+	Operand rhs_storage;
+	DataDef *rhs_type = NULL;
+	Operand &rval = compile_pointer_offset_operand(pgm, right, rhs_storage, rhs_type);
+	emit_pointer_arith_scale(pgm, left, right, rval);
+	pgm.safeadd(lval, rval, regdp.second);
+	return finish_general_binop(pgm, regdp, lval, c);
+    }
+    if ( rptr_type && !lptr_type )
+    {
+	GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+	Operand &lval = compile_token_normalized(pgm, right, regdp.second,
+						 regdp.first, _operand);
+	regdp.first = &lval;
+	if ( !regdp.second ) { throw "TokenAdd::compile() right->compile() cleared datatype!"; }
+	Operand rhs_storage;
+	DataDef *rhs_type = NULL;
+	Operand &rval = compile_pointer_offset_operand(pgm, left, rhs_storage, rhs_type);
+	emit_pointer_arith_scale(pgm, right, left, rval);
+	pgm.safeadd(lval, rval, regdp.second);
+	return finish_general_binop(pgm, regdp, lval, c);
+    }
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenAdd::compile() left->compile() cleared datatype!"; }
@@ -6093,10 +9695,22 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenSub::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "- missing lval operand"; }
     if ( !right ) { throw "- missing rval operand"; }
-    if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
+    DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
+    if ( !lptr_type && !rptr_type
+      && ((left->datadef() && left->datadef()->is_complex())
+       || (right->datadef() && right->datadef()->is_complex())) )
+	return emit_complex_addsub(pgm, left, right, /*subtract=*/true, regdp, _operand);
+    if ( !lptr_type && can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    if ( lptr_type && regdp.second && !regdp.second->is_pointer() )
+	regdp.second = lptr_type;
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safesub, regdp, _operand, "_sub_l");
+    {
+	bool real_ops = (left && left->is_real()) || (right && right->is_real());
+	bool dest_int_real = real_ops && regdp.second && regdp.second->is_integer();
+	if ( !dest_int_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+	    return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safesub, regdp, _operand, "_sub_l");
+    }
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenSub::compile() left->compile() cleared datatype!"; }
@@ -6105,6 +9719,41 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     Operand &rval = right->compile(pgm, regdp);
     emit_pointer_arith_scale(pgm, left, right, rval);	 // ptr - n → ptr - n*sizeof(*ptr)
     pgm.safesub(lval, rval, regdp.second);
+    // ptr - ptr: C requires element count, not byte count.
+    // Divide the raw byte difference by sizeof(element).
+    {
+	DataDef *ltype = effective_pointer_type_for_arith(pgm, left);
+	DataDef *rtype = effective_pointer_type_for_arith(pgm, right);
+	if ( ltype && rtype )
+	{
+	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(ltype);
+	    size_t elem_size = pdd && pdd->base_type ? pdd->base_type->size : 0;
+	    if ( elem_size > 1 && lval.isReg() )
+	    {
+		// Use SAR for power-of-2 element sizes (common case),
+		// otherwise emit a full idiv sequence.
+		x86::Gp diff = lval.as<x86::Gp>();
+		bool is_pow2 = (elem_size & (elem_size - 1)) == 0;
+		if ( is_pow2 )
+		{
+		    int shift = 0;
+		    for (size_t s = elem_size; s > 1; s >>= 1) ++shift;
+		    pgm.cc.sar(diff, shift);
+		}
+		else
+		{
+		    x86::Gp divisor = pgm.cc.newGpq("_ptrdiff_d");
+		    pgm.cc.mov(divisor, (int64_t)elem_size);
+		    // x86 idiv: sign-extend diff into rdx:rax, divide
+		    x86::Gp rdx_hi = pgm.cc.newGpq("_ptrdiff_hi");
+		    pgm.cc.mov(rdx_hi, diff);
+		    pgm.cc.sar(rdx_hi, 63);
+		    pgm.cc.idiv(rdx_hi, diff, divisor);
+		}
+		regdp.second = &ddINT64;
+	    }
+	}
+    }
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -6141,7 +9790,7 @@ Operand &TokenNeg::compile(Program &pgm, regdefp_t &regdp)
 	Operand rval_reg = regdp.second->newreg(pgm.cc, "_neg");
 	Operand rval_norm;
 	Operand &rval = compile_token_normalized(pgm, right, regdp.second, &rval_reg, rval_norm);
-	pgm.safeneg(rval);
+	pgm.safeneg(rval, regdp.second);
 	_operand = rval;
 	regdp.first = &_operand;
 	if ( caller_dest )
@@ -6160,7 +9809,7 @@ Operand &TokenNeg::compile(Program &pgm, regdefp_t &regdp)
     }
     Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
     if ( !regdp.second ) { throw "TokenNeg::compile() right->compile cleared datatype"; }
-    pgm.safeneg(rval);					 // type safe negation
+    pgm.safeneg(rval, regdp.second);			 // type safe negation
     if ( mirror_to_caller )				 // write result back to caller's Mem
 	pgm.safemov(*caller_dest, rval, regdp.second, regdp.second);
     regdp.first = &rval;				 // restore regdp.first
@@ -6173,17 +9822,33 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenMul::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "* missing lval operand"; }
     if ( !right ) { throw "* missing rval operand"; }
+    if ( (left->datadef() && left->datadef()->is_complex())
+      || (right->datadef() && right->datadef()->is_complex()) )
+	return emit_complex_muldiv(pgm, left, right, /*divide=*/false, regdp, _operand);
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+    // Skip the plain-binop fast path when operands are mixed int/real —
+    // emit_plain_binop3 would force both to the destination type before
+    // the multiply, truncating the float. The general path below handles
+    // promotion per C99 usual arithmetic conversions.  Also skip when
+    // destination type is integer but any operand is real — the multiply
+    // must compute in float and convert to int afterward, not truncate
+    // the float literal to int before multiplying.
+    bool any_real = (left && left->is_real()) || (right && right->is_real());
+    bool mixed_real = (left && left->is_real()) != (right && right->is_real());
+    bool dest_int_but_real_ops = any_real && regdp.second && regdp.second->is_integer();
+    if ( !mixed_real && !dest_int_but_real_ops && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safemul, regdp, _operand, "_mul_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenMul::compile() left->compile() cleared datatype!"; }
-    Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
-    regdp.first = &tmp;
-    Operand &rval = right->compile(pgm, regdp);
-    pgm.safemul(lval, rval, regdp.second);
+    DataDef *ltype = regdp.second;
+    // Compile RHS with its natural type (not forced to LHS type)
+    // so int*double keeps the double in Xmm instead of truncating
+    regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
+    Operand &rval = right->compile(pgm, rhs_rdp);
+    DataDef *rtype = rhs_rdp.second ? rhs_rdp.second : ltype;
+    pgm.safemul(lval, rval, ltype, rtype);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -6193,10 +9858,17 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenDiv::Compile() TOP" << endl);
     if ( !left )  { throw "/ missing lval operand"; } 
     if ( !right ) { throw "/ missing rval operand"; }
+    if ( (left->datadef() && left->datadef()->is_complex())
+      || (right->datadef() && right->datadef()->is_complex()) )
+	return emit_complex_muldiv(pgm, left, right, /*divide=*/true, regdp, _operand);
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
-    if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
-	return emit_plain_divmod(pgm, left, right, regdp.second, /*return_remainder=*/false, regdp, _operand, "_div_l");
+    {
+	bool real_ops = (left && left->is_real()) || (right && right->is_real());
+	bool dest_int_real = real_ops && regdp.second && regdp.second->is_integer();
+	if ( !dest_int_real && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+	    return emit_plain_divmod(pgm, left, right, regdp.second, /*return_remainder=*/false, regdp, _operand, "_div_l");
+    }
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand remainder = regdp.second->newreg(pgm.cc, "remainder");
     Operand &dividend = left->compile(pgm, regdp);
@@ -6455,18 +10127,28 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     if ( right->type() == TokenType::ttVariable && !dynamic_cast<TokenVar *>(right)->var.type->is_numeric() )
 	throw "rval is non-numeric";
 
-    settype(pgm, regdp);				 // set regdp.second type
+    DataDef *caller_type = regdp.second;
+    DataDef *shift_type = promoted_shift_result_type(left);
+    if ( !shift_type )
+    {
+	settype(pgm, regdp);
+	shift_type = regdp.second;
+    }
+    regdp.second = caller_type ? caller_type : shift_type;
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
-      && regdp.second && regdp.second->is_integer() )
-	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshl,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_shl_l");
+      && shift_type && shift_type->is_integer() )
+	return emit_plain_bitop2(pgm, left, right, shift_type, &Program::safeshl,
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/true,
+				 regdp, _operand, "_shl_l");
+    regdp.second = shift_type;
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBSL::compile() left->compile() cleared datatype!"; }
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeshl(lval, rval);
+    pgm.safeshl(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -6574,18 +10256,28 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 
     // bitwise right-shift
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    settype(pgm, regdp);				 // set regdp.second type
+    DataDef *caller_type = regdp.second;
+    DataDef *shift_type = promoted_shift_result_type(left);
+    if ( !shift_type )
+    {
+	settype(pgm, regdp);
+	shift_type = regdp.second;
+    }
+    regdp.second = caller_type ? caller_type : shift_type;
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
-      && regdp.second && regdp.second->is_integer() )
-	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshr,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_shr_l");
+      && shift_type && shift_type->is_integer() )
+	return emit_plain_bitop2(pgm, left, right, shift_type, &Program::safeshr,
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/true,
+				 regdp, _operand, "_shr_l");
+    regdp.second = shift_type;
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBSR::compile() left->compile() cleared datatype!"; }
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeshr(lval, rval);
+    pgm.safeshr(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -6600,14 +10292,16 @@ Operand &TokenBor::compile(Program &pgm, regdefp_t &regdp)
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeor,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_or_l");
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/false,
+				 regdp, _operand, "_or_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBor::compile() left->compile() cleared datatype!"; }
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeor(lval, rval);
+    pgm.safeor(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -6622,14 +10316,16 @@ Operand &TokenXor::compile(Program &pgm, regdefp_t &regdp)
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safexor,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_xor_l");
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/false,
+				 regdp, _operand, "_xor_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenXor::compile() left->compile() cleared datatype!"; }
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safexor(lval, rval);
+    pgm.safexor(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -6644,14 +10340,16 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeand,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_and_l");
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/false,
+				 regdp, _operand, "_and_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBand::compile() left->compile() cleared datatype!"; }
     Operand tmp = regdp.second->newreg(pgm.cc, "tmp");
     regdp.first = &tmp;
     Operand &rval = right->compile(pgm, regdp);
-    pgm.safeand(lval, rval);
+    pgm.safeand(lval, rval, regdp.second);
     return finish_general_binop(pgm, regdp, lval, c);
 }
 
@@ -6661,14 +10359,32 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenBnot::Compile() TOP" << endl);
     if ( left )   { throw "Bitwise not has lval!"; }
     if ( !right ) { throw "~ missing rval operand"; }
+    if ( right->datadef() && right->datadef()->is_complex() )
+	return emit_complex_conjugate_expr(pgm, right, right->datadef(), regdp, _operand);
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
     settype(pgm, regdp);				 // set regdp.second type
     if ( right && right->datadef() && right->datadef()->is_integer() )
     {
 	Operand *caller_dest = regdp.first;
 	Operand out_norm;
+	DataDef *rtype = right->datadef() ? right->datadef() : regdp.second;
+	DBG(std::cout << "TokenBnot: integer path, rtype=" << (rtype ? rtype->name : "null") << " size=" << (rtype ? (int)rtype->size : -1) << std::endl);
 	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, out_norm);
 	pgm.safenot(rval);
+	// Narrow result to semantic type width for sub-64-bit types.
+	// ~0U must produce a 32-bit 0xFFFFFFFF, not 64-bit 0xFFFFFFFFFFFFFFFF.
+	// Using mov r32,r32 to truncate (implicit zero-extend to 64-bit) so
+	// subsequent comparisons use the right register width.
+	if ( rtype && rtype->size == 4 && rval.isReg()
+	  && rval.as<x86::Gp>().isGpq() )
+	{
+	    DBG(std::cout << "TokenBnot: narrowing to Gpd" << std::endl);
+	    x86::Gp narrow = pgm.cc.newGpd("~narrow");
+	    pgm.cc.mov(narrow, rval.as<x86::Gp>().r32());
+	    rval = narrow;
+	}
+	else if ( rtype && rtype->size < 4 && rval.isReg() )
+	    pgm.cc.and_(rval.as<x86::Gp>(), (int64_t)((1ULL << (rtype->size * 8)) - 1));
 	_operand = rval;
 	regdp.first = &_operand;
 	if ( caller_dest )
@@ -6686,6 +10402,17 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     Operand &rval = right->compile(pgm, regdp);		 // compile right side ref=rval
     if ( !regdp.second ) { throw "TokenBnot::compile() right->compile cleared datatype"; }
     pgm.safenot(rval);					 // type safe bitwise not
+    // Narrow result to semantic type width for sub-64-bit types.
+    if ( regdp.second && regdp.second->size == 4 && rval.isReg()
+      && rval.as<x86::Gp>().isGpq() )
+    {
+	x86::Gp narrow = pgm.cc.newGpd("~narrow");
+	pgm.cc.mov(narrow, rval.as<x86::Gp>().r32());
+	_operand = narrow;
+	rval = _operand;
+    }
+    else if ( regdp.second && regdp.second->size < 4 && rval.isReg() )
+	pgm.cc.and_(rval.as<x86::Gp>(), (int64_t)((1ULL << (regdp.second->size * 8)) - 1));
     regdp.first = &rval;				 // restore regdp.first
     return *regdp.first;				 // return result operand
 }
@@ -6878,7 +10605,7 @@ Operand &Token3Way::compile(Program &pgm, regdefp_t &regdp)
     Operand &rval = compile_token_normalized(pgm, right, cmp_type, nullptr, right_norm);
     x86::Gp result = pgm.cc.newGpq("_cmp_3way");
     DBG(pgm.cc.comment("Token3Way::compile() pgm.safecmp(lval, rval)"));
-    pgm.safecmp(lval, rval);				 // typesafe comparison
+    pgm.safecmp(lval, rval, cmp_type);			 // typesafe comparison
 
     pgm.safesetg(result);					 // set result to 1 if >
     pgm.cc.jg(done);					 // if >, jump to done
@@ -6973,8 +10700,27 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 	x86::Gp addr_gp = pgm.cc.newGpq("%s", var.name.c_str());
 	if ( func->funcnode )
 	    pgm.cc.lea(addr_gp, x86::ptr(func->funcnode->label()));
-	else if ( method->x86code )
-	    pgm.cc.mov(addr_gp, imm(method->x86code));
+	else
+	{
+	    void *func_addr = method->x86code;
+	    if ( !func_addr && pgm.is_dynamic_symbol_allowed(var.name) )
+	    {
+		func_addr = dlsym(RTLD_DEFAULT, var.name.c_str());
+		if ( func_addr )
+		{
+		    method->x86code = func_addr;
+		    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(func_addr)] =
+			external_symbol_export_name(var.name, func_addr);
+		}
+	    }
+	    if ( func_addr )
+	    {
+		if ( pgm.aot_tracking )
+		    pgm.emit_data_mov(addr_gp, func_addr);
+		else
+		    pgm.cc.mov(addr_gp, imm(func_addr));
+	    }
+	}
 
 	if ( !regdp.second )
 	    regdp.second = var.type;
@@ -6983,6 +10729,14 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 
     DBG(pgm.cc.comment("TokenVar::compile() reg = operand()"));
     Operand &reg = operand(pgm);
+
+    if ( var.is_fixed_array() && (reg.isReg() || reg.isMem()) )
+    {
+	DataDefPTR *ptr_type = pgm.getPointerType(var.type);
+	if ( !regdp.second || regdp.second->is_pointer() )
+	    regdp.second = ptr_type;
+	return emit_ir_value(pgm, ir_from_operand(reg, ptr_type), regdp, _operand, ptr_type);
+    }
 
     if ( !regdp.second )
 	regdp.second = _datatype;
@@ -7037,6 +10791,17 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
 	regdp.second = _datatype;
 
+    if ( const DataDefSTRUCT::BitFieldInfo *bf = bitfield_info() )
+    {
+	if ( !reg.isMem() )
+	    pgm.Throw(this) << "Bit-field member does not have memory storage" << flush;
+	x86::Mem storage = reg.as<x86::Mem>();
+	storage.setSize((uint32_t)bf->storage_size);
+	x86::Gp value = emit_bitfield_load(pgm, storage, *bf, "member_bf");
+	return emit_ir_value(pgm, IRValue::reg(value, _datatype),
+	    regdp, _operand, _datatype);
+    }
+
     if ( reg.isMem() && !_datatype->is_numeric() && !_datatype->is_pointer() )
     {
 	x86::Gp addr = pgm.cc.newIntPtr("%s_obj", var.name.c_str());
@@ -7048,7 +10813,18 @@ Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
 
     if ( (_datatype->is_numeric() || _datatype->is_pointer()) && (reg.isMem() || reg.isReg() || reg.isImm()) )
     {
-	return emit_ir_value(pgm, ir_from_operand(reg, _datatype), regdp, _operand, _datatype);
+	// Fixed-array member accessed without subscript: array-to-pointer decay.
+	// operand() returned an LEA-computed Gp (64-bit address) but _datatype
+	// is the element type (e.g. ddCHAR, 1 byte). Use a pointer type so
+	// emit_ir_value doesn't truncate the 64-bit address.
+	DataDef *emit_type = _datatype;
+	if ( is_fixed_array_member() && reg.isReg() )
+	{
+	    emit_type = pgm.getPointerType(_datatype);
+	    if ( !regdp.second || regdp.second == _datatype )
+		regdp.second = emit_type;
+	}
+	return emit_ir_value(pgm, ir_from_operand(reg, emit_type), regdp, _operand, emit_type);
     }
 
     if ( regdp.first )
@@ -7079,11 +10855,13 @@ Operand &TokenDeref::operand(Program &pgm)
     }
     else
 	ptr_gp = ptr_op.as<x86::Gp>();
-    // return Mem operand [ptr] for numeric types (enables read/write)
-    if ( deref_type->is_numeric() )
+    // Numeric and pointer pointees both live in memory at [ptr]. Only
+    // aggregate / non-scalar dereferences use the pointer value itself as
+    // the address of the object.
+    if ( deref_type->is_numeric() || deref_type->is_pointer() )
 	_operand = x86::ptr(ptr_gp, 0, (uint32_t)deref_type->size);
     else
-	_operand = ptr_gp; // non-numeric: pointer value IS the address
+	_operand = ptr_gp; // non-scalar: pointer value IS the object address
     return _operand;
 }
 
@@ -7094,6 +10872,35 @@ Operand &TokenDeref::compile(Program &pgm, regdefp_t &regdp)
 	regdp.second = deref_type;
 
     Operand &mem = operand(pgm);
+
+    if ( deref_type && deref_type->is_simd() )
+    {
+	x86::Xmm xmm = deref_type->newreg(pgm.cc, "deref_simd").as<x86::Xmm>();
+	if ( mem.isMem() )
+	    load_mem_to_xmm(pgm, xmm, mem.as<x86::Mem>(), deref_type);
+	else if ( mem.isReg() && mem.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(xmm, mem.as<x86::Xmm>(), deref_type, deref_type);
+	else
+	    throw "TokenDeref::compile() SIMD dereference expects memory or Xmm source";
+	regdp.second = deref_type;
+	if ( regdp.first )
+	{
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		pgm.safemov(*regdp.first, xmm, deref_type, deref_type);
+		return *regdp.first;
+	    }
+	    if ( regdp.first->isMem() )
+	    {
+		x86::Mem dst = regdp.first->as<x86::Mem>();
+		store_xmm_to_mem(pgm, dst, xmm, deref_type);
+		return *regdp.first;
+	    }
+	}
+	_operand = xmm;
+	regdp.first = &_operand;
+	return _operand;
+    }
 
     if ( (deref_type->is_numeric() || deref_type->is_pointer())
       && (mem.isMem() || mem.isReg() || mem.isImm()) )
@@ -7132,7 +10939,7 @@ Operand &TokenDerefExpr::operand(Program &pgm)
     }
     else
 	ptr_gp = ptr_op.as<x86::Gp>();
-    if ( deref_type->is_numeric() )
+    if ( deref_type->is_numeric() || deref_type->is_pointer() )
 	_operand = x86::ptr(ptr_gp, 0, (uint32_t)deref_type->size);
     else
 	_operand = ptr_gp;
@@ -7147,6 +10954,35 @@ Operand &TokenDerefExpr::compile(Program &pgm, regdefp_t &regdp)
 
     Operand &mem = operand(pgm);
 
+    if ( deref_type && deref_type->is_simd() )
+    {
+	x86::Xmm xmm = deref_type->newreg(pgm.cc, "derefexpr_simd").as<x86::Xmm>();
+	if ( mem.isMem() )
+	    load_mem_to_xmm(pgm, xmm, mem.as<x86::Mem>(), deref_type);
+	else if ( mem.isReg() && mem.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.safemov(xmm, mem.as<x86::Xmm>(), deref_type, deref_type);
+	else
+	    throw "TokenDerefExpr::compile() SIMD dereference expects memory or Xmm source";
+	regdp.second = deref_type;
+	if ( regdp.first )
+	{
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		pgm.safemov(*regdp.first, xmm, deref_type, deref_type);
+		return *regdp.first;
+	    }
+	    if ( regdp.first->isMem() )
+	    {
+		x86::Mem dst = regdp.first->as<x86::Mem>();
+		store_xmm_to_mem(pgm, dst, xmm, deref_type);
+		return *regdp.first;
+	    }
+	}
+	_operand = xmm;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
     if ( (deref_type->is_numeric() || deref_type->is_pointer())
       && (mem.isMem() || mem.isReg() || mem.isImm()) )
 	return emit_ir_value(pgm, ir_from_operand(mem, deref_type), regdp, _operand, deref_type);
@@ -7159,6 +10995,85 @@ Operand &TokenDerefExpr::compile(Program &pgm, regdefp_t &regdp)
 
     regdp.first = &_operand;
     return _operand;
+}
+
+static DataDef *complex_component_type(DataDef *dd)
+{
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(dd);
+    return cdd && cdd->element_type ? cdd->element_type : dd;
+}
+
+DataDef *TokenComplexPart::datadef() const
+{
+    DataDef *expr_dd = expr ? expr->datadef() : NULL;
+    if ( expr_dd && expr_dd->is_complex() )
+	return complex_component_type(expr_dd);
+    if ( imag_part )
+	return expr_dd && expr_dd->is_real() ? expr_dd : &ddINT64;
+    return expr_dd ? expr_dd : &ddINT64;
+}
+
+Operand &TokenComplexPart::operand(Program &pgm)
+{
+    DataDef *expr_dd = expr ? expr->datadef() : NULL;
+    if ( !expr_dd || !expr_dd->is_complex() )
+	throw "TokenComplexPart::operand() requires a complex lvalue";
+    DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(expr_dd);
+    if ( !cdd )
+	throw "TokenComplexPart::operand() expected complex datadef";
+    regdefp_t sub = {nullptr, expr_dd, nullptr};
+    Operand &base_op = expr->compile(pgm, sub);
+    size_t ofs = cdd->component_offset(imag_part);
+    DataDef *part_dd = datadef();
+
+    if ( base_op.isMem() )
+    {
+	_operand = base_op.as<x86::Mem>();
+	_operand.as<x86::Mem>().addOffset((int64_t)ofs);
+	_operand.as<x86::Mem>().setSize((uint32_t)part_dd->size);
+	return _operand;
+    }
+
+    x86::Gp base_gp;
+    if ( base_op.isImm() )
+    {
+	base_gp = pgm.cc.newIntPtr(imag_part ? "__imag_imm" : "__real_imm");
+	pgm.cc.mov(base_gp, base_op.as<Imm>());
+    }
+    else
+	base_gp = base_op.as<x86::Gp>();
+
+    _operand = x86::ptr(base_gp, (int32_t)ofs, (uint32_t)part_dd->size);
+    return _operand;
+}
+
+Operand &TokenComplexPart::compile(Program &pgm, regdefp_t &regdp)
+{
+    DataDef *expr_dd = expr ? expr->datadef() : NULL;
+    DataDef *part_dd = datadef();
+
+    if ( expr_dd && expr_dd->is_complex() )
+    {
+	Operand &part_mem = operand(pgm);
+	return emit_ir_value(pgm, IRValue::mem(part_mem.as<x86::Mem>(), part_dd),
+			     regdp, _operand, part_dd);
+    }
+
+    if ( imag_part )
+    {
+	x86::Gp zero = pgm.cc.newGpq("__imag_zero");
+	pgm.cc.xor_(zero, zero);
+	_operand = zero;
+	regdp.first = &_operand;
+	regdp.second = part_dd;
+	return _operand;
+    }
+
+    regdefp_t inner = {regdp.first, regdp.second, regdp.object};
+    Operand &result = expr->compile(pgm, inner);
+    regdp.first = &result;
+    regdp.second = part_dd;
+    return result;
 }
 
 Operand &TokenDerefStep::compile(Program &pgm, regdefp_t &regdp)
@@ -7235,7 +11150,69 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     bool str_to_cstr = expr && expr->datadef()
 	&& expr->datadef()->rawtype() == DataType::dtSTRING
 	&& cast_type && cast_type->is_pointer()
-	&& cast_type->rawtype() == DataType::dtCHAR;
+	&& (cast_type->rawtype() == DataType::dtCHAR
+	 || cast_type->rawtype() == DataType::dtUINT8);
+    bool scalar_to_complex = expr && expr->datadef()
+	&& !expr->datadef()->is_complex()
+	&& cast_type && cast_type->is_complex();
+    bool scalar_to_union = expr && expr->datadef()
+	&& cast_type && cast_type->basetype() == BaseType::btStruct
+	&& !expr->datadef()->is_complex()
+	&& (expr->datadef()->is_numeric() || expr->datadef()->is_pointer());
+    bool complex_to_complex = expr && expr->datadef()
+	&& expr->datadef()->is_complex()
+	&& cast_type && cast_type->is_complex();
+    bool complex_to_scalar = expr && expr->datadef()
+	&& expr->datadef()->is_complex()
+	&& !effective_pointer_type_for_arith(pgm, expr)
+	&& cast_type && (cast_type->is_numeric() || cast_type->is_pointer());
+    if ( complex_to_complex )
+	return emit_complex_value_from_expr(pgm, expr, cast_type, regdp, _operand);
+    if ( scalar_to_union )
+    {
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(cast_type);
+	if ( sdd && sdd->union_layout )
+	    return emit_union_from_scalar(pgm, expr, sdd, regdp, _operand);
+    }
+    if ( scalar_to_complex )
+    {
+	regdefp_t inner_rdp = {NULL, expr->datadef(), NULL};
+	Operand &scalar_op = expr->compile(pgm, inner_rdp);
+	DataDef *actual_src = inner_rdp.second ? inner_rdp.second : expr->datadef();
+	return emit_complex_from_scalar(pgm, scalar_op, actual_src, cast_type,
+					/*imag_value=*/false, regdp, _operand,
+					"__cast_complex");
+    }
+    if ( complex_to_scalar )
+    {
+	TokenComplexPart real_part(expr, false);
+	regdefp_t inner_rdp = {NULL, complex_component_type(expr->datadef()), NULL};
+	Operand &real_op = real_part.compile(pgm, inner_rdp);
+	DataDef *real_type = inner_rdp.second ? inner_rdp.second : real_part.datadef();
+	regdp.second = cast_type;
+	if ( cast_type->is_pointer() && real_type && real_type->is_pointer() )
+	{
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, real_op, cast_type, real_type);
+		return *regdp.first;
+	    }
+	    _operand = real_op;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+	IRBuilder ir(pgm.cc);
+	IRValue out = ir.coerce(ir_from_operand(real_op, real_type), cast_type);
+	out = ir.load(out);
+	if ( regdp.first )
+	{
+	    pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
+	    return *regdp.first;
+	}
+	_operand = out.op;
+	regdp.first = &_operand;
+	return _operand;
+    }
     if ( str_to_cstr )
     {
 	Operand cstr_storage;
@@ -7247,6 +11224,36 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	    return *regdp.first;
 	}
 	_operand = cstr;
+	regdp.first = &_operand;
+	return _operand;
+    }
+    DataDef *src_ptr_type = effective_pointer_type_for_arith(pgm, expr);
+    if ( src_ptr_type && cast_type && (cast_type->is_pointer() || cast_type->is_integer()) )
+    {
+	regdefp_t inner_rdp = {NULL, src_ptr_type, NULL};
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	DataDef *actual_inner = inner_rdp.second ? inner_rdp.second : src_ptr_type;
+	regdp.second = cast_type;
+	if ( cast_type->is_integer() )
+	{
+	    IRBuilder ir(pgm.cc);
+	    IRValue out = ir.coerce(ir_from_operand(src_op, &ddUINT64), cast_type);
+	    out = ir.load(out);
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    _operand = out.op;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+	if ( regdp.first )
+	{
+	    pgm.safemov(*regdp.first, src_op, cast_type, actual_inner);
+	    return *regdp.first;
+	}
+	_operand = src_op;
 	regdp.first = &_operand;
 	return _operand;
     }
@@ -7299,13 +11306,433 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	return _operand;
     }
 
-    // set the result type to the cast target
-    regdp.second = cast_type;
-    // compile the inner expression — for pointer/integer casts, the value
-    // is the same (all 64-bit), so just compile and reinterpret the type
-    Operand &result = expr->compile(pgm, regdp);
-    regdp.second = cast_type; // ensure type is set after compile
-    return result;
+    // Real → integer cast: compile inner as its natural float/double type,
+    // then convert to Gp via cvttss2si / cvttsd2si.  The fallthrough
+    // "reinterpret" path below is wrong here: it passes regdp.second =
+    // int to the inner compile, which may write to a caller-supplied Xmm
+    // destination and then compile_token_normalized double-converts the
+    // result (cvtsi2ss on an Xmm register misinterpreted as Gp).
+    if ( src_is_real && cast_type && cast_type->is_integer() )
+    {
+	regdefp_t inner_rdp = {NULL, src_type, NULL};
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	bool preserve_simd_bits = src_type->is_simd() || cast_type->is_simd();
+	x86::Gp out = preserve_simd_bits
+	    ? pgm.cc.newGpq("cast_r2i")
+	    : cast_type->newreg(pgm.cc, "cast_r2i").as<x86::Gp>();
+	bool unsigned_u32 = cast_type->is_unsigned() && cast_type->size == 4;
+	if ( src_type->is_simd() )
+	{
+	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.cc.movq(out, src_op.as<x86::Xmm>());
+	    else if ( src_op.isMem() )
+		pgm.cc.mov(out, src_op.as<x86::Mem>());
+	    else if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(out, src_op.as<x86::Gp>());
+	    else
+		throw "TokenCast::compile() SIMD real->int expects Xmm/Mem/Gp source";
+	}
+	else
+	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    if ( unsigned_u32 )
+	    {
+		Label direct_convert = pgm.cc.newLabel();
+		Label convert_done = pgm.cc.newLabel();
+		if ( src_type->size == sizeof(float) )
+		{
+		    x86::Mem limit = pgm.cc.newFloatConst(ConstPoolScope::kLocal, 2147483648.0f);
+		    limit.setSize(sizeof(float));
+		    pgm.cc.ucomiss(src_op.as<x86::Xmm>(), limit);
+		    pgm.cc.jp(direct_convert);
+		    pgm.cc.jb(direct_convert);
+		    x86::Xmm adj = pgm.cc.newXmmSs("cast_r2u32_adj");
+		    pgm.cc.movss(adj, src_op.as<x86::Xmm>());
+		    pgm.cc.subss(adj, limit);
+		    pgm.cc.cvttss2si(out.r32(), adj);
+		}
+		else
+		{
+		    x86::Mem limit = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, 2147483648.0);
+		    limit.setSize(sizeof(double));
+		    pgm.cc.ucomisd(src_op.as<x86::Xmm>(), limit);
+		    pgm.cc.jp(direct_convert);
+		    pgm.cc.jb(direct_convert);
+		    x86::Xmm adj = pgm.cc.newXmmSd("cast_r2u32_adj");
+		    pgm.cc.movsd(adj, src_op.as<x86::Xmm>());
+		    pgm.cc.subsd(adj, limit);
+		    pgm.cc.cvttsd2si(out.r32(), adj);
+		}
+		pgm.cc.add(out.r32(), imm(0x80000000u));
+		pgm.cc.jmp(convert_done);
+		pgm.cc.bind(direct_convert);
+		if ( src_type->size == sizeof(float) )
+		    pgm.cc.cvttss2si(out.r32(), src_op.as<x86::Xmm>());
+		else
+		    pgm.cc.cvttsd2si(out.r32(), src_op.as<x86::Xmm>());
+		pgm.cc.bind(convert_done);
+	    }
+	    else
+	    {
+	    bool clamp_positive_i32 = !cast_type->is_unsigned() && cast_type->size == 4;
+	    Label clamp_done = pgm.cc.newLabel();
+	    Label do_convert = pgm.cc.newLabel();
+	    if ( clamp_positive_i32 )
+	    {
+		if ( src_type->size == sizeof(float) )
+		{
+		    x86::Mem limit = pgm.cc.newFloatConst(ConstPoolScope::kLocal, 2147483648.0f);
+		    limit.setSize(sizeof(float));
+		    pgm.cc.ucomiss(src_op.as<x86::Xmm>(), limit);
+		}
+		else
+		{
+		    x86::Mem limit = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, 2147483648.0);
+		    limit.setSize(sizeof(double));
+		    pgm.cc.ucomisd(src_op.as<x86::Xmm>(), limit);
+		}
+		pgm.cc.jp(do_convert);
+		pgm.cc.jb(do_convert);
+		pgm.cc.mov(out.r32(), imm(INT32_MAX));
+		pgm.cc.jmp(clamp_done);
+		pgm.cc.bind(do_convert);
+	    }
+	    if ( src_type->size == sizeof(float) )
+		pgm.cc.cvttss2si(out, src_op.as<x86::Xmm>());
+	    else
+		pgm.cc.cvttsd2si(out, src_op.as<x86::Xmm>());
+	    if ( clamp_positive_i32 )
+		pgm.cc.bind(clamp_done);
+	    }
+	}
+	else if ( src_op.isMem() )
+	{
+	    if ( unsigned_u32 )
+	    {
+		x86::Xmm src_tmp = newScalarXmm(pgm, src_type, "cast_r2u32_mem");
+		if ( src_type->size == sizeof(float) )
+		    pgm.cc.movss(src_tmp, src_op.as<x86::Mem>());
+		else
+		    pgm.cc.movsd(src_tmp, src_op.as<x86::Mem>());
+		Label direct_convert = pgm.cc.newLabel();
+		Label convert_done = pgm.cc.newLabel();
+		if ( src_type->size == sizeof(float) )
+		{
+		    x86::Mem limit = pgm.cc.newFloatConst(ConstPoolScope::kLocal, 2147483648.0f);
+		    limit.setSize(sizeof(float));
+		    pgm.cc.ucomiss(src_tmp, limit);
+		    pgm.cc.jp(direct_convert);
+		    pgm.cc.jb(direct_convert);
+		    x86::Xmm adj = pgm.cc.newXmmSs("cast_r2u32_adj");
+		    pgm.cc.movss(adj, src_tmp);
+		    pgm.cc.subss(adj, limit);
+		    pgm.cc.cvttss2si(out.r32(), adj);
+		}
+		else
+		{
+		    x86::Mem limit = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, 2147483648.0);
+		    limit.setSize(sizeof(double));
+		    pgm.cc.ucomisd(src_tmp, limit);
+		    pgm.cc.jp(direct_convert);
+		    pgm.cc.jb(direct_convert);
+		    x86::Xmm adj = pgm.cc.newXmmSd("cast_r2u32_adj");
+		    pgm.cc.movsd(adj, src_tmp);
+		    pgm.cc.subsd(adj, limit);
+		    pgm.cc.cvttsd2si(out.r32(), adj);
+		}
+		pgm.cc.add(out.r32(), imm(0x80000000u));
+		pgm.cc.jmp(convert_done);
+		pgm.cc.bind(direct_convert);
+		if ( src_type->size == sizeof(float) )
+		    pgm.cc.cvttss2si(out.r32(), src_tmp);
+		else
+		    pgm.cc.cvttsd2si(out.r32(), src_tmp);
+		pgm.cc.bind(convert_done);
+	    }
+	    else
+	    {
+	    bool clamp_positive_i32 = !cast_type->is_unsigned() && cast_type->size == 4;
+	    Label clamp_done = pgm.cc.newLabel();
+	    Label do_convert = pgm.cc.newLabel();
+	    if ( clamp_positive_i32 )
+	    {
+		x86::Xmm src_tmp = newScalarXmm(pgm, src_type, "cast_r2i_cmp");
+		if ( src_type->size == sizeof(float) )
+		    pgm.cc.movss(src_tmp, src_op.as<x86::Mem>());
+		else
+		    pgm.cc.movsd(src_tmp, src_op.as<x86::Mem>());
+		if ( src_type->size == sizeof(float) )
+		{
+		    x86::Mem limit = pgm.cc.newFloatConst(ConstPoolScope::kLocal, 2147483648.0f);
+		    limit.setSize(sizeof(float));
+		    pgm.cc.ucomiss(src_tmp, limit);
+		}
+		else
+		{
+		    x86::Mem limit = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, 2147483648.0);
+		    limit.setSize(sizeof(double));
+		    pgm.cc.ucomisd(src_tmp, limit);
+		}
+		pgm.cc.jp(do_convert);
+		pgm.cc.jb(do_convert);
+		pgm.cc.mov(out.r32(), imm(INT32_MAX));
+		pgm.cc.jmp(clamp_done);
+		pgm.cc.bind(do_convert);
+	    }
+	    if ( src_type->size == sizeof(float) )
+		pgm.cc.cvttss2si(out, src_op.as<x86::Mem>());
+	    else
+		pgm.cc.cvttsd2si(out, src_op.as<x86::Mem>());
+	    if ( clamp_positive_i32 )
+		pgm.cc.bind(clamp_done);
+	    }
+	}
+	else
+	{
+	    // Non-real operand (int masquerading as real) — just mov.
+	    pgm.cc.mov(out, src_op.isReg() ? src_op.as<x86::Gp>()
+					    : src_op.as<x86::Gp>());
+	}
+	if ( unsigned_u32 )
+	{
+	    regdp.second = cast_type;
+	    if ( regdp.first
+	      && !(regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec)) )
+	    {
+		Operand out32 = out.r32();
+		pgm.safemov(*regdp.first, out32, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    _operand = out.r32();
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+	// Narrow-integer canonicalization (e.g. int32 → movsxd).
+	IRBuilder ir(pgm.cc);
+	IRValue result = ir.coerce(IRValue::reg(out, &ddINT64), cast_type);
+	result = ir.load(result);
+	regdp.second = cast_type;
+	// Write to caller dest if compatible. Skip Xmm destinations:
+	// safemov(Xmm, Gp) does cvtsi2ss, but the caller (e.g.
+	// compile_token_normalized) will do its own int→float coerce
+	// and would double-convert if we wrote here.
+	if ( regdp.first
+	  && !(regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec)) )
+	{
+	    pgm.safemov(*regdp.first, result.op, cast_type, cast_type);
+	    return *regdp.first;
+	}
+	_operand = result.op;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
+    // Integer → real cast: compile inner as int, convert to Xmm.
+    // Do NOT force the inner expression to src_type — that would
+    // override an unsigned operand's type with signed ddINT32 and
+    // make `>>` use SAR instead of SHR.  Let the expression infer
+    // its own type; we pick up the actual type afterward.
+    if ( dst_is_real && src_type && src_type->is_integer() )
+    {
+	regdefp_t inner_rdp = {NULL, NULL, NULL};
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	DataDef *actual_src = inner_rdp.second ? inner_rdp.second : src_type;
+	if ( cast_type->is_simd() && actual_src && actual_src->is_simd() )
+	{
+	    x86::Xmm out = cast_type->newreg(pgm.cc, "cast_simd_i2r").as<x86::Xmm>();
+	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.safemov(out, src_op.as<x86::Xmm>(), cast_type, actual_src);
+	    else if ( src_op.isMem() )
+	    {
+		x86::Mem mem = src_op.as<x86::Mem>();
+		load_mem_to_xmm(pgm, out, mem, actual_src);
+	    }
+	    else if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.movq(out, src_op.as<x86::Gp>());
+	    else
+		throw "TokenCast::compile() SIMD int->real expects Xmm/Mem/Gp source";
+	    regdp.second = cast_type;
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, *(Operand *)&out, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    _operand = out;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+	x86::Xmm out = newScalarXmm(pgm, cast_type, "cast_i2r");
+	x86::Gp gp;
+	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	    gp = src_op.as<x86::Gp>();
+	else if ( src_op.isMem() )
+	{
+	    gp = pgm.cc.newGpq("cast_i2r_tmp");
+	    pgm.cc.mov(gp, src_op.as<x86::Mem>());
+	}
+	else
+	    gp = src_op.as<x86::Gp>(); // fallback
+
+	// Unsigned 64-bit needs special handling: cvtsi2sd treats the
+	// value as signed. For uint64 with high bit set, use the GCC
+	// pattern: test sign, if negative shift right by 1, OR in the
+	// low bit, convert, then double the result.
+	bool src_unsigned = actual_src && actual_src->is_unsigned();
+	if ( actual_src && !src_unsigned && actual_src->size == 4 )
+	{
+	    x86::Gp signed_gp = pgm.cc.newGpq("cast_i32_signext");
+	    pgm.cc.movsxd(signed_gp, gp.r32());
+	    gp = signed_gp;
+	}
+	if ( src_unsigned && actual_src->size == 8 )
+	{
+	    Label lbl_positive = pgm.cc.newLabel();
+	    Label lbl_done = pgm.cc.newLabel();
+	    pgm.cc.test(gp.r64(), gp.r64());
+	    pgm.cc.jns(lbl_positive);
+	    // High bit set: (double)(val >> 1 | (val & 1)) * 2.0
+	    x86::Gp tmp = pgm.cc.newGpq("u64_halved");
+	    pgm.cc.mov(tmp, gp.r64());
+	    x86::Gp low_bit = pgm.cc.newGpq("u64_low");
+	    pgm.cc.mov(low_bit, gp.r64());
+	    pgm.cc.and_(low_bit, imm(1));
+	    pgm.cc.shr(tmp, imm(1));
+	    pgm.cc.or_(tmp, low_bit);
+	    if ( cast_type->size == sizeof(float) )
+	    {
+		pgm.cc.cvtsi2ss(out, tmp.r64());
+		pgm.cc.addss(out, out);
+	    }
+	    else
+	    {
+		pgm.cc.cvtsi2sd(out, tmp.r64());
+		pgm.cc.addsd(out, out);
+	    }
+	    pgm.cc.jmp(lbl_done);
+	    // Positive: simple signed conversion
+	    pgm.cc.bind(lbl_positive);
+	    if ( cast_type->size == sizeof(float) )
+		pgm.cc.cvtsi2ss(out, gp.r64());
+	    else
+		pgm.cc.cvtsi2sd(out, gp.r64());
+	    pgm.cc.bind(lbl_done);
+	}
+	else if ( cast_type->size == sizeof(float) )
+	    pgm.cc.cvtsi2ss(out, gp.r64());
+	else
+	    pgm.cc.cvtsi2sd(out, gp.r64());
+	regdp.second = cast_type;
+	if ( regdp.first )
+	{
+	    pgm.safemov(*regdp.first, *(Operand *)&out, cast_type, cast_type);
+	    return *regdp.first;
+	}
+	_operand = out;
+	regdp.first = &_operand;
+	return _operand;
+    }
+
+    // Integer narrowing / truncation cast: compile at the source width,
+    // then truncate via IR coerce.  Handles explicit narrowing (int64 →
+    // int32) and same-size sign changes (signed → unsigned).
+    //
+    // When src_type is known and wider than cast_type, or signedness
+    // differs at the same sub-8 width, use the narrowing path.
+    // When src_type is unknown or equals cast_type AND the inner expr
+    // is an operator (which always reports ddINT, now 4 bytes, regardless
+    // of actual operand widths), compile with NULL type so the inner
+    // expression computes at its natural width, then truncate.
+    {
+	bool known_narrow = src_type && src_type->is_integer()
+	    && cast_type && cast_type->is_integer()
+	    && (cast_type->size < src_type->size
+	     || (cast_type->size < 8 && cast_type->size == src_type->size
+		 && cast_type->is_unsigned() != src_type->is_unsigned()));
+	// Operator expressions always report ddINT as their datadef, but
+	// may compute wider values (e.g. LL_literal >> n).  Detect this
+	// and force the natural-width compile path.
+	bool operator_may_be_wider = !known_narrow
+	    && cast_type && cast_type->is_integer() && cast_type->size < 8
+	    && src_type == &ddINT
+	    && dynamic_cast<TokenOperator *>(expr) != nullptr;
+
+	if ( known_narrow || operator_may_be_wider )
+	{
+	    regdefp_t inner_rdp = {NULL, NULL, NULL};
+	    Operand &src_op = expr->compile(pgm, inner_rdp);
+	    DataDef *actual_src = inner_rdp.second ? inner_rdp.second
+				: (src_type && src_type->is_integer() ? src_type : &ddINT64);
+	    if ( actual_src->size > cast_type->size
+	      || (actual_src->size == cast_type->size && actual_src->size < 8
+		  && actual_src->is_unsigned() != cast_type->is_unsigned()) )
+	    {
+		IRBuilder ir(pgm.cc);
+		IRValue out = ir.coerce(ir_from_operand(src_op, actual_src), cast_type);
+		out = ir.load(out);
+		regdp.second = cast_type;
+		if ( regdp.first )
+		{
+		    pgm.safemov(*regdp.first, out.op, cast_type, cast_type);
+		    return *regdp.first;
+		}
+		_operand = out.op;
+		regdp.first = &_operand;
+		return _operand;
+	    }
+	    // No truncation needed — just relabel.
+	    regdp.second = cast_type;
+	    if ( !regdp.first )
+		regdp.first = &src_op;
+	    return src_op;
+	}
+    }
+
+    // Compile the inner expression into a fresh regdp so nested casts
+    // (e.g. (long long)(int)a) don't leak the caller's destination and
+    // skip the narrowing step.
+    {
+	Operand *caller_dest = regdp.first;
+	DataDef *inner_hint = cast_type;
+	// Integer casts apply after the source expression's own arithmetic.
+	// Do not force the inner expression to the destination width here,
+	// or `(long)(u32_a + u32_b)` stops wrapping in 32 bits before widen.
+	if ( cast_type && cast_type->is_integer() && !cast_type->is_simd()
+	  && src_type && src_type->is_integer() && !src_type->is_simd() )
+	    inner_hint = NULL;
+	regdefp_t inner_rdp = {NULL, inner_hint, NULL};
+	Operand &result = expr->compile(pgm, inner_rdp);
+	DataDef *actual_inner = inner_rdp.second ? inner_rdp.second : cast_type;
+	regdp.second = cast_type;
+
+	// Widen if the inner produced a narrower register (e.g. Gpd from
+	// an inner (int) cast needs sign-extension to Gpq for (long long)).
+	if ( cast_type->is_integer() && actual_inner->is_integer()
+	  && actual_inner->size < cast_type->size
+	  && result.isReg() && result.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    IRBuilder ir(pgm.cc);
+	    IRValue widened = ir.coerce(IRValue::reg(result, actual_inner), cast_type);
+	    widened = ir.load(widened);
+	    if ( caller_dest )
+	    {
+		pgm.safemov(*caller_dest, widened.op, cast_type, cast_type);
+		regdp.first = caller_dest;
+		return *caller_dest;
+	    }
+	    _operand = widened.op;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+
+	if ( caller_dest )
+	{
+	    pgm.safemov(*caller_dest, result, cast_type, cast_type);
+	    regdp.first = caller_dest;
+	    return *caller_dest;
+	}
+	regdp.first = &result;
+	return result;
+    }
 }
 
 // & address-of operator: emit LEA to get address of variable
@@ -7333,9 +11760,19 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
     x86::Gp addr = pgm.cc.newIntPtr("addr_expr");
     // TokenMember inherits from TokenVar, but its address must come from the
     // member lvalue operand, not the detached member symbol.
-    if ( dynamic_cast<TokenMember *>(expr) )
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
     {
+	if ( tm->is_bitfield_member() )
+	    pgm.Throw(expr) << "Cannot take address of bit-field member" << flush;
 	Operand &obj = expr->operand(pgm);
+	if ( obj.isMem() )
+	    pgm.cc.lea(addr, obj.as<x86::Mem>());
+	else
+	    pgm.cc.mov(addr, obj.as<x86::Gp>());
+    }
+    else if ( TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(expr) )
+    {
+	Operand &obj = tcp->operand(pgm);
 	if ( obj.isMem() )
 	    pgm.cc.lea(addr, obj.as<x86::Mem>());
 	else
@@ -7365,6 +11802,15 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.mov(obj_reg, obj_op.as<x86::Mem>());
 	else
 	    pgm.cc.mov(obj_reg, obj_op.as<x86::Gp>());
+	if ( obj_var.type && obj_var.type->is_string() )
+	{
+	    InvokeNode *call;
+	    pgm.cc.invoke(&call, imm(string_cstr), FuncSignature::build<const char *, void *>());
+	    call->setArg(0, obj_reg);
+	    x86::Gp cstr = pgm.cc.newIntPtr("addr_sub_cstr");
+	    call->setRet(0, cstr);
+	    obj_reg = cstr;
+	}
 
 	regdefp_t idx_rdp = {nullptr, nullptr, nullptr};
 	Operand &idx_op = ts->index->compile(pgm, idx_rdp);
@@ -7372,13 +11818,18 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
 	load_idx_to_gpq(pgm, idx_reg, idx_op);
 
 	size_t elem_size = 8;
-	if ( obj_var.is_fixed_array() && obj_var.type->size )
+	if ( obj_var.type && obj_var.type->is_string() )
+	    elem_size = 1;
+	else if ( obj_var.is_fixed_array() && obj_var.type->size )
 	    elem_size = obj_var.type->size;
 	else if ( obj_var.type->is_pointer() )
 	{
 	    DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(obj_var.type);
 	    DataDef *base = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
 	    if ( base->size ) elem_size = base->size;
+	    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, base, "addr_sub_size");
+	    pgm.cc.lea(addr, x86::ptr(obj_reg, idx_reg, shift, 0));
+	    return emit_ir_value(pgm, IRValue::reg(addr, ptr_type), regdp, _operand, ptr_type);
 	}
 
 	if ( elem_size == 1 || elem_size == 2 || elem_size == 4 || elem_size == 8 )
@@ -7406,6 +11857,15 @@ Operand &TokenAddrExpr::compile(Program &pgm, regdefp_t &regdp)
     return emit_ir_value(pgm, IRValue::reg(addr, ptr_type), regdp, _operand, ptr_type);
 }
 
+Operand &TokenLabelAddr::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenLabelAddr::compile()"));
+    asmjit::Label &L = lookup_or_make_label(pgm, name);
+    x86::Gp addr = pgm.cc.newIntPtr("%s", name.c_str());
+    pgm.cc.lea(addr, x86::ptr(L));
+    return emit_ir_value(pgm, IRValue::reg(addr, ptr_type), regdp, _operand, ptr_type);
+}
+
 // va_arg(ap, type) — read next variadic argument from packed buffer and advance
 Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 {
@@ -7421,6 +11881,61 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
     else
 	pgm.cc.mov(ptr, ap_op.as<x86::Mem>());
 
+    if ( target_type && !target_type->is_numeric() && !target_type->is_pointer() && !target_type->is_real() )
+    {
+	bool runtime_sized = aggregate_has_runtime_size(target_type);
+	Operand src_storage;
+	Operand *src_ptr = NULL;
+	x86::Mem slot;
+	if ( runtime_sized )
+	{
+	    x86::Gp dyn_src = pgm.cc.newIntPtr("__va_arg_dyn");
+	    pgm.cc.mov(dyn_src, x86::qword_ptr(ptr));
+	    src_storage = dyn_src;
+	    src_ptr = &src_storage;
+	}
+	else
+	{
+	    slot = pgm.cc.newStack((uint32_t)target_type->size, 8);
+	    slot.setSize((uint32_t)target_type->size);
+	    emit_raw_aggregate_copy(pgm, slot, ptr, target_type, "__va_arg_copy");
+	    src_storage = as_gp_ptr(pgm, slot, "__va_arg_val");
+	    src_ptr = &src_storage;
+	}
+
+	size_t advance = internal_vararg_static_slot_size(target_type);
+	pgm.cc.add(ptr, (int64_t)advance);
+	if ( ap_op.isReg() )
+	    pgm.cc.mov(ap_op.as<x86::Gp>(), ptr);
+	else
+	    pgm.cc.mov(ap_op.as<x86::Mem>(), ptr);
+
+	if ( !regdp.second )
+	    regdp.second = target_type;
+	if ( regdp.first )
+	{
+	    if ( regdp.first->isMem() )
+	    {
+		if ( runtime_sized )
+		{
+		    x86::Gp size_gp = emit_runtime_aggregate_size(pgm, target_type, "__va_arg_size");
+		    emit_runtime_aggregate_copy(pgm, *regdp.first, *src_ptr, size_gp, "__va_arg_store");
+		}
+		else
+		    emit_raw_aggregate_copy(pgm, *regdp.first, *src_ptr, target_type, "__va_arg_store");
+		return *regdp.first;
+	    }
+	    if ( regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kGp) )
+	    {
+		pgm.cc.mov(regdp.first->as<x86::Gp>(), src_ptr->as<x86::Gp>());
+		return *regdp.first;
+	    }
+	}
+	_operand = src_ptr->as<x86::Gp>();
+	regdp.first = &_operand;
+	return _operand;
+    }
+
     // read value at [ptr] into result register
     x86::Gp result = pgm.cc.newGpq("va_val");
     pgm.cc.mov(result, x86::qword_ptr(ptr));
@@ -7434,6 +11949,16 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 
     if ( !regdp.second )
 	regdp.second = target_type;
+
+    // For real types (double/float), the buffer holds IEEE 754 bits in a
+    // Gp register. Reinterpret via movq into an Xmm so downstream code
+    // sees a proper floating-point value instead of raw integer bits.
+    if ( target_type && target_type->is_real() )
+    {
+	x86::Xmm xmm_result = pgm.cc.newXmm("va_dbl");
+	pgm.cc.movq(xmm_result, result);
+	return emit_ir_value(pgm, IRValue::reg(xmm_result, target_type), regdp, _operand, target_type);
+    }
     return emit_ir_value(pgm, IRValue::reg(result, &ddINT64), regdp, _operand, target_type);
 }
 
@@ -7441,25 +11966,91 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenReal::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(pgm.cc.comment("TokenReal::compile()"));
+    if ( _datatype && _datatype->is_complex() )
+    {
+	_const = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, _val);
+	_const.setSize(sizeof(double));
+	return emit_complex_from_scalar(pgm, _const, &ddDOUBLE, _datatype,
+					/*imag_value=*/true, regdp, _operand,
+					"__imag_real");
+    }
     if ( !regdp.second )
     {
 	if ( !_datatype ) { throw "TokenReal has NULL _datatype"; }
 	regdp.second = _datatype;
 	DBG(pgm.cc.comment("TokenReal::compile() setting _datatype to double"));
     }
-    _const = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, _val);
-    if ( _datatype->size == sizeof(float) )
+    DataDef *effective_type = (regdp.second && regdp.second->is_real())
+	? regdp.second : _datatype;
+    if ( effective_type->size == sizeof(float) )
+    {
+	_const = pgm.cc.newFloatConst(ConstPoolScope::kLocal, (float)_val);
 	_const.setSize(sizeof(float));
+    }
     else
+    {
+	_const = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, _val);
 	_const.setSize(sizeof(double));
+    }
     DBG(pgm.cc.comment("TokenReal::compile() emitting through IRBuilder"));
     DBG(cout << "TokenReal::compile() emitting through IRBuilder const[" << _val << "]" << endl);
-    return emit_ir_value(pgm, IRValue::mem(_const, _datatype), regdp, _operand, _datatype);
+    return emit_ir_value(pgm, IRValue::mem(_const, effective_type), regdp, _operand, effective_type);
+}
+
+Operand &TokenTypeQuery::compile(Program &pgm, regdefp_t &regdp)
+{
+    if ( !regdp.second )
+	regdp.second = &ddUINT64;
+
+    if ( !query_type || want_alignof )
+	return emit_ir_value(pgm,
+	    IRValue::imm(Imm((int64_t)(query_type ? query_type->alignment() : 0)), &ddUINT64),
+	    regdp, _operand, &ddUINT64);
+
+    if ( DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(query_type) )
+    {
+	if ( use_cached_runtime_size && sdd->runtime_size_expr )
+	{
+	    regdefp_t size_rdp = {NULL, &ddUINT64, NULL};
+	    Operand &size_op = sdd->runtime_size_expr->compile(pgm, size_rdp);
+	    return emit_ir_value(pgm, ir_from_operand(size_op, &ddUINT64), regdp, _operand, &ddUINT64);
+	}
+	if ( sdd->has_runtime_size() )
+	{
+	    x86::Gp total = emit_runtime_struct_size(pgm, sdd, "sizeof_dyn_struct");
+	    return emit_ir_value(pgm, IRValue::reg(total, &ddUINT64), regdp, _operand, &ddUINT64);
+	}
+    }
+    else if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(query_type) )
+    {
+	if ( add->count_expr )
+	{
+	    regdefp_t count_rdp = {NULL, NULL, NULL};
+	    Operand &count_op = add->count_expr->compile(pgm, count_rdp);
+	    x86::Gp total = pgm.cc.newGpq("sizeof_dyn_array");
+	    load_idx_to_gpq(pgm, total, count_op);
+	    size_t elem_size = add->element_type ? add->element_type->size : 0;
+	    if ( elem_size > 1 )
+		pgm.cc.imul(total, total, imm((int64_t)elem_size));
+	    return emit_ir_value(pgm, IRValue::reg(total, &ddUINT64), regdp, _operand, &ddUINT64);
+	}
+    }
+
+    return emit_ir_value(pgm,
+	IRValue::imm(Imm((int64_t)query_type->size), &ddUINT64),
+	regdp, _operand, &ddUINT64);
 }
 
 // load integer into register
 Operand &TokenInt::compile(Program &pgm, regdefp_t &regdp)
 {
+    if ( _datatype && _datatype->is_complex() )
+    {
+	_operand = imm(_token);
+	return emit_complex_from_scalar(pgm, _operand, &ddINT64, _datatype,
+					/*imag_value=*/true, regdp, _operand,
+					"__imag_int");
+    }
     if ( !regdp.second )
     {
 	if ( !_datatype ) { throw "TokenInt has NULL _datatype"; }
@@ -7548,9 +12139,7 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 	merge_slot.setSize(merge_size);
 
 	auto emit_branch = [&](TokenBase *expr) {
-	    if ( regdp.second
-	      && regdp.second->is_pointer()
-	      && regdp.second->rawtype() == DataType::dtCHAR )
+	    if ( type_is_cstr_pointer(regdp.second) )
 	    {
 		Operand branch_storage;
 		Operand &norm = compile_token_normalized(pgm, expr, regdp.second, nullptr, branch_storage);
@@ -7657,6 +12246,10 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 // compile a return statement
 Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 {
+    FuncDef *current_func = pgm.tkFunction && pgm.tkFunction->method
+	? dynamic_cast<FuncDef *>(pgm.tkFunction->method->returns.type)
+	: NULL;
+
     // multi-return: write values to __retbuf and return without cleanup
     // (cleanup runs destructors which can't be called multiple times
     //  when there are multiple return paths in if/else branches)
@@ -7710,6 +12303,7 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), tmp);
 	    }
 	}
+	emit_function_instrument_exit(pgm, current_func);
 	pgm.cc.ret();
 	return _reg;
     }
@@ -7730,13 +12324,13 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	// char* / const char* returns from string literals or string-valued
 	// expressions must return the underlying C string buffer, not the
 	// std::string object address.
-	if ( ret_type && ret_type->is_pointer()
-	  && ret_type->rawtype() == DataType::dtCHAR
+	if ( type_is_cstr_pointer(ret_type)
 	  && returns->datadef() && returns->datadef()->rawtype() == DataType::dtSTRING )
 	{
 	    Operand ret_storage;
 	    Operand &cstr_gp = compile_token_normalized(pgm, returns, ret_type, nullptr, ret_storage);
 	    _operand = cstr_gp;
+	    emit_function_instrument_exit(pgm, current_func);
 	    pgm.saferet(cstr_gp);
 	    return _operand;
 	}
@@ -7758,6 +12352,7 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	    // pointer path.
 	    regdefp_t void_rdp = {NULL, NULL, NULL};
 	    returns->compile(pgm, void_rdp);
+	    emit_function_instrument_exit(pgm, current_func);
 	    emit_zeroed_void_return(pgm);
 	    return _reg;
 	}
@@ -7771,13 +12366,16 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	  && ret_type->basetype() == BaseType::btStruct
 	  && ret_type->size > 0 && ret_type->size <= 16 )
 	{
+	    emit_function_instrument_exit(pgm, current_func);
 	    emit_small_struct_return(pgm, reg, ret_type);
 	    return reg;
 	}
 
+	emit_function_instrument_exit(pgm, current_func);
 	pgm.saferet(reg);
 	return reg;
     }
+    emit_function_instrument_exit(pgm, current_func);
     pgm.cc.ret();
 
     return _reg;
@@ -7835,6 +12433,17 @@ static asmjit::Label &lookup_or_make_label(Program &pgm, const std::string &name
 // compile a goto statement
 Operand &TokenGOTO::compile(Program &pgm, regdefp_t &regdp)
 {
+    if ( indirect_target )
+    {
+	DBG(std::cout << "TokenGOTO::compile(*expr)" << std::endl);
+	regdefp_t jump_rdp = {NULL, NULL, NULL};
+	Operand &jump_op = indirect_target->compile(pgm, jump_rdp);
+	x86::Gp jump_gp = as_gp_ptr(pgm, jump_op, "goto_indirect");
+	DBG(pgm.cc.comment("goto *expr"));
+	pgm.cc.jmp(jump_gp);
+	return _reg;
+    }
+
     DBG(std::cout << "TokenGOTO::compile(" << target << ")" << std::endl);
     asmjit::Label &L = lookup_or_make_label(pgm, target);
     DBG(pgm.cc.comment(("goto " + target).c_str()));
@@ -7859,6 +12468,8 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment("switch start"));
 
     DataDef *expr_type = expression && expression->datadef() ? expression->datadef() : &ddINT64;
+    if ( expr_type && expr_type->is_integer() )
+	expr_type = promote_c_integer_type(expr_type);
     bool normalized_switch = expr_type && (expr_type->is_integer() || expr_type->is_pointer());
     Operand expr_storage;
     Operand *expr_op = NULL;
@@ -7901,18 +12512,13 @@ Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
 	if ( normalized_switch )
 	{
 	    Operand &val_op = compile_token_gp_normalized(pgm, cases[i]->value, expr_type, val_storage);
-	    pgm.cc.cmp(expr_reg, val_op.as<x86::Gp>());
+	    pgm.safecmp(*(Operand *)&expr_reg, val_op, expr_type);
 	}
 	else
 	{
 	    regdefp_t valrdp = {NULL, NULL, NULL};
 	    Operand &val_op = cases[i]->value->compile(pgm, valrdp);
-	    if ( val_op.isReg() && val_op.as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.cc.cmp(expr_reg, val_op.as<x86::Gp>());
-	    else if ( val_op.isImm() )
-		pgm.cc.cmp(expr_reg, val_op.as<Imm>());
-	    else if ( val_op.isMem() )
-		pgm.cc.cmp(expr_reg, val_op.as<x86::Mem>());
+	    pgm.safecmp(*(Operand *)&expr_reg, val_op, expr_type);
 	}
 	pgm.cc.je(case_labels[i]);
     }
@@ -8076,6 +12682,26 @@ Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
     // Reset regdp first so the condition's compile doesn't inherit a
     // stale destination register from the caller — same rule applied in
     // TokenFOR / TokenWHILE / TokenDO (see .claude/rules/regdp-reset.md).
+    if ( condition
+      && (condition->type() == TokenType::ttInteger
+       || condition->type() == TokenType::ttChar) )
+    {
+	if ( condition->ival() )
+	{
+	    pgm.cc.bind(thendo);
+	    regdp.first = NULL; regdp.second = NULL;
+	    statement->compile(pgm, regdp);
+	}
+	else if ( elsestmt )
+	{
+	    pgm.cc.bind(elsedo);
+	    regdp.first = NULL; regdp.second = NULL;
+	    elsestmt->compile(pgm, regdp);
+	}
+	pgm.cc.bind(iftail);
+	pgm.ifstack.pop();
+	return _operand;
+    }
     DBG(pgm.cc.comment("TokenIF::compile() reg = condition->compile()"));
     regdp.first  = NULL;
     regdp.second = NULL;

@@ -1,0 +1,15 @@
+void putu(unsigned long v);
+
+float u2f(unsigned int u) { return u; }
+double u2d(unsigned int u) { return u; }
+
+int main()
+{
+	putu((unsigned long)(float)~0U);
+	putu((unsigned long)u2f((~0U) >> 1));
+	putu((unsigned long)u2f(~((~0U) >> 1)));
+	putu((unsigned long)u2d(~0U));
+	putu((unsigned long)u2d((~0U) >> 1));
+	putu((unsigned long)u2d(~((~0U) >> 1)));
+	return 0;
+}

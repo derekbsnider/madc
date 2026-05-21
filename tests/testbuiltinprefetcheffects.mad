@@ -1,0 +1,16 @@
+int arr[8];
+int *ptr = &arr[2];
+int idx = 1;
+
+int main()
+{
+	int *q;
+	int j;
+
+	__builtin_prefetch((q = ptr), 0, 0);
+	__builtin_prefetch(&ptr[j = idx], 0, 0);
+	__builtin_prefetch(++ptr, 0, 0);
+
+	printf("%d %d %d\n", q == &arr[2], j == 1, ptr == &arr[3]);
+	return 0;
+}

@@ -1,0 +1,17 @@
+void putu(unsigned long v);
+
+double dnan = 1.0 / 0.0 - 1.0 / 0.0;
+double x = 1.0;
+
+int main()
+{
+	putu(dnan == dnan);
+	putu(dnan != x);
+	putu(dnan < x);
+	putu(dnan > x);
+	putu(dnan <= x);
+	putu(dnan >= x);
+	putu(__builtin_isunordered(dnan, x));
+	putu(__builtin_islessgreater(dnan, x));
+	return 0;
+}

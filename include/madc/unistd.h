@@ -30,3 +30,5 @@
 #define dev_t    int64_t
 #define ino_t    uint64_t
 #define nlink_t  int64_t
+#define intptr_t  int64_t
+#define uintptr_t uint64_t

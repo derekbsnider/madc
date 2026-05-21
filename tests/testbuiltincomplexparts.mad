@@ -1,0 +1,36 @@
+extern void abort(void);
+
+int main()
+{
+  __complex__ float f = 1.0F + 2.0iF;
+  __complex__ double d = 3.0 + 4.0i;
+
+  if (crealf(f) != 1.0F)
+    abort();
+  if (__builtin_crealf(f) != 1.0F)
+    abort();
+  if (cimagf(f) != 2.0F)
+    abort();
+  if (__builtin_cimagf(f) != 2.0F)
+    abort();
+  if (conjf(1.0F + 2.0iF) != 1.0F - 2.0iF)
+    abort();
+  if (__builtin_conjf(1.0F + 2.0iF) != 1.0F - 2.0iF)
+    abort();
+
+  if (creal(d) != 3.0)
+    abort();
+  if (__builtin_creal(d) != 3.0)
+    abort();
+  if (cimag(d) != 4.0)
+    abort();
+  if (__builtin_cimag(d) != 4.0)
+    abort();
+  if (conj(3.0 + 4.0i) != 3.0 - 4.0i)
+    abort();
+  if (__builtin_conj(3.0 + 4.0i) != 3.0 - 4.0i)
+    abort();
+
+  puts("ok\n");
+  return 0;
+}

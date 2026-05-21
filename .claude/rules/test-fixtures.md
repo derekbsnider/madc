@@ -4,6 +4,7 @@
   similar runner). No `case "$base" in testfoo.mad) …` branches.
 - Per-test setup lives in sibling fixture files, discovered by the runner
   via filename convention:
+  - `tests/foo.flags` — whitespace-split compiler flags prepended before the source path
   - `tests/foo.input` — redirected to stdin
   - `tests/foo.argv` — whitespace-split, appended as argv
   - `tests/foo.expect` — each non-empty line must appear in the output

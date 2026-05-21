@@ -56,13 +56,5 @@ int main()
 	n = tags.size();
 	cout << n << endl;
 
-	// std::list<int>
-	std::list<int> li;
-	li.push_back(1);
-	li.push_back(2);
-	li.push_front(0);
-	n = li.size();
-	cout << n << endl;
-
 	return 0;
 }

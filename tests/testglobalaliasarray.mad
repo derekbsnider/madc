@@ -1,0 +1,11 @@
+int a[10] = {};
+extern int b[10] __attribute__((alias("a")));
+int off;
+
+int main()
+{
+	b[off] = 1;
+	a[off] = 2;
+	printf("%d\n", b[off]);
+	return 0;
+}

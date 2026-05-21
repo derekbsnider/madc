@@ -44,7 +44,8 @@ enum class TokenID {
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
   tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT,
   tkVECTOR, tkMAP, tkSET, tkLIST,
-  tkFatArrow, tkMATCH    // => (rust::match arm) and the match statement itself
+  tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
+  tkUNION
 };
 
 enum class TokenAssoc {
@@ -86,7 +87,7 @@ public:
     virtual int inc() { return 0; }
     virtual int dec() { return 0; }
     virtual int64_t get() const  { return _token; }
-    virtual int ival() const     { return 0; }
+    virtual int64_t ival() const { return 0; }
     virtual double dval() const { return 0; }
     virtual size_t argc() const { return 0; }
     virtual TokenType  type()  const { return TokenType::ttBase; }
@@ -149,14 +150,14 @@ public:
     TokenOperator() : TokenBase() { left = NULL; right = NULL; _datatype = &ddINT; }
     TokenOperator(int t) : TokenBase(t) { left = NULL; right = NULL; _datatype = &ddINT; }
     virtual TokenBase *clone() { TokenOperator *to = new TokenOperator(); to->left = left; to->right = right; return to; }
-    virtual int ival() const { /*if (left && right) return operate();*/ return 0; }
+    virtual int64_t ival() const { /*if (left && right) return operate();*/ return 0; }
     virtual size_t argc() const { return 2; }
     virtual bool is_operator() const override { return true; }
     virtual inline TokenType type()     const { return TokenType::ttOperator;     }
     virtual inline TokenID   id()       const { return TokenID::tkOperator;       }
     virtual inline TokenAssoc assoc()   const { return TokenAssoc::taLeftToRight; }
     virtual inline int precedence() const  { return 15; } // C Operator Precedence, default to 15 (lowest)
-    virtual inline int ioperate() const    { return 0; } // integer operation
+    virtual inline int64_t ioperate() const { return 0; } // integer operation
     virtual inline double foperate() const { return 0; } // floating point operation
     virtual void setregdp(Program &, regdefp_t &);
     virtual void settype(Program &, regdefp_t &);
@@ -208,9 +209,11 @@ public:
     {
 	if ( left  && left->datadef()  && left->datadef()->is_pointer()  ) return left->datadef();
 	if ( right && right->datadef() && right->datadef()->is_pointer() ) return right->datadef();
+	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
     }
-    inline int    ioperate() const { return left->ival() + right->ival(); }
+    inline int64_t ioperate() const { return left->ival() + right->ival(); }
     inline double foperate() const { return left->dval() + right->dval(); }
 };
 
@@ -242,9 +245,11 @@ public:
 		return TokenOperator::datadef();
 	    return left->datadef();
 	}
+	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
 	return TokenOperator::datadef();
     }
-    inline int    ioperate() const { return left->ival() - right->ival(); }
+    inline int64_t ioperate() const { return left->ival() - right->ival(); }
     inline double foperate() const { return left->dval() - right->dval(); }
 };
 
@@ -259,8 +264,20 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int    ioperate() const { return - right->ival(); }
+    inline int64_t ioperate() const {
+	int64_t v = - right->ival();
+	// Mask to operand width: -1U must yield 0xFFFFFFFF, not -1 as int64
+	if ( right->datadef() && right->datadef()->is_unsigned() && right->datadef()->size < 8 )
+	    v &= (int64_t)((1ULL << (right->datadef()->size * 8)) - 1);
+	return v;
+    }
     inline double foperate() const { return - right->dval(); }
+    // Propagate unsigned operand type so -1U is uint32, not ddINT
+    virtual DataDef *datadef() const override {
+	if ( right && right->datadef() && right->datadef()->is_unsigned() )
+	    return right->datadef();
+	return TokenOperator::datadef();
+    }
 };
 
 // multiply operator *
@@ -272,7 +289,13 @@ public:
     virtual TokenID id() const { return TokenID::tkMul; }
     virtual inline int precedence() const { return 3; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() * right->ival(); }
+    virtual DataDef *datadef() const override
+    {
+	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	return TokenOperator::datadef();
+    }
+    inline int64_t ioperate() const { return left->ival() * right->ival(); }
     inline double foperate() const { return left->dval() * right->dval(); }
 };
 
@@ -285,7 +308,13 @@ public:
     virtual TokenID id() const { return TokenID::tkDiv; }
     virtual inline int precedence() const { return 3; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() / right->ival(); }
+    virtual DataDef *datadef() const override
+    {
+	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
+	if ( right && right->datadef() && right->datadef()->is_complex() ) return right->datadef();
+	return TokenOperator::datadef();
+    }
+    inline int64_t ioperate() const { return left->ival() / right->ival(); }
     inline double foperate() const { return left->dval() / right->dval(); }
 };
 
@@ -298,7 +327,7 @@ public:
     virtual TokenID id() const { return TokenID::tkMod; }
     virtual inline int precedence() const { return 3; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() % right->ival(); }
+    inline int64_t ioperate() const { return left->ival() % right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
 
@@ -319,7 +348,7 @@ public:
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int ioperate() const
+    inline int64_t ioperate() const
     {
 	if ( left )  { return left->ival() + 1;  }
 	if ( right ) { return right->ival() + 1; }
@@ -350,7 +379,7 @@ public:
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int ioperate() const
+    inline int64_t ioperate() const
     {
 	if ( left )  { return left->ival() - 1;  }
 	if ( right ) { return right->ival() - 1; }
@@ -383,7 +412,7 @@ public:
     }
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
-    int ioperate() const;
+    int64_t ioperate() const;
 };
 
 // assignment operator += (assignment by sum)
@@ -533,11 +562,23 @@ public:
     TokenBnot() : TokenOperator('~') {}
     virtual TokenID id() const { return TokenID::tkBnot; }
     virtual TokenBase *clone() { return new TokenBnot(); }
+    // Propagate operand type so ~0U is uint32, not the default ddINT.
+    virtual DataDef *datadef() const override {
+	if ( right && right->datadef() && right->datadef()->is_integer() && right->datadef() != &ddINT )
+	    return right->datadef();
+	return TokenOperator::datadef();
+    }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int    ioperate() const { return ~right->ival(); }
+    inline int64_t ioperate() const {
+	int64_t v = ~right->ival();
+	// Mask to operand's semantic width: ~0U must yield 0xFFFFFFFF, not 0xFFFFFFFFFFFFFFFF
+	if ( right->datadef() && right->datadef()->size < 8 )
+	    v &= (int64_t)((1ULL << (right->datadef()->size * 8)) - 1);
+	return v;
+    }
     inline double foperate() const { return ioperate(); }
 };
 
@@ -552,7 +593,7 @@ public:
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    inline int    ioperate() const { return !right->ival(); }
+    inline int64_t ioperate() const { return !right->ival(); }
     inline double foperate() const { return !right->dval(); }
 };
 
@@ -565,7 +606,7 @@ public:
     virtual TokenBase *clone() { return new TokenBand(); }
     virtual inline int precedence() const { return 8; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() & right->ival(); }
+    inline int64_t ioperate() const { return left->ival() & right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
 
@@ -578,7 +619,7 @@ public:
     virtual TokenBase *clone() { return new TokenLand(); }
     virtual inline int precedence() const { return 11; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() && right->ival(); }
+    inline int64_t ioperate() const { return left->ival() && right->ival(); }
     inline double foperate() const { return left->dval() && right->dval(); }
 };
 
@@ -591,7 +632,7 @@ public:
     virtual TokenBase *clone() { return new TokenBor(); }
     virtual inline int precedence() const { return 10; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() | right->ival(); }
+    inline int64_t ioperate() const { return left->ival() | right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
 
@@ -604,7 +645,7 @@ public:
     virtual TokenBase *clone() { return new TokenLor(); }
     virtual inline int precedence() const { return 12; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() || right->ival(); }
+    inline int64_t ioperate() const { return left->ival() || right->ival(); }
     inline double foperate() const { return left->dval() || right->dval(); }
 };
 
@@ -617,7 +658,7 @@ public:
     virtual TokenBase *clone() { return new TokenXor(); }
     virtual inline int precedence() const { return 9; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() ^ right->ival(); }
+    inline int64_t ioperate() const { return left->ival() ^ right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
 
@@ -635,7 +676,7 @@ public:
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() ? left->ival() : right->ival(); }
+    inline int64_t ioperate() const { return left->ival() ? left->ival() : right->ival(); }
     inline double foperate() const { return left->dval() ? left->dval() : right->dval(); }
 };
 
@@ -660,7 +701,7 @@ public:
     virtual TokenBase *clone() { return new TokenEquals(); }
     virtual inline int precedence() const { return 7; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() == right->ival() ? 1 : 0; }
+    inline int64_t ioperate() const { return left->ival() == right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() == right->dval() ? 1 : 0; }
 };
 
@@ -672,7 +713,7 @@ public:
     virtual TokenID id() const { return TokenID::tk3Eq; }
     virtual TokenBase *clone() { return new Token3Eq(); }
     virtual inline int precedence() const { return 7; }
-    inline int    ioperate() const { return (left->datatype() == right->datatype() && left->ival() == right->ival()) ? 1 : 0; }
+    inline int64_t ioperate() const { return (left->datatype() == right->datatype() && left->ival() == right->ival()) ? 1 : 0; }
     inline double foperate() const { return (left->datatype() == right->datatype() && left->dval() == right->dval()) ? 1 : 0; }
 };
 
@@ -685,7 +726,7 @@ public:
     virtual TokenBase *clone() { return new TokenNotEq(); }
     virtual inline int precedence() const { return 7; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() != right->ival() ? 1 : 0; }
+    inline int64_t ioperate() const { return left->ival() != right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() != right->dval() ? 1 : 0; }
 };
 
@@ -698,7 +739,7 @@ public:
     virtual TokenBase *clone() { return new TokenLT(); }
     virtual inline int precedence() const { return 6; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() < right->ival() ? 1 : 0; }
+    inline int64_t ioperate() const { return left->ival() < right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() < right->dval() ? 1 : 0; }
 };
 
@@ -711,7 +752,7 @@ public:
     virtual TokenBase *clone() { return new TokenGT(); }
     virtual inline int precedence() const { return 6; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() > right->ival() ? 1 : 0; }
+    inline int64_t ioperate() const { return left->ival() > right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() > right->dval() ? 1 : 0; }
 };
 
@@ -724,7 +765,7 @@ public:
     virtual TokenBase *clone() { return new TokenLE(); }
     virtual inline int precedence() const { return 6; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() <= right->ival() ? 1 : 0; }
+    inline int64_t ioperate() const { return left->ival() <= right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() <= right->dval() ? 1 : 0; }
 };
 
@@ -737,7 +778,7 @@ public:
     virtual TokenBase *clone() { return new TokenGE(); }
     virtual inline int precedence() const { return 6; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() >= right->ival() ? 1 : 0; }
+    inline int64_t ioperate() const { return left->ival() >= right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() >= right->dval() ? 1 : 0; }
 };
 
@@ -751,7 +792,7 @@ public:
     virtual TokenBase *clone() { return new Token3Way(); }
     virtual inline int precedence() const { return 6; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const 
+    inline int64_t ioperate() const 
     {
 	if ( left->ival() < right->ival() ) { return -1; }
 	if ( left->ival() > right->ival() ) { return 1;  }
@@ -768,7 +809,7 @@ class TokenBSL: public TokenMultiOp
     virtual TokenBase *clone() { return new TokenBSL(); }
     virtual inline int precedence() const { return 5; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() << right->ival(); }
+    inline int64_t ioperate() const { return left->ival() << right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
 
@@ -780,7 +821,7 @@ class TokenBSR: public TokenMultiOp
     virtual TokenBase *clone() { return new TokenBSR(); }
     virtual inline int precedence() const { return 5; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
-    inline int    ioperate() const { return left->ival() >> right->ival(); }
+    inline int64_t ioperate() const { return left->ival() >> right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
 
@@ -872,7 +913,7 @@ public:
     TokenChar() : TokenBase()       { _datatype = &ddCHAR; }
     TokenChar(int v) : TokenBase(v) { _datatype = &ddCHAR; }
     virtual TokenBase *clone()      { return new TokenChar(_token); }
-    virtual int ival() const        { return _token; }
+    virtual int64_t ival() const    { return _token; }
     virtual bool is_constant()	    { return true; }
     virtual TokenType type() const  { return TokenType::ttChar; }
     virtual TokenID   id()   const  { return TokenID::tkChar; }
@@ -883,15 +924,17 @@ public:
 class TokenInt: public TokenBase
 {
 public:
+    std::string source_text;   // original literal text (hex, suffixes)
     TokenInt() : TokenBase()            { _datatype = &ddINT; }
     TokenInt(int64_t v) : TokenBase(v) { _datatype = &ddINT; }
-    virtual int ival() const            { return (int)_token; }
+    TokenInt(int64_t v, const std::string &src) : TokenBase(v), source_text(src) { _datatype = &ddINT; }
+    virtual int64_t ival() const        { return _token; }
     virtual double dval() const    { return (double)_token; }
     virtual TokenType type() const { return TokenType::ttInteger; }
     virtual TokenID   id()   const { return TokenID::tkInt; }
-    virtual TokenBase *clone()     { return new TokenInt(_token); }
+    virtual TokenBase *clone()     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; return c; }
     virtual bool is_constant() const override { return true; }
-    virtual void setDataType(DataDef *d) { if (d && d->is_integer()) _datatype = d; }
+    virtual void setDataType(DataDef *d) { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
 //  virtual asmjit::x86::Gp &getreg(Program &);
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
@@ -909,6 +952,25 @@ public:
     }
 };
 
+class TokenTypeQuery: public TokenBase
+{
+public:
+    DataDef *query_type;
+    bool want_alignof;
+    bool use_cached_runtime_size;
+
+    TokenTypeQuery(DataDef *dd = NULL, bool want_align = false,
+		   bool use_cached_size = true)
+	: TokenBase(), query_type(dd), want_alignof(want_align),
+	  use_cached_runtime_size(use_cached_size)
+    {
+	_datatype = &ddUINT64;
+    }
+    virtual TokenBase *clone() { return new TokenTypeQuery(query_type, want_alignof, use_cached_runtime_size); }
+    virtual TokenID id() const { return TokenID::tkInt; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 class TokenReal: public TokenBase
 {
 protected:
@@ -917,14 +979,14 @@ protected:
 public:
     TokenReal() : TokenBase()         { _val = 0; _datatype = &ddDOUBLE; }
     TokenReal(double v) : TokenBase() { _val = v; _datatype = &ddDOUBLE; }
-    virtual int ival() const          { return (int)_val; }
+    virtual int64_t ival() const      { return (int64_t)_val; }
     virtual double dval() const       { return _val;      }
     virtual TokenType type() const    { return TokenType::ttReal; }
     virtual TokenID   id()   const    { return TokenID::tkReal;   }
     virtual TokenBase *clone()        { return new TokenReal(_val); }
     virtual bool is_constant() const override { return true; }
     virtual bool is_real()     const override { return true; }
-    virtual void setDataType(DataDef *d) { if (d && d->is_real()) _datatype = d; }
+    virtual void setDataType(DataDef *d) { if (d && (d->is_real() || d->is_complex())) _datatype = d; }
 //  virtual asmjit::x86::Gp &getreg(Program &) { throw "TokenReal::getreg(): Use TokenReal::operand()!"; }
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
@@ -953,7 +1015,7 @@ public:
     TokenStr() {}
     TokenStr(const char *k) : TokenIdent(k) {}
     TokenStr(std::string k) : TokenIdent(k) {}
-    virtual int ival() const       { return atol(str.c_str()); }
+    virtual int64_t ival() const   { return atol(str.c_str()); }
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const { return TokenType::ttString; }
     virtual TokenID   id()   const { return TokenID::tkStr; }
@@ -1017,7 +1079,8 @@ class TokenGOTO: public TokenKeyword
 {
 public:
     std::string target;   // label name (set by parse)
-    TokenGOTO() : TokenKeyword("goto") {}
+    TokenBase *indirect_target;
+    TokenGOTO() : TokenKeyword("goto"), indirect_target(NULL) {}
     virtual TokenID id() const { return TokenID::tkGOTO; }
     virtual TokenBase *clone() { return (TokenBase*)new TokenGOTO(); }
     virtual TokenBase *parse(Program &);
@@ -1152,6 +1215,14 @@ public:
     virtual TokenID id() const { return TokenID::tkSTRUCT; }
     virtual TokenBase *clone() { return new TokenSTRUCT(); }
     virtual TokenBase *parse(Program &pgm);
+};
+
+class TokenUNION: public TokenSTRUCT
+{
+public:
+    TokenUNION() : TokenSTRUCT() { str = "union"; }
+    virtual TokenID id() const { return TokenID::tkUNION; }
+    virtual TokenBase *clone() { return new TokenUNION(); }
 };
 
 // register keyword: declares a variable that lives only in a virtual register

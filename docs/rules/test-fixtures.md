@@ -43,8 +43,9 @@ whenever it changes. With a fixture file, the runner doesn't care.
 
 ## How to add a new capability
 
-If the runner needs a new knob (say, environment variables), resist the
+If the runner needs a new knob (say, compiler flags or environment variables), resist the
 urge to add a per-test `case` branch. Instead, pick another filename
-convention — e.g. `tests/foo.env` with `KEY=value` lines — and extend
+convention — e.g. `tests/foo.flags` with whitespace-split CLI flags or
+`tests/foo.env` with `KEY=value` lines — and extend
 the runner's per-test block to discover it. The runner remains free of
 test-specific knowledge.

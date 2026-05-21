@@ -1,0 +1,15 @@
+_Complex v = 3.0 + 1.0iF;
+
+_Complex id(_Complex z)
+{
+    return z;
+}
+
+int main(void)
+{
+    _Complex x;
+    x = id(v);
+    puti((int)x);
+    puts("\n");
+    return 0;
+}

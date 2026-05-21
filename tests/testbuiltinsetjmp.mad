@@ -1,0 +1,25 @@
+extern char *strcpy(char *, const char *);
+extern int __builtin_setjmp(void *);
+extern void __builtin_longjmp(void *, int);
+
+void *buf[20];
+
+void jump_back(void)
+{
+	__builtin_longjmp(buf, 1);
+}
+
+int main(void)
+{
+	char *p = (char *)__builtin_alloca(20);
+	strcpy(p, "test");
+
+	if (__builtin_setjmp(buf))
+	{
+		printf("%s\n", p);
+		return 0;
+	}
+
+	jump_back();
+	return 1;
+}

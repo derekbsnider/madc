@@ -1,0 +1,15 @@
+void putu(unsigned long v);
+
+float test_isunordered(float x, float y, float a, float b)
+{
+	return __builtin_isunordered(x, y) ? a : b;
+}
+
+int main()
+{
+	float nan = 0.0f / 0.0f;
+	float (*p)(float, float, float, float) = test_isunordered;
+
+	putu((*p)(nan, nan, 1.0f, 2.0f) == 1.0f);
+	return 0;
+}

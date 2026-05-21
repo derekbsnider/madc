@@ -1,0 +1,13 @@
+#include <stdarg.h>
+
+typedef __builtin_va_list my_va_list;
+
+int main()
+{
+	my_va_list ap;
+	va_list ap2;
+	ap = 0;
+	ap2 = 0;
+	puts("ok\n");
+	return 0;
+}

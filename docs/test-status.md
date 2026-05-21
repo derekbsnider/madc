@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 10, 2026 (post-v0.14.1 small-struct-return ABI fix and first native-SMAUG serpent-combat milestone, on top of the ongoing Phase 4.2/4.3 libmadc API work and the current storage/query exploration track).
+Test results as of May 21, 2026 (v0.18.0, GCC parity 1496/1685 = 88.8%).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,21 +11,134 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 271 JIT pass / 0 fail, 271 EXE pass / 0 fail
+## Current Batch Status — 370 JIT pass / 0 fail
 
-Latest results (2026-05-10):
+Latest results (2026-05-21):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 271 integration tests
+- Passing: 370 integration tests
 - Failing: none
-- The integration runner is currently fully green.
+- Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
+  Additional tracked regressions for GNU designated initializers,
+  nested designated initializers, file-scope compound-literal global
+  pointers, struct-copy compound literals, union compound literals,
+  nested deref post-increment, the `20060420-1.c` global array
+  pointer-cast loop, `_Complex` / `iF` compatibility via
+  `testcomplexkw.mad`, and VLA-sized local struct members via
+  `testvlastructmember.mad`, and indirect function-pointer array calls via
+  `testfnptrarraycall.mad`, plus K&R varargs function-pointer calls via
+  `testkrfnptrvarargs.mad`, plus `_Complex unsigned short` compatibility via
+  `testcomplexushort.mad`, plus GNU computed goto via
+  `testcomputedgoto.mad`, plus the `20050502-1.c` deref-postinc read
+  shape via `testderefpostincread.mad`, plus GNU `vector_size`
+  compound-literal coverage via `testgccvectorlit.mad`, now bring the
+  tracked integration count to 297. Additional tracked regressions for
+  typedef'd VLA `sizeof(type)` handling via `testtypedefvlasizeof.mad`
+  and SIMD integer/float vector cast lane preservation via
+  `testgccvectorcasts.mad` now bring the tracked integration count to
+  306. Additional tracked regressions for typedef'd array pointer-
+  subscript decay via `testtypedefarrayptrsubscript.mad`, struct-by-
+  value call copies via `teststructbyvaluecallcopy.mad`, `__real`
+  address-taking via `testcomplexrealaddr.mad`, typedef-enum bitfield
+  extraction via `testenumbitfieldalias.mad`, and repeated nested-
+  function inline-asm barriers via `testnestedasmbarrier.mad` now bring
+  the tracked integration count to 315. Additional tracked regressions
+  for pure-imaginary complex literals via `testcompleximagadd.mad`,
+  builtin/`~` conjugation via `testcomplexconjop.mad` and
+  `testbuiltinconjf.mad`, component-wise complex `+=` via
+  `testcomplexaddeq.mad`, and old-style forward declarations with
+  complex-typed later definitions via `testcomplexfwddeclparams.mad`
+  now bring the tracked integration count to 320. Additional tracked
+  regressions for complex fixed-array decay / pointer comparison via
+  `testcomplexptrcmpdecay.mad` and unsigned complex compound division
+  via `testcomplexunsigneddiveq.mad` now bring the tracked integration
+  count to 322. An additional tracked regression for split-line complex
+  declarations plus complex truthiness in `if (c = f())` via
+  `testcomplexsplitdeclcond.mad` now brings the tracked integration
+  count to 323. The latest tracked regression covers embedded standard-
+  header auto-inclusion for names like `size_t`, `intptr_t`, and
+  `DBL_MIN` via `testautoincludestdheaders.mad`. An additional tracked
+  regression for function `__alignof__` / `__attribute__((aligned(N)))`
+  coverage via `testfunctionalignof.mad` now brings the tracked
+  integration count to 353. An additional tracked regression for
+  `long long` ternary width preservation under casts via
+  `testternaryllcast.mad` now brings the tracked integration count to
+  354. An additional tracked regression for C integer-promotion rules
+  on signed/unsigned bitfield arithmetic via `testbitfieldpromote.mad`
+  now brings the tracked integration count to 355. An additional tracked
+  regression for wide unsigned bitfield arithmetic result precision via
+  `testbitfieldwidearith.mad` now brings the tracked integration count
+  to 356. Additional tracked regressions for GNU `optimize` attributes
+  containing `-fno-strict-aliasing`, GCC byte-swap builtins,
+  `__builtin_setjmp` / `__builtin_longjmp`, and integer bit-operation
+  builtins plus unsigned shift-result typing now bring the tracked
+  integration count to 360. An additional tracked regression for fixed-array struct assignment via
+  `testfixedarraystructcopy.mad` now brings the tracked integration
+  count to 329. An additional tracked regression for
+  `-finstrument-functions` plus `no_instrument_function` handling via
+  `testfinstrumentfunctions.mad` now brings the tracked integration
+  count to 330. Additional tracked regressions for contextual `struct`
+  tag parsing via `teststructtrytag.mad` and float-return indirect
+  function-pointer comparisons via `testfnptrfloatretcmp.mad` now bring
+  the tracked integration count to 369. Additional tracked regressions for typedef'd struct
+  array aliases via `testtypedefstructarrayalias.mad`, nested
+  multidimensional VLA locals via `testmultidimvla.mad`, preserving
+  `defined(...)` operands in `#if` via `testifdefdefinedoperand.mad`,
+  integer wrap-before-widen casts via `testuint32wrapbeforecast.mad`,
+  nested VLA parameter declarators via `testnestedvlaparam.mad`,
+  fixed-array struct assignment via `testfixedarraystructcopy.mad`, and
+  `-finstrument-functions` / `no_instrument_function` coverage via
+  `testfinstrumentfunctions.mad` now bring the tracked integration
+  count to 337. Additional tracked regressions for the builtin
+  `strcmp` macro cycle via `testbuiltinstrcmpmacrocycle.mad`, signed
+  bitfield assignment-expression extraction via
+  `testsignedbitfieldassignexpr.mad`, native string-literal subscript
+  global pointer initialization via `teststrlitaddrsubscriptglobal.mad`,
+  and multidimensional struct-member array decay via
+  `teststructmembermultidimdecay.mad` now bring the tracked integration
+  count to 341. An additional tracked regression for odd-sized local
+  struct array direct/varargs pass-by-value handling via
+  `testsmallstructarraycall.mad` now brings the tracked integration
+  count to 342. Additional tracked regressions from the subsequent GCC
+  parity slices now bring the tracked integration count to 351,
+  including unsigned-char pointer string-literal coercion via
+  `testucharptrstringlit.mad`, empty-template inline asm `"+r"`
+  operand evaluation via `testasmrwoperand.mad`, size_t-width
+  `sizeof` / `alignof` tokens via `testlargesizeofquery.mad`, exact
+  decimal-real lexing via `testhexfloatcompare.mad`, global
+  alias-backed array storage identity via `testglobalaliasarray.mad`,
+  and scalar alias write-through via `testglobalaliasscalar.mad`.
+
+  An additional tracked regression for file-scope `-0.0` sign
+  preservation via `testnegzerostatic.mad` now brings the tracked
+  integration count to 370.
+
+  Additional tracked regressions for GNU compound-literal field
+  designators via `testcompoundlitgnudesignator.mad`,
+  `__builtin_types_compatible_p(...)` via
+  `testbuiltintypescompatible.mad`, `__builtin_prefetch(...)` side
+  effects via `testbuiltinprefetcheffects.mad`, and unsigned 32-bit to
+  real coercions via `testuint32realcoerce.mad` now bring the tracked
+  integration count to 364. An additional tracked regression for
+  pointer-arithmetic member-address expressions like
+  `&((array + 1)->field)` via `testconstaddrexprarrow.mad` now brings
+  the tracked integration count to 365. An additional tracked
+  regression for IEEE NaN comparisons and builtin predicates via
+  `testieeefpcompare.mad` now brings the tracked integration count to
+  366. An additional tracked regression for IEEE huge-value, infinity,
+  finite, and NaN builtins via `testieeehugeval.mad` now brings the
+  tracked integration count to 367.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 271 (of 271 JIT-passing tests)
+- Passing: 367 (of 367 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so
 - The native EXE parity lane is currently fully green.
+- File-scope compound literals that feed global pointer initializers now
+  also relocate correctly in the EXE/AOT lane.
+- The new `_Complex` arithmetic / conjugation regressions are green in
+  native EXE mode too.
 - A fresh `smaug.exe` probe also now survives the room 109 serpent fight
   and serpent death on the standalone executable path.
 

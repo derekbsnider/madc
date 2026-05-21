@@ -33,6 +33,38 @@
 using namespace std;
 using namespace asmjit;
 
+static DataDef *get_complex_compat_type(DataDef *base_type)
+{
+    static std::map<DataDef *, DataDefCOMPLEX *> cache;
+    if ( !base_type )
+	base_type = &ddDOUBLE;
+    std::map<DataDef *, DataDefCOMPLEX *>::iterator it = cache.find(base_type);
+    if ( it != cache.end() )
+	return it->second;
+    DataDefCOMPLEX *complex_type = new DataDefCOMPLEX(*base_type);
+    cache[base_type] = complex_type;
+    return complex_type;
+}
+
+static bool builtin_alias_needs_retokenize(const std::string &word,
+					   const std::string &val)
+{
+    (void)val;
+    return word == "__builtin_va_list";
+}
+
+static bool is_prefixed_literal_token(const std::string &ident,
+				      const std::string &body,
+				      size_t pos)
+{
+    if ( pos >= body.size() )
+	return false;
+    char next = body[pos];
+    if ( next != '\'' && next != '"' )
+	return false;
+    return ident == "L" || ident == "u" || ident == "U" || ident == "u8";
+}
+
 static bool is_binary_prefix(int ch, Source &source)
 {
     return ch == '0' && source.good() && (source.peek() == 'b' || source.peek() == 'B');
@@ -66,9 +98,13 @@ static bool consume_macro_call_open(Source &source)
 {
     std::string spacing;
 
-    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+    // C preprocessor: function-like macro calls allow whitespace
+    // INCLUDING newlines between the macro name and '('.
+    while ( source.good()
+	 && (source.peek() == ' ' || source.peek() == '\t'
+	  || source.peek() == '\n' || source.peek() == '\r') )
 	spacing += source.get();
-    if ( source.peek() == '(' )
+    if ( source.good() && source.peek() == '(' )
     {
 	source.get(); // consume '('
 	return true;
@@ -76,6 +112,198 @@ static bool consume_macro_call_open(Source &source)
     if ( !spacing.empty() )
 	source.pushback(spacing);
     return false;
+}
+
+static bool is_identifier_spelling(const std::string &s)
+{
+    if ( s.empty() )
+	return false;
+    if ( s[0] != '_' && !isalpha((unsigned char)s[0]) )
+	return false;
+    for ( size_t i = 1; i < s.size(); ++i )
+	if ( s[i] != '_' && !isalnum((unsigned char)s[i]) )
+	    return false;
+    return true;
+}
+
+static bool identifier_matches_gnu_attribute_name(const std::string &id,
+						  const std::string &name)
+{
+    return id == name || id == "__" + name + "__";
+}
+
+static bool gnu_attribute_text_has_name(const std::string &text,
+					const std::string &name)
+{
+    for ( size_t i = 0; i < text.size(); )
+    {
+	char c = text[i];
+	if ( c == '"' || c == '\'' )
+	{
+	    char quote = c;
+	    ++i;
+	    while ( i < text.size() )
+	    {
+		if ( text[i] == '\\' && i + 1 < text.size() )
+		{
+		    i += 2;
+		    continue;
+		}
+		if ( text[i++] == quote )
+		    break;
+	    }
+	    continue;
+	}
+	if ( c != '_' && !isalpha((unsigned char)c) )
+	{
+	    ++i;
+	    continue;
+	}
+	std::string id;
+	while ( i < text.size()
+	     && (text[i] == '_' || isalnum((unsigned char)text[i])) )
+	    id += text[i++];
+	if ( identifier_matches_gnu_attribute_name(id, name) )
+	    return true;
+    }
+    return false;
+}
+
+static const char *auto_include_embedded_header_for_identifier(const std::string &word)
+{
+    static const std::map<std::string, std::string> identifier_headers = {
+	{"size_t", "stddef.h"},
+	{"ptrdiff_t", "stddef.h"},
+	{"wchar_t", "stddef.h"},
+	{"NULL", "stddef.h"},
+	{"offsetof", "stddef.h"},
+
+	{"intptr_t", "stdint.h"},
+	{"uintptr_t", "stdint.h"},
+	{"INT8_MIN", "stdint.h"},
+	{"INT8_MAX", "stdint.h"},
+	{"UINT8_MAX", "stdint.h"},
+	{"INT16_MIN", "stdint.h"},
+	{"INT16_MAX", "stdint.h"},
+	{"UINT16_MAX", "stdint.h"},
+	{"INT32_MIN", "stdint.h"},
+	{"INT32_MAX", "stdint.h"},
+	{"UINT32_MAX", "stdint.h"},
+	{"INT64_MIN", "stdint.h"},
+	{"INT64_MAX", "stdint.h"},
+	{"UINT64_MAX", "stdint.h"},
+	{"SIZE_MAX", "stdint.h"},
+	{"INTMAX_MIN", "stdint.h"},
+	{"INTMAX_MAX", "stdint.h"},
+	{"UINTMAX_MAX", "stdint.h"},
+	{"PTRDIFF_MIN", "stdint.h"},
+	{"PTRDIFF_MAX", "stdint.h"},
+
+	{"FLT_RADIX", "float.h"},
+	{"FLT_EVAL_METHOD", "float.h"},
+	{"DECIMAL_DIG", "float.h"},
+	{"FLT_MANT_DIG", "float.h"},
+	{"DBL_MANT_DIG", "float.h"},
+	{"LDBL_MANT_DIG", "float.h"},
+	{"FLT_DIG", "float.h"},
+	{"DBL_DIG", "float.h"},
+	{"LDBL_DIG", "float.h"},
+	{"FLT_MIN_EXP", "float.h"},
+	{"DBL_MIN_EXP", "float.h"},
+	{"LDBL_MIN_EXP", "float.h"},
+	{"FLT_MIN_10_EXP", "float.h"},
+	{"DBL_MIN_10_EXP", "float.h"},
+	{"LDBL_MIN_10_EXP", "float.h"},
+	{"FLT_MAX_EXP", "float.h"},
+	{"DBL_MAX_EXP", "float.h"},
+	{"LDBL_MAX_EXP", "float.h"},
+	{"FLT_MAX_10_EXP", "float.h"},
+	{"DBL_MAX_10_EXP", "float.h"},
+	{"LDBL_MAX_10_EXP", "float.h"},
+	{"FLT_MAX", "float.h"},
+	{"DBL_MAX", "float.h"},
+	{"LDBL_MAX", "float.h"},
+	{"FLT_MIN", "float.h"},
+	{"DBL_MIN", "float.h"},
+	{"LDBL_MIN", "float.h"},
+	{"FLT_EPSILON", "float.h"},
+	{"DBL_EPSILON", "float.h"},
+	{"LDBL_EPSILON", "float.h"}
+    };
+
+    std::map<std::string, std::string>::const_iterator it = identifier_headers.find(word);
+    if ( it == identifier_headers.end() )
+	return NULL;
+    return it->second.c_str();
+}
+
+void Program::mark_embedded_include_flag(const std::string &incfile)
+{
+    if ( incfile == "iostream" )
+	_include_iostream = true;
+    if ( incfile == "stdio.h" )
+	_include_stdio = true;
+}
+
+bool Program::auto_include_standard_identifier(const std::string &word)
+{
+    // `typedef unsigned long size_t;` and similar declaration heads are
+    // defining the identifier, not using the standard header surface.
+    // Auto-including here injects the embedded header in the middle of
+    // the declarator and leaves a duplicate alias token behind.
+    for ( std::deque<TokenBase *>::reverse_iterator it = tokens.rbegin();
+	  it != tokens.rend(); ++it )
+    {
+	TokenBase *t = *it;
+	TokenID tid = t->id();
+	TokenType tt = t->type();
+	if ( tid == TokenID::tkMul )
+	    continue;
+	if ( tt == TokenType::ttDataType
+	  || tid == TokenID::tkSTRUCT
+	  || tid == TokenID::tkCLASS
+	  || tid == TokenID::tkENUM
+	  || tid == TokenID::tkCONST
+	  || tid == TokenID::tkEXTERN
+	  || tid == TokenID::tkSTATIC
+	  || tid == TokenID::tkREGISTER
+	  || tid == TokenID::tkTYPEDEF
+	  || tid == TokenID::tkRESTRICT )
+	    return false;
+	break;
+    }
+
+    const char *header = auto_include_embedded_header_for_identifier(word);
+    if ( !header )
+	return false;
+
+    std::string include_key = std::string("<") + header + ">";
+    if ( !should_tokenize_include(include_key) )
+	return false;
+
+    const std::string *embedded = find_embedded_header(header);
+    if ( !embedded )
+	return false;
+    if ( !is_embedded_header_allowed(header) )
+	Throw << "embedded header '" << header
+	      << "' is not allowed by registration policy" << flush;
+
+    source.pushback(word);
+
+    Source saved = std::move(source);
+    source = Source();
+    source.fname(header);
+    source.str(*embedded);
+    TokenBase *itb;
+    const char *interned = intern_file(header);
+    while ( (itb = getRealToken()) )
+    {
+	itb->file = interned;
+	push_token_with_string_concat(itb);
+    }
+    source = std::move(saved);
+    mark_embedded_include_flag(header);
+    return true;
 }
 
 // Walk back through recently emitted tokens to decide whether the
@@ -101,6 +329,43 @@ static bool looks_like_decl_head(const std::deque<TokenBase *> &tokens)
 	  || tid == TokenID::tkSTATIC || tid == TokenID::tkREGISTER
 	  || tid == TokenID::tkTYPEDEF || tid == TokenID::tkRESTRICT ) return true;
 	return false;
+    }
+    return false;
+}
+
+static bool decl_head_macro_args_look_like_prototype(const std::vector<std::string> &args)
+{
+    if ( args.empty() )
+	return true;
+
+    auto starts_with_type_word = [](const std::string &raw) -> bool {
+	size_t i = 0;
+	while ( i < raw.size() && (raw[i] == ' ' || raw[i] == '\t') )
+	    ++i;
+	size_t start = i;
+	while ( i < raw.size() && (raw[i] == '_' || isalnum((unsigned char)raw[i])) )
+	    ++i;
+	std::string word = raw.substr(start, i - start);
+	return word == "void" || word == "char" || word == "short"
+	    || word == "int" || word == "long" || word == "float"
+	    || word == "double" || word == "signed" || word == "unsigned"
+	    || word == "const" || word == "volatile" || word == "restrict"
+	    || word == "struct" || word == "union" || word == "enum"
+	    || word == "class" || word == "register" || word == "extern"
+	    || word == "static" || word == "typedef";
+    };
+
+    for ( const std::string &arg : args )
+    {
+	size_t i = 0;
+	while ( i < arg.size() && (arg[i] == ' ' || arg[i] == '\t') )
+	    ++i;
+	if ( i >= arg.size() )
+	    continue;
+	if ( arg.compare(i, 3, "...") == 0 )
+	    return true;
+	if ( starts_with_type_word(arg) )
+	    return true;
     }
     return false;
 }
@@ -183,6 +448,7 @@ TokenSWITCH	tkSWITCH;
 TokenWHILE	tkWHILE;
 TokenCLASS	tkCLASS;
 TokenSTRUCT	tkSTRUCT;
+TokenUNION	tkUNION;
 TokenDEFAULT	tkDEFAULT;
 TokenTYPEDEF	tkTYPEDEF;
 TokenOPEROVER	tkOPEROVER;
@@ -255,6 +521,374 @@ void Program::_tokenizer_init()
     add_keywords();
     add_datatypes();
     struct_map["teststruct"] = &ddTESTSTRUCT;
+
+    // Ignored C qualifiers — consumed as empty defines so they
+    // don't trip the "undeclared identifier" path.
+    define_map["volatile"] = "";
+    define_map["__volatile"] = "";
+    define_map["__volatile__"] = "";
+    define_map["__volatile__"] = "";
+    define_map["inline"] = "";
+    define_map["__inline__"] = "";
+    define_map["__inline"] = "";
+    define_map["__extension__"] = "";
+    // _Alignas(N) is a C11 keyword — consume like __attribute__
+    // The lexer handles it by stripping the specifier and its parens.
+    define_map["_Alignas"] = "__attribute__";
+    define_map["__restrict"] = "";
+    define_map["__restrict__"] = "";
+    define_map["__signed__"] = "signed";
+    define_map["__const"] = "const";
+    define_map["__signed"] = "signed";
+    define_map["__signed__"] = "signed";
+    define_map["__const__"] = "const";
+    // GCC floating-point limit macros
+    define_map["__FLT_MAX__"] = "3.40282347e+38F";
+    define_map["__FLT_MIN__"] = "1.17549435e-38F";
+    define_map["__DBL_MAX__"] = "1.7976931348623157e+308";
+    define_map["__DBL_MIN__"] = "2.2250738585072014e-308";
+    define_map["__FLT_EPSILON__"] = "1.19209290e-7F";
+    define_map["__DBL_EPSILON__"] = "2.2204460492503131e-16";
+    define_map["__BIGGEST_ALIGNMENT__"] = "16";
+
+    // GCC predefined macros for C compatibility
+    define_map["__CHAR_BIT__"] = "8";
+    define_map["__SIZEOF_SHORT__"] = "2";
+    define_map["__SIZEOF_INT__"] = "4";
+    define_map["__SIZEOF_LONG__"] = "8";
+    define_map["__SIZEOF_LONG_LONG__"] = "8";
+    define_map["__SIZEOF_POINTER__"] = "8";
+    define_map["__SIZEOF_FLOAT__"] = "4";
+    define_map["__SIZEOF_DOUBLE__"] = "8";
+    define_map["__INT_MAX__"] = "2147483647";
+    define_map["__LONG_MAX__"] = "9223372036854775807L";
+    define_map["__LONG_LONG_MAX__"] = "9223372036854775807LL";
+    define_map["__SHRT_MAX__"] = "32767";
+    define_map["__SCHAR_MAX__"] = "127";
+    define_map["__PTRDIFF_TYPE__"] = "long";
+    define_map["__SIZE_TYPE__"] = "unsigned long";
+    define_map["__INTPTR_TYPE__"] = "long";
+    define_map["__UINTPTR_TYPE__"] = "unsigned long";
+    define_map["__UINT8_TYPE__"] = "unsigned char";
+    define_map["__INT8_TYPE__"] = "char";
+    define_map["__UINT16_TYPE__"] = "unsigned short";
+    define_map["__INT16_TYPE__"] = "short";
+    define_map["__UINT32_TYPE__"] = "unsigned int";
+    define_map["__INT32_TYPE__"] = "int";
+    define_map["__UINT64_TYPE__"] = "unsigned long";
+    define_map["__INT64_TYPE__"] = "long";
+    define_map["__WCHAR_TYPE__"] = "int";
+    define_map["__WINT_TYPE__"] = "unsigned int";
+    define_map["__SIG_ATOMIC_TYPE__"] = "int";
+    define_map["__INTMAX_TYPE__"] = "long";
+    define_map["__UINTMAX_TYPE__"] = "unsigned long";
+    define_map["__INT_LEAST8_TYPE__"] = "char";
+    define_map["__UINT_LEAST8_TYPE__"] = "unsigned char";
+    define_map["__INT_LEAST16_TYPE__"] = "short";
+    define_map["__UINT_LEAST16_TYPE__"] = "unsigned short";
+    define_map["__INT_LEAST32_TYPE__"] = "int";
+    define_map["__UINT_LEAST32_TYPE__"] = "unsigned int";
+    define_map["__INT_LEAST64_TYPE__"] = "long";
+    define_map["__UINT_LEAST64_TYPE__"] = "unsigned long";
+    define_map["__INT_FAST8_TYPE__"] = "char";
+    define_map["__UINT_FAST8_TYPE__"] = "unsigned char";
+    define_map["__INT_FAST16_TYPE__"] = "long";
+    define_map["__UINT_FAST16_TYPE__"] = "unsigned long";
+    define_map["__INT_FAST32_TYPE__"] = "long";
+    define_map["__UINT_FAST32_TYPE__"] = "unsigned long";
+    define_map["__INT_FAST64_TYPE__"] = "long";
+    define_map["__UINT_FAST64_TYPE__"] = "unsigned long";
+    define_map["__builtin_va_list"] = "long";
+    define_map["__builtin_va_arg"] = "va_arg";
+    // __builtin_va_start/end — need to be function-like macros
+    {
+	MacroDef m;
+	m.params = {"__ap", "__last"};
+	m.body = "__ap = __va_args";
+	macro_map["__builtin_va_start"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__ap"};
+	m.body = "__ap = 0";
+	macro_map["__builtin_va_end"] = m;
+    }
+    {
+	MacroDef m;
+	m.params = {"__dest", "__src"};
+	m.body = "__dest = __src";
+	macro_map["__builtin_va_copy"] = m;
+    }
+    define_map["__x86_64__"] = "1";
+    define_map["__LP64__"] = "1";
+    define_map["__BYTE_ORDER__"] = "1234";
+    define_map["__ORDER_LITTLE_ENDIAN__"] = "1234";
+
+    // GCC __builtin_* → libc function aliases.
+    // Most GCC builtins have the same signature as their libc counterpart.
+    define_map["__builtin_abort"] = "abort";
+    define_map["__builtin_exit"] = "exit";
+    define_map["__builtin_malloc"] = "malloc";
+    define_map["__builtin_calloc"] = "calloc";
+    define_map["__builtin_free"] = "free";
+    define_map["__builtin_memcpy"] = "memcpy";
+    define_map["__builtin_memset"] = "memset";
+    define_map["__builtin_memcmp"] = "memcmp";
+    define_map["__builtin_memmove"] = "memmove";
+    define_map["__builtin_strcmp"] = "strcmp";
+    define_map["__builtin_strncmp"] = "strncmp";
+    define_map["__builtin_strcpy"] = "strcpy";
+    define_map["__builtin_strncpy"] = "strncpy";
+    define_map["__builtin_strlen"] = "strlen";
+    define_map["__builtin_printf"] = "printf";
+    define_map["__builtin_sprintf"] = "sprintf";
+    define_map["__builtin_puts"] = "puts";
+    define_map["__builtin_putchar"] = "putchar";
+    define_map["__builtin_abs"] = "abs";
+    define_map["__builtin_labs"] = "labs";
+    define_map["__builtin_fabs"] = "fabs";
+    define_map["__builtin_fabsf"] = "fabsf";
+    define_map["__builtin_fabsl"] = "fabsl";
+    define_map["__builtin_trap"] = "abort";
+    define_map["__builtin_memchr"] = "memchr";
+    define_map["__builtin_strchr"] = "strchr";
+    define_map["__builtin_strrchr"] = "strrchr";
+    define_map["__builtin_strstr"] = "strstr";
+    define_map["__builtin_strncat"] = "strncat";
+    define_map["__builtin_strcat"] = "strcat";
+    define_map["__builtin_snprintf"] = "snprintf";
+    define_map["__builtin_fprintf"] = "fprintf";
+    define_map["__builtin_sscanf"] = "sscanf";
+    define_map["__builtin_fscanf"] = "fscanf";
+    define_map["__builtin_realloc"] = "realloc";
+    define_map["__builtin_alloca"] = "alloca";
+    define_map["__builtin_bzero"] = "bzero";
+    define_map["__builtin_bcopy"] = "bcopy";
+    define_map["__builtin_copysign"] = "copysign";
+    define_map["__builtin_copysignf"] = "copysignf";
+    define_map["__builtin_copysignl"] = "copysignl";
+    define_map["__builtin_sqrtf"] = "sqrtf";
+    define_map["__builtin_sqrt"] = "sqrt";
+    define_map["__builtin_sqrtl"] = "sqrtl";
+    define_map["__builtin_logf"] = "logf";
+    define_map["__builtin_log"] = "log";
+    define_map["__builtin_expf"] = "expf";
+    define_map["__builtin_exp"] = "exp";
+    define_map["__builtin_sinf"] = "sinf";
+    define_map["__builtin_sin"] = "sin";
+    define_map["__builtin_cosf"] = "cosf";
+    define_map["__builtin_cos"] = "cos";
+    define_map["__builtin_floorf"] = "floorf";
+    define_map["__builtin_floor"] = "floor";
+    define_map["__builtin_ceilf"] = "ceilf";
+    define_map["__builtin_ceil"] = "ceil";
+    define_map["__builtin_roundf"] = "roundf";
+    define_map["__builtin_round"] = "round";
+    define_map["__builtin_fmaxf"] = "fmaxf";
+    define_map["__builtin_fmax"] = "fmax";
+    define_map["__builtin_fmaxl"] = "fmaxl";
+    define_map["__builtin_powf"] = "powf";
+    define_map["__builtin_pow"] = "pow";
+    define_map["__builtin_fmaf"] = "fmaf";
+    define_map["__builtin_fma"] = "fma";
+    define_map["__builtin_conj"] = "conj";
+    define_map["__builtin_conjf"] = "conjf";
+    define_map["__builtin_conjl"] = "conjl";
+    define_map["__builtin_creal"] = "creal";
+    define_map["__builtin_crealf"] = "crealf";
+    define_map["__builtin_creall"] = "creall";
+    define_map["__builtin_cimag"] = "cimag";
+    define_map["__builtin_cimagf"] = "cimagf";
+    define_map["__builtin_cimagl"] = "cimagl";
+    define_map["__builtin_llabs"] = "llabs";
+    define_map["__builtin_stpcpy"] = "stpcpy";
+    define_map["__builtin_stpncpy"] = "stpncpy";
+    define_map["__builtin_strdup"] = "strdup";
+    define_map["__builtin_strndup"] = "strndup";
+    define_map["__builtin_strnlen"] = "strnlen";
+    // bswap builtins: these don't exist in glibc as functions, but the
+    // GCC testsuite uses them. Map to helpers exported by the madc binary.
+    define_map["__builtin_bswap16"] = "__madc_bswap16";
+    define_map["__builtin_bswap32"] = "__madc_bswap32";
+    define_map["__builtin_bswap64"] = "__madc_bswap64";
+    define_map["__bswap_16"] = "__madc_bswap16";
+    define_map["__bswap_32"] = "__madc_bswap32";
+
+    // __builtin_*_overflow: overflow-checking arithmetic (GCC extension).
+    // Mapped to helper functions in va_helpers.cpp that use __int128.
+    define_map["__builtin_add_overflow"] = "__madc_add_overflow";
+    define_map["__builtin_sub_overflow"] = "__madc_sub_overflow";
+    define_map["__builtin_mul_overflow"] = "__madc_mul_overflow";
+
+    define_map["__builtin_add_overflow_p"] = "__madc_add_overflow_p";
+    define_map["__builtin_sub_overflow_p"] = "__madc_sub_overflow_p";
+    define_map["__builtin_mul_overflow_p"] = "__madc_mul_overflow_p";
+
+    // __builtin_expect(expr, val) is a branch-prediction hint — just
+    // return expr. Implemented as a function-like macro.
+    {
+	MacroDef m;
+	m.params = {"__expr", "__val"};
+	m.body = "__expr";
+	macro_map["__builtin_expect"] = m;
+    }
+    // __builtin_prefetch is a no-op hint
+    {
+	MacroDef m;
+	m.params = {"__addr", "__rw", "__loc"};
+	m.body = "((void)(__addr))";
+	macro_map["__builtin_prefetch"] = m;
+    }
+    // __builtin_constant_p(expr) — always return 0 (not a constant)
+    {
+	MacroDef m;
+	m.params = {"__expr"};
+	m.body = "0";
+	macro_map["__builtin_constant_p"] = m;
+    }
+    // __builtin_return_address(level) — unsupported, but many GCC
+    // torture tests only need a stable sentinel value.
+    {
+	MacroDef m;
+	m.params = {"__level"};
+	m.body = "0";
+	macro_map["__builtin_return_address"] = m;
+    }
+    // __builtin_unreachable() — map to abort()
+    define_map["__builtin_unreachable"] = "abort";
+    // __builtin_signbit(x) → (x < 0.0) — simplified
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "((__x) < 0.0 ? 1 : 0)";
+	macro_map["__builtin_signbit"] = m;
+	macro_map["__builtin_signbitf"] = m;
+	macro_map["__builtin_signbitl"] = m;
+    }
+    // IEEE floating-point comparison builtins.
+    {
+	MacroDef unordered;
+	unordered.params = {"__a", "__b"};
+	unordered.body = "(((__a) != (__a)) || ((__b) != (__b)))";
+	macro_map["__builtin_isunordered"] = unordered;
+    }
+    {
+	MacroDef lessgreater;
+	lessgreater.params = {"__a", "__b"};
+	lessgreater.body = "(((__a) < (__b)) || ((__a) > (__b)))";
+	macro_map["__builtin_islessgreater"] = lessgreater;
+    }
+    {
+	MacroDef greater;
+	greater.params = {"__a", "__b"};
+	greater.body = "((__a) > (__b))";
+	macro_map["__builtin_isgreater"] = greater;
+    }
+    {
+	MacroDef greaterequal;
+	greaterequal.params = {"__a", "__b"};
+	greaterequal.body = "((__a) >= (__b))";
+	macro_map["__builtin_isgreaterequal"] = greaterequal;
+    }
+    {
+	MacroDef less;
+	less.params = {"__a", "__b"};
+	less.body = "((__a) < (__b))";
+	macro_map["__builtin_isless"] = less;
+    }
+    {
+	MacroDef lessequal;
+	lessequal.params = {"__a", "__b"};
+	lessequal.body = "((__a) <= (__b))";
+	macro_map["__builtin_islessequal"] = lessequal;
+    }
+    {
+	MacroDef inf;
+	inf.body = "(1.0 / 0.0)";
+	macro_map["__builtin_inf"] = inf;
+	macro_map["__builtin_huge_val"] = inf;
+	MacroDef inff;
+	inff.body = "(1.0f / 0.0f)";
+	macro_map["__builtin_inff"] = inff;
+	macro_map["__builtin_huge_valf"] = inff;
+	MacroDef infl;
+	infl.body = "(1.0L / 0.0L)";
+	macro_map["__builtin_infl"] = infl;
+	macro_map["__builtin_huge_vall"] = infl;
+    }
+    {
+	MacroDef nan;
+	nan.params = {"__tag"};
+	nan.body = "(0.0 / 0.0)";
+	macro_map["__builtin_nan"] = nan;
+	MacroDef nanf;
+	nanf.params = {"__tag"};
+	nanf.body = "(0.0f / 0.0f)";
+	macro_map["__builtin_nanf"] = nanf;
+	MacroDef nanl;
+	nanl.params = {"__tag"};
+	nanl.body = "(0.0L / 0.0L)";
+	macro_map["__builtin_nanl"] = nanl;
+    }
+    {
+	MacroDef isnan;
+	isnan.params = {"__x"};
+	isnan.body = "((__x) != (__x))";
+	macro_map["__builtin_isnan"] = isnan;
+	macro_map["__builtin_isnanf"] = isnan;
+	macro_map["__builtin_isnanl"] = isnan;
+    }
+    {
+	MacroDef isfinite;
+	isfinite.params = {"__x"};
+	isfinite.body = "(((__x) == (__x)) && ((__x) != __builtin_inf()) && ((__x) != -__builtin_inf()))";
+	macro_map["__builtin_isfinite"] = isfinite;
+	macro_map["__builtin_isfinitef"] = isfinite;
+	macro_map["__builtin_isfinitel"] = isfinite;
+    }
+    // __builtin_classify_type(x) → 0 (integer type, simplified)
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "0";
+	macro_map["__builtin_classify_type"] = m;
+    }
+    define_map["__builtin_alloca"] = "malloc"; // alloca = stack alloc, map to malloc for now
+    define_map["__builtin_ffs"] = "__madc_ffs";
+    define_map["__builtin_ffsl"] = "__madc_ffsl";
+    define_map["__builtin_ffsll"] = "__madc_ffsll";
+    define_map["__builtin_clz"] = "__madc_clz";
+    define_map["__builtin_clzl"] = "__madc_clzl";
+    define_map["__builtin_clzll"] = "__madc_clzll";
+    define_map["__builtin_ctz"] = "__madc_ctz";
+    define_map["__builtin_ctzl"] = "__madc_ctzl";
+    define_map["__builtin_ctzll"] = "__madc_ctzll";
+    define_map["__builtin_clrsb"] = "__madc_clrsb";
+    define_map["__builtin_clrsbl"] = "__madc_clrsbl";
+    define_map["__builtin_clrsbll"] = "__madc_clrsbll";
+    define_map["__builtin_popcount"] = "__madc_popcount";
+    define_map["__builtin_popcountl"] = "__madc_popcountl";
+    define_map["__builtin_popcountll"] = "__madc_popcountll";
+    define_map["__builtin_parity"] = "__madc_parity";
+    define_map["__builtin_parityl"] = "__madc_parityl";
+    define_map["__builtin_parityll"] = "__madc_parityll";
+
+    // __builtin_offsetof(type, member) — compute struct member offset.
+    // Implemented as a function-like macro using the null-pointer trick.
+    {
+	MacroDef m;
+	m.params = {"__type", "__member"};
+	m.body = "((long)&((__type *)0)->__member)";
+	macro_map["__builtin_offsetof"] = m;
+    }
+
+    // __builtin_classify_type(x) — return 0 (void type) as placeholder
+    {
+	MacroDef m;
+	m.params = {"__x"};
+	m.body = "0";
+	macro_map["__builtin_classify_type"] = m;
+    }
 }
 
 bool Program::include_already_seen(const std::string &path)
@@ -276,10 +910,68 @@ std::string Program::resolve_include_path(const std::string &incfile, bool is_sy
     if ( incfile.empty() || incfile[0] == '/' )
 	return incfile;
 
-    if ( is_system )
-	return incfile;
+    // Standard C include search order:
+    //   #include <file.h>  → embedded headers (checked before this),
+    //                        then system paths
+    //   #include "file.h"  → current source directory, then -I paths
 
+    if ( is_system )
+    {
+	// <file.h>: -I paths first (GCC searches -I for both "" and <>),
+	// then system include paths, then current source directory as
+	// last resort (needed for local header copies in project trees).
+	for ( size_t i = 0; i < include_paths.size(); ++i )
+	{
+	    std::string &dir = include_paths[i];
+	    std::string candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
+	    std::ifstream probe(candidate.c_str());
+	    if ( probe.good() )
+		return candidate;
+	}
+	// TODO: these paths should come from ./configure
+	static const char *sys_paths[] = {
+	    "/usr/local/include/",
+	    "/usr/include/",
+	    "/usr/include/x86_64-linux-gnu/",
+	    NULL
+	};
+	for ( int i = 0; sys_paths[i]; ++i )
+	{
+	    std::string candidate = std::string(sys_paths[i]) + incfile;
+	    std::ifstream probe(candidate.c_str());
+	    if ( probe.good() )
+		return candidate;
+	}
+	// Fall back to current source directory — handles local header
+	// copies (e.g. libpq-fe.h sitting next to the .c that includes it)
+	std::string cur_dir = current_source_directory();
+	if ( !cur_dir.empty() )
+	{
+	    std::string local = cur_dir + incfile;
+	    std::ifstream probe(local.c_str());
+	    if ( probe.good() )
+		return local;
+	}
+	return incfile; // not found — will fail at open
+    }
+
+    // "file.h": current source directory, then -I paths
     std::string cur_dir = current_source_directory();
+    if ( !cur_dir.empty() )
+    {
+	std::string local = cur_dir + incfile;
+	std::ifstream probe(local.c_str());
+	if ( probe.good() )
+	    return local;
+    }
+    for ( size_t i = 0; i < include_paths.size(); ++i )
+    {
+	std::string &dir = include_paths[i];
+	std::string candidate = dir + (dir.empty() || dir.back() == '/' ? "" : "/") + incfile;
+	std::ifstream probe(candidate.c_str());
+	if ( probe.good() )
+	    return candidate;
+    }
     return cur_dir.empty() ? incfile : cur_dir + incfile;
 }
 
@@ -320,6 +1012,7 @@ void Program::add_keywords()
     keyword_map[tkWHILE.str] = &tkWHILE;
     keyword_map[tkCLASS.str] = &tkCLASS;
     keyword_map[tkSTRUCT.str] = &tkSTRUCT;
+    keyword_map[tkUNION.str] = &tkUNION;
     keyword_map[tkDEFAULT.str] = &tkDEFAULT;
     keyword_map[tkTYPEDEF.str] = &tkTYPEDEF;
     keyword_map[tkOPEROVER.str] = &tkOPEROVER;
@@ -336,12 +1029,18 @@ void Program::add_keywords()
     keyword_map[tkVECTOR.str] = &tkVECTOR;
     keyword_map[tkMAP.str] = &tkMAP;
     keyword_map[tkSET.str] = &tkSET;
-    keyword_map[tkLIST.str] = &tkLIST;
+    // `list` intentionally omitted from keyword_map so it doesn't shadow
+    // the C identifier `list`. Use `std::list<T>` instead.
+    // keyword_map[tkLIST.str] = &tkLIST;
 }
 
 // add static tokens for base data types
 void Program::add_datatypes()
 {
+    static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
+    static TokenDataType tkSIZE_T("size_t", ddUINT64);
+    static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+
     datatype_map[tkVOID.str] = &tkVOID;
     datatype_map[tkBOOL.str] = &tkBOOL;
     datatype_map[tkC23BOOL.str] = &tkC23BOOL;
@@ -367,6 +1066,9 @@ void Program::add_datatypes()
     datatype_map[tkFSTREAM.str] = &tkFSTREAM;
     datatype_map[tkLPSTR.str] = &tkLPSTR;
     datatype_map[tkAUTO.str] = &tkAUTO;
+    datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
+    datatype_map[tkSIZE_T.str] = &tkSIZE_T;
+    datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
 }
 
 
@@ -390,7 +1092,9 @@ TokenBase *Program::_getToken()
 
     if ( !source.good() || source.eof() ) { return NULL; }
 
-    switch( (ch=source.get()) )
+    ch = source.get();
+    if ( ch == -1 ) { return NULL; }  // EOF after last char (no trailing newline)
+    switch( ch )
     {
 	case ' ':
 	    cnt = 1;
@@ -483,6 +1187,8 @@ TokenBase *Program::_getToken()
 		    word += source.get();
 		return new TokenREM(word);
 	    }
+	    while ( source.peek() == ' ' || source.peek() == '\t' )
+		source.get();
 	    // #include directive
 	    if ( isalpha(source.peek()) )
 	    {
@@ -533,8 +1239,7 @@ TokenBase *Program::_getToken()
 			    }
 			    source = std::move(saved);
 			    // flag headers for deferred registration during parse init
-			    if ( incfile == "iostream" ) _include_iostream = true;
-			    if ( incfile == "stdio.h" )  _include_stdio = true;
+			    mark_embedded_include_flag(incfile);
 			    return getToken();
 			}
 		    }
@@ -696,6 +1401,12 @@ TokenBase *Program::_getToken()
 			source.get();
 		    return getToken();
 		}
+		if ( directive == "line" )
+		{
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			source.get();
+		    return getToken();
+		}
 		if ( directive == "ifdef" || directive == "ifndef" )
 		{
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
@@ -707,7 +1418,7 @@ TokenBase *Program::_getToken()
 		    bool active = (directive == "ifdef") ? defined : !defined;
 		    ifdef_stack.push(active);
 		    ifdef_done_stack.push(active);
-		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << std::endl);
+		    DBG(std::cout << "#" << directive << " " << name << " -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // consume rest of line
 		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 			source.get();
@@ -759,7 +1470,7 @@ TokenBase *Program::_getToken()
 		    ifdef_stack.push(active);
 		    if ( active )
 			ifdef_done_stack.top() = true;
-		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << std::endl);
+		    DBG(std::cout << "#else -> " << (active ? "true" : "false") << " stack=" << ifdef_stack.size() << " file=" << source.fname() << std::endl);
 		    // consume rest of line
 		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 			source.get();
@@ -779,6 +1490,19 @@ TokenBase *Program::_getToken()
 			source.get();
 		    return getToken();
 		}
+		if ( directive == "error" || directive == "warning" )
+		{
+		    // #error message — emit compile error with the message text
+		    while ( source.peek() == ' ' || source.peek() == '\t' )
+			source.get();
+		    std::string msg;
+		    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			msg += source.get();
+		    if ( directive == "error" )
+			Throw << "#error " << msg << flush;
+		    // #warning is just a diagnostic, skip it
+		    return getToken();
+		}
 		if ( directive == "pragma" )
 		{
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
@@ -786,7 +1510,7 @@ TokenBase *Program::_getToken()
 		    std::string pragma;
 		    int pragma_line = source.line();
 		    int pragma_col = source.column();
-		    while ( source.good() && !source.eof() && isalpha(source.peek()) )
+		    while ( source.good() && !source.eof() && (isalpha(source.peek()) || source.peek() == '_') )
 			pragma += source.get();
 		    if ( pragma == "pack" )
 		    {
@@ -820,6 +1544,52 @@ TokenBase *Program::_getToken()
 			    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 				source.get();
 			}
+		    }
+		    else if ( pragma == "push_macro" || pragma == "pop_macro" )
+		    {
+			bool is_push = (pragma == "push_macro");
+			while ( source.peek() == ' ' || source.peek() == '\t' )
+			    source.get();
+			if ( source.peek() == '(' )
+			{
+			    source.get(); // consume (
+			    while ( source.peek() == ' ' || source.peek() == '\t' )
+				source.get();
+			    // Expect "macro_name"
+			    if ( source.peek() == '"' )
+			    {
+				source.get(); // consume opening "
+				std::string mname;
+				while ( source.good() && !source.eof() && source.peek() != '"' )
+				    mname += source.get();
+				if ( source.peek() == '"' )
+				    source.get(); // consume closing "
+				if ( is_push )
+				{
+				    auto it = define_map.find(mname);
+				    std::string val = (it != define_map.end()) ? it->second : std::string("\x01");
+				    _macro_save_stack[mname].push(val);
+				    DBG(std::cout << "#pragma push_macro(\"" << mname << "\") saved=\"" << val << "\"" << std::endl);
+				}
+				else
+				{
+				    auto sit = _macro_save_stack.find(mname);
+				    if ( sit != _macro_save_stack.end() && !sit->second.empty() )
+				    {
+					std::string val = sit->second.top();
+					sit->second.pop();
+					if ( val == "\x01" )
+					    define_map.erase(mname);
+					else
+					    define_map[mname] = val;
+					DBG(std::cout << "#pragma pop_macro(\"" << mname << "\") restored=\"" << val << "\"" << std::endl);
+				    }
+				}
+			    }
+			}
+			// consume rest of line
+			while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
+			    source.get();
 		    }
 		    else if ( pragma == "prefer" )
 		    {
@@ -873,12 +1643,27 @@ TokenBase *Program::_getToken()
 		    return _getToken();
 		}
 	    }
+	    DBG(std::cout << "# fell through to TokenHash, peek=" << (int)source.peek() << " file=" << source.fname() << std::endl);
 	    return new TokenHash;
 	case '{': return new TokenOpBrc;
 	case '}': return new TokenClBrc;
 	case '(': return new TokenOpBrk;
 	case ')': return new TokenClBrk;
-	case '[': return new TokenOpSqr;
+	case '[':
+	    // C23 [[attribute]] syntax: consume [[...]] and skip
+	    if ( source.peek() == '[' )
+	    {
+		source.get(); // consume second '['
+		int depth = 1;
+		while ( source.good() && depth > 0 )
+		{
+		    char c = source.get();
+		    if ( c == '[' ) ++depth;
+		    else if ( c == ']' ) --depth;
+		}
+		return getToken();
+	    }
+	    return new TokenOpSqr;
 	case ']': return new TokenClSqr;
 	case '~': return new TokenBnot;
 	case '!': if (source.peek() != '=') return new TokenLnot;		// !
@@ -914,6 +1699,23 @@ TokenBase *Program::_getToken()
 		{
 		    num += (source.get() & 0xf) / divisor;
 		    divisor *= 10;
+		}
+		// exponent
+		if ( source.good() && (source.peek() == 'e' || source.peek() == 'E') )
+		{
+		    source.get();
+		    int esign = 1;
+		    if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
+		    {
+			if ( source.peek() == '-' ) esign = -1;
+			source.get();
+		    }
+		    int ev = 0;
+		    while ( source.good() && isdigit(source.peek()) )
+			ev = ev * 10 + (source.get() & 0xf);
+		    double f = 1.0;
+		    for ( int i = 0; i < ev; ++i ) f *= 10.0;
+		    if ( esign > 0 ) num *= f; else num /= f;
 		}
 		if ( source.good() )
 		{
@@ -1072,31 +1874,87 @@ TokenBase *Program::_getToken()
 	default:
 	    if ( isdigit(ch) )
 	    {
+		auto complex_real_type_for_suffix = [&](char suffix) -> DataDef * {
+		    if ( suffix == 'f' || suffix == 'F' )
+			return &ddFLOAT;
+		    return &ddDOUBLE;
+		};
+		char imag_type_suffix = 0;
+		auto eat_imag_suffix = [&]() {
+		    imag_type_suffix = 0;
+		    if ( !source.good() )
+			return false;
+		    int c = source.peek();
+		    if ( c != 'i' && c != 'I' && c != 'j' && c != 'J' )
+			return false;
+		    source.get();
+		    if ( source.good() )
+		    {
+			int tc = source.peek();
+			if ( tc == 'f' || tc == 'F' || tc == 'l' || tc == 'L' )
+			{
+			    imag_type_suffix = (char)tc;
+			    source.get();
+			}
+		    }
+		    return true;
+		};
 		// Consume C integer-literal suffixes (u/U, l/L, ll/LL, combos
-		// like ul/ULL/Lu). madc's int is 64-bit so the size hints are
-		// informational only, and we don't currently propagate
-		// signedness from the suffix — but the lexer must strip them
-		// or the next token (identifier) starts inside the number.
+		// like ul/ULL/Lu) and set type accordingly. With sizeof(int)=4,
+		// the L/LL suffix widens to 64-bit (long/long long), and U
+		// controls signedness.
+		bool has_u_suffix = false;
+		int  long_count   = 0;
+		std::string lit_text;
+		lit_text += ch;
 		auto eat_int_suffix = [&]() {
 		    for (int i = 0; i < 3; ++i)
 		    {
 			int c = source.peek();
-			if (c == 'u' || c == 'U' || c == 'l' || c == 'L')
-			    source.get();
+			if (c == 'u' || c == 'U')
+			{
+			    has_u_suffix = true;
+			    lit_text += (char)source.get();
+			}
+			else if (c == 'l' || c == 'L')
+			{
+			    ++long_count;
+			    lit_text += (char)source.get();
+			}
 			else
 			    break;
 		    }
+		};
+		auto resolve_int_suffix_type = [&](int64_t val, bool is_hex_or_octal) -> DataDef * {
+		    if ( long_count >= 1 )
+			return has_u_suffix ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
+		    if ( has_u_suffix )
+			return &ddUINT32;
+		    // C integer literal type rules (no suffix):
+		    // Hex/octal: int → unsigned int → long → unsigned long
+		    // Decimal:   int → long → long long (never unsigned)
+		    uint64_t uval = (uint64_t)val;
+		    if ( uval <= 0x7FFFFFFF )
+			return nullptr; // fits in int32 — use default
+		    if ( is_hex_or_octal && uval <= 0xFFFFFFFF )
+			return &ddUINT32;
+		    if ( (int64_t)uval >= 0 )
+			return &ddINT64;
+		    return is_hex_or_octal ? (DataDef *)&ddUINT64 : (DataDef *)&ddINT64;
 		};
 		if ( is_binary_prefix(ch, source) )
 		{
 		    int64_t bv = read_binary_literal(source);
 		    eat_int_suffix();
-		    return new TokenInt(bv);
+		    TokenInt *ti = new TokenInt(bv);
+		    { DataDef *st = resolve_int_suffix_type(bv, true); if (st) ti->setDataType(st); }
+		    // binary prefix source_text not critical for macro round-trip
+		    return ti;
 		}
 		// hex literal: 0x... or 0X...
 		if ( ch == '0' && source.good() && (source.peek() == 'x' || source.peek() == 'X') )
 		{
-		    source.get(); // eat 'x'
+		    lit_text += (char)source.get(); // eat 'x'/'X'
 		    long long hv = 0;
 		    while ( source.good() )
 		    {
@@ -1108,37 +1966,146 @@ TokenBase *Program::_getToken()
 			if ( !isxdigit(source.peek()) )
 			    break;
 			char hc = source.get();
+			lit_text += hc;
 			hv *= 16;
 			if      ( hc >= '0' && hc <= '9' ) hv += hc - '0';
 			else if ( hc >= 'a' && hc <= 'f' ) hv += hc - 'a' + 10;
 			else                               hv += hc - 'A' + 10;
 		    }
+		    if ( source.good() && (source.peek() == '.'
+		      || source.peek() == 'p' || source.peek() == 'P') )
+		    {
+			if ( source.peek() == '.' )
+			{
+			    lit_text += (char)source.get();
+			    while ( source.good() )
+			    {
+				if ( is_digit_separator(source.peek()) )
+				{
+				    source.get();
+				    continue;
+				}
+				if ( !isxdigit(source.peek()) )
+				    break;
+				lit_text += (char)source.get();
+			    }
+			}
+			if ( source.good() && (source.peek() == 'p' || source.peek() == 'P') )
+			{
+			    lit_text += (char)source.get();
+			    if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
+				lit_text += (char)source.get();
+			    while ( source.good() && isdigit(source.peek()) )
+				lit_text += (char)source.get();
+			}
+		    char real_type_suffix = 0;
+		    if ( source.good() )
+		    {
+			int c = source.peek();
+			if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
+			{
+			    real_type_suffix = (char)c;
+			    lit_text += (char)source.get();
+			}
+		    }
+		    if ( eat_imag_suffix() )
+		    {
+			TokenReal *tr = new TokenReal(strtod(lit_text.c_str(), NULL));
+			char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
+			tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+			return tr;
+		    }
+		    return new TokenReal(strtod(lit_text.c_str(), NULL));
+		    }
 		    eat_int_suffix();
-		    return new TokenInt((int64_t)hv);
+		    {
+			TokenInt *ti = new TokenInt((int64_t)hv);
+			ti->source_text = lit_text;
+			{ DataDef *st = resolve_int_suffix_type((int64_t)hv, true); if (st) ti->setDataType(st); }
+			return ti;
+		    }
 		}
+		// Octal literal: starts with 0, digits 0-7
+		bool is_octal = (ch == '0') && source.good()
+		    && source.peek() >= '0' && source.peek() <= '7';
 		int64_t v = (ch & 0xf);
 
-		while ( source.good() )
+		if ( is_octal )
 		{
-		    if ( is_digit_separator(source.peek()) )
+		    while ( source.good() )
 		    {
-			source.get();
-			continue;
+			if ( is_digit_separator(source.peek()) )
+			    { source.get(); continue; }
+			if ( source.peek() < '0' || source.peek() > '7' )
+			    break;
+			char oc = source.get();
+			lit_text += oc;
+			v = v * 8 + (oc & 0xf);
 		    }
-		    if ( !isdigit(source.peek()) )
-			break;
-		    v *= 10;
-		    v += source.get() & 0xf;
 		}
-		// no decimal means integer
+		else
+		{
+		    while ( source.good() )
+		    {
+			if ( is_digit_separator(source.peek()) )
+			{
+			    source.get();
+			    continue;
+			}
+			if ( !isdigit(source.peek()) )
+			    break;
+			char dc = source.get();
+			lit_text += dc;
+			v *= 10;
+			v += dc & 0xf;
+		    }
+		}
+		// no decimal means integer — unless followed by e/E (scientific)
 		if ( source.peek() != '.' )
 		{
+		    if ( source.peek() == 'e' || source.peek() == 'E' )
+		    {
+			// Scientific notation without decimal: 1e5, 2E-3
+			lit_text += (char)source.get(); // consume e/E
+			if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
+			    lit_text += (char)source.get();
+			while ( source.good() && isdigit(source.peek()) )
+			    lit_text += (char)source.get();
+			char real_type_suffix = 0;
+			if ( source.good() )
+			{
+			    int c = source.peek();
+			    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
+			    {
+				real_type_suffix = (char)c;
+				lit_text += (char)source.get();
+			    }
+			}
+			double num = strtod(lit_text.c_str(), NULL);
+			if ( eat_imag_suffix() )
+			{
+			    TokenReal *tr = new TokenReal(num);
+			    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
+			    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+			    return tr;
+			}
+			return new TokenReal(num);
+		    }
+		    if ( eat_imag_suffix() )
+		    {
+			TokenInt *ti = new TokenInt(v);
+			ti->source_text = lit_text;
+			ti->setDataType(get_complex_compat_type(&ddINT64));
+			return ti;
+		    }
 		    eat_int_suffix();
-		    return new TokenInt(v);
+		    TokenInt *ti = new TokenInt(v);
+		    ti->source_text = lit_text;
+		    { DataDef *st = resolve_int_suffix_type(v, is_octal); if (st) ti->setDataType(st); }
+		    return ti;
 		}
 		// handle floating point
-		source.get(); // eat .
-		double num = v, divisor = 10;
+		lit_text += (char)source.get(); // eat .
 		while ( source.good() )
 		{
 		    if ( is_digit_separator(source.peek()) )
@@ -1148,18 +2115,38 @@ TokenBase *Program::_getToken()
 		    }
 		    if ( !isdigit(source.peek()) )
 			break;
-		    num += (source.get() & 0xf) / divisor;
-		    divisor *= 10;
+		    lit_text += (char)source.get();
+		}
+		// Scientific notation exponent: e/E followed by optional +/- and digits
+		if ( source.good() && (source.peek() == 'e' || source.peek() == 'E') )
+		{
+		    lit_text += (char)source.get(); // consume e/E
+		    if ( source.good() && (source.peek() == '+' || source.peek() == '-') )
+			lit_text += (char)source.get();
+		    while ( source.good() && isdigit(source.peek()) )
+			lit_text += (char)source.get();
 		}
 		// C float literal suffixes (f/F, l/L). f marks a float (4-byte
 		// real); madc doesn't currently distinguish float-vs-double
 		// literals at lex time (TokenReal is always double-precision),
 		// so we just consume the suffix char.
+		char real_type_suffix = 0;
 		if ( source.good() )
 		{
 		    int c = source.peek();
 		    if ( c == 'f' || c == 'F' || c == 'l' || c == 'L' )
-			source.get();
+		    {
+			real_type_suffix = (char)c;
+			lit_text += (char)source.get();
+		    }
+		}
+		double num = strtod(lit_text.c_str(), NULL);
+		if ( eat_imag_suffix() )
+		{
+		    TokenReal *tr = new TokenReal(num);
+		    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
+		    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+		    return tr;
 		}
 		return new TokenReal(num);
 	    }
@@ -1170,11 +2157,14 @@ TokenBase *Program::_getToken()
 
 		while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 		    word += source.get();
+		if ( word == "L" && source.good()
+		  && (source.peek() == '"' || source.peek() == '\'') )
+		    return getToken();
 		// function-like macro expansion: NAME(args) or NAME (args)
 		// Suppressed when the preceding tokens form a declaration /
 		// definition head (`void bug(const char *, ...)` must not
 		// be eaten by a prior `#define bug(...) ((void)0)`).
-		if ( macro_map.count(word) && !looks_like_decl_head(tokens)
+		if ( macro_map.count(word) && !source.macro_disabled(word)
 		     && consume_macro_call_open(source) )
 		{
 		    MacroDef &macro = macro_map[word];
@@ -1182,9 +2172,96 @@ TokenBase *Program::_getToken()
 		    std::vector<std::string> args;
 		    std::string arg;
 		    int depth = 1;
+		    bool at_line_start = false; // track whether next non-ws char is start of line
+		    int macro_ifdef_skip = 0; // >0 means we're skipping a false #ifdef/#else branch
+		    int macro_ifdef_depth = 0; // tracks #ifdef nesting inside macro args
 		    while ( source.good() && depth > 0 )
 		    {
 			char mc = source.get();
+			// Handle #ifdef/#ifndef/#else/#endif inside macro args
+			// (GCC extension: conditional directives in macro args).
+			if ( mc == '#' && at_line_start )
+			{
+			    // Read directive name
+			    std::string dir;
+			    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+				source.get();
+			    while ( source.good() && isalpha(source.peek()) )
+				dir += source.get();
+			    if ( dir == "ifdef" || dir == "ifndef" )
+			    {
+				while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+				    source.get();
+				std::string name;
+				while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
+				    name += source.get();
+				bool defined = define_map.count(name) > 0 || macro_map.count(name) > 0;
+				bool active = (dir == "ifdef") ? defined : !defined;
+				++macro_ifdef_depth;
+				if ( !active )
+				    ++macro_ifdef_skip;
+				// consume rest of line
+				while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+				    source.get();
+				continue;
+			    }
+			    else if ( dir == "if" )
+			    {
+				// Evaluate #if condition
+				bool active = evaluateIfCondition();
+				++macro_ifdef_depth;
+				if ( !active )
+				    ++macro_ifdef_skip;
+				continue;
+			    }
+			    else if ( dir == "else" )
+			    {
+				if ( macro_ifdef_skip > 0 )
+				    --macro_ifdef_skip; // was skipping → now active
+				else
+				    ++macro_ifdef_skip; // was active → now skip
+				while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+				    source.get();
+				continue;
+			    }
+			    else if ( dir == "elif" )
+			    {
+				if ( macro_ifdef_skip > 0 )
+				{
+				    --macro_ifdef_skip;
+				    bool active = evaluateIfCondition();
+				    if ( !active )
+					++macro_ifdef_skip;
+				}
+				else
+				    ++macro_ifdef_skip; // was active → skip
+				continue;
+			    }
+			    else if ( dir == "endif" )
+			    {
+				--macro_ifdef_depth;
+				if ( macro_ifdef_skip > 0 )
+				    --macro_ifdef_skip;
+				while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+				    source.get();
+				continue;
+			    }
+			    else
+			    {
+				// Not a conditional directive — put # + dir back as arg text
+				arg += '#';
+				arg += dir;
+			    }
+			    at_line_start = false;
+			    continue;
+			}
+			at_line_start = (mc == '\n' || mc == '\r');
+			// Skip content in false #ifdef/#else branch
+			if ( macro_ifdef_skip > 0 )
+			{
+			    // Still need to track nested #ifdef/#endif in skipped text
+			    continue;
+			}
 			if ( mc == '(' ) { ++depth; arg += mc; }
 			else if ( mc == ')' ) { --depth; if (depth > 0) arg += mc; }
 			else if ( mc == ',' && depth == 1 )
@@ -1221,11 +2298,92 @@ TokenBase *Program::_getToken()
 			}
 			else arg += mc;
 		    }
+		    // If the active #ifdef branch contained the closing `)`,
+		    // the remaining #else/#endif directives are still in the
+		    // source. Buffer active content (before #else) and push
+		    // it back; skip #else...#endif blocks entirely.
+		    if ( macro_ifdef_depth > 0 )
+		    {
+			std::string preserved;
+			while ( macro_ifdef_depth > 0 && source.good() )
+			{
+			    // Buffer content until a line starting with `#`
+			    std::string line;
+			    while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+				line += source.get();
+			    // consume newline
+			    std::string nl;
+			    while ( source.good() && (source.peek() == '\n' || source.peek() == '\r') )
+				nl += source.get();
+			    // check if line is a directive
+			    size_t p = 0;
+			    while ( p < line.size() && (line[p] == ' ' || line[p] == '\t') ) ++p;
+			    if ( p < line.size() && line[p] == '#' )
+			    {
+				++p;
+				while ( p < line.size() && (line[p] == ' ' || line[p] == '\t') ) ++p;
+				std::string dir2;
+				while ( p < line.size() && isalpha(line[p]) ) dir2 += line[p++];
+				if ( dir2 == "endif" )
+				{
+				    --macro_ifdef_depth;
+				    // don't preserve the #endif line
+				}
+				else if ( dir2 == "else" || dir2 == "elif" )
+				{
+				    // Skip from #else/#elif to the matching #endif
+				    int skip_depth = 1;
+				    while ( skip_depth > 0 && source.good() )
+				    {
+					std::string sline;
+					while ( source.good() && source.peek() != '\n' && source.peek() != '\r' )
+					    sline += source.get();
+					while ( source.good() && (source.peek() == '\n' || source.peek() == '\r') )
+					    source.get();
+					size_t sp = 0;
+					while ( sp < sline.size() && (sline[sp] == ' ' || sline[sp] == '\t') ) ++sp;
+					if ( sp < sline.size() && sline[sp] == '#' )
+					{
+					    ++sp;
+					    while ( sp < sline.size() && (sline[sp] == ' ' || sline[sp] == '\t') ) ++sp;
+					    std::string d3;
+					    while ( sp < sline.size() && isalpha(sline[sp]) ) d3 += sline[sp++];
+					    if ( d3 == "endif" ) --skip_depth;
+					    else if ( d3 == "ifdef" || d3 == "ifndef" || d3 == "if" ) ++skip_depth;
+					}
+				    }
+				    --macro_ifdef_depth;
+				}
+				else if ( dir2 == "ifdef" || dir2 == "ifndef" || dir2 == "if" )
+				    ++macro_ifdef_depth;
+			    }
+			    else
+			    {
+				// Not a directive — preserve for the tokenizer
+				preserved += line + nl;
+			    }
+			}
+			if ( !preserved.empty() )
+			    source.pushback(preserved);
+		    }
 		    // last argument
 		    while ( !arg.empty() && (arg.front() == ' ' || arg.front() == '\t') ) arg.erase(arg.begin());
 		    while ( !arg.empty() && (arg.back() == ' ' || arg.back() == '\t') ) arg.pop_back();
 		    if ( !arg.empty() || !args.empty() )
 			args.push_back(arg);
+		    if ( looks_like_decl_head(tokens)
+		      && decl_head_macro_args_look_like_prototype(args) )
+		    {
+			std::string tail("(");
+			for ( size_t ai = 0; ai < args.size(); ++ai )
+			{
+			    if ( ai ) tail += ", ";
+			    tail += args[ai];
+			}
+			tail += ")";
+			source.pushback(tail);
+			return new TokenIdent(word);
+		    }
 		    // substitute params in body — single pass over the
 		    // original body so an argument that happens to match a
 		    // later parameter name doesn't get re-substituted. A
@@ -1234,15 +2392,164 @@ TokenBase *Program::_getToken()
 		    // named `type` (macro's first arg), substituting
 		    // `result→type` first and `type→T` next would rewrite
 		    // the user's variable and corrupt the expansion.
+		    // C standard: pre-expand macros in arguments before
+		    // substitution (except for # and ## operands, but we
+		    // expand uniformly for simplicity). This handles nested
+		    // macro calls like UMIN(x, UMIN(y, z)).
+		    for ( size_t i = 0; i < args.size(); ++i )
+		    {
+			std::string &a = args[i];
+			// Quick check: does the argument contain any known macro name?
+			// A naive alpha check triggers on hex literals (0x1F) and
+			// integer suffixes (LU/ULL), whose round-trip through the
+			// tokenizer loses the original representation.  Scan for
+			// actual identifier words and see if any match a define.
+			bool has_macro = false;
+			for ( size_t j = 0; j < a.size() && !has_macro; ++j )
+			{
+			    if ( !(isalpha((unsigned char)a[j]) || a[j] == '_') )
+				continue;
+			    std::string id;
+			    while ( j < a.size() && (isalnum((unsigned char)a[j]) || a[j] == '_') )
+				id += a[j++];
+			    if ( define_map.count(id) || macro_map.count(id) )
+				has_macro = true;
+			}
+			if ( !has_macro ) continue;
+			// Push arg text through the tokenizer to expand macros
+			Source saved = std::move(source);
+			source = Source();
+			source.str(a);
+			std::string expanded_arg;
+			TokenBase *at;
+			while ( (at = getToken()) )
+			{
+			    switch ( at->type() )
+			    {
+				case TokenType::ttSpace: expanded_arg += ' '; break;
+				case TokenType::ttTab:   expanded_arg += '\t'; break;
+				case TokenType::ttEOL:   expanded_arg += '\n'; break;
+				case TokenType::ttOperator:
+				case TokenType::ttSymbol:
+				    expanded_arg += (char)at->get(); break;
+				case TokenType::ttMultiOp:
+				    expanded_arg += ((TokenMultiOp *)at)->str; break;
+				case TokenType::ttString:
+				    expanded_arg += '"';
+				    expanded_arg += ((TokenIdent *)at)->str;
+				    expanded_arg += '"';
+				    break;
+				case TokenType::ttChar:
+				    expanded_arg += '\'';
+				    expanded_arg += (char)at->get();
+				    expanded_arg += '\'';
+				    break;
+				default:
+				    if ( auto *ti = dynamic_cast<TokenIdent *>(at) )
+					expanded_arg += ti->str;
+				    else if ( at->type() == TokenType::ttInteger )
+				    {
+					TokenInt *tki = static_cast<TokenInt *>(at);
+					if ( !tki->source_text.empty() )
+					    expanded_arg += tki->source_text;
+					else
+					{
+					    char buf[32];
+					    snprintf(buf, sizeof(buf), "%ld", (long)at->get());
+					    expanded_arg += buf;
+					}
+				    }
+				    else
+					expanded_arg += (char)at->get();
+				    break;
+			    }
+			}
+			source = std::move(saved);
+			a = expanded_arg;
+		    }
 		    std::map<std::string, const std::string *> param_map;
+		    // For GNU named variadic params (e.g. args...),
+		    // join all remaining call-site arguments into that
+		    // last named parameter so the body can use the name
+		    // directly instead of __VA_ARGS__.
+		    std::string named_varargs;
 		    for ( size_t i = 0; i < macro.params.size() && i < args.size(); ++i )
-			param_map[macro.params[i]] = &args[i];
+		    {
+			if ( macro.variadic && i == macro.params.size() - 1
+			  && args.size() > macro.params.size() )
+			{
+			    named_varargs = args[i];
+			    for ( size_t j = i + 1; j < args.size(); ++j )
+			    {
+				named_varargs += ", ";
+				named_varargs += args[j];
+			    }
+			    param_map[macro.params[i]] = &named_varargs;
+			}
+			else
+			    param_map[macro.params[i]] = &args[i];
+		    }
+		    auto stringify_macro_arg = [](const std::string &raw) -> std::string {
+			std::string out("\"");
+			bool pending_space = false;
+			bool wrote = false;
+			for ( char c : raw )
+			{
+			    if ( c == ' ' || c == '\t' || c == '\n' || c == '\r' )
+			    {
+				if ( wrote )
+				    pending_space = true;
+				continue;
+			    }
+			    if ( pending_space )
+			    {
+				out += ' ';
+				pending_space = false;
+			    }
+			    if ( c == '"' || c == '\\' )
+				out += '\\';
+			    out += c;
+			    wrote = true;
+			}
+			out += '"';
+			return out;
+		    };
 		    std::string expanded;
 		    expanded.reserve(macro.body.size());
 		    for ( size_t p = 0; p < macro.body.size(); )
 		    {
 			char bc = macro.body[p];
-			if ( bc == '_' || isalpha((unsigned char)bc) )
+			if ( bc == '#' && p + 1 < macro.body.size() && macro.body[p+1] == '#' )
+			{
+			    expanded += "##";
+			    p += 2;
+			}
+			else if ( bc == '#' )
+			{
+			    size_t q = p + 1;
+			    while ( q < macro.body.size()
+				 && (macro.body[q] == ' ' || macro.body[q] == '\t') )
+				++q;
+			    if ( q < macro.body.size()
+			      && (macro.body[q] == '_' || isalpha((unsigned char)macro.body[q])) )
+			    {
+				size_t start = q;
+				while ( q < macro.body.size()
+				     && (macro.body[q] == '_' || isalnum((unsigned char)macro.body[q])) )
+				    ++q;
+				std::string ident = macro.body.substr(start, q - start);
+				auto it = param_map.find(ident);
+				if ( it != param_map.end() )
+				{
+				    expanded += stringify_macro_arg(*it->second);
+				    p = q;
+				    continue;
+				}
+			    }
+			    expanded += bc;
+			    ++p;
+			}
+			else if ( bc == '_' || isalpha((unsigned char)bc) )
 			{
 			    size_t start = p;
 			    while ( p < macro.body.size()
@@ -1250,7 +2557,8 @@ TokenBase *Program::_getToken()
 				++p;
 			    std::string ident = macro.body.substr(start, p - start);
 			    auto it = param_map.find(ident);
-			    if ( it != param_map.end() )
+			    if ( it != param_map.end()
+			      && !is_prefixed_literal_token(ident, macro.body, p) )
 				expanded += *it->second;
 			    else
 				expanded += ident;
@@ -1303,16 +2611,24 @@ TokenBase *Program::_getToken()
 			}
 		    }
 		    DBG(std::cout << "macro expand " << word << " -> " << expanded << std::endl);
-		    source.pushback(expanded);
+		    source.pushback_macro(expanded, word);
 		    return getToken();
 		}
 		// #define substitution: inject the define value into the source stream
-		if ( define_map.count(word) )
+		if ( define_map.count(word) && !source.macro_disabled(word) )
 		{
 		    std::string &val = define_map[word];
 		    if ( !val.empty() )
 		    {
-			source.pushback(val);
+			// Builtin libc aliases such as __builtin_strcmp -> strcmp
+			// should resolve to the target identifier directly instead
+			// of re-entering the macro rescanner. Otherwise user macros
+			// like `#define strcmp __builtin_strcmp` recurse forever.
+			if ( word.compare(0, 10, "__builtin_") == 0
+			  && is_identifier_spelling(val)
+			  && !builtin_alias_needs_retokenize(word, val) )
+			    return new TokenIdent(val);
+			source.pushback_macro(val, word);
 			return getToken(); // re-tokenize the substituted text
 		    }
 		    // empty define — skip and get next token
@@ -1336,92 +2652,191 @@ TokenBase *Program::_getToken()
 		    source.pushback(std::to_string(source.line()));
 		    return getToken();
 		}
-		// GCC `__attribute__((...))` is a no-op for madc — the
-		// attribute payload (alignment, format checks, visibility,
-		// etc.) doesn't change the call ABI we care about. Skip the
-		// keyword and its matching outer parens, then re-enter the
-		// tokenizer so the lexer sees the next real token.
-		if ( word == "__attribute__" )
+		// __FUNCTION__ / __func__ / __PRETTY_FUNCTION__: keep these
+		// as magic identifiers. madc tokenizes the whole file before
+		// parsing, so parseExpression resolves them after cur_func_name
+		// is known.
+		if ( word == "__FUNCTION__" || word == "__func__"
+		  || word == "__PRETTY_FUNCTION__" )
+		    return new TokenIdent(word);
+		// Most GCC attributes are no-ops for madc. Preserve the few
+		// layout/type-shaping ones the parser understands and skip
+		// the rest.
+		if ( word == "__attribute__" || word == "__attribute" )
 		{
 		    while ( source.good() && (source.peek() == ' ' || source.peek() == '\t' || source.peek() == '\n' || source.peek() == '\r') )
 			source.get();
+		    std::string attr_text;
 		    if ( source.peek() == '(' )
 		    {
 			int depth = 0;
 			do {
 			    char c = source.get();
+			    attr_text += c;
 			    if ( c == '(' ) ++depth;
 			    else if ( c == ')' ) --depth;
 			} while ( source.good() && depth > 0 );
 		    }
+		    if ( gnu_attribute_text_has_name(attr_text, "packed")
+		      || gnu_attribute_text_has_name(attr_text, "aligned")
+		      || gnu_attribute_text_has_name(attr_text, "scalar_storage_order")
+		      || gnu_attribute_text_has_name(attr_text, "vector_size")
+		      || gnu_attribute_text_has_name(attr_text, "alias")
+		      || gnu_attribute_text_has_name(attr_text, "no_instrument_function") )
+		    {
+			source.pushback(attr_text);
+			return new TokenIdent(word);
+		    }
 		    return getToken();
 		}
-		// compound type keywords: unsigned/signed/long/short [type]
-		// C allows up to three words: `unsigned short int`, `signed long
-		// int`, `long long int`, `unsigned long long`. Read up to two
-		// lookahead words and pick the longest match.
-		if ( word == "unsigned" || word == "signed" || word == "long" || word == "short" )
+		// Compound type specifiers: any mix of unsigned/signed/long/
+		// short/int/char/double in any order (C99 6.7.2).
+		// Uses a bitmap accumulator (chibicc-style) so order doesn't
+		// matter: `unsigned long long int` = `long unsigned int long`.
+		if ( word == "unsigned"   || word == "signed"
+		  || word == "long"       || word == "short"
+		  || word == "int"        || word == "char"
+		  || word == "double"     || word == "float"
+		  || word == "_Complex"   || word == "__complex__"
+		  || word == "__complex" )
 		{
+		    enum {
+			TS_VOID     = 1 << 0,
+			TS_CHAR     = 1 << 2,
+			TS_SHORT    = 1 << 4,
+			TS_INT      = 1 << 6,
+			TS_LONG     = 1 << 8,  // two LONGs = LONG+LONG
+			TS_FLOAT    = 1 << 10,
+			TS_DOUBLE   = 1 << 12,
+			TS_SIGNED   = 1 << 14,
+			TS_UNSIGNED = 1 << 16,
+			TS_COMPLEX  = 1 << 18,
+		    };
+		    auto word_to_flag = [](const std::string &w) -> int {
+			if (w == "char")     return TS_CHAR;
+			if (w == "short")    return TS_SHORT;
+			if (w == "int")      return TS_INT;
+			if (w == "long")     return TS_LONG;
+			if (w == "float")    return TS_FLOAT;
+			if (w == "double")   return TS_DOUBLE;
+			if (w == "signed")   return TS_SIGNED;
+			if (w == "unsigned") return TS_UNSIGNED;
+			if (w == "_Complex" || w == "__complex__" || w == "__complex") return TS_COMPLEX;
+			return 0;
+		    };
+		    int counter = word_to_flag(word);
+		    // Accumulate subsequent type-specifier keywords
 		    auto read_word = [&]() -> std::string {
-			while ( source.good() && (source.peek() == ' ' || source.peek() == '\t') )
+			while ( source.good()
+			     && (source.peek() == ' ' || source.peek() == '\t'
+			      || source.peek() == '\n' || source.peek() == '\r') )
 			    source.get();
 			std::string w;
 			while ( source.good() && (isalnum(source.peek()) || source.peek() == '_') )
 			    w += source.get();
 			return w;
 		    };
-		    std::string next = read_word();
-		    std::string peek2;
-		    if ( next == "short" || next == "long" )
-			peek2 = read_word();
-		    auto unget = [&](const std::string &a, const std::string &b) {
-			if ( !b.empty() ) source.pushback(std::string(" ") + b);
-			if ( !a.empty() ) source.pushback(std::string(" ") + a);
-		    };
-		    if ( word == "unsigned" )
+		    // Read ahead, accumulating type specifier keywords
+		    std::vector<std::string> consumed;
+		    while ( true )
 		    {
-			if ( next == "char" )                     { unget("", peek2); return new TokenDataType("unsigned char", ddUINT8); }
-			if ( next == "short" && peek2 == "int" )  return new TokenDataType("unsigned short int", ddUINT16);
-			if ( next == "short" )                    { unget("", peek2); return new TokenDataType("unsigned short", ddUINT16); }
-			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("unsigned int", ddUINT32); }
-			if ( next == "long" && peek2 == "long" )  return new TokenDataType("unsigned long long", ddUINT64);
-			if ( next == "long" && peek2 == "int" )   return new TokenDataType("unsigned long int", ddUINT64);
-			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("unsigned long", ddUINT64); }
-			unget(next, peek2);
-			return new TokenDataType("unsigned", ddUINT32);
+			std::string w = read_word();
+			int flag = word_to_flag(w);
+			if ( flag )
+			{
+			    counter += flag;
+			    consumed.push_back(w);
+			}
+			else
+			{
+			    // Not a type specifier — push it back
+			    if ( !w.empty() )
+				source.pushback(std::string(" ") + w);
+			    break;
+			}
 		    }
-		    if ( word == "signed" )
+		    // Resolve accumulated type specifiers to DataDef
+		    int normalized_counter = counter & ~TS_COMPLEX;
+		    switch ( normalized_counter )
 		    {
-			if ( next == "char" )                     { unget("", peek2); return new TokenDataType("signed char", ddINT8); }
-			if ( next == "short" && peek2 == "int" )  return new TokenDataType("signed short int", ddINT16);
-			if ( next == "short" )                    { unget("", peek2); return new TokenDataType("signed short", ddINT16); }
-			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("signed int", ddINT32); }
-			if ( next == "long" && peek2 == "long" )  return new TokenDataType("signed long long", ddINT64);
-			if ( next == "long" && peek2 == "int" )   return new TokenDataType("signed long int", ddINT64);
-			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("signed long", ddINT64); }
-			unget(next, peek2);
-			return new TokenDataType("signed", ddINT32);
-		    }
-		    if ( word == "long" )
-		    {
-			if ( next == "long" && peek2 == "int" )   return new TokenDataType("long long int", ddINT64);
-			if ( next == "long" )                     { unget("", peek2); return new TokenDataType("long long", ddINT64); }
-			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("long int", ddINT64); }
-			if ( next == "double" )                   { unget("", peek2); return new TokenDataType("long double", ddDOUBLE); }
-			unget(next, peek2);
-			return new TokenDataType("long", ddINT64);
-		    }
-		    if ( word == "short" )
-		    {
-			if ( next == "int" )                      { unget("", peek2); return new TokenDataType("short int", ddINT16); }
-			unget(next, peek2);
-			return new TokenDataType("short", ddINT16);
+			case 0:
+			    if ( counter & TS_COMPLEX )
+			    {
+				DataDef *complex_dd = get_complex_compat_type(&ddDOUBLE);
+				return new TokenDataType(complex_dd->name.c_str(), *complex_dd);
+			    }
+			    break;
+			case TS_CHAR:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddCHAR); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("char", ddCHAR);
+			case TS_SIGNED + TS_CHAR:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT8); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("signed char", ddINT8);
+			case TS_UNSIGNED + TS_CHAR:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT8); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned char", ddUINT8);
+			case TS_SHORT:
+			case TS_SHORT + TS_INT:
+			case TS_SIGNED + TS_SHORT:
+			case TS_SIGNED + TS_SHORT + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT16); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("short", ddINT16);
+			case TS_UNSIGNED + TS_SHORT:
+			case TS_UNSIGNED + TS_SHORT + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT16); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned short", ddUINT16);
+			case TS_INT:
+			case TS_SIGNED:
+			case TS_SIGNED + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT32); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("int", ddINT32);
+			case TS_UNSIGNED:
+			case TS_UNSIGNED + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT32); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned int", ddUINT32);
+			case TS_LONG:
+			case TS_LONG + TS_INT:
+			case TS_SIGNED + TS_LONG:
+			case TS_SIGNED + TS_LONG + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("long", ddINT64);
+			case TS_UNSIGNED + TS_LONG:
+			case TS_UNSIGNED + TS_LONG + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned long", ddUINT64);
+			case TS_LONG + TS_LONG:
+			case TS_LONG + TS_LONG + TS_INT:
+			case TS_SIGNED + TS_LONG + TS_LONG:
+			case TS_SIGNED + TS_LONG + TS_LONG + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("long long", ddINT64);
+			case TS_UNSIGNED + TS_LONG + TS_LONG:
+			case TS_UNSIGNED + TS_LONG + TS_LONG + TS_INT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddUINT64); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("unsigned long long", ddUINT64);
+			case TS_FLOAT:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddFLOAT); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("float", ddFLOAT);
+			case TS_DOUBLE:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("double", ddDOUBLE);
+			case TS_LONG + TS_DOUBLE:
+			    if ( counter & TS_COMPLEX ) { DataDef *dd = get_complex_compat_type(&ddDOUBLE); return new TokenDataType(dd->name.c_str(), *dd); }
+			    return new TokenDataType("long double", ddDOUBLE);
+			default:
+			    // Unrecognized combination — push back consumed words
+			    // in reverse and fall through to identifier/keyword lookup.
+			    for ( auto it = consumed.rbegin(); it != consumed.rend(); ++it )
+				source.pushback(std::string(" ") + *it);
+			    break;
 		    }
 		}
 		if ( (kmi=keyword_map.find(word)) != keyword_map.end() )
 		    return kmi->second->clone();
 		if ( (bmi=datatype_map.find(word)) != datatype_map.end() )
 		    return bmi->second->clone();
+		if ( auto_include_standard_identifier(word) )
+		    return getToken();
 		return new TokenIdent(word);
 	    }
 	    return new TokenChar(ch);
@@ -1471,11 +2886,13 @@ TokenBase *Program::skipConditionalBlock()
 	    // consume rest of line
 	    while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
 		source.get();
+	    DBG(std::cout << "skipConditionalBlock: #endif depth=" << depth << " stack=" << ifdef_stack.size() << std::endl);
 	    if ( depth == 0 )
 	    {
 		// this #endif closes our block
 		ifdef_stack.pop();
 		ifdef_done_stack.pop();
+		DBG(std::cout << "skipConditionalBlock: popped, stack now=" << ifdef_stack.size() << std::endl);
 		return getToken();
 	    }
 	    depth--;
@@ -1534,11 +2951,77 @@ TokenBase *Program::skipConditionalBlock()
 // evaluate #if condition: supports defined(NAME), !, &&, ||, identifiers,
 // and integer constants. This is enough for the header guards and platform
 // feature checks used by the imported SMAUG sources.
+// Expand all #define macros in a #if/#elif expression string.
+// Simple defines are replaced with their values; undefined identifiers
+// (other than 'defined') become 0 per the C standard. Runs up to
+// max_depth iterations to handle chained expansions.
+std::string Program::expandIfMacros(const std::string &raw)
+{
+    std::string expr = raw;
+    for ( int depth = 0; depth < 32; ++depth )
+    {
+	std::string out;
+	bool changed = false;
+	size_t i = 0;
+	bool preserve_defined_operand = false;
+	while ( i < expr.size() )
+	{
+	    // Copy non-identifier characters
+	    if ( !isalpha((unsigned char)expr[i]) && expr[i] != '_' )
+	    {
+		out += expr[i++];
+		continue;
+	    }
+	    // Extract identifier
+	    std::string word;
+	    while ( i < expr.size() && (isalnum((unsigned char)expr[i]) || expr[i] == '_') )
+		word += expr[i++];
+	    // Don't expand 'defined' — it's a #if operator
+	    if ( word == "defined" )
+	    {
+		out += word;
+		preserve_defined_operand = true;
+		continue;
+	    }
+	    if ( preserve_defined_operand )
+	    {
+		out += word;
+		preserve_defined_operand = false;
+		continue;
+	    }
+	    // Look up in define_map
+	    auto it = define_map.find(word);
+	    if ( it != define_map.end() )
+	    {
+		out += it->second.empty() ? "1" : it->second;
+		changed = true;
+	    }
+	    else if ( macro_map.count(word) > 0 )
+	    {
+		// Function-like macro without args in #if context → treat as defined (1)
+		out += "1";
+		changed = true;
+	    }
+	    else
+		out += word; // leave as-is (will become 0 in the evaluator)
+	}
+	expr = out;
+	if ( !changed ) break;
+    }
+    return expr;
+}
+
 bool Program::evaluateIfCondition()
 {
-    std::string expr;
+    std::string raw_expr;
     while ( source.good() && !source.eof() && source.peek() != '\n' && source.peek() != '\r' )
-	expr += source.get();
+	raw_expr += source.get();
+
+    // Expand macros before evaluation so expressions like
+    // OPENSSL_VERSION_MAJOR * 10000 + OPENSSL_VERSION_MINOR * 100
+    // resolve to numeric values.
+    std::string expr = expandIfMacros(raw_expr);
+    DBG(std::cout << "#if expand: " << raw_expr << " → " << expr << std::endl);
 
     size_t pos = 0;
 
@@ -1547,35 +3030,62 @@ bool Program::evaluateIfCondition()
 	    ++pos;
     };
 
-    std::function<bool()> parse_or;
-    std::function<bool()> parse_and;
-    std::function<bool()> parse_unary;
-    std::function<bool()> parse_primary;
+    // Integer-valued recursive descent so comparisons work correctly.
+    std::function<int64_t()> parse_or;
+    std::function<int64_t()> parse_and;
+    std::function<int64_t()> parse_comparison;
+    std::function<int64_t()> parse_unary;
+    std::function<int64_t()> parse_primary;
 
-    parse_primary = [&]() -> bool {
+    parse_primary = [&]() -> int64_t {
 	skip_ws();
 	if ( pos >= expr.size() )
-	    return false;
+	    return 0;
 
 	if ( expr[pos] == '(' )
 	{
 	    ++pos;
-	    bool value = parse_or();
+	    int64_t value = parse_or();
 	    skip_ws();
 	    if ( pos < expr.size() && expr[pos] == ')' )
 		++pos;
 	    return value;
 	}
 
+	// hex literal 0x...
+	if ( pos + 1 < expr.size() && expr[pos] == '0'
+	  && (expr[pos+1] == 'x' || expr[pos+1] == 'X') )
+	{
+	    pos += 2;
+	    int64_t val = 0;
+	    while ( pos < expr.size() && isxdigit((unsigned char)expr[pos]) )
+	    {
+		val <<= 4;
+		char c = expr[pos++];
+		if ( c >= '0' && c <= '9' ) val += c - '0';
+		else if ( c >= 'a' && c <= 'f' ) val += c - 'a' + 10;
+		else if ( c >= 'A' && c <= 'F' ) val += c - 'A' + 10;
+	    }
+	    // skip integer suffix
+	    while ( pos < expr.size() && (expr[pos] == 'u' || expr[pos] == 'U'
+		 || expr[pos] == 'l' || expr[pos] == 'L') )
+		++pos;
+	    return val;
+	}
+
 	if ( isdigit((unsigned char)expr[pos]) )
 	{
-	    int val = 0;
+	    int64_t val = 0;
 	    while ( pos < expr.size() && isdigit((unsigned char)expr[pos]) )
 	    {
 		val *= 10;
 		val += expr[pos++] - '0';
 	    }
-	    return val != 0;
+	    // skip integer suffix (U, L, LL, ULL, etc.)
+	    while ( pos < expr.size() && (expr[pos] == 'u' || expr[pos] == 'U'
+		 || expr[pos] == 'l' || expr[pos] == 'L') )
+		++pos;
+	    return val;
 	}
 
 	if ( isalpha((unsigned char)expr[pos]) || expr[pos] == '_' )
@@ -1602,63 +3112,257 @@ bool Program::evaluateIfCondition()
 		skip_ws();
 		if ( has_paren && pos < expr.size() && expr[pos] == ')' )
 		    ++pos;
-		return define_map.count(name) > 0 || macro_map.count(name) > 0;
+		return (define_map.count(name) > 0 || macro_map.count(name) > 0) ? 1 : 0;
 	    }
 
-	    bool result = define_map.count(word) > 0 || macro_map.count(word) > 0;
-	    if ( result )
+	    auto it = define_map.find(word);
+	    if ( it != define_map.end() )
 	    {
-		std::string &val = define_map[word];
-		if ( !val.empty() )
-		    result = (atoi(val.c_str()) != 0);
+		if ( !it->second.empty() )
+		    return strtoll(it->second.c_str(), NULL, 0);
+		return 1;
 	    }
-	    return result;
+	    if ( macro_map.count(word) > 0 )
+		return 1;
+	    return 0;
 	}
 
-	return false;
+	// skip single character like ',' or unknown
+	++pos;
+	return 0;
     };
 
-    parse_unary = [&]() -> bool {
+    parse_unary = [&]() -> int64_t {
 	skip_ws();
 	if ( pos < expr.size() && expr[pos] == '!' )
 	{
 	    ++pos;
-	    return !parse_unary();
+	    return parse_unary() ? 0 : 1;
+	}
+	if ( pos < expr.size() && expr[pos] == '~' )
+	{
+	    ++pos;
+	    return ~parse_unary();
+	}
+	if ( pos < expr.size() && expr[pos] == '-'
+	  && (pos + 1 < expr.size() && (isdigit((unsigned char)expr[pos+1])
+		|| expr[pos+1] == '(' || isalpha((unsigned char)expr[pos+1]))) )
+	{
+	    ++pos;
+	    return -parse_unary();
 	}
 	return parse_primary();
     };
 
-    parse_and = [&]() -> bool {
-	bool value = parse_unary();
+    // Multiplicative operators (*, /, %)
+    std::function<int64_t()> parse_multiplicative;
+    parse_multiplicative = [&]() -> int64_t {
+	int64_t value = parse_unary();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == '*' )
+	    {
+		pos += 1;
+		value *= parse_unary();
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '/' )
+	    {
+		pos += 1;
+		int64_t rhs = parse_unary();
+		value = rhs ? value / rhs : 0;
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '%' )
+	    {
+		pos += 1;
+		int64_t rhs = parse_unary();
+		value = rhs ? value % rhs : 0;
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    // Additive operators (+, -)
+    std::function<int64_t()> parse_additive;
+    parse_additive = [&]() -> int64_t {
+	int64_t value = parse_multiplicative();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == '+' )
+	    {
+		pos += 1;
+		value += parse_multiplicative();
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '-' )
+	    {
+		pos += 1;
+		value -= parse_multiplicative();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    // Shift operators (between additive and comparison in C precedence)
+    std::function<int64_t()> parse_shift;
+    parse_shift = [&]() -> int64_t {
+	int64_t value = parse_additive();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos + 1 < expr.size() && expr[pos] == '<' && expr[pos+1] == '<' )
+	    {
+		pos += 2;
+		value <<= parse_unary();
+		continue;
+	    }
+	    if ( pos + 1 < expr.size() && expr[pos] == '>' && expr[pos+1] == '>' )
+	    {
+		pos += 2;
+		value >>= parse_unary();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_comparison = [&]() -> int64_t {
+	int64_t value = parse_shift();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos + 1 < expr.size() && expr[pos] == '=' && expr[pos+1] == '=' )
+	    {
+		pos += 2;
+		value = (value == parse_shift()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos + 1 < expr.size() && expr[pos] == '!' && expr[pos+1] == '=' )
+	    {
+		pos += 2;
+		value = (value != parse_shift()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos + 1 < expr.size() && expr[pos] == '<' && expr[pos+1] == '=' )
+	    {
+		pos += 2;
+		value = (value <= parse_shift()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos + 1 < expr.size() && expr[pos] == '>' && expr[pos+1] == '=' )
+	    {
+		pos += 2;
+		value = (value >= parse_shift()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '<' && (pos + 1 >= expr.size() || expr[pos+1] != '<') )
+	    {
+		pos += 1;
+		value = (value < parse_shift()) ? 1 : 0;
+		continue;
+	    }
+	    if ( pos < expr.size() && expr[pos] == '>' && (pos + 1 >= expr.size() || expr[pos+1] != '>') )
+	    {
+		pos += 1;
+		value = (value > parse_shift()) ? 1 : 0;
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    // Bitwise AND (&), XOR (^), OR (|) — between comparison and logical
+    std::function<int64_t()> parse_bitand;
+    std::function<int64_t()> parse_bitxor;
+    std::function<int64_t()> parse_bitor;
+
+    parse_bitand = [&]() -> int64_t {
+	int64_t value = parse_comparison();
+	for (;;)
+	{
+	    skip_ws();
+	    // single & (not &&)
+	    if ( pos < expr.size() && expr[pos] == '&'
+	      && (pos + 1 >= expr.size() || expr[pos+1] != '&') )
+	    {
+		pos += 1;
+		value &= parse_comparison();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_bitxor = [&]() -> int64_t {
+	int64_t value = parse_bitand();
+	for (;;)
+	{
+	    skip_ws();
+	    if ( pos < expr.size() && expr[pos] == '^' )
+	    {
+		pos += 1;
+		value ^= parse_bitand();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_bitor = [&]() -> int64_t {
+	int64_t value = parse_bitxor();
+	for (;;)
+	{
+	    skip_ws();
+	    // single | (not ||)
+	    if ( pos < expr.size() && expr[pos] == '|'
+	      && (pos + 1 >= expr.size() || expr[pos+1] != '|') )
+	    {
+		pos += 1;
+		value |= parse_bitxor();
+		continue;
+	    }
+	    return value;
+	}
+    };
+
+    parse_and = [&]() -> int64_t {
+	int64_t value = parse_bitor();
 	for (;;)
 	{
 	    skip_ws();
 	    if ( pos + 1 < expr.size() && expr[pos] == '&' && expr[pos + 1] == '&' )
 	    {
 		pos += 2;
-		value = value && parse_unary();
+		int64_t rhs = parse_bitor();
+		value = (value && rhs) ? 1 : 0;
 		continue;
 	    }
 	    return value;
 	}
     };
 
-    parse_or = [&]() -> bool {
-	bool value = parse_and();
+    parse_or = [&]() -> int64_t {
+	int64_t value = parse_and();
 	for (;;)
 	{
 	    skip_ws();
 	    if ( pos + 1 < expr.size() && expr[pos] == '|' && expr[pos + 1] == '|' )
 	    {
 		pos += 2;
-		value = value || parse_and();
+		int64_t rhs = parse_and();
+		value = (value || rhs) ? 1 : 0;
 		continue;
 	    }
 	    return value;
 	}
     };
 
-    return parse_or();
+    return parse_or() != 0;
 }
 
 TokenBase *Program::getToken()

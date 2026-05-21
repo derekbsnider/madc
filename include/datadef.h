@@ -7,6 +7,7 @@
 #define __DATADEF_H 1
 
 extern thread_local bool madc_verbose;
+class TokenBase;
 
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
 enum class RefType  : uint8_t { rtNone, rtValue, rtPointer, rtReference  };
@@ -15,9 +16,9 @@ enum class DataType : uint16_t {
 	// Simple data types
 	dtVOID, dtBOOL, dtUINT8, dtBYTE=dtUINT8,  dtINT8, dtCHAR = dtINT8,
 	dtUINT16, dtINT16, dtSHORT=dtINT16, dtUINT24, dtINT24,
-	dtUINT32, dtINT32, dtUINT64, dtINT64, dtINT=dtINT64,
-	dtFLOAT, dtFLOAT32=dtFLOAT, dtDOUBLE, dtDOUBLE64=dtDOUBLE,
-	dtLDOUBLE, dtDOUBLE80 = dtLDOUBLE, dtRESERVED = 255,
+	dtUINT32, dtINT32, dtUINT64, dtINT64, dtINT=dtINT32,
+	dtFLOAT=12, dtFLOAT32=dtFLOAT, dtDOUBLE, dtDOUBLE64=dtDOUBLE,
+	dtLDOUBLE, dtDOUBLE80 = dtLDOUBLE, dtSIMD, dtRESERVED = 255,
 	// complex and valarray
 	// some Standard C++ classes
 	dtSTRING, dtISTREAM, dtOSTREAM, dtISSTREAM, dtOSSTREAM, dtSSTREAM,
@@ -29,7 +30,7 @@ enum class DataType : uint16_t {
 	// rtPointer variants
 	dtVOIDptr = 10000, dtBOOLptr, dtUINT8ptr, dtBYTEptr=dtUINT8ptr, dtINT8ptr, dtCHARptr = dtINT8ptr,
 	dtUINT16ptr, dtINT16ptr, dtSHORTptr=dtINT16ptr, dtUINT24ptr, dtINT24ptr,
-	dtUINT32ptr, dtINT32ptr, dtUINT64ptr, dtINT64ptr, dtINTptr=dtINT64ptr,
+	dtUINT32ptr, dtINT32ptr, dtUINT64ptr, dtINT64ptr, dtINTptr=dtINT32ptr,
 	dtFLOATptr, dtFLOAT32ptr=dtFLOATptr, dtDOUBLEptr, dtDOUBLE64ptr=dtDOUBLEptr,
 	dtLDOUBLEptr, dtDOUBLE80ptr=dtLDOUBLEptr, dtRESERVEDptr = 10255,
 	dtSTRINGptr, dtISTREAMptr, dtOSTREAMptr, dtISSTREAMptr, dtOSSTREAMptr, dtSSTREAMptr,
@@ -41,7 +42,7 @@ enum class DataType : uint16_t {
 	// rtReference variants
 	dtVOIDref = 20000, dtBOOLref, dtUINT8ref, dtBYTEref=dtUINT8ref, dtINT8ref, dtCHARref = dtINT8ref,
 	dtUINT16ref, dtINT16ref, dtSHORTref=dtINT16ref, dtUINT24ref, dtINT24ref,
-	dtUINT32ref, dtINT32ref, dtUINT64ref, dtINT64ref, dtINTref=dtINT64ref,
+	dtUINT32ref, dtINT32ref, dtUINT64ref, dtINT64ref, dtINTref=dtINT32ref,
 	dtFLOATref, dtFLOAT32ref=dtFLOATref, dtDOUBLEref, dtDOUBLE64ref=dtDOUBLEref,
 	dtLDOUBLEref, dtDOUBLE80ref=dtLDOUBLEref, dtRESERVEDref = 20255,
 	dtSTRINGref, dtISTREAMref, dtOSTREAMref, dtISSTREAMref, dtOSSTREAMref, dtSSTREAMref,
@@ -97,6 +98,7 @@ public:
 	return false;
     }
     virtual bool is_string() const { if (rawtype() == DataType::dtSTRING) return true; return false; }
+    virtual bool is_complex() const { return false; }
     virtual bool is_numeric() const
     {
 	if ( basetype() != BaseType::btSimple )
@@ -121,6 +123,7 @@ public:
 	    return true;
 	return false;
     }
+    virtual bool is_simd() const { return false; }
     virtual bool is_unsigned() const
     {
     	switch(rawtype())
@@ -250,25 +253,26 @@ public:
 	// to avoid garbage deref on the unmatched format spec.
 	switch((DataType)_type)
 	{
-	// All integer types use 64-bit registers. Sub-64-bit values are
-	// sign/zero-extended on load (movmptr2rval, movrptr2rval, safemov).
-	// Using sub-register types (newGpw, newGpd) leaves upper bits
-	// undefined, which corrupts values passed as function arguments or
-	// used as array indices.
+	// Sub-32-bit types use 64-bit registers with sign/zero-extension
+	// on load because 8-bit and 16-bit x86 ops do NOT clear upper bits.
 	case DataType::dtCHAR:
 	case DataType::dtBOOL:
-	case DataType::dtINT64:
 	case DataType::dtINT16:
 	case DataType::dtINT24:
-	case DataType::dtINT32:
 	case DataType::dtUINT8:
 	case DataType::dtUINT16:
 	case DataType::dtUINT24:
-	case DataType::dtUINT32:
+	case DataType::dtINT64:
 	case DataType::dtUINT64:  return n ? cc.newGpq("%s", n) : cc.newGpq();
+	// 32-bit types use 32-bit registers. On x86-64 all 32-bit ops
+	// automatically zero-extend to 64 bits, so wrapping at 2^32 is
+	// free and upper bits are always clean.
+	case DataType::dtINT32:
+	case DataType::dtUINT32:  return n ? cc.newGpd("%s", n) : cc.newGpd();
 	case DataType::dtFLOAT:   return n ? cc.newXmm("%s", n) : cc.newXmm();
 	case DataType::dtDOUBLE:  return n ? cc.newXmm("%s", n) : cc.newXmm();
 	case DataType::dtLDOUBLE: return n ? cc.newXmm("%s", n) : cc.newXmm();
+	case DataType::dtSIMD:    return n ? cc.newXmm("%s", n) : cc.newXmm();
 	default:		  return n ? cc.newIntPtr("%s", n) : cc.newIntPtr();
 	}
     }
@@ -493,26 +497,59 @@ class Variable; // forward dec
 class DataDefSTRUCT: public DataDef
 {
 public:
+    struct BitFieldInfo
+    {
+	bool is_bitfield;
+	size_t storage_offset;
+	size_t storage_size;
+	size_t bit_offset;
+	size_t bit_width;
+	bool is_unsigned;
+	bool reverse_storage;
+	BitFieldInfo()
+	    : is_bitfield(false), storage_offset(0), storage_size(0),
+	      bit_offset(0), bit_width(0), is_unsigned(false),
+	      reverse_storage(false) {}
+    };
+
     std::vector<memberpair_t> members;
     std::vector<size_t> member_counts;	// per-member count for fixed arrays (1 for scalars)
+    std::vector<bool> member_array_flags;	// true when declarator used [] even if count folded to 1
+    std::vector<size_t> member_offsets;	// per-member byte offset in the finalized layout
+    std::vector<BitFieldInfo> member_bitfields;
+    std::vector<std::vector<uint32_t>> member_dims;
+    std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
+    TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
+    bool union_layout;	// true: all members start at offset 0; size is max member size
+    bool reverse_scalar_storage;
+    bool bitfield_active;
+    size_t bitfield_unit_offset;
+    size_t bitfield_unit_size;
+    size_t bitfield_next_bit;
 
     static size_t align_up(size_t v, size_t a) { return a ? ((v + a - 1) & ~(a - 1)) : v; }
 
     // compute alignment for a field: natural alignment capped by pack setting
     size_t field_align(const DataDef &dd) const
     {
-	size_t natural = dd.size > 8 ? 8 : dd.size;  // x86-64: max natural alignment is 8
+	size_t natural = dd.alignment();
+	if ( natural == 0 ) natural = 1;
 	if ( pack == 0 ) return natural;              // C ABI default
 	return pack < natural ? pack : natural;       // #pragma pack(N) caps alignment
     }
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
-	: DataDef(n, s, d), pack(0), max_align(1) {}
+	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), union_layout(false),
+	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
+	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
-	: DataDef(n, 0, DataType::dtRESERVED), pack(0), max_align(1)
+	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1),
+	  union_layout(false),
+	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
+	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
 	DBG(std::cout << "DataDefSTRUCT(" << n << ") constructor" << std::endl);
 	std::vector<memberpair_t>::iterator dvpi;
@@ -527,34 +564,191 @@ public:
     virtual BaseType basetype() const { return BaseType::btStruct; }
     virtual size_t alignment() const { return max_align ? max_align : 1; }
     void addMember(memberpair_t p) { addMember(p.first, *p.second, 1); }
-    void addMember(std::string n, DataDef &dd, size_t cnt)
+    void setReverseScalarStorage(bool reverse)
+    {
+	reverse_scalar_storage = reverse;
+	size_t unit_offset = (size_t)-1;
+	size_t unit_size = 0;
+	size_t unit_next_bit = 0;
+	for ( size_t i = 0; i < member_bitfields.size(); ++i )
+	{
+	    BitFieldInfo &info = member_bitfields[i];
+	    if ( !info.is_bitfield )
+		continue;
+	    if ( info.storage_offset != unit_offset || info.storage_size != unit_size )
+	    {
+		unit_offset = info.storage_offset;
+		unit_size = info.storage_size;
+		unit_next_bit = 0;
+	    }
+	    size_t storage_bits = info.storage_size * 8;
+	    info.bit_offset = reverse_scalar_storage
+		? (storage_bits - unit_next_bit - info.bit_width)
+		: unit_next_bit;
+	    info.reverse_storage = reverse_scalar_storage;
+	    unit_next_bit += info.bit_width;
+	}
+    }
+    void endBitFieldRun()
+    {
+	bitfield_active = false;
+	bitfield_unit_offset = 0;
+	bitfield_unit_size = 0;
+	bitfield_next_bit = 0;
+    }
+    void addMember(std::string n, DataDef &dd, size_t cnt, TokenBase *count_expr = NULL,
+	bool is_array_decl = false, const std::vector<uint32_t> *dims = NULL)
     {
 	DBG(std::cout << "DataDefSTRUCT::addMember(" << n << ") at offset " << size << std::endl);
+	endBitFieldRun();
 	size_t fa = field_align(dd);
+	if ( union_layout )
+	{
+	    if ( fa > max_align ) max_align = fa;
+	    members.emplace_back(n, &dd);
+	    member_counts.push_back(cnt);
+	    member_array_flags.push_back(is_array_decl || count_expr != NULL);
+	    member_offsets.push_back(0);
+	    member_bitfields.push_back(BitFieldInfo());
+	    member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
+	    member_count_exprs.push_back(count_expr);
+	    size_t member_size = count_expr ? 0 : (dd.size * cnt);
+	    if ( member_size > size ) size = member_size;
+	    return;
+	}
 	size = align_up(size, fa);	// pad to field's alignment
 	if ( fa > max_align ) max_align = fa;
 	members.emplace_back(n, &dd);
 	member_counts.push_back(cnt);
-	size += dd.size * cnt;
+	member_array_flags.push_back(is_array_decl || count_expr != NULL);
+	member_offsets.push_back(size);
+	member_bitfields.push_back(BitFieldInfo());
+	member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
+	member_count_exprs.push_back(count_expr);
+	if ( !count_expr )
+	    size += dd.size * cnt;
+    }
+    size_t bitfield_storage_size(const DataDef &dd) const
+    {
+	size_t storage_size = dd.size ? dd.size : 4;
+	return storage_size > 8 ? 8 : storage_size;
+    }
+    BitFieldInfo allocateBitField(DataDef &dd, size_t width)
+    {
+	auto is_builtin_signed_integer_name = [](const std::string &name) -> bool {
+	    return name == "char"
+		|| name == "short"
+		|| name == "int"
+		|| name == "long"
+		|| name == "long long"
+		|| name == "int8_t"
+		|| name == "int16_t"
+		|| name == "int24_t"
+		|| name == "int32_t"
+		|| name == "int64_t";
+	};
+	size_t storage_size = bitfield_storage_size(dd);
+	size_t storage_bits = storage_size * 8;
+	if ( !bitfield_active
+	  || bitfield_unit_size != storage_size
+	  || bitfield_next_bit + width > storage_bits )
+	{
+	    size_t fa = field_align(dd);
+	    size = align_up(size, fa);
+	    if ( fa > max_align ) max_align = fa;
+	    bitfield_active = true;
+	    bitfield_unit_offset = size;
+	    bitfield_unit_size = storage_size;
+	    bitfield_next_bit = 0;
+	    size += storage_size;
+	}
+
+	BitFieldInfo info;
+	info.is_bitfield = true;
+	info.storage_offset = bitfield_unit_offset;
+	info.storage_size = storage_size;
+	info.bit_offset = reverse_scalar_storage
+	    ? (storage_bits - bitfield_next_bit - width)
+	    : bitfield_next_bit;
+	info.bit_width = width;
+	bool alias_like_int =
+	    dd.rawtype() == DataType::dtINT32
+	    && !is_builtin_signed_integer_name(dd.name);
+	info.is_unsigned = dd.is_unsigned()
+	    || dd.rawtype() == DataType::dtBOOL
+	    || alias_like_int;
+	info.reverse_storage = reverse_scalar_storage;
+	bitfield_next_bit += width;
+	if ( bitfield_next_bit >= storage_bits )
+	    endBitFieldRun();
+	return info;
+    }
+    void addBitField(std::string n, DataDef &dd, size_t width)
+    {
+	BitFieldInfo info = allocateBitField(dd, width);
+	members.emplace_back(n, &dd);
+	member_counts.push_back(1);
+	member_array_flags.push_back(false);
+	member_offsets.push_back(info.storage_offset);
+	member_bitfields.push_back(info);
+	member_dims.push_back(std::vector<uint32_t>());
+	member_count_exprs.push_back(NULL);
+    }
+    void addUnnamedBitField(DataDef &dd, size_t width)
+    {
+	if ( width == 0 )
+	{
+	    endBitFieldRun();
+	    size_t fa = field_align(dd);
+	    size = align_up(size, fa);
+	    if ( fa > max_align ) max_align = fa;
+	    return;
+	}
+	(void)allocateBitField(dd, width);
+    }
+    void addAnonymousAggregate(const DataDefSTRUCT &agg)
+    {
+	endBitFieldRun();
+	size_t fa = field_align(agg);
+	size_t base_offset = union_layout ? 0 : align_up(size, fa);
+	if ( fa > max_align ) max_align = fa;
+	for ( size_t i = 0; i < agg.members.size(); ++i )
+	{
+	    members.push_back(agg.members[i]);
+	    member_counts.push_back(i < agg.member_counts.size() ? agg.member_counts[i] : 1);
+	    member_array_flags.push_back(i < agg.member_array_flags.size() ? agg.member_array_flags[i] : false);
+	    size_t child_offset = i < agg.member_offsets.size() ? agg.member_offsets[i] : 0;
+	    member_offsets.push_back(base_offset + child_offset);
+	    BitFieldInfo info = i < agg.member_bitfields.size() ? agg.member_bitfields[i] : BitFieldInfo();
+	    if ( info.is_bitfield )
+		info.storage_offset += base_offset;
+	    member_bitfields.push_back(info);
+	    member_dims.push_back(i < agg.member_dims.size() ? agg.member_dims[i] : std::vector<uint32_t>());
+	    member_count_exprs.push_back(i < agg.member_count_exprs.size() ? agg.member_count_exprs[i] : NULL);
+	}
+	size_t end = base_offset + agg.size;
+	if ( union_layout )
+	{
+	    if ( end > size ) size = end;
+	}
+	else
+	    size = end;
     }
     // round struct size up to its overall alignment (for arrays of structs)
     void finalize()
     {
+	endBitFieldRun();
 	size = align_up(size, max_align);
     }
     ssize_t m_offset(std::string &member)
     {
-	ssize_t ofs = 0;
 	DBG(std::cout << "DataDefSTRUCT::offset(" << member << ')' << std::endl);
 	for ( size_t i = 0; i < members.size(); ++i )
 	{
-	    size_t fa = field_align(*members[i].second);
-	    ofs = (ssize_t)align_up((size_t)ofs, fa);
+	    size_t ofs = (i < member_offsets.size()) ? member_offsets[i] : 0;
 	    DBG(std::cout << "DataDefSTRUCT::offset(" << member << ") looking at " << members[i].first << " ofs=" << ofs << std::endl);
 	    if ( !member.compare(members[i].first) )
-		return ofs;
-	    size_t cnt = (i < member_counts.size()) ? member_counts[i] : 1;
-	    ofs += members[i].second->size * cnt;
+		return (ssize_t)ofs;
 	}
 	return -1;
     }
@@ -565,6 +759,34 @@ public:
 	    if ( !member.compare(members[i].first) )
 		return (i < member_counts.size()) ? member_counts[i] : 1;
 	return 1;
+    }
+    TokenBase *m_count_expr(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_count_exprs.size()) ? member_count_exprs[i] : NULL;
+	return NULL;
+    }
+    bool m_is_array_decl(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_array_flags.size()) ? member_array_flags[i] : false;
+	return false;
+    }
+    const std::vector<uint32_t> *m_dims(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_dims.size()) ? &member_dims[i] : NULL;
+	return NULL;
+    }
+    bool has_runtime_size() const
+    {
+	for ( size_t i = 0; i < member_count_exprs.size(); ++i )
+	    if ( member_count_exprs[i] != NULL )
+		return true;
+	return false;
     }
     DataDef *m_type(std::string &member)
     {
@@ -581,6 +803,18 @@ public:
 	}
 	DBG(std::cout << "DataDefSTRUCT::type() returning NULL" << std::endl);
 	return NULL;
+    }
+    const BitFieldInfo *m_bitfield(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_bitfields.size() && member_bitfields[i].is_bitfield)
+		    ? &member_bitfields[i] : NULL;
+	return NULL;
+    }
+    bool m_is_bitfield(const std::string &member) const
+    {
+	return m_bitfield(member) != NULL;
     }
 };
 
@@ -603,7 +837,7 @@ class DataDefVOID:      public DataDef { public: DataDefVOID() :   DataDef("void
 class DataDefVOIDref:   public DataDef { public: DataDefVOIDref(): DataDef("void&", 0,    DataType::dtVOIDref) {} };
 class DataDefBOOL:      public DataDef { public: DataDefBOOL() :   DataDef("bool", 1,     DataType::dtBOOL) {} };
 class DataDefCHAR:      public DataDef { public: DataDefCHAR() :   DataDef("char", 1,     DataType::dtCHAR) {} };
-class DataDefINT:       public DataDef { public: DataDefINT()  :   DataDef("int",  8,     DataType::dtINT) {} };
+class DataDefINT:       public DataDef { public: DataDefINT()  :   DataDef("int",  4,     DataType::dtINT) {} };
 class DataDefINT8:      public DataDef { public: DataDefINT8() :   DataDef("int8_t", 1,   DataType::dtINT8) {} };
 class DataDefINT16:     public DataDef { public: DataDefINT16():   DataDef("int16_t", 2,  DataType::dtINT16) {} };
 class DataDefINT24:     public DataDef { public: DataDefINT24():   DataDef("int24_t", 3,  DataType::dtINT24) {} };
@@ -649,6 +883,64 @@ public:
     { cc.mov(asmjit::x86::qword_ptr(ptr), rval); }
     virtual void movmptr2rval(asmjit::x86::Compiler &cc, asmjit::x86::Gp &reg, void *ptr)
     { cc.mov(reg, asmjit::x86::qword_ptr((uintptr_t)ptr)); }
+};
+
+class DataDefCArray : public DataDef
+{
+public:
+    DataDef *element_type;
+    size_t count;
+    TokenBase *count_expr;
+
+    DataDefCArray(DataDef &elem, const std::string &alias_name,
+		  size_t cnt, TokenBase *expr = NULL)
+	: DataDef(alias_name, expr ? 0 : (elem.size * cnt), DataType::dtRESERVED),
+	  element_type(&elem), count(cnt), count_expr(expr) {}
+
+    virtual size_t alignment() const
+    {
+	return element_type ? element_type->alignment() : DataDef::alignment();
+    }
+
+    bool has_runtime_size() const { return count_expr != NULL; }
+};
+
+class DataDefENUM : public DataDef
+{
+public:
+    std::string enum_name;
+
+    DataDefENUM(const std::string &name)
+	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
+};
+
+class DataDefCOMPLEX : public DataDefSTRUCT
+{
+public:
+    DataDef *element_type;
+
+    DataDefCOMPLEX(DataDef &elem)
+	: DataDefSTRUCT(elem.name + " _Complex", 0), element_type(&elem)
+    {
+	addMember("__real", elem, 1);
+	addMember("__imag", elem, 1);
+    }
+
+    virtual bool is_complex() const { return true; }
+
+    virtual bool is_compatible(DataDef &d)
+    {
+	if ( &d == this )
+	    return true;
+	DataDefCOMPLEX *other = dynamic_cast<DataDefCOMPLEX *>(&d);
+	return other && other->element_type == element_type;
+    }
+
+    size_t component_offset(bool imag_part) const
+    {
+	std::string member = imag_part ? "__imag" : "__real";
+	return const_cast<DataDefCOMPLEX *>(this)->m_offset(member);
+    }
 };
 
 class MadArray;
@@ -790,6 +1082,27 @@ public:
     DataDef *element_type;
     DataDefVECTOR(DataDef *elem, const std::string &name, size_t sz)
 	: DDClass(name, sz, DataType::dtVECTOR), element_type(elem) {}
+};
+
+class DataDefSIMD: public DataDef
+{
+public:
+    DataDef *element_type;
+    size_t vector_bytes;
+    size_t lane_count;
+    DataDefSIMD(DataDef *elem, const std::string &name, size_t bytes)
+	: DataDef(name, bytes, DataType::dtSIMD), element_type(elem),
+	  vector_bytes(bytes), lane_count((elem && elem->size) ? (bytes / elem->size) : 0) {}
+    virtual bool is_numeric() const { return true; }
+    virtual bool is_integer() const { return element_type && element_type->is_integer(); }
+    virtual bool is_real() const { return element_type && element_type->is_real(); }
+    virtual bool is_simd() const { return true; }
+    virtual size_t alignment() const
+    {
+	if ( size >= 16 ) return 16;
+	if ( size >= 8 ) return 8;
+	return size ? size : 1;
+    }
 };
 
 class DataDefMAP: public DDClass

@@ -1,7 +1,7 @@
 buf=100
 buf0=1
 n=100
-arr=40
-arr0=8
-na=8 nb=1 nc=8
-pa=8 pb=1 pc=8
+arr=20
+arr0=4
+na=4 nb=1 nc=8
+pa=4 pb=1 pc=8

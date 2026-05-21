@@ -1,0 +1,27 @@
+unsigned p;
+
+long test(unsigned a)
+{
+	return (long)(p + a) - (long)p;
+}
+
+int main()
+{
+	p = (unsigned)-2;
+	if (test(0) != 0)
+		abort();
+	if (test(1) != 1)
+		abort();
+	if (test(2) != -(long)(unsigned)-2)
+		abort();
+
+	p = (unsigned)-1;
+	if (test(0) != 0)
+		abort();
+	if (test(1) != -(long)(unsigned)-1)
+		abort();
+	if (test(2) != -(long)(unsigned)-2)
+		abort();
+
+	return 0;
+}

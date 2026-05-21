@@ -1,0 +1,8 @@
+static double nzero = -0.0;
+
+int main(void)
+{
+	printf("%a\n", nzero);
+	printf("%a\n", 1.0 / nzero);
+	return 0;
+}

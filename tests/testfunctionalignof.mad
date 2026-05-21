@@ -1,0 +1,11 @@
+void func() __attribute__((aligned(256)));
+
+void func()
+{
+}
+
+int main()
+{
+	printf("%llu\n", (unsigned long long)__alignof__(func));
+	return 0;
+}

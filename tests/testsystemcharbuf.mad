@@ -1,0 +1,11 @@
+#!/usr/bin/env madc
+
+#include <stdlib.h>
+#include <string.h>
+
+int main()
+{
+    char cmd[16] = "true";
+    strcat(&cmd[0], "");
+    return system(cmd);
+}

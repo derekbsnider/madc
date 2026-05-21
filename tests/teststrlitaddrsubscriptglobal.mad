@@ -1,0 +1,6 @@
+void *foo[] = { (void *)&("X"[0]) };
+
+int main()
+{
+	putchar(((char *)foo[0])[0]);
+}

@@ -1,0 +1,25 @@
+#!/../bin/madc
+
+#include <stdio.h>
+
+typedef float v4flt __attribute__ ((vector_size (16)));
+
+float buffer[64];
+
+int main(void)
+{
+	int i;
+	float *dst, *src;
+	char *cptr;
+	cptr = (char *)buffer;
+	cptr += (-(long int)buffer & (16 * sizeof(float) - 1));
+	dst = (float *)cptr;
+	src = dst + 16;
+	for (i = 0; i < 4; ++i)
+		src[i] = (float)i + 11 * (float)i;
+	v4flt t0 = *(v4flt *)(src + 0);
+	*(v4flt *)(dst + 0) = t0;
+	for (i = 0; i < 4; ++i)
+		printf("%.1f\n", dst[i]);
+	return 0;
+}

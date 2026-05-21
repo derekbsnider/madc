@@ -1024,7 +1024,7 @@ TEST_SUITE("madc::program") {
 	const madc::error *err = pgm.last_error();
 	REQUIRE(err != NULL);
 	CHECK(err->stage == madc::error::phase::parser);
-	CHECK(err->message == "dynamic symbol fallback is disabled by registration policy");
+	CHECK(err->message == "use of undeclared identifier 'strlen'");
     }
 
     TEST_CASE("compile_options can disable extern late-bind dlsym fallback") {
@@ -1748,8 +1748,8 @@ TEST_SUITE("madc::program") {
 	madc::program pgm;
 	std::string path = make_temp_source_path();
 	write_file(path,
-		   "int counter = 0;\n"
-		   "int read_counter() { return counter; }\n"
+		   "long counter = 0;\n"
+		   "long read_counter() { return counter; }\n"
 		   "int main() { return 0; }\n");
 
 	REQUIRE(pgm.compile_file(path));

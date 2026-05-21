@@ -1,0 +1,20 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+void *one(void) { return (void *)1; }
+void *two(void) { return (void *)2; }
+void *three(void) { return (void *)3; }
+
+void *(*funcs[3])(void) = { one, two, three };
+
+int main()
+{
+    if (funcs[0] != one)
+        abort();
+    if (funcs[1] != two)
+        abort();
+    if (funcs[2] != three)
+        abort();
+    printf("ok\n");
+    return 0;
+}

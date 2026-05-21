@@ -1,0 +1,18 @@
+#!/../bin/madc
+
+extern void abort(void);
+
+int main(void)
+{
+    int b;
+    unsigned long long s;
+
+    for (b = 0, s = 16; b++, (s >>= 1) != 0; )
+	;
+
+    if (b != 5)
+	abort();
+
+    puts("ok");
+    return 0;
+}

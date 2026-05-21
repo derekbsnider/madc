@@ -1,0 +1,37 @@
+#!/../bin/madc
+
+#include <stdio.h>
+
+typedef unsigned short v4hi __attribute__ ((vector_size (8)));
+typedef float v4sf __attribute__ ((vector_size (16)));
+typedef int V2SI __attribute__ ((vector_size (8)));
+
+union
+{
+    v4hi v;
+    short s[4];
+} u;
+
+union
+{
+    v4sf v;
+    float f[4];
+} v;
+
+void foo(void)
+{
+    unsigned int i;
+    for (i = 0; i < 2; i++)
+	u.v += (v4hi) { 12, 32768 };
+    for (i = 0; i < 2; i++)
+	v.v += (v4sf) { 18.0, 20.0, 22 };
+}
+
+int main(void)
+{
+    foo();
+    printf("%d %d %d %d\n", u.s[0], u.s[1], u.s[2], u.s[3]);
+    printf("%.1f %.1f %.1f %.1f\n", v.f[0], v.f[1], v.f[2], v.f[3]);
+    printf("%d\n", (int)(long long)(V2SI){ 2, 2 });
+    return 0;
+}

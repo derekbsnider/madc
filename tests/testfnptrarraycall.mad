@@ -1,0 +1,32 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+void *ret0(void) { return (void *)0; }
+void *ret1(void) { return (void *)1; }
+void *ret2(void) { return (void *)2; }
+
+void *(*funcs[3])(void) = { ret0, ret1, ret2 };
+void *saved[3];
+
+void call_one(int i)
+{
+    saved[i] = funcs[i]();
+}
+
+int main()
+{
+    int i;
+
+    for (i = 0; i < 3; i++)
+        call_one(i);
+
+    if (saved[0] != (void *)0)
+        abort();
+    if (saved[1] != (void *)1)
+        abort();
+    if (saved[2] != (void *)2)
+        abort();
+
+    printf("ok\n");
+    return 0;
+}

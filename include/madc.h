@@ -12,6 +12,7 @@
 #include <memory>
 #include <ostream>
 #include <sstream>
+#include <deque>
 #include <vector>
 
 #include "libmadc/value.h"
@@ -50,6 +51,7 @@ public:
     DataDef &returns;
     asmjit::FuncNode *funcnode;
     std::vector<DataDef *> parameters;
+    size_t explicit_alignment;
     // [&] capture support
     bool has_captures;
     struct CaptureEntry { std::string name; DataDef *type; };
@@ -57,10 +59,13 @@ public:
     std::vector<CaptureEntry> captures;         // populated during lambda body compilation
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
-    FuncDef(DataDef &d) : returns(d), has_captures(false), is_varargs(false) { funcnode = NULL; }
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
+    virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
+    bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
+    bool no_instrument_function;
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 
@@ -127,13 +132,23 @@ public:
     // the first use's LEA can sit inside a branch the second use does
     // not dominate, leaving the cached Gp uninitialized → NULL deref.
     std::map<Variable *, asmjit::x86::Mem> fixed_array_stack;
-    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; }
+    // Cursor position right after function parameter setup. Stack-slot
+    // zero-inits for local numeric variables are inserted here via
+    // setCursor() so they execute once at function entry, not at
+    // first-use (which may be inside a loop/branch).
+    asmjit::BaseNode *prologue_cursor;
+    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; prologue_cursor = NULL; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
     void movreg(Program &, asmjit::Operand &, Variable *);
     void putreg(Program &, Variable *);
     void cleanup(Program &);
     void clear_operand_map() { operand_map.clear(); }
+    virtual DataDef *datadef() const override {
+	if ( statements.empty() ) return &ddVOID;
+	DataDef *dd = statements.back()->datadef();
+	return dd ? dd : &ddVOID;
+    }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     Variable *getParameter(unsigned int);
     Variable *findParameter(std::string &s);
@@ -168,7 +183,8 @@ class TokenDecl: public TokenVar
 public:
     TokenBase *initialize;
     std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
-    TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; }
+    bool has_brace_init;               // true when `= { ... }` syntax was used
+    TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
@@ -194,7 +210,11 @@ public:
     TokenBase *src_node = nullptr;
     bool auto_scope_context = false;
     TokenCallFunc(Variable &v) : TokenVar(v) { if (v.type->is_function()) _datatype = returns(); }
-    virtual DataDef *returns()  const { return &((FuncDef *)var.type)->returns; }
+    virtual DataDef *returns()  const {
+	if ( DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(var.type) )
+	    return (fptr->target != NULL) ? &fptr->target->returns : &ddVOID;
+	return &((FuncDef *)var.type)->returns;
+    }
     virtual DataDef *datadef()  const override {
         if ( var.type->is_function() )
             return returns();
@@ -242,13 +262,27 @@ public:
     {
 	// For `obj->member` access, object.type is the pointer-to-struct,
 	// not the struct itself. Walk through any pointer wrapper.
+	DataDefSTRUCT *sdd = owner_struct_type();
+	if ( !sdd ) return false;
+	std::string mname = var.name;
+	return sdd->m_is_array_decl(mname);
+    }
+    DataDefSTRUCT *owner_struct_type() const
+    {
 	DataDef *otype = object.type;
 	if ( DataDefPTR *opt = dynamic_cast<DataDefPTR *>(otype) )
 	    otype = opt->base_type;
-	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(otype);
-	if ( !sdd ) return false;
-	std::string mname = var.name;
-	return sdd->m_count(mname) > 1;
+	return dynamic_cast<DataDefSTRUCT *>(otype);
+    }
+    const DataDefSTRUCT::BitFieldInfo *bitfield_info() const
+    {
+	DataDefSTRUCT *sdd = owner_struct_type();
+	if ( !sdd ) return NULL;
+	return sdd->m_bitfield(var.name);
+    }
+    bool is_bitfield_member() const
+    {
+	return bitfield_info() != NULL;
     }
 };
 
@@ -261,6 +295,7 @@ public:
     asmjit::Operand _operand;
     TokenAddrOf(Variable &v, DataDef *pt) : var(v), ptr_type(pt) {}
     virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -273,6 +308,21 @@ public:
     asmjit::Operand _operand;
     TokenAddrExpr(TokenBase *e, DataDef *pt) : expr(e), ptr_type(pt) {}
     virtual TokenType type() const { return TokenType::ttBase; }
+    virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+// GNU computed-goto label address: `&&label`
+class TokenLabelAddr: public TokenBase
+{
+public:
+    std::string name;
+    DataDef *ptr_type;
+    asmjit::Operand _operand;
+    TokenLabelAddr(const std::string &n, DataDef *pt) : name(n), ptr_type(pt) {}
+    virtual TokenType type() const { return TokenType::ttBase; }
+    virtual TokenBase *clone() { return new TokenLabelAddr(name, ptr_type); }
+    virtual DataDef *datadef() const override { return ptr_type ? ptr_type : &ddVOID; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
@@ -311,6 +361,22 @@ public:
     TokenDerefExpr(TokenBase *e, DataDef *dt) : expr(e), deref_type(dt) { _datatype = dt; }
     virtual TokenType type() const { return TokenType::ttMember; }
     virtual DataDef *datadef() const override { return deref_type; }
+    virtual asmjit::Operand &operand(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
+class TokenComplexPart: public TokenBase
+{
+public:
+    TokenBase *expr;
+    bool imag_part;
+    asmjit::Operand _operand;
+
+    TokenComplexPart(TokenBase *e, bool imag)
+	: expr(e), imag_part(imag) {}
+
+    virtual TokenType type() const { return TokenType::ttMember; }
+    virtual DataDef *datadef() const override;
     virtual asmjit::Operand &operand(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
@@ -374,6 +440,8 @@ public:
             DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(o.type);
             _datatype = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
         }
+	else if ( o.type->is_string() )
+	    _datatype = &ddCHAR;
         else if ( o.type->type() == DataType::dtVECTOR )
             _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
         else if ( o.type->type() == DataType::dtMAP )
@@ -383,6 +451,7 @@ public:
     }
     virtual TokenType type() const { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }
+    virtual DataDef *datadef() const override;
     virtual asmjit::Operand &operand(Program &pgm) {
         regdefp_t r = {nullptr, nullptr, nullptr};
         return compile(pgm, r);
@@ -470,11 +539,26 @@ const std::string *find_embedded_header(const std::string &name);
 class Source
 {
 protected:
+    struct PushbackFrame
+    {
+	size_t remaining;
+	std::string disabled_macro;
+    };
     std::stringstream _ss;
     std::string _pushback;		// pushback buffer for #define substitution
+    std::deque<PushbackFrame> _pushback_frames;
     int _lf, _cr, _column;
     std::streampos _pos;
     std::string _fname;
+    void add_pushback_frame(const std::string &s, const std::string &disabled_macro)
+    {
+	if ( s.empty() )
+	    return;
+	PushbackFrame frame;
+	frame.remaining = s.size();
+	frame.disabled_macro = disabled_macro;
+	_pushback_frames.push_front(frame);
+    }
 public:
     Source() { _lf = 0; _cr = 0; _column = 0; _pos = 0; }
     const char *fname() const { return _fname.c_str(); }
@@ -482,7 +566,19 @@ public:
     const char *fname(std::string &s) { _fname = s; return _fname.c_str(); }
     void copybuf(std::streambuf *sb)  { _ss << sb;  }
     void str(const std::string &s) { _ss.str(s); }
-    void pushback(const std::string &s) { _pushback = s + _pushback; }
+    void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
+    void pushback_macro(const std::string &s, const std::string &disabled_macro)
+    {
+	_pushback = s + _pushback;
+	add_pushback_frame(s, disabled_macro);
+    }
+    bool macro_disabled(const std::string &name) const
+    {
+	for ( const PushbackFrame &frame : _pushback_frames )
+	    if ( frame.disabled_macro == name )
+		return true;
+	return false;
+    }
     bool good() { return !_pushback.empty() || _ss.good(); }
     bool eof()  { return _pushback.empty() && _ss.eof(); }
     int line()  { if ( _lf > _cr ) return _lf+1; return _cr+1; }
@@ -493,11 +589,37 @@ public:
 	{
 	    int ch = (unsigned char)_pushback[0];
 	    _pushback.erase(0, 1);
+	    if ( !_pushback_frames.empty() )
+	    {
+		if ( _pushback_frames.front().remaining > 0 )
+		    --_pushback_frames.front().remaining;
+		if ( _pushback_frames.front().remaining == 0 )
+		    _pushback_frames.pop_front();
+	    }
 	    ++_column;
 	    return ch;
 	}
 	int ch = _ss.get();
 	if ( ch == -1 ) { return -1; }
+	// C line splice: backslash + optional trailing whitespace + newline
+	if ( ch == '\\' )
+	{
+	    std::streampos splice_start = _ss.tellg();
+	    // skip optional trailing spaces/tabs after backslash
+	    while ( _ss.peek() == ' ' || _ss.peek() == '\t' )
+		_ss.get();
+	    int next = _ss.peek();
+	    if ( next == '\n' || next == '\r' )
+	    {
+		_ss.get();
+		if ( next == '\r' && _ss.peek() == '\n' )
+		    _ss.get();
+		++_lf; _column = 0; _pos = _ss.tellg();
+		return get(); // recurse to get next real char
+	    }
+	    // not a line splice — rewind
+	    _ss.seekg(splice_start);
+	}
 	/**/ if ( ch == '\n' ) { ++_lf; _column = 0; _pos = _ss.tellg(); }
 	else if ( ch == '\r' ) { ++_cr; _column = 0; _pos = _ss.tellg(); }
 	else { ++_column; }
@@ -507,7 +629,31 @@ public:
     {
 	if ( !_pushback.empty() )
 	    return (unsigned char)_pushback[0];
-	return _ss.peek();
+	// C line splice: skip backslash + optional whitespace + newline in peek
+	int ch = _ss.peek();
+	if ( ch == '\\' )
+	{
+	    std::streampos saved = _ss.tellg();
+	    _ss.get(); // consume '\'
+	    // skip optional trailing spaces/tabs
+	    while ( _ss.peek() == ' ' || _ss.peek() == '\t' )
+		_ss.get();
+	    int next = _ss.peek();
+	    if ( next == '\n' || next == '\r' )
+	    {
+		// There IS a line splice — consume it and peek the real char
+		_ss.get();
+		if ( next == '\r' && _ss.peek() == '\n' )
+		    _ss.get();
+		++_lf; _column = 0;
+		ch = _ss.peek();
+		_pos = _ss.tellg();
+		return ch;
+	    }
+	    // Not a line splice — rewind
+	    _ss.seekg(saved);
+	}
+	return ch;
     }
     bool getline(std::string &s)
     {
@@ -739,6 +885,8 @@ public:
     struct LazyEntry { int header; LazyKind kind; };
     std::map<std::string, LazyEntry> lazy_map;	// deferred symbol registration
     std::map<std::string, std::string> define_map;	// #define name value
+    std::map<std::string, std::stack<std::string>> _macro_save_stack; // #pragma push_macro / pop_macro
+    std::vector<std::string> include_paths;	// -I include search paths (for #include "file.h")
     std::map<std::string, bool> included_files;	// #include files already tokenized (require_once semantics)
     std::stack<bool> ifdef_stack;	// conditional compilation state stack
     std::stack<bool> ifdef_done_stack;	// tracks if any branch in #if/#elif/#else was taken
@@ -773,6 +921,7 @@ public:
 
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
+    bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
 
     // JIT crash → source location map. Populated during compile by
     // record_compile_anchor() and finalized into jit_source_map after
@@ -807,6 +956,7 @@ public:
 
     bool colors;
     bool aot_tracking;
+    bool instrument_functions;
     struct AotDataRef {
 	uint32_t label_id;
 	uintptr_t address;
@@ -819,6 +969,8 @@ public:
 	std::string name;
 	void *address;
 	size_t size;
+	DataDef *type;
+	uint32_t count;
     };
     std::vector<AotDiscoveredData> aot_discovered_data;
     std::map<uintptr_t, size_t> aot_discovered_data_index;
@@ -841,6 +993,8 @@ public:
     bool lookup_aot_data_offset(uintptr_t address, size_t &out_offset) const;
     size_t aot_variable_storage_size(const Variable *var) const;
     void record_aot_variable_data(Variable *var);
+    void record_aot_data(const std::string &name, void *address, size_t size,
+	DataDef *type = NULL, uint32_t count = 1);
 
     void add_keywords();
     void add_datatypes();
@@ -910,7 +1064,10 @@ public:
     std::string current_source_directory();
     bool include_already_seen(const std::string &path);
     std::string resolve_include_path(const std::string &incfile, bool is_system);
+    std::string expandIfMacros(const std::string &raw);
     bool should_tokenize_include(const std::string &path);
+    bool auto_include_standard_identifier(const std::string &word);
+    void mark_embedded_include_flag(const std::string &incfile);
     void push_runtime_scope();
     void pop_runtime_scope();
     static Program *active_runtime_program();
@@ -1041,6 +1198,9 @@ public:
     // token stream. Used by unary `*` and `&` to avoid
     // parseExpression's greedy consumption of trailing binary ops.
     TokenBase *parsePostfixChain(TokenBase *head);
+    // Parse the operand after unary `&`, preserving C precedence by
+    // stopping before trailing binary operators.
+    TokenBase *parseAddressOfExpression(TokenBase *ampersand);
     TokenFunc *build_expression_function(TokenProgram *tp,
 					 TokenBase *expr,
 					 DataDef *return_type,
@@ -1081,15 +1241,15 @@ public:
     // perform cc.div with size casting
     void safediv(asmjit::Operand &,  asmjit::Operand &,  asmjit::Operand &, DataDef *d1=NULL, DataDef *d2=NULL, DataDef *d3=NULL);
     // perform cc.shl with size casting
-    void safeshl(asmjit::Operand &,  asmjit::Operand &);
+    void safeshl(asmjit::Operand &,  asmjit::Operand &, DataDef *type = NULL);
     // perform cc.shr with size casting
-    void safeshr(asmjit::Operand &,  asmjit::Operand &);
+    void safeshr(asmjit::Operand &,  asmjit::Operand &, DataDef *type = NULL);
     // perform cc.or_ with size casting
-    void safeor(asmjit::Operand &,   asmjit::Operand &);
+    void safeor(asmjit::Operand &,   asmjit::Operand &, DataDef *type = NULL);
     // perform cc.and_ with size casting
-    void safeand(asmjit::Operand &,  asmjit::Operand &);
+    void safeand(asmjit::Operand &,  asmjit::Operand &, DataDef *type = NULL);
     // perform cc.xor_ with size casting
-    void safexor(asmjit::Operand &,  asmjit::Operand &);
+    void safexor(asmjit::Operand &,  asmjit::Operand &, DataDef *type = NULL);
     // perform cc.not_ with size casting
     void safenot(asmjit::Operand &);
 
@@ -1099,7 +1259,7 @@ public:
     void safedec(asmjit::Operand &);
 
     // negate the operand
-    void safeneg(asmjit::Operand &);
+    void safeneg(asmjit::Operand &, DataDef *dd = nullptr);
 
     // return the operand
     void saferet(asmjit::Operand &);
@@ -1120,6 +1280,8 @@ public:
     void safesetl(asmjit::Operand &);
     void safesetle(asmjit::Operand &);
     void safesetne(asmjit::Operand &);
+    void safesetp(asmjit::Operand &);
+    void safesetnp(asmjit::Operand &);
     // Unsigned variants — use when either comparison operand is unsigned.
     // C's "usual arithmetic conversions" treat mixed unsigned/signed as
     // unsigned, so signed setl/setg give wrong results when compared
@@ -1132,8 +1294,8 @@ public:
 
     // perform cc.cmp with size casting
     void safecmp(asmjit::x86::Gp &,  asmjit::x86::Gp &);
-    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &);
-    void safecmp(asmjit::Operand &,  asmjit::Operand &);
+    void safecmp(asmjit::x86::Xmm &, asmjit::x86::Xmm &, DataDef *dd = nullptr);
+    void safecmp(asmjit::Operand &,  asmjit::Operand &, DataDef *dd = nullptr);
 
     // compile code
     bool compile();
@@ -1180,6 +1342,7 @@ public:
     // data management
     DataDef *findType(std::string &);
     Variable *addVariable(TokenCpnd *, DataDef &, std::string &, int c=1, void *init=NULL, bool alloc=true);
+    Variable *resolve_global_storage_variable(Variable *var) const;
     Variable *addGlobal(DataDef &d, std::string str, int c=1, void *init=NULL)
     {
 	return addVariable(NULL, d, str, c, init, true);

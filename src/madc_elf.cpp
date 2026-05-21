@@ -269,16 +269,8 @@ void Program::record_aot_variable_data(Variable *var)
 	if ( sz == 0 )
 		return;
 
-	uintptr_t addr = reinterpret_cast<uintptr_t>(var->data);
-	if ( aot_discovered_data_index.count(addr) )
-		return;
-
-	AotDiscoveredData entry;
-	entry.name = "__aot_var_" + var->name;
-	entry.address = var->data;
-	entry.size = sz;
-	aot_discovered_data_index[addr] = aot_discovered_data.size();
-	aot_discovered_data.push_back(entry);
+	record_aot_data("__aot_var_" + var->name,
+	    var->data, sz, var->type, var->is_fixed_array() ? var->total_elements() : 1);
 
 	if ( var->type->is_string() && sz == sizeof(std::string) )
 	{
@@ -294,10 +286,32 @@ void Program::record_aot_variable_data(Variable *var)
 			centry.name = "__aot_cstr_" + var->name;
 			centry.address = (void *)cstr;
 			centry.size = str->size() + 1;
+			centry.type = NULL;
+			centry.count = 0;
 			aot_discovered_data_index[cstr_addr] = aot_discovered_data.size();
 			aot_discovered_data.push_back(centry);
 		}
 	}
+}
+
+void Program::record_aot_data(const std::string &name, void *address, size_t size,
+	DataDef *type, uint32_t count)
+{
+	if ( !address || size == 0 )
+		return;
+
+	uintptr_t addr = reinterpret_cast<uintptr_t>(address);
+	if ( aot_discovered_data_index.count(addr) )
+		return;
+
+	AotDiscoveredData entry;
+	entry.name = name;
+	entry.address = address;
+	entry.size = size;
+	entry.type = type;
+	entry.count = count;
+	aot_discovered_data_index[addr] = aot_discovered_data.size();
+	aot_discovered_data.push_back(entry);
 }
 
 std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
@@ -312,9 +326,14 @@ std::vector<Program::GlobalDataEntry> Program::collect_global_data() const
 	for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
 	{
 		Variable *var = tkProgram->variables[i];
-		if ( !var || !var->data || !var->type )
+		if ( !var || !var->type )
 			continue;
 		if ( !var->is_global() )
+			continue;
+		Variable *storage = resolve_global_storage_variable(var);
+		if ( storage && storage != var && !var->data )
+			var->data = storage->data;
+		if ( !var->data )
 			continue;
 		// Skip real function variables (their data is a Method*), but keep
 		// function-pointer variables — DataDefFPTR is btFunct too, yet it owns
@@ -596,6 +615,13 @@ void Program::prepare_aot_data_layout()
 	auto propagate_offsets = [&](Variable *var) {
 		if ( !var || !var->type || !var->is_global() || var->has_aot_data() )
 			return;
+		Variable *storage = resolve_global_storage_variable(var);
+		if ( storage && storage != var && storage->has_aot_data() )
+		{
+			var->aot_data_offset = storage->aot_data_offset;
+			var->aot_cstr_offset = storage->aot_cstr_offset;
+			return;
+		}
 		std::map<std::string, std::pair<size_t, size_t> >::const_iterator it =
 		    canonical_offsets.find(var->name);
 		if ( it == canonical_offsets.end() )
@@ -1411,7 +1437,21 @@ bool Program::save_executable(const std::string &path)
 		// alias the object storage; placement-new construction from that
 		// overlapping source is not reliable in native executables.
 		size_t cstr_offset = data_section_buf.size();
-		data_section_buf.insert(data_section_buf.end(), cstr, cstr + std::strlen(cstr) + 1);
+		size_t cstr_size = std::strlen(cstr) + 1;
+		data_section_buf.insert(data_section_buf.end(), cstr, cstr + cstr_size);
+
+		// Global initializers can also bake direct c_str() pointers like
+		// `&("X"[0])` into copied .data. Teach the generic pointer-slot
+		// patcher that those host addresses map to the stable copied
+		// character buffer we just appended.
+		data_offset_map[reinterpret_cast<uintptr_t>(cstr)] = cstr_offset;
+		data_range cstr_range;
+		cstr_range.start = reinterpret_cast<uintptr_t>(cstr);
+		cstr_range.size = cstr_size;
+		cstr_range.data_off = cstr_offset;
+		data_ranges.push_back(cstr_range);
+		std::sort(data_ranges.begin(), data_ranges.end(),
+			  [](const data_range &a, const data_range &b) { return a.start < b.start; });
 
 		string_object_patch sop;
 		sop.object_offset = oit->second;
@@ -1552,6 +1592,19 @@ bool Program::save_executable(const std::string &path)
 	};
 	std::vector<ext_sym> extern_syms;
 	std::map<uintptr_t, uint32_t> extern_indices; // addr -> dynsym index
+	auto ensure_external_dynsym = [&](uintptr_t addr, const std::string &name) -> uint32_t {
+		std::map<uintptr_t, uint32_t>::const_iterator eit =
+		    extern_indices.find(addr);
+		if ( eit != extern_indices.end() )
+			return eit->second;
+
+		uint32_t dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
+		ext_sym es;
+		es.name = normalize_elf_symbol_name(name);
+		extern_syms.push_back(es);
+		extern_indices[addr] = dynsym_idx;
+		return dynsym_idx;
+	};
 
 	struct rela_entry
 	{
@@ -1586,22 +1639,8 @@ bool Program::save_executable(const std::string &path)
 
 			if ( it != external_symbol_map.end() )
 			{
-				uint32_t dynsym_idx;
-				std::map<uintptr_t, uint32_t>::const_iterator eit =
-				    extern_indices.find(payload);
-				if ( eit != extern_indices.end() )
-				{
-					dynsym_idx = eit->second;
-				}
-				else
-				{
-					// dynsym[0] is NULL, so first real symbol is index 1
-					dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
-					ext_sym es;
-					es.name = normalize_elf_symbol_name(it->second);
-					extern_syms.push_back(es);
-					extern_indices[payload] = dynsym_idx;
-				}
+				uint32_t dynsym_idx =
+				    ensure_external_dynsym(payload, it->second);
 				if ( !skip_code_rela )
 				{
 					rela_entry re_entry;
@@ -1625,6 +1664,31 @@ bool Program::save_executable(const std::string &path)
 				rela_entries.push_back(re_entry);
 			}
 		}
+	}
+
+	// --- Add relocations for tracked movabs external address loads ---
+	// emit_data_mov() marks these sites because asmjit won't surface a
+	// reloc entry for mov reg, imm64. In AOT they must become
+	// R_X86_64_64 references to the external symbol, not frozen host
+	// addresses from the JIT process.
+	for ( size_t i = 0; i < aot_data_refs.size(); ++i )
+	{
+		const AotDataRef &ref = aot_data_refs[i];
+		if ( !code.isLabelBound(ref.label_id) )
+			continue;
+		std::map<uintptr_t, std::string>::const_iterator it =
+		    external_symbol_map.find(ref.address);
+		if ( it == external_symbol_map.end() )
+			continue;
+
+		rela_entry re_entry;
+		re_entry.source_offset =
+		    static_cast<uint64_t>(code.labelOffset(ref.label_id)) + ref.imm_offset;
+		re_entry.dynsym_index = ensure_external_dynsym(ref.address, it->second);
+		re_entry.elf_type = R_X86_64_64;
+		re_entry.is_extern = true;
+		re_entry.raw_addend = 0;
+		rela_entries.push_back(re_entry);
 	}
 
 	// --- Add addrtab slot relocations ---
@@ -1656,21 +1720,7 @@ bool Program::save_executable(const std::string &path)
 				continue;
 		}
 
-		uint32_t dynsym_idx;
-		std::map<uintptr_t, uint32_t>::const_iterator eit =
-		    extern_indices.find(func_addr);
-		if ( eit != extern_indices.end() )
-		{
-			dynsym_idx = eit->second;
-		}
-		else
-		{
-			dynsym_idx = static_cast<uint32_t>(extern_syms.size() + 1);
-			ext_sym es;
-			es.name = normalize_elf_symbol_name(it->second);
-			extern_syms.push_back(es);
-			extern_indices[func_addr] = dynsym_idx;
-		}
+		uint32_t dynsym_idx = ensure_external_dynsym(func_addr, it->second);
 
 		data_rela dr;
 		dr.data_offset = addrtab_relas[i].data_offset;
@@ -1780,21 +1830,8 @@ bool Program::save_executable(const std::string &path)
 			}
 			else
 			{
-				uint32_t dsym;
-				std::map<uintptr_t, uint32_t>::const_iterator dit =
-				    extern_indices.find(taddr);
-				if ( dit != extern_indices.end() )
-				{
-					dsym = dit->second;
-				}
-				else
-				{
-					dsym = static_cast<uint32_t>(extern_syms.size() + 1);
-					ext_sym es;
-					es.name = normalize_elf_symbol_name(eit->second);
-					extern_syms.push_back(es);
-					extern_indices[taddr] = dsym;
-				}
+				uint32_t dsym =
+				    ensure_external_dynsym(taddr, eit->second);
 
 				plt_idx = plt_entries.size();
 				plt_entry pe;
@@ -2849,6 +2886,116 @@ bool Program::save_executable(const std::string &path)
 		emit(out, data_section_buf.data(), data_section_size);
 		// Recalculate actual data vaddr for section header.
 		data_vaddr = BASE_ADDR + data_file_offset;
+
+		auto patch_data_pointer_slot = [&](size_t file_pos) {
+			if ( file_pos + sizeof(uint64_t) > out.size() )
+				return;
+			uint64_t raw = 0;
+			std::memcpy(&raw, &out[file_pos], sizeof(raw));
+			std::pair<bool, size_t> found =
+			    find_data_offset(static_cast<uintptr_t>(raw));
+			if ( !found.first )
+				return;
+			uint64_t new_addr = data_vaddr + found.second;
+			std::memcpy(&out[file_pos], &new_addr, sizeof(new_addr));
+		};
+
+		std::function<void(size_t, DataDef *, uint32_t)> patch_data_region;
+		patch_data_region = [&](size_t file_pos, DataDef *dd, uint32_t count) {
+			if ( !dd || count == 0 )
+				return;
+			if ( dd->is_pointer() )
+			{
+				size_t step = dd->size ? dd->size : sizeof(uint64_t);
+				if ( step < sizeof(uint64_t) )
+					step = sizeof(uint64_t);
+				for ( uint32_t i = 0; i < count; ++i )
+				    patch_data_pointer_slot(file_pos + i * step);
+				return;
+			}
+			if ( dd->basetype() != BaseType::btStruct )
+				return;
+
+			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+			if ( !sdd || sdd->union_layout )
+				return;
+
+			size_t struct_size = sdd->size ? sdd->size : dd->size;
+			for ( uint32_t ci = 0; ci < count; ++ci )
+			{
+				size_t base = file_pos + ci * struct_size;
+				for ( size_t mi = 0; mi < sdd->members.size(); ++mi )
+				{
+				    DataDef *member_dd = sdd->members[mi].second;
+				    if ( !member_dd )
+					continue;
+				    size_t member_count =
+					(mi < sdd->member_counts.size()) ? sdd->member_counts[mi] : 1;
+				    size_t member_ofs =
+					(mi < sdd->member_offsets.size()) ? sdd->member_offsets[mi] : 0;
+				    patch_data_region(base + member_ofs, member_dd,
+					(uint32_t)member_count);
+				}
+			}
+		};
+
+		auto patch_variable_region = [&](Variable *var) {
+			if ( !var || !var->data || !var->type )
+				return;
+			size_t offset = 0;
+			if ( var->has_aot_data() )
+				offset = var->aot_data_offset;
+			else
+			{
+				std::pair<bool, size_t> found =
+				    find_data_offset(reinterpret_cast<uintptr_t>(var->data));
+				if ( !found.first )
+					return;
+				offset = found.second;
+			}
+			uint32_t count = var->is_fixed_array() ? var->total_elements() : 1;
+			patch_data_region(data_file_offset + offset, var->type, count);
+		};
+
+		if ( tkProgram )
+		{
+			for ( size_t i = 0; i < tkProgram->variables.size(); ++i )
+			{
+				Variable *var = tkProgram->variables[i];
+				if ( !var || !var->is_global() )
+					continue;
+				patch_variable_region(var);
+			}
+		}
+
+		for ( size_t fi = 0; fi < pending_funcs.size(); ++fi )
+		{
+			TokenFunc *tf = dynamic_cast<TokenFunc *>(pending_funcs[fi]);
+			if ( !tf )
+				continue;
+			for ( size_t vi = 0; vi < tf->variables.size(); ++vi )
+			{
+				Variable *var = tf->variables[vi];
+				if ( !var || (var->flags & vfPARAM) )
+					continue;
+				if ( (var->flags & vfSTACK) && !(var->flags & vfSTATIC) )
+					continue;
+				patch_variable_region(var);
+			}
+		}
+
+		for ( size_t i = 0; i < aot_discovered_data.size(); ++i )
+		{
+			const AotDiscoveredData &entry = aot_discovered_data[i];
+			if ( !entry.address || !entry.type || entry.count == 0 )
+				continue;
+			std::pair<bool, size_t> found =
+			    find_data_offset(reinterpret_cast<uintptr_t>(entry.address));
+			if ( !found.first )
+				continue;
+			patch_data_region(data_file_offset + found.second,
+			    entry.type, entry.count);
+		}
 
 		for ( size_t i = 0; i < string_object_patches.size(); ++i )
 		{

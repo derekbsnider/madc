@@ -1,0 +1,24 @@
+int main()
+{
+	struct s {
+		unsigned long long u33: 33;
+		unsigned long long u40: 40;
+		unsigned long long u41: 41;
+	};
+
+	struct s a = { 0x100000, 0x100000, 0x100000 };
+	struct s b = { 0x100000000ULL, 0x100000000ULL, 0x100000000ULL };
+	struct s c = { 0x1FFFFFFFFULL, 0, 0 };
+
+	printf("mul33=%llu\n", a.u33 * a.u33);
+	printf("mul41=%llu\n", a.u33 * a.u41);
+	printf("add33=%llu\n", b.u33 + b.u33);
+	printf("add40=%llu\n", b.u33 + b.u40);
+	printf("sub33=%llu\n", a.u33 - b.u33);
+	printf("sub40=%llu\n", a.u33 - b.u40);
+	printf("sub41=%llu\n", a.u33 - b.u41);
+	printf("inc33=%llu\n", ++c.u33);
+	printf("dec40=%llu\n", --c.u40);
+	printf("post41=%llu\n", c.u41--);
+	return 0;
+}

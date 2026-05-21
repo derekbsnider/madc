@@ -1,0 +1,29 @@
+void abort(void);
+
+unsigned char g;
+
+unsigned char foo(__complex__ unsigned c)
+{
+  unsigned char v = g;
+  __complex__ unsigned t = 3;
+  t /= c;
+  return v + t;
+}
+
+unsigned char bar(__complex__ unsigned c)
+{
+  unsigned char v = g;
+  __complex__ unsigned t = 42;
+  t /= c;
+  return v + t;
+}
+
+int main(void)
+{
+  unsigned char x = foo(7);
+  if (x)
+    abort();
+  if (bar(7) != 6)
+    abort();
+  return 0;
+}

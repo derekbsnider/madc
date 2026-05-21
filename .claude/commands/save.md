@@ -54,7 +54,7 @@ Ensures all documentation is up to date with the current state of the codebase, 
      - `README.md` version / test counts → no graph mirror (that state lives in claude_status.json and the repo, not the graph).
    - For any graph node whose referenced flat file changed today: set `updatedAt` to today's ISO date.
    - If the FalkorDB MCP is unreachable, skip this step and flag it in the report — do not block the save.
-   - Use `mcp__falkordb__query_graph` for writes, `mcp__falkordb__query_graph_readonly` for verification.
+   - **Use `scripts/kg_query.sh`** (or `scripts/kg_query.sh -ro` for reads) — this is the preferred tool for KG access. It wraps `redis-cli` and targets the `madc-knowledge` graph. Do NOT say the KG is unavailable without first trying this script.
 
 9. **Commit and push**:
    - If any files were modified, stage and commit: `Sync documentation for v{version}`

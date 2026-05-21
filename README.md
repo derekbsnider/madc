@@ -67,7 +67,7 @@ compile.
 ## Language Features
 
 - **Data types:** `int8_t`–`int64_t`, `uint8_t`–`uint64_t`, `float`, `double`, `char`, `string`, `array`
-- **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>`, `list<int>` — also as `std::vector<int>` etc.
+- **Typed containers:** `vector<int>`, `map<string, int>`, `set<string>` — also as `std::vector<int>` etc.
 - **Streams:** `cout`, `cerr`, `cin`, `stringstream`, `ifstream`, `ofstream`, `fstream`
 - **Control flow:** `if`/`else`, `for`, `while`, `do`/`while`, `switch`/`case`/`default`, `rust::match`
 - **Range-based for:** `for (string name : names) { ... }` — works with array and vector
@@ -182,7 +182,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 271 integration tests pass. 261 unit tests pass (80 datadef + 24 IR + 133 libmadc_program + 5 libmadc_error + 19 libmadc_value). Native EXE parity is also green at 271/271, and `smaug.exe` now survives the first serpent combat path. (`make -C src fulltest`, `scripts/run_tests.sh --exe`)**
+**Current status: 370 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1496/1685 (88.8%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -223,17 +223,17 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.14.1** (2026-05-10) — **SMAUG native executables now survive the first real combat path.** `smaug.exe` now boots, accepts telnet, completes character creation, reaches Newgate room 109, enters combat with the serpent, survives repeated damage rounds, and can kill the serpent cleanly in the standalone native executable lane. The load-bearing compiler fix was correct 1..16 byte struct return-by-value codegen: small aggregates now return through `rax`/`rdx` like GCC and no longer leak a dead stack address or mis-treat the first machine word of a local struct as a pointer. Release baseline: 271 integration + 261 unit tests, with native EXE parity green at 271/271.
+**v0.18.0** (2026-05-21) — **GCC parity push: 1496/1685 (88.8%).** _Complex arithmetic, IEEE floating-point semantics, bitfield promotions, auto-include headers, 83 new integration tests.
 
 ### Recent Releases
 
-- **v0.14.1** — SMAUG native EXEs survive the first real combat path; small 1..16 byte struct returns now follow the SysV x86-64 ABI in both JIT and EXE mode
-- **v0.13.0** — SMAUG plays end-to-end on madc: telnet/creation/MOTD/room/commands/reconnect; lexer octal+hex escapes, scanf %d→%ld, stat sign-ext, safemov narrow→64
-- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes covering 9 MadSMAUG TUs (mud_prog.c, news.c, stances.c, tables.c, act_info.c, act_obj.c, boards.c, misc.c, update.c)
-- **v0.11.0** — SMAUG Phase F front-edge resumption: umbrella compiles + runs end-to-end; `goto`/labels, struct-copy, `*p++=`, `(*p).m`, `expr[i].m`, compound-assign on subscripts, realpath includes, class-as-ident
-- **v0.10.1** — Typed-register IR cleanup completion: stream/multi-return/direct-call cleanup, final compiler-site IR store/load ports, dead `typesafe.cpp` surface pruned
-- **v0.10.0** — Typed-register IR scaffolding + bottom-up migration (Stages 0 – 3c): 15 shared compile-site helpers, ~880 lines removed from `compiler.cpp`, three latent bugs fixed
-- **v0.9.1** — Silent codegen bug roll-up: ternary to Mem, shared literals, `int = -N`, fn-ptr casts, constant `case`, postfix chains
+- **v0.18.0** — GCC parity 88.8% (1496/1685); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers
+- **v0.17.0** — GCC parity 78.1% (1316/1685); nested cast chains, empty brace-init, `f().member`, `#pragma push/pop_macro`
+- **v0.16.0** — sizeof(int)=4 LP64 ABI alignment; GCC torture suite 75% (1264/1685); float init, overflow builtins, ternary const-expr, C23 attributes
+- **v0.15.0** — GCC torture test parity: 627 → 1245 (37% → 74%); comma operator, full #if evaluator, scientific notation, mixed arithmetic promotion, K&R functions, 50+ builtins
+- **v0.14.1** — SMAUG native EXEs survive the first real combat path; small struct returns follow SysV x86-64 ABI
+- **v0.13.0** — SMAUG plays end-to-end on madc; octal/hex escapes, scanf widening, stat sign-ext
+- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes
 
 ## Roadmap
 
@@ -249,7 +249,8 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/`, and the exploratory storage track now has stable append-only VLR locators for FLR->VLR relations plus first-wave pushed builder queries on SQLite and keyed local backends |
+| **GCC Parity** | GCC torture test suite compatibility | **v0.18.0** — 1496/1685 (88.8%); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers |
+| **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---
 

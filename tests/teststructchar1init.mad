@@ -1,0 +1,17 @@
+int main() {
+	struct {
+		long a;
+		char b[1];
+	} x = { 2, { 0 } };
+
+	if (x.a != 2) {
+		puts("bad\n");
+		return 1;
+	}
+	if (x.b[0] != 0) {
+		puts("bad\n");
+		return 1;
+	}
+	puts("ok\n");
+	return 0;
+}

@@ -1,0 +1,22 @@
+#!/../bin/madc
+
+#include <stdio.h>
+
+int main()
+{
+    int i = 1;
+    static const void *targets[] = {
+	&&zero,
+	&&one,
+    };
+
+    goto *targets[i];
+
+zero:
+    printf("zero\n");
+    return 0;
+
+one:
+    printf("one\n");
+    return 0;
+}

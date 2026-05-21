@@ -1,0 +1,11 @@
+typedef struct item {
+	int value;
+} item_buf[1];
+
+int main()
+{
+	item_buf items;
+	items[0].value = 7;
+	printf("%d\n", items[0].value);
+	return 0;
+}

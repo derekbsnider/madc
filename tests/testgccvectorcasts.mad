@@ -1,0 +1,39 @@
+#!/../bin/madc
+
+#include <stdio.h>
+
+typedef int V2SI __attribute__ ((vector_size (8)));
+typedef float V2SF __attribute__ ((vector_size (8)));
+
+long long test1(V2SF x)
+{
+    return (long long)(V2SI)x;
+}
+
+long long test2(V2SF x)
+{
+    return (long long)x;
+}
+
+long long test3(V2SI x)
+{
+    return (long long)(V2SF)x;
+}
+
+int main(void)
+{
+    union { long long l; float f[2]; int i[2]; } u;
+
+    V2SF x = { 2.0, 2.0 };
+    u.l = test1(x);
+    printf("%.1f %.1f\n", u.f[0], u.f[1]);
+
+    V2SF y = { 6.0, 6.0 };
+    u.l = test2(y);
+    printf("%.1f %.1f\n", u.f[0], u.f[1]);
+
+    V2SI z = { 4, 4 };
+    u.l = test3(z);
+    printf("%d %d\n", u.i[0], u.i[1]);
+    return 0;
+}

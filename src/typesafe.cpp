@@ -30,6 +30,13 @@
 using namespace std;
 using namespace asmjit;
 
+// Returns true when the type is a 32-bit integer (int / unsigned int).
+// 32-bit x86 ops automatically zero-extend to 64 bits, so using r32
+// gives correct wrapping at 2^32 for free.
+static inline bool use32(DataDef *type) {
+    return type && type->is_integer() && type->size == 4;
+}
+
 // simple for now, should have different versions for signed vs unsigned
 // small to big vs big to small, etc, as we need to ensure that moving
 // small to big doesn't leave unwanted data in the other part of the register
@@ -72,13 +79,14 @@ void Program::safemov(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
     }
     else
     {
-	// Same-or-narrower-dest path. asmjit's intermediate validator
-	// rejects `mov gpw, gpq` even when r2 is narrowed via `.r16()` —
-	// it inspects the vreg's natural allocation width, not the view.
-	// Force both ends to r64() so the encoder sees `mov gpq, gpq`;
-	// asmjit's Compiler treats the 64-bit view of a sub-word vreg
-	// as the same vreg (matches the safemul/shl/or/and/xor pattern).
-	cc.mov(r1.r64(), r2.r64());
+	// Same-or-narrower-dest path. When both operands are the same
+	// width, use their natural width so 32-bit ops stay 32-bit.
+	// When widths differ, promote both to r64 to satisfy asmjit's
+	// validator (it rejects `mov gpw, gpq` with mismatched widths).
+	if ( rs == ms )
+	    cc.mov(r1, r2);
+	else
+	    cc.mov(r1.r64(), r2.r64());
     }
 }
 
@@ -115,6 +123,12 @@ void Program::safemov(x86::Xmm &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Xmm, Xmm)"));
+    if ( d1 && d1->is_simd() )
+    {
+	if ( d1->size <= 8 ) cc.movq(r1, r2);
+	else                 cc.movaps(r1, r2);
+	return;
+    }
     if ( d1 && d1->size == sizeof(float) )
     {
 	if ( d2 && d2->size == sizeof(float) )
@@ -133,6 +147,12 @@ void Program::safemov(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Xmm &r1, x86::Mem &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Xmm, Mem)"));
+    if ( d1 && d1->is_simd() )
+    {
+	if ( d1->size <= 8 ) cc.movq(r1, r2);
+	else                 cc.movups(r1, r2);
+	return;
+    }
     // When d2 isn't supplied, fall back to the Mem's actual size so a
     // 3-arg safemov that just says "destination is float" doesn't
     // misread a 4-byte Mem as a double (the old default blindly used
@@ -290,6 +310,27 @@ void Program::safemov(x86::Mem &m, x86::Gp &r2, DataDef *d1, DataDef *d2)
 void Program::safemov(x86::Mem &m, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
     DBG(cc.comment("safemov(Mem, Xmm)"));
+    if ( d1 && d1->is_simd() )
+    {
+	if ( d1->size <= 8 ) cc.movq(m, r2);
+	else                 cc.movups(m, r2);
+	return;
+    }
+
+    // Integer destination: convert Xmm → Gp, then store as integer.
+    // Handles `unsigned short s = double_expr;` etc.
+    if ( d1 && d1->is_integer() )
+    {
+	x86::Gp tmp = cc.newGpq("_xmm2int");
+	bool src_is_float = d2 && d2->size == sizeof(float);
+	if ( src_is_float )
+	    cc.cvttss2si(tmp, r2);
+	else
+	    cc.cvttsd2si(tmp, r2);
+	safemov(m, tmp, d1, d1);
+	return;
+    }
+
     // Destination is a float (4 byte) or double (8 byte) slot. The
     // source Xmm holds the value in whichever precision produced it —
     // if the destination is narrower we must cvtsd2ss down to float
@@ -465,6 +506,20 @@ void Program::safeadd(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 
 void Program::safeadd(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
+    if ( d1 && d1->is_simd() )
+    {
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(d1);
+	if ( vdd->element_type->is_real() )
+	{
+	    if ( vdd->element_type->size == sizeof(float) ) cc.addps(r1, r2);
+	    else                                            cc.addpd(r1, r2);
+	}
+	else if ( vdd->element_type->size == 2 ) cc.paddw(r1, r2);
+	else if ( vdd->element_type->size == 4 ) cc.paddd(r1, r2);
+	else if ( vdd->element_type->size == 8 ) cc.paddq(r1, r2);
+	else throw "Program::safeadd() unsupported SIMD element size";
+	return;
+    }
     if ( d1 && d1->size == sizeof(float) )
     {
 	DBG(cc.comment("Program::safeadd(r1, r2, float)"));
@@ -513,6 +568,16 @@ void Program::safeadd(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     else
     if ( op1.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    // Mixed Gp + Xmm: promote Gp to Xmm, add, convert back to Gp
+	    DBG(cc.comment("safeadd() Gp + Xmm promotion"));
+	    x86::Xmm tmp = cc.newXmmSd("__add_lhs_xmm");
+	    cc.cvtsi2sd(tmp, op1.as<x86::Gp>().r64());
+	    cc.addsd(tmp, op2.as<x86::Xmm>());
+	    cc.cvttsd2si(op1.as<x86::Gp>().r64(), tmp);
+	}
+	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    safeadd(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
@@ -574,12 +639,26 @@ void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	    safesub(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), d1, d2);
+	else if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    x86::Xmm tmp = cc.newXmmSd("__sub_rhs_xmm");
+	    cc.cvtsi2sd(tmp, op2.as<x86::Gp>().r64());
+	    safesub(op1.as<x86::Xmm>(), tmp, d1, d1);
+	}
 	else
 	    throw "safesub() Xmm arithmetic expects an Xmm rhs";
     }
     else
     if ( op1.as<BaseReg>().isGroup(RegGroup::kGp) )
     {
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    x86::Xmm tmp = cc.newXmmSd("__sub_lhs_xmm");
+	    cc.cvtsi2sd(tmp, op1.as<x86::Gp>().r64());
+	    cc.subsd(tmp, op2.as<x86::Xmm>());
+	    cc.cvttsd2si(op1.as<x86::Gp>().r64(), tmp);
+	}
+	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
 	    safesub(op1.as<x86::Gp>(), op2.as<x86::Gp>(), d1, d2);
 	else
@@ -594,15 +673,28 @@ void Program::safesub(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     }
 }
 
-void Program::safeneg(Operand &op)
+void Program::safeneg(Operand &op, DataDef *dd)
 {
     if ( !op.isReg() ) { throw "safeneg() lval is not a register"; }
     if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	x86::Xmm tmp = cc.newXmmSd("safeneg_tmp");
-	cc.xorpd(tmp, tmp);
-	cc.subsd(tmp, op.as<x86::Xmm>());
-	cc.movsd(op.as<x86::Xmm>(), tmp);
+	bool is_float = dd && dd->size == sizeof(float);
+	if ( is_float )
+	{
+	    x86::Gp mask_gp = cc.newGpd("safeneg_mask");
+	    cc.mov(mask_gp, imm(0x80000000u));
+	    x86::Xmm mask = cc.newXmmSs("safeneg_mask");
+	    cc.movd(mask, mask_gp);
+	    cc.xorps(op.as<x86::Xmm>(), mask);
+	}
+	else
+	{
+	    x86::Gp mask_gp = cc.newGpq("safeneg_mask");
+	    cc.mov(mask_gp, imm((int64_t)0x8000000000000000ULL));
+	    x86::Xmm mask = cc.newXmmSd("safeneg_mask");
+	    cc.movq(mask, mask_gp);
+	    cc.xorpd(op.as<x86::Xmm>(), mask);
+	}
     }
     else
     if ( op.as<BaseReg>().isGroup(RegGroup::kGp) )
@@ -616,8 +708,31 @@ void Program::safeneg(Operand &op)
 // perform cc.mul with size casting
 void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 {
-    if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec)
-    &&   op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
+    // Mixed int/float promotion: convert the integer operand to Xmm
+    // and perform floating-point multiplication
+    bool lhs_is_gp = op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kGp);
+    bool rhs_is_gp = op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp);
+    bool lhs_is_xmm = op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec);
+    bool rhs_is_xmm = op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec);
+
+    if ( lhs_is_gp && rhs_is_xmm )
+    {
+	// Usual arithmetic conversion: int * double → promote int to double,
+	// multiply as doubles, convert back to int (truncate)
+	x86::Xmm tmp = cc.newXmm("_mul_promote");
+	cc.cvtsi2sd(tmp, op1.as<x86::Gp>());
+	cc.mulsd(tmp, op2.as<x86::Xmm>());
+	cc.cvttsd2si(op1.as<x86::Gp>().r64(), tmp);
+	return;
+    }
+    if ( lhs_is_xmm && rhs_is_gp )
+    {
+	x86::Xmm tmp = cc.newXmm("_mul_promote");
+	cc.cvtsi2sd(tmp, op2.as<x86::Gp>());
+	cc.mulsd(op1.as<x86::Xmm>(), tmp);
+	return;
+    }
+    if ( lhs_is_xmm && rhs_is_xmm )
     {
 	if ( d1 && d1->size == sizeof(float) )
 	    cc.mulss(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
@@ -625,17 +740,22 @@ void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 	    cc.mulsd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
 	return;
     }
-    if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
+    if ( !op1.isReg() || !lhs_is_gp )
 	throw "safemul() left operand is not a Gp register";
-    if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
+    if ( !op2.isImm() && !rhs_is_gp )
 	throw "safemul() right operand is not a Gp register or immediate value";
-    // asmjit's imul requires both Gp operands at the same width; mixed
-    // gpw/gpq combinations come up when small-typed (sh_int, char)
-    // multiplications meet a wider promotion. Force both sides to r64.
+    // Use 32-bit imul for 32-bit types so results wrap at 2^32.
+    bool w32 = use32(d1);
     if ( op2.isImm() )
-	cc.imul(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    {
+	if ( w32 ) cc.imul(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else       cc.imul(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    }
     else
-	cc.imul(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+    {
+	if ( w32 ) cc.imul(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	else       cc.imul(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+    }
 }
 
 #if 0
@@ -717,39 +837,100 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
     // for unsigned, wrong for signed. Use `cqo` to sign-extend rax into
     // rdx for signed types; for unsigned divisions we still want rdx=0,
     // which the caller already arranged via safexor.
-    if ( !d2 || !d2->is_unsigned() )
-	cc.cqo(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
-    cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+    // Pick 32-bit or 64-bit division to match the operand width.
+    // 32-bit: cdq (sign-extend eax→edx:eax) + idiv r32, or div r32.
+    // 64-bit: cqo (sign-extend rax→rdx:rax) + idiv r64, or div r64.
+    bool use32 = d2 && d2->is_integer() && d2->size == 4;
+    if ( d2 && d2->is_unsigned() )
+    {
+	if ( use32 )
+	    cc.div(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32(), divisor_gp.r32());
+	else
+	    cc.div(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+    }
+    else
+    {
+	if ( use32 )
+	{
+	    cc.cdq(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	    cc.idiv(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32(), divisor_gp.r32());
+	}
+	else
+	{
+	    cc.cqo(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+	    cc.idiv(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64(), divisor_gp.r64());
+	}
+    }
 }
 
 // perform cc.shl with size casting
-void Program::safeshl(Operand &op1, Operand &op2)
+void Program::safeshl(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeshl() left operand is not a Gp register";
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safeshl() right operand is not a Gp register or immediate value";
+    // Use 32-bit shift for sub-64-bit types so the result wraps at the
+    // correct width (x86: 32-bit ops implicitly zero-extend to 64).
+    bool use32 = type && type->is_integer() && type->size == 4;
     if ( op2.isImm() )
-	cc.shl(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    {
+	if ( use32 )
+	    cc.shl(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else
+	    cc.shl(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    }
     else
-	cc.shl(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+    {
+	if ( use32 )
+	    cc.shl(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r8());
+	else
+	    cc.shl(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+    }
 }
 
 // perform cc.shr with size casting
-void Program::safeshr(Operand &op1, Operand &op2)
+void Program::safeshr(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeshr() left operand is not a Gp register";
     if ( !op2.isImm() && (!op2.isReg() || !op2.as<BaseReg>().isGroup(RegGroup::kGp)) )
 	throw "safeshr() right operand is not a Gp register or immediate value";
+    // Use SAR (arithmetic shift) for signed types to preserve the sign
+    // bit. Use SHR (logical shift) for unsigned types.
+    // Use 32-bit shift for 32-bit types so results wrap correctly.
+    bool use_sar = type && !type->is_unsigned();
+    bool w32 = use32(type);
     if ( op2.isImm() )
-	cc.shr(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+    {
+	if ( use_sar )
+	{
+	    if ( w32 ) cc.sar(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	    else       cc.sar(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	}
+	else
+	{
+	    if ( w32 ) cc.shr(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	    else       cc.shr(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	}
+    }
     else
-	cc.shr(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+    {
+	if ( use_sar )
+	{
+	    if ( w32 ) cc.sar(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r8());
+	    else       cc.sar(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+	}
+	else
+	{
+	    if ( w32 ) cc.shr(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r8());
+	    else       cc.shr(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r8());
+	}
+    }
 }
 
 // perform cc.or_ with size casting
-void Program::safeor(Operand &op1, Operand &op2)
+void Program::safeor(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
@@ -762,20 +943,21 @@ void Program::safeor(Operand &op1, Operand &op2)
 	throw "safeor() right operand is not a Gp register or immediate value";
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeor() left operand is not a Gp register";
+    bool w32 = use32(type);
     if ( op2.isImm() )
     {
-	cc.comment("cc.or_(gp, imm)");
-	cc.or_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	if ( w32 ) cc.or_(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else       cc.or_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
-	cc.comment("cc.or_(gp, gp)");
-	cc.or_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+	if ( w32 ) cc.or_(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	else       cc.or_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 
 // perform cc.and_ with size casting
-void Program::safeand(Operand &op1, Operand &op2)
+void Program::safeand(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
@@ -788,20 +970,21 @@ void Program::safeand(Operand &op1, Operand &op2)
 	throw "safeand() right operand is not a Gp register and immediate value";
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safeand() left operand is not a Gp register";
+    bool w32 = use32(type);
     if ( op2.isImm() )
     {
-	cc.comment("cc.and_(gp, imm)");
-	cc.and_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	if ( w32 ) cc.and_(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else       cc.and_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
-	cc.comment("cc.and_(gp, gp)");
-	cc.and_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+	if ( w32 ) cc.and_(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	else       cc.and_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 
 // perform cc.xor_ with size casting
-void Program::safexor(Operand &op1, Operand &op2)
+void Program::safexor(Operand &op1, Operand &op2, DataDef *type)
 {
     if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
@@ -814,15 +997,16 @@ void Program::safexor(Operand &op1, Operand &op2)
 	throw "safexor() right operand is not a Gp register or immediate value";
     if ( !op1.isReg() || !op1.as<BaseReg>().isGroup(RegGroup::kGp) )
 	throw "safexor() left operand is not a Gp register";
+    bool w32 = use32(type);
     if ( op2.isImm() )
     {
-	cc.comment("cc.xor_(gp, imm)");
-	cc.xor_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
+	if ( w32 ) cc.xor_(op1.as<x86::Gp>().r32(), op2.as<Imm>());
+	else       cc.xor_(op1.as<x86::Gp>().r64(), op2.as<Imm>());
     }
     else
     {
-	cc.comment("cc.xor_(gp, gp)");
-	cc.xor_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
+	if ( w32 ) cc.xor_(op1.as<x86::Gp>().r32(), op2.as<x86::Gp>().r32());
+	else       cc.xor_(op1.as<x86::Gp>().r64(), op2.as<x86::Gp>().r64());
     }
 }
 
@@ -1098,6 +1282,30 @@ void Program::safesetne(Operand &op)
 	throw "safesetne() operand not supported";
 }
 
+void Program::safesetp(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	cc.setp(op.as<x86::Gp>().r8());
+	if ( op.x86RmSize() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
+    else
+	throw "safesetp() operand not supported";
+}
+
+void Program::safesetnp(Operand &op)
+{
+    if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	cc.setnp(op.as<x86::Gp>().r8());
+	if ( op.x86RmSize() > 1 )
+	    cc.movzx(op.as<x86::Gp>(), op.as<x86::Gp>().r8());
+    }
+    else
+	throw "safesetnp() operand not supported";
+}
+
 // Unsigned comparison setcc — setb/setbe/seta/setae. Used when either
 // operand of a < / <= / > / >= comparison is unsigned; picking the signed
 // variant in that case miscategorises values with the high bit set.
@@ -1198,13 +1406,15 @@ void Program::safecmp(x86::Gp &lval, x86::Gp &rval)
     }
 }
 
-void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2)
+void Program::safecmp(x86::Xmm &r1, x86::Xmm &r2, DataDef *dd)
 {
-   cc.ucomisd(r1, r2);
-//   cc.cmpsd(r1, r2, 0);
+    if ( dd && dd->size == sizeof(float) )
+	cc.ucomiss(r1, r2);
+    else
+	cc.ucomisd(r1, r2);
 }
 
-void Program::safecmp(Operand &op1, Operand &op2)
+void Program::safecmp(Operand &op1, Operand &op2, DataDef *dd)
 {
     if ( !op1.isReg() ) { throw "safecmp() lval is not a register"; }
     if ( !op2.isReg() && !op2.isImm() && !op2.isMem() )
@@ -1212,7 +1422,32 @@ void Program::safecmp(Operand &op1, Operand &op2)
     if ( op1.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
-	    safecmp(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	    safecmp(op1.as<x86::Xmm>(), op2.as<x86::Xmm>(), dd);
+	else
+	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kGp) )
+	{
+	    if ( dd && dd->size == sizeof(float) )
+	    {
+		x86::Xmm tmp = cc.newXmmSs("__cmp_rhs_as_flt");
+		cc.cvtsi2ss(tmp, op2.as<x86::Gp>());
+		cc.ucomiss(op1.as<x86::Xmm>(), tmp);
+	    }
+	    else
+	    {
+		x86::Xmm tmp = cc.newXmmSd("__cmp_rhs_as_dbl");
+		cc.cvtsi2sd(tmp, op2.as<x86::Gp>());
+		cc.ucomisd(op1.as<x86::Xmm>(), tmp);
+	    }
+	}
+	else
+	if ( op2.isMem() )
+	{
+	    x86::Xmm tmp = (dd && dd->size == sizeof(float))
+		? cc.newXmmSs("__cmp_rhs_flt")
+		: cc.newXmmSd("__cmp_rhs_dbl");
+	    safemov(tmp, op2.as<x86::Mem>());
+	    safecmp(op1.as<x86::Xmm>(), tmp, dd);
+	}
 	else
 	    throw "safecmp() Xmm compare expects an Xmm rhs";
     }
@@ -1238,12 +1473,19 @@ void Program::safecmp(Operand &op1, Operand &op2)
 	else
 	if ( op2.isReg() && op2.as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
-	    // Gp vs Xmm: convert the integer to double via cvtsi2sd, then
-	    // ucomisd. SMAUG idioms compare an int member against a real
-	    // expression, e.g. `victim->stances[i] > STANCE_GRAND_MASTER * .75`.
-	    x86::Xmm tmp = cc.newXmmSd("__cmp_int_as_dbl");
-	    cc.cvtsi2sd(tmp, op1.as<x86::Gp>());
-	    cc.ucomisd(tmp, op2.as<x86::Xmm>());
+	    // Gp vs Xmm: convert the integer to the matching real type.
+	    if ( dd && dd->size == sizeof(float) )
+	    {
+		x86::Xmm tmp = cc.newXmmSs("__cmp_int_as_flt");
+		cc.cvtsi2ss(tmp, op1.as<x86::Gp>());
+		cc.ucomiss(tmp, op2.as<x86::Xmm>());
+	    }
+	    else
+	    {
+		x86::Xmm tmp = cc.newXmmSd("__cmp_int_as_dbl");
+		cc.cvtsi2sd(tmp, op1.as<x86::Gp>());
+		cc.ucomisd(tmp, op2.as<x86::Xmm>());
+	    }
 	}
 	else
 	    throw "safecmp() rval is unsupported";

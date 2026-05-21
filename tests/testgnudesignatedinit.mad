@@ -1,0 +1,15 @@
+#include <stdlib.h>
+#include <stdio.h>
+
+struct foo {
+    char a, b, c, d, e;
+};
+
+int main()
+{
+    const struct foo x = { a : 'A', c : 'C', e : 'E' };
+    if (x.a != 'A' || x.b != '\0' || x.c != 'C' || x.d != '\0' || x.e != 'E')
+        abort();
+    printf("ok\n");
+    return 0;
+}

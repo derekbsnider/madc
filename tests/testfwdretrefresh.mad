@@ -1,0 +1,17 @@
+#include <stdio.h>
+
+void ready();
+
+bool ready()
+{
+    return 1;
+}
+
+int main()
+{
+    if ( !ready() )
+        printf("bad\n");
+    else
+        printf("ok\n");
+    return 0;
+}

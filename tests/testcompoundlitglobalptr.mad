@@ -1,0 +1,21 @@
+#!/../bin/madc
+
+#include <stdio.h>
+
+struct A { int i; int j; };
+struct B { struct A *a; struct A *b; };
+struct C { struct B *c; struct A *d; };
+
+struct C e = {
+    &(struct B){ &(struct A){ 1, 2 }, &(struct A){ 3, 4 } },
+    &(struct A){ 5, 6 }
+};
+
+int main(void)
+{
+    printf("%d %d %d %d %d %d\n",
+	e.c->a->i, e.c->a->j,
+	e.c->b->i, e.c->b->j,
+	e.d->i, e.d->j);
+    return 0;
+}

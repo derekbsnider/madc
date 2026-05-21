@@ -3,6 +3,8 @@
 #
 # Convention: each .mad test carries its own fixtures, so this runner
 # stays generic. For a test tests/foo.mad, the runner will use:
+#   tests/foo.flags  — whitespace-split compiler flags prepended before
+#                      the source path
 #   tests/foo.input  — redirected to stdin if present
 #   tests/foo.argv   — each whitespace-separated word appended as argv
 #   tests/foo.expect — if present, the test must exit 0 AND produce
@@ -37,14 +39,17 @@ for t in tests/*.mad; do
     input_file="tests/$base.input"
     argv_file="tests/$base.argv"
     expect_file="tests/$base.expect"
+    flags_file="tests/$base.flags"
 
     args=()
+    flags=()
+    [ -f "$flags_file" ] && read -r -a flags < "$flags_file"
     [ -f "$argv_file" ] && read -r -a args < "$argv_file"
 
     if [ -f "$input_file" ]; then
-        out=$(timeout 5 bin/madc "$t" "${args[@]}" < "$input_file" 2>/dev/null)
+        out=$(timeout 5 bin/madc "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
     else
-        out=$(timeout 5 bin/madc "$t" "${args[@]}" 2>/dev/null)
+        out=$(timeout 5 bin/madc "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
     fi
     rc=$?
 
@@ -81,7 +86,7 @@ for t in tests/*.mad; do
     # EXE pass: compile to native and run
     if [ $RUN_EXE -eq 1 ] && [ $ok -eq 1 ]; then
         exe_path="/tmp/madc_test_exe_${base}"
-        if bin/madc -o "$exe_path" "$t" >/dev/null 2>&1; then
+        if bin/madc "${flags[@]}" -o "$exe_path" "$t" >/dev/null 2>&1; then
             if [ -f "$input_file" ]; then
                 exe_out=$(env LD_LIBRARY_PATH="$EXE_LD_LIBRARY_PATH" timeout 5 "$exe_path" "${args[@]}" < "$input_file" 2>/dev/null)
             else

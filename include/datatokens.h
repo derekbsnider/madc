@@ -60,6 +60,7 @@ public:
     size_t aot_cstr_offset;
     uint32_t count;
     uint16_t flags;
+    std::string storage_alias_name;
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
     // C99 variable-length array: when non-NULL, the local was declared as
     // `T name[expr]` with a runtime-valued size. The variable acts as a
@@ -68,7 +69,10 @@ public:
     // dims[0] holds the element-count contribution from the FIRST dim
     // (always 1 for the runtime path; multiply by vla_size_expr at runtime).
     class TokenBase *vla_size_expr;
-    Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; vla_size_expr = nullptr; }
+    // Parameter array bounds like `int a[n++]` decay to pointers but still
+    // evaluate their runtime bound expressions on function entry.
+    class TokenBase *param_vla_side_effect_expr;
+    Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; vla_size_expr = nullptr; param_vla_side_effect_expr = nullptr; }
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
@@ -207,8 +211,8 @@ public:
     // enum/const-var leaves report 0, so e.g. (TOPCOLOR-COLORBASE)
     // folds to 0 at runtime even though parse-time array sizing reads
     // them correctly via read_constant_integer.
-    virtual int ival() const override
-        { return var.is_constant() ? var.get<int>() : 0; }
+    virtual int64_t ival() const override
+        { return var.is_constant() ? var.get<int64_t>() : 0; }
     virtual double dval() const override
         { return var.is_constant() ? var.get<double>() : 0; }
     virtual bool is_constant() const { return var.is_constant(); }

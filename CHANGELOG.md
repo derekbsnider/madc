@@ -2,43 +2,816 @@
 
 ## [Unreleased]
 
-- **JIT/native EXE parity is now green across the full integration suite.**
-  `scripts/run_tests.sh --exe` now passes all 271 JIT-backed integration
-  tests. The closing fixes were: exporting runtime `eval` and
-  `context_set_*` helpers with C linkage for standalone AOT executables,
-  falling back to a temporary runtime `Program` when script-side eval
-  helpers run without an active host program, aliasing `std::endl` into
-  the `std::` namespace, guarding embedded `fd_set` definitions across
-  `sys/time.h` and `sys/select.h`, allowing function references to
-  coerce into raw `int64_t` callback slots for `std::for_each`, and
-  materializing lambda-capture `__env` parameters into a Gp before
-  building captured-variable operands. Coverage also gained explicit
-  `.expect` oracles for lambda capture, `std::for_each`, namespace IO,
-  and struct/time/select interop, and the `smaug_requests_source`
-  compatibility body now carries a trivial harness `main()` so it
-  participates cleanly in the runner.
+## [v0.18.0] - 2026-05-21
 
-- **Additional SMAUG-shaped runtime regressions now stay in-tree.**
-  Promoted deterministic probes for branch-skipped buffer writes,
-  variadic bug logging, `sprintf` with multiple `%s` arguments,
-  repeated ternary string arguments inside variadic formatting, typedef
-  pointer-member chains, and a simplified `set_char_color()` formatting
-  path into real integration tests so these runtime shapes stay covered
-  instead of living as scratch files.
+GCC parity push: 1327 → 1496/1685 (78.8% → 88.8%), _Complex arithmetic, IEEE floating-point, bitfield promotions, auto-include headers.
 
-- **Local variables and parameters now stay local across JIT/native codegen.**
-  Parser-created locals now set `vfLOCAL`, and function/lambda
-  parameters now set `vfPARAM | vfLOCAL`, so block-local names and
-  parameters no longer alias unrelated global storage during later
-  codegen. This closes the native/JIT shadowing cases behind SMAUG's
-  `damage()` path and adds explicit regressions for a local/global name
-  collision plus a `char *` parameter shadowing a global.
+- **GCC torture `ieee/mzero2.c` now passes.**
+  Floating-point unary negation now flips the sign bit directly
+  instead of computing `0 - x`, which preserves `-0.0` during
+  file-scope/static initialization and downstream IEEE divide/multiply
+  semantics. Added `tests/testnegzerostatic.mad` as the local
+  regression. Full validation is green at `370/370` JIT and
+  `370/370` EXE, and the conservative GCC parity floor rises to at
+  least `1504/1685` (89.3%).
 
-- **AOT/global-data parity coverage expanded around SMAUG-shaped extern access.**
-  New regressions now exercise function-scope access to global pointer
-  tables, struct arrays, and `sysdata`-style extern storage so the
-  native executable lane keeps the same observable layout/lookup
-  behavior as the JIT path.
+- **GCC torture `ieee/fp-cmp-8f.c` now passes.**
+  Contextual identifiers like `struct try` now parse correctly in
+  struct-tag and typedef-alias positions, and indirect function-pointer
+  calls now reset the expression type to the callee's real return type
+  before outer comparisons/casts are lowered. Added
+  `tests/teststructtrytag.mad` and `tests/testfnptrfloatretcmp.mad` as
+  local regressions. Full validation is green at `369/369` JIT and
+  `369/369` EXE, and the conservative GCC parity floor rises to at
+  least `1503/1685` (89.2%).
+
+- **GCC torture `ieee/hugeval.c`, `ieee/inf-1.c`, `ieee/inf-3.c`, and `ieee/inf-4.c` now pass.**
+  The IEEE builtin macro surface now covers `__builtin_huge_val*`,
+  `__builtin_isfinite*`, and `__builtin_isnan*`, and the embedded
+  `math.h` surface now defines `HUGE_VAL` / `INFINITY` in terms of
+  real infinity builtins instead of large finite literals. Added
+  `tests/testieeehugeval.mad` as the local regression. Focused
+  validation is green, and the conservative GCC parity floor rises to
+  at least `1502/1685` (89.1%).
+
+- **GCC torture `ieee/compare-fp-1.c` and `ieee/fp-cmp-1.c` now pass.**
+  Real floating-point comparisons now honor IEEE unordered semantics:
+  `==`, `!=`, `<`, and `<=` no longer treat NaN cases as ordered truths
+  just because `ucomis*` set `ZF`/`CF`, and the IEEE builtin predicate
+  family now has macro coverage for `__builtin_isunordered`,
+  `__builtin_islessgreater`, and the matching `inf` / `nan` helpers
+  those tests expect. Added `tests/testieeefpcompare.mad` as the local
+  regression. Focused validation is green, and the conservative GCC
+  parity floor rises to at least `1498/1685` (88.9%).
+
+- **GCC torture `const-addr-expr-1.c` and `conversion.c` now pass.**
+  Parser-side `->` validation now accepts pointer-shaped expressions
+  produced by fixed-array decay and pointer arithmetic such as
+  `&((array + 1)->field)`, and constant-folded integer operators now
+  preserve their real unsigned result type instead of defaulting back
+  to signed `int`. Real-to-`unsigned int` casts also now use an
+  explicit unsigned-32 conversion path for values above `INT_MAX`,
+  which restores GCC-matching results for cases like `(unsigned)(double)~0U`.
+  Added `tests/testconstaddrexprarrow.mad` and extended
+  `tests/testuint32realcoerce.mad` as local regressions. Full
+  validation is green at `365/365` JIT and `365/365` EXE, and focused
+  GCC reruns bring parity to at least `1496/1685` (88.8%).
+
+- **GCC torture `builtin-prefetch-4.c`, `builtin-types-compatible-p.c`, and `compndlit-1.c` now pass.**
+  GNU compound-literal designators now accept both `.field = value` and
+  GNU `field: value` spellings, `__builtin_types_compatible_p(...)` now
+  parses and compares real type signatures instead of hardwiring `0`,
+  `__builtin_prefetch(...)` now preserves side effects in its address
+  operand while remaining a no-op hint, and unsigned 32-bit to real
+  coercions now zero-extend before `cvtsi2s{sd,ss}` so values above
+  `INT_MAX` keep their correct magnitude. Added
+  `tests/testcompoundlitgnudesignator.mad`,
+  `tests/testbuiltintypescompatible.mad`,
+  `tests/testbuiltinprefetcheffects.mad`, and
+  `tests/testuint32realcoerce.mad` as local regressions. Full
+  validation is green at `364/364` JIT and `364/364` EXE, and the
+  latest full GCC sweep plus focused reruns bring parity to at least
+  `1494/1685` (88.7%).
+
+- **GCC torture `alias-1.c`, `bswap-3.c`, `built-in-setjmp.c`, and `builtin-bitops-1.c` now pass.**
+  GNU attribute preservation now matches exact attribute identifiers
+  instead of substring-matching words inside string arguments, so
+  `optimize("-fno-strict-aliasing")` is skipped instead of being
+  mistaken for `alias`. GCC byte-swap builtins now resolve through
+  exported `__madc_bswap*` helpers; `__builtin_setjmp` emits a real
+  JIT-side `_setjmp` with helper-owned `jmp_buf` storage; and the
+  integer bit-operation builtins now cover the `int`, `long`, and
+  `long long` lanes. Shift expressions now compute in the promoted left
+  operand type before converting to the caller's target, which preserves
+  unsigned 64-bit right shifts in int assignment/return contexts. Added
+  `tests/testattributeoptimize.mad`, `tests/testbuiltinbswap.mad`,
+  `tests/testbuiltinsetjmp.mad`, and `tests/testbuiltinbitops.mad` as
+  local regressions. Full validation is green at `360/360` JIT and
+  `360/360` EXE, and a full GCC sweep raises parity to `1491/1685`
+  (88.5%).
+
+- **GCC torture `bitfld-3.c` now passes.**
+  Wide unsigned bitfield arithmetic now reduces results to the effective
+  bitfield precision that GCC uses for operations on 33/40/41-bit fields,
+  so mixed-width multiply/add/subtract expressions wrap at the wider
+  participating bitfield width instead of leaking full `uint64_t`
+  results. Added `tests/testbitfieldwidearith.mad` as the local
+  regression. Full validation is green at `356/356` JIT and `356/356`
+  EXE, and focused GCC reruns bring the conservative parity floor to at
+  least `1432/1685` (85.0%).
+
+- **GCC torture `bitfld-1.c` now passes.**
+  Bitfield expressions now follow C's integer-promotion rules before
+  arithmetic: narrow unsigned bitfields like `unsigned int u:7` promote
+  to `int` until an explicit cast forces `unsigned int`, which restores
+  the correct signed-vs-unsigned remainder behavior in mixed bitfield
+  expressions. Added `tests/testbitfieldpromote.mad` as the local
+  regression. Full validation is green at `355/355` JIT and `355/355`
+  EXE, and focused GCC reruns bring the conservative parity floor to at
+  least `1431/1685` (84.9%).
+
+- **GCC torture `arith-rand-ll.c` now passes.**
+  The parser's ternary-type fallback no longer treats real `int64_t` /
+  `long long` branches as if they were the generic default `int` case,
+  so expressions like `(unsigned long long)(yy >= 0 ? yy : -yy)` keep
+  their full 64-bit width instead of collapsing to 32 bits through the
+  false branch. Added `tests/testternaryllcast.mad` as the local
+  regression. Full validation is green at `354/354` JIT and `354/354`
+  EXE, and focused GCC reruns bring the conservative parity floor to at
+  least `1430/1685` (84.9%).
+
+- **GCC torture `align-3.c` and `align-nest.c` now pass.**
+  Function declarations now preserve GNU `__attribute__((aligned(N)))`
+  as an explicit function alignment override, so `__alignof__(func)`
+  reports the declared function alignment instead of the generic
+  function-type fallback. Cleanup for stack-backed runtime-sized
+  aggregates also now skips fixed arrays of those aggregates, which
+  avoids freeing stack storage in cases like packed/aligned local arrays
+  of VLA-sized structs. Added `tests/testfunctionalignof.mad` as the
+  local regression. Full validation is green at `353/353` JIT and
+  `353/353` EXE, and focused GCC reruns bring the conservative parity
+  floor to at least `1429/1685` (84.8%).
+
+- **GCC torture `alias-3.c` now passes.**
+  File-scope `extern` aliases that resolve to real global storage now
+  clear the temporary stack-backed flag inherited from the non-allocating
+  declaration path, so scalar alias writes like `b++` lower through the
+  global load/store path instead of a bogus local stack slot. Added
+  `tests/testglobalaliasscalar.mad` as the local regression. Full
+  validation is green at `352/352` JIT and `352/352` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1427/1685` (84.7%).
+
+- **GCC torture `alias-2.c` now passes.**
+  GNU `__attribute__((alias("target")))` now survives lexing on
+  declarators, the parser records global storage aliases, and both JIT
+  and AOT global-address resolution now follow that alias to the
+  canonical backing storage instead of creating a distinct global slot.
+  Added `tests/testglobalaliasarray.mad` as the local regression. Full
+  validation is green at `351/351` JIT and `351/351` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1426/1685` (84.6%).
+
+- **GCC torture `931004-11.c` and `931004-12.c` now pass.**
+  Local fixed-size arrays now allocate stack slots using the element
+  type's actual alignment instead of the raw element size, which fixes
+  odd-sized struct arrays like `struct tiny x[3]` where `newStack(..., 3)`
+  was producing invalid stack slots before direct and varargs struct-by-
+  value calls. Added `tests/testsmallstructarraycall.mad` as the local
+  regression. Full validation is green at `342/342` JIT and `342/342`
+  EXE, and focused GCC reruns bring the conservative parity floor to at
+  least `1417/1685` (84.1%).
+
+- **GCC torture `921007-1.c`, `921016-1.c`, `921019-1.c`, and `930628-1.c` now pass.**
+  The lexer now breaks the `strcmp` / `__builtin_strcmp` macro-expansion
+  cycle at the builtin alias boundary, typedef-enum / alias bitfield
+  extraction no longer wrongly forces signed fixed-width aliases like
+  `int32_t` through the unsigned path, fixed-array struct members now
+  preserve multidimensional shape for decay/subscript lowering, and
+  native EXE global pointer initializers can now materialize constant
+  string-subscript addresses like `(void *)&("X"[0])` directly in copied
+  `.data` instead of relying on runtime `string_cstr` setup. Added
+  `tests/testbuiltinstrcmpmacrocycle.mad`,
+  `tests/testsignedbitfieldassignexpr.mad`,
+  `tests/teststrlitaddrsubscriptglobal.mad`, and
+  `tests/teststructmembermultidimdecay.mad` as regressions. Full
+  validation is green at `341/341` JIT and `341/341` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1415/1685` (84.0%).
+
+- **GCC torture `20230630-2.c` and `20230630-4.c` now pass.**
+  `__attribute__((scalar_storage_order(...)))` now survives lexing as a
+  layout-affecting attribute, struct parsing records reversed scalar
+  storage order for bit-field aggregates, and bit-field load/store
+  lowering now byte-swaps multi-byte storage units when the requested
+  scalar storage order differs from the host endianness. Full
+  validation is green at `337/337` JIT and `337/337` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1411/1685` (83.7%).
+
+- **GCC torture `eeprof-1.c` now passes.**
+  `scripts/run_gcc_testsuite.py` now respects the testsuite's
+  `dg-options "-finstrument-functions"` lane by forwarding
+  `--finstrument-functions` into madc, the CLI/compiler now support
+  `--finstrument-functions` directly, and GNU
+  `__attribute__((no_instrument_function))` now survives lexing/parsing
+  so instrumentation hooks skip the expected profiling helpers. Added a
+  generic `tests/foo.flags` fixture convention to `scripts/run_tests.sh`
+  and `tests/testfinstrumentfunctions.mad` as the local regression. Full
+  validation is green at `330/330` JIT and `330/330` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1409/1685` (83.6%).
+
+- **GCC torture `pr93434.c` now passes.**
+  Fixed-array struct assignment now scales write-side indices with the
+  same full element stride as the read path, so copies like
+  `t2[i] = t2[k]` land on the correct element for 16-byte struct array
+  members instead of writing at raw byte offsets. Added
+  `tests/testfixedarraystructcopy.mad` as the regression. Full
+  validation is green at `329/329` JIT and `329/329` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1408/1685` (83.6%).
+
+- **Embedded standard headers now auto-include on first use of common names.**
+  Unresolved identifiers such as `size_t`, `intptr_t`, `DBL_MIN`, and
+  `FLT_RADIX` now trigger tokenization of the owning embedded header in
+  the lexer, so typedefs and macros come from the embedded header
+  surface instead of a parallel ambient-builtin path. Added
+  `tests/testautoincludestdheaders.mad` as the regression. Full
+  validation is green at `328/328` JIT and `328/328` EXE.
+
+- **GCC torture `960512-1.c` now passes.**
+  The lexer now keeps compound type-specifier accumulation alive across
+  line breaks, so split declarations like `__complex__` newline
+  `double f(void)` parse as a single `_Complex double` type instead of
+  prematurely defaulting to plain `double _Complex`. Complex conditions
+  now also lower to a real boolean by testing whether either real or
+  imaginary lane is non-zero, which fixes `if (c = f())` truthiness for
+  complex assignment expressions. Added
+  `tests/testcomplexsplitdeclcond.mad` as the regression. Full
+  validation is green at `323/323` JIT and `323/323` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1407/1685` (83.5%).
+
+- **GCC torture `pr49644.c` and `pr104604.c` now pass.**
+  Complex `*`, `/`, `*=`, and `/=` now lower component-wise through the
+  compiler's internal complex pair representation, and pointer-aware
+  normalization no longer strips fixed-array decay off complex-typed
+  expressions before compare/cast lowering. That closes the
+  `_Complex double a[12], *c = a; if (c != a + 6)` pointer-arithmetic
+  lane and the `_Complex unsigned t = 42; t /= c; return v + t;`
+  unsigned complex division lane. Added
+  `tests/testcomplexptrcmpdecay.mad` and
+  `tests/testcomplexunsigneddiveq.mad` as regressions. Full validation
+  is green at `322/322` JIT and `322/322` EXE, and focused GCC reruns
+  bring the conservative parity floor to at least `1406/1685` (83.4%).
+
+- **GCC torture `20020227-1.c` now passes.**
+  Scalar assignment into packed complex struct members now zeroes the
+  imaginary lane via an immediate store instead of routing the zero
+  through a register-typed float value, which had been duplicating the
+  real lane in packed layouts like `struct { char c; _Complex float f; }`.
+  Full validation remains green at `320/320` JIT and `320/320` EXE, and
+  focused GCC reruns bring the conservative parity floor to at least
+  `1404/1685` (83.3%).
+
+- **GCC torture `pr56837.c` now passes.**
+  Complex subscript assignment no longer forces scalar RHS values
+  through a bogus `regdp.second = complex_type` path before the
+  dedicated complex-element store logic runs, so `_Complex int a[i];
+  a[i] = -1;` now lowers cleanly. Full validation remains green at
+  `320/320` JIT and `320/320` EXE, and focused GCC reruns bring the
+  conservative parity floor to at least `1403/1685` (83.3%).
+
+- **The `_Complex` arithmetic / builtin lane moved forward again.**
+  Pure-imaginary literals like `1.0i`, `2.2if`, and `10iL` now
+  materialize as real complex values instead of collapsing to scalars,
+  scalar-to-complex casts now build the internal complex pair form,
+  `~x` on complex values lowers as conjugation, and complex `+`, `-`,
+  `+=`, and `-=` now run component-wise with width coercion instead of
+  raw-copying mismatched layouts. `__builtin_conj[f|l]` / `conj[f|l]`
+  also route through a builtin conjugate path, old-style forward
+  declarations like `void foo(), bar(), baz();` now rebuild cleanly
+  when the complex-typed definitions arrive later, and
+  `tests/testcomplexkw.expect` now matches GCC's result instead of the
+  old broken behavior. Added `tests/testcompleximagadd.mad`,
+  `tests/testcomplexconjop.mad`, `tests/testcomplexaddeq.mad`,
+  `tests/testbuiltinconjf.mad`, and `tests/testcomplexfwddeclparams.mad`
+  as regressions. Validation is green at `320/320` JIT and `320/320`
+  EXE, and focused GCC reruns confirm at least `1402/1685` (83.2%)
+  parity pending a fresh full-suite pass.
+
+- **GCC torture `20070614-1.c` now passes.**
+  Complex-by-value call lowering now repacks scalar expressions passed
+  to `_Complex` parameters into the compiler's internal complex pair
+  storage before argument validation and call setup, which closes the
+  pure-imaginary multiply call lane behind `bar (1.0iF * i)`. Full
+  validation remains green at `315/315` JIT, `315/315` EXE, and GCC
+  parity is now `1397/1685` (82.9%).
+
+- **GCC torture `20050121-1.c` now passes.**
+  `_Complex` / `__complex__` declarations now preserve a real internal
+  complex pair type instead of collapsing immediately to scalar storage,
+  GNU `__real__` / `__imag__` now parse as component expressions,
+  complex-to-scalar casts route through the real lane, equality / `!=`
+  compare complex values component-wise without double-evaluating their
+  operands, and `&(__real expr)` now lowers as an addressable lvalue.
+  The branch-local complex regressions `tests/testcomplexkw.mad`,
+  `tests/testcomplexushort.mad`, and `tests/testcomplexrealaddr.mad`
+  are green, integration / EXE remain `315/315`, and GCC parity is now
+  `1344/1685` (79.8%).
+
+- **GCC torture `20030222-1.c`, `20030714-1.c`, `20030928-1.c`, `20061220-1.c`, `20080424-1.c`, and `20080519-1.c` now pass.**
+  Typedef enum aliases now preserve their alias spelling well enough for
+  narrow unsigned bitfield extraction heuristics, nested local function
+  definitions now mangle their internal symbol names so repeated
+  `nested` / `nested2` bodies do not collide across outer functions, the
+  inline-asm parser now safely treats GCC's empty-template `"=m"` /
+  `"m"` barrier form as a no-op, and struct-by-value call-argument
+  copying is constrained back to plain C structs instead of raw-copying
+  runtime class objects like `string` and `array`. Added
+  `tests/testenumbitfieldalias.mad` and `tests/testnestedasmbarrier.mad`
+  as regressions, and refreshed integration / EXE counts to `315/315`
+  plus GCC parity to `1343/1685` (79.7%).
+
+- **GCC torture `20040520-1.c` and `930406-1.c` now pass.**
+  Ordinary nested function definitions now get an explicit environment
+  parameter/capture plumbing path instead of only the lambda-only
+  closure lane, and parser statement handling now accepts local
+  `__label__` declarations as a GNU extension. The remaining `_Complex`
+  work is still intentionally out of this diff.
+
+- **GCC torture `20040411-1.c`, `20040423-1.c`, and `20041218-2.c` now pass.**
+  Typedef'd arrays now preserve their full array shape instead of
+  collapsing immediately to pointers, `sizeof(type)` can now materialize
+  runtime VLA-backed typedef and aggregate extents, packed runtime-sized
+  struct layout no longer double-counts dynamic members in its fixed
+  base size, and stack-backed SIMD parameters now spill through the SIMD
+  store helper instead of the scalar IR store path so upper lanes survive
+  function entry intact. Added `tests/testtypedefvlasizeof.mad` and
+  `tests/testgccvectorcasts.mad` as regressions.
+
+- **GCC torture `20050604-1.c` and `20050607-1.c` now pass.**
+  GNU `vector_size(...)` attributes now survive lexing and attach to
+  typedef aliases as real SIMD datadefs, SIMD compound literals now
+  materialize stack/global backing storage and preserve XMM values for
+  vector arithmetic, and integer/float vector `+=` now lower through
+  `paddw` / `addps` instead of falling back into scalar conversion
+  paths. Casting a vector literal to `long long` still preserves the
+  low-qword shape needed by `20050607-1.c`. Added
+  `tests/testgccvectorlit.mad` as the regression.
+
+- **GCC torture `20050502-1.c` now passes.**
+  Unary `*(`...`)` parsing now honors trailing postfix `++/--`, so
+  `*(*x)++` lowers as dereference-of-old-pointer instead of collapsing
+  into `(*x)++`. Pointer-valued dereferences also now materialize as
+  memory loads instead of treating the pointer slot address as the
+  pointee value, and the postfix deref increment fast path is narrowed
+  back to the real `*(*p++)++` shape. Added
+  `tests/testderefpostincread.mad` as the regression.
+
+- **GCC torture `20041124-1.c` now passes.**
+  `_Complex` / `__complex__` now participate in the lexer's normal
+  type-specifier accumulator instead of being force-rewritten to
+  `double`, so declarations like `_Complex unsigned short` keep the base
+  type's own width. The imaginary-literal compatibility lane now also
+  accepts bare integer suffixes like `200i` in addition to float forms
+  like `1.0iF`. Added `tests/testcomplexushort.mad` as the regression.
+
+- **GCC torture `930513-1.c` now passes.**
+  K&R old-style parameter declarations now accept function-pointer
+  parameters with explicit prototypes and varargs, `&name` can late-bind
+  allowed extern function symbols at parse time, indirect varargs calls
+  now preserve their fixed-argument boundary and variadic ABI setup, and
+  native EXE emission now records external function-address `movabs`
+  loads as real `R_X86_64_64` relocations instead of freezing host
+  process addresses into the binary. Added
+  `tests/testkrfnptrvarargs.mad` as the regression.
+
+- **GCC torture `20010122-1.c` now passes.**
+  Function-pointer array elements now stay callable after subscript
+  parsing, so `funcs[i]()` and similar shapes lower through the existing
+  indirect-call path instead of collapsing to the raw function pointer
+  value. Pointer-returning indirect calls now also treat `void *` as a
+  real return value instead of dropping the `RAX` bind because its raw
+  pointee type is `void`. Added `tests/testfnptrarraycall.mad` as the
+  regression.
+
+- **GCC torture `20070919-1.c` now passes.**
+  Local block-scope struct tags can now shadow earlier tags in the GCC
+  parity lane, struct members can carry runtime-sized array counts, and
+  the compiler now uses runtime aggregate sizes for local struct backing
+  storage, pointer subscript scaling, and aggregate copies. The struct
+  initializer path also now accepts array-of-struct string shorthand like
+  `{ "abcdefg", ... }` when the element is a single char-array member.
+  Added `tests/testvlastructmember.mad` as the regression.
+
+- **GCC torture `20070614-1.c` now passes.**
+  The lexer now lowers `_Complex` / `__complex__` declarations to a
+  temporary `double` compatibility path and accepts `i`/`j` imaginary
+  literal suffixes like `1.0iF` on the GCC parity lane. This is still
+  not full complex-number semantics, but it closes the compile/runtime
+  path for the current torture case and adds `tests/testcomplexkw.mad`
+  as a regression.
+
+- **GCC torture `20060420-1.c` now passes.**
+  Expression-base subscript assignment now stores through IR instead of
+  assuming a Gp RHS, fixed-array subscript reads/writes keep stack-backed
+  arrays as addresses via `lea`, and pointer/fixed-array casts bypass the
+  float-conversion path so `(char *)buffer` / `(long)buffer` preserve real
+  address bits. Added `tests/testglobalarrayptrcastloop.mad` as the
+  regression.
+
+- **Native EXE file-scope compound literals now relocate nested pointers correctly.**
+  AOT/native executable emission now routes file-scope compound-literal
+  storage through the discovered-data relocation path and also patches
+  pointer-valued fields inside copied `.data` payloads. This fixes
+  `tests/testcompoundlitglobalptr.mad` in EXE mode instead of only in JIT.
+
+- **Function-pointer array declarations now parse as plain C.**
+  Declarations like `void *(*funcs[3])(void)` now flow through the
+  normal declaration/initializer path instead of failing at the `)`
+  after the name.
+
+- **Aggregate attribute parser now accepts repeated `__attribute`.**
+  `struct ... } __attribute((packed)) __attribute((aligned));` now stays
+  attached to the aggregate definition instead of leaking into later
+  parser stages. GCC torture `packed-aligned.c` now passes.
+
+- **Validation/docs sync for GCC-first mode.**
+  Added `tests/testfnptrarray.mad` as a regression for function-pointer
+  array declarations, `tests/teststmtexprmember.mad` for GNU statement-
+  expression member access, and `tests/testnestedstructflatinit.mad` for
+  flat nested-struct initializers. Added
+  `tests/testcompoundlitglobalptr.mad` for native file-scope
+  compound-literal relocation and `tests/testglobalarrayptrcastloop.mad`
+  for the `20060420-1.c` address-cast loop shape, plus
+  `tests/testcomplexkw.mad` for the `_Complex` / `iF` compatibility lane,
+  `tests/testfnptrarraycall.mad` for indirect calls through
+  function-pointer array elements, `tests/testkrfnptrvarargs.mad`
+  for K&R-declared varargs function pointers, and
+  `tests/testcomplexushort.mad` for `_Complex unsigned short` plus
+  integer imaginary-suffix compatibility, plus
+  `tests/testcomputedgoto.mad` for GNU computed goto and
+  `tests/testderefpostincread.mad` for the `20050502-1.c` deref-postinc
+  read shape.
+  Removed the `std::list` expectation from `tests/testmadc_ns.mad`,
+  refreshed the current integration / EXE pass counts to `306/306`, and
+  refreshed GCC torture parity to `1337/1685` (79.3%).
+
+## [v0.17.0] - 2026-05-19
+
+GCC parity push: 1305 → 1316/1685 (78.1%), cast chain fixes, struct init, preprocessor features.
+
+- **Local variable zero-init at function entry.**
+  Stack-slot zero-init now emitted at function prologue via `prologue_cursor`
+  instead of at first-use. Fixes variables modified in one loop branch
+  being re-zeroed on the next iteration when the first reference was
+  inside a conditional.
+
+- **Empty struct/union brace-init (`struct X x = {}`).**
+  Direct qword zero-fill instead of the assignment path which self-copied
+  (source == destination pointed to same stack slot).
+
+- **Constant-fold register width matches semantic type.**
+  `optimize()` now uses `regdp.second->newreg()` instead of hardcoded
+  `newGpq()`. Fixes `~0U` (32-bit) comparisons failing against 32-bit
+  variables due to 64-bit vs 32-bit register mismatch.
+
+- **`#pragma push_macro` / `pop_macro` support.**
+  Save and restore individual `#define` macro definitions. Per-macro-name
+  stack with sentinel for "macro was undefined".
+
+- **`f().member` — dot access on struct-returning function calls.**
+  `TokenCallFunc` is now an allowed LHS for dot-member access in
+  `parseExpression`. The function call becomes `parent_expr` of the
+  resulting `TokenMember`.
+
+- **`list` removed from keyword map.**
+  `list` no longer shadows C identifiers. `char *list; *list` now
+  parses correctly. Use `std::list<T>` for the container type.
+
+- **Nested integer cast chains: `(long long)(int)x`.**
+  The generic cast fallback now compiles inner expressions with a fresh
+  `regdp` so nested narrowing casts produce independent results. Widening
+  step added when inner produces a narrower register than the outer target.
+
+- **TokenCast: proper real↔integer and narrowing cast codegen.**
+  Float→int, int→float, and integer-narrowing casts now emit correct
+  conversion instructions instead of falling through to the
+  "reinterpret" path. Fixes double `cvtsi2ss` when `(int)flt_expr`
+  appeared inside float arithmetic, and `(unsigned char)-10` keeping
+  the full 64-bit value.
+
+- **Narrow-integer promotion for assignments and compound ops.**
+  `x = x / -5` where `x` is `unsigned char` now computes the division
+  in `int` (C integer promotion), not in unsigned char where `-5`
+  wraps to 251. Compound ops (`/=`, `+=`, etc.) promote similarly.
+
+- **L/LL integer literal suffix selects 64-bit type.**
+  `1ULL` now has type `uint64_t` (was `uint32_t`). `1L`/`1LL` →
+  `int64_t`. Fixes `(int)(-1ULL >> 15)` producing 131071 instead of -1.
+
+- **`sizeof("string literal")` returns char-array size.**
+  Parenthesized form now returns `strlen(s)+1` (was `sizeof(std::string)=32`).
+
+- **Static array init with negative values.**
+  `literal_integer_value` now handles unary minus (`-N`), plus (`+N`),
+  and bitwise NOT (`~N`). Fixes `static int arr[] = {1, -1}` leaving
+  negative elements as zero.
+
+- **Forward-declaration return type refresh.**
+  When a function is forward-declared with one return type and later
+  defined with another, the FuncDef is replaced with the correct type.
+
+- **Preprocessor: `#if`/`#elif` macro expansion.**
+  `expandIfMacros()` iteratively replaces define names in `#if`
+  conditions before evaluation. Fixes OpenSSL `macros.h` checks.
+
+- **Preprocessor: `#ifdef`/`#else`/`#endif` inside macro arguments.**
+  Conditional directives inside function-like macro arg lists are now
+  processed (GCC extension). Fixes RoD `act_obj.c` `ch_printf` call.
+
+- **Preprocessor: backslash-newline line splicing.**
+  `\` + optional trailing whitespace + newline joins physical lines
+  at the `Source::get()`/`peek()` level.
+
+- **Preprocessor: multi-line function-like macro calls.**
+  `(` on the next line after a macro name is now recognized.
+
+- **`#include <>` searches system paths + `-I` flag.**
+  Angle-bracket includes search `-I` paths, then `/usr/local/include`,
+  `/usr/include`, `/usr/include/x86_64-linux-gnu`. Quoted includes
+  search source dir then `-I` paths. Adds `-I`/`-Ipath` CLI flag.
+
+- **Duplicate typedef redeclarations accepted.**
+  `typedef struct foo FOO;` repeated is now silently accepted (C std).
+
+- **Embedded headers: `strings.h`, `malloc.h`, `sys/vfs.h`, `resolv.h`.**
+
+- **Lexer: EOF without trailing newline.**
+  Files ending without `\n` no longer produce a spurious TokenChar(-1).
+
+- **Lexer: angle-bracket include fallback to source directory.**
+  `#include <file.h>` now searches the current source directory as last
+  resort, fixing local header copies like libpq-fe.h → postgres_ext.h.
+
+- **Lexer: octal integer literal support.**
+  `010` now correctly parses as 8 (octal), not 10 (decimal).
+
+- **Preprocessor: nested function-like macro expansion.**
+  Macro arguments are now pre-expanded before substitution (C standard
+  behavior). Fixes `UMIN(x, UMIN(y, z))` and similar nested calls.
+
+- **Parser: subscript on generic pointer expressions.**
+  `NAME(ch)[0]` where NAME expands to a ternary now subscripts correctly.
+
+- **Parser: `const`/`restrict` in cast expressions.**
+  `(const OBJ_DATA * const *)expr` and `(char)CONST` in case labels.
+
+- **Parser: cast-expression tightness.**
+  `(unsigned char)~0 * ' '` now parses as `((unsigned char)(~0)) * ' '`,
+  not `(unsigned char)(~0 * ' ')`.
+
+- **Parser: unary `+` after assignment.**
+  `x = +20` no longer fails with "Missing operand".
+
+- **Parser: `sizeof` / `parsePostfixChain` for keyword identifiers.**
+  `sizeof(class->member)` works when `class` is used as a C identifier.
+
+- **Compiler: `*(*p)++ = value` assignment.**
+  Post-incremented dereference as assignment LHS now captures old pointer,
+  stores RHS, then increments. Matches GCC codegen.
+
+- **Compiler: asmjit 32-arg limit.**
+  FuncSignature/InvokeNode capped at 32 args. Varargs calls with many
+  format arguments no longer abort.
+
+- **Compiler: static struct/array brace-init.**
+  Local `static` variables with brace initializers are now initialized
+  at first entry, not left zeroed.
+
+- **Compiler: unsigned int64 → double/float (GCC pattern).**
+  `(double)UINT64_MAX` now gives ~1.84e19, not -1.0. Uses the
+  test/jns/shr/or/cvtsi2sd/addsd pattern matching GCC.
+
+- **Compiler: 32-bit unsigned comparison.**
+  `int` vs `unsigned int` comparisons now truncate to 32 bits before
+  the unsigned compare. UINT_MAX in limits.h now has the U suffix.
+
+- **Typesafe: SAR for signed right-shift.**
+  `safeshr` now uses SAR (arithmetic shift) for signed types instead
+  of SHR (logical shift). Fixes `-2147483648 >> 1` producing a
+  positive number.
+
+- **Embedded headers: `struct passwd` in `pwd.h`, `intptr_t`/`uintptr_t`,
+  `size_t` in `stdio.h`.**
+
+- **GNU named variadic macro parameter expansion.**
+  `#define test(ret, args...) fprintf(stdout, args)` now joins all
+  trailing call-site arguments into the named variadic parameter.
+
+- **Float-precision negation and comparison.**
+  `safeneg()` uses `subss`/`xorps` for float (was `subsd`/`xorpd`).
+  `safecmp()` uses `ucomiss` for float comparisons. Fixes `-1.0f`
+  producing `1.0f` and float comparison wrong answers.
+
+- **C usual-arithmetic float promotion.**
+  `infer_numeric_type()` returns the actual floating type (float or
+  double) instead of always `ddDOUBLE`. Matches GCC's usual arithmetic
+  conversions for int-vs-float expressions.
+
+- **Function return type always set in regdp.**
+  `TokenCallFunc::compile()` now unconditionally sets `regdp.second`
+  to the function's actual return type, fixing float→double coercion
+  when comparing float function returns directly.
+
+- **`ddINT = ddINT32`: LP64 ABI completion at the type-system level.**
+  `dtINT`, `dtINTptr`, `dtINTref` now alias 32-bit variants. Unsuffixed
+  integer literals, unqualified `int` variables, and `TokenOperator`
+  default types are all 4 bytes. `dtFLOAT` explicitly pinned to avoid
+  enum collision.
+
+- **Integer cast compiles inner at natural width.**
+  `TokenCast` for sub-64-bit integer targets compiles the inner
+  expression with NULL type when it detects an operator whose datadef
+  may underreport width. Fixes `(int)(LL_expr >> n)` truncating the
+  LL literal before the shift.
+
+- **Signed→unsigned same-size cast truncation.**
+  `(unsigned int)(signed int)x` now masks the upper 32 bits via
+  `canonicalize_narrow_integer_reg`. IR coerce handles signed→unsigned
+  same-size conversions.
+
+- **`unsigned char *` treated as charptr for string coercion.**
+  `(unsigned char *)"str"` now produces a valid c_str pointer instead
+  of garbage.
+
+- **Integer literal source text preserved through macro arg pre-expansion.**
+  `TokenInt` now carries `source_text` so hex representation and L/U/LL
+  suffixes survive the tokenize→reserialize round-trip during
+  function-like macro argument pre-expansion. Fixes `sizeof()` on
+  macro-substituted literals like `0x12345678LU` returning 4 instead of 8.
+
+- **Unsigned char/short use signed comparison after integer promotion.**
+  C usual arithmetic conversions: `unsigned char` and `unsigned short`
+  fit in `int`, so relational comparisons use signed `setl`/`setg`
+  instead of unsigned `setb`/`seta`. Only types >= `sizeof(int)` force
+  unsigned comparison.
+
+- **Float arithmetic in integer-destination context.**
+  `add`/`sub`/`mul`/`div` now skip the plain-binop fast path when
+  the destination type is integer but operands are float, preventing
+  float literals from being truncated to int before the operation.
+
+- **Integer→real cast compiles inner expression at natural type.**
+  The `(float)expr` / `(double)expr` cast no longer forces the inner
+  expression's `regdp.second` to the pre-inferred signed type. Unsigned
+  operators like `>>` now correctly use SHR instead of SAR when the
+  source operand is unsigned.
+
+- **32-bit registers (Gpd) for int/unsigned int types.**
+  `DataDef::newreg()` and `IRBuilder::newReg()` now return `newGpd()`
+  for 32-bit integer types. On x86-64, 32-bit ops automatically
+  zero-extend to 64 bits, giving correct wrapping at 2^32 for free.
+  All typesafe arithmetic helpers (`safemul`, `safeor`, `safeand`,
+  `safexor`, `safeshr`, `safediv`) dispatch between r32/r64 forms.
+  Matches GCC's code shape (`addl`, `imull`, `shll` instead of `addq`).
+
+- **Cast operand binds tightly over simple literals.**
+  `(double)5 < 3.0` now parses as `((double)5) < 3.0` instead of
+  `(double)(5 < 3.0)`.
+
+- **C integer literal type rules for hex/octal without suffix.**
+  Hex constant `0x80000081` now typed as `unsigned int` per C §6.4.4.1.
+
+- **Unsigned `div` for unsigned integer division/modulo.**
+  `safediv()` now uses the x86 `div` instruction (unsigned) instead of
+  `idiv` (signed) for unsigned operands.
+
+- **Real→integer assignment for narrow int types.**
+  `unsigned short s = double_expr` now converts via `cvttsd2si` instead
+  of storing raw double bits.
+
+## [v0.16.0] - 2026-05-18
+
+sizeof(int) = 4: LP64 ABI alignment and GCC torture suite 75% milestone.
+
+- **`sizeof(int)` = 4 bytes, matching GCC and the LP64 ABI.**
+  The bitmap type-specifier accumulator now maps `int` to `ddINT32`
+  (4 bytes) and `unsigned int` to `ddUINT32`. `long` remains 8 bytes.
+  All type sizes now match GCC on x86-64 (except `long double`, which
+  is 8 bytes in madc vs 16 in GCC).
+
+- **Codegen fixes for 4-byte int.**
+  Integer stack slots allocate at least 8 bytes for safe 64-bit register
+  writes. IR narrow-integer canonicalization extended in-place (reusing
+  the same vreg) to avoid confusing asmjit's register allocator. 32-bit
+  shift operations (`safeshl`) now use `shl r32` so results wrap at
+  the correct width.
+
+- **Float/double brace initializers in arrays and struct members.**
+  `TokenReal::compile` now emits `newFloatConst` when the target type
+  is float-sized, and init-store paths handle Xmm (Vec) registers via
+  `movss`/`movsd` instead of assuming all values are in Gp registers.
+
+- **Removed scanf `%d` → `%ld` format-rewriting shim.**
+  With `sizeof(int)` = 4, libc's `%d` writes the correct 4 bytes into
+  a standard int slot. The `__madc_sscanf`/`__madc_fscanf` wrappers
+  now pass through to the real libc functions.
+
+- **`__builtin_add/sub/mul_overflow` and `_overflow_p` predicates.**
+  Overflow-checking arithmetic builtins implemented via `__int128`
+  helper functions in `va_helpers.cpp`.
+
+- **Ternary operator in constant expressions.**
+  `sizeof(int) >= 4 ? 0x4000 : 4` now works in array dimensions and
+  other compile-time contexts.
+
+- **C23 `[[attribute]]` consumption.**
+  Double-bracket attributes (`[[gnu::noipa]]`, `[[nodiscard]]`, etc.)
+  are now consumed and skipped at the lexer level.
+
+- **Unary `+` operator support.**
+  `f(+1)` and `+42` are now parsed as no-op unary `+`.
+
+- **Zero-length arrays: `sizeof(arr[0])` = 0.**
+  `int arr[0]` now has sizeof 0, matching GCC.
+
+- **Embedded headers: `stddef.h` and `assert.h` now registered.**
+
+- **`__builtin_bswap64` mapped to helper function.**
+
+- **Build: `make -C src` now builds `lib/libmadc.so` alongside `bin/madc`.**
+
+- **Expression sandbox: comma-operator rejection for `eval_expression`.**
+  `(1, 2)` is now rejected by the pre-lex text scanner, while commas
+  inside function-call parentheses are still allowed.
+
+## [v0.15.0] - 2026-05-17
+
+GCC torture test suite parity initiative: pass rate 627 → 1245 (37% → 74%).
+
+- **GCC torture test suite runner and 96 compile-failure fixes.**
+  New `scripts/run_gcc_testsuite.py` drives GCC's `gcc.c-torture/execute`
+  tests through madc. 24 commits across parser, lexer, compiler, and
+  typesafe took the pass rate from 627/1685 to 1245/1685, closing 96
+  compile failures. Compile failures dropped from 320 to 221; 22 newly
+  compilable tests now hit runtime issues instead.
+
+- **C comma operator in parenthesized expressions.**
+  `(expr1, expr2)` now evaluates `expr1` for side effects, discards it,
+  and returns `expr2`. Works inside `if()` conditions, assignments, and
+  nested expressions.
+
+- **Full C operator precedence in the `#if` preprocessor evaluator.**
+  The `#if` condition evaluator now uses integer arithmetic (was boolean)
+  with the full C precedence chain: unary → multiplicative → additive →
+  shift → relational → equality → bitwise AND/XOR/OR → logical AND/OR.
+  Also adds `#error` and `#warning` directives.
+
+- **Scientific notation in float literals.**
+  Both `1.5e-3` and `1e5` (no decimal point) now parse correctly.
+  Exponent signs (+/-) and float suffixes (f/F/l/L) are handled.
+
+- **Mixed int*double arithmetic promotion (C99 6.3.1.8).**
+  When one operand of `*` is integer and the other is floating-point,
+  the integer is promoted to double for the computation and the result
+  is truncated back to int if the destination requires it. Re-implements
+  the lost RoD mixed-arithmetic fix.
+
+- **K&R empty-parens functions: `f()` vs `f(void)`.**
+  Added `is_void_params` flag to `FuncDef`. Functions declared with
+  empty parens accept any number of arguments; `f(void)` means exactly
+  zero. Applies to both regular functions and function pointers.
+
+- **Zero-length arrays and flexible array members.**
+  `int arr[0]` and `int arr[]` in struct members are now accepted.
+  `int arr[0]` in variable declarations is treated as a 1-element
+  placeholder.
+
+- **Bitfields in anonymous struct/union members.**
+  Named bitfields (`int x : 4;`), unnamed bitfields (`int : 4;`), and
+  comma-separated members (`int f1, f2, f3;`) now work inside anonymous
+  struct/union bodies.
+
+- **Forward enum references.**
+  `enum X var;` where X was previously defined is now treated as `int`.
+
+- **Embedded headers: `stddef.h`, `assert.h`.**
+  `stddef.h` provides `size_t`, `ptrdiff_t`, `wchar_t`, `NULL`,
+  `offsetof`. `assert.h` provides the `assert()` macro. `NULL` also
+  added to `stdlib.h` and `string.h`.
+
+- **50+ GCC `__builtin_*` aliases and type macros.**
+  Covers math functions (sqrt, sin, cos, pow, fma, etc.), string
+  functions (memchr, strchr, strdup, strnlen), `__builtin_va_arg/start/end`,
+  `__builtin_signbit`, `__builtin_classify_type`, bswap16/32, and
+  GCC predefined type macros (`__UINT8_TYPE__`, `__WCHAR_TYPE__`,
+  `__INT_LEAST*_TYPE__`, `__INT_FAST*_TYPE__`, etc.).
+
+- **Comprehensive `__attribute__` consumption.**
+  `__attribute__((...))` is now consumed in variable declarations,
+  typedef aliases, struct member types, function definitions (after
+  param list), and the single-underscore `__attribute` variant.
+  `_Alignas` maps to `__attribute__` for C11 alignment specifiers.
+
+- **`typedef const struct`, `const` after type in struct members.**
+  `typedef const struct X *alias;` now works via `parsing_typedef_decl`
+  flag. `char const *p;` in struct members is accepted.
+
+- **Flat struct initialization.**
+  `struct { int f[4]; } s = {1,2,3,4};` distributes values into array
+  members instead of requiring nested braces.
+
+- **`asm`/`volatile` as if-body, `va_arg(*ptr, type)`.**
+  `if (...) asm(...)` no longer fails. `va_arg(*ap, type)` for pointer-
+  to-va_list parameters is accepted.
+
+- **`static` implicit-int for C89 K&R functions.**
+  `static funcname(...)` is treated as returning `int`.
+
+- **GCC extension aliases: `__volatile__`, `__signed__`.**
 
 ## [v0.14.1] - 2026-05-10
 

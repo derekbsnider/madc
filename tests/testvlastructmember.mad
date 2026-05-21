@@ -1,0 +1,36 @@
+#include <stdio.h>
+#include <stdlib.h>
+
+void check(char *got, char *expected, int n)
+{
+    int i;
+    for (i = 0; i < n; ++i)
+        if (got[i] != expected[i])
+            abort();
+}
+
+void bar(void *x, void *y)
+{
+    struct S { char w[8]; } *p = x, *q = y;
+    check(p->w, "zyxwvut", 8);
+    check(q[0].w, "abcdefg", 8);
+    check(q[1].w, "ABCDEFG", 8);
+    check(q[2].w, "zyxwvut", 8);
+    check(q[3].w, "zyxwvut", 8);
+}
+
+void foo(void *x, int y)
+{
+    struct S { char w[y]; } *p = x, a;
+    a = ({ struct S b; b = p[2]; p[3] = b; });
+    bar(&a, x);
+}
+
+int main()
+{
+    struct S { char w[8]; } p[4]
+        = { "abcdefg", "ABCDEFG", "zyxwvut", "ZYXWVUT" };
+    foo(p, 8);
+    printf("ok\n");
+    return 0;
+}

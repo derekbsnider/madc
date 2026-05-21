@@ -1,0 +1,21 @@
+#!/../bin/madc
+
+extern void abort(void);
+
+double f(double x)
+{
+    return x * x;
+}
+
+double Int(double (*fp)(double), double a)
+{
+    return (*fp)(a);
+}
+
+int main(void)
+{
+    if (Int(&f, 2.0) != 4.0)
+	abort();
+    puts("ok");
+    return 0;
+}

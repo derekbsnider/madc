@@ -1,0 +1,6 @@
+int main()
+{
+	signed long long yy = -576460752303947776LL;
+	printf("%llu\n", (unsigned long long)(yy >= 0 ? yy : -yy));
+	return 0;
+}

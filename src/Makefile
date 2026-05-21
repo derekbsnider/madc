@@ -64,7 +64,7 @@ LIBMADC_STAGE_CPP_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_cpp_smoke
 LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 
 all:
-	$(MAKE) ../bin/madc
+	$(MAKE) ../bin/madc $(LIBMADC_SHARED)
 
 libmadc:
 	$(MAKE) $(LIBMADC_SHARED)
@@ -120,6 +120,12 @@ test: $(TESTBINS)
 
 fulltest: ../bin/madc test
 	@cd .. && bash scripts/run_tests.sh
+
+gcctest: ../bin/madc
+	@cd .. && scripts/run_gcc_testsuite.py
+
+gcctest-smoke: ../bin/madc
+	@cd .. && scripts/run_gcc_testsuite.py --limit 25
 
 $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
 	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(TESTOBJ) $(LIBS)

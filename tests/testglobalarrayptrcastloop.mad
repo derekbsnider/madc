@@ -1,0 +1,22 @@
+float buffer[64];
+
+int main() {
+	int i;
+	float *dst, *src[2];
+	char *cptr;
+
+	cptr = (char *)buffer;
+	cptr += (-(long int) buffer & (16 * sizeof(float) - 1));
+	dst = (float *)cptr;
+	src[0] = dst + 16;
+	src[1] = dst + 32;
+
+	for (i = 0; i < 16; ++i) {
+		src[0][i] = (float)i;
+		src[1][i] = (float)i + 100.0;
+	}
+
+	putf(src[0][15]); puts("\n");
+	putf(src[1][15]); puts("\n");
+	return 0;
+}

@@ -3,6 +3,11 @@
 #include <string>
 
 static std::map<std::string, std::string> embedded_headers = {
+    {"alloca.h", R"EMBED(// madc embedded alloca.h
+// alloca() allocates on the stack — madc maps it to malloc for now.
+// True stack allocation would need compiler intrinsic support.
+#define alloca(size) malloc(size)
+)EMBED"},
     {"arpa/inet.h", R"EMBED(// madc embedded arpa/inet.h — IPv4/IPv6 address conversion
 // Functions (inet_addr, inet_aton, inet_ntoa, inet_pton, inet_ntop,
 //            htons, htonl, ntohs, ntohl) available via dlsym fallback
@@ -65,6 +70,21 @@ static std::map<std::string, std::string> embedded_headers = {
 #define TELOPT_NEW_ENVIRON 39
 #define NTELOPTS         40
 #define TELOPT_EXOPL     255
+)EMBED"},
+    {"assert.h", R"EMBED(// madc embedded assert.h — runtime assertions
+
+#ifndef __MADC_ASSERT_H
+#define __MADC_ASSERT_H 1
+
+#load "libc.so.6" as __libc;
+
+#ifdef NDEBUG
+#define assert(expr) ((void)0)
+#else
+#define assert(expr) ((expr) ? (void)0 : abort())
+#endif
+
+#endif
 )EMBED"},
     {"crypt.h", R"EMBED(// madc embedded crypt.h — POSIX password crypt
 // libcrypt.so isn't part of glibc's RTLD_DEFAULT search, so #load it
@@ -249,6 +269,53 @@ struct dirent {
 
 #define FD_CLOEXEC   1
 )EMBED"},
+    {"float.h", R"EMBED(// madc embedded float.h — floating-point characteristics for host x86-64
+
+#ifndef __MADC_FLOAT_H
+#define __MADC_FLOAT_H 1
+
+#define FLT_RADIX 2
+#define FLT_EVAL_METHOD 0
+#define DECIMAL_DIG 21
+
+#define FLT_MANT_DIG 24
+#define DBL_MANT_DIG 53
+#define LDBL_MANT_DIG 64
+
+#define FLT_DIG 6
+#define DBL_DIG 15
+#define LDBL_DIG 18
+
+#define FLT_MIN_EXP (-125)
+#define DBL_MIN_EXP (-1021)
+#define LDBL_MIN_EXP (-16381)
+
+#define FLT_MIN_10_EXP (-37)
+#define DBL_MIN_10_EXP (-307)
+#define LDBL_MIN_10_EXP (-4931)
+
+#define FLT_MAX_EXP 128
+#define DBL_MAX_EXP 1024
+#define LDBL_MAX_EXP 16384
+
+#define FLT_MAX_10_EXP 38
+#define DBL_MAX_10_EXP 308
+#define LDBL_MAX_10_EXP 4932
+
+#define FLT_MAX 3.40282346638528859811704183484516925e+38F
+#define DBL_MAX ((double)1.79769313486231570814527423731704357e+308L)
+#define LDBL_MAX 1.18973149535723176502126385303097021e+4932L
+
+#define FLT_MIN 1.17549435082228750796873653722224568e-38F
+#define DBL_MIN ((double)2.22507385850720138309023271733240406e-308L)
+#define LDBL_MIN 3.36210314311209350626267781732175260e-4932L
+
+#define FLT_EPSILON 1.19209289550781250000000000000000000e-7F
+#define DBL_EPSILON ((double)2.22044604925031308084726333618164062e-16L)
+#define LDBL_EPSILON 1.08420217248550443400745280086994171e-19L
+
+#endif
+)EMBED"},
     {"fnmatch.h", R"EMBED(// madc embedded fnmatch.h — filename pattern matching
 // Functions (fnmatch) available via dlsym fallback
 
@@ -308,9 +375,15 @@ struct dirent {
 #define USHRT_MAX 65535
 #define INT_MIN   -2147483648
 #define INT_MAX   2147483647
-#define UINT_MAX  4294967295
-#define LONG_MIN  -9223372036854775807
-#define LONG_MAX  9223372036854775807
+#define UINT_MAX  4294967295U
+#define LONG_MIN  -9223372036854775807L
+#define LONG_MAX  9223372036854775807L
+#define ULONG_MAX 18446744073709551615UL
+#define LLONG_MIN -9223372036854775807LL
+#define LLONG_MAX 9223372036854775807LL
+#define ULLONG_MAX 18446744073709551615ULL
+#define CHAR_MIN  -128
+#define CHAR_MAX  127
 #define PATH_MAX  4096
 #define NAME_MAX  255
 )EMBED"},
@@ -325,6 +398,17 @@ struct dirent {
 #define LC_NUMERIC   1
 #define LC_TIME      2
 )EMBED"},
+    {"malloc.h", R"EMBED(// madc embedded malloc.h — memory allocation
+// malloc/free/realloc/calloc are already available via dlsym fallback.
+// This stub satisfies #include <malloc.h>.
+
+#ifndef __MADC_MALLOC_H
+#define __MADC_MALLOC_H 1
+
+#include <stdlib.h>
+
+#endif
+)EMBED"},
     {"math.h", R"EMBED(// madc embedded math.h — auto-loads libm and defines math constants
 #load "libm.so.6" as libm;
 
@@ -338,8 +422,8 @@ struct dirent {
 #define M_LN10     2.30258509299404568402
 #define M_SQRT2    1.41421356237309504880
 #define M_SQRT1_2  0.70710678118654752440
-#define HUGE_VAL   1e308
-#define INFINITY   1e309
+#define HUGE_VAL   __builtin_huge_val()
+#define INFINITY   __builtin_inf()
 )EMBED"},
     {"netdb.h", R"EMBED(// madc embedded netdb.h — network database constants
 // Functions (getaddrinfo, freeaddrinfo, gai_strerror, getnameinfo,
@@ -529,7 +613,25 @@ struct sockaddr_in {
     {"pwd.h", R"EMBED(// madc embedded pwd.h — password database
 // Functions (getpwuid, getpwnam, getpwent, setpwent, endpwent, getlogin)
 // available via dlsym fallback
-// struct passwd access deferred
+
+#ifndef _PWD_H
+#define _PWD_H 1
+
+typedef unsigned int __uid_t;
+typedef unsigned int __gid_t;
+
+struct passwd
+{
+  char *pw_name;
+  char *pw_passwd;
+  __uid_t pw_uid;
+  __gid_t pw_gid;
+  char *pw_gecos;
+  char *pw_dir;
+  char *pw_shell;
+};
+
+#endif
 )EMBED"},
     {"regex.h", R"EMBED(#ifndef __MADC_REGEX_H
 #define __MADC_REGEX_H 1
@@ -572,6 +674,20 @@ int regcomp(regex_t *preg, const char *pattern, int cflags);
 int regexec(const regex_t *preg, const char *string, size_t nmatch, regmatch_t pmatch[], int eflags);
 size_t regerror(int errcode, const regex_t *preg, char *errbuf, size_t errbuf_size);
 void regfree(regex_t *preg);
+
+#endif
+)EMBED"},
+    {"resolv.h", R"EMBED(// madc embedded resolv.h — DNS resolver
+// b64_ntop / b64_pton and resolver functions available via dlsym.
+
+#ifndef __MADC_RESOLV_H
+#define __MADC_RESOLV_H 1
+
+#include <sys/types.h>
+
+extern int b64_ntop(const unsigned char *src, int srclength,
+                    char *target, int targsize);
+extern int b64_pton(const char *src, unsigned char *target, int targsize);
 
 #endif
 )EMBED"},
@@ -619,6 +735,32 @@ typedef long va_list;
 #define vsnprintf __madc_vsnprintf
 #define vfprintf __madc_vfprintf
 )EMBED"},
+    {"stdbool.h", R"EMBED(// madc embedded stdbool.h
+
+#define bool _Bool
+#define true 1
+#define false 0
+#define __bool_true_false_are_defined 1
+)EMBED"},
+    {"stddef.h", R"EMBED(// madc embedded stddef.h — standard definitions
+// size_t and ptrdiff_t are already native madc types via typedef
+// This header provides NULL, offsetof, and max_align_t
+
+#ifndef __MADC_STDDEF_H
+#define __MADC_STDDEF_H 1
+
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
+#define offsetof(type, member) ((unsigned long)&((type *)0)->member)
+
+typedef long ptrdiff_t;
+typedef unsigned long size_t;
+typedef int wchar_t;
+
+#endif
+)EMBED"},
     {"stdint.h", R"EMBED(// madc embedded stdint.h — exact-width integer types
 // Note: int8_t through uint64_t are native madc types
 // This header provides the min/max constants for completeness
@@ -641,6 +783,9 @@ typedef long va_list;
 #define UINTMAX_MAX 0xFFFFFFFFFFFFFFFF
 #define PTRDIFF_MIN -9223372036854775807
 #define PTRDIFF_MAX 9223372036854775807
+
+typedef long int intptr_t;
+typedef unsigned long int uintptr_t;
 )EMBED"},
     {"stdio.h", R"EMBED(// madc embedded stdio.h — C standard I/O
 // printf/fprintf/sprintf/snprintf are available via dlsym fallback (libc is always loaded)
@@ -653,18 +798,17 @@ typedef long va_list;
 #define BUFSIZ 8192
 #define NULL 0
 #define FILE void
-
-// scanf-family redirect: madc int is 64-bit, but libc's %d writes only 4
-// bytes, leaving the high 4 bytes of the destination slot uninitialized
-// and madc then reads garbage as the high half. The __madc_*scanf wrappers
-// rewrite %d/%i/%u/%o/%x/%X/%n (without an explicit length modifier) to
-// their l-prefixed form so libc writes the full 8 bytes. See va_helpers.cpp.
-#define sscanf  __madc_sscanf
-#define fscanf  __madc_fscanf
-#define scanf   __madc_scanf
+#ifndef _SIZE_T_DEFINED
+#define _SIZE_T_DEFINED
+#define size_t uint64_t
+#endif
 )EMBED"},
     {"stdlib.h", R"EMBED(// madc embedded stdlib.h — standard library constants
 // Functions (malloc, free, exit, atoi, atof, rand, srand, abs, etc.) via dlsym fallback
+
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
 
 #define EXIT_SUCCESS 0
 #define EXIT_FAILURE 1
@@ -676,6 +820,10 @@ typedef long va_list;
 // extern declarations below give the parser proper return types so
 // `*(strchr(...)) = 0` works without explicit user-side `extern`.
 
+#ifndef NULL
+#define NULL ((void *)0)
+#endif
+
 extern char *strchr(char *s, int c);
 extern char *strrchr(char *s, int c);
 extern char *strstr(char *haystack, char *needle);
@@ -683,6 +831,22 @@ extern char *strdup(char *s);
 extern char *strpbrk(char *s, char *accept);
 extern char *strtok(char *s, char *delim);
 extern char *strndup(char *s, int n);
+)EMBED"},
+    {"strings.h", R"EMBED(// madc embedded strings.h — POSIX string functions
+// Most functions resolve through the dlsym fallback.
+// This stub satisfies #include <strings.h> for code that uses
+// bcopy, bzero, strcasecmp, strncasecmp, etc.
+
+#ifndef __MADC_STRINGS_H
+#define __MADC_STRINGS_H 1
+
+#include <string.h>
+
+// POSIX strings.h functions — available via dlsym fallback
+extern int strcasecmp(const char *s1, const char *s2);
+extern int strncasecmp(const char *s1, const char *s2, int n);
+
+#endif
 )EMBED"},
     {"sys/cdefs.h", R"EMBED(#ifndef __MADC_SYS_CDEFS_H
 #define __MADC_SYS_CDEFS_H 1
@@ -1162,6 +1326,33 @@ struct timezone {
 // struct sockaddr_un access deferred (requires struct interop)
 // Functions via dlsym fallback (same as sys/socket.h: socket, bind, connect, etc.)
 )EMBED"},
+    {"sys/vfs.h", R"EMBED(// madc embedded sys/vfs.h — filesystem statistics
+// statfs() is available via dlsym fallback.
+
+#ifndef __MADC_SYS_VFS_H
+#define __MADC_SYS_VFS_H 1
+
+#include <sys/types.h>
+
+struct statfs {
+    long f_type;
+    long f_bsize;
+    long f_blocks;
+    long f_bfree;
+    long f_bavail;
+    long f_files;
+    long f_ffree;
+    long f_fsid[2];
+    long f_namelen;
+    long f_frsize;
+    long f_flags;
+    long f_spare[4];
+};
+
+extern int statfs(const char *path, struct statfs *buf);
+
+#endif
+)EMBED"},
     {"sys/wait.h", R"EMBED(// madc embedded sys/wait.h — process wait constants
 // Functions (wait, waitpid) available via dlsym fallback
 
@@ -1367,6 +1558,28 @@ struct tm {
 #define dev_t    int64_t
 #define ino_t    uint64_t
 #define nlink_t  int64_t
+#define intptr_t  int64_t
+#define uintptr_t uint64_t
+)EMBED"},
+    {"zlib.h", R"EMBED(// madc embedded zlib.h — minimal stub for z_stream pointer members.
+// Full zlib functionality requires linking against libz.
+
+typedef struct z_stream_s {
+    void *next_in;
+    unsigned int avail_in;
+    unsigned long total_in;
+    void *next_out;
+    unsigned int avail_out;
+    unsigned long total_out;
+    void *msg;
+    void *state;
+    void *zalloc;
+    void *zfree;
+    void *opaque;
+    int data_type;
+    unsigned long adler;
+    unsigned long reserved;
+} z_stream;
 )EMBED"}
 };
 
