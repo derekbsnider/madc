@@ -6180,7 +6180,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    DataDef *tdd = ternary->true_expr  ? ternary->true_expr->datadef()  : NULL;
 		    DataDef *fdd = ternary->false_expr ? ternary->false_expr->datadef() : NULL;
 		    DataDef *ternary_dd = tdd;
-		    if ( (!ternary_dd || ternary_dd == &ddINT64) && fdd && fdd != &ddINT64 )
+		    if ( (!ternary_dd || ternary_dd == &ddINT) && fdd && fdd != &ddINT )
 			ternary_dd = fdd;
 
 		    // C ternary type unification for pointer-flavored

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `arith-rand-ll.c` now passes.**
+  The parser's ternary-type fallback no longer treats real `int64_t` /
+  `long long` branches as if they were the generic default `int` case,
+  so expressions like `(unsigned long long)(yy >= 0 ? yy : -yy)` keep
+  their full 64-bit width instead of collapsing to 32 bits through the
+  false branch. Added `tests/testternaryllcast.mad` as the local
+  regression. Full validation is green at `354/354` JIT and `354/354`
+  EXE, and focused GCC reruns bring the conservative parity floor to at
+  least `1430/1685` (84.9%).
+
 - **GCC torture `align-3.c` and `align-nest.c` now pass.**
   Function declarations now preserve GNU `__attribute__((aligned(N)))`
   as an explicit function alignment override, so `__alignof__(func)`
