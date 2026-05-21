@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+- **Array compound literals now parse and compile.**
+  `(int []){0, 1, 2}` and `(int [3]){...}` now build a synthetic struct
+  with N uniform elements, decay to a pointer in expression context, and
+  support postfix subscripting. `&(type []){...}[i]` (address-of on a
+  subscripted array compound literal) wraps the derived expression in
+  `TokenAddrExpr`. Closes pr22098-{1,2,3}.c from the GCC torture suite.
+
+- **`*func(args) = value` now assigns through dereferenced call return.**
+  The unary-`*` dereference handler now explicitly parses function calls
+  so trailing `=` stays in the outer expression. Closes pr60072.c.
+
+- **C23 `[[...]]` attribute skip fixed.**
+  The lexer now waits for a real `]]` pair instead of decrementing on
+  each single `]`, and the parser skips any `[[...]]` before
+  declarations. Unlocks 4 GCC torture tests.
+
+- **GNU case range extension: `case LOW ... HIGH:`.**
+  Switch cases now support range matching. The compiler emits two
+  unsigned comparisons for the range check.
+
+- GCC parity: 1536 → 1543/1685 (91.2% → 91.6%). Integration tests:
+  418 → 421, all passing.
+
 ## [v0.20.0] - 2026-05-21
 
 GCC parity crosses 91%: 1505 → 1536/1685 (89.3% → 91.2%). C++ std surface now namespace-owned, std::vector support, __builtin_*_overflow_p, inline asm, triple dereference, volatile token-paste.

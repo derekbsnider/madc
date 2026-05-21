@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.20.0, GCC parity 1536/1685 = 91.2%).
+Test results as of May 21, 2026 (v0.20.0+, GCC parity 1543/1685 = 91.6%, 421 integration tests).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,7 +11,7 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 418 JIT pass / 0 fail
+## Current Batch Status — 421 JIT pass / 0 fail
 
 Latest results (2026-05-21):
 
