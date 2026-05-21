@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `bitfld-3.c` now passes.**
+  Wide unsigned bitfield arithmetic now reduces results to the effective
+  bitfield precision that GCC uses for operations on 33/40/41-bit fields,
+  so mixed-width multiply/add/subtract expressions wrap at the wider
+  participating bitfield width instead of leaking full `uint64_t`
+  results. Added `tests/testbitfieldwidearith.mad` as the local
+  regression. Full validation is green at `356/356` JIT and `356/356`
+  EXE, and focused GCC reruns bring the conservative parity floor to at
+  least `1432/1685` (85.0%).
+
 - **GCC torture `bitfld-1.c` now passes.**
   Bitfield expressions now follow C's integer-promotion rules before
   arithmetic: narrow unsigned bitfields like `unsigned int u:7` promote

@@ -867,6 +867,8 @@ static x86::Gp emit_bitfield_store_reg(Program &pgm, x86::Mem storage,
 static x86::Gp emit_bitfield_store_operand(Program &pgm, x86::Mem storage,
     const DataDefSTRUCT::BitFieldInfo &bf, Operand &value, DataDef *value_type,
     DataDef *field_type, const char *hint);
+static uint64_t bitfield_mask(size_t width);
+static void emit_and_u64(Program &pgm, x86::Gp &gp, uint64_t mask, const char *hint);
 
 static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right);
 static DataDef *complex_component_type(DataDef *dd);
@@ -903,11 +905,128 @@ static DataDef *promoted_bitfield_numeric_type(TokenBase *token)
 	return NULL;
 
     size_t int_bits = ddINT.size * 8;
-    if ( !bf->is_unsigned || bf->bit_width < int_bits )
+    if ( bf->bit_width < int_bits )
 	return &ddINT;
     if ( bf->bit_width == int_bits )
-	return &ddUINT32;
+	return bf->is_unsigned ? (DataDef *)&ddUINT32 : (DataDef *)&ddINT;
     return NULL;
+}
+
+struct IntegerPrecision {
+    bool valid;
+    bool bitfield_derived;
+    size_t bits;
+    bool is_unsigned;
+
+    IntegerPrecision()
+	: valid(false), bitfield_derived(false), bits(0), is_unsigned(false) {}
+    IntegerPrecision(size_t b, bool u, bool derived)
+	: valid(true), bitfield_derived(derived), bits(b), is_unsigned(u) {}
+};
+
+static IntegerPrecision integer_precision_for_token(TokenBase *token);
+
+static IntegerPrecision promoted_bitfield_precision(const DataDefSTRUCT::BitFieldInfo &bf)
+{
+    if ( bf.bit_width == 0 )
+	return IntegerPrecision();
+
+    size_t int_bits = ddINT.size * 8;
+    if ( bf.bit_width < int_bits )
+	return IntegerPrecision(int_bits, false, true);
+    if ( bf.bit_width == int_bits )
+	return IntegerPrecision(int_bits, bf.is_unsigned, true);
+    return IntegerPrecision(bf.bit_width, bf.is_unsigned, true);
+}
+
+static IntegerPrecision binary_integer_precision(TokenBase *left, TokenBase *right,
+						 DataDef *result_type)
+{
+    IntegerPrecision lp = integer_precision_for_token(left);
+    IntegerPrecision rp = integer_precision_for_token(right);
+    if ( !lp.valid && !rp.valid )
+	return IntegerPrecision();
+
+    size_t result_bits = (result_type && result_type->is_integer())
+	? result_type->size * 8 : 64;
+    size_t bits = 0;
+    if ( lp.valid && lp.bits > bits )
+	bits = lp.bits;
+    if ( rp.valid && rp.bits > bits )
+	bits = rp.bits;
+    if ( bits == 0 )
+	bits = result_bits;
+    if ( bits > result_bits )
+	bits = result_bits;
+
+    bool is_unsigned = result_type ? result_type->is_unsigned()
+	: ((lp.valid && lp.is_unsigned) || (rp.valid && rp.is_unsigned));
+    return IntegerPrecision(bits, is_unsigned,
+	lp.bitfield_derived || rp.bitfield_derived);
+}
+
+static IntegerPrecision integer_precision_for_token(TokenBase *token)
+{
+    if ( !token )
+	return IntegerPrecision();
+
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
+    {
+	if ( const DataDefSTRUCT::BitFieldInfo *bf = tm->bitfield_info() )
+	    return promoted_bitfield_precision(*bf);
+    }
+
+    if ( is_arithmetic_result_operator(token) )
+    {
+	TokenOperator *op = dynamic_cast<TokenOperator *>(token);
+	if ( op && (op->left || op->right) )
+	    return binary_integer_precision(op->left, op->right,
+		infer_numeric_type(op->left, op->right));
+    }
+
+    DataDef *dd = token->datadef();
+    if ( dd && dd->is_integer() )
+	return IntegerPrecision(dd->size * 8, dd->is_unsigned(), false);
+    return IntegerPrecision();
+}
+
+static void apply_integer_precision(Program &pgm, Operand &value,
+				    const IntegerPrecision &precision,
+				    DataDef *result_type, const char *hint)
+{
+    if ( !precision.valid || !precision.bitfield_derived
+      || !result_type || !result_type->is_integer() )
+	return;
+    size_t result_bits = result_type->size * 8;
+    if ( precision.bits >= result_bits || precision.bits >= 64 )
+	return;
+    if ( !value.isReg() || !value.as<BaseReg>().isGroup(RegGroup::kGp) )
+	throw "apply_integer_precision() expected a Gp result";
+
+    x86::Gp gp = value.as<x86::Gp>();
+    if ( precision.is_unsigned )
+	emit_and_u64(pgm, gp, bitfield_mask(precision.bits), hint);
+    else
+    {
+	uint32_t shift = (uint32_t)(64 - precision.bits);
+	pgm.cc.shl(gp, imm(shift));
+	pgm.cc.sar(gp, imm(shift));
+    }
+}
+
+static void apply_binary_integer_precision(Program &pgm, Operand &value,
+					   TokenBase *left, TokenBase *right,
+					   DataDef *result_type,
+					   bool left_precision_only,
+					   const char *hint)
+{
+    IntegerPrecision precision = left_precision_only
+	? integer_precision_for_token(left)
+	: binary_integer_precision(left, right, result_type);
+    if ( left_precision_only && precision.valid )
+	precision.is_unsigned = result_type ? result_type->is_unsigned()
+	    : precision.is_unsigned;
+    apply_integer_precision(pgm, value, precision, result_type, hint);
 }
 
 static DataDef *token_numeric_type(TokenBase *token)
@@ -1286,6 +1405,8 @@ static Operand &emit_plain_binop3(Program &pgm, TokenBase *left, TokenBase *righ
     Operand &lval = compile_token_normalized(pgm, left, result_type, &left_reg, left_norm);
     Operand &rval = compile_token_normalized(pgm, right, result_type, nullptr, right_norm);
     (pgm.*op)(lval, rval, result_type, nullptr);
+    apply_binary_integer_precision(pgm, lval, left, right, result_type,
+	false, name_hint);
     IRBuilder ir(pgm.cc);
     IRValue result = ir.load(IRValue::reg(lval, result_type));
     storage = result.op;
@@ -1304,6 +1425,7 @@ static Operand &emit_plain_binop3(Program &pgm, TokenBase *left, TokenBase *righ
 static Operand &emit_plain_bitop2(Program &pgm, TokenBase *left, TokenBase *right,
 				  DataDef *result_type, SafeBitOp2 op,
 				  bool right_must_be_gp,
+				  bool left_precision_only,
 				  regdefp_t &regdp, Operand &storage, const char *name_hint)
 {
     Operand *caller_dest = regdp.first;
@@ -1315,6 +1437,8 @@ static Operand &emit_plain_bitop2(Program &pgm, TokenBase *left, TokenBase *righ
 	? compile_token_gp_normalized(pgm, right, result_type, right_norm)
 	: compile_token_normalized(pgm, right, result_type, nullptr, right_norm);
     (pgm.*op)(lval, rval, result_type);
+    apply_binary_integer_precision(pgm, lval, left, right, result_type,
+	left_precision_only, name_hint);
     IRBuilder ir(pgm.cc);
     IRValue result = ir.load(IRValue::reg(lval, result_type));
     storage = result.op;
@@ -1345,6 +1469,8 @@ static Operand &emit_plain_divmod(Program &pgm, TokenBase *left, TokenBase *righ
 	pgm.safexor(remainder, remainder);
     pgm.safediv(remainder, dividend, divisor, result_type, result_type, result_type);
     Operand &result = return_remainder ? remainder : dividend;
+    apply_binary_integer_precision(pgm, result, left, right, result_type,
+	false, name_hint);
     IRBuilder ir(pgm.cc);
     IRValue normalized = ir.load(IRValue::reg(result, result_type));
     storage = normalized.op;
@@ -9876,7 +10002,9 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshl,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_shl_l");
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/true,
+				 regdp, _operand, "_shl_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBSL::compile() left->compile() cleared datatype!"; }
@@ -10004,7 +10132,9 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshr,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_shr_l");
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/true,
+				 regdp, _operand, "_shr_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBSR::compile() left->compile() cleared datatype!"; }
@@ -10026,7 +10156,9 @@ Operand &TokenBor::compile(Program &pgm, regdefp_t &regdp)
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeor,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_or_l");
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/false,
+				 regdp, _operand, "_or_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBor::compile() left->compile() cleared datatype!"; }
@@ -10048,7 +10180,9 @@ Operand &TokenXor::compile(Program &pgm, regdefp_t &regdp)
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safexor,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_xor_l");
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/false,
+				 regdp, _operand, "_xor_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenXor::compile() left->compile() cleared datatype!"; }
@@ -10070,7 +10204,9 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
 	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeand,
-				 /*right_must_be_gp=*/true, regdp, _operand, "_and_l");
+				 /*right_must_be_gp=*/true,
+				 /*left_precision_only=*/false,
+				 regdp, _operand, "_and_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBand::compile() left->compile() cleared datatype!"; }
