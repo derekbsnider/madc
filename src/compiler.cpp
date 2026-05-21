@@ -9560,7 +9560,8 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
     if ( !regdp.second )
     {
 	DBG(pgm.cc.comment("optimize() regdp.second = &ddINT"));
-	regdp.second = &ddINT;
+	DataDef *folded_type = datadef();
+	regdp.second = (folded_type && folded_type->is_integer()) ? folded_type : &ddINT;
     }
     if ( !regdp.first )
     {
@@ -11284,6 +11285,7 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	x86::Gp out = preserve_simd_bits
 	    ? pgm.cc.newGpq("cast_r2i")
 	    : cast_type->newreg(pgm.cc, "cast_r2i").as<x86::Gp>();
+	bool unsigned_u32 = cast_type->is_unsigned() && cast_type->size == 4;
 	if ( src_type->is_simd() )
 	{
 	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
@@ -11298,6 +11300,45 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	else
 	if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
 	{
+	    if ( unsigned_u32 )
+	    {
+		Label direct_convert = pgm.cc.newLabel();
+		Label convert_done = pgm.cc.newLabel();
+		if ( src_type->size == sizeof(float) )
+		{
+		    x86::Mem limit = pgm.cc.newFloatConst(ConstPoolScope::kLocal, 2147483648.0f);
+		    limit.setSize(sizeof(float));
+		    pgm.cc.ucomiss(src_op.as<x86::Xmm>(), limit);
+		    pgm.cc.jp(direct_convert);
+		    pgm.cc.jb(direct_convert);
+		    x86::Xmm adj = pgm.cc.newXmmSs("cast_r2u32_adj");
+		    pgm.cc.movss(adj, src_op.as<x86::Xmm>());
+		    pgm.cc.subss(adj, limit);
+		    pgm.cc.cvttss2si(out.r32(), adj);
+		}
+		else
+		{
+		    x86::Mem limit = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, 2147483648.0);
+		    limit.setSize(sizeof(double));
+		    pgm.cc.ucomisd(src_op.as<x86::Xmm>(), limit);
+		    pgm.cc.jp(direct_convert);
+		    pgm.cc.jb(direct_convert);
+		    x86::Xmm adj = pgm.cc.newXmmSd("cast_r2u32_adj");
+		    pgm.cc.movsd(adj, src_op.as<x86::Xmm>());
+		    pgm.cc.subsd(adj, limit);
+		    pgm.cc.cvttsd2si(out.r32(), adj);
+		}
+		pgm.cc.add(out.r32(), imm(0x80000000u));
+		pgm.cc.jmp(convert_done);
+		pgm.cc.bind(direct_convert);
+		if ( src_type->size == sizeof(float) )
+		    pgm.cc.cvttss2si(out.r32(), src_op.as<x86::Xmm>());
+		else
+		    pgm.cc.cvttsd2si(out.r32(), src_op.as<x86::Xmm>());
+		pgm.cc.bind(convert_done);
+	    }
+	    else
+	    {
 	    bool clamp_positive_i32 = !cast_type->is_unsigned() && cast_type->size == 4;
 	    Label clamp_done = pgm.cc.newLabel();
 	    Label do_convert = pgm.cc.newLabel();
@@ -11327,9 +11368,54 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 		pgm.cc.cvttsd2si(out, src_op.as<x86::Xmm>());
 	    if ( clamp_positive_i32 )
 		pgm.cc.bind(clamp_done);
+	    }
 	}
 	else if ( src_op.isMem() )
 	{
+	    if ( unsigned_u32 )
+	    {
+		x86::Xmm src_tmp = newScalarXmm(pgm, src_type, "cast_r2u32_mem");
+		if ( src_type->size == sizeof(float) )
+		    pgm.cc.movss(src_tmp, src_op.as<x86::Mem>());
+		else
+		    pgm.cc.movsd(src_tmp, src_op.as<x86::Mem>());
+		Label direct_convert = pgm.cc.newLabel();
+		Label convert_done = pgm.cc.newLabel();
+		if ( src_type->size == sizeof(float) )
+		{
+		    x86::Mem limit = pgm.cc.newFloatConst(ConstPoolScope::kLocal, 2147483648.0f);
+		    limit.setSize(sizeof(float));
+		    pgm.cc.ucomiss(src_tmp, limit);
+		    pgm.cc.jp(direct_convert);
+		    pgm.cc.jb(direct_convert);
+		    x86::Xmm adj = pgm.cc.newXmmSs("cast_r2u32_adj");
+		    pgm.cc.movss(adj, src_tmp);
+		    pgm.cc.subss(adj, limit);
+		    pgm.cc.cvttss2si(out.r32(), adj);
+		}
+		else
+		{
+		    x86::Mem limit = pgm.cc.newDoubleConst(ConstPoolScope::kLocal, 2147483648.0);
+		    limit.setSize(sizeof(double));
+		    pgm.cc.ucomisd(src_tmp, limit);
+		    pgm.cc.jp(direct_convert);
+		    pgm.cc.jb(direct_convert);
+		    x86::Xmm adj = pgm.cc.newXmmSd("cast_r2u32_adj");
+		    pgm.cc.movsd(adj, src_tmp);
+		    pgm.cc.subsd(adj, limit);
+		    pgm.cc.cvttsd2si(out.r32(), adj);
+		}
+		pgm.cc.add(out.r32(), imm(0x80000000u));
+		pgm.cc.jmp(convert_done);
+		pgm.cc.bind(direct_convert);
+		if ( src_type->size == sizeof(float) )
+		    pgm.cc.cvttss2si(out.r32(), src_tmp);
+		else
+		    pgm.cc.cvttsd2si(out.r32(), src_tmp);
+		pgm.cc.bind(convert_done);
+	    }
+	    else
+	    {
 	    bool clamp_positive_i32 = !cast_type->is_unsigned() && cast_type->size == 4;
 	    Label clamp_done = pgm.cc.newLabel();
 	    Label do_convert = pgm.cc.newLabel();
@@ -11364,12 +11450,27 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 		pgm.cc.cvttsd2si(out, src_op.as<x86::Mem>());
 	    if ( clamp_positive_i32 )
 		pgm.cc.bind(clamp_done);
+	    }
 	}
 	else
 	{
 	    // Non-real operand (int masquerading as real) — just mov.
 	    pgm.cc.mov(out, src_op.isReg() ? src_op.as<x86::Gp>()
 					    : src_op.as<x86::Gp>());
+	}
+	if ( unsigned_u32 )
+	{
+	    regdp.second = cast_type;
+	    if ( regdp.first
+	      && !(regdp.first->isReg() && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec)) )
+	    {
+		Operand out32 = out.r32();
+		pgm.safemov(*regdp.first, out32, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    _operand = out.r32();
+	    regdp.first = &_operand;
+	    return _operand;
 	}
 	// Narrow-integer canonicalization (e.g. int32 → movsxd).
 	IRBuilder ir(pgm.cc);

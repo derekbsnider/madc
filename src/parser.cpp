@@ -1144,10 +1144,45 @@ static bool is_nullptr_identifier(const std::string &name)
     return name == "nullptr";
 }
 
+static DataDef *effective_pointer_type_for_member_access(Program &pgm, TokenBase *tb)
+{
+    if ( !tb )
+	return NULL;
+
+    DataDef *dd = tb->datadef();
+    if ( dd && dd->is_pointer() )
+	return dd;
+
+    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
+    {
+	if ( tv->var.is_fixed_array() && tv->var.type )
+	    return pgm.getPointerType(tv->var.type);
+    }
+
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(tb) )
+    {
+	if ( tm->is_fixed_array_member() && tm->var.type )
+	    return pgm.getPointerType(tm->var.type);
+    }
+
+    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(tb) )
+    {
+	if ( op->id() == TokenID::tkAdd || op->id() == TokenID::tkSub )
+	{
+	    DataDef *lptr = effective_pointer_type_for_member_access(pgm, op->left);
+	    if ( lptr )
+		return lptr;
+	    return effective_pointer_type_for_member_access(pgm, op->right);
+	}
+    }
+
+    return NULL;
+}
+
 static TokenBase *skip_expression_whitespace(Program &pgm)
 {
     while ( pgm.peekToken()
-	 && (pgm.peekToken()->type() == TokenType::ttSpace
+	&& (pgm.peekToken()->type() == TokenType::ttSpace
 	  || pgm.peekToken()->type() == TokenType::ttTab
 	  || pgm.peekToken()->type() == TokenType::ttEOL) )
 	pgm.nextToken();
@@ -5315,6 +5350,8 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    {
 		if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
 		    fixed_array_arrow = tv->var.is_fixed_array();
+		if ( !fixed_array_arrow )
+		    obj_type = effective_pointer_type_for_member_access(*this, result);
 		if ( !fixed_array_arrow && (!obj_type || !obj_type->is_pointer()) )
 		    Throw(mtb) << "expression before '->' must be a pointer" << flush;
 		if ( !fixed_array_arrow )
@@ -7424,9 +7461,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			else
 			    Throw(tb) << "expression before '->' must be a pointer to struct" << flush;
 		    }
-		    else if ( lhs->datadef() && lhs->datadef()->is_pointer() )
+		    else if ( effective_pointer_type_for_member_access(*this, lhs) )
 		    {
-			obj_type = lhs->datadef();
+			obj_type = effective_pointer_type_for_member_access(*this, lhs);
 			obj_var = new Variable("__arrow_expr", *obj_type, 1, NULL, false);
 			expr_backed_lhs = true;
 		    }

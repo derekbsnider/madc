@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **GCC torture `const-addr-expr-1.c` and `conversion.c` now pass.**
+  Parser-side `->` validation now accepts pointer-shaped expressions
+  produced by fixed-array decay and pointer arithmetic such as
+  `&((array + 1)->field)`, and constant-folded integer operators now
+  preserve their real unsigned result type instead of defaulting back
+  to signed `int`. Real-to-`unsigned int` casts also now use an
+  explicit unsigned-32 conversion path for values above `INT_MAX`,
+  which restores GCC-matching results for cases like `(unsigned)(double)~0U`.
+  Added `tests/testconstaddrexprarrow.mad` and extended
+  `tests/testuint32realcoerce.mad` as local regressions. Full
+  validation is green at `365/365` JIT and `365/365` EXE, and focused
+  GCC reruns bring parity to at least `1496/1685` (88.8%).
+
 - **GCC torture `builtin-prefetch-4.c`, `builtin-types-compatible-p.c`, and `compndlit-1.c` now pass.**
   GNU compound-literal designators now accept both `.field = value` and
   GNU `field: value` spellings, `__builtin_types_compatible_p(...)` now
