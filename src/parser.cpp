@@ -6135,8 +6135,8 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
       && next_parenthesized_type_is_compound_literal(*this) )
     {
 	TokenBase *compound = parseExpression(nextToken(), true, false, false);
-	if ( !dynamic_cast<TokenStructLit *>(compound) )
-	    Throw(ampersand) << "expected compound literal after '&'" << flush;
+	// Accept compound literal or any expression derived from one
+	// (e.g. subscript, cast wrapper, member access).
 	return compound;
     }
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
@@ -6586,6 +6586,29 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				cast_dd = getPointerType(cast_dd);
 			    // const/restrict are skipped — no JIT effect
 			}
+			// Array declarator in cast/compound literal: (int []){...}
+			// or (int [3]){...}. Consume [N] and record the element
+			// type so the compound literal path can build a synthetic
+			// struct with N elements of that type.
+			DataDef *array_elem_dd = NULL;
+			int64_t array_explicit_count = 0;
+			if ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
+			{
+			    array_elem_dd = cast_dd;
+			    nextToken(); // consume '['
+			    if ( peekToken() && peekToken()->id() != TokenID::tkClSqr )
+			    {
+				// explicit count: (int [3]){...}
+				TokenBase *cnt = nextToken();
+				if ( cnt->type() == TokenType::ttInteger )
+				    array_explicit_count = ((TokenInt *)cnt)->ival();
+			    }
+			    TokenBase *csq = nextToken();
+			    if ( !csq || csq->id() != TokenID::tkClSqr )
+				Throw(csq ? csq : tb) << "Expected ']' after array size in cast" << flush;
+			    // For plain casts (not compound literals), treat as pointer
+			    cast_dd = getPointerType(cast_dd);
+			}
 			// Function-pointer cast: `(RET (*)(PARAMS)) expr`. After the
 			// return type (plus any pointer stars) we may see `(*)` and
 			// then a parameter list. Reuse parseFnPtrParams() to build the
@@ -6617,6 +6640,44 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
 			{
 			    nextToken(); // consume )
+			    // Array compound literal: (int []){0,1,2}
+			    // Build a synthetic DataDefSTRUCT with N uniform
+			    // elements so existing struct-init code handles it.
+			    if ( array_elem_dd
+			      && peekToken() && peekToken()->id() == TokenID::tkOpBrc )
+			    {
+				int64_t n = array_explicit_count;
+				if ( n <= 0 )
+				{
+				    // Count top-level comma-separated items in {...}
+				    std::vector<TokenBase *> peek_buf;
+				    TokenBase *ob = nextToken();
+				    peek_buf.push_back(ob);
+				    n = 1;
+				    int depth = 1;
+				    while ( depth > 0 )
+				    {
+					TokenBase *t = nextToken();
+					if ( !t )
+					    break;
+					peek_buf.push_back(t);
+					if ( t->id() == TokenID::tkOpBrc )
+					    ++depth;
+					else if ( t->id() == TokenID::tkClBrc )
+					    --depth;
+					else if ( depth == 1 && t->id() == TokenID::tkComma )
+					    ++n;
+				    }
+				    for ( std::vector<TokenBase *>::reverse_iterator it = peek_buf.rbegin();
+					  it != peek_buf.rend(); ++it )
+					pushToken(*it);
+				}
+				DataDefSTRUCT *arr_sdd = new DataDefSTRUCT("__compound_array", 0);
+				for ( int64_t i = 0; i < n; i++ )
+				    arr_sdd->addMember("_" + std::to_string(i), *array_elem_dd, 1);
+				arr_sdd->finalize();
+				cast_dd = arr_sdd;
+			    }
 			    // C99 compound literal: (type){ init_list }
 			    // After (type), if '{' follows, parse as a temporary
 			    // struct/array initialization rather than a cast.
@@ -6719,7 +6780,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					};
 					TokenStructLit *slit = read_compound_struct_lit(dynamic_cast<DataDefSTRUCT *>(cast_dd));
 					slit->setDataType(cast_dd);
-					exStack.push(slit);
+					TokenBase *lit_expr = slit;
+					// Array compound literals decay to pointer.
+					// Wrap in a cast so the expression type is
+					// ptr-to-element for subscript/assign purposes.
+					if ( array_elem_dd )
+					{
+					    DataDef *ptr_dd = getPointerType(array_elem_dd);
+					    lit_expr = new TokenCast(ptr_dd, slit);
+					}
+					exStack.push(lit_expr);
 					break;
 				    }
 			    TokenBase *cast_expr_tb = nextToken();
