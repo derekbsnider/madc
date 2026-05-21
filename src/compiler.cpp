@@ -132,6 +132,7 @@ static size_t internal_vararg_static_slot_size(DataDef *type);
 static void load_idx_to_gpq(Program &pgm, asmjit::x86::Gp &dst, asmjit::Operand &src);
 static void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem, DataDef *type);
 static void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm, DataDef *type);
+static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right);
 static const char *token_constant_cstring(TokenBase *token);
 static bool try_eval_const_i64(TokenBase *tb, int64_t &out);
 static int64_t estimate_object_size(TokenBase *expr, int mode);
@@ -473,6 +474,44 @@ static Operand &redirect_builtin_call(Program &pgm, const std::string &target_na
     return *regdp.first;
 }
 
+static Operand &redirect_overflow_predicate_call(Program &pgm, const std::string &target_name,
+						 const std::vector<TokenBase *> &args,
+						 regdefp_t &regdp, TokenCallFunc *site,
+						 Operand &site_operand)
+{
+    std::string lookup = target_name;
+    Variable *target = pgm.findVariable(lookup);
+    if ( (!target || !target->type || !target->type->is_function())
+      && pgm.is_dynamic_symbol_fallback_enabled()
+      && pgm.is_dynamic_symbol_allowed(target_name) )
+    {
+	void *sym = dlsym(RTLD_DEFAULT, target_name.c_str());
+	if ( sym )
+	{
+	    target = pgm.addFunction(target_name,
+		datatype_vec_t{DataType::dtINT32, DataType::dtUINT64, DataType::dtUINT64, DataType::dtUINT64},
+		(fVOIDFUNC)sym);
+	    if ( !target )
+		target = pgm.findVariable(lookup);
+	}
+    }
+    if ( !target || !target->type || !target->type->is_function() )
+	pgm.Throw(site) << "missing overflow helper for " << site->var.name << flush;
+    TokenCallFunc redirected(*target);
+    redirected.file = site->file;
+    redirected.line = site->line;
+    redirected.column = site->column;
+    redirected.parameters = args;
+    Operand &redirected_result = redirected.compile(pgm, regdp);
+    if ( regdp.first == &redirected_result || !regdp.first )
+    {
+	site_operand = redirected_result;
+	regdp.first = &site_operand;
+	return site_operand;
+    }
+    return *regdp.first;
+}
+
 static std::string runtime_symbol_name(const Variable &var)
 {
     return var.storage_alias_name.empty() ? var.name : var.storage_alias_name;
@@ -504,6 +543,44 @@ static const char *simple_libc_builtin_redirect_target(const std::string &name)
 	if ( name == it->builtin )
 	    return it->target;
     return NULL;
+}
+
+static bool is_overflow_predicate_helper_name(const std::string &name)
+{
+    return name == "__madc_add_overflow_p"
+	|| name == "__madc_sub_overflow_p"
+	|| name == "__madc_mul_overflow_p";
+}
+
+static std::string overflow_predicate_helper_suffix(DataDef *indicator_type)
+{
+    if ( !indicator_type || !indicator_type->is_integer() )
+	return "s64";
+    size_t size = indicator_type->size;
+    if ( size <= 2 )
+	return indicator_type->is_unsigned() ? "u16" : "s16";
+    if ( size <= 4 )
+	return indicator_type->is_unsigned() ? "u32" : "s32";
+    return indicator_type->is_unsigned() ? "u64" : "s64";
+}
+
+static DataDef *overflow_predicate_indicator_type(const std::vector<TokenBase *> &parameters)
+{
+    if ( parameters.size() < 3 )
+	return NULL;
+    DataDef *indicator_type = parameters[2] ? parameters[2]->datadef() : NULL;
+    if ( dynamic_cast<TokenInt *>(parameters[2]) != NULL && indicator_type == &ddINT )
+	return infer_numeric_type(parameters[0], parameters[1]);
+    return indicator_type;
+}
+
+static std::string typed_overflow_predicate_symbol_name(const Variable &var,
+							const std::vector<TokenBase *> &parameters)
+{
+    if ( !is_overflow_predicate_helper_name(var.name) || parameters.size() < 3 )
+	return runtime_symbol_name(var);
+    DataDef *indicator_type = overflow_predicate_indicator_type(parameters);
+    return var.name + "_" + overflow_predicate_helper_suffix(indicator_type);
 }
 
 static TypeId simd_type_id(DataDefSIMD *vdd)
@@ -4496,6 +4573,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     if ( const char *target_name = simple_libc_builtin_redirect_target(var.name) )
 	return redirect_builtin_call(pgm, target_name, parameters, regdp, this, _operand);
+    if ( is_overflow_predicate_helper_name(var.name) )
+    {
+	std::string target_name = typed_overflow_predicate_symbol_name(var, parameters);
+	return redirect_overflow_predicate_call(pgm, target_name, parameters, regdp, this, _operand);
+    }
 
     if ( argc() == 2 && var.name == "__builtin_object_size" )
     {
@@ -5024,7 +5106,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	// any libc / system symbol just by extern-declaring it.
 	if ( !pgm.is_dynamic_symbol_fallback_enabled() )
 	    pgm.Throw(this) << "dynamic symbol fallback is disabled by registration policy" << flush;
-	std::string symbol_name = runtime_symbol_name(var);
+	std::string symbol_name = typed_overflow_predicate_symbol_name(var, parameters);
 	if ( !pgm.is_dynamic_symbol_allowed(symbol_name) )
 	    pgm.Throw(this) << "dynamic symbol '" << var.name
 			    << "' is not allowed by registration policy" << flush;
@@ -5376,6 +5458,17 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     // when pointer args were passed for string params, redirect to C library
     // version via dlsym (the built-in wrapper expects std::string*)
     void *call_target = method->x86code;
+    if ( !fnd && is_overflow_predicate_helper_name(var.name) )
+    {
+	std::string symbol_name = typed_overflow_predicate_symbol_name(var, parameters);
+	void *sym = dlsym(RTLD_DEFAULT, symbol_name.c_str());
+	if ( sym )
+	{
+	    call_target = sym;
+	    pgm.external_symbol_map[reinterpret_cast<uintptr_t>(sym)] =
+		external_symbol_export_name(symbol_name, sym);
+	}
+    }
     bool use_c_version = false;
     for ( size_t i = 0; i < argc(); ++i )
     {
@@ -5389,7 +5482,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     }
     if ( use_c_version && !fnd )
     {
-	std::string symbol_name = runtime_symbol_name(var);
+	std::string symbol_name = typed_overflow_predicate_symbol_name(var, parameters);
 	if ( !pgm.is_dynamic_symbol_allowed(symbol_name) )
 	    pgm.Throw(this) << "dynamic symbol '" << var.name
 			    << "' is not allowed by registration policy" << flush;

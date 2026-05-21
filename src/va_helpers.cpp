@@ -326,6 +326,42 @@ extern "C" int __madc_parityll(unsigned long long x)
 
 // __builtin_*_overflow_p: predicate-only versions (no result pointer).
 // The third argument is a type indicator — its value is ignored.
+template <typename T, typename Op>
+static int madc_overflow_p_unsigned(unsigned long long a, unsigned long long b, Op op)
+{
+    unsigned __int128 lhs = static_cast<T>(a);
+    unsigned __int128 rhs = static_cast<T>(b);
+    unsigned __int128 r = op(lhs, rhs);
+    return r != static_cast<T>(r);
+}
+
+template <typename T, typename Op>
+static int madc_overflow_p_signed(unsigned long long a, unsigned long long b, Op op)
+{
+    __int128 lhs = static_cast<T>(a);
+    __int128 rhs = static_cast<T>(b);
+    __int128 r = op(lhs, rhs);
+    return r != static_cast<T>(r);
+}
+
+#define MADC_DEFINE_OVERFLOW_P_HELPERS(OPNAME, EXPR) \
+extern "C" int __madc_##OPNAME##_overflow_p_s16(unsigned long long a, unsigned long long b, unsigned long long) \
+{ return madc_overflow_p_signed<short>(a, b, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_p_u16(unsigned long long a, unsigned long long b, unsigned long long) \
+{ return madc_overflow_p_unsigned<unsigned short>(a, b, []( unsigned __int128 x, unsigned __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_p_s32(unsigned long long a, unsigned long long b, unsigned long long) \
+{ return madc_overflow_p_signed<int>(a, b, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_p_u32(unsigned long long a, unsigned long long b, unsigned long long) \
+{ return madc_overflow_p_unsigned<unsigned int>(a, b, []( unsigned __int128 x, unsigned __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_p_s64(unsigned long long a, unsigned long long b, unsigned long long) \
+{ return madc_overflow_p_signed<long long>(a, b, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_p_u64(unsigned long long a, unsigned long long b, unsigned long long) \
+{ return madc_overflow_p_unsigned<unsigned long long>(a, b, []( unsigned __int128 x, unsigned __int128 y ) { return (EXPR); }); }
+
+MADC_DEFINE_OVERFLOW_P_HELPERS(add, x + y)
+MADC_DEFINE_OVERFLOW_P_HELPERS(sub, x - y)
+MADC_DEFINE_OVERFLOW_P_HELPERS(mul, x * y)
+
 extern "C" int __madc_add_overflow_p(long a, long b, long /*type_zero*/)
 {
     __int128 r = (__int128)a + (__int128)b;
@@ -341,6 +377,8 @@ extern "C" int __madc_mul_overflow_p(long a, long b, long /*type_zero*/)
     __int128 r = (__int128)a * (__int128)b;
     return r != (long)r;
 }
+
+#undef MADC_DEFINE_OVERFLOW_P_HELPERS
 
 // fd_set bit-array helpers. Called by the FD_ZERO/FD_SET/FD_CLR/FD_ISSET
 // macros in the embedded <sys/select.h>. The "set" pointer is the address
