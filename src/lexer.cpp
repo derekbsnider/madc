@@ -735,9 +735,8 @@ void Program::_tokenizer_init()
     // __builtin_prefetch is a no-op hint
     {
 	MacroDef m;
-	m.params = {"__addr"};
-	m.body = "((void)0)";
-	m.variadic = true;
+	m.params = {"__addr", "__rw", "__loc"};
+	m.body = "((void)(__addr))";
 	macro_map["__builtin_prefetch"] = m;
     }
     // __builtin_constant_p(expr) — always return 0 (not a constant)
@@ -800,14 +799,6 @@ void Program::_tokenizer_init()
 	m.params = {"__type", "__member"};
 	m.body = "((long)&((__type *)0)->__member)";
 	macro_map["__builtin_offsetof"] = m;
-    }
-
-    // __builtin_types_compatible_p(t1, t2) — always return 0 for now
-    {
-	MacroDef m;
-	m.params = {"__t1", "__t2"};
-	m.body = "0";
-	macro_map["__builtin_types_compatible_p"] = m;
     }
 
     // __builtin_classify_type(x) — return 0 (void type) as placeholder

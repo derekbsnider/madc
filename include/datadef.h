@@ -905,6 +905,15 @@ public:
     bool has_runtime_size() const { return count_expr != NULL; }
 };
 
+class DataDefENUM : public DataDef
+{
+public:
+    std::string enum_name;
+
+    DataDefENUM(const std::string &name)
+	: DataDef(name, sizeof(int), DataType::dtINT), enum_name(name) {}
+};
+
 class DataDefCOMPLEX : public DataDefSTRUCT
 {
 public:

@@ -1,0 +1,16 @@
+void puti(int v);
+
+struct S
+{
+	int a:3;
+	unsigned b:1, c:28;
+};
+
+struct S x = {1, 1, 1};
+
+int main(void)
+{
+	x = (struct S) {b:0, a:0, c:({ struct S o = x; o.a == 1 ? 10 : 20;})};
+	puti(x.c);
+	return 0;
+}

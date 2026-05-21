@@ -11442,6 +11442,12 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	// pattern: test sign, if negative shift right by 1, OR in the
 	// low bit, convert, then double the result.
 	bool src_unsigned = actual_src && actual_src->is_unsigned();
+	if ( actual_src && !src_unsigned && actual_src->size == 4 )
+	{
+	    x86::Gp signed_gp = pgm.cc.newGpq("cast_i32_signext");
+	    pgm.cc.movsxd(signed_gp, gp.r32());
+	    gp = signed_gp;
+	}
 	if ( src_unsigned && actual_src->size == 8 )
 	{
 	    Label lbl_positive = pgm.cc.newLabel();

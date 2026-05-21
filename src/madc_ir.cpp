@@ -127,6 +127,74 @@ static IRValue canonicalize_narrow_integer_reg(x86::Compiler &cc, const IRValue 
     return IRValue::reg(out, type);
 }
 
+static IRValue coerce_unsigned_int_to_real(x86::Compiler &cc, const IRValue &src, DataDef *to)
+{
+    if ( !src.valid() || !src.isReg() || !src.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	throw "coerce_unsigned_int_to_real() expects Gp register source";
+    if ( !to || !to->is_real() )
+	throw "coerce_unsigned_int_to_real() expects real destination";
+
+    x86::Gp gp = src.op.as<x86::Gp>();
+    x86::Xmm out_xmm = (to->size == sizeof(float))
+	? cc.newXmmSs("ir_coerce_u2r_ss")
+	: cc.newXmmSd("ir_coerce_u2r_sd");
+    IRValue out = IRValue::reg(out_xmm, to);
+
+    if ( src.type && src.type->size == 8 )
+    {
+	Label lbl_positive = cc.newLabel();
+	Label lbl_done = cc.newLabel();
+	cc.test(gp.r64(), gp.r64());
+	cc.jns(lbl_positive);
+
+	x86::Gp tmp = cc.newGpq("ir_u64_halved");
+	cc.mov(tmp, gp.r64());
+	x86::Gp low_bit = cc.newGpq("ir_u64_low");
+	cc.mov(low_bit, gp.r64());
+	cc.and_(low_bit, imm(1));
+	cc.shr(tmp, imm(1));
+	cc.or_(tmp, low_bit);
+	if ( to->size == sizeof(float) )
+	{
+	    cc.cvtsi2ss(out.op.as<x86::Xmm>(), tmp.r64());
+	    cc.addss(out.op.as<x86::Xmm>(), out.op.as<x86::Xmm>());
+	}
+	else
+	{
+	    cc.cvtsi2sd(out.op.as<x86::Xmm>(), tmp.r64());
+	    cc.addsd(out.op.as<x86::Xmm>(), out.op.as<x86::Xmm>());
+	}
+	cc.jmp(lbl_done);
+	cc.bind(lbl_positive);
+	if ( to->size == sizeof(float) )
+	    cc.cvtsi2ss(out.op.as<x86::Xmm>(), gp.r64());
+	else
+	    cc.cvtsi2sd(out.op.as<x86::Xmm>(), gp.r64());
+	cc.bind(lbl_done);
+	return out;
+    }
+
+    // Zero-extend 32-bit unsigned sources into a 64-bit register before
+    // conversion. cvtsi2s{sd,ss} on a Gpd interprets the input as signed.
+    if ( src.type && src.type->size == 4 )
+    {
+	x86::Gp wide = cc.newGpq("ir_u32_wide");
+	cc.mov(wide.r32(), gp.r32());
+	gp = wide;
+	if ( to->size == sizeof(float) )
+	    cc.cvtsi2ss(out.op.as<x86::Xmm>(), gp.r64());
+	else
+	    cc.cvtsi2sd(out.op.as<x86::Xmm>(), gp.r64());
+	return out;
+    }
+
+    if ( to->size == sizeof(float) )
+	cc.cvtsi2ss(out.op.as<x86::Xmm>(), gp.r64());
+    else
+	cc.cvtsi2sd(out.op.as<x86::Xmm>(), gp.r64());
+    return out;
+}
+
 /////////////////////////////////////////////////////////////////////////////
 // load — normalize to Reg shape                                           //
 /////////////////////////////////////////////////////////////////////////////
@@ -437,6 +505,8 @@ IRValue IRBuilder::coerce(const IRValue &src, DataDef *to)
     if ( src_intish && to->is_real() )
     {
 	IRValue r = load(src);
+	if ( src.type->is_unsigned() )
+	    return coerce_unsigned_int_to_real(cc_, r, to);
 	IRValue out = newReg(to, "ir_coerce_i2r");
 	if ( to->size == sizeof(float) )
 	    cc_.cvtsi2ss(out.op.as<x86::Xmm>(), r.op.as<x86::Gp>());

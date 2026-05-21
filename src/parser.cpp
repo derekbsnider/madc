@@ -1144,6 +1144,16 @@ static bool is_nullptr_identifier(const std::string &name)
     return name == "nullptr";
 }
 
+static TokenBase *skip_expression_whitespace(Program &pgm)
+{
+    while ( pgm.peekToken()
+	 && (pgm.peekToken()->type() == TokenType::ttSpace
+	  || pgm.peekToken()->type() == TokenType::ttTab
+	  || pgm.peekToken()->type() == TokenType::ttEOL) )
+	pgm.nextToken();
+    return pgm.peekToken();
+}
+
 static bool is_realpart_identifier(const std::string &name)
 {
     return name == "__real" || name == "__real__";
@@ -1205,6 +1215,224 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 static TokenBase *try_parse_dynamic_type_query(Program &pgm, TokenBase *op_tb,
 					       const std::string &op_name);
 static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb);
+
+static std::string canonical_builtin_simple_type_name(DataDef *dd)
+{
+    if ( !dd )
+	return "";
+    if ( dd == &ddDOUBLE )
+	return "double";
+    if ( DataDefENUM *enum_dd = dynamic_cast<DataDefENUM *>(dd) )
+	return "enum:" + enum_dd->enum_name;
+    if ( DataDefCOMPLEX *complex_dd = dynamic_cast<DataDefCOMPLEX *>(dd) )
+    {
+	std::string elem = canonical_builtin_simple_type_name(complex_dd->element_type);
+	return elem.empty() ? "" : "complex(" + elem + ")";
+    }
+    if ( DataDefPTR *ptr_dd = dynamic_cast<DataDefPTR *>(dd) )
+    {
+	std::string base = canonical_builtin_simple_type_name(ptr_dd->base_type);
+	return base.empty() ? "" : "ptr(" + base + ")";
+    }
+    if ( DataDefCArray *array_dd = dynamic_cast<DataDefCArray *>(dd) )
+    {
+	std::string elem = canonical_builtin_simple_type_name(array_dd->element_type);
+	return elem.empty() ? "" : "array(" + elem + ")";
+    }
+    if ( dd->is_struct() )
+	return "struct:" + dd->name;
+
+    switch ( dd->rawtype() )
+    {
+	case DataType::dtVOID: return "void";
+	case DataType::dtBOOL: return "bool";
+	case DataType::dtUINT8: return "unsigned char";
+	case DataType::dtINT8: return "char";
+	case DataType::dtUINT16: return "unsigned short";
+	case DataType::dtINT16: return "short";
+	case DataType::dtUINT24: return "unsigned int24";
+	case DataType::dtINT24: return "int24";
+	case DataType::dtUINT32: return "unsigned int";
+	case DataType::dtINT32: return "int";
+	case DataType::dtUINT64: return "unsigned long";
+	case DataType::dtINT64: return "long";
+	case DataType::dtFLOAT: return "float";
+	case DataType::dtDOUBLE: return "double";
+	case DataType::dtLDOUBLE: return "long double";
+	default: break;
+    }
+    return dd->name;
+}
+
+static void strip_top_level_type_qualifiers(std::string &sig)
+{
+    static const char *prefixes[] = {"const ", "restrict "};
+    bool changed = true;
+    while ( changed )
+    {
+	changed = false;
+	for ( size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); ++i )
+	{
+	    const char *prefix = prefixes[i];
+	    size_t len = strlen(prefix);
+	    if ( sig.compare(0, len, prefix) == 0 )
+	    {
+		sig.erase(0, len);
+		changed = true;
+	    }
+	}
+    }
+}
+
+static bool parse_builtin_types_compatible_operand(Program &pgm, TokenBase *type_tb,
+						   std::string &sig)
+{
+    sig.clear();
+    if ( !type_tb )
+	return false;
+
+    std::string leading_qualifiers;
+    while ( is_type_qualifier_token(type_tb) )
+    {
+	if ( !leading_qualifiers.empty() )
+	    leading_qualifiers += ' ';
+	leading_qualifiers += ((TokenKeyword *)type_tb)->str;
+	type_tb = pgm.nextToken();
+	if ( !type_tb )
+	    return false;
+    }
+
+    if ( type_tb->type() == TokenType::ttDataType )
+    {
+	TokenDataType *tdt = (TokenDataType *)type_tb;
+	if ( tdt->str == "long double" )
+	    sig = "long double";
+	else
+	    sig = canonical_builtin_simple_type_name(&tdt->definition);
+    }
+    else if ( type_tb->type() == TokenType::ttIdentifier )
+    {
+	std::string tname = ((TokenIdent *)type_tb)->str;
+	if ( is_typeof_identifier(tname) )
+	{
+	    if ( !skip_expression_whitespace(pgm) || pgm.peekToken()->id() != TokenID::tkOpBrk )
+		return false;
+	    pgm.nextToken();
+	    TokenBase *inner_tb = pgm.nextToken();
+	    if ( !inner_tb )
+		return false;
+	    DataDef *inner_dd = NULL;
+	    if ( inner_tb->type() == TokenType::ttIdentifier )
+	    {
+		std::string inner_name = ((TokenIdent *)inner_tb)->str;
+		Variable *inner_var = pgm.findVariable(inner_name);
+		if ( inner_var )
+		    inner_dd = inner_var->type;
+		else
+		    inner_dd = resolve_named_datadef(pgm, inner_name);
+	    }
+	    else if ( inner_tb->type() == TokenType::ttDataType )
+		inner_dd = &((TokenDataType *)inner_tb)->definition;
+	    else if ( inner_tb->type() == TokenType::ttKeyword
+		   && (inner_tb->id() == TokenID::tkSTRUCT || inner_tb->id() == TokenID::tkUNION) )
+	    {
+		TokenBase *tag_tb = pgm.nextToken();
+		if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
+		    return false;
+		inner_dd = resolve_named_datadef(pgm, contextual_identifier_name(tag_tb));
+	    }
+	    if ( !inner_dd )
+	    {
+		TokenBase *expr = pgm.parseExpression(inner_tb, true, false, true, 1);
+		inner_dd = expr ? expr->datadef() : NULL;
+	    }
+	    if ( !inner_dd )
+		return false;
+	    if ( skip_expression_whitespace(pgm) && pgm.peekToken()->id() == TokenID::tkClBrk )
+		pgm.nextToken();
+	    else if ( (!pgm.curToken() || pgm.curToken()->id() != TokenID::tkClBrk)
+	       && (!pgm.prevToken() || pgm.prevToken()->id() != TokenID::tkClBrk) )
+		return false;
+	    sig = canonical_builtin_simple_type_name(inner_dd);
+	}
+	else
+	{
+	    DataDef *dd = resolve_named_datadef(pgm, tname);
+	    sig = canonical_builtin_simple_type_name(dd);
+	}
+    }
+    else if ( type_tb->type() == TokenType::ttKeyword
+	   && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
+    {
+	TokenBase *tag_tb = pgm.nextToken();
+	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
+	    return false;
+	sig = (type_tb->id() == TokenID::tkSTRUCT ? "struct:" : "union:")
+	    + contextual_identifier_name(tag_tb);
+    }
+    else if ( type_tb->type() == TokenType::ttKeyword && type_tb->id() == TokenID::tkENUM )
+    {
+	TokenBase *tag_tb = pgm.nextToken();
+	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
+	    return false;
+	sig = "enum:" + contextual_identifier_name(tag_tb);
+    }
+    else
+	return false;
+
+    if ( sig.empty() )
+	return false;
+    if ( !leading_qualifiers.empty() )
+	sig = leading_qualifiers + " " + sig;
+
+    bool wrapped = false;
+    while ( pgm.peekToken() )
+    {
+	skip_expression_whitespace(pgm);
+	if ( !pgm.peekToken() )
+	    break;
+	if ( pgm.peekToken()->id() == TokenID::tkMul )
+	{
+	    pgm.nextToken();
+	    std::string ptr_qualifiers;
+	    skip_expression_whitespace(pgm);
+	    while ( pgm.peekToken() && is_type_qualifier_token(pgm.peekToken()) )
+	    {
+		if ( !ptr_qualifiers.empty() )
+		    ptr_qualifiers += ' ';
+		ptr_qualifiers += ((TokenKeyword *)pgm.nextToken())->str;
+	    }
+	    sig = ptr_qualifiers.empty()
+		? "ptr(" + sig + ")"
+		: ptr_qualifiers + " ptr(" + sig + ")";
+	    wrapped = true;
+	    continue;
+	}
+	if ( pgm.peekToken()->id() == TokenID::tkOpSqr )
+	{
+	    pgm.nextToken();
+	    int depth = 1;
+	    while ( depth > 0 )
+	    {
+		TokenBase *dim_tb = pgm.nextToken();
+		if ( !dim_tb )
+		    return false;
+		if ( dim_tb->id() == TokenID::tkOpSqr )
+		    ++depth;
+		else if ( dim_tb->id() == TokenID::tkClSqr )
+		    --depth;
+	    }
+	    sig = "array(" + sig + ")";
+	    wrapped = true;
+	    continue;
+	}
+	break;
+    }
+
+    if ( !wrapped )
+	strip_top_level_type_qualifiers(sig);
+    return true;
+}
 
 static Variable *resolve_c_identifier(Program &pgm, TokenIdent *ident_tb, bool expression_head)
 {
@@ -5762,11 +5990,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						}
 						else
 						{
-						    TokenBase *elem = nextToken();
+						TokenBase *elem = nextToken();
+						if ( elem->id() == TokenID::tkDot
+						  || (current_sdd && is_contextual_identifier_token(elem)
+						   && peekToken() && peekToken()->id() == TokenID::tkTerC) )
+						{
+						    std::vector<std::string> field_path;
+						    TokenBase *field_tok = elem;
 						    if ( elem->id() == TokenID::tkDot )
 						    {
-							std::vector<std::string> field_path;
-							TokenBase *field_tok = nextToken();
+							field_tok = nextToken();
 							if ( !is_contextual_identifier_token(field_tok) )
 							    Throw(field_tok) << "Expecting field name in compound literal designator" << flush;
 							field_path.push_back(contextual_identifier_name(field_tok));
@@ -5781,9 +6014,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 							TokenBase *eq = nextToken();
 							if ( !eq || eq->id() != TokenID::tkAssign )
 							    Throw(eq ? eq : field_tok) << "Expecting '=' after compound literal designator" << flush;
-							TokenBase *value_tok = nextToken();
-							std::vector<TokenBase *> *target_inits = &slit->inits;
-							DataDefSTRUCT *target_sdd = current_sdd;
+						    }
+						    else
+						    {
+							field_path.push_back(contextual_identifier_name(field_tok));
+							nextToken(); // consume ':'
+						    }
+						    TokenBase *value_tok = nextToken();
+						    std::vector<TokenBase *> *target_inits = &slit->inits;
+						    DataDefSTRUCT *target_sdd = current_sdd;
 							size_t field_index = 0;
 							for ( size_t pi = 0; pi < field_path.size(); ++pi )
 							{
@@ -6802,6 +7041,37 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    tnp->line = tb->line;
 		    tnp->column = tb->column;
 		    exStack.push(tnp);
+		    break;
+		}
+		if ( ident_tb->str == "__builtin_types_compatible_p" )
+		{
+		    if ( !skip_expression_whitespace(*this) || peekToken()->id() != TokenID::tkOpBrk )
+			Throw(tb) << "Expecting '(' after __builtin_types_compatible_p" << flush;
+		    nextToken();
+		    skip_expression_whitespace(*this);
+		    TokenBase *lhs_tb = nextToken();
+		    std::string lhs_sig;
+		    if ( !parse_builtin_types_compatible_operand(*this, lhs_tb, lhs_sig) )
+			Throw(lhs_tb ? lhs_tb : tb) << "Invalid first type in __builtin_types_compatible_p" << flush;
+		    skip_expression_whitespace(*this);
+		    TokenBase *comma_tb = nextToken();
+		    if ( !comma_tb || comma_tb->id() != TokenID::tkComma )
+			Throw(comma_tb ? comma_tb : tb) << "Expecting ',' in __builtin_types_compatible_p" << flush;
+		    skip_expression_whitespace(*this);
+		    TokenBase *rhs_tb = nextToken();
+		    std::string rhs_sig;
+		    if ( !parse_builtin_types_compatible_operand(*this, rhs_tb, rhs_sig) )
+			Throw(rhs_tb ? rhs_tb : tb) << "Invalid second type in __builtin_types_compatible_p" << flush;
+		    skip_expression_whitespace(*this);
+		    TokenBase *close_tb = nextToken();
+		    if ( !close_tb || close_tb->id() != TokenID::tkClBrk )
+			Throw(close_tb ? close_tb : tb) << "Expecting ')' after __builtin_types_compatible_p" << flush;
+		    TokenInt *ti = new TokenInt(lhs_sig == rhs_sig ? 1 : 0);
+		    ti->setDataType(&ddINT);
+		    ti->file = tb->file;
+		    ti->line = tb->line;
+		    ti->column = tb->column;
+		    exStack.push(ti);
 		    break;
 		}
 		// va_arg(ap, type) — compiler intrinsic for reading variadic args
@@ -9319,8 +9589,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	else
 	    pgm.Throw(tn) << "Expecting alias name in typedef enum" << flush;
 
-	DataDef *enum_alias_dd = new DataDef(ddINT);
-	enum_alias_dd->name = alias;
+	DataDef *enum_alias_dd = new DataDefENUM(alias);
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *enum_alias_dd);
 	pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() enum alias " << alias << " = int" << std::endl);

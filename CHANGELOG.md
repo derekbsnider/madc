@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+- **GCC torture `builtin-prefetch-4.c`, `builtin-types-compatible-p.c`, and `compndlit-1.c` now pass.**
+  GNU compound-literal designators now accept both `.field = value` and
+  GNU `field: value` spellings, `__builtin_types_compatible_p(...)` now
+  parses and compares real type signatures instead of hardwiring `0`,
+  `__builtin_prefetch(...)` now preserves side effects in its address
+  operand while remaining a no-op hint, and unsigned 32-bit to real
+  coercions now zero-extend before `cvtsi2s{sd,ss}` so values above
+  `INT_MAX` keep their correct magnitude. Added
+  `tests/testcompoundlitgnudesignator.mad`,
+  `tests/testbuiltintypescompatible.mad`,
+  `tests/testbuiltinprefetcheffects.mad`, and
+  `tests/testuint32realcoerce.mad` as local regressions. Full
+  validation is green at `364/364` JIT and `364/364` EXE, and the
+  latest full GCC sweep plus focused reruns bring parity to at least
+  `1494/1685` (88.7%).
+
 - **GCC torture `alias-1.c`, `bswap-3.c`, `built-in-setjmp.c`, and `builtin-bitops-1.c` now pass.**
   GNU attribute preservation now matches exact attribute identifiers
   instead of substring-matching words inside string arguments, so
