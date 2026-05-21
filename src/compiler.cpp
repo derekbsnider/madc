@@ -419,6 +419,21 @@ static bool token_get_constant_cstring_address(TokenBase *token, const char *&ou
     return false;
 }
 
+static bool type_is_cstr_pointer(DataDef *dd)
+{
+    return dd
+	&& dd->is_pointer()
+	&& (dd->rawtype() == DataType::dtCHAR
+	 || dd->rawtype() == DataType::dtUINT8);
+}
+
+static bool type_is_cstr_element(DataDef *dd)
+{
+    return dd
+	&& (dd->rawtype() == DataType::dtCHAR
+	 || dd->rawtype() == DataType::dtUINT8);
+}
+
 static bool token_is_charptr_expr(TokenBase *token)
 {
     if ( !token )
@@ -430,21 +445,21 @@ static bool token_is_charptr_expr(TokenBase *token)
     {
 	if ( dd->is_string() )
 	    return true;
-	if ( dd->is_pointer() && dd->rawtype() == DataType::dtCHAR )
+	if ( type_is_cstr_pointer(dd) )
 	    return true;
     }
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
     {
 	if ( tv->var.is_fixed_array()
 	  && tv->var.type
-	  && tv->var.type->rawtype() == DataType::dtCHAR )
+	  && type_is_cstr_element(tv->var.type) )
 	    return true;
     }
     if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
     {
 	if ( tm->is_fixed_array_member()
 	  && tm->var.type
-	  && tm->var.type->rawtype() == DataType::dtCHAR )
+	  && type_is_cstr_element(tm->var.type) )
 	    return true;
     }
     if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(token) )
@@ -457,16 +472,16 @@ static bool token_compiles_naturally_as_charptr(TokenBase *token)
     if ( !token )
 	return false;
     DataDef *dd = token->datadef();
-    if ( dd && dd->is_pointer() && dd->rawtype() == DataType::dtCHAR )
+    if ( type_is_cstr_pointer(dd) )
 	return true;
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
 	return tv->var.is_fixed_array()
 	    && tv->var.type
-	    && tv->var.type->rawtype() == DataType::dtCHAR;
+	    && type_is_cstr_element(tv->var.type);
     if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
 	return tm->is_fixed_array_member()
 	    && tm->var.type
-	    && tm->var.type->rawtype() == DataType::dtCHAR;
+	    && type_is_cstr_element(tm->var.type);
     if ( TokenTerQ *tq = dynamic_cast<TokenTerQ *>(token) )
 	return token_is_charptr_expr(tq->true_expr)
 	    && token_is_charptr_expr(tq->false_expr);
@@ -2325,10 +2340,10 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
     if ( !actual_type )
 	throw "compile_call_arg_normalized() missing argument type";
 
-    bool target_accepts_cstr = target_type
-	&& target_type->is_pointer()
-	&& (target_type->rawtype() == DataType::dtCHAR
-	 || target_type->rawtype() == DataType::dtVOID);
+    bool target_accepts_cstr = type_is_cstr_pointer(target_type)
+	|| (target_type
+	 && target_type->is_pointer()
+	 && target_type->rawtype() == DataType::dtVOID);
     bool want_cstr = (target_accepts_cstr
 		      && token->datadef() && token->datadef()->rawtype() == DataType::dtSTRING)
 		  || (variadic_real_promotion
@@ -4687,7 +4702,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	if ( member_count > 1 && dynamic_cast<TokenStructLit *>(inits[init_idx]) == NULL )
 	{
 	    std::string char_array_init;
-	    if ( mtype->rawtype() == DataType::dtCHAR
+	    if ( type_is_cstr_element(mtype)
 	      && token_get_constant_cstring(inits[init_idx], char_array_init) )
 	    {
 		size_t copy_n = char_array_init.size();
@@ -5218,8 +5233,7 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	    flatten_init(node);
 
 	size_t elem_size = var.type->size ? var.type->size : 8;
-	bool elem_is_charptr = var.type->is_pointer()
-	    && var.type->rawtype() == DataType::dtCHAR;
+	bool elem_is_charptr = type_is_cstr_pointer(var.type);
 	Variable *static_data_var = &var;
 	if ( pgm.tkProgram && var.is_global() )
 	{
@@ -6960,8 +6974,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	    rhs_rdp.second = elem_type;
 	    Operand &rhs_op = right->compile(pgm, rhs_rdp);
 	    Operand effective_rhs = rhs_op;
-	    if ( elem_type && elem_type->is_pointer()
-	      && elem_type->rawtype() == DataType::dtCHAR
+	    if ( type_is_cstr_pointer(elem_type)
 	      && right->datadef()
 	      && right->datadef()->rawtype() == DataType::dtSTRING )
 	    {
@@ -7077,7 +7090,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 	// address into the slot (not its c_str()). Match the same
 	// coercion TokenAssign applies for plain `char *p = "literal";`.
 	Operand effective_rhs = rhs_op;
-	if ( ltype->is_pointer() && ltype->rawtype() == DataType::dtCHAR
+	if ( type_is_cstr_pointer(ltype)
 	  && right->datadef() && right->datadef()->rawtype() == DataType::dtSTRING )
 	{
 	    x86::Gp cstr = pgm.cc.newIntPtr("sub_cstr");
@@ -7193,7 +7206,7 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     // regdp.first would write the std::string pointer into p instead of
     // its data. Compile the RHS into a tmp, pass it through string_cstr,
     // then store the resulting char* into p's register.
-    if ( ltype->is_pointer() && ltype->rawtype() == DataType::dtCHAR
+    if ( type_is_cstr_pointer(ltype)
       && right->datadef() && right->datadef()->rawtype() == DataType::dtSTRING )
     {
 	Operand rhs_storage;
@@ -11714,9 +11727,7 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 	merge_slot.setSize(merge_size);
 
 	auto emit_branch = [&](TokenBase *expr) {
-	    if ( regdp.second
-	      && regdp.second->is_pointer()
-	      && regdp.second->rawtype() == DataType::dtCHAR )
+	    if ( type_is_cstr_pointer(regdp.second) )
 	    {
 		Operand branch_storage;
 		Operand &norm = compile_token_normalized(pgm, expr, regdp.second, nullptr, branch_storage);
@@ -11901,8 +11912,7 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	// char* / const char* returns from string literals or string-valued
 	// expressions must return the underlying C string buffer, not the
 	// std::string object address.
-	if ( ret_type && ret_type->is_pointer()
-	  && ret_type->rawtype() == DataType::dtCHAR
+	if ( type_is_cstr_pointer(ret_type)
 	  && returns->datadef() && returns->datadef()->rawtype() == DataType::dtSTRING )
 	{
 	    Operand ret_storage;
