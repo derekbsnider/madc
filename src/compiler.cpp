@@ -5445,6 +5445,15 @@ Operand &TokenFunc::compile(Program &pgm, regdefp_t &regdp)
 	}
     }
 
+    for ( variable_vec_iter vvi = method.parameters.begin();
+	  vvi != method.parameters.end(); ++vvi )
+    {
+	if ( !(*vvi)->param_vla_side_effect_expr )
+	    continue;
+	regdefp_t sidefx_rdp = {NULL, NULL, NULL};
+	(*vvi)->param_vla_side_effect_expr->compile(pgm, sidefx_rdp);
+    }
+
     emit_function_instrument_enter(pgm, func);
 
     if ( variables.size() )

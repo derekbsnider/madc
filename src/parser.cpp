@@ -2112,7 +2112,8 @@ static int64_t parse_constant_integer_expression(Program &pgm)
     return parse_constant_ternary(pgm);
 }
 
-static bool bracket_dim_uses_runtime_value(Program &pgm)
+static bool bracket_dim_uses_runtime_value(Program &pgm,
+					   const std::set<std::string> *runtime_names = NULL)
 {
     int depth = 1;
     for ( auto it = pgm.tokens.begin(); it != pgm.tokens.end() && depth > 0; ++it )
@@ -2126,6 +2127,8 @@ static bool bracket_dim_uses_runtime_value(Program &pgm)
 	    name = ((TokenIdent *)t)->str;
 	else
 	    continue;
+	if ( runtime_names && runtime_names->count(name) )
+	    return true;
 	Variable *v = pgm.findVariable(name);
 	if ( !v || v->is_constant() )
 	    continue;
@@ -2268,6 +2271,7 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
     aot_data_offset = (size_t)-1;
     aot_cstr_offset = (size_t)-1;
     vla_size_expr = nullptr;
+    param_vla_side_effect_expr = nullptr;
     if ( init ) { alloc = true; }
     if ( !alloc ) { flags |= vfSTACK; }
     switch(type->type())
@@ -10556,6 +10560,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     int anon_param_index = 0;
     bool old_style_params = false;
     std::vector<std::string> old_style_ids;
+    std::map<std::string, TokenBase *> param_vla_side_effects;
     bool is_nested_function = !compounds.empty() && compounds.top() && compounds.top()->method;
     std::string nested_local_name = id;
     TokenCpnd *nested_owner_scope = is_nested_function ? compounds.top() : NULL;
@@ -10626,6 +10631,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	ids.push_back("__this");
 	DBG(cout << "parseFunction() injected hidden __this parameter for class method" << endl);
     }
+
+    Variable temp_param_fn(id, *func, 1, NULL, false);
+    Method temp_param_method(temp_param_fn);
+    pushCompound();
+    TokenCpnd *param_scope = compounds.empty() ? NULL : compounds.top();
+    if ( param_scope )
+	param_scope->method = &temp_param_method;
 
     // look for parameters
     while ( (nt=nextToken()) && nt->id() != TokenID::tkClBrk )
@@ -10863,7 +10875,11 @@ grabnt:
 	    else
 	    {
 		TokenBase *dim_expr = NULL;
-		if ( bracket_dim_uses_runtime_value(*this) )
+		std::set<std::string> param_runtime_names;
+		param_runtime_names.insert(pid);
+		for ( size_t ii = 0; ii < ids.size(); ++ii )
+		    param_runtime_names.insert(ids[ii]);
+		if ( bracket_dim_uses_runtime_value(*this, &param_runtime_names) )
 		{
 		    dim_expr = parseExpression(nextToken(), true);
 		    param_array_dims.push_back(0);
@@ -10884,6 +10900,24 @@ grabnt:
 	}
 	if ( !param_array_dims.empty() )
 	{
+	    TokenBase *param_vla_sidefx = NULL;
+	    for ( size_t i = 0; i < param_array_dim_exprs.size(); ++i )
+	    {
+		TokenBase *dim_expr = param_array_dim_exprs[i];
+		if ( !dim_expr )
+		    continue;
+		if ( !param_vla_sidefx )
+		    param_vla_sidefx = dim_expr;
+		else
+		{
+		    TokenComma *comma = new TokenComma();
+		    comma->left = param_vla_sidefx;
+		    comma->right = dim_expr;
+		    param_vla_sidefx = comma;
+		}
+	    }
+	    if ( param_vla_sidefx )
+		param_vla_side_effects[pid] = param_vla_sidefx;
 	    DataDef *array_elem = param_dd;
 	    for ( size_t i = param_array_dims.size(); i-- > 1; )
 		array_elem = new DataDefCArray(*array_elem, array_elem->name,
@@ -10900,21 +10934,36 @@ paramdecl:
 	{
 	    // If this is a definition following a forward declaration, the
 	    // function already has its parameter DataDefs — don't re-push.
+	    DataDef *scope_param_type = NULL;
 	    if ( func_already_declared )
 	    {
 		ids.push_back(pid);
+		scope_param_type = rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING
+		    ? &ddSTRINGref : param_dd;
 	    }
 	    else if ( !func->findParameter(pid) )
 	    {
 		ids.push_back(pid);
 		if ( rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING )
+		{
 		    func->parameters.push_back(&ddSTRINGref);
+		    scope_param_type = &ddSTRINGref;
+		}
 		else if ( rtype == RefType::rtPointer )
+		{
 		    func->parameters.push_back(param_dd);
+		    scope_param_type = param_dd;
+		}
 		else if ( dynamic_cast<DataDefFPTR *>(param_dd) != NULL )
+		{
 		    func->parameters.push_back(param_dd);
+		    scope_param_type = param_dd;
+		}
 		else
+		{
 		    func->parameters.push_back(&pb->definition);
+		    scope_param_type = &pb->definition;
+		}
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
 		    << dd.size << " name: " << pid << " ptr: " << &dd << std::endl);
 	    }
@@ -10922,6 +10971,12 @@ paramdecl:
 	    {
 		DBG(std::cerr << "parseFunction() params: duplicate parameter name " << pid << std::endl);
 		Throw(nt) << "Duplicate parameter name" << flush;
+	    }
+	    if ( scope_param_type )
+	    {
+		Variable *scope_param = new Variable(pid, *scope_param_type, 1, NULL, false);
+		scope_param->flags |= vfPARAM | vfLOCAL;
+		temp_param_method.parameters.push_back(scope_param);
 	    }
 	    if ( nt->id() == TokenID::tkClBrk )
 		break;
@@ -10935,6 +10990,9 @@ paramdecl:
     }
 
     nt = nextToken();
+
+    if ( !compounds.empty() && compounds.top() == param_scope )
+	popCompound();
 
     if ( old_style_params )
     {
@@ -11092,6 +11150,9 @@ paramdecl:
 	DBG(cout << "parseFunction() adding parameter variable " << pname << endl);
 	v = new Variable(pname, *d, 1, NULL, false);
 	v->flags |= vfPARAM | vfLOCAL;
+	std::map<std::string, TokenBase *>::iterator pvsi = param_vla_side_effects.find(pname);
+	if ( pvsi != param_vla_side_effects.end() )
+	    v->param_vla_side_effect_expr = pvsi->second;
 	method->parameters.push_back(v);
 	DBG(cout << "parseFunction() pushed param, method->parameters.size()=" << method->parameters.size() << endl);
 	++user_param_index;

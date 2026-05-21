@@ -68,7 +68,10 @@ public:
     // dims[0] holds the element-count contribution from the FIRST dim
     // (always 1 for the runtime path; multiply by vla_size_expr at runtime).
     class TokenBase *vla_size_expr;
-    Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; vla_size_expr = nullptr; }
+    // Parameter array bounds like `int a[n++]` decay to pointers but still
+    // evaluate their runtime bound expressions on function entry.
+    class TokenBase *param_vla_side_effect_expr;
+    Variable() { type = &ddINT; data = NULL; aot_data_offset = (size_t)-1; aot_cstr_offset = (size_t)-1; flags = 0; count = 0; vla_size_expr = nullptr; param_vla_side_effect_expr = nullptr; }
     Variable(std::string n, DataDef &d, uint32_t c = 1, void *init=NULL, bool alloc=true);
    ~Variable();
     inline bool is_vla() const { return vla_size_expr != nullptr; }
