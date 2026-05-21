@@ -1097,6 +1097,51 @@ static TokenBase *consume_gnu_asm_label(Program &pgm, TokenBase *nt,
     return nt;
 }
 
+// Skip C23 [[...]] attributes: [[gnu::noipa]], [[nodiscard]], etc.
+// Returns the next meaningful token after any [[...]] sequences.
+static void skip_c23_attributes(Program &pgm)
+{
+    while ( pgm.peekToken()
+	 && pgm.peekToken()->id() == TokenID::tkOpSqr )
+    {
+	// peek ahead: is the NEXT token also [ ?
+	TokenBase *first_sq = pgm.nextToken(); // consume first [
+	if ( !pgm.peekToken()
+	  || pgm.peekToken()->id() != TokenID::tkOpSqr )
+	{
+	    pgm.pushToken(first_sq); // not [[, push back
+	    return;
+	}
+	pgm.nextToken(); // consume second [
+	// Skip until ]]
+	int depth = 1;
+	while ( depth > 0 )
+	{
+	    TokenBase *t = pgm.nextToken();
+	    if ( !t )
+		break;
+	    if ( t->id() == TokenID::tkOpSqr )
+	    {
+		if ( pgm.peekToken()
+		  && pgm.peekToken()->id() == TokenID::tkOpSqr )
+		{
+		    pgm.nextToken();
+		    ++depth;
+		}
+	    }
+	    else if ( t->id() == TokenID::tkClSqr )
+	    {
+		if ( pgm.peekToken()
+		  && pgm.peekToken()->id() == TokenID::tkClSqr )
+		{
+		    pgm.nextToken();
+		    --depth;
+		}
+	    }
+	}
+    }
+}
+
 static size_t parse_gnu_vector_size_attribute(Program &pgm)
 {
     if ( !is_attribute_identifier_token(pgm.peekToken()) )
@@ -13711,6 +13756,16 @@ TokenBase *Program::parseExprStmt(TokenBase *tb)
 TokenBase *Program::parseStatement(TokenBase *tb)
 {
     DBG(cout << "parseStatement() start" << endl);
+    // Skip C23 [[...]] attributes before declarations/definitions.
+    if ( tb->id() == TokenID::tkOpSqr
+      && peekToken() && peekToken()->id() == TokenID::tkOpSqr )
+    {
+	pushToken(tb);
+	skip_c23_attributes(*this);
+	tb = nextToken();
+	if ( !tb )
+	    return NULL;
+    }
     switch(tb->type())
     {
 	// for now, just ignore whitespace and comments
@@ -14291,6 +14346,16 @@ bool Program::parse(TokenProgram *tp)
 	{
 	    tb = nextToken();
 //	    printt(tb);
+	    // Skip C23 [[...]] attributes at top level.
+	    if ( tb && tb->id() == TokenID::tkOpSqr
+	      && peekToken() && peekToken()->id() == TokenID::tkOpSqr )
+	    {
+		pushToken(tb);
+		skip_c23_attributes(*this);
+		tb = nextToken();
+		if ( !tb || tokens.empty() )
+		    break;
+	    }
 #if 1
 	    ts = parseStatement(tb);
 	    if ( ts )

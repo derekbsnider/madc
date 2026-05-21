@@ -1741,12 +1741,15 @@ TokenBase *Program::_getToken()
 	    if ( source.peek() == '[' )
 	    {
 		source.get(); // consume second '['
-		int depth = 1;
-		while ( source.good() && depth > 0 )
+		// Skip until matching ]]
+		while ( source.good() )
 		{
 		    char c = source.get();
-		    if ( c == '[' ) ++depth;
-		    else if ( c == ']' ) --depth;
+		    if ( c == ']' && source.peek() == ']' )
+		    {
+			source.get(); // consume second ']'
+			break;
+		    }
 		}
 		return getToken();
 	    }
