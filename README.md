@@ -226,10 +226,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.19.0** (2026-05-21) — **GCC parity push: 1505/1685 (89.3%).** `__builtin_frame_address`, stdio/string builtin aliases, pointer dereference typing fixes.
+**v0.20.0** (2026-05-21) — **GCC parity crosses 91%: 1536/1685 (91.2%).** C++ std surface now namespace-owned, std::vector, `__builtin_*_overflow_p`, inline asm, triple dereference.
 
 ### Recent Releases
 
+- **v0.20.0** — GCC parity 91.2% (1536/1685); std namespace cleanup, std::vector, overflow_p builtins
 - **v0.19.0** — GCC parity 89.3% (1505/1685); frame_address, stdio/string builtins
 - **v0.18.0** — GCC parity 88.8% (1496/1685); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers
 - **v0.17.0** — GCC parity 78.1% (1316/1685); nested cast chains, empty brace-init, `f().member`, `#pragma push/pop_macro`
@@ -253,7 +254,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG D** | `va_list`/`<stdarg.h>`, variadic helpers, for-loop fix | **Complete** |
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
-| **GCC Parity** | GCC torture test suite compatibility | **v0.19.0** — latest live sweep 1514/1685 (89.9%); next milestone is 90%+ stable |
+| **GCC Parity** | GCC torture test suite compatibility | **v0.20.0** — 1536/1685 (91.2%); std namespace cleanup, std::vector |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---

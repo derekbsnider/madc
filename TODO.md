@@ -2,7 +2,7 @@
 
 ## High Priority
 
-- **GCC torture test suite: stabilize past 90%, then push toward 95%.** Latest live sweep: 1535/1685 (91.1%), with focused reruns now bringing the floor to at least 1536/1685 (91.2%).
+- **GCC torture test suite: push toward 95%.** Currently 1536/1685 (91.2%).
   v0.18.0 closed 169 new tests via _Complex arithmetic, IEEE FP
   semantics, bitfield promotions, auto-include headers, alias support,
   setjmp, bswap, and dozens of individual fixes.

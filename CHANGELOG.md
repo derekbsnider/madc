@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.20.0] - 2026-05-21
+
+GCC parity crosses 91%: 1505 → 1536/1685 (89.3% → 91.2%). C++ std surface now namespace-owned, std::vector support, __builtin_*_overflow_p, inline asm, triple dereference, volatile token-paste.
+
 - **GCC front-edge closures continued.**
   `__builtin_*_overflow_p` now dispatches through typed fixed-signature
   helpers instead of the unprototyped dynamic-symbol path, so the
