@@ -12237,6 +12237,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( alias_target && alias_target != var )
 	    {
 		var->data = alias_target->data;
+		var->flags &= ~vfSTACK;
 		if ( alias_target->has_aot_data() )
 		{
 		    var->aot_data_offset = alias_target->aot_data_offset;

@@ -2,7 +2,7 @@
 
 ## High Priority
 
-- **GCC torture test suite: keep pushing toward GCC parity.** Currently at least 1426/1685 (84.6%) from focused reruns.
+- **GCC torture test suite: keep pushing toward GCC parity.** Currently at least 1427/1685 (84.7%) from focused reruns.
   Recent fixes: function-pointer array declarators, repeated aggregate
   `__attribute`, GNU statement-expression member access, nested struct
   flat initializers, local var zero-init, constant-fold register width,
@@ -20,7 +20,8 @@
   `20230630-4.c`, `921007-1.c`, `921016-1.c`, `921019-1.c`,
   `930628-1.c`, `931004-11.c`, `931004-12.c`, `20041214-1.c`,
   `960416-1.c`, `970214-2.c`, `970217-1.c`, `980506-3.c`,
-  `990130-1.c`, `991014-1.c`, `991030-1.c`, and `alias-2.c`.
+  `990130-1.c`, `991014-1.c`, `991030-1.c`, `alias-2.c`, and
+  `alias-3.c`.
   Remaining targets: `__builtin_return_address`, fuller complex support,
   struct pass-by-value for function args (~8 compile failures),
   32-bit arithmetic wrapping in widening cast contexts

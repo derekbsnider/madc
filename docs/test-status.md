@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.17.0, GCC parity session 21 — at least 1426/1685 from focused reruns).
+Test results as of May 21, 2026 (v0.17.0, GCC parity session 21 — at least 1427/1685 from focused reruns).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 351 JIT pass / 0 fail
+## Current Batch Status — 352 JIT pass / 0 fail
 
 Latest results (2026-05-21):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 351 integration tests
+- Passing: 352 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -88,11 +88,12 @@ Latest results (2026-05-21):
   `testucharptrstringlit.mad`, empty-template inline asm `"+r"`
   operand evaluation via `testasmrwoperand.mad`, size_t-width
   `sizeof` / `alignof` tokens via `testlargesizeofquery.mad`, exact
-  decimal-real lexing via `testhexfloatcompare.mad`, and global
-  alias-backed array storage identity via `testglobalaliasarray.mad`.
+  decimal-real lexing via `testhexfloatcompare.mad`, global
+  alias-backed array storage identity via `testglobalaliasarray.mad`,
+  and scalar alias write-through via `testglobalaliasscalar.mad`.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 351 (of 351 JIT-passing tests)
+- Passing: 352 (of 352 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so

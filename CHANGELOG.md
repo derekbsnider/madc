@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GCC torture `alias-3.c` now passes.**
+  File-scope `extern` aliases that resolve to real global storage now
+  clear the temporary stack-backed flag inherited from the non-allocating
+  declaration path, so scalar alias writes like `b++` lower through the
+  global load/store path instead of a bogus local stack slot. Added
+  `tests/testglobalaliasscalar.mad` as the local regression. Full
+  validation is green at `352/352` JIT and `352/352` EXE, and focused
+  GCC reruns bring the conservative parity floor to at least
+  `1427/1685` (84.7%).
+
 - **GCC torture `alias-2.c` now passes.**
   GNU `__attribute__((alias("target")))` now survives lexing on
   declarators, the parser records global storage aliases, and both JIT

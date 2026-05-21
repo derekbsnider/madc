@@ -585,6 +585,7 @@ static bool global_has_compilable_address(Program &pgm, Variable *var)
 	{
 	    if ( !var->data )
 		var->data = alias_target->data;
+	    var->flags &= ~vfSTACK;
 	    if ( !var->has_aot_data() && alias_target->has_aot_data() )
 	    {
 		var->aot_data_offset = alias_target->aot_data_offset;
