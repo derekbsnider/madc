@@ -3916,6 +3916,14 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		      || var.name == "cimagf"
 		      || var.name == "cimagl") )
 	return emit_builtin_complex_component(pgm, this, true, regdp, _operand);
+    if ( argc() == 1 && var.name == "__builtin_frame_address" )
+    {
+	DataDef *ret_type = returns();
+	regdp.second = ret_type;
+	x86::Gp frame_gp = pgm.cc.newIntPtr("__builtin_frame_address");
+	pgm.cc.mov(frame_gp, x86::rsp);
+	return emit_ir_value(pgm, IRValue::reg(frame_gp, ret_type), regdp, _operand, ret_type);
+    }
     if ( var.name == "__builtin_setjmp" )
 	return emit_builtin_setjmp(pgm, this, regdp, _operand);
     if ( var.name == "__builtin_longjmp" )
@@ -7636,14 +7644,16 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 
     if ( !regdp.second )
 	throw "TokenAssign: no rval type";
-    if (  ltype->is_numeric() && !regdp.second->is_numeric() )
+    bool lhs_scalar = ltype->is_numeric() || ltype->is_pointer();
+    bool rhs_scalar = regdp.second->is_numeric() || regdp.second->is_pointer();
+    if ( lhs_scalar && !rhs_scalar )
 	throw "Expecting rval to be numeric";
-    if ( !ltype->is_integer() &&  regdp.second->is_integer() )
+    if ( !ltype->is_integer() && !ltype->is_pointer() && regdp.second->is_integer() )
 	throw "Not expecting rval to be numeric";
     if ( ltype->is_string() && !regdp.second->is_string() )
 	throw "Expecting rval to be string";
 
-    if ( ltype->is_numeric() )
+    if ( lhs_scalar )
     {
 	DBG(cout << "TokenAssign::compile() numeric to numeric" << endl);
 	DBG(pgm.cc.comment("TokenAssign::compile() numeric to numeric"));
@@ -11102,17 +11112,7 @@ Operand &TokenDerefStep::compile(Program &pgm, regdefp_t &regdp)
     if ( deref_type->is_numeric() )
     {
 	x86::Mem mem = x86::ptr(old_ptr, 0, (uint32_t)deref_type->size);
-	if ( regdp.first )
-	{
-	    pgm.safemov(*regdp.first, mem, deref_type, deref_type);
-	    return *regdp.first;
-	}
-	x86::Gp gp = pgm.cc.newGpq(increment ? "*postinc" : "*postdec");
-	pgm.safemov(gp, mem, deref_type, deref_type);
-	_operand = gp;
-	regdp.first = &_operand;
-	regdp.second = deref_type;
-	return _operand;
+	return emit_ir_value(pgm, IRValue::mem(mem, deref_type), regdp, _operand, deref_type);
     }
 
     _operand = old_ptr;

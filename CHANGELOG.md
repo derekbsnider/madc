@@ -15,6 +15,16 @@ GCC parity push: 1327 → 1496/1685 (78.8% → 88.8%), _Complex arithmetic, IEEE
   `370/370` EXE, and the conservative GCC parity floor rises to at
   least `1504/1685` (89.3%).
 
+- **GCC torture `921013-1.c` and `frame-address.c` now pass.**
+  `*ptr++` now preserves real pointee types instead of forcing float
+  dereferences through integer Gp temporaries, fixing float-equality
+  stores like `*d++ = *x++ == *y++;`. `__builtin_frame_address(0)` is
+  now registered as a builtin and lowered to the current stack frame
+  address. Added `tests/testderefstepptrrealcmp.mad` and
+  `tests/testbuiltinframeaddress.mad` as local regressions. Full
+  validation is green at `372/372` JIT and `372/372` EXE, and the
+  conservative GCC parity floor rises to at least `1506/1685` (89.4%).
+
 - **GCC torture `ieee/fp-cmp-8f.c` now passes.**
   Contextual identifiers like `struct try` now parse correctly in
   struct-tag and typedef-alias positions, and indirect function-pointer
