@@ -806,12 +806,15 @@ void Program::_tokenizer_init()
 	MacroDef inf;
 	inf.body = "(1.0 / 0.0)";
 	macro_map["__builtin_inf"] = inf;
+	macro_map["__builtin_huge_val"] = inf;
 	MacroDef inff;
 	inff.body = "(1.0f / 0.0f)";
 	macro_map["__builtin_inff"] = inff;
+	macro_map["__builtin_huge_valf"] = inff;
 	MacroDef infl;
 	infl.body = "(1.0L / 0.0L)";
 	macro_map["__builtin_infl"] = infl;
+	macro_map["__builtin_huge_vall"] = infl;
     }
     {
 	MacroDef nan;
@@ -826,6 +829,22 @@ void Program::_tokenizer_init()
 	nanl.params = {"__tag"};
 	nanl.body = "(0.0L / 0.0L)";
 	macro_map["__builtin_nanl"] = nanl;
+    }
+    {
+	MacroDef isnan;
+	isnan.params = {"__x"};
+	isnan.body = "((__x) != (__x))";
+	macro_map["__builtin_isnan"] = isnan;
+	macro_map["__builtin_isnanf"] = isnan;
+	macro_map["__builtin_isnanl"] = isnan;
+    }
+    {
+	MacroDef isfinite;
+	isfinite.params = {"__x"};
+	isfinite.body = "(((__x) == (__x)) && ((__x) != __builtin_inf()) && ((__x) != -__builtin_inf()))";
+	macro_map["__builtin_isfinite"] = isfinite;
+	macro_map["__builtin_isfinitef"] = isfinite;
+	macro_map["__builtin_isfinitel"] = isfinite;
     }
     // __builtin_classify_type(x) → 0 (integer type, simplified)
     {

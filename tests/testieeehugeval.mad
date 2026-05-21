@@ -1,0 +1,15 @@
+void putu(unsigned long v);
+
+#include <math.h>
+
+int main()
+{
+	double inf = __builtin_huge_val();
+	double nan = __builtin_nan("");
+	putu(inf == __builtin_inf());
+	putu(HUGE_VAL == __builtin_inf());
+	putu(__builtin_isfinite(1.0));
+	putu(__builtin_isfinite(inf));
+	putu(__builtin_isnan(nan));
+	return 0;
+}

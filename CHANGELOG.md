@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **GCC torture `ieee/hugeval.c`, `ieee/inf-1.c`, `ieee/inf-3.c`, and `ieee/inf-4.c` now pass.**
+  The IEEE builtin macro surface now covers `__builtin_huge_val*`,
+  `__builtin_isfinite*`, and `__builtin_isnan*`, and the embedded
+  `math.h` surface now defines `HUGE_VAL` / `INFINITY` in terms of
+  real infinity builtins instead of large finite literals. Added
+  `tests/testieeehugeval.mad` as the local regression. Focused
+  validation is green, and the conservative GCC parity floor rises to
+  at least `1502/1685` (89.1%).
+
 - **GCC torture `ieee/compare-fp-1.c` and `ieee/fp-cmp-1.c` now pass.**
   Real floating-point comparisons now honor IEEE unordered semantics:
   `==`, `!=`, `<`, and `<=` no longer treat NaN cases as ordered truths
