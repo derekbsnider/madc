@@ -2,7 +2,7 @@
 
 ## High Priority
 
-- **GCC torture test suite: keep pushing toward GCC parity.** Currently at least 1432/1685 (85.0%) from focused reruns.
+- **GCC torture test suite: keep pushing toward GCC parity.** Currently at 1491/1685 (88.5%) from a full sweep.
   Recent fixes: function-pointer array declarators, repeated aggregate
   `__attribute`, GNU statement-expression member access, nested struct
   flat initializers, local var zero-init, constant-fold register width,
@@ -21,9 +21,12 @@
   `930628-1.c`, `931004-11.c`, `931004-12.c`, `20041214-1.c`,
   `960416-1.c`, `970214-2.c`, `970217-1.c`, `980506-3.c`,
   `990130-1.c`, `991014-1.c`, `991030-1.c`, `alias-2.c`, `alias-3.c`,
-  `align-3.c`, `align-nest.c`, `arith-rand-ll.c`, `bitfld-1.c`, and
-  `bitfld-3.c`.
-  Remaining targets: `__builtin_return_address`, fuller complex support,
+  `align-3.c`, `align-nest.c`, `arith-rand-ll.c`, `bitfld-1.c`,
+  `bitfld-3.c`, `alias-1.c`, `bswap-3.c`, `built-in-setjmp.c`,
+  `builtin-bitops-1.c`, `pr60003.c`, `pr84521.c`, and related unsigned
+  shift-result typing fixes.
+  Remaining targets: `builtin-prefetch-4.c`, `__builtin_return_address`,
+  fuller complex support,
   struct pass-by-value for function args (~8 compile failures),
   32-bit arithmetic wrapping in widening cast contexts
   (`(long)(uint_a + uint_b)`), compound assignment evaluation order,

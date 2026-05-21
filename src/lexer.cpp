@@ -126,6 +126,49 @@ static bool is_identifier_spelling(const std::string &s)
     return true;
 }
 
+static bool identifier_matches_gnu_attribute_name(const std::string &id,
+						  const std::string &name)
+{
+    return id == name || id == "__" + name + "__";
+}
+
+static bool gnu_attribute_text_has_name(const std::string &text,
+					const std::string &name)
+{
+    for ( size_t i = 0; i < text.size(); )
+    {
+	char c = text[i];
+	if ( c == '"' || c == '\'' )
+	{
+	    char quote = c;
+	    ++i;
+	    while ( i < text.size() )
+	    {
+		if ( text[i] == '\\' && i + 1 < text.size() )
+		{
+		    i += 2;
+		    continue;
+		}
+		if ( text[i++] == quote )
+		    break;
+	    }
+	    continue;
+	}
+	if ( c != '_' && !isalpha((unsigned char)c) )
+	{
+	    ++i;
+	    continue;
+	}
+	std::string id;
+	while ( i < text.size()
+	     && (text[i] == '_' || isalnum((unsigned char)text[i])) )
+	    id += text[i++];
+	if ( identifier_matches_gnu_attribute_name(id, name) )
+	    return true;
+    }
+    return false;
+}
+
 static const char *auto_include_embedded_header_for_identifier(const std::string &word)
 {
     static const std::map<std::string, std::string> identifier_headers = {
@@ -664,12 +707,12 @@ void Program::_tokenizer_init()
     define_map["__builtin_strndup"] = "strndup";
     define_map["__builtin_strnlen"] = "strnlen";
     // bswap builtins: these don't exist in glibc as functions, but the
-    // GCC testsuite uses them. Map to htonl/htons for now (works on LE).
-    define_map["__builtin_bswap16"] = "htons";
-    define_map["__builtin_bswap32"] = "htonl";
+    // GCC testsuite uses them. Map to helpers exported by the madc binary.
+    define_map["__builtin_bswap16"] = "__madc_bswap16";
+    define_map["__builtin_bswap32"] = "__madc_bswap32";
     define_map["__builtin_bswap64"] = "__madc_bswap64";
-    define_map["__bswap_16"] = "htons";
-    define_map["__bswap_32"] = "htonl";
+    define_map["__bswap_16"] = "__madc_bswap16";
+    define_map["__bswap_32"] = "__madc_bswap32";
 
     // __builtin_*_overflow: overflow-checking arithmetic (GCC extension).
     // Mapped to helper functions in va_helpers.cpp that use __int128.
@@ -731,11 +774,24 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_classify_type"] = m;
     }
     define_map["__builtin_alloca"] = "malloc"; // alloca = stack alloc, map to malloc for now
-    define_map["__builtin_ffs"] = "ffs";
-    define_map["__builtin_bswap32"] = "__bswap_32";
-    define_map["__builtin_bswap64"] = "__madc_bswap64";
-    define_map["__builtin_clz"] = "__builtin_clz"; // will fall through to dlsym
-    define_map["__builtin_ctz"] = "__builtin_ctz";
+    define_map["__builtin_ffs"] = "__madc_ffs";
+    define_map["__builtin_ffsl"] = "__madc_ffsl";
+    define_map["__builtin_ffsll"] = "__madc_ffsll";
+    define_map["__builtin_clz"] = "__madc_clz";
+    define_map["__builtin_clzl"] = "__madc_clzl";
+    define_map["__builtin_clzll"] = "__madc_clzll";
+    define_map["__builtin_ctz"] = "__madc_ctz";
+    define_map["__builtin_ctzl"] = "__madc_ctzl";
+    define_map["__builtin_ctzll"] = "__madc_ctzll";
+    define_map["__builtin_clrsb"] = "__madc_clrsb";
+    define_map["__builtin_clrsbl"] = "__madc_clrsbl";
+    define_map["__builtin_clrsbll"] = "__madc_clrsbll";
+    define_map["__builtin_popcount"] = "__madc_popcount";
+    define_map["__builtin_popcountl"] = "__madc_popcountl";
+    define_map["__builtin_popcountll"] = "__madc_popcountll";
+    define_map["__builtin_parity"] = "__madc_parity";
+    define_map["__builtin_parityl"] = "__madc_parityl";
+    define_map["__builtin_parityll"] = "__madc_parityll";
 
     // __builtin_offsetof(type, member) — compute struct member offset.
     // Implemented as a function-like macro using the null-pointer trick.
@@ -2549,12 +2605,12 @@ TokenBase *Program::_getToken()
 			    else if ( c == ')' ) --depth;
 			} while ( source.good() && depth > 0 );
 		    }
-		    if ( attr_text.find("packed") != std::string::npos
-		      || attr_text.find("aligned") != std::string::npos
-		      || attr_text.find("scalar_storage_order") != std::string::npos
-		      || attr_text.find("vector_size") != std::string::npos
-		      || attr_text.find("alias") != std::string::npos
-		      || attr_text.find("no_instrument_function") != std::string::npos )
+		    if ( gnu_attribute_text_has_name(attr_text, "packed")
+		      || gnu_attribute_text_has_name(attr_text, "aligned")
+		      || gnu_attribute_text_has_name(attr_text, "scalar_storage_order")
+		      || gnu_attribute_text_has_name(attr_text, "vector_size")
+		      || gnu_attribute_text_has_name(attr_text, "alias")
+		      || gnu_attribute_text_has_name(attr_text, "no_instrument_function") )
 		    {
 			source.pushback(attr_text);
 			return new TokenIdent(word);

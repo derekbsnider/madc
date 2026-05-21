@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+- **GCC torture `alias-1.c`, `bswap-3.c`, `built-in-setjmp.c`, and `builtin-bitops-1.c` now pass.**
+  GNU attribute preservation now matches exact attribute identifiers
+  instead of substring-matching words inside string arguments, so
+  `optimize("-fno-strict-aliasing")` is skipped instead of being
+  mistaken for `alias`. GCC byte-swap builtins now resolve through
+  exported `__madc_bswap*` helpers; `__builtin_setjmp` emits a real
+  JIT-side `_setjmp` with helper-owned `jmp_buf` storage; and the
+  integer bit-operation builtins now cover the `int`, `long`, and
+  `long long` lanes. Shift expressions now compute in the promoted left
+  operand type before converting to the caller's target, which preserves
+  unsigned 64-bit right shifts in int assignment/return contexts. Added
+  `tests/testattributeoptimize.mad`, `tests/testbuiltinbswap.mad`,
+  `tests/testbuiltinsetjmp.mad`, and `tests/testbuiltinbitops.mad` as
+  local regressions. Full validation is green at `360/360` JIT and
+  `360/360` EXE, and a full GCC sweep raises parity to `1491/1685`
+  (88.5%).
+
 - **GCC torture `bitfld-3.c` now passes.**
   Wide unsigned bitfield arithmetic now reduces results to the effective
   bitfield precision that GCC uses for operations on 33/40/41-bit fields,

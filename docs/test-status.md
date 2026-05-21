@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.17.0, GCC parity session 22 — at least 1432/1685 from focused reruns).
+Test results as of May 21, 2026 (v0.17.0, GCC parity session 23 — 1491/1685 from a full sweep).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 356 JIT pass / 0 fail
+## Current Batch Status — 360 JIT pass / 0 fail
 
 Latest results (2026-05-21):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 356 integration tests
+- Passing: 360 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,
@@ -68,7 +68,11 @@ Latest results (2026-05-21):
   now brings the tracked integration count to 355. An additional tracked
   regression for wide unsigned bitfield arithmetic result precision via
   `testbitfieldwidearith.mad` now brings the tracked integration count
-  to 356. An additional tracked regression for fixed-array struct assignment via
+  to 356. Additional tracked regressions for GNU `optimize` attributes
+  containing `-fno-strict-aliasing`, GCC byte-swap builtins,
+  `__builtin_setjmp` / `__builtin_longjmp`, and integer bit-operation
+  builtins plus unsigned shift-result typing now bring the tracked
+  integration count to 360. An additional tracked regression for fixed-array struct assignment via
   `testfixedarraystructcopy.mad` now brings the tracked integration
   count to 329. An additional tracked regression for
   `-finstrument-functions` plus `no_instrument_function` handling via
@@ -103,7 +107,7 @@ Latest results (2026-05-21):
   and scalar alias write-through via `testglobalaliasscalar.mad`.
 
 ### Native EXE mode (`scripts/run_tests.sh --exe`)
-- Passing: 356 (of 356 JIT-passing tests)
+- Passing: 360 (of 360 JIT-passing tests)
 - Failing: none
 - Requires: `sudo make -C src install-libmadc` and
   `LD_LIBRARY_PATH=/usr/local/lib` for libmadc.so

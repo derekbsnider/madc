@@ -12,12 +12,48 @@
 #include <cstring>
 #include <cstdint>
 #include <cstdarg>
+#include <csetjmp>
+#include <map>
 
 struct madc_timeval
 {
     int64_t tv_sec;
     int64_t tv_usec;
 };
+
+struct madc_jmp_slot
+{
+    jmp_buf env;
+};
+
+static std::map<void *, madc_jmp_slot *> &madc_jmp_slots()
+{
+    static std::map<void *, madc_jmp_slot *> slots;
+    return slots;
+}
+
+static madc_jmp_slot *madc_jmp_slot_for(void *user_buf)
+{
+    std::map<void *, madc_jmp_slot *> &slots = madc_jmp_slots();
+    std::map<void *, madc_jmp_slot *>::iterator it = slots.find(user_buf);
+    if ( it != slots.end() )
+	return it->second;
+    madc_jmp_slot *slot = new madc_jmp_slot;
+    slots[user_buf] = slot;
+    return slot;
+}
+
+extern "C" void *__madc_jmpbuf_for(void *user_buf)
+{
+    return (void *)madc_jmp_slot_for(user_buf)->env;
+}
+
+extern "C" void __madc_builtin_longjmp(void *user_buf, int value)
+{
+    if ( value == 0 )
+	value = 1;
+    longjmp(madc_jmp_slot_for(user_buf)->env, value);
+}
 
 // Parse one format specifier from *pp (starting at '%'), advance *pp past it,
 // copy the specifier into mini_fmt, and return the conversion character.
@@ -175,10 +211,111 @@ extern "C" int __madc_mul_overflow(long a, long b, long *res)
     return r != (long)r;
 }
 
-// __builtin_bswap64: byte-swap a 64-bit value.
+// __builtin_bswap*: byte-swap fixed-width integer values.
+extern "C" uint16_t __madc_bswap16(uint16_t x)
+{
+    return __builtin_bswap16(x);
+}
+
+extern "C" uint32_t __madc_bswap32(uint32_t x)
+{
+    return __builtin_bswap32(x);
+}
+
 extern "C" uint64_t __madc_bswap64(uint64_t x)
 {
     return __builtin_bswap64(x);
+}
+
+// GCC integer bit-operation builtins.
+extern "C" int __madc_ffs(unsigned int x)
+{
+    return __builtin_ffs((int)x);
+}
+
+extern "C" int __madc_ffsl(unsigned long x)
+{
+    return __builtin_ffsl((long)x);
+}
+
+extern "C" int __madc_ffsll(unsigned long long x)
+{
+    return __builtin_ffsll((long long)x);
+}
+
+extern "C" int __madc_clz(unsigned int x)
+{
+    return __builtin_clz(x);
+}
+
+extern "C" int __madc_clzl(unsigned long x)
+{
+    return __builtin_clzl(x);
+}
+
+extern "C" int __madc_clzll(unsigned long long x)
+{
+    return __builtin_clzll(x);
+}
+
+extern "C" int __madc_ctz(unsigned int x)
+{
+    return __builtin_ctz(x);
+}
+
+extern "C" int __madc_ctzl(unsigned long x)
+{
+    return __builtin_ctzl(x);
+}
+
+extern "C" int __madc_ctzll(unsigned long long x)
+{
+    return __builtin_ctzll(x);
+}
+
+extern "C" int __madc_clrsb(unsigned int x)
+{
+    return __builtin_clrsb((int)x);
+}
+
+extern "C" int __madc_clrsbl(unsigned long x)
+{
+    return __builtin_clrsbl((long)x);
+}
+
+extern "C" int __madc_clrsbll(unsigned long long x)
+{
+    return __builtin_clrsbll((long long)x);
+}
+
+extern "C" int __madc_popcount(unsigned int x)
+{
+    return __builtin_popcount(x);
+}
+
+extern "C" int __madc_popcountl(unsigned long x)
+{
+    return __builtin_popcountl(x);
+}
+
+extern "C" int __madc_popcountll(unsigned long long x)
+{
+    return __builtin_popcountll(x);
+}
+
+extern "C" int __madc_parity(unsigned int x)
+{
+    return __builtin_parity(x);
+}
+
+extern "C" int __madc_parityl(unsigned long x)
+{
+    return __builtin_parityl(x);
+}
+
+extern "C" int __madc_parityll(unsigned long long x)
+{
+    return __builtin_parityll(x);
 }
 
 // __builtin_*_overflow_p: predicate-only versions (no result pointer).

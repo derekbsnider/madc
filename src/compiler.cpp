@@ -39,6 +39,8 @@ using namespace asmjit;
 static void bind_call_return(Program &pgm, InvokeNode *call, Operand *dest, DataDef *ret_type,
 			     Operand &fallback_operand, bool is_variadic, bool narrow_int_ret=false);
 const char *string_cstr(void *ptr);
+extern "C" void *__madc_jmpbuf_for(void *user_buf);
+extern "C" void __madc_builtin_longjmp(void *user_buf, int value);
 
 extern "C" void *madc_runtime_memcpy(void *dst, const void *src, size_t n)
 {
@@ -1142,6 +1144,14 @@ static DataDef *promote_c_integer_type(DataDef *type)
     if ( type->size < 4 )
 	return &ddINT32;
     return type;
+}
+
+static DataDef *promoted_shift_result_type(TokenBase *left)
+{
+    DataDef *left_type = token_numeric_type(left);
+    if ( !left_type || !left_type->is_integer() )
+	return left_type;
+    return promote_c_integer_type(left_type);
 }
 
 static bool signed_type_can_represent_unsigned(DataDef *signed_type, DataDef *unsigned_type)
@@ -2923,6 +2933,97 @@ static void throw_too_many_call_args(Program &pgm, TokenCallFunc *call, TokenBas
     pgm.Throw(call) << "TokenCallFunc::compile() called with too many parameters" << flush;
 }
 
+static void *resolve_setjmp_target()
+{
+    void *target = dlsym(RTLD_DEFAULT, "_setjmp");
+    if ( !target )
+	target = dlsym(RTLD_DEFAULT, "setjmp");
+    return target;
+}
+
+static Operand &emit_builtin_setjmp(Program &pgm, TokenCallFunc *call,
+				    regdefp_t &regdp, Operand &fallback_operand)
+{
+    if ( call->argc() != 1 )
+	pgm.Throw(call) << "__builtin_setjmp expects one argument" << flush;
+
+    DataDef *buf_type = NULL;
+    Operand buf_storage;
+    Operand &buf_arg = compile_call_arg_normalized(pgm, call->parameters[0],
+	&ddVOIDptr, false, buf_storage, buf_type);
+
+    FuncSignature env_sig(CallConvId::kCDecl);
+    env_sig.setRetT<void *>();
+    std::vector<Operand> env_params;
+    append_call_param(env_params, env_sig, buf_arg, &ddVOIDptr);
+
+    void *env_target = (void *)(intptr_t)__madc_jmpbuf_for;
+    InvokeNode *env_call;
+    pgm.cc.invoke(&env_call, imm(env_target), env_sig);
+    pgm.track_invoke_target(env_target);
+    set_invoke_args(pgm, env_call, env_params, false);
+
+    x86::Gp env_ptr = pgm.cc.newIntPtr("__builtin_setjmp_env");
+    env_call->setRet(0, env_ptr);
+
+    void *setjmp_target = resolve_setjmp_target();
+    if ( !setjmp_target )
+	pgm.Throw(call) << "__builtin_setjmp could not resolve _setjmp" << flush;
+
+    FuncSignature setjmp_sig(CallConvId::kCDecl);
+    setjmp_sig.setRetT<int>();
+    std::vector<Operand> setjmp_params;
+    append_call_param(setjmp_params, setjmp_sig, env_ptr, &ddVOIDptr);
+
+    InvokeNode *setjmp_call;
+    pgm.cc.invoke(&setjmp_call, imm(setjmp_target), setjmp_sig);
+    pgm.track_invoke_target(setjmp_target);
+    set_invoke_args(pgm, setjmp_call, setjmp_params, false);
+
+    if ( !regdp.first )
+    {
+	fallback_operand = pgm.cc.newGpq("__builtin_setjmp_ret");
+	regdp.first = &fallback_operand;
+    }
+    bind_call_return(pgm, setjmp_call, regdp.first, &ddINT32,
+		     fallback_operand, false, true);
+    regdp.second = &ddINT32;
+    return *regdp.first;
+}
+
+static Operand &emit_builtin_longjmp(Program &pgm, TokenCallFunc *call,
+				     regdefp_t &regdp, Operand &fallback_operand)
+{
+    if ( call->argc() != 2 )
+	pgm.Throw(call) << "__builtin_longjmp expects two arguments" << flush;
+
+    FuncSignature funcsig(CallConvId::kCDecl);
+    funcsig.setRetT<void>();
+    std::vector<Operand> params;
+
+    DataDef *buf_type = NULL;
+    Operand buf_storage;
+    Operand &buf_arg = compile_call_arg_normalized(pgm, call->parameters[0],
+	&ddVOIDptr, false, buf_storage, buf_type);
+    append_call_param(params, funcsig, buf_arg, &ddVOIDptr);
+
+    DataDef *value_type = NULL;
+    Operand value_storage;
+    Operand &value_arg = compile_call_arg_normalized(pgm, call->parameters[1],
+	&ddINT32, false, value_storage, value_type);
+    append_call_param(params, funcsig, value_arg, &ddINT32);
+
+    void *target = (void *)(intptr_t)__madc_builtin_longjmp;
+    InvokeNode *invoke;
+    pgm.cc.invoke(&invoke, imm(target), funcsig);
+    pgm.track_invoke_target(target);
+    set_invoke_args(pgm, invoke, params, false);
+
+    regdp.second = &ddVOID;
+    fallback_operand = imm(0);
+    return fallback_operand;
+}
+
 static void validate_call_arg_type(Program &pgm, TokenBase *tn, DataDef *ptype,
 				   DataDef *arg_type, const Operand &tnreg)
 {
@@ -3779,6 +3880,10 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 		      || var.name == "cimagf"
 		      || var.name == "cimagl") )
 	return emit_builtin_complex_component(pgm, this, true, regdp, _operand);
+    if ( var.name == "__builtin_setjmp" )
+	return emit_builtin_setjmp(pgm, this, regdp, _operand);
+    if ( var.name == "__builtin_longjmp" )
+	return emit_builtin_longjmp(pgm, this, regdp, _operand);
 
     // GCC builtin parity: direct llabs calls keep builtin semantics even
     // when a same-name function is defined in the translation unit.
@@ -9986,25 +10091,21 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
     if ( right->type() == TokenType::ttVariable && !dynamic_cast<TokenVar *>(right)->var.type->is_numeric() )
 	throw "rval is non-numeric";
 
-    settype(pgm, regdp);				 // set regdp.second type
-    // C standard: shift result type is the promoted left operand type,
-    // NOT the wider of both sides. Override regdp.second when the
-    // caller's target is wider than the natural shift type to get
-    // correct 32-bit wrapping (e.g. 2U << 31 must wrap at 32 bits).
+    DataDef *caller_type = regdp.second;
+    DataDef *shift_type = promoted_shift_result_type(left);
+    if ( !shift_type )
     {
-	DataDef *left_type = token_numeric_type(left);
-	// Only override when the left operand is already int-sized (4 bytes).
-	// Sub-int types (char, short) promote to int before shifting.
-	if ( left_type && left_type->is_integer() && left_type->size == 4
-	  && regdp.second && regdp.second->is_integer() && regdp.second->size > 4 )
-	    regdp.second = left_type;
+	settype(pgm, regdp);
+	shift_type = regdp.second;
     }
+    regdp.second = caller_type ? caller_type : shift_type;
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
-      && regdp.second && regdp.second->is_integer() )
-	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshl,
+      && shift_type && shift_type->is_integer() )
+	return emit_plain_bitop2(pgm, left, right, shift_type, &Program::safeshl,
 				 /*right_must_be_gp=*/true,
 				 /*left_precision_only=*/true,
 				 regdp, _operand, "_shl_l");
+    regdp.second = shift_type;
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBSL::compile() left->compile() cleared datatype!"; }
@@ -10119,22 +10220,21 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 
     // bitwise right-shift
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
-    settype(pgm, regdp);				 // set regdp.second type
-    // C standard: shift result type is the promoted left operand type.
+    DataDef *caller_type = regdp.second;
+    DataDef *shift_type = promoted_shift_result_type(left);
+    if ( !shift_type )
     {
-	DataDef *left_type = token_numeric_type(left);
-	// Only override when the left operand is already int-sized (4 bytes).
-	// Sub-int types (char, short) promote to int before shifting.
-	if ( left_type && left_type->is_integer() && left_type->size == 4
-	  && regdp.second && regdp.second->is_integer() && regdp.second->size > 4 )
-	    regdp.second = left_type;
+	settype(pgm, regdp);
+	shift_type = regdp.second;
     }
+    regdp.second = caller_type ? caller_type : shift_type;
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
-      && regdp.second && regdp.second->is_integer() )
-	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeshr,
+      && shift_type && shift_type->is_integer() )
+	return emit_plain_bitop2(pgm, left, right, shift_type, &Program::safeshr,
 				 /*right_must_be_gp=*/true,
 				 /*left_precision_only=*/true,
 				 regdp, _operand, "_shr_l");
+    regdp.second = shift_type;
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBSR::compile() left->compile() cleared datatype!"; }

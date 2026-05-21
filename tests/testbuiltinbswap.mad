@@ -1,0 +1,13 @@
+int main(void)
+{
+	unsigned short s = __builtin_bswap16(0x1234);
+	unsigned int i = __builtin_bswap32(0x12345678u);
+	unsigned int j = __bswap_32(0x01020304u);
+	unsigned long long l = __builtin_bswap64(0x0123456789abcdefull);
+
+	printf("%x\n", s);
+	printf("%x\n", i);
+	printf("%x\n", j);
+	printf("%llx\n", l);
+	return 0;
+}
