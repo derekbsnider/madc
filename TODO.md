@@ -2,7 +2,7 @@
 
 ## High Priority
 
-- **GCC torture test suite: keep pushing toward GCC parity.** Currently at least 1503/1685 (89.2%) from the latest full sweep plus focused reruns.
+- **GCC torture test suite: keep pushing toward GCC parity.** Currently at least 1504/1685 (89.3%) from the latest full sweep plus focused reruns.
   Recent fixes: function-pointer array declarators, repeated aggregate
   `__attribute`, GNU statement-expression member access, nested struct
   flat initializers, local var zero-init, constant-fold register width,
@@ -30,12 +30,13 @@
   `align-3.c`, `align-nest.c`, `arith-rand-ll.c`, `bitfld-1.c`,
   `bitfld-3.c`, `alias-1.c`, `bswap-3.c`, `built-in-setjmp.c`,
   `builtin-bitops-1.c`, `pr60003.c`, `pr84521.c`, and related unsigned
-  shift-result typing fixes, plus `ieee/fp-cmp-8f.c`.
+  shift-result typing fixes, plus `ieee/fp-cmp-8f.c`, and
+  `ieee/mzero2.c`.
   Remaining targets: `__builtin_return_address`, fuller complex support,
   struct pass-by-value for function args (~8 compile failures),
   32-bit arithmetic wrapping in widening cast contexts
   (`(long)(uint_a + uint_b)`), compound assignment evaluation order,
-  `-0.0` preservation, triple dereference (`***p`), inline asm.
+  triple dereference (`***p`), inline asm.
   The focused `_Complex` execute lane is currently green; the active
   fronts have shifted back to the remaining non-complex GCC gaps.
 

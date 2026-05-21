@@ -681,17 +681,19 @@ void Program::safeneg(Operand &op, DataDef *dd)
 	bool is_float = dd && dd->size == sizeof(float);
 	if ( is_float )
 	{
-	    x86::Xmm tmp = cc.newXmmSs("safeneg_tmp");
-	    cc.xorps(tmp, tmp);
-	    cc.subss(tmp, op.as<x86::Xmm>());
-	    cc.movss(op.as<x86::Xmm>(), tmp);
+	    x86::Gp mask_gp = cc.newGpd("safeneg_mask");
+	    cc.mov(mask_gp, imm(0x80000000u));
+	    x86::Xmm mask = cc.newXmmSs("safeneg_mask");
+	    cc.movd(mask, mask_gp);
+	    cc.xorps(op.as<x86::Xmm>(), mask);
 	}
 	else
 	{
-	    x86::Xmm tmp = cc.newXmmSd("safeneg_tmp");
-	    cc.xorpd(tmp, tmp);
-	    cc.subsd(tmp, op.as<x86::Xmm>());
-	    cc.movsd(op.as<x86::Xmm>(), tmp);
+	    x86::Gp mask_gp = cc.newGpq("safeneg_mask");
+	    cc.mov(mask_gp, imm((int64_t)0x8000000000000000ULL));
+	    x86::Xmm mask = cc.newXmmSd("safeneg_mask");
+	    cc.movq(mask, mask_gp);
+	    cc.xorpd(op.as<x86::Xmm>(), mask);
 	}
     }
     else

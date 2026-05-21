@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+- **GCC torture `ieee/mzero2.c` now passes.**
+  Floating-point unary negation now flips the sign bit directly
+  instead of computing `0 - x`, which preserves `-0.0` during
+  file-scope/static initialization and downstream IEEE divide/multiply
+  semantics. Added `tests/testnegzerostatic.mad` as the local
+  regression. Full validation is green at `370/370` JIT and
+  `370/370` EXE, and the conservative GCC parity floor rises to at
+  least `1504/1685` (89.3%).
+
 - **GCC torture `ieee/fp-cmp-8f.c` now passes.**
   Contextual identifiers like `struct try` now parse correctly in
   struct-tag and typedef-alias positions, and indirect function-pointer
