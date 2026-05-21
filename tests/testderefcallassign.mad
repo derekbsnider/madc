@@ -1,0 +1,10 @@
+#include <stdio.h>
+
+int c = 1;
+int *foo(int *p) { return p; }
+
+int main() {
+    *foo(&c) = 2;
+    printf("%d\n", c);
+    return c - 2;
+}

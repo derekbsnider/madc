@@ -7460,6 +7460,28 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    // like `*p->name == '$'` don't get swallowed.
 				    deref_expr = parsePostfixChain(deref_tb);
 				}
+				else if ( deref_tb->type() == TokenType::ttIdentifier
+				   && peekToken()
+				   && peekToken()->id() == TokenID::tkOpBrk )
+				{
+				    // *func(args) — parse just the call expression so
+				    // trailing `=` stays for the outer assignment, e.g.
+				    // `*foo(&c) = 2`. Push the deref_tb back and let
+				    // parseExpression handle the identifier+call, but
+				    // use stop_on_closing_paren at bracket depth 0 so
+				    // the parse ends after the call's `)`.
+				    std::string fname = ((TokenIdent *)deref_tb)->str;
+				    Variable *fvar = findVariable(fname);
+				    if ( fvar )
+				    {
+					TokenCallFunc *tcf = new TokenCallFunc(*fvar);
+					nextToken(); // consume '('
+					parseCallFunc(tcf);
+					deref_expr = tcf;
+				    }
+				    else
+					deref_expr = parseExpression(deref_tb, true);
+				}
 				else if ( (deref_tb->id() == TokenID::tkInc
 				        || deref_tb->id() == TokenID::tkDec)
 				    && peekToken()
