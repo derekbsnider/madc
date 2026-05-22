@@ -13051,14 +13051,37 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    rbrk = nextToken();
 	    if ( !rbrk || rbrk->id() != TokenID::tkClBrk )
 		Throw(rbrk ? rbrk : open) << "Expecting ')' after function pointer name" << flush;
-	    TokenBase *param_open = nextToken();
-	    if ( !param_open || param_open->id() != TokenID::tkOpBrk )
-		Throw(param_open ? param_open : open) << "Expecting '(' for function pointer parameter list" << flush;
+	    TokenBase *param_open = peekToken();
+	    if ( param_open && param_open->id() == TokenID::tkOpSqr )
+	    {
+		// Pointer-to-array: `type (*name)[N]`
+		// Parse the array dimension and treat as a pointer to the base type.
+		nextToken(); // consume '['
+		TokenBase *dim_peek = peekToken();
+		if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
+		    nextToken(); // consume ']' for unsized
+		else
+		{
+		    parse_constant_integer_expression(*this);
+		    TokenBase *cl = nextToken();
+		    if ( !cl || cl->id() != TokenID::tkClSqr )
+			Throw(cl ? cl : open) << "Expected ] in pointer-to-array declaration" << flush;
+		}
+		decl_type = getPointerType(decl_type);
+		have_decl_id = true;
+		nt = peekToken();
+	    }
+	    else
+	    {
+		nextToken(); // consume the peeked token
+		if ( !param_open || param_open->id() != TokenID::tkOpBrk )
+		    Throw(param_open ? param_open : open) << "Expecting '(' for function pointer parameter list" << flush;
 
-	    FuncDef *func = parseFnPtrParams(*decl_type);
-	    decl_type = new DataDefFPTR(func);
-	    have_decl_id = true;
-	    nt = peekToken();
+		FuncDef *func = parseFnPtrParams(*decl_type);
+		decl_type = new DataDefFPTR(func);
+		have_decl_id = true;
+		nt = peekToken();
+	    }
 	}
 	else
 	{
