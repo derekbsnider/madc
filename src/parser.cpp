@@ -7481,6 +7481,50 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    done = true;
 			break;
 		    }
+		    // Generic expression-as-function-pointer call:
+		    // `(c ? foo : bar)()`, `(expr)(args)` — when the
+		    // exStack top is an expression and the datadef of
+		    // either ternary branch (or the expression itself)
+		    // is a function. Create a synthetic function-pointer
+		    // variable and route through the standard call path.
+		    if ( !exStack.empty() && !opstack_has_pending_op )
+		    {
+			TokenBase *call_expr = exStack.top();
+			DataDef *call_dd = call_expr->datadef();
+			// For ternary: check if either branch is a function reference.
+			TokenTerQ *terq = dynamic_cast<TokenTerQ *>(call_expr);
+			if ( terq )
+			{
+			    DataDef *td = terq->true_expr ? terq->true_expr->datadef() : NULL;
+			    DataDef *fd = terq->false_expr ? terq->false_expr->datadef() : NULL;
+			    if ( td && td->is_function() ) call_dd = td;
+			    else if ( fd && fd->is_function() ) call_dd = fd;
+			}
+			DataDefFPTR *fptr_type = dynamic_cast<DataDefFPTR *>(call_dd);
+			if ( !fptr_type && call_dd && call_dd->is_function() )
+			{
+			    // Wrap a plain function DataDef in a function-pointer type
+			    FuncDef *func = dynamic_cast<FuncDef *>(call_dd);
+			    if ( func )
+				fptr_type = new DataDefFPTR(func);
+			}
+			if ( fptr_type )
+			{
+			    exStack.pop();
+			    Variable *call_var = new Variable("__expr_fptr", *fptr_type, 1, NULL, false);
+			    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+			    tc->src_node = call_expr;
+			    tc->file = tb->file;
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallFunc(tc);
+			    DBG(cout << "expression fptr call" << endl);
+			    opStack.push(tc);
+			    if ( tb && tb->id() == TokenID::tkSemi )
+				done = true;
+			    break;
+			}
+		    }
 		    ++brackets;
 		    DBG(cout << "Got (, pushing onto opStack" << endl);
 		    opStack.push(tb); // opStack.push(tb->clone());
@@ -7522,7 +7566,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			bool postfix_follows = next
 			    && (next->id() == TokenID::tkDot
 			     || next->id() == TokenID::tkDeRef
-			     || next->id() == TokenID::tkOpSqr);
+			     || next->id() == TokenID::tkOpSqr
+			     || next->id() == TokenID::tkOpBrk);
 			bool ends_conditional = !postfix_follows && (stop_on_closing_paren || !next
 			    || next->id() == TokenID::tkComma
 			    || next->id() == TokenID::tkClBrk
