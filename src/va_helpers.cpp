@@ -193,6 +193,17 @@ extern "C" int __madc_scanf(const char *fmt, ...)
     return rc;
 }
 
+// __builtin_signbit: extract sign bit via movmskpd (GCC's approach).
+// Returns non-zero when the sign bit is set.
+extern "C" int __madc_signbit(double x)
+{
+    return __builtin_signbit(x);
+}
+extern "C" int __madc_signbitf(float x)
+{
+    return __builtin_signbitf(x);
+}
+
 // __builtin_add/sub/mul_overflow: write a+b/a-b/a*b to *res and
 // return 1 on overflow, 0 otherwise.  These use __int128 to detect
 // overflow in 64-bit arithmetic.  The GCC torture tests use the

@@ -842,11 +842,14 @@ void Program::_tokenizer_init()
     }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
-    // __builtin_signbit(x) → (x < 0.0) — simplified
+    // __builtin_signbit(x) — check sign bit with 1/x trick.
+    // Cannot use (x < 0.0) because -0.0 < 0.0 is false in IEEE 754.
+    // 1.0/(-0.0) = -inf < 0.0 → true; 1.0/(+0.0) = +inf < 0.0 → false.
+    // For ±normal/subnormal values, x < 0.0 suffices.
     {
 	MacroDef m;
 	m.params = {"__x"};
-	m.body = "((__x) < 0.0 ? 1 : 0)";
+	m.body = "((__x) < 0.0 || 1.0 / (__x) < 0.0)";
 	macro_map["__builtin_signbit"] = m;
 	macro_map["__builtin_signbitf"] = m;
 	macro_map["__builtin_signbitl"] = m;
