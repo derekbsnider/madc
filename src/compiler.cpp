@@ -11278,9 +11278,15 @@ Operand &TokenOperator::optimize(Program &pgm, regdefp_t &regdp)
     }
     if ( !regdp.second )
     {
-	DBG(pgm.cc.comment("optimize() regdp.second = &ddINT"));
-	DataDef *folded_type = datadef();
-	regdp.second = (folded_type && folded_type->is_integer()) ? folded_type : &ddINT;
+	DBG(pgm.cc.comment("optimize() inferring folded type"));
+	DataDef *folded_type = infer_numeric_type(left, right);
+	if ( !folded_type || !folded_type->is_integer() )
+	{
+	    folded_type = datadef();
+	    if ( !folded_type || !folded_type->is_integer() )
+		folded_type = &ddINT;
+	}
+	regdp.second = folded_type;
     }
     if ( !regdp.first )
     {
