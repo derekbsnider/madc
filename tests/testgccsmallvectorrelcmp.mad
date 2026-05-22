@@ -1,0 +1,10 @@
+#include <stdio.h>
+
+typedef unsigned long V __attribute__((__vector_size__ (8)));
+
+int main()
+{
+    V v = ~((V) { } <= 0);
+    printf("%lu\n", v[0]);
+    return 0;
+}

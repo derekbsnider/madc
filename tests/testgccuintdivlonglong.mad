@@ -1,0 +1,22 @@
+#include <stdio.h>
+
+signed char a = -4;
+
+int foo()
+{
+    return ((unsigned int) (signed int) a) / 2LL;
+}
+
+int bar()
+{
+    return ((unsigned int) (signed int) a) % 5LL;
+}
+
+int main()
+{
+    unsigned int u = (unsigned int) (signed int) a;
+    long long l = (long long) u;
+    printf("%lu %lu %u %lld %d %d\n",
+        sizeof(unsigned int), sizeof(2LL), u, l, foo(), bar());
+    return 0;
+}

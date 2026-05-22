@@ -6080,6 +6080,79 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
     return result;
 }
 
+static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
+{
+    if ( !star || star->id() != TokenID::tkMul )
+	return NULL;
+
+    TokenBase *deref_tb = pgm.nextToken();
+    if ( !deref_tb )
+	pgm.Throw(star) << "expecting pointer expression after '*'" << flush;
+
+    if ( deref_tb->id() == TokenID::tkOpBrk )
+    {
+	TokenBase *inner_tb = pgm.nextToken();
+	TokenBase *inner_expr = pgm.parseExpression(inner_tb, true, false, true, 1);
+	if ( !inner_expr )
+	    pgm.Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
+	DataDef *dtype = effective_pointer_type_for_member_access(pgm, inner_expr);
+	if ( !dtype )
+	    dtype = inner_expr->datadef();
+	if ( !dtype || !dtype->is_pointer() )
+	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	return new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
+    }
+
+    if ( deref_tb->type() != TokenType::ttIdentifier )
+    {
+	pgm.pushToken(deref_tb);
+	return NULL;
+    }
+
+    TokenBase *peek = pgm.peekToken();
+    if ( peek && peek->id() == TokenID::tkOpBrk )
+    {
+	pgm.pushToken(deref_tb);
+	return NULL;
+    }
+
+    TokenBase *pointer_expr = NULL;
+    if ( peek && (peek->id() == TokenID::tkDeRef
+	       || peek->id() == TokenID::tkDot
+	       || peek->id() == TokenID::tkOpSqr) )
+    {
+	pointer_expr = pgm.parsePostfixChain(deref_tb);
+	DataDef *dtype = effective_pointer_type_for_member_access(pgm, pointer_expr);
+	if ( !dtype )
+	    dtype = pointer_expr ? pointer_expr->datadef() : NULL;
+	if ( !dtype )
+	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	if ( dtype->is_function() && dtype->is_numeric() )
+	    return pointer_expr;
+	if ( !dtype->is_pointer() )
+	{
+	    if ( TokenMember *tm = dynamic_cast<TokenMember *>(pointer_expr) )
+		if ( tm->is_fixed_array_member() )
+		    return new TokenDerefExpr(pointer_expr, dtype);
+	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+	}
+	return new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
+    }
+
+    std::string name = ((TokenIdent *)deref_tb)->str;
+    Variable *var = pgm.findVariable(name);
+    if ( !var )
+	pgm.Throw(deref_tb) << "undeclared identifier '" << name << "'" << flush;
+    if ( var->type->is_function() && var->type->is_numeric() )
+	return new TokenVar(*var);
+    if ( dynamic_cast<DataDefFPTR *>(var->type) != NULL )
+	return new TokenVar(*var);
+    DataDef *base = deref_type_for_variable(var);
+    if ( !base )
+	pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
+    return new TokenDeref(*var, base);
+}
+
 TokenFunc *Program::build_expression_function(TokenProgram *tp,
 					      TokenBase *expr,
 					      DataDef *return_type,
@@ -6892,6 +6965,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( ident_no_call )
 		    {
 			cast_expr = parsePostfixChain(cast_expr_tb);
+		    }
+		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkMul )
+		    {
+			cast_expr = parse_cast_unary_deref_operand(*this, cast_expr_tb);
+			if ( !cast_expr )
+			    cast_expr = parseExpression(cast_expr_tb, true);
 		    }
 		    else if ( cast_expr_tb && cast_expr_tb->id() == TokenID::tkBand )
 		    {

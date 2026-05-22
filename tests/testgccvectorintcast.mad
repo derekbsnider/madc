@@ -1,0 +1,18 @@
+#include <stdio.h>
+
+typedef int V2SI __attribute__((vector_size(8)));
+typedef short V2HI __attribute__((vector_size(4)));
+
+V2SI widen(V2HI x)
+{
+	return (V2SI)(long long)(int)x;
+}
+
+int main()
+{
+	V2HI y = {4, 4};
+	union { V2SI x; long long y; int i[2]; } v;
+	v.x = widen(y);
+	printf("%lld %d %d\n", v.y, v.i[0], v.i[1]);
+	return 0;
+}

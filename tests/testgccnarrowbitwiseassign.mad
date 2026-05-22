@@ -1,0 +1,15 @@
+#include <stdio.h>
+
+unsigned char t14(unsigned char a, signed char b)
+{
+	unsigned char t1 = ~a;
+	signed char t2 = b | t1;
+	unsigned char t3 = a ^ t2;
+	return t3;
+}
+
+int main()
+{
+	printf("%u\n", t14(100, 53));
+	return 0;
+}

@@ -1883,7 +1883,48 @@ static DataDef *infer_numeric_type(TokenBase *left, TokenBase *right)
     return &ddINT;
 }
 
+static bool should_use_natural_divmod_type(DataDef *requested, DataDef *natural)
+{
+    if ( !requested || !natural )
+	return false;
+    if ( !requested->is_integer() || !natural->is_integer() )
+	return false;
+    if ( requested == natural )
+	return false;
+    if ( requested->size < natural->size )
+	return true;
+    return natural->is_unsigned()
+	&& !requested->is_unsigned()
+	&& requested->size <= natural->size;
+}
+
 static DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb);
+
+static void splat_gp_to_simd_xmm(Program &pgm, x86::Xmm &dst, x86::Gp gp,
+				 DataDefSIMD *vdd)
+{
+    if ( !vdd || !vdd->element_type || vdd->element_type->size == 0 )
+	throw "splat_gp_to_simd_xmm() invalid SIMD type";
+    uint32_t bytes = (uint32_t)vdd->size;
+    x86::Mem slot = pgm.cc.newStack(bytes, (uint32_t)vdd->alignment());
+    slot.setSize(bytes);
+    size_t elem_size = vdd->element_type->size;
+    for ( size_t i = 0; i < vdd->lane_count; ++i )
+    {
+	x86::Mem lane = slot;
+	lane.addOffset((int64_t)(i * elem_size));
+	lane.setSize((uint32_t)elem_size);
+	if ( elem_size == 1 )
+	    pgm.cc.mov(lane, gp.r8());
+	else if ( elem_size == 2 )
+	    pgm.cc.mov(lane, gp.r16());
+	else if ( elem_size == 4 )
+	    pgm.cc.mov(lane, gp.r32());
+	else
+	    pgm.cc.mov(lane, gp.r64());
+    }
+    load_mem_to_xmm(pgm, dst, slot, vdd);
+}
 
 static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					 Operand *preferred_dest, Operand &storage)
@@ -1942,6 +1983,12 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     }
 
     regdefp_t tmp_rdp = {preferred_dest, target_type, nullptr};
+    if ( target_type && target_type->is_simd()
+      && token && token->datadef() && !token->datadef()->is_simd() )
+    {
+	tmp_rdp.first = nullptr;
+	tmp_rdp.second = nullptr;
+    }
     if ( target_type
       && target_type->is_pointer()
       && ((target_is_charptr && token_has_constant_cstring(token))
@@ -1983,16 +2030,21 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	}
 	else if ( raw.isReg() && raw.as<BaseReg>().isGroup(RegGroup::kGp) )
 	{
-	    if ( target_type->size <= 8 )
-		pgm.cc.movq(xmm, raw.as<x86::Gp>());
-	    else
-		throw "compile_token_normalized() SIMD target cannot widen gp source beyond 64 bits";
+	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(target_type);
+	    DataDef *elem = vdd->element_type ? vdd->element_type : &ddINT64;
+	    IRBuilder ir(pgm.cc);
+	    IRValue scalar = ir.coerce(ir_from_operand(raw, raw_type ? raw_type : elem), elem);
+	    scalar = ir.load(scalar);
+	    splat_gp_to_simd_xmm(pgm, xmm, scalar.op.as<x86::Gp>(), vdd);
 	}
 	else if ( raw.isImm() )
 	{
-	    x86::Gp gp = pgm.cc.newGpq("norm_simd_imm");
-	    pgm.cc.mov(gp, raw.as<Imm>());
-	    pgm.cc.movq(xmm, gp);
+	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(target_type);
+	    DataDef *elem = vdd->element_type ? vdd->element_type : &ddINT64;
+	    IRBuilder ir(pgm.cc);
+	    IRValue scalar = ir.coerce(IRValue::imm(raw.as<Imm>(), raw_type ? raw_type : elem), elem);
+	    scalar = ir.load(scalar);
+	    splat_gp_to_simd_xmm(pgm, xmm, scalar.op.as<x86::Gp>(), vdd);
 	}
 	else
 	    throw "compile_token_normalized() unsupported SIMD source operand";
@@ -2772,6 +2824,30 @@ static void store_simd_lane_gp(Program &pgm, const x86::Mem &base, size_t lane,
 	pgm.cc.mov(mem, value.r64());
 }
 
+static Operand &finish_simd_mem_result(Program &pgm, x86::Mem &src_mem,
+				       DataDefSIMD *vdd, regdefp_t &regdp,
+				       Operand &storage, const char *copy_name)
+{
+    regdp.second = vdd;
+    if ( Operand *caller_dest = regdp.first )
+    {
+	if ( caller_dest->isReg()
+	  && caller_dest->as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    x86::Xmm dst = caller_dest->as<x86::Xmm>();
+	    load_mem_to_xmm(pgm, dst, src_mem, vdd);
+	    return *caller_dest;
+	}
+	Operand src = src_mem;
+	emit_raw_aggregate_copy(pgm, *caller_dest, src, vdd, copy_name);
+	regdp.first = caller_dest;
+	return *caller_dest;
+    }
+    storage = src_mem;
+    regdp.first = &storage;
+    return storage;
+}
+
 static Operand &emit_large_simd_compare(Program &pgm, TokenBase *left, TokenBase *right,
 					CmpKind op, DataDefSIMD *vdd,
 					regdefp_t &regdp, Operand &storage)
@@ -2820,17 +2896,7 @@ static Operand &emit_large_simd_compare(Program &pgm, TokenBase *left, TokenBase
 	store_simd_lane_gp(pgm, dst, i, vdd, bit);
     }
 
-    regdp.second = vdd;
-    if ( Operand *caller_dest = regdp.first )
-    {
-	Operand src = dst;
-	emit_raw_aggregate_copy(pgm, *caller_dest, src, vdd, "simd_cmp_copy");
-	regdp.first = caller_dest;
-	return *caller_dest;
-    }
-    storage = dst;
-    regdp.first = &storage;
-    return storage;
+    return finish_simd_mem_result(pgm, dst, vdd, regdp, storage, "simd_cmp_copy");
 }
 
 static Operand &emit_large_simd_bitwise(Program &pgm, TokenBase *left, TokenBase *right,
@@ -2839,7 +2905,6 @@ static Operand &emit_large_simd_bitwise(Program &pgm, TokenBase *left, TokenBase
 {
     if ( !vdd || !vdd->element_type || !vdd->element_type->is_integer() )
 	throw "large SIMD bitwise currently supports integer vectors";
-    Operand *caller_dest = regdp.first;
     DataDef *elem = vdd->element_type;
     bool right_vec = expr_contains_simd_value(right);
     x86::Mem left_mem = large_simd_expr_mem(pgm, left, vdd, "simd_bit_l");
@@ -2871,17 +2936,7 @@ static Operand &emit_large_simd_bitwise(Program &pgm, TokenBase *left, TokenBase
 	store_simd_lane_gp(pgm, dst, i, vdd, ltmp.as<x86::Gp>());
     }
 
-    regdp.second = vdd;
-    if ( caller_dest )
-    {
-	Operand src = dst;
-	emit_raw_aggregate_copy(pgm, *caller_dest, src, vdd, "simd_bit_copy");
-	regdp.first = caller_dest;
-	return *caller_dest;
-    }
-    storage = dst;
-    regdp.first = &storage;
-    return storage;
+    return finish_simd_mem_result(pgm, dst, vdd, regdp, storage, "simd_bit_copy");
 }
 
 static Operand &emit_simd_bitwise_not(Program &pgm, TokenBase *expr, DataDefSIMD *vdd,
@@ -2889,7 +2944,6 @@ static Operand &emit_simd_bitwise_not(Program &pgm, TokenBase *expr, DataDefSIMD
 {
     if ( !vdd || !vdd->element_type || !vdd->element_type->is_integer() )
 	throw "SIMD bitwise-not currently supports integer vectors";
-    Operand *caller_dest = regdp.first;
     x86::Mem src_mem = large_simd_expr_mem(pgm, expr, vdd, "simd_not_src");
     x86::Mem dst = new_large_simd_stack(pgm, vdd, "simd_not");
     for ( size_t i = 0; i < vdd->lane_count; ++i )
@@ -2898,17 +2952,7 @@ static Operand &emit_simd_bitwise_not(Program &pgm, TokenBase *expr, DataDefSIMD
 	pgm.safenot(lane);
 	store_simd_lane_gp(pgm, dst, i, vdd, lane);
     }
-    regdp.second = vdd;
-    if ( caller_dest )
-    {
-	Operand src = dst;
-	emit_raw_aggregate_copy(pgm, *caller_dest, src, vdd, "simd_not_copy");
-	regdp.first = caller_dest;
-	return *caller_dest;
-    }
-    storage = dst;
-    regdp.first = &storage;
-    return storage;
+    return finish_simd_mem_result(pgm, dst, vdd, regdp, storage, "simd_not_copy");
 }
 
 // Central implementation of `lval <cmp> rval` -> 0/1 int64 result.
@@ -2921,7 +2965,7 @@ static Operand &emit_compare(Program &pgm, TokenBase *left, TokenBase *right, Cm
 {
     Operand *caller_dest = regdp.first;
     DataDefSIMD *simd_type = compare_simd_type(left, right, regdp.second);
-    if ( is_large_simd_type(simd_type) )
+    if ( simd_type && simd_type->element_type && simd_type->element_type->is_integer() )
 	return emit_large_simd_compare(pgm, left, right, op, simd_type, regdp, storage);
     if ( simd_type && (op == CmpKind::Eq || op == CmpKind::Ne) )
 	return emit_simd_compare(pgm, left, right, op, simd_type, regdp, storage);
@@ -8034,6 +8078,35 @@ static int pointer_step_size(DataDef *type)
 static void apply_inc_dec_step(Program &pgm, Operand &op, DataDef *type,
 			       bool increment, SafeUnaryStep fallback)
 {
+    if ( type && type->is_simd() )
+    {
+	x86::Xmm value;
+	bool writeback_mem = op.isMem();
+	if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    value = op.as<x86::Xmm>();
+	else if ( writeback_mem )
+	{
+	    value = pgm.cc.newXmm(increment ? "simd_inc" : "simd_dec");
+	    x86::Mem mem = op.as<x86::Mem>();
+	    load_mem_to_xmm(pgm, value, mem, type);
+	}
+	else
+	    pgm.Throw << "SIMD ++/-- operand is not an Xmm register or memory" << flush;
+
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(type);
+	x86::Gp one_i = pgm.cc.newGpq("simd_one_i");
+	pgm.cc.mov(one_i, 1);
+	x86::Xmm one = pgm.cc.newXmm("simd_one");
+	splat_gp_to_simd_xmm(pgm, one, one_i, vdd);
+	if ( increment )
+	    pgm.safeadd(value, one, type, type);
+	else
+	    pgm.safesub(value, one, type, type);
+	if ( writeback_mem )
+	    store_xmm_to_mem(pgm, op.as<x86::Mem>(), value, type);
+	return;
+    }
+
     if ( type && type->is_real() )
     {
 	x86::Xmm value;
@@ -11317,10 +11390,7 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
     // safediv emits unsigned division.
     {
 	DataDef *natural = infer_numeric_type(left, right);
-	if ( natural && natural->is_unsigned()
-	  && regdp.second && regdp.second->is_integer()
-	  && !regdp.second->is_unsigned()
-	  && regdp.second->size <= natural->size )
+	if ( should_use_natural_divmod_type(regdp.second, natural) )
 	    regdp.second = natural;
     }
     settype(pgm, regdp);				 // set regdp.second type
@@ -11379,10 +11449,7 @@ Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)
     // Override signed destination when operands are unsigned (same as TokenDiv).
     {
 	DataDef *natural = infer_numeric_type(left, right);
-	if ( natural && natural->is_unsigned()
-	  && regdp.second && regdp.second->is_integer()
-	  && !regdp.second->is_unsigned()
-	  && regdp.second->size <= natural->size )
+	if ( should_use_natural_divmod_type(regdp.second, natural) )
 	    regdp.second = natural;
     }
     settype(pgm, regdp);
@@ -11854,16 +11921,21 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
     if ( right && right->datadef() && right->datadef()->is_integer() )
     {
 	Operand *caller_dest = regdp.first;
+	DataDef *requested_type = regdp.second;
 	Operand out_norm;
-	DataDef *rtype = right->datadef() ? right->datadef() : regdp.second;
+	DataDef *rtype = token_numeric_type(right);
+	if ( !rtype )
+	    rtype = right->datadef() ? right->datadef() : regdp.second;
+	DataDef *result_type = rtype && rtype->is_integer()
+	    ? promote_c_integer_type(rtype) : regdp.second;
 	DBG(std::cout << "TokenBnot: integer path, rtype=" << (rtype ? rtype->name : "null") << " size=" << (rtype ? (int)rtype->size : -1) << std::endl);
-	Operand &rval = compile_token_gp_normalized(pgm, right, regdp.second, out_norm);
+	Operand &rval = compile_token_gp_normalized(pgm, right, result_type, out_norm);
 	pgm.safenot(rval);
 	// Narrow result to semantic type width for sub-64-bit types.
 	// ~0U must produce a 32-bit 0xFFFFFFFF, not 64-bit 0xFFFFFFFFFFFFFFFF.
 	// Using mov r32,r32 to truncate (implicit zero-extend to 64-bit) so
 	// subsequent comparisons use the right register width.
-	if ( rtype && rtype->size == 4 && rval.isReg()
+	if ( result_type && result_type->size == 4 && rval.isReg()
 	  && rval.as<x86::Gp>().isGpq() )
 	{
 	    DBG(std::cout << "TokenBnot: narrowing to Gpd" << std::endl);
@@ -11871,11 +11943,13 @@ Operand &TokenBnot::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.mov(narrow, rval.as<x86::Gp>().r32());
 	    rval = narrow;
 	}
-	else if ( rtype && rtype->size < 4 && rval.isReg() )
-	    pgm.cc.and_(rval.as<x86::Gp>(), (int64_t)((1ULL << (rtype->size * 8)) - 1));
+	else if ( result_type && result_type->size < 4 && rval.isReg() )
+	    pgm.cc.and_(rval.as<x86::Gp>(), (int64_t)((1ULL << (result_type->size * 8)) - 1));
 	_operand = rval;
+	regdp.second = result_type;
 	regdp.first = &_operand;
-	if ( caller_dest )
+	if ( caller_dest
+	  && (caller_dest->isMem() || !requested_type || requested_type == result_type) )
 	{
 	    regdp.first = caller_dest;
 	    return emit_ir_value(pgm, IRValue::reg(rval, regdp.second), regdp, _operand, regdp.second);
@@ -12750,6 +12824,56 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     DataDef *src_type = expr ? expr->datadef() : NULL;
     bool src_is_real = src_type && src_type->is_real();
     bool dst_is_real = cast_type && cast_type->is_real();
+    if ( cast_type && cast_type->is_simd()
+      && src_type && !src_type->is_simd()
+      && (src_type->is_integer() || src_type->is_pointer()) )
+    {
+	regdefp_t inner_rdp = {NULL, NULL, NULL};
+	Operand &src_op = expr->compile(pgm, inner_rdp);
+	DataDef *actual_src = inner_rdp.second ? inner_rdp.second : src_type;
+	IRBuilder ir(pgm.cc);
+	IRValue scalar = ir.load(ir_from_operand(src_op, actual_src));
+	x86::Xmm out = cast_type->newreg(pgm.cc, "cast_s2v").as<x86::Xmm>();
+	if ( scalar.isReg() && scalar.op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.cc.movq(out, scalar.op.as<x86::Xmm>());
+	else
+	{
+	    if ( !scalar.isReg() || !scalar.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		throw "TokenCast::compile() scalar->SIMD cast expects scalar register";
+	    x86::Gp gp = scalar.op.as<x86::Gp>();
+	    if ( actual_src && actual_src->size <= 4 )
+		pgm.cc.movd(out, gp.r32());
+	    else
+	    {
+		if ( !gp.isGpq() )
+		{
+		    x86::Gp wide = pgm.cc.newGpq("cast_s2v_wide");
+		    pgm.cc.mov(wide.r32(), gp.r32());
+		    gp = wide;
+		}
+		pgm.cc.movq(out, gp.r64());
+	    }
+	}
+	regdp.second = cast_type;
+	if ( regdp.first )
+	{
+	    if ( regdp.first->isReg()
+	      && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	    {
+		pgm.safemov(*regdp.first, out, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    if ( regdp.first->isMem() )
+	    {
+		x86::Mem dst = regdp.first->as<x86::Mem>();
+		store_xmm_to_mem(pgm, dst, out, cast_type);
+		return *regdp.first;
+	    }
+	}
+	_operand = out;
+	regdp.first = &_operand;
+	return _operand;
+    }
     if ( src_is_real && dst_is_real && src_type->size != cast_type->size )
     {
 	regdefp_t inner_rdp = {NULL, NULL, NULL};

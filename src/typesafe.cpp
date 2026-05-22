@@ -618,6 +618,20 @@ void Program::safesub(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 
 void Program::safesub(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
+    if ( d1 && d1->is_simd() )
+    {
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(d1);
+	if ( vdd->element_type->is_real() )
+	{
+	    if ( vdd->element_type->size == sizeof(float) ) cc.subps(r1, r2);
+	    else                                            cc.subpd(r1, r2);
+	}
+	else if ( vdd->element_type->size == 2 ) cc.psubw(r1, r2);
+	else if ( vdd->element_type->size == 4 ) cc.psubd(r1, r2);
+	else if ( vdd->element_type->size == 8 ) cc.psubq(r1, r2);
+	else throw "Program::safesub() unsupported SIMD element size";
+	return;
+    }
     if ( d1 && d1->size == sizeof(float) )
 	cc.subss(r1, r2);
     else
