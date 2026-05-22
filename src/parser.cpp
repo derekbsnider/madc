@@ -2117,6 +2117,7 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 
     dd = resolve_type_query_datadef(pgm, type_tb, op_name, have_value, value);
     // Fallback: sizeof(expression) — parse as expression, use its type
+    bool expr_fallback_consumed_paren = false;
     if ( !have_value && !dd )
     {
 	// sizeof("literal") — C string literals are char arrays, not
@@ -2143,6 +2144,7 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
 		    value = query_datadef_measure(dd, want_alignof);
 		have_value = true;
 		dd = NULL; // have_value is set, skip the pointer/array loop below
+		expr_fallback_consumed_paren = true;
 	    }
 	    if ( !have_value )
 		pgm.Throw(type_tb) << "Unknown type in " << op_name << flush;
@@ -2188,8 +2190,8 @@ static size_t evaluate_type_query(Program &pgm, TokenBase *op_tb, const std::str
     }
     // The expression fallback (sizeof(expr)) already consumed the closing
     // paren via parseExpression's stop_on_closing_paren. Only consume it
-    // here for the type-name path.
-    if ( !have_value || (pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkClBrk) )
+    // here for the type-name / variable-name path.
+    if ( !expr_fallback_consumed_paren )
     {
 	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
 	    pgm.Throw(type_tb) << "Expecting ')' after " << op_name << " type" << flush;
