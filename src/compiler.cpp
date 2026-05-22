@@ -7001,7 +7001,7 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 		continue;
 	    }
 
-	    regdefp_t it_rdp = {nullptr, var.type->is_real() ? var.type : nullptr, nullptr};
+	    regdefp_t it_rdp = {nullptr, var.type->is_numeric() ? var.type : nullptr, nullptr};
 	    Operand &val_op = flat_inits[i]->compile(pgm, it_rdp);
 	    x86::Mem slot = x86::ptr(base_reg, (int32_t)(i * elem_size), (uint32_t)elem_size);
 	    // char *arr[] = {"alice", ...}: each string-literal init yields a

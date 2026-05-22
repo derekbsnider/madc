@@ -5587,19 +5587,36 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 
     if ( code )
     {
-	if ( (var=code->findVariable(id)) )
-	    return var;
 	// Function-local `extern T name;` is not a fresh local — it's a
-	// reference to the file-scope global with that name. Without
-	// this, comm.c's `extern char *help_greeting;` inside
-	// new_descriptor() created an uninitialized local pointer
-	// distinct from db.c's global, and the deref crashed on the
-	// first incoming connection.
+	// reference to the file-scope global with that name.  When a
+	// local with the same name already exists in an enclosing scope,
+	// we must add an alias in the *current* block that points to the
+	// global's storage so subsequent lookups in this block find the
+	// global instead of the local shadow.
 	if ( parsing_extern_decl )
 	{
-	    if ( (var=tkProgram->findVariable(id)) )
+	    Variable *global_var = tkProgram->findVariable(id);
+	    if ( global_var )
+	    {
+		// If the current block's own variables already include this
+		// name, return it (already declared extern earlier in this
+		// same block).  Otherwise create a local alias that shares
+		// the global's data pointer, so findVariable in this block
+		// finds it before any parent-scope shadow.
+		for ( variable_vec_iter vvi = code->variables.begin();
+		      vvi != code->variables.end(); ++vvi )
+		    if ( (*vvi)->name == id )
+			return *vvi;
+		var = new Variable(id, *global_var->type, global_var->count,
+				   NULL, false);
+		var->flags = global_var->flags;
+		var->data  = global_var->data;
+		code->variables.push_back(var);
 		return var;
+	    }
 	}
+	if ( (var=code->findVariable(id)) )
+	    return var;
 	var = new Variable(id, dd, c, init, alloc);
 	var->flags |= vfLOCAL;
 	code->variables.push_back(var);
@@ -6620,6 +6637,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 
     while ( !done && tb )
     {
+	redo_expression_token:
 	switch(tb->type())
 	{
 	    case TokenType::ttInteger:
@@ -7084,7 +7102,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						}
 						if ( look->id() == TokenID::tkOpBrc )
 						{
-						    slit->inits.push_back(read_compound_struct_lit(NULL));
+						    DataDefSTRUCT *elem_sdd = NULL;
+						    if ( current_sdd )
+						    {
+							size_t idx = slit->inits.size();
+							if ( idx < current_sdd->members.size() )
+							    elem_sdd = dynamic_cast<DataDefSTRUCT *>(current_sdd->members[idx].second);
+						    }
+						    slit->inits.push_back(read_compound_struct_lit(elem_sdd));
 						}
 						else
 						{
@@ -8098,6 +8123,20 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		break;
             case TokenType::ttDataType:
 		bt = (TokenDataType *)tb;
+		// If the previous token is '.' or '->', the type name is a
+		// struct member name (e.g. `a.array[1]` where `array` is
+		// both a madc keyword and a union member).  Re-inject as
+		// a plain identifier and let the ttIdentifier path resolve it.
+		if ( prevToken()
+		  && (prevToken()->id() == TokenID::tkDot || prevToken()->id() == TokenID::tkDeRef)
+		  && is_contextual_identifier_token(bt) )
+		{
+		    std::string ctx_name = contextual_identifier_name(bt);
+		    tb = new TokenIdent(ctx_name);
+		    tb->line = bt->line;
+		    tb->column = bt->column;
+		    goto redo_expression_token;
+		}
 		// If the next token isn't an identifier, the user probably
 		// meant the data type *name* as a contextual identifier — a
 		// parameter or local variable named e.g. `string`. Look it up
@@ -13676,10 +13715,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    && dynamic_cast<DataDefSTRUCT *>(decl_type) != NULL
 	    && decl_type->type() == DataType::dtRESERVED;
 	bool is_simd_init = arr_dims.empty() && decl_type && decl_type->is_simd();
-	if ( nt->id() == TokenID::tkAssign && arr_dims.empty() && !provisional_decl_var )
+	if ( nt->id() == TokenID::tkAssign && !provisional_decl_var )
 	{
 	    bool alloc = parsing_extern_decl ? false : ((!code || gotstatic) ? true : false);
-	    provisional_decl_var = addVariable(code, *decl_type, id, 1, NULL, alloc);
+	    uint32_t prov_count = 1;
+	    for ( auto d : arr_dims ) prov_count *= d;
+	    provisional_decl_var = addVariable(code, *decl_type, id, prov_count, NULL, alloc);
 	    if ( gotstatic )
 		provisional_decl_var->flags |= vfSTATIC;
 	    if ( parsing_extern_decl )
@@ -14104,7 +14145,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	bool alloc = parsing_extern_decl ? false : ((!code || gotstatic) ? true : false);
 	uint32_t elem_count = 1;
 	for ( auto d : arr_dims ) elem_count *= d;
-	if ( provisional_decl_var && arr_dims.empty() && elem_count == 1 )
+	if ( provisional_decl_var )
 	{
 	    var = provisional_decl_var;
 	    var->type = decl_type;

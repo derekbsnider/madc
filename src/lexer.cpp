@@ -1125,6 +1125,14 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_isfinitef"] = isfinite;
 	macro_map["__builtin_isfinitel"] = isfinite;
     }
+    {
+	MacroDef isinf;
+	isinf.params = {"__x"};
+	isinf.body = "((__x) == __builtin_inf() ? 1 : ((__x) == -__builtin_inf() ? -1 : 0))";
+	macro_map["__builtin_isinf"] = isinf;
+	macro_map["__builtin_isinff"] = isinf;
+	macro_map["__builtin_isinfl"] = isinf;
+    }
     // __builtin_classify_type(x) → 0 (integer type, simplified)
     {
 	MacroDef m;
