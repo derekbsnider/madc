@@ -1017,14 +1017,15 @@ public:
 class TokenStr: public TokenIdent
 {
 public:
-    TokenStr() {}
-    TokenStr(const char *k) : TokenIdent(k) {}
-    TokenStr(std::string k) : TokenIdent(k) {}
+    bool wide;
+    TokenStr() : wide(false) {}
+    TokenStr(const char *k, bool w = false) : TokenIdent(k), wide(w) {}
+    TokenStr(std::string k, bool w = false) : TokenIdent(k), wide(w) {}
     virtual int64_t ival() const   { return atol(str.c_str()); }
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const { return TokenType::ttString; }
     virtual TokenID   id()   const { return TokenID::tkStr; }
-    virtual TokenBase *clone()     { return new TokenStr(str); }
+    virtual TokenBase *clone()     { return new TokenStr(str, wide); }
 };
 
 // comment

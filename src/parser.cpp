@@ -1324,6 +1324,11 @@ static DataDef *effective_pointer_type_for_member_access(Program &pgm, TokenBase
     DataDef *dd = tb->datadef();
     if ( dd && dd->is_pointer() )
 	return dd;
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+    {
+	DataDef *elem = add->element_type ? add->element_type : &ddINT64;
+	return pgm.getPointerType(elem);
+    }
 
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) )
     {
@@ -2305,11 +2310,45 @@ static TokenBase *materialize_cast_literal_operand(Program &pgm, TokenBase *tb)
     if ( tb->type() != TokenType::ttString )
 	return tb;
 
-    std::string literal = static_cast<TokenStr *>(tb)->str;
+    TokenStr *first = static_cast<TokenStr *>(tb);
+    std::string literal = first->str;
+    bool wide_literal = first->wide;
     while ( pgm.peekToken() && pgm.peekToken()->type() == TokenType::ttString )
-	literal += static_cast<TokenStr *>(pgm.nextToken())->str;
+    {
+	TokenStr *next = static_cast<TokenStr *>(pgm.nextToken());
+	if ( wide_literal || next->wide )
+	{
+	    if ( !wide_literal )
+	    {
+		std::string converted;
+		for ( unsigned char c : literal )
+		{
+		    converted += (char)c;
+		    converted += '\0';
+		    converted += '\0';
+		    converted += '\0';
+		}
+		literal = converted;
+		wide_literal = true;
+	    }
+	    if ( next->wide )
+		literal += next->str;
+	    else
+	    {
+		for ( unsigned char c : next->str )
+		{
+		    literal += (char)c;
+		    literal += '\0';
+		    literal += '\0';
+		    literal += '\0';
+		}
+	    }
+	}
+	else
+	    literal += next->str;
+    }
 
-    Variable *var = pgm.addLiteral(literal);
+    Variable *var = wide_literal ? pgm.addWideLiteral(literal) : pgm.addLiteral(literal);
     TokenVar *tv = new TokenVar(*var);
     tv->file = tb->file;
     tv->line = tb->line;
@@ -2713,6 +2752,108 @@ static TokenBase *parse_static_assert_statement(Program &pgm, TokenBase *tb)
     return NULL;
 }
 
+static bool try_parse_constant_offsetof_address(Program &pgm, int64_t &out)
+{
+    auto saved_tokens = pgm.tokens;
+    size_t saved_diag_count = pgm.diagnostics.size();
+    Program::ErrorInfo saved_error = pgm.last_error;
+
+    auto fail = [&]() -> bool {
+	pgm.tokens = saved_tokens;
+	pgm.diagnostics.resize(saved_diag_count);
+	pgm.last_error = saved_error;
+	return false;
+    };
+
+    TokenBase *open_outer = pgm.nextToken();
+    TokenBase *open_cast = pgm.nextToken();
+    if ( !open_outer || open_outer->id() != TokenID::tkOpBrk
+      || !open_cast || open_cast->id() != TokenID::tkOpBrk )
+	return fail();
+
+    DataDef *base_dd = NULL;
+    TokenBase *type_tb = pgm.nextToken();
+    if ( !type_tb )
+	return fail();
+    if ( type_tb->type() == TokenType::ttKeyword
+      && (type_tb->id() == TokenID::tkSTRUCT || type_tb->id() == TokenID::tkUNION) )
+    {
+	TokenBase *tag_tb = pgm.nextToken();
+	if ( !tag_tb || !is_contextual_identifier_token(tag_tb) )
+	    return fail();
+	base_dd = resolve_named_datadef(pgm, contextual_identifier_name(tag_tb));
+    }
+    else if ( type_tb->type() == TokenType::ttDataType )
+	base_dd = &static_cast<TokenDataType *>(type_tb)->definition;
+    else if ( is_contextual_identifier_token(type_tb) )
+	base_dd = resolve_named_datadef(pgm, contextual_identifier_name(type_tb));
+    if ( !base_dd )
+	return fail();
+
+    while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
+	pgm.nextToken();
+    TokenBase *close_cast = pgm.nextToken();
+    if ( !close_cast || close_cast->id() != TokenID::tkClBrk )
+	return fail();
+
+    TokenBase *zero_tb = pgm.nextToken();
+    int64_t zero_value = 0;
+    if ( !resolve_integer_constant(pgm, zero_tb, zero_value) || zero_value != 0 )
+	return fail();
+    TokenBase *close_outer = pgm.nextToken();
+    if ( !close_outer || close_outer->id() != TokenID::tkClBrk )
+	return fail();
+
+    TokenBase *access = pgm.nextToken();
+    if ( !access || (access->id() != TokenID::tkDeRef && access->id() != TokenID::tkDot) )
+	return fail();
+
+    int64_t offset = 0;
+    DataDef *current = base_dd;
+    while ( true )
+    {
+	if ( DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(current) )
+	    current = pdd->base_type;
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(current);
+	if ( !sdd )
+	    return fail();
+
+	TokenBase *member_tb = pgm.nextToken();
+	if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+	    return fail();
+	std::string member_name = contextual_identifier_name(member_tb);
+	ssize_t member_offset = sdd->m_offset(member_name);
+	if ( member_offset < 0 )
+	    return fail();
+	offset += member_offset;
+	current = sdd->m_type(member_name);
+	if ( !current )
+	    return fail();
+
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
+	{
+	    pgm.nextToken();
+	    int64_t index = parse_constant_integer_expression(pgm);
+	    TokenBase *close_sq = pgm.nextToken();
+	    if ( !close_sq || close_sq->id() != TokenID::tkClSqr )
+		return fail();
+	    size_t elem_size = current->size ? current->size : 1;
+	    offset += index * (int64_t)elem_size;
+	}
+
+	if ( pgm.peekToken()
+	  && (pgm.peekToken()->id() == TokenID::tkDeRef || pgm.peekToken()->id() == TokenID::tkDot) )
+	{
+	    pgm.nextToken();
+	    continue;
+	}
+	break;
+    }
+
+    out = offset;
+    return true;
+}
+
 static int64_t parse_constant_primary(Program &pgm)
 {
     TokenBase *tb = pgm.nextToken();
@@ -2734,6 +2875,12 @@ static int64_t parse_constant_primary(Program &pgm)
 	return parse_constant_primary(pgm);
     if ( tb && tb->id() == TokenID::tkLnot )
 	return !parse_constant_primary(pgm);
+    if ( tb && tb->id() == TokenID::tkBand )
+    {
+	if ( try_parse_constant_offsetof_address(pgm, out) )
+	    return out;
+	pgm.Throw(tb) << "Unsupported address expression in constant expression" << flush;
+    }
     if ( tb && tb->id() == TokenID::tkOpBrk )
     {
 	// Check for cast: (type)value — e.g. (char)SB, (unsigned char)~0
@@ -5398,6 +5545,42 @@ Variable *Program::addLiteral(std::string &s)
     return var;
 }
 
+Variable *Program::addWideLiteral(std::string &s)
+{
+    variable_map_iter vmi;
+    Variable *var;
+
+    string id = "__wliteral__";
+    id.append(s);
+
+    if ( (var=tkProgram->findVariable(id)) )
+	return var;
+
+    size_t chars = s.size() / 4;
+    uint32_t count = (uint32_t)chars + 1;
+    var = new Variable(id, ddINT32, count, NULL, true);
+    var->dims.push_back(count);
+    var->flags |= vfFIXEDARRAY;
+    var->makeconstant();
+    var->object_size_hint = (int64_t)count * (int64_t)ddINT32.size;
+    var->data = calloc(count ? count : 1, ddINT32.size ? ddINT32.size : 4);
+    var->flags |= vfALLOC;
+
+    int32_t *dst = (int32_t *)var->data;
+    for ( size_t i = 0; i < chars; ++i )
+    {
+	size_t p = i * 4;
+	uint32_t cp = (uint8_t)s[p]
+	    | ((uint32_t)(uint8_t)s[p + 1] << 8)
+	    | ((uint32_t)(uint8_t)s[p + 2] << 16)
+	    | ((uint32_t)(uint8_t)s[p + 3] << 24);
+	dst[i] = (int32_t)cp;
+    }
+    tkProgram->variables.push_back(var);
+
+    return var;
+}
+
 Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, int c, void *init, bool alloc)
 {
     Variable *var;
@@ -5865,8 +6048,10 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
 	    {
 		// don't count hidden env param for [&] lambdas
-		size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0);
-		if ( tc->argc() != expected )
+		size_t expected = fd->parameters.size()
+		    - (fd->has_captures ? 1 : 0)
+		    - (fd->is_varargs ? 1 : 0);
+		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
 		    Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
 	    }
 	}
@@ -6059,18 +6244,31 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    // Fixed-array subscripts preserve the element type directly (the
 	    // `struct node *` in `struct node *arr[2]` is already the element),
 	    // whereas raw-pointer subscripts dereference one level.
-	    bool fixed_array = false;
-	    TokenVar *tv = dynamic_cast<TokenVar *>(result);
-	    if ( tv )
-		fixed_array = tv->var.is_fixed_array();
-	    if ( fixed_array )
-		elem_type = build_fixed_array_query_type(tv->var.type, tv->var.dims, 1);
-	    else if ( base_type && base_type->is_simd() )
+	    bool handled_fixed_array = false;
+	    TokenMember *tm = dynamic_cast<TokenMember *>(result);
+	    if ( tm && tm->is_fixed_array_member() && tm->var.type )
+	    {
+		DataDefSTRUCT *sdd = tm->owner_struct_type();
+		const std::vector<uint32_t> *dims = sdd ? sdd->m_dims(tm->var.name) : NULL;
+		elem_type = (dims && !dims->empty())
+		    ? build_fixed_array_query_type(tm->var.type, *dims, 1)
+		    : tm->var.type;
+		handled_fixed_array = true;
+	    }
+	    else if ( TokenVar *tv = dynamic_cast<TokenVar *>(result) )
+	    {
+		if ( tv->var.is_fixed_array() )
+		{
+		    elem_type = build_fixed_array_query_type(tv->var.type, tv->var.dims, 1);
+		    handled_fixed_array = true;
+		}
+	    }
+	    if ( !handled_fixed_array && base_type && base_type->is_simd() )
 	    {
 		DataDefSIMD *vdd = static_cast<DataDefSIMD *>(base_type);
 		elem_type = vdd->element_type ? vdd->element_type : &ddINT64;
 	    }
-	    else if ( base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
+	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
 	    continue;
@@ -6151,6 +6349,31 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
     if ( !base )
 	pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
     return new TokenDeref(*var, base);
+}
+
+static TokenBase *parse_cast_function_call_operand(Program &pgm, TokenBase *head)
+{
+    if ( !head || head->type() != TokenType::ttIdentifier )
+	return NULL;
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkOpBrk )
+	return NULL;
+
+    TokenIdent *ident = static_cast<TokenIdent *>(head);
+    Variable *var = pgm.findVariable(ident->str);
+    if ( !var || !var->type || !var->type->is_function() )
+	return NULL;
+
+    Variable *call_var = pgm.runtime_eval_scope_target(var);
+    TokenCallFunc *tc = new TokenCallFunc(*call_var);
+    tc->auto_scope_context = is_runtime_eval_scope_ctx_helper_name(call_var->name)
+	&& is_runtime_eval_scope_public_name(ident->str);
+
+    TokenBase *open = pgm.nextToken();
+    tc->file = open->file;
+    tc->line = open->line;
+    tc->column = open->column;
+    pgm.parseCallFunc(tc);
+    return tc;
 }
 
 TokenFunc *Program::build_expression_function(TokenProgram *tp,
@@ -6322,6 +6545,17 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	&& (peekToken()->id() == TokenID::tkDot
 	 || peekToken()->id() == TokenID::tkDeRef
 	 || peekToken()->id() == TokenID::tkOpSqr);
+    if ( !postfix_chain && addr_tb->type() == TokenType::ttString
+      && peekToken() && peekToken()->id() == TokenID::tkOpSqr )
+    {
+	addr_expr = parseExpression(addr_tb, true, false, false, 0);
+	if ( is_addressable_expression(addr_expr) )
+	{
+	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
+	    return new TokenAddrExpr(addr_expr, aptr);
+	}
+	Throw(addr_tb) << "expecting addressable string subscript after '&'" << flush;
+    }
     if ( postfix_chain )
     {
 	if ( addr_tb->type() == TokenType::ttIdentifier )
@@ -6951,18 +7185,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    _prv_token = NULL;
 			    TokenBase *cast_expr = NULL;
 			    // Casts in C bind tighter than binary operators: `(long)q
-			    // - n` means `((long)q) - n`, not `(long)(q - n)`. When
-			    // the body is a bare identifier (with an optional postfix
-			    // chain of ->/./[] accesses), use parsePostfixChain which
-			    // stops at the first non-postfix token. Function calls
-			    // (`ident(args)`) and everything else (parenthesized
-			    // body, unary-operator head) still go through
-			    // parseExpression so the full call or complex expression
-			    // parses correctly.
-		    bool ident_no_call = cast_expr_tb
+			    // - n` means `((long)q) - n`, not `(long)(q - n)`.
+			    // Identifier operands, including calls, stop before any
+			    // trailing binary operator so `(uint64)f() << 32` widens
+			    // before the shift.
+		    if ( cast_expr_tb
 		      && cast_expr_tb->type() == TokenType::ttIdentifier
-		      && !(peekToken() && peekToken()->id() == TokenID::tkOpBrk);
-		    if ( ident_no_call )
+		      && peekToken() && peekToken()->id() == TokenID::tkOpBrk
+		      && (cast_expr = parse_cast_function_call_operand(*this, cast_expr_tb)) )
+		    {
+		    }
+		    else if ( cast_expr_tb
+		      && cast_expr_tb->type() == TokenType::ttIdentifier
+		      && !(peekToken() && peekToken()->id() == TokenID::tkOpBrk) )
 		    {
 			cast_expr = parsePostfixChain(cast_expr_tb);
 		    }
@@ -7325,6 +7560,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    return false;
 			if ( dd->is_pointer() || dd->is_string() )
 			    return true;
+			if ( dynamic_cast<DataDefCArray *>(dd) )
+			    return true;
 			if ( TokenVar *tv = dynamic_cast<TokenVar *>(expr) )
 			    if ( tv->var.is_fixed_array() )
 				return true;
@@ -7448,7 +7685,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    if ( !close || close->id() != TokenID::tkClBrk )
 				Throw(close ? close : deref_tb) << "expected ')' after *(expr)" << flush;
 			}
-			DataDef *dtype = deref_expr->datadef();
+			DataDef *dtype = effective_pointer_type_for_member_access(*this, deref_expr);
+			if ( !dtype )
+			    dtype = deref_expr->datadef();
 			if ( !dtype )
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 			if ( dynamic_cast<DataDefFPTR *>(dtype) != NULL )
@@ -7586,7 +7825,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					// (skip the first star since TokenDeref already derefs once)
 					for ( size_t si = 1; si < stars.size(); ++si )
 					{
-					    DataDef *dtype = deref_expr->datadef();
+					    DataDef *dtype = effective_pointer_type_for_member_access(*this, deref_expr);
+					    if ( !dtype )
+						dtype = deref_expr->datadef();
 					    if ( !dtype || !dtype->is_pointer() )
 						Throw(stars[si]) << "cannot dereference non-pointer type" << flush;
 					    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
@@ -7601,7 +7842,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					TokenBase *close = nextToken();
 					if ( !close || close->id() != TokenID::tkClBrk )
 					    Throw(close ? close : inner_tb) << "expected ')' after *(expr)" << flush;
-					DataDef *inner_dtype = inner_expr ? inner_expr->datadef() : NULL;
+					DataDef *inner_dtype = effective_pointer_type_for_member_access(*this, inner_expr);
+					if ( !inner_dtype )
+					    inner_dtype = inner_expr ? inner_expr->datadef() : NULL;
 					if ( !inner_dtype || !inner_dtype->is_pointer() )
 					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
 					DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
@@ -7727,7 +7970,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					Throw(close ? close : deref_tb) << "expected ')' after *(expr)" << flush;
 				    if ( !inner_expr )
 					Throw(deref_tb) << "expecting pointer expression after '*('" << flush;
-				    DataDef *inner_dtype = inner_expr->datadef();
+				    DataDef *inner_dtype = effective_pointer_type_for_member_access(*this, inner_expr);
+				    if ( !inner_dtype )
+					inner_dtype = inner_expr->datadef();
 				    if ( !inner_dtype || !inner_dtype->is_pointer() )
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				    DataDefPTR *inner_dptr = dynamic_cast<DataDefPTR *>(inner_dtype);
@@ -7756,7 +8001,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    deref_expr = parseExpression(deref_tb, true);
 				if ( !deref_expr )
 				    Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
-				DataDef *dtype = deref_expr->datadef();
+				DataDef *dtype = effective_pointer_type_for_member_access(*this, deref_expr);
+				if ( !dtype )
+				    dtype = deref_expr->datadef();
 				if ( !dtype )
 				    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 				if ( dtype->is_function() && dtype->is_numeric() )
@@ -7875,7 +8122,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		exStack.push(new TokenVar(*var));
 		break;
 	    case TokenType::ttString:
-		var = addLiteral(((TokenIdent *)tb)->str);
+		if ( ((TokenStr *)tb)->wide )
+		    var = addWideLiteral(((TokenStr *)tb)->str);
+		else
+		    var = addLiteral(((TokenIdent *)tb)->str);
 		DBG(cout << "Pushing new variable of literal: " << var->name << " onto exStack" << endl);
 		exStack.push(new TokenVar(*var));
 		break;
@@ -9159,6 +9409,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
+	while ( is_attribute_identifier_token(tn) )
+	{
+	    tn = consume_gnu_attributes(pgm, pgm.nextToken());
+	    if ( tn )
+		pgm.pushToken(tn);
+	    tn = pgm.peekToken();
+	}
 	while ( tn && (tn->id() == TokenID::tkCONST
 	            || tn->id() == TokenID::tkVOLATILE) )
 	{
@@ -9215,6 +9472,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    {
 		while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
 		{
+		    while ( is_attribute_identifier_token(tn) )
+		    {
+			tn = consume_gnu_attributes(pgm, pgm.nextToken());
+			if ( tn )
+			    pgm.pushToken(tn);
+			tn = pgm.peekToken();
+		    }
 		    TokenDataType *inner_type = NULL;
 		    if ( tn->type() == TokenType::ttDataType )
 			inner_type = (TokenDataType *)pgm.nextToken();
@@ -13045,6 +13309,26 @@ static void infer_flexible_array_member_counts(DataDefSTRUCT *sdd,
     }
 }
 
+static DataDef *peel_carray_dimensions(DataDef *base_type,
+				       std::vector<uint32_t> &arr_dims,
+				       TokenBase *&vla_size_expr)
+{
+    DataDef *decl_type = base_type;
+    while ( DataDefCArray *alias_array = dynamic_cast<DataDefCArray *>(decl_type) )
+    {
+	if ( alias_array->count_expr )
+	{
+	    if ( !vla_size_expr )
+		vla_size_expr = alias_array->count_expr;
+	    arr_dims.push_back(1);
+	}
+	else
+	    arr_dims.push_back((uint32_t)alias_array->count);
+	decl_type = alias_array->element_type ? alias_array->element_type : &ddINT;
+    }
+    return decl_type;
+}
+
 // parse either a variable declaration, or a function declaration
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
@@ -13099,11 +13383,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     {
 	if ( DataDefCArray *alias_array = dynamic_cast<DataDefCArray *>(base_type) )
 	{
-	    decl_type = alias_array->element_type ? alias_array->element_type : &ddINT;
-	    if ( alias_array->count_expr )
-		vla_size_expr = alias_array->count_expr;
-	    else
-		arr_dims.push_back((uint32_t)alias_array->count);
+	    (void)alias_array;
+	    decl_type = peel_carray_dimensions(base_type, arr_dims, vla_size_expr);
 	}
     }
 
@@ -13187,19 +13468,29 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( param_open && param_open->id() == TokenID::tkOpSqr )
 	    {
 		// Pointer-to-array: `type (*name)[N]`
-		// Parse the array dimension and treat as a pointer to the base type.
-		nextToken(); // consume '['
-		TokenBase *dim_peek = peekToken();
-		if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
-		    nextToken(); // consume ']' for unsized
-		else
+		std::vector<uint32_t> ptr_array_dims;
+		while ( peekToken() && peekToken()->id() == TokenID::tkOpSqr )
 		{
-		    parse_constant_integer_expression(*this);
+		    nextToken(); // consume '['
+		    TokenBase *dim_peek = peekToken();
+		    if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
+		    {
+			nextToken(); // consume ']' for unsized
+			ptr_array_dims.push_back(0);
+			continue;
+		    }
+		    int64_t dim = parse_constant_integer_expression(*this);
+		    if ( dim < 0 )
+			Throw(open) << "Pointer-to-array dimension must be non-negative" << flush;
+		    ptr_array_dims.push_back((uint32_t)dim);
 		    TokenBase *cl = nextToken();
 		    if ( !cl || cl->id() != TokenID::tkClSqr )
 			Throw(cl ? cl : open) << "Expected ] in pointer-to-array declaration" << flush;
 		}
-		decl_type = getPointerType(decl_type);
+		DataDef *array_type = decl_type;
+		for ( size_t di = ptr_array_dims.size(); di-- > 0; )
+		    array_type = new DataDefCArray(*array_type, array_type->name, ptr_array_dims[di], NULL);
+		decl_type = getPointerType(array_type);
 		have_decl_id = true;
 		nt = peekToken();
 	    }
@@ -13418,12 +13709,32 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    if ( !peek0 )
 		Throw(nt) << "Expected initializer after '='" << flush;
 
-	    // String-literal byte-array init:
+	    auto looks_like_wide_string_payload = [](TokenBase *tok) -> bool {
+		if ( !tok || tok->type() != TokenType::ttString )
+		    return false;
+		if ( static_cast<TokenStr *>(tok)->wide )
+		    return true;
+		const std::string &s = static_cast<TokenStr *>(tok)->str;
+		if ( s.empty() || (s.size() % 4) != 0 )
+		    return false;
+		for ( size_t i = 0; i + 3 < s.size(); i += 4 )
+		    if ( s[i + 3] != '\0' )
+			return false;
+		return true;
+	    };
+	    bool wide_string_array_init =
+		!arr_dims.empty()
+		&& decl_type->rawtype() == DataType::dtINT32
+		&& arr_dims.size() == 1
+		&& looks_like_wide_string_payload(peek0);
+	    // String-literal array init:
 	    // char / signed char / unsigned char buf[] = "hello";
+	    // wchar_t w[] = L"hello";
 	    if ( !arr_dims.empty()
 	      && peek0->type() == TokenType::ttString
-	      && (decl_type->rawtype() == DataType::dtCHAR
+	      && ((decl_type->rawtype() == DataType::dtCHAR
 	       || decl_type->rawtype() == DataType::dtUINT8)
+	       || wide_string_array_init)
 	      && arr_dims.size() == 1 )
 	    {
 		// C concatenates adjacent string literals, so consume all
@@ -13432,8 +13743,22 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		{
 		    TokenBase *strtok = nextToken();
 		    const std::string &s = ((TokenStr *)strtok)->str;
-		    for ( char c : s )
-			init_list.push_back(new TokenInt((int64_t)(unsigned char)c));
+		    if ( wide_string_array_init )
+		    {
+			for ( size_t i = 0; i + 3 < s.size(); i += 4 )
+			{
+			    uint32_t cp = (uint8_t)s[i]
+				| ((uint32_t)(uint8_t)s[i + 1] << 8)
+				| ((uint32_t)(uint8_t)s[i + 2] << 16)
+				| ((uint32_t)(uint8_t)s[i + 3] << 24);
+			    init_list.push_back(new TokenInt((int64_t)cp));
+			}
+		    }
+		    else
+		    {
+			for ( char c : s )
+			    init_list.push_back(new TokenInt((int64_t)(unsigned char)c));
+		    }
 		}
 		// C89/C99: if the explicit array size exactly matches the
 		// string length, the null terminator is omitted (e.g.
@@ -13466,8 +13791,31 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    saw_brace_init = true;
 	    // parse comma-separated elements up to '}'. Each element may itself
 	    // be a brace-list (for array-of-structs or nested struct members).
-	    std::function<TokenStructLit *(void)> read_struct_lit;
-	    read_struct_lit = [&]() -> TokenStructLit * {
+	    auto padded_char_string_literal = [&](TokenStr *strtok,
+						  size_t target_count) -> TokenStructLit * {
+		TokenStructLit *slit = string_literal_to_char_init(strtok, false);
+		while ( peekToken() && peekToken()->type() == TokenType::ttString )
+		    append_string_literal_chars(slit, (TokenStr *)nextToken());
+		if ( target_count == 0 )
+		    slit->inits.push_back(new TokenInt(0));
+		else
+		    while ( slit->inits.size() < target_count )
+			slit->inits.push_back(new TokenInt(0));
+		return slit;
+	    };
+	    auto zero_array_initializer = [&](size_t depth) -> TokenBase * {
+		if ( depth + 1 >= arr_dims.size() )
+		    return new TokenInt(0);
+		TokenStructLit *slit = new TokenStructLit();
+		size_t count = 1;
+		for ( size_t i = depth + 1; i < arr_dims.size(); ++i )
+		    count *= (size_t)arr_dims[i];
+		for ( size_t i = 0; i < count; ++i )
+		    slit->inits.push_back(new TokenInt(0));
+		return slit;
+	    };
+	    std::function<TokenStructLit *(size_t)> read_struct_lit;
+	    read_struct_lit = [&](size_t depth) -> TokenStructLit * {
 		nextToken(); // consume '{'
 		TokenStructLit *slit = new TokenStructLit();
 		while ( true )
@@ -13481,7 +13829,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			break;
 		    }
 		    if ( iln->id() == TokenID::tkOpBrc )
-			slit->inits.push_back(read_struct_lit());
+			slit->inits.push_back(read_struct_lit(depth + 1));
 		    else
 		    {
 			TokenBase *ni = nextToken();
@@ -13501,7 +13849,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			if ( ni->id() == TokenID::tkOpBrc )
 			{
 			    pushToken(ni);
-			    TokenBase *nested = read_struct_lit();
+			    TokenBase *nested = read_struct_lit(depth + 1);
 			    if ( array_designator )
 				assign_initializer_range(slit->inits, design_first, design_last, nested);
 			    else
@@ -13509,17 +13857,48 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			}
 			else
 			{
-			    TokenBase *expr = parseExpression(ni);
-			    if ( array_designator )
-				assign_initializer_range(slit->inits, design_first, design_last, expr);
-			    else
-				slit->inits.push_back(expr);
+			    bool handled_string_subarray = false;
+			    if ( !arr_dims.empty()
+			      && arr_dims.size() > 1
+			      && ni->type() == TokenType::ttString
+			      && is_char_array_element_type(decl_type) )
+			    {
+				size_t target_count = 0;
+				if ( depth + 1 < arr_dims.size() )
+				    target_count = arr_dims[depth + 1];
+				else if ( depth < arr_dims.size() )
+				    target_count = arr_dims[depth];
+				TokenBase *nested = padded_char_string_literal((TokenStr *)ni,
+				    target_count);
+				if ( array_designator )
+				    assign_initializer_range(slit->inits, design_first, design_last, nested);
+				else if ( depth + 1 >= arr_dims.size() )
+				{
+				    TokenStructLit *nested_lit = (TokenStructLit *)nested;
+				    for ( TokenBase *child : nested_lit->inits )
+					slit->inits.push_back(child);
+				}
+				else
+				    slit->inits.push_back(nested);
+				handled_string_subarray = true;
+			    }
+			    if ( !handled_string_subarray )
+			    {
+				TokenBase *expr = parseExpression(ni);
+				if ( array_designator )
+				    assign_initializer_range(slit->inits, design_first, design_last, expr);
+				else
+				    slit->inits.push_back(expr);
+			    }
 			}
 		    }
 		    TokenBase *isep = peekToken();
 		    if ( isep && isep->id() == TokenID::tkComma )
 			nextToken();
 		}
+		if ( !arr_dims.empty() && depth < arr_dims.size() )
+		    while ( slit->inits.size() < arr_dims[depth] )
+			slit->inits.push_back(zero_array_initializer(depth));
 		return slit;
 	    };
 	    while ( true )
@@ -13534,7 +13913,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		}
 		if ( look->id() == TokenID::tkOpBrc )
 		{
-		    init_list.push_back(read_struct_lit());
+		    init_list.push_back(read_struct_lit(1));
 		}
 		else
 		{
@@ -13613,7 +13992,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			    if ( next_init && next_init->id() == TokenID::tkOpBrc )
 			    {
 				pushToken(next_init);
-				(*target_inits)[field_index] = read_struct_lit();
+				(*target_inits)[field_index] = read_struct_lit(1);
 				TokenBase *sep = peekToken();
 				if ( sep && sep->id() == TokenID::tkComma )
 				    nextToken();
@@ -13637,7 +14016,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			if ( next_init->id() == TokenID::tkOpBrc )
 			{
 			    pushToken(next_init);
-			    design_value = read_struct_lit();
+			    design_value = read_struct_lit(1);
 			}
 			else
 			    design_value = parseExpression(next_init);
@@ -13660,8 +14039,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			    while ( peekToken() && peekToken()->type() == TokenType::ttString )
 				append_string_literal_chars(slit, (TokenStr *)nextToken());
 			    size_t member_count = sdd->member_counts[field_index];
-			    if ( member_count == 0 || member_count > slit->inits.size() )
+			    if ( member_count == 0 )
 				slit->inits.push_back(new TokenInt(0));
+			    else
+				while ( slit->inits.size() < member_count )
+				    slit->inits.push_back(new TokenInt(0));
 			    init_list.push_back(slit);
 			    TokenBase *sep = peekToken();
 			    if ( sep && sep->id() == TokenID::tkComma )
@@ -13678,8 +14060,11 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			while ( peekToken() && peekToken()->type() == TokenType::ttString )
 			    append_string_literal_chars(slit, (TokenStr *)nextToken());
 			size_t inner_count = arr_dims[1];
-			if ( inner_count == 0 || inner_count > slit->inits.size() )
+			if ( inner_count == 0 )
 			    slit->inits.push_back(new TokenInt(0));
+			else
+			    while ( slit->inits.size() < inner_count )
+				slit->inits.push_back(new TokenInt(0));
 			init_list.push_back(slit);
 			TokenBase *sep = peekToken();
 			if ( sep && sep->id() == TokenID::tkComma )
@@ -13697,10 +14082,28 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    // Infer size for arrays with dims[0] == 0; validate count
 	    if ( !arr_dims.empty() )
 	    {
+		bool has_nested_init = false;
+		for ( TokenBase *init : init_list )
+		    if ( dynamic_cast<TokenStructLit *>(init) != NULL )
+			has_nested_init = true;
+
+		size_t tail_count = 1;
+		for ( size_t di = 1; di < arr_dims.size(); ++di )
+		    tail_count *= (size_t)arr_dims[di];
+
 		if ( arr_dims[0] == 0 )
-		    arr_dims[0] = (uint32_t)init_list.size();
-		if ( init_list.size() > (size_t)arr_dims[0] )
-		    Throw(tb) << "Too many initializers for array (expected " << arr_dims[0] << ")" << flush;
+		{
+		    if ( arr_dims.size() > 1 && !has_nested_init && tail_count > 0 )
+			arr_dims[0] = (uint32_t)((init_list.size() + tail_count - 1) / tail_count);
+		    else
+			arr_dims[0] = (uint32_t)init_list.size();
+		}
+
+		size_t initializer_capacity = (size_t)arr_dims[0];
+		if ( arr_dims.size() > 1 && !has_nested_init )
+		    initializer_capacity *= tail_count;
+		if ( init_list.size() > initializer_capacity )
+		    Throw(tb) << "Too many initializers for array (expected " << initializer_capacity << ")" << flush;
 	    }
 	    if ( is_struct_init )
 		infer_flexible_array_member_counts(dynamic_cast<DataDefSTRUCT *>(decl_type), init_list);
@@ -13959,6 +14362,12 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	pushToken(tb);
 	skip_c23_attributes(*this);
 	tb = nextToken();
+	if ( !tb )
+	    return NULL;
+    }
+    if ( is_attribute_identifier_token(tb) )
+    {
+	tb = consume_gnu_attributes(*this, tb);
 	if ( !tb )
 	    return NULL;
     }

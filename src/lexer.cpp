@@ -75,6 +75,172 @@ static bool is_digit_separator(int ch)
     return ch == '\'';
 }
 
+static uint32_t read_utf8_codepoint(Source &source, unsigned char first)
+{
+    if ( first < 0x80 )
+	return first;
+    int need = 0;
+    uint32_t cp = first;
+    if ( (first & 0xE0) == 0xC0 )
+    {
+	need = 1;
+	cp = first & 0x1F;
+    }
+    else if ( (first & 0xF0) == 0xE0 )
+    {
+	need = 2;
+	cp = first & 0x0F;
+    }
+    else if ( (first & 0xF8) == 0xF0 )
+    {
+	need = 3;
+	cp = first & 0x07;
+    }
+    else
+	return first;
+
+    while ( need-- > 0 )
+    {
+	if ( !source.good() )
+	    return first;
+	unsigned char next = (unsigned char)source.peek();
+	if ( (next & 0xC0) != 0x80 )
+	    return first;
+	source.get();
+	cp = (cp << 6) | (next & 0x3F);
+    }
+    return cp;
+}
+
+static uint32_t read_literal_escape_value(Source &source, char esc)
+{
+    switch ( esc )
+    {
+	case 'n':  return '\n';
+	case 't':  return '\t';
+	case 'r':  return '\r';
+	case '\\': return '\\';
+	case '"':  return '"';
+	case '\'': return '\'';
+	case 'a':  return '\a';
+	case 'b':  return '\b';
+	case 'f':  return '\f';
+	case 'v':  return '\v';
+	case '?':  return '\?';
+	case 'x': case 'X': {
+	    uint32_t val = 0;
+	    int dig = 0;
+	    while ( dig < 2 && source.good() )
+	    {
+		int c = source.peek();
+		int d = (c >= '0' && c <= '9') ? c - '0'
+		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+		if ( d < 0 )
+		    break;
+		val = (val << 4) | (uint32_t)d;
+		source.get();
+		++dig;
+	    }
+	    return val;
+	}
+	case '0': case '1': case '2': case '3':
+	case '4': case '5': case '6': case '7': {
+	    uint32_t val = (uint32_t)(esc - '0');
+	    int dig = 1;
+	    while ( dig < 3 && source.good() )
+	    {
+		int c = source.peek();
+		if ( c < '0' || c > '7' )
+		    break;
+		val = (val << 3) | (uint32_t)(c - '0');
+		source.get();
+		++dig;
+	    }
+	    return val;
+	}
+	default:
+	    return (unsigned char)esc;
+    }
+}
+
+static void append_wide_codepoint(std::string &out, uint32_t cp)
+{
+    out += (char)(cp & 0xff);
+    out += (char)((cp >> 8) & 0xff);
+    out += (char)((cp >> 16) & 0xff);
+    out += (char)((cp >> 24) & 0xff);
+}
+
+static void append_narrow_string_as_wide(std::string &out,
+					 const std::string &narrow)
+{
+    for ( unsigned char c : narrow )
+	append_wide_codepoint(out, (uint32_t)c);
+}
+
+static std::string narrow_string_as_wide(const std::string &narrow)
+{
+    std::string out;
+    append_narrow_string_as_wide(out, narrow);
+    return out;
+}
+
+static TokenBase *read_wide_literal(Source &source)
+{
+    char quote = source.get();
+    int row = source.line();
+    int col = source.column();
+    if ( quote == '"' )
+    {
+	std::string bytes;
+	while ( source.good() && source.peek() != '"' )
+	{
+	    uint32_t cp;
+	    if ( source.peek() == '\\' )
+	    {
+		source.get();
+		if ( !source.good() )
+		    break;
+		cp = read_literal_escape_value(source, source.get());
+	    }
+	    else
+		cp = read_utf8_codepoint(source, (unsigned char)source.get());
+	    append_wide_codepoint(bytes, cp);
+	}
+	if ( !source.good() )
+	{
+	    source.setpos(row, col);
+	    throw "Unterminated wide string";
+	}
+	source.get();
+	return new TokenStr(bytes, true);
+    }
+
+    uint32_t cp = 0;
+    while ( source.good() && source.peek() != '\'' )
+    {
+	if ( source.peek() == '\\' )
+	{
+	    source.get();
+	    if ( !source.good() )
+		break;
+	    cp = read_literal_escape_value(source, source.get());
+	}
+	else
+	    cp = read_utf8_codepoint(source, (unsigned char)source.get());
+    }
+    if ( !source.good() )
+    {
+	source.setpos(row, col);
+	throw "Unterminated wide character literal";
+    }
+    source.get();
+    TokenInt *ti = new TokenInt((int64_t)cp);
+    ti->setDataType(&ddINT32);
+    return ti;
+}
+
 static int64_t read_binary_literal(Source &source)
 {
     int64_t bv = 0;
@@ -559,7 +725,22 @@ void Program::push_token_with_string_concat(TokenBase *tb)
       && !tokens.empty()
       && tokens.back()->type() == TokenType::ttString )
     {
-	((TokenStr *)tokens.back())->str += ((TokenStr *)tb)->str;
+	TokenStr *prev = (TokenStr *)tokens.back();
+	TokenStr *next = (TokenStr *)tb;
+	if ( prev->wide || next->wide )
+	{
+	    if ( !prev->wide )
+	    {
+		prev->str = narrow_string_as_wide(prev->str);
+		prev->wide = true;
+	    }
+	    if ( next->wide )
+		prev->str += next->str;
+	    else
+		append_narrow_string_as_wide(prev->str, next->str);
+	}
+	else
+	    prev->str += next->str;
 	delete tb;
 	return;
     }
@@ -831,6 +1012,15 @@ void Program::_tokenizer_init()
 	m.params = {"__expr"};
 	m.body = "0";
 	macro_map["__builtin_constant_p"] = m;
+    }
+    // __builtin_choose_expr(cond, true_expr, false_expr) chooses by a
+    // compile-time integer condition. The condition is already reduced
+    // for the current GCC execute-suite use by __builtin_constant_p.
+    {
+	MacroDef m;
+	m.params = {"__cond", "__true_expr", "__false_expr"};
+	m.body = "((__cond) ? (__true_expr) : (__false_expr))";
+	macro_map["__builtin_choose_expr"] = m;
     }
     // __builtin_return_address(level) — unsupported, but many GCC
     // torture tests only need a stable sentinel value.
@@ -1132,6 +1322,9 @@ void Program::add_datatypes()
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
     static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+    static TokenDataType tkDECIMAL32("_Decimal32", ddFLOAT);
+    static TokenDataType tkDECIMAL64("_Decimal64", ddDOUBLE);
+    static TokenDataType tkDECIMAL128("_Decimal128", ddDOUBLE);
 
     datatype_map[tkVOID.str] = &tkVOID;
     datatype_map[tkBOOL.str] = &tkBOOL;
@@ -1156,6 +1349,9 @@ void Program::add_datatypes()
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
     datatype_map[tkSIZE_T.str] = &tkSIZE_T;
     datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    datatype_map[tkDECIMAL32.str] = &tkDECIMAL32;
+    datatype_map[tkDECIMAL64.str] = &tkDECIMAL64;
+    datatype_map[tkDECIMAL128.str] = &tkDECIMAL128;
 }
 
 
@@ -2114,6 +2310,12 @@ TokenBase *Program::_getToken()
 			    real_type_suffix = (char)c;
 			    lit_text += (char)source.get();
 			}
+			else if ( c == 'd' || c == 'D' )
+			{
+			    lit_text += (char)source.get();
+			    if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
+				lit_text += (char)source.get();
+			}
 		    }
 		    if ( eat_imag_suffix() )
 		    {
@@ -2246,6 +2448,12 @@ TokenBase *Program::_getToken()
 			real_type_suffix = (char)c;
 			lit_text += (char)source.get();
 		    }
+		    else if ( c == 'd' || c == 'D' )
+		    {
+			lit_text += (char)source.get();
+			if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
+			    lit_text += (char)source.get();
+		    }
 		}
 		double num = strtod(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
@@ -2266,7 +2474,7 @@ TokenBase *Program::_getToken()
 		    word += source.get();
 		if ( word == "L" && source.good()
 		  && (source.peek() == '"' || source.peek() == '\'') )
-		    return getToken();
+		    return read_wide_literal(source);
 		// function-like macro expansion: NAME(args) or NAME (args)
 		// Suppressed when the preceding tokens form a declaration /
 		// definition head (`void bug(const char *, ...)` must not
@@ -3155,6 +3363,78 @@ bool Program::evaluateIfCondition()
     std::function<int64_t()> parse_unary;
     std::function<int64_t()> parse_primary;
 
+    auto read_char_escape = [&]() -> int64_t {
+	if ( pos >= expr.size() )
+	    return 0;
+	char esc = expr[pos++];
+	switch ( esc )
+	{
+	    case 'n':  return '\n';
+	    case 't':  return '\t';
+	    case 'r':  return '\r';
+	    case '\\': return '\\';
+	    case '"':  return '"';
+	    case '\'': return '\'';
+	    case 'a':  return '\a';
+	    case 'b':  return '\b';
+	    case 'f':  return '\f';
+	    case 'v':  return '\v';
+	    case '?':  return '\?';
+	    case 'x': case 'X': {
+		int64_t val = 0;
+		while ( pos < expr.size() && isxdigit((unsigned char)expr[pos]) )
+		{
+		    char c = expr[pos++];
+		    int d = (c >= '0' && c <= '9') ? c - '0'
+			: (c >= 'a' && c <= 'f') ? c - 'a' + 10
+			: (c >= 'A' && c <= 'F') ? c - 'A' + 10 : 0;
+		    val = (val << 4) | d;
+		}
+		return val;
+	    }
+	    case '0': case '1': case '2': case '3':
+	    case '4': case '5': case '6': case '7': {
+		int64_t val = esc - '0';
+		int dig = 1;
+		while ( dig < 3 && pos < expr.size()
+		     && expr[pos] >= '0' && expr[pos] <= '7' )
+		{
+		    val = (val << 3) | (expr[pos++] - '0');
+		    ++dig;
+		}
+		return val;
+	    }
+	    default:
+		return (unsigned char)esc;
+	}
+    };
+
+    auto read_char_literal = [&](bool wide) -> int64_t {
+	if ( wide )
+	    ++pos;
+	if ( pos >= expr.size() || expr[pos] != '\'' )
+	    return 0;
+	++pos;
+	int64_t value = 0;
+	while ( pos < expr.size() && expr[pos] != '\'' )
+	{
+	    int64_t ch;
+	    if ( expr[pos] == '\\' )
+	    {
+		++pos;
+		ch = read_char_escape();
+	    }
+	    else
+		ch = (unsigned char)expr[pos++];
+	    value = (value << 8) | (ch & 0xff);
+	    if ( wide )
+		value = ch;
+	}
+	if ( pos < expr.size() && expr[pos] == '\'' )
+	    ++pos;
+	return value;
+    };
+
     parse_primary = [&]() -> int64_t {
 	skip_ws();
 	if ( pos >= expr.size() )
@@ -3169,6 +3449,12 @@ bool Program::evaluateIfCondition()
 		++pos;
 	    return value;
 	}
+
+	if ( pos + 1 < expr.size() && expr[pos] == 'L' && expr[pos+1] == '\'' )
+	    return read_char_literal(true);
+
+	if ( expr[pos] == '\'' )
+	    return read_char_literal(false);
 
 	// hex literal 0x...
 	if ( pos + 1 < expr.size() && expr[pos] == '0'

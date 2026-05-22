@@ -1,0 +1,15 @@
+#define C L'\400'
+
+#if C
+#define zero (!C)
+#else
+#define zero C
+#endif
+
+#include <stdio.h>
+
+int main(void)
+{
+	printf("%d\n", zero);
+	return 0;
+}

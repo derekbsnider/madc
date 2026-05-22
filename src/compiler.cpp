@@ -1096,6 +1096,8 @@ static bool token_is_charptr_expr(TokenBase *token)
 	    return true;
 	if ( type_is_cstr_pointer(dd) )
 	    return true;
+	if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+	    return add->element_type && type_is_cstr_element(add->element_type);
     }
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
     {
@@ -1123,6 +1125,8 @@ static bool token_compiles_naturally_as_charptr(TokenBase *token)
     DataDef *dd = token->datadef();
     if ( type_is_cstr_pointer(dd) )
 	return true;
+    if ( DataDefCArray *add = dynamic_cast<DataDefCArray *>(dd) )
+	return add->element_type && type_is_cstr_element(add->element_type);
     if ( TokenVar *tv = dynamic_cast<TokenVar *>(token) )
 	return tv->var.is_fixed_array()
 	    && tv->var.type
@@ -1936,6 +1940,8 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     if ( TokenMember *tm = dynamic_cast<TokenMember *>(token) )
 	if ( tm->is_fixed_array_member() )
 	    decay_token = true;
+    if ( token && dynamic_cast<DataDefCArray *>(token->datadef()) )
+	decay_token = true;
 
     bool target_is_charptr = target_type && target_type->is_pointer()
 	&& (target_type->rawtype() == DataType::dtCHAR
@@ -2036,7 +2042,7 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     if ( target_type && target_type->is_pointer() )
     {
 	if ( decay_token && raw_type && !raw_type->is_pointer() )
-	    raw_type = &ddLPSTR;
+	    raw_type = effective_ptr_type ? effective_ptr_type : &ddLPSTR;
     }
     if ( target_type && target_type->is_simd() )
     {
@@ -6210,6 +6216,26 @@ Operand &TokenBase::compile(Program &pgm, regdefp_t &regdp)
 	    TokenStructLit *slit = dynamic_cast<TokenStructLit *>(this);
 	    DataDef *dd = slit->datadef();
 	    DataDefSTRUCT *sdd = dd ? dynamic_cast<DataDefSTRUCT *>(dd) : NULL;
+	    if ( sdd && sdd->size == 0 )
+	    {
+		for ( TokenBase *init : slit->inits )
+		{
+		    if ( !init )
+			continue;
+		    regdefp_t side_rdp = {nullptr, nullptr, nullptr};
+		    init->compile(pgm, side_rdp);
+		}
+		x86::Gp zero = pgm.cc.newIntPtr("_compound_empty");
+		pgm.cc.xor_(zero, zero);
+		_operand = zero;
+		bool want_struct_value =
+		    regdp.second
+		    && regdp.second->basetype() == BaseType::btStruct
+		    && dd->basetype() == BaseType::btStruct;
+		regdp.second = want_struct_value ? dd : pgm.getPointerType(dd);
+		regdp.first = &_operand;
+		return _operand;
+	    }
 	    if ( sdd && sdd->size > 0 )
 	    {
 		x86::Gp base = pgm.cc.newIntPtr("_compound_lit");
@@ -6382,6 +6408,18 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	size_t member_count = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
 
 	// Flat init for array members: distribute consecutive initializers
+	if ( member_count > 1 && inits[init_idx] == NULL )
+	{
+	    size_t esize = mtype->size;
+	    for ( size_t ai = 0; ai < member_count; ++ai )
+	    {
+		x86::Mem mm = x86::ptr(base_reg,
+		    addr + (int32_t)(ai * esize), (uint32_t)esize);
+		pgm.cc.mov(mm, imm(0));
+	    }
+	    ++init_idx;
+	    continue;
+	}
 	if ( member_count > 1 && dynamic_cast<TokenStructLit *>(inits[init_idx]) == NULL )
 	{
 	    std::string char_array_init;
@@ -6483,7 +6521,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	}
 
 	std::string mname = mp.first;
-	bool is_array_decl = dds->m_is_array_decl(mname);
+	bool is_array_decl = dds->m_is_array_decl(mname) || member_count > 1;
 
 	// Nested struct-member init: `{ ..., { 0, 1, 10 }, ... }` where
 	// the member is itself a struct value. TokenStructLit has no
@@ -6573,31 +6611,45 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    if ( nested_arr != NULL && is_array_decl && mcount > 1 )
 	    {
 		size_t esize = mtype->size;
-		for ( size_t j = 0; j < nested_arr->inits.size() && j < mcount; ++j )
+		std::vector<TokenBase *> elem_inits;
+		for ( TokenBase *child : nested_arr->inits )
+		{
+		    if ( mtype->basetype() != BaseType::btStruct )
+		    {
+			if ( TokenStructLit *child_lit = dynamic_cast<TokenStructLit *>(child) )
+			{
+			    for ( TokenBase *grandchild : child_lit->inits )
+				elem_inits.push_back(grandchild);
+			    continue;
+			}
+		    }
+		    elem_inits.push_back(child);
+		}
+		for ( size_t j = 0; j < elem_inits.size() && j < mcount; ++j )
 		{
 		    if ( mtype->basetype() == BaseType::btStruct )
 		    {
 			DataDefSTRUCT *elem_dds = dynamic_cast<DataDefSTRUCT *>(mtype);
 			if ( !elem_dds )
 			    pgm.Throw(err_loc) << "Nested initializer for non-struct array member type" << flush;
-			if ( TokenStructLit *elem_slit = dynamic_cast<TokenStructLit *>(nested_arr->inits[j]) )
+			if ( TokenStructLit *elem_slit = dynamic_cast<TokenStructLit *>(elem_inits[j]) )
 			{
 			    emit_struct_init(pgm, base_reg,
 				addr + (int32_t)(j * esize), elem_dds, elem_slit->inits, err_loc);
 			    continue;
 			}
-			if ( nested_arr->inits[j]->datadef()
-			  && nested_arr->inits[j]->datadef()->basetype() == BaseType::btStruct )
+			if ( elem_inits[j]->datadef()
+			  && elem_inits[j]->datadef()->basetype() == BaseType::btStruct )
 			{
 			    regdefp_t elem_rdp = {nullptr, mtype, nullptr};
-			    Operand &elem_val = nested_arr->inits[j]->compile(pgm, elem_rdp);
+			    Operand &elem_val = elem_inits[j]->compile(pgm, elem_rdp);
 			    Operand dst_slot = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
 			    emit_raw_aggregate_copy(pgm, dst_slot, elem_val, mtype, "init_struct_array_copy");
 			    continue;
 			}
 		    }
 		    regdefp_t arr_rdp = {nullptr, nullptr, nullptr};
-		    Operand &elem_val = nested_arr->inits[j]->compile(pgm, arr_rdp);
+		    Operand &elem_val = elem_inits[j]->compile(pgm, arr_rdp);
 		    x86::Mem em = x86::ptr(base_reg, addr + (int32_t)(j * esize), (uint32_t)esize);
 		    if ( elem_val.isImm() )
 			pgm.cc.mov(em, elem_val.as<Imm>());
@@ -6620,7 +6672,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 			pgm.Throw(err_loc) << "Unsupported nested-array initializer element" << flush;
 		}
 		// Zero remaining slots
-		for ( size_t j = nested_arr->inits.size(); j < mcount; ++j )
+		for ( size_t j = elem_inits.size(); j < mcount; ++j )
 		{
 		    if ( mtype->basetype() == BaseType::btStruct )
 		    {
@@ -9296,6 +9348,87 @@ void TokenVar::putreg(Program &pgm)
     pgm.tkFunction->putreg(pgm, &var);
 }
 
+static bool token_member_needs_runtime_offset(TokenMember *tm)
+{
+    if ( !tm )
+	return false;
+    DataDefSTRUCT *sdd = tm->owner_struct_type();
+    if ( !sdd )
+	return false;
+    for ( size_t i = 0; i < sdd->members.size(); ++i )
+    {
+	if ( sdd->members[i].first == tm->var.name )
+	    return false;
+	if ( i < sdd->member_count_exprs.size() && sdd->member_count_exprs[i] )
+	    return true;
+    }
+    return false;
+}
+
+static x86::Gp emit_token_member_runtime_offset(Program &pgm, TokenMember *tm,
+						const char *name)
+{
+    x86::Gp offset_gp = pgm.cc.newGpq("%s", name ? name : "member_offset");
+    pgm.cc.mov(offset_gp, imm((int64_t)(tm ? tm->offset : 0)));
+    if ( !tm )
+	return offset_gp;
+
+    DataDefSTRUCT *sdd = tm->owner_struct_type();
+    if ( !sdd )
+	return offset_gp;
+    for ( size_t i = 0; i < sdd->members.size(); ++i )
+    {
+	if ( sdd->members[i].first == tm->var.name )
+	    break;
+	TokenBase *count_expr = (i < sdd->member_count_exprs.size()) ? sdd->member_count_exprs[i] : NULL;
+	if ( !count_expr )
+	    continue;
+	DataDef *member_type = sdd->members[i].second;
+	size_t fixed_mult = (i < sdd->member_counts.size()) ? sdd->member_counts[i] : 1;
+	size_t elem_bytes = member_type ? member_type->size * fixed_mult : 0;
+	regdefp_t count_rdp = {NULL, NULL, NULL};
+	Operand &count_op = count_expr->compile(pgm, count_rdp);
+	x86::Gp count_gp = pgm.cc.newGpq("member_vla_count");
+	load_idx_to_gpq(pgm, count_gp, count_op);
+	if ( elem_bytes > 1 )
+	    pgm.cc.imul(count_gp, count_gp, imm((int64_t)elem_bytes));
+	pgm.cc.add(offset_gp, count_gp);
+    }
+    return offset_gp;
+}
+
+static Operand &emit_token_member_from_base_gp(Program &pgm, TokenMember *tm,
+					       x86::Gp base_gp, Operand &out,
+					       const char *addr_name)
+{
+    bool runtime_offset = token_member_needs_runtime_offset(tm);
+    if ( tm->var.type->is_numeric() && !tm->is_fixed_array_member() )
+    {
+	if ( runtime_offset )
+	{
+	    x86::Gp off_gp = emit_token_member_runtime_offset(pgm, tm, "member_dyn_offset");
+	    x86::Gp addr_gp = pgm.cc.newIntPtr("%s", addr_name ? addr_name : tm->var.name.c_str());
+	    pgm.cc.lea(addr_gp, x86::ptr(base_gp, off_gp, 0, 0));
+	    out = x86::ptr(addr_gp, 0, (uint32_t)tm->var.type->size);
+	}
+	else
+	    out = x86::ptr(base_gp, (int32_t)tm->offset, (uint32_t)tm->var.type->size);
+    }
+    else
+    {
+	x86::Gp addr_gp = pgm.cc.newIntPtr("%s", addr_name ? addr_name : tm->var.name.c_str());
+	if ( runtime_offset )
+	{
+	    x86::Gp off_gp = emit_token_member_runtime_offset(pgm, tm, "member_dyn_offset");
+	    pgm.cc.lea(addr_gp, x86::ptr(base_gp, off_gp, 0, 0));
+	}
+	else
+	    pgm.cc.lea(addr_gp, x86::ptr(base_gp, (int32_t)tm->offset));
+	out = addr_gp;
+    }
+    return out;
+}
+
 Operand &TokenMember::operand(Program &pgm)
 {
     if ( parent_expr != nullptr )
@@ -9394,21 +9527,22 @@ Operand &TokenMember::operand(Program &pgm)
 	x86::Gp obj_gp = pgm.cc.newIntPtr("%s", object.name.c_str());
 	DBG(pgm.cc.comment("TokenMember::operand() load stack-backed pointer into Gp"));
 	pgm.cc.mov(obj_gp, _obj.as<x86::Mem>());
-	if ( var.type->is_numeric() && !is_fixed_array_member() )
-	    _operand = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
-	else
-	{
-	    x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
-	    DBG(pgm.cc.comment("TokenMember::operand() lea from stack-backed pointer"));
-	    pgm.cc.lea(addr_reg, x86::ptr(obj_gp, (int32_t)offset));
-	    _operand = addr_reg;
-	}
+	DBG(pgm.cc.comment("TokenMember::operand() stack-backed pointer member"));
+	emit_token_member_from_base_gp(pgm, this, obj_gp, _operand, var.name.c_str());
 	return _operand;
     }
 
     if ( _obj.isMem() )
     {
 	// Struct/array on the JIT stack: compute [struct_base + member_offset]
+	if ( token_member_needs_runtime_offset(this) )
+	{
+	    x86::Gp obj_gp = pgm.cc.newIntPtr("%s", object.name.c_str());
+	    DBG(pgm.cc.comment("TokenMember::operand() runtime member offset from stack base"));
+	    pgm.cc.lea(obj_gp, _obj.as<x86::Mem>());
+	    emit_token_member_from_base_gp(pgm, this, obj_gp, _operand, var.name.c_str());
+	    return _operand;
+	}
 	x86::Mem member_mem = _obj.as<x86::Mem>();
 	member_mem.setSize(var.type->size);
 	member_mem.addOffset((int64_t)offset);
@@ -9433,18 +9567,8 @@ Operand &TokenMember::operand(Program &pgm)
 	// Object is a pointer in a Gp register (e.g. __this in class methods, or -> access)
 	// Access member at [gp + offset]
 	x86::Gp obj_gp = _obj.as<x86::Gp>();
-	if ( var.type->is_numeric() && !is_fixed_array_member() )
-	{
-	    x86::Mem member_mem = x86::ptr(obj_gp, (int32_t)offset, (uint32_t)var.type->size);
-	    _operand = member_mem;
-	}
-	else
-	{
-	    x86::Gp addr_reg = pgm.cc.newIntPtr("%s", var.name.c_str());
-	    DBG(pgm.cc.comment("TokenMember::operand() lea from pointer base"));
-	    pgm.cc.lea(addr_reg, x86::ptr(obj_gp, (int32_t)offset));
-	    _operand = addr_reg;
-	}
+	DBG(pgm.cc.comment("TokenMember::operand() member from pointer base"));
+	emit_token_member_from_base_gp(pgm, this, obj_gp, _operand, var.name.c_str());
     }
     else
     {
@@ -10063,8 +10187,13 @@ Operand &TokenSubscriptExpr::operand(Program &pgm)
     x86::Gp idx_reg = pgm.cc.newGpq("subexpr_idx");
     load_idx_to_gpq(pgm, idx_reg, idx_op);
 
-    size_t elem_size = _datatype && _datatype->size ? _datatype->size : 8;
-    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, _datatype, "subexpr_size");
+    DataDef *result_type = _datatype;
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(base_expr) )
+	if ( tm->is_fixed_array_member() )
+	    result_type = fixed_array_member_result_type(tm, 1);
+
+    size_t elem_size = result_type && result_type->size ? result_type->size : 8;
+    uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "subexpr_size");
 
     _operand = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
     return _operand;
@@ -13833,8 +13962,13 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 		if ( TokenMember *tm = dynamic_cast<TokenMember *>(expr) )
 		    if ( tm->is_fixed_array_member() )
 			branch_decays = true;
+		if ( expr && dynamic_cast<DataDefCArray *>(expr->datadef()) )
+		    branch_decays = true;
 		if ( branch_decays && raw_type && !raw_type->is_pointer() )
-		    raw_type = &ddLPSTR;
+		{
+		    DataDef *decay_ptr = effective_pointer_type_for_arith(pgm, expr);
+		    raw_type = decay_ptr ? decay_ptr : &ddLPSTR;
+		}
 	    }
 	    IRBuilder ir(pgm.cc);
 	    IRValue coerced = ir.coerce(ir_from_operand(raw, raw_type), regdp.second);

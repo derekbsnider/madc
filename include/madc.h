@@ -1367,6 +1367,7 @@ public:
     Variable *findVariable(TokenCpnd *, std::string &);
     Variable *findVariable(std::string &);
     Variable *addLiteral(std::string &);
+    Variable *addWideLiteral(std::string &);
 //  Method *findMethod(std::string &);
 };
 

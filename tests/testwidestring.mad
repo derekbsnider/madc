@@ -1,0 +1,12 @@
+#include <stdio.h>
+
+typedef __WCHAR_TYPE__ wchar_t;
+wchar_t x[] = L"Ä";
+const wchar_t ws[] = L"foo";
+
+int main(void)
+{
+	printf("%d %d %d\n", x[0], x[1], ws[2]);
+	printf("%d\n", L'Ä');
+	return 0;
+}

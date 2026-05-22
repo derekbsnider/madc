@@ -1,0 +1,16 @@
+#include <stdio.h>
+
+int y;
+int z = __builtin_choose_expr(!__builtin_constant_p(y), 3, 4);
+
+int foo(int x)
+{
+	return __builtin_choose_expr(!__builtin_constant_p(x), 3, y++);
+}
+
+int main(void)
+{
+	printf("%d %d %d\n", y, z, foo(4));
+	printf("%d\n", y);
+	return 0;
+}

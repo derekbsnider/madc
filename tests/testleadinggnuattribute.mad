@@ -1,0 +1,12 @@
+#!/../bin/madc
+
+#include <stdio.h>
+
+__attribute__((aligned(sizeof(unsigned long long)))) unsigned long long value;
+
+int main(void)
+{
+    value = 7ULL;
+    printf("%llu\n", value);
+    return 0;
+}
