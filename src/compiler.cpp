@@ -14156,6 +14156,11 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 		    raw_type = decay_ptr ? decay_ptr : &ddLPSTR;
 		}
 	    }
+	    // If the branch returns void (e.g. abort()), skip the
+	    // merge-slot store — the call either never returns or
+	    // produces no meaningful value.
+	    if ( raw_type && raw_type->type() == DataType::dtVOID )
+		return;
 	    IRBuilder ir(pgm.cc);
 	    IRValue coerced = ir.coerce(ir_from_operand(raw, raw_type), regdp.second);
 	    ir.store(IRValue::mem(merge_slot, regdp.second), coerced);

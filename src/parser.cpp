@@ -7563,11 +7563,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			// `(ch)` closes here but `->pcdata` continues the
 			// outer chain). Don't end on stop_on_closing_paren in
 			// that case.
+			// `(` after `)` is a postfix call only when the
+			// expression has a function/function-pointer type.
+			bool paren_is_call = next
+			    && next->id() == TokenID::tkOpBrk
+			    && !exStack.empty()
+			    && exStack.top()->datadef()
+			    && (exStack.top()->datadef()->is_function()
+			     || dynamic_cast<DataDefFPTR *>(exStack.top()->datadef()));
 			bool postfix_follows = next
 			    && (next->id() == TokenID::tkDot
 			     || next->id() == TokenID::tkDeRef
 			     || next->id() == TokenID::tkOpSqr
-			     || next->id() == TokenID::tkOpBrk);
+			     || paren_is_call);
 			bool ends_conditional = !postfix_follows && (stop_on_closing_paren || !next
 			    || next->id() == TokenID::tkComma
 			    || next->id() == TokenID::tkClBrk
