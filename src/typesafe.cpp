@@ -694,22 +694,48 @@ void Program::safeneg(Operand &op, DataDef *dd)
     if ( !op.isReg() ) { throw "safeneg() lval is not a register"; }
     if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	bool is_float = dd && dd->size == sizeof(float);
-	if ( is_float )
+	if ( dd && dd->is_simd() )
 	{
-	    x86::Gp mask_gp = cc.newGpd("safeneg_mask");
-	    cc.mov(mask_gp, imm(0x80000000u));
-	    x86::Xmm mask = cc.newXmmSs("safeneg_mask");
-	    cc.movd(mask, mask_gp);
-	    cc.xorps(op.as<x86::Xmm>(), mask);
+	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(dd);
+	    x86::Xmm zero = cc.newXmm("safeneg_zero");
+	    cc.pxor(zero, zero);
+	    if ( vdd->element_type->is_real() )
+	    {
+		// Packed float/double negation: subtract from zero
+		if ( vdd->element_type->size == sizeof(float) )
+		    cc.subps(zero, op.as<x86::Xmm>());
+		else
+		    cc.subpd(zero, op.as<x86::Xmm>());
+	    }
+	    else if ( vdd->element_type->size == 1 )
+		cc.psubb(zero, op.as<x86::Xmm>());
+	    else if ( vdd->element_type->size == 2 )
+		cc.psubw(zero, op.as<x86::Xmm>());
+	    else if ( vdd->element_type->size == 4 )
+		cc.psubd(zero, op.as<x86::Xmm>());
+	    else
+		cc.psubq(zero, op.as<x86::Xmm>());
+	    cc.emit(asmjit::x86::Inst::kIdMovaps, op.as<x86::Xmm>(), zero);
 	}
 	else
 	{
-	    x86::Gp mask_gp = cc.newGpq("safeneg_mask");
-	    cc.mov(mask_gp, imm((int64_t)0x8000000000000000ULL));
-	    x86::Xmm mask = cc.newXmmSd("safeneg_mask");
-	    cc.movq(mask, mask_gp);
-	    cc.xorpd(op.as<x86::Xmm>(), mask);
+	    bool is_float = dd && dd->size == sizeof(float);
+	    if ( is_float )
+	    {
+		x86::Gp mask_gp = cc.newGpd("safeneg_mask");
+		cc.mov(mask_gp, imm(0x80000000u));
+		x86::Xmm mask = cc.newXmmSs("safeneg_mask");
+		cc.movd(mask, mask_gp);
+		cc.xorps(op.as<x86::Xmm>(), mask);
+	    }
+	    else
+	    {
+		x86::Gp mask_gp = cc.newGpq("safeneg_mask");
+		cc.mov(mask_gp, imm((int64_t)0x8000000000000000ULL));
+		x86::Xmm mask = cc.newXmmSd("safeneg_mask");
+		cc.movq(mask, mask_gp);
+		cc.xorpd(op.as<x86::Xmm>(), mask);
+	    }
 	}
     }
     else
