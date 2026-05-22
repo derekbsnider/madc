@@ -232,6 +232,7 @@ editing — don't try to memorize all of them.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
+| [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 30 | Compare with `gcc -S` first, fix at deepest layer, operator self-determination |
 | [asmjit-api.md](.claude/rules/asmjit-api.md)     |    32 | asmjit v1.14 API dos / don'ts                  |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
 | [regdp-reset.md](.claude/rules/regdp-reset.md)   |    23 | Reset `regdp` before sub-compiles in loops / conditionals |
