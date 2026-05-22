@@ -7532,10 +7532,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    exStack.pop();
 		    // parse true expression — use conditional mode so it stops at : or )
 		    // but : is an operator, not ), so we parse then check for :
+		    // GNU extension: `a ?: b` means `a ? a : b` — the middle
+		    // operand is omitted and `:` appears immediately after `?`.
 		    TokenBase *texpr = nextToken();
-		    ternary->true_expr = parseExpression(texpr, true, true);
-		    // after conditional parseExpression, expect : next
-		    TokenBase *colon = nextToken();
+		    TokenBase *colon;
+		    if ( texpr->id() == TokenID::tkTerC )
+		    {
+			// GNU `?:` — reuse the condition as the true branch.
+			ternary->true_expr = ternary->condition;
+			colon = texpr;
+		    }
+		    else
+		    {
+			ternary->true_expr = parseExpression(texpr, true, true);
+			// after conditional parseExpression, expect : next
+			colon = nextToken();
+		    }
 		    if ( colon->id() != TokenID::tkTerC )
 			Throw(colon) << "Expecting : in ternary expression" << flush;
 		    // parse false expression
