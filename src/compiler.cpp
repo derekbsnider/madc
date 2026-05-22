@@ -5508,9 +5508,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	}
 
 	size_t expected_argc = explicit_expected_argc(func);
-	if ( !func->is_varargs && argc() > expected_argc )
+	// K&R-style `()` (unspecified params) allows any argument count.
+	bool kr_unspecified = func->parameters.empty() && !func->is_void_params;
+	if ( !func->is_varargs && !kr_unspecified && argc() > expected_argc )
 	    throw_too_many_call_args(pgm, this, parameters.data(), argc());
-	size_t fixed_argc = func->is_varargs ? expected_argc : argc();
+	size_t fixed_argc = (func->is_varargs || kr_unspecified) ? expected_argc : argc();
 	for ( size_t i = 0; i < fixed_argc; ++i )
 	{
 	    // skip env param (index 0 in func->parameters) when capturing
@@ -5882,7 +5884,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     size_t param_offset = (func->is_multi_return() ? 1 : 0)
 	+ (has_object_arg ? 1 : 0)
 	+ (func->has_captures ? 1 : 0);
-    size_t fixed_argc = func->is_varargs ? expected_argc : argc();
+    size_t fixed_argc = (func->is_varargs || knr_unspecified) ? expected_argc : argc();
     for ( size_t i = 0; i < fixed_argc; ++i )
     {
 	size_t pi = i + param_offset;
