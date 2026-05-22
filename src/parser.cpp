@@ -7545,8 +7545,54 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
 				    if ( inner_tb->id() == TokenID::tkMul )
 				    {
-					pushToken(inner_tb);
-					deref_expr = parseExpression(deref_tb, true);
+					// Multi-level dereference: ***p, ****p, etc.
+					// Collect all the `*` tokens, then the final
+					// operand, and build the deref chain bottom-up.
+					std::vector<TokenBase *> stars;
+					stars.push_back(deref_tb);  // the current `*`
+					stars.push_back(inner_tb);  // one more `*`
+					TokenBase *operand_tb = nextToken();
+					while ( operand_tb && operand_tb->id() == TokenID::tkMul )
+					{
+					    stars.push_back(operand_tb);
+					    operand_tb = nextToken();
+					}
+					// operand_tb is the identifier or '(' expr
+					if ( !operand_tb )
+					    Throw(deref_tb) << "expecting pointer expression after '*'" << flush;
+					// Build the innermost deref from the variable
+					if ( operand_tb->type() == TokenType::ttIdentifier )
+					{
+					    std::string vname = ((TokenIdent *)operand_tb)->str;
+					    Variable *var = findVariable(vname);
+					    if ( !var )
+						Throw(operand_tb) << "undeclared identifier '" << vname << "'" << flush;
+					    DataDef *base = deref_type_for_variable(var);
+					    if ( !base )
+						Throw(operand_tb) << "cannot dereference non-pointer type" << flush;
+					    deref_expr = new TokenDeref(*var, base);
+					}
+					else if ( operand_tb->id() == TokenID::tkOpBrk )
+					{
+					    TokenBase *inner_expr_tb = nextToken();
+					    deref_expr = parseExpression(inner_expr_tb, true);
+					    TokenBase *close = nextToken();
+					    if ( !close || close->id() != TokenID::tkClBrk )
+						Throw(close ? close : operand_tb) << "expected ')' in multi-deref" << flush;
+					}
+					else
+					    Throw(operand_tb) << "expecting identifier or '(' after multi-level '*'" << flush;
+					// Now wrap in TokenDerefExpr for each additional `*`
+					// (skip the first star since TokenDeref already derefs once)
+					for ( size_t si = 1; si < stars.size(); ++si )
+					{
+					    DataDef *dtype = deref_expr->datadef();
+					    if ( !dtype || !dtype->is_pointer() )
+						Throw(stars[si]) << "cannot dereference non-pointer type" << flush;
+					    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
+					    DataDef *base = dptr ? dptr->base_type : &ddINT64;
+					    deref_expr = new TokenDerefExpr(deref_expr, base);
+					}
 				    }
 				    else if ( inner_tb->id() == TokenID::tkOpBrk )
 				    {
