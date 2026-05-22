@@ -14159,8 +14159,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			    if ( member_count == 0 )
 				slit->inits.push_back(new TokenInt(0));
 			    else
+			    {
+				if ( member_count > 0 && slit->inits.size() > member_count )
+				    slit->inits.resize(member_count);
 				while ( slit->inits.size() < member_count )
 				    slit->inits.push_back(new TokenInt(0));
+			    }
 			    init_list.push_back(slit);
 			    TokenBase *sep = peekToken();
 			    if ( sep && sep->id() == TokenID::tkComma )
@@ -14180,8 +14184,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 			if ( inner_count == 0 )
 			    slit->inits.push_back(new TokenInt(0));
 			else
+			{
+			    // C89/C99: truncate excess characters when the
+			    // string literal is longer than the array dimension.
+			    if ( inner_count > 0 && slit->inits.size() > inner_count )
+				slit->inits.resize(inner_count);
 			    while ( slit->inits.size() < inner_count )
 				slit->inits.push_back(new TokenInt(0));
+			}
 			init_list.push_back(slit);
 			TokenBase *sep = peekToken();
 			if ( sep && sep->id() == TokenID::tkComma )
