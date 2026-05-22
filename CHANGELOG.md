@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+- **Scalar-to-vector SIMD arithmetic.** Inline `__attribute__((vector_size(N)))`
+  now parses in declarations and compound literals. Float/double scalars
+  splat correctly (was silently reinterpreting Xmm as Gp). Packed mul/div
+  for all element sizes: byte via unpack-mul-repack, 64-bit via lane-by-lane
+  imul, lane-by-lane div/idiv with remainder. Byte add/sub via paddb/psubb.
+  Packed negation via psubd/subps. 8-byte SIMD uses movq instead of movaps.
+  Global SIMD vectors init at parse time and use Mem-backed voperand.
+  Mixed int/float mul guard now allows SIMD through emit_plain_binop3.
+  Shift operators detect SIMD from either operand. Scalar-left bitwise
+  ops compile as scalar with per-lane copy. Closes scal-to-vec{1,2,3},
+  simd-{1,2,5}, pr23135.
+
+- **Ternary function-pointer call.** `(c ? foo : bar)()` now dispatches
+  via a generic expression-as-function-pointer path. The postfix `(`
+  check restricts to function types to avoid breaking braceless-if bodies.
+  Ternary void branches (e.g. `abort()`) skip the merge-slot store.
+  Closes pr34768-{1,2}, pr46309.
+
+- **Compound assignment evaluation order.** `x[0] |= foo()` now evaluates
+  RHS before reading LHS value, matching GCC behavior. Closes pr58943.
+
+- **Identity-cast destination store.** `(int)-4` no longer silently
+  produces 0 — the operator_may_be_wider path now stores to the caller's
+  destination when regdp.first is set. Cast expressions also evaluate
+  in `literal_integer_value` for global constant initializers.
+  Closes pr39240.
+
+- **K&R function pointer calls.** `long (*f)()` with empty `()` (K&R
+  unspecified params) now accepts any number of arguments. Closes pr67037.
+
+- **String literal truncation.** `char a[2][3] = {"1234", "xyz"}` no
+  longer overflows the first element into the second. Closes pr86714.
+
+- GCC parity: 1598 → 1622/1685 (94.8% → 96.3%). Integration tests: 451,
+  all passing.
+
 - **GCC integer/SIMD conversion parity advanced.**
   Division/modulo now use the natural C arithmetic type even when an
   outer destination requests a narrower signed result, unary `~` uses

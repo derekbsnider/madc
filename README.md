@@ -185,7 +185,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 451 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1598/1685 (94.8%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status: 451 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1622/1685 (96.3%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)

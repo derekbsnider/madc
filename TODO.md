@@ -2,22 +2,15 @@
 
 ## High Priority
 
-- **GCC torture test suite: push to 95%.** Currently 1598/1685 (94.8%).
-  Need 3 more passes for 95.0% (1601/1685).
-  Remaining targets (57 non-skipped failures): SIMD/vector codegen
-  (~8 tests), struct pass-by-value (~10), missing builtins
-  (`__builtin_apply`, `__builtin_shuffle`, `__builtin_va_arg_pack`),
-  ternary function-pointer calls `(c ? foo : bar)()`, `extern` in
-  block scope, `array` keyword-as-identifier conflicts, evaluation
-  order in compound assignments, asmjit InvalidState/InvalidInstruction
-  for goto-into-conditional and nested VLA paths
-  (`__builtin_choose_expr`, `__builtin_apply`, `__builtin_shuffle`,
-  `__builtin_va_arg_pack`, atomic `__sync_*` helpers), `extern` in
-  block scope, GNU attributes containing `sizeof(type)` expressions,
-  wchar_t/wide string literals, `goto` into conditional blocks,
-  variadic function pointer call parameter counting, and misc
-  individual codegen/parse issues. Current front edge:
-  `gcc_testsuite/gcc.c-torture/execute/pr122000.c`.
+- **GCC torture test suite: push to 97%.** Currently 1622/1685 (96.3%).
+  33 remaining failures (11 compile, 22 runtime, 30 skipped).
+  Key blockers: SIMD pointer dereference (`(*simd_ptr)[idx]` gives
+  garbage — would fix 4+ tests), wide vectors >128-bit (2 tests need
+  multi-XMM or AVX), missing builtins (`__builtin_apply`,
+  `__builtin_shuffle`, `__builtin_va_arg_pack`), varargs/va_list
+  issues (4 tests), struct pass-by-value return (2 tests),
+  goto-into-conditional InvalidState (2 tests), and misc
+  floating-point / alignment / aliasing issues.
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and
