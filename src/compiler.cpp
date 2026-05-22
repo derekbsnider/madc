@@ -3707,6 +3707,21 @@ static Operand &compile_call_arg_normalized(Program &pgm, TokenBase *token, Data
 	IRValue out = ir.coerce(ir_from_operand(arg, actual_type), final_type);
 	out = ir.load(out);
 	storage = out.op;
+	// Ensure the register width matches the target type. If the
+	// expression compiled into a narrower register (e.g. Gpd from
+	// a sub-expression that inferred 32-bit type), widen it now so
+	// the call-site argument is the correct width.
+	if ( storage.isReg() && storage.as<BaseReg>().isGroup(RegGroup::kGp)
+	  && final_type->is_integer() && final_type->size == 8
+	  && storage.as<x86::Gp>().isGpd() )
+	{
+	    x86::Gp wide = pgm.cc.newGpq("__call_arg_widen");
+	    if ( final_type->is_unsigned() )
+		pgm.cc.mov(wide.r32(), storage.as<x86::Gp>());
+	    else
+		pgm.cc.movsxd(wide, storage.as<x86::Gp>());
+	    storage = wide;
+	}
 	// Call arguments should not keep a Mem operand with a caller-saved
 	// base register live across unrelated calls/statements. Materialize
 	// numeric/pointer Mem args into fresh registers now so later uses
