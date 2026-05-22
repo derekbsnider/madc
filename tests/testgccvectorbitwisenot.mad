@@ -1,0 +1,17 @@
+#include <stdio.h>
+
+typedef int v4si __attribute__((vector_size(16)));
+
+v4si invert_or_xor(v4si a, v4si b)
+{
+    return a ^ (b | ~a);
+}
+
+int main()
+{
+    v4si a = {1, 2, 3, 4};
+    v4si b = {6, 7, 8, 9};
+    v4si r = invert_or_xor(a, b);
+    printf("%d %d %d %d\n", r[0], r[1], r[2], r[3]);
+    return 0;
+}

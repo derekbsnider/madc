@@ -1025,6 +1025,8 @@ static bool is_attribute_identifier_token(TokenBase *tb)
     return name == "__attribute__" || name == "__attribute";
 }
 
+static int64_t parse_constant_integer_expression(Program &pgm);
+
 static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 					 std::set<std::string> *attrs = NULL,
 					 std::string *alias_target = NULL,
@@ -1155,7 +1157,17 @@ static size_t parse_gnu_vector_size_attribute(Program &pgm)
     do {
 	TokenBase *at = pgm.nextToken();
 	if ( !at ) break;
-	if ( at->id() == TokenID::tkOpBrk ) ++depth;
+	if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
+	{
+	    int64_t n = parse_constant_integer_expression(pgm);
+	    if ( n > 0 )
+		vector_bytes = (size_t)n;
+	    TokenBase *cl = pgm.nextToken();
+	    if ( !cl || cl->id() != TokenID::tkClBrk )
+		pgm.Throw(cl ? cl : at) << "Expected ')' after vector_size argument" << flush;
+	    saw_vector_size = false;
+	}
+	else if ( at->id() == TokenID::tkOpBrk ) ++depth;
 	else if ( at->id() == TokenID::tkClBrk ) --depth;
 	else if ( at->type() == TokenType::ttIdentifier
 	       && (((TokenIdent *)at)->str == "vector_size"
@@ -1186,7 +1198,17 @@ static void consume_typedef_gnu_attributes(Program &pgm,
 	do {
 	    TokenBase *at = pgm.nextToken();
 	    if ( !at ) break;
-	    if ( at->id() == TokenID::tkOpBrk )
+	    if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
+	    {
+		int64_t n = parse_constant_integer_expression(pgm);
+		if ( vector_bytes && n > 0 )
+		    *vector_bytes = (size_t)n;
+		TokenBase *cl = pgm.nextToken();
+		if ( !cl || cl->id() != TokenID::tkClBrk )
+		    pgm.Throw(cl ? cl : at) << "Expected ')' after vector_size argument" << flush;
+		saw_vector_size = false;
+	    }
+	    else if ( at->id() == TokenID::tkOpBrk )
 		++depth;
 	    else if ( at->id() == TokenID::tkClBrk )
 		--depth;
@@ -6041,6 +6063,11 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 		fixed_array = tv->var.is_fixed_array();
 	    if ( fixed_array )
 		elem_type = build_fixed_array_query_type(tv->var.type, tv->var.dims, 1);
+	    else if ( base_type && base_type->is_simd() )
+	    {
+		DataDefSIMD *vdd = static_cast<DataDefSIMD *>(base_type);
+		elem_type = vdd->element_type ? vdd->element_type : &ddINT64;
+	    }
 	    else if ( base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);

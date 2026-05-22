@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.20.0+, GCC parity 1543/1685 = 91.6%, 421 integration tests).
+Test results as of May 21, 2026 (v0.20.0+, GCC parity 1554/1685 = 92.2%, 425 integration tests).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
@@ -11,12 +11,12 @@ stay on the smaller core footprint. Re-enable `madcdat` before final
 validation when storage/federation code or shared surfaces may be
 affected.
 
-## Current Batch Status — 421 JIT pass / 0 fail
+## Current Batch Status — 425 JIT pass / 0 fail
 
 Latest results (2026-05-21):
 
 ### JIT mode (`scripts/run_tests.sh`)
-- Passing: 418 integration tests
+- Passing: 425 integration tests
 - Failing: none
 - Note: test count previously dropped from 542 to 274 because 316 scratch/reducer files were moved to `tmp/` (gitignored). Dedicated regressions for function-pointer arrays, statement-expression member access, and nested flat struct initializers now bring the tracked integration count to 277.
   Additional tracked regressions for GNU designated initializers,

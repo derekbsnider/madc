@@ -217,6 +217,38 @@ extern "C" int __madc_mul_overflow(long a, long b, long *res)
     return r != (long)r;
 }
 
+template <typename T, typename Op>
+static int madc_overflow_store(long long a, long long b, T *res, Op op)
+{
+    __int128 r = op((__int128)a, (__int128)b);
+    *res = static_cast<T>(r);
+    return r != static_cast<T>(r);
+}
+
+#define MADC_DEFINE_OVERFLOW_STORE_HELPERS(OPNAME, EXPR) \
+extern "C" int __madc_##OPNAME##_overflow_s8(long long a, long long b, int8_t *res) \
+{ return madc_overflow_store<int8_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_u8(long long a, long long b, uint8_t *res) \
+{ return madc_overflow_store<uint8_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_s16(long long a, long long b, int16_t *res) \
+{ return madc_overflow_store<int16_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_u16(long long a, long long b, uint16_t *res) \
+{ return madc_overflow_store<uint16_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_s32(long long a, long long b, int32_t *res) \
+{ return madc_overflow_store<int32_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_u32(long long a, long long b, uint32_t *res) \
+{ return madc_overflow_store<uint32_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_s64(long long a, long long b, int64_t *res) \
+{ return madc_overflow_store<int64_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_u64(long long a, long long b, uint64_t *res) \
+{ return madc_overflow_store<uint64_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); }
+
+MADC_DEFINE_OVERFLOW_STORE_HELPERS(add, x + y)
+MADC_DEFINE_OVERFLOW_STORE_HELPERS(sub, x - y)
+MADC_DEFINE_OVERFLOW_STORE_HELPERS(mul, x * y)
+
+#undef MADC_DEFINE_OVERFLOW_STORE_HELPERS
+
 // __builtin_bswap*: byte-swap fixed-width integer values.
 extern "C" uint16_t __madc_bswap16(uint16_t x)
 {

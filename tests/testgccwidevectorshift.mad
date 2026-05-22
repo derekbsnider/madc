@@ -1,0 +1,14 @@
+#include <stdio.h>
+
+typedef unsigned V __attribute__((__vector_size__ (64)));
+
+V x;
+
+int main()
+{
+    __builtin_sub_overflow(0, 6, &x[5]);
+    x >>= ((V){} != x) & 31;
+    for (unsigned i = 0; i < 16; i++)
+        printf("%u\n", x[i]);
+    return 0;
+}

@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+- **GNU SIMD/vector parity advanced.**
+  Wide vector storage now stays memory-backed when it exceeds XMM width,
+  including `__builtin_*_overflow` stores through vector-element
+  pointers, lane-wise comparisons, bitwise ops, shifts, and by-value
+  vector call arguments. `vector_size(...)` attributes now evaluate
+  constant expressions such as `4 * sizeof(int)`, and small integer
+  vectors use the same lane-wise `^`, `|`, `&`, and `~` handling.
+  Closes `pr108292.c`, `pr109040.c`, `pr109938.c`, and `pr109986.c`
+  plus related SIMD cases.
+
 - **Array compound literals now parse and compile.**
   `(int []){0, 1, 2}` and `(int [3]){...}` now build a synthetic struct
   with N uniform elements, decay to a pointer in expression context, and
@@ -22,8 +32,8 @@
   Switch cases now support range matching. The compiler emits two
   unsigned comparisons for the range check.
 
-- GCC parity: 1536 → 1543/1685 (91.2% → 91.6%). Integration tests:
-  418 → 421, all passing.
+- GCC parity: 1543 → 1554/1685 (91.6% → 92.2%). Integration tests:
+  421 → 425, all passing.
 
 ## [v0.20.0] - 2026-05-21
 

@@ -1,0 +1,18 @@
+#include <stdio.h>
+
+typedef int v4si __attribute__((vector_size(4 * sizeof(int))));
+
+v4si combine(v4si a, v4si b, v4si c)
+{
+    return ((a ^ c) & b) | a;
+}
+
+int main()
+{
+    v4si a = {29789, -20196, 23489, 10489};
+    v4si b = {29477, 18743, 99477, 66477};
+    v4si c = {23942, -32901, 87942, -73313};
+    v4si r = combine(a, b, c);
+    printf("%d %d %d %d\n", r[0], r[1], r[2], r[3]);
+    return 0;
+}
