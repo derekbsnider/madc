@@ -2,6 +2,19 @@
 
 ## [Unreleased]
 
+- **GCC integer/SIMD conversion parity advanced.**
+  Division/modulo now use the natural C arithmetic type even when an
+  outer destination requests a narrower signed result, unary `~` uses
+  inferred operand types for nested operator expressions, narrow
+  bitwise assignment stores through the LHS correctly, and explicit
+  scalar-to-SIMD casts bitcast low scalar bytes instead of taking the
+  arithmetic scalar-splat path. Small integer SIMD relational compares
+  now route through lane-wise compare lowering, and SIMD `++` / `--`
+  uses integer vector add/sub where appropriate. Closes `pr110817-1.c`,
+  `pr110817-3.c`, `pr120630.c`, `pr19606.c`, `pr64682.c`,
+  `pr123753.c`, `conversion.c`, and `20050316-1.c`, while preserving
+  `pr109986.c`.
+
 - **GNU SIMD/vector parity advanced.**
   Wide vector storage now stays memory-backed when it exceeds XMM width,
   including `__builtin_*_overflow` stores through vector-element
@@ -65,8 +78,8 @@
   stayed as unary negation. `isPostfixPosition()` now recognizes `++`
   and `--` as value-producing. Closes pr93744-3.c.
 
-- GCC parity: 1543 → 1562/1685 (91.6% → 92.7%). Integration tests:
-  421 → 425, all passing.
+- GCC parity: 1543 → 1569/1685 (91.6% → 93.1%). Integration tests:
+  421 → 434, all passing.
 
 ## [v0.20.0] - 2026-05-21
 

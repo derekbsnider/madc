@@ -2,17 +2,19 @@
 
 ## High Priority
 
-- **GCC torture test suite: push toward 95%.** Currently 1562/1685 (92.7%).
+- **GCC torture test suite: push toward 95%.** Currently 1569/1685 (93.1%).
   v0.18.0 closed 169 new tests via _Complex arithmetic, IEEE FP
   semantics, bitfield promotions, auto-include headers, alias support,
   setjmp, bswap, and dozens of individual fixes.
-  Remaining targets (93 failures): struct pass-by-value (~15-18 tests),
-  SIMD/vector codegen gaps (~10), missing builtins (`__builtin_choose_expr`,
-  `__builtin_apply`, `__builtin_shuffle`, `__builtin_va_arg_pack`),
-  `extern` in block scope, cast-in-expression operator precedence,
+  Remaining targets (86 non-skipped failures): struct pass-by-value
+  (~15-18 tests), SIMD/vector codegen gaps, missing builtins
+  (`__builtin_choose_expr`, `__builtin_apply`, `__builtin_shuffle`,
+  `__builtin_va_arg_pack`, atomic `__sync_*` helpers), `extern` in
+  block scope, GNU attributes containing `sizeof(type)` expressions,
   wchar_t/wide string literals, `goto` into conditional blocks,
   variadic function pointer call parameter counting, and misc
-  individual codegen/parse issues.
+  individual codegen/parse issues. Current front edge:
+  `gcc_testsuite/gcc.c-torture/execute/pr122000.c`.
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and
