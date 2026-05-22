@@ -11310,6 +11310,19 @@ Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
       || (right->datadef() && right->datadef()->is_complex()) )
 	return emit_complex_muldiv(pgm, left, right, /*divide=*/true, regdp, _operand);
     if ( can_optimize() ) {return optimize(pgm, regdp);} // attempt optimization
+    // Division and modulo must respect operand signedness for correct
+    // instruction selection (div vs idiv). If the caller pre-set
+    // regdp.second to a signed destination type but the operands'
+    // natural type is unsigned, override to the operands' type so
+    // safediv emits unsigned division.
+    {
+	DataDef *natural = infer_numeric_type(left, right);
+	if ( natural && natural->is_unsigned()
+	  && regdp.second && regdp.second->is_integer()
+	  && !regdp.second->is_unsigned()
+	  && regdp.second->size <= natural->size )
+	    regdp.second = natural;
+    }
     settype(pgm, regdp);				 // set regdp.second type
     {
 	bool real_ops = (left && left->is_real()) || (right && right->is_real());
@@ -11363,6 +11376,15 @@ Operand &TokenMod::compile(Program &pgm, regdefp_t &regdp)
     if ( !left )  { throw "% missing lval operand"; }
     if ( !right ) { throw "% missing rval operand"; }
     if ( can_optimize() )  {return optimize(pgm, regdp);}
+    // Override signed destination when operands are unsigned (same as TokenDiv).
+    {
+	DataDef *natural = infer_numeric_type(left, right);
+	if ( natural && natural->is_unsigned()
+	  && regdp.second && regdp.second->is_integer()
+	  && !regdp.second->is_unsigned()
+	  && regdp.second->size <= natural->size )
+	    regdp.second = natural;
+    }
     settype(pgm, regdp);
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
       && regdp.second && regdp.second->is_integer() )
