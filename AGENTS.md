@@ -44,6 +44,54 @@ because the Diku / Merc / SMAUG license stack is distinct from
 madc's own MPL 2.0 licence. `docs/SMAUG_requirements.md` in this
 repo is the historical gap analysis that drove madc's Phase A–F.
 
+## Top 10 Rules — internalize these before writing a single line
+
+These are the rules that cause the most damage when violated. Every
+agent must follow them without exception.
+
+1. **GCC is canon.** Before fixing any codegen or runtime bug, run
+   `gcc -S -fverbose-asm -O0` and study the output. madc must match
+   GCC's behavior. No exceptions. (`gcc-parity.md`, `gcc-methodology.md`)
+
+2. **Fix at the deepest layer.** Never shim a symptom at a higher
+   layer when the root cause is lower. If a type is wrong, fix where
+   the type originates. Shortcuts make for long delays.
+   (`gcc-methodology.md`)
+
+3. **Think first, code second.** Form a hypothesis before editing.
+   If it's wrong, stop and re-examine — don't chain speculative
+   micro-fixes. One reasoned pass beats five iterative attempts.
+   (`gcc-methodology.md`)
+
+4. **Separation of concerns.** Parsers parse, compilers emit code,
+   namespace files implement their own namespace. Do not cross layer
+   boundaries. (`design-principles.md`)
+
+5. **`make -C src fulltest` after every change.** A change is not done
+   until the full test suite is green. No JIT-green-EXE-broken, no
+   EXE-green-JIT-broken. (`testing-fulltest.md`)
+
+6. **No hard-coding specifics into general machinery.** Test runner:
+   no per-test case branches. Parser: no string comparisons against
+   user names. Use data lookups, type predicates, filename conventions.
+   (`design-principles.md`)
+
+7. **Feature branches off `develop`.** Keep `develop` stable. Commit
+   early and often. Never `git checkout` over uncommitted work — use
+   `#ifdef` guards or `git stash`. (`branching.md`, `feature-guards.md`)
+
+8. **Bare rules in `.claude/rules/`, reasoning in `docs/rules/`.**
+   Never duplicate content between the two. If a rules file needs to
+   say "because", move that to the docs file. (`docs-vs-rules.md`)
+
+9. **Operator types are self-determined.** Arithmetic and bitwise
+   operators infer their own type from their operands. Callers must
+   NOT override signedness or width via `regdp.second`. Unsigned values
+   must zero-extend when widened. (`gcc-methodology.md`)
+
+10. **No shell `&&` chains.** Each shell invocation is a single, simple
+    command. This prevents permission-prompt storms in agent environments.
+
 ## Shell command hygiene
 
 **Never chain commands with `&&` or use shell variable substitution.**
