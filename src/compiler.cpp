@@ -13611,10 +13611,15 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 		regdp.first = &_operand;
 		return _operand;
 	    }
-	    // No truncation needed — just relabel.
+	    // No truncation needed — just relabel. If the caller provided
+	    // a destination, store the value there.
 	    regdp.second = cast_type;
-	    if ( !regdp.first )
-		regdp.first = &src_op;
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, src_op, cast_type, actual_src);
+		return *regdp.first;
+	    }
+	    regdp.first = &src_op;
 	    return src_op;
 	}
     }

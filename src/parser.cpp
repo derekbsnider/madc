@@ -13300,6 +13300,28 @@ static bool literal_integer_value(TokenBase *tb, int64_t &out)
 	    return true;
 	}
     }
+    // Cast expression: (type)N — truncate/sign-extend to the target width
+    if ( TokenCast *tc = dynamic_cast<TokenCast *>(tb) )
+    {
+	int64_t inner;
+	if ( tc->expr && literal_integer_value(tc->expr, inner) && tc->cast_type )
+	{
+	    size_t sz = tc->cast_type->size;
+	    if ( sz >= 8 )
+		out = inner;
+	    else if ( tc->cast_type->is_unsigned() )
+		out = inner & ((uint64_t(1) << (sz * 8)) - 1);
+	    else
+	    {
+		// Sign-extend from sz bytes
+		uint64_t mask = (uint64_t(1) << (sz * 8)) - 1;
+		int64_t val = inner & (int64_t)mask;
+		int64_t sign = int64_t(1) << (sz * 8 - 1);
+		out = (val ^ sign) - sign;
+	    }
+	    return true;
+	}
+    }
     return false;
 }
 
