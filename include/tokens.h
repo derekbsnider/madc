@@ -1302,9 +1302,11 @@ public:
 class TokenVaArg: public TokenBase
 {
 public:
-    Variable *ap_var;     // the va_list variable
-    DataDef *target_type; // the type to read as
-    TokenVaArg(Variable *ap, DataDef *tt) : ap_var(ap), target_type(tt) { _datatype = tt; }
+    Variable *ap_var;      // the va_list variable (legacy, may be NULL)
+    TokenBase *ap_expr;    // the va_list expression (may be subscript, deref, etc.)
+    DataDef *target_type;  // the type to read as
+    TokenVaArg(Variable *ap, DataDef *tt) : ap_var(ap), ap_expr(NULL), target_type(tt) { _datatype = tt; }
+    TokenVaArg(Variable *ap, TokenBase *expr, DataDef *tt) : ap_var(ap), ap_expr(expr), target_type(tt) { _datatype = tt; }
     virtual TokenType type() const { return TokenType::ttBase; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };

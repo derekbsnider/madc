@@ -13699,8 +13699,24 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(pgm.cc.comment("TokenVaArg::compile()"));
 
-    // get the va_list variable's operand (it's an int64_t holding a pointer)
-    Operand &ap_op = pgm.tkFunction->voperand(pgm, ap_var);
+    // get the va_list operand — either from the variable (simple case)
+    // or from the expression (subscript, dereference, etc.)
+    Operand ap_storage;
+    Operand *ap_op_ptr = NULL;
+    if ( ap_var )
+    {
+	ap_op_ptr = &pgm.tkFunction->voperand(pgm, ap_var);
+    }
+    else if ( ap_expr )
+    {
+	regdefp_t ap_rdp = {NULL, NULL, NULL};
+	Operand &expr_op = ap_expr->compile(pgm, ap_rdp);
+	ap_storage = expr_op;
+	ap_op_ptr = &ap_storage;
+    }
+    else
+	throw "TokenVaArg::compile() no ap_var or ap_expr";
+    Operand &ap_op = *ap_op_ptr;
 
     // load current pointer value into a temp register
     x86::Gp ptr = pgm.cc.newIntPtr("va_ptr");

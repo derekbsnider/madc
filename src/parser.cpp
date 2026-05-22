@@ -8274,38 +8274,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( !peekToken() || peekToken()->id() != TokenID::tkOpBrk )
 			Throw(tb) << "Expecting '(' after va_arg" << flush;
 		    nextToken(); // consume (
-		    // first arg: the va_list variable name
-		    TokenBase *ap_tb = nextToken();
-		    // Handle *ptr form: va_arg(*ap, type)
-		    bool deref_ap = false;
-		    if ( ap_tb->id() == TokenID::tkMul )
-		    {
-			deref_ap = true;
-			ap_tb = nextToken();
-			// consume optional () around function call: va_arg(*foo(), type)
-			if ( ap_tb->type() == TokenType::ttIdentifier && peekToken()
-			  && peekToken()->id() == TokenID::tkOpBrk )
-			{
-			    // function call — parse as expression and get the result
-			    // For now, just consume the call and use the name
-			    nextToken(); // consume (
-			    if ( peekToken() && peekToken()->id() == TokenID::tkClBrk )
-				nextToken(); // consume )
-			}
-		    }
-		    if ( ap_tb->type() != TokenType::ttIdentifier )
-			Throw(ap_tb) << "Expecting va_list variable name in va_arg" << flush;
-		    std::string ap_name = ((TokenIdent *)ap_tb)->str;
-		    TokenCpnd *scope = compounds.empty() ? NULL : compounds.top();
-		    Variable *ap_var = scope ? scope->findVariable(ap_name) : NULL;
-		    if ( !ap_var )
-			ap_var = findVariable(ap_name);
-		    if ( !ap_var )
-			Throw(ap_tb) << "Unknown variable '" << ap_name << "' in va_arg" << flush;
+		    // first arg: the va_list expression — may be a simple
+		    // identifier, *ptr, aps[4], or any expression that yields
+		    // a va_list. Parse as a general expression; comma stops it.
+		    TokenBase *ap_first = nextToken();
+		    TokenBase *ap_expr = parseExpression(ap_first, false, false, false, 0, true);
+		    // For backward compat, extract the Variable* when the
+		    // expression is a simple variable or deref.
+		    Variable *ap_var = NULL;
+		    if ( TokenVar *tv = dynamic_cast<TokenVar *>(ap_expr) )
+			ap_var = &tv->var;
+		    else if ( TokenDeref *td = dynamic_cast<TokenDeref *>(ap_expr) )
+			ap_var = &td->var;
 		    // consume comma
 		    TokenBase *comma_tb = nextToken();
 		    if ( comma_tb->id() != TokenID::tkComma )
-			Throw(comma_tb) << "Expecting ',' after va_list variable in va_arg" << flush;
+			Throw(comma_tb) << "Expecting ',' after va_list expression in va_arg" << flush;
 		    // second arg: type name
 		    TokenBase *type_tb = nextToken();
 		    while ( is_type_qualifier_token(type_tb) )
@@ -8374,7 +8358,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
 		       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
 			Throw(type_tb) << "Expecting ')' after va_arg type" << flush;
-		    exStack.push(new TokenVaArg(ap_var, target_dd));
+		    exStack.push(new TokenVaArg(ap_var, ap_expr, target_dd));
 		    break;
 		}
 	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
