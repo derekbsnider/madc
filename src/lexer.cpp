@@ -602,8 +602,17 @@ void Program::_tokenizer_init()
     define_map["__FLT_MIN__"] = "1.17549435e-38F";
     define_map["__DBL_MAX__"] = "1.7976931348623157e+308";
     define_map["__DBL_MIN__"] = "2.2250738585072014e-308";
+    define_map["__LDBL_MAX__"] = "1.7976931348623157e+308";
+    define_map["__LDBL_MIN__"] = "2.2250738585072014e-308";
     define_map["__FLT_EPSILON__"] = "1.19209290e-7F";
     define_map["__DBL_EPSILON__"] = "2.2204460492503131e-16";
+    define_map["__LDBL_EPSILON__"] = "2.2204460492503131e-16";
+    define_map["__FLT_MANT_DIG__"] = "24";
+    define_map["__DBL_MANT_DIG__"] = "53";
+    define_map["__LDBL_MANT_DIG__"] = "53";
+    define_map["__FLT_DIG__"] = "6";
+    define_map["__DBL_DIG__"] = "15";
+    define_map["__LDBL_DIG__"] = "15";
     define_map["__BIGGEST_ALIGNMENT__"] = "16";
 
     // GCC predefined macros for C compatibility
@@ -678,10 +687,15 @@ void Program::_tokenizer_init()
 	m.body = "__dest = __src";
 	macro_map["__builtin_va_copy"] = m;
     }
+    // Report the GCC version that compiled madc itself.
+    define_map["__GNUC__"] = std::to_string(__GNUC__);
+    define_map["__GNUC_MINOR__"] = std::to_string(__GNUC_MINOR__);
+    define_map["__GNUC_PATCHLEVEL__"] = std::to_string(__GNUC_PATCHLEVEL__);
     define_map["__x86_64__"] = "1";
     define_map["__LP64__"] = "1";
-    define_map["__BYTE_ORDER__"] = "1234";
-    define_map["__ORDER_LITTLE_ENDIAN__"] = "1234";
+    define_map["__BYTE_ORDER__"] = std::to_string(__BYTE_ORDER__);
+    define_map["__ORDER_LITTLE_ENDIAN__"] = std::to_string(__ORDER_LITTLE_ENDIAN__);
+    define_map["__ORDER_BIG_ENDIAN__"] = std::to_string(__ORDER_BIG_ENDIAN__);
 
     // GCC __builtin_* → libc function aliases.
     // Most GCC builtins have the same signature as their libc counterpart.
