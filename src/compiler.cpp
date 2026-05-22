@@ -7892,6 +7892,24 @@ static bool try_emit_large_simd_compound_bitop(Program &pgm, TokenBase *left, To
     return true;
 }
 
+// Determine the DataDef type of a compound-assignment LHS without reading
+// the value. Used to normalize the RHS before the LHS value is loaded.
+static DataDef *compound_lhs_type(Program &pgm, TokenBase *left)
+{
+    if ( left->type() == TokenType::ttVariable )
+    {
+	TokenVar *tv = dynamic_cast<TokenVar *>(left);
+	return tv ? tv->var.type : left->datadef();
+    }
+    if ( TokenMember *tm = dynamic_cast<TokenMember *>(left) )
+	return tm->datadef();
+    if ( TokenSubscript *ts = dynamic_cast<TokenSubscript *>(left) )
+	return ts->datadef();
+    if ( TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(left) )
+	return tse->datadef();
+    return left->datadef();
+}
+
 static CompoundLHS resolveCompoundLHS(Program &pgm, TokenBase *left, const char *op_name)
 {
     CompoundLHS r;
@@ -8459,15 +8477,15 @@ static Operand &emit_compound_binop3(Program &pgm, TokenBase *left, TokenBase *r
 				     SafeBinOp3 op, regdefp_t &regdp, Operand &_operand,
 				     const char *op_name)
 {
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
-    // C requires compound assignments to promote narrow integers before
-    // the operation (e.g. `unsigned char x; x += -5;` computes in int).
-    DataDef *op_type = promote_c_integer_type(lhs.type);
+    // C semantics: evaluate RHS before reading LHS value.
+    DataDef *lhs_raw_type = compound_lhs_type(pgm, left);
+    DataDef *op_type = promote_c_integer_type(lhs_raw_type);
     Operand tmp;
     Operand *out = regdp.first;
     regdp.second = op_type;
     regdp.first  = nullptr;
     Operand &rval = compile_compound_rhs_normalized(pgm, right, op_type, tmp);
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
     // Pointer arithmetic scaling: `p += n` must scale n by sizeof(*p).
     if ( lhs.type && lhs.type->is_pointer() && rval.isReg()
       && rval.as<BaseReg>().isGroup(RegGroup::kGp) )
@@ -8500,12 +8518,17 @@ static Operand &emit_compound_bitop2(Program &pgm, TokenBase *left, TokenBase *r
 {
     if ( try_emit_large_simd_compound_bitop(pgm, left, right, op, regdp, _operand) )
 	return _operand;
-    CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
+    // C semantics: evaluate RHS before reading LHS value, so side effects
+    // from the RHS (e.g. `x[0] |= foo()` where foo modifies x[0]) are
+    // visible when the LHS is read. Determine LHS type first for RHS
+    // normalization, then compile RHS, then resolve (read) LHS.
+    DataDef *lhs_type = compound_lhs_type(pgm, left);
     Operand tmp;
     Operand *out = regdp.first;
-    regdp.second = lhs.type;
+    regdp.second = lhs_type;
     regdp.first  = nullptr;
-    Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs.type, tmp);
+    Operand &rval = compile_compound_rhs_gp_normalized(pgm, right, lhs_type, tmp);
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
     (pgm.*op)(lhs.lval, rval, lhs.type);
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
 }
@@ -8517,17 +8540,18 @@ static Operand &emit_compound_divmod(Program &pgm, TokenBase *left, TokenBase *r
 				     bool return_remainder, regdefp_t &regdp,
 				     Operand &_operand, const char *op_name)
 {
-    CompoundLHS lhs  = resolveCompoundLHS(pgm, left, op_name);
-    // C requires compound assignments to promote narrow integers.
-    DataDef *op_type = promote_c_integer_type(lhs.type);
-    Operand dividend  = op_type->newreg(pgm.cc, "dividend");
-    Operand remainder = op_type->newreg(pgm.cc, "remainder");
+    // C semantics: evaluate RHS before reading LHS value.
+    DataDef *lhs_raw_type = compound_lhs_type(pgm, left);
+    DataDef *op_type = promote_c_integer_type(lhs_raw_type);
     Operand divisor;
     Operand *out = regdp.first;
-    pgm.safemov(dividend, lhs.lval, op_type, lhs.type);
     regdp.second = op_type;
     regdp.first  = nullptr;
     compile_compound_rhs_normalized(pgm, right, op_type, divisor);
+    CompoundLHS lhs = resolveCompoundLHS(pgm, left, op_name);
+    Operand dividend  = op_type->newreg(pgm.cc, "dividend");
+    Operand remainder = op_type->newreg(pgm.cc, "remainder");
+    pgm.safemov(dividend, lhs.lval, op_type, lhs.type);
     if ( op_type->is_integer() )
 	pgm.safexor(remainder, remainder);
     pgm.safediv(remainder, dividend, divisor, op_type, op_type, op_type);
