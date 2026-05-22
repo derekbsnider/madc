@@ -32,7 +32,40 @@
   Switch cases now support range matching. The compiler emits two
   unsigned comparisons for the range check.
 
-- GCC parity: 1543 → 1554/1685 (91.6% → 92.2%). Integration tests:
+- **Inline asm fallback for unrecognized constraint patterns.**
+  The asm handler previously only recognized `"+r"`, `"+m"`, `"=r"`,
+  `"=m"`, and `"0"` constraints. Other patterns (`"+g"`, `"=m"` with
+  trailing colons, multi-operand forms) consumed tokens past the asm
+  statement, breaking subsequent code. The parser now uses paren-depth
+  tracking to consume all remaining tokens when the constraint doesn't
+  match a known shape. Closes pr40657.c, pr49390.c, pr65053-1.c,
+  pr65053-2.c, pr88904.c.
+
+- **GCC predefined macros expanded.**
+  Added `__LDBL_MAX__`, `__LDBL_MIN__`, `__LDBL_EPSILON__`,
+  `__FLT_MANT_DIG__`, `__DBL_MANT_DIG__`, `__LDBL_MANT_DIG__`,
+  `__FLT_DIG__`, `__DBL_DIG__`, `__LDBL_DIG__`, `__ORDER_BIG_ENDIAN__`.
+  `__GNUC__`, `__GNUC_MINOR__`, `__GNUC_PATCHLEVEL__`, and byte-order
+  macros now reflect the actual build compiler via C preprocessor defines.
+
+- **sizeof(expr) paren fix.** `sizeof(expr)` in the expression-fallback
+  path no longer double-consumes the closing paren, fixing
+  `if (sizeof(0LL) == sizeof(0U))` and similar comparisons.
+
+- **Pointer-to-array declarations now parse.** `int (*a)[N]` is no
+  longer misinterpreted as a function pointer. After `(*name)`, if `[`
+  follows instead of `(`, the parser treats it as a pointer-to-array.
+
+- **Switch case values widen to 64-bit.** Case constants exceeding
+  32-bit range (e.g. `case 1000000000000000000ULL:`) now get the correct
+  64-bit type instead of being truncated to 32-bit. Closes pr34154.c.
+
+- **Postfix `++`/`--` now treated as value-producing for operator
+  context.** `w++ - 3` was previously misparsed because `-` after `++`
+  stayed as unary negation. `isPostfixPosition()` now recognizes `++`
+  and `--` as value-producing. Closes pr93744-3.c.
+
+- GCC parity: 1543 → 1562/1685 (91.6% → 92.7%). Integration tests:
   421 → 425, all passing.
 
 ## [v0.20.0] - 2026-05-21

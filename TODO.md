@@ -2,18 +2,17 @@
 
 ## High Priority
 
-- **GCC torture test suite: push toward 95%.** Currently 1554/1685 (92.2%).
+- **GCC torture test suite: push toward 95%.** Currently 1562/1685 (92.7%).
   v0.18.0 closed 169 new tests via _Complex arithmetic, IEEE FP
   semantics, bitfield promotions, auto-include headers, alias support,
   setjmp, bswap, and dozens of individual fixes.
-  Remaining targets: `__builtin_return_address`, struct pass-by-value
-  for function args (~8 compile/runtime failures), 32-bit arithmetic wrapping
-  in widening cast contexts (`(long)(uint_a + uint_b)`), compound
-  assignment evaluation order, deeper inline-asm operand coverage, and
-  the remaining parser/runtime fronts after `pr108292.c`, `pr109040.c`,
-  `pr109938.c`, and `pr109986.c`.
-  The focused `_Complex` execute lane is currently green; the active
-  fronts have shifted back to the remaining non-complex GCC gaps.
+  Remaining targets (93 failures): struct pass-by-value (~15-18 tests),
+  SIMD/vector codegen gaps (~10), missing builtins (`__builtin_choose_expr`,
+  `__builtin_apply`, `__builtin_shuffle`, `__builtin_va_arg_pack`),
+  `extern` in block scope, cast-in-expression operator precedence,
+  wchar_t/wide string literals, `goto` into conditional blocks,
+  variadic function pointer call parameter counting, and misc
+  individual codegen/parse issues.
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and

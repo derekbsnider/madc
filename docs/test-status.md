@@ -1,6 +1,6 @@
 # Test Status
 
-Test results as of May 21, 2026 (v0.20.0+, GCC parity 1554/1685 = 92.2%, 425 integration tests).
+Test results as of May 22, 2026 (v0.20.0+, GCC parity 1562/1685 = 92.7%, 425 integration tests).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 
