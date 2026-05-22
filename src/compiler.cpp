@@ -1930,6 +1930,36 @@ static void splat_gp_to_simd_xmm(Program &pgm, x86::Xmm &dst, x86::Gp gp,
     load_mem_to_xmm(pgm, dst, slot, vdd);
 }
 
+// Broadcast a scalar Xmm (value in low lane) to all lanes of dst.
+static void splat_xmm_to_simd_xmm(Program &pgm, x86::Xmm &dst, x86::Xmm src,
+				   DataDefSIMD *vdd)
+{
+    if ( !vdd || !vdd->element_type || vdd->element_type->size == 0 )
+	throw "splat_xmm_to_simd_xmm() invalid SIMD type";
+    // For float (4 lanes): shufps dst, dst, 0 broadcasts lane 0 to all
+    // For double (2 lanes): unpcklpd dst, dst broadcasts lane 0 to both
+    if ( !dst.equals(src) )
+	pgm.cc.emit(asmjit::x86::Inst::kIdMovaps, dst, src);
+    if ( vdd->element_type->size == sizeof(float) )
+	pgm.cc.shufps(dst, dst, 0);
+    else if ( vdd->element_type->size == sizeof(double) )
+	pgm.cc.unpcklpd(dst, dst);
+    else
+	throw "splat_xmm_to_simd_xmm() non-float element type";
+}
+
+// Splat a scalar IRValue (Gp or Xmm) into all lanes of a SIMD Xmm register.
+static void splat_scalar_to_simd(Program &pgm, x86::Xmm &dst,
+				 const IRValue &scalar, DataDefSIMD *vdd)
+{
+    if ( scalar.op.isReg() && scalar.op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	splat_gp_to_simd_xmm(pgm, dst, scalar.op.as<x86::Gp>(), vdd);
+    else if ( scalar.op.isReg() && scalar.op.as<BaseReg>().isGroup(RegGroup::kVec) )
+	splat_xmm_to_simd_xmm(pgm, dst, scalar.op.as<x86::Xmm>(), vdd);
+    else
+	throw "splat_scalar_to_simd() unexpected operand type";
+}
+
 static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					 Operand *preferred_dest, Operand &storage)
 {
@@ -2062,7 +2092,21 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	    throw "compile_token_normalized() SIMD target needs Xmm destination";
 	x86::Xmm xmm = simd_dst.as<x86::Xmm>();
 	if ( raw.isReg() && raw.as<BaseReg>().isGroup(RegGroup::kVec) )
-	    pgm.safemov(xmm, raw.as<x86::Xmm>(), target_type, raw_type);
+	{
+	    // If source is a scalar Xmm (float/double) being promoted to SIMD,
+	    // coerce to element type and broadcast to all lanes.
+	    if ( raw_type && raw_type->is_real() && !raw_type->is_simd() )
+	    {
+		DataDefSIMD *vdd = static_cast<DataDefSIMD *>(target_type);
+		DataDef *elem = vdd->element_type ? vdd->element_type : &ddDOUBLE;
+		IRBuilder ir(pgm.cc);
+		IRValue scalar = ir.coerce(ir_from_operand(raw, raw_type), elem);
+		scalar = ir.load(scalar);
+		splat_xmm_to_simd_xmm(pgm, xmm, scalar.op.as<x86::Xmm>(), vdd);
+	    }
+	    else
+		pgm.safemov(xmm, raw.as<x86::Xmm>(), target_type, raw_type);
+	}
 	else if ( raw.isMem() )
 	{
 	    x86::Mem mem = raw.as<x86::Mem>();
@@ -2075,7 +2119,7 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	    IRBuilder ir(pgm.cc);
 	    IRValue scalar = ir.coerce(ir_from_operand(raw, raw_type ? raw_type : elem), elem);
 	    scalar = ir.load(scalar);
-	    splat_gp_to_simd_xmm(pgm, xmm, scalar.op.as<x86::Gp>(), vdd);
+	    splat_scalar_to_simd(pgm, xmm, scalar, vdd);
 	}
 	else if ( raw.isImm() )
 	{
@@ -2084,7 +2128,7 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	    IRBuilder ir(pgm.cc);
 	    IRValue scalar = ir.coerce(IRValue::imm(raw.as<Imm>(), raw_type ? raw_type : elem), elem);
 	    scalar = ir.load(scalar);
-	    splat_gp_to_simd_xmm(pgm, xmm, scalar.op.as<x86::Gp>(), vdd);
+	    splat_scalar_to_simd(pgm, xmm, scalar, vdd);
 	}
 	else
 	    throw "compile_token_normalized() unsupported SIMD source operand";
@@ -2946,10 +2990,16 @@ static Operand &emit_large_simd_bitwise(Program &pgm, TokenBase *left, TokenBase
     if ( !vdd || !vdd->element_type || !vdd->element_type->is_integer() )
 	throw "large SIMD bitwise currently supports integer vectors";
     DataDef *elem = vdd->element_type;
+    bool left_vec = expr_contains_simd_value(left);
     bool right_vec = expr_contains_simd_value(right);
-    x86::Mem left_mem = large_simd_expr_mem(pgm, left, vdd, "simd_bit_l");
+    x86::Mem left_mem;
     x86::Mem right_mem;
+    Operand left_scalar;
     Operand right_scalar;
+    if ( left_vec )
+	left_mem = large_simd_expr_mem(pgm, left, vdd, "simd_bit_l");
+    else
+	left_scalar = compile_token_normalized(pgm, left, elem, nullptr, left_scalar);
     if ( right_vec )
 	right_mem = large_simd_expr_mem(pgm, right, vdd, "simd_bit_r");
     else
@@ -2958,22 +3008,34 @@ static Operand &emit_large_simd_bitwise(Program &pgm, TokenBase *left, TokenBase
     x86::Mem dst = new_large_simd_stack(pgm, vdd, "simd_bit");
     for ( size_t i = 0; i < vdd->lane_count; ++i )
     {
-	Operand ltmp = load_simd_lane_gp(pgm, left_mem, i, vdd, "simd_bit_l");
+	Operand ltmp_storage;
+	Operand &ltmp = left_vec
+	    ? (ltmp_storage = load_simd_lane_gp(pgm, left_mem, i, vdd, "simd_bit_l"))
+	    : left_scalar;
+	// For scalar left, we need a fresh copy per lane since the op is destructive
+	Operand lval;
+	if ( !left_vec )
+	{
+	    lval = elem->newreg(pgm.cc, "simd_bit_l_copy");
+	    pgm.safemov(lval, ltmp, elem, elem);
+	}
+	else
+	    lval = ltmp;
 	Operand rtmp;
 	Operand &rval = right_vec
 	    ? (rtmp = load_simd_lane_gp(pgm, right_mem, i, vdd, "simd_bit_r"))
 	    : right_scalar;
 	if ( op == SimdBitKind::And )
-	    pgm.safeand(ltmp, rval, elem);
+	    pgm.safeand(lval, rval, elem);
 	else if ( op == SimdBitKind::Or )
-	    pgm.safeor(ltmp, rval, elem);
+	    pgm.safeor(lval, rval, elem);
 	else if ( op == SimdBitKind::Xor )
-	    pgm.safexor(ltmp, rval, elem);
+	    pgm.safexor(lval, rval, elem);
 	else if ( op == SimdBitKind::Shl )
-	    pgm.safeshl(ltmp, rval, elem);
+	    pgm.safeshl(lval, rval, elem);
 	else
-	    pgm.safeshr(ltmp, rval, elem);
-	store_simd_lane_gp(pgm, dst, i, vdd, ltmp.as<x86::Gp>());
+	    pgm.safeshr(lval, rval, elem);
+	store_simd_lane_gp(pgm, dst, i, vdd, lval.as<x86::Gp>());
     }
 
     return finish_simd_mem_result(pgm, dst, vdd, regdp, storage, "simd_bit_copy");
@@ -11551,7 +11613,10 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     bool any_real = (left && left->is_real()) || (right && right->is_real());
     bool mixed_real = (left && left->is_real()) != (right && right->is_real());
     bool dest_int_but_real_ops = any_real && regdp.second && regdp.second->is_integer();
-    if ( !mixed_real && !dest_int_but_real_ops && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
+    // SIMD scalar-to-vector: compile_token_normalized handles the splat,
+    // so mixed int/float is fine when the destination is SIMD.
+    bool dest_is_simd = regdp.second && regdp.second->is_simd();
+    if ( (dest_is_simd || (!mixed_real && !dest_int_but_real_ops)) && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safemul, regdp, _operand, "_mul_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     // When the result type is real but the LHS is a bitwise operator,
@@ -11890,6 +11955,12 @@ Operand &TokenBSL::compile(Program &pgm, regdefp_t &regdp)
 	shift_type = regdp.second;
     }
     regdp.second = caller_type ? caller_type : shift_type;
+    // If either operand is SIMD, override shift_type to the SIMD type.
+    DataDef *simd_type = (left && left->datadef() && left->datadef()->is_simd()) ? left->datadef()
+		       : (right && right->datadef() && right->datadef()->is_simd()) ? right->datadef()
+		       : nullptr;
+    if ( simd_type )
+	shift_type = simd_type;
     if ( shift_type && shift_type->is_simd() )
 	return emit_large_simd_bitwise(pgm, left, right, SimdBitKind::Shl,
 	    static_cast<DataDefSIMD *>(shift_type), regdp, _operand);
@@ -12022,6 +12093,13 @@ Operand &TokenBSR::compile(Program &pgm, regdefp_t &regdp)
 	shift_type = regdp.second;
     }
     regdp.second = caller_type ? caller_type : shift_type;
+    {
+	DataDef *simd_type = (left && left->datadef() && left->datadef()->is_simd()) ? left->datadef()
+			   : (right && right->datadef() && right->datadef()->is_simd()) ? right->datadef()
+			   : nullptr;
+	if ( simd_type )
+	    shift_type = simd_type;
+    }
     if ( shift_type && shift_type->is_simd() )
 	return emit_large_simd_bitwise(pgm, left, right, SimdBitKind::Shr,
 	    static_cast<DataDefSIMD *>(shift_type), regdp, _operand);

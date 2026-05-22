@@ -1030,7 +1030,8 @@ static int64_t parse_constant_integer_expression(Program &pgm);
 static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 					 std::set<std::string> *attrs = NULL,
 					 std::string *alias_target = NULL,
-					 size_t *explicit_align = NULL)
+					 size_t *explicit_align = NULL,
+					 size_t *vector_bytes = NULL)
 {
     while ( nt && is_attribute_identifier_token(nt) )
     {
@@ -1039,6 +1040,7 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 	    int adepth = 0;
 	    bool saw_alias = false;
 	    bool saw_aligned = false;
+	    bool saw_vector_size = false;
 	    do {
 		TokenBase *at = pgm.nextToken();
 		if ( !at ) break;
@@ -1061,6 +1063,23 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 		    if ( aval > 0 )
 			*explicit_align = static_cast<size_t>(aval);
 		    saw_aligned = false;
+		}
+		else if ( at->type() == TokenType::ttIdentifier
+		  && (((TokenIdent *)at)->str == "vector_size"
+		   || ((TokenIdent *)at)->str == "__vector_size__") )
+		    saw_vector_size = true;
+		else if ( saw_vector_size && at->id() == TokenID::tkOpBrk )
+		{
+		    int64_t n = parse_constant_integer_expression(pgm);
+		    if ( vector_bytes && n > 0 )
+			*vector_bytes = (size_t)n;
+		    TokenBase *cl = pgm.nextToken();
+		    if ( cl && cl->id() == TokenID::tkClBrk )
+			; // consumed vector_size(...) argument paren
+		    else if ( cl )
+			pgm.pushToken(cl);
+		    saw_vector_size = false;
+		    continue; // don't do depth tracking for this paren pair
 		}
 		if ( at->id() == TokenID::tkOpBrk ) ++adepth;
 		else if ( at->id() == TokenID::tkClBrk ) --adepth;
@@ -6930,8 +6949,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    cast_qualifier = nextToken();
 			    peek1 = peekToken();
 			}
+			// __attribute__((vector_size(N))) type — inline SIMD type in cast/compound literal
+			size_t cast_vector_bytes = 0;
+			if ( peek1 && is_attribute_identifier_token(peek1) )
+			{
+			    TokenBase *attr_tok = nextToken();
+			    TokenBase *after_attr = consume_gnu_attributes(*this, attr_tok, NULL, NULL, NULL, &cast_vector_bytes);
+			    if ( after_attr )
+			    {
+				pushToken(after_attr);
+				peek1 = peekToken();
+			    }
+			}
 			if ( peek1->type() == TokenType::ttDataType )
+			{
 			    cast_dd = &((TokenDataType *)peek1)->definition;
+			    if ( cast_vector_bytes > 0 )
+				cast_dd = new DataDefSIMD(cast_dd, "", cast_vector_bytes);
+			}
 			else if ( peek1->id() == TokenID::tkSTRUCT || peek1->id() == TokenID::tkUNION )
 			{
 			    // (struct/union Tag *) — peek further
@@ -14402,9 +14437,10 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	if ( !tb )
 	    return NULL;
     }
+    size_t attr_vector_bytes = 0;
     if ( is_attribute_identifier_token(tb) )
     {
-	tb = consume_gnu_attributes(*this, tb);
+	tb = consume_gnu_attributes(*this, tb, NULL, NULL, NULL, &attr_vector_bytes);
 	if ( !tb )
 	    return NULL;
     }
@@ -14434,6 +14470,14 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		    resetPrevToken();
 		    return parseExprStmt(tb);
 		}
+	    }
+	    if ( attr_vector_bytes > 0 )
+	    {
+		TokenDataType *tdt = (TokenDataType *)tb;
+		DataDef *simd = new DataDefSIMD(&tdt->definition, "", attr_vector_bytes);
+		tdt = new TokenDataType("", *simd);
+		DBG(std::cout << "parseStatement: wrapping type in SIMD(" << attr_vector_bytes << " bytes)" << std::endl);
+		return parseDeclaration(tdt);
 	    }
 	    DBG(std::cout << "parseStatement(" << (int)tb->type() << ") calling parseDeclaration" << std::endl);
 	    return parseDeclaration((TokenDataType *)tb);
