@@ -37,6 +37,14 @@ static inline bool use32(DataDef *type) {
     return type && type->is_integer() && type->size == 4;
 }
 
+// Emit a SIMD-width-appropriate move between Xmm and Mem.
+// 8-byte vectors use movq; 16-byte use movups.
+static inline void emit_simd_mov(x86::Compiler &cc, const Operand &dst, const Operand &src, uint32_t vbytes)
+{
+    auto id = (vbytes <= 8) ? asmjit::x86::Inst::kIdMovq : asmjit::x86::Inst::kIdMovups;
+    cc.emit(id, dst, src);
+}
+
 // simple for now, should have different versions for signed vs unsigned
 // small to big vs big to small, etc, as we need to ensure that moving
 // small to big doesn't leave unwanted data in the other part of the register
@@ -715,7 +723,7 @@ void Program::safeneg(Operand &op, DataDef *dd)
 		cc.psubd(zero, op.as<x86::Xmm>());
 	    else
 		cc.psubq(zero, op.as<x86::Xmm>());
-	    cc.emit(asmjit::x86::Inst::kIdMovaps, op.as<x86::Xmm>(), zero);
+	    emit_simd_mov(cc, op.as<x86::Xmm>(), zero, (uint32_t)vdd->size);
 	}
 	else
 	{
@@ -823,8 +831,8 @@ void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 		x86::Mem rhs_slot = cc.newStack(vbytes, (uint32_t)vdd->alignment());
 		lhs_slot.setSize(vbytes);
 		rhs_slot.setSize(vbytes);
-		cc.emit(asmjit::x86::Inst::kIdMovaps, lhs_slot, op1.as<x86::Xmm>());
-		cc.emit(asmjit::x86::Inst::kIdMovaps, rhs_slot, op2.as<x86::Xmm>());
+		emit_simd_mov(cc, lhs_slot, op1.as<x86::Xmm>(), vbytes);
+		emit_simd_mov(cc, rhs_slot, op2.as<x86::Xmm>(), vbytes);
 		x86::Gp a = cc.newGpq("_mul64_a");
 		x86::Gp b = cc.newGpq("_mul64_b");
 		for ( size_t i = 0; i < vdd->lane_count; ++i )
@@ -837,7 +845,7 @@ void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
 		    cc.mov(la, a);
 		}
 		lhs_slot.setSize(vbytes);
-		cc.emit(asmjit::x86::Inst::kIdMovaps, op1.as<x86::Xmm>(), lhs_slot);
+		emit_simd_mov(cc, op1.as<x86::Xmm>(), lhs_slot, vbytes);
 	    }
 	    else
 		throw "safemul() unsupported SIMD integer element size";
@@ -936,8 +944,8 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
 		lhs_slot.setSize(vbytes);
 		rhs_slot.setSize(vbytes);
 		rem_slot.setSize(vbytes);
-		cc.emit(asmjit::x86::Inst::kIdMovaps, lhs_slot, op2.as<x86::Xmm>());
-		cc.emit(asmjit::x86::Inst::kIdMovaps, rhs_slot, divisor_xmm);
+		emit_simd_mov(cc, lhs_slot, op2.as<x86::Xmm>(), vbytes);
+		emit_simd_mov(cc, rhs_slot, divisor_xmm, vbytes);
 		for ( size_t i = 0; i < lane_count; ++i )
 		{
 		    x86::Mem ll = lhs_slot;
@@ -1015,9 +1023,9 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
 		}
 		lhs_slot.setSize(vbytes);
 		rem_slot.setSize(vbytes);
-		cc.emit(asmjit::x86::Inst::kIdMovaps, op2.as<x86::Xmm>(), lhs_slot);
+		emit_simd_mov(cc, op2.as<x86::Xmm>(), lhs_slot, vbytes);
 		if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
-		    cc.emit(asmjit::x86::Inst::kIdMovaps, op1.as<x86::Xmm>(), rem_slot);
+		    emit_simd_mov(cc, op1.as<x86::Xmm>(), rem_slot, vbytes);
 	    }
 	    return;
 	}
