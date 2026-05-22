@@ -78,8 +78,46 @@
   stayed as unary negation. `isPostfixPosition()` now recognizes `++`
   and `--` as value-producing. Closes pr93744-3.c.
 
-- GCC parity: 1543 → 1569/1685 (91.6% → 93.1%). Integration tests:
-  421 → 434, all passing.
+- **Wide character support.** `L'x'` wide character literals, `wchar_t`
+  typedef, `__WCHAR_MAX__` macro, `L"..."` wide string literal token
+  metadata. Closes widechar-1.c, 20010325-1.c.
+
+- **strlen family fixed.** Char-array pointer dereference chains,
+  substring assignment through array-element pointers, multi-level
+  string length computations. Closes strlen-2 through strlen-6.
+
+- **Struct/compound literal fixes.** Zero-sized struct members, struct
+  compound literal designator field lookup. Closes struct-ini-4.c,
+  zero-struct-1.c, zero-struct-2.c.
+
+- **Cast+call+shift.** `(unsigned long long)foo() << 32` correctly
+  saves the first call result across the second call and applies the
+  shift in 64-bit. `__builtin_choose_expr` implemented.
+
+- **Multi-level dereference store.** `***f = 42` now correctly follows
+  the pointer chain instead of treating the value as an address. The
+  parser builds the dereference chain iteratively instead of recursively
+  (which consumed the assignment operator). Closes pr97421-2.c.
+
+- **Unsigned compound /= and %=.** `safediv` now receives operand types
+  for compound assignments, selecting `div` vs `idiv` correctly.
+  Closes pr69447.c.
+
+- **Unsigned arithmetic operator type inference.** Arithmetic operators
+  with unsigned natural type now infer their own type instead of
+  accepting the caller's signed target. Bitwise operators always produce
+  integer results even when the enclosing expression wants a double.
+  Closes pr48197.c.
+
+- **IEEE -0.0 signbit.** `__builtin_signbit` correctly detects -0.0.
+  Closes pr35456.c.
+
+- **va_arg accepts general expressions.** `va_arg(aps[4], long)` now
+  parses the first argument as an expression rather than requiring a
+  bare identifier. TokenVaArg carries the expression through to compile.
+
+- GCC parity: 1543 → 1598/1685 (91.6% → 94.8%). Integration tests:
+  421 → 451, all passing.
 
 ## [v0.20.0] - 2026-05-21
 

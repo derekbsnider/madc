@@ -2,12 +2,15 @@
 
 ## High Priority
 
-- **GCC torture test suite: push toward 95%.** Currently 1569/1685 (93.1%).
-  v0.18.0 closed 169 new tests via _Complex arithmetic, IEEE FP
-  semantics, bitfield promotions, auto-include headers, alias support,
-  setjmp, bswap, and dozens of individual fixes.
-  Remaining targets (86 non-skipped failures): struct pass-by-value
-  (~15-18 tests), SIMD/vector codegen gaps, missing builtins
+- **GCC torture test suite: push to 95%.** Currently 1598/1685 (94.8%).
+  Need 3 more passes for 95.0% (1601/1685).
+  Remaining targets (57 non-skipped failures): SIMD/vector codegen
+  (~8 tests), struct pass-by-value (~10), missing builtins
+  (`__builtin_apply`, `__builtin_shuffle`, `__builtin_va_arg_pack`),
+  ternary function-pointer calls `(c ? foo : bar)()`, `extern` in
+  block scope, `array` keyword-as-identifier conflicts, evaluation
+  order in compound assignments, asmjit InvalidState/InvalidInstruction
+  for goto-into-conditional and nested VLA paths
   (`__builtin_choose_expr`, `__builtin_apply`, `__builtin_shuffle`,
   `__builtin_va_arg_pack`, atomic `__sync_*` helpers), `extern` in
   block scope, GNU attributes containing `sizeof(type)` expressions,
