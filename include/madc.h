@@ -1161,7 +1161,9 @@ public:
 	||   id == TokenID::tkComma || id == TokenID::tkSemi
 	||   id == TokenID::tkAssign )
 	    return false;
-	return id == TokenID::tkClBrk || id == TokenID::tkClSqr || !_prv_token->is_operator();
+	return id == TokenID::tkClBrk || id == TokenID::tkClSqr
+	    || id == TokenID::tkInc || id == TokenID::tkDec
+	    || !_prv_token->is_operator();
     }
     inline TokenBase *nextToken()
     {
