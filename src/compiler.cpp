@@ -8358,7 +8358,7 @@ static Operand &emit_compound_divmod(Program &pgm, TokenBase *left, TokenBase *r
     compile_compound_rhs_normalized(pgm, right, op_type, divisor);
     if ( op_type->is_integer() )
 	pgm.safexor(remainder, remainder);
-    pgm.safediv(remainder, dividend, divisor, op_type);
+    pgm.safediv(remainder, dividend, divisor, op_type, op_type, op_type);
     Operand &result = return_remainder ? remainder : dividend;
     pgm.safemov(lhs.lval, result, lhs.type, op_type);
     return finish_compound_assign(pgm, regdp, lhs, _operand, out);
