@@ -1996,26 +1996,37 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	tmp_rdp.second = nullptr;
     }
     // Arithmetic / bitwise operators must compute at their natural
-    // operand type, not the caller's target. Otherwise a caller's
-    // wider signed target (e.g. int64 from a comparison) overrides
-    // the operator's unsigned narrower type (e.g. uint32 from
-    // `0U ^ (short)-0x8000`), causing wrong sign-extension of
-    // intermediate results. Let the operator infer its own type via
-    // settype(), then coerce below.
-    // Only apply when the operator's natural type is unsigned integer
-    // but the target is signed — this is the case where sign-extension
-    // would go wrong. Skip for floating-point or same-signedness.
-    if ( target_type && target_type->is_integer()
-      && is_arithmetic_result_operator(token) )
+    // operand type, not the caller's target.
+    //
+    // Case 1: caller's wider signed target (e.g. int64 from a comparison)
+    // overrides the operator's unsigned narrower type (e.g. uint32 from
+    // `0U ^ (short)-0x8000`), causing wrong sign-extension.
+    //
+    // Case 2: bitwise operators (&, |, ^, <<, >>) always produce integer
+    // results, even when the caller wants a double. Passing a double
+    // target to a bitwise op makes it try to operate in XMM mode, which
+    // is wrong. Let it compute as integer, then coerce below.
+    if ( is_arithmetic_result_operator(token) )
     {
-	DataDef *natural = infer_numeric_type(
-	    dynamic_cast<TokenOperator *>(token)->left,
-	    dynamic_cast<TokenOperator *>(token)->right);
-	if ( natural && natural->is_integer() && natural->is_unsigned()
-	  && !target_type->is_unsigned() )
+	TokenOperator *op = dynamic_cast<TokenOperator *>(token);
+	bool is_bitwise = op && (op->id() == TokenID::tkBand
+	    || op->id() == TokenID::tkBor || op->id() == TokenID::tkXor
+	    || op->id() == TokenID::tkBSL || op->id() == TokenID::tkBSR);
+	if ( is_bitwise && target_type && target_type->is_real() )
 	{
+	    // Bitwise ops are always integer — let them infer their own type
 	    tmp_rdp.second = nullptr;
 	    tmp_rdp.first = nullptr;
+	}
+	else if ( target_type && target_type->is_integer() && op )
+	{
+	    DataDef *natural = infer_numeric_type(op->left, op->right);
+	    if ( natural && natural->is_integer() && natural->is_unsigned()
+	      && !target_type->is_unsigned() )
+	    {
+		tmp_rdp.second = nullptr;
+		tmp_rdp.first = nullptr;
+	    }
 	}
     }
     if ( target_type
@@ -11513,6 +11524,31 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     if ( !mixed_real && !dest_int_but_real_ops && is_plain_numeric_expr(left) && is_plain_numeric_expr(right) && regdp.second && !regdp.second->is_pointer() )
 	return emit_plain_binop3(pgm, left, right, regdp.second, &Program::safemul, regdp, _operand, "_mul_l");
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
+    // When the result type is real but the LHS is a bitwise operator,
+    // compile the LHS at its natural integer type and convert. Bitwise
+    // operators produce integer Gp results; passing them a double
+    // target makes them attempt Xmm mode, producing zeroes.
+    bool lhs_bitwise = left && left->is_operator()
+	&& (left->id() == TokenID::tkBand || left->id() == TokenID::tkBor
+	 || left->id() == TokenID::tkXor || left->id() == TokenID::tkBSL
+	 || left->id() == TokenID::tkBSR);
+    if ( lhs_bitwise && regdp.second && regdp.second->is_real() )
+    {
+	regdefp_t lhs_rdp = {nullptr, nullptr, nullptr};
+	Operand &lval_int = left->compile(pgm, lhs_rdp);
+	DataDef *ltype_int = lhs_rdp.second ? lhs_rdp.second : &ddINT;
+	// Convert int → double
+	IRBuilder ir(pgm.cc);
+	IRValue converted = ir.coerce(ir_from_operand(lval_int, ltype_int), regdp.second);
+	converted = ir.load(converted);
+	Operand lval = converted.op;
+	DataDef *ltype = regdp.second;
+	regdefp_t rhs_rdp = {nullptr, nullptr, nullptr};
+	Operand &rval = right->compile(pgm, rhs_rdp);
+	DataDef *rtype = rhs_rdp.second ? rhs_rdp.second : ltype;
+	pgm.safemul(lval, rval, ltype, rtype);
+	return finish_general_binop(pgm, regdp, lval, c);
+    }
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenMul::compile() left->compile() cleared datatype!"; }
     DataDef *ltype = regdp.second;
