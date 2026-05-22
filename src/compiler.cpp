@@ -1989,6 +1989,29 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 	tmp_rdp.first = nullptr;
 	tmp_rdp.second = nullptr;
     }
+    // Arithmetic / bitwise operators must compute at their natural
+    // operand type, not the caller's target. Otherwise a caller's
+    // wider signed target (e.g. int64 from a comparison) overrides
+    // the operator's unsigned narrower type (e.g. uint32 from
+    // `0U ^ (short)-0x8000`), causing wrong sign-extension of
+    // intermediate results. Let the operator infer its own type via
+    // settype(), then coerce below.
+    // Only apply when the operator's natural type is unsigned integer
+    // but the target is signed — this is the case where sign-extension
+    // would go wrong. Skip for floating-point or same-signedness.
+    if ( target_type && target_type->is_integer()
+      && is_arithmetic_result_operator(token) )
+    {
+	DataDef *natural = infer_numeric_type(
+	    dynamic_cast<TokenOperator *>(token)->left,
+	    dynamic_cast<TokenOperator *>(token)->right);
+	if ( natural && natural->is_integer() && natural->is_unsigned()
+	  && !target_type->is_unsigned() )
+	{
+	    tmp_rdp.second = nullptr;
+	    tmp_rdp.first = nullptr;
+	}
+    }
     if ( target_type
       && target_type->is_pointer()
       && ((target_is_charptr && token_has_constant_cstring(token))
