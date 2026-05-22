@@ -14349,6 +14349,32 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	  && initialize_static_fixed_array_data(var, td->init_list) )
 	    td->init_list.clear();
 
+	// Global/static SIMD with constant init: write directly to heap storage.
+	if ( !code && var && var->data && var->type && var->type->is_simd()
+	  && !td->init_list.empty() )
+	{
+	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(var->type);
+	    size_t elem_size = vdd->element_type ? vdd->element_type->size : 0;
+	    bool all_constant = elem_size > 0;
+	    for ( size_t i = 0; all_constant && i < td->init_list.size(); ++i )
+	    {
+		int64_t v = 0;
+		if ( !literal_integer_value(td->init_list[i], v) )
+		    all_constant = false;
+	    }
+	    if ( all_constant )
+	    {
+		char *base = (char *)var->data;
+		for ( size_t i = 0; i < vdd->lane_count && i < td->init_list.size(); ++i )
+		{
+		    int64_t v = 0;
+		    literal_integer_value(td->init_list[i], v);
+		    memcpy(base + i * elem_size, &v, elem_size);
+		}
+		td->init_list.clear();
+	    }
+	}
+
 	if ( nt->id() == TokenID::tkAssign && arr_dims.empty() && init_list.empty() )
 	{
 	    DBG(std::cout << "parseDeclaration() calling td->initialize = parseExpression" << std::endl);

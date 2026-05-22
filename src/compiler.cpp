@@ -10709,9 +10709,9 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	var->flags |= vfREGSET;
 	return operand_map[var];
     }
-    if ( global_addrable && is_large_simd_type(var->type) )
+    if ( global_addrable && var->type && var->type->is_simd() && var->type->size > 8 )
     {
-	DBG(pgm.cc.comment("voperand global wide SIMD: load absolute base"));
+	DBG(pgm.cc.comment("voperand global SIMD: load absolute base"));
 	x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
 	pgm.emit_data_mov(base_reg, var);
 	operand_map[var] = x86::ptr(base_reg, 0, (uint32_t)var->type->size);
