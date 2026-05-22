@@ -8406,6 +8406,15 @@ static Operand &emit_compound_binop3(Program &pgm, TokenBase *left, TokenBase *r
     regdp.second = op_type;
     regdp.first  = nullptr;
     Operand &rval = compile_compound_rhs_normalized(pgm, right, op_type, tmp);
+    // Pointer arithmetic scaling: `p += n` must scale n by sizeof(*p).
+    if ( lhs.type && lhs.type->is_pointer() && rval.isReg()
+      && rval.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(lhs.type);
+	if ( pdd && pdd->base_type && pdd->base_type->size > 1 )
+	    pgm.cc.imul(rval.as<x86::Gp>(), rval.as<x86::Gp>(),
+			imm((int64_t)pdd->base_type->size));
+    }
     if ( op_type != lhs.type && lhs.lval.isReg() )
     {
 	// Widen LHS value to operation width before the binop.
