@@ -11053,6 +11053,10 @@ static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *t
 	TokenBase *val_anchor = pgm.peekToken();
 	int64_t case_val = parse_constant_integer_expression(pgm);
 	TokenInt *val_tok = new TokenInt(case_val);
+	// Widen to 64-bit type when the value exceeds 32-bit range.
+	uint64_t uval = (uint64_t)case_val;
+	if ( uval > 0x7FFFFFFF )
+	    val_tok->setDataType(case_val < 0 ? (DataDef *)&ddINT64 : (DataDef *)&ddUINT64);
 	if ( val_anchor )
 	{
 	    val_tok->file = val_anchor->file;
@@ -11071,6 +11075,9 @@ static TokenCASE *parse_switch_label(Program &pgm, TokenSWITCH *sw, TokenBase *t
 		pgm.Throw(tn) << "Expecting '...' in case range" << flush;
 	    int64_t high_val = parse_constant_integer_expression(pgm);
 	    tc->range_high = new TokenInt(high_val);
+	    uint64_t uhigh = (uint64_t)high_val;
+	    if ( uhigh > 0x7FFFFFFF )
+		tc->range_high->setDataType(high_val < 0 ? (DataDef *)&ddINT64 : (DataDef *)&ddUINT64);
 	    tn = pgm.nextToken();
 	}
 	if ( tn->id() != TokenID::tkTerC )
