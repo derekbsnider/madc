@@ -13956,12 +13956,13 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				TokenBase *next_clause = nextToken();
 				if ( out_expr
 				  && out_cb && out_cb->id() == TokenID::tkClBrk
-				  && next_clause && next_clause->id() == TokenID::tkClBrk
-				  && out_constraint == "+r" )
+				  && next_clause && next_clause->id() == TokenID::tkClBrk )
 				{
 				    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
 					nextToken();
-				    return out_expr;
+				    if ( out_constraint == "+r" )
+					return out_expr;
+				    return tb;
 				}
 				if ( out_expr
 				  && out_cb && out_cb->id() == TokenID::tkClBrk
@@ -14010,6 +14011,52 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 					    return nextToken();
 					return tb;
 				    }
+				    // Unrecognized two-operand asm pattern — consume
+				    // any remaining tokens until the outer asm ')' is
+				    // found, then return as no-op. We track paren
+				    // depth starting from `close` (which may be `,`,
+				    // `:`, or a paren itself).
+				    {
+					int rem = 1; // 1 for the outer '(' consumed at asm entry
+					if ( close && close->id() == TokenID::tkOpBrk ) ++rem;
+					else if ( close && close->id() == TokenID::tkClBrk ) --rem;
+					while ( rem > 0 )
+					{
+					    TokenBase *t = nextToken();
+					    if ( !t ) break;
+					    if ( t->id() == TokenID::tkOpBrk ) ++rem;
+					    else if ( t->id() == TokenID::tkClBrk ) --rem;
+					}
+					parsed_simple_copy = true;
+					if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+					    return nextToken();
+					return tb;
+				    }
+				}
+				// Unrecognized asm pattern — the output operand
+				// was consumed but the remaining clauses don't match
+				// a known shape. Consume any remaining tokens until
+				// the outer asm ')' is balanced. The outer '(' was
+				// consumed at asm entry; out_ob/out_cb cancel; so we
+				// need 1 more ')' to close, adjusted by any parens
+				// in in_c and in_ob.
+				{
+				    int rem = 1; // for the outer '('
+				    if ( in_c && in_c->id() == TokenID::tkOpBrk ) ++rem;
+				    else if ( in_c && in_c->id() == TokenID::tkClBrk ) --rem;
+				    if ( in_ob && in_ob->id() == TokenID::tkOpBrk ) ++rem;
+				    else if ( in_ob && in_ob->id() == TokenID::tkClBrk ) --rem;
+				    while ( rem > 0 )
+				    {
+					TokenBase *t = nextToken();
+					if ( !t ) break;
+					if ( t->id() == TokenID::tkOpBrk ) ++rem;
+					else if ( t->id() == TokenID::tkClBrk ) --rem;
+				    }
+				    parsed_simple_copy = true;
+				    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+					return nextToken();
+				    return tb;
 				}
 			    }
 			}
