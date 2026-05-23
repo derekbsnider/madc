@@ -13850,6 +13850,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		provisional_decl_var->flags |= vfSTATIC;
 	    if ( parsing_extern_decl )
 		provisional_decl_var->flags |= vfEXTERN;
+	    // Set dims early so self-referencing init expressions like
+	    // &e[1] in `struct E e[2] = { { 0, &e[1] }, ... }` can
+	    // resolve the array element size correctly.
+	    if ( !arr_dims.empty() && !vla_size_expr )
+	    {
+		provisional_decl_var->dims = arr_dims;
+		provisional_decl_var->flags |= vfFIXEDARRAY;
+	    }
 	}
 	if ( nt->id() == TokenID::tkAssign && (!arr_dims.empty() || is_struct_init || is_simd_init) )
 	{
