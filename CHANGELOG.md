@@ -26,7 +26,43 @@
   `emit_raw_aggregate_copy`. Works for both direct calls and function
   pointer indirect calls. Closes pr43784, struct-ret-1.
 
-- GCC parity: 1631 → 1637/1685 (96.8% → 97.1%). Integration tests: 451,
+- **SIMD-to-SIMD reinterpret cast.** `(__m128i)(__m128d)v` for >8-byte
+  vectors now preserves all 128 bits instead of losing the upper lane via
+  movq.  General same-size SIMD reinterpret cast for >8-byte types added
+  as early path in TokenCast.  Closes pr92618.
+
+- **Unsigned overflow dispatch + arithmetic width.** `__builtin_add_overflow`
+  with unsigned 64-bit inputs uses dedicated `_uu64` helpers that preserve
+  unsigned semantics through `__int128` widening.  Unsigned narrower-than-
+  target arithmetic (`0U - 1U` returned as `unsigned long`) now wraps at
+  operand width.  Unary minus on unsigned literals (`-2U`) negates at
+  32-bit.  Closes pr85095.
+
+- **Wide SIMD (>16-byte) subscript write, pointer dereference, cast chain,
+  and function return.** `v[63] = 1` on 64-byte vectors now emits a direct
+  memory store.  `*p` on wide SIMD pointers copies all bytes via aggregate
+  copy.  SIMD-to-SIMD casts of any element type combination use aggregate
+  copy for >16 bytes.  `is_large_struct_return` recognizes SIMD >16 bytes
+  for hidden `__retbuf` return.  `compile_token_normalized` keeps >16-byte
+  SIMD results Mem-backed.  Closes pr85169, pr70903.
+
+- **Inline asm clobber list.** The `=r`/`"0"` identity pattern (empty asm
+  body) now recognizes clobber clauses (`: "memory"`) instead of falling
+  through to the no-op path.  Closes pr49279.
+
+- **va_arg through indirect pointer.** `va_arg(*pap, T)` where `pap` is a
+  global `va_list*` no longer overwrites the pointer variable with the
+  buffer value on write-back.  Closes stdarg-1.
+
+- **Static multi-variable declarations.** `static int a = 1, b = 2;` now
+  preserves the `static` attribute for the second variable.  Previously
+  the comma-continuation pushed back only the type token, losing static
+  storage for subsequent variables.  Closes va-arg-22.
+
+- **va_end semantics.** Changed from `ap = 0` to `((void)(ap))` to match
+  GCC's no-op-with-side-effect-evaluation behavior.
+
+- GCC parity: 1631 → 1644/1685 (96.8% → 97.6%). Integration tests: 451,
   all passing.
 
 - **Scalar-to-vector SIMD arithmetic.** Inline `__attribute__((vector_size(N)))`
