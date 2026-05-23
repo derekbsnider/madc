@@ -13863,9 +13863,28 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
     // or from the expression (subscript, dereference, etc.)
     Operand ap_storage;
     Operand *ap_op_ptr = NULL;
+    // When the parser extracted ap_var from a TokenDeref (*pap), ap_var
+    // is the pointer variable, not the va_list itself. We need to
+    // dereference it: load [ap_var] to get the va_list value, and write
+    // back through [ap_var] after advancing.
+    bool ap_is_indirect = false;
+    x86::Gp ap_indirect_addr;
     if ( ap_var )
     {
 	ap_op_ptr = &pgm.tkFunction->voperand(pgm, ap_var);
+	if ( ap_expr && dynamic_cast<TokenDeref *>(ap_expr) )
+	{
+	    ap_is_indirect = true;
+	    ap_indirect_addr = pgm.cc.newIntPtr("va_indir_addr");
+	    Operand &pval = *ap_op_ptr;
+	    if ( pval.isReg() )
+		pgm.cc.mov(ap_indirect_addr, pval.as<x86::Gp>());
+	    else
+		pgm.cc.mov(ap_indirect_addr, pval.as<x86::Mem>());
+	    // ap_op becomes [pointer_value] — the va_list at the pointed-to location
+	    ap_storage = x86::qword_ptr(ap_indirect_addr);
+	    ap_op_ptr = &ap_storage;
+	}
     }
     else if ( ap_expr )
     {
