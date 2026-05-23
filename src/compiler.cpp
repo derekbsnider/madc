@@ -10849,6 +10849,20 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
         return;
     }
 
+    // SIMD vector subscript write: v[i] = val → byte/word/dword store
+    // at [base + i * elem_size].  Both Mem-backed (>16 bytes) and
+    // register-backed SIMD variables need the address via LEA.
+    if ( ctype == DataType::dtSIMD )
+    {
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(object.type);
+	DataDef *elem = vdd->element_type ? vdd->element_type : &ddINT;
+	size_t elem_size = elem->size ? elem->size : 1;
+	uint32_t shift = scale_index_by_element_size(pgm, idx_reg, elem, "simd_sub_size");
+	x86::Mem elem_mem = x86::ptr(obj_reg, idx_reg, shift, 0, (uint32_t)elem_size);
+	ir.store(IRValue::mem(elem_mem, elem), ir_from_operand(val_op, val_type ? val_type : elem));
+	return;
+    }
+
     if ( ctype == DataType::dtVECTOR )
     {
         DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(object.type);
