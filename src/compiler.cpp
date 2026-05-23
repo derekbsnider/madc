@@ -6129,7 +6129,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	throw_too_many_call_args(pgm, this, parameters.data(), argc());
 
     size_t param_offset = (func->is_multi_return() ? 1 : 0)
-	+ (large_struct_ret ? 1 : 0)
+	+ (func->has_large_struct_retbuf ? 1 : 0)
 	+ (has_object_arg ? 1 : 0)
 	+ (func->has_captures ? 1 : 0);
     size_t fixed_argc = (func->is_varargs || knr_unspecified) ? expected_argc : argc();
