@@ -6815,13 +6815,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    }
 			}
 		    }
-		    bool top_is_cast_pointer = false;
+		    bool top_is_cast_subscriptable = false;
 		    if ( !exStack.empty() )
 		    {
 			if ( TokenCast *tc = dynamic_cast<TokenCast *>(exStack.top()) )
 			{
-			    if ( tc->datadef() && tc->datadef()->is_pointer() )
-				top_is_cast_pointer = true;
+			    DataDef *cd = tc->datadef();
+			    if ( cd && (cd->is_pointer() || cd->is_simd()) )
+				top_is_cast_subscriptable = true;
 			}
 		    }
 		    if ( !exStack.empty()
@@ -6830,7 +6831,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		       || dynamic_cast<TokenDerefExpr *>(exStack.top()) != NULL
 		       || dynamic_cast<TokenDeref *>(exStack.top()) != NULL
 		       || top_is_complex_ptr_expr
-		       || top_is_cast_pointer) )
+		       || top_is_cast_subscriptable) )
 		    {
 			TokenBase *base_expr = exStack.top();
 			exStack.pop();
