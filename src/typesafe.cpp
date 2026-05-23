@@ -954,15 +954,19 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
 		    x86::Mem rl = rhs_slot;
 		    rl.addOffset((int64_t)(i * elem_size));
 		    rl.setSize((uint32_t)elem_size);
-		    if ( elem_size == 1 )
+		    bool is_unsigned = vdd->element_type->is_unsigned();
+		    if ( elem_size <= 2 )
 		    {
-			cc.movzx(lhs_gp.r32(), ll);
-			cc.movzx(rhs_gp.r32(), rl);
-		    }
-		    else if ( elem_size == 2 )
-		    {
-			cc.movzx(lhs_gp.r32(), ll);
-			cc.movzx(rhs_gp.r32(), rl);
+			if ( is_unsigned )
+			{
+			    cc.movzx(lhs_gp.r32(), ll);
+			    cc.movzx(rhs_gp.r32(), rl);
+			}
+			else
+			{
+			    cc.movsx(lhs_gp.r32(), ll);
+			    cc.movsx(rhs_gp.r32(), rl);
+			}
 		    }
 		    else if ( elem_size == 4 )
 		    {
@@ -975,7 +979,7 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
 			cc.mov(rhs_gp.r64(), rl);
 		    }
 		    cc.xor_(rem_gp, rem_gp);
-		    if ( vdd->element_type->is_unsigned() || elem_size < 4 )
+		    if ( is_unsigned )
 		    {
 			if ( elem_size <= 4 )
 			    cc.div(rem_gp.r32(), lhs_gp.r32(), rhs_gp.r32());

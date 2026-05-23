@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdarg>
 #include <csetjmp>
+#include <type_traits>
 #include <map>
 
 struct madc_timeval
@@ -233,7 +234,14 @@ static int madc_overflow_store(long long a, long long b, T *res, Op op)
 {
     __int128 r = op((__int128)a, (__int128)b);
     *res = static_cast<T>(r);
-    return r != static_cast<T>(r);
+    // For unsigned result types, widen the truncated result through the
+    // unsigned type so negative infinite-precision results (which don't
+    // fit in an unsigned range) are correctly detected as overflow.
+    // E.g. r=-8 in __int128, T=uint64_t: *res=0xFFFFFFFFFFFFFFF8,
+    // (unsigned __int128)*res = 0xFFFFFFFFFFFFFFF8 != -8 → overflow.
+    if ( std::is_unsigned<T>::value )
+	return (unsigned __int128)r != (unsigned __int128)(T)r;
+    return r != (__int128)(T)r;
 }
 
 #define MADC_DEFINE_OVERFLOW_STORE_HELPERS(OPNAME, EXPR) \
