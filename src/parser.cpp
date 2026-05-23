@@ -3164,6 +3164,9 @@ static bool bracket_dim_uses_runtime_value(Program &pgm,
 	if ( t->id() == TokenID::tkOpSqr ) { ++depth; continue; }
 	if ( t->id() == TokenID::tkClSqr ) { --depth; continue; }
 	if ( t->id() == TokenID::tkSemi || t->id() == TokenID::tkOpBrc ) break;
+	// ++ or -- in a dimension expression is inherently runtime
+	if ( t->id() == TokenID::tkInc || t->id() == TokenID::tkDec )
+	    return true;
 	std::string name;
 	if ( t->type() == TokenType::ttIdentifier )
 	    name = ((TokenIdent *)t)->str;
