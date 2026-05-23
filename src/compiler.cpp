@@ -13913,6 +13913,12 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.mov(ap_op.as<x86::Gp>(), ptr);
 	else
 	    pgm.cc.mov(ap_op.as<x86::Mem>(), ptr);
+	if ( ap_var && ap_var->is_global() && ap_var->data )
+	{
+	    x86::Gp data_addr = pgm.cc.newIntPtr("va_data_addr");
+	    pgm.emit_data_mov(data_addr, ap_var);
+	    pgm.cc.mov(x86::qword_ptr(data_addr), ptr);
+	}
 
 	if ( !regdp.second )
 	    regdp.second = target_type;
@@ -13944,12 +13950,21 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
     x86::Gp result = pgm.cc.newGpq("va_val");
     pgm.cc.mov(result, x86::qword_ptr(ptr));
 
-    // advance ap by 8 bytes
+    // advance ap by 8 bytes and write back to the va_list variable
     pgm.cc.add(ptr, 8);
     if ( ap_op.isReg() )
 	pgm.cc.mov(ap_op.as<x86::Gp>(), ptr);
     else
 	pgm.cc.mov(ap_op.as<x86::Mem>(), ptr);
+    // For global va_list variables, the register is a cached copy —
+    // also write through to the backing storage so subsequent
+    // va_arg calls (possibly in other functions) see the update.
+    if ( ap_var && ap_var->is_global() && ap_var->data )
+    {
+	x86::Gp data_addr = pgm.cc.newIntPtr("va_data_addr");
+	pgm.emit_data_mov(data_addr, ap_var);
+	pgm.cc.mov(x86::qword_ptr(data_addr), ptr);
+    }
 
     if ( !regdp.second )
 	regdp.second = target_type;
