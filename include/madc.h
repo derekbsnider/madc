@@ -62,13 +62,14 @@ public:
     std::vector<CaptureEntry> captures;         // populated during lambda body compilation
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false) { funcnode = NULL; }
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
     bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
     bool no_instrument_function;
+    bool has_large_struct_retbuf; // __retbuf was injected for struct return > 16 bytes
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 

@@ -4135,7 +4135,7 @@ static size_t explicit_expected_argc(FuncDef *func)
 {
     size_t expected_argc = func->parameters.size();
     if ( func->is_multi_return() ) expected_argc--;
-    if ( is_large_struct_return(&func->returns) ) expected_argc--;
+    if ( func->has_large_struct_retbuf ) expected_argc--;
     if ( func->is_varargs ) expected_argc--;
     return expected_argc;
 }
@@ -4145,7 +4145,7 @@ static size_t visible_expected_argc(FuncDef *func, bool has_object_arg)
     size_t hidden_argc = 0;
     if ( func->is_multi_return() )
 	++hidden_argc;
-    if ( is_large_struct_return(&func->returns) )
+    if ( func->has_large_struct_retbuf )
 	++hidden_argc;
     if ( has_object_arg )
 	++hidden_argc;
@@ -7459,6 +7459,7 @@ void TokenFunc::prepareFuncNode(Program &pgm)
 	    rbvar->flags |= vfPARAM;
 	    method.parameters.insert(method.parameters.begin(), rbvar);
 	    func->parameters.insert(func->parameters.begin(), &ddINT64);
+	    func->has_large_struct_retbuf = true;
 	}
     }
 
