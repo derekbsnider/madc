@@ -740,6 +740,24 @@ public:
 	endBitFieldRun();
 	size = align_up(size, max_align);
     }
+    // Apply __attribute__((aligned(N))) to the most recently added member.
+    // Updates the member's offset (re-aligns it to N) and the struct's
+    // overall alignment requirement.
+    void apply_member_alignment(size_t align)
+    {
+	if ( align == 0 || members.empty() ) return;
+	if ( align > max_align ) max_align = align;
+	if ( union_layout ) return; // unions don't have per-member offsets
+	size_t idx = member_offsets.size() - 1;
+	size_t old_ofs = member_offsets[idx];
+	size_t new_ofs = align_up(old_ofs, align);
+	if ( new_ofs != old_ofs )
+	{
+	    size_t delta = new_ofs - old_ofs;
+	    member_offsets[idx] = new_ofs;
+	    size += delta;
+	}
+    }
     ssize_t m_offset(std::string &member)
     {
 	DBG(std::cout << "DataDefSTRUCT::offset(" << member << ')' << std::endl);

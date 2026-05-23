@@ -9896,20 +9896,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			|| pgm.peekToken()->id() == TokenID::tkVOLATILE
 			|| pgm.peekToken()->id() == TokenID::tkRESTRICT) )
 		    pgm.nextToken();
-		// skip __attribute__((...)) after struct/union/enum type before member name
-		if ( is_attribute_identifier_token(pgm.peekToken()) )
+		// consume __attribute__((...)) after type — extract aligned(N)
+		// for struct member alignment (e.g. `int __attribute__((aligned(8))) a;`)
+		size_t member_align = 0;
+		while ( is_attribute_identifier_token(pgm.peekToken()) )
 		{
-		    pgm.nextToken(); // consume __attribute__
-		    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
-		    {
-			int adepth = 0;
-			do {
-			    TokenBase *at = pgm.nextToken();
-			    if ( !at ) break;
-			    if ( at->id() == TokenID::tkOpBrk ) ++adepth;
-			    else if ( at->id() == TokenID::tkClBrk ) --adepth;
-			} while ( adepth > 0 );
-		    }
+		    TokenBase *after = consume_gnu_attributes(pgm, pgm.nextToken(), NULL, NULL, &member_align);
+		    if ( after )
+			pgm.pushToken(after);
 		}
 		bool done_members = false;
 		while ( !done_members )
@@ -10052,6 +10046,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			dds->addMember(mname, *member_dd, member_count,
 			    member_count_expr, member_is_array_decl, &member_dims);
+			if ( member_align > 0 )
+			    dds->apply_member_alignment(member_align);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
 			    << " (size " << member_dd->size << " x " << member_count
 			    << ", total " << dds->size << ')' << endl);
