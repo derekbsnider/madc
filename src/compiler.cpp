@@ -874,6 +874,13 @@ static size_t internal_vararg_static_slot_size(DataDef *type)
     return 8;
 }
 
+static bool is_large_struct_return(DataDef *ret_type)
+{
+    return ret_type
+	&& ret_type->basetype() == BaseType::btStruct
+	&& ret_type->size > 16;
+}
+
 static void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type)
 {
     if ( !ret_type || ret_type->basetype() != BaseType::btStruct )
@@ -4128,6 +4135,7 @@ static size_t explicit_expected_argc(FuncDef *func)
 {
     size_t expected_argc = func->parameters.size();
     if ( func->is_multi_return() ) expected_argc--;
+    if ( is_large_struct_return(&func->returns) ) expected_argc--;
     if ( func->is_varargs ) expected_argc--;
     return expected_argc;
 }
@@ -4136,6 +4144,8 @@ static size_t visible_expected_argc(FuncDef *func, bool has_object_arg)
 {
     size_t hidden_argc = 0;
     if ( func->is_multi_return() )
+	++hidden_argc;
+    if ( is_large_struct_return(&func->returns) )
 	++hidden_argc;
     if ( has_object_arg )
 	++hidden_argc;
@@ -6039,7 +6049,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
     DBG(cout << "TokenCallFunc::compile(" << var.name << ") func->returns.type() " << (int)func->returns.type() << endl);
 
-    set_funcsig_ret(funcsig, &func->returns, func->is_multi_return());
+    bool large_struct_ret = !func->is_multi_return()
+	&& is_large_struct_return(&func->returns);
+    set_funcsig_ret(funcsig, &func->returns,
+	func->is_multi_return() || large_struct_ret);
+    x86::Gp large_retbuf_ptr;
     if ( func->is_multi_return() )
     {
 	if ( !regdp.object )
@@ -6053,6 +6067,15 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	else
 	    append_call_param(params, funcsig, *regdp.object, &ddINT64);
 	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(__retbuf)"));
+    }
+    else if ( large_struct_ret )
+    {
+	// Allocate stack buffer for large struct return, pass as hidden first arg
+	DBG(pgm.cc.comment("large struct return: allocate retbuf"));
+	x86::Mem retbuf = pgm.cc.newStack((uint32_t)func->returns.size, 8);
+	large_retbuf_ptr = pgm.cc.newIntPtr("__large_retbuf");
+	pgm.cc.lea(large_retbuf_ptr, retbuf);
+	append_call_param(params, funcsig, large_retbuf_ptr, &ddINT64);
     }
 //#if OBJECT_SUPPORT
     // pass along object ("this") as first argument if appropriate
@@ -6106,6 +6129,7 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	throw_too_many_call_args(pgm, this, parameters.data(), argc());
 
     size_t param_offset = (func->is_multi_return() ? 1 : 0)
+	+ (large_struct_ret ? 1 : 0)
 	+ (has_object_arg ? 1 : 0)
 	+ (func->has_captures ? 1 : 0);
     size_t fixed_argc = (func->is_varargs || knr_unspecified) ? expected_argc : argc();
@@ -6306,6 +6330,16 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
     // bytes. Spill rax (and rdx for >8-byte structs) to a fresh stack
     // slot here, then return the slot's address as the operand —
     // that is the address downstream struct copies expect.
+    // Large struct return (>16 bytes): buffer was pre-allocated and
+    // passed as hidden first arg.  The data is already in the buffer.
+    if ( large_struct_ret )
+    {
+	DBG(pgm.cc.comment("TokenCallFunc::compile() large struct ret via retbuf"));
+	_operand = large_retbuf_ptr;
+	if ( !regdp.first ) regdp.first = &_operand;
+	return _operand;
+    }
+
     if ( func->returns.basetype() == BaseType::btStruct
       && func->returns.size > 0 && func->returns.size <= 16 )
     {
@@ -7410,6 +7444,24 @@ void TokenFunc::prepareFuncNode(Program &pgm)
 	}
     }
 
+    // Large struct return (>16 bytes): inject hidden __retbuf param.
+    // Per System V AMD64 ABI, caller allocates buffer and passes its
+    // address as the first argument; callee copies into it.
+    if ( !func->is_multi_return() && is_large_struct_return(&func->returns) )
+    {
+	bool has_retbuf = false;
+	for ( auto *p : method.parameters )
+	    if ( p->name == "__retbuf" ) { has_retbuf = true; break; }
+	if ( !has_retbuf )
+	{
+	    std::string rbname = "__retbuf";
+	    Variable *rbvar = new Variable(rbname, ddINT64, 1, NULL, false);
+	    rbvar->flags |= vfPARAM;
+	    method.parameters.insert(method.parameters.begin(), rbvar);
+	    func->parameters.insert(func->parameters.begin(), &ddINT64);
+	}
+    }
+
     // varargs: inject hidden __va_args param if not already present
     if ( func->is_varargs )
     {
@@ -7426,7 +7478,8 @@ void TokenFunc::prepareFuncNode(Program &pgm)
 	}
     }
 
-    set_funcsig_ret(funcsig, &func->returns, func->is_multi_return());
+    set_funcsig_ret(funcsig, &func->returns,
+	func->is_multi_return() || is_large_struct_return(&func->returns));
 
     // set parameter types
     for ( dvi = func->parameters.begin(); dvi != func->parameters.end(); ++dvi )
@@ -14711,6 +14764,25 @@ Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
 	{
 	    emit_function_instrument_exit(pgm, current_func);
 	    emit_small_struct_return(pgm, reg, ret_type);
+	    return reg;
+	}
+
+	// Large struct return: copy return value into hidden __retbuf
+	if ( is_large_struct_return(ret_type) )
+	{
+	    DBG(pgm.cc.comment("large struct return: copy to __retbuf"));
+	    std::string rbname = "__retbuf";
+	    Variable *retbuf_var = pgm.tkFunction->method
+		? pgm.tkFunction->method->findParameter(rbname) : NULL;
+	    if ( !retbuf_var )
+		pgm.Throw(this) << "Large struct return: missing __retbuf parameter" << flush;
+	    Operand &retbuf_op = pgm.tkFunction->voperand(pgm, retbuf_var);
+	    x86::Gp rb_gp = pgm.cc.newIntPtr("__retbuf_gp");
+	    load_var_to_gp(pgm, retbuf_op, rb_gp);
+	    Operand rb_dst = rb_gp;
+	    emit_raw_aggregate_copy(pgm, rb_dst, reg, ret_type, "large_struct_ret");
+	    emit_function_instrument_exit(pgm, current_func);
+	    pgm.cc.ret();
 	    return reg;
 	}
 
