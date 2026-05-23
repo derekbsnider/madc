@@ -12213,11 +12213,31 @@ Operand &TokenBand::compile(Program &pgm, regdefp_t &regdp)
 	return emit_large_simd_bitwise(pgm, left, right, SimdBitKind::And,
 	    static_cast<DataDefSIMD *>(regdp.second), regdp, _operand);
     if ( is_plain_numeric_expr(left) && is_plain_numeric_expr(right)
-      && regdp.second && regdp.second->is_integer() )
-	return emit_plain_bitop2(pgm, left, right, regdp.second, &Program::safeand,
-				 /*right_must_be_gp=*/true,
-				 /*left_precision_only=*/false,
-				 regdp, _operand, "_and_l");
+      && regdp.second )
+    {
+	// Bitwise AND always produces an integer. When the caller wants a
+	// real destination (e.g. `double d = i & 7`), compute the AND in
+	// the operands' integer type, then coerce int→double on return.
+	DataDef *comp_type = regdp.second;
+	if ( comp_type->is_real() && !comp_type->is_simd() )
+	{
+	    DataDef *natural = infer_numeric_type(left, right);
+	    comp_type = (natural && natural->is_integer()) ? natural : &ddINT64;
+	    Operand *caller_dest = regdp.first;
+	    DataDef *caller_type = regdp.second;
+	    regdp.first = NULL;
+	    regdp.second = comp_type;
+	    Operand &int_result = emit_plain_bitop2(pgm, left, right, comp_type,
+		&Program::safeand, true, false, regdp, _operand, "_and_l");
+	    regdp.first = caller_dest;
+	    regdp.second = caller_type;
+	    return emit_ir_value(pgm, IRValue::reg(int_result, comp_type),
+		regdp, _operand, caller_type);
+	}
+	if ( comp_type->is_integer() )
+	    return emit_plain_bitop2(pgm, left, right, comp_type, &Program::safeand,
+				     true, false, regdp, _operand, "_and_l");
+    }
     GeneralBinopCascade c = begin_general_binop(pgm, regdp, _operand);
     Operand &lval = left->compile(pgm, regdp);
     if ( !regdp.second ) { throw "TokenBand::compile() left->compile() cleared datatype!"; }
