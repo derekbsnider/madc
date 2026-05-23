@@ -13222,6 +13222,24 @@ Operand &TokenDeref::compile(Program &pgm, regdefp_t &regdp)
 
     if ( deref_type && deref_type->is_simd() )
     {
+	// Wide SIMD (>16 bytes): Xmm can't hold the full value.  Copy
+	// qword-by-qword into a stack buffer and return the Mem operand.
+	if ( deref_type->size > 16 )
+	{
+	    x86::Mem buf = pgm.cc.newStack((uint32_t)deref_type->size, 16);
+	    Operand dst = buf;
+	    emit_raw_aggregate_copy(pgm, dst, mem, deref_type, "deref_wide_simd");
+	    regdp.second = deref_type;
+	    if ( regdp.first && regdp.first->isMem() )
+	    {
+		Operand caller_dst = *regdp.first;
+		emit_raw_aggregate_copy(pgm, caller_dst, dst, deref_type, "deref_wide_simd_dst");
+		return *regdp.first;
+	    }
+	    _operand = buf;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
 	x86::Xmm xmm = deref_type->newreg(pgm.cc, "deref_simd").as<x86::Xmm>();
 	if ( mem.isMem() )
 	    load_mem_to_xmm(pgm, xmm, mem.as<x86::Mem>(), deref_type);
