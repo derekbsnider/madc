@@ -1055,7 +1055,8 @@ static TokenBase *consume_gnu_attributes(Program &pgm, TokenBase *nt,
 		    saw_alias = false;
 		}
 		else if ( at->type() == TokenType::ttIdentifier
-		  && ((TokenIdent *)at)->str == "aligned" )
+		  && (((TokenIdent *)at)->str == "aligned"
+		   || ((TokenIdent *)at)->str == "__aligned__") )
 		    saw_aligned = true;
 		else if ( explicit_align && saw_aligned && at->type() == TokenType::ttInteger )
 		{
