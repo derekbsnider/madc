@@ -9562,6 +9562,42 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
 
     if ( !regdp.second )
 	throw "TokenAssign: no rval type";
+
+    // Large SIMD assignment: memory-to-memory copy via qword iteration.
+    // Can't go through safemov (which only handles 1/2/4/8-byte scalars).
+    if ( is_large_simd_type(ltype) )
+    {
+	DBG(pgm.cc.comment("TokenAssign::compile() large SIMD assignment"));
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(ltype);
+	// Compile RHS into a memory-backed slot
+	regdefp_t rhs_rdp = {nullptr, vdd, nullptr};
+	Operand &rhs_op = right->compile(pgm, rhs_rdp);
+	x86::Mem src_mem = large_simd_expr_mem(pgm, right, vdd, "lsimd_assign_src");
+	// Get LHS memory address
+	x86::Gp dst_base = pgm.cc.newIntPtr("lsimd_dst");
+	if ( _operand.isMem() )
+	    pgm.cc.lea(dst_base, _operand.as<x86::Mem>());
+	else
+	    pgm.cc.mov(dst_base, _operand.as<x86::Gp>());
+	x86::Gp src_base = pgm.cc.newIntPtr("lsimd_src");
+	pgm.cc.lea(src_base, src_mem);
+	// Qword-by-qword copy
+	for ( size_t b = 0; b < vdd->size; b += 8 )
+	{
+	    x86::Gp tmp = pgm.cc.newGpq("lsimd_cp");
+	    pgm.cc.mov(tmp, x86::ptr(src_base, (int32_t)b, 8));
+	    pgm.cc.mov(x86::ptr(dst_base, (int32_t)b, 8), tmp);
+	}
+	if ( tvl )
+	{
+	    tvl->var.modified();
+	    tvl->putreg(pgm);
+	}
+	regdp.first = &_operand;
+	regdp.second = ltype;
+	return _operand;
+    }
+
     bool lhs_scalar = ltype->is_numeric() || ltype->is_pointer();
     bool rhs_scalar = regdp.second->is_numeric() || regdp.second->is_pointer();
     if ( lhs_scalar && !rhs_scalar )
@@ -10968,6 +11004,17 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	var->flags |= vfREGSET;
 	return operand_map[var];
     }
+    if ( global_addrable && is_large_simd_type(var->type) )
+    {
+	// Large SIMD globals (>128 bits): Mem-backed operand.
+	// Can't fit in a single XMM register.
+	DBG(pgm.cc.comment("voperand global wide SIMD: Mem-backed"));
+	x86::Gp base_reg = pgm.cc.newIntPtr("%s", var->name.c_str());
+	pgm.emit_data_mov(base_reg, var);
+	operand_map[var] = x86::ptr(base_reg, 0, (uint32_t)var->type->size);
+	var->flags |= vfREGSET;
+	return operand_map[var];
+    }
 	    if ( global_addrable
 	      && (var->type->basetype() == BaseType::btStruct
 	       || var->type->basetype() == BaseType::btClass)
@@ -11330,6 +11377,13 @@ void TokenCpnd::putreg(Program &pgm, Variable *var)
     // every time we modify a numeric global variable
     DBG(std::cout << "TokenCpnd::putreg[" << (uint64_t)this << "](" << var->name << ") calling cc->mov(data, reg)" << std::endl);
     DBG(pgm.cc.comment("TokenCpnd::putreg() calling cc.mov(var->data, reg)"));
+    // Large SIMD globals use Mem-backed operands that point directly to
+    // var->data — writes already go to the backing store, no write-back.
+    if ( rmi->second.isMem() && is_large_simd_type(var->type) )
+    {
+	var->flags &= ~vfMODIFIED;
+	return;
+    }
     if ( pgm.aot_tracking && var->has_aot_data() )
     {
 	x86::Gp base = pgm.cc.newIntPtr("%s_aot_store", var->name.c_str());
