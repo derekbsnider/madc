@@ -14523,6 +14523,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 		pushToken(tb->clone());
 		if ( parsing_extern_decl )
 		    pushToken(new TokenEXTERN());
+		if ( gotstatic )
+		    pushToken(new TokenSTATIC());
 	    }
 	}
 
