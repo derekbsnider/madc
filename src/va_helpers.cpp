@@ -232,6 +232,18 @@ extern "C" int __madc_mul_overflow(long a, long b, long *res)
 template <typename T, typename Op>
 static int madc_overflow_store(long long a, long long b, T *res, Op op)
 {
+    // When the result type is unsigned and as wide as the input params
+    // (uint64_t), the inputs must be reinterpreted as unsigned before
+    // widening to __int128.  Otherwise (long long)0xFFFFFFFFFFFFFFEE
+    // sign-extends to -18 in 128-bit, producing wrong overflow results.
+    if ( std::is_unsigned<T>::value && sizeof(T) >= sizeof(long long) )
+    {
+	unsigned __int128 r = op(
+	    (unsigned __int128)(unsigned long long)a,
+	    (unsigned __int128)(unsigned long long)b);
+	*res = static_cast<T>(r);
+	return r != (unsigned __int128)*res;
+    }
     __int128 r = op((__int128)a, (__int128)b);
     *res = static_cast<T>(r);
     // For unsigned result types, widen the truncated result through the
