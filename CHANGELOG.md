@@ -35,8 +35,43 @@
 - **String literal truncation.** `char a[2][3] = {"1234", "xyz"}` no
   longer overflows the first element into the second. Closes pr86714.
 
-- GCC parity: 1598 → 1622/1685 (94.8% → 96.3%). Integration tests: 451,
+- GCC parity: 1598 → 1631/1685 (94.8% → 96.8%). Integration tests: 451,
   all passing.
+
+- **SIMD array init + subscript + signed lane divmod.**
+  Global arrays of SIMD vectors (`UV u[] = { ((UV){...}) }`) now write
+  initializer data at parse time. Double-subscript on fixed-array-of-SIMD
+  (`v[0][0]`) now resolves the lane element type correctly. Signed byte/
+  short SIMD division and modulo now use `movsx`+`idiv` instead of
+  `movzx`+`div`. Closes pr53645, pr53645-2, pr94524-1, pr94524-2.
+
+- **Anonymous struct/union array member flag.** Members declared with
+  `[]` inside anonymous structs/unions now correctly set the array-decl
+  flag, fixing `&p->u.vec[16]` scale-factor computation from 8 to the
+  actual element size. Closes pr41395-2.
+
+- **`__attribute__((aligned(N)))` on struct members.** The alignment
+  attribute on struct members is now extracted and applied via
+  `apply_member_alignment()`, fixing struct size, alignment, and nested
+  member offsets. Both `aligned` and `__aligned__` (dunder) forms are
+  recognized. Closes pr23467, stkalign.
+
+- **Bitwise AND with real destination.** `double d = i & 7` now computes
+  the AND in integer and coerces the result to double, instead of
+  performing a floating-point AND on raw bit patterns. Closes pr59643.
+
+- **SIMD cast subscript parsing.** `((V8)x)[0]` no longer misparsed
+  as a lambda — the subscript-on-expression check now matches SIMD
+  cast types.
+
+- **va_arg fixes.** Global `va_list` variables now write back the
+  advanced pointer to backing storage. `va_arg(*pap, T)` through a
+  pointer-to-va_list now correctly dereferences the pointer before
+  reading/advancing. Closes pr64979.
+
+- **`__builtin_*_overflow` unsigned result check.** Overflow detection
+  for unsigned result types now correctly identifies negative infinite-
+  precision results as overflow.
 
 - **GCC integer/SIMD conversion parity advanced.**
   Division/modulo now use the natural C arithmetic type even when an

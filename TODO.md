@@ -2,15 +2,15 @@
 
 ## High Priority
 
-- **GCC torture test suite: push to 97%.** Currently 1622/1685 (96.3%).
-  33 remaining failures (11 compile, 22 runtime, 30 skipped).
-  Key blockers: SIMD pointer dereference (`(*simd_ptr)[idx]` gives
-  garbage — would fix 4+ tests), wide vectors >128-bit (2 tests need
-  multi-XMM or AVX), missing builtins (`__builtin_apply`,
-  `__builtin_shuffle`, `__builtin_va_arg_pack`), varargs/va_list
-  issues (4 tests), struct pass-by-value return (2 tests),
-  goto-into-conditional InvalidState (2 tests), and misc
-  floating-point / alignment / aliasing issues.
+- **GCC torture test suite: push to 97%.** Currently 1631/1685 (96.8%).
+  24 remaining failures (11 compile, 13 runtime, 30 skipped).
+  Key blockers: varargs `long double` + `va_copy` struct semantics
+  (4 tests), wide vectors >128-bit (2 tests), missing builtins
+  (`__builtin_apply`, `__builtin_shuffle`, `__builtin_va_arg_pack`),
+  struct pass-by-value return (1 test), goto-into-conditional
+  InvalidState (1 test), anonymous struct union init (1 test),
+  VLA params (1 test), self-referencing struct array init (1 test),
+  unsigned overflow input ABI (1 test).
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and

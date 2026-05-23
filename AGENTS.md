@@ -63,9 +63,9 @@ agent must follow them without exception.
    micro-fixes. One reasoned pass beats five iterative attempts.
    (`gcc-methodology.md`)
 
-4. **Separation of concerns.** Parsers parse, compilers emit code,
-   namespace files implement their own namespace. Do not cross layer
-   boundaries. (`design-principles.md`)
+4. **Do not cross layer boundaries.** Parsers parse, compilers emit
+   code, namespace files implement their own namespace. A fix that
+   touches the wrong layer is a future bug. (`design-principles.md`)
 
 5. **`make -C src fulltest` after every change.** A change is not done
    until the full test suite is green. No JIT-green-EXE-broken, no
@@ -76,9 +76,10 @@ agent must follow them without exception.
    user names. Use data lookups, type predicates, filename conventions.
    (`design-principles.md`)
 
-7. **Feature branches off `develop`.** Keep `develop` stable. Commit
-   early and often. Never `git checkout` over uncommitted work — use
-   `#ifdef` guards or `git stash`. (`branching.md`, `feature-guards.md`)
+7. **Commit early; never clobber uncommitted work.** Feature branches
+   off `develop`. Keep `develop` stable. Never `git checkout` over
+   uncommitted work — use `#ifdef` guards or `git stash`.
+   (`branching.md`, `feature-guards.md`)
 
 8. **Bare rules in `.claude/rules/`, reasoning in `docs/rules/`.**
    Never duplicate content between the two. If a rules file needs to
@@ -89,8 +90,9 @@ agent must follow them without exception.
    NOT override signedness or width via `regdp.second`. Unsigned values
    must zero-extend when widened. (`gcc-methodology.md`)
 
-10. **No shell `&&` chains.** Each shell invocation is a single, simple
-    command. This prevents permission-prompt storms in agent environments.
+10. **Scratch files go in `tmp/`.** Never create `*_tmp.*` files in
+    `tests/` or the repo root. `tmp/` is gitignored — nothing in it
+    is tracked. (`scratch-files.md`)
 
 ## Shell command hygiene
 
