@@ -9723,8 +9723,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
 		    size_t inner_count = 1;
 		    TokenBase *inner_count_expr = NULL;
+		    bool inner_is_array_decl = false;
 		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 		    {
+			inner_is_array_decl = true;
 			pgm.nextToken();
 			TokenBase *cl = pgm.nextToken();
 			if ( cl && cl->id() == TokenID::tkClSqr )
@@ -9763,7 +9765,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    else
 		    {
 			inner->addMember(inner_name, *inner_member_dd, inner_count,
-			    inner_count_expr, inner_count_expr != NULL || inner_count != 1);
+			    inner_count_expr, inner_is_array_decl);
 		    }
 		    tn = pgm.nextToken();
 		    // Handle comma-separated members: `int f1, f2, f3;`

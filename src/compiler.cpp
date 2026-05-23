@@ -10316,6 +10316,7 @@ Operand &TokenSubscriptExpr::operand(Program &pgm)
 	    result_type = fixed_array_member_result_type(tm, 1);
 
     size_t elem_size = result_type && result_type->size ? result_type->size : 8;
+    DBG(pgm.cc.comment(("subexpr_operand elem_size=" + std::to_string(elem_size)).c_str()));
     uint32_t shift = scale_index_by_element_size(pgm, idx_reg, result_type, "subexpr_size");
 
     _operand = x86::ptr(base_reg, idx_reg, shift, 0, (uint32_t)elem_size);
