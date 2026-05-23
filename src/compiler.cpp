@@ -14414,7 +14414,7 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.cc.mov(ap_op.as<x86::Gp>(), ptr);
 	else
 	    pgm.cc.mov(ap_op.as<x86::Mem>(), ptr);
-	if ( ap_var && ap_var->is_global() && ap_var->data )
+	if ( ap_var && ap_var->is_global() && ap_var->data && !ap_is_indirect )
 	{
 	    x86::Gp data_addr = pgm.cc.newIntPtr("va_data_addr");
 	    pgm.emit_data_mov(data_addr, ap_var);
@@ -14460,7 +14460,10 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
     // For global va_list variables, the register is a cached copy —
     // also write through to the backing storage so subsequent
     // va_arg calls (possibly in other functions) see the update.
-    if ( ap_var && ap_var->is_global() && ap_var->data )
+    // Skip when indirect (ap_is_indirect): ap_var is the pointer
+    // variable (*pap), not the va_list itself — writing ptr to pap
+    // would overwrite the pointer-to-va_list with the buffer value.
+    if ( ap_var && ap_var->is_global() && ap_var->data && !ap_is_indirect )
     {
 	x86::Gp data_addr = pgm.cc.newIntPtr("va_data_addr");
 	pgm.emit_data_mov(data_addr, ap_var);
