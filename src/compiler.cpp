@@ -5663,8 +5663,11 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    pgm.Throw(this) << "function pointer call missing target signature" << flush;
 	FuncSignature funcsig(CallConvId::kCDecl);
 	bool ret_is_variadic = false;
+	bool fptr_large_struct_ret = !func->is_multi_return()
+	    && is_large_struct_return(&func->returns);
 
-	set_funcsig_ret(funcsig, &func->returns, func->is_multi_return());
+	set_funcsig_ret(funcsig, &func->returns,
+	    func->is_multi_return() || fptr_large_struct_ret);
 	DataDef &retdd = func->returns;
 
 	// Load the function pointer. When src_node is set (direct struct-member
@@ -5706,6 +5709,18 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 
 	// compile arguments and build signature
 	std::vector<Operand> params;
+
+	// Large struct return through function pointer: allocate retbuf
+	// and pass as hidden first arg, same as the direct call path.
+	x86::Gp fptr_retbuf_ptr;
+	if ( fptr_large_struct_ret )
+	{
+	    DBG(pgm.cc.comment("fptr large struct return: allocate retbuf"));
+	    x86::Mem retbuf = pgm.cc.newStack((uint32_t)func->returns.size, 8);
+	    fptr_retbuf_ptr = pgm.cc.newIntPtr("__fptr_retbuf");
+	    pgm.cc.lea(fptr_retbuf_ptr, retbuf);
+	    append_call_param(params, funcsig, fptr_retbuf_ptr, &ddINT64);
+	}
 
 	// [&] lambda capture: env_ptr declared here so post-call reload can access it
 	x86::Gp env_ptr = pgm.cc.newIntPtr("__env_ptr");
@@ -5794,6 +5809,15 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    }
 	}
 
+	// Large struct return: buffer already filled by callee
+	if ( fptr_large_struct_ret )
+	{
+	    DBG(pgm.cc.comment("fptr large struct ret: return retbuf address"));
+	    _operand = fptr_retbuf_ptr;
+	    if ( !regdp.first ) regdp.first = &_operand;
+	    regdp.second = &func->returns;
+	    return _operand;
+	}
 	// capture return value
 	if ( retdd.type() != DataType::dtVOID )
 	{
