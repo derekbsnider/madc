@@ -630,12 +630,34 @@ static datatype_vec_t overflow_store_helper_signature(DataDef *result_type)
     };
 }
 
+static bool overflow_inputs_are_unsigned64(const std::vector<TokenBase *> &parameters)
+{
+    if ( parameters.size() < 2 )
+	return false;
+    for ( int i = 0; i < 2; ++i )
+    {
+	if ( !parameters[i] )
+	    return false;
+	DataDef *dd = parameters[i]->datadef();
+	if ( !dd || !dd->is_unsigned() || dd->size < 8 )
+	    return false;
+    }
+    return true;
+}
+
 static std::string typed_overflow_store_symbol_name(const Variable &var,
 						    const std::vector<TokenBase *> &parameters)
 {
     if ( !is_overflow_store_helper_name(var.name) || parameters.size() < 3 )
 	return runtime_symbol_name(var);
     DataDef *result_type = overflow_store_result_type(parameters);
+    // When both inputs are unsigned 64-bit and the result is unsigned 64-bit,
+    // use the unsigned-input helpers that reinterpret long long as unsigned
+    // before widening to __int128.  This avoids sign-extension losing the
+    // mathematical value (e.g. 0xFFFFFFFFFFFFFFEE → -18 instead of 2^64-18).
+    if ( result_type && result_type->is_unsigned() && result_type->size >= 8
+      && overflow_inputs_are_unsigned64(parameters) )
+	return var.name + "_uu64";
     return var.name + "_" + overflow_store_helper_suffix(result_type);
 }
 
@@ -13640,6 +13662,36 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
     // result (cvtsi2ss on an Xmm register misinterpreted as Gp).
     if ( src_is_real && cast_type && cast_type->is_integer() )
     {
+	// SIMD-to-SIMD reinterpret cast (e.g. (__m128i)(__m128d)v):
+	// both sides are same-size vectors >8 bytes — preserve all bits.
+	// 8-byte SIMD fits in a Gp via movq, so the fallthrough path is
+	// correct for those; only >8-byte needs the full-width Xmm path.
+	if ( src_type && src_type->is_simd() && cast_type->is_simd()
+	  && src_type->size == cast_type->size && src_type->size > 8 )
+	{
+	    regdefp_t inner_rdp = {NULL, src_type, NULL};
+	    Operand &src_op = expr->compile(pgm, inner_rdp);
+	    DataDef *actual_src = inner_rdp.second ? inner_rdp.second : src_type;
+	    x86::Xmm out = cast_type->newreg(pgm.cc, "cast_simd_r2i").as<x86::Xmm>();
+	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.safemov(out, src_op.as<x86::Xmm>(), cast_type, actual_src);
+	    else if ( src_op.isMem() )
+		load_mem_to_xmm(pgm, out, src_op.as<x86::Mem>(), actual_src);
+	    else if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.movq(out, src_op.as<x86::Gp>());
+	    else
+		throw "TokenCast::compile() SIMD real->int reinterpret expects Xmm/Mem/Gp";
+	    regdp.second = cast_type;
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, *(Operand *)&out, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    _operand = out;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+
 	regdefp_t inner_rdp = {NULL, src_type, NULL};
 	Operand &src_op = expr->compile(pgm, inner_rdp);
 	bool preserve_simd_bits = src_type->is_simd() || cast_type->is_simd();

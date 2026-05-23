@@ -268,6 +268,29 @@ MADC_DEFINE_OVERFLOW_STORE_HELPERS(mul, x * y)
 
 #undef MADC_DEFINE_OVERFLOW_STORE_HELPERS
 
+// Unsigned-input 64-bit overflow helpers.  When both operands are
+// unsigned long (64-bit), the caller passes them as long long, which
+// sign-extends 0xFFFFFFFFFFFFFFEE to -18.  These helpers reinterpret
+// the inputs as unsigned before widening to unsigned __int128, so the
+// mathematical value is preserved (e.g. 2^64 - 18 stays large instead
+// of becoming -18).  See pr85095 vs pr91450 in the GCC torture suite.
+template <typename Op>
+static int madc_overflow_store_uu64(long long a, long long b, uint64_t *res, Op op)
+{
+    unsigned __int128 r = op(
+	(unsigned __int128)(unsigned long long)a,
+	(unsigned __int128)(unsigned long long)b);
+    *res = (uint64_t)r;
+    return r != (unsigned __int128)*res;
+}
+
+extern "C" int __madc_add_overflow_uu64(long long a, long long b, uint64_t *res)
+{ return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x + y; }); }
+extern "C" int __madc_sub_overflow_uu64(long long a, long long b, uint64_t *res)
+{ return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x - y; }); }
+extern "C" int __madc_mul_overflow_uu64(long long a, long long b, uint64_t *res)
+{ return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x * y; }); }
+
 // __builtin_bswap*: byte-swap fixed-width integer values.
 extern "C" uint16_t __madc_bswap16(uint16_t x)
 {
