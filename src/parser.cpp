@@ -14794,6 +14794,20 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 				    TokenBase *in_cb = nextToken();
 				    TokenBase *close = nextToken();
 				    std::string in_constraint = ((TokenStr *)in_c)->str;
+				    // If close is ':' (clobber list), consume
+				    // remaining tokens up to outer ')'.
+				    if ( close && close->id() == TokenID::tkColon )
+				    {
+					int rem = 1;
+					while ( rem > 0 )
+					{
+					    TokenBase *t = nextToken();
+					    if ( !t ) break;
+					    if ( t->id() == TokenID::tkOpBrk ) ++rem;
+					    else if ( t->id() == TokenID::tkClBrk ) --rem;
+					}
+					close = new TokenClBrk();
+				    }
 				    if ( in_expr
 				      && in_cb && in_cb->id() == TokenID::tkClBrk
 				      && close && close->id() == TokenID::tkClBrk
