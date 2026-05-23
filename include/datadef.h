@@ -523,6 +523,7 @@ public:
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
     bool union_layout;	// true: all members start at offset 0; size is max member size
+    bool has_anon_aggregate;	// true: addAnonymousAggregate() was used to flatten members
     bool reverse_scalar_storage;
     bool bitfield_active;
     size_t bitfield_unit_offset;
@@ -543,11 +544,12 @@ public:
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), union_layout(false),
+	  has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1),
-	  union_layout(false),
+	  union_layout(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
@@ -708,6 +710,7 @@ public:
     }
     void addAnonymousAggregate(const DataDefSTRUCT &agg)
     {
+	has_anon_aggregate = true;
 	endBitFieldRun();
 	size_t fa = field_align(agg);
 	size_t base_offset = union_layout ? 0 : align_up(size, fa);

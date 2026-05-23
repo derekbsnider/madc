@@ -6487,8 +6487,25 @@ static void emit_simd_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc)
 {
+    // Union with anonymous struct init: {{"1234", "567"}} wraps the real
+    // initializers in a TokenStructLit that represents the anonymous struct
+    // group.  After addAnonymousAggregate() flattened the members, unwrap
+    // the struct literal so its children map to the consecutive members.
+    const std::vector<TokenBase *> *effective_inits = &inits;
+    std::vector<TokenBase *> unwrapped;
+    if ( dds->union_layout && inits.size() == 1 )
+    {
+	TokenStructLit *slit = dynamic_cast<TokenStructLit *>(inits[0]);
+	if ( slit && dds->has_anon_aggregate )
+	{
+	    unwrapped = slit->inits;
+	    effective_inits = &unwrapped;
+	}
+    }
+    const std::vector<TokenBase *> &eff = *effective_inits;
+
     size_t init_idx = 0;
-    for ( size_t mi = 0; mi < dds->members.size() && init_idx < inits.size(); ++mi )
+    for ( size_t mi = 0; mi < dds->members.size() && init_idx < eff.size(); ++mi )
     {
 	auto &mp = dds->members[mi];
 	DataDef *mtype = mp.second;
@@ -6498,7 +6515,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	size_t member_count = (mi < dds->member_counts.size()) ? dds->member_counts[mi] : 1;
 
 	// Flat init for array members: distribute consecutive initializers
-	if ( member_count > 1 && inits[init_idx] == NULL )
+	if ( member_count > 1 && eff[init_idx] == NULL )
 	{
 	    size_t esize = mtype->size;
 	    for ( size_t ai = 0; ai < member_count; ++ai )
@@ -6510,11 +6527,11 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    ++init_idx;
 	    continue;
 	}
-	if ( member_count > 1 && dynamic_cast<TokenStructLit *>(inits[init_idx]) == NULL )
+	if ( member_count > 1 && dynamic_cast<TokenStructLit *>(eff[init_idx]) == NULL )
 	{
 	    std::string char_array_init;
 	    if ( type_is_cstr_element(mtype)
-	      && token_get_constant_cstring(inits[init_idx], char_array_init) )
+	      && token_get_constant_cstring(eff[init_idx], char_array_init) )
 	    {
 		size_t copy_n = char_array_init.size();
 		if ( copy_n > member_count )
@@ -6533,10 +6550,10 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		continue;
 	    }
 	    size_t esize = mtype->size;
-	    for ( size_t ai = 0; ai < member_count && init_idx < inits.size(); ++ai, ++init_idx )
+	    for ( size_t ai = 0; ai < member_count && init_idx < eff.size(); ++ai, ++init_idx )
 	    {
 		int32_t elem_addr = addr + (int32_t)(ai * esize);
-		if ( !inits[init_idx] )
+		if ( !eff[init_idx] )
 		{
 		    x86::Mem mm = x86::ptr(base_reg, elem_addr, (uint32_t)esize);
 		    pgm.cc.mov(mm, imm(0));
@@ -6544,7 +6561,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		}
 		regdefp_t rdp = {nullptr, nullptr, nullptr};
 		rdp.second = mtype;
-		Operand &val = inits[init_idx]->compile(pgm, rdp);
+		Operand &val = eff[init_idx]->compile(pgm, rdp);
 		x86::Mem mm = x86::ptr(base_reg, elem_addr, (uint32_t)esize);
 		if ( val.isImm() )
 		    pgm.cc.mov(mm, val.as<Imm>());
@@ -6568,7 +6585,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	}
 	init_idx++;
 
-	if ( !inits[i] )
+	if ( !eff[i] )
 	{
 	    if ( i < dds->member_bitfields.size()
 	      && dds->member_bitfields[i].is_bitfield )
@@ -6601,11 +6618,11 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	{
 	    regdefp_t bf_rdp = {nullptr, nullptr, nullptr};
 	    bf_rdp.second = mtype;
-	    Operand &bf_val = inits[i]->compile(pgm, bf_rdp);
+	    Operand &bf_val = eff[i]->compile(pgm, bf_rdp);
 	    const DataDefSTRUCT::BitFieldInfo &bf = dds->member_bitfields[i];
 	    x86::Mem storage = x86::ptr(base_reg, addr, (uint32_t)bf.storage_size);
 	    emit_bitfield_store_operand(pgm, storage, bf, bf_val,
-		bf_rdp.second ? bf_rdp.second : inits[i]->datadef(),
+		bf_rdp.second ? bf_rdp.second : eff[i]->datadef(),
 		mtype, "init_bf");
 	    continue;
 	}
@@ -6618,9 +6635,9 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	// compile() — recurse here instead of letting it fall through to
 	// TokenStmt's default-throw branch.
 	if ( mtype->basetype() == BaseType::btStruct && !is_array_decl
-	  && dynamic_cast<TokenStructLit *>(inits[i]) != NULL )
+	  && dynamic_cast<TokenStructLit *>(eff[i]) != NULL )
 	{
-	    TokenStructLit *nested = static_cast<TokenStructLit *>(inits[i]);
+	    TokenStructLit *nested = static_cast<TokenStructLit *>(eff[i]);
 	    DataDefSTRUCT *ndds = dynamic_cast<DataDefSTRUCT *>(mtype);
 	    if ( !ndds )
 		pgm.Throw(err_loc) << "Nested initializer for non-struct member type" << flush;
@@ -6628,11 +6645,11 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	    continue;
 	}
 	if ( mtype->basetype() == BaseType::btStruct && !is_array_decl
-	  && inits[i]->datadef()
-	  && inits[i]->datadef()->basetype() == BaseType::btStruct )
+	  && eff[i]->datadef()
+	  && eff[i]->datadef()->basetype() == BaseType::btStruct )
 	{
 	    regdefp_t srdp = {nullptr, mtype, nullptr};
-	    Operand &sval = inits[i]->compile(pgm, srdp);
+	    Operand &sval = eff[i]->compile(pgm, srdp);
 	    Operand dst_slot = x86::ptr(base_reg, addr, (uint32_t)mtype->size);
 	    emit_raw_aggregate_copy(pgm, dst_slot, sval, mtype, "init_struct_copy");
 	    continue;
@@ -6644,8 +6661,8 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 		pgm.Throw(err_loc) << "Nested initializer for non-struct member type" << flush;
 	    size_t nested_slots = count_struct_init_slots(ndds);
 	    std::vector<TokenBase *> flat_nested;
-	    for ( size_t ni = i; ni < inits.size() && flat_nested.size() < nested_slots; ++ni )
-		flat_nested.push_back(inits[ni]);
+	    for ( size_t ni = i; ni < eff.size() && flat_nested.size() < nested_slots; ++ni )
+		flat_nested.push_back(eff[ni]);
 	    emit_struct_init(pgm, base_reg, addr, ndds, flat_nested, err_loc);
 	    init_idx = i + flat_nested.size();
 	    continue;
@@ -6657,7 +6674,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	// Member's per-member count lives on the parent struct.
 	{
 	    size_t mcount = dds->m_count(mname);
-	    TokenStructLit *nested_arr = dynamic_cast<TokenStructLit *>(inits[i]);
+	    TokenStructLit *nested_arr = dynamic_cast<TokenStructLit *>(eff[i]);
 	    if ( nested_arr != NULL && is_array_decl && mcount == 0 )
 	    {
 		if ( !nested_arr->inits.empty() )
@@ -6783,7 +6800,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
 	}
 
 	regdefp_t it_rdp = {nullptr, mtype->is_real() ? mtype : nullptr, nullptr};
-	Operand &val_op = inits[i]->compile(pgm, it_rdp);
+	Operand &val_op = eff[i]->compile(pgm, it_rdp);
 
 	if ( mtype->is_numeric() || mtype->is_pointer() )
 	{
@@ -6859,7 +6876,7 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     if ( dds->union_layout )
 	return;
     // Zero-fill remaining numeric/pointer members
-    for ( size_t i = inits.size(); i < dds->members.size(); ++i )
+    for ( size_t i = eff.size(); i < dds->members.size(); ++i )
     {
 	auto &mp = dds->members[i];
 	DataDef *mtype = mp.second;
