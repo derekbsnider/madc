@@ -2086,6 +2086,31 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
 		tmp_rdp.second = nullptr;
 		tmp_rdp.first = nullptr;
 	    }
+	    // Unsigned operands narrower than target: C requires arithmetic
+	    // at operand width. 0U - 1U must wrap to 0xFFFFFFFF (32-bit),
+	    // not 0xFFFFFFFFFFFFFFFF (64-bit). Coerce widens afterward.
+	    else if ( natural && natural->is_integer() && natural->is_unsigned()
+	      && target_type->is_unsigned() && natural->size < target_type->size )
+	    {
+		tmp_rdp.second = nullptr;
+		tmp_rdp.first = nullptr;
+	    }
+	}
+    }
+    // Unary minus on unsigned operand narrower than target: -2U must
+    // negate at 32-bit (0xFFFFFFFE) not 64-bit (0xFFFFFFFFFFFFFFFE).
+    // C defines the result type as the operand type; the coerce step
+    // below handles zero-extension to the wider target.
+    if ( token && token->id() == TokenID::tkNeg
+      && target_type && target_type->is_integer() )
+    {
+	TokenNeg *neg = dynamic_cast<TokenNeg *>(token);
+	if ( neg && neg->right && neg->right->datadef()
+	  && neg->right->datadef()->is_unsigned()
+	  && neg->right->datadef()->size < target_type->size )
+	{
+	    tmp_rdp.second = nullptr;
+	    tmp_rdp.first = nullptr;
 	}
     }
     if ( target_type
