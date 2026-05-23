@@ -2,6 +2,33 @@
 
 ## [Unreleased]
 
+- **`__builtin_shuffle` for SIMD vectors.** Element-wise lane permutation via
+  runtime mask indices. Supports 1-source and 2-source forms, all element
+  types (int8–int64, float, double), register-backed and memory-backed
+  vectors. Honors caller destination register to avoid stale-Xmm bug.
+  Closes pr85331, pr94591.
+
+- **Anonymous struct init in union.** `{{"1234", "567"}}` for unions with
+  flattened anonymous struct members now unwraps the inner TokenStructLit
+  correctly. Added `has_anon_aggregate` flag to DataDefSTRUCT. Closes pr87053.
+
+- **Self-referencing struct array init.** `struct E e[2] = { {0, &e[1]}, ... }`
+  now sets array dims and vfFIXEDARRAY before parsing init expressions, so
+  `&e[1]` resolves the correct element stride. Closes pr39100.
+
+- **Wide SIMD vectors (>128-bit).** Global vectors >16 bytes now use
+  Mem-backed operands. TokenAssign uses qword-by-qword memory copy for
+  large SIMD assignment. Closes pr65427.
+
+- **Large struct return (>16 bytes).** Per System V AMD64 ABI, structs
+  larger than 16 bytes are now returned via a hidden `__retbuf` first
+  parameter. Caller allocates buffer, callee copies via
+  `emit_raw_aggregate_copy`. Works for both direct calls and function
+  pointer indirect calls. Closes pr43784, struct-ret-1.
+
+- GCC parity: 1631 → 1637/1685 (96.8% → 97.1%). Integration tests: 451,
+  all passing.
+
 - **Scalar-to-vector SIMD arithmetic.** Inline `__attribute__((vector_size(N)))`
   now parses in declarations and compound literals. Float/double scalars
   splat correctly (was silently reinterpreting Xmm as Gp). Packed mul/div
