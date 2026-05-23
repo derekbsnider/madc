@@ -898,9 +898,15 @@ static size_t internal_vararg_static_slot_size(DataDef *type)
 
 static bool is_large_struct_return(DataDef *ret_type)
 {
-    return ret_type
-	&& ret_type->basetype() == BaseType::btStruct
-	&& ret_type->size > 16;
+    if ( !ret_type || ret_type->size <= 16 )
+	return false;
+    if ( ret_type->basetype() == BaseType::btStruct )
+	return true;
+    // Wide SIMD (>16 bytes): can't fit in xmm0, needs hidden __retbuf
+    // like large structs.
+    if ( ret_type->is_simd() )
+	return true;
+    return false;
 }
 
 static void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type)
@@ -2141,6 +2147,33 @@ static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef
     }
     if ( target_type && target_type->is_simd() )
     {
+	// Wide SIMD (>16 bytes): can't fit in Xmm.  If the raw result is
+	// already Mem-backed (compound literal buffer, variable), return it
+	// directly.  Otherwise copy to a stack buffer.
+	if ( target_type->size > 16 )
+	{
+	    if ( raw.isMem() )
+	    {
+		if ( preferred_dest && preferred_dest->isMem() )
+		{
+		    Operand dst_copy = *preferred_dest;
+		    emit_raw_aggregate_copy(pgm, dst_copy, raw, target_type, "norm_wide_simd");
+		    storage = *preferred_dest;
+		    return storage;
+		}
+		storage = raw;
+		return storage;
+	    }
+	    // Xmm or Gp result for >16 bytes shouldn't happen, but handle
+	    // gracefully: spill to a stack buffer.
+	    x86::Mem buf = pgm.cc.newStack((uint32_t)target_type->size, 16);
+	    if ( raw.isReg() && raw.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.cc.movups(buf, raw.as<x86::Xmm>());
+	    else if ( raw.isReg() && raw.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.mov(buf, raw.as<x86::Gp>());
+	    storage = buf;
+	    return storage;
+	}
 	Operand simd_dst = preferred_dest ? *preferred_dest : target_type->newreg(pgm.cc, "norm_simd");
 	if ( !simd_dst.isReg() || !simd_dst.as<BaseReg>().isGroup(RegGroup::kVec) )
 	    throw "compile_token_normalized() SIMD target needs Xmm destination";
@@ -13496,6 +13529,57 @@ Operand &TokenCast::compile(Program &pgm, regdefp_t &regdp)
 	    regdp.first = &result;
 	return result;
     }
+    // SIMD-to-SIMD reinterpret cast (same size, >8 bytes): e.g.
+    // (V8)(V64)x or (V64)(V8)x where both are 32-byte vectors.
+    // All bits are preserved — just change the type label.  For >16-byte
+    // (Mem-backed) vectors, emit a raw aggregate copy.
+    {
+	DataDef *src_type_early = expr ? expr->datadef() : NULL;
+	if ( cast_type && cast_type->is_simd() && cast_type->size > 8
+	  && src_type_early && src_type_early->is_simd()
+	  && src_type_early->size == cast_type->size )
+	{
+	    regdefp_t inner_rdp = {NULL, src_type_early, NULL};
+	    Operand &src_op = expr->compile(pgm, inner_rdp);
+	    DataDef *actual_src = inner_rdp.second ? inner_rdp.second : src_type_early;
+	    regdp.second = cast_type;
+	    if ( cast_type->size > 16 )
+	    {
+		// Mem-backed wide SIMD: copy via aggregate copy
+		x86::Mem buf = pgm.cc.newStack((uint32_t)cast_type->size, 16);
+		Operand dst = buf;
+		emit_raw_aggregate_copy(pgm, dst, src_op, actual_src, "cast_simd_reinterp");
+		if ( regdp.first && regdp.first->isMem() )
+		{
+		    Operand caller_dst = *regdp.first;
+		    emit_raw_aggregate_copy(pgm, caller_dst, dst, cast_type, "cast_simd_reinterp_dst");
+		    return *regdp.first;
+		}
+		_operand = buf;
+		regdp.first = &_operand;
+		return _operand;
+	    }
+	    // 16-byte SIMD: use Xmm path
+	    x86::Xmm out = cast_type->newreg(pgm.cc, "cast_simd_reinterp").as<x86::Xmm>();
+	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		pgm.safemov(out, src_op.as<x86::Xmm>(), cast_type, actual_src);
+	    else if ( src_op.isMem() )
+		load_mem_to_xmm(pgm, out, src_op.as<x86::Mem>(), actual_src);
+	    else if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+		pgm.cc.movq(out, src_op.as<x86::Gp>());
+	    else
+		throw "TokenCast SIMD reinterpret expects Xmm/Mem/Gp source";
+	    if ( regdp.first )
+	    {
+		pgm.safemov(*regdp.first, *(Operand *)&out, cast_type, cast_type);
+		return *regdp.first;
+	    }
+	    _operand = out;
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+    }
+
     // Casting a std::string expression to `char *` needs an actual
     // conversion via string_cstr — a bare reinterpretation would leave
     // the caller holding the std::string object's address, not its
