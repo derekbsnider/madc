@@ -5119,6 +5119,230 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	    regdp, _operand, &ddUINT64);
     }
 
+    // __builtin_shuffle(vec, mask) — element-wise lane permutation.
+    // result[i] = vec[mask[i] % lane_count]
+    if ( (argc() == 2 || argc() == 3) && var.name == "__builtin_shuffle" )
+    {
+	// Resolve the source vector SIMD type
+	DataDef *src_dd = parameters[0]->datadef();
+	DataDefSIMD *vdd = src_dd ? dynamic_cast<DataDefSIMD *>(src_dd) : nullptr;
+	if ( !vdd )
+	    pgm.Throw(this) << "__builtin_shuffle: first argument must be a SIMD vector" << flush;
+
+	size_t lanes = vdd->lane_count;
+	size_t elem_size = vdd->element_type ? vdd->element_type->size : 8;
+	DataDef *elem_type = vdd->element_type ? vdd->element_type : &ddINT64;
+	bool is_float_elem = elem_type->is_real();
+
+	// Allocate stack slots for source, mask, and result
+	x86::Mem src_slot = new_large_simd_stack(pgm, vdd, "shuf_src_slot");
+	x86::Mem result_mem = new_large_simd_stack(pgm, vdd, "shuf_result");
+
+	// Compile source and store to our stack slot
+	{
+	    regdefp_t src_rdp = {nullptr, vdd, nullptr};
+	    Operand &src_op = parameters[0]->compile(pgm, src_rdp);
+	    if ( src_op.isReg() && src_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		store_xmm_to_mem(pgm, src_slot, src_op.as<x86::Xmm>(), vdd);
+	    else if ( src_op.isMem() )
+	    {
+		// Copy from source Mem to our stack slot
+		x86::Gp copy_base_src = pgm.cc.newIntPtr("shuf_copy_src");
+		x86::Gp copy_base_dst = pgm.cc.newIntPtr("shuf_copy_dst");
+		pgm.cc.lea(copy_base_src, src_op.as<x86::Mem>());
+		pgm.cc.lea(copy_base_dst, src_slot);
+		for ( size_t b = 0; b < vdd->size; b += 8 )
+		{
+		    x86::Gp tmp = pgm.cc.newGpq("shuf_cp");
+		    pgm.cc.mov(tmp, x86::ptr(copy_base_src, (int32_t)b, 8));
+		    pgm.cc.mov(x86::ptr(copy_base_dst, (int32_t)b, 8), tmp);
+		}
+	    }
+	    else
+		pgm.Throw(this) << "__builtin_shuffle: unsupported source operand shape" << flush;
+	}
+
+	// For 2-source shuffle (argc==3), spill second source too
+	x86::Mem src2_slot;
+	bool two_source = (argc() == 3);
+	if ( two_source )
+	{
+	    src2_slot = new_large_simd_stack(pgm, vdd, "shuf_src2_slot");
+	    regdefp_t src2_rdp = {nullptr, vdd, nullptr};
+	    Operand &src2_op = parameters[1]->compile(pgm, src2_rdp);
+	    if ( src2_op.isReg() && src2_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		store_xmm_to_mem(pgm, src2_slot, src2_op.as<x86::Xmm>(), vdd);
+	    else if ( src2_op.isMem() )
+	    {
+		x86::Gp cs = pgm.cc.newIntPtr("shuf_cp2s");
+		x86::Gp cd = pgm.cc.newIntPtr("shuf_cp2d");
+		pgm.cc.lea(cs, src2_op.as<x86::Mem>());
+		pgm.cc.lea(cd, src2_slot);
+		for ( size_t b = 0; b < vdd->size; b += 8 )
+		{
+		    x86::Gp tmp = pgm.cc.newGpq("shuf_cp2");
+		    pgm.cc.mov(tmp, x86::ptr(cs, (int32_t)b, 8));
+		    pgm.cc.mov(x86::ptr(cd, (int32_t)b, 8), tmp);
+		}
+	    }
+	}
+
+	// Compile mask and store to stack slot
+	TokenBase *mask_param = parameters[argc() - 1];
+	DataDef *mask_dd = mask_param->datadef();
+	DataDefSIMD *mask_vdd = mask_dd ? dynamic_cast<DataDefSIMD *>(mask_dd) : nullptr;
+	if ( !mask_vdd )
+	    pgm.Throw(this) << "__builtin_shuffle: mask must be a SIMD vector" << flush;
+	x86::Mem mask_slot = new_large_simd_stack(pgm, mask_vdd, "shuf_mask_slot");
+	{
+	    regdefp_t mask_rdp = {nullptr, mask_vdd, nullptr};
+	    Operand &mask_op = mask_param->compile(pgm, mask_rdp);
+	    if ( mask_op.isReg() && mask_op.as<BaseReg>().isGroup(RegGroup::kVec) )
+		store_xmm_to_mem(pgm, mask_slot, mask_op.as<x86::Xmm>(), mask_vdd);
+	    else if ( mask_op.isMem() )
+	    {
+		x86::Gp cs = pgm.cc.newIntPtr("shuf_cpm_s");
+		x86::Gp cd = pgm.cc.newIntPtr("shuf_cpm_d");
+		pgm.cc.lea(cs, mask_op.as<x86::Mem>());
+		pgm.cc.lea(cd, mask_slot);
+		for ( size_t b = 0; b < mask_vdd->size; b += 8 )
+		{
+		    x86::Gp tmp = pgm.cc.newGpq("shuf_cpm");
+		    pgm.cc.mov(tmp, x86::ptr(cs, (int32_t)b, 8));
+		    pgm.cc.mov(x86::ptr(cd, (int32_t)b, 8), tmp);
+		}
+	    }
+	}
+
+	x86::Gp src_base = pgm.cc.newIntPtr("shuf_src_base");
+	pgm.cc.lea(src_base, src_slot);
+
+	x86::Gp src2_base;
+	if ( two_source )
+	{
+	    src2_base = pgm.cc.newIntPtr("shuf_src2_base");
+	    pgm.cc.lea(src2_base, src2_slot);
+	}
+
+	size_t mask_mod = two_source ? (lanes * 2) : lanes;
+
+	// For each output lane: load mask index, compute source offset, copy element
+	for ( size_t i = 0; i < lanes; ++i )
+	{
+	    // Load mask[i] as integer
+	    x86::Gp idx = load_simd_lane_gp(pgm, mask_slot, i, mask_vdd, "shuf_idx");
+
+	    // idx = idx % mask_mod (mask_mod is always power of 2)
+	    pgm.cc.and_(idx, imm((int64_t)(mask_mod - 1)));
+
+	    // Compute byte offset: idx * elem_size
+	    if ( elem_size > 1 )
+	    {
+		x86::Gp shift_tmp = pgm.cc.newGpq("shuf_shift");
+		pgm.cc.mov(shift_tmp, idx);
+		if ( elem_size == 2 ) pgm.cc.shl(shift_tmp, 1);
+		else if ( elem_size == 4 ) pgm.cc.shl(shift_tmp, 2);
+		else if ( elem_size == 8 ) pgm.cc.shl(shift_tmp, 3);
+		else
+		{
+		    pgm.cc.imul(shift_tmp, imm((int64_t)elem_size));
+		}
+		idx = shift_tmp;
+	    }
+
+	    // For 2-source: if original index >= lanes, use src2_base
+	    x86::Gp base_ptr;
+	    if ( two_source )
+	    {
+		// Reload unmasked index for source selection
+		x86::Gp raw_idx = load_simd_lane_gp(pgm, mask_slot, i, mask_vdd, "shuf_raw_idx");
+		pgm.cc.and_(raw_idx, imm((int64_t)(mask_mod - 1)));
+
+		base_ptr = pgm.cc.newIntPtr("shuf_base_sel");
+		pgm.cc.mov(base_ptr, src_base);
+		pgm.cc.cmp(raw_idx, imm((int64_t)lanes));
+		Label use_src1 = pgm.cc.newLabel();
+		pgm.cc.jb(use_src1);
+		pgm.cc.mov(base_ptr, src2_base);
+		// Adjust offset: subtract lanes * elem_size
+		pgm.cc.sub(idx, imm((int64_t)(lanes * elem_size)));
+		pgm.cc.bind(use_src1);
+	    }
+	    else
+		base_ptr = src_base;
+
+	    // Compute final element address: base + byte_offset
+	    x86::Gp elem_addr = pgm.cc.newIntPtr("shuf_elem_addr");
+	    pgm.cc.mov(elem_addr, base_ptr);
+	    pgm.cc.add(elem_addr, idx);
+	    x86::Mem src_elem = x86::ptr(elem_addr, 0, (uint32_t)elem_size);
+	    x86::Mem dst_lane = simd_lane_mem(result_mem, i, vdd);
+
+	    if ( is_float_elem && elem_size == 4 )
+	    {
+		x86::Xmm tmp = pgm.cc.newXmm("shuf_ftmp");
+		pgm.cc.movss(tmp, src_elem);
+		pgm.cc.movss(dst_lane, tmp);
+	    }
+	    else if ( is_float_elem && elem_size == 8 )
+	    {
+		x86::Xmm tmp = pgm.cc.newXmm("shuf_dtmp");
+		pgm.cc.movsd(tmp, src_elem);
+		pgm.cc.movsd(dst_lane, tmp);
+	    }
+	    else
+	    {
+		x86::Gp tmp = pgm.cc.newGpq("shuf_itmp");
+		load_mem_to_gpq(pgm, tmp, src_elem, elem_type);
+		store_simd_lane_gp(pgm, result_mem, i, vdd, tmp);
+	    }
+	}
+
+	// Store result into caller's destination if provided, else new Xmm
+	regdp.second = vdd;
+	if ( regdp.first && regdp.first->isReg()
+	  && regdp.first->as<BaseReg>().isGroup(RegGroup::kVec) )
+	{
+	    // Caller provided an Xmm destination — load result directly into it
+	    x86::Xmm dst_xmm = regdp.first->as<x86::Xmm>();
+	    if ( vdd->size == 8 )
+		pgm.cc.movq(dst_xmm, result_mem);
+	    else
+		pgm.cc.movups(dst_xmm, result_mem);
+	}
+	else if ( regdp.first && regdp.first->isMem() )
+	{
+	    // Caller provided a Mem destination — copy result bytes
+	    x86::Gp rs = pgm.cc.newIntPtr("shuf_res_src");
+	    x86::Gp rd = pgm.cc.newIntPtr("shuf_res_dst");
+	    pgm.cc.lea(rs, result_mem);
+	    pgm.cc.lea(rd, regdp.first->as<x86::Mem>());
+	    for ( size_t b = 0; b < vdd->size; b += 8 )
+	    {
+		x86::Gp t = pgm.cc.newGpq("shuf_rcp");
+		pgm.cc.mov(t, x86::ptr(rs, (int32_t)b, 8));
+		pgm.cc.mov(x86::ptr(rd, (int32_t)b, 8), t);
+	    }
+	}
+	else
+	{
+	    // No caller destination — create a new Xmm or return Mem
+	    if ( vdd->size <= 16 )
+	    {
+		x86::Xmm result_xmm = pgm.cc.newXmm("shuf_result");
+		if ( vdd->size == 8 )
+		    pgm.cc.movq(result_xmm, result_mem);
+		else
+		    pgm.cc.movups(result_xmm, result_mem);
+		_operand = result_xmm;
+	    }
+	    else
+		_operand = result_mem;
+	    regdp.first = &_operand;
+	}
+	return _operand;
+    }
+
     if ( argc() == 6 && var.name == "__builtin___vsnprintf_chk" )
     {
 	int64_t flag = 0;
