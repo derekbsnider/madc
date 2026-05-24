@@ -223,7 +223,6 @@ int main(int argc, char **argv)
     int filearg = 1;
     const char *emit_object_path = NULL;
     const char *emit_executable_path = NULL;
-    const char *emit_pch_output = NULL;
     bool emit_pch = false;
 
     for (int i = 1; i < argc; i++) {
@@ -253,11 +252,6 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-pch") == 0) {
             emit_pch = true;
-            if ( i + 1 < argc && strcmp(argv[i+1], "-o") == 0 && i + 2 < argc )
-            {
-                emit_pch_output = argv[i + 2];
-                i += 2;
-            }
             filearg = i + 1;
         } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
             prog->instrument_functions = true;
@@ -299,10 +293,10 @@ int main(int argc, char **argv)
 	    src_hash = madc_pch::hash_content(fbuf.data(), fsize);
 	}
 
-	// Determine output path
+	// Determine output path (-o flag or default from input name)
 	std::string outpath;
-	if ( emit_pch_output )
-	    outpath = emit_pch_output;
+	if ( emit_executable_path )
+	    outpath = emit_executable_path;
 	else
 	{
 	    outpath = input;
