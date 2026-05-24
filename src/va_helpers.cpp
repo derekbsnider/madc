@@ -27,6 +27,10 @@ struct madc_jmp_slot
     jmp_buf env;
 };
 
+// Sentinel stored in buf[0] to validate that buf[1] is a slot pointer.
+// Chosen to be unlikely to appear as a random stack/heap value.
+static const uintptr_t MADC_JMP_MAGIC = 0x4D41444A4D505F31ULL; // "MADJMP_1"
+
 static std::map<void *, madc_jmp_slot *> &madc_jmp_slots()
 {
     static std::map<void *, madc_jmp_slot *> slots;
@@ -47,11 +51,11 @@ static madc_jmp_slot *madc_jmp_slot_for(void *user_buf)
 extern "C" void *__madc_jmpbuf_for(void *user_buf)
 {
     madc_jmp_slot *slot = madc_jmp_slot_for(user_buf);
-    // Store the slot pointer inside the user buffer so that memcpy'd
-    // copies of the buffer still point to the same jmp_buf.  GCC's
-    // __builtin_setjmp stores raw machine state directly in a 5-slot
-    // void* buffer; we store a pointer to the real jmp_buf instead.
-    ((void **)user_buf)[0] = (void *)slot;
+    // Store {magic, slot_ptr} in buf[0..1] so memcpy'd copies of the
+    // buffer still point to the same jmp_buf.  The magic sentinel lets
+    // longjmp validate before trusting buf[1] as a pointer.
+    ((uintptr_t *)user_buf)[0] = MADC_JMP_MAGIC;
+    ((void **)user_buf)[1] = (void *)slot;
     return (void *)slot->env;
 }
 
@@ -59,15 +63,19 @@ extern "C" void __madc_builtin_longjmp(void *user_buf, int value)
 {
     if ( value == 0 )
 	value = 1;
-    // Read the slot pointer from inside the buffer — survives memcpy
-    // because the pointer value is copied along with the rest of the
-    // buffer contents.  Falls back to map lookup for buffers that
-    // weren't created by __madc_jmpbuf_for (shouldn't happen).
-    madc_jmp_slot *slot = (madc_jmp_slot *)((void **)user_buf)[0];
-    if ( slot )
-	longjmp(slot->env, value);
-    else
-	longjmp(madc_jmp_slot_for(user_buf)->env, value);
+    // Validate the magic sentinel before trusting buf[1] as a slot
+    // pointer.  Falls back to map lookup if the buffer wasn't set up
+    // by __madc_jmpbuf_for (or was corrupted).
+    if ( ((uintptr_t *)user_buf)[0] == MADC_JMP_MAGIC )
+    {
+	madc_jmp_slot *slot = (madc_jmp_slot *)((void **)user_buf)[1];
+	if ( slot )
+	{
+	    longjmp(slot->env, value);
+	    return;
+	}
+    }
+    longjmp(madc_jmp_slot_for(user_buf)->env, value);
 }
 
 // Parse one format specifier from *pp (starting at '%'), advance *pp past it,

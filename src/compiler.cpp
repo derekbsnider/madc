@@ -15414,6 +15414,22 @@ static bool contains_label(TokenBase *node)
 	if ( contains_label(tif->statement) ) return true;
 	if ( contains_label(tif->elsestmt) ) return true;
     }
+    if ( TokenFOR *tf = dynamic_cast<TokenFOR *>(node) )
+	return contains_label(tf->statement);
+    if ( TokenWHILE *tw = dynamic_cast<TokenWHILE *>(node) )
+	return contains_label(tw->statement);
+    if ( TokenDO *td = dynamic_cast<TokenDO *>(node) )
+	return contains_label(td->statement);
+    if ( TokenFOREACH *tfe = dynamic_cast<TokenFOREACH *>(node) )
+	return contains_label(tfe->statement);
+    if ( TokenSWITCH *tsw = dynamic_cast<TokenSWITCH *>(node) )
+    {
+	for ( TokenCASE *c : tsw->cases )
+	    if ( contains_label(c) )
+		return true;
+	if ( contains_label(tsw->defaultcase) )
+	    return true;
+    }
     return false;
 }
 
