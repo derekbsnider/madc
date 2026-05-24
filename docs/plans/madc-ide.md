@@ -270,10 +270,37 @@ madcide::map_key("f5", "build_and_run");
 madcide::map_key("ctrl+shift+f", "find_in_project");
 ```
 
-The config file IS a madc script — JIT-compiled at startup. Users can
-write arbitrary logic in their config (conditional keybindings, custom
-commands, macros). This is the Emacs/Vim philosophy: the editor is
-programmable in the language it edits.
+Config supports two formats:
+
+**TOML** (simple, declarative — for most users):
+```toml
+[editor]
+keybindings = "turbo-c"
+theme = "monokai"
+tab_width = 8
+
+[build]
+command = "make -C src"
+
+[keys]
+f5 = "build_and_run"
+"ctrl+shift+f" = "find_in_project"
+```
+
+**madc script** (programmable — for power users):
+```c
+// ~/.madcide/config.mad
+madcide::set_keybindings("turbo-c");
+if (env("TERM") == "xterm-256color")
+    madcide::set_theme("monokai");
+else
+    madcide::set_theme("basic16");
+```
+
+TOML is the default. If `config.mad` exists alongside `config.toml`,
+the script runs after TOML is loaded (can override). The madc script
+approach gives Emacs/Vim-level programmability — conditional keybindings,
+custom commands, macros — all JIT-compiled.
 
 ## Implementation Phases
 
