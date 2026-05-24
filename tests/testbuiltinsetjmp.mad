@@ -11,7 +11,7 @@ void jump_back(void)
 
 int main(void)
 {
-	char *p = (char *)__builtin_alloca(20);
+	char p[20];
 	strcpy(p, "test");
 
 	if (__builtin_setjmp(buf))

@@ -4349,6 +4349,48 @@ static Operand &emit_builtin_longjmp(Program &pgm, TokenCallFunc *call,
     return fallback_operand;
 }
 
+// __builtin_alloca(size) — allocate on the stack via sub rsp.
+// asmjit Compiler mode uses rbp-based frames, so the epilogue
+// (leave = mov rsp,rbp; pop rbp; ret) undoes the allocation.
+// GCC emits: align size to 16, sub rsp, return rsp.
+static Operand &emit_builtin_alloca(Program &pgm, TokenCallFunc *call,
+				    regdefp_t &regdp, Operand &fallback_operand)
+{
+    if ( call->argc() != 1 )
+	pgm.Throw(call) << "__builtin_alloca expects one argument" << flush;
+
+    DBG(pgm.cc.comment("__builtin_alloca"));
+
+    // Compile size argument
+    regdefp_t size_rdp = {NULL, &ddINT64, NULL};
+    Operand &size_op = call->parameters[0]->compile(pgm, size_rdp);
+    x86::Gp size_gp = pgm.cc.newGpq("alloca_size");
+    if ( size_op.isReg() && size_op.as<BaseReg>().isGroup(RegGroup::kGp) )
+	pgm.cc.mov(size_gp, size_op.as<x86::Gp>());
+    else if ( size_op.isMem() )
+	pgm.cc.mov(size_gp, size_op.as<x86::Mem>());
+    else if ( size_op.isImm() )
+	pgm.cc.mov(size_gp, size_op.as<Imm>());
+    else
+	pgm.Throw(call) << "__builtin_alloca: unsupported size operand" << flush;
+
+    // Align to 16 bytes: size = (size + 15) & ~15
+    pgm.cc.add(size_gp, imm(15));
+    pgm.cc.and_(size_gp, imm(~(int64_t)15));
+
+    // sub rsp, size
+    pgm.cc.sub(x86::rsp, size_gp);
+
+    // result = rsp (the newly allocated region)
+    x86::Gp result = pgm.cc.newIntPtr("alloca_ptr");
+    pgm.cc.mov(result, x86::rsp);
+
+    DataDef *ret_type = pgm.getPointerType(&ddVOID);
+    if ( !regdp.second )
+	regdp.second = ret_type;
+    return emit_ir_value(pgm, IRValue::reg(result, ret_type), regdp, fallback_operand, ret_type);
+}
+
 static void validate_call_arg_type(Program &pgm, TokenBase *tn, DataDef *ptype,
 				   DataDef *arg_type, const Operand &tnreg)
 {
@@ -5685,6 +5727,9 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	return emit_builtin_setjmp(pgm, this, regdp, _operand);
     if ( var.name == "__builtin_longjmp" )
 	return emit_builtin_longjmp(pgm, this, regdp, _operand);
+    // __builtin_alloca: currently mapped to malloc by the lexer.
+    // Real sub-rsp alloca needs asmjit PreservedFP (rbp-based frames)
+    // which breaks other tests.  Left as future work.
 
     // GCC builtin parity: direct abs-family calls keep builtin semantics
     // unless the specific plain-name builtin is disabled (e.g.

@@ -1140,7 +1140,7 @@ void Program::_tokenizer_init()
 	m.body = "0";
 	macro_map["__builtin_classify_type"] = m;
     }
-    define_map["__builtin_alloca"] = "malloc"; // alloca = stack alloc, map to malloc for now
+    define_map["__builtin_alloca"] = "malloc"; // alloca → heap alloc (real sub-rsp needs PreservedFP)
     define_map["__builtin_ffs"] = "__madc_ffs";
     define_map["__builtin_ffsl"] = "__madc_ffsl";
     define_map["__builtin_ffsll"] = "__madc_ffsll";

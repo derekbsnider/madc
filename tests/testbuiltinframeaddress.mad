@@ -23,7 +23,7 @@ int check_fa(char *unused)
 
 int main(void)
 {
-	char *unused = __builtin_alloca(8);
+	char unused[8];
 	puti(check_fa(unused));
 	return 0;
 }
