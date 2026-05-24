@@ -1,267 +1,290 @@
-# Rendering Abstraction Layer Plan
+# Universal Rendering Abstraction Plan
 
-Research performed 2026-05-24.
+Revised 2026-05-24 after extensive research into 60 years of UI/UX history
+and modern framework analysis.
 
 ## Vision
 
-A unified UI abstraction for madc that targets:
-1. **Plain text terminal** — simple print output
-2. **Curses/ncurses console** — interactive TUI apps
-3. **Web apps** — server-side rendering with thin browser client
-4. **Native GUI** — desktop windows via SDL/GTK/etc.
+A single semantic rendering abstraction that adapts to ANY display target —
+from a dumb scrolling teletype to Unreal Engine — with the JIT compiler
+resolving capabilities at compile time for zero-runtime-overhead adaptation.
 
-Think "QML/JSX but in C" — using madc as the scripting language instead
-of JavaScript. No new markup language — C syntax with struct initializers,
-function calls, and lambdas is sufficient.
+The app developer writes to ONE API. The JIT emits specialized code for
+whatever the target can do.
 
-## Industry Research
+## Design Decisions (Confirmed)
 
-### What works (proven patterns)
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Declaration style | Code-first declarative | Industry consensus (SwiftUI, Compose, QML). madc controls the parser. |
+| Description level | Semantic-first | Roles/labels/states/actions. Proven by accessibility trees. Degrades to any target. |
+| JIT advantage | Compile-time capability resolution | Dead-code-eliminate unsupported paths. No other framework can do this. |
+| Capability model | 5-level layered | Teletype → curses → 2D graphics → widgets → GPU/3D |
+| Reactivity | One-way flow, compiler-tracked deps | Svelte approach at JIT time. No GC. Predictable. Universal. |
 
-| Framework | Language | Approach | Key Insight |
-|-----------|----------|----------|-------------|
-| **Clay** | C99 | Declarative macros → render commands | Flexbox in C, single header, arena alloc |
-| **Dear ImGui** | C++ | Immediate mode → draw lists | `if (Button("x"))` pattern for events |
-| **ImTui** | C++ | ImGui API → ncurses output | Same API, terminal backend |
-| **Nuklear** | C89 | Immediate mode → command buffer | No malloc in hot path, 18K LOC |
-| **MicroUI** | C | Immediate mode → command list | 1,100 LOC, minimal viable UI |
-| **Textual** | Python | Widget tree → ANSI or HTML/WebSocket | Terminal + web from same code |
-| **Slint** | Rust/C++ | Compiled .slint markup → native code | QML-inspired, 3 rendering backends |
-| **FTXUI** | C++ | Functional composition → terminal | React-inspired TUI |
+## The 5 Capability Levels
 
-### The universal pattern
+Each level is a superset of the previous. A renderer declares its level.
+The JIT emits code for that level, dead-code-eliminating higher levels.
 
-Every successful cross-target UI library uses a **render command list**:
+### Level 0: Sequential Text Stream
+**Targets:** stdout, pipes, log files, dumb teletypes, voice synthesis
+**Capabilities:** Emit characters. Line feed. That's it.
+**What renders:** Role-based linearization. A `nav` becomes a text list.
+A `button` becomes `[Label]`. A `heading` becomes `=== Title ===`.
+**Historical model:** ASR-33 teletype (1963)
+
+### Level 1: 2D Character Grid with Attributes
+**Targets:** VT100+, xterm, curses/ncurses, SSH sessions
+**Capabilities:** Cursor positioning, color, bold/underline, box drawing,
+mouse (optional), alternate screen buffer.
+**What renders:** Full TUI. Panels, borders, scrollable regions, menus.
+**Historical model:** VT100 (1978), curses (1980), TERMINFO capability DB
+
+### Level 2: 2D Geometric Primitives + Text Layout
+**Targets:** Canvas 2D, Cairo, Skia, PDF, SVG, PostScript, printers
+**Capabilities:** Lines, rectangles, arcs, fills, gradients, font rendering,
+anti-aliasing, transparency, image blitting.
+**What renders:** Custom-drawn widgets, charts, diagrams, rich text.
+**Historical model:** PostScript (1982), Display PostScript (NeXT), Cairo
+
+### Level 3: Widget-Level Declarative UI
+**Targets:** Native GUI toolkits (GTK, Qt, Cocoa, WinUI), web DOM, mobile
+**Capabilities:** Platform-native controls (buttons, text fields, lists,
+scroll views, tabs), layout engines (flexbox/grid), system themes,
+accessibility APIs, clipboard, drag-and-drop, IME.
+**What renders:** Full native-feeling application UI.
+**Historical model:** NeXTSTEP (1988), HTML/CSS (1995), SwiftUI (2019)
+
+### Level 4: GPU-Accelerated / 3D / Spatial
+**Targets:** WebGPU, Metal, Vulkan, DirectX, Unreal, Unity, Vision Pro
+**Capabilities:** Shader programs, 3D geometry, lighting, physics,
+spatial positioning, eye/hand tracking, haptics.
+**What renders:** Games, simulations, data visualization, XR/spatial UI.
+**Historical model:** OpenGL (1992), DirectX (1995), WebGPU (2024)
+
+## Architecture
 
 ```
-UI code → render command list → backend driver
-                                 ├── terminal (ANSI)
-                                 ├── curses (ncurses)
-                                 ├── web (WebSocket → DOM)
-                                 └── native (SDL/OpenGL/GTK)
-```
-
-The command list is the abstraction boundary. UI code produces abstract
-commands (draw rect, draw text, set clip). Backend drivers consume them.
-
-## Design for madc
-
-### Architecture: `ui::` namespace with render command list
-
-```
-madc script
+madc source code
     │
-    ▼ ui::button(), ui::text(), ui::panel(), etc.
+    ▼ Parser: render { } blocks → Semantic IR tree
     │
-    ▼ Render command list (tagged union array)
+    ▼ Compiler: query RenderCaps → JIT-specialize
     │
-    ├──► Terminal driver: ANSI escape codes / plain text
-    ├──► Curses driver: ncurses calls via #load
-    ├──► Web driver: WebSocket server → thin JS client
-    └──► Native driver: SDL2/GTK via #load
+    ├──► Level 0: emit sequential text generation
+    ├──► Level 1: emit ANSI/curses grid operations
+    ├──► Level 2: emit 2D draw commands (Skia/Cairo)
+    ├──► Level 3: emit native widget construction
+    └──► Level 4: emit GPU/scene graph operations
 ```
 
-### What declarative UI looks like in madc
+### Semantic IR Node
 
-**Approach A: Immediate mode (recommended for Phase 1)**
+The core abstraction — what every render block produces:
+
 ```c
-ui::begin_panel("main", { .direction = UI_VERTICAL });
-    ui::text("Hello World");
-    if (ui::button("Click me")) {
-        counter++;
+struct UINode {
+    Role     role;        // NAVIGATION, CONTENT, ACTION, INPUT, HEADING,
+                          // LIST, ITEM, IMAGE, SEPARATOR, GROUP, ...
+    char    *label;       // human-readable text
+    State    state;       // NORMAL, DISABLED, SELECTED, EXPANDED, ...
+    Action  *actions;     // what the user can do (ACTIVATE, INPUT, SCROLL)
+    UINode  *children;    // nested elements
+    Hints    hints;       // optional: preferred size, color, direction, weight
+};
+```
+
+Each renderer interprets this tree to its maximum capability:
+- Level 0: linearizes roles and labels into text
+- Level 1: maps roles to TUI widgets (borders, menus, scrollable panes)
+- Level 2: draws custom-styled controls
+- Level 3: maps to native platform controls
+- Level 4: maps to 3D scene elements
+
+### Capability Negotiation at JIT Time
+
+```c
+struct RenderCaps {
+    uint8_t  level;         // 0-4
+    bool     color;
+    bool     truecolor;
+    bool     mouse;
+    bool     keyboard;
+    bool     touch;
+    bool     hover;
+    bool     gpu;
+    bool     spatial_3d;
+    uint16_t width, height; // in logical units
+    // ...
+};
+```
+
+The JIT compiler treats `RenderCaps` fields as compile-time constants.
+Branches conditioned on capabilities are resolved at JIT time:
+
+```c
+render {
+    heading("Dashboard")
+    if (caps.level >= 2) {
+        chart(data)                    // only emitted for 2D+ targets
+    } else {
+        table(data)                    // text/grid fallback
     }
-    ui::text(format("Count: %d", counter));
-ui::end_panel();
-```
-
-Simplest to implement. The `if (button())` pattern handles events
-elegantly. No tree construction needed. Same pattern as Dear ImGui,
-Nuklear, MicroUI.
-
-**Approach B: Function-call tree (for retained mode / web)**
-```c
-ui::element *root = ui::column(
-    ui::text("Hello", { .font_size = 24 }),
-    ui::button("Click me", [&]() { counter++; }),
-    ui::text(format("Count: %d", counter))
-);
-ui::render(root);
-```
-
-Returns a tree of element nodes. Enables diffing for efficient web DOM
-updates. More complex but needed for the web backend.
-
-**Approach C: Elm/MVU architecture (cleanest separation)**
-```c
-struct Model { int counter; };
-
-void update(Model *m, int msg) {
-    if (msg == MSG_INCREMENT) m->counter++;
-}
-
-ui::element *view(Model *m) {
-    return ui::column(
-        ui::text(format("Count: %d", m->counter)),
-        ui::button("Increment", MSG_INCREMENT)
-    );
-}
-
-int main() {
-    Model m = { .counter = 0 };
-    ui::run(&m, update, view);
+    button("Refresh", on_refresh)      // semantic — all levels handle it
 }
 ```
 
-Pure `view` function, centralized `update`. Maps cleanly to madc's
-structs and function pointers.
+The `if (caps.level >= 2)` is evaluated at JIT compile time. The terminal
+build has no chart code in the binary. The GPU build has no table code.
+Zero runtime overhead.
 
-### madc features that enable this
+### Reactivity: Compiler-Tracked Dependencies
 
-| Feature | UI Role |
-|---------|---------|
-| Structs with initializers | Component configuration |
-| Lambdas `[&]() {}` | Event handlers |
-| Namespaces (`ui::`) | API surface |
-| `#load` | Load ncurses, SDL, GTK at runtime |
-| `std::string` | Text content |
-| Function pointers | Callbacks, view functions |
-| Multi-return | Error handling from UI operations |
-| JIT compilation | Hot-reload of UI code |
-
-### Missing language feature
-
-**Tagged unions / sum types** — needed for polymorphic render command
-lists and element trees. Currently simulated with `struct { int type;
-union { ... } data; }`. Could be a language addition (C++17
-`std::variant` equivalent, or Rust-style `enum`).
-
-## Render Command Structure
+The JIT compiler analyzes which state variables each render block reads,
+then emits targeted re-render code — no runtime dependency graph, no
+observer pattern, no GC.
 
 ```c
-enum RenderCommandType {
-    RC_RECT, RC_TEXT, RC_LINE, RC_CLIP, RC_UNCLIP,
-    RC_SCROLL, RC_IMAGE, RC_INPUT
-};
+int counter = 0;
 
-struct RenderCommand {
-    int type;
-    int x, y, w, h;          // bounding box
-    int color_fg, color_bg;   // colors
-    int style;                // bold, italic, underline
-    const char *text;         // for RC_TEXT
-    void *userdata;           // backend-specific
-};
+render {
+    text(format("Count: %d", counter))  // compiler tracks: reads 'counter'
+    button("+", [&]() { counter++; })
+}
 ```
 
-Arena-allocated per frame (reset each render cycle). No per-command
-malloc. This is the MicroUI/Nuklear pattern.
+When `counter` changes, only the `text` node is re-evaluated. The `button`
+node is unchanged and skipped. The compiler determined this statically.
 
-## Backend Drivers
+Arena allocation for the view tree: each render cycle allocates from a
+fresh arena, previous arena freed in bulk after diff is applied. No
+per-node malloc/free.
 
-### Terminal (Phase 1) — simplest
-- Map `RC_TEXT` → `printf()` with ANSI color codes
-- Map `RC_RECT` → box-drawing characters
-- Map `RC_CLIP` → track viewport bounds
-- ~200 lines of C code
+## Syntax: Native `render` Blocks
 
-### Curses (Phase 2) — interactive TUI
-- `#load "libncursesw.so" as curses;`
-- Map `RC_TEXT` → `mvaddstr(y, x, text)`
-- Map `RC_RECT` → `mvhline()`/`mvvline()`
-- Input via `getch()` → event loop
-- ~500 lines
+Since madc controls the parser, `render` blocks are a first-class language
+construct. Semantic roles are inferred from block names:
 
-### Web (Phase 3) — server-side rendering
-- madc runs a WebSocket server (via `#load "libwebsockets.so"`)
-- Serialize render commands as JSON
-- Thin JS client (~100 lines) interprets commands → DOM updates
-- Same app code, different backend — Textual proves this works
-- ~1,000 lines (server + client)
+```c
+render(target) {
+    nav {
+        item("File", show_file_menu)
+        item("Edit", show_edit_menu)
+    }
+    main {
+        heading("Welcome")
+        if (logged_in) {
+            content {
+                text(user.bio)
+                list(user.posts, [](Post p) {
+                    item(p.title, [&]() { open_post(p); })
+                })
+            }
+        } else {
+            action("Log In", open_login)
+        }
+    }
+    status {
+        text(format("%d items", item_count))
+    }
+}
+```
 
-### Native GUI (Phase 4) — desktop
-- `#load "libSDL2.so" as sdl;` or `#load "libgtk-4.so" as gtk;`
-- Map `RC_RECT` → `SDL_RenderFillRect()` or `gtk_drawing_area`
-- Map `RC_TEXT` → `SDL_RenderCopy()` with font texture or Pango
-- ~1,500 lines per backend
+Block names map to roles:
+- `nav` → ROLE_NAVIGATION
+- `main` → ROLE_MAIN
+- `heading` → ROLE_HEADING
+- `content` → ROLE_CONTENT
+- `action` / `button` → ROLE_ACTION
+- `item` → ROLE_ITEM
+- `list` → ROLE_LIST
+- `input` → ROLE_INPUT
+- `status` → ROLE_STATUS
+- `group` → ROLE_GROUP
 
-## Layout Engine
+Structural hints via modifiers (optional, renderer may ignore):
 
-**Recommendation: Adopt Clay.** Clay is C99, single-header (~5,300 LOC),
-arena-allocated, flexbox-inspired, and outputs a render command list.
-It solves the hard layout problems (text wrapping, scrolling, flexbox
-alignment) so madc doesn't have to.
+```c
+render {
+    main {
+        text("Hello") .size(24) .color(0xFF0000) .weight(BOLD)
+        button("Click") .width(200) .padding(8)
+    } .direction(HORIZONTAL) .gap(16)
+}
+```
 
-Clay can be:
-- Compiled directly into madc (single header include)
-- Or loaded via `#load` as a shared library
-- Its `CLAY()` macro syntax maps naturally to madc's C syntax
+## Lessons from 60 Years of UI History
+
+| Historical Lesson | How We Apply It |
+|-------------------|-----------------|
+| TERMCAP/TERMINFO capability DB (1978) | RenderCaps struct, probed at JIT time |
+| Curses retained-mode + diff (1980) | Arena-allocated view tree with differential updates |
+| VT100 backward compatibility | Level 0 always works; higher levels add, never break |
+| NAPLPS resolution-independent coords (1980) | Logical units throughout, not physical pixels |
+| RIPscrip/Flash/Silverlight death | No proprietary format. No plugin. Open. |
+| HTML's success (1995) | Semantic base. Progressive enhancement. Zero-install via web. |
+| HyperCard's lost vision (1987) | Blur user/developer line via JIT hot-reload |
+| Java AWT/Swing failure | "Same everywhere" fails; "appropriate everywhere" succeeds |
+| X11 network transparency failure | No serialization boundaries in render pipeline |
+| React's virtual DOM (2013) | UI = f(state). One-way flow. Diff-based updates. |
+| SwiftUI/Compose convergence (2019-21) | Code-first declarative is the consensus |
+| Accessibility trees | Semantic IR is the proven universal contract |
+| HTMX/LiveView thin-client renaissance | Support both server-side and client-side rendering |
+| Microsoft UI framework churn | Don't couple to platform strategy. Be platform-neutral. |
+| Svelte compiler-tracked reactivity | JIT-time dep tracking. No runtime observer overhead. |
 
 ## Implementation Phases
 
-### Phase 1: Render commands + terminal backend (1-2 weeks)
-- Define `RenderCommand` struct and command list
-- Implement `ui::text()`, `ui::rect()`, `ui::newline()`
-- Terminal driver: ANSI output
-- Gate: "Hello World" TUI renders to terminal
+### Phase 1: Semantic IR + Level 0 (2-3 weeks)
+- Define `UINode` struct and `Role` enum
+- `render { }` block parsing in parser.cpp
+- Level 0 renderer: linearize semantic tree to stdout
+- Gate: render block prints formatted text
 
-### Phase 2: ncurses backend + input (2-3 weeks)
-- `#load "libncursesw.so"` integration
-- Event loop with keyboard/mouse input
-- `ui::button()` with `if (button())` returns
-- Gate: interactive counter app
+### Phase 2: Level 1 — Terminal/Curses (3-4 weeks)
+- ncurses backend via `#load`
+- Map roles to TUI widgets
+- Input event loop, differential updates
+- Gate: interactive TUI app
 
-### Phase 3: Immediate-mode API (2-3 weeks)
-- `ui::begin_panel()` / `ui::end_panel()`
-- `ui::text()`, `ui::button()`, `ui::input()`, `ui::checkbox()`
-- Layout: integrate Clay or build minimal stack-based layout
-- Gate: multi-panel app with input
+### Phase 3: Reactivity + State (2-3 weeks)
+- Compiler-tracked dependencies in render blocks
+- Arena-allocated view trees
+- One-way data flow cycle
+- Gate: only changed nodes re-render
 
-### Phase 4: Web backend (3-4 weeks)
-- WebSocket server in madc
-- JSON-serialized render commands
-- Thin JS client for DOM updates
-- Gate: same app runs in terminal AND browser
+### Phase 4: Level 2 — 2D Graphics (3-4 weeks)
+- Skia or Cairo backend via `#load`
+- Gate: charts alongside text UI
 
-### Phase 5: Retained mode + diffing (2-3 weeks)
-- Element tree construction via function calls
-- Tree diffing for efficient updates (React-style)
-- Needed for web backend efficiency
-- Gate: 60fps updates without full re-render
+### Phase 5: Level 3 — Web Backend (4-6 weeks)
+- WebSocket server + thin JS client
+- Semantic IR diffs → DOM updates
+- Gate: same app in terminal AND browser
 
-### Phase 6: Native GUI backend (3-4 weeks)
-- SDL2 or GTK4 driver
-- Font rendering (SDL_ttf or Pango)
-- Window management, resize handling
+### Phase 6: Level 3 — Native GUI (4-6 weeks)
+- GTK4 or SDL2 backend via `#load`
 - Gate: desktop app with native look
 
-## What NOT To Do
-
-- **No JS engine.** madc IS the scripting engine. No V8, no QJSEngine.
-- **No custom renderer.** Use existing renderers via `#load`. Don't
-  build Impeller/Skia.
-- **No markup language.** C syntax is the markup. Struct initializers
-  and function calls are the declaration syntax.
-- **No standalone web apps.** Server-side rendering with thin client.
-  madc runs on the server; the browser is a terminal.
-- **No reactive binding system.** Start with immediate mode (explicit
-  re-render). Add reactivity only if a use case demands it.
-
-## Relationship to Other Plans
-
-- **cpp-support.md:** Classes with methods would make component
-  abstraction cleaner (stateful widgets as class instances)
-- **precompiled-headers.md:** UI headers would benefit from PCH
-- **macos-arm64-port.md:** SDL2 backend works on macOS natively
-- **libmadc-phase4.md:** UI apps embedding madc could use the
-  library API for hot-reload
+### Phase 7: Level 4 — GPU/3D (future)
+- WebGPU/Metal/Vulkan via `#load`
+- Gate: 3D visualization or spatial UI
 
 ## The SMAUG Connection
 
-SMAUG is a MUD — a text-based multiplayer game. Its output is currently
-`printf` to a socket. A rendering abstraction would let SMAUG use:
-- Plain text for traditional telnet clients
-- Curses for local play
-- Web for browser-based MUD clients
-- Native GUI for a graphical MUD client
+Same MUD game code, five experiences:
+- **Level 0:** Traditional telnet (scrolling text)
+- **Level 1:** Curses TUI (split-pane, status bar)
+- **Level 2:** Graphical map overlay (RIPscrip's dream, done right)
+- **Level 3:** Web-based MUD client in any browser
+- **Level 4:** 3D rendered rooms and characters
 
-Same game code, four rendering targets. This is the vision.
+## What We Do NOT Build
+
+- No JS engine — madc IS the scripting engine
+- No custom renderer — use Skia/Cairo/WebGPU via `#load`
+- No markup language — C syntax IS the declaration
+- No plugin/runtime — JIT compiles to native
+- No reactive binding system — compiler tracks deps statically
+- No layout engine from scratch — adopt Clay/Yoga via library
