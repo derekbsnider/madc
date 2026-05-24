@@ -29,6 +29,11 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_pch.h"
+
+// From precompiled_headers.cpp (generated)
+struct PrecompiledHeader { const uint8_t *data; size_t size; };
+extern const PrecompiledHeader *find_precompiled_header(const std::string &name);
 
 using namespace std;
 using namespace asmjit;
@@ -1510,6 +1515,9 @@ TokenBase *Program::_getToken()
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
+			// Text-embedded headers (hand-written stubs) take priority
+			// because they're tailored for madc's parser. Pre-compiled
+			// system headers are used only when no text stub exists.
 			const std::string *embedded = find_embedded_header(incfile);
 			if ( embedded )
 			{
@@ -1532,6 +1540,26 @@ TokenBase *Program::_getToken()
 			    // flag headers for deferred registration during parse init
 			    mark_embedded_include_flag(incfile);
 			    return getToken();
+			}
+			// Check pre-compiled headers (post-lexer token stream
+			// from real system headers, used when no text stub exists)
+			const PrecompiledHeader *pch = find_precompiled_header(incfile);
+			if ( pch )
+			{
+			    DBG(std::cout << "#include <" << incfile << "> (precompiled)" << std::endl);
+			    std::deque<TokenBase *> pch_tokens;
+			    if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
+			    {
+				const char *_interned_pch = intern_file(incfile);
+				for ( TokenBase *itb : pch_tokens )
+				{
+				    itb->file = _interned_pch;
+				    push_token_with_string_concat(itb);
+				}
+				mark_embedded_include_flag(incfile);
+				return getToken();
+			    }
+			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying filesystem" << std::endl);
 			}
 		    }
 		    std::string full_path = resolve_include_path(incfile, is_system);
