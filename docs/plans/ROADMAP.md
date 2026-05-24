@@ -111,41 +111,65 @@ Master plan linking all workstreams. Updated 2026-05-24.
 
 ## Track 7: Rendering Abstraction (`ui::`)
 
-*Unified UI for terminal, curses, web, and native GUI.*
+*Universal semantic rendering: teletype to Unreal Engine. WCAG by design.
+Hardware × user preference × accessibility three-way negotiation.
+JIT-time capability resolution for zero runtime overhead.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 7.1 | Render command list + terminal backend | 1-2 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
-| 7.2 | ncurses backend + input | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
-| 7.3 | Immediate-mode API (ui::button, ui::text) | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
-| 7.4 | Web backend (WebSocket + thin JS client) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
-| 7.5 | Retained mode + diffing | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
-| 7.6 | Native GUI backend (SDL2/GTK) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.1 | Semantic IR + Level 0 (text stream) | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.2 | Level 1 — curses/terminal backend | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.3 | Reactivity + compiler-tracked state deps | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.4 | Level 2 — 2D graphics (Skia/Cairo) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.5 | Level 3 — Web backend (WebSocket + thin JS) | 4-6 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.6 | Level 3 — Native GUI (SDL2/GTK) | 4-6 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.7 | Level 4 — GPU/3D (WebGPU/Metal) | Future | Future | [rendering-abstraction.md](rendering-abstraction.md) |
 
-**Dependencies:** 2.1 (constructors) makes stateful widgets cleaner.
-Can start after core language basics are stable.
+**Dependencies:** 2.1 (constructors) for widget lifecycle. 7.1-7.2 can
+start after 1.2 (cleanup) makes the parser ready for `render` blocks.
 
 ---
 
-## Track 8: Future Language Evolution
+## Track 8: Tooling (madcide + libmadcedit)
+
+*A Turbo-C style IDE and reusable editor library, built in madc.*
+
+| Phase | Work | Effort | Status | Plan |
+|-------|------|--------|--------|------|
+| 8.1 | libmadcedit core — piece table, cursor, undo, CUA keys | 3-4 wk | Future | [madc-ide.md](madc-ide.md) |
+| 8.2 | libmadcedit curses rendering | 2-3 wk | Blocked on 7.2 | [madc-ide.md](madc-ide.md) |
+| 8.3 | Syntax highlighting + keybinding profiles (Vim, Emacs, Turbo-C) | 2-3 wk | Future | [madc-ide.md](madc-ide.md) |
+| 8.4 | madcide shell — file tree, tabs, build, errors | 3-4 wk | Blocked on 8.2 | [madc-ide.md](madc-ide.md) |
+| 8.5 | Advanced — find/replace, split views, go-to-def | Ongoing | Future | [madc-ide.md](madc-ide.md) |
+
+**Dependencies:** 7.1-7.2 (rendering Level 0-1). Config via TOML + madc scripts.
+
+---
+
+## Track 9: Future Language Evolution
+
+---
+
+## Track 9: Future Language Evolution
 
 *Safety, modern features, and long-term direction.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 8.1 | Optional bounds checking (`--check-bounds`) | 1-2 wk | Future | [future-considerations.md](future-considerations.md) |
-| 8.2 | Ownership annotations (RAII-based) | TBD | Future | [future-considerations.md](future-considerations.md) |
-| 8.3 | Go-style error returns (multi-return convention) | 1 wk | Future | [future-considerations.md](future-considerations.md) |
-| 8.4 | `-O` optimization levels | 2-3 wk | Future | — |
+| 9.1 | Optional bounds checking (`--check-bounds`) | 1-2 wk | Future | [future-considerations.md](future-considerations.md) |
+| 9.2 | Ownership annotations (RAII-based) | TBD | Future | [future-considerations.md](future-considerations.md) |
+| 9.3 | Go-style error returns (multi-return convention) | 1 wk | Future | [future-considerations.md](future-considerations.md) |
+| 9.4 | `-O` optimization levels | 2-3 wk | Future | — |
+| 9.5 | TOML parser (for config files) | 1-2 wk | Future | — |
 
-**Dependencies:** 2.1 (RAII) before 8.2. Existing multi-return enables 8.3.
+**Dependencies:** 2.1 (RAII) before 9.2. Existing multi-return enables 9.3.
 
 ---
 
 ## Ideal Execution Order
 
-Each step builds on the previous. Items at the same level can run in
-parallel.
+Each step builds on the previous. Items at the same indent level can
+run in parallel.
 
 ```
  1.  Track 1.2  Code cleanup Phase A                    [2-3 wk]
@@ -155,77 +179,97 @@ parallel.
          Unblocks: everything below
 
  2.  Track 2.1  Constructors & destructors              [3-5 d]
-     └── RAII foundation — keystone for C++, safety, exceptions
+     └── RAII foundation — keystone for C++, rendering, safety
 
  3.  Track 2.2  Operator overloading completion          [2-3 d]
-     └── Parser done; wire up compiler dispatch
+ ║   └── Parser done; wire up compiler dispatch
+ ║
+ ║── Track 7.1  Rendering: Semantic IR + Level 0         [2-3 wk]
+ ║   └── render { } blocks, UINode, text output
+ ║       Can start in parallel with steps 3-4
 
  4.  Track 2.3  References & const enforcement           [1 wk]
+ ║
+ ║── Track 7.2  Rendering: Level 1 curses backend        [3-4 wk]
+ ║   └── TUI rendering, input loop, differential updates
 
- 5.  Track 1.3  Typed-register IR (stages 0-3)          [4-6 wk]
+ 5.  Track 8.1  libmadcedit core                         [3-4 wk]
+     ├── Piece table, cursor, undo/redo, CUA keybindings
+     └── Requires: Level 0 rendering (step 3b)
+
+ 6.  Track 8.2  libmadcedit curses + syntax highlight    [4-6 wk]
+     ├── Curses rendering, line numbers, scrolling
+     ├── Syntax highlighting engine
+     └── Vim/Emacs/Turbo-C keybinding profiles
+         Requires: Level 1 rendering (step 4b)
+
+ 7.  Track 1.3  Typed-register IR (stages 0-3)          [4-6 wk]
      ├── Fixes operand-shape bugs at the source
      ├── Creates arch-neutral boundary for ARM64
      └── Enables IR Stage 3 (calls) with clean dispatch table
 
- 6.  Track 1.4  Code cleanup Phase B                    [3 wk]
+ 8.  Track 8.4  madcide shell                            [3-4 wk]
+     ├── File tree + tabs + build integration + errors
+     └── Requires: libmadcedit (step 6)
+         Self-hosting milestone: edit madc in madcide
+
+ 9.  Track 1.4  Code cleanup Phase B                    [3 wk]
      └── Parser dereference & subscript unification
          Unblocks: PCH transition, parser resilience
 
- 7.  Track 2.4  new / delete                             [1-2 wk]
-     └── Requires constructors (step 2)
+10.  Track 2.4  new / delete                             [1-2 wk]
 
- 8.  Track 3.2  PCH transition                           [2-3 wk]
+11.  Track 3.2  PCH transition                           [2-3 wk]
      └── Replace text-embedded stubs with pre-compiled
-         Requires: parser resilience from step 6
 
- 9.  Track 2.5  Single inheritance                       [1-2 wk]
-     └── Requires constructors (step 2)
+12.  Track 7.3  Rendering: reactivity + state deps       [2-3 wk]
+     └── Compiler-tracked deps, arena alloc, one-way flow
 
-10.  Track 2.6  Virtual functions / vtables              [2-3 wk]
-     └── Requires inheritance (step 9)
+13.  Track 2.5  Single inheritance                       [1-2 wk]
 
-11.  Track 6.1  macOS/ARM64 JIT MVP                     [10-15 wk]
-     └── Requires IR (step 5) for arch-neutral boundary
+14.  Track 2.6  Virtual functions / vtables              [2-3 wk]
 
-12.  Track 4.2  C ABI shim                               [2-3 wk]
-     └── Thin extern "C" over stable C++ API
+15.  Track 6.1  macOS/ARM64 JIT MVP                     [10-15 wk]
+     └── Requires IR (step 7) for arch-neutral boundary
 
-13.  Track 1.5  Code cleanup Phase C                    [3 wk]
+16.  Track 4.2  C ABI shim                               [2-3 wk]
+
+17.  Track 1.5  Code cleanup Phase C                    [3 wk]
      └── Macro system unification, token hierarchy flattening
 
-14.  Track 2.7  Exception handling (SJLJ)               [3-4 wk]
-     └── Requires constructors (step 2) for stack unwinding
+18.  Track 7.5  Rendering: Level 3 web backend           [4-6 wk]
+     └── WebSocket + thin JS client
+         Same app in terminal AND browser
 
-15.  Track 4.3  Fork-based worker isolation              [3-4 wk]
+19.  Track 2.7  Exception handling (SJLJ)               [3-4 wk]
 
-16.  Track 3.3  PCH Phase 2 — AST serialization         [4-6 wk]
-     └── Requires stable token hierarchy from step 13
+20.  Track 4.3  Fork-based worker isolation              [3-4 wk]
 
-17.  Track 5.3  Query pushdown & federation              [4-6 wk]
+21.  Track 3.3  PCH Phase 2 — AST serialization         [4-6 wk]
+
+22.  Track 5.3  Query pushdown & federation              [4-6 wk]
      └── Independent — can start earlier if prioritized
 
-18.  Track 6.2  macOS SIMD (NEON)                       [2-3 wk]
-     └── After ARM64 MVP (step 11)
+23.  Track 7.6  Rendering: Level 3 native GUI            [4-6 wk]
 
-19.  Track 4.4  Node.js integration                      [4-6 wk]
-     └── After C shim (step 12)
+24.  Track 6.2  macOS SIMD (NEON)                       [2-3 wk]
 
-20.  Track 4.5  Rust bindings                            [2-3 wk]
-     └── After C shim (step 12)
+25.  Track 4.4  Node.js integration                      [4-6 wk]
+     Track 4.5  Rust bindings                            [2-3 wk]
 
-21.  Track 3.4  Modules (.madm)                          [6-8 wk]
-     └── After AST serialization (step 16)
+26.  Track 3.4  Modules (.madm)                          [6-8 wk]
 
-22.  Track 6.3  macOS AOT (Mach-O writer)               [4-6 wk]
-     └── After ARM64 MVP (step 11)
+27.  Track 6.3  macOS AOT (Mach-O writer)               [4-6 wk]
 
-23.  Track 7    Rendering abstraction (ui::)             [ongoing]
-     ├── Terminal + curses backends first
-     ├── Web backend (WebSocket + thin client)
-     └── Native GUI (SDL2/GTK)
+28.  Track 7.7  Rendering: Level 4 GPU/3D               [future]
 
-24.  Track 8    Safety, optimization levels              [ongoing]
-     └── Ownership annotations, bounds checking, -O flags
+29.  Track 9    Safety, optimization levels              [ongoing]
+```
+
+**Key parallel tracks:** Steps 3-4 (C++ basics) and 3b-4b (rendering
+Level 0-1) run in parallel. The IDE (steps 5-8) starts as soon as
+curses rendering is available — providing a self-hosting milestone
+where madc is edited in its own IDE.
 ```
 
 ## The SMAUG Goal
@@ -254,5 +298,6 @@ SMAUG target terminal, web, and GUI from the same game code.
 | Pre-Compiled Headers | [precompiled-headers.md](precompiled-headers.md) |
 | Perry/Rust Integration | [perry-rust-integration.md](perry-rust-integration.md) |
 | Rendering Abstraction | [rendering-abstraction.md](rendering-abstraction.md) |
+| madc IDE & Editor | [madc-ide.md](madc-ide.md) |
 | Typed-Register IR | [typed-register-ir.md](typed-register-ir.md) |
 | Revival Plan (archived) | [archived/revival-plan.md](archived/revival-plan.md) |
