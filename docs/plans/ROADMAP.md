@@ -146,20 +146,33 @@ start after 1.2 (cleanup) makes the parser ready for `render` blocks.
 
 ---
 
-## Track 9: Future Language Evolution
+## Track 9: Multi-Syntax Support
+
+*Write madc programs in Python, Ruby, or Rust syntax. Controlled via
+`#pragma syntax python`. Syntax is skin-deep — AST, compiler, IR unchanged.*
+
+| Phase | Work | Effort | Status | Plan |
+|-------|------|--------|--------|------|
+| 9.1 | Syntax profile infrastructure + lexer config | 2-3 wk | Future | [multi-syntax.md](multi-syntax.md) |
+| 9.2 | Python-style indentation mode | 3-4 wk | Future | [multi-syntax.md](multi-syntax.md) |
+| 9.3 | Type annotation variants (suffix syntax) | 2 wk | Future | [multi-syntax.md](multi-syntax.md) |
+| 9.4 | Ruby/Rust profiles | 2-3 wk ea | Future | [multi-syntax.md](multi-syntax.md) |
+| 9.5 | Mixed-syntax files (`#pragma syntax`) | 2 wk | Future | [multi-syntax.md](multi-syntax.md) |
+
+**Dependencies:** 1.2 + 1.4 (parser cleanup). Editor highlighting reuses profiles.
 
 ---
 
-## Track 9: Future Language Evolution
+## Track 10: Future Language Evolution
 
 *Safety, modern features, and long-term direction.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 9.1 | Optional bounds checking (`--check-bounds`) | 1-2 wk | Future | [future-considerations.md](future-considerations.md) |
-| 9.2 | Ownership annotations (RAII-based) | TBD | Future | [future-considerations.md](future-considerations.md) |
-| 9.3 | Go-style error returns (multi-return convention) | 1 wk | Future | [future-considerations.md](future-considerations.md) |
-| 9.4 | `-O` optimization levels | 2-3 wk | Future | — |
+| 10.1 | Optional bounds checking (`--check-bounds`) | 1-2 wk | Future | [future-considerations.md](future-considerations.md) |
+| 10.2 | Ownership annotations (RAII-based) | TBD | Future | [future-considerations.md](future-considerations.md) |
+| 10.3 | Go-style error returns (multi-return convention) | 1 wk | Future | [future-considerations.md](future-considerations.md) |
+| 10.4 | `-O` optimization levels | 2-3 wk | Future | — |
 | 9.5 | TOML parser (for config files) | 1-2 wk | Future | — |
 
 **Dependencies:** 2.1 (RAII) before 9.2. Existing multi-return enables 9.3.
@@ -263,7 +276,10 @@ run in parallel.
 
 28.  Track 7.7  Rendering: Level 4 GPU/3D               [future]
 
-29.  Track 9    Safety, optimization levels              [ongoing]
+29.  Track 9    Multi-syntax (Python/Ruby/Rust modes)     [ongoing]
+     └── #pragma syntax python — same AST, different spelling
+
+30.  Track 10   Safety, optimization levels              [ongoing]
 ```
 
 **Key parallel tracks:** Steps 3-4 (C++ basics) and 3b-4b (rendering
@@ -299,5 +315,6 @@ SMAUG target terminal, web, and GUI from the same game code.
 | Perry/Rust Integration | [perry-rust-integration.md](perry-rust-integration.md) |
 | Rendering Abstraction | [rendering-abstraction.md](rendering-abstraction.md) |
 | madc IDE & Editor | [madc-ide.md](madc-ide.md) |
+| Multi-Syntax Support | [multi-syntax.md](multi-syntax.md) |
 | Typed-Register IR | [typed-register-ir.md](typed-register-ir.md) |
 | Revival Plan (archived) | [archived/revival-plan.md](archived/revival-plan.md) |
