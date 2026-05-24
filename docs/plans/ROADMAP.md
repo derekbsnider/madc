@@ -109,18 +109,36 @@ Master plan linking all workstreams. Updated 2026-05-24.
 
 ---
 
-## Track 7: Future Language Evolution
+## Track 7: Rendering Abstraction (`ui::`)
+
+*Unified UI for terminal, curses, web, and native GUI.*
+
+| Phase | Work | Effort | Status | Plan |
+|-------|------|--------|--------|------|
+| 7.1 | Render command list + terminal backend | 1-2 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.2 | ncurses backend + input | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.3 | Immediate-mode API (ui::button, ui::text) | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.4 | Web backend (WebSocket + thin JS client) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.5 | Retained mode + diffing | 2-3 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+| 7.6 | Native GUI backend (SDL2/GTK) | 3-4 wk | Future | [rendering-abstraction.md](rendering-abstraction.md) |
+
+**Dependencies:** 2.1 (constructors) makes stateful widgets cleaner.
+Can start after core language basics are stable.
+
+---
+
+## Track 8: Future Language Evolution
 
 *Safety, modern features, and long-term direction.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 7.1 | Optional bounds checking (`--check-bounds`) | 1-2 wk | Future | [future-considerations.md](future-considerations.md) |
-| 7.2 | Ownership annotations (RAII-based) | TBD | Future | [future-considerations.md](future-considerations.md) |
-| 7.3 | Go-style error returns (multi-return convention) | 1 wk | Future | [future-considerations.md](future-considerations.md) |
-| 7.4 | `-O` optimization levels | 2-3 wk | Future | — |
+| 8.1 | Optional bounds checking (`--check-bounds`) | 1-2 wk | Future | [future-considerations.md](future-considerations.md) |
+| 8.2 | Ownership annotations (RAII-based) | TBD | Future | [future-considerations.md](future-considerations.md) |
+| 8.3 | Go-style error returns (multi-return convention) | 1 wk | Future | [future-considerations.md](future-considerations.md) |
+| 8.4 | `-O` optimization levels | 2-3 wk | Future | — |
 
-**Dependencies:** 2.1 (RAII) before 7.2. Existing multi-return enables 7.3.
+**Dependencies:** 2.1 (RAII) before 8.2. Existing multi-return enables 8.3.
 
 ---
 
@@ -201,7 +219,12 @@ parallel.
 22.  Track 6.3  macOS AOT (Mach-O writer)               [4-6 wk]
      └── After ARM64 MVP (step 11)
 
-23.  Track 7    Safety, optimization levels              [ongoing]
+23.  Track 7    Rendering abstraction (ui::)             [ongoing]
+     ├── Terminal + curses backends first
+     ├── Web backend (WebSocket + thin client)
+     └── Native GUI (SDL2/GTK)
+
+24.  Track 8    Safety, optimization levels              [ongoing]
      └── Ownership annotations, bounds checking, -O flags
 ```
 
@@ -212,9 +235,10 @@ The concrete test case driving Tracks 1-3 is compiling SMAUG 1.8
 login, and serpent combat. The next milestone is broader post-combat
 gameplay with longer session stability.
 
-SMAUG does NOT need C++ features (Tracks 2, 7) — it's pure C. But the
+SMAUG does NOT need C++ features (Tracks 2, 8) — it's pure C. But the
 C++ features make madc useful as a general-purpose scripting language
-beyond the SMAUG port.
+beyond the SMAUG port. The rendering abstraction (Track 7) would let
+SMAUG target terminal, web, and GUI from the same game code.
 
 ## Plan Index
 
@@ -229,5 +253,6 @@ beyond the SMAUG port.
 | macOS/ARM64 Port | [macos-arm64-port.md](macos-arm64-port.md) |
 | Pre-Compiled Headers | [precompiled-headers.md](precompiled-headers.md) |
 | Perry/Rust Integration | [perry-rust-integration.md](perry-rust-integration.md) |
+| Rendering Abstraction | [rendering-abstraction.md](rendering-abstraction.md) |
 | Typed-Register IR | [typed-register-ir.md](typed-register-ir.md) |
 | Revival Plan (archived) | [archived/revival-plan.md](archived/revival-plan.md) |
