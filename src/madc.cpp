@@ -25,6 +25,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_pch.h"
 
 using namespace std;
 
@@ -222,6 +223,8 @@ int main(int argc, char **argv)
     int filearg = 1;
     const char *emit_object_path = NULL;
     const char *emit_executable_path = NULL;
+    const char *emit_pch_output = NULL;
+    bool emit_pch = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -248,6 +251,14 @@ int main(int argc, char **argv)
                 prog->include_paths.push_back(p);
             }
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-pch") == 0) {
+            emit_pch = true;
+            if ( i + 1 < argc && strcmp(argv[i+1], "-o") == 0 && i + 2 < argc )
+            {
+                emit_pch_output = argv[i + 2];
+                i += 2;
+            }
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
             prog->instrument_functions = true;
             filearg = i + 1;
@@ -264,6 +275,61 @@ int main(int argc, char **argv)
 
     if ( emit_object_path || emit_executable_path )
 	prog->aot_tracking = true;
+
+    // --emit-pch: lex the input file and write a .madh pre-compiled header
+    if ( emit_pch && filearg < argc )
+    {
+	const char *input = argv[filearg];
+	tp = prog->tokenize(input);
+	if ( !tp )
+	{
+	    std::cerr << "Failed to tokenize " << input << std::endl;
+	    return 1;
+	}
+
+	// Compute source hash from file content
+	std::ifstream hf(input, std::ios::binary | std::ios::ate);
+	uint64_t src_hash = 0;
+	if ( hf )
+	{
+	    size_t fsize = hf.tellg();
+	    hf.seekg(0);
+	    std::vector<char> fbuf(fsize);
+	    hf.read(fbuf.data(), fsize);
+	    src_hash = madc_pch::hash_content(fbuf.data(), fsize);
+	}
+
+	// Determine output path
+	std::string outpath;
+	if ( emit_pch_output )
+	    outpath = emit_pch_output;
+	else
+	{
+	    outpath = input;
+	    size_t dot = outpath.rfind('.');
+	    if ( dot != std::string::npos )
+		outpath = outpath.substr(0, dot);
+	    outpath += ".madh";
+	}
+
+	// Choose compression: prefer zstd if available
+	PchCompression method = PchCompression::Zlib;
+#ifdef HAVE_ZSTD
+	method = PchCompression::Zstd;
+#endif
+
+	if ( madc_pch::write_madh(outpath.c_str(), prog->tokens, src_hash, method) )
+	{
+	    std::cout << "Wrote " << outpath << " (" << prog->tokens.size()
+		      << " tokens)" << std::endl;
+	    return 0;
+	}
+	else
+	{
+	    std::cerr << "Failed to write " << outpath << std::endl;
+	    return 1;
+	}
+    }
 
     if ( argc >= 2 && filearg < argc )
     {

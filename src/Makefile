@@ -11,7 +11,7 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_elf.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o embedded_headers.o madc.o
+CORE_OFILES = lexer.o parser.o typesafe.o compiler.o madc_ir.o madc_elf.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o pch.o embedded_headers.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
@@ -28,7 +28,7 @@ MADC_STORAGE_DB_OFILES ?= madcdat_storage.o
 HAVE_MADCDAT ?= 1
 DEFINES	= -I$(INCDIR) $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
 #LIBS	= -lreadline -lasmjit
-LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl $(OPTIONAL_LIBS)
+LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl -lz $(OPTIONAL_LIBS)
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS)
 
 ifeq ($(HAVE_MADCDAT),1)
