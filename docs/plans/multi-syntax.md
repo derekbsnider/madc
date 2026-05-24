@@ -60,6 +60,27 @@ function is a function whether declared as `int foo()` or `def foo():`.
 The differences are purely in lexing and parsing — which tokens delimit
 blocks, how declarations look, what comments look like.
 
+## Syntax Selection (Three Layers)
+
+Syntax is selected by three mechanisms, each overriding the previous:
+
+1. **File extension** → default profile
+   - `.mad`, `.c`, `.cpp`, `.h`, `.hpp`, `.hh`, `.cc` → C syntax
+   - `.py`, `.pyw` → Python syntax
+   - `.rb` → Ruby syntax
+   - `.rs` → Rust syntax
+
+2. **`--syntax=X`** → command-line override for the entire file
+   - `madc --syntax=python script.txt`
+   - Overrides extension-based detection
+
+3. **`#pragma syntax X`** → mid-file switch
+   - `#pragma syntax python` switches parser mode from that point
+   - `#pragma syntax c` switches back
+   - Each `#include` inherits the current mode (or uses its own extension)
+
+Precedence: `#pragma` > `--syntax` > file extension.
+
 ## Syntax Profiles
 
 A syntax profile configures the lexer and parser for a language style:
