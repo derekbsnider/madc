@@ -2,14 +2,14 @@
 
 ## High Priority
 
-- **GCC torture test suite: push toward 98%.** Currently 1644/1685 (97.6%).
-  10 remaining failures (6 compile, 4 runtime, 30 skipped), 2 unfixable.
-  Key blockers: goto-into-dead-conditional asmjit InvalidState (2 tests),
-  nested function definitions (2 tests), va_arg on struct member/array
-  element (1 test), `**pp++` postfix-increment double-deref (1 test),
-  VLA param dimension + swapped subscript (1 test), GCC-specific compact
-  setjmp format (1 test).  Unfixable: `__builtin_apply` (pr47237),
-  `__builtin_va_arg_pack` (va-arg-pack-1).
+- **GCC torture test suite: at 97.9%.** Currently 1649/1685 (97.9%).
+  6 remaining failures (4 compile, 2 runtime, 30 skipped), 2 unfixable.
+  Remaining: nested function definitions (2 tests, architectural),
+  `alloca(func_call())` asmjit InvalidInstruction (2 tests, pre-existing),
+  `__builtin_apply` (pr47237, unfixable), `__builtin_va_arg_pack`
+  (va-arg-pack-1, unfixable).
+  Fixed this session: stdarg-2, pr17078-1, vla-dealloc-1, pr22061-1,
+  va-arg-21, pr64242 (alloca bump pool).
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and

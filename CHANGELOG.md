@@ -62,7 +62,38 @@
 - **va_end semantics.** Changed from `ap = 0` to `((void)(ap))` to match
   GCC's no-op-with-side-effect-evaluation behavior.
 
-- GCC parity: 1631 → 1644/1685 (96.8% → 97.6%). Integration tests: 451,
+- **va_arg on struct member / array element.** `va_arg(a.g, long)` where
+  `a.g` is a struct member now writes back to the member's Mem location
+  instead of a dead register.  Parser guards `TokenMember`/`TokenSubscriptExpr`
+  from `ap_var` extraction.  Closes stdarg-2.
+
+- **goto into dead `if(0)` conditional.** Labels inside `if(0)` blocks are
+  now detected via `contains_label()` and the block is emitted as unreachable
+  code so labels get bound.  Closes pr17078-1, vla-dealloc-1.
+
+- **Swapped subscript `N[ptr]`.** `N[(char*)x]` where N is an integer and
+  the index is a pointer is now detected and swapped to `ptr[N]`.
+  Closes pr22061-1.
+
+- **`**pp++` postfix increment.** Double-deref with postfix increment now
+  correctly increments the innermost pointer variable via `TokenDerefStep`.
+  Closes va-arg-21.
+
+- **Stack bump-pool `__builtin_alloca`.** Replaced `alloca→malloc` mapping
+  with a real stack-based bump allocator using `cc.newStack()`.  64KB pool
+  per function, cursor in a stack slot (survives `setjmp`/`longjmp`).
+  Closes pr64242.
+
+- **setjmp buffer copy.** `__builtin_longjmp` from a `memcpy`'d buffer copy
+  now works.  Magic sentinel in `buf[0..1]` validates the jmp_slot pointer.
+
+- **Pre-compiled header infrastructure (.madh format).** Post-lexer token
+  serialization with zlib compression.  `madc --emit-pch` mode pre-lexes
+  headers, `scripts/gen_precompiled_headers.sh` batch-processes system
+  headers via `gcc -E -P` preprocessing.  38 system headers embedded.
+  Lookup chain: text-embedded → pre-compiled → filesystem.
+
+- GCC parity: 1631 → 1649/1685 (96.8% → 97.9%). Integration tests: 452,
   all passing.
 
 - **Scalar-to-vector SIMD arithmetic.** Inline `__attribute__((vector_size(N)))`
