@@ -6754,6 +6754,23 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			TokenBase *clsqr = nextToken(); // consume ]
 			if ( !clsqr || clsqr->id() != TokenID::tkClSqr )
 			    Throw(tb) << "Expected ] in subscript expression" << flush;
+			// Swapped subscript: N[ptr] where N is a plain
+			// integer and the index is a pointer.  C defines
+			// a[b] as *(a+b), so N[ptr] == ptr[N].  Swap so
+			// the pointer is the base and the integer is the
+			// index.
+			if ( tv->var.type->is_numeric()
+			  && !tv->var.is_fixed_array()
+			  && !tv->var.type->is_pointer()
+			  && idx->datadef()
+			  && idx->datadef()->is_pointer() )
+			{
+			    DataDef *elem_type = unwrap_subscript_element_type(idx->datadef());
+			    DBG(cout << "parseExpression: swapped subscript "
+				     << tv->var.name << "[ptr]" << endl);
+			    exStack.push(new TokenSubscriptExpr(idx, new TokenVar(tv->var), elem_type));
+			    break;
+			}
 			// for string-returning containers, allocate a temp variable for the result
 			Variable *tmp = nullptr;
 			if ( tv->var.type->type() == DataType::dtVECTOR ) {
@@ -7942,7 +7959,22 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    DataDef *base = deref_type_for_variable(var);
 					    if ( !base )
 						Throw(operand_tb) << "cannot dereference non-pointer type" << flush;
-					    deref_expr = new TokenDeref(*var, base);
+					    // Postfix ++/-- on the innermost variable:
+					    // `**pp++` = `*(*(pp++))`.  Wrap the variable
+					    // in a postfix step before building the deref
+					    // chain so the increment targets `pp`, not a
+					    // dereferenced value.
+					    if ( peekToken()
+					      && (peekToken()->id() == TokenID::tkInc
+					       || peekToken()->id() == TokenID::tkDec) )
+					    {
+						DBG(std::cout << "multi-deref: postfix step on " << vname << std::endl);
+						TokenBase *step_tb = nextToken();
+						deref_expr = new TokenDerefStep(*var, base,
+						    step_tb->id() == TokenID::tkInc);
+					    }
+					    else
+						deref_expr = new TokenDeref(*var, base);
 					}
 					else if ( operand_tb->id() == TokenID::tkOpBrk )
 					{
@@ -8019,7 +8051,20 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					DataDef *inner_base = deref_type_for_variable(inner_var);
 					if ( !inner_base )
 					    Throw(inner_tb) << "cannot dereference non-pointer type" << flush;
-					deref_expr = new TokenDeref(*inner_var, inner_base);
+					// Postfix ++/-- on inner var: `**pp++`
+					// = `*(*(pp++))`.  Use TokenDerefStep so
+					// the increment targets pp.
+					if ( peekToken()
+					  && (peekToken()->id() == TokenID::tkInc
+					   || peekToken()->id() == TokenID::tkDec) )
+					{
+					    DBG(std::cout << "two-level deref: postfix step on " << inner_name << std::endl);
+					    TokenBase *step_tb = nextToken();
+					    deref_expr = new TokenDerefStep(*inner_var, inner_base,
+						step_tb->id() == TokenID::tkInc);
+					}
+					else
+					    deref_expr = new TokenDeref(*inner_var, inner_base);
 				    }
 				    else
 					Throw(inner_tb) << "expecting pointer expression after '*'" << flush;
@@ -8427,9 +8472,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    TokenBase *ap_first = nextToken();
 		    TokenBase *ap_expr = parseExpression(ap_first, false, false, false, 0, true);
 		    // For backward compat, extract the Variable* when the
-		    // expression is a simple variable or deref.
+		    // expression is a simple variable or deref — but NOT for
+		    // struct member (TokenMember) or subscript expressions,
+		    // which need the full expression for proper Mem write-back.
 		    Variable *ap_var = NULL;
-		    if ( TokenVar *tv = dynamic_cast<TokenVar *>(ap_expr) )
+		    if ( dynamic_cast<TokenMember *>(ap_expr)
+		      || dynamic_cast<TokenSubscriptExpr *>(ap_expr) )
+			; // leave ap_var NULL — compiler uses ap_expr->operand()
+		    else if ( TokenVar *tv = dynamic_cast<TokenVar *>(ap_expr) )
 			ap_var = &tv->var;
 		    else if ( TokenDeref *td = dynamic_cast<TokenDeref *>(ap_expr) )
 			ap_var = &td->var;

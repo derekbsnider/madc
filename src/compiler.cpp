@@ -14454,9 +14454,21 @@ Operand &TokenVaArg::compile(Program &pgm, regdefp_t &regdp)
     }
     else if ( ap_expr )
     {
-	regdefp_t ap_rdp = {NULL, NULL, NULL};
-	Operand &expr_op = ap_expr->compile(pgm, ap_rdp);
-	ap_storage = expr_op;
+	// For struct member (a.g) or subscript (aps[4]) va_list expressions,
+	// use operand() to get the Mem location so write-back after va_arg
+	// updates the actual memory, not a dead register copy.
+	if ( dynamic_cast<TokenMember *>(ap_expr)
+	  || dynamic_cast<TokenSubscriptExpr *>(ap_expr) )
+	{
+	    Operand &loc = ap_expr->operand(pgm);
+	    ap_storage = loc;
+	}
+	else
+	{
+	    regdefp_t ap_rdp = {NULL, NULL, NULL};
+	    Operand &expr_op = ap_expr->compile(pgm, ap_rdp);
+	    ap_storage = expr_op;
+	}
 	ap_op_ptr = &ap_storage;
     }
     else
@@ -15338,6 +15350,28 @@ Operand &TokenMatch::compile(Program &pgm, regdefp_t &regdp)
     return _operand;
 }
 
+// Check if a statement subtree contains any labels (TokenLabel or
+// TokenCASE) that might be jump targets.  Used to decide whether an
+// if(0) then-block can safely be elided.
+static bool contains_label(TokenBase *node)
+{
+    if ( !node ) return false;
+    if ( dynamic_cast<TokenLabel *>(node) ) return true;
+    if ( dynamic_cast<TokenCASE *>(node) ) return true;
+    if ( TokenCpnd *cpnd = dynamic_cast<TokenCpnd *>(node) )
+    {
+	for ( TokenStmt *s : cpnd->statements )
+	    if ( contains_label(s) )
+		return true;
+    }
+    if ( TokenIF *tif = dynamic_cast<TokenIF *>(node) )
+    {
+	if ( contains_label(tif->statement) ) return true;
+	if ( contains_label(tif->elsestmt) ) return true;
+    }
+    return false;
+}
+
 // compile an if statement
 Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
 {
@@ -15359,12 +15393,31 @@ Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
     {
 	if ( condition->ival() )
 	{
+	    // if(1): skip else, compile then-block only
 	    pgm.cc.bind(thendo);
 	    regdp.first = NULL; regdp.second = NULL;
 	    statement->compile(pgm, regdp);
 	}
+	else if ( contains_label(statement) )
+	{
+	    // if(0) but the then-block contains labels (goto targets
+	    // or case labels).  Emit it as unreachable code so labels
+	    // get bound — matches GCC's flattening behavior.
+	    pgm.cc.jmp(elsestmt ? elsedo : iftail);
+	    pgm.cc.bind(thendo);
+	    regdp.first = NULL; regdp.second = NULL;
+	    statement->compile(pgm, regdp);
+	    if ( elsestmt )
+	    {
+		pgm.cc.jmp(iftail);
+		pgm.cc.bind(elsedo);
+		regdp.first = NULL; regdp.second = NULL;
+		elsestmt->compile(pgm, regdp);
+	    }
+	}
 	else if ( elsestmt )
 	{
+	    // if(0) with no labels: safe to skip then-block entirely
 	    pgm.cc.bind(elsedo);
 	    regdp.first = NULL; regdp.second = NULL;
 	    elsestmt->compile(pgm, regdp);
