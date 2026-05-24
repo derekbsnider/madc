@@ -141,13 +141,19 @@ public:
     // setCursor() so they execute once at function entry, not at
     // first-use (which may be inside a loop/branch).
     asmjit::BaseNode *prologue_cursor;
-    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; prologue_cursor = NULL; }
+    // Stack bump-pool for alloca/VLA. Lazily initialized on first use.
+    // Cursor lives in a stack slot (not register) so it survives longjmp.
+    bool has_alloca_pool;
+    asmjit::x86::Mem alloca_cursor_slot;     // stack slot: current bump position
+    asmjit::x86::Mem alloca_pool_end_slot;   // stack slot: pool end (overflow check)
+    std::map<Variable *, asmjit::x86::Mem> vla_cursor_saves; // per-VLA saved cursor
+    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; prologue_cursor = NULL; has_alloca_pool = false; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
     void movreg(Program &, asmjit::Operand &, Variable *);
     void putreg(Program &, Variable *);
     void cleanup(Program &);
-    void clear_operand_map() { operand_map.clear(); }
+    void clear_operand_map() { operand_map.clear(); has_alloca_pool = false; vla_cursor_saves.clear(); }
     virtual DataDef *datadef() const override {
 	if ( statements.empty() ) return &ddVOID;
 	DataDef *dd = statements.back()->datadef();

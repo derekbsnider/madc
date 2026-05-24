@@ -4349,10 +4349,66 @@ static Operand &emit_builtin_longjmp(Program &pgm, TokenCallFunc *call,
     return fallback_operand;
 }
 
-// __builtin_alloca(size) — allocate on the stack via sub rsp.
-// asmjit Compiler mode uses rbp-based frames, so the epilogue
-// (leave = mov rsp,rbp; pop rbp; ret) undoes the allocation.
-// GCC emits: align size to 16, sub rsp, return rsp.
+// Default alloca pool size (bytes). Override with MADC_ALLOCA_POOL_SIZE env var.
+static const uint32_t DEFAULT_ALLOCA_POOL_SIZE = 65536;
+
+static uint32_t get_alloca_pool_size()
+{
+    static uint32_t cached = 0;
+    if ( !cached )
+    {
+	const char *env = ::getenv("MADC_ALLOCA_POOL_SIZE");
+	cached = (env && atoi(env) > 0) ? (uint32_t)atoi(env) : DEFAULT_ALLOCA_POOL_SIZE;
+    }
+    return cached;
+}
+
+// Lazily initialize the per-function alloca bump pool.  Uses the
+// prologue-cursor pattern to insert initialization code at function
+// entry rather than at the point of first use.
+static void ensure_alloca_pool(Program &pgm)
+{
+    TokenCpnd *tf = pgm.tkFunction;
+    if ( !tf || tf->has_alloca_pool )
+	return;
+
+    uint32_t pool_size = get_alloca_pool_size();
+
+    // Allocate stack slots at the current position — newStack() is a
+    // metadata operation that registers the slot with asmjit's frame
+    // layout.  The actual initialization code goes at the prologue.
+    x86::Mem pool = pgm.cc.newStack(pool_size, 16);
+    tf->alloca_cursor_slot = pgm.cc.newStack(8, 8);
+    tf->alloca_cursor_slot.setSize(8);
+    tf->alloca_pool_end_slot = pgm.cc.newStack(8, 8);
+    tf->alloca_pool_end_slot.setSize(8);
+
+    // Insert init code at the prologue cursor so it runs once at
+    // function entry, not inside a conditional or loop.
+    BaseNode *saved_cursor = NULL;
+    if ( tf->prologue_cursor )
+	saved_cursor = pgm.cc.setCursor(tf->prologue_cursor);
+
+    DBG(pgm.cc.comment("alloca pool init"));
+    x86::Gp tmp = pgm.cc.newIntPtr("__pool_init");
+    pgm.cc.lea(tmp, pool);
+    pgm.cc.mov(tf->alloca_cursor_slot, tmp);
+    pgm.cc.add(tmp, imm(pool_size));
+    pgm.cc.mov(tf->alloca_pool_end_slot, tmp);
+
+    if ( saved_cursor )
+    {
+	tf->prologue_cursor = pgm.cc.cursor();
+	pgm.cc.setCursor(saved_cursor);
+    }
+
+    tf->has_alloca_pool = true;
+}
+
+// __builtin_alloca(size) — bump-allocate from the per-function stack pool.
+// The pool is a cc.newStack() region managed by asmjit's stack frame,
+// so it doesn't require sub rsp or rbp-based addressing.  The cursor
+// lives in a stack slot so it survives setjmp/longjmp.
 static Operand &emit_builtin_alloca(Program &pgm, TokenCallFunc *call,
 				    regdefp_t &regdp, Operand &fallback_operand)
 {
@@ -4361,7 +4417,9 @@ static Operand &emit_builtin_alloca(Program &pgm, TokenCallFunc *call,
 
     DBG(pgm.cc.comment("__builtin_alloca"));
 
-    // Compile size argument
+    // Compile size argument BEFORE pool init — the argument may be a
+    // function call, and ensure_alloca_pool uses setCursor to insert
+    // code at the prologue which can conflict with invoke nodes.
     regdefp_t size_rdp = {NULL, &ddINT64, NULL};
     Operand &size_op = call->parameters[0]->compile(pgm, size_rdp);
     x86::Gp size_gp = pgm.cc.newGpq("alloca_size");
@@ -4374,16 +4432,38 @@ static Operand &emit_builtin_alloca(Program &pgm, TokenCallFunc *call,
     else
 	pgm.Throw(call) << "__builtin_alloca: unsupported size operand" << flush;
 
+    // Now that the argument is safely in a register, init the pool
+    ensure_alloca_pool(pgm);
+
     // Align to 16 bytes: size = (size + 15) & ~15
     pgm.cc.add(size_gp, imm(15));
     pgm.cc.and_(size_gp, imm(~(int64_t)15));
 
-    // sub rsp, size
-    pgm.cc.sub(x86::rsp, size_gp);
+    TokenCpnd *tf = pgm.tkFunction;
 
-    // result = rsp (the newly allocated region)
+    // result = current cursor position
     x86::Gp result = pgm.cc.newIntPtr("alloca_ptr");
-    pgm.cc.mov(result, x86::rsp);
+    pgm.cc.mov(result, tf->alloca_cursor_slot);
+
+    // Advance cursor
+    x86::Gp new_cursor = pgm.cc.newIntPtr("alloca_new_cur");
+    pgm.cc.mov(new_cursor, result);
+    pgm.cc.add(new_cursor, size_gp);
+
+    // Overflow check: abort if new_cursor > pool_end
+    x86::Gp pool_end = pgm.cc.newIntPtr("alloca_end");
+    pgm.cc.mov(pool_end, tf->alloca_pool_end_slot);
+    Label ok = pgm.cc.newLabel();
+    pgm.cc.cmp(new_cursor, pool_end);
+    pgm.cc.jbe(ok);
+    // overflow → abort
+    InvokeNode *abort_call;
+    pgm.cc.invoke(&abort_call, imm((void *)(intptr_t)::abort),
+		   FuncSignature::build<void>());
+    pgm.cc.bind(ok);
+
+    // Store advanced cursor
+    pgm.cc.mov(tf->alloca_cursor_slot, new_cursor);
 
     DataDef *ret_type = pgm.getPointerType(&ddVOID);
     if ( !regdp.second )
@@ -5727,9 +5807,8 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	return emit_builtin_setjmp(pgm, this, regdp, _operand);
     if ( var.name == "__builtin_longjmp" )
 	return emit_builtin_longjmp(pgm, this, regdp, _operand);
-    // __builtin_alloca: currently mapped to malloc by the lexer.
-    // Real sub-rsp alloca needs asmjit PreservedFP (rbp-based frames)
-    // which breaks other tests.  Left as future work.
+    if ( var.name == "__builtin_alloca" || var.name == "alloca" )
+	return emit_builtin_alloca(pgm, this, regdp, _operand);
 
     // GCC builtin parity: direct abs-family calls keep builtin semantics
     // unless the specific plain-name builtin is disabled (e.g.

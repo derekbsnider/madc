@@ -3,6 +3,7 @@ extern int __builtin_setjmp(void *);
 extern void __builtin_longjmp(void *, int);
 
 void *buf[20];
+char *gp;  // global — survives longjmp (asmjit may put locals in caller-saved regs)
 
 void jump_back(void)
 {
@@ -11,12 +12,12 @@ void jump_back(void)
 
 int main(void)
 {
-	char p[20];
-	strcpy(p, "test");
+	gp = (char *)__builtin_alloca(20);
+	strcpy(gp, "test");
 
 	if (__builtin_setjmp(buf))
 	{
-		printf("%s\n", p);
+		printf("%s\n", gp);
 		return 0;
 	}
 
