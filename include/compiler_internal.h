@@ -94,6 +94,58 @@ DataDef *overflow_store_result_type(const std::vector<TokenBase *> &parameters);
 std::string typed_overflow_store_symbol_name(const Variable &var,
 					     const std::vector<TokenBase *> &parameters);
 
+// --- AST walker ---------------------------------------------------------------
+//
+// Generic depth-first AST traversal.  Walks statement-level children of
+// compound, control-flow, and switch/case nodes.  Calls pred(node) on
+// every node; returns true on first match (short-circuits).
+//
+// Usage:
+//   bool has_label = walk_ast(node, [](TokenBase *n) {
+//       return dynamic_cast<TokenLabel *>(n) || dynamic_cast<TokenCASE *>(n);
+//   });
+
+template <typename Pred>
+bool walk_ast(TokenBase *node, Pred pred)
+{
+    if ( !node ) return false;
+    if ( pred(node) ) return true;
+
+    if ( TokenCpnd *cpnd = dynamic_cast<TokenCpnd *>(node) )
+    {
+	for ( TokenStmt *s : cpnd->statements )
+	    if ( walk_ast(s, pred) )
+		return true;
+	return false;
+    }
+    if ( TokenIF *tif = dynamic_cast<TokenIF *>(node) )
+	return walk_ast(tif->statement, pred)
+	    || walk_ast(tif->elsestmt, pred);
+    if ( TokenFOR *tf = dynamic_cast<TokenFOR *>(node) )
+	return walk_ast(tf->statement, pred);
+    if ( TokenWHILE *tw = dynamic_cast<TokenWHILE *>(node) )
+	return walk_ast(tw->statement, pred);
+    if ( TokenDO *td = dynamic_cast<TokenDO *>(node) )
+	return walk_ast(td->statement, pred);
+    if ( TokenFOREACH *tfe = dynamic_cast<TokenFOREACH *>(node) )
+	return walk_ast(tfe->statement, pred);
+    if ( TokenSWITCH *tsw = dynamic_cast<TokenSWITCH *>(node) )
+    {
+	for ( TokenCASE *c : tsw->cases )
+	    if ( walk_ast(c, pred) )
+		return true;
+	return walk_ast(tsw->defaultcase, pred);
+    }
+    if ( TokenCASE *tc = dynamic_cast<TokenCASE *>(node) )
+    {
+	for ( TokenBase *s : tc->statements )
+	    if ( walk_ast(s, pred) )
+		return true;
+	return false;
+    }
+    return false;
+}
+
 // Runtime helpers (extern "C")
 extern "C" void *__madc_jmpbuf_for(void *user_buf);
 extern "C" void __madc_builtin_longjmp(void *user_buf, int value);

@@ -14344,37 +14344,10 @@ Operand &TokenMatch::compile(Program &pgm, regdefp_t &regdp)
 // if(0) then-block can safely be elided.
 static bool contains_label(TokenBase *node)
 {
-    if ( !node ) return false;
-    if ( dynamic_cast<TokenLabel *>(node) ) return true;
-    if ( dynamic_cast<TokenCASE *>(node) ) return true;
-    if ( TokenCpnd *cpnd = dynamic_cast<TokenCpnd *>(node) )
-    {
-	for ( TokenStmt *s : cpnd->statements )
-	    if ( contains_label(s) )
-		return true;
-    }
-    if ( TokenIF *tif = dynamic_cast<TokenIF *>(node) )
-    {
-	if ( contains_label(tif->statement) ) return true;
-	if ( contains_label(tif->elsestmt) ) return true;
-    }
-    if ( TokenFOR *tf = dynamic_cast<TokenFOR *>(node) )
-	return contains_label(tf->statement);
-    if ( TokenWHILE *tw = dynamic_cast<TokenWHILE *>(node) )
-	return contains_label(tw->statement);
-    if ( TokenDO *td = dynamic_cast<TokenDO *>(node) )
-	return contains_label(td->statement);
-    if ( TokenFOREACH *tfe = dynamic_cast<TokenFOREACH *>(node) )
-	return contains_label(tfe->statement);
-    if ( TokenSWITCH *tsw = dynamic_cast<TokenSWITCH *>(node) )
-    {
-	for ( TokenCASE *c : tsw->cases )
-	    if ( contains_label(c) )
-		return true;
-	if ( contains_label(tsw->defaultcase) )
-	    return true;
-    }
-    return false;
+    return walk_ast(node, [](TokenBase *n) {
+	return dynamic_cast<TokenLabel *>(n) != nullptr
+	    || dynamic_cast<TokenCASE *>(n) != nullptr;
+    });
 }
 
 // compile an if statement
