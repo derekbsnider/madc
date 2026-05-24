@@ -46,14 +46,28 @@ static madc_jmp_slot *madc_jmp_slot_for(void *user_buf)
 
 extern "C" void *__madc_jmpbuf_for(void *user_buf)
 {
-    return (void *)madc_jmp_slot_for(user_buf)->env;
+    madc_jmp_slot *slot = madc_jmp_slot_for(user_buf);
+    // Store the slot pointer inside the user buffer so that memcpy'd
+    // copies of the buffer still point to the same jmp_buf.  GCC's
+    // __builtin_setjmp stores raw machine state directly in a 5-slot
+    // void* buffer; we store a pointer to the real jmp_buf instead.
+    ((void **)user_buf)[0] = (void *)slot;
+    return (void *)slot->env;
 }
 
 extern "C" void __madc_builtin_longjmp(void *user_buf, int value)
 {
     if ( value == 0 )
 	value = 1;
-    longjmp(madc_jmp_slot_for(user_buf)->env, value);
+    // Read the slot pointer from inside the buffer — survives memcpy
+    // because the pointer value is copied along with the rest of the
+    // buffer contents.  Falls back to map lookup for buffers that
+    // weren't created by __madc_jmpbuf_for (shouldn't happen).
+    madc_jmp_slot *slot = (madc_jmp_slot *)((void **)user_buf)[0];
+    if ( slot )
+	longjmp(slot->env, value);
+    else
+	longjmp(madc_jmp_slot_for(user_buf)->env, value);
 }
 
 // Parse one format specifier from *pp (starting at '%'), advance *pp past it,
