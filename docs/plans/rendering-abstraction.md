@@ -102,6 +102,71 @@ Each renderer interprets this tree to its maximum capability:
 - Level 3: maps to native platform controls
 - Level 4: maps to 3D scene elements
 
+### Three-Way Negotiation: Hardware × User × Accessibility
+
+Rendering is NOT determined by hardware alone. Three inputs combine:
+
+1. **Hardware capabilities:** What the display CAN do (detected)
+2. **User preferences:** What the user WANTS (configured)
+3. **Accessibility requirements:** What the user NEEDS (WCAG mandated)
+
+User preferences can override hardware in BOTH directions:
+- **Down:** "I have a GPU but prefer clean terminal output"
+- **Up:** "My terminal is basic but give me fancy box-drawing and color"
+- **Sideways:** "I have full GUI but need high-contrast, large text, no animation"
+
+The effective render level is: `min(hardware_cap, user_preferred_max)`
+unless the user explicitly requests higher (up-rendering on limited hardware).
+
+```c
+struct RenderProfile {
+    // Hardware (detected at startup)
+    RenderCaps  hardware;
+
+    // User preferences (from config file, env, or runtime API)
+    uint8_t     preferred_level;    // user may prefer Level 1 on Level 3 hardware
+    bool        prefer_simplicity;  // clean/minimal over feature-rich
+    float       font_scale;         // 1.0 = default, 2.0 = double size
+    bool        high_contrast;      // WCAG AAA contrast ratios
+    bool        reduce_motion;      // no animations, no transitions
+    bool        reduce_transparency;
+    bool        screen_reader;      // optimize for assistive technology
+    bool        keyboard_only;      // no mouse/touch assumed
+    ColorMode   color_mode;         // FULL, HIGH_CONTRAST, MONOCHROME, CUSTOM
+    char       *custom_theme;       // user-specified color theme
+};
+```
+
+The JIT compiler resolves the effective profile at compile time.
+Both hardware caps AND user prefs are compile-time constants:
+
+```c
+// User prefers terminal even though hardware supports GUI
+render {
+    chart(data)    // JIT sees: user.preferred_level < 2 → emit table instead
+    button("OK")   // JIT sees: user.keyboard_only → ensure focus order
+}
+```
+
+### WCAG Compliance by Design
+
+The semantic IR naturally satisfies WCAG because it IS an accessibility tree:
+
+| WCAG Principle | How the Semantic IR Satisfies It |
+|----------------|----------------------------------|
+| **Perceivable** | Every element has a `role` and `label`. No information conveyed by color alone (hints are optional, roles are not). |
+| **Operable** | Every interactive element has `actions`. Focus order derived from tree structure. Keyboard navigation is implicit. |
+| **Understandable** | Roles carry semantic meaning. A `ROLE_NAVIGATION` is always navigation regardless of visual presentation. |
+| **Robust** | The IR is consumed by renderers, screen readers, and test harnesses identically. One tree, many consumers. |
+
+Specific WCAG features built into the render profile:
+- **Focus management:** Tree order defines tab order. `ROLE_ACTION` elements are focusable. Skip-navigation via `ROLE_MAIN`.
+- **Color independence:** `Hints.color` is OPTIONAL. Renderers that ignore color still convey all information via roles and labels.
+- **Text alternatives:** Every `ROLE_IMAGE` requires a `label` (alt text). The IR rejects images without labels at compile time.
+- **Motion control:** `user.reduce_motion` is a JIT-time constant. Animation code is dead-code-eliminated entirely — not just paused, REMOVED from the binary.
+- **Font scaling:** `user.font_scale` flows through the layout engine. No clipping, no overflow — layout adapts.
+- **Screen reader mode:** When `user.screen_reader` is true, the renderer emits ARIA attributes (web) or native accessibility API calls (desktop) directly from the semantic IR.
+
 ### Capability Negotiation at JIT Time
 
 ```c
