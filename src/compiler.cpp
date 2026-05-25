@@ -4586,6 +4586,14 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	pgm.tkFunction->voperand(pgm, &var);
     if ( aggregate_has_runtime_size(var.type) )
 	pgm.tkFunction->voperand(pgm, &var);
+    // Class objects with user-defined constructors must be allocated and
+    // constructed at declaration time, not lazily on first use.
+    if ( var.type->basetype() == BaseType::btClass )
+    {
+	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(var.type);
+	if ( ddc->has_user_ctor || ddc->has_user_dtor )
+	    pgm.tkFunction->voperand(pgm, &var);
+    }
 
     // Top-level program declarations still need their initializer code emitted
     // so file-scope C globals like `static char *p = "x";` and static tables
@@ -7048,6 +7056,32 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 			    ofs += (ssize_t)m.second->size;
 			}
 		    }
+		    // Call user-defined constructor for class objects
+		    if ( var->type->basetype() == BaseType::btClass )
+		    {
+			DataDefCLASS *ddc = static_cast<DataDefCLASS *>(var->type);
+			if ( ddc->has_user_ctor )
+			{
+			    std::string ctor_name = ddc->name;
+			    Variable *ctor_mvar = ddc->findMethod(ctor_name);
+			    if ( ctor_mvar && ctor_mvar->data )
+			    {
+				FuncDef *ctor_func = (FuncDef *)((Method *)ctor_mvar->data)->returns.type;
+				if ( ctor_func && ctor_func->funcnode )
+				{
+				    DBG(pgm.cc.comment("user constructor call"));
+				    x86::Gp this_ptr = pgm.cc.newIntPtr("__ctor_this");
+				    pgm.cc.lea(this_ptr, stack);
+				    InvokeNode *call;
+				    pgm.cc.invoke(&call, ctor_func->funcnode->label(),
+						  FuncSignature::build<void, void *>());
+				    call->setArg(0, this_ptr);
+				}
+			    }
+			}
+			if ( ddc->has_user_dtor )
+			    destruct_order.push_back(var);
+		    }
 		    break;
 		}
 		std::cerr << "unsupported type: " << (int)var->type->type() << std::endl;
@@ -7149,6 +7183,40 @@ void TokenCpnd::cleanup(Program &pgm)
 	DBG(cc.comment("defer statement"));
 	regdefp_t regdp = {NULL, NULL, NULL};
 	(*it)->compile(pgm, regdp);
+    }
+
+    // Call user-defined destructors in reverse declaration order (LIFO).
+    // User dtor body runs before member cleanup (matches C++ semantics).
+    for ( auto it = destruct_order.rbegin(); it != destruct_order.rend(); ++it )
+    {
+	Variable *var = *it;
+	if ( var->type->basetype() != BaseType::btClass )
+	    continue;
+	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(var->type);
+	if ( !ddc->has_user_dtor )
+	    continue;
+	auto omi = operand_map.find(var);
+	if ( omi == operand_map.end() )
+	    continue;
+	std::string dtor_name = "~" + ddc->name;
+	Variable *dtor_mvar = ddc->findMethod(dtor_name);
+	if ( !dtor_mvar || !dtor_mvar->data )
+	    continue;
+	FuncDef *dtor_func = (FuncDef *)((Method *)dtor_mvar->data)->returns.type;
+	if ( !dtor_func || !dtor_func->funcnode )
+	    continue;
+	DBG(cc.comment("user destructor call"));
+	DBG(std::cout << "cleanup: calling destructor for " << var->name << std::endl);
+	Operand &obj_reg = omi->second;
+	x86::Gp this_ptr = cc.newIntPtr("__dtor_this");
+	if ( obj_reg.isMem() )
+	    cc.lea(this_ptr, obj_reg.as<x86::Mem>());
+	else
+	    cc.mov(this_ptr, obj_reg.as<x86::Gp>());
+	InvokeNode *call;
+	cc.invoke(&call, dtor_func->funcnode->label(),
+		  FuncSignature::build<void, void *>());
+	call->setArg(0, this_ptr);
     }
 
     for ( rmi = operand_map.begin(); rmi != operand_map.end(); ++rmi )

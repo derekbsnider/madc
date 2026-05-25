@@ -10376,10 +10376,65 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
+	// --- destructor: ~ClassName() { ... } ---
+	if ( tn->id() == TokenID::tkBnot )
+	{
+	    pgm.nextToken(); // consume '~'
+	    tn = pgm.nextToken();
+	    if ( !tn || tn->type() != TokenType::ttIdentifier
+	      || ((TokenIdent *)tn)->str != tag->str )
+		pgm.Throw(tn) << "Expected ~" << tag->str << "() destructor" << flush;
+	    tn = pgm.peekToken();
+	    if ( !tn || tn->id() != TokenID::tkOpBrk )
+		pgm.Throw(tn) << "Expected '(' after ~" << tag->str << flush;
+	    pgm.nextToken(); // consume '('
+	    std::string mangled = tag->str + "___dtor";
+	    DBG(cout << "TokenCLASS::parse() parsing destructor " << mangled << endl);
+	    pgm.parseFunction(ddVOID, mangled, ddc);
+	    Variable *mvar;
+	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
+	    {
+		ddc->methods.push_back(mvar);
+		ddc->method_map["~" + tag->str] = mvar;
+		ddc->has_user_dtor = true;
+	    }
+	    continue;
+	}
+
+	// --- constructor: ClassName() { ... } (no return type) ---
+	if ( tn->type() == TokenType::ttIdentifier
+	  && ((TokenIdent *)tn)->str == tag->str )
+	{
+	    // peek ahead: if ClassName is followed by '(' it's a constructor
+	    // (not a member of type ClassName)
+	    TokenBase *name_tok = pgm.nextToken(); // consume class name
+	    tn = pgm.peekToken();
+	    if ( tn && tn->id() == TokenID::tkOpBrk )
+	    {
+		pgm.nextToken(); // consume '('
+		std::string mangled = tag->str + "__" + tag->str;
+		DBG(cout << "TokenCLASS::parse() parsing constructor " << mangled << endl);
+		pgm.parseFunction(ddVOID, mangled, ddc);
+		Variable *mvar;
+		if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
+		{
+		    ddc->methods.push_back(mvar);
+		    ddc->method_map[tag->str] = mvar;
+		    ddc->has_user_ctor = true;
+		}
+		continue;
+	    }
+	    // Not a constructor — push back and fall through to normal parsing.
+	    // The class name is also a valid type for a member (self-referencing
+	    // pointer etc.), so treat it as a type token.
+	    pgm.pushToken(name_tok);
+	}
+
+	// --- normal member or method: type name ... ---
 	// expect a data type token
-	TokenDataType *mtype = resolve_declared_type_token(pgm, tn, true, true);
+	TokenDataType *mtype = resolve_declared_type_token(pgm, pgm.peekToken(), true, true);
 	if ( !mtype )
-	    pgm.Throw(tn) << "Expecting type in class definition" << flush;
+	    pgm.Throw(pgm.peekToken()) << "Expecting type in class definition" << flush;
 	pgm.nextToken();
 
 	// check for pointer declarator(s): type * [*...] member_name
@@ -12541,7 +12596,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     if ( owner_class )
     {
 	if ( !func_already_declared )
-	    func->parameters.push_back(&ddINT64); // void* as int64
+	    func->parameters.push_back(getPointerType(&ddVOID)); // void*
 	ids.push_back("__this");
 	DBG(cout << "parseFunction() injected hidden __this parameter for class method" << endl);
     }

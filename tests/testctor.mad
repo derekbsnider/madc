@@ -1,0 +1,30 @@
+#!/usr/bin/env madc
+#include <iostream>
+using namespace std;
+
+class Foo {
+	int x;
+
+	Foo()
+	{
+		x = 42;
+		cout << "Foo constructed" << endl;
+	}
+
+	~Foo()
+	{
+		cout << "Foo destructed" << endl;
+	}
+
+	int get()
+	{
+		return x;
+	}
+};
+
+int main()
+{
+	Foo f;
+	cout << "x = " << f.get() << endl;
+	return 0;
+}

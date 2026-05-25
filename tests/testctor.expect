@@ -1,0 +1,3 @@
+Foo constructed
+x = 42
+Foo destructed

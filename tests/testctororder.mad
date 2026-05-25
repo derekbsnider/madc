@@ -1,0 +1,40 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+class A {
+	int id;
+
+	A()
+	{
+		id = 1;
+		printf("A constructed\n");
+	}
+
+	~A()
+	{
+		printf("A destructed (id=%d)\n", id);
+	}
+};
+
+class B {
+	int id;
+
+	B()
+	{
+		id = 2;
+		printf("B constructed\n");
+	}
+
+	~B()
+	{
+		printf("B destructed (id=%d)\n", id);
+	}
+};
+
+int main()
+{
+	A a;
+	B b;
+	printf("main body\n");
+	return 0;
+}

@@ -129,6 +129,7 @@ public:
     std::vector<Variable *> variables;
     std::vector<TokenStmt *> statements;
     std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
+    std::vector<Variable *> destruct_order; // class-typed vars in declaration order (for LIFO dtor)
     std::map<Variable *, asmjit::Operand> operand_map;
     // Stack-slot Mem for local C fixed-size arrays. Cached so reuse on a
     // divergent branch can re-emit the LEA into the (also-cached) Gp,
