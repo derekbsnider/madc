@@ -1,0 +1,68 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+class Counter {
+	int val;
+
+	Counter(int v)
+	{
+		val = v;
+	}
+
+	int operator==(int other)
+	{
+		return val == other;
+	}
+
+	int operator!=(int other)
+	{
+		return val != other;
+	}
+
+	int operator<(int other)
+	{
+		return val < other;
+	}
+
+	int operator>(int other)
+	{
+		return val > other;
+	}
+
+	int get()
+	{
+		return val;
+	}
+};
+
+int main()
+{
+	Counter c(42);
+
+	if ( c == 42 )
+		printf("c == 42: true\n");
+	else
+		printf("c == 42: false\n");
+
+	if ( c == 99 )
+		printf("c == 99: true\n");
+	else
+		printf("c == 99: false\n");
+
+	if ( c != 99 )
+		printf("c != 99: true\n");
+	else
+		printf("c != 99: false\n");
+
+	if ( c < 100 )
+		printf("c < 100: true\n");
+	else
+		printf("c < 100: false\n");
+
+	if ( c > 10 )
+		printf("c > 10: true\n");
+	else
+		printf("c > 10: false\n");
+
+	return 0;
+}

@@ -1,0 +1,5 @@
+c == 42: true
+c == 99: false
+c != 99: true
+c < 100: true
+c > 10: true

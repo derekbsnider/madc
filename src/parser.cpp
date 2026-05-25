@@ -10445,11 +10445,47 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    cmember_dd = pgm.getPointerType(cmember_dd);
 	}
 
-	// expect member name
+	// expect member name — may be an identifier or 'operator' keyword
 	tn = pgm.nextToken();
-	if ( tn->type() != TokenType::ttIdentifier )
+	std::string mname;
+	if ( tn->id() == TokenID::tkOPEROVER )
+	{
+	    // operator overload: consume the operator symbol(s) to form the name
+	    TokenBase *op_tok = pgm.nextToken();
+	    if ( !op_tok )
+		pgm.Throw(tn) << "Expected operator symbol after 'operator'" << flush;
+	    // Multi-character operators: ==, !=, <=, >=, <<, >>
+	    if ( dynamic_cast<TokenMultiOp *>(op_tok) )
+		mname = "operator" + ((TokenMultiOp *)op_tok)->str;
+	    else if ( op_tok->id() == TokenID::tkOpBrk )
+	    {
+		// operator()
+		if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+		    pgm.Throw(op_tok) << "Expected ')' in operator()" << flush;
+		pgm.nextToken(); // consume ')'
+		mname = "operator()";
+	    }
+	    else if ( op_tok->id() == TokenID::tkOpSqr )
+	    {
+		// operator[]
+		if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClSqr )
+		    pgm.Throw(op_tok) << "Expected ']' in operator[]" << flush;
+		pgm.nextToken(); // consume ']'
+		mname = "operator[]";
+	    }
+	    else
+	    {
+		// Single-character operators: +, -, *, /, %, <, >, =, etc.
+		char sym = (char)op_tok->get();
+		if ( !sym )
+		    pgm.Throw(op_tok) << "Unrecognized operator symbol" << flush;
+		mname = std::string("operator") + sym;
+	    }
+	}
+	else if ( tn->type() != TokenType::ttIdentifier )
 	    pgm.Throw(tn) << "Expecting member name in class definition" << flush;
-	std::string mname = ((TokenIdent *)tn)->str;
+	else
+	    mname = ((TokenIdent *)tn)->str;
 
 	// peek: is this a method (followed by '(') or a data member (followed by ';')?
 	tn = pgm.peekToken();

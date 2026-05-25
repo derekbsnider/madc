@@ -64,6 +64,115 @@ static void emit_and_u64(Program &pgm, x86::Gp &gp, uint64_t mask, const char *h
     pgm.cc.and_(gp, mask_gp);
 }
 
+// --- Operator overload dispatch ---
+
+// Check if the left operand is a class type with the given operator method.
+// If so, compile a method call and return true (result in out_operand).
+// Called at the top of each TokenOperator::compile() to intercept class ops.
+static bool try_class_operator_dispatch(Program &pgm, TokenBase *left, TokenBase *right,
+					const char *op_name, regdefp_t &regdp,
+					Operand &out_operand)
+{
+    DataDef *ldd = left ? left->datadef() : NULL;
+    if ( !ldd || ldd->basetype() != BaseType::btClass )
+	return false;
+    DataDefCLASS *ddc = static_cast<DataDefCLASS *>(ldd);
+    std::string method_name = op_name;
+    auto it = ddc->method_map.find(method_name);
+    if ( it == ddc->method_map.end() )
+	return false;
+    Variable *op_mvar = it->second;
+    if ( !op_mvar || !op_mvar->data )
+	return false;
+    FuncDef *op_func = (FuncDef *)((Method *)op_mvar->data)->returns.type;
+    if ( !op_func || !op_func->funcnode )
+	return false;
+
+    DBG(pgm.cc.comment(("operator overload: " + method_name).c_str()));
+
+    // Compile the left operand (the object — becomes __this)
+    regdefp_t lrdp = {NULL, NULL, NULL};
+    Operand &lval = left->compile(pgm, lrdp);
+
+    // Get __this pointer
+    x86::Gp this_ptr = pgm.cc.newIntPtr("__op_this");
+    if ( lval.isMem() )
+	pgm.cc.lea(this_ptr, lval.as<x86::Mem>());
+    else
+	pgm.cc.mov(this_ptr, lval.as<x86::Gp>());
+
+    // Build function signature
+    FuncSignature funcsig;
+    funcsig.setCallConvId(CallConvId::kCDecl);
+    // Return type from the operator method's FuncDef
+    DataDef &ret = op_func->returns;
+    if ( ret.is_real() )
+	funcsig.setRetT<double>();
+    else if ( ret.type() == DataType::dtFLOAT )
+	funcsig.setRetT<float>();
+    else if ( ret.type() == DataType::dtVOID )
+	funcsig.setRetT<void>();
+    else
+	funcsig.setRetT<int64_t>();
+    funcsig.addArgT<void *>(); // __this
+
+    // Compile the right operand (the argument)
+    std::vector<Operand> arg_ops;
+    if ( right )
+    {
+	regdefp_t rrdp = {NULL, NULL, NULL};
+	Operand &rval = right->compile(pgm, rrdp);
+	// Determine arg type from the FuncDef (skip __this at index 0)
+	DataDef *arg_type = (op_func->parameters.size() > 1)
+	    ? op_func->parameters[1] : NULL;
+	add_funcsig_arg(funcsig, arg_type);
+	arg_ops.push_back(rval);
+    }
+
+    // Emit the invoke
+    InvokeNode *call;
+    pgm.cc.invoke(&call, op_func->funcnode->label(), funcsig);
+    call->setArg(0, this_ptr);
+
+    for ( size_t i = 0; i < arg_ops.size(); ++i )
+    {
+	if ( arg_ops[i].isReg() )
+	{
+	    if ( arg_ops[i].as<BaseReg>().isGroup(RegGroup::kVec) )
+		call->setArg(i + 1, arg_ops[i].as<x86::Xmm>());
+	    else
+		call->setArg(i + 1, arg_ops[i].as<x86::Gp>());
+	}
+	else if ( arg_ops[i].isMem() )
+	{
+	    x86::Gp tmp = pgm.cc.newIntPtr("__op_arg");
+	    pgm.cc.mov(tmp, arg_ops[i].as<x86::Mem>());
+	    call->setArg(i + 1, tmp);
+	}
+    }
+
+    // Capture return value
+    if ( op_func->returns.is_numeric() )
+    {
+	if ( op_func->returns.is_real() )
+	{
+	    x86::Xmm ret = pgm.cc.newXmm("__op_ret");
+	    call->setRet(0, ret);
+	    out_operand = ret;
+	}
+	else
+	{
+	    x86::Gp ret = pgm.cc.newGpq("__op_ret");
+	    call->setRet(0, ret);
+	    out_operand = ret;
+	}
+	regdp.second = &op_func->returns;
+    }
+    // void return — no result to capture
+
+    return true;
+}
+
 // --- Operator types and structures ---
 
 typedef void (Program::*SafeBinOp3)(asmjit::Operand &, asmjit::Operand &, DataDef *, DataDef *);
@@ -3535,6 +3644,8 @@ Operand &TokenAdd::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenAdd::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "+ missing lval operand"; }
     if ( !right ) { throw "+ missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator+", regdp, _operand) )
+	return _operand;
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
     DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
     if ( !lptr_type && !rptr_type
@@ -3596,6 +3707,8 @@ Operand &TokenSub::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenSub::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "- missing lval operand"; }
     if ( !right ) { throw "- missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator-", regdp, _operand) )
+	return _operand;
     DataDef *lptr_type = effective_pointer_type_for_arith(pgm, left);
     DataDef *rptr_type = effective_pointer_type_for_arith(pgm, right);
     if ( !lptr_type && !rptr_type
@@ -3707,6 +3820,8 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
     DBG(cout << "TokenMul::Compile({" << (uint64_t)regdp.first << ", " << (uint64_t)regdp.second << "}) TOP" << endl);
     if ( !left )  { throw "* missing lval operand"; }
     if ( !right ) { throw "* missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator*", regdp, _operand) )
+	return _operand;
     if ( (left->datadef() && left->datadef()->is_complex())
       || (right->datadef() && right->datadef()->is_complex()) )
 	return emit_complex_muldiv(pgm, left, right, /*divide=*/false, regdp, _operand);
@@ -3769,8 +3884,10 @@ Operand &TokenMul::compile(Program &pgm, regdefp_t &regdp)
 Operand &TokenDiv::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenDiv::Compile() TOP" << endl);
-    if ( !left )  { throw "/ missing lval operand"; } 
+    if ( !left )  { throw "/ missing lval operand"; }
     if ( !right ) { throw "/ missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator/", regdp, _operand) )
+	return _operand;
     if ( (left->datadef() && left->datadef()->is_complex())
       || (right->datadef() && right->datadef()->is_complex()) )
 	return emit_complex_muldiv(pgm, left, right, /*divide=*/true, regdp, _operand);
@@ -4493,6 +4610,8 @@ Operand &TokenEquals::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  { throw "== missing lval operand"; }
     if ( !right ) { throw "== missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator==", regdp, _operand) )
+	return _operand;
     if ( can_optimize() ) { return optimize(pgm, regdp); }
     return emit_compare(pgm, left, right, CmpKind::Eq, regdp, _operand);
 }
@@ -4502,6 +4621,8 @@ Operand &TokenNotEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  { throw "!= missing lval operand"; }
     if ( !right ) { throw "!= missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator!=", regdp, _operand) )
+	return _operand;
     if ( can_optimize() ) { return optimize(pgm, regdp); }
     return emit_compare(pgm, left, right, CmpKind::Ne, regdp, _operand);
 }
@@ -4511,6 +4632,8 @@ Operand &TokenLT::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  { throw "< missing lval operand"; }
     if ( !right ) { throw "< missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator<", regdp, _operand) )
+	return _operand;
     if ( can_optimize() ) { return optimize(pgm, regdp); }
     return emit_compare(pgm, left, right, CmpKind::Lt, regdp, _operand);
 }
@@ -4520,6 +4643,8 @@ Operand &TokenLE::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  { throw "<= missing lval operand"; }
     if ( !right ) { throw "<= missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator<=", regdp, _operand) )
+	return _operand;
     if ( can_optimize() ) { return optimize(pgm, regdp); }
     return emit_compare(pgm, left, right, CmpKind::Le, regdp, _operand);
 }
@@ -4529,6 +4654,8 @@ Operand &TokenGT::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  { throw "> missing lval operand"; }
     if ( !right ) { throw "> missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator>", regdp, _operand) )
+	return _operand;
     if ( can_optimize() ) { return optimize(pgm, regdp); }
     return emit_compare(pgm, left, right, CmpKind::Gt, regdp, _operand);
 }
@@ -4538,6 +4665,8 @@ Operand &TokenGE::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  { throw ">= missing lval operand"; }
     if ( !right ) { throw ">= missing rval operand"; }
+    if ( try_class_operator_dispatch(pgm, left, right, "operator>=", regdp, _operand) )
+	return _operand;
     if ( can_optimize() ) { return optimize(pgm, regdp); }
     return emit_compare(pgm, left, right, CmpKind::Ge, regdp, _operand);
 }
