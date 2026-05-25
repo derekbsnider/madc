@@ -4,9 +4,11 @@ Master plan linking all workstreams. Updated 2026-05-25.
 
 ## Current State
 
-- **Version:** 0.20.1
+- **Version:** 0.21.0
 - **GCC parity:** 1649/1685 (97.9%)
-- **Integration tests:** 452 passing
+- **Integration tests:** 475 passing
+- **C++ model:** Ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding, access control, const enforcement
+- **Generic extern class:** One `register_extern_ctor_dtor()` call per libc type — replaces per-type boilerplate
 - **SMAUG port:** Startup through serpent combat on native exe
 - **libmadc:** C++ embedding API with eval, security policy, invoke limits
 - **PCH:** Phase 1 infrastructure (.madh format, 38 headers pre-compiled)
@@ -37,14 +39,18 @@ Master plan linking all workstreams. Updated 2026-05-25.
 |-------|------|--------|--------|------|
 | 2.1 | Constructors & destructors (RAII foundation) | 3-5 d | **DONE** | [cpp-support.md](cpp-support.md) |
 | 2.2 | Operator overloading completion | 2-3 d | **DONE** | [cpp-support.md](cpp-support.md) |
-| 2.3 | Explicit references `T&`, const enforcement | 1 wk | **Partial** (T& done) | [cpp-support.md](cpp-support.md) |
-| 2.4 | `new` / `delete` | 1-2 wk | **DONE** | [cpp-support.md](cpp-support.md) |
-| 2.5 | Single inheritance | 1-2 wk | **DONE** | [cpp-support.md](cpp-support.md) |
-| 2.6 | Virtual functions / vtables | 2-3 wk | **DONE** | [cpp-support.md](cpp-support.md) |
-| 2.7 | Exception handling (SJLJ) | 3-4 wk | Blocked on 2.1 | [cpp-support.md](cpp-support.md) |
-| 2.8 | Quality of life (enum class, auto, cin>>, namespaces) | Ongoing | — | [cpp-support.md](cpp-support.md) |
+| 2.3 | References `T&`, const enforcement | 1 wk | **Mostly done** | [cpp-support.md](cpp-support.md) |
+| 2.4 | `new` / `delete` | 1-2 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
+| 2.5 | Single inheritance | 1-2 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
+| 2.6 | Virtual functions / vtables | 2-3 wk | **DONE** (v0.21.0) | [cpp-support.md](cpp-support.md) |
+| 2.7 | Exception handling (SJLJ) | 3-4 wk | **DONE** (v0.21.0) — Phase A + B (unwinding) | [cpp-support.md](cpp-support.md) |
+| 2.8 | Quality of life | Ongoing | **Started** — access control, auto token position | [cpp-support.md](cpp-support.md) |
+| 2.9 | Generic extern class ctor/dtor | — | **DONE** (v0.21.0) — replaces per-type switch boilerplate | — |
 
-**Dependencies:** 1.2 (cleanup) before 2.5+. 2.1 is the keystone.
+**2.3 remaining:** pointer-to-const enforcement (`*p` writes), const methods.
+**2.8 remaining:** enum class, auto type deduction, `cin>>`, scope-level destruction.
+
+**Dependencies:** All met. 2.1-2.7 complete.
 
 ---
 
@@ -185,91 +191,65 @@ Each step builds on the previous. Items at the same indent level can
 run in parallel.
 
 ```
+ COMPLETED:
+ ──────────
  1.  Track 1.2  Code cleanup Phase A                    [DONE v0.20.1]
-     ├── Builtin dispatch table (43-entry, compiler_builtins.cpp)
-     ├── AST walker template (walk_ast<>)
-     ├── File split (compiler.cpp → 4 files, 47% reduction)
-     ├── --emit-function CLI tool
-     └── _chk family consolidation
+ 2.  Track 2.1  Constructors & destructors              [DONE v0.21.0]
+ 3.  Track 2.2  Operator overloading                    [DONE v0.21.0]
+ 4.  Track 2.3  References T& + const enforcement       [MOSTLY DONE]
+ 5.  Track 2.4  new / delete                            [DONE v0.21.0]
+ 6.  Track 2.5  Single inheritance                      [DONE v0.21.0]
+ 7.  Track 2.6  Virtual functions / vtables             [DONE v0.21.0]
+ 8.  Track 2.7  Exception handling (SJLJ + unwinding)   [DONE v0.21.0]
+ 9.  Track 2.8  Access control + auto token position    [DONE]
+10.  Track 2.9  Generic extern class ctor/dtor          [DONE v0.21.0]
 
- 2.  Track 2.1  Constructors & destructors              [DONE]
-     ├── Parse ctor (ClassName()) and dtor (~ClassName())
-     ├── Auto-call at declaration / scope exit (LIFO)
-     ├── Constructor arguments: ClassName var(a, b)
-     ├── Fixed __this from ddINT64 to void* (fixes member access)
-     └── Early return cleanup verified vs GCC
-
- 3.  Track 2.2  Operator overloading completion          [DONE]
- ║   ├── Parser: operator keyword in class bodies
- ║   └── Compiler: generic dispatch for +,-,*,/,==,!=,<,>,<=,>=
- ║
- ║── Track 7.1  Rendering: Semantic IR + Level 0         [2-3 wk]
- ║   └── render { } blocks, UINode, text output
- ║       Can start in parallel with steps 3-4
-
- 4.  Track 2.3  References & const enforcement           [1 wk]
- ║
- ║── Track 7.2  Rendering: Level 1 curses backend        [3-4 wk]
- ║   └── TUI rendering, input loop, differential updates
-
- 5.  Track 8.1  libmadcedit core                         [3-4 wk]
-     ├── Piece table, cursor, undo/redo, CUA keybindings
-     └── Requires: Level 0 rendering (step 3b)
-
- 6.  Track 8.2  libmadcedit curses + syntax highlight    [4-6 wk]
-     ├── Curses rendering, line numbers, scrolling
-     ├── Syntax highlighting engine
-     └── Vim/Emacs/Turbo-C keybinding profiles
-         Requires: Level 1 rendering (step 4b)
-
- 7.  Track 1.3  Typed-register IR (stages 0-3)          [4-6 wk]
+ NEXT UP (recommended order):
+ ────────────────────────────
+11.  Track 1.3  Typed-register IR (stages 0-3)          [4-6 wk]
      ├── Fixes operand-shape bugs at the source
      ├── Creates arch-neutral boundary for ARM64
      └── Enables IR Stage 3 (calls) with clean dispatch table
+     ** RECOMMENDED NEXT — high leverage for ARM64 + correctness **
 
- 8.  Track 8.4  madcide shell                            [3-4 wk]
-     ├── File tree + tabs + build integration + errors
-     └── Requires: libmadcedit (step 6)
-         Self-hosting milestone: edit madc in madcide
+ ║── Track 7.1  Rendering: Semantic IR + Level 0         [2-3 wk]
+ ║   └── render { } blocks, UINode, text output
+ ║       Can start in parallel with Track 1.3
 
- 9.  Track 1.4  Code cleanup Phase B                    [3 wk]
+12.  Track 1.4  Code cleanup Phase B                    [3 wk]
      └── Parser dereference & subscript unification
          Unblocks: PCH transition, parser resilience
 
-10.  Track 2.4  new / delete                             [1-2 wk]
+ ║── Track 7.2  Rendering: Level 1 curses backend        [3-4 wk]
 
-11.  Track 3.2  PCH transition                           [2-3 wk]
+13.  Track 8.1  libmadcedit core                         [3-4 wk]
+     ├── Piece table, cursor, undo/redo, CUA keybindings
+     └── Requires: Level 0 rendering (step 11b)
+
+14.  Track 8.2  libmadcedit curses + syntax highlight    [4-6 wk]
+     └── Requires: Level 1 rendering (step 12b)
+
+15.  Track 8.4  madcide shell                            [3-4 wk]
+     └── Self-hosting milestone: edit madc in madcide
+
+16.  Track 3.2  PCH transition                           [2-3 wk]
      └── Replace text-embedded stubs with pre-compiled
 
-12.  Track 7.3  Rendering: reactivity + state deps       [2-3 wk]
-     └── Compiler-tracked deps, arena alloc, one-way flow
+17.  Track 6.1  macOS/ARM64 JIT MVP                     [10-15 wk]
+     └── Requires IR (step 11) for arch-neutral boundary
 
-13.  Track 2.5  Single inheritance                       [1-2 wk]
+18.  Track 4.2  C ABI shim                               [2-3 wk]
 
-14.  Track 2.6  Virtual functions / vtables              [2-3 wk]
-
-15.  Track 6.1  macOS/ARM64 JIT MVP                     [10-15 wk]
-     └── Requires IR (step 7) for arch-neutral boundary
-
-16.  Track 4.2  C ABI shim                               [2-3 wk]
-
-17.  Track 1.5  Code cleanup Phase C                    [3 wk]
+19.  Track 1.5  Code cleanup Phase C                    [3 wk]
      └── Macro system unification, token hierarchy flattening
 
-18.  Track 7.5  Rendering: Level 3 web backend           [4-6 wk]
-     └── WebSocket + thin JS client
-         Same app in terminal AND browser
+20.  Track 7.3-7.6  Rendering Levels 2-3                [4-6 wk each]
 
-19.  Track 2.7  Exception handling (SJLJ)               [3-4 wk]
+21.  Track 4.3  Fork-based worker isolation              [3-4 wk]
 
-20.  Track 4.3  Fork-based worker isolation              [3-4 wk]
+22.  Track 3.3  PCH Phase 2 — AST serialization         [4-6 wk]
 
-21.  Track 3.3  PCH Phase 2 — AST serialization         [4-6 wk]
-
-22.  Track 5.3  Query pushdown & federation              [4-6 wk]
-     └── Independent — can start earlier if prioritized
-
-23.  Track 7.6  Rendering: Level 3 native GUI            [4-6 wk]
+23.  Track 5.3  Query pushdown & federation              [4-6 wk]
 
 24.  Track 6.2  macOS SIMD (NEON)                       [2-3 wk]
 
@@ -283,16 +263,14 @@ run in parallel.
 28.  Track 7.7  Rendering: Level 4 GPU/3D               [future]
 
 29.  Track 9    Multi-syntax (Python/Ruby/Rust modes)     [ongoing]
-     └── #pragma syntax python — same AST, different spelling
 
 30.  Track 10   Safety, optimization levels              [ongoing]
 ```
 
-**Key parallel tracks:** Steps 3-4 (C++ basics) and 3b-4b (rendering
-Level 0-1) run in parallel. The IDE (steps 5-8) starts as soon as
-curses rendering is available — providing a self-hosting milestone
-where madc is edited in its own IDE.
-```
+**Recommended next:** Track 1.3 (Typed-register IR) is the highest-leverage
+item. It fixes operand-shape bugs structurally, creates the arch-neutral
+boundary needed for the macOS/ARM64 port, and makes future compiler work
+cleaner. Track 7.1 (rendering) can run in parallel if desired.
 
 ## The SMAUG Goal
 
