@@ -572,6 +572,8 @@ typedef enum {
   REP8 (T_EL, IF, INLINE, INT, LONG, REGISTER, RESTRICT, RETURN, SHORT),
   REP8 (T_EL, SIGNED, SIZEOF, STATIC, STRUCT, SWITCH, TYPEDEF, TYPEOF, UNION),
   REP5 (T_EL, UNSIGNED, VOID, VOLATILE, WHILE, EOFILE),
+  /* madc extensions: */
+  T_DEFER,
   /* tokens existing in preprocessor only: */
   T_HEADER,         /* include header */
   T_NO_MACRO_IDENT, /* ??? */
@@ -586,6 +588,7 @@ typedef enum {
 } token_code_t;
 
 static token_code_t FIRST_KW = T_BOOL, LAST_KW = T_WHILE;
+/* madc extensions use token codes beyond LAST_KW -- registered separately */
 
 #define NODE_EL(n) N_##n
 
@@ -607,6 +610,8 @@ typedef enum {
   REP8 (NODE_EL, CONST, RESTRICT, VOLATILE, ATOMIC, INLINE, NO_RETURN, ALIGNAS, FUNC),
   REP8 (NODE_EL, STAR, POINTER, DOTS, ARR, INIT, FIELD_ID, TYPE, ST_ASSERT),
   REP4 (NODE_EL, FUNC_DEF, MODULE, ASM, ATTR),
+  /* madc extensions: */
+  N_DEFER,
 } node_code_t;
 
 #undef REP_SEP
@@ -1589,6 +1594,11 @@ static token_t get_next_pptoken_1 (c2m_ctx_t c2m_ctx, int header_p) {
       curr_c = cs_get (c2m_ctx);
       if (curr_c == '>') {
         return new_token (c2m_ctx, cs->pos, ":>", ']', N_IGNORE);
+      } else if (curr_c == ':') {
+        /* madc: namespace separator — previous token was an identifier,
+           next will be an identifier. Return :: as a token for now.
+           The parser will combine ns::name into a mangled identifier. */
+        return new_token (c2m_ctx, cs->pos, "::", T_DBLNO, N_IGNORE); /* reuse T_DBLNO temporarily */
       } else {
         cs_unget (c2m_ctx, curr_c);
         return new_token (c2m_ctx, cs->pos, ":", ':', N_IGNORE);
@@ -5299,6 +5309,9 @@ D (stmt) {
   } else if (MP (T_BREAK, pos)) { /* break-statement */
     PT (';');
     r = new_pos_node1 (c2m_ctx, N_BREAK, pos, l);
+  } else if (MP (T_DEFER, pos)) { /* madc: defer-statement */
+    P (stmt);
+    r = new_pos_node2 (c2m_ctx, N_DEFER, pos, l, r);
   } else if (MP (T_RETURN, pos)) { /* return-statement */
     if (M (';')) {
       r = new_node (c2m_ctx, N_IGNORE);
@@ -5489,6 +5502,8 @@ static void parse_init (c2m_ctx_t c2m_ctx) {
   kw_add (c2m_ctx, "void", T_VOID, 0);
   kw_add (c2m_ctx, "volatile", T_VOLATILE, 0);
   kw_add (c2m_ctx, "while", T_WHILE, 0);
+  /* madc extensions */
+  kw_add (c2m_ctx, "defer", T_DEFER, FLAG_EXT);
   kw_add (c2m_ctx, "__restrict", T_RESTRICT, FLAG_EXT);
   kw_add (c2m_ctx, "__restrict__", T_RESTRICT, FLAG_EXT);
   kw_add (c2m_ctx, "__inline", T_INLINE, FLAG_EXT);
@@ -9988,6 +10003,13 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     check_labels (c2m_ctx, labels, r);
     break;
   }
+  case N_DEFER: { /* madc: defer — check the deferred statement */
+    node_t labels = NL_HEAD (r->u.ops);
+    node_t deferred_stmt = NL_NEXT (labels);
+    check_labels (c2m_ctx, labels, r);
+    check (c2m_ctx, deferred_stmt, r);
+    break;
+  }
   case N_RETURN: {
     node_t labels = NL_HEAD (r->u.ops);
     node_t expr = NL_NEXT (labels);
@@ -13420,6 +13442,12 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     emit_label (c2m_ctx, r);
     emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, break_label));
     break;
+  case N_DEFER: { /* madc: defer — for now, just emit the deferred stmt inline (TODO: scope-exit LIFO) */
+    node_t deferred_stmt = NL_EL (r->u.ops, 1);
+    emit_label (c2m_ctx, r);
+    gen (c2m_ctx, deferred_stmt, NULL, NULL, FALSE, NULL, NULL);
+    break;
+  }
   case N_RETURN: {
     decl_t func_decl = curr_func_def->attr;
     struct type *func_type = func_decl->decl_spec.type;
@@ -13900,6 +13928,7 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_DO:
   case N_CONTINUE:
   case N_BREAK:
+  case N_DEFER:
   case N_RETURN:
   case N_EXPR:
   case N_CASE:
