@@ -68,7 +68,7 @@ extern "C" void madc_runtime_complex_div_double(void *out,
 
 // Materialize an operand into a Gp register. If already Gp, return it.
 // If Mem (global struct/class), LEA the address into a fresh Gp.
-static x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr")
+x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name)
 {
     if ( op.isReg() && op.as<BaseReg>().isGroup(RegGroup::kGp) )
 	return op.as<x86::Gp>();
@@ -81,7 +81,6 @@ static x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr"
     throw "as_gp_ptr: operand is neither Gp nor Mem";
 }
 
-static asmjit::Label &lookup_or_make_label(Program &pgm, const std::string &name);
 
 static x86::Gp materialize_gp_ptr_arg(Program &pgm, Operand &op, const char *name)
 {
@@ -95,8 +94,6 @@ static void emit_struct_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSTRUCT *dds, const std::vector<TokenBase *> &inits, TokenBase *err_loc);
 static void emit_simd_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
     DataDefSIMD *vdd, const std::vector<TokenBase *> &inits, TokenBase *err_loc);
-static void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
-				    DataDef *copy_type, const char *name);
 static x86::Gp emit_runtime_aggregate_size(Program &pgm, DataDef *copy_type, const char *name);
 static void emit_runtime_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
 					x86::Gp &size_gp, const char *name);
@@ -571,7 +568,7 @@ static size_t internal_vararg_static_slot_size(DataDef *type)
     return 8;
 }
 
-static bool is_large_struct_return(DataDef *ret_type)
+bool is_large_struct_return(DataDef *ret_type)
 {
     if ( !ret_type || ret_type->size <= 16 )
 	return false;
@@ -584,7 +581,7 @@ static bool is_large_struct_return(DataDef *ret_type)
     return false;
 }
 
-static void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type)
+void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type)
 {
     if ( !ret_type || ret_type->basetype() != BaseType::btStruct )
 	throw "emit_small_struct_return() requires struct return type";
@@ -778,7 +775,7 @@ static bool token_get_constant_cstring_address(TokenBase *token, const char *&ou
     return false;
 }
 
-static bool type_is_cstr_pointer(DataDef *dd)
+bool type_is_cstr_pointer(DataDef *dd)
 {
     return dd
 	&& dd->is_pointer()
@@ -851,7 +848,7 @@ static bool token_compiles_naturally_as_charptr(TokenBase *token)
     return false;
 }
 
-static void emit_zeroed_void_return(Program &pgm)
+void emit_zeroed_void_return(Program &pgm)
 {
     pgm.cc.xor_(x86::eax, x86::eax);
     pgm.cc.ret();
@@ -929,7 +926,7 @@ static void emit_function_instrument_enter(Program &pgm, FuncDef *current_func)
     emit_function_instrument_hook(pgm, current_func, "__cyg_profile_func_enter");
 }
 
-static void emit_function_instrument_exit(Program &pgm, FuncDef *current_func)
+void emit_function_instrument_exit(Program &pgm, FuncDef *current_func)
 {
     emit_function_instrument_hook(pgm, current_func, "__cyg_profile_func_exit");
 }
@@ -1498,7 +1495,7 @@ static DataDef *unsigned_integer_type_for_size(size_t size)
     return &ddUINT64;
 }
 
-static DataDef *promote_c_integer_type(DataDef *type)
+DataDef *promote_c_integer_type(DataDef *type)
 {
     if ( !type || !type->is_integer() )
 	return type;
@@ -1670,7 +1667,7 @@ static void splat_scalar_to_simd(Program &pgm, x86::Xmm &dst,
 	throw "splat_scalar_to_simd() unexpected operand type";
 }
 
-static Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
+Operand &compile_token_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					 Operand *preferred_dest, Operand &storage)
 {
     bool decay_token = false;
@@ -1917,7 +1914,7 @@ static Operand &compile_compound_rhs_normalized(Program &pgm, TokenBase *token, 
     return compile_token_normalized(pgm, token, target_type, nullptr, storage);
 }
 
-static Operand &compile_token_gp_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
+Operand &compile_token_gp_normalized(Program &pgm, TokenBase *token, DataDef *target_type,
 					    Operand &storage)
 {
     Operand &out = compile_token_normalized(pgm, token, target_type, nullptr, storage);
@@ -2042,7 +2039,7 @@ static Operand &emit_plain_divmod(Program &pgm, TokenBase *left, TokenBase *righ
 // — mov from Gp, mov from Mem. Used by lambda-capture pack / multi-return
 // unpack paths that need to move a var's value into a scratch Gp before
 // storing it elsewhere.
-static void load_var_to_gp(Program &pgm, Operand &src, asmjit::x86::Gp &dst_gp)
+void load_var_to_gp(Program &pgm, Operand &src, asmjit::x86::Gp &dst_gp)
 {
     if ( src.isReg() && src.as<asmjit::BaseReg>().isGroup(asmjit::RegGroup::kGp) )
 	pgm.cc.mov(dst_gp, src.as<asmjit::x86::Gp>());
@@ -4029,61 +4026,6 @@ static void emit_runtime_eval_scope_setter(Program &pgm,
     }
 }
 
-static Operand &compile_complex_condition_operand(Program &pgm, TokenBase *condition,
-						  DataDefCOMPLEX *cdd, Operand &storage)
-{
-    DataDef *component_type = cdd && cdd->element_type ? cdd->element_type : &ddDOUBLE;
-    TokenComplexPart real_part(condition, false);
-    TokenComplexPart imag_part(condition, true);
-    Operand real_storage;
-    Operand imag_storage;
-    Operand &real_op = compile_token_normalized(pgm, &real_part, component_type, nullptr, real_storage);
-    Operand &imag_op = compile_token_normalized(pgm, &imag_part, component_type, nullptr, imag_storage);
-
-    pgm.testzero(real_op);
-    x86::Gp real_nonzero = pgm.cc.newGpq("__complex_cond_re");
-    pgm.safesetne(real_nonzero);
-
-    pgm.testzero(imag_op);
-    x86::Gp imag_nonzero = pgm.cc.newGpq("__complex_cond_im");
-    pgm.safesetne(imag_nonzero);
-
-    pgm.safeor(real_nonzero, imag_nonzero, &ddINT64);
-    storage = real_nonzero;
-    return storage;
-}
-
-static Operand &compile_condition_operand(Program &pgm, TokenBase *condition, Operand &storage)
-{
-    regdefp_t condrdp = {NULL, NULL, NULL};
-    Operand &raw = condition->compile(pgm, condrdp);
-    DataDef *cond_type = condrdp.second
-	? condrdp.second
-	: (condition && condition->datadef() ? condition->datadef() : &ddINT64);
-
-    if ( DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(cond_type) )
-	return compile_complex_condition_operand(pgm, condition, cdd, storage);
-
-    // Preserve literal conditions as immediates so TokenIF/WHILE/FOR can
-    // short-circuit dead branches like `if (0) ...` before compiling them.
-    if ( raw.isImm() )
-    {
-	storage = raw;
-	return storage;
-    }
-
-    if ( cond_type && (cond_type->is_numeric() || cond_type->is_pointer())
-      && (raw.isReg() || raw.isMem()) )
-    {
-	IRBuilder ir(pgm.cc);
-	IRValue cond_value = ir.load(ir.coerce(ir_from_operand(raw, cond_type), cond_type));
-	storage = cond_value.op;
-	return storage;
-    }
-
-    storage = raw;
-    return storage;
-}
 
 static bool is_plain_numeric_expr(TokenBase *token)
 {
@@ -8028,7 +7970,7 @@ Operand &TokenXorEq::compile(Program &pgm, regdefp_t &regdp)
     return emit_compound_bitop2(pgm, left, right, &Program::safexor, regdp, _operand, "^=");
 }
 
-static void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
 				    DataDef *copy_type, const char *name)
 {
     if ( !copy_type )
@@ -13858,816 +13800,5 @@ Operand &TokenTerQ::compile(Program &pgm, regdefp_t &regdp)
 	}
     }
     regdp.first = &_operand;
-    return _operand;
-}
-
-// compile a return statement
-Operand &TokenRETURN::compile(Program &pgm, regdefp_t &regdp)
-{
-    FuncDef *current_func = pgm.tkFunction && pgm.tkFunction->method
-	? dynamic_cast<FuncDef *>(pgm.tkFunction->method->returns.type)
-	: NULL;
-
-    // multi-return: write values to __retbuf and return without cleanup
-    // (cleanup runs destructors which can't be called multiple times
-    //  when there are multiple return paths in if/else branches)
-    if ( !return_exprs.empty() )
-    {
-	DBG(pgm.cc.comment("multi-return: writing values to __retbuf"));
-	// find __retbuf parameter
-	std::string rbname = "__retbuf";
-	Variable *rbvar = pgm.tkFunction->method ? pgm.tkFunction->method->findParameter(rbname) : NULL;
-	if ( !rbvar )
-	    throw "multi-return: __retbuf parameter not found";
-	Operand &rb_op = pgm.tkFunction->voperand(pgm, rbvar);
-	x86::Gp rb_gp = pgm.cc.newIntPtr("__retbuf_gp");
-	load_var_to_gp(pgm, rb_op, rb_gp);
-	FuncDef *fdef = pgm.tkFunction && pgm.tkFunction->method
-	    ? dynamic_cast<FuncDef *>(pgm.tkFunction->method->returns.type)
-	    : NULL;
-	IRBuilder ir(pgm.cc);
-
-	for ( size_t i = 0; i < return_exprs.size(); ++i )
-	{
-	    DataDef *slot_type = (fdef && i < fdef->return_types.size())
-		? fdef->return_types[i]
-		: &ddINT64;
-	    Operand ret_storage;
-	    regdefp_t retrdp = {NULL, NULL, NULL};
-	    bool ir_slot = slot_type && (slot_type->is_numeric() || slot_type->is_pointer());
-	    Operand &val = ir_slot
-		? compile_token_normalized(pgm, return_exprs[i], slot_type, NULL, ret_storage)
-		: return_exprs[i]->compile(pgm, retrdp);
-	    if ( ir_slot )
-	    {
-		x86::Mem slot = x86::qword_ptr(rb_gp, (int32_t)(i * 8));
-		slot.setSize(8);
-		ir.store(IRValue::mem(slot, slot_type), ir_from_operand(val, slot_type));
-	    }
-	    else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kGp) )
-		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), val.as<x86::Gp>());
-	    else if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
-		pgm.cc.movsd(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), val.as<x86::Xmm>());
-	    else if ( val.isImm() )
-	    {
-		x86::Gp tmp = pgm.cc.newGpq("__ret_tmp");
-		pgm.cc.mov(tmp, val.as<Imm>());
-		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), tmp);
-	    }
-	    else if ( val.isMem() )
-	    {
-		x86::Gp tmp = pgm.cc.newGpq("__ret_tmp");
-		pgm.cc.mov(tmp, val.as<x86::Mem>());
-		pgm.cc.mov(x86::qword_ptr(rb_gp, (int32_t)(i * 8)), tmp);
-	    }
-	}
-	emit_function_instrument_exit(pgm, current_func);
-	pgm.cc.ret();
-	return _reg;
-    }
-
-    // single-return or void: cleanup before returning
-    pgm.tkFunction->cleanup(pgm);
-
-    if ( returns )
-    {
-	DataDef *ret_type = &ddVOID;
-	if ( pgm.tkFunction && pgm.tkFunction->method )
-	{
-	    FuncDef *fdef = dynamic_cast<FuncDef *>(pgm.tkFunction->method->returns.type);
-	    if ( fdef )
-		ret_type = &fdef->returns;
-	}
-
-	// char* / const char* returns from string literals or string-valued
-	// expressions must return the underlying C string buffer, not the
-	// std::string object address.
-	if ( type_is_cstr_pointer(ret_type)
-	  && returns->datadef() && returns->datadef()->rawtype() == DataType::dtSTRING )
-	{
-	    Operand ret_storage;
-	    Operand &cstr_gp = compile_token_normalized(pgm, returns, ret_type, nullptr, ret_storage);
-	    _operand = cstr_gp;
-	    emit_function_instrument_exit(pgm, current_func);
-	    pgm.saferet(cstr_gp);
-	    return _operand;
-	}
-
-	// Void return-of-expression: `return some_void_call();` or
-	// `return (void)expr;`. C allows this in a void-returning function;
-	// the inner expression must run for side effects, but there's no
-	// value to ret. Compile the expression, drop the result, emit a
-	// bare ret. Without this, saferet would receive an empty Operand
-	// from the void-call's compile and throw.
-	if ( ret_type && ret_type->rawtype() == DataType::dtVOID
-	  && !ret_type->is_pointer() )
-	{
-	    // `return some_void_call();` in a void-returning function: run
-	    // the inner expression for side effects, drop the (empty) result,
-	    // emit a bare ret. Without this saferet would receive an empty
-	    // Operand and throw. The is_pointer guard keeps `void *` returns
-	    // (which share rawtype dtVOID with bare void) on the regular
-	    // pointer path.
-	    regdefp_t void_rdp = {NULL, NULL, NULL};
-	    returns->compile(pgm, void_rdp);
-	    emit_function_instrument_exit(pgm, current_func);
-	    emit_zeroed_void_return(pgm);
-	    return _reg;
-	}
-
-	Operand ret_storage;
-	Operand &reg = (ret_type && (ret_type->is_numeric() || ret_type->is_pointer()))
-	    ? compile_token_normalized(pgm, returns, ret_type, NULL, ret_storage)
-	    : returns->compile(pgm, regdp);
-
-	if ( ret_type
-	  && ret_type->basetype() == BaseType::btStruct
-	  && ret_type->size > 0 && ret_type->size <= 16 )
-	{
-	    emit_function_instrument_exit(pgm, current_func);
-	    emit_small_struct_return(pgm, reg, ret_type);
-	    return reg;
-	}
-
-	// Large struct return: copy return value into hidden __retbuf
-	if ( is_large_struct_return(ret_type) )
-	{
-	    DBG(pgm.cc.comment("large struct return: copy to __retbuf"));
-	    std::string rbname = "__retbuf";
-	    Variable *retbuf_var = pgm.tkFunction->method
-		? pgm.tkFunction->method->findParameter(rbname) : NULL;
-	    if ( !retbuf_var )
-		pgm.Throw(this) << "Large struct return: missing __retbuf parameter" << flush;
-	    Operand &retbuf_op = pgm.tkFunction->voperand(pgm, retbuf_var);
-	    x86::Gp rb_gp = pgm.cc.newIntPtr("__retbuf_gp");
-	    load_var_to_gp(pgm, retbuf_op, rb_gp);
-	    Operand rb_dst = rb_gp;
-	    emit_raw_aggregate_copy(pgm, rb_dst, reg, ret_type, "large_struct_ret");
-	    emit_function_instrument_exit(pgm, current_func);
-	    pgm.cc.ret();
-	    return reg;
-	}
-
-	emit_function_instrument_exit(pgm, current_func);
-	pgm.saferet(reg);
-	return reg;
-    }
-    emit_function_instrument_exit(pgm, current_func);
-    pgm.cc.ret();
-
-    return _reg;
-}
-
-// compile a break statement
-Operand &TokenBREAK::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(cout << "TokenBREAK::compile(pgm)");
-    if ( !pgm.loopstack.empty() )
-    {
-	DBG(pgm.cc.comment("BREAK"));
-	pgm.cc.jmp(*pgm.loopstack.top().second);
-    }
-    return _reg;
-}
-
-// compile a continue statement
-Operand &TokenCONT::compile(Program &pgm, regdefp_t &regdp)
-{
-    // `continue` jumps to the innermost ENCLOSING LOOP's continue
-    // label. Switches push (NULL, exit) onto loopstack so `break`
-    // exits the switch — but `continue` inside a switch must skip
-    // the switch and target the enclosing loop. Walk the stack from
-    // top to bottom looking for the first entry with a non-NULL
-    // continue label (which only loops, not switches, set).
-    DBG(pgm.cc.comment("CONTINUE"));
-    std::stack<std::pair<asmjit::Label *, asmjit::Label *>> tmp = pgm.loopstack;
-    while ( !tmp.empty() )
-    {
-	auto &top = tmp.top();
-	if ( top.first != NULL )
-	{
-	    pgm.cc.jmp(*top.first);
-	    break;
-	}
-	tmp.pop();
-    }
-    return _reg;
-}
-
-// Function-scope label-map accessor. Creates an asmjit Label on
-// first reference so forward-referenced gotos resolve without
-// ordering requirements. `TokenFunc::compile` clears
-// `pgm.label_map` at each function boundary.
-static asmjit::Label &lookup_or_make_label(Program &pgm, const std::string &name)
-{
-    auto it = pgm.label_map.find(name);
-    if ( it != pgm.label_map.end() )
-	return it->second;
-    pgm.label_map[name] = pgm.cc.newLabel();
-    return pgm.label_map[name];
-}
-
-// compile a goto statement
-Operand &TokenGOTO::compile(Program &pgm, regdefp_t &regdp)
-{
-    if ( indirect_target )
-    {
-	DBG(std::cout << "TokenGOTO::compile(*expr)" << std::endl);
-	regdefp_t jump_rdp = {NULL, NULL, NULL};
-	Operand &jump_op = indirect_target->compile(pgm, jump_rdp);
-	x86::Gp jump_gp = as_gp_ptr(pgm, jump_op, "goto_indirect");
-	DBG(pgm.cc.comment("goto *expr"));
-	pgm.cc.jmp(jump_gp);
-	return _reg;
-    }
-
-    DBG(std::cout << "TokenGOTO::compile(" << target << ")" << std::endl);
-    asmjit::Label &L = lookup_or_make_label(pgm, target);
-    DBG(pgm.cc.comment(("goto " + target).c_str()));
-    pgm.cc.jmp(L);
-    return _reg;
-}
-
-// compile a label definition: bind the Label at the current point.
-Operand &TokenLabel::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(std::cout << "TokenLabel::compile(" << name << ":)" << std::endl);
-    asmjit::Label &L = lookup_or_make_label(pgm, name);
-    DBG(pgm.cc.comment((name + ":").c_str()));
-    pgm.cc.bind(L);
-    return _reg;
-}
-
-// compile a switch statement
-Operand &TokenSWITCH::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(std::cout << "TokenSWITCH::compile() TOP — " << cases.size() << " cases" << std::endl);
-    DBG(pgm.cc.comment("switch start"));
-
-    DataDef *expr_type = expression && expression->datadef() ? expression->datadef() : &ddINT64;
-    if ( expr_type && expr_type->is_integer() )
-	expr_type = promote_c_integer_type(expr_type);
-    bool normalized_switch = expr_type && (expr_type->is_integer() || expr_type->is_pointer());
-    Operand expr_storage;
-    Operand *expr_op = NULL;
-    if ( normalized_switch )
-	expr_op = &compile_token_gp_normalized(pgm, expression, expr_type, expr_storage);
-    else
-    {
-	regdefp_t exprrdp = {NULL, NULL, NULL};
-	Operand &raw_expr = expression->compile(pgm, exprrdp);
-	expr_type = exprrdp.second ? exprrdp.second : expr_type;
-	x86::Gp expr_reg = pgm.cc.newGpq("switch_expr");
-	if ( raw_expr.isReg() && raw_expr.as<BaseReg>().isGroup(RegGroup::kGp) )
-	    pgm.safemov(expr_reg, raw_expr.as<x86::Gp>(), &ddINT64, expr_type);
-	else if ( raw_expr.isImm() )
-	    pgm.cc.mov(expr_reg, raw_expr.as<Imm>());
-	else if ( raw_expr.isMem() )
-	{
-	    IRBuilder ir(pgm.cc);
-	    IRValue expr_val = ir.load(ir.coerce(IRValue::mem(raw_expr.as<x86::Mem>(), expr_type), &ddINT64));
-	    expr_reg = expr_val.op.as<x86::Gp>();
-	}
-	expr_storage = expr_reg;
-	expr_op = &expr_storage;
-	expr_type = &ddINT64;
-    }
-    x86::Gp expr_reg = expr_op->as<x86::Gp>();
-
-    Label sw_exit = pgm.cc.newLabel();
-
-    // create labels for each case + default
-    std::vector<Label> case_labels;
-    for ( size_t i = 0; i < cases.size(); ++i )
-	case_labels.push_back(pgm.cc.newLabel());
-    Label default_label = pgm.cc.newLabel();
-
-    // emit compare-and-jump for each case
-    for ( size_t i = 0; i < cases.size(); ++i )
-    {
-	Operand val_storage;
-	if ( cases[i]->range_high )
-	{
-	    // GNU case range: case LOW ... HIGH:
-	    // Check LOW <= expr <= HIGH
-	    Label skip = pgm.cc.newLabel();
-	    Operand lo_storage, hi_storage;
-	    if ( normalized_switch )
-	    {
-		Operand &lo_op = compile_token_gp_normalized(pgm, cases[i]->value, expr_type, lo_storage);
-		pgm.safecmp(*(Operand *)&expr_reg, lo_op, expr_type);
-	    }
-	    else
-	    {
-		regdefp_t lordp = {NULL, NULL, NULL};
-		Operand &lo_op = cases[i]->value->compile(pgm, lordp);
-		pgm.safecmp(*(Operand *)&expr_reg, lo_op, expr_type);
-	    }
-	    pgm.cc.jb(skip);
-	    if ( normalized_switch )
-	    {
-		Operand &hi_op = compile_token_gp_normalized(pgm, cases[i]->range_high, expr_type, hi_storage);
-		pgm.safecmp(*(Operand *)&expr_reg, hi_op, expr_type);
-	    }
-	    else
-	    {
-		regdefp_t hirdp = {NULL, NULL, NULL};
-		Operand &hi_op = cases[i]->range_high->compile(pgm, hirdp);
-		pgm.safecmp(*(Operand *)&expr_reg, hi_op, expr_type);
-	    }
-	    pgm.cc.jbe(case_labels[i]);
-	    pgm.cc.bind(skip);
-	}
-	else
-	{
-	if ( normalized_switch )
-	{
-	    Operand &val_op = compile_token_gp_normalized(pgm, cases[i]->value, expr_type, val_storage);
-	    pgm.safecmp(*(Operand *)&expr_reg, val_op, expr_type);
-	}
-	else
-	{
-	    regdefp_t valrdp = {NULL, NULL, NULL};
-	    Operand &val_op = cases[i]->value->compile(pgm, valrdp);
-	    pgm.safecmp(*(Operand *)&expr_reg, val_op, expr_type);
-	}
-	pgm.cc.je(case_labels[i]);
-	}
-    }
-    // fall through to default or exit
-    pgm.cc.jmp(defaultcase ? default_label : sw_exit);
-
-    // push exit label onto loopstack so break works
-    pgm.loopstack.push(make_pair((Label *)NULL, &sw_exit));
-
-    auto invalidate_rematerializable_globals = [&]() {
-	for ( std::map<Variable *, Operand>::iterator it = pgm.tkFunction->operand_map.begin();
-	      it != pgm.tkFunction->operand_map.end(); )
-	{
-	    Variable *var = it->first;
-	    if ( var && var->is_global() && var->data
-	      && (var->is_fixed_array()
-	       || var->type->basetype() == BaseType::btStruct
-	       || var->type->basetype() == BaseType::btClass) )
-	    {
-		it = pgm.tkFunction->operand_map.erase(it);
-		continue;
-	    }
-	    ++it;
-	}
-    };
-
-    // emit case bodies in source order; insert default body at its
-    // source-order position so fall-through chains match what the user
-    // wrote.  If default appears after all cases (default_index ==
-    // cases.size()) it's emitted after the loop.  If no default exists
-    // (default_index == -1) it's never emitted.
-    int dflt_pos = defaultcase ? default_index : -1;
-    for ( size_t i = 0; i < cases.size(); ++i )
-    {
-	if ( defaultcase && (int)i == dflt_pos )
-	{
-	    pgm.cc.bind(default_label);
-	    DBG(pgm.cc.comment("default body"));
-	    for ( auto *stmt : defaultcase->statements )
-	    {
-		invalidate_rematerializable_globals();
-		regdefp_t stmtrdp = {NULL, NULL, NULL};
-		stmt->compile(pgm, stmtrdp);
-	    }
-	}
-	pgm.cc.bind(case_labels[i]);
-	DBG(pgm.cc.comment("case body"));
-	for ( auto *stmt : cases[i]->statements )
-	{
-	    invalidate_rematerializable_globals();
-	    regdefp_t stmtrdp = {NULL, NULL, NULL};
-	    stmt->compile(pgm, stmtrdp);
-	}
-    }
-    if ( defaultcase && dflt_pos == (int)cases.size() )
-    {
-	pgm.cc.bind(default_label);
-	DBG(pgm.cc.comment("default body"));
-	for ( auto *stmt : defaultcase->statements )
-	{
-	    invalidate_rematerializable_globals();
-	    regdefp_t stmtrdp = {NULL, NULL, NULL};
-	    stmt->compile(pgm, stmtrdp);
-	}
-    }
-
-    pgm.loopstack.pop();
-    pgm.cc.bind(sw_exit);
-    DBG(pgm.cc.comment("switch end"));
-
-    return _operand;
-}
-
-// TokenCASE::compile() is not called directly — TokenSWITCH::compile() handles it
-Operand &TokenCASE::compile(Program &pgm, regdefp_t &regdp)
-{
-    return _operand;
-}
-
-// rust::match codegen — compare-and-jump chain with no fall-through.
-// Mirrors the integer path of TokenSWITCH but emits one branch per
-// pattern (OR within an arm) and a tail `jmp match_exit` after each
-// arm body. The wildcard arm gets its own label; if no match hits, the
-// dispatch jumps directly to that label, otherwise to match_exit.
-Operand &TokenMatch::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(std::cout << "TokenMatch::compile() " << arms.size() << " arms"
-	    << (wildcard_index >= 0 ? " (with _)" : "") << std::endl);
-    DBG(pgm.cc.comment("rust::match start"));
-
-    DataDef *expr_type = expression && expression->datadef()
-		      ? expression->datadef() : &ddINT64;
-    Operand expr_storage;
-    Operand &expr_op = compile_token_gp_normalized(pgm, expression,
-						   expr_type, expr_storage);
-    x86::Gp expr_reg = expr_op.as<x86::Gp>();
-
-    Label match_exit = pgm.cc.newLabel();
-    std::vector<Label> arm_labels;
-    arm_labels.reserve(arms.size());
-    for ( size_t i = 0; i < arms.size(); ++i )
-	arm_labels.push_back(pgm.cc.newLabel());
-
-    // Dispatch: emit cmp+je for every constant pattern in every non-
-    // wildcard arm, in source order. After the chain, fall through to
-    // the wildcard arm if one exists, otherwise to the exit.
-    for ( size_t i = 0; i < arms.size(); ++i )
-    {
-	if ( arms[i]->is_wildcard )
-	    continue;
-	for ( size_t p = 0; p < arms[i]->patterns.size(); ++p )
-	{
-	    Operand val_storage;
-	    Operand &val_op = compile_token_gp_normalized(pgm,
-		    arms[i]->patterns[p], expr_type, val_storage);
-	    pgm.cc.cmp(expr_reg, val_op.as<x86::Gp>());
-	    pgm.cc.je(arm_labels[i]);
-	}
-    }
-    if ( wildcard_index >= 0 )
-	pgm.cc.jmp(arm_labels[wildcard_index]);
-    else
-	pgm.cc.jmp(match_exit);
-
-    // break inside an arm body should leave the match — push exit on
-    // loopstack the same way TokenSWITCH does.
-    pgm.loopstack.push(make_pair((Label *)NULL, &match_exit));
-
-    // Emit each arm body in source order, terminating each with an
-    // unconditional jump to match_exit so arms never fall through.
-    for ( size_t i = 0; i < arms.size(); ++i )
-    {
-	pgm.cc.bind(arm_labels[i]);
-	DBG(pgm.cc.comment("match arm body"));
-	if ( arms[i]->body )
-	{
-	    regdefp_t armrdp = {NULL, NULL, NULL};
-	    arms[i]->body->compile(pgm, armrdp);
-	}
-	pgm.cc.jmp(match_exit);
-    }
-
-    pgm.loopstack.pop();
-    pgm.cc.bind(match_exit);
-    DBG(pgm.cc.comment("rust::match end"));
-    return _operand;
-}
-
-// Check if a statement subtree contains any labels (TokenLabel or
-// TokenCASE) that might be jump targets.  Used to decide whether an
-// if(0) then-block can safely be elided.
-static bool contains_label(TokenBase *node)
-{
-    return walk_ast(node, [](TokenBase *n) {
-	return dynamic_cast<TokenLabel *>(n) != nullptr
-	    || dynamic_cast<TokenCASE *>(n) != nullptr;
-    });
-}
-
-// compile an if statement
-Operand &TokenIF::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(std::cout << "TokenIF::compile() TOP" << std::endl);
-    Label iftail = pgm.cc.newLabel();	// label for tail of if
-    Label thendo = pgm.cc.newLabel();	// label for then condition
-    Label elsedo = pgm.cc.newLabel();	// label for else condition
-
-    if ( !statement ) { throw "if missing statement"; }
-    // push labels onto ifstack
-    pgm.ifstack.push(make_pair(&thendo, elsestmt ? &elsedo : &iftail));
-    // perform condition check, false goes either to elsedo or iftail.
-    // Reset regdp first so the condition's compile doesn't inherit a
-    // stale destination register from the caller — same rule applied in
-    // TokenFOR / TokenWHILE / TokenDO (see .claude/rules/regdp-reset.md).
-    if ( condition
-      && (condition->type() == TokenType::ttInteger
-       || condition->type() == TokenType::ttChar) )
-    {
-	if ( condition->ival() )
-	{
-	    // if(1): skip else, compile then-block only
-	    pgm.cc.bind(thendo);
-	    regdp.first = NULL; regdp.second = NULL;
-	    statement->compile(pgm, regdp);
-	}
-	else if ( contains_label(statement) )
-	{
-	    // if(0) but the then-block contains labels (goto targets
-	    // or case labels).  Emit it as unreachable code so labels
-	    // get bound — matches GCC's flattening behavior.
-	    pgm.cc.jmp(elsestmt ? elsedo : iftail);
-	    pgm.cc.bind(thendo);
-	    regdp.first = NULL; regdp.second = NULL;
-	    statement->compile(pgm, regdp);
-	    if ( elsestmt )
-	    {
-		pgm.cc.jmp(iftail);
-		pgm.cc.bind(elsedo);
-		regdp.first = NULL; regdp.second = NULL;
-		elsestmt->compile(pgm, regdp);
-	    }
-	}
-	else if ( elsestmt )
-	{
-	    // if(0) with no labels: safe to skip then-block entirely
-	    pgm.cc.bind(elsedo);
-	    regdp.first = NULL; regdp.second = NULL;
-	    elsestmt->compile(pgm, regdp);
-	}
-	pgm.cc.bind(iftail);
-	pgm.ifstack.pop();
-	return _operand;
-    }
-    DBG(pgm.cc.comment("TokenIF::compile() reg = condition->compile()"));
-    regdp.first  = NULL;
-    regdp.second = NULL;
-    Operand cond_storage;
-    Operand &reg = compile_condition_operand(pgm, condition, cond_storage);
-    // hard coded if (1) / if (0)
-    if ( reg.isImm() )
-    {
-	// if (1) (or any non-zero)
-	if ( reg.as<Imm>().value() )
-	{
-	    pgm.cc.bind(thendo);
-	    DBG(pgm.cc.comment("TokenIF::compile(1) statement->compile(pgm, regdp)"));
-	    regdp.first = NULL; regdp.second = NULL;
-	    statement->compile(pgm, regdp); // execute if statement(s) for true
-	}
-	else
-	// if (0)
-	if ( elsestmt )
-	{
-	    pgm.cc.bind(elsedo);	// bind elsedo label
-	    DBG(pgm.cc.comment("TokenIF::compile(0) elsestmt->compile(pgm, regdp)"));
-	    regdp.first = NULL; regdp.second = NULL;
-	    elsestmt->compile(pgm, regdp);  // execute else condition
-	}
-    }
-    // logic controlled
-    else
-    if ( reg.isReg() || reg.isMem() )
-    {
-	DBG(cout << "TokenIF::compile() pgm.safetest(reg, reg)" << endl);
-	DBG(pgm.cc.comment("TokenIF::compile() pgm.safetest(reg, reg)"));
-	pgm.testzero(reg); //pgm.safetest(reg, reg);			// compare to zero
-	DBG(pgm.cc.comment("TokenIF::compile() pgm.cc.je(else/tail)"));
-	pgm.cc.je(elsestmt ? elsedo : iftail);	// jump appropriately
-
-	DBG(pgm.cc.comment("TokenIF::compile() statement->compile(pgm, regdp)"));
-	pgm.cc.bind(thendo);
-	regdp.first = NULL; regdp.second = NULL;
-	statement->compile(pgm, regdp); // execute if statement(s) if condition met
-	if ( elsestmt )			// do we have an else?
-	{
-	    pgm.cc.jmp(iftail);		// jump to tail after executing if statements
-	    pgm.cc.bind(elsedo);	// bind elsedo label
-	    DBG(pgm.cc.comment("TokenIF::compile() elsestmt->compile(pgm, regdp)"));
-	    regdp.first = NULL; regdp.second = NULL;
-	    elsestmt->compile(pgm, regdp); 	// execute else condition
-	}
-    }
-    else
-	throw "TokenIF::compile() condition->compile() didn't return a usable operand";
-    pgm.cc.bind(iftail);		// bind if tail
-
-    pgm.ifstack.pop();			// pop labels from ifstack
-    DBG(std::cout << "TokenIF::compile() END" << std::endl);
-
-    return reg;
-}
-
-Operand &TokenDO::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(std::cout << "TokenDO::compile() TOP" << std::endl);
-    Label dotop  = pgm.cc.newLabel();	// label for top of loop
-    Label dodo   = pgm.cc.newLabel();	// label for loop action
-    Label dotail = pgm.cc.newLabel();	// label for tail of loop
-
-    pgm.loopstack.push(make_pair(&dotop, &dotail)); // push labels onto loopstack
-    pgm.cc.bind(dotop);			// label the top of the loop
-    DBG(cout << "TokenDO::compile() calling statement->compile(pgm, regdp)" << endl);
-    regdp.first  = NULL;			// reset regdp for body
-    regdp.second = NULL;
-    statement->compile(pgm, regdp); 	// execute loop's statement(s)
-    DBG(cout << "TokenDO::compile() statement done, compiling condition" << endl);
-    regdp.first  = NULL;			// reset regdp for condition
-    regdp.second = NULL;
-    Operand cond_storage;
-    Operand &reg = compile_condition_operand(pgm, condition, cond_storage); // get condition result
-    DBG(cout << "TokenDO::compile() condition done, reg type: " << (reg.isReg() ? "reg" : reg.isMem() ? "mem" : "other") << endl);
-    DBG(pgm.cc.comment("TokenDO::compile() pgm.safetest(reg, reg)"));
-    pgm.testzero(reg);			// compare to zero
-    DBG(cout << "TokenDO::compile() testzero done" << endl);
-    pgm.cc.je(dotail);			// jump to end
-
-    pgm.cc.bind(dodo);			// bind action label
-    pgm.cc.jmp(dotop);			// jump back to top
-    pgm.cc.bind(dotail);		// bind do tail
-
-    pgm.loopstack.pop();		// pop labels from loopstack
-    DBG(std::cout << "TokenDO::compile() END" << std::endl);
-
-    return reg;
-}
-
-// while ( condition ) statement;
-// TODO: need way to support break and continue
-Operand &TokenWHILE::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(std::cout << "TokenWHILE::compile() TOP" << std::endl);
-    Label whiletop  = pgm.cc.newLabel();	// label for top of loop
-    Label whiledo   = pgm.cc.newLabel();	// label for loop action
-    Label whiletail = pgm.cc.newLabel();	// label for tail of loop
-
-    pgm.loopstack.push(make_pair(&whiletop, &whiletail)); // push labels onto loopstack
-    pgm.cc.bind(whiletop);			// label the top of the loop
-    regdp.first  = NULL;			// reset regdp for condition
-    regdp.second = NULL;
-    DBG(pgm.cc.comment("condition->compile(pgm, regdp)"));
-    Operand cond_storage;
-    Operand &reg = compile_condition_operand(pgm, condition, cond_storage);// get condition result
-    DBG(pgm.cc.comment("TokenWHILE::compile() pgm.safetest(reg, reg)"));
-    pgm.testzero(reg);  //    pgm.safetest(reg, reg);			// compare to zero
-    pgm.cc.je(whiletail);			// if zero, jump to end
-
-    DBG(cout << "TokenWHILE::compile() calling statement->compile(pgm, regdp)" << endl);
-    pgm.cc.bind(whiledo);			// bind action label
-    regdp.first  = NULL;			// reset regdp for body
-    regdp.second = NULL;
-    DBG(pgm.cc.comment("statement->compile(pgm, regdp)"));
-    statement->compile(pgm, regdp); 		// execute loop's statement(s)
-    pgm.cc.jmp(whiletop);			// jump back to top
-    pgm.cc.bind(whiletail);			// bind while tail
-
-    pgm.loopstack.pop();			// pop labels from loopstack
-    DBG(std::cout << "TokenWHILE::compile() END" << std::endl);
-
-    return reg;
-}
-
-Operand &TokenFOR::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(std::cout << "TokenFOR::compile() TOP" << std::endl);
-    Label fortop  = pgm.cc.newLabel();		// label for top of loop
-    Label forcont = pgm.cc.newLabel();		// label for continue statement
-    Label fortail = pgm.cc.newLabel();		// label for tail of loop
-
-    pgm.loopstack.push(make_pair(&forcont, &fortail)); // push labels onto loopstack
-    if ( initialize )
-	initialize->compile(pgm, regdp); 	// execute loop's initializer statement
-    for ( auto *extra : init_extras )		// C comma-init extras
-    {
-	regdp.first = NULL;
-	regdp.second = NULL;
-	extra->compile(pgm, regdp);
-    }
-    pgm.cc.bind(fortop);			// label the top of the loop
-    regdp.first  = NULL;			// reset so condition compiles into a fresh register
-    regdp.second = NULL;
-    Operand cond_storage;
-    Operand &reg = compile_condition_operand(pgm, condition, cond_storage); // get condition result
-    DBG(pgm.cc.comment("TokenFOR::compile() pgm.safetest(reg, reg)"));
-    pgm.testzero(reg);				// compare to zero
-    pgm.cc.je(fortail);				// jump to end
-
-    DBG(cout << "TokenFOR::compile() calling statement->compile(pgm, regdp)" << endl);
-    regdp.first  = NULL;			// reset so statement doesn't inherit stale destination
-    regdp.second = NULL;
-    statement->compile(pgm, regdp); 		// execute loop's statement(s)
-    pgm.cc.bind(forcont);			// bind continue label
-    regdp.first  = NULL;			// reset so increment doesn't clobber unrelated registers
-    regdp.second = NULL;
-    if ( increment )
-	increment->compile(pgm, regdp); 		// execute loop's increment statement
-    for ( auto *extra : incr_extras )		// C comma-incr extras
-    {
-	regdp.first = NULL;
-	regdp.second = NULL;
-	extra->compile(pgm, regdp);
-    }
-    pgm.cc.jmp(fortop);				// jump back to top
-    pgm.cc.bind(fortail);			// bind for tail
-
-    pgm.loopstack.pop();			// pop labels from loopstack
-    DBG(std::cout << "TokenFOR::compile() END" << std::endl);
-
-    return reg;
-}
-
-Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
-{
-    DBG(std::cout << "TokenFOREACH::compile() TOP — " << elemtype->name << ' ' << elemname << std::endl);
-    DBG(pgm.cc.comment("TokenFOREACH::compile() start"));
-
-    Label fortop  = pgm.cc.newLabel();
-    Label forcont = pgm.cc.newLabel();
-    Label fortail = pgm.cc.newLabel();
-
-    pgm.loopstack.push(make_pair(&forcont, &fortail));
-
-    // compile container expression to get array pointer
-    regdefp_t arrrdp = {NULL, NULL, NULL};
-    Operand &arr_op = container->compile(pgm, arrrdp);
-    x86::Gp arr_reg = pgm.cc.newIntPtr("foreach_arr");
-    pgm.cc.mov(arr_reg, arr_op.as<x86::Gp>());
-
-    // determine the container type to pick the right size/at functions
-    DataDef *container_type = arrrdp.second;
-    bool is_vector = container_type && container_type->type() == DataType::dtVECTOR;
-
-    // get count — dispatch based on container type
-    x86::Gp count_reg = pgm.cc.newGpq("foreach_count");
-    {
-	void *size_fn;
-	if ( is_vector )
-	    size_fn = elemtype->is_string() ? (void *)vector_str_size : (void *)vector_int_size;
-	else
-	    size_fn = (void *)php_count;
-	InvokeNode *cnt_call;
-	pgm.cc.invoke(&cnt_call, imm(size_fn), FuncSignature::build<int64_t, void *>());
-	cnt_call->setArg(0, arr_reg);
-	cnt_call->setRet(0, count_reg);
-    }
-
-    // index register
-    x86::Gp idx_reg = pgm.cc.newGpq("foreach_idx");
-    pgm.cc.xor_(idx_reg, idx_reg);
-
-    // allocate loop variable
-    TokenCpnd *code = pgm.tkFunction;
-    Operand &elem_op = code->voperand(pgm, elemvar);
-
-    // loop top
-    pgm.cc.bind(fortop);
-    pgm.cc.cmp(idx_reg, count_reg);
-    pgm.cc.jge(fortail);
-
-    // fetch element — dispatch based on container + element type
-    if ( elemtype->is_string() )
-    {
-	void *at_fn = is_vector ? (void *)vector_str_at : (void *)php_array_get;
-	DBG(pgm.cc.comment("foreach: get string element"));
-	InvokeNode *get_call;
-	pgm.cc.invoke(&get_call, imm(at_fn),
-	    FuncSignature::build<void *, void *, void *, int64_t>());
-	get_call->setArg(0, elem_op.as<x86::Gp>());
-	get_call->setArg(1, arr_reg);
-	get_call->setArg(2, idx_reg);
-    }
-    else if ( elemtype->is_integer() )
-    {
-	void *at_fn = is_vector ? (void *)vector_int_at : (void *)php_array_get_int;
-	DBG(pgm.cc.comment("foreach: get int element"));
-	InvokeNode *get_call;
-	pgm.cc.invoke(&get_call, imm(at_fn),
-	    FuncSignature::build<int64_t, void *, int64_t>());
-	get_call->setArg(0, arr_reg);
-	get_call->setArg(1, idx_reg);
-	get_call->setRet(0, elem_op.as<x86::Gp>());
-    }
-    else
-    {
-	pgm.Throw(this) << "range-for: unsupported element type '" << elemtype->name << "'" << flush;
-    }
-
-    // loop body
-    statement->compile(pgm, regdp);
-
-    // continue: increment and loop
-    pgm.cc.bind(forcont);
-    pgm.cc.inc(idx_reg);
-    pgm.cc.jmp(fortop);
-    pgm.cc.bind(fortail);
-
-    pgm.loopstack.pop();
-    DBG(std::cout << "TokenFOREACH::compile() END" << std::endl);
-
     return _operand;
 }

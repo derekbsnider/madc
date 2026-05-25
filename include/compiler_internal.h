@@ -66,8 +66,32 @@ void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm,
 void load_mem_to_gpq(Program &pgm, x86::Gp &gp, const x86::Mem &mem,
 		     DataDef *type);
 
-// Type inference
+// Type inference and type helpers
 DataDef *infer_numeric_type(TokenBase *left, TokenBase *right);
+DataDef *promote_c_integer_type(DataDef *type);
+bool type_is_cstr_pointer(DataDef *dd);
+bool is_large_struct_return(DataDef *ret_type);
+
+// Operand helpers
+x86::Gp as_gp_ptr(Program &pgm, Operand &op, const char *name = "mem_ptr");
+void load_var_to_gp(Program &pgm, Operand &src, x86::Gp &dst_gp);
+Operand &compile_token_normalized(Program &pgm, TokenBase *token,
+				  DataDef *target_type, Operand *preferred_dest,
+				  Operand &storage);
+Operand &compile_token_gp_normalized(Program &pgm, TokenBase *token,
+				     DataDef *target_type, Operand &storage);
+Operand &compile_condition_operand(Program &pgm, TokenBase *condition,
+				   Operand &storage);
+
+// Emit helpers
+void emit_raw_aggregate_copy(Program &pgm, Operand &dst, Operand &src,
+			     DataDef *copy_type, const char *name);
+void emit_small_struct_return(Program &pgm, Operand &src, DataDef *ret_type);
+void emit_zeroed_void_return(Program &pgm);
+void emit_function_instrument_exit(Program &pgm, FuncDef *current_func);
+
+// Label helpers (defined in compiler_control_flow.cpp)
+Label &lookup_or_make_label(Program &pgm, const std::string &name);
 
 // Complex helpers
 void prepare_complex_component_pair(Program &pgm, TokenBase *expr,
