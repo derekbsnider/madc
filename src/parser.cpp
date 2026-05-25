@@ -13029,10 +13029,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
 	// tolerate C qualifiers/storage hints in parameter lists such as
 	// `const char *s` and `register char *s`
+	bool param_has_const = false;
 	while ( nt && (nt->id() == TokenID::tkCONST
 	            || nt->id() == TokenID::tkVOLATILE
 	            || nt->id() == TokenID::tkREGISTER) )
 	{
+	    if ( nt->id() == TokenID::tkCONST )
+		param_has_const = true;
 	    nt = nextToken();
 	}
 	std::vector<uint32_t> param_array_dims;
@@ -13157,7 +13160,11 @@ grabnt:
 	if ( is_restrict_token(nt)
 	  || nt->id() == TokenID::tkCONST
 	  || nt->id() == TokenID::tkVOLATILE )
+	{
+	    if ( nt->id() == TokenID::tkCONST )
+		param_has_const = true;
 	    goto grabnt;
+	}
 	if ( nt->id() == TokenID::tkComma || nt->id() == TokenID::tkClBrk )
 	{
 	    pid = "__anon_param_" + std::to_string(anon_param_index++);
@@ -13320,6 +13327,7 @@ paramdecl:
 		{
 		    func->parameters.push_back(&ddSTRINGref);
 		    func->ref_params.push_back(true);
+		    func->const_params.push_back(param_has_const);
 		    scope_param_type = &ddSTRINGref;
 		}
 		else if ( rtype == RefType::rtReference )
@@ -13328,24 +13336,28 @@ paramdecl:
 		    DataDef *ref_ptr = getPointerType(&pb->definition);
 		    func->parameters.push_back(ref_ptr);
 		    func->ref_params.push_back(true);
+		    func->const_params.push_back(param_has_const);
 		    scope_param_type = ref_ptr;
 		}
 		else if ( rtype == RefType::rtPointer )
 		{
 		    func->parameters.push_back(param_dd);
 		    func->ref_params.push_back(false);
+		    func->const_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
 		else if ( dynamic_cast<DataDefFPTR *>(param_dd) != NULL )
 		{
 		    func->parameters.push_back(param_dd);
 		    func->ref_params.push_back(false);
+		    func->const_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
 		else
 		{
 		    func->parameters.push_back(&pb->definition);
 		    func->ref_params.push_back(false);
+		    func->const_params.push_back(false);
 		    scope_param_type = &pb->definition;
 		}
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
@@ -13363,6 +13375,8 @@ paramdecl:
 		if ( rtype == RefType::rtReference
 		  && pb->definition.rawtype() != DataType::dtSTRING )
 		    scope_param->flags |= vfREFERENCE;
+		if ( param_has_const && rtype == RefType::rtReference )
+		    scope_param->flags |= vfCONSTANT;
 		temp_param_method.parameters.push_back(scope_param);
 	    }
 	    if ( nt->id() == TokenID::tkClBrk )
@@ -13549,6 +13563,8 @@ paramdecl:
 	v->flags |= vfPARAM | vfLOCAL;
 	if ( (size_t)i < func->ref_params.size() && func->ref_params[i] )
 	    v->flags |= vfREFERENCE;
+	if ( (size_t)i < func->const_params.size() && func->const_params[i] )
+	    v->flags |= vfCONSTANT;
 	std::map<std::string, TokenBase *>::iterator pvsi = param_vla_side_effects.find(pname);
 	if ( pvsi != param_vla_side_effects.end() )
 	    v->param_vla_side_effect_expr = pvsi->second;

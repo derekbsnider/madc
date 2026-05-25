@@ -1,0 +1,22 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+void modify(int &x)
+{
+	x = 99;
+}
+
+void readonly(const int &x)
+{
+	printf("readonly: %d\n", x);
+}
+
+int main()
+{
+	int a = 42;
+	readonly(a);
+	modify(a);
+	printf("after modify: %d\n", a);
+	readonly(a);
+	return 0;
+}

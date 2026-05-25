@@ -1,0 +1,3 @@
+readonly: 42
+after modify: 99
+readonly: 99
