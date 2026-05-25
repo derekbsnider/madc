@@ -520,6 +520,7 @@ public:
     std::vector<BitFieldInfo> member_bitfields;
     std::vector<std::vector<uint32_t>> member_dims;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
+    std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
@@ -615,6 +616,7 @@ public:
 	    member_bitfields.push_back(BitFieldInfo());
 	    member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
 	    member_count_exprs.push_back(count_expr);
+	    member_access.push_back(0);
 	    size_t member_size = count_expr ? 0 : (dd.size * cnt);
 	    if ( member_size > size ) size = member_size;
 	    return;
@@ -628,6 +630,7 @@ public:
 	member_bitfields.push_back(BitFieldInfo());
 	member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
 	member_count_exprs.push_back(count_expr);
+	member_access.push_back(0);
 	if ( !count_expr )
 	    size += dd.size * cnt;
     }

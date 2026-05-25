@@ -10493,8 +10493,32 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    << inherit_base->name << ", size now " << ddc->size << endl);
     }
 
+    // C++ defaults: struct=public, class=private. madc uses class for everything
+    // so default to public for backward compatibility with existing tests.
+    uint32_t access_flags = 0; // 0=public, vfPRIVATE, vfPROTECTED
+
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
+	// --- access specifier labels: public: / private: / protected: ---
+	if ( tn->type() == TokenType::ttIdentifier )
+	{
+	    std::string &label = ((TokenIdent *)tn)->str;
+	    if ( label == "public" || label == "private" || label == "protected" )
+	    {
+		pgm.nextToken(); // consume the keyword
+		TokenBase *colon = pgm.peekToken();
+		if ( colon && colon->id() == TokenID::tkTerC )
+		    pgm.nextToken(); // consume ':'
+		if ( label == "private" )
+		    access_flags = vfPRIVATE;
+		else if ( label == "protected" )
+		    access_flags = vfPROTECTED;
+		else
+		    access_flags = 0;
+		continue;
+	    }
+	}
+
 	// --- virtual keyword ---
 	bool is_virtual = false;
 	if ( tn->type() == TokenType::ttIdentifier
@@ -10525,6 +10549,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 	    {
+		if ( access_flags )
+		    mvar->flags |= access_flags;
 		ddc->methods.push_back(mvar);
 		ddc->method_map["~" + tag->str] = mvar;
 		ddc->has_user_dtor = true;
@@ -10549,6 +10575,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		Variable *mvar;
 		if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 		{
+		    if ( access_flags )
+			mvar->flags |= access_flags;
 		    ddc->methods.push_back(mvar);
 		    ddc->method_map[tag->str] = mvar;
 		    ddc->has_user_ctor = true;
@@ -10632,6 +10660,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 	    {
+		if ( access_flags )
+		    mvar->flags |= access_flags;
 		ddc->methods.push_back(mvar);
 		// also register under the unmangled name for method lookup
 		ddc->method_map[mname] = mvar;
@@ -10649,6 +10679,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	{
 	    // data member
 	    ddc->addMember(mname, *cmember_dd, 1);
+	    if ( access_flags && !ddc->member_access.empty() )
+		ddc->member_access.back() = access_flags;
 	    DBG(cout << "TokenCLASS::parse() added member " << cmember_dd->name << ' ' << mname
 		<< " (size " << cmember_dd->size << ", total " << ddc->size << ')' << endl);
 	    tn = pgm.nextToken();

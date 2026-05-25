@@ -1,0 +1,26 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+class Foo
+{
+private:
+	int secret;
+
+public:
+	Foo(int v)
+	{
+		secret = v;
+	}
+
+	int getsecret()
+	{
+		return secret;
+	}
+};
+
+int main()
+{
+	Foo f(42);
+	printf("secret = %d\n", f.getsecret());
+	return 0;
+}

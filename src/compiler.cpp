@@ -3022,6 +3022,21 @@ bool Program::_compiler_finalize()
 }
 
 
+// Check if the current compilation context is inside a method of the given class
+static bool is_inside_class_method(Program &pgm, DataDefCLASS *ddc)
+{
+    if ( !pgm.tkFunction || !pgm.tkFunction->method )
+	return false;
+    DataDefCLASS *owner = pgm.tkFunction->method->owner_class;
+    while ( owner )
+    {
+	if ( owner == ddc )
+	    return true;
+	owner = owner->base_class;
+    }
+    return false;
+}
+
 Operand &TokenCallMethod::compile(Program &pgm, regdefp_t &regdp)
 {
     DBG(cout << "TokenCallMethod::compile(" << var.name << ") TOP" << endl);
@@ -3029,6 +3044,24 @@ Operand &TokenCallMethod::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment(object.name.c_str()));
     DBG(pgm.cc.comment("::"));
     DBG(pgm.cc.comment(var.name.c_str()));
+
+    // Access control: check private/protected methods
+    if ( var.flags & (vfPRIVATE | vfPROTECTED) )
+    {
+	DataDef *check_type = object.type;
+	if ( check_type->is_pointer() )
+	{
+	    DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(check_type);
+	    if ( ptr ) check_type = ptr->base_type;
+	}
+	DataDefCLASS *check_class = dynamic_cast<DataDefCLASS *>(check_type);
+	if ( check_class && !is_inside_class_method(pgm, check_class) )
+	{
+	    const char *kind = (var.flags & vfPRIVATE) ? "private" : "protected";
+	    pgm.Throw(this) << "'" << var.name << "' is a " << kind
+			    << " method of '" << check_class->name << "'" << flush;
+	}
+    }
 
     // Virtual dispatch: if the method is virtual, call through vtable
     DataDef *obj_type = object.type;
@@ -8221,6 +8254,34 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 // load variable into register
 Operand &TokenMember::compile(Program &pgm, regdefp_t &regdp)
 {
+    // Access control: check private/protected members
+    DataDefCLASS *owner_class = dynamic_cast<DataDefCLASS *>(var.type);
+    if ( !owner_class )
+	owner_class = dynamic_cast<DataDefCLASS *>(object.type);
+    if ( owner_class )
+    {
+	// Check member access flags — find the member index
+	uint32_t access = 0;
+	for ( size_t i = 0; i < owner_class->members.size(); ++i )
+	{
+	    if ( owner_class->members[i].first == var.name
+	      && i < owner_class->member_access.size() )
+	    {
+		access = owner_class->member_access[i];
+		break;
+	    }
+	}
+	if ( access & (vfPRIVATE | vfPROTECTED) )
+	{
+	    if ( !is_inside_class_method(pgm, owner_class) )
+	    {
+		const char *kind = (access & vfPRIVATE) ? "private" : "protected";
+		pgm.Throw(this) << "'" << var.name << "' is a " << kind
+				<< " member of '" << owner_class->name << "'" << flush;
+	    }
+	}
+    }
+
     DBG(pgm.cc.comment("TokenMember::compile() reg = operand()"));
     Operand &reg = operand(pgm);
 
