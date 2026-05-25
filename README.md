@@ -226,10 +226,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.20.0** (2026-05-21) — **GCC parity crosses 91%: 1536/1685 (91.2%).** C++ std surface now namespace-owned, std::vector, `__builtin_*_overflow_p`, inline asm, triple dereference.
+**v0.20.1** (2026-05-25) — **Code cleanup Phase A.** compiler.cpp split from 15,835 to 8,330 lines across 4 files. Builtin dispatch table, AST walker template, `--emit-function` CLI tool, `TokenCpnd::end_line` tracking.
 
 ### Recent Releases
 
+- **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
 - **v0.20.0** — GCC parity 91.2% (1536/1685); std namespace cleanup, std::vector, overflow_p builtins
 - **v0.19.0** — GCC parity 89.3% (1505/1685); frame_address, stdio/string builtins
 - **v0.18.0** — GCC parity 88.8% (1496/1685); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers

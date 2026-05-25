@@ -1612,3 +1612,14 @@
 - ~~**isUnaryPosition()/isPostfixPosition() helpers**~~ — replaces duplicated checks (59805a6)
 - ~~**`<stdarg.h>` / `va_list`**~~ — `...` in function decls, va_start/va_end macros, va_arg intrinsic, packed int64_t[] buffer, format-aware vsprintf helper (9afa644)
 - ~~**For-loop increment parsing bug**~~ — `i++`/`i--`/`++i`/`--i` in for-loop third position now works. Root cause: conditional `parseExpression` left `;` in stream; fixed with one extra `nextToken()` in `TokenFOR::parse()`
+
+### Session 2026-05-25 (Code cleanup Phase A on feature/builtin-dispatch-table-claude)
+
+- ~~**Builtin dispatch table**~~ — 43-entry data-driven table replacing 550-line if-chain (ba62ee7)
+- ~~**AST walker template**~~ — generic walk_ast() replacing hand-written traversal (825df09)
+- ~~**--emit-function CLI tool**~~ — verbatim function extraction via parser + text fallback (22cceb1)
+- ~~**TokenCpnd::end_line tracking**~~ — parser records closing brace line (22cceb1)
+- ~~**--no-includes flag**~~ — skip #include processing during tokenization (ac6aa24)
+- ~~**compiler.cpp file split**~~ — 15,835→8,330 lines across 4 files (e464573, 680a44b)
+- ~~**Makefile LD_LIBRARY_PATH fix**~~ — AOT unit tests find libmadc.so (bd1182f)
+- ~~**_chk family consolidation**~~ — ~200 lines of duplicated arg-remapping → 2 shared helpers (ba62ee7)

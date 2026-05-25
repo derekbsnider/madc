@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [v0.20.1] — 2026-05-25
+
+Code cleanup Phase A: compiler restructuring and tooling.
+
+- **Compiler file split.** `compiler.cpp` (15,835 lines) split into 4 files:
+  `compiler_builtins.cpp` (1,296L), `compiler_control_flow.cpp` (930L),
+  `compiler_operators.cpp` (5,662L), plus shared `compiler_internal.h` (283L).
+  Core compiler.cpp reduced to 8,330 lines (47% of original).
+
+- **Builtin dispatch table.** 45 `if (var.name == "__builtin_*")` checks in
+  `TokenCallFunc::compile()` replaced by a 43-entry data-driven dispatch table.
+  New builtins are one table entry + one handler function.
+
+- **AST walker template.** Generic `walk_ast()` template replaces hand-written
+  traversal code.  `contains_label()` reduced from 33 lines to 4.
+
+- **`--emit-function` CLI tool.** `bin/madc --emit-function <name> <file>`
+  extracts a complete function definition verbatim.  Parser path for `.mad`
+  files (uses `TokenCpnd::end_line`); text fallback for C/C++ source.
+
+- **`TokenCpnd::end_line` tracking.** Parser now records the closing `}`
+  line for every compound statement.  IDE infrastructure for code folding
+  and structural views.
+
+- **`--no-includes` flag.** Disables `#include` processing during
+  tokenization for processing non-madc source files.
+
+- **Build fixes.** Makefile `test` target sets `LD_LIBRARY_PATH` for AOT
+  unit tests.  `fulltest` target explicitly depends on `libmadc.so`.
+
+- **`_chk` family consolidation.** ~200 lines of duplicated `__builtin___*_chk`
+  argument remapping consolidated into two shared helpers.
+
 - **`__builtin_shuffle` for SIMD vectors.** Element-wise lane permutation via
   runtime mask indices. Supports 1-source and 2-source forms, all element
   types (int8–int64, float, double), register-backed and memory-backed
