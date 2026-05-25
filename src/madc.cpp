@@ -208,69 +208,9 @@ static void install_resource_guards(void)
     }
 }
 
-// --emit-function: extract a complete function by name from a source file.
-// Tokenizes and parses to find the function definition, then uses the
-// token's line position to locate the function in the original source
-// and emits it verbatim (including preceding comment block).
-static int emit_function(Program &prog, const char *filepath, const char *funcname)
+// Walk backwards from a line to include preceding comment block.
+static int find_comment_start(const std::vector<std::string> &lines, int func_line)
 {
-    // Read original source lines for verbatim output
-    std::ifstream in(filepath);
-    if ( !in )
-    {
-	std::cerr << "Cannot open " << filepath << std::endl;
-	return 1;
-    }
-    std::vector<std::string> lines;
-    std::string line;
-    while ( std::getline(in, line) )
-	lines.push_back(line);
-    in.close();
-
-    // Tokenize and parse to find functions.
-    TokenProgram *tp = prog.tokenize(filepath);
-    if ( !tp )
-    {
-	std::cerr << "Failed to tokenize " << filepath << std::endl;
-	return 1;
-    }
-    // Parse to register function names. Parse errors are non-fatal
-    // here — we just need enough to find the function definition.
-    prog.parse(tp);
-
-    // Search pending_funcs for a match
-    std::string target(funcname);
-    TokenFunc *found = NULL;
-    for ( TokenBase *tb : prog.pending_funcs )
-    {
-	TokenFunc *tf = dynamic_cast<TokenFunc *>(tb);
-	if ( !tf ) continue;
-	if ( tf->var.name == target )
-	{
-	    found = tf;
-	    break;
-	}
-    }
-    if ( !found )
-    {
-	std::cerr << "Function '" << funcname << "' not found in "
-		  << filepath << std::endl;
-	return 1;
-    }
-
-    // Token lines are 1-based; convert to 0-based index
-    int func_line = found->line - 1;
-    int end = found->end_line - 1;
-    if ( func_line < 0 || (size_t)func_line >= lines.size()
-      || end < func_line || (size_t)end >= lines.size() )
-    {
-	std::cerr << "Function '" << funcname << "' line range "
-		  << found->line << "-" << found->end_line
-		  << " out of range" << std::endl;
-	return 1;
-    }
-
-    // Walk backwards from func_line to include preceding comment block
     int start = func_line;
     while ( start > 0 )
     {
@@ -295,12 +235,155 @@ static int emit_function(Program &prog, const char *filepath, const char *funcna
 	else
 	    break;
     }
+    return start;
+}
 
-    // Emit the function verbatim
-    for ( int j = start; j <= end; ++j )
-	std::cout << lines[j] << '\n';
+// Walk forward from a line tracking brace depth (with comment/string
+// awareness) to find the closing brace of a function body.  Returns
+// the 0-based line index of the closing brace, or -1 on failure.
+static int find_closing_brace(const std::vector<std::string> &lines, int func_line)
+{
+    int depth = 0;
+    bool in_body = false;
+    enum { NORMAL, IN_STR, IN_CHR, IN_BCOMMENT } state = NORMAL;
 
-    return 0;
+    for ( size_t j = (size_t)func_line; j < lines.size(); ++j )
+    {
+	const std::string &ln = lines[j];
+	for ( size_t k = 0; k < ln.size(); ++k )
+	{
+	    char c = ln[k];
+	    char next = (k + 1 < ln.size()) ? ln[k + 1] : '\0';
+
+	    switch ( state )
+	    {
+	    case NORMAL:
+		if ( c == '/' && next == '/' )
+		    goto next_line;
+		if ( c == '/' && next == '*' )
+		    { state = IN_BCOMMENT; ++k; break; }
+		if ( c == '"' )  { state = IN_STR; break; }
+		if ( c == '\'' ) { state = IN_CHR; break; }
+		if ( c == '{' )  { ++depth; in_body = true; }
+		else if ( c == '}' )
+		{
+		    --depth;
+		    if ( in_body && depth == 0 )
+			return (int)j;
+		}
+		break;
+	    case IN_STR:
+		if ( c == '\\' ) { ++k; break; }
+		if ( c == '"' ) state = NORMAL;
+		break;
+	    case IN_CHR:
+		if ( c == '\\' ) { ++k; break; }
+		if ( c == '\'' ) state = NORMAL;
+		break;
+	    case IN_BCOMMENT:
+		if ( c == '*' && next == '/' )
+		    { state = NORMAL; ++k; }
+		break;
+	    }
+	}
+	next_line:;
+    }
+    return -1;
+}
+
+// Text-based function extraction: find the function signature by name
+// in the raw source text, then use brace-counting to find the body.
+// Works on any C/C++ source without needing the madc parser.
+static int emit_function_text(const std::vector<std::string> &lines, const char *funcname)
+{
+    std::string target(funcname);
+
+    for ( size_t i = 0; i < lines.size(); ++i )
+    {
+	size_t pos = lines[i].find(target);
+	if ( pos == std::string::npos )
+	    continue;
+	// Must be followed by ( (possibly with whitespace)
+	size_t after = pos + target.size();
+	while ( after < lines[i].size() && lines[i][after] == ' ' )
+	    ++after;
+	if ( after >= lines[i].size() || lines[i][after] != '(' )
+	    continue;
+	// Must be a definition (at column 0 or after a type), not indented code
+	if ( pos > 0 && (lines[i][0] == ' ' || lines[i][0] == '\t') )
+	    continue;
+	// Skip lines where the match is inside a comment
+	size_t comment_pos = lines[i].find("//");
+	if ( comment_pos != std::string::npos && comment_pos < pos )
+	    continue;
+
+	int end = find_closing_brace(lines, (int)i);
+	if ( end < 0 )
+	{
+	    std::cerr << "Found '" << funcname << "' at line " << (i + 1)
+		      << " but could not find closing brace" << std::endl;
+	    return 1;
+	}
+
+	int start = find_comment_start(lines, (int)i);
+	for ( int j = start; j <= end; ++j )
+	    std::cout << lines[j] << '\n';
+	return 0;
+    }
+
+    std::cerr << "Function '" << funcname << "' not found" << std::endl;
+    return 1;
+}
+
+// --emit-function: extract a complete function by name from a source file.
+// For .mad files: tokenizes and parses using the madc parser, then uses
+// the token's line position to locate the function in the original source.
+// For other files (C/C++): falls back to text-based brace-matching.
+// Both paths emit the function verbatim, including preceding comment block.
+static int emit_function(Program &prog, const char *filepath, const char *funcname)
+{
+    // Read original source lines for verbatim output
+    std::ifstream in(filepath);
+    if ( !in )
+    {
+	std::cerr << "Cannot open " << filepath << std::endl;
+	return 1;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while ( std::getline(in, line) )
+	lines.push_back(line);
+    in.close();
+
+    // Try the parser path first (works for .mad files).
+    // Tokenize and parse to find functions.
+    TokenProgram *tp = prog.tokenize(filepath);
+    if ( tp && prog.parse(tp) )
+    {
+	// Search pending_funcs for a match
+	std::string target(funcname);
+	for ( TokenBase *tb : prog.pending_funcs )
+	{
+	    TokenFunc *tf = dynamic_cast<TokenFunc *>(tb);
+	    if ( !tf ) continue;
+	    if ( tf->var.name != target ) continue;
+
+	    int func_line = tf->line - 1;
+	    int end = tf->end_line - 1;
+	    if ( func_line >= 0 && (size_t)func_line < lines.size()
+	      && end >= func_line && (size_t)end < lines.size() )
+	    {
+		int start = find_comment_start(lines, func_line);
+		for ( int j = start; j <= end; ++j )
+		    std::cout << lines[j] << '\n';
+		return 0;
+	    }
+	}
+    }
+
+    // Parser path didn't find it — fall back to text-based extraction.
+    // This handles C/C++ source and cases where parse failed.
+    return emit_function_text(lines, funcname);
 }
 
 int main(int argc, char **argv)
