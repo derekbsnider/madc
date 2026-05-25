@@ -1,0 +1,5 @@
+A constructed
+B constructed
+main body
+B destructed (id=2)
+A destructed (id=1)

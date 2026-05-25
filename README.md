@@ -185,7 +185,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 418 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). Latest live GCC torture sweep: 1535/1685 (91.1%), with focused reruns now bringing the floor to at least 1536/1685 (91.2%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status: 452 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1649/1685 (97.9%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -226,19 +226,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.20.0** (2026-05-21) — **GCC parity crosses 91%: 1536/1685 (91.2%).** C++ std surface now namespace-owned, std::vector, `__builtin_*_overflow_p`, inline asm, triple dereference.
+**v0.21.1** (2026-05-25) — **Const enforcement, access control, MIR backend plan.** Top-level const and const ref enforcement, public/private/protected access control, automatic token position inheritance, and JIT IR architecture research leading to the decision to adopt MIR as the optimizing backend (replacing asmjit). 475 tests, 0 failures.
 
 ### Recent Releases
 
+- **v0.21.1** — Const enforcement, access control, token position, MIR backend architecture decision
+- **v0.21.0** — C++ class model: ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding
+- **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
 - **v0.20.0** — GCC parity 91.2% (1536/1685); std namespace cleanup, std::vector, overflow_p builtins
 - **v0.19.0** — GCC parity 89.3% (1505/1685); frame_address, stdio/string builtins
-- **v0.18.0** — GCC parity 88.8% (1496/1685); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers
-- **v0.17.0** — GCC parity 78.1% (1316/1685); nested cast chains, empty brace-init, `f().member`, `#pragma push/pop_macro`
-- **v0.16.0** — sizeof(int)=4 LP64 ABI alignment; GCC torture suite 75% (1264/1685); float init, overflow builtins, ternary const-expr, C23 attributes
-- **v0.15.0** — GCC torture test parity: 627 → 1245 (37% → 74%); comma operator, full #if evaluator, scientific notation, mixed arithmetic promotion, K&R functions, 50+ builtins
-- **v0.14.1** — SMAUG native EXEs survive the first real combat path; small struct returns follow SysV x86-64 ABI
-- **v0.13.0** — SMAUG plays end-to-end on madc; octal/hex escapes, scanf widening, stat sign-ext
-- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes
 
 ## Roadmap
 
@@ -255,6 +251,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
 | **GCC Parity** | GCC torture test suite compatibility | **v0.20.0** — 1536/1685 (91.2%); std namespace cleanup, std::vector |
+| **C++ Model** | Classes, inheritance, vtables, exceptions | **v0.21.0** — ctors/dtors, operators, refs, new/delete, inheritance, vtables, SJLJ exceptions + unwinding |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---

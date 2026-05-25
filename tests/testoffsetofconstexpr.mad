@@ -1,0 +1,10 @@
+#include <stdio.h>
+
+struct A { int i; char a[1]; void (*p)(); };
+struct B { char a[sizeof(struct A) - __builtin_offsetof(struct A, a)]; };
+
+int main(void)
+{
+	printf("%lu\n", (unsigned long)sizeof(struct B));
+	return 0;
+}

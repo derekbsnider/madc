@@ -13,6 +13,7 @@
 #include <cstdint>
 #include <cstdarg>
 #include <csetjmp>
+#include <type_traits>
 #include <map>
 
 struct madc_timeval
@@ -25,6 +26,10 @@ struct madc_jmp_slot
 {
     jmp_buf env;
 };
+
+// Sentinel stored in buf[0] to validate that buf[1] is a slot pointer.
+// Chosen to be unlikely to appear as a random stack/heap value.
+static const uintptr_t MADC_JMP_MAGIC = 0x4D41444A4D505F31ULL; // "MADJMP_1"
 
 static std::map<void *, madc_jmp_slot *> &madc_jmp_slots()
 {
@@ -45,13 +50,31 @@ static madc_jmp_slot *madc_jmp_slot_for(void *user_buf)
 
 extern "C" void *__madc_jmpbuf_for(void *user_buf)
 {
-    return (void *)madc_jmp_slot_for(user_buf)->env;
+    madc_jmp_slot *slot = madc_jmp_slot_for(user_buf);
+    // Store {magic, slot_ptr} in buf[0..1] so memcpy'd copies of the
+    // buffer still point to the same jmp_buf.  The magic sentinel lets
+    // longjmp validate before trusting buf[1] as a pointer.
+    ((uintptr_t *)user_buf)[0] = MADC_JMP_MAGIC;
+    ((void **)user_buf)[1] = (void *)slot;
+    return (void *)slot->env;
 }
 
 extern "C" void __madc_builtin_longjmp(void *user_buf, int value)
 {
     if ( value == 0 )
 	value = 1;
+    // Validate the magic sentinel before trusting buf[1] as a slot
+    // pointer.  Falls back to map lookup if the buffer wasn't set up
+    // by __madc_jmpbuf_for (or was corrupted).
+    if ( ((uintptr_t *)user_buf)[0] == MADC_JMP_MAGIC )
+    {
+	madc_jmp_slot *slot = (madc_jmp_slot *)((void **)user_buf)[1];
+	if ( slot )
+	{
+	    longjmp(slot->env, value);
+	    return;
+	}
+    }
     longjmp(madc_jmp_slot_for(user_buf)->env, value);
 }
 
@@ -193,6 +216,17 @@ extern "C" int __madc_scanf(const char *fmt, ...)
     return rc;
 }
 
+// __builtin_signbit: extract sign bit via movmskpd (GCC's approach).
+// Returns non-zero when the sign bit is set.
+extern "C" int __madc_signbit(double x)
+{
+    return __builtin_signbit(x);
+}
+extern "C" int __madc_signbitf(float x)
+{
+    return __builtin_signbitf(x);
+}
+
 // __builtin_add/sub/mul_overflow: write a+b/a-b/a*b to *res and
 // return 1 on overflow, 0 otherwise.  These use __int128 to detect
 // overflow in 64-bit arithmetic.  The GCC torture tests use the
@@ -216,6 +250,68 @@ extern "C" int __madc_mul_overflow(long a, long b, long *res)
     *res = (long)r;
     return r != (long)r;
 }
+
+template <typename T, typename Op>
+static int madc_overflow_store(long long a, long long b, T *res, Op op)
+{
+    __int128 r = op((__int128)a, (__int128)b);
+    *res = static_cast<T>(r);
+    // For unsigned result types, widen the truncated result through the
+    // unsigned type so negative infinite-precision results (which don't
+    // fit in an unsigned range) are correctly detected as overflow.
+    // E.g. r=-8 in __int128, T=uint64_t: *res=0xFFFFFFFFFFFFFFF8,
+    // (unsigned __int128)*res = 0xFFFFFFFFFFFFFFF8 != -8 → overflow.
+    if ( std::is_unsigned<T>::value )
+	return (unsigned __int128)r != (unsigned __int128)(T)r;
+    return r != (__int128)(T)r;
+}
+
+#define MADC_DEFINE_OVERFLOW_STORE_HELPERS(OPNAME, EXPR) \
+extern "C" int __madc_##OPNAME##_overflow_s8(long long a, long long b, int8_t *res) \
+{ return madc_overflow_store<int8_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_u8(long long a, long long b, uint8_t *res) \
+{ return madc_overflow_store<uint8_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_s16(long long a, long long b, int16_t *res) \
+{ return madc_overflow_store<int16_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_u16(long long a, long long b, uint16_t *res) \
+{ return madc_overflow_store<uint16_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_s32(long long a, long long b, int32_t *res) \
+{ return madc_overflow_store<int32_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_u32(long long a, long long b, uint32_t *res) \
+{ return madc_overflow_store<uint32_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_s64(long long a, long long b, int64_t *res) \
+{ return madc_overflow_store<int64_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); } \
+extern "C" int __madc_##OPNAME##_overflow_u64(long long a, long long b, uint64_t *res) \
+{ return madc_overflow_store<uint64_t>(a, b, res, []( __int128 x, __int128 y ) { return (EXPR); }); }
+
+MADC_DEFINE_OVERFLOW_STORE_HELPERS(add, x + y)
+MADC_DEFINE_OVERFLOW_STORE_HELPERS(sub, x - y)
+MADC_DEFINE_OVERFLOW_STORE_HELPERS(mul, x * y)
+
+#undef MADC_DEFINE_OVERFLOW_STORE_HELPERS
+
+// Unsigned-input 64-bit overflow helpers.  When both operands are
+// unsigned long (64-bit), the caller passes them as long long, which
+// sign-extends 0xFFFFFFFFFFFFFFEE to -18.  These helpers reinterpret
+// the inputs as unsigned before widening to unsigned __int128, so the
+// mathematical value is preserved (e.g. 2^64 - 18 stays large instead
+// of becoming -18).  See pr85095 vs pr91450 in the GCC torture suite.
+template <typename Op>
+static int madc_overflow_store_uu64(long long a, long long b, uint64_t *res, Op op)
+{
+    unsigned __int128 r = op(
+	(unsigned __int128)(unsigned long long)a,
+	(unsigned __int128)(unsigned long long)b);
+    *res = (uint64_t)r;
+    return r != (unsigned __int128)*res;
+}
+
+extern "C" int __madc_add_overflow_uu64(long long a, long long b, uint64_t *res)
+{ return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x + y; }); }
+extern "C" int __madc_sub_overflow_uu64(long long a, long long b, uint64_t *res)
+{ return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x - y; }); }
+extern "C" int __madc_mul_overflow_uu64(long long a, long long b, uint64_t *res)
+{ return madc_overflow_store_uu64(a, b, res, [](unsigned __int128 x, unsigned __int128 y) { return x * y; }); }
 
 // __builtin_bswap*: byte-swap fixed-width integer values.
 extern "C" uint16_t __madc_bswap16(uint16_t x)

@@ -1,0 +1,34 @@
+#!/usr/bin/env madc
+#include <iostream>
+using namespace std;
+
+class Person {
+	string name;
+	int age;
+
+	Person()
+	{
+		name = "unknown";
+		age = 0;
+		cout << "Person constructed" << endl;
+	}
+
+	~Person()
+	{
+		cout << "Person " << name << " destructed" << endl;
+	}
+
+	void setage(int a)
+	{
+		age = a;
+	}
+};
+
+int main()
+{
+	Person p;
+	p.name = "Alice";
+	p.setage(30);
+	cout << p.name << " age " << p.age << endl;
+	return 0;
+}

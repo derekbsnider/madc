@@ -29,6 +29,11 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_pch.h"
+
+// From precompiled_headers.cpp (generated)
+struct PrecompiledHeader { const uint8_t *data; size_t size; };
+extern const PrecompiledHeader *find_precompiled_header(const std::string &name);
 
 using namespace std;
 using namespace asmjit;
@@ -73,6 +78,172 @@ static bool is_binary_prefix(int ch, Source &source)
 static bool is_digit_separator(int ch)
 {
     return ch == '\'';
+}
+
+static uint32_t read_utf8_codepoint(Source &source, unsigned char first)
+{
+    if ( first < 0x80 )
+	return first;
+    int need = 0;
+    uint32_t cp = first;
+    if ( (first & 0xE0) == 0xC0 )
+    {
+	need = 1;
+	cp = first & 0x1F;
+    }
+    else if ( (first & 0xF0) == 0xE0 )
+    {
+	need = 2;
+	cp = first & 0x0F;
+    }
+    else if ( (first & 0xF8) == 0xF0 )
+    {
+	need = 3;
+	cp = first & 0x07;
+    }
+    else
+	return first;
+
+    while ( need-- > 0 )
+    {
+	if ( !source.good() )
+	    return first;
+	unsigned char next = (unsigned char)source.peek();
+	if ( (next & 0xC0) != 0x80 )
+	    return first;
+	source.get();
+	cp = (cp << 6) | (next & 0x3F);
+    }
+    return cp;
+}
+
+static uint32_t read_literal_escape_value(Source &source, char esc)
+{
+    switch ( esc )
+    {
+	case 'n':  return '\n';
+	case 't':  return '\t';
+	case 'r':  return '\r';
+	case '\\': return '\\';
+	case '"':  return '"';
+	case '\'': return '\'';
+	case 'a':  return '\a';
+	case 'b':  return '\b';
+	case 'f':  return '\f';
+	case 'v':  return '\v';
+	case '?':  return '\?';
+	case 'x': case 'X': {
+	    uint32_t val = 0;
+	    int dig = 0;
+	    while ( dig < 2 && source.good() )
+	    {
+		int c = source.peek();
+		int d = (c >= '0' && c <= '9') ? c - '0'
+		    : (c >= 'a' && c <= 'f') ? c - 'a' + 10
+		    : (c >= 'A' && c <= 'F') ? c - 'A' + 10 : -1;
+		if ( d < 0 )
+		    break;
+		val = (val << 4) | (uint32_t)d;
+		source.get();
+		++dig;
+	    }
+	    return val;
+	}
+	case '0': case '1': case '2': case '3':
+	case '4': case '5': case '6': case '7': {
+	    uint32_t val = (uint32_t)(esc - '0');
+	    int dig = 1;
+	    while ( dig < 3 && source.good() )
+	    {
+		int c = source.peek();
+		if ( c < '0' || c > '7' )
+		    break;
+		val = (val << 3) | (uint32_t)(c - '0');
+		source.get();
+		++dig;
+	    }
+	    return val;
+	}
+	default:
+	    return (unsigned char)esc;
+    }
+}
+
+static void append_wide_codepoint(std::string &out, uint32_t cp)
+{
+    out += (char)(cp & 0xff);
+    out += (char)((cp >> 8) & 0xff);
+    out += (char)((cp >> 16) & 0xff);
+    out += (char)((cp >> 24) & 0xff);
+}
+
+static void append_narrow_string_as_wide(std::string &out,
+					 const std::string &narrow)
+{
+    for ( unsigned char c : narrow )
+	append_wide_codepoint(out, (uint32_t)c);
+}
+
+static std::string narrow_string_as_wide(const std::string &narrow)
+{
+    std::string out;
+    append_narrow_string_as_wide(out, narrow);
+    return out;
+}
+
+static TokenBase *read_wide_literal(Source &source)
+{
+    char quote = source.get();
+    int row = source.line();
+    int col = source.column();
+    if ( quote == '"' )
+    {
+	std::string bytes;
+	while ( source.good() && source.peek() != '"' )
+	{
+	    uint32_t cp;
+	    if ( source.peek() == '\\' )
+	    {
+		source.get();
+		if ( !source.good() )
+		    break;
+		cp = read_literal_escape_value(source, source.get());
+	    }
+	    else
+		cp = read_utf8_codepoint(source, (unsigned char)source.get());
+	    append_wide_codepoint(bytes, cp);
+	}
+	if ( !source.good() )
+	{
+	    source.setpos(row, col);
+	    throw "Unterminated wide string";
+	}
+	source.get();
+	return new TokenStr(bytes, true);
+    }
+
+    uint32_t cp = 0;
+    while ( source.good() && source.peek() != '\'' )
+    {
+	if ( source.peek() == '\\' )
+	{
+	    source.get();
+	    if ( !source.good() )
+		break;
+	    cp = read_literal_escape_value(source, source.get());
+	}
+	else
+	    cp = read_utf8_codepoint(source, (unsigned char)source.get());
+    }
+    if ( !source.good() )
+    {
+	source.setpos(row, col);
+	throw "Unterminated wide character literal";
+    }
+    source.get();
+    TokenInt *ti = new TokenInt((int64_t)cp);
+    ti->setDataType(&ddINT32);
+    return ti;
 }
 
 static int64_t read_binary_literal(Source &source)
@@ -524,6 +695,8 @@ TokenVECTOR	tkVECTOR;
 TokenMAP	tkMAP;
 TokenSET	tkSET;
 TokenLIST	tkLIST;
+TokenNEW	tkNEW;
+TokenDELETE	tkDELETE;
 
 // basic type tokens
 TokenVOID	tkVOID;
@@ -559,7 +732,22 @@ void Program::push_token_with_string_concat(TokenBase *tb)
       && !tokens.empty()
       && tokens.back()->type() == TokenType::ttString )
     {
-	((TokenStr *)tokens.back())->str += ((TokenStr *)tb)->str;
+	TokenStr *prev = (TokenStr *)tokens.back();
+	TokenStr *next = (TokenStr *)tb;
+	if ( prev->wide || next->wide )
+	{
+	    if ( !prev->wide )
+	    {
+		prev->str = narrow_string_as_wide(prev->str);
+		prev->wide = true;
+	    }
+	    if ( next->wide )
+		prev->str += next->str;
+	    else
+		append_narrow_string_as_wide(prev->str, next->str);
+	}
+	else
+	    prev->str += next->str;
 	delete tb;
 	return;
     }
@@ -571,6 +759,7 @@ void Program::_tokenizer_init()
 
     tkProgram = NULL;
     tkFunction = NULL;
+    try_depth = 0;
     _cur_token = NULL;
     _prv_token = NULL;
     _include_iostream = false;
@@ -602,8 +791,17 @@ void Program::_tokenizer_init()
     define_map["__FLT_MIN__"] = "1.17549435e-38F";
     define_map["__DBL_MAX__"] = "1.7976931348623157e+308";
     define_map["__DBL_MIN__"] = "2.2250738585072014e-308";
+    define_map["__LDBL_MAX__"] = "1.7976931348623157e+308";
+    define_map["__LDBL_MIN__"] = "2.2250738585072014e-308";
     define_map["__FLT_EPSILON__"] = "1.19209290e-7F";
     define_map["__DBL_EPSILON__"] = "2.2204460492503131e-16";
+    define_map["__LDBL_EPSILON__"] = "2.2204460492503131e-16";
+    define_map["__FLT_MANT_DIG__"] = "24";
+    define_map["__DBL_MANT_DIG__"] = "53";
+    define_map["__LDBL_MANT_DIG__"] = "53";
+    define_map["__FLT_DIG__"] = "6";
+    define_map["__DBL_DIG__"] = "15";
+    define_map["__LDBL_DIG__"] = "15";
     define_map["__BIGGEST_ALIGNMENT__"] = "16";
 
     // GCC predefined macros for C compatibility
@@ -678,10 +876,15 @@ void Program::_tokenizer_init()
 	m.body = "__dest = __src";
 	macro_map["__builtin_va_copy"] = m;
     }
+    // Report the GCC version that compiled madc itself.
+    define_map["__GNUC__"] = std::to_string(__GNUC__);
+    define_map["__GNUC_MINOR__"] = std::to_string(__GNUC_MINOR__);
+    define_map["__GNUC_PATCHLEVEL__"] = std::to_string(__GNUC_PATCHLEVEL__);
     define_map["__x86_64__"] = "1";
     define_map["__LP64__"] = "1";
-    define_map["__BYTE_ORDER__"] = "1234";
-    define_map["__ORDER_LITTLE_ENDIAN__"] = "1234";
+    define_map["__BYTE_ORDER__"] = std::to_string(__BYTE_ORDER__);
+    define_map["__ORDER_LITTLE_ENDIAN__"] = std::to_string(__ORDER_LITTLE_ENDIAN__);
+    define_map["__ORDER_BIG_ENDIAN__"] = std::to_string(__ORDER_BIG_ENDIAN__);
 
     // GCC __builtin_* → libc function aliases.
     // Most GCC builtins have the same signature as their libc counterpart.
@@ -818,6 +1021,15 @@ void Program::_tokenizer_init()
 	m.body = "0";
 	macro_map["__builtin_constant_p"] = m;
     }
+    // __builtin_choose_expr(cond, true_expr, false_expr) chooses by a
+    // compile-time integer condition. The condition is already reduced
+    // for the current GCC execute-suite use by __builtin_constant_p.
+    {
+	MacroDef m;
+	m.params = {"__cond", "__true_expr", "__false_expr"};
+	m.body = "((__cond) ? (__true_expr) : (__false_expr))";
+	macro_map["__builtin_choose_expr"] = m;
+    }
     // __builtin_return_address(level) — unsupported, but many GCC
     // torture tests only need a stable sentinel value.
     {
@@ -828,11 +1040,14 @@ void Program::_tokenizer_init()
     }
     // __builtin_unreachable() — map to abort()
     define_map["__builtin_unreachable"] = "abort";
-    // __builtin_signbit(x) → (x < 0.0) — simplified
+    // __builtin_signbit(x) — check sign bit with 1/x trick.
+    // Cannot use (x < 0.0) because -0.0 < 0.0 is false in IEEE 754.
+    // 1.0/(-0.0) = -inf < 0.0 → true; 1.0/(+0.0) = +inf < 0.0 → false.
+    // For ±normal/subnormal values, x < 0.0 suffices.
     {
 	MacroDef m;
 	m.params = {"__x"};
-	m.body = "((__x) < 0.0 ? 1 : 0)";
+	m.body = "((__x) < 0.0 || 1.0 / (__x) < 0.0)";
 	macro_map["__builtin_signbit"] = m;
 	macro_map["__builtin_signbitf"] = m;
 	macro_map["__builtin_signbitl"] = m;
@@ -918,6 +1133,14 @@ void Program::_tokenizer_init()
 	macro_map["__builtin_isfinitef"] = isfinite;
 	macro_map["__builtin_isfinitel"] = isfinite;
     }
+    {
+	MacroDef isinf;
+	isinf.params = {"__x"};
+	isinf.body = "((__x) == __builtin_inf() ? 1 : ((__x) == -__builtin_inf() ? -1 : 0))";
+	macro_map["__builtin_isinf"] = isinf;
+	macro_map["__builtin_isinff"] = isinf;
+	macro_map["__builtin_isinfl"] = isinf;
+    }
     // __builtin_classify_type(x) → 0 (integer type, simplified)
     {
 	MacroDef m;
@@ -925,7 +1148,7 @@ void Program::_tokenizer_init()
 	m.body = "0";
 	macro_map["__builtin_classify_type"] = m;
     }
-    define_map["__builtin_alloca"] = "malloc"; // alloca = stack alloc, map to malloc for now
+    // __builtin_alloca → alloca (line 930); compiler handles via stack bump pool.
     define_map["__builtin_ffs"] = "__madc_ffs";
     define_map["__builtin_ffsl"] = "__madc_ffsl";
     define_map["__builtin_ffsll"] = "__madc_ffsll";
@@ -1107,6 +1330,8 @@ void Program::add_keywords()
     // `list` intentionally omitted from keyword_map so it doesn't shadow
     // the C identifier `list`. Use `std::list<T>` instead.
     // keyword_map[tkLIST.str] = &tkLIST;
+    keyword_map[tkNEW.str] = &tkNEW;
+    keyword_map[tkDELETE.str] = &tkDELETE;
 }
 
 // add static tokens for base data types
@@ -1115,6 +1340,9 @@ void Program::add_datatypes()
     static TokenDataType tkPTRDIFF("ptrdiff_t", ddINT64);
     static TokenDataType tkSIZE_T("size_t", ddUINT64);
     static TokenDataType tkWCHAR_T("wchar_t", ddINT32);
+    static TokenDataType tkDECIMAL32("_Decimal32", ddFLOAT);
+    static TokenDataType tkDECIMAL64("_Decimal64", ddDOUBLE);
+    static TokenDataType tkDECIMAL128("_Decimal128", ddDOUBLE);
 
     datatype_map[tkVOID.str] = &tkVOID;
     datatype_map[tkBOOL.str] = &tkBOOL;
@@ -1139,6 +1367,9 @@ void Program::add_datatypes()
     datatype_map[tkPTRDIFF.str] = &tkPTRDIFF;
     datatype_map[tkSIZE_T.str] = &tkSIZE_T;
     datatype_map[tkWCHAR_T.str] = &tkWCHAR_T;
+    datatype_map[tkDECIMAL32.str] = &tkDECIMAL32;
+    datatype_map[tkDECIMAL64.str] = &tkDECIMAL64;
+    datatype_map[tkDECIMAL128.str] = &tkDECIMAL128;
 }
 
 
@@ -1267,6 +1498,14 @@ TokenBase *Program::_getToken()
 		    directive += source.get();
 		if ( directive == "include" )
 		{
+		    // skip_includes mode: consume rest of line and continue
+		    if ( skip_includes )
+		    {
+			while ( source.good() && !source.eof()
+			     && source.peek() != '\n' && source.peek() != '\r' )
+			    source.get();
+			return getToken();
+		    }
 		    // skip whitespace
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();
@@ -1289,6 +1528,9 @@ TokenBase *Program::_getToken()
 			    DBG(std::cout << "#include <" << incfile << "> skipped (already included)" << std::endl);
 			    return getToken();
 			}
+			// Text-embedded headers (hand-written stubs) take priority
+			// because they're tailored for madc's parser. Pre-compiled
+			// system headers are used only when no text stub exists.
 			const std::string *embedded = find_embedded_header(incfile);
 			if ( embedded )
 			{
@@ -1311,6 +1553,26 @@ TokenBase *Program::_getToken()
 			    // flag headers for deferred registration during parse init
 			    mark_embedded_include_flag(incfile);
 			    return getToken();
+			}
+			// Check pre-compiled headers (post-lexer token stream
+			// from real system headers, used when no text stub exists)
+			const PrecompiledHeader *pch = find_precompiled_header(incfile);
+			if ( pch )
+			{
+			    DBG(std::cout << "#include <" << incfile << "> (precompiled)" << std::endl);
+			    std::deque<TokenBase *> pch_tokens;
+			    if ( madc_pch::read_madh(pch->data, pch->size, pch_tokens) )
+			    {
+				const char *_interned_pch = intern_file(incfile);
+				for ( TokenBase *itb : pch_tokens )
+				{
+				    itb->file = _interned_pch;
+				    push_token_with_string_concat(itb);
+				}
+				mark_embedded_include_flag(incfile);
+				return getToken();
+			    }
+			    DBG(std::cout << "#include <" << incfile << "> PCH failed, trying filesystem" << std::endl);
 			}
 		    }
 		    std::string full_path = resolve_include_path(incfile, is_system);
@@ -1741,12 +2003,15 @@ TokenBase *Program::_getToken()
 	    if ( source.peek() == '[' )
 	    {
 		source.get(); // consume second '['
-		int depth = 1;
-		while ( source.good() && depth > 0 )
+		// Skip until matching ]]
+		while ( source.good() )
 		{
 		    char c = source.get();
-		    if ( c == '[' ) ++depth;
-		    else if ( c == ']' ) --depth;
+		    if ( c == ']' && source.peek() == ']' )
+		    {
+			source.get(); // consume second ']'
+			break;
+		    }
 		}
 		return getToken();
 	    }
@@ -2094,6 +2359,12 @@ TokenBase *Program::_getToken()
 			    real_type_suffix = (char)c;
 			    lit_text += (char)source.get();
 			}
+			else if ( c == 'd' || c == 'D' )
+			{
+			    lit_text += (char)source.get();
+			    if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
+				lit_text += (char)source.get();
+			}
 		    }
 		    if ( eat_imag_suffix() )
 		    {
@@ -2226,6 +2497,12 @@ TokenBase *Program::_getToken()
 			real_type_suffix = (char)c;
 			lit_text += (char)source.get();
 		    }
+		    else if ( c == 'd' || c == 'D' )
+		    {
+			lit_text += (char)source.get();
+			if ( source.good() && (source.peek() == 'd' || source.peek() == 'D') )
+			    lit_text += (char)source.get();
+		    }
 		}
 		double num = strtod(lit_text.c_str(), NULL);
 		if ( eat_imag_suffix() )
@@ -2246,7 +2523,7 @@ TokenBase *Program::_getToken()
 		    word += source.get();
 		if ( word == "L" && source.good()
 		  && (source.peek() == '"' || source.peek() == '\'') )
-		    return getToken();
+		    return read_wide_literal(source);
 		// function-like macro expansion: NAME(args) or NAME (args)
 		// Suppressed when the preceding tokens form a declaration /
 		// definition head (`void bug(const char *, ...)` must not
@@ -3135,6 +3412,78 @@ bool Program::evaluateIfCondition()
     std::function<int64_t()> parse_unary;
     std::function<int64_t()> parse_primary;
 
+    auto read_char_escape = [&]() -> int64_t {
+	if ( pos >= expr.size() )
+	    return 0;
+	char esc = expr[pos++];
+	switch ( esc )
+	{
+	    case 'n':  return '\n';
+	    case 't':  return '\t';
+	    case 'r':  return '\r';
+	    case '\\': return '\\';
+	    case '"':  return '"';
+	    case '\'': return '\'';
+	    case 'a':  return '\a';
+	    case 'b':  return '\b';
+	    case 'f':  return '\f';
+	    case 'v':  return '\v';
+	    case '?':  return '\?';
+	    case 'x': case 'X': {
+		int64_t val = 0;
+		while ( pos < expr.size() && isxdigit((unsigned char)expr[pos]) )
+		{
+		    char c = expr[pos++];
+		    int d = (c >= '0' && c <= '9') ? c - '0'
+			: (c >= 'a' && c <= 'f') ? c - 'a' + 10
+			: (c >= 'A' && c <= 'F') ? c - 'A' + 10 : 0;
+		    val = (val << 4) | d;
+		}
+		return val;
+	    }
+	    case '0': case '1': case '2': case '3':
+	    case '4': case '5': case '6': case '7': {
+		int64_t val = esc - '0';
+		int dig = 1;
+		while ( dig < 3 && pos < expr.size()
+		     && expr[pos] >= '0' && expr[pos] <= '7' )
+		{
+		    val = (val << 3) | (expr[pos++] - '0');
+		    ++dig;
+		}
+		return val;
+	    }
+	    default:
+		return (unsigned char)esc;
+	}
+    };
+
+    auto read_char_literal = [&](bool wide) -> int64_t {
+	if ( wide )
+	    ++pos;
+	if ( pos >= expr.size() || expr[pos] != '\'' )
+	    return 0;
+	++pos;
+	int64_t value = 0;
+	while ( pos < expr.size() && expr[pos] != '\'' )
+	{
+	    int64_t ch;
+	    if ( expr[pos] == '\\' )
+	    {
+		++pos;
+		ch = read_char_escape();
+	    }
+	    else
+		ch = (unsigned char)expr[pos++];
+	    value = (value << 8) | (ch & 0xff);
+	    if ( wide )
+		value = ch;
+	}
+	if ( pos < expr.size() && expr[pos] == '\'' )
+	    ++pos;
+	return value;
+    };
+
     parse_primary = [&]() -> int64_t {
 	skip_ws();
 	if ( pos >= expr.size() )
@@ -3149,6 +3498,12 @@ bool Program::evaluateIfCondition()
 		++pos;
 	    return value;
 	}
+
+	if ( pos + 1 < expr.size() && expr[pos] == 'L' && expr[pos+1] == '\'' )
+	    return read_char_literal(true);
+
+	if ( expr[pos] == '\'' )
+	    return read_char_literal(false);
 
 	// hex literal 0x...
 	if ( pos + 1 < expr.size() && expr[pos] == '0'

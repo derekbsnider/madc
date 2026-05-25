@@ -1,0 +1,57 @@
+#include <stdio.h>
+
+float u2f(u)
+	unsigned int u;
+{
+	return u;
+}
+
+double u2d(u)
+	unsigned int u;
+{
+	return u;
+}
+
+long double u2ld(u)
+	unsigned int u;
+{
+	return u;
+}
+
+int fnear(float x, float y)
+{
+	float t = x - y;
+	return t == 0 || x / t > 1000000.0;
+}
+
+int dnear(double x, double y)
+{
+	double t = x - y;
+	return t == 0 || x / t > 100000000000000.0;
+}
+
+int ldnear(long double x, long double y)
+{
+	long double t = x - y;
+	return t == 0 || x / t > 100000000000000000000000000000000.0;
+}
+
+int main()
+{
+	printf("f %d %d %d %d\n",
+		u2f(0U) == (float)0U,
+		fnear(u2f(~0U), (float)~0U),
+		fnear(u2f((~0U) >> 1), (float)((~0U) >> 1)),
+		u2f(~((~0U) >> 1)) == (float)~((~0U) >> 1));
+	printf("d %d %d %d %d\n",
+		u2d(0U) == (double)0U,
+		dnear(u2d(~0U), (double)~0U),
+		dnear(u2d((~0U) >> 1), (double)((~0U) >> 1)),
+		u2d(~((~0U) >> 1)) == (double)~((~0U) >> 1));
+	printf("ld %d %d %d %d\n",
+		u2ld(0U) == (long double)0U,
+		ldnear(u2ld(~0U), (long double)~0U),
+		ldnear(u2ld((~0U) >> 1), (long double)((~0U) >> 1)),
+		u2ld(~((~0U) >> 1)) == (long double)~((~0U) >> 1));
+	return 0;
+}

@@ -45,7 +45,7 @@ enum class TokenID {
   tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT, tkVOLATILE,
   tkVECTOR, tkMAP, tkSET, tkLIST,
   tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
-  tkUNION
+  tkUNION, tkNEW, tkDELETE
 };
 
 enum class TokenAssoc {
@@ -72,8 +72,14 @@ public:
     int line;
     int column;
     std::streampos pos;
-    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = NULL; parent = NULL; line = 0; column = 0; pos = 0; }
-    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = NULL; parent = NULL; line = 0; column = 0; pos = 0; }
+    // Current parse position — updated by nextToken(), inherited by
+    // all new tokens so synthetic parser-created tokens automatically
+    // get the position of the most recently consumed source token.
+    static const char *_parse_file;
+    static int _parse_line;
+    static int _parse_column;
+    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; }
+    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; }
     virtual ~TokenBase() {}
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int64_t c) { _token = c; }
@@ -1017,14 +1023,15 @@ public:
 class TokenStr: public TokenIdent
 {
 public:
-    TokenStr() {}
-    TokenStr(const char *k) : TokenIdent(k) {}
-    TokenStr(std::string k) : TokenIdent(k) {}
+    bool wide;
+    TokenStr() : wide(false) {}
+    TokenStr(const char *k, bool w = false) : TokenIdent(k), wide(w) {}
+    TokenStr(std::string k, bool w = false) : TokenIdent(k), wide(w) {}
     virtual int64_t ival() const   { return atol(str.c_str()); }
     virtual bool is_constant() const override { return true; }
     virtual TokenType type() const { return TokenType::ttString; }
     virtual TokenID   id()   const { return TokenID::tkStr; }
-    virtual TokenBase *clone()     { return new TokenStr(str); }
+    virtual TokenBase *clone()     { return new TokenStr(str, wide); }
 };
 
 // comment
@@ -1107,16 +1114,41 @@ class TokenCASE: public TokenKeyword
 {
 public:
     TokenBase *value;                          // case constant expression
+    TokenBase *range_high;                     // GNU case range: case LOW ... HIGH
     std::vector<TokenBase *> statements;       // statements until next case/default/}
-    TokenCASE() : TokenKeyword("case"), value(NULL) {}
+    TokenCASE() : TokenKeyword("case"), value(NULL), range_high(NULL) {}
     virtual TokenID id() const { return TokenID::tkCASE; }
     virtual TokenBase *clone() { return new TokenCASE(); }
     virtual TokenBase *parse(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
-class TokenTRY:      public TokenKeyword { public: TokenTRY()      : TokenKeyword("try") {}      virtual TokenID id() const { return TokenID::tkTRY;      } virtual TokenBase *clone() { return (TokenBase*)new TokenTRY();     } };
+// try { ... } catch (type var) { ... } — exception handling
+class TokenTRY: public TokenKeyword
+{
+public:
+    TokenBase *try_body;                     // compound statement for try block
+    // catch clauses: parallel vectors (type, var name, body)
+    std::vector<int> catch_types;            // MADC_EXCEPT_* type tags (99 = catch(...))
+    std::vector<std::string> catch_varnames; // catch variable names (empty for catch(...))
+    std::vector<TokenBase *> catch_bodies;   // compound statements for each catch
+    TokenTRY() : TokenKeyword("try") { try_body = NULL; }
+    virtual TokenID id() const { return TokenID::tkTRY; }
+    virtual TokenBase *clone() { return new TokenTRY(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
 class TokenCATCH:    public TokenKeyword { public: TokenCATCH()    : TokenKeyword("catch") {}    virtual TokenID id() const { return TokenID::tkCATCH;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCATCH();   } };
-class TokenTHROW:    public TokenKeyword { public: TokenTHROW()    : TokenKeyword("throw") {}    virtual TokenID id() const { return TokenID::tkTHROW;    } virtual TokenBase *clone() { return (TokenBase*)new TokenTHROW();   } };
+// throw expr — throws an exception
+class TokenTHROW: public TokenKeyword
+{
+public:
+    TokenBase *throw_expr;  // expression to throw (NULL for rethrow)
+    TokenTHROW() : TokenKeyword("throw") { throw_expr = NULL; }
+    virtual TokenID id() const { return TokenID::tkTHROW; }
+    virtual TokenBase *clone() { return new TokenTHROW(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
 class TokenSWITCH: public TokenKeyword
 {
 public:
@@ -1213,6 +1245,30 @@ class TokenMAP:    public TokenKeyword { public: TokenMAP()    : TokenKeyword("m
 class TokenSET:    public TokenKeyword { public: TokenSET()    : TokenKeyword("set") {}    virtual TokenID id() const { return TokenID::tkSET; }    virtual TokenBase *clone() { return new TokenSET(); }    virtual TokenBase *parse(Program &); };
 class TokenLIST:   public TokenKeyword { public: TokenLIST()   : TokenKeyword("list") {}   virtual TokenID id() const { return TokenID::tkLIST; }   virtual TokenBase *clone() { return new TokenLIST(); }   virtual TokenBase *parse(Program &); };
 
+// new / delete — heap allocation with constructor/destructor calls
+class TokenNEW: public TokenKeyword
+{
+public:
+    DataDefCLASS *alloc_class;
+    std::vector<TokenBase *> ctor_args;
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; }
+    virtual TokenID id() const { return TokenID::tkNEW; }
+    virtual TokenBase *clone() { return new TokenNEW(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+class TokenDELETE: public TokenKeyword
+{
+public:
+    TokenBase *expr;
+    DataDefCLASS *del_class;
+    TokenDELETE() : TokenKeyword("delete") { expr = NULL; del_class = NULL; }
+    virtual TokenID id() const { return TokenID::tkDELETE; }
+    virtual TokenBase *clone() { return new TokenDELETE(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+
 class TokenSTRUCT: public TokenKeyword
 {
 public:
@@ -1300,9 +1356,11 @@ public:
 class TokenVaArg: public TokenBase
 {
 public:
-    Variable *ap_var;     // the va_list variable
-    DataDef *target_type; // the type to read as
-    TokenVaArg(Variable *ap, DataDef *tt) : ap_var(ap), target_type(tt) { _datatype = tt; }
+    Variable *ap_var;      // the va_list variable (legacy, may be NULL)
+    TokenBase *ap_expr;    // the va_list expression (may be subscript, deref, etc.)
+    DataDef *target_type;  // the type to read as
+    TokenVaArg(Variable *ap, DataDef *tt) : ap_var(ap), ap_expr(NULL), target_type(tt) { _datatype = tt; }
+    TokenVaArg(Variable *ap, TokenBase *expr, DataDef *tt) : ap_var(ap), ap_expr(expr), target_type(tt) { _datatype = tt; }
     virtual TokenType type() const { return TokenType::ttBase; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };

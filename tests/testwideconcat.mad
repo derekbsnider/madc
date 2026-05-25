@@ -1,0 +1,6 @@
+int main(void)
+{
+	if ( L"a" "b"[1] != L'b' )
+		__builtin_abort();
+	return 0;
+}

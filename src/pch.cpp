@@ -1,0 +1,479 @@
+///////////////////////////////////////////////////////////////////////////
+//                                                                       //
+// pch.cpp — madc Pre-Compiled Header serialization                     //
+//                                                                       //
+// Serializes/deserializes post-lexer token streams in .madh format.     //
+// Compressed with zlib (fallback) or zstd (preferred, if available).    //
+//                                                                       //
+///////////////////////////////////////////////////////////////////////////
+
+#include <cstdint>
+#include <cstring>
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <deque>
+#include <map>
+#include <queue>
+#include <stack>
+#include <set>
+#include <sstream>
+
+#include <zlib.h>
+#include <asmjit/x86.h>
+
+extern thread_local bool madc_verbose;
+#define DBG(x) do { if(madc_verbose){x;} } while(0)
+
+#include "datadef.h"
+#include "tokens.h"
+#include "datatokens.h"
+#include "madc.h"
+#include "madc_pch.h"
+
+// Try zstd if available (detected by configure)
+#ifdef HAVE_ZSTD
+#include <zstd.h>
+#endif
+
+namespace madc_pch {
+
+// --- Binary buffer helpers ---
+
+static void write_u8(std::vector<uint8_t> &buf, uint8_t v)
+{
+    buf.push_back(v);
+}
+
+static void write_u16(std::vector<uint8_t> &buf, uint16_t v)
+{
+    buf.push_back(v & 0xFF);
+    buf.push_back((v >> 8) & 0xFF);
+}
+
+static void write_u32(std::vector<uint8_t> &buf, uint32_t v)
+{
+    buf.push_back(v & 0xFF);
+    buf.push_back((v >> 8) & 0xFF);
+    buf.push_back((v >> 16) & 0xFF);
+    buf.push_back((v >> 24) & 0xFF);
+}
+
+static void write_i64(std::vector<uint8_t> &buf, int64_t v)
+{
+    for ( int i = 0; i < 8; i++ )
+	buf.push_back((v >> (i * 8)) & 0xFF);
+}
+
+static void write_f64(std::vector<uint8_t> &buf, double v)
+{
+    int64_t bits;
+    memcpy(&bits, &v, 8);
+    write_i64(buf, bits);
+}
+
+static void write_str(std::vector<uint8_t> &buf, const std::string &s)
+{
+    write_u32(buf, (uint32_t)s.size());
+    buf.insert(buf.end(), s.begin(), s.end());
+}
+
+// --- Read helpers ---
+
+struct Reader
+{
+    const uint8_t *data;
+    size_t len;
+    size_t pos;
+
+    Reader(const uint8_t *d, size_t l) : data(d), len(l), pos(0) {}
+
+    bool has(size_t n) const { return pos + n <= len; }
+
+    uint8_t read_u8()
+    {
+	if ( !has(1) ) return 0;
+	return data[pos++];
+    }
+    uint16_t read_u16()
+    {
+	if ( !has(2) ) return 0;
+	uint16_t v = data[pos] | ((uint16_t)data[pos+1] << 8);
+	pos += 2;
+	return v;
+    }
+    uint32_t read_u32()
+    {
+	if ( !has(4) ) return 0;
+	uint32_t v = data[pos] | ((uint32_t)data[pos+1] << 8)
+		   | ((uint32_t)data[pos+2] << 16) | ((uint32_t)data[pos+3] << 24);
+	pos += 4;
+	return v;
+    }
+    int64_t read_i64()
+    {
+	if ( !has(8) ) return 0;
+	int64_t v = 0;
+	for ( int i = 0; i < 8; i++ )
+	    v |= ((int64_t)data[pos++]) << (i * 8);
+	return v;
+    }
+    double read_f64()
+    {
+	int64_t bits = read_i64();
+	double v;
+	memcpy(&v, &bits, 8);
+	return v;
+    }
+    std::string read_str()
+    {
+	uint32_t slen = read_u32();
+	if ( !has(slen) ) return "";
+	std::string s((const char *)data + pos, slen);
+	pos += slen;
+	return s;
+    }
+};
+
+// --- Serialization ---
+
+bool serialize_tokens(const std::deque<TokenBase *> &tokens,
+		      std::vector<uint8_t> &out)
+{
+    out.clear();
+    out.reserve(tokens.size() * 16); // rough estimate
+
+    for ( TokenBase *tb : tokens )
+    {
+	if ( !tb ) continue;
+
+	TokenType tt = tb->type();
+	TokenID   ti = tb->id();
+
+	write_u8(out, (uint8_t)tt);
+	write_u16(out, (uint16_t)ti);
+	write_u32(out, (uint32_t)tb->line);
+	write_u16(out, (uint16_t)tb->column);
+
+	// Determine value type and write value
+	switch ( tt )
+	{
+	case TokenType::ttInteger:
+	{
+	    TokenInt *tok = dynamic_cast<TokenInt *>(tb);
+	    if ( tok && !tok->source_text.empty() )
+	    {
+		write_u8(out, (uint8_t)PchValueType::IntStr);
+		write_i64(out, tok->ival());
+		write_str(out, tok->source_text);
+	    }
+	    else
+	    {
+		write_u8(out, (uint8_t)PchValueType::Int64);
+		write_i64(out, tb->ival());
+	    }
+	    break;
+	}
+	case TokenType::ttChar:
+	    write_u8(out, (uint8_t)PchValueType::Int64);
+	    write_i64(out, tb->ival());
+	    break;
+
+	case TokenType::ttReal:
+	    write_u8(out, (uint8_t)PchValueType::Double);
+	    write_f64(out, tb->dval());
+	    break;
+
+	case TokenType::ttString:
+	{
+	    TokenStr *ts = dynamic_cast<TokenStr *>(tb);
+	    write_u8(out, (uint8_t)PchValueType::String);
+	    write_str(out, ts ? ts->str : "");
+	    // Store wide flag in high bit of string length (already encoded in write_str)
+	    write_u8(out, ts ? (ts->wide ? 1 : 0) : 0);
+	    break;
+	}
+	case TokenType::ttIdentifier:
+	{
+	    TokenIdent *ti_tok = dynamic_cast<TokenIdent *>(tb);
+	    write_u8(out, (uint8_t)PchValueType::String);
+	    write_str(out, ti_tok ? ti_tok->str : "");
+	    break;
+	}
+	case TokenType::ttKeyword:
+	case TokenType::ttDataType:
+	    // Keywords and datatypes are identified by their TokenID;
+	    // no additional value needed.  But some have string content
+	    // (e.g., typedef'd names).
+	    if ( TokenIdent *ki = dynamic_cast<TokenIdent *>(tb) )
+	    {
+		write_u8(out, (uint8_t)PchValueType::String);
+		write_str(out, ki->str);
+	    }
+	    else
+	    {
+		write_u8(out, (uint8_t)PchValueType::None);
+	    }
+	    break;
+
+	default:
+	    // Operators, symbols, punctuation — identified by TokenID alone
+	    write_u8(out, (uint8_t)PchValueType::None);
+	    break;
+	}
+    }
+
+    return true;
+}
+
+// --- Deserialization ---
+
+bool deserialize_tokens(const uint8_t *data, size_t len,
+			uint32_t expected_count,
+			std::deque<TokenBase *> &out)
+{
+    Reader r(data, len);
+    out.clear();
+
+    for ( uint32_t i = 0; i < expected_count && r.has(1); i++ )
+    {
+	TokenType tt = (TokenType)r.read_u8();
+	TokenID   ti = (TokenID)r.read_u16();
+	uint32_t line = r.read_u32();
+	uint16_t column = r.read_u16();
+	PchValueType vt = (PchValueType)r.read_u8();
+
+	TokenBase *tb = NULL;
+
+	switch ( vt )
+	{
+	case PchValueType::Int64:
+	{
+	    int64_t val = r.read_i64();
+	    if ( tt == TokenType::ttChar )
+		tb = new TokenChar((int)val);
+	    else
+		tb = new TokenInt(val);
+	    break;
+	}
+	case PchValueType::IntStr:
+	{
+	    int64_t val = r.read_i64();
+	    std::string src = r.read_str();
+	    tb = new TokenInt(val, src);
+	    break;
+	}
+	case PchValueType::Double:
+	{
+	    double val = r.read_f64();
+	    tb = new TokenReal(val);
+	    break;
+	}
+	case PchValueType::String:
+	{
+	    std::string s = r.read_str();
+	    if ( tt == TokenType::ttString )
+	    {
+		uint8_t wide = r.read_u8();
+		tb = new TokenStr(s, wide != 0);
+	    }
+	    else if ( tt == TokenType::ttIdentifier )
+		tb = new TokenIdent(s);
+	    else if ( tt == TokenType::ttKeyword || tt == TokenType::ttDataType )
+	    {
+		// Keywords/datatypes with string content — create as
+		// identifier and let the parser resolve the keyword.
+		tb = new TokenIdent(s);
+	    }
+	    else
+		tb = new TokenIdent(s);
+	    break;
+	}
+	case PchValueType::None:
+	default:
+	    // Reconstruct from TokenID — operators, punctuation, keywords
+	    tb = new TokenBase((int64_t)ti);
+	    break;
+	}
+
+	if ( tb )
+	{
+	    tb->line = line;
+	    tb->column = column;
+	    out.push_back(tb);
+	}
+    }
+
+    return true;
+}
+
+// --- Compression ---
+
+bool compress(const std::vector<uint8_t> &in,
+	      std::vector<uint8_t> &out,
+	      PchCompression method)
+{
+    if ( method == PchCompression::None )
+    {
+	out = in;
+	return true;
+    }
+
+#ifdef HAVE_ZSTD
+    if ( method == PchCompression::Zstd )
+    {
+	size_t bound = ZSTD_compressBound(in.size());
+	out.resize(bound);
+	size_t result = ZSTD_compress(out.data(), bound, in.data(), in.size(), 3);
+	if ( ZSTD_isError(result) )
+	    return false;
+	out.resize(result);
+	return true;
+    }
+#endif
+
+    if ( method == PchCompression::Zlib )
+    {
+	uLongf bound = compressBound((uLong)in.size());
+	out.resize(bound);
+	int rc = compress2(out.data(), &bound, in.data(), (uLong)in.size(), Z_DEFAULT_COMPRESSION);
+	if ( rc != Z_OK )
+	    return false;
+	out.resize(bound);
+	return true;
+    }
+
+    return false;
+}
+
+bool decompress(const uint8_t *in, size_t in_len,
+		uint8_t *out, size_t out_len,
+		PchCompression method)
+{
+    if ( method == PchCompression::None )
+    {
+	if ( in_len != out_len ) return false;
+	memcpy(out, in, in_len);
+	return true;
+    }
+
+#ifdef HAVE_ZSTD
+    if ( method == PchCompression::Zstd )
+    {
+	size_t result = ZSTD_decompress(out, out_len, in, in_len);
+	return !ZSTD_isError(result) && result == out_len;
+    }
+#endif
+
+    if ( method == PchCompression::Zlib )
+    {
+	uLongf dest_len = (uLongf)out_len;
+	int rc = ::uncompress(out, &dest_len, in, (uLong)in_len);
+	return rc == Z_OK && dest_len == (uLongf)out_len;
+    }
+
+    return false;
+}
+
+// --- File I/O ---
+
+bool write_madh(const char *path,
+		const std::deque<TokenBase *> &tokens,
+		uint64_t source_hash,
+		PchCompression method)
+{
+    // Serialize tokens
+    std::vector<uint8_t> raw;
+    if ( !serialize_tokens(tokens, raw) )
+	return false;
+
+    // Compress
+    std::vector<uint8_t> compressed;
+    if ( !compress(raw, compressed, method) )
+	return false;
+
+    // Build header
+    MadhHeader hdr;
+    memcpy(hdr.magic, "MADH", 4);
+    hdr.version = FORMAT_VERSION;
+    hdr.flags = (uint16_t)method;
+    hdr.source_hash = source_hash;
+    hdr.compiler_hash = compiler_hash();
+    hdr.uncompressed_size = (uint32_t)raw.size();
+    hdr.token_count = (uint32_t)tokens.size();
+
+    // Write file
+    std::ofstream f(path, std::ios::binary);
+    if ( !f ) return false;
+    f.write((const char *)&hdr, sizeof(hdr));
+    f.write((const char *)compressed.data(), compressed.size());
+    return f.good();
+}
+
+bool read_madh(const uint8_t *data, size_t len,
+	       std::deque<TokenBase *> &tokens)
+{
+    if ( len < sizeof(MadhHeader) )
+	return false;
+
+    const MadhHeader *hdr = (const MadhHeader *)data;
+
+    // Validate magic
+    if ( memcmp(hdr->magic, "MADH", 4) != 0 )
+	return false;
+
+    // Check version
+    if ( hdr->version > FORMAT_VERSION )
+	return false;
+
+    // Check compiler hash
+    if ( hdr->compiler_hash != compiler_hash() )
+	return false;
+
+    // Decompress
+    PchCompression method = (PchCompression)(hdr->flags & 0x03);
+    const uint8_t *compressed = data + sizeof(MadhHeader);
+    size_t compressed_len = len - sizeof(MadhHeader);
+
+    std::vector<uint8_t> raw(hdr->uncompressed_size);
+    if ( !decompress(compressed, compressed_len,
+		     raw.data(), raw.size(), method) )
+	return false;
+
+    // Deserialize
+    return deserialize_tokens(raw.data(), raw.size(),
+			      hdr->token_count, tokens);
+}
+
+// --- Hashing ---
+
+uint64_t hash_content(const char *data, size_t len)
+{
+    // FNV-1a 64-bit
+    uint64_t h = 14695981039346656037ULL;
+    for ( size_t i = 0; i < len; i++ )
+    {
+	h ^= (uint8_t)data[i];
+	h *= 1099511628211ULL;
+    }
+    return h;
+}
+
+uint64_t compiler_hash()
+{
+    // Hash the token format version + key enum sizes so that
+    // PCH files are invalidated when the token format changes.
+    static uint64_t cached = 0;
+    if ( !cached )
+    {
+	const char *sig = "madh-v1-tt" // token type enum
+			  "-ti"        // token id enum
+			  "-2026a";    // format generation
+	cached = hash_content(sig, strlen(sig));
+    }
+    return cached;
+}
+
+} // namespace madc_pch

@@ -1,0 +1,26 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+int main()
+{
+	const int x = 42;
+	printf("x = %d\n", x);
+
+	const double pi = 3.14;
+	printf("pi = %.2f\n", pi);
+
+	// const pointer — pointer itself is const, contents are not
+	int a = 10;
+	int b = 20;
+	int * const p = &a;
+	*p = 99;
+	printf("a = %d\n", a);
+
+	// non-const pointer to const — pointer can change, contents cannot
+	const char *s = "hello";
+	s = "world";
+	printf("s = %s\n", s);
+
+	printf("done\n");
+	return 0;
+}

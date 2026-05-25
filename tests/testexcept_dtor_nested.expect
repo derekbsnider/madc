@@ -1,0 +1,7 @@
+Foo(1)
+Foo(2)
+~Foo(2)
+inner caught: 42
+after inner
+done
+~Foo(1)

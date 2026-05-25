@@ -1,0 +1,24 @@
+#include <stdio.h>
+
+struct empty {};
+
+int calls;
+
+struct empty make_empty(void)
+{
+	calls++;
+	return (struct empty){};
+}
+
+struct holder {
+	struct empty lock;
+};
+
+int main(void)
+{
+	struct empty e;
+	struct holder h = (struct holder){ .lock = make_empty() };
+	e = (struct empty){};
+	printf("%d\n", calls);
+	return 0;
+}

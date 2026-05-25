@@ -1,0 +1,18 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+#include <string>
+using namespace std;
+
+int main()
+{
+	try {
+		string s = "hello";
+		printf("s = %s\n", s.c_str());
+		throw 42;
+	}
+	catch ( int e ) {
+		printf("caught: %d\n", e);
+	}
+	printf("done\n");
+	return 0;
+}

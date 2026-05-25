@@ -1,0 +1,8 @@
+Foo(1)
+Foo(2)
+Foo(3)
+~Foo(3)
+~Foo(2)
+~Foo(1)
+caught: 99
+done

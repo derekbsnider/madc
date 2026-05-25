@@ -25,6 +25,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_pch.h"
 
 using namespace std;
 
@@ -207,6 +208,184 @@ static void install_resource_guards(void)
     }
 }
 
+// Walk backwards from a line to include preceding comment block.
+static int find_comment_start(const std::vector<std::string> &lines, int func_line)
+{
+    int start = func_line;
+    while ( start > 0 )
+    {
+	const std::string &prev = lines[start - 1];
+	size_t first = prev.find_first_not_of(" \t");
+	if ( first != std::string::npos && prev.compare(first, 2, "//") == 0 )
+	    --start;
+	else if ( prev.empty() || first == std::string::npos )
+	{
+	    if ( start > 1 )
+	    {
+		const std::string &prev2 = lines[start - 2];
+		size_t f2 = prev2.find_first_not_of(" \t");
+		if ( f2 != std::string::npos && prev2.compare(f2, 2, "//") == 0 )
+		    --start;
+		else
+		    break;
+	    }
+	    else
+		break;
+	}
+	else
+	    break;
+    }
+    return start;
+}
+
+// Walk forward from a line tracking brace depth (with comment/string
+// awareness) to find the closing brace of a function body.  Returns
+// the 0-based line index of the closing brace, or -1 on failure.
+static int find_closing_brace(const std::vector<std::string> &lines, int func_line)
+{
+    int depth = 0;
+    bool in_body = false;
+    enum { NORMAL, IN_STR, IN_CHR, IN_BCOMMENT } state = NORMAL;
+
+    for ( size_t j = (size_t)func_line; j < lines.size(); ++j )
+    {
+	const std::string &ln = lines[j];
+	for ( size_t k = 0; k < ln.size(); ++k )
+	{
+	    char c = ln[k];
+	    char next = (k + 1 < ln.size()) ? ln[k + 1] : '\0';
+
+	    switch ( state )
+	    {
+	    case NORMAL:
+		if ( c == '/' && next == '/' )
+		    goto next_line;
+		if ( c == '/' && next == '*' )
+		    { state = IN_BCOMMENT; ++k; break; }
+		if ( c == '"' )  { state = IN_STR; break; }
+		if ( c == '\'' ) { state = IN_CHR; break; }
+		if ( c == '{' )  { ++depth; in_body = true; }
+		else if ( c == '}' )
+		{
+		    --depth;
+		    if ( in_body && depth == 0 )
+			return (int)j;
+		}
+		break;
+	    case IN_STR:
+		if ( c == '\\' ) { ++k; break; }
+		if ( c == '"' ) state = NORMAL;
+		break;
+	    case IN_CHR:
+		if ( c == '\\' ) { ++k; break; }
+		if ( c == '\'' ) state = NORMAL;
+		break;
+	    case IN_BCOMMENT:
+		if ( c == '*' && next == '/' )
+		    { state = NORMAL; ++k; }
+		break;
+	    }
+	}
+	next_line:;
+    }
+    return -1;
+}
+
+// Text-based function extraction: find the function signature by name
+// in the raw source text, then use brace-counting to find the body.
+// Works on any C/C++ source without needing the madc parser.
+static int emit_function_text(const std::vector<std::string> &lines, const char *funcname)
+{
+    std::string target(funcname);
+
+    for ( size_t i = 0; i < lines.size(); ++i )
+    {
+	size_t pos = lines[i].find(target);
+	if ( pos == std::string::npos )
+	    continue;
+	// Must be followed by ( (possibly with whitespace)
+	size_t after = pos + target.size();
+	while ( after < lines[i].size() && lines[i][after] == ' ' )
+	    ++after;
+	if ( after >= lines[i].size() || lines[i][after] != '(' )
+	    continue;
+	// Must be a definition (at column 0 or after a type), not indented code
+	if ( pos > 0 && (lines[i][0] == ' ' || lines[i][0] == '\t') )
+	    continue;
+	// Skip lines where the match is inside a comment
+	size_t comment_pos = lines[i].find("//");
+	if ( comment_pos != std::string::npos && comment_pos < pos )
+	    continue;
+
+	int end = find_closing_brace(lines, (int)i);
+	if ( end < 0 )
+	{
+	    std::cerr << "Found '" << funcname << "' at line " << (i + 1)
+		      << " but could not find closing brace" << std::endl;
+	    return 1;
+	}
+
+	int start = find_comment_start(lines, (int)i);
+	for ( int j = start; j <= end; ++j )
+	    std::cout << lines[j] << '\n';
+	return 0;
+    }
+
+    std::cerr << "Function '" << funcname << "' not found" << std::endl;
+    return 1;
+}
+
+// --emit-function: extract a complete function by name from a source file.
+// For .mad files: tokenizes and parses using the madc parser, then uses
+// the token's line position to locate the function in the original source.
+// For other files (C/C++): falls back to text-based brace-matching.
+// Both paths emit the function verbatim, including preceding comment block.
+static int emit_function(Program &prog, const char *filepath, const char *funcname)
+{
+    // Read original source lines for verbatim output
+    std::ifstream in(filepath);
+    if ( !in )
+    {
+	std::cerr << "Cannot open " << filepath << std::endl;
+	return 1;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while ( std::getline(in, line) )
+	lines.push_back(line);
+    in.close();
+
+    // Try the parser path first (works for .mad files).
+    // Tokenize and parse to find functions.
+    TokenProgram *tp = prog.tokenize(filepath);
+    if ( tp && prog.parse(tp) )
+    {
+	// Search pending_funcs for a match
+	std::string target(funcname);
+	for ( TokenBase *tb : prog.pending_funcs )
+	{
+	    TokenFunc *tf = dynamic_cast<TokenFunc *>(tb);
+	    if ( !tf ) continue;
+	    if ( tf->var.name != target ) continue;
+
+	    int func_line = tf->line - 1;
+	    int end = tf->end_line - 1;
+	    if ( func_line >= 0 && (size_t)func_line < lines.size()
+	      && end >= func_line && (size_t)end < lines.size() )
+	    {
+		int start = find_comment_start(lines, func_line);
+		for ( int j = start; j <= end; ++j )
+		    std::cout << lines[j] << '\n';
+		return 0;
+	    }
+	}
+    }
+
+    // Parser path didn't find it — fall back to text-based extraction.
+    // This handles C/C++ source and cases where parse failed.
+    return emit_function_text(lines, funcname);
+}
+
 int main(int argc, char **argv)
 {
     install_crash_handler();
@@ -222,6 +401,8 @@ int main(int argc, char **argv)
     int filearg = 1;
     const char *emit_object_path = NULL;
     const char *emit_executable_path = NULL;
+    const char *emit_function_name = NULL;
+    bool emit_pch = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -248,6 +429,15 @@ int main(int argc, char **argv)
                 prog->include_paths.push_back(p);
             }
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-pch") == 0) {
+            emit_pch = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-function") == 0 && i + 1 < argc) {
+            emit_function_name = argv[++i];
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--no-includes") == 0) {
+            prog->skip_includes = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
             prog->instrument_functions = true;
             filearg = i + 1;
@@ -264,6 +454,65 @@ int main(int argc, char **argv)
 
     if ( emit_object_path || emit_executable_path )
 	prog->aot_tracking = true;
+
+    // --emit-pch: lex the input file and write a .madh pre-compiled header
+    if ( emit_pch && filearg < argc )
+    {
+	const char *input = argv[filearg];
+	tp = prog->tokenize(input);
+	if ( !tp )
+	{
+	    std::cerr << "Failed to tokenize " << input << std::endl;
+	    return 1;
+	}
+
+	// Compute source hash from file content
+	std::ifstream hf(input, std::ios::binary | std::ios::ate);
+	uint64_t src_hash = 0;
+	if ( hf )
+	{
+	    size_t fsize = hf.tellg();
+	    hf.seekg(0);
+	    std::vector<char> fbuf(fsize);
+	    hf.read(fbuf.data(), fsize);
+	    src_hash = madc_pch::hash_content(fbuf.data(), fsize);
+	}
+
+	// Determine output path (-o flag or default from input name)
+	std::string outpath;
+	if ( emit_executable_path )
+	    outpath = emit_executable_path;
+	else
+	{
+	    outpath = input;
+	    size_t dot = outpath.rfind('.');
+	    if ( dot != std::string::npos )
+		outpath = outpath.substr(0, dot);
+	    outpath += ".madh";
+	}
+
+	// Choose compression: prefer zstd if available
+	PchCompression method = PchCompression::Zlib;
+#ifdef HAVE_ZSTD
+	method = PchCompression::Zstd;
+#endif
+
+	if ( madc_pch::write_madh(outpath.c_str(), prog->tokens, src_hash, method) )
+	{
+	    std::cout << "Wrote " << outpath << " (" << prog->tokens.size()
+		      << " tokens)" << std::endl;
+	    return 0;
+	}
+	else
+	{
+	    std::cerr << "Failed to write " << outpath << std::endl;
+	    return 1;
+	}
+    }
+
+    // --emit-function: tokenize+parse, find function, emit source lines
+    if ( emit_function_name && filearg < argc )
+	return emit_function(*prog, argv[filearg], emit_function_name);
 
     if ( argc >= 2 && filearg < argc )
     {

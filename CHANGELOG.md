@@ -2,6 +2,408 @@
 
 ## [Unreleased]
 
+## [v0.21.1] — 2026-05-25
+
+Const enforcement, access control, token position, and JIT IR architecture research.
+
+- **Top-level `const` enforcement.** `const int x = 5; x = 10;` is now a
+  compile error. All 12 mutating operators (`=`, `++`, `--`, `+=`, `-=`,
+  `*=`, `/=`, `%=`, `<<=`, `>>=`, `&=`, `|=`, `^=`) are checked.
+  Correctly distinguishes top-level const (`const int x`) from low-level
+  const (`const char *p` — pointer can still change).
+
+- **`const T&` parameter enforcement.** `void f(const int &x) { x = 5; }`
+  is now a compile error.
+
+- **`public:`/`private:`/`protected:` access control.** Class members and
+  methods respect access specifiers. Private/protected members are rejected
+  at compile time when accessed from outside the class.
+
+- **Automatic token position inheritance.** Every token created during
+  parsing automatically inherits file/line/column from the most recently
+  consumed source token. Eliminates 0:0 positions in error messages and
+  prepares for IDE features (hover, go-to-definition, syntax highlighting).
+
+- **JIT IR architecture research and MIR backend plan.** Cross-referenced
+  V8, HotSpot, LuaJIT, MIR, dstogov/ir, RyuJIT, PyPy, Julia, Cranelift,
+  TPDE, GCC, and LLVM. Decision: adopt MIR (MIT, ~16K lines C) as
+  optimizing backend, replacing asmjit for codegen. 12 optimization passes,
+  91% of GCC -O2 quality, 5 architectures, 66% smaller binary. Plan at
+  `docs/plans/typed-register-ir.md`, research at
+  `docs/research/jit-ir-design-2026.md`.
+
+## [v0.21.0] — 2026-05-25
+
+C++ class model: constructors, destructors, operators, references, new/delete,
+inheritance, vtables, exceptions with destructor unwinding, and generic extern
+class infrastructure.
+
+- **User-defined constructors and destructors.** `ClassName()` / `~ClassName()`
+  with LIFO destruction ordering, constructor arguments (`Foo f(1, 2)`),
+  and early-return destructor cleanup.
+
+- **Operator overloading.** `operator+`, `-`, `*`, `/`, `==`, `!=`, `<`, `>`,
+  `<=`, `>=` in class bodies. Generic `try_class_operator_dispatch()` handles
+  all 10 operators.
+
+- **References (`T&`).** `vfREFERENCE` flag (varflag_t widened to uint32_t),
+  auto-deref in `TokenVar::compile()` and `operand()`, LEA at call site for
+  pass-by-reference.
+
+- **`new` / `delete` operators.** `TokenNEW` (malloc + ctor + vtable) and
+  `TokenDELETE` (dtor + free). Arrow method calls (`ptr->method()`) for
+  heap-allocated class objects.
+
+- **Single inheritance.** `class Derived : public Base` with member layout
+  copy, method inheritance via `findMethod()` chain, automatic base ctor/dtor
+  chaining.
+
+- **Virtual functions and vtables.** `vtable_slots` vector, `virtual_methods`
+  map, 8-byte `__vptr` at offset 0, vtable filled after `cc.finalize()`,
+  indirect call dispatch in `TokenCallMethod::compile()`.
+
+- **Exception handling (SJLJ).** `try` / `catch(...)` / `catch(int e)` /
+  `throw` / `throw;` via setjmp/longjmp. Thread-local `MadcTryContext` linked
+  list and `MadcException` state. Typed catch value binding and rethrow.
+
+- **Destructor unwinding during exceptions (Phase B).** Runtime cleanup stack
+  (`MadcCleanupEntry` linked list) tracks destructible objects inside try
+  blocks. `__madc_throw_*` walks the cleanup stack calling destructors in LIFO
+  order before `longjmp`. Guard bytes prevent double-destruction. Inheritance
+  chains push base dtor entries so LIFO unwind calls derived first, then bases.
+
+- **Built-in type exception cleanup.** Strings, stringstreams, file streams,
+  MadArrays, vectors, maps, sets, and lists inside try blocks get cleanup
+  entries. All 11 built-in types are exception-safe.
+
+- **Generic extern class ctor/dtor infrastructure.** `DataDefCLASS` gains
+  `extern_ctor` / `extern_dtor` / `_dtor_ptr` fields and
+  `register_extern_ctor_dtor()`. Single generic code paths in `voperand()`
+  and `cleanup()` replace ~260 lines of per-type switch cases. Adding a new
+  libc C++ type requires only one registration call. Struct members with
+  registered types are auto-constructed/destructed.
+
+- **20 new integration tests.** Constructors, destructor order, constructor
+  args, early return, operator overloading, references, new/delete,
+  inheritance, virtual dispatch, basic exceptions, rethrow, and 8 exception
+  + destructor unwinding tests (basic, LIFO order, partial construction,
+  no-throw path, inheritance chain, nested try, rethrow, string cleanup).
+
+## [v0.20.1] — 2026-05-25
+
+Code cleanup Phase A: compiler restructuring and tooling.
+
+- **Compiler file split.** `compiler.cpp` (15,835 lines) split into 4 files:
+  `compiler_builtins.cpp` (1,296L), `compiler_control_flow.cpp` (930L),
+  `compiler_operators.cpp` (5,662L), plus shared `compiler_internal.h` (283L).
+  Core compiler.cpp reduced to 8,330 lines (47% of original).
+
+- **Builtin dispatch table.** 45 `if (var.name == "__builtin_*")` checks in
+  `TokenCallFunc::compile()` replaced by a 43-entry data-driven dispatch table.
+  New builtins are one table entry + one handler function.
+
+- **AST walker template.** Generic `walk_ast()` template replaces hand-written
+  traversal code.  `contains_label()` reduced from 33 lines to 4.
+
+- **`--emit-function` CLI tool.** `bin/madc --emit-function <name> <file>`
+  extracts a complete function definition verbatim.  Parser path for `.mad`
+  files (uses `TokenCpnd::end_line`); text fallback for C/C++ source.
+
+- **`TokenCpnd::end_line` tracking.** Parser now records the closing `}`
+  line for every compound statement.  IDE infrastructure for code folding
+  and structural views.
+
+- **`--no-includes` flag.** Disables `#include` processing during
+  tokenization for processing non-madc source files.
+
+- **Build fixes.** Makefile `test` target sets `LD_LIBRARY_PATH` for AOT
+  unit tests.  `fulltest` target explicitly depends on `libmadc.so`.
+
+- **`_chk` family consolidation.** ~200 lines of duplicated `__builtin___*_chk`
+  argument remapping consolidated into two shared helpers.
+
+- **`__builtin_shuffle` for SIMD vectors.** Element-wise lane permutation via
+  runtime mask indices. Supports 1-source and 2-source forms, all element
+  types (int8–int64, float, double), register-backed and memory-backed
+  vectors. Honors caller destination register to avoid stale-Xmm bug.
+  Closes pr85331, pr94591.
+
+- **Anonymous struct init in union.** `{{"1234", "567"}}` for unions with
+  flattened anonymous struct members now unwraps the inner TokenStructLit
+  correctly. Added `has_anon_aggregate` flag to DataDefSTRUCT. Closes pr87053.
+
+- **Self-referencing struct array init.** `struct E e[2] = { {0, &e[1]}, ... }`
+  now sets array dims and vfFIXEDARRAY before parsing init expressions, so
+  `&e[1]` resolves the correct element stride. Closes pr39100.
+
+- **Wide SIMD vectors (>128-bit).** Global vectors >16 bytes now use
+  Mem-backed operands. TokenAssign uses qword-by-qword memory copy for
+  large SIMD assignment. Closes pr65427.
+
+- **Large struct return (>16 bytes).** Per System V AMD64 ABI, structs
+  larger than 16 bytes are now returned via a hidden `__retbuf` first
+  parameter. Caller allocates buffer, callee copies via
+  `emit_raw_aggregate_copy`. Works for both direct calls and function
+  pointer indirect calls. Closes pr43784, struct-ret-1.
+
+- **SIMD-to-SIMD reinterpret cast.** `(__m128i)(__m128d)v` for >8-byte
+  vectors now preserves all 128 bits instead of losing the upper lane via
+  movq.  General same-size SIMD reinterpret cast for >8-byte types added
+  as early path in TokenCast.  Closes pr92618.
+
+- **Unsigned overflow dispatch + arithmetic width.** `__builtin_add_overflow`
+  with unsigned 64-bit inputs uses dedicated `_uu64` helpers that preserve
+  unsigned semantics through `__int128` widening.  Unsigned narrower-than-
+  target arithmetic (`0U - 1U` returned as `unsigned long`) now wraps at
+  operand width.  Unary minus on unsigned literals (`-2U`) negates at
+  32-bit.  Closes pr85095.
+
+- **Wide SIMD (>16-byte) subscript write, pointer dereference, cast chain,
+  and function return.** `v[63] = 1` on 64-byte vectors now emits a direct
+  memory store.  `*p` on wide SIMD pointers copies all bytes via aggregate
+  copy.  SIMD-to-SIMD casts of any element type combination use aggregate
+  copy for >16 bytes.  `is_large_struct_return` recognizes SIMD >16 bytes
+  for hidden `__retbuf` return.  `compile_token_normalized` keeps >16-byte
+  SIMD results Mem-backed.  Closes pr85169, pr70903.
+
+- **Inline asm clobber list.** The `=r`/`"0"` identity pattern (empty asm
+  body) now recognizes clobber clauses (`: "memory"`) instead of falling
+  through to the no-op path.  Closes pr49279.
+
+- **va_arg through indirect pointer.** `va_arg(*pap, T)` where `pap` is a
+  global `va_list*` no longer overwrites the pointer variable with the
+  buffer value on write-back.  Closes stdarg-1.
+
+- **Static multi-variable declarations.** `static int a = 1, b = 2;` now
+  preserves the `static` attribute for the second variable.  Previously
+  the comma-continuation pushed back only the type token, losing static
+  storage for subsequent variables.  Closes va-arg-22.
+
+- **va_end semantics.** Changed from `ap = 0` to `((void)(ap))` to match
+  GCC's no-op-with-side-effect-evaluation behavior.
+
+- **va_arg on struct member / array element.** `va_arg(a.g, long)` where
+  `a.g` is a struct member now writes back to the member's Mem location
+  instead of a dead register.  Parser guards `TokenMember`/`TokenSubscriptExpr`
+  from `ap_var` extraction.  Closes stdarg-2.
+
+- **goto into dead `if(0)` conditional.** Labels inside `if(0)` blocks are
+  now detected via `contains_label()` and the block is emitted as unreachable
+  code so labels get bound.  Closes pr17078-1, vla-dealloc-1.
+
+- **Swapped subscript `N[ptr]`.** `N[(char*)x]` where N is an integer and
+  the index is a pointer is now detected and swapped to `ptr[N]`.
+  Closes pr22061-1.
+
+- **`**pp++` postfix increment.** Double-deref with postfix increment now
+  correctly increments the innermost pointer variable via `TokenDerefStep`.
+  Closes va-arg-21.
+
+- **Stack bump-pool `__builtin_alloca`.** Replaced `alloca→malloc` mapping
+  with a real stack-based bump allocator using `cc.newStack()`.  64KB pool
+  per function, cursor in a stack slot (survives `setjmp`/`longjmp`).
+  Closes pr64242.
+
+- **setjmp buffer copy.** `__builtin_longjmp` from a `memcpy`'d buffer copy
+  now works.  Magic sentinel in `buf[0..1]` validates the jmp_slot pointer.
+
+- **Pre-compiled header infrastructure (.madh format).** Post-lexer token
+  serialization with zlib compression.  `madc --emit-pch` mode pre-lexes
+  headers, `scripts/gen_precompiled_headers.sh` batch-processes system
+  headers via `gcc -E -P` preprocessing.  38 system headers embedded.
+  Lookup chain: text-embedded → pre-compiled → filesystem.
+
+- GCC parity: 1631 → 1649/1685 (96.8% → 97.9%). Integration tests: 452,
+  all passing.
+
+- **Scalar-to-vector SIMD arithmetic.** Inline `__attribute__((vector_size(N)))`
+  now parses in declarations and compound literals. Float/double scalars
+  splat correctly (was silently reinterpreting Xmm as Gp). Packed mul/div
+  for all element sizes: byte via unpack-mul-repack, 64-bit via lane-by-lane
+  imul, lane-by-lane div/idiv with remainder. Byte add/sub via paddb/psubb.
+  Packed negation via psubd/subps. 8-byte SIMD uses movq instead of movaps.
+  Global SIMD vectors init at parse time and use Mem-backed voperand.
+  Mixed int/float mul guard now allows SIMD through emit_plain_binop3.
+  Shift operators detect SIMD from either operand. Scalar-left bitwise
+  ops compile as scalar with per-lane copy. Closes scal-to-vec{1,2,3},
+  simd-{1,2,5}, pr23135.
+
+- **Ternary function-pointer call.** `(c ? foo : bar)()` now dispatches
+  via a generic expression-as-function-pointer path. The postfix `(`
+  check restricts to function types to avoid breaking braceless-if bodies.
+  Ternary void branches (e.g. `abort()`) skip the merge-slot store.
+  Closes pr34768-{1,2}, pr46309.
+
+- **Compound assignment evaluation order.** `x[0] |= foo()` now evaluates
+  RHS before reading LHS value, matching GCC behavior. Closes pr58943.
+
+- **Identity-cast destination store.** `(int)-4` no longer silently
+  produces 0 — the operator_may_be_wider path now stores to the caller's
+  destination when regdp.first is set. Cast expressions also evaluate
+  in `literal_integer_value` for global constant initializers.
+  Closes pr39240.
+
+- **K&R function pointer calls.** `long (*f)()` with empty `()` (K&R
+  unspecified params) now accepts any number of arguments. Closes pr67037.
+
+- **String literal truncation.** `char a[2][3] = {"1234", "xyz"}` no
+  longer overflows the first element into the second. Closes pr86714.
+
+- GCC parity: 1598 → 1631/1685 (94.8% → 96.8%). Integration tests: 451,
+  all passing.
+
+- **SIMD array init + subscript + signed lane divmod.**
+  Global arrays of SIMD vectors (`UV u[] = { ((UV){...}) }`) now write
+  initializer data at parse time. Double-subscript on fixed-array-of-SIMD
+  (`v[0][0]`) now resolves the lane element type correctly. Signed byte/
+  short SIMD division and modulo now use `movsx`+`idiv` instead of
+  `movzx`+`div`. Closes pr53645, pr53645-2, pr94524-1, pr94524-2.
+
+- **Anonymous struct/union array member flag.** Members declared with
+  `[]` inside anonymous structs/unions now correctly set the array-decl
+  flag, fixing `&p->u.vec[16]` scale-factor computation from 8 to the
+  actual element size. Closes pr41395-2.
+
+- **`__attribute__((aligned(N)))` on struct members.** The alignment
+  attribute on struct members is now extracted and applied via
+  `apply_member_alignment()`, fixing struct size, alignment, and nested
+  member offsets. Both `aligned` and `__aligned__` (dunder) forms are
+  recognized. Closes pr23467, stkalign.
+
+- **Bitwise AND with real destination.** `double d = i & 7` now computes
+  the AND in integer and coerces the result to double, instead of
+  performing a floating-point AND on raw bit patterns. Closes pr59643.
+
+- **SIMD cast subscript parsing.** `((V8)x)[0]` no longer misparsed
+  as a lambda — the subscript-on-expression check now matches SIMD
+  cast types.
+
+- **va_arg fixes.** Global `va_list` variables now write back the
+  advanced pointer to backing storage. `va_arg(*pap, T)` through a
+  pointer-to-va_list now correctly dereferences the pointer before
+  reading/advancing. Closes pr64979.
+
+- **`__builtin_*_overflow` unsigned result check.** Overflow detection
+  for unsigned result types now correctly identifies negative infinite-
+  precision results as overflow.
+
+- **GCC integer/SIMD conversion parity advanced.**
+  Division/modulo now use the natural C arithmetic type even when an
+  outer destination requests a narrower signed result, unary `~` uses
+  inferred operand types for nested operator expressions, narrow
+  bitwise assignment stores through the LHS correctly, and explicit
+  scalar-to-SIMD casts bitcast low scalar bytes instead of taking the
+  arithmetic scalar-splat path. Small integer SIMD relational compares
+  now route through lane-wise compare lowering, and SIMD `++` / `--`
+  uses integer vector add/sub where appropriate. Closes `pr110817-1.c`,
+  `pr110817-3.c`, `pr120630.c`, `pr19606.c`, `pr64682.c`,
+  `pr123753.c`, `conversion.c`, and `20050316-1.c`, while preserving
+  `pr109986.c`.
+
+- **GNU SIMD/vector parity advanced.**
+  Wide vector storage now stays memory-backed when it exceeds XMM width,
+  including `__builtin_*_overflow` stores through vector-element
+  pointers, lane-wise comparisons, bitwise ops, shifts, and by-value
+  vector call arguments. `vector_size(...)` attributes now evaluate
+  constant expressions such as `4 * sizeof(int)`, and small integer
+  vectors use the same lane-wise `^`, `|`, `&`, and `~` handling.
+  Closes `pr108292.c`, `pr109040.c`, `pr109938.c`, and `pr109986.c`
+  plus related SIMD cases.
+
+- **Array compound literals now parse and compile.**
+  `(int []){0, 1, 2}` and `(int [3]){...}` now build a synthetic struct
+  with N uniform elements, decay to a pointer in expression context, and
+  support postfix subscripting. `&(type []){...}[i]` (address-of on a
+  subscripted array compound literal) wraps the derived expression in
+  `TokenAddrExpr`. Closes pr22098-{1,2,3}.c from the GCC torture suite.
+
+- **`*func(args) = value` now assigns through dereferenced call return.**
+  The unary-`*` dereference handler now explicitly parses function calls
+  so trailing `=` stays in the outer expression. Closes pr60072.c.
+
+- **C23 `[[...]]` attribute skip fixed.**
+  The lexer now waits for a real `]]` pair instead of decrementing on
+  each single `]`, and the parser skips any `[[...]]` before
+  declarations. Unlocks 4 GCC torture tests.
+
+- **GNU case range extension: `case LOW ... HIGH:`.**
+  Switch cases now support range matching. The compiler emits two
+  unsigned comparisons for the range check.
+
+- **Inline asm fallback for unrecognized constraint patterns.**
+  The asm handler previously only recognized `"+r"`, `"+m"`, `"=r"`,
+  `"=m"`, and `"0"` constraints. Other patterns (`"+g"`, `"=m"` with
+  trailing colons, multi-operand forms) consumed tokens past the asm
+  statement, breaking subsequent code. The parser now uses paren-depth
+  tracking to consume all remaining tokens when the constraint doesn't
+  match a known shape. Closes pr40657.c, pr49390.c, pr65053-1.c,
+  pr65053-2.c, pr88904.c.
+
+- **GCC predefined macros expanded.**
+  Added `__LDBL_MAX__`, `__LDBL_MIN__`, `__LDBL_EPSILON__`,
+  `__FLT_MANT_DIG__`, `__DBL_MANT_DIG__`, `__LDBL_MANT_DIG__`,
+  `__FLT_DIG__`, `__DBL_DIG__`, `__LDBL_DIG__`, `__ORDER_BIG_ENDIAN__`.
+  `__GNUC__`, `__GNUC_MINOR__`, `__GNUC_PATCHLEVEL__`, and byte-order
+  macros now reflect the actual build compiler via C preprocessor defines.
+
+- **sizeof(expr) paren fix.** `sizeof(expr)` in the expression-fallback
+  path no longer double-consumes the closing paren, fixing
+  `if (sizeof(0LL) == sizeof(0U))` and similar comparisons.
+
+- **Pointer-to-array declarations now parse.** `int (*a)[N]` is no
+  longer misinterpreted as a function pointer. After `(*name)`, if `[`
+  follows instead of `(`, the parser treats it as a pointer-to-array.
+
+- **Switch case values widen to 64-bit.** Case constants exceeding
+  32-bit range (e.g. `case 1000000000000000000ULL:`) now get the correct
+  64-bit type instead of being truncated to 32-bit. Closes pr34154.c.
+
+- **Postfix `++`/`--` now treated as value-producing for operator
+  context.** `w++ - 3` was previously misparsed because `-` after `++`
+  stayed as unary negation. `isPostfixPosition()` now recognizes `++`
+  and `--` as value-producing. Closes pr93744-3.c.
+
+- **Wide character support.** `L'x'` wide character literals, `wchar_t`
+  typedef, `__WCHAR_MAX__` macro, `L"..."` wide string literal token
+  metadata. Closes widechar-1.c, 20010325-1.c.
+
+- **strlen family fixed.** Char-array pointer dereference chains,
+  substring assignment through array-element pointers, multi-level
+  string length computations. Closes strlen-2 through strlen-6.
+
+- **Struct/compound literal fixes.** Zero-sized struct members, struct
+  compound literal designator field lookup. Closes struct-ini-4.c,
+  zero-struct-1.c, zero-struct-2.c.
+
+- **Cast+call+shift.** `(unsigned long long)foo() << 32` correctly
+  saves the first call result across the second call and applies the
+  shift in 64-bit. `__builtin_choose_expr` implemented.
+
+- **Multi-level dereference store.** `***f = 42` now correctly follows
+  the pointer chain instead of treating the value as an address. The
+  parser builds the dereference chain iteratively instead of recursively
+  (which consumed the assignment operator). Closes pr97421-2.c.
+
+- **Unsigned compound /= and %=.** `safediv` now receives operand types
+  for compound assignments, selecting `div` vs `idiv` correctly.
+  Closes pr69447.c.
+
+- **Unsigned arithmetic operator type inference.** Arithmetic operators
+  with unsigned natural type now infer their own type instead of
+  accepting the caller's signed target. Bitwise operators always produce
+  integer results even when the enclosing expression wants a double.
+  Closes pr48197.c.
+
+- **IEEE -0.0 signbit.** `__builtin_signbit` correctly detects -0.0.
+  Closes pr35456.c.
+
+- **va_arg accepts general expressions.** `va_arg(aps[4], long)` now
+  parses the first argument as an expression rather than requiring a
+  bare identifier. TokenVaArg carries the expression through to compile.
+
+- GCC parity: 1543 → 1598/1685 (91.6% → 94.8%). Integration tests:
+  421 → 451, all passing.
+
 ## [v0.20.0] - 2026-05-21
 
 GCC parity crosses 91%: 1505 → 1536/1685 (89.3% → 91.2%). C++ std surface now namespace-owned, std::vector support, __builtin_*_overflow_p, inline asm, triple dereference, volatile token-paste.

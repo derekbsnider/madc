@@ -1,0 +1,24 @@
+#include <stdio.h>
+
+double u2d(u)
+	unsigned int u;
+{
+	return u;
+}
+
+int dnear(double x, double y)
+{
+	double t = x - y;
+	return t == 0 || x / t > 100000000000000.0;
+}
+
+int main()
+{
+	unsigned int edge = ~((~0U) >> 1);
+	printf("%.0f %.0f %.0f %d %u %.0f %.0f %d %.0f %.0f %d\n",
+		u2d(0U), u2d(1U), u2d(~0U), dnear(u2d(~0U), (double)~0U),
+		edge, (double)edge, u2d(edge), u2d(edge) == (double)edge,
+		u2d(~((~0U) >> 1)), (double)~((~0U) >> 1),
+		u2d(~((~0U) >> 1)) == (double)~((~0U) >> 1));
+	return 0;
+}

@@ -1,0 +1,45 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+class Base
+{
+	int x;
+
+	Base()
+	{
+		x = 10;
+		printf("Base(%d)\n", x);
+	}
+	~Base()
+	{
+		printf("~Base(%d)\n", x);
+	}
+};
+
+class Derived : public Base
+{
+	int y;
+
+	Derived(int b)
+	{
+		y = b;
+		printf("Derived(%d)\n", y);
+	}
+	~Derived()
+	{
+		printf("~Derived(%d)\n", y);
+	}
+};
+
+int main()
+{
+	try {
+		Derived d(2);
+		throw 42;
+	}
+	catch ( int e ) {
+		printf("caught: %d\n", e);
+	}
+	printf("done\n");
+	return 0;
+}

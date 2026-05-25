@@ -62,13 +62,18 @@ public:
     std::vector<CaptureEntry> captures;         // populated during lambda body compilation
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false) { funcnode = NULL; }
+    // reference parameter tracking: ref_params[i] == true when parameter i is T&
+    std::vector<bool> ref_params;
+    // const parameter tracking: const_params[i] == true when parameter i is const T&
+    std::vector<bool> const_params;
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
     bool is_varargs;  // function declared with ... (variadic)
     bool is_void_params; // f(void) — explicitly zero params (vs f() which is K&R unspecified)
     bool no_instrument_function;
+    bool has_large_struct_retbuf; // __retbuf was injected for struct return > 16 bytes
     bool is_multi_return() const { return return_types.size() > 1; }
 };
 
@@ -128,6 +133,8 @@ public:
     std::vector<Variable *> variables;
     std::vector<TokenStmt *> statements;
     std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
+    std::vector<Variable *> destruct_order; // class-typed vars in declaration order (for LIFO dtor)
+    std::map<Variable *, asmjit::x86::Mem> cleanup_guards; // guard bytes for exception-safe destruction
     std::map<Variable *, asmjit::Operand> operand_map;
     // Stack-slot Mem for local C fixed-size arrays. Cached so reuse on a
     // divergent branch can re-emit the LEA into the (also-cached) Gp,
@@ -140,13 +147,20 @@ public:
     // setCursor() so they execute once at function entry, not at
     // first-use (which may be inside a loop/branch).
     asmjit::BaseNode *prologue_cursor;
-    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; prologue_cursor = NULL; }
+    // Stack bump-pool for alloca/VLA. Lazily initialized on first use.
+    // Cursor lives in a stack slot (not register) so it survives longjmp.
+    int end_line;			// line of closing } (set by parseCompound)
+    bool has_alloca_pool;
+    asmjit::x86::Mem alloca_cursor_slot;     // stack slot: current bump position
+    asmjit::x86::Mem alloca_pool_end_slot;   // stack slot: pool end (overflow check)
+    std::map<Variable *, asmjit::x86::Mem> vla_cursor_saves; // per-VLA saved cursor
+    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; prologue_cursor = NULL; end_line = 0; has_alloca_pool = false; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
     void movreg(Program &, asmjit::Operand &, Variable *);
     void putreg(Program &, Variable *);
     void cleanup(Program &);
-    void clear_operand_map() { operand_map.clear(); }
+    void clear_operand_map() { operand_map.clear(); has_alloca_pool = false; vla_cursor_saves.clear(); }
     virtual DataDef *datadef() const override {
 	if ( statements.empty() ) return &ddVOID;
 	DataDef *dd = statements.back()->datadef();
@@ -186,8 +200,10 @@ class TokenDecl: public TokenVar
 public:
     TokenBase *initialize;
     std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
+    std::vector<TokenBase *> ctor_args; // constructor arguments for class-typed vars
     bool has_brace_init;               // true when `= { ... }` syntax was used
-    TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; }
+    bool is_const_decl;                // true when declared with `const` qualifier
+    TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; is_const_decl = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
@@ -914,6 +930,7 @@ public:
     std::vector<TokenCASE *> switch_case_stack; // current active case/default while parsing each switch
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
+    int try_depth;			// >0 when compiling inside a try body
     std::string cur_func_name;		// name of current function being compiled (for diagnostics)
     throwstream Throw;			// throw an error
     int script_argc;			// argc for the .mad script
@@ -933,6 +950,7 @@ public:
 
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
+    bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
 
     // JIT crash → source location map. Populated during compile by
@@ -969,6 +987,7 @@ public:
     bool colors;
     bool aot_tracking;
     bool instrument_functions;
+    bool skip_includes;		// --emit-function: lex without processing #include
     struct AotDataRef {
 	uint32_t label_id;
 	uintptr_t address;
@@ -1161,7 +1180,9 @@ public:
 	||   id == TokenID::tkComma || id == TokenID::tkSemi
 	||   id == TokenID::tkAssign )
 	    return false;
-	return id == TokenID::tkClBrk || id == TokenID::tkClSqr || !_prv_token->is_operator();
+	return id == TokenID::tkClBrk || id == TokenID::tkClSqr
+	    || id == TokenID::tkInc || id == TokenID::tkDec
+	    || !_prv_token->is_operator();
     }
     inline TokenBase *nextToken()
     {
@@ -1171,6 +1192,12 @@ public:
 	_cur_token = tokens.front();
 //	DBG(cout << "nextToken(" << (int)ret->type() << ", " << (int)ret->id() << ')' << endl);
 	tokens.pop_front();
+	// Update global parse position so newly created tokens inherit it
+	if ( _cur_token ) {
+	    TokenBase::_parse_file   = _cur_token->file;
+	    TokenBase::_parse_line   = _cur_token->line;
+	    TokenBase::_parse_column = _cur_token->column;
+	}
 	return _cur_token;
     }
     // parse tokens into AST
@@ -1365,6 +1392,7 @@ public:
     Variable *findVariable(TokenCpnd *, std::string &);
     Variable *findVariable(std::string &);
     Variable *addLiteral(std::string &);
+    Variable *addWideLiteral(std::string &);
 //  Method *findMethod(std::string &);
 };
 

@@ -1,0 +1,69 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+class Shape {
+	virtual int area()
+	{
+		return 0;
+	}
+
+	virtual void describe()
+	{
+		printf("Shape\n");
+	}
+};
+
+class Rect : public Shape {
+	int w;
+	int h;
+
+	Rect(int ww, int hh)
+	{
+		w = ww;
+		h = hh;
+	}
+
+	int area()
+	{
+		return w * h;
+	}
+
+	void describe()
+	{
+		printf("Rect(%d,%d)\n", w, h);
+	}
+};
+
+class Circle : public Shape {
+	int r;
+
+	Circle(int rr)
+	{
+		r = rr;
+	}
+
+	int area()
+	{
+		return 3 * r * r;
+	}
+
+	void describe()
+	{
+		printf("Circle(%d)\n", r);
+	}
+};
+
+void print_shape(Shape *s)
+{
+	s->describe();
+	printf("area = %d\n", s->area());
+}
+
+int main()
+{
+	Rect r(3, 4);
+	Circle c(5);
+	print_shape(&r);
+	print_shape(&c);
+	return 0;
+}

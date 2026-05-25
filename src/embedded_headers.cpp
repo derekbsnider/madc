@@ -728,7 +728,7 @@ extern int b64_pton(const char *src, unsigned char *target, int targsize);
 typedef long va_list;
 
 #define va_start(ap, last) ap = __va_args
-#define va_end(ap) ap = 0
+#define va_end(ap) ((void)(ap))
 #define va_copy(dest, src) dest = src
 
 #define vsprintf __madc_vsprintf

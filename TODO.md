@@ -2,18 +2,14 @@
 
 ## High Priority
 
-- **GCC torture test suite: push toward 95%.** Currently 1536/1685 (91.2%).
-  v0.18.0 closed 169 new tests via _Complex arithmetic, IEEE FP
-  semantics, bitfield promotions, auto-include headers, alias support,
-  setjmp, bswap, and dozens of individual fixes.
-  Remaining targets: `__builtin_return_address`, struct pass-by-value
-  for function args (~8 compile failures), 32-bit arithmetic wrapping
-  in widening cast contexts (`(long)(uint_a + uint_b)`), compound
-  assignment evaluation order, deeper inline-asm operand coverage, and
-  the remaining parser/runtime fronts after `pr105777.c` and
-  `pr108064.c`.
-  The focused `_Complex` execute lane is currently green; the active
-  fronts have shifted back to the remaining non-complex GCC gaps.
+- **GCC torture test suite: at 97.9%.** Currently 1649/1685 (97.9%).
+  6 remaining failures (4 compile, 2 runtime, 30 skipped), 2 unfixable.
+  Remaining: nested function definitions (2 tests, architectural),
+  `alloca(func_call())` asmjit InvalidInstruction (2 tests, pre-existing),
+  `__builtin_apply` (pr47237, unfixable), `__builtin_va_arg_pack`
+  (va-arg-pack-1, unfixable).
+  Fixed this session: stdarg-2, pr17078-1, vla-dealloc-1, pr22061-1,
+  va-arg-21, pr64242 (alloca bump pool).
 
 - **Native SMAUG next step: move beyond the first serpent combat path.**
   `smaug.exe` now survives startup, login, room 109 serpent combat, and
@@ -1616,3 +1612,14 @@
 - ~~**isUnaryPosition()/isPostfixPosition() helpers**~~ — replaces duplicated checks (59805a6)
 - ~~**`<stdarg.h>` / `va_list`**~~ — `...` in function decls, va_start/va_end macros, va_arg intrinsic, packed int64_t[] buffer, format-aware vsprintf helper (9afa644)
 - ~~**For-loop increment parsing bug**~~ — `i++`/`i--`/`++i`/`--i` in for-loop third position now works. Root cause: conditional `parseExpression` left `;` in stream; fixed with one extra `nextToken()` in `TokenFOR::parse()`
+
+### Session 2026-05-25 (Code cleanup Phase A on feature/builtin-dispatch-table-claude)
+
+- ~~**Builtin dispatch table**~~ — 43-entry data-driven table replacing 550-line if-chain (ba62ee7)
+- ~~**AST walker template**~~ — generic walk_ast() replacing hand-written traversal (825df09)
+- ~~**--emit-function CLI tool**~~ — verbatim function extraction via parser + text fallback (22cceb1)
+- ~~**TokenCpnd::end_line tracking**~~ — parser records closing brace line (22cceb1)
+- ~~**--no-includes flag**~~ — skip #include processing during tokenization (ac6aa24)
+- ~~**compiler.cpp file split**~~ — 15,835→8,330 lines across 4 files (e464573, 680a44b)
+- ~~**Makefile LD_LIBRARY_PATH fix**~~ — AOT unit tests find libmadc.so (bd1182f)
+- ~~**_chk family consolidation**~~ — ~200 lines of duplicated arg-remapping → 2 shared helpers (ba62ee7)

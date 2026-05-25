@@ -1,0 +1,34 @@
+#include <stdio.h>
+
+class Guard {
+	int id;
+
+	Guard(int n)
+	{
+		id = n;
+		printf("Guard %d constructed\n", id);
+	}
+
+	~Guard()
+	{
+		printf("Guard %d destructed\n", id);
+	}
+};
+
+int check(int x)
+{
+	Guard g(1);
+	if ( x > 0 )
+		return 1;
+	Guard g2(2);
+	return 0;
+}
+
+int main()
+{
+	printf("--- early return ---\n");
+	check(1);
+	printf("--- normal return ---\n");
+	check(0);
+	return 0;
+}

@@ -1,0 +1,21 @@
+#include <stdio.h>
+
+typedef int V __attribute__((__vector_size__ (8)));
+typedef short W __attribute__((__vector_size__ (8)));
+
+union { unsigned short u[4]; W w; } u;
+V v;
+
+V foo()
+{
+    u.w--;
+    V r = v + u.u[0];
+    return r;
+}
+
+int main()
+{
+    V x = foo();
+    printf("%d %d %u\n", x[0], x[1], u.u[0]);
+    return 0;
+}

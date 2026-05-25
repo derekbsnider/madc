@@ -37,6 +37,14 @@ static inline bool use32(DataDef *type) {
     return type && type->is_integer() && type->size == 4;
 }
 
+// Emit a SIMD-width-appropriate move between Xmm and Mem.
+// 8-byte vectors use movq; 16-byte use movups.
+static inline void emit_simd_mov(x86::Compiler &cc, const Operand &dst, const Operand &src, uint32_t vbytes)
+{
+    auto id = (vbytes <= 8) ? asmjit::x86::Inst::kIdMovq : asmjit::x86::Inst::kIdMovups;
+    cc.emit(id, dst, src);
+}
+
 // simple for now, should have different versions for signed vs unsigned
 // small to big vs big to small, etc, as we need to ensure that moving
 // small to big doesn't leave unwanted data in the other part of the register
@@ -514,6 +522,7 @@ void Program::safeadd(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 	    if ( vdd->element_type->size == sizeof(float) ) cc.addps(r1, r2);
 	    else                                            cc.addpd(r1, r2);
 	}
+	else if ( vdd->element_type->size == 1 ) cc.paddb(r1, r2);
 	else if ( vdd->element_type->size == 2 ) cc.paddw(r1, r2);
 	else if ( vdd->element_type->size == 4 ) cc.paddd(r1, r2);
 	else if ( vdd->element_type->size == 8 ) cc.paddq(r1, r2);
@@ -618,6 +627,21 @@ void Program::safesub(x86::Gp &r1, x86::Gp &r2, DataDef *d1, DataDef *d2)
 
 void Program::safesub(x86::Xmm &r1, x86::Xmm &r2, DataDef *d1, DataDef *d2)
 {
+    if ( d1 && d1->is_simd() )
+    {
+	DataDefSIMD *vdd = static_cast<DataDefSIMD *>(d1);
+	if ( vdd->element_type->is_real() )
+	{
+	    if ( vdd->element_type->size == sizeof(float) ) cc.subps(r1, r2);
+	    else                                            cc.subpd(r1, r2);
+	}
+	else if ( vdd->element_type->size == 1 ) cc.psubb(r1, r2);
+	else if ( vdd->element_type->size == 2 ) cc.psubw(r1, r2);
+	else if ( vdd->element_type->size == 4 ) cc.psubd(r1, r2);
+	else if ( vdd->element_type->size == 8 ) cc.psubq(r1, r2);
+	else throw "Program::safesub() unsupported SIMD element size";
+	return;
+    }
     if ( d1 && d1->size == sizeof(float) )
 	cc.subss(r1, r2);
     else
@@ -678,22 +702,48 @@ void Program::safeneg(Operand &op, DataDef *dd)
     if ( !op.isReg() ) { throw "safeneg() lval is not a register"; }
     if ( op.as<BaseReg>().isGroup(RegGroup::kVec) )
     {
-	bool is_float = dd && dd->size == sizeof(float);
-	if ( is_float )
+	if ( dd && dd->is_simd() )
 	{
-	    x86::Gp mask_gp = cc.newGpd("safeneg_mask");
-	    cc.mov(mask_gp, imm(0x80000000u));
-	    x86::Xmm mask = cc.newXmmSs("safeneg_mask");
-	    cc.movd(mask, mask_gp);
-	    cc.xorps(op.as<x86::Xmm>(), mask);
+	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(dd);
+	    x86::Xmm zero = cc.newXmm("safeneg_zero");
+	    cc.pxor(zero, zero);
+	    if ( vdd->element_type->is_real() )
+	    {
+		// Packed float/double negation: subtract from zero
+		if ( vdd->element_type->size == sizeof(float) )
+		    cc.subps(zero, op.as<x86::Xmm>());
+		else
+		    cc.subpd(zero, op.as<x86::Xmm>());
+	    }
+	    else if ( vdd->element_type->size == 1 )
+		cc.psubb(zero, op.as<x86::Xmm>());
+	    else if ( vdd->element_type->size == 2 )
+		cc.psubw(zero, op.as<x86::Xmm>());
+	    else if ( vdd->element_type->size == 4 )
+		cc.psubd(zero, op.as<x86::Xmm>());
+	    else
+		cc.psubq(zero, op.as<x86::Xmm>());
+	    emit_simd_mov(cc, op.as<x86::Xmm>(), zero, (uint32_t)vdd->size);
 	}
 	else
 	{
-	    x86::Gp mask_gp = cc.newGpq("safeneg_mask");
-	    cc.mov(mask_gp, imm((int64_t)0x8000000000000000ULL));
-	    x86::Xmm mask = cc.newXmmSd("safeneg_mask");
-	    cc.movq(mask, mask_gp);
-	    cc.xorpd(op.as<x86::Xmm>(), mask);
+	    bool is_float = dd && dd->size == sizeof(float);
+	    if ( is_float )
+	    {
+		x86::Gp mask_gp = cc.newGpd("safeneg_mask");
+		cc.mov(mask_gp, imm(0x80000000u));
+		x86::Xmm mask = cc.newXmmSs("safeneg_mask");
+		cc.movd(mask, mask_gp);
+		cc.xorps(op.as<x86::Xmm>(), mask);
+	    }
+	    else
+	    {
+		x86::Gp mask_gp = cc.newGpq("safeneg_mask");
+		cc.mov(mask_gp, imm((int64_t)0x8000000000000000ULL));
+		x86::Xmm mask = cc.newXmmSd("safeneg_mask");
+		cc.movq(mask, mask_gp);
+		cc.xorpd(op.as<x86::Xmm>(), mask);
+	    }
 	}
     }
     else
@@ -734,6 +784,73 @@ void Program::safemul(Operand &op1, Operand &op2, DataDef *d1, DataDef *d2)
     }
     if ( lhs_is_xmm && rhs_is_xmm )
     {
+	if ( d1 && d1->is_simd() )
+	{
+	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(d1);
+	    if ( vdd->element_type->is_real() )
+	    {
+		if ( vdd->element_type->size == sizeof(float) )
+		    cc.mulps(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+		else
+		    cc.mulpd(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	    }
+	    else if ( vdd->element_type->size == 1 )
+	    {
+		// No SSE pmullb; unpack to words, multiply, repack
+		x86::Xmm zero = cc.newXmm("_mul_zero");
+		x86::Xmm lo1 = cc.newXmm("_mul_lo1");
+		x86::Xmm lo2 = cc.newXmm("_mul_lo2");
+		cc.pxor(zero, zero);
+		cc.emit(asmjit::x86::Inst::kIdMovaps, lo1, op1.as<x86::Xmm>());
+		cc.emit(asmjit::x86::Inst::kIdMovaps, lo2, op2.as<x86::Xmm>());
+		// Unpack low bytes to words
+		cc.punpcklbw(lo1, zero);
+		cc.punpcklbw(lo2, zero);
+		cc.pmullw(lo1, lo2);
+		// Unpack high bytes to words
+		x86::Xmm hi1 = cc.newXmm("_mul_hi1");
+		x86::Xmm hi2 = cc.newXmm("_mul_hi2");
+		cc.emit(asmjit::x86::Inst::kIdMovaps, hi1, op1.as<x86::Xmm>());
+		cc.emit(asmjit::x86::Inst::kIdMovaps, hi2, op2.as<x86::Xmm>());
+		cc.punpckhbw(hi1, zero);
+		cc.punpckhbw(hi2, zero);
+		cc.pmullw(hi1, hi2);
+		// Pack results back to bytes (unsigned saturation then mask)
+		cc.packuswb(lo1, hi1);
+		cc.emit(asmjit::x86::Inst::kIdMovaps, op1.as<x86::Xmm>(), lo1);
+	    }
+	    else if ( vdd->element_type->size == 2 )
+		cc.pmullw(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	    else if ( vdd->element_type->size == 4 )
+		cc.pmulld(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
+	    else if ( vdd->element_type->size == 8 )
+	    {
+		// No SSE pmullq; extract lanes, imul, reinsert
+		uint32_t vbytes = (uint32_t)vdd->size;
+		x86::Mem lhs_slot = cc.newStack(vbytes, (uint32_t)vdd->alignment());
+		x86::Mem rhs_slot = cc.newStack(vbytes, (uint32_t)vdd->alignment());
+		lhs_slot.setSize(vbytes);
+		rhs_slot.setSize(vbytes);
+		emit_simd_mov(cc, lhs_slot, op1.as<x86::Xmm>(), vbytes);
+		emit_simd_mov(cc, rhs_slot, op2.as<x86::Xmm>(), vbytes);
+		x86::Gp a = cc.newGpq("_mul64_a");
+		x86::Gp b = cc.newGpq("_mul64_b");
+		for ( size_t i = 0; i < vdd->lane_count; ++i )
+		{
+		    x86::Mem la = lhs_slot; la.addOffset((int64_t)(i*8)); la.setSize(8);
+		    x86::Mem lb = rhs_slot; lb.addOffset((int64_t)(i*8)); lb.setSize(8);
+		    cc.mov(a, la);
+		    cc.mov(b, lb);
+		    cc.imul(a, b);
+		    cc.mov(la, a);
+		}
+		lhs_slot.setSize(vbytes);
+		emit_simd_mov(cc, op1.as<x86::Xmm>(), lhs_slot, vbytes);
+	    }
+	    else
+		throw "safemul() unsupported SIMD integer element size";
+	    return;
+	}
 	if ( d1 && d1->size == sizeof(float) )
 	    cc.mulss(op1.as<x86::Xmm>(), op2.as<x86::Xmm>());
 	else
@@ -801,6 +918,121 @@ void Program::safediv(Operand &op1, Operand &op2, Operand &op3, DataDef *d1, Dat
 	else
 	    throw "safediv() right operand is not a Gp or Xmm register";
 
+	if ( d1 && d1->is_simd() )
+	{
+	    DataDefSIMD *vdd = static_cast<DataDefSIMD *>(d1);
+	    if ( vdd->element_type->is_real() )
+	    {
+		if ( vdd->element_type->size == sizeof(float) )
+		    cc.divps(op2.as<x86::Xmm>(), divisor_xmm);
+		else
+		    cc.divpd(op2.as<x86::Xmm>(), divisor_xmm);
+	    }
+	    else
+	    {
+		// No SSE integer division instruction — extract each lane,
+		// divide as scalar, reinsert.
+		size_t lane_count = vdd->lane_count;
+		size_t elem_size = vdd->element_type->size;
+		x86::Gp lhs_gp = cc.newGpq("_div_lane_lhs");
+		x86::Gp rhs_gp = cc.newGpq("_div_lane_rhs");
+		x86::Gp rem_gp = cc.newGpq("_div_lane_rem");
+		uint32_t vbytes = (uint32_t)vdd->size;
+		x86::Mem lhs_slot = cc.newStack(vbytes, (uint32_t)vdd->alignment());
+		x86::Mem rhs_slot = cc.newStack(vbytes, (uint32_t)vdd->alignment());
+		x86::Mem rem_slot = cc.newStack(vbytes, (uint32_t)vdd->alignment());
+		lhs_slot.setSize(vbytes);
+		rhs_slot.setSize(vbytes);
+		rem_slot.setSize(vbytes);
+		emit_simd_mov(cc, lhs_slot, op2.as<x86::Xmm>(), vbytes);
+		emit_simd_mov(cc, rhs_slot, divisor_xmm, vbytes);
+		for ( size_t i = 0; i < lane_count; ++i )
+		{
+		    x86::Mem ll = lhs_slot;
+		    ll.addOffset((int64_t)(i * elem_size));
+		    ll.setSize((uint32_t)elem_size);
+		    x86::Mem rl = rhs_slot;
+		    rl.addOffset((int64_t)(i * elem_size));
+		    rl.setSize((uint32_t)elem_size);
+		    bool is_unsigned = vdd->element_type->is_unsigned();
+		    if ( elem_size <= 2 )
+		    {
+			if ( is_unsigned )
+			{
+			    cc.movzx(lhs_gp.r32(), ll);
+			    cc.movzx(rhs_gp.r32(), rl);
+			}
+			else
+			{
+			    cc.movsx(lhs_gp.r32(), ll);
+			    cc.movsx(rhs_gp.r32(), rl);
+			}
+		    }
+		    else if ( elem_size == 4 )
+		    {
+			cc.mov(lhs_gp.r32(), ll);
+			cc.mov(rhs_gp.r32(), rl);
+		    }
+		    else
+		    {
+			cc.mov(lhs_gp.r64(), ll);
+			cc.mov(rhs_gp.r64(), rl);
+		    }
+		    cc.xor_(rem_gp, rem_gp);
+		    if ( is_unsigned )
+		    {
+			if ( elem_size <= 4 )
+			    cc.div(rem_gp.r32(), lhs_gp.r32(), rhs_gp.r32());
+			else
+			    cc.div(rem_gp.r64(), lhs_gp.r64(), rhs_gp.r64());
+		    }
+		    else
+		    {
+			// Sign-extend for signed division
+			if ( elem_size <= 4 )
+			{
+			    cc.cdq(rem_gp.r32(), lhs_gp.r32());
+			    cc.idiv(rem_gp.r32(), lhs_gp.r32(), rhs_gp.r32());
+			}
+			else
+			{
+			    cc.cqo(rem_gp.r64(), lhs_gp.r64());
+			    cc.idiv(rem_gp.r64(), lhs_gp.r64(), rhs_gp.r64());
+			}
+		    }
+		    // Store quotient and remainder back
+		    x86::Mem rl2 = rem_slot;
+		    rl2.addOffset((int64_t)(i * elem_size));
+		    rl2.setSize((uint32_t)elem_size);
+		    if ( elem_size == 1 )
+		    {
+			cc.mov(ll, lhs_gp.r8());
+			cc.mov(rl2, rem_gp.r8());
+		    }
+		    else if ( elem_size == 2 )
+		    {
+			cc.mov(ll, lhs_gp.r16());
+			cc.mov(rl2, rem_gp.r16());
+		    }
+		    else if ( elem_size == 4 )
+		    {
+			cc.mov(ll, lhs_gp.r32());
+			cc.mov(rl2, rem_gp.r32());
+		    }
+		    else
+		    {
+			cc.mov(ll, lhs_gp.r64());
+			cc.mov(rl2, rem_gp.r64());
+		    }
+		}
+		lhs_slot.setSize(vbytes);
+		rem_slot.setSize(vbytes);
+		emit_simd_mov(cc, op2.as<x86::Xmm>(), lhs_slot, vbytes);
+		if ( op1.isReg() && op1.as<BaseReg>().isGroup(RegGroup::kVec) )
+		    emit_simd_mov(cc, op1.as<x86::Xmm>(), rem_slot, vbytes);
+	    }
+	    return;
+	}
 	if ( d1 && d1->size == sizeof(float) )
 	    cc.divss(op2.as<x86::Xmm>(), divisor_xmm);
 	else

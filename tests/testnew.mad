@@ -1,0 +1,32 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+class Box {
+	int width;
+	int height;
+
+	Box(int w, int h)
+	{
+		width = w;
+		height = h;
+		printf("Box(%d,%d) created\n", width, height);
+	}
+
+	~Box()
+	{
+		printf("Box(%d,%d) deleted\n", width, height);
+	}
+
+	int area()
+	{
+		return width * height;
+	}
+};
+
+int main()
+{
+	Box *b = new Box(3, 4);
+	printf("area = %d\n", b->area());
+	delete b;
+	return 0;
+}

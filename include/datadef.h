@@ -53,7 +53,7 @@ enum class DataType : uint16_t {
 };
 
 // Variable flags
-typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
+typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			  vfSTACK	=    2, // stack vs heap
 			  vfSTATIC	=    4, // static variable
 			  vfPARAM	=    8, // parameter variable
@@ -69,6 +69,7 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfPROTECTED	= 8192, // variable is a protected class member
 			  vfADDRTAKEN	=16384, // variable needs stable stack storage for &
 			  vfEXTERN	=32768, // extern declaration placeholder
+			  vfREFERENCE	=65536, // reference parameter (T&): auto-deref on access
 			} varflag_t;
 
 #define rtNone(x) 0
@@ -519,10 +520,12 @@ public:
     std::vector<BitFieldInfo> member_bitfields;
     std::vector<std::vector<uint32_t>> member_dims;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
+    std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
     bool union_layout;	// true: all members start at offset 0; size is max member size
+    bool has_anon_aggregate;	// true: addAnonymousAggregate() was used to flatten members
     bool reverse_scalar_storage;
     bool bitfield_active;
     size_t bitfield_unit_offset;
@@ -543,11 +546,12 @@ public:
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), union_layout(false),
+	  has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1),
-	  union_layout(false),
+	  union_layout(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
@@ -612,6 +616,7 @@ public:
 	    member_bitfields.push_back(BitFieldInfo());
 	    member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
 	    member_count_exprs.push_back(count_expr);
+	    member_access.push_back(0);
 	    size_t member_size = count_expr ? 0 : (dd.size * cnt);
 	    if ( member_size > size ) size = member_size;
 	    return;
@@ -625,6 +630,7 @@ public:
 	member_bitfields.push_back(BitFieldInfo());
 	member_dims.push_back(dims ? *dims : std::vector<uint32_t>());
 	member_count_exprs.push_back(count_expr);
+	member_access.push_back(0);
 	if ( !count_expr )
 	    size += dd.size * cnt;
     }
@@ -708,6 +714,7 @@ public:
     }
     void addAnonymousAggregate(const DataDefSTRUCT &agg)
     {
+	has_anon_aggregate = true;
 	endBitFieldRun();
 	size_t fa = field_align(agg);
 	size_t base_offset = union_layout ? 0 : align_up(size, fa);
@@ -739,6 +746,24 @@ public:
     {
 	endBitFieldRun();
 	size = align_up(size, max_align);
+    }
+    // Apply __attribute__((aligned(N))) to the most recently added member.
+    // Updates the member's offset (re-aligns it to N) and the struct's
+    // overall alignment requirement.
+    void apply_member_alignment(size_t align)
+    {
+	if ( align == 0 || members.empty() ) return;
+	if ( align > max_align ) max_align = align;
+	if ( union_layout ) return; // unions don't have per-member offsets
+	size_t idx = member_offsets.size() - 1;
+	size_t old_ofs = member_offsets[idx];
+	size_t new_ofs = align_up(old_ofs, align);
+	if ( new_ofs != old_ofs )
+	{
+	    size_t delta = new_ofs - old_ofs;
+	    member_offsets[idx] = new_ofs;
+	    size += delta;
+	}
     }
     ssize_t m_offset(std::string &member)
     {
@@ -824,10 +849,37 @@ public:
     std::vector<Variable *> methods;
     std::vector<Variable *> staticconst;
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
+    bool has_user_ctor;  // true if user defined ClassName() constructor
+    bool has_user_dtor;  // true if user defined ~ClassName() destructor
+    void *extern_ctor;   // C function pointer for extern class default constructor (NULL if none)
+    void *extern_dtor;   // C function pointer for extern class destructor (NULL if none)
+    void *_dtor_ptr;     // copy of extern_dtor; &_dtor_ptr is fn_indirect for cleanup stack
+    DataDefCLASS *base_class; // single inheritance: parent class (NULL if none)
+    // Virtual function table
+    std::vector<std::string> vtable_slots; // method names in vtable slot order
+    std::map<std::string, bool> virtual_methods;  // names of methods declared virtual
+    void **vtable;         // runtime vtable (array of function pointers, filled at compile time)
+    bool has_vtable;       // true if this class or any base has virtual methods
+    int vtable_slot(const std::string &name) const {
+	for ( size_t i = 0; i < vtable_slots.size(); ++i )
+	    if ( vtable_slots[i] == name ) return (int)i;
+	return -1;
+    }
+    bool is_virtual_method(const std::string &name) const {
+	if ( virtual_methods.find(name) != virtual_methods.end() ) return true;
+	if ( base_class ) return base_class->is_virtual_method(name);
+	return false;
+    }
 
-    DataDefCLASS(std::string n, size_t s, DataType d) : DataDefSTRUCT(n, s, d) {}
+    DataDefCLASS(std::string n, size_t s, DataType d)
+	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),
+	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
+	  base_class(NULL), vtable(NULL), has_vtable(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
+    void register_extern_ctor_dtor(void *ctor, void *dtor) {
+	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
+    }
 };
 
 typedef DataDefCLASS DDClass;

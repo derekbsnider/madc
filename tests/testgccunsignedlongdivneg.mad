@@ -1,0 +1,13 @@
+#include <stdio.h>
+
+int main()
+{
+    int e = 0;
+    unsigned long lhs = ~e + 0UL;
+    unsigned long rhs = -1;
+    unsigned long q = lhs / rhs;
+    int b = (~e + 0UL) / -1;
+    unsigned d = 1;
+    printf("%lu %lu %lu %d %d\n", lhs, rhs, q, b, d > b);
+    return 0;
+}

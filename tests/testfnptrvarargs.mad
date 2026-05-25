@@ -1,0 +1,17 @@
+#include <stdio.h>
+
+double direct(int x, ...)
+{
+	return x * x;
+}
+
+double broken(double (*indirect)(int x, ...), int v)
+{
+	return indirect(v);
+}
+
+int main(void)
+{
+	printf("%.0f\n", broken(direct, 3));
+	return 0;
+}

@@ -44,6 +44,62 @@ because the Diku / Merc / SMAUG license stack is distinct from
 madc's own MPL 2.0 licence. `docs/SMAUG_requirements.md` in this
 repo is the historical gap analysis that drove madc's Phase A–F.
 
+## Top 10 Rules — internalize these before writing a single line
+
+These are the rules that cause the most damage when violated. Every
+agent must follow them without exception.
+
+1. **GCC is canon.** Before fixing any codegen or runtime bug, run
+   `gcc -S -fverbose-asm -O0` and study the output. madc must match
+   GCC's behavior. No exceptions. (`gcc-parity.md`, `gcc-methodology.md`)
+
+2. **Fix at the deepest layer.** Never shim a symptom at a higher
+   layer when the root cause is lower. If a type is wrong, fix where
+   the type originates. Shortcuts make for long delays.
+   (`gcc-methodology.md`)
+
+3. **Think twice, code once.** Form a hypothesis before editing.
+   If it's wrong, stop and re-examine — don't chain speculative
+   micro-fixes. One reasoned pass beats five iterative attempts.
+   (`gcc-methodology.md`)
+
+4. **Understand what exists before assuming it doesn't.** Read the
+   relevant code before writing new code. If you think a feature,
+   helper, or handling path is missing — search first. The codebase
+   is large; something that looks absent is often already there under
+   a different name or in a different file. Reinventing existing
+   machinery creates duplication and divergence.
+   (`pre-edit-checklist.md`, `design-principles.md`)
+
+5. **Do not cross layer boundaries.** Parsers parse, compilers emit
+   code, namespace files implement their own namespace. A fix that
+   touches the wrong layer is a future bug. (`design-principles.md`)
+
+6. **`make -C src fulltest` after every change.** A change is not done
+   until the full test suite is green. No JIT-green-EXE-broken, no
+   EXE-green-JIT-broken. (`testing-fulltest.md`)
+
+7. **No hard-coding specifics into general machinery.** Test runner:
+   no per-test case branches. Parser: no string comparisons against
+   user names. Use data lookups, type predicates, filename conventions.
+   (`design-principles.md`)
+
+8. **Commit early; never clobber uncommitted work.** Feature branches
+   off `develop`. Keep `develop` stable. Never `git checkout` over
+   uncommitted work — use `#ifdef` guards or `git stash`.
+   (`branching.md`, `feature-guards.md`)
+
+9. **Bare rules in `.claude/rules/`, reasoning in `docs/rules/`.**
+   Never duplicate content between the two. If a rules file needs to
+   say "because", move that to the docs file. (`docs-vs-rules.md`)
+
+10. **Pre-edit checklist: trace, search, identify.** Before modifying
+    any source file: trace the data flow for every variable the fix
+    touches, search the file for existing handling of the same pattern,
+    and identify where modified values are written back. If any check
+    reveals an unknown, read more code before editing.
+    (`pre-edit-checklist.md`)
+
 ## Shell command hygiene
 
 **Never chain commands with `&&` or use shell variable substitution.**
@@ -209,6 +265,7 @@ no matter how small.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [design-principles.md](.claude/rules/design-principles.md) |  59 | Separation of concerns, high cohesion / low coupling, OOP, no hard-coding specifics into general machinery |
+| [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit (Top 10 Rule #10) |
 | [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  10 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
 | [code-style.md](.claude/rules/code-style.md)     |     9 | C++11, tabs, header guards, naming             |
@@ -232,6 +289,7 @@ editing — don't try to memorize all of them.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
+| [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 30 | Compare with `gcc -S` first, fix at deepest layer, operator self-determination |
 | [asmjit-api.md](.claude/rules/asmjit-api.md)     |    32 | asmjit v1.14 API dos / don'ts                  |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
 | [regdp-reset.md](.claude/rules/regdp-reset.md)   |    23 | Reset `regdp` before sub-compiles in loops / conditionals |
@@ -245,10 +303,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **23 rules, 529 lines** in `.claude/rules/`.
-- **This file (AGENTS.md): ~290 lines** — loaded by Claude via
+- **24 rules, 548 lines** in `.claude/rules/`.
+- **This file (AGENTS.md): ~295 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~819 lines.**
+- **Grand total loaded by Claude Code per turn: ~843 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

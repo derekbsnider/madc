@@ -1,0 +1,25 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+class Vec2 {
+	int x;
+	int y;
+
+	Vec2(int a, int b)
+	{
+		x = a;
+		y = b;
+	}
+
+	~Vec2()
+	{
+		printf("Vec2(%d,%d) destructed\n", x, y);
+	}
+};
+
+int main()
+{
+	Vec2 v(10, 20);
+	printf("v = (%d, %d)\n", v.x, v.y);
+	return 0;
+}

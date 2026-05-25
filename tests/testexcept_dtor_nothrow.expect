@@ -1,0 +1,6 @@
+Foo(1)
+Foo(2)
+no throw
+done
+~Foo(2)
+~Foo(1)
