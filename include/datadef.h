@@ -848,9 +848,10 @@ public:
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
     bool has_user_ctor;  // true if user defined ClassName() constructor
     bool has_user_dtor;  // true if user defined ~ClassName() destructor
+    DataDefCLASS *base_class; // single inheritance: parent class (NULL if none)
 
     DataDefCLASS(std::string n, size_t s, DataType d)
-	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false) {}
+	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false), base_class(NULL) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
 };

@@ -1,0 +1,50 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+class Animal {
+	int legs;
+
+	Animal()
+	{
+		legs = 0;
+	}
+
+	~Animal()
+	{
+		printf("Animal(%d) destructed\n", legs);
+	}
+
+	int get_legs()
+	{
+		return legs;
+	}
+};
+
+class Dog : public Animal {
+	int tricks;
+
+	Dog(int t)
+	{
+		legs = 4;
+		tricks = t;
+	}
+
+	~Dog()
+	{
+		printf("Dog(%d) destructed\n", tricks);
+	}
+
+	int get_tricks()
+	{
+		return tricks;
+	}
+};
+
+int main()
+{
+	Dog d(3);
+	printf("legs = %d\n", d.get_legs());
+	printf("tricks = %d\n", d.get_tricks());
+	printf("legs direct = %d\n", d.legs);
+	return 0;
+}

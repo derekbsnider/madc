@@ -4631,6 +4631,29 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	if ( ddc->has_user_ctor || ddc->has_user_dtor )
 	{
 	    Operand &obj_op = pgm.tkFunction->voperand(pgm, &var);
+	    // Call base class constructor first (inheritance)
+	    if ( ddc->base_class && ddc->base_class->has_user_ctor )
+	    {
+		std::string base_ctor_name = ddc->base_class->name;
+		Variable *base_ctor_mvar = ddc->base_class->findMethod(base_ctor_name);
+		if ( base_ctor_mvar && base_ctor_mvar->data )
+		{
+		    FuncDef *base_ctor = (FuncDef *)((Method *)base_ctor_mvar->data)->returns.type;
+		    if ( base_ctor && base_ctor->funcnode )
+		    {
+			DBG(pgm.cc.comment("base class constructor call"));
+			x86::Gp base_this = pgm.cc.newIntPtr("__base_ctor_this");
+			if ( obj_op.isMem() )
+			    pgm.cc.lea(base_this, obj_op.as<x86::Mem>());
+			else
+			    pgm.cc.mov(base_this, obj_op.as<x86::Gp>());
+			InvokeNode *bcall;
+			pgm.cc.invoke(&bcall, base_ctor->funcnode->label(),
+				      FuncSignature::build<void, void *>());
+			bcall->setArg(0, base_this);
+		    }
+		}
+	    }
 	    // Call user-defined constructor
 	    if ( ddc->has_user_ctor )
 	    {
@@ -7437,6 +7460,26 @@ void TokenCpnd::cleanup(Program &pgm)
 	cc.invoke(&call, dtor_func->funcnode->label(),
 		  FuncSignature::build<void, void *>());
 	call->setArg(0, this_ptr);
+	// Call base class destructor after derived (C++ order)
+	DataDefCLASS *base = ddc->base_class;
+	while ( base && base->has_user_dtor )
+	{
+	    std::string base_dtor_name = "~" + base->name;
+	    Variable *base_dtor = base->findMethod(base_dtor_name);
+	    if ( base_dtor && base_dtor->data )
+	    {
+		FuncDef *bdf = (FuncDef *)((Method *)base_dtor->data)->returns.type;
+		if ( bdf && bdf->funcnode )
+		{
+		    DBG(cc.comment("base class destructor call"));
+		    InvokeNode *bcall;
+		    cc.invoke(&bcall, bdf->funcnode->label(),
+			      FuncSignature::build<void, void *>());
+		    bcall->setArg(0, this_ptr);
+		}
+	    }
+	    base = base->base_class;
+	}
     }
 
     for ( rmi = operand_map.begin(); rmi != operand_map.end(); ++rmi )

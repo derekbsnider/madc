@@ -1,0 +1,5 @@
+legs = 4
+tricks = 3
+legs direct = 4
+Dog(3) destructed
+Animal(4) destructed

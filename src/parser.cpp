@@ -3443,6 +3443,10 @@ Variable *DataDefCLASS::findMethod(std::string &s)
 	if ( !s.compare((*vvi)->name) )
 	    return *vvi;
 
+    // search base class chain
+    if ( base_class )
+	return base_class->findMethod(s);
+
     return NULL;
 }
 
@@ -10368,6 +10372,33 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    pgm.Throw << "Unexpected end of input after class name" << flush;
     }
 
+    // --- inheritance: class Derived : public Base { ... } ---
+    DataDefCLASS *inherit_base = NULL;
+    if ( tn->id() == TokenID::tkColon )
+    {
+	pgm.nextToken(); // consume ':'
+	// optional access specifier (public/protected/private) — accept and ignore
+	tn = pgm.peekToken();
+	if ( tn && tn->type() == TokenType::ttIdentifier )
+	{
+	    std::string spec = ((TokenIdent *)tn)->str;
+	    if ( spec == "public" || spec == "protected" || spec == "private" )
+		pgm.nextToken(); // consume access specifier
+	}
+	tn = pgm.nextToken();
+	if ( !tn || tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn ? tn : this) << "Expected base class name after ':'" << flush;
+	std::string base_name = ((TokenIdent *)tn)->str;
+	dmi = pgm.struct_map.find(base_name);
+	if ( dmi == pgm.struct_map.end() )
+	    pgm.Throw(tn) << "Unknown base class '" << base_name << "'" << flush;
+	inherit_base = dynamic_cast<DataDefCLASS *>(dmi->second);
+	if ( !inherit_base )
+	    pgm.Throw(tn) << "'" << base_name << "' is not a class" << flush;
+	tn = pgm.peekToken();
+	DBG(cout << "TokenCLASS::parse() inherits from " << base_name << endl);
+    }
+
     // if no brace, class type must already be defined
     if ( tn->id() != TokenID::tkOpBrc )
     {
@@ -10405,6 +10436,27 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     DataDefCLASS *ddc = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
     DBG(cout << "TokenCLASS::parse() defining class " << tag->str << endl);
+
+    // Copy base class members (at offset 0) and methods for inheritance
+    if ( inherit_base )
+    {
+	ddc->base_class = inherit_base;
+	// Copy all data members from base class
+	for ( auto &m : inherit_base->members )
+	    ddc->addMember(m.first, *m.second, 1);
+	// Inherit methods (derived can override via method_map shadowing)
+	for ( auto &mp : inherit_base->method_map )
+	{
+	    if ( ddc->method_map.find(mp.first) == ddc->method_map.end() )
+		ddc->method_map[mp.first] = mp.second;
+	}
+	// Inherit ctor/dtor flags for cleanup
+	if ( inherit_base->has_user_dtor )
+	    ddc->has_user_dtor = true;
+	DBG(cout << "TokenCLASS::parse() inherited " << inherit_base->members.size()
+	    << " members, " << inherit_base->method_map.size() << " methods from "
+	    << inherit_base->name << ", size now " << ddc->size << endl);
+    }
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
