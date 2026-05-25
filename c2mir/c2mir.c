@@ -574,6 +574,7 @@ typedef enum {
   REP5 (T_EL, UNSIGNED, VOID, VOLATILE, WHILE, EOFILE),
   /* madc extensions: */
   T_DEFER,
+  T_CLASS,
   /* tokens existing in preprocessor only: */
   T_HEADER,         /* include header */
   T_NO_MACRO_IDENT, /* ??? */
@@ -612,6 +613,8 @@ typedef enum {
   REP4 (NODE_EL, FUNC_DEF, MODULE, ASM, ATTR),
   /* madc extensions: */
   N_DEFER,
+  N_CLASS,       /* class body (like N_STRUCT but with methods) */
+  N_METHOD,      /* method declaration inside a class */
 } node_code_t;
 
 #undef REP_SEP
@@ -4612,7 +4615,7 @@ DA (type_spec) {
     P (type_name);
     PT (')');
     error (c2m_ctx, pos, "Atomic types are not supported");
-  } else if ((struct_p = MP (T_STRUCT, pos)) || MP (T_UNION, pos)) {
+  } else if ((struct_p = MP (T_STRUCT, pos)) || (struct_p = MP (T_CLASS, pos)) || MP (T_UNION, pos)) {
     /* struct-or-union-specifier, struct-or-union */
     if (!MN (T_ID, op1)) {
       op1 = new_node (c2m_ctx, N_IGNORE);
@@ -4716,6 +4719,15 @@ D (struct_declaration) {
           op = new_node (c2m_ctx, N_IGNORE);
         }
         if (attrs == err_node) attrs = new_node (c2m_ctx, N_IGNORE);
+        /* madc: method definition — declarator followed by '{' */
+        if (C ('{')) {
+          P (compound_stmt);
+          op = new_pos_node3 (c2m_ctx, N_METHOD, POS (op),
+                              new_node1 (c2m_ctx, N_SHARE, spec), op, r);
+          op_append (c2m_ctx, list, op);
+          r = list;
+          return r;  /* method parsed — return to struct_declaration_list */
+        }
         if (M (':')) {
           P (const_expr);
         } else {
@@ -4726,7 +4738,7 @@ D (struct_declaration) {
         op_append (c2m_ctx, list, op);
         if (!M (',')) break;
       }
-      PT (';');
+      if (!C ('}')) PT (';');  /* methods don't need trailing ; */
     }
     r = list;
   }
@@ -5504,6 +5516,7 @@ static void parse_init (c2m_ctx_t c2m_ctx) {
   kw_add (c2m_ctx, "while", T_WHILE, 0);
   /* madc extensions */
   kw_add (c2m_ctx, "defer", T_DEFER, FLAG_EXT);
+  kw_add (c2m_ctx, "class", T_CLASS, FLAG_EXT);
   kw_add (c2m_ctx, "__restrict", T_RESTRICT, FLAG_EXT);
   kw_add (c2m_ctx, "__restrict__", T_RESTRICT, FLAG_EXT);
   kw_add (c2m_ctx, "__inline", T_INLINE, FLAG_EXT);
@@ -9545,6 +9558,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                NL_NEXT (op1)->u.s.s);  // ???
       }
     }
+    break;
+  }
+  case N_METHOD: {
+    /* madc: method inside class — for now, skip checking.
+       TODO: mangle name, add hidden this parameter, register as function. */
     break;
   }
   case N_MEMBER: {
@@ -13929,6 +13947,7 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_CONTINUE:
   case N_BREAK:
   case N_DEFER:
+  case N_METHOD:
   case N_RETURN:
   case N_EXPR:
   case N_CASE:
