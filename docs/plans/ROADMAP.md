@@ -38,7 +38,7 @@ Master plan linking all workstreams. Updated 2026-05-25.
 | 2.1 | Constructors & destructors (RAII foundation) | 3-5 d | **DONE** | [cpp-support.md](cpp-support.md) |
 | 2.2 | Operator overloading completion | 2-3 d | **DONE** | [cpp-support.md](cpp-support.md) |
 | 2.3 | Explicit references `T&`, const enforcement | 1 wk | **Partial** (T& done) | [cpp-support.md](cpp-support.md) |
-| 2.4 | `new` / `delete` | 1-2 wk | Blocked on 2.1 | [cpp-support.md](cpp-support.md) |
+| 2.4 | `new` / `delete` | 1-2 wk | **DONE** | [cpp-support.md](cpp-support.md) |
 | 2.5 | Single inheritance | 1-2 wk | Blocked on 2.1 | [cpp-support.md](cpp-support.md) |
 | 2.6 | Virtual functions / vtables | 2-3 wk | Blocked on 2.5 | [cpp-support.md](cpp-support.md) |
 | 2.7 | Exception handling (SJLJ) | 3-4 wk | Blocked on 2.1 | [cpp-support.md](cpp-support.md) |

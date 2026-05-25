@@ -17,7 +17,7 @@ Analysis performed 2026-05-24.
 | Namespaces | Built-in only | `using namespace std;` works. No user-defined namespaces |
 | Streams | Partial | `cout <<` chaining works. `cin >>` missing. No manipulators |
 | Enums | C-style | No `enum class` (scoped enums) |
-| new/delete | Missing | Stack allocation only for user classes |
+| new/delete | Working | Heap allocation with ctor/dtor. No new[]/delete[] yet |
 
 ## Industry Context
 
