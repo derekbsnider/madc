@@ -1101,7 +1101,7 @@ Operand &TokenTRY::compile(Program &pgm, regdefp_t &regdp)
 				  FuncSignature::build<int64_t>());
 		    x86::Gp exc_val = pgm.cc.newGpq("__exc_int");
 		    val_call->setRet(0, exc_val);
-		    Operand &cv_op = catch_cpnd->voperand(pgm, cv);
+		    Operand &cv_op = pgm.tkFunction->voperand(pgm, cv);
 		    if ( cv_op.isMem() )
 			pgm.cc.mov(cv_op.as<x86::Mem>(), exc_val);
 		    else
@@ -1114,7 +1114,7 @@ Operand &TokenTRY::compile(Program &pgm, regdefp_t &regdp)
 				  FuncSignature::build<double>());
 		    x86::Xmm exc_val = pgm.cc.newXmm("__exc_dbl");
 		    val_call->setRet(0, exc_val);
-		    Operand &cv_op = catch_cpnd->voperand(pgm, cv);
+		    Operand &cv_op = pgm.tkFunction->voperand(pgm, cv);
 		    if ( cv_op.isMem() )
 			pgm.cc.movsd(cv_op.as<x86::Mem>(), exc_val);
 		    else

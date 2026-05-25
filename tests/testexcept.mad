@@ -1,15 +1,22 @@
 #!/usr/bin/env madc
 #include <stdio.h>
 
+int divide(int a, int b)
+{
+	if ( b == 0 )
+		throw 42;
+	return a / b;
+}
+
 int main()
 {
 	try {
-		printf("before throw\n");
-		throw 42;
+		printf("10/2 = %d\n", divide(10, 2));
+		printf("10/0 = %d\n", divide(10, 0));
 		printf("should not reach\n");
 	}
-	catch ( ... ) {
-		printf("caught exception\n");
+	catch ( int e ) {
+		printf("caught: %d\n", e);
 	}
 	printf("after catch\n");
 	return 0;
