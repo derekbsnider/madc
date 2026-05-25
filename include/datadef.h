@@ -848,6 +848,9 @@ public:
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
     bool has_user_ctor;  // true if user defined ClassName() constructor
     bool has_user_dtor;  // true if user defined ~ClassName() destructor
+    void *extern_ctor;   // C function pointer for extern class default constructor (NULL if none)
+    void *extern_dtor;   // C function pointer for extern class destructor (NULL if none)
+    void *_dtor_ptr;     // copy of extern_dtor; &_dtor_ptr is fn_indirect for cleanup stack
     DataDefCLASS *base_class; // single inheritance: parent class (NULL if none)
     // Virtual function table
     std::vector<std::string> vtable_slots; // method names in vtable slot order
@@ -867,9 +870,13 @@ public:
 
     DataDefCLASS(std::string n, size_t s, DataType d)
 	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),
+	  extern_ctor(NULL), extern_dtor(NULL), _dtor_ptr(NULL),
 	  base_class(NULL), vtable(NULL), has_vtable(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
+    void register_extern_ctor_dtor(void *ctor, void *dtor) {
+	extern_ctor = ctor; extern_dtor = dtor; _dtor_ptr = dtor;
+    }
 };
 
 typedef DataDefCLASS DDClass;

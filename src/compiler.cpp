@@ -2826,6 +2826,15 @@ void Program::_compiler_init()
     }
     // constant initialization
 //  __const_double_1 = cc.newDoubleConst(ConstPool::kScopeGlobal, 1.0);
+
+    // Register extern class ctor/dtor for built-in types.
+    // This enables the generic DataDefCLASS construction/destruction path
+    // to handle these types, replacing per-type switch cases.
+    ddSTRING.register_extern_ctor_dtor((void *)string_construct, (void *)string_destruct);
+    ddSSTREAM.register_extern_ctor_dtor((void *)stringstream_construct, (void *)stringstream_destruct);
+    ddIFSTREAM.register_extern_ctor_dtor((void *)ifstream_construct, (void *)ifstream_destruct);
+    ddOFSTREAM.register_extern_ctor_dtor((void *)ofstream_construct, (void *)ofstream_destruct);
+    ddFSTREAM.register_extern_ctor_dtor((void *)fstream_construct, (void *)fstream_destruct);
 }
 
 bool Program::_compiler_finalize()
@@ -7378,6 +7387,27 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	}
 	else
 	{
+	// Generic extern class construction — handles any type registered
+	// via register_extern_ctor_dtor(), replacing per-type switch cases.
+	DataDefCLASS *ext_ddc = dynamic_cast<DataDefCLASS *>(var->type);
+	if ( ext_ddc && ext_ddc->extern_ctor )
+	{
+	    uint32_t align = var->type->size >= 8 ? 8 : 4;
+	    x86::Mem stack = pgm.cc.newStack(var->type->size, align);
+	    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
+	    pgm.cc.lea(reg, stack);
+	    DBG(pgm.cc.comment(("extern_ctor " + ext_ddc->name).c_str()));
+	    InvokeNode *call;
+	    pgm.cc.invoke(&call, imm(ext_ddc->extern_ctor),
+			  FuncSignature::build<void *, void *>());
+	    call->setArg(0, reg);
+	    operand_map[var] = reg;
+	    if ( pgm.try_depth > 0 )
+		emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg,
+					  &ext_ddc->_dtor_ptr);
+	}
+	else
+	{
 	DBG(pgm.cc.comment("voperand on stack and non-numeric"));
 	switch(var->type->type())
 	{
@@ -7636,6 +7666,7 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		throw "TokenCpnd()::voperand() unsupported type on stack";
 		
 	} // switch
+    } // else (fallback to per-type switch)
     } // else (non-param stack variable)
     }
     else
@@ -7845,6 +7876,38 @@ void TokenCpnd::cleanup(Program &pgm)
 		}
 		continue;
 	    }
+	    // Generic extern class destruction — handles any type registered
+	    // via register_extern_ctor_dtor().
+	    {
+		DataDefCLASS *ext_ddc = dynamic_cast<DataDefCLASS *>(rmi->first->type);
+		if ( ext_ddc && ext_ddc->extern_dtor )
+		{
+		    Variable *var = rmi->first;
+		    // Guard check: skip if already destroyed by exception unwinding
+		    Label ext_skip;
+		    bool ext_guarded = false;
+		    auto egi = cleanup_guards.find(var);
+		    if ( egi != cleanup_guards.end() )
+		    {
+			ext_guarded = true;
+			ext_skip = cc.newLabel();
+			x86::Gp gv = cc.newGpd("__eguard_chk");
+			x86::Mem gm = egi->second;
+			gm.setSize(1);
+			cc.movzx(gv, gm);
+			cc.test(gv, gv);
+			cc.je(ext_skip);
+		    }
+		    InvokeNode *call;
+		    cc.invoke(&call, imm(ext_ddc->extern_dtor),
+			      FuncSignature::build<void, void *>());
+		    call->setArg(0, as_gp_ptr(pgm, reg, "extern_dtor"));
+		    if ( ext_guarded )
+			cc.bind(ext_skip);
+		    continue;
+		}
+	    }
+
 	    if ( rmi->first->type->type() > DataType::dtRESERVED )
 	    {
 		Variable *var = rmi->first;
