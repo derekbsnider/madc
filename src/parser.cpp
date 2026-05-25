@@ -3636,6 +3636,24 @@ extern int64_t fstream_eof(void *);
 extern int64_t fstream_good(void *);
 extern int64_t fstream_is_open(void *);
 
+// forward declarations for STL container construct/destruct (ns_stl.cpp)
+extern void *vector_int_construct(void *);
+extern void vector_int_destruct(void *);
+extern void *vector_str_construct(void *);
+extern void vector_str_destruct(void *);
+extern void *map_str_int_construct(void *);
+extern void map_str_int_destruct(void *);
+extern void *map_str_str_construct(void *);
+extern void map_str_str_destruct(void *);
+extern void *set_int_construct(void *);
+extern void set_int_destruct(void *);
+extern void *set_str_construct(void *);
+extern void set_str_destruct(void *);
+extern void *list_int_construct(void *);
+extern void list_int_destruct(void *);
+extern void *list_str_construct(void *);
+extern void list_str_destruct(void *);
+
 // forward declarations for STL container methods (defined in ns_stl.cpp)
 extern void vector_int_push_back(void *, int64_t);
 extern void vector_int_pop_back(void *);
@@ -12324,6 +12342,10 @@ TokenBase *TokenVECTOR::parse(Program &pgm)
     {
 	// use sizeof of the underlying vector type — all std::vector are same size
 	DataDefVECTOR *dd = new DataDefVECTOR(elem, tname, sizeof(std::vector<int64_t>));
+	if ( elem->is_string() )
+	    dd->register_extern_ctor_dtor((void *)vector_str_construct, (void *)vector_str_destruct);
+	else
+	    dd->register_extern_ctor_dtor((void *)vector_int_construct, (void *)vector_int_destruct);
 	tdt = new TokenDataType(tname.c_str(), *dd);
 	pgm.datatype_map[tname] = tdt;
 
@@ -12402,6 +12424,10 @@ TokenBase *TokenMAP::parse(Program &pgm)
     else
     {
 	DataDefMAP *dd = new DataDefMAP(key, val, tname, sizeof(std::map<std::string, int64_t>));
+	if ( val->is_string() )
+	    dd->register_extern_ctor_dtor((void *)map_str_str_construct, (void *)map_str_str_destruct);
+	else
+	    dd->register_extern_ctor_dtor((void *)map_str_int_construct, (void *)map_str_int_destruct);
 	tdt = new TokenDataType(tname.c_str(), *dd);
 	pgm.datatype_map[tname] = tdt;
 
@@ -12466,6 +12492,10 @@ TokenBase *TokenSET::parse(Program &pgm)
     else
     {
 	DataDefSET *dd = new DataDefSET(elem, tname, sizeof(std::set<std::string>));
+	if ( elem->is_string() )
+	    dd->register_extern_ctor_dtor((void *)set_str_construct, (void *)set_str_destruct);
+	else
+	    dd->register_extern_ctor_dtor((void *)set_int_construct, (void *)set_int_destruct);
 	tdt = new TokenDataType(tname.c_str(), *dd);
 	pgm.datatype_map[tname] = tdt;
 
@@ -12525,6 +12555,10 @@ TokenBase *TokenLIST::parse(Program &pgm)
     else
     {
 	DataDefLIST *dd = new DataDefLIST(elem, tname, sizeof(std::list<int64_t>));
+	if ( elem->is_string() )
+	    dd->register_extern_ctor_dtor((void *)list_str_construct, (void *)list_str_destruct);
+	else
+	    dd->register_extern_ctor_dtor((void *)list_int_construct, (void *)list_int_destruct);
 	tdt = new TokenDataType(tname.c_str(), *dd);
 	pgm.datatype_map[tname] = tdt;
 

@@ -2835,6 +2835,7 @@ void Program::_compiler_init()
     ddIFSTREAM.register_extern_ctor_dtor((void *)ifstream_construct, (void *)ifstream_destruct);
     ddOFSTREAM.register_extern_ctor_dtor((void *)ofstream_construct, (void *)ofstream_destruct);
     ddFSTREAM.register_extern_ctor_dtor((void *)fstream_construct, (void *)fstream_destruct);
+    ddARRAY.register_extern_ctor_dtor((void *)madarray_construct, (void *)madarray_destruct);
 }
 
 bool Program::_compiler_finalize()
@@ -7007,23 +7008,6 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
     // else: MadArray write not yet supported (no indexed set helper)
 }
 
-// Static dtor function pointers for built-in types (used by cleanup stack)
-static void *_dtor_string         = (void *)string_destruct;
-static void *_dtor_stringstream   = (void *)stringstream_destruct;
-static void *_dtor_ifstream       = (void *)ifstream_destruct;
-static void *_dtor_ofstream       = (void *)ofstream_destruct;
-static void *_dtor_fstream        = (void *)fstream_destruct;
-static void *_dtor_istream        = (void *)istream_destruct;
-static void *_dtor_ostream        = (void *)ostream_destruct;
-static void *_dtor_madarray       = (void *)madarray_destruct;
-static void *_dtor_vector_int     = (void *)vector_int_destruct;
-static void *_dtor_vector_str     = (void *)vector_str_destruct;
-static void *_dtor_map_str_int    = (void *)map_str_int_destruct;
-static void *_dtor_map_str_str    = (void *)map_str_str_destruct;
-static void *_dtor_set_int        = (void *)set_int_destruct;
-static void *_dtor_set_str        = (void *)set_str_destruct;
-static void *_dtor_list_int       = (void *)list_int_destruct;
-static void *_dtor_list_str       = (void *)list_str_destruct;
 
 // Emit a cleanup stack push for a built-in type destructor.
 // fn_indirect points to a static void* holding the destructor address.
@@ -7411,162 +7395,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 	DBG(pgm.cc.comment("voperand on stack and non-numeric"));
 	switch(var->type->type())
 	{
-	    case DataType::dtSTRING:
-		{
-		    x86::Mem stack = pgm.cc.newStack(sizeof(std::string), 4);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DBG(std::cout << "TokenCpnd::voperand(" << var->name << ") stack var calling string_construct[" << (uint64_t)string_construct << ']' << std::endl);
-		    DBG(pgm.cc.comment("string_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(string_construct), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_string);
-		}
-		break;
-	    case DataType::dtSSTREAM:
-		{
-		    x86::Mem stack = pgm.cc.newStack(sizeof(std::stringstream), 4);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DBG(pgm.cc.comment("stringstream_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(stringstream_construct), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_stringstream);
-		}
-		break;
-	    case DataType::dtIFSTREAM:
-		{
-		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ifstream), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DBG(pgm.cc.comment("ifstream_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(ifstream_construct), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_ifstream);
-		}
-		break;
-	    case DataType::dtOFSTREAM:
-		{
-		    x86::Mem stack = pgm.cc.newStack(sizeof(std::ofstream), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DBG(pgm.cc.comment("ofstream_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(ofstream_construct), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_ofstream);
-		}
-		break;
-	    case DataType::dtFSTREAM:
-		{
-		    x86::Mem stack = pgm.cc.newStack(sizeof(std::fstream), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DBG(pgm.cc.comment("fstream_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(fstream_construct), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_fstream);
-		}
-		break;
-	    case DataType::dtARRAY:
-		{
-		    x86::Mem stack = pgm.cc.newStack(sizeof(MadArray), 8);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DBG(pgm.cc.comment("madarray_construct"));
-                    InvokeNode* call; pgm.cc.invoke(&call, imm(madarray_construct), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_madarray);
-		}
-		break;
-	    case DataType::dtVECTOR:
-		{
-		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(var->type);
-		    void *ctor = vdd->element_type->is_string()
-			? (void *)vector_str_construct : (void *)vector_int_construct;
-		    DBG(pgm.cc.comment("vector construct"));
-		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-		    {
-			void **dtor = vdd->element_type->is_string()
-			    ? &_dtor_vector_str : &_dtor_vector_int;
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, dtor);
-		    }
-		}
-		break;
-	    case DataType::dtMAP:
-		{
-		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DataDefMAP *mdd = static_cast<DataDefMAP *>(var->type);
-		    void *ctor = mdd->val_type->is_string()
-			? (void *)map_str_str_construct : (void *)map_str_int_construct;
-		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-		    {
-			void **dtor = mdd->val_type->is_string()
-			    ? &_dtor_map_str_str : &_dtor_map_str_int;
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, dtor);
-		    }
-		}
-		break;
-	    case DataType::dtSET:
-		{
-		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DataDefSET *sdd = static_cast<DataDefSET *>(var->type);
-		    void *ctor = sdd->element_type->is_string()
-			? (void *)set_str_construct : (void *)set_int_construct;
-		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-		    {
-			void **dtor = sdd->element_type->is_string()
-			    ? &_dtor_set_str : &_dtor_set_int;
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, dtor);
-		    }
-		}
-		break;
-	    case DataType::dtLIST:
-		{
-		    x86::Mem stack = pgm.cc.newStack(var->type->size, 8);
-		    x86::Gp reg = pgm.cc.newIntPtr("%s", var->name.c_str());
-		    pgm.cc.lea(reg, stack);
-		    DataDefLIST *ldd = static_cast<DataDefLIST *>(var->type);
-		    void *ctor = ldd->element_type->is_string()
-			? (void *)list_str_construct : (void *)list_int_construct;
-		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
-		    call->setArg(0, reg);
-		    operand_map[var] = reg;
-		    if ( pgm.try_depth > 0 )
-		    {
-			void **dtor = ldd->element_type->is_string()
-			    ? &_dtor_list_str : &_dtor_list_int;
-			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, dtor);
-		    }
-		}
-		break;
+	    // Types with extern_ctor are handled by the generic path above.
+	    // Remaining cases: types without constructors or with special handling.
 	    case DataType::dtISTREAM:
 		{
 		    x86::Mem stack = pgm.cc.newStack(sizeof(std::istream), 8);
@@ -7928,93 +7758,10 @@ void TokenCpnd::cleanup(Program &pgm)
 		    cc.je(builtin_dtor_skip);
 		}
 
+		// Types with extern_dtor are handled by the generic path above.
+		// Remaining: struct member string cleanup.
 		switch(var->type->type())
 		{
-		    case DataType::dtSTRING:
-			{
-			    DBG(std::cout << "TokenCpnd::cleanup(" << var->name << ") calling string_destruct[" << (uint64_t)string_destruct << ']' << std::endl);
-                            InvokeNode* call; cc.invoke(&call, imm(string_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, as_gp_ptr(pgm, reg, "str_dtor"));
-			}
-			break;
-		    case DataType::dtSSTREAM:
-			{
-                            InvokeNode* call; cc.invoke(&call, imm(stringstream_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, as_gp_ptr(pgm, reg, "ss_dtor"));
-			}
-			break;
-		    case DataType::dtARRAY:
-			{
-                            InvokeNode* call; cc.invoke(&call, imm(madarray_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, as_gp_ptr(pgm, reg, "arr_dtor"));
-			}
-			break;
-		    case DataType::dtVECTOR:
-			{
-			    DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(var->type);
-			    void *dtor = vdd->element_type->is_string()
-				? (void *)vector_str_destruct : (void *)vector_int_destruct;
-			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
-			    call->setArg(0, as_gp_ptr(pgm, reg, "vec_dtor"));
-			}
-			break;
-		    case DataType::dtMAP:
-			{
-			    DataDefMAP *mdd = static_cast<DataDefMAP *>(var->type);
-			    void *dtor = mdd->val_type->is_string()
-				? (void *)map_str_str_destruct : (void *)map_str_int_destruct;
-			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
-			    call->setArg(0, as_gp_ptr(pgm, reg, "map_dtor"));
-			}
-			break;
-		    case DataType::dtSET:
-			{
-			    DataDefSET *sdd = static_cast<DataDefSET *>(var->type);
-			    void *dtor = sdd->element_type->is_string()
-				? (void *)set_str_destruct : (void *)set_int_destruct;
-			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
-			    call->setArg(0, as_gp_ptr(pgm, reg, "set_dtor"));
-			}
-			break;
-		    case DataType::dtLIST:
-			{
-			    DataDefLIST *ldd = static_cast<DataDefLIST *>(var->type);
-			    void *dtor = ldd->element_type->is_string()
-				? (void *)list_str_destruct : (void *)list_int_destruct;
-			    InvokeNode* call; cc.invoke(&call, imm(dtor), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
-			}
-			break;
-		    case DataType::dtIFSTREAM:
-			{
-                            InvokeNode* call; cc.invoke(&call, imm(ifstream_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
-			}
-			break;
-		    case DataType::dtOFSTREAM:
-			{
-                            InvokeNode* call; cc.invoke(&call, imm(ofstream_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
-			}
-			break;
-		    case DataType::dtFSTREAM:
-			{
-                            InvokeNode* call; cc.invoke(&call, imm(fstream_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
-			}
-			break;
-		    case DataType::dtISTREAM:
-			{
-                            InvokeNode* call; cc.invoke(&call, imm(istream_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
-			}
-			break;
-		    case DataType::dtOSTREAM:
-			{
-                            InvokeNode* call; cc.invoke(&call, imm(ostream_destruct), FuncSignature::build<void, void *>());
-			    call->setArg(0, reg.as<x86::Gp>());
-			}
-			break;
 		    default:
 			// For structs: destruct any non-trivial members
 			if ( var->type->basetype() == BaseType::btStruct
