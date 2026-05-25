@@ -17,10 +17,20 @@
 #define MADC_EXCEPT_CSTR    3
 #define MADC_EXCEPT_ANY     99  // catch(...)
 
+// Per-object cleanup entry — linked list, pushed at construction time
+struct MadcCleanupEntry {
+    void **fn_indirect;          // pointer to function pointer (double deref for JIT dtors)
+    void *obj_ptr;               // object (this) pointer
+    uint8_t *guard;              // guard byte on JIT stack (NULL if unguarded)
+    uint8_t is_chain_tail;       // 1 = last in dtor chain for this object, clear guard
+    MadcCleanupEntry *prev;      // toward older entries
+};
+
 // Per-try-block context — linked list, one per active try
 struct MadcTryContext {
     jmp_buf jbuf;
-    MadcTryContext *prev;   // outer try block
+    MadcTryContext *prev;          // outer try block
+    MadcCleanupEntry *cleanup_mark; // cleanup stack depth at try entry
 };
 
 // Current exception value
@@ -34,6 +44,7 @@ struct MadcException {
 // Thread-local exception state
 static thread_local MadcTryContext *madc_try_stack = nullptr;
 static thread_local MadcException madc_current_exception = {};
+static thread_local MadcCleanupEntry *madc_cleanup_stack = nullptr;
 
 // --- Runtime functions called from JIT code ---
 
@@ -43,6 +54,7 @@ extern "C" {
 void *__madc_try_push(MadcTryContext *ctx)
 {
     ctx->prev = madc_try_stack;
+    ctx->cleanup_mark = madc_cleanup_stack;
     madc_try_stack = ctx;
     return (void *)ctx->jbuf;
 }
@@ -54,6 +66,48 @@ void __madc_try_pop()
 	madc_try_stack = madc_try_stack->prev;
 }
 
+// Unwind cleanup entries down to mark, calling destructors
+void __madc_cleanup_unwind_to(void *mark)
+{
+    while ( madc_cleanup_stack != (MadcCleanupEntry *)mark )
+    {
+	MadcCleanupEntry *e = madc_cleanup_stack;
+	madc_cleanup_stack = e->prev;
+	if ( !e->guard || *e->guard )
+	{
+	    void (*fn)(void *) = (void (*)(void *))*e->fn_indirect;
+	    fn(e->obj_ptr);
+	    if ( e->guard && e->is_chain_tail )
+		*e->guard = 0;
+	}
+    }
+}
+
+// Discard cleanup entries down to mark WITHOUT calling destructors
+void __madc_cleanup_discard_to(void *mark)
+{
+    madc_cleanup_stack = (MadcCleanupEntry *)mark;
+}
+
+// Push a cleanup entry onto the cleanup stack
+void __madc_cleanup_push(MadcCleanupEntry *entry, void **fn_indirect,
+			 void *obj, uint8_t *guard, uint8_t is_chain_tail)
+{
+    entry->fn_indirect = fn_indirect;
+    entry->obj_ptr = obj;
+    entry->guard = guard;
+    entry->is_chain_tail = is_chain_tail;
+    entry->prev = madc_cleanup_stack;
+    madc_cleanup_stack = entry;
+}
+
+// Pop the top cleanup entry (no destructor call)
+void __madc_cleanup_pop()
+{
+    if ( madc_cleanup_stack )
+	madc_cleanup_stack = madc_cleanup_stack->prev;
+}
+
 // Throw an integer exception
 void __madc_throw_int(int64_t val)
 {
@@ -61,11 +115,13 @@ void __madc_throw_int(int64_t val)
     madc_current_exception.int_val = val;
     if ( !madc_try_stack )
     {
+	__madc_cleanup_unwind_to(NULL);
 	fprintf(stderr, "Unhandled exception: %ld\n", (long)val);
 	abort();
     }
     MadcTryContext *ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
+    __madc_cleanup_unwind_to(ctx->cleanup_mark);
     longjmp(ctx->jbuf, 1);
 }
 
@@ -76,11 +132,13 @@ void __madc_throw_double(double val)
     madc_current_exception.double_val = val;
     if ( !madc_try_stack )
     {
+	__madc_cleanup_unwind_to(NULL);
 	fprintf(stderr, "Unhandled exception: %f\n", val);
 	abort();
     }
     MadcTryContext *ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
+    __madc_cleanup_unwind_to(ctx->cleanup_mark);
     longjmp(ctx->jbuf, 1);
 }
 
@@ -91,11 +149,13 @@ void __madc_throw_cstr(const char *val)
     madc_current_exception.str_val = val;
     if ( !madc_try_stack )
     {
+	__madc_cleanup_unwind_to(NULL);
 	fprintf(stderr, "Unhandled exception: %s\n", val ? val : "(null)");
 	abort();
     }
     MadcTryContext *ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
+    __madc_cleanup_unwind_to(ctx->cleanup_mark);
     longjmp(ctx->jbuf, 1);
 }
 
@@ -142,12 +202,14 @@ void __madc_rethrow()
     }
     if ( !madc_try_stack )
     {
+	__madc_cleanup_unwind_to(NULL);
 	fprintf(stderr, "Unhandled rethrown exception\n");
 	abort();
     }
     // Don't modify the exception state — just longjmp to the next try
     MadcTryContext *ctx = madc_try_stack;
     madc_try_stack = ctx->prev;
+    __madc_cleanup_unwind_to(ctx->cleanup_mark);
     longjmp(ctx->jbuf, 1);
 }
 

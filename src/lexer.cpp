@@ -759,6 +759,7 @@ void Program::_tokenizer_init()
 
     tkProgram = NULL;
     tkFunction = NULL;
+    try_depth = 0;
     _cur_token = NULL;
     _prv_token = NULL;
     _include_iostream = false;

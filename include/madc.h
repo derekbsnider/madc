@@ -132,6 +132,7 @@ public:
     std::vector<TokenStmt *> statements;
     std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
     std::vector<Variable *> destruct_order; // class-typed vars in declaration order (for LIFO dtor)
+    std::map<Variable *, asmjit::x86::Mem> cleanup_guards; // guard bytes for exception-safe destruction
     std::map<Variable *, asmjit::Operand> operand_map;
     // Stack-slot Mem for local C fixed-size arrays. Cached so reuse on a
     // divergent branch can re-emit the LEA into the (also-cached) Gp,
@@ -926,6 +927,7 @@ public:
     std::vector<TokenCASE *> switch_case_stack; // current active case/default while parsing each switch
     TokenProgram *tkProgram;		// program token
     TokenCpnd *tkFunction;		// function we are currently in
+    int try_depth;			// >0 when compiling inside a try body
     std::string cur_func_name;		// name of current function being compiled (for diagnostics)
     throwstream Throw;			// throw an error
     int script_argc;			// argc for the .mad script

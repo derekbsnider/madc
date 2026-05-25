@@ -946,9 +946,9 @@ extern "C" {
     void __madc_rethrow();
 }
 
-// sizeof(MadcTryContext) = sizeof(jmp_buf) + sizeof(void*)
-// jmp_buf on Linux x86-64 is typically 200 bytes; add 8 for prev pointer
-static const uint32_t TRYCTX_SIZE = 208;
+// sizeof(MadcTryContext) = sizeof(jmp_buf) + prev + cleanup_mark
+// jmp_buf on Linux x86-64 is 200 bytes; add 8 for prev, 8 for cleanup_mark
+static const uint32_t TRYCTX_SIZE = 216;
 static const uint32_t TRYCTX_ALIGN = 16;
 
 Operand &TokenTHROW::compile(Program &pgm, regdefp_t &regdp)
@@ -1057,8 +1057,10 @@ Operand &TokenTRY::compile(Program &pgm, regdefp_t &regdp)
 
     // --- Try body ---
     {
+	pgm.try_depth++;
 	regdefp_t body_rdp = {NULL, NULL, NULL};
 	try_body->compile(pgm, body_rdp);
+	pgm.try_depth--;
     }
 
     // Normal exit: pop the try context

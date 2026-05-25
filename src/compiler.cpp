@@ -4857,6 +4857,69 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 		    }
 		}
 	    }
+	    // Exception-safe cleanup: push cleanup entry when inside try block
+	    if ( pgm.try_depth > 0 && ddc->has_user_dtor )
+	    {
+		// Allocate guard byte on stack, initialize to 1 (object is now live)
+		x86::Mem guard_slot = pgm.cc.newStack(1, 1);
+		guard_slot.setSize(1);
+		pgm.cc.mov(guard_slot, imm(1));
+		pgm.tkFunction->cleanup_guards[&var] = guard_slot;
+
+		// Compute object and guard pointers (shared by all chain entries)
+		x86::Gp obj_ptr = pgm.cc.newIntPtr("__cleanup_obj");
+		if ( obj_op.isMem() )
+		    pgm.cc.lea(obj_ptr, obj_op.as<x86::Mem>());
+		else
+		    pgm.cc.mov(obj_ptr, obj_op.as<x86::Gp>());
+
+		x86::Gp guard_ptr = pgm.cc.newIntPtr("__cleanup_guard");
+		pgm.cc.lea(guard_ptr, guard_slot);
+
+		// Collect dtor chain: [deepest_base, ..., derived]
+		// Push order: deepest base first (bottom of stack), derived last (top)
+		// LIFO unwind calls derived first, then bases
+		struct DtorEntry { void **fn_addr; };
+		std::vector<DtorEntry> dtor_chain;
+
+		// Walk base classes from derived to deepest, then reverse
+		DataDefCLASS *cur = ddc;
+		while ( cur )
+		{
+		    std::string dname = "~" + cur->name;
+		    Variable *dmvar = cur->findMethod(dname);
+		    if ( dmvar && dmvar->data )
+		    {
+			Method *dm = (Method *)dmvar->data;
+			dtor_chain.push_back({&dm->x86code});
+		    }
+		    cur = cur->base_class;
+		}
+		// dtor_chain is now [derived, base1, base2, ...]
+		// Push in reverse so derived ends up on top
+		for ( int i = (int)dtor_chain.size() - 1; i >= 0; --i )
+		{
+		    x86::Mem entry_slot = pgm.cc.newStack(CLEANUP_ENTRY_SIZE, CLEANUP_ENTRY_ALIGN);
+		    x86::Gp entry_ptr = pgm.cc.newIntPtr("__cleanup_entry");
+		    pgm.cc.lea(entry_ptr, entry_slot);
+
+		    x86::Gp fn_gp = pgm.cc.newIntPtr("__cleanup_fn");
+		    pgm.cc.mov(fn_gp, imm((uintptr_t)dtor_chain[i].fn_addr));
+
+		    // is_chain_tail=1 for the deepest base (last called), 0 for others
+		    int is_tail = (i == (int)dtor_chain.size() - 1) ? 1 : 0;
+
+		    DBG(pgm.cc.comment("exception cleanup: push dtor entry"));
+		    InvokeNode *push_call;
+		    pgm.cc.invoke(&push_call, imm((void *)__madc_cleanup_push),
+				  FuncSignature::build<void, void *, void *, void *, void *, int>());
+		    push_call->setArg(0, entry_ptr);
+		    push_call->setArg(1, fn_gp);
+		    push_call->setArg(2, obj_ptr);
+		    push_call->setArg(3, guard_ptr);
+		    push_call->setArg(4, imm(is_tail));
+		}
+	    }
 	}
     }
 
@@ -7604,6 +7667,23 @@ void TokenCpnd::cleanup(Program &pgm)
 	    continue;
 	DBG(cc.comment("user destructor call"));
 	DBG(std::cout << "cleanup: calling destructor for " << var->name << std::endl);
+
+	// Guard check: skip if already destroyed by exception unwinding
+	Label dtor_skip;
+	bool has_guard = false;
+	auto gi = cleanup_guards.find(var);
+	if ( gi != cleanup_guards.end() )
+	{
+	    has_guard = true;
+	    dtor_skip = cc.newLabel();
+	    x86::Gp guard_val = cc.newGpd("__guard_chk");
+	    x86::Mem guard_mem = gi->second;
+	    guard_mem.setSize(1);
+	    cc.movzx(guard_val, guard_mem);
+	    cc.test(guard_val, guard_val);
+	    cc.je(dtor_skip);
+	}
+
 	Operand &obj_reg = omi->second;
 	x86::Gp this_ptr = cc.newIntPtr("__dtor_this");
 	if ( obj_reg.isMem() )
@@ -7634,6 +7714,9 @@ void TokenCpnd::cleanup(Program &pgm)
 	    }
 	    base = base->base_class;
 	}
+
+	if ( has_guard )
+	    cc.bind(dtor_skip);
     }
 
     for ( rmi = operand_map.begin(); rmi != operand_map.end(); ++rmi )
@@ -7797,6 +7880,18 @@ void TokenCpnd::cleanup(Program &pgm)
 		} // switch
 	    }
 	}
+    }
+
+    // Discard any remaining cleanup stack entries (already destroyed above)
+    if ( !cleanup_guards.empty() )
+    {
+	DBG(cc.comment("discard cleanup stack entries"));
+	InvokeNode *discard_call;
+	cc.invoke(&discard_call, imm((void *)__madc_cleanup_discard_to),
+		  FuncSignature::build<void, void *>());
+	x86::Gp null_mark = cc.newIntPtr("__null_mark");
+	cc.xor_(null_mark, null_mark);
+	discard_call->setArg(0, null_mark);
     }
 }
 

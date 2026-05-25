@@ -280,4 +280,16 @@ extern "C" unsigned long madc_builtin_ulabs(long x);
 extern "C" unsigned long long madc_builtin_ullabs(long long x);
 extern "C" unsigned long madc_builtin_umaxabs(long x);
 
+// Exception cleanup stack (exception_runtime.cpp)
+extern "C" void __madc_cleanup_push(void *entry, void **fn_indirect,
+				    void *obj, uint8_t *guard,
+				    uint8_t is_chain_tail);
+extern "C" void __madc_cleanup_pop();
+extern "C" void __madc_cleanup_unwind_to(void *mark);
+extern "C" void __madc_cleanup_discard_to(void *mark);
+
+// Cleanup entry size for JIT stack allocation (must match MadcCleanupEntry)
+static const uint32_t CLEANUP_ENTRY_SIZE = 40;
+static const uint32_t CLEANUP_ENTRY_ALIGN = 8;
+
 #endif

@@ -1,0 +1,6 @@
+Base(10)
+Derived(2)
+~Derived(2)
+~Base(10)
+caught: 42
+done
