@@ -11681,6 +11681,8 @@ TokenBase *TokenSTATIC::parse(Program &pgm)
 TokenBase *TokenCONST::parse(Program &pgm)
 {
     DBG(std::cout << "TokenCONST::parse() — consuming const" << std::endl);
+    bool prev_const = pgm.parsing_const_decl;
+    pgm.parsing_const_decl = true;
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'const'" << flush;
@@ -14031,10 +14033,12 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     bool have_decl_id = false;
     Variable *provisional_decl_var = NULL;
     bool gotstatic = is_static || parsing_static_decl;
-    // The flag covers exactly this declaration. Clear so nested declarations
+    bool gotconst = parsing_const_decl;
+    // The flags cover exactly this declaration. Clear so nested declarations
     // (e.g. locals inside a `static void f() { string s = ...; }` body)
-    // don't inherit static storage.
+    // don't inherit static storage or const-ness.
     parsing_static_decl = false;
+    parsing_const_decl = false;
 
     DBG(std::cout << "parseDeclaration(" << tb->str << ") START" << std::endl);
 
@@ -14045,6 +14049,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     DataDef *base_type = &tb->definition;
     DataDef *decl_type = base_type;
     bool saw_pointer_decl = false;
+    bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
     // Function-pointer typedefs (DataDefFPTR) already represent pointers;
     // `DO_FUN *cmd;` and `DO_FUN cmd;` both name a function-pointer variable.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
@@ -14060,12 +14065,17 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	{
 	    nextToken(); // consume '*'
 	    saw_pointer_decl = true;
+	    saw_const_after_star = false; // reset — any const before this star is low-level
 	    if ( !is_fnptr_base )
 		decl_type = getPointerType(decl_type);
 	    DBG(std::cout << "parseDeclaration() pointer: " << decl_type->name << std::endl);
 	}
 	else
+	{
+	    if ( saw_pointer_decl && peekToken()->id() == TokenID::tkCONST )
+		saw_const_after_star = true; // const after last * = top-level const pointer
 	    nextToken(); // consume const/restrict
+	}
     }
 
     if ( !saw_pointer_decl )
@@ -14954,6 +14964,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	TokenDecl *td = new TokenDecl(*var);
 	td->has_brace_init = saw_brace_init;
+	td->is_const_decl = (gotconst && !saw_pointer_decl) || saw_const_after_star;
 
 	td->file = tb->file;
 	td->line = tb->line;

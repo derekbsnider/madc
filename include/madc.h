@@ -200,7 +200,8 @@ public:
     std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
     std::vector<TokenBase *> ctor_args; // constructor arguments for class-typed vars
     bool has_brace_init;               // true when `= { ... }` syntax was used
-    TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; }
+    bool is_const_decl;                // true when declared with `const` qualifier
+    TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; is_const_decl = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
@@ -947,6 +948,7 @@ public:
 
     bool parsing_extern_decl = false;	// current declaration originated from `extern`
     bool parsing_static_decl = false;	// current declaration originated from `static` (propagates through `static struct X x;` path so parseDeclaration knows to allocate persistent storage)
+    bool parsing_const_decl = false;	// current declaration originated from `const` — set vfCONSTANT on the variable
     bool parsing_typedef_decl = false;	// propagates through `typedef const struct ...` path
 
     // JIT crash → source location map. Populated during compile by

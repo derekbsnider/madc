@@ -2525,11 +2525,15 @@ static void apply_inc_dec_step(Program &pgm, Operand &op, DataDef *type,
 // and position (postfix — return old value — vs. prefix — return new).
 // The `old_name_hint` / `new_name_hint` parameters feed into the
 // temp-register names so ++/-- keep readable asm in logs.
-static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
+static Operand &emit_inc_dec(Program &pgm, TokenBase *caller, TokenBase *target,
+			     bool postfix,
 			     SafeUnaryStep step, regdefp_t &regdp, Operand &_operand,
 			     const char *old_name_hint, const char *new_name_hint,
 			     const char *op_name)
 {
+    TokenVar *tv = dynamic_cast<TokenVar *>(target);
+    if ( tv && tv->var.is_constant() )
+	pgm.Throw(caller) << op_name << " on const variable '" << tv->var.name << "'" << flush;
     bool increment = op_name && op_name[0] == '+';
     TokenDerefExpr *postfix_deref = postfix ? dynamic_cast<TokenDerefExpr *>(target) : NULL;
     if ( postfix_deref
@@ -2635,10 +2639,14 @@ static Operand &emit_inc_dec(Program &pgm, TokenBase *target, bool postfix,
 /////////////////////////////////////////////////////////////////////////////
 
 // Helper for +=, -=, *= (3-arg safe ops with DataDef slots).
-static Operand &emit_compound_binop3(Program &pgm, TokenBase *left, TokenBase *right,
+static Operand &emit_compound_binop3(Program &pgm, TokenBase *caller,
+				     TokenBase *left, TokenBase *right,
 				     SafeBinOp3 op, regdefp_t &regdp, Operand &_operand,
 				     const char *op_name)
 {
+    TokenVar *tv = dynamic_cast<TokenVar *>(left);
+    if ( tv && tv->var.is_constant() )
+	pgm.Throw(caller) << op_name << " on const variable '" << tv->var.name << "'" << flush;
     // C semantics: evaluate RHS before reading LHS value.
     DataDef *lhs_raw_type = compound_lhs_type(pgm, left);
     DataDef *op_type = promote_c_integer_type(lhs_raw_type);
@@ -2809,7 +2817,7 @@ Operand &TokenInc::compile(Program &pgm, regdefp_t &regdp)
     TokenBase *target = left ? left : right;
     bool postfix = (left != nullptr);
     if ( !target ) pgm.Throw(this) << "Invalid increment" << flush;
-    return emit_inc_dec(pgm, target, postfix, &Program::safeinc, regdp, _operand,
+    return emit_inc_dec(pgm, this, target, postfix, &Program::safeinc, regdp, _operand,
 			"postinc", "preinc", "++");
 }
 
@@ -2818,7 +2826,7 @@ Operand &TokenDec::compile(Program &pgm, regdefp_t &regdp)
     TokenBase *target = left ? left : right;
     bool postfix = (left != nullptr);
     if ( !target ) pgm.Throw(this) << "Invalid decrement" << flush;
-    return emit_inc_dec(pgm, target, postfix, &Program::safedec, regdp, _operand,
+    return emit_inc_dec(pgm, this, target, postfix, &Program::safedec, regdp, _operand,
 			"postdec", "predec", "--");
 }
 
@@ -2828,7 +2836,7 @@ Operand &TokenAddEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) pgm.Throw(this) << "+= missing rval operand" << flush;
     if ( left->datadef() && left->datadef()->is_complex() )
 	return emit_complex_compound_addsub(pgm, left, right, /*subtract=*/false, regdp, _operand);
-    return emit_compound_binop3(pgm, left, right, &Program::safeadd, regdp, _operand, "+=");
+    return emit_compound_binop3(pgm, this, left, right, &Program::safeadd, regdp, _operand, "+=");
 }
 
 Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
@@ -2837,7 +2845,7 @@ Operand &TokenSubEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) pgm.Throw(this) << "-= missing rval operand" << flush;
     if ( left->datadef() && left->datadef()->is_complex() )
 	return emit_complex_compound_addsub(pgm, left, right, /*subtract=*/true, regdp, _operand);
-    return emit_compound_binop3(pgm, left, right, &Program::safesub, regdp, _operand, "-=");
+    return emit_compound_binop3(pgm, this, left, right, &Program::safesub, regdp, _operand, "-=");
 }
 
 Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
@@ -2846,13 +2854,20 @@ Operand &TokenMulEq::compile(Program &pgm, regdefp_t &regdp)
     if ( !right ) pgm.Throw(this) << "*= missing rval operand" << flush;
     if ( left->datadef() && left->datadef()->is_complex() )
 	return emit_complex_compound_muldiv(pgm, left, right, /*divide=*/false, regdp, _operand);
-    return emit_compound_binop3(pgm, left, right, &Program::safemul, regdp, _operand, "*=");
+    return emit_compound_binop3(pgm, this, left, right, &Program::safemul, regdp, _operand, "*=");
 }
+
+// Check that the left-hand side of a compound assignment is not const
+#define CHECK_CONST_LHS(op_str) \
+    { TokenVar *_tv = dynamic_cast<TokenVar *>(left); \
+      if ( _tv && _tv->var.is_constant() ) \
+          pgm.Throw(this) << op_str " on const variable '" << _tv->var.name << "'" << flush; }
 
 Operand &TokenDivEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "/= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "/= missing rval operand" << flush;
+    CHECK_CONST_LHS("/=")
     if ( left->datadef() && left->datadef()->is_complex() )
 	return emit_complex_compound_muldiv(pgm, left, right, /*divide=*/true, regdp, _operand);
     return emit_compound_divmod(pgm, left, right, /*return_remainder=*/false, regdp, _operand, "/=");
@@ -2862,6 +2877,7 @@ Operand &TokenModEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "%= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "%= missing rval operand" << flush;
+    CHECK_CONST_LHS("%=")
     return emit_compound_divmod(pgm, left, right, /*return_remainder=*/true, regdp, _operand, "%=");
 }
 
@@ -2869,6 +2885,7 @@ Operand &TokenBSLEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "<<= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "<<= missing rval operand" << flush;
+    CHECK_CONST_LHS("<<=")
     return emit_compound_bitop2(pgm, left, right, &Program::safeshl, regdp, _operand, "<<=");
 }
 
@@ -2876,6 +2893,7 @@ Operand &TokenBSREq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << ">>= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << ">>= missing rval operand" << flush;
+    CHECK_CONST_LHS(">>=")
     return emit_compound_bitop2(pgm, left, right, &Program::safeshr, regdp, _operand, ">>=");
 }
 
@@ -2883,6 +2901,7 @@ Operand &TokenBandEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "&= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "&= missing rval operand" << flush;
+    CHECK_CONST_LHS("&=")
     return emit_compound_bitop2(pgm, left, right, &Program::safeand, regdp, _operand, "&=");
 }
 
@@ -2890,6 +2909,7 @@ Operand &TokenBorEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "|= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "|= missing rval operand" << flush;
+    CHECK_CONST_LHS("|=")
     return emit_compound_bitop2(pgm, left, right, &Program::safeor, regdp, _operand, "|=");
 }
 
@@ -2897,6 +2917,7 @@ Operand &TokenXorEq::compile(Program &pgm, regdefp_t &regdp)
 {
     if ( !left )  pgm.Throw(this) << "^= missing lval operand" << flush;
     if ( !right ) pgm.Throw(this) << "^= missing rval operand" << flush;
+    CHECK_CONST_LHS("^=")
     return emit_compound_bitop2(pgm, left, right, &Program::safexor, regdp, _operand, "^=");
 }
 
@@ -2992,6 +3013,8 @@ Operand &TokenAssign::compile(Program &pgm, regdefp_t &regdp)
     if ( left->type() == TokenType::ttVariable )
     {
 	tvl = dynamic_cast<TokenVar *>(left);
+	if ( tvl->var.is_constant() )
+	    pgm.Throw(this) << "assignment to const variable '" << tvl->var.name << "'" << flush;
 	ltype = tvl->var.type;
 	DBG(cout << "TokenAssign::compile() assignment to " << tvl->var.name << " type " << ltype->name << endl);
 	DBG(pgm.cc.comment("TokenAssign::compile() assignment to:"));

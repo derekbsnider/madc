@@ -5154,6 +5154,11 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 	}
     }
 
+    // Set vfCONSTANT after initialization so the init assignment succeeds
+    // but any subsequent assignment is rejected by the compiler.
+    if ( is_const_decl )
+	var.flags |= vfCONSTANT;
+
     DBG(cout << "TokenDecl::compile(" << var.name << ") END" << endl);
 
     return _reg;
