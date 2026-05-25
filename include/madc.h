@@ -1143,14 +1143,6 @@ public:
     inline TokenBase *curToken()  { return _cur_token; }
     inline void resetPrevToken() { _prv_token = NULL; }
     inline void pushToken(TokenBase *t) { tokens.push_front(t); }
-    // Stamp file/line/column from the most recently consumed token
-    inline void stampPos(TokenBase *dst) {
-	if ( dst && _prv_token ) {
-	    dst->file = _prv_token->file;
-	    dst->line = _prv_token->line;
-	    dst->column = _prv_token->column;
-	}
-    }
 
     // helper: is prevToken in a position where the next operator would be unary?
     // true when prevToken is NULL, ;, {, (, ,, =, or any operator except ) ],

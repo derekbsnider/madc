@@ -6340,7 +6340,6 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
-	    copy_token_location(result, open);
 	    continue;
 	}
 	break;
@@ -6368,9 +6367,7 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
 	    dtype = inner_expr->datadef();
 	if ( !dtype || !dtype->is_pointer() )
 	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-	TokenBase *_t = new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
-	copy_token_location(_t, deref_tb);
-	return _t;
+	return new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
     }
 
     if ( deref_tb->type() != TokenType::ttIdentifier )
@@ -6403,18 +6400,10 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
 	{
 	    if ( TokenMember *tm = dynamic_cast<TokenMember *>(pointer_expr) )
 		if ( tm->is_fixed_array_member() )
-		{
-		    TokenBase *_t = new TokenDerefExpr(pointer_expr, dtype);
-		    copy_token_location(_t, deref_tb);
-		    return _t;
-		}
+		    return new TokenDerefExpr(pointer_expr, dtype);
 	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 	}
-	{
-	TokenBase *_t = new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
-	copy_token_location(_t, deref_tb);
-	return _t;
-	}
+	return new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
     }
 
     std::string name = ((TokenIdent *)deref_tb)->str;
@@ -6422,23 +6411,13 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
     if ( !var )
 	pgm.Throw(deref_tb) << "undeclared identifier '" << name << "'" << flush;
     if ( var->type->is_function() && var->type->is_numeric() )
-    {
-	TokenVar *tv = new TokenVar(*var);
-	tv->file = deref_tb->file; tv->line = deref_tb->line; tv->column = deref_tb->column;
-	return tv;
-    }
+	return new TokenVar(*var);
     if ( dynamic_cast<DataDefFPTR *>(var->type) != NULL )
-    {
-	TokenVar *tv = new TokenVar(*var);
-	tv->file = deref_tb->file; tv->line = deref_tb->line; tv->column = deref_tb->column;
-	return tv;
-    }
+	return new TokenVar(*var);
     DataDef *base = deref_type_for_variable(var);
     if ( !base )
 	pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-    TokenBase *_t = new TokenDeref(*var, base);
-    copy_token_location(_t, deref_tb);
-    return _t;
+    return new TokenDeref(*var, base);
 }
 
 static TokenBase *parse_cast_function_call_operand(Program &pgm, TokenBase *head)
@@ -6601,9 +6580,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	if ( dynamic_cast<TokenStructLit *>(compound) )
 	    return compound;
 	DataDefPTR *aptr = getPointerType(compound->datadef());
-	TokenBase *_ae = new TokenAddrExpr(compound, aptr);
-	copy_token_location(_ae, ampersand);
-	return _ae;
+	return new TokenAddrExpr(compound, aptr);
     }
     if ( peekToken() && peekToken()->id() == TokenID::tkOpBrk )
     {
@@ -6619,9 +6596,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	if ( is_addressable_expression(addr_expr) )
 	{
 	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
-	    TokenBase *_ae = new TokenAddrExpr(addr_expr, aptr);
-	    copy_token_location(_ae, addr_tb);
-	    return _ae;
+	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
 	{
@@ -6629,9 +6604,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 		return tv;
 	    tv->var.flags |= vfADDRTAKEN;
 	    DataDefPTR *aptr = getPointerType(tv->var.type);
-	    TokenBase *_ao = new TokenAddrOf(tv->var, aptr);
-	    copy_token_location(_ao, addr_tb);
-	    return _ao;
+	    return new TokenAddrOf(tv->var, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&('" << flush;
     }
@@ -6648,9 +6621,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	if ( is_addressable_expression(addr_expr) )
 	{
 	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
-	    TokenBase *_ae = new TokenAddrExpr(addr_expr, aptr);
-	    copy_token_location(_ae, addr_tb);
-	    return _ae;
+	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable string subscript after '&'" << flush;
     }
@@ -6663,17 +6634,13 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 	if ( is_addressable_expression(addr_expr) )
 	{
 	    DataDefPTR *aptr = getPointerType(addr_expr->datadef());
-	    TokenBase *_ae = new TokenAddrExpr(addr_expr, aptr);
-	    copy_token_location(_ae, addr_tb);
-	    return _ae;
+	    return new TokenAddrExpr(addr_expr, aptr);
 	}
 	if ( TokenVar *tv = dynamic_cast<TokenVar *>(addr_expr) )
 	{
 	    tv->var.flags |= vfADDRTAKEN;
 	    DataDefPTR *aptr = getPointerType(tv->var.type);
-	    TokenBase *_ao = new TokenAddrOf(tv->var, aptr);
-	    copy_token_location(_ao, addr_tb);
-	    return _ao;
+	    return new TokenAddrOf(tv->var, aptr);
 	}
 	Throw(addr_tb) << "expecting addressable expression after '&'" << flush;
     }
@@ -6692,16 +6659,10 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     if ( !avar )
 	Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
     if ( avar->type && avar->type->is_function() )
-    {
-	TokenVar *tv = new TokenVar(*avar);
-	tv->file = addr_tb->file; tv->line = addr_tb->line; tv->column = addr_tb->column;
-	return tv;
-    }
+	return new TokenVar(*avar);
     avar->flags |= vfADDRTAKEN;
     DataDefPTR *aptr = getPointerType(avar->type);
-    TokenBase *_ao = new TokenAddrOf(*avar, aptr);
-    copy_token_location(_ao, addr_tb);
-    return _ao;
+    return new TokenAddrOf(*avar, aptr);
 }
 
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
@@ -6836,13 +6797,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    DataDef *elem_type = unwrap_subscript_element_type(idx->datadef());
 			    DBG(cout << "parseExpression: swapped subscript "
 				     << tv->var.name << "[ptr]" << endl);
-			    {
-			    TokenVar *_sv = new TokenVar(tv->var);
-			    copy_token_location(_sv, tb);
-			    TokenBase *_se = new TokenSubscriptExpr(idx, _sv, elem_type);
-			    copy_token_location(_se, tb);
-			    exStack.push(_se);
-			    }
+			    exStack.push(new TokenSubscriptExpr(idx, new TokenVar(tv->var), elem_type));
 			    break;
 			}
 			// for string-returning containers, allocate a temp variable for the result
@@ -6861,9 +6816,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    }
 			}
 			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
-			{ TokenBase *_ts = new TokenSubscript(tv->var, idx, tmp);
-			  copy_token_location(_ts, tb);
-			  exStack.push(_ts); }
+			exStack.push(new TokenSubscript(tv->var, idx, tmp));
 			break;
 		    }
 		    // Widened detection: complex value-producing expressions
@@ -6980,9 +6933,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				elem_type = fav->type;
 			}
 			DBG(cout << "parseExpression: subscript on expression base" << endl);
-			{ TokenBase *_ts = new TokenSubscriptExpr(base_expr, idx, elem_type);
-			  copy_token_location(_ts, tb);
-			  exStack.push(_ts); }
+			exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			break;
 		    }
 		    // General fallback: any expression with a pointer datadef
@@ -7016,9 +6967,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				elem_type = (pdd && pdd->base_type) ? pdd->base_type : &ddINT64;
 			    }
 			    DBG(cout << "parseExpression: subscript on generic expression" << endl);
-			    { TokenBase *_ts = new TokenSubscriptExpr(base_expr, idx, elem_type);
-			      copy_token_location(_ts, tb);
-			      exStack.push(_ts); }
+			    exStack.push(new TokenSubscriptExpr(base_expr, idx, elem_type));
 			    break;
 			}
 		    }
@@ -7437,9 +7386,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    {
 				cast_expr = parseExpression(cast_expr_tb, true);
 			    }
-			    { TokenBase *_tc = new TokenCast(cast_dd, cast_expr);
-			      copy_token_location(_tc, tb);
-			      exStack.push(_tc); }
+			    exStack.push(new TokenCast(cast_dd, cast_expr));
 			    DBG(cout << "parseExpression: cast to " << cast_dd->name << endl);
 			    // Caller wants only the cast group, not whatever
 			    // follows. Without this the inner parseExpression
@@ -7862,11 +7809,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    TokenBase *label_tb = nextToken();
 		    if ( !label_tb || !is_contextual_identifier_token(label_tb) )
 			Throw(label_tb ? label_tb : tb) << "expected label name after '&&'" << flush;
-		    { TokenBase *_tl = new TokenLabelAddr(
+		    exStack.push(new TokenLabelAddr(
 			contextual_identifier_name(label_tb),
-			getPointerType(&ddVOID));
-		      copy_token_location(_tl, label_tb);
-		      exStack.push(_tl); }
+			getPointerType(&ddVOID)));
 		    break;
 		}
 			// * dereference in unary position
@@ -7941,9 +7886,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    TokenMember *tm_deref = dynamic_cast<TokenMember *>(deref_expr);
 			    if ( tm_deref && tm_deref->is_fixed_array_member() )
 			    {
-				TokenBase *_de = new TokenDerefExpr(deref_expr, dtype);
-				copy_token_location(_de, deref_tb);
-				exStack.push(_de);
+				exStack.push(new TokenDerefExpr(deref_expr, dtype));
 				break;
 			    }
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
@@ -7962,17 +7905,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				step = new TokenInc();
 			    else
 				step = new TokenDec();
-			    copy_token_location(step, step_tb);
 			    step->left = deref_expr;
 			    step->right = NULL;
-			    TokenBase *_de = new TokenDerefExpr(step, base);
-			    copy_token_location(_de, deref_tb);
-			    exStack.push(_de);
+			    exStack.push(new TokenDerefExpr(step, base));
 			    break;
 			}
-			{ TokenBase *_de = new TokenDerefExpr(deref_expr, base);
-			  copy_token_location(_de, deref_tb);
-			  exStack.push(_de); }
+			exStack.push(new TokenDerefExpr(deref_expr, base));
 			    }
 			    else
 			    {
@@ -7994,16 +7932,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    // logic dispatch normally.
 				    if ( dvar->type->is_function() && dvar->type->is_numeric() )
 				    {
-					{ TokenVar *_tv = new TokenVar(*dvar);
-					  copy_token_location(_tv, tb);
-					  exStack.push(_tv); }
+					exStack.push(new TokenVar(*dvar));
 					break;
 				    }
 				    if ( dynamic_cast<DataDefFPTR *>(dvar->type) != NULL )
 				    {
-					{ TokenVar *_tv = new TokenVar(*dvar);
-					  copy_token_location(_tv, tb);
-					  exStack.push(_tv); }
+					exStack.push(new TokenVar(*dvar));
 					break;
 				    }
 				    DataDef *base = deref_type_for_variable(dvar);
@@ -8013,16 +7947,11 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    {
 					TokenBase *step_tb = nextToken();
 					TokenBase *step_expr = new TokenDerefStep(*dvar, base, step_tb->id() == TokenID::tkInc);
-					copy_token_location(step_expr, step_tb);
 					exStack.push(step_expr);
 					_cur_token = step_expr;
 				    }
 				    else
-				    {
-					TokenBase *_td = new TokenDeref(*dvar, base);
-					copy_token_location(_td, deref_tb);
-					exStack.push(_td);
-				    }
+					exStack.push(new TokenDeref(*dvar, base));
 				}
 			    else
 			    {
@@ -8072,13 +8001,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						TokenBase *step_tb = nextToken();
 						deref_expr = new TokenDerefStep(*var, base,
 						    step_tb->id() == TokenID::tkInc);
-						copy_token_location(deref_expr, step_tb);
 					    }
 					    else
-					    {
 						deref_expr = new TokenDeref(*var, base);
-						copy_token_location(deref_expr, operand_tb);
-					    }
 					}
 					else if ( operand_tb->id() == TokenID::tkOpBrk )
 					{
@@ -8102,7 +8027,6 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 					    DataDef *base = dptr ? dptr->base_type : &ddINT64;
 					    deref_expr = new TokenDerefExpr(deref_expr, base);
-					    copy_token_location(deref_expr, stars[si]);
 					}
 				    }
 				    else if ( inner_tb->id() == TokenID::tkOpBrk )
@@ -8135,16 +8059,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						step = new TokenInc();
 					    else
 						step = new TokenDec();
-					    copy_token_location(step, step_tb);
 					    step->left = inner_expr;
 					    step->right = NULL;
 					    deref_expr = step;
 					}
 					else
-					{
 					    deref_expr = new TokenDerefExpr(inner_expr, inner_base);
-					    copy_token_location(deref_expr, inner_tb);
-					}
 				    }
 				    else if ( inner_tb->type() == TokenType::ttIdentifier
 					  && !(peekToken()
@@ -8171,13 +8091,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    TokenBase *step_tb = nextToken();
 					    deref_expr = new TokenDerefStep(*inner_var, inner_base,
 						step_tb->id() == TokenID::tkInc);
-					    copy_token_location(deref_expr, step_tb);
 					}
 					else
-					{
 					    deref_expr = new TokenDeref(*inner_var, inner_base);
-					    copy_token_location(deref_expr, inner_tb);
-					}
 				    }
 				    else
 					Throw(inner_tb) << "expecting pointer expression after '*'" << flush;
@@ -8243,12 +8159,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					step = new TokenInc();
 				    else
 					step = new TokenDec();
-				    copy_token_location(step, deref_tb);
 				    step->left = NULL;
 				    step->right = new TokenVar(*id_var);
-				    copy_token_location(step->right, id_tb);
 				    deref_expr = new TokenDerefExpr(step, base);
-				    copy_token_location(deref_expr, deref_tb);
 				    DataDef *dtype = id_var->type;
 				    if ( !dtype || !dtype->is_pointer() )
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
@@ -8283,19 +8196,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    step = new TokenInc();
 					else
 					    step = new TokenDec();
-					copy_token_location(step, step_tb);
 					step->left = inner_expr;
 					step->right = NULL;
-					{ TokenBase *_de = new TokenDerefExpr(step, inner_base);
-					  copy_token_location(_de, deref_tb);
-					  exStack.push(_de); }
+					exStack.push(new TokenDerefExpr(step, inner_base));
 					break;
 				    }
 				    else
-				    {
 					deref_expr = new TokenDerefExpr(inner_expr, inner_base);
-					copy_token_location(deref_expr, deref_tb);
-				    }
 				}
 				else
 				    deref_expr = parseExpression(deref_tb, true);
@@ -8317,9 +8224,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    TokenMember *tm_d = dynamic_cast<TokenMember *>(deref_expr);
 				    if ( tm_d && tm_d->is_fixed_array_member() )
 				    {
-					TokenBase *_de = new TokenDerefExpr(deref_expr, dtype);
-					copy_token_location(_de, deref_tb);
-					exStack.push(_de);
+					exStack.push(new TokenDerefExpr(deref_expr, dtype));
 					break;
 				    }
 				    // Multi-dim array subscripts decay to pointers:
@@ -8327,9 +8232,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    TokenSubscript *ts_d = dynamic_cast<TokenSubscript *>(deref_expr);
 				    if ( ts_d && ts_d->object.is_fixed_array() )
 				    {
-					TokenBase *_de = new TokenDerefExpr(deref_expr, dtype);
-					copy_token_location(_de, deref_tb);
-					exStack.push(_de);
+					exStack.push(new TokenDerefExpr(deref_expr, dtype));
 					break;
 				    }
 				    // Also handle TokenSubscriptExpr from parsePostfixChain
@@ -8339,9 +8242,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					TokenVar *base_tv = dynamic_cast<TokenVar *>(tse_d->base_expr);
 					if ( base_tv && base_tv->var.is_fixed_array() )
 					{
-					    TokenBase *_de = new TokenDerefExpr(deref_expr, dtype);
-					    copy_token_location(_de, deref_tb);
-					    exStack.push(_de);
+					    exStack.push(new TokenDerefExpr(deref_expr, dtype));
 					    break;
 					}
 				    }
@@ -8349,9 +8250,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				}
 				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 				DataDef *base = dptr ? dptr->base_type : &ddINT64;
-				{ TokenBase *_de = new TokenDerefExpr(deref_expr, base);
-				  copy_token_location(_de, deref_tb);
-				  exStack.push(_de); }
+				exStack.push(new TokenDerefExpr(deref_expr, base));
 				}
 			    }
 			    break;
@@ -8433,9 +8332,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			 && (!peekToken() || peekToken()->type() != TokenType::ttIdentifier) )
 		    {
 			DBG(cout << "ttDataType " << ctx_name << " resolves to variable" << endl);
-			{ TokenVar *_tv = new TokenVar(*ctx_var);
-			  copy_token_location(_tv, tb);
-			  exStack.push(_tv); }
+			exStack.push(new TokenVar(*ctx_var));
 			break;
 		    }
 		}
@@ -8443,9 +8340,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		if ( tb->type() != TokenType::ttIdentifier ) { Throw(tb) << "Expecting identifier" << flush; }
 		var = addVariable(code, bt->definition, ((TokenIdent *)tb)->str);
 		DBG(cout << "Pushing newly declared variable: " << var->name << " onto exStack" << endl);
-		{ TokenVar *_tv = new TokenVar(*var);
-		  copy_token_location(_tv, tb);
-		  exStack.push(_tv); }
+		exStack.push(new TokenVar(*var));
 		break;
 	    case TokenType::ttString:
 		if ( ((TokenStr *)tb)->wide )
@@ -8453,9 +8348,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		else
 		    var = addLiteral(((TokenIdent *)tb)->str);
 		DBG(cout << "Pushing new variable of literal: " << var->name << " onto exStack" << endl);
-		{ TokenVar *_tv = new TokenVar(*var);
-		  copy_token_location(_tv, tb);
-		  exStack.push(_tv); }
+		exStack.push(new TokenVar(*var));
 		break;
 	    case TokenType::ttKeyword:
 		// const/volatile/restrict qualifiers are compile-time
@@ -8491,9 +8384,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		  || ident_tb->str == "__PRETTY_FUNCTION__" )
 		{
 		    var = addLiteral(cur_func_name);
-		    { TokenVar *_tv = new TokenVar(*var);
-		      copy_token_location(_tv, tb);
-		      exStack.push(_tv); }
+		    exStack.push(new TokenVar(*var));
 		    break;
 		}
 		if ( is_realpart_identifier(ident_tb->str)
@@ -8701,9 +8592,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    else if ( (!curToken() || curToken()->id() != TokenID::tkClBrk)
 		       && (!prevToken() || prevToken()->id() != TokenID::tkClBrk) )
 			Throw(type_tb) << "Expecting ')' after va_arg type" << flush;
-		    { TokenBase *_va = new TokenVaArg(ap_var, ap_expr, target_dd);
-		      copy_token_location(_va, tb);
-		      exStack.push(_va); }
+		    exStack.push(new TokenVaArg(ap_var, ap_expr, target_dd));
 		    break;
 		}
 	    	if ( prevToken() && prevToken()->id() == TokenID::tkDot )
@@ -8891,19 +8780,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    bool is_compound_lit_lhs = (dynamic_cast<TokenStructLit *>(lhs_dot) != NULL);
 		    bool is_stmt_expr_lhs = (lhs_dot->type() == TokenType::ttCompound);
 		    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc);
-		    {
-		    TokenMember *_tm;
 		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs || is_callfunc_lhs )
-			_tm = new TokenMember(*tv_var, *var, ofs, lhs_dot);
+			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
 		    else if ( !is_deref_lhs
 		      && (lhs_dot->type() == TokenType::ttMember
 		       || lhs_dot->type() == TokenType::ttSubscript) )
-			_tm = new TokenMember(*tv_var, *var, ofs, lhs_dot);
+			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
 		    else
-			_tm = new TokenMember(*tv_var, *var, ofs);
-		    _tm->file = tb->file; _tm->line = tb->line; _tm->column = tb->column;
-		    exStack.push(_tm);
-		    }
+			exStack.push(new TokenMember(*tv_var, *var, ofs));
 		    // remove TokenDot from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
 			opStack.pop();
@@ -9016,15 +8900,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    exStack.pop();
 		    // for chained -> (lhs was a TokenMember), pass it as parent_expr so
 		    // operand() can compile the intermediate pointer at codegen time
-		    {
-		    TokenMember *_tm;
 		    if ( lhs->type() == TokenType::ttMember || expr_backed_lhs )
-			_tm = new TokenMember(*obj_var, *var, ofs, lhs);
+			exStack.push(new TokenMember(*obj_var, *var, ofs, lhs));
 		    else
-			_tm = new TokenMember(*obj_var, *var, ofs);
-		    _tm->file = tb->file; _tm->line = tb->line; _tm->column = tb->column;
-		    exStack.push(_tm);
-		    }
+			exStack.push(new TokenMember(*obj_var, *var, ofs));
 		    // remove TokenDeRef from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 			opStack.pop();
@@ -9094,9 +8973,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( thisvar )
 			{
 			    Variable *member = new Variable(mname, *mtype, 1, NULL, false);
-			    TokenMember *_tm = new TokenMember(*thisvar, *member, ofs);
-			    _tm->file = tb->file; _tm->line = tb->line; _tm->column = tb->column;
-			    exStack.push(_tm);
+			    exStack.push(new TokenMember(*thisvar, *member, ofs));
 			    break;
 			}
 		    }
@@ -9188,9 +9065,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			else
 			{
 			    // FPTR variable as value — push onto exStack
-			    { TokenVar *_tv = new TokenVar(*var);
-			      copy_token_location(_tv, tb);
-			      exStack.push(_tv); }
+			    exStack.push(new TokenVar(*var));
 			}
 			break;
 		    }
@@ -9249,9 +9124,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( !followed_by_paren && (in_assign_context || followed_by_value_end) )
 			{
 			    DBG(cout << "Pushing function address (decay): " << var->name << " onto exStack" << endl);
-			    { TokenVar *_tv = new TokenVar(*var);
-			      copy_token_location(_tv, tb);
-			      exStack.push(_tv); }
+			    exStack.push(new TokenVar(*var));
 			    break;
 			}
 		    }
@@ -9280,9 +9153,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    DBG(cout << "Pushing found variable: " << var->name << '=' << (double)var->get<double>() << " onto exStack" << endl);
 		else
 		    DBG(cout << "Pushing found variable: " << var->name << " onto exStack" << endl);
-		{ TokenVar *_tv = new TokenVar(*var);
-		  copy_token_location(_tv, tb);
-		  exStack.push(_tv); }
+		exStack.push(new TokenVar(*var));
 		break;
 	    }
 	    case TokenType::ttVariable:
