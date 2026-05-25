@@ -2875,6 +2875,27 @@ bool Program::_compiler_finalize()
 	method->x86code = (uint8_t *)root_fn + code.labelOffset(func->funcnode->label());
     }
 
+    // Fill vtables for classes with virtual methods
+    for ( auto &smi : struct_map )
+    {
+	DataDefCLASS *ddc = dynamic_cast<DataDefCLASS *>(smi.second);
+	if ( !ddc || !ddc->has_vtable || !ddc->vtable )
+	    continue;
+	for ( size_t i = 0; i < ddc->vtable_slots.size(); ++i )
+	{
+	    std::string &mname = ddc->vtable_slots[i];
+	    Variable *mvar = ddc->findMethod(mname);
+	    if ( !mvar || !mvar->data )
+		continue;
+	    FuncDef *mfunc = dynamic_cast<FuncDef *>(((Method *)mvar->data)->returns.type);
+	    if ( !mfunc || !mfunc->funcnode )
+		continue;
+	    ddc->vtable[i] = (uint8_t *)root_fn + code.labelOffset(mfunc->funcnode->label());
+	    DBG(std::cout << "vtable[" << ddc->name << "][" << i << "] = " << mname
+		<< " @ " << ddc->vtable[i] << std::endl);
+	}
+    }
+
     // Build the JIT-PC → source-line map. Each anchor was a label
     // bound at a Token::compile() entry; resolve each to a byte offset
     // in the code section and sort by offset. CLI/worker layers can
@@ -2998,6 +3019,117 @@ Operand &TokenCallMethod::compile(Program &pgm, regdefp_t &regdp)
     DBG(pgm.cc.comment(object.name.c_str()));
     DBG(pgm.cc.comment("::"));
     DBG(pgm.cc.comment(var.name.c_str()));
+
+    // Virtual dispatch: if the method is virtual, call through vtable
+    DataDef *obj_type = object.type;
+    // For pointer types, get the pointed-to class
+    if ( obj_type->is_pointer() )
+    {
+	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(obj_type);
+	if ( ptr ) obj_type = ptr->base_type;
+    }
+    DataDefCLASS *obj_class = dynamic_cast<DataDefCLASS *>(obj_type);
+    if ( obj_class && obj_class->has_vtable )
+    {
+	// Get the unmangled method name from the mangled var.name
+	// Mangled: ClassName__methodName → extract methodName
+	std::string method_name;
+	size_t sep = var.name.find("__");
+	if ( sep != std::string::npos )
+	    method_name = var.name.substr(sep + 2);
+	else
+	    method_name = var.name;
+
+	int slot = obj_class->vtable_slot(method_name);
+	if ( slot >= 0 && obj_class->is_virtual_method(method_name) )
+	{
+	    DBG(pgm.cc.comment("virtual dispatch"));
+	    Operand &obj_op = pgm.tkFunction->voperand(pgm, &object);
+
+	    // Get object pointer (__this)
+	    x86::Gp this_ptr = pgm.cc.newIntPtr("__virt_this");
+	    if ( obj_op.isMem() )
+		pgm.cc.lea(this_ptr, obj_op.as<x86::Mem>());
+	    else
+		pgm.cc.mov(this_ptr, obj_op.as<x86::Gp>());
+
+	    // Load vptr from [this+0]
+	    x86::Gp vptr = pgm.cc.newIntPtr("__vptr");
+	    pgm.cc.mov(vptr, x86::qword_ptr(this_ptr));
+
+	    // Load method address from [vptr + slot*8]
+	    x86::Gp method_addr = pgm.cc.newIntPtr("__vmethod");
+	    pgm.cc.mov(method_addr, x86::qword_ptr(vptr, slot * 8));
+
+	    // Build function signature
+	    FuncDef *func = dynamic_cast<FuncDef *>(((Method *)var.data)->returns.type);
+	    if ( !func )
+		throw "virtual dispatch: method has no FuncDef";
+	    FuncSignature funcsig;
+	    funcsig.setCallConvId(CallConvId::kCDecl);
+	    if ( func->returns.is_real() )
+		funcsig.setRetT<double>();
+	    else if ( func->returns.type() == DataType::dtVOID )
+		funcsig.setRetT<void>();
+	    else
+		funcsig.setRetT<int64_t>();
+	    funcsig.addArgT<void *>(); // __this
+
+	    // Compile arguments
+	    std::vector<Operand> arg_ops;
+	    for ( size_t i = 0; i < argc(); ++i )
+	    {
+		regdefp_t arg_rdp = {NULL, NULL, NULL};
+		Operand &arg_val = parameters[i]->compile(pgm, arg_rdp);
+		DataDef *arg_type = (i + 1 < func->parameters.size())
+		    ? func->parameters[i + 1] : NULL;
+		add_funcsig_arg(funcsig, arg_type);
+		arg_ops.push_back(arg_val);
+	    }
+
+	    // Emit indirect invoke
+	    InvokeNode *call;
+	    pgm.cc.invoke(&call, method_addr, funcsig);
+	    call->setArg(0, this_ptr);
+	    for ( size_t i = 0; i < arg_ops.size(); ++i )
+	    {
+		if ( arg_ops[i].isReg() )
+		{
+		    if ( arg_ops[i].as<BaseReg>().isGroup(RegGroup::kVec) )
+			call->setArg(i + 1, arg_ops[i].as<x86::Xmm>());
+		    else
+			call->setArg(i + 1, arg_ops[i].as<x86::Gp>());
+		}
+		else if ( arg_ops[i].isMem() )
+		{
+		    x86::Gp tmp = pgm.cc.newIntPtr("__varg");
+		    pgm.cc.mov(tmp, arg_ops[i].as<x86::Mem>());
+		    call->setArg(i + 1, tmp);
+		}
+	    }
+
+	    // Capture return value
+	    if ( func->returns.type() != DataType::dtVOID )
+	    {
+		if ( func->returns.is_real() )
+		{
+		    x86::Xmm ret = pgm.cc.newXmm("__vret");
+		    call->setRet(0, ret);
+		    _operand = ret;
+		}
+		else
+		{
+		    x86::Gp ret = pgm.cc.newGpq("__vret");
+		    call->setRet(0, ret);
+		    _operand = ret;
+		}
+		regdp.second = &func->returns;
+	    }
+	    regdp.first = &_operand;
+	    return _operand;
+	}
+    }
+
     regdp.object = &pgm.tkFunction->voperand(pgm, &object);
     return TokenCallFunc::compile(pgm, regdp);
 }
@@ -4654,6 +4786,19 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
 		    }
 		}
 	    }
+	    // Store vtable pointer at [this+0] for classes with virtual methods
+	    if ( ddc->has_vtable && ddc->vtable )
+	    {
+		DBG(pgm.cc.comment("store vtable pointer"));
+		x86::Gp vptr_this = pgm.cc.newIntPtr("__vptr_this");
+		if ( obj_op.isMem() )
+		    pgm.cc.lea(vptr_this, obj_op.as<x86::Mem>());
+		else
+		    pgm.cc.mov(vptr_this, obj_op.as<x86::Gp>());
+		x86::Gp vtable_addr = pgm.cc.newIntPtr("__vtable_addr");
+		pgm.cc.mov(vtable_addr, imm((uintptr_t)ddc->vtable));
+		pgm.cc.mov(x86::qword_ptr(vptr_this), vtable_addr);
+	    }
 	    // Call user-defined constructor
 	    if ( ddc->has_user_ctor )
 	    {
@@ -5006,6 +5151,15 @@ Operand &TokenNEW::compile(Program &pgm, regdefp_t &regdp)
 		}
 	    }
 	}
+    }
+
+    // Store vtable pointer for heap-allocated objects with virtual methods
+    if ( alloc_class->has_vtable && alloc_class->vtable )
+    {
+	DBG(pgm.cc.comment("new: store vtable pointer"));
+	x86::Gp vtable_addr = pgm.cc.newIntPtr("__new_vtable");
+	pgm.cc.mov(vtable_addr, imm((uintptr_t)alloc_class->vtable));
+	pgm.cc.mov(x86::qword_ptr(obj_ptr), vtable_addr);
     }
 
     // If caller provided a destination (assignment context), store there

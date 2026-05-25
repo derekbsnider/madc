@@ -849,9 +849,25 @@ public:
     bool has_user_ctor;  // true if user defined ClassName() constructor
     bool has_user_dtor;  // true if user defined ~ClassName() destructor
     DataDefCLASS *base_class; // single inheritance: parent class (NULL if none)
+    // Virtual function table
+    std::vector<std::string> vtable_slots; // method names in vtable slot order
+    std::map<std::string, bool> virtual_methods;  // names of methods declared virtual
+    void **vtable;         // runtime vtable (array of function pointers, filled at compile time)
+    bool has_vtable;       // true if this class or any base has virtual methods
+    int vtable_slot(const std::string &name) const {
+	for ( size_t i = 0; i < vtable_slots.size(); ++i )
+	    if ( vtable_slots[i] == name ) return (int)i;
+	return -1;
+    }
+    bool is_virtual_method(const std::string &name) const {
+	if ( virtual_methods.find(name) != virtual_methods.end() ) return true;
+	if ( base_class ) return base_class->is_virtual_method(name);
+	return false;
+    }
 
     DataDefCLASS(std::string n, size_t s, DataType d)
-	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false), base_class(NULL) {}
+	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),
+	  base_class(NULL), vtable(NULL), has_vtable(false) {}
     virtual BaseType basetype() const { return BaseType::btClass; }
     Variable *findMethod(std::string &s);
 };

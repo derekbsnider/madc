@@ -10441,9 +10441,19 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( inherit_base )
     {
 	ddc->base_class = inherit_base;
-	// Copy all data members from base class
-	for ( auto &m : inherit_base->members )
-	    ddc->addMember(m.first, *m.second, 1);
+	// Start derived class at base class's full size (includes vptr if any)
+	// so that new members are placed after the base layout.
+	ddc->size = inherit_base->size;
+	// Copy all data members from base class (preserving their offsets)
+	for ( size_t i = 0; i < inherit_base->members.size(); ++i )
+	{
+	    auto &m = inherit_base->members[i];
+	    ddc->members.push_back(m);
+	    ddc->member_offsets.push_back(inherit_base->member_offsets[i]);
+	    ddc->member_array_flags.push_back(
+		i < inherit_base->member_array_flags.size()
+		? inherit_base->member_array_flags[i] : false);
+	}
 	// Inherit methods (derived can override via method_map shadowing)
 	for ( auto &mp : inherit_base->method_map )
 	{
@@ -10453,6 +10463,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// Inherit ctor/dtor flags for cleanup
 	if ( inherit_base->has_user_dtor )
 	    ddc->has_user_dtor = true;
+	// Inherit vtable slots and virtual method set
+	if ( inherit_base->has_vtable )
+	{
+	    ddc->has_vtable = true;
+	    ddc->vtable_slots = inherit_base->vtable_slots;
+	    ddc->virtual_methods = inherit_base->virtual_methods;
+	}
 	DBG(cout << "TokenCLASS::parse() inherited " << inherit_base->members.size()
 	    << " members, " << inherit_base->method_map.size() << " methods from "
 	    << inherit_base->name << ", size now " << ddc->size << endl);
@@ -10460,6 +10477,18 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {
+	// --- virtual keyword ---
+	bool is_virtual = false;
+	if ( tn->type() == TokenType::ttIdentifier
+	  && ((TokenIdent *)tn)->str == "virtual" )
+	{
+	    pgm.nextToken(); // consume 'virtual'
+	    is_virtual = true;
+	    tn = pgm.peekToken();
+	    if ( !tn )
+		pgm.Throw(this) << "Unexpected end of input after 'virtual'" << flush;
+	}
+
 	// --- destructor: ~ClassName() { ... } ---
 	if ( tn->id() == TokenID::tkBnot )
 	{
@@ -10588,6 +10617,14 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 		ddc->methods.push_back(mvar);
 		// also register under the unmangled name for method lookup
 		ddc->method_map[mname] = mvar;
+		// Track virtual methods and assign vtable slots
+		if ( is_virtual || ddc->is_virtual_method(mname) )
+		{
+		    ddc->virtual_methods[mname] = true;
+		    if ( ddc->vtable_slot(mname) < 0 )
+			ddc->vtable_slots.push_back(mname);
+		    ddc->has_vtable = true;
+		}
 	    }
 	}
 	else
@@ -10605,6 +10642,24 @@ TokenBase *TokenCLASS::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input in class definition" << flush;
     pgm.nextToken(); // consume '}'
+
+    // If this class has virtual methods but no inherited vptr, prepend __vptr
+    if ( ddc->has_vtable && !(inherit_base && inherit_base->has_vtable) )
+    {
+	// Shift all existing member offsets by 8 to make room for __vptr at offset 0
+	ddc->size += 8;
+	for ( size_t i = 0; i < ddc->member_offsets.size(); ++i )
+	    ddc->member_offsets[i] += 8;
+	DBG(cout << "TokenCLASS::parse() added __vptr, size now " << ddc->size << endl);
+    }
+
+    // Allocate vtable if needed
+    if ( ddc->has_vtable )
+    {
+	size_t nslots = ddc->vtable_slots.size();
+	ddc->vtable = (void **)calloc(nslots, sizeof(void *));
+	DBG(cout << "TokenCLASS::parse() allocated vtable with " << nslots << " slots" << endl);
+    }
 
     // register the class type
     if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
