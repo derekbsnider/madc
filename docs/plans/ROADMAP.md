@@ -36,7 +36,7 @@ Master plan linking all workstreams. Updated 2026-05-25.
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
 | 2.1 | Constructors & destructors (RAII foundation) | 3-5 d | **DONE** | [cpp-support.md](cpp-support.md) |
-| 2.2 | Operator overloading completion | 2-3 d | Ready | [cpp-support.md](cpp-support.md) |
+| 2.2 | Operator overloading completion | 2-3 d | **DONE** | [cpp-support.md](cpp-support.md) |
 | 2.3 | Explicit references `T&`, const enforcement | 1 wk | Ready | [cpp-support.md](cpp-support.md) |
 | 2.4 | `new` / `delete` | 1-2 wk | Blocked on 2.1 | [cpp-support.md](cpp-support.md) |
 | 2.5 | Single inheritance | 1-2 wk | Blocked on 2.1 | [cpp-support.md](cpp-support.md) |
@@ -199,8 +199,9 @@ run in parallel.
      ├── Fixed __this from ddINT64 to void* (fixes member access)
      └── Early return cleanup verified vs GCC
 
- 3.  Track 2.2  Operator overloading completion          [2-3 d]
- ║   └── Parser done; wire up compiler dispatch
+ 3.  Track 2.2  Operator overloading completion          [DONE]
+ ║   ├── Parser: operator keyword in class bodies
+ ║   └── Compiler: generic dispatch for +,-,*,/,==,!=,<,>,<=,>=
  ║
  ║── Track 7.1  Rendering: Semantic IR + Level 0         [2-3 wk]
  ║   └── render { } blocks, UINode, text output
