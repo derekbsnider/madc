@@ -9,7 +9,7 @@ Analysis performed 2026-05-24.
 | Classes | Constructors | Members, methods, user-defined ctors/dtors with args. No inheritance/virtual/access control |
 | Templates | Hardcoded | vector/map/set/list for int64 and string only. No user-defined templates |
 | Operator overloading | Working | ==, !=, <, >, <=, >=, +, -, *, / dispatch to class methods |
-| References | Parameters | Non-numeric types pass by ref. No explicit `T&` syntax |
+| References | Working | Explicit `T&` for numeric types. Non-numeric types pass by ref implicitly |
 | Exceptions | Tokens only | try/catch/throw parsed but zero compilation |
 | Lambdas | Working | `[]` and `[&]` capture. No selective `[x, &y]` |
 | Auto | Limited | Function pointers and lambdas only. No general type deduction |
