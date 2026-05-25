@@ -1,0 +1,3 @@
+before throw
+caught exception
+after catch

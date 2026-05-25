@@ -1,0 +1,16 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+int main()
+{
+	try {
+		printf("before throw\n");
+		throw 42;
+		printf("should not reach\n");
+	}
+	catch ( ... ) {
+		printf("caught exception\n");
+	}
+	printf("after catch\n");
+	return 0;
+}

@@ -11839,6 +11839,122 @@ TokenBase *TokenDEFER::parse(Program &pgm)
     return NULL;
 }
 
+// try { ... } catch (type var) { ... }
+TokenBase *TokenTRY::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenTRY::parse()" << std::endl);
+
+    // Parse try body: must be { ... }
+    TokenBase *tn = pgm.peekToken();
+    if ( !tn || tn->id() != TokenID::tkOpBrc )
+	pgm.Throw(tn ? tn : this) << "Expected '{' after 'try'" << flush;
+    pgm.nextToken(); // consume '{'
+    pgm.pushCompound();
+    try_body = pgm.parseCompound();
+
+    // Parse one or more catch clauses
+    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkCATCH )
+    {
+	pgm.nextToken(); // consume 'catch'
+	tn = pgm.nextToken();
+	if ( !tn || tn->id() != TokenID::tkOpBrk )
+	    pgm.Throw(tn ? tn : this) << "Expected '(' after 'catch'" << flush;
+
+	// Parse catch parameter: (type var) or (...)
+	tn = pgm.peekToken();
+	if ( tn && tn->id() == TokenID::tkDot )
+	{
+	    // catch(...) — three dot tokens
+	    pgm.nextToken(); // consume first '.'
+	    tn = pgm.nextToken();
+	    if ( !tn || tn->id() != TokenID::tkDot )
+		pgm.Throw(tn) << "Expected '...' in catch" << flush;
+	    tn = pgm.nextToken();
+	    if ( !tn || tn->id() != TokenID::tkDot )
+		pgm.Throw(tn) << "Expected '...' in catch" << flush;
+	    catch_types.push_back(99); // MADC_EXCEPT_ANY
+	    catch_varnames.push_back("");
+	}
+	else
+	{
+	    // catch(type var)
+	    TokenDataType *ctype = resolve_declared_type_token(pgm, tn, true, true);
+	    if ( !ctype )
+		pgm.Throw(tn) << "Expected type in catch parameter" << flush;
+	    pgm.nextToken(); // consume type
+
+	    // Determine exception type tag
+	    int tag = 99; // default: any
+	    DataType dt = ctype->definition.rawtype();
+	    if ( dt == DataType::dtINT || dt == DataType::dtINT32
+	      || dt == DataType::dtINT64 )
+		tag = 1; // MADC_EXCEPT_INT
+	    else if ( dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT )
+		tag = 2; // MADC_EXCEPT_DOUBLE
+	    else if ( dt == DataType::dtCHAR )
+		tag = 3; // MADC_EXCEPT_CSTR (char* conceptually)
+	    catch_types.push_back(tag);
+
+	    // Variable name
+	    tn = pgm.nextToken();
+	    if ( tn && tn->type() == TokenType::ttIdentifier )
+		catch_varnames.push_back(((TokenIdent *)tn)->str);
+	    else
+	    {
+		catch_varnames.push_back("");
+		if ( tn ) pgm.pushToken(tn);
+	    }
+	}
+
+	tn = pgm.nextToken();
+	if ( !tn || tn->id() != TokenID::tkClBrk )
+	    pgm.Throw(tn ? tn : this) << "Expected ')' after catch parameter" << flush;
+
+	// Parse catch body — create catch variable in scope first
+	tn = pgm.peekToken();
+	if ( !tn || tn->id() != TokenID::tkOpBrc )
+	    pgm.Throw(tn ? tn : this) << "Expected '{' after catch(...)" << flush;
+	pgm.nextToken(); // consume '{'
+	pgm.pushCompound();
+	// Add catch variable to the catch body's scope
+	if ( !catch_varnames.back().empty() )
+	{
+	    TokenCpnd *catch_scope = pgm.compounds.empty() ? NULL : pgm.compounds.top();
+	    DataDef *cv_type = &ddINT64; // default
+	    if ( catch_types.back() == 2 ) cv_type = &ddDOUBLE;
+	    pgm.addVariable(catch_scope, *cv_type, catch_varnames.back(), 1, NULL, false);
+	}
+	catch_bodies.push_back(pgm.parseCompound());
+    }
+
+    if ( catch_bodies.empty() )
+	pgm.Throw(this) << "try without catch" << flush;
+
+    return this;
+}
+
+// throw expr — throws an exception
+TokenBase *TokenTHROW::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenTHROW::parse()" << std::endl);
+
+    // Check for throw; (rethrow, no expression)
+    TokenBase *tn = pgm.peekToken();
+    if ( tn && tn->id() == TokenID::tkSemi )
+    {
+	throw_expr = NULL; // rethrow
+	return this;
+    }
+
+    // Parse the throw expression
+    tn = pgm.nextToken();
+    throw_expr = pgm.parseExpression(tn, true);
+    // Consume trailing semicolon
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+    return this;
+}
+
 // new ClassName(args) — heap allocation + constructor call
 TokenBase *TokenNEW::parse(Program &pgm)
 {
@@ -15617,15 +15733,24 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    // `catch (...)` block; a real throw is `throw expr;`. In any
 	    // other follower context, treat as an identifier and route
 	    // through parseExpression.
-	    if ( (tb->id() == TokenID::tkTRY
-	       || tb->id() == TokenID::tkCATCH
-	       || tb->id() == TokenID::tkTHROW)
+	    // `try` is a keyword when followed by '{'. `throw` is a keyword
+	    // when followed by an expression or ';'. `catch` is only valid
+	    // after a try block (handled by TokenTRY::parse). In C identifier
+	    // context (SMAUG: `int try; try = saving_throw()`), these route
+	    // through parseExpression instead.
+	    if ( tb->id() == TokenID::tkCATCH
 	      && peekToken()
-	      && peekToken()->id() != TokenID::tkOpBrc
 	      && peekToken()->id() != TokenID::tkOpBrk )
 	    {
-		DBG(std::cout << "parseStatement() '"
-		    << ((TokenKeyword *)tb)->str << "' used as identifier" << std::endl);
+		DBG(std::cout << "parseStatement() 'catch' used as identifier" << std::endl);
+		resetPrevToken();
+		return parseExpression(tb);
+	    }
+	    if ( tb->id() == TokenID::tkTRY
+	      && peekToken()
+	      && peekToken()->id() != TokenID::tkOpBrc )
+	    {
+		DBG(std::cout << "parseStatement() 'try' used as identifier" << std::endl);
 		resetPrevToken();
 		return parseExpression(tb);
 	    }

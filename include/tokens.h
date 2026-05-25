@@ -1116,9 +1116,33 @@ public:
     virtual TokenBase *parse(Program &);
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
-class TokenTRY:      public TokenKeyword { public: TokenTRY()      : TokenKeyword("try") {}      virtual TokenID id() const { return TokenID::tkTRY;      } virtual TokenBase *clone() { return (TokenBase*)new TokenTRY();     } };
+// try { ... } catch (type var) { ... } — exception handling
+class TokenTRY: public TokenKeyword
+{
+public:
+    TokenBase *try_body;                     // compound statement for try block
+    // catch clauses: parallel vectors (type, var name, body)
+    std::vector<int> catch_types;            // MADC_EXCEPT_* type tags (99 = catch(...))
+    std::vector<std::string> catch_varnames; // catch variable names (empty for catch(...))
+    std::vector<TokenBase *> catch_bodies;   // compound statements for each catch
+    TokenTRY() : TokenKeyword("try") { try_body = NULL; }
+    virtual TokenID id() const { return TokenID::tkTRY; }
+    virtual TokenBase *clone() { return new TokenTRY(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
 class TokenCATCH:    public TokenKeyword { public: TokenCATCH()    : TokenKeyword("catch") {}    virtual TokenID id() const { return TokenID::tkCATCH;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCATCH();   } };
-class TokenTHROW:    public TokenKeyword { public: TokenTHROW()    : TokenKeyword("throw") {}    virtual TokenID id() const { return TokenID::tkTHROW;    } virtual TokenBase *clone() { return (TokenBase*)new TokenTHROW();   } };
+// throw expr — throws an exception
+class TokenTHROW: public TokenKeyword
+{
+public:
+    TokenBase *throw_expr;  // expression to throw (NULL for rethrow)
+    TokenTHROW() : TokenKeyword("throw") { throw_expr = NULL; }
+    virtual TokenID id() const { return TokenID::tkTHROW; }
+    virtual TokenBase *clone() { return new TokenTHROW(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
 class TokenSWITCH: public TokenKeyword
 {
 public:

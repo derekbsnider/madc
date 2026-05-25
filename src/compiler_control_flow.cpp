@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <dlfcn.h>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -924,6 +925,223 @@ Operand &TokenFOREACH::compile(Program &pgm, regdefp_t &regdp)
 
     pgm.loopstack.pop();
     DBG(std::cout << "TokenFOREACH::compile() END" << std::endl);
+
+    return _operand;
+}
+
+// --- Exception handling: try/catch/throw ---
+
+// Runtime function declarations (defined in exception_runtime.cpp)
+extern "C" {
+    void *__madc_try_push(void *ctx);
+    void __madc_try_pop();
+    void __madc_throw_int(int64_t val);
+    void __madc_throw_double(double val);
+    void __madc_throw_cstr(const char *val);
+    int __madc_exception_type();
+    int64_t __madc_exception_int();
+    double __madc_exception_double();
+    const char *__madc_exception_cstr();
+    void __madc_exception_clear();
+}
+
+// sizeof(MadcTryContext) = sizeof(jmp_buf) + sizeof(void*)
+// jmp_buf on Linux x86-64 is typically 200 bytes; add 8 for prev pointer
+static const uint32_t TRYCTX_SIZE = 208;
+static const uint32_t TRYCTX_ALIGN = 16;
+
+Operand &TokenTHROW::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenTHROW::compile()"));
+
+    if ( !throw_expr )
+    {
+	// rethrow — not yet implemented
+	pgm.Throw(this) << "rethrow (throw;) not yet implemented" << flush;
+    }
+
+    // Compile the throw expression
+    regdefp_t erdp = {NULL, NULL, NULL};
+    Operand &val = throw_expr->compile(pgm, erdp);
+    DataDef *vtype = erdp.second ? erdp.second : throw_expr->datadef();
+
+    // Determine which throw function to call based on type
+    void *throw_fn = (void *)__madc_throw_int; // default
+    if ( vtype && (vtype->is_real() || vtype->type() == DataType::dtFLOAT) )
+	throw_fn = (void *)__madc_throw_double;
+    else if ( vtype && (vtype->type() == DataType::dtCHARptr
+	  || vtype->type() == DataType::dtSTRING) )
+	throw_fn = (void *)__madc_throw_cstr;
+
+    InvokeNode *call;
+    if ( throw_fn == (void *)__madc_throw_double )
+    {
+	// Double argument
+	x86::Xmm xarg = pgm.cc.newXmm("__throw_dbl");
+	if ( val.isReg() && val.as<BaseReg>().isGroup(RegGroup::kVec) )
+	    pgm.cc.movsd(xarg, val.as<x86::Xmm>());
+	else if ( val.isMem() )
+	    pgm.cc.movsd(xarg, val.as<x86::Mem>());
+	pgm.cc.invoke(&call, imm(throw_fn),
+		      FuncSignature::build<void, double>());
+	call->setArg(0, xarg);
+    }
+    else
+    {
+	// Int or string argument — widen to 64-bit
+	x86::Gp garg = pgm.cc.newGpq("__throw_val");
+	if ( val.isReg() )
+	{
+	    x86::Gp src = val.as<x86::Gp>();
+	    if ( src.size() < 8 )
+		pgm.cc.movsxd(garg, src);
+	    else
+		pgm.cc.mov(garg, src);
+	}
+	else if ( val.isMem() )
+	    pgm.cc.mov(garg, val.as<x86::Mem>());
+	else if ( val.isImm() )
+	    pgm.cc.mov(garg, val.as<Imm>());
+	pgm.cc.invoke(&call, imm(throw_fn),
+		      FuncSignature::build<void, int64_t>());
+	call->setArg(0, garg);
+    }
+
+    return _operand;
+}
+
+Operand &TokenTRY::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenTRY::compile()"));
+
+    // Allocate MadcTryContext on JIT stack
+    x86::Mem tryctx = pgm.cc.newStack(TRYCTX_SIZE, TRYCTX_ALIGN);
+
+    // Push try context: jbuf_ptr = __madc_try_push(&tryctx)
+    x86::Gp ctx_ptr = pgm.cc.newIntPtr("__tryctx");
+    pgm.cc.lea(ctx_ptr, tryctx);
+    InvokeNode *push_call;
+    pgm.cc.invoke(&push_call, imm((void *)__madc_try_push),
+		  FuncSignature::build<void *, void *>());
+    push_call->setArg(0, ctx_ptr);
+    x86::Gp jbuf_ptr = pgm.cc.newIntPtr("__jbuf");
+    push_call->setRet(0, jbuf_ptr);
+
+    // Call setjmp(jbuf_ptr) — returns 0 on setup, non-zero on exception
+    void *setjmp_fn = dlsym(RTLD_DEFAULT, "_setjmp");
+    if ( !setjmp_fn )
+	setjmp_fn = dlsym(RTLD_DEFAULT, "setjmp");
+    if ( !setjmp_fn )
+	pgm.Throw(this) << "cannot resolve setjmp" << flush;
+
+    FuncSignature setjmp_sig(CallConvId::kCDecl);
+    setjmp_sig.setRetT<int>();
+    setjmp_sig.addArgT<void *>();
+
+    InvokeNode *sjcall;
+    pgm.cc.invoke(&sjcall, imm(setjmp_fn), setjmp_sig);
+    sjcall->setArg(0, jbuf_ptr);
+    x86::Gp sjret = pgm.cc.newGpq("__sjret");
+    sjcall->setRet(0, sjret);
+
+    // Branch: if setjmp returned 0, execute try body; else go to catch dispatch
+    Label catch_dispatch = pgm.cc.newLabel();
+    Label after_catch = pgm.cc.newLabel();
+    pgm.cc.cmp(sjret, imm(0));
+    pgm.cc.jne(catch_dispatch);
+
+    // --- Try body ---
+    {
+	regdefp_t body_rdp = {NULL, NULL, NULL};
+	try_body->compile(pgm, body_rdp);
+    }
+
+    // Normal exit: pop the try context
+    InvokeNode *pop_call;
+    pgm.cc.invoke(&pop_call, imm((void *)__madc_try_pop),
+		  FuncSignature::build<void>());
+    pgm.cc.jmp(after_catch);
+
+    // --- Catch dispatch ---
+    pgm.cc.bind(catch_dispatch);
+
+    // Get exception type
+    InvokeNode *type_call;
+    pgm.cc.invoke(&type_call, imm((void *)__madc_exception_type),
+		  FuncSignature::build<int>());
+    x86::Gp exc_type = pgm.cc.newGpd("__exc_type");
+    type_call->setRet(0, exc_type);
+
+    for ( size_t i = 0; i < catch_types.size(); ++i )
+    {
+	Label next_catch = pgm.cc.newLabel();
+	Label this_catch = pgm.cc.newLabel();
+
+	if ( catch_types[i] != 99 ) // not catch(...)
+	{
+	    pgm.cc.cmp(exc_type, imm(catch_types[i]));
+	    pgm.cc.jne(next_catch);
+	}
+
+	pgm.cc.bind(this_catch);
+
+	// Bind exception value to catch variable if named.
+	// The variable lives in the catch body's compound (created at parse time).
+	// Use the compound's voperand to get its storage.
+	TokenCpnd *catch_cpnd = dynamic_cast<TokenCpnd *>(catch_bodies[i]);
+	if ( !catch_varnames[i].empty() && catch_cpnd )
+	{
+	    Variable *cv = catch_cpnd->findVariable(catch_varnames[i]);
+	    if ( cv )
+	    {
+		if ( catch_types[i] == 1 ) // int
+		{
+		    InvokeNode *val_call;
+		    pgm.cc.invoke(&val_call, imm((void *)__madc_exception_int),
+				  FuncSignature::build<int64_t>());
+		    x86::Gp exc_val = pgm.cc.newGpq("__exc_int");
+		    val_call->setRet(0, exc_val);
+		    Operand &cv_op = catch_cpnd->voperand(pgm, cv);
+		    if ( cv_op.isMem() )
+			pgm.cc.mov(cv_op.as<x86::Mem>(), exc_val);
+		    else
+			pgm.cc.mov(cv_op.as<x86::Gp>(), exc_val);
+		}
+		else if ( catch_types[i] == 2 ) // double
+		{
+		    InvokeNode *val_call;
+		    pgm.cc.invoke(&val_call, imm((void *)__madc_exception_double),
+				  FuncSignature::build<double>());
+		    x86::Xmm exc_val = pgm.cc.newXmm("__exc_dbl");
+		    val_call->setRet(0, exc_val);
+		    Operand &cv_op = catch_cpnd->voperand(pgm, cv);
+		    if ( cv_op.isMem() )
+			pgm.cc.movsd(cv_op.as<x86::Mem>(), exc_val);
+		    else
+			pgm.cc.movsd(cv_op.as<x86::Xmm>(), exc_val);
+		}
+	    }
+	}
+
+	// Compile catch body
+	{
+	    regdefp_t catch_rdp = {NULL, NULL, NULL};
+	    catch_bodies[i]->compile(pgm, catch_rdp);
+	}
+
+	// Clear exception
+	InvokeNode *clear_call;
+	pgm.cc.invoke(&clear_call, imm((void *)__madc_exception_clear),
+		      FuncSignature::build<void>());
+
+	pgm.cc.jmp(after_catch);
+	pgm.cc.bind(next_catch);
+    }
+
+    // No catch matched — should not happen in well-formed code
+    // (unmatched exceptions abort in __madc_throw_*)
+
+    pgm.cc.bind(after_catch);
 
     return _operand;
 }
