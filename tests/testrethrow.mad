@@ -1,0 +1,20 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+int main()
+{
+	try {
+		try {
+			throw 99;
+		}
+		catch ( int e ) {
+			printf("inner caught: %d\n", e);
+			throw;
+		}
+	}
+	catch ( int e ) {
+		printf("outer caught: %d\n", e);
+	}
+	printf("done\n");
+	return 0;
+}

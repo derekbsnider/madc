@@ -943,6 +943,7 @@ extern "C" {
     double __madc_exception_double();
     const char *__madc_exception_cstr();
     void __madc_exception_clear();
+    void __madc_rethrow();
 }
 
 // sizeof(MadcTryContext) = sizeof(jmp_buf) + sizeof(void*)
@@ -956,8 +957,12 @@ Operand &TokenTHROW::compile(Program &pgm, regdefp_t &regdp)
 
     if ( !throw_expr )
     {
-	// rethrow — not yet implemented
-	pgm.Throw(this) << "rethrow (throw;) not yet implemented" << flush;
+	// rethrow: throw; — re-throws current exception to next try block
+	DBG(pgm.cc.comment("rethrow"));
+	InvokeNode *call;
+	pgm.cc.invoke(&call, imm((void *)__madc_rethrow),
+		      FuncSignature::build<void>());
+	return _operand;
     }
 
     // Compile the throw expression

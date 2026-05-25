@@ -132,4 +132,23 @@ void __madc_exception_clear()
     madc_current_exception.str_val = nullptr;
 }
 
+// Rethrow the current exception (throw; with no expression)
+void __madc_rethrow()
+{
+    if ( madc_current_exception.type == MADC_EXCEPT_NONE )
+    {
+	fprintf(stderr, "rethrow with no active exception\n");
+	abort();
+    }
+    if ( !madc_try_stack )
+    {
+	fprintf(stderr, "Unhandled rethrown exception\n");
+	abort();
+    }
+    // Don't modify the exception state — just longjmp to the next try
+    MadcTryContext *ctx = madc_try_stack;
+    madc_try_stack = ctx->prev;
+    longjmp(ctx->jbuf, 1);
+}
+
 } // extern "C"
