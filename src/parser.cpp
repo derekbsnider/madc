@@ -8335,6 +8335,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( !tb ) { done = true; break; }
 		    continue;
 		}
+		// new ClassName(args) in expression context
+		if ( tb->id() == TokenID::tkNEW )
+		{
+		    TokenBase *new_node = ((TokenKeyword *)tb)->parse(*this);
+		    if ( new_node )
+			exStack.push(new_node);
+		    break;
+		}
 		if ( !is_contextual_identifier_token(tb) )
 		    Throw(tb) << "Unexpected keyword in expression" << flush;
 	    case TokenType::ttIdentifier:
@@ -8827,8 +8835,32 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 
 		    string id = ident_tb->str;
 
-		    // get member offset and type
+		    // get member offset and type — or method
 		    ssize_t ofs = ((DataDefSTRUCT *)base)->m_offset(id);
+		    if ( ofs == -1 && base->is_object() )
+		    {
+			// Check if it's a method call on a class pointer
+			var = ((DataDefCLASS *)base)->findMethod(id);
+			if ( var )
+			{
+			    // arrow method call: ptr->method(args)
+			    if ( lhs->type() != TokenType::ttVariable
+			      && lhs->type() != TokenType::ttMember )
+				Throw(tb) << "chained arrow method call not yet supported" << flush;
+			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);
+			    tb = nextToken();
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    if ( tb->id() == TokenID::tkOpBrk )
+				tb = parseCallMethod(tc);
+			    exStack.pop();
+			    // remove TokenDeRef from opStack
+			    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
+				opStack.pop();
+			    opStack.push(tc);
+			    break;
+			}
+		    }
 		    if ( ofs == -1 )
 			Throw(tb) << "no member named '" << id << "'" << flush;
 		    DataDef *mtype = ((DataDefSTRUCT *)base)->m_type(id);
@@ -11698,6 +11730,72 @@ TokenBase *TokenDEFER::parse(Program &pgm)
 
     // return NULL — defer doesn't produce code at this point
     return NULL;
+}
+
+// new ClassName(args) — heap allocation + constructor call
+TokenBase *TokenNEW::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenNEW::parse()" << std::endl);
+
+    TokenBase *tn = pgm.nextToken();
+    if ( !tn || tn->type() != TokenType::ttIdentifier )
+	pgm.Throw(tn ? tn : this) << "Expected class name after 'new'" << flush;
+
+    std::string class_name = ((TokenIdent *)tn)->str;
+
+    // Look up the class type
+    datadef_map_iter dmi = pgm.struct_map.find(class_name);
+    if ( dmi == pgm.struct_map.end() )
+	pgm.Throw(tn) << "Unknown class '" << class_name << "' in new expression" << flush;
+    DataDefCLASS *ddc = dynamic_cast<DataDefCLASS *>(dmi->second);
+    if ( !ddc )
+	pgm.Throw(tn) << "'" << class_name << "' is not a class type" << flush;
+
+    alloc_class = ddc;
+
+    // Parse constructor arguments: (arg1, arg2, ...)
+    tn = pgm.peekToken();
+    if ( tn && tn->id() == TokenID::tkOpBrk )
+    {
+	pgm.nextToken(); // consume '('
+	while ( pgm.peekToken() && pgm.peekToken()->id() != TokenID::tkClBrk )
+	{
+	    TokenBase *arg = pgm.parseExpression(pgm.nextToken(), true);
+	    ctor_args.push_back(arg);
+	    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkComma )
+		pgm.nextToken(); // consume ','
+	}
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+	    pgm.Throw(this) << "Expected ')' after new " << class_name << " arguments" << flush;
+	pgm.nextToken(); // consume ')'
+    }
+
+    return this;
+}
+
+// delete expr — destructor call + free
+TokenBase *TokenDELETE::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenDELETE::parse()" << std::endl);
+
+    TokenBase *tn = pgm.nextToken();
+    if ( !tn )
+	pgm.Throw(this) << "Expected expression after 'delete'" << flush;
+
+    expr = pgm.parseExpression(tn, true);
+    if ( !expr )
+	pgm.Throw(tn) << "Failed to parse expression after 'delete'" << flush;
+
+    // Try to determine the class type from the expression's pointer type
+    DataDef *dd = expr->datadef();
+    if ( dd && dd->is_pointer() )
+    {
+	DataDefPTR *ptr = dynamic_cast<DataDefPTR *>(dd);
+	if ( ptr )
+	    del_class = dynamic_cast<DataDefCLASS *>(ptr->base_type);
+    }
+
+    return this;
 }
 
 // parse switch(expr) { case val: ...; break; default: ...; }

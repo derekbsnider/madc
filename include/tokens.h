@@ -45,7 +45,7 @@ enum class TokenID {
   tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT, tkVOLATILE,
   tkVECTOR, tkMAP, tkSET, tkLIST,
   tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
-  tkUNION
+  tkUNION, tkNEW, tkDELETE
 };
 
 enum class TokenAssoc {
@@ -1214,6 +1214,30 @@ class TokenVECTOR: public TokenKeyword { public: TokenVECTOR() : TokenKeyword("v
 class TokenMAP:    public TokenKeyword { public: TokenMAP()    : TokenKeyword("map") {}    virtual TokenID id() const { return TokenID::tkMAP; }    virtual TokenBase *clone() { return new TokenMAP(); }    virtual TokenBase *parse(Program &); };
 class TokenSET:    public TokenKeyword { public: TokenSET()    : TokenKeyword("set") {}    virtual TokenID id() const { return TokenID::tkSET; }    virtual TokenBase *clone() { return new TokenSET(); }    virtual TokenBase *parse(Program &); };
 class TokenLIST:   public TokenKeyword { public: TokenLIST()   : TokenKeyword("list") {}   virtual TokenID id() const { return TokenID::tkLIST; }   virtual TokenBase *clone() { return new TokenLIST(); }   virtual TokenBase *parse(Program &); };
+
+// new / delete — heap allocation with constructor/destructor calls
+class TokenNEW: public TokenKeyword
+{
+public:
+    DataDefCLASS *alloc_class;
+    std::vector<TokenBase *> ctor_args;
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; }
+    virtual TokenID id() const { return TokenID::tkNEW; }
+    virtual TokenBase *clone() { return new TokenNEW(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
+class TokenDELETE: public TokenKeyword
+{
+public:
+    TokenBase *expr;
+    DataDefCLASS *del_class;
+    TokenDELETE() : TokenKeyword("delete") { expr = NULL; del_class = NULL; }
+    virtual TokenID id() const { return TokenID::tkDELETE; }
+    virtual TokenBase *clone() { return new TokenDELETE(); }
+    virtual TokenBase *parse(Program &);
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
+};
 
 class TokenSTRUCT: public TokenKeyword
 {

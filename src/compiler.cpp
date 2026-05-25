@@ -4918,6 +4918,135 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     return _reg;
 }
 
+// new ClassName(args) — malloc + constructor call, return pointer
+Operand &TokenNEW::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenNEW::compile()"));
+    if ( !alloc_class )
+	throw "TokenNEW::compile() missing class type";
+
+    // Allocate memory: malloc(class_size)
+    x86::Gp obj_ptr = pgm.cc.newIntPtr("__new_obj");
+    x86::Gp size_reg = pgm.cc.newGpq("__new_size");
+    pgm.cc.mov(size_reg, imm((int64_t)alloc_class->size));
+    InvokeNode *mcall;
+    pgm.cc.invoke(&mcall, imm((void *)::malloc),
+		  FuncSignature::build<void *, size_t>());
+    mcall->setArg(0, size_reg);
+    mcall->setRet(0, obj_ptr);
+
+    // Call constructor if the class has one
+    if ( alloc_class->has_user_ctor )
+    {
+	std::string ctor_name = alloc_class->name;
+	Variable *ctor_mvar = alloc_class->findMethod(ctor_name);
+	if ( ctor_mvar && ctor_mvar->data )
+	{
+	    FuncDef *ctor_func = (FuncDef *)((Method *)ctor_mvar->data)->returns.type;
+	    if ( ctor_func && ctor_func->funcnode )
+	    {
+		DBG(pgm.cc.comment("new: constructor call"));
+		FuncSignature funcsig;
+		funcsig.setCallConvId(CallConvId::kCDecl);
+		funcsig.setRetT<void>();
+		funcsig.addArgT<void *>(); // __this
+
+		std::vector<Operand> arg_ops;
+		for ( size_t i = 0; i < ctor_args.size(); ++i )
+		{
+		    regdefp_t arg_regdp = {NULL, NULL, NULL};
+		    Operand &arg_result = ctor_args[i]->compile(pgm, arg_regdp);
+		    DataDef *arg_type = (i + 1 < ctor_func->parameters.size())
+			? ctor_func->parameters[i + 1] : NULL;
+		    add_funcsig_arg(funcsig, arg_type);
+		    arg_ops.push_back(arg_result);
+		}
+
+		InvokeNode *ccall;
+		pgm.cc.invoke(&ccall, ctor_func->funcnode->label(), funcsig);
+		ccall->setArg(0, obj_ptr);
+		for ( size_t i = 0; i < arg_ops.size(); ++i )
+		{
+		    if ( arg_ops[i].isReg() )
+		    {
+			if ( arg_ops[i].as<BaseReg>().isGroup(RegGroup::kVec) )
+			    ccall->setArg(i + 1, arg_ops[i].as<x86::Xmm>());
+			else
+			    ccall->setArg(i + 1, arg_ops[i].as<x86::Gp>());
+		    }
+		    else if ( arg_ops[i].isMem() )
+		    {
+			x86::Gp tmp = pgm.cc.newIntPtr("__new_arg");
+			pgm.cc.mov(tmp, arg_ops[i].as<x86::Mem>());
+			ccall->setArg(i + 1, tmp);
+		    }
+		}
+	    }
+	}
+    }
+
+    // If caller provided a destination (assignment context), store there
+    if ( regdp.first )
+    {
+	if ( regdp.first->isMem() )
+	    pgm.cc.mov(regdp.first->as<x86::Mem>(), obj_ptr);
+	else if ( regdp.first->isReg() )
+	    pgm.cc.mov(regdp.first->as<x86::Gp>(), obj_ptr);
+	regdp.second = pgm.getPointerType(alloc_class);
+	return *regdp.first;
+    }
+    _operand = obj_ptr;
+    regdp.first = &_operand;
+    regdp.second = pgm.getPointerType(alloc_class);
+    return _operand;
+}
+
+// delete expr — destructor call + free
+Operand &TokenDELETE::compile(Program &pgm, regdefp_t &regdp)
+{
+    DBG(pgm.cc.comment("TokenDELETE::compile()"));
+    if ( !expr )
+	throw "TokenDELETE::compile() missing expression";
+
+    // Compile the expression to get the pointer
+    regdefp_t erd = {NULL, NULL, NULL};
+    Operand &ptr_op = expr->compile(pgm, erd);
+    x86::Gp obj_ptr = pgm.cc.newIntPtr("__del_ptr");
+    if ( ptr_op.isMem() )
+	pgm.cc.mov(obj_ptr, ptr_op.as<x86::Mem>());
+    else if ( ptr_op.isReg() )
+	pgm.cc.mov(obj_ptr, ptr_op.as<x86::Gp>());
+
+    // Call destructor if the class has one
+    if ( del_class && del_class->has_user_dtor )
+    {
+	std::string dtor_name = "~" + del_class->name;
+	Variable *dtor_mvar = del_class->findMethod(dtor_name);
+	if ( dtor_mvar && dtor_mvar->data )
+	{
+	    FuncDef *dtor_func = (FuncDef *)((Method *)dtor_mvar->data)->returns.type;
+	    if ( dtor_func && dtor_func->funcnode )
+	    {
+		DBG(pgm.cc.comment("delete: destructor call"));
+		InvokeNode *dcall;
+		pgm.cc.invoke(&dcall, dtor_func->funcnode->label(),
+			      FuncSignature::build<void, void *>());
+		dcall->setArg(0, obj_ptr);
+	    }
+	}
+    }
+
+    // Free the memory
+    DBG(pgm.cc.comment("delete: free()"));
+    InvokeNode *fcall;
+    pgm.cc.invoke(&fcall, imm((void *)::free),
+		  FuncSignature::build<void, void *>());
+    fcall->setArg(0, obj_ptr);
+
+    _operand = obj_ptr;
+    return _operand;
+}
+
 void TokenFunc::prepareFuncNode(Program &pgm)
 {
     if ( !var.data ) return; // not a real function (edge case)

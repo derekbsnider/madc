@@ -695,6 +695,8 @@ TokenVECTOR	tkVECTOR;
 TokenMAP	tkMAP;
 TokenSET	tkSET;
 TokenLIST	tkLIST;
+TokenNEW	tkNEW;
+TokenDELETE	tkDELETE;
 
 // basic type tokens
 TokenVOID	tkVOID;
@@ -1327,6 +1329,8 @@ void Program::add_keywords()
     // `list` intentionally omitted from keyword_map so it doesn't shadow
     // the C identifier `list`. Use `std::list<T>` instead.
     // keyword_map[tkLIST.str] = &tkLIST;
+    keyword_map[tkNEW.str] = &tkNEW;
+    keyword_map[tkDELETE.str] = &tkDELETE;
 }
 
 // add static tokens for base data types
