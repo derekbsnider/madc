@@ -7471,12 +7471,13 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 			ssize_t ofs = 0;
 			for ( auto &m : dds->members )
 			{
-			    if ( m.second->rawtype() == DataType::dtSTRING )
+			    DataDefCLASS *mdc = dynamic_cast<DataDefCLASS *>(m.second);
+			    if ( mdc && mdc->extern_ctor )
 			    {
 				x86::Gp mreg = pgm.cc.newIntPtr("%s", (var->name + "." + m.first).c_str());
 				pgm.cc.lea(mreg, x86::ptr(base_reg, (int32_t)ofs));
-				DBG(pgm.cc.comment(("struct member " + m.first + " string_construct").c_str()));
-                                InvokeNode* call; pgm.cc.invoke(&call, imm(string_construct), FuncSignature::build<void *, void *>());
+				DBG(pgm.cc.comment(("struct member " + m.first + " extern_ctor").c_str()));
+                                InvokeNode* call; pgm.cc.invoke(&call, imm(mdc->extern_ctor), FuncSignature::build<void *, void *>());
 				call->setArg(0, mreg);
 			    }
 			    ofs += (ssize_t)m.second->size;
@@ -7775,12 +7776,13 @@ void TokenCpnd::cleanup(Program &pgm)
 				ssize_t ofs = 0;
 				for ( auto &m : dds->members )
 				{
-				    if ( m.second->rawtype() == DataType::dtSTRING )
+				    DataDefCLASS *mdc = dynamic_cast<DataDefCLASS *>(m.second);
+				    if ( mdc && mdc->extern_dtor )
 				    {
 					x86::Gp mreg = cc.newIntPtr("%s", (var->name + "." + m.first).c_str());
 					cc.lea(mreg, x86::ptr(base_reg, (int32_t)ofs));
-					DBG(std::cerr << "cleanup: " << var->name << '.' << m.first << " string_destruct" << std::endl);
-                                        InvokeNode* call; cc.invoke(&call, imm(string_destruct), FuncSignature::build<void, void *>());
+					DBG(std::cerr << "cleanup: " << var->name << '.' << m.first << " extern_dtor" << std::endl);
+                                        InvokeNode* call; cc.invoke(&call, imm(mdc->extern_dtor), FuncSignature::build<void, void *>());
 					call->setArg(0, mreg);
 				    }
 				    ofs += (ssize_t)m.second->size;
