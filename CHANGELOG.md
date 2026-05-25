@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.21.1] — 2026-05-25
+
+Const enforcement, access control, token position, and JIT IR architecture research.
+
 - **Top-level `const` enforcement.** `const int x = 5; x = 10;` is now a
   compile error. All 12 mutating operators (`=`, `++`, `--`, `+=`, `-=`,
   `*=`, `/=`, `%=`, `<<=`, `>>=`, `&=`, `|=`, `^=`) are checked.

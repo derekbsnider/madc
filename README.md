@@ -226,15 +226,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.21.0** (2026-05-25) — **C++ class model.** Constructors, destructors, operator overloading, references (T&), new/delete, single inheritance, virtual functions/vtables, SJLJ exception handling with destructor unwinding, generic extern class ctor/dtor infrastructure, const enforcement, access control, auto token position. 475 tests, 0 failures.
+**v0.21.1** (2026-05-25) — **Const enforcement, access control, MIR backend plan.** Top-level const and const ref enforcement, public/private/protected access control, automatic token position inheritance, and JIT IR architecture research leading to the decision to adopt MIR as the optimizing backend (replacing asmjit). 475 tests, 0 failures.
 
 ### Recent Releases
 
+- **v0.21.1** — Const enforcement, access control, token position, MIR backend architecture decision
 - **v0.21.0** — C++ class model: ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding
 - **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
 - **v0.20.0** — GCC parity 91.2% (1536/1685); std namespace cleanup, std::vector, overflow_p builtins
 - **v0.19.0** — GCC parity 89.3% (1505/1685); frame_address, stdio/string builtins
-- **v0.18.0** — GCC parity 88.8% (1496/1685); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers
 
 ## Roadmap
 
