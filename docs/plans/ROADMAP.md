@@ -1,10 +1,10 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-05-24.
+Master plan linking all workstreams. Updated 2026-05-25.
 
 ## Current State
 
-- **Version:** 0.20.0
+- **Version:** 0.20.1
 - **GCC parity:** 1649/1685 (97.9%)
 - **Integration tests:** 452 passing
 - **SMAUG port:** Startup through serpent combat on native exe
@@ -20,7 +20,7 @@ Master plan linking all workstreams. Updated 2026-05-24.
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
 | 1.1 | C foundation (GCC parity) | — | **DONE** 97.9% | — |
-| 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
+| 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | **DONE** (v0.20.1) | [code-cleanup.md](code-cleanup.md) |
 | 1.3 | Typed-register IR — stages 0-3 | 4-6 wk | Draft | [typed-register-ir.md](typed-register-ir.md) |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
@@ -35,7 +35,7 @@ Master plan linking all workstreams. Updated 2026-05-24.
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 2.1 | Constructors & destructors (RAII foundation) | 3-5 d | Ready | [cpp-support.md](cpp-support.md) |
+| 2.1 | Constructors & destructors (RAII foundation) | 3-5 d | **DONE** | [cpp-support.md](cpp-support.md) |
 | 2.2 | Operator overloading completion | 2-3 d | Ready | [cpp-support.md](cpp-support.md) |
 | 2.3 | Explicit references `T&`, const enforcement | 1 wk | Ready | [cpp-support.md](cpp-support.md) |
 | 2.4 | `new` / `delete` | 1-2 wk | Blocked on 2.1 | [cpp-support.md](cpp-support.md) |
@@ -185,14 +185,19 @@ Each step builds on the previous. Items at the same indent level can
 run in parallel.
 
 ```
- 1.  Track 1.2  Code cleanup Phase A                    [2-3 wk]
-     ├── Builtin dispatch table (compiler.cpp)
-     ├── AST visitor pattern (contains_label → general)
-     └── File splitting (compiler.cpp → 5 files)
-         Unblocks: everything below
+ 1.  Track 1.2  Code cleanup Phase A                    [DONE v0.20.1]
+     ├── Builtin dispatch table (43-entry, compiler_builtins.cpp)
+     ├── AST walker template (walk_ast<>)
+     ├── File split (compiler.cpp → 4 files, 47% reduction)
+     ├── --emit-function CLI tool
+     └── _chk family consolidation
 
- 2.  Track 2.1  Constructors & destructors              [3-5 d]
-     └── RAII foundation — keystone for C++, rendering, safety
+ 2.  Track 2.1  Constructors & destructors              [DONE]
+     ├── Parse ctor (ClassName()) and dtor (~ClassName())
+     ├── Auto-call at declaration / scope exit (LIFO)
+     ├── Constructor arguments: ClassName var(a, b)
+     ├── Fixed __this from ddINT64 to void* (fixes member access)
+     └── Early return cleanup verified vs GCC
 
  3.  Track 2.2  Operator overloading completion          [2-3 d]
  ║   └── Parser done; wire up compiler dispatch

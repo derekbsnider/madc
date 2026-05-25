@@ -6,7 +6,7 @@ Analysis performed 2026-05-24.
 
 | Feature | Status | Detail |
 |---------|--------|--------|
-| Classes | Basic | Members + methods work. No constructors/destructors/inheritance/virtual/access control |
+| Classes | Constructors | Members, methods, user-defined ctors/dtors with args. No inheritance/virtual/access control |
 | Templates | Hardcoded | vector/map/set/list for int64 and string only. No user-defined templates |
 | Operator overloading | Parser only | Syntax recognized, compiler has TODO placeholder |
 | References | Parameters | Non-numeric types pass by ref. No explicit `T&` syntax |
@@ -32,11 +32,77 @@ C++ features that real code needs are.
 ## Phase 1: Complete the Class Model (2-3 weeks)
 
 ### 1a. User-defined constructors & destructors (3-5 days)
-- Parse method with class name as constructor, `~ClassName()` as destructor
-- Auto-call constructor after stack allocation in `voperand()`
-- Auto-call destructor in `cleanup()`
-- Hidden `__this` mechanism already works
-- **Prerequisite for:** inheritance, new/delete, RAII
+
+**Existing infrastructure (do not rebuild):**
+- Hidden `__this` pointer — fully working (parser injects, compiler binds)
+- Method parsing/compilation — name mangling, `method_map`, `findMethod()`
+- Stack allocation — `TokenCpnd::voperand()` handles btClass via `cc.newStack()`
+- Placement-new pattern — `string_construct()` / `string_destruct()` for members
+- Cleanup dispatch — `TokenCpnd::cleanup()` walks scope, calls dtors per type
+- Deferred statements — `defer` runs LIFO before destructors
+
+**Implementation steps:**
+
+**Step 1 — Parse-time ctor/dtor recognition** (parser.cpp, datadef.h)
+- In `TokenCLASS::parse()`, when method name == class name: treat as
+  constructor. No return type required in source — internally `void`.
+- When method name is `~ClassName`: treat as destructor (also `void`).
+- Add `bool has_user_ctor` and `bool has_user_dtor` to `DataDefCLASS`.
+- Ctor/dtor are stored in `method_map` like any method. The flags are
+  just fast checks for `voperand()` / `cleanup()`.
+- Single mangled names: `ClassName__ClassName` (ctor),
+  `ClassName___dtor` (dtor). No Itanium C1/C2/D0/D1/D2 split needed
+  (no virtual inheritance).
+
+**Step 2 — Destructor calls at scope exit** (compiler.cpp `cleanup`)
+- In `cleanup()`, btClass default case: if `has_user_dtor`, look up
+  dtor in `method_map`, emit `invoke` with `__this` = object address.
+- Call user dtor *before* member cleanup (string_destruct etc.) —
+  matches C++ semantics (body runs first, then members in reverse).
+- **LIFO ordering problem:** `operand_map` is `std::map<Variable*,
+  Operand>` — ordered by pointer address, not declaration order.
+  Add a `std::vector<Variable*> destruct_order` to `TokenCpnd` that
+  records class-typed variables in declaration order. Walk it in
+  reverse during cleanup.
+
+**Step 3 — Constructor calls at object creation** (compiler.cpp `voperand`)
+- In `voperand()` btClass case, after stack alloc + member string init:
+  if `has_user_ctor`, look up ctor in `method_map`, emit `invoke` with
+  `__this` = LEA of stack slot.
+- Default ctor (no args) only in this step.
+
+**Step 4 — Constructor arguments at declaration** (parser.cpp `parseDeclaration`)
+- In `parseDeclaration()`, when a class-typed variable is followed by
+  `(`: parse as ctor arguments (not function-pointer syntax). No
+  most-vexing-parse ambiguity — madc forbids function declarations
+  inside function bodies.
+- Store parsed arg expressions on the declaration node (e.g., on
+  `TokenDecl` or a new `ctor_args` field).
+- In `voperand()`, pass the args when invoking the ctor.
+
+**Step 5 — Early return cleanup**
+- Verify `TokenRETURN::compile()` calls `cleanup()` for all return
+  paths. It already does for single-return; confirm multi-return and
+  void-return paths.
+- Duplicate dtor calls at each return point — fine for JIT, matches
+  GCC `-O0` behavior. No shared cleanup block needed.
+
+**Step 6 — Tests**
+- `testctor.mad` — default ctor/dtor, verify call order via prints
+- `testctorargs.mad` — ctor with arguments
+- `testctornested.mad` — class with string members + user ctor/dtor
+- `testctororder.mad` — multiple objects, verify LIFO destruction
+
+**Explicitly deferred (not in this phase):**
+- Copy constructors / copy assignment (`Foo a = b;`)
+- Move semantics
+- Temporary objects (`foo(Bar(1,2))`)
+- Member initializer lists (`: member(val)`)
+- `break` / `continue` / `goto` across scopes with dtors (loop exits)
+- Constructor overloading (multiple signatures)
+- Inheritance constructor chaining (Phase 2a)
+
+**Prerequisite for:** inheritance, new/delete, RAII, exception cleanup
 
 ### 1b. Operator overloading completion (2-3 days)
 - Compiler already has the TODO placeholder
