@@ -72,8 +72,14 @@ public:
     int line;
     int column;
     std::streampos pos;
-    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = NULL; parent = NULL; line = 0; column = 0; pos = 0; }
-    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = NULL; parent = NULL; line = 0; column = 0; pos = 0; }
+    // Current parse position — updated by nextToken(), inherited by
+    // all new tokens so synthetic parser-created tokens automatically
+    // get the position of the most recently consumed source token.
+    static const char *_parse_file;
+    static int _parse_line;
+    static int _parse_column;
+    TokenBase()           { _token = 0; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; }
+    TokenBase(int64_t t)  { _token = t; _datatype = &ddVOID; _flags = 0; file = _parse_file; parent = NULL; line = _parse_line; column = _parse_column; pos = 0; }
     virtual ~TokenBase() {}
     virtual TokenBase *clone() { return new TokenBase(_token); }
     virtual void set(int64_t c) { _token = c; }

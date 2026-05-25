@@ -39,6 +39,11 @@
 using namespace std;
 using namespace asmjit;
 
+// Static parse position — inherited by all new tokens automatically
+const char *TokenBase::_parse_file = NULL;
+int TokenBase::_parse_line = 0;
+int TokenBase::_parse_column = 0;
+
 static size_t find_struct_member_index(DataDefSTRUCT *sdd, const std::string &field_name);
 
 namespace madc {

@@ -1200,6 +1200,12 @@ public:
 	_cur_token = tokens.front();
 //	DBG(cout << "nextToken(" << (int)ret->type() << ", " << (int)ret->id() << ')' << endl);
 	tokens.pop_front();
+	// Update global parse position so newly created tokens inherit it
+	if ( _cur_token ) {
+	    TokenBase::_parse_file   = _cur_token->file;
+	    TokenBase::_parse_line   = _cur_token->line;
+	    TokenBase::_parse_column = _cur_token->column;
+	}
 	return _cur_token;
     }
     // parse tokens into AST
