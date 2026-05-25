@@ -1,0 +1,8 @@
+--- early return ---
+Guard 1 constructed
+Guard 1 destructed
+--- normal return ---
+Guard 1 constructed
+Guard 2 constructed
+Guard 2 destructed
+Guard 1 destructed
