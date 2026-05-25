@@ -13958,6 +13958,39 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // Only real array declarators (`char buf[] = "literal";`) should take the
     // char-array string-initializer path below.
 
+    // Constructor call syntax: ClassName var(arg1, arg2, ...);
+    // Only for user-defined classes with a constructor.
+    if ( nt->id() == TokenID::tkOpBrk && arr_dims.empty()
+      && decl_type->basetype() == BaseType::btClass )
+    {
+	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
+	if ( ddc->has_user_ctor )
+	{
+	    nextToken(); // consume '('
+	    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
+	    bool alloc = (!code || gotstatic) ? true : false;
+	    var = addVariable(code, *decl_type, id, 1, NULL, alloc);
+	    TokenDecl *td = new TokenDecl(*var);
+	    td->file = tb->file;
+	    td->line = tb->line;
+	    td->column = tb->column;
+	    // Parse constructor arguments
+	    while ( peekToken() && peekToken()->id() != TokenID::tkClBrk )
+	    {
+		TokenBase *arg = parseExpression(nextToken(), true);
+		td->ctor_args.push_back(arg);
+		if ( peekToken() && peekToken()->id() == TokenID::tkComma )
+		    nextToken(); // consume ','
+	    }
+	    if ( !peekToken() || peekToken()->id() != TokenID::tkClBrk )
+		Throw(tb) << "Expected ')' after constructor arguments" << flush;
+	    nextToken(); // consume ')'
+	    if ( peekToken() && peekToken()->id() == TokenID::tkSemi )
+		nextToken(); // consume ';'
+	    return td;
+	}
+    }
+
     // variable declaration
     if ( nt->id() == TokenID::tkSemi || nt->id() == TokenID::tkAssign
       || nt->id() == TokenID::tkComma )

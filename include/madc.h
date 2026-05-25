@@ -195,6 +195,7 @@ class TokenDecl: public TokenVar
 public:
     TokenBase *initialize;
     std::vector<TokenBase *> init_list; // brace-enclosed initializer for fixed-size arrays
+    std::vector<TokenBase *> ctor_args; // constructor arguments for class-typed vars
     bool has_brace_init;               // true when `= { ... }` syntax was used
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }

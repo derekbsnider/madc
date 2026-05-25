@@ -4592,7 +4592,67 @@ Operand &TokenDecl::compile(Program &pgm, regdefp_t &regdp)
     {
 	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(var.type);
 	if ( ddc->has_user_ctor || ddc->has_user_dtor )
-	    pgm.tkFunction->voperand(pgm, &var);
+	{
+	    Operand &obj_op = pgm.tkFunction->voperand(pgm, &var);
+	    // Call user-defined constructor
+	    if ( ddc->has_user_ctor )
+	    {
+		std::string ctor_name = ddc->name;
+		Variable *ctor_mvar = ddc->findMethod(ctor_name);
+		if ( ctor_mvar && ctor_mvar->data )
+		{
+		    FuncDef *ctor_func = (FuncDef *)((Method *)ctor_mvar->data)->returns.type;
+		    if ( ctor_func && ctor_func->funcnode )
+		    {
+			DBG(pgm.cc.comment("user constructor call"));
+			// Build function signature: void(this, arg1, arg2, ...)
+			FuncSignature funcsig;
+			funcsig.setCallConvId(CallConvId::kCDecl);
+			funcsig.setRetT<void>();
+			funcsig.addArgT<void *>(); // __this
+			// Compile constructor arguments and build params
+			std::vector<Operand> arg_ops;
+			for ( size_t i = 0; i < ctor_args.size(); ++i )
+			{
+			    regdefp_t arg_regdp = {NULL, NULL, NULL};
+			    Operand &arg_result = ctor_args[i]->compile(pgm, arg_regdp);
+			    // Determine the argument type from the ctor's FuncDef
+			    DataDef *arg_type = NULL;
+			    // +1 to skip __this parameter
+			    if ( i + 1 < ctor_func->parameters.size() )
+				arg_type = ctor_func->parameters[i + 1];
+			    add_funcsig_arg(funcsig, arg_type);
+			    arg_ops.push_back(arg_result);
+			}
+			// Emit the invoke
+			x86::Gp this_ptr = pgm.cc.newIntPtr("__ctor_this");
+			if ( obj_op.isMem() )
+			    pgm.cc.lea(this_ptr, obj_op.as<x86::Mem>());
+			else
+			    pgm.cc.mov(this_ptr, obj_op.as<x86::Gp>());
+			InvokeNode *call;
+			pgm.cc.invoke(&call, ctor_func->funcnode->label(), funcsig);
+			call->setArg(0, this_ptr);
+			for ( size_t i = 0; i < arg_ops.size(); ++i )
+			{
+			    if ( arg_ops[i].isReg() )
+			    {
+				if ( arg_ops[i].as<BaseReg>().isGroup(RegGroup::kVec) )
+				    call->setArg(i + 1, arg_ops[i].as<x86::Xmm>());
+				else
+				    call->setArg(i + 1, arg_ops[i].as<x86::Gp>());
+			    }
+			    else if ( arg_ops[i].isMem() )
+			    {
+				x86::Gp tmp = pgm.cc.newIntPtr("__ctor_arg");
+				pgm.cc.mov(tmp, arg_ops[i].as<x86::Mem>());
+				call->setArg(i + 1, tmp);
+			    }
+			}
+		    }
+		}
+	    }
+	}
     }
 
     // Top-level program declarations still need their initializer code emitted
@@ -7056,29 +7116,10 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 			    ofs += (ssize_t)m.second->size;
 			}
 		    }
-		    // Call user-defined constructor for class objects
+		    // Track class objects for LIFO destructor ordering
 		    if ( var->type->basetype() == BaseType::btClass )
 		    {
 			DataDefCLASS *ddc = static_cast<DataDefCLASS *>(var->type);
-			if ( ddc->has_user_ctor )
-			{
-			    std::string ctor_name = ddc->name;
-			    Variable *ctor_mvar = ddc->findMethod(ctor_name);
-			    if ( ctor_mvar && ctor_mvar->data )
-			    {
-				FuncDef *ctor_func = (FuncDef *)((Method *)ctor_mvar->data)->returns.type;
-				if ( ctor_func && ctor_func->funcnode )
-				{
-				    DBG(pgm.cc.comment("user constructor call"));
-				    x86::Gp this_ptr = pgm.cc.newIntPtr("__ctor_this");
-				    pgm.cc.lea(this_ptr, stack);
-				    InvokeNode *call;
-				    pgm.cc.invoke(&call, ctor_func->funcnode->label(),
-						  FuncSignature::build<void, void *>());
-				    call->setArg(0, this_ptr);
-				}
-			    }
-			}
 			if ( ddc->has_user_dtor )
 			    destruct_order.push_back(var);
 		    }
