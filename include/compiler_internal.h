@@ -65,6 +65,8 @@ void store_xmm_to_mem(Program &pgm, x86::Mem &mem, x86::Xmm &xmm,
 		       DataDef *type);
 void load_mem_to_gpq(Program &pgm, x86::Gp &gp, const x86::Mem &mem,
 		     DataDef *type);
+void load_mem_to_xmm(Program &pgm, x86::Xmm &xmm, const x86::Mem &mem,
+		     DataDef *type);
 
 // Type inference and type helpers
 DataDef *infer_numeric_type(TokenBase *left, TokenBase *right);
@@ -169,6 +171,105 @@ bool walk_ast(TokenBase *node, Pred pred)
     }
     return false;
 }
+
+// Shared types (used by both compiler.cpp and compiler_operators.cpp)
+struct IntegerPrecision {
+    bool valid;
+    bool bitfield_derived;
+    size_t bits;
+    bool is_unsigned;
+    IntegerPrecision()
+	: valid(false), bitfield_derived(false), bits(0), is_unsigned(false) {}
+    IntegerPrecision(size_t b, bool u, bool derived)
+	: valid(true), bitfield_derived(derived), bits(b), is_unsigned(u) {}
+};
+
+// Operator helpers shared with compiler.cpp (defined in compiler_operators.cpp)
+DataDef *token_numeric_type(TokenBase *token);
+IntegerPrecision promoted_bitfield_precision(const DataDefSTRUCT::BitFieldInfo &bf);
+IntegerPrecision binary_integer_precision(TokenBase *left, TokenBase *right,
+					  DataDef *result_type);
+bool is_arithmetic_result_operator(TokenBase *token);
+DataDef *choose_integer_type(TokenBase *left, DataDef *lt,
+			     TokenBase *right, DataDef *rt);
+DataDef *usual_binary_integer_type(TokenBase *left, DataDef *lt,
+				   TokenBase *right, DataDef *rt);
+DataDef *effective_pointer_type_for_arith(Program &pgm, TokenBase *tb);
+DataDef *complex_component_type(DataDef *dd);
+void splat_xmm_to_simd_xmm(Program &pgm, x86::Xmm &dst, x86::Xmm src,
+			    DataDefSIMD *vdd);
+void splat_scalar_to_simd(Program &pgm, x86::Xmm &dst,
+			  const IRValue &scalar, DataDefSIMD *vdd);
+Operand &compile_complex_compare_base(Program &pgm, TokenBase *expr,
+				      DataDef *expr_type, Operand &storage);
+x86::Mem complex_component_mem(Program &pgm, const Operand &base_op,
+			       DataDefCOMPLEX *cdd, bool imag,
+			       const char *name);
+x86::Mem large_simd_expr_mem(Program &pgm, TokenBase *expr,
+			     DataDefSIMD *vdd, const char *name);
+Operand &emit_complex_from_scalar(Program &pgm, Operand &scalar_op,
+				  DataDef *scalar_type,
+				  DataDef *complex_type, bool imag_value,
+				  regdefp_t &regdp, Operand &storage,
+				  const char *slot_name);
+
+// SIMD / init helpers (defined in compiler.cpp)
+bool is_large_simd_type(DataDef *type);
+void emit_zero_fill_region(Program &pgm, x86::Gp &base_reg,
+			   int32_t base_ofs, size_t total);
+void emit_simd_init(Program &pgm, x86::Gp &base_reg, int32_t base_ofs,
+		    DataDefSIMD *vdd, const std::vector<TokenBase *> &inits,
+		    TokenBase *err_loc);
+void load_idx_to_gpq(Program &pgm, x86::Gp &dst, Operand &src);
+
+// Shared utility helpers (defined in compiler.cpp)
+bool is_fixed_array_struct_member(TokenBase *tb);
+bool subscript_object_uses_inplace_storage(const Variable &object);
+DataDef *fixed_array_member_result_type(TokenMember *tm, size_t consumed_dims);
+DataDef *fixed_array_subscript_result_type(const Variable &object,
+					   size_t consumed_dims);
+size_t fixed_array_subscript_stride(const Variable &object,
+				    size_t consumed_dims);
+x86::Xmm newScalarXmm(Program &pgm, DataDef *dd, const char *name);
+void store_gp_to_var(Program &pgm, x86::Gp &src_gp, Operand &dst);
+void lea_var_to_gp(Program &pgm, Operand &src, x86::Gp &dst_gp);
+uint32_t scale_index_by_element_size(Program &pgm, x86::Gp &idx_reg,
+				     DataDef *elem_type, const char *name);
+x86::Gp materialize_gp_ptr_arg(Program &pgm, Operand &op, const char *name);
+x86::Gp emit_runtime_struct_size(Program &pgm, DataDefSTRUCT *sdd,
+				 const char *name);
+
+bool token_has_constant_cstring(TokenBase *token);
+
+// String helpers (defined in compiler.cpp / ns_common.cpp)
+const char *string_cstr(void *ptr);
+void string_assign(std::string &o, std::string &n);
+
+// Runtime complex helpers (defined in compiler.cpp)
+extern "C" void madc_runtime_complex_div_float(void *out,
+    float ar, float ai, float br, float bi);
+extern "C" void madc_runtime_complex_div_double(void *out,
+    double ar, double ai, double br, double bi);
+
+// Bitfield helpers (defined in compiler_operators.cpp)
+x86::Gp emit_bitfield_load(Program &pgm, x86::Mem storage,
+			   const DataDefSTRUCT::BitFieldInfo &bf,
+			   const char *hint);
+x86::Gp emit_bitfield_store_reg(Program &pgm, x86::Mem storage,
+				const DataDefSTRUCT::BitFieldInfo &bf,
+				x86::Gp value, const char *hint);
+x86::Gp emit_bitfield_store_operand(Program &pgm, x86::Mem storage,
+				    const DataDefSTRUCT::BitFieldInfo &bf,
+				    Operand &value, DataDef *value_type,
+				    DataDef *field_type, const char *hint);
+x86::Gp emit_bitfield_load_storage(Program &pgm, x86::Mem storage,
+				   const DataDefSTRUCT::BitFieldInfo &bf,
+				   const char *hint);
+void emit_bitfield_store_storage(Program &pgm, x86::Mem storage,
+				const DataDefSTRUCT::BitFieldInfo &bf,
+				x86::Gp merged);
+void emit_bitfield_sign_extend(Program &pgm, x86::Gp &value,
+			       const DataDefSTRUCT::BitFieldInfo &bf);
 
 // Runtime helpers (extern "C")
 extern "C" void *__madc_jmpbuf_for(void *user_buf);
