@@ -7936,7 +7936,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    TokenMember *tm_deref = dynamic_cast<TokenMember *>(deref_expr);
 			    if ( tm_deref && tm_deref->is_fixed_array_member() )
 			    {
-				exStack.push(new TokenDerefExpr(deref_expr, dtype));
+				TokenBase *_de = new TokenDerefExpr(deref_expr, dtype);
+				copy_token_location(_de, deref_tb);
+				exStack.push(_de);
 				break;
 			    }
 			    Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
@@ -7955,12 +7957,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				step = new TokenInc();
 			    else
 				step = new TokenDec();
+			    copy_token_location(step, step_tb);
 			    step->left = deref_expr;
 			    step->right = NULL;
-			    exStack.push(new TokenDerefExpr(step, base));
+			    TokenBase *_de = new TokenDerefExpr(step, base);
+			    copy_token_location(_de, deref_tb);
+			    exStack.push(_de);
 			    break;
 			}
-			exStack.push(new TokenDerefExpr(deref_expr, base));
+			{ TokenBase *_de = new TokenDerefExpr(deref_expr, base);
+			  copy_token_location(_de, deref_tb);
+			  exStack.push(_de); }
 			    }
 			    else
 			    {
@@ -8001,11 +8008,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    {
 					TokenBase *step_tb = nextToken();
 					TokenBase *step_expr = new TokenDerefStep(*dvar, base, step_tb->id() == TokenID::tkInc);
+					copy_token_location(step_expr, step_tb);
 					exStack.push(step_expr);
 					_cur_token = step_expr;
 				    }
 				    else
-					exStack.push(new TokenDeref(*dvar, base));
+				    {
+					TokenBase *_td = new TokenDeref(*dvar, base);
+					copy_token_location(_td, deref_tb);
+					exStack.push(_td);
+				    }
 				}
 			    else
 			    {
@@ -8055,9 +8067,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						TokenBase *step_tb = nextToken();
 						deref_expr = new TokenDerefStep(*var, base,
 						    step_tb->id() == TokenID::tkInc);
+						copy_token_location(deref_expr, step_tb);
 					    }
 					    else
+					    {
 						deref_expr = new TokenDeref(*var, base);
+						copy_token_location(deref_expr, operand_tb);
+					    }
 					}
 					else if ( operand_tb->id() == TokenID::tkOpBrk )
 					{
@@ -8081,6 +8097,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 					    DataDef *base = dptr ? dptr->base_type : &ddINT64;
 					    deref_expr = new TokenDerefExpr(deref_expr, base);
+					    copy_token_location(deref_expr, stars[si]);
 					}
 				    }
 				    else if ( inner_tb->id() == TokenID::tkOpBrk )
@@ -8113,12 +8130,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 						step = new TokenInc();
 					    else
 						step = new TokenDec();
+					    copy_token_location(step, step_tb);
 					    step->left = inner_expr;
 					    step->right = NULL;
 					    deref_expr = step;
 					}
 					else
+					{
 					    deref_expr = new TokenDerefExpr(inner_expr, inner_base);
+					    copy_token_location(deref_expr, inner_tb);
+					}
 				    }
 				    else if ( inner_tb->type() == TokenType::ttIdentifier
 					  && !(peekToken()
@@ -8145,9 +8166,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    TokenBase *step_tb = nextToken();
 					    deref_expr = new TokenDerefStep(*inner_var, inner_base,
 						step_tb->id() == TokenID::tkInc);
+					    copy_token_location(deref_expr, step_tb);
 					}
 					else
+					{
 					    deref_expr = new TokenDeref(*inner_var, inner_base);
+					    copy_token_location(deref_expr, inner_tb);
+					}
 				    }
 				    else
 					Throw(inner_tb) << "expecting pointer expression after '*'" << flush;
@@ -8213,9 +8238,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					step = new TokenInc();
 				    else
 					step = new TokenDec();
+				    copy_token_location(step, deref_tb);
 				    step->left = NULL;
 				    step->right = new TokenVar(*id_var);
+				    copy_token_location(step->right, id_tb);
 				    deref_expr = new TokenDerefExpr(step, base);
+				    copy_token_location(deref_expr, deref_tb);
 				    DataDef *dtype = id_var->type;
 				    if ( !dtype || !dtype->is_pointer() )
 					Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
@@ -8250,13 +8278,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					    step = new TokenInc();
 					else
 					    step = new TokenDec();
+					copy_token_location(step, step_tb);
 					step->left = inner_expr;
 					step->right = NULL;
-					exStack.push(new TokenDerefExpr(step, inner_base));
+					{ TokenBase *_de = new TokenDerefExpr(step, inner_base);
+					  copy_token_location(_de, deref_tb);
+					  exStack.push(_de); }
 					break;
 				    }
 				    else
+				    {
 					deref_expr = new TokenDerefExpr(inner_expr, inner_base);
+					copy_token_location(deref_expr, deref_tb);
+				    }
 				}
 				else
 				    deref_expr = parseExpression(deref_tb, true);
@@ -8278,7 +8312,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    TokenMember *tm_d = dynamic_cast<TokenMember *>(deref_expr);
 				    if ( tm_d && tm_d->is_fixed_array_member() )
 				    {
-					exStack.push(new TokenDerefExpr(deref_expr, dtype));
+					TokenBase *_de = new TokenDerefExpr(deref_expr, dtype);
+					copy_token_location(_de, deref_tb);
+					exStack.push(_de);
 					break;
 				    }
 				    // Multi-dim array subscripts decay to pointers:
@@ -8286,7 +8322,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				    TokenSubscript *ts_d = dynamic_cast<TokenSubscript *>(deref_expr);
 				    if ( ts_d && ts_d->object.is_fixed_array() )
 				    {
-					exStack.push(new TokenDerefExpr(deref_expr, dtype));
+					TokenBase *_de = new TokenDerefExpr(deref_expr, dtype);
+					copy_token_location(_de, deref_tb);
+					exStack.push(_de);
 					break;
 				    }
 				    // Also handle TokenSubscriptExpr from parsePostfixChain
@@ -8296,7 +8334,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					TokenVar *base_tv = dynamic_cast<TokenVar *>(tse_d->base_expr);
 					if ( base_tv && base_tv->var.is_fixed_array() )
 					{
-					    exStack.push(new TokenDerefExpr(deref_expr, dtype));
+					    TokenBase *_de = new TokenDerefExpr(deref_expr, dtype);
+					    copy_token_location(_de, deref_tb);
+					    exStack.push(_de);
 					    break;
 					}
 				    }
@@ -8304,7 +8344,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 				}
 				DataDefPTR *dptr = dynamic_cast<DataDefPTR *>(dtype);
 				DataDef *base = dptr ? dptr->base_type : &ddINT64;
-				exStack.push(new TokenDerefExpr(deref_expr, base));
+				{ TokenBase *_de = new TokenDerefExpr(deref_expr, base);
+				  copy_token_location(_de, deref_tb);
+				  exStack.push(_de); }
 				}
 			    }
 			    break;
