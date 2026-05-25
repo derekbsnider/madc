@@ -118,7 +118,7 @@ clean:
 test: $(TESTBINS)
 	@for t in $(TESTBINS); do echo "Running $$t..."; LD_LIBRARY_PATH="$(LIBDIR):/usr/local/lib:$$LD_LIBRARY_PATH" $$t || exit $$?; done
 
-fulltest: ../bin/madc test
+fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/run_tests.sh
 
 gcctest: ../bin/madc

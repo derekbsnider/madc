@@ -228,8 +228,11 @@ static int emit_function(Program &prog, const char *filepath, const char *funcna
     in.close();
 
     // Tokenize and parse to find functions.
-    // Skip #include processing so we can lex any C/C++ source.
-    prog.skip_includes = true;
+    // For non-.mad files (e.g. .cpp), skip #include processing so we
+    // can lex any C/C++ source without resolving system headers.
+    std::string fpath(filepath);
+    if ( fpath.size() < 4 || fpath.compare(fpath.size() - 4, 4, ".mad") != 0 )
+	prog.skip_includes = true;
     TokenProgram *tp = prog.tokenize(filepath);
     if ( !tp )
     {
