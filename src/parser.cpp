@@ -6335,6 +6335,7 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	    else if ( !handled_fixed_array && base_type && (base_type->is_pointer() || dynamic_cast<DataDefCArray *>(base_type) != NULL) )
 		elem_type = unwrap_subscript_element_type(base_type);
 	    result = new TokenSubscriptExpr(result, idx_expr, elem_type);
+	    copy_token_location(result, open);
 	    continue;
 	}
 	break;
@@ -6362,7 +6363,9 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
 	    dtype = inner_expr->datadef();
 	if ( !dtype || !dtype->is_pointer() )
 	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-	return new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
+	TokenBase *_t = new TokenDerefExpr(inner_expr, unwrap_subscript_element_type(dtype));
+	copy_token_location(_t, deref_tb);
+	return _t;
     }
 
     if ( deref_tb->type() != TokenType::ttIdentifier )
@@ -6395,10 +6398,18 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
 	{
 	    if ( TokenMember *tm = dynamic_cast<TokenMember *>(pointer_expr) )
 		if ( tm->is_fixed_array_member() )
-		    return new TokenDerefExpr(pointer_expr, dtype);
+		{
+		    TokenBase *_t = new TokenDerefExpr(pointer_expr, dtype);
+		    copy_token_location(_t, deref_tb);
+		    return _t;
+		}
 	    pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
 	}
-	return new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
+	{
+	TokenBase *_t = new TokenDerefExpr(pointer_expr, unwrap_subscript_element_type(dtype));
+	copy_token_location(_t, deref_tb);
+	return _t;
+	}
     }
 
     std::string name = ((TokenIdent *)deref_tb)->str;
@@ -6420,7 +6431,9 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
     DataDef *base = deref_type_for_variable(var);
     if ( !base )
 	pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
-    return new TokenDeref(*var, base);
+    TokenBase *_t = new TokenDeref(*var, base);
+    copy_token_location(_t, deref_tb);
+    return _t;
 }
 
 static TokenBase *parse_cast_function_call_operand(Program &pgm, TokenBase *head)
