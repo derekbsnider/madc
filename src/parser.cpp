@@ -6406,9 +6406,17 @@ static TokenBase *parse_cast_unary_deref_operand(Program &pgm, TokenBase *star)
     if ( !var )
 	pgm.Throw(deref_tb) << "undeclared identifier '" << name << "'" << flush;
     if ( var->type->is_function() && var->type->is_numeric() )
-	return new TokenVar(*var);
+    {
+	TokenVar *tv = new TokenVar(*var);
+	tv->file = deref_tb->file; tv->line = deref_tb->line; tv->column = deref_tb->column;
+	return tv;
+    }
     if ( dynamic_cast<DataDefFPTR *>(var->type) != NULL )
-	return new TokenVar(*var);
+    {
+	TokenVar *tv = new TokenVar(*var);
+	tv->file = deref_tb->file; tv->line = deref_tb->line; tv->column = deref_tb->column;
+	return tv;
+    }
     DataDef *base = deref_type_for_variable(var);
     if ( !base )
 	pgm.Throw(deref_tb) << "cannot dereference non-pointer type" << flush;
@@ -6654,7 +6662,11 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     if ( !avar )
 	Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
     if ( avar->type && avar->type->is_function() )
-	return new TokenVar(*avar);
+    {
+	TokenVar *tv = new TokenVar(*avar);
+	tv->file = addr_tb->file; tv->line = addr_tb->line; tv->column = addr_tb->column;
+	return tv;
+    }
     avar->flags |= vfADDRTAKEN;
     DataDefPTR *aptr = getPointerType(avar->type);
     return new TokenAddrOf(*avar, aptr);
