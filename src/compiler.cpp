@@ -6998,6 +6998,57 @@ void TokenSubscript::compile_set(Program &pgm, Operand &val_op, DataDef *val_typ
     // else: MadArray write not yet supported (no indexed set helper)
 }
 
+// Static dtor function pointers for built-in types (used by cleanup stack)
+static void *_dtor_string         = (void *)string_destruct;
+static void *_dtor_stringstream   = (void *)stringstream_destruct;
+static void *_dtor_ifstream       = (void *)ifstream_destruct;
+static void *_dtor_ofstream       = (void *)ofstream_destruct;
+static void *_dtor_fstream        = (void *)fstream_destruct;
+static void *_dtor_istream        = (void *)istream_destruct;
+static void *_dtor_ostream        = (void *)ostream_destruct;
+static void *_dtor_madarray       = (void *)madarray_destruct;
+static void *_dtor_vector_int     = (void *)vector_int_destruct;
+static void *_dtor_vector_str     = (void *)vector_str_destruct;
+static void *_dtor_map_str_int    = (void *)map_str_int_destruct;
+static void *_dtor_map_str_str    = (void *)map_str_str_destruct;
+static void *_dtor_set_int        = (void *)set_int_destruct;
+static void *_dtor_set_str        = (void *)set_str_destruct;
+static void *_dtor_list_int       = (void *)list_int_destruct;
+static void *_dtor_list_str       = (void *)list_str_destruct;
+
+// Emit a cleanup stack push for a built-in type destructor.
+// fn_indirect points to a static void* holding the destructor address.
+static void emit_builtin_cleanup_push(Program &pgm, TokenCpnd *func,
+				      Variable *var, x86::Gp &obj_reg,
+				      void **fn_indirect)
+{
+    x86::Compiler &cc = pgm.cc;
+    x86::Mem guard_slot = cc.newStack(1, 1);
+    guard_slot.setSize(1);
+    cc.mov(guard_slot, imm(1));
+    func->cleanup_guards[var] = guard_slot;
+
+    x86::Mem entry_slot = cc.newStack(CLEANUP_ENTRY_SIZE, CLEANUP_ENTRY_ALIGN);
+    x86::Gp entry_ptr = cc.newIntPtr("__cleanup_entry");
+    cc.lea(entry_ptr, entry_slot);
+
+    x86::Gp guard_ptr = cc.newIntPtr("__cleanup_guard");
+    cc.lea(guard_ptr, guard_slot);
+
+    x86::Gp fn_gp = cc.newIntPtr("__cleanup_fn");
+    cc.mov(fn_gp, imm((uintptr_t)fn_indirect));
+
+    DBG(cc.comment("exception cleanup: push builtin dtor entry"));
+    InvokeNode *push_call;
+    cc.invoke(&push_call, imm((void *)__madc_cleanup_push),
+	      FuncSignature::build<void, void *, void *, void *, void *, int>());
+    push_call->setArg(0, entry_ptr);
+    push_call->setArg(1, fn_gp);
+    push_call->setArg(2, obj_reg);
+    push_call->setArg(3, guard_ptr);
+    push_call->setArg(4, imm(1));
+}
+
 // Manage operands/registers for use on local as well as global variables
 Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 {
@@ -7340,6 +7391,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
                     InvokeNode* call; pgm.cc.invoke(&call, imm(string_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_string);
 		}
 		break;
 	    case DataType::dtSSTREAM:
@@ -7351,6 +7404,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
                     InvokeNode* call; pgm.cc.invoke(&call, imm(stringstream_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_stringstream);
 		}
 		break;
 	    case DataType::dtIFSTREAM:
@@ -7362,6 +7417,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
                     InvokeNode* call; pgm.cc.invoke(&call, imm(ifstream_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_ifstream);
 		}
 		break;
 	    case DataType::dtOFSTREAM:
@@ -7373,6 +7430,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
                     InvokeNode* call; pgm.cc.invoke(&call, imm(ofstream_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_ofstream);
 		}
 		break;
 	    case DataType::dtFSTREAM:
@@ -7384,6 +7443,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
                     InvokeNode* call; pgm.cc.invoke(&call, imm(fstream_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_fstream);
 		}
 		break;
 	    case DataType::dtARRAY:
@@ -7395,6 +7456,8 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
                     InvokeNode* call; pgm.cc.invoke(&call, imm(madarray_construct), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, &_dtor_madarray);
 		}
 		break;
 	    case DataType::dtVECTOR:
@@ -7409,6 +7472,12 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+		    {
+			void **dtor = vdd->element_type->is_string()
+			    ? &_dtor_vector_str : &_dtor_vector_int;
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, dtor);
+		    }
 		}
 		break;
 	    case DataType::dtMAP:
@@ -7422,6 +7491,12 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+		    {
+			void **dtor = mdd->val_type->is_string()
+			    ? &_dtor_map_str_str : &_dtor_map_str_int;
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, dtor);
+		    }
 		}
 		break;
 	    case DataType::dtSET:
@@ -7435,6 +7510,12 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+		    {
+			void **dtor = sdd->element_type->is_string()
+			    ? &_dtor_set_str : &_dtor_set_int;
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, dtor);
+		    }
 		}
 		break;
 	    case DataType::dtLIST:
@@ -7448,6 +7529,12 @@ Operand &TokenCpnd::voperand(Program &pgm, Variable *var)
 		    InvokeNode* call; pgm.cc.invoke(&call, imm(ctor), FuncSignature::build<void *, void *>());
 		    call->setArg(0, reg);
 		    operand_map[var] = reg;
+		    if ( pgm.try_depth > 0 )
+		    {
+			void **dtor = ldd->element_type->is_string()
+			    ? &_dtor_list_str : &_dtor_list_int;
+			emit_builtin_cleanup_push(pgm, pgm.tkFunction, var, reg, dtor);
+		    }
 		}
 		break;
 	    case DataType::dtISTREAM:
@@ -7762,6 +7849,22 @@ void TokenCpnd::cleanup(Program &pgm)
 	    {
 		Variable *var = rmi->first;
 
+		// Guard check: skip if already destroyed by exception unwinding
+		Label builtin_dtor_skip;
+		bool has_builtin_guard = false;
+		auto bgi = cleanup_guards.find(var);
+		if ( bgi != cleanup_guards.end() )
+		{
+		    has_builtin_guard = true;
+		    builtin_dtor_skip = cc.newLabel();
+		    x86::Gp gv = cc.newGpd("__bguard_chk");
+		    x86::Mem gm = bgi->second;
+		    gm.setSize(1);
+		    cc.movzx(gv, gm);
+		    cc.test(gv, gv);
+		    cc.je(builtin_dtor_skip);
+		}
+
 		switch(var->type->type())
 		{
 		    case DataType::dtSTRING:
@@ -7878,6 +7981,9 @@ void TokenCpnd::cleanup(Program &pgm)
 			    DBG(std::cerr << "Unable to handle stack variable: " << var->type->name << ' ' << var->name << " type: " << (int)var->type->type() << std::endl);
 			break;
 		} // switch
+
+		if ( has_builtin_guard )
+		    cc.bind(builtin_dtor_skip);
 	    }
 	}
     }
