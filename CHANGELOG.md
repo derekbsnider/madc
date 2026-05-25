@@ -2,6 +2,63 @@
 
 ## [Unreleased]
 
+## [v0.21.0] — 2026-05-25
+
+C++ class model: constructors, destructors, operators, references, new/delete,
+inheritance, vtables, exceptions with destructor unwinding, and generic extern
+class infrastructure.
+
+- **User-defined constructors and destructors.** `ClassName()` / `~ClassName()`
+  with LIFO destruction ordering, constructor arguments (`Foo f(1, 2)`),
+  and early-return destructor cleanup.
+
+- **Operator overloading.** `operator+`, `-`, `*`, `/`, `==`, `!=`, `<`, `>`,
+  `<=`, `>=` in class bodies. Generic `try_class_operator_dispatch()` handles
+  all 10 operators.
+
+- **References (`T&`).** `vfREFERENCE` flag (varflag_t widened to uint32_t),
+  auto-deref in `TokenVar::compile()` and `operand()`, LEA at call site for
+  pass-by-reference.
+
+- **`new` / `delete` operators.** `TokenNEW` (malloc + ctor + vtable) and
+  `TokenDELETE` (dtor + free). Arrow method calls (`ptr->method()`) for
+  heap-allocated class objects.
+
+- **Single inheritance.** `class Derived : public Base` with member layout
+  copy, method inheritance via `findMethod()` chain, automatic base ctor/dtor
+  chaining.
+
+- **Virtual functions and vtables.** `vtable_slots` vector, `virtual_methods`
+  map, 8-byte `__vptr` at offset 0, vtable filled after `cc.finalize()`,
+  indirect call dispatch in `TokenCallMethod::compile()`.
+
+- **Exception handling (SJLJ).** `try` / `catch(...)` / `catch(int e)` /
+  `throw` / `throw;` via setjmp/longjmp. Thread-local `MadcTryContext` linked
+  list and `MadcException` state. Typed catch value binding and rethrow.
+
+- **Destructor unwinding during exceptions (Phase B).** Runtime cleanup stack
+  (`MadcCleanupEntry` linked list) tracks destructible objects inside try
+  blocks. `__madc_throw_*` walks the cleanup stack calling destructors in LIFO
+  order before `longjmp`. Guard bytes prevent double-destruction. Inheritance
+  chains push base dtor entries so LIFO unwind calls derived first, then bases.
+
+- **Built-in type exception cleanup.** Strings, stringstreams, file streams,
+  MadArrays, vectors, maps, sets, and lists inside try blocks get cleanup
+  entries. All 11 built-in types are exception-safe.
+
+- **Generic extern class ctor/dtor infrastructure.** `DataDefCLASS` gains
+  `extern_ctor` / `extern_dtor` / `_dtor_ptr` fields and
+  `register_extern_ctor_dtor()`. Single generic code paths in `voperand()`
+  and `cleanup()` replace ~260 lines of per-type switch cases. Adding a new
+  libc C++ type requires only one registration call. Struct members with
+  registered types are auto-constructed/destructed.
+
+- **20 new integration tests.** Constructors, destructor order, constructor
+  args, early return, operator overloading, references, new/delete,
+  inheritance, virtual dispatch, basic exceptions, rethrow, and 8 exception
+  + destructor unwinding tests (basic, LIFO order, partial construction,
+  no-throw path, inheritance chain, nested try, rethrow, string cleanup).
+
 ## [v0.20.1] — 2026-05-25
 
 Code cleanup Phase A: compiler restructuring and tooling.

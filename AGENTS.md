@@ -58,41 +58,47 @@ agent must follow them without exception.
    the type originates. Shortcuts make for long delays.
    (`gcc-methodology.md`)
 
-3. **Think first, code second.** Form a hypothesis before editing.
+3. **Think twice, code once.** Form a hypothesis before editing.
    If it's wrong, stop and re-examine — don't chain speculative
    micro-fixes. One reasoned pass beats five iterative attempts.
    (`gcc-methodology.md`)
 
-4. **Do not cross layer boundaries.** Parsers parse, compilers emit
+4. **Understand what exists before assuming it doesn't.** Read the
+   relevant code before writing new code. If you think a feature,
+   helper, or handling path is missing — search first. The codebase
+   is large; something that looks absent is often already there under
+   a different name or in a different file. Reinventing existing
+   machinery creates duplication and divergence.
+   (`pre-edit-checklist.md`, `design-principles.md`)
+
+5. **Do not cross layer boundaries.** Parsers parse, compilers emit
    code, namespace files implement their own namespace. A fix that
    touches the wrong layer is a future bug. (`design-principles.md`)
 
-5. **`make -C src fulltest` after every change.** A change is not done
+6. **`make -C src fulltest` after every change.** A change is not done
    until the full test suite is green. No JIT-green-EXE-broken, no
    EXE-green-JIT-broken. (`testing-fulltest.md`)
 
-6. **No hard-coding specifics into general machinery.** Test runner:
+7. **No hard-coding specifics into general machinery.** Test runner:
    no per-test case branches. Parser: no string comparisons against
    user names. Use data lookups, type predicates, filename conventions.
    (`design-principles.md`)
 
-7. **Commit early; never clobber uncommitted work.** Feature branches
+8. **Commit early; never clobber uncommitted work.** Feature branches
    off `develop`. Keep `develop` stable. Never `git checkout` over
    uncommitted work — use `#ifdef` guards or `git stash`.
    (`branching.md`, `feature-guards.md`)
 
-8. **Bare rules in `.claude/rules/`, reasoning in `docs/rules/`.**
+9. **Bare rules in `.claude/rules/`, reasoning in `docs/rules/`.**
    Never duplicate content between the two. If a rules file needs to
    say "because", move that to the docs file. (`docs-vs-rules.md`)
 
-9. **Operator types are self-determined.** Arithmetic and bitwise
-   operators infer their own type from their operands. Callers must
-   NOT override signedness or width via `regdp.second`. Unsigned values
-   must zero-extend when widened. (`gcc-methodology.md`)
-
-10. **Scratch files go in `tmp/`.** Never create `*_tmp.*` files in
-    `tests/` or the repo root. `tmp/` is gitignored — nothing in it
-    is tracked. (`scratch-files.md`)
+10. **Pre-edit checklist: trace, search, identify.** Before modifying
+    any source file: trace the data flow for every variable the fix
+    touches, search the file for existing handling of the same pattern,
+    and identify where modified values are written back. If any check
+    reveals an unknown, read more code before editing.
+    (`pre-edit-checklist.md`)
 
 ## Shell command hygiene
 
@@ -259,7 +265,7 @@ no matter how small.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [design-principles.md](.claude/rules/design-principles.md) |  59 | Separation of concerns, high cohesion / low coupling, OOP, no hard-coding specifics into general machinery |
-| [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit |
+| [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit (Top 10 Rule #10) |
 | [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  10 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
 | [code-style.md](.claude/rules/code-style.md)     |     9 | C++11, tabs, header guards, naming             |

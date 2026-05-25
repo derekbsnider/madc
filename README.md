@@ -226,20 +226,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.20.1** (2026-05-25) — **Code cleanup Phase A.** compiler.cpp split from 15,835 to 8,330 lines across 4 files. Builtin dispatch table, AST walker template, `--emit-function` CLI tool, `TokenCpnd::end_line` tracking.
+**v0.21.0** (2026-05-25) — **C++ class model.** Constructors, destructors, operator overloading, references (T&), new/delete, single inheritance, virtual functions/vtables, SJLJ exception handling with destructor unwinding, and generic extern class ctor/dtor infrastructure. 472 tests, 0 failures.
 
 ### Recent Releases
 
+- **v0.21.0** — C++ class model: ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding
 - **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
 - **v0.20.0** — GCC parity 91.2% (1536/1685); std namespace cleanup, std::vector, overflow_p builtins
 - **v0.19.0** — GCC parity 89.3% (1505/1685); frame_address, stdio/string builtins
 - **v0.18.0** — GCC parity 88.8% (1496/1685); _Complex arithmetic, IEEE FP, bitfield promotions, auto-include headers
-- **v0.17.0** — GCC parity 78.1% (1316/1685); nested cast chains, empty brace-init, `f().member`, `#pragma push/pop_macro`
-- **v0.16.0** — sizeof(int)=4 LP64 ABI alignment; GCC torture suite 75% (1264/1685); float init, overflow builtins, ternary const-expr, C23 attributes
-- **v0.15.0** — GCC torture test parity: 627 → 1245 (37% → 74%); comma operator, full #if evaluator, scientific notation, mixed arithmetic promotion, K&R functions, 50+ builtins
-- **v0.14.1** — SMAUG native EXEs survive the first real combat path; small struct returns follow SysV x86-64 ABI
-- **v0.13.0** — SMAUG plays end-to-end on madc; octal/hex escapes, scanf widening, stat sign-ext
-- **v0.12.0** — SMAUG Phase F front-edge wave: 13 parser/lexer/compiler fixes
 
 ## Roadmap
 
@@ -256,6 +251,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | **SMAUG E** | Fixed arrays, brace init, struct/array-of-struct init, chained member access, struct tm/timeval/fd_set, select() | **Complete** (v0.8.0) |
 | **SMAUG F** | Language gaps surfaced by porting SMAUG 1.8. Port itself lives in [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) | **Complete** (v0.13.0 — playable end-to-end) |
 | **GCC Parity** | GCC torture test suite compatibility | **v0.20.0** — 1536/1685 (91.2%); std namespace cleanup, std::vector |
+| **C++ Model** | Classes, inheritance, vtables, exceptions | **v0.21.0** — ctors/dtors, operators, refs, new/delete, inheritance, vtables, SJLJ exceptions + unwinding |
 | **Phase 4** | `libmadc.so` embedding API | **In progress** — §4.1 state split + structured diagnostics + engine-owned IO + full logging stack landed; §4.2 now ships `madc::value` and `madc::error` at `include/libmadc/` |
 
 ---

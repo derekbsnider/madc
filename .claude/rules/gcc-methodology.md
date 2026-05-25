@@ -34,7 +34,7 @@
 - Unsigned operands must zero-extend when widened, never sign-extend. If
   `is_unsigned()` is true, use `mov r32, r32` (not `movsxd`).
 
-## Think first, code second
+## Think twice, code once
 
 - Form a hypothesis about the root cause before editing any file.
 - If the first hypothesis is wrong, stop and re-examine — don't chain
