@@ -226,7 +226,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.21.0** (2026-05-25) — **C++ class model.** Constructors, destructors, operator overloading, references (T&), new/delete, single inheritance, virtual functions/vtables, SJLJ exception handling with destructor unwinding, and generic extern class ctor/dtor infrastructure. 472 tests, 0 failures.
+**v0.21.0** (2026-05-25) — **C++ class model.** Constructors, destructors, operator overloading, references (T&), new/delete, single inheritance, virtual functions/vtables, SJLJ exception handling with destructor unwinding, generic extern class ctor/dtor infrastructure, const enforcement, access control, auto token position. 475 tests, 0 failures.
 
 ### Recent Releases
 

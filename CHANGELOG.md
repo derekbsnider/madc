@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+- **Top-level `const` enforcement.** `const int x = 5; x = 10;` is now a
+  compile error. All 12 mutating operators (`=`, `++`, `--`, `+=`, `-=`,
+  `*=`, `/=`, `%=`, `<<=`, `>>=`, `&=`, `|=`, `^=`) are checked.
+  Correctly distinguishes top-level const (`const int x`) from low-level
+  const (`const char *p` — pointer can still change).
+
+- **`const T&` parameter enforcement.** `void f(const int &x) { x = 5; }`
+  is now a compile error.
+
+- **`public:`/`private:`/`protected:` access control.** Class members and
+  methods respect access specifiers. Private/protected members are rejected
+  at compile time when accessed from outside the class.
+
+- **Automatic token position inheritance.** Every token created during
+  parsing automatically inherits file/line/column from the most recently
+  consumed source token. Eliminates 0:0 positions in error messages and
+  prepares for IDE features (hover, go-to-definition, syntax highlighting).
+
 ## [v0.21.0] — 2026-05-25
 
 C++ class model: constructors, destructors, operators, references, new/delete,
