@@ -23,7 +23,7 @@ Master plan linking all workstreams. Updated 2026-05-25.
 |-------|------|--------|--------|------|
 | 1.1 | C foundation (GCC parity) | — | **DONE** 97.9% | — |
 | 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | **DONE** (v0.20.1) | [code-cleanup.md](code-cleanup.md) |
-| 1.3 | Typed-register IR — stages 0-3 | 4-6 wk | Draft | [typed-register-ir.md](typed-register-ir.md) |
+| 1.3 | Typed-register IR + MIR backend — token migration then asmjit→MIR swap | 10-14 wk | **Active** (Stage 0 done) | [typed-register-ir.md](typed-register-ir.md) |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 

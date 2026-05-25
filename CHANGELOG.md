@@ -20,6 +20,14 @@
   consumed source token. Eliminates 0:0 positions in error messages and
   prepares for IDE features (hover, go-to-definition, syntax highlighting).
 
+- **JIT IR architecture research and MIR backend plan.** Cross-referenced
+  V8, HotSpot, LuaJIT, MIR, dstogov/ir, RyuJIT, PyPy, Julia, Cranelift,
+  TPDE, GCC, and LLVM. Decision: adopt MIR (MIT, ~16K lines C) as
+  optimizing backend, replacing asmjit for codegen. 12 optimization passes,
+  91% of GCC -O2 quality, 5 architectures, 66% smaller binary. Plan at
+  `docs/plans/typed-register-ir.md`, research at
+  `docs/research/jit-ir-design-2026.md`.
+
 ## [v0.21.0] — 2026-05-25
 
 C++ class model: constructors, destructors, operators, references, new/delete,
