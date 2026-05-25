@@ -1,0 +1,28 @@
+#!/usr/bin/env madc
+#include <stdio.h>
+
+void increment(int &x)
+{
+	x = x + 1;
+}
+
+void do_swap(int &a, int &b)
+{
+	int tmp = a;
+	a = b;
+	b = tmp;
+}
+
+int main()
+{
+	int x = 10;
+	increment(x);
+	printf("x = %d\n", x);
+
+	int a = 1;
+	int b = 2;
+	do_swap(a, b);
+	printf("a = %d, b = %d\n", a, b);
+
+	return 0;
+}

@@ -53,7 +53,7 @@ enum class DataType : uint16_t {
 };
 
 // Variable flags
-typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
+typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			  vfSTACK	=    2, // stack vs heap
 			  vfSTATIC	=    4, // static variable
 			  vfPARAM	=    8, // parameter variable
@@ -69,6 +69,7 @@ typedef enum : uint16_t { vfLOCAL	=    1, // local vs global
 			  vfPROTECTED	= 8192, // variable is a protected class member
 			  vfADDRTAKEN	=16384, // variable needs stable stack storage for &
 			  vfEXTERN	=32768, // extern declaration placeholder
+			  vfREFERENCE	=65536, // reference parameter (T&): auto-deref on access
 			} varflag_t;
 
 #define rtNone(x) 0

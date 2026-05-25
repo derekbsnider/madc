@@ -62,6 +62,8 @@ public:
     std::vector<CaptureEntry> captures;         // populated during lambda body compilation
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
+    // reference parameter tracking: ref_params[i] == true when parameter i is T&
+    std::vector<bool> ref_params;
     FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false) { funcnode = NULL; }
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }

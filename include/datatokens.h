@@ -59,7 +59,7 @@ public:
     size_t aot_data_offset;
     size_t aot_cstr_offset;
     uint32_t count;
-    uint16_t flags;
+    uint32_t flags;
     std::string storage_alias_name;
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
     int64_t object_size_hint;

@@ -12962,21 +12962,33 @@ paramdecl:
 		if ( rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING )
 		{
 		    func->parameters.push_back(&ddSTRINGref);
+		    func->ref_params.push_back(true);
 		    scope_param_type = &ddSTRINGref;
+		}
+		else if ( rtype == RefType::rtReference )
+		{
+		    // Numeric reference: pass as pointer, mark vfREFERENCE for auto-deref
+		    DataDef *ref_ptr = getPointerType(&pb->definition);
+		    func->parameters.push_back(ref_ptr);
+		    func->ref_params.push_back(true);
+		    scope_param_type = ref_ptr;
 		}
 		else if ( rtype == RefType::rtPointer )
 		{
 		    func->parameters.push_back(param_dd);
+		    func->ref_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
 		else if ( dynamic_cast<DataDefFPTR *>(param_dd) != NULL )
 		{
 		    func->parameters.push_back(param_dd);
+		    func->ref_params.push_back(false);
 		    scope_param_type = param_dd;
 		}
 		else
 		{
 		    func->parameters.push_back(&pb->definition);
+		    func->ref_params.push_back(false);
 		    scope_param_type = &pb->definition;
 		}
 		DBG(std::cout << "Added new parameter declaration type: " << dd.name << " size: "
@@ -12991,6 +13003,9 @@ paramdecl:
 	    {
 		Variable *scope_param = new Variable(pid, *scope_param_type, 1, NULL, false);
 		scope_param->flags |= vfPARAM | vfLOCAL;
+		if ( rtype == RefType::rtReference
+		  && pb->definition.rawtype() != DataType::dtSTRING )
+		    scope_param->flags |= vfREFERENCE;
 		temp_param_method.parameters.push_back(scope_param);
 	    }
 	    if ( nt->id() == TokenID::tkClBrk )
@@ -13175,6 +13190,8 @@ paramdecl:
 	DBG(cout << "parseFunction() adding parameter variable " << pname << endl);
 	v = new Variable(pname, *d, 1, NULL, false);
 	v->flags |= vfPARAM | vfLOCAL;
+	if ( (size_t)i < func->ref_params.size() && func->ref_params[i] )
+	    v->flags |= vfREFERENCE;
 	std::map<std::string, TokenBase *>::iterator pvsi = param_vla_side_effects.find(pname);
 	if ( pvsi != param_vla_side_effects.end() )
 	    v->param_vla_side_effect_expr = pvsi->second;

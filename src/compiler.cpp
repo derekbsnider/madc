@@ -3540,12 +3540,49 @@ Operand &TokenCallFunc::compile(Program &pgm, regdefp_t &regdp)
 	Operand arg_storage;
 
 	DBG(pgm.cc.comment("TokenCallFunc::argc param"));
+	// Reference parameter: pass address instead of value
+	bool is_ref_param = pi < func->ref_params.size() && func->ref_params[pi];
+	if ( is_ref_param )
+	{
+	    // Get the storage location of the argument, then LEA
+	    x86::Gp addr = pgm.cc.newIntPtr("__ref_arg");
+	    TokenVar *tv = dynamic_cast<TokenVar *>(tn);
+	    if ( tv )
+	    {
+		// Variable argument: get its operand (Mem or Gp) and LEA
+		Operand &var_op = tv->operand(pgm);
+		if ( var_op.isMem() )
+		    pgm.cc.lea(addr, var_op.as<x86::Mem>());
+		else
+		    pgm.cc.mov(addr, var_op.as<x86::Gp>());
+	    }
+	    else
+	    {
+		// Expression argument: compile, spill to stack, then LEA
+		regdefp_t ref_rdp = {NULL, NULL, NULL};
+		Operand &ref_val = tn->compile(pgm, ref_rdp);
+		if ( ref_val.isMem() )
+		    pgm.cc.lea(addr, ref_val.as<x86::Mem>());
+		else
+		{
+		    x86::Mem spill = pgm.cc.newStack(8, 8);
+		    if ( ref_val.isReg() )
+			pgm.cc.mov(spill, ref_val.as<x86::Gp>());
+		    pgm.cc.lea(addr, spill);
+		}
+	    }
+	    arg_type = ptype;
+	    append_call_param(params, funcsig, addr, arg_type);
+	}
+	else
+	{
 	Operand &tnreg = compile_call_arg_normalized(pgm, tn, ptype, is_variadic, arg_storage, arg_type);
 	validate_call_arg_type(pgm, tn, ptype, arg_type, tnreg);
 	DBG(pgm.cc.comment("TokenCallFunc::compile() params.push_back(tnreg)"));
 	// could probably use a tv->var.addArgT(funcsig) method
 	DBG(pgm.cc.comment(ptype->name.c_str() /*arg_type->name.c_str()*/));
 	append_call_param(params, funcsig, tnreg, arg_type);
+	}
 	if ( arg_type->type() == DataType::dtDOUBLE )
 	    DBG(pgm.cc.comment("addArgT<double>()"));
     }
@@ -5529,7 +5566,20 @@ Operand &TokenReal::operand(Program &pgm)
 // variable needs special handling
 Operand &TokenVar::operand(Program &pgm)
 {
-    return pgm.tkFunction->voperand(pgm, &var);
+    Operand &op = pgm.tkFunction->voperand(pgm, &var);
+    // Reference parameter: auto-dereference for assignment destinations
+    if ( (var.flags & vfREFERENCE) && op.isReg()
+      && op.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	DataDef *base_type = var.type->is_pointer()
+	    ? static_cast<DataDefPTR *>(var.type)->base_type : var.type;
+	uint32_t sz = (uint32_t)base_type->size;
+	if ( sz == 0 ) sz = 8;
+	_operand = x86::ptr(op.as<x86::Gp>(), 0, sz);
+	_datatype = base_type;
+	return _operand;
+    }
+    return op;
 }
 
 // variable also needs to be able to write the register back to variable
@@ -7745,6 +7795,24 @@ Operand &TokenVar::compile(Program &pgm, regdefp_t &regdp)
 
     DBG(pgm.cc.comment("TokenVar::compile() reg = operand()"));
     Operand &reg = operand(pgm);
+
+    // Reference parameter: auto-dereference — return Mem through the pointer
+    if ( (var.flags & vfREFERENCE) && reg.isReg()
+      && reg.as<BaseReg>().isGroup(RegGroup::kGp) )
+    {
+	DBG(pgm.cc.comment("TokenVar::compile() reference auto-deref"));
+	DataDef *base_type = var.type->is_pointer()
+	    ? static_cast<DataDefPTR *>(var.type)->base_type : var.type;
+	uint32_t sz = (uint32_t)base_type->size;
+	if ( sz == 0 ) sz = 8;
+	x86::Mem deref = x86::ptr(reg.as<x86::Gp>(), 0, sz);
+	_operand = deref;
+	// Override datatype so downstream code sees the base type, not the pointer
+	_datatype = base_type;
+	regdp.second = base_type;
+	regdp.first = &_operand;
+	return _operand;
+    }
 
     if ( var.is_fixed_array() && (reg.isReg() || reg.isMem()) )
     {
