@@ -8775,14 +8775,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    bool is_compound_lit_lhs = (dynamic_cast<TokenStructLit *>(lhs_dot) != NULL);
 		    bool is_stmt_expr_lhs = (lhs_dot->type() == TokenType::ttCompound);
 		    bool is_callfunc_lhs = (lhs_dot->type() == TokenType::ttCallFunc);
+		    {
+		    TokenMember *_tm;
 		    if ( is_derefexpr_lhs || is_compound_lit_lhs || is_stmt_expr_lhs || is_callfunc_lhs )
-			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
+			_tm = new TokenMember(*tv_var, *var, ofs, lhs_dot);
 		    else if ( !is_deref_lhs
 		      && (lhs_dot->type() == TokenType::ttMember
 		       || lhs_dot->type() == TokenType::ttSubscript) )
-			exStack.push(new TokenMember(*tv_var, *var, ofs, lhs_dot));
+			_tm = new TokenMember(*tv_var, *var, ofs, lhs_dot);
 		    else
-			exStack.push(new TokenMember(*tv_var, *var, ofs));
+			_tm = new TokenMember(*tv_var, *var, ofs);
+		    _tm->file = tb->file; _tm->line = tb->line; _tm->column = tb->column;
+		    exStack.push(_tm);
+		    }
 		    // remove TokenDot from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDot )
 			opStack.pop();
@@ -8895,10 +8900,15 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    exStack.pop();
 		    // for chained -> (lhs was a TokenMember), pass it as parent_expr so
 		    // operand() can compile the intermediate pointer at codegen time
+		    {
+		    TokenMember *_tm;
 		    if ( lhs->type() == TokenType::ttMember || expr_backed_lhs )
-			exStack.push(new TokenMember(*obj_var, *var, ofs, lhs));
+			_tm = new TokenMember(*obj_var, *var, ofs, lhs);
 		    else
-			exStack.push(new TokenMember(*obj_var, *var, ofs));
+			_tm = new TokenMember(*obj_var, *var, ofs);
+		    _tm->file = tb->file; _tm->line = tb->line; _tm->column = tb->column;
+		    exStack.push(_tm);
+		    }
 		    // remove TokenDeRef from opStack
 		    if ( !opStack.empty() && opStack.top()->id() == TokenID::tkDeRef )
 			opStack.pop();
@@ -8968,7 +8978,9 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( thisvar )
 			{
 			    Variable *member = new Variable(mname, *mtype, 1, NULL, false);
-			    exStack.push(new TokenMember(*thisvar, *member, ofs));
+			    TokenMember *_tm = new TokenMember(*thisvar, *member, ofs);
+			    _tm->file = tb->file; _tm->line = tb->line; _tm->column = tb->column;
+			    exStack.push(_tm);
 			    break;
 			}
 		    }
