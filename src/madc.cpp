@@ -208,6 +208,103 @@ static void install_resource_guards(void)
     }
 }
 
+// --emit-function: extract a complete function by name from a source file.
+// Tokenizes and parses to find the function definition, then uses the
+// token's line position to locate the function in the original source
+// and emits it verbatim (including preceding comment block).
+static int emit_function(Program &prog, const char *filepath, const char *funcname)
+{
+    // Read original source lines for verbatim output
+    std::ifstream in(filepath);
+    if ( !in )
+    {
+	std::cerr << "Cannot open " << filepath << std::endl;
+	return 1;
+    }
+    std::vector<std::string> lines;
+    std::string line;
+    while ( std::getline(in, line) )
+	lines.push_back(line);
+    in.close();
+
+    // Tokenize and parse to find functions.
+    // Skip #include processing so we can lex any C/C++ source.
+    prog.skip_includes = true;
+    TokenProgram *tp = prog.tokenize(filepath);
+    if ( !tp )
+    {
+	std::cerr << "Failed to tokenize " << filepath << std::endl;
+	return 1;
+    }
+    // Parse to register function names. Parse errors are non-fatal
+    // here — we just need enough to find the function definition.
+    prog.parse(tp);
+
+    // Search pending_funcs for a match
+    std::string target(funcname);
+    TokenFunc *found = NULL;
+    for ( TokenBase *tb : prog.pending_funcs )
+    {
+	TokenFunc *tf = dynamic_cast<TokenFunc *>(tb);
+	if ( !tf ) continue;
+	if ( tf->var.name == target )
+	{
+	    found = tf;
+	    break;
+	}
+    }
+    if ( !found )
+    {
+	std::cerr << "Function '" << funcname << "' not found in "
+		  << filepath << std::endl;
+	return 1;
+    }
+
+    // Token lines are 1-based; convert to 0-based index
+    int func_line = found->line - 1;
+    int end = found->end_line - 1;
+    if ( func_line < 0 || (size_t)func_line >= lines.size()
+      || end < func_line || (size_t)end >= lines.size() )
+    {
+	std::cerr << "Function '" << funcname << "' line range "
+		  << found->line << "-" << found->end_line
+		  << " out of range" << std::endl;
+	return 1;
+    }
+
+    // Walk backwards from func_line to include preceding comment block
+    int start = func_line;
+    while ( start > 0 )
+    {
+	const std::string &prev = lines[start - 1];
+	size_t first = prev.find_first_not_of(" \t");
+	if ( first != std::string::npos && prev.compare(first, 2, "//") == 0 )
+	    --start;
+	else if ( prev.empty() || first == std::string::npos )
+	{
+	    if ( start > 1 )
+	    {
+		const std::string &prev2 = lines[start - 2];
+		size_t f2 = prev2.find_first_not_of(" \t");
+		if ( f2 != std::string::npos && prev2.compare(f2, 2, "//") == 0 )
+		    --start;
+		else
+		    break;
+	    }
+	    else
+		break;
+	}
+	else
+	    break;
+    }
+
+    // Emit the function verbatim
+    for ( int j = start; j <= end; ++j )
+	std::cout << lines[j] << '\n';
+
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     install_crash_handler();
@@ -223,6 +320,7 @@ int main(int argc, char **argv)
     int filearg = 1;
     const char *emit_object_path = NULL;
     const char *emit_executable_path = NULL;
+    const char *emit_function_name = NULL;
     bool emit_pch = false;
 
     for (int i = 1; i < argc; i++) {
@@ -252,6 +350,9 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-pch") == 0) {
             emit_pch = true;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-function") == 0 && i + 1 < argc) {
+            emit_function_name = argv[++i];
             filearg = i + 1;
         } else if (strcmp(argv[i], "--finstrument-functions") == 0) {
             prog->instrument_functions = true;
@@ -324,6 +425,10 @@ int main(int argc, char **argv)
 	    return 1;
 	}
     }
+
+    // --emit-function: tokenize+parse, find function, emit source lines
+    if ( emit_function_name && filearg < argc )
+	return emit_function(*prog, argv[filearg], emit_function_name);
 
     if ( argc >= 2 && filearg < argc )
     {

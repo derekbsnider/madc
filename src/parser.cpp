@@ -3856,6 +3856,7 @@ Program::Program()
       colors(false),
       aot_tracking(false),
       instrument_functions(false),
+      skip_includes(false),
       root_fn(NULL)
 {
 }
@@ -3880,6 +3881,7 @@ Program::Program(MadcEngine *eng)
       colors(false),
       aot_tracking(false),
       instrument_functions(false),
+      skip_includes(false),
       root_fn(NULL)
 {
     attach_engine(eng);
@@ -12159,6 +12161,7 @@ TokenBase *Program::parseCompound()
     {
 	if ( tb->id() == TokenID::tkClBrc )
 	{
+	    code->end_line = tb->line;
 	    popCompound();
 	    DBG(std::cout << "parseCompound() ends" << std::endl);
 	    return code;
@@ -13103,6 +13106,23 @@ paramdecl:
     }
 
     TokenFunc *tf = new TokenFunc(*var);
+    // Capture the function declaration's source position before
+    // parseCompound overwrites it.  The previous token is the `{`
+    // which sits on the declaration line (or the line after the
+    // signature for multi-line declarations).
+    if ( _prv_token && _prv_token->file && _prv_token->line > 0 )
+    {
+	tf->file = _prv_token->file;
+	tf->line = _prv_token->line;
+	tf->column = 0;
+    }
+    else if ( source.line() > 0 )
+    {
+	tf->file = source.fname();
+	tf->line = source.line();
+	tf->column = 0;
+    }
+    int decl_line = tf->line;
     DBG(cout << "parseFunction() calling parseCompound()" << endl);
     TokenCpnd *tc = dynamic_cast<TokenCpnd *>(parseCompound());
 
@@ -13111,18 +13131,22 @@ paramdecl:
     tf->variables = tc->variables;
     tf->statements = tc->statements;
     tf->deferred = tc->deferred;
-    // Walk statements to find one with real file/line info — the first
-    // statement isn't always a body statement (parser sometimes hangs
-    // initializer-shaped tokens off the front whose file pointer
-    // belongs to the enclosing init context, not the function body).
-    for ( auto *st : tf->statements )
+    tf->end_line = tc->end_line;
+    // Preserve the declaration line — don't let the statement-walk
+    // overwrite it. For error reporting on the body, use statement
+    // positions; for function-level diagnostics and --emit-function,
+    // keep the declaration line.
+    if ( !tf->file || tf->line <= 0 )
     {
-	if ( st && st->file && st->line > 0 )
+	for ( auto *st : tf->statements )
 	{
-	    tf->file = st->file;
-	    tf->line = st->line;
-	    tf->column = st->column;
-	    break;
+	    if ( st && st->file && st->line > 0 )
+	    {
+		tf->file = st->file;
+		tf->line = st->line;
+		tf->column = st->column;
+		break;
+	    }
 	}
     }
 
@@ -13278,6 +13302,7 @@ TokenBase *Program::parseLambda()
     tf->variables = tc->variables;
     tf->statements = tc->statements;
     tf->deferred = tc->deferred;
+    tf->end_line = tc->end_line;
 
     // push the lambda as a top-level function in the AST
     // It will be compiled before the enclosing function since

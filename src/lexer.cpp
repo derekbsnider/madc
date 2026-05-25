@@ -1493,6 +1493,14 @@ TokenBase *Program::_getToken()
 		    directive += source.get();
 		if ( directive == "include" )
 		{
+		    // skip_includes mode: consume rest of line and continue
+		    if ( skip_includes )
+		    {
+			while ( source.good() && !source.eof()
+			     && source.peek() != '\n' && source.peek() != '\r' )
+			    source.get();
+			return getToken();
+		    }
 		    // skip whitespace
 		    while ( source.peek() == ' ' || source.peek() == '\t' )
 			source.get();

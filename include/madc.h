@@ -143,11 +143,12 @@ public:
     asmjit::BaseNode *prologue_cursor;
     // Stack bump-pool for alloca/VLA. Lazily initialized on first use.
     // Cursor lives in a stack slot (not register) so it survives longjmp.
+    int end_line;			// line of closing } (set by parseCompound)
     bool has_alloca_pool;
     asmjit::x86::Mem alloca_cursor_slot;     // stack slot: current bump position
     asmjit::x86::Mem alloca_pool_end_slot;   // stack slot: pool end (overflow check)
     std::map<Variable *, asmjit::x86::Mem> vla_cursor_saves; // per-VLA saved cursor
-    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; prologue_cursor = NULL; has_alloca_pool = false; }
+    TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; prologue_cursor = NULL; end_line = 0; has_alloca_pool = false; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     asmjit::Operand &voperand(Program &, Variable *);
     void movreg(Program &, asmjit::Operand &, Variable *);
@@ -976,6 +977,7 @@ public:
     bool colors;
     bool aot_tracking;
     bool instrument_functions;
+    bool skip_includes;		// --emit-function: lex without processing #include
     struct AotDataRef {
 	uint32_t label_id;
 	uintptr_t address;
