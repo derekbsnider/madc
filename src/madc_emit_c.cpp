@@ -798,6 +798,9 @@ class CEmitter
     {
 	if (!node) return "0";
 	if (node->type == GP_NIL) return "0";
+	// GLR ambiguity — use first alternative
+	if (node->type == GP_ALT) return emit_expr(node->val.alt.first);
+	if (node->type == GP_OPT) return emit_expr(node->val.opt.first);
 
 	// Terminal: literal or identifier
 	if (node->type == GP_TERM) {
@@ -909,7 +912,10 @@ class CEmitter
 	// Function call
 	if (an == AN_CALL) {
 	    gp_tree_node *callee = child(node, 0);
-	    std::string args = emit_arg_list(child(node, 1));
+	    // Namespace calls (call(ns_name(...), args)): don't coerce strings
+	    bool is_ns = is_an(callee, AN_NS_NAME);
+	    std::string args = is_ns ? emit_arg_list_raw(child(node, 1))
+				     : emit_arg_list(child(node, 1));
 
 	    // Handle method calls: call(member(obj, method), args)
 	    if (is_an(callee, AN_MEMBER) || is_an(callee, AN_ARROW_MEMBER)) {
@@ -976,7 +982,7 @@ class CEmitter
 	if (an == AN_NS_CALL) {
 	    std::string ns = term_text(child(node, 0));
 	    std::string func = term_text(child(node, 1));
-	    std::string args = emit_arg_list(child(node, 2));
+	    std::string args = emit_arg_list_raw(child(node, 2));  // no coerce — ns funcs take std::string*
 	    std::string mangled = "__" + ns_prefix(ns) + "_" + func;
 	    ns_funcs_used.insert(mangled);
 	    return mangled + "(" + args + ")";
@@ -1030,14 +1036,54 @@ class CEmitter
     }
 
     // Emit argument list (flattened from nested arg_list nodes)
-    std::string emit_arg_list(gp_tree_node *node)
+    // Find the deepest identifier in a single-child pass-through chain
+    static gp_tree_node *unwrap_to_ident(gp_tree_node *node)
+    {
+	while (node) {
+	    if (node->type == GP_TERM) return node;
+	    if (node->type == GP_ANODE && nchildren(node) == 1)
+		node = child(node, 0);
+	    else
+		return node;
+	}
+	return nullptr;
+    }
+
+    // Emit an expression, optionally coercing managed strings to const char *
+    std::string emit_arg_maybe_coerce(gp_tree_node *node, bool coerce)
+    {
+	std::string e = emit_expr(node);
+	if (!coerce) return e;
+	// Check if the expression resolves to a managed string identifier
+	gp_tree_node *leaf = unwrap_to_ident(node);
+	if (leaf && leaf->type == GP_TERM && term_code(leaf) == GT_IDENT) {
+	    TypeClass tc = lookup_var_type(term_text(leaf));
+	    if (tc == TC_STDSTR)
+		return "__madc_string_cstr(" + e + ")";
+	}
+	return e;
+    }
+
+    // Raw arg list — no string coercion (for namespace functions)
+    std::string emit_arg_list_raw(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return "";
 	if (node->type == GP_TERM) return emit_expr(node);
 	if (!is_an(node, AN_ARG_LIST))
 	    return emit_expr(node);
-	return emit_arg_list(child(node, 0)) + ", " +
+	return emit_arg_list_raw(child(node, 0)) + ", " +
 	       emit_expr(child(node, 1));
+    }
+
+    // Regular arg list with string coercion
+    std::string emit_arg_list(gp_tree_node *node, bool coerce = true)
+    {
+	if (!node || node->type == GP_NIL) return "";
+	if (node->type == GP_TERM) return emit_arg_maybe_coerce(node, coerce);
+	if (!is_an(node, AN_ARG_LIST))
+	    return emit_arg_maybe_coerce(node, coerce);
+	return emit_arg_list(child(node, 0), coerce) + ", " +
+	       emit_arg_maybe_coerce(child(node, 1), coerce);
     }
 
     // Emit initializer list
@@ -1099,6 +1145,9 @@ class CEmitter
     void emit_stmt(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
+	// GLR ambiguity — use first alternative
+	if (node->type == GP_ALT) { emit_stmt(node->val.alt.first); return; }
+	if (node->type == GP_OPT) { emit_stmt(node->val.opt.first); return; }
 
 	if (node->type == GP_TERM) {
 	    emit_indent();
