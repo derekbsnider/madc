@@ -1392,6 +1392,7 @@ public:
 	header += "typedef unsigned long size_t;\n";
 	header += "typedef long ptrdiff_t;\n";
 	header += "#define NULL ((void *)0)\n";
+	header += "#define nullptr ((void *)0)\n";
 	header += "\n";
 
 	header += "/* madc runtime builtins */\n";

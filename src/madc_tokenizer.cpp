@@ -62,6 +62,23 @@ static int gecko_read_token(void **attr, GeckoTokenizer *state)
 	if (code < 0)
 	    continue;  // skip whitespace, comments
 
+	// Synthesize ELLIPSIS from three consecutive '.' tokens
+	if (code == '.') {
+	    size_t saved = state->pos;
+	    int dots = 1;
+	    for (size_t i = saved; i < state->tokens->size() && dots < 3; i++) {
+		int c = madc_token_to_gecko((*state->tokens)[i]);
+		if (c < 0) continue;  // skip whitespace
+		if (c == '.') { dots++; state->pos = i + 1; }
+		else break;
+	    }
+	    if (dots == 3) {
+		*attr = (void *)tb;
+		return 372;  // GT_ELLIPSIS
+	    }
+	    state->pos = saved;  // not three dots, revert
+	}
+
 	*attr = (void *)tb;
 	return code;
     }
