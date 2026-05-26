@@ -265,6 +265,17 @@ class CEmitter
     // 3D+ char arrays.
     int char_array_init_depth = 0;
 
+    // VLA param side effects: expressions from VLA parameter sizes that
+    // need to be evaluated at function entry to preserve side effects.
+    // E.g. `int sub(int i, int arr[i++])` → emit `(void)(i++);` in body.
+    std::vector<std::string> vla_param_side_effects;
+
+    // VLA typedef tracking: typedef name → size expression string.
+    // When a VLA typedef like `typedef int c[n+2]` is encountered inside
+    // a function, instead of emitting the typedef (which c2mir rejects),
+    // we store the computed size expression and replace sizeof(c) with it.
+    std::map<std::string, std::string> vla_typedef_sizes;
+
     // Check if a name is a global string variable tracked in global_strings
     bool is_global_string(const std::string &name) {
 	for (auto &gsv : global_strings)
@@ -683,6 +694,42 @@ class CEmitter
 	if (an == AN_DECL_LIST)
 	    return array_dims(child(node, 0));
 	return 0;
+    }
+
+    // Return true if an expression subtree contains any GT_IDENT terminal,
+    // meaning it references a runtime variable and is not a compile-time
+    // constant.  Used to detect VLA size expressions.
+    static bool expr_has_ident(gp_tree_node *node) {
+	if (!node) return false;
+	if (node->type == GP_TERM)
+	    return term_code(node) == GT_IDENT;
+	if (node->type == GP_ANODE) {
+	    int an = an_code(node);
+	    // sizeof(expr) and sizeof(type) are compile-time constants —
+	    // identifiers inside them don't make the expression non-constant.
+	    if (an == AN_SIZEOF_EXPR || an == AN_SIZEOF_TYPE)
+		return false;
+	    for (int i = 0; i < nchildren(node); i++)
+		if (expr_has_ident(child(node, i)))
+		    return true;
+	}
+	return false;
+    }
+
+    // Check whether a declarator contains any VLA dimension (an
+    // AN_ARRAY_DECL whose size expression contains GT_IDENT).
+    static bool declarator_has_vla(gp_tree_node *node) {
+	if (!node || node->type != GP_ANODE) return false;
+	int an = an_code(node);
+	if (an == AN_ARRAY_DECL) {
+	    gp_tree_node *sz = child(node, 1);
+	    if (sz && !is_nil(sz) && expr_has_ident(sz))
+		return true;
+	    return declarator_has_vla(child(node, 0));
+	}
+	if (an == AN_INIT_DECL)
+	    return declarator_has_vla(child(node, 0));
+	return false;
     }
 
     // Return true if node is a plain function declarator (AN_FUNC_DECL at the
@@ -1516,8 +1563,15 @@ class CEmitter
 	}
 
 	// sizeof
-	if (an == AN_SIZEOF_TYPE)
-	    return "sizeof(" + emit_type(child(node, 0)) + ")";
+	if (an == AN_SIZEOF_TYPE) {
+	    std::string st = emit_type(child(node, 0));
+	    // Check for VLA typedef — replace sizeof(vla_type) with
+	    // the precomputed size variable
+	    auto vit = vla_typedef_sizes.find(st);
+	    if (vit != vla_typedef_sizes.end())
+		return "_sizeof_" + st;
+	    return "sizeof(" + st + ")";
+	}
 	if (an == AN_SIZEOF_EXPR)
 	    return "sizeof(" + emit_expr(child(node, 0)) + ")";
 
@@ -2690,6 +2744,19 @@ class CEmitter
 	    // No function declarators — fall through to normal emit.
 	}
 
+	// VLA lowering: convert variable-length array declarations to
+	// __builtin_alloca.  Only for local (non-global) declarations.
+	if (indent_level > 0 && declarator_has_vla(decls)) {
+	    // VLA typedef: `typedef int c[n+2]` → record sizeof and suppress
+	    if (type.find("typedef") != std::string::npos) {
+		emit_vla_typedef(type, decls);
+		return;
+	    }
+	    emit_vla_alloca(type, decls);
+	    // Still need to track the variable name below
+	    goto post_decl_emit;
+	}
+
 	// For 3D+ char arrays, set the depth flag before emitting so that
 	// string literal sub-initializers are expanded to byte lists.
 	{
@@ -2702,6 +2769,7 @@ class CEmitter
 	    char_array_init_depth = 0;
 	}
 
+	post_decl_emit:
 	// Inject constructor call for class variables (no-args ctor)
 	std::string vname = extract_name(decls);
 
@@ -2715,6 +2783,208 @@ class CEmitter
 	    if (class_has_dtor(clean_type))
 		scope_class_vars.push_back(vname + "|" + clean_type);
 	}
+    }
+
+    // ---------------------------------------------------------------
+    // VLA lowering: emit __builtin_alloca for variable-length arrays
+    // ---------------------------------------------------------------
+
+    // Collect array dimensions from a declarator chain.
+    // Returns the dimension expressions (as emitted C strings) from
+    // outermost to innermost, and sets `name` to the base variable name.
+    void collect_vla_dims(gp_tree_node *node,
+			  std::vector<std::string> &dims,
+			  std::vector<bool> &dim_is_vla,
+			  std::string &name)
+    {
+	if (!node) return;
+	if (node->type == GP_TERM) {
+	    name = term_text(node);
+	    return;
+	}
+	if (node->type != GP_ANODE) return;
+	int an = an_code(node);
+	if (an == AN_ARRAY_DECL) {
+	    gp_tree_node *sz = child(node, 1);
+	    if (sz && !is_nil(sz)) {
+		dims.push_back(emit_expr(sz));
+		dim_is_vla.push_back(expr_has_ident(sz));
+	    } else {
+		dims.push_back("");
+		dim_is_vla.push_back(false);
+	    }
+	    collect_vla_dims(child(node, 0), dims, dim_is_vla, name);
+	} else if (an == AN_INIT_DECL) {
+	    collect_vla_dims(child(node, 0), dims, dim_is_vla, name);
+	} else {
+	    name = extract_name(node);
+	}
+    }
+
+    void emit_vla_alloca(const std::string &type, gp_tree_node *decls)
+    {
+	std::vector<std::string> dims;
+	std::vector<bool> dim_is_vla;
+	std::string name;
+	collect_vla_dims(decls, dims, dim_is_vla, name);
+
+	// dims are collected outermost-first due to how the AST nests
+	// AN_ARRAY_DECL nodes.  E.g. int M[a][b] gives dims = {"b","a"}
+	// (innermost first from the recursive descent) — actually reverse
+	// because the outer array wraps the inner.  Let's verify the order:
+	// AN_ARRAY_DECL(AN_ARRAY_DECL(name, b), a) → first call gets a,
+	// recurse gets b.  So dims = {"a", "b"} = outermost first.
+
+	int ndims = (int)dims.size();
+	if (ndims == 0) {
+	    // Shouldn't happen — fallback to normal emit
+	    emit_indent();
+	    O("%s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
+	    return;
+	}
+
+	// Build the total size expression: d0 * d1 * ... * sizeof(type)
+	std::string size_expr;
+	for (int i = 0; i < ndims; i++) {
+	    if (!dims[i].empty()) {
+		if (!size_expr.empty()) size_expr += " * ";
+		size_expr += "(" + dims[i] + ")";
+	    }
+	}
+	if (!size_expr.empty())
+	    size_expr += " * ";
+	size_expr += "sizeof(" + type + ")";
+
+	if (ndims == 1) {
+	    // 1D VLA: int *name = (int *)__builtin_alloca(size);
+	    emit_indent();
+	    O("%s *%s = (%s *)__builtin_alloca(%s);\n",
+	      type.c_str(), name.c_str(), type.c_str(), size_expr.c_str());
+	} else {
+	    // Multi-dim VLA: use array-of-pointers approach.
+	    // For int M[a][b]:
+	    //   int **M = (int **)__builtin_alloca(a * sizeof(int *));
+	    //   { int *_M_data = (int *)__builtin_alloca(a * b * sizeof(int));
+	    //     for (int _i = 0; _i < a; _i++) M[_i] = _M_data + _i * b; }
+	    //
+	    // For 3D+ we only handle the common 2D case properly;
+	    // deeper dimensions are flattened (subscript behavior may differ).
+
+	    // Generate pointer type: int ** for 2D, int *** for 3D, etc.
+	    std::string ptr_stars;
+	    for (int i = 0; i < ndims; i++) ptr_stars += "*";
+
+	    // Outer pointer array allocation
+	    emit_indent();
+	    O("%s %s%s = (%s %s)__builtin_alloca((%s) * sizeof(%s %s));\n",
+	      type.c_str(), ptr_stars.c_str(), name.c_str(),
+	      type.c_str(), ptr_stars.c_str(),
+	      dims[0].c_str(),
+	      type.c_str(), std::string(ptr_stars.size() - 1, '*').c_str());
+
+	    // Data allocation (flat)
+	    std::string data_var = "_" + name + "_data";
+	    emit_indent();
+	    O("%s *%s = (%s *)__builtin_alloca(%s);\n",
+	      type.c_str(), data_var.c_str(), type.c_str(), size_expr.c_str());
+
+	    if (ndims == 2) {
+		// Row pointer setup: for (int _i=0; _i<a; _i++) M[_i] = data + _i*b;
+		std::string idx = "_" + name + "_i";
+		emit_indent();
+		O("for (int %s = 0; %s < (%s); %s++) %s[%s] = %s + %s * (%s);\n",
+		  idx.c_str(), idx.c_str(), dims[0].c_str(),
+		  idx.c_str(), name.c_str(), idx.c_str(),
+		  data_var.c_str(), idx.c_str(), dims[1].c_str());
+	    } else {
+		// 3D+ — set up first-level pointers only; deeper levels
+		// remain flat.  This is a best-effort fallback.
+		std::string idx = "_" + name + "_i";
+		// Compute stride for first dim (product of remaining dims)
+		std::string stride;
+		for (int i = 1; i < ndims; i++) {
+		    if (!stride.empty()) stride += " * ";
+		    stride += "(" + dims[i] + ")";
+		}
+		emit_indent();
+		O("for (int %s = 0; %s < (%s); %s++) %s[%s] = (%s %s)(%s + %s * %s);\n",
+		  idx.c_str(), idx.c_str(), dims[0].c_str(),
+		  idx.c_str(), name.c_str(), idx.c_str(),
+		  type.c_str(), std::string(ptr_stars.size() - 1, '*').c_str(),
+		  data_var.c_str(), idx.c_str(), stride.c_str());
+	    }
+	}
+    }
+
+    // Handle VLA typedef: `typedef int c[n+2]`
+    // Instead of emitting the typedef (c2mir rejects VLA types),
+    // record the computed size expression so that sizeof(c) can
+    // be replaced with the runtime value.
+    // Check if an expression has side effects (++, --, function calls).
+    static bool expr_has_side_effects(gp_tree_node *node) {
+	if (!node) return false;
+	if (node->type == GP_ANODE) {
+	    int an = an_code(node);
+	    if (an == AN_POST_INC || an == AN_POST_DEC ||
+		an == AN_PRE_INC || an == AN_PRE_DEC ||
+		an == AN_CALL)
+		return true;
+	    for (int i = 0; i < nchildren(node); i++)
+		if (expr_has_side_effects(child(node, i)))
+		    return true;
+	}
+	return false;
+    }
+
+    // Collect VLA param size expressions that have side effects.
+    // These need to be evaluated at function entry.
+    void collect_vla_param_side_effects(gp_tree_node *node) {
+	if (!node || node->type != GP_ANODE) return;
+	int an = an_code(node);
+	if (an == AN_ARRAY_DECL) {
+	    gp_tree_node *sz = child(node, 1);
+	    if (sz && !is_nil(sz) && expr_has_side_effects(sz)) {
+		vla_param_side_effects.push_back(emit_expr(sz));
+	    }
+	    collect_vla_param_side_effects(child(node, 0));
+	}
+    }
+
+    void emit_vla_typedef(const std::string &type, gp_tree_node *decls)
+    {
+	// Extract base type (strip "typedef ")
+	std::string base = type;
+	size_t pos = base.find("typedef ");
+	if (pos != std::string::npos)
+	    base.erase(pos, 8);
+	// Trim leading/trailing whitespace
+	while (!base.empty() && base[0] == ' ') base.erase(0, 1);
+	while (!base.empty() && base.back() == ' ') base.pop_back();
+
+	// Collect dimensions and name
+	std::vector<std::string> dims;
+	std::vector<bool> dim_is_vla;
+	std::string name;
+	collect_vla_dims(decls, dims, dim_is_vla, name);
+
+	// Build size expression: d0 * d1 * ... * sizeof(base_type)
+	std::string size_expr;
+	for (size_t i = 0; i < dims.size(); i++) {
+	    if (!dims[i].empty()) {
+		if (!size_expr.empty()) size_expr += " * ";
+		size_expr += "(" + dims[i] + ")";
+	    }
+	}
+	if (!size_expr.empty())
+	    size_expr += " * ";
+	size_expr += "sizeof(" + base + ")";
+
+	// Store for sizeof() replacement
+	vla_typedef_sizes[name] = size_expr;
+
+	// Emit a size_t variable to hold the computed size at runtime
+	emit_indent();
+	O("unsigned long _sizeof_%s = %s;\n", name.c_str(), size_expr.c_str());
     }
 
     // Emit declaration as inline string (for for-loop init)
@@ -2746,6 +3016,20 @@ class CEmitter
 	    std::string type = emit_type(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    if (is_nil(decl)) return type;
+	    // VLA array params decay to pointers in C:
+	    // int arr[n] → int *arr, int arr[n][m] → int (*arr)[m] or int **arr
+	    if (declarator_has_vla(decl)) {
+		std::string name = extract_name(decl);
+		int nd = array_dims(decl);
+		// Capture VLA size expressions with side effects (i++, fn())
+		collect_vla_param_side_effects(decl);
+		if (nd <= 1)
+		    return type + " *" + name;
+		// Multi-dim VLA param: decay outermost dim to pointer
+		std::string stars;
+		for (int i = 0; i < nd; i++) stars += "*";
+		return type + " " + stars + name;
+	    }
 	    // The declarator may have pointer, name, etc.
 	    std::string d = emit_declarator_str(decl);
 	    // If emit_declarator_str returned empty, the declarator may be
@@ -2813,6 +3097,8 @@ class CEmitter
 	local_var_class_map.clear();
 	scope_class_vars.clear();
 	va_list_vars.clear();
+	vla_typedef_sizes.clear();
+	vla_param_side_effects.clear();
 	current_func_last_param.clear();
 	ref_vars.clear();
 	std::string ret_type = emit_type(child(node, 0));
@@ -2875,6 +3161,11 @@ class CEmitter
 	    O("{\n");
 	    indent_level++;
 	    O("\t__madc_init_globals();\n");
+	    // Inject VLA param side-effect expressions
+	    for (const auto &se : vla_param_side_effects) {
+		emit_indent();
+		O("(void)(%s);\n", se.c_str());
+	    }
 	    // Emit body statements (skip outer block wrapper to avoid double braces)
 	    gp_tree_node *stmts = is_an(body_node, AN_BLOCK) ? child(body_node, 0) : body_node;
 	    emit_stmt(stmts);
@@ -2883,6 +3174,18 @@ class CEmitter
 	    indent_level--;
 	    O("}\n");
 	    emitting_main = false;
+	} else if (!vla_param_side_effects.empty()) {
+	    // Inject VLA param side-effect expressions at function entry
+	    O("{\n");
+	    indent_level++;
+	    for (const auto &se : vla_param_side_effects) {
+		emit_indent();
+		O("(void)(%s);\n", se.c_str());
+	    }
+	    gp_tree_node *stmts = is_an(body_node, AN_BLOCK) ? child(body_node, 0) : body_node;
+	    emit_stmt(stmts);
+	    indent_level--;
+	    O("}\n");
 	} else {
 	    emit_stmt(body_node);
 	}
