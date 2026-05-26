@@ -26,6 +26,19 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+#include "madc_sema.h"
+
+extern "C" {
+struct gp_tree_node;
+}
+
+// Transpiler pipeline (Gecko + MIR)
+extern struct gp_tree_node *madc_gecko_parse(std::deque<TokenBase *> *tokens,
+                                              int *out_ambiguity);
+extern void madc_gecko_free_tree(struct gp_tree_node *root);
+extern std::string madc_emit_c(struct gp_tree_node *root, SemaInfo *sema);
+extern int madc_mir_execute(const std::string &c_source,
+                             const std::string &source_name);
 
 using namespace std;
 
@@ -471,6 +484,12 @@ int main(int argc, char **argv)
     if ( emit_object_path || emit_executable_path )
 	prog->aot_tracking = true;
 
+    if (use_mir_backend && (emit_object_path || emit_executable_path)) {
+	std::cerr << "--backend=mir does not support --emit-object or "
+	          << "--emit-executable yet" << std::endl;
+	return 1;
+    }
+
     // --emit-pch: lex the input file and write a .madh pre-compiled header
     if ( emit_pch && filearg < argc )
     {
@@ -534,6 +553,42 @@ int main(int argc, char **argv)
     {
 	if ( !(tp=prog->tokenize(argv[filearg])) )
 	    return 0;
+
+	if ( use_mir_backend )
+	{
+	    // Transpiler pipeline: Gecko parse → sema → emit C → MIR execute
+	    int ambiguity = 0;
+	    struct gp_tree_node *ast = madc_gecko_parse(&prog->tokens, &ambiguity);
+	    if ( !ast )
+	    {
+		std::cerr << "Gecko parse failed for " << argv[filearg] << std::endl;
+		return 1;
+	    }
+
+	    SemaInfo *sema = madc_sema_collect(ast);
+	    std::string c_source = madc_emit_c(ast, sema);
+
+	    if ( emit_c )
+	    {
+		std::cout << c_source;
+		madc_sema_free(sema);
+		madc_gecko_free_tree(ast);
+		return 0;
+	    }
+
+	    struct timeval before, after;
+	    gettimeofday(&before, NULL);
+	    int result = madc_mir_execute(c_source, argv[filearg]);
+	    gettimeofday(&after, NULL);
+
+	    DBG(std::cout << "Elapsed time: " << time_diff(before, after) << std::endl);
+
+	    madc_sema_free(sema);
+	    madc_gecko_free_tree(ast);
+	    return (result < 0) ? 1 : 0;
+	}
+
+	// Legacy asmjit pipeline
 	if ( !prog->parse(tp) )
 	    return 0;
 	if ( !prog->compile() )
