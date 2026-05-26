@@ -1267,6 +1267,43 @@ struct grammar *madc_create_gecko_grammar()
 
 
 // -----------------------------------------------------------------------
+// ident_to_gecko — O(1) hash lookup for identifier-form keywords.
+// Built once on first call, maps keyword strings to Gecko terminal codes.
+// Replaces ~60 sequential string comparisons per identifier token.
+// -----------------------------------------------------------------------
+
+#include <unordered_map>
+
+static int ident_to_gecko(const std::string &s)
+{
+    static const std::unordered_map<std::string, int> map = {
+	// Type keywords
+	{"void", GT_VOID}, {"bool", GT_BOOL}, {"_Bool", GT_BOOL},
+	{"char", GT_CHAR}, {"short", GT_SHORT}, {"int", GT_INT},
+	{"long", GT_LONG}, {"float", GT_FLOAT}, {"double", GT_DOUBLE},
+	{"string", GT_STRING_T}, {"auto", GT_AUTO},
+	{"int8_t", GT_INT8}, {"int16_t", GT_INT16},
+	{"int32_t", GT_INT32}, {"int64_t", GT_INT64},
+	{"uint8_t", GT_UINT8}, {"uint16_t", GT_UINT16},
+	{"uint32_t", GT_UINT32}, {"uint64_t", GT_UINT64},
+	// Stream/container types
+	{"stringstream", GT_SSTREAM}, {"ifstream", GT_IFSTREAM},
+	{"ofstream", GT_OFSTREAM}, {"fstream", GT_FSTREAM},
+	{"ostream", GT_OSTREAM},
+	// Qualifiers and specifiers
+	{"sizeof", GT_SIZEOF}, {"inline", GT_INLINE},
+	{"signed", GT_SIGNED}, {"unsigned", GT_UNSIGNED},
+	{"public", GT_PUBLIC}, {"private", GT_PRIVATE},
+	{"protected", GT_PROTECTED}, {"virtual", GT_VIRTUAL},
+	{"alignof", GT_ALIGNOF}, {"_Alignof", GT_ALIGNOF},
+	// Aliases
+	{"LPSTR", GT_INT},
+    };
+    auto it = map.find(s);
+    return (it != map.end()) ? it->second : -1;
+}
+
+// -----------------------------------------------------------------------
 // madc_token_to_gecko — map a madc TokenBase to a Gecko terminal code.
 // Returns -1 for tokens that should be skipped (whitespace, comments).
 // -----------------------------------------------------------------------
@@ -1299,46 +1336,11 @@ int madc_token_to_gecko(TokenBase *tb)
     case TokenType::ttChar:
         return GT_CHAR_LIT;
     case TokenType::ttIdentifier:
-        // Check for identifier-form keywords that the lexer does not
-        // tokenize as keyword tokens.
         {
             TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
             if (ti) {
-                if (ti->str == "sizeof")       return GT_SIZEOF;
-                if (ti->str == "inline")       return GT_INLINE;
-                if (ti->str == "signed")       return GT_SIGNED;
-                if (ti->str == "unsigned")     return GT_UNSIGNED;
-                if (ti->str == "string")       return GT_STRING_T;
-                if (ti->str == "auto")         return GT_AUTO;
-                if (ti->str == "bool")         return GT_BOOL;
-                if (ti->str == "_Bool")        return GT_BOOL;
-                if (ti->str == "void")         return GT_VOID;
-                if (ti->str == "char")         return GT_CHAR;
-                if (ti->str == "short")        return GT_SHORT;
-                if (ti->str == "int")          return GT_INT;
-                if (ti->str == "long")         return GT_LONG;
-                if (ti->str == "float")        return GT_FLOAT;
-                if (ti->str == "double")       return GT_DOUBLE;
-                if (ti->str == "int8_t")       return GT_INT8;
-                if (ti->str == "int16_t")      return GT_INT16;
-                if (ti->str == "int32_t")      return GT_INT32;
-                if (ti->str == "int64_t")      return GT_INT64;
-                if (ti->str == "uint8_t")      return GT_UINT8;
-                if (ti->str == "uint16_t")     return GT_UINT16;
-                if (ti->str == "uint32_t")     return GT_UINT32;
-                if (ti->str == "uint64_t")     return GT_UINT64;
-                if (ti->str == "stringstream") return GT_SSTREAM;
-                if (ti->str == "ifstream")     return GT_IFSTREAM;
-                if (ti->str == "ofstream")     return GT_OFSTREAM;
-                if (ti->str == "fstream")      return GT_FSTREAM;
-                if (ti->str == "ostream")      return GT_OSTREAM;
-                // Access specifiers + virtual
-                if (ti->str == "public")       return GT_PUBLIC;
-                if (ti->str == "private")      return GT_PRIVATE;
-                if (ti->str == "protected")    return GT_PROTECTED;
-                if (ti->str == "virtual")      return GT_VIRTUAL;
-                if (ti->str == "alignof" || ti->str == "_Alignof")
-                    return GT_ALIGNOF;
+                int code = ident_to_gecko(ti->str);
+                if (code >= 0) return code;
             }
         }
         return GT_IDENT;
@@ -1346,50 +1348,17 @@ int madc_token_to_gecko(TokenBase *tb)
         break;
     }
 
-    // Data type keywords
+    // Data type keywords — same hash lookup as identifiers
     switch (tt) {
     case TokenType::ttDataType:
-        // Map each data type token to its Gecko terminal
-        switch (tid) {
-        case TokenID::tkBase:  // use str matching below
-            break;
-        default:
-            break;
-        }
-        // Fall through to string-based matching for data types
         {
-            // Cast to TokenDataType to check the definition
             TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
             if (ti) {
-                const std::string &s = ti->str;
-                if (s == "void")          return GT_VOID;
-                if (s == "bool" || s == "_Bool") return GT_BOOL;
-                if (s == "char")          return GT_CHAR;
-                if (s == "short")         return GT_SHORT;
-                if (s == "int")           return GT_INT;
-                if (s == "long")          return GT_LONG;
-                if (s == "float")         return GT_FLOAT;
-                if (s == "double")        return GT_DOUBLE;
-                if (s == "string")        return GT_STRING_T;
-                if (s == "auto")          return GT_AUTO;
-                if (s == "int8_t")        return GT_INT8;
-                if (s == "int16_t")       return GT_INT16;
-                if (s == "int32_t")       return GT_INT32;
-                if (s == "int64_t")       return GT_INT64;
-                if (s == "uint8_t")       return GT_UINT8;
-                if (s == "uint16_t")      return GT_UINT16;
-                if (s == "uint32_t")      return GT_UINT32;
-                if (s == "uint64_t")      return GT_UINT64;
-                if (s == "ostream")       return GT_OSTREAM;
-                if (s == "stringstream")  return GT_SSTREAM;
-                if (s == "ifstream")      return GT_IFSTREAM;
-                if (s == "ofstream")      return GT_OFSTREAM;
-                if (s == "fstream")       return GT_FSTREAM;
-                if (s == "LPSTR")         return GT_INT;  // char* alias
-                if (s == "array")         return GT_IDENT; // treated as ident
+                int code = ident_to_gecko(ti->str);
+                if (code >= 0) return code;
             }
         }
-        return GT_IDENT;  // fallback for unknown data types
+        return GT_IDENT;
 
     default:
         break;
