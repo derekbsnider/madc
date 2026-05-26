@@ -604,14 +604,35 @@ class CEmitter
 	if (strcmp(nm, "paren") == 0)
 	    return infer_expr_cout_type(child(node, 0));
 
-	// Arithmetic — if either side is double, result is double
-	if (strcmp(nm, "add") == 0 || strcmp(nm, "sub") == 0 ||
-	    strcmp(nm, "mul") == 0 || strcmp(nm, "div") == 0) {
+	// Arithmetic — pointer arithmetic preserves pointer type
+	if (strcmp(nm, "add") == 0 || strcmp(nm, "sub") == 0) {
+	    char l = infer_expr_cout_type(child(node, 0));
+	    char r = infer_expr_cout_type(child(node, 1));
+	    if (l == 's' || r == 's') return 's';  // ptr + int = ptr
+	    if (l == 'd' || r == 'd') return 'd';
+	    return 'i';
+	}
+	if (strcmp(nm, "mul") == 0 || strcmp(nm, "div") == 0) {
 	    char l = infer_expr_cout_type(child(node, 0));
 	    char r = infer_expr_cout_type(child(node, 1));
 	    if (l == 'd' || r == 'd') return 'd';
 	    return 'i';
 	}
+
+	// Assignment — type of LHS
+	if (strcmp(nm, "assign") == 0)
+	    return infer_expr_cout_type(child(node, 0));
+
+	// Address-of — produces a pointer
+	if (strcmp(nm, "addrof") == 0) {
+	    char inner = infer_expr_cout_type(child(node, 0));
+	    if (inner == 'c') return 's';  // &char → char*
+	    return 'i';  // &int → int* (print as int)
+	}
+
+	// Member access — default to int for now
+	if (strcmp(nm, "member") == 0 || strcmp(nm, "arrow_member") == 0)
+	    return 'i';
 
 	// Ternary — type of true branch
 	if (strcmp(nm, "ternary") == 0)
