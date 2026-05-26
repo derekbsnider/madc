@@ -2056,6 +2056,8 @@ class CEmitter
     {
 	if (cn == "string")
 	    O("string_destruct(%s);", vn.c_str());
+	else if (cn == "array")
+	    O("madarray_destruct(%s);", vn.c_str());
 	else if (cn == "ofstream" || cn == "ifstream" || cn == "fstream")
 	    O("%s_destruct(%s);", cn.c_str(), vn.c_str());
 	else if (cn == "stringstream")
@@ -2083,6 +2085,8 @@ class CEmitter
 		O("if (%s) { ", git->second.c_str());
 		if (cn == "string")
 		    O("string_destruct(%s);", vn.c_str());
+		else if (cn == "array")
+		    O("madarray_destruct(%s);", vn.c_str());
 		else if (cn == "ofstream" || cn == "ifstream" || cn == "fstream")
 		    O("%s_destruct(%s);", cn.c_str(), vn.c_str());
 		else if (cn == "stringstream")
@@ -2485,6 +2489,8 @@ class CEmitter
 			O("if (%s) ", git->second.c_str());
 			if (cn == "string")
 			    O("string_destruct(%s);\n", vn.c_str());
+			else if (cn == "array")
+			    O("madarray_destruct(%s);\n", vn.c_str());
 			else if (cn == "ofstream" || cn == "ifstream" ||
 				 cn == "fstream")
 			    O("%s_destruct(%s);\n", cn.c_str(), vn.c_str());
@@ -2496,6 +2502,8 @@ class CEmitter
 			emit_indent();
 			if (cn == "string")
 			    O("string_destruct(%s);\n", vn.c_str());
+			else if (cn == "array")
+			    O("madarray_destruct(%s);\n", vn.c_str());
 			else if (cn == "ofstream" || cn == "ifstream" ||
 				 cn == "fstream")
 			    O("%s_destruct(%s);\n", cn.c_str(), vn.c_str());
@@ -2789,6 +2797,17 @@ class CEmitter
 	return false;
     }
 
+    // Check if a declaration_specifiers chain is the "array" typedef (MadArray)
+    static bool is_array_type(gp_tree_node *specs)
+    {
+	if (!specs) return false;
+	if (specs->type == GP_TERM)
+	    return term_code(specs) == GT_IDENT && term_text(specs) == "array";
+	if (an_code(specs) == AN_QUAL)
+	    return is_array_type(child(specs, 0)) || is_array_type(child(specs, 1));
+	return false;
+    }
+
     // Collect global string declarations — emit storage in header and
     // record name + optional initializer for __madc_init_globals().
     void collect_global_string_decls(gp_tree_node *decls)
@@ -2916,6 +2935,51 @@ class CEmitter
 	}
     }
 
+    // Emit a MadArray variable declaration with runtime lifecycle
+    void emit_array_decl(gp_tree_node *decls)
+    {
+	if (is_nil(decls)) return;
+
+	int an = an_code(decls);
+
+	// init_decl(name, initializer) — unusual for arrays
+	if (an == AN_INIT_DECL) {
+	    std::string vname = extract_name(child(decls, 0));
+	    if (!vname.empty()) {
+		emit_indent();
+		O("char %s[MADC_ARRAY_SIZE];\n", vname.c_str());
+		emit_indent();
+		O("madarray_construct(%s);\n", vname.c_str());
+		local_var_types[vname] = TC_CLASS;
+		local_var_class_map[vname] = "array";
+		scope_class_vars.push_back(vname + "|array");
+	    }
+	    return;
+	}
+
+	// decl_list — multiple declarators
+	if (an == AN_DECL_LIST) {
+	    emit_array_decl(child(decls, 0));
+	    emit_array_decl(child(decls, 1));
+	    return;
+	}
+
+	// Plain identifier — array x;
+	if (decls->type == GP_TERM) {
+	    std::string vname = term_text(decls);
+	    if (!vname.empty()) {
+		emit_indent();
+		O("char %s[MADC_ARRAY_SIZE];\n", vname.c_str());
+		emit_indent();
+		O("madarray_construct(%s);\n", vname.c_str());
+		local_var_types[vname] = TC_CLASS;
+		local_var_class_map[vname] = "array";
+		scope_class_vars.push_back(vname + "|array");
+	    }
+	    return;
+	}
+    }
+
     // Emit a stream variable declaration: char buf[SIZE]; type_construct(buf);
     void emit_stream_decl(const std::string &stream_class, gp_tree_node *decls)
     {
@@ -3031,6 +3095,12 @@ class CEmitter
 	std::string sclass = stream_type_name(specs);
 	if (!sclass.empty()) {
 	    emit_stream_decl(sclass, decls);
+	    return;
+	}
+
+	// Array type: managed MadArray with runtime wrappers
+	if (is_array_type(specs)) {
+	    emit_array_decl(decls);
 	    return;
 	}
 
@@ -4424,6 +4494,12 @@ public:
 	header += "extern void sstream_destruct(void *);\n";
 	header += "extern const char *sstream_str(void *);\n";
 	header += "extern void sstream_str_set(void *, const char *);\n";
+	header += "\n";
+
+	// MadArray runtime wrappers
+	header += "extern void *madarray_construct(void *);\n";
+	header += "extern void madarray_destruct(void *);\n";
+	header += "extern long madarray_size(void *);\n";
 	header += "\n";
 
 	// Stream pointers

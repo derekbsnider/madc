@@ -235,6 +235,15 @@ void __std_to_string(void *dst, long val)
     *s = std::to_string(val);
 }
 
+// MadArray runtime — construct/destruct/size for transpiled array variables.
+// MadArray is defined in include/datadef.h (already included).
+void *madarray_construct(void *ptr)
+    { return new(ptr) MadArray; }
+void madarray_destruct(void *ptr)
+    { ((MadArray *)ptr)->~MadArray(); }
+long madarray_size(void *ptr)
+    { return (long)((MadArray *)ptr)->data.size(); }
+
 } // extern "C"
 
 // -----------------------------------------------------------------------
