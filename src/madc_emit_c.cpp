@@ -1357,6 +1357,22 @@ public:
 	header += "extern int strcmp(const char *, const char *);\n";
 	header += "extern int atoi(const char *);\n";
 	header += "extern double atof(const char *);\n";
+	header += "extern char *strstr(const char *, const char *);\n";
+	header += "extern char *strchr(const char *, int);\n";
+	header += "extern char *strncpy(char *, const char *, unsigned long);\n";
+	header += "extern char *strcat(char *, const char *);\n";
+	header += "extern char *strcpy(char *, const char *);\n";
+	header += "extern int strncmp(const char *, const char *, unsigned long);\n";
+	header += "extern void *realloc(void *, unsigned long);\n";
+	header += "extern int abs(int);\n";
+	header += "extern long labs(long);\n";
+	header += "extern void exit(int);\n";
+	header += "extern void abort(void);\n";
+	header += "extern int system(const char *);\n";
+	header += "extern int snprintf(char *, unsigned long, const char *, ...);\n";
+	header += "extern int sprintf(char *, const char *, ...);\n";
+	header += "extern int sscanf(const char *, const char *, ...);\n";
+	header += "static const char *version = \"madc transpiler\";\n";
 	header += "\n";
 
 	emit_top_level(root);
