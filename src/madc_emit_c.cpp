@@ -116,6 +116,10 @@ class CEmitter
     int indent_level;
     int tmp_counter;
 
+    // Simple type tracking for cout format inference
+    // 'c' = char, 's' = string/char*, 'd' = double/float, 'i' = int (default)
+    std::map<std::string, char> var_types;
+
     void O(const char *fmt, ...)
     {
 	char buf[4096];
@@ -553,17 +557,34 @@ class CEmitter
 		} else if (code == GT_CHAR_LIT) {
 		    result += "putchar(" + emit_expr(v) + ")";
 		} else {
-		    // Identifier — could be int, string, etc.
-		    // Default to %lld (most madc values are integers).
-		    // String vars would need type info to distinguish.
-		    result += "printf(\"%lld\", (long long)" + emit_expr(v) + ")";
+		    // Identifier — use tracked type info if available
+		    std::string id = term_text(v);
+		    auto it = var_types.find(id);
+		    char tc = (it != var_types.end()) ? it->second : 'i';
+		    if (tc == 's')
+			result += "printf(\"%s\", " + id + ")";
+		    else if (tc == 'c')
+			result += "printf(\"%c\", " + id + ")";
+		    else if (tc == 'd')
+			result += "printf(\"%g\", (double)" + id + ")";
+		    else
+			result += "printf(\"%lld\", (long long)" + id + ")";
 		}
 	    } else {
-		// Complex expression — check for string literal inside
+		// Complex expression
 		std::string e = emit_expr(v);
 		if (e[0] == '"')
 		    result += "printf(\"%s\", " + e + ")";
-		else
+		else if (is_anode(v, "cast")) {
+		    // Check cast target type for format hint
+		    std::string ct = emit_type(child(v, 0));
+		    if (ct.find("char") != std::string::npos && ct.find("*") == std::string::npos)
+			result += "printf(\"%c\", " + e + ")";
+		    else if (ct.find("double") != std::string::npos || ct.find("float") != std::string::npos)
+			result += "printf(\"%g\", (double)(" + e + "))";
+		    else
+			result += "printf(\"%lld\", (long long)(" + e + "))";
+		} else
 		    result += "printf(\"%lld\", (long long)(" + e + "))";
 	    }
 	}
@@ -1058,6 +1079,57 @@ class CEmitter
     // Declaration emission (inside function bodies)
     // ---------------------------------------------------------------
 
+    // Classify a type string for cout format inference
+    static char classify_type(const std::string &type)
+    {
+	if (type.find("char") != std::string::npos) {
+	    if (type.find("*") != std::string::npos) return 's';
+	    return 'c';
+	}
+	if (type.find("const char") != std::string::npos) return 's';
+	if (type.find("float") != std::string::npos) return 'd';
+	if (type.find("double") != std::string::npos) return 'd';
+	return 'i';
+    }
+
+    // Track variable types from a declaration for cout inference
+    void track_decl_types(const std::string &type, gp_tree_node *decls)
+    {
+	if (is_nil(decls)) return;
+	std::string vname = extract_name(decls);
+	if (!vname.empty()) {
+	    // Check if declarator has pointer
+	    bool has_ptr = is_anode(decls, "ptr_decl");
+	    char tc = classify_type(type);
+	    if (has_ptr && tc == 'c') tc = 's';  // char * → string
+	    if (has_ptr && tc == 'i') tc = 'i';  // int * → still int-like for printing
+	    var_types[vname] = tc;
+	}
+	// Handle decl_list
+	if (is_anode(decls, "decl_list") || is_anode(decls, "init_decl")) {
+	    track_decl_types(type, child(decls, 0));
+	    if (nchildren(decls) > 1)
+		track_decl_types(type, child(decls, 1));
+	}
+    }
+
+    // Track parameter types for cout format inference
+    void track_param_types(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return;
+	const char *name = anode_name(node);
+	if (strcmp(name, "param") == 0) {
+	    std::string type = emit_type(child(node, 0));
+	    gp_tree_node *decl = child(node, 1);
+	    if (!is_nil(decl)) track_decl_types(type, decl);
+	} else if (strcmp(name, "param_list") == 0) {
+	    track_param_types(child(node, 0));
+	    track_param_types(child(node, 1));
+	} else if (strcmp(name, "param_va") == 0) {
+	    track_param_types(child(node, 0));
+	}
+    }
+
     void emit_decl_stmt(gp_tree_node *node)
     {
 	// decl(declaration_specifiers, init_declarator_list_opt)
@@ -1065,13 +1137,14 @@ class CEmitter
 	gp_tree_node *decls = child(node, 1);
 
 	if (is_nil(decls)) {
-	    // Forward declaration or type-only declaration
 	    emit_indent();
 	    O("%s;\n", type.c_str());
 	    return;
 	}
 
-	// Use the declarator string emitter
+	// Track types for cout format inference
+	track_decl_types(type, decls);
+
 	emit_indent();
 	O("%s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
     }
@@ -1138,6 +1211,7 @@ class CEmitter
     void emit_func_def(gp_tree_node *node)
     {
 	// func_def(declaration_specifiers, declarator, compound_statement)
+	var_types.clear();  // fresh scope for each function
 	std::string ret_type = emit_type(child(node, 0));
 	gp_tree_node *decl = child(node, 1);
 	gp_tree_node *body_node = child(node, 2);
@@ -1162,6 +1236,7 @@ class CEmitter
 
 	if (is_anode(inner, "func_decl")) {
 	    func_name = extract_name(child(inner, 0));
+	    track_param_types(child(inner, 1));
 	    params = emit_param_list(child(inner, 1));
 	} else {
 	    func_name = term_text(inner);
