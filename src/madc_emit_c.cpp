@@ -214,7 +214,7 @@ class CEmitter
 	    case 315: return "long";
 	    case 316: return "float";
 	    case 317: return "double";
-	    case 318: return "madc_string_t";
+	    case 318: return "const char *";
 	    case 319: return "int8_t";
 	    case 320: return "int16_t";
 	    case 321: return "int32_t";
@@ -409,6 +409,113 @@ class CEmitter
     }
 
     // ---------------------------------------------------------------
+    // cout << expr << endl  →  C output calls
+    //
+    // Detects bsl (<<) chains rooted at "cout" and converts them to
+    // printf/madc_puti/etc.  Each value in the chain becomes a
+    // separate call.  "endl" maps to putchar('\n').
+    // ---------------------------------------------------------------
+
+    // Check if a node is the identifier "cout"
+    static bool is_cout(gp_tree_node *node)
+    {
+	if (!node) return false;
+	if (node->type == GP_TERM && term_code(node) == GT_IDENT)
+	    return term_text(node) == "cout";
+	// Paren-wrapped: (cout << ...)
+	if (is_anode(node, "paren"))
+	    return is_cout_chain(child(node, 0));
+	return false;
+    }
+
+    // Check if a bsl chain is rooted at "cout"
+    static bool is_cout_chain(gp_tree_node *node)
+    {
+	if (!node) return false;
+	if (node->type == GP_TERM) return is_cout(node);
+	if (is_anode(node, "paren"))
+	    return is_cout_chain(child(node, 0));
+	if (!is_anode(node, "bsl")) return false;
+	gp_tree_node *lhs = child(node, 0);
+	return is_cout(lhs) || is_cout_chain(lhs);
+    }
+
+    // Collect all values from a cout << chain (left to right)
+    void collect_cout_values(gp_tree_node *node,
+			     std::vector<gp_tree_node *> &vals)
+    {
+	if (!node) return;
+	if (is_anode(node, "paren")) {
+	    collect_cout_values(child(node, 0), vals);
+	    return;
+	}
+	if (!is_anode(node, "bsl")) return;
+
+	gp_tree_node *lhs = child(node, 0);
+	gp_tree_node *rhs = child(node, 1);
+
+	// Recurse into left side (cout or more bsl's)
+	if (is_anode(lhs, "bsl") && is_cout_chain(lhs))
+	    collect_cout_values(lhs, vals);
+	else if (is_anode(lhs, "paren") && is_cout_chain(lhs))
+	    collect_cout_values(child(lhs, 0), vals);
+	// else: lhs is "cout" — skip it
+
+	// Add right side as a value
+	vals.push_back(rhs);
+    }
+
+    // Emit a cout chain as a sequence of C output calls
+    std::string emit_cout_chain(gp_tree_node *node)
+    {
+	std::vector<gp_tree_node *> vals;
+	collect_cout_values(node, vals);
+
+	std::string result;
+	for (size_t i = 0; i < vals.size(); i++) {
+	    gp_tree_node *v = vals[i];
+	    if (i > 0) result += ", ";
+
+	    // Check for "endl"
+	    if (v->type == GP_TERM && term_code(v) == GT_IDENT &&
+		term_text(v) == "endl") {
+		result += "putchar('\\n')";
+		continue;
+	    }
+
+	    // Determine the type of value and emit appropriate call
+	    if (v->type == GP_TERM) {
+		int code = term_code(v);
+		if (code == GT_STRING) {
+		    result += "printf(\"%s\", \"" + c_escape(term_text(v)) + "\")";
+		} else if (code == GT_INTEGER) {
+		    char buf[32];
+		    snprintf(buf, sizeof(buf), "%lld", (long long)term_ival(v));
+		    result += std::string("printf(\"%lld\", (long long)") + buf + ")";
+		} else if (code == GT_REAL) {
+		    result += "printf(\"%g\", " + emit_expr(v) + ")";
+		} else if (code == GT_CHAR_LIT) {
+		    result += "putchar(" + emit_expr(v) + ")";
+		} else {
+		    // Identifier — could be int, string, etc.
+		    // Default to %lld (most madc values are integers).
+		    // String vars would need type info to distinguish.
+		    result += "printf(\"%lld\", (long long)" + emit_expr(v) + ")";
+		}
+	    } else {
+		// Complex expression — check for string literal inside
+		std::string e = emit_expr(v);
+		if (e[0] == '"')
+		    result += "printf(\"%s\", " + e + ")";
+		else
+		    result += "printf(\"%lld\", (long long)(" + e + "))";
+	    }
+	}
+
+	return "(" + result + ")";
+    }
+
+    // ---------------------------------------------------------------
     // Expression emission
     // ---------------------------------------------------------------
 
@@ -460,6 +567,10 @@ class CEmitter
 	// Parenthesized expression
 	if (strcmp(name, "paren") == 0)
 	    return "(" + emit_expr(child(node, 0)) + ")";
+
+	// cout << expr << endl → C output calls
+	if (strcmp(name, "bsl") == 0 && is_cout_chain(node))
+	    return emit_cout_chain(node);
 
 	// Binary operators
 	struct { const char *node_name; const char *c_op; } binops[] = {

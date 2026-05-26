@@ -1133,10 +1133,34 @@ int madc_token_to_gecko(TokenBase *tb)
         {
             TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
             if (ti) {
-                if (ti->str == "sizeof")   return GT_SIZEOF;
-                if (ti->str == "inline")   return GT_INLINE;
-                if (ti->str == "signed")   return GT_SIGNED;
-                if (ti->str == "unsigned") return GT_UNSIGNED;
+                if (ti->str == "sizeof")       return GT_SIZEOF;
+                if (ti->str == "inline")       return GT_INLINE;
+                if (ti->str == "signed")       return GT_SIGNED;
+                if (ti->str == "unsigned")     return GT_UNSIGNED;
+                if (ti->str == "string")       return GT_STRING_T;
+                if (ti->str == "auto")         return GT_AUTO;
+                if (ti->str == "bool")         return GT_BOOL;
+                if (ti->str == "_Bool")        return GT_BOOL;
+                if (ti->str == "void")         return GT_VOID;
+                if (ti->str == "char")         return GT_CHAR;
+                if (ti->str == "short")        return GT_SHORT;
+                if (ti->str == "int")          return GT_INT;
+                if (ti->str == "long")         return GT_LONG;
+                if (ti->str == "float")        return GT_FLOAT;
+                if (ti->str == "double")       return GT_DOUBLE;
+                if (ti->str == "int8_t")       return GT_INT8;
+                if (ti->str == "int16_t")      return GT_INT16;
+                if (ti->str == "int32_t")      return GT_INT32;
+                if (ti->str == "int64_t")      return GT_INT64;
+                if (ti->str == "uint8_t")      return GT_UINT8;
+                if (ti->str == "uint16_t")     return GT_UINT16;
+                if (ti->str == "uint32_t")     return GT_UINT32;
+                if (ti->str == "uint64_t")     return GT_UINT64;
+                if (ti->str == "stringstream") return GT_SSTREAM;
+                if (ti->str == "ifstream")     return GT_IFSTREAM;
+                if (ti->str == "ofstream")     return GT_OFSTREAM;
+                if (ti->str == "fstream")      return GT_FSTREAM;
+                if (ti->str == "ostream")      return GT_OSTREAM;
             }
         }
         return GT_IDENT;
