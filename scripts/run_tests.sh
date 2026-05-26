@@ -17,10 +17,14 @@
 #   --exe   Also compile each test to a native executable and run it.
 #           Failures are reported as "FAIL(exe): ..." separately.
 RUN_EXE=0
-if [ "$1" = "--exe" ]; then
-    RUN_EXE=1
-    shift
-fi
+BACKEND_FLAG=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --exe) RUN_EXE=1; shift ;;
+        --backend=*) BACKEND_FLAG="$1"; shift ;;
+        *) break ;;
+    esac
+done
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")"; pwd -P)
 REPO_ROOT=$(CDPATH= cd -- "$SCRIPT_DIR/.."; pwd -P)
@@ -47,9 +51,9 @@ for t in tests/*.mad; do
     [ -f "$argv_file" ] && read -r -a args < "$argv_file"
 
     if [ -f "$input_file" ]; then
-        out=$(timeout 5 bin/madc "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
+        out=$(timeout 5 bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" < "$input_file" 2>/dev/null)
     else
-        out=$(timeout 5 bin/madc "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
+        out=$(timeout 5 bin/madc $BACKEND_FLAG "${flags[@]}" "$t" "${args[@]}" 2>/dev/null)
     fi
     rc=$?
 
