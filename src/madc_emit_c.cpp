@@ -4056,6 +4056,17 @@ class CEmitter
 	    O("void %s(%s)\n", mangled.c_str(), full_params.c_str());
 	    indent_level = 0;
 
+	    // Check for base class — need to chain base ctor
+	    std::string base_ctor_call;
+	    if (sema) {
+		auto bit = sema->class_bases.find(class_name);
+		if (bit != sema->class_bases.end()) {
+		    std::string base = bit->second;
+		    base_ctor_call = base + "__" + base +
+			"((struct " + base + " *)__this);\n";
+		}
+	    }
+
 	    // If class has vtable, inject vptr initialization at top of ctor body
 	    std::string vptr_init;
 	    if (sema) {
@@ -4064,13 +4075,20 @@ class CEmitter
 		    vptr_init = "__this->__vptr = &" + class_name + "_vtable_instance;\n";
 	    }
 
-	    if (!vptr_init.empty() && is_an(body_node, AN_BLOCK)) {
-		// Emit block manually to inject vptr init at the top
+	    bool need_inject = !base_ctor_call.empty() || !vptr_init.empty();
+	    if (need_inject && is_an(body_node, AN_BLOCK)) {
+		// Emit block manually to inject base ctor / vptr init at the top
 		emit_indent();
 		O("{\n");
 		indent_level++;
-		emit_indent();
-		O("%s", vptr_init.c_str());
+		if (!base_ctor_call.empty()) {
+		    emit_indent();
+		    O("%s", base_ctor_call.c_str());
+		}
+		if (!vptr_init.empty()) {
+		    emit_indent();
+		    O("%s", vptr_init.c_str());
+		}
 		emit_stmt(child(body_node, 0));
 		indent_level--;
 		emit_indent();
