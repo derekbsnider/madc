@@ -274,11 +274,16 @@ static int c_string_getc(void *data)
 // Returns the exit code from main(), or -1 on compilation failure.
 // -----------------------------------------------------------------------
 
-int madc_mir_execute(const std::string &c_source, const std::string &source_name)
+int madc_mir_execute(const std::string &c_source, const std::string &source_name,
+		     int user_argc, char **user_argv)
 {
     MIR_context_t ctx = MIR_init();
     c2mir_init(ctx);
     MIR_gen_init(ctx);
+    // Use optimization level 1 (RA+combiner only) to avoid the addr-
+    // elimination pass at level >= 2 which has an SSA-version bug when
+    // a pointer variable is address-taken and then reassigned later.
+    MIR_gen_set_optimize_level(ctx, 1);
 
     struct c2mir_options opts;
     memset(&opts, 0, sizeof(opts));
@@ -329,7 +334,7 @@ int madc_mir_execute(const std::string &c_source, const std::string &source_name
 	return -1;
     }
 
-    int result = ((int (*)(void))code)();
+    int result = ((int (*)(int, char **))code)(user_argc, user_argv);
 
     MIR_gen_finish(ctx);
     c2mir_finish(ctx);

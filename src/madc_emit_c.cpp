@@ -664,8 +664,13 @@ class CEmitter
 	}
 
 	if (an == AN_ARRAY_DECL) {
-	    std::string nm = emit_declarator_str(child(node, 0));
+	    gp_tree_node *dd = child(node, 0);
+	    std::string nm = emit_declarator_str(dd);
 	    gp_tree_node *sz = child(node, 1);
+	    // Wrap in parens if the direct declarator has a pointer:
+	    // int (*a)[2] needs parens to distinguish from int *a[2]
+	    if (is_an(dd, AN_PTR_DECL) || is_an(dd, AN_REF_DECL))
+		nm = "(" + nm + ")";
 	    if (is_nil(sz)) return nm + "[]";
 	    return nm + "[" + emit_expr(sz) + "]";
 	}

@@ -38,7 +38,8 @@ extern struct gp_tree_node *madc_gecko_parse(std::deque<TokenBase *> *tokens,
 extern void madc_gecko_free_tree(struct gp_tree_node *root);
 extern std::string madc_emit_c(struct gp_tree_node *root, SemaInfo *sema);
 extern int madc_mir_execute(const std::string &c_source,
-                             const std::string &source_name);
+                             const std::string &source_name,
+                             int user_argc, char **user_argv);
 
 using namespace std;
 
@@ -578,7 +579,8 @@ int main(int argc, char **argv)
 
 	    struct timeval before, after;
 	    gettimeofday(&before, NULL);
-	    int result = madc_mir_execute(c_source, argv[filearg]);
+	    int result = madc_mir_execute(c_source, argv[filearg],
+					  argc - filearg, argv + filearg);
 	    gettimeofday(&after, NULL);
 
 	    DBG(std::cout << "Elapsed time: " << time_diff(before, after) << std::endl);
