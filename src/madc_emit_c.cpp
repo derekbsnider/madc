@@ -119,6 +119,7 @@ class CEmitter
     // Simple type tracking for cout format inference
     // 'c' = char, 's' = string/char*, 'd' = double/float, 'i' = int (default)
     std::map<std::string, char> var_types;
+    std::map<std::string, char> func_ret_types;  // function return types
 
     void O(const char *fmt, ...)
     {
@@ -578,9 +579,22 @@ class CEmitter
 	    } else {
 		// Complex expression
 		std::string e = emit_expr(v);
-		if (e[0] == '"')
+		if (!e.empty() && e[0] == '"')
 		    result += "printf(\"%s\", " + e + ")";
-		else if (is_anode(v, "cast")) {
+		else if (is_anode(v, "call")) {
+		    // Check function return type
+		    std::string fn = extract_name(child(v, 0));
+		    auto fit = func_ret_types.find(fn);
+		    char ftc = (fit != func_ret_types.end()) ? fit->second : 'i';
+		    if (ftc == 's')
+			result += "printf(\"%s\", " + e + ")";
+		    else if (ftc == 'c')
+			result += "printf(\"%c\", " + e + ")";
+		    else if (ftc == 'd')
+			result += "printf(\"%g\", (double)(" + e + "))";
+		    else
+			result += "printf(\"%lld\", (long long)(" + e + "))";
+		} else if (is_anode(v, "cast")) {
 		    // Check cast target type for format hint
 		    std::string ct = emit_type(child(v, 0));
 		    if (ct.find("char") != std::string::npos && ct.find("*") == std::string::npos)
@@ -1250,6 +1264,10 @@ class CEmitter
 	std::string full_ret = ret_type;
 	if (!ptr_str.empty())
 	    full_ret += " " + ptr_str;
+
+	// Track return type for cout format inference
+	if (!func_name.empty())
+	    func_ret_types[func_name] = classify_type(full_ret);
 
 	// Forward declaration in header
 	OH("%s %s(%s);\n", full_ret.c_str(), func_name.c_str(),
