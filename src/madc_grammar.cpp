@@ -35,6 +35,8 @@ extern "C" {
 #include "gecko.h"
 }
 
+#include "madc_anode.h"
+
 // -----------------------------------------------------------------------
 // Gecko terminal codes for madc tokens
 //
@@ -1099,6 +1101,166 @@ struct grammar *madc_create_gecko_grammar()
         gp_fin(g);
         return nullptr;
     }
+
+    // Register integer codes for all abstract node names.
+    // After this, every gp_tree_node's `aux` field holds the AnodeCode
+    // for its anode name — O(1) dispatch via an_code(node).
+    gp_set_anode_code(g, "abs_array", AN_ABS_ARRAY);
+    gp_set_anode_code(g, "abs_func", AN_ABS_FUNC);
+    gp_set_anode_code(g, "abs_ptr", AN_ABS_PTR);
+    gp_set_anode_code(g, "abs_ref", AN_ABS_REF);
+    gp_set_anode_code(g, "abs_vla", AN_ABS_VLA);
+    gp_set_anode_code(g, "access", AN_ACCESS);
+    gp_set_anode_code(g, "add", AN_ADD);
+    gp_set_anode_code(g, "add_assign", AN_ADD_ASSIGN);
+    gp_set_anode_code(g, "addrof", AN_ADDROF);
+    gp_set_anode_code(g, "alignof_type", AN_ALIGNOF_TYPE);
+    gp_set_anode_code(g, "arg_list", AN_ARG_LIST);
+    gp_set_anode_code(g, "array_decl", AN_ARRAY_DECL);
+    gp_set_anode_code(g, "arrow_member", AN_ARROW_MEMBER);
+    gp_set_anode_code(g, "assign", AN_ASSIGN);
+    gp_set_anode_code(g, "band_assign", AN_BAND_ASSIGN);
+    gp_set_anode_code(g, "bitand", AN_BITAND);
+    gp_set_anode_code(g, "bitfield", AN_BITFIELD);
+    gp_set_anode_code(g, "bitor", AN_BITOR);
+    gp_set_anode_code(g, "bitxor", AN_BITXOR);
+    gp_set_anode_code(g, "block", AN_BLOCK);
+    gp_set_anode_code(g, "bnot", AN_BNOT);
+    gp_set_anode_code(g, "bor_assign", AN_BOR_ASSIGN);
+    gp_set_anode_code(g, "break", AN_BREAK);
+    gp_set_anode_code(g, "bsl", AN_BSL);
+    gp_set_anode_code(g, "bsl_assign", AN_BSL_ASSIGN);
+    gp_set_anode_code(g, "bsr", AN_BSR);
+    gp_set_anode_code(g, "bsr_assign", AN_BSR_ASSIGN);
+    gp_set_anode_code(g, "call", AN_CALL);
+    gp_set_anode_code(g, "case", AN_CASE);
+    gp_set_anode_code(g, "case_range", AN_CASE_RANGE);
+    gp_set_anode_code(g, "cast", AN_CAST);
+    gp_set_anode_code(g, "catch", AN_CATCH);
+    gp_set_anode_code(g, "catch_all", AN_CATCH_ALL);
+    gp_set_anode_code(g, "catch_list", AN_CATCH_LIST);
+    gp_set_anode_code(g, "class_body", AN_CLASS_BODY);
+    gp_set_anode_code(g, "class_def", AN_CLASS_DEF);
+    gp_set_anode_code(g, "class_inherit", AN_CLASS_INHERIT);
+    gp_set_anode_code(g, "col_assign", AN_COL_ASSIGN);
+    gp_set_anode_code(g, "comma", AN_COMMA);
+    gp_set_anode_code(g, "compound_lit", AN_COMPOUND_LIT);
+    gp_set_anode_code(g, "continue", AN_CONTINUE);
+    gp_set_anode_code(g, "ctor", AN_CTOR);
+    gp_set_anode_code(g, "ctor_decl", AN_CTOR_DECL);
+    gp_set_anode_code(g, "decl", AN_DECL);
+    gp_set_anode_code(g, "decl_list", AN_DECL_LIST);
+    gp_set_anode_code(g, "default", AN_DEFAULT);
+    gp_set_anode_code(g, "defer", AN_DEFER);
+    gp_set_anode_code(g, "delete", AN_DELETE);
+    gp_set_anode_code(g, "delete_array", AN_DELETE_ARRAY);
+    gp_set_anode_code(g, "deref", AN_DEREF);
+    gp_set_anode_code(g, "desig_chain", AN_DESIG_CHAIN);
+    gp_set_anode_code(g, "desig_init", AN_DESIG_INIT);
+    gp_set_anode_code(g, "div", AN_DIV);
+    gp_set_anode_code(g, "div_assign", AN_DIV_ASSIGN);
+    gp_set_anode_code(g, "do_while", AN_DO_WHILE);
+    gp_set_anode_code(g, "dtor", AN_DTOR);
+    gp_set_anode_code(g, "empty_init", AN_EMPTY_INIT);
+    gp_set_anode_code(g, "enum_assign", AN_ENUM_ASSIGN);
+    gp_set_anode_code(g, "enum_def", AN_ENUM_DEF);
+    gp_set_anode_code(g, "enum_list", AN_ENUM_LIST);
+    gp_set_anode_code(g, "enum_ref", AN_ENUM_REF);
+    gp_set_anode_code(g, "eq", AN_EQ);
+    gp_set_anode_code(g, "eq3", AN_EQ3);
+    gp_set_anode_code(g, "expr_stmt", AN_EXPR_STMT);
+    gp_set_anode_code(g, "field_list", AN_FIELD_LIST);
+    gp_set_anode_code(g, "for", AN_FOR);
+    gp_set_anode_code(g, "for_decl", AN_FOR_DECL);
+    gp_set_anode_code(g, "for_range", AN_FOR_RANGE);
+    gp_set_anode_code(g, "func_decl", AN_FUNC_DECL);
+    gp_set_anode_code(g, "func_def", AN_FUNC_DEF);
+    gp_set_anode_code(g, "funcall_op", AN_FUNCALL_OP);
+    gp_set_anode_code(g, "ge", AN_GE);
+    gp_set_anode_code(g, "goto", AN_GOTO);
+    gp_set_anode_code(g, "goto_indirect", AN_GOTO_INDIRECT);
+    gp_set_anode_code(g, "gt", AN_GT);
+    gp_set_anode_code(g, "ident_list", AN_IDENT_LIST);
+    gp_set_anode_code(g, "if", AN_IF);
+    gp_set_anode_code(g, "if_else", AN_IF_ELSE);
+    gp_set_anode_code(g, "index_desig", AN_INDEX_DESIG);
+    gp_set_anode_code(g, "init_decl", AN_INIT_DECL);
+    gp_set_anode_code(g, "init_list", AN_INIT_LIST);
+    gp_set_anode_code(g, "init_seq", AN_INIT_SEQ);
+    gp_set_anode_code(g, "label", AN_LABEL);
+    gp_set_anode_code(g, "land", AN_LAND);
+    gp_set_anode_code(g, "le", AN_LE);
+    gp_set_anode_code(g, "list_type", AN_LIST_TYPE);
+    gp_set_anode_code(g, "lnot", AN_LNOT);
+    gp_set_anode_code(g, "lor", AN_LOR);
+    gp_set_anode_code(g, "lt", AN_LT);
+    gp_set_anode_code(g, "map_type", AN_MAP_TYPE);
+    gp_set_anode_code(g, "match", AN_MATCH);
+    gp_set_anode_code(g, "match_arm", AN_MATCH_ARM);
+    gp_set_anode_code(g, "match_arms", AN_MATCH_ARMS);
+    gp_set_anode_code(g, "match_pats", AN_MATCH_PATS);
+    gp_set_anode_code(g, "match_wild", AN_MATCH_WILD);
+    gp_set_anode_code(g, "member", AN_MEMBER);
+    gp_set_anode_code(g, "member_desig", AN_MEMBER_DESIG);
+    gp_set_anode_code(g, "method", AN_METHOD);
+    gp_set_anode_code(g, "method_proto", AN_METHOD_PROTO);
+    gp_set_anode_code(g, "mod", AN_MOD);
+    gp_set_anode_code(g, "mod_assign", AN_MOD_ASSIGN);
+    gp_set_anode_code(g, "mul", AN_MUL);
+    gp_set_anode_code(g, "mul_assign", AN_MUL_ASSIGN);
+    gp_set_anode_code(g, "name", AN_NAME);
+    gp_set_anode_code(g, "namespace_def", AN_NAMESPACE_DEF);
+    gp_set_anode_code(g, "ne", AN_NE);
+    gp_set_anode_code(g, "neg", AN_NEG);
+    gp_set_anode_code(g, "new_ctor", AN_NEW_CTOR);
+    gp_set_anode_code(g, "new_plain", AN_NEW_PLAIN);
+    gp_set_anode_code(g, "ns_call", AN_NS_CALL);
+    gp_set_anode_code(g, "ns_name", AN_NS_NAME);
+    gp_set_anode_code(g, "oper_method", AN_OPER_METHOD);
+    gp_set_anode_code(g, "param", AN_PARAM);
+    gp_set_anode_code(g, "param_list", AN_PARAM_LIST);
+    gp_set_anode_code(g, "param_va", AN_PARAM_VA);
+    gp_set_anode_code(g, "paren", AN_PAREN);
+    gp_set_anode_code(g, "pos", AN_POS);
+    gp_set_anode_code(g, "post_dec", AN_POST_DEC);
+    gp_set_anode_code(g, "post_inc", AN_POST_INC);
+    gp_set_anode_code(g, "pre_dec", AN_PRE_DEC);
+    gp_set_anode_code(g, "pre_inc", AN_PRE_INC);
+    gp_set_anode_code(g, "prefer", AN_PREFER);
+    gp_set_anode_code(g, "ptr_decl", AN_PTR_DECL);
+    gp_set_anode_code(g, "qual", AN_QUAL);
+    gp_set_anode_code(g, "qual_list", AN_QUAL_LIST);
+    gp_set_anode_code(g, "ref_decl", AN_REF_DECL);
+    gp_set_anode_code(g, "return_multi", AN_RETURN_MULTI);
+    gp_set_anode_code(g, "return_val", AN_RETURN_VAL);
+    gp_set_anode_code(g, "set_type", AN_SET_TYPE);
+    gp_set_anode_code(g, "sizeof_expr", AN_SIZEOF_EXPR);
+    gp_set_anode_code(g, "sizeof_type", AN_SIZEOF_TYPE);
+    gp_set_anode_code(g, "star", AN_STAR);
+    gp_set_anode_code(g, "stars", AN_STARS);
+    gp_set_anode_code(g, "stmt_list", AN_STMT_LIST);
+    gp_set_anode_code(g, "struct_body", AN_STRUCT_BODY);
+    gp_set_anode_code(g, "struct_def", AN_STRUCT_DEF);
+    gp_set_anode_code(g, "struct_field", AN_STRUCT_FIELD);
+    gp_set_anode_code(g, "struct_ref", AN_STRUCT_REF);
+    gp_set_anode_code(g, "sub", AN_SUB);
+    gp_set_anode_code(g, "sub_assign", AN_SUB_ASSIGN);
+    gp_set_anode_code(g, "subscript", AN_SUBSCRIPT);
+    gp_set_anode_code(g, "subscript_op", AN_SUBSCRIPT_OP);
+    gp_set_anode_code(g, "switch", AN_SWITCH);
+    gp_set_anode_code(g, "ternary", AN_TERNARY);
+    gp_set_anode_code(g, "three_way", AN_THREE_WAY);
+    gp_set_anode_code(g, "throw", AN_THROW);
+    gp_set_anode_code(g, "throw_expr", AN_THROW_EXPR);
+    gp_set_anode_code(g, "try", AN_TRY);
+    gp_set_anode_code(g, "tu", AN_TU);
+    gp_set_anode_code(g, "type_name", AN_TYPE_NAME);
+    gp_set_anode_code(g, "using_decl", AN_USING_DECL);
+    gp_set_anode_code(g, "using_ns", AN_USING_NS);
+    gp_set_anode_code(g, "vector_type", AN_VECTOR_TYPE);
+    gp_set_anode_code(g, "vla_decl", AN_VLA_DECL);
+    gp_set_anode_code(g, "while", AN_WHILE);
+    gp_set_anode_code(g, "xor_assign", AN_XOR_ASSIGN);
 
     return g;
 }

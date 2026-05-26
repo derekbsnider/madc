@@ -34,6 +34,7 @@ extern "C" {
 }
 
 #include "madc_sema.h"
+#include "madc_anode.h"
 
 // -----------------------------------------------------------------------
 // Helpers for accessing Gecko AST nodes
@@ -316,10 +317,10 @@ class CEmitter
 
 	if (node->type != GP_ANODE) return "int";
 
-	const char *name = anode_name(node);
+	int an = an_code(node);
 
 	// qual(specifier, rest) — recursive declaration_specifiers chain
-	if (strcmp(name, "qual") == 0) {
+	if (an == AN_QUAL) {
 	    std::string spec = emit_type(child(node, 0));
 	    gp_tree_node *rest = child(node, 1);
 	    if (is_nil(rest)) return spec;
@@ -330,14 +331,14 @@ class CEmitter
 	}
 
 	// struct/union reference: struct foo
-	if (strcmp(name, "struct_ref") == 0) {
+	if (an == AN_STRUCT_REF) {
 	    std::string su = term_text(child(node, 0));  // "struct" or "union"
 	    std::string nm = term_text(child(node, 1));
 	    return su + " " + nm;
 	}
 
 	// struct/union definition (inline): struct foo { ... }
-	if (strcmp(name, "struct_def") == 0) {
+	if (an == AN_STRUCT_DEF) {
 	    std::string su = term_text(child(node, 0));
 	    gp_tree_node *nm = child(node, 1);
 	    std::string sname = is_nil(nm) ? "" : (" " + term_text(nm));
@@ -348,11 +349,11 @@ class CEmitter
 	}
 
 	// enum reference: enum foo
-	if (strcmp(name, "enum_ref") == 0)
+	if (an == AN_ENUM_REF)
 	    return "enum " + term_text(child(node, 0));
 
 	// enum definition (inline) — emit the full body
-	if (strcmp(name, "enum_def") == 0) {
+	if (an == AN_ENUM_DEF) {
 	    gp_tree_node *nm = child(node, 0);
 	    std::string ename = is_nil(nm) ? "" : (" " + term_text(nm));
 	    std::string result = "enum" + ename + " { ";
@@ -362,7 +363,7 @@ class CEmitter
 	}
 
 	// type_name(specifier_qualifier_list, abstract_declarator_opt)
-	if (strcmp(name, "type_name") == 0) {
+	if (an == AN_TYPE_NAME) {
 	    std::string base = emit_type(child(node, 0));
 	    gp_tree_node *abs = child(node, 1);
 	    if (is_nil(abs)) return base;
@@ -370,15 +371,13 @@ class CEmitter
 	}
 
 	// container types
-	if (strcmp(name, "vector_type") == 0 ||
-	    strcmp(name, "set_type") == 0 ||
-	    strcmp(name, "list_type") == 0)
+	if (an == AN_VECTOR_TYPE || an == AN_SET_TYPE || an == AN_LIST_TYPE)
 	    return "void *";  // TODO: proper container support
-	if (strcmp(name, "map_type") == 0)
+	if (an == AN_MAP_TYPE)
 	    return "void *";
 
 	// Legacy compatibility
-	if (strcmp(name, "qual_list") == 0) {
+	if (an == AN_QUAL_LIST) {
 	    return emit_type(child(node, 0)) + " " + emit_type(child(node, 1));
 	}
 
@@ -389,7 +388,7 @@ class CEmitter
     std::string emit_struct_body_inline(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return "";
-	if (is_anode(node, "struct_body"))
+	if (is_an(node, AN_STRUCT_BODY))
 	    return emit_struct_body_inline(child(node, 0)) + " " +
 		   emit_struct_field_inline(child(node, 1));
 	return emit_struct_field_inline(node);
@@ -398,7 +397,7 @@ class CEmitter
     std::string emit_struct_field_inline(gp_tree_node *node)
     {
 	if (!node) return "";
-	if (is_anode(node, "struct_field")) {
+	if (is_an(node, AN_STRUCT_FIELD)) {
 	    std::string type = emit_type(child(node, 0));
 	    std::string decls = emit_declarator_str(child(node, 1));
 	    return type + " " + decls + ";";
@@ -410,7 +409,7 @@ class CEmitter
     std::string emit_enum_body_inline(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return "";
-	if (is_anode(node, "enum_list"))
+	if (is_an(node, AN_ENUM_LIST))
 	    return emit_enum_body_inline(child(node, 0)) + ", " +
 		   emit_enum_val_inline(child(node, 1));
 	return emit_enum_val_inline(node);
@@ -421,7 +420,7 @@ class CEmitter
 	if (!node) return "";
 	if (node->type == GP_TERM)
 	    return term_text(node);
-	if (is_anode(node, "enum_assign"))
+	if (is_an(node, AN_ENUM_ASSIGN))
 	    return term_text(child(node, 0)) + " = " + emit_expr(child(node, 1));
 	return "";
     }
@@ -434,13 +433,13 @@ class CEmitter
     {
 	if (!node || node->type == GP_NIL) return "";
 
-	if (is_anode(node, "star")) {
+	if (is_an(node, AN_STAR)) {
 	    gp_tree_node *quals = child(node, 0);
 	    if (!is_nil(quals))
 		return "* " + emit_type(quals) + " ";
 	    return "*";
 	}
-	if (is_anode(node, "stars")) {
+	if (is_an(node, AN_STARS)) {
 	    gp_tree_node *quals = child(node, 0);
 	    std::string s = "*";
 	    if (!is_nil(quals))
@@ -459,16 +458,16 @@ class CEmitter
 	if (!node || node->type == GP_NIL) return "";
 
 	if (node->type == GP_ANODE) {
-	    const char *name = anode_name(node);
-	    if (strcmp(name, "star") == 0 || strcmp(name, "stars") == 0)
+	    int an = an_code(node);
+	    if (an == AN_STAR || an == AN_STARS)
 		return emit_pointer(node);
-	    if (strcmp(name, "abs_ref") == 0)
+	    if (an == AN_ABS_REF)
 		return "*";  // refs → pointers in C
-	    if (strcmp(name, "abs_ptr") == 0)
+	    if (an == AN_ABS_PTR)
 		return emit_pointer(child(node, 0));
-	    if (strcmp(name, "abs_func") == 0)
+	    if (an == AN_ABS_FUNC)
 		return "(*)(void)";  // function pointer abstract
-	    if (strcmp(name, "abs_array") == 0)
+	    if (an == AN_ABS_ARRAY)
 		return "[]";
 	}
 	return "";
@@ -483,14 +482,14 @@ class CEmitter
     {
 	if (!node) return "";
 	if (node->type == GP_TERM) return term_text(node);
-	const char *name = anode_name(node);
-	if (strcmp(name, "ptr_decl") == 0)
+	int an = an_code(node);
+	if (an == AN_PTR_DECL)
 	    return extract_name(child(node, 1));
-	if (strcmp(name, "ref_decl") == 0)
+	if (an == AN_REF_DECL)
 	    return extract_name(child(node, 0));
-	if (strcmp(name, "func_decl") == 0)
+	if (an == AN_FUNC_DECL)
 	    return extract_name(child(node, 0));
-	if (strcmp(name, "array_decl") == 0)
+	if (an == AN_ARRAY_DECL)
 	    return extract_name(child(node, 0));
 	// Fallback: try first child
 	if (nchildren(node) > 0)
@@ -505,45 +504,45 @@ class CEmitter
 	if (!node) return "";
 	if (node->type == GP_TERM) return term_text(node);
 
-	const char *name = anode_name(node);
+	int an = an_code(node);
 
-	if (strcmp(name, "ptr_decl") == 0)
+	if (an == AN_PTR_DECL)
 	    return emit_pointer(child(node, 0)) + emit_declarator_str(child(node, 1));
 
-	if (strcmp(name, "ref_decl") == 0)
+	if (an == AN_REF_DECL)
 	    return "*" + emit_declarator_str(child(node, 0));  // refs → pointers in C
 
-	if (strcmp(name, "func_decl") == 0) {
+	if (an == AN_FUNC_DECL) {
 	    gp_tree_node *dd = child(node, 0);
 	    std::string nm = emit_declarator_str(dd);
 	    std::string params = emit_param_list(child(node, 1));
 	    // Wrap in parens if the direct declarator has a pointer
 	    // (needed for function pointer declarators: int (*fp)(int))
-	    if (is_anode(dd, "ptr_decl") || is_anode(dd, "ref_decl"))
+	    if (is_an(dd, AN_PTR_DECL) || is_an(dd, AN_REF_DECL))
 		return "(" + nm + ")(" + params + ")";
 	    return nm + "(" + params + ")";
 	}
 
-	if (strcmp(name, "array_decl") == 0) {
+	if (an == AN_ARRAY_DECL) {
 	    std::string nm = emit_declarator_str(child(node, 0));
 	    gp_tree_node *sz = child(node, 1);
 	    if (is_nil(sz)) return nm + "[]";
 	    return nm + "[" + emit_expr(sz) + "]";
 	}
 
-	if (strcmp(name, "vla_decl") == 0)
+	if (an == AN_VLA_DECL)
 	    return emit_declarator_str(child(node, 0)) + "[*]";
 
 	// init_decl — declarator = initializer
-	if (strcmp(name, "init_decl") == 0)
+	if (an == AN_INIT_DECL)
 	    return emit_declarator_str(child(node, 0)) + " = " + emit_expr(child(node, 1));
 
 	// decl_list / field_list — multiple declarators
-	if (strcmp(name, "decl_list") == 0 || strcmp(name, "field_list") == 0)
+	if (an == AN_DECL_LIST || an == AN_FIELD_LIST)
 	    return emit_declarator_str(child(node, 0)) + ", " + emit_declarator_str(child(node, 1));
 
 	// bitfield
-	if (strcmp(name, "bitfield") == 0) {
+	if (an == AN_BITFIELD) {
 	    gp_tree_node *d = child(node, 0);
 	    std::string nm = is_nil(d) ? "" : emit_declarator_str(d);
 	    return nm + " : " + emit_expr(child(node, 1));
@@ -572,47 +571,47 @@ class CEmitter
 	}
 
 	if (node->type != GP_ANODE) return TC_INT;
-	const char *nm = anode_name(node);
+	int an = an_code(node);
 
 	// Deref: *p where p is char* → char
-	if (strcmp(nm, "deref") == 0) {
+	if (an == AN_DEREF) {
 	    TypeClass inner = infer_expr_cout_type(child(node, 0));
 	    if (inner == TC_STRING) return TC_CHAR;  // deref string/char* → char
 	    return TC_INT;
 	}
 
 	// Subscript: a[i] where a is char* → char
-	if (strcmp(nm, "subscript") == 0) {
+	if (an == AN_SUBSCRIPT) {
 	    TypeClass inner = infer_expr_cout_type(child(node, 0));
 	    if (inner == TC_STRING) return TC_CHAR;
 	    return TC_INT;
 	}
 
 	// Cast — check target type
-	if (strcmp(nm, "cast") == 0) {
+	if (an == AN_CAST) {
 	    std::string ct = emit_type(child(node, 0));
 	    return classify_type(ct);
 	}
 
 	// Function call — check return type
-	if (strcmp(nm, "call") == 0) {
+	if (an == AN_CALL) {
 	    std::string fn = extract_name(child(node, 0));
 	    return lookup_func_ret_type(fn);
 	}
 
 	// Parenthesized
-	if (strcmp(nm, "paren") == 0)
+	if (an == AN_PAREN)
 	    return infer_expr_cout_type(child(node, 0));
 
 	// Arithmetic — pointer arithmetic preserves pointer type
-	if (strcmp(nm, "add") == 0 || strcmp(nm, "sub") == 0) {
+	if (an == AN_ADD || an == AN_SUB) {
 	    TypeClass l = infer_expr_cout_type(child(node, 0));
 	    TypeClass r = infer_expr_cout_type(child(node, 1));
 	    if (l == TC_STRING || r == TC_STRING) return TC_STRING;  // ptr + int = ptr
 	    if (l == TC_DOUBLE || r == TC_DOUBLE) return TC_DOUBLE;
 	    return TC_INT;
 	}
-	if (strcmp(nm, "mul") == 0 || strcmp(nm, "div") == 0) {
+	if (an == AN_MUL || an == AN_DIV) {
 	    TypeClass l = infer_expr_cout_type(child(node, 0));
 	    TypeClass r = infer_expr_cout_type(child(node, 1));
 	    if (l == TC_DOUBLE || r == TC_DOUBLE) return TC_DOUBLE;
@@ -620,31 +619,31 @@ class CEmitter
 	}
 
 	// Assignment — type of LHS
-	if (strcmp(nm, "assign") == 0)
+	if (an == AN_ASSIGN)
 	    return infer_expr_cout_type(child(node, 0));
 
 	// Address-of — produces a pointer
-	if (strcmp(nm, "addrof") == 0) {
+	if (an == AN_ADDROF) {
 	    TypeClass inner = infer_expr_cout_type(child(node, 0));
 	    if (inner == TC_CHAR) return TC_STRING;  // &char → char*
 	    return TC_INT;  // &int → int* (print as int)
 	}
 
 	// Member access — default to int for now
-	if (strcmp(nm, "member") == 0 || strcmp(nm, "arrow_member") == 0)
+	if (an == AN_MEMBER || an == AN_ARROW_MEMBER)
 	    return TC_INT;
 
 	// Ternary — type of true branch
-	if (strcmp(nm, "ternary") == 0)
+	if (an == AN_TERNARY)
 	    return infer_expr_cout_type(child(node, 1));
 
 	// Pre/post inc/dec — same as operand
-	if (strcmp(nm, "pre_inc") == 0 || strcmp(nm, "pre_dec") == 0 ||
-	    strcmp(nm, "post_inc") == 0 || strcmp(nm, "post_dec") == 0)
+	if (an == AN_PRE_INC || an == AN_PRE_DEC ||
+	    an == AN_POST_INC || an == AN_POST_DEC)
 	    return infer_expr_cout_type(child(node, 0));
 
 	// Neg — same as operand
-	if (strcmp(nm, "neg") == 0)
+	if (an == AN_NEG)
 	    return infer_expr_cout_type(child(node, 0));
 
 	return TC_INT;
@@ -665,7 +664,7 @@ class CEmitter
 	if (node->type == GP_TERM && term_code(node) == GT_IDENT)
 	    return term_text(node) == "cout";
 	// Paren-wrapped: (cout << ...)
-	if (is_anode(node, "paren"))
+	if (is_an(node, AN_PAREN))
 	    return is_cout_chain(child(node, 0));
 	return false;
     }
@@ -675,9 +674,9 @@ class CEmitter
     {
 	if (!node) return false;
 	if (node->type == GP_TERM) return is_cout(node);
-	if (is_anode(node, "paren"))
+	if (is_an(node, AN_PAREN))
 	    return is_cout_chain(child(node, 0));
-	if (!is_anode(node, "bsl")) return false;
+	if (!is_an(node, AN_BSL)) return false;
 	gp_tree_node *lhs = child(node, 0);
 	return is_cout(lhs) || is_cout_chain(lhs);
     }
@@ -687,19 +686,19 @@ class CEmitter
 			     std::vector<gp_tree_node *> &vals)
     {
 	if (!node) return;
-	if (is_anode(node, "paren")) {
+	if (is_an(node, AN_PAREN)) {
 	    collect_cout_values(child(node, 0), vals);
 	    return;
 	}
-	if (!is_anode(node, "bsl")) return;
+	if (!is_an(node, AN_BSL)) return;
 
 	gp_tree_node *lhs = child(node, 0);
 	gp_tree_node *rhs = child(node, 1);
 
 	// Recurse into left side (cout or more bsl's)
-	if (is_anode(lhs, "bsl") && is_cout_chain(lhs))
+	if (is_an(lhs, AN_BSL) && is_cout_chain(lhs))
 	    collect_cout_values(lhs, vals);
-	else if (is_anode(lhs, "paren") && is_cout_chain(lhs))
+	else if (is_an(lhs, AN_PAREN) && is_cout_chain(lhs))
 	    collect_cout_values(child(lhs, 0), vals);
 	// else: lhs is "cout" — skip it
 
@@ -826,77 +825,77 @@ class CEmitter
 	    return term_text(node);
 	}
 
-	const char *name = anode_name(node);
+	int an = an_code(node);
 
 	// Parenthesized expression
-	if (strcmp(name, "paren") == 0)
+	if (an == AN_PAREN)
 	    return "(" + emit_expr(child(node, 0)) + ")";
 
 	// cout << expr << endl → C output calls
-	if (strcmp(name, "bsl") == 0 && is_cout_chain(node))
+	if (an == AN_BSL && is_cout_chain(node))
 	    return emit_cout_chain(node);
 
 	// Binary operators
-	struct { const char *node_name; const char *c_op; } binops[] = {
-	    {"add", "+"}, {"sub", "-"}, {"mul", "*"}, {"div", "/"},
-	    {"mod", "%"}, {"bsl", "<<"}, {"bsr", ">>"},
-	    {"bitand", "&"}, {"bitor", "|"}, {"bitxor", "^"},
-	    {"lor", "||"}, {"land", "&&"},
-	    {"eq", "=="}, {"ne", "!="}, {"lt", "<"}, {"gt", ">"},
-	    {"le", "<="}, {"ge", ">="}, {"three_way", "-"},
-	    {"eq3", "==="},
-	    {nullptr, nullptr}
+	struct { int code; const char *c_op; } binops[] = {
+	    {AN_ADD, "+"}, {AN_SUB, "-"}, {AN_MUL, "*"}, {AN_DIV, "/"},
+	    {AN_MOD, "%"}, {AN_BSL, "<<"}, {AN_BSR, ">>"},
+	    {AN_BITAND, "&"}, {AN_BITOR, "|"}, {AN_BITXOR, "^"},
+	    {AN_LOR, "||"}, {AN_LAND, "&&"},
+	    {AN_EQ, "=="}, {AN_NE, "!="}, {AN_LT, "<"}, {AN_GT, ">"},
+	    {AN_LE, "<="}, {AN_GE, ">="}, {AN_THREE_WAY, "-"},
+	    {AN_EQ3, "==="},
+	    {AN_NONE, nullptr}
 	};
-	for (int i = 0; binops[i].node_name; i++) {
-	    if (strcmp(name, binops[i].node_name) == 0)
+	for (int i = 0; binops[i].c_op; i++) {
+	    if (an == binops[i].code)
 		return "(" + emit_expr(child(node, 0)) + " " +
 		       binops[i].c_op + " " +
 		       emit_expr(child(node, 1)) + ")";
 	}
 
 	// Assignment operators
-	struct { const char *node_name; const char *c_op; } assigns[] = {
-	    {"assign", "="}, {"add_assign", "+="}, {"sub_assign", "-="},
-	    {"mul_assign", "*="}, {"div_assign", "/="}, {"mod_assign", "%="},
-	    {"bsl_assign", "<<="}, {"bsr_assign", ">>="}, {"band_assign", "&="},
-	    {"bor_assign", "|="}, {"xor_assign", "^="},
-	    {nullptr, nullptr}
+	struct { int code; const char *c_op; } assigns[] = {
+	    {AN_ASSIGN, "="}, {AN_ADD_ASSIGN, "+="}, {AN_SUB_ASSIGN, "-="},
+	    {AN_MUL_ASSIGN, "*="}, {AN_DIV_ASSIGN, "/="}, {AN_MOD_ASSIGN, "%="},
+	    {AN_BSL_ASSIGN, "<<="}, {AN_BSR_ASSIGN, ">>="}, {AN_BAND_ASSIGN, "&="},
+	    {AN_BOR_ASSIGN, "|="}, {AN_XOR_ASSIGN, "^="},
+	    {AN_NONE, nullptr}
 	};
-	for (int i = 0; assigns[i].node_name; i++) {
-	    if (strcmp(name, assigns[i].node_name) == 0)
+	for (int i = 0; assigns[i].c_op; i++) {
+	    if (an == assigns[i].code)
 		return emit_expr(child(node, 0)) + " " +
 		       assigns[i].c_op + " " +
 		       emit_expr(child(node, 1));
 	}
 
 	// Unary operators
-	if (strcmp(name, "neg") == 0)     return "(-" + emit_expr(child(node, 0)) + ")";
-	if (strcmp(name, "pos") == 0)     return "(+" + emit_expr(child(node, 0)) + ")";
-	if (strcmp(name, "lnot") == 0)    return "(!" + emit_expr(child(node, 0)) + ")";
-	if (strcmp(name, "bnot") == 0)    return "(~" + emit_expr(child(node, 0)) + ")";
-	if (strcmp(name, "deref") == 0)   return "(*" + emit_expr(child(node, 0)) + ")";
-	if (strcmp(name, "addrof") == 0)  return "(&" + emit_expr(child(node, 0)) + ")";
-	if (strcmp(name, "pre_inc") == 0) return "(++" + emit_expr(child(node, 0)) + ")";
-	if (strcmp(name, "pre_dec") == 0) return "(--" + emit_expr(child(node, 0)) + ")";
-	if (strcmp(name, "post_inc") == 0) return "(" + emit_expr(child(node, 0)) + "++)";
-	if (strcmp(name, "post_dec") == 0) return "(" + emit_expr(child(node, 0)) + "--)";
+	if (an == AN_NEG)      return "(-" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_POS)      return "(+" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_LNOT)     return "(!" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_BNOT)     return "(~" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_DEREF)    return "(*" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_ADDROF)   return "(&" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_PRE_INC)  return "(++" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_PRE_DEC)  return "(--" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_POST_INC) return "(" + emit_expr(child(node, 0)) + "++)";
+	if (an == AN_POST_DEC) return "(" + emit_expr(child(node, 0)) + "--)";
 
 	// Ternary
-	if (strcmp(name, "ternary") == 0)
+	if (an == AN_TERNARY)
 	    return "(" + emit_expr(child(node, 0)) + " ? " +
 		   emit_expr(child(node, 1)) + " : " +
 		   emit_expr(child(node, 2)) + ")";
 
 	// Function call
-	if (strcmp(name, "call") == 0) {
+	if (an == AN_CALL) {
 	    gp_tree_node *callee = child(node, 0);
 	    std::string args = emit_arg_list(child(node, 1));
 
 	    // Handle method calls: call(member(obj, method), args)
-	    if (is_anode(callee, "member") || is_anode(callee, "arrow_member")) {
+	    if (is_an(callee, AN_MEMBER) || is_an(callee, AN_ARROW_MEMBER)) {
 		std::string obj = emit_expr(child(callee, 0));
 		std::string method = term_text(child(callee, 1));
-		bool is_arrow = is_anode(callee, "arrow_member");
+		bool is_arrow = is_an(callee, AN_ARROW_MEMBER);
 
 		// String methods: c_str() → identity (string is already char*)
 		if (method == "c_str") return obj;
@@ -944,17 +943,17 @@ class CEmitter
 	}
 
 	// Member access
-	if (strcmp(name, "member") == 0)
+	if (an == AN_MEMBER)
 	    return emit_expr(child(node, 0)) + "." + term_text(child(node, 1));
-	if (strcmp(name, "arrow_member") == 0)
+	if (an == AN_ARROW_MEMBER)
 	    return emit_expr(child(node, 0)) + "->" + term_text(child(node, 1));
 
 	// Subscript
-	if (strcmp(name, "subscript") == 0)
+	if (an == AN_SUBSCRIPT)
 	    return emit_expr(child(node, 0)) + "[" + emit_expr(child(node, 1)) + "]";
 
 	// Namespace call: ns::func(args)
-	if (strcmp(name, "ns_call") == 0) {
+	if (an == AN_NS_CALL) {
 	    std::string ns = term_text(child(node, 0));
 	    std::string func = term_text(child(node, 1));
 	    std::string args = emit_arg_list(child(node, 2));
@@ -962,7 +961,7 @@ class CEmitter
 	    ns_funcs_used.insert(mangled);
 	    return mangled + "(" + args + ")";
 	}
-	if (strcmp(name, "ns_name") == 0) {
+	if (an == AN_NS_NAME) {
 	    std::string ns = term_text(child(node, 0));
 	    std::string func = term_text(child(node, 1));
 	    std::string mangled = "__" + ns_prefix(ns) + "_" + func;
@@ -971,43 +970,43 @@ class CEmitter
 	}
 
 	// Cast: (type)expr
-	if (strcmp(name, "cast") == 0)
+	if (an == AN_CAST)
 	    return "((" + emit_type(child(node, 0)) + ")" +
 		   emit_expr(child(node, 1)) + ")";
 
 	// sizeof
-	if (strcmp(name, "sizeof_type") == 0)
+	if (an == AN_SIZEOF_TYPE)
 	    return "sizeof(" + emit_type(child(node, 0)) + ")";
-	if (strcmp(name, "sizeof_expr") == 0)
+	if (an == AN_SIZEOF_EXPR)
 	    return "sizeof(" + emit_expr(child(node, 0)) + ")";
 
 	// new/delete
-	if (strcmp(name, "new_plain") == 0)
+	if (an == AN_NEW_PLAIN)
 	    return "malloc(sizeof(" + term_text(child(node, 0)) + "_t))";
-	if (strcmp(name, "new_ctor") == 0)
+	if (an == AN_NEW_CTOR)
 	    return "malloc(sizeof(" + term_text(child(node, 0)) + "_t))";
 
 	// Comma operator
-	if (strcmp(name, "comma") == 0)
+	if (an == AN_COMMA)
 	    return "(" + emit_expr(child(node, 0)) + ", " +
 		   emit_expr(child(node, 1)) + ")";
 
 	// Compound literal
-	if (strcmp(name, "compound_lit") == 0)
+	if (an == AN_COMPOUND_LIT)
 	    return "((" + emit_type(child(node, 0)) + "){" +
 		   emit_init_list(child(node, 1)) + "})";
 
 	// Initializer list in expression context
-	if (strcmp(name, "init_list") == 0)
+	if (an == AN_INIT_LIST)
 	    return "{" + emit_init_list(child(node, 0)) + "}";
-	if (strcmp(name, "empty_init") == 0)
+	if (an == AN_EMPTY_INIT)
 	    return "{0}";
 
 	// Fallback: if it has children, try first child
 	if (nchildren(node) > 0)
 	    return emit_expr(child(node, 0));
 
-	return "/* unknown expr: " + std::string(name) + " */0";
+	return "/* unknown expr: " + std::string(anode_name(node)) + " */0";
     }
 
     // Emit argument list (flattened from nested arg_list nodes)
@@ -1015,7 +1014,7 @@ class CEmitter
     {
 	if (!node || node->type == GP_NIL) return "";
 	if (node->type == GP_TERM) return emit_expr(node);
-	if (!is_anode(node, "arg_list"))
+	if (!is_an(node, AN_ARG_LIST))
 	    return emit_expr(node);
 	return emit_arg_list(child(node, 0)) + ", " +
 	       emit_expr(child(node, 1));
@@ -1027,7 +1026,7 @@ class CEmitter
 	if (!node || node->type == GP_NIL) return "";
 
 	// desig_init(designation_opt, initializer)
-	if (is_anode(node, "desig_init")) {
+	if (is_an(node, AN_DESIG_INIT)) {
 	    gp_tree_node *desig = child(node, 0);
 	    std::string val = emit_init_item(child(node, 1));
 	    if (!is_nil(desig))
@@ -1036,7 +1035,7 @@ class CEmitter
 	}
 
 	// init_seq(prev_list, designation_opt, initializer)
-	if (is_anode(node, "init_seq")) {
+	if (is_an(node, AN_INIT_SEQ)) {
 	    std::string prev = emit_init_list(child(node, 0));
 	    gp_tree_node *desig = child(node, 1);
 	    std::string val = emit_init_item(child(node, 2));
@@ -1054,9 +1053,9 @@ class CEmitter
     std::string emit_init_item(gp_tree_node *node)
     {
 	if (!node) return "0";
-	if (is_anode(node, "init_list"))
+	if (is_an(node, AN_INIT_LIST))
 	    return "{" + emit_init_list(child(node, 0)) + "}";
-	if (is_anode(node, "empty_init"))
+	if (is_an(node, AN_EMPTY_INIT))
 	    return "{0}";
 	return emit_expr(node);
     }
@@ -1064,11 +1063,11 @@ class CEmitter
     std::string emit_designator(gp_tree_node *node)
     {
 	if (!node) return "";
-	if (is_anode(node, "member_desig"))
+	if (is_an(node, AN_MEMBER_DESIG))
 	    return "." + term_text(child(node, 0));
-	if (is_anode(node, "index_desig"))
+	if (is_an(node, AN_INDEX_DESIG))
 	    return "[" + emit_expr(child(node, 0)) + "]";
-	if (is_anode(node, "desig_chain"))
+	if (is_an(node, AN_DESIG_CHAIN))
 	    return emit_designator(child(node, 0)) + emit_designator(child(node, 1));
 	return "";
     }
@@ -1087,17 +1086,17 @@ class CEmitter
 	    return;
 	}
 
-	const char *name = anode_name(node);
+	int an = an_code(node);
 
 	// Statement list
-	if (strcmp(name, "stmt_list") == 0) {
+	if (an == AN_STMT_LIST) {
 	    emit_stmt(child(node, 0));
 	    emit_stmt(child(node, 1));
 	    return;
 	}
 
 	// Expression statement
-	if (strcmp(name, "expr_stmt") == 0) {
+	if (an == AN_EXPR_STMT) {
 	    gp_tree_node *e = child(node, 0);
 	    if (!is_nil(e)) {
 		emit_indent();
@@ -1110,7 +1109,7 @@ class CEmitter
 	}
 
 	// Block
-	if (strcmp(name, "block") == 0) {
+	if (an == AN_BLOCK) {
 	    emit_indent();
 	    O("{\n");
 	    indent_level++;
@@ -1122,13 +1121,13 @@ class CEmitter
 	}
 
 	// Declaration (inside function body)
-	if (strcmp(name, "decl") == 0) {
+	if (an == AN_DECL) {
 	    emit_decl_stmt(node);
 	    return;
 	}
 
 	// Constructor-call declaration: ClassName var(args);
-	if (strcmp(name, "ctor_decl") == 0) {
+	if (an == AN_CTOR_DECL) {
 	    std::string type = emit_type(child(node, 0));
 	    std::string vname = term_text(child(node, 1));
 	    std::string args = emit_arg_list(child(node, 2));
@@ -1152,7 +1151,7 @@ class CEmitter
 	}
 
 	// If/else
-	if (strcmp(name, "if") == 0) {
+	if (an == AN_IF) {
 	    emit_indent();
 	    O("if (%s)\n", emit_expr(child(node, 0)).c_str());
 	    indent_level++;
@@ -1160,7 +1159,7 @@ class CEmitter
 	    indent_level--;
 	    return;
 	}
-	if (strcmp(name, "if_else") == 0) {
+	if (an == AN_IF_ELSE) {
 	    emit_indent();
 	    O("if (%s)\n", emit_expr(child(node, 0)).c_str());
 	    indent_level++;
@@ -1175,7 +1174,7 @@ class CEmitter
 	}
 
 	// While
-	if (strcmp(name, "while") == 0) {
+	if (an == AN_WHILE) {
 	    emit_indent();
 	    O("while (%s)\n", emit_expr(child(node, 0)).c_str());
 	    indent_level++;
@@ -1185,7 +1184,7 @@ class CEmitter
 	}
 
 	// Do-while
-	if (strcmp(name, "do_while") == 0) {
+	if (an == AN_DO_WHILE) {
 	    emit_indent();
 	    O("do\n");
 	    indent_level++;
@@ -1197,7 +1196,7 @@ class CEmitter
 	}
 
 	// For loop
-	if (strcmp(name, "for") == 0) {
+	if (an == AN_FOR) {
 	    // for(expr; expr; expr) stmt
 	    emit_indent();
 	    std::string init = is_nil(child(node, 0)) ? "" : emit_expr(child(node, 0));
@@ -1209,7 +1208,7 @@ class CEmitter
 	    indent_level--;
 	    return;
 	}
-	if (strcmp(name, "for_decl") == 0) {
+	if (an == AN_FOR_DECL) {
 	    // for(decl; expr; expr) stmt
 	    emit_indent();
 	    std::string init = emit_decl_inline(child(node, 0));
@@ -1223,7 +1222,7 @@ class CEmitter
 	}
 
 	// Return — inject destructor calls before returning
-	if (strcmp(name, "return_val") == 0) {
+	if (an == AN_RETURN_VAL) {
 	    // Call destructors in LIFO order
 	    for (int i = (int)scope_class_vars.size() - 1; i >= 0; i--) {
 		size_t sep = scope_class_vars[i].find('|');
@@ -1242,28 +1241,28 @@ class CEmitter
 		O("return %s;\n", emit_expr(val).c_str());
 	    return;
 	}
-	if (strcmp(name, "return_multi") == 0) {
+	if (an == AN_RETURN_MULTI) {
 	    emit_indent();
 	    O("return %s;\n", emit_expr(child(node, 0)).c_str());
 	    return;
 	}
 
 	// Break / Continue
-	if (strcmp(name, "break") == 0)    { emit_indent(); O("break;\n"); return; }
-	if (strcmp(name, "continue") == 0) { emit_indent(); O("continue;\n"); return; }
+	if (an == AN_BREAK)    { emit_indent(); O("break;\n"); return; }
+	if (an == AN_CONTINUE) { emit_indent(); O("continue;\n"); return; }
 
 	// Goto / Label
-	if (strcmp(name, "goto") == 0) {
+	if (an == AN_GOTO) {
 	    emit_indent();
 	    O("goto %s;\n", term_text(child(node, 0)).c_str());
 	    return;
 	}
-	if (strcmp(name, "goto_indirect") == 0) {
+	if (an == AN_GOTO_INDIRECT) {
 	    emit_indent();
 	    O("goto *%s;\n", emit_expr(child(node, 0)).c_str());
 	    return;
 	}
-	if (strcmp(name, "label") == 0) {
+	if (an == AN_LABEL) {
 	    // label has children: [ident, statement]
 	    O("%s:;\n", term_text(child(node, 0)).c_str());
 	    emit_stmt(child(node, 1));
@@ -1271,7 +1270,7 @@ class CEmitter
 	}
 
 	// Switch
-	if (strcmp(name, "switch") == 0) {
+	if (an == AN_SWITCH) {
 	    emit_indent();
 	    O("switch (%s)\n", emit_expr(child(node, 0)).c_str());
 	    emit_stmt(child(node, 1));
@@ -1279,7 +1278,7 @@ class CEmitter
 	}
 
 	// Case / Default (labeled statements)
-	if (strcmp(name, "case") == 0) {
+	if (an == AN_CASE) {
 	    emit_indent();
 	    O("case %s:\n", emit_expr(child(node, 0)).c_str());
 	    indent_level++;
@@ -1287,7 +1286,7 @@ class CEmitter
 	    indent_level--;
 	    return;
 	}
-	if (strcmp(name, "case_range") == 0) {
+	if (an == AN_CASE_RANGE) {
 	    emit_indent();
 	    O("case %s ... %s:\n", emit_expr(child(node, 0)).c_str(),
 	      emit_expr(child(node, 1)).c_str());
@@ -1296,7 +1295,7 @@ class CEmitter
 	    indent_level--;
 	    return;
 	}
-	if (strcmp(name, "default") == 0) {
+	if (an == AN_DEFAULT) {
 	    emit_indent();
 	    O("default:\n");
 	    indent_level++;
@@ -1306,7 +1305,7 @@ class CEmitter
 	}
 
 	// Try/catch
-	if (strcmp(name, "try") == 0) {
+	if (an == AN_TRY) {
 	    emit_indent();
 	    O("/* try */ {\n");
 	    indent_level++;
@@ -1318,26 +1317,26 @@ class CEmitter
 	}
 
 	// Throw
-	if (strcmp(name, "throw_expr") == 0) {
+	if (an == AN_THROW_EXPR) {
 	    emit_indent();
 	    O("/* throw */ ;\n");
 	    return;
 	}
-	if (strcmp(name, "throw") == 0) {
+	if (an == AN_THROW) {
 	    emit_indent();
 	    O("/* throw */ ;\n");
 	    return;
 	}
 
 	// Delete
-	if (strcmp(name, "delete") == 0) {
+	if (an == AN_DELETE) {
 	    emit_indent();
 	    O("free(%s);\n", emit_expr(child(node, 0)).c_str());
 	    return;
 	}
 
 	// Defer
-	if (strcmp(name, "defer") == 0) {
+	if (an == AN_DEFER) {
 	    emit_indent();
 	    O("/* defer */ ;\n");
 	    return;
@@ -1345,7 +1344,7 @@ class CEmitter
 
 	// Fallback
 	emit_indent();
-	O("/* TODO stmt: %s */\n", name);
+	O("/* TODO stmt: %s */\n", anode_name(node));
     }
 
     // ---------------------------------------------------------------
@@ -1379,14 +1378,14 @@ class CEmitter
 		local_var_class_map[vname] = clean_type;
 		local_var_types[vname] = TC_CLASS;  // class objects print as int
 	    } else {
-		bool has_ptr = is_anode(decls, "ptr_decl");
+		bool has_ptr = is_an(decls, AN_PTR_DECL);
 		TypeClass tc = classify_type(type);
 		if (has_ptr && tc == TC_CHAR) tc = TC_STRING;  // char * → string
 		local_var_types[vname] = tc;
 	    }
 	}
 	// Handle decl_list / init_decl
-	if (is_anode(decls, "decl_list") || is_anode(decls, "init_decl")) {
+	if (is_an(decls, AN_DECL_LIST) || is_an(decls, AN_INIT_DECL)) {
 	    track_decl_types(type, child(decls, 0));
 	    if (nchildren(decls) > 1)
 		track_decl_types(type, child(decls, 1));
@@ -1397,15 +1396,15 @@ class CEmitter
     void track_param_types(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
-	const char *name = anode_name(node);
-	if (strcmp(name, "param") == 0) {
+	int an = an_code(node);
+	if (an == AN_PARAM) {
 	    std::string type = emit_type(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    if (!is_nil(decl)) track_decl_types(type, decl);
-	} else if (strcmp(name, "param_list") == 0) {
+	} else if (an == AN_PARAM_LIST) {
 	    track_param_types(child(node, 0));
 	    track_param_types(child(node, 1));
-	} else if (strcmp(name, "param_va") == 0) {
+	} else if (an == AN_PARAM_VA) {
 	    track_param_types(child(node, 0));
 	}
     }
@@ -1431,7 +1430,7 @@ class CEmitter
 	if (clean_type.substr(0, 7) == "struct ")
 	    clean_type = clean_type.substr(7);
 
-	if (is_anode(decls, "func_decl") && is_known_class(clean_type)) {
+	if (is_an(decls, AN_FUNC_DECL) && is_known_class(clean_type)) {
 	    // This is a constructor call, not a function declaration
 	    std::string vname = extract_name(child(decls, 0));
 	    std::string args = emit_arg_list(child(decls, 1));
@@ -1468,7 +1467,7 @@ class CEmitter
     std::string emit_decl_inline(gp_tree_node *node)
     {
 	if (!node) return "";
-	if (!is_anode(node, "decl")) return emit_expr(node);
+	if (!is_an(node, AN_DECL)) return emit_expr(node);
 	std::string type = emit_type(child(node, 0));
 	gp_tree_node *decls = child(node, 1);
 	if (is_nil(decls)) return type;
@@ -1486,10 +1485,10 @@ class CEmitter
 	if (node->type == GP_TERM)
 	    return emit_type(node);
 
-	const char *name = anode_name(node);
+	int an = an_code(node);
 
 	// param(declaration_specifiers, declarator_or_abstract)
-	if (strcmp(name, "param") == 0) {
+	if (an == AN_PARAM) {
 	    std::string type = emit_type(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    if (is_nil(decl)) return type;
@@ -1500,20 +1499,20 @@ class CEmitter
 	}
 
 	// param_list(prev, next_param)
-	if (strcmp(name, "param_list") == 0)
+	if (an == AN_PARAM_LIST)
 	    return emit_param_list(child(node, 0)) + ", " +
 		   emit_param_list(child(node, 1));
 
 	// param_va(param_list) — variadic
-	if (strcmp(name, "param_va") == 0)
+	if (an == AN_PARAM_VA)
 	    return emit_param_list(child(node, 0)) + ", ...";
 
 	// type_name used as param (abstract)
-	if (strcmp(name, "type_name") == 0)
+	if (an == AN_TYPE_NAME)
 	    return emit_type(node);
 
 	// qual (declaration_specifiers used as param type)
-	if (strcmp(name, "qual") == 0)
+	if (an == AN_QUAL)
 	    return emit_type(node);
 
 	return emit_type(node);
@@ -1538,11 +1537,11 @@ class CEmitter
 	gp_tree_node *inner = decl;
 
 	// Peel off pointer
-	if (is_anode(inner, "ptr_decl")) {
+	if (is_an(inner, AN_PTR_DECL)) {
 	    ptr_str = emit_pointer(child(inner, 0));
 	    inner = child(inner, 1);
 	}
-	if (is_anode(inner, "ref_decl")) {
+	if (is_an(inner, AN_REF_DECL)) {
 	    ptr_str = "&";
 	    inner = child(inner, 0);
 	}
@@ -1551,7 +1550,7 @@ class CEmitter
 	std::string func_name;
 	std::string params;
 
-	if (is_anode(inner, "func_decl")) {
+	if (is_an(inner, AN_FUNC_DECL)) {
 	    func_name = extract_name(child(inner, 0));
 	    track_param_types(child(inner, 1));
 	    params = emit_param_list(child(inner, 1));
@@ -1595,7 +1594,7 @@ class CEmitter
     void emit_struct_body(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
-	if (is_anode(node, "struct_body")) {
+	if (is_an(node, AN_STRUCT_BODY)) {
 	    emit_struct_body(child(node, 0));
 	    emit_struct_field(child(node, 1));
 	    return;
@@ -1606,14 +1605,14 @@ class CEmitter
     void emit_struct_field(gp_tree_node *node)
     {
 	if (!node) return;
-	if (is_anode(node, "struct_field")) {
+	if (is_an(node, AN_STRUCT_FIELD)) {
 	    std::string type = emit_type(child(node, 0));
 	    gp_tree_node *decls = child(node, 1);
 	    OH("    %s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
 	    return;
 	}
 	// Nested struct/union/enum definitions
-	if (is_anode(node, "struct_def")) {
+	if (is_an(node, AN_STRUCT_DEF)) {
 	    emit_struct_def_toplevel(node);
 	    return;
 	}
@@ -1633,7 +1632,7 @@ class CEmitter
     void emit_enum_body(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
-	if (is_anode(node, "enum_list")) {
+	if (is_an(node, AN_ENUM_LIST)) {
 	    emit_enum_body(child(node, 0));
 	    OH(",\n");
 	    emit_enum_val(child(node, 1));
@@ -1647,7 +1646,7 @@ class CEmitter
 	if (!node) return;
 	if (node->type == GP_TERM)
 	    OH("    %s", term_text(node).c_str());
-	else if (is_anode(node, "enum_assign"))
+	else if (is_an(node, AN_ENUM_ASSIGN))
 	    OH("    %s = %s", term_text(child(node, 0)).c_str(),
 	       emit_expr(child(node, 1)).c_str());
     }
@@ -1675,11 +1674,11 @@ class CEmitter
 	std::string base_class;
 	gp_tree_node *body_node = nullptr;
 
-	if (is_anode(node, "class_def")) {
+	if (is_an(node, AN_CLASS_DEF)) {
 	    // class_def(name, class_body)
 	    class_name = term_text(child(node, 0));
 	    body_node = child(node, 1);
-	} else if (is_anode(node, "class_inherit")) {
+	} else if (is_an(node, AN_CLASS_INHERIT)) {
 	    // class_inherit(name, access_spec, base_name, class_body)
 	    class_name = term_text(child(node, 0));
 	    base_class = term_text(child(node, 2));
@@ -1730,10 +1729,10 @@ class CEmitter
     void collect_class_fields(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
-	if (is_anode(node, "class_body")) {
+	if (is_an(node, AN_CLASS_BODY)) {
 	    collect_class_fields(child(node, 0));
 	    gp_tree_node *item = child(node, 1);
-	    if (is_anode(item, "decl")) {
+	    if (is_an(item, AN_DECL)) {
 		// Extract field names from declarator
 		gp_tree_node *decls = child(item, 1);
 		std::string fname = extract_name(decls);
@@ -1746,7 +1745,7 @@ class CEmitter
     void emit_class_fields(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
-	if (is_anode(node, "class_body")) {
+	if (is_an(node, AN_CLASS_BODY)) {
 	    emit_class_fields(child(node, 0));
 	    emit_class_field_item(child(node, 1));
 	    return;
@@ -1757,9 +1756,8 @@ class CEmitter
     void emit_class_field_item(gp_tree_node *node)
     {
 	if (!node) return;
-	const char *name = anode_name(node);
 	// Only emit field declarations, skip methods/ctors/access specs
-	if (strcmp(name, "decl") == 0) {
+	if (is_an(node, AN_DECL)) {
 	    std::string type = emit_type(child(node, 0));
 	    gp_tree_node *decls = child(node, 1);
 	    if (!is_nil(decls))
@@ -1771,7 +1769,7 @@ class CEmitter
     void emit_class_methods(const std::string &class_name, gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
-	if (is_anode(node, "class_body")) {
+	if (is_an(node, AN_CLASS_BODY)) {
 	    emit_class_methods(class_name, child(node, 0));
 	    emit_class_method_item(class_name, child(node, 1));
 	    return;
@@ -1783,10 +1781,10 @@ class CEmitter
 				gp_tree_node *node)
     {
 	if (!node) return;
-	const char *name = anode_name(node);
+	int an = an_code(node);
 
 	// method(declaration_specifiers, declarator, compound_statement)
-	if (strcmp(name, "method") == 0) {
+	if (an == AN_METHOD) {
 	    std::string prev_class = current_class;
 	    current_class = class_name;
 
@@ -1798,7 +1796,7 @@ class CEmitter
 	    std::string method_name;
 	    std::string params;
 	    gp_tree_node *inner = decl;
-	    if (is_anode(inner, "func_decl")) {
+	    if (is_an(inner, AN_FUNC_DECL)) {
 		method_name = extract_name(child(inner, 0));
 		params = emit_param_list(child(inner, 1));
 	    } else {
@@ -1828,7 +1826,7 @@ class CEmitter
 	}
 
 	// ctor(name, params, body)
-	if (strcmp(name, "ctor") == 0) {
+	if (an == AN_CTOR) {
 	    std::string prev_class = current_class;
 	    current_class = class_name;
 
@@ -1854,7 +1852,7 @@ class CEmitter
 	}
 
 	// dtor(name, body)
-	if (strcmp(name, "dtor") == 0) {
+	if (an == AN_DTOR) {
 	    std::string prev_class = current_class;
 	    current_class = class_name;
 
@@ -1886,20 +1884,20 @@ class CEmitter
 	if (!node || node->type == GP_NIL) return;
 
 	// Translation unit: iterate children
-	if (is_anode(node, "tu")) {
+	if (is_an(node, AN_TU)) {
 	    emit_top_level(child(node, 0));
 	    emit_top_level(child(node, 1));
 	    return;
 	}
 
 	// Function definition
-	if (is_anode(node, "func_def")) {
+	if (is_an(node, AN_FUNC_DEF)) {
 	    emit_func_def(node);
 	    return;
 	}
 
 	// Top-level declaration (globals, prototypes, typedefs)
-	if (is_anode(node, "decl")) {
+	if (is_an(node, AN_DECL)) {
 	    std::string type = emit_type(child(node, 0));
 	    gp_tree_node *decls = child(node, 1);
 
@@ -1913,24 +1911,24 @@ class CEmitter
 		if (specs && specs->type == GP_ANODE) {
 		    // Walk qual chain to find struct_def or enum_def
 		    gp_tree_node *s = specs;
-		    while (is_anode(s, "qual")) {
+		    while (is_an(s, AN_QUAL)) {
 			gp_tree_node *c0 = child(s, 0);
-			if (is_anode(c0, "struct_def")) {
+			if (is_an(c0, AN_STRUCT_DEF)) {
 			    emit_struct_def_toplevel(c0);
 			    return;
 			}
-			if (is_anode(c0, "enum_def")) {
+			if (is_an(c0, AN_ENUM_DEF)) {
 			    emit_enum_def_toplevel(c0);
 			    return;
 			}
 			s = child(s, 1);
 		    }
 		    // Single specifier
-		    if (is_anode(specs, "struct_def")) {
+		    if (is_an(specs, AN_STRUCT_DEF)) {
 			emit_struct_def_toplevel(specs);
 			return;
 		    }
-		    if (is_anode(specs, "enum_def")) {
+		    if (is_an(specs, AN_ENUM_DEF)) {
 			emit_enum_def_toplevel(specs);
 			return;
 		    }
@@ -1956,24 +1954,24 @@ class CEmitter
 	}
 
 	// Struct/Union/Enum definitions (direct, not through decl)
-	if (is_anode(node, "struct_def")) {
+	if (is_an(node, AN_STRUCT_DEF)) {
 	    emit_struct_def_toplevel(node);
 	    return;
 	}
-	if (is_anode(node, "enum_def")) {
+	if (is_an(node, AN_ENUM_DEF)) {
 	    emit_enum_def_toplevel(node);
 	    return;
 	}
 
 	// Class definition → C struct + free functions
-	if (is_anode(node, "class_def") || is_anode(node, "class_inherit")) {
+	if (is_an(node, AN_CLASS_DEF) || is_an(node, AN_CLASS_INHERIT)) {
 	    emit_class_def(node);
 	    return;
 	}
 
 	// Using / namespace — skip for C output
-	if (is_anode(node, "using_ns") || is_anode(node, "using_decl") ||
-	    is_anode(node, "prefer") || is_anode(node, "namespace_def")) {
+	if (is_an(node, AN_USING_NS) || is_an(node, AN_USING_DECL) ||
+	    is_an(node, AN_PREFER) || is_an(node, AN_NAMESPACE_DEF)) {
 	    return;
 	}
 

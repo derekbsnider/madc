@@ -36,6 +36,7 @@ extern "C" {
 #include "gecko.h"
 }
 
+#include "madc_anode.h"
 #include "madc_sema.h"
 
 using namespace std;
@@ -95,12 +96,6 @@ static int term_code(gp_tree_node *node)
 {
     if (!node || node->type != GP_TERM) return -1;
     return node->val.term.code;
-}
-
-static bool is_anode(gp_tree_node *node, const char *name)
-{
-    return node && node->type == GP_ANODE &&
-	   strcmp(node->val.anode.name, name) == 0;
 }
 
 static bool is_nil(gp_tree_node *node)
@@ -190,10 +185,10 @@ class SemaCollector
 
 	if (node->type != GP_ANODE) return "";
 
-	const char *nm = anode_name(node);
+	int an = an_code(node);
 
 	// qual(specifier, rest) — recursive chain
-	if (strcmp(nm, "qual") == 0) {
+	if (an == AN_QUAL) {
 	    string spec = type_string(child(node, 0));
 	    gp_tree_node *rest = child(node, 1);
 	    if (is_nil(rest)) return spec;
@@ -204,11 +199,11 @@ class SemaCollector
 	}
 
 	// struct_ref(struct/union, name)
-	if (strcmp(nm, "struct_ref") == 0)
+	if (an == AN_STRUCT_REF)
 	    return "struct " + term_text(child(node, 1));
 
 	// struct_def — just the struct name
-	if (strcmp(nm, "struct_def") == 0) {
+	if (an == AN_STRUCT_DEF) {
 	    gp_tree_node *sname = child(node, 1);
 	    if (!is_nil(sname))
 		return "struct " + term_text(sname);
@@ -216,20 +211,20 @@ class SemaCollector
 	}
 
 	// enum_ref
-	if (strcmp(nm, "enum_ref") == 0)
+	if (an == AN_ENUM_REF)
 	    return "int";  // enums are ints in C
 
 	// enum_def
-	if (strcmp(nm, "enum_def") == 0)
+	if (an == AN_ENUM_DEF)
 	    return "int";
 
 	// type_name(specs, abstract_declarator)
-	if (strcmp(nm, "type_name") == 0)
+	if (an == AN_TYPE_NAME)
 	    return type_string(child(node, 0));
 
 	// Container/stream types → void* for now
-	if (strcmp(nm, "vector_type") == 0 || strcmp(nm, "set_type") == 0 ||
-	    strcmp(nm, "list_type") == 0 || strcmp(nm, "map_type") == 0)
+	if (an == AN_VECTOR_TYPE || an == AN_SET_TYPE ||
+	    an == AN_LIST_TYPE || an == AN_MAP_TYPE)
 	    return "void *";
 
 	return "";
@@ -248,16 +243,16 @@ class SemaCollector
     {
 	if (!node) return "";
 	if (node->type == GP_TERM) return term_text(node);
-	const char *nm = anode_name(node);
-	if (strcmp(nm, "ptr_decl") == 0)
+	int an = an_code(node);
+	if (an == AN_PTR_DECL)
 	    return extract_name(child(node, 1));
-	if (strcmp(nm, "ref_decl") == 0)
+	if (an == AN_REF_DECL)
 	    return extract_name(child(node, 0));
-	if (strcmp(nm, "func_decl") == 0)
+	if (an == AN_FUNC_DECL)
 	    return extract_name(child(node, 0));
-	if (strcmp(nm, "array_decl") == 0)
+	if (an == AN_ARRAY_DECL)
 	    return extract_name(child(node, 0));
-	if (strcmp(nm, "init_decl") == 0)
+	if (an == AN_INIT_DECL)
 	    return extract_name(child(node, 0));
 	if (nchildren(node) > 0)
 	    return extract_name(child(node, 0));
@@ -268,15 +263,15 @@ class SemaCollector
     bool has_pointer(gp_tree_node *node)
     {
 	if (!node || node->type != GP_ANODE) return false;
-	return is_anode(node, "ptr_decl");
+	return is_an(node, AN_PTR_DECL);
     }
 
     // Check if declarator is a function declarator
     bool is_func_decl(gp_tree_node *node)
     {
 	if (!node) return false;
-	if (is_anode(node, "func_decl")) return true;
-	if (is_anode(node, "ptr_decl"))
+	if (is_an(node, AN_FUNC_DECL)) return true;
+	if (is_an(node, AN_PTR_DECL))
 	    return is_func_decl(child(node, 1));
 	return false;
     }
@@ -309,11 +304,11 @@ class SemaCollector
 	}
 
 	// Recurse into decl_list and init_decl
-	const char *nm = anode_name(decls);
-	if (strcmp(nm, "decl_list") == 0) {
+	int an = an_code(decls);
+	if (an == AN_DECL_LIST) {
 	    collect_decl_vars(type_str, tc, child(decls, 0), is_global);
 	    collect_decl_vars(type_str, tc, child(decls, 1), is_global);
-	} else if (strcmp(nm, "init_decl") == 0) {
+	} else if (an == AN_INIT_DECL) {
 	    collect_decl_vars(type_str, tc, child(decls, 0), is_global);
 	}
     }
@@ -360,9 +355,9 @@ class SemaCollector
     void walk_params(gp_tree_node *node)
     {
 	if (is_nil(node)) return;
-	const char *nm = anode_name(node);
+	int an = an_code(node);
 
-	if (strcmp(nm, "param") == 0) {
+	if (an == AN_PARAM) {
 	    string type_str = type_string(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    if (!is_nil(decl)) {
@@ -374,10 +369,10 @@ class SemaCollector
 		    info.var_types[pname] = tc;
 		}
 	    }
-	} else if (strcmp(nm, "param_list") == 0) {
+	} else if (an == AN_PARAM_LIST) {
 	    walk_params(child(node, 0));
 	    walk_params(child(node, 1));
-	} else if (strcmp(nm, "param_va") == 0) {
+	} else if (an == AN_PARAM_VA) {
 	    walk_params(child(node, 0));
 	}
     }
@@ -407,10 +402,10 @@ class SemaCollector
 	}
 
 	// Collect parameter types
-	if (is_anode(decl, "func_decl"))
+	if (is_an(decl, AN_FUNC_DECL))
 	    walk_params(child(decl, 1));
-	else if (is_anode(decl, "ptr_decl") &&
-		 is_anode(child(decl, 1), "func_decl"))
+	else if (is_an(decl, AN_PTR_DECL) &&
+		 is_an(child(decl, 1), AN_FUNC_DECL))
 	    walk_params(child(child(decl, 1), 1));
 
 	// Walk body for local declarations
@@ -427,10 +422,10 @@ class SemaCollector
 	gp_tree_node *body_node = nullptr;
 	string base_class;
 
-	if (is_anode(node, "class_def")) {
+	if (is_an(node, AN_CLASS_DEF)) {
 	    class_name = term_text(child(node, 0));
 	    body_node = child(node, 1);
-	} else if (is_anode(node, "class_inherit")) {
+	} else if (is_an(node, AN_CLASS_INHERIT)) {
 	    class_name = term_text(child(node, 0));
 	    base_class = term_text(child(node, 2));
 	    body_node = child(node, 3);
@@ -463,7 +458,7 @@ class SemaCollector
 			 SemaClassInfo &ci)
     {
 	if (is_nil(node)) return;
-	if (is_anode(node, "class_body")) {
+	if (is_an(node, AN_CLASS_BODY)) {
 	    walk_class_body(child(node, 0), class_name, ci);
 	    walk_class_member(child(node, 1), class_name, ci);
 	    return;
@@ -475,10 +470,10 @@ class SemaCollector
 			   SemaClassInfo &ci)
     {
 	if (!node) return;
-	const char *nm = anode_name(node);
+	int an = an_code(node);
 
 	// Field declaration
-	if (strcmp(nm, "decl") == 0) {
+	if (an == AN_DECL) {
 	    string type_str = type_string(child(node, 0));
 	    gp_tree_node *decls = child(node, 1);
 	    collect_class_fields(decls, type_str, ci);
@@ -486,7 +481,7 @@ class SemaCollector
 	}
 
 	// Method definition
-	if (strcmp(nm, "method") == 0) {
+	if (an == AN_METHOD) {
 	    string ret_type = type_string(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    string method_name = extract_name(decl);
@@ -505,7 +500,7 @@ class SemaCollector
 	}
 
 	// Method prototype (no body)
-	if (strcmp(nm, "method_proto") == 0) {
+	if (an == AN_METHOD_PROTO) {
 	    string ret_type = type_string(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    string method_name = extract_name(decl);
@@ -520,7 +515,7 @@ class SemaCollector
 	}
 
 	// Constructor
-	if (strcmp(nm, "ctor") == 0) {
+	if (an == AN_CTOR) {
 	    info.classes_with_ctor.insert(class_name);
 	    ci.has_ctor = true;
 	    // Walk body for local var types
@@ -529,7 +524,7 @@ class SemaCollector
 	}
 
 	// Destructor
-	if (strcmp(nm, "dtor") == 0) {
+	if (an == AN_DTOR) {
 	    info.classes_with_dtor.insert(class_name);
 	    ci.has_dtor = true;
 	    // Walk body for local var types
@@ -538,7 +533,7 @@ class SemaCollector
 	}
 
 	// Operator method
-	if (strcmp(nm, "oper_method") == 0) {
+	if (an == AN_OPER_METHOD) {
 	    // Walk body for local var types
 	    walk_block(child(node, 3));
 	    return;
@@ -562,11 +557,11 @@ class SemaCollector
 	}
 
 	// Handle decl_list
-	const char *nm = anode_name(node);
-	if (strcmp(nm, "decl_list") == 0) {
+	int an = an_code(node);
+	if (an == AN_DECL_LIST) {
 	    collect_class_fields(child(node, 0), type_str, ci);
 	    collect_class_fields(child(node, 1), type_str, ci);
-	} else if (strcmp(nm, "init_decl") == 0) {
+	} else if (an == AN_INIT_DECL) {
 	    collect_class_fields(child(node, 0), type_str, ci);
 	}
     }
@@ -600,7 +595,7 @@ class SemaCollector
     void walk_enum_list(gp_tree_node *node)
     {
 	if (is_nil(node)) return;
-	if (is_anode(node, "enum_list")) {
+	if (is_an(node, AN_ENUM_LIST)) {
 	    walk_enum_list(child(node, 0));
 	    walk_enum_val(child(node, 1));
 	    return;
@@ -614,7 +609,7 @@ class SemaCollector
 	string vname;
 	if (node->type == GP_TERM && term_code(node) == GT_IDENT)
 	    vname = term_text(node);
-	else if (is_anode(node, "enum_assign"))
+	else if (is_an(node, AN_ENUM_ASSIGN))
 	    vname = term_text(child(node, 0));
 	if (!vname.empty())
 	    info.var_types[vname] = TC_INT;  // enum values are ints
@@ -640,7 +635,7 @@ class SemaCollector
     void walk_block(gp_tree_node *node)
     {
 	if (is_nil(node)) return;
-	if (is_anode(node, "block")) {
+	if (is_an(node, AN_BLOCK)) {
 	    walk_stmt_list(child(node, 0));
 	    return;
 	}
@@ -650,7 +645,7 @@ class SemaCollector
     void walk_stmt_list(gp_tree_node *node)
     {
 	if (is_nil(node)) return;
-	if (is_anode(node, "stmt_list")) {
+	if (is_an(node, AN_STMT_LIST)) {
 	    walk_stmt_list(child(node, 0));
 	    walk_stmt(child(node, 1));
 	    return;
@@ -661,13 +656,13 @@ class SemaCollector
     void walk_stmt(gp_tree_node *node)
     {
 	if (is_nil(node)) return;
-	const char *nm = anode_name(node);
+	int an = an_code(node);
 
-	if (strcmp(nm, "decl") == 0) {
+	if (an == AN_DECL) {
 	    walk_decl(node, false);
 	    return;
 	}
-	if (strcmp(nm, "ctor_decl") == 0) {
+	if (an == AN_CTOR_DECL) {
 	    // ctor_decl(type, name, args) — constructor call declaration
 	    string type_str = type_string(child(node, 0));
 	    string vname = term_text(child(node, 1));
@@ -684,47 +679,47 @@ class SemaCollector
 	    }
 	    return;
 	}
-	if (strcmp(nm, "block") == 0) {
+	if (an == AN_BLOCK) {
 	    walk_block(node);
 	    return;
 	}
-	if (strcmp(nm, "if") == 0) {
+	if (an == AN_IF) {
 	    walk_stmt(child(node, 1));
 	    return;
 	}
-	if (strcmp(nm, "if_else") == 0) {
+	if (an == AN_IF_ELSE) {
 	    walk_stmt(child(node, 1));
 	    walk_stmt(child(node, 2));
 	    return;
 	}
-	if (strcmp(nm, "while") == 0) {
+	if (an == AN_WHILE) {
 	    walk_stmt(child(node, 1));
 	    return;
 	}
-	if (strcmp(nm, "do_while") == 0) {
+	if (an == AN_DO_WHILE) {
 	    walk_stmt(child(node, 0));
 	    return;
 	}
-	if (strcmp(nm, "for") == 0) {
+	if (an == AN_FOR) {
 	    walk_stmt(child(node, 0));  // init may declare vars
 	    walk_stmt(child(node, 3));  // body
 	    return;
 	}
-	if (strcmp(nm, "for_decl") == 0) {
+	if (an == AN_FOR_DECL) {
 	    walk_decl(child(node, 0), false);  // declaration in for-init
 	    walk_stmt(child(node, 3));  // body
 	    return;
 	}
-	if (strcmp(nm, "switch") == 0) {
+	if (an == AN_SWITCH) {
 	    walk_stmt(child(node, 1));
 	    return;
 	}
-	if (strcmp(nm, "try") == 0) {
+	if (an == AN_TRY) {
 	    walk_stmt(child(node, 0));
 	    walk_stmt(child(node, 1));
 	    return;
 	}
-	if (strcmp(nm, "catch") == 0) {
+	if (an == AN_CATCH) {
 	    // catch(type, declarator, body)
 	    string type_str = type_string(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
@@ -734,32 +729,32 @@ class SemaCollector
 	    walk_stmt(child(node, 2));
 	    return;
 	}
-	if (strcmp(nm, "catch_all") == 0) {
+	if (an == AN_CATCH_ALL) {
 	    walk_stmt(child(node, 0));
 	    return;
 	}
-	if (strcmp(nm, "catch_list") == 0) {
+	if (an == AN_CATCH_LIST) {
 	    walk_stmt(child(node, 0));
 	    walk_stmt(child(node, 1));
 	    return;
 	}
-	if (strcmp(nm, "stmt_list") == 0) {
+	if (an == AN_STMT_LIST) {
 	    walk_stmt_list(node);
 	    return;
 	}
-	if (strcmp(nm, "label") == 0) {
+	if (an == AN_LABEL) {
 	    walk_stmt(child(node, 1));
 	    return;
 	}
-	if (strcmp(nm, "case") == 0) {
+	if (an == AN_CASE) {
 	    walk_stmt(child(node, 1));
 	    return;
 	}
-	if (strcmp(nm, "case_range") == 0) {
+	if (an == AN_CASE_RANGE) {
 	    walk_stmt(child(node, 2));
 	    return;
 	}
-	if (strcmp(nm, "default") == 0) {
+	if (an == AN_DEFAULT) {
 	    walk_stmt(child(node, 0));
 	    return;
 	}
@@ -785,36 +780,36 @@ class SemaCollector
 	if (is_nil(node)) return;
 	if (node->type == GP_TERM) return;
 
-	const char *nm = anode_name(node);
+	int an = an_code(node);
 
 	// Translation unit — walk children
-	if (strcmp(nm, "tu") == 0) {
+	if (an == AN_TU) {
 	    for (int i = 0; i < nchildren(node); ++i)
 		walk(child(node, i));
 	    return;
 	}
 
-	if (strcmp(nm, "func_def") == 0) {
+	if (an == AN_FUNC_DEF) {
 	    walk_func_def(node);
 	    return;
 	}
 
-	if (strcmp(nm, "decl") == 0) {
+	if (an == AN_DECL) {
 	    walk_decl(node, true);
 	    return;
 	}
 
-	if (strcmp(nm, "class_def") == 0 || strcmp(nm, "class_inherit") == 0) {
+	if (an == AN_CLASS_DEF || an == AN_CLASS_INHERIT) {
 	    walk_class_def(node);
 	    return;
 	}
 
-	if (strcmp(nm, "struct_def") == 0) {
+	if (an == AN_STRUCT_DEF) {
 	    walk_struct_def(node);
 	    return;
 	}
 
-	if (strcmp(nm, "enum_def") == 0) {
+	if (an == AN_ENUM_DEF) {
 	    walk_enum_def(node);
 	    return;
 	}
