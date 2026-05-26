@@ -8,6 +8,7 @@
   - `tests/foo.input` — redirected to stdin
   - `tests/foo.argv` — whitespace-split, appended as argv
   - `tests/foo.expect` — each non-empty line must appear in the output
+  - `tests/foo.mir_skip` — skip this test when running with `--backend=mir`
 - When a test needs stdin, use a `.input` fixture file with shell
   redirection (`prog < foo.input`). Never use `echo ... | prog` inline in
   the runner.
