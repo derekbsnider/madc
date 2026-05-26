@@ -441,6 +441,12 @@ class CEmitter
 	    return "((" + emit_type(child(node, 0)) + "){" +
 		   emit_init_list(child(node, 1)) + "})";
 
+	// Initializer list: {expr, expr, ...}
+	if (strcmp(name, "init_list") == 0)
+	    return "{" + emit_init_list(child(node, 0)) + "}";
+	if (strcmp(name, "empty_init") == 0)
+	    return "{0}";
+
 	// Init declaration (in expression context)
 	if (strcmp(name, "init_decl") == 0)
 	    return emit_expr(child(node, 1));
