@@ -706,7 +706,9 @@ class CEmitter
 	vals.push_back(rhs);
     }
 
-    // Emit a cout chain as a sequence of C output calls
+    // Emit a cout chain as calls to C++ stream wrappers.
+    // cout << x << y << endl  →  __std_cout_*(x), __std_cout_*(y), __std_cout_endl()
+    // The wrappers call real std::cout << operators, preserving iostream formatting.
     std::string emit_cout_chain(gp_tree_node *node)
     {
 	std::vector<gp_tree_node *> vals;
@@ -717,57 +719,74 @@ class CEmitter
 	    gp_tree_node *v = vals[i];
 	    if (i > 0) result += ", ";
 
-	    // Check for "endl"
-	    if (v->type == GP_TERM && term_code(v) == GT_IDENT &&
-		term_text(v) == "endl") {
-		result += "putchar('\\n')";
-		continue;
+	    // Stream manipulators (endl, flush, hex, oct, etc.)
+	    if (v->type == GP_TERM && term_code(v) == GT_IDENT) {
+		std::string manip = cout_manipulator(term_text(v));
+		if (!manip.empty()) {
+		    result += manip;
+		    continue;
+		}
 	    }
 
-	    // Determine the type of value and emit appropriate call
+	    std::string e = emit_expr(v);
+
+	    // Dispatch by terminal type or inferred expression type
 	    if (v->type == GP_TERM) {
 		int code = term_code(v);
-		if (code == GT_STRING) {
-		    result += "printf(\"%s\", \"" + c_escape(term_text(v)) + "\")";
-		} else if (code == GT_INTEGER) {
-		    char buf[32];
-		    snprintf(buf, sizeof(buf), "%lld", (long long)term_ival(v));
-		    result += std::string("printf(\"%lld\", (long long)") + buf + ")";
-		} else if (code == GT_REAL) {
-		    result += "printf(\"%g\", " + emit_expr(v) + ")";
-		} else if (code == GT_CHAR_LIT) {
-		    result += "putchar(" + emit_expr(v) + ")";
-		} else {
-		    // Identifier — use sema + local type info
-		    std::string id = term_text(v);
-		    TypeClass tc = lookup_var_type(id);
-		    if (tc == TC_STRING)
-			result += "printf(\"%s\", " + id + ")";
-		    else if (tc == TC_CHAR)
-			result += "printf(\"%c\", " + id + ")";
-		    else if (tc == TC_DOUBLE)
-			result += "printf(\"%g\", (double)" + id + ")";
-		    else
-			result += "printf(\"%lld\", (long long)" + id + ")";
+		if (code == GT_STRING)
+		    result += "__std_cout_str(\"" + c_escape(term_text(v)) + "\")";
+		else if (code == GT_CHAR_LIT)
+		    result += "__std_cout_char(" + e + ")";
+		else if (code == GT_REAL)
+		    result += "__std_cout_double(" + e + ")";
+		else if (code == GT_INTEGER)
+		    result += "__std_cout_int(" + e + ")";
+		else {
+		    // Identifier — use type info to pick the right wrapper
+		    TypeClass tc = lookup_var_type(term_text(v));
+		    result += cout_call_for_type(tc, e);
 		}
 	    } else {
-		// Complex expression — infer type for format
-		std::string e = emit_expr(v);
+		// Complex expression — infer type
 		TypeClass etc = infer_expr_cout_type(v);
 		if (!e.empty() && e[0] == '"')
-		    result += "printf(\"%s\", " + e + ")";
-		else if (etc == TC_STRING)
-		    result += "printf(\"%s\", " + e + ")";
-		else if (etc == TC_CHAR)
-		    result += "printf(\"%c\", " + e + ")";
-		else if (etc == TC_DOUBLE)
-		    result += "printf(\"%g\", (double)(" + e + "))";
+		    result += "__std_cout_str(" + e + ")";
 		else
-		    result += "printf(\"%lld\", (long long)(" + e + "))";
+		    result += cout_call_for_type(etc, e);
 	    }
 	}
 
 	return "(" + result + ")";
+    }
+
+    // Map TypeClass to the appropriate __std_cout_* wrapper call
+    std::string cout_call_for_type(TypeClass tc, const std::string &expr)
+    {
+	switch (tc) {
+	case TC_STRING: return "__std_cout_str(" + expr + ")";
+	case TC_CHAR:   return "__std_cout_char(" + expr + ")";
+	case TC_DOUBLE: return "__std_cout_double(" + expr + ")";
+	default:        return "__std_cout_int(" + expr + ")";
+	}
+    }
+
+    // Map iostream manipulator names to wrapper calls
+    static std::string cout_manipulator(const std::string &name)
+    {
+	if (name == "endl")        return "__std_cout_endl()";
+	if (name == "flush")       return "__std_cout_flush()";
+	if (name == "hex")         return "__std_cout_hex()";
+	if (name == "oct")         return "__std_cout_oct()";
+	if (name == "dec")         return "__std_cout_dec()";
+	if (name == "fixed")       return "__std_cout_fixed()";
+	if (name == "scientific")  return "__std_cout_scientific()";
+	if (name == "left")        return "__std_cout_left()";
+	if (name == "right")       return "__std_cout_right()";
+	if (name == "boolalpha")   return "__std_cout_boolalpha()";
+	if (name == "noboolalpha") return "__std_cout_noboolalpha()";
+	if (name == "showbase")    return "__std_cout_showbase()";
+	if (name == "noshowbase")  return "__std_cout_noshowbase()";
+	return "";
     }
 
     // ---------------------------------------------------------------
@@ -2056,6 +2075,30 @@ public:
 	header += "typedef void *stringstream;\n";
 	header += "typedef void *ostream;\n";
 	header += "typedef void *array;\n";  // MadArray
+	header += "\n";
+
+	// C++ iostream wrappers (call real std::cout << operators)
+	header += "extern void __std_cout_str(const char *);\n";
+	header += "extern void __std_cout_int(long);\n";
+	header += "extern void __std_cout_uint(unsigned long);\n";
+	header += "extern void __std_cout_char(int);\n";
+	header += "extern void __std_cout_double(double);\n";
+	header += "extern void __std_cout_endl(void);\n";
+	header += "extern void __std_cout_flush(void);\n";
+	header += "extern void __std_cout_hex(void);\n";
+	header += "extern void __std_cout_oct(void);\n";
+	header += "extern void __std_cout_dec(void);\n";
+	header += "extern void __std_cout_fixed(void);\n";
+	header += "extern void __std_cout_scientific(void);\n";
+	header += "extern void __std_cout_left(void);\n";
+	header += "extern void __std_cout_right(void);\n";
+	header += "extern void __std_cout_boolalpha(void);\n";
+	header += "extern void __std_cout_noboolalpha(void);\n";
+	header += "extern void __std_cout_showbase(void);\n";
+	header += "extern void __std_cout_noshowbase(void);\n";
+	header += "extern void __std_cout_setw(int);\n";
+	header += "extern void __std_cout_setprecision(int);\n";
+	header += "extern void __std_cout_setfill(int);\n";
 	header += "\n";
 
 	// Additional builtins commonly needed

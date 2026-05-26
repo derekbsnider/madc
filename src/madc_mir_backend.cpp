@@ -10,6 +10,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <iomanip>
 #include <sstream>
 #include <fstream>
 #include <string>
@@ -49,6 +50,32 @@ void madc_putd(double d)     { std::cout << d << std::endl; }
 void madc_putf(float f)      { std::cout << f << std::endl; }
 void madc_puts(const char *s) { if (s) puts(s); }
 void madc_printstr(const char *s) { if (s) std::cout << s << std::endl; }
+
+// C++ iostream wrappers — thin C-linkage functions that call real
+// std::cout << operators.  The transpiler emits these instead of printf,
+// preserving iostream formatting behavior.
+void __std_cout_str(const char *s)  { if (s) std::cout << s; }
+void __std_cout_int(long i)         { std::cout << i; }
+void __std_cout_uint(unsigned long u) { std::cout << u; }
+void __std_cout_char(int c)         { std::cout << (char)c; }
+void __std_cout_double(double d)    { std::cout << d; }
+void __std_cout_endl(void)          { std::cout << std::endl; }
+void __std_cout_flush(void)         { std::cout << std::flush; }
+// Stream manipulators
+void __std_cout_hex(void)           { std::cout << std::hex; }
+void __std_cout_oct(void)           { std::cout << std::oct; }
+void __std_cout_dec(void)           { std::cout << std::dec; }
+void __std_cout_fixed(void)         { std::cout << std::fixed; }
+void __std_cout_scientific(void)    { std::cout << std::scientific; }
+void __std_cout_left(void)          { std::cout << std::left; }
+void __std_cout_right(void)         { std::cout << std::right; }
+void __std_cout_boolalpha(void)     { std::cout << std::boolalpha; }
+void __std_cout_noboolalpha(void)   { std::cout << std::noboolalpha; }
+void __std_cout_showbase(void)      { std::cout << std::showbase; }
+void __std_cout_noshowbase(void)    { std::cout << std::noshowbase; }
+void __std_cout_setw(int w)         { std::cout << std::setw(w); }
+void __std_cout_setprecision(int p) { std::cout << std::setprecision(p); }
+void __std_cout_setfill(int c)      { std::cout << std::setfill((char)c); }
 
 } // extern "C"
 
