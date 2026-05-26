@@ -101,6 +101,19 @@ static bool is_nil(gp_tree_node *node)
     return !node || node->type == GP_NIL;
 }
 
+// c2mir reserves C++ keywords even in C11 mode — prefix them with _
+static std::string safe_ident(const std::string &name)
+{
+    static const std::set<std::string> reserved = {
+	"class", "new", "delete", "this", "virtual", "template",
+	"namespace", "using", "throw", "catch", "try", "private",
+	"public", "protected", "operator"
+    };
+    if (reserved.count(name))
+	return "_" + name;
+    return name;
+}
+
 // Gecko terminal codes (must match madc_grammar.cpp)
 enum {
     GT_IDENT    = 256,
@@ -538,9 +551,9 @@ class CEmitter
     {
 	if (!node) return "";
 	if (node->type == GP_TERM)
-	    return term_text(node);
+	    return safe_ident(term_text(node));
 	if (is_an(node, AN_ENUM_ASSIGN))
-	    return term_text(child(node, 0)) + " = " + emit_expr(child(node, 1));
+	    return safe_ident(term_text(child(node, 0))) + " = " + emit_expr(child(node, 1));
 	return "";
     }
 
@@ -621,7 +634,7 @@ class CEmitter
     std::string emit_declarator_str(gp_tree_node *node)
     {
 	if (!node) return "";
-	if (node->type == GP_TERM) return term_text(node);
+	if (node->type == GP_TERM) return safe_ident(term_text(node));
 
 	int an = an_code(node);
 
@@ -1078,8 +1091,8 @@ class CEmitter
 		if (!current_class.empty() &&
 		    current_class_fields.count(id) &&
 		    !local_var_types.count(id))  // don't transform local vars
-		    return "__this->" + id;
-		return id;
+		    return "__this->" + safe_ident(id);
+		return safe_ident(id);
 	    }
 	    if (code == GT_INTEGER) {
 		char buf[32];
@@ -1339,9 +1352,9 @@ class CEmitter
 
 	// Member access
 	if (an == AN_MEMBER)
-	    return emit_expr(child(node, 0)) + "." + term_text(child(node, 1));
+	    return emit_expr(child(node, 0)) + "." + safe_ident(term_text(child(node, 1)));
 	if (an == AN_ARROW_MEMBER)
-	    return emit_expr(child(node, 0)) + "->" + term_text(child(node, 1));
+	    return emit_expr(child(node, 0)) + "->" + safe_ident(term_text(child(node, 1)));
 
 	// Subscript
 	if (an == AN_SUBSCRIPT)
@@ -1549,11 +1562,38 @@ class CEmitter
     // Statement emission
     // ---------------------------------------------------------------
 
+    // Check if a GP_ALT's first branch is a declaration whose "type" is
+    // actually a known function name — i.e. the GLR parser mis-read a
+    // function call like `print_shape(&r)` as a declaration.  When that
+    // happens we prefer the second alternative (the expression statement).
+    bool alt_first_is_func_as_decl(gp_tree_node *alt)
+    {
+	gp_tree_node *first = alt->val.alt.first;
+	if (!first || first->type != GP_ANODE) return false;
+	if (an_code(first) != AN_DECL) return false;
+	gp_tree_node *specs = child(first, 0);
+	if (!specs) return false;
+	// Simple case: the specifier is a single identifier
+	if (specs->type == GP_TERM && term_code(specs) == GT_IDENT) {
+	    std::string name = term_text(specs);
+	    if (sema && sema->func_ret_types.count(name))
+		return true;
+	}
+	return false;
+    }
+
     void emit_stmt(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
-	// GLR ambiguity — use first alternative
-	if (node->type == GP_ALT) { emit_stmt(node->val.alt.first); return; }
+	// GLR ambiguity — prefer expression statement when the "type" is
+	// actually a known function name
+	if (node->type == GP_ALT) {
+	    if (alt_first_is_func_as_decl(node) && node->val.alt.second)
+		emit_stmt(node->val.alt.second);
+	    else
+		emit_stmt(node->val.alt.first);
+	    return;
+	}
 	if (node->type == GP_OPT) { emit_stmt(node->val.opt.first); return; }
 
 	if (node->type == GP_TERM) {
@@ -2160,11 +2200,63 @@ class CEmitter
 	}
     }
 
+    // Reconstruct function call arguments from a declarator that was
+    // mis-parsed as a declaration.  ptr_decl(*, name) → "&name",
+    // plain terminal → "name", decl_list(a, b) → "a, b".
+    std::string reconstruct_call_args(gp_tree_node *node)
+    {
+	if (!node) return "";
+	if (node->type == GP_TERM)
+	    return safe_ident(term_text(node));
+	int an = an_code(node);
+	if (an == AN_PTR_DECL) {
+	    // ptr_decl(pointer, declarator) — the pointer means &
+	    return "&" + reconstruct_call_args(child(node, nchildren(node) - 1));
+	}
+	if (an == AN_REF_DECL) {
+	    // ref_decl(declarator) — the & means address-of in call context
+	    return "&" + reconstruct_call_args(child(node, 0));
+	}
+	if (an == AN_DECL_LIST) {
+	    return reconstruct_call_args(child(node, 0)) + ", " +
+		   reconstruct_call_args(child(node, 1));
+	}
+	// Fallback: emit as expression
+	return emit_expr(node);
+    }
+
     void emit_decl_stmt(gp_tree_node *node)
     {
 	// decl(declaration_specifiers, init_declarator_list_opt)
 	gp_tree_node *specs = child(node, 0);
 	gp_tree_node *decls = child(node, 1);
+
+	// GLR mis-parse: function call parsed as declaration.
+	// e.g. `print_shape(&r)` → decl(qual(print_shape,nil), ptr_decl(*, r))
+	// Detect: type specifier resolves to a single identifier that is a
+	// known function (in sema->func_ret_types) but NOT a known type/class.
+	{
+	    // Unwrap AN_QUAL chain to find the bare identifier
+	    gp_tree_node *s = specs;
+	    while (s && s->type == GP_ANODE && an_code(s) == AN_QUAL) {
+		// qual(child0, child1) — if child1 is nil, child0 is the leaf
+		gp_tree_node *c1 = child(s, 1);
+		if (is_nil(c1)) { s = child(s, 0); break; }
+		s = child(s, 0);  // keep unwrapping
+	    }
+	    if (s && s->type == GP_TERM && term_code(s) == GT_IDENT &&
+		!is_nil(decls)) {
+		std::string tname = term_text(s);
+		if (sema && sema->func_ret_types.count(tname) &&
+		    !is_known_class(tname)) {
+		    // Reconstruct as function call: ptr_decl(*, name) → &name
+		    std::string args = reconstruct_call_args(decls);
+		    emit_indent();
+		    O("%s(%s);\n", tname.c_str(), args.c_str());
+		    return;
+		}
+	    }
+	}
 
 	// Stream type: managed fstream/ifstream/ofstream/stringstream
 	std::string sclass = stream_type_name(specs);
@@ -2499,9 +2591,9 @@ class CEmitter
     {
 	if (!node) return;
 	if (node->type == GP_TERM)
-	    OH("    %s", term_text(node).c_str());
+	    OH("    %s", safe_ident(term_text(node)).c_str());
 	else if (is_an(node, AN_ENUM_ASSIGN))
-	    OH("    %s = %s", term_text(child(node, 0)).c_str(),
+	    OH("    %s = %s", safe_ident(term_text(child(node, 0))).c_str(),
 	       emit_expr(child(node, 1)).c_str());
     }
 
