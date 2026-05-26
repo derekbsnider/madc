@@ -559,6 +559,7 @@ static const char *madc_grammar_str =
 
     "direct_declarator"
     "  : IDENT                                              # 0\n"
+    "  | STRING_T                                           # 0\n"
     "  | '(' declarator ')'                                 # 1\n"
     "  | direct_declarator '[' assignment_expression_opt ']'\n"
     "                                                       # array_decl (0 2)\n"
@@ -702,6 +703,7 @@ static const char *madc_grammar_str =
 
     // §6.5.1  Primary expressions
     "primary_expression : IDENT        # 0\n"
+    "                   | STRING_T     # 0\n"
     "                   | INTEGER      # 0\n"
     "                   | REAL         # 0\n"
     "                   | STRING_LIT   # 0\n"

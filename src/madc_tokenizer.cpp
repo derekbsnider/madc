@@ -62,6 +62,33 @@ static int gecko_read_token(void **attr, GeckoTokenizer *state)
 	if (code < 0)
 	    continue;  // skip whitespace, comments
 
+	// Collapse std::string → STRING_T
+	if (code == 256 /* GT_IDENT */) {
+	    TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
+	    if (ti && ti->str == "std") {
+		// Peek for :: string (SCOPE STRING_T)
+		size_t saved = state->pos;
+		int c1 = -1;
+		size_t i = saved;
+		for (; i < state->tokens->size(); i++) {
+		    c1 = madc_token_to_gecko((*state->tokens)[i]);
+		    if (c1 >= 0) { i++; break; }
+		}
+		int c2 = -1;
+		size_t j = i;
+		for (; j < state->tokens->size(); j++) {
+		    c2 = madc_token_to_gecko((*state->tokens)[j]);
+		    if (c2 >= 0) { j++; break; }
+		}
+		if (c1 == 359 /* GT_SCOPE */ && c2 == 318 /* GT_STRING_T */) {
+		    state->pos = j;  // skip past :: string
+		    *attr = (void *)tb;
+		    return 318;  // GT_STRING_T
+		}
+		// else fall through as normal IDENT
+	    }
+	}
+
 	// Skip __attribute__((...)) — consume the entire construct
 	if (code == 256 /* GT_IDENT */) {
 	    TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);

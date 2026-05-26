@@ -19,6 +19,7 @@
 #include <queue>
 #include <stack>
 #include <set>
+#include <unordered_map>
 #include <stdint.h>
 #include <asmjit/x86.h>
 
@@ -1155,8 +1156,9 @@ class CEmitter
 		std::string method = term_text(child(callee, 1));
 		bool is_arrow = is_an(callee, AN_ARROW_MEMBER);
 
-		// String methods: c_str() → identity (string is already char*)
-		if (method == "c_str") return obj;
+		// String methods: c_str() → string_cstr(obj)
+		// (obj is a char[MADC_STRING_SIZE] buffer holding a placement-new'd std::string)
+		if (method == "c_str") return "string_cstr(" + obj + ")";
 		// String methods: length()/size() → strlen()
 		if (method == "length" || method == "size")
 		    return "strlen(" + obj + ")";
@@ -2884,12 +2886,29 @@ public:
 	emit_top_level(root);
 	emit_global_init_cleanup();
 
-	// Emit extern declarations for all namespace functions used
+	// Emit extern declarations for all namespace functions used.
+	// Known std:: functions get proper typed signatures; others fall back
+	// to the generic variadic form.
 	if (!ns_funcs_used.empty()) {
+	    // Map of mangled name -> typed extern declaration
+	    static const std::unordered_map<std::string, std::string> known_ns_sigs = {
+		{"__std_stoi",      "extern long __std_stoi(void *);"},
+		{"__std_stol",      "extern long __std_stol(void *);"},
+		{"__std_stoul",     "extern unsigned long __std_stoul(void *);"},
+		{"__std_stof",      "extern double __std_stof(void *);"},
+		{"__std_stod",      "extern double __std_stod(void *);"},
+		{"__std_stold",     "extern double __std_stold(void *);"},
+		{"__std_to_string", "extern void __std_to_string(void *, long);"},
+	    };
 	    std::string ns_decls;
 	    ns_decls += "/* Namespace function externs (resolved via dlsym) */\n";
-	    for (auto &fn : ns_funcs_used)
-		ns_decls += "extern long " + fn + "();\n";
+	    for (auto &fn : ns_funcs_used) {
+		auto it = known_ns_sigs.find(fn);
+		if (it != known_ns_sigs.end())
+		    ns_decls += it->second + "\n";
+		else
+		    ns_decls += "extern long " + fn + "();\n";
+	    }
 	    ns_decls += "\n";
 	    // Insert after header, before body
 	    header += ns_decls;

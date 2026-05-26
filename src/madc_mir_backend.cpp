@@ -195,6 +195,46 @@ const char *sstream_str(void *ptr)
 void sstream_str_set(void *ptr, const char *s)
 	{ ((std::stringstream *)ptr)->str(s ? s : ""); }
 
+// std:: namespace functions — madc programs call these as std::stoi etc.
+// The emitter mangles them to __std_stoi / __std_stod / __std_to_string.
+// Take void* for string args (pointing to a std::string placement-new'd
+// at the stack slot) and cast to std::string*.
+long __std_stoi(void *str)
+{
+    try { return (long)std::stoi(((std::string *)str)->c_str()); }
+    catch (...) { return 0; }
+}
+long __std_stol(void *str)
+{
+    try { return std::stol(((std::string *)str)->c_str()); }
+    catch (...) { return 0; }
+}
+unsigned long __std_stoul(void *str)
+{
+    try { return std::stoul(((std::string *)str)->c_str()); }
+    catch (...) { return 0; }
+}
+double __std_stof(void *str)
+{
+    try { return (double)std::stof(((std::string *)str)->c_str()); }
+    catch (...) { return 0.0; }
+}
+double __std_stod(void *str)
+{
+    try { return std::stod(((std::string *)str)->c_str()); }
+    catch (...) { return 0.0; }
+}
+double __std_stold(void *str)
+{
+    try { return (double)std::stold(((std::string *)str)->c_str()); }
+    catch (...) { return 0.0; }
+}
+void __std_to_string(void *dst, long val)
+{
+    std::string *s = (std::string *)dst;
+    *s = std::to_string(val);
+}
+
 } // extern "C"
 
 // -----------------------------------------------------------------------
