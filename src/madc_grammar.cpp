@@ -98,6 +98,7 @@ enum GeckoTermCode {
     GT_RESTRICT   = 302,
     GT_OPERATOR   = 303,   // operator keyword (overloading)
     GT_ALIGNOF    = 305,
+    GT_TYPEOF     = 306,
 
     // Type keywords
     GT_VOID       = 310,
@@ -231,6 +232,7 @@ static const char *madc_grammar_str =
     "RESTRICT = 302\n"
     "OPERATOR = 303\n"
     "ALIGNOF = 305\n"
+    "TYPEOF = 306\n"
 
     // Type keywords
     "VOID = 310\n"
@@ -423,6 +425,8 @@ static const char *madc_grammar_str =
     "               | container_type             # 0\n"
     "               | stream_type                # 0\n"
     "               | typedef_name               # 0\n"
+    "               | TYPEOF '(' expression ')'  # typeof_expr (2)\n"
+    "               | TYPEOF '(' type_name ')'   # typeof_type (2)\n"
     "               ;\n"
     "\n"
 
@@ -529,8 +533,13 @@ static const char *madc_grammar_str =
     "                ;\n"
     "\n"
 
-    "enumerator : IDENT                                     # 0\n"
-    "           | IDENT '=' constant_expression              # enum_assign (0 2)\n"
+    "enumerator : enum_ident                                 # 0\n"
+    "           | enum_ident '=' constant_expression          # enum_assign (0 2)\n"
+    "           ;\n"
+    "\n"
+    // enum_ident — IDENT or keyword used as enum value name
+    "enum_ident : IDENT # 0 | CLASS # 0 | DEFAULT # 0 | NEW # 0 | DELETE # 0\n"
+    "           | NAMESPACE # 0 | OPERATOR # 0\n"
     "           ;\n"
     "\n"
 
@@ -1261,6 +1270,8 @@ struct grammar *madc_create_gecko_grammar()
     gp_set_anode_code(g, "vla_decl", AN_VLA_DECL);
     gp_set_anode_code(g, "while", AN_WHILE);
     gp_set_anode_code(g, "xor_assign", AN_XOR_ASSIGN);
+    gp_set_anode_code(g, "typeof_expr", AN_TYPEOF_EXPR);
+    gp_set_anode_code(g, "typeof_type", AN_TYPEOF_TYPE);
 
     return g;
 }
@@ -1296,6 +1307,7 @@ static int ident_to_gecko(const std::string &s)
 	{"public", GT_PUBLIC}, {"private", GT_PRIVATE},
 	{"protected", GT_PROTECTED}, {"virtual", GT_VIRTUAL},
 	{"alignof", GT_ALIGNOF}, {"_Alignof", GT_ALIGNOF},
+	{"typeof", GT_TYPEOF}, {"__typeof__", GT_TYPEOF}, {"__typeof", GT_TYPEOF},
 	// Aliases
 	{"LPSTR", GT_INT},
     };

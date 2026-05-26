@@ -370,6 +370,12 @@ class CEmitter
 	    return base + " " + emit_abstract_declarator(abs);
 	}
 
+	// typeof — emit as __typeof__ for c2mir/GCC compatibility
+	if (an == AN_TYPEOF_EXPR)
+	    return "__typeof__(" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_TYPEOF_TYPE)
+	    return "__typeof__(" + emit_type(child(node, 0)) + ")";
+
 	// container types
 	if (an == AN_VECTOR_TYPE || an == AN_SET_TYPE || an == AN_LIST_TYPE)
 	    return "void *";  // TODO: proper container support

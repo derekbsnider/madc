@@ -165,6 +165,8 @@ enum AnodeCode {
     AN_VLA_DECL           = 154,
     AN_WHILE              = 155,
     AN_XOR_ASSIGN         = 156,
+    AN_TYPEOF_EXPR        = 157,
+    AN_TYPEOF_TYPE        = 158,
 };
 
 // O(1) anode code lookup — returns AN_NONE for non-anode nodes
