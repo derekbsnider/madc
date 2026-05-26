@@ -62,6 +62,25 @@ static int gecko_read_token(void **attr, GeckoTokenizer *state)
 	if (code < 0)
 	    continue;  // skip whitespace, comments
 
+	// Skip __attribute__((...)) — consume the entire construct
+	if (code == 256 /* GT_IDENT */) {
+	    TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
+	    if (ti && (ti->str == "__attribute__" || ti->str == "__attribute" ||
+		       ti->str == "__extension__")) {
+		// Find opening '(' and count parens to find matching close
+		int depth = 0;
+		bool found_open = false;
+		for (size_t i = state->pos; i < state->tokens->size(); i++) {
+		    int c = madc_token_to_gecko((*state->tokens)[i]);
+		    if (c < 0) continue;
+		    if (c == '(') { depth++; found_open = true; }
+		    else if (c == ')') { depth--; if (found_open && depth == 0) { state->pos = i + 1; break; } }
+		    else if (!found_open) break;  // no parens after attribute — just skip the keyword
+		}
+		continue;  // skip the entire attribute
+	    }
+	}
+
 	// Synthesize ELLIPSIS from three consecutive '.' tokens
 	if (code == '.') {
 	    size_t saved = state->pos;
