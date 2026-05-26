@@ -450,9 +450,16 @@ class CEmitter
 	if (strcmp(name, "init_decl") == 0)
 	    return emit_declarator_str(child(node, 0)) + " = " + emit_expr(child(node, 1));
 
-	// decl_list — multiple declarators
-	if (strcmp(name, "decl_list") == 0)
+	// decl_list / field_list — multiple declarators
+	if (strcmp(name, "decl_list") == 0 || strcmp(name, "field_list") == 0)
 	    return emit_declarator_str(child(node, 0)) + ", " + emit_declarator_str(child(node, 1));
+
+	// bitfield
+	if (strcmp(name, "bitfield") == 0) {
+	    gp_tree_node *d = child(node, 0);
+	    std::string nm = is_nil(d) ? "" : emit_declarator_str(d);
+	    return nm + " : " + emit_expr(child(node, 1));
+	}
 
 	return term_text(node);
     }
