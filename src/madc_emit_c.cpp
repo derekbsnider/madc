@@ -271,8 +271,15 @@ class CEmitter
 	    }
 	    if (code == GT_REAL) {
 		char buf[64];
-		snprintf(buf, sizeof(buf), "%.17g", term_dval(node));
-		return buf;
+		double d = term_dval(node);
+		snprintf(buf, sizeof(buf), "%.17g", d);
+		// Ensure it looks like a float literal (has . or e)
+		std::string s = buf;
+		if (s.find('.') == std::string::npos &&
+		    s.find('e') == std::string::npos &&
+		    s.find('E') == std::string::npos)
+		    s += ".0";
+		return s;
 	    }
 	    if (code == GT_STRING) {
 		// Lexer stores content without quotes and with escapes
