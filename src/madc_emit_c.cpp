@@ -763,6 +763,7 @@ class CEmitter
     std::string cout_call_for_type(TypeClass tc, const std::string &expr)
     {
 	switch (tc) {
+	case TC_STDSTR: return "__std_cout_stdstr(" + expr + ")";
 	case TC_STRING: return "__std_cout_str(" + expr + ")";
 	case TC_CHAR:   return "__std_cout_char(" + expr + ")";
 	case TC_DOUBLE: return "__std_cout_double(" + expr + ")";
@@ -1249,7 +1250,10 @@ class CEmitter
 		    std::string vn = scope_class_vars[i].substr(0, sep);
 		    std::string cn = scope_class_vars[i].substr(sep + 1);
 		    emit_indent();
-		    O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
+		    if (cn == "__string")
+			O("__madc_string_destruct(%s);\n", vn.c_str());
+		    else
+			O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
 		}
 	    }
 	    emit_indent();
@@ -1428,11 +1432,76 @@ class CEmitter
 	}
     }
 
+    // Check if a declaration_specifiers chain contains GT_STRING_T
+    static bool is_string_type(gp_tree_node *specs)
+    {
+	if (!specs) return false;
+	if (specs->type == GP_TERM) return term_code(specs) == 318;
+	if (an_code(specs) == AN_QUAL)
+	    return is_string_type(child(specs, 0)) || is_string_type(child(specs, 1));
+	return false;
+    }
+
+    // Emit a string variable declaration with runtime management
+    void emit_string_decl(gp_tree_node *decls)
+    {
+	if (is_nil(decls)) return;
+
+	int an = an_code(decls);
+
+	// init_decl(name, initializer) — string x = "literal";
+	if (an == AN_INIT_DECL) {
+	    std::string vname = extract_name(child(decls, 0));
+	    std::string init_expr = emit_expr(child(decls, 1));
+	    if (!vname.empty()) {
+		emit_indent();
+		O("char %s[MADC_STRING_SIZE];\n", vname.c_str());
+		emit_indent();
+		O("__madc_string_construct(%s);\n", vname.c_str());
+		emit_indent();
+		O("__madc_string_assign_cstr(%s, %s);\n",
+		  vname.c_str(), init_expr.c_str());
+		local_var_types[vname] = TC_STDSTR;
+		scope_class_vars.push_back(vname + "|__string");
+	    }
+	    return;
+	}
+
+	// decl_list — multiple declarators
+	if (an == AN_DECL_LIST) {
+	    emit_string_decl(child(decls, 0));
+	    emit_string_decl(child(decls, 1));
+	    return;
+	}
+
+	// Plain identifier — string x; (no initializer)
+	if (decls->type == GP_TERM) {
+	    std::string vname = term_text(decls);
+	    if (!vname.empty()) {
+		emit_indent();
+		O("char %s[MADC_STRING_SIZE];\n", vname.c_str());
+		emit_indent();
+		O("__madc_string_construct(%s);\n", vname.c_str());
+		local_var_types[vname] = TC_STDSTR;
+		scope_class_vars.push_back(vname + "|__string");
+	    }
+	    return;
+	}
+    }
+
     void emit_decl_stmt(gp_tree_node *node)
     {
 	// decl(declaration_specifiers, init_declarator_list_opt)
-	std::string type = emit_type(child(node, 0));
+	gp_tree_node *specs = child(node, 0);
 	gp_tree_node *decls = child(node, 1);
+
+	// String type: managed std::string with runtime wrappers
+	if (is_string_type(specs)) {
+	    emit_string_decl(decls);
+	    return;
+	}
+
+	std::string type = emit_type(specs);
 
 	if (is_nil(decls)) {
 	    emit_indent();
@@ -2075,6 +2144,19 @@ public:
 	header += "typedef void *stringstream;\n";
 	header += "typedef void *ostream;\n";
 	header += "typedef void *array;\n";  // MadArray
+	header += "\n";
+
+	// String runtime (manages std::string objects from C)
+	header += "#define MADC_STRING_SIZE 32\n";
+	header += "extern void __madc_string_construct(void *);\n";
+	header += "extern void __madc_string_destruct(void *);\n";
+	header += "extern void __madc_string_assign_cstr(void *, const char *);\n";
+	header += "extern void __madc_string_assign(void *, void *);\n";
+	header += "extern const char *__madc_string_cstr(void *);\n";
+	header += "extern long __madc_string_length(void *);\n";
+	header += "extern void __madc_string_append_cstr(void *, const char *);\n";
+	header += "extern void __madc_string_append(void *, void *);\n";
+	header += "extern void __std_cout_stdstr(void *);\n";
 	header += "\n";
 
 	// C++ iostream wrappers (call real std::cout << operators)

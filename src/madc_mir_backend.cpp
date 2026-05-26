@@ -54,6 +54,28 @@ void madc_printstr(const char *s) { if (s) std::cout << s << std::endl; }
 // C++ iostream wrappers — thin C-linkage functions that call real
 // std::cout << operators.  The transpiler emits these instead of printf,
 // preserving iostream formatting behavior.
+// String runtime — manages std::string objects from generated C code.
+// String variables are stack-allocated char[32] buffers with placement new.
+void __madc_string_construct(void *ptr)
+    { new(ptr) std::string; }
+void __madc_string_destruct(void *ptr)
+    { ((std::string *)ptr)->~basic_string(); }
+void __madc_string_assign_cstr(void *ptr, const char *s)
+    { *(std::string *)ptr = s ? s : ""; }
+void __madc_string_assign(void *dst, void *src)
+    { *(std::string *)dst = *(std::string *)src; }
+const char *__madc_string_cstr(void *ptr)
+    { return ((std::string *)ptr)->c_str(); }
+long __madc_string_length(void *ptr)
+    { return (long)((std::string *)ptr)->length(); }
+void __madc_string_append_cstr(void *ptr, const char *s)
+    { if (s) *(std::string *)ptr += s; }
+void __madc_string_append(void *dst, void *src)
+    { *(std::string *)dst += *(std::string *)src; }
+// cout for std::string* — outputs the string content
+void __std_cout_stdstr(void *ptr)
+    { std::cout << *(std::string *)ptr; }
+
 void __std_cout_str(const char *s)  { if (s) std::cout << s; }
 void __std_cout_int(long i)         { std::cout << i; }
 void __std_cout_uint(unsigned long u) { std::cout << u; }

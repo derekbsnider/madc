@@ -20,6 +20,7 @@ enum TypeClass {
     TC_VOID   = 4,   // void
     TC_CLASS  = 5,   // user-defined class instance
     TC_PTR    = 6,   // generic pointer (not char*)
+    TC_STDSTR = 7,   // managed std::string (needs ctor/dtor)
 };
 
 // Per-class type information
