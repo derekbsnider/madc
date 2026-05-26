@@ -49,6 +49,9 @@ MADDAT_ARCHIVE = $(LIBDIR)/libmadcdat.a
 MADC_VERSION ?= $(shell cat ../VERSION 2>/dev/null || echo 0.0.0)
 MADC_SOVERSION ?= $(firstword $(subst ., ,$(MADC_VERSION)))
 LIBMADC_SHARED = $(LIBDIR)/libmadc.so
+LIBMADC_STATIC = $(LIBDIR)/libmadc.a
+# Objects for the library: everything except the main() driver
+LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS)) $(GECKO_OBJ)
 pkgconfigdir ?= $(libdir)/pkgconfig
 
 TESTDIR  = ../tests/unit
@@ -69,10 +72,10 @@ LIBMADC_STAGE_CPP_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_cpp_smoke
 LIBMADC_STAGE_C_SMOKE = $(LIBMADC_STAGE_ROOT)/libmadc_c_smoke
 
 all:
-	$(MAKE) ../bin/madc $(LIBMADC_SHARED)
+	$(MAKE) $(LIBMADC_STATIC) ../bin/madc $(LIBMADC_SHARED)
 
 libmadc:
-	$(MAKE) $(LIBMADC_SHARED)
+	$(MAKE) $(LIBMADC_STATIC) $(LIBMADC_SHARED)
 
 libmadc-smoke:
 	rm -rf $(LIBMADC_STAGE_ROOT)
@@ -118,6 +121,7 @@ clean:
 	rm -f ../obj/pic/*.o
 	rm -f $(ALL_TESTBINS)
 	rm -f $(MADDAT_ARCHIVE)
+	rm -f $(LIBMADC_STATIC)
 	rm -f $(LIBMADC_SHARED)
 
 test: $(TESTBINS)
@@ -132,11 +136,16 @@ gcctest: ../bin/madc
 gcctest-smoke: ../bin/madc
 	@cd .. && scripts/run_gcc_testsuite.py --limit 25
 
-$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ) $(GECKO_OBJ) $(MIRLIB)
-	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(TESTOBJ) $(GECKO_OBJ) $(MIRLIB) $(LIBS)
+$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(LIBMADC_STATIC) $(MIRLIB) $(LIBS)
 
-../bin/madc: $(OBJECTS) $(GECKO_OBJ) $(MIRLIB)
-	$(CXX) -o $@ $(OBJECTS) $(GECKO_OBJ) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+../bin/madc: $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+
+$(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS)
+	mkdir -p $(LIBDIR)
+	rm -f $@
+	$(AR) $(ARFLAGS) $@ $^
 
 $(LIBMADC_SHARED): $(LIBMADC_OBJECTS)
 	mkdir -p $(LIBDIR)
