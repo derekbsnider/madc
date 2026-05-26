@@ -403,6 +403,8 @@ int main(int argc, char **argv)
     const char *emit_executable_path = NULL;
     const char *emit_function_name = NULL;
     bool emit_pch = false;
+    bool emit_c = false;
+    bool use_mir_backend = false;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -445,6 +447,20 @@ int main(int argc, char **argv)
             const char *name = argv[i] + strlen("-fno-builtin-");
             if ( *name )
                 prog->disabled_builtin_names.insert(name);
+            filearg = i + 1;
+        } else if (strncmp(argv[i], "--backend=", 10) == 0) {
+            const char *backend = argv[i] + 10;
+            if (strcmp(backend, "mir") == 0)
+                use_mir_backend = true;
+            else if (strcmp(backend, "asmjit") != 0) {
+                std::cerr << "Unknown backend: " << backend
+                          << " (use 'mir' or 'asmjit')" << std::endl;
+                return 1;
+            }
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--emit-c") == 0) {
+            emit_c = true;
+            use_mir_backend = true;  // --emit-c implies MIR pipeline
             filearg = i + 1;
         } else {
             filearg = i;
