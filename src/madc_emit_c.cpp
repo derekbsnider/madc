@@ -967,7 +967,9 @@ class CEmitter
 	    std::string ret = emit_type(child(node, 0));
 	    std::string name = term_text(child(node, 1));
 	    std::string params = emit_param_list(child(node, 2));
-	    OH("extern %s %s(%s);\n", ret.c_str(), name.c_str(),
+	    // Don't add extern if type already includes it
+	    const char *prefix = (ret.find("extern") == std::string::npos) ? "extern " : "";
+	    OH("%s%s %s(%s);\n", prefix, ret.c_str(), name.c_str(),
 	       params.empty() ? "void" : params.c_str());
 	    return;
 	}
@@ -999,11 +1001,64 @@ class CEmitter
 	    return;
 	}
 
-	// Typedef
+	// Typedef variants
 	if (is_anode(node, "typedef")) {
 	    OH("typedef %s %s;\n",
 	       emit_type(child(node, 0)).c_str(),
 	       term_text(child(node, 1)).c_str());
+	    return;
+	}
+	if (is_anode(node, "typedef_struct")) {
+	    OH("typedef struct %s %s;\n",
+	       term_text(child(node, 0)).c_str(),
+	       term_text(child(node, 1)).c_str());
+	    return;
+	}
+	if (is_anode(node, "typedef_struct_def")) {
+	    // typedef struct Name { ... } Alias;
+	    std::string sname = term_text(child(node, 0));
+	    std::string alias = term_text(child(node, 2));
+	    OH("typedef struct %s {\n", sname.c_str());
+	    emit_struct_body_to_header(child(node, 1));
+	    OH("} %s;\n\n", alias.c_str());
+	    return;
+	}
+	if (is_anode(node, "typedef_anon_struct")) {
+	    // typedef struct { ... } Alias;
+	    std::string alias = term_text(child(node, 1));
+	    OH("typedef struct {\n");
+	    emit_struct_body_to_header(child(node, 0));
+	    OH("} %s;\n\n", alias.c_str());
+	    return;
+	}
+	if (is_anode(node, "typedef_union_def")) {
+	    std::string uname = term_text(child(node, 0));
+	    std::string alias = term_text(child(node, 2));
+	    OH("typedef union %s {\n", uname.c_str());
+	    emit_struct_body_to_header(child(node, 1));
+	    OH("} %s;\n\n", alias.c_str());
+	    return;
+	}
+	if (is_anode(node, "typedef_anon_union")) {
+	    std::string alias = term_text(child(node, 1));
+	    OH("typedef union {\n");
+	    emit_struct_body_to_header(child(node, 0));
+	    OH("} %s;\n\n", alias.c_str());
+	    return;
+	}
+	if (is_anode(node, "typedef_enum_def")) {
+	    std::string ename = term_text(child(node, 0));
+	    std::string alias = term_text(child(node, 2));
+	    OH("typedef enum %s {\n", ename.c_str());
+	    emit_enum_body(child(node, 1));
+	    OH("\n} %s;\n\n", alias.c_str());
+	    return;
+	}
+	if (is_anode(node, "typedef_anon_enum")) {
+	    std::string alias = term_text(child(node, 1));
+	    OH("typedef enum {\n");
+	    emit_enum_body(child(node, 0));
+	    OH("\n} %s;\n\n", alias.c_str());
 	    return;
 	}
 
