@@ -149,6 +149,32 @@ class CEmitter
     }
 
     // ---------------------------------------------------------------
+    // String escaping — re-escape a string for C source output
+    // ---------------------------------------------------------------
+
+    static std::string c_escape(const std::string &s)
+    {
+	std::string out;
+	out.reserve(s.size() + 16);
+	for (char c : s) {
+	    switch (c) {
+	    case '\n': out += "\\n"; break;
+	    case '\r': out += "\\r"; break;
+	    case '\t': out += "\\t"; break;
+	    case '\\': out += "\\\\"; break;
+	    case '"':  out += "\\\""; break;
+	    case '\0': out += "\\0"; break;
+	    default:
+		if ((unsigned char)c < 32)
+		    { char buf[8]; snprintf(buf, sizeof(buf), "\\x%02x", (unsigned char)c); out += buf; }
+		else
+		    out += c;
+	    }
+	}
+	return out;
+    }
+
+    // ---------------------------------------------------------------
     // Builtin name mapping — translates madc builtin names to their
     // extern "C" wrapper names in libmadc.
     // ---------------------------------------------------------------
@@ -249,10 +275,22 @@ class CEmitter
 		return buf;
 	    }
 	    if (code == GT_STRING) {
-		return term_text(node); // already quoted
+		// Lexer stores content without quotes and with escapes
+		// resolved — re-escape for C output
+		return "\"" + c_escape(term_text(node)) + "\"";
 	    }
 	    if (code == GT_CHAR_LIT) {
-		return "'" + term_text(node) + "'";
+		// TokenChar stores the char value in _token, not in str
+		int64_t ch = term_ival(node);
+		char buf[8];
+		if (ch == '\n') return "'\\n'";
+		if (ch == '\t') return "'\\t'";
+		if (ch == '\r') return "'\\r'";
+		if (ch == '\\') return "'\\\\'";
+		if (ch == '\'') return "'\\''";
+		if (ch == 0)    return "'\\0'";
+		snprintf(buf, sizeof(buf), "'%c'", (char)ch);
+		return buf;
 	    }
 	    return term_text(node);
 	}
