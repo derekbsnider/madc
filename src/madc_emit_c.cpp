@@ -136,6 +136,12 @@ class CEmitter
     // Class vars in current scope needing destructor injection (LIFO)
     std::vector<std::string> scope_class_vars;
 
+    // Per-function va_list variable names (for va_start/va_end emission)
+    std::set<std::string> va_list_vars;
+
+    // Last named parameter of the current variadic function (for va_start)
+    std::string current_func_last_param;
+
     // Look up variable type: local overlay first, then sema
     TypeClass lookup_var_type(const std::string &name) {
 	auto it = local_var_types.find(name);
@@ -241,11 +247,16 @@ class CEmitter
 
     static std::string map_builtin(const std::string &name)
     {
-	if (name == "puti")     return "madc_puti";
-	if (name == "putu")     return "madc_putu";
-	if (name == "putd")     return "madc_putd";
-	if (name == "putf")     return "madc_putf";
-	if (name == "printstr") return "madc_printstr";
+	if (name == "puti")             return "madc_puti";
+	if (name == "putu")             return "madc_putu";
+	if (name == "putd")             return "madc_putd";
+	if (name == "putf")             return "madc_putf";
+	if (name == "printstr")         return "madc_printstr";
+	// JIT-backend va helpers → standard C11 equivalents
+	if (name == "__madc_vsprintf")  return "vsprintf";
+	if (name == "__madc_vsnprintf") return "vsnprintf";
+	if (name == "__madc_vprintf")   return "vprintf";
+	if (name == "__madc_vfprintf")  return "vfprintf";
 	return name;
     }
 
@@ -664,32 +675,62 @@ class CEmitter
     // ---------------------------------------------------------------
 
     // Check if a node is an ostream identifier (cout or cerr)
-    static bool is_ostream_ident(gp_tree_node *node)
+    bool is_ostream_ident(gp_tree_node *node)
     {
 	if (!node || node->type != GP_TERM || term_code(node) != GT_IDENT)
 	    return false;
 	std::string id = term_text(node);
-	return id == "cout" || id == "cerr";
+	if (id == "cout" || id == "cerr") return true;
+	// Stream-typed variables (ofstream, fstream, stringstream) are ostreams
+	std::string cls = lookup_var_class(id);
+	return is_ostream_class(cls);
     }
 
-    // Get the ostream macro name for a stream identifier
-    static std::string ostream_for_ident(gp_tree_node *node)
+    // Check if a node is an istream identifier (cin or ifstream/fstream var)
+    bool is_istream_ident(gp_tree_node *node)
+    {
+	if (!node || node->type != GP_TERM || term_code(node) != GT_IDENT)
+	    return false;
+	std::string id = term_text(node);
+	if (id == "cin") return true;
+	std::string cls = lookup_var_class(id);
+	return is_istream_class(cls);
+    }
+
+    // Get the ostream expression for a stream identifier
+    std::string ostream_for_ident(gp_tree_node *node)
     {
 	if (node && node->type == GP_TERM) {
 	    std::string id = term_text(node);
 	    if (id == "cerr") return "__madc_cerr";
+	    if (id == "cout") return "__madc_cout";
+	    // Stream variable — pass the buffer directly
+	    std::string cls = lookup_var_class(id);
+	    if (is_ostream_class(cls)) return id;
 	}
 	return "__madc_cout";
     }
 
+    // Get the istream expression for a stream identifier
+    std::string istream_for_ident(gp_tree_node *node)
+    {
+	if (node && node->type == GP_TERM) {
+	    std::string id = term_text(node);
+	    if (id == "cin") return "__madc_cin";
+	    std::string cls = lookup_var_class(id);
+	    if (is_istream_class(cls)) return id;
+	}
+	return "__madc_cin";
+    }
+
     // Check if a node is the identifier "cout" (backward compat helper)
-    static bool is_cout(gp_tree_node *node)
+    bool is_cout(gp_tree_node *node)
     {
 	return is_ostream_ident(node);
     }
 
     // Check if a bsl chain is rooted at an ostream
-    static bool is_cout_chain(gp_tree_node *node)
+    bool is_cout_chain(gp_tree_node *node)
     {
 	if (!node) return false;
 	if (node->type == GP_TERM) return is_cout(node);
@@ -726,7 +767,7 @@ class CEmitter
     }
 
     // Find the ostream identifier at the root of a bsl chain
-    static gp_tree_node *find_stream_root(gp_tree_node *node)
+    gp_tree_node *find_stream_root(gp_tree_node *node)
     {
 	if (!node) return nullptr;
 	if (is_ostream_ident(node)) return node;
@@ -825,17 +866,27 @@ class CEmitter
     // cin >> var  →  istream wrapper calls
     // ---------------------------------------------------------------
 
-    static bool is_cin(gp_tree_node *node)
+    bool is_cin(gp_tree_node *node)
     {
 	if (!node) return false;
 	if (node->type == GP_TERM && term_code(node) == GT_IDENT)
-	    return term_text(node) == "cin";
+	    return is_istream_ident(node);
 	if (is_an(node, AN_PAREN))
 	    return is_cin_chain(child(node, 0));
 	return false;
     }
 
-    static bool is_cin_chain(gp_tree_node *node)
+    // Find the istream identifier at the root of a >> chain
+    gp_tree_node *find_istream_root(gp_tree_node *node)
+    {
+	if (!node) return nullptr;
+	if (is_istream_ident(node)) return node;
+	if (is_an(node, AN_PAREN)) return find_istream_root(child(node, 0));
+	if (is_an(node, AN_BSR)) return find_istream_root(child(node, 0));
+	return nullptr;
+    }
+
+    bool is_cin_chain(gp_tree_node *node)
     {
 	if (!node) return false;
 	if (node->type == GP_TERM) return is_cin(node);
@@ -868,6 +919,10 @@ class CEmitter
 	std::vector<gp_tree_node *> targets;
 	collect_cin_targets(node, targets);
 
+	// Determine which istream (cin or ifstream variable)
+	gp_tree_node *root = find_istream_root(node);
+	std::string is = istream_for_ident(root);
+
 	std::string result;
 	for (size_t i = 0; i < targets.size(); i++) {
 	    gp_tree_node *t = targets[i];
@@ -878,23 +933,23 @@ class CEmitter
 		TypeClass tc = lookup_var_type(term_text(t));
 		switch (tc) {
 		case TC_CLASS:
-		    result += "streamin_string(__madc_cin, " + var + ")";
+		    result += "streamin_string(" + is + ", " + var + ")";
 		    break;
 		case TC_STRING:
-		    result += "streamin_char(__madc_cin, " + var + ")";
+		    result += "streamin_char(" + is + ", " + var + ")";
 		    break;
 		case TC_CHAR:
-		    result += "streamin_char(__madc_cin, &" + var + ")";
+		    result += "streamin_char(" + is + ", &" + var + ")";
 		    break;
 		case TC_DOUBLE:
-		    result += "streamin_double(__madc_cin, &" + var + ")";
+		    result += "streamin_double(" + is + ", &" + var + ")";
 		    break;
 		default:
-		    result += "streamin_int(__madc_cin, &" + var + ")";
+		    result += "streamin_int(" + is + ", &" + var + ")";
 		    break;
 		}
 	    } else {
-		result += "streamin_int(__madc_cin, &" + var + ")";
+		result += "streamin_int(" + is + ", &" + var + ")";
 	    }
 	}
 	return "(" + result + ")";
@@ -990,6 +1045,38 @@ class CEmitter
 		       emit_expr(child(node, 1)) + ")";
 	}
 
+	// String assignment: s = "hello" → string_assign_cstr(s, "hello")
+	//                    s = t      → string_assign(s, t)
+	if (an == AN_ASSIGN) {
+	    gp_tree_node *lhs = child(node, 0);
+	    gp_tree_node *rhs = child(node, 1);
+	    // va_start macro expands to: ap = __va_args
+	    // Detect this and emit proper va_start(ap, last_param) instead.
+	    if (lhs && lhs->type == GP_TERM && term_code(lhs) == GT_IDENT &&
+		rhs && rhs->type == GP_TERM && term_code(rhs) == GT_IDENT &&
+		term_text(rhs) == "__va_args") {
+		std::string ap = term_text(lhs);
+		va_list_vars.insert(ap);
+		std::string last = current_func_last_param;
+		if (last.empty()) last = "/* last_param */";
+		return "va_start(" + ap + ", " + last + ")";
+	    }
+	    if (lhs && lhs->type == GP_TERM && term_code(lhs) == GT_IDENT) {
+		std::string lname = term_text(lhs);
+		if (lookup_var_type(lname) == TC_CLASS &&
+		    lookup_var_class(lname) == "string") {
+		    std::string lhs_str = emit_expr(lhs);
+		    if (rhs && rhs->type == GP_TERM && term_code(rhs) == GT_STRING) {
+			return "string_assign_cstr(" + lhs_str + ", \"" +
+			       c_escape(term_text(rhs)) + "\")";
+		    }
+		    // RHS is another string variable or expression
+		    std::string rhs_str = emit_expr(rhs);
+		    return "string_assign(" + lhs_str + ", " + rhs_str + ")";
+		}
+	    }
+	}
+
 	// Assignment operators
 	struct { int code; const char *c_op; } assigns[] = {
 	    {AN_ASSIGN, "="}, {AN_ADD_ASSIGN, "+="}, {AN_SUB_ASSIGN, "-="},
@@ -1043,9 +1130,19 @@ class CEmitter
 		if (method == "length" || method == "size")
 		    return "strlen(" + obj + ")";
 
-		// Check if obj is a known class instance → mangled method call
+		// Stream method dispatch: obj.method(args) → prefix_method(obj, args)
 		std::string obj_name = term_text(child(callee, 0));
 		std::string cls = lookup_var_class(obj_name);
+		if (cls == "ofstream" || cls == "ifstream" ||
+		    cls == "fstream" || cls == "stringstream") {
+		    std::string prefix;
+		    if (cls == "stringstream") prefix = "sstream";
+		    else prefix = cls;
+		    std::string wrapper = prefix + "_" + method;
+		    if (args.empty())
+			return wrapper + "(" + obj + ")";
+		    return wrapper + "(" + obj + ", " + args + ")";
+		}
 		if (!cls.empty()) {
 		    // Resolve method through inheritance chain
 		    std::string owner = cls;
@@ -1079,6 +1176,14 @@ class CEmitter
 
 	    std::string func = emit_expr(callee);
 	    func = map_builtin(func);
+
+	    // getline(stream, string) → streamin_getline(stream, string)
+	    if (func == "getline") {
+		// Re-emit args without string coercion (need raw buffer, not c_str)
+		std::string raw_args = emit_arg_list(child(node, 1), false);
+		return "streamin_getline(" + raw_args + ")";
+	    }
+
 	    return func + "(" + args + ")";
 	}
 
@@ -1110,9 +1215,25 @@ class CEmitter
 	}
 
 	// Cast: (type)expr
-	if (an == AN_CAST)
-	    return "((" + emit_type(child(node, 0)) + ")" +
-		   emit_expr(child(node, 1)) + ")";
+	if (an == AN_CAST) {
+	    // va_end(ap) expands to ((void)(ap)) — detect and emit va_end
+	    gp_tree_node *cast_type = child(node, 0);
+	    gp_tree_node *cast_expr = child(node, 1);
+	    std::string type_str = emit_type(cast_type);
+	    if (type_str == "void" && cast_expr) {
+		// Unwrap optional paren: (ap) → ap
+		gp_tree_node *inner_e = cast_expr;
+		if (inner_e->type == GP_ANODE && an_code(inner_e) == AN_PAREN)
+		    inner_e = child(inner_e, 0);
+		if (inner_e && inner_e->type == GP_TERM &&
+		    term_code(inner_e) == GT_IDENT) {
+		    std::string vname = term_text(inner_e);
+		    if (va_list_vars.count(vname))
+			return "va_end(" + vname + ")";
+		}
+	    }
+	    return "((" + type_str + ")" + emit_expr(cast_expr) + ")";
+	}
 
 	// sizeof
 	if (an == AN_SIZEOF_TYPE)
@@ -1434,6 +1555,11 @@ class CEmitter
 		    emit_indent();
 		    if (cn == "string")
 			O("string_destruct(%s);\n", vn.c_str());
+		    else if (cn == "ofstream" || cn == "ifstream" ||
+			     cn == "fstream")
+			O("%s_destruct(%s);\n", cn.c_str(), vn.c_str());
+		    else if (cn == "stringstream")
+			O("sstream_destruct(%s);\n", vn.c_str());
 		    else
 			O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
 		}
@@ -1614,6 +1740,55 @@ class CEmitter
 	}
     }
 
+    // Check if a declaration_specifiers chain contains a stream type
+    // Returns the stream kind name or "" if not a stream.
+    static std::string stream_type_name(gp_tree_node *specs)
+    {
+	if (!specs) return "";
+	if (specs->type == GP_TERM) {
+	    int code = term_code(specs);
+	    if (code == 341) return "ofstream";
+	    if (code == 340) return "ifstream";
+	    if (code == 342) return "fstream";
+	    if (code == 343) return "stringstream";
+	    return "";
+	}
+	if (an_code(specs) == AN_QUAL) {
+	    std::string s = stream_type_name(child(specs, 0));
+	    if (!s.empty()) return s;
+	    return stream_type_name(child(specs, 1));
+	}
+	return "";
+    }
+
+    // Check if a variable name refers to a stream type via local_var_class_map
+    bool is_stream_var(const std::string &name)
+    {
+	std::string cls = lookup_var_class(name);
+	return cls == "ofstream" || cls == "ifstream" ||
+	       cls == "fstream" || cls == "stringstream";
+    }
+
+    // Check if a stream class is an ostream (supports <<)
+    static bool is_ostream_class(const std::string &cls)
+    {
+	return cls == "ofstream" || cls == "fstream" || cls == "stringstream";
+    }
+
+    // Check if a stream class is an istream (supports >>)
+    static bool is_istream_class(const std::string &cls)
+    {
+	return cls == "ifstream" || cls == "fstream";
+    }
+
+    // Get the wrapper prefix for a stream class (e.g. "ofstream" → "ofstream_")
+    // stringstream uses "sstream_" prefix
+    static std::string stream_wrapper_prefix(const std::string &cls)
+    {
+	if (cls == "stringstream") return "sstream_";
+	return cls + "_";
+    }
+
     // Check if a declaration_specifiers chain contains GT_STRING_T
     static bool is_string_type(gp_tree_node *specs)
     {
@@ -1671,11 +1846,71 @@ class CEmitter
 	}
     }
 
+    // Emit a stream variable declaration: char buf[SIZE]; type_construct(buf);
+    void emit_stream_decl(const std::string &stream_class, gp_tree_node *decls)
+    {
+	if (is_nil(decls)) return;
+
+	// Determine size macro and wrapper prefix
+	std::string size_macro;
+	std::string prefix = stream_wrapper_prefix(stream_class);
+	if (stream_class == "ofstream")      size_macro = "MADC_OFSTREAM_SIZE";
+	else if (stream_class == "ifstream") size_macro = "MADC_IFSTREAM_SIZE";
+	else if (stream_class == "fstream")  size_macro = "MADC_FSTREAM_SIZE";
+	else                                 size_macro = "MADC_SSTREAM_SIZE";
+
+	int an = an_code(decls);
+
+	// init_decl(name, initializer) — stream with initializer (unusual)
+	if (an == AN_INIT_DECL) {
+	    std::string vname = extract_name(child(decls, 0));
+	    if (!vname.empty()) {
+		emit_indent();
+		O("char %s[%s];\n", vname.c_str(), size_macro.c_str());
+		emit_indent();
+		O("%sconstruct(%s);\n", prefix.c_str(), vname.c_str());
+		local_var_types[vname] = TC_CLASS;
+		local_var_class_map[vname] = stream_class;
+		scope_class_vars.push_back(vname + "|" + stream_class);
+	    }
+	    return;
+	}
+
+	// decl_list — multiple declarators
+	if (an == AN_DECL_LIST) {
+	    emit_stream_decl(stream_class, child(decls, 0));
+	    emit_stream_decl(stream_class, child(decls, 1));
+	    return;
+	}
+
+	// Plain identifier — ofstream f;
+	if (decls->type == GP_TERM) {
+	    std::string vname = term_text(decls);
+	    if (!vname.empty()) {
+		emit_indent();
+		O("char %s[%s];\n", vname.c_str(), size_macro.c_str());
+		emit_indent();
+		O("%sconstruct(%s);\n", prefix.c_str(), vname.c_str());
+		local_var_types[vname] = TC_CLASS;
+		local_var_class_map[vname] = stream_class;
+		scope_class_vars.push_back(vname + "|" + stream_class);
+	    }
+	    return;
+	}
+    }
+
     void emit_decl_stmt(gp_tree_node *node)
     {
 	// decl(declaration_specifiers, init_declarator_list_opt)
 	gp_tree_node *specs = child(node, 0);
 	gp_tree_node *decls = child(node, 1);
+
+	// Stream type: managed fstream/ifstream/ofstream/stringstream
+	std::string sclass = stream_type_name(specs);
+	if (!sclass.empty()) {
+	    emit_stream_decl(sclass, decls);
+	    return;
+	}
 
 	// String type: managed std::string with runtime wrappers
 	if (is_string_type(specs)) {
@@ -1724,6 +1959,10 @@ class CEmitter
 
 	// Inject constructor call for class variables (no-args ctor)
 	std::string vname = extract_name(decls);
+
+	// Track va_list variables so we can emit proper va_start/va_end
+	if (type == "va_list" && !vname.empty())
+	    va_list_vars.insert(vname);
 	if (!vname.empty() && class_has_ctor(clean_type)) {
 	    emit_indent();
 	    O("%s__%s(&%s);\n", clean_type.c_str(), clean_type.c_str(),
@@ -1792,12 +2031,38 @@ class CEmitter
     // Function definition emission
     // ---------------------------------------------------------------
 
+    // Extract the last named parameter from a parameter list node.
+    // Used to generate va_start(ap, last_param).
+    std::string extract_last_named_param(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return "";
+	int an = an_code(node);
+	// param_va(param_list) — variadic: descend into the param_list
+	if (an == AN_PARAM_VA)
+	    return extract_last_named_param(child(node, 0));
+	// param_list(prev, next) — rightmost is last
+	if (an == AN_PARAM_LIST) {
+	    std::string r = extract_last_named_param(child(node, 1));
+	    if (!r.empty()) return r;
+	    return extract_last_named_param(child(node, 0));
+	}
+	// param(type, declarator)
+	if (an == AN_PARAM) {
+	    gp_tree_node *decl = child(node, 1);
+	    if (!is_nil(decl)) return extract_name(decl);
+	    return "";
+	}
+	return "";
+    }
+
     void emit_func_def(gp_tree_node *node)
     {
 	// func_def(declaration_specifiers, declarator, compound_statement)
 	local_var_types.clear();  // fresh scope for each function
 	local_var_class_map.clear();
 	scope_class_vars.clear();
+	va_list_vars.clear();
+	current_func_last_param.clear();
 	std::string ret_type = emit_type(child(node, 0));
 	gp_tree_node *decl = child(node, 1);
 	gp_tree_node *body_node = child(node, 2);
@@ -1822,8 +2087,12 @@ class CEmitter
 
 	if (is_an(inner, AN_FUNC_DECL)) {
 	    func_name = extract_name(child(inner, 0));
-	    track_param_types(child(inner, 1));
-	    params = emit_param_list(child(inner, 1));
+	    gp_tree_node *plist = child(inner, 1);
+	    track_param_types(plist);
+	    params = emit_param_list(plist);
+	    // If this is a variadic function, record last named param for va_start
+	    if (is_an(plist, AN_PARAM_VA))
+		current_func_last_param = extract_last_named_param(plist);
 	} else {
 	    func_name = term_text(inner);
 	}
@@ -2209,7 +2478,10 @@ class CEmitter
 
 	    // Declaration with declarators
 	    if (is_typedef) {
-		OH("%s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
+		// Suppress va_list typedef — we use <stdarg.h> in the preamble
+		std::string decl_name = emit_declarator_str(decls);
+		if (decl_name == "va_list") return;
+		OH("%s %s;\n", type.c_str(), decl_name.c_str());
 	    } else {
 		// Check if any declarator is a func_decl (function prototype)
 		std::string d = emit_declarator_str(decls);
@@ -2267,6 +2539,7 @@ public:
 	body.clear();
 
 	header += "/* Generated by madc transpiler */\n";
+	header += "#include <stdarg.h>\n";
 	header += "typedef signed char int8_t;\n";
 	header += "typedef unsigned char uint8_t;\n";
 	header += "typedef short int16_t;\n";
@@ -2315,6 +2588,10 @@ public:
 	header += "extern int snprintf(char *, unsigned long, const char *, ...);\n";
 	header += "extern int sprintf(char *, const char *, ...);\n";
 	header += "extern int sscanf(const char *, const char *, ...);\n";
+	header += "extern int vsprintf(char *, const char *, va_list);\n";
+	header += "extern int vsnprintf(char *, unsigned long, const char *, va_list);\n";
+	header += "extern int vprintf(const char *, va_list);\n";
+	header += "extern int vfprintf(void *, const char *, va_list);\n";
 	header += "static const char *version = \"v0.0.1\";\n";
 	header += "\n";
 
@@ -2330,6 +2607,10 @@ public:
 
 	// String runtime — same API as legacy compiler.cpp string_construct/destruct
 	header += "#define MADC_STRING_SIZE 32\n";
+	header += "#define MADC_OFSTREAM_SIZE 512\n";
+	header += "#define MADC_IFSTREAM_SIZE 512\n";
+	header += "#define MADC_FSTREAM_SIZE  512\n";
+	header += "#define MADC_SSTREAM_SIZE  512\n";
 	header += "extern void *string_construct(void *);\n";
 	header += "extern void string_destruct(void *);\n";
 	header += "extern void *string_construct_cstr(void *, const char *);\n";
@@ -2369,6 +2650,30 @@ public:
 	header += "extern void streamin_char(void *, char *);\n";
 	header += "extern void streamin_string(void *, void *);\n";
 	header += "extern void streamin_getline(void *, void *);\n";
+	header += "\n";
+
+	// fstream runtime wrappers
+	header += "extern void *ofstream_construct(void *);\n";
+	header += "extern void ofstream_destruct(void *);\n";
+	header += "extern void ofstream_open(void *, const char *);\n";
+	header += "extern void ofstream_close(void *);\n";
+	header += "extern long ofstream_good(void *);\n";
+	header += "extern long ofstream_is_open(void *);\n";
+	header += "extern void *ifstream_construct(void *);\n";
+	header += "extern void ifstream_destruct(void *);\n";
+	header += "extern void ifstream_open(void *, const char *);\n";
+	header += "extern void ifstream_close(void *);\n";
+	header += "extern long ifstream_good(void *);\n";
+	header += "extern long ifstream_eof(void *);\n";
+	header += "extern long ifstream_is_open(void *);\n";
+	header += "extern void *fstream_construct(void *);\n";
+	header += "extern void fstream_destruct(void *);\n";
+	header += "extern void fstream_open(void *, const char *);\n";
+	header += "extern void fstream_close(void *);\n";
+	header += "extern void *sstream_construct(void *);\n";
+	header += "extern void sstream_destruct(void *);\n";
+	header += "extern const char *sstream_str(void *);\n";
+	header += "extern void sstream_str_set(void *, const char *);\n";
 	header += "\n";
 
 	// Stream pointers
