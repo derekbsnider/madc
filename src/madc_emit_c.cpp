@@ -108,7 +108,74 @@ enum {
     GT_REAL     = 258,
     GT_STRING   = 259,
     GT_CHAR_LIT = 260,
+
+    // Multi-char operators
+    GT_EQ       = 350,
+    GT_NE       = 351,
+    GT_LE       = 352,
+    GT_GE       = 353,
+    GT_THREE_WAY= 373,
 };
+
+// Map operator symbol string to function suffix
+static std::string op_suffix(const std::string &sym)
+{
+    if (sym == "==")  return "op_eq";
+    if (sym == "!=")  return "op_ne";
+    if (sym == "<")   return "op_lt";
+    if (sym == ">")   return "op_gt";
+    if (sym == "<=")  return "op_le";
+    if (sym == ">=")  return "op_ge";
+    if (sym == "+")   return "op_add";
+    if (sym == "-")   return "op_sub";
+    if (sym == "*")   return "op_mul";
+    if (sym == "/")   return "op_div";
+    if (sym == "%")   return "op_mod";
+    if (sym == "<=>") return "op_cmp";
+    return "op_unknown";
+}
+
+// Convert an operator terminal node to its string symbol
+static std::string op_terminal_to_str(gp_tree_node *node)
+{
+    if (!node || node->type != GP_TERM) return "";
+    int code = node->val.term.code;
+    switch (code) {
+    case '+':      return "+";
+    case '-':      return "-";
+    case '*':      return "*";
+    case '/':      return "/";
+    case '%':      return "%";
+    case '<':      return "<";
+    case '>':      return ">";
+    case GT_EQ:    return "==";
+    case GT_NE:    return "!=";
+    case GT_LE:    return "<=";
+    case GT_GE:    return ">=";
+    case GT_THREE_WAY: return "<=>";
+    default:       return "";
+    }
+}
+
+// Map AN_* binary operator code to the operator symbol string
+static std::string an_to_op_sym(int an)
+{
+    switch (an) {
+    case AN_EQ:  return "==";
+    case AN_NE:  return "!=";
+    case AN_LT:  return "<";
+    case AN_GT:  return ">";
+    case AN_LE:  return "<=";
+    case AN_GE:  return ">=";
+    case AN_ADD: return "+";
+    case AN_SUB: return "-";
+    case AN_MUL: return "*";
+    case AN_DIV: return "/";
+    case AN_MOD: return "%";
+    case AN_THREE_WAY: return "<=>";
+    default:     return "";
+    }
+}
 
 // -----------------------------------------------------------------------
 // CEmitter — generates C11 text from a Gecko AST
@@ -1062,6 +1129,28 @@ class CEmitter
 	if (an == AN_BSR && is_cin_chain(node))
 	    return emit_cin_chain(node);
 
+	// Operator overload dispatch: if LHS is a class with that operator,
+	// emit ClassName__op_XX(&var, rhs) instead of (var op rhs)
+	{
+	    std::string sym = an_to_op_sym(an);
+	    if (!sym.empty()) {
+		gp_tree_node *lhs = child(node, 0);
+		if (lhs && lhs->type == GP_TERM && term_code(lhs) == GT_IDENT) {
+		    std::string lname = term_text(lhs);
+		    std::string cls = lookup_var_class(lname);
+		    if (!cls.empty()) {
+			auto cit = class_operators.find(cls);
+			if (cit != class_operators.end() &&
+			    cit->second.count(sym)) {
+			    std::string mangled = cls + "__" + op_suffix(sym);
+			    std::string rhs = emit_expr(child(node, 1));
+			    return mangled + "(&" + lname + ", " + rhs + ")";
+			}
+		    }
+		}
+	    }
+	}
+
 	// Binary operators
 	struct { int code; const char *c_op; } binops[] = {
 	    {AN_ADD, "+"}, {AN_SUB, "-"}, {AN_MUL, "*"}, {AN_DIV, "/"},
@@ -1180,6 +1269,26 @@ class CEmitter
 		    return wrapper + "(" + obj + ", " + args + ")";
 		}
 		if (!cls.empty()) {
+		    // Check for virtual dispatch
+		    if (sema && sema->is_virtual_method(cls, method)) {
+			// Virtual call: obj->__vptr->method(obj)
+			std::string addr = is_arrow ? obj : ("&" + obj);
+			std::string vptr_access = is_arrow
+			    ? (obj + "->__vptr->" + method)
+			    : (obj + ".__vptr->" + method);
+			// Cast addr to base vtable type
+			std::string vtbl_cls = sema->vtable_class(cls);
+			if (!vtbl_cls.empty() && vtbl_cls != cls) {
+			    if (is_arrow)
+				addr = "(struct " + vtbl_cls + " *)" + obj;
+			    else
+				addr = "(struct " + vtbl_cls + " *)&" + obj;
+			}
+			if (args.empty())
+			    return vptr_access + "(" + addr + ")";
+			return vptr_access + "(" + addr + ", " + args + ")";
+		    }
+
 		    // Resolve method through inheritance chain
 		    std::string owner = cls;
 		    if (sema) {
@@ -2410,6 +2519,9 @@ class CEmitter
     std::string current_class;
     std::set<std::string> current_class_fields;
 
+    // Per-class operator overloads: class_name → set of operator symbols
+    std::map<std::string, std::set<std::string>> class_operators;
+
     // Map of emitted class fields for inheritance
     std::map<std::string, std::string> emitted_class_fields;
 
@@ -2443,8 +2555,43 @@ class CEmitter
 	if (current_class_fields.empty())
 	    collect_class_fields(body_node);
 
+	// Determine vtable info for this class
+	std::string vtable_owner;  // class that declares the vtable struct
+	const SemaClassInfo *ci_vt = nullptr;
+	if (sema) {
+	    // Find the root class with virtual methods
+	    vtable_owner = sema->vtable_class(class_name);
+	    if (!vtable_owner.empty())
+		ci_vt = sema->get_class(vtable_owner);
+	}
+
+	// Emit vtable struct (only for the class that first declares virtuals)
+	if (ci_vt && vtable_owner == class_name && ci_vt->has_virtuals()) {
+	    OH("struct %s_vtable {\n", class_name.c_str());
+	    for (size_t i = 0; i < ci_vt->virtual_methods.size(); i++) {
+		const std::string &vm = ci_vt->virtual_methods[i];
+		auto rit = ci_vt->virtual_ret_types.find(vm);
+		std::string rt = (rit != ci_vt->virtual_ret_types.end()) ? rit->second : "int";
+		auto pit = ci_vt->virtual_param_types.find(vm);
+		std::string pt = (pit != ci_vt->virtual_param_types.end()) ? pit->second : "";
+		std::string params = "struct " + class_name + " *";
+		if (!pt.empty())
+		    params += ", " + pt;
+		OH("    %s (*%s)(%s);\n", rt.c_str(), vm.c_str(), params.c_str());
+	    }
+	    OH("};\n\n");
+	}
+
 	// First pass: emit the struct with fields only
 	OH("struct %s {\n", class_name.c_str());
+	// Add __vptr as first field if this class hierarchy has virtuals
+	std::string vptr_field;
+	if (ci_vt) {
+	    vptr_field = "    struct " + vtable_owner + "_vtable *__vptr;\n";
+	    // Only emit __vptr if not already inherited from base
+	    if (base_class.empty() || vtable_owner == class_name)
+		OH("%s", vptr_field.c_str());
+	}
 	// Copy base class fields if inheriting
 	if (!base_class.empty()) {
 	    auto bit = emitted_class_fields.find(base_class);
@@ -2457,17 +2604,35 @@ class CEmitter
 	emit_class_fields(body_node);
 	std::string field_text = header;
 	header = saved_header + field_text;
-	emitted_class_fields[class_name] = field_text;
-	// Also include base fields in the stored text for further inheritance
+	// Store emitted fields including __vptr for inheritance
+	std::string all_fields;
+	if (ci_vt && (base_class.empty() || vtable_owner == class_name))
+	    all_fields = vptr_field;
 	if (!base_class.empty()) {
 	    auto bit = emitted_class_fields.find(base_class);
 	    if (bit != emitted_class_fields.end())
-		emitted_class_fields[class_name] = bit->second + field_text;
+		all_fields += bit->second;
 	}
+	all_fields += field_text;
+	emitted_class_fields[class_name] = all_fields;
 	OH("};\n\n");
 
 	// Second pass: emit methods as free functions
+	// Forward-declare vtable instance (ctor references it before definition)
+	if (ci_vt) {
+	    O("static struct %s_vtable %s_vtable_instance;\n",
+	      vtable_owner.c_str(), class_name.c_str());
+	}
 	emit_class_methods(class_name, body_node);
+
+	// Emit vtable instance for this class (if it has virtuals or inherits them)
+	if (ci_vt && sema) {
+	    const SemaClassInfo *this_ci = sema->get_class(class_name);
+	    if (this_ci) {
+		emit_vtable_instance(class_name, vtable_owner, *ci_vt, *this_ci);
+	    }
+	}
+
 	current_class_fields.clear();
     }
 
@@ -2537,6 +2702,11 @@ class CEmitter
 	    gp_tree_node *decl = child(node, 1);
 	    gp_tree_node *body_node = child(node, 2);
 
+	    // Strip /* virtual */ comment from return type
+	    std::string virt_prefix = "/* virtual */ ";
+	    if (ret_type.substr(0, virt_prefix.size()) == virt_prefix)
+		ret_type = ret_type.substr(virt_prefix.size());
+
 	    // Extract method name and params from declarator
 	    std::string method_name;
 	    std::string params;
@@ -2589,7 +2759,29 @@ class CEmitter
 	    local_var_class_map.clear();
 	    O("void %s(%s)\n", mangled.c_str(), full_params.c_str());
 	    indent_level = 0;
-	    emit_stmt(body_node);
+
+	    // If class has vtable, inject vptr initialization at top of ctor body
+	    std::string vptr_init;
+	    if (sema) {
+		std::string vtbl_cls = sema->vtable_class(class_name);
+		if (!vtbl_cls.empty())
+		    vptr_init = "__this->__vptr = &" + class_name + "_vtable_instance;\n";
+	    }
+
+	    if (!vptr_init.empty() && is_an(body_node, AN_BLOCK)) {
+		// Emit block manually to inject vptr init at the top
+		emit_indent();
+		O("{\n");
+		indent_level++;
+		emit_indent();
+		O("%s", vptr_init.c_str());
+		emit_stmt(child(body_node, 0));
+		indent_level--;
+		emit_indent();
+		O("}\n");
+	    } else {
+		emit_stmt(body_node);
+	    }
 	    O("\n");
 
 	    current_class = prev_class;
@@ -2642,6 +2834,90 @@ class CEmitter
 	    current_class = prev_class;
 	    return;
 	}
+
+	// oper_method(ret_type, op_symbol, params, body)
+	if (an == AN_OPER_METHOD) {
+	    std::string prev_class = current_class;
+	    current_class = class_name;
+
+	    std::string ret_type = emit_type(child(node, 0));
+	    gp_tree_node *op_node = child(node, 1);
+	    std::string params = emit_param_list(child(node, 2));
+	    gp_tree_node *body_node = child(node, 3);
+
+	    // Get operator symbol and compute mangled name
+	    std::string op_sym = op_terminal_to_str(op_node);
+	    std::string suffix = op_suffix(op_sym);
+	    std::string mangled = class_name + "__" + suffix;
+
+	    // Track this operator for call site rewriting
+	    class_operators[class_name].insert(op_sym);
+
+	    std::string this_param = "struct " + class_name + " *__this";
+	    std::string full_params = params.empty() ? this_param
+					: this_param + ", " + params;
+
+	    // Forward declaration
+	    OH("%s %s(%s);\n", ret_type.c_str(), mangled.c_str(),
+	       full_params.c_str());
+
+	    // Function body
+	    local_var_types.clear();
+	    local_var_class_map.clear();
+	    O("%s %s(%s)\n", ret_type.c_str(), mangled.c_str(),
+	      full_params.c_str());
+	    indent_level = 0;
+	    emit_stmt(body_node);
+	    O("\n");
+
+	    current_class = prev_class;
+	    return;
+	}
+    }
+
+    // Emit a static vtable instance for a class
+    void emit_vtable_instance(const std::string &class_name,
+			      const std::string &vtable_owner,
+			      const SemaClassInfo &vtable_ci,
+			      const SemaClassInfo &this_ci)
+    {
+	O("static struct %s_vtable %s_vtable_instance = {\n",
+	  vtable_owner.c_str(), class_name.c_str());
+	for (size_t i = 0; i < vtable_ci.virtual_methods.size(); i++) {
+	    const std::string &vm = vtable_ci.virtual_methods[i];
+	    // Determine which class provides the implementation
+	    std::string impl_class = class_name;
+	    if (sema) {
+		// Walk from this class up to find who implements this method
+		std::string check = class_name;
+		bool found = false;
+		while (!check.empty()) {
+		    const SemaClassInfo *ci = sema->get_class(check);
+		    if (ci && ci->methods.count(vm)) {
+			impl_class = check;
+			found = true;
+			break;
+		    }
+		    auto bit = sema->class_bases.find(check);
+		    if (bit != sema->class_bases.end())
+			check = bit->second;
+		    else
+			break;
+		}
+		if (!found) impl_class = vtable_owner;
+	    }
+	    std::string mangled = impl_class + "__" + vm;
+	    // Cast to vtable function pointer type
+	    auto rit = vtable_ci.virtual_ret_types.find(vm);
+	    std::string rt = (rit != vtable_ci.virtual_ret_types.end()) ? rit->second : "int";
+	    auto pit = vtable_ci.virtual_param_types.find(vm);
+	    std::string pt = (pit != vtable_ci.virtual_param_types.end()) ? pit->second : "";
+	    std::string params = "struct " + vtable_owner + " *";
+	    if (!pt.empty())
+		params += ", " + pt;
+	    O("    (%s (*)(%s))%s,\n", rt.c_str(), params.c_str(), mangled.c_str());
+	}
+	O("};\n\n");
     }
 
     // ---------------------------------------------------------------

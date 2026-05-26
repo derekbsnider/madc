@@ -125,6 +125,35 @@ static int gecko_read_token(void **attr, GeckoTokenizer *state)
 	    state->pos = saved;  // not three dots, revert
 	}
 
+	// Contextual keyword remapping: CLASS/MAP/SET/VECTOR/LIST are
+	// keywords only in specific syntactic positions.  Peek at the next
+	// token to decide; otherwise remap to GT_IDENT so Gecko treats
+	// them as plain identifiers (variable names, struct members, etc.).
+	// This is the Cfront approach: solve it at the token level, not
+	// in the grammar.
+	if (code == 274 /* GT_CLASS */) {
+	    // CLASS is a keyword only when followed by IDENT (class Foo)
+	    // or '{' (anonymous class).  Otherwise it's an identifier.
+	    int next = -1;
+	    for (size_t i = state->pos; i < state->tokens->size(); i++) {
+		next = madc_token_to_gecko((*state->tokens)[i]);
+		if (next >= 0) break;
+	    }
+	    if (next != 256 /* GT_IDENT */ && next != '{')
+		code = 256;  // remap to GT_IDENT
+	}
+	if (code == 331 /* GT_MAP */ || code == 332 /* GT_SET */ ||
+	    code == 330 /* GT_VECTOR */ || code == 333 /* GT_LIST */) {
+	    // Container keywords only when followed by '<'.
+	    int next = -1;
+	    for (size_t i = state->pos; i < state->tokens->size(); i++) {
+		next = madc_token_to_gecko((*state->tokens)[i]);
+		if (next >= 0) break;
+	    }
+	    if (next != '<')
+		code = 256;  // remap to GT_IDENT
+	}
+
 	*attr = (void *)tb;
 	return code;
     }

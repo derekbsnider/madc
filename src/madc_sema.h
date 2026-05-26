@@ -29,8 +29,23 @@ struct SemaClassInfo {
     std::map<std::string, TypeClass> field_types;             // field → type
     std::set<std::string> methods;                            // method names
     std::map<std::string, TypeClass> method_ret_types;        // method → return type
+    std::set<std::string> operators;                          // overloaded operator symbols (==, !=, <, etc.)
     bool has_ctor;
     bool has_dtor;
+
+    // Virtual dispatch support
+    std::vector<std::string> virtual_methods;                 // ordered vtable slot list
+    std::map<std::string, std::string> virtual_ret_types;     // method → C return type string
+    std::map<std::string, std::string> virtual_param_types;   // method → C param type string (excl. __this)
+
+    bool has_virtuals() const { return !virtual_methods.empty(); }
+
+    // Find vtable slot index for a method (-1 if not virtual)
+    int vtable_slot(const std::string &method) const {
+        for (size_t i = 0; i < virtual_methods.size(); i++)
+            if (virtual_methods[i] == method) return (int)i;
+        return -1;
+    }
 
     SemaClassInfo() : has_ctor(false), has_dtor(false) {}
 };
@@ -96,6 +111,40 @@ struct SemaInfo {
 
     bool is_typedef(const std::string &name) const {
 	return typedef_names.count(name) > 0;
+    }
+
+    // Find the root class that declares the vtable for a given class
+    // (walks inheritance chain up to find where virtual methods originate)
+    std::string vtable_class(const std::string &name) const {
+	std::string cur = name;
+	std::string result;
+	while (!cur.empty()) {
+	    const SemaClassInfo *ci = get_class(cur);
+	    if (ci && ci->has_virtuals())
+		result = cur;
+	    auto bit = class_bases.find(cur);
+	    if (bit != class_bases.end())
+		cur = bit->second;
+	    else
+		break;
+	}
+	return result;
+    }
+
+    // Check if a method is virtual for a class (including inherited)
+    bool is_virtual_method(const std::string &class_name,
+			   const std::string &method) const {
+	std::string cur = class_name;
+	while (!cur.empty()) {
+	    const SemaClassInfo *ci = get_class(cur);
+	    if (ci && ci->vtable_slot(method) >= 0) return true;
+	    auto bit = class_bases.find(cur);
+	    if (bit != class_bases.end())
+		cur = bit->second;
+	    else
+		break;
+	}
+	return false;
     }
 };
 

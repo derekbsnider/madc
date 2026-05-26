@@ -537,10 +537,12 @@ static const char *madc_grammar_str =
     "           | enum_ident '=' constant_expression          # enum_assign (0 2)\n"
     "           ;\n"
     "\n"
-    // enum_ident — IDENT or keyword used as enum value name
-    "enum_ident : IDENT # 0 | CLASS # 0 | DEFAULT # 0 | NEW # 0 | DELETE # 0\n"
+    // enum_ident — IDENT or keyword used as enum value name.
+    // CLASS/MAP/SET/VECTOR/LIST are remapped to GT_IDENT by the tokenizer
+    // when not in keyword context, so they arrive as IDENT here.
+    // DEFAULT/NEW/DELETE/NAMESPACE/OPERATOR still need explicit alternates.
+    "enum_ident : IDENT # 0 | DEFAULT # 0 | NEW # 0 | DELETE # 0\n"
     "           | NAMESPACE # 0 | OPERATOR # 0\n"
-    "           | MAP # 0 | SET # 0 | VECTOR # 0 | LIST # 0\n"
     "           ;\n"
     "\n"
 
@@ -559,7 +561,7 @@ static const char *madc_grammar_str =
     "\n"
 
     "direct_declarator"
-    "  : contextual_ident                                   # 0\n"
+    "  : IDENT                                              # 0\n"
     "  | STRING_T                                           # 0\n"
     "  | '(' declarator ')'                                 # 1\n"
     "  | direct_declarator '[' assignment_expression_opt ']'\n"
@@ -658,18 +660,9 @@ static const char *madc_grammar_str =
     "                        ;\n"
     "\n"
 
-    // contextual_ident — IDENT or keyword tokens that may be used as
-    // identifiers in non-type-specifier positions (variable names,
-    // struct members, enum values, expressions).  CLASS/MAP/SET/
-    // VECTOR/LIST remain keywords in type-specifier position, but C
-    // codebases use them as plain identifiers everywhere else.
-    "contextual_ident : IDENT   # 0\n"
-    "                 | CLASS   # 0\n"
-    "                 | MAP     # 0\n"
-    "                 | SET     # 0\n"
-    "                 | VECTOR  # 0\n"
-    "                 | LIST    # 0\n"
-    "                 ;\n"
+    // IDENT is no longer needed — the tokenizer remaps
+    // CLASS/MAP/SET/VECTOR/LIST to GT_IDENT when they appear in
+    // non-keyword contexts (see gecko_read_token lookahead).
     "\n"
 
     // typedef_name — any IDENT can be a typedef name.
@@ -708,7 +701,7 @@ static const char *madc_grammar_str =
     "\n"
 
     "designator : '[' constant_expression ']'   # index_desig (1)\n"
-    "           | '.' contextual_ident          # member_desig (1)\n"
+    "           | '.' IDENT          # member_desig (1)\n"
     "           ;\n"
     "\n"
 
@@ -717,7 +710,7 @@ static const char *madc_grammar_str =
     // ================================================================
 
     // §6.5.1  Primary expressions
-    "primary_expression : contextual_ident  # 0\n"
+    "primary_expression : IDENT  # 0\n"
     "                   | STRING_T     # 0\n"
     "                   | INTEGER      # 0\n"
     "                   | REAL         # 0\n"
@@ -736,8 +729,8 @@ static const char *madc_grammar_str =
     "  | postfix_expression '[' expression ']'               # subscript (0 2)\n"
     "  | postfix_expression '(' argument_expression_list_opt ')'\n"
     "                                                        # call (0 2)\n"
-    "  | postfix_expression '.' contextual_ident              # member (0 2)\n"
-    "  | postfix_expression ARROW contextual_ident           # arrow_member (0 2)\n"
+    "  | postfix_expression '.' IDENT              # member (0 2)\n"
+    "  | postfix_expression ARROW IDENT           # arrow_member (0 2)\n"
     "  | postfix_expression INC_OP                           # post_inc (0)\n"
     "  | postfix_expression DEC_OP                           # post_dec (0)\n"
     "  | '(' type_name ')' '{' initializer_list '}'          # compound_lit (1 4)\n"

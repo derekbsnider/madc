@@ -77,6 +77,13 @@ enum SemaTermCode {
     GT_EXTERN     = 280,
     GT_STATIC     = 279,
     GT_CONST      = 281,
+
+    // Multi-char operators (for overload_op)
+    GT_EQ         = 350,   // ==
+    GT_NE         = 351,   // !=
+    GT_LE         = 352,   // <=
+    GT_GE         = 353,   // >=
+    GT_THREE_WAY  = 373,   // <=>
 };
 
 // -----------------------------------------------------------------------
@@ -101,6 +108,28 @@ static int term_code(gp_tree_node *node)
 static bool is_nil(gp_tree_node *node)
 {
     return !node || node->type == GP_NIL;
+}
+
+// Convert an operator terminal node to its string symbol
+static string op_terminal_to_str(gp_tree_node *node)
+{
+    if (!node || node->type != GP_TERM) return "";
+    int code = node->val.term.code;
+    switch (code) {
+    case '+':     return "+";
+    case '-':     return "-";
+    case '*':     return "*";
+    case '/':     return "/";
+    case '%':     return "%";
+    case '<':     return "<";
+    case '>':     return ">";
+    case GT_EQ:   return "==";
+    case GT_NE:   return "!=";
+    case GT_LE:   return "<=";
+    case GT_GE:   return ">=";
+    case GT_THREE_WAY: return "<=>";
+    default:      return "";
+    }
 }
 
 static gp_tree_node *child(gp_tree_node *node, int n)
@@ -233,6 +262,62 @@ class SemaCollector
     TypeClass classify_specs(gp_tree_node *specs)
     {
 	return classify_type_str(type_string(specs));
+    }
+
+    // Check if declaration_specifiers contain the 'virtual' keyword
+    bool has_virtual(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return false;
+	if (node->type == GP_TERM)
+	    return term_code(node) == 293; // GT_VIRTUAL
+	if (node->type == GP_ANODE && an_code(node) == AN_QUAL) {
+	    if (has_virtual(child(node, 0))) return true;
+	    return has_virtual(child(node, 1));
+	}
+	return false;
+    }
+
+    // Strip 'virtual' from a type string (e.g. "virtual int" → "int")
+    static string strip_virtual(const string &type)
+    {
+	if (type.substr(0, 8) == "virtual ")
+	    return type.substr(8);
+	return type;
+    }
+
+    // Extract parameter types as a string from a function declarator's param list
+    // Returns the C parameter type signature (excluding __this)
+    string param_type_string(gp_tree_node *decl)
+    {
+	if (!decl) return "";
+	if (is_an(decl, AN_FUNC_DECL)) {
+	    gp_tree_node *plist = child(decl, 1);
+	    return param_list_types(plist);
+	}
+	return "";
+    }
+
+    string param_list_types(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return "";
+	int an = an_code(node);
+	if (an == AN_PARAM) {
+	    string t = type_string(child(node, 0));
+	    gp_tree_node *d = child(node, 1);
+	    if (!is_nil(d)) {
+		// Check if declarator adds pointer indirection
+		if (is_an(d, AN_PTR_DECL)) t += " *";
+	    }
+	    return t;
+	}
+	if (an == AN_PARAM_LIST) {
+	    string left = param_list_types(child(node, 0));
+	    string right = param_list_types(child(node, 1));
+	    if (left.empty()) return right;
+	    if (right.empty()) return left;
+	    return left + ", " + right;
+	}
+	return "";
     }
 
     // ---------------------------------------------------------------
@@ -448,6 +533,10 @@ class SemaCollector
 	    if (bit != info.class_info.end()) {
 		ci.fields = bit->second.fields;
 		ci.field_types = bit->second.field_types;
+		// Inherit virtual method slots from base class
+		ci.virtual_methods = bit->second.virtual_methods;
+		ci.virtual_ret_types = bit->second.virtual_ret_types;
+		ci.virtual_param_types = bit->second.virtual_param_types;
 	    }
 	}
 
@@ -482,17 +571,27 @@ class SemaCollector
 
 	// Method definition
 	if (an == AN_METHOD) {
-	    string ret_type = type_string(child(node, 0));
+	    gp_tree_node *specs = child(node, 0);
+	    string ret_type = type_string(specs);
+	    bool is_virtual = has_virtual(specs);
 	    gp_tree_node *decl = child(node, 1);
 	    string method_name = extract_name(decl);
 	    if (!method_name.empty()) {
 		ci.methods.insert(method_name);
-		TypeClass tc = classify_type_str(ret_type);
+		string clean_ret = is_virtual ? strip_virtual(ret_type) : ret_type;
+		TypeClass tc = classify_type_str(clean_ret);
 		ci.method_ret_types[method_name] = tc;
 		// Register mangled name in func_ret_types
 		string mangled = class_name + "__" + method_name;
 		info.func_ret_types[mangled] = tc;
-		info.func_type_strs[mangled] = ret_type;
+		info.func_type_strs[mangled] = clean_ret;
+		// Track virtual methods
+		if (is_virtual || ci.vtable_slot(method_name) >= 0) {
+		    if (ci.vtable_slot(method_name) < 0)
+			ci.virtual_methods.push_back(method_name);
+		    ci.virtual_ret_types[method_name] = clean_ret;
+		    ci.virtual_param_types[method_name] = param_type_string(decl);
+		}
 	    }
 	    // Walk method body for local var types
 	    walk_block(child(node, 2));
@@ -501,15 +600,25 @@ class SemaCollector
 
 	// Method prototype (no body)
 	if (an == AN_METHOD_PROTO) {
-	    string ret_type = type_string(child(node, 0));
+	    gp_tree_node *specs = child(node, 0);
+	    string ret_type = type_string(specs);
+	    bool is_virtual = has_virtual(specs);
 	    gp_tree_node *decl = child(node, 1);
 	    string method_name = extract_name(decl);
 	    if (!method_name.empty()) {
 		ci.methods.insert(method_name);
-		TypeClass tc = classify_type_str(ret_type);
+		string clean_ret = is_virtual ? strip_virtual(ret_type) : ret_type;
+		TypeClass tc = classify_type_str(clean_ret);
 		ci.method_ret_types[method_name] = tc;
 		string mangled = class_name + "__" + method_name;
 		info.func_ret_types[mangled] = tc;
+		// Track virtual methods
+		if (is_virtual || ci.vtable_slot(method_name) >= 0) {
+		    if (ci.vtable_slot(method_name) < 0)
+			ci.virtual_methods.push_back(method_name);
+		    ci.virtual_ret_types[method_name] = clean_ret;
+		    ci.virtual_param_types[method_name] = param_type_string(decl);
+		}
 	    }
 	    return;
 	}
@@ -532,8 +641,15 @@ class SemaCollector
 	    return;
 	}
 
-	// Operator method
+	// Operator method — oper_method(ret_type, op_symbol, params, body)
 	if (an == AN_OPER_METHOD) {
+	    // Extract operator symbol from terminal
+	    gp_tree_node *op_node = child(node, 1);
+	    if (op_node && op_node->type == GP_TERM) {
+		std::string op_sym = op_terminal_to_str(op_node);
+		if (!op_sym.empty())
+		    ci.operators.insert(op_sym);
+	    }
 	    // Walk body for local var types
 	    walk_block(child(node, 3));
 	    return;
