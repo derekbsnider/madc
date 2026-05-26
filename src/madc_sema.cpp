@@ -398,11 +398,30 @@ class SemaCollector
 	}
     }
 
+    // Recursively find AN_STRUCT_DEF inside declaration_specifiers
+    gp_tree_node *find_struct_def(gp_tree_node *node)
+    {
+	if (!node || node->type != GP_ANODE) return NULL;
+	int an = an_code(node);
+	if (an == AN_STRUCT_DEF) return node;
+	if (an == AN_QUAL) {
+	    gp_tree_node *r = find_struct_def(child(node, 0));
+	    if (r) return r;
+	    return find_struct_def(child(node, 1));
+	}
+	return NULL;
+    }
+
     void walk_decl(gp_tree_node *node, bool is_global)
     {
 	// decl(declaration_specifiers, init_declarator_list_opt)
 	gp_tree_node *specs = child(node, 0);
 	gp_tree_node *decls = child(node, 1);
+
+	// Check for inline struct/union definitions in specifiers
+	gp_tree_node *sdef = find_struct_def(specs);
+	if (sdef)
+	    walk_struct_def(sdef);
 
 	string type_str = type_string(specs);
 
@@ -689,12 +708,53 @@ class SemaCollector
     void walk_struct_def(gp_tree_node *node)
     {
 	gp_tree_node *sname = child(node, 1);
+	string name;
 	if (!is_nil(sname)) {
-	    string name = term_text(sname);
+	    name = term_text(sname);
 	    if (!name.empty())
 		info.struct_names.insert(name);
 	}
-	// Walk struct body for field info (future use)
+	// Walk struct body to collect field type info
+	if (!name.empty())
+	    collect_struct_fields(child(node, 2), name);
+    }
+
+    void collect_struct_fields(gp_tree_node *node, const string &sname)
+    {
+	if (!node || node->type == GP_NIL) return;
+	if (is_an(node, AN_STRUCT_BODY)) {
+	    collect_struct_fields(child(node, 0), sname);
+	    collect_struct_fields(child(node, 1), sname);
+	    return;
+	}
+	if (is_an(node, AN_STRUCT_FIELD)) {
+	    string type_str = type_string(child(node, 0));
+	    gp_tree_node *decls = child(node, 1);
+	    collect_struct_field_decl(decls, type_str, sname);
+	}
+    }
+
+    void collect_struct_field_decl(gp_tree_node *node,
+				   const string &type_str,
+				   const string &sname)
+    {
+	if (is_nil(node)) return;
+
+	string fname = extract_name(node);
+	if (!fname.empty()) {
+	    TypeClass tc = classify_type_str(type_str);
+	    if (has_pointer(node) && tc == TC_CHAR)
+		tc = TC_STRING;
+	    else if (has_pointer(node))
+		tc = TC_PTR;
+	    info.struct_field_types[sname][fname] = tc;
+	}
+
+	int an = an_code(node);
+	if (an == AN_DECL_LIST || an == AN_FIELD_LIST) {
+	    collect_struct_field_decl(child(node, 0), type_str, sname);
+	    collect_struct_field_decl(child(node, 1), type_str, sname);
+	}
     }
 
     // ---------------------------------------------------------------

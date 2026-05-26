@@ -80,6 +80,9 @@ struct SemaInfo {
     // Known struct names
     std::set<std::string> struct_names;
 
+    // Per-struct field type info (struct_name → field_name → TypeClass)
+    std::map<std::string, std::map<std::string, TypeClass>> struct_field_types;
+
     // Known typedef names (for type vs identifier disambiguation)
     std::set<std::string> typedef_names;
 
@@ -111,6 +114,27 @@ struct SemaInfo {
 
     bool is_typedef(const std::string &name) const {
 	return typedef_names.count(name) > 0;
+    }
+
+    // Look up a struct field's type across all known structs.
+    // Returns TC_INT if not found.
+    TypeClass get_struct_field_type(const std::string &field) const {
+	for (auto &kv : struct_field_types) {
+	    auto fit = kv.second.find(field);
+	    if (fit != kv.second.end()) return fit->second;
+	}
+	return TC_INT;
+    }
+
+    // Look up a field type in a specific struct
+    TypeClass get_struct_field_type(const std::string &sname,
+				   const std::string &field) const {
+	auto sit = struct_field_types.find(sname);
+	if (sit != struct_field_types.end()) {
+	    auto fit = sit->second.find(field);
+	    if (fit != sit->second.end()) return fit->second;
+	}
+	return TC_INT;
     }
 
     // Find the root class that declares the vtable for a given class

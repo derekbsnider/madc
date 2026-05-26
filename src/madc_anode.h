@@ -167,6 +167,7 @@ enum AnodeCode {
     AN_XOR_ASSIGN         = 156,
     AN_TYPEOF_EXPR        = 157,
     AN_TYPEOF_TYPE        = 158,
+    AN_VA_ARG             = 159,
 };
 
 // O(1) anode code lookup — returns AN_NONE for non-anode nodes

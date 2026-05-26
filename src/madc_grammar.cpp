@@ -99,6 +99,7 @@ enum GeckoTermCode {
     GT_OPERATOR   = 303,   // operator keyword (overloading)
     GT_ALIGNOF    = 305,
     GT_TYPEOF     = 306,
+    GT_VA_ARG     = 307,
 
     // Type keywords
     GT_VOID       = 310,
@@ -233,6 +234,7 @@ static const char *madc_grammar_str =
     "OPERATOR = 303\n"
     "ALIGNOF = 305\n"
     "TYPEOF = 306\n"
+    "VA_ARG = 307\n"
 
     // Type keywords
     "VOID = 310\n"
@@ -772,6 +774,8 @@ static const char *madc_grammar_str =
     "  | NEW IDENT                                   # new_plain (1)\n"
     "  | NEW IDENT '(' argument_expression_list_opt ')'\n"
     "                                                # new_ctor (1 3)\n"
+    "  | VA_ARG '(' assignment_expression ',' type_name ')'\n"
+    "                                                # va_arg (2 4)\n"
     "  ;\n"
     "\n"
 
@@ -1282,6 +1286,7 @@ struct grammar *madc_create_gecko_grammar()
     gp_set_anode_code(g, "xor_assign", AN_XOR_ASSIGN);
     gp_set_anode_code(g, "typeof_expr", AN_TYPEOF_EXPR);
     gp_set_anode_code(g, "typeof_type", AN_TYPEOF_TYPE);
+    gp_set_anode_code(g, "va_arg", AN_VA_ARG);
 
     return g;
 }
@@ -1318,6 +1323,7 @@ static int ident_to_gecko(const std::string &s)
 	{"protected", GT_PROTECTED}, {"virtual", GT_VIRTUAL},
 	{"alignof", GT_ALIGNOF}, {"_Alignof", GT_ALIGNOF},
 	{"typeof", GT_TYPEOF}, {"__typeof__", GT_TYPEOF}, {"__typeof", GT_TYPEOF},
+	{"va_arg", GT_VA_ARG}, {"__builtin_va_arg", GT_VA_ARG},
 	// Aliases
 	{"LPSTR", GT_INT},
     };

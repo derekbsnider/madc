@@ -226,6 +226,14 @@ class CEmitter
     // Last named parameter of the current variadic function (for va_start)
     std::string current_func_last_param;
 
+    // Per-function reference parameters (name → true means it's a ref/pointer)
+    // Variables in this set are emitted as (*name) in expressions.
+    std::set<std::string> ref_vars;
+
+    // Per-program map: function name → vector<bool> of ref param positions
+    // Used at call sites to emit &arg for ref parameters.
+    std::map<std::string, std::vector<bool>> func_ref_param_map;
+
     // Global string variables — collected during emit_top_level,
     // emitted as __madc_init/cleanup_globals() after all top-level decls.
     struct GlobalStringVar {
@@ -761,9 +769,22 @@ class CEmitter
 	    return TC_INT;  // &int → int* (print as int)
 	}
 
-	// Member access — default to int for now
-	if (an == AN_MEMBER || an == AN_ARROW_MEMBER)
+	// Member access — look up field type in struct/class info
+	if (an == AN_MEMBER || an == AN_ARROW_MEMBER) {
+	    std::string field = term_text(child(node, 1));
+	    if (!field.empty() && sema) {
+		// Check struct field types
+		TypeClass tc = sema->get_struct_field_type(field);
+		if (tc != TC_INT) return tc;
+		// Check class field types
+		for (auto &kv : sema->class_info) {
+		    auto fit = kv.second.field_types.find(field);
+		    if (fit != kv.second.field_types.end())
+			return fit->second;
+		}
+	    }
 	    return TC_INT;
+	}
 
 	// Ternary — type of true branch
 	if (an == AN_TERNARY)
@@ -1092,6 +1113,9 @@ class CEmitter
 		    current_class_fields.count(id) &&
 		    !local_var_types.count(id))  // don't transform local vars
 		    return "__this->" + safe_ident(id);
+		// Reference parameters are pointers; dereference on access.
+		if (ref_vars.count(id))
+		    return "(*" + safe_ident(id) + ")";
 		return safe_ident(id);
 	    }
 	    if (code == GT_INTEGER) {
@@ -1252,8 +1276,14 @@ class CEmitter
 	    gp_tree_node *callee = child(node, 0);
 	    // Namespace calls (call(ns_name(...), args)): don't coerce strings
 	    bool is_ns = is_an(callee, AN_NS_NAME);
+	    // For plain identifier calls, extract function name early so we
+	    // can emit &arg for ref parameters.
+	    std::string early_func_name;
+	    if (!is_ns && callee && callee->type == GP_TERM &&
+		term_code(callee) == GT_IDENT)
+		early_func_name = term_text(callee);
 	    std::string args = is_ns ? emit_arg_list_raw(child(node, 1))
-				     : emit_arg_list(child(node, 1));
+				     : emit_arg_list_ref(child(node, 1), early_func_name);
 
 	    // Handle method calls: call(member(obj, method), args)
 	    if (is_an(callee, AN_MEMBER) || is_an(callee, AN_ARROW_MEMBER)) {
@@ -1404,6 +1434,11 @@ class CEmitter
 	if (an == AN_SIZEOF_EXPR)
 	    return "sizeof(" + emit_expr(child(node, 0)) + ")";
 
+	// va_arg(expr, type)
+	if (an == AN_VA_ARG)
+	    return "va_arg(" + emit_expr(child(node, 0)) + ", " +
+		   emit_type(child(node, 1)) + ")";
+
 	// new/delete
 	if (an == AN_NEW_PLAIN || an == AN_NEW_CTOR) {
 	    std::string cls = term_text(child(node, 0));
@@ -1504,6 +1539,65 @@ class CEmitter
 	    return emit_arg_maybe_coerce(node, coerce);
 	return emit_arg_list(child(node, 0), coerce) + ", " +
 	       emit_arg_maybe_coerce(child(node, 1), coerce);
+    }
+
+    // Emit a single arg, prepending & if the param at position idx is a ref.
+    // When the arg itself is a ref_var we already have (*x); strip that and
+    // use the underlying pointer directly (i.e. emit just the name).
+    std::string emit_arg_maybe_ref(gp_tree_node *node, bool is_ref)
+    {
+	if (!is_ref) return emit_arg_maybe_coerce(node, true);
+	// Arg should be passed as a pointer.  If the expression is a plain
+	// identifier that is itself a ref_var, it is already a pointer — pass
+	// it directly.  Otherwise, take its address.
+	gp_tree_node *leaf = unwrap_to_ident(node);
+	if (leaf && leaf->type == GP_TERM && term_code(leaf) == GT_IDENT) {
+	    std::string id = term_text(leaf);
+	    if (ref_vars.count(id))
+		return safe_ident(id);  // already a pointer, pass through
+	    return "&" + safe_ident(id);
+	}
+	// Non-identifier expression (e.g. array element, member):
+	// emit the expression and prepend &
+	return "&(" + emit_expr(node) + ")";
+    }
+
+    // Arg list with ref-param awareness: func_name used to look up
+    // which parameters expect a pointer (ref) vs a value.
+    std::string emit_arg_list_ref(gp_tree_node *node,
+				  const std::string &func_name,
+				  int &idx)
+    {
+	if (!node || node->type == GP_NIL) return "";
+	auto it = func_ref_param_map.find(func_name);
+	const std::vector<bool> *refs = (it != func_ref_param_map.end())
+					? &it->second : nullptr;
+	if (node->type == GP_TERM) {
+	    bool is_ref = refs && idx < (int)refs->size() && (*refs)[idx];
+	    idx++;
+	    return emit_arg_maybe_ref(node, is_ref);
+	}
+	if (!is_an(node, AN_ARG_LIST)) {
+	    bool is_ref = refs && idx < (int)refs->size() && (*refs)[idx];
+	    idx++;
+	    return emit_arg_maybe_ref(node, is_ref);
+	}
+	std::string left = emit_arg_list_ref(child(node, 0), func_name, idx);
+	std::string right;
+	{
+	    bool is_ref = refs && idx < (int)refs->size() && (*refs)[idx];
+	    idx++;
+	    right = emit_arg_maybe_ref(child(node, 1), is_ref);
+	}
+	return left + ", " + right;
+    }
+
+    // Entry point for ref-aware arg list emission.
+    std::string emit_arg_list_ref(gp_tree_node *node,
+				  const std::string &func_name)
+    {
+	int idx = 0;
+	return emit_arg_list_ref(node, func_name, idx);
     }
 
     // Emit initializer list
@@ -1952,12 +2046,45 @@ class CEmitter
 	if (an == AN_PARAM) {
 	    std::string type = emit_type(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
-	    if (!is_nil(decl)) track_decl_types(type, decl);
+	    if (!is_nil(decl)) {
+		track_decl_types(type, decl);
+		// If the declarator is a ref_decl, add the param name to ref_vars
+		// so that uses of it in the function body emit (*name).
+		if (is_an(decl, AN_REF_DECL)) {
+		    std::string nm = extract_name(child(decl, 0));
+		    if (!nm.empty()) ref_vars.insert(nm);
+		}
+	    }
 	} else if (an == AN_PARAM_LIST) {
 	    track_param_types(child(node, 0));
 	    track_param_types(child(node, 1));
 	} else if (an == AN_PARAM_VA) {
 	    track_param_types(child(node, 0));
+	}
+    }
+
+    // Collect vector<bool> of which params are refs for a param list node.
+    // Also registers the result in func_ref_param_map under func_name.
+    void collect_ref_params(const std::string &fname, gp_tree_node *plist)
+    {
+	std::vector<bool> refs;
+	collect_ref_params_into(plist, refs);
+	if (!refs.empty())
+	    func_ref_param_map[fname] = refs;
+    }
+
+    void collect_ref_params_into(gp_tree_node *node, std::vector<bool> &refs)
+    {
+	if (!node || node->type == GP_NIL) return;
+	int an = an_code(node);
+	if (an == AN_PARAM) {
+	    gp_tree_node *decl = child(node, 1);
+	    refs.push_back(!is_nil(decl) && is_an(decl, AN_REF_DECL));
+	} else if (an == AN_PARAM_LIST) {
+	    collect_ref_params_into(child(node, 0), refs);
+	    collect_ref_params_into(child(node, 1), refs);
+	} else if (an == AN_PARAM_VA) {
+	    collect_ref_params_into(child(node, 0), refs);
 	}
     }
 
@@ -2451,6 +2578,7 @@ class CEmitter
 	scope_class_vars.clear();
 	va_list_vars.clear();
 	current_func_last_param.clear();
+	ref_vars.clear();
 	std::string ret_type = emit_type(child(node, 0));
 	gp_tree_node *decl = child(node, 1);
 	gp_tree_node *body_node = child(node, 2);
@@ -2477,6 +2605,7 @@ class CEmitter
 	    func_name = extract_name(child(inner, 0));
 	    gp_tree_node *plist = child(inner, 1);
 	    track_param_types(plist);
+	    collect_ref_params(func_name, plist);
 	    params = emit_param_list(plist);
 	    // If this is a variadic function, record last named param for va_start
 	    if (is_an(plist, AN_PARAM_VA))
