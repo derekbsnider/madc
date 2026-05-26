@@ -234,6 +234,14 @@ class CEmitter
     // Used at call sites to emit &arg for ref parameters.
     std::map<std::string, std::vector<bool>> func_ref_param_map;
 
+    // Per-program map: function name → (return_type, param_list)
+    // Used for auto type inference on function pointer assignments.
+    struct FuncSig {
+	std::string ret_type;   // e.g. "int"
+	std::string param_list; // e.g. "int, int" or "int x" — types only
+    };
+    std::map<std::string, FuncSig> func_signatures;
+
     // Global string variables — collected during emit_top_level,
     // emitted as __madc_init/cleanup_globals() after all top-level decls.
     struct GlobalStringVar {
@@ -2411,6 +2419,31 @@ class CEmitter
 	    return;
 	}
 
+	// C++ `auto` → infer type from initializer.
+	// Currently handles: auto var = funcname → function pointer.
+	if (type == "auto" && is_an(decls, AN_INIT_DECL)) {
+	    gp_tree_node *init_expr = child(decls, 1);
+	    std::string vname = extract_name(child(decls, 0));
+	    if (init_expr && init_expr->type == GP_TERM &&
+		term_code(init_expr) == GT_IDENT) {
+		std::string fname = term_text(init_expr);
+		auto sit = func_signatures.find(fname);
+		if (sit != func_signatures.end()) {
+		    // Emit: ret_type (*var)(params) = funcname;
+		    const FuncSig &sig = sit->second;
+		    std::string p = sig.param_list.empty() ? "void" : sig.param_list;
+		    emit_indent();
+		    O("%s (*%s)(%s) = %s;\n", sig.ret_type.c_str(),
+		      vname.c_str(), p.c_str(), fname.c_str());
+		    // Track as function pointer for call sites
+		    local_var_types[vname] = TC_INT;
+		    return;
+		}
+	    }
+	    // Fallback: auto with non-function initializer → int
+	    type = "int";
+	}
+
 	// Track types for cout format inference
 	track_decl_types(type, decls);
 
@@ -2523,7 +2556,13 @@ class CEmitter
 	    if (is_nil(decl)) return type;
 	    // The declarator may have pointer, name, etc.
 	    std::string d = emit_declarator_str(decl);
-	    if (d.empty()) return type;
+	    // If emit_declarator_str returned empty, the declarator may be
+	    // an abstract declarator (unnamed pointer param like "void *").
+	    // Fall back to emit_abstract_declarator to pick up the pointer.
+	    if (d.empty()) {
+		d = emit_abstract_declarator(decl);
+		if (d.empty()) return type;
+	    }
 	    return type + " " + d;
 	}
 
@@ -2622,6 +2661,9 @@ class CEmitter
 	std::string full_ret = ret_type;
 	if (!ptr_str.empty())
 	    full_ret += " " + ptr_str;
+
+	// Record function signature for auto type inference
+	func_signatures[func_name] = {full_ret, params};
 
 	// Forward declaration in header
 	OH("%s %s(%s);\n", full_ret.c_str(), func_name.c_str(),
@@ -3353,6 +3395,9 @@ public:
 	header += "extern long labs(long);\n";
 	header += "extern void exit(int);\n";
 	header += "extern void abort(void);\n";
+	header += "extern int *__errno_location(void);\n";
+	header += "extern void *fopen(const char *, const char *);\n";
+	header += "extern int fclose(void *);\n";
 	header += "extern int system(const char *);\n";
 	header += "extern int snprintf(char *, unsigned long, const char *, ...);\n";
 	header += "extern int sprintf(char *, const char *, ...);\n";
