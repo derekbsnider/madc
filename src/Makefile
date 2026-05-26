@@ -1,5 +1,6 @@
 -include ../config.mk
 
+CC ?= gcc
 CXX ?= g++
 CXXFLAGS ?= -std=c++11 -Wall
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
@@ -11,7 +12,7 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o typesafe.o compiler.o compiler_builtins.o compiler_control_flow.o compiler_operators.o madc_ir.o madc_elf.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o exception_runtime.o pch.o embedded_headers.o precompiled_headers.o madc.o
+CORE_OFILES = lexer.o parser.o typesafe.o compiler.o compiler_builtins.o compiler_control_flow.o compiler_operators.o madc_ir.o madc_elf.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o ns_stl.o va_helpers.o exception_runtime.o pch.o embedded_headers.o precompiled_headers.o madc_grammar.o madc_tokenizer.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
@@ -26,9 +27,12 @@ OPTIONAL_CPPFLAGS ?=
 OPTIONAL_LIBS ?=
 MADC_STORAGE_DB_OFILES ?= madcdat_storage.o
 HAVE_MADCDAT ?= 1
-DEFINES	= -I$(INCDIR) $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
+GECKODIR = ../lib/gecko
+MIRDIR	= /workspace/mir
+DEFINES	= -I$(INCDIR) -I$(GECKODIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
 #LIBS	= -lreadline -lasmjit
-LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl -lz $(OPTIONAL_LIBS)
+LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
+MIRLIB	= $(MIRDIR)/libmir.a
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS)
 
 ifeq ($(HAVE_MADCDAT),1)
@@ -37,6 +41,7 @@ else
 OFILES = $(CORE_OFILES)
 endif
 
+GECKO_OBJ = $(OBJDIR)/gecko.o
 OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 PIC_OBJECTS = $(patsubst %,$(PICOBJDIR)/%,$(OFILES))
 MADDAT_OBJECTS = $(patsubst %,$(OBJDIR)/%,$(MADDAT_OFILES))
@@ -127,11 +132,11 @@ gcctest: ../bin/madc
 gcctest-smoke: ../bin/madc
 	@cd .. && scripts/run_gcc_testsuite.py --limit 25
 
-$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ)
-	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(TESTOBJ) $(LIBS)
+$(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(TESTOBJ) $(GECKO_OBJ) $(MIRLIB)
+	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(TESTOBJ) $(GECKO_OBJ) $(MIRLIB) $(LIBS)
 
-../bin/madc: $(OBJECTS)
-	$(CXX) -o $@ $^ $(CXXFLAGS) $(DEFINES) $(LIBS)
+../bin/madc: $(OBJECTS) $(GECKO_OBJ) $(MIRLIB)
+	$(CXX) -o $@ $(OBJECTS) $(GECKO_OBJ) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
 $(LIBMADC_SHARED): $(LIBMADC_OBJECTS)
 	mkdir -p $(LIBDIR)
@@ -144,6 +149,9 @@ $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 
 embedded_headers.cpp: $(MADHDRS)
 	../scripts/gen_embedded_headers.sh
+
+$(GECKO_OBJ): $(GECKODIR)/gecko.c $(GECKODIR)/gecko.h
+	$(CC) -c -o $@ -std=gnu11 -O3 -DNDEBUG -I$(GECKODIR) $<
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) $<
