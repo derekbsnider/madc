@@ -721,8 +721,27 @@ class CEmitter
 
 	// Function call
 	if (strcmp(name, "call") == 0) {
-	    std::string func = emit_expr(child(node, 0));
+	    gp_tree_node *callee = child(node, 0);
 	    std::string args = emit_arg_list(child(node, 1));
+
+	    // Handle method calls: call(member(obj, method), args)
+	    if (is_anode(callee, "member") || is_anode(callee, "arrow_member")) {
+		std::string obj = emit_expr(child(callee, 0));
+		std::string method = term_text(child(callee, 1));
+		bool is_arrow = is_anode(callee, "arrow_member");
+		std::string op = is_arrow ? "->" : ".";
+
+		// String methods: c_str() → identity (string is already char*)
+		if (method == "c_str") return obj;
+		// String methods: length()/size() → strlen()
+		if (method == "length" || method == "size")
+		    return "strlen(" + obj + ")";
+
+		// Stream/container methods → pass through as C member access
+		return obj + op + method + "(" + args + ")";
+	    }
+
+	    std::string func = emit_expr(callee);
 	    func = map_builtin(func);
 	    return func + "(" + args + ")";
 	}
