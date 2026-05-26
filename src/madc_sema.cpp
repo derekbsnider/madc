@@ -1,24 +1,29 @@
-// madc_sema.cpp -- Semantic analysis walker for Gecko AST
+// madc_sema.cpp — Semantic pre-pass for Gecko AST
 //
 // Phase 2 of the Gecko pipeline.  Walks the gp_tree_node AST produced
-// by the Gecko GLR parser and populates madc's existing data structures
-// (DataDef, Variable, FuncDef, scope chains) so the C emitter (Phase 3)
-// has everything it needs.
+// by the Gecko GLR parser and collects type information into a SemaInfo
+// struct.  The C emitter (Phase 3) queries SemaInfo for:
+//   - Variable types (for cout format inference)
+//   - Function return types (for call expression type inference)
+//   - Class names, fields, methods, ctor/dtor presence
+//   - Typedef names (for type vs identifier disambiguation)
 //
 // This file does NOT emit code.  It only builds symbol tables.
 
+#include <cstdio>
+#include <cstring>
 #include <iostream>
 #include <sstream>
 #include <fstream>
 #include <string>
 #include <map>
+#include <set>
 #include <list>
 #include <vector>
 #include <deque>
 #include <queue>
 #include <stack>
 #include <stdint.h>
-#include <cstring>
 #include <asmjit/x86.h>
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -26,1495 +31,831 @@
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
-#include "madc.h"
 
 extern "C" {
 #include "gecko.h"
 }
 
+#include "madc_sema.h"
+
 using namespace std;
-using namespace asmjit;
 
 // -----------------------------------------------------------------------
-// Terminal codes — must match GeckoTermCode in madc_grammar.cpp
+// Gecko terminal codes — must match madc_grammar.cpp
 // -----------------------------------------------------------------------
 
 enum SemaTermCode {
-	GT_IDENT      = 256,
-	GT_INTEGER    = 257,
-	GT_REAL       = 258,
-	GT_STRING     = 259,
-	GT_CHAR_LIT   = 260,
+    GT_IDENT      = 256,
+    GT_INTEGER    = 257,
+    GT_REAL       = 258,
+    GT_STRING     = 259,
+    GT_CHAR_LIT   = 260,
 
-	GT_VOID       = 310,
-	GT_BOOL       = 311,
-	GT_CHAR       = 312,
-	GT_SHORT      = 313,
-	GT_INT        = 314,
-	GT_LONG       = 315,
-	GT_FLOAT      = 316,
-	GT_DOUBLE     = 317,
-	GT_STRING_T   = 318,
-	GT_INT8       = 319,
-	GT_INT16      = 320,
-	GT_INT32      = 321,
-	GT_INT64      = 322,
-	GT_UINT8      = 323,
-	GT_UINT16     = 324,
-	GT_UINT32     = 325,
-	GT_UINT64     = 326,
+    GT_VOID       = 310,
+    GT_BOOL       = 311,
+    GT_CHAR       = 312,
+    GT_SHORT      = 313,
+    GT_INT        = 314,
+    GT_LONG       = 315,
+    GT_FLOAT      = 316,
+    GT_DOUBLE     = 317,
+    GT_STRING_T   = 318,
+    GT_INT8       = 319,
+    GT_INT16      = 320,
+    GT_INT32      = 321,
+    GT_INT64      = 322,
+    GT_UINT8      = 323,
+    GT_UINT16     = 324,
+    GT_UINT32     = 325,
+    GT_UINT64     = 326,
 
-	GT_SIGNED     = 285,
-	GT_UNSIGNED   = 286,
+    GT_SIGNED     = 285,
+    GT_UNSIGNED   = 286,
+
+    GT_TYPEDEF    = 277,
+    GT_EXTERN     = 280,
+    GT_STATIC     = 279,
+    GT_CONST      = 281,
 };
 
 // -----------------------------------------------------------------------
 // Helpers — access Gecko tree nodes
 // -----------------------------------------------------------------------
 
-// Get the string text from a terminal node (IDENT, STRING, etc.)
 static string term_text(gp_tree_node *node)
 {
-	if ( !node || node->type != GP_TERM )
-		return "";
-	TokenBase *tb = (TokenBase *)node->val.term.attr;
-	if ( !tb )
-		return "";
-	TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
-	if ( ti )
-		return ti->str;
-	// For keyword terminals that carry no TokenIdent, return empty
-	return "";
+    if (!node || node->type != GP_TERM) return "";
+    TokenBase *tb = (TokenBase *)node->val.term.attr;
+    if (!tb) return "";
+    TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
+    return ti ? ti->str : "";
 }
 
-// Get integer value from a terminal node
-static int64_t term_ival(gp_tree_node *node)
-{
-	if ( !node || node->type != GP_TERM )
-		return 0;
-	TokenBase *tb = (TokenBase *)node->val.term.attr;
-	return tb ? tb->ival() : 0;
-}
-
-// Get double value from a terminal node
-static double GP_UNUSED term_dval(gp_tree_node *node)
-{
-	if ( !node || node->type != GP_TERM )
-		return 0.0;
-	TokenBase *tb = (TokenBase *)node->val.term.attr;
-	return tb ? tb->dval() : 0.0;
-}
-
-// Get the TokenBase* from a terminal node
-static TokenBase *term_token(gp_tree_node *node)
-{
-	if ( !node || node->type != GP_TERM )
-		return nullptr;
-	return (TokenBase *)node->val.term.attr;
-}
-
-// Get source location from a terminal node
-static void term_loc(gp_tree_node *node, const char *&file, int &line, int &col)
-{
-	TokenBase *tb = term_token(node);
-	if ( tb )
-	{
-		file = tb->file;
-		line = tb->line;
-		col  = tb->column;
-	}
-}
-
-// Check if node is an anode with given name
-static bool is_anode(gp_tree_node *node, const char *name)
-{
-	return node && node->type == GP_ANODE
-	    && strcmp(node->val.anode.name, name) == 0;
-}
-
-// Check if node is a terminal
-static bool is_term(gp_tree_node *node)
-{
-	return node && node->type == GP_TERM;
-}
-
-// Check if node is NIL
-static bool is_nil(gp_tree_node *node)
-{
-	return !node || node->type == GP_NIL;
-}
-
-// Get terminal code
 static int term_code(gp_tree_node *node)
 {
-	if ( !node || node->type != GP_TERM )
-		return -1;
-	return node->val.term.code;
+    if (!node || node->type != GP_TERM) return -1;
+    return node->val.term.code;
 }
 
-// Get child N of an anode (NULL-safe)
+static bool is_anode(gp_tree_node *node, const char *name)
+{
+    return node && node->type == GP_ANODE &&
+	   strcmp(node->val.anode.name, name) == 0;
+}
+
+static bool is_nil(gp_tree_node *node)
+{
+    return !node || node->type == GP_NIL;
+}
+
 static gp_tree_node *child(gp_tree_node *node, int n)
 {
-	if ( !node || node->type != GP_ANODE )
-		return nullptr;
-	if ( n >= node->val.anode.children_num )
-		return nullptr;
-	return node->val.anode.children[n];
+    if (!node || node->type != GP_ANODE ||
+	n >= node->val.anode.children_num)
+	return nullptr;
+    return node->val.anode.children[n];
 }
 
-// Number of children
 static int nchildren(gp_tree_node *node)
 {
-	if ( !node || node->type != GP_ANODE )
-		return 0;
-	return node->val.anode.children_num;
+    if (!node || node->type != GP_ANODE) return 0;
+    return node->val.anode.children_num;
 }
 
-// Get the anode name (empty string if not an anode)
 static const char *anode_name(gp_tree_node *node)
 {
-	if ( !node || node->type != GP_ANODE )
-		return "";
-	return node->val.anode.name;
+    if (!node || node->type != GP_ANODE) return "";
+    return node->val.anode.name;
 }
 
 // -----------------------------------------------------------------------
-// SemaScope — lexical scope for variables
+// SemaCollector — walks the AST and populates SemaInfo
 // -----------------------------------------------------------------------
 
-class SemaScope
+class SemaCollector
 {
-public:
-	SemaScope *parent;
-	map<string, Variable *> locals;
-	// The FuncDef being defined, if this is a function body scope
-	FuncDef *func;
+    SemaInfo &info;
 
-	SemaScope(SemaScope *p = nullptr)
-		: parent(p), func(nullptr) {}
+    // ---------------------------------------------------------------
+    // Type classification — matches the emitter's classify_type()
+    // ---------------------------------------------------------------
 
-	~SemaScope() {}
+    // Classify a type specifier string into a single char:
+    //   'c' = char, 's' = string/char*, 'd' = double/float, 'i' = int
+    static char classify_type_str(const string &type)
+    {
+	if (type.find("char") != string::npos) {
+	    if (type.find("*") != string::npos) return 's';
+	    return 'c';
+	}
+	if (type.find("const char") != string::npos) return 's';
+	if (type.find("float") != string::npos) return 'd';
+	if (type.find("double") != string::npos) return 'd';
+	return 'i';
+    }
 
-	Variable *find_local(const string &name)
-	{
-		auto it = locals.find(name);
-		if ( it != locals.end() )
-			return it->second;
-		return nullptr;
+    // Build a type string from a declaration_specifiers (qual chain)
+    string type_string(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return "";
+
+	if (node->type == GP_TERM) {
+	    int code = term_code(node);
+	    switch (code) {
+	    case GT_VOID:     return "void";
+	    case GT_BOOL:     return "int";
+	    case GT_CHAR:     return "char";
+	    case GT_SHORT:    return "short";
+	    case GT_INT:      return "int";
+	    case GT_LONG:     return "long";
+	    case GT_FLOAT:    return "float";
+	    case GT_DOUBLE:   return "double";
+	    case GT_STRING_T: return "const char *";
+	    case GT_INT8:     return "int8_t";
+	    case GT_INT16:    return "int16_t";
+	    case GT_INT32:    return "int32_t";
+	    case GT_INT64:    return "int64_t";
+	    case GT_UINT8:    return "uint8_t";
+	    case GT_UINT16:   return "uint16_t";
+	    case GT_UINT32:   return "uint32_t";
+	    case GT_UINT64:   return "uint64_t";
+	    case GT_SIGNED:   return "signed";
+	    case GT_UNSIGNED: return "unsigned";
+	    case GT_TYPEDEF:  return "typedef";
+	    case GT_EXTERN:   return "extern";
+	    case GT_STATIC:   return "static";
+	    case GT_CONST:    return "const";
+	    case GT_IDENT:    return term_text(node);
+	    default:          return term_text(node);
+	    }
 	}
 
-	Variable *find(const string &name)
-	{
-		Variable *v = find_local(name);
-		if ( v )
-			return v;
-		if ( parent )
-			return parent->find(name);
-		return nullptr;
+	if (node->type != GP_ANODE) return "";
+
+	const char *nm = anode_name(node);
+
+	// qual(specifier, rest) — recursive chain
+	if (strcmp(nm, "qual") == 0) {
+	    string spec = type_string(child(node, 0));
+	    gp_tree_node *rest = child(node, 1);
+	    if (is_nil(rest)) return spec;
+	    string r = type_string(rest);
+	    if (spec.empty()) return r;
+	    if (r.empty()) return spec;
+	    return spec + " " + r;
 	}
 
-	void add(const string &name, Variable *v)
-	{
-		locals[name] = v;
-	}
-};
+	// struct_ref(struct/union, name)
+	if (strcmp(nm, "struct_ref") == 0)
+	    return "struct " + term_text(child(node, 1));
 
-// -----------------------------------------------------------------------
-// SemaWalker — the main semantic analysis walker
-// -----------------------------------------------------------------------
-
-class SemaWalker
-{
-	Program &pgm;
-	SemaScope *current_scope;
-	int errors;
-
-	// Error reporting
-	void sema_error(const string &msg, gp_tree_node *node = nullptr)
-	{
-		const char *file = nullptr;
-		int line = 0, col = 0;
-
-		// Try to extract location from the node or its first terminal child
-		if ( node )
-		{
-			if ( is_term(node) )
-			{
-				term_loc(node, file, line, col);
-			}
-			else if ( node->type == GP_ANODE && nchildren(node) > 0 )
-			{
-				// Walk to find the first terminal for location
-				gp_tree_node *c = child(node, 0);
-				if ( is_term(c) )
-					term_loc(c, file, line, col);
-			}
-		}
-
-		pgm.add_diagnostic(Program::DiagnosticSeverity::error,
-				   Program::DiagnosticPhase::parser,
-				   msg, file, line, col);
-		++errors;
+	// struct_def — just the struct name
+	if (strcmp(nm, "struct_def") == 0) {
+	    gp_tree_node *sname = child(node, 1);
+	    if (!is_nil(sname))
+		return "struct " + term_text(sname);
+	    return "struct";
 	}
 
-	void sema_warning(const string &msg, gp_tree_node *node = nullptr)
-	{
-		const char *file = nullptr;
-		int line = 0, col = 0;
-		if ( node && is_term(node) )
-			term_loc(node, file, line, col);
+	// enum_ref
+	if (strcmp(nm, "enum_ref") == 0)
+	    return "int";  // enums are ints in C
 
-		pgm.add_diagnostic(Program::DiagnosticSeverity::warning,
-				   Program::DiagnosticPhase::parser,
-				   msg, file, line, col);
+	// enum_def
+	if (strcmp(nm, "enum_def") == 0)
+	    return "int";
+
+	// type_name(specs, abstract_declarator)
+	if (strcmp(nm, "type_name") == 0)
+	    return type_string(child(node, 0));
+
+	// Container/stream types → void* for now
+	if (strcmp(nm, "vector_type") == 0 || strcmp(nm, "set_type") == 0 ||
+	    strcmp(nm, "list_type") == 0 || strcmp(nm, "map_type") == 0)
+	    return "void *";
+
+	return "";
+    }
+
+    // Classify a declaration_specifiers node into a type char
+    char classify_specs(gp_tree_node *specs)
+    {
+	return classify_type_str(type_string(specs));
+    }
+
+    // ---------------------------------------------------------------
+    // Name extraction from declarators
+    // ---------------------------------------------------------------
+
+    string extract_name(gp_tree_node *node)
+    {
+	if (!node) return "";
+	if (node->type == GP_TERM) return term_text(node);
+	const char *nm = anode_name(node);
+	if (strcmp(nm, "ptr_decl") == 0)
+	    return extract_name(child(node, 1));
+	if (strcmp(nm, "ref_decl") == 0)
+	    return extract_name(child(node, 0));
+	if (strcmp(nm, "func_decl") == 0)
+	    return extract_name(child(node, 0));
+	if (strcmp(nm, "array_decl") == 0)
+	    return extract_name(child(node, 0));
+	if (strcmp(nm, "init_decl") == 0)
+	    return extract_name(child(node, 0));
+	if (nchildren(node) > 0)
+	    return extract_name(child(node, 0));
+	return "";
+    }
+
+    // Check if declarator has a pointer (ptr_decl at any level)
+    bool has_pointer(gp_tree_node *node)
+    {
+	if (!node || node->type != GP_ANODE) return false;
+	return is_anode(node, "ptr_decl");
+    }
+
+    // Check if declarator is a function declarator
+    bool is_func_decl(gp_tree_node *node)
+    {
+	if (!node) return false;
+	if (is_anode(node, "func_decl")) return true;
+	if (is_anode(node, "ptr_decl"))
+	    return is_func_decl(child(node, 1));
+	return false;
+    }
+
+    // ---------------------------------------------------------------
+    // Declaration walking
+    // ---------------------------------------------------------------
+
+    void collect_decl_vars(const string &type_str, char tc,
+			   gp_tree_node *decls, bool is_global)
+    {
+	if (is_nil(decls)) return;
+
+	string vname = extract_name(decls);
+	if (!vname.empty()) {
+	    // Check if this is a class type
+	    string clean_type = type_str;
+	    if (clean_type.substr(0, 7) == "struct ")
+		clean_type = clean_type.substr(7);
+
+	    if (info.class_names.count(clean_type)) {
+		info.var_class_map[vname] = clean_type;
+		info.var_types[vname] = 'i';  // class objects print as int
+	    } else {
+		char effective_tc = tc;
+		if (has_pointer(decls) && effective_tc == 'c')
+		    effective_tc = 's';  // char * → string
+		info.var_types[vname] = effective_tc;
+	    }
 	}
 
-	// ---------------------------------------------------------------
-	// Scope management
-	// ---------------------------------------------------------------
+	// Recurse into decl_list and init_decl
+	const char *nm = anode_name(decls);
+	if (strcmp(nm, "decl_list") == 0) {
+	    collect_decl_vars(type_str, tc, child(decls, 0), is_global);
+	    collect_decl_vars(type_str, tc, child(decls, 1), is_global);
+	} else if (strcmp(nm, "init_decl") == 0) {
+	    collect_decl_vars(type_str, tc, child(decls, 0), is_global);
+	}
+    }
 
-	void push_scope()
-	{
-		SemaScope *s = new SemaScope(current_scope);
-		current_scope = s;
+    void walk_decl(gp_tree_node *node, bool is_global)
+    {
+	// decl(declaration_specifiers, init_declarator_list_opt)
+	gp_tree_node *specs = child(node, 0);
+	gp_tree_node *decls = child(node, 1);
+
+	string type_str = type_string(specs);
+
+	// Check for typedef
+	if (type_str.find("typedef") != string::npos) {
+	    string alias = extract_name(decls);
+	    if (!alias.empty())
+		info.typedef_names.insert(alias);
+	    return;
 	}
 
-	void pop_scope()
-	{
-		if ( !current_scope )
-			return;
-		SemaScope *p = current_scope->parent;
-		delete current_scope;
-		current_scope = p;
+	// Check if this is a function prototype (func_decl in declarators)
+	if (is_func_decl(decls)) {
+	    string fname = extract_name(decls);
+	    if (!fname.empty()) {
+		char tc = classify_type_str(type_str);
+		// Check if declarator adds a pointer
+		if (has_pointer(decls) && tc == 'c')
+		    tc = 's';  // char * return → string
+		info.func_ret_types[fname] = tc;
+		info.func_type_strs[fname] = type_str;
+	    }
+	    return;
 	}
 
-	// ---------------------------------------------------------------
-	// Type resolution — map AST type nodes to DataDef*
-	// ---------------------------------------------------------------
+	// Regular variable declaration
+	char tc = classify_type_str(type_str);
+	collect_decl_vars(type_str, tc, decls, is_global);
+    }
 
-	DataDef *resolve_type(gp_tree_node *node)
-	{
-		if ( !node )
-			return &ddVOID;
+    // ---------------------------------------------------------------
+    // Parameter walking — collect param types
+    // ---------------------------------------------------------------
 
-		// Terminal type keywords — direct mapping by code
-		if ( is_term(node) )
-		{
-			switch ( term_code(node) )
-			{
-			case GT_VOID:     return &ddVOID;
-			case GT_BOOL:     return &ddBOOL;
-			case GT_CHAR:     return &ddCHAR;
-			case GT_SHORT:    return &ddINT16;
-			case GT_INT:      return &ddINT32;
-			case GT_LONG:     return &ddINT64;
-			case GT_FLOAT:    return &ddFLOAT;
-			case GT_DOUBLE:   return &ddDOUBLE;
-			case GT_STRING_T: return &ddSTRING;
-			case GT_INT8:     return &ddINT8;
-			case GT_INT16:    return &ddINT16;
-			case GT_INT32:    return &ddINT32;
-			case GT_INT64:    return &ddINT64;
-			case GT_UINT8:    return &ddUINT8;
-			case GT_UINT16:   return &ddUINT16;
-			case GT_UINT32:   return &ddUINT32;
-			case GT_UINT64:   return &ddUINT64;
-			case GT_IDENT:
-			{
-				// User-defined type name — look up in datadef_map
-				string name = term_text(node);
-				auto it = pgm.datadef_map.find(name);
-				if ( it != pgm.datadef_map.end() )
-					return it->second;
-				auto it2 = pgm.struct_map.find(name);
-				if ( it2 != pgm.struct_map.end() )
-					return it2->second;
-				sema_error("unknown type '" + name + "'", node);
-				return &ddVOID;
-			}
-			default:
-				return &ddVOID;
-			}
+    void walk_params(gp_tree_node *node)
+    {
+	if (is_nil(node)) return;
+	const char *nm = anode_name(node);
+
+	if (strcmp(nm, "param") == 0) {
+	    string type_str = type_string(child(node, 0));
+	    gp_tree_node *decl = child(node, 1);
+	    if (!is_nil(decl)) {
+		string pname = extract_name(decl);
+		if (!pname.empty()) {
+		    char tc = classify_type_str(type_str);
+		    if (has_pointer(decl) && tc == 'c')
+			tc = 's';
+		    info.var_types[pname] = tc;
 		}
+	    }
+	} else if (strcmp(nm, "param_list") == 0) {
+	    walk_params(child(node, 0));
+	    walk_params(child(node, 1));
+	} else if (strcmp(nm, "param_va") == 0) {
+	    walk_params(child(node, 0));
+	}
+    }
 
-		// NIL node means void / absent
-		if ( is_nil(node) )
-			return &ddVOID;
+    // ---------------------------------------------------------------
+    // Function definition
+    // ---------------------------------------------------------------
 
-		// Anode type wrappers
-		const char *nm = anode_name(node);
+    void walk_func_def(gp_tree_node *node)
+    {
+	// func_def(declaration_specifiers, declarator, compound_statement)
+	gp_tree_node *specs = child(node, 0);
+	gp_tree_node *decl = child(node, 1);
+	gp_tree_node *body = child(node, 2);
 
-		if ( strcmp(nm, "ptr_type") == 0 )
-		{
-			DataDef *base = resolve_type(child(node, 0));
-			// Look up or create a pointer-to-base type
-			auto it = pgm.ptr_type_cache.find(base);
-			if ( it != pgm.ptr_type_cache.end() )
-				return it->second;
-			DataDefPTR *pdd = new DataDefPTR(*base);
-			pgm.ptr_type_cache[base] = pdd;
-			return pdd;
-		}
+	string type_str = type_string(specs);
+	string func_name = extract_name(decl);
+	char tc = classify_type_str(type_str);
 
-		if ( strcmp(nm, "ref_type") == 0 )
-		{
-			DataDef *base = resolve_type(child(node, 0));
-			// Reference types — set reftype on a copy
-			// For sema purposes, references resolve to the base type
-			// with rtReference marker.  The emitter handles the rest.
-			return base;
-		}
+	// Check if declarator adds a pointer (e.g. char *func() → ptr_decl)
+	if (has_pointer(decl) && tc == 'c')
+	    tc = 's';  // char * return → string
 
-		if ( strcmp(nm, "const_type") == 0 )
-		{
-			// const qualifier — for sema, resolve the inner type
-			return resolve_type(child(node, 1));
-		}
-
-		if ( strcmp(nm, "qual_type") == 0 )
-		{
-			// Qualified type (signed/unsigned + inner type)
-			gp_tree_node *qual = child(node, 0);
-			gp_tree_node *inner = child(node, 1);
-			DataDef *base = resolve_type(inner);
-
-			if ( is_term(qual) && term_code(qual) == GT_UNSIGNED )
-			{
-				// Map signed -> unsigned variants
-				if ( base == &ddCHAR  )  return &ddUINT8;
-				if ( base == &ddINT8  )  return &ddUINT8;
-				if ( base == &ddINT16 )  return &ddUINT16;
-				if ( base == &ddINT32 )  return &ddUINT32;
-				if ( base == &ddINT64 )  return &ddUINT64;
-				// "unsigned" alone = unsigned int
-				if ( base == &ddVOID  )  return &ddUINT32;
-			}
-			if ( is_term(qual) && term_code(qual) == GT_SIGNED )
-			{
-				// signed char -> int8, etc.
-				if ( base == &ddUINT8  ) return &ddINT8;
-				if ( base == &ddCHAR   ) return &ddINT8;
-				if ( base == &ddUINT16 ) return &ddINT16;
-				if ( base == &ddUINT32 ) return &ddINT32;
-				if ( base == &ddUINT64 ) return &ddINT64;
-				if ( base == &ddVOID   ) return &ddINT32;
-			}
-			return base;
-		}
-
-		if ( strcmp(nm, "struct_type") == 0 )
-		{
-			string name = term_text(child(node, 1));
-			auto it = pgm.struct_map.find(name);
-			if ( it != pgm.struct_map.end() )
-				return it->second;
-			auto it2 = pgm.datadef_map.find(name);
-			if ( it2 != pgm.datadef_map.end() )
-				return it2->second;
-			sema_error("unknown struct '" + name + "'", child(node, 1));
-			return &ddVOID;
-		}
-
-		if ( strcmp(nm, "class_type") == 0 )
-		{
-			string name = term_text(child(node, 1));
-			auto it = pgm.datadef_map.find(name);
-			if ( it != pgm.datadef_map.end() )
-				return it->second;
-			sema_error("unknown class '" + name + "'", child(node, 1));
-			return &ddVOID;
-		}
-
-		// vector_type, map_type — stub for now
-		if ( strcmp(nm, "vector_type") == 0 || strcmp(nm, "map_type") == 0 )
-		{
-			DBG(cerr << "sema: TODO container type '" << nm << "'" << endl);
-			return &ddVOID;
-		}
-
-		sema_error(string("unrecognized type node '") + nm + "'", node);
-		return &ddVOID;
+	if (!func_name.empty()) {
+	    info.func_ret_types[func_name] = tc;
+	    info.func_type_strs[func_name] = type_str;
 	}
 
-	// ---------------------------------------------------------------
-	// Parameter list walking — returns a vector of (type, name) pairs
-	// ---------------------------------------------------------------
+	// Collect parameter types
+	if (is_anode(decl, "func_decl"))
+	    walk_params(child(decl, 1));
+	else if (is_anode(decl, "ptr_decl") &&
+		 is_anode(child(decl, 1), "func_decl"))
+	    walk_params(child(child(decl, 1), 1));
 
-	struct ParamInfo
-	{
-		DataDef *type;
-		string name;
-		bool is_ref;
-		bool is_const;
-	};
+	// Walk body for local declarations
+	walk_block(body);
+    }
 
-	void collect_params(gp_tree_node *node, vector<ParamInfo> &out)
-	{
-		if ( is_nil(node) )
-			return;
+    // ---------------------------------------------------------------
+    // Class definition
+    // ---------------------------------------------------------------
 
-		if ( is_anode(node, "param_list") )
-		{
-			collect_params(child(node, 0), out);
-			collect_params(child(node, 2), out);
-			return;
-		}
+    void walk_class_def(gp_tree_node *node)
+    {
+	string class_name;
+	gp_tree_node *body_node = nullptr;
+	string base_class;
 
-		if ( is_anode(node, "param") )
-		{
-			ParamInfo pi;
-			pi.is_ref = false;
-			pi.is_const = false;
-
-			gp_tree_node *type_node = child(node, 0);
-			gp_tree_node *name_node = child(node, 1);
-
-			// Check for reference type
-			if ( is_anode(type_node, "ref_type") )
-			{
-				pi.is_ref = true;
-				pi.type = resolve_type(child(type_node, 0));
-			}
-			else if ( is_anode(type_node, "const_type") )
-			{
-				pi.is_const = true;
-				gp_tree_node *inner = child(type_node, 1);
-				if ( is_anode(inner, "ref_type") )
-				{
-					pi.is_ref = true;
-					pi.type = resolve_type(child(inner, 0));
-				}
-				else
-				{
-					pi.type = resolve_type(inner);
-				}
-			}
-			else
-			{
-				pi.type = resolve_type(type_node);
-			}
-
-			pi.name = is_nil(name_node) ? "" : term_text(name_node);
-			out.push_back(pi);
-			return;
-		}
-
-		// Single terminal like "void" — void params
-		if ( is_term(node) && term_code(node) == GT_VOID )
-			return;
-
-		DBG(cerr << "sema: unexpected param node type '" << anode_name(node) << "'" << endl);
+	if (is_anode(node, "class_def")) {
+	    class_name = term_text(child(node, 0));
+	    body_node = child(node, 1);
+	} else if (is_anode(node, "class_inherit")) {
+	    class_name = term_text(child(node, 0));
+	    base_class = term_text(child(node, 2));
+	    body_node = child(node, 3);
 	}
 
-	// ---------------------------------------------------------------
-	// Function definition
-	// ---------------------------------------------------------------
+	if (class_name.empty()) return;
 
-	void walk_func_def(gp_tree_node *node)
-	{
-		// func_def: [0]=return_type, [1]=name, [2]=params_or_NIL, [3]=block
-		gp_tree_node *ret_node   = child(node, 0);
-		gp_tree_node *name_node  = child(node, 1);
-		gp_tree_node *param_node = child(node, 2);
-		gp_tree_node *body_node  = child(node, 3);
+	info.class_names.insert(class_name);
+	if (!base_class.empty())
+	    info.class_bases[class_name] = base_class;
 
-		DataDef *ret_type = resolve_type(ret_node);
-		string func_name = term_text(name_node);
+	// Collect fields and methods from class body
+	SemaClassInfo &ci = info.class_info[class_name];
+	ci.name = class_name;
 
-		if ( func_name.empty() )
-		{
-			sema_error("function definition with no name", name_node);
-			return;
-		}
-
-		// Create FuncDef
-		FuncDef *fd = new FuncDef(*ret_type);
-		fd->name = func_name;
-
-		// Parse parameters
-		vector<ParamInfo> params;
-		collect_params(param_node, params);
-
-		for ( auto &pi : params )
-		{
-			fd->parameters.push_back(pi.type);
-			fd->ref_params.push_back(pi.is_ref);
-			fd->const_params.push_back(pi.is_const);
-		}
-
-		// Register in funcdef_map
-		pgm.funcdef_map[func_name] = fd;
-
-		DBG(cerr << "sema: registered function '" << func_name
-		         << "' returning " << ret_type->name
-		         << " with " << params.size() << " params" << endl);
-
-		// Walk the body in a new scope
-		push_scope();
-		current_scope->func = fd;
-
-		// Add parameters to scope
-		for ( auto &pi : params )
-		{
-			if ( pi.name.empty() )
-				continue;
-			uint32_t flags = vfPARAM | vfLOCAL;
-			Variable *v = new Variable(pi.name, *pi.type, 1, nullptr, false);
-			v->flags = flags;
-			current_scope->add(pi.name, v);
-		}
-
-		// Walk body statements
-		walk_block(body_node);
-
-		pop_scope();
+	// If we have a base class, copy its fields first
+	if (!base_class.empty()) {
+	    auto bit = info.class_info.find(base_class);
+	    if (bit != info.class_info.end()) {
+		ci.fields = bit->second.fields;
+		ci.field_types = bit->second.field_types;
+		ci.methods = bit->second.methods;
+		ci.method_ret_types = bit->second.method_ret_types;
+	    }
 	}
 
-	// ---------------------------------------------------------------
-	// Function prototype (forward declaration)
-	// ---------------------------------------------------------------
+	walk_class_body(body_node, class_name, ci);
+    }
 
-	void walk_func_proto(gp_tree_node *node)
-	{
-		// func_proto: [0]=return_type, [1]=name, [2]=params
-		gp_tree_node *ret_node   = child(node, 0);
-		gp_tree_node *name_node  = child(node, 1);
-		gp_tree_node *param_node = child(node, 2);
+    void walk_class_body(gp_tree_node *node, const string &class_name,
+			 SemaClassInfo &ci)
+    {
+	if (is_nil(node)) return;
+	if (is_anode(node, "class_body")) {
+	    walk_class_body(child(node, 0), class_name, ci);
+	    walk_class_member(child(node, 1), class_name, ci);
+	    return;
+	}
+	walk_class_member(node, class_name, ci);
+    }
 
-		DataDef *ret_type = resolve_type(ret_node);
-		string func_name = term_text(name_node);
+    void walk_class_member(gp_tree_node *node, const string &class_name,
+			   SemaClassInfo &ci)
+    {
+	if (!node) return;
+	const char *nm = anode_name(node);
 
-		if ( func_name.empty() )
-			return;
-
-		// Only register if not already defined
-		if ( pgm.funcdef_map.find(func_name) != pgm.funcdef_map.end() )
-			return;
-
-		FuncDef *fd = new FuncDef(*ret_type);
-		fd->name = func_name;
-
-		vector<ParamInfo> params;
-		collect_params(param_node, params);
-		for ( auto &pi : params )
-		{
-			fd->parameters.push_back(pi.type);
-			fd->ref_params.push_back(pi.is_ref);
-			fd->const_params.push_back(pi.is_const);
-		}
-
-		pgm.funcdef_map[func_name] = fd;
-
-		DBG(cerr << "sema: registered prototype '" << func_name << "'" << endl);
+	// Field declaration
+	if (strcmp(nm, "decl") == 0) {
+	    string type_str = type_string(child(node, 0));
+	    gp_tree_node *decls = child(node, 1);
+	    collect_class_fields(decls, type_str, ci);
+	    return;
 	}
 
-	// ---------------------------------------------------------------
-	// Struct definition
-	// ---------------------------------------------------------------
-
-	void walk_struct_def(gp_tree_node *node)
-	{
-		// struct_def: [1]=name, [3]=struct_body  (or [0]=name, [1]=struct_body)
-		// The child indices depend on grammar rule expansion.
-		// Try common patterns.
-		string name;
-		gp_tree_node *body = nullptr;
-
-		// Find the name terminal and body anode
-		for ( int i = 0; i < nchildren(node); ++i )
-		{
-			gp_tree_node *c = child(node, i);
-			if ( is_term(c) && term_code(c) == GT_IDENT && name.empty() )
-				name = term_text(c);
-			if ( is_anode(c, "struct_body") )
-				body = c;
-		}
-
-		if ( name.empty() )
-		{
-			sema_error("struct definition with no name", node);
-			return;
-		}
-
-		// Create a DataDefSTRUCT
-		DataDefSTRUCT *sdd = new DataDefSTRUCT(name, 0);
-
-		// Walk struct body to collect fields
-		if ( body )
-			walk_struct_body(body, sdd);
-
-		// Register in struct_map
-		pgm.struct_map[name] = sdd;
-		// Also register in datadef_map so "struct X" and just "X" both resolve
-		pgm.datadef_map[name] = sdd;
-
-		DBG(cerr << "sema: registered struct '" << name
-		         << "' with " << sdd->members.size() << " members" << endl);
+	// Method definition
+	if (strcmp(nm, "method") == 0) {
+	    string ret_type = type_string(child(node, 0));
+	    gp_tree_node *decl = child(node, 1);
+	    string method_name = extract_name(decl);
+	    if (!method_name.empty()) {
+		ci.methods.insert(method_name);
+		char tc = classify_type_str(ret_type);
+		ci.method_ret_types[method_name] = tc;
+		// Register mangled name in func_ret_types
+		string mangled = class_name + "__" + method_name;
+		info.func_ret_types[mangled] = tc;
+		info.func_type_strs[mangled] = ret_type;
+	    }
+	    // Walk method body for local var types
+	    walk_block(child(node, 2));
+	    return;
 	}
 
-	void walk_struct_body(gp_tree_node *node, DataDefSTRUCT *sdd)
-	{
-		if ( is_nil(node) )
-			return;
-
-		if ( is_anode(node, "struct_body") )
-		{
-			// struct_body: [0]=prev, [1]=member
-			walk_struct_body(child(node, 0), sdd);
-			walk_struct_field(child(node, 1), sdd);
-			return;
-		}
-
-		// Single field
-		walk_struct_field(node, sdd);
+	// Method prototype (no body)
+	if (strcmp(nm, "method_proto") == 0) {
+	    string ret_type = type_string(child(node, 0));
+	    gp_tree_node *decl = child(node, 1);
+	    string method_name = extract_name(decl);
+	    if (!method_name.empty()) {
+		ci.methods.insert(method_name);
+		char tc = classify_type_str(ret_type);
+		ci.method_ret_types[method_name] = tc;
+		string mangled = class_name + "__" + method_name;
+		info.func_ret_types[mangled] = tc;
+	    }
+	    return;
 	}
 
-	void walk_struct_field(gp_tree_node *node, DataDefSTRUCT *sdd)
-	{
-		if ( is_nil(node) )
-			return;
-
-		if ( is_anode(node, "struct_field") )
-		{
-			// struct_field: [0]=type, [1]=field_list
-			DataDef *ftype = resolve_type(child(node, 0));
-			walk_field_list(child(node, 1), sdd, ftype);
-			return;
-		}
-
-		DBG(cerr << "sema: TODO struct member type '" << anode_name(node) << "'" << endl);
+	// Constructor
+	if (strcmp(nm, "ctor") == 0) {
+	    info.classes_with_ctor.insert(class_name);
+	    ci.has_ctor = true;
+	    // Walk body for local var types
+	    walk_block(child(node, 2));
+	    return;
 	}
 
-	void walk_field_list(gp_tree_node *node, DataDefSTRUCT *sdd, DataDef *ftype)
-	{
-		if ( is_nil(node) )
-			return;
-
-		// Terminal IDENT — single field name
-		if ( is_term(node) && term_code(node) == GT_IDENT )
-		{
-			string fname = term_text(node);
-			sdd->members.push_back(make_pair(fname, ftype));
-			sdd->member_counts.push_back(1);
-			sdd->member_array_flags.push_back(false);
-			sdd->member_offsets.push_back(0);
-			sdd->member_bitfields.push_back(DataDefSTRUCT::BitFieldInfo());
-			sdd->member_dims.push_back(vector<uint32_t>());
-			sdd->member_count_exprs.push_back(nullptr);
-			sdd->member_access.push_back(0);
-			return;
-		}
-
-		if ( is_anode(node, "field_array") )
-		{
-			// field_array: [0]=name, [1]=size
-			string fname = term_text(child(node, 0));
-			int64_t count = term_ival(child(node, 1));
-			if ( count <= 0 ) count = 1;
-
-			sdd->members.push_back(make_pair(fname, ftype));
-			sdd->member_counts.push_back((size_t)count);
-			sdd->member_array_flags.push_back(true);
-			sdd->member_offsets.push_back(0);
-			sdd->member_bitfields.push_back(DataDefSTRUCT::BitFieldInfo());
-			vector<uint32_t> dims;
-			dims.push_back((uint32_t)count);
-			sdd->member_dims.push_back(dims);
-			sdd->member_count_exprs.push_back(nullptr);
-			sdd->member_access.push_back(0);
-			return;
-		}
-
-		if ( is_anode(node, "field_ptr") )
-		{
-			// field_ptr: [0]=name — field declared as pointer
-			string fname = term_text(child(node, 0));
-			// Create pointer-to-ftype
-			DataDef *ptype = ftype;
-			auto it = pgm.ptr_type_cache.find(ftype);
-			if ( it != pgm.ptr_type_cache.end() )
-				ptype = it->second;
-			else
-			{
-				DataDefPTR *pdd = new DataDefPTR(*ftype);
-				pgm.ptr_type_cache[ftype] = pdd;
-				ptype = pdd;
-			}
-
-			sdd->members.push_back(make_pair(fname, ptype));
-			sdd->member_counts.push_back(1);
-			sdd->member_array_flags.push_back(false);
-			sdd->member_offsets.push_back(0);
-			sdd->member_bitfields.push_back(DataDefSTRUCT::BitFieldInfo());
-			sdd->member_dims.push_back(vector<uint32_t>());
-			sdd->member_count_exprs.push_back(nullptr);
-			sdd->member_access.push_back(0);
-			return;
-		}
-
-		if ( is_anode(node, "bitfield") )
-		{
-			// bitfield: [0]=name, [1]=width
-			string fname = term_text(child(node, 0));
-			int64_t width = term_ival(child(node, 1));
-
-			DataDefSTRUCT::BitFieldInfo bfi;
-			bfi.is_bitfield = true;
-			bfi.bit_width = (size_t)width;
-
-			sdd->members.push_back(make_pair(fname, ftype));
-			sdd->member_counts.push_back(1);
-			sdd->member_array_flags.push_back(false);
-			sdd->member_offsets.push_back(0);
-			sdd->member_bitfields.push_back(bfi);
-			sdd->member_dims.push_back(vector<uint32_t>());
-			sdd->member_count_exprs.push_back(nullptr);
-			sdd->member_access.push_back(0);
-			return;
-		}
-
-		// Could be a decl_list for multi-field declarations
-		DBG(cerr << "sema: TODO field_list node '" << anode_name(node) << "'" << endl);
+	// Destructor
+	if (strcmp(nm, "dtor") == 0) {
+	    info.classes_with_dtor.insert(class_name);
+	    ci.has_dtor = true;
+	    // Walk body for local var types
+	    walk_block(child(node, 1));
+	    return;
 	}
 
-	// ---------------------------------------------------------------
-	// Enum definition
-	// ---------------------------------------------------------------
-
-	void walk_enum_def(gp_tree_node *node)
-	{
-		string name;
-		gp_tree_node *body = nullptr;
-
-		for ( int i = 0; i < nchildren(node); ++i )
-		{
-			gp_tree_node *c = child(node, i);
-			if ( is_term(c) && term_code(c) == GT_IDENT && name.empty() )
-				name = term_text(c);
-			if ( is_anode(c, "enum_body") || is_anode(c, "enum_list") )
-				body = c;
-		}
-
-		DBG(cerr << "sema: registered enum '" << name << "'" << endl);
-
-		// Walk enum values and register them as integer constants
-		int64_t next_val = 0;
-		walk_enum_body(body, name, next_val);
+	// Operator method
+	if (strcmp(nm, "oper_method") == 0) {
+	    // Walk body for local var types
+	    walk_block(child(node, 3));
+	    return;
 	}
 
-	void walk_enum_body(gp_tree_node *node, const string &enum_name, int64_t &next_val)
-	{
-		if ( is_nil(node) )
-			return;
+	// Access specifier — skip
+    }
 
-		if ( is_anode(node, "enum_list") )
-		{
-			walk_enum_body(child(node, 0), enum_name, next_val);
-			walk_enum_body(child(node, 1), enum_name, next_val);
-			return;
-		}
+    void collect_class_fields(gp_tree_node *node, const string &type_str,
+			      SemaClassInfo &ci)
+    {
+	if (is_nil(node)) return;
 
-		if ( is_anode(node, "enum_assign") )
-		{
-			// enum_assign: [0]=name, [1]=value_expr
-			string vname = term_text(child(node, 0));
-			// For now, try to get a constant integer value
-			gp_tree_node *val_node = child(node, 1);
-			if ( is_term(val_node) && term_code(val_node) == GT_INTEGER )
-				next_val = term_ival(val_node);
-
-			register_enum_value(vname, next_val);
-			++next_val;
-			return;
-		}
-
-		// Plain identifier (no = value)
-		if ( is_term(node) && term_code(node) == GT_IDENT )
-		{
-			string vname = term_text(node);
-			register_enum_value(vname, next_val);
-			++next_val;
-			return;
-		}
+	string fname = extract_name(node);
+	if (!fname.empty()) {
+	    char tc = classify_type_str(type_str);
+	    if (has_pointer(node) && tc == 'c')
+		tc = 's';
+	    ci.fields.insert(fname);
+	    ci.field_types[fname] = tc;
 	}
 
-	void register_enum_value(const string &name, int64_t val)
-	{
-		if ( name.empty() )
-			return;
+	// Handle decl_list
+	const char *nm = anode_name(node);
+	if (strcmp(nm, "decl_list") == 0) {
+	    collect_class_fields(child(node, 0), type_str, ci);
+	    collect_class_fields(child(node, 1), type_str, ci);
+	} else if (strcmp(nm, "init_decl") == 0) {
+	    collect_class_fields(child(node, 0), type_str, ci);
+	}
+    }
 
-		// Register as a constant integer variable
-		Variable *v = new Variable(name, ddINT32, 1, nullptr, true);
-		v->flags = vfCONSTANT;
-		if ( v->data )
-			*((int32_t *)v->data) = (int32_t)val;
+    // ---------------------------------------------------------------
+    // Struct definition
+    // ---------------------------------------------------------------
 
-		// Add to current scope and global scope
-		if ( current_scope )
-			current_scope->add(name, v);
+    void walk_struct_def(gp_tree_node *node)
+    {
+	gp_tree_node *sname = child(node, 1);
+	if (!is_nil(sname)) {
+	    string name = term_text(sname);
+	    if (!name.empty())
+		info.struct_names.insert(name);
+	}
+	// Walk struct body for field info (future use)
+    }
 
-		// Also register globally via the program's define_map as a constant
-		pgm.define_map[name] = to_string(val);
+    // ---------------------------------------------------------------
+    // Enum definition — register enum values as int constants
+    // ---------------------------------------------------------------
 
-		DBG(cerr << "sema: enum value '" << name << "' = " << val << endl);
+    void walk_enum_def(gp_tree_node *node)
+    {
+	// enum_def(name, enumerator_list)
+	gp_tree_node *elist = child(node, 1);
+	walk_enum_list(elist);
+    }
+
+    void walk_enum_list(gp_tree_node *node)
+    {
+	if (is_nil(node)) return;
+	if (is_anode(node, "enum_list")) {
+	    walk_enum_list(child(node, 0));
+	    walk_enum_val(child(node, 1));
+	    return;
+	}
+	walk_enum_val(node);
+    }
+
+    void walk_enum_val(gp_tree_node *node)
+    {
+	if (!node) return;
+	string vname;
+	if (node->type == GP_TERM && term_code(node) == GT_IDENT)
+	    vname = term_text(node);
+	else if (is_anode(node, "enum_assign"))
+	    vname = term_text(child(node, 0));
+	if (!vname.empty())
+	    info.var_types[vname] = 'i';  // enum values are ints
+    }
+
+    // ---------------------------------------------------------------
+    // Typedef
+    // ---------------------------------------------------------------
+
+    void walk_typedef(gp_tree_node *node)
+    {
+	// The decl has "typedef" in its specifiers. Extract the alias name.
+	gp_tree_node *decls = child(node, 1);
+	string alias = extract_name(decls);
+	if (!alias.empty())
+	    info.typedef_names.insert(alias);
+    }
+
+    // ---------------------------------------------------------------
+    // Block / statement walking — collect local variable types
+    // ---------------------------------------------------------------
+
+    void walk_block(gp_tree_node *node)
+    {
+	if (is_nil(node)) return;
+	if (is_anode(node, "block")) {
+	    walk_stmt_list(child(node, 0));
+	    return;
+	}
+	walk_stmt(node);
+    }
+
+    void walk_stmt_list(gp_tree_node *node)
+    {
+	if (is_nil(node)) return;
+	if (is_anode(node, "stmt_list")) {
+	    walk_stmt_list(child(node, 0));
+	    walk_stmt(child(node, 1));
+	    return;
+	}
+	walk_stmt(node);
+    }
+
+    void walk_stmt(gp_tree_node *node)
+    {
+	if (is_nil(node)) return;
+	const char *nm = anode_name(node);
+
+	if (strcmp(nm, "decl") == 0) {
+	    walk_decl(node, false);
+	    return;
+	}
+	if (strcmp(nm, "ctor_decl") == 0) {
+	    // ctor_decl(type, name, args) — constructor call declaration
+	    string type_str = type_string(child(node, 0));
+	    string vname = term_text(child(node, 1));
+	    string clean_type = type_str;
+	    if (clean_type.substr(0, 7) == "struct ")
+		clean_type = clean_type.substr(7);
+	    if (!vname.empty()) {
+		if (info.class_names.count(clean_type)) {
+		    info.var_class_map[vname] = clean_type;
+		    info.var_types[vname] = 'i';
+		} else {
+		    info.var_types[vname] = classify_type_str(type_str);
+		}
+	    }
+	    return;
+	}
+	if (strcmp(nm, "block") == 0) {
+	    walk_block(node);
+	    return;
+	}
+	if (strcmp(nm, "if") == 0) {
+	    walk_stmt(child(node, 1));
+	    return;
+	}
+	if (strcmp(nm, "if_else") == 0) {
+	    walk_stmt(child(node, 1));
+	    walk_stmt(child(node, 2));
+	    return;
+	}
+	if (strcmp(nm, "while") == 0) {
+	    walk_stmt(child(node, 1));
+	    return;
+	}
+	if (strcmp(nm, "do_while") == 0) {
+	    walk_stmt(child(node, 0));
+	    return;
+	}
+	if (strcmp(nm, "for") == 0) {
+	    walk_stmt(child(node, 0));  // init may declare vars
+	    walk_stmt(child(node, 3));  // body
+	    return;
+	}
+	if (strcmp(nm, "for_decl") == 0) {
+	    walk_decl(child(node, 0), false);  // declaration in for-init
+	    walk_stmt(child(node, 3));  // body
+	    return;
+	}
+	if (strcmp(nm, "switch") == 0) {
+	    walk_stmt(child(node, 1));
+	    return;
+	}
+	if (strcmp(nm, "try") == 0) {
+	    walk_stmt(child(node, 0));
+	    walk_stmt(child(node, 1));
+	    return;
+	}
+	if (strcmp(nm, "catch") == 0) {
+	    // catch(type, declarator, body)
+	    string type_str = type_string(child(node, 0));
+	    gp_tree_node *decl = child(node, 1);
+	    string vname = extract_name(decl);
+	    if (!vname.empty())
+		info.var_types[vname] = classify_type_str(type_str);
+	    walk_stmt(child(node, 2));
+	    return;
+	}
+	if (strcmp(nm, "catch_all") == 0) {
+	    walk_stmt(child(node, 0));
+	    return;
+	}
+	if (strcmp(nm, "catch_list") == 0) {
+	    walk_stmt(child(node, 0));
+	    walk_stmt(child(node, 1));
+	    return;
+	}
+	if (strcmp(nm, "stmt_list") == 0) {
+	    walk_stmt_list(node);
+	    return;
+	}
+	if (strcmp(nm, "label") == 0) {
+	    walk_stmt(child(node, 1));
+	    return;
+	}
+	if (strcmp(nm, "case") == 0) {
+	    walk_stmt(child(node, 1));
+	    return;
+	}
+	if (strcmp(nm, "case_range") == 0) {
+	    walk_stmt(child(node, 2));
+	    return;
+	}
+	if (strcmp(nm, "default") == 0) {
+	    walk_stmt(child(node, 0));
+	    return;
+	}
+    }
+
+    // ---------------------------------------------------------------
+    // Top-level dispatch
+    // ---------------------------------------------------------------
+
+    void walk(gp_tree_node *node)
+    {
+	if (!node) return;
+
+	// Handle GLR alternatives — use first
+	if (node->type == GP_ALT) {
+	    walk(node->val.alt.first);
+	    return;
+	}
+	if (node->type == GP_OPT) {
+	    walk(node->val.opt.first);
+	    return;
+	}
+	if (is_nil(node)) return;
+	if (node->type == GP_TERM) return;
+
+	const char *nm = anode_name(node);
+
+	// Translation unit — walk children
+	if (strcmp(nm, "tu") == 0) {
+	    for (int i = 0; i < nchildren(node); ++i)
+		walk(child(node, i));
+	    return;
 	}
 
-	// ---------------------------------------------------------------
-	// Typedef
-	// ---------------------------------------------------------------
-
-	void walk_typedef(gp_tree_node *node)
-	{
-		// typedef: [1]=type, [2]=alias
-		DataDef *base = resolve_type(child(node, 1));
-		string alias = term_text(child(node, 2));
-
-		if ( alias.empty() )
-		{
-			sema_error("typedef with no alias name", node);
-			return;
-		}
-
-		pgm.datadef_map[alias] = base;
-
-		DBG(cerr << "sema: typedef '" << alias << "' -> " << base->name << endl);
+	if (strcmp(nm, "func_def") == 0) {
+	    walk_func_def(node);
+	    return;
 	}
 
-	// ---------------------------------------------------------------
-	// Class definition (stub)
-	// ---------------------------------------------------------------
-
-	void walk_class_def(gp_tree_node *node)
-	{
-		string name;
-		for ( int i = 0; i < nchildren(node); ++i )
-		{
-			gp_tree_node *c = child(node, i);
-			if ( is_term(c) && term_code(c) == GT_IDENT && name.empty() )
-				name = term_text(c);
-		}
-
-		DBG(cerr << "sema: TODO class_def '" << name << "'" << endl);
-
-		// Create a minimal DataDefCLASS for name resolution
-		DataDefCLASS *cdd = new DataDefCLASS(name, 0, DataType::dtRESERVED);
-		pgm.datadef_map[name] = cdd;
+	if (strcmp(nm, "decl") == 0) {
+	    walk_decl(node, true);
+	    return;
 	}
 
-	// ---------------------------------------------------------------
-	// Variable declarations
-	// ---------------------------------------------------------------
-
-	void walk_decl(gp_tree_node *node)
-	{
-		// decl: [0]=type, [1]=declarator_list
-		DataDef *base_type = resolve_type(child(node, 0));
-		walk_declarator_list(child(node, 1), base_type);
+	if (strcmp(nm, "class_def") == 0 || strcmp(nm, "class_inherit") == 0) {
+	    walk_class_def(node);
+	    return;
 	}
 
-	void walk_declarator_list(gp_tree_node *node, DataDef *type)
-	{
-		if ( is_nil(node) )
-			return;
-
-		// decl_list: [0]=prev_list, [2]=declarator
-		if ( is_anode(node, "decl_list") )
-		{
-			walk_declarator_list(child(node, 0), type);
-			walk_declarator(child(node, 2), type);
-			return;
-		}
-
-		// Single declarator
-		walk_declarator(node, type);
+	if (strcmp(nm, "struct_def") == 0) {
+	    walk_struct_def(node);
+	    return;
 	}
 
-	Variable *walk_declarator(gp_tree_node *node, DataDef *type)
-	{
-		if ( is_nil(node) )
-			return nullptr;
-
-		// init_decl: [0]=name, [1]=initializer
-		if ( is_anode(node, "init_decl") )
-		{
-			string vname = term_text(child(node, 0));
-			if ( vname.empty() )
-				return nullptr;
-
-			Variable *v = new Variable(vname, *type, 1, nullptr, false);
-			v->flags = vfLOCAL;
-			if ( current_scope )
-				current_scope->add(vname, v);
-
-			// Walk initializer for type checking (future)
-			// walk_expr(child(node, 1));
-
-			DBG(cerr << "sema: decl '" << vname << "' : " << type->name << " (init)" << endl);
-			return v;
-		}
-
-		// array_decl: [0]=name, [2]=size_expr
-		if ( is_anode(node, "array_decl") )
-		{
-			string vname = term_text(child(node, 0));
-			if ( vname.empty() )
-				return nullptr;
-
-			Variable *v = new Variable(vname, *type, 1, nullptr, false);
-			v->flags = vfLOCAL | vfFIXEDARRAY;
-
-			// Try to get array size as a constant
-			gp_tree_node *size_node = child(node, 2);
-			if ( is_term(size_node) && term_code(size_node) == GT_INTEGER )
-			{
-				int64_t sz = term_ival(size_node);
-				if ( sz > 0 )
-					v->dims.push_back((uint32_t)sz);
-			}
-
-			if ( current_scope )
-				current_scope->add(vname, v);
-
-			DBG(cerr << "sema: decl '" << vname << "' : " << type->name << "[]" << endl);
-			return v;
-		}
-
-		// Plain IDENT — uninitialized variable
-		if ( is_term(node) && term_code(node) == GT_IDENT )
-		{
-			string vname = term_text(node);
-			if ( vname.empty() )
-				return nullptr;
-
-			Variable *v = new Variable(vname, *type, 1, nullptr, false);
-			v->flags = vfLOCAL;
-			if ( current_scope )
-				current_scope->add(vname, v);
-
-			DBG(cerr << "sema: decl '" << vname << "' : " << type->name << endl);
-			return v;
-		}
-
-		DBG(cerr << "sema: unknown declarator node '" << anode_name(node) << "'" << endl);
-		return nullptr;
+	if (strcmp(nm, "enum_def") == 0) {
+	    walk_enum_def(node);
+	    return;
 	}
 
-	// ---------------------------------------------------------------
-	// Block / statement walking
-	// ---------------------------------------------------------------
-
-	void walk_block(gp_tree_node *node)
-	{
-		if ( is_nil(node) )
-			return;
-
-		if ( is_anode(node, "block") )
-		{
-			push_scope();
-			walk_stmt_list(child(node, 0));
-			pop_scope();
-			return;
-		}
-
-		// Might be a single statement
-		walk_stmt(node);
+	// Pass-through: single child nodes
+	if (node->type == GP_ANODE && nchildren(node) == 1) {
+	    walk(child(node, 0));
+	    return;
 	}
 
-	void walk_stmt_list(gp_tree_node *node)
-	{
-		if ( is_nil(node) )
-			return;
-
-		if ( is_anode(node, "stmt_list") )
-		{
-			walk_stmt_list(child(node, 0));
-			walk_stmt(child(node, 1));
-			return;
-		}
-
-		// Single statement
-		walk_stmt(node);
-	}
-
-	void walk_stmt(gp_tree_node *node)
-	{
-		if ( is_nil(node) )
-			return;
-
-		if ( !node )
-			return;
-
-		const char *nm = anode_name(node);
-
-		// Declarations inside function bodies
-		if ( strcmp(nm, "decl") == 0 )
-		{
-			walk_decl(node);
-			return;
-		}
-
-		// Expression statement
-		if ( strcmp(nm, "expr_stmt") == 0 )
-		{
-			// Walk expression for type checking (future)
-			// For now, just recurse for any nested declarations
-			return;
-		}
-
-		// Control flow statements
-		if ( strcmp(nm, "if") == 0 )
-		{
-			// if: [0]=condition, [1]=then_body
-			walk_stmt(child(node, 1));
-			return;
-		}
-
-		if ( strcmp(nm, "if_else") == 0 )
-		{
-			// if_else: [0]=condition, [1]=then_body, [2]=else_body
-			walk_stmt(child(node, 1));
-			walk_stmt(child(node, 2));
-			return;
-		}
-
-		if ( strcmp(nm, "while") == 0 )
-		{
-			walk_stmt(child(node, 1));
-			return;
-		}
-
-		if ( strcmp(nm, "do_while") == 0 )
-		{
-			walk_stmt(child(node, 0));
-			return;
-		}
-
-		if ( strcmp(nm, "for") == 0 )
-		{
-			// for: [0]=init, [1]=condition, [2]=increment, [3]=body
-			push_scope();
-			walk_stmt(child(node, 0));  // init may declare vars
-			walk_stmt(child(node, 3));  // body
-			pop_scope();
-			return;
-		}
-
-		if ( strcmp(nm, "switch") == 0 )
-		{
-			walk_stmt(child(node, 1));
-			return;
-		}
-
-		if ( strcmp(nm, "block") == 0 )
-		{
-			walk_block(node);
-			return;
-		}
-
-		if ( strcmp(nm, "try") == 0 )
-		{
-			walk_stmt(child(node, 0));  // try body
-			walk_stmt(child(node, 1));  // catch list
-			return;
-		}
-
-		if ( strcmp(nm, "catch") == 0 )
-		{
-			push_scope();
-			// catch: [0]=type, [1]=varname, [2]=body
-			DataDef *ctype = resolve_type(child(node, 0));
-			string vname = term_text(child(node, 1));
-			if ( !vname.empty() )
-			{
-				Variable *v = new Variable(vname, *ctype, 1, nullptr, false);
-				v->flags = vfLOCAL;
-				current_scope->add(vname, v);
-			}
-			walk_stmt(child(node, 2));
-			pop_scope();
-			return;
-		}
-
-		if ( strcmp(nm, "catch_all") == 0 )
-		{
-			walk_stmt(child(node, 0));
-			return;
-		}
-
-		// Leaf statements that need no scope work
-		if ( strcmp(nm, "return") == 0 || strcmp(nm, "return_val") == 0
-		  || strcmp(nm, "return_multi") == 0
-		  || strcmp(nm, "break") == 0 || strcmp(nm, "continue") == 0
-		  || strcmp(nm, "goto") == 0 || strcmp(nm, "label") == 0
-		  || strcmp(nm, "defer") == 0 || strcmp(nm, "delete") == 0
-		  || strcmp(nm, "throw_expr") == 0 )
-		{
-			return;
-		}
-
-		// stmt_list at statement level (e.g., case body)
-		if ( strcmp(nm, "stmt_list") == 0 )
-		{
-			walk_stmt_list(node);
-			return;
-		}
-
-		// Unknown — may be an expression or a node we haven't handled yet
-		DBG(cerr << "sema: unhandled stmt node '" << nm << "'" << endl);
-	}
-
-	// ---------------------------------------------------------------
-	// Expression type inference (basic)
-	// ---------------------------------------------------------------
-
-	DataDef *infer_expr_type(gp_tree_node *node)
-	{
-		if ( !node )
-			return &ddVOID;
-
-		// Terminal literals
-		if ( is_term(node) )
-		{
-			switch ( term_code(node) )
-			{
-			case GT_INTEGER:  return &ddINT32;
-			case GT_REAL:     return &ddDOUBLE;
-			case GT_STRING:   return &ddSTRING;
-			case GT_CHAR_LIT: return &ddCHAR;
-			case GT_IDENT:
-			{
-				string name = term_text(node);
-				// Look up in scope chain
-				if ( current_scope )
-				{
-					Variable *v = current_scope->find(name);
-					if ( v )
-						return v->type;
-				}
-				// Look up in global function map
-				auto it = pgm.funcdef_map.find(name);
-				if ( it != pgm.funcdef_map.end() )
-					return it->second;
-				return &ddINT32;  // unknown identifier defaults to int
-			}
-			default:
-				return &ddVOID;
-			}
-		}
-
-		if ( is_nil(node) )
-			return &ddVOID;
-
-		const char *nm = anode_name(node);
-
-		// Arithmetic binary ops — use C promotion rules (simplified)
-		if ( strcmp(nm, "add") == 0 || strcmp(nm, "sub") == 0
-		  || strcmp(nm, "mul") == 0 || strcmp(nm, "div") == 0
-		  || strcmp(nm, "mod") == 0 )
-		{
-			DataDef *lhs = infer_expr_type(child(node, 0));
-			DataDef *rhs = infer_expr_type(child(node, 1));
-			if ( lhs->is_real() || rhs->is_real() )
-				return &ddDOUBLE;
-			if ( lhs == &ddINT64 || rhs == &ddINT64 )
-				return &ddINT64;
-			return &ddINT32;
-		}
-
-		// Shift and bitwise ops — always integer
-		if ( strcmp(nm, "bsl") == 0 || strcmp(nm, "bsr") == 0
-		  || strcmp(nm, "bitand") == 0 || strcmp(nm, "bitor") == 0
-		  || strcmp(nm, "bitxor") == 0 )
-		{
-			DataDef *lhs = infer_expr_type(child(node, 0));
-			if ( lhs == &ddINT64 )
-				return &ddINT64;
-			return &ddINT32;
-		}
-
-		// Comparison ops — always int (boolean)
-		if ( strcmp(nm, "eq") == 0 || strcmp(nm, "ne") == 0
-		  || strcmp(nm, "lt") == 0 || strcmp(nm, "gt") == 0
-		  || strcmp(nm, "le") == 0 || strcmp(nm, "ge") == 0
-		  || strcmp(nm, "lor") == 0 || strcmp(nm, "land") == 0 )
-		{
-			return &ddINT32;
-		}
-
-		// Unary ops
-		if ( strcmp(nm, "neg") == 0 || strcmp(nm, "bnot") == 0 )
-			return infer_expr_type(child(node, 0));
-
-		if ( strcmp(nm, "lnot") == 0 )
-			return &ddINT32;
-
-		if ( strcmp(nm, "pre_inc") == 0 || strcmp(nm, "pre_dec") == 0
-		  || strcmp(nm, "post_inc") == 0 || strcmp(nm, "post_dec") == 0 )
-			return infer_expr_type(child(node, 0));
-
-		// Deref
-		if ( strcmp(nm, "deref") == 0 )
-		{
-			DataDef *inner = infer_expr_type(child(node, 0));
-			if ( inner->is_pointer() )
-			{
-				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(inner);
-				if ( pdd && pdd->base_type )
-					return pdd->base_type;
-			}
-			return &ddINT32;
-		}
-
-		// Address-of
-		if ( strcmp(nm, "addrof") == 0 )
-		{
-			DataDef *inner = infer_expr_type(child(node, 0));
-			auto it = pgm.ptr_type_cache.find(inner);
-			if ( it != pgm.ptr_type_cache.end() )
-				return it->second;
-			DataDefPTR *pdd = new DataDefPTR(*inner);
-			pgm.ptr_type_cache[inner] = pdd;
-			return pdd;
-		}
-
-		// Assignment — type of LHS
-		if ( strcmp(nm, "assign") == 0 || strcmp(nm, "add_assign") == 0
-		  || strcmp(nm, "sub_assign") == 0 || strcmp(nm, "mul_assign") == 0
-		  || strcmp(nm, "div_assign") == 0 || strcmp(nm, "mod_assign") == 0 )
-			return infer_expr_type(child(node, 0));
-
-		// Cast
-		if ( strcmp(nm, "cast") == 0 )
-			return resolve_type(child(node, 0));
-
-		// Ternary
-		if ( strcmp(nm, "ternary") == 0 )
-			return infer_expr_type(child(node, 1));
-
-		// sizeof — always size_t / uint64
-		if ( strcmp(nm, "sizeof_type") == 0 || strcmp(nm, "sizeof_expr") == 0 )
-			return &ddUINT64;
-
-		// Function call
-		if ( strcmp(nm, "call") == 0 )
-		{
-			DataDef *fn = infer_expr_type(child(node, 0));
-			if ( fn->is_function() )
-				return &((FuncDef *)fn)->returns;
-			return &ddINT32;
-		}
-
-		// Member access
-		if ( strcmp(nm, "member") == 0 || strcmp(nm, "arrow_member") == 0 )
-		{
-			// TODO: resolve struct member type
-			return &ddINT32;
-		}
-
-		// Subscript
-		if ( strcmp(nm, "subscript") == 0 )
-		{
-			DataDef *base = infer_expr_type(child(node, 0));
-			if ( base->is_pointer() )
-			{
-				DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(base);
-				if ( pdd && pdd->base_type )
-					return pdd->base_type;
-			}
-			return &ddINT32;
-		}
-
-		// Paren — transparent
-		if ( strcmp(nm, "paren") == 0 )
-			return infer_expr_type(child(node, 0));
-
-		// Comma — type of right operand
-		if ( strcmp(nm, "comma") == 0 )
-			return infer_expr_type(child(node, 1));
-
-		// String literal
-		if ( strcmp(nm, "compound_lit") == 0 )
-			return resolve_type(child(node, 0));
-
-		// new
-		if ( strcmp(nm, "new_ctor") == 0 || strcmp(nm, "new_plain") == 0 )
-		{
-			string tname = term_text(child(node, 0));
-			auto it = pgm.datadef_map.find(tname);
-			if ( it != pgm.datadef_map.end() )
-			{
-				DataDef *base = it->second;
-				auto pit = pgm.ptr_type_cache.find(base);
-				if ( pit != pgm.ptr_type_cache.end() )
-					return pit->second;
-				DataDefPTR *pdd = new DataDefPTR(*base);
-				pgm.ptr_type_cache[base] = pdd;
-				return pdd;
-			}
-			return &ddVOIDptr;
-		}
-
-		return &ddVOID;
-	}
-
-	// ---------------------------------------------------------------
-	// Top-level dispatch
-	// ---------------------------------------------------------------
-
-	void walk(gp_tree_node *node)
-	{
-		if ( !node )
-			return;
-
-		// Handle alternative nodes (GLR ambiguities)
-		if ( node->type == GP_ALT )
-		{
-			// Use the first alternative
-			walk(node->val.alt.first);
-			return;
-		}
-
-		if ( node->type == GP_OPT )
-		{
-			walk(node->val.opt.first);
-			return;
-		}
-
-		// NIL — nothing to do
-		if ( is_nil(node) )
-			return;
-
-		// Terminal at top level — skip
-		if ( is_term(node) )
-			return;
-
-		const char *nm = anode_name(node);
-
-		// Translation unit — walk all children
-		if ( strcmp(nm, "tu") == 0 )
-		{
-			walk_tu(node);
-			return;
-		}
-
-		if ( strcmp(nm, "func_def") == 0 )
-		{
-			walk_func_def(node);
-			return;
-		}
-
-		if ( strcmp(nm, "func_proto") == 0 )
-		{
-			walk_func_proto(node);
-			return;
-		}
-
-		if ( strcmp(nm, "struct_def") == 0 )
-		{
-			walk_struct_def(node);
-			return;
-		}
-
-		if ( strcmp(nm, "class_def") == 0 || strcmp(nm, "class_inherit") == 0 )
-		{
-			walk_class_def(node);
-			return;
-		}
-
-		if ( strcmp(nm, "enum_def") == 0 )
-		{
-			walk_enum_def(node);
-			return;
-		}
-
-		if ( strcmp(nm, "typedef") == 0 )
-		{
-			walk_typedef(node);
-			return;
-		}
-
-		if ( strcmp(nm, "decl") == 0 )
-		{
-			walk_decl(node);
-			return;
-		}
-
-		if ( strcmp(nm, "using_ns") == 0 )
-		{
-			string ns = term_text(child(node, 2));
-			DBG(cerr << "sema: using namespace '" << ns << "'" << endl);
-			return;
-		}
-
-		// Statement-level nodes at top level (e.g., expression statements)
-		if ( strcmp(nm, "expr_stmt") == 0 || strcmp(nm, "stmt_list") == 0 )
-		{
-			walk_stmt(node);
-			return;
-		}
-
-		DBG(cerr << "sema: unhandled top-level node '" << nm << "'" << endl);
-	}
-
-	void walk_tu(gp_tree_node *node)
-	{
-		if ( is_nil(node) )
-			return;
-
-		if ( is_anode(node, "tu") )
-		{
-			for ( int i = 0; i < nchildren(node); ++i )
-				walk(child(node, i));
-			return;
-		}
-
-		// Single top-level item
-		walk(node);
-	}
+	// Skip: using_ns, namespace_def, etc.
+    }
 
 public:
-	SemaWalker(Program &p)
-		: pgm(p), current_scope(nullptr), errors(0)
-	{}
+    SemaCollector(SemaInfo &si) : info(si) {}
 
-	~SemaWalker()
-	{
-		// Clean up any remaining scopes (shouldn't happen on success)
-		while ( current_scope )
-			pop_scope();
-	}
-
-	bool analyze(gp_tree_node *root)
-	{
-		errors = 0;
-
-		// Create the global scope
-		push_scope();
-
-		// Walk the AST
-		walk(root);
-
-		// Pop global scope
-		pop_scope();
-
-		return errors == 0;
-	}
+    void collect(gp_tree_node *root)
+    {
+	walk(root);
+    }
 };
 
 // -----------------------------------------------------------------------
 // Public API
 // -----------------------------------------------------------------------
 
-bool madc_sema_analyze(Program &pgm, gp_tree_node *root)
+SemaInfo *madc_sema_collect(gp_tree_node *root)
 {
-	if ( !root )
-	{
-		pgm.add_diagnostic(Program::DiagnosticSeverity::error,
-				   Program::DiagnosticPhase::parser,
-				   "sema: NULL AST root", nullptr, 0, 0);
-		return false;
-	}
+    if (!root) return nullptr;
 
-	SemaWalker walker(pgm);
-	return walker.analyze(root);
+    SemaInfo *info = new SemaInfo();
+    SemaCollector collector(*info);
+    collector.collect(root);
+    return info;
+}
+
+void madc_sema_free(SemaInfo *info)
+{
+    delete info;
 }

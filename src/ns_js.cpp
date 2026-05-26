@@ -237,3 +237,13 @@ void Program::add_js_namespace()
 
 	DBG(std::cout << "add_js_namespace() registered js:: with " << js_ns.size() << " members" << std::endl);
 }
+
+extern "C" {
+// Thin C-linkage wrappers for transpiler import resolution
+void *__js_btoa(void *a, void *b) { return js_btoa(a, b); }
+void *__js_atob(void *a, void *b) { return js_atob(a, b); }
+void *__js_encodeURIComponent(void *a, void *b) { return js_encodeURIComponent(a, b); }
+void *__js_decodeURIComponent(void *a, void *b) { return js_decodeURIComponent(a, b); }
+int64_t __js_parseInt(void *a, int64_t b) { return js_parseInt(a, b); }
+void *__js_stringify(void *a, void *b) { return js_stringify(a, b); }
+}

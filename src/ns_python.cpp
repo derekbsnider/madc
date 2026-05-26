@@ -278,3 +278,22 @@ void Program::add_python_namespace()
 
 	DBG(std::cout << "add_python_namespace() registered python:: with " << py_ns.size() << " members" << std::endl);
 }
+
+extern "C" {
+// Thin C-linkage wrappers for transpiler import resolution
+void *__py_title(void *a) { return python_title(a); }
+void *__py_swapcase(void *a) { return python_swapcase(a); }
+void *__py_center(void *a, int64_t b, void *c) { return python_center(a, b, c); }
+void *__py_ljust(void *a, int64_t b, void *c) { return python_ljust(a, b, c); }
+void *__py_rjust(void *a, int64_t b, void *c) { return python_rjust(a, b, c); }
+void *__py_zfill(void *a, int64_t b) { return python_zfill(a, b); }
+int64_t __py_count(void *a, void *b) { return python_count(a, b); }
+int64_t __py_startswith(void *a, void *b) { return python_startswith(a, b); }
+int64_t __py_endswith(void *a, void *b) { return python_endswith(a, b); }
+int64_t __py_isdigit(void *a) { return python_isdigit(a); }
+int64_t __py_isalpha(void *a) { return python_isalpha(a); }
+int64_t __py_isalnum(void *a) { return python_isalnum(a); }
+int64_t __py_isspace(void *a) { return python_isspace(a); }
+void *__py_replace(void *a, void *b, void *c) { return python_replace(a, b, c); }
+void *__py_format(void *a, void *b, void *c) { return python_format(a, b, c); }
+}

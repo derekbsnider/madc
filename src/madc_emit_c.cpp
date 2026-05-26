@@ -33,6 +33,8 @@ extern "C" {
 #include "gecko.h"
 }
 
+#include "madc_sema.h"
+
 // -----------------------------------------------------------------------
 // Helpers for accessing Gecko AST nodes
 // -----------------------------------------------------------------------
@@ -117,14 +119,61 @@ class CEmitter
     int indent_level;
     int tmp_counter;
 
-    // Simple type tracking for cout format inference
-    // 'c' = char, 's' = string/char*, 'd' = double/float, 'i' = int (default)
-    std::map<std::string, char> var_types;
-    std::map<std::string, char> func_ret_types;  // function return types
-    std::map<std::string, std::string> var_class_map;  // var name → class name
-    std::set<std::string> classes_with_ctor;  // classes that have constructors
-    std::set<std::string> classes_with_dtor;  // classes that have destructors
-    std::vector<std::string> scope_class_vars; // class vars in current scope (for dtor)
+    // Semantic pre-pass data (populated before emission)
+    SemaInfo *sema;
+
+    // Namespace function names collected during emission (for extern decls)
+    std::set<std::string> ns_funcs_used;
+
+    // Per-function local variable type overlay (cleared each function)
+    // Augments sema->var_types with function-local declarations
+    std::map<std::string, char> local_var_types;
+
+    // Per-function local class var map overlay
+    std::map<std::string, std::string> local_var_class_map;
+
+    // Class vars in current scope needing destructor injection (LIFO)
+    std::vector<std::string> scope_class_vars;
+
+    // Look up variable type: local overlay first, then sema
+    char lookup_var_type(const std::string &name) {
+	auto it = local_var_types.find(name);
+	if (it != local_var_types.end()) return it->second;
+	if (sema) return sema->get_var_type(name);
+	return 'i';
+    }
+
+    // Look up function return type: sema first
+    char lookup_func_ret_type(const std::string &name) {
+	if (sema) return sema->get_func_ret_type(name);
+	return 'i';
+    }
+
+    // Check if a name is a known class
+    bool is_known_class(const std::string &name) {
+	if (sema) return sema->is_class(name);
+	return false;
+    }
+
+    // Check if class has constructor
+    bool class_has_ctor(const std::string &name) {
+	if (sema) return sema->classes_with_ctor.count(name) > 0;
+	return false;
+    }
+
+    // Check if class has destructor
+    bool class_has_dtor(const std::string &name) {
+	if (sema) return sema->classes_with_dtor.count(name) > 0;
+	return false;
+    }
+
+    // Get class info for a variable
+    std::string lookup_var_class(const std::string &name) {
+	auto it = local_var_class_map.find(name);
+	if (it != local_var_class_map.end()) return it->second;
+	if (sema) return sema->get_var_class(name);
+	return "";
+    }
 
     void O(const char *fmt, ...)
     {
@@ -181,6 +230,14 @@ class CEmitter
 	return out;
     }
 
+    // Map namespace names to their registered prefix abbreviation
+    static std::string ns_prefix(const std::string &ns)
+    {
+	if (ns == "python" || ns == "py") return "py";
+	if (ns == "ruby"   || ns == "rb") return "rb";
+	return ns;  // php, perl, js, rust use their full name
+    }
+
     static std::string map_builtin(const std::string &name)
     {
 	if (name == "puti")     return "madc_puti";
@@ -233,9 +290,20 @@ class CEmitter
 	    case 324: return "uint16_t";
 	    case 325: return "uint32_t";
 	    case 326: return "uint64_t";
+	    // Stream types → opaque pointers (typedef'd in preamble)
+	    case 340: return "ifstream";
+	    case 341: return "ofstream";
+	    case 342: return "fstream";
+	    case 343: return "stringstream";
+	    case 344: return "ostream";
+	    // Container types → opaque pointers
+	    case 330: return "void *";  // vector
+	    case 331: return "void *";  // map
+	    case 332: return "void *";  // set
+	    case 333: return "void *";  // list
 	    case GT_IDENT: {
 		std::string t = term_text(node);
-		if (class_names.count(t))
+		if (is_known_class(t))
 		    return "struct " + t;
 		return t;
 	    }
@@ -573,10 +641,9 @@ class CEmitter
 		} else if (code == GT_CHAR_LIT) {
 		    result += "putchar(" + emit_expr(v) + ")";
 		} else {
-		    // Identifier — use tracked type info if available
+		    // Identifier — use sema + local type info
 		    std::string id = term_text(v);
-		    auto it = var_types.find(id);
-		    char tc = (it != var_types.end()) ? it->second : 'i';
+		    char tc = lookup_var_type(id);
 		    if (tc == 's')
 			result += "printf(\"%s\", " + id + ")";
 		    else if (tc == 'c')
@@ -592,10 +659,9 @@ class CEmitter
 		if (!e.empty() && e[0] == '"')
 		    result += "printf(\"%s\", " + e + ")";
 		else if (is_anode(v, "call")) {
-		    // Check function return type
+		    // Check function return type via sema
 		    std::string fn = extract_name(child(v, 0));
-		    auto fit = func_ret_types.find(fn);
-		    char ftc = (fit != func_ret_types.end()) ? fit->second : 'i';
+		    char ftc = lookup_func_ret_type(fn);
 		    if (ftc == 's')
 			result += "printf(\"%s\", " + e + ")";
 		    else if (ftc == 'c')
@@ -638,7 +704,7 @@ class CEmitter
 		// Inside class methods: unqualified members → __this->member
 		if (!current_class.empty() &&
 		    current_class_fields.count(id) &&
-		    !var_types.count(id))  // don't transform local vars
+		    !local_var_types.count(id))  // don't transform local vars
 		    return "__this->" + id;
 		return id;
 	    }
@@ -756,11 +822,8 @@ class CEmitter
 
 		// Check if obj is a known class instance → mangled method call
 		std::string obj_name = term_text(child(callee, 0));
-		auto vit = var_types.find(obj_name);
-		// 'C' = class type, tracked with class name in var_class_map
-		auto cit = var_class_map.find(obj_name);
-		if (cit != var_class_map.end()) {
-		    std::string cls = cit->second;
+		std::string cls = lookup_var_class(obj_name);
+		if (!cls.empty()) {
 		    std::string mangled = cls + "__" + method;
 		    std::string addr = is_arrow ? obj : ("&" + obj);
 		    if (args.empty())
@@ -793,12 +856,16 @@ class CEmitter
 	    std::string ns = term_text(child(node, 0));
 	    std::string func = term_text(child(node, 1));
 	    std::string args = emit_arg_list(child(node, 2));
-	    return "__" + ns + "_" + func + "(" + args + ")";
+	    std::string mangled = "__" + ns_prefix(ns) + "_" + func;
+	    ns_funcs_used.insert(mangled);
+	    return mangled + "(" + args + ")";
 	}
 	if (strcmp(name, "ns_name") == 0) {
 	    std::string ns = term_text(child(node, 0));
 	    std::string func = term_text(child(node, 1));
-	    return "__" + ns + "_" + func;
+	    std::string mangled = "__" + ns_prefix(ns) + "_" + func;
+	    ns_funcs_used.insert(mangled);
+	    return mangled;
 	}
 
 	// Cast: (type)expr
@@ -975,9 +1042,9 @@ class CEmitter
 	      vname.c_str(), args.c_str());
 
 	    // Track type
-	    if (class_names.count(clean_type))
-		var_class_map[vname] = clean_type;
-	    if (classes_with_dtor.count(clean_type))
+	    if (is_known_class(clean_type))
+		local_var_class_map[vname] = clean_type;
+	    if (class_has_dtor(clean_type))
 		scope_class_vars.push_back(vname + "|" + clean_type);
 	    return;
 	}
@@ -1203,19 +1270,17 @@ class CEmitter
 	std::string vname = extract_name(decls);
 	if (!vname.empty()) {
 	    // Check if this is a class type
-	    // The type string might be just the class name (parsed as typedef_name)
 	    std::string clean_type = type;
-	    // Strip "struct " prefix if present
 	    if (clean_type.substr(0, 7) == "struct ")
 		clean_type = clean_type.substr(7);
-	    if (class_names.count(clean_type)) {
-		var_class_map[vname] = clean_type;
-		var_types[vname] = 'i';  // class objects print as int
+	    if (is_known_class(clean_type)) {
+		local_var_class_map[vname] = clean_type;
+		local_var_types[vname] = 'i';  // class objects print as int
 	    } else {
 		bool has_ptr = is_anode(decls, "ptr_decl");
 		char tc = classify_type(type);
 		if (has_ptr && tc == 'c') tc = 's';  // char * → string
-		var_types[vname] = tc;
+		local_var_types[vname] = tc;
 	    }
 	}
 	// Handle decl_list / init_decl
@@ -1264,7 +1329,7 @@ class CEmitter
 	if (clean_type.substr(0, 7) == "struct ")
 	    clean_type = clean_type.substr(7);
 
-	if (is_anode(decls, "func_decl") && class_names.count(clean_type)) {
+	if (is_anode(decls, "func_decl") && is_known_class(clean_type)) {
 	    // This is a constructor call, not a function declaration
 	    std::string vname = extract_name(child(decls, 0));
 	    std::string args = emit_arg_list(child(decls, 1));
@@ -1277,8 +1342,8 @@ class CEmitter
 	    else
 		O("%s__%s(&%s, %s);\n", clean_type.c_str(), clean_type.c_str(),
 		  vname.c_str(), args.c_str());
-	    var_class_map[vname] = clean_type;
-	    if (classes_with_dtor.count(clean_type))
+	    local_var_class_map[vname] = clean_type;
+	    if (class_has_dtor(clean_type))
 		scope_class_vars.push_back(vname + "|" + clean_type);
 	    return;
 	}
@@ -1288,11 +1353,11 @@ class CEmitter
 
 	// Inject constructor call for class variables (no-args ctor)
 	std::string vname = extract_name(decls);
-	if (!vname.empty() && classes_with_ctor.count(clean_type)) {
+	if (!vname.empty() && class_has_ctor(clean_type)) {
 	    emit_indent();
 	    O("%s__%s(&%s);\n", clean_type.c_str(), clean_type.c_str(),
 	      vname.c_str());
-	    if (classes_with_dtor.count(clean_type))
+	    if (class_has_dtor(clean_type))
 		scope_class_vars.push_back(vname + "|" + clean_type);
 	}
     }
@@ -1359,8 +1424,8 @@ class CEmitter
     void emit_func_def(gp_tree_node *node)
     {
 	// func_def(declaration_specifiers, declarator, compound_statement)
-	var_types.clear();  // fresh scope for each function
-	var_class_map.clear();
+	local_var_types.clear();  // fresh scope for each function
+	local_var_class_map.clear();
 	scope_class_vars.clear();
 	std::string ret_type = emit_type(child(node, 0));
 	gp_tree_node *decl = child(node, 1);
@@ -1395,10 +1460,6 @@ class CEmitter
 	std::string full_ret = ret_type;
 	if (!ptr_str.empty())
 	    full_ret += " " + ptr_str;
-
-	// Track return type for cout format inference
-	if (!func_name.empty())
-	    func_ret_types[func_name] = classify_type(full_ret);
 
 	// Forward declaration in header
 	OH("%s %s(%s);\n", full_ret.c_str(), func_name.c_str(),
@@ -1499,9 +1560,6 @@ class CEmitter
     // int Counter__get(struct Counter *__this) { return __this->count; }
     // ---------------------------------------------------------------
 
-    // Set of known class names (for var type → struct mapping)
-    std::set<std::string> class_names;
-
     // Current class being emitted (for member access → __this->member)
     std::string current_class;
     std::set<std::string> current_class_fields;
@@ -1523,11 +1581,17 @@ class CEmitter
 	}
 
 	if (class_name.empty()) return;
-	class_names.insert(class_name);
 
 	// Collect field names for member→__this->member transformation
+	// Use sema info if available, otherwise collect from AST
 	current_class_fields.clear();
-	collect_class_fields(body_node);
+	if (sema) {
+	    const SemaClassInfo *ci = sema->get_class(class_name);
+	    if (ci)
+		current_class_fields = ci->fields;
+	}
+	if (current_class_fields.empty())
+	    collect_class_fields(body_node);
 
 	// First pass: emit the struct with fields only
 	OH("struct %s {\n", class_name.c_str());
@@ -1626,11 +1690,9 @@ class CEmitter
 	    OH("%s %s(%s);\n", ret_type.c_str(), mangled.c_str(),
 	       full_params.c_str());
 
-	    // Track return type
-	    func_ret_types[mangled] = classify_type(ret_type);
-
 	    // Function body
-	    var_types.clear();
+	    local_var_types.clear();
+	    local_var_class_map.clear();
 	    O("%s %s(%s)\n", ret_type.c_str(), mangled.c_str(),
 	      full_params.c_str());
 	    indent_level = 0;
@@ -1643,7 +1705,6 @@ class CEmitter
 
 	// ctor(name, params, body)
 	if (strcmp(name, "ctor") == 0) {
-	    classes_with_ctor.insert(class_name);
 	    std::string prev_class = current_class;
 	    current_class = class_name;
 
@@ -1657,7 +1718,8 @@ class CEmitter
 
 	    OH("void %s(%s);\n", mangled.c_str(), full_params.c_str());
 
-	    var_types.clear();
+	    local_var_types.clear();
+	    local_var_class_map.clear();
 	    O("void %s(%s)\n", mangled.c_str(), full_params.c_str());
 	    indent_level = 0;
 	    emit_stmt(body_node);
@@ -1669,7 +1731,6 @@ class CEmitter
 
 	// dtor(name, body)
 	if (strcmp(name, "dtor") == 0) {
-	    classes_with_dtor.insert(class_name);
 	    std::string prev_class = current_class;
 	    current_class = class_name;
 
@@ -1680,7 +1741,8 @@ class CEmitter
 
 	    OH("void %s(%s);\n", mangled.c_str(), this_param.c_str());
 
-	    var_types.clear();
+	    local_var_types.clear();
+	    local_var_class_map.clear();
 	    O("void %s(%s)\n", mangled.c_str(), this_param.c_str());
 	    indent_level = 0;
 	    emit_stmt(body_node);
@@ -1804,10 +1866,11 @@ class CEmitter
     }
 
 public:
-    CEmitter() : indent_level(0), tmp_counter(0) {}
+    CEmitter() : indent_level(0), tmp_counter(0), sema(nullptr) {}
 
-    std::string emit(gp_tree_node *root)
+    std::string emit(gp_tree_node *root, SemaInfo *sema_info = nullptr)
     {
+	sema = sema_info;
 	header.clear();
 	body.clear();
 
@@ -1863,7 +1926,55 @@ public:
 	header += "static const char *version = \"v0.0.1\";\n";
 	header += "\n";
 
+	// Stream and container type stubs (opaque pointers in C)
+	header += "/* Stream/container type stubs */\n";
+	header += "typedef void *ifstream;\n";
+	header += "typedef void *ofstream;\n";
+	header += "typedef void *fstream;\n";
+	header += "typedef void *stringstream;\n";
+	header += "typedef void *ostream;\n";
+	header += "typedef void *array;\n";  // MadArray
+	header += "\n";
+
+	// Additional builtins commonly needed
+	header += "extern void puti(int64_t);\n";
+	header += "extern void putu(uint64_t);\n";
+	header += "extern void putd(double);\n";
+	header += "extern void putf(float);\n";
+	header += "extern void printstr(const char *);\n";
+	header += "extern int getchar(void);\n";
+	header += "extern int rand(void);\n";
+	header += "extern void srand(unsigned int);\n";
+	header += "extern unsigned long time(void *);\n";
+	header += "extern int isdigit(int);\n";
+	header += "extern int isalpha(int);\n";
+	header += "extern int isalnum(int);\n";
+	header += "extern int isspace(int);\n";
+	header += "extern int toupper(int);\n";
+	header += "extern int tolower(int);\n";
+	header += "extern double sqrt(double);\n";
+	header += "extern double pow(double, double);\n";
+	header += "extern double fabs(double);\n";
+	header += "extern double floor(double);\n";
+	header += "extern double ceil(double);\n";
+	header += "extern double log(double);\n";
+	header += "extern double sin(double);\n";
+	header += "extern double cos(double);\n";
+	header += "\n";
+
+	ns_funcs_used.clear();
 	emit_top_level(root);
+
+	// Emit extern declarations for all namespace functions used
+	if (!ns_funcs_used.empty()) {
+	    std::string ns_decls;
+	    ns_decls += "/* Namespace function externs (resolved via dlsym) */\n";
+	    for (auto &fn : ns_funcs_used)
+		ns_decls += "extern long " + fn + "();\n";
+	    ns_decls += "\n";
+	    // Insert after header, before body
+	    header += ns_decls;
+	}
 
 	return header + "\n" + body;
     }
@@ -1873,8 +1984,8 @@ public:
 // Public API
 // -----------------------------------------------------------------------
 
-std::string madc_emit_c(gp_tree_node *root)
+std::string madc_emit_c(gp_tree_node *root, SemaInfo *sema)
 {
     CEmitter emitter;
-    return emitter.emit(root);
+    return emitter.emit(root, sema);
 }

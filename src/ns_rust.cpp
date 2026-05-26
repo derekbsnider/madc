@@ -238,3 +238,25 @@ void Program::add_rust_namespace()
 
 	DBG(std::cout << "add_rust_namespace() registered rust:: with " << rust_ns.size() << " members" << std::endl);
 }
+
+extern "C" {
+// Thin C-linkage wrappers for transpiler import resolution
+int64_t __rust_contains(void *a, void *b) { return rust_contains(a, b); }
+int64_t __rust_starts_with(void *a, void *b) { return rust_starts_with(a, b); }
+int64_t __rust_ends_with(void *a, void *b) { return rust_ends_with(a, b); }
+void *__rust_trim(void *a) { return rust_trim(a); }
+void *__rust_trim_start(void *a) { return rust_trim_start(a); }
+void *__rust_trim_end(void *a) { return rust_trim_end(a); }
+void *__rust_replace(void *a, void *b, void *c) { return rust_replace(a, b, c); }
+void *__rust_repeat(void *a, int64_t b) { return rust_repeat(a, b); }
+int64_t __rust_len(void *a) { return rust_len(a); }
+int64_t __rust_is_empty(void *a) { return rust_is_empty(a); }
+void *__rust_split(void *a, void *b, void *c) { return rust_split(a, b, c); }
+void *__rust_split_whitespace(void *a, void *b) { return rust_split_whitespace(a, b); }
+void *__rust_join(void *a, void *b, void *c) { return rust_join(a, b, c); }
+void *__rust_first(void *a, void *b) { return rust_first(a, b); }
+void *__rust_last(void *a, void *b) { return rust_last(a, b); }
+void *__rust_get(void *a, void *b, int64_t c) { return rust_get(a, b, c); }
+void *__rust_push(void *a, void *b) { return rust_push(a, b); }
+void *__rust_pop(void *a, void *b) { return rust_pop(a, b); }
+}

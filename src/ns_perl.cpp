@@ -378,3 +378,27 @@ void Program::add_perl_namespace()
 
 	DBG(std::cout << "add_perl_namespace() registered perl:: with " << perl_ns.size() << " members" << std::endl);
 }
+
+extern "C" {
+// Thin C-linkage wrappers for transpiler import resolution
+int64_t __perl_chop(void *a) { return perl_chop(a); }
+int64_t __perl_chomp(void *a) { return perl_chomp(a); }
+void *__perl_grep(void *a, void *b, void *c) { return perl_grep(a, b, c); }
+void *__perl_glob(void *a, void *b) { return perl_glob(a, b); }
+int64_t __perl_scalar(void *a) { return perl_scalar(a); }
+void *__perl_push(void *a, void *b) { return perl_push(a, b); }
+void *__perl_pop(void *a, void *b) { return perl_pop(a, b); }
+void *__perl_shift(void *a, void *b) { return perl_shift(a, b); }
+void *__perl_unshift(void *a, void *b) { return perl_unshift(a, b); }
+void *__perl_join(void *a, void *b, void *c) { return perl_join(a, b, c); }
+void *__perl_split(void *a, void *b, void *c) { return perl_split(a, b, c); }
+void *__perl_reverse(void *a) { return perl_reverse(a); }
+void *__perl_lc(void *a) { return perl_lc(a); }
+void *__perl_uc(void *a) { return perl_uc(a); }
+void *__perl_ucfirst(void *a) { return perl_ucfirst(a); }
+void *__perl_lcfirst(void *a) { return perl_lcfirst(a); }
+int64_t __perl_index(void *a, void *b) { return perl_index(a, b); }
+int64_t __perl_rindex(void *a, void *b) { return perl_rindex(a, b); }
+int64_t __perl_length(void *a) { return perl_length(a); }
+void *__perl_substr(void *a, void *b, int64_t c, int64_t d) { return perl_substr(a, b, c, d); }
+}

@@ -634,3 +634,43 @@ void Program::add_php_namespace()
 
 	DBG(std::cout << "add_php_namespace() registered php:: with " << php_ns.size() << " members" << std::endl);
 }
+
+extern "C" {
+// Thin C-linkage wrappers for transpiler import resolution
+void *__php_trim(void *a) { return php_trim(a); }
+void *__php_ltrim(void *a) { return php_ltrim(a); }
+void *__php_rtrim(void *a) { return php_rtrim(a); }
+void *__php_ucfirst(void *a) { return php_ucfirst(a); }
+void *__php_lcfirst(void *a) { return php_lcfirst(a); }
+void *__php_str_repeat(void *a, int64_t b) { return php_str_repeat(a, b); }
+void *__php_str_replace(void *a, void *b, void *c) { return php_str_replace(a, b, c); }
+void *__php_str_pad(void *a, int64_t b, void *c) { return php_str_pad(a, b, c); }
+int64_t __php_str_word_count(void *a) { return php_str_word_count(a); }
+void *__php_nl2br(void *a) { return php_nl2br(a); }
+void *__php_str_rot13(void *a) { return php_str_rot13(a); }
+void *__php_chunk_split(void *a, int64_t b, void *c) { return php_chunk_split(a, b, c); }
+void *__php_number_format(void *a, int64_t b, void *c) { return php_number_format(a, b, c); }
+void *__php_wordwrap(void *a, int64_t b, void *c) { return php_wordwrap(a, b, c); }
+void *__php_explode(void *a, void *b, void *c) { return php_explode(a, b, c); }
+void *__php_implode(void *a, void *b, void *c) { return php_implode(a, b, c); }
+int64_t __php_count(void *a) { return php_count(a); }
+void *__php_array_push(void *a, void *b) { return php_array_push_str(a, b); }
+void *__php_array_push_int(void *a, int64_t b) { return php_array_push_int(a, b); }
+void *__php_array_push_array(void *a, void *b) { return php_array_push_array(a, b); }
+void *__php_array_pop(void *a, void *b) { return php_array_pop(a, b); }
+void *__php_array_get(void *a, void *b, int64_t c) { return php_array_get(a, b, c); }
+int64_t __php_array_get_int(void *a, int64_t b) { return php_array_get_int(a, b); }
+void *__php_array_reverse(void *a) { return php_array_reverse(a); }
+int64_t __php_in_array(void *a, void *b) { return php_in_array(a, b); }
+int64_t __php_array_search(void *a, void *b) { return php_array_search(a, b); }
+void *__php_array_unique(void *a) { return php_array_unique(a); }
+void *__php_array_shift(void *a, void *b) { return php_array_shift(a, b); }
+void *__php_array_unshift(void *a, void *b) { return php_array_unshift(a, b); }
+void *__php_sort(void *a) { return php_sort(a); }
+void *__php_rsort(void *a) { return php_rsort(a); }
+void *__php_array_slice(void *a, void *b, int64_t c, int64_t d) { return php_array_slice(a, b, c, d); }
+void *__php_array_merge(void *a, void *b) { return php_array_merge(a, b); }
+void *__php_array_column(void *a, void *b, int64_t c) { return php_array_column(a, b, c); }
+// Aliases
+void *__php_chop(void *a) { return php_rtrim(a); }  // chop = rtrim in PHP
+}

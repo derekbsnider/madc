@@ -243,3 +243,19 @@ void Program::add_ruby_namespace()
 
 	DBG(std::cout << "add_ruby_namespace() registered ruby:: with " << rb_ns.size() << " members" << std::endl);
 }
+
+extern "C" {
+// Thin C-linkage wrappers for transpiler import resolution
+void *__rb_squeeze(void *a) { return ruby_squeeze(a); }
+void *__rb_tr(void *a, void *b, void *c) { return ruby_tr(a, b, c); }
+void *__rb_chars(void *a, void *b) { return ruby_chars(a, b); }
+void *__rb_capitalize(void *a) { return ruby_capitalize(a); }
+void *__rb_delete(void *a, void *b) { return ruby_delete_chars(a, b); }
+int64_t __rb_count(void *a, void *b) { return ruby_count(a, b); }
+int64_t __rb_include(void *a, void *b) { return ruby_include(a, b); }
+void *__rb_gsub(void *a, void *b, void *c) { return ruby_gsub(a, b, c); }
+void *__rb_sub(void *a, void *b, void *c) { return ruby_sub(a, b, c); }
+void *__rb_rotate(void *a, int64_t b) { return ruby_rotate(a, b); }
+void *__rb_compact(void *a) { return ruby_compact(a); }
+void *__rb_flatten(void *a, void *b) { return ruby_flatten(a, b); }
+}

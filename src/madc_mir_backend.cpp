@@ -3,9 +3,8 @@
 // Feeds generated C11 text to c2mir → MIR → machine code, then
 // executes the result.
 //
-// Import resolution is trivially dlsym — all runtime helpers live
-// in libmadc.so and are resolved at link time.  No hard-coded
-// import tables.
+// Import resolution uses dlsym — all runtime helpers are either
+// C-linkage builtins or extern "C" namespace wrappers.
 
 #include <cstdio>
 #include <cstdlib>
@@ -54,8 +53,8 @@ void madc_printstr(const char *s) { if (s) std::cout << s << std::endl; }
 } // extern "C"
 
 // -----------------------------------------------------------------------
-// Import resolver — all runtime helpers live in libmadc.so or libc.
-// dlsym(RTLD_DEFAULT) finds them.
+// Import resolver — dlsym finds C-linkage symbols directly.
+// Namespace functions have extern "C" wrappers in ns_*.cpp.
 // -----------------------------------------------------------------------
 
 static void *madc_import_resolver(const char *name)
