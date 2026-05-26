@@ -1585,6 +1585,17 @@ class CEmitter
 
 	// Return — inject destructor calls before returning
 	if (an == AN_RETURN_VAL) {
+	    bool need_dtors = !scope_class_vars.empty() ||
+			     (emitting_main && !global_strings.empty());
+	    // When there are dtor calls to emit, wrap the whole block in braces
+	    // so that a bare `if (cond) return expr;` doesn't become an
+	    // unbraced multi-statement sequence where only the first statement
+	    // is guarded by the condition.
+	    if (need_dtors) {
+		emit_indent();
+		O("{\n");
+		indent_level++;
+	    }
 	    // Call destructors in LIFO order
 	    for (int i = (int)scope_class_vars.size() - 1; i >= 0; i--) {
 		size_t sep = scope_class_vars[i].find('|');
@@ -1614,6 +1625,11 @@ class CEmitter
 		O("return;\n");
 	    else
 		O("return %s;\n", emit_expr(val).c_str());
+	    if (need_dtors) {
+		indent_level--;
+		emit_indent();
+		O("}\n");
+	    }
 	    return;
 	}
 	if (an == AN_RETURN_MULTI) {
