@@ -100,6 +100,8 @@ enum GeckoTermCode {
     GT_ALIGNOF    = 305,
     GT_TYPEOF     = 306,
     GT_VA_ARG     = 307,
+    GT_STATIC_ASSERT = 308,
+    GT_COMPLEX    = 309,
 
     // Type keywords
     GT_VOID       = 310,
@@ -235,6 +237,8 @@ static const char *madc_grammar_str =
     "ALIGNOF = 305\n"
     "TYPEOF = 306\n"
     "VA_ARG = 307\n"
+    "STATIC_ASSERT = 308\n"
+    "COMPLEX = 309\n"
 
     // Type keywords
     "VOID = 310\n"
@@ -339,6 +343,7 @@ static const char *madc_grammar_str =
     "                     | class_definition       # 0\n"
     "                     | using_declaration      # 0\n"
     "                     | namespace_definition   # 0\n"
+    "                     | static_assert_decl     # 0\n"
     "                     | ';'                    \n"
     "                     ;\n"
     "\n"
@@ -349,6 +354,14 @@ static const char *madc_grammar_str =
     //   → specs=int, decl=main(int argc, char **argv), body={...}
     "function_definition : declaration_specifiers declarator compound_statement\n"
     "                                              # func_def (0 1 2)\n"
+    "                    | declaration_specifiers declarator kr_declaration_list compound_statement\n"
+    "                                              # kr_func_def (0 1 2 3)\n"
+    "                    ;\n"
+    "\n"
+
+    // K&R parameter declaration list for old-style function definitions
+    "kr_declaration_list : declaration                         # 0\n"
+    "                    | kr_declaration_list declaration     # kr_decl_list (0 1)\n"
     "                    ;\n"
     "\n"
 
@@ -429,6 +442,7 @@ static const char *madc_grammar_str =
     "               | typedef_name               # 0\n"
     "               | TYPEOF '(' expression ')'  # typeof_expr (2)\n"
     "               | TYPEOF '(' type_name ')'   # typeof_type (2)\n"
+    "               | COMPLEX                    # 0\n"
     "               ;\n"
     "\n"
 
@@ -466,6 +480,8 @@ static const char *madc_grammar_str =
     "struct_or_union_specifier"
     "  : struct_or_union identifier_opt '{' struct_declaration_list '}'\n"
     "                                              # struct_def (0 1 3)\n"
+    "  | struct_or_union identifier_opt '{' '}'\n"
+    "                                              # struct_def (0 1)\n"
     "  | struct_or_union IDENT                     # struct_ref (0 1)\n"
     "  ;\n"
     "\n"
@@ -694,6 +710,7 @@ static const char *madc_grammar_str =
     "\n"
 
     "designation : designator_list '='   # 0\n"
+    "            | IDENT ':'             # gnu_field_desig (0)\n"
     "            ;\n"
     "\n"
 
@@ -702,7 +719,8 @@ static const char *madc_grammar_str =
     "                ;\n"
     "\n"
 
-    "designator : '[' constant_expression ']'   # index_desig (1)\n"
+    "designator : '[' constant_expression ']'                          # index_desig (1)\n"
+    "           | '[' constant_expression ELLIPSIS constant_expression ']'  # range_desig (1 3)\n"
     "           | '.' IDENT          # member_desig (1)\n"
     "           ;\n"
     "\n"
@@ -719,6 +737,7 @@ static const char *madc_grammar_str =
     "                   | STRING_LIT   # 0\n"
     "                   | CHAR_LIT     # 0\n"
     "                   | '(' expression ')'  # paren (1)\n"
+    "                   | '(' compound_statement ')'  # stmt_expr (1)\n"
     "                   ;\n"
     "\n"
 
@@ -737,6 +756,7 @@ static const char *madc_grammar_str =
     "  | postfix_expression DEC_OP                           # post_dec (0)\n"
     "  | '(' type_name ')' '{' initializer_list '}'          # compound_lit (1 4)\n"
     "  | '(' type_name ')' '{' initializer_list ',' '}'      # compound_lit (1 4)\n"
+    "  | '(' type_name ')' '{' '}'                            # compound_lit (1)\n"
     "  | IDENT SCOPE IDENT                                   # ns_name (0 2)\n"
     "  | IDENT SCOPE IDENT '(' argument_expression_list_opt ')'\n"
     "                                                        # ns_call (0 2 4)\n"
@@ -771,11 +791,13 @@ static const char *madc_grammar_str =
     "  | SIZEOF unary_expression                     # sizeof_expr (1)\n"
     "  | SIZEOF '(' type_name ')'                    # sizeof_type (2)\n"
     "  | ALIGNOF '(' type_name ')'                   # alignof_type (2)\n"
+    "  | ALIGNOF '(' unary_expression ')'            # alignof_expr (2)\n"
     "  | NEW IDENT                                   # new_plain (1)\n"
     "  | NEW IDENT '(' argument_expression_list_opt ')'\n"
     "                                                # new_ctor (1 3)\n"
     "  | VA_ARG '(' assignment_expression ',' type_name ')'\n"
     "                                                # va_arg (2 4)\n"
+    "  | AND_OP IDENT                                # label_addr (1)\n"
     "  ;\n"
     "\n"
 
@@ -865,6 +887,7 @@ static const char *madc_grammar_str =
     "          | delete_statement      # 0\n"
     "          | defer_statement       # 0\n"
     "          | match_statement       # 0\n"
+    "          | using_declaration     # 0\n"
     "          ;\n"
     "\n"
 
@@ -896,6 +919,7 @@ static const char *madc_grammar_str =
     "block_item : declaration  # 0\n"
     "           | statement    # 0\n"
     "           | ctor_call_decl # 0\n"
+    "           | function_definition # 0\n"
     "           ;\n"
     "\n"
     // Constructor-call declaration: ClassName var(expr, expr, ...);
@@ -1096,7 +1120,21 @@ static const char *madc_grammar_str =
     "using_declaration"
     "  : USING NAMESPACE IDENT ';'   # using_ns (2)\n"
     "  | USING IDENT ';'             # using_decl (1)\n"
-    "  | PREFER IDENT ';'            # prefer (1)\n"
+    "  | PREFER prefer_list ';'      # prefer (1)\n"
+    "  ;\n"
+    "\n"
+
+    "prefer_list"
+    "  : IDENT                       # 0\n"
+    "  | prefer_list ',' IDENT       # prefer_list (0 2)\n"
+    "  ;\n"
+    "\n"
+
+    // C11 _Static_assert / C++11 static_assert — compile-time assertion.
+    // Two forms: with message string and without (C23/C++17).
+    "static_assert_decl"
+    "  : STATIC_ASSERT '(' expression ',' STRING_LIT ')' ';'  # static_assert (2 4)\n"
+    "  | STATIC_ASSERT '(' expression ')' ';'                  # static_assert (2)\n"
     "  ;\n"
     "\n"
 ;
@@ -1138,6 +1176,7 @@ struct grammar *madc_create_gecko_grammar()
     gp_set_anode_code(g, "add_assign", AN_ADD_ASSIGN);
     gp_set_anode_code(g, "addrof", AN_ADDROF);
     gp_set_anode_code(g, "alignof_type", AN_ALIGNOF_TYPE);
+    gp_set_anode_code(g, "alignof_expr", AN_ALIGNOF_EXPR);
     gp_set_anode_code(g, "arg_list", AN_ARG_LIST);
     gp_set_anode_code(g, "array_decl", AN_ARRAY_DECL);
     gp_set_anode_code(g, "arrow_member", AN_ARROW_MEMBER);
@@ -1198,6 +1237,8 @@ struct grammar *madc_create_gecko_grammar()
     gp_set_anode_code(g, "for_range", AN_FOR_RANGE);
     gp_set_anode_code(g, "func_decl", AN_FUNC_DECL);
     gp_set_anode_code(g, "func_def", AN_FUNC_DEF);
+    gp_set_anode_code(g, "kr_func_def", AN_KR_FUNC_DEF);
+    gp_set_anode_code(g, "kr_decl_list", AN_KR_DECL_LIST);
     gp_set_anode_code(g, "funcall_op", AN_FUNCALL_OP);
     gp_set_anode_code(g, "ge", AN_GE);
     gp_set_anode_code(g, "goto", AN_GOTO);
@@ -1250,6 +1291,7 @@ struct grammar *madc_create_gecko_grammar()
     gp_set_anode_code(g, "pre_dec", AN_PRE_DEC);
     gp_set_anode_code(g, "pre_inc", AN_PRE_INC);
     gp_set_anode_code(g, "prefer", AN_PREFER);
+    gp_set_anode_code(g, "prefer_list", AN_PREFER);  // nested prefer list reuses code
     gp_set_anode_code(g, "ptr_decl", AN_PTR_DECL);
     gp_set_anode_code(g, "qual", AN_QUAL);
     gp_set_anode_code(g, "qual_list", AN_QUAL_LIST);
@@ -1261,6 +1303,11 @@ struct grammar *madc_create_gecko_grammar()
     gp_set_anode_code(g, "sizeof_type", AN_SIZEOF_TYPE);
     gp_set_anode_code(g, "star", AN_STAR);
     gp_set_anode_code(g, "stars", AN_STARS);
+    gp_set_anode_code(g, "static_assert", AN_STATIC_ASSERT);
+    gp_set_anode_code(g, "gnu_field_desig", AN_GNU_FIELD_DESIG);
+    gp_set_anode_code(g, "label_addr", AN_LABEL_ADDR);
+    gp_set_anode_code(g, "range_desig", AN_RANGE_DESIG);
+    gp_set_anode_code(g, "stmt_expr", AN_STMT_EXPR);
     gp_set_anode_code(g, "stmt_list", AN_STMT_LIST);
     gp_set_anode_code(g, "struct_body", AN_STRUCT_BODY);
     gp_set_anode_code(g, "struct_def", AN_STRUCT_DEF);
@@ -1324,6 +1371,8 @@ static int ident_to_gecko(const std::string &s)
 	{"alignof", GT_ALIGNOF}, {"_Alignof", GT_ALIGNOF}, {"__alignof__", GT_ALIGNOF},
 	{"typeof", GT_TYPEOF}, {"__typeof__", GT_TYPEOF}, {"__typeof", GT_TYPEOF},
 	{"va_arg", GT_VA_ARG}, {"__builtin_va_arg", GT_VA_ARG},
+	{"_Static_assert", GT_STATIC_ASSERT}, {"static_assert", GT_STATIC_ASSERT},
+	{"_Complex", GT_COMPLEX}, {"__complex__", GT_COMPLEX},
 	// Aliases
 	{"LPSTR", GT_INT},
     };

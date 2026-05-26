@@ -44,8 +44,9 @@ extern int madc_token_to_gecko(TokenBase *tb);
 struct GeckoTokenizer {
     std::deque<TokenBase *> *tokens;
     size_t pos;
+    int prev_code;  // previous non-whitespace token code, for context-sensitive remapping
 
-    GeckoTokenizer(std::deque<TokenBase *> *toks) : tokens(toks), pos(0) {}
+    GeckoTokenizer(std::deque<TokenBase *> *toks) : tokens(toks), pos(0), prev_code(-1) {}
 };
 
 // Gecko read_token callback.  Returns the terminal code for the next
@@ -154,7 +155,60 @@ static int gecko_read_token(void **attr, GeckoTokenizer *state)
 		code = 256;  // remap to GT_IDENT
 	}
 
+	// TRY is a keyword only when starting a try-catch block: `try {`.
+	// When preceded by STRUCT/UNION (struct tag), a type keyword,
+	// '.', or '->', it's an identifier.
+	if (code == 288 /* GT_TRY */) {
+	    int prev = state->prev_code;
+	    int next = -1;
+	    for (size_t i = state->pos; i < state->tokens->size(); i++) {
+		next = madc_token_to_gecko((*state->tokens)[i]);
+		if (next >= 0) break;
+	    }
+	    // After struct/union → struct tag name
+	    bool after_struct = (prev == 273 /* GT_STRUCT */ || prev == 276 /* GT_UNION */);
+	    // After '.', '->' → member access
+	    bool after_member_op = (prev == '.' || prev == 370 /* GT_ARROW */);
+	    // After a type keyword → declaration (int try;)
+	    bool after_type = (prev >= 310 && prev <= 326) ||
+		prev == 285 /* GT_SIGNED */ || prev == 286 /* GT_UNSIGNED */ ||
+		prev == 281 /* GT_CONST */ || prev == 282 /* GT_VOLATILE */;
+	    // try { is a keyword ONLY if not preceded by struct/union
+	    if (after_struct || after_member_op || after_type || next != '{')
+		code = 256;  // remap to GT_IDENT
+	}
+
+	// THROW is a keyword only when starting a throw statement:
+	//   throw;          (rethrow)
+	//   throw expr;     (throw with value)
+	// When preceded by a type keyword, '.', '->', or in a declaration
+	// context, it's an identifier (e.g. `int throw;`, `s.throw`).
+	if (code == 290 /* GT_THROW */) {
+	    int prev = state->prev_code;
+	    // After '.', '->' or a type specifier, it's a member/var name.
+	    bool after_member_op = (prev == '.' || prev == 370 /* GT_ARROW */);
+	    bool after_type = (prev >= 310 && prev <= 326) ||  // type keywords
+		prev == 285 /* GT_SIGNED */ || prev == 286 /* GT_UNSIGNED */ ||
+		prev == 281 /* GT_CONST */ || prev == 282 /* GT_VOLATILE */;
+	    if (after_member_op || after_type)
+		code = 256;  // remap to GT_IDENT
+	}
+
+	// PREFER is a keyword only at statement level: `prefer IDENT`.
+	// When used as a variable name (`prefer = 5`, `prefer()`), remap.
+	if (code == 301 /* GT_PREFER */) {
+	    int next = -1;
+	    for (size_t i = state->pos; i < state->tokens->size(); i++) {
+		next = madc_token_to_gecko((*state->tokens)[i]);
+		if (next >= 0) break;
+	    }
+	    // Keep as keyword only when followed by IDENT (prefer rust, c;)
+	    if (next != 256 /* GT_IDENT */)
+		code = 256;  // remap to GT_IDENT
+	}
+
 	*attr = (void *)tb;
+	state->prev_code = code;
 	return code;
     }
     // EOF

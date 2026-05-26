@@ -168,6 +168,14 @@ enum AnodeCode {
     AN_TYPEOF_EXPR        = 157,
     AN_TYPEOF_TYPE        = 158,
     AN_VA_ARG             = 159,
+    AN_STATIC_ASSERT      = 160,
+    AN_GNU_FIELD_DESIG    = 161,
+    AN_RANGE_DESIG        = 162,
+    AN_STMT_EXPR          = 163,
+    AN_LABEL_ADDR         = 164,
+    AN_ALIGNOF_EXPR       = 165,
+    AN_KR_FUNC_DEF        = 166,
+    AN_KR_DECL_LIST       = 167,
 };
 
 // O(1) anode code lookup — returns AN_NONE for non-anode nodes

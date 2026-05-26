@@ -1,14 +1,16 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-05-25.
+Master plan linking all workstreams. Updated 2026-05-26.
 
 ## Current State
 
-- **Version:** 0.21.0
-- **GCC parity:** 1649/1685 (97.9%)
-- **Integration tests:** 475 passing
+- **Version:** 0.22.0
+- **GCC parity (legacy):** 1649/1685 (97.9%)
+- **Integration tests (legacy):** 475 passing
+- **Transpiler (Gecko+MIR):** 365/475 (76.8%) — Phases 0-6B complete
 - **C++ model:** Ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding, access control, const enforcement
-- **Generic extern class:** One `register_extern_ctor_dtor()` call per libc type — replaces per-type boilerplate
+- **Transpiler features:** Itanium ABI mangler, SJLJ exceptions, MadArray lifecycle, vtable dispatch, lambda emission, VLA→alloca, computed object sizes
+- **Generic extern class:** One `register_extern_ctor_dtor()` call per libc type
 - **SMAUG port:** Startup through serpent combat on native exe
 - **libmadc:** C++ embedding API with eval, security policy, invoke limits
 - **PCH:** Phase 1 infrastructure (.madh format, 38 headers pre-compiled)
@@ -23,7 +25,7 @@ Master plan linking all workstreams. Updated 2026-05-25.
 |-------|------|--------|--------|------|
 | 1.1 | C foundation (GCC parity) | — | **DONE** 97.9% | — |
 | 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | **DONE** (v0.20.1) | [code-cleanup.md](code-cleanup.md) |
-| 1.3 | Typed-register IR + MIR backend — token migration then asmjit→MIR swap | 10-14 wk | **Active** (Stage 0 done) | [typed-register-ir.md](typed-register-ir.md) |
+| 1.3 | Gecko+MIR transpiler — C11 emission, replacing asmjit | ongoing | **Active** (76.8% parity) | [transpiler-backend.md](transpiler-backend.md) |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 
@@ -85,18 +87,82 @@ Master plan linking all workstreams. Updated 2026-05-25.
 
 ---
 
-## Track 5: Data Storage & Federation (madcdat)
+## Track 5: Data Substrate & Storage
 
-*Structured data access from madc scripts.*
+*Three-tier data architecture: core substrate (madcdis) + external
+drivers (madcdat) + language-conventional interfaces.*
+
+### Track 5A: madcdis — Core Data Substrate (`libmadcdis`)
+
+*Typed in-memory data substrate. Ships as optional `libmadcdis.so`.
+Pools, values, interning, datasets, relations, query IR, planner.*
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 5.1 | DataSource / DataSet core | — | **DONE** | [data-storage-federation.md](data-storage-federation.md) |
-| 5.2 | Backend drivers (BDB, GDBM, QDBM, SQLite) | Ongoing | Partial | [data-storage-federation.md](data-storage-federation.md) |
-| 5.3 | Query pushdown & federation | 4-6 wk | Planned | [data-storage-federation.md](data-storage-federation.md) |
-| 5.4 | libmadcdat separate library | 2-3 wk | Planned | [data-storage-federation.md](data-storage-federation.md) |
+| 5A.1 | Library restructure — split madcdis from madcdat | 2-3 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.2 | DataSet/Relation/Query/Schema/Mapper → `include/madcdis/` | 1 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.3 | DataSource moves from libmadc to madcdis | 1 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.4 | Memory pools (arena, slab, size-class, intern) | 3-4 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.5 | Value system — NaN-boxing, refcounting, interning | 3-4 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.6 | Multiplicity dedup for collections | 2 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.7 | Column encoding catalog (dict, RLE, FoR, delta, prefix, GCD) | 4-6 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.8 | mem:// and shm:// pool-backed drivers | 2-3 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.9 | Federated query planner (core, capability-aware) | 4-6 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.10 | GQL as canonical query language + SQL/Cypher lowering | 4-6 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.11 | Derivation relations (keyframe aggregation, retention) | 3-4 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
+| 5A.12 | COW snapshots (fork-based, page-level) | 2-3 wk | Planned | [madcdis-plan.md](madcdis-plan.md) |
 
-**Dependencies:** Independent of other tracks. `--enable-madcdat` gate exists.
+### Track 5B: madcdat — External Storage Drivers (`libmadcdat`)
+
+*Optional companion library. Depends on libmadcdis. External backends.*
+
+| Phase | Work | Effort | Status | Plan |
+|-------|------|--------|--------|------|
+| 5B.1 | Library restructure — libmadcdat depends on libmadcdis | 1-2 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.2 | File-format drivers (CSV/DSV, FLR, VLR, snapshot) | Ongoing | **Partial** (DSV, FLR, VLR exist) | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.3 | Keyed local DB drivers (BDB, GDBM, QDBM) | — | **DONE** | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.4 | SQLite driver | — | **DONE** | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.5 | Network DB drivers (MySQL, PostgreSQL) | 3-4 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.6 | Graph DB drivers (FalkorDB, Neo4j) | 3-4 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.7 | Service drivers (HTTP/REST, MCP, S3) | 4-6 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
+| 5B.8 | Structured text adapters (SMAUG areas, mbox, TOML) | 2-3 wk | Planned | [madcdat-plan.md](madcdat-plan.md) |
+
+### Track 5C: Language-Conventional Interfaces
+
+*Multiple syntactic surfaces over the same data substrate.*
+
+| Phase | Work | Effort | Status | Plan |
+|-------|------|--------|--------|------|
+| 5C.1 | C-native core API (DataSet, Cursor, Query builder) | 2-3 wk | **Partial** | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
+| 5C.2 | C++23 ranges integration (madc::linq::) | 3-4 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
+| 5C.3 | Ruby-style trailing blocks (madc::ruby::) | 2-3 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
+| 5C.4 | Python comprehensions (madc::python::) | 3-4 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
+| 5C.5 | Objective-C brackets (madc::objc::) | 2-3 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
+| 5C.6 | ORM-style records (madc::orm::) | 2-3 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
+| 5C.7 | Native query sub-grammars (sql::, cypher::, gql::) | 4-6 wk | Planned | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
+
+**Library structure:**
+```
+libmadc          (core: compiler, runtime, embedding API)
+  ↑
+libmadcdis       (optional: data substrate — pools, values, datasets, query, planner)
+  ↑
+libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
+```
+
+**Dependencies:**
+- **Track 1.3 (transpiler) must reach full legacy parity before any
+  Track 5 work begins.** The data substrate needs a stable compiler
+  foundation — templates, full C++ class support, and AOT output must
+  work before DataSet<T>/Cursor<T>/Relation<A,B> can compile through
+  the MIR pipeline.
+- 5A.1-5A.3 (restructure) first — moves existing code to new library boundary
+- 5B.1 follows 5A.1 — madcdat depends on madcdis
+- 5A.4-5A.5 (pools, values) before 5A.7-5A.12 (column encoding, COW, derivation)
+- 5C.1-5C.2 (library-only surfaces) independent of compiler work
+- 5C.3-5C.7 (compiler-integrated surfaces) require Track 9 (multi-syntax) or Gecko grammar extensions
+
+**Research:** [madcdis-memory-research.md](madcdis-memory-research.md) — design lineage from SMAUG, Lucene, modern arenas, refcounting
 
 ---
 
@@ -249,7 +315,15 @@ run in parallel.
 
 22.  Track 3.3  PCH Phase 2 — AST serialization         [4-6 wk]
 
-23.  Track 5.3  Query pushdown & federation              [4-6 wk]
+     ── TRANSPILER PARITY GATE ──────────────────────────────
+     Track 1.3 must reach 475/475 before data work begins.
+
+23.  Track 5A.1-3  madcdis library restructure            [3-4 wk]
+     Track 5B.1    madcdat depends on madcdis             [1-2 wk]
+
+24.  Track 5A.4-5  Pools + value system                  [6-8 wk]
+
+25.  Track 5A.9   Federated query planner                [4-6 wk]
 
 24.  Track 6.2  macOS SIMD (NEON)                       [2-3 wk]
 
@@ -291,7 +365,11 @@ SMAUG target terminal, web, and GUI from the same game code.
 | Code Cleanup | [code-cleanup.md](code-cleanup.md) |
 | C++ Support | [cpp-support.md](cpp-support.md) |
 | Cross-Cutting Insights | [cross-cutting-insights.md](cross-cutting-insights.md) |
-| Data Storage & Federation | [data-storage-federation.md](data-storage-federation.md) |
+| Data Storage & Federation (legacy) | [data-storage-federation.md](data-storage-federation.md) |
+| madcdis Core Substrate | [madcdis-plan.md](madcdis-plan.md) |
+| madcdis Memory Research | [madcdis-memory-research.md](madcdis-memory-research.md) |
+| madcdat External Drivers | [madcdat-plan.md](madcdat-plan.md) |
+| Language Interfaces | [madc-interfaces-plan.md](madc-interfaces-plan.md) |
 | Future Considerations | [future-considerations.md](future-considerations.md) |
 | libmadc Phase 4 | [libmadc-phase4.md](libmadc-phase4.md) |
 | macOS/ARM64 Port | [macos-arm64-port.md](macos-arm64-port.md) |
