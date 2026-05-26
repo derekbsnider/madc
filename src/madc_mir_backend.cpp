@@ -194,6 +194,8 @@ const char *sstream_str(void *ptr)
 	{ static thread_local std::string s; s = ((std::stringstream *)ptr)->str(); return s.c_str(); }
 void sstream_str_set(void *ptr, const char *s)
 	{ ((std::stringstream *)ptr)->str(s ? s : ""); }
+void printstream(void *ptr)
+	{ std::cout << ((std::stringstream *)ptr)->str() << std::endl; }
 
 // std:: namespace functions — madc programs call these as std::stoi etc.
 // The emitter mangles them to __std_stoi / __std_stod / __std_to_string.

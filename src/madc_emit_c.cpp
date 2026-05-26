@@ -302,6 +302,14 @@ class CEmitter
 	auto it = local_var_types.find(name);
 	if (it != local_var_types.end()) return it->second;
 	if (is_global_string(name)) return TC_CLASS;
+	// Inside class methods: check class field types
+	if (!current_class.empty() && current_class_fields.count(name) && sema) {
+	    const SemaClassInfo *ci = sema->get_class(current_class);
+	    if (ci) {
+		auto fit = ci->field_types.find(name);
+		if (fit != ci->field_types.end()) return fit->second;
+	    }
+	}
 	if (sema) return sema->get_var_type(name);
 	return TC_INT;
     }
@@ -568,6 +576,10 @@ class CEmitter
 	if (name == "__madc_vsnprintf") return "vsnprintf";
 	if (name == "__madc_vprintf")   return "vprintf";
 	if (name == "__madc_vfprintf")  return "vfprintf";
+	// C++ string-to-number → C equivalents (args already coerced via string_cstr)
+	if (name == "stoi")             return "atoi";
+	if (name == "stol")             return "atol";
+	if (name == "stof" || name == "stod") return "atof";
 	return name;
     }
 
@@ -1082,7 +1094,14 @@ class CEmitter
     // Check if a node is an ostream identifier (cout or cerr)
     bool is_ostream_ident(gp_tree_node *node)
     {
-	if (!node || node->type != GP_TERM || term_code(node) != GT_IDENT)
+	if (!node) return false;
+	// Namespace-qualified: std::cout, std::cerr
+	if (node->type == GP_ANODE && an_code(node) == AN_NS_NAME) {
+	    std::string func = term_text(child(node, 1));
+	    if (func == "cout" || func == "cerr") return true;
+	    return false;
+	}
+	if (node->type != GP_TERM || term_code(node) != GT_IDENT)
 	    return false;
 	std::string id = term_text(node);
 	if (id == "cout" || id == "cerr") return true;
@@ -1105,7 +1124,14 @@ class CEmitter
     // Get the ostream expression for a stream identifier
     std::string ostream_for_ident(gp_tree_node *node)
     {
-	if (node && node->type == GP_TERM) {
+	if (!node) return "__madc_cout";
+	// Namespace-qualified: std::cout, std::cerr
+	if (node->type == GP_ANODE && an_code(node) == AN_NS_NAME) {
+	    std::string func = term_text(child(node, 1));
+	    if (func == "cerr") return "__madc_cerr";
+	    return "__madc_cout";
+	}
+	if (node->type == GP_TERM) {
 	    std::string id = term_text(node);
 	    if (id == "cerr") return "__madc_cerr";
 	    if (id == "cout") return "__madc_cout";
@@ -1178,6 +1204,7 @@ class CEmitter
 	if (is_ostream_ident(node)) return node;
 	if (is_an(node, AN_PAREN)) return find_stream_root(child(node, 0));
 	if (is_an(node, AN_BSL)) return find_stream_root(child(node, 0));
+	if (is_an(node, AN_NS_NAME)) return is_ostream_ident(node) ? node : nullptr;
 	return nullptr;
     }
 
@@ -1199,6 +1226,14 @@ class CEmitter
 	    // Stream manipulators (endl, flush, hex, oct, etc.)
 	    if (v->type == GP_TERM && term_code(v) == GT_IDENT) {
 		std::string manip = ostream_manipulator(os, term_text(v));
+		if (!manip.empty()) {
+		    result += manip;
+		    continue;
+		}
+	    }
+	    // Namespace-qualified manipulators: std::endl, std::flush, etc.
+	    if (v->type == GP_ANODE && an_code(v) == AN_NS_NAME) {
+		std::string manip = ostream_manipulator(os, term_text(child(v, 1)));
 		if (!manip.empty()) {
 		    result += manip;
 		    continue;
@@ -1652,6 +1687,13 @@ class CEmitter
 		// Re-emit args without string coercion (need raw buffer, not c_str)
 		std::string raw_args = emit_arg_list(child(node, 1), false);
 		return "streamin_getline(" + raw_args + ")";
+	    }
+
+	    // to_string(str, val) → __std_to_string(str, val)
+	    // First arg is a string buffer (not coerced to cstr)
+	    if (func == "to_string") {
+		std::string raw_args = emit_arg_list(child(node, 1), false);
+		return "__std_to_string(" + raw_args + ")";
 	    }
 
 	    return func + "(" + args + ")";
@@ -4440,6 +4482,7 @@ public:
 	header += "extern long string_length(void *);\n";
 	header += "extern void string_append(void *, void *);\n";
 	header += "extern void string_append_cstr(void *, const char *);\n";
+	header += "extern void __std_to_string(void *, long);\n";
 	// ostream wrappers — mirrors streamout_string/cstr/numeric from legacy
 	header += "extern void streamout_string(void *, void *);\n";
 	header += "extern void streamout_cstr(void *, const char *);\n";
@@ -4494,6 +4537,7 @@ public:
 	header += "extern void sstream_destruct(void *);\n";
 	header += "extern const char *sstream_str(void *);\n";
 	header += "extern void sstream_str_set(void *, const char *);\n";
+	header += "extern void printstream(void *);\n";
 	header += "\n";
 
 	// MadArray runtime wrappers
