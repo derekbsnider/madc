@@ -1760,6 +1760,10 @@ class CEmitter
 	if (an == AN_SIZEOF_EXPR)
 	    return "sizeof(" + emit_expr(child(node, 0)) + ")";
 
+	// _Alignof(type)
+	if (an == AN_ALIGNOF_TYPE)
+	    return "_Alignof(" + emit_type(child(node, 0)) + ")";
+
 	// va_arg(expr, type)
 	if (an == AN_VA_ARG)
 	    return "va_arg(" + emit_expr(child(node, 0)) + ", " +
@@ -3085,8 +3089,15 @@ class CEmitter
 	    return safe_ident(term_text(node));
 	int an = an_code(node);
 	if (an == AN_PTR_DECL) {
-	    // ptr_decl(pointer, declarator) — the pointer means &
-	    return "&" + reconstruct_call_args(child(node, nchildren(node) - 1));
+	    // ptr_decl(pointer, declarator)
+	    // In the original expression, `*x` is deref and `&x` is addr-of.
+	    // Both are GLR-misparsed as ptr_decl.  The pointer child
+	    // distinguishes them: AN_STAR for `*` (deref), otherwise `&`.
+	    gp_tree_node *ptr_node = child(node, 0);
+	    std::string prefix = "&";  // default: addr-of
+	    if (is_an(ptr_node, AN_STAR) || is_an(ptr_node, AN_STARS))
+		prefix = "*";  // deref
+	    return prefix + reconstruct_call_args(child(node, nchildren(node) - 1));
 	}
 	if (an == AN_REF_DECL) {
 	    // ref_decl(declarator) — the & means address-of in call context
@@ -3124,10 +3135,11 @@ class CEmitter
 		std::string tname = term_text(s);
 		if (sema && sema->func_ret_types.count(tname) &&
 		    !is_known_class(tname)) {
-		    // Reconstruct as function call: ptr_decl(*, name) → &name
+		    // Reconstruct as function call
+		    std::string func = map_builtin(tname);
 		    std::string args = reconstruct_call_args(decls);
 		    emit_indent();
-		    O("%s(%s);\n", tname.c_str(), args.c_str());
+		    O("%s(%s);\n", func.c_str(), args.c_str());
 		    return;
 		}
 	    }
@@ -3921,6 +3933,27 @@ class CEmitter
 	}
 	emit_class_methods(class_name, body_node);
 
+	// Synthesize implicit default constructor if class has vtable
+	// but no explicit constructor — derived ctors chain to base ctor.
+	if (ci_vt && !class_has_ctor(class_name)) {
+	    std::string mangled = class_name + "__" + class_name;
+	    std::string this_param = "struct " + class_name + " *__this";
+	    OH("void %s(%s);\n", mangled.c_str(), this_param.c_str());
+	    O("void %s(%s)\n", mangled.c_str(), this_param.c_str());
+	    O("{\n");
+	    // Chain to base class ctor if inherited
+	    if (!base_class.empty()) {
+		O("    %s__%s((struct %s *)__this);\n",
+		  base_class.c_str(), base_class.c_str(), base_class.c_str());
+	    }
+	    // Initialize vtable pointer
+	    O("    __this->__vptr = &%s_vtable_instance;\n", class_name.c_str());
+	    O("}\n\n");
+	    // Register in sema so class_has_ctor returns true for dependent code
+	    if (sema)
+		sema->classes_with_ctor.insert(class_name);
+	}
+
 	// Emit vtable instance for this class (if it has virtuals or inherits them)
 	if (ci_vt && sema) {
 	    const SemaClassInfo *this_ci = sema->get_class(class_name);
@@ -4577,11 +4610,8 @@ public:
 	header += "\n";
 
 	// Additional builtins commonly needed
-	header += "extern void puti(int64_t);\n";
-	header += "extern void putu(uint64_t);\n";
-	header += "extern void putd(double);\n";
-	header += "extern void putf(float);\n";
-	header += "extern void printstr(const char *);\n";
+	// (puti/putu/putd/putf/printstr are mapped to madc_* by map_builtin
+	// and declared above — do not re-declare unmapped names here)
 	header += "extern int getchar(void);\n";
 	header += "extern int rand(void);\n";
 	header += "extern void srand(unsigned int);\n";

@@ -44,6 +44,13 @@ for t in tests/*.mad; do
     argv_file="tests/$base.argv"
     expect_file="tests/$base.expect"
     flags_file="tests/$base.flags"
+    mir_skip_file="tests/$base.mir_skip"
+
+    # Skip tests marked as not transpilable when running with MIR backend
+    if [ -n "$BACKEND_FLAG" ] && [ -f "$mir_skip_file" ]; then
+        SKIP=$((SKIP+1))
+        continue
+    fi
 
     args=()
     flags=()

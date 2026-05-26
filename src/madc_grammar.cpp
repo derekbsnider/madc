@@ -1321,7 +1321,7 @@ static int ident_to_gecko(const std::string &s)
 	{"signed", GT_SIGNED}, {"unsigned", GT_UNSIGNED},
 	{"public", GT_PUBLIC}, {"private", GT_PRIVATE},
 	{"protected", GT_PROTECTED}, {"virtual", GT_VIRTUAL},
-	{"alignof", GT_ALIGNOF}, {"_Alignof", GT_ALIGNOF},
+	{"alignof", GT_ALIGNOF}, {"_Alignof", GT_ALIGNOF}, {"__alignof__", GT_ALIGNOF},
 	{"typeof", GT_TYPEOF}, {"__typeof__", GT_TYPEOF}, {"__typeof", GT_TYPEOF},
 	{"va_arg", GT_VA_ARG}, {"__builtin_va_arg", GT_VA_ARG},
 	// Aliases
