@@ -958,6 +958,30 @@ class CEmitter
 	    return;
 	}
 
+	// Constructor-call declaration: ClassName var(args);
+	if (strcmp(name, "ctor_decl") == 0) {
+	    std::string type = emit_type(child(node, 0));
+	    std::string vname = term_text(child(node, 1));
+	    std::string args = emit_arg_list(child(node, 2));
+	    std::string clean_type = type;
+	    if (clean_type.substr(0, 7) == "struct ")
+		clean_type = clean_type.substr(7);
+
+	    // Emit: type var; ClassName__ClassName(&var, args);
+	    emit_indent();
+	    O("%s %s;\n", type.c_str(), vname.c_str());
+	    emit_indent();
+	    O("%s__%s(&%s, %s);\n", clean_type.c_str(), clean_type.c_str(),
+	      vname.c_str(), args.c_str());
+
+	    // Track type
+	    if (class_names.count(clean_type))
+		var_class_map[vname] = clean_type;
+	    if (classes_with_dtor.count(clean_type))
+		scope_class_vars.push_back(vname + "|" + clean_type);
+	    return;
+	}
+
 	// If/else
 	if (strcmp(name, "if") == 0) {
 	    emit_indent();

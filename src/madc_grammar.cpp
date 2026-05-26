@@ -870,7 +870,16 @@ static const char *madc_grammar_str =
 
     "block_item : declaration  # 0\n"
     "           | statement    # 0\n"
+    "           | ctor_call_decl # 0\n"
     "           ;\n"
+    "\n"
+    // Constructor-call declaration: ClassName var(expr, expr, ...);
+    // Parses Foo x(1, 2); as a variable declaration + ctor invocation.
+    // Cfront pattern: separate the declaration from the initialization.
+    "ctor_call_decl\n"
+    "  : declaration_specifiers IDENT '(' argument_expression_list ')' ';'\n"
+    "                                              # ctor_decl (0 1 3)\n"
+    "  ;\n"
     "\n"
 
     // §6.8.3  Expression statement
