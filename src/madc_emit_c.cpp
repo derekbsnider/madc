@@ -258,6 +258,13 @@ class CEmitter
     // statements inject __madc_cleanup_globals().
     bool emitting_main;
 
+    // Depth counter for multi-dimensional char array initialization.
+    // Incremented at each `{...}` nesting level inside a char[] initializer.
+    // When >= 1, string literals in init items are expanded to explicit bytes
+    // to work around a c2mir bug where string literal offsets are wrong in
+    // 3D+ char arrays.
+    int char_array_init_depth = 0;
+
     // Check if a name is a global string variable tracked in global_strings
     bool is_global_string(const std::string &name) {
 	for (auto &gsv : global_strings)
@@ -350,19 +357,38 @@ class CEmitter
     {
 	std::string out;
 	out.reserve(s.size() + 16);
-	for (char c : s) {
+	for (size_t i = 0; i < s.size(); i++) {
+	    unsigned char c = (unsigned char)s[i];
+	    unsigned char next = (i + 1 < s.size()) ? (unsigned char)s[i + 1] : 0;
 	    switch (c) {
 	    case '\n': out += "\\n"; break;
 	    case '\r': out += "\\r"; break;
 	    case '\t': out += "\\t"; break;
 	    case '\\': out += "\\\\"; break;
 	    case '"':  out += "\\\""; break;
-	    case '\0': out += "\\0"; break;
+	    case '\0':
+		// Use 3-digit octal so a following digit is not consumed as part
+		// of the escape sequence (e.g. "\0002" would be parsed as \000
+		// followed by 2, not as octal \002).
+		out += "\\000";
+		break;
 	    default:
-		if ((unsigned char)c < 32)
-		    { char buf[8]; snprintf(buf, sizeof(buf), "\\x%02x", (unsigned char)c); out += buf; }
-		else
-		    out += c;
+		if (c < 32) {
+		    char buf[16];
+		    // Use \xNN hex escape, but if the next char is a hex digit
+		    // we must terminate and reopen the string literal so the
+		    // compiler does not extend the escape sequence.
+		    bool next_is_hex = isxdigit(next) != 0;
+		    if (next_is_hex) {
+			snprintf(buf, sizeof(buf), "\\x%02x\" \"", c);
+		    } else {
+			snprintf(buf, sizeof(buf), "\\x%02x", c);
+		    }
+		    out += buf;
+		} else {
+		    out += (char)c;
+		}
+		break;
 	    }
 	}
 	return out;
@@ -645,6 +671,41 @@ class CEmitter
 	return "";
     }
 
+    // Count the number of array dimensions in a declarator chain.
+    // E.g. a[2][3][9] → 3, a[2] → 1, a → 0.
+    static int array_dims(gp_tree_node *node) {
+	if (!node || node->type != GP_ANODE) return 0;
+	int an = an_code(node);
+	if (an == AN_ARRAY_DECL)
+	    return 1 + array_dims(child(node, 0));
+	if (an == AN_INIT_DECL)
+	    return array_dims(child(node, 0));
+	if (an == AN_DECL_LIST)
+	    return array_dims(child(node, 0));
+	return 0;
+    }
+
+    // Return true if node is a plain function declarator (AN_FUNC_DECL at the
+    // top level, not wrapped in AN_PTR_DECL which would make it a function
+    // pointer).  Used to skip local function prototype entries in mixed
+    // declarations like `float fx(), a, b, c;`.
+    static bool is_plain_func_decl(gp_tree_node *node) {
+	if (!node || node->type != GP_ANODE) return false;
+	return an_code(node) == AN_FUNC_DECL;
+    }
+
+    // Collect all leaf declarators from an AN_DECL_LIST tree into a vector.
+    static void collect_decl_list(gp_tree_node *node,
+				  std::vector<gp_tree_node *> &out) {
+	if (!node || node->type == GP_NIL) return;
+	if (node->type == GP_ANODE && an_code(node) == AN_DECL_LIST) {
+	    collect_decl_list(child(node, 0), out);
+	    collect_decl_list(child(node, 1), out);
+	} else {
+	    out.push_back(node);
+	}
+    }
+
     // Emit a complete declarator (pointer + name + array/func suffixes)
     // Returns: "**name" or "name[10]" or "(*name)(int, int)" etc.
     std::string emit_declarator_str(gp_tree_node *node)
@@ -726,17 +787,20 @@ class CEmitter
 	if (node->type != GP_ANODE) return TC_INT;
 	int an = an_code(node);
 
-	// Deref: *p where p is char* → char
+	// Deref: *p where p is char* or char[] → char
 	if (an == AN_DEREF) {
 	    TypeClass inner = infer_expr_cout_type(child(node, 0));
 	    if (inner == TC_STRING) return TC_CHAR;  // deref string/char* → char
+	    if (inner == TC_CHAR)   return TC_CHAR;  // deref char[] → char
 	    return TC_INT;
 	}
 
-	// Subscript: a[i] where a is char* → char
+	// Subscript: a[i] where a is char* or char[] → char
 	if (an == AN_SUBSCRIPT) {
 	    TypeClass inner = infer_expr_cout_type(child(node, 0));
 	    if (inner == TC_STRING) return TC_CHAR;
+	    // char array (TC_CHAR from sema for char[N]): subscripting still gives char
+	    if (inner == TC_CHAR) return TC_CHAR;
 	    return TC_INT;
 	}
 
@@ -761,6 +825,8 @@ class CEmitter
 	    TypeClass l = infer_expr_cout_type(child(node, 0));
 	    TypeClass r = infer_expr_cout_type(child(node, 1));
 	    if (l == TC_STRING || r == TC_STRING) return TC_STRING;  // ptr + int = ptr
+	    // char array (TC_CHAR) + int decays to char* (TC_STRING)
+	    if (l == TC_CHAR || r == TC_CHAR) return TC_STRING;
 	    if (l == TC_DOUBLE || r == TC_DOUBLE) return TC_DOUBLE;
 	    return TC_INT;
 	}
@@ -1132,6 +1198,14 @@ class CEmitter
 		return safe_ident(id);
 	    }
 	    if (code == GT_INTEGER) {
+		// If the original token has source_text (e.g. "0U", "0xFFU"),
+		// use it verbatim so unsigned suffixes are preserved.  This is
+		// critical for expressions like ~0U where the signedness of the
+		// literal determines the result type.
+		TokenBase *tb_int = (TokenBase *)node->val.term.attr;
+		TokenInt  *ti_int = tb_int ? dynamic_cast<TokenInt *>(tb_int) : nullptr;
+		if (ti_int && !ti_int->source_text.empty())
+		    return ti_int->source_text;
 		char buf[32];
 		snprintf(buf, sizeof(buf), "%lld", (long long)term_ival(node));
 		return buf;
@@ -1643,13 +1717,96 @@ class CEmitter
 	return emit_expr(node);
     }
 
-    std::string emit_init_item(gp_tree_node *node)
+    // Expand a string literal to a braced byte-list initializer.
+    // E.g. "hi" → {104, 105, 0}
+    // Used inside multi-dimensional char array inits to work around a
+    // c2mir bug where string literal offsets in 3D+ arrays are wrong.
+    static std::string string_to_bytes(const std::string &s) {
+	std::string out = "{";
+	for (size_t i = 0; i < s.size(); i++) {
+	    char buf[16];
+	    snprintf(buf, sizeof(buf), "%d", (unsigned char)s[i]);
+	    out += buf;
+	    out += ", ";
+	}
+	out += "0}";
+	return out;
+    }
+
+    // emit_init_list variant that treats string literals as char-array
+    // sub-initializers (expands them to byte lists).  Used for the inner
+    // dimension of a 3D+ char array (e.g. char b[2][3][9] = {<here>}).
+    std::string emit_init_list_chararray(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return "";
+	if (is_an(node, AN_DESIG_INIT)) {
+	    gp_tree_node *desig = child(node, 0);
+	    std::string val = emit_init_item_chararray(child(node, 1));
+	    if (!is_nil(desig))
+		return emit_designator(desig) + " = " + val;
+	    return val;
+	}
+	if (is_an(node, AN_INIT_SEQ)) {
+	    std::string prev = emit_init_list_chararray(child(node, 0));
+	    gp_tree_node *desig = child(node, 1);
+	    std::string val = emit_init_item_chararray(child(node, 2));
+	    std::string item;
+	    if (!is_nil(desig))
+		item = emit_designator(desig) + " = " + val;
+	    else
+		item = val;
+	    return prev + ", " + item;
+	}
+	// Leaf — expand if it's a string literal
+	if (node->type == GP_TERM && term_code(node) == GT_STRING) {
+	    TokenBase *tb = (TokenBase *)node->val.term.attr;
+	    TokenIdent *ti = tb ? dynamic_cast<TokenIdent *>(tb) : nullptr;
+	    if (ti) return string_to_bytes(ti->str);
+	}
+	return emit_expr(node);
+    }
+
+    std::string emit_init_item_chararray(gp_tree_node *node)
     {
 	if (!node) return "0";
 	if (is_an(node, AN_INIT_LIST))
-	    return "{" + emit_init_list(child(node, 0)) + "}";
+	    return "{" + emit_init_list_chararray(child(node, 0)) + "}";
 	if (is_an(node, AN_EMPTY_INIT))
 	    return "{0}";
+	if (node->type == GP_TERM && term_code(node) == GT_STRING) {
+	    TokenBase *tb = (TokenBase *)node->val.term.attr;
+	    TokenIdent *ti = tb ? dynamic_cast<TokenIdent *>(tb) : nullptr;
+	    if (ti) return string_to_bytes(ti->str);
+	}
+	return emit_expr(node);
+    }
+
+    std::string emit_init_item(gp_tree_node *node)
+    {
+	if (!node) return "0";
+	if (is_an(node, AN_INIT_LIST)) {
+	    // If we are in a char-array init context, inner lists must also
+	    // expand string literals.
+	    if (char_array_init_depth >= 1) {
+		char_array_init_depth++;
+		std::string inner = emit_init_list(child(node, 0));
+		char_array_init_depth--;
+		return "{" + inner + "}";
+	    }
+	    return "{" + emit_init_list(child(node, 0)) + "}";
+	}
+	if (is_an(node, AN_EMPTY_INIT))
+	    return "{0}";
+	// When inside a char array initializer (depth >= 1), expand string
+	// literals to explicit byte arrays to work around a c2mir bug where
+	// string literals in 3D+ char arrays are mis-placed by 8 bytes.
+	if (char_array_init_depth >= 1 &&
+	    node->type == GP_TERM && term_code(node) == GT_STRING) {
+	    TokenBase *tb = (TokenBase *)node->val.term.attr;
+	    TokenIdent *ti = tb ? dynamic_cast<TokenIdent *>(tb) : nullptr;
+	    if (ti)
+		return string_to_bytes(ti->str);
+	}
 	return emit_expr(node);
     }
 
@@ -2507,8 +2664,43 @@ class CEmitter
 	    }
 	}
 
-	emit_indent();
-	O("%s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
+	// Mixed declaration: `float fx(), a, b, c;` — split into function
+	// declarators (already prototyped globally, skip them) and variable
+	// declarators (emit normally).
+	if (is_an(decls, AN_DECL_LIST)) {
+	    std::vector<gp_tree_node *> all_decls;
+	    collect_decl_list(decls, all_decls);
+	    std::vector<gp_tree_node *> var_decls;
+	    for (gp_tree_node *d : all_decls)
+		if (!is_plain_func_decl(d))
+		    var_decls.push_back(d);
+	    if (var_decls.size() < all_decls.size()) {
+		// There were function declarators — emit only the variable ones.
+		if (!var_decls.empty()) {
+		    std::string decl_str;
+		    for (size_t i = 0; i < var_decls.size(); i++) {
+			if (i > 0) decl_str += ", ";
+			decl_str += emit_declarator_str(var_decls[i]);
+		    }
+		    emit_indent();
+		    O("%s %s;\n", type.c_str(), decl_str.c_str());
+		}
+		return;
+	    }
+	    // No function declarators — fall through to normal emit.
+	}
+
+	// For 3D+ char arrays, set the depth flag before emitting so that
+	// string literal sub-initializers are expanded to byte lists.
+	{
+	    bool is_char_type = (type.find("char") != std::string::npos &&
+				 type.find('*') == std::string::npos);
+	    if (is_char_type && array_dims(decls) >= 3)
+		char_array_init_depth = 1;
+	    emit_indent();
+	    O("%s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
+	    char_array_init_depth = 0;
+	}
 
 	// Inject constructor call for class variables (no-args ctor)
 	std::string vname = extract_name(decls);
@@ -3272,8 +3464,15 @@ class CEmitter
 		if (decl_name == "va_list") return;
 		OH("%s %s;\n", type.c_str(), decl_name.c_str());
 	    } else {
-		// Check if any declarator is a func_decl (function prototype)
+		// For multi-dimensional char arrays (3+ dims), set the depth
+		// flag so that string literal initializers in sub-lists are
+		// expanded to explicit byte arrays (c2mir bug workaround).
+		bool is_char_type = (type.find("char") != std::string::npos &&
+				     type.find('*') == std::string::npos);
+		if (is_char_type && array_dims(decls) >= 3)
+		    char_array_init_depth = 1;
 		std::string d = emit_declarator_str(decls);
+		char_array_init_depth = 0;
 		// Suppress bare-identifier "declarations" with empty type —
 		// these result from grammar error-recovery on top-level
 		// assignment statements (e.g. `hello = "x";` at file scope).
