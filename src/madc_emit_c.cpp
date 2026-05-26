@@ -553,6 +553,83 @@ class CEmitter
     }
 
     // ---------------------------------------------------------------
+    // Expression type inference for cout format selection.
+    // Returns: 'c' char, 's' string, 'd' double, 'i' int (default)
+    // ---------------------------------------------------------------
+
+    char infer_expr_cout_type(gp_tree_node *node)
+    {
+	if (!node) return 'i';
+
+	// Terminal
+	if (node->type == GP_TERM) {
+	    int code = term_code(node);
+	    if (code == GT_STRING) return 's';
+	    if (code == GT_REAL) return 'd';
+	    if (code == GT_CHAR_LIT) return 'c';
+	    if (code == GT_IDENT) return lookup_var_type(term_text(node));
+	    return 'i';
+	}
+
+	if (node->type != GP_ANODE) return 'i';
+	const char *nm = anode_name(node);
+
+	// Deref: *p where p is char* → char
+	if (strcmp(nm, "deref") == 0) {
+	    char inner = infer_expr_cout_type(child(node, 0));
+	    if (inner == 's') return 'c';  // deref string/char* → char
+	    return 'i';
+	}
+
+	// Subscript: a[i] where a is char* → char
+	if (strcmp(nm, "subscript") == 0) {
+	    char inner = infer_expr_cout_type(child(node, 0));
+	    if (inner == 's') return 'c';
+	    return 'i';
+	}
+
+	// Cast — check target type
+	if (strcmp(nm, "cast") == 0) {
+	    std::string ct = emit_type(child(node, 0));
+	    return classify_type(ct);
+	}
+
+	// Function call — check return type
+	if (strcmp(nm, "call") == 0) {
+	    std::string fn = extract_name(child(node, 0));
+	    return lookup_func_ret_type(fn);
+	}
+
+	// Parenthesized
+	if (strcmp(nm, "paren") == 0)
+	    return infer_expr_cout_type(child(node, 0));
+
+	// Arithmetic — if either side is double, result is double
+	if (strcmp(nm, "add") == 0 || strcmp(nm, "sub") == 0 ||
+	    strcmp(nm, "mul") == 0 || strcmp(nm, "div") == 0) {
+	    char l = infer_expr_cout_type(child(node, 0));
+	    char r = infer_expr_cout_type(child(node, 1));
+	    if (l == 'd' || r == 'd') return 'd';
+	    return 'i';
+	}
+
+	// Ternary — type of true branch
+	if (strcmp(nm, "ternary") == 0)
+	    return infer_expr_cout_type(child(node, 1));
+
+	// Pre/post inc/dec — same as operand
+	if (strcmp(nm, "pre_inc") == 0 || strcmp(nm, "pre_dec") == 0 ||
+	    strcmp(nm, "post_inc") == 0 || strcmp(nm, "post_dec") == 0)
+	    return infer_expr_cout_type(child(node, 0));
+
+	// Neg — same as operand
+	if (strcmp(nm, "neg") == 0)
+	    return infer_expr_cout_type(child(node, 0));
+
+	return 'i';
+    }
+
+    // ---------------------------------------------------------------
     // cout << expr << endl  →  C output calls
     //
     // Detects bsl (<<) chains rooted at "cout" and converts them to
@@ -654,32 +731,18 @@ class CEmitter
 			result += "printf(\"%lld\", (long long)" + id + ")";
 		}
 	    } else {
-		// Complex expression
+		// Complex expression — infer type for format
 		std::string e = emit_expr(v);
+		char etc = infer_expr_cout_type(v);
 		if (!e.empty() && e[0] == '"')
 		    result += "printf(\"%s\", " + e + ")";
-		else if (is_anode(v, "call")) {
-		    // Check function return type via sema
-		    std::string fn = extract_name(child(v, 0));
-		    char ftc = lookup_func_ret_type(fn);
-		    if (ftc == 's')
-			result += "printf(\"%s\", " + e + ")";
-		    else if (ftc == 'c')
-			result += "printf(\"%c\", " + e + ")";
-		    else if (ftc == 'd')
-			result += "printf(\"%g\", (double)(" + e + "))";
-		    else
-			result += "printf(\"%lld\", (long long)(" + e + "))";
-		} else if (is_anode(v, "cast")) {
-		    // Check cast target type for format hint
-		    std::string ct = emit_type(child(v, 0));
-		    if (ct.find("char") != std::string::npos && ct.find("*") == std::string::npos)
-			result += "printf(\"%c\", " + e + ")";
-		    else if (ct.find("double") != std::string::npos || ct.find("float") != std::string::npos)
-			result += "printf(\"%g\", (double)(" + e + "))";
-		    else
-			result += "printf(\"%lld\", (long long)(" + e + "))";
-		} else
+		else if (etc == 's')
+		    result += "printf(\"%s\", " + e + ")";
+		else if (etc == 'c')
+		    result += "printf(\"%c\", " + e + ")";
+		else if (etc == 'd')
+		    result += "printf(\"%g\", (double)(" + e + "))";
+		else
 		    result += "printf(\"%lld\", (long long)(" + e + "))";
 	    }
 	}
