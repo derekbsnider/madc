@@ -226,15 +226,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.21.1** (2026-05-25) — **Const enforcement, access control, MIR backend plan.** Top-level const and const ref enforcement, public/private/protected access control, automatic token position inheritance, and JIT IR architecture research leading to the decision to adopt MIR as the optimizing backend (replacing asmjit). 475 tests, 0 failures.
+**v0.22.0** (2026-05-26) — **Gecko+MIR transpiler pipeline.** Phase 2 semantic pre-pass, Phase 4 string runtime, O(1) AST dispatch via gp_set_anode_code, iostream wrappers (cout/cerr/cin), 106 extern "C" namespace wrappers, class inheritance, __attribute__ skipping, typeof support. Transpiler: 283/473 (59.8%) match. Legacy: 475 tests, 0 failures.
 
 ### Recent Releases
 
+- **v0.22.0** — Gecko+MIR transpiler: sema pre-pass, string runtime, O(1) anode dispatch, iostream wrappers
 - **v0.21.1** — Const enforcement, access control, token position, MIR backend architecture decision
 - **v0.21.0** — C++ class model: ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding
 - **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
 - **v0.20.0** — GCC parity 91.2% (1536/1685); std namespace cleanup, std::vector, overflow_p builtins
-- **v0.19.0** — GCC parity 89.3% (1505/1685); frame_address, stdio/string builtins
 
 ## Roadmap
 

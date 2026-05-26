@@ -2,6 +2,58 @@
 
 ## [Unreleased]
 
+## [v0.22.0] — 2026-05-26
+
+Gecko+MIR transpiler pipeline: Phase 2 semantic pre-pass, Phase 4 string
+runtime, O(1) AST dispatch, iostream wrappers, and namespace function bridging.
+
+- **Phase 2 semantic pre-pass.** `madc_sema.cpp/h` — SemaInfo struct
+  collects variable types, function signatures, class info, and typedef
+  names in a single AST walk before emission. TypeClass enum for
+  compile-time-checked type classification.
+
+- **Phase 4 string runtime.** `string` variables are managed `std::string`
+  objects via placement-new in stack buffers. Runtime wrappers:
+  `__madc_string_construct/destruct/assign_cstr/cstr/length/append`.
+  Namespace functions (php::trim etc.) receive `std::string*` directly.
+
+- **O(1) AST dispatch via `gp_set_anode_code`.** 156 anode names registered
+  as integer codes at grammar build time. Eliminates ~200 `strcmp` calls per
+  AST traversal. Uses Makarov's built-in Gecko API (`node->aux` field).
+
+- **Hash map tokenizer.** Replaces ~60 sequential string comparisons per
+  identifier token with a single `unordered_map` lookup for keyword
+  recognition.
+
+- **iostream wrappers.** `cout <<` / `cerr <<` / `cin >>` emit calls to
+  generic `__madc_ostream_*` / `__madc_istream_*` wrappers that take a
+  stream pointer. Works with any `std::ostream` / `std::istream`.
+  Full manipulator support (hex, oct, setw, setprecision, etc.).
+
+- **Extern "C" namespace wrappers.** 106 thin C-linkage functions across
+  6 namespace files (php, perl, python, ruby, js, rust). Enables
+  `dlsym`-based import resolution and provides a clean C API for libmadc.
+
+- **Class inheritance.** Base class fields copied into derived struct.
+  Method calls resolve through the base chain via sema. Access specifiers
+  (public/private/protected) tokenized correctly.
+
+- **`__attribute__` skipping.** Tokenizer consumes `__attribute__((...))`,
+  `__extension__` constructs. Unlocks 9 GCC-extension-heavy tests.
+
+- **`typeof` type specifier.** Grammar rules for `typeof(expr)` and
+  `typeof(type)`, emitted as `__typeof__()` for c2mir.
+
+- **Expression type inference for cout.** `infer_expr_cout_type()` walks
+  AST expressions to determine correct output type — deref, subscript,
+  pointer arithmetic, cast, function call return types.
+
+- **New rule: `enum-over-strings.md`.** Never use strings or chars as
+  type discriminators when an enum will do.
+
+- Transpiler test results: 283/473 (59.8%) match legacy output, up from
+  274/473 (57.9%) at session start. 475/475 legacy JIT tests pass.
+
 ## [v0.21.1] — 2026-05-25
 
 Const enforcement, access control, token position, and JIT IR architecture research.
