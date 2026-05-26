@@ -18,6 +18,7 @@
 #include <deque>
 #include <queue>
 #include <stack>
+#include <set>
 #include <stdint.h>
 #include <asmjit/x86.h>
 
@@ -120,6 +121,7 @@ class CEmitter
     // 'c' = char, 's' = string/char*, 'd' = double/float, 'i' = int (default)
     std::map<std::string, char> var_types;
     std::map<std::string, char> func_ret_types;  // function return types
+    std::map<std::string, std::string> var_class_map;  // var name → class name
 
     void O(const char *fmt, ...)
     {
@@ -228,7 +230,12 @@ class CEmitter
 	    case 324: return "uint16_t";
 	    case 325: return "uint32_t";
 	    case 326: return "uint64_t";
-	    case GT_IDENT: return term_text(node);
+	    case GT_IDENT: {
+		std::string t = term_text(node);
+		if (class_names.count(t))
+		    return "struct " + t;
+		return t;
+	    }
 	    default: {
 		std::string t = term_text(node);
 		return t.empty() ? "int" : t;
@@ -623,7 +630,15 @@ class CEmitter
 	// Terminal: literal or identifier
 	if (node->type == GP_TERM) {
 	    int code = term_code(node);
-	    if (code == GT_IDENT) return term_text(node);
+	    if (code == GT_IDENT) {
+		std::string id = term_text(node);
+		// Inside class methods: unqualified members → __this->member
+		if (!current_class.empty() &&
+		    current_class_fields.count(id) &&
+		    !var_types.count(id))  // don't transform local vars
+		    return "__this->" + id;
+		return id;
+	    }
 	    if (code == GT_INTEGER) {
 		char buf[32];
 		snprintf(buf, sizeof(buf), "%lld", (long long)term_ival(node));
@@ -729,7 +744,6 @@ class CEmitter
 		std::string obj = emit_expr(child(callee, 0));
 		std::string method = term_text(child(callee, 1));
 		bool is_arrow = is_anode(callee, "arrow_member");
-		std::string op = is_arrow ? "->" : ".";
 
 		// String methods: c_str() → identity (string is already char*)
 		if (method == "c_str") return obj;
@@ -737,7 +751,22 @@ class CEmitter
 		if (method == "length" || method == "size")
 		    return "strlen(" + obj + ")";
 
-		// Stream/container methods → pass through as C member access
+		// Check if obj is a known class instance → mangled method call
+		std::string obj_name = term_text(child(callee, 0));
+		auto vit = var_types.find(obj_name);
+		// 'C' = class type, tracked with class name in var_class_map
+		auto cit = var_class_map.find(obj_name);
+		if (cit != var_class_map.end()) {
+		    std::string cls = cit->second;
+		    std::string mangled = cls + "__" + method;
+		    std::string addr = is_arrow ? obj : ("&" + obj);
+		    if (args.empty())
+			return mangled + "(" + addr + ")";
+		    return mangled + "(" + addr + ", " + args + ")";
+		}
+
+		// Fallback: pass through as C member access
+		std::string op = is_arrow ? "->" : ".";
 		return obj + op + method + "(" + args + ")";
 	    }
 
@@ -1136,14 +1165,23 @@ class CEmitter
 	if (is_nil(decls)) return;
 	std::string vname = extract_name(decls);
 	if (!vname.empty()) {
-	    // Check if declarator has pointer
-	    bool has_ptr = is_anode(decls, "ptr_decl");
-	    char tc = classify_type(type);
-	    if (has_ptr && tc == 'c') tc = 's';  // char * → string
-	    if (has_ptr && tc == 'i') tc = 'i';  // int * → still int-like for printing
-	    var_types[vname] = tc;
+	    // Check if this is a class type
+	    // The type string might be just the class name (parsed as typedef_name)
+	    std::string clean_type = type;
+	    // Strip "struct " prefix if present
+	    if (clean_type.substr(0, 7) == "struct ")
+		clean_type = clean_type.substr(7);
+	    if (class_names.count(clean_type)) {
+		var_class_map[vname] = clean_type;
+		var_types[vname] = 'i';  // class objects print as int
+	    } else {
+		bool has_ptr = is_anode(decls, "ptr_decl");
+		char tc = classify_type(type);
+		if (has_ptr && tc == 'c') tc = 's';  // char * → string
+		var_types[vname] = tc;
+	    }
 	}
-	// Handle decl_list
+	// Handle decl_list / init_decl
 	if (is_anode(decls, "decl_list") || is_anode(decls, "init_decl")) {
 	    track_decl_types(type, child(decls, 0));
 	    if (nchildren(decls) > 1)
@@ -1378,6 +1416,206 @@ class CEmitter
     }
 
     // ---------------------------------------------------------------
+    // Class definition emission → C struct + free functions
+    //
+    // class Counter { int count; void inc() { count++; } int get() { return count; } };
+    // →
+    // struct Counter { int count; };
+    // void Counter__inc(struct Counter *__this) { __this->count++; }
+    // int Counter__get(struct Counter *__this) { return __this->count; }
+    // ---------------------------------------------------------------
+
+    // Set of known class names (for var type → struct mapping)
+    std::set<std::string> class_names;
+
+    // Current class being emitted (for member access → __this->member)
+    std::string current_class;
+    std::set<std::string> current_class_fields;
+
+    void emit_class_def(gp_tree_node *node)
+    {
+	std::string class_name;
+	gp_tree_node *body_node = nullptr;
+
+	if (is_anode(node, "class_def")) {
+	    // class_def(name, class_body)
+	    class_name = term_text(child(node, 0));
+	    body_node = child(node, 1);
+	} else if (is_anode(node, "class_inherit")) {
+	    // class_inherit(name, access_spec, base_name, class_body)
+	    class_name = term_text(child(node, 0));
+	    body_node = child(node, 3);
+	    // TODO: copy base class fields
+	}
+
+	if (class_name.empty()) return;
+	class_names.insert(class_name);
+
+	// Collect field names for member→__this->member transformation
+	current_class_fields.clear();
+	collect_class_fields(body_node);
+
+	// First pass: emit the struct with fields only
+	OH("struct %s {\n", class_name.c_str());
+	emit_class_fields(body_node);
+	OH("};\n\n");
+
+	// Second pass: emit methods as free functions
+	emit_class_methods(class_name, body_node);
+	current_class_fields.clear();
+    }
+
+    void collect_class_fields(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return;
+	if (is_anode(node, "class_body")) {
+	    collect_class_fields(child(node, 0));
+	    gp_tree_node *item = child(node, 1);
+	    if (is_anode(item, "decl")) {
+		// Extract field names from declarator
+		gp_tree_node *decls = child(item, 1);
+		std::string fname = extract_name(decls);
+		if (!fname.empty())
+		    current_class_fields.insert(fname);
+	    }
+	}
+    }
+
+    void emit_class_fields(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return;
+	if (is_anode(node, "class_body")) {
+	    emit_class_fields(child(node, 0));
+	    emit_class_field_item(child(node, 1));
+	    return;
+	}
+	emit_class_field_item(node);
+    }
+
+    void emit_class_field_item(gp_tree_node *node)
+    {
+	if (!node) return;
+	const char *name = anode_name(node);
+	// Only emit field declarations, skip methods/ctors/access specs
+	if (strcmp(name, "decl") == 0) {
+	    std::string type = emit_type(child(node, 0));
+	    gp_tree_node *decls = child(node, 1);
+	    if (!is_nil(decls))
+		OH("    %s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
+	}
+	// Skip: method, ctor, dtor, oper_method, access
+    }
+
+    void emit_class_methods(const std::string &class_name, gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return;
+	if (is_anode(node, "class_body")) {
+	    emit_class_methods(class_name, child(node, 0));
+	    emit_class_method_item(class_name, child(node, 1));
+	    return;
+	}
+	emit_class_method_item(class_name, node);
+    }
+
+    void emit_class_method_item(const std::string &class_name,
+				gp_tree_node *node)
+    {
+	if (!node) return;
+	const char *name = anode_name(node);
+
+	// method(declaration_specifiers, declarator, compound_statement)
+	if (strcmp(name, "method") == 0) {
+	    std::string prev_class = current_class;
+	    current_class = class_name;
+
+	    std::string ret_type = emit_type(child(node, 0));
+	    gp_tree_node *decl = child(node, 1);
+	    gp_tree_node *body_node = child(node, 2);
+
+	    // Extract method name and params from declarator
+	    std::string method_name;
+	    std::string params;
+	    gp_tree_node *inner = decl;
+	    if (is_anode(inner, "func_decl")) {
+		method_name = extract_name(child(inner, 0));
+		params = emit_param_list(child(inner, 1));
+	    } else {
+		method_name = term_text(inner);
+	    }
+
+	    std::string mangled = class_name + "__" + method_name;
+	    std::string this_param = "struct " + class_name + " *__this";
+	    std::string full_params = params.empty() ? this_param
+					: this_param + ", " + params;
+
+	    // Forward declaration
+	    OH("%s %s(%s);\n", ret_type.c_str(), mangled.c_str(),
+	       full_params.c_str());
+
+	    // Track return type
+	    func_ret_types[mangled] = classify_type(ret_type);
+
+	    // Function body
+	    var_types.clear();
+	    O("%s %s(%s)\n", ret_type.c_str(), mangled.c_str(),
+	      full_params.c_str());
+	    indent_level = 0;
+	    emit_stmt(body_node);
+	    O("\n");
+
+	    current_class = prev_class;
+	    return;
+	}
+
+	// ctor(name, params, body)
+	if (strcmp(name, "ctor") == 0) {
+	    std::string prev_class = current_class;
+	    current_class = class_name;
+
+	    std::string params = emit_param_list(child(node, 1));
+	    gp_tree_node *body_node = child(node, 2);
+
+	    std::string mangled = class_name + "__" + class_name;
+	    std::string this_param = "struct " + class_name + " *__this";
+	    std::string full_params = params.empty() ? this_param
+					: this_param + ", " + params;
+
+	    OH("void %s(%s);\n", mangled.c_str(), full_params.c_str());
+
+	    var_types.clear();
+	    O("void %s(%s)\n", mangled.c_str(), full_params.c_str());
+	    indent_level = 0;
+	    emit_stmt(body_node);
+	    O("\n");
+
+	    current_class = prev_class;
+	    return;
+	}
+
+	// dtor(name, body)
+	if (strcmp(name, "dtor") == 0) {
+	    std::string prev_class = current_class;
+	    current_class = class_name;
+
+	    gp_tree_node *body_node = child(node, 1);
+
+	    std::string mangled = class_name + "__dtor";
+	    std::string this_param = "struct " + class_name + " *__this";
+
+	    OH("void %s(%s);\n", mangled.c_str(), this_param.c_str());
+
+	    var_types.clear();
+	    O("void %s(%s)\n", mangled.c_str(), this_param.c_str());
+	    indent_level = 0;
+	    emit_stmt(body_node);
+	    O("\n");
+
+	    current_class = prev_class;
+	    return;
+	}
+    }
+
+    // ---------------------------------------------------------------
     // Top-level dispatch
     // ---------------------------------------------------------------
 
@@ -1465,9 +1703,9 @@ class CEmitter
 	    return;
 	}
 
-	// Class — TODO in Phase 5
+	// Class definition → C struct + free functions
 	if (is_anode(node, "class_def") || is_anode(node, "class_inherit")) {
-	    OH("/* TODO: class */\n");
+	    emit_class_def(node);
 	    return;
 	}
 
