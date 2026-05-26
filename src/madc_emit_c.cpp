@@ -4642,6 +4642,7 @@ public:
 		{"__std_stod",      "extern double __std_stod(void *);"},
 		{"__std_stold",     "extern double __std_stold(void *);"},
 		{"__std_to_string", "extern void __std_to_string(void *, long);"},
+		{"__std_for_each", "extern void __std_for_each(void *, void *);"},
 	    };
 	    std::string ns_decls;
 	    ns_decls += "/* Namespace function externs (resolved via dlsym) */\n";

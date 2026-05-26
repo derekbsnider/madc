@@ -237,6 +237,28 @@ void __std_to_string(void *dst, long val)
     *s = std::to_string(val);
 }
 
+// std::for_each — calls a function pointer for each element in a MadArray.
+// Provides the extern "C" symbol the transpiled code expects.
+void __std_for_each(void *arr, void *fn_ptr)
+{
+    MadArray &a = *(MadArray *)arr;
+    typedef void (*fn_cstr_t)(const char *);
+    fn_cstr_t fn = (fn_cstr_t)fn_ptr;
+    for (size_t i = 0; i < a.data.size(); ++i) {
+	MadValue &v = a.data[i];
+	if (v.is_string()) {
+	    std::string s = v.as_string();
+	    fn(s.c_str());
+	} else if (v.is_int()) {
+	    std::string s = std::to_string(v.as_int());
+	    fn(s.c_str());
+	} else if (v.is_double()) {
+	    std::string s = std::to_string(v.as_double());
+	    fn(s.c_str());
+	}
+    }
+}
+
 // MadArray runtime — construct/destruct/size for transpiled array variables.
 // MadArray is defined in include/datadef.h (already included).
 void *madarray_construct(void *ptr)
