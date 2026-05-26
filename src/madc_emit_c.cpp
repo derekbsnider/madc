@@ -122,6 +122,9 @@ class CEmitter
     std::map<std::string, char> var_types;
     std::map<std::string, char> func_ret_types;  // function return types
     std::map<std::string, std::string> var_class_map;  // var name → class name
+    std::set<std::string> classes_with_ctor;  // classes that have constructors
+    std::set<std::string> classes_with_dtor;  // classes that have destructors
+    std::vector<std::string> scope_class_vars; // class vars in current scope (for dtor)
 
     void O(const char *fmt, ...)
     {
@@ -1026,8 +1029,18 @@ class CEmitter
 	    return;
 	}
 
-	// Return
+	// Return — inject destructor calls before returning
 	if (strcmp(name, "return_val") == 0) {
+	    // Call destructors in LIFO order
+	    for (int i = (int)scope_class_vars.size() - 1; i >= 0; i--) {
+		size_t sep = scope_class_vars[i].find('|');
+		if (sep != std::string::npos) {
+		    std::string vn = scope_class_vars[i].substr(0, sep);
+		    std::string cn = scope_class_vars[i].substr(sep + 1);
+		    emit_indent();
+		    O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
+		}
+	    }
 	    emit_indent();
 	    gp_tree_node *val = child(node, 0);
 	    if (is_nil(val))
@@ -1223,6 +1236,20 @@ class CEmitter
 
 	emit_indent();
 	O("%s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
+
+	// Inject constructor call for class variables
+	std::string vname = extract_name(decls);
+	std::string clean_type = type;
+	if (clean_type.substr(0, 7) == "struct ")
+	    clean_type = clean_type.substr(7);
+	if (!vname.empty() && classes_with_ctor.count(clean_type)) {
+	    emit_indent();
+	    O("%s__%s(&%s);\n", clean_type.c_str(), clean_type.c_str(),
+	      vname.c_str());
+	    // Track for destructor at scope exit
+	    if (classes_with_dtor.count(clean_type))
+		scope_class_vars.push_back(vname + "|" + clean_type);
+	}
     }
 
     // Emit declaration as inline string (for for-loop init)
@@ -1288,6 +1315,8 @@ class CEmitter
     {
 	// func_def(declaration_specifiers, declarator, compound_statement)
 	var_types.clear();  // fresh scope for each function
+	var_class_map.clear();
+	scope_class_vars.clear();
 	std::string ret_type = emit_type(child(node, 0));
 	gp_tree_node *decl = child(node, 1);
 	gp_tree_node *body_node = child(node, 2);
@@ -1569,6 +1598,7 @@ class CEmitter
 
 	// ctor(name, params, body)
 	if (strcmp(name, "ctor") == 0) {
+	    classes_with_ctor.insert(class_name);
 	    std::string prev_class = current_class;
 	    current_class = class_name;
 
@@ -1594,6 +1624,7 @@ class CEmitter
 
 	// dtor(name, body)
 	if (strcmp(name, "dtor") == 0) {
+	    classes_with_dtor.insert(class_name);
 	    std::string prev_class = current_class;
 	    current_class = class_name;
 
