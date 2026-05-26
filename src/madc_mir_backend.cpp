@@ -72,32 +72,57 @@ void __madc_string_append_cstr(void *ptr, const char *s)
     { if (s) *(std::string *)ptr += s; }
 void __madc_string_append(void *dst, void *src)
     { *(std::string *)dst += *(std::string *)src; }
-// cout for std::string* — outputs the string content
-void __std_cout_stdstr(void *ptr)
-    { std::cout << *(std::string *)ptr; }
-
-void __std_cout_str(const char *s)  { if (s) std::cout << s; }
-void __std_cout_int(long i)         { std::cout << i; }
-void __std_cout_uint(unsigned long u) { std::cout << u; }
-void __std_cout_char(int c)         { std::cout << (char)c; }
-void __std_cout_double(double d)    { std::cout << d; }
-void __std_cout_endl(void)          { std::cout << std::endl; }
-void __std_cout_flush(void)         { std::cout << std::flush; }
+// Generic ostream wrappers — take ostream* as first arg so they work
+// with cout, cerr, ofstream, stringstream, etc.
+void __madc_ostream_str(void *os, const char *s)
+    { if (s) *(std::ostream *)os << s; }
+void __madc_ostream_stdstr(void *os, void *ptr)
+    { *(std::ostream *)os << *(std::string *)ptr; }
+void __madc_ostream_int(void *os, long i)
+    { *(std::ostream *)os << i; }
+void __madc_ostream_uint(void *os, unsigned long u)
+    { *(std::ostream *)os << u; }
+void __madc_ostream_char(void *os, int c)
+    { *(std::ostream *)os << (char)c; }
+void __madc_ostream_double(void *os, double d)
+    { *(std::ostream *)os << d; }
+void __madc_ostream_endl(void *os)
+    { *(std::ostream *)os << std::endl; }
+void __madc_ostream_flush(void *os)
+    { *(std::ostream *)os << std::flush; }
 // Stream manipulators
-void __std_cout_hex(void)           { std::cout << std::hex; }
-void __std_cout_oct(void)           { std::cout << std::oct; }
-void __std_cout_dec(void)           { std::cout << std::dec; }
-void __std_cout_fixed(void)         { std::cout << std::fixed; }
-void __std_cout_scientific(void)    { std::cout << std::scientific; }
-void __std_cout_left(void)          { std::cout << std::left; }
-void __std_cout_right(void)         { std::cout << std::right; }
-void __std_cout_boolalpha(void)     { std::cout << std::boolalpha; }
-void __std_cout_noboolalpha(void)   { std::cout << std::noboolalpha; }
-void __std_cout_showbase(void)      { std::cout << std::showbase; }
-void __std_cout_noshowbase(void)    { std::cout << std::noshowbase; }
-void __std_cout_setw(int w)         { std::cout << std::setw(w); }
-void __std_cout_setprecision(int p) { std::cout << std::setprecision(p); }
-void __std_cout_setfill(int c)      { std::cout << std::setfill((char)c); }
+void __madc_ostream_hex(void *os)
+    { *(std::ostream *)os << std::hex; }
+void __madc_ostream_oct(void *os)
+    { *(std::ostream *)os << std::oct; }
+void __madc_ostream_dec(void *os)
+    { *(std::ostream *)os << std::dec; }
+void __madc_ostream_fixed(void *os)
+    { *(std::ostream *)os << std::fixed; }
+void __madc_ostream_scientific(void *os)
+    { *(std::ostream *)os << std::scientific; }
+void __madc_ostream_left(void *os)
+    { *(std::ostream *)os << std::left; }
+void __madc_ostream_right(void *os)
+    { *(std::ostream *)os << std::right; }
+void __madc_ostream_boolalpha(void *os)
+    { *(std::ostream *)os << std::boolalpha; }
+void __madc_ostream_noboolalpha(void *os)
+    { *(std::ostream *)os << std::noboolalpha; }
+void __madc_ostream_showbase(void *os)
+    { *(std::ostream *)os << std::showbase; }
+void __madc_ostream_noshowbase(void *os)
+    { *(std::ostream *)os << std::noshowbase; }
+void __madc_ostream_setw(void *os, int w)
+    { *(std::ostream *)os << std::setw(w); }
+void __madc_ostream_setprecision(void *os, int p)
+    { *(std::ostream *)os << std::setprecision(p); }
+void __madc_ostream_setfill(void *os, int c)
+    { *(std::ostream *)os << std::setfill((char)c); }
+
+// Global stream pointers accessible from generated C
+void *__madc_cout_ptr(void) { return &std::cout; }
+void *__madc_cerr_ptr(void) { return &std::cerr; }
 
 } // extern "C"
 

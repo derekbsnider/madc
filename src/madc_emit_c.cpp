@@ -721,7 +721,7 @@ class CEmitter
 
 	    // Stream manipulators (endl, flush, hex, oct, etc.)
 	    if (v->type == GP_TERM && term_code(v) == GT_IDENT) {
-		std::string manip = cout_manipulator(term_text(v));
+		std::string manip = ostream_manipulator("__madc_cout", term_text(v));
 		if (!manip.empty()) {
 		    result += manip;
 		    continue;
@@ -734,59 +734,59 @@ class CEmitter
 	    if (v->type == GP_TERM) {
 		int code = term_code(v);
 		if (code == GT_STRING)
-		    result += "__std_cout_str(\"" + c_escape(term_text(v)) + "\")";
+		    result += "__madc_ostream_str(__madc_cout, \"" + c_escape(term_text(v)) + "\")";
 		else if (code == GT_CHAR_LIT)
-		    result += "__std_cout_char(" + e + ")";
+		    result += "__madc_ostream_char(__madc_cout, " + e + ")";
 		else if (code == GT_REAL)
-		    result += "__std_cout_double(" + e + ")";
+		    result += "__madc_ostream_double(__madc_cout, " + e + ")";
 		else if (code == GT_INTEGER)
-		    result += "__std_cout_int(" + e + ")";
+		    result += "__madc_ostream_int(__madc_cout, " + e + ")";
 		else {
-		    // Identifier — use type info to pick the right wrapper
 		    TypeClass tc = lookup_var_type(term_text(v));
-		    result += cout_call_for_type(tc, e);
+		    result += ostream_call_for_type("__madc_cout", tc, e);
 		}
 	    } else {
-		// Complex expression — infer type
 		TypeClass etc = infer_expr_cout_type(v);
 		if (!e.empty() && e[0] == '"')
-		    result += "__std_cout_str(" + e + ")";
+		    result += "__madc_ostream_str(__madc_cout, " + e + ")";
 		else
-		    result += cout_call_for_type(etc, e);
+		    result += ostream_call_for_type("__madc_cout", etc, e);
 	    }
 	}
 
 	return "(" + result + ")";
     }
 
-    // Map TypeClass to the appropriate __std_cout_* wrapper call
-    std::string cout_call_for_type(TypeClass tc, const std::string &expr)
+    // Map TypeClass to the appropriate __madc_ostream_* wrapper call
+    std::string ostream_call_for_type(const std::string &os,
+				      TypeClass tc, const std::string &expr)
     {
 	switch (tc) {
-	case TC_STDSTR: return "__std_cout_stdstr(" + expr + ")";
-	case TC_STRING: return "__std_cout_str(" + expr + ")";
-	case TC_CHAR:   return "__std_cout_char(" + expr + ")";
-	case TC_DOUBLE: return "__std_cout_double(" + expr + ")";
-	default:        return "__std_cout_int(" + expr + ")";
+	case TC_STDSTR: return "__madc_ostream_stdstr(" + os + ", " + expr + ")";
+	case TC_STRING: return "__madc_ostream_str(" + os + ", " + expr + ")";
+	case TC_CHAR:   return "__madc_ostream_char(" + os + ", " + expr + ")";
+	case TC_DOUBLE: return "__madc_ostream_double(" + os + ", " + expr + ")";
+	default:        return "__madc_ostream_int(" + os + ", " + expr + ")";
 	}
     }
 
-    // Map iostream manipulator names to wrapper calls
-    static std::string cout_manipulator(const std::string &name)
+    // Map iostream manipulator names to ostream wrapper calls
+    static std::string ostream_manipulator(const std::string &os,
+					   const std::string &name)
     {
-	if (name == "endl")        return "__std_cout_endl()";
-	if (name == "flush")       return "__std_cout_flush()";
-	if (name == "hex")         return "__std_cout_hex()";
-	if (name == "oct")         return "__std_cout_oct()";
-	if (name == "dec")         return "__std_cout_dec()";
-	if (name == "fixed")       return "__std_cout_fixed()";
-	if (name == "scientific")  return "__std_cout_scientific()";
-	if (name == "left")        return "__std_cout_left()";
-	if (name == "right")       return "__std_cout_right()";
-	if (name == "boolalpha")   return "__std_cout_boolalpha()";
-	if (name == "noboolalpha") return "__std_cout_noboolalpha()";
-	if (name == "showbase")    return "__std_cout_showbase()";
-	if (name == "noshowbase")  return "__std_cout_noshowbase()";
+	if (name == "endl")        return "__madc_ostream_endl(" + os + ")";
+	if (name == "flush")       return "__madc_ostream_flush(" + os + ")";
+	if (name == "hex")         return "__madc_ostream_hex(" + os + ")";
+	if (name == "oct")         return "__madc_ostream_oct(" + os + ")";
+	if (name == "dec")         return "__madc_ostream_dec(" + os + ")";
+	if (name == "fixed")       return "__madc_ostream_fixed(" + os + ")";
+	if (name == "scientific")  return "__madc_ostream_scientific(" + os + ")";
+	if (name == "left")        return "__madc_ostream_left(" + os + ")";
+	if (name == "right")       return "__madc_ostream_right(" + os + ")";
+	if (name == "boolalpha")   return "__madc_ostream_boolalpha(" + os + ")";
+	if (name == "noboolalpha") return "__madc_ostream_noboolalpha(" + os + ")";
+	if (name == "showbase")    return "__madc_ostream_showbase(" + os + ")";
+	if (name == "noshowbase")  return "__madc_ostream_noshowbase(" + os + ")";
 	return "";
     }
 
@@ -2205,31 +2205,36 @@ public:
 	header += "extern long __madc_string_length(void *);\n";
 	header += "extern void __madc_string_append_cstr(void *, const char *);\n";
 	header += "extern void __madc_string_append(void *, void *);\n";
-	header += "extern void __std_cout_stdstr(void *);\n";
+	// ostream wrappers — take ostream* as first arg
+	header += "extern void __madc_ostream_str(void *, const char *);\n";
+	header += "extern void __madc_ostream_stdstr(void *, void *);\n";
+	header += "extern void __madc_ostream_int(void *, long);\n";
+	header += "extern void __madc_ostream_uint(void *, unsigned long);\n";
+	header += "extern void __madc_ostream_char(void *, int);\n";
+	header += "extern void __madc_ostream_double(void *, double);\n";
+	header += "extern void __madc_ostream_endl(void *);\n";
+	header += "extern void __madc_ostream_flush(void *);\n";
+	header += "extern void __madc_ostream_hex(void *);\n";
+	header += "extern void __madc_ostream_oct(void *);\n";
+	header += "extern void __madc_ostream_dec(void *);\n";
+	header += "extern void __madc_ostream_fixed(void *);\n";
+	header += "extern void __madc_ostream_scientific(void *);\n";
+	header += "extern void __madc_ostream_left(void *);\n";
+	header += "extern void __madc_ostream_right(void *);\n";
+	header += "extern void __madc_ostream_boolalpha(void *);\n";
+	header += "extern void __madc_ostream_noboolalpha(void *);\n";
+	header += "extern void __madc_ostream_showbase(void *);\n";
+	header += "extern void __madc_ostream_noshowbase(void *);\n";
+	header += "extern void __madc_ostream_setw(void *, int);\n";
+	header += "extern void __madc_ostream_setprecision(void *, int);\n";
+	header += "extern void __madc_ostream_setfill(void *, int);\n";
+	header += "extern void *__madc_cout_ptr(void);\n";
+	header += "extern void *__madc_cerr_ptr(void);\n";
+	header += "#define __madc_cout (__madc_cout_ptr())\n";
+	header += "#define __madc_cerr (__madc_cerr_ptr())\n";
 	header += "\n";
 
-	// C++ iostream wrappers (call real std::cout << operators)
-	header += "extern void __std_cout_str(const char *);\n";
-	header += "extern void __std_cout_int(long);\n";
-	header += "extern void __std_cout_uint(unsigned long);\n";
-	header += "extern void __std_cout_char(int);\n";
-	header += "extern void __std_cout_double(double);\n";
-	header += "extern void __std_cout_endl(void);\n";
-	header += "extern void __std_cout_flush(void);\n";
-	header += "extern void __std_cout_hex(void);\n";
-	header += "extern void __std_cout_oct(void);\n";
-	header += "extern void __std_cout_dec(void);\n";
-	header += "extern void __std_cout_fixed(void);\n";
-	header += "extern void __std_cout_scientific(void);\n";
-	header += "extern void __std_cout_left(void);\n";
-	header += "extern void __std_cout_right(void);\n";
-	header += "extern void __std_cout_boolalpha(void);\n";
-	header += "extern void __std_cout_noboolalpha(void);\n";
-	header += "extern void __std_cout_showbase(void);\n";
-	header += "extern void __std_cout_noshowbase(void);\n";
-	header += "extern void __std_cout_setw(int);\n";
-	header += "extern void __std_cout_setprecision(int);\n";
-	header += "extern void __std_cout_setfill(int);\n";
+	// (old __std_cout_* declarations removed — replaced by __madc_ostream_* above)
 	header += "\n";
 
 	// Additional builtins commonly needed
