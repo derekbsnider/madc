@@ -38,6 +38,22 @@ extern "C" {
 }
 
 // -----------------------------------------------------------------------
+// madc runtime builtins — exported with C linkage so dlsym can find them.
+// These wrap the C++ implementations in parser.cpp.
+// -----------------------------------------------------------------------
+
+extern "C" {
+
+void madc_puti(int64_t i)    { std::cout << i << std::endl; }
+void madc_putu(uint64_t i)   { std::cout << i << std::endl; }
+void madc_putd(double d)     { std::cout << d << std::endl; }
+void madc_putf(float f)      { std::cout << f << std::endl; }
+void madc_puts(const char *s) { if (s) puts(s); }
+void madc_printstr(const char *s) { if (s) std::cout << s; }
+
+} // extern "C"
+
+// -----------------------------------------------------------------------
 // Import resolver — all runtime helpers live in libmadc.so or libc.
 // dlsym(RTLD_DEFAULT) finds them.
 // -----------------------------------------------------------------------
