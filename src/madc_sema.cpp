@@ -140,18 +140,16 @@ class SemaCollector
     // Type classification — matches the emitter's classify_type()
     // ---------------------------------------------------------------
 
-    // Classify a type specifier string into a single char:
-    //   'c' = char, 's' = string/char*, 'd' = double/float, 'i' = int
-    static char classify_type_str(const string &type)
+    static TypeClass classify_type_str(const string &type)
     {
 	if (type.find("char") != string::npos) {
-	    if (type.find("*") != string::npos) return 's';
-	    return 'c';
+	    if (type.find("*") != string::npos) return TC_STRING;
+	    return TC_CHAR;
 	}
-	if (type.find("const char") != string::npos) return 's';
-	if (type.find("float") != string::npos) return 'd';
-	if (type.find("double") != string::npos) return 'd';
-	return 'i';
+	if (type.find("const char") != string::npos) return TC_STRING;
+	if (type.find("float") != string::npos) return TC_DOUBLE;
+	if (type.find("double") != string::npos) return TC_DOUBLE;
+	return TC_INT;
     }
 
     // Build a type string from a declaration_specifiers (qual chain)
@@ -237,8 +235,7 @@ class SemaCollector
 	return "";
     }
 
-    // Classify a declaration_specifiers node into a type char
-    char classify_specs(gp_tree_node *specs)
+    TypeClass classify_specs(gp_tree_node *specs)
     {
 	return classify_type_str(type_string(specs));
     }
@@ -288,7 +285,7 @@ class SemaCollector
     // Declaration walking
     // ---------------------------------------------------------------
 
-    void collect_decl_vars(const string &type_str, char tc,
+    void collect_decl_vars(const string &type_str, TypeClass tc,
 			   gp_tree_node *decls, bool is_global)
     {
 	if (is_nil(decls)) return;
@@ -302,11 +299,11 @@ class SemaCollector
 
 	    if (info.class_names.count(clean_type)) {
 		info.var_class_map[vname] = clean_type;
-		info.var_types[vname] = 'i';  // class objects print as int
+		info.var_types[vname] = TC_CLASS;
 	    } else {
-		char effective_tc = tc;
-		if (has_pointer(decls) && effective_tc == 'c')
-		    effective_tc = 's';  // char * → string
+		TypeClass effective_tc = tc;
+		if (has_pointer(decls) && effective_tc == TC_CHAR)
+		    effective_tc = TC_STRING;  // char * → string
 		info.var_types[vname] = effective_tc;
 	    }
 	}
@@ -341,10 +338,10 @@ class SemaCollector
 	if (is_func_decl(decls)) {
 	    string fname = extract_name(decls);
 	    if (!fname.empty()) {
-		char tc = classify_type_str(type_str);
+		TypeClass tc = classify_type_str(type_str);
 		// Check if declarator adds a pointer
-		if (has_pointer(decls) && tc == 'c')
-		    tc = 's';  // char * return → string
+		if (has_pointer(decls) && tc == TC_CHAR)
+		    tc = TC_STRING;  // char * return → string
 		info.func_ret_types[fname] = tc;
 		info.func_type_strs[fname] = type_str;
 	    }
@@ -352,7 +349,7 @@ class SemaCollector
 	}
 
 	// Regular variable declaration
-	char tc = classify_type_str(type_str);
+	TypeClass tc = classify_type_str(type_str);
 	collect_decl_vars(type_str, tc, decls, is_global);
     }
 
@@ -371,9 +368,9 @@ class SemaCollector
 	    if (!is_nil(decl)) {
 		string pname = extract_name(decl);
 		if (!pname.empty()) {
-		    char tc = classify_type_str(type_str);
-		    if (has_pointer(decl) && tc == 'c')
-			tc = 's';
+		    TypeClass tc = classify_type_str(type_str);
+		    if (has_pointer(decl) && tc == TC_CHAR)
+			tc = TC_STRING;
 		    info.var_types[pname] = tc;
 		}
 	    }
@@ -398,11 +395,11 @@ class SemaCollector
 
 	string type_str = type_string(specs);
 	string func_name = extract_name(decl);
-	char tc = classify_type_str(type_str);
+	TypeClass tc = classify_type_str(type_str);
 
 	// Check if declarator adds a pointer (e.g. char *func() → ptr_decl)
-	if (has_pointer(decl) && tc == 'c')
-	    tc = 's';  // char * return → string
+	if (has_pointer(decl) && tc == TC_CHAR)
+	    tc = TC_STRING;  // char * return → string
 
 	if (!func_name.empty()) {
 	    info.func_ret_types[func_name] = tc;
@@ -495,7 +492,7 @@ class SemaCollector
 	    string method_name = extract_name(decl);
 	    if (!method_name.empty()) {
 		ci.methods.insert(method_name);
-		char tc = classify_type_str(ret_type);
+		TypeClass tc = classify_type_str(ret_type);
 		ci.method_ret_types[method_name] = tc;
 		// Register mangled name in func_ret_types
 		string mangled = class_name + "__" + method_name;
@@ -514,7 +511,7 @@ class SemaCollector
 	    string method_name = extract_name(decl);
 	    if (!method_name.empty()) {
 		ci.methods.insert(method_name);
-		char tc = classify_type_str(ret_type);
+		TypeClass tc = classify_type_str(ret_type);
 		ci.method_ret_types[method_name] = tc;
 		string mangled = class_name + "__" + method_name;
 		info.func_ret_types[mangled] = tc;
@@ -557,9 +554,9 @@ class SemaCollector
 
 	string fname = extract_name(node);
 	if (!fname.empty()) {
-	    char tc = classify_type_str(type_str);
-	    if (has_pointer(node) && tc == 'c')
-		tc = 's';
+	    TypeClass tc = classify_type_str(type_str);
+	    if (has_pointer(node) && tc == TC_CHAR)
+		tc = TC_STRING;
 	    ci.fields.insert(fname);
 	    ci.field_types[fname] = tc;
 	}
@@ -620,7 +617,7 @@ class SemaCollector
 	else if (is_anode(node, "enum_assign"))
 	    vname = term_text(child(node, 0));
 	if (!vname.empty())
-	    info.var_types[vname] = 'i';  // enum values are ints
+	    info.var_types[vname] = TC_INT;  // enum values are ints
     }
 
     // ---------------------------------------------------------------
@@ -680,7 +677,7 @@ class SemaCollector
 	    if (!vname.empty()) {
 		if (info.class_names.count(clean_type)) {
 		    info.var_class_map[vname] = clean_type;
-		    info.var_types[vname] = 'i';
+		    info.var_types[vname] = TC_INT;
 		} else {
 		    info.var_types[vname] = classify_type_str(type_str);
 		}

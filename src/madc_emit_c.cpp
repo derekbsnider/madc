@@ -127,7 +127,7 @@ class CEmitter
 
     // Per-function local variable type overlay (cleared each function)
     // Augments sema->var_types with function-local declarations
-    std::map<std::string, char> local_var_types;
+    std::map<std::string, TypeClass> local_var_types;
 
     // Per-function local class var map overlay
     std::map<std::string, std::string> local_var_class_map;
@@ -136,17 +136,17 @@ class CEmitter
     std::vector<std::string> scope_class_vars;
 
     // Look up variable type: local overlay first, then sema
-    char lookup_var_type(const std::string &name) {
+    TypeClass lookup_var_type(const std::string &name) {
 	auto it = local_var_types.find(name);
 	if (it != local_var_types.end()) return it->second;
 	if (sema) return sema->get_var_type(name);
-	return 'i';
+	return TC_INT;
     }
 
     // Look up function return type: sema first
-    char lookup_func_ret_type(const std::string &name) {
+    TypeClass lookup_func_ret_type(const std::string &name) {
 	if (sema) return sema->get_func_ret_type(name);
-	return 'i';
+	return TC_INT;
     }
 
     // Check if a name is a known class
@@ -557,35 +557,35 @@ class CEmitter
     // Returns: 'c' char, 's' string, 'd' double, 'i' int (default)
     // ---------------------------------------------------------------
 
-    char infer_expr_cout_type(gp_tree_node *node)
+    TypeClass infer_expr_cout_type(gp_tree_node *node)
     {
-	if (!node) return 'i';
+	if (!node) return TC_INT;
 
 	// Terminal
 	if (node->type == GP_TERM) {
 	    int code = term_code(node);
-	    if (code == GT_STRING) return 's';
-	    if (code == GT_REAL) return 'd';
-	    if (code == GT_CHAR_LIT) return 'c';
+	    if (code == GT_STRING) return TC_STRING;
+	    if (code == GT_REAL) return TC_DOUBLE;
+	    if (code == GT_CHAR_LIT) return TC_CHAR;
 	    if (code == GT_IDENT) return lookup_var_type(term_text(node));
-	    return 'i';
+	    return TC_INT;
 	}
 
-	if (node->type != GP_ANODE) return 'i';
+	if (node->type != GP_ANODE) return TC_INT;
 	const char *nm = anode_name(node);
 
 	// Deref: *p where p is char* → char
 	if (strcmp(nm, "deref") == 0) {
-	    char inner = infer_expr_cout_type(child(node, 0));
-	    if (inner == 's') return 'c';  // deref string/char* → char
-	    return 'i';
+	    TypeClass inner = infer_expr_cout_type(child(node, 0));
+	    if (inner == TC_STRING) return TC_CHAR;  // deref string/char* → char
+	    return TC_INT;
 	}
 
 	// Subscript: a[i] where a is char* → char
 	if (strcmp(nm, "subscript") == 0) {
-	    char inner = infer_expr_cout_type(child(node, 0));
-	    if (inner == 's') return 'c';
-	    return 'i';
+	    TypeClass inner = infer_expr_cout_type(child(node, 0));
+	    if (inner == TC_STRING) return TC_CHAR;
+	    return TC_INT;
 	}
 
 	// Cast — check target type
@@ -606,17 +606,17 @@ class CEmitter
 
 	// Arithmetic — pointer arithmetic preserves pointer type
 	if (strcmp(nm, "add") == 0 || strcmp(nm, "sub") == 0) {
-	    char l = infer_expr_cout_type(child(node, 0));
-	    char r = infer_expr_cout_type(child(node, 1));
-	    if (l == 's' || r == 's') return 's';  // ptr + int = ptr
-	    if (l == 'd' || r == 'd') return 'd';
-	    return 'i';
+	    TypeClass l = infer_expr_cout_type(child(node, 0));
+	    TypeClass r = infer_expr_cout_type(child(node, 1));
+	    if (l == TC_STRING || r == TC_STRING) return TC_STRING;  // ptr + int = ptr
+	    if (l == TC_DOUBLE || r == TC_DOUBLE) return TC_DOUBLE;
+	    return TC_INT;
 	}
 	if (strcmp(nm, "mul") == 0 || strcmp(nm, "div") == 0) {
-	    char l = infer_expr_cout_type(child(node, 0));
-	    char r = infer_expr_cout_type(child(node, 1));
-	    if (l == 'd' || r == 'd') return 'd';
-	    return 'i';
+	    TypeClass l = infer_expr_cout_type(child(node, 0));
+	    TypeClass r = infer_expr_cout_type(child(node, 1));
+	    if (l == TC_DOUBLE || r == TC_DOUBLE) return TC_DOUBLE;
+	    return TC_INT;
 	}
 
 	// Assignment — type of LHS
@@ -625,14 +625,14 @@ class CEmitter
 
 	// Address-of — produces a pointer
 	if (strcmp(nm, "addrof") == 0) {
-	    char inner = infer_expr_cout_type(child(node, 0));
-	    if (inner == 'c') return 's';  // &char → char*
-	    return 'i';  // &int → int* (print as int)
+	    TypeClass inner = infer_expr_cout_type(child(node, 0));
+	    if (inner == TC_CHAR) return TC_STRING;  // &char → char*
+	    return TC_INT;  // &int → int* (print as int)
 	}
 
 	// Member access — default to int for now
 	if (strcmp(nm, "member") == 0 || strcmp(nm, "arrow_member") == 0)
-	    return 'i';
+	    return TC_INT;
 
 	// Ternary — type of true branch
 	if (strcmp(nm, "ternary") == 0)
@@ -647,7 +647,7 @@ class CEmitter
 	if (strcmp(nm, "neg") == 0)
 	    return infer_expr_cout_type(child(node, 0));
 
-	return 'i';
+	return TC_INT;
     }
 
     // ---------------------------------------------------------------
@@ -741,12 +741,12 @@ class CEmitter
 		} else {
 		    // Identifier — use sema + local type info
 		    std::string id = term_text(v);
-		    char tc = lookup_var_type(id);
-		    if (tc == 's')
+		    TypeClass tc = lookup_var_type(id);
+		    if (tc == TC_STRING)
 			result += "printf(\"%s\", " + id + ")";
-		    else if (tc == 'c')
+		    else if (tc == TC_CHAR)
 			result += "printf(\"%c\", " + id + ")";
-		    else if (tc == 'd')
+		    else if (tc == TC_DOUBLE)
 			result += "printf(\"%g\", (double)" + id + ")";
 		    else
 			result += "printf(\"%lld\", (long long)" + id + ")";
@@ -754,14 +754,14 @@ class CEmitter
 	    } else {
 		// Complex expression — infer type for format
 		std::string e = emit_expr(v);
-		char etc = infer_expr_cout_type(v);
+		TypeClass etc = infer_expr_cout_type(v);
 		if (!e.empty() && e[0] == '"')
 		    result += "printf(\"%s\", " + e + ")";
-		else if (etc == 's')
+		else if (etc == TC_STRING)
 		    result += "printf(\"%s\", " + e + ")";
-		else if (etc == 'c')
+		else if (etc == TC_CHAR)
 		    result += "printf(\"%c\", " + e + ")";
-		else if (etc == 'd')
+		else if (etc == TC_DOUBLE)
 		    result += "printf(\"%g\", (double)(" + e + "))";
 		else
 		    result += "printf(\"%lld\", (long long)(" + e + "))";
@@ -1353,16 +1353,16 @@ class CEmitter
     // ---------------------------------------------------------------
 
     // Classify a type string for cout format inference
-    static char classify_type(const std::string &type)
+    static TypeClass classify_type(const std::string &type)
     {
 	if (type.find("char") != std::string::npos) {
-	    if (type.find("*") != std::string::npos) return 's';
-	    return 'c';
+	    if (type.find("*") != std::string::npos) return TC_STRING;
+	    return TC_CHAR;
 	}
-	if (type.find("const char") != std::string::npos) return 's';
-	if (type.find("float") != std::string::npos) return 'd';
-	if (type.find("double") != std::string::npos) return 'd';
-	return 'i';
+	if (type.find("const char") != std::string::npos) return TC_STRING;
+	if (type.find("float") != std::string::npos) return TC_DOUBLE;
+	if (type.find("double") != std::string::npos) return TC_DOUBLE;
+	return TC_INT;
     }
 
     // Track variable types from a declaration for cout inference
@@ -1377,11 +1377,11 @@ class CEmitter
 		clean_type = clean_type.substr(7);
 	    if (is_known_class(clean_type)) {
 		local_var_class_map[vname] = clean_type;
-		local_var_types[vname] = 'i';  // class objects print as int
+		local_var_types[vname] = TC_CLASS;  // class objects print as int
 	    } else {
 		bool has_ptr = is_anode(decls, "ptr_decl");
-		char tc = classify_type(type);
-		if (has_ptr && tc == 'c') tc = 's';  // char * → string
+		TypeClass tc = classify_type(type);
+		if (has_ptr && tc == TC_CHAR) tc = TC_STRING;  // char * → string
 		local_var_types[vname] = tc;
 	    }
 	}
