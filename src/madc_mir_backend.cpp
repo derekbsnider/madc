@@ -141,6 +141,60 @@ void *__madc_cout_ptr(void) { return &std::cout; }
 void *__madc_cerr_ptr(void) { return &std::cerr; }
 void *__madc_cin_ptr(void)  { return &std::cin; }
 
+// File stream wrappers — typed per stream class because std::ios is a
+// virtual base class; casting void* to ios* gives wrong pointer offset.
+// Pattern from legacy compiler.cpp:2577.
+
+// ofstream
+void *ofstream_construct(void *ptr)
+	{ return new(ptr) std::ofstream; }
+void ofstream_destruct(void *ptr)
+	{ ((std::ofstream *)ptr)->~basic_ofstream(); }
+void ofstream_open(void *ptr, const char *path)
+	{ ((std::ofstream *)ptr)->open(path); }
+void ofstream_close(void *ptr)
+	{ ((std::ofstream *)ptr)->close(); }
+long ofstream_good(void *ptr)
+	{ return ((std::ofstream *)ptr)->good() ? 1 : 0; }
+long ofstream_is_open(void *ptr)
+	{ return ((std::ofstream *)ptr)->is_open() ? 1 : 0; }
+
+// ifstream
+void *ifstream_construct(void *ptr)
+	{ return new(ptr) std::ifstream; }
+void ifstream_destruct(void *ptr)
+	{ ((std::ifstream *)ptr)->~basic_ifstream(); }
+void ifstream_open(void *ptr, const char *path)
+	{ ((std::ifstream *)ptr)->open(path); }
+void ifstream_close(void *ptr)
+	{ ((std::ifstream *)ptr)->close(); }
+long ifstream_good(void *ptr)
+	{ return ((std::ifstream *)ptr)->good() ? 1 : 0; }
+long ifstream_eof(void *ptr)
+	{ return ((std::ifstream *)ptr)->eof() ? 1 : 0; }
+long ifstream_is_open(void *ptr)
+	{ return ((std::ifstream *)ptr)->is_open() ? 1 : 0; }
+
+// fstream
+void *fstream_construct(void *ptr)
+	{ return new(ptr) std::fstream; }
+void fstream_destruct(void *ptr)
+	{ ((std::fstream *)ptr)->~basic_fstream(); }
+void fstream_open(void *ptr, const char *path)
+	{ ((std::fstream *)ptr)->open(path); }
+void fstream_close(void *ptr)
+	{ ((std::fstream *)ptr)->close(); }
+
+// stringstream
+void *sstream_construct(void *ptr)
+	{ return new(ptr) std::stringstream; }
+void sstream_destruct(void *ptr)
+	{ ((std::stringstream *)ptr)->~basic_stringstream(); }
+const char *sstream_str(void *ptr)
+	{ static thread_local std::string s; s = ((std::stringstream *)ptr)->str(); return s.c_str(); }
+void sstream_str_set(void *ptr, const char *s)
+	{ ((std::stringstream *)ptr)->str(s ? s : ""); }
+
 } // extern "C"
 
 // -----------------------------------------------------------------------
