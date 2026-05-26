@@ -220,6 +220,17 @@ class CEmitter
     // When true, use calloc instead of malloc for new expressions
     bool prefer_calloc = false;
 
+    // Try block nesting depth — for unique __try_ctx variable names
+    int try_depth = 0;
+    // Nesting level for try blocks — used to determine whether objects
+    // should persist to function scope (level 0) or be destroyed at
+    // try scope (level > 0).
+    int try_nesting = 0;
+
+    // Guard variables for try-body objects: maps "varname|classname"
+    // to a guard variable name. Function-scope dtors check the guard.
+    std::map<std::string, std::string> try_dtor_guards;
+
     // Per-function va_list variable names (for va_start/va_end emission)
     std::set<std::string> va_list_vars;
 
@@ -329,6 +340,138 @@ class CEmitter
 	}
 	if (is_global_string(name)) return "string";
 	return "";
+    }
+
+    // Collect catch clauses from catch_list tree into a flat vector
+    void collect_catch_clauses(gp_tree_node *node,
+			       std::vector<gp_tree_node *> &out)
+    {
+	if (!node) return;
+	int an = an_code(node);
+	if (an == AN_CATCH || an == AN_CATCH_ALL) {
+	    out.push_back(node);
+	    return;
+	}
+	if (an == AN_CATCH_LIST) {
+	    collect_catch_clauses(child(node, 0), out);
+	    collect_catch_clauses(child(node, 1), out);
+	    return;
+	}
+	// Fallback: might be a single clause directly
+	out.push_back(node);
+    }
+
+    // Determine the __madc_throw_* function for a throw expression type
+    std::string throw_func_for_type(TypeClass tc)
+    {
+	switch (tc) {
+	case TC_DOUBLE: return "__madc_throw_double";
+	case TC_STRING: return "__madc_throw_cstr";
+	default:        return "__madc_throw_int";
+	}
+    }
+
+    // Map catch type string to exception type constant (1=int, 2=double, 3=cstr)
+    int exception_type_for_catch(const std::string &type_str)
+    {
+	if (type_str.find("double") != std::string::npos ||
+	    type_str.find("float") != std::string::npos)
+	    return 2;
+	if (type_str.find("char") != std::string::npos &&
+	    type_str.find("*") != std::string::npos)
+	    return 3;
+	if (type_str == "const char *")
+	    return 3;
+	return 1;  // int, long, etc.
+    }
+
+    // Map exception type constant to the retrieval function
+    std::string exception_getter_for_type(int exc_type)
+    {
+	switch (exc_type) {
+	case 2:  return "__madc_exception_double";
+	case 3:  return "__madc_exception_cstr";
+	default: return "__madc_exception_int";
+	}
+    }
+
+    // Emit the contents of a compound statement WITHOUT braces
+    // (unwraps AN_BLOCK to keep declarations at enclosing scope)
+    void emit_stmt_unwrapped(gp_tree_node *node)
+    {
+	if (!node) return;
+	if (is_an(node, AN_BLOCK)) {
+	    emit_stmt(child(node, 0));
+	    return;
+	}
+	emit_stmt(node);
+    }
+
+    // Check if a statement node is a declaration (needs hoisting out
+    // of setjmp if-blocks to keep variables in scope for dtors).
+    bool is_decl_stmt(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return false;
+	int an = an_code(node);
+	return an == AN_DECL || an == AN_CTOR_DECL;
+    }
+
+    // Emit ONLY the variable declaration part of a ctor decl
+    // (struct Foo a;) without the constructor call. Used for hoisting.
+    void emit_ctor_decl_only(gp_tree_node *node)
+    {
+	std::string type = emit_type(child(node, 0));
+	std::string vname = term_text(child(node, 1));
+	emit_indent();
+	O("%s %s;\n", type.c_str(), vname.c_str());
+	// Track type info
+	std::string clean_type = type;
+	if (clean_type.substr(0, 7) == "struct ")
+	    clean_type = clean_type.substr(7);
+	if (is_known_class(clean_type))
+	    local_var_class_map[vname] = clean_type;
+    }
+
+    // Emit ONLY the constructor call part of a ctor decl
+    // (Foo__Foo(&a, args);) without the variable declaration.
+    // If guard_var is non-empty, set the guard after construction and
+    // register it for guarded function-scope cleanup.
+    void emit_ctor_call_only(gp_tree_node *node, const std::string &guard_var = "")
+    {
+	std::string type = emit_type(child(node, 0));
+	std::string vname = term_text(child(node, 1));
+	std::string args = emit_arg_list(child(node, 2));
+	std::string clean_type = type;
+	if (clean_type.substr(0, 7) == "struct ")
+	    clean_type = clean_type.substr(7);
+	emit_indent();
+	O("%s__%s(&%s, %s);\n", clean_type.c_str(), clean_type.c_str(),
+	  vname.c_str(), args.c_str());
+	if (class_has_dtor(clean_type)) {
+	    std::string key = vname + "|" + clean_type;
+	    scope_class_vars.push_back(key);
+	    if (!guard_var.empty()) {
+		// Set guard to 1 after successful construction
+		emit_indent();
+		O("%s = 1;\n", guard_var.c_str());
+		try_dtor_guards[key] = guard_var;
+	    }
+	}
+    }
+
+
+    // Collect all statements from a compound statement's stmt_list,
+    // flattening left-recursive AN_STMT_LIST nodes into a flat vector.
+    void collect_stmts(gp_tree_node *node,
+		       std::vector<gp_tree_node *> &out)
+    {
+	if (!node || node->type == GP_NIL) return;
+	if (is_an(node, AN_STMT_LIST)) {
+	    collect_stmts(child(node, 0), out);
+	    collect_stmts(child(node, 1), out);
+	    return;
+	}
+	out.push_back(node);
     }
 
     void O(const char *fmt, ...)
@@ -1900,6 +2043,265 @@ class CEmitter
 	return false;
     }
 
+    // Emit dtor call for one scope_class_vars entry
+    void emit_one_dtor(const std::string &vn, const std::string &cn)
+    {
+	emit_indent();
+	emit_one_dtor_inline(vn, cn);
+	O("\n");
+    }
+
+    // Emit dtor call inline (no indent/newline — for use inside if blocks)
+    void emit_one_dtor_inline(const std::string &vn, const std::string &cn)
+    {
+	if (cn == "string")
+	    O("string_destruct(%s);", vn.c_str());
+	else if (cn == "ofstream" || cn == "ifstream" || cn == "fstream")
+	    O("%s_destruct(%s);", cn.c_str(), vn.c_str());
+	else if (cn == "stringstream")
+	    O("sstream_destruct(%s);", vn.c_str());
+	else
+	    O("%s__dtor(&%s);", cn.c_str(), vn.c_str());
+    }
+
+    // Emit dtor calls for try-body objects in catch handler.
+    // Uses guard variables to handle partially-constructed state
+    // (e.g. throw before all ctors complete). Also clears guards
+    // so function-scope dtors won't double-destruct.
+    void emit_try_body_dtors_guarded(size_t scope_save)
+    {
+	for (int i = (int)scope_class_vars.size() - 1; i >= (int)scope_save; i--) {
+	    std::string key = scope_class_vars[i];
+	    size_t sep = key.find('|');
+	    if (sep == std::string::npos) continue;
+	    std::string vn = key.substr(0, sep);
+	    std::string cn = key.substr(sep + 1);
+	    auto git = try_dtor_guards.find(key);
+	    if (git != try_dtor_guards.end()) {
+		// Guarded: only destruct if guard is set, then clear it
+		emit_indent();
+		O("if (%s) { ", git->second.c_str());
+		if (cn == "string")
+		    O("string_destruct(%s);", vn.c_str());
+		else if (cn == "ofstream" || cn == "ifstream" || cn == "fstream")
+		    O("%s_destruct(%s);", cn.c_str(), vn.c_str());
+		else if (cn == "stringstream")
+		    O("sstream_destruct(%s);", vn.c_str());
+		else
+		    O("%s__dtor(&%s);", cn.c_str(), vn.c_str());
+		O(" %s = 0; }\n", git->second.c_str());
+	    } else {
+		emit_one_dtor(vn, cn);
+	    }
+	}
+    }
+
+    // Emit a try/catch block using the SJLJ exception runtime.
+    //
+    // Declarations from the try body are hoisted before setjmp so that
+    // variables remain visible for destructor calls in both the normal
+    // and exception paths.
+    //
+    // Normal path: dtors are NOT called at try-body exit — they persist
+    // to function scope (matching madc JIT semantics).
+    // Exception path: catch handler calls dtors for try-body objects,
+    // then removes them from scope_class_vars.
+    void emit_try_catch(gp_tree_node *node)
+    {
+	int ctx_id = try_depth++;
+	bool nested = (try_nesting > 0);
+	try_nesting++;
+	gp_tree_node *try_body = child(node, 0);
+	gp_tree_node *catch_list = child(node, 1);
+
+	// Collect catch clauses
+	std::vector<gp_tree_node *> catches;
+	collect_catch_clauses(catch_list, catches);
+
+	// Save scope_class_vars size to track objects constructed in try body
+	size_t scope_save = scope_class_vars.size();
+
+	// Collect all statements from the try body compound statement.
+	gp_tree_node *body_stmts = try_body;
+	if (is_an(try_body, AN_BLOCK))
+	    body_stmts = child(try_body, 0);
+	std::vector<gp_tree_node *> stmts;
+	collect_stmts(body_stmts, stmts);
+
+	// Declarations are emitted at the enclosing scope level (no
+	// extra block) so variables remain visible for function-scope
+	// destructor calls and guard checks.
+
+	// Pass 1: emit declarations before setjmp (hoisted).
+	// For CTOR_DECL, emit variable declaration + guard variable.
+	// For regular decls (including strings), emit fully.
+	std::vector<std::string> ctor_guard_names;
+	for (size_t i = 0; i < stmts.size(); i++) {
+	    if (an_code(stmts[i]) == AN_CTOR_DECL) {
+		emit_ctor_decl_only(stmts[i]);
+		// Emit a guard variable for dtor tracking. Use static so
+		// the value survives longjmp (c2mir doesn't honour volatile
+		// across setjmp/longjmp). Reset to 0 at entry.
+		std::string gname = "__try_alive_" + std::to_string(ctx_id)
+		    + "_" + std::to_string(ctor_guard_names.size());
+		emit_indent();
+		O("static int %s = 0;\n", gname.c_str());
+		emit_indent();
+		O("%s = 0;\n", gname.c_str());
+		ctor_guard_names.push_back(gname);
+	    } else if (an_code(stmts[i]) == AN_DECL) {
+		emit_stmt(stmts[i]);
+	    }
+	}
+
+	// Declare try context
+	emit_indent();
+	O("__madc_try_ctx_t __try_ctx_%d;\n", ctx_id);
+	emit_indent();
+	O("__madc_try_push(&__try_ctx_%d);\n", ctx_id);
+
+	// setjmp branch: 0 = normal (try body), non-zero = exception (catch)
+	emit_indent();
+	O("if (_setjmp(((char *)&__try_ctx_%d)) == 0) {\n", ctx_id);
+	indent_level++;
+
+	// Pass 2: emit constructor calls (with guards) and non-declaration
+	// statements inside the if block
+	int ctor_idx = 0;
+	for (size_t i = 0; i < stmts.size(); i++) {
+	    if (an_code(stmts[i]) == AN_CTOR_DECL) {
+		std::string guard = ctor_idx < (int)ctor_guard_names.size()
+		    ? ctor_guard_names[ctor_idx] : "";
+		emit_ctor_call_only(stmts[i], guard);
+		ctor_idx++;
+	    } else if (!is_decl_stmt(stmts[i]))
+		emit_stmt(stmts[i]);
+	}
+
+	// Save scope_class_vars for the catch handler before potentially
+	// resizing on the normal exit path (nested try).
+	std::vector<std::string> saved_scope = scope_class_vars;
+
+	// Normal exit: for nested try blocks, destroy objects here
+	// (they can't survive to function scope since they're in a
+	// nested block). For top-level try, let them persist to
+	// function-scope cleanup via scope_class_vars + guards.
+	if (nested) {
+	    // Call dtors in LIFO order and remove from scope_class_vars
+	    for (int i = (int)scope_class_vars.size() - 1; i >= (int)scope_save; i--) {
+		std::string key = scope_class_vars[i];
+		size_t sep = key.find('|');
+		if (sep != std::string::npos) {
+		    std::string vn = key.substr(0, sep);
+		    std::string cn = key.substr(sep + 1);
+		    auto git = try_dtor_guards.find(key);
+		    if (git != try_dtor_guards.end()) {
+			emit_indent();
+			O("if (%s) { ", git->second.c_str());
+			emit_one_dtor_inline(vn, cn);
+			O(" %s = 0; }\n", git->second.c_str());
+		    } else {
+			emit_one_dtor(vn, cn);
+		    }
+		}
+	    }
+	    scope_class_vars.resize(scope_save);
+	}
+
+	emit_indent();
+	O("__madc_try_pop();\n");
+	indent_level--;
+	emit_indent();
+
+	// Restore scope_class_vars for catch handler emission so that
+	// the guarded dtor calls reference the right entries.
+	scope_class_vars = saved_scope;
+
+	// Catch handler(s) — emit guarded dtors for try-body objects.
+	// Guards are cleared so function-scope cleanup won't double-destruct.
+	if (catches.size() == 1 && is_an(catches[0], AN_CATCH_ALL)) {
+	    // Single catch(...)
+	    O("} else {\n");
+	    indent_level++;
+	    emit_try_body_dtors_guarded(scope_save);
+	    emit_stmt_unwrapped(child(catches[0], 0));
+	    emit_indent();
+	    O("__madc_exception_clear();\n");
+	    indent_level--;
+	} else if (catches.size() == 1 && is_an(catches[0], AN_CATCH)) {
+	    // Single typed catch
+	    gp_tree_node *c = catches[0];
+	    std::string type_str = emit_type(child(c, 0));
+	    std::string vname = extract_name(child(c, 1));
+	    int exc_type = exception_type_for_catch(type_str);
+	    O("} else {\n");
+	    indent_level++;
+	    // Destroy try-body objects (exception unwinding)
+	    emit_try_body_dtors_guarded(scope_save);
+	    // Declare catch variable and retrieve exception value
+	    emit_indent();
+	    O("%s %s = %s();\n", type_str.c_str(), vname.c_str(),
+	      exception_getter_for_type(exc_type).c_str());
+	    emit_stmt_unwrapped(child(c, 2));
+	    emit_indent();
+	    O("__madc_exception_clear();\n");
+	    indent_level--;
+	} else {
+	    // Multiple catch clauses — dispatch by exception type
+	    O("} else {\n");
+	    indent_level++;
+	    // Destroy try-body objects (exception unwinding)
+	    emit_try_body_dtors_guarded(scope_save);
+	    emit_indent();
+	    O("int __exc_type_%d = __madc_exception_type();\n", ctx_id);
+	    bool first = true;
+	    for (size_t i = 0; i < catches.size(); i++) {
+		gp_tree_node *c = catches[i];
+		if (is_an(c, AN_CATCH_ALL)) {
+		    // catch(...) — always last, acts as else
+		    emit_indent();
+		    if (!first) O("} else {\n");
+		    else O("{\n");
+		    indent_level++;
+		    emit_stmt_unwrapped(child(c, 0));
+		    emit_indent();
+		    O("__madc_exception_clear();\n");
+		    indent_level--;
+		} else if (is_an(c, AN_CATCH)) {
+		    std::string type_str = emit_type(child(c, 0));
+		    std::string vname = extract_name(child(c, 1));
+		    int exc_type = exception_type_for_catch(type_str);
+		    emit_indent();
+		    if (first)
+			O("if (__exc_type_%d == %d) {\n", ctx_id, exc_type);
+		    else
+			O("} else if (__exc_type_%d == %d) {\n", ctx_id, exc_type);
+		    indent_level++;
+		    emit_indent();
+		    O("%s %s = %s();\n", type_str.c_str(), vname.c_str(),
+		      exception_getter_for_type(exc_type).c_str());
+		    emit_stmt_unwrapped(child(c, 2));
+		    emit_indent();
+		    O("__madc_exception_clear();\n");
+		    indent_level--;
+		}
+		first = false;
+	    }
+	    emit_indent();
+	    O("}\n");
+	    indent_level--;
+	}
+
+	// Close the if/else
+	emit_indent();
+	O("}\n");
+	// For nested try, also resize scope_class_vars in the catch
+	// path (entries were already guarded-destructed above)
+	if (nested)
+	    scope_class_vars.resize(scope_save);
+	try_nesting--;
+    }
+
     void emit_stmt(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return;
@@ -2068,22 +2470,40 @@ class CEmitter
 		O("{\n");
 		indent_level++;
 	    }
-	    // Call destructors in LIFO order
+	    // Call destructors in LIFO order, checking guards for
+	    // try-body objects (already destroyed on exception path).
 	    for (int i = (int)scope_class_vars.size() - 1; i >= 0; i--) {
-		size_t sep = scope_class_vars[i].find('|');
+		std::string key = scope_class_vars[i];
+		size_t sep = key.find('|');
 		if (sep != std::string::npos) {
-		    std::string vn = scope_class_vars[i].substr(0, sep);
-		    std::string cn = scope_class_vars[i].substr(sep + 1);
-		    emit_indent();
-		    if (cn == "string")
-			O("string_destruct(%s);\n", vn.c_str());
-		    else if (cn == "ofstream" || cn == "ifstream" ||
-			     cn == "fstream")
-			O("%s_destruct(%s);\n", cn.c_str(), vn.c_str());
-		    else if (cn == "stringstream")
-			O("sstream_destruct(%s);\n", vn.c_str());
-		    else
-			O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
+		    std::string vn = key.substr(0, sep);
+		    std::string cn = key.substr(sep + 1);
+		    auto git = try_dtor_guards.find(key);
+		    if (git != try_dtor_guards.end()) {
+			// Guarded: only call dtor if guard is set
+			emit_indent();
+			O("if (%s) ", git->second.c_str());
+			if (cn == "string")
+			    O("string_destruct(%s);\n", vn.c_str());
+			else if (cn == "ofstream" || cn == "ifstream" ||
+				 cn == "fstream")
+			    O("%s_destruct(%s);\n", cn.c_str(), vn.c_str());
+			else if (cn == "stringstream")
+			    O("sstream_destruct(%s);\n", vn.c_str());
+			else
+			    O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
+		    } else {
+			emit_indent();
+			if (cn == "string")
+			    O("string_destruct(%s);\n", vn.c_str());
+			else if (cn == "ofstream" || cn == "ifstream" ||
+				 cn == "fstream")
+			    O("%s_destruct(%s);\n", cn.c_str(), vn.c_str());
+			else if (cn == "stringstream")
+			    O("sstream_destruct(%s);\n", vn.c_str());
+			else
+			    O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
+		    }
 		}
 	    }
 	    // In main(), call __madc_cleanup_globals() before returning
@@ -2169,25 +2589,23 @@ class CEmitter
 
 	// Try/catch
 	if (an == AN_TRY) {
-	    emit_indent();
-	    O("/* try */ {\n");
-	    indent_level++;
-	    emit_stmt(child(node, 0));
-	    indent_level--;
-	    emit_indent();
-	    O("}\n");
+	    emit_try_catch(node);
 	    return;
 	}
 
-	// Throw
+	// Throw with expression
 	if (an == AN_THROW_EXPR) {
+	    gp_tree_node *expr = child(node, 0);
+	    std::string val = emit_expr(expr);
+	    TypeClass tc = infer_expr_cout_type(expr);
 	    emit_indent();
-	    O("/* throw */ ;\n");
+	    O("%s(%s);\n", throw_func_for_type(tc).c_str(), val.c_str());
 	    return;
 	}
+	// Bare throw (rethrow)
 	if (an == AN_THROW) {
 	    emit_indent();
-	    O("/* throw */ ;\n");
+	    O("__madc_rethrow();\n");
 	    return;
 	}
 
@@ -3096,6 +3514,9 @@ class CEmitter
 	local_var_types.clear();  // fresh scope for each function
 	local_var_class_map.clear();
 	scope_class_vars.clear();
+	try_depth = 0;
+	try_nesting = 0;
+	try_dtor_guards.clear();
 	va_list_vars.clear();
 	vla_typedef_sizes.clear();
 	vla_param_side_effects.clear();
@@ -4041,6 +4462,27 @@ public:
 	header += "extern double log(double);\n";
 	header += "extern double sin(double);\n";
 	header += "extern double cos(double);\n";
+	header += "\n";
+
+	// Exception handling (SJLJ) runtime
+	header += "/* Exception handling runtime (SJLJ) */\n";
+	header += "#define __MADC_TRYCTX_SIZE 216\n";
+	header += "#define __MADC_TRYCTX_ALIGN 16\n";
+	header += "typedef struct { char __buf[__MADC_TRYCTX_SIZE]; } __madc_try_ctx_t;\n";
+	header += "extern void *__madc_try_push(void *);\n";
+	header += "extern void __madc_try_pop(void);\n";
+	header += "extern void __madc_throw_int(long);\n";
+	header += "extern void __madc_throw_double(double);\n";
+	header += "extern void __madc_throw_cstr(const char *);\n";
+	header += "extern void __madc_rethrow(void);\n";
+	header += "extern int __madc_exception_type(void);\n";
+	header += "extern long __madc_exception_int(void);\n";
+	header += "extern double __madc_exception_double(void);\n";
+	header += "extern const char *__madc_exception_cstr(void);\n";
+	header += "extern void __madc_exception_clear(void);\n";
+	header += "extern int _setjmp(void *);\n";
+	header += "\n";
+
 	header += "\n";
 
 	ns_funcs_used.clear();
