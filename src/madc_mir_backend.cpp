@@ -49,7 +49,7 @@ void madc_putu(uint64_t i)   { std::cout << i << std::endl; }
 void madc_putd(double d)     { std::cout << d << std::endl; }
 void madc_putf(float f)      { std::cout << f << std::endl; }
 void madc_puts(const char *s) { if (s) puts(s); }
-void madc_printstr(const char *s) { if (s) std::cout << s; }
+void madc_printstr(const char *s) { if (s) std::cout << s << std::endl; }
 
 } // extern "C"
 
