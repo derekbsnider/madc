@@ -111,3 +111,30 @@ TEST_SUITE("Itanium function mangling") {
 		      == "_ZN3std6string6assignEPKc");
 	}
 }
+
+TEST_SUITE("Itanium operator mangling") {
+
+	TEST_CASE("Comparison operators") {
+		CHECK(itanium_mangle_operator("Counter", "==", {"int"}) == "_ZN7CountereqEi");
+		CHECK(itanium_mangle_operator("Counter", "!=", {"int"}) == "_ZN7CounterneEi");
+		CHECK(itanium_mangle_operator("Counter", "<", {"int"}) == "_ZN7CounterltEi");
+		CHECK(itanium_mangle_operator("Counter", ">", {"int"}) == "_ZN7CountergtEi");
+		CHECK(itanium_mangle_operator("Counter", "<=", {"int"}) == "_ZN7CounterleEi");
+		CHECK(itanium_mangle_operator("Counter", ">=", {"int"}) == "_ZN7CountergeEi");
+	}
+
+	TEST_CASE("Arithmetic operators") {
+		CHECK(itanium_mangle_operator("Vec", "+", {"Vec"}) == "_ZN3VecplE3Vec");
+		CHECK(itanium_mangle_operator("Vec", "-", {"Vec"}) == "_ZN3VecmiE3Vec");
+		CHECK(itanium_mangle_operator("Vec", "*", {"int"}) == "_ZN3VecmlEi");
+	}
+
+	TEST_CASE("Unary operators") {
+		CHECK(itanium_mangle_operator("Iter", "++", {}) == "_ZN4IterppEv");
+		CHECK(itanium_mangle_operator("Iter", "--", {}) == "_ZN4ItermmEv");
+	}
+
+	TEST_CASE("Unknown operator returns empty") {
+		CHECK(itanium_mangle_operator("Foo", "???", {"int"}) == "");
+	}
+}

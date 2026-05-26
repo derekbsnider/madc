@@ -140,6 +140,48 @@ std::string itanium_mangle_dtor(const std::string &class_name)
 	return "_ZN" + source_name(class_name) + "D1Ev";
 }
 
+static std::string operator_code(const std::string &op)
+{
+	if (op == "==") return "eq";
+	if (op == "!=") return "ne";
+	if (op == "<")  return "lt";
+	if (op == ">")  return "gt";
+	if (op == "<=") return "le";
+	if (op == ">=") return "ge";
+	if (op == "+")  return "pl";
+	if (op == "-")  return "mi";
+	if (op == "*")  return "ml";
+	if (op == "/")  return "dv";
+	if (op == "%")  return "rm";
+	if (op == "=")  return "aS";
+	if (op == "+=") return "pL";
+	if (op == "-=") return "mI";
+	if (op == "*=") return "mL";
+	if (op == "/=") return "dV";
+	if (op == "<<") return "ls";
+	if (op == ">>") return "rs";
+	if (op == "[]") return "ix";
+	if (op == "()") return "cl";
+	if (op == "++") return "pp";
+	if (op == "--") return "mm";
+	if (op == "!")  return "nt";
+	if (op == "~")  return "co";
+	if (op == "&")  return "an";
+	if (op == "|")  return "or";
+	if (op == "^")  return "eo";
+	return "";
+}
+
+std::string itanium_mangle_operator(const std::string &class_name,
+                                     const std::string &op,
+                                     const std::vector<std::string> &param_types)
+{
+	std::string code = operator_code(op);
+	if (code.empty()) return "";
+	return "_ZN" + source_name(class_name) + code
+	       + "E" + itanium_encode_params(param_types);
+}
+
 std::string itanium_mangle_nested(const std::vector<std::string> &qualifiers,
                                    const std::string &name,
                                    const std::vector<std::string> &param_types)

@@ -37,4 +37,9 @@ std::string itanium_mangle_nested(const std::vector<std::string> &qualifiers,
                                    const std::string &name,
                                    const std::vector<std::string> &param_types);
 
+// Mangle an operator: ("Counter", "==", {"int"}) → "_ZN7CountereqEi"
+std::string itanium_mangle_operator(const std::string &class_name,
+                                     const std::string &op,
+                                     const std::vector<std::string> &param_types);
+
 #endif // __MADC_MANGLE_H
