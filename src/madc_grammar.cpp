@@ -1,10 +1,15 @@
 // madc_grammar.cpp — Gecko GLR grammar for the madc language
 //
-// This file defines the complete madc grammar as a Gecko grammar string
-// and provides the tokenizer-to-Gecko mapping function.
+// Based on the ANSI C grammar from Gecko's test/test_gecko.c, with
+// the critical fix: pointer/reference on the DECLARATOR, not the type.
+// This correctly handles `int *a, *b;` (two pointer declarators sharing
+// type `int`).
 //
-// The grammar produces an AST with named abstract nodes.  Semantic
-// analysis happens in a separate walk (Phase 2).
+// C++ extensions (classes, references, try/catch, namespaces, etc.)
+// are added incrementally on top of the ANSI C base.
+//
+// Operator precedence uses Gecko's ambiguous-expression approach:
+// all binary operators in one rule, resolved by LEFT/RIGHT declarations.
 
 #include <cstdio>
 #include <cstring>
@@ -157,17 +162,16 @@ enum GeckoTermCode {
 // -----------------------------------------------------------------------
 // Grammar string
 //
-// Convention:
-//   # name (child_indices)     — create an abstract node
-//   # N                        — pass-through the Nth child (0-based)
-//   Empty alternative          — epsilon production (no # annotation)
-//
-// Operator precedence is declared via LEFT/RIGHT/NONASSOC directives
-// at the top.  Gecko resolves shift/reduce conflicts using those
-// declarations, just like yacc/bison.
+// Structure follows ANSI C (ISO 9899:1999) Appendix A, with:
+//   - Correct declarator model (pointer on declarator, not type)
+//   - Gecko's ambiguous binary expression approach (precedence-resolved)
+//   - Abstract node annotations (# name (children)) for emitter
+//   - C++ extensions: class, references, try/catch, new/delete,
+//     namespaces, operator overloading, match, defer
 // -----------------------------------------------------------------------
 
 static const char *madc_grammar_str =
+
     // ================================================================
     // Terminal declarations
     // ================================================================
@@ -281,7 +285,7 @@ static const char *madc_grammar_str =
     "BAND_ASSIGN = 369\n"
     "BOR_ASSIGN = 370\n"
     "XOR_ASSIGN = 371\n"
-    "ELLIPSIS = 372\n"  // lexer emits 3 dots; mapper synthesizes ELLIPSIS
+    "ELLIPSIS = 372\n"
     "THREE_WAY = 373\n"
     "FAT_ARROW = 374\n"
     "COL_ASSIGN = 375\n"
@@ -289,15 +293,15 @@ static const char *madc_grammar_str =
     "\n"
 
     // ================================================================
-    // Operator precedence (lowest to highest)
+    // Operator precedence — lowest to highest
     //
-    // C operator precedence table, adapted for Gecko.  The comma
-    // operator is at the very bottom; unary operators are handled
-    // structurally via the grammar (not by precedence declarations).
+    // IMPORTANT: In Gecko, LATER declarations have HIGHER priority
+    // (tighter binding).  The ANSI C test grammar (test_gecko.c) has
+    // these in the WRONG order — we use the correct C order here.
+    //
+    // Only binary operators that appear in bin_expr need declarations.
+    // Assignment and ternary are handled structurally.
     // ================================================================
-    "RIGHT '=' ADD_ASSIGN SUB_ASSIGN MUL_ASSIGN DIV_ASSIGN MOD_ASSIGN"
-    " BSL_ASSIGN BSR_ASSIGN BAND_ASSIGN BOR_ASSIGN XOR_ASSIGN COL_ASSIGN\n"
-    "RIGHT '?' ':'\n"
     "LEFT OR_OP\n"
     "LEFT AND_OP\n"
     "LEFT '|'\n"
@@ -312,646 +316,755 @@ static const char *madc_grammar_str =
     "\n"
 
     // ================================================================
-    // Top-level program
+    // A.2.4  External definitions  (§6.9)
     // ================================================================
-    "program : translation_unit                     # 0\n"
-    "        ;\n"
-    "translation_unit : top_level                   # 0\n"
-    "                 | translation_unit top_level  # tu (0 1)\n"
+
+    "start : translation_unit                        # 0\n"
+    "      ;\n"
+    "\n"
+
+    "translation_unit : external_declaration                     # 0\n"
+    "                 | translation_unit external_declaration    # tu (0 1)\n"
     "                 ;\n"
-    "top_level : function_def                       # 0\n"
-    "          | declaration ';'                    # 0\n"
-    "          | class_def                          # 0\n"
-    "          | struct_def                         # 0\n"
-    "          | union_def                          # 0\n"
-    "          | enum_def                           # 0\n"
-    "          | typedef_decl                       # 0\n"
-    "          | using_decl                         # 0\n"
-    "          | namespace_def                      # 0\n"
-    "          | ';'                                \n"
-    "          ;\n"
+    "\n"
+
+    "external_declaration : function_definition   # 0\n"
+    "                     | declaration            # 0\n"
+    "                     | class_definition       # 0\n"
+    "                     | using_declaration      # 0\n"
+    "                     | namespace_definition   # 0\n"
+    "                     | ';'                    \n"
+    "                     ;\n"
+    "\n"
+
+    // function_definition — ANSI C structure.
+    // The function name and parameters are INSIDE the declarator:
+    //   int main(int argc, char **argv) { ... }
+    //   → specs=int, decl=main(int argc, char **argv), body={...}
+    "function_definition : declaration_specifiers declarator compound_statement\n"
+    "                                              # func_def (0 1 2)\n"
+    "                    ;\n"
     "\n"
 
     // ================================================================
-    // Type specifiers
-    //
-    // The typedef/identifier ambiguity (user-defined type names are
-    // IDENT tokens) is accepted here — both IDENT and primitive type
-    // keywords produce type_spec.  A rule guard can be used in Phase 2
-    // to disambiguate when an IDENT is a typename vs. a variable name.
+    // A.2.2  Declarations  (§6.7)
     // ================================================================
-    "type_spec : VOID                               # 0\n"
-    "          | BOOL                               # 0\n"
-    "          | CHAR                               # 0\n"
-    "          | SHORT                              # 0\n"
-    "          | INT                                # 0\n"
-    "          | LONG                               # 0\n"
-    "          | FLOAT                              # 0\n"
-    "          | DOUBLE                             # 0\n"
-    "          | SIGNED                             # 0\n"
-    "          | UNSIGNED                           # 0\n"
-    "          | STRING_T                           # 0\n"
-    "          | AUTO                               # 0\n"
-    "          | INT8                               # 0\n"
-    "          | INT16                              # 0\n"
-    "          | INT32                              # 0\n"
-    "          | INT64                              # 0\n"
-    "          | UINT8                              # 0\n"
-    "          | UINT16                             # 0\n"
-    "          | UINT32                             # 0\n"
-    "          | UINT64                             # 0\n"
-    "          | STRUCT IDENT                       # struct_type (1)\n"
-    "          | UNION IDENT                        # union_type (1)\n"
-    "          | ENUM IDENT                         # enum_type (1)\n"
-    "          | CLASS IDENT                        # class_type (1)\n"
-    "          | IDENT                              # 0\n"
-    "          ;\n"
-    "\n"
 
-    // Compound type specifiers (multi-keyword like "unsigned int",
-    // "long long", "signed char", etc.)
-    "type_prefix : UNSIGNED                         # 0\n"
-    "            | SIGNED                           # 0\n"
-    "            | LONG                             # 0\n"
-    "            | SHORT                            # 0\n"
-    "            | CONST                            # 0\n"
-    "            | VOLATILE                         # 0\n"
-    "            | STATIC                           # 0\n"
-    "            | EXTERN                           # 0\n"
-    "            | REGISTER                         # 0\n"
-    "            | INLINE                           # 0\n"
-    "            | RESTRICT                         # 0\n"
+    "declaration : declaration_specifiers init_declarator_list_opt ';'\n"
+    "                                              # decl (0 1)\n"
     "            ;\n"
     "\n"
 
-    // Full type: optional prefixes + base type + optional pointer/ref
-    "qualified_type : type_spec                     # 0\n"
-    "               | type_prefix qualified_type    # qual_type (0 1)\n"
-    "               ;\n"
-    "type : qualified_type                          # 0\n"
-    "     | type '*'                                # ptr_type (0)\n"
-    "     | type '&'                                # ref_type (0)\n"
-    "     | CONST type                              # const_type (1)\n"
-    "     | type CONST                              # type_const (0)\n"
-    "     ;\n"
+    // declaration_specifiers — recursive list of specifiers.
+    // Each specifier is one of: storage class, type, qualifier, function spec.
+    // For `static const unsigned long int`:
+    //   → qual(static, qual(const, qual(unsigned, qual(long, qual(int, nil)))))
+    "declaration_specifiers"
+    "  : storage_class_specifier declaration_specifiers_opt  # qual (0 1)\n"
+    "  | type_specifier declaration_specifiers_opt           # qual (0 1)\n"
+    "  | type_qualifier declaration_specifiers_opt           # qual (0 1)\n"
+    "  | function_specifier declaration_specifiers_opt       # qual (0 1)\n"
+    "  ;\n"
     "\n"
 
-    // Container types: vector<T>, map<K,V>, set<T>, list<T>
-    "container_type : VECTOR '<' type '>'           # vector_type (2)\n"
-    "               | MAP '<' type ',' type '>'     # map_type (2 4)\n"
-    "               | SET '<' type '>'              # set_type (2)\n"
-    "               | LIST '<' type '>'             # list_type (2)\n"
-    "               ;\n"
+    "declaration_specifiers_opt :                     \n"
+    "                           | declaration_specifiers  # 0\n"
+    "                           ;\n"
     "\n"
 
-    // Stream types
-    "stream_type : IFSTREAM                         # 0\n"
-    "            | OFSTREAM                         # 0\n"
-    "            | FSTREAM                          # 0\n"
-    "            | SSTREAM                          # 0\n"
-    "            | OSTREAM                          # 0\n"
-    "            ;\n"
+    "init_declarator_list_opt :                       \n"
+    "                         | init_declarator_list  # 0\n"
+    "                         ;\n"
     "\n"
 
-    // Full type including containers and streams
-    "full_type : type                               # 0\n"
-    "          | container_type                     # 0\n"
-    "          | stream_type                        # 0\n"
-    "          ;\n"
+    "init_declarator_list : init_declarator                            # 0\n"
+    "                     | init_declarator_list ',' init_declarator   # decl_list (0 2)\n"
+    "                     ;\n"
     "\n"
 
-    // ================================================================
-    // Declarations
-    // ================================================================
-
-    // Declarator: name, name with array dims, name with initializer
-    "declarator : IDENT                             # 0\n"
-    "           | IDENT '[' const_expr ']'          # array_decl (0 2)\n"
-    "           | IDENT '[' ']'                     # unsized_array (0)\n"
-    "           | IDENT '=' initializer             # init_decl (0 2)\n"
-    "           | IDENT '[' const_expr ']' '=' initializer\n"
-    "                                               # array_init_decl (0 2 5)\n"
-    "           | IDENT '[' ']' '=' initializer\n"
-    "                                               # unsized_array_init (0 4)\n"
-    "           | '(' '*' IDENT ')' '(' param_type_list_opt ')'\n"
-    "                                               # fptr_decl (2 5)\n"
-    "           ;\n"
-    "\n"
-
-    "declaration : full_type declarator_list        # decl (0 1)\n"
-    "            ;\n"
-    "declarator_list : declarator                   # 0\n"
-    "                | declarator_list ',' declarator\n"
-    "                                               # decl_list (0 2)\n"
+    "init_declarator : declarator                     # 0\n"
+    "                | declarator '=' initializer      # init_decl (0 2)\n"
     "                ;\n"
     "\n"
 
-    // Initializers
-    "initializer : assign_expr                      # 0\n"
-    "            | '{' initializer_list '}'         # init_list (1)\n"
-    "            | '{' initializer_list ',' '}'     # init_list (1)\n"
-    "            | '{' '}'                          # empty_init\n"
+    // §6.7.1  Storage class specifiers
+    "storage_class_specifier : TYPEDEF    # 0\n"
+    "                        | EXTERN     # 0\n"
+    "                        | STATIC     # 0\n"
+    "                        | AUTO       # 0\n"
+    "                        | REGISTER   # 0\n"
+    "                        ;\n"
+    "\n"
+
+    // §6.7.2  Type specifiers
+    "type_specifier : VOID       # 0\n"
+    "               | BOOL       # 0\n"
+    "               | CHAR       # 0\n"
+    "               | SHORT      # 0\n"
+    "               | INT        # 0\n"
+    "               | LONG       # 0\n"
+    "               | FLOAT      # 0\n"
+    "               | DOUBLE     # 0\n"
+    "               | SIGNED     # 0\n"
+    "               | UNSIGNED   # 0\n"
+    "               | STRING_T   # 0\n"
+    "               | INT8       # 0\n"
+    "               | INT16      # 0\n"
+    "               | INT32      # 0\n"
+    "               | INT64      # 0\n"
+    "               | UINT8      # 0\n"
+    "               | UINT16     # 0\n"
+    "               | UINT32     # 0\n"
+    "               | UINT64     # 0\n"
+    "               | struct_or_union_specifier  # 0\n"
+    "               | enum_specifier             # 0\n"
+    "               | container_type             # 0\n"
+    "               | stream_type                # 0\n"
+    "               | typedef_name               # 0\n"
+    "               ;\n"
+    "\n"
+
+    // §6.7.3  Type qualifiers
+    "type_qualifier : CONST      # 0\n"
+    "               | VOLATILE   # 0\n"
+    "               | RESTRICT   # 0\n"
+    "               ;\n"
+    "\n"
+
+    // §6.7.4  Function specifiers (extended with C++ virtual)
+    "function_specifier : INLINE   # 0\n"
+    "                   | VIRTUAL  # 0\n"
+    "                   ;\n"
+    "\n"
+
+    // madc container types: vector<T>, map<K,V>, set<T>, list<T>
+    "container_type : VECTOR '<' type_name '>'             # vector_type (2)\n"
+    "               | MAP '<' type_name ',' type_name '>'  # map_type (2 4)\n"
+    "               | SET '<' type_name '>'                # set_type (2)\n"
+    "               | LIST '<' type_name '>'               # list_type (2)\n"
+    "               ;\n"
+    "\n"
+
+    // madc stream types
+    "stream_type : IFSTREAM    # 0\n"
+    "            | OFSTREAM    # 0\n"
+    "            | FSTREAM     # 0\n"
+    "            | SSTREAM     # 0\n"
+    "            | OSTREAM     # 0\n"
     "            ;\n"
-    "initializer_list : initializer_elem            # 0\n"
-    "                 | initializer_list ',' initializer_elem\n"
-    "                                               # init_seq (0 2)\n"
-    "                 ;\n"
-    "initializer_elem : initializer                 # 0\n"
-    "                 | designator '=' initializer  # desig_init (0 2)\n"
-    "                 ;\n"
-    "designator : '.' IDENT                         # member_desig (1)\n"
-    "           | '[' const_expr ']'                # index_desig (1)\n"
+    "\n"
+
+    // §6.7.2.1  Struct/union specifiers
+    "struct_or_union_specifier"
+    "  : struct_or_union identifier_opt '{' struct_declaration_list '}'\n"
+    "                                              # struct_def (0 1 3)\n"
+    "  | struct_or_union IDENT                     # struct_ref (0 1)\n"
+    "  ;\n"
+    "\n"
+
+    "identifier_opt :            \n"
+    "               | IDENT  # 0\n"
+    "               ;\n"
+    "\n"
+
+    "struct_or_union : STRUCT  # 0\n"
+    "                | UNION   # 0\n"
+    "                ;\n"
+    "\n"
+
+    "struct_declaration_list"
+    "  : struct_declaration                              # 0\n"
+    "  | struct_declaration_list struct_declaration       # struct_body (0 1)\n"
+    "  ;\n"
+    "\n"
+
+    "struct_declaration"
+    "  : specifier_qualifier_list struct_declarator_list ';'\n"
+    "                                              # struct_field (0 1)\n"
+    "  ;\n"
+    "\n"
+
+    // specifier_qualifier_list — like declaration_specifiers but no
+    // storage class or function specifiers.
+    "specifier_qualifier_list"
+    "  : type_specifier specifier_qualifier_list_opt    # qual (0 1)\n"
+    "  | type_qualifier specifier_qualifier_list_opt    # qual (0 1)\n"
+    "  ;\n"
+    "\n"
+
+    "specifier_qualifier_list_opt :                      \n"
+    "                             | specifier_qualifier_list  # 0\n"
+    "                             ;\n"
+    "\n"
+
+    "struct_declarator_list"
+    "  : struct_declarator                                  # 0\n"
+    "  | struct_declarator_list ',' struct_declarator        # field_list (0 2)\n"
+    "  ;\n"
+    "\n"
+
+    "struct_declarator : declarator                         # 0\n"
+    "                  | declarator_opt ':' constant_expression\n"
+    "                                                       # bitfield (0 2)\n"
+    "                  ;\n"
+    "\n"
+
+    "declarator_opt :             \n"
+    "               | declarator  # 0\n"
+    "               ;\n"
+    "\n"
+
+    // §6.7.2.2  Enum specifiers
+    "enum_specifier"
+    "  : ENUM identifier_opt '{' enumerator_list '}'        # enum_def (1 3)\n"
+    "  | ENUM identifier_opt '{' enumerator_list ',' '}'    # enum_def (1 3)\n"
+    "  | ENUM IDENT                                         # enum_ref (1)\n"
+    "  ;\n"
+    "\n"
+
+    "enumerator_list : enumerator                           # 0\n"
+    "                | enumerator_list ',' enumerator        # enum_list (0 2)\n"
+    "                ;\n"
+    "\n"
+
+    "enumerator : IDENT                                     # 0\n"
+    "           | IDENT '=' constant_expression              # enum_assign (0 2)\n"
     "           ;\n"
     "\n"
 
     // ================================================================
-    // Typedef
+    // §6.7.5  Declarators — THE KEY FIX
+    //
+    // In C, pointer/reference belongs on the DECLARATOR, not the type.
+    //   int *a, *b;   → two declarators, each with its own pointer
+    //   int (*fp)();  → function pointer declarator
     // ================================================================
-    "typedef_decl : TYPEDEF full_type IDENT ';'     # typedef (1 2)\n"
-    "             | TYPEDEF full_type '(' '*' IDENT ')' '(' param_type_list_opt ')' ';'\n"
-    "                                               # typedef_fptr (1 4 7)\n"
-    "             | TYPEDEF STRUCT IDENT IDENT ';'  # typedef_struct (2 3)\n"
-    "             | TYPEDEF ENUM IDENT IDENT ';'    # typedef_enum (2 3)\n"
-    "             | TYPEDEF UNION IDENT IDENT ';'   # typedef_union (2 3)\n"
-    "             | TYPEDEF STRUCT IDENT '{' struct_body '}' IDENT ';'\n"
-    "                                               # typedef_struct_def (2 4 6)\n"
-    "             | TYPEDEF STRUCT '{' struct_body '}' IDENT ';'\n"
-    "                                               # typedef_anon_struct (3 5)\n"
-    "             | TYPEDEF UNION IDENT '{' struct_body '}' IDENT ';'\n"
-    "                                               # typedef_union_def (2 4 6)\n"
-    "             | TYPEDEF UNION '{' struct_body '}' IDENT ';'\n"
-    "                                               # typedef_anon_union (3 5)\n"
-    "             | TYPEDEF ENUM IDENT '{' enum_body '}' IDENT ';'\n"
-    "                                               # typedef_enum_def (2 4 6)\n"
-    "             | TYPEDEF ENUM '{' enum_body '}' IDENT ';'\n"
-    "                                               # typedef_anon_enum (3 5)\n"
+
+    "declarator : pointer direct_declarator          # ptr_decl (0 1)\n"
+    "           | '&' direct_declarator              # ref_decl (1)\n"
+    "           | direct_declarator                  # 0\n"
+    "           ;\n"
+    "\n"
+
+    "direct_declarator"
+    "  : IDENT                                              # 0\n"
+    "  | '(' declarator ')'                                 # 1\n"
+    "  | direct_declarator '[' assignment_expression_opt ']'\n"
+    "                                                       # array_decl (0 2)\n"
+    "  | direct_declarator '[' '*' ']'                      # vla_decl (0)\n"
+    "  | direct_declarator '(' parameter_type_list ')'      # func_decl (0 2)\n"
+    "  | direct_declarator '(' identifier_list_opt ')'      # func_decl (0 2)\n"
+    "  ;\n"
+    "\n"
+
+    "assignment_expression_opt :                      \n"
+    "                          | assignment_expression  # 0\n"
+    "                          ;\n"
+    "\n"
+
+    "identifier_list_opt :                \n"
+    "                    | identifier_list  # 0\n"
+    "                    ;\n"
+    "\n"
+
+    // §6.7.5  Pointer — right-recursive chain of stars
+    "pointer : '*' type_qualifier_list_opt              # star (1)\n"
+    "        | '*' type_qualifier_list_opt pointer       # stars (1 2)\n"
+    "        ;\n"
+    "\n"
+
+    "type_qualifier_list_opt :                    \n"
+    "                        | type_qualifier_list  # 0\n"
+    "                        ;\n"
+    "\n"
+
+    "type_qualifier_list : type_qualifier                       # 0\n"
+    "                    | type_qualifier_list type_qualifier    # qual_list (0 1)\n"
+    "                    ;\n"
+    "\n"
+
+    // §6.7.5  Parameter type list
+    "parameter_type_list : parameter_list                       # 0\n"
+    "                    | parameter_list ',' ELLIPSIS           # param_va (0)\n"
+    "                    ;\n"
+    "\n"
+
+    "parameter_list : parameter_declaration                              # 0\n"
+    "               | parameter_list ',' parameter_declaration           # param_list (0 2)\n"
+    "               ;\n"
+    "\n"
+
+    "parameter_declaration"
+    "  : declaration_specifiers declarator               # param (0 1)\n"
+    "  | declaration_specifiers abstract_declarator_opt   # param (0 1)\n"
+    "  ;\n"
+    "\n"
+
+    "abstract_declarator_opt :                    \n"
+    "                        | abstract_declarator  # 0\n"
+    "                        ;\n"
+    "\n"
+
+    "identifier_list : IDENT                             # 0\n"
+    "                | identifier_list ',' IDENT          # ident_list (0 2)\n"
+    "                ;\n"
+    "\n"
+
+    // §6.7.6  Type names — used in casts and sizeof
+    "type_name : specifier_qualifier_list abstract_declarator_opt\n"
+    "                                              # type_name (0 1)\n"
+    "          ;\n"
+    "\n"
+
+    // §6.7.6  Abstract declarator (unnamed — for casts, sizeof)
+    "abstract_declarator : pointer                           # 0\n"
+    "                    | pointer direct_abstract_declarator\n"
+    "                                                        # abs_ptr (0 1)\n"
+    "                    | '&'                               # abs_ref\n"
+    "                    | direct_abstract_declarator        # 0\n"
+    "                    ;\n"
+    "\n"
+
+    "direct_abstract_declarator"
+    "  : '(' abstract_declarator ')'                         # 1\n"
+    "  | direct_abstract_declarator_opt '[' assignment_expression_opt ']'\n"
+    "                                                        # abs_array (0 2)\n"
+    "  | direct_abstract_declarator_opt '[' '*' ']'          # abs_vla (0)\n"
+    "  | direct_abstract_declarator_opt '(' parameter_type_list_opt ')'\n"
+    "                                                        # abs_func (0 2)\n"
+    "  ;\n"
+    "\n"
+
+    "direct_abstract_declarator_opt :                          \n"
+    "                               | direct_abstract_declarator  # 0\n"
+    "                               ;\n"
+    "\n"
+
+    "parameter_type_list_opt :                      \n"
+    "                        | parameter_type_list  # 0\n"
+    "                        ;\n"
+    "\n"
+
+    // typedef_name — any IDENT can be a typedef name.
+    // This creates ambiguity (IDENT as type vs variable); Gecko's GLR
+    // handles it.  A rule guard can be added later for disambiguation.
+    "typedef_name : IDENT  # 0\n"
     "             ;\n"
     "\n"
 
-    // ================================================================
-    // Functions
-    // ================================================================
-    "function_def : full_type IDENT '(' param_list_opt ')' compound_stmt\n"
-    "                                               # func_def (0 1 3 5)\n"
-    "             | full_type IDENT '(' param_list_opt ')' ';'\n"
-    "                                               # func_proto (0 1 3)\n"
-    "             | full_type OPERATOR overload_op '(' param_list_opt ')' compound_stmt\n"
-    "                                               # oper_def (0 2 4 6)\n"
-    "             ;\n"
+    // §6.7.8  Initializers
+    "initializer : assignment_expression             # 0\n"
+    "            | '{' initializer_list '}'           # init_list (1)\n"
+    "            | '{' initializer_list ',' '}'       # init_list (1)\n"
+    "            | '{' '}'                            # empty_init\n"
+    "            ;\n"
     "\n"
 
-    "overload_op : '+' # 0\n"
-    "            | '-' # 0\n"
-    "            | '*' # 0\n"
-    "            | '/' # 0\n"
-    "            | '%' # 0\n"
-    "            | EQ_OP # 0\n"
-    "            | NE_OP # 0\n"
-    "            | '<' # 0\n"
-    "            | '>' # 0\n"
-    "            | LE_OP # 0\n"
-    "            | GE_OP # 0\n"
+    "initializer_list"
+    "  : designation_opt initializer                         # desig_init (0 1)\n"
+    "  | initializer_list ',' designation_opt initializer    # init_seq (0 2 3)\n"
+    "  ;\n"
+    "\n"
+
+    "designation_opt :              \n"
+    "                | designation  # 0\n"
+    "                ;\n"
+    "\n"
+
+    "designation : designator_list '='   # 0\n"
+    "            ;\n"
+    "\n"
+
+    "designator_list : designator                        # 0\n"
+    "                | designator_list designator         # desig_chain (0 1)\n"
+    "                ;\n"
+    "\n"
+
+    "designator : '[' constant_expression ']'   # index_desig (1)\n"
+    "           | '.' IDENT                     # member_desig (1)\n"
+    "           ;\n"
+    "\n"
+
+    // ================================================================
+    // A.2.1  Expressions  (§6.5)
+    // ================================================================
+
+    // §6.5.1  Primary expressions
+    "primary_expression : IDENT        # 0\n"
+    "                   | INTEGER      # 0\n"
+    "                   | REAL         # 0\n"
+    "                   | STRING_LIT   # 0\n"
+    "                   | CHAR_LIT     # 0\n"
+    "                   | '(' expression ')'  # paren (1)\n"
+    "                   ;\n"
+    "\n"
+
+    // §6.5.2  Postfix expressions
+    // Includes C++ extensions: namespace calls (ns::func), compound literals.
+    // Method calls (a.b(args)) are NOT a separate rule — they parse as
+    // call(member(a, b), args) via the ANSI C rules, which is correct.
+    "postfix_expression"
+    "  : primary_expression                                  # 0\n"
+    "  | postfix_expression '[' expression ']'               # subscript (0 2)\n"
+    "  | postfix_expression '(' argument_expression_list_opt ')'\n"
+    "                                                        # call (0 2)\n"
+    "  | postfix_expression '.' IDENT                        # member (0 2)\n"
+    "  | postfix_expression ARROW IDENT                      # arrow_member (0 2)\n"
+    "  | postfix_expression INC_OP                           # post_inc (0)\n"
+    "  | postfix_expression DEC_OP                           # post_dec (0)\n"
+    "  | '(' type_name ')' '{' initializer_list '}'          # compound_lit (1 4)\n"
+    "  | '(' type_name ')' '{' initializer_list ',' '}'      # compound_lit (1 4)\n"
+    "  | IDENT SCOPE IDENT                                   # ns_name (0 2)\n"
+    "  | IDENT SCOPE IDENT '(' argument_expression_list_opt ')'\n"
+    "                                                        # ns_call (0 2 4)\n"
+    "  ;\n"
+    "\n"
+
+    "argument_expression_list_opt :                       \n"
+    "                             | argument_expression_list  # 0\n"
+    "                             ;\n"
+    "\n"
+
+    "argument_expression_list"
+    "  : assignment_expression                                    # 0\n"
+    "  | argument_expression_list ',' assignment_expression       # arg_list (0 2)\n"
+    "  ;\n"
+    "\n"
+
+    // §6.5.3  Unary expressions
+    // Unary operators are inlined (not via unary_operator nonterminal)
+    // so each produces a distinct anode name for the emitter.
+    // C++ extensions: new, alignof.
+    "unary_expression"
+    "  : postfix_expression                          # 0\n"
+    "  | INC_OP unary_expression                     # pre_inc (1)\n"
+    "  | DEC_OP unary_expression                     # pre_dec (1)\n"
+    "  | '&' cast_expression                         # addrof (1)\n"
+    "  | '*' cast_expression                         # deref (1)\n"
+    "  | '+' cast_expression                         # pos (1)\n"
+    "  | '-' cast_expression                         # neg (1)\n"
+    "  | '~' cast_expression                         # bnot (1)\n"
+    "  | '!' cast_expression                         # lnot (1)\n"
+    "  | SIZEOF unary_expression                     # sizeof_expr (1)\n"
+    "  | SIZEOF '(' type_name ')'                    # sizeof_type (2)\n"
+    "  | ALIGNOF '(' type_name ')'                   # alignof_type (2)\n"
+    "  | NEW IDENT                                   # new_plain (1)\n"
+    "  | NEW IDENT '(' argument_expression_list_opt ')'\n"
+    "                                                # new_ctor (1 3)\n"
+    "  ;\n"
+    "\n"
+
+    // §6.5.4  Cast expressions
+    "cast_expression : unary_expression                  # 0\n"
+    "                | '(' type_name ')' cast_expression  # cast (1 3)\n"
+    "                ;\n"
+    "\n"
+
+    // §6.5.5–6.5.14  Binary expressions
+    // All binary operators in one rule — Gecko resolves precedence via
+    // the LEFT/RIGHT declarations above.  Each alternative produces a
+    // distinct anode name matching what the emitter expects.
+    "bin_expr"
+    "  : bin_expr OR_OP bin_expr        # lor (0 2)\n"
+    "  | bin_expr AND_OP bin_expr       # land (0 2)\n"
+    "  | bin_expr '|' bin_expr          # bitor (0 2)\n"
+    "  | bin_expr '^' bin_expr          # bitxor (0 2)\n"
+    "  | bin_expr '&' bin_expr          # bitand (0 2)\n"
+    "  | bin_expr EQ_OP bin_expr        # eq (0 2)\n"
+    "  | bin_expr NE_OP bin_expr        # ne (0 2)\n"
+    "  | bin_expr EQ3_OP bin_expr       # eq3 (0 2)\n"
+    "  | bin_expr '<' bin_expr          # lt (0 2)\n"
+    "  | bin_expr '>' bin_expr          # gt (0 2)\n"
+    "  | bin_expr LE_OP bin_expr        # le (0 2)\n"
+    "  | bin_expr GE_OP bin_expr        # ge (0 2)\n"
+    "  | bin_expr THREE_WAY bin_expr    # three_way (0 2)\n"
+    "  | bin_expr BSL_OP bin_expr       # bsl (0 2)\n"
+    "  | bin_expr BSR_OP bin_expr       # bsr (0 2)\n"
+    "  | bin_expr '+' bin_expr          # add (0 2)\n"
+    "  | bin_expr '-' bin_expr          # sub (0 2)\n"
+    "  | bin_expr '*' bin_expr          # mul (0 2)\n"
+    "  | bin_expr '/' bin_expr          # div (0 2)\n"
+    "  | bin_expr '%' bin_expr          # mod (0 2)\n"
+    "  | cast_expression                # 0\n"
+    "  ;\n"
+    "\n"
+
+    // §6.5.15  Conditional (ternary) expression
+    "conditional_expression"
+    "  : bin_expr                                            # 0\n"
+    "  | bin_expr '?' expression ':' conditional_expression  # ternary (0 2 4)\n"
+    "  ;\n"
+    "\n"
+
+    // §6.5.16  Assignment expression
+    "assignment_expression"
+    "  : conditional_expression                              # 0\n"
+    "  | unary_expression '=' assignment_expression          # assign (0 2)\n"
+    "  | unary_expression ADD_ASSIGN assignment_expression   # add_assign (0 2)\n"
+    "  | unary_expression SUB_ASSIGN assignment_expression   # sub_assign (0 2)\n"
+    "  | unary_expression MUL_ASSIGN assignment_expression   # mul_assign (0 2)\n"
+    "  | unary_expression DIV_ASSIGN assignment_expression   # div_assign (0 2)\n"
+    "  | unary_expression MOD_ASSIGN assignment_expression   # mod_assign (0 2)\n"
+    "  | unary_expression BSL_ASSIGN assignment_expression   # bsl_assign (0 2)\n"
+    "  | unary_expression BSR_ASSIGN assignment_expression   # bsr_assign (0 2)\n"
+    "  | unary_expression BAND_ASSIGN assignment_expression  # band_assign (0 2)\n"
+    "  | unary_expression BOR_ASSIGN assignment_expression   # bor_assign (0 2)\n"
+    "  | unary_expression XOR_ASSIGN assignment_expression   # xor_assign (0 2)\n"
+    "  | unary_expression COL_ASSIGN assignment_expression   # col_assign (0 2)\n"
+    "  ;\n"
+    "\n"
+
+    // §6.5.17  Expression (comma)
+    "expression : assignment_expression                      # 0\n"
+    "           | expression ',' assignment_expression        # comma (0 2)\n"
+    "           ;\n"
+    "\n"
+
+    // §6.6  Constant expression
+    "constant_expression : conditional_expression  # 0\n"
+    "                    ;\n"
+    "\n"
+
+    // ================================================================
+    // A.2.3  Statements  (§6.8)
+    // ================================================================
+
+    "statement : labeled_statement     # 0\n"
+    "          | compound_statement    # 0\n"
+    "          | expression_statement  # 0\n"
+    "          | selection_statement   # 0\n"
+    "          | iteration_statement   # 0\n"
+    "          | jump_statement        # 0\n"
+    "          | try_statement         # 0\n"
+    "          | throw_statement       # 0\n"
+    "          | delete_statement      # 0\n"
+    "          | defer_statement       # 0\n"
+    "          | match_statement       # 0\n"
+    "          ;\n"
+    "\n"
+
+    // §6.8.1  Labeled statements
+    "labeled_statement"
+    "  : IDENT ':' statement                         # label (0 2)\n"
+    "  | CASE constant_expression ':' statement       # case (1 3)\n"
+    "  | CASE constant_expression ELLIPSIS constant_expression ':' statement\n"
+    "                                                 # case_range (1 3 5)\n"
+    "  | DEFAULT ':' statement                        # default (2)\n"
+    "  ;\n"
+    "\n"
+
+    // §6.8.2  Compound statement
+    "compound_statement : '{' block_item_list_opt '}'   # block (1)\n"
+    "                   ;\n"
+    "\n"
+
+    "block_item_list_opt :                  \n"
+    "                    | block_item_list  # 0\n"
+    "                    ;\n"
+    "\n"
+
+    "block_item_list : block_item                    # 0\n"
+    "                | block_item_list block_item     # stmt_list (0 1)\n"
+    "                ;\n"
+    "\n"
+
+    "block_item : declaration  # 0\n"
+    "           | statement    # 0\n"
+    "           ;\n"
+    "\n"
+
+    // §6.8.3  Expression statement
+    "expression_statement : expression_opt ';'  # expr_stmt (0)\n"
+    "                     ;\n"
+    "\n"
+
+    "expression_opt :             \n"
+    "               | expression  # 0\n"
+    "               ;\n"
+    "\n"
+
+    // §6.8.4  Selection statements (if/else, switch)
+    "selection_statement"
+    "  : IF '(' expression ')' statement                      # if (2 4)\n"
+    "  | IF '(' expression ')' statement ELSE statement       # if_else (2 4 6)\n"
+    "  | SWITCH '(' expression ')' compound_statement         # switch (2 4)\n"
+    "  ;\n"
+    "\n"
+
+    // §6.8.5  Iteration statements
+    // C++ extension: range-for (for (type id : expr))
+    "iteration_statement"
+    "  : WHILE '(' expression ')' statement                   # while (2 4)\n"
+    "  | DO statement WHILE '(' expression ')' ';'            # do_while (1 4)\n"
+    "  | FOR '(' expression_opt ';' expression_opt ';' expression_opt ')' statement\n"
+    "                                                         # for (2 4 6 8)\n"
+    "  | FOR '(' declaration expression_opt ';' expression_opt ')' statement\n"
+    "                                                         # for_decl (2 3 5 7)\n"
+    "  | FOR '(' declaration_specifiers declarator ':' expression ')' statement\n"
+    "                                                         # for_range (2 3 5 7)\n"
+    "  ;\n"
+    "\n"
+
+    // §6.8.6  Jump statements
+    "jump_statement"
+    "  : GOTO IDENT ';'                # goto (1)\n"
+    "  | GOTO '*' expression ';'       # goto_indirect (2)\n"
+    "  | CONTINUE ';'                  # continue\n"
+    "  | BREAK ';'                     # break\n"
+    "  | RETURN expression_opt ';'     # return_val (1)\n"
+    "  | RETURN expression ',' expression ';'\n"
+    "                                  # return_multi (1 3)\n"
+    "  ;\n"
+    "\n"
+
+    // ================================================================
+    // C++ Extensions: try/catch, throw, delete, defer, match
+    // ================================================================
+
+    // try / catch
+    "try_statement : TRY compound_statement catch_list  # try (1 2)\n"
+    "              ;\n"
+    "\n"
+
+    "catch_list : catch_clause                   # 0\n"
+    "           | catch_list catch_clause         # catch_list (0 1)\n"
+    "           ;\n"
+    "\n"
+
+    "catch_clause"
+    "  : CATCH '(' declaration_specifiers declarator ')' compound_statement\n"
+    "                                              # catch (2 3 5)\n"
+    "  | CATCH '(' ELLIPSIS ')' compound_statement # catch_all (4)\n"
+    "  ;\n"
+    "\n"
+
+    // throw
+    "throw_statement : THROW ';'              # throw\n"
+    "                | THROW expression ';'   # throw_expr (1)\n"
+    "                ;\n"
+    "\n"
+
+    // delete
+    "delete_statement : DELETE expression ';'          # delete (1)\n"
+    "                 | DELETE '[' ']' expression ';'  # delete_array (3)\n"
+    "                 ;\n"
+    "\n"
+
+    // defer (Go/Zig-style deferred execution)
+    "defer_statement : DEFER statement   # defer (1)\n"
+    "                ;\n"
+    "\n"
+
+    // match (Rust-style pattern matching)
+    "match_statement"
+    "  : MATCH '(' expression ')' '{' match_arm_list '}'\n"
+    "                                              # match (2 5)\n"
+    "  ;\n"
+    "\n"
+
+    "match_arm_list :                                \n"
+    "               | match_arm_list match_arm       # match_arms (0 1)\n"
+    "               ;\n"
+    "\n"
+
+    "match_arm"
+    "  : match_patterns FAT_ARROW match_body   # match_arm (0 2)\n"
+    "  | IDENT FAT_ARROW match_body            # match_wild (0 2)\n"
+    "  ;\n"
+    "\n"
+
+    "match_patterns : constant_expression                    # 0\n"
+    "               | match_patterns '|' constant_expression # match_pats (0 2)\n"
+    "               ;\n"
+    "\n"
+
+    "match_body : statement          # 0\n"
+    "           | compound_statement # 0\n"
+    "           ;\n"
+    "\n"
+
+    // ================================================================
+    // C++ Extensions: classes
+    // ================================================================
+
+    "class_definition"
+    "  : CLASS IDENT '{' class_body '}' ';'\n"
+    "                                              # class_def (1 3)\n"
+    "  | CLASS IDENT ':' access_specifier IDENT '{' class_body '}' ';'\n"
+    "                                              # class_inherit (1 3 4 6)\n"
+    "  ;\n"
+    "\n"
+
+    "access_specifier : PUBLIC     # 0\n"
+    "                 | PRIVATE    # 0\n"
+    "                 | PROTECTED  # 0\n"
+    "                 ;\n"
+    "\n"
+
+    "class_body :                                    \n"
+    "           | class_body class_member            # class_body (0 1)\n"
+    "           ;\n"
+    "\n"
+
+    "class_member"
+    "  : access_specifier ':'                        # access (0)\n"
+    "  | declaration                                 # 0\n"
+    "  | method_definition                           # 0\n"
+    "  | constructor_definition                      # 0\n"
+    "  | destructor_definition                       # 0\n"
+    "  | operator_method_definition                  # 0\n"
+    "  ;\n"
+    "\n"
+
+    "method_definition"
+    "  : declaration_specifiers declarator compound_statement\n"
+    "                                              # method (0 1 2)\n"
+    "  | declaration_specifiers declarator ';'      # method_proto (0 1)\n"
+    "  ;\n"
+    "\n"
+
+    "constructor_definition"
+    "  : IDENT '(' parameter_type_list_opt ')' compound_statement\n"
+    "                                              # ctor (0 2 4)\n"
+    "  ;\n"
+    "\n"
+
+    "destructor_definition"
+    "  : '~' IDENT '(' ')' compound_statement      # dtor (1 4)\n"
+    "  ;\n"
+    "\n"
+
+    "operator_method_definition"
+    "  : declaration_specifiers OPERATOR overload_op '(' parameter_type_list_opt ')' compound_statement\n"
+    "                                              # oper_method (0 2 4 6)\n"
+    "  ;\n"
+    "\n"
+
+    "overload_op : '+' # 0 | '-' # 0 | '*' # 0 | '/' # 0 | '%' # 0\n"
+    "            | EQ_OP # 0 | NE_OP # 0\n"
+    "            | '<' # 0 | '>' # 0 | LE_OP # 0 | GE_OP # 0\n"
     "            | THREE_WAY # 0\n"
-    "            | BSL_OP # 0\n"
-    "            | BSR_OP # 0\n"
+    "            | BSL_OP # 0 | BSR_OP # 0\n"
     "            | '(' ')' # funcall_op\n"
     "            | '[' ']' # subscript_op\n"
     "            ;\n"
     "\n"
 
-    "param_list_opt :                                \n"
-    "               | param_list                    # 0\n"
-    "               ;\n"
-    "param_list : param                             # 0\n"
-    "           | param_list ',' param              # param_list (0 2)\n"
-    "           ;\n"
-    "param : full_type IDENT                        # param (0 1)\n"
-    "      | full_type IDENT '[' ']'                # param_array (0 1)\n"
-    "      | full_type IDENT '[' const_expr ']'     # param_fixed_array (0 1 3)\n"
-    "      | full_type                              # 0\n"
-    "      | ELLIPSIS                               # ellipsis_param\n"
-    "      ;\n"
-    "\n"
-
-    // Parameter type list (for function pointer typedefs — no names)
-    "param_type_list_opt :                           \n"
-    "                    | param_type_list           # 0\n"
-    "                    ;\n"
-    "param_type_list : full_type                    # 0\n"
-    "                | param_type_list ',' full_type # param_types (0 2)\n"
-    "                | param_type_list ',' ELLIPSIS  # param_types_va (0)\n"
-    "                ;\n"
-    "\n"
-
     // ================================================================
-    // Struct / Union
-    // ================================================================
-    "struct_def : STRUCT IDENT '{' struct_body '}' ';'\n"
-    "                                               # struct_def (1 3)\n"
-    "           | STRUCT '{' struct_body '}' ';'    # anon_struct (2)\n"
-    "           | STRUCT IDENT ';'                  # struct_fwd (1)\n"
-    "           ;\n"
-    "union_def : UNION IDENT '{' struct_body '}' ';'\n"
-    "                                               # union_def (1 3)\n"
-    "          | UNION '{' struct_body '}' ';'      # anon_union (2)\n"
-    "          ;\n"
-    "struct_body :                                   \n"
-    "            | struct_body struct_member         # struct_body (0 1)\n"
-    "            ;\n"
-    "struct_member : full_type struct_field_list ';' # struct_field (0 1)\n"
-    "              | struct_def                      # 0\n"
-    "              | union_def                       # 0\n"
-    "              | enum_def                        # 0\n"
-    "              ;\n"
-    "struct_field_list : struct_field                # 0\n"
-    "                  | struct_field_list ',' struct_field\n"
-    "                                               # field_list (0 2)\n"
-    "                  ;\n"
-    "struct_field : IDENT                            # 0\n"
-    "             | IDENT '[' const_expr ']'         # field_array (0 2)\n"
-    "             | '*' IDENT                        # field_ptr (1)\n"
-    "             | IDENT ':' INTEGER                # bitfield (0 2)\n"
-    "             ;\n"
-    "\n"
-
-    // ================================================================
-    // Enum
-    // ================================================================
-    "enum_def : ENUM IDENT '{' enum_body '}' ';'   # enum_def (1 3)\n"
-    "         | ENUM IDENT '{' enum_body ',' '}' ';'\n"
-    "                                               # enum_def (1 3)\n"
-    "         | ENUM '{' enum_body '}' ';'          # anon_enum (2)\n"
-    "         | ENUM '{' enum_body ',' '}' ';'      # anon_enum (2)\n"
-    "         ;\n"
-    "enum_body : enum_val                           # 0\n"
-    "          | enum_body ',' enum_val             # enum_list (0 2)\n"
-    "          ;\n"
-    "enum_val : IDENT                               # 0\n"
-    "         | IDENT '=' const_expr                # enum_assign (0 2)\n"
-    "         ;\n"
-    "\n"
-
-    // ================================================================
-    // Class
-    // ================================================================
-    "class_def : CLASS IDENT '{' class_body '}' ';'\n"
-    "                                               # class_def (1 3)\n"
-    "          | CLASS IDENT ':' access_spec IDENT '{' class_body '}' ';'\n"
-    "                                               # class_inherit (1 3 4 6)\n"
-    "          ;\n"
-    "access_spec : PUBLIC                           # 0\n"
-    "            | PRIVATE                          # 0\n"
-    "            | PROTECTED                        # 0\n"
-    "            ;\n"
-    "class_body :                                    \n"
-    "           | class_body class_member            # class_body (0 1)\n"
-    "           ;\n"
-    "class_member : access_spec ':'                  # access (0)\n"
-    "             | declaration ';'                  # 0\n"
-    "             | method_def                       # 0\n"
-    "             | constructor_def                  # 0\n"
-    "             | destructor_def                   # 0\n"
-    "             | oper_method_def                  # 0\n"
-    "             ;\n"
-    "method_def : full_type IDENT '(' param_list_opt ')' compound_stmt\n"
-    "                                               # method (0 1 3 5)\n"
-    "           | VIRTUAL full_type IDENT '(' param_list_opt ')' compound_stmt\n"
-    "                                               # vmethod (1 2 4 6)\n"
-    "           | full_type IDENT '(' param_list_opt ')' ';'\n"
-    "                                               # method_proto (0 1 3)\n"
-    "           | VIRTUAL full_type IDENT '(' param_list_opt ')' ';'\n"
-    "                                               # vmethod_proto (1 2 4)\n"
-    "           ;\n"
-    "constructor_def : IDENT '(' param_list_opt ')' compound_stmt\n"
-    "                                               # ctor (0 2 4)\n"
-    "                ;\n"
-    "destructor_def : '~' IDENT '(' ')' compound_stmt\n"
-    "                                               # dtor (1 4)\n"
-    "               ;\n"
-    "oper_method_def : full_type OPERATOR overload_op '(' param_list_opt ')' compound_stmt\n"
-    "                                               # oper_method (0 2 4 6)\n"
-    "                ;\n"
-    "\n"
-
-    // ================================================================
-    // Namespace / Using
-    // ================================================================
-    "namespace_def : NAMESPACE IDENT '{' translation_unit '}'\n"
-    "                                               # namespace_def (1 3)\n"
-    "              ;\n"
-    "using_decl : USING NAMESPACE IDENT ';'         # using_ns (2)\n"
-    "           | USING IDENT ';'                   # using_decl (1)\n"
-    "           | PREFER IDENT ';'                  # prefer (1)\n"
-    "           ;\n"
-    "\n"
-
-    // ================================================================
-    // Statements
-    // ================================================================
-    "compound_stmt : '{' stmt_list_opt '}'          # block (1)\n"
-    "              ;\n"
-    "stmt_list_opt :                                 \n"
-    "              | stmt_list                       # 0\n"
-    "              ;\n"
-    "stmt_list : stmt                                # 0\n"
-    "          | stmt_list stmt                      # stmt_list (0 1)\n"
-    "          ;\n"
-    "stmt : expr_stmt                               # 0\n"
-    "     | declaration ';'                          # 0\n"
-    "     | compound_stmt                            # 0\n"
-    "     | if_stmt                                  # 0\n"
-    "     | while_stmt                               # 0\n"
-    "     | do_while_stmt                            # 0\n"
-    "     | for_stmt                                 # 0\n"
-    "     | switch_stmt                              # 0\n"
-    "     | return_stmt                              # 0\n"
-    "     | break_stmt                               # 0\n"
-    "     | continue_stmt                            # 0\n"
-    "     | goto_stmt                                # 0\n"
-    "     | label_stmt                               # 0\n"
-    "     | try_stmt                                 # 0\n"
-    "     | throw_stmt                               # 0\n"
-    "     | delete_stmt                              # 0\n"
-    "     | defer_stmt                               # 0\n"
-    "     | match_stmt                               # 0\n"
-    "     | ';'                                      \n"
-    "     ;\n"
-    "\n"
-
-    "expr_stmt : expr ';'                           # expr_stmt (0)\n"
-    "          ;\n"
-
-    // if / else with RIGHT ELSE for dangling-else resolution
-    "if_stmt : IF '(' expr ')' stmt                 # if (2 4)\n"
-    "        | IF '(' expr ')' stmt ELSE stmt       # if_else (2 4 6)\n"
-    "        ;\n"
-
-    "while_stmt : WHILE '(' expr ')' stmt           # while (2 4)\n"
-    "           ;\n"
-
-    "do_while_stmt : DO stmt WHILE '(' expr ')' ';' # do_while (1 4)\n"
-    "              ;\n"
-
-    // for loop — supports both expression and declaration init
-    "for_stmt : FOR '(' for_init for_cond ';' for_iter_opt ')' stmt\n"
-    "                                               # for (2 3 5 7)\n"
-    "         | FOR '(' full_type IDENT ':' expr ')' stmt\n"
-    "                                               # for_range (2 3 5 7)\n"
-    "         ;\n"
-    "for_init : ';'                                  \n"
-    "         | expr ';'                             # 0\n"
-    "         | declaration ';'                      # 0\n"
-    "         | expr_list ';'                        # 0\n"
-    "         ;\n"
-    "for_cond :                                      \n"
-    "         | expr                                 # 0\n"
-    "         ;\n"
-    "for_iter_opt :                                   \n"
-    "             | expr                             # 0\n"
-    "             | expr_list                        # 0\n"
-    "             ;\n"
-    // Comma-separated expression list (for for-init and for-iter)
-    "expr_list : expr ',' expr                      # expr_list (0 2)\n"
-    "          | expr_list ',' expr                  # expr_list (0 2)\n"
-    "          ;\n"
-    "\n"
-
-    // switch / case / default
-    "switch_stmt : SWITCH '(' expr ')' '{' case_list '}'\n"
-    "                                               # switch (2 5)\n"
-    "            ;\n"
-    "case_list :                                     \n"
-    "          | case_list case_clause               # case_list (0 1)\n"
-    "          ;\n"
-    "case_clause : CASE const_expr ':' case_stmts   # case (1 3)\n"
-    "            | CASE const_expr ELLIPSIS const_expr ':' case_stmts\n"
-    "                                               # case_range (1 3 5)\n"
-    "            | DEFAULT ':' case_stmts            # default (2)\n"
-    "            ;\n"
-    "case_stmts :                                    \n"
-    "           | case_stmts stmt                    # case_stmts (0 1)\n"
-    "           ;\n"
-    "\n"
-
-    "return_stmt : RETURN ';'                       # return\n"
-    "            | RETURN expr ';'                   # return_val (1)\n"
-    "            | RETURN expr ',' expr ';'          # return_multi (1 3)\n"
-    "            ;\n"
-
-    "break_stmt : BREAK ';'                         # break\n"
-    "           ;\n"
-    "continue_stmt : CONTINUE ';'                   # continue\n"
-    "              ;\n"
-
-    "goto_stmt : GOTO IDENT ';'                     # goto (1)\n"
-    "          | GOTO '*' expr ';'                   # goto_indirect (2)\n"
-    "          ;\n"
-    "label_stmt : IDENT ':'                          # label (0)\n"
-    "           ;\n"
-    "\n"
-
-    // try / catch
-    "try_stmt : TRY compound_stmt catch_list        # try (1 2)\n"
-    "         ;\n"
-    "catch_list : catch_clause                       # 0\n"
-    "           | catch_list catch_clause            # catch_list (0 1)\n"
-    "           ;\n"
-    "catch_clause : CATCH '(' full_type IDENT ')' compound_stmt\n"
-    "                                               # catch (2 3 5)\n"
-    "             | CATCH '(' ELLIPSIS ')' compound_stmt\n"
-    "                                               # catch_all (4)\n"
-    "             ;\n"
-
-    // throw
-    "throw_stmt : THROW ';'                         # throw\n"
-    "           | THROW expr ';'                     # throw_expr (1)\n"
-    "           ;\n"
-
-    // delete
-    "delete_stmt : DELETE expr ';'                  # delete (1)\n"
-    "            | DELETE '[' ']' expr ';'           # delete_array (3)\n"
-    "            ;\n"
-
-    // defer (Go/Zig-style)
-    "defer_stmt : DEFER stmt                        # defer (1)\n"
-    "           ;\n"
-    "\n"
-
-    // match (Rust-style)
-    "match_stmt : MATCH '(' expr ')' '{' match_arms '}'\n"
-    "                                               # match (2 5)\n"
-    "           ;\n"
-    "match_arms :                                    \n"
-    "           | match_arms match_arm               # match_arms (0 1)\n"
-    "           ;\n"
-    "match_arm : match_patterns FAT_ARROW match_body\n"
-    "                                               # match_arm (0 2)\n"
-    "          | IDENT FAT_ARROW match_body          # match_wild (0 2)\n"
-    "          ;\n"
-    "match_patterns : const_expr                    # 0\n"
-    "               | match_patterns '|' const_expr # match_pats (0 2)\n"
-    "               ;\n"
-    "match_body : stmt                              # 0\n"
-    "           | compound_stmt                     # 0\n"
-    "           ;\n"
-    "\n"
-
-    // ================================================================
-    // Expressions
-    //
-    // Full C expression grammar with operator precedence handled by
-    // Gecko's LEFT/RIGHT declarations.  The grammar is factored into
-    // layers: expr (binary + ternary + assignment), unary_expr,
-    // postfix_expr, primary_expr.
+    // C++ Extensions: namespace, using
     // ================================================================
 
-    // Constant expression (used in enum values, array sizes, case labels)
-    "const_expr : expr                              # 0\n"
-    "           ;\n"
+    "namespace_definition"
+    "  : NAMESPACE IDENT '{' translation_unit '}'  # namespace_def (1 3)\n"
+    "  ;\n"
     "\n"
 
-    // Full expression — binary operators resolved by precedence decls
-    "expr : expr ',' expr                           # comma (0 2)\n"
-    "     | assign_expr                             # 0\n"
-    "     ;\n"
-
-    "assign_expr : cond_expr                        # 0\n"
-    "            | unary_expr '=' assign_expr        # assign (0 2)\n"
-    "            | unary_expr ADD_ASSIGN assign_expr # add_assign (0 2)\n"
-    "            | unary_expr SUB_ASSIGN assign_expr # sub_assign (0 2)\n"
-    "            | unary_expr MUL_ASSIGN assign_expr # mul_assign (0 2)\n"
-    "            | unary_expr DIV_ASSIGN assign_expr # div_assign (0 2)\n"
-    "            | unary_expr MOD_ASSIGN assign_expr # mod_assign (0 2)\n"
-    "            | unary_expr BSL_ASSIGN assign_expr # bsl_assign (0 2)\n"
-    "            | unary_expr BSR_ASSIGN assign_expr # bsr_assign (0 2)\n"
-    "            | unary_expr BAND_ASSIGN assign_expr # band_assign (0 2)\n"
-    "            | unary_expr BOR_ASSIGN assign_expr # bor_assign (0 2)\n"
-    "            | unary_expr XOR_ASSIGN assign_expr # xor_assign (0 2)\n"
-    "            | unary_expr COL_ASSIGN assign_expr # col_assign (0 2)\n"
-    "            ;\n"
+    "using_declaration"
+    "  : USING NAMESPACE IDENT ';'   # using_ns (2)\n"
+    "  | USING IDENT ';'             # using_decl (1)\n"
+    "  | PREFER IDENT ';'            # prefer (1)\n"
+    "  ;\n"
     "\n"
-
-    // Ternary conditional
-    "cond_expr : lor_expr                           # 0\n"
-    "          | lor_expr '?' expr ':' cond_expr    # ternary (0 2 4)\n"
-    "          ;\n"
-
-    // Logical OR
-    "lor_expr : land_expr                           # 0\n"
-    "         | lor_expr OR_OP land_expr            # lor (0 2)\n"
-    "         ;\n"
-
-    // Logical AND
-    "land_expr : bor_expr                           # 0\n"
-    "          | land_expr AND_OP bor_expr           # land (0 2)\n"
-    "          ;\n"
-
-    // Bitwise OR
-    "bor_expr : bxor_expr                           # 0\n"
-    "         | bor_expr '|' bxor_expr              # bitor (0 2)\n"
-    "         ;\n"
-
-    // Bitwise XOR
-    "bxor_expr : band_expr                          # 0\n"
-    "          | bxor_expr '^' band_expr            # bitxor (0 2)\n"
-    "          ;\n"
-
-    // Bitwise AND
-    "band_expr : eq_expr                            # 0\n"
-    "          | band_expr '&' eq_expr              # bitand (0 2)\n"
-    "          ;\n"
-
-    // Equality
-    "eq_expr : rel_expr                             # 0\n"
-    "        | eq_expr EQ_OP rel_expr               # eq (0 2)\n"
-    "        | eq_expr NE_OP rel_expr               # ne (0 2)\n"
-    "        | eq_expr EQ3_OP rel_expr              # eq3 (0 2)\n"
-    "        ;\n"
-
-    // Relational
-    "rel_expr : shift_expr                          # 0\n"
-    "         | rel_expr '<' shift_expr             # lt (0 2)\n"
-    "         | rel_expr '>' shift_expr             # gt (0 2)\n"
-    "         | rel_expr LE_OP shift_expr           # le (0 2)\n"
-    "         | rel_expr GE_OP shift_expr           # ge (0 2)\n"
-    "         | rel_expr THREE_WAY shift_expr       # three_way (0 2)\n"
-    "         ;\n"
-
-    // Shift
-    "shift_expr : add_expr                          # 0\n"
-    "           | shift_expr BSL_OP add_expr        # bsl (0 2)\n"
-    "           | shift_expr BSR_OP add_expr        # bsr (0 2)\n"
-    "           ;\n"
-
-    // Additive
-    "add_expr : mul_expr                            # 0\n"
-    "         | add_expr '+' mul_expr               # add (0 2)\n"
-    "         | add_expr '-' mul_expr               # sub (0 2)\n"
-    "         ;\n"
-
-    // Multiplicative
-    "mul_expr : unary_expr                          # 0\n"
-    "         | mul_expr '*' unary_expr             # mul (0 2)\n"
-    "         | mul_expr '/' unary_expr             # div (0 2)\n"
-    "         | mul_expr '%' unary_expr             # mod (0 2)\n"
-    "         ;\n"
-    "\n"
-
-    // Unary expressions
-    "unary_expr : postfix_expr                      # 0\n"
-    "           | '-' unary_expr                    # neg (1)\n"
-    "           | '+' unary_expr                    # pos (1)\n"
-    "           | '!' unary_expr                    # lnot (1)\n"
-    "           | '~' unary_expr                    # bnot (1)\n"
-    "           | '*' unary_expr                    # deref (1)\n"
-    "           | '&' unary_expr                    # addrof (1)\n"
-    "           | INC_OP unary_expr                 # pre_inc (1)\n"
-    "           | DEC_OP unary_expr                 # pre_dec (1)\n"
-    "           | SIZEOF '(' full_type ')'          # sizeof_type (2)\n"
-    "           | SIZEOF unary_expr                 # sizeof_expr (1)\n"
-    "           | '(' full_type ')' unary_expr      # cast (1 3)\n"
-    "           | NEW IDENT                         # new_plain (1)\n"
-    "           | NEW IDENT '(' arg_list_opt ')'    # new_ctor (1 3)\n"
-    "           ;\n"
-    "\n"
-
-    // Postfix expressions
-    "postfix_expr : primary_expr                    # 0\n"
-    "             | postfix_expr '(' arg_list_opt ')'\n"
-    "                                               # call (0 2)\n"
-    "             | postfix_expr '.' IDENT          # member (0 2)\n"
-    "             | postfix_expr ARROW IDENT        # arrow_member (0 2)\n"
-    "             | postfix_expr '.' IDENT '(' arg_list_opt ')'\n"
-    "                                               # method_call (0 2 4)\n"
-    "             | postfix_expr ARROW IDENT '(' arg_list_opt ')'\n"
-    "                                               # arrow_call (0 2 4)\n"
-    "             | postfix_expr '[' expr ']'       # subscript (0 2)\n"
-    "             | postfix_expr INC_OP             # post_inc (0)\n"
-    "             | postfix_expr DEC_OP             # post_dec (0)\n"
-    "             | IDENT SCOPE IDENT               # ns_name (0 2)\n"
-    "             | IDENT SCOPE IDENT '(' arg_list_opt ')'\n"
-    "                                               # ns_call (0 2 4)\n"
-    "             | '(' full_type ')' '{' initializer_list '}'\n"
-    "                                               # compound_lit (1 4)\n"
-    "             ;\n"
-    "\n"
-
-    // Primary expressions
-    "primary_expr : IDENT                           # 0\n"
-    "             | INTEGER                         # 0\n"
-    "             | REAL                            # 0\n"
-    "             | STRING_LIT                      # 0\n"
-    "             | CHAR_LIT                        # 0\n"
-    "             | '(' expr ')'                    # paren (1)\n"
-    "             ;\n"
-    "\n"
-
-    "arg_list_opt :                                  \n"
-    "             | arg_list                         # 0\n"
-    "             ;\n"
-    "arg_list : assign_expr                          # 0\n"
-    "         | arg_list ',' assign_expr             # arg_list (0 2)\n"
-    "         ;\n"
 ;
 
 
@@ -1163,7 +1276,7 @@ int madc_token_to_gecko(TokenBase *tb)
     case TokenID::tkSub:       return '-';
     case TokenID::tkMul:       return '*';
     case TokenID::tkDiv:       return '/';
-    case TokenID::tkMod:       return '%';  // note: tkMod == tkQmark alias? no, tkMod is 29
+    case TokenID::tkMod:       return '%';
     case TokenID::tkAssign:    return '=';
     case TokenID::tkLT:        return '<';
     case TokenID::tkGT:        return '>';
