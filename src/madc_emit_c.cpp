@@ -1200,6 +1200,11 @@ class CEmitter
 		    }
 		    std::string mangled = owner + "__" + method;
 		    std::string addr = is_arrow ? obj : ("&" + obj);
+		    // Cast to base class type when method is inherited
+		    if (owner != cls && !is_arrow)
+			addr = "(struct " + owner + " *)&" + obj;
+		    else if (owner != cls && is_arrow)
+			addr = "(struct " + owner + " *)" + obj;
 		    if (args.empty())
 			return mangled + "(" + addr + ")";
 		    return mangled + "(" + addr + ", " + args + ")";
@@ -2607,7 +2612,31 @@ class CEmitter
 	    local_var_class_map.clear();
 	    O("void %s(%s)\n", mangled.c_str(), this_param.c_str());
 	    indent_level = 0;
-	    emit_stmt(body_node);
+
+	    // Check for base class — need to chain base dtor
+	    std::string base_class;
+	    if (sema) {
+		auto bit = sema->class_bases.find(class_name);
+		if (bit != sema->class_bases.end())
+		    base_class = bit->second;
+	    }
+
+	    if (!base_class.empty() && is_an(body_node, AN_BLOCK)) {
+		// Emit block manually so we can inject base dtor before closing }
+		emit_indent();
+		O("{\n");
+		indent_level++;
+		emit_stmt(child(body_node, 0));
+		// Chain to base class destructor
+		emit_indent();
+		O("%s__dtor((struct %s *)__this);\n",
+		  base_class.c_str(), base_class.c_str());
+		indent_level--;
+		emit_indent();
+		O("}\n");
+	    } else {
+		emit_stmt(body_node);
+	    }
 	    O("\n");
 
 	    current_class = prev_class;
