@@ -354,7 +354,7 @@ class CEmitter
 	if (is_anode(node, "star")) {
 	    gp_tree_node *quals = child(node, 0);
 	    if (!is_nil(quals))
-		return "* " + emit_type(quals);
+		return "* " + emit_type(quals) + " ";
 	    return "*";
 	}
 	if (is_anode(node, "stars")) {
@@ -380,7 +380,7 @@ class CEmitter
 	    if (strcmp(name, "star") == 0 || strcmp(name, "stars") == 0)
 		return emit_pointer(node);
 	    if (strcmp(name, "abs_ref") == 0)
-		return "&";
+		return "*";  // refs → pointers in C
 	    if (strcmp(name, "abs_ptr") == 0)
 		return emit_pointer(child(node, 0));
 	    if (strcmp(name, "abs_func") == 0)
@@ -428,7 +428,7 @@ class CEmitter
 	    return emit_pointer(child(node, 0)) + emit_declarator_str(child(node, 1));
 
 	if (strcmp(name, "ref_decl") == 0)
-	    return "&" + emit_declarator_str(child(node, 0));
+	    return "*" + emit_declarator_str(child(node, 0));  // refs → pointers in C
 
 	if (strcmp(name, "func_decl") == 0) {
 	    std::string nm = emit_declarator_str(child(node, 0));
