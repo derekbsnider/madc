@@ -51,102 +51,90 @@ void madc_putf(float f)      { std::cout << f << std::endl; }
 void madc_puts(const char *s) { if (s) puts(s); }
 void madc_printstr(const char *s) { if (s) std::cout << s << std::endl; }
 
-// C++ iostream wrappers — thin C-linkage functions that call real
-// std::cout << operators.  The transpiler emits these instead of printf,
-// preserving iostream formatting behavior.
-// String runtime — manages std::string objects from generated C code.
-// String variables are stack-allocated char[32] buffers with placement new.
-void __madc_string_construct(void *ptr)
-    { new(ptr) std::string; }
-void __madc_string_destruct(void *ptr)
+// String runtime — mirrors the legacy compiler's string_construct/string_destruct
+// pattern from compiler.cpp.  std::string is treated as a C++ object with
+// extern ctor/dtor, not special-cased.
+void *string_construct(void *ptr)
+    { return new(ptr) std::string; }
+void string_destruct(void *ptr)
     { ((std::string *)ptr)->~basic_string(); }
-void __madc_string_assign_cstr(void *ptr, const char *s)
-    { *(std::string *)ptr = s ? s : ""; }
-void __madc_string_assign(void *dst, void *src)
+void *string_construct_cstr(void *ptr, const char *s)
+    { return new(ptr) std::string(s ? s : ""); }
+void string_assign(void *dst, void *src)
     { *(std::string *)dst = *(std::string *)src; }
-const char *__madc_string_cstr(void *ptr)
+void string_assign_cstr(void *dst, const char *s)
+    { *(std::string *)dst = s ? s : ""; }
+const char *string_cstr(void *ptr)
     { return ((std::string *)ptr)->c_str(); }
-long __madc_string_length(void *ptr)
+long string_length(void *ptr)
     { return (long)((std::string *)ptr)->length(); }
-void __madc_string_append_cstr(void *ptr, const char *s)
-    { if (s) *(std::string *)ptr += s; }
-void __madc_string_append(void *dst, void *src)
+void string_append(void *dst, void *src)
     { *(std::string *)dst += *(std::string *)src; }
-// Generic ostream wrappers — take ostream* as first arg so they work
-// with cout, cerr, ofstream, stringstream, etc.
-void __madc_ostream_str(void *os, const char *s)
-    { if (s) *(std::ostream *)os << s; }
-void __madc_ostream_stdstr(void *os, void *ptr)
+void string_append_cstr(void *dst, const char *s)
+    { if (s) *(std::string *)dst += s; }
+
+// Generic ostream wrappers — mirrors streamout_string/streamout_cstr/
+// streamout_numeric from compiler_operators.cpp.  Take ostream* as first
+// arg so they work with cout, cerr, ofstream, stringstream, etc.
+void streamout_string(void *os, void *ptr)
     { *(std::ostream *)os << *(std::string *)ptr; }
-void __madc_ostream_int(void *os, long i)
+void streamout_cstr(void *os, const char *s)
+    { if (s) *(std::ostream *)os << s; }
+void streamout_int64(void *os, long i)
     { *(std::ostream *)os << i; }
-void __madc_ostream_uint(void *os, unsigned long u)
+void streamout_uint64(void *os, unsigned long u)
     { *(std::ostream *)os << u; }
-void __madc_ostream_char(void *os, int c)
+void streamout_char(void *os, int c)
     { *(std::ostream *)os << (char)c; }
-void __madc_ostream_double(void *os, double d)
+void streamout_double(void *os, double d)
     { *(std::ostream *)os << d; }
-void __madc_ostream_endl(void *os)
+void streamout_endl(void *os)
     { *(std::ostream *)os << std::endl; }
-void __madc_ostream_flush(void *os)
+void streamout_flush(void *os)
     { *(std::ostream *)os << std::flush; }
 // Stream manipulators
-void __madc_ostream_hex(void *os)
+void streamout_hex(void *os)
     { *(std::ostream *)os << std::hex; }
-void __madc_ostream_oct(void *os)
+void streamout_oct(void *os)
     { *(std::ostream *)os << std::oct; }
-void __madc_ostream_dec(void *os)
+void streamout_dec(void *os)
     { *(std::ostream *)os << std::dec; }
-void __madc_ostream_fixed(void *os)
+void streamout_fixed(void *os)
     { *(std::ostream *)os << std::fixed; }
-void __madc_ostream_scientific(void *os)
+void streamout_scientific(void *os)
     { *(std::ostream *)os << std::scientific; }
-void __madc_ostream_left(void *os)
+void streamout_left(void *os)
     { *(std::ostream *)os << std::left; }
-void __madc_ostream_right(void *os)
+void streamout_right(void *os)
     { *(std::ostream *)os << std::right; }
-void __madc_ostream_boolalpha(void *os)
+void streamout_boolalpha(void *os)
     { *(std::ostream *)os << std::boolalpha; }
-void __madc_ostream_noboolalpha(void *os)
+void streamout_noboolalpha(void *os)
     { *(std::ostream *)os << std::noboolalpha; }
-void __madc_ostream_showbase(void *os)
+void streamout_showbase(void *os)
     { *(std::ostream *)os << std::showbase; }
-void __madc_ostream_noshowbase(void *os)
+void streamout_noshowbase(void *os)
     { *(std::ostream *)os << std::noshowbase; }
-void __madc_ostream_setw(void *os, int w)
+void streamout_setw(void *os, int w)
     { *(std::ostream *)os << std::setw(w); }
-void __madc_ostream_setprecision(void *os, int p)
+void streamout_setprecision(void *os, int p)
     { *(std::ostream *)os << std::setprecision(p); }
-void __madc_ostream_setfill(void *os, int c)
+void streamout_setfill(void *os, int c)
     { *(std::ostream *)os << std::setfill((char)c); }
 
 // istream wrappers — take istream* as first arg
-void __madc_istream_int(void *is, long *out)
+void streamin_int(void *is, long *out)
     { *(std::istream *)is >> *out; }
-void __madc_istream_uint(void *is, unsigned long *out)
+void streamin_uint(void *is, unsigned long *out)
     { *(std::istream *)is >> *out; }
-void __madc_istream_double(void *is, double *out)
+void streamin_double(void *is, double *out)
     { *(std::istream *)is >> *out; }
-void __madc_istream_char(void *is, char *out)
+void streamin_char(void *is, char *out)
     { *(std::istream *)is >> *out; }
-void __madc_istream_stdstr(void *is, void *str)
+void streamin_string(void *is, void *str)
     { *(std::istream *)is >> *(std::string *)str; }
-void __madc_istream_cstr(void *is, char *buf, long maxlen)
-    { *(std::istream *)is >> std::setw(maxlen) >> buf; }
-void __madc_istream_getline(void *is, void *str)
+void streamin_getline(void *is, void *str)
     { std::getline(*(std::istream *)is, *(std::string *)str); }
-
-// Temporary string from C literal — for passing string literals to
-// namespace functions that expect std::string*.  Uses a static buffer
-// (not thread-safe, but matches the single-threaded transpiler model).
-static char __madc_tmpstr_buf[4][32];
-static int __madc_tmpstr_idx = 0;
-void *__madc_tmpstr(const char *s)
-{
-    int idx = __madc_tmpstr_idx++ & 3;  // round-robin 4 slots
-    std::string *str = new(__madc_tmpstr_buf[idx]) std::string(s ? s : "");
-    return str;
-}
 
 // Global stream pointers accessible from generated C
 void *__madc_cout_ptr(void) { return &std::cout; }

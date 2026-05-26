@@ -18,9 +18,8 @@ enum TypeClass {
     TC_STRING = 2,   // char*, const char*, string (prints as string)
     TC_DOUBLE = 3,   // double, float (prints as %g)
     TC_VOID   = 4,   // void
-    TC_CLASS  = 5,   // user-defined class instance
+    TC_CLASS  = 5,   // class instance (user-defined or built-in like std::string)
     TC_PTR    = 6,   // generic pointer (not char*)
-    TC_STDSTR = 7,   // managed std::string (needs ctor/dtor)
 };
 
 // Per-class type information

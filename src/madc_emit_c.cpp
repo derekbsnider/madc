@@ -765,13 +765,13 @@ class CEmitter
 	    if (v->type == GP_TERM) {
 		int code = term_code(v);
 		if (code == GT_STRING)
-		    result += "__madc_ostream_str(" + os + ", \"" + c_escape(term_text(v)) + "\")";
+		    result += "streamout_cstr(" + os + ", \"" + c_escape(term_text(v)) + "\")";
 		else if (code == GT_CHAR_LIT)
-		    result += "__madc_ostream_char(" + os + ", " + e + ")";
+		    result += "streamout_char(" + os + ", " + e + ")";
 		else if (code == GT_REAL)
-		    result += "__madc_ostream_double(" + os + ", " + e + ")";
+		    result += "streamout_double(" + os + ", " + e + ")";
 		else if (code == GT_INTEGER)
-		    result += "__madc_ostream_int(" + os + ", " + e + ")";
+		    result += "streamout_int64(" + os + ", " + e + ")";
 		else {
 		    TypeClass tc = lookup_var_type(term_text(v));
 		    result += ostream_call_for_type(os, tc, e);
@@ -779,7 +779,7 @@ class CEmitter
 	    } else {
 		TypeClass etc = infer_expr_cout_type(v);
 		if (!e.empty() && e[0] == '"')
-		    result += "__madc_ostream_str(" + os + ", " + e + ")";
+		    result += "streamout_cstr(" + os + ", " + e + ")";
 		else
 		    result += ostream_call_for_type(os, etc, e);
 	    }
@@ -788,16 +788,16 @@ class CEmitter
 	return "(" + result + ")";
     }
 
-    // Map TypeClass to the appropriate __madc_ostream_* wrapper call
+    // Map TypeClass to the appropriate streamout_* wrapper call
     std::string ostream_call_for_type(const std::string &os,
 				      TypeClass tc, const std::string &expr)
     {
 	switch (tc) {
-	case TC_STDSTR: return "__madc_ostream_stdstr(" + os + ", " + expr + ")";
-	case TC_STRING: return "__madc_ostream_str(" + os + ", " + expr + ")";
-	case TC_CHAR:   return "__madc_ostream_char(" + os + ", " + expr + ")";
-	case TC_DOUBLE: return "__madc_ostream_double(" + os + ", " + expr + ")";
-	default:        return "__madc_ostream_int(" + os + ", " + expr + ")";
+	case TC_CLASS:  return "streamout_string(" + os + ", " + expr + ")";
+	case TC_STRING: return "streamout_cstr(" + os + ", " + expr + ")";
+	case TC_CHAR:   return "streamout_char(" + os + ", " + expr + ")";
+	case TC_DOUBLE: return "streamout_double(" + os + ", " + expr + ")";
+	default:        return "streamout_int64(" + os + ", " + expr + ")";
 	}
     }
 
@@ -805,19 +805,19 @@ class CEmitter
     static std::string ostream_manipulator(const std::string &os,
 					   const std::string &name)
     {
-	if (name == "endl")        return "__madc_ostream_endl(" + os + ")";
-	if (name == "flush")       return "__madc_ostream_flush(" + os + ")";
-	if (name == "hex")         return "__madc_ostream_hex(" + os + ")";
-	if (name == "oct")         return "__madc_ostream_oct(" + os + ")";
-	if (name == "dec")         return "__madc_ostream_dec(" + os + ")";
-	if (name == "fixed")       return "__madc_ostream_fixed(" + os + ")";
-	if (name == "scientific")  return "__madc_ostream_scientific(" + os + ")";
-	if (name == "left")        return "__madc_ostream_left(" + os + ")";
-	if (name == "right")       return "__madc_ostream_right(" + os + ")";
-	if (name == "boolalpha")   return "__madc_ostream_boolalpha(" + os + ")";
-	if (name == "noboolalpha") return "__madc_ostream_noboolalpha(" + os + ")";
-	if (name == "showbase")    return "__madc_ostream_showbase(" + os + ")";
-	if (name == "noshowbase")  return "__madc_ostream_noshowbase(" + os + ")";
+	if (name == "endl")        return "streamout_endl(" + os + ")";
+	if (name == "flush")       return "streamout_flush(" + os + ")";
+	if (name == "hex")         return "streamout_hex(" + os + ")";
+	if (name == "oct")         return "streamout_oct(" + os + ")";
+	if (name == "dec")         return "streamout_dec(" + os + ")";
+	if (name == "fixed")       return "streamout_fixed(" + os + ")";
+	if (name == "scientific")  return "streamout_scientific(" + os + ")";
+	if (name == "left")        return "streamout_left(" + os + ")";
+	if (name == "right")       return "streamout_right(" + os + ")";
+	if (name == "boolalpha")   return "streamout_boolalpha(" + os + ")";
+	if (name == "noboolalpha") return "streamout_noboolalpha(" + os + ")";
+	if (name == "showbase")    return "streamout_showbase(" + os + ")";
+	if (name == "noshowbase")  return "streamout_noshowbase(" + os + ")";
 	return "";
     }
 
@@ -877,24 +877,24 @@ class CEmitter
 	    if (t->type == GP_TERM && term_code(t) == GT_IDENT) {
 		TypeClass tc = lookup_var_type(term_text(t));
 		switch (tc) {
-		case TC_STDSTR:
-		    result += "__madc_istream_stdstr(__madc_cin, " + var + ")";
+		case TC_CLASS:
+		    result += "streamin_string(__madc_cin, " + var + ")";
 		    break;
 		case TC_STRING:
-		    result += "__madc_istream_cstr(__madc_cin, " + var + ", 256)";
+		    result += "streamin_char(__madc_cin, " + var + ")";
 		    break;
 		case TC_CHAR:
-		    result += "__madc_istream_char(__madc_cin, &" + var + ")";
+		    result += "streamin_char(__madc_cin, &" + var + ")";
 		    break;
 		case TC_DOUBLE:
-		    result += "__madc_istream_double(__madc_cin, &" + var + ")";
+		    result += "streamin_double(__madc_cin, &" + var + ")";
 		    break;
 		default:
-		    result += "__madc_istream_int(__madc_cin, &" + var + ")";
+		    result += "streamin_int(__madc_cin, &" + var + ")";
 		    break;
 		}
 	    } else {
-		result += "__madc_istream_int(__madc_cin, &" + var + ")";
+		result += "streamin_int(__madc_cin, &" + var + ")";
 	    }
 	}
 	return "(" + result + ")";
@@ -1172,19 +1172,28 @@ class CEmitter
 	gp_tree_node *leaf = unwrap_to_ident(node);
 	if (leaf && leaf->type == GP_TERM && term_code(leaf) == GT_IDENT) {
 	    TypeClass tc = lookup_var_type(term_text(leaf));
-	    if (tc == TC_STDSTR)
-		return "__madc_string_cstr(" + e + ")";
+	    if (tc == TC_CLASS && lookup_var_class(term_text(leaf)) == "string")
+		return "string_cstr(" + e + ")";
 	}
 	return e;
     }
 
-    // Emit an arg for namespace calls — wrap string literals in __madc_tmpstr
+    // Emit an arg for namespace calls — string literals become stack
+    // string objects constructed inline (same lifecycle as any C++ object).
     std::string emit_ns_arg(gp_tree_node *node)
     {
 	std::string e = emit_expr(node);
-	// String literals need wrapping — ns funcs expect std::string*
-	if (node && node->type == GP_TERM && term_code(node) == GT_STRING)
-	    return "__madc_tmpstr(\"" + c_escape(term_text(node)) + "\")";
+	if (node && node->type == GP_TERM && term_code(node) == GT_STRING) {
+	    // Emit a temporary stack string for the literal
+	    std::string tmp = tmp_var();
+	    emit_indent();
+	    O("char %s[MADC_STRING_SIZE];\n", tmp.c_str());
+	    emit_indent();
+	    O("string_construct_cstr(%s, \"%s\");\n", tmp.c_str(), c_escape(term_text(node)).c_str());
+	    // Track for destruction
+	    scope_class_vars.push_back(tmp + "|string");
+	    return tmp;
+	}
 	return e;
     }
 
@@ -1423,8 +1432,8 @@ class CEmitter
 		    std::string vn = scope_class_vars[i].substr(0, sep);
 		    std::string cn = scope_class_vars[i].substr(sep + 1);
 		    emit_indent();
-		    if (cn == "__string")
-			O("__madc_string_destruct(%s);\n", vn.c_str());
+		    if (cn == "string")
+			O("string_destruct(%s);\n", vn.c_str());
 		    else
 			O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
 		}
@@ -1630,12 +1639,11 @@ class CEmitter
 		emit_indent();
 		O("char %s[MADC_STRING_SIZE];\n", vname.c_str());
 		emit_indent();
-		O("__madc_string_construct(%s);\n", vname.c_str());
-		emit_indent();
-		O("__madc_string_assign_cstr(%s, %s);\n",
+		O("string_construct_cstr(%s, %s);\n",
 		  vname.c_str(), init_expr.c_str());
-		local_var_types[vname] = TC_STDSTR;
-		scope_class_vars.push_back(vname + "|__string");
+		local_var_types[vname] = TC_CLASS;
+		local_var_class_map[vname] = "string";
+		scope_class_vars.push_back(vname + "|string");
 	    }
 	    return;
 	}
@@ -1654,9 +1662,10 @@ class CEmitter
 		emit_indent();
 		O("char %s[MADC_STRING_SIZE];\n", vname.c_str());
 		emit_indent();
-		O("__madc_string_construct(%s);\n", vname.c_str());
-		local_var_types[vname] = TC_STDSTR;
-		scope_class_vars.push_back(vname + "|__string");
+		O("string_construct(%s);\n", vname.c_str());
+		local_var_types[vname] = TC_CLASS;
+		local_var_class_map[vname] = "string";
+		scope_class_vars.push_back(vname + "|string");
 	    }
 	    return;
 	}
@@ -2319,48 +2328,47 @@ public:
 	header += "typedef void *array;\n";  // MadArray
 	header += "\n";
 
-	// String runtime (manages std::string objects from C)
+	// String runtime — same API as legacy compiler.cpp string_construct/destruct
 	header += "#define MADC_STRING_SIZE 32\n";
-	header += "extern void __madc_string_construct(void *);\n";
-	header += "extern void __madc_string_destruct(void *);\n";
-	header += "extern void __madc_string_assign_cstr(void *, const char *);\n";
-	header += "extern void __madc_string_assign(void *, void *);\n";
-	header += "extern const char *__madc_string_cstr(void *);\n";
-	header += "extern long __madc_string_length(void *);\n";
-	header += "extern void __madc_string_append_cstr(void *, const char *);\n";
-	header += "extern void __madc_string_append(void *, void *);\n";
-	header += "extern void *__madc_tmpstr(const char *);\n";
-	// ostream wrappers — take ostream* as first arg
-	header += "extern void __madc_ostream_str(void *, const char *);\n";
-	header += "extern void __madc_ostream_stdstr(void *, void *);\n";
-	header += "extern void __madc_ostream_int(void *, long);\n";
-	header += "extern void __madc_ostream_uint(void *, unsigned long);\n";
-	header += "extern void __madc_ostream_char(void *, int);\n";
-	header += "extern void __madc_ostream_double(void *, double);\n";
-	header += "extern void __madc_ostream_endl(void *);\n";
-	header += "extern void __madc_ostream_flush(void *);\n";
-	header += "extern void __madc_ostream_hex(void *);\n";
-	header += "extern void __madc_ostream_oct(void *);\n";
-	header += "extern void __madc_ostream_dec(void *);\n";
-	header += "extern void __madc_ostream_fixed(void *);\n";
-	header += "extern void __madc_ostream_scientific(void *);\n";
-	header += "extern void __madc_ostream_left(void *);\n";
-	header += "extern void __madc_ostream_right(void *);\n";
-	header += "extern void __madc_ostream_boolalpha(void *);\n";
-	header += "extern void __madc_ostream_noboolalpha(void *);\n";
-	header += "extern void __madc_ostream_showbase(void *);\n";
-	header += "extern void __madc_ostream_noshowbase(void *);\n";
-	header += "extern void __madc_ostream_setw(void *, int);\n";
-	header += "extern void __madc_ostream_setprecision(void *, int);\n";
-	header += "extern void __madc_ostream_setfill(void *, int);\n";
+	header += "extern void *string_construct(void *);\n";
+	header += "extern void string_destruct(void *);\n";
+	header += "extern void *string_construct_cstr(void *, const char *);\n";
+	header += "extern void string_assign(void *, void *);\n";
+	header += "extern void string_assign_cstr(void *, const char *);\n";
+	header += "extern const char *string_cstr(void *);\n";
+	header += "extern long string_length(void *);\n";
+	header += "extern void string_append(void *, void *);\n";
+	header += "extern void string_append_cstr(void *, const char *);\n";
+	// ostream wrappers — mirrors streamout_string/cstr/numeric from legacy
+	header += "extern void streamout_string(void *, void *);\n";
+	header += "extern void streamout_cstr(void *, const char *);\n";
+	header += "extern void streamout_int64(void *, long);\n";
+	header += "extern void streamout_uint64(void *, unsigned long);\n";
+	header += "extern void streamout_char(void *, int);\n";
+	header += "extern void streamout_double(void *, double);\n";
+	header += "extern void streamout_endl(void *);\n";
+	header += "extern void streamout_flush(void *);\n";
+	header += "extern void streamout_hex(void *);\n";
+	header += "extern void streamout_oct(void *);\n";
+	header += "extern void streamout_dec(void *);\n";
+	header += "extern void streamout_fixed(void *);\n";
+	header += "extern void streamout_scientific(void *);\n";
+	header += "extern void streamout_left(void *);\n";
+	header += "extern void streamout_right(void *);\n";
+	header += "extern void streamout_boolalpha(void *);\n";
+	header += "extern void streamout_noboolalpha(void *);\n";
+	header += "extern void streamout_showbase(void *);\n";
+	header += "extern void streamout_noshowbase(void *);\n";
+	header += "extern void streamout_setw(void *, int);\n";
+	header += "extern void streamout_setprecision(void *, int);\n";
+	header += "extern void streamout_setfill(void *, int);\n";
 	// istream wrappers
-	header += "extern void __madc_istream_int(void *, long *);\n";
-	header += "extern void __madc_istream_uint(void *, unsigned long *);\n";
-	header += "extern void __madc_istream_double(void *, double *);\n";
-	header += "extern void __madc_istream_char(void *, char *);\n";
-	header += "extern void __madc_istream_stdstr(void *, void *);\n";
-	header += "extern void __madc_istream_cstr(void *, char *, long);\n";
-	header += "extern void __madc_istream_getline(void *, void *);\n";
+	header += "extern void streamin_int(void *, long *);\n";
+	header += "extern void streamin_uint(void *, unsigned long *);\n";
+	header += "extern void streamin_double(void *, double *);\n";
+	header += "extern void streamin_char(void *, char *);\n";
+	header += "extern void streamin_string(void *, void *);\n";
+	header += "extern void streamin_getline(void *, void *);\n";
 	header += "\n";
 
 	// Stream pointers
@@ -2372,7 +2380,7 @@ public:
 	header += "#define __madc_cin  (__madc_cin_ptr())\n";
 	header += "\n";
 
-	// (old __std_cout_* declarations removed — replaced by __madc_ostream_* above)
+	// (old __std_cout_* declarations removed — replaced by streamout_* above)
 	header += "\n";
 
 	// Additional builtins commonly needed
