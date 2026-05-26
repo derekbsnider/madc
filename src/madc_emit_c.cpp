@@ -255,20 +255,28 @@ class CEmitter
 
 	// struct/union definition (inline): struct foo { ... }
 	if (strcmp(name, "struct_def") == 0) {
-	    // This can appear as a type_specifier
 	    std::string su = term_text(child(node, 0));
 	    gp_tree_node *nm = child(node, 1);
 	    std::string sname = is_nil(nm) ? "" : (" " + term_text(nm));
-	    return su + sname;
+	    std::string result = su + sname + " { ";
+	    result += emit_struct_body_inline(child(node, 2));
+	    result += " }";
+	    return result;
 	}
 
 	// enum reference: enum foo
 	if (strcmp(name, "enum_ref") == 0)
 	    return "enum " + term_text(child(node, 0));
 
-	// enum definition (inline)
-	if (strcmp(name, "enum_def") == 0)
-	    return "enum " + term_text(child(node, 0));
+	// enum definition (inline) — emit the full body
+	if (strcmp(name, "enum_def") == 0) {
+	    gp_tree_node *nm = child(node, 0);
+	    std::string ename = is_nil(nm) ? "" : (" " + term_text(nm));
+	    std::string result = "enum" + ename + " { ";
+	    result += emit_enum_body_inline(child(node, 1));
+	    result += " }";
+	    return result;
+	}
 
 	// type_name(specifier_qualifier_list, abstract_declarator_opt)
 	if (strcmp(name, "type_name") == 0) {
@@ -292,6 +300,47 @@ class CEmitter
 	}
 
 	return "int";
+    }
+
+    // Inline struct/union body (for typedef struct { ... } name;)
+    std::string emit_struct_body_inline(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return "";
+	if (is_anode(node, "struct_body"))
+	    return emit_struct_body_inline(child(node, 0)) + " " +
+		   emit_struct_field_inline(child(node, 1));
+	return emit_struct_field_inline(node);
+    }
+
+    std::string emit_struct_field_inline(gp_tree_node *node)
+    {
+	if (!node) return "";
+	if (is_anode(node, "struct_field")) {
+	    std::string type = emit_type(child(node, 0));
+	    std::string decls = emit_declarator_str(child(node, 1));
+	    return type + " " + decls + ";";
+	}
+	return "";
+    }
+
+    // Inline enum body (for typedef enum { ... } name;)
+    std::string emit_enum_body_inline(gp_tree_node *node)
+    {
+	if (!node || node->type == GP_NIL) return "";
+	if (is_anode(node, "enum_list"))
+	    return emit_enum_body_inline(child(node, 0)) + ", " +
+		   emit_enum_val_inline(child(node, 1));
+	return emit_enum_val_inline(node);
+    }
+
+    std::string emit_enum_val_inline(gp_tree_node *node)
+    {
+	if (!node) return "";
+	if (node->type == GP_TERM)
+	    return term_text(node);
+	if (is_anode(node, "enum_assign"))
+	    return term_text(child(node, 0)) + " = " + emit_expr(child(node, 1));
+	return "";
     }
 
     // ---------------------------------------------------------------
