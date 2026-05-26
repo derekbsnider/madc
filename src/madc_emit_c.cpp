@@ -3921,12 +3921,25 @@ public:
 	header += "typedef void *array;\n";  // MadArray
 	header += "\n";
 
-	// String runtime — same API as legacy compiler.cpp string_construct/destruct
-	header += "#define MADC_STRING_SIZE 32\n";
-	header += "#define MADC_OFSTREAM_SIZE 512\n";
-	header += "#define MADC_IFSTREAM_SIZE 512\n";
-	header += "#define MADC_FSTREAM_SIZE  512\n";
-	header += "#define MADC_SSTREAM_SIZE  512\n";
+	// Object sizes — computed from sizeof() so they're correct for
+	// whatever libstdc++/libc++ is linked. Portable across ABIs.
+	{
+	    char __sz[512];
+	    snprintf(__sz, sizeof(__sz),
+		"#define MADC_STRING_SIZE %zu\n"
+		"#define MADC_OFSTREAM_SIZE %zu\n"
+		"#define MADC_IFSTREAM_SIZE %zu\n"
+		"#define MADC_FSTREAM_SIZE %zu\n"
+		"#define MADC_SSTREAM_SIZE %zu\n"
+		"#define MADC_ARRAY_SIZE %zu\n",
+		sizeof(std::string),
+		sizeof(std::ofstream),
+		sizeof(std::ifstream),
+		sizeof(std::fstream),
+		sizeof(std::stringstream),
+		sizeof(MadArray));
+	    header += __sz;
+	}
 	header += "extern void *string_construct(void *);\n";
 	header += "extern void string_destruct(void *);\n";
 	header += "extern void *string_construct_cstr(void *, const char *);\n";
