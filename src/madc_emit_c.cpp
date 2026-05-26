@@ -1504,7 +1504,7 @@ public:
 	header += "extern int snprintf(char *, unsigned long, const char *, ...);\n";
 	header += "extern int sprintf(char *, const char *, ...);\n";
 	header += "extern int sscanf(const char *, const char *, ...);\n";
-	header += "static const char *version = \"madc transpiler\";\n";
+	header += "static const char *version = \"v0.0.1\";\n";
 	header += "\n";
 
 	emit_top_level(root);
