@@ -1172,15 +1172,25 @@ class CEmitter
 	return e;
     }
 
-    // Raw arg list — no string coercion (for namespace functions)
+    // Emit an arg for namespace calls — wrap string literals in __madc_tmpstr
+    std::string emit_ns_arg(gp_tree_node *node)
+    {
+	std::string e = emit_expr(node);
+	// String literals need wrapping — ns funcs expect std::string*
+	if (node && node->type == GP_TERM && term_code(node) == GT_STRING)
+	    return "__madc_tmpstr(\"" + c_escape(term_text(node)) + "\")";
+	return e;
+    }
+
+    // Raw arg list for namespace calls — no coercion, but wrap string literals
     std::string emit_arg_list_raw(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return "";
-	if (node->type == GP_TERM) return emit_expr(node);
+	if (node->type == GP_TERM) return emit_ns_arg(node);
 	if (!is_an(node, AN_ARG_LIST))
-	    return emit_expr(node);
+	    return emit_ns_arg(node);
 	return emit_arg_list_raw(child(node, 0)) + ", " +
-	       emit_expr(child(node, 1));
+	       emit_ns_arg(child(node, 1));
     }
 
     // Regular arg list with string coercion
@@ -2313,6 +2323,7 @@ public:
 	header += "extern long __madc_string_length(void *);\n";
 	header += "extern void __madc_string_append_cstr(void *, const char *);\n";
 	header += "extern void __madc_string_append(void *, void *);\n";
+	header += "extern void *__madc_tmpstr(const char *);\n";
 	// ostream wrappers — take ostream* as first arg
 	header += "extern void __madc_ostream_str(void *, const char *);\n";
 	header += "extern void __madc_ostream_stdstr(void *, void *);\n";

@@ -136,6 +136,18 @@ void __madc_istream_cstr(void *is, char *buf, long maxlen)
 void __madc_istream_getline(void *is, void *str)
     { std::getline(*(std::istream *)is, *(std::string *)str); }
 
+// Temporary string from C literal — for passing string literals to
+// namespace functions that expect std::string*.  Uses a static buffer
+// (not thread-safe, but matches the single-threaded transpiler model).
+static char __madc_tmpstr_buf[4][32];
+static int __madc_tmpstr_idx = 0;
+void *__madc_tmpstr(const char *s)
+{
+    int idx = __madc_tmpstr_idx++ & 3;  // round-robin 4 slots
+    std::string *str = new(__madc_tmpstr_buf[idx]) std::string(s ? s : "");
+    return str;
+}
+
 // Global stream pointers accessible from generated C
 void *__madc_cout_ptr(void) { return &std::cout; }
 void *__madc_cerr_ptr(void) { return &std::cerr; }
