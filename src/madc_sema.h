@@ -43,9 +43,6 @@ struct SemaInfo {
     // Function return types: name → type class
     std::map<std::string, TypeClass> func_ret_types;
 
-    // Function return type strings (for emit_type-level use)
-    std::map<std::string, std::string> func_type_strs;
-
     // Variable → class name mapping (for method dispatch)
     std::map<std::string, std::string> var_class_map;
 
