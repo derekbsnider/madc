@@ -137,6 +137,9 @@ class CEmitter
     // Class vars in current scope needing destructor injection (LIFO)
     std::vector<std::string> scope_class_vars;
 
+    // When true, use calloc instead of malloc for new expressions
+    bool prefer_calloc = false;
+
     // Per-function va_list variable names (for va_start/va_end emission)
     std::set<std::string> va_list_vars;
 
@@ -1275,10 +1278,13 @@ class CEmitter
 	    return "sizeof(" + emit_expr(child(node, 0)) + ")";
 
 	// new/delete
-	if (an == AN_NEW_PLAIN)
-	    return "malloc(sizeof(" + term_text(child(node, 0)) + "_t))";
-	if (an == AN_NEW_CTOR)
-	    return "malloc(sizeof(" + term_text(child(node, 0)) + "_t))";
+	if (an == AN_NEW_PLAIN || an == AN_NEW_CTOR) {
+	    std::string cls = term_text(child(node, 0));
+	    std::string st = is_known_class(cls) ? "struct " + cls : cls;
+	    if (prefer_calloc)
+		return "((" + st + " *)calloc(1, sizeof(" + st + ")))";
+	    return "((" + st + " *)malloc(sizeof(" + st + ")))";
+	}
 
 	// Comma operator
 	if (an == AN_COMMA)
@@ -1697,10 +1703,17 @@ class CEmitter
 	    return;
 	}
 
-	// Delete
+	// Delete — call destructor before freeing
 	if (an == AN_DELETE) {
+	    std::string expr = emit_expr(child(node, 0));
+	    // Look up class name for the variable
+	    std::string cls = lookup_var_class(expr);
+	    if (!cls.empty() && class_has_dtor(cls)) {
+		emit_indent();
+		O("%s__dtor(%s);\n", cls.c_str(), expr.c_str());
+	    }
 	    emit_indent();
-	    O("free(%s);\n", emit_expr(child(node, 0)).c_str());
+	    O("free(%s);\n", expr.c_str());
 	    return;
 	}
 
@@ -2070,6 +2083,41 @@ class CEmitter
 	    if (class_has_dtor(clean_type))
 		scope_class_vars.push_back(vname + "|" + clean_type);
 	    return;
+	}
+
+	// Pointer-to-class with new: `Box *b = new Box(3,4);`
+	// Emit: struct Box *b = (struct Box *)malloc(sizeof(struct Box));
+	//       Box__Box(b, 3, 4);
+	if (is_an(decls, AN_INIT_DECL)) {
+	    gp_tree_node *declarator = child(decls, 0);
+	    gp_tree_node *initializer = child(decls, 1);
+	    bool is_new_ctor = is_an(initializer, AN_NEW_CTOR);
+	    bool is_new_plain = is_an(initializer, AN_NEW_PLAIN);
+	    if ((is_new_ctor || is_new_plain) && is_an(declarator, AN_PTR_DECL)) {
+		std::string vname = extract_name(declarator);
+		std::string new_cls = term_text(child(initializer, 0));
+		std::string alloc = emit_expr(initializer);
+		emit_indent();
+		O("%s *%s = %s;\n", type.c_str(), vname.c_str(), alloc.c_str());
+		// Emit constructor call with proper args
+		if (is_new_ctor) {
+		    std::string args = emit_arg_list(child(initializer, 1));
+		    emit_indent();
+		    if (args.empty())
+			O("%s__%s(%s);\n", new_cls.c_str(), new_cls.c_str(),
+			  vname.c_str());
+		    else
+			O("%s__%s(%s, %s);\n", new_cls.c_str(), new_cls.c_str(),
+			  vname.c_str(), args.c_str());
+		} else if (class_has_ctor(new_cls)) {
+		    emit_indent();
+		    O("%s__%s(%s);\n", new_cls.c_str(), new_cls.c_str(),
+		      vname.c_str());
+		}
+		local_var_class_map[vname] = new_cls;
+		// Don't push to scope_class_vars — delete handles dtor for heap objects
+		return;
+	    }
 	}
 
 	emit_indent();
@@ -2679,7 +2727,15 @@ class CEmitter
 
 	// Using / namespace — skip for C output
 	if (is_an(node, AN_USING_NS) || is_an(node, AN_USING_DECL) ||
-	    is_an(node, AN_PREFER) || is_an(node, AN_NAMESPACE_DEF)) {
+	    is_an(node, AN_NAMESPACE_DEF)) {
+	    return;
+	}
+
+	// prefer calloc; — set flag for new expressions
+	if (is_an(node, AN_PREFER)) {
+	    std::string pref = term_text(child(node, 0));
+	    if (pref == "calloc")
+		prefer_calloc = true;
 	    return;
 	}
 
