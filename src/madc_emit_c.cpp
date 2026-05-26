@@ -142,10 +142,37 @@ class CEmitter
     // Last named parameter of the current variadic function (for va_start)
     std::string current_func_last_param;
 
-    // Look up variable type: local overlay first, then sema
+    // Global string variables — collected during emit_top_level,
+    // emitted as __madc_init/cleanup_globals() after all top-level decls.
+    struct GlobalStringVar {
+	std::string name;
+	std::string init_expr;  // empty if no initializer
+    };
+    std::vector<GlobalStringVar> global_strings;
+
+    // Top-level expression statements (assignments, etc.) captured for
+    // emission inside __madc_init_globals().
+    std::vector<std::string> global_init_stmts;
+
+    // Set to true while emitting the body of main() so that return
+    // statements inject __madc_cleanup_globals().
+    bool emitting_main;
+
+    // Check if a name is a global string variable tracked in global_strings
+    bool is_global_string(const std::string &name) {
+	for (auto &gsv : global_strings)
+	    if (gsv.name == name) return true;
+	return false;
+    }
+
+    // Look up variable type: local overlay first, then global_strings,
+    // then sema.  Global string vars tracked in global_strings always
+    // return TC_CLASS (sema mis-classifies them as TC_STRING because it
+    // maps GT_STRING_T → "const char *" internally).
     TypeClass lookup_var_type(const std::string &name) {
 	auto it = local_var_types.find(name);
 	if (it != local_var_types.end()) return it->second;
+	if (is_global_string(name)) return TC_CLASS;
 	if (sema) return sema->get_var_type(name);
 	return TC_INT;
     }
@@ -178,7 +205,11 @@ class CEmitter
     std::string lookup_var_class(const std::string &name) {
 	auto it = local_var_class_map.find(name);
 	if (it != local_var_class_map.end()) return it->second;
-	if (sema) return sema->get_var_class(name);
+	if (sema) {
+	    std::string cls = sema->get_var_class(name);
+	    if (!cls.empty()) return cls;
+	}
+	if (is_global_string(name)) return "string";
 	return "";
     }
 
@@ -1564,6 +1595,11 @@ class CEmitter
 			O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
 		}
 	    }
+	    // In main(), call __madc_cleanup_globals() before returning
+	    if (emitting_main && !global_strings.empty()) {
+		emit_indent();
+		O("__madc_cleanup_globals();\n");
+	    }
 	    emit_indent();
 	    gp_tree_node *val = child(node, 0);
 	    if (is_nil(val))
@@ -1797,6 +1833,86 @@ class CEmitter
 	if (an_code(specs) == AN_QUAL)
 	    return is_string_type(child(specs, 0)) || is_string_type(child(specs, 1));
 	return false;
+    }
+
+    // Collect global string declarations — emit storage in header and
+    // record name + optional initializer for __madc_init_globals().
+    void collect_global_string_decls(gp_tree_node *decls)
+    {
+	if (is_nil(decls)) return;
+
+	int an = an_code(decls);
+
+	// decl_list — multiple declarators
+	if (an == AN_DECL_LIST) {
+	    collect_global_string_decls(child(decls, 0));
+	    collect_global_string_decls(child(decls, 1));
+	    return;
+	}
+
+	// init_decl(name, initializer) — string x = "literal";
+	if (an == AN_INIT_DECL) {
+	    std::string vname = extract_name(child(decls, 0));
+	    std::string init = emit_expr(child(decls, 1));
+	    if (!vname.empty()) {
+		OH("char %s[MADC_STRING_SIZE];\n", vname.c_str());
+		GlobalStringVar gsv;
+		gsv.name = vname;
+		gsv.init_expr = init;
+		global_strings.push_back(gsv);
+	    }
+	    return;
+	}
+
+	// Plain identifier — string x; (no initializer)
+	if (decls->type == GP_TERM) {
+	    std::string vname = term_text(decls);
+	    if (!vname.empty()) {
+		OH("char %s[MADC_STRING_SIZE];\n", vname.c_str());
+		GlobalStringVar gsv;
+		gsv.name = vname;
+		global_strings.push_back(gsv);
+	    }
+	    return;
+	}
+    }
+
+    // Emit __madc_init_globals() and __madc_cleanup_globals() functions.
+    // Called after all top-level declarations have been emitted.
+    void emit_global_init_cleanup()
+    {
+	if (global_strings.empty() && global_init_stmts.empty()) return;
+
+	// Forward declarations in header
+	OH("static void __madc_init_globals(void);\n");
+	OH("static void __madc_cleanup_globals(void);\n");
+	// Guard flag — prevents double-cleanup if main() has both an
+	// explicit return and falls through (or has multiple return paths).
+	OH("static int __madc_globals_live = 0;\n");
+
+	// Init function body
+	O("static void __madc_init_globals(void)\n");
+	O("{\n");
+	O("\t__madc_globals_live = 1;\n");
+	for (auto &gsv : global_strings) {
+	    if (gsv.init_expr.empty())
+		O("\tstring_construct(%s);\n", gsv.name.c_str());
+	    else
+		O("\tstring_construct_cstr(%s, %s);\n",
+		  gsv.name.c_str(), gsv.init_expr.c_str());
+	}
+	for (auto &stmt : global_init_stmts)
+	    O("\t%s\n", stmt.c_str());
+	O("}\n\n");
+
+	// Cleanup function body (reverse order, idempotent via guard)
+	O("static void __madc_cleanup_globals(void)\n");
+	O("{\n");
+	O("\tif (!__madc_globals_live) return;\n");
+	O("\t__madc_globals_live = 0;\n");
+	for (int i = (int)global_strings.size() - 1; i >= 0; i--)
+	    O("\tstring_destruct(%s);\n", global_strings[i].name.c_str());
+	O("}\n\n");
     }
 
     // Emit a string variable declaration with runtime management
@@ -2110,7 +2226,26 @@ class CEmitter
 	  params.empty() ? "void" : params.c_str());
 
 	indent_level = 0;
-	emit_stmt(body_node);
+	// For main(), inject __madc_init_globals() as first statement,
+	// set flag so return statements also get __madc_cleanup_globals(),
+	// and inject __madc_cleanup_globals() before the implicit end of main.
+	bool is_main = (func_name == "main");
+	if (is_main && !global_strings.empty()) {
+	    emitting_main = true;
+	    O("{\n");
+	    indent_level++;
+	    O("\t__madc_init_globals();\n");
+	    // Emit body statements (skip outer block wrapper to avoid double braces)
+	    gp_tree_node *stmts = is_an(body_node, AN_BLOCK) ? child(body_node, 0) : body_node;
+	    emit_stmt(stmts);
+	    // Inject cleanup before implicit fall-through end of main()
+	    O("\t__madc_cleanup_globals();\n");
+	    indent_level--;
+	    O("}\n");
+	    emitting_main = false;
+	} else {
+	    emit_stmt(body_node);
+	}
 	O("\n");
     }
 
@@ -2437,8 +2572,16 @@ class CEmitter
 
 	// Top-level declaration (globals, prototypes, typedefs)
 	if (is_an(node, AN_DECL)) {
-	    std::string type = emit_type(child(node, 0));
+	    gp_tree_node *specs = child(node, 0);
 	    gp_tree_node *decls = child(node, 1);
+
+	    // Global string variable — emit storage array; track for init/cleanup
+	    if (is_string_type(specs)) {
+		collect_global_string_decls(decls);
+		return;
+	    }
+
+	    std::string type = emit_type(specs);
 
 	    // Check if this is a typedef
 	    bool is_typedef = (type.find("typedef") != std::string::npos);
@@ -2446,7 +2589,6 @@ class CEmitter
 	    if (is_nil(decls)) {
 		// Type-only decl (struct/enum definition with no variable)
 		// Check if type contains a struct/enum definition
-		gp_tree_node *specs = child(node, 0);
 		if (specs && specs->type == GP_ANODE) {
 		    // Walk qual chain to find struct_def or enum_def
 		    gp_tree_node *s = specs;
@@ -2472,6 +2614,14 @@ class CEmitter
 			return;
 		    }
 		}
+		// Suppress recovered error expressions like "hello;" that
+		// have no real type keywords — just an identifier as type.
+		// Real type-only decls (struct, enum defs) are handled above.
+		if (!type.empty() && type.find(' ') == std::string::npos) {
+		    // Single-word "type" with no declarator — likely a
+		    // grammar recovery of a top-level expression statement.
+		    return;
+		}
 		OH("%s;\n", type.c_str());
 		return;
 	    }
@@ -2485,6 +2635,10 @@ class CEmitter
 	    } else {
 		// Check if any declarator is a func_decl (function prototype)
 		std::string d = emit_declarator_str(decls);
+		// Suppress bare-identifier "declarations" with empty type —
+		// these result from grammar error-recovery on top-level
+		// assignment statements (e.g. `hello = "x";` at file scope).
+		if (type.empty() && decls->type == GP_TERM) return;
 		// Extern declarations go in header
 		if (type.find("extern") != std::string::npos) {
 		    OH("%s %s;\n", type.c_str(), d.c_str());
@@ -2492,6 +2646,16 @@ class CEmitter
 		    OH("%s %s;\n", type.c_str(), d.c_str());
 		}
 	    }
+	    return;
+	}
+
+	// Top-level expression statement (e.g. global assignment recovered
+	// from a parse error on "hello = ...;" at file scope).
+	// Capture as a global init statement.
+	if (is_an(node, AN_EXPR_STMT) || is_an(node, AN_ASSIGN)) {
+	    std::string s = emit_expr(node);
+	    if (!s.empty())
+		global_init_stmts.push_back(s + ";");
 	    return;
 	}
 
@@ -2530,7 +2694,7 @@ class CEmitter
     }
 
 public:
-    CEmitter() : indent_level(0), tmp_counter(0), sema(nullptr) {}
+    CEmitter() : indent_level(0), tmp_counter(0), sema(nullptr), emitting_main(false) {}
 
     std::string emit(gp_tree_node *root, SemaInfo *sema_info = nullptr)
     {
@@ -2715,7 +2879,10 @@ public:
 	header += "\n";
 
 	ns_funcs_used.clear();
+	global_strings.clear();
+	global_init_stmts.clear();
 	emit_top_level(root);
+	emit_global_init_cleanup();
 
 	// Emit extern declarations for all namespace functions used
 	if (!ns_funcs_used.empty()) {
