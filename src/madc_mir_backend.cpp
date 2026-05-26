@@ -120,9 +120,26 @@ void __madc_ostream_setprecision(void *os, int p)
 void __madc_ostream_setfill(void *os, int c)
     { *(std::ostream *)os << std::setfill((char)c); }
 
+// istream wrappers — take istream* as first arg
+void __madc_istream_int(void *is, long *out)
+    { *(std::istream *)is >> *out; }
+void __madc_istream_uint(void *is, unsigned long *out)
+    { *(std::istream *)is >> *out; }
+void __madc_istream_double(void *is, double *out)
+    { *(std::istream *)is >> *out; }
+void __madc_istream_char(void *is, char *out)
+    { *(std::istream *)is >> *out; }
+void __madc_istream_stdstr(void *is, void *str)
+    { *(std::istream *)is >> *(std::string *)str; }
+void __madc_istream_cstr(void *is, char *buf, long maxlen)
+    { *(std::istream *)is >> std::setw(maxlen) >> buf; }
+void __madc_istream_getline(void *is, void *str)
+    { std::getline(*(std::istream *)is, *(std::string *)str); }
+
 // Global stream pointers accessible from generated C
 void *__madc_cout_ptr(void) { return &std::cout; }
 void *__madc_cerr_ptr(void) { return &std::cerr; }
+void *__madc_cin_ptr(void)  { return &std::cin; }
 
 } // extern "C"
 

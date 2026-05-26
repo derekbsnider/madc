@@ -657,19 +657,32 @@ class CEmitter
     // separate call.  "endl" maps to putchar('\n').
     // ---------------------------------------------------------------
 
-    // Check if a node is the identifier "cout"
-    static bool is_cout(gp_tree_node *node)
+    // Check if a node is an ostream identifier (cout or cerr)
+    static bool is_ostream_ident(gp_tree_node *node)
     {
-	if (!node) return false;
-	if (node->type == GP_TERM && term_code(node) == GT_IDENT)
-	    return term_text(node) == "cout";
-	// Paren-wrapped: (cout << ...)
-	if (is_an(node, AN_PAREN))
-	    return is_cout_chain(child(node, 0));
-	return false;
+	if (!node || node->type != GP_TERM || term_code(node) != GT_IDENT)
+	    return false;
+	std::string id = term_text(node);
+	return id == "cout" || id == "cerr";
     }
 
-    // Check if a bsl chain is rooted at "cout"
+    // Get the ostream macro name for a stream identifier
+    static std::string ostream_for_ident(gp_tree_node *node)
+    {
+	if (node && node->type == GP_TERM) {
+	    std::string id = term_text(node);
+	    if (id == "cerr") return "__madc_cerr";
+	}
+	return "__madc_cout";
+    }
+
+    // Check if a node is the identifier "cout" (backward compat helper)
+    static bool is_cout(gp_tree_node *node)
+    {
+	return is_ostream_ident(node);
+    }
+
+    // Check if a bsl chain is rooted at an ostream
     static bool is_cout_chain(gp_tree_node *node)
     {
 	if (!node) return false;
@@ -706,13 +719,25 @@ class CEmitter
 	vals.push_back(rhs);
     }
 
-    // Emit a cout chain as calls to C++ stream wrappers.
-    // cout << x << y << endl  →  __std_cout_*(x), __std_cout_*(y), __std_cout_endl()
-    // The wrappers call real std::cout << operators, preserving iostream formatting.
+    // Find the ostream identifier at the root of a bsl chain
+    static gp_tree_node *find_stream_root(gp_tree_node *node)
+    {
+	if (!node) return nullptr;
+	if (is_ostream_ident(node)) return node;
+	if (is_an(node, AN_PAREN)) return find_stream_root(child(node, 0));
+	if (is_an(node, AN_BSL)) return find_stream_root(child(node, 0));
+	return nullptr;
+    }
+
+    // Emit an ostream << chain as calls to C++ stream wrappers.
     std::string emit_cout_chain(gp_tree_node *node)
     {
 	std::vector<gp_tree_node *> vals;
 	collect_cout_values(node, vals);
+
+	// Determine which stream (cout or cerr)
+	gp_tree_node *root = find_stream_root(node);
+	std::string os = ostream_for_ident(root);
 
 	std::string result;
 	for (size_t i = 0; i < vals.size(); i++) {
@@ -721,7 +746,7 @@ class CEmitter
 
 	    // Stream manipulators (endl, flush, hex, oct, etc.)
 	    if (v->type == GP_TERM && term_code(v) == GT_IDENT) {
-		std::string manip = ostream_manipulator("__madc_cout", term_text(v));
+		std::string manip = ostream_manipulator(os, term_text(v));
 		if (!manip.empty()) {
 		    result += manip;
 		    continue;
@@ -734,23 +759,23 @@ class CEmitter
 	    if (v->type == GP_TERM) {
 		int code = term_code(v);
 		if (code == GT_STRING)
-		    result += "__madc_ostream_str(__madc_cout, \"" + c_escape(term_text(v)) + "\")";
+		    result += "__madc_ostream_str(" + os + ", \"" + c_escape(term_text(v)) + "\")";
 		else if (code == GT_CHAR_LIT)
-		    result += "__madc_ostream_char(__madc_cout, " + e + ")";
+		    result += "__madc_ostream_char(" + os + ", " + e + ")";
 		else if (code == GT_REAL)
-		    result += "__madc_ostream_double(__madc_cout, " + e + ")";
+		    result += "__madc_ostream_double(" + os + ", " + e + ")";
 		else if (code == GT_INTEGER)
-		    result += "__madc_ostream_int(__madc_cout, " + e + ")";
+		    result += "__madc_ostream_int(" + os + ", " + e + ")";
 		else {
 		    TypeClass tc = lookup_var_type(term_text(v));
-		    result += ostream_call_for_type("__madc_cout", tc, e);
+		    result += ostream_call_for_type(os, tc, e);
 		}
 	    } else {
 		TypeClass etc = infer_expr_cout_type(v);
 		if (!e.empty() && e[0] == '"')
-		    result += "__madc_ostream_str(__madc_cout, " + e + ")";
+		    result += "__madc_ostream_str(" + os + ", " + e + ")";
 		else
-		    result += ostream_call_for_type("__madc_cout", etc, e);
+		    result += ostream_call_for_type(os, etc, e);
 	    }
 	}
 
@@ -788,6 +813,85 @@ class CEmitter
 	if (name == "showbase")    return "__madc_ostream_showbase(" + os + ")";
 	if (name == "noshowbase")  return "__madc_ostream_noshowbase(" + os + ")";
 	return "";
+    }
+
+    // ---------------------------------------------------------------
+    // cin >> var  →  istream wrapper calls
+    // ---------------------------------------------------------------
+
+    static bool is_cin(gp_tree_node *node)
+    {
+	if (!node) return false;
+	if (node->type == GP_TERM && term_code(node) == GT_IDENT)
+	    return term_text(node) == "cin";
+	if (is_an(node, AN_PAREN))
+	    return is_cin_chain(child(node, 0));
+	return false;
+    }
+
+    static bool is_cin_chain(gp_tree_node *node)
+    {
+	if (!node) return false;
+	if (node->type == GP_TERM) return is_cin(node);
+	if (is_an(node, AN_PAREN))
+	    return is_cin_chain(child(node, 0));
+	if (!is_an(node, AN_BSR)) return false;
+	return is_cin(child(node, 0)) || is_cin_chain(child(node, 0));
+    }
+
+    void collect_cin_targets(gp_tree_node *node,
+			     std::vector<gp_tree_node *> &targets)
+    {
+	if (!node) return;
+	if (is_an(node, AN_PAREN)) {
+	    collect_cin_targets(child(node, 0), targets);
+	    return;
+	}
+	if (!is_an(node, AN_BSR)) return;
+	gp_tree_node *lhs = child(node, 0);
+	gp_tree_node *rhs = child(node, 1);
+	if (is_an(lhs, AN_BSR) && is_cin_chain(lhs))
+	    collect_cin_targets(lhs, targets);
+	else if (is_an(lhs, AN_PAREN) && is_cin_chain(lhs))
+	    collect_cin_targets(child(lhs, 0), targets);
+	targets.push_back(rhs);
+    }
+
+    std::string emit_cin_chain(gp_tree_node *node)
+    {
+	std::vector<gp_tree_node *> targets;
+	collect_cin_targets(node, targets);
+
+	std::string result;
+	for (size_t i = 0; i < targets.size(); i++) {
+	    gp_tree_node *t = targets[i];
+	    if (i > 0) result += ", ";
+	    std::string var = emit_expr(t);
+	    // Determine type and emit appropriate istream call
+	    if (t->type == GP_TERM && term_code(t) == GT_IDENT) {
+		TypeClass tc = lookup_var_type(term_text(t));
+		switch (tc) {
+		case TC_STDSTR:
+		    result += "__madc_istream_stdstr(__madc_cin, " + var + ")";
+		    break;
+		case TC_STRING:
+		    result += "__madc_istream_cstr(__madc_cin, " + var + ", 256)";
+		    break;
+		case TC_CHAR:
+		    result += "__madc_istream_char(__madc_cin, &" + var + ")";
+		    break;
+		case TC_DOUBLE:
+		    result += "__madc_istream_double(__madc_cin, &" + var + ")";
+		    break;
+		default:
+		    result += "__madc_istream_int(__madc_cin, &" + var + ")";
+		    break;
+		}
+	    } else {
+		result += "__madc_istream_int(__madc_cin, &" + var + ")";
+	    }
+	}
+	return "(" + result + ")";
     }
 
     // ---------------------------------------------------------------
@@ -854,9 +958,13 @@ class CEmitter
 	if (an == AN_PAREN)
 	    return "(" + emit_expr(child(node, 0)) + ")";
 
-	// cout << expr << endl → C output calls
+	// cout << expr << endl → ostream wrapper calls
 	if (an == AN_BSL && is_cout_chain(node))
 	    return emit_cout_chain(node);
+
+	// cin >> var >> var → istream wrapper calls
+	if (an == AN_BSR && is_cin_chain(node))
+	    return emit_cin_chain(node);
 
 	// Binary operators
 	struct { int code; const char *c_op; } binops[] = {
@@ -2228,10 +2336,23 @@ public:
 	header += "extern void __madc_ostream_setw(void *, int);\n";
 	header += "extern void __madc_ostream_setprecision(void *, int);\n";
 	header += "extern void __madc_ostream_setfill(void *, int);\n";
+	// istream wrappers
+	header += "extern void __madc_istream_int(void *, long *);\n";
+	header += "extern void __madc_istream_uint(void *, unsigned long *);\n";
+	header += "extern void __madc_istream_double(void *, double *);\n";
+	header += "extern void __madc_istream_char(void *, char *);\n";
+	header += "extern void __madc_istream_stdstr(void *, void *);\n";
+	header += "extern void __madc_istream_cstr(void *, char *, long);\n";
+	header += "extern void __madc_istream_getline(void *, void *);\n";
+	header += "\n";
+
+	// Stream pointers
 	header += "extern void *__madc_cout_ptr(void);\n";
 	header += "extern void *__madc_cerr_ptr(void);\n";
+	header += "extern void *__madc_cin_ptr(void);\n";
 	header += "#define __madc_cout (__madc_cout_ptr())\n";
 	header += "#define __madc_cerr (__madc_cerr_ptr())\n";
+	header += "#define __madc_cin  (__madc_cin_ptr())\n";
 	header += "\n";
 
 	// (old __std_cout_* declarations removed — replaced by __madc_ostream_* above)
