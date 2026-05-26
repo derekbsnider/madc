@@ -1234,19 +1234,40 @@ class CEmitter
 	// Track types for cout format inference
 	track_decl_types(type, decls);
 
-	emit_indent();
-	O("%s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
-
-	// Inject constructor call for class variables
-	std::string vname = extract_name(decls);
+	// Check for class constructor with arguments:
+	// `Vec2 v(10, 20)` parses as decl with func_decl(v, args)
 	std::string clean_type = type;
 	if (clean_type.substr(0, 7) == "struct ")
 	    clean_type = clean_type.substr(7);
+
+	if (is_anode(decls, "func_decl") && class_names.count(clean_type)) {
+	    // This is a constructor call, not a function declaration
+	    std::string vname = extract_name(child(decls, 0));
+	    std::string args = emit_arg_list(child(decls, 1));
+	    emit_indent();
+	    O("%s %s;\n", type.c_str(), vname.c_str());
+	    emit_indent();
+	    if (args.empty())
+		O("%s__%s(&%s);\n", clean_type.c_str(), clean_type.c_str(),
+		  vname.c_str());
+	    else
+		O("%s__%s(&%s, %s);\n", clean_type.c_str(), clean_type.c_str(),
+		  vname.c_str(), args.c_str());
+	    var_class_map[vname] = clean_type;
+	    if (classes_with_dtor.count(clean_type))
+		scope_class_vars.push_back(vname + "|" + clean_type);
+	    return;
+	}
+
+	emit_indent();
+	O("%s %s;\n", type.c_str(), emit_declarator_str(decls).c_str());
+
+	// Inject constructor call for class variables (no-args ctor)
+	std::string vname = extract_name(decls);
 	if (!vname.empty() && classes_with_ctor.count(clean_type)) {
 	    emit_indent();
 	    O("%s__%s(&%s);\n", clean_type.c_str(), clean_type.c_str(),
 	      vname.c_str());
-	    // Track for destructor at scope exit
 	    if (classes_with_dtor.count(clean_type))
 		scope_class_vars.push_back(vname + "|" + clean_type);
 	}
