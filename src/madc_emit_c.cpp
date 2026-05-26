@@ -435,8 +435,13 @@ class CEmitter
 	    return "*" + emit_declarator_str(child(node, 0));  // refs → pointers in C
 
 	if (strcmp(name, "func_decl") == 0) {
-	    std::string nm = emit_declarator_str(child(node, 0));
+	    gp_tree_node *dd = child(node, 0);
+	    std::string nm = emit_declarator_str(dd);
 	    std::string params = emit_param_list(child(node, 1));
+	    // Wrap in parens if the direct declarator has a pointer
+	    // (needed for function pointer declarators: int (*fp)(int))
+	    if (is_anode(dd, "ptr_decl") || is_anode(dd, "ref_decl"))
+		return "(" + nm + ")(" + params + ")";
 	    return nm + "(" + params + ")";
 	}
 
