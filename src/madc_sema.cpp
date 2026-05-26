@@ -449,14 +449,13 @@ class SemaCollector
 	SemaClassInfo &ci = info.class_info[class_name];
 	ci.name = class_name;
 
-	// If we have a base class, copy its fields first
+	// If we have a base class, copy its fields (for member access)
+	// but NOT methods (those resolve through the base chain)
 	if (!base_class.empty()) {
 	    auto bit = info.class_info.find(base_class);
 	    if (bit != info.class_info.end()) {
 		ci.fields = bit->second.fields;
 		ci.field_types = bit->second.field_types;
-		ci.methods = bit->second.methods;
-		ci.method_ret_types = bit->second.method_ret_types;
 	    }
 	}
 

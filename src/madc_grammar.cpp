@@ -1170,6 +1170,13 @@ int madc_token_to_gecko(TokenBase *tb)
                 if (ti->str == "ofstream")     return GT_OFSTREAM;
                 if (ti->str == "fstream")      return GT_FSTREAM;
                 if (ti->str == "ostream")      return GT_OSTREAM;
+                // Access specifiers + virtual
+                if (ti->str == "public")       return GT_PUBLIC;
+                if (ti->str == "private")      return GT_PRIVATE;
+                if (ti->str == "protected")    return GT_PROTECTED;
+                if (ti->str == "virtual")      return GT_VIRTUAL;
+                if (ti->str == "alignof" || ti->str == "_Alignof")
+                    return GT_ALIGNOF;
             }
         }
         return GT_IDENT;

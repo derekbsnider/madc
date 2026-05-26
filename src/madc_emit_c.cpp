@@ -824,7 +824,25 @@ class CEmitter
 		std::string obj_name = term_text(child(callee, 0));
 		std::string cls = lookup_var_class(obj_name);
 		if (!cls.empty()) {
-		    std::string mangled = cls + "__" + method;
+		    // Resolve method through inheritance chain
+		    std::string owner = cls;
+		    if (sema) {
+			std::string check = cls;
+			while (!check.empty()) {
+			    const SemaClassInfo *ci = sema->get_class(check);
+			    if (ci && ci->methods.count(method)) {
+				owner = check;
+				break;
+			    }
+			    // Walk up inheritance chain
+			    auto bit = sema->class_bases.find(check);
+			    if (bit != sema->class_bases.end())
+				check = bit->second;
+			    else
+				break;
+			}
+		    }
+		    std::string mangled = owner + "__" + method;
 		    std::string addr = is_arrow ? obj : ("&" + obj);
 		    if (args.empty())
 			return mangled + "(" + addr + ")";
@@ -1564,9 +1582,13 @@ class CEmitter
     std::string current_class;
     std::set<std::string> current_class_fields;
 
+    // Map of emitted class fields for inheritance
+    std::map<std::string, std::string> emitted_class_fields;
+
     void emit_class_def(gp_tree_node *node)
     {
 	std::string class_name;
+	std::string base_class;
 	gp_tree_node *body_node = nullptr;
 
 	if (is_anode(node, "class_def")) {
@@ -1576,8 +1598,8 @@ class CEmitter
 	} else if (is_anode(node, "class_inherit")) {
 	    // class_inherit(name, access_spec, base_name, class_body)
 	    class_name = term_text(child(node, 0));
+	    base_class = term_text(child(node, 2));
 	    body_node = child(node, 3);
-	    // TODO: copy base class fields
 	}
 
 	if (class_name.empty()) return;
@@ -1595,7 +1617,25 @@ class CEmitter
 
 	// First pass: emit the struct with fields only
 	OH("struct %s {\n", class_name.c_str());
+	// Copy base class fields if inheriting
+	if (!base_class.empty()) {
+	    auto bit = emitted_class_fields.find(base_class);
+	    if (bit != emitted_class_fields.end())
+		OH("%s", bit->second.c_str());
+	}
+	// Save header position to capture this class's fields
+	std::string saved_header = header;
+	header.clear();
 	emit_class_fields(body_node);
+	std::string field_text = header;
+	header = saved_header + field_text;
+	emitted_class_fields[class_name] = field_text;
+	// Also include base fields in the stored text for further inheritance
+	if (!base_class.empty()) {
+	    auto bit = emitted_class_fields.find(base_class);
+	    if (bit != emitted_class_fields.end())
+		emitted_class_fields[class_name] = bit->second + field_text;
+	}
 	OH("};\n\n");
 
 	// Second pass: emit methods as free functions
