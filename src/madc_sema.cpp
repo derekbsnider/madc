@@ -137,80 +137,107 @@ class SemaCollector
     SemaInfo &info;
 
     // ---------------------------------------------------------------
-    // Type classification — direct from terminal codes, O(1).
-    // No string building, no string::find(). The terminal code
-    // already encodes the type — just switch on it.
+    // Type classification — matches the emitter's classify_type()
     // ---------------------------------------------------------------
 
-    static TypeClass classify_terminal(int code)
+    static TypeClass classify_type_str(const string &type)
     {
-	switch (code) {
-	case GT_CHAR:     return TC_CHAR;
-	case GT_FLOAT:
-	case GT_DOUBLE:   return TC_DOUBLE;
-	case GT_STRING_T: return TC_STRING;
-	case GT_VOID:     return TC_VOID;
-	default:          return TC_INT;
+	if (type.find("char") != string::npos) {
+	    if (type.find("*") != string::npos) return TC_STRING;
+	    return TC_CHAR;
 	}
-    }
-
-    // Classify a declaration_specifiers (qual chain) node.
-    // Walks the chain looking for the type-bearing terminal.
-    // Storage-class and qualifier terminals are skipped.
-    TypeClass classify_specs(gp_tree_node *node)
-    {
-	if (!node || node->type == GP_NIL) return TC_INT;
-
-	if (node->type == GP_TERM) {
-	    int code = term_code(node);
-	    // Skip non-type terminals (qualifiers, storage class)
-	    switch (code) {
-	    case GT_CONST: case GT_STATIC: case GT_EXTERN:
-	    case GT_TYPEDEF: case GT_SIGNED: case GT_UNSIGNED:
-	    case 282: /*VOLATILE*/ case 283: /*REGISTER*/
-	    case 284: /*INLINE*/ case 293: /*VIRTUAL*/
-		return TC_INT;  // not the type — caller keeps looking
-	    case GT_IDENT: {
-		string name = term_text(node);
-		if (info.class_names.count(name)) return TC_CLASS;
-		return TC_INT;
-	    }
-	    default:
-		return classify_terminal(code);
-	    }
-	}
-
-	if (node->type != GP_ANODE) return TC_INT;
-	const char *nm = anode_name(node);
-
-	// qual(specifier, rest) — find the actual type terminal
-	if (strcmp(nm, "qual") == 0) {
-	    TypeClass left = classify_specs(child(node, 0));
-	    if (left != TC_INT) return left;
-	    return classify_specs(child(node, 1));
-	}
-
-	if (strcmp(nm, "struct_ref") == 0 || strcmp(nm, "struct_def") == 0)
-	    return TC_INT;
-	if (strcmp(nm, "enum_ref") == 0 || strcmp(nm, "enum_def") == 0)
-	    return TC_INT;
-	if (strcmp(nm, "type_name") == 0)
-	    return classify_specs(child(node, 0));
-	if (strcmp(nm, "vector_type") == 0 || strcmp(nm, "set_type") == 0 ||
-	    strcmp(nm, "list_type") == 0 || strcmp(nm, "map_type") == 0)
-	    return TC_PTR;
-
+	if (type.find("const char") != string::npos) return TC_STRING;
+	if (type.find("float") != string::npos) return TC_DOUBLE;
+	if (type.find("double") != string::npos) return TC_DOUBLE;
 	return TC_INT;
     }
 
-    // Check if a qual chain contains a typedef keyword
-    bool has_typedef(gp_tree_node *node)
+    // Build a type string from a declaration_specifiers (qual chain)
+    string type_string(gp_tree_node *node)
     {
-	if (!node || node->type == GP_NIL) return false;
-	if (node->type == GP_TERM) return term_code(node) == GT_TYPEDEF;
-	if (is_anode(node, "qual"))
-	    return has_typedef(child(node, 0)) || has_typedef(child(node, 1));
-	return false;
+	if (!node || node->type == GP_NIL) return "";
+
+	if (node->type == GP_TERM) {
+	    int code = term_code(node);
+	    switch (code) {
+	    case GT_VOID:     return "void";
+	    case GT_BOOL:     return "int";
+	    case GT_CHAR:     return "char";
+	    case GT_SHORT:    return "short";
+	    case GT_INT:      return "int";
+	    case GT_LONG:     return "long";
+	    case GT_FLOAT:    return "float";
+	    case GT_DOUBLE:   return "double";
+	    case GT_STRING_T: return "const char *";
+	    case GT_INT8:     return "int8_t";
+	    case GT_INT16:    return "int16_t";
+	    case GT_INT32:    return "int32_t";
+	    case GT_INT64:    return "int64_t";
+	    case GT_UINT8:    return "uint8_t";
+	    case GT_UINT16:   return "uint16_t";
+	    case GT_UINT32:   return "uint32_t";
+	    case GT_UINT64:   return "uint64_t";
+	    case GT_SIGNED:   return "signed";
+	    case GT_UNSIGNED: return "unsigned";
+	    case GT_TYPEDEF:  return "typedef";
+	    case GT_EXTERN:   return "extern";
+	    case GT_STATIC:   return "static";
+	    case GT_CONST:    return "const";
+	    case GT_IDENT:    return term_text(node);
+	    default:          return term_text(node);
+	    }
+	}
+
+	if (node->type != GP_ANODE) return "";
+
+	const char *nm = anode_name(node);
+
+	// qual(specifier, rest) — recursive chain
+	if (strcmp(nm, "qual") == 0) {
+	    string spec = type_string(child(node, 0));
+	    gp_tree_node *rest = child(node, 1);
+	    if (is_nil(rest)) return spec;
+	    string r = type_string(rest);
+	    if (spec.empty()) return r;
+	    if (r.empty()) return spec;
+	    return spec + " " + r;
+	}
+
+	// struct_ref(struct/union, name)
+	if (strcmp(nm, "struct_ref") == 0)
+	    return "struct " + term_text(child(node, 1));
+
+	// struct_def — just the struct name
+	if (strcmp(nm, "struct_def") == 0) {
+	    gp_tree_node *sname = child(node, 1);
+	    if (!is_nil(sname))
+		return "struct " + term_text(sname);
+	    return "struct";
+	}
+
+	// enum_ref
+	if (strcmp(nm, "enum_ref") == 0)
+	    return "int";  // enums are ints in C
+
+	// enum_def
+	if (strcmp(nm, "enum_def") == 0)
+	    return "int";
+
+	// type_name(specs, abstract_declarator)
+	if (strcmp(nm, "type_name") == 0)
+	    return type_string(child(node, 0));
+
+	// Container/stream types → void* for now
+	if (strcmp(nm, "vector_type") == 0 || strcmp(nm, "set_type") == 0 ||
+	    strcmp(nm, "list_type") == 0 || strcmp(nm, "map_type") == 0)
+	    return "void *";
+
+	return "";
+    }
+
+    TypeClass classify_specs(gp_tree_node *specs)
+    {
+	return classify_type_str(type_string(specs));
     }
 
     // ---------------------------------------------------------------
@@ -258,75 +285,72 @@ class SemaCollector
     // Declaration walking
     // ---------------------------------------------------------------
 
-    // Extract class name from a specs node (for var→class mapping).
-    // Only called when classify_specs returned TC_CLASS.
-    string extract_class_name(gp_tree_node *specs)
-    {
-	if (!specs) return "";
-	if (specs->type == GP_TERM && term_code(specs) == GT_IDENT)
-	    return term_text(specs);
-	if (is_anode(specs, "qual")) {
-	    string left = extract_class_name(child(specs, 0));
-	    if (!left.empty()) return left;
-	    return extract_class_name(child(specs, 1));
-	}
-	return "";
-    }
-
-    void collect_decl_vars(gp_tree_node *specs, TypeClass tc,
-			   gp_tree_node *decls)
+    void collect_decl_vars(const string &type_str, TypeClass tc,
+			   gp_tree_node *decls, bool is_global)
     {
 	if (is_nil(decls)) return;
 
 	string vname = extract_name(decls);
 	if (!vname.empty()) {
-	    if (tc == TC_CLASS) {
-		string cname = extract_class_name(specs);
-		info.var_class_map[vname] = cname;
+	    // Check if this is a class type
+	    string clean_type = type_str;
+	    if (clean_type.substr(0, 7) == "struct ")
+		clean_type = clean_type.substr(7);
+
+	    if (info.class_names.count(clean_type)) {
+		info.var_class_map[vname] = clean_type;
 		info.var_types[vname] = TC_CLASS;
 	    } else {
 		TypeClass effective_tc = tc;
 		if (has_pointer(decls) && effective_tc == TC_CHAR)
-		    effective_tc = TC_STRING;
+		    effective_tc = TC_STRING;  // char * → string
 		info.var_types[vname] = effective_tc;
 	    }
 	}
 
+	// Recurse into decl_list and init_decl
 	const char *nm = anode_name(decls);
 	if (strcmp(nm, "decl_list") == 0) {
-	    collect_decl_vars(specs, tc, child(decls, 0));
-	    collect_decl_vars(specs, tc, child(decls, 1));
+	    collect_decl_vars(type_str, tc, child(decls, 0), is_global);
+	    collect_decl_vars(type_str, tc, child(decls, 1), is_global);
 	} else if (strcmp(nm, "init_decl") == 0) {
-	    collect_decl_vars(specs, tc, child(decls, 0));
+	    collect_decl_vars(type_str, tc, child(decls, 0), is_global);
 	}
     }
 
     void walk_decl(gp_tree_node *node, bool is_global)
     {
+	// decl(declaration_specifiers, init_declarator_list_opt)
 	gp_tree_node *specs = child(node, 0);
 	gp_tree_node *decls = child(node, 1);
 
-	if (has_typedef(specs)) {
+	string type_str = type_string(specs);
+
+	// Check for typedef
+	if (type_str.find("typedef") != string::npos) {
 	    string alias = extract_name(decls);
 	    if (!alias.empty())
 		info.typedef_names.insert(alias);
 	    return;
 	}
 
-	TypeClass tc = classify_specs(specs);
-
+	// Check if this is a function prototype (func_decl in declarators)
 	if (is_func_decl(decls)) {
 	    string fname = extract_name(decls);
 	    if (!fname.empty()) {
-		TypeClass ftc = tc;
-		if (has_pointer(decls) && ftc == TC_CHAR)
-		    ftc = TC_STRING;
-		info.func_ret_types[fname] = ftc;
+		TypeClass tc = classify_type_str(type_str);
+		// Check if declarator adds a pointer
+		if (has_pointer(decls) && tc == TC_CHAR)
+		    tc = TC_STRING;  // char * return → string
+		info.func_ret_types[fname] = tc;
+		info.func_type_strs[fname] = type_str;
 	    }
 	    return;
 	}
 
-	collect_decl_vars(specs, tc, decls);
+	// Regular variable declaration
+	TypeClass tc = classify_type_str(type_str);
+	collect_decl_vars(type_str, tc, decls, is_global);
     }
 
     // ---------------------------------------------------------------
@@ -339,12 +363,12 @@ class SemaCollector
 	const char *nm = anode_name(node);
 
 	if (strcmp(nm, "param") == 0) {
-	    gp_tree_node *pspecs = child(node, 0);
+	    string type_str = type_string(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    if (!is_nil(decl)) {
 		string pname = extract_name(decl);
 		if (!pname.empty()) {
-		    TypeClass tc = classify_specs(pspecs);
+		    TypeClass tc = classify_type_str(type_str);
 		    if (has_pointer(decl) && tc == TC_CHAR)
 			tc = TC_STRING;
 		    info.var_types[pname] = tc;
@@ -369,14 +393,18 @@ class SemaCollector
 	gp_tree_node *decl = child(node, 1);
 	gp_tree_node *body = child(node, 2);
 
+	string type_str = type_string(specs);
 	string func_name = extract_name(decl);
-	TypeClass tc = classify_specs(specs);
+	TypeClass tc = classify_type_str(type_str);
 
+	// Check if declarator adds a pointer (e.g. char *func() → ptr_decl)
 	if (has_pointer(decl) && tc == TC_CHAR)
-	    tc = TC_STRING;
+	    tc = TC_STRING;  // char * return → string
 
-	if (!func_name.empty())
+	if (!func_name.empty()) {
 	    info.func_ret_types[func_name] = tc;
+	    info.func_type_strs[func_name] = type_str;
+	}
 
 	// Collect parameter types
 	if (is_anode(decl, "func_decl"))
@@ -451,39 +479,39 @@ class SemaCollector
 
 	// Field declaration
 	if (strcmp(nm, "decl") == 0) {
-	    gp_tree_node *fspecs = child(node, 0);
+	    string type_str = type_string(child(node, 0));
 	    gp_tree_node *decls = child(node, 1);
-	    TypeClass ftc = classify_specs(fspecs);
-	    collect_class_fields(decls, ftc, ci);
+	    collect_class_fields(decls, type_str, ci);
 	    return;
 	}
 
 	// Method definition
 	if (strcmp(nm, "method") == 0) {
-	    gp_tree_node *mspecs = child(node, 0);
+	    string ret_type = type_string(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    string method_name = extract_name(decl);
 	    if (!method_name.empty()) {
 		ci.methods.insert(method_name);
-		TypeClass tc = classify_specs(mspecs);
-		if (has_pointer(decl) && tc == TC_CHAR) tc = TC_STRING;
+		TypeClass tc = classify_type_str(ret_type);
 		ci.method_ret_types[method_name] = tc;
+		// Register mangled name in func_ret_types
 		string mangled = class_name + "__" + method_name;
 		info.func_ret_types[mangled] = tc;
+		info.func_type_strs[mangled] = ret_type;
 	    }
+	    // Walk method body for local var types
 	    walk_block(child(node, 2));
 	    return;
 	}
 
 	// Method prototype (no body)
 	if (strcmp(nm, "method_proto") == 0) {
-	    gp_tree_node *mspecs = child(node, 0);
+	    string ret_type = type_string(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    string method_name = extract_name(decl);
 	    if (!method_name.empty()) {
 		ci.methods.insert(method_name);
-		TypeClass tc = classify_specs(mspecs);
-		if (has_pointer(decl) && tc == TC_CHAR) tc = TC_STRING;
+		TypeClass tc = classify_type_str(ret_type);
 		ci.method_ret_types[method_name] = tc;
 		string mangled = class_name + "__" + method_name;
 		info.func_ret_types[mangled] = tc;
@@ -519,26 +547,27 @@ class SemaCollector
 	// Access specifier — skip
     }
 
-    void collect_class_fields(gp_tree_node *node, TypeClass tc,
+    void collect_class_fields(gp_tree_node *node, const string &type_str,
 			      SemaClassInfo &ci)
     {
 	if (is_nil(node)) return;
 
 	string fname = extract_name(node);
 	if (!fname.empty()) {
-	    TypeClass ftc = tc;
-	    if (has_pointer(node) && ftc == TC_CHAR)
-		ftc = TC_STRING;
+	    TypeClass tc = classify_type_str(type_str);
+	    if (has_pointer(node) && tc == TC_CHAR)
+		tc = TC_STRING;
 	    ci.fields.insert(fname);
-	    ci.field_types[fname] = ftc;
+	    ci.field_types[fname] = tc;
 	}
 
+	// Handle decl_list
 	const char *nm = anode_name(node);
 	if (strcmp(nm, "decl_list") == 0) {
-	    collect_class_fields(child(node, 0), tc, ci);
-	    collect_class_fields(child(node, 1), tc, ci);
+	    collect_class_fields(child(node, 0), type_str, ci);
+	    collect_class_fields(child(node, 1), type_str, ci);
 	} else if (strcmp(nm, "init_decl") == 0) {
-	    collect_class_fields(child(node, 0), tc, ci);
+	    collect_class_fields(child(node, 0), type_str, ci);
 	}
     }
 
@@ -639,15 +668,18 @@ class SemaCollector
 	    return;
 	}
 	if (strcmp(nm, "ctor_decl") == 0) {
-	    gp_tree_node *cspecs = child(node, 0);
+	    // ctor_decl(type, name, args) — constructor call declaration
+	    string type_str = type_string(child(node, 0));
 	    string vname = term_text(child(node, 1));
-	    TypeClass tc = classify_specs(cspecs);
+	    string clean_type = type_str;
+	    if (clean_type.substr(0, 7) == "struct ")
+		clean_type = clean_type.substr(7);
 	    if (!vname.empty()) {
-		if (tc == TC_CLASS) {
-		    info.var_class_map[vname] = extract_class_name(cspecs);
-		    info.var_types[vname] = TC_CLASS;
+		if (info.class_names.count(clean_type)) {
+		    info.var_class_map[vname] = clean_type;
+		    info.var_types[vname] = TC_INT;
 		} else {
-		    info.var_types[vname] = tc;
+		    info.var_types[vname] = classify_type_str(type_str);
 		}
 	    }
 	    return;
@@ -694,11 +726,11 @@ class SemaCollector
 	}
 	if (strcmp(nm, "catch") == 0) {
 	    // catch(type, declarator, body)
-	    gp_tree_node *cspecs = child(node, 0);
+	    string type_str = type_string(child(node, 0));
 	    gp_tree_node *decl = child(node, 1);
 	    string vname = extract_name(decl);
 	    if (!vname.empty())
-		info.var_types[vname] = classify_specs(cspecs);
+		info.var_types[vname] = classify_type_str(type_str);
 	    walk_stmt(child(node, 2));
 	    return;
 	}
