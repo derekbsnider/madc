@@ -1757,19 +1757,19 @@ class CEmitter
 		    std::string idx = emit_expr(child(lhs, 1));
 		    if (cls == "vector_int") {
 			std::string val = emit_expr(rhs);
-			return "__stl_vector_int_set(" + aname + ", " + idx + ", " + val + ")";
+			return "__stl_vector_int_set(&" + aname + ", " + idx + ", " + val + ")";
 		    }
 		    if (cls == "vector_str") {
 			std::string val = emit_expr(rhs);
-			return "__stl_vector_str_set_cstr(" + aname + ", " + idx + ", " + val + ")";
+			return "__stl_vector_str_set_cstr(&" + aname + ", " + idx + ", " + val + ")";
 		    }
 		    if (cls == "map_str_int") {
 			std::string val = emit_expr(rhs);
-			return "__stl_map_str_int_set(" + aname + ", " + idx + ", " + val + ")";
+			return "__stl_map_str_int_set(&" + aname + ", " + idx + ", " + val + ")";
 		    }
 		    if (cls == "map_str_str") {
 			std::string val = emit_expr(rhs);
-			return "__stl_map_str_str_set_cstr(" + aname + ", " + idx + ", " + val + ")";
+			return "__stl_map_str_str_set_cstr(&" + aname + ", " + idx + ", " + val + ")";
 		    }
 		}
 	    }
@@ -1891,6 +1891,7 @@ class CEmitter
 		// STL container method dispatch
 		if (is_container_class(cls)) {
 		    std::string prefix = container_wrapper_prefix(cls);
+		    obj = "&" + obj;  // containers are structs, pass by pointer
 		    // Detect if first arg is a string literal
 		    gp_tree_node *argnode = child(node, 1);
 		    gp_tree_node *first_arg = argnode;
@@ -2033,20 +2034,20 @@ class CEmitter
 		std::string aname = term_text(arr);
 		std::string cls = lookup_var_class(aname);
 		if (cls == "vector_int") {
-		    return "__stl_vector_int_at(" + aname + ", " +
+		    return "__stl_vector_int_at(&" + aname + ", " +
 			   emit_expr(child(node, 1)) + ")";
 		}
 		if (cls == "vector_str") {
 		    // Use _get_cstr convenience wrapper (thread_local storage)
-		    return "__stl_vector_str_get_cstr(" + aname + ", " +
+		    return "__stl_vector_str_get_cstr(&" + aname + ", " +
 			   emit_expr(child(node, 1)) + ")";
 		}
 		if (cls == "map_str_int") {
-		    return "__stl_map_str_int_get(" + aname + ", " +
+		    return "__stl_map_str_int_get(&" + aname + ", " +
 			   emit_expr(child(node, 1)) + ")";
 		}
 		if (cls == "map_str_str") {
-		    return "__stl_map_str_str_get_cstr(" + aname + ", " +
+		    return "__stl_map_str_str_get_cstr(&" + aname + ", " +
 			   emit_expr(child(node, 1)) + ")";
 		}
 	    }
@@ -2468,7 +2469,7 @@ class CEmitter
 	else if (cn == "stringstream")
 	    O("sstream_destruct(%s);", vn.c_str());
 	else if (is_container_class(cn))
-	    O("%sdestruct(%s);", container_wrapper_prefix(cn).c_str(), vn.c_str());
+	    O("%sdestruct(&%s);", container_wrapper_prefix(cn).c_str(), vn.c_str());
 	else
 	    O("%s__dtor(&%s);", cn.c_str(), vn.c_str());
     }
@@ -3188,11 +3189,11 @@ class CEmitter
 		// for (int n : nums) → for (int64_t __i = 0; __i < size; __i++) { int n = at(__i); body }
 		std::string idx = "__rf_i_" + std::to_string(tmp_counter++);
 		emit_indent();
-		O("for (int64_t %s = 0; %s < __stl_vector_int_size(%s); %s++) {\n",
+		O("for (int64_t %s = 0; %s < __stl_vector_int_size(&%s); %s++) {\n",
 		  idx.c_str(), idx.c_str(), container.c_str(), idx.c_str());
 		indent_level++;
 		emit_indent();
-		O("%s %s = __stl_vector_int_at(%s, %s);\n",
+		O("%s %s = __stl_vector_int_at(&%s, %s);\n",
 		  type.c_str(), var.c_str(), container.c_str(), idx.c_str());
 		emit_stmt(child(node, 3));
 		indent_level--;
@@ -3207,11 +3208,11 @@ class CEmitter
 		emit_indent();
 		O("string_construct(%s);\n", tmp.c_str());
 		emit_indent();
-		O("for (int64_t %s = 0; %s < __stl_vector_str_size(%s); %s++) {\n",
+		O("for (int64_t %s = 0; %s < __stl_vector_str_size(&%s); %s++) {\n",
 		  idx.c_str(), idx.c_str(), container.c_str(), idx.c_str());
 		indent_level++;
 		emit_indent();
-		O("__stl_vector_str_at(%s, %s, %s);\n",
+		O("__stl_vector_str_at(%s, &%s, %s);\n",
 		  tmp.c_str(), container.c_str(), idx.c_str());
 		// Declare the user's variable as a string alias
 		emit_indent();
@@ -3449,13 +3450,16 @@ class CEmitter
 	return "";
     }
 
-    // Get the size macro for a container class
-    static std::string container_size_macro(const std::string &cls)
+    // Get the C11 struct type name for a container class
+    static std::string container_c_type(const std::string &cls)
     {
-	if (cls.substr(0, 6) == "vector") return "MADC_VECTOR_SIZE";
-	if (cls.substr(0, 3) == "map")    return "MADC_MAP_SIZE";
-	if (cls.substr(0, 3) == "set")    return "MADC_SET_SIZE";
-	return "sizeof(void*)";
+	if (cls == "vector_int") return "vec_int";
+	if (cls == "vector_str") return "vec_str";
+	if (cls == "map_str_int") return "map_str_int";
+	if (cls == "map_str_str") return "map_str_str";
+	if (cls == "set_str") return "set_str";
+	if (cls == "set_int") return "set_int";
+	return "void *";  // fallback
     }
 
     // Get the wrapper prefix for a container class (e.g. "vector_int" → "__stl_vector_int_")
@@ -3470,7 +3474,7 @@ class CEmitter
 	if (is_nil(decls)) return;
 	int an = an_code(decls);
 
-	std::string size_macro = container_size_macro(cls);
+	std::string c_type = container_c_type(cls);
 	std::string prefix = container_wrapper_prefix(cls);
 
 	// init_decl(name, initializer)
@@ -3478,9 +3482,9 @@ class CEmitter
 	    std::string vname = extract_name(child(decls, 0));
 	    if (!vname.empty()) {
 		emit_indent();
-		O("char %s[%s];\n", vname.c_str(), size_macro.c_str());
+		O("%s %s;\n", c_type.c_str(), vname.c_str());
 		emit_indent();
-		O("%sconstruct(%s);\n", prefix.c_str(), vname.c_str());
+		O("%sconstruct(&%s);\n", prefix.c_str(), vname.c_str());
 		local_var_types[vname] = TC_CLASS;
 		local_var_class_map[vname] = cls;
 		scope_class_vars.push_back(vname + "|" + cls);
@@ -3500,9 +3504,9 @@ class CEmitter
 	    std::string vname = term_text(decls);
 	    if (!vname.empty()) {
 		emit_indent();
-		O("char %s[%s];\n", vname.c_str(), size_macro.c_str());
+		O("%s %s;\n", c_type.c_str(), vname.c_str());
 		emit_indent();
-		O("%sconstruct(%s);\n", prefix.c_str(), vname.c_str());
+		O("%sconstruct(&%s);\n", prefix.c_str(), vname.c_str());
 		local_var_types[vname] = TC_CLASS;
 		local_var_class_map[vname] = cls;
 		scope_class_vars.push_back(vname + "|" + cls);
@@ -5497,73 +5501,137 @@ public:
 	header += "extern long madarray_size(void *);\n";
 	header += "\n";
 
-	// STL container sizes
-	{
-	    char __sz[256];
-	    snprintf(__sz, sizeof(__sz),
-		"#define MADC_VECTOR_SIZE %zu\n"
-		"#define MADC_MAP_SIZE %zu\n"
-		"#define MADC_SET_SIZE %zu\n",
-		sizeof(std::vector<int64_t>),
-		sizeof(std::map<std::string, int64_t>),
-		sizeof(std::set<std::string>));
-	    header += __sz;
-	}
+	// ---------------------------------------------------------------
+	// Inline C11 container implementations (Cfront-style)
+	// Pure C — no libstdc++ dependency for containers.
+	// ---------------------------------------------------------------
 
-	// STL container runtime wrappers — vector<int>
-	header += "extern void *__stl_vector_int_construct(void *);\n";
-	header += "extern void __stl_vector_int_destruct(void *);\n";
-	header += "extern void __stl_vector_int_push_back(void *, long);\n";
-	header += "extern void __stl_vector_int_pop_back(void *);\n";
-	header += "extern long __stl_vector_int_at(void *, long);\n";
-	header += "extern long __stl_vector_int_size(void *);\n";
-	header += "extern void __stl_vector_int_clear(void *);\n";
-	header += "extern long __stl_vector_int_empty(void *);\n";
-	header += "extern void __stl_vector_int_set(void *, long, long);\n";
-	// vector<string>
-	header += "extern void *__stl_vector_str_construct(void *);\n";
-	header += "extern void __stl_vector_str_destruct(void *);\n";
-	header += "extern void __stl_vector_str_push_back(void *, void *);\n";
-	header += "extern void __stl_vector_str_push_back_cstr(void *, const char *);\n";
-	header += "extern void __stl_vector_str_pop_back(void *);\n";
-	header += "extern void *__stl_vector_str_at(void *, void *, long);\n";
-	header += "extern long __stl_vector_str_size(void *);\n";
-	header += "extern void __stl_vector_str_clear(void *);\n";
-	header += "extern long __stl_vector_str_empty(void *);\n";
-	header += "extern void __stl_vector_str_set(void *, long, void *);\n";
-	header += "extern void __stl_vector_str_set_cstr(void *, long, const char *);\n";
-	header += "extern const char *__stl_vector_str_get_cstr(void *, long);\n";
-	// map<string,int>
-	header += "extern void *__stl_map_str_int_construct(void *);\n";
-	header += "extern void __stl_map_str_int_destruct(void *);\n";
-	header += "extern void __stl_map_str_int_set(void *, void *, long);\n";
-	header += "extern void __stl_map_str_int_put(void *, void *, long);\n";
-	header += "extern void __stl_map_str_int_put_cstr(void *, const char *, long);\n";
-	header += "extern long __stl_map_str_int_get(void *, void *);\n";
-	header += "extern long __stl_map_str_int_contains(void *, void *);\n";
-	header += "extern void __stl_map_str_int_erase(void *, void *);\n";
-	header += "extern long __stl_map_str_int_size(void *);\n";
-	header += "extern void __stl_map_str_int_clear(void *);\n";
-	// map<string,string>
-	header += "extern void *__stl_map_str_str_construct(void *);\n";
-	header += "extern void __stl_map_str_str_destruct(void *);\n";
-	header += "extern void __stl_map_str_str_set(void *, void *, void *);\n";
-	header += "extern void __stl_map_str_str_put(void *, void *, void *);\n";
-	header += "extern void __stl_map_str_str_put_cstr(void *, const char *, const char *);\n";
-	header += "extern void *__stl_map_str_str_get(void *, void *, void *);\n";
-	header += "extern long __stl_map_str_str_contains(void *, void *);\n";
-	header += "extern long __stl_map_str_str_size(void *);\n";
-	header += "extern const char *__stl_map_str_str_get_cstr(void *, void *);\n";
-	header += "extern void __stl_map_str_str_set_cstr(void *, void *, const char *);\n";
-	// set<string>
-	header += "extern void *__stl_set_str_construct(void *);\n";
-	header += "extern void __stl_set_str_destruct(void *);\n";
-	header += "extern void __stl_set_str_insert(void *, void *);\n";
-	header += "extern void __stl_set_str_insert_cstr(void *, const char *);\n";
-	header += "extern long __stl_set_str_contains(void *, void *);\n";
-	header += "extern void __stl_set_str_erase(void *, void *);\n";
-	header += "extern long __stl_set_str_size(void *);\n";
-	header += "extern void __stl_set_str_clear(void *);\n";
+	// --- vec_int: vector<int> ---
+	header += "typedef struct { int64_t *data; size_t len, cap; } vec_int;\n";
+	header += "static void __stl_vector_int_construct(vec_int *v) { v->data=0; v->len=0; v->cap=0; }\n";
+	header += "static void __stl_vector_int_destruct(vec_int *v) { free(v->data); }\n";
+	header += "static void __stl_vector_int_push_back(vec_int *v, int64_t val) {\n";
+	header += "    if (v->len==v->cap) { v->cap = v->cap ? v->cap*2 : 8;\n";
+	header += "        v->data=(int64_t*)realloc(v->data, v->cap*sizeof(int64_t)); }\n";
+	header += "    v->data[v->len++] = val; }\n";
+	header += "static int64_t __stl_vector_int_at(vec_int *v, int64_t i) {\n";
+	header += "    return (i>=0 && (size_t)i<v->len) ? v->data[i] : 0; }\n";
+	header += "static void __stl_vector_int_set(vec_int *v, int64_t i, int64_t val) {\n";
+	header += "    if (i>=0 && (size_t)i<v->len) v->data[i] = val; }\n";
+	header += "static int64_t __stl_vector_int_size(vec_int *v) { return (int64_t)v->len; }\n";
+	header += "static void __stl_vector_int_clear(vec_int *v) { v->len=0; }\n";
+	header += "static int64_t __stl_vector_int_empty(vec_int *v) { return v->len==0; }\n";
+	header += "static void __stl_vector_int_pop_back(vec_int *v) { if(v->len) v->len--; }\n";
+	header += "\n";
+
+	// --- vec_str: vector<string> (elements are char[MADC_STRING_SIZE]) ---
+	header += "typedef struct { char *data; size_t len, cap; } vec_str;\n";
+	header += "static void __stl_vector_str_construct(vec_str *v) { v->data=0; v->len=0; v->cap=0; }\n";
+	header += "static void __stl_vector_str_destruct(vec_str *v) {\n";
+	header += "    for (size_t i=0; i<v->len; i++) string_destruct(v->data + i*MADC_STRING_SIZE);\n";
+	header += "    free(v->data); }\n";
+	header += "static void __stl_vector_str_push_back(vec_str *v, void *s) {\n";
+	header += "    if (v->len==v->cap) { v->cap = v->cap ? v->cap*2 : 8;\n";
+	header += "        v->data=(char*)realloc(v->data, v->cap*MADC_STRING_SIZE); }\n";
+	header += "    string_construct(v->data + v->len*MADC_STRING_SIZE);\n";
+	header += "    string_assign(v->data + v->len*MADC_STRING_SIZE, s); v->len++; }\n";
+	header += "static void __stl_vector_str_push_back_cstr(vec_str *v, const char *s) {\n";
+	header += "    if (v->len==v->cap) { v->cap = v->cap ? v->cap*2 : 8;\n";
+	header += "        v->data=(char*)realloc(v->data, v->cap*MADC_STRING_SIZE); }\n";
+	header += "    string_construct_cstr(v->data + v->len*MADC_STRING_SIZE, s); v->len++; }\n";
+	header += "static const char *__stl_vector_str_get_cstr(vec_str *v, int64_t i) {\n";
+	header += "    return (i>=0 && (size_t)i<v->len) ? string_cstr(v->data + i*MADC_STRING_SIZE) : \"\"; }\n";
+	header += "static void *__stl_vector_str_at(void *result, vec_str *v, int64_t i) {\n";
+	header += "    if (i>=0 && (size_t)i<v->len) string_assign(result, v->data + i*MADC_STRING_SIZE);\n";
+	header += "    return result; }\n";
+	header += "static int64_t __stl_vector_str_size(vec_str *v) { return (int64_t)v->len; }\n";
+	header += "static void __stl_vector_str_clear(vec_str *v) {\n";
+	header += "    for (size_t i=0; i<v->len; i++) string_destruct(v->data + i*MADC_STRING_SIZE);\n";
+	header += "    v->len=0; }\n";
+	header += "static int64_t __stl_vector_str_empty(vec_str *v) { return v->len==0; }\n";
+	header += "static void __stl_vector_str_pop_back(vec_str *v) {\n";
+	header += "    if(v->len) { string_destruct(v->data + (v->len-1)*MADC_STRING_SIZE); v->len--; } }\n";
+	header += "static void __stl_vector_str_set(vec_str *v, int64_t i, void *s) {\n";
+	header += "    if (i>=0 && (size_t)i<v->len) string_assign(v->data + i*MADC_STRING_SIZE, s); }\n";
+	header += "static void __stl_vector_str_set_cstr(vec_str *v, int64_t i, const char *s) {\n";
+	header += "    if (i>=0 && (size_t)i<v->len) string_assign_cstr(v->data + i*MADC_STRING_SIZE, s); }\n";
+	header += "\n";
+
+	// --- map_str_int: map<string,int> (sorted array of key-value pairs) ---
+	header += "typedef struct { char *keys; int64_t *vals; size_t len, cap; } map_str_int;\n";
+	header += "static void __stl_map_str_int_construct(map_str_int *m) { m->keys=0; m->vals=0; m->len=0; m->cap=0; }\n";
+	header += "static void __stl_map_str_int_destruct(map_str_int *m) {\n";
+	header += "    for (size_t i=0; i<m->len; i++) string_destruct(m->keys + i*MADC_STRING_SIZE);\n";
+	header += "    free(m->keys); free(m->vals); }\n";
+	header += "static int64_t __stl_map_str_int_find(map_str_int *m, const char *k) {\n";
+	header += "    for (size_t i=0; i<m->len; i++) if (strcmp(string_cstr(m->keys+i*MADC_STRING_SIZE),k)==0) return (int64_t)i;\n";
+	header += "    return -1; }\n";
+	header += "static void __stl_map_str_int_put(map_str_int *m, void *k, int64_t v) {\n";
+	header += "    int64_t idx = __stl_map_str_int_find(m, string_cstr(k));\n";
+	header += "    if (idx >= 0) { m->vals[idx] = v; return; }\n";
+	header += "    if (m->len==m->cap) { m->cap = m->cap ? m->cap*2 : 8;\n";
+	header += "        m->keys=(char*)realloc(m->keys, m->cap*MADC_STRING_SIZE);\n";
+	header += "        m->vals=(int64_t*)realloc(m->vals, m->cap*sizeof(int64_t)); }\n";
+	header += "    string_construct(m->keys + m->len*MADC_STRING_SIZE);\n";
+	header += "    string_assign(m->keys + m->len*MADC_STRING_SIZE, k);\n";
+	header += "    m->vals[m->len++] = v; }\n";
+	header += "static void __stl_map_str_int_set(map_str_int *m, void *k, int64_t v) { __stl_map_str_int_put(m, k, v); }\n";
+	header += "static void __stl_map_str_int_put_cstr(map_str_int *m, const char *k, int64_t v) {\n";
+	header += "    int64_t idx = __stl_map_str_int_find(m, k);\n";
+	header += "    if (idx >= 0) { m->vals[idx] = v; return; }\n";
+	header += "    if (m->len==m->cap) { m->cap = m->cap ? m->cap*2 : 8;\n";
+	header += "        m->keys=(char*)realloc(m->keys, m->cap*MADC_STRING_SIZE);\n";
+	header += "        m->vals=(int64_t*)realloc(m->vals, m->cap*sizeof(int64_t)); }\n";
+	header += "    string_construct_cstr(m->keys + m->len*MADC_STRING_SIZE, k);\n";
+	header += "    m->vals[m->len++] = v; }\n";
+	header += "static int64_t __stl_map_str_int_get(map_str_int *m, void *k) {\n";
+	header += "    int64_t idx = __stl_map_str_int_find(m, string_cstr(k)); return idx>=0 ? m->vals[idx] : 0; }\n";
+	header += "static int64_t __stl_map_str_int_contains(map_str_int *m, void *k) {\n";
+	header += "    return __stl_map_str_int_find(m, string_cstr(k)) >= 0; }\n";
+	header += "static void __stl_map_str_int_erase(map_str_int *m, void *k) {\n";
+	header += "    int64_t idx = __stl_map_str_int_find(m, string_cstr(k));\n";
+	header += "    if (idx<0) return; string_destruct(m->keys + idx*MADC_STRING_SIZE);\n";
+	header += "    for (size_t i=(size_t)idx; i<m->len-1; i++) {\n";
+	header += "        memcpy(m->keys+i*MADC_STRING_SIZE, m->keys+(i+1)*MADC_STRING_SIZE, MADC_STRING_SIZE);\n";
+	header += "        m->vals[i]=m->vals[i+1]; } m->len--; }\n";
+	header += "static int64_t __stl_map_str_int_size(map_str_int *m) { return (int64_t)m->len; }\n";
+	header += "static void __stl_map_str_int_clear(map_str_int *m) {\n";
+	header += "    for (size_t i=0; i<m->len; i++) string_destruct(m->keys + i*MADC_STRING_SIZE);\n";
+	header += "    m->len=0; }\n";
+	header += "\n";
+
+	// --- set_str: set<string> (sorted array, unique elements) ---
+	header += "typedef struct { char *data; size_t len, cap; } set_str;\n";
+	header += "static void __stl_set_str_construct(set_str *s) { s->data=0; s->len=0; s->cap=0; }\n";
+	header += "static void __stl_set_str_destruct(set_str *s) {\n";
+	header += "    for (size_t i=0; i<s->len; i++) string_destruct(s->data + i*MADC_STRING_SIZE);\n";
+	header += "    free(s->data); }\n";
+	header += "static int64_t __stl_set_str_find(set_str *s, const char *k) {\n";
+	header += "    for (size_t i=0; i<s->len; i++) if (strcmp(string_cstr(s->data+i*MADC_STRING_SIZE),k)==0) return (int64_t)i;\n";
+	header += "    return -1; }\n";
+	header += "static void __stl_set_str_insert(set_str *s, void *val) {\n";
+	header += "    if (__stl_set_str_find(s, string_cstr(val))>=0) return;\n";
+	header += "    if (s->len==s->cap) { s->cap = s->cap ? s->cap*2 : 8;\n";
+	header += "        s->data=(char*)realloc(s->data, s->cap*MADC_STRING_SIZE); }\n";
+	header += "    string_construct(s->data + s->len*MADC_STRING_SIZE);\n";
+	header += "    string_assign(s->data + s->len*MADC_STRING_SIZE, val); s->len++; }\n";
+	header += "static void __stl_set_str_insert_cstr(set_str *s, const char *val) {\n";
+	header += "    if (__stl_set_str_find(s, val)>=0) return;\n";
+	header += "    if (s->len==s->cap) { s->cap = s->cap ? s->cap*2 : 8;\n";
+	header += "        s->data=(char*)realloc(s->data, s->cap*MADC_STRING_SIZE); }\n";
+	header += "    string_construct_cstr(s->data + s->len*MADC_STRING_SIZE, val); s->len++; }\n";
+	header += "static int64_t __stl_set_str_contains(set_str *s, void *val) {\n";
+	header += "    return __stl_set_str_find(s, string_cstr(val)) >= 0; }\n";
+	header += "static void __stl_set_str_erase(set_str *s, void *val) {\n";
+	header += "    int64_t idx = __stl_set_str_find(s, string_cstr(val));\n";
+	header += "    if (idx<0) return; string_destruct(s->data + idx*MADC_STRING_SIZE);\n";
+	header += "    for (size_t i=(size_t)idx; i<s->len-1; i++)\n";
+	header += "        memcpy(s->data+i*MADC_STRING_SIZE, s->data+(i+1)*MADC_STRING_SIZE, MADC_STRING_SIZE);\n";
+	header += "    s->len--; }\n";
+	header += "static int64_t __stl_set_str_size(set_str *s) { return (int64_t)s->len; }\n";
+	header += "static void __stl_set_str_clear(set_str *s) {\n";
+	header += "    for (size_t i=0; i<s->len; i++) string_destruct(s->data + i*MADC_STRING_SIZE);\n";
+	header += "    s->len=0; }\n";
 	header += "\n";
 
 	// Stream pointers
