@@ -401,4 +401,8 @@ int64_t __perl_index(void *a, void *b) { return perl_index(a, b); }
 int64_t __perl_rindex(void *a, void *b) { return perl_rindex(a, b); }
 int64_t __perl_length(void *a) { return perl_length(a); }
 void *__perl_substr(void *a, void *b, int64_t c, int64_t d) { return perl_substr(a, b, c, d); }
+// madc:: namespace regex functions
+int64_t __madc_regex_match(void *a, void *b) { return madc_regex_match(a, b); }
+int64_t __madc_regex_search(void *a, void *b) { return madc_regex_search(a, b); }
+void *__madc_regex_replace(void *a, void *b, void *c, void *d) { return madc_regex_replace(a, b, c, d); }
 }
