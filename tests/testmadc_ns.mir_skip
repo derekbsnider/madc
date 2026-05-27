@@ -1,1 +1,1 @@
-madc-specific namespace features not in transpiler
+madc::array and STL container types need transpiler support

@@ -1,1 +1,1 @@
-lambda capture [&] not yet in transpiler
+lambda [&] capture not yet in transpiler — needs struct-based env passing

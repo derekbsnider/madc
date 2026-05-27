@@ -1,1 +1,1 @@
-madc-specific eval/context API not in transpiler
+madc::array and context API need transpiler support
