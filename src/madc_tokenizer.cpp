@@ -331,36 +331,37 @@ static void gecko_syntax_error(const char *err_nonterm, bool after_p,
 // prepended to the deque so Gecko parses them as top-level decls.
 // -----------------------------------------------------------------------
 
-// preprocess_complex_types — split compound type keywords like
-// "double _Complex" into separate tokens that Gecko can parse.
-// The madc lexer combines them into one keyword; Gecko needs them apart.
+// preprocess_complex_types — replace compound _Complex keywords with
+// "struct __madc_cX" token pairs that Gecko parses unambiguously as types.
 static void preprocess_complex_types(std::deque<TokenBase *> *tokens)
 {
     for (size_t i = 0; i < tokens->size(); i++) {
 	TokenIdent *ti = dynamic_cast<TokenIdent *>((*tokens)[i]);
 	if (!ti) continue;
-	// Check for compound _Complex keywords
-	size_t pos = ti->str.find("_Complex");
-	if (pos == std::string::npos)
-	    pos = ti->str.find("__complex__");
-	if (pos == std::string::npos) continue;
+	if (ti->str.find("_Complex") == std::string::npos &&
+	    ti->str.find("__complex__") == std::string::npos)
+	    continue;
 
-	// Split "double _Complex" → TokenKeyword("double"), TokenKeyword("_Complex")
-	std::string before = ti->str.substr(0, pos);
-	// Trim trailing space
-	while (!before.empty() && before.back() == ' ') before.pop_back();
+	// Map compound keyword to struct name
+	std::string name;
+	const std::string &s = ti->str;
+	if (s.find("float") != std::string::npos) name = "__madc_cfloat";
+	else if (s.find("unsigned short") != std::string::npos) name = "__madc_cushort";
+	else if (s.find("unsigned long") != std::string::npos) name = "__madc_culong";
+	else if (s.find("unsigned") != std::string::npos) name = "__madc_cuint";
+	else if (s.find("short") != std::string::npos) name = "__madc_cushort";
+	else if (s.find("long") != std::string::npos) name = "__madc_clong";
+	else if (s.find("int") != std::string::npos &&
+		 s.find("unsigned") == std::string::npos) name = "__madc_cint";
+	else name = "__madc_cdouble";
 
-	if (before.empty()) {
-	    // Bare "_Complex" or "__complex__" — replace with "_Complex"
-	    ti->str = "_Complex";
-	} else {
-	    // e.g. "double _Complex" → replace with "double", insert "_Complex" after
-	    ti->str = before;
-	    TokenKeyword *cx = new TokenKeyword("_Complex");
-	    cx->file = ti->file;
-	    cx->line = ti->line;
-	    tokens->insert(tokens->begin() + i + 1, cx);
-	}
+	// Replace with "struct" keyword + struct name identifier
+	ti->str = "struct";
+	TokenIdent *sname = new TokenIdent(name.c_str());
+	sname->file = ti->file;
+	sname->line = ti->line;
+	tokens->insert(tokens->begin() + i + 1, sname);
+	i++;  // skip the inserted token
     }
 }
 

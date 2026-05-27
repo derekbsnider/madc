@@ -2597,8 +2597,9 @@ class CEmitter
 	    std::string name = term_text(specs);
 	    if (sema && sema->func_ret_types.count(name))
 		return true;
-	    // __madc_ prefixed names are always runtime helpers, not types
-	    if (name.substr(0, 7) == "__madc_")
+	    // __madc_ prefixed names are runtime helpers — except complex types
+	    if (name.substr(0, 7) == "__madc_" &&
+		!known_typedefs.count(name))
 		return true;
 	}
 	return false;
@@ -5581,6 +5582,13 @@ public:
 	header.clear();
 	body.clear();
 	defined_funcs.clear();
+	complex_types_used.clear();
+
+	// Pre-register complex struct typedefs for GLR disambiguation
+	for (const char *ct : {"__madc_cdouble", "__madc_cfloat", "__madc_cint",
+				"__madc_cuint", "__madc_cushort", "__madc_clong",
+				"__madc_culong"})
+	    known_typedefs.insert(ct);
 
 	// Pre-pass: collect function definitions so we can skip their
 	// forward-declaration prototypes (which may have wrong return types).
