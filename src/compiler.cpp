@@ -2635,7 +2635,8 @@ extern int64_t php_count(void *arr);
 extern void *php_array_get(void *result, void *arr, int64_t index);
 extern int64_t php_array_get_int(void *arr, int64_t index);
 
-// extern declarations for STL container helpers (defined in ns_stl.cpp)
+// STL container stubs — ns_stl.cpp removed, abort stubs in ns_stl_stubs.cpp
+extern "C" {
 extern void *vector_int_construct(void *);
 extern void  vector_int_destruct(void *);
 extern void *vector_str_construct(void *);
@@ -2662,6 +2663,7 @@ extern void *list_int_construct(void *);
 extern void  list_int_destruct(void *);
 extern void *list_str_construct(void *);
 extern void  list_str_destruct(void *);
+} // extern "C" — STL stubs
 
 MadcAsmjitErrHandler::MadcAsmjitErrHandler() : pgm(nullptr), hits(0) {}
 

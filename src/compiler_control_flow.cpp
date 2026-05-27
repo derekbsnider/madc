@@ -35,11 +35,13 @@ extern int64_t php_count(void *arr);
 extern void *php_array_get(void *result, void *arr, int64_t index);
 extern int64_t php_array_get_int(void *arr, int64_t index);
 
-// extern declarations for STL container helpers (defined in ns_stl.cpp)
+// STL container stubs — ns_stl.cpp removed
+extern "C" {
 extern int64_t vector_int_size(void *);
 extern int64_t vector_int_at(void *, int64_t);
 extern void *vector_str_at(void *, void *, int64_t);
 extern int64_t vector_str_size(void *);
+}
 
 
 ///////////////////////////////////////////////////////////////////////////
