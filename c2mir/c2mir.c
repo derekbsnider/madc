@@ -619,6 +619,9 @@ typedef enum {
   N_COMPLEX,     /* _Complex type specifier */
   N_REALPART,    /* __real__ expr */
   N_IMAGPART,    /* __imag__ expr */
+  N_CF,          /* imaginary float literal (e.g., 1.0fi) — im value in u.f */
+  N_CD,          /* imaginary double literal (e.g., 1.0i) — im value in u.d */
+  N_CLD,         /* imaginary long double literal (e.g., 1.0Li) — im value in u.ld */
   /* madc extensions: */
   N_DEFER,
   N_CLASS,       /* class body (like N_STRUCT but with methods) */
@@ -1895,12 +1898,18 @@ static token_t pptoken2token (c2m_ctx_t c2m_ctx, token_t t, int id2kw_p) {
     return NULL;
   } else if (t->code == T_NUMBER) {
     int i, base = 10, float_p = FALSE, double_p = FALSE, ldouble_p = FALSE;
-    int uns_p = FALSE, long_p = FALSE, llong_p = FALSE;
+    int uns_p = FALSE, long_p = FALSE, llong_p = FALSE, imaginary_p = FALSE;
     const char *repr = t->repr, *start = t->repr;
     char *stop;
     int last = (int) strlen (repr) - 1;
 
     assert (last >= 0);
+    /* GCC extension: imaginary suffix i/I/j/J */
+    if (last >= 0 && (repr[last] == 'i' || repr[last] == 'I'
+                      || repr[last] == 'j' || repr[last] == 'J')) {
+      imaginary_p = TRUE;
+      last--;
+    }
     if (repr[0] == '0' && (repr[1] == 'x' || repr[1] == 'X')) {
       base = 16;
     } else if (repr[0] == '0' && (repr[1] == 'b' || repr[1] == 'B')) {
@@ -1958,7 +1967,24 @@ static token_t pptoken2token (c2m_ctx_t c2m_ctx, token_t t, int id2kw_p) {
       }
     }
     errno = 0;
-    if (float_p) {
+    if (imaginary_p && !float_p && !double_p && !ldouble_p) {
+      double_p = TRUE;  /* bare imaginary integer → _Complex double */
+    }
+    if (imaginary_p) {
+      if (float_p) {
+        node_t n = new_pos_node (c2m_ctx, N_CF, t->pos);
+        n->u.f = strtof (start, &stop);
+        t->node = n;
+      } else if (ldouble_p) {
+        node_t n = new_pos_node (c2m_ctx, N_CLD, t->pos);
+        n->u.ld = strtold (start, &stop);
+        t->node = n;
+      } else {
+        node_t n = new_pos_node (c2m_ctx, N_CD, t->pos);
+        n->u.d = strtod (start, &stop);
+        t->node = n;
+      }
+    } else if (float_p) {
       t->node = new_f_node (c2m_ctx, strtof (start, &stop), t->pos);
     } else if (double_p) {
       t->node = new_d_node (c2m_ctx, strtod (start, &stop), t->pos);
@@ -8629,6 +8655,15 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e->const_p = TRUE;
     e->c.d_val = r->u.ld;
     break;
+  case N_CF:
+    e = create_basic_type_expr (c2m_ctx, r, TP_CFLOAT);
+    break;
+  case N_CD:
+    e = create_basic_type_expr (c2m_ctx, r, TP_CDOUBLE);
+    break;
+  case N_CLD:
+    e = create_basic_type_expr (c2m_ctx, r, TP_CLDOUBLE);
+    break;
   case N_CH:
     e = create_basic_type_expr (c2m_ctx, r, TP_CHAR);
     e->const_p = TRUE;
@@ -12210,6 +12245,16 @@ static MIR_item_t get_ref_item (c2m_ctx_t c2m_ctx, node_t def, const char *name)
   return NULL;
 }
 
+/* Allocate a temporary complex value on the stack. Returns a MEM operand. */
+static op_t complex_temp (c2m_ctx_t c2m_ctx, enum basic_type bt) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  int size = basic_type_size (bt);
+  op_t addr = get_new_temp (c2m_ctx, MIR_T_I64);
+
+  emit2 (c2m_ctx, MIR_ALLOCA, addr.mir_op, MIR_new_int_op (ctx, size));
+  return new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, addr.mir_op.u.reg, 0, 1));
+}
+
 /* Load a scalar component from a complex MEM operand at the given byte offset. */
 static op_t complex_load (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset) {
   MIR_context_t ctx = c2m_ctx->ctx;
@@ -12231,6 +12276,28 @@ static void complex_store (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offse
          MIR_new_mem_op (ctx, ct, mem.mir_op.u.mem.disp + offset, mem.mir_op.u.mem.base,
                          mem.mir_op.u.mem.index, mem.mir_op.u.mem.scale),
          val.mir_op);
+}
+
+/* Promote a scalar operand to a complex temp: {value, 0}. */
+static op_t scalar_to_complex (c2m_ctx_t c2m_ctx, op_t scalar, MIR_type_t scalar_t,
+                               enum basic_type complex_bt) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  MIR_type_t ct = complex_bt == TP_CFLOAT ? MIR_T_F : complex_bt == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+  int imag_off = complex_bt == TP_CFLOAT ? sizeof (mir_float) : complex_bt == TP_CDOUBLE ? sizeof (mir_double)
+                                                                                          : sizeof (mir_ldouble);
+  op_t tmp, zero_val, re_val;
+
+  tmp = complex_temp (c2m_ctx, complex_bt);
+  re_val = get_new_temp (c2m_ctx, ct);
+  emit2 (c2m_ctx, tp_mov (ct), re_val.mir_op, scalar.mir_op);
+  zero_val = get_new_temp (c2m_ctx, ct);
+  emit2 (c2m_ctx, tp_mov (ct), zero_val.mir_op,
+         ct == MIR_T_F ? MIR_new_float_op (ctx, 0.0f)
+         : ct == MIR_T_D ? MIR_new_double_op (ctx, 0.0)
+                          : MIR_new_ldouble_op (ctx, 0.0L));
+  complex_store (c2m_ctx, tmp, ct, 0, re_val);
+  complex_store (c2m_ctx, tmp, ct, imag_off, zero_val);
+  return tmp;
 }
 
 /* Generate complex binary operation: result operands are MEM, components lowered to real pairs. */
@@ -12413,6 +12480,30 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   uint_val:
     res = new_op (NULL, MIR_new_uint_op (ctx, ull));
     break;
+  case N_CF:
+  case N_CD:
+  case N_CLD: {
+    /* Imaginary literal: {0, value} in stack memory */
+    enum basic_type ibt = r->code == N_CF ? TP_CFLOAT : r->code == N_CD ? TP_CDOUBLE : TP_CLDOUBLE;
+    MIR_type_t ict = r->code == N_CF ? MIR_T_F : r->code == N_CD ? MIR_T_D : MIR_T_LD;
+    int iimag = r->code == N_CF ? sizeof (mir_float) : r->code == N_CD ? sizeof (mir_double)
+                                                                        : sizeof (mir_ldouble);
+    op_t zero_val = get_new_temp (c2m_ctx, ict);
+    op_t im_val = get_new_temp (c2m_ctx, ict);
+
+    res = desirable_dest != NULL ? *desirable_dest : complex_temp (c2m_ctx, ibt);
+    emit2 (c2m_ctx, tp_mov (ict), zero_val.mir_op,
+           ict == MIR_T_F ? MIR_new_float_op (ctx, 0.0f)
+           : ict == MIR_T_D ? MIR_new_double_op (ctx, 0.0)
+                             : MIR_new_ldouble_op (ctx, 0.0L));
+    emit2 (c2m_ctx, tp_mov (ict), im_val.mir_op,
+           ict == MIR_T_F ? MIR_new_float_op (ctx, r->u.f)
+           : ict == MIR_T_D ? MIR_new_double_op (ctx, r->u.d)
+                             : MIR_new_ldouble_op (ctx, r->u.ld));
+    complex_store (c2m_ctx, res, ict, 0, zero_val);
+    complex_store (c2m_ctx, res, ict, iimag, im_val);
+    break;
+  }
   case N_F: ld = r->u.f; goto float_val;
   case N_D: ld = r->u.d; goto float_val;
   case N_LD:
@@ -12604,12 +12695,21 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_DIV:
   case N_MOD:
     if (complex_type_p (((struct expr *) r->attr)->type)) {
-      op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
-      op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, FALSE, NULL, NULL);
+      struct type *ltype = ((struct expr *) NL_HEAD (r->u.ops)->attr)->type;
+      struct type *rtype = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+      enum basic_type result_bt = ((struct expr *) r->attr)->type->u.basic_type;
+
+      op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, !complex_type_p (ltype), NULL, NULL);
+      op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, !complex_type_p (rtype), NULL, NULL);
+      /* Promote scalar operands to complex */
+      if (!complex_type_p (ltype))
+        op1 = scalar_to_complex (c2m_ctx, op1, get_mir_type (c2m_ctx, ltype), result_bt);
+      if (!complex_type_p (rtype))
+        op2 = scalar_to_complex (c2m_ctx, op2, get_mir_type (c2m_ctx, rtype), result_bt);
       if (desirable_dest != NULL) {
         res = *desirable_dest;
       } else {
-        res = op1;  /* in-place if no dest provided */
+        res = complex_temp (c2m_ctx, result_bt);
       }
       gen_complex_bin_op (c2m_ctx, r, res, op1, op2);
       break;
@@ -12627,6 +12727,42 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     struct type *type2 = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
     struct type type_s, ptr_type_s = get_ptr_int_type (FALSE);
 
+    if (complex_type_p (type1) || complex_type_p (type2)) {
+      /* Complex equality: (a.re == b.re) && (a.im == b.im) */
+      struct type conv = arithmetic_conversion (type1, type2);
+      enum basic_type cbt = conv.u.basic_type;
+      MIR_type_t cct = cbt == TP_CFLOAT ? MIR_T_F : cbt == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+      int cimag = cbt == TP_CFLOAT ? sizeof (mir_float) : cbt == TP_CDOUBLE ? sizeof (mir_double)
+                                                                              : sizeof (mir_ldouble);
+      MIR_insn_code_t eq_ic = cct == MIR_T_F ? MIR_FEQ : cct == MIR_T_D ? MIR_DEQ : MIR_LDEQ;
+      MIR_insn_code_t ne_ic = cct == MIR_T_F ? MIR_FNE : cct == MIR_T_D ? MIR_DNE : MIR_LDNE;
+      op_t a_re, a_im, b_re, b_im, cmp_re, cmp_im;
+
+      op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+      op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, FALSE, NULL, NULL);
+      a_re = complex_load (c2m_ctx, op1, cct, 0);
+      a_im = complex_load (c2m_ctx, op1, cct, cimag);
+      b_re = complex_load (c2m_ctx, op2, cct, 0);
+      b_im = complex_load (c2m_ctx, op2, cct, cimag);
+      cmp_re = get_new_temp (c2m_ctx, MIR_T_I64);
+      cmp_im = get_new_temp (c2m_ctx, MIR_T_I64);
+      res = get_new_temp (c2m_ctx, MIR_T_I64);
+      if (r->code == N_EQ) {
+        emit3 (c2m_ctx, eq_ic, cmp_re.mir_op, a_re.mir_op, b_re.mir_op);
+        emit3 (c2m_ctx, eq_ic, cmp_im.mir_op, a_im.mir_op, b_im.mir_op);
+        emit3 (c2m_ctx, MIR_AND, res.mir_op, cmp_re.mir_op, cmp_im.mir_op);
+      } else {
+        emit3 (c2m_ctx, ne_ic, cmp_re.mir_op, a_re.mir_op, b_re.mir_op);
+        emit3 (c2m_ctx, ne_ic, cmp_im.mir_op, a_im.mir_op, b_im.mir_op);
+        emit3 (c2m_ctx, MIR_OR, res.mir_op, cmp_re.mir_op, cmp_im.mir_op);
+      }
+      if (true_label != NULL) {
+        emit3 (c2m_ctx, MIR_BNE, MIR_new_label_op (ctx, true_label), res.mir_op, zero_op.mir_op);
+        emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, false_label));
+        true_label = false_label = NULL;
+      }
+      break;
+    }
     type_s = arithmetic_conversion (type1->mode == TM_PTR ? &ptr_type_s : type1,
                                     type2->mode == TM_PTR ? &ptr_type_s : type2);
     set_type_layout (c2m_ctx, &type_s);
@@ -14253,6 +14389,9 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_UNSIGNED:
   case N_BOOL:
   case N_COMPLEX:
+  case N_CF:
+  case N_CD:
+  case N_CLD:
   case N_REALPART:
   case N_IMAGPART:
   case N_CONST:
