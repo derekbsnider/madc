@@ -272,6 +272,145 @@ void madarray_destruct(void *ptr)
 long madarray_size(void *ptr)
     { return (long)((MadArray *)ptr)->data.size(); }
 
+// -----------------------------------------------------------------------
+// STL container wrappers — thin extern "C" forwarders to the C++
+// functions in ns_stl.cpp.  dlsym finds these by plain name.
+// -----------------------------------------------------------------------
+
+// vector<int64_t>
+void *__stl_vector_int_construct(void *p)
+    { return new(p) std::vector<int64_t>; }
+void __stl_vector_int_destruct(void *p)
+    { ((std::vector<int64_t> *)p)->~vector(); }
+void __stl_vector_int_push_back(void *p, int64_t v)
+    { ((std::vector<int64_t> *)p)->push_back(v); }
+void __stl_vector_int_pop_back(void *p)
+    { ((std::vector<int64_t> *)p)->pop_back(); }
+int64_t __stl_vector_int_at(void *p, int64_t i)
+    { auto &v = *(std::vector<int64_t> *)p;
+      if (i < 0 || (size_t)i >= v.size()) return 0;
+      return v[(size_t)i]; }
+int64_t __stl_vector_int_size(void *p)
+    { return (int64_t)((std::vector<int64_t> *)p)->size(); }
+void __stl_vector_int_clear(void *p)
+    { ((std::vector<int64_t> *)p)->clear(); }
+int64_t __stl_vector_int_empty(void *p)
+    { return ((std::vector<int64_t> *)p)->empty() ? 1 : 0; }
+void __stl_vector_int_set(void *p, int64_t i, int64_t v)
+    { auto &vec = *(std::vector<int64_t> *)p;
+      if (i >= 0 && (size_t)i < vec.size()) vec[(size_t)i] = v; }
+
+// vector<string>
+void *__stl_vector_str_construct(void *p)
+    { return new(p) std::vector<std::string>; }
+void __stl_vector_str_destruct(void *p)
+    { ((std::vector<std::string> *)p)->~vector(); }
+void __stl_vector_str_push_back(void *p, void *s)
+    { ((std::vector<std::string> *)p)->push_back(*(std::string *)s); }
+void __stl_vector_str_push_back_cstr(void *p, const char *s)
+    { ((std::vector<std::string> *)p)->push_back(s ? s : ""); }
+void __stl_vector_str_pop_back(void *p)
+    { ((std::vector<std::string> *)p)->pop_back(); }
+void *__stl_vector_str_at(void *result, void *p, int64_t i)
+    { auto &v = *(std::vector<std::string> *)p;
+      auto &res = *(std::string *)result;
+      if (i < 0 || (size_t)i >= v.size()) { res.clear(); return result; }
+      res = v[(size_t)i]; return result; }
+int64_t __stl_vector_str_size(void *p)
+    { return (int64_t)((std::vector<std::string> *)p)->size(); }
+void __stl_vector_str_clear(void *p)
+    { ((std::vector<std::string> *)p)->clear(); }
+int64_t __stl_vector_str_empty(void *p)
+    { return ((std::vector<std::string> *)p)->empty() ? 1 : 0; }
+void __stl_vector_str_set(void *p, int64_t i, void *s)
+    { auto &v = *(std::vector<std::string> *)p;
+      if (i >= 0 && (size_t)i < v.size()) v[(size_t)i] = *(std::string *)s; }
+void __stl_vector_str_set_cstr(void *p, int64_t i, const char *s)
+    { auto &v = *(std::vector<std::string> *)p;
+      if (i >= 0 && (size_t)i < v.size()) v[(size_t)i] = s ? s : ""; }
+// Convenience: return const char* for subscript reads (uses thread_local)
+const char *__stl_vector_str_get_cstr(void *p, int64_t i)
+    { static thread_local std::string __tl;
+      auto &v = *(std::vector<std::string> *)p;
+      if (i < 0 || (size_t)i >= v.size()) return "";
+      __tl = v[(size_t)i]; return __tl.c_str(); }
+
+// map<string, int64_t>
+void *__stl_map_str_int_construct(void *p)
+    { return new(p) std::map<std::string, int64_t>; }
+void __stl_map_str_int_destruct(void *p)
+    { ((std::map<std::string, int64_t> *)p)->~map(); }
+void __stl_map_str_int_set(void *p, void *k, int64_t v)
+    { (*(std::map<std::string, int64_t> *)p)[*(std::string *)k] = v; }
+void __stl_map_str_int_put(void *p, void *k, int64_t v)
+    { (*(std::map<std::string, int64_t> *)p)[*(std::string *)k] = v; }
+void __stl_map_str_int_put_cstr(void *p, const char *k, int64_t v)
+    { (*(std::map<std::string, int64_t> *)p)[k ? k : ""] = v; }
+int64_t __stl_map_str_int_get(void *p, void *k)
+    { auto &m = *(std::map<std::string, int64_t> *)p;
+      auto it = m.find(*(std::string *)k);
+      return it != m.end() ? it->second : 0; }
+int64_t __stl_map_str_int_contains(void *p, void *k)
+    { auto &m = *(std::map<std::string, int64_t> *)p;
+      return m.find(*(std::string *)k) != m.end() ? 1 : 0; }
+void __stl_map_str_int_erase(void *p, void *k)
+    { ((std::map<std::string, int64_t> *)p)->erase(*(std::string *)k); }
+int64_t __stl_map_str_int_size(void *p)
+    { return (int64_t)((std::map<std::string, int64_t> *)p)->size(); }
+void __stl_map_str_int_clear(void *p)
+    { ((std::map<std::string, int64_t> *)p)->clear(); }
+
+// map<string, string>
+void *__stl_map_str_str_construct(void *p)
+    { return new(p) std::map<std::string, std::string>; }
+void __stl_map_str_str_destruct(void *p)
+    { ((std::map<std::string, std::string> *)p)->~map(); }
+void __stl_map_str_str_set(void *p, void *k, void *v)
+    { (*(std::map<std::string, std::string> *)p)[*(std::string *)k] = *(std::string *)v; }
+void __stl_map_str_str_put(void *p, void *k, void *v)
+    { (*(std::map<std::string, std::string> *)p)[*(std::string *)k] = *(std::string *)v; }
+void __stl_map_str_str_put_cstr(void *p, const char *k, const char *v)
+    { (*(std::map<std::string, std::string> *)p)[k ? k : ""] = v ? v : ""; }
+void *__stl_map_str_str_get(void *result, void *p, void *k)
+    { auto &m = *(std::map<std::string, std::string> *)p;
+      auto &res = *(std::string *)result;
+      auto it = m.find(*(std::string *)k);
+      res = it != m.end() ? it->second : "";
+      return result; }
+int64_t __stl_map_str_str_contains(void *p, void *k)
+    { auto &m = *(std::map<std::string, std::string> *)p;
+      return m.find(*(std::string *)k) != m.end() ? 1 : 0; }
+int64_t __stl_map_str_str_size(void *p)
+    { return (int64_t)((std::map<std::string, std::string> *)p)->size(); }
+// Convenience: return const char* for subscript reads
+const char *__stl_map_str_str_get_cstr(void *p, void *k)
+    { static thread_local std::string __tl;
+      auto &m = *(std::map<std::string, std::string> *)p;
+      auto it = m.find(*(std::string *)k);
+      __tl = it != m.end() ? it->second : "";
+      return __tl.c_str(); }
+// Convenience: set with cstr value, string key
+void __stl_map_str_str_set_cstr(void *p, void *k, const char *v)
+    { (*(std::map<std::string, std::string> *)p)[*(std::string *)k] = v ? v : ""; }
+
+// set<string>
+void *__stl_set_str_construct(void *p)
+    { return new(p) std::set<std::string>; }
+void __stl_set_str_destruct(void *p)
+    { ((std::set<std::string> *)p)->~set(); }
+void __stl_set_str_insert(void *p, void *s)
+    { ((std::set<std::string> *)p)->insert(*(std::string *)s); }
+void __stl_set_str_insert_cstr(void *p, const char *s)
+    { ((std::set<std::string> *)p)->insert(s ? s : ""); }
+int64_t __stl_set_str_contains(void *p, void *s)
+    { return ((std::set<std::string> *)p)->count(*(std::string *)s) ? 1 : 0; }
+void __stl_set_str_erase(void *p, void *s)
+    { ((std::set<std::string> *)p)->erase(*(std::string *)s); }
+int64_t __stl_set_str_size(void *p)
+    { return (int64_t)((std::set<std::string> *)p)->size(); }
+void __stl_set_str_clear(void *p)
+    { ((std::set<std::string> *)p)->clear(); }
+
 } // extern "C"
 
 // -----------------------------------------------------------------------

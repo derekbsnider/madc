@@ -1153,8 +1153,16 @@ class CEmitter
 	    return TC_INT;
 	}
 
-	// Subscript: a[i] where a is char* or char[] → char
+	// Subscript: a[i] — check for container types first
 	if (an == AN_SUBSCRIPT) {
+	    gp_tree_node *arr = child(node, 0);
+	    if (arr && arr->type == GP_TERM && term_code(arr) == GT_IDENT) {
+		std::string cls = lookup_var_class(term_text(arr));
+		if (cls == "vector_str" || cls == "map_str_str")
+		    return TC_STRING;  // returns const char *
+		if (cls == "vector_int" || cls == "map_str_int")
+		    return TC_INT;
+	    }
 	    TypeClass inner = infer_expr_cout_type(child(node, 0));
 	    if (inner == TC_STRING) return TC_CHAR;
 	    // char array (TC_CHAR from sema for char[N]): subscripting still gives char
@@ -1740,6 +1748,31 @@ class CEmitter
 		    return "string_assign(" + lhs_str + ", " + rhs_str + ")";
 		}
 	    }
+	    // Container subscript write: v[i] = val → wrapper_set(v, i, val)
+	    if (is_an(lhs, AN_SUBSCRIPT)) {
+		gp_tree_node *arr = child(lhs, 0);
+		if (arr && arr->type == GP_TERM && term_code(arr) == GT_IDENT) {
+		    std::string aname = term_text(arr);
+		    std::string cls = lookup_var_class(aname);
+		    std::string idx = emit_expr(child(lhs, 1));
+		    if (cls == "vector_int") {
+			std::string val = emit_expr(rhs);
+			return "__stl_vector_int_set(" + aname + ", " + idx + ", " + val + ")";
+		    }
+		    if (cls == "vector_str") {
+			std::string val = emit_expr(rhs);
+			return "__stl_vector_str_set_cstr(" + aname + ", " + idx + ", " + val + ")";
+		    }
+		    if (cls == "map_str_int") {
+			std::string val = emit_expr(rhs);
+			return "__stl_map_str_int_set(" + aname + ", " + idx + ", " + val + ")";
+		    }
+		    if (cls == "map_str_str") {
+			std::string val = emit_expr(rhs);
+			return "__stl_map_str_str_set_cstr(" + aname + ", " + idx + ", " + val + ")";
+		    }
+		}
+	    }
 	}
 
 	// Assignment operators
@@ -1831,8 +1864,16 @@ class CEmitter
 		// (obj is a char[MADC_STRING_SIZE] buffer holding a placement-new'd std::string)
 		if (method == "c_str") return "string_cstr(" + obj + ")";
 		// String methods: length()/size() → strlen()
-		if (method == "length" || method == "size")
-		    return "strlen(" + obj + ")";
+		// Only for actual string variables, not containers
+		{
+		    std::string _obj_name = term_text(child(callee, 0));
+		    std::string _cls = lookup_var_class(_obj_name);
+		    if ((method == "length" || method == "size") &&
+			!is_container_class(_cls) &&
+			_cls != "ofstream" && _cls != "ifstream" &&
+			_cls != "fstream" && _cls != "stringstream")
+			return "strlen(" + obj + ")";
+		}
 
 		// Stream method dispatch: obj.method(args) → prefix_method(obj, args)
 		std::string obj_name = term_text(child(callee, 0));
@@ -1843,6 +1884,62 @@ class CEmitter
 		    if (cls == "stringstream") prefix = "sstream";
 		    else prefix = cls;
 		    std::string wrapper = prefix + "_" + method;
+		    if (args.empty())
+			return wrapper + "(" + obj + ")";
+		    return wrapper + "(" + obj + ", " + args + ")";
+		}
+		// STL container method dispatch
+		if (is_container_class(cls)) {
+		    std::string prefix = container_wrapper_prefix(cls);
+		    // Detect if first arg is a string literal
+		    gp_tree_node *argnode = child(node, 1);
+		    gp_tree_node *first_arg = argnode;
+		    if (is_an(argnode, AN_ARG_LIST))
+			first_arg = child(argnode, 0);
+		    bool first_is_cstr = first_arg && first_arg->type == GP_TERM &&
+					 term_code(first_arg) == GT_STRING;
+
+		    if ((method == "push_back" || method == "insert") &&
+			(cls == "vector_str" || cls == "set_str")) {
+			if (first_is_cstr) {
+			    std::string val = emit_expr(first_arg);
+			    return prefix + method + "_cstr(" + obj + ", " + val + ")";
+			}
+			std::string raw = emit_arg_list(child(node, 1), false);
+			return prefix + method + "(" + obj + ", " + raw + ")";
+		    }
+		    if (method == "put" && (cls == "map_str_int" || cls == "map_str_str")) {
+			// Check which args are string literals vs string vars
+			std::string raw = emit_arg_list(child(node, 1), false);
+			// For cstr args, we'd need _cstr variant
+			// For now, check first arg (key)
+			if (first_is_cstr) {
+			    // Use _cstr variant for literal key
+			    std::string key = emit_expr(first_arg);
+			    // Get second arg
+			    gp_tree_node *second_arg = is_an(argnode, AN_ARG_LIST) ?
+				child(argnode, 1) : nullptr;
+			    if (second_arg && is_an(second_arg, AN_ARG_LIST))
+				second_arg = child(second_arg, 0);
+			    std::string val = second_arg ? emit_expr(second_arg) : "0";
+			    return prefix + "put_cstr(" + obj + ", " + key + ", " + val + ")";
+			}
+			return prefix + "put(" + obj + ", " + raw + ")";
+		    }
+		    if (method == "get" && (cls == "map_str_int" || cls == "map_str_str")) {
+			std::string raw = emit_arg_list(child(node, 1), false);
+			return prefix + "get(" + obj + ", " + raw + ")";
+		    }
+		    if (method == "contains") {
+			std::string raw = emit_arg_list(child(node, 1), false);
+			return prefix + "contains(" + obj + ", " + raw + ")";
+		    }
+		    if (method == "erase") {
+			std::string raw = emit_arg_list(child(node, 1), false);
+			return prefix + "erase(" + obj + ", " + raw + ")";
+		    }
+		    // size, clear, empty, pop_back — no args needed
+		    std::string wrapper = prefix + method;
 		    if (args.empty())
 			return wrapper + "(" + obj + ")";
 		    return wrapper + "(" + obj + ", " + args + ")";
@@ -1929,9 +2026,32 @@ class CEmitter
 	if (an == AN_ARROW_MEMBER)
 	    return emit_expr(child(node, 0)) + "->" + safe_ident(term_text(child(node, 1)));
 
-	// Subscript
-	if (an == AN_SUBSCRIPT)
+	// Subscript — intercept container subscript reads
+	if (an == AN_SUBSCRIPT) {
+	    gp_tree_node *arr = child(node, 0);
+	    if (arr && arr->type == GP_TERM && term_code(arr) == GT_IDENT) {
+		std::string aname = term_text(arr);
+		std::string cls = lookup_var_class(aname);
+		if (cls == "vector_int") {
+		    return "__stl_vector_int_at(" + aname + ", " +
+			   emit_expr(child(node, 1)) + ")";
+		}
+		if (cls == "vector_str") {
+		    // Use _get_cstr convenience wrapper (thread_local storage)
+		    return "__stl_vector_str_get_cstr(" + aname + ", " +
+			   emit_expr(child(node, 1)) + ")";
+		}
+		if (cls == "map_str_int") {
+		    return "__stl_map_str_int_get(" + aname + ", " +
+			   emit_expr(child(node, 1)) + ")";
+		}
+		if (cls == "map_str_str") {
+		    return "__stl_map_str_str_get_cstr(" + aname + ", " +
+			   emit_expr(child(node, 1)) + ")";
+		}
+	    }
 	    return emit_expr(child(node, 0)) + "[" + emit_expr(child(node, 1)) + "]";
+	}
 
 	// Namespace call: ns::func(args)
 	if (an == AN_NS_CALL) {
@@ -2347,6 +2467,8 @@ class CEmitter
 	    O("%s_destruct(%s);", cn.c_str(), vn.c_str());
 	else if (cn == "stringstream")
 	    O("sstream_destruct(%s);", vn.c_str());
+	else if (is_container_class(cn))
+	    O("%sdestruct(%s);", container_wrapper_prefix(cn).c_str(), vn.c_str());
 	else
 	    O("%s__dtor(&%s);", cn.c_str(), vn.c_str());
     }
@@ -2911,30 +3033,10 @@ class CEmitter
 			// Guarded: only call dtor if guard is set
 			emit_indent();
 			O("if (%s) ", git->second.c_str());
-			if (cn == "string")
-			    O("string_destruct(%s);\n", vn.c_str());
-			else if (cn == "array")
-			    O("madarray_destruct(%s);\n", vn.c_str());
-			else if (cn == "ofstream" || cn == "ifstream" ||
-				 cn == "fstream")
-			    O("%s_destruct(%s);\n", cn.c_str(), vn.c_str());
-			else if (cn == "stringstream")
-			    O("sstream_destruct(%s);\n", vn.c_str());
-			else
-			    O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
+			emit_one_dtor_inline(vn, cn);
+			O("\n");
 		    } else {
-			emit_indent();
-			if (cn == "string")
-			    O("string_destruct(%s);\n", vn.c_str());
-			else if (cn == "array")
-			    O("madarray_destruct(%s);\n", vn.c_str());
-			else if (cn == "ofstream" || cn == "ifstream" ||
-				 cn == "fstream")
-			    O("%s_destruct(%s);\n", cn.c_str(), vn.c_str());
-			else if (cn == "stringstream")
-			    O("sstream_destruct(%s);\n", vn.c_str());
-			else
-			    O("%s__dtor(&%s);\n", cn.c_str(), vn.c_str());
+			emit_one_dtor(vn, cn);
 		    }
 		}
 	    }
@@ -3071,6 +3173,68 @@ class CEmitter
 	if (an == AN_DEFER) {
 	    emit_indent();
 	    O("/* defer */ ;\n");
+	    return;
+	}
+
+	// Range-for: for (type var : container) body
+	// for_range(declaration_specifiers, declarator, expression, statement)
+	if (an == AN_FOR_RANGE) {
+	    std::string type = emit_type(child(node, 0));
+	    std::string var = extract_name(child(node, 1));
+	    std::string container = emit_expr(child(node, 2));
+	    std::string cls = lookup_var_class(container);
+
+	    if (cls == "vector_int") {
+		// for (int n : nums) → for (int64_t __i = 0; __i < size; __i++) { int n = at(__i); body }
+		std::string idx = "__rf_i_" + std::to_string(tmp_counter++);
+		emit_indent();
+		O("for (int64_t %s = 0; %s < __stl_vector_int_size(%s); %s++) {\n",
+		  idx.c_str(), idx.c_str(), container.c_str(), idx.c_str());
+		indent_level++;
+		emit_indent();
+		O("%s %s = __stl_vector_int_at(%s, %s);\n",
+		  type.c_str(), var.c_str(), container.c_str(), idx.c_str());
+		emit_stmt(child(node, 3));
+		indent_level--;
+		emit_indent();
+		O("}\n");
+	    } else if (cls == "vector_str") {
+		std::string idx = "__rf_i_" + std::to_string(tmp_counter++);
+		// Emit a tmp string for the element
+		std::string tmp = "__rf_elem_" + std::to_string(tmp_counter++);
+		emit_indent();
+		O("char %s[MADC_STRING_SIZE];\n", tmp.c_str());
+		emit_indent();
+		O("string_construct(%s);\n", tmp.c_str());
+		emit_indent();
+		O("for (int64_t %s = 0; %s < __stl_vector_str_size(%s); %s++) {\n",
+		  idx.c_str(), idx.c_str(), container.c_str(), idx.c_str());
+		indent_level++;
+		emit_indent();
+		O("__stl_vector_str_at(%s, %s, %s);\n",
+		  tmp.c_str(), container.c_str(), idx.c_str());
+		// Declare the user's variable as a string alias
+		emit_indent();
+		O("char %s[MADC_STRING_SIZE];\n", var.c_str());
+		emit_indent();
+		O("string_construct(%s);\n", var.c_str());
+		emit_indent();
+		O("string_assign(%s, %s);\n", var.c_str(), tmp.c_str());
+		local_var_types[var] = TC_CLASS;
+		local_var_class_map[var] = "string";
+		emit_stmt(child(node, 3));
+		emit_indent();
+		O("string_destruct(%s);\n", var.c_str());
+		indent_level--;
+		emit_indent();
+		O("}\n");
+		emit_indent();
+		O("string_destruct(%s);\n", tmp.c_str());
+	    } else {
+		// Fallback: emit as TODO
+		emit_indent();
+		O("/* TODO: for_range over %s */\n", cls.c_str());
+	    }
 	    return;
 	}
 
@@ -3246,6 +3410,113 @@ class CEmitter
 	if (an_code(specs) == AN_QUAL)
 	    return is_array_type(child(specs, 0)) || is_array_type(child(specs, 1));
 	return false;
+    }
+
+    // ---------------------------------------------------------------
+    // STL container type detection and helpers
+    // ---------------------------------------------------------------
+
+    // Detect container type from declaration_specifiers node.
+    // Returns a class name like "vector_int", "vector_str", "map_str_int",
+    // "map_str_str", "set_str", or "" if not a container.
+    std::string container_class_name(gp_tree_node *specs)
+    {
+	if (!specs) return "";
+	int an = an_code(specs);
+	if (an == AN_VECTOR_TYPE) {
+	    // child(0) = element type_name
+	    std::string elem = emit_type(child(specs, 0));
+	    if (elem == "int" || elem == "int64_t" || elem == "long")
+		return "vector_int";
+	    return "vector_str";  // string or other → string variant
+	}
+	if (an == AN_MAP_TYPE) {
+	    // child(0) = key type, child(1) = value type
+	    std::string val = emit_type(child(specs, 1));
+	    if (val == "int" || val == "int64_t" || val == "long")
+		return "map_str_int";
+	    return "map_str_str";
+	}
+	if (an == AN_SET_TYPE) {
+	    return "set_str";
+	}
+	// Unwrap AN_QUAL
+	if (an == AN_QUAL) {
+	    std::string s = container_class_name(child(specs, 0));
+	    if (!s.empty()) return s;
+	    return container_class_name(child(specs, 1));
+	}
+	return "";
+    }
+
+    // Get the size macro for a container class
+    static std::string container_size_macro(const std::string &cls)
+    {
+	if (cls.substr(0, 6) == "vector") return "MADC_VECTOR_SIZE";
+	if (cls.substr(0, 3) == "map")    return "MADC_MAP_SIZE";
+	if (cls.substr(0, 3) == "set")    return "MADC_SET_SIZE";
+	return "sizeof(void*)";
+    }
+
+    // Get the wrapper prefix for a container class (e.g. "vector_int" → "__stl_vector_int_")
+    static std::string container_wrapper_prefix(const std::string &cls)
+    {
+	return "__stl_" + cls + "_";
+    }
+
+    // Emit a container variable declaration with runtime lifecycle
+    void emit_container_decl(const std::string &cls, gp_tree_node *decls)
+    {
+	if (is_nil(decls)) return;
+	int an = an_code(decls);
+
+	std::string size_macro = container_size_macro(cls);
+	std::string prefix = container_wrapper_prefix(cls);
+
+	// init_decl(name, initializer)
+	if (an == AN_INIT_DECL) {
+	    std::string vname = extract_name(child(decls, 0));
+	    if (!vname.empty()) {
+		emit_indent();
+		O("char %s[%s];\n", vname.c_str(), size_macro.c_str());
+		emit_indent();
+		O("%sconstruct(%s);\n", prefix.c_str(), vname.c_str());
+		local_var_types[vname] = TC_CLASS;
+		local_var_class_map[vname] = cls;
+		scope_class_vars.push_back(vname + "|" + cls);
+	    }
+	    return;
+	}
+
+	// decl_list — multiple declarators
+	if (an == AN_DECL_LIST) {
+	    emit_container_decl(cls, child(decls, 0));
+	    emit_container_decl(cls, child(decls, 1));
+	    return;
+	}
+
+	// Plain identifier — vector<int> v;
+	if (decls->type == GP_TERM) {
+	    std::string vname = term_text(decls);
+	    if (!vname.empty()) {
+		emit_indent();
+		O("char %s[%s];\n", vname.c_str(), size_macro.c_str());
+		emit_indent();
+		O("%sconstruct(%s);\n", prefix.c_str(), vname.c_str());
+		local_var_types[vname] = TC_CLASS;
+		local_var_class_map[vname] = cls;
+		scope_class_vars.push_back(vname + "|" + cls);
+	    }
+	    return;
+	}
+    }
+
+    // Check if a class name is a container type
+    static bool is_container_class(const std::string &cls)
+    {
+	return cls == "vector_int" || cls == "vector_str" ||
+	       cls == "map_str_int" || cls == "map_str_str" ||
+	       cls == "set_str";
     }
 
     // Collect global string declarations — emit storage in header and
@@ -3603,6 +3874,15 @@ class CEmitter
 		    O("%s(%s);\n", func.c_str(), args.c_str());
 		    return;
 		}
+	    }
+	}
+
+	// STL container type: vector<int>, map<string,int>, set<string>, etc.
+	{
+	    std::string ccls = container_class_name(specs);
+	    if (!ccls.empty()) {
+		emit_container_decl(ccls, decls);
+		return;
 	    }
 	}
 
@@ -5215,6 +5495,75 @@ public:
 	header += "extern void *madarray_construct(void *);\n";
 	header += "extern void madarray_destruct(void *);\n";
 	header += "extern long madarray_size(void *);\n";
+	header += "\n";
+
+	// STL container sizes
+	{
+	    char __sz[256];
+	    snprintf(__sz, sizeof(__sz),
+		"#define MADC_VECTOR_SIZE %zu\n"
+		"#define MADC_MAP_SIZE %zu\n"
+		"#define MADC_SET_SIZE %zu\n",
+		sizeof(std::vector<int64_t>),
+		sizeof(std::map<std::string, int64_t>),
+		sizeof(std::set<std::string>));
+	    header += __sz;
+	}
+
+	// STL container runtime wrappers — vector<int>
+	header += "extern void *__stl_vector_int_construct(void *);\n";
+	header += "extern void __stl_vector_int_destruct(void *);\n";
+	header += "extern void __stl_vector_int_push_back(void *, long);\n";
+	header += "extern void __stl_vector_int_pop_back(void *);\n";
+	header += "extern long __stl_vector_int_at(void *, long);\n";
+	header += "extern long __stl_vector_int_size(void *);\n";
+	header += "extern void __stl_vector_int_clear(void *);\n";
+	header += "extern long __stl_vector_int_empty(void *);\n";
+	header += "extern void __stl_vector_int_set(void *, long, long);\n";
+	// vector<string>
+	header += "extern void *__stl_vector_str_construct(void *);\n";
+	header += "extern void __stl_vector_str_destruct(void *);\n";
+	header += "extern void __stl_vector_str_push_back(void *, void *);\n";
+	header += "extern void __stl_vector_str_push_back_cstr(void *, const char *);\n";
+	header += "extern void __stl_vector_str_pop_back(void *);\n";
+	header += "extern void *__stl_vector_str_at(void *, void *, long);\n";
+	header += "extern long __stl_vector_str_size(void *);\n";
+	header += "extern void __stl_vector_str_clear(void *);\n";
+	header += "extern long __stl_vector_str_empty(void *);\n";
+	header += "extern void __stl_vector_str_set(void *, long, void *);\n";
+	header += "extern void __stl_vector_str_set_cstr(void *, long, const char *);\n";
+	header += "extern const char *__stl_vector_str_get_cstr(void *, long);\n";
+	// map<string,int>
+	header += "extern void *__stl_map_str_int_construct(void *);\n";
+	header += "extern void __stl_map_str_int_destruct(void *);\n";
+	header += "extern void __stl_map_str_int_set(void *, void *, long);\n";
+	header += "extern void __stl_map_str_int_put(void *, void *, long);\n";
+	header += "extern void __stl_map_str_int_put_cstr(void *, const char *, long);\n";
+	header += "extern long __stl_map_str_int_get(void *, void *);\n";
+	header += "extern long __stl_map_str_int_contains(void *, void *);\n";
+	header += "extern void __stl_map_str_int_erase(void *, void *);\n";
+	header += "extern long __stl_map_str_int_size(void *);\n";
+	header += "extern void __stl_map_str_int_clear(void *);\n";
+	// map<string,string>
+	header += "extern void *__stl_map_str_str_construct(void *);\n";
+	header += "extern void __stl_map_str_str_destruct(void *);\n";
+	header += "extern void __stl_map_str_str_set(void *, void *, void *);\n";
+	header += "extern void __stl_map_str_str_put(void *, void *, void *);\n";
+	header += "extern void __stl_map_str_str_put_cstr(void *, const char *, const char *);\n";
+	header += "extern void *__stl_map_str_str_get(void *, void *, void *);\n";
+	header += "extern long __stl_map_str_str_contains(void *, void *);\n";
+	header += "extern long __stl_map_str_str_size(void *);\n";
+	header += "extern const char *__stl_map_str_str_get_cstr(void *, void *);\n";
+	header += "extern void __stl_map_str_str_set_cstr(void *, void *, const char *);\n";
+	// set<string>
+	header += "extern void *__stl_set_str_construct(void *);\n";
+	header += "extern void __stl_set_str_destruct(void *);\n";
+	header += "extern void __stl_set_str_insert(void *, void *);\n";
+	header += "extern void __stl_set_str_insert_cstr(void *, const char *);\n";
+	header += "extern long __stl_set_str_contains(void *, void *);\n";
+	header += "extern void __stl_set_str_erase(void *, void *);\n";
+	header += "extern long __stl_set_str_size(void *);\n";
+	header += "extern void __stl_set_str_clear(void *);\n";
 	header += "\n";
 
 	// Stream pointers
