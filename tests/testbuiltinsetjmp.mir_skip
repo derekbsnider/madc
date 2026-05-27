@@ -1,1 +1,1 @@
-c2mir does not support __builtin_setjmp
+__builtin_setjmp/__builtin_longjmp are compiler intrinsics — use setjmp/longjmp instead

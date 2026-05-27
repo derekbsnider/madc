@@ -1,1 +1,1 @@
-c2mir limitation or transpiler unsupported feature
+__builtin_uabs/__builtin_umaxabs are GCC 14+ intrinsics not in c2mir or libc

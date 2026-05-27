@@ -1,1 +1,1 @@
-c2mir does not support __builtin_object_size
+__builtin_object_size and __builtin___strcpy_chk are compiler intrinsics with no libc equivalent
