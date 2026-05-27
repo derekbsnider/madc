@@ -1178,11 +1178,19 @@ class CEmitter
 	if (an == AN_SUBSCRIPT) {
 	    gp_tree_node *arr = child(node, 0);
 	    if (arr && arr->type == GP_TERM && term_code(arr) == GT_IDENT) {
-		std::string cls = lookup_var_class(term_text(arr));
+		std::string vname = term_text(arr);
+		std::string cls = lookup_var_class(vname);
 		if (cls == "vector_str" || cls == "map_str_str")
 		    return TC_STRING;  // returns const char *
 		if (cls == "vector_int" || cls == "map_str_int")
 		    return TC_INT;
+		// char ** (or deeper) subscript → char * (TC_STRING), not char
+		auto vit = var_type_strs.find(vname);
+		if (vit != var_type_strs.end()) {
+		    int stars = 0;
+		    for (char c : vit->second) if (c == '*') stars++;
+		    if (stars >= 2) return TC_STRING;
+		}
 	    }
 	    TypeClass inner = infer_expr_cout_type(child(node, 0));
 	    if (inner == TC_STRING) return TC_CHAR;
@@ -3400,9 +3408,13 @@ class CEmitter
 	std::string vname = extract_name(decls);
 	if (!vname.empty()) {
 	    // Track C type string for typeof resolution
-	    bool has_ptr = is_an(decls, AN_PTR_DECL);
+	    // Count pointer depth (char **argv → "char **")
+	    int ptr_depth = 0;
+	    gp_tree_node *d = decls;
+	    while (is_an(d, AN_PTR_DECL)) { ptr_depth++; d = child(d, 1); }
+	    bool has_ptr = ptr_depth > 0;
 	    std::string full_type = type;
-	    if (has_ptr) full_type += " *";
+	    for (int p = 0; p < ptr_depth; p++) full_type += " *";
 	    var_type_strs[vname] = full_type;
 	    // Check if this is a class type
 	    std::string clean_type = type;
@@ -5614,7 +5626,7 @@ public:
 	header += "extern long __madc_timeval_sec(void *);\n";
 	header += "extern long __madc_timeval_usec(void *);\n";
 	// madc runtime functions (compiled into the binary, resolved via dlsym)
-	header += "extern const char *madc_get_argv(long, long);\n";
+	header += "extern const char *get_argv(long, long);\n";
 	header += "extern long __madc_regex_match(void *, void *);\n";
 	header += "extern long __madc_regex_search(void *, void *);\n";
 	header += "extern void *__madc_regex_replace(void *, void *, void *, void *);\n";

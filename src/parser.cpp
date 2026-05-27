@@ -3715,6 +3715,12 @@ const char *madc_get_argv(int64_t argv_ptr, int64_t index)
     return argv[index];
 }
 
+// Extern "C" wrapper so transpiled code (c2mir) can resolve get_argv via dlsym
+extern "C" const char *get_argv(int64_t argv_ptr, int64_t index)
+{
+    return madc_get_argv(argv_ptr, index);
+}
+
 void madc_setenv(void *name, void *value)
 {
     setenv(((std::string *)name)->c_str(), ((std::string *)value)->c_str(), 1);
