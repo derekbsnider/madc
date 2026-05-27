@@ -120,7 +120,40 @@ static int gecko_read_token(void **attr, GeckoTokenizer *state)
 		    *attr = (void *)tb;
 		    return 318;  // GT_STRING_T
 		}
+		// std::vector / std::map / std::set / std::list → container keyword
+		if (c1 == 359 /* GT_SCOPE */ &&
+		    (c2 == 330 /* GT_VECTOR */ || c2 == 331 /* GT_MAP */ ||
+		     c2 == 332 /* GT_SET */    || c2 == 333 /* GT_LIST */)) {
+		    state->pos = j;
+		    *attr = (void *)tb;
+		    state->prev_code = c2;
+		    return c2;
+		}
 		// else fall through as normal IDENT
+	    }
+	    // madc::array → just 'array' (identifier)
+	    if (ti && ti->str == "madc") {
+		size_t saved = state->pos;
+		int c1 = -1;
+		size_t i = saved;
+		for (; i < state->tokens->size(); i++) {
+		    c1 = madc_token_to_gecko((*state->tokens)[i]);
+		    if (c1 >= 0) { i++; break; }
+		}
+		int c2 = -1;
+		size_t j = i;
+		for (; j < state->tokens->size(); j++) {
+		    c2 = madc_token_to_gecko((*state->tokens)[j]);
+		    if (c2 >= 0) { j++; break; }
+		}
+		if (c1 == 359 /* GT_SCOPE */ && c2 == 256 /* GT_IDENT */) {
+		    TokenIdent *t2 = dynamic_cast<TokenIdent *>((*state->tokens)[j-1]);
+		    if (t2 && t2->str == "array") {
+			state->pos = j;
+			*attr = (void *)((*state->tokens)[j-1]);
+			return 256;  // GT_IDENT — 'array'
+		    }
+		}
 	    }
 	}
 
