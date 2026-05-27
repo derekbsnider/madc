@@ -1,1 +1,1 @@
-version is const char* in transpiler but string in legacy — .c_str() mismatch
+version preamble var_type_strs overwritten to char — needs investigation

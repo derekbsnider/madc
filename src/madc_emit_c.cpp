@@ -1948,9 +1948,18 @@ class CEmitter
 		// String methods: c_str() → string_cstr(obj) for managed strings,
 		// identity for const char * variables
 		if (method == "c_str") {
+		    // If the object is already a const char *, .c_str() is identity
 		    std::string oname = term_text(child(callee, 0));
-		    if (!oname.empty() && lookup_var_type(oname) == TC_STRING)
-			return obj;  // already const char *
+		    if (!oname.empty()) {
+			TypeClass tc = lookup_var_type(oname);
+			if (tc == TC_STRING)
+			    return obj;
+			auto vit = var_type_strs.find(oname);
+			if (vit != var_type_strs.end() &&
+			    vit->second.find("char") != std::string::npos &&
+			    vit->second.find("*") != std::string::npos)
+			    return obj;
+		    }
 		    return "string_cstr(" + obj + ")";
 		}
 		// String methods: length()/size() → strlen()
@@ -5660,6 +5669,7 @@ public:
 	header += "extern int vprintf(const char *, va_list);\n";
 	header += "extern int vfprintf(void *, const char *, va_list);\n";
 	header += "static const char *version = \"v0.0.1\";\n";
+	var_type_strs["version"] = "const char *";
 	// POSIX timer/fd helpers (implemented in va_helpers.cpp)
 	header += "extern long __madc_timerisset(void *);\n";
 	header += "extern void __madc_timerclear(void *);\n";
