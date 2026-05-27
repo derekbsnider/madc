@@ -1586,4 +1586,18 @@ namespace madc
 #define ANSI_WHITE "\e[1;37m"
 #define ANSI_RESET "\e[m"
 
+// Macros for generating extern "C" thin wrappers.
+// Usage: MADC_EXTERN_C1(int64_t, php_trim, void *)
+// Expands to: extern "C" int64_t __php_trim(void *a) { return php_trim(a); }
+#define MADC_EXTERN_C0(ret, name) \
+    extern "C" ret __##name(void) { return name(); }
+#define MADC_EXTERN_C1(ret, name, T1) \
+    extern "C" ret __##name(T1 a) { return name(a); }
+#define MADC_EXTERN_C2(ret, name, T1, T2) \
+    extern "C" ret __##name(T1 a, T2 b) { return name(a, b); }
+#define MADC_EXTERN_C3(ret, name, T1, T2, T3) \
+    extern "C" ret __##name(T1 a, T2 b, T3 c) { return name(a, b, c); }
+#define MADC_EXTERN_C4(ret, name, T1, T2, T3, T4) \
+    extern "C" ret __##name(T1 a, T2 b, T3 c, T4 d) { return name(a, b, c, d); }
+
 #endif // __MADC_H
