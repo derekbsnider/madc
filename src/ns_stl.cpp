@@ -28,6 +28,8 @@
 
 using namespace std;
 
+extern "C" {
+
 //
 // vector<int64_t> helpers
 //
@@ -348,3 +350,5 @@ int64_t list_str_size(void *ptr)
 {
     return (int64_t)((std::list<std::string> *)ptr)->size();
 }
+
+} // extern "C"
