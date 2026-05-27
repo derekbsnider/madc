@@ -1047,9 +1047,19 @@ class CEmitter
     // top level, not wrapped in AN_PTR_DECL which would make it a function
     // pointer).  Used to skip local function prototype entries in mixed
     // declarations like `float fx(), a, b, c;`.
+    // Return true for a plain function prototype like `int foo(void);`
+    // but NOT for function pointer declarations like `int (*fp)(void);`.
     static bool is_plain_func_decl(gp_tree_node *node) {
 	if (!node || node->type != GP_ANODE) return false;
-	return an_code(node) == AN_FUNC_DECL;
+	if (an_code(node) != AN_FUNC_DECL) return false;
+	// The name (first child) must be a bare identifier, not a
+	// parenthesized pointer declarator.  Function pointer decls
+	// have func_decl(paren_decl(ptr_decl(...)), params).
+	gp_tree_node *name = child(node, 0);
+	if (!name) return false;
+	if (name->type == GP_TERM) return true;  // plain: foo(int)
+	// If name is AN_PAREN or AN_PTR_DECL, it's a function pointer
+	return false;
     }
 
     // Collect all leaf declarators from an AN_DECL_LIST tree into a vector.
