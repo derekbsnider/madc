@@ -1835,8 +1835,12 @@ class CEmitter
 					   callee_is_paren_ident ? child(callee, 0) : nullptr;
 		if (ident_node && arg0 && is_an(arg0, AN_ADDROF)) {
 		    std::string name = term_text(ident_node);
-		    if (!sema || (!sema->func_ret_types.count(name) &&
-			!is_known_class(name))) {
+		    // Only reconstruct as bitwise AND if name is a
+		    // known variable — not a function/class/__madc_ helper.
+		    // Unknown identifiers keep the function-call parse.
+		    if (sema && sema->var_types.count(name) &&
+			!sema->func_ret_types.count(name) &&
+			!is_known_class(name)) {
 			// Reconstruct as bitwise AND
 			return "(" + emit_expr(ident_node) + " & " +
 			       emit_expr(child(arg0, 0)) + ")";
@@ -2295,8 +2299,15 @@ class CEmitter
 	if (is_an(node, AN_DESIG_INIT)) {
 	    gp_tree_node *desig = child(node, 0);
 	    std::string val = emit_init_item(child(node, 1));
-	    if (!is_nil(desig))
+	    if (!is_nil(desig)) {
+		// Expand GCC range designators [lo ... hi] = val
+		// into [lo] = val, [lo+1] = val, ..., [hi] = val
+		// because c2mir does not support range designators.
+		if (is_an(desig, AN_RANGE_DESIG)) {
+		    return expand_range_desig(desig, val);
+		}
 		return emit_designator(desig) + " = " + val;
+	    }
 	    return val;
 	}
 
@@ -2306,9 +2317,12 @@ class CEmitter
 	    gp_tree_node *desig = child(node, 1);
 	    std::string val = emit_init_item(child(node, 2));
 	    std::string item;
-	    if (!is_nil(desig))
-		item = emit_designator(desig) + " = " + val;
-	    else
+	    if (!is_nil(desig)) {
+		if (is_an(desig, AN_RANGE_DESIG))
+		    item = expand_range_desig(desig, val);
+		else
+		    item = emit_designator(desig) + " = " + val;
+	    } else
 		item = val;
 	    return prev + ", " + item;
 	}
@@ -2425,6 +2439,29 @@ class CEmitter
 	return "";
     }
 
+    // Expand GCC range designator [lo ... hi] = val into individual
+    // designators for c2mir compatibility.
+    std::string expand_range_desig(gp_tree_node *desig, const std::string &val)
+    {
+	std::string lo_str = emit_expr(child(desig, 0));
+	std::string hi_str = emit_expr(child(desig, 1));
+	// Try to evaluate as integer constants for expansion
+	char *end_lo = nullptr, *end_hi = nullptr;
+	long lo = strtol(lo_str.c_str(), &end_lo, 0);
+	long hi = strtol(hi_str.c_str(), &end_hi, 0);
+	if (end_lo && *end_lo == '\0' && end_hi && *end_hi == '\0' &&
+	    hi >= lo && (hi - lo) < 256) {
+	    std::string result;
+	    for (long i = lo; i <= hi; i++) {
+		if (!result.empty()) result += ", ";
+		result += "[" + std::to_string(i) + "] = " + val;
+	    }
+	    return result;
+	}
+	// Fallback: emit as-is (will fail in c2mir but at least compiles)
+	return "[" + lo_str + " ... " + hi_str + "] = " + val;
+    }
+
     // ---------------------------------------------------------------
     // Statement emission
     // ---------------------------------------------------------------
@@ -2444,6 +2481,9 @@ class CEmitter
 	if (specs->type == GP_TERM && term_code(specs) == GT_IDENT) {
 	    std::string name = term_text(specs);
 	    if (sema && sema->func_ret_types.count(name))
+		return true;
+	    // __madc_ prefixed names are always runtime helpers, not types
+	    if (name.substr(0, 7) == "__madc_")
 		return true;
 	}
 	return false;
@@ -3239,6 +3279,28 @@ class CEmitter
 	    return;
 	}
 
+	// Nested function definition — hoist to top level.
+	// C doesn't support nested functions, so emit before the
+	// enclosing function in the output.
+	if (an == AN_FUNC_DEF) {
+	    // Save enclosing function state
+	    std::string saved_body = body;
+	    int saved_indent = indent_level;
+	    std::string saved_func_name = current_func_name;
+	    // emit_toplevel will append to body (func def) and header (fwd decl)
+	    emit_top_level(node);
+	    // The nested function definition is now in body after saved_body.
+	    // Splice: put the hoisted function BEFORE the enclosing function.
+	    // saved_body = outer function body so far
+	    // body = saved_body + hoisted function def
+	    // We want: hoisted function def + saved_body (continuing)
+	    std::string hoisted = body.substr(saved_body.size());
+	    body = hoisted + saved_body;
+	    indent_level = saved_indent;
+	    current_func_name = saved_func_name;
+	    return;
+	}
+
 	// Fallback
 	emit_indent();
 	O("/* TODO stmt: %s */\n", anode_name(node));
@@ -3869,7 +3931,8 @@ class CEmitter
 		!is_nil(decls)) {
 		std::string tname = term_text(s);
 		if ((is_builtin_func(tname) ||
-		    (sema && sema->func_ret_types.count(tname))) &&
+		    (sema && sema->func_ret_types.count(tname)) ||
+		    tname.substr(0, 7) == "__madc_") &&
 		    !is_known_class(tname)) {
 		    // Reconstruct as function call
 		    std::string func = map_builtin(tname);
@@ -5204,6 +5267,20 @@ class CEmitter
 		    // grammar recovery of a top-level expression statement.
 		    return;
 		}
+		// Suppress re-typedefs where the typedef name was parsed as
+		// part of the specifiers (Gecko sees int64_t as a typedef name).
+		if (is_typedef) {
+		    static const char *preamble_types[] = {
+			"int8_t", "uint8_t", "int16_t", "uint16_t",
+			"int32_t", "uint32_t", "int64_t", "uint64_t",
+			"size_t", "ssize_t", "intptr_t", "uintptr_t",
+			"ptrdiff_t", nullptr
+		    };
+		    for (const char **p = preamble_types; *p; ++p) {
+			if (type.find(*p) != std::string::npos)
+			    return;
+		    }
+		}
 		OH("%s;\n", type.c_str());
 		return;
 	    }
@@ -5213,6 +5290,22 @@ class CEmitter
 		// Suppress va_list typedef — we use <stdarg.h> in the preamble
 		std::string decl_name = emit_declarator_str(decls);
 		if (decl_name == "va_list") return;
+		// Suppress re-typedefs of standard integer types already
+		// in the preamble (c2mir forbids repeated typedefs).
+		{
+		    static const char *preamble_types[] = {
+			"int8_t", "uint8_t", "int16_t", "uint16_t",
+			"int32_t", "uint32_t", "int64_t", "uint64_t",
+			"size_t", "ssize_t", "intptr_t", "uintptr_t",
+			"ptrdiff_t", nullptr
+		    };
+		    // Check both declarator name and extracted name
+		    std::string tname = extract_name(decls);
+		    for (const char **p = preamble_types; *p; ++p) {
+			if (tname == *p || decl_name == *p)
+			    return;
+		    }
+		}
 		// Track typedef name for cast disambiguation
 		{
 		    std::string tname = extract_name(decls);
@@ -5233,6 +5326,10 @@ class CEmitter
 		// these result from grammar error-recovery on top-level
 		// assignment statements (e.g. `hello = "x";` at file scope).
 		if (type.empty() && decls->type == GP_TERM) return;
+		// Skip standalone function prototypes at file scope —
+		// the actual func_def will generate its own forward decl
+		// with the correct return type (mad-C allows void fwd + int def).
+		if (is_plain_func_decl(decls)) return;
 		// Track global variable type for typeof resolution
 		{
 		    std::string vn = extract_name(decls);
@@ -5397,6 +5494,17 @@ public:
 	header += "extern int vprintf(const char *, va_list);\n";
 	header += "extern int vfprintf(void *, const char *, va_list);\n";
 	header += "static const char *version = \"v0.0.1\";\n";
+	// POSIX timer/fd helpers (implemented in va_helpers.cpp)
+	header += "extern long __madc_timerisset(void *);\n";
+	header += "extern void __madc_timerclear(void *);\n";
+	header += "extern void __madc_timeradd(void *, void *, void *);\n";
+	header += "extern void __madc_timersub(void *, void *, void *);\n";
+	header += "extern void __madc_fd_zero(void *);\n";
+	header += "extern void __madc_fd_set(int, void *);\n";
+	header += "extern long __madc_fd_isset(int, void *);\n";
+	header += "extern void __madc_fd_clr(int, void *);\n";
+	header += "extern long __madc_timeval_sec(void *);\n";
+	header += "extern long __madc_timeval_usec(void *);\n";
 	header += "\n";
 
 	// Stream and container type stubs (opaque pointers in C)
@@ -5597,6 +5705,58 @@ public:
 	header += "static int64_t __stl_map_str_int_size(map_str_int *m) { return (int64_t)m->len; }\n";
 	header += "static void __stl_map_str_int_clear(map_str_int *m) {\n";
 	header += "    for (size_t i=0; i<m->len; i++) string_destruct(m->keys + i*MADC_STRING_SIZE);\n";
+	header += "    m->len=0; }\n";
+	header += "\n";
+
+	// --- map_str_str: map<string,string> (linear scan key-value pairs) ---
+	header += "typedef struct { char *keys; char *vals; size_t len, cap; } map_str_str;\n";
+	header += "static void __stl_map_str_str_construct(map_str_str *m) { m->keys=0; m->vals=0; m->len=0; m->cap=0; }\n";
+	header += "static void __stl_map_str_str_destruct(map_str_str *m) {\n";
+	header += "    for (size_t i=0; i<m->len; i++) { string_destruct(m->keys + i*MADC_STRING_SIZE);\n";
+	header += "        string_destruct(m->vals + i*MADC_STRING_SIZE); }\n";
+	header += "    free(m->keys); free(m->vals); }\n";
+	header += "static int64_t __stl_map_str_str_find(map_str_str *m, const char *k) {\n";
+	header += "    for (size_t i=0; i<m->len; i++) if (strcmp(string_cstr(m->keys+i*MADC_STRING_SIZE),k)==0) return (int64_t)i;\n";
+	header += "    return -1; }\n";
+	header += "static void __stl_map_str_str_put(map_str_str *m, void *k, void *v) {\n";
+	header += "    int64_t idx = __stl_map_str_str_find(m, string_cstr(k));\n";
+	header += "    if (idx >= 0) { string_assign(m->vals + idx*MADC_STRING_SIZE, v); return; }\n";
+	header += "    if (m->len==m->cap) { m->cap = m->cap ? m->cap*2 : 8;\n";
+	header += "        m->keys=(char*)realloc(m->keys, m->cap*MADC_STRING_SIZE);\n";
+	header += "        m->vals=(char*)realloc(m->vals, m->cap*MADC_STRING_SIZE); }\n";
+	header += "    string_construct(m->keys + m->len*MADC_STRING_SIZE);\n";
+	header += "    string_assign(m->keys + m->len*MADC_STRING_SIZE, k);\n";
+	header += "    string_construct(m->vals + m->len*MADC_STRING_SIZE);\n";
+	header += "    string_assign(m->vals + m->len*MADC_STRING_SIZE, v);\n";
+	header += "    m->len++; }\n";
+	header += "static void __stl_map_str_str_set(map_str_str *m, void *k, void *v) { __stl_map_str_str_put(m, k, v); }\n";
+	header += "static void __stl_map_str_str_put_cstr(map_str_str *m, const char *k, const char *v) {\n";
+	header += "    int64_t idx = __stl_map_str_str_find(m, k);\n";
+	header += "    if (idx >= 0) { string_assign_cstr(m->vals + idx*MADC_STRING_SIZE, v); return; }\n";
+	header += "    if (m->len==m->cap) { m->cap = m->cap ? m->cap*2 : 8;\n";
+	header += "        m->keys=(char*)realloc(m->keys, m->cap*MADC_STRING_SIZE);\n";
+	header += "        m->vals=(char*)realloc(m->vals, m->cap*MADC_STRING_SIZE); }\n";
+	header += "    string_construct_cstr(m->keys + m->len*MADC_STRING_SIZE, k);\n";
+	header += "    string_construct_cstr(m->vals + m->len*MADC_STRING_SIZE, v);\n";
+	header += "    m->len++; }\n";
+	header += "static void __stl_map_str_str_set_cstr(map_str_str *m, void *k, const char *v) {\n";
+	header += "    __stl_map_str_str_put_cstr(m, string_cstr(k), v); }\n";
+	header += "static const char *__stl_map_str_str_get_cstr(map_str_str *m, void *k) {\n";
+	header += "    int64_t idx = __stl_map_str_str_find(m, string_cstr(k)); return idx>=0 ? string_cstr(m->vals+idx*MADC_STRING_SIZE) : \"\"; }\n";
+	header += "static int64_t __stl_map_str_str_contains(map_str_str *m, void *k) {\n";
+	header += "    return __stl_map_str_str_find(m, string_cstr(k)) >= 0; }\n";
+	header += "static void __stl_map_str_str_erase(map_str_str *m, void *k) {\n";
+	header += "    int64_t idx = __stl_map_str_str_find(m, string_cstr(k));\n";
+	header += "    if (idx<0) return; string_destruct(m->keys + idx*MADC_STRING_SIZE);\n";
+	header += "    string_destruct(m->vals + idx*MADC_STRING_SIZE);\n";
+	header += "    for (size_t i=(size_t)idx; i<m->len-1; i++) {\n";
+	header += "        memcpy(m->keys+i*MADC_STRING_SIZE, m->keys+(i+1)*MADC_STRING_SIZE, MADC_STRING_SIZE);\n";
+	header += "        memcpy(m->vals+i*MADC_STRING_SIZE, m->vals+(i+1)*MADC_STRING_SIZE, MADC_STRING_SIZE); }\n";
+	header += "    m->len--; }\n";
+	header += "static int64_t __stl_map_str_str_size(map_str_str *m) { return (int64_t)m->len; }\n";
+	header += "static void __stl_map_str_str_clear(map_str_str *m) {\n";
+	header += "    for (size_t i=0; i<m->len; i++) { string_destruct(m->keys + i*MADC_STRING_SIZE);\n";
+	header += "        string_destruct(m->vals + i*MADC_STRING_SIZE); }\n";
 	header += "    m->len=0; }\n";
 	header += "\n";
 
