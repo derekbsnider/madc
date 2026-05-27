@@ -1904,11 +1904,29 @@ static token_t pptoken2token (c2m_ctx_t c2m_ctx, token_t t, int id2kw_p) {
     int last = (int) strlen (repr) - 1;
 
     assert (last >= 0);
-    /* GCC extension: imaginary suffix i/I/j/J */
-    if (last >= 0 && (repr[last] == 'i' || repr[last] == 'I'
-                      || repr[last] == 'j' || repr[last] == 'J')) {
-      imaginary_p = TRUE;
-      last--;
+    /* GCC extension: imaginary suffix i/I/j/J — can appear before or after F/L suffix.
+       Patterns: 1.0i (double), 1.0fi/1.0if (float), 1.0Li/1.0iL (long double). */
+    if (last >= 1
+        && (repr[last] == 'i' || repr[last] == 'I' || repr[last] == 'j' || repr[last] == 'J')
+        && (repr[last - 1] == 'f' || repr[last - 1] == 'F')) {
+      imaginary_p = TRUE; float_p = TRUE; double_p = FALSE; last -= 2;  /* fi, Fi */
+    } else if (last >= 1
+               && (repr[last] == 'f' || repr[last] == 'F')
+               && (repr[last - 1] == 'i' || repr[last - 1] == 'I'
+                   || repr[last - 1] == 'j' || repr[last - 1] == 'J')) {
+      imaginary_p = TRUE; float_p = TRUE; double_p = FALSE; last -= 2;  /* iF, if */
+    } else if (last >= 1
+               && (repr[last] == 'i' || repr[last] == 'I' || repr[last] == 'j' || repr[last] == 'J')
+               && (repr[last - 1] == 'l' || repr[last - 1] == 'L')) {
+      imaginary_p = TRUE; ldouble_p = TRUE; double_p = FALSE; last -= 2;  /* Li, li */
+    } else if (last >= 1
+               && (repr[last] == 'l' || repr[last] == 'L')
+               && (repr[last - 1] == 'i' || repr[last - 1] == 'I'
+                   || repr[last - 1] == 'j' || repr[last - 1] == 'J')) {
+      imaginary_p = TRUE; ldouble_p = TRUE; double_p = FALSE; last -= 2;  /* iL, il */
+    } else if (last >= 0 && (repr[last] == 'i' || repr[last] == 'I'
+                              || repr[last] == 'j' || repr[last] == 'J')) {
+      imaginary_p = TRUE; last--;  /* bare i — double */
     }
     if (repr[0] == '0' && (repr[1] == 'x' || repr[1] == 'X')) {
       base = 16;
