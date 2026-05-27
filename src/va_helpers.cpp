@@ -613,3 +613,54 @@ extern "C" uintmax_t __madc_builtin_umaxabs(intmax_t x)
 {
     return (x < 0) ? (uintmax_t)(-((long long)x + 1)) + 1 : (uintmax_t)x;
 }
+
+// -----------------------------------------------------------------------
+// _Complex lowering — struct-based complex arithmetic helpers.
+// Each type gets a struct { T re; T im; } and a full set of operations.
+// Mirrors the legacy DataDefCOMPLEX layout exactly.
+// -----------------------------------------------------------------------
+
+// Struct types (must match emitter preamble typedefs)
+typedef struct { double re; double im; } __madc_cdouble;
+typedef struct { float re; float im; } __madc_cfloat;
+typedef struct { int re; int im; } __madc_cint;
+typedef struct { unsigned int re; unsigned int im; } __madc_cuint;
+typedef struct { unsigned short re; unsigned short im; } __madc_cushort;
+typedef struct { long re; long im; } __madc_clong;
+typedef struct { unsigned long re; unsigned long im; } __madc_culong;
+
+// Macro to generate all operations for a complex type.
+// T = scalar type, N = name suffix (e.g. cdouble, cfloat)
+#define MADC_COMPLEX_OPS(T, N) \
+extern "C" __madc_##N __madc_##N##_add(__madc_##N a, __madc_##N b) \
+    { return (__madc_##N){a.re+b.re, a.im+b.im}; } \
+extern "C" __madc_##N __madc_##N##_sub(__madc_##N a, __madc_##N b) \
+    { return (__madc_##N){a.re-b.re, a.im-b.im}; } \
+extern "C" __madc_##N __madc_##N##_mul(__madc_##N a, __madc_##N b) \
+    { return (__madc_##N){a.re*b.re - a.im*b.im, a.re*b.im + a.im*b.re}; } \
+extern "C" __madc_##N __madc_##N##_div(__madc_##N a, __madc_##N b) \
+    { T denom = b.re*b.re + b.im*b.im; \
+      return (__madc_##N){(a.re*b.re + a.im*b.im)/denom, \
+                          (a.im*b.re - a.re*b.im)/denom}; } \
+extern "C" __madc_##N __madc_##N##_conj(__madc_##N a) \
+    { return (__madc_##N){a.re, -a.im}; } \
+extern "C" __madc_##N __madc_##N##_neg(__madc_##N a) \
+    { return (__madc_##N){-a.re, -a.im}; } \
+extern "C" int __madc_##N##_eq(__madc_##N a, __madc_##N b) \
+    { return a.re == b.re && a.im == b.im; } \
+extern "C" int __madc_##N##_ne(__madc_##N a, __madc_##N b) \
+    { return a.re != b.re || a.im != b.im; } \
+extern "C" __madc_##N __madc_##N##_make(T re, T im) \
+    { return (__madc_##N){re, im}; } \
+extern "C" __madc_##N __madc_##N##_from_real(T re) \
+    { return (__madc_##N){re, 0}; } \
+extern "C" T __madc_##N##_real(__madc_##N a) { return a.re; } \
+extern "C" T __madc_##N##_imag(__madc_##N a) { return a.im; }
+
+MADC_COMPLEX_OPS(double, cdouble)
+MADC_COMPLEX_OPS(float, cfloat)
+MADC_COMPLEX_OPS(int, cint)
+MADC_COMPLEX_OPS(unsigned int, cuint)
+MADC_COMPLEX_OPS(unsigned short, cushort)
+MADC_COMPLEX_OPS(long, clong)
+MADC_COMPLEX_OPS(unsigned long, culong)

@@ -227,6 +227,47 @@ class CEmitter
     // Functions that have a func_def in this TU — skip their prototypes
     std::set<std::string> defined_funcs;
 
+    // Complex types used — tracks which __madc_c* typedefs to emit
+    std::set<std::string> complex_types_used;
+
+    // Map "double _Complex" etc. → "__madc_cdouble" etc.
+    // Returns empty string if not a complex type.
+    std::string map_complex_type(const std::string &t) {
+	// Normalize: "_Complex" may appear before or after the base type
+	static const std::vector<std::pair<std::string, std::string>> mappings = {
+	    {"double _Complex",          "__madc_cdouble"},
+	    {"_Complex double",          "__madc_cdouble"},
+	    {"_Complex",                 "__madc_cdouble"},  // bare _Complex = double
+	    {"float _Complex",           "__madc_cfloat"},
+	    {"_Complex float",           "__madc_cfloat"},
+	    {"int _Complex",             "__madc_cint"},
+	    {"_Complex int",             "__madc_cint"},
+	    {"unsigned int _Complex",    "__madc_cuint"},
+	    {"unsigned _Complex",        "__madc_cuint"},
+	    {"_Complex unsigned int",    "__madc_cuint"},
+	    {"_Complex unsigned",        "__madc_cuint"},
+	    {"unsigned short _Complex",  "__madc_cushort"},
+	    {"_Complex unsigned short",  "__madc_cushort"},
+	    {"long _Complex",            "__madc_clong"},
+	    {"_Complex long",            "__madc_clong"},
+	    {"unsigned long _Complex",   "__madc_culong"},
+	    {"_Complex unsigned long",   "__madc_culong"},
+	};
+	for (auto &m : mappings) {
+	    if (t == m.first) {
+		complex_types_used.insert(m.second);
+		return m.second;
+	    }
+	}
+	return "";
+    }
+
+    // Get the helper prefix for a complex struct type name
+    static std::string complex_helper_prefix(const std::string &type) {
+	// type is e.g. "__madc_cdouble" → prefix is "__madc_cdouble_"
+	return type + "_";
+    }
+
     // Pending write-backs for const char * args passed to namespace calls.
     // After the call, copy the possibly-mutated string back to the pointer.
     struct NsArgWriteback {
@@ -783,7 +824,11 @@ class CEmitter
 	    std::string r = emit_type(rest);
 	    if (spec.empty()) return r;
 	    if (r.empty()) return spec;
-	    return spec + " " + r;
+	    std::string combined = spec + " " + r;
+	    // _Complex T → __madc_cT struct typedef
+	    std::string ct = map_complex_type(combined);
+	    if (!ct.empty()) return ct;
+	    return combined;
 	}
 
 	// struct/union reference: struct foo
@@ -5649,6 +5694,41 @@ public:
 	header += "extern void __madc_builtin_longjmp_val(void *, int);\n";
 	header += "extern unsigned int __madc_builtin_uabs(int);\n";
 	header += "extern unsigned long __madc_builtin_umaxabs(long);\n";
+	header += "\n";
+
+	// _Complex lowering — struct-based complex types and helpers
+	header += "/* _Complex struct types */\n";
+	header += "typedef struct { double re; double im; } __madc_cdouble;\n";
+	header += "typedef struct { float re; float im; } __madc_cfloat;\n";
+	header += "typedef struct { int re; int im; } __madc_cint;\n";
+	header += "typedef struct { unsigned int re; unsigned int im; } __madc_cuint;\n";
+	header += "typedef struct { unsigned short re; unsigned short im; } __madc_cushort;\n";
+	header += "typedef struct { long re; long im; } __madc_clong;\n";
+	header += "typedef struct { unsigned long re; unsigned long im; } __madc_culong;\n";
+	// Declare all helpers for each complex type
+	{
+	    const char *types[] = {"cdouble", "cfloat", "cint", "cuint", "cushort", "clong", "culong", nullptr};
+	    const char *scalars[] = {"double", "float", "int", "unsigned int", "unsigned short", "long", "unsigned long"};
+	    for (int i = 0; types[i]; i++) {
+		std::string N = std::string("__madc_") + types[i];
+		std::string T = scalars[i];
+		// Binary ops
+		for (const char *op : {"add", "sub", "mul", "div"})
+		    header += "extern " + N + " " + N + "_" + op + "(" + N + ", " + N + ");\n";
+		// Unary ops
+		for (const char *op : {"conj", "neg"})
+		    header += "extern " + N + " " + N + "_" + op + "(" + N + ");\n";
+		// Comparison
+		header += "extern int " + N + "_eq(" + N + ", " + N + ");\n";
+		header += "extern int " + N + "_ne(" + N + ", " + N + ");\n";
+		// Construction
+		header += "extern " + N + " " + N + "_make(" + T + ", " + T + ");\n";
+		header += "extern " + N + " " + N + "_from_real(" + T + ");\n";
+		// Component access
+		header += "extern " + T + " " + N + "_real(" + N + ");\n";
+		header += "extern " + T + " " + N + "_imag(" + N + ");\n";
+	    }
+	}
 	header += "\n";
 
 	// Stream and container type stubs (opaque pointers in C)

@@ -331,6 +331,39 @@ static void gecko_syntax_error(const char *err_nonterm, bool after_p,
 // prepended to the deque so Gecko parses them as top-level decls.
 // -----------------------------------------------------------------------
 
+// preprocess_complex_types — split compound type keywords like
+// "double _Complex" into separate tokens that Gecko can parse.
+// The madc lexer combines them into one keyword; Gecko needs them apart.
+static void preprocess_complex_types(std::deque<TokenBase *> *tokens)
+{
+    for (size_t i = 0; i < tokens->size(); i++) {
+	TokenIdent *ti = dynamic_cast<TokenIdent *>((*tokens)[i]);
+	if (!ti) continue;
+	// Check for compound _Complex keywords
+	size_t pos = ti->str.find("_Complex");
+	if (pos == std::string::npos)
+	    pos = ti->str.find("__complex__");
+	if (pos == std::string::npos) continue;
+
+	// Split "double _Complex" → TokenKeyword("double"), TokenKeyword("_Complex")
+	std::string before = ti->str.substr(0, pos);
+	// Trim trailing space
+	while (!before.empty() && before.back() == ' ') before.pop_back();
+
+	if (before.empty()) {
+	    // Bare "_Complex" or "__complex__" — replace with "_Complex"
+	    ti->str = "_Complex";
+	} else {
+	    // e.g. "double _Complex" → replace with "double", insert "_Complex" after
+	    ti->str = before;
+	    TokenKeyword *cx = new TokenKeyword("_Complex");
+	    cx->file = ti->file;
+	    cx->line = ti->line;
+	    tokens->insert(tokens->begin() + i + 1, cx);
+	}
+    }
+}
+
 static bool is_whitespace_token(TokenBase *tb) {
     TokenType tt = tb->type();
     return tt == TokenType::ttSpace || tt == TokenType::ttTab ||
@@ -621,6 +654,7 @@ struct gp_tree_node *madc_gecko_parse(std::deque<TokenBase *> *tokens,
     }
 
     // Lower __attribute__((mode(X))) before Gecko sees them
+    preprocess_complex_types(tokens);
     preprocess_attribute_modes(tokens);
 
     // Extract lambdas before Gecko sees them
