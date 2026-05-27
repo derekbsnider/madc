@@ -3463,10 +3463,21 @@ class CEmitter
 	std::string vname = extract_name(decls);
 	if (!vname.empty()) {
 	    // Track C type string for typeof resolution
-	    // Count pointer depth (char **argv → "char **")
+	    // Count pointer depth (char **argv → "char * *")
+	    // ptr_decl has child 0 = pointer node, child 1 = inner declarator.
+	    // The pointer node is AN_STAR (single *) or AN_STARS (* pointer).
 	    int ptr_depth = 0;
 	    gp_tree_node *d = decls;
-	    while (is_an(d, AN_PTR_DECL)) { ptr_depth++; d = child(d, 1); }
+	    if (is_an(d, AN_PTR_DECL)) {
+		// Count stars in the pointer child (child 0)
+		gp_tree_node *p = child(d, 0);
+		ptr_depth = 1;  // at least one *
+		while (is_an(p, AN_STARS)) {
+		    ptr_depth++;
+		    p = child(p, nchildren(p) - 1);  // recurse into nested pointer
+		}
+		d = child(d, 1);  // inner declarator
+	    }
 	    bool has_ptr = ptr_depth > 0;
 	    std::string full_type = type;
 	    for (int p = 0; p < ptr_depth; p++) full_type += " *";
