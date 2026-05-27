@@ -5799,6 +5799,13 @@ static int arithmetic_type_p (const struct type *type) {
   return integer_type_p (type) || floating_type_p (type);
 }
 
+/* C99 6.2.5: complex types are arithmetic types.  We keep arithmetic_type_p()
+   for scalar (register-sized) arithmetic and use this where the checker needs
+   to accept complex operands too. */
+static int arith_or_complex_type_p (const struct type *type) {
+  return arithmetic_type_p (type) || complex_type_p (type);
+}
+
 static int scalar_type_p (const struct type *type) {
   return arithmetic_type_p (type) || type->mode == TM_PTR;
 }
@@ -5847,9 +5854,24 @@ static struct type integer_promotion (const struct type *type) {
 static struct type arithmetic_conversion (const struct type *type1, const struct type *type2) {
   struct type res, t1, t2;
 
-  assert (arithmetic_type_p (type1) && arithmetic_type_p (type2));
+  assert (arith_or_complex_type_p (type1) && arith_or_complex_type_p (type2));
   init_type (&res);
   res.mode = TM_BASIC;
+  if (complex_type_p (type1) || complex_type_p (type2)) {
+    /* C99 6.3.1.8: if either operand is complex, result is complex.
+       Component type follows the usual real conversion hierarchy. */
+    enum basic_type c1 = complex_type_p (type1) ? complex_component_type (type1->u.basic_type)
+                                                 : type1->u.basic_type;
+    enum basic_type c2 = complex_type_p (type2) ? complex_component_type (type2->u.basic_type)
+                                                 : type2->u.basic_type;
+    /* For integer operands combined with complex, promote to double component */
+    if (!floating_type_p (type1) && !complex_type_p (type1)) c1 = TP_DOUBLE;
+    if (!floating_type_p (type2) && !complex_type_p (type2)) c2 = TP_DOUBLE;
+    res.u.basic_type = (c1 == TP_LDOUBLE || c2 == TP_LDOUBLE ? TP_CLDOUBLE
+                        : c1 == TP_DOUBLE || c2 == TP_DOUBLE ? TP_CDOUBLE
+                                                              : TP_CFLOAT);
+    return res;
+  }
   if (floating_type_p (type1) || floating_type_p (type2)) {
     if ((type1->mode == TM_BASIC && type1->u.basic_type == TP_LDOUBLE)
         || (type2->mode == TM_BASIC && type2->u.basic_type == TP_LDOUBLE)) {
@@ -7333,8 +7355,15 @@ static void check_assignment_types (c2m_ctx_t c2m_ctx, struct type *left, struct
   const char *msg;
 
   if (right == NULL) right = expr->type;
-  if (arithmetic_type_p (left)) {
-    if (!arithmetic_type_p (right)
+  if (complex_type_p (left)) {
+    if (!complex_type_p (right) && !arithmetic_type_p (right)) {
+      msg = (code == N_CALL ? "incompatible argument type for complex type parameter"
+             : code != N_RETURN ? "incompatible types in assignment to a complex type lvalue"
+                                : "incompatible return-expr type in function returning a complex value");
+      error (c2m_ctx, POS (assign_node), "%s", msg);
+    }
+  } else if (arithmetic_type_p (left)) {
+    if (!arithmetic_type_p (right) && !complex_type_p (right)
         && !(left->mode == TM_BASIC && left->u.basic_type == TP_BOOL && right->mode == TM_PTR)) {
       if (integer_type_p (left) && right->mode == TM_PTR) {
         msg = (code == N_CALL     ? "using pointer without cast for integer type parameter"
@@ -8199,10 +8228,10 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
-    if (arithmetic_type_p (t1) && arithmetic_type_p (t2)) {
+    if (arith_or_complex_type_p (t1) && arith_or_complex_type_p (t2)) {
       t = arithmetic_conversion (t1, t2);
       e->type->u.basic_type = t.u.basic_type;
-      if (e1->const_p && e2->const_p) {
+      if (!complex_type_p (&t) && e1->const_p && e2->const_p) {
         e->const_p = TRUE;
         convert_value (e1, &t);
         convert_value (e2, &t);
@@ -8277,12 +8306,12 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     e->type->u.basic_type = TP_INT;
     if (r->code == N_MOD && (!integer_type_p (t1) || !integer_type_p (t2))) {
       error (c2m_ctx, POS (r), "invalid operand types of %%");
-    } else if (r->code != N_MOD && (!arithmetic_type_p (t1) || !arithmetic_type_p (t2))) {
+    } else if (r->code != N_MOD && (!arith_or_complex_type_p (t1) || !arith_or_complex_type_p (t2))) {
       error (c2m_ctx, POS (r), "invalid operand types of %s", r->code == N_MUL ? "*" : "/");
     } else {
       t = arithmetic_conversion (t1, t2);
       e->type->u.basic_type = t.u.basic_type;
-      if (e1->const_p && e2->const_p) {
+      if (!complex_type_p (&t) && e1->const_p && e2->const_p) {
         e->const_p = TRUE;
         convert_value (e1, &t);
         convert_value (e2, &t);
@@ -8725,6 +8754,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
                       : r->code == N_GT ? e1->c.u_val > e2->c.u_val
                                         : e1->c.u_val >= e2->c.u_val);
       }
+    } else if ((complex_type_p (t1) || complex_type_p (t2))
+               && arith_or_complex_type_p (t1) && arith_or_complex_type_p (t2)) {
+      if (r->code != N_EQ && r->code != N_NE)
+        error (c2m_ctx, POS (r), "ordering comparison on complex type");
+      /* no const folding for complex comparisons */
     } else if (arithmetic_type_p (t1) && arithmetic_type_p (t2)) {
       if (e1->const_p && e2->const_p) {
         t = arithmetic_conversion (t1, t2);
@@ -8766,10 +8800,12 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
-    if (r->code == N_BITWISE_NOT && !integer_type_p (t1)) {
-      error (c2m_ctx, POS (r), "bitwise-not operand should be of an integer type");
+    if (r->code == N_BITWISE_NOT && !integer_type_p (t1) && !complex_type_p (t1)) {
+      error (c2m_ctx, POS (r), "bitwise-not operand should be of an integer or complex type");
     } else if (r->code == N_NOT && !scalar_type_p (t1)) {
       error (c2m_ctx, POS (r), "not operand should be of a scalar type");
+    } else if (r->code == N_BITWISE_NOT && complex_type_p (t1)) {
+      e->type->u.basic_type = t1->u.basic_type;  /* conjugate preserves type */
     } else if (r->code == N_BITWISE_NOT) {
       t = integer_promotion (t1);
       e->type->u.basic_type = t.u.basic_type;
@@ -8818,8 +8854,10 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       e = create_expr (c2m_ctx, r);
       e->type->mode = TM_BASIC;
       e->type->u.basic_type = TP_INT;
-      if (!arithmetic_type_p (t1)) {
+      if (!arith_or_complex_type_p (t1)) {
         error (c2m_ctx, POS (r), "unary + or - operand should be of an arithmentic type");
+      } else if (complex_type_p (t1)) {
+        e->type->u.basic_type = t1->u.basic_type;
       } else {
         if (e1->const_p) e->const_p = TRUE;
         if (floating_type_p (t1)) {
