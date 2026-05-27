@@ -5613,6 +5613,19 @@ public:
 	header += "extern void __madc_fd_clr(int, void *);\n";
 	header += "extern long __madc_timeval_sec(void *);\n";
 	header += "extern long __madc_timeval_usec(void *);\n";
+	// madc runtime functions (compiled into the binary, resolved via dlsym)
+	header += "extern const char *madc_get_argv(long, long);\n";
+	header += "extern long __madc_regex_match(void *, void *);\n";
+	header += "extern long __madc_regex_search(void *, void *);\n";
+	header += "extern void *__madc_regex_replace(void *, void *, void *, void *);\n";
+	// libmadc eval API
+	header += "extern long __madc_eval_bool(void *);\n";
+	header += "extern long __madc_eval_expression(void *);\n";
+	header += "extern long __madc_eval_expression_bool(void *);\n";
+	header += "extern long __madc_eval_expression_int(void *);\n";
+	header += "extern double __madc_eval_expression_double(void *);\n";
+	header += "extern long __madc_eval_expression_bool_ctx(void *, void *);\n";
+	header += "extern long __madc_eval_expression_int_ctx(void *, void *);\n";
 	header += "\n";
 
 	// Stream and container type stubs (opaque pointers in C)
@@ -5984,14 +5997,26 @@ public:
 		{"__std_stold",     "extern double __std_stold(void *);"},
 		{"__std_to_string", "extern void __std_to_string(void *, long);"},
 		{"__std_for_each", "extern void __std_for_each(void *, void *);"},
+		// madc runtime — already declared in preamble, suppress duplicate
+		{"__madc_regex_match", ""},
+		{"__madc_regex_search", ""},
+		{"__madc_regex_replace", ""},
+		{"__madc_eval_bool", ""},
+		{"__madc_eval_expression", ""},
+		{"__madc_eval_expression_bool", ""},
+		{"__madc_eval_expression_int", ""},
+		{"__madc_eval_expression_double", ""},
+		{"__madc_eval_expression_bool_ctx", ""},
+		{"__madc_eval_expression_int_ctx", ""},
 	    };
 	    std::string ns_decls;
 	    ns_decls += "/* Namespace function externs (resolved via dlsym) */\n";
 	    for (auto &fn : ns_funcs_used) {
 		auto it = known_ns_sigs.find(fn);
-		if (it != known_ns_sigs.end())
-		    ns_decls += it->second + "\n";
-		else
+		if (it != known_ns_sigs.end()) {
+		    if (!it->second.empty())
+			ns_decls += it->second + "\n";
+		} else
 		    ns_decls += "extern long " + fn + "();\n";
 	    }
 	    ns_decls += "\n";
