@@ -11312,6 +11312,7 @@ static const char *get_func_static_var_name (c2m_ctx_t c2m_ctx, const char *suff
 
 static const char *get_param_name (c2m_ctx_t c2m_ctx, struct type *param_type, const char *name) {
   MIR_type_t type = (param_type->mode == TM_STRUCT || param_type->mode == TM_UNION
+                     || complex_type_p (param_type)
                        ? MIR_POINTER_TYPE
                        : get_mir_type (c2m_ctx, param_type));
   return get_reg_var_name (c2m_ctx, promote_mir_int_type (type), name, 0);
@@ -13356,7 +13357,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       assert (res.mir_op.mode == MIR_OP_MEM && res.mir_op.u.mem.type == MIR_T_RBLK);
       res.mir_op = MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, res.mir_op.u.mem.base, 0, 1);
       t = MIR_T_I64;
-    } else if (type->mode == TM_STRUCT || type->mode == TM_UNION) { /* passed in regs */
+    } else if (type->mode == TM_STRUCT || type->mode == TM_UNION
+               || complex_type_p (type)) { /* passed in regs */
       if (!va_arg_p) {
         res = get_new_temp (c2m_ctx, MIR_T_I64);
         emit3 (c2m_ctx, MIR_ADD, res.mir_op,
@@ -13630,7 +13632,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
         if (target_gen_gather_arg (c2m_ctx, name, param_type, param_decl, &arg_info)) continue;
         if (param_decl->reg_p) continue;
         if (param_type->mode == TM_STRUCT
-            || param_type->mode == TM_UNION) { /* ??? only block pass */
+            || param_type->mode == TM_UNION
+            || complex_type_p (param_type)) { /* block pass for aggregates and complex */
           param_reg = get_reg_var (c2m_ctx, MIR_POINTER_TYPE, name, NULL).reg;
           val = new_op (NULL, MIR_new_mem_op (ctx, MIR_T_UNDEF, 0, param_reg, 0, 1));
           var
