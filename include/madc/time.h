@@ -31,3 +31,13 @@ struct tm {
     int64_t tm_gmtoff;  // seconds east of UTC
     char   *tm_zone;    // timezone abbreviation
 };
+
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+int64_t time(int64_t *tloc);
+int64_t clock(void);
+double difftime(int64_t time1, int64_t time0);
+int64_t mktime(struct tm *timeptr);
+struct tm *localtime(const int64_t *timer);
+struct tm *gmtime(const int64_t *timer);
+uint64_t strftime(char *s, uint64_t maxsize, const char *format, const struct tm *timeptr);
+int nanosleep(const void *req, void *rem);

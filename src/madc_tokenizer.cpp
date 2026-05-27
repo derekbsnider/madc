@@ -330,6 +330,90 @@ static size_t find_matching(std::deque<TokenBase *> *tokens, size_t start,
     return tokens->size();
 }
 
+// preprocess_attribute_modes — lower __attribute__((mode(QI/HI/SI/DI)))
+// by replacing the preceding base type token with the correct sized type.
+// QI=char(8), HI=short(16), SI=int(32), DI=long(64).
+// The attribute tokens are erased from the deque.
+static void preprocess_attribute_modes(std::deque<TokenBase *> *tokens)
+{
+    for (size_t i = 0; i < tokens->size(); i++) {
+	if (is_whitespace_token((*tokens)[i])) continue;
+	TokenIdent *ti = dynamic_cast<TokenIdent *>((*tokens)[i]);
+	if (!ti) continue;
+	if (ti->str != "__attribute__" && ti->str != "__attribute") continue;
+
+	// Scan forward for (( mode ( XX ) ))
+	size_t attr_start = i;
+	size_t j = i + 1;
+	int depth = 0;
+	std::string mode_val;
+
+	// Find the mode value inside the parens
+	bool in_mode = false;
+	for (; j < tokens->size(); j++) {
+	    if (is_whitespace_token((*tokens)[j])) continue;
+	    TokenIdent *tj = dynamic_cast<TokenIdent *>((*tokens)[j]);
+	    int code = madc_token_to_gecko((*tokens)[j]);
+	    if (code == '(') { depth++; continue; }
+	    if (code == ')') { depth--; if (depth == 0) { j++; break; } continue; }
+	    if (tj && tj->str == "mode") { in_mode = true; continue; }
+	    if (in_mode && tj && mode_val.empty()) {
+		mode_val = tj->str;
+		in_mode = false;
+	    }
+	}
+
+	if (mode_val.empty()) continue;
+
+	// Determine replacement type
+	const char *repl = nullptr;
+	if (mode_val == "QI" || mode_val == "__QI__") repl = "char";
+	else if (mode_val == "HI" || mode_val == "__HI__") repl = "short";
+	else if (mode_val == "SI" || mode_val == "__SI__") repl = "int";
+	else if (mode_val == "DI" || mode_val == "__DI__") repl = "long";
+	if (!repl) continue;
+
+	// Find the preceding base-type token (int, char, short, long)
+	// and replace it with the correct type.
+	bool replaced = false;
+	for (size_t k = attr_start; k > 0; k--) {
+	    if (is_whitespace_token((*tokens)[k-1])) continue;
+	    TokenIdent *tk = dynamic_cast<TokenIdent *>((*tokens)[k-1]);
+	    if (tk && (tk->str == "int" || tk->str == "char" ||
+		       tk->str == "short" || tk->str == "long" ||
+		       tk->str == "unsigned int" || tk->str == "signed int" ||
+		       tk->str == "unsigned" || tk->str == "signed")) {
+		{
+		    // Build replacement: preserve signed/unsigned prefix
+		    std::string new_type;
+		    if (tk->str.find("unsigned") != std::string::npos)
+			new_type = std::string("unsigned ") + repl;
+		    else if (tk->str.find("signed") != std::string::npos)
+			new_type = std::string("signed ") + repl;
+		    else
+			new_type = repl;
+		    tk->str = new_type;
+		    replaced = true;
+		}
+		break;
+	    }
+	    // Stop at non-type tokens
+	    if (tk && tk->str != "unsigned" && tk->str != "signed" &&
+		tk->str != "typedef" && tk->str != "static" &&
+		tk->str != "extern" && tk->str != "const" &&
+		tk->str != "volatile" && tk->str != "__extension__")
+		break;
+	    if (!tk) break;  // non-ident token (operator, etc.)
+	}
+	(void)replaced;
+
+	// Erase the attribute tokens from attr_start to j
+	tokens->erase(tokens->begin() + attr_start,
+		       tokens->begin() + j);
+	i = attr_start - 1;  // re-check from this position
+    }
+}
+
 static void preprocess_lambdas(std::deque<TokenBase *> *tokens)
 {
     static int lambda_counter = 0;
@@ -502,6 +586,9 @@ struct gp_tree_node *madc_gecko_parse(std::deque<TokenBase *> *tokens,
 	    return nullptr;
 	}
     }
+
+    // Lower __attribute__((mode(X))) before Gecko sees them
+    preprocess_attribute_modes(tokens);
 
     // Extract lambdas before Gecko sees them
     preprocess_lambdas(tokens);

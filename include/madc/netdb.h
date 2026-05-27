@@ -56,3 +56,10 @@ struct servent {
     int    s_port;      // port number (network byte order)
     char  *s_proto;     // protocol name
 };
+
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+struct hostent *gethostbyname(const char *name);
+struct hostent *gethostbyaddr(const void *addr, uint32_t len, int type);
+struct servent *getservbyname(const char *name, const char *proto);
+struct servent *getservbyport(int port, const char *proto);
+int gethostname(char *name, uint64_t len);

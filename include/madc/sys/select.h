@@ -47,3 +47,7 @@ typedef struct fd_set fd_set;
 #define FD_SET(fd, setp)   __madc_fd_set((fd), (setp))
 #define FD_CLR(fd, setp)   __madc_fd_clr((fd), (setp))
 #define FD_ISSET(fd, setp) __madc_fd_isset((fd), (setp))
+
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+int select(int nfds, struct fd_set *readfds, struct fd_set *writefds,
+           struct fd_set *exceptfds, void *timeout);

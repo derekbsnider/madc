@@ -22,6 +22,14 @@ typedef struct __dir_opaque DIR;
 #define DT_SOCK    12
 #define DT_WHT     14
 
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+DIR *opendir(const char *name);
+struct dirent *readdir(DIR *dirp);
+int closedir(DIR *dirp);
+void rewinddir(DIR *dirp);
+long telldir(DIR *dirp);
+void seekdir(DIR *dirp, long loc);
+
 // glibc x86-64 struct dirent — 280 bytes total (275 active + 5 trailing
 // pad to the 8-byte struct alignment). d_name is declared as char[256]
 // matching NAME_MAX + 1; readdir guarantees a null terminator.

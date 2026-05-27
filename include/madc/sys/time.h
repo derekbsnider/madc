@@ -68,3 +68,7 @@ struct timezone {
     int32_t tz_minuteswest;
     int32_t tz_dsttime;
 };
+
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+int gettimeofday(struct timeval *tv, void *tz);
+int settimeofday(const struct timeval *tv, const void *tz);

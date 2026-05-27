@@ -126,6 +126,14 @@ typedef struct __dir_opaque DIR;
 #define DT_SOCK    12
 #define DT_WHT     14
 
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+DIR *opendir(const char *name);
+struct dirent *readdir(DIR *dirp);
+int closedir(DIR *dirp);
+void rewinddir(DIR *dirp);
+long telldir(DIR *dirp);
+void seekdir(DIR *dirp, long loc);
+
 // glibc x86-64 struct dirent — 280 bytes total (275 active + 5 trailing
 // pad to the 8-byte struct alignment). d_name is declared as char[256]
 // matching NAME_MAX + 1; readdir guarantees a null terminator.
@@ -483,6 +491,13 @@ struct servent {
     int    s_port;      // port number (network byte order)
     char  *s_proto;     // protocol name
 };
+
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+struct hostent *gethostbyname(const char *name);
+struct hostent *gethostbyaddr(const void *addr, uint32_t len, int type);
+struct servent *getservbyname(const char *name, const char *proto);
+struct servent *getservbyport(int port, const char *proto);
+int gethostname(char *name, uint64_t len);
 )EMBED"},
     {"netinet/in.h", R"EMBED(// madc embedded netinet/in.h — IP protocol constants and struct layouts.
 // Functions (htons, htonl, ntohs, ntohl, inet_addr, inet_ntoa) available
@@ -1046,6 +1061,10 @@ typedef struct fd_set fd_set;
 #define FD_SET(fd, setp)   __madc_fd_set((fd), (setp))
 #define FD_CLR(fd, setp)   __madc_fd_clr((fd), (setp))
 #define FD_ISSET(fd, setp) __madc_fd_isset((fd), (setp))
+
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+int select(int nfds, struct fd_set *readfds, struct fd_set *writefds,
+           struct fd_set *exceptfds, void *timeout);
 )EMBED"},
     {"sys/shm.h", R"EMBED(// madc embedded sys/shm.h — shared memory IPC
 // Functions (shmget, shmat, shmdt, shmctl) available via dlsym fallback
@@ -1305,6 +1324,10 @@ struct timezone {
     int32_t tz_minuteswest;
     int32_t tz_dsttime;
 };
+
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+int gettimeofday(struct timeval *tv, void *tz);
+int settimeofday(const struct timeval *tv, const void *tz);
 )EMBED"},
     {"sys/types.h", R"EMBED(// madc embedded sys/types.h — POSIX type aliases
 // These supplement the aliases in unistd.h
@@ -1529,6 +1552,16 @@ struct tm {
     int64_t tm_gmtoff;  // seconds east of UTC
     char   *tm_zone;    // timezone abbreviation
 };
+
+// Function prototypes (needed by transpiler — JIT uses dlsym fallback)
+int64_t time(int64_t *tloc);
+int64_t clock(void);
+double difftime(int64_t time1, int64_t time0);
+int64_t mktime(struct tm *timeptr);
+struct tm *localtime(const int64_t *timer);
+struct tm *gmtime(const int64_t *timer);
+uint64_t strftime(char *s, uint64_t maxsize, const char *format, const struct tm *timeptr);
+int nanosleep(const void *req, void *rem);
 )EMBED"},
     {"unistd.h", R"EMBED(// madc embedded unistd.h — POSIX constants and type aliases
 // Functions (read, write, close, lseek, fork, execvp, pipe, dup2,
