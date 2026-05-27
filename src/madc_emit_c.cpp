@@ -2387,6 +2387,134 @@ class CEmitter
 
     // Emit a try/catch block using the SJLJ exception runtime.
     //
+    // ---------------------------------------------------------------
+    // emit_match — Rust-style match → C switch/case
+    //
+    // AN_MATCH has two children:
+    //   [0] = scrutinee expression
+    //   [1] = match_arms (AN_MATCH_ARMS or single AN_MATCH_ARM)
+    //
+    // AN_MATCH_ARMS flattens left-recursively:
+    //   match_arms(match_arms(nil, arm0), arm1) → collect in order
+    //
+    // AN_MATCH_ARM has two children:
+    //   [0] = pattern (constant_expression or AN_MATCH_PATS)
+    //   [1] = body (statement or compound_statement)
+    //
+    // AN_MATCH_WILD has two children:
+    //   [0] = IDENT ("_")
+    //   [1] = body
+    //
+    // AN_MATCH_PATS flattens left-recursively:
+    //   match_pats(match_pats(p0, p1), p2)
+    // ---------------------------------------------------------------
+
+    void collect_match_arms(gp_tree_node *node, std::vector<gp_tree_node *> &arms)
+    {
+	if (!node) return;
+	if (an_code(node) == AN_MATCH_ARMS) {
+	    collect_match_arms(child(node, 0), arms);
+	    if (child(node, 1))
+		arms.push_back(child(node, 1));
+	} else if (an_code(node) == AN_MATCH_ARM || an_code(node) == AN_MATCH_WILD) {
+	    arms.push_back(node);
+	}
+    }
+
+    void collect_match_patterns(gp_tree_node *node, std::vector<gp_tree_node *> &pats)
+    {
+	if (!node) return;
+	if (an_code(node) == AN_MATCH_PATS) {
+	    collect_match_patterns(child(node, 0), pats);
+	    if (child(node, 1))
+		pats.push_back(child(node, 1));
+	} else if (an_code(node) == AN_BITOR) {
+	    // In match patterns, `|` is the pattern separator, not
+	    // bitwise OR.  Flatten AN_BITOR trees into individual
+	    // case labels.
+	    collect_match_patterns(child(node, 0), pats);
+	    collect_match_patterns(child(node, 1), pats);
+	} else {
+	    // Single constant expression
+	    pats.push_back(node);
+	}
+    }
+
+    // Check if a node is a wildcard `_` identifier
+    bool is_match_wildcard(gp_tree_node *node)
+    {
+	if (!node) return false;
+	// Direct IDENT terminal with text "_"
+	if (node->type == GP_TERM) {
+	    return term_text(node) == "_";
+	}
+	// AN_MATCH_WILD anode
+	if (an_code(node) == AN_MATCH_WILD)
+	    return true;
+	return false;
+    }
+
+    void emit_match(gp_tree_node *node)
+    {
+	gp_tree_node *scrutinee = child(node, 0);
+	gp_tree_node *arms_node = child(node, 1);
+
+	emit_indent();
+	O("switch (%s) {\n", emit_expr(scrutinee).c_str());
+
+	std::vector<gp_tree_node *> arms;
+	collect_match_arms(arms_node, arms);
+
+	for (size_t i = 0; i < arms.size(); i++) {
+	    gp_tree_node *arm = arms[i];
+	    int ac = an_code(arm);
+
+	    if (ac == AN_MATCH_WILD) {
+		// _ => body  →  default: { body } break;
+		emit_indent();
+		O("default:\n");
+		indent_level++;
+		emit_stmt(child(arm, 1));
+		emit_indent();
+		O("break;\n");
+		indent_level--;
+	    } else if (ac == AN_MATCH_ARM) {
+		gp_tree_node *pat_node = child(arm, 0);
+		gp_tree_node *body = child(arm, 1);
+
+		// Check for wildcard `_` — Gecko may parse it as
+		// match_arm with constant_expression IDENT("_")
+		// instead of match_wild.
+		if (is_match_wildcard(pat_node)) {
+		    emit_indent();
+		    O("default:\n");
+		    indent_level++;
+		    emit_stmt(body);
+		    emit_indent();
+		    O("break;\n");
+		    indent_level--;
+		} else {
+		    // pattern(s) => body  →  case X: [case Y:] { body } break;
+		    std::vector<gp_tree_node *> pats;
+		    collect_match_patterns(pat_node, pats);
+
+		    for (size_t p = 0; p < pats.size(); p++) {
+			emit_indent();
+			O("case %s:\n", emit_expr(pats[p]).c_str());
+		    }
+		    indent_level++;
+		    emit_stmt(body);
+		    emit_indent();
+		    O("break;\n");
+		    indent_level--;
+		}
+	    }
+	}
+
+	emit_indent();
+	O("}\n");
+    }
+
     // Declarations from the try body are hoisted before setjmp so that
     // variables remain visible for destructor calls in both the normal
     // and exception paths.
@@ -2894,6 +3022,12 @@ class CEmitter
 	    indent_level++;
 	    emit_stmt(child(node, 0));
 	    indent_level--;
+	    return;
+	}
+
+	// Match (Rust-style → C switch/case)
+	if (an == AN_MATCH) {
+	    emit_match(node);
 	    return;
 	}
 

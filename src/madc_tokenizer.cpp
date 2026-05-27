@@ -63,6 +63,40 @@ static int gecko_read_token(void **attr, GeckoTokenizer *state)
 	if (code < 0)
 	    continue;  // skip whitespace, comments
 
+	// Collapse rust::match → MATCH
+	if (code == 256 /* GT_IDENT */) {
+	    TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
+	    if (ti && ti->str == "rust") {
+		size_t saved = state->pos;
+		int c1 = -1;
+		size_t i = saved;
+		for (; i < state->tokens->size(); i++) {
+		    c1 = madc_token_to_gecko((*state->tokens)[i]);
+		    if (c1 >= 0) { i++; break; }
+		}
+		if (c1 == 359 /* GT_SCOPE */) {
+		    int c2 = -1;
+		    size_t j = i;
+		    for (; j < state->tokens->size(); j++) {
+			c2 = madc_token_to_gecko((*state->tokens)[j]);
+			if (c2 >= 0) { j++; break; }
+		    }
+		    // Check if the next token is IDENT "match"
+		    if (c2 == 256 /* GT_IDENT */) {
+			TokenBase *tb2 = (*state->tokens)[j - 1];
+			TokenIdent *ti2 = dynamic_cast<TokenIdent *>(tb2);
+			if (ti2 && ti2->str == "match") {
+			    state->pos = j;  // skip past rust :: match
+			    *attr = (void *)tb;
+			    state->prev_code = 299;  // GT_MATCH
+			    return 299;  // GT_MATCH
+			}
+		    }
+		}
+		// else fall through as normal IDENT
+	    }
+	}
+
 	// Collapse std::string → STRING_T
 	if (code == 256 /* GT_IDENT */) {
 	    TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
