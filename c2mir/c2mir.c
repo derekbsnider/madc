@@ -614,6 +614,7 @@ typedef enum {
   REP8 (NODE_EL, CONST, RESTRICT, VOLATILE, ATOMIC, INLINE, NO_RETURN, ALIGNAS, FUNC),
   REP8 (NODE_EL, STAR, POINTER, DOTS, ARR, INIT, FIELD_ID, TYPE, ST_ASSERT),
   REP4 (NODE_EL, FUNC_DEF, MODULE, ASM, ATTR),
+  N_COMPLEX,     /* _Complex type specifier */
   /* madc extensions: */
   N_DEFER,
   N_CLASS,       /* class body (like N_STRUCT but with methods) */
@@ -4611,8 +4612,7 @@ DA (type_spec) {
   } else if (MP (T_BOOL, pos)) {
     r = new_pos_node (c2m_ctx, N_BOOL, pos);
   } else if (MP (T_COMPLEX, pos)) {
-    if (record_level == 0) error (c2m_ctx, pos, "complex numbers are not supported");
-    return err_node;
+    r = new_pos_node (c2m_ctx, N_COMPLEX, pos);
   } else if (MP (T_ATOMIC, pos)) { /* atomic-type-specifier */
     PT ('(');
     P (type_name);
@@ -5475,6 +5475,7 @@ static void parse_init (c2m_ctx_t c2m_ctx) {
   pre_init (c2m_ctx);
   kw_add (c2m_ctx, "_Bool", T_BOOL, 0);
   kw_add (c2m_ctx, "_Complex", T_COMPLEX, 0);
+  kw_add (c2m_ctx, "__complex__", T_COMPLEX, 0);
   kw_add (c2m_ctx, "_Alignas", T_ALIGNAS, 0);
   kw_add (c2m_ctx, "_Alignof", T_ALIGNOF, 0);
   kw_add (c2m_ctx, "_Atomic", T_ATOMIC, 0);
@@ -6647,7 +6648,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t node, node_t context);
 
 static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t decl_node) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
-  int n_sc = 0, sign = 0, size = 0, func_p = FALSE;
+  int n_sc = 0, sign = 0, size = 0, complex_p = 0, func_p = FALSE;
   struct decl_spec *res;
   struct type *type;
 
@@ -6691,6 +6692,11 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
         error (c2m_ctx, POS (n), "short with long");
       else
         size = 2;
+    } else if (n->code == N_COMPLEX) {
+      if (complex_p)
+        error (c2m_ctx, POS (n), "duplicate _Complex");
+      else
+        complex_p = 1;
     }
   for (node_t n = NL_HEAD (r->u.ops); n != NULL; n = NL_NEXT (n)) switch (n->code) {
       /* Type qualifiers are already processed. */
@@ -6757,7 +6763,8 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
     case N_UNSIGNED:
     case N_SIGNED:
     case N_SHORT:
-    case N_LONG: set_type_pos_node (type, n); break;
+    case N_LONG:
+    case N_COMPLEX: set_type_pos_node (type, n); break;
     case N_CHAR:
     case N_INT:
       set_type_pos_node (type, n);
@@ -6796,7 +6803,7 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
       else if (size != 0)
         error (c2m_ctx, POS (n), "float with short or long");
       else
-        type->u.basic_type = TP_FLOAT;
+        type->u.basic_type = complex_p ? TP_CFLOAT : TP_FLOAT;
       break;
     case N_DOUBLE:
       set_type_pos_node (type, n);
@@ -6805,9 +6812,9 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
       else if (sign != 0)
         error (c2m_ctx, POS (n), "double with sign qualifier");
       else if (size == 0)
-        type->u.basic_type = TP_DOUBLE;
+        type->u.basic_type = complex_p ? TP_CDOUBLE : TP_DOUBLE;
       else if (size == 2)
-        type->u.basic_type = TP_LDOUBLE;
+        type->u.basic_type = complex_p ? TP_CLDOUBLE : TP_LDOUBLE;
       else
         error (c2m_ctx, POS (n), "double with short");
       break;
@@ -6980,7 +6987,9 @@ static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t dec
     default: abort ();
     }
   if (type->mode == TM_BASIC && type->u.basic_type == TP_UNDEF) {
-    if (size == 0 && sign == 0) {
+    if (complex_p && size == 0 && sign == 0) {
+      type->u.basic_type = TP_CDOUBLE;  /* bare _Complex = _Complex double */
+    } else if (size == 0 && sign == 0) {
       (c2m_options->pedantic_p ? error (c2m_ctx, POS (r), "no any type specifier")
                                : warning (c2m_ctx, POS (r), "type defaults to int"));
       type->u.basic_type = TP_INT;
@@ -13990,6 +13999,7 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_SIGNED:
   case N_UNSIGNED:
   case N_BOOL:
+  case N_COMPLEX:
   case N_CONST:
   case N_RESTRICT:
   case N_VOLATILE:
