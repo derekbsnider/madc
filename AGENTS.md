@@ -125,7 +125,7 @@ working on storage/federation code or any shared surface that may affect it.
 Source lives in `src/`, headers in `include/`, output in `bin/` and
 `obj/`.
 
-Build requires `g++` with C++11 support and asmjit v1.14 installed at
+Build requires `clang++` (or `g++`) with C++11 support and asmjit v1.14 installed at
 `/usr/local/` (see "asmjit version notes" below).
 
 ## Architecture

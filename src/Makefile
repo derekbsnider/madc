@@ -1,7 +1,7 @@
 -include ../config.mk
 
-CC ?= gcc
-CXX ?= g++
+CC ?= clang
+CXX ?= clang++
 CXXFLAGS ?= -std=c++11 -Wall
 PIC_CXXFLAGS ?= $(CXXFLAGS) -fPIC
 AR ?= ar

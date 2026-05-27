@@ -164,7 +164,7 @@ Plus `#load` for any shared library via dlopen.
 ## Building
 
 Requires:
-- `g++` with C++11 support
+- `clang++` (or `g++`) with C++11 support
 - asmjit v1.14 installed at `/usr/local/` (see [`docs/build.md`](docs/build.md))
 
 ```bash
