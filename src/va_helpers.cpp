@@ -2,7 +2,8 @@
 //                                                                       //
 // va_helpers.cpp — madc varargs support functions                       //
 //                                                                       //
-// These C functions are compiled by gcc and linked into the madc binary. //
+// These C functions are compiled by clang++ and linked into the madc     //
+// binary.
 // They bridge madc's packed int64_t[] varargs buffer to libc's printf    //
 // family by parsing the format string and calling sprintf per-specifier. //
 //                                                                       //
@@ -546,4 +547,69 @@ extern "C" void __madc_timersub(void *left, void *right, void *result)
         --r->tv_sec;
         r->tv_usec += 1000000;
     }
+}
+
+// -----------------------------------------------------------------------
+// Compiler builtin wrappers — expose clang++ builtins as extern "C"
+// so transpiled code (c2mir) can call them via dlsym.
+// -----------------------------------------------------------------------
+
+// __builtin_object_size: compile-time only — runtime always returns -1 (unknown)
+extern "C" unsigned long __madc_builtin_object_size(void *ptr, int mode)
+{
+    (void)ptr; (void)mode;
+    return (unsigned long)-1;
+}
+
+// __builtin___strcpy_chk family — bounds-checked string operations
+extern "C" char *__madc_builtin_strcpy_chk(char *dst, const char *src, unsigned long size)
+{
+    return __builtin___strcpy_chk(dst, src, size);
+}
+
+extern "C" char *__madc_builtin_stpcpy_chk(char *dst, const char *src, unsigned long size)
+{
+    return __builtin___stpcpy_chk(dst, src, size);
+}
+
+extern "C" char *__madc_builtin_stpncpy_chk(char *dst, const char *src, unsigned long n, unsigned long size)
+{
+    return __builtin___stpncpy_chk(dst, src, n, size);
+}
+
+extern "C" char *__madc_builtin_strcat_chk(char *dst, const char *src, unsigned long size)
+{
+    return __builtin___strcat_chk(dst, src, size);
+}
+
+// __builtin_frame_address: return caller's frame pointer
+extern "C" void *__madc_builtin_frame_address(int level)
+{
+    // level must be a compile-time constant for the real builtin;
+    // we only support level 0 (current frame).
+    return __builtin_frame_address(0);
+}
+
+// __builtin_setjmp / __builtin_longjmp — map to standard setjmp/longjmp
+#include <setjmp.h>
+extern "C" int __madc_builtin_setjmp(void *buf)
+{
+    return setjmp(*(jmp_buf *)buf);
+}
+
+extern "C" void __madc_builtin_longjmp_val(void *buf, int val)
+{
+    longjmp(*(jmp_buf *)buf, val);
+}
+
+// __builtin_uabs / __builtin_umaxabs — unsigned absolute value
+#include <stdint.h>
+extern "C" unsigned int __madc_builtin_uabs(int x)
+{
+    return (x < 0) ? (unsigned int)(-(long long)x) : (unsigned int)x;
+}
+
+extern "C" uintmax_t __madc_builtin_umaxabs(intmax_t x)
+{
+    return (x < 0) ? (uintmax_t)(-((long long)x + 1)) + 1 : (uintmax_t)x;
 }

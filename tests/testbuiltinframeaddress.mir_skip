@@ -1,1 +1,1 @@
-__builtin_frame_address is a compiler intrinsic with no libc equivalent
+emitter drops function call args — emits check_fa instead of check_fa(unused)

@@ -5638,6 +5638,17 @@ public:
 	header += "extern double __madc_eval_expression_double(void *);\n";
 	header += "extern long __madc_eval_expression_bool_ctx(void *, void *);\n";
 	header += "extern long __madc_eval_expression_int_ctx(void *, void *);\n";
+	// Compiler builtin wrappers (clang++ builtins exposed as extern "C")
+	header += "extern unsigned long __madc_builtin_object_size(void *, int);\n";
+	header += "extern char *__madc_builtin_strcpy_chk(char *, const char *, unsigned long);\n";
+	header += "extern char *__madc_builtin_stpcpy_chk(char *, const char *, unsigned long);\n";
+	header += "extern char *__madc_builtin_stpncpy_chk(char *, const char *, unsigned long, unsigned long);\n";
+	header += "extern char *__madc_builtin_strcat_chk(char *, const char *, unsigned long);\n";
+	header += "extern void *__madc_builtin_frame_address(int);\n";
+	header += "extern int __madc_builtin_setjmp(void *);\n";
+	header += "extern void __madc_builtin_longjmp_val(void *, int);\n";
+	header += "extern unsigned int __madc_builtin_uabs(int);\n";
+	header += "extern unsigned long __madc_builtin_umaxabs(long);\n";
 	header += "\n";
 
 	// Stream and container type stubs (opaque pointers in C)

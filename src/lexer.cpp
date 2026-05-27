@@ -1168,6 +1168,18 @@ void Program::_tokenizer_init()
     define_map["__builtin_parityl"] = "__madc_parityl";
     define_map["__builtin_parityll"] = "__madc_parityll";
 
+    // Compiler builtins with no libc equivalent — map to __madc_builtin_* wrappers
+    define_map["__builtin_object_size"] = "__madc_builtin_object_size";
+    define_map["__builtin___strcpy_chk"] = "__madc_builtin_strcpy_chk";
+    define_map["__builtin___stpcpy_chk"] = "__madc_builtin_stpcpy_chk";
+    define_map["__builtin___stpncpy_chk"] = "__madc_builtin_stpncpy_chk";
+    define_map["__builtin___strcat_chk"] = "__madc_builtin_strcat_chk";
+    define_map["__builtin_frame_address"] = "__madc_builtin_frame_address";
+    define_map["__builtin_setjmp"] = "__madc_builtin_setjmp";
+    define_map["__builtin_longjmp"] = "__madc_builtin_longjmp_val";
+    define_map["__builtin_uabs"] = "__madc_builtin_uabs";
+    define_map["__builtin_umaxabs"] = "__madc_builtin_umaxabs";
+
     // __builtin_offsetof(type, member) — compute struct member offset.
     // Implemented as a function-like macro using the null-pointer trick.
     {

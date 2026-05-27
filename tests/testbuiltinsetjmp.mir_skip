@@ -1,1 +1,1 @@
-__builtin_setjmp/__builtin_longjmp are compiler intrinsics — use setjmp/longjmp instead
+__builtin_setjmp has different ABI from setjmp (5-word buffer vs full jmp_buf)

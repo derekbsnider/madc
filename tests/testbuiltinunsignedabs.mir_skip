@@ -1,1 +1,1 @@
-__builtin_uabs/__builtin_umaxabs are GCC 14+ intrinsics not in c2mir or libc
+emitter drops parens on function prototype with typedef-only params

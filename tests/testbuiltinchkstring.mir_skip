@@ -1,1 +1,0 @@
-__builtin_object_size and __builtin___strcpy_chk are compiler intrinsics with no libc equivalent
