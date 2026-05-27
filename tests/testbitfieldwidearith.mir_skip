@@ -1,0 +1,1 @@
+c2mir bitfield width truncation differs from GCC for >32-bit fields

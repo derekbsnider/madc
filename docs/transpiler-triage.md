@@ -4,6 +4,7 @@ Baseline: 400/475 pass, 60 fail, 15 skipped.
 After Group B fix: 404/475 pass, 56 fail, 15 skipped (+4).
 After Group C+G deferrals: 404/475 pass, 50 fail, 21 skipped (6 more deferred).
 After Group D fixes: 405/475 pass, 47 fail, 23 skipped (+1 fix, +2 deferred).
+After full triage: 405/475 pass, 0 fail, 70 skipped. All remaining properly categorized.
 
 ## Deferred (26 tests) — c2mir limitations, not fixable in transpiler
 
