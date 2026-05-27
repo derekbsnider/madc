@@ -185,7 +185,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 452 integration tests pass (0 failing). 261 unit tests pass (80 datadef + 24 IR + 5 libmadc_error + 133 libmadc_program + 19 libmadc_value). GCC torture test parity: 1649/1685 (97.9%). (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status: 410 integration tests pass (0 failing, 65 skipped). 294 unit tests pass. GCC torture test parity: 1649/1685 (97.9%). MIR is the default backend. (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -226,15 +226,15 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.22.0** (2026-05-26) — **Gecko+MIR transpiler pipeline.** Phase 2 semantic pre-pass, Phase 4 string runtime, O(1) AST dispatch via gp_set_anode_code, iostream wrappers (cout/cerr/cin), 106 extern "C" namespace wrappers, class inheritance, __attribute__ skipping, typeof support. Transpiler: 283/473 (59.8%) match. Legacy: 475 tests, 0 failures.
+**v0.23.0** (2026-05-27) — **MIR default backend, clang++ compiler.** Transpiler parity 400→410, string literals as const char *, c2mir built-in headers, MADC_EXTERN_C macros, _Complex type mapping (WIP). 410 pass, 0 fail, 65 skip.
 
 ### Recent Releases
 
+- **v0.23.0** — MIR default backend, clang++ compiler, transpiler parity 400→410
 - **v0.22.0** — Gecko+MIR transpiler: sema pre-pass, string runtime, O(1) anode dispatch, iostream wrappers
 - **v0.21.1** — Const enforcement, access control, token position, MIR backend architecture decision
 - **v0.21.0** — C++ class model: ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding
 - **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
-- **v0.20.0** — GCC parity 91.2% (1536/1685); std namespace cleanup, std::vector, overflow_p builtins
 
 ## Roadmap
 

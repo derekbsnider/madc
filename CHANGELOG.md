@@ -2,6 +2,46 @@
 
 ## [Unreleased]
 
+## [v0.23.0] — 2026-05-27
+
+MIR default backend, clang++ compiler, transpiler parity push (400→410).
+
+- **MIR is now the default backend.** `bin/madc` uses the Gecko+c2mir
+  transpiler pipeline by default. Legacy asmjit JIT available via
+  `--backend=jit`.
+
+- **clang++ replaces g++ as the default compiler.** Builds clean with
+  identical results. Prepares for macOS port.
+
+- **String literals as `const char *`.** Literal-initialized `string`
+  variables emit as `const char *` instead of managed char arrays.
+  Temporary `std::string` constructed at namespace call sites via
+  `__builtin_alloca`. `MADC_STRING_SIZE` renamed to `STDSTRING_SIZE`.
+
+- **Transpiler parity: 400→410 (+10 tests).** Header prototypes for
+  dirent/time/netdb/select, emitter extern declarations, attribute
+  mode lowering, std::vector/map/set/list tokenizer collapse,
+  madc::array support, extern "C" regex/argv wrappers, builtin
+  wrappers (object_size, strcpy_chk), char** pointer depth fix.
+
+- **`MADC_EXTERN_C` macros.** `MADC_EXTERN_C0` through `MADC_EXTERN_C4`
+  for generating thin extern "C" wrappers by argument count.
+
+- **c2mir built-in headers.** Emitter preamble now uses `#include
+  <stdint.h>`, `<stddef.h>`, etc. from c2mir's embedded C11 headers
+  instead of hand-written typedefs.
+
+- **_Complex type mapping (WIP).** Compound _Complex keywords lowered
+  to `struct __madc_cX` types. Runtime helpers for all complex
+  arithmetic compiled by clang++. Operation lowering still in progress.
+
+- **STL container `_cstr` variants.** Map/set get, contains, put
+  operations accept `const char *` keys directly.
+
+- **Transpiler triage.** All 65 skipped tests categorized with specific
+  root causes in `.mir_skip` files. `docs/transpiler-triage.md` tracks
+  the full breakdown.
+
 ## [v0.22.0] — 2026-05-26
 
 Gecko+MIR transpiler pipeline: Phase 2 semantic pre-pass, Phase 4 string
