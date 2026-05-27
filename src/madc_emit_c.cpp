@@ -294,6 +294,12 @@ class CEmitter
     // we store the computed size expression and replace sizeof(c) with it.
     std::map<std::string, std::string> vla_typedef_sizes;
 
+    // Multi-return function tracking: function name → number of return values
+    std::map<std::string, int> multi_return_funcs;
+
+    // Current function name being emitted (for multi-return context)
+    std::string current_func_name;
+
     // Check if a name is a global string variable tracked in global_strings
     bool is_global_string(const std::string &name) {
 	for (auto &gsv : global_strings)
@@ -365,6 +371,72 @@ class CEmitter
 	}
 	if (is_global_string(name)) return "string";
 	return "";
+    }
+
+    // Recursively check if a subtree contains a node with the given anode code
+    bool tree_contains(gp_tree_node *node, int code)
+    {
+	if (!node) return false;
+	if (is_an(node, code)) return true;
+	if (node->type == GP_ANODE) {
+	    for (int i = 0; i < nchildren(node); i++)
+		if (tree_contains(child(node, i), code)) return true;
+	}
+	if (node->type == GP_ALT) {
+	    if (tree_contains(node->val.alt.first, code)) return true;
+	    if (tree_contains(node->val.alt.second, code)) return true;
+	}
+	if (node->type == GP_OPT)
+	    return tree_contains(node->val.opt.first, code);
+	return false;
+    }
+
+    // Count how many return values a return_multi node has (always 2 currently)
+    int count_return_values(gp_tree_node *node)
+    {
+	if (is_an(node, AN_RETURN_MULTI))
+	    return 2;  // grammar: RETURN expr ',' expr ';'
+	return 1;
+    }
+
+    // Check if a comma expression contains a col_assign as its rightmost child.
+    // Pattern: comma(var1, col_assign(var2, call_expr))
+    // Returns true if this is a multi-var := pattern.
+    bool is_multi_col_assign(gp_tree_node *node)
+    {
+	if (!is_an(node, AN_COMMA)) return false;
+	gp_tree_node *rhs = child(node, 1);
+	if (is_an(rhs, AN_COL_ASSIGN)) return true;
+	// Nested comma: comma(var1, comma(var2, col_assign(var3, expr)))
+	return is_multi_col_assign(rhs);
+    }
+
+    // Collect all LHS variable names from a multi-var := pattern
+    // comma(v1, col_assign(v2, rhs)) → [v1, v2]
+    // comma(v1, comma(v2, col_assign(v3, rhs))) → [v1, v2, v3]
+    void collect_multi_col_vars(gp_tree_node *node, std::vector<std::string> &vars)
+    {
+	if (is_an(node, AN_COMMA)) {
+	    vars.push_back(emit_expr(child(node, 0)));
+	    gp_tree_node *rhs = child(node, 1);
+	    if (is_an(rhs, AN_COL_ASSIGN)) {
+		vars.push_back(emit_expr(child(rhs, 0)));
+	    } else {
+		collect_multi_col_vars(rhs, vars);
+	    }
+	}
+    }
+
+    // Get the RHS (call expression) from a multi-var := pattern
+    gp_tree_node *get_multi_col_rhs(gp_tree_node *node)
+    {
+	if (is_an(node, AN_COMMA)) {
+	    gp_tree_node *rhs = child(node, 1);
+	    if (is_an(rhs, AN_COL_ASSIGN))
+		return child(rhs, 1);
+	    return get_multi_col_rhs(rhs);
+	}
+	return nullptr;
     }
 
     // Collect catch clauses from catch_list tree into a flat vector
@@ -2556,6 +2628,12 @@ class CEmitter
 		emit_col_assign(e);
 		return;
 	    }
+	    // Multi-var short declaration: q, r := func(args)
+	    // Parsed as comma(q, col_assign(r, call_expr))
+	    if (!is_nil(e) && is_multi_col_assign(e)) {
+		emit_multi_col_assign(e);
+		return;
+	    }
 	    if (!is_nil(e)) {
 		emit_indent();
 		O("%s;\n", emit_expr(e).c_str());
@@ -2751,8 +2829,14 @@ class CEmitter
 	    return;
 	}
 	if (an == AN_RETURN_MULTI) {
+	    std::string v0 = emit_expr(child(node, 0));
+	    std::string v1 = emit_expr(child(node, 1));
 	    emit_indent();
-	    O("return %s;\n", emit_expr(child(node, 0)).c_str());
+	    O("__retbuf[0] = %s;\n", v0.c_str());
+	    emit_indent();
+	    O("__retbuf[1] = %s;\n", v1.c_str());
+	    emit_indent();
+	    O("return;\n");
 	    return;
 	}
 
@@ -3308,6 +3392,49 @@ class CEmitter
 	local_var_types[vname] = tc;
 	emit_indent();
 	O("%s %s = %s;\n", type.c_str(), vname.c_str(), rhs_str.c_str());
+    }
+
+    // Multi-var short declaration: q, r := func(args)
+    // Emits: int64_t __retbuf_N[count]; func(__retbuf_N, args);
+    //        int64_t q = __retbuf_N[0]; int64_t r = __retbuf_N[1];
+    void emit_multi_col_assign(gp_tree_node *node)
+    {
+	std::vector<std::string> vars;
+	collect_multi_col_vars(node, vars);
+	gp_tree_node *rhs = get_multi_col_rhs(node);
+	if (!rhs || vars.empty()) return;
+
+	int count = (int)vars.size();
+	int buf_id = tmp_counter++;
+
+	// Declare the retbuf
+	emit_indent();
+	O("int64_t __retbuf_%d[%d];\n", buf_id, count);
+
+	// Emit the function call with __retbuf prepended as first arg
+	if (is_an(rhs, AN_CALL)) {
+	    std::string fn = extract_name(child(rhs, 0));
+	    gp_tree_node *args_node = child(rhs, 1);
+	    std::string args_str;
+	    if (!is_nil(args_node))
+		args_str = emit_arg_list(args_node);
+	    emit_indent();
+	    if (args_str.empty())
+		O("%s(__retbuf_%d);\n", fn.c_str(), buf_id);
+	    else
+		O("%s(__retbuf_%d, %s);\n", fn.c_str(), buf_id, args_str.c_str());
+	} else {
+	    // Fallback: emit as-is (shouldn't happen for multi-return)
+	    emit_indent();
+	    O("%s;\n", emit_expr(rhs).c_str());
+	}
+
+	// Unpack retbuf into variables
+	for (int i = 0; i < count; i++) {
+	    local_var_types[vars[i]] = TC_INT;
+	    emit_indent();
+	    O("int64_t %s = __retbuf_%d[%d];\n", vars[i].c_str(), buf_id, i);
+	}
     }
 
     void emit_decl_stmt(gp_tree_node *node)
@@ -3929,6 +4056,20 @@ class CEmitter
 	std::string full_ret = ret_type;
 	if (!ptr_str.empty())
 	    full_ret += " " + ptr_str;
+
+	// Detect multi-return: scan body for AN_RETURN_MULTI
+	bool is_multi_ret = tree_contains(body_node, AN_RETURN_MULTI);
+	if (is_multi_ret) {
+	    multi_return_funcs[func_name] = 2;  // currently grammar supports 2
+	    full_ret = "void";
+	    std::string retbuf_param = "int64_t *__retbuf";
+	    if (params.empty())
+		params = retbuf_param;
+	    else
+		params = retbuf_param + ", " + params;
+	}
+
+	current_func_name = func_name;
 
 	// Record function signature for auto type inference
 	func_signatures[func_name] = {full_ret, params};
