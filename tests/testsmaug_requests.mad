@@ -1,5 +1,5 @@
 #!/usr/bin/env madc
-
+#define SMAUG_REQUESTS_INCLUDED
 #include "smaug_requests_source.mad"
 
 void write_request(char *text)

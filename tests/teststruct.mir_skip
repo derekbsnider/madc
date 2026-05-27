@@ -1,1 +1,1 @@
-madc built-in struct teststruct not available in transpiler
+built-in struct teststruct — needs legacy cleanup to define in test file
