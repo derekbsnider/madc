@@ -418,7 +418,7 @@ int main(int argc, char **argv)
     const char *emit_function_name = NULL;
     bool emit_pch = false;
     bool emit_c = false;
-    bool use_mir_backend = false;
+    bool use_mir_backend = true;  // MIR is the default backend
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -466,9 +466,11 @@ int main(int argc, char **argv)
             const char *backend = argv[i] + 10;
             if (strcmp(backend, "mir") == 0)
                 use_mir_backend = true;
-            else if (strcmp(backend, "asmjit") != 0) {
+            else if (strcmp(backend, "jit") == 0 || strcmp(backend, "asmjit") == 0)
+                use_mir_backend = false;
+            else {
                 std::cerr << "Unknown backend: " << backend
-                          << " (use 'mir' or 'asmjit')" << std::endl;
+                          << " (use 'mir', 'jit', or 'asmjit')" << std::endl;
                 return 1;
             }
             filearg = i + 1;
