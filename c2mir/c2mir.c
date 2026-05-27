@@ -5784,6 +5784,16 @@ static int floating_type_p (const struct type *type) {
              || type->u.basic_type == TP_LDOUBLE);
 }
 
+static int complex_type_p (const struct type *type) {
+  return type->mode == TM_BASIC
+         && (type->u.basic_type == TP_CFLOAT || type->u.basic_type == TP_CDOUBLE
+             || type->u.basic_type == TP_CLDOUBLE);
+}
+
+static enum basic_type complex_component_type (enum basic_type bt) {
+  return bt == TP_CFLOAT ? TP_FLOAT : bt == TP_CDOUBLE ? TP_DOUBLE : TP_LDOUBLE;
+}
+
 static int arithmetic_type_p (const struct type *type) {
   return integer_type_p (type) || floating_type_p (type);
 }
