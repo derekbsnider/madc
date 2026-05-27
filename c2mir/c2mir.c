@@ -575,6 +575,8 @@ typedef enum {
   REP8 (T_EL, IF, INLINE, INT, LONG, REGISTER, RESTRICT, RETURN, SHORT),
   REP8 (T_EL, SIGNED, SIZEOF, STATIC, STRUCT, SWITCH, TYPEDEF, TYPEOF, UNION),
   REP5 (T_EL, UNSIGNED, VOID, VOLATILE, WHILE, EOFILE),
+  T_REALPART,   /* __real__ */
+  T_IMAGPART,   /* __imag__ */
   /* madc extensions: */
   T_DEFER,
   T_CLASS,
@@ -615,6 +617,8 @@ typedef enum {
   REP8 (NODE_EL, STAR, POINTER, DOTS, ARR, INIT, FIELD_ID, TYPE, ST_ASSERT),
   REP4 (NODE_EL, FUNC_DEF, MODULE, ASM, ATTR),
   N_COMPLEX,     /* _Complex type specifier */
+  N_REALPART,    /* __real__ expr */
+  N_IMAGPART,    /* __imag__ expr */
   /* madc extensions: */
   N_DEFER,
   N_CLASS,       /* class body (like N_STRUCT but with methods) */
@@ -4280,6 +4284,14 @@ D (unary_expr) {
       r = new_pos_node1 (c2m_ctx, N_ALIGNOF, pos, new_node (c2m_ctx, N_IGNORE));
     }
     return r;
+  } else if (MP (T_REALPART, pos)) {
+    code = N_REALPART;
+    P (unary_expr);
+    return new_pos_node1 (c2m_ctx, code, pos, r);
+  } else if (MP (T_IMAGPART, pos)) {
+    code = N_IMAGPART;
+    P (unary_expr);
+    return new_pos_node1 (c2m_ctx, code, pos, r);
   } else if (!MC (T_INCDEC, pos, code) && !MC (T_UNOP, pos, code) && !MC (T_ADDOP, pos, code)
              && !MC ('*', pos, code) && !MC ('&', pos, code)) {
     P (post_expr);
@@ -5476,6 +5488,10 @@ static void parse_init (c2m_ctx_t c2m_ctx) {
   kw_add (c2m_ctx, "_Bool", T_BOOL, 0);
   kw_add (c2m_ctx, "_Complex", T_COMPLEX, 0);
   kw_add (c2m_ctx, "__complex__", T_COMPLEX, 0);
+  kw_add (c2m_ctx, "__real__", T_REALPART, 0);
+  kw_add (c2m_ctx, "__imag__", T_IMAGPART, 0);
+  kw_add (c2m_ctx, "__real", T_REALPART, 0);
+  kw_add (c2m_ctx, "__imag", T_IMAGPART, 0);
   kw_add (c2m_ctx, "_Alignas", T_ALIGNAS, 0);
   kw_add (c2m_ctx, "_Alignof", T_ALIGNOF, 0);
   kw_add (c2m_ctx, "_Atomic", T_ATOMIC, 0);
@@ -8825,6 +8841,24 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         e->c.i_val = e1->c.i_val == 0;
       else
         e->c.i_val = e1->c.u_val == 0;
+    }
+    break;
+  case N_REALPART:
+  case N_IMAGPART:
+    process_unop (c2m_ctx, r, &op1, &e1, &t1, r);
+    e = create_expr (c2m_ctx, r);
+    e->type->mode = TM_BASIC;
+    if (!complex_type_p (t1)) {
+      if (arithmetic_type_p (t1)) {
+        /* __real__ on a real type is identity; __imag__ gives 0. */
+        e->type->u.basic_type = t1->u.basic_type;
+      } else {
+        error (c2m_ctx, POS (r), "__real__/__imag__ operand should be of a complex or arithmetic type");
+        e->type->u.basic_type = TP_DOUBLE;
+      }
+    } else {
+      e->type->u.basic_type = complex_component_type (t1->u.basic_type);
+      e->u.lvalue_node = op1;  /* it is an lvalue */
     }
     break;
   case N_INC:
@@ -12441,11 +12475,62 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     }
     break;
   case N_BITWISE_NOT:
+    if (complex_type_p (((struct expr *) r->attr)->type)) {
+      /* Complex conjugate: ~z = (re, -im) */
+      struct type *ctype = ((struct expr *) r->attr)->type;
+      enum basic_type cbt = ctype->u.basic_type;
+      MIR_type_t cct = cbt == TP_CFLOAT ? MIR_T_F : cbt == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+      int cimag = cbt == TP_CFLOAT ? sizeof (mir_float) : cbt == TP_CDOUBLE ? sizeof (mir_double)
+                                                                              : sizeof (mir_ldouble);
+      MIR_insn_code_t cneg = cct == MIR_T_F ? MIR_FNEG : cct == MIR_T_D ? MIR_DNEG : MIR_LDNEG;
+      op_t im;
+
+      op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+      res = desirable_dest != NULL ? *desirable_dest : op1;
+      if (!MIR_op_eq_p (ctx, res.mir_op, op1.mir_op))
+        block_move (c2m_ctx, res, op1, type_size (c2m_ctx, ctype));
+      im = complex_load (c2m_ctx, res, cct, cimag);
+      emit2 (c2m_ctx, cneg, im.mir_op, im.mir_op);
+      complex_store (c2m_ctx, res, cct, cimag, im);
+      break;
+    }
     gen_unary_op (c2m_ctx, r, &op1, &res);
     t = get_mir_type (c2m_ctx, ((struct expr *) r->attr)->type);
     emit3 (c2m_ctx, t == MIR_T_I64 || t == MIR_T_U64 ? MIR_XOR : MIR_XORS, res.mir_op, op1.mir_op,
            minus_one_op.mir_op);
     break;
+  case N_REALPART:
+  case N_IMAGPART: {
+    struct type *rt = ((struct expr *) r->attr)->type;
+    MIR_type_t rct = get_mir_type (c2m_ctx, rt);
+
+    op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+    if (!complex_type_p (((struct expr *) NL_HEAD (r->u.ops)->attr)->type)) {
+      /* __real__/__imag__ on non-complex: identity / zero */
+      if (r->code == N_REALPART) {
+        res = op1;
+      } else {
+        res = get_new_temp (c2m_ctx, rct);
+        emit2 (c2m_ctx, tp_mov (rct), res.mir_op,
+               rct == MIR_T_F ? MIR_new_float_op (ctx, 0.0f)
+               : rct == MIR_T_D ? MIR_new_double_op (ctx, 0.0)
+               : MIR_new_ldouble_op (ctx, 0.0L));
+      }
+    } else {
+      /* Extract component from complex MEM operand */
+      struct type *src_type = ((struct expr *) NL_HEAD (r->u.ops)->attr)->type;
+      int imoff = src_type->u.basic_type == TP_CFLOAT ? sizeof (mir_float)
+                  : src_type->u.basic_type == TP_CDOUBLE ? sizeof (mir_double)
+                                                          : sizeof (mir_ldouble);
+      int offset = r->code == N_REALPART ? 0 : imoff;
+
+      assert (op1.mir_op.mode == MIR_OP_MEM);
+      res = new_op (NULL, MIR_new_mem_op (ctx, rct, op1.mir_op.u.mem.disp + offset,
+                                          op1.mir_op.u.mem.base, op1.mir_op.u.mem.index,
+                                          op1.mir_op.u.mem.scale));
+    }
+    break;
+  }
   case N_NOT:
     if (true_label != NULL) {
       gen (c2m_ctx, NL_HEAD (r->u.ops), false_label, true_label, FALSE, NULL, NULL);
@@ -14168,6 +14253,8 @@ static void print_node (c2m_ctx_t c2m_ctx, FILE *f, node_t n, int indent, int at
   case N_UNSIGNED:
   case N_BOOL:
   case N_COMPLEX:
+  case N_REALPART:
+  case N_IMAGPART:
   case N_CONST:
   case N_RESTRICT:
   case N_VOLATILE:
