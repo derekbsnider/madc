@@ -35,13 +35,12 @@ extern int64_t php_count(void *arr);
 extern void *php_array_get(void *result, void *arr, int64_t index);
 extern int64_t php_array_get_int(void *arr, int64_t index);
 
-// STL container stubs — ns_stl.cpp removed
-extern "C" {
-extern int64_t vector_int_size(void *);
-extern int64_t vector_int_at(void *, int64_t);
-extern void *vector_str_at(void *, void *, int64_t);
-extern int64_t vector_str_size(void *);
-}
+// STL container helpers removed — transpiler handles these now.
+// NULL pointers satisfy the linker for dead JIT code paths.
+static void *vector_int_size = nullptr;
+static void *vector_int_at = nullptr;
+static void *vector_str_at = nullptr;
+static void *vector_str_size = nullptr;
 
 
 ///////////////////////////////////////////////////////////////////////////

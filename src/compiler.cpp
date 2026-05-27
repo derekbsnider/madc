@@ -2635,35 +2635,37 @@ extern int64_t php_count(void *arr);
 extern void *php_array_get(void *result, void *arr, int64_t index);
 extern int64_t php_array_get_int(void *arr, int64_t index);
 
-// STL container stubs — ns_stl.cpp removed, abort stubs in ns_stl_stubs.cpp
-extern "C" {
-extern void *vector_int_construct(void *);
-extern void  vector_int_destruct(void *);
-extern void *vector_str_construct(void *);
-extern void  vector_str_destruct(void *);
-extern int64_t vector_int_size(void *);
-extern int64_t vector_int_at(void *, int64_t);
-extern void vector_int_set(void *, int64_t, int64_t);
-extern void *vector_str_at(void *, void *, int64_t);
-extern void vector_str_set(void *, int64_t, void *);
-extern int64_t vector_str_size(void *);
-extern void map_str_int_set(void *, void *, int64_t);
-extern int64_t map_str_int_get(void *, void *);
-extern void map_str_str_set(void *, void *, void *);
-extern void *map_str_str_get(void *, void *, void *);
-extern void *map_str_int_construct(void *);
-extern void  map_str_int_destruct(void *);
-extern void *map_str_str_construct(void *);
-extern void  map_str_str_destruct(void *);
-extern void *set_str_construct(void *);
-extern void  set_str_destruct(void *);
-extern void *set_int_construct(void *);
-extern void  set_int_destruct(void *);
-extern void *list_int_construct(void *);
-extern void  list_int_destruct(void *);
-extern void *list_str_construct(void *);
-extern void  list_str_destruct(void *);
-} // extern "C" — STL stubs
+// STL container helpers removed — ns_stl.cpp was a proof-of-concept.
+// Template instantiation is handled by the transpiler (Cfront-style).
+// These NULL pointers satisfy the linker for dead JIT code paths that
+// still reference the old functions. They crash if called — which is
+// correct, since STL containers require --backend=mir.
+static void *vector_int_construct = nullptr;
+static void *vector_int_destruct = nullptr;
+static void *vector_str_construct = nullptr;
+static void *vector_str_destruct = nullptr;
+static void *vector_int_size = nullptr;
+static void *vector_int_at = nullptr;
+static void *vector_int_set = nullptr;
+static void *vector_str_at = nullptr;
+static void *vector_str_set = nullptr;
+static void *vector_str_size = nullptr;
+static void *map_str_int_set = nullptr;
+static void *map_str_int_get = nullptr;
+static void *map_str_str_set = nullptr;
+static void *map_str_str_get = nullptr;
+static void *map_str_int_construct = nullptr;
+static void *map_str_int_destruct = nullptr;
+static void *map_str_str_construct = nullptr;
+static void *map_str_str_destruct = nullptr;
+static void *set_str_construct = nullptr;
+static void *set_str_destruct = nullptr;
+static void *set_int_construct = nullptr;
+static void *set_int_destruct = nullptr;
+static void *list_int_construct = nullptr;
+static void *list_int_destruct = nullptr;
+static void *list_str_construct = nullptr;
+static void *list_str_destruct = nullptr;
 
 MadcAsmjitErrHandler::MadcAsmjitErrHandler() : pgm(nullptr), hits(0) {}
 
