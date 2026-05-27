@@ -44,6 +44,10 @@ extern "C" {
 
 extern "C" {
 
+void *__madc_get_stdout(void) { return (void *)stdout; }
+void *__madc_get_stdin(void)  { return (void *)stdin; }
+void *__madc_get_stderr(void) { return (void *)stderr; }
+
 void madc_puti(int64_t i)    { std::cout << i << std::endl; }
 void madc_putu(uint64_t i)   { std::cout << i << std::endl; }
 void madc_putd(double d)     { std::cout << d << std::endl; }

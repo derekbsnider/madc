@@ -211,11 +211,18 @@ class CEmitter
     // Augments sema->var_types with function-local declarations
     std::map<std::string, TypeClass> local_var_types;
 
+    // Per-variable actual C type string (for typeof resolution)
+    std::map<std::string, std::string> var_type_strs;
+
     // Per-function local class var map overlay
     std::map<std::string, std::string> local_var_class_map;
 
     // Class vars in current scope needing destructor injection (LIFO)
     std::vector<std::string> scope_class_vars;
+
+    // Known typedef names — used to distinguish typedefs from variables
+    // in the GLR cast-vs-bitand disambiguation
+    std::set<std::string> known_typedefs;
 
     // When true, use calloc instead of malloc for new expressions
     bool prefer_calloc = false;
@@ -292,6 +299,16 @@ class CEmitter
 	for (auto &gsv : global_strings)
 	    if (gsv.name == name) return true;
 	return false;
+    }
+
+    // Convert TypeClass to a C type string (for typeof resolution)
+    static std::string tc_to_c_type(TypeClass tc) {
+	switch (tc) {
+	case TC_DOUBLE: return "double";
+	case TC_CHAR:   return "char";
+	case TC_STRING: return "const char *";
+	default:        return "int";
+	}
     }
 
     // Look up variable type: local overlay first, then global_strings,
@@ -564,6 +581,12 @@ class CEmitter
 	return ns;  // php, perl, js, rust use their full name
     }
 
+    static bool is_builtin_func(const std::string &name)
+    {
+	return name == "puti" || name == "putu" || name == "putd" ||
+	       name == "putf" || name == "printstr";
+    }
+
     static std::string map_builtin(const std::string &name)
     {
 	if (name == "puti")             return "madc_puti";
@@ -591,6 +614,21 @@ class CEmitter
     std::string emit_type(gp_tree_node *node)
     {
 	if (!node || node->type == GP_NIL) return "";
+
+	// GLR ambiguity in type context — prefer typeof_expr over typeof_type
+	// when one alternative is a typeof node with a variable name
+	if (node->type == GP_ALT) {
+	    gp_tree_node *first = node->val.alt.first;
+	    gp_tree_node *second = node->val.alt.second;
+	    // Check if either alternative is a typeof — prefer typeof_expr
+	    if (is_an(first, AN_TYPEOF_EXPR) || is_an(first, AN_TYPEOF_TYPE))
+		return emit_type(first);
+	    if (second && (is_an(second, AN_TYPEOF_EXPR) || is_an(second, AN_TYPEOF_TYPE)))
+		return emit_type(second);
+	    return emit_type(first);
+	}
+	if (node->type == GP_OPT)
+	    return emit_type(node->val.opt.first);
 
 	// Terminal: keyword type
 	if (node->type == GP_TERM) {
@@ -705,11 +743,56 @@ class CEmitter
 	    return base + " " + emit_abstract_declarator(abs);
 	}
 
-	// typeof — emit as __typeof__ for c2mir/GCC compatibility
-	if (an == AN_TYPEOF_EXPR)
-	    return "__typeof__(" + emit_expr(child(node, 0)) + ")";
-	if (an == AN_TYPEOF_TYPE)
-	    return "__typeof__(" + emit_type(child(node, 0)) + ")";
+	// typeof — resolve to concrete type (c2mir doesn't support typeof)
+	if (an == AN_TYPEOF_EXPR) {
+	    gp_tree_node *expr = child(node, 0);
+	    // Simple identifier: look up its type
+	    if (expr && expr->type == GP_TERM && term_code(expr) == GT_IDENT) {
+		std::string vname = term_text(expr);
+		auto it = var_type_strs.find(vname);
+		if (it != var_type_strs.end()) return it->second;
+	    }
+	    // Member access: expr.field — look up struct member type
+	    if (is_an(expr, AN_MEMBER) && sema) {
+		gp_tree_node *obj = child(expr, 0);
+		std::string field = term_text(child(expr, 1));
+		std::string obj_name = (obj && obj->type == GP_TERM) ?
+				       term_text(obj) : "";
+		// Look up the struct type string and its field type
+		auto it = var_type_strs.find(obj_name);
+		if (it != var_type_strs.end()) {
+		    std::string stype = it->second;
+		    if (stype.substr(0, 7) == "struct ")
+			stype = stype.substr(7);
+		    TypeClass ftc = sema->get_struct_field_type(stype, field);
+		    if (ftc != TC_INT || field.empty())
+			return tc_to_c_type(ftc);
+		    // For int, check if it's really int
+		    return "int";
+		}
+	    }
+	    // Fallback: emit as int64_t
+	    return "int64_t";
+	}
+	if (an == AN_TYPEOF_TYPE) {
+	    // Could be a real type or a variable name mis-parsed as type.
+	    // Check if the child resolves to a variable name first.
+	    gp_tree_node *typenode = child(node, 0);
+	    // Unwrap type_name(specifier_list, abstract_decl)
+	    if (is_an(typenode, AN_TYPE_NAME))
+		typenode = child(typenode, 0);
+	    // Unwrap qual chain to bare ident
+	    while (is_an(typenode, AN_QUAL) && is_nil(child(typenode, 1)))
+		typenode = child(typenode, 0);
+	    if (typenode && typenode->type == GP_TERM &&
+		term_code(typenode) == GT_IDENT) {
+		std::string name = term_text(typenode);
+		auto it = var_type_strs.find(name);
+		if (it != var_type_strs.end()) return it->second;
+	    }
+	    // Fall through to regular type emission
+	    return emit_type(child(node, 0));
+	}
 
 	// container types
 	if (an == AN_VECTOR_TYPE || an == AN_SET_TYPE || an == AN_LIST_TYPE)
@@ -1404,8 +1487,28 @@ class CEmitter
     {
 	if (!node) return "0";
 	if (node->type == GP_NIL) return "0";
-	// GLR ambiguity — use first alternative
-	if (node->type == GP_ALT) return emit_expr(node->val.alt.first);
+	// GLR ambiguity — disambiguate
+	if (node->type == GP_ALT) {
+	    gp_tree_node *first = node->val.alt.first;
+	    gp_tree_node *second = node->val.alt.second;
+	    // If first is a funcall whose callee is a parenthesized
+	    // non-function variable, prefer second (bitwise AND etc.).
+	    // e.g. (flags)(&(4)) vs ((flags) & (4))
+	    if (second && is_an(first, AN_CALL)) {
+		gp_tree_node *callee = child(first, 0);
+		if (is_an(callee, AN_PAREN)) {
+		    gp_tree_node *inner = child(callee, 0);
+		    if (inner && inner->type == GP_TERM &&
+			term_code(inner) == GT_IDENT) {
+			std::string name = term_text(inner);
+			if (!sema || (!sema->func_ret_types.count(name) &&
+			    !is_known_class(name)))
+			    return emit_expr(second);
+		    }
+		}
+	    }
+	    return emit_expr(first);
+	}
 	if (node->type == GP_OPT) return emit_expr(node->val.opt.first);
 
 	// Terminal: literal or identifier
@@ -1421,6 +1524,10 @@ class CEmitter
 		// Reference parameters are pointers; dereference on access.
 		if (ref_vars.count(id))
 		    return "(*" + safe_ident(id) + ")";
+		// stdio globals → function calls (c2mir has no FILE*)
+		if (id == "stdout") return "__madc_get_stdout()";
+		if (id == "stdin")  return "__madc_get_stdin()";
+		if (id == "stderr") return "__madc_get_stderr()";
 		return safe_ident(id);
 	    }
 	    if (code == GT_INTEGER) {
@@ -1538,10 +1645,10 @@ class CEmitter
 	    gp_tree_node *rhs = child(node, 1);
 	    // va_start macro expands to: ap = __va_args
 	    // Detect this and emit proper va_start(ap, last_param) instead.
-	    if (lhs && lhs->type == GP_TERM && term_code(lhs) == GT_IDENT &&
-		rhs && rhs->type == GP_TERM && term_code(rhs) == GT_IDENT &&
+	    // RHS is __va_args (simple ident or any node).
+	    if (rhs && rhs->type == GP_TERM && term_code(rhs) == GT_IDENT &&
 		term_text(rhs) == "__va_args") {
-		std::string ap = term_text(lhs);
+		std::string ap = emit_expr(lhs);
 		va_list_vars.insert(ap);
 		std::string last = current_func_last_param;
 		if (last.empty()) last = "/* last_param */";
@@ -1600,6 +1707,37 @@ class CEmitter
 	// Function call
 	if (an == AN_CALL) {
 	    gp_tree_node *callee = child(node, 0);
+	    // GLR mis-parse: (var) & (expr) parsed as funcall var(&(expr))
+	    // When macro expansion produces ((var) & (expr)), the parser may see
+	    // the inner (var) as postfix_expression and (&(expr)) as argument list,
+	    // giving call(var, addrof(expr)).
+	    // Detect: callee is a simple ident that is NOT a known function/type,
+	    // and the single arg is AN_ADDROF.
+	    {
+		gp_tree_node *arglist = child(node, 1);
+		gp_tree_node *arg0 = arglist;
+		if (is_an(arglist, AN_ARG_LIST) && nchildren(arglist) == 1)
+		    arg0 = child(arglist, 0);
+		else if (is_an(arglist, AN_ARG_LIST))
+		    arg0 = nullptr;
+		bool callee_is_ident = callee && callee->type == GP_TERM &&
+				       term_code(callee) == GT_IDENT;
+		bool callee_is_paren_ident = is_an(callee, AN_PAREN) &&
+					     child(callee, 0) &&
+					     child(callee, 0)->type == GP_TERM &&
+					     term_code(child(callee, 0)) == GT_IDENT;
+		gp_tree_node *ident_node = callee_is_ident ? callee :
+					   callee_is_paren_ident ? child(callee, 0) : nullptr;
+		if (ident_node && arg0 && is_an(arg0, AN_ADDROF)) {
+		    std::string name = term_text(ident_node);
+		    if (!sema || (!sema->func_ret_types.count(name) &&
+			!is_known_class(name))) {
+			// Reconstruct as bitwise AND
+			return "(" + emit_expr(ident_node) + " & " +
+			       emit_expr(child(arg0, 0)) + ")";
+		    }
+		}
+	    }
 	    // Namespace calls (call(ns_name(...), args)): don't coerce strings
 	    bool is_ns = is_an(callee, AN_NS_NAME);
 	    // For plain identifier calls, extract function name early so we
@@ -1757,6 +1895,15 @@ class CEmitter
 		    if (va_list_vars.count(vname))
 			return "va_end(" + vname + ")";
 		}
+	    }
+	    // GLR mis-parse: (var) & (expr) parsed as cast(var, &(expr))
+	    // when var is not a type. Reconstruct as bitwise AND.
+	    // Must NOT trigger for typedefs or type names.
+	    if (cast_expr && is_an(cast_expr, AN_ADDROF) &&
+		local_var_types.count(type_str) &&
+		!known_typedefs.count(type_str)) {
+		return "(" + type_str + " & " +
+		       emit_expr(child(cast_expr, 0)) + ")";
 	    }
 	    return "((" + type_str + ")" + emit_expr(cast_expr) + ")";
 	}
@@ -2404,6 +2551,11 @@ class CEmitter
 	// Expression statement
 	if (an == AN_EXPR_STMT) {
 	    gp_tree_node *e = child(node, 0);
+	    // Go-style short declaration: x := expr
+	    if (!is_nil(e) && is_an(e, AN_COL_ASSIGN)) {
+		emit_col_assign(e);
+		return;
+	    }
 	    if (!is_nil(e)) {
 		emit_indent();
 		O("%s;\n", emit_expr(e).c_str());
@@ -2732,6 +2884,11 @@ class CEmitter
 	if (is_nil(decls)) return;
 	std::string vname = extract_name(decls);
 	if (!vname.empty()) {
+	    // Track C type string for typeof resolution
+	    bool has_ptr = is_an(decls, AN_PTR_DECL);
+	    std::string full_type = type;
+	    if (has_ptr) full_type += " *";
+	    var_type_strs[vname] = full_type;
 	    // Check if this is a class type
 	    std::string clean_type = type;
 	    if (clean_type.substr(0, 7) == "struct ")
@@ -2740,7 +2897,6 @@ class CEmitter
 		local_var_class_map[vname] = clean_type;
 		local_var_types[vname] = TC_CLASS;  // class objects print as int
 	    } else {
-		bool has_ptr = is_an(decls, AN_PTR_DECL);
 		TypeClass tc = classify_type(type);
 		if (has_ptr && tc == TC_CHAR) tc = TC_STRING;  // char * → string
 		local_var_types[vname] = tc;
@@ -3131,6 +3287,29 @@ class CEmitter
 	return emit_expr(node);
     }
 
+    // Go-style short variable declaration: x := expr
+    // Infer the C type from the RHS and emit a declaration.
+    void emit_col_assign(gp_tree_node *node)
+    {
+	gp_tree_node *lhs = child(node, 0);
+	gp_tree_node *rhs = child(node, 1);
+	std::string vname = emit_expr(lhs);
+	std::string rhs_str = emit_expr(rhs);
+	// Infer type from RHS
+	std::string type;
+	TypeClass tc = infer_expr_cout_type(rhs);
+	switch (tc) {
+	case TC_DOUBLE: type = "double"; break;
+	case TC_STRING: type = "const char *"; break;
+	case TC_CHAR:   type = "char"; break;
+	default:        type = "int64_t"; break;
+	}
+	// Track for cout inference
+	local_var_types[vname] = tc;
+	emit_indent();
+	O("%s %s = %s;\n", type.c_str(), vname.c_str(), rhs_str.c_str());
+    }
+
     void emit_decl_stmt(gp_tree_node *node)
     {
 	// decl(declaration_specifiers, init_declarator_list_opt)
@@ -3153,7 +3332,8 @@ class CEmitter
 	    if (s && s->type == GP_TERM && term_code(s) == GT_IDENT &&
 		!is_nil(decls)) {
 		std::string tname = term_text(s);
-		if (sema && sema->func_ret_types.count(tname) &&
+		if ((is_builtin_func(tname) ||
+		    (sema && sema->func_ret_types.count(tname))) &&
 		    !is_known_class(tname)) {
 		    // Reconstruct as function call
 		    std::string func = map_builtin(tname);
@@ -3654,6 +3834,27 @@ class CEmitter
 	    return "";
 	}
 	return "";
+    }
+
+    // Collect typed parameter strings from K&R declaration list
+    // Returns "type name" pairs suitable for ANSI-style function prototype
+    void collect_kr_params_typed(gp_tree_node *node,
+				 std::vector<std::string> &params)
+    {
+	if (!node) return;
+	if (is_an(node, AN_KR_DECL_LIST)) {
+	    collect_kr_params_typed(child(node, 0), params);
+	    collect_kr_params_typed(child(node, 1), params);
+	    return;
+	}
+	if (is_an(node, AN_DECL)) {
+	    std::string type = emit_type(child(node, 0));
+	    gp_tree_node *idl = child(node, 1);
+	    if (!is_nil(idl)) {
+		std::string d = emit_declarator_str(idl);
+		params.push_back(type + " " + d);
+	    }
+	}
     }
 
     void emit_kr_decl_list(gp_tree_node *node)
@@ -4339,10 +4540,48 @@ class CEmitter
 	    gp_tree_node *kr_decls = child(node, 2);
 	    gp_tree_node *body = child(node, 3);
 	    std::string stype = emit_type(specs);
-	    std::string sdecl = emit_declarator_str(decl);
-	    O("%s %s\n", stype.c_str(), sdecl.c_str());
-	    // Emit K&R parameter declarations
-	    emit_kr_decl_list(kr_decls);
+	    // Convert K&R-style to ANSI-style by collecting typed params
+	    std::vector<std::string> kr_params;
+	    collect_kr_params_typed(kr_decls, kr_params);
+	    // Parser may absorb the function name into stype (e.g.
+	    // "double u2d" for `double u2d(u)`).  Split off the last
+	    // word as the function name when emit_declarator_str just
+	    // gives the parameter name.
+	    std::string fname = extract_name(decl);
+	    {
+		size_t sp = stype.rfind(' ');
+		if (sp != std::string::npos) {
+		    std::string last = stype.substr(sp + 1);
+		    // If the last word looks like an identifier (not a C keyword)
+		    // and differs from the return type keywords, treat it as the
+		    // function name.
+		    static const std::set<std::string> ctype_kw = {
+			"void", "int", "char", "short", "long", "float",
+			"double", "signed", "unsigned", "const", "volatile",
+			"static", "extern", "inline", "register", "restrict",
+			"_Complex", "_Bool"
+		    };
+		    if (!last.empty() && !ctype_kw.count(last)) {
+			fname = last;
+			stype = stype.substr(0, sp);
+		    }
+		}
+	    }
+	    if (!fname.empty() && !kr_params.empty()) {
+		// Emit as ANSI-style function definition
+		std::string params_str;
+		for (size_t i = 0; i < kr_params.size(); i++) {
+		    if (i > 0) params_str += ", ";
+		    params_str += kr_params[i];
+		}
+		O("%s %s(%s)\n", stype.c_str(), fname.c_str(),
+		  params_str.c_str());
+	    } else {
+		std::string sdecl = emit_declarator_str(decl);
+		O("%s %s\n", stype.c_str(), sdecl.c_str());
+		// Emit K&R parameter declarations
+		emit_kr_decl_list(kr_decls);
+	    }
 	    // Emit body
 	    emit_indent();
 	    O("{\n");
@@ -4415,6 +4654,11 @@ class CEmitter
 		// Suppress va_list typedef — we use <stdarg.h> in the preamble
 		std::string decl_name = emit_declarator_str(decls);
 		if (decl_name == "va_list") return;
+		// Track typedef name for cast disambiguation
+		{
+		    std::string tname = extract_name(decls);
+		    if (!tname.empty()) known_typedefs.insert(tname);
+		}
 		OH("%s %s;\n", type.c_str(), decl_name.c_str());
 	    } else {
 		// For multi-dimensional char arrays (3+ dims), set the depth
@@ -4430,6 +4674,12 @@ class CEmitter
 		// these result from grammar error-recovery on top-level
 		// assignment statements (e.g. `hello = "x";` at file scope).
 		if (type.empty() && decls->type == GP_TERM) return;
+		// Track global variable type for typeof resolution
+		{
+		    std::string vn = extract_name(decls);
+		    if (!vn.empty())
+			var_type_strs[vn] = type;
+		}
 		// Extern declarations go in header
 		if (type.find("extern") != std::string::npos) {
 		    OH("%s %s;\n", type.c_str(), d.c_str());
@@ -4546,6 +4796,9 @@ public:
 	header += "extern void free(void *);\n";
 	header += "extern void *memcpy(void *, const void *, unsigned long);\n";
 	header += "extern void *memset(void *, int, unsigned long);\n";
+	header += "extern void *memmove(void *, const void *, unsigned long);\n";
+	header += "extern void *memchr(const void *, int, unsigned long);\n";
+	header += "extern int memcmp(const void *, const void *, unsigned long);\n";
 	header += "extern unsigned long strlen(const char *);\n";
 	header += "extern int strcmp(const char *, const char *);\n";
 	header += "extern int atoi(const char *);\n";
@@ -4561,7 +4814,19 @@ public:
 	header += "extern long labs(long);\n";
 	header += "extern void exit(int);\n";
 	header += "extern void abort(void);\n";
+	header += "extern unsigned short __madc_bswap16(unsigned short);\n";
+	header += "extern unsigned int __madc_bswap32(unsigned int);\n";
+	header += "extern unsigned long long __madc_bswap64(unsigned long long);\n";
 	header += "extern int *__errno_location(void);\n";
+	header += "extern void *__madc_get_stdout(void);\n";
+	header += "extern void *__madc_get_stdin(void);\n";
+	header += "extern void *__madc_get_stderr(void);\n";
+	header += "extern int fputc(int, void *);\n";
+	header += "extern int fputs(const char *, void *);\n";
+	header += "extern unsigned long fwrite(const void *, unsigned long, unsigned long, void *);\n";
+	header += "extern int fprintf(void *, const char *, ...);\n";
+	header += "extern char *fgets(char *, int, void *);\n";
+	header += "extern int feof(void *);\n";
 	header += "extern void *fopen(const char *, const char *);\n";
 	header += "extern int fclose(void *);\n";
 	header += "extern int system(const char *);\n";
