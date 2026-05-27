@@ -12176,6 +12176,102 @@ static MIR_item_t get_ref_item (c2m_ctx_t c2m_ctx, node_t def, const char *name)
   return NULL;
 }
 
+/* Load a scalar component from a complex MEM operand at the given byte offset. */
+static op_t complex_load (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+  op_t temp = get_new_temp (c2m_ctx, ct);
+
+  assert (mem.mir_op.mode == MIR_OP_MEM);
+  emit2 (c2m_ctx, tp_mov (ct), temp.mir_op,
+         MIR_new_mem_op (ctx, ct, mem.mir_op.u.mem.disp + offset, mem.mir_op.u.mem.base,
+                         mem.mir_op.u.mem.index, mem.mir_op.u.mem.scale));
+  return temp;
+}
+
+/* Store a scalar register value into a complex MEM operand at the given byte offset. */
+static void complex_store (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset, op_t val) {
+  MIR_context_t ctx = c2m_ctx->ctx;
+
+  assert (mem.mir_op.mode == MIR_OP_MEM);
+  emit2 (c2m_ctx, tp_mov (ct),
+         MIR_new_mem_op (ctx, ct, mem.mir_op.u.mem.disp + offset, mem.mir_op.u.mem.base,
+                         mem.mir_op.u.mem.index, mem.mir_op.u.mem.scale),
+         val.mir_op);
+}
+
+/* Generate complex binary operation: result operands are MEM, components lowered to real pairs. */
+static void gen_complex_bin_op (c2m_ctx_t c2m_ctx, node_t r, op_t res, op_t op1, op_t op2) {
+  struct type *type = ((struct expr *) r->attr)->type;
+  enum basic_type bt = type->u.basic_type;
+  MIR_type_t ct = bt == TP_CFLOAT ? MIR_T_F : bt == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+  int imag_off = bt == TP_CFLOAT ? sizeof (mir_float) : bt == TP_CDOUBLE ? sizeof (mir_double)
+                                                                          : sizeof (mir_ldouble);
+  MIR_insn_code_t add_ic = ct == MIR_T_F ? MIR_FADD : ct == MIR_T_D ? MIR_DADD : MIR_LDADD;
+  MIR_insn_code_t sub_ic = ct == MIR_T_F ? MIR_FSUB : ct == MIR_T_D ? MIR_DSUB : MIR_LDSUB;
+  MIR_insn_code_t mul_ic = ct == MIR_T_F ? MIR_FMUL : ct == MIR_T_D ? MIR_DMUL : MIR_LDMUL;
+  MIR_insn_code_t div_ic = ct == MIR_T_F ? MIR_FDIV : ct == MIR_T_D ? MIR_DDIV : MIR_LDDIV;
+  op_t a_re, a_im, b_re, b_im, r_re, r_im;
+
+  a_re = complex_load (c2m_ctx, op1, ct, 0);
+  a_im = complex_load (c2m_ctx, op1, ct, imag_off);
+  b_re = complex_load (c2m_ctx, op2, ct, 0);
+  b_im = complex_load (c2m_ctx, op2, ct, imag_off);
+
+  switch (r->code) {
+  case N_ADD:
+  case N_ADD_ASSIGN:
+    r_re = get_new_temp (c2m_ctx, ct);
+    r_im = get_new_temp (c2m_ctx, ct);
+    emit3 (c2m_ctx, add_ic, r_re.mir_op, a_re.mir_op, b_re.mir_op);
+    emit3 (c2m_ctx, add_ic, r_im.mir_op, a_im.mir_op, b_im.mir_op);
+    break;
+  case N_SUB:
+  case N_SUB_ASSIGN:
+    r_re = get_new_temp (c2m_ctx, ct);
+    r_im = get_new_temp (c2m_ctx, ct);
+    emit3 (c2m_ctx, sub_ic, r_re.mir_op, a_re.mir_op, b_re.mir_op);
+    emit3 (c2m_ctx, sub_ic, r_im.mir_op, a_im.mir_op, b_im.mir_op);
+    break;
+  case N_MUL:
+  case N_MUL_ASSIGN: {
+    /* (a+bi)(c+di) = (ac-bd) + (ad+bc)i */
+    op_t t1 = get_new_temp (c2m_ctx, ct), t2 = get_new_temp (c2m_ctx, ct);
+    r_re = get_new_temp (c2m_ctx, ct);
+    r_im = get_new_temp (c2m_ctx, ct);
+    emit3 (c2m_ctx, mul_ic, t1.mir_op, a_re.mir_op, b_re.mir_op);  /* ac */
+    emit3 (c2m_ctx, mul_ic, t2.mir_op, a_im.mir_op, b_im.mir_op);  /* bd */
+    emit3 (c2m_ctx, sub_ic, r_re.mir_op, t1.mir_op, t2.mir_op);    /* ac - bd */
+    emit3 (c2m_ctx, mul_ic, t1.mir_op, a_re.mir_op, b_im.mir_op);  /* ad */
+    emit3 (c2m_ctx, mul_ic, t2.mir_op, a_im.mir_op, b_re.mir_op);  /* bc */
+    emit3 (c2m_ctx, add_ic, r_im.mir_op, t1.mir_op, t2.mir_op);    /* ad + bc */
+    break;
+  }
+  case N_DIV:
+  case N_DIV_ASSIGN: {
+    /* (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c^2+d^2) */
+    op_t t1 = get_new_temp (c2m_ctx, ct), t2 = get_new_temp (c2m_ctx, ct);
+    op_t denom = get_new_temp (c2m_ctx, ct);
+    r_re = get_new_temp (c2m_ctx, ct);
+    r_im = get_new_temp (c2m_ctx, ct);
+    emit3 (c2m_ctx, mul_ic, t1.mir_op, b_re.mir_op, b_re.mir_op);    /* c^2 */
+    emit3 (c2m_ctx, mul_ic, t2.mir_op, b_im.mir_op, b_im.mir_op);    /* d^2 */
+    emit3 (c2m_ctx, add_ic, denom.mir_op, t1.mir_op, t2.mir_op);     /* c^2+d^2 */
+    emit3 (c2m_ctx, mul_ic, t1.mir_op, a_re.mir_op, b_re.mir_op);    /* ac */
+    emit3 (c2m_ctx, mul_ic, t2.mir_op, a_im.mir_op, b_im.mir_op);    /* bd */
+    emit3 (c2m_ctx, add_ic, t1.mir_op, t1.mir_op, t2.mir_op);        /* ac+bd */
+    emit3 (c2m_ctx, div_ic, r_re.mir_op, t1.mir_op, denom.mir_op);   /* (ac+bd)/denom */
+    emit3 (c2m_ctx, mul_ic, t1.mir_op, a_im.mir_op, b_re.mir_op);    /* bc */
+    emit3 (c2m_ctx, mul_ic, t2.mir_op, a_re.mir_op, b_im.mir_op);    /* ad */
+    emit3 (c2m_ctx, sub_ic, t1.mir_op, t1.mir_op, t2.mir_op);        /* bc-ad */
+    emit3 (c2m_ctx, div_ic, r_im.mir_op, t1.mir_op, denom.mir_op);   /* (bc-ad)/denom */
+    break;
+  }
+  default: assert (FALSE); return;
+  }
+  complex_store (c2m_ctx, res, ct, 0, r_re);
+  complex_store (c2m_ctx, res, ct, imag_off, r_im);
+}
+
 static void emit_bin_op (c2m_ctx_t c2m_ctx, node_t r, struct type *type, op_t res, op_t op1,
                          op_t op2) {
   MIR_context_t ctx = c2m_ctx->ctx;
@@ -12371,24 +12467,47 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_ADD:
   case N_SUB:
     if (NL_NEXT (NL_HEAD (r->u.ops)) == NULL) { /* unary */
-      MIR_insn_code_t ic = get_mir_insn_code (c2m_ctx, r);
+      if (complex_type_p (((struct expr *) r->attr)->type)) {
+        struct type *utype = ((struct expr *) r->attr)->type;
+        enum basic_type ubt = utype->u.basic_type;
+        MIR_type_t uct = ubt == TP_CFLOAT ? MIR_T_F : ubt == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+        int uimag = ubt == TP_CFLOAT ? sizeof (mir_float) : ubt == TP_CDOUBLE ? sizeof (mir_double)
+                                                                                : sizeof (mir_ldouble);
+        MIR_insn_code_t neg_ic = uct == MIR_T_F ? MIR_FNEG : uct == MIR_T_D ? MIR_DNEG : MIR_LDNEG;
+        op_t src_re, src_im;
 
-      gen_unary_op (c2m_ctx, r, &op1, &res);
-      if (r->code == N_ADD) {
-        ic = (ic == MIR_FADD    ? MIR_FMOV
-              : ic == MIR_DADD  ? MIR_DMOV
-              : ic == MIR_LDADD ? MIR_LDMOV
-                                : MIR_MOV);
-        emit2 (c2m_ctx, ic, res.mir_op, op1.mir_op);
-      } else {
-        ic = (ic == MIR_FSUB    ? MIR_FNEG
-              : ic == MIR_DSUB  ? MIR_DNEG
-              : ic == MIR_LDSUB ? MIR_LDNEG
-              : ic == MIR_SUB   ? MIR_NEG
-                                : MIR_NEGS);
-        emit2 (c2m_ctx, ic, res.mir_op, op1.mir_op);
+        op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+        res = op1;  /* unary + returns same value; unary - negates in place via temp */
+        if (r->code == N_SUB) {
+          src_re = complex_load (c2m_ctx, op1, uct, 0);
+          src_im = complex_load (c2m_ctx, op1, uct, uimag);
+          emit2 (c2m_ctx, neg_ic, src_re.mir_op, src_re.mir_op);
+          emit2 (c2m_ctx, neg_ic, src_im.mir_op, src_im.mir_op);
+          complex_store (c2m_ctx, op1, uct, 0, src_re);
+          complex_store (c2m_ctx, op1, uct, uimag, src_im);
+        }
+        break;
       }
-      break;
+      {
+        MIR_insn_code_t ic = get_mir_insn_code (c2m_ctx, r);
+
+        gen_unary_op (c2m_ctx, r, &op1, &res);
+        if (r->code == N_ADD) {
+          ic = (ic == MIR_FADD    ? MIR_FMOV
+                : ic == MIR_DADD  ? MIR_DMOV
+                : ic == MIR_LDADD ? MIR_LDMOV
+                                  : MIR_MOV);
+          emit2 (c2m_ctx, ic, res.mir_op, op1.mir_op);
+        } else {
+          ic = (ic == MIR_FSUB    ? MIR_FNEG
+                : ic == MIR_DSUB  ? MIR_DNEG
+                : ic == MIR_LDSUB ? MIR_LDNEG
+                : ic == MIR_SUB   ? MIR_NEG
+                                  : MIR_NEGS);
+          emit2 (c2m_ctx, ic, res.mir_op, op1.mir_op);
+        }
+        break;
+      }
     }
   /* falls through */
   case N_AND:
@@ -12399,6 +12518,17 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_MUL:
   case N_DIV:
   case N_MOD:
+    if (complex_type_p (((struct expr *) r->attr)->type)) {
+      op1 = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+      op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, FALSE, NULL, NULL);
+      if (desirable_dest != NULL) {
+        res = *desirable_dest;
+      } else {
+        res = op1;  /* in-place if no dest provided */
+      }
+      gen_complex_bin_op (c2m_ctx, r, res, op1, op2);
+      break;
+    }
     gen_bin_op (c2m_ctx, r, &op1, &op2, &res);
     emit_bin_op (c2m_ctx, r, ((struct expr *) r->attr)->type, res, op1, op2);
     break;
