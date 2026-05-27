@@ -11320,6 +11320,11 @@ static const char *get_param_name (c2m_ctx_t c2m_ctx, struct type *param_type, c
 static void MIR_UNUSED simple_init_arg_vars (c2m_ctx_t c2m_ctx MIR_UNUSED,
                                              void *arg_info MIR_UNUSED) {}
 
+/* Forward declarations for complex helpers defined later */
+static op_t complex_load (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset);
+static void complex_store (c2m_ctx_t c2m_ctx, op_t mem, MIR_type_t ct, int offset, op_t val);
+static op_t complex_temp (c2m_ctx_t c2m_ctx, enum basic_type bt);
+
 static int simple_return_by_addr_p (c2m_ctx_t c2m_ctx MIR_UNUSED, struct type *ret_type) {
   return ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION;
 }
@@ -11331,7 +11336,13 @@ static void MIR_UNUSED simple_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret
   MIR_var_t var;
 
   if (void_type_p (ret_type)) return;
-  if (!simple_return_by_addr_p (c2m_ctx, ret_type)) {
+  if (complex_type_p (ret_type)) {
+    /* Complex return: two scalar results (re, im) */
+    MIR_type_t ct = ret_type->u.basic_type == TP_CFLOAT ? MIR_T_F
+                    : ret_type->u.basic_type == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+    VARR_PUSH (MIR_type_t, res_types, ct);
+    VARR_PUSH (MIR_type_t, res_types, ct);
+  } else if (!simple_return_by_addr_p (c2m_ctx, ret_type)) {
     VARR_PUSH (MIR_type_t, res_types, get_mir_type (c2m_ctx, ret_type));
   } else {
     var.name = RET_ADDR_NAME;
@@ -11350,6 +11361,16 @@ static int MIR_UNUSED simple_add_call_res_op (c2m_ctx_t c2m_ctx, struct type *re
   op_t temp;
 
   if (void_type_p (ret_type)) return -1;
+  if (complex_type_p (ret_type)) {
+    /* Complex return: receive two scalar results (re, im) */
+    MIR_type_t ct = ret_type->u.basic_type == TP_CFLOAT ? MIR_T_F
+                    : ret_type->u.basic_type == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+    temp = get_new_temp (c2m_ctx, ct);
+    VARR_PUSH (MIR_op_t, call_ops, temp.mir_op);
+    temp = get_new_temp (c2m_ctx, ct);
+    VARR_PUSH (MIR_op_t, call_ops, temp.mir_op);
+    return 2;
+  }
   if (!simple_return_by_addr_p (c2m_ctx, ret_type)) {
     type = promote_mir_int_type (get_mir_type (c2m_ctx, ret_type));
     temp = get_new_temp (c2m_ctx, type);
@@ -11366,10 +11387,26 @@ static int MIR_UNUSED simple_add_call_res_op (c2m_ctx_t c2m_ctx, struct type *re
   return 0;
 }
 
-static op_t MIR_UNUSED simple_gen_post_call_res_code (c2m_ctx_t c2m_ctx MIR_UNUSED,
-                                                      struct type *ret_type MIR_UNUSED, op_t res,
-                                                      MIR_insn_t call MIR_UNUSED,
-                                                      size_t call_ops_start MIR_UNUSED) {
+static op_t MIR_UNUSED simple_gen_post_call_res_code (c2m_ctx_t c2m_ctx,
+                                                      struct type *ret_type, op_t res,
+                                                      MIR_insn_t call,
+                                                      size_t call_ops_start) {
+  gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
+  MIR_context_t ctx = c2m_ctx->ctx;
+
+  if (complex_type_p (ret_type)) {
+    /* Store returned (re, im) register pair into complex memory */
+    MIR_type_t ct = ret_type->u.basic_type == TP_CFLOAT ? MIR_T_F
+                    : ret_type->u.basic_type == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+    int imag_off = ret_type->u.basic_type == TP_CFLOAT ? sizeof (mir_float)
+                   : ret_type->u.basic_type == TP_CDOUBLE ? sizeof (mir_double)
+                                                           : sizeof (mir_ldouble);
+    /* The two result operands are at call_ops_start+2 and +3 (after proto+func) */
+    MIR_op_t re_op = VARR_GET (MIR_op_t, call_ops, call_ops_start + 2);
+    MIR_op_t im_op = VARR_GET (MIR_op_t, call_ops, call_ops_start + 3);
+    complex_store (c2m_ctx, res, ct, 0, new_op (NULL, re_op));
+    complex_store (c2m_ctx, res, ct, imag_off, new_op (NULL, im_op));
+  }
   return res;
 }
 
@@ -11380,7 +11417,18 @@ static void MIR_UNUSED simple_add_ret_ops (c2m_ctx_t c2m_ctx, struct type *ret_t
   op_t var;
 
   if (void_type_p (ret_type)) return;
-  if (!simple_return_by_addr_p (c2m_ctx, ret_type)) {
+  if (complex_type_p (ret_type)) {
+    /* Complex return: push two components as separate return values */
+    MIR_type_t ct = ret_type->u.basic_type == TP_CFLOAT ? MIR_T_F
+                    : ret_type->u.basic_type == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+    int imag_off = ret_type->u.basic_type == TP_CFLOAT ? sizeof (mir_float)
+                   : ret_type->u.basic_type == TP_CDOUBLE ? sizeof (mir_double)
+                                                           : sizeof (mir_ldouble);
+    op_t re = complex_load (c2m_ctx, val, ct, 0);
+    op_t im = complex_load (c2m_ctx, val, ct, imag_off);
+    VARR_PUSH (MIR_op_t, ret_ops, re.mir_op);
+    VARR_PUSH (MIR_op_t, ret_ops, im.mir_op);
+  } else if (!simple_return_by_addr_p (c2m_ctx, ret_type)) {
     VARR_PUSH (MIR_op_t, ret_ops, val.mir_op);
   } else {
     ret_addr_reg = MIR_reg (ctx, RET_ADDR_NAME, curr_func->u.func);
@@ -11400,7 +11448,7 @@ static void MIR_UNUSED simple_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name
   MIR_var_t var;
   MIR_type_t type;
 
-  type = (arg_type->mode == TM_STRUCT || arg_type->mode == TM_UNION
+  type = (arg_type->mode == TM_STRUCT || arg_type->mode == TM_UNION || complex_type_p (arg_type)
             ? MIR_T_BLK
             : get_mir_type (c2m_ctx, arg_type));
   var.name = name;
@@ -11414,7 +11462,7 @@ static void MIR_UNUSED simple_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *a
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
   MIR_type_t type;
 
-  type = (arg_type->mode == TM_STRUCT || arg_type->mode == TM_UNION
+  type = (arg_type->mode == TM_STRUCT || arg_type->mode == TM_UNION || complex_type_p (arg_type)
             ? MIR_T_BLK
             : get_mir_type (c2m_ctx, arg_type));
   if (type != MIR_T_BLK) {
@@ -12824,6 +12872,19 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_MUL_ASSIGN:
   case N_DIV_ASSIGN:
   case N_MOD_ASSIGN:
+    if (complex_type_p (((struct expr *) r->attr)->type)) {
+      /* Complex compound assignment: x += y → x = x op y */
+      struct type *rtype = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
+      enum basic_type cbt = ((struct expr *) r->attr)->type->u.basic_type;
+
+      var = gen (c2m_ctx, NL_HEAD (r->u.ops), NULL, NULL, FALSE, NULL, NULL);
+      op2 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, !complex_type_p (rtype), NULL, NULL);
+      if (!complex_type_p (rtype))
+        op2 = scalar_to_complex (c2m_ctx, op2, get_mir_type (c2m_ctx, rtype), cbt);
+      gen_complex_bin_op (c2m_ctx, r, var, var, op2);  /* result stored in-place */
+      res = var;
+      break;
+    }
     gen_assign_bin_op (c2m_ctx, r, ((struct expr *) r->attr)->type2, &val, &op2, &var);
     emit_bin_op (c2m_ctx, r, ((struct expr *) r->attr)->type2, val, val, op2);
     t = get_op_type (c2m_ctx, var);
@@ -13887,7 +13948,8 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     decl_t func_decl = curr_func_def->attr;
     struct type *func_type = func_decl->decl_spec.type;
     struct type *ret_type = func_type->u.func_type->ret_type;
-    int scalar_p = ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION;
+    int scalar_p = ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION
+                   && !complex_type_p (ret_type);
     int ret_by_addr_p = target_return_by_addr_p (c2m_ctx, ret_type);
 
     assert (false_label == NULL && true_label == NULL);

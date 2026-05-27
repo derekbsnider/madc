@@ -106,6 +106,17 @@ static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[
 #endif
   }
 
+  if (complex_type_p (type)) {
+    /* _Complex: classify as two floats or two doubles */
+    MIR_type_t ct = type->u.basic_type == TP_CFLOAT ? MIR_T_F
+                    : type->u.basic_type == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+    if (ct == MIR_T_LD) {
+      return 0; /* _Complex long double is too big for registers */
+    }
+    types[0] = ct == MIR_T_F ? MIR_T_F : MIR_T_D;
+    if (n_qwords >= 2) types[1] = types[0];
+    return n_qwords;
+  }
   assert (scalar_type_p (type));
   switch (mir_type = get_mir_type (c2m_ctx, type)) {
   case MIR_T_F:
@@ -145,7 +156,8 @@ static int process_ret_type (c2m_ctx_t c2m_ctx, struct type *ret_type,
   int n, n_iregs, n_fregs, n_stregs, curr;
   int n_qwords = classify_arg (c2m_ctx, ret_type, qword_types, FALSE);
 
-  if (ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION) return 0;
+  if (ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION && !complex_type_p (ret_type))
+    return 0;
   if (n_qwords != 0) {
     update_last_qword_type (c2m_ctx, ret_type, qword_types, n_qwords);
     n_iregs = n_fregs = n_stregs = curr = 0;
@@ -178,7 +190,8 @@ static int target_return_by_addr_p (c2m_ctx_t c2m_ctx, struct type *ret_type) {
 
   if (void_type_p (ret_type)) return FALSE;
   n_qwords = process_ret_type (c2m_ctx, ret_type, qword_types);
-  return n_qwords == 0 && (ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION);
+  return n_qwords == 0
+         && (ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION || complex_type_p (ret_type));
 }
 
 static void target_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
@@ -194,7 +207,8 @@ static void target_add_res_proto (c2m_ctx_t c2m_ctx, struct type *ret_type,
   if (n_qwords != 0) {
     for (n = 0; n < n_qwords; n++)
       VARR_PUSH (MIR_type_t, res_types, promote_mir_int_type (qword_types[n]));
-  } else if (ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION) {
+  } else if (ret_type->mode != TM_STRUCT && ret_type->mode != TM_UNION
+             && !complex_type_p (ret_type)) {
     type = get_mir_type (c2m_ctx, ret_type);
     VARR_PUSH (MIR_type_t, res_types, type);
   } else { /* return by reference */
@@ -306,7 +320,8 @@ static int process_aggregate_arg (c2m_ctx_t c2m_ctx, struct type *arg_type,
   int n, n_iregs, n_fregs, n_qwords = classify_arg (c2m_ctx, arg_type, qword_types, FALSE);
 
   if (n_qwords == 0) return 0;
-  if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION) return 0;
+  if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION && !complex_type_p (arg_type))
+    return 0;
   update_last_qword_type (c2m_ctx, arg_type, qword_types, n_qwords);
   n_iregs = n_fregs = 0;
   for (n = 0; n < n_qwords; n++) { /* start from the last qword */
@@ -369,7 +384,10 @@ static void target_add_arg_proto (c2m_ctx_t c2m_ctx, const char *name, struct ty
 
   /* pass aggregates on the stack and pass by value for others: */
   var.name = name;
-  if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION) {
+  if (complex_type_p (arg_type)) {
+    var.type = get_blk_type (n_qwords, qword_types);
+    var.size = type_size (c2m_ctx, arg_type);
+  } else if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION) {
     type = get_mir_type (c2m_ctx, arg_type);
     var.type = type;
     if (type == MIR_T_F || type == MIR_T_D)
@@ -392,7 +410,7 @@ static void target_add_call_arg_op (c2m_ctx_t c2m_ctx, struct type *arg_type,
   int n_qwords = process_aggregate_arg (c2m_ctx, arg_type, arg_info, qword_types);
 
   /* pass aggregates on the stack and pass by value for others: */
-  if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION) {
+  if (arg_type->mode != TM_STRUCT && arg_type->mode != TM_UNION && !complex_type_p (arg_type)) {
     type = get_mir_type (c2m_ctx, arg_type);
     VARR_PUSH (MIR_op_t, call_ops, arg.mir_op);
     if (type == MIR_T_F || type == MIR_T_D)
