@@ -260,6 +260,9 @@ enum basic_type {
   TP_FLOAT,
   TP_DOUBLE,
   TP_LDOUBLE,
+  TP_CFLOAT,   /* _Complex float */
+  TP_CDOUBLE,  /* _Complex double */
+  TP_CLDOUBLE, /* _Complex long double */
 };
 
 struct type_qual {
@@ -6093,6 +6096,9 @@ static int basic_type_size (enum basic_type bt) {
   case TP_FLOAT: return sizeof (mir_float);
   case TP_DOUBLE: return sizeof (mir_double);
   case TP_LDOUBLE: return sizeof (mir_ldouble);
+  case TP_CFLOAT: return 2 * sizeof (mir_float);
+  case TP_CDOUBLE: return 2 * sizeof (mir_double);
+  case TP_CLDOUBLE: return 2 * sizeof (mir_ldouble);
   case TP_VOID: return 1;  // ???
   default: abort ();
   }
@@ -6100,8 +6106,11 @@ static int basic_type_size (enum basic_type bt) {
 
 static int basic_type_align (enum basic_type bt) {
 #ifdef MIR_LDOUBLE_ALIGN
-  if (bt == TP_LDOUBLE) return MIR_LDOUBLE_ALIGN;
+  if (bt == TP_LDOUBLE || bt == TP_CLDOUBLE) return MIR_LDOUBLE_ALIGN;
 #endif
+  if (bt == TP_CFLOAT) return sizeof (mir_float);
+  if (bt == TP_CDOUBLE) return sizeof (mir_double);
+  if (bt == TP_CLDOUBLE) return sizeof (mir_ldouble);
   return basic_type_size (bt);
 }
 
