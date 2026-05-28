@@ -10020,6 +10020,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
 
 		DataDef *base_member_dd = &mtype->definition;
+		// Member declared via a user typedef alias (not a builtin or
+		// "struct tag"): record it so CIR emits ID("alias") for this
+		// member, matching c2m's node_t tree. Shared by every declarator
+		// on this line (`sh_int a, b;`).
+		std::string member_typedef_alias;
+		if ( mtype->str != mtype->definition.name && pgm.datatype_map.count(mtype->str) )
+		    member_typedef_alias = mtype->str;
 		// skip const/restrict qualifiers between type and pointer stars
 		// e.g. `char const *p;`
 		while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
@@ -10103,6 +10110,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    member_dd = fptr_type;
 
 			    dds->addMember(mname, *member_dd, 1);
+			    if ( !member_typedef_alias.empty() && !dds->members.empty() )
+				dds->members.back().typedef_name = member_typedef_alias;
 			    DBG(cout << "TokenSTRUCT::parse() added function pointer member " << mname
 				<< " (size " << member_dd->size << ", total " << dds->size << ')' << endl);
 
@@ -10176,6 +10185,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			dds->addMember(mname, *member_dd, member_count,
 			    member_count_expr, member_is_array_decl, &member_dims);
+			if ( !member_typedef_alias.empty() && !dds->members.empty() )
+			    dds->members.back().typedef_name = member_typedef_alias;
 			if ( member_align > 0 )
 			    dds->apply_member_alignment(member_align);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
@@ -13871,6 +13882,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     DataDef *decl_type = base_type;
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
+    // If this declaration names a user typedef alias (not a builtin, where
+    // tb->str == definition.name, nor a "struct tag" type, which isn't in
+    // datatype_map), record the alias so the CIR backend emits ID("alias")
+    // at the usage site — matching c2m's node_t tree. Every declarator in a
+    // comma list re-enters parseDeclaration with a clone of the same tb, so
+    // setting this on each created Variable covers them all.
+    std::string decl_typedef_alias;
+    if ( tb->str != tb->definition.name && datatype_map.count(tb->str) )
+	decl_typedef_alias = tb->str;
     // Function-pointer typedefs (DataDefFPTR) already represent pointers;
     // `DO_FUN *cmd;` and `DO_FUN cmd;` both name a function-pointer variable.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
@@ -14094,6 +14114,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 	bool alloc = (!code || gotstatic) ? true : false;
 	var = addVariable(code, *fptr_type, id, 1, NULL, alloc);
+	if ( !decl_typedef_alias.empty() )
+	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
 	td->file = tb->file;
 	td->line = tb->line;
@@ -14209,6 +14231,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 	    bool alloc = (!code || gotstatic) ? true : false;
 	    var = addVariable(code, *decl_type, id, 1, NULL, alloc);
+	    if ( !decl_typedef_alias.empty() )
+		var->typedef_name = decl_typedef_alias;
 	    TokenDecl *td = new TokenDecl(*var);
 	    td->file = tb->file;
 	    td->line = tb->line;
@@ -14701,6 +14725,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	else
 	    var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
+	if ( !decl_typedef_alias.empty() )
+	    var->typedef_name = decl_typedef_alias;
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(*this, code, var);
 	if ( gotstatic )
