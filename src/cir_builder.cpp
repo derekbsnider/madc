@@ -1139,3 +1139,53 @@ node_t CirBuilder::translate_module(Program *prog)
 	append(module, top_list);
 	return module;
 }
+
+// ---------------------------------------------------------------------------
+// cir_dump_nodes — madc-owned walker over the cir_node tree.
+// ---------------------------------------------------------------------------
+// Prints our enhanced CIR tree directly (not via c2mir's dumper): node type,
+// literal payload, and the +madc fields (source position, typedef alias).
+// Leaf nodes are codes <= N_ID (payload lives in the union); every other
+// node iterates its u.ops children. Every node in a CirBuilder tree is an
+// arena-allocated cir_node, so CIR_NODE() is always valid here.
+
+static void cir_dump_node(FILE *f, node_t n, int indent)
+{
+	if (!n) return;
+	for (int i = 0; i < indent; i++) fputc(' ', f);
+	fprintf(f, "%s", c2mir_node_code_name((c2mir_node_code_t)n->code));
+
+	switch (n->code) {
+	case N_I: case N_L:  fprintf(f, " %lld", (long long)n->u.l); break;
+	case N_LL:           fprintf(f, " %lld", (long long)n->u.ll); break;
+	case N_U: case N_UL: fprintf(f, " %llu", (unsigned long long)n->u.ul); break;
+	case N_ULL:          fprintf(f, " %llu", (unsigned long long)n->u.ull); break;
+	case N_F:            fprintf(f, " %g", (double)n->u.f); break;
+	case N_D:            fprintf(f, " %g", n->u.d); break;
+	case N_CH: case N_CH16: case N_CH32: fprintf(f, " '%d'", (int)n->u.ch); break;
+	case N_STR: case N_STR16: case N_STR32:
+		fprintf(f, " \"%s\"", n->u.s.s ? n->u.s.s : ""); break;
+	case N_ID:           fprintf(f, " %s", n->u.s.s ? n->u.s.s : ""); break;
+	default: break;
+	}
+
+	cir_node *cn = CIR_NODE(n);
+	if (cn->typedef_name) fprintf(f, "  [typedef=%s]", cn->typedef_name);
+	if (cn->src_file) fprintf(f, "  @%s:%d", cn->src_file, cn->src_line);
+	fputc('\n', f);
+
+	if (n->code > N_ID) {
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op) break;
+			cir_dump_node(f, op, indent + 2);
+		}
+	}
+}
+
+void cir_dump_nodes(FILE *f, node_t tree)
+{
+	fprintf(f, "=== CIR NODE TREE (+madc) ===\n");
+	cir_dump_node(f, tree, 0);
+	fprintf(f, "=== END CIR NODE TREE ===\n");
+}

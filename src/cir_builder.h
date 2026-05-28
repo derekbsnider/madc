@@ -97,4 +97,9 @@ public:
 	node_t translate_module(Program *prog);
 };
 
+// Dump the cir_node tree (our own walker, not c2mir's): node types,
+// literal payloads, and the +madc fields (source position, typedef
+// alias). Used by --dump-nodes.
+void cir_dump_nodes(FILE *f, node_t tree);
+
 #endif // __CIR_BUILDER_H

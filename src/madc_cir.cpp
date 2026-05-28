@@ -1613,7 +1613,7 @@ static void *cir_import_resolver(const char *name)
 
 int madc_cir_execute(Program *prog, const char *source_name,
 		     int user_argc, char **user_argv,
-		     bool dump_tree)
+		     bool dump_tree, bool dump_nodes)
 {
     MIR_context_t ctx = MIR_init();
     c2mir_init(ctx);
@@ -1646,6 +1646,9 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	MIR_finish(ctx);
 	return -1;
     }
+
+    if (dump_nodes)
+	cir_dump_nodes(stderr, tree);
 
     if (dump_tree) {
 	fprintf(stderr, "=== CIR TREE (pre-check) ===\n");

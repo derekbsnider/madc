@@ -44,9 +44,11 @@ void cir_finish(c2m_ctx_t c2m);
 
 // Full CIR pipeline: tokenize+parse → CIR translate → c2mir compile → JIT execute.
 // Returns the exit code from main(), or -1 on failure.
-// If dump_tree is true, dumps the CIR node tree to stderr before checking.
+// If dump_tree is true, dumps the c2mir-format tree (c2mir_dump_tree, for
+// c2m -d comparison). If dump_nodes is true, dumps our cir_node tree via
+// the madc-owned walker (cir_dump_nodes, showing +madc fields).
 int madc_cir_execute(Program *prog, const char *source_name,
 		     int user_argc, char **user_argv,
-		     bool dump_tree = false);
+		     bool dump_tree = false, bool dump_nodes = false);
 
 #endif // __MADC_CIR_H

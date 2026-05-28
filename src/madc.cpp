@@ -42,7 +42,7 @@ extern int madc_mir_execute(const std::string &c_source,
                              int user_argc, char **user_argv);
 extern int madc_cir_execute(Program *prog, const char *source_name,
                              int user_argc, char **user_argv,
-                             bool dump_tree = false);
+                             bool dump_tree = false, bool dump_nodes = false);
 
 using namespace std;
 
@@ -424,6 +424,7 @@ int main(int argc, char **argv)
     bool use_mir_backend = true;  // MIR is the default backend
     bool use_cir_backend = false; // CIR: direct AST → c2mir (libc2mir)
     bool dump_cir = false;        // --dump-cir: dump CIR tree before checking
+    bool dump_nodes = false;      // --dump-nodes: dump cir_node tree via madc walker
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -484,6 +485,11 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir") == 0) {
             dump_cir = true;
+            use_cir_backend = true;
+            use_mir_backend = false;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--dump-nodes") == 0) {
+            dump_nodes = true;
             use_cir_backend = true;
             use_mir_backend = false;
             filearg = i + 1;
@@ -595,7 +601,7 @@ int main(int argc, char **argv)
 	    gettimeofday(&before, NULL);
 	    int result = madc_cir_execute(prog.get(), argv[filearg],
 					  argc - filearg, argv + filearg,
-					  dump_cir);
+					  dump_cir, dump_nodes);
 	    gettimeofday(&after, NULL);
 	    DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
 	    return (result < 0) ? 1 : 0;
