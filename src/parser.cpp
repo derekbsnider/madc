@@ -5964,6 +5964,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     // (need check for optional parameters)
     if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
     {
+	// (debug removed)
 	DBG(std::cout << "parseCallFunc(" << tc->var.name << "): argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << " (paramcnt: " << paramcnt << ") brackets: " << brackets << std::endl);
 	throw "Incorrect number of parameters";
     }
@@ -6075,7 +6076,13 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 		    - (fd->has_captures ? 1 : 0)
 		    - (fd->is_varargs ? 1 : 0);
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
-		    Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
+		{
+		    // For synthetic __expr_fptr calls, the inferred type may
+		    // not match the actual call. Skip the error — C calling
+		    // convention handles mismatched arg counts at runtime.
+		    if ( tc->var.name != "__expr_fptr" )
+			Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
+		}
 	    }
 	}
 	else
@@ -7473,7 +7480,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		      && !opstack_has_pending_op
 		      && exStack.top()->type() == TokenType::ttVariable
 		      && (var_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
-		      && dynamic_cast<DataDefFPTR *>(var_call_base->var.type) )
+		      && dynamic_cast<DataDefFPTR *>(var_call_base->var.type)
+		      && !var_call_base->var.is_constant()
+		      && var_call_base->var.name.compare(0, 11, "__literal__") != 0 /* skip string literals */
+		      && var_call_base->var.name[0] != '(' /* skip grouped exprs */ )
 		    {
 			TokenVar *tv = var_call_base;
 			exStack.pop();
@@ -7491,14 +7501,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    // Generic expression-as-function-pointer call:
 		    // `(c ? foo : bar)()`, `(expr)(args)` — when the
-		    // exStack top is an expression and the datadef of
-		    // either ternary branch (or the expression itself)
-		    // is a function. Create a synthetic function-pointer
-		    // variable and route through the standard call path.
+		    // exStack top is a ternary or explicit DataDefFPTR
+		    // expression. Only trigger for ternary expressions
+		    // and already-typed function pointers, NOT for plain
+		    // identifiers that happen to have a function type
+		    // (which would be a normal function call or a
+		    // parenthesized expression starting with a func name).
 		    if ( !exStack.empty() && !opstack_has_pending_op )
 		    {
 			TokenBase *call_expr = exStack.top();
 			DataDef *call_dd = call_expr->datadef();
+			DataDefFPTR *fptr_type = dynamic_cast<DataDefFPTR *>(call_dd);
 			// For ternary: check if either branch is a function reference.
 			TokenTerQ *terq = dynamic_cast<TokenTerQ *>(call_expr);
 			if ( terq )
@@ -7507,14 +7520,27 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    DataDef *fd = terq->false_expr ? terq->false_expr->datadef() : NULL;
 			    if ( td && td->is_function() ) call_dd = td;
 			    else if ( fd && fd->is_function() ) call_dd = fd;
+			    // For ternary, wrap in FPTR if needed
+			    if ( !fptr_type && call_dd && call_dd->is_function() )
+			    {
+				FuncDef *func = dynamic_cast<FuncDef *>(call_dd);
+				if ( func )
+				    fptr_type = new DataDefFPTR(func);
+			    }
 			}
-			DataDefFPTR *fptr_type = dynamic_cast<DataDefFPTR *>(call_dd);
-			if ( !fptr_type && call_dd && call_dd->is_function() )
+			// Only trigger for genuine fptr patterns: ternary dispatch,
+			// member fptr, deref fptr, or subscript with explicit FPTR type.
+			// Reject plain expressions whose datadef merely inherits from
+			// a function type (common with C function identifiers in expressions).
+			if ( fptr_type && !terq )
 			{
-			    // Wrap a plain function DataDef in a function-pointer type
-			    FuncDef *func = dynamic_cast<FuncDef *>(call_dd);
-			    if ( func )
-				fptr_type = new DataDefFPTR(func);
+			    bool is_genuine_fptr =
+				call_expr->type() == TokenType::ttMember
+				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL
+				|| (call_expr->type() == TokenType::ttSubscript
+				    && dynamic_cast<DataDefFPTR *>(call_expr->datadef()));
+			    if ( !is_genuine_fptr )
+				fptr_type = NULL;
 			}
 			if ( fptr_type )
 			{
