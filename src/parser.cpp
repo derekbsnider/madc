@@ -11257,6 +11257,22 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'typedef'" << flush;
 
+    // Record a typedef in source order for the CIR backend and return an
+    // AST node so the typedef keeps its position. The legacy JIT/MIR
+    // paths ignore the node (compile() is a no-op; MIR re-parses tokens).
+    auto record_typedef = [&](const std::string &alias, DataDef *dd,
+			      TokenDataType *tdt) -> TokenBase * {
+	Program::TopDecl td;
+	td.kind = Program::DeclKind::dkTypedef;
+	td.name = alias;
+	td.dd = dd;
+	td.tdt = tdt;
+	td.file = TokenBase::_parse_file;
+	td.line = TokenBase::_parse_line;
+	pgm.top_decls.push_back(td);
+	return new TokenTypedefDecl(alias, dd);
+    };
+
     // skip const/restrict qualifiers: `typedef const struct X *const_ptr;`
     while ( tn && (tn->id() == TokenID::tkCONST
 		|| tn->id() == TokenID::tkRESTRICT
@@ -11313,7 +11329,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return NULL;
+	return record_typedef(alias, enum_alias_dd, tdt);
     }
 
     // typedef TYPE alias; — primitive type alias
@@ -11375,7 +11391,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 2): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return NULL;
+	return record_typedef(alias, fptr, tdt);
     }
 
     // get alias name (may be an identifier or an existing type name being redefined)
@@ -11405,7 +11421,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 1): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return NULL;
+	return record_typedef(alias, fptr, tdt);
     }
 
     // Preserve typedef'd array shape so sizeof(NAME) can reflect the real
@@ -11457,7 +11473,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	pgm.nextToken();
 
-    return NULL;
+    return record_typedef(alias, base_dd, tdt);
 }
 
 // Parse a function-pointer parameter list. The opening '(' has already been
