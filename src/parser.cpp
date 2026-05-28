@@ -6076,13 +6076,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 		    - (fd->has_captures ? 1 : 0)
 		    - (fd->is_varargs ? 1 : 0);
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
-		{
-		    // For synthetic __expr_fptr calls, the inferred type may
-		    // not match the actual call. Skip the error — C calling
-		    // convention handles mismatched arg counts at runtime.
-		    if ( tc->var.name != "__expr_fptr" )
-			Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
-		}
+		    Throw(tc) << "Incorrect number of parameters for '" << tc->var.name << "': expected " << expected << " got " << tc->argc() << flush;
 	    }
 	}
 	else
@@ -7529,19 +7523,28 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    }
 			}
 			// Only trigger for genuine fptr patterns: ternary dispatch,
-			// member fptr, deref fptr, or subscript with explicit FPTR type.
-			// Reject plain expressions whose datadef merely inherits from
-			// a function type (common with C function identifiers in expressions).
+			// member fptr, or deref fptr (*fptr)(args).
+			// Do NOT trigger for subscript expressions or plain
+			// identifiers — those are normal expressions followed by
+			// grouping parens, not function pointer invocations.
+			// (Subscript fptr calls like table[i](args) are rare and
+			// were not supported pre-v0.14; they cause false matches
+			// on SMAUG's DO_FUN/SPEC_FUN typedef system.)
 			if ( fptr_type && !terq )
 			{
 			    bool is_genuine_fptr =
 				call_expr->type() == TokenType::ttMember
-				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL
-				|| (call_expr->type() == TokenType::ttSubscript
-				    && dynamic_cast<DataDefFPTR *>(call_expr->datadef()));
+				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL;
 			    if ( !is_genuine_fptr )
 				fptr_type = NULL;
 			}
+			// Only trigger for: ternary dispatch or deref fptr.
+			// Members and subscripts are handled by their own dedicated
+			// fptr paths earlier in the code. The generic path's
+			// is_function() check is too aggressive for those.
+			if ( fptr_type && !terq
+			  && dynamic_cast<TokenDerefExpr *>(call_expr) == NULL )
+			    fptr_type = NULL;
 			if ( fptr_type )
 			{
 			    exStack.pop();
