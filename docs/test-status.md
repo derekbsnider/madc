@@ -1,9 +1,9 @@
 # Test Status
 
-Test results as of May 28, 2026 (v0.23.0, GCC parity 1649/1685 = 97.9%, 475 integration tests, 294 unit tests).
+Test results as of May 28, 2026 (v0.24.0, GCC parity 1649/1685 = 97.9%, 475 integration tests, 294 unit tests).
 
-MIR default backend: 417 passed, 0 failed, 58 skipped.
-10 of 12 _Complex tests now pass via native c2mir _Complex support.
+MIR default backend: 419 passed, 0 failed, 56 skipped.
+All 12 _Complex tests now pass via native c2mir _Complex support (13 commits).
 
 Run with: `bin/madc tests/<name>.mad` or `make -C src fulltest`
 

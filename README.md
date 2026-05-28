@@ -185,7 +185,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 410 integration tests pass (0 failing, 65 skipped). 294 unit tests pass. GCC torture test parity: 1649/1685 (97.9%). MIR is the default backend. (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status: 419 integration tests pass (0 failing, 56 skipped). 294 unit tests pass. GCC torture test parity: 1649/1685 (97.9%). MIR is the default backend. (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -226,10 +226,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.23.0** (2026-05-27) — **MIR default backend, clang++ compiler.** Transpiler parity 400→410, string literals as const char *, c2mir built-in headers, MADC_EXTERN_C macros, _Complex type mapping (WIP). 410 pass, 0 fail, 65 skip.
+**v0.24.0** (2026-05-28) — **Native C99 `_Complex` in c2mir.** All 12 `_Complex` tests passing, complex constant folding, `__real__`/`__imag__` grammar operators, transpiler cleanup. 419 pass, 0 fail, 56 skip.
 
 ### Recent Releases
 
+- **v0.24.0** — Native C99 `_Complex` in c2mir, transpiler parity 410→419
 - **v0.23.0** — MIR default backend, clang++ compiler, transpiler parity 400→410
 - **v0.22.0** — Gecko+MIR transpiler: sema pre-pass, string runtime, O(1) anode dispatch, iostream wrappers
 - **v0.21.1** — Const enforcement, access control, token position, MIR backend architecture decision

@@ -1,10 +1,10 @@
 {
-  "version": "0.23.0",
+  "version": "0.24.0",
   "date": "2026-05-28",
   "build_status": "green",
   "test_status": {
     "unit_tests": "294 passed, 0 failed (across all test binaries)",
-    "integration_tests": "417 passed, 0 failed, 0 timed out, 58 skipped"
+    "integration_tests": "419 passed, 0 failed, 0 timed out, 56 skipped"
   },
   "phases": {
     "phase_1": "complete",
@@ -23,7 +23,7 @@
     "transpiler_phase_5_classes": "complete",
     "transpiler_phase_6a_c_correctness": "complete",
     "transpiler_phase_6b_madc_features": "complete",
-    "transpiler_parity": "in_progress — 87.8% (417/475, 58 skipped)"
+    "transpiler_parity": "in_progress — 88.2% (419/475, 56 skipped)"
   },
   "features": [
     "MIR is the default backend (--backend=jit for legacy asmjit)",
@@ -37,6 +37,7 @@
     "c2mir _Complex support — native C99 complex types (our fork, 12 commits)",
     "_Complex double/float/long double: arithmetic, ==, !=, ~, __real__, __imag__",
     "Imaginary literals (1.0i, 2.0iF, etc.) pass through to c2mir natively",
+    "Complex constant folding — global _Complex initializers, complex-to-scalar cast (C99 6.3.1.7)",
     "__real__/__imag__ as first-class Gecko grammar operators (AN_REALPART/AN_IMAGPART)",
     "Itanium ABI name mangler (types, functions, methods, ctors, dtors, operators)",
     "Phase 2 semantic pre-pass (SemaInfo, TypeClass enum)",
@@ -73,7 +74,7 @@
     "GCC torture suite at 97.9% (1649/1685)"
   ],
   "known_issues": [
-    "Transpiler: 2 _Complex tests remaining — global complex init (constant folding), integer complex types",
+    "Transpiler: _Complex support complete — all 12 tests passing (13 c2mir commits)",
     "Transpiler: c2mir does not support SIMD/vector_size (11 tests deferred)",
     "Transpiler: c2mir does not support inline asm (4 tests deferred)",
     "Transpiler: c2mir does not support wchar_t/wide strings (2 tests deferred)",
@@ -87,8 +88,6 @@
     "Legacy: alloca(func_call()) causes asmjit InvalidInstruction (2 tests)"
   ],
   "remaining_todo": [
-    "c2mir _Complex: global complex constant initializers (constant expression folding)",
-    "c2mir _Complex: integer complex types (_Complex int, _Complex unsigned short)",
     "c2mir _Complex: crealf/cimagf/conj builtins (need declarations or <complex.h>)",
     "Add system headers to c2mir fork (stdio.h, stdlib.h, string.h, etc.)",
     "Eval API extern C wrappers + name mapping (5 tests)",
