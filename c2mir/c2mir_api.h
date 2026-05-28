@@ -61,6 +61,10 @@ void c2mir_set_node_pos (c2m_ctx_t c2m_ctx, node_t n, c2mir_pos_t pos);
 int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
                         node_t tree, const char *module_name);
 
+/* Dump the raw AST tree (pre-check, no annotations).
+   Output format matches c2m -d for easy diffing. */
+void c2mir_dump_tree (c2m_ctx_t c2m_ctx, FILE *f, node_t tree);
+
 #ifdef __cplusplus
 }
 #endif

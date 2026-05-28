@@ -15033,6 +15033,11 @@ int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
   return n_errors == 0;
 }
 
+void c2mir_dump_tree (c2m_ctx_t c2m_ctx, FILE *f, node_t tree) {
+  if (c2m_ctx == NULL || tree == NULL || f == NULL) return;
+  print_node (c2m_ctx, f, tree, 0, FALSE);
+}
+
 /* Local Variables:                */
 /* mode: c                         */
 /* page-delimiter: "/\\* New Page" */
