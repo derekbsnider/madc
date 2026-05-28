@@ -245,3 +245,52 @@ TEST_CASE("CIR: break and continue") {
 	"  return sum; }"
     ) == 25);
 }
+
+TEST_CASE("CIR: goto and labels") {
+    CHECK(cir_run(
+	"int main() { int x; x = 0; goto skip; x = 99; skip: return x; }"
+    ) == 0);
+    CHECK(cir_run(
+	"int main() { int i; i = 0; loop: if (i >= 5) goto done;\n"
+	"  i = i + 1; goto loop; done: return i; }"
+    ) == 5);
+}
+
+TEST_CASE("CIR: variable initializers") {
+    CHECK(cir_run("int main() { int x = 42; return x; }") == 42);
+    CHECK(cir_run("int main() { int a = 3; int b = 4; return a + b; }") == 7);
+}
+
+TEST_CASE("CIR: enum constants") {
+    CHECK(cir_run(
+	"enum { RED, GREEN = 5, BLUE };\n"
+	"int main() { return GREEN; }"
+    ) == 5);
+    CHECK(cir_run(
+	"enum { A, B, C, D };\n"
+	"int main() { return D; }"
+    ) == 3);
+}
+
+TEST_CASE("CIR: static global") {
+    CHECK(cir_run(
+	"int count;\n"
+	"void inc(void) { count = count + 1; }\n"
+	"int main() { count = 0; inc(); inc(); inc(); return count; }"
+    ) == 3);
+}
+
+TEST_CASE("CIR: nested function calls") {
+    CHECK(cir_run(
+	"int double_it(int x) { return x * 2; }\n"
+	"int add_one(int x) { return x + 1; }\n"
+	"int main() { return add_one(double_it(5)); }"
+    ) == 11);
+}
+
+TEST_CASE("CIR: recursive function") {
+    CHECK(cir_run(
+	"int factorial(int n) { if (n <= 1) return 1; return n * factorial(n - 1); }\n"
+	"int main() { return factorial(5); }"
+    ) == 120);
+}

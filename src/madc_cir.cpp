@@ -151,6 +151,10 @@ static node_t cir_translate_expr(c2m_ctx_t c2m, TokenBase *tb)
     if (tb->type() == TokenType::ttVariable) {
 	TokenVar *tv = dynamic_cast<TokenVar *>(tb);
 	if (tv) {
+	    // Constant variables (enum values) → emit literal value
+	    if (tv->var.is_constant()) {
+		return c2mir_new_i_node(c2m, tv->var.get<int64_t>(), pos);
+	    }
 	    return c2mir_new_str_node(c2m, N_ID, tv->var.name.c_str(),
 				     tv->var.name.size() + 1, pos);
 	}
@@ -543,10 +547,61 @@ static node_t cir_translate_block(c2m_ctx_t c2m, TokenCpnd *tc)
 	c2mir_op_append(c2m, items, spec_decl);
     }
 
-    // Then emit statements
-    for (TokenStmt *ts : tc->statements) {
-	node_t s = cir_translate_stmt(c2m, (TokenBase *)ts);
-	if (s) c2mir_op_append(c2m, items, s);
+    // Then emit statements, handling labels.
+    // Labels attach to the NEXT statement's label LIST in c2mir.
+    std::vector<std::string> pending_labels;
+    for (size_t si = 0; si < tc->statements.size(); si++) {
+	TokenBase *stb = (TokenBase *)tc->statements[si];
+
+	// Collect labels
+	TokenLabel *tl = dynamic_cast<TokenLabel *>(stb);
+	if (tl) {
+	    pending_labels.push_back(tl->name);
+	    continue;
+	}
+
+	node_t s = cir_translate_stmt(c2m, stb);
+	if (!s) continue;
+
+	// If we have pending labels, inject them into the statement.
+	// c2mir statements have a label LIST as their first child.
+	// We can't easily replace children in a built node, so we
+	// insert a labeled empty expression BEFORE the actual statement.
+	if (!pending_labels.empty()) {
+	    node_t label_list = c2mir_new_node(c2m, N_LIST);
+	    for (auto &lname : pending_labels) {
+		node_t lid = c2mir_new_str_node(c2m, N_ID, lname.c_str(),
+						lname.size() + 1, pos);
+		node_t label = c2mir_new_node1(c2m, N_LABEL, lid);
+		c2mir_set_node_pos(c2m, label, pos);
+		c2mir_op_append(c2m, label_list, label);
+	    }
+	    pending_labels.clear();
+
+	    // Emit a labeled no-op before the actual statement
+	    node_t labeled_nop = c2mir_new_node2(c2m, N_EXPR,
+		label_list, c2mir_new_i_node(c2m, 0, pos));
+	    c2mir_set_node_pos(c2m, labeled_nop, pos);
+	    c2mir_op_append(c2m, items, labeled_nop);
+	}
+
+	c2mir_op_append(c2m, items, s);
+    }
+
+    // If labels remain at end of block (label before closing }), emit empty stmt
+    if (!pending_labels.empty()) {
+	node_t label_list = c2mir_new_node(c2m, N_LIST);
+	for (auto &lname : pending_labels) {
+	    node_t lid = c2mir_new_str_node(c2m, N_ID, lname.c_str(),
+					    lname.size() + 1, pos);
+	    node_t label = c2mir_new_node1(c2m, N_LABEL, lid);
+	    c2mir_set_node_pos(c2m, label, pos);
+	    c2mir_op_append(c2m, label_list, label);
+	}
+	node_t empty = c2mir_new_node2(c2m, N_EXPR,
+	    label_list, c2mir_new_i_node(c2m, 0, pos));
+	c2mir_set_node_pos(c2m, empty, pos);
+	c2mir_op_append(c2m, items, empty);
     }
     c2mir_set_node_pos(c2m, items, pos);
 
@@ -775,6 +830,49 @@ static node_t cir_translate_stmt(c2m_ctx_t c2m, TokenBase *tb)
     {
 	TokenSWITCH *ts = dynamic_cast<TokenSWITCH *>(tb);
 	if (ts) return cir_translate_switch(c2m, ts);
+    }
+
+    // Goto: GOTO(LIST(), ID("label"))
+    {
+	TokenGOTO *tg = dynamic_cast<TokenGOTO *>(tb);
+	if (tg) {
+	    node_t label_id = c2mir_new_str_node(c2m, N_ID, tg->target.c_str(),
+						 tg->target.size() + 1, pos);
+	    node_t n = c2mir_new_node2(c2m, N_GOTO,
+		c2mir_new_node(c2m, N_LIST), label_id);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // Label: handled in cir_translate_block (attaches to next statement)
+    {
+	TokenLabel *tl = dynamic_cast<TokenLabel *>(tb);
+	if (tl) return NULL;
+    }
+
+    // Declaration with initializer: emit as SPEC_DECL with init expr
+    {
+	TokenDecl *td = dynamic_cast<TokenDecl *>(tb);
+	if (td && td->initialize) {
+	    c2mir_pos_t dpos = pos;
+	    node_t init_expr = cir_translate_expr(c2m, td->initialize);
+	    node_t spec_decl = cir_var_decl(c2m, &td->var, dpos);
+	    // Replace the 5th child (IGNORE) with the initializer
+	    // The 5th child is at position 4 in the ops list
+	    // Since we can't easily replace, rebuild with initializer
+	    // Actually, cir_var_decl already builds the SPEC_DECL. We need
+	    // to modify it. For now, just emit the declaration followed by
+	    // an assignment.
+	    node_t var_id = c2mir_new_str_node(c2m, N_ID, td->var.name.c_str(),
+					       td->var.name.size() + 1, dpos);
+	    node_t assign = c2mir_new_node2(c2m, N_ASSIGN, var_id, init_expr);
+	    c2mir_set_node_pos(c2m, assign, dpos);
+	    node_t stmt = c2mir_new_node2(c2m, N_EXPR,
+		c2mir_new_node(c2m, N_LIST), assign);
+	    c2mir_set_node_pos(c2m, stmt, dpos);
+	    return stmt;
+	}
     }
 
     // Break
