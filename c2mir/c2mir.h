@@ -26,6 +26,7 @@ struct c2mir_options {
   size_t macro_commands_num, include_dirs_num;
   struct c2mir_macro_command *macro_commands;
   const char **include_dirs;
+  int external_tree_p;  /* non-zero: caller owns AST nodes, c2mir won't free them */
 };
 
 void c2mir_init (MIR_context_t ctx);

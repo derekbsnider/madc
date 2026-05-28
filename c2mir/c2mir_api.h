@@ -56,6 +56,28 @@ node_t c2mir_new_str_node (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, const char *
 
 void c2mir_set_node_pos (c2m_ctx_t c2m_ctx, node_t n, c2mir_pos_t pos);
 
+/* ---- External tree support ---- */
+
+/* Assign the next uid and ensure node_positions has a slot.
+   Used by external code that allocates its own node memory. */
+unsigned c2mir_next_uid (c2m_ctx_t c2m_ctx);
+
+/* Intern a string in c2mir's string table. Returns the interned pointer.
+   The returned pointer is valid until c2mir_finish(). */
+const char *c2mir_uniq_str (c2m_ctx_t c2m_ctx, const char *s, size_t len);
+
+/* Node-code -> name (e.g. N_MODULE -> "MODULE"), for external AST
+   walkers/dumpers. Matches the names c2m -d prints. */
+const char *c2mir_node_code_name (c2mir_node_code_t code);
+
+/* i-th operand of a composite node (NULL past the end), for external
+   AST walkers that can't see c2mir's generated DLIST accessors. */
+node_t c2mir_node_op (node_t n, int i);
+
+/* Initialize the DLIST ops field of an externally-allocated node.
+   Must be called before appending children. */
+void c2mir_init_node_ops (node_t n);
+
 /* ---- Compilation from external AST ---- */
 
 int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,

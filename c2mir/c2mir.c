@@ -15006,6 +15006,38 @@ void c2mir_set_node_pos (c2m_ctx_t c2m_ctx, node_t n, c2mir_pos_t pos) {
   set_node_pos (c2m_ctx, n, p);
 }
 
+/* ---- External tree support ---- */
+
+unsigned c2mir_next_uid (c2m_ctx_t c2m_ctx) {
+  parse_ctx_t parse_ctx = c2m_ctx->parse_ctx;
+  unsigned uid = curr_uid++;
+  while (uid >= VARR_LENGTH (pos_t, node_positions))
+    VARR_PUSH (pos_t, node_positions, no_pos);
+  return uid;
+}
+
+const char *c2mir_uniq_str (c2m_ctx_t c2m_ctx, const char *s, size_t len) {
+  str_t str = uniq_str (c2m_ctx, s, len);
+  return str.s;
+}
+
+/* Public node-code -> name, for external AST walkers/dumpers. */
+const char *c2mir_node_code_name (c2mir_node_code_t code) {
+  return get_node_name ((node_code_t) code);
+}
+
+/* Public i-th operand accessor, for external AST walkers. Returns NULL
+   past the end. (DLIST accessor functions for node_t are generated inside
+   c2mir.c and are not visible to external translation units.) */
+node_t c2mir_node_op (node_t n, int i) {
+  if (n == NULL || i < 0) return NULL;
+  return get_op (n, i);
+}
+
+void c2mir_init_node_ops (node_t n) {
+  DLIST_INIT (node_t, n->u.ops);
+}
+
 /* ---- Compilation from externally-built AST ---- */
 
 int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
