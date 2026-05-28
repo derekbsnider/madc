@@ -60,36 +60,59 @@ static c2mir_pos_t no_pos()
 // Type translation: DataDef → c2mir type specifier node
 // -----------------------------------------------------------------------
 
+// Append type specifier node(s) into a LIST for the given DataDef.
+// Handles multi-specifier types (unsigned int, long long, etc.)
+static void cir_append_type_specs(c2m_ctx_t c2m, node_t list, DataDef *dd)
+{
+    if (!dd) { c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_INT)); return; }
+
+    DataType dt = dd->rawtype();
+    switch (dt) {
+    case DataType::dtVOID:   c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_VOID)); break;
+    case DataType::dtCHAR:   c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_CHAR)); break;
+    case DataType::dtINT16:  c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_SHORT)); break;
+    case DataType::dtINT32:  c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_INT)); break;
+    case DataType::dtINT64:
+	// long on x86-64 is 64-bit
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_LONG));
+	break;
+    case DataType::dtUINT8:
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_UNSIGNED));
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_CHAR));
+	break;
+    case DataType::dtUINT16:
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_UNSIGNED));
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_SHORT));
+	break;
+    case DataType::dtUINT32:
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_UNSIGNED));
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_INT));
+	break;
+    case DataType::dtUINT64:
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_UNSIGNED));
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_LONG));
+	break;
+    case DataType::dtFLOAT:  c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_FLOAT)); break;
+    case DataType::dtDOUBLE: c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_DOUBLE)); break;
+    default:
+	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_INT));
+    }
+}
+
+// Single-node type specifier for simple types (used by cir_struct_def, etc.)
 static node_t cir_type_spec(c2m_ctx_t c2m, DataDef *dd)
 {
-    if (!dd) return c2mir_new_node(c2m, N_INT);  // default to int
-
+    if (!dd) return c2mir_new_node(c2m, N_INT);
     DataType dt = dd->rawtype();
     switch (dt) {
     case DataType::dtVOID:   return c2mir_new_node(c2m, N_VOID);
     case DataType::dtCHAR:   return c2mir_new_node(c2m, N_CHAR);
-    //case DataType::dtINT8: return c2mir_new_node(c2m, N_CHAR);  // same as dtCHAR
     case DataType::dtINT16:  return c2mir_new_node(c2m, N_SHORT);
     case DataType::dtINT32:  return c2mir_new_node(c2m, N_INT);
-    case DataType::dtINT64: {
-	// long long on most platforms
-	node_t list = c2mir_new_node(c2m, N_LIST);
-	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_LONG));
-	c2mir_op_append(c2m, list, c2mir_new_node(c2m, N_LONG));
-	return list;  // caller must flatten
-    }
-    case DataType::dtUINT8:
-    case DataType::dtUINT16:
-    case DataType::dtUINT32:
-    case DataType::dtUINT64: {
-	node_t u = c2mir_new_node(c2m, N_UNSIGNED);
-	// For simplicity, return just 'unsigned' — caller adds size
-	return u;
-    }
+    case DataType::dtINT64:  return c2mir_new_node(c2m, N_LONG);
     case DataType::dtFLOAT:  return c2mir_new_node(c2m, N_FLOAT);
     case DataType::dtDOUBLE: return c2mir_new_node(c2m, N_DOUBLE);
-    default:
-	return c2mir_new_node(c2m, N_INT);
+    default:                 return c2mir_new_node(c2m, N_INT);
     }
 }
 
@@ -114,8 +137,7 @@ static node_t cir_type_list(c2m_ctx_t c2m, DataDef *dd, c2mir_pos_t pos)
 	}
     }
 
-    node_t spec = cir_type_spec(c2m, dd);
-    c2mir_op_append(c2m, list, spec);
+    cir_append_type_specs(c2m, list, dd);
     c2mir_set_node_pos(c2m, list, pos);
     return list;
 }
@@ -1201,6 +1223,100 @@ node_t cir_translate(c2m_ctx_t c2m, Program *prog)
 	    node_t gd = cir_var_decl(c2m, v, gpos);
 	    if (gd) c2mir_op_append(c2m, top_list, gd);
 	}
+    }
+
+    // Pass 0.75: Emit extern function prototypes from funcdef_map.
+    // These are functions declared via `extern` or built-in headers that
+    // aren't in pending_funcs (user-defined). c2mir needs to see them
+    // for correct type-checking of calls.
+    std::set<std::string> user_func_names;
+    for (TokenFunc *tf : funcs)
+	user_func_names.insert(tf->var.name);
+
+    for (auto &kv : prog->funcdef_map) {
+	const std::string &fname = kv.first;
+	FuncDef *fd = kv.second;
+	if (!fd || user_func_names.count(fname)) continue;
+
+	c2mir_pos_t epos = { "<extern>", 1, 0 };
+
+	// Return type — unwrap pointer if needed
+	DataDef *ret_dd = &fd->returns;
+	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
+	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : nullptr;
+	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
+
+	node_t ret_type = cir_type_list(c2m, ret_dd, epos);
+	// Add EXTERN to the type specifier list
+	node_t ext_list = c2mir_new_node(c2m, N_LIST);
+	c2mir_op_append(c2m, ext_list, c2mir_new_node(c2m, N_EXTERN));
+	// Copy the type spec from ret_type's children
+	node_t spec = cir_type_spec(c2m, ret_dd);
+	if (ret_dd && ret_dd->is_struct()) {
+	    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ret_dd);
+	    if (sdd) {
+		node_t sid = c2mir_new_str_node(c2m, N_ID, sdd->name.c_str(),
+						sdd->name.size() + 1, epos);
+		spec = c2mir_new_node2(c2m, N_STRUCT, sid, c2mir_new_node(c2m, N_IGNORE));
+	    }
+	}
+	c2mir_op_append(c2m, ext_list, spec);
+	c2mir_set_node_pos(c2m, ext_list, epos);
+	node_t share = c2mir_new_node1(c2m, N_SHARE, ext_list);
+
+	// Parameters
+	node_t param_list = c2mir_new_node(c2m, N_LIST);
+	if (fd->parameters.empty() && fd->is_void_params) {
+	    node_t void_spec = c2mir_new_node1(c2m, N_LIST, c2mir_new_node(c2m, N_VOID));
+	    node_t void_decl = c2mir_new_node2(c2m, N_DECL,
+		c2mir_new_node(c2m, N_IGNORE), c2mir_new_node(c2m, N_LIST));
+	    node_t void_param = c2mir_new_node2(c2m, N_TYPE, void_spec, void_decl);
+	    c2mir_op_append(c2m, param_list, void_param);
+	} else {
+	    // For variadic functions, the parser adds a dummy int64 param for "...".
+	    // Skip that last dummy parameter — we emit DOTS instead.
+	    size_t nparam = fd->parameters.size();
+	    if (fd->is_varargs && nparam > 0) nparam--;
+	    for (size_t i = 0; i < nparam; i++) {
+		char pname[16];
+		snprintf(pname, sizeof(pname), "p%zu", i);
+		node_t pd = cir_param_decl(c2m, fd->parameters[i], pname, epos);
+		c2mir_op_append(c2m, param_list, pd);
+	    }
+	}
+	// Variadic: append N_DOTS
+	if (fd->is_varargs) {
+	    node_t dots = c2mir_new_node(c2m, N_DOTS);
+	    c2mir_set_node_pos(c2m, dots, epos);
+	    c2mir_op_append(c2m, param_list, dots);
+	}
+	c2mir_set_node_pos(c2m, param_list, epos);
+
+	node_t func_inner = c2mir_new_node1(c2m, N_FUNC, param_list);
+	c2mir_set_node_pos(c2m, func_inner, epos);
+
+	node_t func_id = c2mir_new_str_node(c2m, N_ID, fname.c_str(),
+					     fname.size() + 1, epos);
+	node_t decl_list = c2mir_new_node(c2m, N_LIST);
+	c2mir_op_append(c2m, decl_list, func_inner);
+	if (ret_is_ptr) {
+	    node_t pointer = c2mir_new_node1(c2m, N_POINTER, c2mir_new_node(c2m, N_LIST));
+	    c2mir_set_node_pos(c2m, pointer, epos);
+	    c2mir_op_append(c2m, decl_list, pointer);
+	}
+	c2mir_set_node_pos(c2m, decl_list, epos);
+	node_t decl = c2mir_new_node2(c2m, N_DECL, func_id, decl_list);
+	c2mir_set_node_pos(c2m, decl, epos);
+
+	node_t proto = c2mir_new_node(c2m, N_SPEC_DECL);
+	c2mir_op_append(c2m, proto, share);
+	c2mir_op_append(c2m, proto, decl);
+	c2mir_op_append(c2m, proto, c2mir_new_node(c2m, N_IGNORE));
+	c2mir_op_append(c2m, proto, c2mir_new_node(c2m, N_IGNORE));
+	c2mir_op_append(c2m, proto, c2mir_new_node(c2m, N_IGNORE));
+	c2mir_set_node_pos(c2m, proto, epos);
+
+	c2mir_op_append(c2m, top_list, proto);
     }
 
     // Pass 1: Emit forward declarations for all functions except main.
