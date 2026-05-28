@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+### libc2mir CIR (feature/libc2mir branch)
+
+- **CIR translation layer: 33 unit tests, 469 assertions.** Direct
+  AST→c2mir path bypassing Gecko and C11 text emission.
+- **`--backend=cir` and `--dump-cir` CLI flags.**
+- **SMAUG mini test working.** malloc/free/printf/structs/pointers
+  all running through CIR path.
+- **Extern function prototypes** with variadic support.
+- **Full C89 construct coverage:** all operators, control flow,
+  pointers, arrays, structs, goto/labels, brace initializers,
+  enum constants, casts, sizeof, static qualifier.
+
 ## [v0.24.0] — 2026-05-28
 
 Native C99 `_Complex` support in c2mir, transpiler cleanup, 410→419.

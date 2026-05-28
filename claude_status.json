@@ -1,6 +1,6 @@
 {
   "version": "0.24.0",
-  "date": "2026-05-28",
+  "date": "2026-05-29",
   "build_status": "green",
   "test_status": {
     "unit_tests": "294 passed, 0 failed (across all test binaries, excl. WIP test_cir)",
@@ -24,15 +24,15 @@
     "transpiler_phase_6a_c_correctness": "complete",
     "transpiler_phase_6b_madc_features": "complete",
     "transpiler_parity": "in_progress — 88.2% (419/475, 56 skipped)",
-    "libc2mir_poc": "in_progress — PoC validated, CIR translation 6/7 tests"
+    "libc2mir_cir": "in_progress — 33/33 unit tests, SMAUG mini test working, CLI wired (--backend=cir)"
   },
   "features": [
     "MIR is the default backend (--backend=jit for legacy asmjit)",
     "clang++ is the default compiler (g++ still works via CXX=g++)",
     "Gecko GLR parser (2M lines/sec) — current MIR frontend (being replaced by libc2mir)",
     "Gecko+MIR transpiler pipeline: --emit-c CLI flag",
-    "libc2mir: c2mir exposed as AST library — external parsers build node_t directly (PoC validated)",
-    "CIR translation layer: madc parser → c2mir node_t → MIR (6/7 tests, feature/libc2mir branch)",
+    "libc2mir CIR: madc parser → c2mir node_t → MIR (33 tests, --backend=cir CLI, feature/libc2mir branch)",
+    "CIR SMAUG mini: malloc/free/printf/structs/pointers working through direct AST→c2mir path",
     "String literals as const char * (managed std::string only when needed)",
     "STDSTRING_SIZE (sizeof std::string) replaces MADC_STRING_SIZE",
     "MADC_EXTERN_C0-C4 macros for extern C wrapper generation",
@@ -87,15 +87,15 @@
     "Transpiler: lambda [&] capture not yet implemented (1 test)",
     "Transpiler: prefer directive not yet implemented (1 test)",
     "Transpiler: #load directive not in transpiler (2 tests)",
-    "libc2mir: multi-function programs fail — prototype SPEC_DECL structure needs to match c2mir exactly",
+    "libc2mir CIR: needs typedef, union, full extern decl support for complete SMAUG.mad",
     "Legacy: nested function definitions unsupported (2 tests)",
     "Legacy: alloca(func_call()) causes asmjit InvalidInstruction (2 tests)"
   ],
   "remaining_todo": [
-    "libc2mir: fix forward declaration (prototype) structure for multi-function programs",
-    "libc2mir: expand CIR translation — structs, pointers, arrays, strings",
-    "libc2mir: C++ lowering (class → struct + free functions)",
-    "libc2mir: wire as default MIR backend in madc.cpp (replace Gecko pipeline)",
+    "libc2mir CIR: run actual SMAUG.mad through --backend=cir, fix remaining failures",
+    "libc2mir CIR: typedef, union, complete extern function declarations",
+    "libc2mir CIR: C++ lowering (class → struct + free functions)",
+    "libc2mir CIR: wire as default MIR backend (replace Gecko pipeline)",
     "Parser speed optimization: string interning, arena allocation, token pre-materialization",
     "--std= mode switching in parser.cpp (C78-C23, C++98-C++26)",
     "c2mir _Complex: crealf/cimagf/conj builtins",
