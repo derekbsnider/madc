@@ -596,37 +596,10 @@ typedef enum {
 static token_code_t FIRST_KW = T_BOOL, LAST_KW = T_WHILE;
 /* madc extensions use token codes beyond LAST_KW -- registered separately */
 
-#define NODE_EL(n) N_##n
-
-typedef enum {
-  REP8 (NODE_EL, IGNORE, I, L, LL, U, UL, ULL, F),
-  REP8 (NODE_EL, D, LD, CH, CH16, CH32, STR, STR16, STR32),
-  REP5 (NODE_EL, ID, COMMA, ANDAND, OROR, STMTEXPR),
-  REP8 (NODE_EL, EQ, NE, LT, LE, GT, GE, ASSIGN, BITWISE_NOT),
-  REP8 (NODE_EL, NOT, AND, AND_ASSIGN, OR, OR_ASSIGN, XOR, XOR_ASSIGN, LSH),
-  REP8 (NODE_EL, LSH_ASSIGN, RSH, RSH_ASSIGN, ADD, ADD_ASSIGN, SUB, SUB_ASSIGN, MUL),
-  REP8 (NODE_EL, MUL_ASSIGN, DIV, DIV_ASSIGN, MOD, MOD_ASSIGN, IND, FIELD, ADDR),
-  REP8 (NODE_EL, DEREF, DEREF_FIELD, COND, INC, DEC, POST_INC, POST_DEC, ALIGNOF),
-  REP8 (NODE_EL, SIZEOF, EXPR_SIZEOF, CAST, COMPOUND_LITERAL, CALL, GENERIC, GENERIC_ASSOC, IF),
-  REP8 (NODE_EL, SWITCH, WHILE, DO, FOR, GOTO, INDIRECT_GOTO, CONTINUE, BREAK),
-  REP8 (NODE_EL, RETURN, EXPR, BLOCK, CASE, DEFAULT, LABEL, LABEL_ADDR, LIST),
-  REP8 (NODE_EL, SPEC_DECL, SHARE, TYPEDEF, EXTERN, STATIC, AUTO, REGISTER, THREAD_LOCAL),
-  REP8 (NODE_EL, DECL, VOID, CHAR, SHORT, INT, LONG, FLOAT, DOUBLE),
-  REP8 (NODE_EL, SIGNED, UNSIGNED, BOOL, STRUCT, UNION, ENUM, ENUM_CONST, MEMBER),
-  REP8 (NODE_EL, CONST, RESTRICT, VOLATILE, ATOMIC, INLINE, NO_RETURN, ALIGNAS, FUNC),
-  REP8 (NODE_EL, STAR, POINTER, DOTS, ARR, INIT, FIELD_ID, TYPE, ST_ASSERT),
-  REP4 (NODE_EL, FUNC_DEF, MODULE, ASM, ATTR),
-  N_COMPLEX,     /* _Complex type specifier */
-  N_REALPART,    /* __real__ expr */
-  N_IMAGPART,    /* __imag__ expr */
-  N_CF,          /* imaginary float literal (e.g., 1.0fi) — im value in u.f */
-  N_CD,          /* imaginary double literal (e.g., 1.0i) — im value in u.d */
-  N_CLD,         /* imaginary long double literal (e.g., 1.0Li) — im value in u.ld */
-  /* madc extensions: */
-  N_DEFER,
-  N_CLASS,       /* class body (like N_STRUCT but with methods) */
-  N_METHOD,      /* method declaration inside a class */
-} node_code_t;
+/* Node code enum — extracted to c2mir_node_code.h for external use */
+#define C2MIR_INTERNAL 1  /* suppress duplicate typedef */
+#include "c2mir_node_code.h"
+typedef c2mir_node_code_t node_code_t;
 
 #undef REP_SEP
 
@@ -14936,6 +14909,125 @@ int c2mir_compile (MIR_context_t ctx, struct c2mir_options *ops, int (*getc_func
   if (c2m_options->verbose_p && c2m_options->message_file != NULL)
     fprintf (c2m_options->message_file, "C2MIR compiler end                -- %.0f usec\n",
              real_usec_time () - start_time);
+  return n_errors == 0;
+}
+
+/* ========================================================================
+   c2mir_api — Public API for external AST construction.
+   These wrappers call the static internal functions above, providing
+   a stable ABI for external parsers to build c2mir AST trees.
+   ======================================================================== */
+
+#include "c2mir_api.h"
+
+/* ---- Context management ---- */
+
+c2m_ctx_t c2mir_init_compile (MIR_context_t ctx, struct c2mir_options *ops) {
+  struct c2m_ctx *c2m_ctx = *c2m_ctx_loc (ctx);
+  if (c2m_ctx == NULL) return NULL;
+  /* Set up compilation state without starting preprocessor/parser */
+  static struct c2mir_options default_ops = {0};
+  if (ops == NULL) ops = &default_ops;
+  if (ops->message_file == NULL) ops->message_file = stderr;
+  compile_init (c2m_ctx, ops, NULL, NULL);
+  return c2m_ctx;
+}
+
+void c2mir_finish_compile (c2m_ctx_t c2m_ctx) {
+  if (c2m_ctx != NULL) compile_finish (c2m_ctx);
+}
+
+/* ---- Node creation ---- */
+
+node_t c2mir_new_node (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc) {
+  return new_node (c2m_ctx, (node_code_t) nc);
+}
+
+node_t c2mir_new_node1 (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, node_t op1) {
+  return new_node1 (c2m_ctx, (node_code_t) nc, op1);
+}
+
+node_t c2mir_new_node2 (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, node_t op1, node_t op2) {
+  return new_node2 (c2m_ctx, (node_code_t) nc, op1, op2);
+}
+
+node_t c2mir_new_node3 (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, node_t op1, node_t op2, node_t op3) {
+  return new_node3 (c2m_ctx, (node_code_t) nc, op1, op2, op3);
+}
+
+node_t c2mir_new_node4 (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, node_t op1, node_t op2, node_t op3, node_t op4) {
+  return new_node4 (c2m_ctx, (node_code_t) nc, op1, op2, op3, op4);
+}
+
+node_t c2mir_new_node5 (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, node_t op1, node_t op2, node_t op3, node_t op4, node_t op5) {
+  return new_node5 (c2m_ctx, (node_code_t) nc, op1, op2, op3, op4, op5);
+}
+
+node_t c2mir_op_append (c2m_ctx_t c2m_ctx, node_t n, node_t child) {
+  return op_append (c2m_ctx, n, child);
+}
+
+node_t c2mir_new_i_node (c2m_ctx_t c2m_ctx, long val, c2mir_pos_t pos) {
+  pos_t p = {pos.fname, pos.lno, pos.ln_pos};
+  return new_i_node (c2m_ctx, val, p);
+}
+
+node_t c2mir_new_l_node (c2m_ctx_t c2m_ctx, long val, c2mir_pos_t pos) {
+  pos_t p = {pos.fname, pos.lno, pos.ln_pos};
+  return new_l_node (c2m_ctx, val, p);
+}
+
+node_t c2mir_new_ll_node (c2m_ctx_t c2m_ctx, long long val, c2mir_pos_t pos) {
+  pos_t p = {pos.fname, pos.lno, pos.ln_pos};
+  return new_ll_node (c2m_ctx, val, p);
+}
+
+node_t c2mir_new_u_node (c2m_ctx_t c2m_ctx, unsigned long val, c2mir_pos_t pos) {
+  pos_t p = {pos.fname, pos.lno, pos.ln_pos};
+  return new_u_node (c2m_ctx, val, p);
+}
+
+node_t c2mir_new_d_node (c2m_ctx_t c2m_ctx, double val, c2mir_pos_t pos) {
+  pos_t p = {pos.fname, pos.lno, pos.ln_pos};
+  node_t n = new_pos_node (c2m_ctx, N_D, p);
+  n->u.d = val;
+  return n;
+}
+
+node_t c2mir_new_str_node (c2m_ctx_t c2m_ctx, c2mir_node_code_t nc, const char *s, size_t len,
+                           c2mir_pos_t pos) {
+  pos_t p = {pos.fname, pos.lno, pos.ln_pos};
+  str_t str = uniq_str (c2m_ctx, s, len);
+  return new_str_node (c2m_ctx, (node_code_t) nc, str, p);
+}
+
+void c2mir_set_node_pos (c2m_ctx_t c2m_ctx, node_t n, c2mir_pos_t pos) {
+  pos_t p = {pos.fname, pos.lno, pos.ln_pos};
+  set_node_pos (c2m_ctx, n, p);
+}
+
+/* ---- Compilation from externally-built AST ---- */
+
+int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
+                        node_t tree, const char *module_name) {
+  MIR_module_t m;
+  unsigned n_error_before;
+
+  if (c2m_ctx == NULL || tree == NULL) return 0;
+
+  /* Type-check the AST */
+  n_error_before = n_errors;
+  do_context (c2m_ctx, tree);
+  if (n_errors > n_error_before) {
+    if (c2m_options->debug_p) print_node (c2m_ctx, c2m_options->message_file, tree, 0, FALSE);
+    return 0;
+  }
+
+  /* Generate MIR */
+  m = MIR_new_module (ctx, module_name);
+  gen_mir (c2m_ctx, tree);
+  MIR_finish_module (ctx);
+
   return n_errors == 0;
 }
 
