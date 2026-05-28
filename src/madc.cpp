@@ -41,7 +41,8 @@ extern int madc_mir_execute(const std::string &c_source,
                              const std::string &source_name,
                              int user_argc, char **user_argv);
 extern int madc_cir_execute(Program *prog, const char *source_name,
-                             int user_argc, char **user_argv);
+                             int user_argc, char **user_argv,
+                             bool dump_tree = false);
 
 using namespace std;
 
@@ -422,6 +423,7 @@ int main(int argc, char **argv)
     bool emit_c = false;
     bool use_mir_backend = true;  // MIR is the default backend
     bool use_cir_backend = false; // CIR: direct AST → c2mir (libc2mir)
+    bool dump_cir = false;        // --dump-cir: dump CIR tree before checking
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -479,6 +481,11 @@ int main(int argc, char **argv)
                           << " (use 'mir', 'cir', 'jit', or 'asmjit')" << std::endl;
                 return 1;
             }
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--dump-cir") == 0) {
+            dump_cir = true;
+            use_cir_backend = true;
+            use_mir_backend = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-c") == 0) {
             emit_c = true;
@@ -572,7 +579,8 @@ int main(int argc, char **argv)
 	    struct timeval before, after;
 	    gettimeofday(&before, NULL);
 	    int result = madc_cir_execute(prog.get(), argv[filearg],
-					  argc - filearg, argv + filearg);
+					  argc - filearg, argv + filearg,
+					  dump_cir);
 	    gettimeofday(&after, NULL);
 	    DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
 	    return (result < 0) ? 1 : 0;

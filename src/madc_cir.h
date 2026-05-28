@@ -44,7 +44,9 @@ void cir_finish(c2m_ctx_t c2m);
 
 // Full CIR pipeline: tokenize+parse → CIR translate → c2mir compile → JIT execute.
 // Returns the exit code from main(), or -1 on failure.
+// If dump_tree is true, dumps the CIR node tree to stderr before checking.
 int madc_cir_execute(Program *prog, const char *source_name,
-		     int user_argc, char **user_argv);
+		     int user_argc, char **user_argv,
+		     bool dump_tree = false);
 
 #endif // __MADC_CIR_H
