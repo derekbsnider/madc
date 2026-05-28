@@ -176,6 +176,8 @@ enum AnodeCode {
     AN_ALIGNOF_EXPR       = 165,
     AN_KR_FUNC_DEF        = 166,
     AN_KR_DECL_LIST       = 167,
+    AN_REALPART           = 168,  // __real__ expr
+    AN_IMAGPART           = 169,  // __imag__ expr
 };
 
 // O(1) anode code lookup — returns AN_NONE for non-anode nodes

@@ -1886,6 +1886,8 @@ class CEmitter
 	if (an == AN_POS)      return "(+" + emit_expr(child(node, 0)) + ")";
 	if (an == AN_LNOT)     return "(!" + emit_expr(child(node, 0)) + ")";
 	if (an == AN_BNOT)     return "(~" + emit_expr(child(node, 0)) + ")";
+	if (an == AN_REALPART) return "(__real__ " + emit_expr(child(node, 0)) + ")";
+	if (an == AN_IMAGPART) return "(__imag__ " + emit_expr(child(node, 0)) + ")";
 	if (an == AN_DEREF)    return "(*" + emit_expr(child(node, 0)) + ")";
 	if (an == AN_ADDROF)   return "(&" + emit_expr(child(node, 0)) + ")";
 	if (an == AN_LABEL_ADDR)  return "(&&" + term_text(child(node, 0)) + ")";

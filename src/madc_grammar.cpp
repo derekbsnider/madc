@@ -102,6 +102,8 @@ enum GeckoTermCode {
     GT_VA_ARG     = 307,
     GT_STATIC_ASSERT = 308,
     GT_COMPLEX    = 309,
+    GT_REALPART   = 334,   // __real__
+    GT_IMAGPART   = 335,   // __imag__
 
     // Type keywords
     GT_VOID       = 310,
@@ -239,6 +241,8 @@ static const char *madc_grammar_str =
     "VA_ARG = 307\n"
     "STATIC_ASSERT = 308\n"
     "COMPLEX = 309\n"
+    "REALPART = 334\n"
+    "IMAGPART = 335\n"
 
     // Type keywords
     "VOID = 310\n"
@@ -798,6 +802,8 @@ static const char *madc_grammar_str =
     "  | VA_ARG '(' assignment_expression ',' type_name ')'\n"
     "                                                # va_arg (2 4)\n"
     "  | AND_OP IDENT                                # label_addr (1)\n"
+    "  | REALPART unary_expression                   # realpart (1)\n"
+    "  | IMAGPART unary_expression                   # imagpart (1)\n"
     "  ;\n"
     "\n"
 
@@ -1306,6 +1312,8 @@ struct grammar *madc_create_gecko_grammar()
     gp_set_anode_code(g, "static_assert", AN_STATIC_ASSERT);
     gp_set_anode_code(g, "gnu_field_desig", AN_GNU_FIELD_DESIG);
     gp_set_anode_code(g, "label_addr", AN_LABEL_ADDR);
+    gp_set_anode_code(g, "realpart", AN_REALPART);
+    gp_set_anode_code(g, "imagpart", AN_IMAGPART);
     gp_set_anode_code(g, "range_desig", AN_RANGE_DESIG);
     gp_set_anode_code(g, "stmt_expr", AN_STMT_EXPR);
     gp_set_anode_code(g, "stmt_list", AN_STMT_LIST);
@@ -1372,7 +1380,9 @@ static int ident_to_gecko(const std::string &s)
 	{"typeof", GT_TYPEOF}, {"__typeof__", GT_TYPEOF}, {"__typeof", GT_TYPEOF},
 	{"va_arg", GT_VA_ARG}, {"__builtin_va_arg", GT_VA_ARG},
 	{"_Static_assert", GT_STATIC_ASSERT}, {"static_assert", GT_STATIC_ASSERT},
-	{"_Complex", GT_COMPLEX}, {"__complex__", GT_COMPLEX},
+	{"_Complex", GT_COMPLEX}, {"__complex__", GT_COMPLEX}, {"__complex", GT_COMPLEX},
+	{"__real__", GT_REALPART}, {"__imag__", GT_IMAGPART},
+	{"__real", GT_REALPART}, {"__imag", GT_IMAGPART},
 	// Aliases
 	{"LPSTR", GT_INT},
     };
