@@ -5581,7 +5581,9 @@ static void parse_init (c2m_ctx_t c2m_ctx) {
   kw_add (c2m_ctx, "while", T_WHILE, 0);
   /* madc extensions */
   kw_add (c2m_ctx, "defer", T_DEFER, FLAG_EXT);
+#if 0 /* disabled: conflicts with C89 'class' identifiers (SMAUG) */
   kw_add (c2m_ctx, "class", T_CLASS, FLAG_EXT);
+#endif
   kw_add (c2m_ctx, "__restrict", T_RESTRICT, FLAG_EXT);
   kw_add (c2m_ctx, "__restrict__", T_RESTRICT, FLAG_EXT);
   kw_add (c2m_ctx, "__inline", T_INLINE, FLAG_EXT);
