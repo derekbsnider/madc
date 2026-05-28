@@ -9176,7 +9176,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     e = create_expr (c2m_ctx, r);
     e->type->mode = TM_BASIC;
     e->type->u.basic_type = TP_INT;
-    if (!scalar_type_p (t1)) {
+    if (!scalar_type_p (t1) && !complex_type_p (t1)) {
       error (c2m_ctx, POS (r), "condition should be of a scalar type");
       break;
     }
@@ -9969,7 +9969,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     check (c2m_ctx, expr, r);
     e1 = expr->attr;
     t1 = e1->type;
-    if (!scalar_type_p (t1)) {
+    if (!scalar_type_p (t1) && !complex_type_p (t1)) {
       error (c2m_ctx, POS (expr), "if-expr should be of a scalar type");
     }
     check (c2m_ctx, if_stmt, r);
@@ -10094,7 +10094,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     check (c2m_ctx, expr, r);
     e1 = expr->attr;
     t1 = e1->type;
-    if (!scalar_type_p (t1)) {
+    if (!scalar_type_p (t1) && !complex_type_p (t1)) {
       error (c2m_ctx, POS (expr), "while-expr should be of a scalar type");
     }
     curr_loop = curr_loop_switch = r;
@@ -10134,7 +10134,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       check (c2m_ctx, cond, r);
       e1 = cond->attr;
       t1 = e1->type;
-      if (!scalar_type_p (t1)) {
+      if (!scalar_type_p (t1) && !complex_type_p (t1)) {
         error (c2m_ctx, POS (cond), "for-condition should be of a scalar type");
       }
     }
@@ -12355,6 +12355,7 @@ static op_t scalar_to_complex (c2m_ctx_t c2m_ctx, op_t scalar, MIR_type_t scalar
   op_t tmp, zero_val, re_val;
 
   tmp = complex_temp (c2m_ctx, complex_bt);
+  scalar = cast (c2m_ctx, scalar, ct, FALSE);  /* convert int/float to component type */
   re_val = get_new_temp (c2m_ctx, ct);
   emit2 (c2m_ctx, tp_mov (ct), re_val.mir_op, scalar.mir_op);
   zero_val = get_new_temp (c2m_ctx, ct);
@@ -12931,6 +12932,13 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       emit_scalar_assign (c2m_ctx, var, &val, t, FALSE);
       if ((val_p || true_label != NULL) && r->code != N_POST_INC && r->code != N_POST_DEC)
         emit2_noopt (c2m_ctx, tp_mov (t), res.mir_op, val.mir_op);
+    } else if (complex_type_p (((struct expr *) r->attr)->type)
+               && !complex_type_p (((struct expr *) NL_EL (r->u.ops, 1)->attr)->type)) {
+      /* Complex assignment from scalar: convert to {value, 0} */
+      struct type *ctype = ((struct expr *) r->attr)->type;
+      MIR_type_t rhs_t = get_mir_type (c2m_ctx, ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type);
+      val = scalar_to_complex (c2m_ctx, val, rhs_t, ctype->u.basic_type);
+      block_move (c2m_ctx, var, val, type_size (c2m_ctx, ctype));
     } else { /* block move */
       mir_size_t size = type_size (c2m_ctx, ((struct expr *) r->attr)->type);
 
@@ -14009,7 +14017,23 @@ finish:
     MIR_op_t lab_op = MIR_new_label_op (ctx, true_label);
 
     type = ((struct expr *) r->attr)->type;
-    if (!floating_type_p (type)) {
+    if (complex_type_p (type)) {
+      /* Complex truth test: true if either component is nonzero */
+      MIR_type_t ct = type->u.basic_type == TP_CFLOAT ? MIR_T_F
+                      : type->u.basic_type == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
+      int imoff = type->u.basic_type == TP_CFLOAT ? sizeof (mir_float)
+                  : type->u.basic_type == TP_CDOUBLE ? sizeof (mir_double)
+                                                      : sizeof (mir_ldouble);
+      MIR_insn_code_t bne_ic = ct == MIR_T_F ? MIR_FBNE : ct == MIR_T_D ? MIR_DBNE : MIR_LDBNE;
+      MIR_op_t zero = ct == MIR_T_F ? MIR_new_float_op (ctx, 0.0f)
+                      : ct == MIR_T_D ? MIR_new_double_op (ctx, 0.0)
+                                       : MIR_new_ldouble_op (ctx, 0.0L);
+      op_t re = complex_load (c2m_ctx, res, ct, 0);
+      op_t im = complex_load (c2m_ctx, res, ct, imoff);
+      emit3 (c2m_ctx, bne_ic, lab_op, re.mir_op, zero);
+      emit3 (c2m_ctx, bne_ic, lab_op, im.mir_op, zero);
+      emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, false_label));
+    } else if (!floating_type_p (type)) {
       res = promote (c2m_ctx, force_val (c2m_ctx, res, type->arr_type != NULL), MIR_T_I64, FALSE);
       emit2 (c2m_ctx, MIR_BT, lab_op, res.mir_op);
     } else if (type->u.basic_type == TP_FLOAT) {
