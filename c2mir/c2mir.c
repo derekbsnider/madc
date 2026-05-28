@@ -5532,6 +5532,7 @@ static void parse_init (c2m_ctx_t c2m_ctx) {
   kw_add (c2m_ctx, "_Bool", T_BOOL, 0);
   kw_add (c2m_ctx, "_Complex", T_COMPLEX, 0);
   kw_add (c2m_ctx, "__complex__", T_COMPLEX, 0);
+  kw_add (c2m_ctx, "__complex", T_COMPLEX, 0);
   kw_add (c2m_ctx, "__real__", T_REALPART, 0);
   kw_add (c2m_ctx, "__imag__", T_IMAGPART, 0);
   kw_add (c2m_ctx, "__real", T_REALPART, 0);
@@ -9317,9 +9318,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     decl_spec = op1->attr;
     *e->type = *decl_spec->type;
     void_p = void_type_p (decl_spec->type);
-    if (!void_p && !scalar_type_p (decl_spec->type)) {
+    if (!void_p && !scalar_type_p (decl_spec->type) && !complex_type_p (decl_spec->type)) {
       error (c2m_ctx, POS (r), "conversion to non-scalar type requested");
-    } else if (!void_p && !scalar_type_p (t2) && !void_type_p (t2)) {
+    } else if (!void_p && !scalar_type_p (t2) && !complex_type_p (t2) && !void_type_p (t2)) {
       error (c2m_ctx, POS (r), "conversion of non-scalar value requested");
     } else if (t2->mode == TM_PTR && floating_type_p (decl_spec->type)) {
       error (c2m_ctx, POS (r), "conversion of a pointer to floating value requested");
