@@ -391,6 +391,76 @@ static node_t cir_translate_stmt(c2m_ctx_t c2m, TokenBase *tb)
 }
 
 // -----------------------------------------------------------------------
+// Function forward declaration (prototype)
+// -----------------------------------------------------------------------
+
+static node_t cir_func_proto(c2m_ctx_t c2m, TokenFunc *tf)
+{
+    c2mir_pos_t pos = { tf->file, tf->line, tf->column };
+    FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
+    if (!fd) return NULL;
+
+    // Return type
+    node_t ret_type = cir_type_list(c2m, &fd->returns, pos);
+    node_t share = c2mir_new_node1(c2m, N_SHARE, ret_type);
+
+    // Parameters
+    node_t param_list = c2mir_new_node(c2m, N_LIST);
+    if (fd->parameters.empty()) {
+	node_t void_spec = c2mir_new_node1(c2m, N_LIST, c2mir_new_node(c2m, N_VOID));
+	c2mir_set_node_pos(c2m, void_spec, pos);
+	node_t void_decl = c2mir_new_node2(c2m, N_DECL,
+	    c2mir_new_node(c2m, N_IGNORE), c2mir_new_node(c2m, N_LIST));
+	node_t void_param = c2mir_new_node2(c2m, N_TYPE, void_spec, void_decl);
+	c2mir_set_node_pos(c2m, void_param, pos);
+	c2mir_op_append(c2m, param_list, void_param);
+    } else {
+	for (size_t i = 0; i < fd->parameters.size(); i++) {
+	    DataDef *ptype = fd->parameters[i];
+	    const char *pname = "p";
+	    if (tf->method && i < tf->method->parameters.size())
+		pname = tf->method->parameters[i]->name.c_str();
+
+	    node_t pspec = cir_type_list(c2m, ptype, pos);
+	    node_t pid = c2mir_new_str_node(c2m, N_ID, pname, strlen(pname) + 1, pos);
+	    node_t pdecl = c2mir_new_node2(c2m, N_DECL, pid, c2mir_new_node(c2m, N_LIST));
+	    node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
+	    c2mir_op_append(c2m, spec_decl, pspec);
+	    c2mir_op_append(c2m, spec_decl, pdecl);
+	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+	    c2mir_set_node_pos(c2m, spec_decl, pos);
+	    c2mir_op_append(c2m, param_list, spec_decl);
+	}
+    }
+    c2mir_set_node_pos(c2m, param_list, pos);
+
+    // Function declarator
+    node_t func_inner = c2mir_new_node1(c2m, N_FUNC, param_list);
+    c2mir_set_node_pos(c2m, func_inner, pos);
+
+    // DECL(ID("name"), LIST(FUNC(...)))
+    node_t func_id = c2mir_new_str_node(c2m, N_ID, tf->var.name.c_str(),
+					tf->var.name.size() + 1, pos);
+    node_t decl_list = c2mir_new_node1(c2m, N_LIST, func_inner);
+    c2mir_set_node_pos(c2m, decl_list, pos);
+    node_t decl = c2mir_new_node2(c2m, N_DECL, func_id, decl_list);
+    c2mir_set_node_pos(c2m, decl, pos);
+
+    // SPEC_DECL(SHARE(ret_type), DECL, IGNORE, IGNORE, IGNORE)
+    node_t proto = c2mir_new_node(c2m, N_SPEC_DECL);
+    c2mir_op_append(c2m, proto, share);
+    c2mir_op_append(c2m, proto, decl);
+    c2mir_op_append(c2m, proto, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, proto, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, proto, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_set_node_pos(c2m, proto, pos);
+
+    return proto;
+}
+
+// -----------------------------------------------------------------------
 // Function translation
 // -----------------------------------------------------------------------
 
@@ -512,23 +582,29 @@ node_t cir_translate(c2m_ctx_t c2m, Program *prog)
     // The parse output: prog->parse(tp) populates tp->statements
     // We need access to tp. Let's walk the token tree.
 
-    // For now, find all TokenFunc in the program's function list
-    DBG(fprintf(stderr, "cir: pending_funcs has %zu entries\n", prog->pending_funcs.size()));
+    // Collect all TokenFunc entries
+    std::vector<TokenFunc *> funcs;
     for (auto it = prog->pending_funcs.begin();
 	 it != prog->pending_funcs.end(); ++it) {
 	TokenFunc *tf = dynamic_cast<TokenFunc *>(*it);
-	if (!tf) {
-	    DBG(fprintf(stderr, "cir: skipping non-TokenFunc (type=%d)\n", (int)(*it)->type()));
-	    continue;
-	}
-	if (tf->is_overridden) continue;
-	DBG(fprintf(stderr, "cir: translating func '%s'\n", tf->var.name.c_str()));
+	if (tf && !tf->is_overridden)
+	    funcs.push_back(tf);
+    }
+
+    // Pass 1: Emit forward declarations for all functions except main.
+    // This ensures c2mir's checker can resolve cross-function references.
+    // We skip main because it's typically the last function and doesn't
+    // need a forward declaration (nothing calls main internally).
+    for (TokenFunc *tf : funcs) {
+	if (tf->var.name == "main") continue;
+	node_t proto = cir_func_proto(c2m, tf);
+	if (proto) c2mir_op_append(c2m, module, proto);
+    }
+
+    // Pass 2: Emit function definitions.
+    for (TokenFunc *tf : funcs) {
 	node_t fd = cir_translate_func(c2m, tf);
-	if (fd) {
-	    c2mir_op_append(c2m, module, fd);
-	} else {
-	    DBG(fprintf(stderr, "cir: translate returned NULL for '%s'\n", tf->var.name.c_str()));
-	}
+	if (fd) c2mir_op_append(c2m, module, fd);
     }
 
     return module;
