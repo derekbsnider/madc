@@ -9404,6 +9404,32 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	return pgm.struct_map.find(name);
     };
 
+    // Record source-ordered top-level declarations for the CIR backend.
+    // Inert for the legacy JIT/MIR paths (the returned nodes' compile()
+    // is a no-op and MIR re-parses prog->tokens). record_struct logs a
+    // struct/union definition; record_typedef logs a typedef alias.
+    auto record_struct = [&](DataDefSTRUCT *sdd)
+    {
+	Program::TopDecl td;
+	td.kind = is_union ? Program::DeclKind::dkUnion : Program::DeclKind::dkStruct;
+	td.name = sdd->name;
+	td.dd = sdd;
+	td.file = TokenBase::_parse_file;
+	td.line = TokenBase::_parse_line;
+	pgm.top_decls.push_back(td);
+    };
+    auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_)
+    {
+	Program::TopDecl td;
+	td.kind = Program::DeclKind::dkTypedef;
+	td.name = alias;
+	td.dd = dd;
+	td.tdt = tdt_;
+	td.file = TokenBase::_parse_file;
+	td.line = TokenBase::_parse_line;
+	pgm.top_decls.push_back(td);
+    };
+
     // check for __attribute__((packed)) before or after tag
     bool is_packed = false;
     size_t explicit_align = 0;
@@ -9514,15 +9540,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// plain forward declaration: struct tag;
 	if ( tn->id() == TokenID::tkSemi )
 	{
+	    DataDefSTRUCT *fwd;
 	    if ( dmi == pgm.struct_map.end() )
 	    {
-		DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->str, 0);
+		fwd = new DataDefSTRUCT(tag->str, 0);
 		fwd->union_layout = is_union;
 		pgm.struct_map[scoped_struct_tag(tag->str)] = fwd;
 	    }
+	    else
+		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
 	    pgm.nextToken(); // consume ';'
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
-	    return NULL;
+	    record_struct(fwd);
+	    return new TokenStructDef(fwd, is_union);
 	}
 
 	// forward typedef: typedef struct tag_name alias; (struct not yet defined)
@@ -9570,7 +9600,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // also register tag in struct_map so "struct tag" works
 	    if ( !alias_dd->is_pointer() )
 		pgm.struct_map[alias_name] = dmi->second;
-	    return NULL;
+	    record_typedef(alias_name, alias_dd, tdt);
+	    return new TokenTypedefDecl(alias_name, alias_dd);
 	}
 
 	// struct tag variable; — declare variable of existing struct type
@@ -10270,6 +10301,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
     }
 
+    // Record the struct/union definition in source order for CIR. Covers
+    // every post-brace form (typedef, with-variable, and bare `;`); any
+    // typedef aliases are recorded separately in the typedef loop below.
+    record_struct(dds);
+
     // what follows the closing brace?
     tn = pgm.peekToken();
 
@@ -10297,6 +10333,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.datatype_map[alias->str] = tdt;
 	    if ( alias_dd == dds )
 		pgm.struct_map[alias->str] = dds;
+	    record_typedef(alias->str, alias_dd, tdt);
 	    DBG(cout << "TokenSTRUCT::parse() typedef alias " << alias->str << endl);
 	    tn = pgm.nextToken();
 	    if ( !tn )
@@ -10307,7 +10344,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.Throw(tn) << "Expecting ',' or ';' after typedef alias" << flush;
 	    done_aliases = true;
 	}
-	return NULL;
+	return new TokenStructDef(dds, is_union);
     }
 
     // struct [tag] { ... } variable;
