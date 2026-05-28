@@ -1017,11 +1017,6 @@ SemaInfo *madc_sema_collect(gp_tree_node *root)
     if (!root) return nullptr;
 
     SemaInfo *info = new SemaInfo();
-    // Pre-register complex struct typedefs so Gecko disambiguation works
-    for (const char *ct : {"__madc_cdouble", "__madc_cfloat", "__madc_cint",
-			    "__madc_cuint", "__madc_cushort", "__madc_clong",
-			    "__madc_culong"})
-	info->typedef_names.insert(ct);
     SemaCollector collector(*info);
     collector.collect(root);
     return info;

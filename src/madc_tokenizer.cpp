@@ -655,7 +655,7 @@ struct gp_tree_node *madc_gecko_parse(std::deque<TokenBase *> *tokens,
     }
 
     // Lower __attribute__((mode(X))) before Gecko sees them
-    preprocess_complex_types(tokens);
+    // Note: _Complex types now pass through to c2mir natively (no struct lowering)
     preprocess_attribute_modes(tokens);
 
     // Extract lambdas before Gecko sees them

@@ -798,7 +798,15 @@ class CEmitter
 	    case 331: return "void *";  // map
 	    case 332: return "void *";  // set
 	    case 333: return "void *";  // list
-	    case 309: return "_Complex";  // GT_COMPLEX
+	    case 309: {  // GT_COMPLEX — emit full compound type from token text
+		std::string text = term_text(node);
+		// Normalize: ensure _Complex keyword is present
+		if (text.find("_Complex") != std::string::npos ||
+		    text.find("__complex__") != std::string::npos ||
+		    text.find("__complex") != std::string::npos)
+		    return text;
+		return "_Complex";
+	    }
 	    case GT_IDENT: {
 		std::string t = term_text(node);
 		if (is_known_class(t))
@@ -825,9 +833,6 @@ class CEmitter
 	    if (spec.empty()) return r;
 	    if (r.empty()) return spec;
 	    std::string combined = spec + " " + r;
-	    // _Complex T → __madc_cT struct typedef
-	    std::string ct = map_complex_type(combined);
-	    if (!ct.empty()) return ct;
 	    return combined;
 	}
 
@@ -1698,6 +1703,11 @@ class CEmitter
 		return buf;
 	    }
 	    if (code == GT_REAL) {
+		// Preserve original source text if available (imaginary suffixes, etc.)
+		TokenBase *tb_real = (TokenBase *)node->val.term.attr;
+		TokenReal *tr_real = tb_real ? dynamic_cast<TokenReal *>(tb_real) : nullptr;
+		if (tr_real && !tr_real->source_text.empty())
+		    return tr_real->source_text;
 		char buf[64];
 		double d = term_dval(node);
 		snprintf(buf, sizeof(buf), "%.17g", d);
@@ -5604,12 +5614,6 @@ public:
 	defined_funcs.clear();
 	complex_types_used.clear();
 
-	// Pre-register complex struct typedefs for GLR disambiguation
-	for (const char *ct : {"__madc_cdouble", "__madc_cfloat", "__madc_cint",
-				"__madc_cuint", "__madc_cushort", "__madc_clong",
-				"__madc_culong"})
-	    known_typedefs.insert(ct);
-
 	// Pre-pass: collect function definitions so we can skip their
 	// forward-declaration prototypes (which may have wrong return types).
 	collect_defined_funcs(root);
@@ -5719,39 +5723,7 @@ public:
 	header += "\n";
 
 	// _Complex lowering — struct-based complex types and helpers
-	header += "/* _Complex struct types */\n";
-	header += "typedef struct { double re; double im; } __madc_cdouble;\n";
-	header += "typedef struct { float re; float im; } __madc_cfloat;\n";
-	header += "typedef struct { int re; int im; } __madc_cint;\n";
-	header += "typedef struct { unsigned int re; unsigned int im; } __madc_cuint;\n";
-	header += "typedef struct { unsigned short re; unsigned short im; } __madc_cushort;\n";
-	header += "typedef struct { long re; long im; } __madc_clong;\n";
-	header += "typedef struct { unsigned long re; unsigned long im; } __madc_culong;\n";
-	// Declare all helpers for each complex type
-	{
-	    const char *types[] = {"cdouble", "cfloat", "cint", "cuint", "cushort", "clong", "culong", nullptr};
-	    const char *scalars[] = {"double", "float", "int", "unsigned int", "unsigned short", "long", "unsigned long"};
-	    for (int i = 0; types[i]; i++) {
-		std::string N = std::string("__madc_") + types[i];
-		std::string T = scalars[i];
-		// Binary ops
-		for (const char *op : {"add", "sub", "mul", "div"})
-		    header += "extern " + N + " " + N + "_" + op + "(" + N + ", " + N + ");\n";
-		// Unary ops
-		for (const char *op : {"conj", "neg"})
-		    header += "extern " + N + " " + N + "_" + op + "(" + N + ");\n";
-		// Comparison
-		header += "extern int " + N + "_eq(" + N + ", " + N + ");\n";
-		header += "extern int " + N + "_ne(" + N + ", " + N + ");\n";
-		// Construction
-		header += "extern " + N + " " + N + "_make(" + T + ", " + T + ");\n";
-		header += "extern " + N + " " + N + "_from_real(" + T + ");\n";
-		// Component access
-		header += "extern " + T + " " + N + "_real(" + N + ");\n";
-		header += "extern " + T + " " + N + "_imag(" + N + ");\n";
-	    }
-	}
-	header += "\n";
+	/* _Complex types handled natively by c2mir — no struct workaround needed */
 
 	// Stream and container type stubs (opaque pointers in C)
 	header += "/* Stream/container type stubs */\n";

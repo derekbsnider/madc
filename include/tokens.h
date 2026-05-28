@@ -988,13 +988,14 @@ protected:
     asmjit::x86::Mem _const;
     double _val;
 public:
+    std::string source_text;   // original literal text (suffixes like i, iF, f, L)
     TokenReal() : TokenBase()         { _val = 0; _datatype = &ddDOUBLE; }
     TokenReal(double v) : TokenBase() { _val = v; _datatype = &ddDOUBLE; }
     virtual int64_t ival() const      { return (int64_t)_val; }
     virtual double dval() const       { return _val;      }
     virtual TokenType type() const    { return TokenType::ttReal; }
     virtual TokenID   id()   const    { return TokenID::tkReal;   }
-    virtual TokenBase *clone()        { return new TokenReal(_val); }
+    virtual TokenBase *clone()        { auto *c = new TokenReal(_val); c->source_text = source_text; return c; }
     virtual bool is_constant() const override { return true; }
     virtual bool is_real()     const override { return true; }
     virtual void setDataType(DataDef *d) { if (d && (d->is_real() || d->is_complex())) _datatype = d; }

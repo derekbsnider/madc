@@ -2383,6 +2383,11 @@ TokenBase *Program::_getToken()
 			TokenReal *tr = new TokenReal(strtod(lit_text.c_str(), NULL));
 			char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 			tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+			// Preserve full literal text with imaginary suffix for transpiler
+			std::string full = lit_text;
+			if (imag_type_suffix) { full += 'i'; full += imag_type_suffix; }
+			else full += 'i';
+			tr->source_text = full;
 			return tr;
 		    }
 		    return new TokenReal(strtod(lit_text.c_str(), NULL));
@@ -2457,6 +2462,10 @@ TokenBase *Program::_getToken()
 			    TokenReal *tr = new TokenReal(num);
 			    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 			    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+			    std::string full = lit_text;
+			    if (imag_type_suffix) { full += 'i'; full += imag_type_suffix; }
+			    else full += 'i';
+			    tr->source_text = full;
 			    return tr;
 			}
 			return new TokenReal(num);
@@ -2522,6 +2531,10 @@ TokenBase *Program::_getToken()
 		    TokenReal *tr = new TokenReal(num);
 		    char suffix = imag_type_suffix ? imag_type_suffix : real_type_suffix;
 		    tr->setDataType(get_complex_compat_type(complex_real_type_for_suffix(suffix)));
+		    std::string full = lit_text;
+		    if (imag_type_suffix) { full += 'i'; full += imag_type_suffix; }
+		    else full += 'i';
+		    tr->source_text = full;
 		    return tr;
 		}
 		return new TokenReal(num);

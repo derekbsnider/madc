@@ -1426,26 +1426,15 @@ int madc_token_to_gecko(TokenBase *tb)
     }
 
     // Compound keyword tokens (e.g. "double _Complex") — the madc lexer
-    // combines type specifiers into one keyword. Map complex types to
-    // __madc_c* struct names and return GT_IDENT (typedef_name).
+    // combines type specifiers into one keyword. Return GT_COMPLEX and
+    // let the emitter reconstruct the full type from the AST.
+    // c2mir handles _Complex natively — no struct lowering needed.
     if (tt == TokenType::ttKeyword) {
 	TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
 	if (ti) {
 	    if (ti->str.find("_Complex") != std::string::npos ||
 		ti->str.find("__complex__") != std::string::npos) {
-		std::string &s = ti->str;
-		if (s.find("float") != std::string::npos) ti->str = "__madc_cfloat";
-		else if (s.find("unsigned short") != std::string::npos) ti->str = "__madc_cushort";
-		else if (s.find("unsigned long") != std::string::npos) ti->str = "__madc_culong";
-		else if (s.find("unsigned") != std::string::npos) ti->str = "__madc_cuint";
-		else if (s.find("short") != std::string::npos) ti->str = "__madc_cushort";
-		else if (s.find("long") != std::string::npos) ti->str = "__madc_clong";
-		else if (s.find("int") != std::string::npos &&
-			 s.find("unsigned") == std::string::npos) ti->str = "__madc_cint";
-		else ti->str = "__madc_cdouble";
-		// Return as typedef_name — the emitter's known_typedefs
-		// and Gecko's GLR will handle disambiguation
-		return GT_IDENT;
+		return GT_COMPLEX;
 	    }
 	    // Other compound keywords — try hash lookup
 	    int code = ident_to_gecko(ti->str);
@@ -1459,21 +1448,10 @@ int madc_token_to_gecko(TokenBase *tb)
         {
             TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
             if (ti) {
-                // _Complex types → struct typedef name
+                // _Complex types — pass through as GT_COMPLEX for c2mir
                 if (ti->str.find("_Complex") != std::string::npos ||
                     ti->str.find("__complex__") != std::string::npos) {
-                    // Map to __madc_c* struct name
-                    std::string &s = ti->str;
-                    if (s.find("float") != std::string::npos) ti->str = "__madc_cfloat";
-                    else if (s.find("unsigned short") != std::string::npos) ti->str = "__madc_cushort";
-                    else if (s.find("unsigned long") != std::string::npos) ti->str = "__madc_culong";
-                    else if (s.find("unsigned") != std::string::npos) ti->str = "__madc_cuint";
-                    else if (s.find("short") != std::string::npos) ti->str = "__madc_cushort";
-                    else if (s.find("long") != std::string::npos) ti->str = "__madc_clong";
-                    else if (s.find("int") != std::string::npos &&
-                             s.find("unsigned") == std::string::npos) ti->str = "__madc_cint";
-                    else ti->str = "__madc_cdouble";  // default
-                    return GT_IDENT;
+                    return GT_COMPLEX;
                 }
                 int code = ident_to_gecko(ti->str);
                 if (code >= 0) return code;
