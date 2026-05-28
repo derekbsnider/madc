@@ -15019,6 +15019,8 @@ int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
   n_error_before = n_errors;
   do_context (c2m_ctx, tree);
   if (n_errors > n_error_before) {
+    fprintf (c2m_options->message_file, "c2mir_compile_tree: %u check errors\n",
+             n_errors - n_error_before);
     if (c2m_options->debug_p) print_node (c2m_ctx, c2m_options->message_file, tree, 0, FALSE);
     return 0;
   }
