@@ -42,4 +42,9 @@ int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
 // Clean up the c2mir context.
 void cir_finish(c2m_ctx_t c2m);
 
+// Full CIR pipeline: tokenize+parse → CIR translate → c2mir compile → JIT execute.
+// Returns the exit code from main(), or -1 on failure.
+int madc_cir_execute(Program *prog, const char *source_name,
+		     int user_argc, char **user_argv);
+
 #endif // __MADC_CIR_H

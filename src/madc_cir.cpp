@@ -18,6 +18,7 @@
 #include <sstream>
 #include <fstream>
 #include <stdint.h>
+#include <dlfcn.h>
 
 #include <asmjit/x86.h>
 
@@ -31,6 +32,7 @@
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
+#include "mir-gen.h"
 }
 
 extern thread_local bool madc_verbose;
@@ -582,6 +584,38 @@ static node_t cir_struct_def(c2m_ctx_t c2m, DataDefSTRUCT *sdd, c2mir_pos_t pos)
     return spec_decl;
 }
 
+// Build a SPEC_DECL for a function parameter, handling pointer types.
+static node_t cir_param_decl(c2m_ctx_t c2m, DataDef *ptype, const char *pname,
+			     c2mir_pos_t pos)
+{
+    // Determine base type — for pointers, use the pointed-to type
+    DataDef *base_dd = ptype;
+    bool is_ptr = base_dd && base_dd->is_pointer();
+    DataDefPTR *ptr_dd = is_ptr ? dynamic_cast<DataDefPTR *>(base_dd) : nullptr;
+    if (ptr_dd && ptr_dd->base_type)
+	base_dd = ptr_dd->base_type;
+
+    node_t pspec = cir_type_list(c2m, base_dd, pos);
+    node_t pid = c2mir_new_str_node(c2m, N_ID, pname, strlen(pname) + 1, pos);
+
+    node_t pdecl_list = c2mir_new_node(c2m, N_LIST);
+    if (is_ptr) {
+	node_t pointer = c2mir_new_node1(c2m, N_POINTER, c2mir_new_node(c2m, N_LIST));
+	c2mir_set_node_pos(c2m, pointer, pos);
+	c2mir_op_append(c2m, pdecl_list, pointer);
+    }
+    node_t pdecl = c2mir_new_node2(c2m, N_DECL, pid, pdecl_list);
+
+    node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
+    c2mir_op_append(c2m, spec_decl, pspec);
+    c2mir_op_append(c2m, spec_decl, pdecl);
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_set_node_pos(c2m, spec_decl, pos);
+    return spec_decl;
+}
+
 static node_t cir_translate_block(c2m_ctx_t c2m, TokenCpnd *tc)
 {
     c2mir_pos_t pos = { tc->file, tc->line, tc->column };
@@ -988,16 +1022,7 @@ static node_t cir_func_proto(c2m_ctx_t c2m, TokenFunc *tf)
 	    if (tf->method && i < tf->method->parameters.size())
 		pname = tf->method->parameters[i]->name.c_str();
 
-	    node_t pspec = cir_type_list(c2m, ptype, pos);
-	    node_t pid = c2mir_new_str_node(c2m, N_ID, pname, strlen(pname) + 1, pos);
-	    node_t pdecl = c2mir_new_node2(c2m, N_DECL, pid, c2mir_new_node(c2m, N_LIST));
-	    node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
-	    c2mir_op_append(c2m, spec_decl, pspec);
-	    c2mir_op_append(c2m, spec_decl, pdecl);
-	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	    c2mir_set_node_pos(c2m, spec_decl, pos);
+	    node_t spec_decl = cir_param_decl(c2m, ptype, pname, pos);
 	    c2mir_op_append(c2m, param_list, spec_decl);
 	}
     }
@@ -1068,21 +1093,7 @@ static node_t cir_translate_func(c2m_ctx_t c2m, TokenFunc *tf)
 			  << " name='" << pname << "' vars.size=" << tf->variables.size()
 			  << " params.size=" << fd->parameters.size() << std::endl);
 
-	    node_t pspec = cir_type_list(c2m, ptype, pos);
-	    node_t pid = c2mir_new_str_node(c2m, N_ID, pname,
-					    strlen(pname) + 1, pos);
-	    node_t pdecl = c2mir_new_node2(c2m, N_DECL,
-		pid, c2mir_new_node(c2m, N_LIST));
-
-	    // SPEC_DECL(type_list, decl, ignore, ignore, ignore)
-	    node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
-	    c2mir_op_append(c2m, spec_decl, pspec);
-	    c2mir_op_append(c2m, spec_decl, pdecl);
-	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	    c2mir_set_node_pos(c2m, spec_decl, pos);
-
+	    node_t spec_decl = cir_param_decl(c2m, ptype, pname, pos);
 	    c2mir_op_append(c2m, param_list, spec_decl);
 	}
     }
@@ -1194,4 +1205,99 @@ int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
 void cir_finish(c2m_ctx_t c2m)
 {
     c2mir_finish_compile(c2m);
+}
+
+// -----------------------------------------------------------------------
+// Import resolver for MIR linking — finds C library symbols via dlsym
+// -----------------------------------------------------------------------
+
+static void *cir_import_resolver(const char *name)
+{
+    void *addr = dlsym(RTLD_DEFAULT, name);
+    if (!addr)
+	DBG(std::cerr << "cir_import_resolver: unresolved: " << name << std::endl);
+    return addr;
+}
+
+// -----------------------------------------------------------------------
+// Full CIR pipeline: parse → translate → compile → JIT execute
+// -----------------------------------------------------------------------
+
+int madc_cir_execute(Program *prog, const char *source_name,
+		     int user_argc, char **user_argv)
+{
+    MIR_context_t ctx = MIR_init();
+    c2mir_init(ctx);
+    MIR_gen_init(ctx);
+    MIR_gen_set_optimize_level(ctx, 1);
+
+    c2m_ctx_t c2m = cir_init(ctx);
+    if (!c2m) {
+	fprintf(stderr, "madc_cir_execute: cir_init failed\n");
+	MIR_gen_finish(ctx);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
+    node_t tree = cir_translate(c2m, prog);
+    if (!tree) {
+	fprintf(stderr, "madc_cir_execute: cir_translate failed\n");
+	cir_finish(c2m);
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
+    int ok = cir_compile(ctx, c2m, tree, source_name);
+    if (!ok) {
+	fprintf(stderr, "madc_cir_execute: cir_compile failed\n");
+	cir_finish(c2m);
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
+    MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(ctx));
+    if (!mod) {
+	fprintf(stderr, "madc_cir_execute: no module produced\n");
+	cir_finish(c2m);
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
+    MIR_load_module(ctx, mod);
+    MIR_link(ctx, MIR_set_gen_interface, cir_import_resolver);
+
+    void *code = nullptr;
+    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
+	 item != nullptr; item = DLIST_NEXT(MIR_item_t, item)) {
+	if (item->item_type == MIR_func_item &&
+	    strcmp(item->u.func->name, "main") == 0) {
+	    code = MIR_gen(ctx, item);
+	    break;
+	}
+    }
+
+    if (!code) {
+	fprintf(stderr, "madc_cir_execute: main() not found\n");
+	cir_finish(c2m);
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
+    int result = ((int (*)(int, char **))code)(user_argc, user_argv);
+
+    cir_finish(c2m);
+    MIR_gen_finish(ctx);
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+
+    return result;
 }

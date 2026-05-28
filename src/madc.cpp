@@ -40,6 +40,8 @@ extern std::string madc_emit_c(struct gp_tree_node *root, SemaInfo *sema);
 extern int madc_mir_execute(const std::string &c_source,
                              const std::string &source_name,
                              int user_argc, char **user_argv);
+extern int madc_cir_execute(Program *prog, const char *source_name,
+                             int user_argc, char **user_argv);
 
 using namespace std;
 
@@ -419,6 +421,7 @@ int main(int argc, char **argv)
     bool emit_pch = false;
     bool emit_c = false;
     bool use_mir_backend = true;  // MIR is the default backend
+    bool use_cir_backend = false; // CIR: direct AST → c2mir (libc2mir)
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -466,11 +469,14 @@ int main(int argc, char **argv)
             const char *backend = argv[i] + 10;
             if (strcmp(backend, "mir") == 0)
                 use_mir_backend = true;
-            else if (strcmp(backend, "jit") == 0 || strcmp(backend, "asmjit") == 0)
+            else if (strcmp(backend, "cir") == 0) {
+                use_cir_backend = true;
+                use_mir_backend = false;
+            } else if (strcmp(backend, "jit") == 0 || strcmp(backend, "asmjit") == 0)
                 use_mir_backend = false;
             else {
                 std::cerr << "Unknown backend: " << backend
-                          << " (use 'mir', 'jit', or 'asmjit')" << std::endl;
+                          << " (use 'mir', 'cir', 'jit', or 'asmjit')" << std::endl;
                 return 1;
             }
             filearg = i + 1;
@@ -556,6 +562,21 @@ int main(int argc, char **argv)
     {
 	if ( !(tp=prog->tokenize(argv[filearg])) )
 	    return 0;
+
+	if ( use_cir_backend )
+	{
+	    // CIR pipeline: madc parse → CIR translate → c2mir compile → MIR execute
+	    if ( !prog->parse(tp) )
+		return 1;
+
+	    struct timeval before, after;
+	    gettimeofday(&before, NULL);
+	    int result = madc_cir_execute(prog.get(), argv[filearg],
+					  argc - filearg, argv + filearg);
+	    gettimeofday(&after, NULL);
+	    DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
+	    return (result < 0) ? 1 : 0;
+	}
 
 	if ( use_mir_backend )
 	{
