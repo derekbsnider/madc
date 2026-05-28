@@ -3,7 +3,7 @@
   "date": "2026-05-28",
   "build_status": "green",
   "test_status": {
-    "unit_tests": "294 passed, 0 failed (across all test binaries)",
+    "unit_tests": "294 passed, 0 failed (across all test binaries, excl. WIP test_cir)",
     "integration_tests": "419 passed, 0 failed, 0 timed out, 56 skipped"
   },
   "phases": {
@@ -23,13 +23,16 @@
     "transpiler_phase_5_classes": "complete",
     "transpiler_phase_6a_c_correctness": "complete",
     "transpiler_phase_6b_madc_features": "complete",
-    "transpiler_parity": "in_progress — 88.2% (419/475, 56 skipped)"
+    "transpiler_parity": "in_progress — 88.2% (419/475, 56 skipped)",
+    "libc2mir_poc": "in_progress — PoC validated, CIR translation 6/7 tests"
   },
   "features": [
     "MIR is the default backend (--backend=jit for legacy asmjit)",
     "clang++ is the default compiler (g++ still works via CXX=g++)",
-    "Gecko GLR parser (2M lines/sec) — replaces recursive descent",
+    "Gecko GLR parser (2M lines/sec) — current MIR frontend (being replaced by libc2mir)",
     "Gecko+MIR transpiler pipeline: --emit-c CLI flag",
+    "libc2mir: c2mir exposed as AST library — external parsers build node_t directly (PoC validated)",
+    "CIR translation layer: madc parser → c2mir node_t → MIR (6/7 tests, feature/libc2mir branch)",
     "String literals as const char * (managed std::string only when needed)",
     "STDSTRING_SIZE (sizeof std::string) replaces MADC_STRING_SIZE",
     "MADC_EXTERN_C0-C4 macros for extern C wrapper generation",
@@ -74,7 +77,8 @@
     "GCC torture suite at 97.9% (1649/1685)"
   ],
   "known_issues": [
-    "Transpiler: _Complex support complete — all 12 tests passing (13 c2mir commits)",
+    "Gecko: typedef/expression ambiguity causes 79 misparsed declarations in SMAUG (libc2mir will eliminate)",
+    "Gecko: emitter had 4K buffer truncation (fixed on feature/unify-cpp-objects, stashed)",
     "Transpiler: c2mir does not support SIMD/vector_size (11 tests deferred)",
     "Transpiler: c2mir does not support inline asm (4 tests deferred)",
     "Transpiler: c2mir does not support wchar_t/wide strings (2 tests deferred)",
@@ -83,23 +87,23 @@
     "Transpiler: lambda [&] capture not yet implemented (1 test)",
     "Transpiler: prefer directive not yet implemented (1 test)",
     "Transpiler: #load directive not in transpiler (2 tests)",
-    "SMAUG regression: C++ keyword 'new' conflicts with C89 struct member names — needs --std=c mode toggle",
+    "libc2mir: multi-function programs fail — prototype SPEC_DECL structure needs to match c2mir exactly",
     "Legacy: nested function definitions unsupported (2 tests)",
     "Legacy: alloca(func_call()) causes asmjit InvalidInstruction (2 tests)"
   ],
   "remaining_todo": [
-    "c2mir _Complex: crealf/cimagf/conj builtins (need declarations or <complex.h>)",
-    "Add system headers to c2mir fork (stdio.h, stdlib.h, string.h, etc.)",
+    "libc2mir: fix forward declaration (prototype) structure for multi-function programs",
+    "libc2mir: expand CIR translation — structs, pointers, arrays, strings",
+    "libc2mir: C++ lowering (class → struct + free functions)",
+    "libc2mir: wire as default MIR backend in madc.cpp (replace Gecko pipeline)",
+    "Parser speed optimization: string interning, arena allocation, token pre-materialization",
+    "--std= mode switching in parser.cpp (C78-C23, C++98-C++26)",
+    "c2mir _Complex: crealf/cimagf/conj builtins",
     "Eval API extern C wrappers + name mapping (5 tests)",
     "Lambda [&] capture via struct-based env passing",
-    "prefer directive namespace dispatch",
-    "#load directive in transpiler",
-    "C/C++ mode toggle for SMAUG compatibility (--std=c89)",
-    "Cfront-style template instantiation (generate wrappers from C++ headers)",
     "MIR optimizer level 2 SSA bug fix in our fork",
-    "libmadcdis/libmadcdat library restructure",
     "libmadc C++ API next pieces",
     "SMAUG native runtime broader gameplay testing",
-    "macOS/ARM64 port (clang++ default is first step)"
+    "macOS/ARM64 port"
   ]
 }
