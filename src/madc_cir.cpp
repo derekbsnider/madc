@@ -640,12 +640,18 @@ static node_t cir_translate_block(c2m_ctx_t c2m, TokenCpnd *tc)
     std::set<std::string> decl_vars;
     for (auto *ts : tc->statements) {
 	TokenDecl *td = dynamic_cast<TokenDecl *>((TokenBase *)ts);
-	if (td && (td->initialize || td->has_brace_init))
+	if (td)
 	    decl_vars.insert(td->var.name);
     }
 
+    DBG(std::cerr << "cir: block vars=" << tc->variables.size()
+		  << " skip=" << skip << " stmts=" << tc->statements.size()
+		  << " decl_vars=" << decl_vars.size() << std::endl);
     for (size_t vi = skip; vi < tc->variables.size(); vi++) {
 	Variable *v = tc->variables[vi];
+	DBG(std::cerr << "cir:   var[" << vi << "] '" << v->name
+		      << "' type=" << (v->type ? v->type->name : "null")
+		      << " skip_decl=" << decl_vars.count(v->name) << std::endl);
 	if (decl_vars.count(v->name)) continue;  // emitted with initializer later
 	c2mir_pos_t vpos = pos;
 	node_t spec_decl = cir_var_decl(c2m, v, vpos);
@@ -956,10 +962,10 @@ static node_t cir_translate_stmt(c2m_ctx_t c2m, TokenBase *tb)
 	if (tl) return NULL;
     }
 
-    // Declaration with initializer: emit as SPEC_DECL with init in 5th child
+    // Declaration statement: emit as SPEC_DECL (with optional initializer)
     {
-	TokenDecl *td = dynamic_cast<TokenDecl *>(tb);
-	if (td && (td->initialize || td->has_brace_init)) {
+	TokenDecl *td = dynamic_cast<TokenDecl *>((TokenBase *)tb);
+	if (td) {
 	    return cir_var_decl(c2m, &td->var, pos, td);
 	}
     }
@@ -1001,8 +1007,13 @@ static node_t cir_func_proto(c2m_ctx_t c2m, TokenFunc *tf)
     FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
     if (!fd) return NULL;
 
-    // Return type
-    node_t ret_type = cir_type_list(c2m, &fd->returns, pos);
+    // Return type — unwrap pointer if needed
+    DataDef *ret_dd = &fd->returns;
+    bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
+    DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : nullptr;
+    if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
+
+    node_t ret_type = cir_type_list(c2m, ret_dd, pos);
     node_t share = c2mir_new_node1(c2m, N_SHARE, ret_type);
 
     // Parameters
@@ -1032,10 +1043,17 @@ static node_t cir_func_proto(c2m_ctx_t c2m, TokenFunc *tf)
     node_t func_inner = c2mir_new_node1(c2m, N_FUNC, param_list);
     c2mir_set_node_pos(c2m, func_inner, pos);
 
-    // DECL(ID("name"), LIST(FUNC(...)))
+    // DECL(ID("name"), LIST(FUNC(...) [, POINTER]))
+    // c2mir puts POINTER AFTER FUNC for pointer return types.
     node_t func_id = c2mir_new_str_node(c2m, N_ID, tf->var.name.c_str(),
 					tf->var.name.size() + 1, pos);
-    node_t decl_list = c2mir_new_node1(c2m, N_LIST, func_inner);
+    node_t decl_list = c2mir_new_node(c2m, N_LIST);
+    c2mir_op_append(c2m, decl_list, func_inner);
+    if (ret_is_ptr) {
+	node_t pointer = c2mir_new_node1(c2m, N_POINTER, c2mir_new_node(c2m, N_LIST));
+	c2mir_set_node_pos(c2m, pointer, pos);
+	c2mir_op_append(c2m, decl_list, pointer);
+    }
     c2mir_set_node_pos(c2m, decl_list, pos);
     node_t decl = c2mir_new_node2(c2m, N_DECL, func_id, decl_list);
     c2mir_set_node_pos(c2m, decl, pos);
@@ -1062,14 +1080,18 @@ static node_t cir_translate_func(c2m_ctx_t c2m, TokenFunc *tf)
     FuncDef *fd = dynamic_cast<FuncDef *>(tf->var.type);
     if (!fd) return NULL;
 
-    // Return type: LIST(type_spec)
-    node_t ret_type = cir_type_list(c2m, &fd->returns, pos);
+    // Return type — unwrap pointer if needed
+    DataDef *ret_dd = &fd->returns;
+    bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
+    DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : nullptr;
+    if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
-    // Parameters: LIST(TYPE(spec_list, DECL(name, LIST())) ...)
+    node_t ret_type = cir_type_list(c2m, ret_dd, pos);
+
+    // Parameters
     node_t param_list = c2mir_new_node(c2m, N_LIST);
 
     if (fd->parameters.empty()) {
-	// void parameter: TYPE(LIST(VOID), DECL(IGNORE, LIST()))
 	node_t void_spec = c2mir_new_node1(c2m, N_LIST,
 	    c2mir_new_node(c2m, N_VOID));
 	c2mir_set_node_pos(c2m, void_spec, pos);
@@ -1081,17 +1103,11 @@ static node_t cir_translate_func(c2m_ctx_t c2m, TokenFunc *tf)
 	c2mir_set_node_pos(c2m, void_param, pos);
 	c2mir_op_append(c2m, param_list, void_param);
     } else {
-	// Named parameters
 	for (size_t i = 0; i < fd->parameters.size(); i++) {
 	    DataDef *ptype = fd->parameters[i];
-	    // Get parameter name from the function's variable list
-	    // Parameter names live in the Method object, not tf->variables
 	    const char *pname = "p";
 	    if (tf->method && i < tf->method->parameters.size())
 		pname = tf->method->parameters[i]->name.c_str();
-	    DBG(std::cerr << "cir: func " << tf->var.name << " param " << i
-			  << " name='" << pname << "' vars.size=" << tf->variables.size()
-			  << " params.size=" << fd->parameters.size() << std::endl);
 
 	    node_t spec_decl = cir_param_decl(c2m, ptype, pname, pos);
 	    c2mir_op_append(c2m, param_list, spec_decl);
@@ -1103,10 +1119,16 @@ static node_t cir_translate_func(c2m_ctx_t c2m, TokenFunc *tf)
     node_t func_inner = c2mir_new_node1(c2m, N_FUNC, param_list);
     c2mir_set_node_pos(c2m, func_inner, pos);
 
-    // Declarator: DECL(ID("name"), LIST(FUNC(...)))
+    // Declarator: DECL(ID("name"), LIST(FUNC(...) [, POINTER]))
     node_t func_id = c2mir_new_str_node(c2m, N_ID, tf->var.name.c_str(),
 					tf->var.name.size() + 1, pos);
-    node_t decl_list = c2mir_new_node1(c2m, N_LIST, func_inner);
+    node_t decl_list = c2mir_new_node(c2m, N_LIST);
+    c2mir_op_append(c2m, decl_list, func_inner);
+    if (ret_is_ptr) {
+	node_t pointer = c2mir_new_node1(c2m, N_POINTER, c2mir_new_node(c2m, N_LIST));
+	c2mir_set_node_pos(c2m, pointer, pos);
+	c2mir_op_append(c2m, decl_list, pointer);
+    }
     c2mir_set_node_pos(c2m, decl_list, pos);
     node_t decl = c2mir_new_node2(c2m, N_DECL, func_id, decl_list);
     c2mir_set_node_pos(c2m, decl, pos);
@@ -1117,7 +1139,7 @@ static node_t cir_translate_func(c2m_ctx_t c2m, TokenFunc *tf)
     // FUNC_DEF(ret_type, decl, kr_decl_list, body)
     node_t func_def = c2mir_new_node4(c2m, N_FUNC_DEF,
 	ret_type, decl,
-	c2mir_new_node(c2m, N_LIST),  // K&R decl list (empty)
+	c2mir_new_node(c2m, N_LIST),
 	body);
     c2mir_set_node_pos(c2m, func_def, pos);
 
@@ -1156,11 +1178,13 @@ node_t cir_translate(c2m_ctx_t c2m, Program *prog)
     }
 
     // Pass 0: Emit struct definitions.
-    // Track which structs we've already emitted.
+    // Only emit structs that have members (skip forward declarations and
+    // builtins that might not be fully initialized).
     std::set<std::string> emitted_structs;
     for (auto &kv : prog->struct_map) {
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(kv.second);
-	if (!sdd || emitted_structs.count(sdd->name)) continue;
+	if (!sdd || sdd->members.empty()) continue;
+	if (emitted_structs.count(sdd->name)) continue;
 	emitted_structs.insert(sdd->name);
 	c2mir_pos_t spos = { "<struct>", 1, 0 };
 	node_t sd = cir_struct_def(c2m, sdd, spos);
