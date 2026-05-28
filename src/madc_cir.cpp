@@ -564,23 +564,9 @@ node_t cir_translate(c2m_ctx_t c2m, Program *prog)
     if (!prog) return NULL;
 
     node_t module = c2mir_new_node(c2m, N_MODULE);
-
-    // Walk the program's AST: TokenProgram has statements which include
-    // function definitions (TokenFunc) and global declarations.
-    // For now, we only handle TokenFunc.
-
-    // Find the TokenProgram
-    TokenProgram *tp = NULL;
-    // The program's token tree root is accessible via the ast stack
-    // or via the statements in the program's compound statement.
-    // The parser pushes TokenProgram onto the ast stack.
-
-    // Actually, the parsed program's functions are in the statements
-    // of the TokenProgram which is at the top of the AST.
-    // Let me find it through prog's public interface.
-
-    // The parse output: prog->parse(tp) populates tp->statements
-    // We need access to tp. Let's walk the token tree.
+    // c2mir expects MODULE to contain a single LIST child.
+    // The checker and generator both process NL_HEAD(module->u.ops).
+    node_t top_list = c2mir_new_node(c2m, N_LIST);
 
     // Collect all TokenFunc entries
     std::vector<TokenFunc *> funcs;
@@ -592,21 +578,19 @@ node_t cir_translate(c2m_ctx_t c2m, Program *prog)
     }
 
     // Pass 1: Emit forward declarations for all functions except main.
-    // This ensures c2mir's checker can resolve cross-function references.
-    // We skip main because it's typically the last function and doesn't
-    // need a forward declaration (nothing calls main internally).
     for (TokenFunc *tf : funcs) {
 	if (tf->var.name == "main") continue;
 	node_t proto = cir_func_proto(c2m, tf);
-	if (proto) c2mir_op_append(c2m, module, proto);
+	if (proto) c2mir_op_append(c2m, top_list, proto);
     }
 
     // Pass 2: Emit function definitions.
     for (TokenFunc *tf : funcs) {
 	node_t fd = cir_translate_func(c2m, tf);
-	if (fd) c2mir_op_append(c2m, module, fd);
+	if (fd) c2mir_op_append(c2m, top_list, fd);
     }
 
+    c2mir_op_append(c2m, module, top_list);
     return module;
 }
 
