@@ -5984,6 +5984,7 @@ struct expr {
     mir_ullong u_val;
     mir_ldouble d_val;
   } c;
+  mir_ldouble c_im_val; /* imaginary part for complex constants (real part in c.d_val) */
 };
 
 struct decl_spec {
@@ -6484,6 +6485,12 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
     CONV (TP_LONG, mir_long, i_val, mfrom) CONV (TP_LLONG, mir_llong, i_val, mfrom);     \
     CONV (TP_FLOAT, mir_float, d_val, mfrom) CONV (TP_DOUBLE, mir_double, d_val, mfrom); \
     CONV (TP_LDOUBLE, mir_ldouble, d_val, mfrom);                                        \
+  case TP_CFLOAT:                                                                        \
+  case TP_CDOUBLE:                                                                       \
+  case TP_CLDOUBLE:                                                                      \
+    to_e->c.d_val = (mir_ldouble) from_e->c.mfrom;                                       \
+    to_e->c_im_val = 0.0L;                                                               \
+    break;                                                                               \
   case TP_CHAR:                                                                          \
     if (char_is_signed_p ())                                                             \
       to_e->c.i_val = (mir_char) from_e->c.mfrom;                                        \
@@ -6557,6 +6564,18 @@ static void cast_value (struct expr *to_e, struct expr *from_e, struct type *to)
     case TP_FLOAT:
     case TP_DOUBLE:
     case TP_LDOUBLE: BASIC_FROM_CONV (d_val); break;
+    case TP_CFLOAT:
+    case TP_CDOUBLE:
+    case TP_CLDOUBLE:
+      if (complex_type_p (to)) {
+        /* complex-to-complex: copy both parts */
+        to_e->c.d_val = from_e->c.d_val;
+        to_e->c_im_val = from_e->c_im_val;
+      } else {
+        /* complex-to-scalar: extract real part (C99 6.3.1.7) */
+        BASIC_FROM_CONV (d_val);
+      }
+      break;
     default: assert (FALSE);
     }
   }
@@ -8292,16 +8311,32 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     if (arith_or_complex_type_p (t1) && arith_or_complex_type_p (t2)) {
       t = arithmetic_conversion (t1, t2);
       e->type->u.basic_type = t.u.basic_type;
-      if (!complex_type_p (&t) && e1->const_p && e2->const_p) {
+      if (e1->const_p && e2->const_p) {
         e->const_p = TRUE;
-        convert_value (e1, &t);
-        convert_value (e2, &t);
-        if (floating_type_p (&t))
-          e->c.d_val = (add_p ? e1->c.d_val + e2->c.d_val : e1->c.d_val - e2->c.d_val);
-        else if (signed_integer_type_p (&t))
-          e->c.i_val = (add_p ? e1->c.i_val + e2->c.i_val : e1->c.i_val - e2->c.i_val);
-        else
-          e->c.u_val = (add_p ? e1->c.u_val + e2->c.u_val : e1->c.u_val - e2->c.u_val);
+        if (complex_type_p (&t)) {
+          mir_ldouble re1, im1, re2, im2;
+          re1 = complex_type_p (t1) ? e1->c.d_val
+                : floating_type_p (t1) ? e1->c.d_val
+                : signed_integer_type_p (t1) ? (mir_ldouble) e1->c.i_val
+                : (mir_ldouble) e1->c.u_val;
+          im1 = complex_type_p (t1) ? e1->c_im_val : 0.0L;
+          re2 = complex_type_p (t2) ? e2->c.d_val
+                : floating_type_p (t2) ? e2->c.d_val
+                : signed_integer_type_p (t2) ? (mir_ldouble) e2->c.i_val
+                : (mir_ldouble) e2->c.u_val;
+          im2 = complex_type_p (t2) ? e2->c_im_val : 0.0L;
+          e->c.d_val = add_p ? re1 + re2 : re1 - re2;
+          e->c_im_val = add_p ? im1 + im2 : im1 - im2;
+        } else {
+          convert_value (e1, &t);
+          convert_value (e2, &t);
+          if (floating_type_p (&t))
+            e->c.d_val = (add_p ? e1->c.d_val + e2->c.d_val : e1->c.d_val - e2->c.d_val);
+          else if (signed_integer_type_p (&t))
+            e->c.i_val = (add_p ? e1->c.i_val + e2->c.i_val : e1->c.i_val - e2->c.i_val);
+          else
+            e->c.u_val = (add_p ? e1->c.u_val + e2->c.u_val : e1->c.u_val - e2->c.u_val);
+        }
       }
     } else if (add_p) {
       if (t2->mode == TM_PTR) {
@@ -8372,35 +8407,59 @@ static struct expr *check_assign_op (c2m_ctx_t c2m_ctx, node_t r, struct expr *e
     } else {
       t = arithmetic_conversion (t1, t2);
       e->type->u.basic_type = t.u.basic_type;
-      if (!complex_type_p (&t) && e1->const_p && e2->const_p) {
+      if (e1->const_p && e2->const_p) {
         e->const_p = TRUE;
-        convert_value (e1, &t);
-        convert_value (e2, &t);
-        if (r->code == N_MUL) {
-          if (floating_type_p (&t))
-            e->c.d_val = e1->c.d_val * e2->c.d_val;
-          else if (signed_integer_type_p (&t))
-            e->c.i_val = e1->c.i_val * e2->c.i_val;
-          else
-            e->c.u_val = e1->c.u_val * e2->c.u_val;
-        } else if ((floating_type_p (&t) && e1->c.d_val == 0.0 && e2->c.d_val == 0.0)
-                   || (signed_integer_type_p (&t) && e2->c.i_val == 0)
-                   || (integer_type_p (&t) && !signed_integer_type_p (&t) && e2->c.u_val == 0)) {
-          if (floating_type_p (&t)) {
-            e->c.d_val = nanl (""); /* Use NaN */
+        if (complex_type_p (&t)) {
+          mir_ldouble re1, im1, re2, im2;
+          re1 = complex_type_p (t1) ? e1->c.d_val
+                : floating_type_p (t1) ? e1->c.d_val
+                : signed_integer_type_p (t1) ? (mir_ldouble) e1->c.i_val
+                : (mir_ldouble) e1->c.u_val;
+          im1 = complex_type_p (t1) ? e1->c_im_val : 0.0L;
+          re2 = complex_type_p (t2) ? e2->c.d_val
+                : floating_type_p (t2) ? e2->c.d_val
+                : signed_integer_type_p (t2) ? (mir_ldouble) e2->c.i_val
+                : (mir_ldouble) e2->c.u_val;
+          im2 = complex_type_p (t2) ? e2->c_im_val : 0.0L;
+          if (r->code == N_MUL) {
+            /* (a+bi)(c+di) = (ac-bd) + (ad+bc)i */
+            e->c.d_val = re1 * re2 - im1 * im2;
+            e->c_im_val = re1 * im2 + im1 * re2;
           } else {
-            if (signed_integer_type_p (&t))
-              e->c.i_val = 0;
-            else
-              e->c.u_val = 0;
-            error (c2m_ctx, POS (r), "Division by zero");
+            /* (a+bi)/(c+di) = ((ac+bd) + (bc-ad)i) / (c^2+d^2) */
+            mir_ldouble denom = re2 * re2 + im2 * im2;
+            e->c.d_val = (re1 * re2 + im1 * im2) / denom;
+            e->c_im_val = (im1 * re2 - re1 * im2) / denom;
           }
-        } else if (r->code != N_MOD && floating_type_p (&t)) {
-          e->c.d_val = e1->c.d_val / e2->c.d_val;
-        } else if (signed_integer_type_p (&t)) {  // ??? zero
-          e->c.i_val = r->code == N_DIV ? e1->c.i_val / e2->c.i_val : e1->c.i_val % e2->c.i_val;
         } else {
-          e->c.u_val = r->code == N_DIV ? e1->c.u_val / e2->c.u_val : e1->c.u_val % e2->c.u_val;
+          convert_value (e1, &t);
+          convert_value (e2, &t);
+          if (r->code == N_MUL) {
+            if (floating_type_p (&t))
+              e->c.d_val = e1->c.d_val * e2->c.d_val;
+            else if (signed_integer_type_p (&t))
+              e->c.i_val = e1->c.i_val * e2->c.i_val;
+            else
+              e->c.u_val = e1->c.u_val * e2->c.u_val;
+          } else if ((floating_type_p (&t) && e1->c.d_val == 0.0 && e2->c.d_val == 0.0)
+                     || (signed_integer_type_p (&t) && e2->c.i_val == 0)
+                     || (integer_type_p (&t) && !signed_integer_type_p (&t) && e2->c.u_val == 0)) {
+            if (floating_type_p (&t)) {
+              e->c.d_val = nanl (""); /* Use NaN */
+            } else {
+              if (signed_integer_type_p (&t))
+                e->c.i_val = 0;
+              else
+                e->c.u_val = 0;
+              error (c2m_ctx, POS (r), "Division by zero");
+            }
+          } else if (r->code != N_MOD && floating_type_p (&t)) {
+            e->c.d_val = e1->c.d_val / e2->c.d_val;
+          } else if (signed_integer_type_p (&t)) {  // ??? zero
+            e->c.i_val = r->code == N_DIV ? e1->c.i_val / e2->c.i_val : e1->c.i_val % e2->c.i_val;
+          } else {
+            e->c.u_val = r->code == N_DIV ? e1->c.u_val / e2->c.u_val : e1->c.u_val % e2->c.u_val;
+          }
         }
       }
     }
@@ -8676,12 +8735,21 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     break;
   case N_CF:
     e = create_basic_type_expr (c2m_ctx, r, TP_CFLOAT);
+    e->const_p = TRUE;
+    e->c.d_val = 0.0L;
+    e->c_im_val = r->u.f;
     break;
   case N_CD:
     e = create_basic_type_expr (c2m_ctx, r, TP_CDOUBLE);
+    e->const_p = TRUE;
+    e->c.d_val = 0.0L;
+    e->c_im_val = r->u.d;
     break;
   case N_CLD:
     e = create_basic_type_expr (c2m_ctx, r, TP_CLDOUBLE);
+    e->const_p = TRUE;
+    e->c.d_val = 0.0L;
+    e->c_im_val = r->u.ld;
     break;
   case N_CH:
     e = create_basic_type_expr (c2m_ctx, r, TP_CHAR);
@@ -10673,6 +10741,7 @@ static int push_const_val (c2m_ctx_t c2m_ctx, node_t r, op_t *res) {
   MIR_type_t mir_type;
 
   if (!e->const_p) return FALSE;
+  if (complex_type_p (e->type)) return FALSE; /* complex consts need memory, not a single imm */
   if (floating_type_p (e->type)) {
     /* MIR support only IEEE float and double */
     mir_type = get_mir_type (c2m_ctx, e->type);
@@ -12172,6 +12241,30 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
           && (init_el.member_decl == NULL || init_el.member_decl->bit_offset < 0))
         continue;
       e = init_el.init->attr;
+      if (complex_type_p (init_el.el_type) && e->const_p) {
+        /* Complex constant global initializer: emit two data items (re, im) */
+        enum basic_type cbt = complex_component_type (init_el.el_type->u.basic_type);
+        MIR_type_t ct = cbt == TP_FLOAT ? MIR_T_F : cbt == TP_DOUBLE ? MIR_T_D : MIR_T_LD;
+        convert_value (e, init_el.el_type);
+        if (rel_offset < init_el.offset) {
+          data = MIR_new_bss (ctx, global_name, init_el.offset - rel_offset);
+          if (global_name != NULL) var.decl->u.item = data;
+          global_name = NULL;
+        }
+        {
+          union { float f; double d; long double ld; } re_u, im_u;
+          if (ct == MIR_T_F) { re_u.f = (float) e->c.d_val; im_u.f = (float) e->c_im_val; }
+          else if (ct == MIR_T_D) { re_u.d = (double) e->c.d_val; im_u.d = (double) e->c_im_val; }
+          else { re_u.ld = e->c.d_val; im_u.ld = e->c_im_val; }
+          data = MIR_new_data (ctx, global_name, ct, 1, &re_u);
+          if (global_name != NULL) var.decl->u.item = data;
+          global_name = NULL;
+          MIR_new_data (ctx, NULL, ct, 1, &im_u);
+        }
+        data_size = type_size (c2m_ctx, init_el.el_type);
+        rel_offset = init_el.offset + data_size;
+        continue;
+      }
       if (!e->const_addr_p) {
         if (e->const_p) {
           convert_value (e, init_el.el_type);
@@ -13193,19 +13286,32 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_ALIGNOF:
   case N_SIZEOF:
   case N_EXPR_SIZEOF: assert (FALSE); break;
-  case N_CAST:
+  case N_CAST: {
+    struct type *from_type;
     assert (!((struct expr *) r->attr)->const_p);
     type = ((struct expr *) r->attr)->type;
+    from_type = ((struct expr *) NL_EL (r->u.ops, 1)->attr)->type;
     op1 = gen (c2m_ctx, NL_EL (r->u.ops, 1), NULL, NULL, !void_type_p (type), NULL, NULL);
     if (void_type_p (type)) {
       res = op1;
       res.decl = NULL;
       res.mir_op.mode = MIR_OP_UNDEF;
+    } else if (complex_type_p (from_type) && !complex_type_p (type)) {
+      /* Complex-to-scalar cast: extract real part (C99 6.3.1.7) */
+      enum basic_type cbt = complex_component_type (from_type->u.basic_type);
+      MIR_type_t ct = cbt == TP_FLOAT ? MIR_T_F : cbt == TP_DOUBLE ? MIR_T_D : MIR_T_LD;
+      op_t real_part = complex_load (c2m_ctx, op1, ct, 0);
+      t = get_mir_type (c2m_ctx, type);
+      res = cast (c2m_ctx, real_part, t, TRUE);
+    } else if (!complex_type_p (from_type) && complex_type_p (type)) {
+      /* Scalar-to-complex cast: {scalar, 0} */
+      res = scalar_to_complex (c2m_ctx, op1, get_mir_type (c2m_ctx, from_type), type->u.basic_type);
     } else {
       t = get_mir_type (c2m_ctx, type);
       res = cast (c2m_ctx, op1, t, TRUE);
     }
     break;
+  }
   case N_COMPOUND_LITERAL: {
     const char *global_name = NULL;
     char buff[50];
