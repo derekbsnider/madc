@@ -18,6 +18,7 @@
 #include <sstream>
 #include <fstream>
 #include <stdint.h>
+#include <stdlib.h>
 #include <dlfcn.h>
 
 #include <asmjit/x86.h>
@@ -29,6 +30,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_cir.h"
+#include "cir_builder.h"
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -1627,9 +1629,17 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	return -1;
     }
 
-    node_t tree = cir_translate(c2m, prog);
+    // CirBuilder (cir_node) is the real backend; the legacy static
+    // cir_translate() path is retained only for A/B comparison via
+    // MADC_CIR_OLD=1 during the migration. The builder owns its node
+    // arena and must outlive cir_compile()/MIR_gen() — its stack scope
+    // here covers both.
+    CirBuilder builder(c2m);
+    node_t tree = getenv("MADC_CIR_OLD")
+		      ? cir_translate(c2m, prog)
+		      : builder.translate_module(prog);
     if (!tree) {
-	fprintf(stderr, "madc_cir_execute: cir_translate failed\n");
+	fprintf(stderr, "madc_cir_execute: tree build failed\n");
 	cir_finish(c2m);
 	c2mir_finish(ctx);
 	MIR_gen_finish(ctx);
