@@ -582,6 +582,181 @@ static node_t cir_var_decl(c2m_ctx_t c2m, Variable *v, c2mir_pos_t vpos,
     return spec_decl;
 }
 
+// Forward declaration for cir_param_decl (used by cir_typedef_decl)
+static node_t cir_param_decl(c2m_ctx_t c2m, DataDef *ptype, const char *pname,
+			     c2mir_pos_t pos);
+
+// Names of built-in types that are NOT typedefs — skip when emitting typedefs.
+static bool cir_is_builtin_type(const std::string &name)
+{
+    static const char *builtins[] = {
+	"void", "bool", "_Bool", "char", "int", "int8_t", "int16_t",
+	"int24_t", "int32_t", "int64_t", "uint8_t", "uint16_t",
+	"uint24_t", "uint32_t", "uint64_t", "float", "double",
+	"array", "LPSTR", "auto", "ptrdiff_t", "size_t", "wchar_t",
+	"_Decimal32", "_Decimal64", "_Decimal128",
+	// C++ stream types
+	"string", "ostream", "stringstream", "ifstream", "ofstream",
+	"fstream", "istream",
+	NULL
+    };
+    for (const char **p = builtins; *p; p++)
+	if (name == *p) return true;
+    return false;
+}
+
+// Build a typedef SPEC_DECL node for a single typedef entry.
+// Pattern: SPEC_DECL(SHARE(LIST(TYPEDEF, type_spec)), DECL(ID("alias"), LIST([POINTER])), IGNORE*3)
+static node_t cir_typedef_decl(c2m_ctx_t c2m, const std::string &alias,
+				DataDef *dd, c2mir_pos_t pos,
+				const std::set<std::string> &emitted_structs)
+{
+    if (!dd) return NULL;
+
+    // Build the type specifier list: LIST(TYPEDEF, ...)
+    node_t type_list = c2mir_new_node(c2m, N_LIST);
+    node_t td_node = c2mir_new_node(c2m, N_TYPEDEF);
+    c2mir_set_node_pos(c2m, td_node, pos);
+    c2mir_op_append(c2m, type_list, td_node);
+
+    // Unwrap pointer for the base type
+    DataDef *base_dd = dd;
+    bool is_ptr = dd->is_pointer();
+    DataDefPTR *ptr_dd = is_ptr ? dynamic_cast<DataDefPTR *>(dd) : nullptr;
+    if (ptr_dd && ptr_dd->base_type)
+	base_dd = ptr_dd->base_type;
+
+    // Function pointer typedef: typedef void (*FUNC_PTR)(int);
+    DataDefFPTR *fptr = dynamic_cast<DataDefFPTR *>(dd);
+    if (!fptr && ptr_dd)
+	fptr = dynamic_cast<DataDefFPTR *>(ptr_dd->base_type);
+
+    // Determine the type specifier
+    if (base_dd->is_struct()) {
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
+	if (sdd) {
+	    if (emitted_structs.count(sdd->name)) {
+		// Reference previously-emitted struct: STRUCT(ID("name"), IGNORE)
+		node_t sid = c2mir_new_str_node(c2m, N_ID, sdd->name.c_str(),
+						sdd->name.size() + 1, pos);
+		node_t sref = c2mir_new_node2(c2m, N_STRUCT, sid,
+		    c2mir_new_node(c2m, N_IGNORE));
+		c2mir_set_node_pos(c2m, sref, pos);
+		c2mir_op_append(c2m, type_list, sref);
+	    } else if (!sdd->members.empty()) {
+		// Emit struct definition inline (for typedef struct { ... } NAME)
+		node_t sid = c2mir_new_str_node(c2m, N_ID, sdd->name.c_str(),
+						sdd->name.size() + 1, pos);
+		node_t member_list = c2mir_new_node(c2m, N_LIST);
+		for (size_t i = 0; i < sdd->members.size(); i++) {
+		    DataDef *mtype = sdd->members[i].second;
+		    const std::string &mname = sdd->members[i].first;
+		    DataDef *mbase = mtype;
+		    bool m_is_ptr = mbase && mbase->is_pointer();
+		    DataDefPTR *mptr = m_is_ptr ? dynamic_cast<DataDefPTR *>(mbase) : nullptr;
+		    if (mptr && mptr->base_type) mbase = mptr->base_type;
+
+		    node_t mspec = cir_type_list(c2m, mbase, pos);
+		    node_t mshare = c2mir_new_node1(c2m, N_SHARE, mspec);
+		    node_t mid = c2mir_new_str_node(c2m, N_ID, mname.c_str(),
+						    mname.size() + 1, pos);
+		    node_t mdecl_list = c2mir_new_node(c2m, N_LIST);
+		    if (m_is_ptr) {
+			node_t pointer = c2mir_new_node1(c2m, N_POINTER,
+			    c2mir_new_node(c2m, N_LIST));
+			c2mir_set_node_pos(c2m, pointer, pos);
+			c2mir_op_append(c2m, mdecl_list, pointer);
+		    }
+		    node_t mdecl = c2mir_new_node2(c2m, N_DECL, mid, mdecl_list);
+		    node_t member = c2mir_new_node(c2m, N_MEMBER);
+		    c2mir_op_append(c2m, member, mshare);
+		    c2mir_op_append(c2m, member, mdecl);
+		    c2mir_op_append(c2m, member, c2mir_new_node(c2m, N_IGNORE));
+		    c2mir_op_append(c2m, member, c2mir_new_node(c2m, N_IGNORE));
+		    c2mir_set_node_pos(c2m, member, pos);
+		    c2mir_op_append(c2m, member_list, member);
+		}
+		node_t struct_node = c2mir_new_node2(c2m, N_STRUCT, sid, member_list);
+		c2mir_set_node_pos(c2m, struct_node, pos);
+		c2mir_op_append(c2m, type_list, struct_node);
+	    } else {
+		// Forward-declared struct with no members — just reference the tag
+		node_t sid = c2mir_new_str_node(c2m, N_ID, sdd->name.c_str(),
+						sdd->name.size() + 1, pos);
+		node_t sref = c2mir_new_node2(c2m, N_STRUCT, sid,
+		    c2mir_new_node(c2m, N_IGNORE));
+		c2mir_set_node_pos(c2m, sref, pos);
+		c2mir_op_append(c2m, type_list, sref);
+	    }
+	}
+    } else {
+	// Simple type (int, char, unsigned long, etc.)
+	cir_append_type_specs(c2m, type_list, base_dd);
+    }
+    c2mir_set_node_pos(c2m, type_list, pos);
+
+    node_t share = c2mir_new_node1(c2m, N_SHARE, type_list);
+
+    // Build declarator: DECL(ID("alias"), LIST([POINTER] [, FUNC(...)]))
+    node_t alias_id = c2mir_new_str_node(c2m, N_ID, alias.c_str(),
+					  alias.size() + 1, pos);
+    node_t decl_list = c2mir_new_node(c2m, N_LIST);
+
+    if (fptr && fptr->target) {
+	// Function pointer typedef: DECL(ID, LIST(POINTER, FUNC(params)))
+	node_t pointer = c2mir_new_node1(c2m, N_POINTER, c2mir_new_node(c2m, N_LIST));
+	c2mir_set_node_pos(c2m, pointer, pos);
+	c2mir_op_append(c2m, decl_list, pointer);
+
+	FuncDef *fd = fptr->target;
+	node_t param_list = c2mir_new_node(c2m, N_LIST);
+	if (fd->parameters.empty()) {
+	    node_t void_spec = c2mir_new_node1(c2m, N_LIST, c2mir_new_node(c2m, N_VOID));
+	    node_t void_decl = c2mir_new_node2(c2m, N_DECL,
+		c2mir_new_node(c2m, N_IGNORE), c2mir_new_node(c2m, N_LIST));
+	    node_t void_param = c2mir_new_node2(c2m, N_TYPE, void_spec, void_decl);
+	    c2mir_op_append(c2m, param_list, void_param);
+	} else {
+	    size_t nparam = fd->parameters.size();
+	    if (fd->is_varargs && nparam > 0) nparam--;
+	    for (size_t i = 0; i < nparam; i++) {
+		char pname[16];
+		snprintf(pname, sizeof(pname), "p%zu", i);
+		node_t pd = cir_param_decl(c2m, fd->parameters[i], pname, pos);
+		c2mir_op_append(c2m, param_list, pd);
+	    }
+	    if (fd->is_varargs) {
+		node_t dots = c2mir_new_node(c2m, N_DOTS);
+		c2mir_set_node_pos(c2m, dots, pos);
+		c2mir_op_append(c2m, param_list, dots);
+	    }
+	}
+	c2mir_set_node_pos(c2m, param_list, pos);
+	node_t func_inner = c2mir_new_node1(c2m, N_FUNC, param_list);
+	c2mir_set_node_pos(c2m, func_inner, pos);
+	c2mir_op_append(c2m, decl_list, func_inner);
+    } else if (is_ptr) {
+	// Pointer typedef: DECL(ID, LIST(POINTER(LIST())))
+	node_t pointer = c2mir_new_node1(c2m, N_POINTER, c2mir_new_node(c2m, N_LIST));
+	c2mir_set_node_pos(c2m, pointer, pos);
+	c2mir_op_append(c2m, decl_list, pointer);
+    }
+    c2mir_set_node_pos(c2m, decl_list, pos);
+
+    node_t decl = c2mir_new_node2(c2m, N_DECL, alias_id, decl_list);
+    c2mir_set_node_pos(c2m, decl, pos);
+
+    node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
+    c2mir_op_append(c2m, spec_decl, share);
+    c2mir_op_append(c2m, spec_decl, decl);
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_set_node_pos(c2m, spec_decl, pos);
+
+    return spec_decl;
+}
+
 // Build a struct definition SPEC_DECL for the top-level declarations list.
 static node_t cir_struct_def(c2m_ctx_t c2m, DataDefSTRUCT *sdd, c2mir_pos_t pos)
 {
@@ -1232,10 +1407,48 @@ node_t cir_translate(c2m_ctx_t c2m, Program *prog)
 	    funcs.push_back(tf);
     }
 
-    // Pass 0: Emit struct definitions.
-    // Only emit structs that have members (skip forward declarations and
-    // builtins that might not be fully initialized).
+    // Pass 0: Emit typedefs FIRST, then remaining struct definitions.
+    // Typedefs must come first because struct members may reference typedef'd
+    // types (e.g., struct char_data has an EXT_BV member). c2mir's checker
+    // needs to see the typedef before the struct that uses it.
+    // For struct typedefs (typedef struct X Y), the typedef SPEC_DECL includes
+    // the full struct definition inline — matching what c2m produces.
     std::set<std::string> emitted_structs;
+    for (auto &kv : prog->datatype_map) {
+	const std::string &alias = kv.first;
+	TokenDataType *tdt = kv.second;
+	if (!tdt || cir_is_builtin_type(alias)) continue;
+
+	DataDef *dd = &tdt->definition;
+	if (!dd) continue;
+
+	// Skip C++ class types (not relevant in --std=c mode)
+	if (dd->basetype() == BaseType::btClass) continue;
+
+	// Unwrap pointer to check for struct underneath
+	DataDef *check_dd = dd;
+	DataDefPTR *check_ptr = dynamic_cast<DataDefPTR *>(dd);
+	if (check_ptr && check_ptr->base_type) check_dd = check_ptr->base_type;
+
+	// Skip if this typedef name equals the struct tag name AND
+	// the struct itself is the definition (not a pointer to it).
+	// These are "struct foo" registered as datatype "foo" by the parser.
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(check_dd);
+	if (sdd && sdd->name == alias && !dd->is_pointer())
+	    continue;  // will be emitted as a plain struct def
+
+	c2mir_pos_t tpos = { "<typedef>", 1, 0 };
+	node_t td = cir_typedef_decl(c2m, alias, dd, tpos, emitted_structs);
+	if (td) {
+	    c2mir_op_append(c2m, top_list, td);
+	    // Track struct names emitted inline within typedefs
+	    if (sdd && !sdd->members.empty())
+		emitted_structs.insert(sdd->name);
+	    DBG(std::cerr << "cir: typedef " << alias << " -> " << dd->name << std::endl);
+	}
+    }
+
+    // Pass 0.5: Emit remaining struct definitions not already emitted via typedefs.
     for (auto &kv : prog->struct_map) {
 	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(kv.second);
 	if (!sdd || sdd->members.empty()) continue;

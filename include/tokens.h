@@ -20,7 +20,9 @@ enum class TokenType {
 	ttIdentifier, ttString, ttChar, ttInteger, ttReal, ttKeyword, ttDataType, ttVariable,
 //	16		17	  18		19	  20		21	22	 23
 	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram, ttMember, ttCallMethod, ttSubscript,
-	ttStructLit
+	ttStructLit,
+	ttTypedefDecl,	// typedef declaration (preserves source order in AST)
+	ttStructDef	// standalone struct/union definition (preserves source order in AST)
 };
 
 enum class TokenID {

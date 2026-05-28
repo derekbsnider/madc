@@ -34,6 +34,7 @@ extern "C" {
 }
 
 #include "../src/madc_cir.h"
+#include "../src/cir_builder.h"
 
 // Helper: tokenize+parse source, translate to CIR, compile+run, return result
 static int64_t cir_run(const char *source) {
@@ -346,4 +347,89 @@ TEST_CASE("CIR: chained assignments") {
     CHECK(cir_run(
 	"int main() { int a; int b; int c; a = b = c = 7; return a + b + c; }"
     ) == 21);
+}
+
+// --- CirBuilder tests (cir_node-based tree building) ---
+
+// Helper: tokenize+parse, build tree with CirBuilder, compile+run, return result
+static int64_t cir_run_builder(const char *source) {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+
+    struct c2mir_options opts;
+    memset(&opts, 0, sizeof(opts));
+    opts.message_file = stderr;
+    c2m_ctx_t c2m = c2mir_init_compile(mir_ctx, &opts);
+    REQUIRE(c2m != nullptr);
+
+    CirBuilder builder(c2m);
+    node_t tree = builder.translate_module(prog.get());
+    REQUIRE(tree != nullptr);
+
+    int ok = c2mir_compile_tree(mir_ctx, c2m, tree, "test_mod");
+    REQUIRE(ok == 1);
+
+    MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
+    MIR_load_module(mir_ctx, mod);
+    MIR_link(mir_ctx, MIR_set_interp_interface, NULL);
+
+    MIR_item_t func_item = NULL;
+    for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
+	 item != NULL;
+	 item = DLIST_NEXT(MIR_item_t, item)) {
+	if (item->item_type == MIR_func_item &&
+	    strcmp(item->u.func->name, "main") == 0)
+	    func_item = item;
+    }
+    REQUIRE(func_item != nullptr);
+
+    MIR_val_t val;
+    MIR_interp(mir_ctx, func_item, &val, 0);
+    int64_t result = val.i;
+
+    c2mir_finish_compile(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+    return result;
+}
+
+TEST_CASE("CirBuilder: return literal") {
+    CHECK(cir_run_builder("int main() { return 42; }") == 42);
+    CHECK(cir_run_builder("int main() { return 0; }") == 0);
+}
+
+TEST_CASE("CirBuilder: arithmetic") {
+    CHECK(cir_run_builder("int main() { return 2 + 3; }") == 5);
+    CHECK(cir_run_builder("int main() { return 6 * 7; }") == 42);
+}
+
+TEST_CASE("CirBuilder: local vars and function call") {
+    CHECK(cir_run_builder(
+	"int add(int a, int b) { return a + b; }\n"
+	"int main() { int x; x = add(10, 20); return x; }"
+    ) == 30);
+}
+
+TEST_CASE("CirBuilder: if/else") {
+    CHECK(cir_run_builder(
+	"int main() { int x; x = 10; if (x > 5) return 1; else return 0; }"
+    ) == 1);
+}
+
+TEST_CASE("CirBuilder: while loop") {
+    CHECK(cir_run_builder(
+	"int main() { int i; int sum; i = 0; sum = 0; while (i < 10) { sum = sum + i; i = i + 1; } return sum; }"
+    ) == 45);
+}
+
+TEST_CASE("CirBuilder: structs") {
+    CHECK(cir_run_builder(
+	"struct point { int x; int y; };\n"
+	"int main() { struct point p; p.x = 3; p.y = 4; return p.x + p.y; }"
+    ) == 7);
 }
