@@ -294,3 +294,56 @@ TEST_CASE("CIR: recursive function") {
 	"int main() { return factorial(5); }"
     ) == 120);
 }
+
+TEST_CASE("CIR: static qualifier") {
+    // static global — just tests that static doesn't break compilation
+    CHECK(cir_run(
+	"static int count;\n"
+	"void inc(void) { count = count + 1; }\n"
+	"int main() { count = 0; inc(); inc(); return count; }"
+    ) == 2);
+}
+
+TEST_CASE("CIR: array brace initializer") {
+    CHECK(cir_run(
+	"int main() { int arr[3] = {10, 20, 30}; return arr[1]; }"
+    ) == 20);
+}
+
+TEST_CASE("CIR: pointer arithmetic") {
+    // Array decays to pointer; pointer + offset dereference
+    CHECK(cir_run(
+	"int main() { int a[4] = {1, 2, 3, 4}; return a[2]; }"
+    ) == 3);
+    CHECK(cir_run(
+	"int main() { int a[4] = {1, 2, 3, 4}; return *(a + 3); }"
+    ) == 4);
+}
+
+TEST_CASE("CIR: void function") {
+    CHECK(cir_run(
+	"int result;\n"
+	"void set_result(int v) { result = v; }\n"
+	"int main() { set_result(42); return result; }"
+    ) == 42);
+}
+
+TEST_CASE("CIR: logical operators short-circuit") {
+    CHECK(cir_run(
+	"int main() { int x; x = 0; if (1 || (x = 99)) {} return x; }"
+    ) == 0);
+    CHECK(cir_run(
+	"int main() { int x; x = 0; if (0 && (x = 99)) {} return x; }"
+    ) == 0);
+}
+
+TEST_CASE("CIR: negative numbers and expressions") {
+    CHECK(cir_run("int main() { return -42; }") == -42);
+    CHECK(cir_run("int main() { int x; x = -10; return x * -3; }") == 30);
+}
+
+TEST_CASE("CIR: chained assignments") {
+    CHECK(cir_run(
+	"int main() { int a; int b; int c; a = b = c = 7; return a + b + c; }"
+    ) == 21);
+}

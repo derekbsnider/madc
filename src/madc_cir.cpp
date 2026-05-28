@@ -427,8 +427,10 @@ static node_t cir_translate_return(c2m_ctx_t c2m, TokenRETURN *tr)
     return ret;
 }
 
-// Build a SPEC_DECL for a variable declaration, handling pointer and array types.
-static node_t cir_var_decl(c2m_ctx_t c2m, Variable *v, c2mir_pos_t vpos)
+// Build a SPEC_DECL for a variable declaration, handling pointer and array types,
+// storage class qualifiers, and brace initializers.
+static node_t cir_var_decl(c2m_ctx_t c2m, Variable *v, c2mir_pos_t vpos,
+			    TokenDecl *tdecl = nullptr)
 {
     // Determine base type — for pointers, use the pointed-to type
     DataDef *base_dd = v->type;
@@ -438,6 +440,46 @@ static node_t cir_var_decl(c2m_ctx_t c2m, Variable *v, c2mir_pos_t vpos)
 	base_dd = ptr_dd->base_type;
 
     node_t type_list = cir_type_list(c2m, base_dd, vpos);
+
+    // Add storage class qualifiers to the type list
+    if (v->flags & vfSTATIC) {
+	node_t stat = c2mir_new_node(c2m, N_STATIC);
+	c2mir_set_node_pos(c2m, stat, vpos);
+	// Prepend STATIC before type specifiers — rebuild the list
+	node_t new_list = c2mir_new_node(c2m, N_LIST);
+	c2mir_op_append(c2m, new_list, stat);
+	// Copy existing children (type specifiers)
+	// Since we can't iterate c2mir node children easily,
+	// just rebuild: STATIC goes in the same LIST as the type
+	// Actually, cir_type_list returns LIST(type_spec). We need
+	// LIST(STATIC, type_spec). Simplest: insert into existing list.
+	// c2mir nodes use DLIST for children. We can append STATIC then type.
+	// But we already built type_list. Let's just rebuild.
+	node_t spec = cir_type_spec(c2m, base_dd);
+	if (base_dd && base_dd->is_struct()) {
+	    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
+	    if (sdd) {
+		node_t sid = c2mir_new_str_node(c2m, N_ID, sdd->name.c_str(),
+						sdd->name.size() + 1, vpos);
+		spec = c2mir_new_node2(c2m, N_STRUCT, sid, c2mir_new_node(c2m, N_IGNORE));
+		c2mir_set_node_pos(c2m, spec, vpos);
+	    }
+	}
+	c2mir_op_append(c2m, new_list, spec);
+	c2mir_set_node_pos(c2m, new_list, vpos);
+	type_list = new_list;
+    }
+    if (v->flags & vfEXTERN) {
+	node_t ext = c2mir_new_node(c2m, N_EXTERN);
+	c2mir_set_node_pos(c2m, ext, vpos);
+	node_t new_list = c2mir_new_node(c2m, N_LIST);
+	c2mir_op_append(c2m, new_list, ext);
+	node_t spec = cir_type_spec(c2m, base_dd);
+	c2mir_op_append(c2m, new_list, spec);
+	c2mir_set_node_pos(c2m, new_list, vpos);
+	type_list = new_list;
+    }
+
     node_t share = c2mir_new_node1(c2m, N_SHARE, type_list);
 
     node_t var_id = c2mir_new_str_node(c2m, N_ID, v->name.c_str(),
@@ -466,12 +508,30 @@ static node_t cir_var_decl(c2m_ctx_t c2m, Variable *v, c2mir_pos_t vpos)
 
     node_t var_decl = c2mir_new_node2(c2m, N_DECL, var_id, decl_list);
 
+    // Build initializer (5th child of SPEC_DECL)
+    node_t init_node = c2mir_new_node(c2m, N_IGNORE);
+    if (tdecl && tdecl->has_brace_init && !tdecl->init_list.empty()) {
+	// Brace initializer: LIST(INIT(LIST(), val), INIT(LIST(), val), ...)
+	init_node = c2mir_new_node(c2m, N_LIST);
+	for (auto *elem : tdecl->init_list) {
+	    node_t val = cir_translate_expr(c2m, elem);
+	    node_t init = c2mir_new_node2(c2m, N_INIT,
+		c2mir_new_node(c2m, N_LIST), val);
+	    c2mir_set_node_pos(c2m, init, vpos);
+	    c2mir_op_append(c2m, init_node, init);
+	}
+	c2mir_set_node_pos(c2m, init_node, vpos);
+    } else if (tdecl && tdecl->initialize) {
+	// Scalar initializer
+	init_node = cir_translate_expr(c2m, tdecl->initialize);
+    }
+
     node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
     c2mir_op_append(c2m, spec_decl, share);
     c2mir_op_append(c2m, spec_decl, var_decl);
     c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
     c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, init_node);
     c2mir_set_node_pos(c2m, spec_decl, vpos);
 
     return spec_decl;
@@ -539,10 +599,21 @@ static node_t cir_translate_block(c2m_ctx_t c2m, TokenCpnd *tc)
 	if (fd) skip = fd->parameters.size();
     }
 
+    // Collect names of variables that have TokenDecl statements (with initializers).
+    // Those will be emitted in the statement pass instead.
+    // Note: statements vector stores TokenStmt* but actual objects may be TokenDecl
+    // (which doesn't extend TokenStmt), so cast through TokenBase* first.
+    std::set<std::string> decl_vars;
+    for (auto *ts : tc->statements) {
+	TokenDecl *td = dynamic_cast<TokenDecl *>((TokenBase *)ts);
+	if (td && (td->initialize || td->has_brace_init))
+	    decl_vars.insert(td->var.name);
+    }
+
     for (size_t vi = skip; vi < tc->variables.size(); vi++) {
 	Variable *v = tc->variables[vi];
+	if (decl_vars.count(v->name)) continue;  // emitted with initializer later
 	c2mir_pos_t vpos = pos;
-
 	node_t spec_decl = cir_var_decl(c2m, v, vpos);
 	c2mir_op_append(c2m, items, spec_decl);
     }
@@ -851,27 +922,11 @@ static node_t cir_translate_stmt(c2m_ctx_t c2m, TokenBase *tb)
 	if (tl) return NULL;
     }
 
-    // Declaration with initializer: emit as SPEC_DECL with init expr
+    // Declaration with initializer: emit as SPEC_DECL with init in 5th child
     {
 	TokenDecl *td = dynamic_cast<TokenDecl *>(tb);
-	if (td && td->initialize) {
-	    c2mir_pos_t dpos = pos;
-	    node_t init_expr = cir_translate_expr(c2m, td->initialize);
-	    node_t spec_decl = cir_var_decl(c2m, &td->var, dpos);
-	    // Replace the 5th child (IGNORE) with the initializer
-	    // The 5th child is at position 4 in the ops list
-	    // Since we can't easily replace, rebuild with initializer
-	    // Actually, cir_var_decl already builds the SPEC_DECL. We need
-	    // to modify it. For now, just emit the declaration followed by
-	    // an assignment.
-	    node_t var_id = c2mir_new_str_node(c2m, N_ID, td->var.name.c_str(),
-					       td->var.name.size() + 1, dpos);
-	    node_t assign = c2mir_new_node2(c2m, N_ASSIGN, var_id, init_expr);
-	    c2mir_set_node_pos(c2m, assign, dpos);
-	    node_t stmt = c2mir_new_node2(c2m, N_EXPR,
-		c2mir_new_node(c2m, N_LIST), assign);
-	    c2mir_set_node_pos(c2m, stmt, dpos);
-	    return stmt;
+	if (td && (td->initialize || td->has_brace_init)) {
+	    return cir_var_decl(c2m, &td->var, pos, td);
 	}
     }
 
