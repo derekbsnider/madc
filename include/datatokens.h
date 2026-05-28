@@ -61,6 +61,7 @@ public:
     uint32_t count;
     uint32_t flags;
     std::string storage_alias_name;
+    std::string typedef_name; // if declared via typedef, the source alias (e.g. "EXT_BV")
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
     int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as

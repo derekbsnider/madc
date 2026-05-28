@@ -208,6 +208,33 @@ public:
     virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
+// AST node for a typedef declaration. Returned by TokenTYPEDEF::parse()
+// so typedefs appear in the AST in source order (consumed by the CIR
+// layer via Program::top_decls). The JIT compiler ignores it: compile()
+// is a no-op that returns the inherited _operand.
+class TokenTypedefDecl: public TokenBase
+{
+public:
+    std::string alias;       // typedef alias name (e.g. "EXT_BV")
+    DataDef *target_type;    // what the typedef resolves to
+    TokenTypedefDecl(const std::string &a, DataDef *t) : alias(a), target_type(t) {}
+    virtual TokenType type() const { return TokenType::ttTypedefDecl; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp) { return _operand; }
+};
+
+// AST node for a standalone struct/union definition (no variable
+// declarator). Returned by TokenSTRUCT::parse() so the definition keeps
+// its source-order position. The JIT compiler ignores it.
+class TokenStructDef: public TokenBase
+{
+public:
+    DataDefSTRUCT *sdd;
+    bool is_union;
+    TokenStructDef(DataDefSTRUCT *s, bool u = false) : sdd(s), is_union(u) {}
+    virtual TokenType type() const { return TokenType::ttStructDef; }
+    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp) { return _operand; }
+};
+
 // { v0, v1, ... } — a nested brace initializer, used for elements of an
 // array-of-structs or for nested struct members. Not a value by itself.
 class TokenStructLit: public TokenBase
@@ -923,6 +950,22 @@ public:
     // Program::compile in a pre-pass to create funcnodes (labels) before
     // globals compile, so global fn-pointer inits can LEA the target label.
     std::vector<TokenBase *> pending_funcs;
+    // Source-ordered top-level declarations for CIR tree generation.
+    // Each entry records what was declared and in what order, matching
+    // the order c2m's parser produces in its MODULE LIST. The legacy
+    // JIT/compile path ignores this; only the CIR backend consumes it.
+    enum class DeclKind { dkTypedef, dkStruct, dkUnion, dkEnum, dkGlobalVar };
+    struct TopDecl {
+	DeclKind kind;
+	std::string name;	// typedef alias, struct tag, or variable name
+	DataDef *dd;		// the DataDef (struct, typedef target, etc.)
+	TokenDataType *tdt;	// for typedefs: the TokenDataType entry
+	Variable *var;		// for global vars: the Variable
+	const char *file;
+	int line;
+	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0) {}
+    };
+    std::vector<TopDecl> top_decls;
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::stack<l_shortcut_t> loopstack;	// stack to manage break/continue for loops
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else

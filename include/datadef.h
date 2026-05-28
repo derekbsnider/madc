@@ -491,7 +491,20 @@ public:
     }
 };
 
-typedef std::pair<std::string, DataDef *> memberpair_t;
+// Member descriptor for struct/union/class layouts. Models a
+// std::pair<name, type> (the .first/.second names are kept for
+// backward compatibility) plus the source typedef alias used at the
+// member's declaration site (empty for raw types), so the CIR layer
+// can emit ID("alias") instead of the underlying type nodes.
+struct memberpair_t {
+    std::string first;          // member name
+    DataDef *second;            // member type
+    std::string typedef_name;   // source typedef alias, "" if raw type
+    memberpair_t() : second(nullptr) {}
+    memberpair_t(const std::string &n, DataDef *d) : first(n), second(d) {}
+    memberpair_t(const std::string &n, DataDef *d, const std::string &td)
+	: first(n), second(d), typedef_name(td) {}
+};
 
 class Variable; // forward dec
 
