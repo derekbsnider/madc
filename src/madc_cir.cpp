@@ -96,9 +96,23 @@ static node_t cir_type_spec(c2m_ctx_t c2m, DataDef *dd)
 static node_t cir_type_list(c2m_ctx_t c2m, DataDef *dd, c2mir_pos_t pos)
 {
     node_t list = c2mir_new_node(c2m, N_LIST);
+
+    // Struct types: LIST(STRUCT(ID("name"), IGNORE))
+    if (dd && dd->is_struct()) {
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	if (sdd) {
+	    node_t sid = c2mir_new_str_node(c2m, N_ID, sdd->name.c_str(),
+					    sdd->name.size() + 1, pos);
+	    node_t struct_ref = c2mir_new_node2(c2m, N_STRUCT, sid,
+		c2mir_new_node(c2m, N_IGNORE));
+	    c2mir_set_node_pos(c2m, struct_ref, pos);
+	    c2mir_op_append(c2m, list, struct_ref);
+	    c2mir_set_node_pos(c2m, list, pos);
+	    return list;
+	}
+    }
+
     node_t spec = cir_type_spec(c2m, dd);
-    // If cir_type_spec returned a LIST (for long long), flatten it
-    // For now, simple types return a single node
     c2mir_op_append(c2m, list, spec);
     c2mir_set_node_pos(c2m, list, pos);
     return list;
@@ -151,9 +165,150 @@ static node_t cir_translate_expr(c2m_ctx_t c2m, TokenBase *tb)
 	}
     }
 
+    // Ternary operator: cond ? true_expr : false_expr → COND(cond, true, false)
+    {
+	TokenTerQ *tq = dynamic_cast<TokenTerQ *>(tb);
+	if (tq) {
+	    node_t cond = cir_translate_expr(c2m, tq->condition);
+	    node_t t = cir_translate_expr(c2m, tq->true_expr);
+	    node_t f = cir_translate_expr(c2m, tq->false_expr);
+	    node_t n = c2mir_new_node3(c2m, N_COND, cond, t, f);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // Address-of: &var → ADDR(ID)
+    {
+	TokenAddrOf *ta = dynamic_cast<TokenAddrOf *>(tb);
+	if (ta) {
+	    node_t id = c2mir_new_str_node(c2m, N_ID, ta->var.name.c_str(),
+					   ta->var.name.size() + 1, pos);
+	    node_t n = c2mir_new_node1(c2m, N_ADDR, id);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // Address-of expression: &(expr) → ADDR(expr)
+    {
+	TokenAddrExpr *tae = dynamic_cast<TokenAddrExpr *>(tb);
+	if (tae) {
+	    node_t expr = cir_translate_expr(c2m, tae->expr);
+	    node_t n = c2mir_new_node1(c2m, N_ADDR, expr);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // Dereference: *ptr → DEREF(ID)
+    {
+	TokenDeref *td = dynamic_cast<TokenDeref *>(tb);
+	if (td) {
+	    node_t id = c2mir_new_str_node(c2m, N_ID, td->var.name.c_str(),
+					   td->var.name.size() + 1, pos);
+	    node_t n = c2mir_new_node1(c2m, N_DEREF, id);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // Dereference expression: *(expr) → DEREF(expr)
+    {
+	TokenDerefExpr *tde = dynamic_cast<TokenDerefExpr *>(tb);
+	if (tde) {
+	    node_t expr = cir_translate_expr(c2m, tde->expr);
+	    node_t n = c2mir_new_node1(c2m, N_DEREF, expr);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // Array subscript: arr[i] → IND(ID, index)
+    {
+	TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb);
+	if (tsub) {
+	    node_t base = c2mir_new_str_node(c2m, N_ID,
+		tsub->object.name.c_str(), tsub->object.name.size() + 1, pos);
+	    node_t idx = cir_translate_expr(c2m, tsub->index);
+	    node_t n = c2mir_new_node2(c2m, N_IND, base, idx);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // Struct member access: obj.member → FIELD(ID, ID)
+    {
+	TokenMember *tm = dynamic_cast<TokenMember *>(tb);
+	if (tm) {
+	    node_t obj;
+	    if (tm->parent_expr) {
+		obj = cir_translate_expr(c2m, tm->parent_expr);
+	    } else {
+		obj = c2mir_new_str_node(c2m, N_ID,
+		    tm->object.name.c_str(), tm->object.name.size() + 1, pos);
+	    }
+	    node_t member = c2mir_new_str_node(c2m, N_ID,
+		tm->var.name.c_str(), tm->var.name.size() + 1, pos);
+	    // Use DEREF_FIELD for pointer->member, FIELD for obj.member
+	    c2mir_node_code_t code = tm->object.type->is_pointer() ? N_DEREF_FIELD : N_FIELD;
+	    node_t n = c2mir_new_node2(c2m, code, obj, member);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // sizeof(type) → SIZEOF(TYPE(LIST(type_spec), DECL(IGNORE, LIST())))
+    {
+	TokenTypeQuery *ttq = dynamic_cast<TokenTypeQuery *>(tb);
+	if (ttq && ttq->query_type) {
+	    node_t type_list = cir_type_list(c2m, ttq->query_type, pos);
+	    node_t type_decl = c2mir_new_node2(c2m, N_DECL,
+		c2mir_new_node(c2m, N_IGNORE), c2mir_new_node(c2m, N_LIST));
+	    node_t type_node = c2mir_new_node2(c2m, N_TYPE, type_list, type_decl);
+	    c2mir_set_node_pos(c2m, type_node, pos);
+	    c2mir_node_code_t code = ttq->want_alignof ? N_ALIGNOF : N_SIZEOF;
+	    node_t n = c2mir_new_node1(c2m, code, type_node);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
+    // Cast: (type)expr → CAST(TYPE(LIST(type_spec), DECL(IGNORE, LIST())), expr)
+    {
+	TokenCast *tc = dynamic_cast<TokenCast *>(tb);
+	if (tc) {
+	    node_t type_list = cir_type_list(c2m, tc->cast_type, pos);
+	    node_t type_decl = c2mir_new_node2(c2m, N_DECL,
+		c2mir_new_node(c2m, N_IGNORE), c2mir_new_node(c2m, N_LIST));
+	    node_t type_node = c2mir_new_node2(c2m, N_TYPE, type_list, type_decl);
+	    c2mir_set_node_pos(c2m, type_node, pos);
+	    node_t expr = cir_translate_expr(c2m, tc->expr);
+	    node_t n = c2mir_new_node2(c2m, N_CAST, type_node, expr);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+    }
+
     // Operators (unary and binary)
     if (tb->is_operator()) {
 	TokenOperator *top = dynamic_cast<TokenOperator *>(tb);
+
+	// Increment/decrement
+	if (tb->id() == TokenID::tkInc || tb->id() == TokenID::tkDec) {
+	    // left set = postfix (x++), right set = prefix (++x)
+	    bool is_post = (top->left != nullptr);
+	    TokenBase *operand_tb = is_post ? top->left : top->right;
+	    node_t operand = cir_translate_expr(c2m, operand_tb);
+	    c2mir_node_code_t code;
+	    if (tb->id() == TokenID::tkInc)
+		code = is_post ? N_POST_INC : N_INC;
+	    else
+		code = is_post ? N_POST_DEC : N_DEC;
+	    node_t n = c2mir_new_node1(c2m, code, operand);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
 
 	// Unary operators (argc == 1, operand in right)
 	if (top && top->argc() == 1 && top->right) {
@@ -180,7 +335,7 @@ static node_t cir_translate_expr(c2m_ctx_t c2m, TokenBase *tb)
 	    return n;
 	}
 
-	// Binary operators
+	// Binary operators (including compound assignment)
 	if (top && top->left && top->right) {
 	    node_t left = cir_translate_expr(c2m, top->left);
 	    node_t right = cir_translate_expr(c2m, top->right);
@@ -206,6 +361,18 @@ static node_t cir_translate_expr(c2m_ctx_t c2m, TokenBase *tb)
 	    case TokenID::tkLor:       code = N_OROR; break;
 	    case TokenID::tkBSL:       code = N_LSH; break;
 	    case TokenID::tkBSR:       code = N_RSH; break;
+	    case TokenID::tkComma:     code = N_COMMA; break;
+	    // Compound assignment
+	    case TokenID::tkAddEq:     code = N_ADD_ASSIGN; break;
+	    case TokenID::tkSubEq:     code = N_SUB_ASSIGN; break;
+	    case TokenID::tkMulEq:     code = N_MUL_ASSIGN; break;
+	    case TokenID::tkDivEq:     code = N_DIV_ASSIGN; break;
+	    case TokenID::tkModEq:     code = N_MOD_ASSIGN; break;
+	    case TokenID::tkBandEq:    code = N_AND_ASSIGN; break;
+	    case TokenID::tkBorEq:     code = N_OR_ASSIGN; break;
+	    case TokenID::tkXorEq:     code = N_XOR_ASSIGN; break;
+	    case TokenID::tkBSLEq:     code = N_LSH_ASSIGN; break;
+	    case TokenID::tkBSREq:     code = N_RSH_ASSIGN; break;
 	    default:
 		DBG(std::cerr << "cir: unhandled binary op " << (int)tb->id() << std::endl);
 		code = N_ADD;  // fallback
@@ -256,6 +423,101 @@ static node_t cir_translate_return(c2m_ctx_t c2m, TokenRETURN *tr)
     return ret;
 }
 
+// Build a SPEC_DECL for a variable declaration, handling pointer and array types.
+static node_t cir_var_decl(c2m_ctx_t c2m, Variable *v, c2mir_pos_t vpos)
+{
+    // Determine base type — for pointers, use the pointed-to type
+    DataDef *base_dd = v->type;
+    bool is_ptr = base_dd && base_dd->is_pointer();
+    DataDefPTR *ptr_dd = is_ptr ? dynamic_cast<DataDefPTR *>(base_dd) : nullptr;
+    if (ptr_dd && ptr_dd->base_type)
+	base_dd = ptr_dd->base_type;
+
+    node_t type_list = cir_type_list(c2m, base_dd, vpos);
+    node_t share = c2mir_new_node1(c2m, N_SHARE, type_list);
+
+    node_t var_id = c2mir_new_str_node(c2m, N_ID, v->name.c_str(),
+				       v->name.size() + 1, vpos);
+    // Build declarator LIST — may contain POINTER or ARR nodes
+    node_t decl_list = c2mir_new_node(c2m, N_LIST);
+
+    if (is_ptr) {
+	// POINTER(LIST()) — pointer to base type
+	node_t ptr_quals = c2mir_new_node(c2m, N_LIST);
+	node_t pointer = c2mir_new_node1(c2m, N_POINTER, ptr_quals);
+	c2mir_set_node_pos(c2m, pointer, vpos);
+	c2mir_op_append(c2m, decl_list, pointer);
+    }
+
+    if (v->is_fixed_array() && !v->dims.empty()) {
+	// ARR(IGNORE, LIST(), size) — fixed-size array
+	node_t size = c2mir_new_i_node(c2m, v->dims[0], vpos);
+	node_t arr = c2mir_new_node3(c2m, N_ARR,
+	    c2mir_new_node(c2m, N_IGNORE),
+	    c2mir_new_node(c2m, N_LIST),
+	    size);
+	c2mir_set_node_pos(c2m, arr, vpos);
+	c2mir_op_append(c2m, decl_list, arr);
+    }
+
+    node_t var_decl = c2mir_new_node2(c2m, N_DECL, var_id, decl_list);
+
+    node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
+    c2mir_op_append(c2m, spec_decl, share);
+    c2mir_op_append(c2m, spec_decl, var_decl);
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_set_node_pos(c2m, spec_decl, vpos);
+
+    return spec_decl;
+}
+
+// Build a struct definition SPEC_DECL for the top-level declarations list.
+static node_t cir_struct_def(c2m_ctx_t c2m, DataDefSTRUCT *sdd, c2mir_pos_t pos)
+{
+    // STRUCT(ID("name"), LIST(MEMBER, MEMBER, ...))
+    node_t struct_id = c2mir_new_str_node(c2m, N_ID, sdd->name.c_str(),
+					  sdd->name.size() + 1, pos);
+    node_t member_list = c2mir_new_node(c2m, N_LIST);
+
+    for (size_t i = 0; i < sdd->members.size(); i++) {
+	DataDef *mtype = sdd->members[i].second;
+	const std::string &mname = sdd->members[i].first;
+
+	node_t mspec = cir_type_list(c2m, mtype, pos);
+	node_t mshare = c2mir_new_node1(c2m, N_SHARE, mspec);
+	node_t mid = c2mir_new_str_node(c2m, N_ID, mname.c_str(),
+					mname.size() + 1, pos);
+	node_t mdecl = c2mir_new_node2(c2m, N_DECL, mid, c2mir_new_node(c2m, N_LIST));
+	// MEMBER has 4 children: SHARE(type), DECL, IGNORE, IGNORE
+	node_t member = c2mir_new_node(c2m, N_MEMBER);
+	c2mir_op_append(c2m, member, mshare);
+	c2mir_op_append(c2m, member, mdecl);
+	c2mir_op_append(c2m, member, c2mir_new_node(c2m, N_IGNORE));
+	c2mir_op_append(c2m, member, c2mir_new_node(c2m, N_IGNORE));
+	c2mir_set_node_pos(c2m, member, pos);
+	c2mir_op_append(c2m, member_list, member);
+    }
+
+    node_t struct_node = c2mir_new_node2(c2m, N_STRUCT, struct_id, member_list);
+    c2mir_set_node_pos(c2m, struct_node, pos);
+
+    // Wrap in SPEC_DECL: LIST(STRUCT(...)), IGNORE*4
+    node_t type_list = c2mir_new_node1(c2m, N_LIST, struct_node);
+    c2mir_set_node_pos(c2m, type_list, pos);
+
+    node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
+    c2mir_op_append(c2m, spec_decl, type_list);
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+    c2mir_set_node_pos(c2m, spec_decl, pos);
+
+    return spec_decl;
+}
+
 static node_t cir_translate_block(c2m_ctx_t c2m, TokenCpnd *tc)
 {
     c2mir_pos_t pos = { tc->file, tc->line, tc->column };
@@ -277,23 +539,7 @@ static node_t cir_translate_block(c2m_ctx_t c2m, TokenCpnd *tc)
 	Variable *v = tc->variables[vi];
 	c2mir_pos_t vpos = pos;
 
-	// SPEC_DECL(SHARE(LIST(type)), DECL(ID, LIST), IGNORE, IGNORE, IGNORE)
-	node_t type_list = cir_type_list(c2m, v->type, vpos);
-	node_t share = c2mir_new_node1(c2m, N_SHARE, type_list);
-
-	node_t var_id = c2mir_new_str_node(c2m, N_ID, v->name.c_str(),
-					   v->name.size() + 1, vpos);
-	node_t var_decl = c2mir_new_node2(c2m, N_DECL,
-	    var_id, c2mir_new_node(c2m, N_LIST));
-
-	node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
-	c2mir_op_append(c2m, spec_decl, share);
-	c2mir_op_append(c2m, spec_decl, var_decl);
-	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
-	c2mir_set_node_pos(c2m, spec_decl, vpos);
-
+	node_t spec_decl = cir_var_decl(c2m, v, vpos);
 	c2mir_op_append(c2m, items, spec_decl);
     }
 
@@ -357,9 +603,151 @@ static node_t cir_translate_for(c2m_ctx_t c2m, TokenFOR *tf)
     return n;
 }
 
+static node_t cir_translate_do(c2m_ctx_t c2m, TokenDO *td)
+{
+    c2mir_pos_t pos = make_pos(td);
+    node_t cond = cir_translate_expr(c2m, td->condition);
+    node_t body = cir_translate_stmt(c2m, td->statement);
+    // c2mir DO: LIST(), condition, body
+    node_t n = c2mir_new_node3(c2m, N_DO, c2mir_new_node(c2m, N_LIST), cond, body);
+    c2mir_set_node_pos(c2m, n, pos);
+    return n;
+}
+
+static node_t cir_translate_switch(c2m_ctx_t c2m, TokenSWITCH *ts)
+{
+    c2mir_pos_t pos = make_pos(ts);
+    node_t expr = cir_translate_expr(c2m, ts->expression);
+
+    // Build a BLOCK containing all case statements.
+    // c2mir SWITCH: LIST(), expr, body_block
+    // Inside the body, each statement's label LIST contains CASE or DEFAULT nodes.
+    node_t block_items = c2mir_new_node(c2m, N_LIST);
+
+    for (size_t ci = 0; ci < ts->cases.size(); ci++) {
+	TokenCASE *tc = ts->cases[ci];
+	bool is_default = (tc->value == NULL);
+
+	// Build label for this case
+	node_t label;
+	if (is_default) {
+	    label = c2mir_new_node(c2m, N_DEFAULT);
+	    c2mir_set_node_pos(c2m, label, make_pos(tc));
+	} else {
+	    node_t val = cir_translate_expr(c2m, tc->value);
+	    label = c2mir_new_node1(c2m, N_CASE, val);
+	    c2mir_set_node_pos(c2m, label, make_pos(tc));
+	}
+
+	// Emit each statement in this case arm with the label on the first one
+	for (size_t si = 0; si < tc->statements.size(); si++) {
+	    node_t s = cir_translate_stmt(c2m, tc->statements[si]);
+	    if (!s) continue;
+	    if (si == 0) {
+		// Attach the case/default label to the first statement's label list.
+		// Statements are N_EXPR/N_RETURN/etc. — their first child is the label LIST.
+		// Replace the empty LIST with one containing the label.
+		// For simplicity, wrap in a labeled expression if needed.
+		node_t label_list = c2mir_new_node1(c2m, N_LIST, label);
+		c2mir_set_node_pos(c2m, label_list, make_pos(tc));
+		// Replace s's first child (the empty label LIST) with our labeled one.
+		// Since we can't easily replace children, rebuild the statement.
+		// For N_RETURN and N_EXPR which have LIST as first child:
+		// We need to inject the label. Use a wrapper approach.
+		// Actually, the simplest approach: build a labeled expression statement.
+		if (tc->statements.size() == 0) {
+		    // Empty case: emit a labeled empty expression
+		    node_t empty = c2mir_new_node2(c2m, N_EXPR,
+			label_list, c2mir_new_i_node(c2m, 0, make_pos(tc)));
+		    c2mir_set_node_pos(c2m, empty, make_pos(tc));
+		    c2mir_op_append(c2m, block_items, empty);
+		} else {
+		    // Rebuild the statement with the label
+		    // Peek at the statement type to know how to rebuild it
+		    TokenRETURN *ret = dynamic_cast<TokenRETURN *>(tc->statements[si]);
+		    if (ret) {
+			node_t retexpr = ret->returns
+			    ? cir_translate_expr(c2m, ret->returns)
+			    : c2mir_new_node(c2m, N_IGNORE);
+			node_t labeled_ret = c2mir_new_node2(c2m, N_RETURN,
+			    label_list, retexpr);
+			c2mir_set_node_pos(c2m, labeled_ret, make_pos(ret));
+			c2mir_op_append(c2m, block_items, labeled_ret);
+		    } else if (dynamic_cast<TokenBREAK *>(tc->statements[si])) {
+			node_t brk = c2mir_new_node1(c2m, N_BREAK, label_list);
+			c2mir_set_node_pos(c2m, brk, make_pos(tc->statements[si]));
+			c2mir_op_append(c2m, block_items, brk);
+		    } else {
+			// General case: wrap as labeled expression statement
+			node_t inner = cir_translate_expr(c2m, tc->statements[si]);
+			node_t labeled_expr = c2mir_new_node2(c2m, N_EXPR,
+			    label_list, inner);
+			c2mir_set_node_pos(c2m, labeled_expr, make_pos(tc->statements[si]));
+			c2mir_op_append(c2m, block_items, labeled_expr);
+		    }
+		}
+	    } else {
+		c2mir_op_append(c2m, block_items, s);
+	    }
+	}
+
+	// If this case had no statements, emit an empty labeled expression
+	if (tc->statements.empty()) {
+	    node_t label_list = c2mir_new_node1(c2m, N_LIST, label);
+	    node_t empty = c2mir_new_node2(c2m, N_EXPR,
+		label_list, c2mir_new_i_node(c2m, 0, make_pos(tc)));
+	    c2mir_set_node_pos(c2m, empty, make_pos(tc));
+	    c2mir_op_append(c2m, block_items, empty);
+	}
+    }
+
+    // Handle default case if not already in cases vector
+    if (ts->defaultcase && ts->default_index < 0) {
+	TokenCASE *dc = ts->defaultcase;
+	node_t def_label = c2mir_new_node(c2m, N_DEFAULT);
+	c2mir_set_node_pos(c2m, def_label, make_pos(dc));
+	for (size_t si = 0; si < dc->statements.size(); si++) {
+	    node_t s = cir_translate_stmt(c2m, dc->statements[si]);
+	    if (!s) continue;
+	    if (si == 0) {
+		node_t label_list = c2mir_new_node1(c2m, N_LIST, def_label);
+		TokenRETURN *ret = dynamic_cast<TokenRETURN *>(dc->statements[si]);
+		if (ret) {
+		    node_t retexpr = ret->returns
+			? cir_translate_expr(c2m, ret->returns)
+			: c2mir_new_node(c2m, N_IGNORE);
+		    node_t labeled_ret = c2mir_new_node2(c2m, N_RETURN,
+			label_list, retexpr);
+		    c2mir_set_node_pos(c2m, labeled_ret, make_pos(ret));
+		    c2mir_op_append(c2m, block_items, labeled_ret);
+		} else {
+		    node_t inner = cir_translate_expr(c2m, dc->statements[si]);
+		    node_t labeled_expr = c2mir_new_node2(c2m, N_EXPR,
+			label_list, inner);
+		    c2mir_set_node_pos(c2m, labeled_expr, make_pos(dc->statements[si]));
+		    c2mir_op_append(c2m, block_items, labeled_expr);
+		}
+	    } else {
+		c2mir_op_append(c2m, block_items, s);
+	    }
+	}
+    }
+
+    node_t body = c2mir_new_node2(c2m, N_BLOCK,
+	c2mir_new_node(c2m, N_LIST), block_items);
+    c2mir_set_node_pos(c2m, body, pos);
+
+    node_t n = c2mir_new_node3(c2m, N_SWITCH,
+	c2mir_new_node(c2m, N_LIST), expr, body);
+    c2mir_set_node_pos(c2m, n, pos);
+    return n;
+}
+
 static node_t cir_translate_stmt(c2m_ctx_t c2m, TokenBase *tb)
 {
     if (!tb) return NULL;
+
+    c2mir_pos_t pos = make_pos(tb);
 
     // Return statement
     TokenRETURN *tr = dynamic_cast<TokenRETURN *>(tb);
@@ -377,6 +765,32 @@ static node_t cir_translate_stmt(c2m_ctx_t c2m, TokenBase *tb)
     TokenFOR *tf = dynamic_cast<TokenFOR *>(tb);
     if (tf) return cir_translate_for(c2m, tf);
 
+    // Do-while loop
+    {
+	TokenDO *td = dynamic_cast<TokenDO *>(tb);
+	if (td) return cir_translate_do(c2m, td);
+    }
+
+    // Switch statement
+    {
+	TokenSWITCH *ts = dynamic_cast<TokenSWITCH *>(tb);
+	if (ts) return cir_translate_switch(c2m, ts);
+    }
+
+    // Break
+    if (tb->id() == TokenID::tkBREAK) {
+	node_t n = c2mir_new_node1(c2m, N_BREAK, c2mir_new_node(c2m, N_LIST));
+	c2mir_set_node_pos(c2m, n, pos);
+	return n;
+    }
+
+    // Continue
+    if (tb->id() == TokenID::tkCONT) {
+	node_t n = c2mir_new_node1(c2m, N_CONTINUE, c2mir_new_node(c2m, N_LIST));
+	c2mir_set_node_pos(c2m, n, pos);
+	return n;
+    }
+
     // Compound statement (block)
     TokenCpnd *tc = dynamic_cast<TokenCpnd *>(tb);
     if (tc) return cir_translate_block(c2m, tc);
@@ -386,7 +800,7 @@ static node_t cir_translate_stmt(c2m_ctx_t c2m, TokenBase *tb)
     node_t expr = cir_translate_expr(c2m, tb);
     node_t stmt = c2mir_new_node2(c2m, N_EXPR,
 	c2mir_new_node(c2m, N_LIST), expr);
-    c2mir_set_node_pos(c2m, stmt, make_pos(tb));
+    c2mir_set_node_pos(c2m, stmt, pos);
     return stmt;
 }
 
@@ -575,6 +989,30 @@ node_t cir_translate(c2m_ctx_t c2m, Program *prog)
 	TokenFunc *tf = dynamic_cast<TokenFunc *>(*it);
 	if (tf && !tf->is_overridden)
 	    funcs.push_back(tf);
+    }
+
+    // Pass 0: Emit struct definitions.
+    // Track which structs we've already emitted.
+    std::set<std::string> emitted_structs;
+    for (auto &kv : prog->struct_map) {
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(kv.second);
+	if (!sdd || emitted_structs.count(sdd->name)) continue;
+	emitted_structs.insert(sdd->name);
+	c2mir_pos_t spos = { "<struct>", 1, 0 };
+	node_t sd = cir_struct_def(c2m, sdd, spos);
+	if (sd) c2mir_op_append(c2m, top_list, sd);
+    }
+
+    // Pass 0.5: Emit global variable declarations.
+    // Skip function-typed variables (they're emitted as FUNC_DEF in Pass 2).
+    if (prog->tkProgram) {
+	for (auto *v : prog->tkProgram->variables) {
+	    if (!v) continue;
+	    if (dynamic_cast<FuncDef *>(v->type)) continue;
+	    c2mir_pos_t gpos = { "<global>", 1, 0 };
+	    node_t gd = cir_var_decl(c2m, v, gpos);
+	    if (gd) c2mir_op_append(c2m, top_list, gd);
+	}
     }
 
     // Pass 1: Emit forward declarations for all functions except main.

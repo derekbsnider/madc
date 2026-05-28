@@ -135,3 +135,113 @@ TEST_CASE("CIR: for loop") {
 	"  return sum; }"
     ) == 55);
 }
+
+TEST_CASE("CIR: compound assignment") {
+    CHECK(cir_run("int main() { int x; x = 10; x += 5; return x; }") == 15);
+    CHECK(cir_run("int main() { int x; x = 10; x -= 3; return x; }") == 7);
+    CHECK(cir_run("int main() { int x; x = 6; x *= 7; return x; }") == 42);
+    CHECK(cir_run("int main() { int x; x = 100; x /= 10; return x; }") == 10);
+    CHECK(cir_run("int main() { int x; x = 17; x %= 5; return x; }") == 2);
+    CHECK(cir_run("int main() { int x; x = 0xFF; x &= 0x0F; return x; }") == 15);
+    CHECK(cir_run("int main() { int x; x = 0xF0; x |= 0x0F; return x; }") == 255);
+    CHECK(cir_run("int main() { int x; x = 1; x <<= 3; return x; }") == 8);
+    CHECK(cir_run("int main() { int x; x = 16; x >>= 2; return x; }") == 4);
+}
+
+TEST_CASE("CIR: increment and decrement") {
+    CHECK(cir_run("int main() { int x; x = 5; x++; return x; }") == 6);
+    CHECK(cir_run("int main() { int x; x = 5; x--; return x; }") == 4);
+    CHECK(cir_run("int main() { int x; x = 5; return ++x; }") == 6);
+    CHECK(cir_run("int main() { int x; x = 5; return --x; }") == 4);
+}
+
+TEST_CASE("CIR: pointers") {
+    CHECK(cir_run(
+	"int main() { int x; int *p; x = 42; p = &x; return *p; }"
+    ) == 42);
+    CHECK(cir_run(
+	"int main() { int x; int *p; x = 10; p = &x; *p = 20; return x; }"
+    ) == 20);
+}
+
+TEST_CASE("CIR: arrays") {
+    CHECK(cir_run(
+	"int main() { int arr[5]; arr[0] = 10; arr[1] = 20; return arr[0] + arr[1]; }"
+    ) == 30);
+    CHECK(cir_run(
+	"int main() { int arr[3]; int i; for (i = 0; i < 3; i = i + 1) arr[i] = i * 10;\n"
+	"  return arr[0] + arr[1] + arr[2]; }"
+    ) == 30);
+}
+
+TEST_CASE("CIR: structs") {
+    CHECK(cir_run(
+	"struct Point { int x; int y; };\n"
+	"int main() { struct Point p; p.x = 3; p.y = 4; return p.x + p.y; }"
+    ) == 7);
+}
+
+TEST_CASE("CIR: global variables") {
+    CHECK(cir_run(
+	"int g; int main() { g = 42; return g; }"
+    ) == 42);
+    CHECK(cir_run(
+	"int counter;\n"
+	"void inc(void) { counter = counter + 1; }\n"
+	"int main() { counter = 0; inc(); inc(); inc(); return counter; }"
+    ) == 3);
+}
+
+TEST_CASE("CIR: ternary operator") {
+    CHECK(cir_run("int main() { int x; x = 10; return x > 5 ? 1 : 0; }") == 1);
+    CHECK(cir_run("int main() { int x; x = 3; return x > 5 ? 1 : 0; }") == 0);
+}
+
+TEST_CASE("CIR: sizeof") {
+    CHECK(cir_run("int main() { return sizeof(int); }") == 4);
+    CHECK(cir_run("int main() { return sizeof(char); }") == 1);
+    CHECK(cir_run("int main() { return sizeof(double); }") == 8);
+}
+
+TEST_CASE("CIR: cast") {
+    CHECK(cir_run("int main() { double d; d = 3.7; return (int)d; }") == 3);
+}
+
+TEST_CASE("CIR: comma operator") {
+    CHECK(cir_run("int main() { int x; x = (1, 2, 42); return x; }") == 42);
+}
+
+TEST_CASE("CIR: do-while") {
+    CHECK(cir_run(
+	"int main() { int i; int sum; i = 0; sum = 0;\n"
+	"  do { sum = sum + i; i = i + 1; } while (i < 10);\n"
+	"  return sum; }"
+    ) == 45);
+}
+
+TEST_CASE("CIR: switch/case") {
+    CHECK(cir_run(
+	"int main() { int x; x = 2;\n"
+	"  switch (x) { case 1: return 10; case 2: return 20; case 3: return 30; }\n"
+	"  return 0; }"
+    ) == 20);
+}
+
+TEST_CASE("CIR: break and continue") {
+    CHECK(cir_run(
+	"int main() { int i; int sum; sum = 0;\n"
+	"  for (i = 0; i < 100; i = i + 1) {\n"
+	"    if (i >= 5) break;\n"
+	"    sum = sum + i;\n"
+	"  }\n"
+	"  return sum; }"
+    ) == 10);
+    CHECK(cir_run(
+	"int main() { int i; int sum; sum = 0;\n"
+	"  for (i = 0; i < 10; i = i + 1) {\n"
+	"    if (i % 2 == 0) continue;\n"
+	"    sum = sum + i;\n"
+	"  }\n"
+	"  return sum; }"
+    ) == 25);
+}
