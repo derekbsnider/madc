@@ -151,9 +151,36 @@ static node_t cir_translate_expr(c2m_ctx_t c2m, TokenBase *tb)
 	}
     }
 
-    // Binary operators
+    // Operators (unary and binary)
     if (tb->is_operator()) {
 	TokenOperator *top = dynamic_cast<TokenOperator *>(tb);
+
+	// Unary operators (argc == 1, operand in right)
+	if (top && top->argc() == 1 && top->right) {
+	    node_t operand = cir_translate_expr(c2m, top->right);
+
+	    if (tb->id() == TokenID::tkNeg) {
+		// Unary minus: 0 - operand
+		node_t zero = c2mir_new_i_node(c2m, 0, pos);
+		node_t n = c2mir_new_node2(c2m, N_SUB, zero, operand);
+		c2mir_set_node_pos(c2m, n, pos);
+		return n;
+	    }
+
+	    c2mir_node_code_t code;
+	    switch (tb->id()) {
+	    case TokenID::tkLnot:  code = N_NOT; break;
+	    case TokenID::tkBnot:  code = N_BITWISE_NOT; break;
+	    default:
+		DBG(std::cerr << "cir: unhandled unary op " << (int)tb->id() << std::endl);
+		code = N_NOT;
+	    }
+	    node_t n = c2mir_new_node1(c2m, code, operand);
+	    c2mir_set_node_pos(c2m, n, pos);
+	    return n;
+	}
+
+	// Binary operators
 	if (top && top->left && top->right) {
 	    node_t left = cir_translate_expr(c2m, top->left);
 	    node_t right = cir_translate_expr(c2m, top->right);
@@ -233,38 +260,51 @@ static node_t cir_translate_block(c2m_ctx_t c2m, TokenCpnd *tc)
 {
     c2mir_pos_t pos = { tc->file, tc->line, tc->column };
 
-    // Local declarations
-    node_t decls = c2mir_new_node(c2m, N_LIST);
+    // c2mir BLOCK has two children: LIST (empty) and LIST (block items).
+    // Both declarations and statements go in the second LIST.
+    node_t empty_list = c2mir_new_node(c2m, N_LIST);
+    node_t items = c2mir_new_node(c2m, N_LIST);
 
-    // Translate local variable declarations
-    for (Variable *v : tc->variables) {
-	c2mir_pos_t vpos = pos;  // approximate
+    // Emit local variable declarations first (skip function parameters).
+    TokenFunc *parent_func = dynamic_cast<TokenFunc *>(tc);
+    size_t skip = 0;
+    if (parent_func) {
+	FuncDef *fd = dynamic_cast<FuncDef *>(parent_func->var.type);
+	if (fd) skip = fd->parameters.size();
+    }
+
+    for (size_t vi = skip; vi < tc->variables.size(); vi++) {
+	Variable *v = tc->variables[vi];
+	c2mir_pos_t vpos = pos;
+
+	// SPEC_DECL(SHARE(LIST(type)), DECL(ID, LIST), IGNORE, IGNORE, IGNORE)
 	node_t type_list = cir_type_list(c2m, v->type, vpos);
+	node_t share = c2mir_new_node1(c2m, N_SHARE, type_list);
+
 	node_t var_id = c2mir_new_str_node(c2m, N_ID, v->name.c_str(),
 					   v->name.size() + 1, vpos);
 	node_t var_decl = c2mir_new_node2(c2m, N_DECL,
 	    var_id, c2mir_new_node(c2m, N_LIST));
-	// SPEC_DECL(type_list, decl, empty, empty, empty)
+
 	node_t spec_decl = c2mir_new_node(c2m, N_SPEC_DECL);
-	c2mir_op_append(c2m, spec_decl, type_list);
+	c2mir_op_append(c2m, spec_decl, share);
 	c2mir_op_append(c2m, spec_decl, var_decl);
-	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));  // attr
-	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));  // init
-	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));  // asm
+	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
+	c2mir_op_append(c2m, spec_decl, c2mir_new_node(c2m, N_IGNORE));
 	c2mir_set_node_pos(c2m, spec_decl, vpos);
 
-	c2mir_op_append(c2m, decls, spec_decl);
+	c2mir_op_append(c2m, items, spec_decl);
     }
 
-    // Statements
-    node_t stmts = c2mir_new_node(c2m, N_LIST);
+    // Then emit statements
     for (TokenStmt *ts : tc->statements) {
 	node_t s = cir_translate_stmt(c2m, (TokenBase *)ts);
-	if (s) c2mir_op_append(c2m, stmts, s);
+	if (s) c2mir_op_append(c2m, items, s);
     }
-    c2mir_set_node_pos(c2m, stmts, pos);
+    c2mir_set_node_pos(c2m, items, pos);
 
-    node_t block = c2mir_new_node2(c2m, N_BLOCK, decls, stmts);
+    node_t block = c2mir_new_node2(c2m, N_BLOCK, empty_list, items);
     c2mir_set_node_pos(c2m, block, pos);
     return block;
 }
@@ -276,7 +316,9 @@ static node_t cir_translate_if(c2m_ctx_t c2m, TokenIF *ti)
     node_t then_body = cir_translate_stmt(c2m, ti->statement);
     node_t else_body = ti->elsestmt ? cir_translate_stmt(c2m, ti->elsestmt)
 				    : c2mir_new_node(c2m, N_IGNORE);
-    node_t n = c2mir_new_node3(c2m, N_IF, cond, then_body, else_body);
+    // c2mir IF: LIST(), condition, then_body, else_body
+    node_t n = c2mir_new_node4(c2m, N_IF,
+	c2mir_new_node(c2m, N_LIST), cond, then_body, else_body);
     c2mir_set_node_pos(c2m, n, pos);
     return n;
 }
@@ -289,7 +331,9 @@ static node_t cir_translate_while(c2m_ctx_t c2m, TokenBase *tw)
 
     node_t cond = cir_translate_expr(c2m, w->condition);
     node_t body = cir_translate_stmt(c2m, w->statement);
-    node_t n = c2mir_new_node2(c2m, N_WHILE, cond, body);
+    // c2mir WHILE: LIST(), condition, body
+    node_t n = c2mir_new_node3(c2m, N_WHILE,
+	c2mir_new_node(c2m, N_LIST), cond, body);
     c2mir_set_node_pos(c2m, n, pos);
     return n;
 }
@@ -305,10 +349,10 @@ static node_t cir_translate_for(c2m_ctx_t c2m, TokenFOR *tf)
 				: c2mir_new_node(c2m, N_IGNORE);
     node_t body = cir_translate_stmt(c2m, tf->statement);
 
-    // c2mir FOR: N_FOR(init_or_decl, cond_expr, incr_expr, body)
-    // init needs to be wrapped in N_EXPR for expression statements
-    node_t init_expr = c2mir_new_node1(c2m, N_EXPR, init);
-    node_t n = c2mir_new_node4(c2m, N_FOR, init_expr, cond, incr, body);
+    // c2mir FOR: LIST(), init_expr, cond_expr, incr_expr, body
+    // Note: init/cond/incr are bare expressions (not wrapped in N_EXPR)
+    node_t n = c2mir_new_node5(c2m, N_FOR,
+	c2mir_new_node(c2m, N_LIST), init, cond, incr, body);
     c2mir_set_node_pos(c2m, n, pos);
     return n;
 }
@@ -338,8 +382,10 @@ static node_t cir_translate_stmt(c2m_ctx_t c2m, TokenBase *tb)
     if (tc) return cir_translate_block(c2m, tc);
 
     // Expression statement (any expression followed by ;)
+    // c2mir's N_EXPR has two children: LIST() and the expression
     node_t expr = cir_translate_expr(c2m, tb);
-    node_t stmt = c2mir_new_node1(c2m, N_EXPR, expr);
+    node_t stmt = c2mir_new_node2(c2m, N_EXPR,
+	c2mir_new_node(c2m, N_LIST), expr);
     c2mir_set_node_pos(c2m, stmt, make_pos(tb));
     return stmt;
 }
@@ -377,9 +423,13 @@ static node_t cir_translate_func(c2m_ctx_t c2m, TokenFunc *tf)
 	for (size_t i = 0; i < fd->parameters.size(); i++) {
 	    DataDef *ptype = fd->parameters[i];
 	    // Get parameter name from the function's variable list
+	    // Parameter names live in the Method object, not tf->variables
 	    const char *pname = "p";
-	    if (i < tf->variables.size())
-		pname = tf->variables[i]->name.c_str();
+	    if (tf->method && i < tf->method->parameters.size())
+		pname = tf->method->parameters[i]->name.c_str();
+	    DBG(std::cerr << "cir: func " << tf->var.name << " param " << i
+			  << " name='" << pname << "' vars.size=" << tf->variables.size()
+			  << " params.size=" << fd->parameters.size() << std::endl);
 
 	    node_t pspec = cir_type_list(c2m, ptype, pos);
 	    node_t pid = c2mir_new_str_node(c2m, N_ID, pname,
@@ -435,6 +485,7 @@ c2m_ctx_t cir_init(MIR_context_t mir_ctx)
     struct c2mir_options *opts = new struct c2mir_options();
     memset(opts, 0, sizeof(*opts));
     opts->message_file = stderr;
+    // opts->debug_p = 1;  // enable for AST dump after check
     return c2mir_init_compile(mir_ctx, opts);
 }
 
@@ -462,12 +513,22 @@ node_t cir_translate(c2m_ctx_t c2m, Program *prog)
     // We need access to tp. Let's walk the token tree.
 
     // For now, find all TokenFunc in the program's function list
+    DBG(fprintf(stderr, "cir: pending_funcs has %zu entries\n", prog->pending_funcs.size()));
     for (auto it = prog->pending_funcs.begin();
 	 it != prog->pending_funcs.end(); ++it) {
 	TokenFunc *tf = dynamic_cast<TokenFunc *>(*it);
-	if (!tf || tf->is_overridden) continue;
+	if (!tf) {
+	    DBG(fprintf(stderr, "cir: skipping non-TokenFunc (type=%d)\n", (int)(*it)->type()));
+	    continue;
+	}
+	if (tf->is_overridden) continue;
+	DBG(fprintf(stderr, "cir: translating func '%s'\n", tf->var.name.c_str()));
 	node_t fd = cir_translate_func(c2m, tf);
-	if (fd) c2mir_op_append(c2m, module, fd);
+	if (fd) {
+	    c2mir_op_append(c2m, module, fd);
+	} else {
+	    DBG(fprintf(stderr, "cir: translate returned NULL for '%s'\n", tf->var.name.c_str()));
+	}
     }
 
     return module;
