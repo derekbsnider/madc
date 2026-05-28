@@ -2,9 +2,11 @@
 
 ## High Priority
 
-- **Transpiler parity: 410/475 (86.3%), 65 skipped.** MIR is now the
-  default backend. Next targets: _Complex operation lowering (13 tests),
-  add system headers to c2mir fork, eval API wrappers (5 tests).
+- **Transpiler parity: 417/475 (87.8%), 58 skipped.** MIR is now the
+  default backend. _Complex support implemented natively in c2mir
+  (10/12 tests passing). Next targets: remaining 2 _Complex tests
+  (global init, integer complex), eval API wrappers (5 tests),
+  add system headers to c2mir fork.
 
 - **GCC torture test suite: at 97.9%.** Currently 1649/1685 (97.9%).
   6 remaining failures (4 compile, 2 runtime, 30 skipped), 2 unfixable.

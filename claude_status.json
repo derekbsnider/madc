@@ -1,10 +1,10 @@
 {
   "version": "0.23.0",
-  "date": "2026-05-27",
+  "date": "2026-05-28",
   "build_status": "green",
   "test_status": {
     "unit_tests": "294 passed, 0 failed (across all test binaries)",
-    "integration_tests": "410 passed, 0 failed, 0 timed out, 65 skipped"
+    "integration_tests": "417 passed, 0 failed, 0 timed out, 58 skipped"
   },
   "phases": {
     "phase_1": "complete",
@@ -23,7 +23,7 @@
     "transpiler_phase_5_classes": "complete",
     "transpiler_phase_6a_c_correctness": "complete",
     "transpiler_phase_6b_madc_features": "complete",
-    "transpiler_parity": "in_progress — 86.3% (410/475, 65 skipped)"
+    "transpiler_parity": "in_progress — 87.8% (417/475, 58 skipped)"
   },
   "features": [
     "MIR is the default backend (--backend=jit for legacy asmjit)",
@@ -34,7 +34,10 @@
     "STDSTRING_SIZE (sizeof std::string) replaces MADC_STRING_SIZE",
     "MADC_EXTERN_C0-C4 macros for extern C wrapper generation",
     "c2mir built-in headers (stdint.h, stddef.h, stdbool.h, limits.h)",
-    "_Complex type mapping to struct __madc_cX (WIP — runtime helpers done)",
+    "c2mir _Complex support — native C99 complex types (our fork, 12 commits)",
+    "_Complex double/float/long double: arithmetic, ==, !=, ~, __real__, __imag__",
+    "Imaginary literals (1.0i, 2.0iF, etc.) pass through to c2mir natively",
+    "__real__/__imag__ as first-class Gecko grammar operators (AN_REALPART/AN_IMAGPART)",
     "Itanium ABI name mangler (types, functions, methods, ctors, dtors, operators)",
     "Phase 2 semantic pre-pass (SemaInfo, TypeClass enum)",
     "String runtime (managed std::string via extern C placement-new wrappers)",
@@ -70,7 +73,7 @@
     "GCC torture suite at 97.9% (1649/1685)"
   ],
   "known_issues": [
-    "Transpiler: _Complex operation lowering WIP (type mapping done, arithmetic/conjugate/literals next)",
+    "Transpiler: 2 _Complex tests remaining — global complex init (constant folding), integer complex types",
     "Transpiler: c2mir does not support SIMD/vector_size (11 tests deferred)",
     "Transpiler: c2mir does not support inline asm (4 tests deferred)",
     "Transpiler: c2mir does not support wchar_t/wide strings (2 tests deferred)",
@@ -79,16 +82,20 @@
     "Transpiler: lambda [&] capture not yet implemented (1 test)",
     "Transpiler: prefer directive not yet implemented (1 test)",
     "Transpiler: #load directive not in transpiler (2 tests)",
+    "SMAUG regression: C++ keyword 'new' conflicts with C89 struct member names — needs --std=c mode toggle",
     "Legacy: nested function definitions unsupported (2 tests)",
     "Legacy: alloca(func_call()) causes asmjit InvalidInstruction (2 tests)"
   ],
   "remaining_todo": [
-    "_Complex operation lowering (arithmetic, conjugate, imaginary literals, __real__/__imag__)",
+    "c2mir _Complex: global complex constant initializers (constant expression folding)",
+    "c2mir _Complex: integer complex types (_Complex int, _Complex unsigned short)",
+    "c2mir _Complex: crealf/cimagf/conj builtins (need declarations or <complex.h>)",
     "Add system headers to c2mir fork (stdio.h, stdlib.h, string.h, etc.)",
     "Eval API extern C wrappers + name mapping (5 tests)",
     "Lambda [&] capture via struct-based env passing",
     "prefer directive namespace dispatch",
     "#load directive in transpiler",
+    "C/C++ mode toggle for SMAUG compatibility (--std=c89)",
     "Cfront-style template instantiation (generate wrappers from C++ headers)",
     "MIR optimizer level 2 SSA bug fix in our fork",
     "libmadcdis/libmadcdat library restructure",

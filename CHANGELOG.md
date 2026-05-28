@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+- **Native `_Complex` support in c2mir.** 12 commits to our MIR fork
+  implementing C99 `_Complex` types directly in c2mir — no struct
+  workaround needed. Supports `_Complex double/float/long double`,
+  arithmetic (`+`, `-`, `*`, `/`, `+=`, etc.), `__real__`/`__imag__`
+  operators, imaginary literals (`1.0i`), conjugate (`~`), equality
+  (`==`, `!=`), boolean context, function params/return, casts.
+  Zero regressions across c2mir's 1,071 test suite.
+
+- **Transpiler `_Complex` cleanup.** Removed `struct __madc_c*`
+  workaround infrastructure (-302 lines). Transpiler now emits raw
+  `_Complex` types and imaginary literals directly.
+
+- **`__real__`/`__imag__` as first-class grammar operators.** New
+  `AN_REALPART`/`AN_IMAGPART` AST nodes, `GT_REALPART`/`GT_IMAGPART`
+  grammar terminals. Gecko parses them as unary prefix operators.
+
+- **Test parity: 410→417.** 10 of 12 `_Complex` tests now pass.
+  Remaining 2: global complex constant initializers, integer complex
+  types (`_Complex unsigned short`).
+
 ## [v0.23.0] — 2026-05-27
 
 MIR default backend, clang++ compiler, transpiler parity push (400→410).
