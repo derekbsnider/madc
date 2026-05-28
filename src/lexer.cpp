@@ -1312,12 +1312,15 @@ void Program::add_keywords()
     keyword_map[tkCASE.str] = &tkCASE;
     keyword_map[tkBREAK.str] = &tkBREAK;
     keyword_map[tkCONT.str] = &tkCONT;
-    keyword_map[tkTRY.str] = &tkTRY;
-    keyword_map[tkCATCH.str] = &tkCATCH;
-    keyword_map[tkTHROW.str] = &tkTHROW;
+    if ( !is_c_mode() ) {
+	keyword_map[tkTRY.str] = &tkTRY;
+	keyword_map[tkCATCH.str] = &tkCATCH;
+	keyword_map[tkTHROW.str] = &tkTHROW;
+    }
     keyword_map[tkSWITCH.str] = &tkSWITCH;
     keyword_map[tkWHILE.str] = &tkWHILE;
-    keyword_map[tkCLASS.str] = &tkCLASS;
+    if ( !is_c_mode() )
+	keyword_map[tkCLASS.str] = &tkCLASS;
     keyword_map[tkSTRUCT.str] = &tkSTRUCT;
     keyword_map[tkUNION.str] = &tkUNION;
     keyword_map[tkDEFAULT.str] = &tkDEFAULT;
@@ -1332,18 +1335,17 @@ void Program::add_keywords()
     keyword_map[tkVOLATILE.str] = &tkVOLATILE;
     keyword_map["__volatile"] = &tkVOLATILE;
     keyword_map["__volatile__"] = &tkVOLATILE;
-    keyword_map[tkUSING.str] = &tkUSING;
-    keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
-    keyword_map[tkPREFER.str] = &tkPREFER;
+    if ( !is_c_mode() ) {
+	keyword_map[tkUSING.str] = &tkUSING;
+	keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
+	keyword_map[tkPREFER.str] = &tkPREFER;
+	keyword_map[tkVECTOR.str] = &tkVECTOR;
+	keyword_map[tkMAP.str] = &tkMAP;
+	keyword_map[tkSET.str] = &tkSET;
+	keyword_map[tkNEW.str] = &tkNEW;
+	keyword_map[tkDELETE.str] = &tkDELETE;
+    }
     keyword_map[tkDEFER.str] = &tkDEFER;
-    keyword_map[tkVECTOR.str] = &tkVECTOR;
-    keyword_map[tkMAP.str] = &tkMAP;
-    keyword_map[tkSET.str] = &tkSET;
-    // `list` intentionally omitted from keyword_map so it doesn't shadow
-    // the C identifier `list`. Use `std::list<T>` instead.
-    // keyword_map[tkLIST.str] = &tkLIST;
-    keyword_map[tkNEW.str] = &tkNEW;
-    keyword_map[tkDELETE.str] = &tkDELETE;
 }
 
 // add static tokens for base data types
@@ -1498,6 +1500,41 @@ TokenBase *Program::_getToken()
 		word = "#!";
 		while ( source.good() && !source.eof() && source.peek() != '\r' && source.peek() != '\n' )
 		    word += source.get();
+		// Parse shebang args if interpreter is madc
+		{
+		    size_t sp = word.find(' ');
+		    std::string path = (sp != std::string::npos) ? word.substr(2, sp - 2) : word.substr(2);
+		    size_t slash = path.rfind('/');
+		    std::string base = (slash != std::string::npos) ? path.substr(slash + 1) : path;
+		    if ( base == "madc" && sp != std::string::npos )
+		    {
+			std::string args = word.substr(sp + 1);
+			if ( args.find("--std=c89") != std::string::npos )
+			    language_std = STD_C89;
+			else if ( args.find("--std=c99") != std::string::npos )
+			    language_std = STD_C99;
+			else if ( args.find("--std=c11") != std::string::npos )
+			    language_std = STD_C11;
+			else if ( args.find("--std=c") != std::string::npos )
+			    language_std = STD_C11;
+			// Remove C++ keywords retroactively if shebang set C mode
+			if ( is_c_mode() )
+			{
+			    keyword_map.erase("try");
+			    keyword_map.erase("catch");
+			    keyword_map.erase("throw");
+			    keyword_map.erase("class");
+			    keyword_map.erase("new");
+			    keyword_map.erase("delete");
+			    keyword_map.erase("using");
+			    keyword_map.erase("namespace");
+			    keyword_map.erase("prefer");
+			    keyword_map.erase("vector");
+			    keyword_map.erase("map");
+			    keyword_map.erase("set");
+			}
+		    }
+		}
 		return new TokenREM(word);
 	    }
 	    while ( source.peek() == ' ' || source.peek() == '\t' )

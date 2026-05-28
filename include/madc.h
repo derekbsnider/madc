@@ -985,6 +985,12 @@ public:
     std::map<std::string, asmjit::Label> label_map;
 
     bool colors;
+    enum LanguageStd {
+	STD_MADC,	// default: C++ keywords reserved
+	STD_C78, STD_C86, STD_C88, STD_C89, STD_C90, STD_C94, STD_C95, STD_C99, STD_C11, STD_C17, STD_C23,
+	STD_CPP98, STD_CPP03, STD_CPP11, STD_CPP14, STD_CPP17, STD_CPP20, STD_CPP23, STD_CPP26
+    } language_std;
+    bool is_c_mode() const { return language_std >= STD_C89 && language_std <= STD_C23; }
     bool aot_tracking;
     bool instrument_functions;
     bool skip_includes;		// --emit-function: lex without processing #include

@@ -491,6 +491,21 @@ int main(int argc, char **argv)
             emit_c = true;
             use_mir_backend = true;  // --emit-c implies MIR pipeline
             filearg = i + 1;
+        } else if (strcmp(argv[i], "--std=c") == 0 || strcmp(argv[i], "--std=c11") == 0) {
+            prog->language_std = Program::STD_C11;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--std=c89") == 0 || strcmp(argv[i], "--std=c90") == 0) {
+            prog->language_std = Program::STD_C89;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--std=c99") == 0) {
+            prog->language_std = Program::STD_C99;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--std=c17") == 0) {
+            prog->language_std = Program::STD_C17;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--std=c23") == 0) {
+            prog->language_std = Program::STD_C23;
+            filearg = i + 1;
         } else {
             filearg = i;
             break;
