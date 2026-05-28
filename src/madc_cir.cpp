@@ -175,9 +175,18 @@ static node_t cir_translate_expr(c2m_ctx_t c2m, TokenBase *tb)
     if (tb->type() == TokenType::ttVariable) {
 	TokenVar *tv = dynamic_cast<TokenVar *>(tb);
 	if (tv) {
-	    // Constant variables (enum values) → emit literal value
-	    if (tv->var.is_constant()) {
+	    // Constant integer variables (enum values) → emit literal value
+	    // But NOT string literals or other non-integer constants.
+	    if (tv->var.is_constant() && tv->var.type &&
+		tv->var.type->is_integer() && !tv->var.type->is_pointer()) {
 		return c2mir_new_i_node(c2m, tv->var.get<int64_t>(), pos);
+	    }
+	    // String literal variables: prefixed with "__literal__" by parser.
+	    // Extract the actual string content and emit as N_STR.
+	    if (tv->var.name.compare(0, 11, "__literal__") == 0) {
+		const std::string &content = tv->var.name.substr(11);
+		return c2mir_new_str_node(c2m, N_STR, content.c_str(),
+					 content.size() + 1, pos);
 	    }
 	    return c2mir_new_str_node(c2m, N_ID, tv->var.name.c_str(),
 				     tv->var.name.size() + 1, pos);
@@ -302,13 +311,25 @@ static node_t cir_translate_expr(c2m_ctx_t c2m, TokenBase *tb)
 	}
     }
 
-    // Cast: (type)expr → CAST(TYPE(LIST(type_spec), DECL(IGNORE, LIST())), expr)
+    // Cast: (type)expr → CAST(TYPE(LIST(type_spec), DECL(IGNORE, LIST([POINTER]))), expr)
     {
 	TokenCast *tc = dynamic_cast<TokenCast *>(tb);
 	if (tc) {
-	    node_t type_list = cir_type_list(c2m, tc->cast_type, pos);
+	    // Unwrap pointer for the type specifier
+	    DataDef *cast_dd = tc->cast_type;
+	    bool cast_is_ptr = cast_dd && cast_dd->is_pointer();
+	    DataDefPTR *cast_ptr = cast_is_ptr ? dynamic_cast<DataDefPTR *>(cast_dd) : nullptr;
+	    if (cast_ptr && cast_ptr->base_type) cast_dd = cast_ptr->base_type;
+
+	    node_t type_list = cir_type_list(c2m, cast_dd, pos);
+	    node_t cast_decl_list = c2mir_new_node(c2m, N_LIST);
+	    if (cast_is_ptr) {
+		node_t pointer = c2mir_new_node1(c2m, N_POINTER, c2mir_new_node(c2m, N_LIST));
+		c2mir_set_node_pos(c2m, pointer, pos);
+		c2mir_op_append(c2m, cast_decl_list, pointer);
+	    }
 	    node_t type_decl = c2mir_new_node2(c2m, N_DECL,
-		c2mir_new_node(c2m, N_IGNORE), c2mir_new_node(c2m, N_LIST));
+		c2mir_new_node(c2m, N_IGNORE), cast_decl_list);
 	    node_t type_node = c2mir_new_node2(c2m, N_TYPE, type_list, type_decl);
 	    c2mir_set_node_pos(c2m, type_node, pos);
 	    node_t expr = cir_translate_expr(c2m, tc->expr);
@@ -573,11 +594,23 @@ static node_t cir_struct_def(c2m_ctx_t c2m, DataDefSTRUCT *sdd, c2mir_pos_t pos)
 	DataDef *mtype = sdd->members[i].second;
 	const std::string &mname = sdd->members[i].first;
 
-	node_t mspec = cir_type_list(c2m, mtype, pos);
+	// Unwrap pointer types for the type specifier
+	DataDef *mbase = mtype;
+	bool m_is_ptr = mbase && mbase->is_pointer();
+	DataDefPTR *mptr = m_is_ptr ? dynamic_cast<DataDefPTR *>(mbase) : nullptr;
+	if (mptr && mptr->base_type) mbase = mptr->base_type;
+
+	node_t mspec = cir_type_list(c2m, mbase, pos);
 	node_t mshare = c2mir_new_node1(c2m, N_SHARE, mspec);
 	node_t mid = c2mir_new_str_node(c2m, N_ID, mname.c_str(),
 					mname.size() + 1, pos);
-	node_t mdecl = c2mir_new_node2(c2m, N_DECL, mid, c2mir_new_node(c2m, N_LIST));
+	node_t mdecl_list = c2mir_new_node(c2m, N_LIST);
+	if (m_is_ptr) {
+	    node_t pointer = c2mir_new_node1(c2m, N_POINTER, c2mir_new_node(c2m, N_LIST));
+	    c2mir_set_node_pos(c2m, pointer, pos);
+	    c2mir_op_append(c2m, mdecl_list, pointer);
+	}
+	node_t mdecl = c2mir_new_node2(c2m, N_DECL, mid, mdecl_list);
 	// MEMBER has 4 children: SHARE(type), DECL, IGNORE, IGNORE
 	node_t member = c2mir_new_node(c2m, N_MEMBER);
 	c2mir_op_append(c2m, member, mshare);
