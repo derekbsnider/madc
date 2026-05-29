@@ -10312,10 +10312,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	}
     }
 
-    // Record the struct/union definition in source order for CIR. Covers
-    // every post-brace form (typedef, with-variable, and bare `;`); any
-    // typedef aliases are recorded separately in the typedef loop below.
-    record_struct(dds);
+    // NOTE: the struct/union definition is recorded in top_decls only for
+    // the *bare* `struct X { ... };` form (below). For `typedef struct X
+    // {...} Y;` and `struct X {...} v;`, the body rides inline in the
+    // typedef / variable declaration (one combined SPEC_DECL, matching c2m),
+    // so we must NOT also record a standalone dkStruct here.
 
     // what follows the closing brace?
     tn = pgm.peekToken();
@@ -10383,9 +10384,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	return pgm.parseDeclaration(tdt);
     }
 
-    // struct tag { ... }; — just a type definition, nothing to compile
+    // struct tag { ... }; — bare type definition. This is the one form whose
+    // body is emitted as a standalone struct SPEC_DECL, so record it here.
     if ( tn && tn->id() == TokenID::tkSemi )
     {
+	record_struct(dds);
 	TokenBase *capture_stmt =
 	    materialize_runtime_struct_size_captures(pgm,
 		pgm.compounds.empty() ? NULL : pgm.compounds.top(), dds, tag ? (TokenBase *)tag : (TokenBase *)this);
@@ -14727,6 +14730,20 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
+	// Record file-scope variables in top_decls in source order for the CIR
+	// backend (a struct defined inline here, `struct X {...} v;`, rides in
+	// this declaration). Locals (inside a function compound) are excluded.
+	if ( var && (code == NULL || code == tkProgram) )
+	{
+	    Program::TopDecl gtd;
+	    gtd.kind = Program::DeclKind::dkGlobalVar;
+	    gtd.name = var->name;
+	    gtd.var = var;
+	    gtd.dd = var->type;
+	    gtd.file = tb->file;
+	    gtd.line = tb->line;
+	    top_decls.push_back(gtd);
+	}
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(*this, code, var);
 	if ( gotstatic )
