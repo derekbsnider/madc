@@ -86,15 +86,39 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		}
 		break;
 	case N_SPEC_DECL:
-		emit(f, op(n, 0), lang);                 // specifiers
+		// [0]=specifiers (often N_SHARE-wrapped) [1]=declarator
+		// [2],[3]=ignore (bit-field width etc.) [4]=initializer
+		emit(f, op(n, 0), lang);
 		fputc(' ', f);
-		emit_declarator(f, op(n, 1), lang);      // declarator
-		if (op(n, 2) && op(n, 2)->code != N_IGNORE) {
+		emit_declarator(f, op(n, 1), lang);
+		if (op(n, 4) && op(n, 4)->code != N_IGNORE) {
 			fputs(" = ", f);
-			emit(f, op(n, 2), lang);
+			emit(f, op(n, 4), lang);
 		}
 		fputc(';', f);
 		break;
+	case N_SHARE:
+		// single-operand wrapper around a type-specifier list
+		emit(f, op(n, 0), lang);
+		break;
+	case N_ADD: case N_SUB: case N_MUL: case N_DIV: case N_MOD:
+	case N_EQ:  case N_NE:  case N_LT:  case N_LE: case N_GT: case N_GE:
+	case N_AND: case N_OR:  case N_XOR: case N_LSH: case N_RSH:
+	case N_ANDAND: case N_OROR: case N_ASSIGN: {
+		static const struct { int code; const char *o; } M[] = {
+			{N_ADD,"+"},{N_SUB,"-"},{N_MUL,"*"},{N_DIV,"/"},{N_MOD,"%"},
+			{N_EQ,"=="},{N_NE,"!="},{N_LT,"<"},{N_LE,"<="},{N_GT,">"},{N_GE,">="},
+			{N_AND,"&"},{N_OR,"|"},{N_XOR,"^"},{N_LSH,"<<"},{N_RSH,">>"},
+			{N_ANDAND,"&&"},{N_OROR,"||"},{N_ASSIGN,"="},{0,0}};
+		const char *o = "?";
+		for (int k = 0; M[k].o; k++) if (M[k].code == (int)n->code) o = M[k].o;
+		fputc('(', f);
+		emit(f, op(n, 0), lang);
+		fprintf(f, " %s ", o);
+		emit(f, op(n, 1), lang);
+		fputc(')', f);
+		break;
+	}
 	case N_BLOCK:
 		fputs("{\n", f);
 		emit_seq(f, op(n, 1), lang, 0, "\n");     // [1] = statement list
