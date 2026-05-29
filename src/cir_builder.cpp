@@ -1321,6 +1321,31 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		}
 	}
 
+	// va_arg(ap, T) -> __builtin_va_arg(ap, (T *)0). c2mir derives the result
+	// type from the 2nd argument's pointer type (it inspects the type, never
+	// evaluates the 0); see c2mir.c va_arg handling (2nd arg must be T*).
+	if (TokenVaArg *tva = dynamic_cast<TokenVaArg *>(tb)) {
+		node_t ap = tva->ap_expr ? translate_expr(tva->ap_expr)
+					 : id(tva->ap_var->name.c_str(), tb);
+		// Build a (T *)0 carrier: base specs of T plus one extra '*'.
+		DataDef *base = tva->target_type;
+		int levels = dd_ptr_depth(base) + 1;
+		while (base && base->is_pointer()) {
+			DataDefPTR *p = dynamic_cast<DataDefPTR *>(base);
+			if (!p) break;
+			base = p->base_type;
+		}
+		node_t decl_list = list();
+		for (int i = 0; i < levels; i++) append(decl_list, pointer());
+		node_t type_node = node2(N_TYPE, type_list(base),
+					 node2(N_DECL, ignore(), decl_list));
+		node_t typeptr = node2(N_CAST, type_node, integer(0));
+		node_t args = list();
+		append(args, ap);
+		append(args, typeptr);
+		return node2(N_CALL, id("__builtin_va_arg", tb), args, tb);
+	}
+
 	DBG(std::cerr << "cir: unhandled expr type=" << (int)tb->type()
 		      << " id=" << (int)tb->id() << std::endl);
 	// Previously this silently became integer(0) — a wrong translation that
