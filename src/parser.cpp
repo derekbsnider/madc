@@ -10424,6 +10424,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	tname.append(" ");
 	tname.append(tag ? tag->str : "anonymous");
 	tdt = new TokenDataType(tname.c_str(), *dds);
+	// A tagged definition with body followed by variable declarators
+	// (`struct node { ... } *first, *last;`) must still emit the struct
+	// body as a standalone top-level definition; otherwise `struct node`
+	// stays incomplete and the variables have unknown storage size. Only
+	// named tags get a standalone def — anonymous `struct { ... } s;`
+	// renders its body inline in the variable's own declaration.
+	if ( tag )
+	    record_struct(dds, tag);
 	if ( tn->id() == TokenID::tkSTATIC )
 	{
 	    pgm.nextToken(); // consume static before declarator
