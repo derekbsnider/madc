@@ -294,6 +294,76 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 	return lst;
 }
 
+// Build the N_FUNC(param-list) declarator suffix for a function-pointer's
+// target signature. Mirrors func_proto's parameter handling: drops the
+// synthetic trailing vararg slot and emits N_DOTS, renders an explicit
+// `(void)` only for is_void_params, leaves a bare `()` for K&R-unspecified,
+// and reuses param_decl per parameter.
+node_t CirBuilder::fnptr_func_node(FuncDef *fd)
+{
+	node_t param_list = list();
+	if (!fd) return node1(N_FUNC, param_list);   // unknown signature -> ()
+
+	size_t nparam = fd->parameters.size();
+	if (fd->is_varargs && nparam > 0) nparam--;  // drop the synthetic vararg slot
+
+	if (nparam == 0) {
+		if (fd->is_void_params) {
+			node_t void_spec = node1(N_LIST, simple(N_VOID));
+			node_t void_decl = node2(N_DECL, ignore(), list());
+			append(param_list, node2(N_TYPE, void_spec, void_decl));
+		}
+		// else: bare () — unspecified parameter list (K&R)
+	} else {
+		for (size_t i = 0; i < nparam; i++)
+			append(param_list, param_decl(fd->parameters[i], "", std::string()));
+	}
+	if (fd->is_varargs)
+		append(param_list, simple(N_DOTS));
+	return node1(N_FUNC, param_list);
+}
+
+// Append a function-pointer variable's return-type specifiers into
+// `spec_list`, and fill `decl_list` with its declarator suffixes in c2m
+// innermost-first order. `int (*fp)(char)` => specs `int`, suffixes
+// [POINTER, FUNC]; a pointer-returning fn-ptr `char *(*fp)(void)` appends the
+// return stars AFTER the FUNC ([POINTER, FUNC, POINTER]); an array of fn-ptrs
+// `void (*tab[3])(int)` prepends the array dims ([ARR, POINTER, FUNC]).
+void CirBuilder::fnptr_decl_pieces(DataDefFPTR *fp, node_t spec_list,
+				   node_t decl_list,
+				   const std::vector<uint32_t> &lead_dims)
+{
+	FuncDef *fd = fp ? fp->target : NULL;
+
+	// Return-type specs: peel pointer levels, recording the star count so the
+	// stars can be appended as the outermost declarator suffix.
+	DataDef *ret_dd = fd ? &fd->returns : NULL;
+	int ret_stars = 0;
+	while (ret_dd && ret_dd->is_pointer()) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(ret_dd);
+		if (!p || !p->base_type) break;
+		ret_dd = p->base_type;
+		ret_stars++;
+	}
+	if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
+		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ret_dd);
+		if (sdd)
+			append(spec_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
+		else
+			append_type_specs(spec_list, ret_dd);
+	} else {
+		append_type_specs(spec_list, ret_dd);
+	}
+
+	// Suffixes, innermost binding first.
+	for (size_t d = 0; d < lead_dims.size(); d++)
+		append(decl_list, node3(N_ARR, ignore(), list(), integer(lead_dims[d])));
+	append(decl_list, pointer());            // the fn-ptr `(*name)`
+	append(decl_list, fnptr_func_node(fd));  // the `(params)`
+	for (int s = 0; s < ret_stars; s++)
+		append(decl_list, pointer());        // return-type `*`
+}
+
 // -----------------------------------------------------------------------
 // Declaration builders
 // -----------------------------------------------------------------------
@@ -356,6 +426,21 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		node_t pdecl_list = list();
 		for (int s = 0; s < stars; s++)
 			append(pdecl_list, pointer());
+		node_t pdecl = node2(N_DECL, id(pname), pdecl_list);
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, pspec);
+		append(sd, pdecl);
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, ignore());
+		return sd;
+	}
+
+	// Function-pointer parameter (no typedef alias): `int (*fp)(int)`.
+	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(ptype)) {
+		node_t pspec = list();
+		node_t pdecl_list = list();
+		fnptr_decl_pieces(fp, pspec, pdecl_list, std::vector<uint32_t>());
 		node_t pdecl = node2(N_DECL, id(pname), pdecl_list);
 		node_t sd = simple(N_SPEC_DECL);
 		append(sd, pspec);
@@ -625,11 +710,27 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			anon_sdd = sdd;
 	}
 
+	// Function-pointer variable `int (*fp)(int)` — unless declared via a
+	// fn-ptr typedef alias, in which case the alias is the type spec like any
+	// other typedef. The dtINT64 rawtype would otherwise emit `long`, erasing
+	// the signature; build `ret (*fp)(params)` instead. (Array-of-fn-ptr
+	// variables are deferred; SMAUG's tables are struct-arrays with fn-ptr
+	// members, handled in member_node.)
+	DataDefFPTR *fnptr = v->typedef_name.empty()
+			? dynamic_cast<DataDefFPTR *>(v->type) : NULL;
+	node_t fnptr_decl_list = NULL;
+
 	// Emit ID("alias") for a variable declared via a typedef (matches c2m).
 	// Pointer usages keep the alias as the type spec and carry the explicit
 	// stars on the declarator below.
 	node_t tl;
-	if (anon_sdd) {
+	if (fnptr) {
+		tl = list();
+		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
+		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
+		fnptr_decl_list = list();
+		fnptr_decl_pieces(fnptr, tl, fnptr_decl_list, std::vector<uint32_t>());
+	} else if (anon_sdd) {
 		node_t ml = list();
 		for (size_t i = 0; i < anon_sdd->members.size(); i++)
 			append(ml, member_node(anon_sdd->members[i], anon_sdd));
@@ -641,8 +742,8 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 				: type_list(base_dd);
 	}
 
-	// Storage class qualifiers
-	if (v->flags & vfSTATIC) {
+	// Storage class qualifiers (fn-ptr vars handle storage class above).
+	if (!fnptr && (v->flags & vfSTATIC)) {
 		node_t new_list = list();
 		append(new_list, simple(N_STATIC));
 		if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
@@ -656,7 +757,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		}
 		tl = new_list;
 	}
-	if (v->flags & vfEXTERN) {
+	if (!fnptr && (v->flags & vfEXTERN)) {
 		node_t new_list = list();
 		append(new_list, simple(N_EXTERN));
 		append_type_specs(new_list, base_dd);
@@ -665,14 +766,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 
 	node_t share = node1(N_SHARE, tl);
 	node_t var_id = id(v->name.c_str(), origin);
-	node_t decl_list = list();
+	node_t decl_list = fnptr ? fnptr_decl_list : list();
 
 	// c2m declarator order: in `T *arr[N]` the `[]` binds tighter than `*`
 	// (array of pointers), and c2m's declarator parser appends the pointer
 	// ops AFTER the direct-declarator's array ops. So the N_ARR nodes must
 	// precede the N_POINTER nodes in the decl list. Emit arrays first, then
 	// pointers — matching `direct_declarator`/`declarator` in c2mir.c.
-	if (v->is_fixed_array() && !v->dims.empty()) {
+	if (!fnptr && v->is_fixed_array() && !v->dims.empty()) {
 		// One N_ARR per dimension, outer dimension first:
 		// int m[2][2] -> ARR(...,2) ARR(...,2)
 		//
@@ -700,8 +801,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		}
 	}
 
-	int decl_stars = explicit_star_count(v->type, v->typedef_name);
-	if (decl_stars >= 0) {
+	int decl_stars = fnptr ? -1 : explicit_star_count(v->type, v->typedef_name);
+	if (fnptr) {
+		// fn-ptr declarator suffixes already built by fnptr_decl_pieces.
+	} else if (decl_stars >= 0) {
 		for (int s = 0; s < decl_stars; s++)
 			append(decl_list, pointer());
 	} else if (is_ptr) {

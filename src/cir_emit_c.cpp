@@ -17,6 +17,9 @@
 
 #include "cir_emit_c.h"
 #include "cir_node.h"
+#include <string>
+#include <cstdio>
+#include <cstdlib>
 
 extern "C" {
 #include "c2mir/c2mir_api.h"   // c2mir_node_op, c2mir_node_code_name
@@ -69,11 +72,31 @@ void emit_labels(FILE *f, node_t labels, CirEmitLang lang)
 	}
 }
 
-// Emit a C declarator: pointer prefixes, then the identifier, then the
-// postfix suffixes (function params, array dimensions). The builder's
-// suffix list (op(1)) mixes N_POINTER (a prefix `*` in C syntax) with
-// N_FUNC / N_ARR (postfix). C declarator syntax is positional, so the
-// pointer stars must precede the identifier while arrays/functions follow.
+// Render `n` to a heap string through the normal emit() path. Used by
+// emit_declarator to compose declarator text out-of-order (the spiral rule
+// needs to wrap an already-rendered inner declarator in parentheses).
+std::string emit_to_string(node_t n, CirEmitLang lang)
+{
+	char *buf = NULL;
+	size_t sz = 0;
+	FILE *m = open_memstream(&buf, &sz);
+	if (!m) return std::string();
+	emit(m, n, lang);
+	fclose(m);
+	std::string s(buf ? buf : "");
+	free(buf);
+	return s;
+}
+
+// Emit a C declarator following the C "spiral rule". The builder's suffix
+// list (op(1)) is in c2m order — innermost binding first — and mixes
+// N_POINTER (a prefix `*`) with N_FUNC / N_ARR (postfix). A pointer is a
+// lower-precedence prefix than the postfix `()`/`[]`, so when a function or
+// array suffix binds *outside* a pointer (pointer-to-function,
+// pointer-to-array) the inner declarator must be parenthesized:
+// `int (*fp)(int)`, `int (*ap)[4]`. Plain cases (`*p`, `a[3]`, `f(int)`,
+// `*f(int)`) never have a pointer preceding a postfix in the list, so they
+// render exactly as the previous flat emitter did.
 void emit_declarator(FILE *f, node_t decl, CirEmitLang lang)
 {
 	if (!decl) return;
@@ -83,19 +106,23 @@ void emit_declarator(FILE *f, node_t decl, CirEmitLang lang)
 	// operand list, which c2mir_node_op does not guard (NL_NEXT(NULL)).
 	if (decl->code != N_DECL) { emit(f, decl, lang); return; }
 	node_t suffixes = op(decl, 1);       // N_LIST of N_POINTER / N_FUNC / N_ARR
-	if (suffixes)                        // pointer prefixes: one `*` each
+
+	std::string d = emit_to_string(op(decl, 0), lang);  // identifier (empty for N_IGNORE)
+	bool prefix_pointer = false;         // inner declarator's outermost form is `*...`
+	if (suffixes)
 		for (int i = 0; ; i++) {
 			node_t s = op(suffixes, i);
 			if (!s) break;
-			if (s->code == N_POINTER) fputc('*', f);
+			if (s->code == N_POINTER) {
+				d = "*" + d;
+				prefix_pointer = true;
+			} else {                     // N_FUNC -> "(params)", N_ARR -> "[size]"
+				if (prefix_pointer) d = "(" + d + ")";
+				d += emit_to_string(s, lang);
+				prefix_pointer = false;
+			}
 		}
-	emit(f, op(decl, 0), lang);          // the identifier (or nothing for N_IGNORE)
-	if (suffixes)                        // postfix suffixes: arrays, functions
-		for (int i = 0; ; i++) {
-			node_t s = op(suffixes, i);
-			if (!s) break;
-			if (s->code != N_POINTER) emit(f, s, lang);
-		}
+	fputs(d.c_str(), f);
 }
 
 // Emit a declaration initializer. A scalar initializer is a bare

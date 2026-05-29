@@ -106,6 +106,18 @@ public:
 	node_t type_list(DataDef *dd, const std::string &typedef_alias = "");
 	node_t pointer();
 
+	// ---- Function-pointer declarators ----
+	// A fn-ptr type (DataDefFPTR) must render as `ret (*name)(params)`, not the
+	// `long` its dtINT64 rawtype would yield. fnptr_func_node builds the
+	// N_FUNC(params) suffix from the target signature; fnptr_decl_pieces appends
+	// the target's return-type specifiers into `spec_list` and fills `decl_list`
+	// with the c2m innermost-first suffix order
+	// ([lead_dims..., POINTER, FUNC, ret-pointer stars...]).
+	node_t fnptr_func_node(class FuncDef *fd);
+	void fnptr_decl_pieces(class DataDefFPTR *fp, node_t spec_list,
+			       node_t decl_list,
+			       const std::vector<uint32_t> &lead_dims);
+
 	// ---- Declaration builders ----
 	// Recursively build an initializer value node: a scalar expression, or
 	// for a nested brace element (TokenStructLit) a LIST(INIT(LIST(), val), ...).
