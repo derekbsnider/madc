@@ -404,6 +404,11 @@ TEST_CASE("CirBuilder: return literal") {
     CHECK(cir_run_builder("int main() { return 0; }") == 0);
 }
 
+TEST_CASE("CirBuilder: char literals") {
+    CHECK(cir_run_builder("int main() { return 'A'; }") == 65);
+    CHECK(cir_run_builder("int main() { return 'Z' - 'A'; }") == 25);
+}
+
 TEST_CASE("CirBuilder: arithmetic") {
     CHECK(cir_run_builder("int main() { return 2 + 3; }") == 5);
     CHECK(cir_run_builder("int main() { return 6 * 7; }") == 42);

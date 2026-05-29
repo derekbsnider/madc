@@ -117,6 +117,13 @@ node_t CirBuilder::real(double val, TokenBase *origin)
 	return cn->as_node();
 }
 
+node_t CirBuilder::ch(long val, TokenBase *origin)
+{
+	cir_node *cn = make(N_CH, origin);
+	cn->base.u.ch = (c2mir_char)val;
+	return cn->as_node();
+}
+
 node_t CirBuilder::str(const char *s, size_t len, TokenBase *origin)
 {
 	cir_node *cn = make(N_STR, origin);
@@ -584,6 +591,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// Real literal
 	if (tb->type() == TokenType::ttReal)
 		return real(tb->dval(), tb);
+
+	// Char literal (C char constants emit N_CH; value via ival())
+	if (tb->type() == TokenType::ttChar)
+		return ch(tb->ival(), tb);
 
 	// String literal
 	if (tb->type() == TokenType::ttString) {

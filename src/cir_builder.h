@@ -69,6 +69,7 @@ public:
 	node_t id(const char *name, TokenBase *origin = NULL);
 	node_t integer(long val, TokenBase *origin = NULL);
 	node_t real(double val, TokenBase *origin = NULL);
+	node_t ch(long val, TokenBase *origin = NULL);
 	node_t str(const char *s, size_t len, TokenBase *origin = NULL);
 	node_t ignore();
 
