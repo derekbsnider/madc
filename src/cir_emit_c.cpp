@@ -61,17 +61,27 @@ void emit_labels(FILE *f, node_t labels, CirEmitLang lang)
 	}
 }
 
-// Emit a C declarator: id plus its suffix list (function params, etc.).
+// Emit a C declarator: pointer prefixes, then the identifier, then the
+// postfix suffixes (function params, array dimensions). The builder's
+// suffix list (op(1)) mixes N_POINTER (a prefix `*` in C syntax) with
+// N_FUNC / N_ARR (postfix). C declarator syntax is positional, so the
+// pointer stars must precede the identifier while arrays/functions follow.
 void emit_declarator(FILE *f, node_t decl, CirEmitLang lang)
 {
 	if (!decl) return;
-	emit(f, op(decl, 0), lang);          // the identifier (or nothing for N_IGNORE)
-	node_t suffixes = op(decl, 1);       // N_LIST of N_FUNC / pointer / N_ARR
-	if (suffixes)
+	node_t suffixes = op(decl, 1);       // N_LIST of N_POINTER / N_FUNC / N_ARR
+	if (suffixes)                        // pointer prefixes: one `*` each
 		for (int i = 0; ; i++) {
 			node_t s = op(suffixes, i);
 			if (!s) break;
-			emit(f, s, lang);
+			if (s->code == N_POINTER) fputc('*', f);
+		}
+	emit(f, op(decl, 0), lang);          // the identifier (or nothing for N_IGNORE)
+	if (suffixes)                        // postfix suffixes: arrays, functions
+		for (int i = 0; ; i++) {
+			node_t s = op(suffixes, i);
+			if (!s) break;
+			if (s->code != N_POINTER) emit(f, s, lang);
 		}
 }
 
@@ -96,7 +106,22 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		break;
 	case N_FUNC:
 		fputc('(', f);
-		emit_seq(f, op(n, 0), lang, 0, ", ");    // parameter list
+		// Parameter list: each entry is an N_TYPE (abstract) or N_SPEC_DECL
+		// (named). A parameter declarator carries no trailing ';', so emit
+		// the SPEC_DECL specs + declarator directly rather than via the
+		// statement-context N_SPEC_DECL case.
+		for (int i = 0; ; i++) {
+			node_t p = op(op(n, 0), i);
+			if (!p) break;
+			if (i > 0) fputs(", ", f);
+			if (p->code == N_SPEC_DECL) {
+				emit(f, op(p, 0), lang);
+				fputc(' ', f);
+				emit_declarator(f, op(p, 1), lang);
+			} else {
+				emit(f, p, lang);
+			}
+		}
 		fputc(')', f);
 		break;
 	case N_TYPE:
@@ -258,6 +283,25 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		fputc('"', f);
 		break;
 	}
+	case N_ADDR:
+		// [0] = operand expression
+		fputs("(&", f); emit(f, op(n, 0), lang); fputc(')', f);
+		break;
+	case N_DEREF:
+		// [0] = operand expression
+		fputs("(*", f); emit(f, op(n, 0), lang); fputc(')', f);
+		break;
+	case N_IND:
+		// [0] = base, [1] = subscript index
+		emit(f, op(n, 0), lang);
+		fputc('[', f); emit(f, op(n, 1), lang); fputc(']', f);
+		break;
+	case N_ARR:
+		// declarator suffix: [0]=ignore [1]=qualifier-list [2]=size expr
+		fputc('[', f);
+		if (op(n, 2) && op(n, 2)->code != N_IGNORE) emit(f, op(n, 2), lang);
+		fputc(']', f);
+		break;
 	case N_NOT:
 		fputc('(', f); fputc('!', f); emit(f, op(n, 0), lang); fputc(')', f);
 		break;
