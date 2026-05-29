@@ -805,6 +805,8 @@ void Program::_tokenizer_init()
     define_map["__BIGGEST_ALIGNMENT__"] = "16";
 
     // GCC predefined macros for C compatibility
+    define_map["__DATE__"] = "\"" __DATE__ "\"";
+    define_map["__TIME__"] = "\"" __TIME__ "\"";
     define_map["__CHAR_BIT__"] = "8";
     define_map["__SIZEOF_SHORT__"] = "2";
     define_map["__SIZEOF_INT__"] = "4";
