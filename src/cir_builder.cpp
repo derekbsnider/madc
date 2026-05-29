@@ -1111,11 +1111,22 @@ node_t CirBuilder::translate_module(Program *prog)
 	// site, so position is threaded here. Member nodes carry the real
 	// origin token (see member_node).
 	auto stamp = [&](node_t n, Program::TopDecl &td) {
-		if (!n || !td.file) return;
+		if (!n) return;
+		// Prefer the per-occurrence origin token (precise file/line/column);
+		// fall back to the file/line the parser recorded otherwise.
+		const char *file = td.file;
+		int line = td.line, col = 0;
+		if (td.origin) {
+			file = td.origin->file;
+			line = td.origin->line;
+			col = td.origin->column;
+		}
+		if (!file) return;
 		cir_node *cn = CIR_NODE(n);
-		cn->src_file = td.file;
-		cn->src_line = td.line;
-		set_pos(cn, td.file, td.line, 0);
+		cn->src_file = file;
+		cn->src_line = line;
+		cn->src_column = col;
+		set_pos(cn, file, line, col);
 	};
 	std::set<std::string> emitted_structs;
 	for (auto &td : prog->top_decls) {
@@ -1279,7 +1290,7 @@ static void cir_dump_node(FILE *f, node_t n, int indent)
 
 	cir_node *cn = CIR_NODE(n);
 	if (cn->typedef_name) fprintf(f, "  [typedef=%s]", cn->typedef_name);
-	if (cn->src_file) fprintf(f, "  @%s:%d", cn->src_file, cn->src_line);
+	if (cn->src_file) fprintf(f, "  @%s:%d:%d", cn->src_file, cn->src_line, cn->src_column);
 	fputc('\n', f);
 
 	if (n->code > N_ID) {

@@ -9408,7 +9408,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // Inert for the legacy JIT/MIR paths (the returned nodes' compile()
     // is a no-op and MIR re-parses prog->tokens). record_struct logs a
     // struct/union definition; record_typedef logs a typedef alias.
-    auto record_struct = [&](DataDefSTRUCT *sdd)
+    auto record_struct = [&](DataDefSTRUCT *sdd, TokenBase *otok = nullptr)
     {
 	Program::TopDecl td;
 	td.kind = is_union ? Program::DeclKind::dkUnion : Program::DeclKind::dkStruct;
@@ -9416,9 +9416,10 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	td.dd = sdd;
 	td.file = TokenBase::_parse_file;
 	td.line = TokenBase::_parse_line;
+	td.origin = otok;
 	pgm.top_decls.push_back(td);
     };
-    auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_)
+    auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr)
     {
 	Program::TopDecl td;
 	td.kind = Program::DeclKind::dkTypedef;
@@ -9427,6 +9428,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	td.tdt = tdt_;
 	td.file = TokenBase::_parse_file;
 	td.line = TokenBase::_parse_line;
+	td.origin = otok;
 	pgm.top_decls.push_back(td);
 	pgm.user_typedef_names.insert(alias);
     };
@@ -9552,7 +9554,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
 	    pgm.nextToken(); // consume ';'
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
-	    record_struct(fwd);
+	    record_struct(fwd, tag);
 	    return new TokenStructDef(fwd, is_union);
 	}
 
@@ -9601,7 +9603,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // also register tag in struct_map so "struct tag" works
 	    if ( !alias_dd->is_pointer() )
 		pgm.struct_map[alias_name] = dmi->second;
-	    record_typedef(alias_name, alias_dd, tdt);
+	    record_typedef(alias_name, alias_dd, tdt, tn);
 	    return new TokenTypedefDecl(alias_name, alias_dd);
 	}
 
@@ -10351,7 +10353,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.datatype_map[alias->str] = tdt;
 	    if ( alias_dd == dds )
 		pgm.struct_map[alias->str] = dds;
-	    record_typedef(alias->str, alias_dd, tdt);
+	    record_typedef(alias->str, alias_dd, tdt, alias);
 	    DBG(cout << "TokenSTRUCT::parse() typedef alias " << alias->str << endl);
 	    tn = pgm.nextToken();
 	    if ( !tn )
@@ -10394,7 +10396,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     // body is emitted as a standalone struct SPEC_DECL, so record it here.
     if ( tn && tn->id() == TokenID::tkSemi )
     {
-	record_struct(dds);
+	record_struct(dds, tag);
 	TokenBase *capture_stmt =
 	    materialize_runtime_struct_size_captures(pgm,
 		pgm.compounds.empty() ? NULL : pgm.compounds.top(), dds, tag ? (TokenBase *)tag : (TokenBase *)this);
@@ -11318,7 +11320,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // AST node so the typedef keeps its position. The legacy JIT/MIR
     // paths ignore the node (compile() is a no-op; MIR re-parses tokens).
     auto record_typedef = [&](const std::string &alias, DataDef *dd,
-			      TokenDataType *tdt) -> TokenBase * {
+			      TokenDataType *tdt, TokenBase *otok = nullptr) -> TokenBase * {
 	Program::TopDecl td;
 	td.kind = Program::DeclKind::dkTypedef;
 	td.name = alias;
@@ -11326,6 +11328,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	td.tdt = tdt;
 	td.file = TokenBase::_parse_file;
 	td.line = TokenBase::_parse_line;
+	td.origin = otok;
 	pgm.top_decls.push_back(td);
 	pgm.user_typedef_names.insert(alias);
 	return new TokenTypedefDecl(alias, dd);
@@ -11454,6 +11457,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 
     // get alias name (may be an identifier or an existing type name being redefined)
     tn = pgm.nextToken();
+    TokenBase *alias_tok = tn;   // per-occurrence alias token (CIR origin)
     std::string alias;
     if ( tn->type() == TokenType::ttIdentifier )
 	alias = ((TokenIdent *)tn)->str;
@@ -11531,7 +11535,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	pgm.nextToken();
 
-    return record_typedef(alias, base_dd, tdt);
+    return record_typedef(alias, base_dd, tdt, alias_tok);
 }
 
 // Parse a function-pointer parameter list. The opening '(' has already been
@@ -14749,6 +14753,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    gtd.dd = var->type;
 	    gtd.file = tb->file;
 	    gtd.line = tb->line;
+	    gtd.origin = tb;
 	    top_decls.push_back(gtd);
 	}
 	bool shared_global_extern_ref =

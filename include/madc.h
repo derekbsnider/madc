@@ -963,7 +963,8 @@ public:
 	Variable *var;		// for global vars: the Variable
 	const char *file;
 	int line;
-	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0) {}
+	TokenBase *origin;	// per-occurrence source token (alias/tag/decl head); NULL → use file/line
+	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr) {}
     };
     std::vector<TopDecl> top_decls;
     // Names registered via a user `typedef` (populated when a typedef is
