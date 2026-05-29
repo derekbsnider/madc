@@ -9428,6 +9428,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	td.file = TokenBase::_parse_file;
 	td.line = TokenBase::_parse_line;
 	pgm.top_decls.push_back(td);
+	pgm.user_typedef_names.insert(alias);
     };
 
     // check for __attribute__((packed)) before or after tag
@@ -10025,7 +10026,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// member, matching c2m's node_t tree. Shared by every declarator
 		// on this line (`sh_int a, b;`).
 		std::string member_typedef_alias;
-		if ( mtype->str != mtype->definition.name && pgm.datatype_map.count(mtype->str) )
+		if ( pgm.user_typedef_names.count(mtype->str) )
 		    member_typedef_alias = mtype->str;
 		// skip const/restrict qualifiers between type and pointer stars
 		// e.g. `char const *p;`
@@ -11321,6 +11322,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	td.file = TokenBase::_parse_file;
 	td.line = TokenBase::_parse_line;
 	pgm.top_decls.push_back(td);
+	pgm.user_typedef_names.insert(alias);
 	return new TokenTypedefDecl(alias, dd);
     };
 
@@ -13892,7 +13894,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // comma list re-enters parseDeclaration with a clone of the same tb, so
     // setting this on each created Variable covers them all.
     std::string decl_typedef_alias;
-    if ( tb->str != tb->definition.name && datatype_map.count(tb->str) )
+    if ( user_typedef_names.count(tb->str) )
 	decl_typedef_alias = tb->str;
     // Function-pointer typedefs (DataDefFPTR) already represent pointers;
     // `DO_FUN *cmd;` and `DO_FUN cmd;` both name a function-pointer variable.

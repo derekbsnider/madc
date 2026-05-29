@@ -297,7 +297,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (ptr_dd && ptr_dd->base_type)
 		base_dd = ptr_dd->base_type;
 
-	node_t tl = type_list(base_dd);
+	// Emit ID("alias") for a non-pointer variable declared via a typedef
+	// (matches c2m). Pointer usages keep the underlying type for now.
+	node_t tl = (!is_ptr && !v->typedef_name.empty())
+			? type_list(base_dd, v->typedef_name)
+			: type_list(base_dd);
 
 	// Storage class qualifiers
 	if (v->flags & vfSTATIC) {
@@ -361,7 +365,13 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 		DataDefPTR *mptr = m_is_ptr ? dynamic_cast<DataDefPTR *>(mbase) : NULL;
 		if (mptr && mptr->base_type) mbase = mptr->base_type;
 
-		node_t mspec = type_list(mbase);
+		// Emit ID("alias") for a non-pointer member declared via a typedef
+		// (matches c2m). Pointer members keep the underlying type for now
+		// (typedef-name + pointer-depth handling is a follow-up).
+		const std::string &mtypedef = sdd->members[i].typedef_name;
+		node_t mspec = (!m_is_ptr && !mtypedef.empty())
+				   ? type_list(mbase, mtypedef)
+				   : type_list(mbase);
 		node_t mshare = node1(N_SHARE, mspec);
 		node_t mid = id(mname.c_str());
 		node_t mdecl_list = list();
@@ -426,7 +436,10 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 					DataDefPTR *mptr = m_is_ptr ? dynamic_cast<DataDefPTR *>(mbase) : NULL;
 					if (mptr && mptr->base_type) mbase = mptr->base_type;
 
-					node_t mspec = type_list(mbase);
+					const std::string &mtypedef = sdd->members[i].typedef_name;
+					node_t mspec = (!m_is_ptr && !mtypedef.empty())
+							   ? type_list(mbase, mtypedef)
+							   : type_list(mbase);
 					node_t mshare = node1(N_SHARE, mspec);
 					node_t mid = id(mname.c_str());
 					node_t mdecl_list = list();

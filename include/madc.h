@@ -966,6 +966,12 @@ public:
 	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0) {}
     };
     std::vector<TopDecl> top_decls;
+    // Names registered via a user `typedef` (populated when a typedef is
+    // recorded). Used to decide when a type was written with a typedef
+    // alias so CIR emits ID("alias"); distinguishes user typedefs from
+    // builtin type keywords (whose token str can differ from the DataDef
+    // name, e.g. `int` -> "int32_t", making a name compare unreliable).
+    std::set<std::string> user_typedef_names;
     std::stack<TokenCpnd *> compounds;	// stack to manage nested brackets
     std::stack<l_shortcut_t> loopstack;	// stack to manage break/continue for loops
     std::stack<l_shortcut_t> ifstack;	// stack to manage short circuit boolean for if/else
