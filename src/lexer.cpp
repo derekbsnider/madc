@@ -3173,7 +3173,7 @@ TokenBase *Program::_getToken()
 			    }
 			    else
 			    {
-				source.pushback(std::string(" ") + w);
+				source.pushback_reread(std::string(" ") + w);
 				break;
 			    }
 			}
@@ -3181,7 +3181,7 @@ TokenBase *Program::_getToken()
 			{
 			    // Not a type specifier — push it back
 			    if ( !w.empty() )
-				source.pushback(std::string(" ") + w);
+				source.pushback_reread(std::string(" ") + w);
 			    break;
 			}
 		    }
@@ -3264,7 +3264,7 @@ TokenBase *Program::_getToken()
 			    // Unrecognized combination — push back consumed words
 			    // in reverse and fall through to identifier/keyword lookup.
 			    for ( auto it = consumed.rbegin(); it != consumed.rend(); ++it )
-				source.pushback(std::string(" ") + *it);
+				source.pushback_reread(std::string(" ") + *it);
 			    break;
 		    }
 		}

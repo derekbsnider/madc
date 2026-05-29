@@ -592,6 +592,8 @@ protected:
     {
 	size_t remaining;
 	std::string disabled_macro;
+	bool recount = true;   // false: text was already read once; re-reading
+			       // it must not re-advance the column counter
     };
     std::stringstream _ss;
     std::string _pushback;		// pushback buffer for #define substitution
@@ -599,13 +601,15 @@ protected:
     int _lf, _cr, _column;
     std::streampos _pos;
     std::string _fname;
-    void add_pushback_frame(const std::string &s, const std::string &disabled_macro)
+    void add_pushback_frame(const std::string &s, const std::string &disabled_macro,
+			    bool recount = true)
     {
 	if ( s.empty() )
 	    return;
 	PushbackFrame frame;
 	frame.remaining = s.size();
 	frame.disabled_macro = disabled_macro;
+	frame.recount = recount;
 	_pushback_frames.push_front(frame);
     }
 public:
@@ -616,6 +620,11 @@ public:
     void copybuf(std::streambuf *sb)  { _ss << sb;  }
     void str(const std::string &s) { _ss.str(s); }
     void pushback(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, ""); }
+    // Push back text that was ALREADY read (lexer lookahead/backtrack). Those
+    // source characters were already counted on the first read, so re-reading
+    // them must not re-advance the column counter (contrast pushback(), used
+    // for synthesized text like macro expansions, which does count).
+    void pushback_reread(const std::string &s) { _pushback = s + _pushback; add_pushback_frame(s, "", false); }
     void pushback_macro(const std::string &s, const std::string &disabled_macro)
     {
 	_pushback = s + _pushback;
@@ -638,14 +647,17 @@ public:
 	{
 	    int ch = (unsigned char)_pushback[0];
 	    _pushback.erase(0, 1);
+	    bool recount = true;
 	    if ( !_pushback_frames.empty() )
 	    {
+		recount = _pushback_frames.front().recount;
 		if ( _pushback_frames.front().remaining > 0 )
 		    --_pushback_frames.front().remaining;
 		if ( _pushback_frames.front().remaining == 0 )
 		    _pushback_frames.pop_front();
 	    }
-	    ++_column;
+	    if ( recount )
+		++_column;
 	    return ch;
 	}
 	int ch = _ss.get();
