@@ -310,9 +310,31 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname)
 
 node_t CirBuilder::init_value(TokenBase *elem)
 {
-	if (!elem) return ignore();
+	// A NULL element is a designated-initializer GAP: the parser normalizes
+	// `.field`/`[index]` designators into positional slots at parse time
+	// (parser.cpp: assign_initializer_range / field_index resolution),
+	// NULL-filling the slots between explicit values. C semantics zero-fill
+	// those gaps. We emit a dense `I 0` rather than N_IGNORE because c2mir
+	// rejects N_IGNORE as an initializer value (it crashes in
+	// c2mir_compile_tree). This keeps the init list positional+dense, which
+	// is semantically identical to C99 sparse designated init.
+	// LIMITATION: a gap whose element type is an aggregate (struct/array)
+	// would need a nested zero-init list, not a scalar 0; that case is not
+	// yet produced by the parser's normalization for the supported tests.
+	if (!elem) return integer(0);
 	TokenStructLit *sl = dynamic_cast<TokenStructLit *>(elem);
 	if (sl) {
+		// DEFERRED (CirBuilder-only): an empty brace `{}` produces an empty
+		// LIST() value here. For a flexible-array member (`int z[]; ... .z={}`)
+		// c2m's text front-end emits INIT(LIST(FIELD_ID(z)), LIST()) — the
+		// FIELD_ID designator tells the checker the target is the flex array,
+		// so the empty LIST is accepted. Our positional normalization drops
+		// the designator, so the empty LIST lands as a scalar/flex slot value
+		// and c2mir rejects it ("empty scalar initializer"). This affects only
+		// the --backend=cir path; the default --backend=mir (madc_emit_c text)
+		// path handles tests/testflexarrayemptyinit.mad correctly, so that test
+		// is NOT mir_skip'd. Fixing this requires CirBuilder to retain/re-derive
+		// designator info for flexible-array empty inits.
 		node_t inner = list();
 		for (size_t i = 0; i < sl->inits.size(); i++)
 			append(inner, node2(N_INIT, list(), init_value(sl->inits[i])));

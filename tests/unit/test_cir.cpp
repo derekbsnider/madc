@@ -477,6 +477,20 @@ TEST_CASE("CirBuilder: nested brace initializers") {
         "struct P { int x, y; };\n"
         "int main() { struct P a[2] = {{1,2},{3,4}}; return a[1].x + a[0].y; }") == 5);
 }
+TEST_CASE("CirBuilder: designated initializers") {
+    // The madc parser normalizes designators into POSITIONAL slots at parse
+    // time (parser.cpp: field name -> field_index, array [i] ->
+    // assign_initializer_range), zero/NULL-filling gaps. CirBuilder therefore
+    // never sees designator metadata and the existing positional INIT emission
+    // is semantically correct without emitting N_FIELD_ID / index const-exprs.
+    // field designators, out of order
+    CHECK(cir_run_builder(
+        "struct P { int x, y; };\n"
+        "int main() { struct P p = { .y = 9, .x = 5 }; return p.x * 10 + p.y; }") == 59);
+    // array index designators with gaps
+    CHECK(cir_run_builder(
+        "int main() { int d[5] = { [2] = 7, [4] = 1 }; return d[2]*10 + d[4] + d[0]; }") == 71);
+}
 TEST_CASE("CirBuilder: multi-dim array read") {
     CHECK(cir_run_builder(
         "int main() { int a[2][3]; a[1][2] = 8; return a[1][2]; }") == 8);
