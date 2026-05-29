@@ -71,6 +71,13 @@ cir_node *CirBuilder::make(c2mir_node_code_t code, TokenBase *origin)
 	return cn;
 }
 
+node_t CirBuilder::error_node(const char *reason, TokenBase *origin)
+{
+	cir_node *cn = make(N_IGNORE, origin);
+	cn->error_msg = arena.intern(reason ? reason : "error");
+	return cn->as_node();
+}
+
 void CirBuilder::set_pos(cir_node *cn, const char *file, int line, int col)
 {
 	c2mir_pos_t pos = { file, line, col };
@@ -793,7 +800,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 	DBG(std::cerr << "cir: unhandled expr type=" << (int)tb->type()
 		      << " id=" << (int)tb->id() << std::endl);
-	return integer(0, tb);
+	// Previously this silently became integer(0) — a wrong translation that
+	// compiled fine but ran incorrectly. Emit an error node instead so the
+	// pre-c2mir gate rejects the tree rather than miscompiling it.
+	char buf[80];
+	snprintf(buf, sizeof(buf), "unhandled expression (token type %d, id %d)",
+		 (int)tb->type(), (int)tb->id());
+	return error_node(buf, tb);
 }
 
 // -----------------------------------------------------------------------
@@ -953,6 +966,12 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	// Compound statement (block)
 	TokenCpnd *tc = dynamic_cast<TokenCpnd *>(tb);
 	if (tc) return translate_block(tc);
+
+	// Empty statement (stray ';'): a no-op — skip it (translate_block drops
+	// NULLs). Handling it here keeps it from reaching the expression-statement
+	// fallthrough and being flagged as an unhandled expression.
+	if (tb->id() == TokenID::tkSemi)
+		return NULL;
 
 	// Expression statement
 	return node2(N_EXPR, list(), translate_expr(tb), tb);
@@ -1291,6 +1310,7 @@ static void cir_dump_node(FILE *f, node_t n, int indent)
 
 	cir_node *cn = CIR_NODE(n);
 	if (cn->typedef_name) fprintf(f, "  [typedef=%s]", cn->typedef_name);
+	if (cn->error_msg) fprintf(f, "  [ERROR: %s]", cn->error_msg);
 	if (cn->src_file()) fprintf(f, "  @%s:%d:%d", cn->src_file(), cn->src_line(), cn->src_column());
 	fputc('\n', f);
 
@@ -1309,3 +1329,32 @@ void cir_dump_nodes(FILE *f, node_t tree)
 	cir_dump_node(f, tree, 0);
 	fprintf(f, "=== END CIR NODE TREE ===\n");
 }
+
+// Recursively count (and optionally report) error/incomplete nodes.
+static int cir_walk_errors(FILE *f, node_t n, bool report)
+{
+	if (!n) return 0;
+	int count = 0;
+	cir_node *cn = CIR_NODE(n);
+	if (cn->error_msg) {
+		count++;
+		if (report && f) {
+			fprintf(f, "cir error: %s", cn->error_msg);
+			if (cn->src_file())
+				fprintf(f, " @%s:%d:%d", cn->src_file(),
+					cn->src_line(), cn->src_column());
+			fputc('\n', f);
+		}
+	}
+	if (n->code > N_ID) {
+		for (int i = 0; ; i++) {
+			node_t op = c2mir_node_op(n, i);
+			if (!op) break;
+			count += cir_walk_errors(f, op, report);
+		}
+	}
+	return count;
+}
+
+bool cir_tree_has_error(node_t tree) { return cir_walk_errors(NULL, tree, false) > 0; }
+int  cir_report_errors(FILE *f, node_t tree) { return cir_walk_errors(f, tree, true); }

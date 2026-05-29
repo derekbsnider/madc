@@ -82,6 +82,12 @@ public:
 	node_t append(node_t parent, node_t child);
 	node_t simple(c2mir_node_code_t code, TokenBase *origin = NULL);
 
+	// Build an error/incomplete node (carries a reason + origin for
+	// diagnostics). The node's code is N_IGNORE so it is harmless if it ever
+	// leaked, but cir_tree_has_error() / the pre-c2mir gate must reject any
+	// tree containing one.
+	node_t error_node(const char *reason, TokenBase *origin = NULL);
+
 	// ---- Type builders ----
 	// Build type specifier LIST. If typedef_alias is non-empty, emit
 	// ID("alias") — c2mir's checker resolves it from the typedef SPEC_DECL.
@@ -120,5 +126,13 @@ public:
 // literal payloads, and the +madc fields (source position, typedef
 // alias). Used by --dump-nodes.
 void cir_dump_nodes(FILE *f, node_t tree);
+
+// Validity gate: true if any node in the tree is an error/incomplete node
+// (error_msg set). A tree with errors must not be handed to c2mir.
+bool cir_tree_has_error(node_t tree);
+
+// Walk the tree and print every error node (@file:line:column + message) to f;
+// returns the number of error nodes found. Used to gate compilation.
+int cir_report_errors(FILE *f, node_t tree);
 
 #endif // __CIR_BUILDER_H

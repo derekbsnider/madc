@@ -55,6 +55,8 @@ struct cir_node {
 	TokenBase   *origin;        // originating madc token (NULL for synthetic)
 	DataDef     *datadef;       // madc type info (NULL if not type-related)
 	const char  *typedef_name;  // source typedef alias (e.g. "EXT_BV"), NULL if none
+	const char  *error_msg;     // non-NULL: error/incomplete node; a tree that
+				    // contains one MUST NOT be handed to c2mir
 	CirSourceLang src_lang;     // which language produced this node
 	uint8_t      _pad[7];       // alignment padding
 

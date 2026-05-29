@@ -1656,6 +1656,17 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	fprintf(stderr, "=== END CIR TREE ===\n");
     }
 
+    // Validity gate: never hand c2mir a tree containing error/incomplete
+    // nodes (the builder emits them where it can't translate a construct).
+    if (int nerr = cir_report_errors(stderr, tree)) {
+	fprintf(stderr, "madc_cir_execute: %d untranslatable node(s); not compiling\n", nerr);
+	cir_finish(c2m);
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
     int ok = cir_compile(ctx, c2m, tree, source_name);
     if (!ok) {
 	fprintf(stderr, "madc_cir_execute: cir_compile failed\n");
