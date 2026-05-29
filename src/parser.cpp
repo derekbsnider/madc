@@ -5230,6 +5230,21 @@ bool Program::is_dynamic_symbol_allowed(const std::string &name) const
     return false;
 }
 
+// Some libc symbols resolved via dlsym fallback return a pointer, not an
+// int. Declaring them as dtINT64 leaves CIR emitting `long f()` and then
+// assigning the result to a pointer (a spurious int-to-pointer warning,
+// and a real truncation risk on any 32-bit-int return path). Map the
+// known string-returning ones to dtCHARptr so the prototype is accurate.
+static DataType dynamic_symbol_fallback_return_type(const std::string &name)
+{
+    static const std::set<std::string> cstr_returners = {
+	"asctime", "ctime"
+    };
+    if ( cstr_returners.count(name) )
+	return DataType::dtCHARptr;
+    return DataType::dtINT64;
+}
+
 Variable *Program::runtime_eval_scope_target(Variable *var) const
 {
     if ( !var )
@@ -6635,7 +6650,9 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     {
 	void *sym = dlsym(RTLD_DEFAULT, aname.c_str());
 	if ( sym )
-	    avar = addFunction(aname, datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
+	    avar = addFunction(aname,
+		datatype_vec_t{dynamic_symbol_fallback_return_type(aname)},
+		(fVOIDFUNC)sym);
     }
     if ( !avar )
 	Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
@@ -9021,7 +9038,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( sym )
 			{
 			    var = addFunction(fname,
-				datatype_vec_t{DataType::dtINT64},
+				datatype_vec_t{dynamic_symbol_fallback_return_type(fname)},
 				(fVOIDFUNC)sym);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
