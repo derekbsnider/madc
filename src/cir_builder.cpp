@@ -1046,8 +1046,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb);
 		if (tsub) {
-			node_t n = node2(N_IND,
-				id(tsub->object.name.c_str(), tb),
+			// A subscript on a lifted string literal (`"X"[0]`) keeps the
+			// synthetic `__literal__X` variable as its object. Emit the string
+			// literal itself, not a reference to an undefined symbol.
+			node_t base;
+			if (tsub->object.name.compare(0, 11, "__literal__") == 0) {
+				const std::string &content = tsub->object.name.substr(11);
+				base = str(content.c_str(), content.size() + 1, tb);
+			} else {
+				base = id(tsub->object.name.c_str(), tb);
+			}
+			node_t n = node2(N_IND, base,
 				translate_expr(tsub->index), tb);
 			// Multi-dim fixed array: a[i][j] -> IND(IND(a,i),j)
 			for (size_t k = 0; k < tsub->extra_indices.size(); k++)
