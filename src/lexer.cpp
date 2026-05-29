@@ -24,7 +24,6 @@
 #include <stack>
 #include <functional>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
-#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
@@ -36,7 +35,6 @@ struct PrecompiledHeader { const uint8_t *data; size_t size; };
 extern const PrecompiledHeader *find_precompiled_header(const std::string &name);
 
 using namespace std;
-using namespace asmjit;
 
 static DataDef *get_complex_compat_type(DataDef *base_type)
 {

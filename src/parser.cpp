@@ -30,14 +30,12 @@
 #include <stack>
 #include "libmadc/program.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
-#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
-using namespace asmjit;
 
 // Static parse position — inherited by all new tokens automatically
 const char *TokenBase::_parse_file = NULL;
@@ -5834,7 +5832,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     }
     DBG(std::cout << endl);
 
-    func->funcnode = NULL;
     Method *method;
 
     if ( isMethod )

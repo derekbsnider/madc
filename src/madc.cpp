@@ -19,7 +19,6 @@
 #include <vector>
 #include <queue>
 #include <stack>
-#include <asmjit/x86.h>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 #include "datadef.h"
 #include "tokens.h"
@@ -63,72 +62,6 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 	write(2, addrbuf, n);
     }
     write(2, "\n", 1);
-
-    // JIT crash → source-line lookup. The faulting RIP usually lands
-    // inside JIT'd code, but for crashes that bottom out in libc
-    // (memcpy with NULL dst, strlen on bad pointer, etc.) RIP is in
-    // glibc — walk the backtrace and report the first frame whose
-    // address falls in the JIT'd region.
-    if ( g_active_program
-      && !g_active_program->jit_source_map.empty()
-      && g_active_program->root_fn )
-    {
-	const std::vector<Program::JitSourceEntry> &jit_map = g_active_program->jit_source_map;
-	size_t jit_map_size = jit_map.size();
-	uintptr_t base = (uintptr_t)g_active_program->root_fn;
-	uintptr_t end  = base + g_active_program->code.codeSize();
-	auto print_at = [&](uintptr_t pc, const char *header) {
-	    if ( pc < base || pc >= end ) return false;
-	    uint32_t offset = (uint32_t)(pc - base);
-	    size_t lo = 0, hi = jit_map_size, best = SIZE_MAX;
-	    while ( lo < hi )
-	    {
-		size_t mid = lo + (hi - lo) / 2;
-		if ( jit_map[mid].byte_offset <= offset )
-		{ best = mid; lo = mid + 1; }
-		else hi = mid;
-	    }
-	    if ( best == SIZE_MAX ) return false;
-	    const Program::JitSourceEntry &e = jit_map[best];
-	    char buf[512];
-	    int n = snprintf(buf, sizeof(buf),
-		"%s at +0x%x — last anchor +0x%x: %s:%u:%u (%s)\n",
-		header, offset, e.byte_offset,
-		e.file ? e.file : "(null)",
-		(unsigned)e.line, (unsigned)e.col,
-		e.kind ? e.kind : "?");
-	    write(2, buf, n);
-	    if ( best + 1 < jit_map_size )
-	    {
-		const Program::JitSourceEntry &n2 = jit_map[best + 1];
-		int n3 = snprintf(buf, sizeof(buf),
-		    "               next anchor +0x%x: %s:%u:%u (%s)\n",
-		    n2.byte_offset,
-		    n2.file ? n2.file : "(null)",
-		    (unsigned)n2.line, (unsigned)n2.col,
-		    n2.kind ? n2.kind : "?");
-		write(2, buf, n3);
-	    }
-	    return true;
-	};
-	bool found = false;
-	if ( uctx )
-	{
-	    ucontext_t *uc = (ucontext_t *)uctx;
-	    uintptr_t rip = (uintptr_t)uc->uc_mcontext.gregs[REG_RIP];
-	    found = print_at(rip, "JIT'd code");
-	}
-	if ( !found )
-	{
-	    void *frames[64];
-	    int nf = backtrace(frames, 64);
-	    for ( int i = 0; i < nf; ++i )
-	    {
-		if ( print_at((uintptr_t)frames[i], "JIT frame on stack") )
-		    break;
-	    }
-	}
-    }
 
     const char *btheader = "Backtrace:\n";
     write(2, btheader, strlen(btheader));
@@ -408,7 +341,6 @@ int main(int argc, char **argv)
     const char *emit_executable_path = NULL;
     const char *emit_function_name = NULL;
     bool emit_pch = false;
-    bool use_cir_backend = true;  // CIR (madc parse → cir_node → c2mir) is the default backend
     bool dump_cir = false;        // --dump-cir: dump CIR tree before checking
     bool dump_nodes = false;      // --dump-nodes: dump cir_node tree via madc walker
     bool dump_source = false;     // --dump-source: full-fidelity source reconstruction (trivia round-trip)
@@ -458,34 +390,33 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strncmp(argv[i], "--backend=", 10) == 0) {
             const char *backend = argv[i] + 10;
-            if (strcmp(backend, "cir") == 0)
-                use_cir_backend = true;
-            else if (strcmp(backend, "mir") == 0) {
+            // CIR (madc parse → cir_node → c2mir → MIR) is the sole backend.
+            // The asmjit JIT codegen path has been removed entirely.
+            if (strcmp(backend, "cir") == 0) {
+            } else if (strcmp(backend, "mir") == 0) {
                 // The standalone Gecko+MIR transpiler was removed; the CIR
-                // backend (now default) produces MIR via c2mir. Accept as a
-                // deprecated synonym for cir.
+                // backend produces MIR via c2mir. Accept as a synonym.
                 std::cerr << "note: --backend=mir is deprecated; using the CIR backend "
                              "(which produces MIR via c2mir)" << std::endl;
-                use_cir_backend = true;
-            } else if (strcmp(backend, "jit") == 0 || strcmp(backend, "asmjit") == 0)
-                use_cir_backend = false;
-            else {
+            } else if (strcmp(backend, "jit") == 0 || strcmp(backend, "asmjit") == 0) {
+                std::cerr << "the asmjit JIT backend has been removed; the CIR "
+                             "backend (madc parse → c2mir → MIR) is the only backend"
+                          << std::endl;
+                return 1;
+            } else {
                 std::cerr << "Unknown backend: " << backend
-                          << " (use 'cir', 'jit', or 'asmjit')" << std::endl;
+                          << " (only 'cir' is supported)" << std::endl;
                 return 1;
             }
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir") == 0) {
             dump_cir = true;
-            use_cir_backend = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-nodes") == 0) {
             dump_nodes = true;
-            use_cir_backend = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir-checked") == 0) {
             dump_checked = true;
-            use_cir_backend = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-source") == 0) {
             dump_source = true;
@@ -520,9 +451,10 @@ int main(int argc, char **argv)
     if ( emit_object_path || emit_executable_path )
 	prog->aot_tracking = true;
 
-    if (use_cir_backend && (emit_object_path || emit_executable_path)) {
-	std::cerr << "the CIR backend does not support --emit-object or "
-	          << "--emit-executable; use --backend=jit for AOT output" << std::endl;
+    if (emit_object_path || emit_executable_path) {
+	std::cerr << "AOT object/executable output is not available on the CIR "
+	             "backend; emit C with --emit-c and compile with gcc/clang"
+	          << std::endl;
 	return 1;
     }
 
@@ -598,60 +530,23 @@ int main(int argc, char **argv)
 	    return 0;
 	}
 
-	if ( use_cir_backend )
-	{
-	    // CIR pipeline: madc parse → CIR translate → c2mir compile → MIR execute
-	    if ( !prog->parse(tp) )
-		return 1;
-
-	    struct timeval before, after;
-	    gettimeofday(&before, NULL);
-	    int result = madc_cir_execute(prog.get(), argv[filearg],
-					  argc - filearg, argv + filearg,
-					  dump_cir, dump_nodes, dump_checked);
-	    gettimeofday(&after, NULL);
-	    DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
-	    return (result < 0) ? 1 : 0;
-	}
-
-	// asmjit JIT pipeline (--backend=jit)
+	// CIR pipeline: madc parse → CIR translate → c2mir compile → MIR execute.
+	// This is the sole backend; the asmjit JIT codegen path was removed.
 	if ( !prog->parse(tp) )
-	    return 0;
-	if ( !prog->compile() )
-	    return 0;
+	    return 1;
 
-	if ( emit_object_path )
-	{
-	    if ( prog->save_object(emit_object_path) )
-		cerr << "wrote " << emit_object_path << endl;
-	    else
-		cerr << "failed to write " << emit_object_path << endl;
-	    return 0;
-	}
-
-	if ( emit_executable_path )
-	{
-	    if ( prog->save_executable(emit_executable_path) )
-		cerr << "wrote " << emit_executable_path << endl;
-	    else
-		cerr << "failed to write " << emit_executable_path << endl;
-	    return 0;
-	}
-
-	// set script argc/argv after tokenize/parse/compile (tokenizer_init resets members)
 	prog->script_argc = argc - filearg;
 	prog->script_argv = argv + filearg;
 	g_active_program = prog.get();
 
 	struct timeval before, after;
-
 	gettimeofday(&before, NULL);
-	prog->execute();
+	int result = madc_cir_execute(prog.get(), argv[filearg],
+				      argc - filearg, argv + filearg,
+				      dump_cir, dump_nodes, dump_checked);
 	gettimeofday(&after, NULL);
-
-	DBG(std::cout << "Elapsed time: " << time_diff(before, after) << std::endl);
-
-	return 0;
+	DBG(std::cout << "CIR elapsed time: " << time_diff(before, after) << std::endl);
+	return (result < 0) ? 1 : 0;
     }
     std::cout << "Usage: madc [-v|--verbose] [--finstrument-functions] [-fno-builtin-name] <file.mad>" << std::endl;
 

@@ -20,7 +20,6 @@ thread_local bool madc_verbose = false;
 #include <syslog.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <asmjit/x86.h>
 
 #include "datadef.h"
 #include "tokens.h"

@@ -12,7 +12,7 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o typesafe.o compiler.o compiler_builtins.o compiler_control_flow.o compiler_operators.o madc_ir.o madc_elf.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o va_helpers.o exception_runtime.o pch.o embedded_headers.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o madc.o
+CORE_OFILES = lexer.o parser.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o va_helpers.o exception_runtime.o pch.o embedded_headers.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o madc_stream_runtime.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
@@ -30,7 +30,7 @@ HAVE_MADCDAT ?= 1
 MIRDIR	= /workspace/mir
 DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
 #LIBS	= -lreadline -lasmjit
-LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
+LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 MIRLIB	= $(MIRDIR)/libmir.a
 DEPENDS	= $(patsubst %,$(INCDIR)/%,$(HFILES)) $(LIBMADDHDRS) $(MADDATHDRS)
 
@@ -134,11 +134,20 @@ gcctest: ../bin/madc
 gcctest-smoke: ../bin/madc
 	@cd .. && scripts/run_gcc_testsuite.py --limit 25
 
+# Runtime helpers (__madc_* in va_helpers, the file-stream wrappers, the
+# exception runtime, namespace builtins, etc.) are resolved at runtime by
+# the CIR/MIR backend via dlsym(RTLD_DEFAULT) and consulted at parse time
+# the same way. Nothing references them at link time, so plain archive
+# semantics would drop those objects. Force the whole libmadc archive in
+# (with -rdynamic) so every runtime symbol is present in the dynamic table.
+WHOLE_ARCHIVE_BEGIN = -Wl,--whole-archive
+WHOLE_ARCHIVE_END   = -Wl,--no-whole-archive
+
 $(BINDIR)/%: $(TESTDIR)/%.cpp $(DEPENDS) $(LIBMADC_STATIC) $(MIRLIB)
-	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(LIBMADC_STATIC) $(MIRLIB) $(LIBS)
+	$(CXX) -o $@ $(CXXFLAGS) $(DEFINES) $< $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(LIBS)
 
 ../bin/madc: $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB)
-	$(CXX) -o $@ $(OBJDIR)/madc.o $(LIBMADC_STATIC) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
+	$(CXX) -o $@ $(OBJDIR)/madc.o $(WHOLE_ARCHIVE_BEGIN) $(LIBMADC_STATIC) $(WHOLE_ARCHIVE_END) $(MIRLIB) $(CXXFLAGS) $(DEFINES) $(LIBS)
 
 $(LIBMADC_STATIC): $(LIBMADC_STATIC_OBJS)
 	mkdir -p $(LIBDIR)

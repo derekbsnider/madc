@@ -20,14 +20,12 @@
 #include <queue>
 #include <stack>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
-#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
-using namespace asmjit;
 
 // ---- Base64 tables ----
 

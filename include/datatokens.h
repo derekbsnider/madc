@@ -220,10 +220,6 @@ public:
     virtual bool is_constant() const { return var.is_constant(); }
     virtual bool is_real() const { return _datatype->is_real(); }
     virtual void set(int64_t c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
-    virtual void putreg(Program &);
-//  virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::Operand &operand(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 #endif // __TOKENDATA_H

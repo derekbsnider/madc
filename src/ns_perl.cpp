@@ -21,14 +21,12 @@
 #include <glob.h>
 #include <regex>
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
-#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
-using namespace asmjit;
 
 // ---- C++ wrapper functions called by JIT ----
 

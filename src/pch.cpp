@@ -22,7 +22,6 @@
 #include <sstream>
 
 #include <zlib.h>
-#include <asmjit/x86.h>
 
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)

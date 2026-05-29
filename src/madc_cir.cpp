@@ -21,7 +21,6 @@
 #include <stdlib.h>
 #include <dlfcn.h>
 
-#include <asmjit/x86.h>
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
