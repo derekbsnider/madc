@@ -283,6 +283,8 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 // Declaration builders
 // -----------------------------------------------------------------------
 
+static int dd_ptr_depth(DataDef *dd);  // defined below; counts int** -> 2
+
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname)
 {
 	DataDef *base_dd = ptype;
@@ -294,8 +296,12 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname)
 	node_t pspec = type_list(base_dd);
 	node_t pid = id(pname);
 	node_t pdecl_list = list();
-	if (is_ptr)
-		append(pdecl_list, pointer());
+	if (is_ptr) {
+		// One '*' per indirection level (int** param -> 2).
+		int depth = dd_ptr_depth(ptype);
+		for (int s = 0; s < depth; s++)
+			append(pdecl_list, pointer());
+	}
 	node_t pdecl = node2(N_DECL, pid, pdecl_list);
 
 	node_t spec_decl = simple(N_SPEC_DECL);
@@ -506,8 +512,6 @@ node_t CirBuilder::init_value(TokenBase *elem)
 	}
 	return translate_expr(elem);
 }
-
-static int dd_ptr_depth(DataDef *dd);  // defined below; counts int** -> 2
 
 node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
