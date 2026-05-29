@@ -748,6 +748,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttCallFunc) {
 		TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tb);
 		if (tcf) {
+			referenced_funcs.insert(tcf->var.name);
 			node_t func_id = id(tcf->var.name.c_str(), tb);
 			node_t args = list();
 			for (size_t i = 0; i < tcf->parameters.size(); i++)
@@ -1114,15 +1115,27 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	}
 
-	// Pass 0.75: Extern function prototypes
+	// Collect user function names.
 	std::set<std::string> user_func_names;
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
 
+	// Translate function bodies first, into a temp list, so referenced_funcs
+	// (populated as N_CALL nodes are built) is complete before the prototype
+	// pass — letting us emit extern protos for ONLY referenced functions.
+	std::vector<node_t> func_def_nodes;
+	for (TokenFunc *tf : funcs) {
+		node_t fd = func_def(tf);
+		if (fd) func_def_nodes.push_back(fd);
+	}
+
+	// Pass 0.75: Extern function prototypes — referenced-only (matches c2m,
+	// which only declares what #include pulled in).
 	for (auto &kv : prog->funcdef_map) {
 		const std::string &fname = kv.first;
 		FuncDef *fd = kv.second;
 		if (!fd || user_func_names.count(fname)) continue;
+		if (!referenced_funcs.count(fname)) continue;
 
 		DataDef *ret_dd = &fd->returns;
 		bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
@@ -1186,11 +1199,9 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (proto) append(top_list, proto);
 	}
 
-	// Pass 2: Function definitions
-	for (TokenFunc *tf : funcs) {
-		node_t fd = func_def(tf);
-		if (fd) append(top_list, fd);
-	}
+	// Pass 2: Function definitions (translated above).
+	for (node_t fd : func_def_nodes)
+		append(top_list, fd);
 
 	append(module, top_list);
 	return module;

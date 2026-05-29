@@ -32,6 +32,10 @@ class FuncDef;
 class CirBuilder {
 	c2m_ctx_t c2m;
 	CirArena arena;
+	// Function names referenced (called) while translating bodies. Used by
+	// translate_module to emit extern prototypes only for funcs the source
+	// actually uses (matches c2m's #include-driven scope).
+	std::set<std::string> referenced_funcs;
 
 	// Internal: allocate and initialize a cir_node
 	cir_node *make(c2mir_node_code_t code, TokenBase *origin = NULL);
