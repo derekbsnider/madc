@@ -1075,7 +1075,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			else
 				obj = id(tm->object.name.c_str(), tb);
 			node_t member = id(tm->var.name.c_str(), tb);
-			c2mir_node_code_t code = tm->object.type->is_pointer() ? N_DEREF_FIELD : N_FIELD;
+			// `.` requires a struct lvalue; `->` requires a pointer. The
+			// object's declared type drives this: a pointer-typed object uses
+			// `->` (the parser already marks pointer-arithmetic parents like
+			// `(arr+1)` as pointer-typed objects). A *bare* array object
+			// (`(Upgrade_items)->m`) decays to a pointer and also needs `->`,
+			// UNLESS the access subscripted into the array first (`rt[0].m`),
+			// in which case the parent expression yields a struct element and
+			// needs `.`.
+			bool obj_is_array = !tm->object.dims.empty()
+				|| dynamic_cast<DataDefCArray *>(tm->object.type) != NULL;
+			bool parent_is_subscript = tm->parent_expr
+				&& (dynamic_cast<TokenSubscript *>(tm->parent_expr)
+				 || dynamic_cast<TokenSubscriptExpr *>(tm->parent_expr));
+			bool ptr_like = tm->object.type->is_pointer()
+				|| (obj_is_array && !parent_is_subscript);
+			c2mir_node_code_t code = ptr_like ? N_DEREF_FIELD : N_FIELD;
 			return node2(code, obj, member, tb);
 		}
 	}
