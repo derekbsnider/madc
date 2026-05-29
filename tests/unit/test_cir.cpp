@@ -611,6 +611,20 @@ TEST_CASE("CirBuilder: ostream chains and types") {
     CHECK(cir_capture(std::string(P) + "int main() { cout << \"a\"; cerr << \"b\"; return 0; }") == "a");
 }
 
+TEST_CASE("CirBuilder: cout endl") {
+    const char *P = "#include <iostream>\nusing namespace std;\n";
+    // endl as the trailing manipulator of a chain: the idiomatic form used by
+    // essentially every cout integration test (`cout << ... << endl;`).
+    CHECK(cir_capture(std::string(P) + "int main() { cout << 5 << endl; return 0; }") == "5\n");
+    CHECK(cir_capture(std::string(P) + "int main() { cout << \"hi\" << endl; cout << 7; return 0; }") == "hi\n7");
+    // LIMITATION: a value AFTER endl in the SAME chain (`cout << x << endl << y`)
+    // is not supported on the CIR path. The legacy parser resolves std::endl as
+    // the callable __std_endl, so when endl is followed by `<< y` it is parsed
+    // as a call `endl()` and the chain is re-associated with cout dropped from
+    // the root. Trailing endl (the idiomatic form) is unaffected. Fixing the
+    // mid-chain form is a parser concern, not CIR lowering, and is out of scope.
+}
+
 TEST_CASE("CirBuilder: ostream parenthesized shift value") {
     const char *P = "#include <iostream>\nusing namespace std;\n";
     // (1 << 2) is ONE value (a shift result), not two chain links.

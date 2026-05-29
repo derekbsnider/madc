@@ -448,6 +448,21 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 
 	node_t result = node1(N_ADDR, id(stream_object_symbol(k)));
 	for (size_t i = 0; i < vals.size(); i++) {
+		// endl manipulator: _ZNSolsEPFRSoS_E(os, &endl)
+		std::string vn;
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(vals[i])) vn = tv->var.name;
+		else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(vals[i])) vn = ti->str;
+		if (vn == "endl") {
+			const char *MANIP = "_ZNSolsEPFRSoS_E";
+			const char *ENDLF = "_ZSt4endlIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_";
+			need_output_extern(MANIP, true, { { {N_VOID}, true }, { {N_VOID}, true } });
+			need_output_extern(ENDLF, true, { { {N_VOID}, true } }); // fn; address taken
+			node_t args = list();
+			append(args, result);
+			append(args, node1(N_ADDR, id(ENDLF)));
+			result = node2(N_CALL, id(MANIP), args, top);
+			continue;
+		}
 		DataDef *vdd = vals[i]->datadef();
 		ExternParam vp;
 		const char *sym = ostream_insert_symbol(vdd, vp);
