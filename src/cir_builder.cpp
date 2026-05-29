@@ -569,12 +569,35 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (ptr_dd && ptr_dd->base_type)
 		base_dd = ptr_dd->base_type;
 
+	// A variable whose type is an anonymous aggregate (`struct { ... } x;`)
+	// has no tag to forward-reference, so the body must be emitted inline in
+	// the variable's own spec: LIST(STRUCT(IGNORE, members)). Without this the
+	// builder emits `struct anonymous` (a forward ref to a never-defined tag),
+	// leaving the variable with an incomplete type. member_node carries the
+	// member array dims via the owning struct.
+	DataDefSTRUCT *anon_sdd = NULL;
+	if (v->typedef_name.empty() && !is_ptr && base_dd && base_dd->is_struct()
+	    && !base_dd->is_complex()) {
+		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
+		if (sdd && sdd->name == "anonymous" && !sdd->members.empty())
+			anon_sdd = sdd;
+	}
+
 	// Emit ID("alias") for a variable declared via a typedef (matches c2m).
 	// Pointer usages keep the alias as the type spec and carry the explicit
 	// stars on the declarator below.
-	node_t tl = !v->typedef_name.empty()
-			? type_list(v->type, v->typedef_name)
-			: type_list(base_dd);
+	node_t tl;
+	if (anon_sdd) {
+		node_t ml = list();
+		for (size_t i = 0; i < anon_sdd->members.size(); i++)
+			append(ml, member_node(anon_sdd->members[i], anon_sdd));
+		tl = node1(N_LIST, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
+					 ignore(), ml));
+	} else {
+		tl = !v->typedef_name.empty()
+				? type_list(v->type, v->typedef_name)
+				: type_list(base_dd);
+	}
 
 	// Storage class qualifiers
 	if (v->flags & vfSTATIC) {
