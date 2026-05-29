@@ -28,7 +28,7 @@ file indexes them explicitly in the "Rules" section below.
 
 ## Project summary
 
-**madc** — "My Assembled Dialect of C" — is a C-like scripting
+**madc** — "My Advanced Dialect of C" — is a C-like scripting
 language. madc parses source into a `cir_node` tree — a
 c2mir-friendly C11 AST that serves as madc's IR — which c2mir then
 compiles to MIR for execution. (The original asmjit x86-64 JIT and the
@@ -179,7 +179,7 @@ playbook.
 
 - `claude_status.json` is the canonical current snapshot.
 - `madc-knowledge` is the authoritative project-memory source.
-- `claude_status.json`, `TODO.md`, and `CHANGELOG.md` are mirrored
+- `claude_status.json`, `docs/plans/ROADMAP.md`, and `CHANGELOG.md` are mirrored
   repo surfaces that must stay in sync with it.
 - `docs/test-status.md` is the detailed test baseline.
 - Live git state and actual build/test results remain operational truth
