@@ -298,8 +298,17 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		// [0]=labels [1]=init [2]=cond [3]=incr [4]=body (each may be N_IGNORE)
 		emit_labels(f, op(n, 0), lang);
 		fputs("for (", f);
-		if (op(n, 1) && op(n, 1)->code != N_IGNORE) emit(f, op(n, 1), lang);
-		fputs("; ", f);
+		{
+			node_t finit = op(n, 1);
+			bool init_present = finit && finit->code != N_IGNORE;
+			if (init_present) emit(f, finit, lang);
+			// A declaration init (N_SPEC_DECL) renders its own trailing ';';
+			// don't emit a second separator. An expression / empty init needs
+			// the explicit separator.
+			if (!(init_present && finit->code == N_SPEC_DECL))
+				fputc(';', f);
+			fputc(' ', f);
+		}
 		if (op(n, 2) && op(n, 2)->code != N_IGNORE) emit(f, op(n, 2), lang);
 		fputs("; ", f);
 		if (op(n, 3) && op(n, 3)->code != N_IGNORE) emit(f, op(n, 3), lang);

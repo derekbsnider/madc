@@ -1258,7 +1258,17 @@ node_t CirBuilder::translate_while(TokenBase *tw)
 
 node_t CirBuilder::translate_for(TokenFOR *tf)
 {
-	node_t init = tf->initialize ? translate_expr(tf->initialize) : ignore();
+	// A declaration init (`for (int i = 0; ...)`) parses to a TokenDecl, which
+	// translate_expr would mis-handle as a bare variable reference (TokenDecl
+	// IS-A TokenVar) — dropping the declaration and leaving `i` undeclared.
+	// Emit the proper SPEC_DECL so c2mir sees a declaration in the init slot.
+	node_t init;
+	if (tf->initialize) {
+		TokenDecl *td = dynamic_cast<TokenDecl *>(tf->initialize);
+		init = td ? var_decl(&td->var, td) : translate_expr(tf->initialize);
+	} else {
+		init = ignore();
+	}
 	node_t cond = tf->condition ? translate_expr(tf->condition) : ignore();
 	node_t incr = tf->increment ? translate_expr(tf->increment) : ignore();
 	node_t body = translate_stmt_required(tf->statement);
