@@ -226,9 +226,22 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.24.0** (2026-05-28) — **Native C99 `_Complex` in c2mir.** All 12 `_Complex` tests passing, complex constant folding, `__real__`/`__imag__` grammar operators, transpiler cleanup. 419 pass, 0 fail, 56 skip.
+**v0.24.0** (2026-05-28) was the last release cut on the now-removed
+asmjit/Gecko backend (native C99 `_Complex` in c2mir; on that backend, 419 pass
+/ 0 fail / 56 skip).
+
+**Current development** (`feature/cir-node`): Gecko and asmjit have both been
+**removed**; `cir_node` (MC11-IR) → c2mir → MIR is the **sole** backend. Honest
+CIR integration baseline: **227 pass / 193 fail / 56 skip** — the 193 are the
+active coverage worklist. In-process `eval`/exec + the REPL, and native AOT
+output, are deferred (stubbed) until the CIR path reaches parity.
 
 ### Recent Releases
+
+*(Historical — these versions were built on the asmjit/Gecko backend that has
+since been removed. They describe past milestones, not the current backend; see
+"Current development" above.)*
+
 
 - **v0.24.0** — Native C99 `_Complex` in c2mir, transpiler parity 410→419
 - **v0.23.0** — MIR default backend, clang++ compiler, transpiler parity 400→410
@@ -238,6 +251,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 - **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
 
 ## Roadmap
+
+Canonical roadmap: [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md). The phases
+below were achieved on the **old asmjit/Gecko backend** (now removed); the
+current focus is re-establishing them on the `cir_node` → c2mir → MIR path
+(integration baseline 227/193/56).
 
 | Phase | Goal | Status |
 |-------|------|--------|

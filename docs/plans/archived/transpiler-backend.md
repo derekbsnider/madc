@@ -1,3 +1,10 @@
+> **⚠️ ARCHIVED / SUPERSEDED (2026-05-29).** The Gecko parser and the Gecko+MIR
+> C11-text transpiler described here were **removed entirely**. The sole backend
+> is now `madc parser → cir_node (MC11-IR) → c2mir → MIR`. The C11-emission *goal*
+> in this doc lives on as the cir_node→`.c`/`.mc11` renderer (see
+> `docs/rules/mc11-ir.md` and `docs/superpowers/plans/2026-05-28-cir-node-unified-ast.md`).
+> Kept for historical reference only — do NOT implement against it.
+
 # madc Next-Generation Architecture: Gecko + MIR Transpiler
 
 ## Context

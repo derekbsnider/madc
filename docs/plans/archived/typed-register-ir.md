@@ -1,6 +1,12 @@
 # Typed-Register IR Plan
 
-**Status:** Active — Stage 0 (scaffolding) complete, Stage 1 next.
+> **⚠️ ARCHIVED / SUPERSEDED (2026-05-29).** This was an IR layer over **asmjit**,
+> which has been **removed entirely**. The IR is now the `cir_node` tree (MC11-IR,
+> see `docs/rules/mc11-ir.md`), and codegen is c2mir → MIR — there are no asmjit
+> registers to type. Kept for historical reference only — do NOT implement
+> against it.
+
+**Status (historical):** Active — Stage 0 (scaffolding) complete, Stage 1 next.
 **Date:** 2026-05-25 (revised from 2026-04-24 draft)
 **Research:** See `docs/research/jit-ir-design-2026.md` for the full
 cross-reference with V8, HotSpot, LuaJIT, MIR, dstogov/ir, RyuJIT,
