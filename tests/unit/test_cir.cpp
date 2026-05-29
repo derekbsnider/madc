@@ -5,6 +5,8 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
+#include <unistd.h>
 #include <string>
 #include <vector>
 #include <map>
@@ -397,6 +399,68 @@ static int64_t cir_run_builder(const char *source) {
     c2mir_finish(mir_ctx);
     MIR_finish(mir_ctx);
     return result;
+}
+
+// Like cir_run_builder, but captures everything the program writes to stdout
+// (fd 1) during execution and returns it. Covers madc_puti/printf AND std::cout.
+static std::string cir_capture(const char *source) {
+    auto prog = std::make_shared<Program>();
+    TokenProgram *tp = prog->tokenize_buffer(source, "<test>");
+    REQUIRE(tp != nullptr);
+    REQUIRE(prog->parse(tp));
+
+    MIR_context_t mir_ctx = MIR_init();
+    c2mir_init(mir_ctx);
+    c2m_ctx_t c2m = cir_init(mir_ctx);
+    REQUIRE(c2m != nullptr);
+
+    CirBuilder builder(c2m);
+    node_t tree = builder.translate_module(prog.get());
+    REQUIRE(tree != nullptr);
+    REQUIRE(cir_report_errors(stderr, tree) == 0);
+    REQUIRE(cir_compile(mir_ctx, c2m, tree, "test_mod") == 1);
+
+    MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
+    MIR_load_module(mir_ctx, mod);
+    MIR_link(mir_ctx, MIR_set_interp_interface, NULL);
+
+    MIR_item_t func_item = NULL;
+    for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it; it = DLIST_NEXT(MIR_item_t, it))
+        if (it->item_type == MIR_func_item && strcmp(it->u.func->name, "main") == 0)
+            func_item = it;
+    REQUIRE(func_item != nullptr);
+
+    // Redirect fd 1 to a temp file around the interp call.
+    fflush(stdout);
+    int saved = dup(1);
+    char tmpl[] = "/tmp/cir_capXXXXXX";
+    int tfd = mkstemp(tmpl);
+    dup2(tfd, 1);
+
+    MIR_val_t val;
+    MIR_interp(mir_ctx, func_item, &val, 0);
+
+    std::cout.flush();   // flush the libstdc++ std::cout buffer (same object the JIT used)
+    fflush(stdout);
+    dup2(saved, 1);
+    close(saved);
+
+    lseek(tfd, 0, SEEK_SET);
+    std::string out;
+    char buf[512]; ssize_t n;
+    while ((n = read(tfd, buf, sizeof(buf))) > 0) out.append(buf, (size_t)n);
+    close(tfd);
+    unlink(tmpl);
+
+    cir_finish(c2m);
+    c2mir_finish(mir_ctx);
+    MIR_finish(mir_ctx);
+    return out;
+}
+
+TEST_CASE("CirBuilder: capture helper baseline") {
+    // No output yet; just verify the helper runs a program and returns "".
+    CHECK(cir_capture("int main() { return 0; }") == "");
 }
 
 TEST_CASE("CirBuilder: return literal") {
