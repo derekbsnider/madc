@@ -1356,11 +1356,22 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	if (tf->initialize) {
 		TokenDecl *td = dynamic_cast<TokenDecl *>(tf->initialize);
 		init = td ? var_decl(&td->var, td) : translate_expr(tf->initialize);
+		// Comma-separated init clauses (`for (a=0, b=1; ...)`) keep the first
+		// in `initialize` and the rest in init_extras. Fold them into a single
+		// left-associative N_COMMA so all run, in order, in the init slot.
+		if (!td)
+			for (TokenBase *ex : tf->init_extras)
+				init = node2(N_COMMA, init, translate_expr(ex));
 	} else {
 		init = ignore();
 	}
 	node_t cond = tf->condition ? translate_expr(tf->condition) : ignore();
 	node_t incr = tf->increment ? translate_expr(tf->increment) : ignore();
+	// Comma-separated increment clauses (`for (...; ...; i++, j--)`): fold the
+	// extras into the increment via N_COMMA so each runs every iteration.
+	if (tf->increment)
+		for (TokenBase *ex : tf->incr_extras)
+			incr = node2(N_COMMA, incr, translate_expr(ex));
 	node_t body = translate_stmt_required(tf->statement);
 	return node5(N_FOR, list(), init, cond, incr, body, tf);
 }
@@ -1478,7 +1489,20 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 
 	// Declaration
 	{ TokenDecl *td = dynamic_cast<TokenDecl *>((TokenBase *)tb);
-	  if (td) return var_decl(&td->var, td); }
+	  if (td) {
+		// A function-local `extern T name;` that resolves to a file-scope
+		// global yields a TokenDecl whose var IS that global: file scope, so
+		// not vfLOCAL and not vfSTATIC. The parser clears vfEXTERN here, so
+		// var_decl would emit a fresh local definition, shadowing the global
+		// with uninitialized storage. The global is already emitted at top
+		// level and is in scope, so skip the in-function redeclaration.
+		// (A `static` local has vfSTATIC and IS emitted in the body.)
+		bool is_file_scope_global =
+			!(td->var.flags & vfLOCAL) && !(td->var.flags & vfSTATIC);
+		if (is_file_scope_global)
+			return NULL;
+		return var_decl(&td->var, td);
+	  } }
 
 	// Break
 	if (tb->id() == TokenID::tkBREAK)
