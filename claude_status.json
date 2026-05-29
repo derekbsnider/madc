@@ -7,7 +7,7 @@
   "ir": "MC11-IR: the cir_node tree DERIVES FROM c2mir node_t (c2mir consumes the lowered C11 view) AND carries each node's originating lexed tokens + parse subtree + file/line/col (madc retains the high-level view). It is deliberately BOTH. SET IN STONE — see docs/rules/mc11-ir.md and docs/superpowers/plans/2026-05-28-cir-node-unified-ast.md.",
   "test_status": {
     "unit_tests": "green; ~100 eval/exec/compile cases skipped — the libmadc in-process compile/exec/eval surface is stubbed pending reimplementation on CIR->c2mir->MIR",
-    "integration_tests": "238 passed, 182 failed, 56 skipped (CIR sole backend). Up from 227 via fidelity-suite-driven cir_builder fixes (pointer-depth x2, _Complex spec). The 182 are the active CIR coverage worklist (see the cir_fidelity suite + task #22)."
+    "integration_tests": "272 passed, 148 failed, 56 skipped (CIR sole backend). Up from 227 via fidelity-suite-driven cir_builder fixes (pointer-depth, _Complex spec, array-dims, struct bodies, multi-level ptr base, for-init decls, deref-step, etc.). The 148 are the active CIR coverage worklist; remaining hard clusters = fn-pointer vars (need parenthesized declarators), VLA, va_arg, complex-arithmetic (see the cir_fidelity suite + task #22)."
   },
   "phases": {
     "language_core_phase_1_to_6": "complete (achieved on the now-removed asmjit backend; being re-established on CIR)",
