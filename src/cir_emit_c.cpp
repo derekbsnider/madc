@@ -27,6 +27,7 @@ namespace {
 inline node_t op(node_t n, int i) { return c2mir_node_op(n, i); }
 
 void emit(FILE *f, node_t n, CirEmitLang lang);
+void emit_initializer(FILE *f, node_t n, CirEmitLang lang);
 
 // Emit each operand of `n` starting at `from`, separated by `sep`.
 void emit_seq(FILE *f, node_t n, CirEmitLang lang, int from, const char *sep)
@@ -88,6 +89,21 @@ void emit_declarator(FILE *f, node_t decl, CirEmitLang lang)
 			if (!s) break;
 			if (s->code != N_POINTER) emit(f, s, lang);
 		}
+}
+
+// Emit a declaration initializer. A scalar initializer is a bare
+// expression; a brace initializer is an N_LIST of N_INIT entries, which is
+// rendered as `{ e1, e2, ... }`.
+void emit_initializer(FILE *f, node_t n, CirEmitLang lang)
+{
+	if (!n) return;
+	if (n->code == N_LIST) {
+		fputs("{ ", f);
+		emit_seq(f, n, lang, 0, ", ");
+		fputs(" }", f);
+		return;
+	}
+	emit(f, n, lang);
 }
 
 void emit(FILE *f, node_t n, CirEmitLang lang)
@@ -154,7 +170,7 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		emit_declarator(f, op(n, 1), lang);
 		if (op(n, 4) && op(n, 4)->code != N_IGNORE) {
 			fputs(" = ", f);
-			emit(f, op(n, 4), lang);
+			emit_initializer(f, op(n, 4), lang);
 		}
 		fputc(';', f);
 		break;
@@ -356,6 +372,17 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		if (op(n, 2) && op(n, 2)->code != N_IGNORE) emit(f, op(n, 2), lang);
 		fputc(']', f);
 		break;
+	case N_INIT: {
+		// [0] = designator list (often empty), [1] = value (scalar or nested
+		// brace list). Emit designators (=) then the value initializer.
+		node_t desig = op(n, 0);
+		if (desig && op(desig, 0)) {
+			emit_seq(f, desig, lang, 0, " ");
+			fputs(" = ", f);
+		}
+		emit_initializer(f, op(n, 1), lang);
+		break;
+	}
 	case N_CAST:
 		// [0] = N_TYPE (target type), [1] = operand expression
 		fputs("((", f);
