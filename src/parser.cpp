@@ -1534,7 +1534,18 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     std::string tname = contextual_identifier_name(tb);
     datatype_map_iter dmi = pgm.datatype_map.find(tname);
     if ( dmi != pgm.datatype_map.end() )
-	return dmi->second;
+    {
+	// dmi->second is the shared prototype token created at the typedef's
+	// definition, carrying the definition-site position. Return a clone
+	// stamped with this use-site token's position, so a typedef'd-type
+	// usage (and any diagnostic or CIR node derived from it) maps to the
+	// use site rather than the typedef definition.
+	TokenDataType *use = (TokenDataType *)dmi->second->clone();
+	use->file   = tb->file;
+	use->line   = tb->line;
+	use->column = tb->column;
+	return use;
+    }
 
     if ( TokenDataType *ns_type = resolve_namespaced_type_token(pgm, tb, consume_ns_tokens) )
 	return ns_type;
@@ -1546,6 +1557,21 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     if ( !dd )
 	return NULL;
     return new TokenDataType(dd->name.c_str(), *dd);
+}
+
+// A type-name usage must carry its own source position, not the position of
+// the shared prototype TokenDataType held in datatype_map (which is stamped at
+// the typedef's definition site). Return a clone of `proto` positioned at the
+// use-site token `at`, so declarations and diagnostics map to the usage.
+static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at)
+{
+    if ( !proto || !at )
+	return proto;
+    TokenDataType *t = (TokenDataType *)proto->clone();
+    t->file = at->file;
+    t->line = at->line;
+    t->column = at->column;
+    return t;
 }
 
 static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
@@ -15385,7 +15411,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		else
 		{
 		    DBG(std::cout << "parseStatement() identifier is a registered type, calling parseDeclaration" << std::endl);
-		    return parseDeclaration(dmi->second);
+		    return parseDeclaration(use_site_type_token(dmi->second, tb));
 		}
 	    }
 	    // namespace resolution: set current namespace and re-enter parseStatement
