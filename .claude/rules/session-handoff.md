@@ -2,7 +2,7 @@
 
 - Start each session by reading `AGENTS.md`, `docs/agent-handoff.md`,
   querying `madc-knowledge`, then reading the mirrored repo files:
-  `claude_status.json`, `TODO.md`, and the top of `CHANGELOG.md`.
+  `claude_status.json`, `docs/plans/ROADMAP.md`, and the top of `CHANGELOG.md`.
 - Form a concrete hypothesis and plan before editing; avoid repeated
   speculative micro-attempts when one reasoned pass is available.
 - Treat `madc-knowledge` as authoritative for project memory; treat the

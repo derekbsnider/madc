@@ -2,17 +2,28 @@
 
 ## [Unreleased]
 
-### libc2mir CIR (feature/libc2mir branch)
+### CIR is now the sole backend; asmjit and Gecko removed (feature/cir-node)
 
-- **CIR translation layer: 33 unit tests, 469 assertions.** Direct
-  AST→c2mir path bypassing Gecko and C11 text emission.
-- **`--backend=cir` and `--dump-cir` CLI flags.**
-- **SMAUG mini test working.** malloc/free/printf/structs/pointers
-  all running through CIR path.
-- **Extern function prototypes** with variadic support.
-- **Full C89 construct coverage:** all operators, control flow,
-  pointers, arrays, structs, goto/labels, brace initializers,
-  enum constants, casts, sizeof, static qualifier.
+- **Removed the Gecko parser + MIR-transpiler entirely** (`42e9b6e`).
+- **Removed the asmjit x86-64 JIT + original codegen entirely** (`64f44b3`).
+  `madc parser → cir_node (MC11-IR) → c2mir → MIR` is now the **sole** backend.
+  There is no `--backend=jit`; `--backend=mir` aliases to cir.
+- **MC11-IR set in stone:** the `cir_node` tree derives from c2mir `node_t`
+  (c2mir consumes the lowered C11 view) AND carries each node's originating
+  tokens + parse subtree + file/line/col (madc retains the high-level view).
+  See `docs/rules/mc11-ir.md`.
+- **Honest CIR baseline: 227 pass / 193 fail / 56 skip** (integration). The 193
+  are the active coverage worklist. (The earlier "419 pass / 0 fail" was the
+  now-removed backend; full C89 coverage is the *target* the CIR path is
+  climbing back to, not a current property.)
+- **Parser-fix port + empty-body CIR fix** landed (SMAUG now parses end-to-end
+  through CIR): `fd4d510`, `a429323`, `28d5e65`, `8b627ec`.
+- **Deferred (stubbed):** libmadc in-process compile/exec/`eval` + the REPL
+  (~100 unit tests skipped as the spec); native AOT object/executable
+  (`save_object`/`save_executable` stubbed, signatures kept).
+- **`--backend=cir` and `--dump-cir` CLI flags;** extern function prototypes
+  with variadic support; SMAUG mini test (malloc/free/printf/structs/pointers)
+  runs through the CIR path.
 
 ## [v0.24.0] — 2026-05-28
 

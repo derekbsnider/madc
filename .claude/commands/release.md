@@ -15,7 +15,7 @@ Perform the full release workflow:
 
 3. **Write the new version** to `VERSION`
 
-4. **Update TODO.md**:
+4. **Update docs/plans/ROADMAP.md**:
    - Move any newly completed items (with `~~strikethrough~~`) from High/Medium sections to the Completed section, if they haven't been moved yet
    - Keep the Completed section sorted chronologically (newest at bottom)
 
@@ -41,7 +41,7 @@ Perform the full release workflow:
    - Write the updated JSON
 
 9. **Commit all changes on current branch**:
-   - Stage: `VERSION`, `TODO.md`, `CHANGELOG.md`, `README.md`, `claude_status.json`, `docs/release-notes/vX.Y.Z.md`, plus any other uncommitted changes
+   - Stage: `VERSION`, `docs/plans/ROADMAP.md`, `CHANGELOG.md`, `README.md`, `claude_status.json`, `docs/release-notes/vX.Y.Z.md`, plus any other uncommitted changes
    - Commit message: `Release vX.Y.Z — <one-line summary>`
    - Do NOT use `--amend`
 

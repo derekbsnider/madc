@@ -17,8 +17,8 @@ Ensures all documentation is up to date with the current state of the codebase, 
    - Update the date to today
    - Write the updated JSON
 
-3. **Sync TODO.md**:
-   - Read current TODO.md
+3. **Sync docs/plans/ROADMAP.md**:
+   - Read current docs/plans/ROADMAP.md
    - Verify items in High/Medium/Deferred sections are still accurate
    - Move any items that have been implemented (check git log since last release) to Completed
    - Remove duplicates between sections
@@ -48,7 +48,7 @@ Ensures all documentation is up to date with the current state of the codebase, 
    - Per `.claude/rules/knowledge-graph.md`, the graph is a full prose backup + fast index, not just a relationship overlay. Anything updated above must be reflected in the graph too.
    - For each flat file touched in this /save, update the matching graph node:
      - `claude_status.json` phase/feature status changes → Phase/Feature `status` + `description` + `updatedAt`.
-     - `TODO.md` items moved to Completed → the matching Gap's `status: done` + `CLOSED_BY` edge to a Decision if a fix landed.
+     - `docs/plans/ROADMAP.md` items moved to Completed → the matching Gap's `status: done` + `CLOSED_BY` edge to a Decision if a fix landed.
      - `CHANGELOG.md` new `[Unreleased]` entries → new Decision node for any non-obvious architectural choice; bump affected Component `updatedAt`.
      - `.claude/rules/*.md` or `docs/rules/*.md` edits → Rule node `body` / `reasoning`.
      - `README.md` version / test counts → no graph mirror (that state lives in claude_status.json and the repo, not the graph).

@@ -1,4 +1,13 @@
-# TODO
+# TODO (ARCHIVED 2026-05-29)
+
+> **⚠️ ARCHIVED / STALE — do NOT use as a work source.** This flat TODO list
+> was superseded by the structured **[`docs/plans/ROADMAP.md`](../plans/ROADMAP.md)**
+> (the master plan) and **`claude_status.json`** (the current snapshot). Its
+> content predates the 2026-05-29 cleanup: it describes the removed asmjit JIT
+> and Gecko+MIR transpiler, "419/475 transpiler parity", "GCC torture 97.9%",
+> and a native `smaug.exe` — none of which reflect the current
+> `cir_node (MC11-IR) -> c2mir -> MIR` sole-backend reality (baseline 227/193/56).
+> Kept for historical reference only.
 
 ## High Priority
 
