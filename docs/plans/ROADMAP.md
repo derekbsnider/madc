@@ -2,6 +2,26 @@
 
 Master plan linking all workstreams. Updated 2026-05-26.
 
+## The Intermediate Representation — MC11-IR (SET IN STONE, 2026-05-29)
+
+The primary in-memory representation is the **Mad-enhanced-C11 IR (MC11-IR)** —
+the `cir_node` AST tree. `cir_node` **derives from c2mir's `node_t`** (so c2mir
+consumes the lowered C11 view directly) AND each node **carries its originating
+lexed tokens + parse subtree + file/line/column** (so madc retains the original
+high-level structure without reconstruction). It is deliberately **both**:
+lowered for c2mir, high-level for madc. The `.mc11` text is the on-disk
+serialization of the extra info; render targets (C11/MC11/C++/madc) share the
+`--std=` language enum to pick which view to emit. See
+[`docs/rules/mc11-ir.md`](../rules/mc11-ir.md). **Do not re-pose "lowered vs
+high-level" — the answer is both.**
+
+> **⚠️ This roadmap predates the 2026-05-29 cleanup and is STALE below.** Gecko
+> and asmjit have both been **removed entirely**; `madc parser → cir_node
+> (MC11-IR) → c2mir → MIR` is now the **sole** backend. Any line below framing
+> "Gecko+MIR transpiler" or "asmjit JIT" as active is superseded. Honest current
+> integration baseline: **227 pass / 193 fail / 56 skip** — the 193 are the CIR
+> coverage worklist. Roadmap body needs a full rewrite (tracked).
+
 ## Current State
 
 - **Version:** 0.22.0
