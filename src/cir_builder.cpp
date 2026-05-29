@@ -36,6 +36,13 @@ extern "C" {
 
 extern thread_local bool madc_verbose;
 
+// Derived source position: a node's position IS its origin token's position
+// (the single source of truth). No absolute offset is stored on the node, so a
+// future switch to relative token positions changes only the token layer.
+const char *cir_node::src_file()   const { return origin ? origin->file   : NULL; }
+int         cir_node::src_line()   const { return origin ? origin->line   : 0; }
+int         cir_node::src_column() const { return origin ? origin->column : 0; }
+
 // -----------------------------------------------------------------------
 // CirBuilder core
 // -----------------------------------------------------------------------
@@ -56,12 +63,10 @@ cir_node *CirBuilder::make(c2mir_node_code_t code, TokenBase *origin)
 	cn->typedef_name = NULL;
 	cn->src_lang = cslC;  // default; caller can override
 
-	if (origin) {
-		cn->src_file = origin->file;
-		cn->src_line = origin->line;
-		cn->src_column = origin->column;
+	// Position is derived from origin (see cir_node::src_*); here we only feed
+	// c2mir's own (absolute) position store so diagnostics work.
+	if (origin)
 		set_pos(cn, origin);
-	}
 
 	return cn;
 }
@@ -1112,21 +1117,17 @@ node_t CirBuilder::translate_module(Program *prog)
 	// origin token (see member_node).
 	auto stamp = [&](node_t n, Program::TopDecl &td) {
 		if (!n) return;
-		// Prefer the per-occurrence origin token (precise file/line/column);
-		// fall back to the file/line the parser recorded otherwise.
-		const char *file = td.file;
-		int line = td.line, col = 0;
-		if (td.origin) {
-			file = td.origin->file;
-			line = td.origin->line;
-			col = td.origin->column;
-		}
-		if (!file) return;
 		cir_node *cn = CIR_NODE(n);
-		cn->src_file = file;
-		cn->src_line = line;
-		cn->src_column = col;
-		set_pos(cn, file, line, col);
+		if (td.origin) {
+			// The origin token is the position source of truth; the node's
+			// src_*() derive from it. Also feed c2mir's absolute store.
+			cn->origin = td.origin;
+			set_pos(cn, td.origin->file, td.origin->line, td.origin->column);
+		} else if (td.file) {
+			// No origin token captured (rare typedef variants): feed c2mir's
+			// store the recorded file/line; node carries no +madc origin.
+			set_pos(cn, td.file, td.line, 0);
+		}
 	};
 	std::set<std::string> emitted_structs;
 	for (auto &td : prog->top_decls) {
@@ -1290,7 +1291,7 @@ static void cir_dump_node(FILE *f, node_t n, int indent)
 
 	cir_node *cn = CIR_NODE(n);
 	if (cn->typedef_name) fprintf(f, "  [typedef=%s]", cn->typedef_name);
-	if (cn->src_file) fprintf(f, "  @%s:%d:%d", cn->src_file, cn->src_line, cn->src_column);
+	if (cn->src_file()) fprintf(f, "  @%s:%d:%d", cn->src_file(), cn->src_line(), cn->src_column());
 	fputc('\n', f);
 
 	if (n->code > N_ID) {

@@ -47,17 +47,25 @@ struct cir_node {
 	struct node base;           // offset 0 — c2mir-compatible layout
 
 	// --- madc extension fields (invisible to c2mir) ---
-	TokenBase   *origin;        // originating madc AST node (NULL for synthetic)
+	// `origin` is the SINGLE SOURCE OF TRUTH for this node's source position
+	// and provenance. The source position is a DERIVED VIEW (src_file()/
+	// src_line()/src_column() below) — never stored as independent absolute
+	// truth on the node, so switching the token layer to relative positions
+	// later needs no change here. NULL for synthetic nodes (no position).
+	TokenBase   *origin;        // originating madc token (NULL for synthetic)
 	DataDef     *datadef;       // madc type info (NULL if not type-related)
 	const char  *typedef_name;  // source typedef alias (e.g. "EXT_BV"), NULL if none
-	const char  *src_file;      // source file path (madc's copy)
-	int          src_line;      // source line
-	int          src_column;    // source column
 	CirSourceLang src_lang;     // which language produced this node
-	uint8_t      _pad[3];       // alignment padding
+	uint8_t      _pad[7];       // alignment padding
 
 	// Cast to node_t for c2mir API calls
 	node_t as_node() { return (node_t)&base; }
+
+	// Derived source position (read from the origin token; the single source
+	// of truth). Defined in cir_builder.cpp where TokenBase is complete.
+	const char *src_file() const;
+	int         src_line() const;
+	int         src_column() const;
 };
 
 // Recover cir_node* from a node_t.  Only valid if the node was
