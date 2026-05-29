@@ -40,7 +40,7 @@ extern thread_local bool madc_verbose;
 // CirBuilder core
 // -----------------------------------------------------------------------
 
-CirBuilder::CirBuilder(c2m_ctx_t c2m_ctx) : c2m(c2m_ctx) {}
+CirBuilder::CirBuilder(c2m_ctx_t c2m_ctx) : c2m(c2m_ctx), m_prog(NULL) {}
 CirBuilder::~CirBuilder() {}
 
 cir_node *CirBuilder::make(c2mir_node_code_t code, TokenBase *origin)
@@ -297,10 +297,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (ptr_dd && ptr_dd->base_type)
 		base_dd = ptr_dd->base_type;
 
-	// Emit ID("alias") for a non-pointer variable declared via a typedef
-	// (matches c2m). Pointer usages keep the underlying type for now.
-	node_t tl = (!is_ptr && !v->typedef_name.empty())
-			? type_list(base_dd, v->typedef_name)
+	// Emit ID("alias") for a variable declared via a typedef (matches c2m).
+	// Pointer usages keep the alias as the type spec and carry the explicit
+	// stars on the declarator below.
+	node_t tl = !v->typedef_name.empty()
+			? type_list(v->type, v->typedef_name)
 			: type_list(base_dd);
 
 	// Storage class qualifiers
@@ -329,8 +330,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t var_id = id(v->name.c_str(), origin);
 	node_t decl_list = list();
 
-	if (is_ptr)
+	int decl_stars = explicit_star_count(v->type, v->typedef_name);
+	if (decl_stars >= 0) {
+		for (int s = 0; s < decl_stars; s++)
+			append(decl_list, pointer());
+	} else if (is_ptr) {
 		append(decl_list, pointer());
+	}
 
 	if (v->is_fixed_array() && !v->dims.empty()) {
 		node_t size = integer(v->dims[0]);
@@ -351,40 +357,85 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	return spec_decl;
 }
 
+// Count pointer-indirection levels of a DataDef (int** -> 2, NODE -> 0).
+static int dd_ptr_depth(DataDef *dd)
+{
+	int depth = 0;
+	while (dd && dd->is_pointer()) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+		if (!p) break;
+		dd = p->base_type;
+		depth++;
+	}
+	return depth;
+}
+
+int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias)
+{
+	if (alias.empty())
+		return -1;
+	int full_depth = dd_ptr_depth(full_type);
+	int base_depth = 0;
+	if (m_prog) {
+		// Resolve the alias to the typedef's own DataDef so its base pointer
+		// depth can be subtracted from the usage-site total.
+		datatype_map_iter it = m_prog->datatype_map.find(alias);
+		if (it != m_prog->datatype_map.end() && it->second)
+			base_depth = dd_ptr_depth(&it->second->definition);
+	}
+	int stars = full_depth - base_depth;
+	return stars < 0 ? 0 : stars;
+}
+
+node_t CirBuilder::member_node(const memberpair_t &m)
+{
+	DataDef *mtype = m.second;            // full member type, stars included
+	const std::string &mtypedef = m.typedef_name;
+
+	// Type specifier. A member declared via a typedef emits ID("alias")
+	// regardless of pointer-ness — the stars belong on the declarator, not
+	// the type spec (matches c2m). The star count is the explicit indirection
+	// written at the usage site, i.e. the type's total depth minus the
+	// typedef's own base depth (handles `typedef T *TP; TP x;` correctly).
+	int stars = explicit_star_count(mtype, mtypedef);
+	node_t mspec;
+	if (!mtypedef.empty()) {
+		mspec = type_list(mtype, mtypedef);
+	} else {
+		DataDef *mbase = mtype;
+		if (mbase && mbase->is_pointer()) {
+			DataDefPTR *mptr = dynamic_cast<DataDefPTR *>(mbase);
+			if (mptr && mptr->base_type) mbase = mptr->base_type;
+		}
+		mspec = type_list(mbase);
+	}
+
+	node_t mshare = node1(N_SHARE, mspec);
+	node_t mid = id(m.first.c_str());
+	node_t mdecl_list = list();
+	if (!mtypedef.empty()) {
+		for (int s = 0; s < stars; s++)
+			append(mdecl_list, pointer());
+	} else if (mtype && mtype->is_pointer()) {
+		append(mdecl_list, pointer());
+	}
+	node_t mdecl = node2(N_DECL, mid, mdecl_list);
+
+	node_t member = simple(N_MEMBER);
+	append(member, mshare);
+	append(member, mdecl);
+	append(member, ignore());
+	append(member, ignore());
+	return member;
+}
+
 node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 {
 	node_t struct_id = id(sdd->name.c_str());
 	node_t member_list = list();
 
 	for (size_t i = 0; i < sdd->members.size(); i++) {
-		DataDef *mtype = sdd->members[i].second;
-		const std::string &mname = sdd->members[i].first;
-
-		DataDef *mbase = mtype;
-		bool m_is_ptr = mbase && mbase->is_pointer();
-		DataDefPTR *mptr = m_is_ptr ? dynamic_cast<DataDefPTR *>(mbase) : NULL;
-		if (mptr && mptr->base_type) mbase = mptr->base_type;
-
-		// Emit ID("alias") for a non-pointer member declared via a typedef
-		// (matches c2m). Pointer members keep the underlying type for now
-		// (typedef-name + pointer-depth handling is a follow-up).
-		const std::string &mtypedef = sdd->members[i].typedef_name;
-		node_t mspec = (!m_is_ptr && !mtypedef.empty())
-				   ? type_list(mbase, mtypedef)
-				   : type_list(mbase);
-		node_t mshare = node1(N_SHARE, mspec);
-		node_t mid = id(mname.c_str());
-		node_t mdecl_list = list();
-		if (m_is_ptr)
-			append(mdecl_list, pointer());
-		node_t mdecl = node2(N_DECL, mid, mdecl_list);
-
-		node_t member = simple(N_MEMBER);
-		append(member, mshare);
-		append(member, mdecl);
-		append(member, ignore());
-		append(member, ignore());
-		append(member_list, member);
+		append(member_list, member_node(sdd->members[i]));
 	}
 
 	node_t struct_node = node2(N_STRUCT, struct_id, member_list);
@@ -429,29 +480,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 				node_t struct_id_node = id(sdd->name.c_str());
 				node_t ml = list();
 				for (size_t i = 0; i < sdd->members.size(); i++) {
-					DataDef *mtype = sdd->members[i].second;
-					const std::string &mname = sdd->members[i].first;
-					DataDef *mbase = mtype;
-					bool m_is_ptr = mbase && mbase->is_pointer();
-					DataDefPTR *mptr = m_is_ptr ? dynamic_cast<DataDefPTR *>(mbase) : NULL;
-					if (mptr && mptr->base_type) mbase = mptr->base_type;
-
-					const std::string &mtypedef = sdd->members[i].typedef_name;
-					node_t mspec = (!m_is_ptr && !mtypedef.empty())
-							   ? type_list(mbase, mtypedef)
-							   : type_list(mbase);
-					node_t mshare = node1(N_SHARE, mspec);
-					node_t mid = id(mname.c_str());
-					node_t mdecl_list = list();
-					if (m_is_ptr)
-						append(mdecl_list, pointer());
-					node_t mdecl = node2(N_DECL, mid, mdecl_list);
-					node_t member = simple(N_MEMBER);
-					append(member, mshare);
-					append(member, mdecl);
-					append(member, ignore());
-					append(member, ignore());
-					append(ml, member);
+					append(ml, member_node(sdd->members[i]));
 				}
 				append(tl, node2(N_STRUCT, struct_id_node, ml));
 			}
@@ -1038,6 +1067,7 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 node_t CirBuilder::translate_module(Program *prog)
 {
 	if (!prog) return NULL;
+	m_prog = prog;
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();

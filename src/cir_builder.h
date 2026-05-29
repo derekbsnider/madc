@@ -15,6 +15,7 @@
 
 // Forward declarations
 class Program;
+struct memberpair_t;
 class TokenFunc;
 class TokenCpnd;
 class TokenBase;
@@ -36,9 +37,22 @@ class CirBuilder {
 	// translate_module to emit extern prototypes only for funcs the source
 	// actually uses (matches c2m's #include-driven scope).
 	std::set<std::string> referenced_funcs;
+	// Set during translate_module. Used to resolve a typedef alias to its
+	// base DataDef so we can tell the typedef's own pointer depth apart from
+	// the explicit stars written at the usage site.
+	Program *m_prog;
 
 	// Internal: allocate and initialize a cir_node
 	cir_node *make(c2mir_node_code_t code, TokenBase *origin = NULL);
+
+	// Explicit pointer stars at a usage site = total pointer depth of the
+	// declared type minus the typedef's own base depth. Returns -1 when
+	// alias is empty (caller falls back to the non-typedef pointer path).
+	int explicit_star_count(DataDef *full_type, const std::string &alias);
+
+	// Build one N_MEMBER node for a struct/union member (shared by struct_def
+	// and the inline-struct path in typedef_decl).
+	node_t member_node(const memberpair_t &m);
 
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);
