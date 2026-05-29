@@ -15070,6 +15070,16 @@ void c2mir_dump_tree (c2m_ctx_t c2m_ctx, FILE *f, node_t tree) {
   print_node (c2m_ctx, f, tree, 0, FALSE);
 }
 
+/* Run the context checker (do_context) on an externally-built tree, then dump
+   it — the POST-check tree, matching `c2m -d`'s stage (which also runs
+   do_context before printing). For stage-matched diffing of external trees.
+   Mutates the tree (sets attrs); do not compile the same tree afterwards. */
+void c2mir_dump_tree_checked (c2m_ctx_t c2m_ctx, FILE *f, node_t tree) {
+  if (c2m_ctx == NULL || tree == NULL || f == NULL) return;
+  do_context (c2m_ctx, tree);
+  print_node (c2m_ctx, f, tree, 0, FALSE);
+}
+
 /* Local Variables:                */
 /* mode: c                         */
 /* page-delimiter: "/\\* New Page" */

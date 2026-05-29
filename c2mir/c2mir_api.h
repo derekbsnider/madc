@@ -87,6 +87,10 @@ int c2mir_compile_tree (MIR_context_t ctx, c2m_ctx_t c2m_ctx,
    Output format matches c2m -d for easy diffing. */
 void c2mir_dump_tree (c2m_ctx_t c2m_ctx, FILE *f, node_t tree);
 
+/* Run do_context on the (external) tree, then dump it — the POST-check tree,
+   matching `c2m -d`'s stage. Mutates the tree; do not compile it afterwards. */
+void c2mir_dump_tree_checked (c2m_ctx_t c2m_ctx, FILE *f, node_t tree);
+
 #ifdef __cplusplus
 }
 #endif
