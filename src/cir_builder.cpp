@@ -636,18 +636,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t var_id = id(v->name.c_str(), origin);
 	node_t decl_list = list();
 
-	int decl_stars = explicit_star_count(v->type, v->typedef_name);
-	if (decl_stars >= 0) {
-		for (int s = 0; s < decl_stars; s++)
-			append(decl_list, pointer());
-	} else if (is_ptr) {
-		// One '*' per indirection level (int** -> 2). Previously a single
-		// pointer() was appended, collapsing int**/T*** to one star.
-		int depth = dd_ptr_depth(v->type);
-		for (int s = 0; s < depth; s++)
-			append(decl_list, pointer());
-	}
-
+	// c2m declarator order: in `T *arr[N]` the `[]` binds tighter than `*`
+	// (array of pointers), and c2m's declarator parser appends the pointer
+	// ops AFTER the direct-declarator's array ops. So the N_ARR nodes must
+	// precede the N_POINTER nodes in the decl list. Emit arrays first, then
+	// pointers — matching `direct_declarator`/`declarator` in c2mir.c.
 	if (v->is_fixed_array() && !v->dims.empty()) {
 		// One N_ARR per dimension, outer dimension first:
 		// int m[2][2] -> ARR(...,2) ARR(...,2)
@@ -674,6 +667,18 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			node_t arr = node3(N_ARR, ignore(), list(), size);
 			append(decl_list, arr);
 		}
+	}
+
+	int decl_stars = explicit_star_count(v->type, v->typedef_name);
+	if (decl_stars >= 0) {
+		for (int s = 0; s < decl_stars; s++)
+			append(decl_list, pointer());
+	} else if (is_ptr) {
+		// One '*' per indirection level (int** -> 2). Previously a single
+		// pointer() was appended, collapsing int**/T*** to one star.
+		int depth = dd_ptr_depth(v->type);
+		for (int s = 0; s < depth; s++)
+			append(decl_list, pointer());
 	}
 
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);
