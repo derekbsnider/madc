@@ -104,7 +104,11 @@ node_t CirBuilder::id(const char *name, TokenBase *origin)
 
 node_t CirBuilder::integer(long val, TokenBase *origin)
 {
-	cir_node *cn = make(N_I, origin);
+	// c2m types N_I as `int` (32-bit) and N_L as `long` (64-bit). A value
+	// outside signed-32 range must be N_L, or c2m truncates+sign-extends it
+	// to int — e.g. __builtin_bswap64(0x0123456789abcdef) lost its high word.
+	bool fits_int = (val >= (long)INT32_MIN && val <= (long)INT32_MAX);
+	cir_node *cn = make(fits_int ? N_I : N_L, origin);
 	cn->base.u.l = val;
 	return cn->as_node();
 }
