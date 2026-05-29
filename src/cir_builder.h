@@ -143,6 +143,11 @@ public:
 
 	// ---- Statement translation ----
 	node_t translate_stmt(TokenBase *tb);
+	// Like translate_stmt, but for required-statement slots (loop/if
+	// bodies) where c2mir demands a node. translate_stmt returns NULL for
+	// an empty `;` (correctly dropped inside a block); a required slot
+	// must instead receive c2mir's empty-statement node, EXPR(LIST,IGNORE).
+	node_t translate_stmt_required(TokenBase *tb);
 	node_t translate_block(TokenCpnd *tc);
 	node_t translate_return(TokenRETURN *tr);
 	node_t translate_if(TokenIF *ti);

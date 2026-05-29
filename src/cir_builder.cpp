@@ -1100,8 +1100,8 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
 	node_t cond = translate_expr(ti->condition);
-	node_t then_body = translate_stmt(ti->statement);
-	node_t else_body = ti->elsestmt ? translate_stmt(ti->elsestmt) : ignore();
+	node_t then_body = translate_stmt_required(ti->statement);
+	node_t else_body = ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
 	return node4(N_IF, list(), cond, then_body, else_body, ti);
 }
 
@@ -1110,7 +1110,7 @@ node_t CirBuilder::translate_while(TokenBase *tw)
 	TokenWHILE *w = dynamic_cast<TokenWHILE *>(tw);
 	if (!w) return ignore();
 	return node3(N_WHILE, list(), translate_expr(w->condition),
-		     translate_stmt(w->statement), tw);
+		     translate_stmt_required(w->statement), tw);
 }
 
 node_t CirBuilder::translate_for(TokenFOR *tf)
@@ -1118,14 +1118,14 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	node_t init = tf->initialize ? translate_expr(tf->initialize) : ignore();
 	node_t cond = tf->condition ? translate_expr(tf->condition) : ignore();
 	node_t incr = tf->increment ? translate_expr(tf->increment) : ignore();
-	node_t body = translate_stmt(tf->statement);
+	node_t body = translate_stmt_required(tf->statement);
 	return node5(N_FOR, list(), init, cond, incr, body, tf);
 }
 
 node_t CirBuilder::translate_do(TokenDO *td)
 {
 	return node3(N_DO, list(), translate_expr(td->condition),
-		     translate_stmt(td->statement), td);
+		     translate_stmt_required(td->statement), td);
 }
 
 node_t CirBuilder::translate_switch(TokenSWITCH *ts)
@@ -1253,6 +1253,17 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 
 	// Expression statement
 	return node2(N_EXPR, list(), translate_expr(tb), tb);
+}
+
+// A loop/if body is a required statement operand: c2mir always has a node
+// in that slot. translate_stmt returns NULL for an empty `;` (which a block
+// drops, matching c2m), so substitute c2mir's empty-statement node here —
+// EXPR(LIST, IGNORE) — rather than feeding NULL to c2mir_op_append.
+node_t CirBuilder::translate_stmt_required(TokenBase *tb)
+{
+	node_t s = translate_stmt(tb);
+	if (s) return s;
+	return node2(N_EXPR, list(), ignore(), tb);
 }
 
 node_t CirBuilder::translate_block(TokenCpnd *tc)
