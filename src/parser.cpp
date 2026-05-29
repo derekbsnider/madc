@@ -10131,6 +10131,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( !is_contextual_identifier_token(tn) )
 			pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
 		    std::string mname = contextual_identifier_name(tn);
+		    TokenBase *member_name_tok = tn;  // CIR origin for this member
 
 		    // Optional fixed-array dimensions: `char d_name[256];`, `int m[4][8];`.
 		    // Multiply the dimensions into a single count so the member reserves
@@ -10186,8 +10187,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			dds->addMember(mname, *member_dd, member_count,
 			    member_count_expr, member_is_array_decl, &member_dims);
-			if ( !member_typedef_alias.empty() && !dds->members.empty() )
-			    dds->members.back().typedef_name = member_typedef_alias;
+			if ( !dds->members.empty() )
+			{
+			    if ( !member_typedef_alias.empty() )
+				dds->members.back().typedef_name = member_typedef_alias;
+			    dds->members.back().origin = member_name_tok;
+			}
 			if ( member_align > 0 )
 			    dds->apply_member_alignment(member_align);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname

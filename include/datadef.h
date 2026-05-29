@@ -500,10 +500,11 @@ struct memberpair_t {
     std::string first;          // member name
     DataDef *second;            // member type
     std::string typedef_name;   // source typedef alias, "" if raw type
-    memberpair_t() : second(nullptr) {}
-    memberpair_t(const std::string &n, DataDef *d) : first(n), second(d) {}
+    TokenBase *origin;          // member-name source token (CIR origin), NULL if none
+    memberpair_t() : second(nullptr), origin(nullptr) {}
+    memberpair_t(const std::string &n, DataDef *d) : first(n), second(d), origin(nullptr) {}
     memberpair_t(const std::string &n, DataDef *d, const std::string &td)
-	: first(n), second(d), typedef_name(td) {}
+	: first(n), second(d), typedef_name(td), origin(nullptr) {}
 };
 
 class Variable; // forward dec

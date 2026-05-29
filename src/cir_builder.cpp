@@ -411,7 +411,7 @@ node_t CirBuilder::member_node(const memberpair_t &m)
 	}
 
 	node_t mshare = node1(N_SHARE, mspec);
-	node_t mid = id(m.first.c_str());
+	node_t mid = id(m.first.c_str(), m.origin);
 	node_t mdecl_list = list();
 	if (!mtypedef.empty()) {
 		for (int s = 0; s < stars; s++)
@@ -421,7 +421,7 @@ node_t CirBuilder::member_node(const memberpair_t &m)
 	}
 	node_t mdecl = node2(N_DECL, mid, mdecl_list);
 
-	node_t member = simple(N_MEMBER);
+	node_t member = simple(N_MEMBER, m.origin);
 	append(member, mshare);
 	append(member, mdecl);
 	append(member, ignore());
@@ -1106,6 +1106,17 @@ node_t CirBuilder::translate_module(Program *prog)
 	}
 
 	// Pass 0: top-level declarations in source order (faithful mirror).
+	// Stamp each declaration node with the source position the parser
+	// recorded (file/line); the token itself isn't in scope at the record
+	// site, so position is threaded here. Member nodes carry the real
+	// origin token (see member_node).
+	auto stamp = [&](node_t n, Program::TopDecl &td) {
+		if (!n || !td.file) return;
+		cir_node *cn = CIR_NODE(n);
+		cn->src_file = td.file;
+		cn->src_line = td.line;
+		set_pos(cn, td.file, td.line, 0);
+	};
 	std::set<std::string> emitted_structs;
 	for (auto &td : prog->top_decls) {
 		switch (td.kind) {
@@ -1116,7 +1127,7 @@ node_t CirBuilder::translate_module(Program *prog)
 			bool forward = sdd && struct_def_points.count(sdd->name)
 					   && !emitted_structs.count(sdd->name);
 			node_t n = typedef_decl(td.name, td.dd, emitted_structs, forward);
-			if (n) append(top_list, n);
+			if (n) { stamp(n, td); append(top_list, n); }
 			// A combined `typedef struct X {...} Y;` (no separate bare
 			// def) emits the body inline here -> mark it emitted.
 			if (sdd && !sdd->members.empty() && !struct_def_points.count(sdd->name))
@@ -1129,14 +1140,14 @@ node_t CirBuilder::translate_module(Program *prog)
 			if (sdd && !sdd->members.empty() && !emitted_structs.count(sdd->name)) {
 				emitted_structs.insert(sdd->name);
 				node_t sd = struct_def(sdd);
-				if (sd) append(top_list, sd);
+				if (sd) { stamp(sd, td); append(top_list, sd); }
 			}
 			break;
 		}
 		case Program::DeclKind::dkGlobalVar: {
 			if (td.var && !dynamic_cast<FuncDef *>(td.var->type)) {
 				node_t gd = var_decl(td.var);
-				if (gd) append(top_list, gd);
+				if (gd) { stamp(gd, td); append(top_list, gd); }
 			}
 			break;
 		}
