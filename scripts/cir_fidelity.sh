@@ -42,13 +42,32 @@ if grep -q "<unhandled" "$emitted"; then
 	exit 2
 fi
 
+# Compile original and emitted separately, capturing gcc's exit status so we can
+# tell "input isn't standalone C" (leg N/A) from "renderer produced bad C" (bug).
+orig_s="$work/$base.orig.s"
+emit_s="$work/$base.emit.s"
+gcc -S -fverbose-asm -O0 -x c "$src"     -o "$orig_s" 2>/dev/null; src_ok=$?
+gcc -S -fverbose-asm -O0 -x c "$emitted" -o "$emit_s" 2>"$work/$base.gcc.err"; emit_ok=$?
+
+if [ $src_ok -ne 0 ]; then
+	# The original isn't standalone C (C++/madc constructs): the gcc-fidelity
+	# leg cannot apply. Emission itself succeeded with no unhandled markers.
+	echo "NONC $base (original not standalone C; asm-fidelity N/A)"
+	exit 0
+fi
+if [ $emit_ok -ne 0 ]; then
+	# Original is valid C but our emitted C is rejected by gcc — a real
+	# renderer correctness bug (malformed/ill-typed output).
+	echo "EMIT-BAD-C $base -> $work/$base.gcc.err"
+	exit 4
+fi
+
 # Normalize away non-semantic noise: local labels, directives, trailing comments.
 norm() {
-	gcc -S -fverbose-asm -O0 -x c "$1" -o - 2>/dev/null \
-		| sed -E 's/\.L[A-Za-z0-9_]+/.L/g; /^[[:space:]]*\.(file|ident|cfi[_a-z]*|loc|size|type|globl|section|text|align)/d; s/#.*$//; /^[[:space:]]*$/d'
+	sed -E 's/\.L[A-Za-z0-9_]+/.L/g; /^[[:space:]]*\.(file|ident|cfi[_a-z]*|loc|size|type|globl|section|text|align)/d; s/#.*$//; /^[[:space:]]*$/d' "$1"
 }
 
-if ! diff <(norm "$src") <(norm "$emitted") > "$work/$base.asm.diff" 2>/dev/null; then
+if ! diff <(norm "$orig_s") <(norm "$emit_s") > "$work/$base.asm.diff" 2>/dev/null; then
 	echo "ASM-DIVERGE $base ($(grep -c '^[<>]' "$work/$base.asm.diff") lines) -> $work/$base.asm.diff"
 	exit 3
 fi
