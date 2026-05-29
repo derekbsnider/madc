@@ -28,7 +28,9 @@ class Program;
 
 // Initialize a c2mir context for CIR translation.
 // Call AFTER c2mir_init(mir_ctx).
-c2m_ctx_t cir_init(MIR_context_t mir_ctx);
+// debug_p (post-check dump): when true, c2mir prints the tree AFTER do_context
+// to message_file — same stage as `c2m -d`, for stage-matched diffing.
+c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p = false);
 
 // Translate a parsed madc Program into a c2mir node_t tree (N_MODULE).
 // The Program must have been tokenized and parsed (prog->parse(tp) called).
@@ -47,8 +49,11 @@ void cir_finish(c2m_ctx_t c2m);
 // If dump_tree is true, dumps the c2mir-format tree (c2mir_dump_tree, for
 // c2m -d comparison). If dump_nodes is true, dumps our cir_node tree via
 // the madc-owned walker (cir_dump_nodes, showing +madc fields).
+// dump_checked: dump the POST-check tree (after c2mir's do_context) to stderr,
+// matching `c2m -d`'s stage so the forward-decl folding lines up for diffing.
 int madc_cir_execute(Program *prog, const char *source_name,
 		     int user_argc, char **user_argv,
-		     bool dump_tree = false, bool dump_nodes = false);
+		     bool dump_tree = false, bool dump_nodes = false,
+		     bool dump_checked = false);
 
 #endif // __MADC_CIR_H

@@ -1382,12 +1382,14 @@ static node_t cir_translate_func(c2m_ctx_t c2m, TokenFunc *tf)
 // Public API
 // -----------------------------------------------------------------------
 
-c2m_ctx_t cir_init(MIR_context_t mir_ctx)
+c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p)
 {
     struct c2mir_options *opts = new struct c2mir_options();
     memset(opts, 0, sizeof(*opts));
     opts->message_file = stderr;
-    // opts->debug_p = 1;  // enable for AST dump after check
+    // debug_p makes c2mir_compile_tree print the POST-check tree (after
+    // do_context) to message_file — same stage as `c2m -d`, for diffing.
+    opts->debug_p = debug_p ? 1 : 0;
     return c2mir_init_compile(mir_ctx, opts);
 }
 
@@ -1613,14 +1615,14 @@ static void *cir_import_resolver(const char *name)
 
 int madc_cir_execute(Program *prog, const char *source_name,
 		     int user_argc, char **user_argv,
-		     bool dump_tree, bool dump_nodes)
+		     bool dump_tree, bool dump_nodes, bool dump_checked)
 {
     MIR_context_t ctx = MIR_init();
     c2mir_init(ctx);
     MIR_gen_init(ctx);
     MIR_gen_set_optimize_level(ctx, 1);
 
-    c2m_ctx_t c2m = cir_init(ctx);
+    c2m_ctx_t c2m = cir_init(ctx, dump_checked);
     if (!c2m) {
 	fprintf(stderr, "madc_cir_execute: cir_init failed\n");
 	MIR_gen_finish(ctx);
@@ -1665,6 +1667,20 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	MIR_gen_finish(ctx);
 	MIR_finish(ctx);
 	return -1;
+    }
+
+    // --dump-cir-checked: run c2mir's checker (do_context) and dump the
+    // POST-check tree to stderr — same stage as `c2m -d`, for diffing. This
+    // mutates the tree, so we stop here rather than compile it.
+    if (dump_checked) {
+	fprintf(stderr, "=== CIR TREE (post-check) ===\n");
+	c2mir_dump_tree_checked(c2m, stderr, tree);
+	fprintf(stderr, "=== END CIR TREE ===\n");
+	cir_finish(c2m);
+	c2mir_finish(ctx);
+	MIR_gen_finish(ctx);
+	MIR_finish(ctx);
+	return 0;
     }
 
     int ok = cir_compile(ctx, c2m, tree, source_name);
