@@ -308,6 +308,19 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname)
 	return spec_decl;
 }
 
+node_t CirBuilder::init_value(TokenBase *elem)
+{
+	if (!elem) return ignore();
+	TokenStructLit *sl = dynamic_cast<TokenStructLit *>(elem);
+	if (sl) {
+		node_t inner = list();
+		for (size_t i = 0; i < sl->inits.size(); i++)
+			append(inner, node2(N_INIT, list(), init_value(sl->inits[i])));
+		return inner;
+	}
+	return translate_expr(elem);
+}
+
 node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
 	DataDef *base_dd = v->type;
@@ -365,7 +378,24 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);
 	node_t init_node = ignore();
-	// TODO: initializers will be ported later when we integrate fully
+	TokenDecl *tdecl = dynamic_cast<TokenDecl *>(origin);
+	if (tdecl && tdecl->has_brace_init) {
+		// Brace init: LIST(INIT(LIST(), val), ...)
+		node_t lst = list();
+		for (size_t i = 0; i < tdecl->init_list.size(); i++)
+			append(lst, node2(N_INIT, list(), init_value(tdecl->init_list[i])));
+		init_node = lst;
+	} else if (tdecl && tdecl->initialize) {
+		// Scalar init: the parser stores `initialize` as a full
+		// assignment AST (TokenAssign: left=var, right=value), but a
+		// SPEC_DECL initializer is the bare value, not an ASSIGN. Unwrap
+		// to the RHS so the 5th operand matches c2m (e.g. `I 7`).
+		TokenBase *init_expr = tdecl->initialize;
+		TokenAssign *as = dynamic_cast<TokenAssign *>(init_expr);
+		if (as && as->right)
+			init_expr = as->right;
+		init_node = translate_expr(init_expr);
+	}
 
 	node_t spec_decl = simple(N_SPEC_DECL);
 	append(spec_decl, share);

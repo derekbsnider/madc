@@ -433,6 +433,14 @@ TEST_CASE("CirBuilder: while loop") {
     ) == 45);
 }
 
+TEST_CASE("CirBuilder: scalar initializers") {
+    CHECK(cir_run_builder("int main() { int x = 7; return x; }") == 7);
+    CHECK(cir_run_builder("int main() { int a = 3, b = 4; return a + b; }") == 7);
+}
+TEST_CASE("CirBuilder: flat brace initializers") {
+    CHECK(cir_run_builder(
+        "int main() { int a[3] = {10,20,12}; return a[0]+a[1]+a[2]; }") == 42);
+}
 TEST_CASE("CirBuilder: structs") {
     CHECK(cir_run_builder(
 	"struct point { int x; int y; };\n"

@@ -97,6 +97,9 @@ public:
 	node_t pointer();
 
 	// ---- Declaration builders ----
+	// Recursively build an initializer value node: a scalar expression, or
+	// for a nested brace element (TokenStructLit) a LIST(INIT(LIST(), val), ...).
+	node_t init_value(TokenBase *elem);
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);
 	node_t param_decl(DataDef *ptype, const char *pname);
 	node_t typedef_decl(const std::string &alias, DataDef *dd,
