@@ -52,8 +52,15 @@ void emit_labels(FILE *f, node_t labels, CirEmitLang lang)
 		switch (l->code) {
 		case N_LABEL:
 			emit(f, op(l, 0), lang); fputs(": ", f); break;
-		case N_CASE:
-			fputs("case ", f); emit(f, op(l, 0), lang); fputs(": ", f); break;
+		case N_CASE: {
+			// N_CASE(low) is a single value; N_CASE(low, high) is the GNU
+			// range form `case LOW ... HIGH:`.
+			fputs("case ", f); emit(f, op(l, 0), lang);
+			node_t hi = op(l, 1);
+			if (hi) { fputs(" ... ", f); emit(f, hi, lang); }
+			fputs(": ", f);
+			break;
+		}
 		case N_DEFAULT:
 			fputs("default: ", f); break;
 		default:

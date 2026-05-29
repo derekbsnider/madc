@@ -1383,6 +1383,10 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 		node_t label;
 		if (is_default) {
 			label = simple(N_DEFAULT);
+		} else if (tc->range_high) {
+			// GNU case range: `case LOW ... HIGH:` -> N_CASE(low, high).
+			label = node2(N_CASE, translate_expr(tc->value),
+				      translate_expr(tc->range_high), tc);
 		} else {
 			label = node1(N_CASE, translate_expr(tc->value), tc);
 		}
