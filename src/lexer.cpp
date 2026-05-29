@@ -3888,10 +3888,25 @@ TokenBase *Program::getToken()
     return tb;
 }
 
+// Exact source text of a trivia token (whitespace via its RLE count, comment
+// via its stored text incl. delimiters). Used for full-fidelity reconstruction.
+static std::string trivia_text(TokenBase *tb)
+{
+    switch ( tb->type() )
+    {
+	case TokenType::ttSpace:   return std::string(((TokenSpace *)tb)->cnt, ' ');
+	case TokenType::ttTab:     return std::string(((TokenTab *)tb)->cnt, '\t');
+	case TokenType::ttEOL:     return std::string(((TokenEOL *)tb)->cnt, '\n');
+	case TokenType::ttComment: return ((TokenIdent *)tb)->str;
+	default:                   return std::string();
+    }
+}
+
 // get a real token (ignore whitespace and comments)
 TokenBase *Program::getRealToken()
 {
     TokenBase *tb;
+    std::string pending_trivia;   // full-fidelity: leading whitespace/comments
 
 	while ( (tb=getToken()) )
 	{
@@ -3906,13 +3921,62 @@ TokenBase *Program::getRealToken()
 	    case TokenType::ttTab:
 	    case TokenType::ttEOL:
 	    case TokenType::ttComment:
+		if ( keep_trivia )
+		    pending_trivia += trivia_text(tb);
 		continue;
 	    default:
+		if ( keep_trivia && !pending_trivia.empty() )
+		    tb->leading_trivia = std::move(pending_trivia);
 		return tb;
 	}
     }
 
+    // EOF: stash any accumulated trailing trivia for reconstruct_source().
+    if ( keep_trivia && !pending_trivia.empty() )
+	_trailing_trivia = std::move(pending_trivia);
     return NULL;
+}
+
+// Best-effort source spelling of a lex-time token. NOTE: numeric literals store
+// the parsed value, not the original text (0x1F -> "31"), and string escapes are
+// not preserved — true byte-faithful reconstruction needs tokens to retain raw
+// source text (a follow-on). Sufficient to demonstrate trivia retention on plain
+// source. Keywords/identifiers/types/comments are all TokenIdent-derived.
+static std::string token_spelling(TokenBase *tb)
+{
+    switch ( tb->type() )
+    {
+	case TokenType::ttString:
+	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) )
+		return std::string("\"") + ti->str + "\"";
+	    return std::string();
+	case TokenType::ttVariable:
+	    if ( TokenVar *tv = dynamic_cast<TokenVar *>(tb) ) return tv->var.name;
+	    return std::string();
+	case TokenType::ttInteger: return std::to_string(tb->ival());
+	case TokenType::ttReal:    return std::to_string(tb->dval());
+	case TokenType::ttOperator:
+	case TokenType::ttSymbol:  return std::string(1, (char)tb->get());
+	default:
+	    if ( TokenIdent *ti = dynamic_cast<TokenIdent *>(tb) ) return ti->str;
+	    if ( TokenMultiOp *to = dynamic_cast<TokenMultiOp *>(tb) ) return to->str;
+	    return std::string();
+    }
+}
+
+// Reconstruct source text from the token stream (full-fidelity mode): each
+// token's leading trivia followed by its spelling. Requires keep_trivia to have
+// been set before tokenizing.
+std::string Program::reconstruct_source()
+{
+    std::string out;
+    for ( TokenBase *tb : tokens )
+    {
+	out += tb->leading_trivia;
+	out += token_spelling(tb);
+    }
+    out += _trailing_trivia;   // whitespace/comments after the last token
+    return out;
 }
 
 // print out a token with syntax highlighting, to debug parser

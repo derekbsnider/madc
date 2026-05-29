@@ -74,6 +74,10 @@ public:
     int line;
     int column;
     std::streampos pos;
+    // Leading trivia (whitespace + comments) preserved before this token, for
+    // byte-faithful source reconstruction. Populated only in full-fidelity mode
+    // (Program::keep_trivia); empty in lean/batch mode (zero cost there).
+    std::string leading_trivia;
     // Current parse position — updated by nextToken(), inherited by
     // all new tokens so synthetic parser-created tokens automatically
     // get the position of the most recently consumed source token.

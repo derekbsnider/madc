@@ -425,6 +425,7 @@ int main(int argc, char **argv)
     bool use_cir_backend = false; // CIR: direct AST → c2mir (libc2mir)
     bool dump_cir = false;        // --dump-cir: dump CIR tree before checking
     bool dump_nodes = false;      // --dump-nodes: dump cir_node tree via madc walker
+    bool dump_source = false;     // --dump-source: full-fidelity source reconstruction (trivia round-trip)
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -492,6 +493,9 @@ int main(int argc, char **argv)
             dump_nodes = true;
             use_cir_backend = true;
             use_mir_backend = false;
+            filearg = i + 1;
+        } else if (strcmp(argv[i], "--dump-source") == 0) {
+            dump_source = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-c") == 0) {
             emit_c = true;
@@ -588,8 +592,16 @@ int main(int argc, char **argv)
 
     if ( argc >= 2 && filearg < argc )
     {
+	if ( dump_source )
+	    prog->keep_trivia = true;   // preserve whitespace/comments for round-trip
 	if ( !(tp=prog->tokenize(argv[filearg])) )
 	    return 0;
+
+	if ( dump_source )
+	{
+	    std::cout << prog->reconstruct_source();
+	    return 0;
+	}
 
 	if ( use_cir_backend )
 	{

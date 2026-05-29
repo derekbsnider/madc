@@ -997,6 +997,11 @@ public:
     throwstream Throw;			// throw an error
     int script_argc;			// argc for the .mad script
     char **script_argv;			// argv for the .mad script
+    bool keep_trivia = false;		// full-fidelity: preserve whitespace/comments
+					// as TokenBase::leading_trivia (IDE/.mc11);
+					// off by default → zero cost for batch
+    std::string _trailing_trivia;	// whitespace/comments after the last token
+					// (full-fidelity; reconstruct_source appends it)
     bool _include_iostream;		// #include <iostream> was seen during tokenization
     bool _include_stdio;		// #include <stdio.h> was seen during tokenization
     bool _include_string;		// #include <string> was seen during tokenization
@@ -1192,6 +1197,9 @@ public:
     TokenBase *getRealToken();
 //  TokenProgram *tokenize(std::istream &);
     TokenProgram *tokenize(const char *);
+    // Full-fidelity source reconstruction from the token stream (requires
+    // keep_trivia set before tokenizing). See TokenBase::leading_trivia.
+    std::string reconstruct_source();
     TokenProgram *tokenize_buffer(const std::string &source_text,
 				  const std::string &display_name);
     // C/C++ translation phase 6: adjacent string literals concatenate.
