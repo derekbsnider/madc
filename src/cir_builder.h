@@ -58,7 +58,7 @@ class CirBuilder {
 
 	// Build one N_MEMBER node for a struct/union member (shared by struct_def
 	// and the inline-struct path in typedef_decl).
-	node_t member_node(const memberpair_t &m);
+	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
 
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);
@@ -107,7 +107,8 @@ public:
 	// for a nested brace element (TokenStructLit) a LIST(INIT(LIST(), val), ...).
 	node_t init_value(TokenBase *elem);
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);
-	node_t param_decl(DataDef *ptype, const char *pname);
+	node_t param_decl(DataDef *ptype, const char *pname,
+			  const std::string &typedef_alias = std::string());
 
 	// ---- Output (Phase-2) ----
 	// A param of an output extern: its type-spec node codes + whether it is a pointer.

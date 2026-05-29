@@ -296,8 +296,45 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 
 static int dd_ptr_depth(DataDef *dd);  // defined below; counts int** -> 2
 
-node_t CirBuilder::param_decl(DataDef *ptype, const char *pname)
+// Peel DataDefCArray layers off a type, collecting fixed-array dimensions
+// outermost-first. `typedef unsigned long T[2]` -> elem=unsigned long,
+// dims=[2]. A runtime-sized CArray (count_expr != NULL) stops the peel and
+// contributes no dimension (it decays/uses a VLA path elsewhere).
+// Returns the innermost element type; appends each fixed dim to `dims`.
+static DataDef *peel_carray_dims(DataDef *dd, std::vector<uint32_t> &dims)
 {
+	while (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd)) {
+		if (ca->has_runtime_size() || !ca->element_type)
+			break;
+		dims.push_back((uint32_t)ca->count);
+		dd = ca->element_type;
+	}
+	return dd;
+}
+
+node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
+			      const std::string &typedef_alias)
+{
+	// Parameter declared via a typedef alias keeps the alias as the type spec
+	// (matches c2m and the var/member paths); explicit stars go on the
+	// declarator. This correctly renders `HARD_REG_SET *p` (a pointer to an
+	// array typedef) as `HARD_REG_SET *p` rather than peeling to `int *p`.
+	if (!typedef_alias.empty()) {
+		int stars = explicit_star_count(ptype, typedef_alias);
+		node_t pspec = type_list(ptype, typedef_alias);
+		node_t pdecl_list = list();
+		for (int s = 0; s < stars; s++)
+			append(pdecl_list, pointer());
+		node_t pdecl = node2(N_DECL, id(pname), pdecl_list);
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, pspec);
+		append(sd, pdecl);
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, ignore());
+		return sd;
+	}
+
 	DataDef *base_dd = ptype;
 	bool is_ptr = base_dd && base_dd->is_pointer();
 	DataDefPTR *ptr_dd = is_ptr ? dynamic_cast<DataDefPTR *>(base_dd) : NULL;
@@ -580,7 +617,25 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (v->is_fixed_array() && !v->dims.empty()) {
 		// One N_ARR per dimension, outer dimension first:
 		// int m[2][2] -> ARR(...,2) ARR(...,2)
-		for (size_t d = 0; d < v->dims.size(); d++) {
+		//
+		// When declared via an array typedef alias (`HARD_REG_SET x[2]` with
+		// `typedef T HARD_REG_SET[2]`), the parser flattens the typedef's own
+		// dims into v->dims, so v->dims = [typedef-dims..., own-dims...]. The
+		// alias spec (ID("HARD_REG_SET")) already implies the typedef's dims,
+		// so emit only the variable's OWN leading dims here — skip the trailing
+		// dims contributed by the alias.
+		size_t skip_tail = 0;
+		if (!v->typedef_name.empty() && m_prog) {
+			datatype_map_iter it = m_prog->datatype_map.find(v->typedef_name);
+			if (it != m_prog->datatype_map.end() && it->second) {
+				std::vector<uint32_t> tdims;
+				peel_carray_dims(&it->second->definition, tdims);
+				skip_tail = tdims.size();
+			}
+		}
+		size_t emit_count = v->dims.size() > skip_tail
+				? v->dims.size() - skip_tail : 0;
+		for (size_t d = 0; d < emit_count; d++) {
 			node_t size = integer(v->dims[d]);
 			node_t arr = node3(N_ARR, ignore(), list(), size);
 			append(decl_list, arr);
@@ -647,10 +702,29 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 	return stars < 0 ? 0 : stars;
 }
 
-node_t CirBuilder::member_node(const memberpair_t &m)
+node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 {
 	DataDef *mtype = m.second;            // full member type, stars included
 	const std::string &mtypedef = m.typedef_name;
+
+	// Fixed-array member dimensions, outermost first. The struct stores these
+	// in parallel arrays keyed by member name: member_dims for the explicit
+	// multi-dim shape, falling back to member_counts (a single flat count) for
+	// 1-D array members. A runtime-sized member (member_count_exprs != NULL)
+	// is a flexible/VLA-ish member and contributes no constant dimension here.
+	std::vector<uint32_t> mdims;
+	if (owner) {
+		std::string mname = m.first;
+		if (owner->m_is_array_decl(mname) && !owner->m_count_expr(mname)) {
+			const std::vector<uint32_t> *dv = owner->m_dims(mname);
+			if (dv && !dv->empty()) {
+				mdims = *dv;
+			} else {
+				size_t c = owner->m_count(mname);
+				if (c >= 1) mdims.push_back((uint32_t)c);
+			}
+		}
+	}
 
 	// Type specifier. A member declared via a typedef emits ID("alias")
 	// regardless of pointer-ness — the stars belong on the declarator, not
@@ -679,6 +753,9 @@ node_t CirBuilder::member_node(const memberpair_t &m)
 	} else if (mtype && mtype->is_pointer()) {
 		append(mdecl_list, pointer());
 	}
+	// Array member dimensions: short learned[16] -> ARR(16).
+	for (size_t d = 0; d < mdims.size(); d++)
+		append(mdecl_list, node3(N_ARR, ignore(), list(), integer(mdims[d])));
 	node_t mdecl = node2(N_DECL, mid, mdecl_list);
 
 	node_t member = simple(N_MEMBER, m.origin);
@@ -695,7 +772,7 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 	node_t member_list = list();
 
 	for (size_t i = 0; i < sdd->members.size(); i++) {
-		append(member_list, member_node(sdd->members[i]));
+		append(member_list, member_node(sdd->members[i], sdd));
 	}
 
 	node_t struct_node = node2(N_STRUCT, struct_id, member_list);
@@ -719,6 +796,14 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	node_t tl = list();
 	append(tl, simple(N_TYPEDEF));
 
+	// Peel any fixed-array layers: `typedef T NAME[2][3]` carries the element
+	// type in DataDefCArray::element_type and the dims as nested CArrays. The
+	// element type drives the spec list; the dims become N_ARR declarator
+	// suffixes below. Without this the CArray's dtRESERVED rawtype defaults to
+	// `int` and the dimensions are dropped entirely.
+	std::vector<uint32_t> arr_dims;
+	dd = peel_carray_dims(dd, arr_dims);
+
 	// Unwrap pointer for base type
 	DataDef *base_dd = dd;
 	bool is_ptr = dd->is_pointer();
@@ -740,7 +825,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 				node_t struct_id_node = id(sdd->name.c_str());
 				node_t ml = list();
 				for (size_t i = 0; i < sdd->members.size(); i++) {
-					append(ml, member_node(sdd->members[i]));
+					append(ml, member_node(sdd->members[i], sdd));
 				}
 				append(tl, node2(N_STRUCT, struct_id_node, ml));
 			}
@@ -756,6 +841,9 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	node_t decl_list = list();
 	if (is_ptr)
 		append(decl_list, pointer());
+	// Fixed-array dimensions, outermost first: T NAME[2][3] -> ARR(2) ARR(3).
+	for (size_t d = 0; d < arr_dims.size(); d++)
+		append(decl_list, node3(N_ARR, ignore(), list(), integer(arr_dims[d])));
 
 	node_t decl = node2(N_DECL, alias_id, decl_list);
 
@@ -792,9 +880,12 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 		for (size_t i = 0; i < fd->parameters.size(); i++) {
 			DataDef *ptype = fd->parameters[i];
 			const char *pname = "p";
-			if (tf->method && i < tf->method->parameters.size())
+			std::string ptypedef;
+			if (tf->method && i < tf->method->parameters.size()) {
 				pname = tf->method->parameters[i]->name.c_str();
-			append(param_list, param_decl(ptype, pname));
+				ptypedef = tf->method->parameters[i]->typedef_name;
+			}
+			append(param_list, param_decl(ptype, pname, ptypedef));
 		}
 	}
 
@@ -1371,9 +1462,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	} else {
 		for (size_t i = 0; i < fd->parameters.size(); i++) {
 			const char *pname = "p";
-			if (tf->method && i < tf->method->parameters.size())
+			std::string ptypedef;
+			if (tf->method && i < tf->method->parameters.size()) {
 				pname = tf->method->parameters[i]->name.c_str();
-			append(param_list, param_decl(fd->parameters[i], pname));
+				ptypedef = tf->method->parameters[i]->typedef_name;
+			}
+			append(param_list, param_decl(fd->parameters[i], pname, ptypedef));
 		}
 	}
 
