@@ -69,6 +69,11 @@ void emit_labels(FILE *f, node_t labels, CirEmitLang lang)
 void emit_declarator(FILE *f, node_t decl, CirEmitLang lang)
 {
 	if (!decl) return;
+	// Only a true N_DECL carries id + suffix-list. A bare N_IGNORE (used as
+	// an empty declarator, e.g. on a struct definition's SPEC_DECL) has no
+	// operands; calling op(decl, 1) on it walks past the end of an empty
+	// operand list, which c2mir_node_op does not guard (NL_NEXT(NULL)).
+	if (decl->code != N_DECL) { emit(f, decl, lang); return; }
 	node_t suffixes = op(decl, 1);       // N_LIST of N_POINTER / N_FUNC / N_ARR
 	if (suffixes)                        // pointer prefixes: one `*` each
 		for (int i = 0; ; i++) {
@@ -147,6 +152,46 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	case N_SHARE:
 		// single-operand wrapper around a type-specifier list
 		emit(f, op(n, 0), lang);
+		break;
+	case N_STRUCT:
+	case N_UNION: {
+		// [0]=tag id (N_ID or N_IGNORE) [1]=member list (N_LIST of N_MEMBER),
+		// or N_IGNORE for an incomplete/forward reference.
+		fputs(n->code == N_UNION ? "union" : "struct", f);
+		node_t tag = op(n, 0);
+		if (tag && tag->code != N_IGNORE) { fputc(' ', f); emit(f, tag, lang); }
+		node_t members = op(n, 1);
+		if (members && members->code != N_IGNORE) {
+			fputs(" {\n", f);
+			for (int i = 0; ; i++) {
+				node_t m = op(members, i);
+				if (!m) break;
+				emit(f, m, lang);
+				fputc('\n', f);
+			}
+			fputc('}', f);
+		}
+		break;
+	}
+	case N_MEMBER:
+		// [0]=N_SHARE(specs) [1]=declarator. Like a SPEC_DECL with no
+		// initializer; bit-field width (op(2)) is left unhandled for now.
+		emit(f, op(n, 0), lang);
+		fputc(' ', f);
+		emit_declarator(f, op(n, 1), lang);
+		fputc(';', f);
+		break;
+	case N_FIELD:
+		// [0]=object expression, [1]=member id (N_ID leaf — emit directly)
+		emit(f, op(n, 0), lang);
+		fputc('.', f);
+		emit(f, op(n, 1), lang);
+		break;
+	case N_DEREF_FIELD:
+		// [0]=pointer expression, [1]=member id
+		emit(f, op(n, 0), lang);
+		fputs("->", f);
+		emit(f, op(n, 1), lang);
 		break;
 	case N_ADD: case N_SUB: case N_MUL: case N_DIV: case N_MOD:
 	case N_EQ:  case N_NE:  case N_LT:  case N_LE: case N_GT: case N_GE:
