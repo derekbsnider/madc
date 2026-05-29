@@ -12,7 +12,9 @@
 #ifndef __MADC_CIR_H
 #define __MADC_CIR_H 1
 
+#include <cstdio>
 #include "mir.h"
+#include "cir_emit_c.h"   // CirEmitLang
 
 // Forward declarations (c2mir types)
 struct c2m_ctx;
@@ -55,5 +57,10 @@ int madc_cir_execute(Program *prog, const char *source_name,
 		     int user_argc, char **user_argv,
 		     bool dump_tree = false, bool dump_nodes = false,
 		     bool dump_checked = false);
+
+// Build the cir_node tree and render it as C source (no compile/run).
+// Backs --emit=c11|mc11. Returns 0 on success, -1 on build failure.
+int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
+		  CirEmitLang lang);
 
 #endif // __MADC_CIR_H

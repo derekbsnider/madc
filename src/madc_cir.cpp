@@ -30,6 +30,7 @@
 #include "madc.h"
 #include "madc_cir.h"
 #include "cir_builder.h"
+#include "cir_emit_c.h"
 
 extern "C" {
 #include "c2mir/c2mir_api.h"
@@ -1732,4 +1733,39 @@ int madc_cir_execute(Program *prog, const char *source_name,
     MIR_finish(ctx);
 
     return result;
+}
+
+// Build the cir_node tree and render it as C source (no compile/run).
+// Used by `--emit=c11|mc11`.
+int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
+		  CirEmitLang lang)
+{
+    (void)source_name;
+    MIR_context_t ctx = MIR_init();
+    c2mir_init(ctx);
+
+    c2m_ctx_t c2m = cir_init(ctx, /*debug_p=*/false);
+    if (!c2m) {
+	fprintf(stderr, "madc_cir_emit: cir_init failed\n");
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
+    CirBuilder builder(c2m);
+    node_t tree = builder.translate_module(prog);
+    if (!tree) {
+	fprintf(stderr, "madc_cir_emit: tree build failed\n");
+	cir_finish(c2m);
+	c2mir_finish(ctx);
+	MIR_finish(ctx);
+	return -1;
+    }
+
+    cir_emit_c(out, tree, lang);
+
+    cir_finish(c2m);
+    c2mir_finish(ctx);
+    MIR_finish(ctx);
+    return 0;
 }

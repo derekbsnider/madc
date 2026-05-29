@@ -25,11 +25,14 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
+#include "cir_emit_c.h"   // CirEmitLang
 
 extern int madc_cir_execute(Program *prog, const char *source_name,
                              int user_argc, char **user_argv,
                              bool dump_tree = false, bool dump_nodes = false,
                              bool dump_checked = false);
+extern int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
+                         CirEmitLang lang);
 
 using namespace std;
 
@@ -345,6 +348,8 @@ int main(int argc, char **argv)
     bool dump_nodes = false;      // --dump-nodes: dump cir_node tree via madc walker
     bool dump_source = false;     // --dump-source: full-fidelity source reconstruction (trivia round-trip)
     bool dump_checked = false;    // --dump-cir-checked: post-check tree dump (c2m -d stage)
+    bool do_emit = false;         // --emit=c11|mc11: render cir_node tree as C, no run
+    CirEmitLang emit_lang = celC11;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--verbose") == 0) {
@@ -388,27 +393,6 @@ int main(int argc, char **argv)
             if ( *name )
                 prog->disabled_builtin_names.insert(name);
             filearg = i + 1;
-        } else if (strncmp(argv[i], "--backend=", 10) == 0) {
-            const char *backend = argv[i] + 10;
-            // CIR (madc parse → cir_node → c2mir → MIR) is the sole backend.
-            // The asmjit JIT codegen path has been removed entirely.
-            if (strcmp(backend, "cir") == 0) {
-            } else if (strcmp(backend, "mir") == 0) {
-                // The standalone Gecko+MIR transpiler was removed; the CIR
-                // backend produces MIR via c2mir. Accept as a synonym.
-                std::cerr << "note: --backend=mir is deprecated; using the CIR backend "
-                             "(which produces MIR via c2mir)" << std::endl;
-            } else if (strcmp(backend, "jit") == 0 || strcmp(backend, "asmjit") == 0) {
-                std::cerr << "the asmjit JIT backend has been removed; the CIR "
-                             "backend (madc parse → c2mir → MIR) is the only backend"
-                          << std::endl;
-                return 1;
-            } else {
-                std::cerr << "Unknown backend: " << backend
-                          << " (only 'cir' is supported)" << std::endl;
-                return 1;
-            }
-            filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir") == 0) {
             dump_cir = true;
             filearg = i + 1;
@@ -421,12 +405,18 @@ int main(int argc, char **argv)
         } else if (strcmp(argv[i], "--dump-source") == 0) {
             dump_source = true;
             filearg = i + 1;
-        } else if (strcmp(argv[i], "--emit-c") == 0) {
-            // C11 / .mc11 emission is being rebuilt as a renderer over the
-            // cir_node tree (it previously came from the removed Gecko path).
-            std::cerr << "--emit-c is temporarily unavailable: the C11 emitter "
-                         "is being rebuilt on the CIR (cir_node) path" << std::endl;
-            return 1;
+        } else if (strncmp(argv[i], "--emit=", 7) == 0) {
+            // Render the cir_node tree (MC11-IR) as C source; do not run.
+            const char *lang = argv[i] + 7;
+            if (strcmp(lang, "c11") == 0)       emit_lang = celC11;
+            else if (strcmp(lang, "mc11") == 0) emit_lang = celMC11;
+            else {
+                std::cerr << "Unknown --emit target: " << lang
+                          << " (c11|mc11)" << std::endl;
+                return 1;
+            }
+            do_emit = true;
+            filearg = i + 1;
         } else if (strcmp(argv[i], "--std=c") == 0 || strcmp(argv[i], "--std=c11") == 0) {
             prog->language_std = Program::STD_C11;
             filearg = i + 1;
@@ -538,6 +528,10 @@ int main(int argc, char **argv)
 	prog->script_argc = argc - filearg;
 	prog->script_argv = argv + filearg;
 	g_active_program = prog.get();
+
+	// --emit=c11|mc11: render the cir_node tree as C source; do not run.
+	if (do_emit)
+		return madc_cir_emit(prog.get(), argv[filearg], stdout, emit_lang);
 
 	struct timeval before, after;
 	gettimeofday(&before, NULL);
