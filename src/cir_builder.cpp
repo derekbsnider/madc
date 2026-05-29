@@ -390,7 +390,8 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 }
 
 node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
-				const std::set<std::string> &emitted_structs)
+				const std::set<std::string> &emitted_structs,
+				bool force_incomplete_struct)
 {
 	if (!dd) return NULL;
 
@@ -408,8 +409,10 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	if (base_dd->is_struct()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 		if (sdd) {
-			if (emitted_structs.count(sdd->name) || sdd->members.empty()) {
-				// Reference previously-emitted struct
+			if (force_incomplete_struct || emitted_structs.count(sdd->name) || sdd->members.empty()) {
+				// Forward reference / already-emitted / incomplete:
+				// STRUCT(tag, IGNORE). The full body is emitted at the
+				// struct's own definition point.
 				append(tl, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
 			} else {
 				// Emit struct definition inline (typedef struct { ... } NAME)
@@ -1034,27 +1037,67 @@ node_t CirBuilder::translate_module(Program *prog)
 			funcs.push_back(tf);
 	}
 
-	// TODO: Walk prog->top_decls in source order once parser changes land.
-	// For now, use the same map-based passes as the old code.
+	// Helper: resolve the (possibly pointer-wrapped) struct behind a DataDef.
+	auto struct_behind = [](DataDef *dd) -> DataDefSTRUCT * {
+		DataDefSTRUCT *s = dynamic_cast<DataDefSTRUCT *>(dd);
+		if (!s) {
+			DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+			if (p) s = dynamic_cast<DataDefSTRUCT *>(p->base_type);
+		}
+		return s;
+	};
 
-	// Pass 0: Struct definitions
-	std::set<std::string> emitted_structs;
-	for (auto &kv : prog->struct_map) {
-		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(kv.second);
-		if (!sdd || sdd->members.empty()) continue;
-		if (emitted_structs.count(sdd->name)) continue;
-		emitted_structs.insert(sdd->name);
-		node_t sd = struct_def(sdd);
-		if (sd) append(top_list, sd);
+	// Pre-scan: structs that have a bare standalone definition entry
+	// (`struct X {...};`). A typedef that references such a struct is a
+	// forward reference and must emit STRUCT(tag, IGNORE) — the full body is
+	// emitted once at the bare dkStruct, matching c2m's source structure.
+	std::set<std::string> struct_def_points;
+	for (auto &td : prog->top_decls) {
+		if (td.kind == Program::DeclKind::dkStruct ||
+		    td.kind == Program::DeclKind::dkUnion) {
+			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
+			if (sdd && !sdd->members.empty())
+				struct_def_points.insert(sdd->name);
+		}
 	}
 
-	// Pass 0.5: Global variables
-	if (prog->tkProgram) {
-		for (auto *v : prog->tkProgram->variables) {
-			if (!v) continue;
-			if (dynamic_cast<FuncDef *>(v->type)) continue;
-			node_t gd = var_decl(v);
-			if (gd) append(top_list, gd);
+	// Pass 0: top-level declarations in source order (faithful mirror).
+	std::set<std::string> emitted_structs;
+	for (auto &td : prog->top_decls) {
+		switch (td.kind) {
+		case Program::DeclKind::dkTypedef: {
+			DataDefSTRUCT *sdd = struct_behind(td.dd);
+			// Forward ref iff the struct is defined by a separate bare
+			// dkStruct and hasn't been emitted yet -> STRUCT(tag, IGNORE).
+			bool forward = sdd && struct_def_points.count(sdd->name)
+					   && !emitted_structs.count(sdd->name);
+			node_t n = typedef_decl(td.name, td.dd, emitted_structs, forward);
+			if (n) append(top_list, n);
+			// A combined `typedef struct X {...} Y;` (no separate bare
+			// def) emits the body inline here -> mark it emitted.
+			if (sdd && !sdd->members.empty() && !struct_def_points.count(sdd->name))
+				emitted_structs.insert(sdd->name);
+			break;
+		}
+		case Program::DeclKind::dkStruct:
+		case Program::DeclKind::dkUnion: {
+			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
+			if (sdd && !sdd->members.empty() && !emitted_structs.count(sdd->name)) {
+				emitted_structs.insert(sdd->name);
+				node_t sd = struct_def(sdd);
+				if (sd) append(top_list, sd);
+			}
+			break;
+		}
+		case Program::DeclKind::dkGlobalVar: {
+			if (td.var && !dynamic_cast<FuncDef *>(td.var->type)) {
+				node_t gd = var_decl(td.var);
+				if (gd) append(top_list, gd);
+			}
+			break;
+		}
+		case Program::DeclKind::dkEnum:
+			break;
 		}
 	}
 

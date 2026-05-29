@@ -75,7 +75,8 @@ public:
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);
 	node_t param_decl(DataDef *ptype, const char *pname);
 	node_t typedef_decl(const std::string &alias, DataDef *dd,
-			    const std::set<std::string> &emitted_structs);
+			    const std::set<std::string> &emitted_structs,
+			    bool force_incomplete_struct = false);
 	node_t struct_def(DataDefSTRUCT *sdd);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
