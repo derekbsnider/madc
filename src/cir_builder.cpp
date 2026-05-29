@@ -439,7 +439,8 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 	std::vector<TokenBase *> vals;
 	TokenBase *n = top->right;
 	while (TokenOperator *o = dynamic_cast<TokenOperator *>(n)) {
-		if (o->id() != top->id()) break;
+		// A parenthesized `<<`/`>>` is a single value, not a chain link.
+		if (o->id() != top->id() || o->is_bracketed()) break;
 		vals.push_back(o->left);
 		n = o->right;
 	}

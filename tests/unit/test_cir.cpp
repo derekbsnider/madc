@@ -610,3 +610,12 @@ TEST_CASE("CirBuilder: ostream chains and types") {
     CHECK(cir_capture(std::string(P) + "int main() { double d = 1.5; cout << d; return 0; }") == "1.5");
     CHECK(cir_capture(std::string(P) + "int main() { cout << \"a\"; cerr << \"b\"; return 0; }") == "a");
 }
+
+TEST_CASE("CirBuilder: ostream parenthesized shift value") {
+    const char *P = "#include <iostream>\nusing namespace std;\n";
+    // (1 << 2) is ONE value (a shift result), not two chain links.
+    // madc parses << right-associatively, so 1 << 2 == 4 here; the point is
+    // it prints a single value, not "12".
+    CHECK(cir_capture(std::string(P) + "int main() { cout << (1 << 2); return 0; }") == "4");
+    CHECK(cir_capture(std::string(P) + "int main() { cout << \"a\" << (1 << 2) << \"b\"; return 0; }") == "a4b");
+}
