@@ -1414,54 +1414,27 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 			label = node1(N_CASE, translate_expr(tc->value), tc);
 		}
 
+		// Emit the case/default label as a labeled marker statement, then
+		// every statement in the case translated AS A STATEMENT. Previously
+		// the first non-return/break statement was sent to translate_expr,
+		// which mis-flagged statements like `if`/`for`/`while` inside a case
+		// as "unhandled expression" (679 such nodes in SMAUG's switch-heavy
+		// interpreter). A labeled `0;` marker carries the label uniformly,
+		// regardless of the first statement's kind.
+		append(block_items, node2(N_EXPR, node1(N_LIST, label), integer(0)));
 		for (size_t si = 0; si < tc->statements.size(); si++) {
 			node_t s = translate_stmt(tc->statements[si]);
-			if (!s) continue;
-			if (si == 0) {
-				node_t label_list = node1(N_LIST, label);
-				if (tc->statements.empty()) {
-					append(block_items, node2(N_EXPR, label_list, integer(0)));
-				} else {
-					TokenRETURN *ret = dynamic_cast<TokenRETURN *>(tc->statements[si]);
-					if (ret) {
-						node_t retexpr = ret->returns ? translate_expr(ret->returns) : ignore();
-						append(block_items, node2(N_RETURN, label_list, retexpr));
-					} else if (dynamic_cast<TokenBREAK *>(tc->statements[si])) {
-						append(block_items, node1(N_BREAK, label_list));
-					} else {
-						node_t inner = translate_expr(tc->statements[si]);
-						append(block_items, node2(N_EXPR, label_list, inner));
-					}
-				}
-			} else {
-				append(block_items, s);
-			}
+			if (s) append(block_items, s);
 		}
-
-		if (tc->statements.empty())
-			append(block_items, node2(N_EXPR, node1(N_LIST, label), integer(0)));
 	}
 
-	// Default case
+	// Separately-stored default case (not inline in ts->cases).
 	if (ts->defaultcase && ts->default_index < 0) {
 		TokenCASE *dc = ts->defaultcase;
-		node_t def_label = simple(N_DEFAULT);
+		append(block_items, node2(N_EXPR, node1(N_LIST, simple(N_DEFAULT)), integer(0)));
 		for (size_t si = 0; si < dc->statements.size(); si++) {
 			node_t s = translate_stmt(dc->statements[si]);
-			if (!s) continue;
-			if (si == 0) {
-				node_t label_list = node1(N_LIST, def_label);
-				TokenRETURN *ret = dynamic_cast<TokenRETURN *>(dc->statements[si]);
-				if (ret) {
-					node_t retexpr = ret->returns ? translate_expr(ret->returns) : ignore();
-					append(block_items, node2(N_RETURN, label_list, retexpr));
-				} else {
-					node_t inner = translate_expr(dc->statements[si]);
-					append(block_items, node2(N_EXPR, label_list, inner));
-				}
-			} else {
-				append(block_items, s);
-			}
+			if (s) append(block_items, s);
 		}
 	}
 
