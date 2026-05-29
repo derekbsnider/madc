@@ -370,6 +370,7 @@ static int64_t cir_run_builder(const char *source) {
     CirBuilder builder(c2m);
     node_t tree = builder.translate_module(prog.get());
     REQUIRE(tree != nullptr);
+    REQUIRE(cir_report_errors(stderr, tree) == 0);
 
     int ok = c2mir_compile_tree(mir_ctx, c2m, tree, "test_mod");
     REQUIRE(ok == 1);
