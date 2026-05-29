@@ -312,6 +312,33 @@ static DataDef *peel_carray_dims(DataDef *dd, std::vector<uint32_t> &dims)
 	return dd;
 }
 
+// Read element `index` of a static integer fixed-array's pre-baked storage
+// (`var->data`), decoded per the element type. The parser writes constant
+// initializers for `static`/global integer arrays directly into var->data and
+// clears the TokenDecl init_list (store_static_integer_array_value), so the CIR
+// path — which only inspects init_list — would otherwise lose the initializer.
+// Returns true and sets `out` on success; false for non-integer element types.
+static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out)
+{
+	if (!var || !var->data || !var->type || !var->type->is_integer())
+		return false;
+	const char *src = (const char *)var->data + index * var->type->size;
+	switch (var->type->rawtype()) {
+	case DataType::dtBOOL:
+	case DataType::dtCHAR:   out = *(const int8_t *)src;   return true;
+	case DataType::dtUINT8:  out = *(const uint8_t *)src;  return true;
+	case DataType::dtINT16:
+	case DataType::dtINT24:  out = *(const int16_t *)src;  return true;
+	case DataType::dtUINT16:
+	case DataType::dtUINT24: out = *(const uint16_t *)src; return true;
+	case DataType::dtINT32:  out = *(const int32_t *)src;  return true;
+	case DataType::dtUINT32: out = *(const uint32_t *)src; return true;
+	case DataType::dtINT64:  out = *(const int64_t *)src;  return true;
+	case DataType::dtUINT64: out = (int64_t)*(const uint64_t *)src; return true;
+	default: return false;
+	}
+}
+
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			      const std::string &typedef_alias)
 {
@@ -691,8 +718,21 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		// without setting has_brace_init, so key on a populated init_list
 		// too — the emitted INIT list is identical either way.
 		node_t lst = list();
-		for (size_t i = 0; i < tdecl->init_list.size(); i++)
-			append(lst, node2(N_INIT, list(), init_value(tdecl->init_list[i])));
+		if (tdecl->init_list.empty() && v->is_fixed_array() && v->data
+		    && v->type && v->type->is_integer()) {
+			// The parser baked a static/global integer array's constant
+			// initializer into v->data and cleared init_list. Reconstruct the
+			// INIT entries from the storage so the CIR backend sees them.
+			size_t total = v->total_elements();
+			for (size_t i = 0; i < total; i++) {
+				int64_t ev = 0;
+				if (!read_static_int_array_elem(v, i, ev)) { lst = ignore(); break; }
+				append(lst, node2(N_INIT, list(), integer(ev)));
+			}
+		} else {
+			for (size_t i = 0; i < tdecl->init_list.size(); i++)
+				append(lst, node2(N_INIT, list(), init_value(tdecl->init_list[i])));
+		}
 		init_node = lst;
 	} else if (tdecl && tdecl->initialize) {
 		// Scalar init: the parser stores `initialize` as a full
