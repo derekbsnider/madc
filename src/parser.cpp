@@ -14770,6 +14770,9 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	// Record file-scope variables in top_decls in source order for the CIR
 	// backend (a struct defined inline here, `struct X {...} v;`, rides in
 	// this declaration). Locals (inside a function compound) are excluded.
+	// Capture the index so the TokenDecl built later (which carries the
+	// initializer) can be linked back into this entry for CIR emission.
+	ssize_t global_top_decl_index = -1;
 	if ( var && (code == NULL || code == tkProgram) )
 	{
 	    Program::TopDecl gtd;
@@ -14780,6 +14783,7 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    gtd.file = tb->file;
 	    gtd.line = tb->line;
 	    gtd.origin = tb;
+	    global_top_decl_index = (ssize_t)top_decls.size();
 	    top_decls.push_back(gtd);
 	}
 	bool shared_global_extern_ref =
@@ -14975,6 +14979,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	}
 	update_pointer_object_size_hints(td->initialize);
+
+	// Link this fully-populated TokenDecl (carrying initialize / init_list)
+	// into the file-scope TopDecl recorded earlier, so the CIR backend can
+	// emit the global's initializer in its SPEC_DECL. The legacy JIT path
+	// keeps its own statement-stream handling and ignores this field.
+	if ( global_top_decl_index >= 0
+	  && (size_t)global_top_decl_index < top_decls.size() )
+	    top_decls[global_top_decl_index].decl = td;
 
 	// Comma-continuation: `int a, b = 1, c;` or
 	// `char a[8], b[16];` — after the first declarator, if the next token is

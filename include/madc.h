@@ -976,7 +976,8 @@ public:
 	const char *file;
 	int line;
 	TokenBase *origin;	// per-occurrence source token (alias/tag/decl head); NULL → use file/line
-	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr) {}
+	TokenDecl *decl;	// for global vars: the TokenDecl carrying initializer (initialize/init_list); NULL → no init
+	TopDecl() : kind(DeclKind::dkStruct), dd(nullptr), tdt(nullptr), var(nullptr), file(nullptr), line(0), origin(nullptr), decl(nullptr) {}
     };
     std::vector<TopDecl> top_decls;
     // Names registered via a user `typedef` (populated when a typedef is

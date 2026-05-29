@@ -409,6 +409,13 @@ TEST_CASE("CirBuilder: char literals") {
     CHECK(cir_run_builder("int main() { return 'Z' - 'A'; }") == 25);
 }
 
+TEST_CASE("CirBuilder: global initializers") {
+    CHECK(cir_run_builder("int g = 5; int main() { return g; }") == 5);
+    CHECK(cir_run_builder("int a = 3, b = 4; int main() { return a + b; }") == 7);
+    CHECK(cir_run_builder(
+        "int t[3] = {4,5,6}; int main() { return t[0]+t[1]+t[2]; }") == 15);
+}
+
 TEST_CASE("CirBuilder: arithmetic") {
     CHECK(cir_run_builder("int main() { return 2 + 3; }") == 5);
     CHECK(cir_run_builder("int main() { return 6 * 7; }") == 42);

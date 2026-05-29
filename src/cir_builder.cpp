@@ -1236,7 +1236,11 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 		case Program::DeclKind::dkGlobalVar: {
 			if (td.var && !dynamic_cast<FuncDef *>(td.var->type)) {
-				node_t gd = var_decl(td.var);
+				// Pass the linked TokenDecl as origin so var_decl's
+				// existing initializer logic (scalar + brace) emits the
+				// global's init in its SPEC_DECL — the single source for
+				// the CIR backend (tkProgram->statements is not walked here).
+				node_t gd = var_decl(td.var, td.decl);
 				if (gd) { stamp(gd, td); append(top_list, gd); }
 			}
 			break;
