@@ -439,3 +439,18 @@ TEST_CASE("CirBuilder: structs") {
 	"int main() { struct point p; p.x = 3; p.y = 4; return p.x + p.y; }"
     ) == 7);
 }
+
+TEST_CASE("CirBuilder: subscript-expr reads") {
+    // base is an expression (pointer arithmetic), not a bare name -> TokenSubscriptExpr
+    CHECK(cir_run_builder(
+	"int main() { int a[3]; a[0]=7; a[1]=0; a[2]=0; int *p; p=a; return (p+0)[0]; }") == 7);
+    // subscript-expr with a non-zero index offset on a sub-expression base
+    CHECK(cir_run_builder(
+	"int main() { int a[5]; a[0]=0; a[1]=0; a[2]=7; a[3]=0; a[4]=0; int *p; p=a; return (p+1)[1]; }") == 7);
+    // NOTE: multi-dim fixed-array reads (a[i][j] via TokenSubscript::extra_indices)
+    // are translated to nested N_IND below, but cannot be runtime-tested here yet:
+    // CirBuilder's array *declaration* lowering only emits the first dimension
+    // (cir_builder.cpp ~360, single N_ARR), so c2mir rejects `int a[2][2]` as a
+    // 1-D array. The read-side IND(IND(a,i),j) shape is verified against c2m via
+    // scripts/cir_diff.sh; runtime coverage lands when the decl lowering is fixed.
+}

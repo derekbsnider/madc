@@ -663,13 +663,27 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			return node1(N_DEREF, translate_expr(tde->expr), tb);
 	}
 
-	// Array subscript
+	// Array subscript on a named variable: name[i] (+ multi-dim extras)
 	{
 		TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb);
-		if (tsub)
-			return node2(N_IND,
+		if (tsub) {
+			node_t n = node2(N_IND,
 				id(tsub->object.name.c_str(), tb),
 				translate_expr(tsub->index), tb);
+			// Multi-dim fixed array: a[i][j] -> IND(IND(a,i),j)
+			for (size_t k = 0; k < tsub->extra_indices.size(); k++)
+				n = node2(N_IND, n, translate_expr(tsub->extra_indices[k]), tb);
+			return n;
+		}
+	}
+
+	// Array subscript on a sub-expression: expr[i] == IND(expr, i)
+	{
+		TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(tb);
+		if (tse)
+			return node2(N_IND,
+				translate_expr(tse->base_expr),
+				translate_expr(tse->index), tb);
 	}
 
 	// Struct member access
