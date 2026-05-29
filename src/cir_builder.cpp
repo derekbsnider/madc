@@ -361,6 +361,76 @@ void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
 	m_output_externs[symbol] = proto;
 }
 
+// ---- Stream chains (cout << x) ----
+
+CirBuilder::StreamKind CirBuilder::stream_ident_kind(TokenBase *tb)
+{
+	std::string name;
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(tb)) name = tv->var.name;
+	else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(tb)) name = ti->str;
+	else return SK_NONE;
+	if (name == "cout") return SK_COUT;
+	if (name == "cerr") return SK_CERR;
+	if (name == "clog") return SK_CLOG;
+	if (name == "cin")  return SK_CIN;
+	return SK_NONE;
+}
+
+const char *CirBuilder::stream_object_symbol(StreamKind k)
+{
+	switch (k) {
+	case SK_COUT: return "_ZSt4cout";
+	case SK_CERR: return "_ZSt4cerr";
+	case SK_CLOG: return "_ZSt4clog";
+	case SK_CIN:  return "_ZSt3cin";
+	default:      return "_ZSt4cout";
+	}
+}
+
+// extern char SYM;  (an opaque object whose address we take)
+void CirBuilder::need_stream_object(StreamKind k)
+{
+	const char *sym = stream_object_symbol(k);
+	if (m_stream_objects.count(sym)) return;
+	m_stream_objects.insert(sym);
+	node_t spec = list();
+	append(spec, simple(N_EXTERN));
+	append(spec, simple(N_CHAR));
+	node_t share = node1(N_SHARE, spec);
+	node_t decl = node2(N_DECL, id(sym), list());
+	node_t sd = simple(N_SPEC_DECL);
+	append(sd, share); append(sd, decl);
+	append(sd, ignore()); append(sd, ignore()); append(sd, ignore());
+	m_stream_object_protos.push_back(sd);
+}
+
+// PoC: int-only ostream chain.
+node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool is_out)
+{
+	need_stream_object(k);
+	// Collect chain values left-to-right.
+	std::vector<TokenBase *> vals;
+	std::vector<TokenOperator *> ops;
+	TokenBase *n = top;
+	while (TokenOperator *o = dynamic_cast<TokenOperator *>(n)) {
+		ops.push_back(o);
+		n = o->left;
+		if (stream_ident_kind(n) != SK_NONE) break;
+	}
+	for (size_t i = ops.size(); i-- > 0; )
+		vals.push_back(ops[i]->right);
+
+	node_t result = node1(N_ADDR, id(stream_object_symbol(k)));
+	need_output_extern("_ZNSolsEi", true, { { {N_VOID}, true }, { {N_INT}, false } });
+	for (size_t i = 0; i < vals.size(); i++) {
+		node_t args = list();
+		append(args, result);
+		append(args, translate_expr(vals[i]));
+		result = node2(N_CALL, id("_ZNSolsEi"), args, top);
+	}
+	return result;
+}
+
 node_t CirBuilder::init_value(TokenBase *elem)
 {
 	// A NULL element is a designated-initializer GAP: the parser normalizes
@@ -876,6 +946,20 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 		// Binary
 		if (top && top->left && top->right) {
+			// Stream chain: cout << x [<< y ...] -> direct calls on the
+			// mangled libstdc++ stream object. Intercept BEFORE the
+			// tkBSL->N_LSH (shift) translation below.
+			if (tb->id() == TokenID::tkBSL || tb->id() == TokenID::tkBSR) {
+				bool is_out = (tb->id() == TokenID::tkBSL);
+				TokenBase *leaf = top->left;
+				while (TokenOperator *o = dynamic_cast<TokenOperator *>(leaf)) {
+					if (o->id() != tb->id()) break;
+					leaf = o->left;
+				}
+				StreamKind k = stream_ident_kind(leaf);
+				bool ok = (is_out && (k==SK_COUT||k==SK_CERR||k==SK_CLOG)) || (!is_out && k==SK_CIN);
+				if (ok) return translate_stream_chain(top, k, is_out);
+			}
 			node_t left = translate_expr(top->left);
 			node_t right = translate_expr(top->right);
 
@@ -1421,6 +1505,8 @@ node_t CirBuilder::translate_module(Program *prog)
 	// Pass 0.8: output externs (madc_* builtins; libstdc++ stream symbols later)
 	for (auto &kv : m_output_externs)
 		append(top_list, kv.second);
+	for (node_t p : m_stream_object_protos)
+		append(top_list, p);
 
 	// Pass 1: Forward declarations
 	for (TokenFunc *tf : funcs) {

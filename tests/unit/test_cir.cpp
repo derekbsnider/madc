@@ -594,3 +594,8 @@ TEST_CASE("CirBuilder: multi-dim array read") {
     CHECK(cir_run_builder(
         "int main() { int a[2][3]; a[1][2] = 8; return a[1][2]; }") == 8);
 }
+
+TEST_CASE("CirBuilder: cout << int (PoC)") {
+    CHECK(cir_capture("#include <iostream>\nusing namespace std;\n"
+                      "int main() { cout << 5; return 0; }") == "5");
+}

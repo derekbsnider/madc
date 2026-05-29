@@ -27,6 +27,7 @@ class TokenDO;
 class TokenSWITCH;
 class TokenCASE;
 class TokenRETURN;
+class TokenOperator;
 class Variable;
 class DataDef;
 class DataDefSTRUCT;
@@ -40,6 +41,8 @@ class CirBuilder {
 	// actually uses (matches c2m's #include-driven scope).
 	std::set<std::string> referenced_funcs;
 	std::map<std::string, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
+	std::set<std::string> m_stream_objects;       // dedup stream object externs
+	std::vector<node_t>   m_stream_object_protos;  // extern object decls to emit
 	// Set during translate_module. Used to resolve a typedef alias to its
 	// base DataDef so we can tell the typedef's own pointer depth apart from
 	// the explicit stars written at the usage site.
@@ -115,6 +118,15 @@ public:
 				const std::vector<ExternParam> &params);
 	// Map a builtin print-fn name to its madc_* runtime symbol ("" if not one).
 	static const char *builtin_output_runtime(const std::string &name);
+
+	// ---- Stream chains (cout << x) ----
+	// PoC: lower a C++ stream chain to direct calls on the mangled
+	// libstdc++ stream object via the mangled operator<< symbol.
+	enum StreamKind { SK_NONE, SK_COUT, SK_CERR, SK_CLOG, SK_CIN };
+	StreamKind stream_ident_kind(TokenBase *tb);
+	static const char *stream_object_symbol(StreamKind k);
+	void need_stream_object(StreamKind k);
+	node_t translate_stream_chain(TokenOperator *top, StreamKind k, bool is_out);
 
 	node_t typedef_decl(const std::string &alias, DataDef *dd,
 			    const std::set<std::string> &emitted_structs,
