@@ -40,6 +40,10 @@ class CirBuilder {
 	// translate_module to emit extern prototypes only for funcs the source
 	// actually uses (matches c2m's #include-driven scope).
 	std::set<std::string> referenced_funcs;
+	// Global variables referenced while translating bodies. Used to emit
+	// extern decls for libc globals (stderr/stdout/stdin, registered lazily
+	// via addGlobal but absent from top_decls) so the emitted C compiles.
+	std::map<std::string, Variable *> referenced_globals;
 	std::map<std::string, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
 	std::set<std::string> m_stream_objects;       // dedup stream object externs
 	std::vector<node_t>   m_stream_object_protos;  // extern object decls to emit

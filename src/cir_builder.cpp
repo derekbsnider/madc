@@ -1039,6 +1039,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				const std::string &content = tv->var.name.substr(11);
 				return str(content.c_str(), content.size() + 1, tb);
 			}
+			// Record file-scope (non-local, non-param) references so
+			// translate_module can emit extern decls for libc globals
+			// (stderr/stdout/stdin) that were registered lazily and never
+			// reached top_decls. Locals/params already have in-scope decls.
+			if (!(tv->var.flags & vfLOCAL) && !(tv->var.flags & vfPARAM))
+				referenced_globals[tv->var.name] = &tv->var;
 			return id(tv->var.name.c_str(), tb);
 		}
 	}
@@ -1656,6 +1662,41 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	node_t decl = node2(N_DECL, func_id, decl_list);
 	node_t body = translate_block((TokenCpnd *)tf);
 
+	// A variadic function body references the parser-injected `__va_args`
+	// symbol (its va_start macro expands to `ap = __va_args`). Since the
+	// signature now uses real C `...` instead of a `__va_args` parameter,
+	// declare `__va_args` as a local va_list and prime it with
+	// __builtin_va_start(<last named param>) so the body's reference
+	// resolves and the emitted C compiles as standard C11.
+	if (fd->is_varargs && nparam > 0) {
+		const char *last_named = "p";
+		if (tf->method && nparam - 1 < tf->method->parameters.size())
+			last_named = tf->method->parameters[nparam - 1]->name.c_str();
+
+		// va_list __va_args;
+		node_t va_spec = type_list(NULL, "va_list");
+		node_t va_decl = node2(N_DECL, id("__va_args"), list());
+		node_t va_sd = simple(N_SPEC_DECL);
+		append(va_sd, node1(N_SHARE, va_spec));
+		append(va_sd, va_decl);
+		append(va_sd, ignore());
+		append(va_sd, ignore());
+		append(va_sd, ignore());
+
+		// __builtin_va_start(__va_args, last_named);
+		node_t vs_args = list();
+		append(vs_args, id("__va_args"));
+		append(vs_args, id(last_named));
+		node_t vs_call = node2(N_CALL, id("__builtin_va_start"), vs_args);
+
+		// Wrap: { va_list __va_args; __builtin_va_start(...); <orig body> }
+		node_t wrap_items = list();
+		append(wrap_items, va_sd);
+		append(wrap_items, node2(N_EXPR, list(), vs_call));
+		append(wrap_items, body);
+		body = node2(N_BLOCK, list(), wrap_items);
+	}
+
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
 }
 
@@ -1724,6 +1765,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		}
 	};
 	std::set<std::string> emitted_structs;
+	std::set<std::string> emitted_globals;
 	for (auto &td : prog->top_decls) {
 		switch (td.kind) {
 		case Program::DeclKind::dkTypedef: {
@@ -1758,6 +1800,7 @@ node_t CirBuilder::translate_module(Program *prog)
 				// the CIR backend (tkProgram->statements is not walked here).
 				node_t gd = var_decl(td.var, td.decl);
 				if (gd) { stamp(gd, td); append(top_list, gd); }
+				emitted_globals.insert(td.var->name);
 			}
 			break;
 		}
@@ -1841,6 +1884,57 @@ node_t CirBuilder::translate_module(Program *prog)
 		append(proto, ignore());
 		append(proto, ignore());
 		append(top_list, proto);
+	}
+
+	// Pass 0.78: extern declarations for referenced libc globals.
+	// stderr/stdout/stdin (and any future lazily-registered libc global) are
+	// added via addGlobal() during expression parsing, so they never appear
+	// in prog->top_decls and are never emitted by Pass 0. Without a decl the
+	// emitted C fails with "'stderr' undeclared". Emit `extern <type> name;`
+	// for every referenced global the top-level pass did not already define.
+	for (auto &kv : referenced_globals) {
+		const std::string &gname = kv.first;
+		Variable *gv = kv.second;
+		if (!gv || !gv->type) continue;
+		if (emitted_globals.count(gname)) continue;
+
+		// Skip function symbols referenced as values (function pointers):
+		// they already have a prototype/definition; an `extern <type> name;`
+		// would clash ("redeclared as different kind of symbol").
+		if (gv->type->is_function())
+			continue;
+		{
+			DataDefPTR *fp = dynamic_cast<DataDefPTR *>(gv->type);
+			if (fp && fp->base_type && fp->base_type->is_function())
+				continue;
+		}
+		if (user_func_names.count(gname) || prog->funcdef_map.count(gname))
+			continue;
+
+		DataDef *gdd = gv->type;
+		bool g_is_ptr = gdd->is_pointer();
+		DataDefPTR *gptr = g_is_ptr ? dynamic_cast<DataDefPTR *>(gdd) : NULL;
+		if (gptr && gptr->base_type) gdd = gptr->base_type;
+
+		node_t ext_list = list();
+		append(ext_list, simple(N_EXTERN));
+		append_type_specs(ext_list, gdd);
+		node_t share = node1(N_SHARE, ext_list);
+
+		node_t var_id = id(gname.c_str());
+		node_t decl_list = list();
+		if (g_is_ptr)
+			append(decl_list, pointer());
+		node_t decl = node2(N_DECL, var_id, decl_list);
+
+		node_t proto = simple(N_SPEC_DECL);
+		append(proto, share);
+		append(proto, decl);
+		append(proto, ignore());
+		append(proto, ignore());
+		append(proto, ignore());
+		append(top_list, proto);
+		emitted_globals.insert(gname);
 	}
 
 	// Pass 0.8: output externs (madc_* builtins; libstdc++ stream symbols later)
