@@ -1029,6 +1029,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			return node1(N_DEREF, translate_expr(tde->expr), tb);
 	}
 
+	// Dereference of a post-incremented/decremented pointer variable:
+	// `*p++` / `*p--` -> DEREF(POST_INC|POST_DEC(id(p))). The parser builds a
+	// TokenDerefStep for this idiom; without a case here it fell through to the
+	// error/IGNORE path, producing an empty operand (`( = ( == ))`).
+	{
+		TokenDerefStep *tds = dynamic_cast<TokenDerefStep *>(tb);
+		if (tds) {
+			node_t step = node1(tds->increment ? N_POST_INC : N_POST_DEC,
+					    id(tds->var.name.c_str(), tb), tb);
+			return node1(N_DEREF, step, tb);
+		}
+	}
+
 	// Array subscript on a named variable: name[i] (+ multi-dim extras)
 	{
 		TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb);
