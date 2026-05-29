@@ -679,8 +679,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);
 	node_t init_node = ignore();
 	TokenDecl *tdecl = dynamic_cast<TokenDecl *>(origin);
-	if (tdecl && tdecl->has_brace_init) {
+	if (tdecl && (tdecl->has_brace_init || !tdecl->init_list.empty())) {
 		// Brace init: LIST(INIT(LIST(), val), ...)
+		// Also the string-literal char-array form (`char s[3] = "ab";`):
+		// the parser expands the literal into per-char init_list entries
+		// without setting has_brace_init, so key on a populated init_list
+		// too — the emitted INIT list is identical either way.
 		node_t lst = list();
 		for (size_t i = 0; i < tdecl->init_list.size(); i++)
 			append(lst, node2(N_INIT, list(), init_value(tdecl->init_list[i])));
