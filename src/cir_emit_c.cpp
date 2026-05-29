@@ -129,14 +129,23 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		}
 		fputc(')', f);
 		break;
-	case N_TYPE:
+	case N_TYPE: {
 		emit(f, op(n, 0), lang);                 // specifiers
-		// declarator (abstract or named); op(1) may be N_DECL[N_IGNORE,...]
-		if (op(n, 1) && op(op(n, 1), 0) && op(op(n, 1), 0)->code != N_IGNORE) {
+		// Declarator (abstract or named). For a named declarator the id is
+		// non-ignore; for an abstract one (cast / sizeof type-name) the id is
+		// N_IGNORE but pointer/array suffixes (op(decl,1)) still matter, e.g.
+		// the '*' in (int *) or sizeof(int *).
+		node_t decl = op(n, 1);
+		bool named = decl && decl->code == N_DECL && op(decl, 0)
+			&& op(decl, 0)->code != N_IGNORE;
+		bool has_suffix = decl && decl->code == N_DECL && op(decl, 1)
+			&& op(op(decl, 1), 0);
+		if (named || has_suffix) {
 			fputc(' ', f);
-			emit_declarator(f, op(n, 1), lang);
+			emit_declarator(f, decl, lang);
 		}
 		break;
+	}
 	case N_SPEC_DECL:
 		// [0]=specifiers (often N_SHARE-wrapped) [1]=declarator
 		// [2],[3]=ignore (bit-field width etc.) [4]=initializer
@@ -346,6 +355,32 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		fputc('[', f);
 		if (op(n, 2) && op(n, 2)->code != N_IGNORE) emit(f, op(n, 2), lang);
 		fputc(']', f);
+		break;
+	case N_CAST:
+		// [0] = N_TYPE (target type), [1] = operand expression
+		fputs("((", f);
+		emit(f, op(n, 0), lang);
+		fputs(")", f);
+		emit(f, op(n, 1), lang);
+		fputc(')', f);
+		break;
+	case N_SIZEOF:
+		// [0] = N_TYPE (type-name operand)
+		fputs("sizeof(", f);
+		emit(f, op(n, 0), lang);
+		fputc(')', f);
+		break;
+	case N_EXPR_SIZEOF:
+		// [0] = expression operand
+		fputs("sizeof(", f);
+		emit(f, op(n, 0), lang);
+		fputc(')', f);
+		break;
+	case N_ALIGNOF:
+		// [0] = N_TYPE operand
+		fputs("_Alignof(", f);
+		emit(f, op(n, 0), lang);
+		fputc(')', f);
 		break;
 	case N_NOT:
 		fputc('(', f); fputc('!', f); emit(f, op(n, 0), lang); fputc(')', f);
