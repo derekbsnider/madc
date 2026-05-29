@@ -956,15 +956,19 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	node_t ret_type = type_list(ret_dd);
 	node_t share = node1(N_SHARE, ret_type);
 
-	// Parameters
+	// Parameters. A variadic function carries a trailing synthetic param
+	// (the parser pushes a ddINT64 placeholder when it sees `...`); drop it
+	// and emit N_DOTS instead so the prototype is truly variadic.
 	node_t param_list = list();
-	if (fd->parameters.empty()) {
+	size_t nparam = fd->parameters.size();
+	if (fd->is_varargs && nparam > 0) nparam--;
+	if (nparam == 0 && !fd->is_varargs) {
 		node_t void_spec = node1(N_LIST, simple(N_VOID));
 		node_t void_decl = node2(N_DECL, ignore(), list());
 		node_t void_param = node2(N_TYPE, void_spec, void_decl);
 		append(param_list, void_param);
 	} else {
-		for (size_t i = 0; i < fd->parameters.size(); i++) {
+		for (size_t i = 0; i < nparam; i++) {
 			DataDef *ptype = fd->parameters[i];
 			const char *pname = "p";
 			std::string ptypedef;
@@ -975,6 +979,8 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 			append(param_list, param_decl(ptype, pname, ptypedef));
 		}
 	}
+	if (fd->is_varargs)
+		append(param_list, simple(N_DOTS));
 
 	node_t func_inner = node1(N_FUNC, param_list);
 
@@ -1615,14 +1621,18 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 
 	node_t ret_type = type_list(ret_dd);
 
-	// Parameters
+	// Parameters. A variadic function carries a trailing synthetic param
+	// (the parser pushes a ddINT64 placeholder when it sees `...`); drop it
+	// and emit N_DOTS instead so the definition is truly variadic.
 	node_t param_list = list();
-	if (fd->parameters.empty()) {
+	size_t nparam = fd->parameters.size();
+	if (fd->is_varargs && nparam > 0) nparam--;
+	if (nparam == 0 && !fd->is_varargs) {
 		node_t void_spec = node1(N_LIST, simple(N_VOID));
 		node_t void_decl = node2(N_DECL, ignore(), list());
 		append(param_list, node2(N_TYPE, void_spec, void_decl));
 	} else {
-		for (size_t i = 0; i < fd->parameters.size(); i++) {
+		for (size_t i = 0; i < nparam; i++) {
 			const char *pname = "p";
 			std::string ptypedef;
 			if (tf->method && i < tf->method->parameters.size()) {
@@ -1632,6 +1642,8 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 			append(param_list, param_decl(fd->parameters[i], pname, ptypedef));
 		}
 	}
+	if (fd->is_varargs)
+		append(param_list, simple(N_DOTS));
 
 	node_t func_inner = node1(N_FUNC, param_list);
 
