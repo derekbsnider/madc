@@ -8388,8 +8388,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( !tb ) { done = true; break; }
 		    continue;
 		}
-		// new ClassName(args) in expression context
-		if ( tb->id() == TokenID::tkNEW )
+		// new ClassName(args) in expression context. After `.` or `->`,
+		// C code can use `new` as a member name.
+		if ( tb->id() == TokenID::tkNEW
+		  && (!prevToken()
+		   || (prevToken()->id() != TokenID::tkDot
+		    && prevToken()->id() != TokenID::tkDeRef))
+		  && peekToken()
+		  && peekToken()->type() == TokenType::ttIdentifier )
 		{
 		    TokenBase *new_node = ((TokenKeyword *)tb)->parse(*this);
 		    if ( new_node )
@@ -11312,6 +11318,10 @@ static bool is_contextual_identifier_token(TokenBase *tb)
     switch ( tb->id() )
     {
 	case TokenID::tkCLASS:
+	case TokenID::tkNAMESPACE:
+	case TokenID::tkUSING:
+	case TokenID::tkPREFER:
+	case TokenID::tkDEFER:
 	case TokenID::tkVECTOR:
 	case TokenID::tkMAP:
 	case TokenID::tkSET:
@@ -11321,6 +11331,9 @@ static bool is_contextual_identifier_token(TokenBase *tb)
 	case TokenID::tkTRY:
 	case TokenID::tkCATCH:
 	case TokenID::tkTHROW:
+	case TokenID::tkNEW:
+	case TokenID::tkDELETE:
+	case TokenID::tkOPEROVER:
 	    return true;
 	default:
 	    return false;
@@ -11340,13 +11353,20 @@ static std::string contextual_identifier_name(TokenBase *tb)
 	    return td->str;
     }
     if ( tb->id() == TokenID::tkCLASS
+	|| tb->id() == TokenID::tkNAMESPACE
+	|| tb->id() == TokenID::tkUSING
+	|| tb->id() == TokenID::tkPREFER
+	|| tb->id() == TokenID::tkDEFER
 	|| tb->id() == TokenID::tkVECTOR
 	|| tb->id() == TokenID::tkMAP
 	|| tb->id() == TokenID::tkSET
 	|| tb->id() == TokenID::tkLIST
 	|| tb->id() == TokenID::tkTRY
 	|| tb->id() == TokenID::tkCATCH
-	|| tb->id() == TokenID::tkTHROW )
+	|| tb->id() == TokenID::tkTHROW
+	|| tb->id() == TokenID::tkNEW
+	|| tb->id() == TokenID::tkDELETE
+	|| tb->id() == TokenID::tkOPEROVER )
 	return ((TokenKeyword *)tb)->str;
     return "";
 }
@@ -15727,6 +15747,13 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	      && peekToken()->id() != TokenID::tkOpBrc )
 	    {
 		DBG(std::cout << "parseStatement() 'try' used as identifier" << std::endl);
+		resetPrevToken();
+		return parseExpression(tb);
+	    }
+	    if ( tb->id() == TokenID::tkNEW
+	      && (!peekToken() || peekToken()->type() != TokenType::ttIdentifier) )
+	    {
+		DBG(std::cout << "parseStatement() 'new' used as identifier" << std::endl);
 		resetPrevToken();
 		return parseExpression(tb);
 	    }

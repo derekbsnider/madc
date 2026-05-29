@@ -1221,6 +1221,13 @@ public:
     inline void resetPrevToken() { _prv_token = NULL; }
     inline void pushToken(TokenBase *t) { tokens.push_front(t); }
 
+    inline bool keywordStartsUnaryOperandContext(TokenID id)
+    {
+	return id == TokenID::tkRETURN
+	    || id == TokenID::tkCASE
+	    || id == TokenID::tkTHROW;
+    }
+
     // helper: is prevToken in a position where the next operator would be unary?
     // true when prevToken is NULL, ;, {, (, ,, =, or any operator except ) ],
     // and postfix ++/--
@@ -1234,10 +1241,12 @@ public:
 	if ( _prv_token->is_operator()
 	&&   id != TokenID::tkClBrk && id != TokenID::tkClSqr
 	&&   id != TokenID::tkInc && id != TokenID::tkDec ) return true;
-	// Keywords like `return`, `if`, `while`, `case` open an expression
-	// context — the following `-` should be unary negation, not binary
-	// subtraction with a missing left operand.
-	if ( _prv_token->type() == TokenType::ttKeyword ) return true;
+	// Only expression-leading keywords open a unary operand context.
+	// Contextual keyword identifiers such as `class` can also appear as
+	// member names; after `p->class`, a following `&&` is binary logic,
+	// not GNU label-address syntax.
+	if ( _prv_token->type() == TokenType::ttKeyword )
+	    return keywordStartsUnaryOperandContext(id);
 	return false;
     }
     // helper: is prevToken in a position where the next operator would be postfix?
@@ -1246,8 +1255,8 @@ public:
     {
 	if ( !_prv_token ) return false;
 	TokenID id = _prv_token->id();
-	// Keywords aren't values — they open expression contexts, not close them.
-	if ( _prv_token->type() == TokenType::ttKeyword ) return false;
+	if ( _prv_token->type() == TokenType::ttKeyword )
+	    return !keywordStartsUnaryOperandContext(id);
 	// Symbols that open or continue expression contexts aren't values
 	// either — `{`, `(`, `,`, `;`, `=` mean the next `-` / `!` is
 	// unary, not binary. Without this guard `int x[] = { -5 };`
