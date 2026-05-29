@@ -337,9 +337,15 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 
 	DataDef *base_dd = ptype;
 	bool is_ptr = base_dd && base_dd->is_pointer();
-	DataDefPTR *ptr_dd = is_ptr ? dynamic_cast<DataDefPTR *>(base_dd) : NULL;
-	if (ptr_dd && ptr_dd->base_type)
-		base_dd = ptr_dd->base_type;
+	// Peel ALL pointer levels to the innermost base type. A single peel left
+	// `struct node **p` with base = `DataDefPTR(struct node)`, which is not a
+	// struct, so type_list fell through to the default `int` spec — dropping
+	// the struct/real base type for any multi-level pointer parameter.
+	while (base_dd && base_dd->is_pointer()) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base_dd);
+		if (!p || !p->base_type) break;
+		base_dd = p->base_type;
+	}
 
 	node_t pspec = type_list(base_dd);
 	node_t pid = id(pname);
@@ -565,9 +571,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
-	DataDefPTR *ptr_dd = is_ptr ? dynamic_cast<DataDefPTR *>(base_dd) : NULL;
-	if (ptr_dd && ptr_dd->base_type)
-		base_dd = ptr_dd->base_type;
+	// Peel ALL pointer levels to the innermost base type (struct node ** -> the
+	// struct, not the intermediate DataDefPTR which type_list would render as
+	// `int`). The star count is recovered separately via dd_ptr_depth below.
+	while (base_dd && base_dd->is_pointer()) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base_dd);
+		if (!p || !p->base_type) break;
+		base_dd = p->base_type;
+	}
 
 	// A variable whose type is an anonymous aggregate (`struct { ... } x;`)
 	// has no tag to forward-reference, so the body must be emitted inline in
