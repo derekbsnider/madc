@@ -223,6 +223,16 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 {
 	if (!dd) { append(lst, simple(N_INT)); return; }
 
+	// C99 _Complex: emit base-type spec(s) followed by N_COMPLEX.
+	// c2mir natively supports _Complex (spec list e.g. [N_DOUBLE, N_COMPLEX]).
+	// DataDefCOMPLEX IS-A DataDefSTRUCT, so callers must route it here rather
+	// than into the N_STRUCT path (which would emit a bogus `struct double _Complex`).
+	if (dd->is_complex()) {
+		append_type_specs(lst, ((DataDefCOMPLEX *)dd)->element_type);
+		append(lst, simple(N_COMPLEX));
+		return;
+	}
+
 	DataType dt = dd->rawtype();
 	switch (dt) {
 	case DataType::dtVOID:   append(lst, simple(N_VOID)); break;
@@ -266,7 +276,8 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 	}
 
 	// Struct types: LIST(STRUCT(ID("name"), IGNORE))
-	if (dd && dd->is_struct()) {
+	// _Complex is a DataDefSTRUCT subclass but must use the native spec path.
+	if (dd && dd->is_struct() && !dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
 		if (sdd) {
 			node_t sref = node2(N_STRUCT, id(sdd->name.c_str()), ignore());
@@ -532,7 +543,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (v->flags & vfSTATIC) {
 		node_t new_list = list();
 		append(new_list, simple(N_STATIC));
-		if (base_dd && base_dd->is_struct()) {
+		if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 			if (sdd)
 				append(new_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
@@ -716,7 +727,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 		base_dd = ptr_dd->base_type;
 
 	// Type specifier
-	if (base_dd->is_struct()) {
+	if (base_dd->is_struct() && !base_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 		if (sdd) {
 			if (force_incomplete_struct || emitted_structs.count(sdd->name) || sdd->members.empty()) {
@@ -1517,7 +1528,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		// Build: EXTERN + type spec
 		node_t ext_list = list();
 		append(ext_list, simple(N_EXTERN));
-		if (ret_dd && ret_dd->is_struct()) {
+		if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ret_dd);
 			if (sdd)
 				append(ext_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));

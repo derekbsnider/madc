@@ -482,6 +482,7 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	case N_SIGNED:   fputs("signed", f); break;
 	case N_DOUBLE:   fputs("double", f); break;
 	case N_FLOAT:    fputs("float", f); break;
+	case N_COMPLEX:  fputs("_Complex", f); break;
 	case N_BOOL:     fputs("_Bool", f); break;
 	case N_CONST:    fputs("const", f); break;
 	case N_VOLATILE: fputs("volatile", f); break;
