@@ -69,3 +69,53 @@ act_move/ibuild/const/db) — likely the next cluster. Then `c2mir` clean →
 **MIR-gen → JIT**, then link + boot against `MadSMAUG/runtime/` (login → the
 old serpent-combat benchmark). See `claude_status.json.smaug_compile` and
 agent memory `project_cir_fidelity_suite` for full context.
+
+---
+
+## 2026-05-29 progress + course-correction
+
+**Landed (committed `2ec34ff`, integration 302→303, fnptr.c FIDELITY-OK):**
+- **Part B renderer (`cir_emit_c.cpp`):** `emit_declarator` rewritten flat→spiral.
+  The suffix list is c2m innermost-first; a pointer binding inside a func/array
+  suffix is parenthesized — `int (*fp)(int)`, `char *(*fp)(void)`. Verified
+  against `c2m -d`. All 20 prior reducers render byte-identically (only fn-ptr
+  declarators, where a POINTER precedes a FUNC/ARR, change).
+- **Part A builder (scalar) (`cir_builder.cpp`):** `DataDefFPTR` no longer emits
+  `long`. `fnptr_func_node` + `fnptr_decl_pieces` build `ret (*name)(params)`
+  with order `[lead-dims…, POINTER, FUNC, ret-stars…]`. Wired into `var_decl`
+  (scalar fn-ptr vars) and `param_decl` (fn-ptr params).
+
+**Two premises in this plan were WRONG — corrected by measurement:**
+1. The 159 SMAUG c2mir **fatal** errors are **NOT** fn-ptr-dominated. They are
+   dominated by **96 "excess elements in array/struct/union initializer"** (2D
+   brace init, e.g. `act_move.c:64` `char * const sect_names[SECT_MAX][2]`).
+   The fn-ptr "returning pointer without cast" / "incompatible pointer types"
+   were among the **2421 warnings**, not the fatal 159. ⇒ The highest-value
+   SMAUG target now is the **2D-array init bug**, not more fn-ptr work.
+2. Fixing fn-ptr **typedefs + struct members** at the *emitter* layer **cannot**
+   be net-positive on its own — it **regresses** SMAUG (159→163 or →176).
+
+**Why the typedef/member emitter fix regresses (root cause = parser layer):**
+SMAUG's `typedef void DO_FUN(args)` is a **function** typedef (no `*`). It is
+used two ways: `DECLARE_DO_FUN(do_north)` ⇒ `DO_FUN do_north` (a *function*
+declaration) and `DO_FUN *do_fun` (a struct-member *pointer*). The parser
+**collapses both `DO_FUN *p` and `DO_FUN g` into the same bare `DataDefFPTR`**
+(typedef alias set, **0 recoverable stars** — confirmed: both emit `DO_FUN p`).
+So the emitter cannot tell pointer-use from function-decl-use:
+- emit `typedef void DO_FUN(args)` (function form) ⇒ `DO_FUN *p`/member lose the
+  `*` → function-typed lvalues → "lvalue required as left operand" (→176).
+- emit `typedef void (*DO_FUN)(args)` (pointer form) ⇒ the `DECLARE_DO_FUN`
+  `DO_FUN do_north` becomes a pointer **variable** conflicting with the function
+  definition → "repeated declaration" (+4 → 163).
+
+**Prerequisite (deepest layer, Task #5):** the parser must record the source
+`*` on fn-ptr-typedef variable/param declarations (pointer var → 1 star;
+`DECLARE_DO_FUN` function decl → 0 stars / function type). Only then can the
+typedef emit as a function typedef while pointer uses keep their `*`.
+
+**Stashed** (recoverable; `git stash list` → "WIP fnptr typedef+member emitter"):
+`typedef_decl` fn-ptr branch, `member_node` fn-ptr branch, `fnptr_alias_stars`,
+the `fnptr_decl_pieces(FuncDef*, bool emit_pointer, …)` generalization, and a
+`DataDefFPTR::ptr_syntax` flag (Form-1 typedef=false / Form-2=true, set in
+`parser.cpp`). Unstash after Task #5 and re-gate (fnptr.c FIDELITY-OK,
+fulltest ≥303, SMAUG fatal-error count must DROP, 0 untranslatable).
