@@ -12474,10 +12474,10 @@ TokenBase *TokenMatch::parse(Program &pgm)
 
 // STL container parse functions removed — ns_stl.cpp was a proof-of-concept.
 // Template instantiation will be generated on demand by the transpiler.
-TokenBase *TokenVECTOR::parse(Program &pgm) { pgm.Throw(this) << "vector<T> requires --backend=mir (template instantiation)" << flush; return this; }
-TokenBase *TokenMAP::parse(Program &pgm) { pgm.Throw(this) << "map<K,V> requires --backend=mir (template instantiation)" << flush; return this; }
-TokenBase *TokenSET::parse(Program &pgm) { pgm.Throw(this) << "set<T> requires --backend=mir (template instantiation)" << flush; return this; }
-TokenBase *TokenLIST::parse(Program &pgm) { pgm.Throw(this) << "list<T> requires --backend=mir (template instantiation)" << flush; return this; }
+TokenBase *TokenVECTOR::parse(Program &pgm) { pgm.Throw(this) << "vector<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
+TokenBase *TokenMAP::parse(Program &pgm) { pgm.Throw(this) << "map<K,V> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
+TokenBase *TokenSET::parse(Program &pgm) { pgm.Throw(this) << "set<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
+TokenBase *TokenLIST::parse(Program &pgm) { pgm.Throw(this) << "list<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
 
 
 TokenBase *Program::parseKeyword(TokenKeyword *tk)

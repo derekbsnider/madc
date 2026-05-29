@@ -13,6 +13,17 @@
 # Diagnostic tool, not a pass/fail CI gate. Generic — no per-test logic.
 set -u
 
+# Corpus mode: run every integration test + fidelity reducer through the gate.
+if [ "${1:-}" = "--all" ]; then
+	for t in tests/*.mad tests/fidelity/*.c; do
+		b=$(basename "$t" | sed 's/\.[^.]*$//')
+		[ "$b" = "include_helper" ] && continue
+		[ -f "tests/$b.mir_skip" ] && continue
+		timeout 20 bash "$0" "$t" 2>/dev/null | head -1
+	done
+	exit 0
+fi
+
 src="$1"
 base=$(basename "$src" | sed 's/\.[^.]*$//')
 work=tmp/fid
