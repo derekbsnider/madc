@@ -12,7 +12,7 @@ INSTALL_PROGRAM ?= $(INSTALL) -m 755
 INSTALL_DIR ?= $(INSTALL) -d
 #CFLAGS = -O3 -std=c++14 -stdlib=libc++ -Wall -Wno-nested-anon-types -Wno-gnu-anonymous-struct -Wunused
 HFILES	= madc.h datadef.h tokens.h datatokens.h
-CORE_OFILES = lexer.o parser.o typesafe.o compiler.o compiler_builtins.o compiler_control_flow.o compiler_operators.o madc_ir.o madc_elf.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o va_helpers.o exception_runtime.o pch.o embedded_headers.o precompiled_headers.o madc_grammar.o madc_tokenizer.o madc_sema.o madc_emit_c.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o madc.o
+CORE_OFILES = lexer.o parser.o typesafe.o compiler.o compiler_builtins.o compiler_control_flow.o compiler_operators.o madc_ir.o madc_elf.o madc_value.o madc_error.o madc_program.o madc_api.o madc_c_api.o madc_globals.o ns_common.o ns_php.o ns_perl.o ns_python.o ns_ruby.o ns_js.o ns_rust.o va_helpers.o exception_runtime.o pch.o embedded_headers.o precompiled_headers.o madc_mir_backend.o madc_mangle.o madc_cir.o cir_builder.o madc.o
 MADDAT_OFILES = $(MADC_STORAGE_DB_OFILES)
 MADHDRS = $(wildcard ../include/madc/*)
 LIBMADDHDRS = $(wildcard ../include/libmadc/*.h)
@@ -27,9 +27,8 @@ OPTIONAL_CPPFLAGS ?=
 OPTIONAL_LIBS ?=
 MADC_STORAGE_DB_OFILES ?= madcdat_storage.o
 HAVE_MADCDAT ?= 1
-GECKODIR = ../lib/gecko
 MIRDIR	= /workspace/mir
-DEFINES	= -I$(INCDIR) -I$(GECKODIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
+DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
 #LIBS	= -lreadline -lasmjit
 LIBS	= -L/usr/local/lib -Wl,-rpath,/usr/local/lib -rdynamic -lasmjit -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 MIRLIB	= $(MIRDIR)/libmir.a
@@ -41,7 +40,6 @@ else
 OFILES = $(CORE_OFILES)
 endif
 
-GECKO_OBJ = $(OBJDIR)/gecko.o
 OBJECTS = $(patsubst %,$(OBJDIR)/%,$(OFILES))
 PIC_OBJECTS = $(patsubst %,$(PICOBJDIR)/%,$(OFILES))
 MADDAT_OBJECTS = $(patsubst %,$(OBJDIR)/%,$(MADDAT_OFILES))
@@ -51,7 +49,7 @@ MADC_SOVERSION ?= $(firstword $(subst ., ,$(MADC_VERSION)))
 LIBMADC_SHARED = $(LIBDIR)/libmadc.so
 LIBMADC_STATIC = $(LIBDIR)/libmadc.a
 # Objects for the library: everything except the main() driver
-LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS)) $(GECKO_OBJ)
+LIBMADC_STATIC_OBJS = $(filter-out $(OBJDIR)/madc.o, $(OBJECTS))
 pkgconfigdir ?= $(libdir)/pkgconfig
 
 TESTDIR  = ../tests/unit
@@ -158,9 +156,6 @@ $(MADDAT_ARCHIVE): $(MADDAT_OBJECTS)
 
 embedded_headers.cpp: $(MADHDRS)
 	../scripts/gen_embedded_headers.sh
-
-$(GECKO_OBJ): $(GECKODIR)/gecko.c $(GECKODIR)/gecko.h
-	$(CC) -c -o $@ -std=gnu11 -O3 -DNDEBUG -I$(GECKODIR) $<
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
 	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<

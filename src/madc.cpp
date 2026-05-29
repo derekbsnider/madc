@@ -26,20 +26,7 @@
 #include "datatokens.h"
 #include "madc.h"
 #include "madc_pch.h"
-#include "madc_sema.h"
 
-extern "C" {
-struct gp_tree_node;
-}
-
-// Transpiler pipeline (Gecko + MIR)
-extern struct gp_tree_node *madc_gecko_parse(std::deque<TokenBase *> *tokens,
-                                              int *out_ambiguity);
-extern void madc_gecko_free_tree(struct gp_tree_node *root);
-extern std::string madc_emit_c(struct gp_tree_node *root, SemaInfo *sema);
-extern int madc_mir_execute(const std::string &c_source,
-                             const std::string &source_name,
-                             int user_argc, char **user_argv);
 extern int madc_cir_execute(Program *prog, const char *source_name,
                              int user_argc, char **user_argv,
                              bool dump_tree = false, bool dump_nodes = false,
@@ -421,9 +408,7 @@ int main(int argc, char **argv)
     const char *emit_executable_path = NULL;
     const char *emit_function_name = NULL;
     bool emit_pch = false;
-    bool emit_c = false;
-    bool use_mir_backend = true;  // MIR is the default backend
-    bool use_cir_backend = false; // CIR: direct AST → c2mir (libc2mir)
+    bool use_cir_backend = true;  // CIR (madc parse → cir_node → c2mir) is the default backend
     bool dump_cir = false;        // --dump-cir: dump CIR tree before checking
     bool dump_nodes = false;      // --dump-nodes: dump cir_node tree via madc walker
     bool dump_source = false;     // --dump-source: full-fidelity source reconstruction (trivia round-trip)
@@ -473,41 +458,44 @@ int main(int argc, char **argv)
             filearg = i + 1;
         } else if (strncmp(argv[i], "--backend=", 10) == 0) {
             const char *backend = argv[i] + 10;
-            if (strcmp(backend, "mir") == 0)
-                use_mir_backend = true;
-            else if (strcmp(backend, "cir") == 0) {
+            if (strcmp(backend, "cir") == 0)
                 use_cir_backend = true;
-                use_mir_backend = false;
+            else if (strcmp(backend, "mir") == 0) {
+                // The standalone Gecko+MIR transpiler was removed; the CIR
+                // backend (now default) produces MIR via c2mir. Accept as a
+                // deprecated synonym for cir.
+                std::cerr << "note: --backend=mir is deprecated; using the CIR backend "
+                             "(which produces MIR via c2mir)" << std::endl;
+                use_cir_backend = true;
             } else if (strcmp(backend, "jit") == 0 || strcmp(backend, "asmjit") == 0)
-                use_mir_backend = false;
+                use_cir_backend = false;
             else {
                 std::cerr << "Unknown backend: " << backend
-                          << " (use 'mir', 'cir', 'jit', or 'asmjit')" << std::endl;
+                          << " (use 'cir', 'jit', or 'asmjit')" << std::endl;
                 return 1;
             }
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir") == 0) {
             dump_cir = true;
             use_cir_backend = true;
-            use_mir_backend = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-nodes") == 0) {
             dump_nodes = true;
             use_cir_backend = true;
-            use_mir_backend = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-cir-checked") == 0) {
             dump_checked = true;
             use_cir_backend = true;
-            use_mir_backend = false;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--dump-source") == 0) {
             dump_source = true;
             filearg = i + 1;
         } else if (strcmp(argv[i], "--emit-c") == 0) {
-            emit_c = true;
-            use_mir_backend = true;  // --emit-c implies MIR pipeline
-            filearg = i + 1;
+            // C11 / .mc11 emission is being rebuilt as a renderer over the
+            // cir_node tree (it previously came from the removed Gecko path).
+            std::cerr << "--emit-c is temporarily unavailable: the C11 emitter "
+                         "is being rebuilt on the CIR (cir_node) path" << std::endl;
+            return 1;
         } else if (strcmp(argv[i], "--std=c") == 0 || strcmp(argv[i], "--std=c11") == 0) {
             prog->language_std = Program::STD_C11;
             filearg = i + 1;
@@ -532,9 +520,9 @@ int main(int argc, char **argv)
     if ( emit_object_path || emit_executable_path )
 	prog->aot_tracking = true;
 
-    if (use_mir_backend && (emit_object_path || emit_executable_path)) {
-	std::cerr << "--backend=mir does not support --emit-object or "
-	          << "--emit-executable yet" << std::endl;
+    if (use_cir_backend && (emit_object_path || emit_executable_path)) {
+	std::cerr << "the CIR backend does not support --emit-object or "
+	          << "--emit-executable; use --backend=jit for AOT output" << std::endl;
 	return 1;
     }
 
@@ -626,42 +614,7 @@ int main(int argc, char **argv)
 	    return (result < 0) ? 1 : 0;
 	}
 
-	if ( use_mir_backend )
-	{
-	    // Transpiler pipeline: Gecko parse → sema → emit C → MIR execute
-	    int ambiguity = 0;
-	    struct gp_tree_node *ast = madc_gecko_parse(&prog->tokens, &ambiguity);
-	    if ( !ast )
-	    {
-		std::cerr << "Gecko parse failed for " << argv[filearg] << std::endl;
-		return 1;
-	    }
-
-	    SemaInfo *sema = madc_sema_collect(ast);
-	    std::string c_source = madc_emit_c(ast, sema);
-
-	    if ( emit_c )
-	    {
-		std::cout << c_source;
-		madc_sema_free(sema);
-		madc_gecko_free_tree(ast);
-		return 0;
-	    }
-
-	    struct timeval before, after;
-	    gettimeofday(&before, NULL);
-	    int result = madc_mir_execute(c_source, argv[filearg],
-					  argc - filearg, argv + filearg);
-	    gettimeofday(&after, NULL);
-
-	    DBG(std::cout << "Elapsed time: " << time_diff(before, after) << std::endl);
-
-	    madc_sema_free(sema);
-	    madc_gecko_free_tree(ast);
-	    return (result < 0) ? 1 : 0;
-	}
-
-	// Legacy asmjit pipeline
+	// asmjit JIT pipeline (--backend=jit)
 	if ( !prog->parse(tp) )
 	    return 0;
 	if ( !prog->compile() )

@@ -497,11 +497,9 @@ node_t CirBuilder::init_value(TokenBase *elem)
 		// FIELD_ID designator tells the checker the target is the flex array,
 		// so the empty LIST is accepted. Our positional normalization drops
 		// the designator, so the empty LIST lands as a scalar/flex slot value
-		// and c2mir rejects it ("empty scalar initializer"). This affects only
-		// the --backend=cir path; the default --backend=mir (madc_emit_c text)
-		// path handles tests/testflexarrayemptyinit.mad correctly, so that test
-		// is NOT mir_skip'd. Fixing this requires CirBuilder to retain/re-derive
-		// designator info for flexible-array empty inits.
+		// and c2mir rejects it ("empty scalar initializer"). Fixing this
+		// requires CirBuilder to retain/re-derive designator info for
+		// flexible-array empty inits (tests/testflexarrayemptyinit.mad).
 		node_t inner = list();
 		for (size_t i = 0; i < sl->inits.size(); i++)
 			append(inner, node2(N_INIT, list(), init_value(sl->inits[i])));
