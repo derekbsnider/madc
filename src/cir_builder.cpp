@@ -404,29 +404,57 @@ void CirBuilder::need_stream_object(StreamKind k)
 	m_stream_object_protos.push_back(sd);
 }
 
-// PoC: int-only ostream chain.
+// Pick the mangled libstdc++ operator<< overload for a value's type.
+const char *CirBuilder::ostream_insert_symbol(DataDef *dd, ExternParam &p_out)
+{
+	bool is_ptr = dd && dd->is_pointer();
+	DataType dt = dd ? dd->rawtype() : DataType::dtINT64;
+	if (dd && dd->is_string()) { p_out = {{N_CHAR}, true}; return "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc"; }
+	if (is_ptr && dt == DataType::dtCHAR) { p_out = {{N_CHAR}, true}; return "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc"; }
+	if (is_ptr) { p_out = {{N_VOID}, true}; return "_ZNSolsEPKv"; }
+	switch (dt) {
+	case DataType::dtCHAR:   p_out = {{N_CHAR}, false};  return "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_c";
+	case DataType::dtFLOAT:
+	case DataType::dtDOUBLE: p_out = {{N_DOUBLE}, false}; return "_ZNSolsEd";
+	case DataType::dtINT16:
+	case DataType::dtINT32:  p_out = {{N_INT}, false};    return "_ZNSolsEi";
+	case DataType::dtUINT8:
+	case DataType::dtUINT16:
+	case DataType::dtUINT32: p_out = {{N_UNSIGNED, N_INT}, false}; return "_ZNSolsEj";
+	case DataType::dtINT64:
+	case DataType::dtUINT64:
+	default:                 p_out = {{N_LONG}, false};   return "_ZNSolsEl";
+	}
+}
+
+// Lower a C++ ostream chain to direct mangled operator<< calls, one per value.
 node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool is_out)
 {
 	need_stream_object(k);
-	// Collect chain values left-to-right.
+	// madc parses `cout << a << b << c` right-associatively as
+	// `cout << (a << (b << c))`: the stream object is top->left and the
+	// values hang off the right spine (each `<<` node's left is one value,
+	// its right is the next value or `<<` node). Collect values in C++
+	// (left-to-right) order by walking that right spine.
 	std::vector<TokenBase *> vals;
-	std::vector<TokenOperator *> ops;
-	TokenBase *n = top;
+	TokenBase *n = top->right;
 	while (TokenOperator *o = dynamic_cast<TokenOperator *>(n)) {
-		ops.push_back(o);
-		n = o->left;
-		if (stream_ident_kind(n) != SK_NONE) break;
+		if (o->id() != top->id()) break;
+		vals.push_back(o->left);
+		n = o->right;
 	}
-	for (size_t i = ops.size(); i-- > 0; )
-		vals.push_back(ops[i]->right);
+	if (n) vals.push_back(n);
 
 	node_t result = node1(N_ADDR, id(stream_object_symbol(k)));
-	need_output_extern("_ZNSolsEi", true, { { {N_VOID}, true }, { {N_INT}, false } });
 	for (size_t i = 0; i < vals.size(); i++) {
+		DataDef *vdd = vals[i]->datadef();
+		ExternParam vp;
+		const char *sym = ostream_insert_symbol(vdd, vp);
+		need_output_extern(sym, true, { { {N_VOID}, true }, vp });
 		node_t args = list();
 		append(args, result);
 		append(args, translate_expr(vals[i]));
-		result = node2(N_CALL, id("_ZNSolsEi"), args, top);
+		result = node2(N_CALL, id(sym), args, top);
 	}
 	return result;
 }

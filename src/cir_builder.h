@@ -127,6 +127,9 @@ public:
 	static const char *stream_object_symbol(StreamKind k);
 	void need_stream_object(StreamKind k);
 	node_t translate_stream_chain(TokenOperator *top, StreamKind k, bool is_out);
+	// Pick the mangled operator<< overload for a value's type; fill p_out with
+	// the value param's spec/ptr shape for the extern proto.
+	const char *ostream_insert_symbol(DataDef *dd, ExternParam &p_out);
 
 	node_t typedef_decl(const std::string &alias, DataDef *dd,
 			    const std::set<std::string> &emitted_structs,

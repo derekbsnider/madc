@@ -489,6 +489,10 @@ static std::string cir_capture(const char *source) {
     return out;
 }
 
+static std::string cir_capture(const std::string &source) {
+    return cir_capture(source.c_str());
+}
+
 TEST_CASE("CirBuilder: capture helper baseline") {
     // No output yet; just verify the helper runs a program and returns "".
     CHECK(cir_capture("int main() { return 0; }") == "");
@@ -598,4 +602,11 @@ TEST_CASE("CirBuilder: multi-dim array read") {
 TEST_CASE("CirBuilder: cout << int (PoC)") {
     CHECK(cir_capture("#include <iostream>\nusing namespace std;\n"
                       "int main() { cout << 5; return 0; }") == "5");
+}
+
+TEST_CASE("CirBuilder: ostream chains and types") {
+    const char *P = "#include <iostream>\nusing namespace std;\n";
+    CHECK(cir_capture(std::string(P) + "int main() { cout << \"x=\" << 5 << '!'; return 0; }") == "x=5!");
+    CHECK(cir_capture(std::string(P) + "int main() { double d = 1.5; cout << d; return 0; }") == "1.5");
+    CHECK(cir_capture(std::string(P) + "int main() { cout << \"a\"; cerr << \"b\"; return 0; }") == "a");
 }
