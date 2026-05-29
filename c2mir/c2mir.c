@@ -15030,8 +15030,16 @@ const char *c2mir_node_code_name (c2mir_node_code_t code) {
    past the end. (DLIST accessor functions for node_t are generated inside
    c2mir.c and are not visible to external translation units.) */
 node_t c2mir_node_op (node_t n, int i) {
+  node_t op;
   if (n == NULL || i < 0) return NULL;
-  return get_op (n, i);
+  /* Leaf nodes (<= N_ID) carry a scalar in the union, not an op-list;
+     reading u.ops would alias that scalar.  Interior nodes (> N_ID) own ops. */
+  if (n->code <= N_ID) return NULL;
+  /* Bounds-safe walk: return NULL past the end rather than dereferencing
+     NL_NEXT(NULL) (get_op() is unguarded and is for internal callers that
+     know the operand count). */
+  for (op = NL_HEAD (n->u.ops); i > 0 && op != NULL; i--) op = NL_NEXT (op);
+  return op;
 }
 
 void c2mir_init_node_ops (node_t n) {
