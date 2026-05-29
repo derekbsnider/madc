@@ -371,9 +371,13 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	}
 
 	if (v->is_fixed_array() && !v->dims.empty()) {
-		node_t size = integer(v->dims[0]);
-		node_t arr = node3(N_ARR, ignore(), list(), size);
-		append(decl_list, arr);
+		// One N_ARR per dimension, outer dimension first:
+		// int m[2][2] -> ARR(...,2) ARR(...,2)
+		for (size_t d = 0; d < v->dims.size(); d++) {
+			node_t size = integer(v->dims[d]);
+			node_t arr = node3(N_ARR, ignore(), list(), size);
+			append(decl_list, arr);
+		}
 	}
 
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);

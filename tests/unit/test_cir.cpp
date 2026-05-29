@@ -462,3 +462,15 @@ TEST_CASE("CirBuilder: subscript-expr reads") {
     // 1-D array. The read-side IND(IND(a,i),j) shape is verified against c2m via
     // scripts/cir_diff.sh; runtime coverage lands when the decl lowering is fixed.
 }
+
+TEST_CASE("CirBuilder: nested brace initializers") {
+    CHECK(cir_run_builder(
+        "int main() { int m[2][2] = {{1,2},{3,4}}; return m[0][0] + m[1][1]; }") == 5);
+    CHECK(cir_run_builder(
+        "struct P { int x, y; };\n"
+        "int main() { struct P a[2] = {{1,2},{3,4}}; return a[1].x + a[0].y; }") == 5);
+}
+TEST_CASE("CirBuilder: multi-dim array read") {
+    CHECK(cir_run_builder(
+        "int main() { int a[2][3]; a[1][2] = 8; return a[1][2]; }") == 8);
+}
