@@ -163,8 +163,14 @@ $(GECKO_OBJ): $(GECKODIR)/gecko.c $(GECKODIR)/gecko.h
 	$(CC) -c -o $@ -std=gnu11 -O3 -DNDEBUG -I$(GECKODIR) $<
 
 $(OBJDIR)/%.o: %.cpp $(DEPENDS)
-	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) $<
+	$(CXX) -c -o $@ $(CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
 
 $(PICOBJDIR)/%.o: %.cpp $(DEPENDS)
 	mkdir -p $(PICOBJDIR)
-	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) $<
+	$(CXX) -c -o $@ $(PIC_CXXFLAGS) $(DEFINES) -MMD -MP -MF $(@:.o=.d) $<
+
+# Auto-generated per-object header dependencies (from -MMD -MP above). A changed
+# .h rebuilds every .o that includes it, preventing stale-object ABI skew (e.g.
+# a layout change in cir_builder.h not recompiling madc_cir.o). Missing on a
+# clean build (regenerated during it); -include ignores the absent files.
+-include $(wildcard $(OBJDIR)/*.d $(PICOBJDIR)/*.d)
