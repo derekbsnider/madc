@@ -221,12 +221,20 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	case N_ADD: case N_SUB: case N_MUL: case N_DIV: case N_MOD:
 	case N_EQ:  case N_NE:  case N_LT:  case N_LE: case N_GT: case N_GE:
 	case N_AND: case N_OR:  case N_XOR: case N_LSH: case N_RSH:
-	case N_ANDAND: case N_OROR: case N_ASSIGN: {
+	case N_ANDAND: case N_OROR: case N_ASSIGN:
+	case N_ADD_ASSIGN: case N_SUB_ASSIGN: case N_MUL_ASSIGN:
+	case N_DIV_ASSIGN: case N_MOD_ASSIGN: case N_AND_ASSIGN:
+	case N_OR_ASSIGN:  case N_XOR_ASSIGN: case N_LSH_ASSIGN:
+	case N_RSH_ASSIGN: case N_COMMA: {
 		static const struct { int code; const char *o; } M[] = {
 			{N_ADD,"+"},{N_SUB,"-"},{N_MUL,"*"},{N_DIV,"/"},{N_MOD,"%"},
 			{N_EQ,"=="},{N_NE,"!="},{N_LT,"<"},{N_LE,"<="},{N_GT,">"},{N_GE,">="},
 			{N_AND,"&"},{N_OR,"|"},{N_XOR,"^"},{N_LSH,"<<"},{N_RSH,">>"},
-			{N_ANDAND,"&&"},{N_OROR,"||"},{N_ASSIGN,"="},{0,0}};
+			{N_ANDAND,"&&"},{N_OROR,"||"},{N_ASSIGN,"="},
+			{N_ADD_ASSIGN,"+="},{N_SUB_ASSIGN,"-="},{N_MUL_ASSIGN,"*="},
+			{N_DIV_ASSIGN,"/="},{N_MOD_ASSIGN,"%="},{N_AND_ASSIGN,"&="},
+			{N_OR_ASSIGN,"|="},{N_XOR_ASSIGN,"^="},{N_LSH_ASSIGN,"<<="},
+			{N_RSH_ASSIGN,">>="},{N_COMMA,","},{0,0}};
 		const char *o = "?";
 		for (int k = 0; M[k].o; k++) if (M[k].code == (int)n->code) o = M[k].o;
 		fputc('(', f);
@@ -441,10 +449,43 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	case N_STR16: case N_STR32: break; // wide strings: not supported (see c11-transpiler rule)
 	case N_I:
 	case N_L:    fprintf(f, "%lld", (long long)n->u.l); break;
-	case N_VOID: fputs("void", f); break;
-	case N_CHAR: fputs("char", f); break;
-	case N_INT:  fputs("int", f); break;
-	case N_LONG: fputs("long", f); break;
+	case N_LL:   fprintf(f, "%lldLL", (long long)n->u.ll); break;
+	case N_U:    fprintf(f, "%lluU", (unsigned long long)n->u.ul); break;
+	case N_UL:   fprintf(f, "%lluUL", (unsigned long long)n->u.ul); break;
+	case N_ULL:  fprintf(f, "%lluULL", (unsigned long long)n->u.ull); break;
+	// Floating literals: hex float (%a) round-trips the exact bit pattern and
+	// is unambiguously typed (avoids "3.0" reparsing as int / precision loss).
+	case N_F:    fprintf(f, "%af", (double)n->u.f); break;
+	case N_D:    fprintf(f, "%a", n->u.d); break;
+	case N_LD:   fprintf(f, "%LaL", n->u.ld); break;
+	case N_CH: case N_CH16: case N_CH32: {
+		int c = (int)n->u.ch;
+		switch (c) {
+		case '\n': fputs("'\\n'", f); break;
+		case '\t': fputs("'\\t'", f); break;
+		case '\r': fputs("'\\r'", f); break;
+		case '\0': fputs("'\\0'", f); break;
+		case '\\': fputs("'\\\\'", f); break;
+		case '\'': fputs("'\\''", f); break;
+		default:
+			if (c >= 32 && c < 127) fprintf(f, "'%c'", c);
+			else fprintf(f, "'\\x%02x'", (unsigned char)c);
+		}
+		break;
+	}
+	case N_VOID:     fputs("void", f); break;
+	case N_CHAR:     fputs("char", f); break;
+	case N_INT:      fputs("int", f); break;
+	case N_LONG:     fputs("long", f); break;
+	case N_SHORT:    fputs("short", f); break;
+	case N_UNSIGNED: fputs("unsigned", f); break;
+	case N_SIGNED:   fputs("signed", f); break;
+	case N_DOUBLE:   fputs("double", f); break;
+	case N_FLOAT:    fputs("float", f); break;
+	case N_BOOL:     fputs("_Bool", f); break;
+	case N_CONST:    fputs("const", f); break;
+	case N_VOLATILE: fputs("volatile", f); break;
+	case N_RESTRICT: fputs("restrict", f); break;
 	case N_EXTERN:       fputs("extern", f); break;
 	case N_STATIC:       fputs("static", f); break;
 	case N_TYPEDEF:      fputs("typedef", f); break;
