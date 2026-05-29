@@ -507,6 +507,8 @@ node_t CirBuilder::init_value(TokenBase *elem)
 	return translate_expr(elem);
 }
 
+static int dd_ptr_depth(DataDef *dd);  // defined below; counts int** -> 2
+
 node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
 	DataDef *base_dd = v->type;
@@ -553,7 +555,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		for (int s = 0; s < decl_stars; s++)
 			append(decl_list, pointer());
 	} else if (is_ptr) {
-		append(decl_list, pointer());
+		// One '*' per indirection level (int** -> 2). Previously a single
+		// pointer() was appended, collapsing int**/T*** to one star.
+		int depth = dd_ptr_depth(v->type);
+		for (int s = 0; s < depth; s++)
+			append(decl_list, pointer());
 	}
 
 	if (v->is_fixed_array() && !v->dims.empty()) {
