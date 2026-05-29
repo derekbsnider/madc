@@ -7,6 +7,7 @@
 #include <cstring>
 #include <cstdlib>
 #include <unistd.h>
+#include <dlfcn.h>
 #include <string>
 #include <vector>
 #include <map>
@@ -38,6 +39,34 @@ extern "C" {
 #include "../src/madc_cir.h"
 #include "../src/cir_builder.h"
 
+// The CIR output builtins (puti/printstr/...) lower to madc_* runtime symbols
+// in madc_mir_backend.cpp.  MIR resolves them at link time via
+// dlsym(RTLD_DEFAULT), which only sees symbols present in this binary's
+// dynamic symbol table.  Since libmadc.a is linked as a plain archive, the
+// backend object is only pulled in if something references it.  Take the
+// address of each runtime symbol here (under -rdynamic) so the archive member
+// is linked and the symbols are dlsym-visible during cir_capture().
+extern "C" {
+	void madc_puti(int64_t);
+	void madc_putu(uint64_t);
+	void madc_putd(double);
+	void madc_putf(float);
+	void madc_puts(const char *);
+	void madc_printstr(const char *);
+}
+static void *const cir_runtime_anchor[] = {
+	(void *)madc_puti, (void *)madc_putu, (void *)madc_putd,
+	(void *)madc_putf, (void *)madc_puts, (void *)madc_printstr,
+};
+
+// Import resolver for MIR_link: external symbols (madc_* runtime, libc) are
+// resolved via dlsym(RTLD_DEFAULT), mirroring madc_import_resolver in
+// madc_mir_backend.cpp. Needed once a translated program calls a runtime
+// symbol (e.g. the puti/printstr builtins -> madc_puti/madc_printstr).
+static void *cir_test_import_resolver(const char *name) {
+	return dlsym(RTLD_DEFAULT, name);
+}
+
 // Helper: tokenize+parse source, translate to CIR, compile+run, return result
 static int64_t cir_run(const char *source) {
     auto prog = std::make_shared<Program>();
@@ -58,7 +87,7 @@ static int64_t cir_run(const char *source) {
 
     MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
     MIR_load_module(mir_ctx, mod);
-    MIR_link(mir_ctx, MIR_set_interp_interface, NULL);
+    MIR_link(mir_ctx, MIR_set_interp_interface, cir_test_import_resolver);
 
     MIR_item_t func_item = NULL;
     for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
@@ -379,7 +408,7 @@ static int64_t cir_run_builder(const char *source) {
 
     MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
     MIR_load_module(mir_ctx, mod);
-    MIR_link(mir_ctx, MIR_set_interp_interface, NULL);
+    MIR_link(mir_ctx, MIR_set_interp_interface, cir_test_import_resolver);
 
     MIR_item_t func_item = NULL;
     for (MIR_item_t item = DLIST_HEAD(MIR_item_t, mod->items);
@@ -404,6 +433,8 @@ static int64_t cir_run_builder(const char *source) {
 // Like cir_run_builder, but captures everything the program writes to stdout
 // (fd 1) during execution and returns it. Covers madc_puti/printf AND std::cout.
 static std::string cir_capture(const char *source) {
+    // Keep the runtime anchor (above) live so the backend object is linked.
+    (void)cir_runtime_anchor;
     auto prog = std::make_shared<Program>();
     TokenProgram *tp = prog->tokenize_buffer(source, "<test>");
     REQUIRE(tp != nullptr);
@@ -422,7 +453,7 @@ static std::string cir_capture(const char *source) {
 
     MIR_module_t mod = DLIST_TAIL(MIR_module_t, *MIR_get_module_list(mir_ctx));
     MIR_load_module(mir_ctx, mod);
-    MIR_link(mir_ctx, MIR_set_interp_interface, NULL);
+    MIR_link(mir_ctx, MIR_set_interp_interface, cir_test_import_resolver);
 
     MIR_item_t func_item = NULL;
     for (MIR_item_t it = DLIST_HEAD(MIR_item_t, mod->items); it; it = DLIST_NEXT(MIR_item_t, it))
@@ -490,6 +521,12 @@ TEST_CASE("CirBuilder: local vars and function call") {
 	"int add(int a, int b) { return a + b; }\n"
 	"int main() { int x; x = add(10, 20); return x; }"
     ) == 30);
+}
+
+TEST_CASE("CirBuilder: stdout print builtins") {
+    // madc_puti / madc_printstr (madc_mir_backend.cpp) append a newline.
+    CHECK(cir_capture("int main() { puti(42); return 0; }") == "42\n");
+    CHECK(cir_capture("int main() { printstr(\"hi\"); return 0; }") == "hi\n");
 }
 
 TEST_CASE("CirBuilder: if/else") {

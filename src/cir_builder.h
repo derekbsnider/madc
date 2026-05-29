@@ -12,6 +12,8 @@
 #include "cir_node.h"
 #include <string>
 #include <set>
+#include <map>
+#include <vector>
 
 // Forward declarations
 class Program;
@@ -37,6 +39,7 @@ class CirBuilder {
 	// translate_module to emit extern prototypes only for funcs the source
 	// actually uses (matches c2m's #include-driven scope).
 	std::set<std::string> referenced_funcs;
+	std::map<std::string, node_t> m_output_externs; // symbol -> proto SPEC_DECL (dedup)
 	// Set during translate_module. Used to resolve a typedef alias to its
 	// base DataDef so we can tell the typedef's own pointer depth apart from
 	// the explicit stars written at the usage site.
@@ -102,6 +105,17 @@ public:
 	node_t init_value(TokenBase *elem);
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);
 	node_t param_decl(DataDef *ptype, const char *pname);
+
+	// ---- Output (Phase-2) ----
+	// A param of an output extern: its type-spec node codes + whether it is a pointer.
+	struct ExternParam { std::vector<c2mir_node_code_t> specs; bool ptr; };
+	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
+	// ret_ptr=true -> returns void*, else void.
+	void need_output_extern(const char *symbol, bool ret_ptr,
+				const std::vector<ExternParam> &params);
+	// Map a builtin print-fn name to its madc_* runtime symbol ("" if not one).
+	static const char *builtin_output_runtime(const std::string &name);
+
 	node_t typedef_decl(const std::string &alias, DataDef *dd,
 			    const std::set<std::string> &emitted_structs,
 			    bool force_incomplete_struct = false);

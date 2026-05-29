@@ -308,6 +308,59 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname)
 	return spec_decl;
 }
 
+const char *CirBuilder::builtin_output_runtime(const std::string &name)
+{
+	if (name == "puti")     return "madc_puti";
+	if (name == "putu")     return "madc_putu";
+	if (name == "putd")     return "madc_putd";
+	if (name == "putf")     return "madc_putf";
+	if (name == "puts")     return "madc_puts";
+	if (name == "printstr") return "madc_printstr";
+	return "";
+}
+
+void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
+				    const std::vector<ExternParam> &params)
+{
+	if (m_output_externs.count(symbol)) return;
+
+	node_t ext_list = list();
+	append(ext_list, simple(N_EXTERN));
+	append(ext_list, simple(N_VOID));            // ret base type = void
+	node_t share = node1(N_SHARE, ext_list);
+
+	node_t param_list = list();
+	if (params.empty()) {
+		node_t void_spec = node1(N_LIST, simple(N_VOID));
+		node_t void_decl = node2(N_DECL, ignore(), list());
+		append(param_list, node2(N_TYPE, void_spec, void_decl));
+	} else {
+		for (size_t i = 0; i < params.size(); i++) {
+			node_t specs = list();
+			for (size_t j = 0; j < params[i].specs.size(); j++)
+				append(specs, simple(params[i].specs[j]));
+			node_t pdecl_list = list();
+			if (params[i].ptr) append(pdecl_list, pointer());
+			node_t pdecl = node2(N_DECL, ignore(), pdecl_list);
+			append(param_list, node2(N_TYPE, specs, pdecl));
+		}
+	}
+
+	node_t func_inner = node1(N_FUNC, param_list);
+	node_t decl_list = list();
+	append(decl_list, func_inner);
+	if (ret_ptr) append(decl_list, pointer());   // returns void*
+	node_t decl = node2(N_DECL, id(symbol), decl_list);
+
+	node_t proto = simple(N_SPEC_DECL);
+	append(proto, share);
+	append(proto, decl);
+	append(proto, ignore());
+	append(proto, ignore());
+	append(proto, ignore());
+	m_output_externs[symbol] = proto;
+}
+
 node_t CirBuilder::init_value(TokenBase *elem)
 {
 	// A NULL element is a designated-initializer GAP: the parser normalizes
@@ -870,6 +923,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttCallFunc) {
 		TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tb);
 		if (tcf) {
+			const char *rt = builtin_output_runtime(tcf->var.name);
+			if (rt[0]) {
+				static const std::map<std::string, ExternParam> sigs = {
+					{"madc_puti",     {{N_LONG}, false}},
+					{"madc_putu",     {{N_UNSIGNED, N_LONG}, false}},
+					{"madc_putd",     {{N_DOUBLE}, false}},
+					{"madc_putf",     {{N_FLOAT}, false}},
+					{"madc_puts",     {{N_CHAR}, true}},
+					{"madc_printstr", {{N_CHAR}, true}},
+				};
+				need_output_extern(rt, false, { sigs.at(rt) });
+				node_t a = list();
+				for (size_t i = 0; i < tcf->parameters.size(); i++)
+					append(a, translate_expr(tcf->parameters[i]));
+				return node2(N_CALL, id(rt, tb), a, tb);
+			}
 			referenced_funcs.insert(tcf->var.name);
 			node_t func_id = id(tcf->var.name.c_str(), tb);
 			node_t args = list();
@@ -1348,6 +1417,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		append(proto, ignore());
 		append(top_list, proto);
 	}
+
+	// Pass 0.8: output externs (madc_* builtins; libstdc++ stream symbols later)
+	for (auto &kv : m_output_externs)
+		append(top_list, kv.second);
 
 	// Pass 1: Forward declarations
 	for (TokenFunc *tf : funcs) {
