@@ -1,3 +1,5 @@
+> ARCHIVED: describes the removed asmjit JIT backend.
+
 # Typed-Register IR — Reasoning
 
 ## Why the IR exists

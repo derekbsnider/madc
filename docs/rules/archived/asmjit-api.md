@@ -1,3 +1,5 @@
+> ARCHIVED: describes the removed asmjit JIT backend.
+
 # asmjit API Migration Reference (v1.14)
 
 See `.claude/rules/asmjit-api.md` for the rules.
