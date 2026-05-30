@@ -1926,6 +1926,34 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				bool ok = (is_out && (k==SK_COUT||k==SK_CERR||k==SK_CLOG)) || (!is_out && k==SK_CIN);
 				if (ok) return translate_stream_chain(top, k, is_out);
 			}
+
+			// std::string assignment / append on a string OBJECT lvalue:
+			// `s = rhs` / `s += rhs` lower to the basic_string operator=/+=
+			// runtime wrappers. c2mir cannot assign into the `long[]` buffer,
+			// and g++ would emit these operator calls. RHS string OBJECT ->
+			// string_assign/append; const char* value -> the _cstr variant.
+			if ((tb->id() == TokenID::tkAssign || tb->id() == TokenID::tkAddEq)
+			    && is_string_object_value(top->left)) {
+				bool is_append = (tb->id() == TokenID::tkAddEq);
+				node_t cargs = list();
+				append(cargs, string_obj_arg(top->left));   // (void*)&s
+				const char *sym;
+				if (is_string_object_value(top->right)) {
+					append(cargs, string_obj_arg(top->right));  // (void*)&rhs
+					sym = is_append ? "string_append" : "string_assign";
+					need_output_extern(sym, false,
+						{ { {N_VOID}, true }, { {N_VOID}, true } });
+				} else {
+					append(cargs, translate_expr(top->right));  // const char*
+					sym = is_append ? "string_append_cstr" : "string_assign_cstr";
+					need_output_extern(sym, false,
+						{ { {N_VOID}, true }, { {N_CHAR}, true } });
+				}
+				node_t scall = node2(N_CALL, id(sym, tb), cargs, tb);
+				CIR_NODE(scall)->synth_from_origin = true;
+				return scall;
+			}
+
 			node_t left = translate_expr(top->left);
 			node_t right = translate_expr(top->right);
 
@@ -2157,6 +2185,84 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	return node5(N_FOR, list(), init, cond, incr, body, tf);
 }
 
+// Range-based for over a MadArray: `for (T x : arr) body`.
+// The parser already declared `x` in the ENCLOSING scope (so translate_block
+// emits its storage + ctor once, and the cleanup attribute destructs it), so
+// here we only emit:
+//   for (long __fe_i = 0; __fe_i < madarray_size((void*)arr); __fe_i += 1) {
+//       <fill x from arr[__fe_i]>;   <body>
+//   }
+// String element -> php_array_get((void*)x, (void*)arr, __fe_i) (assigns into
+// the pre-constructed std::string). Numeric element -> x = php_array_get_int().
+node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
+{
+	if (!fe->container || !fe->elemtype)
+		return error_node("range-for missing container or element type", fe);
+
+	// (void*)container — the MadArray object address (the var name decays to
+	// its long[] buffer, normalized to void*).
+	auto container_addr = [&]() -> node_t {
+		return node2(N_CAST, void_ptr_type(), translate_expr(fe->container), fe);
+	};
+
+	char idx[32];
+	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
+
+	// long __fe_i = 0;
+	node_t ispec = list();
+	append(ispec, simple(N_LONG, fe));
+	node_t init = simple(N_SPEC_DECL, fe);
+	append(init, node1(N_SHARE, ispec));
+	append(init, node2(N_DECL, id(idx, fe), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, fe));
+
+	// __fe_i < madarray_size((void*)container)
+	need_output_extern("madarray_size", false, { { {N_VOID}, true } },
+			   std::vector<c2mir_node_code_t>{N_LONG});
+	node_t size_args = list();
+	append(size_args, container_addr());
+	node_t size_call = node2(N_CALL, id("madarray_size", fe), size_args, fe);
+	node_t cond = node2(N_LT, id(idx, fe), size_call, fe);
+
+	// __fe_i += 1
+	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
+
+	// Body: element fill + user statement.
+	node_t body_items = list();
+	if (fe->elemtype->rawtype() == DataType::dtSTRING) {
+		// php_array_get((void*)x, (void*)container, __fe_i)
+		need_output_extern("__php_array_get", true,
+				   { { {N_VOID}, true }, { {N_VOID}, true }, { {N_LONG}, false } });
+		referenced_funcs.insert("__php_array_get");
+		node_t a = list();
+		append(a, string_obj_addr(fe->elemname.c_str(), fe));
+		append(a, container_addr());
+		append(a, id(idx, fe));
+		node_t fill = node2(N_CALL, id("__php_array_get", fe), a, fe);
+		append(body_items, node2(N_EXPR, list(), fill, fe));
+	} else {
+		// x = (T)__php_array_get_int((void*)container, __fe_i)
+		need_output_extern("__php_array_get_int", false,
+				   { { {N_VOID}, true }, { {N_LONG}, false } },
+				   std::vector<c2mir_node_code_t>{N_LONG});
+		referenced_funcs.insert("__php_array_get_int");
+		node_t a = list();
+		append(a, container_addr());
+		append(a, id(idx, fe));
+		node_t getcall = node2(N_CALL, id("__php_array_get_int", fe), a, fe);
+		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe), getcall, fe);
+		append(body_items, node2(N_EXPR, list(), assign, fe));
+	}
+
+	node_t user_body = translate_stmt_required(fe->statement);
+	if (user_body) append(body_items, user_body);
+	node_t body = node2(N_BLOCK, list(), body_items, fe);
+
+	return node5(N_FOR, list(), init, cond, incr, body, fe);
+}
+
 node_t CirBuilder::translate_do(TokenDO *td)
 {
 	return node3(N_DO, list(), translate_expr(td->condition),
@@ -2234,6 +2340,11 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 
 	if (tb->id() == TokenID::tkWHILE)
 		return translate_while(tb);
+
+	// Range-based for (TokenFOREACH) is a sibling of TokenFOR, not a subclass,
+	// so check it first — dynamic_cast<TokenFOR*> would miss it.
+	{ TokenFOREACH *fe = dynamic_cast<TokenFOREACH *>(tb);
+	  if (fe) return translate_foreach(fe); }
 
 	TokenFOR *tf = dynamic_cast<TokenFOR *>(tb);
 	if (tf) return translate_for(tf);

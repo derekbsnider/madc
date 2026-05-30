@@ -238,6 +238,11 @@ public:
 	node_t translate_if(TokenIF *ti);
 	node_t translate_while(TokenBase *tw);
 	node_t translate_for(TokenFOR *tf);
+	// Range-based for over a MadArray: `for (T x : arr) body`. The loop
+	// variable is declared in the enclosing scope by the parser, so this only
+	// emits the index loop + per-iteration element fill (php_array_get /
+	// php_array_get_int) around the translated body.
+	node_t translate_foreach(class TokenFOREACH *fe);
 	node_t translate_do(TokenDO *td);
 	node_t translate_switch(TokenSWITCH *ts);
 
