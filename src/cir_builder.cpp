@@ -366,10 +366,20 @@ node_t CirBuilder::string_storage_decl(const char *name, TokenBase *origin)
 	append(decl_list, node3(N_ARR, ignore(), list(),
 				integer((long)string_obj_words(), origin)));
 	node_t decl = node2(N_DECL, id(name, origin), decl_list);
+	// __attribute__((cleanup(string_destruct))): the madc c2mir fork calls
+	// string_destruct(&name) automatically at EVERY scope exit (fall-through,
+	// return, break, continue, goto) — proper RAII without per-exit dtor
+	// injection in the front end. We build the N_ATTR node directly (no source
+	// preprocessing, so the glibc `__attribute__`-emptying issue doesn't apply).
+	need_output_extern("string_destruct", false, { { {N_VOID}, true } });
+	node_t attr_args = list();
+	append(attr_args, id("string_destruct", origin));
+	node_t attrs = list();
+	append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args, origin));
 	node_t sd = simple(N_SPEC_DECL, origin);
 	append(sd, share);
 	append(sd, decl);
-	append(sd, ignore());   // attrs
+	append(sd, attrs);      // __attribute__((cleanup(string_destruct)))
 	append(sd, ignore());   // asm
 	append(sd, ignore());   // initializer — none; the ctor call does it
 	CIR_NODE(sd)->synth_from_origin = true;
@@ -405,19 +415,6 @@ node_t CirBuilder::string_ctor_call(const char *name, TokenBase *initexpr,
 	node_t call = node2(N_CALL, id(sym, origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
 	// Wrap as an expression-statement (a block item), matching translate_stmt.
-	node_t stmt = node2(N_EXPR, list(), call, origin);
-	CIR_NODE(stmt)->synth_from_origin = true;
-	return stmt;
-}
-
-// string_destruct((void*)name);  (expression-statement)
-node_t CirBuilder::string_dtor_call(const char *name, TokenBase *origin)
-{
-	node_t args = list();
-	append(args, string_obj_addr(name, origin));
-	need_output_extern("string_destruct", false, { { {N_VOID}, true } });
-	node_t call = node2(N_CALL, id("string_destruct", origin), args, origin);
-	CIR_NODE(call)->synth_from_origin = true;
 	node_t stmt = node2(N_EXPR, list(), call, origin);
 	CIR_NODE(stmt)->synth_from_origin = true;
 	return stmt;
@@ -2118,19 +2115,16 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			decl_vars.insert(td->var.name);
 	}
 
-	// std::string objects declared in this scope, in declaration order, for
-	// scope-exit destruction (see string_dtor_call). Pair: (name, origin token).
-	std::vector<std::pair<std::string, TokenBase *> > scope_strings;
-
 	for (size_t vi = skip; vi < tc->variables.size(); vi++) {
 		Variable *v = tc->variables[vi];
 		if (decl_vars.count(v->name)) continue;
 		append(items, var_decl(v));
 		if (is_string_object(v->type)) {
-			// `string b;` (no initializer) — default-construct the object,
-			// destruct at scope end. The storage decl was just appended above.
+			// `string b;` (no initializer) — default-construct the object.
+			// Destruction is handled by the cleanup attribute on the storage
+			// decl (string_storage_decl): c2mir calls string_destruct(&b) at
+			// every scope exit, so no manual dtor injection is needed.
 			append(items, string_ctor_call(v->name.c_str(), NULL, tc));
-			scope_strings.push_back(std::make_pair(v->name, (TokenBase *)tc));
 		}
 	}
 
@@ -2168,8 +2162,6 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					initexpr = sdcl->init_list[0];
 				append(items, string_ctor_call(sdcl->var.name.c_str(),
 							       initexpr, sdcl));
-				scope_strings.push_back(
-					std::make_pair(sdcl->var.name, (TokenBase *)sdcl));
 				continue;
 			}
 		}
@@ -2198,13 +2190,11 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		append(items, node2(N_EXPR, label_list, integer(0)));
 	}
 
-	// Destruct scope-local std::string objects at block end, reverse declaration
-	// order (matches C++). NOTE: early exits (return/break/continue/goto) are
-	// Phase 4; a trailing `return` currently leaves these unreachable — a
-	// harmless leak reclaimed at process exit, not a crash.
-	for (auto it = scope_strings.rbegin(); it != scope_strings.rend(); ++it)
-		append(items, string_dtor_call(it->first.c_str(), it->second));
-
+	// No manual scope-exit destruction: each std::string object's storage decl
+	// carries __attribute__((cleanup(string_destruct))), so the c2mir fork emits
+	// the destructor call on EVERY exit path (fall-through, return, break,
+	// continue, goto) — correct RAII including early exits, with no front-end
+	// dtor injection. See string_storage_decl.
 	return node2(N_BLOCK, empty_list, items, tc);
 }
 
