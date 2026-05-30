@@ -75,6 +75,46 @@ subscript/foreach + testmadc_ns) — convert incrementally, type by type.
    make testvector pass via the template path (parallel to ns_stl, behind a guard).
 4. map/set headers; flip the keyword path off; delete ns_stl. Validate each step.
 
+## Implementation mechanics (codebase-verified 2026-05-30 — follow exactly, don't drift)
+
+madc is **two-phase**: the lexer builds a full token list, then the parser
+consumes `Program::tokens` (a `std::deque<TokenBase*>`, madc.h:890) front-to-back
+(`nextToken` = pop_front madc.h:1172; `pushToken` = push_front madc.h:1121).
+There's also `injected_tokens` (madc.h:891) — precedent for synthetic tokens.
+`#include` does re-entrant SOURCE-swap in the LEXER (lexer.cpp:1589
+`Source saved = std::move(source); source.str(*embedded); …; source = std::move(saved)`).
+So template work is PARSE-phase and operates on TOKENS, not source text.
+
+**Template definition capture** (parse phase): `template` is currently only a
+reserved word (tokens.h:1022). Add a parse path: on `template < typename|class T >`
+followed by `class Name { … }`, capture the token range for `class Name { … }`
+by brace-counting tkOpBrc/tkClBrc, storing CLONES (TokenBase::clone()). Register
+in a new `Program` member, e.g. `std::map<std::string, TemplateDef>` where
+TemplateDef = { std::vector<std::string> typeparams; std::string class_name;
+std::vector<TokenBase*> body_tokens (the full `class … { … }` range) }. Do NOT
+parse the body at definition time (T is unbound).
+
+**Instantiation** (Borland monomorphize) at a type-resolution site that sees
+`Name < ConcreteType[,…] >` where Name is a registered template:
+1. Compute a mangled instantiation name (e.g. `Name$int` or the Itanium template-id
+   spelling) and check a cache (`std::map<std::string, DataDefCLASS*>`); return if hit.
+2. CLONE body_tokens; substitute: each `TokenIdent` whose str == a typeparam name
+   → a token for the concrete type (TokenDataType for builtins, or TokenIdent/
+   TokenDataType for a class type); rename the `class` tag token to the mangled name.
+3. Inject: push the cloned token sequence to the FRONT of `tokens` (push_front in
+   REVERSE so they dequeue in order), then call the class-definition parser
+   (TokenCLASS::parse path) re-entrantly — it consumes the injected tokens and
+   registers a normal DataDefCLASS + FuncDefs (datatype_map/struct_map). Cache it.
+4. Resolve the use site to that DataDefCLASS. Downstream, the existing class-model
+   CIR lowering (class→struct, Name__method(&this,args), ctor/dtor via cleanup
+   attr) handles it — NO new codegen.
+
+**Reuse, don't reinvent:** the class parser (TokenCLASS::parse, parser.cpp ~10645)
+and parseFunction(owner_class=…) already build DataDefCLASS + methods + the
+__this param. Instantiation just feeds them synthesized tokens. Container headers
+(include/madc/vector|map|set, madc-dialect) define the templates; `#include
+<vector>` lexes them; `vector<int>` instantiates.
+
 ## What stays mangled-direct (NOT templated by madc)
 std::string (and ostream/istream/cout/cin) — libstdc++ exports them; madc calls
 them directly via the mangler. See [[project_cpp_mangled_direct]].
