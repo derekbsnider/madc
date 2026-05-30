@@ -287,6 +287,13 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 		break;
 	case DataType::dtFLOAT:  append(lst, simple(N_FLOAT)); break;
 	case DataType::dtDOUBLE: append(lst, simple(N_DOUBLE)); break;
+	case DataType::dtSTRING:
+		// A string OBJECT uses string_storage_decl, not this path. If a bare
+		// string spec still reaches here (e.g. a struct member — Phase 3),
+		// emit `char` so it degrades to a byte type, never a 32-bit-truncating
+		// `int`. (Struct-member string objects are not yet lowered.)
+		append(lst, simple(N_CHAR));
+		break;
 	default:
 		append(lst, simple(N_INT));
 	}
@@ -870,6 +877,12 @@ node_t CirBuilder::init_value(TokenBase *elem)
 
 node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
+	// std::string object: emit ONLY the opaque storage (`long name[W]`) here.
+	// Construction and scope-exit destruction are emitted as separate statements
+	// by translate_block (the 1->N C++ lowering); see string_ctor_call/dtor.
+	if (is_string_object(v->type))
+		return string_storage_decl(v->name.c_str(), origin);
+
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
 	// Peel ALL pointer levels to the innermost base type (struct node ** -> the
