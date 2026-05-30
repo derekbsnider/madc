@@ -11,7 +11,29 @@
   Build: `make -C /workspace/mir`. Test suite: `make -C /workspace/mir c2mir-test` (must stay green: 1075 tests/2150 success). c2m binary: `/workspace/mir/c2m`. Run a c2m test: `c2m FILE.c -ei` (file BEFORE -ei; args after -ei go to the program) or `-eg` (gen). gcc is canon: `gcc -std=gnu11 -O0 FILE.c && ./a.out`.
 
 ## CURRENT TEST STATE
-- madc integration: **351 passed / 71 failed / 1 flaky-timeout (testfortypedcomma) / 56 skipped** (was 334/88 at the start of the 2026-05-30 PM session; +17 net, 0 regressions; unit tests green). Goal = drive 71→0 for develop→master parity (Track 1.3).
+- madc integration: **367 passed / 55 failed / 1 flaky-timeout (testfortypedcomma) / 56 skipped** (was 334/88 at the start of the 2026-05-30 PM session; **+33 net, 0 regressions**; unit tests green). Goal = drive 55→0 for develop→master parity (Track 1.3).
+
+## ⚠️ ARCHITECTURE (user-confirmed, READ [[project_cpp_mangled_direct]])
+std:: C++ types must lower to **DIRECT mangled-libstdc++ calls** (Itanium symbols,
+real objects), NOT hand-written wrappers — generalize the cout `<<` path +
+madc_mangle. The wrapper layer (string_*/streamout_*/sstream_*/ns_stl vector_*)
+is TECH DEBT to retire. **std::string is DONE** (commit 57a9da3): ctor/dtor (dtor
+= the cleanup-attr fn, runs real ~basic_string)/methods/operator=/+= all call real
+libstdc++ via g++-verified mangled symbols; the symbols are hardcoded (madc_mangle
+lacks substitution compression — enhancing it = full generality). STILL ON
+WRAPPERS (convert next): MadArray, STL containers (ns_stl), stringstream
+(streamout_*+sstream_ostream — my own divergence, commit 2f60ed1). User-defined
+classes legitimately use the flat ClassName__method scheme (madc compiles them).
+
+## DONE THIS PM SESSION (367, +33) — all committed on feature/cir-stdstring-claude
+- Qualified std:: streams; MadArray objects; Cfront temp materialization for
+  const-char*->string args; std::string operator=/+=; range-for over MadArray;
+  rust::match->switch (3ba6da9, 08b0008, 2c9a4c7).
+- STL containers vector/map/set (fd32441+308f549, subagent).
+- stringstream objects + `ss<<` (2f60ed1) — WRAPPER-based, retire per architecture.
+- std::string -> mangled-direct libstdc++ (57a9da3) — the architecture keystone.
+- **C++ class model core** (merge 8a2177f, subagent): structs/methods/ctor-dtor/
+  inheritance/new-delete/operators/vtables/refs/string-members. +15.
 - **STL containers DONE** (commits fd32441+308f549, opus subagent in worktree, reviewed+cherry-picked+validated by me): vector<T>/map<K,V>/set<T> via the runtime-object model — recovered ns_stl.cpp (real std::vector/map/set wrappers) + parser instantiation + NEW CIR lowering (is_container_object, container_method_call, container_subscript_read/_assign, translate_foreach_vector; string results via scope-temp + (fill, string_cstr) comma-seq). Passing: testvector testset testmap testsubscript testmadc_ns. list<T> still stubbed (unused).
 - madc unit tests: green. MIR c2mir-test: green (incl. bootstrap, which we FIXED).
 
