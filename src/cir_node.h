@@ -58,7 +58,11 @@ struct cir_node {
 	const char  *error_msg;     // non-NULL: error/incomplete node; a tree that
 				    // contains one MUST NOT be handed to c2mir
 	CirSourceLang src_lang;     // which language produced this node
-	uint8_t      _pad[7];       // alignment padding
+	bool         synth_from_origin; // true: a lowering artifact (e.g. a ctor/dtor
+				    // call synthesized for a C++ construct). Shares its
+				    // origin with the high-level node; the reverse-
+				    // renderer emits the origin ONCE and suppresses these.
+	uint8_t      _pad[6];       // alignment padding
 
 	// Cast to node_t for c2mir API calls
 	node_t as_node() { return (node_t)&base; }
