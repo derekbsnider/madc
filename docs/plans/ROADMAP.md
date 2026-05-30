@@ -1,6 +1,15 @@
 # madc Roadmap
 
-Master plan linking all workstreams. Updated 2026-05-26.
+Master plan linking all workstreams. Updated 2026-05-30 (v0.25.0).
+
+**Backend reality:** `madc parser → cir_node (MC11-IR) → c2mir → MIR → JIT` is
+the **sole** backend — asmjit and the Gecko parser/MIR-transpiler are gone. The
+**central near-term goal is feature parity with `master`** (which still carries
+the removed asmjit backend at full C89 coverage): `develop` is not promoted to
+`master` until the CIR path's test coverage matches or exceeds it. Track 1.3
+(CIR coverage) is therefore the gating workstream — most other tracks are
+re-established or unblocked behind it. Where a track below was completed on the
+old backend, it is marked "proven on old backend, re-establishing on CIR."
 
 ## The Intermediate Representation — MC11-IR (SET IN STONE, 2026-05-29)
 
@@ -14,16 +23,6 @@ serialization of the extra info; render targets (C11/MC11/C++/madc) share the
 `--std=` language enum to pick which view to emit. See
 [`docs/rules/mc11-ir.md`](../rules/mc11-ir.md). **Do not re-pose "lowered vs
 high-level" — the answer is both.**
-
-> **⚠️ This roadmap predates the 2026-05-29 cleanup and is STALE below.** Gecko
-> and asmjit have both been **removed entirely**; `madc parser → cir_node
-> (MC11-IR) → c2mir → MIR` is now the **sole** backend. Any line below framing
-> "Gecko+MIR transpiler" or "asmjit JIT" as active is superseded. Honest current
-> integration baseline (v0.25.0): **325 pass / ~95 fail / 56 skip** — the
-> failures are the CIR coverage worklist. ★ **SMAUG 1.8 boots, runs as a live
-> server, and is playable** (character creation, navigation, the Newgate serpent
-> fight) via `cir_node → c2mir → MIR → JIT`. Roadmap body needs a full rewrite
-> (tracked).
 
 ## Current State
 
@@ -68,13 +67,22 @@ high-level" — the answer is both.**
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 1.1 | C foundation (GCC parity) | — | **DONE** 97.9% | — |
+| 1.1 | C foundation (GCC parity) | — | **DONE** (97.9% on the old backend; the CIR target) | — |
 | 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | **DONE** (v0.20.1) | [code-cleanup.md](code-cleanup.md) |
-| 1.3 | CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity | ongoing | **Active** (227/193/56) | — |
+| 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (325 pass / ~95 fail / 56 skip) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 
-**Dependencies:** 1.2 before 1.3. 1.3 before macOS port.
+**Track 1.3 is the central workstream.** It is the sole backend, so its
+coverage *is* the bar for promoting `develop → master`. SMAUG 1.8 now boots,
+runs, and is playable on this path (a real-world end-to-end proof); the ~95
+remaining integration failures are the worklist between here and parity. Build
+the `.mc11`/`.c` renderer + the gcc-`-fverbose-asm` fidelity gate + the
+`cir_node`-vs-`c2m -d` differential to make those failures mechanical and
+localizable, then reimplement eval/exec + REPL on MIR.
+
+**Dependencies:** 1.2 before 1.3. **1.3 (full CIR parity) gates promotion to
+master and unblocks Tracks 3, 5, 6, and AOT.**
 
 ---
 
@@ -289,10 +297,10 @@ start after 1.2 (cleanup) makes the parser ready for `render` blocks.
 | 10.1 | Optional bounds checking (`--check-bounds`) | 1-2 wk | Future | [future-considerations.md](future-considerations.md) |
 | 10.2 | Ownership annotations (RAII-based) | TBD | Future | [future-considerations.md](future-considerations.md) |
 | 10.3 | Go-style error returns (multi-return convention) | 1 wk | Future | [future-considerations.md](future-considerations.md) |
-| 10.4 | `-O` optimization levels | 2-3 wk | Future | — |
-| 9.5 | TOML parser (for config files) | 1-2 wk | Future | — |
+| 10.4 | `-O` optimization levels (`-O0..-O3` flag landed; MIR-gen level) | 2-3 wk | **Partial** | — |
+| 10.5 | TOML parser (for config files) | 1-2 wk | Future | — |
 
-**Dependencies:** 2.1 (RAII) before 9.2. Existing multi-return enables 9.3.
+**Dependencies:** 2.1 (RAII) before 10.2. Existing multi-return enables 10.3.
 
 ---
 
@@ -318,11 +326,14 @@ run in parallel.
  NEXT UP (recommended order):
  ────────────────────────────
 11.  Track 1.3  CIR coverage — cir_node (MC11-IR) → c2mir → MIR  [ongoing]
-     ├── Burn down the 193 CIR integration failures toward 0
+     ├── ★ SMAUG 1.8 boots, runs, and is playable on this path (v0.25.0)
+     ├── Burn down the ~95 CIR integration failures toward 0
      ├── Build the .mc11/.c renderer + gcc -fverbose-asm fidelity
      │   gate + cir_node-vs-`c2m -d` differential
      └── Then reimplement eval/exec + REPL on MIR (deferred)
-     ** RECOMMENDED NEXT — the sole backend must reach full parity **
+     ** THE PARITY-TO-MASTER GATE — sole backend; nothing downstream
+        ships, and develop is not promoted to master, until this reaches
+        full parity with master's C89 coverage **
 
  ║── Track 7.1  Rendering: Semantic IR + Level 0         [2-3 wk]
  ║   └── render { } blocks, UINode, text output
@@ -372,27 +383,33 @@ run in parallel.
 
 25.  Track 5A.9   Federated query planner                [4-6 wk]
 
-24.  Track 6.2  macOS SIMD (NEON)                       [2-3 wk]
+26.  Track 6.2  macOS SIMD (NEON)                       [2-3 wk]
 
-25.  Track 4.4  Node.js integration                      [4-6 wk]
+27.  Track 4.4  Node.js integration                      [4-6 wk]
      Track 4.5  Rust bindings                            [2-3 wk]
 
-26.  Track 3.4  Modules (.madm)                          [6-8 wk]
+28.  Track 3.4  Modules (.madm)                          [6-8 wk]
 
-27.  Track 6.3  macOS AOT (Mach-O writer)               [4-6 wk]
+29.  Track 6.3  macOS AOT (Mach-O writer)               [4-6 wk]
 
-28.  Track 7.7  Rendering: Level 4 GPU/3D               [future]
+30.  Track 7.7  Rendering: Level 4 GPU/3D               [future]
 
-29.  Track 9    Multi-syntax (Python/Ruby/Rust modes)     [ongoing]
+31.  Track 9    Multi-syntax (Python/Ruby/Rust modes)     [ongoing]
 
-30.  Track 10   Safety, optimization levels              [ongoing]
+32.  Track 10   Safety, optimization levels              [ongoing]
 ```
 
-**Recommended next:** Track 1.3 (CIR coverage) is the highest-leverage item —
-it is the sole backend, so nothing downstream (data substrate, ARM64 port, AOT)
-can proceed until `cir_node → c2mir → MIR` reaches full parity. Build the
-`.mc11`/`.c` renderer and the gcc-`-fverbose-asm` fidelity gate to make the 193
-failures mechanical and localizable, then reimplement eval/exec + REPL on MIR.
+**Recommended next:** Track 1.3 (CIR coverage) is the highest-leverage item and
+the gate for promoting `develop → master` — it is the sole backend, so nothing
+downstream (data substrate, ARM64 port, AOT) proceeds, and master is not
+updated, until `cir_node → c2mir → MIR` reaches full C89 parity. SMAUG 1.8
+already boots/runs/plays on this path; the ~95 remaining integration failures
+are the worklist. Build the `.mc11`/`.c` renderer and the gcc-`-fverbose-asm`
+fidelity gate to make them mechanical and localizable, then reimplement
+eval/exec + REPL on MIR. Latent items surfaced during the SMAUG bring-up:
+other signed `int`-returning libc fns on the `long` fallback (declare them
+`int`), and the flaky `testfortypedcomma` (uninitialized 2nd declarator in a
+multi-declarator for-init).
 
 ## The SMAUG Goal
 
