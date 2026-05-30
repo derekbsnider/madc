@@ -860,6 +860,17 @@ public:
     datatype_map_t datatype_map;	// TokenDataType map
     datadef_map_t  datadef_map;		// data definitions defined by typedef or class
     datadef_map_t  struct_map;		// data definitions defined by struct
+    // Captured `template<typename T> class Name {...}` definitions for
+    // Borland-model instantiation: name -> {type params, the class-body token
+    // range}. `Name<ConcreteT>` clones+substitutes+re-parses it as a concrete
+    // class. See docs/plans/2026-05-30-template-instantiation.md.
+    struct TemplateDef {
+	std::vector<std::string> typeparams;   // e.g. ["T"]
+	std::string class_name;                // e.g. "Box"
+	std::vector<TokenBase *> body;         // cloned tokens: `class Name { ... }`
+    };
+    std::map<std::string, TemplateDef> template_map;       // name -> definition
+    std::set<std::string> template_instantiated;           // mangled names done
     std::map<DataDef*, DataDefPTR*> ptr_type_cache; // cached pointer-to-T DataDefs
     funcdef_map_t  funcdef_map;		// function definitions
     variable_map_t literal_map;		// string literals

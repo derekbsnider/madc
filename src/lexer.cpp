@@ -693,6 +693,7 @@ TokenVECTOR	tkVECTOR;
 TokenMAP	tkMAP;
 TokenSET	tkSET;
 TokenLIST	tkLIST;
+TokenTEMPLATE	tkTEMPLATE;
 TokenNEW	tkNEW;
 TokenDELETE	tkDELETE;
 
@@ -1341,6 +1342,7 @@ void Program::add_keywords()
 	keyword_map[tkVECTOR.str] = &tkVECTOR;
 	keyword_map[tkMAP.str] = &tkMAP;
 	keyword_map[tkSET.str] = &tkSET;
+	keyword_map[tkTEMPLATE.str] = &tkTEMPLATE;
 	keyword_map[tkNEW.str] = &tkNEW;
 	keyword_map[tkDELETE.str] = &tkDELETE;
     }

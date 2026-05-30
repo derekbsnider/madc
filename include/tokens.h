@@ -47,7 +47,7 @@ enum class TokenID {
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
   tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT, tkVOLATILE,
-  tkVECTOR, tkMAP, tkSET, tkLIST,
+  tkVECTOR, tkMAP, tkSET, tkLIST, tkTEMPLATE,
   tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
   tkUNION, tkNEW, tkDELETE
 };
@@ -1180,6 +1180,13 @@ class TokenVECTOR: public TokenKeyword { public: TokenVECTOR() : TokenKeyword("v
 class TokenMAP:    public TokenKeyword { public: TokenMAP()    : TokenKeyword("map") {}    virtual TokenID id() const { return TokenID::tkMAP; }    virtual TokenBase *clone() { return new TokenMAP(); }    virtual TokenBase *parse(Program &); };
 class TokenSET:    public TokenKeyword { public: TokenSET()    : TokenKeyword("set") {}    virtual TokenID id() const { return TokenID::tkSET; }    virtual TokenBase *clone() { return new TokenSET(); }    virtual TokenBase *parse(Program &); };
 class TokenLIST:   public TokenKeyword { public: TokenLIST()   : TokenKeyword("list") {}   virtual TokenID id() const { return TokenID::tkLIST; }   virtual TokenBase *clone() { return new TokenLIST(); }   virtual TokenBase *parse(Program &); };
+
+// `template<typename T> class Name { ... }` — capture the definition for
+// Borland-model instantiation. parse() captures (typeparams, class-body token
+// range) into Program::template_map without parsing the body (T is unbound);
+// `Name<ConcreteType>` later clones+substitutes+re-parses it as a concrete class.
+// See docs/plans/2026-05-30-template-instantiation.md.
+class TokenTEMPLATE: public TokenKeyword { public: TokenTEMPLATE() : TokenKeyword("template") {} virtual TokenID id() const { return TokenID::tkTEMPLATE; } virtual TokenBase *clone() { return new TokenTEMPLATE(); } virtual TokenBase *parse(Program &); };
 
 // new / delete — heap allocation with constructor/destructor calls
 class TokenNEW: public TokenKeyword

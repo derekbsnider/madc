@@ -12575,6 +12575,80 @@ TokenBase *TokenMatch::parse(Program &pgm)
 }
 
 
+// template<typename T[, ...]> class Name { ... }
+// Capture the definition for Borland-model instantiation (substitute the type
+// parameter(s) into a clone of the body and re-parse it as a concrete class when
+// `Name<ConcreteT>` is used). Does NOT parse the body here — T is unbound.
+// See docs/plans/2026-05-30-template-instantiation.md.
+TokenBase *TokenTEMPLATE::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenTEMPLATE::parse()" << std::endl);
+
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkLT )
+	pgm.Throw(tn) << "Expecting '<' after template" << flush;
+
+    // <typename T [, typename U ...]> — 'typename' lexes as an identifier,
+    // 'class' as the tkCLASS keyword; both are optional before each param name.
+    std::vector<std::string> typeparams;
+    for (;;)
+    {
+	tn = pgm.nextToken();
+	if ( tn->id() == TokenID::tkCLASS
+	  || (tn->type() == TokenType::ttIdentifier
+	      && ((TokenIdent *)tn)->str == "typename") )
+	    tn = pgm.nextToken();   // consume 'class'/'typename', take the name next
+	if ( tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expecting type-parameter name in template<>" << flush;
+	typeparams.push_back(((TokenIdent *)tn)->str);
+	tn = pgm.nextToken();
+	if ( tn->id() == TokenID::tkComma ) continue;
+	if ( tn->id() == TokenID::tkGT ) break;
+	pgm.Throw(tn) << "Expecting ',' or '>' in template parameter list" << flush;
+    }
+
+    // Expect `class|struct Name` then capture through the matching '}'.
+    TokenBase *class_kw = pgm.nextToken();
+    if ( class_kw->id() != TokenID::tkCLASS && class_kw->id() != TokenID::tkSTRUCT )
+	pgm.Throw(class_kw) << "template must be followed by a class/struct definition" << flush;
+    TokenBase *name_tb = pgm.nextToken();
+    if ( name_tb->type() != TokenType::ttIdentifier )
+	pgm.Throw(name_tb) << "Expecting template class name" << flush;
+    std::string class_name = ((TokenIdent *)name_tb)->str;
+
+    // Capture the full `class Name ... { ... }` token range (incl. any base list
+    // before the brace). Brace-match on tkOpBrc/tkClBrc.
+    std::vector<TokenBase *> body;
+    body.push_back(class_kw);
+    body.push_back(name_tb);
+    int depth = 0;
+    bool seen_brace = false;
+    for (;;)
+    {
+	tn = pgm.nextToken();
+	body.push_back(tn);
+	if ( tn->id() == TokenID::tkOpBrc ) { depth++; seen_brace = true; }
+	else if ( tn->id() == TokenID::tkClBrc )
+	{
+	    if ( --depth == 0 && seen_brace ) break;
+	}
+    }
+    // Consume an optional trailing ';' after the class definition.
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
+	pgm.nextToken();
+
+    Program::TemplateDef td;
+    td.typeparams = typeparams;
+    td.class_name = class_name;
+    td.body = body;
+    pgm.template_map[class_name] = td;
+    DBG(std::cout << "TokenTEMPLATE::parse() captured template '" << class_name
+	<< "' (" << typeparams.size() << " param(s), " << body.size()
+	<< " body tokens)" << std::endl);
+
+    return NULL;   // a definition: produces no statement node
+}
+
 // STL container parse functions removed — ns_stl.cpp was a proof-of-concept.
 // Template instantiation will be generated on demand by the transpiler.
 // parse vector<type>
