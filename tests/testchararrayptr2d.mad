@@ -1,0 +1,23 @@
+#include <stdio.h>
+
+/* 2D array of char pointers (SMAUG sect_names shape). String literals must
+ * stay as pointers, not be expanded to per-char bytes. Regression test for
+ * is_char_array_element_type() wrongly treating char* as a char element. */
+char * const sect_names[3][2] =
+{
+	{ "room",  "inside" },
+	{ "city",  "cities" },
+	{ "field", "fields" }
+};
+
+/* A real 2D char array still expands its string initializers to bytes. */
+char board[2][6] = { "abc", "de" };
+
+int main(void)
+{
+	int i;
+	for ( i = 0; i < 3; i++ )
+		printf("%s=%s\n", sect_names[i][0], sect_names[i][1]);
+	printf("board=%s|%s\n", board[0], board[1]);
+	return 0;
+}
