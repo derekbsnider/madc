@@ -3674,10 +3674,68 @@ extern int64_t fstream_eof(void *);
 extern int64_t fstream_good(void *);
 extern int64_t fstream_is_open(void *);
 
-// STL container helpers removed — ns_stl.cpp was a proof-of-concept
-// with hardcoded type instantiations. Proper template instantiation
-// is generated on demand by the transpiler (Cfront-style).
-// See: docs/plans/transpiler-backend.md Phase 9
+// forward declarations for STL container construct/destruct (ns_stl.cpp).
+// ns_stl.cpp defines these as extern "C"; declare them the same way so the
+// linker resolves the unmangled symbols (the surrounding region is C++).
+extern "C" {
+extern void *vector_int_construct(void *);
+extern void vector_int_destruct(void *);
+extern void *vector_str_construct(void *);
+extern void vector_str_destruct(void *);
+extern void *map_str_int_construct(void *);
+extern void map_str_int_destruct(void *);
+extern void *map_str_str_construct(void *);
+extern void map_str_str_destruct(void *);
+extern void *set_int_construct(void *);
+extern void set_int_destruct(void *);
+extern void *set_str_construct(void *);
+extern void set_str_destruct(void *);
+extern void *list_int_construct(void *);
+extern void list_int_destruct(void *);
+extern void *list_str_construct(void *);
+extern void list_str_destruct(void *);
+
+// forward declarations for STL container methods (defined in ns_stl.cpp)
+extern void vector_int_push_back(void *, int64_t);
+extern void vector_int_pop_back(void *);
+extern int64_t vector_int_at(void *, int64_t);
+extern int64_t vector_int_size(void *);
+extern void vector_int_clear(void *);
+extern int64_t vector_int_empty(void *);
+extern void vector_int_set(void *, int64_t, int64_t);
+extern void vector_str_push_back(void *, void *);
+extern void vector_str_pop_back(void *);
+extern void *vector_str_at(void *, void *, int64_t);
+extern void vector_str_set(void *, int64_t, void *);
+extern int64_t vector_str_size(void *);
+extern void vector_str_clear(void *);
+extern int64_t vector_str_empty(void *);
+extern void map_str_int_set(void *, void *, int64_t);
+extern int64_t map_str_int_get(void *, void *);
+extern int64_t map_str_int_contains(void *, void *);
+extern void map_str_int_erase(void *, void *);
+extern int64_t map_str_int_size(void *);
+extern void map_str_int_clear(void *);
+extern void map_str_str_set(void *, void *, void *);
+extern void *map_str_str_get(void *, void *, void *);
+extern int64_t map_str_str_contains(void *, void *);
+extern int64_t map_str_str_size(void *);
+extern void set_str_insert(void *, void *);
+extern int64_t set_str_contains(void *, void *);
+extern void set_str_erase(void *, void *);
+extern int64_t set_str_size(void *);
+extern void set_str_clear(void *);
+extern void set_int_insert(void *, int64_t);
+extern int64_t set_int_contains(void *, int64_t);
+extern int64_t set_int_size(void *);
+extern void list_int_push_back(void *, int64_t);
+extern void list_int_push_front(void *, int64_t);
+extern int64_t list_int_size(void *);
+extern void list_int_clear(void *);
+extern void list_str_push_back(void *, void *);
+extern void list_str_push_front(void *, void *);
+extern int64_t list_str_size(void *);
+} // extern "C" — STL container helpers
 
 // dlopen/dlsym wrappers that accept std::string* (madc strings)
 int64_t madc_dlopen(void *filename)
@@ -12519,9 +12577,224 @@ TokenBase *TokenMatch::parse(Program &pgm)
 
 // STL container parse functions removed — ns_stl.cpp was a proof-of-concept.
 // Template instantiation will be generated on demand by the transpiler.
-TokenBase *TokenVECTOR::parse(Program &pgm) { pgm.Throw(this) << "vector<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
-TokenBase *TokenMAP::parse(Program &pgm) { pgm.Throw(this) << "map<K,V> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
-TokenBase *TokenSET::parse(Program &pgm) { pgm.Throw(this) << "set<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
+// parse vector<type>
+TokenBase *TokenVECTOR::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenVECTOR::parse()" << std::endl);
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkLT )
+	pgm.Throw(tn) << "Expecting < after vector" << flush;
+
+    tn = pgm.nextToken();
+    TokenDataType *elem_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !elem_td )
+	pgm.Throw(tn) << "Expecting type inside vector<>" << flush;
+
+    DataDef *elem = &elem_td->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkGT )
+	pgm.Throw(tn) << "Expecting > after vector<type" << flush;
+
+    // build composite name and look up or create
+    std::string tname = "vector<" + elem->name + ">";
+    datatype_map_iter dmi = pgm.datatype_map.find(tname);
+    TokenDataType *tdt;
+    if ( dmi != pgm.datatype_map.end() )
+    {
+	tdt = dmi->second;
+    }
+    else
+    {
+	// use sizeof of the underlying vector type — all std::vector are same size
+	DataDefVECTOR *dd = new DataDefVECTOR(elem, tname, sizeof(std::vector<int64_t>));
+	if ( elem->is_string() )
+	    dd->register_extern_ctor_dtor((void *)vector_str_construct, (void *)vector_str_destruct);
+	else
+	    dd->register_extern_ctor_dtor((void *)vector_int_construct, (void *)vector_int_destruct);
+	tdt = new TokenDataType(tname.c_str(), *dd);
+	pgm.datatype_map[tname] = tdt;
+
+	// register methods on this parameterization
+	Variable *mv;
+	if ( elem->is_string() )
+	{
+	    mv = pgm.addFunction("push_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR), DataType::dtSTRING}, (fVOIDFUNC)vector_str_push_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("pop_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_pop_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("at", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_str_at, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_clear, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_empty, true);
+	    dd->methods.push_back(mv);
+	}
+	else
+	{
+	    mv = pgm.addFunction("push_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_int_push_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("pop_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_pop_back, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("at", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_int_at, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_clear, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_empty, true);
+	    dd->methods.push_back(mv);
+	}
+    }
+
+    return pgm.parseDeclaration(tdt);
+}
+
+// parse map<key_type, val_type>
+TokenBase *TokenMAP::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenMAP::parse()" << std::endl);
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkLT )
+	pgm.Throw(tn) << "Expecting < after map" << flush;
+
+    tn = pgm.nextToken();
+    TokenDataType *key_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !key_td )
+	pgm.Throw(tn) << "Expecting key type inside map<>" << flush;
+    DataDef *key = &key_td->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkComma )
+	pgm.Throw(tn) << "Expecting , between key and value types in map<k, v>" << flush;
+
+    tn = pgm.nextToken();
+    TokenDataType *val_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !val_td )
+	pgm.Throw(tn) << "Expecting value type inside map<k, v>" << flush;
+    DataDef *val = &val_td->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkGT )
+	pgm.Throw(tn) << "Expecting > after map<k, v" << flush;
+
+    std::string tname = "map<" + key->name + "," + val->name + ">";
+    datatype_map_iter dmi = pgm.datatype_map.find(tname);
+    TokenDataType *tdt;
+    if ( dmi != pgm.datatype_map.end() )
+    {
+	tdt = dmi->second;
+    }
+    else
+    {
+	DataDefMAP *dd = new DataDefMAP(key, val, tname, sizeof(std::map<std::string, int64_t>));
+	if ( val->is_string() )
+	    dd->register_extern_ctor_dtor((void *)map_str_str_construct, (void *)map_str_str_destruct);
+	else
+	    dd->register_extern_ctor_dtor((void *)map_str_int_construct, (void *)map_str_int_destruct);
+	tdt = new TokenDataType(tname.c_str(), *dd);
+	pgm.datatype_map[tname] = tdt;
+
+	// register methods
+	Variable *mv;
+	if ( val->is_string() )
+	{
+	    mv = pgm.addFunction("put", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)map_str_str_set, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("get", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_str_get, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_str_contains, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_str_size, true);
+	    dd->methods.push_back(mv);
+	}
+	else
+	{
+	    mv = pgm.addFunction("put", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)map_str_int_set, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("get", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_get, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_contains, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("erase", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_erase, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_int_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_int_clear, true);
+	    dd->methods.push_back(mv);
+	}
+    }
+
+    return pgm.parseDeclaration(tdt);
+}
+
+// parse set<type>
+TokenBase *TokenSET::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenSET::parse()" << std::endl);
+    TokenBase *tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkLT )
+	pgm.Throw(tn) << "Expecting < after set" << flush;
+
+    tn = pgm.nextToken();
+    TokenDataType *elem_td = resolve_declared_type_token(pgm, tn, true, true);
+    if ( !elem_td )
+	pgm.Throw(tn) << "Expecting type inside set<>" << flush;
+    DataDef *elem = &elem_td->definition;
+
+    tn = pgm.nextToken();
+    if ( tn->id() != TokenID::tkGT )
+	pgm.Throw(tn) << "Expecting > after set<type" << flush;
+
+    std::string tname = "set<" + elem->name + ">";
+    datatype_map_iter dmi = pgm.datatype_map.find(tname);
+    TokenDataType *tdt;
+    if ( dmi != pgm.datatype_map.end() )
+    {
+	tdt = dmi->second;
+    }
+    else
+    {
+	DataDefSET *dd = new DataDefSET(elem, tname, sizeof(std::set<std::string>));
+	if ( elem->is_string() )
+	    dd->register_extern_ctor_dtor((void *)set_str_construct, (void *)set_str_destruct);
+	else
+	    dd->register_extern_ctor_dtor((void *)set_int_construct, (void *)set_int_destruct);
+	tdt = new TokenDataType(tname.c_str(), *dd);
+	pgm.datatype_map[tname] = tdt;
+
+	Variable *mv;
+	if ( elem->is_string() )
+	{
+	    mv = pgm.addFunction("insert", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_insert, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_contains, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("erase", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_erase, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_str_size, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_str_clear, true);
+	    dd->methods.push_back(mv);
+	}
+	else
+	{
+	    mv = pgm.addFunction("insert", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtINT64}, (fVOIDFUNC)set_int_insert, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET), DataType::dtINT64}, (fVOIDFUNC)set_int_contains, true);
+	    dd->methods.push_back(mv);
+	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_int_size, true);
+	    dd->methods.push_back(mv);
+	}
+    }
+
+    return pgm.parseDeclaration(tdt);
+}
+
+// list<T> is recognized but not yet lowered on the CIR backend; no failing
+// test requires it. Keep the parser stub until a vector/map/set parity pass.
 TokenBase *TokenLIST::parse(Program &pgm) { pgm.Throw(this) << "list<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
 
 
