@@ -440,6 +440,26 @@ static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			      const std::string &typedef_alias)
 {
+	// c2m emits a NAMED parameter as N_SPEC_DECL, but an UNNAMED (abstract)
+	// parameter as N_TYPE(specs, DECL(IGNORE, suffixes)). Emitting an unnamed
+	// param as N_SPEC_DECL with an IGNORE/empty id passes c2mir's checker but
+	// CRASHES its MIR generator (and two empty-named N_ID params would also
+	// trip "repeated declaration"). Fn-ptr type params (built via
+	// fnptr_func_node) are always unnamed — e.g. `void (*)(CHAR_DATA*, char*)`.
+	// wrap() builds the correct node for each case from (specs, suffix-list).
+	bool unnamed = !(pname && pname[0]);
+	auto wrap = [&](node_t pspec, node_t pdecl_list) -> node_t {
+		if (unnamed)
+			return node2(N_TYPE, pspec, node2(N_DECL, ignore(), pdecl_list));
+		node_t sd = simple(N_SPEC_DECL);
+		append(sd, pspec);
+		append(sd, node2(N_DECL, id(pname), pdecl_list));
+		append(sd, ignore());
+		append(sd, ignore());
+		append(sd, ignore());
+		return sd;
+	};
+
 	// Parameter declared via a typedef alias keeps the alias as the type spec
 	// (matches c2m and the var/member paths); explicit stars go on the
 	// declarator. This correctly renders `HARD_REG_SET *p` (a pointer to an
@@ -450,14 +470,7 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		node_t pdecl_list = list();
 		for (int s = 0; s < stars; s++)
 			append(pdecl_list, pointer());
-		node_t pdecl = node2(N_DECL, id(pname), pdecl_list);
-		node_t sd = simple(N_SPEC_DECL);
-		append(sd, pspec);
-		append(sd, pdecl);
-		append(sd, ignore());
-		append(sd, ignore());
-		append(sd, ignore());
-		return sd;
+		return wrap(pspec, pdecl_list);
 	}
 
 	// Function-pointer parameter (no typedef alias): `int (*fp)(int)`.
@@ -465,14 +478,7 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		node_t pspec = list();
 		node_t pdecl_list = list();
 		fnptr_decl_pieces(fp, pspec, pdecl_list, std::vector<uint32_t>());
-		node_t pdecl = node2(N_DECL, id(pname), pdecl_list);
-		node_t sd = simple(N_SPEC_DECL);
-		append(sd, pspec);
-		append(sd, pdecl);
-		append(sd, ignore());
-		append(sd, ignore());
-		append(sd, ignore());
-		return sd;
+		return wrap(pspec, pdecl_list);
 	}
 
 	// Array parameter decay: `T m[N]` -> `T *m`, `T m[N][M]` -> `T (*m)[M]`.
@@ -515,14 +521,7 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 			for (size_t d = first_dim; d < adims.size(); d++)
 				append(pdecl_list, node3(N_ARR, ignore(), list(),
 							 integer(adims[d])));
-			node_t pdecl = node2(N_DECL, id(pname), pdecl_list);
-			node_t sd = simple(N_SPEC_DECL);
-			append(sd, pspec);
-			append(sd, pdecl);
-			append(sd, ignore());
-			append(sd, ignore());
-			append(sd, ignore());
-			return sd;
+			return wrap(pspec, pdecl_list);
 		}
 	}
 
@@ -539,7 +538,6 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	}
 
 	node_t pspec = type_list(base_dd);
-	node_t pid = id(pname);
 	node_t pdecl_list = list();
 	if (is_ptr) {
 		// One '*' per indirection level (int** param -> 2).
@@ -547,15 +545,7 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		for (int s = 0; s < depth; s++)
 			append(pdecl_list, pointer());
 	}
-	node_t pdecl = node2(N_DECL, pid, pdecl_list);
-
-	node_t spec_decl = simple(N_SPEC_DECL);
-	append(spec_decl, pspec);
-	append(spec_decl, pdecl);
-	append(spec_decl, ignore());
-	append(spec_decl, ignore());
-	append(spec_decl, ignore());
-	return spec_decl;
+	return wrap(pspec, pdecl_list);
 }
 
 const char *CirBuilder::builtin_output_runtime(const std::string &name)
