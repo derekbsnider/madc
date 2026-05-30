@@ -38,6 +38,7 @@ extern "C" {
 }
 
 extern thread_local bool madc_verbose;
+extern thread_local int madc_opt_level;
 
 // -----------------------------------------------------------------------
 // Helpers
@@ -1620,7 +1621,7 @@ int madc_cir_execute(Program *prog, const char *source_name,
     MIR_context_t ctx = MIR_init();
     c2mir_init(ctx);
     MIR_gen_init(ctx);
-    MIR_gen_set_optimize_level(ctx, 1);
+    MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
 
     c2m_ctx_t c2m = cir_init(ctx, dump_checked);
     if (!c2m) {

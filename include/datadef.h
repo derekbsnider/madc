@@ -9,6 +9,9 @@
 #include <cstdint>
 
 extern thread_local bool madc_verbose;
+// JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
+// both MIR_gen_set_optimize_level and c2mir's compile optimize_level. Default 1.
+extern thread_local int madc_opt_level;
 class TokenBase;
 
 enum class BaseType : uint8_t { btSimple, btStruct, btFunct, btClass     };
