@@ -2258,6 +2258,116 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttChar)
 		return ch(tb->ival(), tb);
 
+	// new ClassName(args) -> a statement expression that allocates zeroed
+	// storage, constructs in place, and yields the typed pointer:
+	//   ({ struct C *__newN = (struct C*)calloc(1, sizeof(struct C));
+	//      C__C(__newN, args); __newN; })
+	// (No ctor call when the class has no user constructor — calloc already
+	// zero-initializes, matching value-init of a POD.)
+	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
+		DataDefCLASS *cdd = tn->alloc_class;
+		if (!cdd) return error_node("new without a class type", tb);
+		char tmp[32];
+		snprintf(tmp, sizeof(tmp), "__new%d", m_strtmp_counter++);
+		// struct C * type node, reused for the decl and the cast.
+		auto ptr_type = [&]() -> node_t {
+			return node2(N_TYPE,
+				node1(N_LIST, node2(N_STRUCT,
+					id(cdd->name.c_str()), ignore())),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		};
+		auto struct_type = [&]() -> node_t {
+			return node2(N_TYPE,
+				node1(N_LIST, node2(N_STRUCT,
+					id(cdd->name.c_str()), ignore())),
+				node2(N_DECL, ignore(), list()));
+		};
+		// calloc(1, sizeof(struct C)) -> void*. Declare the prototype so
+		// c2mir does not default it to an implicit int return (which would
+		// truncate the 64-bit pointer to 32 bits and crash on deref).
+		need_output_extern("calloc", true,
+			{ { {N_UNSIGNED, N_LONG}, false },
+			  { {N_UNSIGNED, N_LONG}, false } });
+		node_t szof = node1(N_SIZEOF, struct_type(), tb);
+		node_t calloc_args = list();
+		append(calloc_args, integer(1, tb));
+		append(calloc_args, szof);
+		node_t calloc_call = node2(N_CALL, id("calloc", tb), calloc_args, tb);
+		node_t cast_alloc = node2(N_CAST, ptr_type(), calloc_call, tb);
+		// struct C *__newN = (struct C*)calloc(...);
+		node_t decl = simple(N_SPEC_DECL);
+		append(decl, node1(N_SHARE, node1(N_LIST,
+			node2(N_STRUCT, id(cdd->name.c_str()), ignore()))));
+		append(decl, node2(N_DECL, id(tmp, tb), node1(N_LIST, pointer())));
+		append(decl, ignore());
+		append(decl, ignore());
+		append(decl, cast_alloc);
+		node_t items = list();
+		append(items, decl);
+		// C__C(__newN, args)  (the pointer is already __this-shaped)
+		if (cdd->has_user_ctor) {
+			std::string csym = cdd->name + "__" + cdd->name;
+			FuncDef *ctor = NULL;
+			auto it = cdd->method_map.find(cdd->name);
+			if (it != cdd->method_map.end() && it->second)
+				ctor = dynamic_cast<FuncDef *>(it->second->type);
+			referenced_funcs.insert(csym);
+			node_t cargs = list();
+			append(cargs, id(tmp, tb));
+			for (size_t i = 0; i < tn->ctor_args.size(); i++) {
+				TokenBase *arg = tn->ctor_args[i];
+				size_t pi = i + 1;
+				DataDef *pt = (ctor && pi < ctor->parameters.size())
+						? ctor->parameters[pi] : NULL;
+				DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+				bool refp = ctor && pi < ctor->ref_params.size()
+					    && ctor->ref_params[pi];
+				if (pt && (pdt == DataType::dtSTRING
+					   || pdt == DataType::dtSTRINGref))
+					append(cargs, string_obj_arg(arg));
+				else if (refp)
+					append(cargs, node1(N_ADDR, translate_expr(arg), arg));
+				else
+					append(cargs, translate_expr(arg));
+			}
+			node_t ccall = node2(N_CALL, id(csym.c_str(), tb), cargs, tb);
+			append(items, node2(N_EXPR, list(), ccall, tb));
+		}
+		// __newN;  (value of the statement expression)
+		append(items, node2(N_EXPR, list(), id(tmp, tb), tb));
+		node_t block = node2(N_BLOCK, list(), items, tb);
+		return node1(N_STMTEXPR, block, tb);
+	}
+
+	// delete ptr -> ({ C___dtor(ptr); free(ptr); }) — dtor only when the
+	// class has a user destructor; free always. Evaluated for effect, no
+	// value (delete is a void expression).
+	if (TokenDELETE *tdl = dynamic_cast<TokenDELETE *>(tb)) {
+		node_t ptr = translate_expr(tdl->expr);
+		node_t items = list();
+		DataDefCLASS *cdd = tdl->del_class;
+		if (cdd && cdd->has_user_dtor) {
+			std::string dsym = cdd->name + "___dtor";
+			referenced_funcs.insert(dsym);
+			node_t dargs = list();
+			append(dargs, ptr);
+			node_t dcall = node2(N_CALL, id(dsym.c_str(), tb), dargs, tb);
+			append(items, node2(N_EXPR, list(), dcall, tb));
+			// Re-translate the pointer for free() — a fresh expression node
+			// (the same node must not appear twice in the tree).
+			ptr = translate_expr(tdl->expr);
+		}
+		need_output_extern("free", false, { { {N_VOID}, true } });
+		node_t fargs = list();
+		append(fargs, ptr);
+		node_t fcall = node2(N_CALL, id("free", tb), fargs, tb);
+		append(items, node2(N_EXPR, list(), fcall, tb));
+		// A statement expression needs a trailing value expression; use 0.
+		append(items, node2(N_EXPR, list(), integer(0, tb), tb));
+		node_t block = node2(N_BLOCK, list(), items, tb);
+		return node1(N_STMTEXPR, block, tb);
+	}
+
 	// String literal
 	if (tb->type() == TokenType::ttString) {
 		TokenIdent *ti = dynamic_cast<TokenIdent *>(tb);
