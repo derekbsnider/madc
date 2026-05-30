@@ -251,6 +251,13 @@ public:
 	// *__vptr;` slot is prepended when the class (or a base) has virtual
 	// methods, matching the parser's layout (which reserves offset 0).
 	node_t class_struct_def(DataDefCLASS *cdd);
+	// Emit a class's virtual-method dispatch table as a file-scope array of
+	// type-erased function pointers in vtable_slot order:
+	//   void *ClassName__vtable[] = { (void*)C__slot0, (void*)C__slot1, ... };
+	// Each slot resolves to the most-derived override visible to this class
+	// (findMethod walks class -> base). Returns NULL when the class has no
+	// vtable. Must be emitted after the method prototypes it references.
+	node_t class_vtable_def(DataDefCLASS *cdd);
 	// Lower a user-defined class method call on a class OBJECT (or pointer)
 	// receiver to a free-function call on the mangled method symbol with the
 	// receiver address threaded as the hidden first `__this` argument:
@@ -277,6 +284,12 @@ public:
 	// the left operand is not a user class or has no such operator (caller
 	// falls through to the built-in operator translation).
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin);
+	// Build a function-pointer cast type node for a method's signature:
+	// `RET (*)(struct Owner *, params...)`. Used to cast a type-erased vtable
+	// slot back to a callable function pointer for virtual dispatch. The
+	// callee's parameter 0 is already the (owner *) __this, so its full
+	// parameter list is emitted as-is.
+	node_t method_fnptr_type(class FuncDef *callee, DataDefCLASS *owner);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
 

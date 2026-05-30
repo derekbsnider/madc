@@ -1924,6 +1924,48 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 	return spec_decl;
 }
 
+node_t CirBuilder::class_vtable_def(DataDefCLASS *cdd)
+{
+	if (!cdd || !cdd->has_vtable || cdd->vtable_slots.empty())
+		return NULL;
+
+	// Initializer: { (void*)C__slot0, (void*)C__slot1, ... }
+	node_t inits = list();
+	for (const std::string &slot : cdd->vtable_slots) {
+		std::string sname = slot;
+		Variable *mv = cdd->findMethod(sname);
+		if (!mv) {
+			// No override visible: a pure/abstract slot. Emit a null
+			// pointer (calling it is UB, same as C++ abstract dispatch).
+			append(inits, node2(N_INIT, list(), integer(0)));
+			continue;
+		}
+		referenced_funcs.insert(mv->name);
+		// (void*)C__slot
+		node_t vptr_type = node2(N_TYPE,
+			node1(N_LIST, simple(N_VOID)),
+			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t fnref = node2(N_CAST, vptr_type, id(mv->name.c_str()));
+		append(inits, node2(N_INIT, list(), fnref));
+	}
+
+	// void *ClassName__vtable[] = { ... };
+	std::string vname = cdd->name + "__vtable";
+	node_t spec = list();
+	append(spec, simple(N_VOID));
+	node_t dl = list();
+	append(dl, node3(N_ARR, ignore(), list(), ignore())); // [] (sized by init)
+	append(dl, pointer());
+	node_t decl = node2(N_DECL, id(vname.c_str()), dl);
+	node_t sd = simple(N_SPEC_DECL);
+	append(sd, node1(N_SHARE, spec));
+	append(sd, decl);
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, inits);
+	return sd;
+}
+
 node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 {
 	node_t struct_id = id(cdd->name.c_str());
@@ -1931,11 +1973,11 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 
 	// Virtual classes carry a hidden vtable pointer at offset 0. Emit it
 	// first so the C struct layout matches the parser's offsets (which it
-	// shifted by 8 to reserve the slot). The base class already owns the
-	// __vptr when it is virtual, so emit it only for the class that first
-	// introduces the vtable.
-	bool base_has_vtable = cdd->base_class && cdd->base_class->has_vtable;
-	if (cdd->has_vtable && !base_has_vtable) {
+	// shifted by 8 to reserve the slot). The parser flattens base *data*
+	// members into the derived class but NOT the synthetic __vptr (it is not
+	// a real member entry), so every has_vtable class needs __vptr emitted
+	// here at offset 0 — including derived classes.
+	if (cdd->has_vtable) {
 		node_t vptr_spec = list();
 		append(vptr_spec, simple(N_VOID));
 		node_t vptr_dl = list();
@@ -2042,8 +2084,61 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 			append(args, translate_expr(arg));
 	}
 
+	// Virtual dispatch: a method declared (or inherited as) virtual is called
+	// indirectly through the receiver's vtable rather than by name, so the
+	// most-derived override runs. Lower to:
+	//   ( (RET(*)(struct Owner*, params))
+	//       ((void**)recv->__vptr)[slot] )(args...)
+	// recv->__vptr is loaded from a freshly-derived receiver pointer (the
+	// this_arg node above is already consumed as the call's first argument).
+	std::string mname = (sym.size() > recv_class->name.size() + 2)
+				? sym.substr(recv_class->name.size() + 2) : sym;
+	int slot = recv_class->vtable_slot(mname);
+	if (recv_class->is_virtual_method(mname) && slot >= 0 && callee) {
+		DataDefCLASS *vowner = owner ? owner : recv_class;
+		// Fresh receiver pointer for the vptr load.
+		DataDefCLASS *dummy = NULL;
+		node_t recv_for_vptr = class_this_arg(tm, dummy, origin);
+		if (vowner && vowner != recv_class)
+			recv_for_vptr = node2(N_CAST,
+				node2(N_TYPE,
+				      node1(N_LIST, node2(N_STRUCT,
+					id(vowner->name.c_str()), ignore())),
+				      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+				recv_for_vptr, origin);
+		// (void**)recv->__vptr
+		node_t vptr = node2(N_DEREF_FIELD, recv_for_vptr,
+				    id("__vptr", origin));
+		// Build the `void **` cast type explicitly (two pointer levels).
+		node_t vpp_dl = list();
+		append(vpp_dl, pointer());
+		append(vpp_dl, pointer());
+		node_t vpp_type = node2(N_TYPE, node1(N_LIST, simple(N_VOID)),
+					node2(N_DECL, ignore(), vpp_dl));
+		node_t vtab = node2(N_CAST, vpp_type, vptr, origin);
+		// ((void**)...)[slot]
+		node_t slotref = node2(N_IND, vtab, integer(slot, origin), origin);
+		// Cast the slot to the method's function-pointer type.
+		node_t fnptr_type = method_fnptr_type(callee, vowner);
+		node_t fn = node2(N_CAST, fnptr_type, slotref, origin);
+		return node2(N_CALL, fn, args, origin);
+	}
+
 	referenced_funcs.insert(sym);
 	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+}
+
+node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
+{
+	// Specs = return type; decl suffixes = [POINTER, FUNC(params), ret*].
+	// fnptr_decl_pieces emits the callee's full parameter list (param 0 is the
+	// owner-* __this), which is exactly the dynamic call signature.
+	node_t spec_list = list();
+	node_t decl_list = list();
+	fnptr_decl_pieces(callee, true, spec_list, decl_list,
+			  std::vector<uint32_t>());
+	(void)owner;
+	return node2(N_TYPE, spec_list, node2(N_DECL, ignore(), decl_list));
 }
 
 node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
@@ -3573,12 +3668,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// at offset 0, so __this (cast to Base *) is the same address. Only chain
 	// when the base actually has a user ctor/dtor.
 	DataDefCLASS *ocls = tf->method ? tf->method->owner_class : NULL;
-	if (ocls && ocls->base_class) {
-		DataDefCLASS *base = ocls->base_class;
+	if (ocls) {
 		const std::string &fname = tf->var.name;
 		bool is_ctor = (fname == ocls->name + "__" + ocls->name);
 		bool is_dtor = (fname == ocls->name + "___dtor");
-		// Cast __this to `Base *` for the chained call.
+		DataDefCLASS *base = ocls->base_class;
+		// Cast __this to `Base *` for a chained base ctor/dtor call.
 		auto base_this = [&]() -> node_t {
 			node_t t = node2(N_TYPE,
 				node1(N_LIST, node2(N_STRUCT,
@@ -3586,23 +3681,40 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
 			return node2(N_CAST, t, id("__this", tf), tf);
 		};
-		// Wrap the original body block in an outer block, with the base
-		// ctor call before it (ctor) or the base dtor call after it (dtor).
-		// The original body is itself an N_BLOCK — a valid block item — so
-		// no internal list surgery is needed.
-		if ((is_ctor && base->has_user_ctor)
-		    || (is_dtor && base->has_user_dtor)) {
-			std::string bsym = is_ctor
-				? base->name + "__" + base->name
-				: base->name + "___dtor";
+		auto base_call = [&](const std::string &bsym) -> node_t {
 			referenced_funcs.insert(bsym);
 			node_t a = list();
 			append(a, base_this());
 			node_t call = node2(N_CALL, id(bsym.c_str(), tf), a, tf);
-			node_t stmt = node2(N_EXPR, list(), call, tf);
+			return node2(N_EXPR, list(), call, tf);
+		};
+		// Prologue statements (run before the body), in order:
+		//   1. base ctor call (ctor of a derived class with a base ctor)
+		//   2. __this->__vptr = (void*)ClassName__vtable (ctor of a virtual
+		//      class) — set after base construction, matching C++.
+		// Epilogue (after the body): base dtor call (dtor with a base dtor).
+		std::vector<node_t> prologue, epilogue;
+		if (is_ctor && base && base->has_user_ctor)
+			prologue.push_back(base_call(base->name + "__" + base->name));
+		if (is_ctor && ocls->has_vtable) {
+			std::string vname = ocls->name + "__vtable";
+			node_t vptr_lhs = node2(N_DEREF_FIELD, id("__this", tf),
+						id("__vptr", tf));
+			node_t vptr_type = node2(N_TYPE,
+				node1(N_LIST, simple(N_VOID)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t vtab = node2(N_CAST, vptr_type, id(vname.c_str(), tf));
+			node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tf);
+			prologue.push_back(node2(N_EXPR, list(), asn, tf));
+		}
+		if (is_dtor && base && base->has_user_dtor)
+			epilogue.push_back(base_call(base->name + "___dtor"));
+
+		if (!prologue.empty() || !epilogue.empty()) {
 			node_t outer = list();
-			if (is_ctor) { append(outer, stmt); append(outer, body); }
-			else         { append(outer, body); append(outer, stmt); }
+			for (node_t s : prologue) append(outer, s);
+			append(outer, body);
+			for (node_t s : epilogue) append(outer, s);
 			body = node2(N_BLOCK, list(), outer, tf);
 		}
 	}
@@ -3884,6 +3996,20 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (tf->var.name == "main") continue;
 		node_t proto = func_proto(tf);
 		if (proto) append(top_list, proto);
+	}
+
+	// Pass 1.5: per-class virtual dispatch tables. Emitted after the method
+	// prototypes they reference (Pass 1) and before the function definitions
+	// (Pass 2) that initialize __vptr from them. Iterate struct_map once more,
+	// deduped by class pointer.
+	std::set<DataDefCLASS *> emitted_vtables;
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		if (!cdd || !cdd->has_vtable) continue;
+		if (emitted_vtables.count(cdd)) continue;
+		emitted_vtables.insert(cdd);
+		node_t vt = class_vtable_def(cdd);
+		if (vt) append(top_list, vt);
 	}
 
 	// Pass 2: Function definitions (translated above).
