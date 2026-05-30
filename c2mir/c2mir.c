@@ -5648,6 +5648,9 @@ struct check_ctx {
   node_t n_i1_node;
   HTAB (case_t) * case_tab;
   node_t curr_func_def, curr_loop, curr_loop_switch;
+  /* __attribute__((cleanup)): scope enclosing the current loop / loop-or-switch
+     construct (the scope to stop cleanups at for continue / break). */
+  node_t curr_loop_scope, curr_loop_switch_scope;
   mir_size_t curr_call_arg_area_offset;
   VARR (node_t) * context_stack;
 };
@@ -5667,6 +5670,8 @@ struct check_ctx {
 #define curr_func_def check_ctx->curr_func_def
 #define curr_loop check_ctx->curr_loop
 #define curr_loop_switch check_ctx->curr_loop_switch
+#define curr_loop_scope check_ctx->curr_loop_scope
+#define curr_loop_switch_scope check_ctx->curr_loop_switch_scope
 #define curr_call_arg_area_offset check_ctx->curr_call_arg_area_offset
 #define context_stack check_ctx->context_stack
 
@@ -9967,6 +9972,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     curr_func_def = r;
     jump_ret_p = FALSE;
     curr_switch = curr_loop = curr_loop_switch = NULL;
+    curr_loop_scope = curr_loop_switch_scope = NULL;
     curr_call_arg_area_offset = 0;
     VARR_TRUNC (decl_t, func_decls_for_allocation, 0);
     create_decl (c2m_ctx, top_scope, r, decl_spec, NULL, FALSE);
@@ -10138,6 +10144,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
   case N_SWITCH: {
     node_t saved_switch = curr_switch;
     node_t saved_loop_switch = curr_loop_switch;
+    node_t saved_loop_switch_scope = curr_loop_switch_scope;
     node_t labels = NL_HEAD (r->u.ops);
     node_t expr = NL_NEXT (labels);
     node_t stmt = NL_NEXT (expr);
@@ -10161,6 +10168,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     }
     signed_p = signed_integer_type_p (type);
     curr_switch = curr_loop_switch = r;
+    curr_loop_switch_scope = curr_scope; /* scope enclosing the switch */
     switch_attr = curr_switch->attr = reg_malloc (c2m_ctx, sizeof (struct switch_attr));
     switch_attr->type = t;
     switch_attr->ranges_p = FALSE;
@@ -10239,6 +10247,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     }
     curr_switch = saved_switch;
     curr_loop_switch = saved_loop_switch;
+    curr_loop_switch_scope = saved_loop_switch_scope;
     break;
   }
   case N_DO:
@@ -10248,6 +10257,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     node_t stmt = NL_NEXT (expr);
     node_t saved_loop = curr_loop;
     node_t saved_loop_switch = curr_loop_switch;
+    node_t saved_loop_scope = curr_loop_scope;
+    node_t saved_loop_switch_scope = curr_loop_switch_scope;
 
     check_labels (c2m_ctx, labels, r);
     check (c2m_ctx, expr, r);
@@ -10257,9 +10268,14 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       error (c2m_ctx, POS (expr), "while-expr should be of a scalar type");
     }
     curr_loop = curr_loop_switch = r;
+    /* while/do have no own scope; cleanups for break/continue stop at the
+       scope enclosing the loop construct. */
+    curr_loop_scope = curr_loop_switch_scope = curr_scope;
     check (c2m_ctx, stmt, r);
     curr_loop_switch = saved_loop_switch;
     curr_loop = saved_loop;
+    curr_loop_scope = saved_loop_scope;
+    curr_loop_switch_scope = saved_loop_switch_scope;
     break;
   }
   case N_FOR: {
@@ -10271,9 +10287,16 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     decl_t decl;
     node_t saved_loop = curr_loop;
     node_t saved_loop_switch = curr_loop_switch;
+    node_t saved_loop_scope = curr_loop_scope;
+    node_t saved_loop_switch_scope = curr_loop_switch_scope;
 
     check_labels (c2m_ctx, labels, r);
+    /* break exits the whole for (incl. for-init scope): stop at the scope
+       enclosing the for. continue re-enters the iter step inside the for
+       scope: stop at the for scope itself (so for-init vars are not cleaned). */
+    curr_loop_switch_scope = curr_scope;
     create_node_scope (c2m_ctx, r);
+    curr_loop_scope = curr_scope; /* == r, the for-init scope */
     curr_loop = curr_loop_switch = r;
     check (c2m_ctx, init, r);
     if (init->code == N_LIST) {
@@ -10302,6 +10325,8 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     finish_scope (c2m_ctx);
     curr_loop_switch = saved_loop_switch;
     curr_loop = saved_loop;
+    curr_loop_scope = saved_loop_scope;
+    curr_loop_switch_scope = saved_loop_switch_scope;
     break;
   }
   case N_GOTO: {
@@ -10329,6 +10354,9 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       error (c2m_ctx, POS (r), "break statement not within loop or switch");
     } else if (r->code == N_CONTINUE && curr_loop == NULL) {
       error (c2m_ctx, POS (r), "continue statement not within a loop");
+    } else { /* __attribute__((cleanup)): run cleanups exited by this jump. */
+      record_cleanups_until (c2m_ctx, r,
+                             r->code == N_BREAK ? curr_loop_switch_scope : curr_loop_scope);
     }
     check_labels (c2m_ctx, labels, r);
     break;
@@ -14158,11 +14186,17 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
   case N_CONTINUE:
     assert (false_label == NULL && true_label == NULL);
     emit_label (c2m_ctx, r);
+    /* __attribute__((cleanup)): run recorded cleanups (extra ops past the
+       label list, index 1+) before the jump. */
+    for (node_t cl = NL_EL (r->u.ops, 1); cl != NULL; cl = NL_NEXT (cl))
+      gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
     emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, continue_label));
     break;
   case N_BREAK:
     assert (false_label == NULL && true_label == NULL);
     emit_label (c2m_ctx, r);
+    for (node_t cl = NL_EL (r->u.ops, 1); cl != NULL; cl = NL_NEXT (cl))
+      gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
     emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, break_label));
     break;
   case N_DEFER: { /* madc: defer — for now, just emit the deferred stmt inline (TODO: scope-exit LIFO) */
