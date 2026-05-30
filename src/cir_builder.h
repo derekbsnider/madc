@@ -118,9 +118,13 @@ public:
 	// with the c2m innermost-first suffix order
 	// ([lead_dims..., POINTER, FUNC, ret-pointer stars...]).
 	node_t fnptr_func_node(class FuncDef *fd);
-	void fnptr_decl_pieces(class DataDefFPTR *fp, node_t spec_list,
-			       node_t decl_list,
+	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
+			       node_t spec_list, node_t decl_list,
 			       const std::vector<uint32_t> &lead_dims);
+	// Extra pointer stars an fn-ptr usage carries beyond its typedef alias:
+	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
+	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.
+	int fnptr_alias_stars(const std::string &alias);
 
 	// ---- Declaration builders ----
 	// Recursively build an initializer value node: a scalar expression, or

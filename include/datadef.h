@@ -1001,7 +1001,14 @@ class DataDefFPTR: public DataDef
 {
 public:
     FuncDef *target;
-    DataDefFPTR(FuncDef *fd) : DataDef("funcptr", 8, DataType::dtINT64), target(fd) {}
+    // True when the type was written with explicit pointer syntax — a value
+    // `RET (*name)(params)` or a Form-2 typedef `typedef RET (*NAME)(params)`.
+    // False for a Form-1 function typedef `typedef RET NAME(params)`, whose
+    // alias names a bare function type (so `NAME f` declares a function and
+    // `NAME *p` a pointer). Drives whether the CIR renderer parenthesizes the
+    // typedef itself vs. defers the `*` to each use site.
+    bool ptr_syntax;
+    DataDefFPTR(FuncDef *fd) : DataDef("funcptr", 8, DataType::dtINT64), target(fd), ptr_syntax(true) {}
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual bool is_function() const { return true; }
     virtual bool is_numeric()  const { return true; }

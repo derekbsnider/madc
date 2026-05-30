@@ -11522,6 +11522,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.Throw(open ? open : tn) << "Expecting '(' for parameter list" << flush;
 	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
 	DataDefFPTR *fptr = new DataDefFPTR(func);
+	fptr->ptr_syntax = true;   // Form 2: explicit `(*NAME)` — pointer typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 2): " << alias << std::endl);
@@ -11553,6 +11554,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.nextToken(); // consume '('
 	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
 	DataDefFPTR *fptr = new DataDefFPTR(func);
+	fptr->ptr_syntax = false;  // Form 1: `typedef RET NAME(params)` — function typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 1): " << alias << std::endl);

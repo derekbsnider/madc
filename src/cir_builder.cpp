@@ -7,6 +7,7 @@
 
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <string>
 #include <vector>
 #include <map>
@@ -347,18 +348,18 @@ node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 	return node1(N_FUNC, param_list);
 }
 
-// Append a function-pointer variable's return-type specifiers into
-// `spec_list`, and fill `decl_list` with its declarator suffixes in c2m
-// innermost-first order. `int (*fp)(char)` => specs `int`, suffixes
-// [POINTER, FUNC]; a pointer-returning fn-ptr `char *(*fp)(void)` appends the
-// return stars AFTER the FUNC ([POINTER, FUNC, POINTER]); an array of fn-ptrs
-// `void (*tab[3])(int)` prepends the array dims ([ARR, POINTER, FUNC]).
-void CirBuilder::fnptr_decl_pieces(DataDefFPTR *fp, node_t spec_list,
-				   node_t decl_list,
+// Append a function-pointer's return-type specifiers into `spec_list`, and
+// fill `decl_list` with its declarator suffixes in c2m innermost-first order.
+// With emit_pointer the result is a pointer-to-function (`int (*fp)(char)` =>
+// specs `int`, suffixes [POINTER, FUNC]); without it, a bare function type
+// (`typedef int BINOP(int,int)` => [FUNC]). A pointer-returning fn-ptr
+// `char *(*fp)(void)` appends the return stars AFTER the FUNC
+// ([POINTER, FUNC, POINTER]); an array of fn-ptrs `void (*tab[3])(int)`
+// prepends the array dims ([ARR, POINTER, FUNC]).
+void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
+				   node_t spec_list, node_t decl_list,
 				   const std::vector<uint32_t> &lead_dims)
 {
-	FuncDef *fd = fp ? fp->target : NULL;
-
 	// Return-type specs: peel pointer levels, recording the star count so the
 	// stars can be appended as the outermost declarator suffix.
 	DataDef *ret_dd = fd ? &fd->returns : NULL;
@@ -382,10 +383,29 @@ void CirBuilder::fnptr_decl_pieces(DataDefFPTR *fp, node_t spec_list,
 	// Suffixes, innermost binding first.
 	for (size_t d = 0; d < lead_dims.size(); d++)
 		append(decl_list, node3(N_ARR, ignore(), list(), integer(lead_dims[d])));
-	append(decl_list, pointer());            // the fn-ptr `(*name)`
+	if (emit_pointer)
+		append(decl_list, pointer());        // the fn-ptr `(*name)`
 	append(decl_list, fnptr_func_node(fd));  // the `(params)`
 	for (int s = 0; s < ret_stars; s++)
 		append(decl_list, pointer());        // return-type `*`
+}
+
+// Extra pointer stars an fn-ptr usage carries beyond its typedef alias. The
+// alias `DO_FUN` of `typedef void DO_FUN(args)` is a bare function type, so
+// `DO_FUN *do_fun` needs one explicit `*`; `UNOP` of `typedef int (*UNOP)(int)`
+// already includes the pointer, so `UNOP u` needs none. Unknown alias -> 1
+// (the usage is a fn-ptr, so assume the alias is the function form).
+int CirBuilder::fnptr_alias_stars(const std::string &alias)
+{
+	if (alias.empty() || !m_prog) return 1;
+	datatype_map_iter it = m_prog->datatype_map.find(alias);
+	if (it == m_prog->datatype_map.end() || !it->second) return 1;
+	// A Form-2 pointer-to-function typedef already carries the pointer (0
+	// extra stars); a Form-1 function typedef does not, so a fn-ptr use of
+	// the alias needs one explicit `*`.
+	if (DataDefFPTR *afp = dynamic_cast<DataDefFPTR *>(&it->second->definition))
+		return afp->ptr_syntax ? 0 : 1;
+	return 1;
 }
 
 // -----------------------------------------------------------------------
@@ -477,7 +497,8 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(ptype)) {
 		node_t pspec = list();
 		node_t pdecl_list = list();
-		fnptr_decl_pieces(fp, pspec, pdecl_list, std::vector<uint32_t>());
+		fnptr_decl_pieces(fp->target, true, pspec, pdecl_list,
+				  std::vector<uint32_t>());
 		return wrap(pspec, pdecl_list);
 	}
 
@@ -794,7 +815,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
 		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
 		fnptr_decl_list = list();
-		fnptr_decl_pieces(fnptr, tl, fnptr_decl_list, std::vector<uint32_t>());
+		fnptr_decl_pieces(fnptr->target, true, tl, fnptr_decl_list, std::vector<uint32_t>());
 	} else if (anon_sdd) {
 		node_t ml = list();
 		for (size_t i = 0; i < anon_sdd->members.size(); i++)
@@ -965,15 +986,32 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 		return -1;
 	int full_depth = dd_ptr_depth(full_type);
 	int base_depth = 0;
+	bool fnptr_alias = false;
 	if (m_prog) {
 		// Resolve the alias to the typedef's own DataDef so its base pointer
 		// depth can be subtracted from the usage-site total.
 		datatype_map_iter it = m_prog->datatype_map.find(alias);
-		if (it != m_prog->datatype_map.end() && it->second)
+		if (it != m_prog->datatype_map.end() && it->second) {
 			base_depth = dd_ptr_depth(&it->second->definition);
+			fnptr_alias = (dynamic_cast<DataDefFPTR *>(
+					&it->second->definition) != NULL);
+		}
 	}
 	int stars = full_depth - base_depth;
-	return stars < 0 ? 0 : stars;
+	if (stars < 0) stars = 0;
+	// A function-typedef alias (`typedef void DO_FUN(args)`) names a bare
+	// FUNCTION type, so a member/parameter/variable use of it is a
+	// pointer-to-function and carries one '*' that the parser does NOT record
+	// on the type: it keeps the bare DataDefFPTR (no DataDefPTR wrapper) so the
+	// expression parser's fn-ptr-call detection — which keys on
+	// `var.type` being DataDefFPTR — keeps working. fnptr_alias_stars adds the
+	// missing star for a Form-1 function typedef (1) and none for a Form-2
+	// pointer-to-function typedef (0, the pointer is already in the alias).
+	// `DO_FUN fn` (a bare-function declaration) never reaches here — it is
+	// represented as a FuncDef and emitted on the function path.
+	if (fnptr_alias)
+		stars += fnptr_alias_stars(alias);
+	return stars;
 }
 
 node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
@@ -998,6 +1036,34 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 				if (c >= 1) mdims.push_back((uint32_t)c);
 			}
 		}
+	}
+
+	// Function-pointer member (SMAUG's command/spell tables: `DO_FUN *do_fun`).
+	// Without a typedef alias, expand the signature inline
+	// (`void (*do_fun)(int,int)`); with one, emit the alias plus the explicit
+	// pointer star(s) it carries beyond the alias (`DO_FUN *do_fun`). dtINT64
+	// rawtype would otherwise emit a `long` (or, via the alias, a member of
+	// bare function type) — both rejected/miscompiled by c2mir.
+	if (DataDefFPTR *mfp = dynamic_cast<DataDefFPTR *>(mtype)) {
+		node_t mspec;
+		node_t mdl = list();
+		if (!mtypedef.empty()) {
+			mspec = type_list(mtype, mtypedef);
+			for (size_t d = 0; d < mdims.size(); d++)
+				append(mdl, node3(N_ARR, ignore(), list(), integer(mdims[d])));
+			int mstars = fnptr_alias_stars(mtypedef);
+			for (int s = 0; s < mstars; s++)
+				append(mdl, pointer());
+		} else {
+			mspec = list();
+			fnptr_decl_pieces(mfp->target, true, mspec, mdl, mdims);
+		}
+		node_t mmember = simple(N_MEMBER, m.origin);
+		append(mmember, node1(N_SHARE, mspec));
+		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdl));
+		append(mmember, ignore());
+		append(mmember, ignore());
+		return mmember;
 	}
 
 	// Type specifier. A member declared via a typedef emits ID("alias")
@@ -1071,6 +1137,36 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 				bool force_incomplete_struct)
 {
 	if (!dd) return NULL;
+
+	// Function typedef `typedef void DO_FUN(int,int)` (dd = FuncDef) and
+	// pointer-to-function typedef `typedef int (*UNOP)(int)` (dd = DataDefFPTR).
+	// Both have dtINT64 rawtype and would otherwise emit `typedef long NAME`,
+	// erasing the signature; build `typedef ret NAME(params)` /
+	// `typedef ret (*NAME)(params)` from the target instead.
+	{
+		DataDefFPTR *fp_td = dynamic_cast<DataDefFPTR *>(dd);
+		FuncDef *fn_td = fp_td ? fp_td->target : dynamic_cast<FuncDef *>(dd);
+		if (fn_td) {
+			// A Form-1 function typedef `typedef RET NAME(params)` emits no
+			// pointer (so `NAME f` is a function decl, `NAME *p` a pointer);
+			// a Form-2 pointer typedef `typedef RET (*NAME)(params)` keeps it.
+			bool td_ptr = fp_td ? fp_td->ptr_syntax : false;
+			node_t sl = list();
+			append(sl, simple(N_TYPEDEF));
+			node_t dl = list();
+			fnptr_decl_pieces(fn_td, td_ptr, sl, dl,
+					  std::vector<uint32_t>());
+			node_t share = node1(N_SHARE, sl);
+			node_t decl = node2(N_DECL, id(alias.c_str()), dl);
+			node_t spec_decl = simple(N_SPEC_DECL);
+			append(spec_decl, share);
+			append(spec_decl, decl);
+			append(spec_decl, ignore());
+			append(spec_decl, ignore());
+			append(spec_decl, ignore());
+			return spec_decl;
+		}
+	}
 
 	node_t tl = list();
 	append(tl, simple(N_TYPEDEF));
