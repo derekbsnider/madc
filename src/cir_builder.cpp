@@ -1531,8 +1531,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					append(a, translate_expr(tcf->parameters[i]));
 				return node2(N_CALL, id(rt, tb), a, tb);
 			}
-			referenced_funcs.insert(tcf->var.name);
-			node_t func_id = id(tcf->var.name.c_str(), tb);
+			// Callee selection. A normal call names a function by
+			// identifier. A call through a function-pointer held in a
+			// sub-expression (a struct member `c.fn`, an array element
+			// `arr[i].fn`, etc.) carries that expression in src_node —
+			// the parser sets it when `(` follows a TokenMember whose
+			// datadef is DataDefFPTR. Emit the member-access node as the
+			// callee, not the bare member name: `(*ch->spec_fun)(ch)` must
+			// stay an indirect call, not become a call to a (nonexistent)
+			// global `spec_fun` (which c2mir-check tolerates as an implicit
+			// declaration but MIR-link cannot resolve).
+			node_t func_id;
+			if (tcf->src_node) {
+				func_id = translate_expr(tcf->src_node);
+			} else {
+				referenced_funcs.insert(tcf->var.name);
+				func_id = id(tcf->var.name.c_str(), tb);
+			}
 			node_t args = list();
 			for (size_t i = 0; i < tcf->parameters.size(); i++)
 				append(args, translate_expr(tcf->parameters[i]));
