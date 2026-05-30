@@ -1,0 +1,50 @@
+# Session Handoff / Rehydration — 2026-05-30 (std::string + c2mir cleanup)
+
+**Read this first after compaction.** Then: `MEMORY.md` index + the linked memories,
+`claude_status.json`, this file. Live git/test state is operational truth.
+
+## Where everything lives (TWO repos)
+- **madc**: `/workspace/madc`, branch **`feature/cir-stdstring-claude`** (off `develop`).
+  Build: `make -C src` (configured `--enable-madcdat=no`). Test: `make -C src fulltest`.
+  Single test: `./bin/madc tests/NAME.mad`. Emit C: `./bin/madc --emit=c11 FILE.mad` (debug renderer, incomplete for some nodes).
+- **MIR fork**: `/workspace/mir`, branch **`feature/cleanup-attribute`** (the one madc links via `/workspace/mir/libmir.a`).
+  Build: `make -C /workspace/mir`. Test suite: `make -C /workspace/mir c2mir-test` (must stay green: 1075 tests/2150 success). c2m binary: `/workspace/mir/c2m`. Run a c2m test: `c2m FILE.c -ei` (file BEFORE -ei; args after -ei go to the program) or `-eg` (gen). gcc is canon: `gcc -std=gnu11 -O0 FILE.c && ./a.out`.
+
+## CURRENT TEST STATE
+- madc integration: **334 passed / 88 failed / 1 flaky-timeout / 56 skipped** (was 325/95 at session start; +9 net). Goal = drive 88→0 for develop→master parity (Track 1.3).
+- madc unit tests: green. MIR c2mir-test: green (incl. bootstrap, which we FIXED).
+
+## WHAT WAS DONE THIS SESSION (all committed)
+### MIR fork — two clean, ordered PRs (enhance fork now, upstream to vnmakarov later; fork untouched ~2yr = safe window)
+- **`fix/ldouble-determinism`** (off base 42471db): `mir.c put_ldouble` wrote uninitialized 80-bit-long-double padding (6 bytes) → non-deterministic binary MIR → bootstrap self-consistency test FAILED. Fix: zero the union + `u.u[1] &= 0xffff` (x86). Latent core-MIR bug, triggered by the fork's _Complex work (203 ldouble ops in c2mir.c). All 6 bootstrap variants pass. UPSTREAM-WORTHY. See [[project_mir_ldouble_determinism]].
+- **`feature/cleanup-attribute`** (STACKED on the fix): full GNU `__attribute__((cleanup(fn)))` in c2mir. Mechanism: CHECK records `fn(&var)` stmts as extra ops on the jump node via `record_cleanups_until(jump,stop_scope)`; GEN emits them before the jump (return value already in a reg → no temp). Phases: fall-through (`emit_scope_cleanups` at N_BLOCK check end), return (`add_return_cleanups`, stop=NULL), break/continue (stop=loop/switch enclosing scope, trackers `curr_loop_scope`/`curr_loop_switch_scope`), goto (label scope via `S_LABEL` symbol `aux_node` + `common_ancestor_scope` NCA + `process_goto_cleanups` post-pass for forward gotos). Op indices: N_RETURN=2, N_BREAK/CONTINUE=1, N_GOTO=2. 5 tests in `c-tests/new/cleanup-*.c`, all byte-identical to gcc interp+gen. GOTCHA: c2m has no `__GNUC__` so glibc empties source-level `__attribute__` — c2mir tests use `__mirc_attribute__`; **madc builds the N_ATTR node directly so it's unaffected**. See [[project_c2mir_cleanup_attr]].
+
+### madc — std::string as a real object (branch feature/cir-stdstring-claude)
+A madc `string` = a real std::string OBJECT (g++ canon, user decision): storage `long buf[4]` (8-aligned), address via `string_obj_addr(name)`→`(void*)name`. Runtime wrappers in `src/madc_mir_backend.cpp` (string_construct/_cstr, string_destruct, string_cstr, string_length, string_assign/_cstr, string_append/_cstr, string_clear) operate on the void* object ptr. DONE:
+- Decl + construct (`string_storage_decl`, `string_ctor_call`), in `translate_block`.
+- **Destruction via the cleanup attribute** — `string_storage_decl` tags the buffer with `__attribute__((cleanup(string_destruct)))` (N_ATTR built in tree); c2mir destructs on EVERY exit path. Manual destruct removed. Verified leak-free on early return (valgrind).
+- char* coercion: `string_cstr_arg` (string obj → `string_cstr((void*)s)`) at char*-expecting builtin args (printstr/puts).
+- Stream: `cout << s` → basic_string `operator<<` (in `translate_stream_chain`).
+- **Params**: `string&`(dtSTRINGref)/by-value(dtSTRING) → `void*` in `param_decl`; `is_string_object_value` recognizes string& params.
+- **Methods**: `.c_str/.length/.size/.empty/.clear` → wrappers (`string_method_call`, dispatched on `ttCallMethod`=TokenCallMethod which IS-A TokenMember). `need_output_extern` gained a return-spec param so `string_length` returns `long`.
+- KEY HELPERS in `src/cir_builder.cpp`: `is_string_object` (dtSTRING, not ptr), `is_string_object_value` (declared string var OR string& param; EXCLUDES literals/`__literal__`/ternary-of-literals — this distinction was a SIGSEGV bug we fixed), `string_obj_words`, `void_ptr_type`, `string_storage_decl`, `string_obj_addr`, `string_ctor_call`, `string_cstr_arg`, `string_method_call`. Provenance marker `synth_from_origin` on cir_node (src/cir_node.h) for future reverse-render suppression.
+See [[project_cir_stdstring_model]]. Plan: docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
+
+## THE 88 FAILURES — clusters (run `bash scripts/run_tests.sh 2>&1 | grep FAIL` to refresh)
+- **C++ class model: ~23** — ctor/dtor/except*/virtual/inherit/operover/new/access/method/ref/class. Proven on OLD asmjit backend, NOT re-established on CIR. `cleanup` attribute now gives us RAII dtors.
+- **namespace/STL/string: ~15** — testns/testphp/testperl/testrust/testlang/testmap/testset/testvector/testsstream/teststdstringconv(maybe now passing)/testregex/testrubycharsshadow/testrustmatch/testforeach/testforeach2/testsubscript. String-heavy: string objects passed to php::/std::/STL fns, cout chains, stringstream.
+- **complex: 7** (testcomplex*), **struct/compound init: 7**, **VLA: 6** (testvla*), **fnptr: 5** (testfnptr*), **misc**: test/test4/test5 (undefined `version` global — a builtin-global/Task-1.7 issue, NOT params), testcin, testfstream, testdefer, testlambda, testgccconversionprefix/u32todouble/uint32realcoerce, testnegzerostatic, testlargesizeofquery, testsignedbitfieldassignexpr, testcomputedgoto, testmacrodefhead, testnestedvarargs, testautoincludestdheaders.
+
+## PLAN (prioritized for test-suite recovery — develop→master gate)
+**P1 — namespace/STL/string cluster (~15 tests). DO FIRST.** Natural continuation; we have string objects+params+methods. Work: coerce string OBJECTS into call sites of php::/perl::/python::/ruby::/js::/rust::/std:: functions (they take string/string&/char* params — apply string_cstr_arg or pass object ptr per param type), fix cout/stringstream chains with string objects, and STL container element handling (vector<string>/map). Investigate each failing test's emit (`--emit=c11`) + diff vs expected. Likely also needs: namespace-fn signatures with string params (param_decl already does string→void*), and string args to varargs/printf-family (extend the builtin char* coercion to general/varargs calls — currently only printstr/puts). MEDIUM effort, high count. Take the call-site/coercion complexity myself; subagent the repetitive per-namespace tests with liberal context.
+**P2 — C++ class model (~23 tests). BIGGEST cluster.** Re-establish on CIR: ctor/dtor (use cleanup attr for dtors!), single inheritance + vtables, operator overloading, new/delete, references, access, exceptions (SJLJ). Large multi-feature. Establish ONE sub-feature myself (e.g. ctor/dtor), then fan the rest to subagents (worktrees) with liberal context. Reference: the OLD asmjit backend's C++ model (git history on master) + docs/rules/c11-transpiler.md (class→struct+vtable+static-fns lowering).
+**P3 — small independent clusters (complex 7 / struct-init 7 / VLA 6 / fnptr 5 / misc). SUBAGENT-FRIENDLY, parallelizable.** Each is a few tests, mostly disjoint. Fan to parallel subagents (worktrees) with liberal context; I verify + integrate. The `version` global (test/test4/test5) + Task 1.7 global strings is a quick one.
+**Pure std::string completion (returns/concat `s+t`/operators =,+=,==)**: parity-completeness, NO current failing test needs it → do on-demand when a P1/P2 test requires it, else last.
+
+### Working method for clusters (proven this session)
+- Disjoint code → parallel subagents in **worktrees** (madc: `git worktree add -b wip/X /workspace/madc-X feature/cir-stdstring-claude`; configure+build in it; cherry-pick back — clean for disjoint code). Same-file/coupled → do myself or sequence.
+- Always: subagents model=opus, LIBERAL context (full background+helpers+gotchas+build/test+gcc-canon), TDD, gcc is canon, fulltest must not regress the pass count.
+
+## RULES/CONVENTIONS (don't relearn)
+- gcc/clang is canon. Build per-change as separate ordered PRs on the MIR fork (fixes before dependent features). Commit msgs end with `Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>`. Scratch in tmp/. No `&&` chains in Bash. `make -C src fulltest` after changes.
+- MIR fork PRs: PR1 fix/ldouble-determinism, PR2 feature/cleanup-attribute (stacked). Future MIR work stacks similarly.
