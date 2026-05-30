@@ -403,6 +403,25 @@ node_t CirBuilder::string_dtor_call(const char *name, TokenBase *origin)
 	return stmt;
 }
 
+// Coerce a std::string OBJECT argument to const char*: string_cstr((void*)obj).
+// For a plain string variable the object address is string_obj_addr(name); for
+// any other string-object expression, cast its translated value to void*. This
+// is the dtSTRING->dtCHARptr coercion applied at char*-expecting call sites.
+node_t CirBuilder::string_cstr_arg(TokenBase *arg)
+{
+	need_output_extern("string_cstr", true, { { {N_VOID}, true } });
+	node_t addr;
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
+		addr = string_obj_addr(tv->var.name.c_str(), arg);
+	else
+		addr = node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+	node_t a = list();
+	append(a, addr);
+	node_t call = node2(N_CALL, id("string_cstr", arg), a, arg);
+	CIR_NODE(call)->synth_from_origin = true;
+	return call;
+}
+
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
 // instead of raw type nodes — c2mir's checker resolves the typedef.
 node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
@@ -1740,8 +1759,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				};
 				need_output_extern(rt, false, { sigs.at(rt) });
 				node_t a = list();
-				for (size_t i = 0; i < tcf->parameters.size(); i++)
-					append(a, translate_expr(tcf->parameters[i]));
+				for (size_t i = 0; i < tcf->parameters.size(); i++) {
+					TokenBase *p = tcf->parameters[i];
+					// printstr/puts take char*: a std::string object
+					// argument must be coerced via string_cstr.
+					if (is_string_object(p->datadef()))
+						append(a, string_cstr_arg(p));
+					else
+						append(a, translate_expr(p));
+				}
 				return node2(N_CALL, id(rt, tb), a, tb);
 			}
 			// Callee selection. A normal call names a function by
