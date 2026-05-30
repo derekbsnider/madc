@@ -27,14 +27,23 @@ high-level" — the answer is both.**
 
 ## Current State
 
-- **Version:** `0.24.0` (per `VERSION`) — the last release cut on the
-  now-removed asmjit/Gecko backend. Active development on `feature/cir-node`.
+- **Version:** `0.25.0` (per `VERSION`) — released on `develop` (CIR backend).
+  `master` still holds the v0.24.0 asmjit/Gecko backend at full C89 coverage;
+  develop is **not** promoted to master until the CIR path reaches feature
+  parity.
 - **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
   backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
   (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`
-  aliases to cir.
-- **CIR integration baseline:** **227 pass / 193 fail / 56 skip** (measured).
-  The 193 are the active CIR coverage worklist — see Track 1.3.
+  aliases to cir. Builds against the **madc MIR fork**
+  (github.com/derekbsnider/mir, branch `feature/complex-support`).
+- **★ SMAUG 1.8 boots, runs, and is playable** through the CIR path: it boots to
+  a live server (`Realms of Despair ready … port 4000`) and a client can create
+  a character, navigate the world, and fight (the Newgate serpent fight runs).
+  The project's north-star goal — running a real C89 codebase end-to-end —
+  is now demonstrated on CIR.
+- **CIR integration baseline:** **325 pass / ~95 fail / 56 skip** (v0.25.0).
+  The failures are the active CIR coverage worklist — see Track 1.3 — and the
+  gate for promotion to master.
 - **C++ model — proven on the old backend, being re-established on CIR:**
   ctors/dtors, operator overloading, references, `new`/`delete`, single
   inheritance, vtables, SJLJ exceptions + unwinding, access control, const
@@ -387,12 +396,15 @@ failures mechanical and localizable, then reimplement eval/exec + REPL on MIR.
 
 ## The SMAUG Goal
 
-The concrete test case driving Tracks 1-3 is compiling SMAUG 1.8
-(~158K LOC C89) end-to-end. On the old asmjit backend, `smaug.exe` reached
-startup → login → serpent combat. That backend is now removed; the current
-state is that SMAUG **parses** end-to-end through the CIR path (after the
-parser-fix port), and rebuilding **runtime** parity via `cir_node → c2mir →
-MIR` is the active push. The port itself lives in the external
+The concrete test case driving Tracks 1-3 is compiling **and running** SMAUG
+1.8 (~158K LOC C89) end-to-end. ★ **Achieved on the CIR path (v0.25.0,
+2026-05-30):** SMAUG compiles through `cir_node → c2mir → MIR`, links, boots to
+a live server (`Realms of Despair ready … port 4000`), and is playable — a
+connected client creates a character, navigates the world, and fights (the
+Newgate room-109 serpent fight runs). This matches and now exceeds the old
+asmjit backend's startup → login → serpent-combat reach, on the sole supported
+backend. Remaining: broader gameplay coverage and driving the CIR integration
+worklist to parity. The port itself lives in the external
 [MadSMAUG](https://github.com/derekbsnider/MadSMAUG) repo.
 
 SMAUG does NOT need C++ features (Tracks 2, 8) — it's pure C. But the

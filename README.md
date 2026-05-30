@@ -219,7 +219,7 @@ feeds them stdin and argv respectively and asserts on their output.)
 | [`docs/language/regex.md`](docs/language/regex.md) | Regex functions |
 | [`docs/language/multiple-returns.md`](docs/language/multiple-returns.md) | Go-style multiple return values |
 | [`docs/language/ternary-operator.md`](docs/language/ternary-operator.md) | Ternary operator |
-| [`docs/build.md`](docs/build.md) | Build requirements, asmjit setup |
+| [`docs/build.md`](docs/build.md) | Build requirements + the madc MIR fork |
 | [`docs/plans/data-storage-federation.md`](docs/plans/data-storage-federation.md) | Exploratory `madcdat` storage/federation design (`madc::DataSource` stays core, `DataSet<T>`, `Relation<A,B>`, automatic mapping, SQL/GQL front-ends, current `--enable-madcdat` build gate, future separate `libmadcdat` boundary) |
 | [`docs/architecture.md`](docs/architecture.md) | Compiler internals |
 | [`docs/testing.md`](docs/testing.md) | Test guide |
@@ -233,26 +233,23 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.24.0** (2026-05-28) was the last release cut on the now-removed
-asmjit/Gecko backend (native C99 `_Complex` in c2mir; on that backend, 419 pass
-/ 0 fail / 56 skip).
-
-**Current development** (`feature/cir-node`): Gecko and asmjit have both been
-**removed**; `cir_node` (MC11-IR) → c2mir → MIR is the **sole** backend. Honest
-CIR integration baseline: **325 pass / ~95 fail / 56 skip** — the failures are
-the active coverage worklist. In-process `eval`/exec + the REPL, and native AOT
-output, are deferred (stubbed) until the CIR path reaches parity.
-
-### Current Release
-
-**v0.25.0 (2026-05-30)** — CIR is now madc's sole backend, and the headline
-milestone lands: **SMAUG 1.8 (~158k LOC C89) boots, runs as a live server, and
-is playable** through `cir_node → c2mir → MIR → JIT` — character creation, world
-navigation, and the Newgate serpent fight all run. Six root-cause runtime fixes
-(fn-ptr-typedef rendering, extern-at-creation, varargs intrinsic, switch
-default, strcmp-int, and a JIT-symbolizing crash handler) took SMAUG from
-won't-link to gameplay; integration 316 → 325. See
+**v0.25.0 (2026-05-30)** — CIR is now madc's **sole** backend (asmjit and Gecko
+removed), and the headline milestone lands: **SMAUG 1.8 (~158k LOC C89) boots,
+runs as a live server, and is playable** through `cir_node` (MC11-IR) → c2mir →
+MIR → JIT — character creation, world navigation, and the Newgate serpent fight
+all run. Six root-cause runtime fixes (fn-ptr-typedef rendering,
+extern-at-creation, varargs intrinsic, switch default, strcmp-int, and a
+JIT-symbolizing crash handler) took SMAUG from won't-link to gameplay. Builds
+against the [madc MIR fork](https://github.com/derekbsnider/mir). See
 [`docs/release-notes/v0.25.0.md`](docs/release-notes/v0.25.0.md).
+
+Honest CIR integration baseline: **325 pass / ~95 fail / 56 skip** — the
+failures are the active coverage worklist. In-process `eval`/exec + the REPL,
+and native AOT output, are deferred (stubbed) until the CIR path reaches parity.
+
+**Branch state:** `develop` carries v0.25.0 (CIR backend). `master` still holds
+the v0.24.0 asmjit/Gecko backend at full C89 coverage (419 pass / 0 fail) —
+develop is **not** promoted to master until the CIR path reaches feature parity.
 
 ### Recent Releases
 
