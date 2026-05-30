@@ -317,18 +317,21 @@ bool CirBuilder::is_string_object(DataDef *dd)
 
 bool CirBuilder::is_string_object_value(TokenBase *arg)
 {
-	if (!arg || !is_string_object(arg->datadef()))
+	// A string OBJECT value is a DECLARED `string` variable — an lvalue with
+	// constructed storage. Many other expressions are typed dtSTRING but are
+	// const char* values, NOT objects: string literals, lifted `__literal__`
+	// vars, and char*-valued expressions like a ternary of literals
+	// (`cond ? "a" : "b"`). So require a genuine variable token; everything
+	// else flows through the const char* path (str()/char* operator<<).
+	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
+	if (!tv)
 		return false;
-	// A string literal is a const char* value, not a constructed object —
-	// neither a bare ttString token nor a lifted `__literal__` synthetic var.
-	if (arg->type() == TokenType::ttString)
+	if (!is_string_object(tv->var.type))
 		return false;
-	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
-		if (tv->var.name.compare(0, 11, "__literal__") == 0)
-			return false;
-		if (tv->var.is_constant())
-			return false;
-	}
+	if (tv->var.name.compare(0, 11, "__literal__") == 0)
+		return false;
+	if (tv->var.is_constant())
+		return false;
 	return true;
 }
 
