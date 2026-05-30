@@ -315,6 +315,23 @@ bool CirBuilder::is_string_object(DataDef *dd)
 	return dd && dd->is_string() && !dd->is_pointer();
 }
 
+bool CirBuilder::is_string_object_value(TokenBase *arg)
+{
+	if (!arg || !is_string_object(arg->datadef()))
+		return false;
+	// A string literal is a const char* value, not a constructed object —
+	// neither a bare ttString token nor a lifted `__literal__` synthetic var.
+	if (arg->type() == TokenType::ttString)
+		return false;
+	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg)) {
+		if (tv->var.name.compare(0, 11, "__literal__") == 0)
+			return false;
+		if (tv->var.is_constant())
+			return false;
+	}
+	return true;
+}
+
 size_t CirBuilder::string_obj_words() const
 {
 	// cir_builder is itself C++, so it knows the real ABI size/alignment of
@@ -800,13 +817,10 @@ const char *CirBuilder::ostream_insert_symbol(DataDef *dd, ExternParam &p_out)
 {
 	bool is_ptr = dd && dd->is_pointer();
 	DataType dt = dd ? dd->rawtype() : DataType::dtINT64;
-	if (is_string_object(dd)) {
-		// operator<<(ostream&, const std::string&) — takes the object pointer,
-		// returns ostream& (so it chains). The 2nd param is the object addr,
-		// passed as void* in translate_stream_chain.
-		p_out = {{N_VOID}, true};
-		return "_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE";
-	}
+	// NOTE: a string OBJECT value (operator<<(ostream&, const string&)) is
+	// handled directly in translate_stream_chain, which has the token to tell
+	// an object apart from a literal. Here `is_string()` means a const char*
+	// (string literal / char* value).
 	if (dd && dd->is_string()) { p_out = {{N_CHAR}, true}; return "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc"; }
 	if (is_ptr && dt == DataType::dtCHAR) { p_out = {{N_CHAR}, true}; return "_ZStlsISt11char_traitsIcEERSt13basic_ostreamIcT_ES5_PKc"; }
 	if (is_ptr) { p_out = {{N_VOID}, true}; return "_ZNSolsEPKv"; }
@@ -861,22 +875,27 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 			result = node2(N_CALL, id(MANIP), args, top);
 			continue;
 		}
-		DataDef *vdd = vals[i]->datadef();
-		ExternParam vp;
-		const char *sym = ostream_insert_symbol(vdd, vp);
-		need_output_extern(sym, true, { { {N_VOID}, true }, vp });
 		node_t args = list();
 		append(args, result);
-		if (is_string_object(vdd)) {
-			// basic_string operator<< takes the object pointer (const string&).
+		if (is_string_object_value(vals[i])) {
+			// operator<<(ostream&, const std::string&) — takes the object
+			// pointer, returns ostream& (chains). Literals are NOT objects and
+			// fall through to the char* overload below.
+			const char *SSYM = "_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE";
+			need_output_extern(SSYM, true, { { {N_VOID}, true }, { {N_VOID}, true } });
 			if (TokenVar *tv = dynamic_cast<TokenVar *>(vals[i]))
 				append(args, string_obj_addr(tv->var.name.c_str(), top));
 			else
 				append(args, node2(N_CAST, void_ptr_type(),
 						   translate_expr(vals[i]), top));
-		} else {
-			append(args, translate_expr(vals[i]));
+			result = node2(N_CALL, id(SSYM), args, top);
+			continue;
 		}
+		DataDef *vdd = vals[i]->datadef();
+		ExternParam vp;
+		const char *sym = ostream_insert_symbol(vdd, vp);
+		need_output_extern(sym, true, { { {N_VOID}, true }, vp });
+		append(args, translate_expr(vals[i]));
 		result = node2(N_CALL, id(sym), args, top);
 	}
 	return result;
@@ -1778,8 +1797,9 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				for (size_t i = 0; i < tcf->parameters.size(); i++) {
 					TokenBase *p = tcf->parameters[i];
 					// printstr/puts take char*: a std::string object
-					// argument must be coerced via string_cstr.
-					if (is_string_object(p->datadef()))
+					// argument must be coerced via string_cstr. String
+					// literals are already const char* — pass directly.
+					if (is_string_object_value(p))
 						append(a, string_cstr_arg(p));
 					else
 						append(a, translate_expr(p));

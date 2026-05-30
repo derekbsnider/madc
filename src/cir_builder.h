@@ -75,6 +75,10 @@ class CirBuilder {
 	// nodes; all share the originating TokenDecl in cir_node::origin and set
 	// synth_from_origin. See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
 	static bool is_string_object(DataDef *dd);   // dtSTRING value type, not a pointer
+	// True only for a genuine string OBJECT value (declared string variable /
+	// string-returning expression) — EXCLUDES string literals (ttString tokens
+	// and lifted `__literal__` vars), which are already const char* values.
+	static bool is_string_object_value(TokenBase *arg);
 	size_t string_obj_words() const;             // ceil(sizeof(std::string)/sizeof(long))
 	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
 	node_t string_storage_decl(const char *name, TokenBase *origin); // long name[W];
