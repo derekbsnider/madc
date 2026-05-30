@@ -124,6 +124,31 @@ class CirBuilder {
 	node_t array_storage_decl(const char *name, TokenBase *origin);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
 
+	// ---- STL container (vector/map/set) object lowering ----
+	// Same opaque-object model as std::string / MadArray: an 8-aligned long[]
+	// buffer + a ctor call, destructed via the cleanup attribute. The runtime
+	// symbol family is selected by container kind + element/key/value types
+	// (e.g. dtVECTOR + string element -> "vector_str_*"). The container is
+	// always passed to its wrappers by address ((void*)&buffer).
+	static bool is_container_object(DataDef *dd);
+	// Fill ctor/dtor wrapper names + word count for a container value type.
+	// Returns false when `dd` is not a (non-pointer) container.
+	bool container_obj_info(DataDef *dd, const char *&ctor_sym,
+				const char *&dtor_sym, size_t &words);
+	node_t container_storage_decl(const char *name, DataDef *dd, TokenBase *origin);
+	node_t container_ctor_call(const char *name, DataDef *dd, TokenBase *origin);
+	// Lower a container method call (vector .push_back/.size/.at/...; map
+	// .put/.get/.contains/.size; set .insert/.contains/.size) on a container
+	// OBJECT receiver to its runtime wrapper. Returns NULL when not a
+	// recognized container-object method call (caller falls through).
+	node_t container_method_call(class TokenMember *tm, TokenBase *origin);
+	// Lower a container subscript READ `c[i]` to its runtime getter. Returns
+	// NULL when `tsub` is not a container subscript.
+	node_t container_subscript_read(class TokenSubscript *tsub, TokenBase *origin);
+	// Lower a container subscript WRITE `c[i] = rhs` to its runtime setter.
+	// Returns NULL when the assignment LHS is not a container subscript.
+	node_t container_subscript_assign(class TokenOperator *top, TokenBase *origin);
+
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);
 	void set_pos(cir_node *cn, TokenBase *tb);
@@ -243,6 +268,12 @@ public:
 	// emits the index loop + per-iteration element fill (php_array_get /
 	// php_array_get_int) around the translated body.
 	node_t translate_foreach(class TokenFOREACH *fe);
+	// Range-for over a std::vector: `for (T x : vec) body`. Iterates by index
+	// using vector_int_size/at (int element) or vector_str_size/at (string
+	// element, filled into the enclosing-scope loop var). The loop variable is
+	// declared in the enclosing scope by the parser (same as translate_foreach).
+	node_t translate_foreach_vector(class TokenFOREACH *fe,
+					class DataDefVECTOR *vdd);
 	node_t translate_do(TokenDO *td);
 	node_t translate_switch(TokenSWITCH *ts);
 	// rust::match over integer patterns -> a switch: each arm's pattern(s)
