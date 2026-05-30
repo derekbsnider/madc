@@ -857,13 +857,12 @@ void Program::_tokenizer_init()
     define_map["__UINT_FAST64_TYPE__"] = "unsigned long";
     define_map["__builtin_va_list"] = "long";
     define_map["__builtin_va_arg"] = "va_arg";
-    // __builtin_va_start/end — need to be function-like macros
-    {
-	MacroDef m;
-	m.params = {"__ap", "__last"};
-	m.body = "__ap = __va_args";
-	macro_map["__builtin_va_start"] = m;
-    }
+    // __builtin_va_start passes through to the CIR as a real c2mir intrinsic
+    // call (cir_builder emits N_CALL(__builtin_va_start, ap); c2mir lowers it to
+    // MIR_VA_START on the user's own va_list). It is intentionally NOT a macro:
+    // the earlier `__ap = __va_args` master-copy expansion mis-set reg_save_area
+    // in large frames. va_end stays a no-op (the stdarg.h va_end macro handles
+    // it as `((void)(ap))`).
     {
 	MacroDef m;
 	m.params = {"__ap"};

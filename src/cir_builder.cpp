@@ -1641,7 +1641,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (tcf->src_node) {
 				func_id = translate_expr(tcf->src_node);
 			} else {
-				referenced_funcs.insert(tcf->var.name);
+				// c2mir intrinsics (e.g. __builtin_va_start) are
+				// recognized by name and lowered in-place; emitting an
+				// extern prototype for one shadows the intrinsic and
+				// turns it into an undefined external symbol at MIR-link.
+				// So skip the proto for them. (__builtin_va_arg has its
+				// own translation path above.)
+				if (tcf->var.name.compare(0, 13, "__builtin_va_") != 0)
+					referenced_funcs.insert(tcf->var.name);
 				func_id = id(tcf->var.name.c_str(), tb);
 			}
 			node_t args = list();
@@ -2026,36 +2033,13 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	node_t decl = node2(N_DECL, func_id, decl_list);
 	node_t body = translate_block((TokenCpnd *)tf);
 
-	// A variadic function body references the parser-injected `__va_args`
-	// symbol (its va_start macro expands to `ap = __va_args`). Since the
-	// signature now uses real C `...` instead of a `__va_args` parameter,
-	// declare `__va_args` as a local va_list and prime it with
-	// __builtin_va_start(<last named param>) so the body's reference
-	// resolves and the emitted C compiles as standard C11.
-	if (fd->is_varargs && nparam > 0) {
-		// va_list __va_args;
-		node_t va_spec = type_list(NULL, "va_list");
-		node_t va_decl = node2(N_DECL, id("__va_args"), list());
-		node_t va_sd = simple(N_SPEC_DECL);
-		append(va_sd, node1(N_SHARE, va_spec));
-		append(va_sd, va_decl);
-		append(va_sd, ignore());
-		append(va_sd, ignore());
-		append(va_sd, ignore());
-
-		// __builtin_va_start(__va_args);  — c2mir's builtin takes exactly ONE
-		// argument (the va_list), unlike C's two-arg va_start(ap, last) macro.
-		node_t vs_args = list();
-		append(vs_args, id("__va_args"));
-		node_t vs_call = node2(N_CALL, id("__builtin_va_start"), vs_args);
-
-		// Wrap: { va_list __va_args; __builtin_va_start(...); <orig body> }
-		node_t wrap_items = list();
-		append(wrap_items, va_sd);
-		append(wrap_items, node2(N_EXPR, list(), vs_call));
-		append(wrap_items, body);
-		body = node2(N_BLOCK, list(), wrap_items);
-	}
+	// Variadic bodies need no function-entry priming: the user's
+	// `va_start(ap, last)` macro now lowers directly to the c2mir intrinsic
+	// `__builtin_va_start(ap)` (see include/madc/stdarg.h), which initializes
+	// the user's own va_list from the frame. The earlier model declared a
+	// hidden `__va_args` master here and copied it per use site, but that extra
+	// va_list struct copy mis-set reg_save_area in large frames (e.g. SMAUG's
+	// bug() with char buf[MAX_STRING_LENGTH]), corrupting the list.
 
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
 }

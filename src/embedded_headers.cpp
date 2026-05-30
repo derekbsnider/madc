@@ -739,13 +739,16 @@ extern int b64_pton(const char *src, unsigned char *target, int targsize);
 // c2mir's mirc_x86_64_stdarg.h): va_list is the real __va_list_tag[1] struct,
 // and the ABI work is done by the compiler intrinsic __builtin_va_start.
 //
-// The compiler injects, at the top of every variadic function body, a local
-//   va_list __va_args;  __builtin_va_start(__va_args);
-// (a properly-initialized va_list for this frame). The user's
+// The user's
 //   va_list ap; va_start(ap, last);
-// copies that initialized list into `ap` (va_list is an array type, so the
-// copy is element-wise, i.e. va_copy semantics — plain `ap = __va_args` is an
-// illegal array assignment).
+// lowers directly to c2mir's intrinsic __builtin_va_start(ap), which takes the
+// va_list alone and derives the named-argument count from the enclosing
+// function's signature — exactly c2mir's own mirc_x86_64_stdarg.h idiom.
+// (An earlier model primed a hidden function-entry `__va_args` master and
+// copied it per use site — `(ap)[0] = (__va_args)[0]` — but that extra
+// va_list struct copy left reg_save_area mis-set in large/complex frames,
+// corrupting the list; invoking the intrinsic on the user's own va_list
+// avoids the copy and the corruption.)
 
 typedef struct __madc_va_list_tag {
 	unsigned int gp_offset;
@@ -754,7 +757,7 @@ typedef struct __madc_va_list_tag {
 	void *reg_save_area;
 } va_list[1];
 
-#define va_start(ap, last) ((ap)[0] = (__va_args)[0])
+#define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))
 #define va_copy(dest, src) ((dest)[0] = (src)[0])
 
