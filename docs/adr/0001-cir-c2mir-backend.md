@@ -156,6 +156,12 @@ User-visible language features stay on the c2mir path so they also flow through
 - **c2mir's explicit non-features** (per its README): VLA (we lower →
   `__builtin_alloca`), `_Complex` (our fork adds it natively), atomics, and
   thread-local storage. Anything madc needs there is lowering or fork work.
+- **SIMD is a *floor* gap, and is roadmapped as a raise** (Track 1.6, KG
+  `Decision{simd_raise_mir_upstream}`). MIR itself has no vector type/insns, so
+  real SIMD-in-JIT means adding a minimal generic-vector extension to **MIR**
+  (+ per-target codegen) and a c2mir `vector_size` front-end — **designed for
+  upstream** (it enables MIR's own WASM→MIR goal, since WASM has SIMD).
+  Interim: scalarize for the JIT, emit-C → gcc/clang for real SIMD (AOT).
 - **~2× compile latency** vs direct-MIR. Accepted for batch/JIT; the
   interactive tier is addressed by the hybrid interpreter seam.
 - **Coverage regression during the transition** (master 419 pass → develop's

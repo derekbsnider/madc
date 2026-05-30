@@ -72,6 +72,19 @@ high-level" — the answer is both.**
 | 1.3 | **CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity** | ongoing | **Active — the parity-to-master gate** (325 pass / ~95 fail / 56 skip) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
+| 1.6 | **SIMD — add a minimal generic-vector extension to MIR (types + insns + per-target codegen) and a c2mir `vector_size` front-end** | large | **Planned (raise the floor)** — design for **upstream** to vnmakarov/mir | — |
+
+**Track 1.6 (SIMD) raises the *floor*, not just c2mir.** MIR today has no vector
+type/insns (locals are `i64/f/d/ld` only), so real SIMD-in-JIT requires adding
+vectors to MIR itself + per-target codegen (x86-64 SSE/AVX, aarch64 NEON, …) +
+interpreter support + ABI/serialization, plus a c2mir front-end for GNU
+`vector_size` / generic vector ops. **Design it for upstream** — it benefits MIR
+directly (WASM→MIR, a stated MIR future goal, *requires* SIMD since WASM has
+fixed-width SIMD; every MIR target has a vector ISA; it lifts ~11 deferred SIMD
+torture tests). Keep it a **minimal generic-vector core** to fit MIR's
+lightweight ethos. Interim until it lands: madc **scalarizes** for the JIT and
+**emit-C → gcc/clang** for real SIMD (AOT). Feeds Track 6.2 (macOS NEON). See
+the lowering-vs-raising rule (`.claude/rules/`) and ADR 0001.
 
 **Track 1.3 is the central workstream.** It is the sole backend, so its
 coverage *is* the bar for promoting `develop → master`. SMAUG 1.8 now boots,
