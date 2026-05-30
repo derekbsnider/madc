@@ -1,7 +1,7 @@
 {
   "version": "0.24.0",
-  "date": "2026-05-29",
-  "branch": "feature/cir-node",
+  "date": "2026-05-30",
+  "branch": "develop (feature/cir-node merged 2026-05-30 via 1d70f92)",
   "build_status": "green",
   "backend": "madc parser -> cir_node (MC11-IR) -> c2mir -> MIR is the SOLE backend. The asmjit JIT and the Gecko parser/MIR-transpiler were BOTH removed (commits 42e9b6e + 64f44b3). There is no --backend=jit; --backend=mir aliases to cir.",
   "ir": "MC11-IR: the cir_node tree DERIVES FROM c2mir node_t (c2mir consumes the lowered C11 view) AND carries each node's originating lexed tokens + parse subtree + file/line/col (madc retains the high-level view). It is deliberately BOTH. SET IN STONE — see docs/rules/mc11-ir.md and docs/superpowers/plans/2026-05-28-cir-node-unified-ast.md.",
