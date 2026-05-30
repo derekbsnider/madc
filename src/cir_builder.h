@@ -271,6 +271,12 @@ public:
 	node_t class_ctor_call(class Variable *v, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
+	// Lower an overloaded binary operator on a user-defined class lvalue:
+	//   c <op> rhs  ->  ClassName__operator<op>(&c, rhs)
+	// when c's class defines a matching operator method. Returns NULL when
+	// the left operand is not a user class or has no such operator (caller
+	// falls through to the built-in operator translation).
+	node_t class_operator_call(class TokenOperator *top, TokenBase *origin);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
 

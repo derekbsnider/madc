@@ -2081,6 +2081,61 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 	return node2(N_EXPR, list(), call, origin);
 }
 
+// Map a binary TokenID to its C++ operator spelling (the method-name suffix
+// the parser stored, e.g. tkEquals -> "==" -> method "operator=="). Returns
+// "" for operators madc does not currently support overloading.
+static const char *binop_overload_symbol(TokenID id)
+{
+	switch (id) {
+	case TokenID::tkEquals: return "==";
+	case TokenID::tkNotEq:  return "!=";
+	case TokenID::tkLT:     return "<";
+	case TokenID::tkGT:     return ">";
+	case TokenID::tkLE:     return "<=";
+	case TokenID::tkGE:     return ">=";
+	case TokenID::tkAdd:    return "+";
+	case TokenID::tkSub:    return "-";
+	case TokenID::tkMul:    return "*";
+	case TokenID::tkDiv:    return "/";
+	case TokenID::tkMod:    return "%";
+	default:                return "";
+	}
+}
+
+node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
+{
+	if (!top || !top->left || !top->right) return NULL;
+	DataDefCLASS *lcls = as_user_class(top->left->datadef());
+	if (!lcls) return NULL;
+	const char *opsym = binop_overload_symbol(top->id());
+	if (!opsym[0]) return NULL;
+
+	std::string mname = std::string("operator") + opsym;
+	Variable *mv = lcls->findMethod(mname);
+	if (!mv) return NULL;
+	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+
+	std::string sym = lcls->name + "__" + mname;   // ClassName__operator==
+	node_t args = list();
+	append(args, node1(N_ADDR, translate_expr(top->left), origin));  // &lhs
+	// Single explicit RHS argument (operator parameter 1; param 0 = __this).
+	{
+		DataDef *pt = (callee && callee->parameters.size() > 1)
+				? callee->parameters[1] : NULL;
+		DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+		bool refp = callee && callee->ref_params.size() > 1
+			    && callee->ref_params[1];
+		if (pt && (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref))
+			append(args, string_obj_arg(top->right));
+		else if (refp)
+			append(args, node1(N_ADDR, translate_expr(top->right), top->right));
+		else
+			append(args, translate_expr(top->right));
+	}
+	referenced_funcs.insert(sym);
+	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+}
+
 node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 				const std::set<std::string> &emitted_structs,
 				bool force_incomplete_struct)
@@ -2695,6 +2750,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				node_t scall = node2(N_CALL, id(sym, tb), cargs, tb);
 				CIR_NODE(scall)->synth_from_origin = true;
 				return scall;
+			}
+
+			// Operator overloading on a user-defined class lvalue:
+			// `c <op> rhs` where `c`'s class defines `operator<op>` lowers
+			// to `ClassName__operator<op>(&c, rhs)`. The parser keeps the
+			// raw binary node; the method dispatch is resolved here (like
+			// the std::string operator interception above).
+			{
+				node_t ov = class_operator_call(top, tb);
+				if (ov) return ov;
 			}
 
 			node_t left = translate_expr(top->left);
