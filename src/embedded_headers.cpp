@@ -735,21 +735,39 @@ extern int b64_pton(const char *src, unsigned char *target, int targsize);
 )EMBED"},
     {"stdarg.h", R"EMBED(// madc embedded stdarg.h — variadic function support
 //
-// va_list is an int64_t pointer to a packed argument buffer.
-// va_start sets it to the hidden __va_args parameter injected by the compiler.
-// va_arg is a compiler intrinsic (parsed specially in parseExpression).
-// vsprintf/vsnprintf/vfprintf/vprintf are redirected to madc helpers that unpack the buffer.
+// Matches the x86-64 System V ABI exactly as gcc/c2mir set it up (see
+// c2mir's mirc_x86_64_stdarg.h): va_list is the real __va_list_tag[1] struct,
+// and the ABI work is done by the compiler intrinsic __builtin_va_start.
+//
+// The user's
+//   va_list ap; va_start(ap, last);
+// lowers directly to c2mir's intrinsic __builtin_va_start(ap), which takes the
+// va_list alone and derives the named-argument count from the enclosing
+// function's signature — exactly c2mir's own mirc_x86_64_stdarg.h idiom.
+// (An earlier model primed a hidden function-entry `__va_args` master and
+// copied it per use site — `(ap)[0] = (__va_args)[0]` — but that extra
+// va_list struct copy left reg_save_area mis-set in large/complex frames,
+// corrupting the list; invoking the intrinsic on the user's own va_list
+// avoids the copy and the corruption.)
 
-typedef long va_list;
+typedef struct __madc_va_list_tag {
+	unsigned int gp_offset;
+	unsigned int fp_offset;
+	void *overflow_arg_area;
+	void *reg_save_area;
+} va_list[1];
 
-#define va_start(ap, last) ap = __va_args
+#define va_start(ap, last) __builtin_va_start(ap)
 #define va_end(ap) ((void)(ap))
-#define va_copy(dest, src) dest = src
+#define va_copy(dest, src) ((dest)[0] = (src)[0])
 
-#define vsprintf __madc_vsprintf
-#define vsnprintf __madc_vsnprintf
-#define vfprintf __madc_vfprintf
-#define vprintf __madc_vprintf
+// va_list is now the real ABI struct, so the v*printf family resolve to the
+// real libc functions (which take a va_list) — not the old __madc_* helpers
+// that unpacked a custom int64_t[] buffer.
+int vsprintf(char *, const char *, va_list);
+int vsnprintf(char *, unsigned long, const char *, va_list);
+int vfprintf(void *, const char *, va_list);
+int vprintf(const char *, va_list);
 )EMBED"},
     {"stdbool.h", R"EMBED(// madc embedded stdbool.h
 
@@ -850,6 +868,26 @@ extern char *strdup(char *s);
 extern char *strpbrk(char *s, char *accept);
 extern char *strtok(char *s, char *delim);
 extern char *strndup(char *s, int n);
+// The copy/concat family also return char* (the destination). Without these
+// declarations they default to a long return, so e.g.
+// `cond ? one_argument(...) : strcpy(...)` mismatches char* vs long.
+extern char *strcpy(char *dest, char *src);
+extern char *strncpy(char *dest, char *src, unsigned long n);
+extern char *strcat(char *dest, char *src);
+extern char *strncat(char *dest, char *src, unsigned long n);
+// The comparison family returns int, NOT the dlsym-fallback default of long.
+// This matters: their result is negative for "less than", and that negative
+// is routinely used directly in a signed comparison (e.g. SMAUG's
+// `bsearch_skill_exact`: `strcmp(name, ...) < 1`). With a long return, libc
+// leaves only the low 32 bits set (the value is returned in eax), so a
+// negative int read as a 64-bit long becomes a huge positive — every such
+// comparison goes the wrong way (the binary search always returned -1, so
+// skill_lookup failed and combat dereferenced skill_table[bad gsn]).
+extern int strcmp(char *a, char *b);
+extern int strncmp(char *a, char *b, unsigned long n);
+extern int strcasecmp(char *a, char *b);
+extern int strncasecmp(char *a, char *b, unsigned long n);
+extern int memcmp(void *a, void *b, unsigned long n);
 )EMBED"},
     {"strings.h", R"EMBED(// madc embedded strings.h — POSIX string functions
 // Most functions resolve through the dlsym fallback.

@@ -28,10 +28,12 @@ file indexes them explicitly in the "Rules" section below.
 
 ## Project summary
 
-**madc** — "My jit-Assembled Dialect of C" — is a C-like scripting
-language that JIT-compiles directly to x86-64 machine code using the
-asmjit library. Programs are compiled and executed in-process with no
-intermediate bytecode.
+**madc** — "My Advanced Dialect of C" — is a C-like scripting
+language. madc parses source into a `cir_node` tree — a
+c2mir-friendly C11 AST that serves as madc's IR — which c2mir then
+compiles to MIR for execution. (The original asmjit x86-64 JIT and the
+Gecko parser experiment were both removed; CIR → c2mir → MIR is now the
+sole backend.)
 
 The "Mad" in Mad-C: mix functions from multiple programming languages
 (PHP, Perl, Python, Ruby, JavaScript) in a single program via
@@ -125,17 +127,16 @@ working on storage/federation code or any shared surface that may affect it.
 Source lives in `src/`, headers in `include/`, output in `bin/` and
 `obj/`.
 
-Build requires `clang++` (or `g++`) with C++11 support and asmjit v1.14 installed at
-`/usr/local/` (see "asmjit version notes" below).
+Build requires `clang++` (or `g++`) with C++11 support and the MIR
+library (libmir + c2mir) at `/workspace/mir`.
 
 ## Architecture
 
 | Component | File                       | Role                                                          |
 |-----------|----------------------------|---------------------------------------------------------------|
-| Lexer     | `src/lexer.cpp`            | Tokenizes `.mad` source; handles `#include`, `#load`           |
-| Parser    | `src/parser.cpp`           | Builds AST; struct/class/namespace resolution                  |
-| Compiler  | `src/compiler.cpp`         | Walks AST, emits x86 via asmjit; stream I/O, dlcall            |
-| Typesafe  | `src/typesafe.cpp`         | Type-safe register helpers (Gp/Xmm moves, arithmetic)          |
+| Lexer       | `src/lexer.cpp`          | Tokenizes `.mad` source; handles `#include`, `#load`           |
+| Parser      | `src/parser.cpp`         | Builds AST; struct/class/namespace resolution                  |
+| CIR builder | `src/cir_builder.cpp`    | Lowers the AST to a `cir_node` tree (c2mir-friendly C11 AST), the IR fed to c2mir → MIR |
 | php::     | `src/ns_php.cpp`           | 36 PHP-style string + array functions                          |
 | perl::    | `src/ns_perl.cpp`          | 21 Perl-style functions (chop, grep, glob, split)              |
 | python::  | `src/ns_python.cpp`        | 16 Python-style functions (title, center, zfill, format)       |
@@ -144,26 +145,13 @@ Build requires `clang++` (or `g++`) with C++11 support and asmjit v1.14 installe
 | STL       | `src/ns_stl.cpp`           | STL container helpers: `vector<T>`, `map<K,V>`, `set<T>`, `list<T>` |
 | Headers   | `include/madc.h`, `include/tokens.h`, `include/datadef.h`, `include/datatokens.h` | Core data structures |
 
-Execution flow: `madc.cpp` → lexer → parser → compiler → JIT execute.
+Execution flow: `madc.cpp` → lexer → parser → CIR builder (`cir_node`)
+→ c2mir → MIR execute.
 
-## asmjit version notes
+## Backend note
 
-The project uses the **manually installed** asmjit v1.14 at
-`/usr/local/` (NOT the apt-installed package at
-`/lib/x86_64-linux-gnu/`). The Makefile explicitly passes
-`-L/usr/local/lib -Wl,-rpath,/usr/local/lib` to link the right one.
-Headers are at `/usr/local/include/asmjit/`.
-
-Key v1.14 migration points (full list in `docs/rules/asmjit-api.md`):
-
-- `BaseReg::kTypeGp*` → `RegType::kGp*`
-- `BaseReg::kGroupVec` / `kGroupGp` → `RegGroup::kVec` / `kGp`
-- `ConstPool::kScopeLocal` → `ConstPoolScope::kLocal`
-- `CallConv::kIdHost` → `CallConvId::kCDecl`
-- `cc.call(target, sig)` → `cc.invoke(&node, target, sig)`
-- `Imm::i64()` → `Imm::value()`
-- `Operand::isEqual()` → `Operand::equals()`
-- `FormatOptions::kFlag*` → `FormatFlags::k*`
+asmjit (the original x86-64 JIT) was removed. CIR → c2mir → MIR is the
+sole backend; the MIR library (libmir + c2mir) lives at `/workspace/mir`.
 
 ## Testing
 
@@ -191,7 +179,7 @@ playbook.
 
 - `claude_status.json` is the canonical current snapshot.
 - `madc-knowledge` is the authoritative project-memory source.
-- `claude_status.json`, `TODO.md`, and `CHANGELOG.md` are mirrored
+- `claude_status.json`, `docs/plans/ROADMAP.md`, and `CHANGELOG.md` are mirrored
   repo surfaces that must stay in sync with it.
 - `docs/test-status.md` is the detailed test baseline.
 - Live git state and actual build/test results remain operational truth
@@ -289,8 +277,8 @@ editing — don't try to memorize all of them.
 
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
+| [mc11-ir.md](.claude/rules/mc11-ir.md)           |    24 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
 | [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 30 | Compare with `gcc -S` first, fix at deepest layer, operator self-determination |
-| [asmjit-api.md](.claude/rules/asmjit-api.md)     |    32 | asmjit v1.14 API dos / don'ts                  |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
 | [regdp-reset.md](.claude/rules/regdp-reset.md)   |    23 | Reset `regdp` before sub-compiles in loops / conditionals |
 | [struct-compiler.md](.claude/rules/struct-compiler.md) |  40 | `addOffset` vs `setOffset`, string-member lifecycle |
@@ -298,15 +286,14 @@ editing — don't try to memorize all of them.
 | [multi-return.md](.claude/rules/multi-return.md) |    33 | `__retbuf` injection, multi-return call sites  |
 | [ternary.md](.claude/rules/ternary.md)           |    30 | Ternary parsing + stack-slot merge pattern     |
 | [embedded-headers.md](.claude/rules/embedded-headers.md) |  53 | `include/madc/` headers, lazy registration, `#load` |
-| [typed-register-ir.md](.claude/rules/typed-register-ir.md) |  32 | IR layer between tokens and asmjit; Load/Store/Coerce; per-token migration |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |     8 | Use GCC as the reference baseline for JIT vs EXE / AOT parity work |
 
 ### Total rule footprint
 
-- **24 rules, 548 lines** in `.claude/rules/`.
-- **This file (AGENTS.md): ~295 lines** — loaded by Claude via
+- **24 rules, 566 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~298 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~843 lines.**
+- **Grand total loaded by Claude Code per turn: ~916 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

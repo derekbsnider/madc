@@ -22,7 +22,6 @@
 #include <stack>
 #include <stdint.h>
 #include <dlfcn.h>
-#include <asmjit/x86.h>
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
@@ -322,10 +321,11 @@ int madc_mir_execute(const std::string &c_source, const std::string &source_name
     MIR_context_t ctx = MIR_init();
     c2mir_init(ctx);
     MIR_gen_init(ctx);
-    // Use optimization level 1 (RA+combiner only) to avoid the addr-
-    // elimination pass at level >= 2 which has an SSA-version bug when
-    // a pointer variable is address-taken and then reassigned later.
-    MIR_gen_set_optimize_level(ctx, 1);
+    // Optimization level from the `-O<n>` flag (default 1). Level 1
+    // (RA+combiner only) is the safe default: level >= 2 enables an addr-
+    // elimination pass with an SSA-version bug when a pointer variable is
+    // address-taken and then reassigned later. -O2/-O3 may hit it; -O0 is fine.
+    MIR_gen_set_optimize_level(ctx, (unsigned)madc_opt_level);
 
     struct c2mir_options opts;
     memset(&opts, 0, sizeof(opts));

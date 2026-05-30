@@ -14,7 +14,7 @@ already matter:
 
 - `madc-knowledge` as the authoritative project-memory source
 - `claude_status.json` for the current snapshot
-- `TODO.md` for open work
+- `docs/plans/ROADMAP.md` for open work
 - `CHANGELOG.md` for landed work
 - `docs/test-status.md` for test coverage detail
 

@@ -30,14 +30,12 @@
 #include <stack>
 #include "libmadc/program.h"
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
-#include <asmjit/x86.h>
 #include "datadef.h"
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
 
 using namespace std;
-using namespace asmjit;
 
 // Static parse position — inherited by all new tokens automatically
 const char *TokenBase::_parse_file = NULL;
@@ -1534,7 +1532,18 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     std::string tname = contextual_identifier_name(tb);
     datatype_map_iter dmi = pgm.datatype_map.find(tname);
     if ( dmi != pgm.datatype_map.end() )
-	return dmi->second;
+    {
+	// dmi->second is the shared prototype token created at the typedef's
+	// definition, carrying the definition-site position. Return a clone
+	// stamped with this use-site token's position, so a typedef'd-type
+	// usage (and any diagnostic or CIR node derived from it) maps to the
+	// use site rather than the typedef definition.
+	TokenDataType *use = (TokenDataType *)dmi->second->clone();
+	use->file   = tb->file;
+	use->line   = tb->line;
+	use->column = tb->column;
+	return use;
+    }
 
     if ( TokenDataType *ns_type = resolve_namespaced_type_token(pgm, tb, consume_ns_tokens) )
 	return ns_type;
@@ -1546,6 +1555,21 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
     if ( !dd )
 	return NULL;
     return new TokenDataType(dd->name.c_str(), *dd);
+}
+
+// A type-name usage must carry its own source position, not the position of
+// the shared prototype TokenDataType held in datatype_map (which is stamped at
+// the typedef's definition site). Return a clone of `proto` positioned at the
+// use-site token `at`, so declarations and diagnostics map to the usage.
+static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at)
+{
+    if ( !proto || !at )
+	return proto;
+    TokenDataType *t = (TokenDataType *)proto->clone();
+    t->file = at->file;
+    t->line = at->line;
+    t->column = at->column;
+    return t;
 }
 
 static size_t query_datadef_measure(const DataDef *dd, bool want_alignof)
@@ -3833,6 +3857,7 @@ Program::Program()
       _include_stdio(false),
       _include_string(false),
       colors(false),
+      language_std(STD_MADC),
       aot_tracking(false),
       instrument_functions(false),
       skip_includes(false),
@@ -3858,6 +3883,7 @@ Program::Program(MadcEngine *eng)
       _include_stdio(false),
       _include_string(false),
       colors(false),
+      language_std(STD_MADC),
       aot_tracking(false),
       instrument_functions(false),
       skip_includes(false),
@@ -4722,6 +4748,11 @@ void Program::populate_builtin_registry()
     builtin_registry.add_core_function("putchar", datatype_vec_t{DataType::dtINT,  DataType::dtINT}, (fVOIDFUNC)putchar);
     builtin_registry.add_core_function("__builtin_memcpy", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)memcpy);
     builtin_registry.add_core_function("__builtin_frame_address", datatype_vec_t{rtPtr(DataType::dtCHAR), DataType::dtINT}, (fVOIDFUNC)NULL);
+    // __builtin_va_start(ap): c2mir intrinsic (lowered to MIR_VA_START), no real
+    // symbol — register with a NULL pointer like __builtin_frame_address so the
+    // call parses; cir_builder emits N_CALL(__builtin_va_start, ap) and c2mir
+    // intrinsic-lowers it. The arg is the user's va_list (array -> pointer).
+    builtin_registry.add_core_function("__builtin_va_start", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
     // alloca() is a compiler intrinsic, not a real libc function.
     // Map to malloc for now (true stack alloca needs JIT intrinsic support).
     builtin_registry.add_core_function("alloca", datatype_vec_t{rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)malloc);
@@ -5202,6 +5233,21 @@ bool Program::is_dynamic_symbol_allowed(const std::string &name) const
     return false;
 }
 
+// Some libc symbols resolved via dlsym fallback return a pointer, not an
+// int. Declaring them as dtINT64 leaves CIR emitting `long f()` and then
+// assigning the result to a pointer (a spurious int-to-pointer warning,
+// and a real truncation risk on any 32-bit-int return path). Map the
+// known string-returning ones to dtCHARptr so the prototype is accurate.
+static DataType dynamic_symbol_fallback_return_type(const std::string &name)
+{
+    static const std::set<std::string> cstr_returners = {
+	"asctime", "ctime"
+    };
+    if ( cstr_returners.count(name) )
+	return DataType::dtCHARptr;
+    return DataType::dtINT64;
+}
+
 Variable *Program::runtime_eval_scope_target(Variable *var) const
 {
     if ( !var )
@@ -5623,6 +5669,11 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	    return var;
 	var = new Variable(id, dd, c, init, alloc);
 	var->flags |= vfLOCAL;
+	// The extern flag may only be set on a freshly-created symbol (here), never
+	// on an existing one — so a redundant `extern` declaration can never demote
+	// an already-defined variable back to a mere declaration.
+	if ( parsing_extern_decl )
+	    var->flags |= vfEXTERN;
 	code->variables.push_back(var);
 	DBG(std::cout << "Added new variable type: " << dd.name << " size: "
 		<< dd.size << " name: " << id << " ptr: " << var << " to codeblock: " << code << std::endl);
@@ -5642,6 +5693,11 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	return var;
     }
     var = new Variable(id, dd, c, init, alloc);
+    // Extern is set only at creation (see the local-create path above): a later
+    // redundant `extern` declaration finds the existing var via the branch
+    // above and leaves its storage class untouched.
+    if ( parsing_extern_decl )
+	var->flags |= vfEXTERN;
     tkProgram->variables.push_back(var);
 
     DBG(std::cout << "Added new global variable type: " << dd.name << " size: "
@@ -5791,7 +5847,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     }
     DBG(std::cout << endl);
 
-    func->funcnode = NULL;
     Method *method;
 
     if ( isMethod )
@@ -5962,6 +6017,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
     // (need check for optional parameters)
     if ( tc->argc() != ((FuncDef *)tc->var.type)->parameters.size() )
     {
+	// (debug removed)
 	DBG(std::cout << "parseCallFunc(" << tc->var.name << "): argument count: " << tc->argc() << " expected: " << ((FuncDef *)tc->var.type)->parameters.size() << " (paramcnt: " << paramcnt << ") brackets: " << brackets << std::endl);
 	throw "Incorrect number of parameters";
     }
@@ -6073,7 +6129,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 		    - (fd->has_captures ? 1 : 0)
 		    - (fd->is_varargs ? 1 : 0);
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
-		    Throw(tc) << "Incorrect number of parameters: expected " << expected << " got " << tc->argc() << flush;
+		    Throw(tc) << "Incorrect number of parameters for '" << tc->var.name << "': expected " << expected << " got " << tc->argc() << flush;
 	    }
 	}
 	else
@@ -6606,7 +6662,9 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     {
 	void *sym = dlsym(RTLD_DEFAULT, aname.c_str());
 	if ( sym )
-	    avar = addFunction(aname, datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)sym);
+	    avar = addFunction(aname,
+		datatype_vec_t{dynamic_symbol_fallback_return_type(aname)},
+		(fVOIDFUNC)sym);
     }
     if ( !avar )
 	Throw(addr_tb) << "undeclared identifier '" << aname << "'" << flush;
@@ -7471,7 +7529,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		      && !opstack_has_pending_op
 		      && exStack.top()->type() == TokenType::ttVariable
 		      && (var_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
-		      && dynamic_cast<DataDefFPTR *>(var_call_base->var.type) )
+		      && dynamic_cast<DataDefFPTR *>(var_call_base->var.type)
+		      && !var_call_base->var.is_constant()
+		      && var_call_base->var.name.compare(0, 11, "__literal__") != 0 /* skip string literals */
+		      && var_call_base->var.name[0] != '(' /* skip grouped exprs */ )
 		    {
 			TokenVar *tv = var_call_base;
 			exStack.pop();
@@ -7489,14 +7550,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    // Generic expression-as-function-pointer call:
 		    // `(c ? foo : bar)()`, `(expr)(args)` — when the
-		    // exStack top is an expression and the datadef of
-		    // either ternary branch (or the expression itself)
-		    // is a function. Create a synthetic function-pointer
-		    // variable and route through the standard call path.
+		    // exStack top is a ternary or explicit DataDefFPTR
+		    // expression. Only trigger for ternary expressions
+		    // and already-typed function pointers, NOT for plain
+		    // identifiers that happen to have a function type
+		    // (which would be a normal function call or a
+		    // parenthesized expression starting with a func name).
 		    if ( !exStack.empty() && !opstack_has_pending_op )
 		    {
 			TokenBase *call_expr = exStack.top();
 			DataDef *call_dd = call_expr->datadef();
+			DataDefFPTR *fptr_type = dynamic_cast<DataDefFPTR *>(call_dd);
 			// For ternary: check if either branch is a function reference.
 			TokenTerQ *terq = dynamic_cast<TokenTerQ *>(call_expr);
 			if ( terq )
@@ -7505,15 +7569,37 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    DataDef *fd = terq->false_expr ? terq->false_expr->datadef() : NULL;
 			    if ( td && td->is_function() ) call_dd = td;
 			    else if ( fd && fd->is_function() ) call_dd = fd;
+			    // For ternary, wrap in FPTR if needed
+			    if ( !fptr_type && call_dd && call_dd->is_function() )
+			    {
+				FuncDef *func = dynamic_cast<FuncDef *>(call_dd);
+				if ( func )
+				    fptr_type = new DataDefFPTR(func);
+			    }
 			}
-			DataDefFPTR *fptr_type = dynamic_cast<DataDefFPTR *>(call_dd);
-			if ( !fptr_type && call_dd && call_dd->is_function() )
+			// Only trigger for genuine fptr patterns: ternary dispatch,
+			// member fptr, or deref fptr (*fptr)(args).
+			// Do NOT trigger for subscript expressions or plain
+			// identifiers — those are normal expressions followed by
+			// grouping parens, not function pointer invocations.
+			// (Subscript fptr calls like table[i](args) are rare and
+			// were not supported pre-v0.14; they cause false matches
+			// on SMAUG's DO_FUN/SPEC_FUN typedef system.)
+			if ( fptr_type && !terq )
 			{
-			    // Wrap a plain function DataDef in a function-pointer type
-			    FuncDef *func = dynamic_cast<FuncDef *>(call_dd);
-			    if ( func )
-				fptr_type = new DataDefFPTR(func);
+			    bool is_genuine_fptr =
+				call_expr->type() == TokenType::ttMember
+				|| dynamic_cast<TokenDerefExpr *>(call_expr) != NULL;
+			    if ( !is_genuine_fptr )
+				fptr_type = NULL;
 			}
+			// Only trigger for: ternary dispatch or deref fptr.
+			// Members and subscripts are handled by their own dedicated
+			// fptr paths earlier in the code. The generic path's
+			// is_function() check is too aggressive for those.
+			if ( fptr_type && !terq
+			  && dynamic_cast<TokenDerefExpr *>(call_expr) == NULL )
+			    fptr_type = NULL;
 			if ( fptr_type )
 			{
 			    exStack.pop();
@@ -8314,8 +8400,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( !tb ) { done = true; break; }
 		    continue;
 		}
-		// new ClassName(args) in expression context
-		if ( tb->id() == TokenID::tkNEW )
+		// new ClassName(args) in expression context. After `.` or `->`,
+		// C code can use `new` as a member name.
+		if ( tb->id() == TokenID::tkNEW
+		  && (!prevToken()
+		   || (prevToken()->id() != TokenID::tkDot
+		    && prevToken()->id() != TokenID::tkDeRef))
+		  && peekToken()
+		  && peekToken()->type() == TokenType::ttIdentifier )
 		{
 		    TokenBase *new_node = ((TokenKeyword *)tb)->parse(*this);
 		    if ( new_node )
@@ -8964,7 +9056,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			if ( sym )
 			{
 			    var = addFunction(fname,
-				datatype_vec_t{DataType::dtINT64},
+				datatype_vec_t{dynamic_symbol_fallback_return_type(fname)},
 				(fVOIDFUNC)sym);
 			    DBG(if (var) cout << "parseExpression() dlsym fallback resolved " << fname << " at " << (uint64_t)sym << endl);
 			}
@@ -9373,6 +9465,35 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	return pgm.struct_map.find(name);
     };
 
+    // Record source-ordered top-level declarations for the CIR backend.
+    // Inert for the legacy JIT/MIR paths (the returned nodes' compile()
+    // is a no-op and MIR re-parses prog->tokens). record_struct logs a
+    // struct/union definition; record_typedef logs a typedef alias.
+    auto record_struct = [&](DataDefSTRUCT *sdd, TokenBase *otok = nullptr)
+    {
+	Program::TopDecl td;
+	td.kind = is_union ? Program::DeclKind::dkUnion : Program::DeclKind::dkStruct;
+	td.name = sdd->name;
+	td.dd = sdd;
+	td.file = TokenBase::_parse_file;
+	td.line = TokenBase::_parse_line;
+	td.origin = otok;
+	pgm.top_decls.push_back(td);
+    };
+    auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr)
+    {
+	Program::TopDecl td;
+	td.kind = Program::DeclKind::dkTypedef;
+	td.name = alias;
+	td.dd = dd;
+	td.tdt = tdt_;
+	td.file = TokenBase::_parse_file;
+	td.line = TokenBase::_parse_line;
+	td.origin = otok;
+	pgm.top_decls.push_back(td);
+	pgm.user_typedef_names.insert(alias);
+    };
+
     // check for __attribute__((packed)) before or after tag
     bool is_packed = false;
     size_t explicit_align = 0;
@@ -9483,15 +9604,19 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	// plain forward declaration: struct tag;
 	if ( tn->id() == TokenID::tkSemi )
 	{
+	    DataDefSTRUCT *fwd;
 	    if ( dmi == pgm.struct_map.end() )
 	    {
-		DataDefSTRUCT *fwd = new DataDefSTRUCT(tag->str, 0);
+		fwd = new DataDefSTRUCT(tag->str, 0);
 		fwd->union_layout = is_union;
 		pgm.struct_map[scoped_struct_tag(tag->str)] = fwd;
 	    }
+	    else
+		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
 	    pgm.nextToken(); // consume ';'
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
-	    return NULL;
+	    record_struct(fwd, tag);
+	    return new TokenStructDef(fwd, is_union);
 	}
 
 	// forward typedef: typedef struct tag_name alias; (struct not yet defined)
@@ -9539,7 +9664,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    // also register tag in struct_map so "struct tag" works
 	    if ( !alias_dd->is_pointer() )
 		pgm.struct_map[alias_name] = dmi->second;
-	    return NULL;
+	    record_typedef(alias_name, alias_dd, tdt, tn);
+	    return new TokenTypedefDecl(alias_name, alias_dd);
 	}
 
 	// struct tag variable; — declare variable of existing struct type
@@ -9958,6 +10084,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.Throw(tn) << "Expecting type in struct definition" << flush;
 
 		DataDef *base_member_dd = &mtype->definition;
+		// Member declared via a user typedef alias (not a builtin or
+		// "struct tag"): record it so CIR emits ID("alias") for this
+		// member, matching c2m's node_t tree. Shared by every declarator
+		// on this line (`sh_int a, b;`).
+		std::string member_typedef_alias;
+		if ( pgm.user_typedef_names.count(mtype->str) )
+		    member_typedef_alias = mtype->str;
 		// skip const/restrict qualifiers between type and pointer stars
 		// e.g. `char const *p;`
 		while ( pgm.peekToken() && (pgm.peekToken()->id() == TokenID::tkCONST
@@ -10041,6 +10174,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			    member_dd = fptr_type;
 
 			    dds->addMember(mname, *member_dd, 1);
+			    if ( !member_typedef_alias.empty() && !dds->members.empty() )
+				dds->members.back().typedef_name = member_typedef_alias;
 			    DBG(cout << "TokenSTRUCT::parse() added function pointer member " << mname
 				<< " (size " << member_dd->size << ", total " << dds->size << ')' << endl);
 
@@ -10059,6 +10194,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    if ( !is_contextual_identifier_token(tn) )
 			pgm.Throw(tn) << "Expecting member name in struct definition" << flush;
 		    std::string mname = contextual_identifier_name(tn);
+		    TokenBase *member_name_tok = tn;  // CIR origin for this member
 
 		    // Optional fixed-array dimensions: `char d_name[256];`, `int m[4][8];`.
 		    // Multiply the dimensions into a single count so the member reserves
@@ -10114,6 +10250,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    {
 			dds->addMember(mname, *member_dd, member_count,
 			    member_count_expr, member_is_array_decl, &member_dims);
+			if ( !dds->members.empty() )
+			{
+			    if ( !member_typedef_alias.empty() )
+				dds->members.back().typedef_name = member_typedef_alias;
+			    dds->members.back().origin = member_name_tok;
+			}
 			if ( member_align > 0 )
 			    dds->apply_member_alignment(member_align);
 			DBG(cout << "TokenSTRUCT::parse() added member " << member_dd->name << ' ' << mname
@@ -10218,6 +10360,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		existing->member_counts = dds->member_counts;
 		existing->member_count_exprs = dds->member_count_exprs;
 		existing->member_array_flags = dds->member_array_flags;
+		// Multi-dim shapes (`int m[49][81]`) and per-member access control
+		// must carry over too — without member_dims the completed struct
+		// keeps only the flattened member_count, so a 2D member renders as
+		// `int m[3969]` and `m[i][j]` fails ("subscripted value is neither
+		// array nor pointer").
+		existing->member_dims = dds->member_dims;
+		existing->member_access = dds->member_access;
 		existing->member_offsets = dds->member_offsets;
 		existing->member_bitfields = dds->member_bitfields;
 		existing->size = dds->size;
@@ -10238,6 +10387,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    DBG(cout << "TokenSTRUCT::parse() registered struct " << tag_store_key << " size=" << dds->size << endl);
 	}
     }
+
+    // NOTE: the struct/union definition is recorded in top_decls only for
+    // the *bare* `struct X { ... };` form (below). For `typedef struct X
+    // {...} Y;` and `struct X {...} v;`, the body rides inline in the
+    // typedef / variable declaration (one combined SPEC_DECL, matching c2m),
+    // so we must NOT also record a standalone dkStruct here.
 
     // what follows the closing brace?
     tn = pgm.peekToken();
@@ -10266,6 +10421,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.datatype_map[alias->str] = tdt;
 	    if ( alias_dd == dds )
 		pgm.struct_map[alias->str] = dds;
+	    record_typedef(alias->str, alias_dd, tdt, alias);
 	    DBG(cout << "TokenSTRUCT::parse() typedef alias " << alias->str << endl);
 	    tn = pgm.nextToken();
 	    if ( !tn )
@@ -10276,7 +10432,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		pgm.Throw(tn) << "Expecting ',' or ';' after typedef alias" << flush;
 	    done_aliases = true;
 	}
-	return NULL;
+	return new TokenStructDef(dds, is_union);
     }
 
     // struct [tag] { ... } variable;
@@ -10290,6 +10446,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	tname.append(" ");
 	tname.append(tag ? tag->str : "anonymous");
 	tdt = new TokenDataType(tname.c_str(), *dds);
+	// A tagged definition with body followed by variable declarators
+	// (`struct node { ... } *first, *last;`) must still emit the struct
+	// body as a standalone top-level definition; otherwise `struct node`
+	// stays incomplete and the variables have unknown storage size. Only
+	// named tags get a standalone def — anonymous `struct { ... } s;`
+	// renders its body inline in the variable's own declaration.
+	if ( tag )
+	    record_struct(dds, tag);
 	if ( tn->id() == TokenID::tkSTATIC )
 	{
 	    pgm.nextToken(); // consume static before declarator
@@ -10304,9 +10468,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	return pgm.parseDeclaration(tdt);
     }
 
-    // struct tag { ... }; — just a type definition, nothing to compile
+    // struct tag { ... }; — bare type definition. This is the one form whose
+    // body is emitted as a standalone struct SPEC_DECL, so record it here.
     if ( tn && tn->id() == TokenID::tkSemi )
     {
+	record_struct(dds, tag);
 	TokenBase *capture_stmt =
 	    materialize_runtime_struct_size_captures(pgm,
 		pgm.compounds.empty() ? NULL : pgm.compounds.top(), dds, tag ? (TokenBase *)tag : (TokenBase *)this);
@@ -11179,6 +11345,10 @@ static bool is_contextual_identifier_token(TokenBase *tb)
     switch ( tb->id() )
     {
 	case TokenID::tkCLASS:
+	case TokenID::tkNAMESPACE:
+	case TokenID::tkUSING:
+	case TokenID::tkPREFER:
+	case TokenID::tkDEFER:
 	case TokenID::tkVECTOR:
 	case TokenID::tkMAP:
 	case TokenID::tkSET:
@@ -11188,6 +11358,9 @@ static bool is_contextual_identifier_token(TokenBase *tb)
 	case TokenID::tkTRY:
 	case TokenID::tkCATCH:
 	case TokenID::tkTHROW:
+	case TokenID::tkNEW:
+	case TokenID::tkDELETE:
+	case TokenID::tkOPEROVER:
 	    return true;
 	default:
 	    return false;
@@ -11207,13 +11380,20 @@ static std::string contextual_identifier_name(TokenBase *tb)
 	    return td->str;
     }
     if ( tb->id() == TokenID::tkCLASS
+	|| tb->id() == TokenID::tkNAMESPACE
+	|| tb->id() == TokenID::tkUSING
+	|| tb->id() == TokenID::tkPREFER
+	|| tb->id() == TokenID::tkDEFER
 	|| tb->id() == TokenID::tkVECTOR
 	|| tb->id() == TokenID::tkMAP
 	|| tb->id() == TokenID::tkSET
 	|| tb->id() == TokenID::tkLIST
 	|| tb->id() == TokenID::tkTRY
 	|| tb->id() == TokenID::tkCATCH
-	|| tb->id() == TokenID::tkTHROW )
+	|| tb->id() == TokenID::tkTHROW
+	|| tb->id() == TokenID::tkNEW
+	|| tb->id() == TokenID::tkDELETE
+	|| tb->id() == TokenID::tkOPEROVER )
 	return ((TokenKeyword *)tb)->str;
     return "";
 }
@@ -11225,6 +11405,24 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     TokenBase *tn = pgm.peekToken();
     if ( !tn )
 	pgm.Throw << "Unexpected end of input after 'typedef'" << flush;
+
+    // Record a typedef in source order for the CIR backend and return an
+    // AST node so the typedef keeps its position. The legacy JIT/MIR
+    // paths ignore the node (compile() is a no-op; MIR re-parses tokens).
+    auto record_typedef = [&](const std::string &alias, DataDef *dd,
+			      TokenDataType *tdt, TokenBase *otok = nullptr) -> TokenBase * {
+	Program::TopDecl td;
+	td.kind = Program::DeclKind::dkTypedef;
+	td.name = alias;
+	td.dd = dd;
+	td.tdt = tdt;
+	td.file = TokenBase::_parse_file;
+	td.line = TokenBase::_parse_line;
+	td.origin = otok;
+	pgm.top_decls.push_back(td);
+	pgm.user_typedef_names.insert(alias);
+	return new TokenTypedefDecl(alias, dd);
+    };
 
     // skip const/restrict qualifiers: `typedef const struct X *const_ptr;`
     while ( tn && (tn->id() == TokenID::tkCONST
@@ -11282,7 +11480,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return NULL;
+	return record_typedef(alias, enum_alias_dd, tdt);
     }
 
     // typedef TYPE alias; — primitive type alias
@@ -11339,16 +11537,18 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	    pgm.Throw(open ? open : tn) << "Expecting '(' for parameter list" << flush;
 	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
 	DataDefFPTR *fptr = new DataDefFPTR(func);
+	fptr->ptr_syntax = true;   // Form 2: explicit `(*NAME)` — pointer typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 2): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return NULL;
+	return record_typedef(alias, fptr, tdt);
     }
 
     // get alias name (may be an identifier or an existing type name being redefined)
     tn = pgm.nextToken();
+    TokenBase *alias_tok = tn;   // per-occurrence alias token (CIR origin)
     std::string alias;
     if ( tn->type() == TokenType::ttIdentifier )
 	alias = ((TokenIdent *)tn)->str;
@@ -11369,12 +11569,13 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
 	pgm.nextToken(); // consume '('
 	FuncDef *func = pgm.parseFnPtrParams(*base_dd);
 	DataDefFPTR *fptr = new DataDefFPTR(func);
+	fptr->ptr_syntax = false;  // Form 1: `typedef RET NAME(params)` — function typedef
 	TokenDataType *tdt = new TokenDataType(alias.c_str(), *fptr);
 	pgm.datatype_map[alias] = tdt;
 	DBG(std::cout << "TokenTYPEDEF::parse() fptr (form 1): " << alias << std::endl);
 	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	    pgm.nextToken();
-	return NULL;
+	return record_typedef(alias, fptr, tdt);
     }
 
     // Preserve typedef'd array shape so sizeof(NAME) can reflect the real
@@ -11426,7 +11627,7 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkSemi )
 	pgm.nextToken();
 
-    return NULL;
+    return record_typedef(alias, base_dd, tdt, alias_tok);
 }
 
 // Parse a function-pointer parameter list. The opening '(' has already been
@@ -12165,9 +12366,13 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 		// case label — they're unreachable (no case path enters
 		// there) but valid as compile-time declarations. SMAUG's
 		// `switch(SPELL_POWER(skill)) { OBJ_DATA *clone; default: ... }`
-		// is a common form. Parse and discard.
-		DBG(std::cout << "TokenSWITCH::parse() skipping pre-case declaration" << std::endl);
-		pgm.parseStatement(tn);
+		// is a common form. Keep them so the CIR emits the declaration
+		// (it carries the type for uses later in the switch); discarding
+		// left the variable undeclared in the emitted C.
+		DBG(std::cout << "TokenSWITCH::parse() keeping pre-case declaration" << std::endl);
+		TokenBase *pre = pgm.parseStatement(tn);
+		if ( pre )
+		    pre_case_stmts.push_back(pre);
 	    }
 	    else if ( tn->id() == TokenID::tkSemi )
 	    {
@@ -12305,10 +12510,10 @@ TokenBase *TokenMatch::parse(Program &pgm)
 
 // STL container parse functions removed — ns_stl.cpp was a proof-of-concept.
 // Template instantiation will be generated on demand by the transpiler.
-TokenBase *TokenVECTOR::parse(Program &pgm) { pgm.Throw(this) << "vector<T> requires --backend=mir (template instantiation)" << flush; return this; }
-TokenBase *TokenMAP::parse(Program &pgm) { pgm.Throw(this) << "map<K,V> requires --backend=mir (template instantiation)" << flush; return this; }
-TokenBase *TokenSET::parse(Program &pgm) { pgm.Throw(this) << "set<T> requires --backend=mir (template instantiation)" << flush; return this; }
-TokenBase *TokenLIST::parse(Program &pgm) { pgm.Throw(this) << "list<T> requires --backend=mir (template instantiation)" << flush; return this; }
+TokenBase *TokenVECTOR::parse(Program &pgm) { pgm.Throw(this) << "vector<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
+TokenBase *TokenMAP::parse(Program &pgm) { pgm.Throw(this) << "map<K,V> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
+TokenBase *TokenSET::parse(Program &pgm) { pgm.Throw(this) << "set<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
+TokenBase *TokenLIST::parse(Program &pgm) { pgm.Throw(this) << "list<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
 
 
 TokenBase *Program::parseKeyword(TokenKeyword *tk)
@@ -13667,7 +13872,13 @@ static bool initialize_static_fixed_array_data(Variable *var,
 
 static bool is_char_array_element_type(DataDef *dd)
 {
-    return dd && (dd->rawtype() == DataType::dtCHAR
+    // A char/unsigned-char ELEMENT, not a pointer to one. rawtype() strips
+    // pointer-ness (`char *` -> dtCHAR), so without the is_pointer() guard an
+    // array of char pointers (`char *names[3][2]`) would be mistaken for a 2D
+    // char array and have its string-literal initializers expanded to bytes
+    // ("excess elements" — the pointer slots expect addresses, not chars).
+    return dd && !dd->is_pointer()
+	       && (dd->rawtype() == DataType::dtCHAR
 	       || dd->rawtype() == DataType::dtUINT8);
 }
 
@@ -13787,6 +13998,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     DataDef *decl_type = base_type;
     bool saw_pointer_decl = false;
     bool saw_const_after_star = false; // `int * const p` — top-level const on a pointer
+    // If this declaration names a user typedef alias (not a builtin, where
+    // tb->str == definition.name, nor a "struct tag" type, which isn't in
+    // datatype_map), record the alias so the CIR backend emits ID("alias")
+    // at the usage site — matching c2m's node_t tree. Every declarator in a
+    // comma list re-enters parseDeclaration with a clone of the same tb, so
+    // setting this on each created Variable covers them all.
+    std::string decl_typedef_alias;
+    if ( user_typedef_names.count(tb->str) )
+	decl_typedef_alias = tb->str;
     // Function-pointer typedefs (DataDefFPTR) already represent pointers;
     // `DO_FUN *cmd;` and `DO_FUN cmd;` both name a function-pointer variable.
     bool is_fnptr_base = (dynamic_cast<DataDefFPTR *>(base_type) != NULL);
@@ -14010,6 +14230,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 	bool alloc = (!code || gotstatic) ? true : false;
 	var = addVariable(code, *fptr_type, id, 1, NULL, alloc);
+	if ( !decl_typedef_alias.empty() )
+	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
 	td->file = tb->file;
 	td->line = tb->line;
@@ -14125,6 +14347,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    TokenCpnd *code = compounds.empty() ? NULL : compounds.top();
 	    bool alloc = (!code || gotstatic) ? true : false;
 	    var = addVariable(code, *decl_type, id, 1, NULL, alloc);
+	    if ( !decl_typedef_alias.empty() )
+		var->typedef_name = decl_typedef_alias;
 	    TokenDecl *td = new TokenDecl(*var);
 	    td->file = tb->file;
 	    td->line = tb->line;
@@ -14617,13 +14841,40 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	}
 	else
 	    var = addVariable(code, *decl_type, id, elem_count, NULL, alloc);
+	if ( !decl_typedef_alias.empty() )
+	    var->typedef_name = decl_typedef_alias;
+	// Record file-scope variables in top_decls in source order for the CIR
+	// backend (a struct defined inline here, `struct X {...} v;`, rides in
+	// this declaration). Locals (inside a function compound) are excluded.
+	// Capture the index so the TokenDecl built later (which carries the
+	// initializer) can be linked back into this entry for CIR emission.
+	ssize_t global_top_decl_index = -1;
+	if ( var && (code == NULL || code == tkProgram) )
+	{
+	    Program::TopDecl gtd;
+	    gtd.kind = Program::DeclKind::dkGlobalVar;
+	    gtd.name = var->name;
+	    gtd.var = var;
+	    gtd.dd = var->type;
+	    gtd.file = tb->file;
+	    gtd.line = tb->line;
+	    gtd.origin = tb;
+	    global_top_decl_index = (ssize_t)top_decls.size();
+	    top_decls.push_back(gtd);
+	}
 	bool shared_global_extern_ref =
 	    is_shared_global_extern_reference(*this, code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
-	if ( parsing_extern_decl && !shared_global_extern_ref )
-	    var->flags |= vfEXTERN;
-	else
+	// The extern flag is set at variable-CREATION time (addVariable), so it
+	// can only mark a freshly-created symbol and can never demote an
+	// already-defined (existing non-extern) one — a global with both a
+	// definition and a redundant `extern` in the same TU stays defined.
+	// Here we handle the converse: a declaration that is NOT extern (or a
+	// shared-global extern that resolves to real local storage) is a
+	// DEFINITION — promote a prior extern by allocating storage and clear the
+	// extern flag.
+	if ( !(parsing_extern_decl && !shared_global_extern_ref) )
 	{
 	    // Promoting a previously-extern declaration to a real
 	    // definition: addVariable returned the existing var without
@@ -14810,6 +15061,14 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    }
 	}
 	update_pointer_object_size_hints(td->initialize);
+
+	// Link this fully-populated TokenDecl (carrying initialize / init_list)
+	// into the file-scope TopDecl recorded earlier, so the CIR backend can
+	// emit the global's initializer in its SPEC_DECL. The legacy JIT path
+	// keeps its own statement-stream handling and ignores this field.
+	if ( global_top_decl_index >= 0
+	  && (size_t)global_top_decl_index < top_decls.size() )
+	    top_decls[global_top_decl_index].decl = td;
 
 	// Comma-continuation: `int a, b = 1, c;` or
 	// `char a[8], b[16];` — after the first declarator, if the next token is
@@ -15246,7 +15505,7 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		else
 		{
 		    DBG(std::cout << "parseStatement() identifier is a registered type, calling parseDeclaration" << std::endl);
-		    return parseDeclaration(dmi->second);
+		    return parseDeclaration(use_site_type_token(dmi->second, tb));
 		}
 	    }
 	    // namespace resolution: set current namespace and re-enter parseStatement
@@ -15533,6 +15792,13 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	      && peekToken()->id() != TokenID::tkOpBrc )
 	    {
 		DBG(std::cout << "parseStatement() 'try' used as identifier" << std::endl);
+		resetPrevToken();
+		return parseExpression(tb);
+	    }
+	    if ( tb->id() == TokenID::tkNEW
+	      && (!peekToken() || peekToken()->type() != TokenType::ttIdentifier) )
+	    {
+		DBG(std::cout << "parseStatement() 'new' used as identifier" << std::endl);
 		resetPrevToken();
 		return parseExpression(tb);
 	    }

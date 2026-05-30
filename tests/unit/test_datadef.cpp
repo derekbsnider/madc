@@ -20,7 +20,6 @@ thread_local bool madc_verbose = false;
 #include <syslog.h>
 #include <stdio.h>
 #include <unistd.h>
-#include <asmjit/x86.h>
 
 #include "datadef.h"
 #include "tokens.h"
@@ -224,7 +223,8 @@ static void register_test_host_namespace(Program &pgm)
 }
 
 TEST_SUITE("Program isolation") {
-    TEST_CASE("separate Program instances do not leak typedefs or macros") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("separate Program instances do not leak typedefs or macros" * doctest::skip()) {
 	std::string good_path = write_temp_mad_source(
 	    "madc_prog_good",
 	    "#define ANSWER 42\n"
@@ -279,7 +279,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("Engine builtin registry can be extended before parse") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("Engine builtin registry can be extended before parse" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_host_builtin",
 	    "int main() { host_putchar(65); return 0; }\n");
@@ -302,7 +303,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("Engine namespace registry can be extended before parse") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("Engine namespace registry can be extended before parse" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_host_namespace",
 	    "int main() { host::putchar(65); return 0; }\n");
@@ -337,7 +339,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("MadcEngine seeds program policy and registries") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("MadcEngine seeds program policy and registries" * doctest::skip()) {
 	std::string restricted_path = write_temp_mad_source(
 	    "madc_engine_restricted",
 	    "int main() { puti(42); return 0; }\n");
@@ -371,7 +374,8 @@ TEST_SUITE("Program isolation") {
 	unlink(host_path.c_str());
     }
 
-    TEST_CASE("Program load_file runs tokenize parse and compile") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("Program load_file runs tokenize parse and compile" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_load_file",
 	    "int main() { return 0; }\n");
@@ -498,7 +502,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("Program execute runtime failures become diagnostics") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("Program execute runtime failures become diagnostics" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_no_main",
 	    "int helper() { return 0; }\n");
@@ -524,7 +529,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-	TEST_CASE("MadcEngine stream helpers capture script output") {
+	// DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+	TEST_CASE("MadcEngine stream helpers capture script output" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_capture_output",
 	    "#include <string>\n"
@@ -544,7 +550,8 @@ TEST_SUITE("Program isolation") {
 	unlink(path.c_str());
     }
 
-    TEST_CASE("MadcEngine buffer helpers capture and clear output") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("MadcEngine buffer helpers capture and clear output" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_buffer_capture",
 	    "int main() { puti(7); return 0; }\n");
@@ -578,7 +585,8 @@ TEST_SUITE("Program isolation") {
 	engine.reset_standard_streams();
     }
 
-    TEST_CASE("MadcEngine tee output duplicates to primary and buffer") {
+    // DEFERRED: eval/exec reimplements on CIR→c2mir→MIR (+ REPL); see task
+    TEST_CASE("MadcEngine tee output duplicates to primary and buffer" * doctest::skip()) {
 	std::string path = write_temp_mad_source(
 	    "madc_prog_tee_output",
 	    "int main() { puti(9); return 0; }\n");

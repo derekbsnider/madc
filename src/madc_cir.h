@@ -1,0 +1,66 @@
+/* madc_cir.h — CIR (C Internal Representation) translation layer.
+ *
+ * Translates madc's TokenBase AST into c2mir node_t trees that can be
+ * fed directly to c2mir's type checker and MIR generator, bypassing
+ * c2mir's own preprocessor and parser.
+ *
+ * This is the bridge between madc's parser (parser.cpp) and the MIR
+ * backend. C++ and madc constructs are lowered to C11-shaped node_t
+ * trees during translation.
+ */
+
+#ifndef __MADC_CIR_H
+#define __MADC_CIR_H 1
+
+#include <cstdio>
+#include "mir.h"
+#include "cir_emit_c.h"   // CirEmitLang
+
+// Forward declarations (c2mir types)
+struct c2m_ctx;
+typedef struct c2m_ctx *c2m_ctx_t;
+struct node;
+typedef struct node *node_t;
+
+// Forward declarations (madc types)
+class TokenBase;
+class TokenCpnd;
+class TokenFunc;
+class Program;
+
+// Initialize a c2mir context for CIR translation.
+// Call AFTER c2mir_init(mir_ctx).
+// debug_p (post-check dump): when true, c2mir prints the tree AFTER do_context
+// to message_file — same stage as `c2m -d`, for stage-matched diffing.
+c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p = false);
+
+// Translate a parsed madc Program into a c2mir node_t tree (N_MODULE).
+// The Program must have been tokenized and parsed (prog->parse(tp) called).
+node_t cir_translate(c2m_ctx_t c2m, Program *prog);
+
+// Type-check the translated tree and generate MIR.
+// Returns 1 on success, 0 on error.
+int cir_compile(MIR_context_t mir_ctx, c2m_ctx_t c2m, node_t tree,
+		const char *module_name);
+
+// Clean up the c2mir context.
+void cir_finish(c2m_ctx_t c2m);
+
+// Full CIR pipeline: tokenize+parse → CIR translate → c2mir compile → JIT execute.
+// Returns the exit code from main(), or -1 on failure.
+// If dump_tree is true, dumps the c2mir-format tree (c2mir_dump_tree, for
+// c2m -d comparison). If dump_nodes is true, dumps our cir_node tree via
+// the madc-owned walker (cir_dump_nodes, showing +madc fields).
+// dump_checked: dump the POST-check tree (after c2mir's do_context) to stderr,
+// matching `c2m -d`'s stage so the forward-decl folding lines up for diffing.
+int madc_cir_execute(Program *prog, const char *source_name,
+		     int user_argc, char **user_argv,
+		     bool dump_tree = false, bool dump_nodes = false,
+		     bool dump_checked = false);
+
+// Build the cir_node tree and render it as C source (no compile/run).
+// Backs --emit=c11|mc11. Returns 0 on success, -1 on build failure.
+int madc_cir_emit(Program *prog, const char *source_name, FILE *out,
+		  CirEmitLang lang);
+
+#endif // __MADC_CIR_H

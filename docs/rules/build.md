@@ -25,3 +25,13 @@ So the operational rule is:
 This is a workflow default, not a license to skip relevant coverage. If a
 change can plausibly affect `madcdat`, the broader enabled build remains
 the honest gate.
+
+## Backend — why no asmjit flags
+
+The build used to link the manually installed asmjit v1.14 at
+`/usr/local/`, with `-L/usr/local/lib -Wl,-rpath,/usr/local/lib` in the
+Makefile to avoid the older apt-packaged copy. asmjit (the original
+x86-64 JIT) was removed: madc now lowers its AST to a `cir_node` C11 IR
+that c2mir compiles to MIR. The backend dependency is therefore the MIR
+library (libmir + c2mir) at `/workspace/mir`, and the old asmjit link
+flags no longer exist.

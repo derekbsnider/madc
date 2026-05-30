@@ -2,18 +2,51 @@
 
 Master plan linking all workstreams. Updated 2026-05-26.
 
+## The Intermediate Representation — MC11-IR (SET IN STONE, 2026-05-29)
+
+The primary in-memory representation is the **Mad-enhanced-C11 IR (MC11-IR)** —
+the `cir_node` AST tree. `cir_node` **derives from c2mir's `node_t`** (so c2mir
+consumes the lowered C11 view directly) AND each node **carries its originating
+lexed tokens + parse subtree + file/line/column** (so madc retains the original
+high-level structure without reconstruction). It is deliberately **both**:
+lowered for c2mir, high-level for madc. The `.mc11` text is the on-disk
+serialization of the extra info; render targets (C11/MC11/C++/madc) share the
+`--std=` language enum to pick which view to emit. See
+[`docs/rules/mc11-ir.md`](../rules/mc11-ir.md). **Do not re-pose "lowered vs
+high-level" — the answer is both.**
+
+> **⚠️ This roadmap predates the 2026-05-29 cleanup and is STALE below.** Gecko
+> and asmjit have both been **removed entirely**; `madc parser → cir_node
+> (MC11-IR) → c2mir → MIR` is now the **sole** backend. Any line below framing
+> "Gecko+MIR transpiler" or "asmjit JIT" as active is superseded. Honest current
+> integration baseline: **227 pass / 193 fail / 56 skip** — the 193 are the CIR
+> coverage worklist. Roadmap body needs a full rewrite (tracked).
+
 ## Current State
 
-- **Version:** 0.22.0
-- **GCC parity (legacy):** 1649/1685 (97.9%)
-- **Integration tests (legacy):** 475 passing
-- **Transpiler (Gecko+MIR):** 365/475 (76.8%) — Phases 0-6B complete
-- **C++ model:** Ctors/dtors, operators, refs, new/delete, inheritance, vtables, exceptions + unwinding, access control, const enforcement
-- **Transpiler features:** Itanium ABI mangler, SJLJ exceptions, MadArray lifecycle, vtable dispatch, lambda emission, VLA→alloca, computed object sizes
-- **Generic extern class:** One `register_extern_ctor_dtor()` call per libc type
-- **SMAUG port:** Startup through serpent combat on native exe
-- **libmadc:** C++ embedding API with eval, security policy, invoke limits
-- **PCH:** Phase 1 infrastructure (.madh format, 38 headers pre-compiled)
+- **Version:** `0.24.0` (per `VERSION`) — the last release cut on the
+  now-removed asmjit/Gecko backend. Active development on `feature/cir-node`.
+- **Backend:** `madc parser → cir_node (MC11-IR) → c2mir → MIR` is the **sole**
+  backend. The asmjit JIT and the Gecko parser/MIR-transpiler were both removed
+  (commits `42e9b6e`, `64f44b3`). There is no `--backend=jit`; `--backend=mir`
+  aliases to cir.
+- **CIR integration baseline:** **227 pass / 193 fail / 56 skip** (measured).
+  The 193 are the active CIR coverage worklist — see Track 1.3.
+- **C++ model — proven on the old backend, being re-established on CIR:**
+  ctors/dtors, operator overloading, references, `new`/`delete`, single
+  inheritance, vtables, SJLJ exceptions + unwinding, access control, const
+  enforcement. These all worked on the asmjit backend; CIR parity is the
+  current push.
+- **libmadc:** C++ embedding API (security policy, structured diagnostics,
+  engine-owned IO). In-process compile/exec/`eval` is **currently stubbed**
+  pending reimplementation on CIR→c2mir→MIR (deferred; ~100 unit tests skipped
+  as its future spec).
+- **AOT (native object/executable):** deferred, low priority. Near-term native
+  builds come from emit-`.c` + an external compiler; `save_object` /
+  `save_executable` are stubbed (signatures kept) for a later MIR-based revisit.
+- **Legacy reference (asmjit backend, pre-removal):** GCC-torture parity reached
+  ~97.9% and ~475 integration tests passed. Retained only as the parity target
+  the CIR path is climbing back to — NOT the current state.
 
 ---
 
@@ -25,7 +58,7 @@ Master plan linking all workstreams. Updated 2026-05-26.
 |-------|------|--------|--------|------|
 | 1.1 | C foundation (GCC parity) | — | **DONE** 97.9% | — |
 | 1.2 | Code cleanup Phase A — dispatch table, AST visitor, file split | 2-3 wk | **DONE** (v0.20.1) | [code-cleanup.md](code-cleanup.md) |
-| 1.3 | Gecko+MIR transpiler — C11 emission, replacing asmjit | ongoing | **Active** (76.8% parity) | [transpiler-backend.md](transpiler-backend.md) |
+| 1.3 | CIR coverage — drive `cir_node` (MC11-IR) → c2mir → MIR to full parity | ongoing | **Active** (227/193/56) | — |
 | 1.4 | Code cleanup Phase B — parser dereference/subscript unification | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 | 1.5 | Code cleanup Phase C — macro system, token hierarchy | 3 wk | Ready | [code-cleanup.md](code-cleanup.md) |
 
@@ -151,16 +184,16 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 ```
 
 **Dependencies:**
-- **Track 1.3 (transpiler) must reach full legacy parity before any
+- **Track 1.3 (CIR coverage) must reach full parity before any
   Track 5 work begins.** The data substrate needs a stable compiler
   foundation — templates, full C++ class support, and AOT output must
   work before DataSet<T>/Cursor<T>/Relation<A,B> can compile through
-  the MIR pipeline.
+  the CIR → c2mir → MIR pipeline.
 - 5A.1-5A.3 (restructure) first — moves existing code to new library boundary
 - 5B.1 follows 5A.1 — madcdat depends on madcdis
 - 5A.4-5A.5 (pools, values) before 5A.7-5A.12 (column encoding, COW, derivation)
 - 5C.1-5C.2 (library-only surfaces) independent of compiler work
-- 5C.3-5C.7 (compiler-integrated surfaces) require Track 9 (multi-syntax) or Gecko grammar extensions
+- 5C.3-5C.7 (compiler-integrated surfaces) require Track 9 (multi-syntax)
 
 **Research:** [madcdis-memory-research.md](madcdis-memory-research.md) — design lineage from SMAUG, Lucene, modern arenas, refcounting
 
@@ -172,7 +205,7 @@ libmadcdat       (optional: external drivers — BDB, GDBM, SQLite, MySQL, etc.)
 
 | Phase | Work | Effort | Status | Plan |
 |-------|------|--------|--------|------|
-| 6.1 | macOS/ARM64 JIT-only MVP | 10-15 wk | Planned | [macos-arm64-port.md](macos-arm64-port.md) |
+| 6.1 | macOS/ARM64 MVP (via MIR — c2mir + MIR are already cross-platform) | 10-15 wk | Planned | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.2 | macOS SIMD (NEON) | 2-3 wk | Blocked on 6.1 | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.3 | macOS AOT (Mach-O writer) | 4-6 wk | Future | [macos-arm64-port.md](macos-arm64-port.md) |
 | 6.4 | Windows port | TBD | Not started | — |
@@ -272,11 +305,12 @@ run in parallel.
 
  NEXT UP (recommended order):
  ────────────────────────────
-11.  Track 1.3  Typed-register IR (stages 0-3)          [4-6 wk]
-     ├── Fixes operand-shape bugs at the source
-     ├── Creates arch-neutral boundary for ARM64
-     └── Enables IR Stage 3 (calls) with clean dispatch table
-     ** RECOMMENDED NEXT — high leverage for ARM64 + correctness **
+11.  Track 1.3  CIR coverage — cir_node (MC11-IR) → c2mir → MIR  [ongoing]
+     ├── Burn down the 193 CIR integration failures toward 0
+     ├── Build the .mc11/.c renderer + gcc -fverbose-asm fidelity
+     │   gate + cir_node-vs-`c2m -d` differential
+     └── Then reimplement eval/exec + REPL on MIR (deferred)
+     ** RECOMMENDED NEXT — the sole backend must reach full parity **
 
  ║── Track 7.1  Rendering: Semantic IR + Level 0         [2-3 wk]
  ║   └── render { } blocks, UINode, text output
@@ -301,8 +335,8 @@ run in parallel.
 16.  Track 3.2  PCH transition                           [2-3 wk]
      └── Replace text-embedded stubs with pre-compiled
 
-17.  Track 6.1  macOS/ARM64 JIT MVP                     [10-15 wk]
-     └── Requires IR (step 11) for arch-neutral boundary
+17.  Track 6.1  macOS/ARM64 MVP (via MIR)               [10-15 wk]
+     └── c2mir + MIR are already cross-platform; CIR coverage (step 11) first
 
 18.  Track 4.2  C ABI shim                               [2-3 wk]
 
@@ -315,8 +349,9 @@ run in parallel.
 
 22.  Track 3.3  PCH Phase 2 — AST serialization         [4-6 wk]
 
-     ── TRANSPILER PARITY GATE ──────────────────────────────
-     Track 1.3 must reach 475/475 before data work begins.
+     ── CIR PARITY GATE ─────────────────────────────────────
+     Track 1.3 (CIR coverage) must reach full parity before
+     data work begins.
 
 23.  Track 5A.1-3  madcdis library restructure            [3-4 wk]
      Track 5B.1    madcdat depends on madcdis             [1-2 wk]
@@ -341,17 +376,21 @@ run in parallel.
 30.  Track 10   Safety, optimization levels              [ongoing]
 ```
 
-**Recommended next:** Track 1.3 (Typed-register IR) is the highest-leverage
-item. It fixes operand-shape bugs structurally, creates the arch-neutral
-boundary needed for the macOS/ARM64 port, and makes future compiler work
-cleaner. Track 7.1 (rendering) can run in parallel if desired.
+**Recommended next:** Track 1.3 (CIR coverage) is the highest-leverage item —
+it is the sole backend, so nothing downstream (data substrate, ARM64 port, AOT)
+can proceed until `cir_node → c2mir → MIR` reaches full parity. Build the
+`.mc11`/`.c` renderer and the gcc-`-fverbose-asm` fidelity gate to make the 193
+failures mechanical and localizable, then reimplement eval/exec + REPL on MIR.
 
 ## The SMAUG Goal
 
 The concrete test case driving Tracks 1-3 is compiling SMAUG 1.8
-(~158K LOC C89) end-to-end. Current state: `smaug.exe` survives startup,
-login, and serpent combat. The next milestone is broader post-combat
-gameplay with longer session stability.
+(~158K LOC C89) end-to-end. On the old asmjit backend, `smaug.exe` reached
+startup → login → serpent combat. That backend is now removed; the current
+state is that SMAUG **parses** end-to-end through the CIR path (after the
+parser-fix port), and rebuilding **runtime** parity via `cir_node → c2mir →
+MIR` is the active push. The port itself lives in the external
+[MadSMAUG](https://github.com/derekbsnider/MadSMAUG) repo.
 
 SMAUG does NOT need C++ features (Tracks 2, 8) — it's pure C. But the
 C++ features make madc useful as a general-purpose scripting language
@@ -378,5 +417,6 @@ SMAUG target terminal, web, and GUI from the same game code.
 | Rendering Abstraction | [rendering-abstraction.md](rendering-abstraction.md) |
 | madc IDE & Editor | [madc-ide.md](madc-ide.md) |
 | Multi-Syntax Support | [multi-syntax.md](multi-syntax.md) |
-| Typed-Register IR | [typed-register-ir.md](typed-register-ir.md) |
+| Typed-Register IR (archived — asmjit-era) | [archived/typed-register-ir.md](archived/typed-register-ir.md) |
+| Gecko+MIR Transpiler (archived — superseded by CIR) | [archived/transpiler-backend.md](archived/transpiler-backend.md) |
 | Revival Plan (archived) | [archived/revival-plan.md](archived/revival-plan.md) |

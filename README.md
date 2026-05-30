@@ -1,6 +1,6 @@
 # madc — Mad-C Programming Language
 
-**My jit-Assembled Dialect of C** — a C-like scripting language that JIT-compiles directly to x86-64 machine code using [asmjit](https://asmjit.com/). No bytecode, no interpreter, no separate compilation step.
+**My Advanced Dialect of C** — a C-like scripting language built around the **MC11-IR**: a `cir_node` AST tree that *derives from* [c2mir](https://github.com/vnmakarov/mir)'s `node_t`, so it feeds c2mir → MIR and executes in-process — no bytecode, no separate compilation step. The same tree also carries its originating tokens, so it renders back to source (`.c` / `.mc11`) and forward to other targets from one representation.
 
 The "Mad" in Mad-C: mix functions from multiple programming languages in a single program.
 
@@ -226,9 +226,22 @@ feeds them stdin and argv respectively and asserts on their output.)
 
 ## Current Release
 
-**v0.24.0** (2026-05-28) — **Native C99 `_Complex` in c2mir.** All 12 `_Complex` tests passing, complex constant folding, `__real__`/`__imag__` grammar operators, transpiler cleanup. 419 pass, 0 fail, 56 skip.
+**v0.24.0** (2026-05-28) was the last release cut on the now-removed
+asmjit/Gecko backend (native C99 `_Complex` in c2mir; on that backend, 419 pass
+/ 0 fail / 56 skip).
+
+**Current development** (`feature/cir-node`): Gecko and asmjit have both been
+**removed**; `cir_node` (MC11-IR) → c2mir → MIR is the **sole** backend. Honest
+CIR integration baseline: **227 pass / 193 fail / 56 skip** — the 193 are the
+active coverage worklist. In-process `eval`/exec + the REPL, and native AOT
+output, are deferred (stubbed) until the CIR path reaches parity.
 
 ### Recent Releases
+
+*(Historical — these versions were built on the asmjit/Gecko backend that has
+since been removed. They describe past milestones, not the current backend; see
+"Current development" above.)*
+
 
 - **v0.24.0** — Native C99 `_Complex` in c2mir, transpiler parity 410→419
 - **v0.23.0** — MIR default backend, clang++ compiler, transpiler parity 400→410
@@ -238,6 +251,11 @@ feeds them stdin and argv respectively and asserts on their output.)
 - **v0.20.1** — Code cleanup Phase A: compiler file split, builtin dispatch table, --emit-function tool
 
 ## Roadmap
+
+Canonical roadmap: [`docs/plans/ROADMAP.md`](docs/plans/ROADMAP.md). The phases
+below were achieved on the **old asmjit/Gecko backend** (now removed); the
+current focus is re-establishing them on the `cir_node` → c2mir → MIR path
+(integration baseline 227/193/56).
 
 | Phase | Goal | Status |
 |-------|------|--------|
@@ -260,15 +278,36 @@ feeds them stdin and argv respectively and asserts on their output.)
 ## Architecture
 
 ```
-Source (.mad file)
+Source (.mad / .mc11 / C / C++)
     |
-    v src/lexer.cpp      — tokenize source (#include, #load handled here)
+    v src/lexer.cpp       — tokenize source (#include, #load handled here)
     |
-    v src/parser.cpp     — build AST, namespace resolution, type registration
+    v src/parser.cpp      — build the token parse tree (file/line/col retained)
     |
-    v src/compiler.cpp   — walk AST, emit x86-64 via asmjit
+    v src/cir_builder.cpp — build the MC11-IR: a cir_node AST tree derived from
+    |                       c2mir's node_t, each node carrying its originating
+    |                       tokens + parse subtree
     |
-    v JIT execute        — run machine code in-process
+    v c2mir               — consume the lowered C11 view of the MC11-IR
+    |
+    v MIR                 — execute in-process (native object/executable later)
 ```
+
+### MC11-IR — the one intermediate representation (SET IN STONE)
+
+The primary in-memory representation is the **Mad-enhanced-C11 IR (MC11-IR)** —
+the `cir_node` AST tree. It is **both** lowered and high-level by construction:
+
+- `cir_node` **derives from c2mir's `node_t`**, so c2mir consumes the lowered
+  C11 view of the tree directly (classes already struct + functions, etc.).
+- Every `cir_node` also **carries its originating lexed tokens and parse
+  subtree**, with `file`/`line`/`column`, so madc retains the original
+  high-level structure — not reconstructed from comments, but kept.
+
+So one tree serves c2mir (lowered) and madc (high-level) at once. The `.mc11`
+text form (C11 + `madc`-namespaced pragmas) is the on-disk serialization of the
+extra info; render targets (C11, MC11, C++, madc) share the `--std=` language
+enum and pick which view of the one IR to emit. See
+[`docs/rules/mc11-ir.md`](docs/rules/mc11-ir.md).
 
 Namespace implementations: `src/ns_php.cpp`, `src/ns_perl.cpp`, `src/ns_python.cpp`, `src/ns_ruby.cpp`, `src/ns_js.cpp`, `src/ns_stl.cpp`

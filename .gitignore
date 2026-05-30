@@ -1,5 +1,6 @@
 .mcp.json
 .claude/settings.local.json
+.claude/statusline-state.json
 *~
 claude_status.json
 Makefile

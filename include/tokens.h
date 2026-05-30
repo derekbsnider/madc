@@ -6,21 +6,25 @@
 //////////////////////////////////////////////////////////////////////////
 #define __TOKENS_H 1
 
+#include <cstdint>
+#include <string>
+#include <vector>
+#include <ios>
+
 // forward declaration
 class Program;
 //class DataDef;
 
-//typedef std::pair<asmjit::x86::Gp *, DataDef *> regdefp_t;
-typedef struct { asmjit::Operand *first; DataDef *second; asmjit::Operand *object; } regdefp_t;
-
-enum class TokenType { 
+enum class TokenType {
 //	0	1	 2	3	4	  5		6	  7
 	ttBase, ttSpace, ttTab, ttEOL, ttComment, ttOperator, ttMultiOp, ttSymbol,
 //	8		9	  10	 11	    12	    13		14	    15
 	ttIdentifier, ttString, ttChar, ttInteger, ttReal, ttKeyword, ttDataType, ttVariable,
 //	16		17	  18		19	  20		21	22	 23
 	ttFunction, ttCallFunc, ttStatement, ttCompound, ttDeclare, ttProgram, ttMember, ttCallMethod, ttSubscript,
-	ttStructLit
+	ttStructLit,
+	ttTypedefDecl,	// typedef declaration (preserves source order in AST)
+	ttStructDef	// standalone struct/union definition (preserves source order in AST)
 };
 
 enum class TokenID {
@@ -63,8 +67,6 @@ class TokenBase
 protected:
     int64_t _token;
     DataDef *_datatype;
-    asmjit::x86::Gp _reg;
-    asmjit::Operand _operand;
     uint16_t _flags;
 public:
     const char *file;
@@ -72,6 +74,10 @@ public:
     int line;
     int column;
     std::streampos pos;
+    // Leading trivia (whitespace + comments) preserved before this token, for
+    // byte-faithful source reconstruction. Populated only in full-fidelity mode
+    // (Program::keep_trivia); empty in lean/batch mode (zero cost there).
+    std::string leading_trivia;
     // Current parse position — updated by nextToken(), inherited by
     // all new tokens so synthetic parser-created tokens automatically
     // get the position of the most recently consumed source token.
@@ -101,8 +107,6 @@ public:
     virtual DataType datatype() const { return _datatype ? _datatype->type() : DataType::dtVOID; }
     virtual DataDef *datadef()  const { return _datatype ? _datatype : &ddVOID; }
     virtual TokenAssoc associativity() const { return TokenAssoc::taNone; }
-    virtual asmjit::Operand &operand(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 // whitespace
@@ -148,8 +152,6 @@ public:
 // single symbol operator base class
 class TokenOperator: public TokenBase
 {
-protected:
-    asmjit::x86::Xmm _xmm;
 public:
     TokenBase *left;
     TokenBase *right;
@@ -165,17 +167,6 @@ public:
     virtual inline int precedence() const  { return 15; } // C Operator Precedence, default to 15 (lowest)
     virtual inline int64_t ioperate() const { return 0; } // integer operation
     virtual inline double foperate() const { return 0; } // floating point operation
-    virtual void setregdp(Program &, regdefp_t &);
-    virtual void settype(Program &, regdefp_t &);
-    virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::Operand &operand(Program &);
-    virtual bool can_optimize();
-    virtual asmjit::Operand &optimize(Program &, regdefp_t &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp)
-    {
-	DBG(std::cout << "TokenOperator::compile() called on operator: " << _token << std::endl);
-	throw "!!! TokenOperator::compile() !!!";
-    }
     virtual inline bool operator>(const TokenOperator &op) // used to compare precedence
     {
 	DBG(std::cout << "TokenOperator(" << (char)_token << ") comparing precedence(" << precedence() << ") > to TokenOperator(" << (char)op.get() << ") precedence(" << op.precedence() << ")" << std::endl);
@@ -198,7 +189,6 @@ public:
     virtual TokenBase *clone() { TokenMultiOp *to = new TokenMultiOp(); to->left = left; to->right = right; return to; }
     virtual TokenType type() const { return TokenType::ttMultiOp; }
     virtual TokenID   id()   const { return TokenID::tkMultiOp; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp)  { throw "!!! TokenMultiOp::compile() !!!"; }
     virtual inline int precedence() const { return 16; }
 };
 
@@ -210,7 +200,6 @@ public:
     virtual TokenBase *clone() { TokenAdd *to = new TokenAdd(); to->left = left; to->right = right; return to; }
     virtual inline int precedence() const { return 4; }
     virtual TokenID id() const { return TokenID::tkAdd; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual DataDef *datadef() const override
     {
 	if ( left  && left->datadef()  && left->datadef()->is_pointer()  ) return left->datadef();
@@ -241,7 +230,6 @@ public:
     virtual TokenBase *clone() { TokenSub *to = new TokenSub(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkSub; }
     virtual inline int precedence() const { return 4; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual DataDef *datadef() const override
     {
 	// `p - n` is a pointer; `p - q` (both pointers) is ptrdiff_t.
@@ -267,7 +255,6 @@ public:
     virtual TokenBase *clone() { TokenNeg *to = new TokenNeg(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkNeg; }
     virtual inline int precedence() const { return 2; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
     inline int64_t ioperate() const {
@@ -294,7 +281,6 @@ public:
     virtual TokenBase *clone() { TokenMul *to = new TokenMul(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkMul; }
     virtual inline int precedence() const { return 3; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual DataDef *datadef() const override
     {
 	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
@@ -313,7 +299,6 @@ public:
     virtual TokenBase *clone() { TokenDiv *to = new TokenDiv(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkDiv; }
     virtual inline int precedence() const { return 3; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual DataDef *datadef() const override
     {
 	if ( left  && left->datadef()  && left->datadef()->is_complex()  ) return left->datadef();
@@ -332,7 +317,6 @@ public:
     virtual TokenBase *clone() { TokenMod *to = new TokenMod(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkMod; }
     virtual inline int precedence() const { return 3; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() % right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
@@ -350,7 +334,6 @@ public:
 	if ( right ) return right->datadef();
 	return TokenBase::datadef();
     }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
@@ -381,7 +364,6 @@ public:
 	if ( right ) return right->datadef();
 	return TokenBase::datadef();
     }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
@@ -407,7 +389,6 @@ public:
     TokenAssign() : TokenOperator('=') {}
     virtual TokenBase *clone() { TokenAssign *to = new TokenAssign(); to->left = left; to->right = right; return to; }
     virtual TokenID id() const { return TokenID::tkAssign; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual DataDef *datadef() const override
     {
 	// An assignment-as-expression evaluates to the assigned LHS
@@ -428,7 +409,6 @@ public:
     TokenAddEq() : TokenMultiOp("+=") {}
     virtual TokenID id() const { return TokenID::tkAddEq; }
     virtual TokenBase *clone() { return new TokenAddEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -440,7 +420,6 @@ public:
     TokenSubEq() : TokenMultiOp("-=") {}
     virtual TokenID id() const { return TokenID::tkSubEq; }
     virtual TokenBase *clone() { return new TokenSubEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -452,7 +431,6 @@ public:
     TokenMulEq() : TokenMultiOp("*=") {}
     virtual TokenID id() const { return TokenID::tkMulEq; }
     virtual TokenBase *clone() { return new TokenMulEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -464,7 +442,6 @@ public:
     TokenDivEq() : TokenMultiOp("/=") {}
     virtual TokenID id() const { return TokenID::tkDivEq; }
     virtual TokenBase *clone() { return new TokenDivEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -476,7 +453,6 @@ public:
     TokenModEq() : TokenMultiOp("%=") {}
     virtual TokenID id() const { return TokenID::tkModEq; }
     virtual TokenBase *clone() { return new TokenModEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -488,7 +464,6 @@ public:
     TokenBSLEq() : TokenMultiOp("<<=") {}
     virtual TokenID id() const { return TokenID::tkBSLEq; }
     virtual TokenBase *clone() { return new TokenBSLEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -500,7 +475,6 @@ public:
     TokenBSREq() : TokenMultiOp(">>=") {}
     virtual TokenID id() const { return TokenID::tkBSREq; }
     virtual TokenBase *clone() { return new TokenBSREq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -512,7 +486,6 @@ public:
     TokenBandEq() : TokenMultiOp("&=") {}
     virtual TokenID id() const { return TokenID::tkBandEq; }
     virtual TokenBase *clone() { return new TokenBandEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -524,7 +497,6 @@ public:
     TokenBorEq() : TokenMultiOp("|=") {}
     virtual TokenID id() const { return TokenID::tkBorEq; }
     virtual TokenBase *clone() { return new TokenBorEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -536,7 +508,6 @@ public:
     TokenXorEq() : TokenMultiOp("^=") {}
     virtual TokenID id() const { return TokenID::tkXorEq; }
     virtual TokenBase *clone() { return new TokenXorEq(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 14; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
 };
@@ -574,7 +545,6 @@ public:
 	    return right->datadef();
 	return TokenOperator::datadef();
     }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
@@ -595,7 +565,6 @@ public:
     TokenLnot() : TokenOperator('!') {}
     virtual TokenID id() const { return TokenID::tkLnot; }
     virtual TokenBase *clone() { return new TokenLnot(); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual inline int precedence()   const { return 2; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
@@ -611,7 +580,6 @@ public:
     virtual TokenID id() const { return TokenID::tkBand; }
     virtual TokenBase *clone() { return new TokenBand(); }
     virtual inline int precedence() const { return 8; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() & right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
@@ -624,7 +592,6 @@ public:
     virtual TokenID id() const { return TokenID::tkLand; }
     virtual TokenBase *clone() { return new TokenLand(); }
     virtual inline int precedence() const { return 11; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() && right->ival(); }
     inline double foperate() const { return left->dval() && right->dval(); }
 };
@@ -637,7 +604,6 @@ public:
     virtual TokenID id() const { return TokenID::tkBor; }
     virtual TokenBase *clone() { return new TokenBor(); }
     virtual inline int precedence() const { return 10; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() | right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
@@ -650,7 +616,6 @@ public:
     virtual TokenID id() const { return TokenID::tkLor; }
     virtual TokenBase *clone() { return new TokenLor(); }
     virtual inline int precedence() const { return 12; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() || right->ival(); }
     inline double foperate() const { return left->dval() || right->dval(); }
 };
@@ -663,7 +628,6 @@ public:
     virtual TokenID id() const { return TokenID::tkXor; }
     virtual TokenBase *clone() { return new TokenXor(); }
     virtual inline int precedence() const { return 9; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() ^ right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
@@ -681,7 +645,6 @@ public:
     virtual inline int precedence()   const { return 13; }
     virtual inline TokenAssoc assoc() const { return TokenAssoc::taRightToLeft; }
     virtual size_t argc() const { return 1; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() ? left->ival() : right->ival(); }
     inline double foperate() const { return left->dval() ? left->dval() : right->dval(); }
 };
@@ -706,7 +669,6 @@ public:
     virtual TokenID id() const { return TokenID::tkEquals; }
     virtual TokenBase *clone() { return new TokenEquals(); }
     virtual inline int precedence() const { return 7; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() == right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() == right->dval() ? 1 : 0; }
 };
@@ -731,7 +693,6 @@ public:
     virtual TokenID id() const { return TokenID::tkNotEq; }
     virtual TokenBase *clone() { return new TokenNotEq(); }
     virtual inline int precedence() const { return 7; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() != right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() != right->dval() ? 1 : 0; }
 };
@@ -744,7 +705,6 @@ public:
     virtual TokenID id() const { return TokenID::tkLT; }
     virtual TokenBase *clone() { return new TokenLT(); }
     virtual inline int precedence() const { return 6; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() < right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() < right->dval() ? 1 : 0; }
 };
@@ -757,7 +717,6 @@ public:
     virtual TokenID id() const { return TokenID::tkGT; }
     virtual TokenBase *clone() { return new TokenGT(); }
     virtual inline int precedence() const { return 6; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() > right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() > right->dval() ? 1 : 0; }
 };
@@ -770,7 +729,6 @@ public:
     virtual TokenID id() const { return TokenID::tkLE; }
     virtual TokenBase *clone() { return new TokenLE(); }
     virtual inline int precedence() const { return 6; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() <= right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() <= right->dval() ? 1 : 0; }
 };
@@ -783,7 +741,6 @@ public:
     virtual TokenID id() const { return TokenID::tkGE; }
     virtual TokenBase *clone() { return new TokenGE(); }
     virtual inline int precedence() const { return 6; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() >= right->ival() ? 1 : 0; }
     inline double foperate() const { return left->dval() >= right->dval() ? 1 : 0; }
 };
@@ -797,7 +754,6 @@ public:
     virtual TokenID id() const { return TokenID::tk3Way; }
     virtual TokenBase *clone() { return new Token3Way(); }
     virtual inline int precedence() const { return 6; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const 
     {
 	if ( left->ival() < right->ival() ) { return -1; }
@@ -814,7 +770,6 @@ class TokenBSL: public TokenMultiOp
     virtual TokenID id() const { return TokenID::tkBSL; }
     virtual TokenBase *clone() { return new TokenBSL(); }
     virtual inline int precedence() const { return 5; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() << right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
@@ -826,7 +781,6 @@ class TokenBSR: public TokenMultiOp
     virtual TokenID id() const { return TokenID::tkBSR; }
     virtual TokenBase *clone() { return new TokenBSR(); }
     virtual inline int precedence() const { return 5; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     inline int64_t ioperate() const { return left->ival() >> right->ival(); }
     inline double foperate() const { return ioperate(); }
 };
@@ -872,7 +826,6 @@ public:
     virtual TokenID id() const { return TokenID::tkDot; }
     virtual TokenBase *clone() { return new TokenDot(); }
     virtual inline int precedence() const { return 1; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 // command operator , (perform first, second and return second result)
@@ -886,7 +839,6 @@ class TokenComma: public TokenOperator { public: TokenComma()  : TokenOperator('
 	    return right->datadef();
 	return TokenOperator::datadef();
     }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &);
 };
 
 
@@ -928,8 +880,6 @@ public:
     virtual bool is_constant()	    { return true; }
     virtual TokenType type() const  { return TokenType::ttChar; }
     virtual TokenID   id()   const  { return TokenID::tkChar; }
-    virtual asmjit::Operand &operand(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenInt: public TokenBase
@@ -946,9 +896,6 @@ public:
     virtual TokenBase *clone()     { auto *c = new TokenInt(_token); c->source_text = source_text; c->_datatype = _datatype; return c; }
     virtual bool is_constant() const override { return true; }
     virtual void setDataType(DataDef *d) { if (d && (d->is_integer() || d->is_complex())) _datatype = d; }
-//  virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::Operand &operand(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenNullptr: public TokenInt
@@ -979,13 +926,11 @@ public:
     }
     virtual TokenBase *clone() { return new TokenTypeQuery(query_type, want_alignof, use_cached_runtime_size); }
     virtual TokenID id() const { return TokenID::tkInt; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenReal: public TokenBase
 {
 protected:
-    asmjit::x86::Mem _const;
     double _val;
 public:
     std::string source_text;   // original literal text (suffixes like i, iF, f, L)
@@ -999,9 +944,6 @@ public:
     virtual bool is_constant() const override { return true; }
     virtual bool is_real()     const override { return true; }
     virtual void setDataType(DataDef *d) { if (d && (d->is_real() || d->is_complex())) _datatype = d; }
-//  virtual asmjit::x86::Gp &getreg(Program &) { throw "TokenReal::getreg(): Use TokenReal::operand()!"; }
-    virtual asmjit::Operand &operand(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 // string based tokens
@@ -1058,7 +1000,6 @@ public:
 //  virtual TokenBase *clone(){ return new TokenKeyword(str); }
     virtual TokenBase *clone(){ return this; }
     virtual TokenBase *parse(Program &) { return NULL; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp)  { throw "!!! TokenKeyword::compile() !!!"; }
 };
 
 /*
@@ -1097,7 +1038,6 @@ public:
     virtual TokenID id() const { return TokenID::tkGOTO; }
     virtual TokenBase *clone() { return (TokenBase*)new TokenGOTO(); }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 // `name:` — label statement (function-scoped). Binds the enclosing
@@ -1109,7 +1049,6 @@ public:
     TokenLabel(const std::string &n) : name(n) {}
     virtual TokenType type() const { return TokenType::ttBase; }
     virtual TokenBase *clone() { return new TokenLabel(name); }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 class TokenCASE: public TokenKeyword
 {
@@ -1121,7 +1060,6 @@ public:
     virtual TokenID id() const { return TokenID::tkCASE; }
     virtual TokenBase *clone() { return new TokenCASE(); }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 // try { ... } catch (type var) { ... } — exception handling
 class TokenTRY: public TokenKeyword
@@ -1136,7 +1074,6 @@ public:
     virtual TokenID id() const { return TokenID::tkTRY; }
     virtual TokenBase *clone() { return new TokenTRY(); }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 class TokenCATCH:    public TokenKeyword { public: TokenCATCH()    : TokenKeyword("catch") {}    virtual TokenID id() const { return TokenID::tkCATCH;    } virtual TokenBase *clone() { return (TokenBase*)new TokenCATCH();   } };
 // throw expr — throws an exception
@@ -1148,7 +1085,6 @@ public:
     virtual TokenID id() const { return TokenID::tkTHROW; }
     virtual TokenBase *clone() { return new TokenTHROW(); }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 class TokenSWITCH: public TokenKeyword
 {
@@ -1157,11 +1093,11 @@ public:
     std::vector<TokenCASE *> cases;            // case entries
     TokenCASE *defaultcase;                    // default entry (reuses TokenCASE with value=NULL)
     int default_index;                         // source-order position of default among cases (-1 if none)
+    std::vector<TokenBase *> pre_case_stmts;   // declarations before the first case label (C allows them)
     TokenSWITCH() : TokenKeyword("switch"), expression(NULL), defaultcase(NULL), default_index(-1) {}
     virtual TokenID id() const { return TokenID::tkSWITCH; }
     virtual TokenBase *clone() { return new TokenSWITCH(); }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 class TokenCLASS: public TokenKeyword
 {
@@ -1227,7 +1163,6 @@ public:
     virtual TokenID id() const { return TokenID::tkMATCH; }
     virtual TokenBase *clone() { return new TokenMatch(); }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 // defer keyword: register a statement to run at scope exit (LIFO)
@@ -1256,7 +1191,6 @@ public:
     virtual TokenID id() const { return TokenID::tkNEW; }
     virtual TokenBase *clone() { return new TokenNEW(); }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 class TokenDELETE: public TokenKeyword
 {
@@ -1267,7 +1201,6 @@ public:
     virtual TokenID id() const { return TokenID::tkDELETE; }
     virtual TokenBase *clone() { return new TokenDELETE(); }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenSTRUCT: public TokenKeyword
@@ -1363,7 +1296,6 @@ public:
     TokenVaArg(Variable *ap, DataDef *tt) : ap_var(ap), ap_expr(NULL), target_type(tt) { _datatype = tt; }
     TokenVaArg(Variable *ap, TokenBase *expr, DataDef *tt) : ap_var(ap), ap_expr(expr), target_type(tt) { _datatype = tt; }
     virtual TokenType type() const { return TokenType::ttBase; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenBREAK: public TokenKeyword
@@ -1373,7 +1305,6 @@ public:
     virtual TokenID id() const { return TokenID::tkBREAK; }
     virtual TokenBase *clone() { return new TokenBREAK(); }
     virtual TokenBase *parse(Program &pgm) { return this; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 class TokenCONT: public TokenKeyword
@@ -1383,7 +1314,6 @@ public:
     virtual TokenID id() const { return TokenID::tkCONT;  }
     virtual TokenBase *clone() { return new TokenCONT();  }
     virtual TokenBase *parse(Program &pgm) { return this; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 
@@ -1404,7 +1334,6 @@ public:
     TokenBase *elsestmt;
     TokenIF() : TokenKeyword("if") { condition = statement = elsestmt = NULL; }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual TokenID id() const { return TokenID::tkIF; }
     virtual TokenBase *clone() { return new TokenIF(); }
 };
@@ -1416,7 +1345,6 @@ public:
     std::vector<TokenBase *> return_exprs; // multi-return: return a, b;
     TokenRETURN() : TokenKeyword("return") { returns = NULL; }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual TokenID id() const { return TokenID::tkRETURN; }
     virtual TokenBase *clone() { return new TokenRETURN(); }
 };
@@ -1428,7 +1356,6 @@ public:
     TokenBase *condition;
     TokenDO() : TokenKeyword("do") { statement = condition = NULL; }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual TokenID id() const { return TokenID::tkDO; }
     virtual TokenBase *clone() { return new TokenDO(); }
 };
@@ -1440,7 +1367,6 @@ public:
     TokenBase *statement;
     TokenWHILE() : TokenKeyword("while") { condition = statement = NULL; }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual TokenID id() const { return TokenID::tkWHILE; }
     virtual TokenBase *clone() { return new TokenWHILE(); }
 };
@@ -1460,7 +1386,6 @@ public:
     std::vector<TokenBase *> incr_extras;
     TokenFOR() : TokenKeyword("for") { initialize = condition = increment = statement = NULL; }
     virtual TokenBase *parse(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual TokenID id() const { return TokenID::tkFOR; }
     virtual TokenBase *clone() { return new TokenFOR(); }
 };
@@ -1475,7 +1400,6 @@ public:
     TokenBase *container;
     TokenBase *statement;
     TokenFOREACH() : TokenKeyword("for") { elemtype = NULL; elemvar = NULL; container = statement = NULL; }
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
     virtual TokenID id() const { return TokenID::tkFOR; }
     virtual TokenBase *clone() { return new TokenFOREACH(); }
 };

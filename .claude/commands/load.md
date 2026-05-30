@@ -9,7 +9,7 @@ Read all key project files to understand current state, then report a summary.
    - `VERSION` — current semantic version
    - `README.md` — project overview, current release, roadmap
    - `CHANGELOG.md` — recent changes (read the first `[Unreleased]` and most recent versioned section)
-   - `TODO.md` — remaining work items by priority
+   - `docs/plans/ROADMAP.md` — remaining work items by priority
    - `docs/SMAUG_requirements.md` — gap analysis for the SMAUG 1.8 goal
 
 2. **Scan the docs/ directory tree**:
@@ -37,7 +37,7 @@ Read all key project files to understand current state, then report a summary.
 7. **Report a session briefing** with:
    - Current version and branch
    - What was done in the last release (from CHANGELOG)
-   - Top priority items from TODO.md
+   - Top priority items from docs/plans/ROADMAP.md
    - Known issues that might affect current work
    - Available commands (/release, /promote, /save, /load)
    - Any uncommitted work or pending items

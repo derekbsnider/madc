@@ -61,6 +61,7 @@ public:
     uint32_t count;
     uint32_t flags;
     std::string storage_alias_name;
+    std::string typedef_name; // if declared via typedef, the source alias (e.g. "EXT_BV")
     std::vector<uint32_t> dims; // C fixed-size array shape; empty = scalar
     int64_t object_size_hint;
     // C99 variable-length array: when non-NULL, the local was declared as
@@ -219,10 +220,6 @@ public:
     virtual bool is_constant() const { return var.is_constant(); }
     virtual bool is_real() const { return _datatype->is_real(); }
     virtual void set(int64_t c) { DBG(std::cout << "TokenVariable: set() calling var.set()" << std::endl); var.set(c); }
-    virtual void putreg(Program &);
-//  virtual asmjit::x86::Gp &getreg(Program &);
-    virtual asmjit::Operand &operand(Program &);
-    virtual asmjit::Operand &compile(Program &, regdefp_t &regdp);
 };
 
 #endif // __TOKENDATA_H

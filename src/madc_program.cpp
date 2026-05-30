@@ -29,7 +29,6 @@
 extern thread_local bool madc_verbose;
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
 
-#include <asmjit/x86.h>
 
 #include "datadef.h"
 #include "tokens.h"
@@ -2298,36 +2297,6 @@ bool call_target4_void(void *fn,
     return true;
 }
 
-bool build_cpp_callback_trampoline(asmjit::JitRuntime &runtime,
-				   void *callback_ptr,
-				   program::native_function adapter_entry,
-				   program::native_function &out)
-{
-    out = NULL;
-    if ( !callback_ptr || !adapter_entry )
-	return false;
-
-    asmjit::CodeHolder code;
-    code.init(runtime.environment());
-    asmjit::x86::Assembler a(&code);
-
-    // Insert the original callback pointer as a hidden first GP argument:
-    // rdi <- callback, rsi <- old rdi, rdx <- old rsi, rcx <- old rdx, r8 <- old rcx.
-    a.mov(asmjit::x86::r8, asmjit::x86::rcx);
-    a.mov(asmjit::x86::rcx, asmjit::x86::rdx);
-    a.mov(asmjit::x86::rdx, asmjit::x86::rsi);
-    a.mov(asmjit::x86::rsi, asmjit::x86::rdi);
-    a.mov(asmjit::x86::rdi, asmjit::imm(reinterpret_cast<uint64_t>(callback_ptr)));
-    a.mov(asmjit::x86::rax, asmjit::imm(reinterpret_cast<uint64_t>(adapter_entry)));
-    a.jmp(asmjit::x86::rax);
-
-    void *fn = NULL;
-    if ( runtime.add(&fn, &code) != asmjit::kErrorOk )
-	return false;
-    out = reinterpret_cast<program::native_function>(fn);
-    return true;
-}
-
 } // namespace
 
 struct program::impl
@@ -2361,7 +2330,6 @@ struct program::impl
     value current_expression_context;
     std::map<std::string, value> active_expression_bindings;
     invoke_limits current_invoke_limits;
-    asmjit::JitRuntime callback_trampoline_runtime;
     std::vector<void *> callback_trampolines;
 
     impl()
@@ -2390,8 +2358,8 @@ struct program::impl
 
     ~impl()
     {
-	for ( std::size_t i = 0; i < callback_trampolines.size(); ++i )
-	    callback_trampoline_runtime.release(callback_trampolines[i]);
+	// Callback trampolines were JIT-built by asmjit, which is gone.
+	// The vector is never populated now; nothing to release.
     }
 
     MadcEngine &engine() { return *eng; }
@@ -3217,38 +3185,14 @@ struct program::impl
 			   native_function callback,
 			   const native_signature &signature)
     {
-	if ( name.empty() )
-	{
-	    clear_public_errors();
-	    public_last_error = error(error::severity::error,
-				      error::phase::runtime,
-				      "register_function requires a non-empty name");
-	    has_public_last_error = true;
-	    public_diagnostics.push_back(public_last_error);
-	    return false;
-	}
-	if ( !callback )
-	{
-	    clear_public_errors();
-	    public_last_error = error(error::severity::error,
-				      error::phase::runtime,
-				      "register_function requires a non-null callback");
-	    has_public_last_error = true;
-	    public_diagnostics.push_back(public_last_error);
-	    return false;
-	}
-	engine().populate_default_registries();
-
-	datatype_vec_t params;
-	params.push_back(datatype_from_native_type(signature.returns));
-	for ( std::size_t i = 0; i < signature.parameters.size(); ++i )
-	    params.push_back(datatype_from_native_type(signature.parameters[i]));
-
-	engine().builtin_registry.add_core_function(name,
-						    params,
-						    reinterpret_cast<fVOIDFUNC>(callback));
-	reset_program();
-	return true;
+	(void)name; (void)callback; (void)signature;
+	// Host callbacks require the in-process JIT to thunk a script call
+	// into a native function pointer. The asmjit JIT has been removed;
+	// the CIR → c2mir → MIR backend does not yet expose a host-callback
+	// registration path. Fail cleanly until MIR-backed callbacks land.
+	return fail_runtime("host callbacks are not available without the asmjit "
+			    "JIT; MIR-backed host-callback registration is not yet "
+			    "implemented");
     }
 
     bool register_cpp_callback(const std::string &name,
@@ -3256,14 +3200,10 @@ struct program::impl
 			       const native_signature &signature,
 			       native_function adapter_entry)
     {
-	native_function trampoline = NULL;
-	if ( !build_cpp_callback_trampoline(callback_trampoline_runtime,
-					    callback_ptr,
-					    adapter_entry,
-					    trampoline) )
-	    return fail_runtime("register_function could not build callback trampoline");
-	callback_trampolines.push_back(reinterpret_cast<void *>(trampoline));
-	return register_function(name, trampoline, signature);
+	(void)name; (void)callback_ptr; (void)signature; (void)adapter_entry;
+	return fail_runtime("host callbacks are not available without the asmjit "
+			    "JIT; MIR-backed host-callback registration is not yet "
+			    "implemented");
     }
 
     bool fail_runtime(const std::string &message)
@@ -4742,7 +4682,6 @@ struct engine::impl
     expression_policy current_expression_policy;
     runtime_eval_policy current_runtime_eval_policy;
     invoke_limits current_invoke_limits;
-    asmjit::JitRuntime callback_trampoline_runtime;
     std::vector<void *> callback_trampolines;
 
     impl()
@@ -4753,8 +4692,8 @@ struct engine::impl
 
     ~impl()
     {
-	for ( std::size_t i = 0; i < callback_trampolines.size(); ++i )
-	    callback_trampoline_runtime.release(callback_trampolines[i]);
+	// Callback trampolines were JIT-built by asmjit, which is gone.
+	// The vector is never populated now; nothing to release.
     }
 
     void sync_registration_policy()
@@ -4873,20 +4812,12 @@ bool engine::register_function(const std::string &name,
 			       program::native_function callback,
 			       const program::native_signature &signature)
 {
-    if ( name.empty() || !callback )
-	return false;
-
-    _impl->eng.populate_default_registries();
-
-    datatype_vec_t params;
-    params.push_back(datatype_from_native_type(signature.returns));
-    for ( std::size_t i = 0; i < signature.parameters.size(); ++i )
-	params.push_back(datatype_from_native_type(signature.parameters[i]));
-
-    _impl->eng.builtin_registry.add_core_function(name,
-						   params,
-						   reinterpret_cast<fVOIDFUNC>(callback));
-    return true;
+    (void)name; (void)callback; (void)signature;
+    // Host callbacks require an in-process JIT thunk to bridge a script
+    // call to a native function pointer. The asmjit JIT was removed; the
+    // CIR → c2mir → MIR backend does not yet expose host-callback
+    // registration. Fail cleanly until MIR-backed callbacks land.
+    return false;
 }
 
 bool engine::register_cpp_callback(const std::string &name,
@@ -4894,14 +4825,8 @@ bool engine::register_cpp_callback(const std::string &name,
 				   const program::native_signature &signature,
 				   program::native_function adapter_entry)
 {
-    program::native_function trampoline = NULL;
-    if ( !build_cpp_callback_trampoline(_impl->callback_trampoline_runtime,
-					callback_ptr,
-					adapter_entry,
-					trampoline) )
-	return false;
-    _impl->callback_trampolines.push_back(reinterpret_cast<void *>(trampoline));
-    return register_function(name, trampoline, signature);
+    (void)name; (void)callback_ptr; (void)signature; (void)adapter_entry;
+    return false;
 }
 
 // Deferred: needs engine::impl to be complete.
@@ -4916,3 +4841,70 @@ program::program(engine &eng)
 }
 
 } // namespace madc
+
+//////////////////////////////////////////////////////////////////////////
+// Legacy asmjit-JIT entry points — now stubs.
+//
+// The asmjit JIT codegen backend (compiler.cpp, typesafe.cpp,
+// compiler_*.cpp) and the AOT ELF writer (madc_elf.cpp) were removed.
+// CIR (madc parse → cir_node → c2mir → MIR) is the sole backend and is
+// driven through madc_cir_execute(). The public Program methods below
+// keep their signatures (for libmadc API/ABI stability) but no longer
+// generate or run native code: they report a clear error and fail.
+//////////////////////////////////////////////////////////////////////////
+
+bool Program::compile()
+{
+    set_error(Program::DiagnosticPhase::compiler,
+	      "Program::compile() is unavailable: the asmjit JIT codegen "
+	      "backend was removed. Use the CIR backend via madc_cir_execute() "
+	      "(the madc CLI does this by default).");
+    return false;
+}
+
+void Program::execute()
+{
+    set_error(Program::DiagnosticPhase::runtime,
+	      "Program::execute() is unavailable: the asmjit JIT codegen "
+	      "backend was removed. Use the CIR backend via madc_cir_execute().");
+}
+
+bool Program::save_object(const std::string &path) const
+{
+    (void)path;
+    std::cerr << "AOT object output is not available on the CIR backend; "
+		 "emit C with --emit-c and compile with gcc/clang" << std::endl;
+    return false;
+}
+
+bool Program::save_executable(const std::string &path)
+{
+    (void)path;
+    std::cerr << "AOT executable output is not available on the CIR backend; "
+		 "emit C with --emit-c and compile with gcc/clang" << std::endl;
+    return false;
+}
+
+bool Program::load_object(const std::string &path)
+{
+    (void)path;
+    std::cerr << "loading saved AOT objects is not available on the CIR "
+		 "backend (the asmjit/ELF code path was removed)" << std::endl;
+    return false;
+}
+
+bool Program::has_loaded_function(const std::string &name) const
+{
+    (void)name;
+    return false;
+}
+
+void *Program::loaded_function_ptr(const std::string &name) const
+{
+    (void)name;
+    return NULL;
+}
+
+void Program::unload_object()
+{
+}

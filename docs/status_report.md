@@ -7,7 +7,7 @@ Use these files instead:
 
 - `madc-knowledge` for the authoritative project-memory state
 - `claude_status.json` for the current repo snapshot
-- `TODO.md` for open work
+- `docs/plans/ROADMAP.md` for open work
 - `CHANGELOG.md` for landed work
 - `docs/test-status.md` for detailed test coverage
 - `docs/agent-handoff.md` for the cross-agent workflow
