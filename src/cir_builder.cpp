@@ -1354,9 +1354,36 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			bool parent_is_subscript = tm->parent_expr
 				&& (dynamic_cast<TokenSubscript *>(tm->parent_expr)
 				 || dynamic_cast<TokenSubscriptExpr *>(tm->parent_expr));
-			bool ptr_like = tm->object.type->is_pointer()
-				|| (obj_is_array && !parent_is_subscript);
+			bool ptr_like;
+			if (parent_is_subscript) {
+				// Subscripting dereferences: `p[i]`/`arr[i]` yields the
+				// element value, so use `.` — even when the base `p` is a
+				// pointer (`MENU_DATA *m; m[i].field`). Use `->` only if the
+				// element itself is a pointer (`T **pp; pp[i]->field`).
+				DataDef *pdd = tm->parent_expr->datadef();
+				ptr_like = pdd && pdd->is_pointer();
+			} else {
+				// A pointer object uses `->`; a bare array object decays to a
+				// pointer and also uses `->`.
+				ptr_like = tm->object.type->is_pointer() || obj_is_array;
+			}
 			c2mir_node_code_t code = ptr_like ? N_DEREF_FIELD : N_FIELD;
+			// Detect & reject the inverse of the bug above: `->` is valid on
+			// a pointer OR an array (which decays to a pointer), but invalid
+			// on a plain non-pointer struct/union value — gcc rejects that,
+			// while c2mir's checker is lenient and miscompiles it into a bad
+			// load. Emit an error node so the validity gate reports it with a
+			// source location rather than producing broken MIR.
+			if (code == N_DEREF_FIELD) {
+				DataDef *odd = tm->parent_expr
+					? tm->parent_expr->datadef() : tm->object.type;
+				bool deref_ok = obj_is_array
+					|| (tm->object.type && tm->object.type->is_pointer())
+					|| (odd && odd->is_pointer());
+				if (!deref_ok && odd && odd->is_struct())
+					return error_node("'->' applied to a non-pointer "
+						"struct value (use '.')", tb);
+			}
 			return node2(code, obj, member, tb);
 		}
 	}
