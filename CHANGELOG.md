@@ -25,6 +25,49 @@
   with variadic support; SMAUG mini test (malloc/free/printf/structs/pointers)
   runs through the CIR path.
 
+### ★ SMAUG 1.8 boots, runs, and is playable through CIR (2026-05-30)
+
+The full SMAUG 1.8 codebase (~158k LOC C89) now compiles and **runs**
+end-to-end through `cir_node → c2mir → MIR → JIT`: it boots to a live
+server (`Realms of Despair ready … port 4000`), and a connected client can
+create a character, navigate the world, and **fight** — the Newgate room-109
+serpent fight runs without crashing. Integration **316 → 325**. The fixes,
+in order:
+
+- **fn-ptr-typedef rendering** (`49b79a1`, call-site `7924e42`): function
+  typedefs / members / vars / params now render from the retained signature
+  (`DataDefFPTR->target`) instead of erasing to `long`; the implicit `*` for a
+  Form-1 fn-ptr-typedef use is added at emit time in `explicit_star_count` so
+  `var.type` stays `DataDefFPTR` and the expression parser's fn-ptr-call
+  detection keeps working. Cleared the SMAUG `spec_fun` blocker.
+- **extern set only at variable creation** (`62577a8`): a file-scope
+  definition plus a redundant `extern` of the same global share one Variable;
+  `vfEXTERN` is now set only when the symbol is created, never re-set on an
+  existing one, so a defined global can't be demoted to a declaration
+  (MIR-link `import of undefined item help_greeting`).
+- **varargs lowered to the c2mir intrinsic** (`2fbe5f0`): `va_start(ap,last)`
+  → `__builtin_va_start(ap)` directly, instead of a master-`__va_args` +
+  struct-copy that mis-set `reg_save_area` in large frames (SMAUG's `bug()`
+  segfaulted in `vsprintf`).
+- **switch `default` case emitted** (`4011d95`): `translate_switch` dropped
+  every `default:` (it only emitted the separately-stored default when
+  `default_index < 0`, which the parser never sets) — values matching no case
+  fell through executing nothing. Was the last boot blocker.
+- **strcmp family declared `int`, not the `long` fallback** (`ac16d07`):
+  undeclared comparison libc fns defaulted to a `long` return; libc returns
+  `int` in `eax`, so a negative result read as 64-bit became huge and SMAUG's
+  `bsearch_skill_exact` (`strcmp(name,x) < 1`) always took the wrong branch —
+  `skill_lookup` failed for 79 skills, every combat gsn stayed unassigned, and
+  the serpent fight dereferenced `skill_table[bad]` (SIGSEGV). ASSIGN_GSN
+  failures 79 → 0.
+- **JIT-symbolizing crash handler** (`25c731a`): madc's SIGSEGV backtrace now
+  resolves MIR-generated frames to `func+0xoff [JIT]` (maps the faulting
+  address to a function's `machine_code` range). First brick of a madc-native
+  debugger; pinpointed the serpent crash to `learn_from_failure`.
+- Plus the array/pointer type-erasure family, 2D-array init, switch pre-case
+  decls, abstract-param `N_TYPE`, and the real System V `va_list` ABI that
+  drove SMAUG from **159 → 0** c2mir check errors earlier in the session.
+
 ## [v0.24.0] — 2026-05-28
 
 Native C99 `_Complex` support in c2mir, transpiler cleanup, 410→419.
