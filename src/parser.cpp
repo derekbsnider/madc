@@ -5664,6 +5664,11 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	    return var;
 	var = new Variable(id, dd, c, init, alloc);
 	var->flags |= vfLOCAL;
+	// The extern flag may only be set on a freshly-created symbol (here), never
+	// on an existing one — so a redundant `extern` declaration can never demote
+	// an already-defined variable back to a mere declaration.
+	if ( parsing_extern_decl )
+	    var->flags |= vfEXTERN;
 	code->variables.push_back(var);
 	DBG(std::cout << "Added new variable type: " << dd.name << " size: "
 		<< dd.size << " name: " << id << " ptr: " << var << " to codeblock: " << code << std::endl);
@@ -5683,6 +5688,11 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 	return var;
     }
     var = new Variable(id, dd, c, init, alloc);
+    // Extern is set only at creation (see the local-create path above): a later
+    // redundant `extern` declaration finds the existing var via the branch
+    // above and leaves its storage class untouched.
+    if ( parsing_extern_decl )
+	var->flags |= vfEXTERN;
     tkProgram->variables.push_back(var);
 
     DBG(std::cout << "Added new global variable type: " << dd.name << " size: "
@@ -14851,9 +14861,15 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    is_shared_global_extern_reference(*this, code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
-	if ( parsing_extern_decl && !shared_global_extern_ref )
-	    var->flags |= vfEXTERN;
-	else
+	// The extern flag is set at variable-CREATION time (addVariable), so it
+	// can only mark a freshly-created symbol and can never demote an
+	// already-defined (existing non-extern) one — a global with both a
+	// definition and a redundant `extern` in the same TU stays defined.
+	// Here we handle the converse: a declaration that is NOT extern (or a
+	// shared-global extern that resolves to real local storage) is a
+	// DEFINITION — promote a prior extern by allocating storage and clear the
+	// extern flag.
+	if ( !(parsing_extern_decl && !shared_global_extern_ref) )
 	{
 	    // Promoting a previously-extern declaration to a real
 	    // definition: addVariable returned the existing var without
