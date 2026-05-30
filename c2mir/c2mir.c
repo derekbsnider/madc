@@ -5638,6 +5638,12 @@ DEF_HTAB (case_t);
 struct check_ctx {
   node_t curr_scope;
   VARR (node_t) * label_uses;
+  /* __attribute__((cleanup)): gotos needing scope-crossing cleanups and the
+     scope each goto was in (parallel arrays), processed in a post-pass after
+     the function body is checked (so forward-goto target labels are resolved).
+     See process_goto_cleanups. */
+  VARR (node_t) * cleanup_gotos;
+  VARR (node_t) * cleanup_goto_scopes;
   node_t func_block_scope;
   unsigned curr_func_scope_num;
   unsigned char in_params_p, jump_ret_p;
@@ -5657,6 +5663,8 @@ struct check_ctx {
 
 #define curr_scope check_ctx->curr_scope
 #define label_uses check_ctx->label_uses
+#define cleanup_gotos check_ctx->cleanup_gotos
+#define cleanup_goto_scopes check_ctx->cleanup_goto_scopes
 #define func_block_scope check_ctx->func_block_scope
 #define curr_func_scope_num check_ctx->curr_func_scope_num
 #define in_params_p check_ctx->in_params_p
@@ -6806,6 +6814,49 @@ static void record_cleanups_until (c2m_ctx_t c2m_ctx, node_t jump_node, node_t s
   }
 }
 
+/* __attribute__((cleanup)): nearest common ancestor of two block scopes in the
+   node_scope parent chain. Collect goto_scope's ancestor chain (itself first),
+   then walk label_scope's chain until one of those is hit. Returns NULL only if
+   the chains are disjoint (should not happen within one function). */
+static node_t common_ancestor_scope (node_t goto_scope, node_t label_scope) {
+  node_t a, b;
+
+  for (b = label_scope; b != NULL; b = ((struct node_scope *) b->attr)->scope) {
+    for (a = goto_scope; a != NULL; a = ((struct node_scope *) a->attr)->scope)
+      if (a == b) return b;
+    if (b->code == N_MODULE) break;
+  }
+  return NULL;
+}
+
+/* __attribute__((cleanup)): post-pass over all gotos in the just-checked
+   function. For each goto, run cleanups for the scopes strictly between the
+   goto's scope and the nearest common ancestor of the goto's and target
+   label's scopes (the scopes the jump exits). Done after the whole function
+   body is checked so forward-goto labels are resolved; the cleanup statements
+   are built/checked with curr_scope temporarily set to the goto's own scope so
+   &var / fn resolve there, exactly as if recorded at the goto site. */
+static void process_goto_cleanups (c2m_ctx_t c2m_ctx) {
+  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  node_t saved_scope = curr_scope;
+
+  for (size_t i = 0; i < VARR_LENGTH (node_t, cleanup_gotos); i++) {
+    node_t g = VARR_GET (node_t, cleanup_gotos, i);
+    node_t goto_scope = VARR_GET (node_t, cleanup_goto_scopes, i);
+    node_t id = NL_NEXT (NL_HEAD (g->u.ops));
+    node_t nca;
+    symbol_t sym;
+
+    if (!symbol_find (c2m_ctx, S_LABEL, id, func_block_scope, &sym)) continue; /* undefined: already errored */
+    nca = common_ancestor_scope (goto_scope, sym.aux_node);
+    curr_scope = goto_scope;
+    record_cleanups_until (c2m_ctx, g, nca);
+  }
+  curr_scope = saved_scope;
+  VARR_TRUNC (node_t, cleanup_gotos, 0);
+  VARR_TRUNC (node_t, cleanup_goto_scopes, 0);
+}
+
 /* return: cleanups for ALL enclosing scopes (up to the function top). */
 static void add_return_cleanups (c2m_ctx_t c2m_ctx, node_t r) {
   record_cleanups_until (c2m_ctx, r, NULL);
@@ -7351,7 +7402,10 @@ static void check_labels (c2m_ctx_t c2m_ctx, node_t labels, node_t target) {
       if (symbol_find (c2m_ctx, S_LABEL, id, func_block_scope, &sym)) {
         error (c2m_ctx, POS (id), "label %s redeclaration", id->u.s.s);
       } else {
-        symbol_insert (c2m_ctx, S_LABEL, id, func_block_scope, target, NULL);
+        /* __attribute__((cleanup)): stash the block scope enclosing the label
+           in aux_node so a goto can compute the nearest common ancestor of its
+           own scope and the label's scope (the cut-off for scope cleanups). */
+        symbol_insert (c2m_ctx, S_LABEL, id, func_block_scope, target, curr_scope);
       }
     } else if (curr_switch == NULL) {
       error (c2m_ctx, POS (l), "%s not within a switch-stmt",
@@ -10057,6 +10111,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
       }
     }
     VARR_TRUNC (node_t, label_uses, 0);
+    /* __attribute__((cleanup)): now that every label is resolved (with its
+       scope in aux_node), record scope-crossing cleanups on each goto. Must
+       run while func_block_scope still points at the function block so the
+       label symbols are findable. */
+    process_goto_cleanups (c2m_ctx);
     assert (curr_scope == top_scope); /* set up in the block */
     func_block_scope = top_scope;
     process_func_decls_for_allocation (c2m_ctx);
@@ -10334,6 +10393,11 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
 
     check_labels (c2m_ctx, labels, r);
     VARR_PUSH (node_t, label_uses, r);
+    /* __attribute__((cleanup)): remember this goto and the scope it sits in,
+       so the post-pass (after all labels resolve) can run cleanups for the
+       scopes crossed to reach the target label. */
+    VARR_PUSH (node_t, cleanup_gotos, r);
+    VARR_PUSH (node_t, cleanup_goto_scopes, curr_scope);
     break;
   }
   case N_INDIRECT_GOTO: {
@@ -10454,6 +10518,8 @@ static void context_init (c2m_ctx_t c2m_ctx) {
   check (c2m_ctx, n_i1_node, NULL);
   func_block_scope = curr_scope = NULL;
   VARR_CREATE (node_t, label_uses, alloc, 0);
+  VARR_CREATE (node_t, cleanup_gotos, alloc, 0);
+  VARR_CREATE (node_t, cleanup_goto_scopes, alloc, 0);
   symbol_init (c2m_ctx);
   in_params_p = FALSE;
   curr_unnamed_anon_struct_union_member = NULL;
@@ -10468,6 +10534,8 @@ static void context_finish (c2m_ctx_t c2m_ctx) {
   if (c2m_ctx == NULL || (check_ctx = c2m_ctx->check_ctx) == NULL) return;
   if (context_stack != NULL) VARR_DESTROY (node_t, context_stack);
   if (label_uses != NULL) VARR_DESTROY (node_t, label_uses);
+  if (cleanup_gotos != NULL) VARR_DESTROY (node_t, cleanup_gotos);
+  if (cleanup_goto_scopes != NULL) VARR_DESTROY (node_t, cleanup_goto_scopes);
   symbol_finish (c2m_ctx);
   if (case_tab != NULL) HTAB_DESTROY (case_t, case_tab);
   if (func_decls_for_allocation != NULL) VARR_DESTROY (decl_t, func_decls_for_allocation);
@@ -14171,6 +14239,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
 
     assert (false_label == NULL && true_label == NULL);
     emit_label (c2m_ctx, r);
+    /* __attribute__((cleanup)): run cleanups (extra ops appended past the
+       N_GOTO's original 2 ops: labels list + target N_ID) before the jump. */
+    for (node_t cl = NL_EL (r->u.ops, 2); cl != NULL; cl = NL_NEXT (cl))
+      gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
     emit1 (c2m_ctx, MIR_JMP, MIR_new_label_op (ctx, get_label (c2m_ctx, target)));
     break;
   }

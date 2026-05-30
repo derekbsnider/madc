@@ -1,0 +1,15 @@
+-- one level --
+cleanup 1
+at done
+-- two levels --
+cleanup 3
+cleanup 2
+at target
+-- same scope --
+at here
+cleanup 4
+-- sibling blocks --
+in first
+cleanup 5
+cleanup 6
+at out
