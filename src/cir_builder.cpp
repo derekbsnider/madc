@@ -326,7 +326,11 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
 	if (!tv)
 		return false;
-	if (!is_string_object(tv->var.type))
+	// A declared `string` object (dtSTRING) OR a `string&` reference parameter
+	// (dtSTRINGref) — both denote a std::string object the front end can take
+	// the address of. (A by-value `string` param is also dtSTRING.)
+	DataType dt = tv->var.type ? tv->var.type->rawtype() : DataType::dtVOID;
+	if (dt != DataType::dtSTRING && dt != DataType::dtSTRINGref)
 		return false;
 	if (tv->var.name.compare(0, 11, "__literal__") == 0)
 		return false;
@@ -626,6 +630,21 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		append(sd, ignore());
 		return sd;
 	};
+
+	// std::string parameter: by-value (`string`, dtSTRING) or by-reference
+	// (`string&`, dtSTRINGref) both lower to `void *` — a pointer to the
+	// std::string object. The caller passes the object's address; uses inside
+	// the function treat the param as a string object (is_string_object_value
+	// accepts dtSTRING/dtSTRINGref). NOTE: a by-value param currently aliases
+	// the caller's object (no copy); a copy-temp at the call site is a refinement.
+	if (ptype && (ptype->rawtype() == DataType::dtSTRING
+		      || ptype->rawtype() == DataType::dtSTRINGref)) {
+		node_t pspec = list();
+		append(pspec, simple(N_VOID));
+		node_t pdecl_list = list();
+		append(pdecl_list, pointer());
+		return wrap(pspec, pdecl_list);
+	}
 
 	// Parameter declared via a typedef alias keeps the alias as the type spec
 	// (matches c2m and the var/member paths); explicit stars go on the
