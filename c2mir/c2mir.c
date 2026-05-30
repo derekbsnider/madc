@@ -6766,15 +6766,28 @@ static void emit_scope_cleanups (c2m_ctx_t c2m_ctx, node_t block) {
                build_cleanup_stmt (c2m_ctx, VARR_GET (node_t, ns->cleanup_decls, i - 1), block));
 }
 
-/* return: cleanups run for ALL enclosing scopes (innermost first, reverse decl
-   within each, only those declared before this return). Record them as extra
-   ops on the N_RETURN node; gen emits them after the return value is computed
-   (so it stays live in a register) and before the ret insn. */
-static void add_return_cleanups (c2m_ctx_t c2m_ctx, node_t r) {
+/* Shared exit-path helper. Record fn(&var) cleanup statements as extra ops on
+   `jump_node`, for every cleanup decl in the scopes exited by this jump:
+   walk from curr_scope outward, innermost first, reverse decl order within each
+   scope (only decls declared before this point are present in cleanup_decls),
+   stopping just BEFORE `stop_scope` (exclusive) — i.e. cleanups run for scopes
+   [curr_scope, stop_scope). `stop_scope == NULL` walks to the function top
+   (stops at N_MODULE), which is the `return` case. gen emits these ops right
+   before the corresponding jump insn (the return value, if any, is already in a
+   register and stays live across the calls). Used by return/break/continue/goto.
+
+   Choosing stop_scope per exit:
+     - return            : NULL (all enclosing scopes up to the function).
+     - break / continue  : the scope ENCLOSING the loop/switch being exited
+                           (so cleanups cover the loop body + any inner blocks,
+                           but not the scope the loop lives in).
+     - goto L            : the nearest common ancestor scope of the goto's scope
+                           and label L's scope. */
+static void record_cleanups_until (c2m_ctx_t c2m_ctx, node_t jump_node, node_t stop_scope) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
   node_t scope;
 
-  for (scope = curr_scope; scope != NULL && scope->code != N_MODULE;
+  for (scope = curr_scope; scope != NULL && scope != stop_scope && scope->code != N_MODULE;
        scope = ((struct node_scope *) scope->attr)->scope) {
     struct node_scope *ns = scope->attr;
     size_t i, n;
@@ -6782,10 +6795,15 @@ static void add_return_cleanups (c2m_ctx_t c2m_ctx, node_t r) {
     if (ns == NULL || ns->cleanup_decls == NULL) continue;
     n = VARR_LENGTH (node_t, ns->cleanup_decls);
     for (i = n; i > 0; i--)
-      op_append (c2m_ctx, r,
+      op_append (c2m_ctx, jump_node,
                  build_cleanup_stmt (c2m_ctx, VARR_GET (node_t, ns->cleanup_decls, i - 1),
                                      curr_scope));
   }
+}
+
+/* return: cleanups for ALL enclosing scopes (up to the function top). */
+static void add_return_cleanups (c2m_ctx_t c2m_ctx, node_t r) {
+  record_cleanups_until (c2m_ctx, r, NULL);
 }
 
 static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t decl_node) {
