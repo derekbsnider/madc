@@ -129,7 +129,24 @@ __this param. Instantiation just feeds them synthesized tokens. Container header
   T> class Box { T value; }; Box<int> b; b.value=42;` prints "box holds 42" through
   cir_node→c2mir→MIR→JIT. fulltest 367, 0 regressions (instantiation is guarded:
   only fires for a template_map name followed by `<`).
-- **KNOWN BUG (next): instantiated-class METHODS get +1 parameter.** `Box<int>::fetch()`
+- **Step 2b — METHODS now work** (top-level-scope fix). The re-entrant class
+  parse ran inside the caller's `compounds` scope, so methods registered as
+  NESTED functions (`caller__Class__method__N`) — `instantiate_template_use`
+  now saves/clears `pgm.compounds` + `pgm.cur_func_name` around the parseKeyword
+  re-parse and restores after, so methods register at top level. VALIDATED:
+  `Box<int>` with `store(T)`/`fetch()`→T, member access, and a 2nd `Box<int>`
+  instantiation all work; tests/testtemplate.mad passes (368). 
+- **KNOWN BUG (next): instantiated methods whose type parameter is an 8-BYTE type
+  (long/double) — the T-RETURNING method fails to register.** `Box<int>` works
+  fully; `Box<long>`/`Box<double>`: `store(T v)` (void return) registers, but
+  `fetch()` returning T (8-byte) → "no member named 'fetch'" at the call. So an
+  8-byte-by-value RETURN method is dropped during the instantiated class parse
+  (4-byte int return is fine). Likely the 8-byte return triggers the multi-return/
+  __retbuf or large-return path in parseFunction during the re-entrant parse.
+  Debug: compare parseFunction for `long fetch()` in a hand-written class vs the
+  instantiated one; check has_large_struct_retbuf / return-type handling. MUST fix
+  for containers (vector<long>/<double>, and string elements are 8-byte ptrs).
+- **(superseded) earlier symptom: instantiated METHODS got +1 parameter** — `Box<int>::fetch()`
   (0 declared params) is registered with 2 params (expected __this only =1);
   `store(T v)` → 3. Symptom: "Incorrect number of parameters: expected N got N-1"
   at the method call. Root cause is in the re-entrant class/method parse — the

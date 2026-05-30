@@ -1606,8 +1606,22 @@ static TokenDataType *instantiate_template_use(Program &pgm, const std::string &
     // dequeue in order), then re-parse the class definition via its keyword token.
     for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin(); it != inj.rend(); ++it )
 	pgm.pushToken(*it);
+    // Re-parse the injected class definition at TOP-LEVEL scope. Instantiation
+    // is triggered mid-statement (e.g. while parsing `Box<int> b;` inside a
+    // function), so the enclosing function's compound scope is active — without
+    // this the class's methods would be registered as nested/local functions
+    // (id `caller__Class__method__N`), breaking call-site resolution. Save and
+    // clear the function context, instantiate, then restore.
+    std::stack<TokenCpnd *> saved_compounds;
+    std::swap(pgm.compounds, saved_compounds);
+    std::string saved_func = pgm.cur_func_name;
+    pgm.cur_func_name.clear();
+
     TokenBase *class_kw = pgm.nextToken();   // the injected `class` keyword
     pgm.parseKeyword((TokenKeyword *)class_kw); // TokenCLASS::parse → registers DataDefCLASS
+
+    std::swap(pgm.compounds, saved_compounds);
+    pgm.cur_func_name = saved_func;
 
     datatype_map_iter now = pgm.datatype_map.find(mangled);
     if ( now == pgm.datatype_map.end() )

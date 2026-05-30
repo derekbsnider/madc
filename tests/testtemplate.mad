@@ -1,0 +1,26 @@
+#!/../bin/madc
+#include <iostream>
+using namespace std;
+
+// User-defined class template, instantiated per concrete type (Borland
+// monomorphization) — the same machinery containers will build on.
+template<typename T> class Box {
+    T value;
+    void store(T v) { value = v; }
+    T fetch() { return value; }
+};
+
+int main()
+{
+    Box<int> a;
+    a.store(42);
+    printf("a: %d\n", a.fetch());
+
+    Box<int> b;
+    b.store(99);
+    printf("b: %d\n", b.fetch());
+
+    a.value = 7;
+    printf("a.value: %d\n", a.value);
+    return 0;
+}
