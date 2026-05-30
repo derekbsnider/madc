@@ -56,6 +56,15 @@ class CirBuilder {
 	// return;` (c2mir rejects a value in a void return).
 	bool m_cur_func_returns_void = false;
 
+	// Statements that must be emitted in the enclosing block immediately
+	// BEFORE the statement currently being translated — used to materialize
+	// temporary runtime objects (e.g. a std::string built from a literal that
+	// is passed to a function expecting a string object). translate_block
+	// flushes this buffer ahead of each statement. Mirrors the old transpiler's
+	// emit_ns_arg statement-level temp construction.
+	std::vector<node_t> m_pending_stmts;
+	int m_strtmp_counter = 0;
+
 	// Internal: allocate and initialize a cir_node
 	cir_node *make(c2mir_node_code_t code, TokenBase *origin = NULL);
 
@@ -68,12 +77,19 @@ class CirBuilder {
 	// and the inline-struct path in typedef_decl).
 	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
 
+	// ---- Opaque C++ runtime-object lowering (shared mechanism) ----
+	// A monomorphic C++ object (std::string, MadArray, …) lowers to an 8-aligned
+	// `long name[words]` buffer tagged with __attribute__((cleanup(dtor))) plus a
+	// constructor call to a runtime wrapper in madc_mir_backend.cpp. One C++ decl
+	// fans out (1->N) into these lowered nodes; all share the originating
+	// TokenDecl in cir_node::origin and set synth_from_origin.
+	// See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
+	node_t obj_storage_decl(const char *name, size_t words,
+				const char *dtor_sym, TokenBase *origin);
+	node_t obj_default_ctor_call(const char *name, const char *ctor_sym,
+				     TokenBase *origin);
+
 	// ---- std::string object lowering ----
-	// A madc `string` lowers to a real std::string OBJECT (Cfront-style): an
-	// 8-aligned opaque buffer plus ctor/dtor calls to the runtime wrappers in
-	// madc_mir_backend.cpp. One C++ decl fans out (1->N) into these lowered
-	// nodes; all share the originating TokenDecl in cir_node::origin and set
-	// synth_from_origin. See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
 	static bool is_string_object(DataDef *dd);   // dtSTRING value type, not a pointer
 	// True only for a genuine string OBJECT value (declared string variable /
 	// string-returning expression) — EXCLUDES string literals (ttString tokens
@@ -87,11 +103,26 @@ class CirBuilder {
 	// string_cstr((void*)obj) — coerce a std::string object argument to a
 	// const char* (the dtSTRING->dtCHARptr coercion) for a char*-expecting call.
 	node_t string_cstr_arg(TokenBase *arg);
+	// Coerce an argument to a `std::string` OBJECT pointer for a call whose
+	// parameter is a string object (dtSTRING/dtSTRINGref). A genuine string
+	// object is passed by address directly; any const char* value (literal,
+	// char* var) is materialized into a scope-lived temporary std::string
+	// (storage + ctor pushed to m_pending_stmts, destructed via cleanup attr).
+	node_t string_obj_arg(TokenBase *arg);
 	// Lower a std::string method call on a string OBJECT receiver to the
 	// matching runtime wrapper: s.c_str()/.length()/.size()/.empty()/.clear().
 	// Returns NULL when `tm` is not a recognized string-object method call,
 	// so translate_expr falls through to its generic member/call handling.
 	node_t string_method_call(class TokenMember *tm, TokenBase *origin);
+
+	// ---- MadArray (`array`) object lowering ----
+	// Same opaque-object model as std::string, but an array argument needs no
+	// const char* coercion — it is always passed by pointer and the long[]
+	// buffer name decays to that pointer at the call site.
+	static bool is_array_object(DataDef *dd);    // dtARRAY value type, not a pointer
+	size_t array_obj_words() const;              // ceil(sizeof(MadArray)/sizeof(long))
+	node_t array_storage_decl(const char *name, TokenBase *origin);
+	node_t array_ctor_call(const char *name, TokenBase *origin);
 
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);

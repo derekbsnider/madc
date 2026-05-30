@@ -1,0 +1,11 @@
+#include <iostream>
+using namespace std;
+
+int main()
+{
+    string a = "alpha";
+    string b;                 // default-constructed
+    printstr(a);              // char* coercion: string_cstr(a)
+    cout << a << endl;        // basic_string operator<<
+    return 0;
+}

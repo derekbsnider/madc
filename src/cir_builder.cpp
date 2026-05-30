@@ -360,34 +360,84 @@ node_t CirBuilder::void_ptr_type()
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
 }
 
-// `long <name>[NWORDS];` — the opaque, 8-aligned storage for a string object.
-node_t CirBuilder::string_storage_decl(const char *name, TokenBase *origin)
+// `long <name>[words];` — opaque, 8-aligned storage for a C++ runtime object,
+// tagged with __attribute__((cleanup(dtor_sym))). This is the shared mechanism
+// behind every monomorphic runtime object madc lowers to a buffer + ctor/dtor
+// (std::string, MadArray, …): the madc c2mir fork calls dtor_sym(&name)
+// automatically at EVERY scope exit (fall-through, return, break, continue,
+// goto) — proper RAII without per-exit dtor injection in the front end. We
+// build the N_ATTR node directly (no source preprocessing, so the glibc
+// `__attribute__`-emptying issue doesn't apply).
+node_t CirBuilder::obj_storage_decl(const char *name, size_t words,
+				    const char *dtor_sym, TokenBase *origin)
 {
 	node_t spec = list();
 	append(spec, simple(N_LONG, origin));
 	node_t share = node1(N_SHARE, spec);
 	node_t decl_list = list();
 	append(decl_list, node3(N_ARR, ignore(), list(),
-				integer((long)string_obj_words(), origin)));
+				integer((long)words, origin)));
 	node_t decl = node2(N_DECL, id(name, origin), decl_list);
-	// __attribute__((cleanup(string_destruct))): the madc c2mir fork calls
-	// string_destruct(&name) automatically at EVERY scope exit (fall-through,
-	// return, break, continue, goto) — proper RAII without per-exit dtor
-	// injection in the front end. We build the N_ATTR node directly (no source
-	// preprocessing, so the glibc `__attribute__`-emptying issue doesn't apply).
-	need_output_extern("string_destruct", false, { { {N_VOID}, true } });
+	need_output_extern(dtor_sym, false, { { {N_VOID}, true } });
 	node_t attr_args = list();
-	append(attr_args, id("string_destruct", origin));
+	append(attr_args, id(dtor_sym, origin));
 	node_t attrs = list();
 	append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args, origin));
 	node_t sd = simple(N_SPEC_DECL, origin);
 	append(sd, share);
 	append(sd, decl);
-	append(sd, attrs);      // __attribute__((cleanup(string_destruct)))
+	append(sd, attrs);      // __attribute__((cleanup(dtor_sym)))
 	append(sd, ignore());   // asm
 	append(sd, ignore());   // initializer — none; the ctor call does it
 	CIR_NODE(sd)->synth_from_origin = true;
 	return sd;
+}
+
+// `dtor_sym((void*)name)` as a block-item expression-statement — the default
+// (no-argument) constructor call for a runtime object lowered by obj_storage_decl.
+node_t CirBuilder::obj_default_ctor_call(const char *name, const char *ctor_sym,
+					 TokenBase *origin)
+{
+	need_output_extern(ctor_sym, true, { { {N_VOID}, true } });
+	node_t args = list();
+	append(args, string_obj_addr(name, origin));
+	node_t call = node2(N_CALL, id(ctor_sym, origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	node_t stmt = node2(N_EXPR, list(), call, origin);
+	CIR_NODE(stmt)->synth_from_origin = true;
+	return stmt;
+}
+
+// `long <name>[NWORDS];` — the opaque, 8-aligned storage for a string object.
+node_t CirBuilder::string_storage_decl(const char *name, TokenBase *origin)
+{
+	return obj_storage_decl(name, string_obj_words(), "string_destruct", origin);
+}
+
+// ---- MadArray (`array`) object lowering ----
+// A madc `array` is a real MadArray C++ object — same model as std::string:
+// an 8-aligned opaque buffer + madarray_construct/madarray_destruct (the
+// wrappers in madc_mir_backend.cpp). Unlike a string it needs no const char*
+// coercion: an array argument is always passed by pointer, and the buffer's
+// long[] name decays to that pointer naturally at the call site.
+bool CirBuilder::is_array_object(DataDef *dd)
+{
+	return dd && dd->rawtype() == DataType::dtARRAY && !dd->is_pointer();
+}
+
+size_t CirBuilder::array_obj_words() const
+{
+	return (sizeof(MadArray) + sizeof(long) - 1) / sizeof(long);
+}
+
+node_t CirBuilder::array_storage_decl(const char *name, TokenBase *origin)
+{
+	return obj_storage_decl(name, array_obj_words(), "madarray_destruct", origin);
+}
+
+node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
+{
+	return obj_default_ctor_call(name, "madarray_construct", origin);
 }
 
 // `(void*)<name>` — the buffer address as void*, so the runtime wrappers see
@@ -441,6 +491,28 @@ node_t CirBuilder::string_cstr_arg(TokenBase *arg)
 	node_t call = node2(N_CALL, id("string_cstr", arg), a, arg);
 	CIR_NODE(call)->synth_from_origin = true;
 	return call;
+}
+
+// Coerce an argument to a std::string OBJECT pointer for a string-object
+// parameter. A real string object (declared variable / string& param) is passed
+// by address. A const char* value (string literal, char* variable, char*-valued
+// expression) is materialized into a scope-lived temporary std::string: the
+// storage decl (cleanup-tagged) + ctor are pushed to m_pending_stmts so
+// translate_block emits them just before the current statement; the temp's
+// address becomes the argument. Mirrors the old transpiler's emit_ns_arg.
+node_t CirBuilder::string_obj_arg(TokenBase *arg)
+{
+	if (is_string_object_value(arg)) {
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
+			return string_obj_addr(tv->var.name.c_str(), arg);
+		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
+	}
+	// const char* value -> temp std::string object.
+	char name[32];
+	snprintf(name, sizeof(name), "__madc_strtmp_%d", m_strtmp_counter++);
+	m_pending_stmts.push_back(string_storage_decl(name, arg));
+	m_pending_stmts.push_back(string_ctor_call(name, arg, arg));
+	return string_obj_addr(name, arg);
 }
 
 // Lower a std::string method call (s.c_str()/.length()/.size()/.empty()/.clear())
@@ -696,19 +768,22 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		return sd;
 	};
 
-	// std::string parameter: by-value (`string`, dtSTRING) or by-reference
-	// (`string&`, dtSTRINGref) both lower to `void *` — a pointer to the
-	// std::string object. The caller passes the object's address; uses inside
-	// the function treat the param as a string object (is_string_object_value
-	// accepts dtSTRING/dtSTRINGref). NOTE: a by-value param currently aliases
-	// the caller's object (no copy); a copy-temp at the call site is a refinement.
-	if (ptype && (ptype->rawtype() == DataType::dtSTRING
-		      || ptype->rawtype() == DataType::dtSTRINGref)) {
-		node_t pspec = list();
-		append(pspec, simple(N_VOID));
-		node_t pdecl_list = list();
-		append(pdecl_list, pointer());
-		return wrap(pspec, pdecl_list);
+	// std::string / MadArray parameter: a runtime-object value (`string`,
+	// `string&`, `array`, `array&`) or its pointer form lowers to `void *` — a
+	// pointer to the object. The caller passes the object's address; uses inside
+	// the function treat the param as that object. NOTE: a by-value param
+	// currently aliases the caller's object (no copy); a copy-temp at the call
+	// site is a refinement.
+	if (ptype) {
+		DataType pdt = ptype->rawtype();
+		if (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref
+		    || pdt == DataType::dtARRAY || pdt == DataType::dtARRAYref) {
+			node_t pspec = list();
+			append(pspec, simple(N_VOID));
+			node_t pdecl_list = list();
+			append(pdecl_list, pointer());
+			return wrap(pspec, pdecl_list);
+		}
 	}
 
 	// Parameter declared via a typedef alias keeps the alias as the type spec
@@ -870,10 +945,13 @@ CirBuilder::StreamKind CirBuilder::stream_ident_kind(TokenBase *tb)
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(tb)) name = tv->var.name;
 	else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(tb)) name = ti->str;
 	else return SK_NONE;
-	if (name == "cout") return SK_COUT;
-	if (name == "cerr") return SK_CERR;
-	if (name == "clog") return SK_CLOG;
-	if (name == "cin")  return SK_CIN;
+	// Unqualified `cout` keeps its source name; qualified `std::cout`
+	// resolves to the hidden std global `__std_cout` (see add_namespaces()).
+	// Recognize both so a qualified stream chain isn't mistaken for a shift.
+	if (name == "cout" || name == "__std_cout") return SK_COUT;
+	if (name == "cerr" || name == "__std_cerr") return SK_CERR;
+	if (name == "clog" || name == "__std_clog") return SK_CLOG;
+	if (name == "cin"  || name == "__std_cin")  return SK_CIN;
 	return SK_NONE;
 }
 
@@ -957,7 +1035,7 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 		std::string vn;
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(vals[i])) vn = tv->var.name;
 		else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(vals[i])) vn = ti->str;
-		if (vn == "endl") {
+		if (vn == "endl" || vn == "__std_endl") {
 			const char *MANIP = "_ZNSolsEPFRSoS_E";
 			const char *ENDLF = "_ZSt4endlIcSt11char_traitsIcEERSt13basic_ostreamIT_T0_ES6_";
 			need_output_extern(MANIP, true, { { {N_VOID}, true }, { {N_VOID}, true } });
@@ -1034,6 +1112,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// by translate_block (the 1->N C++ lowering); see string_ctor_call/dtor.
 	if (is_string_object(v->type))
 		return string_storage_decl(v->name.c_str(), origin);
+
+	// MadArray object (`array a;`): same opaque-storage model as std::string.
+	// madarray_construct is emitted as a separate statement by translate_block;
+	// the cleanup attribute on the storage handles scope-exit destruction.
+	if (is_array_object(v->type))
+		return array_storage_decl(v->name.c_str(), origin);
 
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
@@ -1938,8 +2022,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				func_id = id(tcf->var.name.c_str(), tb);
 			}
 			node_t args = list();
-			for (size_t i = 0; i < tcf->parameters.size(); i++)
-				append(args, translate_expr(tcf->parameters[i]));
+			// Coerce arguments to string-OBJECT parameters: a real object
+			// is passed by address, a const char* value is materialized into
+			// a temporary std::string (string_obj_arg). The callee's declared
+			// parameter types come from its FuncDef; varargs / unknown callees
+			// fall through to a plain translation.
+			FuncDef *callee = dynamic_cast<FuncDef *>(tcf->var.type);
+			for (size_t i = 0; i < tcf->parameters.size(); i++) {
+				TokenBase *arg = tcf->parameters[i];
+				DataDef *pt = (callee && i < callee->parameters.size())
+						? callee->parameters[i] : NULL;
+				DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+				if (pt && (pdt == DataType::dtSTRING
+					   || pdt == DataType::dtSTRINGref))
+					append(args, string_obj_arg(arg));
+				else
+					append(args, translate_expr(arg));
+			}
 			return node2(N_CALL, func_id, args, tb);
 		}
 	}
@@ -2232,6 +2331,10 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// decl (string_storage_decl): c2mir calls string_destruct(&b) at
 			// every scope exit, so no manual dtor injection is needed.
 			append(items, string_ctor_call(v->name.c_str(), NULL, tc));
+		} else if (is_array_object(v->type)) {
+			// `array a;` — default-construct the MadArray object. Scope-exit
+			// destruction is handled by the cleanup attribute (array_storage_decl).
+			append(items, array_ctor_call(v->name.c_str(), tc));
 		}
 	}
 
@@ -2271,6 +2374,19 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 							       initexpr, sdcl));
 				continue;
 			}
+			// MadArray object declaration: storage (via var_decl) + default ctor.
+			if (sdcl && is_array_object(sdcl->var.type) && !file_global) {
+				if (!pending_labels.empty()) {
+					node_t ll = list();
+					for (auto &ln : pending_labels)
+						append(ll, node1(N_LABEL, id(ln.c_str())));
+					pending_labels.clear();
+					append(items, node2(N_EXPR, ll, integer(0)));
+				}
+				append(items, var_decl(&sdcl->var, sdcl));
+				append(items, array_ctor_call(sdcl->var.name.c_str(), sdcl));
+				continue;
+			}
 		}
 
 		node_t s = translate_stmt(stb);
@@ -2285,6 +2401,13 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			pending_labels.clear();
 			append(items, node2(N_EXPR, label_list, integer(0)));
 		}
+		// Materialized temporaries (e.g. a std::string built from a literal
+		// passed to a string-object parameter) are emitted just before the
+		// statement that uses them; their cleanup attribute destructs them at
+		// scope exit. See string_obj_arg / m_pending_stmts.
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
 		append(items, s);
 	}
 
