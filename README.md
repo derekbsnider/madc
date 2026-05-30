@@ -232,17 +232,24 @@ asmjit/Gecko backend (native C99 `_Complex` in c2mir; on that backend, 419 pass
 
 **Current development** (`feature/cir-node`): Gecko and asmjit have both been
 **removed**; `cir_node` (MC11-IR) → c2mir → MIR is the **sole** backend. Honest
-CIR integration baseline: **227 pass / 193 fail / 56 skip** — the 193 are the
-active coverage worklist. In-process `eval`/exec + the REPL, and native AOT
+CIR integration baseline: **325 pass / ~95 fail / 56 skip** — the failures are
+the active coverage worklist. In-process `eval`/exec + the REPL, and native AOT
 output, are deferred (stubbed) until the CIR path reaches parity.
+
+### Current Release
+
+**v0.25.0 (2026-05-30)** — CIR is now madc's sole backend, and the headline
+milestone lands: **SMAUG 1.8 (~158k LOC C89) boots, runs as a live server, and
+is playable** through `cir_node → c2mir → MIR → JIT` — character creation, world
+navigation, and the Newgate serpent fight all run. Six root-cause runtime fixes
+(fn-ptr-typedef rendering, extern-at-creation, varargs intrinsic, switch
+default, strcmp-int, and a JIT-symbolizing crash handler) took SMAUG from
+won't-link to gameplay; integration 316 → 325. See
+[`docs/release-notes/v0.25.0.md`](docs/release-notes/v0.25.0.md).
 
 ### Recent Releases
 
-*(Historical — these versions were built on the asmjit/Gecko backend that has
-since been removed. They describe past milestones, not the current backend; see
-"Current development" above.)*
-
-
+- **v0.25.0** — CIR sole backend; SMAUG 1.8 boots, runs, and is playable (serpent fight); integration 316→325
 - **v0.24.0** — Native C99 `_Complex` in c2mir, transpiler parity 410→419
 - **v0.23.0** — MIR default backend, clang++ compiler, transpiler parity 400→410
 - **v0.22.0** — Gecko+MIR transpiler: sema pre-pass, string runtime, O(1) anode dispatch, iostream wrappers

@@ -19,8 +19,11 @@ high-level" — the answer is both.**
 > and asmjit have both been **removed entirely**; `madc parser → cir_node
 > (MC11-IR) → c2mir → MIR` is now the **sole** backend. Any line below framing
 > "Gecko+MIR transpiler" or "asmjit JIT" as active is superseded. Honest current
-> integration baseline: **227 pass / 193 fail / 56 skip** — the 193 are the CIR
-> coverage worklist. Roadmap body needs a full rewrite (tracked).
+> integration baseline (v0.25.0): **325 pass / ~95 fail / 56 skip** — the
+> failures are the CIR coverage worklist. ★ **SMAUG 1.8 boots, runs as a live
+> server, and is playable** (character creation, navigation, the Newgate serpent
+> fight) via `cir_node → c2mir → MIR → JIT`. Roadmap body needs a full rewrite
+> (tracked).
 
 ## Current State
 

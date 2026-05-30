@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+## [v0.25.0] — 2026-05-30
+
+CIR is now the sole backend, and SMAUG 1.8 boots, runs, and is playable.
+
 ### CIR is now the sole backend; asmjit and Gecko removed (feature/cir-node)
 
 - **Removed the Gecko parser + MIR-transpiler entirely** (`42e9b6e`).
