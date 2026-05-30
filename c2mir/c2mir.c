@@ -6729,6 +6729,36 @@ static node_t skip_struct_scopes (node_t scope) {
 }
 static void check (c2m_ctx_t c2m_ctx, node_t node, node_t context);
 
+/* __attribute__((cleanup)): append `fn(&var);` statements to the end of a block,
+   one per cleanup-tagged decl in REVERSE declaration order, and check each so gen
+   can compile it. Called at N_BLOCK check end while curr_scope is still the block,
+   so the synthesized N_IDs resolve. This handles fall-through scope exit; jumps
+   (return/break/continue/goto) are handled separately. */
+static void emit_scope_cleanups (c2m_ctx_t c2m_ctx, node_t block) {
+  struct node_scope *ns = block->attr;
+  size_t i, n;
+
+  if (ns == NULL || ns->cleanup_decls == NULL) return;
+  n = VARR_LENGTH (node_t, ns->cleanup_decls);
+  for (i = n; i > 0; i--) {
+    node_t decl_node = VARR_GET (node_t, ns->cleanup_decls, i - 1);
+    decl_t decl = decl_node->attr;
+    node_t declr = NL_EL (decl_node->u.ops, 1);
+    node_t var_id = NL_HEAD (declr->u.ops);
+    node_t fn_ref = new_str_node (c2m_ctx, N_ID, decl->cleanup_fn->u.s, POS (decl->cleanup_fn));
+    node_t var_ref = new_str_node (c2m_ctx, N_ID, var_id->u.s, POS (var_id));
+    node_t addr = new_pos_node1 (c2m_ctx, N_ADDR, POS (var_id), var_ref);
+    node_t args = new_node (c2m_ctx, N_LIST);
+    node_t call, stmt;
+
+    op_append (c2m_ctx, args, addr);
+    call = new_pos_node2 (c2m_ctx, N_CALL, POS (var_id), fn_ref, args);
+    stmt = new_pos_node2 (c2m_ctx, N_EXPR, POS (var_id), new_node (c2m_ctx, N_LIST), call);
+    op_append (c2m_ctx, NL_EL (block->u.ops, 1), stmt);
+    check (c2m_ctx, stmt, block);
+  }
+}
+
 static struct decl_spec check_decl_spec (c2m_ctx_t c2m_ctx, node_t r, node_t decl_node) {
   check_ctx_t check_ctx = c2m_ctx->check_ctx;
   int n_sc = 0, sign = 0, size = 0, complex_p = 0, func_p = FALSE;
@@ -10032,6 +10062,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     if (curr_scope != r)
       create_node_scope (c2m_ctx, r); /* it happens if it is the top func block */
     check (c2m_ctx, NL_EL (r->u.ops, 1), r);
+    emit_scope_cleanups (c2m_ctx, r); /* __attribute__((cleanup)): fall-through exit */
     finish_scope (c2m_ctx);
     break;
   case N_MODULE:
