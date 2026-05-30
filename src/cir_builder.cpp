@@ -408,10 +408,35 @@ node_t CirBuilder::obj_default_ctor_call(const char *name, const char *ctor_sym,
 	return stmt;
 }
 
+// Itanium-mangled libstdc++ std::string (__cxx11) member symbols, verified
+// against `g++ -std=gnu++11 -O0 -S`. madc is Cfront: std::string operations
+// lower to DIRECT calls on these real libstdc++ members (the object is a real
+// libstdc++ std::string), NOT hand-written wrappers — same model as the cout
+// `<<` path. The mangler (madc_mangle) lacks substitution compression, so these
+// std:: symbols are hardcoded here like cout's operator<< symbols.
+// _ZN..E = non-const member, _ZNK..E = const member.
+#define STR_TN "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE"
+#define STR_TK "_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE"
+static const char *const STR_CTOR0  = STR_TN "C1Ev";        // (this)
+static const char *const STR_CTOR_S = STR_TN "C1EPKcRKS3_"; // (this, const char*, const allocator&)
+static const char *const STR_CTOR_CP= STR_TN "C1ERKS4_";    // (this, const string&)
+static const char *const STR_DTOR   = STR_TN "D1Ev";        // (this) — cleanup fn
+static const char *const STR_CSTR   = STR_TK "5c_strEv";    // (this) -> char*
+static const char *const STR_SIZE   = STR_TK "4sizeEv";     // (this) -> unsigned long
+static const char *const STR_LENGTH = STR_TK "6lengthEv";   // (this) -> unsigned long
+static const char *const STR_EMPTY  = STR_TK "5emptyEv";    // (this) -> bool
+static const char *const STR_CLEAR  = STR_TN "5clearEv";    // (this)
+static const char *const STR_ASGN_S = STR_TN "aSEPKc";      // operator=(const char*)
+static const char *const STR_ASGN_C = STR_TN "aSERKS4_";    // operator=(const string&)
+static const char *const STR_APP_S  = STR_TN "pLEPKc";      // operator+=(const char*)
+static const char *const STR_APP_C  = STR_TN "pLERKS4_";    // operator+=(const string&)
+
 // `long <name>[NWORDS];` — the opaque, 8-aligned storage for a string object.
+// The cleanup attribute names the REAL libstdc++ dtor (it takes only `this`),
+// so c2mir destructs the object via the genuine std::string destructor.
 node_t CirBuilder::string_storage_decl(const char *name, TokenBase *origin)
 {
-	return obj_storage_decl(name, string_obj_words(), "string_destruct", origin);
+	return obj_storage_decl(name, string_obj_words(), STR_DTOR, origin);
 }
 
 // ---- MadArray (`array`) object lowering ----
@@ -568,11 +593,11 @@ node_t CirBuilder::container_method_call(TokenMember *tm, TokenBase *origin)
 		node_t call = node2(N_CALL, id(sym, origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		// read the temp as const char*
-		need_output_extern("string_cstr", true, { { {N_VOID}, true } });
+		need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
 		// comma-sequence: (fill(...), string_cstr(&tmp))
 		node_t cargs = list();
 		append(cargs, string_obj_addr(tname, origin));
-		node_t cstr = node2(N_CALL, id("string_cstr", origin), cargs, origin);
+		node_t cstr = node2(N_CALL, id(STR_CSTR, origin), cargs, origin);
 		CIR_NODE(cstr)->synth_from_origin = true;
 		node_t seq = node2(N_COMMA, call, cstr, origin);
 		CIR_NODE(seq)->synth_from_origin = true;
@@ -738,10 +763,10 @@ node_t CirBuilder::container_subscript_read(TokenSubscript *tsub, TokenBase *ori
 		append(a, key_or_index);
 		node_t call = node2(N_CALL, id(sym, origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
-		need_output_extern("string_cstr", true, { { {N_VOID}, true } });
+		need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
 		node_t cargs = list();
 		append(cargs, string_obj_addr(tname, origin));
-		node_t cstr = node2(N_CALL, id("string_cstr", origin), cargs, origin);
+		node_t cstr = node2(N_CALL, id(STR_CSTR, origin), cargs, origin);
 		CIR_NODE(cstr)->synth_from_origin = true;
 		node_t seq = node2(N_COMMA, call, cstr, origin);
 		CIR_NODE(seq)->synth_from_origin = true;
@@ -851,21 +876,31 @@ node_t CirBuilder::string_obj_addr(const char *name, TokenBase *origin)
 	return cast;
 }
 
-// string_construct_cstr((void*)name, <cstr>)  — or string_construct((void*)name)
-// when there is no initializer. (A string-from-string copy-init is Phase 2/3.)
+// Construct the std::string object via the real libstdc++ ctor:
+//   no init        -> basic_string()              C1Ev
+//   string init    -> basic_string(const string&) C1ERKS4_  (copy ctor)
+//   const char*    -> basic_string(const char*, const allocator&) C1EPKcRKS3_
+// std::allocator<char> is empty/stateless, so the allocator& arg is a harmless
+// dummy — we reuse the object's own address.
 node_t CirBuilder::string_ctor_call(const char *name, TokenBase *initexpr,
 				    TokenBase *origin)
 {
 	node_t args = list();
-	append(args, string_obj_addr(name, origin));
+	append(args, string_obj_addr(name, origin));   // this
 	const char *sym;
-	if (initexpr) {
-		append(args, translate_expr(initexpr));   // a const char* value
-		sym = "string_construct_cstr";
-		need_output_extern(sym, true, { { {N_VOID}, true }, { {N_CHAR}, true } });
+	if (initexpr && is_string_object_value(initexpr)) {
+		append(args, string_obj_arg(initexpr));    // const string&
+		sym = STR_CTOR_CP;
+		need_output_extern(sym, false, { { {N_VOID}, true }, { {N_VOID}, true } });
+	} else if (initexpr) {
+		append(args, translate_expr(initexpr));        // const char*
+		append(args, string_obj_addr(name, origin));   // dummy const allocator&
+		sym = STR_CTOR_S;
+		need_output_extern(sym, false,
+				   { { {N_VOID}, true }, { {N_CHAR}, true }, { {N_VOID}, true } });
 	} else {
-		sym = "string_construct";
-		need_output_extern(sym, true, { { {N_VOID}, true } });
+		sym = STR_CTOR0;
+		need_output_extern(sym, false, { { {N_VOID}, true } });
 	}
 	node_t call = node2(N_CALL, id(sym, origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
@@ -881,7 +916,7 @@ node_t CirBuilder::string_ctor_call(const char *name, TokenBase *initexpr,
 // is the dtSTRING->dtCHARptr coercion applied at char*-expecting call sites.
 node_t CirBuilder::string_cstr_arg(TokenBase *arg)
 {
-	need_output_extern("string_cstr", true, { { {N_VOID}, true } });
+	need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
 	node_t addr;
 	if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
 		addr = string_obj_addr(tv->var.name.c_str(), arg);
@@ -889,7 +924,7 @@ node_t CirBuilder::string_cstr_arg(TokenBase *arg)
 		addr = node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 	node_t a = list();
 	append(a, addr);
-	node_t call = node2(N_CALL, id("string_cstr", arg), a, arg);
+	node_t call = node2(N_CALL, id(STR_CSTR, arg), a, arg);
 	CIR_NODE(call)->synth_from_origin = true;
 	return call;
 }
@@ -938,32 +973,31 @@ node_t CirBuilder::string_method_call(TokenMember *tm, TokenBase *origin)
 	node_t addr = string_obj_addr(obj.name.c_str(), origin);
 
 	if (method == "c_str") {
-		need_output_extern("string_cstr", true, { { {N_VOID}, true } });
+		need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
 		node_t a = list();
 		append(a, addr);
-		node_t call = node2(N_CALL, id("string_cstr", origin), a, origin);
+		node_t call = node2(N_CALL, id(STR_CSTR, origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		return call;
 	}
-	// length()/size() — std::string size()==length(); both -> string_length,
-	// declared returning `long` (NOT void) so the value reads correctly in
-	// arithmetic/comparison contexts.
+	// length()/size() — the real libstdc++ members (both return size_t). Declared
+	// returning `long` (NOT void) so the value reads correctly in arithmetic.
 	if (method == "length" || method == "size") {
-		need_output_extern("string_length", false, { { {N_VOID}, true } },
-				   { N_LONG });
+		const char *sym = (method == "size") ? STR_SIZE : STR_LENGTH;
+		need_output_extern(sym, false, { { {N_VOID}, true } }, { N_LONG });
 		node_t a = list();
 		append(a, addr);
-		node_t call = node2(N_CALL, id("string_length", origin), a, origin);
+		node_t call = node2(N_CALL, id(sym, origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		return call;
 	}
-	// empty() -> (string_length((void*)s) == 0)
+	// empty() -> (size() == 0). Use the real size() member (a clean size_t)
+	// rather than the bool empty() (whose al-only return is fiddly to read).
 	if (method == "empty") {
-		need_output_extern("string_length", false, { { {N_VOID}, true } },
-				   { N_LONG });
+		need_output_extern(STR_SIZE, false, { { {N_VOID}, true } }, { N_LONG });
 		node_t a = list();
 		append(a, addr);
-		node_t call = node2(N_CALL, id("string_length", origin), a, origin);
+		node_t call = node2(N_CALL, id(STR_SIZE, origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		node_t eq = node2(N_EQ, call, integer(0, origin), origin);
 		CIR_NODE(eq)->synth_from_origin = true;
@@ -971,10 +1005,10 @@ node_t CirBuilder::string_method_call(TokenMember *tm, TokenBase *origin)
 	}
 	// clear() -> string_clear((void*)s)  (a void statement-expression)
 	if (method == "clear") {
-		need_output_extern("string_clear", false, { { {N_VOID}, true } });
+		need_output_extern(STR_CLEAR, false, { { {N_VOID}, true } });
 		node_t a = list();
 		append(a, addr);
-		node_t call = node2(N_CALL, id("string_clear", origin), a, origin);
+		node_t call = node2(N_CALL, id(STR_CLEAR, origin), a, origin);
 		CIR_NODE(call)->synth_from_origin = true;
 		return call;
 	}
@@ -2453,24 +2487,25 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 
 			// std::string assignment / append on a string OBJECT lvalue:
-			// `s = rhs` / `s += rhs` lower to the basic_string operator=/+=
-			// runtime wrappers. c2mir cannot assign into the `long[]` buffer,
-			// and g++ would emit these operator calls. RHS string OBJECT ->
-			// string_assign/append; const char* value -> the _cstr variant.
+			// `s = rhs` / `s += rhs` lower to the real libstdc++
+			// basic_string::operator= / operator+= members. c2mir cannot assign
+			// into the `long[]` buffer, and g++ emits these operator calls. RHS
+			// string OBJECT -> the (const string&) overload; const char* value
+			// -> the (const char*) overload.
 			if ((tb->id() == TokenID::tkAssign || tb->id() == TokenID::tkAddEq)
 			    && is_string_object_value(top->left)) {
 				bool is_append = (tb->id() == TokenID::tkAddEq);
 				node_t cargs = list();
-				append(cargs, string_obj_arg(top->left));   // (void*)&s
+				append(cargs, string_obj_arg(top->left));   // this (&s)
 				const char *sym;
 				if (is_string_object_value(top->right)) {
-					append(cargs, string_obj_arg(top->right));  // (void*)&rhs
-					sym = is_append ? "string_append" : "string_assign";
+					append(cargs, string_obj_arg(top->right));  // const string&
+					sym = is_append ? STR_APP_C : STR_ASGN_C;
 					need_output_extern(sym, false,
 						{ { {N_VOID}, true }, { {N_VOID}, true } });
 				} else {
 					append(cargs, translate_expr(top->right));  // const char*
-					sym = is_append ? "string_append_cstr" : "string_assign_cstr";
+					sym = is_append ? STR_APP_S : STR_ASGN_S;
 					need_output_extern(sym, false,
 						{ { {N_VOID}, true }, { {N_CHAR}, true } });
 				}
