@@ -475,6 +475,57 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		return sd;
 	}
 
+	// Array parameter decay: `T m[N]` -> `T *m`, `T m[N][M]` -> `T (*m)[M]`.
+	// A 1-D array param arrives as a CArray; a multi-dim param arrives already
+	// decayed by the parser as DataDefPTR(CArray) (`char (*)[M]`). Handle both:
+	// peel pointer levels, then any remaining array dims become `T (*m)[dims]`.
+	// Without this an array param collapsed to the wrong type (`int *map`), so
+	// `map[x][y]` failed ("subscripted value is neither array nor pointer").
+	{
+		int ptr_levels = 0;
+		DataDef *t = ptype;
+		while (t && t->is_pointer()) {
+			DataDefPTR *p = dynamic_cast<DataDefPTR *>(t);
+			if (!p || !p->base_type) break;
+			t = p->base_type;
+			ptr_levels++;
+		}
+		std::vector<uint32_t> adims;
+		DataDef *elem = peel_carray_dims(t, adims);
+		if (!adims.empty()) {
+			// A direct CArray param (ptr_levels == 0) decays its outermost
+			// dimension to a pointer; an already-decayed DataDefPTR(CArray)
+			// keeps its pointer(s) and all remaining dims.
+			int decay_ptrs = ptr_levels ? ptr_levels : 1;
+			size_t first_dim = ptr_levels ? 0 : 1;
+			// Element's own pointer depth (`char *argv[]` -> element char*).
+			int elem_stars = 0;
+			while (elem && elem->is_pointer()) {
+				DataDefPTR *p = dynamic_cast<DataDefPTR *>(elem);
+				if (!p || !p->base_type) break;
+				elem = p->base_type;
+				elem_stars++;
+			}
+			node_t pspec = type_list(elem);
+			node_t pdecl_list = list();
+			for (int s = 0; s < elem_stars; s++)
+				append(pdecl_list, pointer());          // element pointers (innermost)
+			for (int s = 0; s < decay_ptrs; s++)
+				append(pdecl_list, pointer());          // explicit / decayed pointer(s)
+			for (size_t d = first_dim; d < adims.size(); d++)
+				append(pdecl_list, node3(N_ARR, ignore(), list(),
+							 integer(adims[d])));
+			node_t pdecl = node2(N_DECL, id(pname), pdecl_list);
+			node_t sd = simple(N_SPEC_DECL);
+			append(sd, pspec);
+			append(sd, pdecl);
+			append(sd, ignore());
+			append(sd, ignore());
+			append(sd, ignore());
+			return sd;
+		}
+	}
+
 	DataDef *base_dd = ptype;
 	bool is_ptr = base_dd && base_dd->is_pointer();
 	// Peel ALL pointer levels to the innermost base type. A single peel left
