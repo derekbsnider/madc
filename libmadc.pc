@@ -6,7 +6,7 @@ includedir=${prefix}/include
 Name: libmadc
 Description: Mad-C embeddable JIT scripting engine
 URL: https://github.com/derekbsnider/madc
-Version: 0.13.0
+Version: 0.25.0
 Cflags: -I${includedir}
 Libs: -L${libdir} -lmadc
 Libs.private: -lasmjit -ldl

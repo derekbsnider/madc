@@ -2070,6 +2070,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// reached top_decls. Locals/params already have in-scope decls.
 			if (!(tv->var.flags & vfLOCAL) && !(tv->var.flags & vfPARAM))
 				referenced_globals[tv->var.name] = &tv->var;
+			// A numeric reference parameter (`int &x`) is lowered to a
+			// pointer parameter (`int *x`) by the parser, with vfREFERENCE
+			// set for auto-deref. Every value use of the reference reads
+			// through the pointer: `x` -> `(*x)`. (String references are a
+			// separate object-pointer path handled elsewhere.)
+			if ((tv->var.flags & vfREFERENCE) && tv->var.type
+			    && tv->var.type->is_pointer())
+				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
 			return id(tv->var.name.c_str(), tb);
 		}
 	}
@@ -2469,9 +2477,17 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				DataDef *pt = (callee && i < callee->parameters.size())
 						? callee->parameters[i] : NULL;
 				DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+				bool is_ref_param = callee && i < callee->ref_params.size()
+						    && callee->ref_params[i];
 				if (pt && (pdt == DataType::dtSTRING
 					   || pdt == DataType::dtSTRINGref))
 					append(args, string_obj_arg(arg));
+				else if (is_ref_param)
+					// Numeric reference parameter (`int &x`): the callee
+					// takes a pointer, so pass the argument's address. The
+					// argument lvalue translates normally (a vfREFERENCE arg
+					// re-derefs to its own pointer, and &(*p) folds to p).
+					append(args, node1(N_ADDR, translate_expr(arg), arg));
 				else
 					append(args, translate_expr(arg));
 			}
