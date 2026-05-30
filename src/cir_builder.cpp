@@ -384,10 +384,13 @@ node_t CirBuilder::string_ctor_call(const char *name, TokenBase *initexpr,
 	}
 	node_t call = node2(N_CALL, id(sym, origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	return call;
+	// Wrap as an expression-statement (a block item), matching translate_stmt.
+	node_t stmt = node2(N_EXPR, list(), call, origin);
+	CIR_NODE(stmt)->synth_from_origin = true;
+	return stmt;
 }
 
-// string_destruct((void*)name)
+// string_destruct((void*)name);  (expression-statement)
 node_t CirBuilder::string_dtor_call(const char *name, TokenBase *origin)
 {
 	node_t args = list();
@@ -395,7 +398,9 @@ node_t CirBuilder::string_dtor_call(const char *name, TokenBase *origin)
 	need_output_extern("string_destruct", false, { { {N_VOID}, true } });
 	node_t call = node2(N_CALL, id("string_destruct", origin), args, origin);
 	CIR_NODE(call)->synth_from_origin = true;
-	return call;
+	node_t stmt = node2(N_EXPR, list(), call, origin);
+	CIR_NODE(stmt)->synth_from_origin = true;
+	return stmt;
 }
 
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
@@ -2048,10 +2053,20 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			decl_vars.insert(td->var.name);
 	}
 
+	// std::string objects declared in this scope, in declaration order, for
+	// scope-exit destruction (see string_dtor_call). Pair: (name, origin token).
+	std::vector<std::pair<std::string, TokenBase *> > scope_strings;
+
 	for (size_t vi = skip; vi < tc->variables.size(); vi++) {
 		Variable *v = tc->variables[vi];
 		if (decl_vars.count(v->name)) continue;
 		append(items, var_decl(v));
+		if (is_string_object(v->type)) {
+			// `string b;` (no initializer) — default-construct the object,
+			// destruct at scope end. The storage decl was just appended above.
+			append(items, string_ctor_call(v->name.c_str(), NULL, tc));
+			scope_strings.push_back(std::make_pair(v->name, (TokenBase *)tc));
+		}
 	}
 
 	// Statements with label handling
@@ -2062,6 +2077,36 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		if (tl) {
 			pending_labels.push_back(tl->name);
 			continue;
+		}
+
+		// std::string object declaration WITH initializer: 1->N lowering.
+		// Emit storage + ctor inline here (translate_stmt's var_decl emits only
+		// the storage), and track for scope-end destruction. A file-scope global
+		// reaching here is handled elsewhere (translate_stmt drops it).
+		{
+			TokenDecl *sdcl = dynamic_cast<TokenDecl *>(stb);
+			bool file_global = sdcl && !(sdcl->var.flags & vfLOCAL)
+					&& !(sdcl->var.flags & vfSTATIC);
+			if (sdcl && is_string_object(sdcl->var.type) && !file_global) {
+				if (!pending_labels.empty()) {
+					node_t ll = list();
+					for (auto &ln : pending_labels)
+						append(ll, node1(N_LABEL, id(ln.c_str())));
+					pending_labels.clear();
+					append(items, node2(N_EXPR, ll, integer(0)));
+				}
+				append(items, var_decl(&sdcl->var, sdcl));
+				TokenBase *initexpr = sdcl->initialize;
+				if (TokenAssign *as = dynamic_cast<TokenAssign *>(initexpr))
+					initexpr = as->right;
+				if (!initexpr && !sdcl->init_list.empty())
+					initexpr = sdcl->init_list[0];
+				append(items, string_ctor_call(sdcl->var.name.c_str(),
+							       initexpr, sdcl));
+				scope_strings.push_back(
+					std::make_pair(sdcl->var.name, (TokenBase *)sdcl));
+				continue;
+			}
 		}
 
 		node_t s = translate_stmt(stb);
@@ -2087,6 +2132,13 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		}
 		append(items, node2(N_EXPR, label_list, integer(0)));
 	}
+
+	// Destruct scope-local std::string objects at block end, reverse declaration
+	// order (matches C++). NOTE: early exits (return/break/continue/goto) are
+	// Phase 4; a trailing `return` currently leaves these unreachable — a
+	// harmless leak reclaimed at process exit, not a crash.
+	for (auto it = scope_strings.rbegin(); it != scope_strings.rend(); ++it)
+		append(items, string_dtor_call(it->first.c_str(), it->second));
 
 	return node2(N_BLOCK, empty_list, items, tc);
 }
