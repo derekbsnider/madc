@@ -245,6 +245,10 @@ public:
 	node_t translate_foreach(class TokenFOREACH *fe);
 	node_t translate_do(TokenDO *td);
 	node_t translate_switch(TokenSWITCH *ts);
+	// rust::match over integer patterns -> a switch: each arm's pattern(s)
+	// become case labels (OR-list `a | b` -> multiple labels), `_` -> default,
+	// and every arm ends with an implicit break (no fall-through).
+	node_t translate_match(class TokenMatch *tm);
 
 	// ---- Top-level module translation ----
 	node_t translate_module(Program *prog);

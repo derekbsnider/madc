@@ -2328,6 +2328,39 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 	return node3(N_SWITCH, list(), expr, body, ts);
 }
 
+// rust::match(expr) { p1 | p2 => stmt; _ => stmt; } -> a C switch with an
+// implicit break per arm. OR-list patterns become consecutive case labels; the
+// `_` arm becomes default. Source order is preserved — in C, explicit case
+// values always win over default regardless of where default sits, so a
+// mid-list wildcard does not shadow patterns listed after it.
+node_t CirBuilder::translate_match(TokenMatch *tm)
+{
+	if (!tm->expression)
+		return error_node("match missing scrutinee expression", tm);
+
+	node_t expr = translate_expr(tm->expression);
+	node_t block_items = list();
+	for (MatchArm *arm : tm->arms) {
+		if (!arm) continue;
+		if (arm->is_wildcard) {
+			append(block_items, node2(N_EXPR,
+				node1(N_LIST, simple(N_DEFAULT)), integer(0), tm));
+		} else {
+			for (TokenBase *pat : arm->patterns) {
+				node_t label = node1(N_CASE, translate_expr(pat), tm);
+				append(block_items, node2(N_EXPR,
+					node1(N_LIST, label), integer(0)));
+			}
+		}
+		node_t b = translate_stmt(arm->body);
+		if (b) append(block_items, b);
+		// No fall-through between arms.
+		append(block_items, node1(N_BREAK, list(), tm));
+	}
+	node_t body = node2(N_BLOCK, list(), block_items, tm);
+	return node3(N_SWITCH, list(), expr, body, tm);
+}
+
 node_t CirBuilder::translate_stmt(TokenBase *tb)
 {
 	if (!tb) return NULL;
@@ -2354,6 +2387,9 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 
 	{ TokenSWITCH *ts = dynamic_cast<TokenSWITCH *>(tb);
 	  if (ts) return translate_switch(ts); }
+
+	{ TokenMatch *tm = dynamic_cast<TokenMatch *>(tb);
+	  if (tm) return translate_match(tm); }
 
 	// Goto
 	{ TokenGOTO *tg = dynamic_cast<TokenGOTO *>(tb);
