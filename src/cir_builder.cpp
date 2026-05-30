@@ -833,9 +833,24 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		tl = new_list;
 	}
 	if (!fnptr && (v->flags & vfEXTERN)) {
+		// An extern is a forward reference to a symbol defined elsewhere, so
+		// emit its type exactly as the definition would — preserve the typedef
+		// alias and struct tag. The old append_type_specs path dropped the
+		// alias, so `extern bool x` degraded to `extern int x` and conflicted
+		// with the `bool x` definition ("incompatible types of x declarations").
 		node_t new_list = list();
 		append(new_list, simple(N_EXTERN));
-		append_type_specs(new_list, base_dd);
+		if (!v->typedef_name.empty()) {
+			append(new_list, id(v->typedef_name.c_str()));
+		} else if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
+			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
+			if (sdd)
+				append(new_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
+			else
+				append_type_specs(new_list, base_dd);
+		} else {
+			append_type_specs(new_list, base_dd);
+		}
 		tl = new_list;
 	}
 
@@ -870,7 +885,11 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		size_t emit_count = v->dims.size() > skip_tail
 				? v->dims.size() - skip_tail : 0;
 		for (size_t d = 0; d < emit_count; d++) {
-			node_t size = integer(v->dims[d]);
+			// An unsized extern array (`extern char buf[]`) carries dim 0 —
+			// emit `[]` (incomplete type, compatible with the sized
+			// definition) rather than `[0]`, which conflicts.
+			node_t size = ((v->flags & vfEXTERN) && v->dims[d] == 0)
+					? ignore() : integer(v->dims[d]);
 			node_t arr = node3(N_ARR, ignore(), list(), size);
 			append(decl_list, arr);
 		}
