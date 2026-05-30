@@ -42,4 +42,59 @@ std::string itanium_mangle_operator(const std::string &class_name,
                                      const std::string &op,
                                      const std::vector<std::string> &param_types);
 
+// ---------------------------------------------------------------------------
+// Substitution-aware (template-id capable) mangling.
+//
+// These accept fully-qualified C++ type strings that may be template-ids
+// with nested template args, e.g.
+//   "std::__cxx11::basic_string<char,std::char_traits<char>,std::allocator<char>>"
+//   "std::vector<long,std::allocator<long>>"
+//   "std::map<std::__cxx11::basic_string<...>,long,std::less<...>,std::allocator<std::pair<const std::__cxx11::basic_string<...>,long>>>"
+// and reproduce the exact libstdc++ symbol, including Itanium substitution
+// compression (S_, S0_, S1_, …) and the standard St/Sa/Sb/Ss/Si/So/Sd
+// abbreviations. They are the path madc uses to call real libstdc++.
+//
+// The full canonical std:: type spellings are provided as helpers so callers
+// don't have to hand-write the default template arguments.
+// ---------------------------------------------------------------------------
+
+// Encode a single (possibly template-id) C++ type as an Itanium <type>,
+// with substitution compression computed in isolation (a fresh candidate
+// table). Mainly useful for testing the type encoder directly.
+std::string itanium_encode_type_sub(const std::string &cpp_type);
+
+// Mangle a member function on a (possibly template-id) class.
+//   itanium_mangle_member_sub(string_type, "c_str", {}, true)
+//     → "_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE5c_strEv"
+std::string itanium_mangle_member_sub(const std::string &qualified_class,
+                                       const std::string &member,
+                                       const std::vector<std::string> &param_types,
+                                       bool const_method);
+
+// Mangle a constructor (C1) on a (possibly template-id) class.
+std::string itanium_mangle_ctor_sub(const std::string &qualified_class,
+                                      const std::vector<std::string> &param_types);
+
+// Mangle a destructor (D1) on a (possibly template-id) class.
+std::string itanium_mangle_dtor_sub(const std::string &qualified_class);
+
+// Mangle an operator (operator=, operator[], operator+=, …) on a
+// (possibly template-id) class.
+//   itanium_mangle_operator_sub(string_type, "+=", {"const char*"}, false)
+//     → "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEpLEPKc"
+std::string itanium_mangle_operator_sub(const std::string &qualified_class,
+                                         const std::string &op,
+                                         const std::vector<std::string> &param_types,
+                                         bool const_method);
+
+// Canonical std:: type spellings (full default template args), so callers
+// don't hand-write them. Each returns the C++ type string accepted by the
+// _sub helpers above.
+std::string std_string_type();                              // std::__cxx11::basic_string<char,...>
+std::string std_vector_type(const std::string &elem);       // std::vector<elem, std::allocator<elem>>
+std::string std_map_type(const std::string &key,
+                         const std::string &val);            // std::map<key,val,std::less<key>,std::allocator<std::pair<const key,val>>>
+std::string std_set_type(const std::string &elem);          // std::set<elem,std::less<elem>,std::allocator<elem>>
+std::string std_stringstream_type();                        // std::__cxx11::basic_stringstream<char,...>
+
 #endif // __MADC_MANGLE_H
