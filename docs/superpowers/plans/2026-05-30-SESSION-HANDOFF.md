@@ -11,8 +11,55 @@
   Build: `make -C /workspace/mir`. Test suite: `make -C /workspace/mir c2mir-test` (must stay green: 1075 tests/2150 success). c2m binary: `/workspace/mir/c2m`. Run a c2m test: `c2m FILE.c -ei` (file BEFORE -ei; args after -ei go to the program) or `-eg` (gen). gcc is canon: `gcc -std=gnu11 -O0 FILE.c && ./a.out`.
 
 ## CURRENT TEST STATE
-- madc integration: **334 passed / 88 failed / 1 flaky-timeout / 56 skipped** (was 325/95 at session start; +9 net). Goal = drive 88→0 for develop→master parity (Track 1.3).
+- madc integration: **346 passed / 76 failed / 1 flaky-timeout (testfortypedcomma) / 56 skipped** (was 334/88 at the start of the 2026-05-30 PM session; +12 net, 0 regressions). Goal = drive 76→0 for develop→master parity (Track 1.3).
 - madc unit tests: green. MIR c2mir-test: green (incl. bootstrap, which we FIXED).
+
+## 2026-05-30 PM SESSION — P1 progress (+12, branch feature/cir-stdstring-claude)
+Six features, all on the runtime-object model, committed (3ba6da9, 08b0008, +match):
+- **Qualified std:: stream chains** — stream_ident_kind recognizes the hidden
+  globals `__std_cout`/`__std_cerr`/`__std_endl` so `std::cout << x` is a stream
+  chain, not N_LSH. (testns)
+- **MadArray (`array`) objects** — generalized the string storage/ctor into
+  `obj_storage_decl`/`obj_default_ctor_call` (shared); `array` = opaque buffer +
+  madarray_construct + cleanup(madarray_destruct); array/array& params -> void*.
+  (testphp)
+- **String-object arg coercion (Cfront temporaries)** — a const char* value
+  passed to a string-OBJECT param is materialized into a scope-lived temp
+  std::string via `string_obj_arg` + `m_pending_stmts` (flushed by translate_block
+  before the statement; cleanup-attr destructs). A real object passes by address.
+  Mirrors the old transpiler's emit_ns_arg. Applied to ALL calls via callee
+  FuncDef param types. (testphp array_push, testperl, testrust, …)
+- **std::string operator= / += ** — `s = "lit"`/`s = t`/`s += …` on a string
+  object lvalue -> string_assign / string_assign_cstr / string_append(_cstr).
+  (testlang, test, test5)
+- **Range-for over MadArray** — `for (T x : arr)`; TokenFOREACH is a sibling of
+  TokenFOR (was missed). Loop var lives in the enclosing scope (parser puts it
+  there), so translate_foreach emits the index loop + per-iteration element fill
+  (php_array_get / php_array_get_int). (testforeach)
+- **rust::match -> switch** — OR-list patterns become case labels, `_` ->
+  default, each arm auto-breaks. (testrustmatch)
+Newly passing: testns testphp testperl testrust testregex testrubycharsshadow
+testinclude test test5 testforeach testlang testrustmatch.
+
+### REMAINING P1 sub-projects (each a cohesive unit; cir_builder.cpp-heavy so
+### serialize or use worktrees+cherry-pick, not parallel same-file edits)
+- **STL containers vector<T>/map/set/list** (testmadc_ns testsubscript testvector
+  testmap testset) — "template instantiation not implemented". The OLD transpiler
+  has a full reference: `git show 42e9b6e~1:src/madc_emit_c.cpp` lines ~5759-5960
+  (the `__stl_vector_int_*` / `__stl_map_str_int_*` header generators) + its
+  range-for-over-vector lowering (~3365). Biggest P1 unit; good subagent task with
+  that reference + the obj model.
+- **stringstream** (testsstream) — needs a stringstream OBJECT (obj model) + a
+  proper `stringstream*->ostream*` base-offset-adjusting wrapper (the virtual-base
+  issue AGENTS.md flags) + printstream. The streamout_* wrappers
+  (madc_mir_backend.cpp) take an ostream* and already work for any stream.
+- **for_each + fn-ptr / lambda callback** (testforeach2 testlambda) — std_for_each
+  passes a std::string* per element to a `void(*)(void*)` callback; by-value string
+  param + auto fn-ptr + lambda. Overlaps the lambda cluster. (testforeach2 SIGSEGVs
+  in the callback's `cout << name`.)
+- **file streams** (testcin testfstream testloop) — `ofstream`/`ifstream`
+  `.open()/.good()/.close()` + `ofs << x` (file-stream operator<<, same ostream*
+  wrapper mechanism as stringstream).
 
 ## WHAT WAS DONE THIS SESSION (all committed)
 ### MIR fork — two clean, ordered PRs (enhance fork now, upstream to vnmakarov later; fork untouched ~2yr = safe window)
