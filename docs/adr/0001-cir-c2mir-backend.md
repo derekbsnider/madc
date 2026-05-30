@@ -59,6 +59,12 @@ interpreter/REPL/debug tier (the "hybrid seam," below). The MC11-IR design (the
    biggest theoretical advantage of direct-MIR is escaping C semantics
    (stack-switching coroutines, a non-C++ object model, etc.). madc does not
    want those — its semantics *are* C/C++. So that advantage does not pay off.
+   And the ceiling is *higher than bare C11* anyway: per `mir/c2mir/README.md`,
+   c2mir already exposes the dynamic-language-JIT machinery as GNU-style
+   extensions — **labels-as-values (computed goto), statement expressions,
+   `__builtin_jcall`/`__builtin_jret` (fast interp↔JIT switching), overflow
+   builtins, and the `__builtin_prop_*` lazy-BB-versioning builtins.** Most of
+   what looked like "direct-MIR-only" is reachable through c2mir.
 2. **C++ makes c2mir the natural backend, via Cfront.** The proven way to
    implement C++ is to lower it to C and hand it to a C compiler (Cfront). The
    c11-transpiler lowering (classes→struct+vtable, templates→instantiation,
@@ -96,10 +102,14 @@ interpreter/REPL/debug tier (the "hybrid seam," below). The MC11-IR design (the
 
 - **A — retarget master's codegen onto MIR (direct-MIR).** Genuinely survives
   the analysis on a few axes: lower JIT/REPL latency (no C-sema pass),
-  dependency independence (no c2mir fork), finer MIR↔source debug control, and
-  direct use of MIR features C lacks (native multi-return, computed goto, tail
-  calls, lightweight interp↔JIT calls). **But** every one of those is a
-  *runtime/implementation* argument, not a *language* argument — and madc would
+  dependency independence (no c2mir fork), and finer MIR↔source debug control.
+  The "MIR features C lacks" axis is **narrower than it first appears**: per
+  `mir/c2mir/README.md`, c2mir already exposes computed goto, statement
+  expressions, and the lightweight interp↔JIT calls (`__builtin_jcall`/`jret`)
+  as extensions — so what's *genuinely* direct-MIR-only is **native multiple
+  return** (no C syntax — we emulate with `__retbuf`) and **guaranteed tail
+  calls**. **But** all of these are *runtime/implementation* arguments, not
+  *language* arguments — and madc would
   then **own the C ABI per target** (master had only x86-64 SysV; c2mir ships
   per-arch ABIs for free) and own C-conformance correctness. Rejected as the
   *primary* backend; its surviving value is captured by the hybrid seam.
@@ -135,7 +145,17 @@ User-visible language features stay on the c2mir path so they also flow through
 - **We drive c2mir's `node_t` the way its own parser would** — a fragile seam
   that has surfaced internal-convention bugs (abstract-param `N_TYPE`, fn-ptr
   node ordering). Accepted; mitigated by treating c2mir as canon and reducing
-  to minimal `.c` reducers when a tree is rejected.
+  to minimal `.c` reducers when a tree is rejected. Concretely: the develop hot
+  path enters via a **fork-added `c2mir_compile_tree(ctx, c2m, tree, module)`**
+  (`madc_cir.cpp`), injecting a pre-built `node_t` and bypassing c2mir's
+  preprocessor + PEG parser. c2mir's *documented* library API is source-text
+  via `c2mir_compile(getc_func)` (still used by the older `madc_mir_backend`
+  path and by `--emit=c11`). So the coupling includes an **API surface we added
+  to the fork**, not just patches — a real maintenance fact, and a deliberate
+  one (reuse c2mir's sema + MIR-gen, skip its parser since madc has its own).
+- **c2mir's explicit non-features** (per its README): VLA (we lower →
+  `__builtin_alloca`), `_Complex` (our fork adds it natively), atomics, and
+  thread-local storage. Anything madc needs there is lowering or fork work.
 - **~2× compile latency** vs direct-MIR. Accepted for batch/JIT; the
   interactive tier is addressed by the hybrid interpreter seam.
 - **Coverage regression during the transition** (master 419 pass → develop's
