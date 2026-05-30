@@ -283,6 +283,12 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 		emit_seq(f, op(n, 1), lang, 0, "\n");     // [1] = statement list
 		fputs("\n}", f);
 		break;
+	case N_STMTEXPR:
+		// GNU statement expression: ({ stmts; value; }). [0] = the block.
+		fputs("(", f);
+		emit(f, op(n, 0), lang);
+		fputs(")", f);
+		break;
 	case N_RETURN:
 		// [0] = label list, [1] = return expression (may be absent/N_IGNORE)
 		emit_labels(f, op(n, 0), lang);

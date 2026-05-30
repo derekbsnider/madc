@@ -13193,11 +13193,14 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	DBG(cout << "parseFunction() injected hidden __retbuf for multi-return (" << multi_ret->size() << " types)" << endl);
     }
 
-    // for class methods, inject hidden __this parameter as first arg
+    // for class methods, inject hidden __this parameter as first arg.
+    // Type it as a pointer to the owning class (`ClassName *`) — not a bare
+    // `void *` — so the CIR backend can resolve `__this->member` against the
+    // class's lowered C struct (a void* would leave member access untyped).
     if ( owner_class )
     {
 	if ( !func_already_declared )
-	    func->parameters.push_back(getPointerType(&ddVOID)); // void*
+	    func->parameters.push_back(getPointerType(owner_class));
 	ids.push_back("__this");
 	DBG(cout << "parseFunction() injected hidden __this parameter for class method" << endl);
     }

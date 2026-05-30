@@ -259,6 +259,85 @@ public:
 			    const std::set<std::string> &emitted_structs,
 			    bool force_incomplete_struct = false);
 	node_t struct_def(DataDefSTRUCT *sdd);
+	// Emit a user-defined class as a plain C struct definition. Base-class
+	// members are already flattened into the derived class's member list by
+	// the parser (single inheritance), so this is a flat struct. A `void
+	// *__vptr;` slot is prepended when the class (or a base) has virtual
+	// methods, matching the parser's layout (which reserves offset 0).
+	node_t class_struct_def(DataDefCLASS *cdd);
+	// Emit a class's virtual-method dispatch table as a file-scope array of
+	// type-erased function pointers in vtable_slot order:
+	//   void *ClassName__vtable[] = { (void*)C__slot0, (void*)C__slot1, ... };
+	// Each slot resolves to the most-derived override visible to this class
+	// (findMethod walks class -> base). Returns NULL when the class has no
+	// vtable. Must be emitted after the method prototypes it references.
+	node_t class_vtable_def(DataDefCLASS *cdd);
+	// Lower a user-defined class method call on a class OBJECT (or pointer)
+	// receiver to a free-function call on the mangled method symbol with the
+	// receiver address threaded as the hidden first `__this` argument:
+	//   c.method(a, b)   -> ClassName__method(&c, a, b)
+	//   p->method(a, b)  -> ClassName__method(p, a, b)
+	// A virtual call dispatches through the receiver's __vptr slot instead of
+	// naming the symbol directly. Returns NULL when the receiver is not a
+	// user-defined class (caller falls through to generic member access).
+	node_t class_method_call(class TokenMember *tm, TokenBase *origin);
+	// Build the hidden `__this` argument for a class method/operator call:
+	// the receiver's address for a value receiver, or the pointer itself for
+	// a pointer receiver. `recv_class` is filled with the receiver's class.
+	node_t class_this_arg(class TokenMember *tm, DataDefCLASS *&recv_class,
+			      TokenBase *origin);
+	// Build the constructor-call statement for a class instance `v`:
+	//   ClassName__ClassName(&v, ctor_args...)
+	// Returns NULL when `v` is not a user class or has no user constructor.
+	node_t class_ctor_call(class Variable *v, DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
+	// Lower an overloaded binary operator on a user-defined class lvalue:
+	//   c <op> rhs  ->  ClassName__operator<op>(&c, rhs)
+	// when c's class defines a matching operator method. Returns NULL when
+	// the left operand is not a user class or has no such operator (caller
+	// falls through to the built-in operator translation).
+	node_t class_operator_call(class TokenOperator *top, TokenBase *origin);
+	// Build a function-pointer cast type node for a method's signature:
+	// `RET (*)(struct Owner *, params...)`. Used to cast a type-erased vtable
+	// slot back to a callable function pointer for virtual dispatch. The
+	// callee's parameter 0 is already the (owner *) __this, so its full
+	// parameter list is emitted as-is.
+	node_t method_fnptr_type(class FuncDef *callee, DataDefCLASS *owner);
+	// Append placement-new construct / destruct calls for every embedded
+	// OBJECT member (std::string today) of `cdd` to `out`, addressing each
+	// member through the in-scope `__this` pointer:
+	//   string_construct((void*)&__this->member)  /  string_destruct(...)
+	// Used to give a class with object members proper member lifetime inside
+	// its (possibly synthesized) ctor/dtor. Returns true if it emitted any.
+	bool class_member_construct(DataDefCLASS *cdd, std::vector<node_t> &out,
+				    TokenBase *origin);
+	bool class_member_destruct(DataDefCLASS *cdd, std::vector<node_t> &out,
+				   TokenBase *origin);
+	// True when the class has at least one embedded object member needing
+	// construction/destruction (so it requires a ctor/dtor even if the user
+	// wrote none).
+	bool class_has_object_members(DataDefCLASS *cdd);
+	// Append `string_construct((void*)&inst.member)` statements (one per
+	// embedded object member) to the c2mir list node `items`. Used at a
+	// value class-instance declaration that has object members but no user
+	// constructor (the member access is `inst.member`, not `__this->member`).
+	void class_instance_member_ctors(const char *inst, DataDefCLASS *cdd,
+					 node_t items, TokenBase *origin);
+	// True when a class needs an (implicit) destructor: it has a user dtor,
+	// embedded object members, or a base class that needs one.
+	bool class_needs_dtor(DataDefCLASS *cdd);
+	// The destructor symbol used as the cleanup function for a class
+	// instance (ClassName___dtor) — whether user-written or synthesized.
+	std::string class_dtor_symbol(DataDefCLASS *cdd);
+	// Emit a synthesized destructor function for a class that needs a dtor
+	// (object members and/or a base dtor) but has no user-written one:
+	//   void Class___dtor(struct Class *__this) {
+	//       string_destruct(&__this->member); ...; Base___dtor((Base*)__this);
+	//   }
+	// Returns NULL when the class has a user dtor (its own def handles this)
+	// or needs no dtor.
+	node_t synth_dtor_def(DataDefCLASS *cdd);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
 
