@@ -5988,6 +5988,9 @@ struct node_scope {
   unsigned func_scope_num;
   mir_size_t size, offset, call_arg_area_size;
   node_t scope;
+  /* Decls in this scope carrying __attribute__((cleanup(fn))), in declaration
+     order; NULL if none. Populated in check, consumed by process_cleanups. */
+  VARR (node_t) * cleanup_decls;
 };
 
 struct decl {
@@ -6004,6 +6007,8 @@ struct decl {
   /* Unnamed member if this scope is anon struct/union for the member,
      NULL otherwise: */
   node_t containing_unnamed_anon_struct_union_member;
+  /* Resolved N_ID of __attribute__((cleanup(fn))) on this decl, else NULL. */
+  node_t cleanup_fn;
   union {
     const char *asm_str; /* register name for global reg used and defined only if asm_p */
     MIR_item_t item;     /* MIR_item for some declarations */
@@ -6574,6 +6579,7 @@ static void create_node_scope (c2m_ctx_t c2m_ctx, node_t node) {
   ns->func_scope_num = curr_func_scope_num++;
   ns->stack_var_p = FALSE;
   ns->offset = ns->size = ns->call_arg_area_size = 0;
+  ns->cleanup_decls = NULL;
   node->attr = ns;
   ns->scope = curr_scope;
   curr_scope = node;
@@ -8037,6 +8043,7 @@ static void init_decl (c2m_ctx_t c2m_ctx, decl_t decl) {
   decl->param_args_start = decl->param_args_num = 0;
   decl->scope = curr_scope;
   decl->containing_unnamed_anon_struct_union_member = curr_unnamed_anon_struct_union_member;
+  decl->cleanup_fn = NULL;
   decl->u.item = NULL;
   decl->c2m_ctx = c2m_ctx;
 }
