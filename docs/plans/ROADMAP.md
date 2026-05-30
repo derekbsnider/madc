@@ -433,6 +433,7 @@ SMAUG target terminal, web, and GUI from the same game code.
 
 | Plan | File |
 |------|------|
+| **ADR 0001 — CIR/c2mir backend (why c2mir, not direct-MIR)** | [../adr/0001-cir-c2mir-backend.md](../adr/0001-cir-c2mir-backend.md) |
 | Code Cleanup | [code-cleanup.md](code-cleanup.md) |
 | C++ Support | [cpp-support.md](cpp-support.md) |
 | Cross-Cutting Insights | [cross-cutting-insights.md](cross-cutting-insights.md) |
