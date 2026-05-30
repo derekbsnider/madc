@@ -1883,10 +1883,6 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// __builtin_va_start(<last named param>) so the body's reference
 	// resolves and the emitted C compiles as standard C11.
 	if (fd->is_varargs && nparam > 0) {
-		const char *last_named = "p";
-		if (tf->method && nparam - 1 < tf->method->parameters.size())
-			last_named = tf->method->parameters[nparam - 1]->name.c_str();
-
 		// va_list __va_args;
 		node_t va_spec = type_list(NULL, "va_list");
 		node_t va_decl = node2(N_DECL, id("__va_args"), list());
@@ -1897,10 +1893,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(va_sd, ignore());
 		append(va_sd, ignore());
 
-		// __builtin_va_start(__va_args, last_named);
+		// __builtin_va_start(__va_args);  — c2mir's builtin takes exactly ONE
+		// argument (the va_list), unlike C's two-arg va_start(ap, last) macro.
 		node_t vs_args = list();
 		append(vs_args, id("__va_args"));
-		append(vs_args, id(last_named));
 		node_t vs_call = node2(N_CALL, id("__builtin_va_start"), vs_args);
 
 		// Wrap: { va_list __va_args; __builtin_va_start(...); <orig body> }
