@@ -292,6 +292,105 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 	}
 }
 
+// ---------------------------------------------------------------------------
+// std::string object lowering
+// ---------------------------------------------------------------------------
+// A madc `string` is a real std::string object, matching g++/clang++ (Rule #1):
+// an 8-aligned opaque buffer + ctor/dtor calls to the runtime wrappers in
+// madc_mir_backend.cpp (string_construct*/string_destruct/string_cstr). Only a
+// declared string OBJECT becomes an object; a bare string literal stays a
+// const char* (it never reaches here — TokenString emits str()).
+
+bool CirBuilder::is_string_object(DataDef *dd)
+{
+	// dtSTRING is the value type `string`; dtSTRINGref (`string&`) and
+	// dtSTRINGptr are separate and handled on the param/pointer paths.
+	return dd && dd->is_string() && !dd->is_pointer();
+}
+
+size_t CirBuilder::string_obj_words() const
+{
+	// cir_builder is itself C++, so it knows the real ABI size/alignment of
+	// std::string. A long[] buffer is naturally 8-aligned and >= the object
+	// size, so placement-new of std::string into it is well-aligned without an
+	// explicit alignment attribute.
+	return (sizeof(std::string) + sizeof(long) - 1) / sizeof(long);
+}
+
+// N_TYPE node for a (void*) cast: TYPE(LIST(VOID), DECL(IGNORE, LIST(POINTER))).
+// The spec is a plain LIST (NOT N_SHARE — that wraps SPEC_DECL specs only;
+// matches the cast at translate_expr and the param TYPE in need_output_extern).
+node_t CirBuilder::void_ptr_type()
+{
+	node_t spec = list();
+	append(spec, simple(N_VOID));
+	node_t decl_list = list();
+	append(decl_list, pointer());
+	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
+}
+
+// `long <name>[NWORDS];` — the opaque, 8-aligned storage for a string object.
+node_t CirBuilder::string_storage_decl(const char *name, TokenBase *origin)
+{
+	node_t spec = list();
+	append(spec, simple(N_LONG, origin));
+	node_t share = node1(N_SHARE, spec);
+	node_t decl_list = list();
+	append(decl_list, node3(N_ARR, ignore(), list(),
+				integer((long)string_obj_words(), origin)));
+	node_t decl = node2(N_DECL, id(name, origin), decl_list);
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, share);
+	append(sd, decl);
+	append(sd, ignore());   // attrs
+	append(sd, ignore());   // asm
+	append(sd, ignore());   // initializer — none; the ctor call does it
+	CIR_NODE(sd)->synth_from_origin = true;
+	return sd;
+}
+
+// `(void*)<name>` — the buffer address as void*, so the runtime wrappers see
+// void* and c2mir emits no pointer/integer cast warning. The array name decays
+// to long*; the cast normalizes it to void*.
+node_t CirBuilder::string_obj_addr(const char *name, TokenBase *origin)
+{
+	node_t cast = node2(N_CAST, void_ptr_type(), id(name, origin), origin);
+	CIR_NODE(cast)->synth_from_origin = true;
+	return cast;
+}
+
+// string_construct_cstr((void*)name, <cstr>)  — or string_construct((void*)name)
+// when there is no initializer. (A string-from-string copy-init is Phase 2/3.)
+node_t CirBuilder::string_ctor_call(const char *name, TokenBase *initexpr,
+				    TokenBase *origin)
+{
+	node_t args = list();
+	append(args, string_obj_addr(name, origin));
+	const char *sym;
+	if (initexpr) {
+		append(args, translate_expr(initexpr));   // a const char* value
+		sym = "string_construct_cstr";
+		need_output_extern(sym, true, { { {N_VOID}, true }, { {N_CHAR}, true } });
+	} else {
+		sym = "string_construct";
+		need_output_extern(sym, true, { { {N_VOID}, true } });
+	}
+	node_t call = node2(N_CALL, id(sym, origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	return call;
+}
+
+// string_destruct((void*)name)
+node_t CirBuilder::string_dtor_call(const char *name, TokenBase *origin)
+{
+	node_t args = list();
+	append(args, string_obj_addr(name, origin));
+	need_output_extern("string_destruct", false, { { {N_VOID}, true } });
+	node_t call = node2(N_CALL, id("string_destruct", origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	return call;
+}
+
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
 // instead of raw type nodes — c2mir's checker resolves the typedef.
 node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)

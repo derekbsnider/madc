@@ -68,6 +68,20 @@ class CirBuilder {
 	// and the inline-struct path in typedef_decl).
 	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
 
+	// ---- std::string object lowering ----
+	// A madc `string` lowers to a real std::string OBJECT (Cfront-style): an
+	// 8-aligned opaque buffer plus ctor/dtor calls to the runtime wrappers in
+	// madc_mir_backend.cpp. One C++ decl fans out (1->N) into these lowered
+	// nodes; all share the originating TokenDecl in cir_node::origin and set
+	// synth_from_origin. See docs/superpowers/plans/2026-05-30-cir-stdstring-lowering.md.
+	static bool is_string_object(DataDef *dd);   // dtSTRING value type, not a pointer
+	size_t string_obj_words() const;             // ceil(sizeof(std::string)/sizeof(long))
+	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
+	node_t string_storage_decl(const char *name, TokenBase *origin); // long name[W];
+	node_t string_obj_addr(const char *name, TokenBase *origin);     // (void*)name
+	node_t string_ctor_call(const char *name, TokenBase *initexpr, TokenBase *origin);
+	node_t string_dtor_call(const char *name, TokenBase *origin);
+
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);
 	void set_pos(cir_node *cn, TokenBase *tb);
