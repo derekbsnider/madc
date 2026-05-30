@@ -1518,6 +1518,104 @@ static TokenDataType *resolve_namespaced_type_token(Program &pgm, TokenBase *tb,
     return dti->second;
 }
 
+// Instantiate a captured template on use: `Name<ConcreteType>`. Clones the
+// template's body tokens, substitutes the type parameter(s) with the concrete
+// type token(s) and renames the class to a per-instantiation mangled name, then
+// injects the synthesized `class Mangled { ... };` to the front of the parse
+// deque and re-parses it via the existing class parser (which registers a normal
+// DataDefCLASS). Returns a use-site TokenDataType for the instantiated class, or
+// NULL if `tname` is not a template / the syntax doesn't match (caller falls
+// through). Assumes `tb` (the template name) is already current; the next token
+// must be '<'. See docs/plans/2026-05-30-template-instantiation.md.
+static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
+						  bool consume_ns_tokens,
+						  bool allow_lazy_types);
+static TokenDataType *use_site_type_token(TokenDataType *proto, TokenBase *at);
+
+static TokenDataType *instantiate_template_use(Program &pgm, const std::string &tname,
+					       TokenBase *tb)
+{
+    auto tmi = pgm.template_map.find(tname);
+    if ( tmi == pgm.template_map.end() )
+	return NULL;
+    if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkLT )
+	return NULL;
+    Program::TemplateDef &td = tmi->second;
+
+    // Parse `< Arg [, Arg ...] >` — resolve each argument to a concrete type.
+    pgm.nextToken(); // consume '<'
+    std::vector<TokenDataType *> args;
+    std::string mangled = tname;
+    for (;;)
+    {
+	TokenBase *at = pgm.nextToken();
+	TokenDataType *adt = resolve_declared_type_token(pgm, at, true, true);
+	if ( !adt )
+	    pgm.Throw(at) << "Expecting a type argument to " << tname << "<>" << flush;
+	args.push_back(adt);
+	mangled += "_" + adt->definition.name;
+	TokenBase *sep = pgm.nextToken();
+	if ( sep->id() == TokenID::tkComma ) continue;
+	if ( sep->id() == TokenID::tkGT ) break;
+	pgm.Throw(sep) << "Expecting ',' or '>' in " << tname << "<...>" << flush;
+    }
+    if ( args.size() != td.typeparams.size() )
+	pgm.Throw(tb) << tname << "<> expects " << td.typeparams.size()
+		      << " type argument(s), got " << args.size() << flush;
+
+    // Already instantiated? Return a use-site clone of the cached type.
+    datatype_map_iter have = pgm.datatype_map.find(mangled);
+    if ( have != pgm.datatype_map.end() )
+	return use_site_type_token((TokenDataType *)have->second, tb);
+
+    // Map each type-parameter name -> its concrete type token.
+    std::map<std::string, TokenDataType *> subst;
+    for ( size_t i = 0; i < td.typeparams.size(); ++i )
+	subst[td.typeparams[i]] = args[i];
+
+    // Build the substituted, renamed class-definition token sequence:
+    // clone each body token; rename the class tag (TokenIdent == class_name) to
+    // `mangled`; replace each type-parameter ident with its concrete type token.
+    std::vector<TokenBase *> inj;
+    for ( TokenBase *bt : td.body )
+    {
+	if ( bt->type() == TokenType::ttIdentifier )
+	{
+	    const std::string &s = ((TokenIdent *)bt)->str;
+	    std::map<std::string, TokenDataType *>::iterator si = subst.find(s);
+	    if ( si != subst.end() ) { inj.push_back(si->second->clone()); continue; }
+	    if ( s == td.class_name )
+	    {
+		TokenIdent *ni = (TokenIdent *)bt->clone();
+		ni->str = mangled;
+		inj.push_back(ni);
+		continue;
+	    }
+	}
+	inj.push_back(bt->clone());
+    }
+    // Terminate the class definition so the class parser stops cleanly without
+    // consuming the caller's following tokens (e.g. the declared variable name).
+    TokenSemi *semi = new TokenSemi();
+    inj.push_back(semi);
+
+    DBG(std::cout << "instantiate_template_use(): injecting " << inj.size()
+	<< " tokens for " << mangled << std::endl);
+
+    // Inject to the FRONT of the parse deque (push_front in reverse so they
+    // dequeue in order), then re-parse the class definition via its keyword token.
+    for ( std::vector<TokenBase *>::reverse_iterator it = inj.rbegin(); it != inj.rend(); ++it )
+	pgm.pushToken(*it);
+    TokenBase *class_kw = pgm.nextToken();   // the injected `class` keyword
+    pgm.parseKeyword((TokenKeyword *)class_kw); // TokenCLASS::parse → registers DataDefCLASS
+
+    datatype_map_iter now = pgm.datatype_map.find(mangled);
+    if ( now == pgm.datatype_map.end() )
+	pgm.Throw(tb) << "internal: template instantiation " << mangled << " did not register" << flush;
+    DBG(std::cout << "instantiate_template_use(): instantiated " << mangled << std::endl);
+    return use_site_type_token((TokenDataType *)now->second, tb);
+}
+
 static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 						  bool consume_ns_tokens,
 						  bool allow_lazy_types)
@@ -1544,6 +1642,12 @@ static TokenDataType *resolve_declared_type_token(Program &pgm, TokenBase *tb,
 	use->column = tb->column;
 	return use;
     }
+
+    // `Name<ConcreteType>` where Name is a captured template: instantiate (or
+    // reuse) the concrete class and return its type. Guarded on template_map +
+    // a following '<', so non-template identifiers are unaffected.
+    if ( TokenDataType *inst = instantiate_template_use(pgm, tname, tb) )
+	return inst;
 
     if ( TokenDataType *ns_type = resolve_namespaced_type_token(pgm, tb, consume_ns_tokens) )
 	return ns_type;
@@ -12618,15 +12722,17 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
     // Capture the full `class Name ... { ... }` token range (incl. any base list
     // before the brace). Brace-match on tkOpBrc/tkClBrc.
+    // Store CLONES we own: the consumed originals may be freed/reused once this
+    // parse pass moves on, so capturing raw pointers would dangle at instantiation.
     std::vector<TokenBase *> body;
-    body.push_back(class_kw);
-    body.push_back(name_tb);
+    body.push_back(class_kw->clone());
+    body.push_back(name_tb->clone());
     int depth = 0;
     bool seen_brace = false;
     for (;;)
     {
 	tn = pgm.nextToken();
-	body.push_back(tn);
+	body.push_back(tn->clone());
 	if ( tn->id() == TokenID::tkOpBrc ) { depth++; seen_brace = true; }
 	else if ( tn->id() == TokenID::tkClBrc )
 	{
@@ -15848,6 +15954,13 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		datatype_map_iter dmi = datatype_map.find(tname);
 		if ( dmi == datatype_map.end() )
 		{
+		    // `Name<ConcreteType>` where Name is a captured template:
+		    // instantiate the concrete class and declare a variable of it.
+		    if ( TokenDataType *inst = instantiate_template_use(*this, tname, tb) )
+		    {
+			DBG(std::cout << "parseStatement() template instantiation, calling parseDeclaration" << std::endl);
+			return parseDeclaration(inst);
+		    }
 		    if ( TokenDataType *ns_type = resolve_namespaced_type_token(*this, tb, true) )
 		    {
 			DBG(std::cout << "parseStatement() namespaced identifier is a registered type, calling parseDeclaration" << std::endl);

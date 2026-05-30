@@ -115,6 +115,35 @@ __this param. Instantiation just feeds them synthesized tokens. Container header
 (include/madc/vector|map|set, madc-dialect) define the templates; `#include
 <vector>` lexes them; `vector<int>` instantiates.
 
+## IMPLEMENTATION STATUS (2026-05-30)
+- **Step 1 — capture: DONE** (commit ba62e64). `template<typename T> class Name {...}`
+  parses; TokenTEMPLATE::parse captures {typeparams, class_name, body-token-range
+  CLONES} into Program::template_map. Validated; fulltest 367, 0 regressions.
+- **Step 2 — instantiation: WORKS FOR MEMBERS** (this commit). Hooked in
+  parseStatement's ttIdentifier path (the datatype_map miss, ~parser.cpp:15950)
+  and resolve_declared_type_token (~1640) via `instantiate_template_use()`:
+  parses `<Args>`, mangles `Name_arg`, clones+substitutes body tokens (TokenIdent
+  ==typeparam → concrete type token; ==class_name → mangled), appends a `;`,
+  injects to the front of the parse deque, re-parses via parseKeyword (TokenCLASS),
+  registers a normal DataDefCLASS, caches. VALIDATED end-to-end: `template<typename
+  T> class Box { T value; }; Box<int> b; b.value=42;` prints "box holds 42" through
+  cir_node→c2mir→MIR→JIT. fulltest 367, 0 regressions (instantiation is guarded:
+  only fires for a template_map name followed by `<`).
+- **KNOWN BUG (next): instantiated-class METHODS get +1 parameter.** `Box<int>::fetch()`
+  (0 declared params) is registered with 2 params (expected __this only =1);
+  `store(T v)` → 3. Symptom: "Incorrect number of parameters: expected N got N-1"
+  at the method call. Root cause is in the re-entrant class/method parse — the
+  __this injection (parseFunction, parser.cpp:13383
+  `func->parameters.push_back(getPointerType(owner_class))` + `ids.push_back("__this")`,
+  guarded by func_already_declared) interacts with the nested parse state so a
+  method ends up with one extra param. Member access works; only methods are
+  affected. MUST be fixed before container headers (vector::push_back etc. are
+  methods). Debug by dumping the instantiated FuncDef param list vs an identical
+  hand-written non-template class, and checking func_already_declared / the
+  compounds-stack/parsing-flags state during the re-entrant parse. GOTCHA already
+  found: user method names that are madc keywords (`set`, `map`, `list`, `vector`,
+  `get` is OK) collide — pre-existing keyword issue, use non-keyword names in tests.
+
 ## What stays mangled-direct (NOT templated by madc)
 std::string (and ostream/istream/cout/cin) — libstdc++ exports them; madc calls
 them directly via the mangler. See [[project_cpp_mangled_direct]].
