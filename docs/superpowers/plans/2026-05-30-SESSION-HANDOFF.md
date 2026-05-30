@@ -11,7 +11,8 @@
   Build: `make -C /workspace/mir`. Test suite: `make -C /workspace/mir c2mir-test` (must stay green: 1075 tests/2150 success). c2m binary: `/workspace/mir/c2m`. Run a c2m test: `c2m FILE.c -ei` (file BEFORE -ei; args after -ei go to the program) or `-eg` (gen). gcc is canon: `gcc -std=gnu11 -O0 FILE.c && ./a.out`.
 
 ## CURRENT TEST STATE
-- madc integration: **346 passed / 76 failed / 1 flaky-timeout (testfortypedcomma) / 56 skipped** (was 334/88 at the start of the 2026-05-30 PM session; +12 net, 0 regressions). Goal = drive 76→0 for develop→master parity (Track 1.3).
+- madc integration: **351 passed / 71 failed / 1 flaky-timeout (testfortypedcomma) / 56 skipped** (was 334/88 at the start of the 2026-05-30 PM session; +17 net, 0 regressions; unit tests green). Goal = drive 71→0 for develop→master parity (Track 1.3).
+- **STL containers DONE** (commits fd32441+308f549, opus subagent in worktree, reviewed+cherry-picked+validated by me): vector<T>/map<K,V>/set<T> via the runtime-object model — recovered ns_stl.cpp (real std::vector/map/set wrappers) + parser instantiation + NEW CIR lowering (is_container_object, container_method_call, container_subscript_read/_assign, translate_foreach_vector; string results via scope-temp + (fill, string_cstr) comma-seq). Passing: testvector testset testmap testsubscript testmadc_ns. list<T> still stubbed (unused).
 - madc unit tests: green. MIR c2mir-test: green (incl. bootstrap, which we FIXED).
 
 ## 2026-05-30 PM SESSION — P1 progress (+12, branch feature/cir-stdstring-claude)
@@ -43,12 +44,6 @@ testinclude test test5 testforeach testlang testrustmatch.
 
 ### REMAINING P1 sub-projects (each a cohesive unit; cir_builder.cpp-heavy so
 ### serialize or use worktrees+cherry-pick, not parallel same-file edits)
-- **STL containers vector<T>/map/set/list** (testmadc_ns testsubscript testvector
-  testmap testset) — "template instantiation not implemented". The OLD transpiler
-  has a full reference: `git show 42e9b6e~1:src/madc_emit_c.cpp` lines ~5759-5960
-  (the `__stl_vector_int_*` / `__stl_map_str_int_*` header generators) + its
-  range-for-over-vector lowering (~3365). Biggest P1 unit; good subagent task with
-  that reference + the obj model.
 - **stringstream** (testsstream) — needs a stringstream OBJECT (obj model) + a
   proper `stringstream*->ostream*` base-offset-adjusting wrapper (the virtual-base
   issue AGENTS.md flags) + printstream. The streamout_* wrappers
