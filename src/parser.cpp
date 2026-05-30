@@ -3592,6 +3592,15 @@ void Program::add_string_methods()
     var = addFunction("size",   datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
     ddSTRING.methods.push_back(var);
 
+    // empty() -> int (0/1); clear() -> void. These are recognized by the
+    // parser here so `s.empty()`/`s.clear()` parse as method calls; the CIR
+    // backend lowers them to runtime wrappers (string_length==0 / string_clear),
+    // so the registered function pointer is only a legacy-backend placeholder.
+    var = addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    ddSTRING.methods.push_back(var);
+    var = addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    ddSTRING.methods.push_back(var);
+
     DBG(std::cout << "add_string_methods() ddSTRING.methods.size() = " << ddSTRING.methods.size() << std::endl);
 }
 

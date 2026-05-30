@@ -1,0 +1,15 @@
+#include <iostream>
+using namespace std;
+int main() {
+    string s = "hello";
+    string e;
+    printstr(s.c_str());          // hello
+    cout << s.length() << endl;   // 5
+    cout << s.size() << endl;     // 5
+    cout << s.empty() << endl;    // 0
+    cout << e.empty() << endl;    // 1
+    s.clear();
+    cout << s.empty() << endl;    // 1
+    cout << s.length() << endl;   // 0
+    return 0;
+}

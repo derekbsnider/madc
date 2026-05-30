@@ -87,6 +87,11 @@ class CirBuilder {
 	// string_cstr((void*)obj) — coerce a std::string object argument to a
 	// const char* (the dtSTRING->dtCHARptr coercion) for a char*-expecting call.
 	node_t string_cstr_arg(TokenBase *arg);
+	// Lower a std::string method call on a string OBJECT receiver to the
+	// matching runtime wrapper: s.c_str()/.length()/.size()/.empty()/.clear().
+	// Returns NULL when `tm` is not a recognized string-object method call,
+	// so translate_expr falls through to its generic member/call handling.
+	node_t string_method_call(class TokenMember *tm, TokenBase *origin);
 
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);
@@ -158,9 +163,13 @@ public:
 	// A param of an output extern: its type-spec node codes + whether it is a pointer.
 	struct ExternParam { std::vector<c2mir_node_code_t> specs; bool ptr; };
 	// Record (once) an extern proto for an output runtime/libstdc++ symbol.
-	// ret_ptr=true -> returns void*, else void.
+	// ret_ptr=true -> returns void*, else void. ret_specs overrides the
+	// return base type when non-empty (e.g. {N_LONG} for a long-returning
+	// runtime fn); empty means the default base type N_VOID.
 	void need_output_extern(const char *symbol, bool ret_ptr,
-				const std::vector<ExternParam> &params);
+				const std::vector<ExternParam> &params,
+				const std::vector<c2mir_node_code_t> &ret_specs
+					= std::vector<c2mir_node_code_t>());
 	// Map a builtin print-fn name to its madc_* runtime symbol ("" if not one).
 	static const char *builtin_output_runtime(const std::string &name);
 

@@ -443,6 +443,71 @@ node_t CirBuilder::string_cstr_arg(TokenBase *arg)
 	return call;
 }
 
+// Lower a std::string method call (s.c_str()/.length()/.size()/.empty()/.clear())
+// on a string OBJECT receiver to the matching runtime wrapper, passing the object
+// address as (void*). Returns NULL when this is not a recognized string-object
+// method call (wrong receiver type, a string literal/lifted-literal receiver, or
+// an unknown method) so the caller falls through to generic handling.
+node_t CirBuilder::string_method_call(TokenMember *tm, TokenBase *origin)
+{
+	// Receiver must be a genuine string OBJECT, not a const char* value:
+	// exclude non-string types, lifted `__literal__` vars, and constants —
+	// the same exclusions is_string_object_value applies to a TokenVar.
+	const Variable &obj = tm->object;
+	if (!is_string_object(obj.type))
+		return NULL;
+	if (obj.name.compare(0, 11, "__literal__") == 0)
+		return NULL;
+	if (obj.is_constant())
+		return NULL;
+
+	const std::string &method = tm->var.name;
+	node_t addr = string_obj_addr(obj.name.c_str(), origin);
+
+	if (method == "c_str") {
+		need_output_extern("string_cstr", true, { { {N_VOID}, true } });
+		node_t a = list();
+		append(a, addr);
+		node_t call = node2(N_CALL, id("string_cstr", origin), a, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		return call;
+	}
+	// length()/size() — std::string size()==length(); both -> string_length,
+	// declared returning `long` (NOT void) so the value reads correctly in
+	// arithmetic/comparison contexts.
+	if (method == "length" || method == "size") {
+		need_output_extern("string_length", false, { { {N_VOID}, true } },
+				   { N_LONG });
+		node_t a = list();
+		append(a, addr);
+		node_t call = node2(N_CALL, id("string_length", origin), a, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		return call;
+	}
+	// empty() -> (string_length((void*)s) == 0)
+	if (method == "empty") {
+		need_output_extern("string_length", false, { { {N_VOID}, true } },
+				   { N_LONG });
+		node_t a = list();
+		append(a, addr);
+		node_t call = node2(N_CALL, id("string_length", origin), a, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		node_t eq = node2(N_EQ, call, integer(0, origin), origin);
+		CIR_NODE(eq)->synth_from_origin = true;
+		return eq;
+	}
+	// clear() -> string_clear((void*)s)  (a void statement-expression)
+	if (method == "clear") {
+		need_output_extern("string_clear", false, { { {N_VOID}, true } });
+		node_t a = list();
+		append(a, addr);
+		node_t call = node2(N_CALL, id("string_clear", origin), a, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		return call;
+	}
+	return NULL;
+}
+
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
 // instead of raw type nodes — c2mir's checker resolves the typedef.
 node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
@@ -747,13 +812,22 @@ const char *CirBuilder::builtin_output_runtime(const std::string &name)
 }
 
 void CirBuilder::need_output_extern(const char *symbol, bool ret_ptr,
-				    const std::vector<ExternParam> &params)
+				    const std::vector<ExternParam> &params,
+				    const std::vector<c2mir_node_code_t> &ret_specs)
 {
 	if (m_output_externs.count(symbol)) return;
 
 	node_t ext_list = list();
 	append(ext_list, simple(N_EXTERN));
-	append(ext_list, simple(N_VOID));            // ret base type = void
+	// Return base type: N_VOID by default, or the caller-supplied specs
+	// (e.g. {N_LONG} for a long-returning runtime fn — a void base would
+	// silently truncate/misread a value used in arithmetic/comparison).
+	if (ret_specs.empty()) {
+		append(ext_list, simple(N_VOID));
+	} else {
+		for (size_t i = 0; i < ret_specs.size(); i++)
+			append(ext_list, simple(ret_specs[i]));
+	}
 	node_t share = node1(N_SHARE, ext_list);
 
 	node_t param_list = list();
@@ -1615,6 +1689,20 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			return node2(N_IND,
 				translate_expr(tse->base_expr),
 				translate_expr(tse->index), tb);
+	}
+
+	// std::string method call on a string-object receiver
+	// (s.c_str()/.length()/.size()/.empty()/.clear()). A TokenCallMethod
+	// IS-A TokenMember, so this must run before the generic member-access
+	// handler below — otherwise `s.c_str()` mis-lowers to a bare field
+	// access `s.c_str`. string_method_call returns NULL for anything it
+	// doesn't recognize, so non-string method calls fall through.
+	if (tb->type() == TokenType::ttCallMethod) {
+		TokenMember *tcm = dynamic_cast<TokenMember *>(tb);
+		if (tcm) {
+			node_t lowered = string_method_call(tcm, tb);
+			if (lowered) return lowered;
+		}
 	}
 
 	// Struct member access

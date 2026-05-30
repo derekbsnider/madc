@@ -75,6 +75,8 @@ void string_append(void *dst, void *src)
     { *(std::string *)dst += *(std::string *)src; }
 void string_append_cstr(void *dst, const char *s)
     { if (s) *(std::string *)dst += s; }
+void string_clear(void *ptr)
+    { ((std::string *)ptr)->clear(); }
 
 // Generic ostream wrappers — mirrors streamout_string/streamout_cstr/
 // streamout_numeric from compiler_operators.cpp.  Take ostream* as first
