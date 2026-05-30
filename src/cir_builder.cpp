@@ -1632,6 +1632,14 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 	node_t expr = translate_expr(ts->expression);
 	node_t block_items = list();
 
+	// Declarations before the first case label (`switch(x){ T v; case ...}`)
+	// belong to the switch's compound scope. Emit them first so uses of `v`
+	// later in the switch resolve; dropping them left `v` undeclared.
+	for (size_t pi = 0; pi < ts->pre_case_stmts.size(); pi++) {
+		node_t s = translate_stmt(ts->pre_case_stmts[pi]);
+		if (s) append(block_items, s);
+	}
+
 	for (size_t ci = 0; ci < ts->cases.size(); ci++) {
 		TokenCASE *tc = ts->cases[ci];
 		bool is_default = (tc->value == NULL);

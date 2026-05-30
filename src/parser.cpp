@@ -12349,9 +12349,13 @@ TokenBase *TokenSWITCH::parse(Program &pgm)
 		// case label — they're unreachable (no case path enters
 		// there) but valid as compile-time declarations. SMAUG's
 		// `switch(SPELL_POWER(skill)) { OBJ_DATA *clone; default: ... }`
-		// is a common form. Parse and discard.
-		DBG(std::cout << "TokenSWITCH::parse() skipping pre-case declaration" << std::endl);
-		pgm.parseStatement(tn);
+		// is a common form. Keep them so the CIR emits the declaration
+		// (it carries the type for uses later in the switch); discarding
+		// left the variable undeclared in the emitted C.
+		DBG(std::cout << "TokenSWITCH::parse() keeping pre-case declaration" << std::endl);
+		TokenBase *pre = pgm.parseStatement(tn);
+		if ( pre )
+		    pre_case_stmts.push_back(pre);
 	    }
 	    else if ( tn->id() == TokenID::tkSemi )
 	    {
