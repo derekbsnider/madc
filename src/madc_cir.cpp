@@ -1611,6 +1611,39 @@ static void *cir_import_resolver(const char *name)
 }
 
 // -----------------------------------------------------------------------
+// JIT symbolization for the crash handler
+// -----------------------------------------------------------------------
+//
+// The MIR module whose functions are currently JIT-executing. Set just
+// before main() is invoked so the crash handler (madc.cpp) can map a
+// faulting machine-code address back to the MIR function name + offset —
+// MIR generates each function lazily, recording its code range in
+// machine_code / machine_code_len, so a function on the live call stack has
+// a resolvable range. This is the first brick of madc's own debugger.
+static MIR_module_t g_jit_module = NULL;
+
+// Resolve a code address to "func+0xoff [JIT]". Returns 1 on success. Only
+// reads pointer-chasing DLIST fields and writes via snprintf — acceptable
+// from a crashing signal handler (the process is dying regardless).
+extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n)
+{
+	if (!g_jit_module || !out || n == 0) return 0;
+	char *a = (char *)addr;
+	for (MIR_item_t item = DLIST_HEAD(MIR_item_t, g_jit_module->items);
+	     item != NULL; item = DLIST_NEXT(MIR_item_t, item)) {
+		if (item->item_type != MIR_func_item || !item->u.func) continue;
+		char *mc = (char *)item->u.func->machine_code;
+		size_t len = item->u.func->machine_code_len;
+		if (mc && len && a >= mc && a < mc + len) {
+			snprintf(out, n, "%s+0x%lx [JIT]", item->u.func->name,
+				 (unsigned long)(a - mc));
+			return 1;
+		}
+	}
+	return 0;
+}
+
+// -----------------------------------------------------------------------
 // Full CIR pipeline: parse → translate → compile → JIT execute
 // -----------------------------------------------------------------------
 
@@ -1726,7 +1759,10 @@ int madc_cir_execute(Program *prog, const char *source_name,
 	return -1;
     }
 
+    // Expose the module to the crash handler for JIT symbolization.
+    g_jit_module = mod;
     int result = ((int (*)(int, char **))code)(user_argc, user_argv);
+    g_jit_module = NULL;
 
     cir_finish(c2m);
     MIR_gen_finish(ctx);

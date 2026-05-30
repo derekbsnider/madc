@@ -6,6 +6,7 @@
 #include <sys/time.h>
 #include <signal.h>
 #include <execinfo.h>
+#include <dlfcn.h>
 #include <unistd.h>
 #include <ucontext.h>
 #include <sys/resource.h>
@@ -41,6 +42,11 @@ using namespace std;
 // their own crash/error plumbing instead of relying on process globals.
 static Program *g_active_program = NULL;
 
+// Resolve a JIT (MIR-generated) code address to "func+0xoff [JIT]".
+// Defined in madc_cir.cpp where the live MIR module is in scope. Returns 1
+// if the address falls inside a generated function's code range.
+extern "C" int madc_jit_symbolize(void *addr, char *out, unsigned long n);
+
 // Async-signal-safe crash handler: writes signal name + backtrace to fd 2
 // (stderr) using only async-signal-safe libc calls. Re-raises the signal
 // with the default handler so core files still drop if enabled.
@@ -71,7 +77,33 @@ static void crash_handler(int sig, siginfo_t *info, void *uctx)
 
     void *frames[64];
     int nf = backtrace(frames, 64);
-    backtrace_symbols_fd(frames, nf, 2);
+    // Symbolize each frame. JIT (MIR-generated) frames are invisible to
+    // backtrace_symbols/dladdr — resolve those against the live MIR module so
+    // a crash inside transpiled code reads as `func+0xoff [JIT]` instead of a
+    // bare address. Falls back to dladdr for native (libc/madc) frames.
+    for (int i = 0; i < nf; i++)
+    {
+	char line[320], sym[200];
+	if ( madc_jit_symbolize(frames[i], sym, sizeof(sym)) )
+	{
+	    int n = snprintf(line, sizeof(line), "  [%p] %s\n", frames[i], sym);
+	    write(2, line, n);
+	    continue;
+	}
+	Dl_info di;
+	if ( dladdr(frames[i], &di) && di.dli_sname )
+	{
+	    int n = snprintf(line, sizeof(line), "  [%p] %s+0x%lx\n", frames[i],
+			     di.dli_sname,
+			     (unsigned long)((char *)frames[i] - (char *)di.dli_saddr));
+	    write(2, line, n);
+	}
+	else
+	{
+	    int n = snprintf(line, sizeof(line), "  [%p] ??\n", frames[i]);
+	    write(2, line, n);
+	}
+    }
 
     // Restore default handler and re-raise so the shell sees the real exit
     // status (and optionally produces a core dump).
