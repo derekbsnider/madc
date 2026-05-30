@@ -282,6 +282,7 @@ editing — don't try to memorize all of them.
 |--------------------------------------------------|------:|------------------------------------------------|
 | [mc11-ir.md](.claude/rules/mc11-ir.md)           |    24 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
 | [backend-strategy.md](.claude/rules/backend-strategy.md) | 30 | **Forward trajectory (ADR 0001).** c2mir/C-AST IR is the sole backend; direct-MIR is a scalpel for runtime internals + REPL/debug tier; `--emit=c11` is first-class; CIR coverage parity gates promotion to master |
+| [lowering-vs-raising.md](.claude/rules/lowering-vs-raising.md) | 40 | Where a missing feature gets fixed: Tier 1 lower/resolve in madc (default) · Tier 2 raise c2mir for semantic primitives · Tier 3 raise MIR for floor gaps (SIMD). Verify c2mir's real surface — stmt-exprs/_Generic/_Complex are supported |
 | [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 30 | Compare with `gcc -S` first, fix at deepest layer, operator self-determination |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
 | [regdp-reset.md](.claude/rules/regdp-reset.md)   |    23 | Reset `regdp` before sub-compiles in loops / conditionals |
@@ -294,10 +295,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **25 rules, 619 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~300 lines** — loaded by Claude via
+- **26 rules, 669 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~302 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~972 lines.**
+- **Grand total loaded by Claude Code per turn: ~1023 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

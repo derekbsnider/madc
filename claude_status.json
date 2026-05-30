@@ -29,7 +29,8 @@
     "Write the cir_node -> .c / .mc11 renderer (single emitter; render target = the same --std= language enum: C11, MC11, C++, madc) + the gcc -S -fverbose-asm fidelity gate + cir_node-vs-`c2m -d` differential, to make the worklist mechanical.",
     "Debug/REPL tier (hybrid seam, ADR 0001): extend the JIT-symbolizing crash handler (25c731a) toward a madc-native debugger on MIR interp.",
     "Reimplement eval/exec + REPL on MIR (deferred). AOT via emit-C + external compiler (deferred).",
-    "Backend trajectory is settled — see docs/adr/0001-cir-c2mir-backend.md and .claude/rules/backend-strategy.md. Don't re-litigate."
+    "Backend trajectory is settled — see docs/adr/0001-cir-c2mir-backend.md and .claude/rules/backend-strategy.md. Don't re-litigate. Lowering-vs-raising decision rule: .claude/rules/lowering-vs-raising.md.",
+    "SIMD (Track 1.6, KG Decision{simd_raise_mir_upstream}): add a minimal generic-vector extension to MIR (types+insns+per-target codegen+interp+ABI) and a c2mir vector_size front-end, DESIGNED FOR UPSTREAM to vnmakarov/mir (enables MIR's WASM->MIR future; all 5 targets have vector ISAs; lifts ~11 deferred SIMD torture tests). Interim: scalarize for JIT + emit-C->gcc/clang. TODO: write the full multi-phase plan doc docs/plans/2026-05-30-simd-mir-c2mir.md (deferred — context budget; phasing sketched in the ROADMAP Track 1.6 note + the KG node)."
   ],
   "known_issues": [
     "~95 CIR integration failures = the coverage worklist (classes: unhandled_expr / c2mir_rejected / runtime_mismatch) and the parity-to-master gate. Re-measure fresh per session.",
