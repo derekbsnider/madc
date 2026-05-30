@@ -290,6 +290,40 @@ public:
 	// callee's parameter 0 is already the (owner *) __this, so its full
 	// parameter list is emitted as-is.
 	node_t method_fnptr_type(class FuncDef *callee, DataDefCLASS *owner);
+	// Append placement-new construct / destruct calls for every embedded
+	// OBJECT member (std::string today) of `cdd` to `out`, addressing each
+	// member through the in-scope `__this` pointer:
+	//   string_construct((void*)&__this->member)  /  string_destruct(...)
+	// Used to give a class with object members proper member lifetime inside
+	// its (possibly synthesized) ctor/dtor. Returns true if it emitted any.
+	bool class_member_construct(DataDefCLASS *cdd, std::vector<node_t> &out,
+				    TokenBase *origin);
+	bool class_member_destruct(DataDefCLASS *cdd, std::vector<node_t> &out,
+				   TokenBase *origin);
+	// True when the class has at least one embedded object member needing
+	// construction/destruction (so it requires a ctor/dtor even if the user
+	// wrote none).
+	bool class_has_object_members(DataDefCLASS *cdd);
+	// Append `string_construct((void*)&inst.member)` statements (one per
+	// embedded object member) to the c2mir list node `items`. Used at a
+	// value class-instance declaration that has object members but no user
+	// constructor (the member access is `inst.member`, not `__this->member`).
+	void class_instance_member_ctors(const char *inst, DataDefCLASS *cdd,
+					 node_t items, TokenBase *origin);
+	// True when a class needs an (implicit) destructor: it has a user dtor,
+	// embedded object members, or a base class that needs one.
+	bool class_needs_dtor(DataDefCLASS *cdd);
+	// The destructor symbol used as the cleanup function for a class
+	// instance (ClassName___dtor) — whether user-written or synthesized.
+	std::string class_dtor_symbol(DataDefCLASS *cdd);
+	// Emit a synthesized destructor function for a class that needs a dtor
+	// (object members and/or a base dtor) but has no user-written one:
+	//   void Class___dtor(struct Class *__this) {
+	//       string_destruct(&__this->member); ...; Base___dtor((Base*)__this);
+	//   }
+	// Returns NULL when the class has a user dtor (its own def handles this)
+	// or needs no dtor.
+	node_t synth_dtor_def(DataDefCLASS *cdd);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
 

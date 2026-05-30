@@ -897,6 +897,12 @@ node_t CirBuilder::string_cstr_arg(TokenBase *arg)
 node_t CirBuilder::string_obj_arg(TokenBase *arg)
 {
 	if (is_string_object_value(arg)) {
+		// A string-object MEMBER (`obj.name`) is an embedded `long[W]` buffer
+		// in the struct; its address is `(void*)&(obj.name)`. Translate the
+		// member access (yields the FIELD lvalue), take its address, cast.
+		if (dynamic_cast<TokenMember *>(arg))
+			return node2(N_CAST, void_ptr_type(),
+				node1(N_ADDR, translate_expr(arg), arg), arg);
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
 			return string_obj_addr(tv->var.name.c_str(), arg);
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
@@ -1452,11 +1458,9 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 			// fall through to the char* overload below.
 			const char *SSYM = "_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE";
 			need_output_extern(SSYM, true, { { {N_VOID}, true }, { {N_VOID}, true } });
-			if (TokenVar *tv = dynamic_cast<TokenVar *>(vals[i]))
-				append(args, string_obj_addr(tv->var.name.c_str(), top));
-			else
-				append(args, node2(N_CAST, void_ptr_type(),
-						   translate_expr(vals[i]), top));
+			// string_obj_arg yields the object's (void*) address for both a
+			// plain string variable (&v) and a string MEMBER (&obj.member).
+			append(args, string_obj_arg(vals[i]));
 			result = node2(N_CALL, id(SSYM), args, top);
 			continue;
 		}
@@ -1721,7 +1725,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t attr_node = ignore();
 	{
 		DataDefCLASS *cdd = (!is_ptr) ? as_user_class(base_dd) : NULL;
-		if (cdd && cdd->has_user_dtor) {
+		if (cdd && class_needs_dtor(cdd)) {
 			std::string dtor_sym = cdd->name + "___dtor";
 			referenced_funcs.insert(dtor_sym);
 			node_t attr_args = list();
@@ -2126,6 +2130,141 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 
 	referenced_funcs.insert(sym);
 	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+}
+
+bool CirBuilder::class_has_object_members(DataDefCLASS *cdd)
+{
+	if (!cdd) return false;
+	for (const auto &m : cdd->members)
+		if (is_string_object(m.second)) return true;
+	return false;
+}
+
+// Shared body for member construct/destruct: emit `sym((void*)&__this->m)`
+// expression-statements for each embedded string-object member.
+static const char *MEMBER_CTOR_SYM = "string_construct";
+static const char *MEMBER_DTOR_SYM = "string_destruct";
+
+bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
+					std::vector<node_t> &out, TokenBase *origin)
+{
+	if (!cdd) return false;
+	bool any = false;
+	for (const auto &m : cdd->members) {
+		if (!is_string_object(m.second)) continue;
+		need_output_extern(MEMBER_CTOR_SYM, true, { { {N_VOID}, true } });
+		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
+				   id(m.first.c_str(), origin));
+		node_t addr = node2(N_CAST, void_ptr_type(),
+				    node1(N_ADDR, fld, origin), origin);
+		node_t a = list();
+		append(a, addr);
+		node_t call = node2(N_CALL, id(MEMBER_CTOR_SYM, origin), a, origin);
+		out.push_back(node2(N_EXPR, list(), call, origin));
+		any = true;
+	}
+	return any;
+}
+
+bool CirBuilder::class_member_destruct(DataDefCLASS *cdd,
+				       std::vector<node_t> &out, TokenBase *origin)
+{
+	if (!cdd) return false;
+	bool any = false;
+	// Destruct in reverse declaration order (mirrors C++ member teardown).
+	for (size_t i = cdd->members.size(); i-- > 0; ) {
+		const auto &m = cdd->members[i];
+		if (!is_string_object(m.second)) continue;
+		need_output_extern(MEMBER_DTOR_SYM, false, { { {N_VOID}, true } });
+		node_t fld = node2(N_DEREF_FIELD, id("__this", origin),
+				   id(m.first.c_str(), origin));
+		node_t addr = node2(N_CAST, void_ptr_type(),
+				    node1(N_ADDR, fld, origin), origin);
+		node_t a = list();
+		append(a, addr);
+		node_t call = node2(N_CALL, id(MEMBER_DTOR_SYM, origin), a, origin);
+		out.push_back(node2(N_EXPR, list(), call, origin));
+		any = true;
+	}
+	return any;
+}
+
+bool CirBuilder::class_needs_dtor(DataDefCLASS *cdd)
+{
+	if (!cdd) return false;
+	if (cdd->has_user_dtor) return true;
+	if (class_has_object_members(cdd)) return true;
+	if (cdd->base_class && class_needs_dtor(cdd->base_class)) return true;
+	return false;
+}
+
+std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
+{
+	return cdd ? cdd->name + "___dtor" : std::string();
+}
+
+void CirBuilder::class_instance_member_ctors(const char *inst,
+					     DataDefCLASS *cdd, node_t items,
+					     TokenBase *origin)
+{
+	if (!cdd) return;
+	for (const auto &m : cdd->members) {
+		if (!is_string_object(m.second)) continue;
+		need_output_extern(MEMBER_CTOR_SYM, true, { { {N_VOID}, true } });
+		// string_construct((void*)&inst.member)
+		node_t fld = node2(N_FIELD, id(inst, origin),
+				   id(m.first.c_str(), origin));
+		node_t addr = node2(N_CAST, void_ptr_type(),
+				    node1(N_ADDR, fld, origin), origin);
+		node_t a = list();
+		append(a, addr);
+		node_t call = node2(N_CALL, id(MEMBER_CTOR_SYM, origin), a, origin);
+		append(items, node2(N_EXPR, list(), call, origin));
+	}
+}
+
+node_t CirBuilder::synth_dtor_def(DataDefCLASS *cdd)
+{
+	if (!cdd || cdd->has_user_dtor || !class_needs_dtor(cdd))
+		return NULL;
+
+	// void Class___dtor(struct Class *__this)
+	node_t ret_type = node1(N_LIST, simple(N_VOID));
+	// A NAMED parameter is an N_SPEC_DECL (matches param_decl); an N_TYPE is
+	// only for unnamed/abstract params and would lose the __this name.
+	node_t pspec = node1(N_LIST, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t param = simple(N_SPEC_DECL);
+	append(param, pspec);
+	append(param, node2(N_DECL, id("__this"), node1(N_LIST, pointer())));
+	append(param, ignore());
+	append(param, ignore());
+	append(param, ignore());
+	node_t param_list = list();
+	append(param_list, param);
+	node_t func_inner = node1(N_FUNC, param_list);
+	node_t decl = node2(N_DECL, id(class_dtor_symbol(cdd).c_str()),
+			    node1(N_LIST, func_inner));
+
+	// Body: destruct object members (reverse order), then base dtor.
+	std::vector<node_t> stmts;
+	class_member_destruct(cdd, stmts, NULL);
+	if (cdd->base_class && class_needs_dtor(cdd->base_class)) {
+		std::string bsym = class_dtor_symbol(cdd->base_class);
+		referenced_funcs.insert(bsym);
+		node_t bt = node2(N_TYPE,
+			node1(N_LIST, node2(N_STRUCT,
+				id(cdd->base_class->name.c_str()), ignore())),
+			node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+		node_t bcast = node2(N_CAST, bt, id("__this"));
+		node_t a = list();
+		append(a, bcast);
+		node_t call = node2(N_CALL, id(bsym.c_str()), a);
+		stmts.push_back(node2(N_EXPR, list(), call));
+	}
+	node_t items = list();
+	for (node_t s : stmts) append(items, s);
+	node_t body = node2(N_BLOCK, list(), items);
+	return node4(N_FUNC_DEF, ret_type, decl, list(), body);
 }
 
 node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
@@ -3479,6 +3618,13 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			node_t cc = class_ctor_call(v, cdd,
 						    std::vector<TokenBase *>(), tc);
 			if (cc) append(items, cc);
+			// A class with embedded object members but NO user ctor still
+			// needs each member constructed (string_construct(&f.member)).
+			// (Member destruction is via the synthesized dtor referenced by
+			// the cleanup attribute — see class_struct_def / var_decl.)
+			else if (class_has_object_members(cdd))
+				class_instance_member_ctors(v->name.c_str(), cdd,
+							    items, tc);
 		}
 	}
 
@@ -3562,6 +3708,12 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				node_t cc = class_ctor_call(&sdcl->var, cdcl,
 							    sdcl->ctor_args, sdcl);
 				if (cc) append(items, cc);
+				// No user ctor but embedded object members: construct each
+				// member in place (string_construct(&inst.member)). With a
+				// user ctor, the ctor body's prologue constructs them.
+				else if (class_has_object_members(cdcl))
+					class_instance_member_ctors(sdcl->var.name.c_str(),
+								    cdcl, items, sdcl);
 				continue;
 			}
 		}
@@ -3696,6 +3848,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		std::vector<node_t> prologue, epilogue;
 		if (is_ctor && base && base->has_user_ctor)
 			prologue.push_back(base_call(base->name + "__" + base->name));
+		// Construct embedded object members at ctor entry (after base ctor),
+		// destruct them at dtor exit (before base dtor) — C++ member lifetime.
+		if (is_ctor)
+			class_member_construct(ocls, prologue, tf);
+		if (is_dtor)
+			class_member_destruct(ocls, epilogue, tf);
 		if (is_ctor && ocls->has_vtable) {
 			std::string vname = ocls->name + "__vtable";
 			node_t vptr_lhs = node2(N_DEREF_FIELD, id("__this", tf),
@@ -4010,6 +4168,20 @@ node_t CirBuilder::translate_module(Program *prog)
 		emitted_vtables.insert(cdd);
 		node_t vt = class_vtable_def(cdd);
 		if (vt) append(top_list, vt);
+	}
+
+	// Pass 1.6: synthesized destructors for classes that need a dtor (object
+	// members and/or a base dtor) but have no user-written one. Emitted here
+	// so the symbol is in scope for the cleanup attribute in function bodies
+	// (Pass 2). Deduped by class pointer.
+	std::set<DataDefCLASS *> emitted_synth_dtors;
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		if (!cdd || cdd->has_user_dtor || !class_needs_dtor(cdd)) continue;
+		if (emitted_synth_dtors.count(cdd)) continue;
+		emitted_synth_dtors.insert(cdd);
+		node_t dd = synth_dtor_def(cdd);
+		if (dd) append(top_list, dd);
 	}
 
 	// Pass 2: Function definitions (translated above).
