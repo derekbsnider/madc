@@ -1713,7 +1713,26 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t spec_decl = simple(N_SPEC_DECL);
 	append(spec_decl, share);
 	append(spec_decl, var_decl_node);
-	append(spec_decl, ignore());
+	// A class instance with a user destructor gets RAII via the cleanup
+	// attribute: the c2mir fork calls ClassName___dtor(&v) on every scope
+	// exit. Only for a non-pointer value instance (a `Foo *p` pointer owns
+	// nothing). The dtor is a user function `void Cls___dtor(struct Cls *)`,
+	// and the cleanup mechanism passes &v (a `struct Cls *`) — a type match.
+	node_t attr_node = ignore();
+	{
+		DataDefCLASS *cdd = (!is_ptr) ? as_user_class(base_dd) : NULL;
+		if (cdd && cdd->has_user_dtor) {
+			std::string dtor_sym = cdd->name + "___dtor";
+			referenced_funcs.insert(dtor_sym);
+			node_t attr_args = list();
+			append(attr_args, id(dtor_sym.c_str(), origin));
+			node_t attrs = list();
+			append(attrs, node2(N_ATTR, id("cleanup", origin),
+					    attr_args, origin));
+			attr_node = attrs;
+		}
+	}
+	append(spec_decl, attr_node);
 	append(spec_decl, ignore());
 	append(spec_decl, init_node);
 	return spec_decl;
@@ -1987,6 +2006,20 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	const std::string &sym = tm->var.name;
 	FuncDef *callee = dynamic_cast<FuncDef *>(tm->var.type);
 
+	// An inherited method's __this is typed `Base *`, but the receiver is a
+	// `Derived *`. Since base members are flattened at offset 0 (single
+	// inheritance), the address is identical — cast the __this pointer to the
+	// method's declared owner-class type so c2mir doesn't warn/mistype.
+	DataDefCLASS *owner = (callee && !callee->parameters.empty())
+				? class_behind(callee->parameters[0]) : NULL;
+	if (owner && owner != recv_class)
+		this_arg = node2(N_CAST,
+			node2(N_TYPE,
+			      node1(N_LIST, node2(N_STRUCT, id(owner->name.c_str()),
+						  ignore())),
+			      node2(N_DECL, ignore(), node1(N_LIST, pointer()))),
+			this_arg, origin);
+
 	// Build the argument list: hidden __this first, then the explicit args.
 	// Coerce each explicit arg to its declared parameter shape (string object
 	// / numeric reference), mirroring the free-function call path. The
@@ -2011,6 +2044,41 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 
 	referenced_funcs.insert(sym);
 	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+}
+
+node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
+				   const std::vector<TokenBase *> &ctor_args,
+				   TokenBase *origin)
+{
+	if (!v || !cdd || !cdd->has_user_ctor) return NULL;
+
+	std::string sym = cdd->name + "__" + cdd->name;   // ClassName__ClassName
+	// Resolve the ctor's signature for argument coercion (param 0 = __this).
+	FuncDef *ctor = NULL;
+	auto it = cdd->method_map.find(cdd->name);
+	if (it != cdd->method_map.end() && it->second)
+		ctor = dynamic_cast<FuncDef *>(it->second->type);
+
+	node_t args = list();
+	append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin)); // &v
+	for (size_t i = 0; i < ctor_args.size(); i++) {
+		TokenBase *arg = ctor_args[i];
+		size_t pi = i + 1;   // skip __this
+		DataDef *pt = (ctor && pi < ctor->parameters.size())
+				? ctor->parameters[pi] : NULL;
+		DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+		bool is_ref_param = ctor && pi < ctor->ref_params.size()
+				    && ctor->ref_params[pi];
+		if (pt && (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref))
+			append(args, string_obj_arg(arg));
+		else if (is_ref_param)
+			append(args, node1(N_ADDR, translate_expr(arg), arg));
+		else
+			append(args, translate_expr(arg));
+	}
+	referenced_funcs.insert(sym);
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	return node2(N_EXPR, list(), call, origin);
 }
 
 node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
@@ -3133,6 +3201,14 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// `vector<T>/map<K,V>/set<T> c;` — default-construct the container.
 			// Scope-exit destruction is via the cleanup attribute.
 			append(items, container_ctor_call(v->name.c_str(), v->type, tc));
+		} else if (DataDefCLASS *cdd = as_user_class(v->type)) {
+			// `Foo f;` — a class instance declared without an explicit
+			// constructor-call (no ctor args). Default-construct it; scope-exit
+			// destruction is via the cleanup attribute (var_decl). The argful
+			// form `Foo f(a,b)` parses to a TokenDecl statement handled below.
+			node_t cc = class_ctor_call(v, cdd,
+						    std::vector<TokenBase *>(), tc);
+			if (cc) append(items, cc);
 		}
 	}
 
@@ -3197,6 +3273,25 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				append(items, var_decl(&sdcl->var, sdcl));
 				append(items, container_ctor_call(sdcl->var.name.c_str(),
 								  sdcl->var.type, sdcl));
+				continue;
+			}
+			// Class instance declared with constructor args `Foo f(a,b)`:
+			// emit the struct storage (+ cleanup attr) then the ctor call
+			// threading the parsed ctor_args. The no-arg form `Foo f;` is
+			// handled in the variables loop above.
+			DataDefCLASS *cdcl = sdcl ? as_user_class(sdcl->var.type) : NULL;
+			if (cdcl && !file_global) {
+				if (!pending_labels.empty()) {
+					node_t ll = list();
+					for (auto &ln : pending_labels)
+						append(ll, node1(N_LABEL, id(ln.c_str())));
+					pending_labels.clear();
+					append(items, node2(N_EXPR, ll, integer(0)));
+				}
+				append(items, var_decl(&sdcl->var, sdcl));
+				node_t cc = class_ctor_call(&sdcl->var, cdcl,
+							    sdcl->ctor_args, sdcl);
+				if (cc) append(items, cc);
 				continue;
 			}
 		}
@@ -3296,6 +3391,46 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
 	node_t body = translate_block((TokenCpnd *)tf);
+
+	// C++ base-class ctor/dtor chaining (single inheritance). The derived
+	// ctor implicitly runs the base ctor BEFORE its own body; the derived
+	// dtor runs the base dtor AFTER its own body. Base members are flattened
+	// at offset 0, so __this (cast to Base *) is the same address. Only chain
+	// when the base actually has a user ctor/dtor.
+	DataDefCLASS *ocls = tf->method ? tf->method->owner_class : NULL;
+	if (ocls && ocls->base_class) {
+		DataDefCLASS *base = ocls->base_class;
+		const std::string &fname = tf->var.name;
+		bool is_ctor = (fname == ocls->name + "__" + ocls->name);
+		bool is_dtor = (fname == ocls->name + "___dtor");
+		// Cast __this to `Base *` for the chained call.
+		auto base_this = [&]() -> node_t {
+			node_t t = node2(N_TYPE,
+				node1(N_LIST, node2(N_STRUCT,
+					id(base->name.c_str()), ignore())),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			return node2(N_CAST, t, id("__this", tf), tf);
+		};
+		// Wrap the original body block in an outer block, with the base
+		// ctor call before it (ctor) or the base dtor call after it (dtor).
+		// The original body is itself an N_BLOCK — a valid block item — so
+		// no internal list surgery is needed.
+		if ((is_ctor && base->has_user_ctor)
+		    || (is_dtor && base->has_user_dtor)) {
+			std::string bsym = is_ctor
+				? base->name + "__" + base->name
+				: base->name + "___dtor";
+			referenced_funcs.insert(bsym);
+			node_t a = list();
+			append(a, base_this());
+			node_t call = node2(N_CALL, id(bsym.c_str(), tf), a, tf);
+			node_t stmt = node2(N_EXPR, list(), call, tf);
+			node_t outer = list();
+			if (is_ctor) { append(outer, stmt); append(outer, body); }
+			else         { append(outer, body); append(outer, stmt); }
+			body = node2(N_BLOCK, list(), outer, tf);
+		}
+	}
 
 	// Variadic bodies need no function-entry priming: the user's
 	// `va_start(ap, last)` macro now lowers directly to the c2mir intrinsic

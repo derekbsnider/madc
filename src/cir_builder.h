@@ -265,6 +265,12 @@ public:
 	// a pointer receiver. `recv_class` is filled with the receiver's class.
 	node_t class_this_arg(class TokenMember *tm, DataDefCLASS *&recv_class,
 			      TokenBase *origin);
+	// Build the constructor-call statement for a class instance `v`:
+	//   ClassName__ClassName(&v, ctor_args...)
+	// Returns NULL when `v` is not a user class or has no user constructor.
+	node_t class_ctor_call(class Variable *v, DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args,
+			       TokenBase *origin);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
 
