@@ -10345,6 +10345,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		existing->member_counts = dds->member_counts;
 		existing->member_count_exprs = dds->member_count_exprs;
 		existing->member_array_flags = dds->member_array_flags;
+		// Multi-dim shapes (`int m[49][81]`) and per-member access control
+		// must carry over too — without member_dims the completed struct
+		// keeps only the flattened member_count, so a 2D member renders as
+		// `int m[3969]` and `m[i][j]` fails ("subscripted value is neither
+		// array nor pointer").
+		existing->member_dims = dds->member_dims;
+		existing->member_access = dds->member_access;
 		existing->member_offsets = dds->member_offsets;
 		existing->member_bitfields = dds->member_bitfields;
 		existing->size = dds->size;
