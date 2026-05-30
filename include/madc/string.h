@@ -15,3 +15,10 @@ extern char *strdup(char *s);
 extern char *strpbrk(char *s, char *accept);
 extern char *strtok(char *s, char *delim);
 extern char *strndup(char *s, int n);
+// The copy/concat family also return char* (the destination). Without these
+// declarations they default to a long return, so e.g.
+// `cond ? one_argument(...) : strcpy(...)` mismatches char* vs long.
+extern char *strcpy(char *dest, char *src);
+extern char *strncpy(char *dest, char *src, unsigned long n);
+extern char *strcat(char *dest, char *src);
+extern char *strncat(char *dest, char *src, unsigned long n);

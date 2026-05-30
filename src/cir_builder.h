@@ -51,6 +51,10 @@ class CirBuilder {
 	// base DataDef so we can tell the typedef's own pointer depth apart from
 	// the explicit stars written at the usage site.
 	Program *m_prog;
+	// True while translating the body of a void-returning function — lets
+	// translate_return lower a gcc-accepted `return <expr>;` to `<expr>;
+	// return;` (c2mir rejects a value in a void return).
+	bool m_cur_func_returns_void = false;
 
 	// Internal: allocate and initialize a cir_node
 	cir_node *make(c2mir_node_code_t code, TokenBase *origin = NULL);

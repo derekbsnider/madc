@@ -1571,6 +1571,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 node_t CirBuilder::translate_return(TokenRETURN *tr)
 {
+	// `return <void-expr>;` inside a void function (e.g.
+	// `return some_void_fn();`) is accepted by gcc — the void expression is
+	// evaluated and the function returns — but c2mir rejects "return with a
+	// value in function returning void". A void return value is equivalent to
+	// a bare return, so lower it to `<expr>; return;`. Require the expression
+	// itself to be void-typed: a genuine `return 5;` in a void function stays
+	// an error (which gcc reports too).
+	if (tr->returns && m_cur_func_returns_void) {
+		DataDef *edd = tr->returns->datadef();
+		if (edd && !edd->is_pointer() && edd->rawtype() == DataType::dtVOID) {
+			node_t items = list();
+			append(items, node2(N_EXPR, list(), translate_expr(tr->returns)));
+			append(items, node2(N_RETURN, list(), ignore(), tr));
+			return node2(N_BLOCK, list(), items);
+		}
+	}
 	node_t expr = tr->returns ? translate_expr(tr->returns) : ignore();
 	return node2(N_RETURN, list(), expr, tr);
 }
@@ -1838,6 +1854,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
+
+	// Track whether this function returns void, so translate_return can lower
+	// a gcc-accepted `return <expr>;` (void function) to `<expr>; return;`.
+	m_cur_func_returns_void = !ret_is_ptr && ret_dd
+				  && ret_dd->rawtype() == DataType::dtVOID
+				  && !fd->is_multi_return();
 
 	node_t ret_type = type_list(ret_dd);
 
