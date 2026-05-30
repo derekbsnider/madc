@@ -6734,28 +6734,57 @@ static void check (c2m_ctx_t c2m_ctx, node_t node, node_t context);
    can compile it. Called at N_BLOCK check end while curr_scope is still the block,
    so the synthesized N_IDs resolve. This handles fall-through scope exit; jumps
    (return/break/continue/goto) are handled separately. */
+/* Build (and check) one `fn(&var);` expression-statement for a cleanup-tagged
+   decl, resolved in the current scope. */
+static node_t build_cleanup_stmt (c2m_ctx_t c2m_ctx, node_t decl_node, node_t context) {
+  decl_t decl = decl_node->attr;
+  node_t declr = NL_EL (decl_node->u.ops, 1);
+  node_t var_id = NL_HEAD (declr->u.ops);
+  node_t fn_ref = new_str_node (c2m_ctx, N_ID, decl->cleanup_fn->u.s, POS (decl->cleanup_fn));
+  node_t var_ref = new_str_node (c2m_ctx, N_ID, var_id->u.s, POS (var_id));
+  node_t addr = new_pos_node1 (c2m_ctx, N_ADDR, POS (var_id), var_ref);
+  node_t args = new_node (c2m_ctx, N_LIST);
+  node_t call, stmt;
+
+  op_append (c2m_ctx, args, addr);
+  call = new_pos_node2 (c2m_ctx, N_CALL, POS (var_id), fn_ref, args);
+  stmt = new_pos_node2 (c2m_ctx, N_EXPR, POS (var_id), new_node (c2m_ctx, N_LIST), call);
+  check (c2m_ctx, stmt, context);
+  return stmt;
+}
+
+/* Fall-through scope exit: append each scope-local cleanup call (reverse decl
+   order) to the end of the block. */
 static void emit_scope_cleanups (c2m_ctx_t c2m_ctx, node_t block) {
   struct node_scope *ns = block->attr;
   size_t i, n;
 
   if (ns == NULL || ns->cleanup_decls == NULL) return;
   n = VARR_LENGTH (node_t, ns->cleanup_decls);
-  for (i = n; i > 0; i--) {
-    node_t decl_node = VARR_GET (node_t, ns->cleanup_decls, i - 1);
-    decl_t decl = decl_node->attr;
-    node_t declr = NL_EL (decl_node->u.ops, 1);
-    node_t var_id = NL_HEAD (declr->u.ops);
-    node_t fn_ref = new_str_node (c2m_ctx, N_ID, decl->cleanup_fn->u.s, POS (decl->cleanup_fn));
-    node_t var_ref = new_str_node (c2m_ctx, N_ID, var_id->u.s, POS (var_id));
-    node_t addr = new_pos_node1 (c2m_ctx, N_ADDR, POS (var_id), var_ref);
-    node_t args = new_node (c2m_ctx, N_LIST);
-    node_t call, stmt;
+  for (i = n; i > 0; i--)
+    op_append (c2m_ctx, NL_EL (block->u.ops, 1),
+               build_cleanup_stmt (c2m_ctx, VARR_GET (node_t, ns->cleanup_decls, i - 1), block));
+}
 
-    op_append (c2m_ctx, args, addr);
-    call = new_pos_node2 (c2m_ctx, N_CALL, POS (var_id), fn_ref, args);
-    stmt = new_pos_node2 (c2m_ctx, N_EXPR, POS (var_id), new_node (c2m_ctx, N_LIST), call);
-    op_append (c2m_ctx, NL_EL (block->u.ops, 1), stmt);
-    check (c2m_ctx, stmt, block);
+/* return: cleanups run for ALL enclosing scopes (innermost first, reverse decl
+   within each, only those declared before this return). Record them as extra
+   ops on the N_RETURN node; gen emits them after the return value is computed
+   (so it stays live in a register) and before the ret insn. */
+static void add_return_cleanups (c2m_ctx_t c2m_ctx, node_t r) {
+  check_ctx_t check_ctx = c2m_ctx->check_ctx;
+  node_t scope;
+
+  for (scope = curr_scope; scope != NULL && scope->code != N_MODULE;
+       scope = ((struct node_scope *) scope->attr)->scope) {
+    struct node_scope *ns = scope->attr;
+    size_t i, n;
+
+    if (ns == NULL || ns->cleanup_decls == NULL) continue;
+    n = VARR_LENGTH (node_t, ns->cleanup_decls);
+    for (i = n; i > 0; i--)
+      op_append (c2m_ctx, r,
+                 build_cleanup_stmt (c2m_ctx, VARR_GET (node_t, ns->cleanup_decls, i - 1),
+                                     curr_scope));
   }
 }
 
@@ -10311,6 +10340,7 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
     } else if (expr->code != N_IGNORE) {
       check_assignment_types (c2m_ctx, ret_type, NULL, expr->attr, r);
     }
+    add_return_cleanups (c2m_ctx, r); /* __attribute__((cleanup)): run before return */
     break;
   }
   case N_EXPR: {
@@ -14134,6 +14164,9 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
     assert (false_label == NULL && true_label == NULL);
     emit_label (c2m_ctx, r);
     if (NL_EL (r->u.ops, 1)->code == N_IGNORE) {
+      /* __attribute__((cleanup)): run cleanups (extra ops) before the return. */
+      for (node_t cl = NL_EL (r->u.ops, 2); cl != NULL; cl = NL_NEXT (cl))
+        gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
       emit_insn (c2m_ctx, MIR_new_ret_insn (ctx, 0));
       break;
     }
@@ -14149,6 +14182,10 @@ static op_t gen (c2m_ctx_t c2m_ctx, node_t r, MIR_label_t true_label, MIR_label_
       t = promote_mir_int_type (t);
       val = promote (c2m_ctx, val, t, FALSE);
     }
+    /* __attribute__((cleanup)): run cleanups AFTER the value is computed (it
+       stays live in a register across the calls) and BEFORE the ret insn. */
+    for (node_t cl = NL_EL (r->u.ops, 2); cl != NULL; cl = NL_NEXT (cl))
+      gen (c2m_ctx, cl, NULL, NULL, FALSE, NULL, NULL);
     VARR_TRUNC (MIR_op_t, ret_ops, 0);
     target_add_ret_ops (c2m_ctx, func_type->u.func_type->ret_type, val);
     emit_insn (c2m_ctx, MIR_new_insn_arr (ctx, MIR_RET, VARR_LENGTH (MIR_op_t, ret_ops),
