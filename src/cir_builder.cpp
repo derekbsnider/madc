@@ -961,15 +961,20 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	node_t mshare = node1(N_SHARE, mspec);
 	node_t mid = id(m.first.c_str(), m.origin);
 	node_t mdecl_list = list();
+	// c2m declarator order: in `T *m[N]` the `[]` binds tighter than `*`
+	// (array of pointers), so the N_ARR dims must PRECEDE the pointer stars
+	// (matches var_decl and c2mir's direct_declarator). Emitting the pointer
+	// first instead yields `T (*m)[N]` — a pointer to an array — which
+	// mistypes element assignments ("assignment of incompatible value").
+	// Array member dimensions: short learned[16] -> ARR(16).
+	for (size_t d = 0; d < mdims.size(); d++)
+		append(mdecl_list, node3(N_ARR, ignore(), list(), integer(mdims[d])));
 	if (!mtypedef.empty()) {
 		for (int s = 0; s < stars; s++)
 			append(mdecl_list, pointer());
 	} else if (mtype && mtype->is_pointer()) {
 		append(mdecl_list, pointer());
 	}
-	// Array member dimensions: short learned[16] -> ARR(16).
-	for (size_t d = 0; d < mdims.size(); d++)
-		append(mdecl_list, node3(N_ARR, ignore(), list(), integer(mdims[d])));
 	node_t mdecl = node2(N_DECL, mid, mdecl_list);
 
 	node_t member = simple(N_MEMBER, m.origin);
