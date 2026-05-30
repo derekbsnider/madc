@@ -165,9 +165,16 @@ Plus `#load` for any shared library via dlopen.
 
 Requires:
 - `clang++` (or `g++`) with C++11 support
-- asmjit v1.14 installed at `/usr/local/` (see [`docs/build.md`](docs/build.md))
+- The **madc MIR fork** — [github.com/derekbsnider/mir](https://github.com/derekbsnider/mir)
+  (branch `feature/complex-support`), built at `/workspace/mir`. madc links
+  `libmir.a` + c2mir from there. This is **not** upstream MIR: the fork carries
+  native C99 `_Complex` support and the c2mir fixes the CIR backend depends on.
 
 ```bash
+# Build the MIR fork first (libmir + c2mir):
+git clone -b feature/complex-support https://github.com/derekbsnider/mir /workspace/mir
+make -C /workspace/mir
+
 make -C src           # build bin/madc
 make -C src clean     # clean objects
 make -C src test      # run unit tests
@@ -185,7 +192,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status: 419 integration tests pass (0 failing, 56 skipped). 294 unit tests pass. GCC torture test parity: 1649/1685 (97.9%). MIR is the default backend. (`make -C src fulltest`, `scripts/run_gcc_testsuite.py`)**
+**Current status (v0.25.0): 325 integration tests pass (~95 failing — the CIR coverage worklist, 56 skipped). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)

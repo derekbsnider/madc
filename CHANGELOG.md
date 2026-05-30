@@ -6,6 +6,11 @@
 
 CIR is now the sole backend, and SMAUG 1.8 boots, runs, and is playable.
 
+> **Build dependency:** madc now builds against the **madc MIR fork**
+> ([github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
+> `feature/complex-support`) at `/workspace/mir` — not upstream MIR. It carries
+> native C99 `_Complex` support and the c2mir fixes the CIR backend depends on.
+
 ### CIR is now the sole backend; asmjit and Gecko removed (feature/cir-node)
 
 - **Removed the Gecko parser + MIR-transpiler entirely** (`42e9b6e`).

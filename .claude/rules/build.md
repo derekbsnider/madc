@@ -10,4 +10,8 @@
 ## Backend
 
 - The backend is CIR → c2mir → MIR. asmjit was removed.
-- The MIR library (libmir + c2mir) lives at `/workspace/mir`.
+- The MIR library (libmir + c2mir) lives at `/workspace/mir` and is the
+  **madc MIR fork** (github.com/derekbsnider/mir, branch
+  `feature/complex-support`) — NOT upstream MIR. It carries native C99
+  `_Complex` support and c2mir fixes the CIR backend depends on. Push fork
+  changes there before relying on them in a madc release.

@@ -127,8 +127,11 @@ working on storage/federation code or any shared surface that may affect it.
 Source lives in `src/`, headers in `include/`, output in `bin/` and
 `obj/`.
 
-Build requires `clang++` (or `g++`) with C++11 support and the MIR
-library (libmir + c2mir) at `/workspace/mir`.
+Build requires `clang++` (or `g++`) with C++11 support and the **madc MIR
+fork** (libmir + c2mir) at `/workspace/mir` —
+[github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
+`feature/complex-support`, **not** upstream MIR (it carries native C99
+`_Complex` support and the c2mir fixes the CIR backend depends on).
 
 ## Architecture
 
