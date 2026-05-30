@@ -19,6 +19,9 @@
 #include <fstream>
 #include <stdint.h>
 #include <dlfcn.h>
+#include <cstdlib>
+#include <typeinfo>
+#include <cxxabi.h>
 
 
 #define DBG(x) do { if(madc_verbose){x;} } while(0)
@@ -75,6 +78,27 @@ node_t CirBuilder::error_node(const char *reason, TokenBase *origin)
 	cir_node *cn = make(N_IGNORE, origin);
 	cn->error_msg = arena.intern(reason ? reason : "error");
 	return cn->as_node();
+}
+
+// Human-readable description of a parse token, for internal-error diagnostics.
+// madc is open source — there are no internals to hide — so name the concrete
+// TokenBase subclass via RTTI (e.g. "TokenMember") plus the lexeme it carries,
+// which is far more actionable for a contributor than raw enum ordinals.
+static std::string describe_token(TokenBase *tb)
+{
+	if (!tb)
+		return "<null token>";
+	int status = 0;
+	char *dem = abi::__cxa_demangle(typeid(*tb).name(), NULL, NULL, &status);
+	std::string desc = (status == 0 && dem) ? dem : typeid(*tb).name();
+	free(dem);
+	// Append the lexeme for tokens that carry one (identifiers, keywords,
+	// strings, literals all derive from TokenIdent) — the single most useful
+	// disambiguator. Operators are already identified by their class name.
+	if (TokenIdent *idt = dynamic_cast<TokenIdent *>(tb)) {
+		if (!idt->str.empty()) desc += " '" + idt->str + "'";
+	}
+	return desc;
 }
 
 void CirBuilder::set_pos(cir_node *cn, const char *file, int line, int col)
@@ -1449,14 +1473,20 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return node2(N_CALL, id("__builtin_va_arg", tb), args, tb);
 	}
 
-	DBG(std::cerr << "cir: unhandled expr type=" << (int)tb->type()
+	DBG(std::cerr << "cir: unhandled expr " << describe_token(tb)
+		      << " type=" << (int)tb->type()
 		      << " id=" << (int)tb->id() << std::endl);
 	// Previously this silently became integer(0) — a wrong translation that
 	// compiled fine but ran incorrectly. Emit an error node instead so the
-	// pre-c2mir gate rejects the tree rather than miscompiling it.
-	char buf[80];
-	snprintf(buf, sizeof(buf), "unhandled expression (token type %d, id %d)",
-		 (int)tb->type(), (int)tb->id());
+	// pre-c2mir gate rejects the tree rather than miscompiling it. Name the
+	// concrete token class + lexeme so the failing construct is identifiable
+	// (the origin token also carries the source file:line:col, printed by
+	// cir_report_errors).
+	char buf[160];
+	snprintf(buf, sizeof(buf),
+		 "unhandled expression: %s (CIR builder has no translation for this "
+		 "construct; token type %d, id %d)",
+		 describe_token(tb).c_str(), (int)tb->type(), (int)tb->id());
 	return error_node(buf, tb);
 }
 
