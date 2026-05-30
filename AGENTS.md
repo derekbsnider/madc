@@ -281,6 +281,7 @@ editing — don't try to memorize all of them.
 | Rule                                             | Lines | Scope                                          |
 |--------------------------------------------------|------:|------------------------------------------------|
 | [mc11-ir.md](.claude/rules/mc11-ir.md)           |    24 | **SET IN STONE.** `cir_node` = MC11-IR: derives from c2mir `node_t` (c2mir sees lowered) AND carries originating tokens + parse tree + file/line/col (madc sees high-level). It is BOTH; render targets share the `--std=` enum |
+| [backend-strategy.md](.claude/rules/backend-strategy.md) | 30 | **Forward trajectory (ADR 0001).** c2mir/C-AST IR is the sole backend; direct-MIR is a scalpel for runtime internals + REPL/debug tier; `--emit=c11` is first-class; CIR coverage parity gates promotion to master |
 | [gcc-methodology.md](.claude/rules/gcc-methodology.md) | 30 | Compare with `gcc -S` first, fix at deepest layer, operator self-determination |
 | [debug.md](.claude/rules/debug.md)               |    18 | `DBG(x)` macro usage and rules                 |
 | [regdp-reset.md](.claude/rules/regdp-reset.md)   |    23 | Reset `regdp` before sub-compiles in loops / conditionals |
@@ -288,15 +289,15 @@ editing — don't try to memorize all of them.
 | [class-methods.md](.claude/rules/class-methods.md) |    26 | Name mangling, `__this`, unqualified member access |
 | [multi-return.md](.claude/rules/multi-return.md) |    33 | `__retbuf` injection, multi-return call sites  |
 | [ternary.md](.claude/rules/ternary.md)           |    30 | Ternary parsing + stack-slot merge pattern     |
-| [embedded-headers.md](.claude/rules/embedded-headers.md) |  53 | `include/madc/` headers, lazy registration, `#load` |
+| [embedded-headers.md](.claude/rules/embedded-headers.md) |  65 | `include/madc/` headers, lazy registration, `#load`, real return types (signed `int` libc fns) |
 | [gcc-parity.md](.claude/rules/gcc-parity.md)     |     8 | Use GCC as the reference baseline for JIT vs EXE / AOT parity work |
 
 ### Total rule footprint
 
-- **24 rules, 566 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~298 lines** — loaded by Claude via
+- **25 rules, 619 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~300 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~916 lines.**
+- **Grand total loaded by Claude Code per turn: ~972 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

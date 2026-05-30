@@ -11,6 +11,20 @@
 5. Run `make -C src` — `scripts/gen_embedded_headers.sh` regenerates
    automatically.
 
+## Declare real return types — never rely on the fallback for signed int
+
+- The dlsym/implicit fallback gives an undeclared function a generic 64-bit
+  (`long`) return. For a function that returns a **signed `int`** whose result
+  is used in a comparison, that is a correctness bug: libc returns `int` in
+  `eax`, so a negative value read as 64-bit `long` becomes a huge positive.
+- Declare the real return type in the embedded header. In particular the
+  comparison family MUST be `int`: `strcmp`, `strncmp`, `strcasecmp`,
+  `strncasecmp`, `memcmp` (this is what broke SMAUG's `bsearch_skill_exact` →
+  `skill_lookup` → combat). Audit other signed-`int` libc fns (`atoi`,
+  `memcmp`-likes, etc.) the same way.
+- `char *` / pointer-returning fns must also be declared (already are) so
+  ternaries and assignments don't mismatch `char*` vs `long`.
+
 ## Lazy registration (only when needed)
 
 Use lazy registration only for:

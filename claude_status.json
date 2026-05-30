@@ -22,22 +22,26 @@
     "AOT native object/executable: low priority. Near-term native builds via emit-.c + an external compiler. save_object/save_executable stubbed with signatures kept for a later MIR-based revisit."
   ],
   "remaining_todo": [
-    "Drive the 193 CIR integration failures toward 0 (Track 1.3)",
-    "Write the cir_node -> .c / .mc11 renderer (single emitter; render target = the same language enum as --std=: C11, MC11, C++, madc)",
-    "Stand up the gcc -S -fverbose-asm transpiler-fidelity gate + the cir_node-vs-`c2m -d` differential to make the 193 mechanical/localizable",
-    "Reimplement eval/exec + REPL on MIR (deferred)",
-    "AOT native output on MIR (deferred, low priority)",
-    "Finish syncing stale mirrors: CHANGELOG [Unreleased], TODO.md (task #17)"
+    "PRIMARY: drive the ~95 CIR integration failures to parity with master (Track 1.3) — this is the gate for promoting develop->master. Re-measure fresh (make -C src fulltest).",
+    "SMAUG gameplay: continue past the serpent (kill it — its death_prog mpoload/mpechoat exercises mud_prog.c); exercise more commands over a port connection.",
+    "Audit other signed-int-returning libc fns on the long fallback (atoi, etc.) and declare them int in embedded headers (same class as the strcmp sign bug ac16d07). See .claude/rules/embedded-headers.md.",
+    "Fix flaky tests/testfortypedcomma.mad: 2nd declarator in a multi-declarator for-init (for(int a=0,b=4;...)) is left uninitialized (reads garbage; flaky timeout). Pre-existing, reproducible on clean HEAD.",
+    "Write the cir_node -> .c / .mc11 renderer (single emitter; render target = the same --std= language enum: C11, MC11, C++, madc) + the gcc -S -fverbose-asm fidelity gate + cir_node-vs-`c2m -d` differential, to make the worklist mechanical.",
+    "Debug/REPL tier (hybrid seam, ADR 0001): extend the JIT-symbolizing crash handler (25c731a) toward a madc-native debugger on MIR interp.",
+    "Reimplement eval/exec + REPL on MIR (deferred). AOT via emit-C + external compiler (deferred).",
+    "Backend trajectory is settled — see docs/adr/0001-cir-c2mir-backend.md and .claude/rules/backend-strategy.md. Don't re-litigate."
   ],
   "known_issues": [
-    "193 CIR integration failures = the coverage worklist (classes: unhandled_expr / c2mir_rejected / runtime_mismatch). Re-measure fresh per session.",
-    "CIR switch `default:` returns 0 for any value (CIR-only; emit-c/MIR/JIT were correct). See agent memory project_cir_switch_default_bug.",
+    "~95 CIR integration failures = the coverage worklist (classes: unhandled_expr / c2mir_rejected / runtime_mismatch) and the parity-to-master gate. Re-measure fresh per session.",
+    "tests/testfortypedcomma.mad flaky: uninitialized 2nd declarator in a multi-declarator for-init -> reads varying garbage -> nondeterministic timeout. Reproducible on clean HEAD; unrelated to the fn-ptr/extern/strcmp work.",
     "libmadc in-process compile/exec/eval stubbed (asmjit-era machinery removed); ~100 unit tests skipped until CIR reimplementation."
   ],
   "canonical_refs": {
+    "backend_decision_adr": "docs/adr/0001-cir-c2mir-backend.md (+ .claude/rules/backend-strategy.md; KG Decision{cir_c2mir_backend_adr}) — SETTLED, don't re-litigate",
     "ir_definition_rule": "docs/rules/mc11-ir.md (bare) + .claude/rules/mc11-ir.md",
     "ir_design_doc": "docs/superpowers/plans/2026-05-28-cir-node-unified-ast.md",
     "roadmap": "docs/plans/ROADMAP.md",
-    "agent_memory": "project_madc_vision, project_mc11_ir, project_cir_triage (FalkorDB graph madc-knowledge + ~/.claude .../memory)"
+    "promote_gate": ".claude/rules/branching.md — develop->master gated on CIR parity with master",
+    "agent_memory": "project_backend_decision, project_smaug_fnptr_and_159, feedback_promote_parity, project_madc_vision, project_mc11_ir (FalkorDB graph madc-knowledge + ~/.claude .../memory)"
   }
 }
