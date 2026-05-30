@@ -1791,10 +1791,13 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 		if (s) append(block_items, s);
 	}
 
-	for (size_t ci = 0; ci < ts->cases.size(); ci++) {
-		TokenCASE *tc = ts->cases[ci];
-		bool is_default = (tc->value == NULL);
-
+	// Emit one case/default: a labeled marker statement (`<label>: 0;`) then
+	// every statement in the case translated AS A STATEMENT. The marker
+	// carries the label uniformly regardless of the first statement's kind —
+	// previously the first non-return/break statement was sent to
+	// translate_expr, which mis-flagged `if`/`for`/`while` inside a case as
+	// "unhandled expression" (679 such nodes in SMAUG's switch-heavy interp).
+	auto emit_case = [&](TokenCASE *tc, bool is_default) {
 		node_t label;
 		if (is_default) {
 			label = simple(N_DEFAULT);
@@ -1805,30 +1808,30 @@ node_t CirBuilder::translate_switch(TokenSWITCH *ts)
 		} else {
 			label = node1(N_CASE, translate_expr(tc->value), tc);
 		}
-
-		// Emit the case/default label as a labeled marker statement, then
-		// every statement in the case translated AS A STATEMENT. Previously
-		// the first non-return/break statement was sent to translate_expr,
-		// which mis-flagged statements like `if`/`for`/`while` inside a case
-		// as "unhandled expression" (679 such nodes in SMAUG's switch-heavy
-		// interpreter). A labeled `0;` marker carries the label uniformly,
-		// regardless of the first statement's kind.
 		append(block_items, node2(N_EXPR, node1(N_LIST, label), integer(0)));
 		for (size_t si = 0; si < tc->statements.size(); si++) {
 			node_t s = translate_stmt(tc->statements[si]);
 			if (s) append(block_items, s);
 		}
-	}
+	};
 
-	// Separately-stored default case (not inline in ts->cases).
-	if (ts->defaultcase && ts->default_index < 0) {
-		TokenCASE *dc = ts->defaultcase;
-		append(block_items, node2(N_EXPR, node1(N_LIST, simple(N_DEFAULT)), integer(0)));
-		for (size_t si = 0; si < dc->statements.size(); si++) {
-			node_t s = translate_stmt(dc->statements[si]);
-			if (s) append(block_items, s);
-		}
+	// The parser keeps the `default:` case in ts->defaultcase (never in
+	// ts->cases) and records the position it appeared among the cases in
+	// ts->default_index. Emit it at that position so fall-through order is
+	// preserved — e.g. `case A: ...; default: ...; case B: ...` stays
+	// A, default, B. (The old code only emitted the default when
+	// default_index < 0, which the parser never sets, so the default case was
+	// silently dropped from every switch — values matching no case fell
+	// through the whole switch.)
+	bool have_default = (ts->defaultcase != NULL);
+	for (size_t ci = 0; ci < ts->cases.size(); ci++) {
+		if (have_default && (int)ci == ts->default_index)
+			emit_case(ts->defaultcase, true);
+		emit_case(ts->cases[ci], false);
 	}
+	// default at (or past) the end of the case list.
+	if (have_default && ts->default_index >= (int)ts->cases.size())
+		emit_case(ts->defaultcase, true);
 
 	node_t body = node2(N_BLOCK, list(), block_items);
 	return node3(N_SWITCH, list(), expr, body, ts);
