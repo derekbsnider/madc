@@ -440,6 +440,27 @@ node_t CirBuilder::array_ctor_call(const char *name, TokenBase *origin)
 	return obj_default_ctor_call(name, "madarray_construct", origin);
 }
 
+// ---- std::stringstream object lowering ----
+bool CirBuilder::is_sstream_object(DataDef *dd)
+{
+	return dd && dd->rawtype() == DataType::dtSSTREAM && !dd->is_pointer();
+}
+
+size_t CirBuilder::sstream_obj_words() const
+{
+	return (sizeof(std::stringstream) + sizeof(long) - 1) / sizeof(long);
+}
+
+node_t CirBuilder::sstream_storage_decl(const char *name, TokenBase *origin)
+{
+	return obj_storage_decl(name, sstream_obj_words(), "sstream_destruct", origin);
+}
+
+node_t CirBuilder::sstream_ctor_call(const char *name, TokenBase *origin)
+{
+	return obj_default_ctor_call(name, "sstream_construct", origin);
+}
+
 // ---- STL container (vector/map/set) object lowering ----
 // A typed STL container (vector<T>/map<K,V>/set<T>) is a real C++ object, the
 // same opaque-buffer model as std::string / MadArray: an 8-aligned long[]
@@ -1160,7 +1181,8 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		    || pdt == DataType::dtARRAY || pdt == DataType::dtARRAYref
 		    || pdt == DataType::dtVECTOR || pdt == DataType::dtVECTORref
 		    || pdt == DataType::dtMAP || pdt == DataType::dtMAPref
-		    || pdt == DataType::dtSET || pdt == DataType::dtSETref) {
+		    || pdt == DataType::dtSET || pdt == DataType::dtSETref
+		    || pdt == DataType::dtSSTREAM || pdt == DataType::dtSSTREAMref) {
 			node_t pspec = list();
 			append(pspec, simple(N_VOID));
 			node_t pdecl_list = list();
@@ -1455,6 +1477,89 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 	return result;
 }
 
+// `ss << a << b ...` on a std::stringstream OBJECT. Unlike cout (a global
+// std::ostream addressed directly), a stringstream's ostream base is at a
+// non-zero offset, so we route through the generic streamout_* wrappers on
+// sstream_ostream((void*)&ss) (which applies the base adjustment). Each `<< v`
+// becomes one streamout_TYPE(os, v) call; the calls are chained with N_COMMA so
+// the whole chain is a single expression (its value is unused as a statement).
+node_t CirBuilder::translate_sstream_chain(TokenOperator *top, const char *ssname)
+{
+	need_output_extern("sstream_ostream", true, { { {N_VOID}, true } });
+
+	// Collect chained values along the right spine (left-to-right), exactly
+	// as translate_stream_chain does.
+	std::vector<TokenBase *> vals;
+	TokenBase *n = top->right;
+	while (TokenOperator *o = dynamic_cast<TokenOperator *>(n)) {
+		if (o->id() != top->id() || o->is_bracketed()) break;
+		vals.push_back(o->left);
+		n = o->right;
+	}
+	if (n) vals.push_back(n);
+
+	// A fresh `sstream_ostream((void*)ss)` ostream* for each value.
+	auto os_arg = [&]() -> node_t {
+		node_t a = list();
+		append(a, string_obj_addr(ssname, top));
+		node_t call = node2(N_CALL, id("sstream_ostream", top), a, top);
+		CIR_NODE(call)->synth_from_origin = true;
+		return call;
+	};
+
+	node_t result = NULL;
+	for (size_t i = 0; i < vals.size(); i++) {
+		std::string vn;
+		if (TokenVar *tv = dynamic_cast<TokenVar *>(vals[i])) vn = tv->var.name;
+		else if (TokenIdent *ti = dynamic_cast<TokenIdent *>(vals[i])) vn = ti->str;
+
+		node_t call;
+		if (vn == "endl" || vn == "__std_endl") {
+			need_output_extern("streamout_endl", false, { { {N_VOID}, true } });
+			node_t a = list();
+			append(a, os_arg());
+			call = node2(N_CALL, id("streamout_endl", top), a, top);
+		} else if (is_string_object_value(vals[i])) {
+			// streamout_string(os, (void*)&strobj)
+			need_output_extern("streamout_string", false,
+					   { { {N_VOID}, true }, { {N_VOID}, true } });
+			node_t a = list();
+			append(a, os_arg());
+			append(a, string_obj_arg(vals[i]));
+			call = node2(N_CALL, id("streamout_string", top), a, top);
+		} else {
+			// Pick the streamout_* wrapper by value type (mirrors
+			// ostream_insert_symbol's classification).
+			DataDef *vdd = vals[i]->datadef();
+			bool is_ptr = vdd && vdd->is_pointer();
+			DataType dt = vdd ? vdd->rawtype() : DataType::dtINT64;
+			const char *sym;
+			ExternParam vp;
+			if ((vdd && vdd->is_string()) || (is_ptr && dt == DataType::dtCHAR)) {
+				sym = "streamout_cstr"; vp = { {N_CHAR}, true };
+			} else if (dt == DataType::dtCHAR) {
+				sym = "streamout_char"; vp = { {N_INT}, false };
+			} else if (dt == DataType::dtFLOAT || dt == DataType::dtDOUBLE) {
+				sym = "streamout_double"; vp = { {N_DOUBLE}, false };
+			} else if (dt == DataType::dtUINT8 || dt == DataType::dtUINT16
+				   || dt == DataType::dtUINT32 || dt == DataType::dtUINT64) {
+				sym = "streamout_uint64"; vp = { {N_UNSIGNED, N_LONG}, false };
+			} else {
+				sym = "streamout_int64"; vp = { {N_LONG}, false };
+			}
+			need_output_extern(sym, false, { { {N_VOID}, true }, vp });
+			node_t a = list();
+			append(a, os_arg());
+			append(a, translate_expr(vals[i]));
+			call = node2(N_CALL, id(sym, top), a, top);
+		}
+		CIR_NODE(call)->synth_from_origin = true;
+		result = result ? node2(N_COMMA, result, call, top) : call;
+	}
+	// Empty chain (no values) is a no-op; emit a harmless 0.
+	return result ? result : integer(0, top);
+}
+
 node_t CirBuilder::init_value(TokenBase *elem)
 {
 	// A NULL element is a designated-initializer GAP: the parser normalizes
@@ -1507,6 +1612,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// translate_block; the cleanup attribute handles scope-exit destruction.
 	if (is_container_object(v->type))
 		return container_storage_decl(v->name.c_str(), v->type, origin);
+
+	// std::stringstream object: opaque storage + cleanup(sstream_destruct).
+	if (is_sstream_object(v->type))
+		return sstream_storage_decl(v->name.c_str(), origin);
 
 	DataDef *base_dd = v->type;
 	bool is_ptr = base_dd && base_dd->is_pointer();
@@ -2323,6 +2432,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				StreamKind k = stream_ident_kind(leaf);
 				bool ok = (is_out && (k==SK_COUT||k==SK_CERR||k==SK_CLOG)) || (!is_out && k==SK_CIN);
 				if (ok) return translate_stream_chain(top, k, is_out);
+				// `ss << a << b` on a stringstream OBJECT: lower to streamout_*
+				// calls on the adjusted ostream*. (cin/>> into a stringstream is
+				// not yet handled — falls through.)
+				if (is_out) {
+					TokenVar *sv = dynamic_cast<TokenVar *>(leaf);
+					if (sv && is_sstream_object(sv->var.type))
+						return translate_sstream_chain(top, sv->var.name.c_str());
+				}
 			}
 
 			// STL container subscript WRITE: `c[i] = rhs` lowers to the
@@ -2968,6 +3085,9 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// `vector<T>/map<K,V>/set<T> c;` — default-construct the container.
 			// Scope-exit destruction is via the cleanup attribute.
 			append(items, container_ctor_call(v->name.c_str(), v->type, tc));
+		} else if (is_sstream_object(v->type)) {
+			// `stringstream ss;` — default-construct; cleanup attribute destructs.
+			append(items, sstream_ctor_call(v->name.c_str(), tc));
 		}
 	}
 
@@ -3032,6 +3152,19 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				append(items, var_decl(&sdcl->var, sdcl));
 				append(items, container_ctor_call(sdcl->var.name.c_str(),
 								  sdcl->var.type, sdcl));
+				continue;
+			}
+			// std::stringstream object declaration.
+			if (sdcl && is_sstream_object(sdcl->var.type) && !file_global) {
+				if (!pending_labels.empty()) {
+					node_t ll = list();
+					for (auto &ln : pending_labels)
+						append(ll, node1(N_LABEL, id(ln.c_str())));
+					pending_labels.clear();
+					append(items, node2(N_EXPR, ll, integer(0)));
+				}
+				append(items, var_decl(&sdcl->var, sdcl));
+				append(items, sstream_ctor_call(sdcl->var.name.c_str(), sdcl));
 				continue;
 			}
 		}

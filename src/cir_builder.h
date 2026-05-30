@@ -124,6 +124,20 @@ class CirBuilder {
 	node_t array_storage_decl(const char *name, TokenBase *origin);
 	node_t array_ctor_call(const char *name, TokenBase *origin);
 
+	// ---- std::stringstream object lowering ----
+	// Same opaque-object model. A `ss << a << b` chain lowers to a sequence of
+	// streamout_*(sstream_ostream((void*)&ss), value) calls (the streamout_*
+	// runtime wrappers take an ostream*; sstream_ostream applies the
+	// multiple-inheritance base-offset adjustment). printstream(ss) takes the
+	// object pointer directly (dtSSTREAM param -> void*).
+	static bool is_sstream_object(DataDef *dd); // dtSSTREAM value type, not a pointer
+	size_t sstream_obj_words() const;           // ceil(sizeof(std::stringstream)/sizeof(long))
+	node_t sstream_storage_decl(const char *name, TokenBase *origin);
+	node_t sstream_ctor_call(const char *name, TokenBase *origin);
+	// `ss << a << b ...` on a stringstream OBJECT -> a comma-sequence of
+	// streamout_*(sstream_ostream((void*)&ss), value) calls.
+	node_t translate_sstream_chain(class TokenOperator *top, const char *ssname);
+
 	// ---- STL container (vector/map/set) object lowering ----
 	// Same opaque-object model as std::string / MadArray: an 8-aligned long[]
 	// buffer + a ctor call, destructed via the cleanup attribute. The runtime

@@ -201,6 +201,15 @@ void sstream_str_set(void *ptr, const char *s)
 	{ ((std::stringstream *)ptr)->str(s ? s : ""); }
 void printstream(void *ptr)
 	{ std::cout << ((std::stringstream *)ptr)->str() << std::endl; }
+// Adjust a stringstream object pointer to its std::ostream base subobject.
+// std::stringstream multiply-inherits (istream + ostream over a virtual
+// basic_ios), so the ostream base is at a non-zero offset (16 bytes on
+// x86-64 libstdc++) — a C reinterpret of the buffer pointer as ostream* is
+// wrong. static_cast applies the correct adjustment; the streamout_* wrappers
+// then operate on a valid ostream*. (Same virtual-base hazard AGENTS.md notes
+// for ifstream/ofstream.)
+void *sstream_ostream(void *ptr)
+	{ return (void *)static_cast<std::ostream *>((std::stringstream *)ptr); }
 
 // std:: namespace functions — madc programs call these as std::stoi etc.
 // The emitter mangles them to __std_stoi / __std_stod / __std_to_string.
