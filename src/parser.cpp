@@ -13844,7 +13844,13 @@ static bool initialize_static_fixed_array_data(Variable *var,
 
 static bool is_char_array_element_type(DataDef *dd)
 {
-    return dd && (dd->rawtype() == DataType::dtCHAR
+    // A char/unsigned-char ELEMENT, not a pointer to one. rawtype() strips
+    // pointer-ness (`char *` -> dtCHAR), so without the is_pointer() guard an
+    // array of char pointers (`char *names[3][2]`) would be mistaken for a 2D
+    // char array and have its string-literal initializers expanded to bytes
+    // ("excess elements" — the pointer slots expect addresses, not chars).
+    return dd && !dd->is_pointer()
+	       && (dd->rawtype() == DataType::dtCHAR
 	       || dd->rawtype() == DataType::dtUINT8);
 }
 
