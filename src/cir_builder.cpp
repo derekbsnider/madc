@@ -242,6 +242,20 @@ node_t CirBuilder::node5(c2mir_node_code_t code, node_t op1, node_t op2, node_t 
 // Type builders
 // -----------------------------------------------------------------------
 
+// A user-defined class (`class Foo { ... };`) lowers to a plain C struct
+// `struct Foo`, matching the Cfront C++->C model. It is btClass with the
+// generic dtRESERVED rawtype — distinct from the builtin opaque-object
+// "classes" (std::string, the streams) which carry their own dt* rawtype
+// and are lowered as runtime buffers, not C structs. Returns the class
+// DataDef when `dd` is such a user class, else NULL.
+static DataDefCLASS *as_user_class(DataDef *dd)
+{
+	if (!dd) return NULL;
+	if (dd->basetype() != BaseType::btClass) return NULL;
+	if (dd->rawtype() != DataType::dtRESERVED) return NULL;
+	return dynamic_cast<DataDefCLASS *>(dd);
+}
+
 node_t CirBuilder::pointer()
 {
 	return node1(N_POINTER, list());
@@ -973,8 +987,9 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 	}
 
 	// Struct types: LIST(STRUCT(ID("name"), IGNORE))
+	// A user-defined class lowers to `struct ClassName` too (same shape).
 	// _Complex is a DataDefSTRUCT subclass but must use the native spec path.
-	if (dd && dd->is_struct() && !dd->is_complex()) {
+	if (dd && (dd->is_struct() || as_user_class(dd)) && !dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
 		if (sdd) {
 			node_t sref = node2(N_STRUCT, id(sdd->name.c_str()), ignore());
@@ -1803,6 +1818,27 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		return mmember;
 	}
 
+	// A std::string OBJECT member (not a pointer) embeds the opaque string
+	// buffer in the struct: `long name[W];`. Same lowering as a local string
+	// object (string_storage_decl) but as a struct member. Construction /
+	// destruction of an embedded string member is driven by the enclosing
+	// class's ctor/dtor, not the cleanup attribute (members have no
+	// independent scope). String member access then reads through
+	// string_cstr((void*)&obj.name) — handled at the use site.
+	if (is_string_object(mtype)) {
+		node_t mspec = list();
+		append(mspec, simple(N_LONG));
+		node_t mdl = list();
+		append(mdl, node3(N_ARR, ignore(), list(),
+				  integer((long)string_obj_words())));
+		node_t mmember = simple(N_MEMBER, m.origin);
+		append(mmember, node1(N_SHARE, mspec));
+		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdl));
+		append(mmember, ignore());
+		append(mmember, ignore());
+		return mmember;
+	}
+
 	// Type specifier. A member declared via a typedef emits ID("alias")
 	// regardless of pointer-ness — the stars belong on the declarator, not
 	// the type spec (matches c2m). The star count is the explicit indirection
@@ -1867,6 +1903,114 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 	append(spec_decl, ignore());
 	append(spec_decl, ignore());
 	return spec_decl;
+}
+
+node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
+{
+	node_t struct_id = id(cdd->name.c_str());
+	node_t member_list = list();
+
+	// Virtual classes carry a hidden vtable pointer at offset 0. Emit it
+	// first so the C struct layout matches the parser's offsets (which it
+	// shifted by 8 to reserve the slot). The base class already owns the
+	// __vptr when it is virtual, so emit it only for the class that first
+	// introduces the vtable.
+	bool base_has_vtable = cdd->base_class && cdd->base_class->has_vtable;
+	if (cdd->has_vtable && !base_has_vtable) {
+		node_t vptr_spec = list();
+		append(vptr_spec, simple(N_VOID));
+		node_t vptr_dl = list();
+		append(vptr_dl, pointer());
+		node_t vptr_member = simple(N_MEMBER);
+		append(vptr_member, node1(N_SHARE, vptr_spec));
+		append(vptr_member, node2(N_DECL, id("__vptr"), vptr_dl));
+		append(vptr_member, ignore());
+		append(vptr_member, ignore());
+		append(member_list, vptr_member);
+	}
+
+	for (size_t i = 0; i < cdd->members.size(); i++)
+		append(member_list, member_node(cdd->members[i], cdd));
+
+	node_t struct_node = node2(N_STRUCT, struct_id, member_list);
+	node_t tl = node1(N_LIST, struct_node);
+
+	node_t spec_decl = simple(N_SPEC_DECL);
+	append(spec_decl, tl);
+	append(spec_decl, ignore());
+	append(spec_decl, ignore());
+	append(spec_decl, ignore());
+	append(spec_decl, ignore());
+	return spec_decl;
+}
+
+// Resolve the class behind a (possibly pointer-wrapped) DataDef.
+static DataDefCLASS *class_behind(DataDef *dd)
+{
+	if (!dd) return NULL;
+	if (DataDefCLASS *c = as_user_class(dd)) return c;
+	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
+		return as_user_class(p->base_type);
+	return NULL;
+}
+
+node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
+				  TokenBase *origin)
+{
+	recv_class = NULL;
+	// The receiver is either a chained sub-expression (parent_expr) or a bare
+	// object variable. Determine its declared type to tell a value receiver
+	// (`.`, needs &obj) from a pointer receiver (`->`, pass the pointer).
+	DataDef *recv_type;
+	node_t recv_node;
+	if (tm->parent_expr) {
+		recv_type = tm->parent_expr->datadef();
+		recv_node = translate_expr(tm->parent_expr);
+	} else {
+		recv_type = tm->object.type;
+		recv_node = id(tm->object.name.c_str(), origin);
+	}
+	recv_class = class_behind(recv_type);
+	if (!recv_class) return NULL;
+	bool recv_is_ptr = recv_type && recv_type->is_pointer();
+	// Value receiver -> &obj; pointer receiver -> obj.
+	return recv_is_ptr ? recv_node : node1(N_ADDR, recv_node, origin);
+}
+
+node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
+{
+	DataDefCLASS *recv_class = NULL;
+	node_t this_arg = class_this_arg(tm, recv_class, origin);
+	if (!recv_class) return NULL;
+
+	// The method's mangled symbol (`ClassName__method`) and signature.
+	const std::string &sym = tm->var.name;
+	FuncDef *callee = dynamic_cast<FuncDef *>(tm->var.type);
+
+	// Build the argument list: hidden __this first, then the explicit args.
+	// Coerce each explicit arg to its declared parameter shape (string object
+	// / numeric reference), mirroring the free-function call path. The
+	// callee's parameter 0 is __this, so explicit arg i maps to parameter i+1.
+	node_t args = list();
+	append(args, this_arg);
+	for (size_t i = 0; i < tm->parameters.size(); i++) {
+		TokenBase *arg = tm->parameters[i];
+		size_t pi = i + 1;   // +1 to skip __this
+		DataDef *pt = (callee && pi < callee->parameters.size())
+				? callee->parameters[pi] : NULL;
+		DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+		bool is_ref_param = callee && pi < callee->ref_params.size()
+				    && callee->ref_params[pi];
+		if (pt && (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref))
+			append(args, string_obj_arg(arg));
+		else if (is_ref_param)
+			append(args, node1(N_ADDR, translate_expr(arg), arg));
+		else
+			append(args, translate_expr(arg));
+	}
+
+	referenced_funcs.insert(sym);
+	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
 }
 
 node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
@@ -2191,6 +2335,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// STL container method call (vector/map/set) on a container
 			// object receiver. Returns NULL for non-container receivers.
 			lowered = container_method_call(tcm, tb);
+			if (lowered) return lowered;
+			// User-defined class method call: c.method(args) ->
+			// ClassName__method(&c, args). Returns NULL when the
+			// receiver is not a user class.
+			lowered = class_method_call(tcm, tb);
 			if (lowered) return lowered;
 		}
 	}
@@ -3266,6 +3415,24 @@ node_t CirBuilder::translate_module(Program *prog)
 		case Program::DeclKind::dkEnum:
 			break;
 		}
+	}
+
+	// Pass 0.5: user-defined class struct definitions. Classes are not in
+	// top_decls; they live in struct_map (also keyed under any typedef
+	// alias, so dedup by the DataDefCLASS pointer / tag name). Each lowers
+	// to `struct ClassName { ... }` — base members are already flattened
+	// into the derived class by the parser, so no base-before-derived
+	// ordering is required.
+	std::set<DataDefCLASS *> emitted_classes;
+	for (auto &kv : prog->struct_map) {
+		DataDefCLASS *cdd = as_user_class(kv.second);
+		if (!cdd) continue;
+		if (emitted_classes.count(cdd)) continue;
+		if (emitted_structs.count(cdd->name)) continue;
+		emitted_classes.insert(cdd);
+		emitted_structs.insert(cdd->name);
+		node_t cd = class_struct_def(cdd);
+		if (cd) append(top_list, cd);
 	}
 
 	// Collect user function names.

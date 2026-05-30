@@ -245,6 +245,26 @@ public:
 			    const std::set<std::string> &emitted_structs,
 			    bool force_incomplete_struct = false);
 	node_t struct_def(DataDefSTRUCT *sdd);
+	// Emit a user-defined class as a plain C struct definition. Base-class
+	// members are already flattened into the derived class's member list by
+	// the parser (single inheritance), so this is a flat struct. A `void
+	// *__vptr;` slot is prepended when the class (or a base) has virtual
+	// methods, matching the parser's layout (which reserves offset 0).
+	node_t class_struct_def(DataDefCLASS *cdd);
+	// Lower a user-defined class method call on a class OBJECT (or pointer)
+	// receiver to a free-function call on the mangled method symbol with the
+	// receiver address threaded as the hidden first `__this` argument:
+	//   c.method(a, b)   -> ClassName__method(&c, a, b)
+	//   p->method(a, b)  -> ClassName__method(p, a, b)
+	// A virtual call dispatches through the receiver's __vptr slot instead of
+	// naming the symbol directly. Returns NULL when the receiver is not a
+	// user-defined class (caller falls through to generic member access).
+	node_t class_method_call(class TokenMember *tm, TokenBase *origin);
+	// Build the hidden `__this` argument for a class method/operator call:
+	// the receiver's address for a value receiver, or the pointer itself for
+	// a pointer receiver. `recv_class` is filled with the receiver's class.
+	node_t class_this_arg(class TokenMember *tm, DataDefCLASS *&recv_class,
+			      TokenBase *origin);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
 
