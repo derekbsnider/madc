@@ -1,0 +1,44 @@
+#!/../bin/madc
+// Copy-ASSIGNMENT of a class with object members into an EXISTING object must
+// be memberwise (each member's operator=), NOT a bit-copy — a bit-copy aliases
+// the std::string heap buffer between LHS and RHS, double-freeing at cleanup.
+#include <iostream>
+#include <string>
+using namespace std;
+
+class B { public: string s; int n; };
+B make(const char *t, int k) { B b; b.s = t; b.n = k; return b; }
+
+// trivial struct (no object members) — keeps native bit-copy
+class P { public: int x; int y; };
+
+int main() {
+	// plain copy-assign into a live object
+	B a; a.s = "hello"; a.n = 7;
+	B b;
+	b = a;
+	cout << "b " << b.s << " " << b.n << endl;       // b hello 7
+	// a must still be intact (independent buffer, not moved)
+	cout << "a " << a.s << " " << a.n << endl;        // a hello 7
+
+	// assign a by-value return into a live object (the P0.1 concern case)
+	B c;
+	c = make("world", 42);
+	cout << "c " << c.s << " " << c.n << endl;        // c world 42
+
+	// overwrite an already-assigned object (old buffer must be freed, not leaked/aliased)
+	b = make("again", 9);
+	cout << "b2 " << b.s << " " << b.n << endl;        // b2 again 9
+
+	// self-assignment must be safe
+	a = a;
+	cout << "self " << a.s << " " << a.n << endl;      // self hello 7
+
+	// trivial struct assign still works (bit-copy, no dtor)
+	P p; p.x = 1; p.y = 2;
+	P q;
+	q = p;
+	cout << "q " << q.x << " " << q.y << endl;         // q 1 2
+
+	return 0;
+}

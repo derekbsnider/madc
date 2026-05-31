@@ -152,6 +152,22 @@ class CirBuilder {
 	void class_copy_construct_into_retbuf(DataDefCLASS *cdd, TokenBase *src,
 					      std::vector<node_t> &out,
 					      TokenBase *origin);
+	// Member-wise copy-ASSIGNMENT of a non-trivial class into an existing object
+	// (`lhs = rhs`): each member is copy-assigned (string -> string_assign,
+	// scalar -> plain =), NOT bit-copied — avoids aliasing object members' heap
+	// buffers (double-free). Self-assignment-safe. The implicit g++ operator=.
+	// `class_copy_assign` takes an lvalue rhs; `class_copy_assign_from_addr`
+	// takes a pre-materialized (void*) rhs address (a call temp evaluated once).
+	void class_copy_assign(DataDefCLASS *cdd, TokenBase *lhs, TokenBase *rhs,
+			       std::vector<node_t> &out, TokenBase *origin);
+	void class_copy_assign_from_addr(DataDefCLASS *cdd, TokenBase *lhs,
+					 node_t rhs_addr, std::vector<node_t> &out,
+					 TokenBase *origin);
+	void class_copy_assign_members(DataDefCLASS *cdd, const char *lname,
+				       const char *rname, std::vector<node_t> &out,
+				       TokenBase *origin);
+	node_t class_ptr_bind(DataDefCLASS *cdd, const char *nm, node_t init,
+			      TokenBase *origin);
 	// Materialize an object-returning CALL (non-trivial class) into a
 	// cleanup-tagged temp of that class via the __retbuf ABI, and return the
 	// temp's (void*) address. Mirrors string_call_temp_addr for user classes.
