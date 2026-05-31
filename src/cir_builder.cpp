@@ -3322,6 +3322,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				append(cargs, id(tmp, tb));   // trailing allocator& == this
 			node_t ccall = node2(N_CALL, id(csym.c_str(), tb), cargs, tb);
 			append(items, node2(N_EXPR, list(), ccall, tb));
+		} else if (cdd->has_vtable) {
+			// No user constructor, but a virtual (polymorphic) class: calloc
+			// zeroes the storage, leaving __vptr NULL — a virtual call would
+			// deref NULL and crash. A user ctor's body sets __vptr (func_def
+			// prologue); with no ctor we must set it here so `new B()` yields a
+			// usable polymorphic object. `__newN->__vptr = (void*)B__vtable`.
+			std::string vname = cdd->name + "__vtable";
+			node_t vptr_lhs = node2(N_DEREF_FIELD, id(tmp, tb),
+						id("__vptr", tb));
+			node_t vptr_type = node2(N_TYPE,
+				node1(N_LIST, simple(N_VOID)),
+				node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+			node_t vtab = node2(N_CAST, vptr_type, id(vname.c_str(), tb), tb);
+			node_t asn = node2(N_ASSIGN, vptr_lhs, vtab, tb);
+			CIR_NODE(asn)->synth_from_origin = true;
+			append(items, node2(N_EXPR, list(), asn, tb));
 		}
 		// __newN;  (value of the statement expression)
 		append(items, node2(N_EXPR, list(), id(tmp, tb), tb));

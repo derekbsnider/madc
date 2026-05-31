@@ -1,0 +1,44 @@
+#!/../bin/madc
+// Virtual method dispatch through a base pointer for classes WITHOUT a user
+// constructor, allocated via `new` (the SIGSEGV repro): the instance carries a
+// __vptr at offset 0 pointing at the class vtable, and `new B()` must initialize
+// it even when B declares no constructor. The vtable indirect call then
+// dispatches to the derived override.
+#include <iostream>
+using namespace std;
+
+class A {
+public:
+	virtual int who() { return 1; }
+	virtual int base_only() { return 10; }   // B/C do not override this
+};
+class B : public A {
+public:
+	int who() { return 2; }                  // override
+};
+class C : public A {
+public:
+	int who() { return 3; }                  // override
+};
+
+int main() {
+	// base pointer -> derived override (the repro)
+	A *p = new B();
+	cout << "p " << p->who() << endl;            // p 2
+
+	// non-overridden virtual resolves to the base impl
+	cout << "base_only " << p->base_only() << endl;  // base_only 10
+
+	// a second derived type through a base pointer
+	A *q = new C();
+	cout << "q " << q->who() << endl;            // q 3
+
+	// polymorphism through base pointers reassigned at runtime
+	A *r = new B();
+	int sum = r->who();          // 2
+	r = new C();
+	sum = sum + r->who();        // + 3
+	cout << "sum " << sum << endl;               // sum 5
+
+	return 0;
+}
