@@ -2711,33 +2711,111 @@ static const char *binop_overload_symbol(TokenID id)
 	case TokenID::tkMul:    return "*";
 	case TokenID::tkDiv:    return "/";
 	case TokenID::tkMod:    return "%";
+	case TokenID::tkAssign: return "=";
+	case TokenID::tkAddEq:  return "+=";
 	default:                return "";
 	}
+}
+
+// Among a class's operator overloads of name `mname`, select the one whose
+// single explicit parameter (param 1; param 0 = __this) matches the RHS: a
+// string-OBJECT RHS picks the (const string&) overload, a const char* value
+// picks the (const char*) overload. Falls back to the first by-name match for
+// a class with a single (non-overloaded) operator. NULL when none is found.
+FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
+					      const std::string &mname,
+					      TokenBase *rhs)
+{
+	bool rhs_is_string = CirBuilder::is_string_object_value(rhs);
+	// Scan the methods vector for same-name overloads (std::string registers
+	// operator=/operator+= here under the unmangled name, two overloads each).
+	FuncDef *first = NULL;
+	for (Variable *mv : cls->methods) {
+		if (!mv || mv->name != mname) continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd) continue;
+		if (!first) first = fd;
+		DataType p1 = (fd->parameters.size() > 1)
+			      ? fd->parameters[1]->rawtype() : DataType::dtVOID;
+		bool p1_is_string = (p1 == DataType::dtSTRING
+				     || p1 == DataType::dtSTRINGref);
+		if (rhs_is_string == p1_is_string) return fd;
+	}
+	if (first) return first;
+	// Fall back to the keyed lookup: a user class registers its operator under
+	// the unmangled name in method_map, while its methods-vector entry carries
+	// the MANGLED name — so the by-name scan above misses it.
+	std::string key = mname;
+	Variable *mv = cls->findMethod(key);
+	return mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 }
 
 node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 {
 	if (!top || !top->left || !top->right) return NULL;
-	DataDefCLASS *lcls = as_user_class(top->left->datadef());
+	// The lhs is either an ordinary user class or a runtime-object class
+	// (std::string, via the object-class bridge), both of which use the class
+	// operator path. NULL lhs class -> not an overloadable operator here.
+	DataDefCLASS *lcls = class_behind(top->left->datadef());
 	if (!lcls) return NULL;
 	const char *opsym = binop_overload_symbol(top->id());
 	if (!opsym[0]) return NULL;
 
 	std::string mname = std::string("operator") + opsym;
-	Variable *mv = lcls->findMethod(mname);
-	if (!mv) return NULL;
-	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+	// Pick the overload matching the RHS (string& vs const char*). A class
+	// without this operator yields NULL -> fall through to generic handling.
+	FuncDef *callee = select_operator_overload(lcls, mname, top->right);
+	if (!callee) return NULL;
+
+	// A class-bound external operator (std::string) names its real symbol via
+	// emit_symbol and is declared from its signature; otherwise the default
+	// ClassName__operator<op> scheme + the referenced-funcs prototype pass.
+	if (!callee->emit_symbol.empty()) {
+		DataDef *pt = (callee->parameters.size() > 1)
+				? callee->parameters[1] : NULL;
+		DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+		std::vector<ExternParam> eparams = { { {N_VOID}, true } };
+		node_t args = list();
+		// The lhs `this` is a std::string OBJECT — string_obj_arg yields its
+		// (void*) address whether it is a named variable (honouring pointer-
+		// stored params via string_var_addr), a string MEMBER (`&obj.field`),
+		// or a string-object subscript element.
+		append(args, string_obj_arg(top->left));
+		if (pt && (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref)) {
+			eparams.push_back({ {N_VOID}, true });
+			append(args, string_obj_arg(top->right));   // const string& -> object ptr
+		} else {
+			eparams.push_back({ {N_CHAR}, true });
+			append(args, translate_expr(top->right));   // const char*
+		}
+		// The libstdc++ operators return basic_string& (a void* we ignore
+		// when the result is unused). Declared returning void* so a chained
+		// use still type-checks; the common statement use discards it.
+		need_output_extern(callee->emit_symbol.c_str(), true, eparams);
+		node_t ocall = node2(N_CALL, id(callee->emit_symbol.c_str(), origin),
+				     args, origin);
+		CIR_NODE(ocall)->synth_from_origin = true;
+		return ocall;
+	}
+
+	// The lhs `this` address for a user-class operator: a NAMED variable
+	// honours the unified pointer-stored rule; any other lhs expression is
+	// addressed by &expr (a value lvalue).
+	node_t this_arg;
+	if (TokenVar *ltv = dynamic_cast<TokenVar *>(top->left))
+		this_arg = object_var_addr(ltv->var, origin);
+	else
+		this_arg = node1(N_ADDR, translate_expr(top->left), origin);
 
 	std::string sym = lcls->name + "__" + mname;   // ClassName__operator==
 	node_t args = list();
-	append(args, node1(N_ADDR, translate_expr(top->left), origin));  // &lhs
+	append(args, this_arg);
 	// Single explicit RHS argument (operator parameter 1; param 0 = __this).
 	{
-		DataDef *pt = (callee && callee->parameters.size() > 1)
+		DataDef *pt = (callee->parameters.size() > 1)
 				? callee->parameters[1] : NULL;
 		DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
-		bool refp = callee && callee->ref_params.size() > 1
-			    && callee->ref_params[1];
+		bool refp = callee->ref_params.size() > 1 && callee->ref_params[1];
 		if (pt && (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref))
 			append(args, string_obj_arg(top->right));
 		else if (refp)
@@ -3512,39 +3590,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				if (cw) return cw;
 			}
 
-			// std::string assignment / append on a string OBJECT lvalue:
-			// `s = rhs` / `s += rhs` lower to the real libstdc++
-			// basic_string::operator= / operator+= members. c2mir cannot assign
-			// into the `long[]` buffer, and g++ emits these operator calls. RHS
-			// string OBJECT -> the (const string&) overload; const char* value
-			// -> the (const char*) overload.
-			if ((tb->id() == TokenID::tkAssign || tb->id() == TokenID::tkAddEq)
-			    && is_string_object_value(top->left)) {
-				bool is_append = (tb->id() == TokenID::tkAddEq);
-				node_t cargs = list();
-				append(cargs, string_obj_arg(top->left));   // this (&s)
-				const char *sym;
-				if (is_string_object_value(top->right)) {
-					append(cargs, string_obj_arg(top->right));  // const string&
-					sym = is_append ? STR_APP_C : STR_ASGN_C;
-					need_output_extern(sym, false,
-						{ { {N_VOID}, true }, { {N_VOID}, true } });
-				} else {
-					append(cargs, translate_expr(top->right));  // const char*
-					sym = is_append ? STR_APP_S : STR_ASGN_S;
-					need_output_extern(sym, false,
-						{ { {N_VOID}, true }, { {N_CHAR}, true } });
-				}
-				node_t scall = node2(N_CALL, id(sym, tb), cargs, tb);
-				CIR_NODE(scall)->synth_from_origin = true;
-				return scall;
-			}
-
-			// Operator overloading on a user-defined class lvalue:
-			// `c <op> rhs` where `c`'s class defines `operator<op>` lowers
-			// to `ClassName__operator<op>(&c, rhs)`. The parser keeps the
-			// raw binary node; the method dispatch is resolved here (like
-			// the std::string operator interception above).
+			// Operator overloading on a class lvalue (user class OR
+			// std::string via the object-class bridge): `c <op> rhs` where
+			// c's class defines `operator<op>` lowers to the operator call.
+			// For std::string this covers `s = "x"`/`s = t`/`s += ...` ->
+			// the mangled libstdc++ basic_string::operator=/operator+=
+			// (c2mir cannot assign through the long[] buffer, and g++ emits
+			// these operator calls). The overload is selected by RHS type.
+			// The legacy dtSTRING assign interception was deleted in A4b
+			// Surface 3 — class_operator_call now owns it.
 			{
 				node_t ov = class_operator_call(top, tb);
 				if (ov) return ov;

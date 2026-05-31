@@ -321,6 +321,12 @@ public:
 	// user class). NULL when no overload set is recorded.
 	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args);
+	// Select the operator overload (operator= / operator+=) matching the RHS:
+	// a string-object RHS picks the (const string&) overload, a const char*
+	// value picks the (const char*) overload. Falls back to the first by-name
+	// match. NULL when the class has no such operator.
+	class FuncDef *select_operator_overload(DataDefCLASS *cls,
+				const std::string &mname, TokenBase *rhs);
 	// Lower an overloaded binary operator on a user-defined class lvalue:
 	//   c <op> rhs  ->  ClassName__operator<op>(&c, rhs)
 	// when c's class defines a matching operator method. Returns NULL when

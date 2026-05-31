@@ -3714,6 +3714,10 @@ void Program::add_string_methods()
     const std::string sym_assign_cstr = itanium_mangle_member_sub(T, "assign", {"const char*"}, false);
     const std::string sym_append_str  = itanium_mangle_member_sub(T, "append", {"const " + T + "&"}, false);
     const std::string sym_append_cstr = itanium_mangle_member_sub(T, "append", {"const char*"}, false);
+    const std::string sym_op_asgn_str  = itanium_mangle_operator_sub(T, "=",  {"const " + T + "&"}, false);
+    const std::string sym_op_asgn_cstr = itanium_mangle_operator_sub(T, "=",  {"const char*"}, false);
+    const std::string sym_op_app_str   = itanium_mangle_operator_sub(T, "+=", {"const " + T + "&"}, false);
+    const std::string sym_op_app_cstr  = itanium_mangle_operator_sub(T, "+=", {"const char*"}, false);
 
     scmc.c_str = (const char *(string::*)(void))&string::c_str;
     var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
@@ -3741,6 +3745,40 @@ void Program::add_string_methods()
     scmc.method_cstr = (string &(string::*)(const char *))&string::append;
     var = addFunction("append", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_append_cstr;
+    ddSTRING.methods.push_back(var);
+
+    // operator=/operator+= as class operators bound to the mangled libstdc++
+    // basic_string::operator=/operator+= members. Two overloads each (const
+    // string& / const char*); CirBuilder::class_operator_call selects by the
+    // RHS type. `s = "x"`/`s = t`/`s += "x"`/`s += t` route through the class
+    // operator path (no legacy dtSTRING assign interception). Param 1 marks
+    // the string& overload as a ref param so the address is passed.
+    scmc.method_str = (string &(string::*)(const string &))&string::operator=;
+    var = addFunction("operator=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	fd->emit_symbol = sym_op_asgn_str;
+	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
+	fd->ref_params[1] = true;
+    }
+    ddSTRING.methods.push_back(var);
+
+    scmc.method_cstr = (string &(string::*)(const char *))&string::operator=;
+    var = addFunction("operator=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_asgn_cstr;
+    ddSTRING.methods.push_back(var);
+
+    scmc.method_str = (string &(string::*)(const string &))&string::operator+=;
+    var = addFunction("operator+=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	fd->emit_symbol = sym_op_app_str;
+	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
+	fd->ref_params[1] = true;
+    }
+    ddSTRING.methods.push_back(var);
+
+    scmc.method_cstr = (string &(string::*)(const char *))&string::operator+=;
+    var = addFunction("operator+=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_app_cstr;
     ddSTRING.methods.push_back(var);
 
     // length() and size() — wrap std::string::length via a free helper.
