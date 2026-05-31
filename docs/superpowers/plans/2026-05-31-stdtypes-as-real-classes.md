@@ -16,11 +16,11 @@
 
 The legacy C++ shortcut artifacts are RETIRED. std::string is a real class; std::vector/map/set are real `#include`-defined `std::` templates; the vector/map/set/list keywords and the tkSTRING token are gone; ns_stl.cpp is deleted. **374 integration tests passing, zero regressions** throughout. Commit trail: ed21e3b, 9e5eceaf, 6101c3a, d95503c, d8317c4, e5aca81, 1a9c024, 3e78028, 64c3d63, 1d0b6c0, 34c1e0e, d45e72a, 457cdaa, 70e5932, bcd428f, ef41596, 6390559.
 
-**Polish follow-ups (out of the core scope, optional):**
-1. std::string `operator==`/`!=` via a runtime extern-C wrapper bound on ddSTRING (map/set headers currently compare string keys via `c_str()`/`strcmp`); also teach `class_operator_call` to honor an int-returning bound operator.
-2. Container element DESTRUCTORS (the headers `free(data)` but don't destruct live elements — a leak for string/object elements; B3).
-3. Remove the now-inert `DataDefVECTOR`/`MAP`/`SET`/`LIST` classes + their `dt*` enum tags, and the dead `tkSSTREAM`. (Keep `DataDefSTRING`/`dtSTRING` — still the class-model discriminator.)
-4. Three pre-existing parser gaps the container headers worked around: unqualified sibling-method calls inside a class method; a method call on a subscript element (`arr[i].m()`); `this.member` inside methods.
+**Polish follow-ups:**
+1. ✅ DONE (b0f408c/0806e0e): std::string `operator==`/`!=` via the `string_equals` runtime extern-C wrapper; `class_operator_call` honors an int-returning bound operator; map/set headers compare keys with `==`. `tests/teststringeq.mad`.
+2. ✅ DONE (655b088): container element DESTRUCTORS via a general `__destroy(ptr)` intrinsic (no-op for scalar T, the element type's class dtor for object T) in the vector/map/set `~dtor`s — valgrind-confirmed the std::string element buffers are freed. `tests/testcontainerdtor.mad`. No string special-casing.
+3. ✅ DONE (4a06137/d281f6c): deleted the unreachable container-object lowering (`is_container_object` was always false) + dead `DataDefSET`/`DataDefLIST`/`tkSSTREAM` (392 LOC). LEFT inert (still referenced by enum-guarded branches): `DataDefVECTOR`/`DataDefMAP` + the `dtVECTOR/MAP/SET/LIST` enum tags — removing them ripples through parallel switch/array tables for zero functional gain.
+4. ⏳ REMAINING (feature work, parser-grammar risk — do deliberately, not at session-tail): three parser gaps the container headers work around. Sequenced by leverage (per the element-dtor subagent): (1) **method/operator on a subscript element** (`arr[i].m()`, `keys[i] == k`) — the keystone: cleans the map/set `K cur=keys[i]` workaround AND would let `__destroy` be replaced by native pseudo-destructor teardown; (2) **pseudo-destructor syntax** (`(data+i)->~T()`) — then `__destroy` retires; (3) unqualified **sibling-method call inside a method** (`helper()`→`this->helper()`) — lets map/set factor their linear search. These improve elegance/usability; they do NOT fix bugs (the headers work today). A parser-grammar change touches all 376 tests — scope it carefully.
 
 ## EXECUTION PROGRESS (subagent-driven, 2026-05-31)
 
