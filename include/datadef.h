@@ -623,6 +623,12 @@ public:
     std::vector<Variable *> methods;
     std::vector<Variable *> staticconst;
     std::map<std::string, Variable *> method_map; // unmangled name -> method variable
+    // Constructor overload set (each entry's FuncDef carries the param signature
+    // and, for class-bound externals like std::string, an emit_symbol naming the
+    // real ctor). A user class with one ClassName() ctor has a single entry; a
+    // class with overloaded ctors (std::string: default / const char* / copy)
+    // has several. Empty when the class has no recorded ctor.
+    std::vector<Variable *> ctors;
     bool has_user_ctor;  // true if user defined ClassName() constructor
     bool has_user_dtor;  // true if user defined ~ClassName() destructor
     void *extern_ctor;   // C function pointer for extern class default constructor (NULL if none)

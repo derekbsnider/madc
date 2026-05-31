@@ -1892,7 +1892,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	{
 		DataDefCLASS *cdd = (!is_ptr) ? as_user_class(base_dd) : NULL;
 		if (cdd && class_needs_dtor(cdd)) {
-			std::string dtor_sym = cdd->name + "___dtor";
+			std::string dtor_sym = class_dtor_symbol(cdd);
 			referenced_funcs.insert(dtor_sym);
 			node_t attr_args = list();
 			append(attr_args, id(dtor_sym.c_str(), origin));
@@ -2374,7 +2374,19 @@ bool CirBuilder::class_needs_dtor(DataDefCLASS *cdd)
 
 std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
 {
-	return cdd ? cdd->name + "___dtor" : std::string();
+	if (!cdd) return std::string();
+	// A class whose destructor is bound to an external symbol (emit_symbol set
+	// — e.g. std::string's libstdc++ ~basic_string()) uses that symbol directly
+	// as the cleanup function; madc synthesizes no Cls___dtor body for it
+	// (synth_dtor_def early-returns on has_user_dtor). The libstdc++ dtor takes
+	// only `this`, matching the cleanup attribute's `void (*)(T*)` shape.
+	auto it = cdd->method_map.find("~" + cdd->name);
+	if (it != cdd->method_map.end() && it->second) {
+		FuncDef *dt = dynamic_cast<FuncDef *>(it->second->type);
+		if (dt && !dt->emit_symbol.empty())
+			return dt->emit_symbol;
+	}
+	return cdd->name + "___dtor";
 }
 
 void CirBuilder::class_instance_member_ctors(const char *inst,
@@ -2454,18 +2466,64 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 	return node2(N_TYPE, spec_list, node2(N_DECL, ignore(), decl_list));
 }
 
+// Select the constructor overload of `cdd` that matches the initializer
+// arguments. Mirrors string_ctor_call's logic but on the class path:
+//   - no args            -> the receiver-only (default) ctor.
+//   - one string-OBJECT  -> the copy ctor (param is dtSTRING / dtSTRINGref).
+//   - any other args     -> the ctor whose (non-__this) param count matches,
+//                           preferring a non-string-typed first param.
+// `cdd->ctors` lists the overloads (one entry for a user class). Returns NULL
+// when no overload set is recorded (caller falls back to the single ctor).
+FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
+					  const std::vector<TokenBase *> &ctor_args)
+{
+	if (!cdd || cdd->ctors.empty()) return NULL;
+
+	bool copy_init = ctor_args.size() == 1
+			 && is_string_object_value(ctor_args[0]);
+	FuncDef *best = NULL;
+	for (Variable *cv : cdd->ctors) {
+		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
+		if (!fd) continue;
+		// Parameter count excluding the hidden __this (param 0).
+		size_t pn = fd->parameters.empty() ? 0 : fd->parameters.size() - 1;
+		if (pn != ctor_args.size()) continue;
+		DataType p1 = (fd->parameters.size() > 1)
+			      ? fd->parameters[1]->rawtype() : DataType::dtVOID;
+		bool p1_is_string = (p1 == DataType::dtSTRING
+				     || p1 == DataType::dtSTRINGref);
+		if (ctor_args.size() == 1) {
+			// Disambiguate string-object copy vs const char* by the arg.
+			if (copy_init && p1_is_string) return fd;
+			if (!copy_init && !p1_is_string) return fd;
+			if (!best) best = fd;   // arity match, keep as fallback
+			continue;
+		}
+		return fd;   // arity uniquely selects for 0 or >1 args
+	}
+	return best;
+}
+
 node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 				   const std::vector<TokenBase *> &ctor_args,
 				   TokenBase *origin)
 {
 	if (!v || !cdd || !cdd->has_user_ctor) return NULL;
 
-	std::string sym = cdd->name + "__" + cdd->name;   // ClassName__ClassName
-	// Resolve the ctor's signature for argument coercion (param 0 = __this).
-	FuncDef *ctor = NULL;
-	auto it = cdd->method_map.find(cdd->name);
-	if (it != cdd->method_map.end() && it->second)
-		ctor = dynamic_cast<FuncDef *>(it->second->type);
+	// Resolve the ctor: prefer the overload matching the initializer (the
+	// general path; a user class has one ctor so this is a no-op). Fall back
+	// to the single ctor keyed under the class name.
+	FuncDef *ctor = select_ctor_overload(cdd, ctor_args);
+	if (!ctor) {
+		auto it = cdd->method_map.find(cdd->name);
+		if (it != cdd->method_map.end() && it->second)
+			ctor = dynamic_cast<FuncDef *>(it->second->type);
+	}
+
+	// A class-bound external ctor (e.g. std::string) names its real symbol via
+	// emit_symbol; otherwise use the default ClassName__ClassName scheme.
+	std::string sym = (ctor && !ctor->emit_symbol.empty())
+			  ? ctor->emit_symbol : (cdd->name + "__" + cdd->name);
 
 	node_t args = list();
 	append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin)); // &v
@@ -2484,6 +2542,11 @@ node_t CirBuilder::class_ctor_call(Variable *v, DataDefCLASS *cdd,
 		else
 			append(args, translate_expr(arg));
 	}
+	// libstdc++ basic_string(const char*, const allocator&): the real ABI takes
+	// a trailing allocator& madc has no value for — pass &this (a throwaway
+	// pointer the ctor treats as an empty allocator). See FuncDef::ctor_trailing_self.
+	if (ctor && ctor->ctor_trailing_self)
+		append(args, node1(N_ADDR, id(v->name.c_str(), origin), origin));
 	referenced_funcs.insert(sym);
 	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
 	return node2(N_EXPR, list(), call, origin);
@@ -2836,11 +2899,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			} else if (tn->alloc_class) {
 				DataDefCLASS *pc = tn->alloc_class;
 				if (pc->has_user_ctor) {
-					std::string csym = pc->name + "__" + pc->name;
-					FuncDef *ctor = NULL;
-					auto it = pc->method_map.find(pc->name);
-					if (it != pc->method_map.end() && it->second)
-						ctor = dynamic_cast<FuncDef *>(it->second->type);
+					FuncDef *ctor = select_ctor_overload(pc, tn->ctor_args);
+					if (!ctor) {
+						auto it = pc->method_map.find(pc->name);
+						if (it != pc->method_map.end() && it->second)
+							ctor = dynamic_cast<FuncDef *>(it->second->type);
+					}
+					std::string csym = (ctor && !ctor->emit_symbol.empty())
+							   ? ctor->emit_symbol
+							   : (pc->name + "__" + pc->name);
 					referenced_funcs.insert(csym);
 					node_t a = list();
 					append(a, addr());   // __this (already Class*)
@@ -2860,6 +2927,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 						else
 							append(a, translate_expr(arg));
 					}
+					if (ctor && ctor->ctor_trailing_self)
+						append(a, addr());   // trailing allocator& == &this
 					construct = node2(N_CALL, id(csym.c_str(), tb), a, tb);
 				}
 			} else {
@@ -2917,11 +2986,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		append(items, decl);
 		// C__C(__newN, args)  (the pointer is already __this-shaped)
 		if (cdd->has_user_ctor) {
-			std::string csym = cdd->name + "__" + cdd->name;
-			FuncDef *ctor = NULL;
-			auto it = cdd->method_map.find(cdd->name);
-			if (it != cdd->method_map.end() && it->second)
-				ctor = dynamic_cast<FuncDef *>(it->second->type);
+			FuncDef *ctor = select_ctor_overload(cdd, tn->ctor_args);
+			if (!ctor) {
+				auto it = cdd->method_map.find(cdd->name);
+				if (it != cdd->method_map.end() && it->second)
+					ctor = dynamic_cast<FuncDef *>(it->second->type);
+			}
+			std::string csym = (ctor && !ctor->emit_symbol.empty())
+					   ? ctor->emit_symbol
+					   : (cdd->name + "__" + cdd->name);
 			referenced_funcs.insert(csym);
 			node_t cargs = list();
 			append(cargs, id(tmp, tb));
@@ -2941,6 +3014,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				else
 					append(cargs, translate_expr(arg));
 			}
+			if (ctor && ctor->ctor_trailing_self)
+				append(cargs, id(tmp, tb));   // trailing allocator& == this
 			node_t ccall = node2(N_CALL, id(csym.c_str(), tb), cargs, tb);
 			append(items, node2(N_EXPR, list(), ccall, tb));
 		}
@@ -2958,7 +3033,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		node_t items = list();
 		DataDefCLASS *cdd = tdl->del_class;
 		if (cdd && cdd->has_user_dtor) {
-			std::string dsym = cdd->name + "___dtor";
+			std::string dsym = class_dtor_symbol(cdd);
 			referenced_funcs.insert(dsym);
 			node_t dargs = list();
 			append(dargs, ptr);

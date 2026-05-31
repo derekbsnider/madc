@@ -306,6 +306,11 @@ public:
 	node_t class_ctor_call(class Variable *v, DataDefCLASS *cdd,
 			       const std::vector<TokenBase *> &ctor_args,
 			       TokenBase *origin);
+	// Select the ctor overload of `cdd` matching the initializer arguments
+	// (default / const char* / copy for std::string; the single ctor for a
+	// user class). NULL when no overload set is recorded.
+	class FuncDef *select_ctor_overload(DataDefCLASS *cdd,
+			       const std::vector<TokenBase *> &ctor_args);
 	// Lower an overloaded binary operator on a user-defined class lvalue:
 	//   c <op> rhs  ->  ClassName__operator<op>(&c, rhs)
 	// when c's class defines a matching operator method. Returns NULL when

@@ -3764,6 +3764,53 @@ void Program::add_string_methods()
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_clear;
     ddSTRING.methods.push_back(var);
 
+    // std::string is a real C++ class: register its constructors and destructor
+    // bound to the mangled libstdc++ symbols, so a `string s;` declaration can be
+    // constructed/destructed through the same class ctor/dtor machinery a user
+    // class uses (CirBuilder::class_ctor_call selects the ctor overload by
+    // initializer; the cleanup attribute names the dtor's emit_symbol). These
+    // mirror the STR_CTOR0/_S/_CP/_DTOR statics in src/cir_builder.cpp; the
+    // symbols are demangle-verified with c++filt against libstdc++.so.
+    const std::string sym_ctor0  = itanium_mangle_ctor_sub(T, {});
+    const std::string sym_ctor_s = itanium_mangle_ctor_sub(T, {"const char*", "const std::allocator<char>&"});
+    const std::string sym_ctor_cp= itanium_mangle_ctor_sub(T, {"const " + T + "&"});
+    const std::string sym_dtor   = itanium_mangle_dtor_sub(T);
+
+    // default ctor: string(). Receiver only (param 0 == hidden string*).
+    var = addFunction("string", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING)}, NULL, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_ctor0;
+    ddSTRING.methods.push_back(var);
+    ddSTRING.ctors.push_back(var);
+    ddSTRING.method_map["string"] = var;   // keyed under class name, like a user ctor
+
+    // (const char*) ctor: string(const char*). Receiver + char*. (libstdc++ also
+    // takes a trailing allocator&; class_ctor_call passes &this for it.)
+    var = addFunction("string", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, NULL, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	fd->emit_symbol = sym_ctor_s;
+	fd->ctor_trailing_self = true;   // trailing const allocator<char>& == &this
+    }
+    ddSTRING.methods.push_back(var);
+    ddSTRING.ctors.push_back(var);
+
+    // copy ctor: string(const string&). Receiver + string (ref param).
+    var = addFunction("string", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, NULL, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	fd->emit_symbol = sym_ctor_cp;
+	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
+	fd->ref_params[1] = true;
+    }
+    ddSTRING.methods.push_back(var);
+    ddSTRING.ctors.push_back(var);
+    ddSTRING.has_user_ctor = true;
+
+    // dtor: ~string(). Receiver only; bound to the libstdc++ ~basic_string().
+    var = addFunction("~string", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING)}, NULL, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_dtor;
+    ddSTRING.methods.push_back(var);
+    ddSTRING.method_map["~string"] = var;
+    ddSTRING.has_user_dtor = true;
+
     DBG(std::cout << "add_string_methods() ddSTRING.methods.size() = " << ddSTRING.methods.size() << std::endl);
 }
 
@@ -10937,6 +10984,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 			mvar->flags |= access_flags;
 		    ddc->methods.push_back(mvar);
 		    ddc->method_map[tag->str] = mvar;
+		    ddc->ctors.push_back(mvar);
 		    ddc->has_user_ctor = true;
 		}
 		continue;
