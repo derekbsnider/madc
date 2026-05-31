@@ -21,12 +21,20 @@ tests/testtemplate.mad covers int/long/double/char* and passes.
 (verified 2026-05-31, int/long/double all store+fetch correctly) — it was resolved
 by the top-level-scope method-registration fix (8229ae8); the prior note was a stale
 intermediate observation.
+**REFERENCE RETURN TYPES DONE** (commit ef699e2): `T& method()` / `T& operator[]`
+work (the canonical container element-accessor blocker). Model: a reference is a
+strict pointer (method returns the address; call site reads `*p`/stores `*p=rhs`),
+byte-identical to g++. tests/testrefreturn.mad. The engine is verified on a
+realistic container body (Vec<int>: ctor/dtor/push/realloc/operator[]).
 **IMMEDIATE NEXT TASK:** container std-lib as madc-dialect include/madc/vector|map|set
 templates (T* data; len/cap; realloc; calling exported leaves), instantiate
 vector<int>/<string> via the template path, make testvector/testmap/testset pass
-through it (parallel to ns_stl, behind a guard), THEN flip the hardcoded
-TokenVECTOR/MAP/SET keyword path off and delete ns_stl.cpp (the disallowed stdlib
-wrapper). Full plan + mechanics: docs/plans/2026-05-30-template-instantiation.md.
+through it. NOTE: vector/map/set are LEXER KEYWORDS (tkVECTOR etc.) — they preempt
+the identifier->template path, so prove the header under a NON-keyword name first,
+then the "flip" = remove the keyword registration + ship the header + repoint tests
++ delete ns_stl.cpp (the disallowed stdlib wrapper). Pre-existing gap to watch:
+array data members (int data[4]) unsupported in class bodies (containers use T*, so
+deferrable). Full plan + mechanics: docs/plans/2026-05-30-template-instantiation.md.
 Memory: [[project_template_instantiation]]. Gotcha: user method names that are madc
 keywords (set/map/list/vector) collide — use other names.
 
