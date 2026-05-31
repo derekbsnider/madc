@@ -12,6 +12,16 @@
 
 ---
 
+## EXECUTION COMPLETE (subagent-driven, 2026-05-31) — core refactor DONE
+
+The legacy C++ shortcut artifacts are RETIRED. std::string is a real class; std::vector/map/set are real `#include`-defined `std::` templates; the vector/map/set/list keywords and the tkSTRING token are gone; ns_stl.cpp is deleted. **374 integration tests passing, zero regressions** throughout. Commit trail: ed21e3b, 9e5eceaf, 6101c3a, d95503c, d8317c4, e5aca81, 1a9c024, 3e78028, 64c3d63, 1d0b6c0, 34c1e0e, d45e72a, 457cdaa, 70e5932, bcd428f, ef41596, 6390559.
+
+**Polish follow-ups (out of the core scope, optional):**
+1. std::string `operator==`/`!=` via a runtime extern-C wrapper bound on ddSTRING (map/set headers currently compare string keys via `c_str()`/`strcmp`); also teach `class_operator_call` to honor an int-returning bound operator.
+2. Container element DESTRUCTORS (the headers `free(data)` but don't destruct live elements — a leak for string/object elements; B3).
+3. Remove the now-inert `DataDefVECTOR`/`MAP`/`SET`/`LIST` classes + their `dt*` enum tags, and the dead `tkSSTREAM`. (Keep `DataDefSTRING`/`dtSTRING` — still the class-model discriminator.)
+4. Three pre-existing parser gaps the container headers worked around: unqualified sibling-method calls inside a class method; a method call on a subscript element (`arr[i].m()`); `this.member` inside methods.
+
 ## EXECUTION PROGRESS (subagent-driven, 2026-05-31)
 
 - **A1 DONE** (commit `ed21e3b`): `tests/teststringclass.mad` invariant — REDUCED from the plan: string-by-value param+RETURN was removed because the legacy path never implemented string returns (segfaults today). The refactor should DELIVER string return; add a target test in A3/A4 once it works.
