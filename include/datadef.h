@@ -30,7 +30,6 @@ enum class DataType : uint16_t {
 	dtIFSTREAM, dtOFSTREAM, dtFSTREAM, dtTCPSTREAM, 
 	dtMUTEX, dtTHREAD, dtTHISTHREAD,
 	dtARRAY,
-	dtVECTOR, dtMAP, dtSET, dtLIST,
 
 	// rtPointer variants
 	dtVOIDptr = 10000, dtBOOLptr, dtUINT8ptr, dtBYTEptr=dtUINT8ptr, dtINT8ptr, dtCHARptr = dtINT8ptr,
@@ -42,7 +41,6 @@ enum class DataType : uint16_t {
 	dtIFSTREAMptr, dtOFSTREAMptr, dtFSTREAMptr, dtTCPSTREAMptr, 
 	dtMUTEXptr, dtTHREADptr, dtTHISTHREADptr,
 	dtARRAYptr,
-	dtVECTORptr, dtMAPptr, dtSETptr, dtLISTptr,
 
 	// rtReference variants
 	dtVOIDref = 20000, dtBOOLref, dtUINT8ref, dtBYTEref=dtUINT8ref, dtINT8ref, dtCHARref = dtINT8ref,
@@ -54,7 +52,6 @@ enum class DataType : uint16_t {
 	dtIFSTREAMref, dtOFSTREAMref, dtFSTREAMref, dtTCPSTREAMref, 
 	dtMUTEXref, dtTHREADref, dtTHISTHREADref,
 	dtARRAYref,
-	dtVECTORref, dtMAPref, dtSETref, dtLISTref,
 };
 
 // Variable flags
