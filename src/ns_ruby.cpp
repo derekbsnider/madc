@@ -202,31 +202,31 @@ void Program::add_ruby_namespace()
 	Variable *var;
 
 	// Ruby-unique string operations
-	var = addFunction("__rb_squeeze",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)ruby_squeeze);
+	var = addFunction("__rb_squeeze",      datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)ruby_squeeze);
 	if (var) rb_ns["squeeze"] = var;
 
-	var = addFunction("__rb_tr",           datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)ruby_tr);
+	var = addFunction("__rb_tr",           datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)ruby_tr);
 	if (var) rb_ns["tr"] = var;
 
-	var = addFunction("__rb_chars",        datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)ruby_chars);
+	var = addFunction("__rb_chars",        datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)ruby_chars);
 	if (var) rb_ns["chars"] = var;
 
-	var = addFunction("__rb_capitalize",   datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)ruby_capitalize);
+	var = addFunction("__rb_capitalize",   datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)ruby_capitalize);
 	if (var) rb_ns["capitalize"] = var;
 
-	var = addFunction("__rb_delete",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)ruby_delete_chars);
+	var = addFunction("__rb_delete",       datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)ruby_delete_chars);
 	if (var) rb_ns["delete"] = var;
 
-	var = addFunction("__rb_count",        datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)ruby_count);
+	var = addFunction("__rb_count",        datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)ruby_count);
 	if (var) rb_ns["count"] = var;
 
-	var = addFunction("__rb_include",      datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)ruby_include);
+	var = addFunction("__rb_include",      datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)ruby_include);
 	if (var) rb_ns["include"] = var;
 
-	var = addFunction("__rb_gsub",         datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)ruby_gsub);
+	var = addFunction("__rb_gsub",         datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)ruby_gsub);
 	if (var) rb_ns["gsub"] = var;
 
-	var = addFunction("__rb_sub",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)ruby_sub);
+	var = addFunction("__rb_sub",          datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)ruby_sub);
 	if (var) rb_ns["sub"] = var;
 
 	// Ruby-unique array operations
@@ -236,7 +236,7 @@ void Program::add_ruby_namespace()
 	var = addFunction("__rb_compact",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY}, (fVOIDFUNC)ruby_compact);
 	if (var) rb_ns["compact"] = var;
 
-	var = addFunction("__rb_flatten",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)ruby_flatten);
+	var = addFunction("__rb_flatten",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)ruby_flatten);
 	if (var) rb_ns["flatten"] = var;
 
 	DBG(std::cout << "add_ruby_namespace() registered ruby:: with " << rb_ns.size() << " members" << std::endl);

@@ -501,61 +501,61 @@ void Program::add_php_namespace()
 	Variable *var;
 
 	// trim family — no C/C++ equivalent
-	var = addFunction("__php_trim",           datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_trim);
+	var = addFunction("__php_trim",           datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_trim);
 	if (var) php_ns["trim"] = var;
 
-	var = addFunction("__php_ltrim",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_ltrim);
+	var = addFunction("__php_ltrim",          datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_ltrim);
 	if (var) php_ns["ltrim"] = var;
 
-	var = addFunction("__php_rtrim",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_rtrim);
+	var = addFunction("__php_rtrim",          datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_rtrim);
 	if (var) { php_ns["rtrim"] = var; php_ns["chop"] = var; } // chop is alias for rtrim in PHP
 
 	// case manipulation — ucfirst/lcfirst are PHP-unique
-	var = addFunction("__php_ucfirst",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_ucfirst);
+	var = addFunction("__php_ucfirst",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_ucfirst);
 	if (var) php_ns["ucfirst"] = var;
 
-	var = addFunction("__php_lcfirst",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_lcfirst);
+	var = addFunction("__php_lcfirst",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_lcfirst);
 	if (var) php_ns["lcfirst"] = var;
 
 	// string building
-	var = addFunction("__php_str_repeat",     datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)php_str_repeat);
+	var = addFunction("__php_str_repeat",     datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)php_str_repeat);
 	if (var) php_ns["str_repeat"] = var;
 
-	var = addFunction("__php_str_replace",    datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_str_replace);
+	var = addFunction("__php_str_replace",    datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)php_str_replace);
 	if (var) php_ns["str_replace"] = var;
 
-	var = addFunction("__php_str_pad",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_str_pad);
+	var = addFunction("__php_str_pad",        datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_str_pad);
 	if (var) php_ns["str_pad"] = var;
 
 	// text analysis
-	var = addFunction("__php_str_word_count", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_str_word_count);
+	var = addFunction("__php_str_word_count", datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_str_word_count);
 	if (var) php_ns["str_word_count"] = var;
 
 	// text transformation
-	var = addFunction("__php_nl2br",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_nl2br);
+	var = addFunction("__php_nl2br",          datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_nl2br);
 	if (var) php_ns["nl2br"] = var;
 
-	var = addFunction("__php_str_rot13",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_str_rot13);
+	var = addFunction("__php_str_rot13",      datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)php_str_rot13);
 	if (var) php_ns["str_rot13"] = var;
 
-	var = addFunction("__php_chunk_split",    datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_chunk_split);
+	var = addFunction("__php_chunk_split",    datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_chunk_split);
 	if (var) php_ns["chunk_split"] = var;
 
 	// formatting
-	var = addFunction("__php_number_format",  datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_number_format);
+	var = addFunction("__php_number_format",  datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_number_format);
 	if (var) php_ns["number_format"] = var;
 
-	var = addFunction("__php_wordwrap",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)php_wordwrap);
+	var = addFunction("__php_wordwrap",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)php_wordwrap);
 	if (var) php_ns["wordwrap"] = var;
 
 	// ---- MadArray functions ----
 
 	// explode(arr, delim, str) — split string into array
-	var = addFunction("__php_explode",        datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)php_explode);
+	var = addFunction("__php_explode",        datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING, &ddSTRING}, (fVOIDFUNC)php_explode);
 	if (var) php_ns["explode"] = var;
 
 	// implode(result, glue, arr) — join array into string
-	var = addFunction("__php_implode",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_implode);
+	var = addFunction("__php_implode",        datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_implode);
 	if (var) php_ns["implode"] = var;
 
 	// count(arr) — number of elements
@@ -563,7 +563,7 @@ void Program::add_php_namespace()
 	if (var) php_ns["count"] = var;
 
 	// array_push(arr, str) — append string
-	var = addFunction("__php_array_push",     datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)php_array_push_str);
+	var = addFunction("__php_array_push",     datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)php_array_push_str);
 	if (var) php_ns["array_push"] = var;
 
 	// array_push_int(arr, int) — append int
@@ -575,11 +575,11 @@ void Program::add_php_namespace()
 	if (var) php_ns["array_push_array"] = var;
 
 	// array_pop(result, arr) — remove last, return as string
-	var = addFunction("__php_array_pop",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_pop);
+	var = addFunction("__php_array_pop",      datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_pop);
 	if (var) php_ns["array_pop"] = var;
 
 	// array_get(result, arr, index) — get element as string
-	var = addFunction("__php_array_get",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_get);
+	var = addFunction("__php_array_get",      datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)php_array_get);
 	if (var) php_ns["array_get"] = var;
 
 	// array_get_int(arr, index) — get element as int
@@ -591,11 +591,11 @@ void Program::add_php_namespace()
 	if (var) php_ns["array_reverse"] = var;
 
 	// in_array(needle, arr) — check if string exists in array
-	var = addFunction("__php_in_array",       datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_in_array);
+	var = addFunction("__php_in_array",       datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_in_array);
 	if (var) php_ns["in_array"] = var;
 
 	// array_search(needle, arr) — find index of string, -1 if not found
-	var = addFunction("__php_array_search",   datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_search);
+	var = addFunction("__php_array_search",   datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_search);
 	if (var) php_ns["array_search"] = var;
 
 	// array_unique(arr) — remove duplicates
@@ -603,11 +603,11 @@ void Program::add_php_namespace()
 	if (var) php_ns["array_unique"] = var;
 
 	// array_shift(result, arr) — remove first element
-	var = addFunction("__php_array_shift",    datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_shift);
+	var = addFunction("__php_array_shift",    datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)php_array_shift);
 	if (var) php_ns["array_shift"] = var;
 
 	// array_unshift(arr, str) — prepend value
-	var = addFunction("__php_array_unshift",  datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)php_array_unshift);
+	var = addFunction("__php_array_unshift",  datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)php_array_unshift);
 	if (var) php_ns["array_unshift"] = var;
 
 	// sort(arr) — sort ascending

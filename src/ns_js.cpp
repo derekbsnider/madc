@@ -212,25 +212,25 @@ void Program::add_js_namespace()
 	Variable *var;
 
 	// base64
-	var = addFunction("__js_btoa",               datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)js_btoa);
+	var = addFunction("__js_btoa",               datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)js_btoa);
 	if (var) js_ns["btoa"] = var;
 
-	var = addFunction("__js_atob",               datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)js_atob);
+	var = addFunction("__js_atob",               datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)js_atob);
 	if (var) js_ns["atob"] = var;
 
 	// URL encoding
-	var = addFunction("__js_encodeURIComponent", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)js_encodeURIComponent);
+	var = addFunction("__js_encodeURIComponent", datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)js_encodeURIComponent);
 	if (var) js_ns["encodeURIComponent"] = var;
 
-	var = addFunction("__js_decodeURIComponent", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)js_decodeURIComponent);
+	var = addFunction("__js_decodeURIComponent", datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)js_decodeURIComponent);
 	if (var) js_ns["decodeURIComponent"] = var;
 
 	// parsing
-	var = addFunction("__js_parseInt",           datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)js_parseInt);
+	var = addFunction("__js_parseInt",           datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)js_parseInt);
 	if (var) js_ns["parseInt"] = var;
 
 	// JSON
-	var = addFunction("__js_stringify",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)js_stringify);
+	var = addFunction("__js_stringify",          datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)js_stringify);
 	if (var) js_ns["stringify"] = var;
 
 	DBG(std::cout << "add_js_namespace() registered js:: with " << js_ns.size() << " members" << std::endl);

@@ -224,54 +224,54 @@ void Program::add_python_namespace()
 	Variable *var;
 
 	// case transforms
-	var = addFunction("__py_title",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)python_title);
+	var = addFunction("__py_title",       datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)python_title);
 	if (var) py_ns["title"] = var;
 
-	var = addFunction("__py_swapcase",    datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)python_swapcase);
+	var = addFunction("__py_swapcase",    datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)python_swapcase);
 	if (var) py_ns["swapcase"] = var;
 
 	// alignment
-	var = addFunction("__py_center",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)python_center);
+	var = addFunction("__py_center",      datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_center);
 	if (var) py_ns["center"] = var;
 
-	var = addFunction("__py_ljust",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)python_ljust);
+	var = addFunction("__py_ljust",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_ljust);
 	if (var) py_ns["ljust"] = var;
 
-	var = addFunction("__py_rjust",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)python_rjust);
+	var = addFunction("__py_rjust",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_rjust);
 	if (var) py_ns["rjust"] = var;
 
-	var = addFunction("__py_zfill",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)python_zfill);
+	var = addFunction("__py_zfill",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)python_zfill);
 	if (var) py_ns["zfill"] = var;
 
 	// counting / searching
-	var = addFunction("__py_count",       datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)python_count);
+	var = addFunction("__py_count",       datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)python_count);
 	if (var) py_ns["count"] = var;
 
-	var = addFunction("__py_startswith",  datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)python_startswith);
+	var = addFunction("__py_startswith",  datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)python_startswith);
 	if (var) py_ns["startswith"] = var;
 
-	var = addFunction("__py_endswith",    datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)python_endswith);
+	var = addFunction("__py_endswith",    datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)python_endswith);
 	if (var) py_ns["endswith"] = var;
 
 	// character class tests
-	var = addFunction("__py_isdigit",     datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)python_isdigit);
+	var = addFunction("__py_isdigit",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_isdigit);
 	if (var) py_ns["isdigit"] = var;
 
-	var = addFunction("__py_isalpha",     datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)python_isalpha);
+	var = addFunction("__py_isalpha",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_isalpha);
 	if (var) py_ns["isalpha"] = var;
 
-	var = addFunction("__py_isalnum",     datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)python_isalnum);
+	var = addFunction("__py_isalnum",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_isalnum);
 	if (var) py_ns["isalnum"] = var;
 
-	var = addFunction("__py_isspace",     datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)python_isspace);
+	var = addFunction("__py_isspace",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)python_isspace);
 	if (var) py_ns["isspace"] = var;
 
 	// string manipulation
-	var = addFunction("__py_replace",     datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)python_replace);
+	var = addFunction("__py_replace",     datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)python_replace);
 	if (var) py_ns["replace"] = var;
 
 	// formatting
-	var = addFunction("__py_format",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)python_format);
+	var = addFunction("__py_format",      datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)python_format);
 	if (var) py_ns["format"] = var;
 
 	DBG(std::cout << "add_python_namespace() registered python:: with " << py_ns.size() << " members" << std::endl);

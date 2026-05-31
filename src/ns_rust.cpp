@@ -180,58 +180,58 @@ void Program::add_rust_namespace()
 	variable_map_t &rust_ns = namespace_map["rust"];
 	Variable *var;
 
-	var = addFunction("__rust_contains",          datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_contains);
+	var = addFunction("__rust_contains",          datatype_vec_t{DataType::dtINT64,  &ddSTRING, &ddSTRING}, (fVOIDFUNC)rust_contains);
 	if (var) rust_ns["contains"] = var;
 
-	var = addFunction("__rust_starts_with",       datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_starts_with);
+	var = addFunction("__rust_starts_with",       datatype_vec_t{DataType::dtINT64,  &ddSTRING, &ddSTRING}, (fVOIDFUNC)rust_starts_with);
 	if (var) rust_ns["starts_with"] = var;
 
-	var = addFunction("__rust_ends_with",         datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_ends_with);
+	var = addFunction("__rust_ends_with",         datatype_vec_t{DataType::dtINT64,  &ddSTRING, &ddSTRING}, (fVOIDFUNC)rust_ends_with);
 	if (var) rust_ns["ends_with"] = var;
 
-	var = addFunction("__rust_trim",              datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_trim);
+	var = addFunction("__rust_trim",              datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)rust_trim);
 	if (var) rust_ns["trim"] = var;
 
-	var = addFunction("__rust_trim_start",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_trim_start);
+	var = addFunction("__rust_trim_start",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)rust_trim_start);
 	if (var) rust_ns["trim_start"] = var;
 
-	var = addFunction("__rust_trim_end",          datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_trim_end);
+	var = addFunction("__rust_trim_end",          datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)rust_trim_end);
 	if (var) rust_ns["trim_end"] = var;
 
-	var = addFunction("__rust_replace",           datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_replace);
+	var = addFunction("__rust_replace",           datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING}, (fVOIDFUNC)rust_replace);
 	if (var) rust_ns["replace"] = var;
 
-	var = addFunction("__rust_repeat",            datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)rust_repeat);
+	var = addFunction("__rust_repeat",            datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)rust_repeat);
 	if (var) rust_ns["repeat"] = var;
 
-	var = addFunction("__rust_len",               datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING}, (fVOIDFUNC)rust_len);
+	var = addFunction("__rust_len",               datatype_vec_t{DataType::dtINT64,  &ddSTRING}, (fVOIDFUNC)rust_len);
 	if (var) rust_ns["len"] = var;
 
-	var = addFunction("__rust_is_empty",          datatype_vec_t{DataType::dtINT64,  DataType::dtSTRING}, (fVOIDFUNC)rust_is_empty);
+	var = addFunction("__rust_is_empty",          datatype_vec_t{DataType::dtINT64,  &ddSTRING}, (fVOIDFUNC)rust_is_empty);
 	if (var) rust_ns["is_empty"] = var;
 
-	var = addFunction("__rust_split",             datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)rust_split);
+	var = addFunction("__rust_split",             datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, &ddSTRING, &ddSTRING}, (fVOIDFUNC)rust_split);
 	if (var) rust_ns["split"] = var;
 
-	var = addFunction("__rust_split_whitespace",  datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)rust_split_whitespace);
+	var = addFunction("__rust_split_whitespace",  datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)rust_split_whitespace);
 	if (var) rust_ns["split_whitespace"] = var;
 
-	var = addFunction("__rust_join",              datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)rust_join);
+	var = addFunction("__rust_join",              datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)rust_join);
 	if (var) rust_ns["join"] = var;
 
-	var = addFunction("__rust_first",             datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_first);
+	var = addFunction("__rust_first",             datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_first);
 	if (var) rust_ns["first"] = var;
 
-	var = addFunction("__rust_last",              datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_last);
+	var = addFunction("__rust_last",              datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_last);
 	if (var) rust_ns["last"] = var;
 
-	var = addFunction("__rust_get",               datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)rust_get);
+	var = addFunction("__rust_get",               datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY, DataType::dtINT64}, (fVOIDFUNC)rust_get);
 	if (var) rust_ns["get"] = var;
 
-	var = addFunction("__rust_push",              datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)rust_push);
+	var = addFunction("__rust_push",              datatype_vec_t{DataType::dtARRAY,  DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)rust_push);
 	if (var) rust_ns["push"] = var;
 
-	var = addFunction("__rust_pop",               datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_pop);
+	var = addFunction("__rust_pop",               datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)rust_pop);
 	if (var) rust_ns["pop"] = var;
 
 	DBG(std::cout << "add_rust_namespace() registered rust:: with " << rust_ns.size() << " members" << std::endl);

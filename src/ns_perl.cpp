@@ -309,69 +309,69 @@ void Program::add_perl_namespace()
 	Variable *var;
 
 	// chop/chomp — Perl-unique
-	var = addFunction("__perl_chop",      datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)perl_chop);
+	var = addFunction("__perl_chop",      datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)perl_chop);
 	if (var) perl_ns["chop"] = var;
 
-	var = addFunction("__perl_chomp",     datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)perl_chomp);
+	var = addFunction("__perl_chomp",     datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)perl_chomp);
 	if (var) perl_ns["chomp"] = var;
 
 	// grep — filter array by pattern
-	var = addFunction("__perl_grep",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_grep);
+	var = addFunction("__perl_grep",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_grep);
 	if (var) perl_ns["grep"] = var;
 
 	// glob — file globbing
-	var = addFunction("__perl_glob",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)perl_glob);
+	var = addFunction("__perl_glob",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)perl_glob);
 	if (var) perl_ns["glob"] = var;
 
 	// array operations
 	var = addFunction("__perl_scalar",    datatype_vec_t{DataType::dtINT64, DataType::dtARRAY}, (fVOIDFUNC)perl_scalar);
 	if (var) perl_ns["scalar"] = var;
 
-	var = addFunction("__perl_push",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)perl_push);
+	var = addFunction("__perl_push",      datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)perl_push);
 	if (var) perl_ns["push"] = var;
 
-	var = addFunction("__perl_pop",       datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_pop);
+	var = addFunction("__perl_pop",       datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_pop);
 	if (var) perl_ns["pop"] = var;
 
-	var = addFunction("__perl_shift",     datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_shift);
+	var = addFunction("__perl_shift",     datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_shift);
 	if (var) perl_ns["shift"] = var;
 
-	var = addFunction("__perl_unshift",   datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING}, (fVOIDFUNC)perl_unshift);
+	var = addFunction("__perl_unshift",   datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING}, (fVOIDFUNC)perl_unshift);
 	if (var) perl_ns["unshift"] = var;
 
 	// join/split
-	var = addFunction("__perl_join",      datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_join);
+	var = addFunction("__perl_join",      datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY}, (fVOIDFUNC)perl_join);
 	if (var) perl_ns["join"] = var;
 
-	var = addFunction("__perl_split",     datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)perl_split);
+	var = addFunction("__perl_split",     datatype_vec_t{DataType::dtARRAY, DataType::dtARRAY, &ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_split);
 	if (var) perl_ns["split"] = var;
 
 	// string functions
-	var = addFunction("__perl_reverse",   datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)perl_reverse);
+	var = addFunction("__perl_reverse",   datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_reverse);
 	if (var) perl_ns["reverse"] = var;
 
-	var = addFunction("__perl_lc",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)perl_lc);
+	var = addFunction("__perl_lc",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_lc);
 	if (var) perl_ns["lc"] = var;
 
-	var = addFunction("__perl_uc",        datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)perl_uc);
+	var = addFunction("__perl_uc",        datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_uc);
 	if (var) perl_ns["uc"] = var;
 
-	var = addFunction("__perl_ucfirst",   datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)perl_ucfirst);
+	var = addFunction("__perl_ucfirst",   datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_ucfirst);
 	if (var) perl_ns["ucfirst"] = var;
 
-	var = addFunction("__perl_lcfirst",   datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)perl_lcfirst);
+	var = addFunction("__perl_lcfirst",   datatype_vec_t{&ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_lcfirst);
 	if (var) perl_ns["lcfirst"] = var;
 
-	var = addFunction("__perl_index",     datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)perl_index);
+	var = addFunction("__perl_index",     datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_index);
 	if (var) perl_ns["index"] = var;
 
-	var = addFunction("__perl_rindex",    datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)perl_rindex);
+	var = addFunction("__perl_rindex",    datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)perl_rindex);
 	if (var) perl_ns["rindex"] = var;
 
-	var = addFunction("__perl_length",    datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)perl_length);
+	var = addFunction("__perl_length",    datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)perl_length);
 	if (var) perl_ns["length"] = var;
 
-	var = addFunction("__perl_substr",    datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)perl_substr);
+	var = addFunction("__perl_substr",    datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)perl_substr);
 	if (var) perl_ns["substr"] = var;
 
 	DBG(std::cout << "add_perl_namespace() registered perl:: with " << perl_ns.size() << " members" << std::endl);
