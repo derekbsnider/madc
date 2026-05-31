@@ -272,6 +272,12 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   a retbuf-returning function (emits `char (*)(int)`, segfaults). Scalar/pointer
   lambda returns are fixed (P1.2); object returns need the fn-ptr-to-retbuf ABI.
   Intersects P1.1c/the __retbuf machinery. (Found 2026-05-31 during P1.2.)
+- **P2.8b — `string&` references not wired through operator dispatch** (pre-existing,
+  surfaced during P2.7). A `std::string&` reference (parameter OR `for (string& s : c)`
+  loop var) can't use string operators — `s += "x"` on a string-ref → "invalid operand
+  types of +". String references aren't routed through the class-operator dispatch the
+  way string values/members are. Wire the vfREFERENCE-string case into
+  `class_operator_call`/`string_obj_arg`. Scalar `T&` refs work; only string refs gap.
 - **P2.9 — `DataDefPTR` double-pointer vs reference type-code overlap (latent
   hazard)**. `DataDefPTR` stacks `rtPtr` twice for `T**`, so a double-pointer's raw
   `type()` code lands in the `rtRef` (20000+) range — i.e. `is_pointer()` returns
