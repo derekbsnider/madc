@@ -21,21 +21,37 @@ tests/testtemplate.mad covers int/long/double/char* and passes.
 (verified 2026-05-31, int/long/double all store+fetch correctly) — it was resolved
 by the top-level-scope method-registration fix (8229ae8); the prior note was a stale
 intermediate observation.
-**REFERENCE RETURN TYPES DONE** (commit ef699e2): `T& method()` / `T& operator[]`
-work (the canonical container element-accessor blocker). Model: a reference is a
-strict pointer (method returns the address; call site reads `*p`/stores `*p=rhs`),
-byte-identical to g++. tests/testrefreturn.mad. The engine is verified on a
-realistic container body (Vec<int>: ctor/dtor/push/realloc/operator[]).
-**IMMEDIATE NEXT TASK:** container std-lib as madc-dialect include/madc/vector|map|set
-templates (T* data; len/cap; realloc; calling exported leaves), instantiate
-vector<int>/<string> via the template path, make testvector/testmap/testset pass
-through it. NOTE: vector/map/set are LEXER KEYWORDS (tkVECTOR etc.) — they preempt
-the identifier->template path, so prove the header under a NON-keyword name first,
-then the "flip" = remove the keyword registration + ship the header + repoint tests
-+ delete ns_stl.cpp (the disallowed stdlib wrapper). Pre-existing gap to watch:
-array data members (int data[4]) unsupported in class bodies (containers use T*, so
-deferrable). Full plan + mechanics: docs/plans/2026-05-30-template-instantiation.md.
-Memory: [[project_template_instantiation]]. Gotcha: user method names that are madc
+ENABLING LANGUAGE FEATURES DONE THIS SESSION (all 0-regression, on
+feature/cir-stdstring-claude) — the scalar container is fully proven end-to-end:
+- Pointer type args `Box<char*>` (8652455).
+- **Reference return types** `T& method()` / `T& operator[]` (ef699e2): a reference
+  is a strict pointer — method returns the address, call site reads `*p`/stores
+  `*p=rhs`, byte-identical to g++. tests/testrefreturn.mad.
+- **Range-for over an instantiated class** (22cc794): `for (T x : c)` -> index loop
+  on c.size()/c[i] (translate_foreach_class). tests/testtemplatecontainer.mad proves
+  the FULL scalar container (ctor/dtor/push_back+realloc/size/T& operator[]/range-for).
+- **Placement new** `new (addr) T(args)` (079d0c5): in-place construction (what
+  std::vector uses for elements), scalar+class+string. tests/testplacementnew.mad.
+  Parser dispatch broadened (parser.cpp ~8607) to fire on `(` / builtin-type too.
+
+**IMMEDIATE NEXT TASK — the LAST gate for vector<string>: string element access
+through string*/string&.** `cout << *p`, `cout << v[i]`, `v[i] = "x"` where the
+string is reached via a pointer/reference/subscript (NOT a declared var). Root:
+`is_string_object_value` (cir_builder.cpp:333) only accepts a TokenVar, and callers
+use `string_obj_addr(name)`. Generalize: recognize string-lvalue EXPRESSIONS
+(subscript yielding string element; N_DEREF of string*; a returns_ref string
+method) AND compute their address from the expression NODE (the bare operator[]
+call IS the string* address) instead of a name — in the stream chain (cout),
+assignment, and arg-passing. Placement copy-construct (push_back) ALREADY works via
+placement new. Once string access lands, vector<int>/<string> works through the
+template path; THEN flip: write include/madc/vector (T* data; len/cap; realloc;
+push_back via placement new; T& operator[]; size; ~dtor frees + per-element
+destruct), remove the tkVECTOR lexer keyword, repoint testvector/testsubscript,
+delete ns_stl.cpp. Then map/set. NOTE: vector/map/set are LEXER KEYWORDS — prove the
+header under a NON-keyword name first (Vec/etc.), the flip removes the keyword.
+Pre-existing gap: array data members (int data[4]) unsupported in class bodies
+(containers use T*, deferrable). Plan: docs/plans/2026-05-30-template-instantiation.md.
+Memory: [[project_template_instantiation]]. Gotcha: method names that are madc
 keywords (set/map/list/vector) collide — use other names.
 
 ## CURRENT TEST STATE
