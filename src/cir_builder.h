@@ -69,11 +69,21 @@ class CirBuilder {
 	// local's cleanup dtor would free a buffer already shallow-copied into the
 	// caller's return slot). Matches g++'s by-value class-return ABI.
 	bool m_cur_func_returns_string = false;
-	// Name of the hidden return-slot pointer parameter for a string-returning fn.
+	// Non-NULL while translating the body of a function that returns a
+	// NON-TRIVIAL user class (one with object members / a dtor) BY VALUE. Such a
+	// class uses the SAME struct-return (__retbuf) ABI as std::string: C return
+	// type `void`, a hidden `struct Cls *__retbuf` first param, and `return obj;`
+	// becomes "copy-construct *__retbuf from obj (member-wise); return;" — so the
+	// returned object is deep-copied instead of bit-copied (which would
+	// double-free the shared string buffer at both scope exits). A TRIVIAL struct
+	// keeps c2mir's native struct return (no dtor -> bit-copy is safe).
+	DataDefCLASS *m_cur_func_returns_object = NULL;
+	// Name of the hidden return-slot pointer parameter for a by-value class return.
 	static const char *RETBUF_NAME;
-	// Build the `struct string *__retbuf` named parameter node (N_SPEC_DECL),
-	// the hidden first parameter of a by-value string-returning function.
-	node_t retbuf_param(TokenBase *origin);
+	// Build the `struct <Cls> *__retbuf` named parameter node (N_SPEC_DECL), the
+	// hidden first parameter of a by-value object-returning function. `retdd` is
+	// the returned class/struct type (ddSTRING for a string-returning fn).
+	node_t retbuf_param(DataDef *retdd, TokenBase *origin);
 
 	// Statements that must be emitted in the enclosing block immediately
 	// BEFORE the statement currently being translated — used to materialize
@@ -130,6 +140,23 @@ class CirBuilder {
 	// dtSTRING return (they keep their own ABI). Such a call is a string-object
 	// rvalue that must be materialized into a scope temp before use.
 	bool is_string_returning_call(TokenBase *arg);
+	// A CALL to a madc-COMPILED function returning a NON-TRIVIAL user class by
+	// value (one routed through the __retbuf ABI). Returns the class, or NULL.
+	DataDefCLASS *object_returning_call_class(TokenBase *arg);
+	// The user class that, returned by value, must use the __retbuf ABI (a
+	// non-trivial class needing a dtor). NULL for std::string (its own path) and
+	// trivial structs (native struct return). See cir_builder.cpp.
+	DataDefCLASS *class_return_via_retbuf(DataDef *dd);
+	// Member-wise copy-construct `cdd`'s object members from `src` into *__retbuf
+	// (after a bit-copy for scalars), so the return slot owns its own buffers.
+	void class_copy_construct_into_retbuf(DataDefCLASS *cdd, TokenBase *src,
+					      std::vector<node_t> &out,
+					      TokenBase *origin);
+	// Materialize an object-returning CALL (non-trivial class) into a
+	// cleanup-tagged temp of that class via the __retbuf ABI, and return the
+	// temp's (void*) address. Mirrors string_call_temp_addr for user classes.
+	node_t object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
+				     TokenBase *origin);
 	// Materialize a string-returning CALL into a cleanup-tagged `struct string`
 	// temp initialized directly by the call (the struct-return slot IS the temp,
 	// matching g++ NRVO), and return the temp's (void*) address. Pushes the temp

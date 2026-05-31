@@ -434,9 +434,8 @@ struct dirent {
 // The search loop is inlined into each method rather than factored into a
 // private __find(): madc does not yet support an unqualified sibling-method
 // call from inside a class method (`__find(k)` -> "undeclared identifier").
-// A method call on a subscript element (`keys[i] == k`) is likewise not yet a
-// supported parse form, so each search copies the element into a local first
-// (`K cur = keys[i]; cur == k`).
+// An operator on a subscript element (`keys[i] == k`) IS now a supported parse
+// form, so each search compares the key directly (no copy-to-local).
 #include <stdlib.h>
 #include <string.h>
 namespace std {
@@ -466,8 +465,7 @@ template<typename K, typename V> class map {
     void put(K k, V v) {
 	long i = 0;
 	while ( i < len ) {
-	    K cur = keys[i];
-	    if ( cur == k ) {
+	    if ( keys[i] == k ) {
 		V* vslot = vals + i;	// pointer arith (NOT &vals[i] — parser gap)
 		new (vslot) V(v);	// overwrite value in place
 		return;
@@ -488,8 +486,7 @@ template<typename K, typename V> class map {
     V get(K k) {
 	long i = 0;
 	while ( i < len ) {
-	    K cur = keys[i];
-	    if ( cur == k )
+	    if ( keys[i] == k )
 		return vals[i];
 	    i = i + 1;
 	}
@@ -498,8 +495,7 @@ template<typename K, typename V> class map {
     int contains(K k) {
 	long i = 0;
 	while ( i < len ) {
-	    K cur = keys[i];
-	    if ( cur == k )
+	    if ( keys[i] == k )
 		return 1;
 	    i = i + 1;
 	}
@@ -509,8 +505,7 @@ template<typename K, typename V> class map {
     V& operator[](K k) {
 	long i = 0;
 	while ( i < len ) {
-	    K cur = keys[i];
-	    if ( cur == k )
+	    if ( keys[i] == k )
 		return vals[i];
 	    i = i + 1;
 	}
@@ -832,10 +827,9 @@ extern int b64_pton(const char *src, unsigned char *target, int targsize);
 // libstdc++'s std::operator== for strings is an inlined weak template symbol
 // that is not dlsym-exportable). The search loop is inlined into each method
 // rather than factored into a private __find(): madc does not yet support an
-// unqualified sibling-method call from inside a class method. A method call on
-// a subscript element (`data[i] == v`) is likewise not yet a supported parse
-// form, so each search copies the element into a local first (`T cur =
-// data[i]; cur == v`).
+// unqualified sibling-method call from inside a class method. An operator on a
+// subscript element (`data[i] == v`) IS now a supported parse form, so the
+// search compares the element directly (no copy-to-local).
 #include <stdlib.h>
 #include <string.h>
 namespace std {
@@ -854,8 +848,7 @@ template<typename T> class set {
     void insert(T v) {
 	long i = 0;
 	while ( i < len ) {
-	    T cur = data[i];
-	    if ( cur == v )
+	    if ( data[i] == v )
 		return;			// dedup: element already present
 	    i = i + 1;
 	}
@@ -870,8 +863,7 @@ template<typename T> class set {
     int contains(T v) {
 	long i = 0;
 	while ( i < len ) {
-	    T cur = data[i];
-	    if ( cur == v )
+	    if ( data[i] == v )
 		return 1;
 	    i = i + 1;
 	}

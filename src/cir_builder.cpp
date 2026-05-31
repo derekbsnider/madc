@@ -431,6 +431,26 @@ bool CirBuilder::is_string_returning_call(TokenBase *arg)
 	return m_user_func_names && m_user_func_names->count(tcf->var.name) > 0;
 }
 
+// A CALL to a madc-COMPILED function returning a NON-TRIVIAL user class by value.
+// Such a call is lowered (func_def/func_proto) through the SAME __retbuf ABI as a
+// string return, so the call site must materialize the result into a caller temp
+// it owns (object_call_temp_addr). Gated on m_user_func_names like the string
+// predicate: an external/native class-returning fn keeps its own ABI and must
+// NOT be rewritten (a bogus __retbuf arg would be "too many arguments"). std::
+// string and trivial structs are excluded by class_return_via_retbuf.
+DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
+{
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
+	if (!tcf) return NULL;
+	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
+	if (!fd) return NULL;
+	DataDefCLASS *cdd = class_return_via_retbuf(&fd->returns);
+	if (!cdd) return NULL;
+	if (!(m_user_func_names && m_user_func_names->count(tcf->var.name) > 0))
+		return NULL;
+	return cdd;
+}
+
 size_t CirBuilder::string_obj_words() const
 {
 	// cir_builder is itself C++, so it knows the real ABI size/alignment of
@@ -812,6 +832,42 @@ node_t CirBuilder::string_call_temp_addr(TokenBase *call_tok, TokenBase *origin)
 	return string_obj_addr(name, origin);   // (void*)&__t
 }
 
+// Materialize a NON-TRIVIAL class-returning CALL into a cleanup-tagged temp of
+// that class, via the __retbuf ABI (mirrors string_call_temp_addr). Declares
+// `struct Cls __t __attribute__((cleanup(Cls___dtor)));` (var_decl attaches the
+// cleanup), emits the void call `f(&__t, <args>)` whose callee copy-constructs
+// the result into *__retbuf, and returns the temp's (void*) address. Pushes the
+// decl and the call to m_pending_stmts.
+node_t CirBuilder::object_call_temp_addr(TokenBase *call_tok, DataDefCLASS *cdd,
+					 TokenBase *origin)
+{
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
+	char name[40];
+	snprintf(name, sizeof(name), "__madc_objtmp_%d", m_strtmp_counter++);
+
+	// Temp object variable of the class type; var_decl emits the storage with a
+	// cleanup(Cls___dtor) attribute (RAII scope-exit destruction).
+	Variable *tmp = new Variable(name, *cdd, 1, NULL, false);
+	tmp->flags |= vfLOCAL;
+	m_pending_stmts.push_back(var_decl(tmp, origin));
+
+	if (tcf) {
+		referenced_funcs.insert(tcf->var.name);
+		node_t cargs = list();
+		append(cargs, node1(N_ADDR, id(name, origin), origin));   // __retbuf = &__t
+		build_call_args(tcf, cargs);
+		node_t call = node2(N_CALL, id(tcf->var.name.c_str(), origin), cargs, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+	}
+
+	// The temp's (void*) address — the call's object-lvalue result.
+	node_t addr = node2(N_CAST, void_ptr_type(),
+			    node1(N_ADDR, id(name, origin), origin), origin);
+	CIR_NODE(addr)->synth_from_origin = true;
+	return addr;
+}
+
 // (std::string method calls — s.c_str()/.length()/.size()/.empty()/.clear() —
 // now route through the uniform class path: CirBuilder::class_method_call ->
 // emit_symbol_method_call, which calls the mangled libstdc++ member bound via
@@ -985,13 +1041,14 @@ static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out
 	}
 }
 
-// The hidden return-slot parameter `struct string *__retbuf` of a by-value
-// string-returning function. A named pointer parameter: N_SPEC_DECL with the
-// `struct string` spec (bare LIST, like param_decl's pspec) and a DECL carrying
-// the name plus one pointer suffix.
-node_t CirBuilder::retbuf_param(TokenBase *origin)
+// The hidden return-slot parameter `struct <Cls> *__retbuf` of a by-value
+// object-returning function. A named pointer parameter: N_SPEC_DECL with the
+// returned class/struct spec (bare LIST, like param_decl's pspec) and a DECL
+// carrying the name plus one pointer suffix. `retdd` is the returned type
+// (ddSTRING for a string-returning fn, the user class for a class-returning fn).
+node_t CirBuilder::retbuf_param(DataDef *retdd, TokenBase *origin)
 {
-	node_t pspec = type_list(&ddSTRING);   // LIST(STRUCT(ID("string"), IGNORE))
+	node_t pspec = type_list(retdd ? retdd : &ddSTRING);   // LIST(STRUCT(ID(name), IGNORE))
 	node_t pdecl_list = list();
 	append(pdecl_list, pointer());
 	node_t sd = simple(N_SPEC_DECL, origin);
@@ -2240,6 +2297,7 @@ bool CirBuilder::class_has_object_members(DataDefCLASS *cdd)
 // expression-statements for each embedded string-object member.
 static const char *MEMBER_CTOR_SYM = "string_construct";
 static const char *MEMBER_DTOR_SYM = "string_destruct";
+static const char *MEMBER_COPY_SYM = "string_construct_copy";
 
 bool CirBuilder::class_member_construct(DataDefCLASS *cdd,
 					std::vector<node_t> &out, TokenBase *origin)
@@ -2292,6 +2350,62 @@ bool CirBuilder::class_needs_dtor(DataDefCLASS *cdd)
 	if (class_has_object_members(cdd)) return true;
 	if (cdd->base_class && class_needs_dtor(cdd->base_class)) return true;
 	return false;
+}
+
+// The user class that `dd` denotes IF returning it by value must use the
+// struct-return (__retbuf) ABI — i.e. a NON-TRIVIAL class: one that needs a
+// destructor (object members / user dtor / non-trivial base). A bit-copy return
+// of such a class would double-free its members' resources at the two scope
+// exits, so the callee must deep-copy (member copy-construct) into *__retbuf.
+// std::string is handled by its own (mangled copy-ctor) string path, NOT here;
+// a TRIVIAL struct keeps c2mir's native struct return. Returns NULL otherwise.
+DataDefCLASS *CirBuilder::class_return_via_retbuf(DataDef *dd)
+{
+	if (!dd || dd->is_pointer()) return NULL;
+	if (dd->rawtype() == DataType::dtSTRING) return NULL;   // string path owns it
+	DataDefCLASS *cdd = as_class_instance(dd);
+	if (!cdd) return NULL;
+	return class_needs_dtor(cdd) ? cdd : NULL;
+}
+
+// Member-wise copy-construct each object member of `cdd` from `src` into the
+// __retbuf return slot, and bit-copy the whole object first for the scalar
+// members. Emits into `out`. `src` is a TokenBase whose translate_expr yields
+// the source object lvalue (the `return obj;` operand). Mirrors g++'s implicit
+// copy-ctor for a class with object members: copy each member, deep-copying the
+// object ones (string -> string_construct_copy) so no buffer is shared.
+void CirBuilder::class_copy_construct_into_retbuf(DataDefCLASS *cdd,
+						  TokenBase *src,
+						  std::vector<node_t> &out,
+						  TokenBase *origin)
+{
+	// 1) Bit-copy the source object into *__retbuf (covers scalar members and
+	//    establishes the layout). `*__retbuf = src;` — c2mir struct assignment.
+	node_t retderef = node1(N_DEREF, id(RETBUF_NAME, origin), origin);
+	node_t bitcopy = node2(N_ASSIGN, retderef, translate_expr(src), origin);
+	out.push_back(node2(N_EXPR, list(), bitcopy, origin));
+	// 2) Re-construct each object member from the source's member, so the slot
+	//    owns its own buffers (the bit-copy aliased them). string member:
+	//    string_construct_copy((void*)&__retbuf->m, (void*)&src.m).
+	for (const auto &m : cdd->members) {
+		if (!is_string_object(m.second)) continue;
+		need_output_extern(MEMBER_COPY_SYM, false,
+				   { { {N_VOID}, true }, { {N_VOID}, true } });
+		node_t dstfld = node2(N_DEREF_FIELD, id(RETBUF_NAME, origin),
+				      id(m.first.c_str(), origin));
+		node_t dst = node2(N_CAST, void_ptr_type(),
+				   node1(N_ADDR, dstfld, origin), origin);
+		node_t srcfld = node2(N_FIELD, translate_expr(src),
+				      id(m.first.c_str(), origin));
+		node_t srcp = node2(N_CAST, void_ptr_type(),
+				    node1(N_ADDR, srcfld, origin), origin);
+		node_t a = list();
+		append(a, dst);
+		append(a, srcp);
+		node_t call = node2(N_CALL, id(MEMBER_COPY_SYM, origin), a, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		out.push_back(node2(N_EXPR, list(), call, origin));
+	}
 }
 
 std::string CirBuilder::class_dtor_symbol(DataDefCLASS *cdd)
@@ -2952,25 +3066,30 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
-	// A by-value std::string return uses the __retbuf ABI (void return + hidden
-	// `struct string *__retbuf` first param); keep the prototype in lock-step
-	// with func_def's lowering.
+	// A by-value std::string OR non-trivial class return uses the __retbuf ABI
+	// (void return + hidden `struct <T> *__retbuf` first param); keep the
+	// prototype in lock-step with func_def's lowering. A trivial struct keeps
+	// c2mir's native struct return.
 	bool ret_is_string = !ret_is_ptr && !ret_is_ref && ret_dd
 			     && ret_dd->rawtype() == DataType::dtSTRING
 			     && !fd->is_multi_return();
+	DataDefCLASS *ret_obj = (!ret_is_ptr && !ret_is_ref && !fd->is_multi_return())
+				? class_return_via_retbuf(ret_dd) : NULL;
+	bool ret_via_retbuf = ret_is_string || ret_obj;
+	DataDef *retbuf_dd = ret_obj ? (DataDef *)ret_obj : (DataDef *)&ddSTRING;
 
-	node_t ret_type = ret_is_string ? type_list(&ddVOID) : type_list(ret_dd);
+	node_t ret_type = ret_via_retbuf ? type_list(&ddVOID) : type_list(ret_dd);
 	node_t share = node1(N_SHARE, ret_type);
 
 	// Parameters. A variadic function carries a trailing synthetic param
 	// (the parser pushes a ddINT64 placeholder when it sees `...`); drop it
 	// and emit N_DOTS instead so the prototype is truly variadic.
 	node_t param_list = list();
-	if (ret_is_string)
-		append(param_list, retbuf_param(tf));
+	if (ret_via_retbuf)
+		append(param_list, retbuf_param(retbuf_dd, tf));
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
-	if (nparam == 0 && !fd->is_varargs && !ret_is_string) {
+	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf) {
 		node_t void_spec = node1(N_LIST, simple(N_VOID));
 		node_t void_decl = node2(N_DECL, ignore(), list());
 		node_t void_param = node2(N_TYPE, void_spec, void_decl);
@@ -3697,6 +3816,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				node_t as_sp = node2(N_CAST, sp_type, addr, tb);
 				return node1(N_DEREF, as_sp, tb);
 			}
+			// A by-value NON-TRIVIAL class-returning call uses the same __retbuf
+			// ABI: materialize a cleanup-tagged temp of the class, emit the void
+			// call writing into it, and yield the temp as a `struct Cls` lvalue
+			// (`*(struct Cls*)&temp`) — so member access / further use reads it.
+			if (DataDefCLASS *ocls = object_returning_call_class(tcf)) {
+				node_t addr = object_call_temp_addr(tcf, ocls, tb);
+				node_t cp_type = node2(N_TYPE,
+					node1(N_LIST, node2(N_STRUCT,
+						id(ocls->name.c_str(), tb), ignore())),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t as_cp = node2(N_CAST, cp_type, addr, tb);
+				return node1(N_DEREF, as_cp, tb);
+			}
 			node_t args = list();
 			build_call_args(tcf, args);
 			return node2(N_CALL, func_id, args, tb);
@@ -3788,6 +3920,27 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			append(items, p);
 		m_pending_stmts.clear();
 		append(items, node2(N_EXPR, list(), cc, tr));
+		append(items, node2(N_RETURN, list(), ignore(), tr));
+		return node2(N_BLOCK, list(), items, tr);
+	}
+	// A by-value NON-TRIVIAL class return uses the same __retbuf ABI: deep-copy
+	// the returned object into *__retbuf (bit-copy scalars + member copy-construct
+	// object members), then `return;`. The returned local keeps its own cleanup
+	// dtor; because object members are copy-constructed (not bit-aliased), the
+	// caller's slot owns its own buffers and there is no double-free.
+	if (m_cur_func_returns_object && tr->returns) {
+		// Build the deep-copy statements into a scratch vector first (this calls
+		// translate_expr on the return operand, which may queue sub-call temps in
+		// m_pending_stmts). Then flush those temps, then the copy statements.
+		std::vector<node_t> copy_stmts;
+		class_copy_construct_into_retbuf(m_cur_func_returns_object,
+						 tr->returns, copy_stmts, tr);
+		node_t items = list();
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
+		for (node_t s : copy_stmts)
+			append(items, s);
 		append(items, node2(N_RETURN, list(), ignore(), tr));
 		return node2(N_BLOCK, list(), items, tr);
 	}
@@ -4317,6 +4470,31 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 						initexpr = sdcl->init_list[0];
 					if (initexpr) ctor_args.push_back(initexpr);
 				}
+				// `B z = makeB();` where makeB returns a NON-TRIVIAL class by
+				// value (the __retbuf ABI): construct directly into z by passing
+				// &z as the call's __retbuf (copy-elision / NRVO into z). z's
+				// storage decl already carries the cleanup dtor, so z is
+				// destructed once; the callee placement-copy-constructs z's
+				// object members — no default member ctors here, no bit-copy
+				// double-free.
+				if (ctor_args.size() == 1
+				    && object_returning_call_class(ctor_args[0]) == cdcl) {
+					TokenCallFunc *itcf =
+						dynamic_cast<TokenCallFunc *>(ctor_args[0]);
+					referenced_funcs.insert(itcf->var.name);
+					node_t cargs = list();
+					append(cargs, node1(N_ADDR,
+						id(sdcl->var.name.c_str(), sdcl), sdcl));
+					build_call_args(itcf, cargs);
+					node_t icall = node2(N_CALL,
+						id(itcf->var.name.c_str(), sdcl), cargs, sdcl);
+					CIR_NODE(icall)->synth_from_origin = true;
+					for (node_t p : m_pending_stmts)
+						append(items, p);
+					m_pending_stmts.clear();
+					append(items, node2(N_EXPR, list(), icall, sdcl));
+					continue;
+				}
 				node_t cc = class_ctor_call(&sdcl->var, cdcl,
 							    ctor_args, sdcl);
 				// A ctor arg may have materialized a temporary (e.g. a
@@ -4414,39 +4592,45 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
-	// A by-value std::string return uses the struct-return (__retbuf) ABI: the C
-	// return type is `void`, a hidden `struct string *__retbuf` is the first
-	// parameter, and `return s;` copy-constructs *__retbuf (see translate_return).
+	// A by-value std::string OR non-trivial class return uses the struct-return
+	// (__retbuf) ABI: the C return type is `void`, a hidden `struct <T> *__retbuf`
+	// is the first parameter, and `return obj;` copy-constructs *__retbuf (see
+	// translate_return). A trivial struct keeps c2mir's native struct return.
 	bool ret_is_string = !ret_is_ptr && !ret_is_ref && ret_dd
 			     && ret_dd->rawtype() == DataType::dtSTRING
 			     && !fd->is_multi_return();
 	m_cur_func_returns_string = ret_is_string;
+	DataDefCLASS *ret_obj = (!ret_is_ptr && !ret_is_ref && !fd->is_multi_return())
+				? class_return_via_retbuf(ret_dd) : NULL;
+	m_cur_func_returns_object = ret_obj;
+	bool ret_via_retbuf = ret_is_string || ret_obj;
+	DataDef *retbuf_dd = ret_obj ? (DataDef *)ret_obj : (DataDef *)&ddSTRING;
 
 	// Track whether this function returns void, so translate_return can lower
 	// a gcc-accepted `return <expr>;` (void function) to `<expr>; return;`.
-	// A string-returning fn also has a `void` C return type but goes through the
+	// A retbuf-returning fn also has a `void` C return type but goes through the
 	// __retbuf path, so keep it out of the plain-void lowering.
-	m_cur_func_returns_void = !ret_is_ptr && !ret_is_ref && !ret_is_string && ret_dd
+	m_cur_func_returns_void = !ret_is_ptr && !ret_is_ref && !ret_via_retbuf && ret_dd
 				  && ret_dd->rawtype() == DataType::dtVOID
 				  && !fd->is_multi_return();
 	// Track reference return so translate_return emits `return &<expr>`.
 	m_cur_func_returns_ref = ret_is_ref;
 
-	// String-returning fn: C return type is `void`.
-	node_t ret_type = ret_is_string ? type_list(&ddVOID) : type_list(ret_dd);
+	// Retbuf-returning fn: C return type is `void`.
+	node_t ret_type = ret_via_retbuf ? type_list(&ddVOID) : type_list(ret_dd);
 
 	// Parameters. A variadic function carries a trailing synthetic param
 	// (the parser pushes a ddINT64 placeholder when it sees `...`); drop it
 	// and emit N_DOTS instead so the definition is truly variadic.
 	node_t param_list = list();
-	// Hidden return-slot parameter `struct string *__retbuf` first. Named param
+	// Hidden return-slot parameter `struct <T> *__retbuf` first. Named param
 	// => N_SPEC_DECL (specs, DECL(id, [POINTER]), asm, attr, init), matching
 	// param_decl's wrap() for a named pointer parameter.
-	if (ret_is_string)
-		append(param_list, retbuf_param(tf));
+	if (ret_via_retbuf)
+		append(param_list, retbuf_param(retbuf_dd, tf));
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
-	if (nparam == 0 && !fd->is_varargs && !ret_is_string) {
+	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf) {
 		node_t void_spec = node1(N_LIST, simple(N_VOID));
 		node_t void_decl = node2(N_DECL, ignore(), list());
 		append(param_list, node2(N_TYPE, void_spec, void_decl));

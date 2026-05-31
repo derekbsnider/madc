@@ -64,6 +64,13 @@ void string_destruct(void *ptr)
     { ((std::string *)ptr)->~basic_string(); }
 void *string_construct_cstr(void *ptr, const char *s)
     { return new(ptr) std::string(s ? s : ""); }
+// Copy-construct a string member into uninitialized storage from another string
+// object (the std::string copy ctor). Used to deep-copy an object member when a
+// class is returned by value through the __retbuf ABI (CirBuilder's
+// class_copy_construct_into_retbuf), so the return slot owns its own buffer and
+// no buffer is shared/double-freed.
+void *string_construct_copy(void *ptr, void *src)
+    { return new(ptr) std::string(*(std::string *)src); }
 void string_assign(void *dst, void *src)
     { *(std::string *)dst = *(std::string *)src; }
 void string_assign_cstr(void *dst, const char *s)
