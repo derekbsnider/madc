@@ -2726,6 +2726,28 @@ static const char *binop_overload_symbol(TokenID id)
 	case TokenID::tkMod:    return "%";
 	case TokenID::tkAssign: return "=";
 	case TokenID::tkAddEq:  return "+=";
+	// Compound assignments.
+	case TokenID::tkSubEq:  return "-=";
+	case TokenID::tkMulEq:  return "*=";
+	case TokenID::tkDivEq:  return "/=";
+	case TokenID::tkModEq:  return "%=";
+	case TokenID::tkBandEq: return "&=";
+	case TokenID::tkBorEq:  return "|=";
+	case TokenID::tkXorEq:  return "^=";
+	case TokenID::tkBSLEq:  return "<<=";
+	case TokenID::tkBSREq:  return ">>=";
+	// Bitwise.
+	case TokenID::tkBand:   return "&";
+	case TokenID::tkBor:    return "|";
+	case TokenID::tkXor:    return "^";
+	// Shifts. The stream-chain `cout << x` / `cin >> x` path is intercepted
+	// BEFORE class_operator_call (see translate_expr), so these only reach a
+	// class operator<<()/operator>>() declared on a non-stream class object.
+	case TokenID::tkBSL:    return "<<";
+	case TokenID::tkBSR:    return ">>";
+	// Logical.
+	case TokenID::tkLand:   return "&&";
+	case TokenID::tkLor:    return "||";
 	default:                return "";
 	}
 }
