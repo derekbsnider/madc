@@ -934,22 +934,6 @@ public:
 	: DDClass(name, sz, DataType::dtMAP), key_type(k), val_type(v) {}
 };
 
-class DataDefSET: public DDClass
-{
-public:
-    DataDef *element_type;
-    DataDefSET(DataDef *elem, const std::string &name, size_t sz)
-	: DDClass(name, sz, DataType::dtSET), element_type(elem) {}
-};
-
-class DataDefLIST: public DDClass
-{
-public:
-    DataDef *element_type;
-    DataDefLIST(DataDef *elem, const std::string &name, size_t sz)
-	: DDClass(name, sz, DataType::dtLIST), element_type(elem) {}
-};
-
 extern DataDefVOID ddVOID;
 extern DataDefVOIDref ddVOIDref;
 extern DataDefBOOL ddBOOL;
