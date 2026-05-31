@@ -37,6 +37,17 @@ testable — is **drift** and is rejected. (Memory: `project_north_star_c23_cpp2
    One concept per commit. Parser-grammar changes are load-bearing for the whole
    suite — highest regression risk; go incrementally.
 
+## Execution sequence (user-agreed 2026-05-31)
+1. **Core C++ features FIRST** — P0 (done) → P1 → P2, until the class model is
+   genuinely usable as intended.
+2. **THEN a C-stability pass** — pivot to ensuring plain C still compiles/runs
+   correctly: the ~56 CIR integration failures (ROADMAP Track 1.3) + a full
+   C-regression sweep. Rationale: several P0 fixes touched SHARED lowering
+   (`member_node` pointer rendering, assignment, member access, `new`/struct
+   paths) that C also exercises — the suite stayed green throughout, but a
+   deliberate C sweep before promotion is the right hygiene.
+   (Memory: `project_sequencing_cpp_then_c`.)
+
 ## How to use this doc
 
 - **Controller:** keep the Status table honest (re-probe before asserting), drive
@@ -139,6 +150,25 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   during P0.6.)
 
 ### P1 — core C++ features the language is incomplete without
+
+> **P1.1 status (2026-05-31, commit `2444f85`):** Phase A DONE — single-level
+> `try/catch/throw` for scalar types (int/double/cstr) works via the SJLJ runtime
+> (`testexcept`, `testexcept_dtor_nothrow`, `testtrycatch` green). Remaining
+> exception follow-ups (the hard tail):
+> - **P1.1b — MIR nested-setjmp safety**: rethrow-to-an-outer-try infinite-loops
+>   (outer `setjmp` re-returns 0 on longjmp re-entry). Lowering is gcc-correct
+>   (verified); the bug is in the MIR JIT backend — a **fork-level fix**, fits the
+>   later C-stability/MIR pass. `testrethrow` + `testexcept_dtor_rethrow` `.mir_skip`'d.
+> - **P1.1c — Phase B: RAII dtor-unwind on the throw path**: try-body objects'
+>   dtors must run when an exception propagates. Cross-cutting (changes how every
+>   in-try object construction lowers): use the runtime cleanup stack
+>   (`__madc_cleanup_push` at each ctor; `__madc_throw_*` unwinds to `cleanup_mark`)
+>   and STOP relying on cleanup-attribute dtors across setjmp/longjmp.
+>   `testexcept_dtor_string` bus-errors until this lands.
+> - **P1.1d — catch-clause parser gaps**: `catch(char* m)` (pointer type) doesn't
+>   parse; typed cstr/string catch binding needs parser+binding work (used
+>   `catch(...)` as the interim).
+
 - **P1.1 — exceptions (try/catch/throw)**. Lower `TokenTRY` to SJLJ as `cir_node`
   in `CirBuilder` (CIR builder currently errors `unhandled expression: TokenTRY`;
   parser already tokenizes/parses try/catch/throw). **The SJLJ runtime is ALREADY
