@@ -69,6 +69,16 @@ public:
     // method directly to an externally-provided symbol (e.g. a mangled
     // libstdc++ std::string member). madc emits no body for such methods.
     std::string emit_symbol;
+    // For a madc-emitted class operator that shares its name with another
+    // overload of DIFFERENT arity (e.g. unary `operator-()` AND binary
+    // `operator-(const C&)`, or prefix `operator++()` AND postfix
+    // `operator++(int)`), the default `ClassName__operatorX` scheme collides.
+    // When set, this is the actual C symbol the method's BODY is emitted as and
+    // its CALL sites reference — an arity-disambiguated name. Empty for the
+    // common single-overload case (the default scheme is used). Distinct from
+    // emit_symbol: this still takes the normal madc-emitted-body path, NOT the
+    // extern-binding path that emit_symbol triggers.
+    std::string class_emit_name;
     // For an externally-bound ctor (emit_symbol set) whose real ABI takes a
     // trailing reference argument that madc has no value for — e.g. libstdc++'s
     // basic_string(const char*, const allocator<char>&) — pass the object's own
@@ -76,7 +86,7 @@ public:
     // behaviour. The allocator is default-constructed/empty, so &this is a
     // harmless throwaway pointer the ctor never reads as an allocator.
     bool ctor_trailing_self;
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), returns_ref(false), emit_symbol(), ctor_trailing_self(false) {}
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), returns_ref(false), emit_symbol(), class_emit_name(), ctor_trailing_self(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }

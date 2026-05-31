@@ -2795,9 +2795,25 @@ FuncDef *CirBuilder::select_operator_overload(DataDefCLASS *cls,
 		if (rhs_is_string == p1_is_string) return fd;
 	}
 	if (first) return first;
-	// Fall back to the keyed lookup: a user class registers its operator under
-	// the unmangled name in method_map, while its methods-vector entry carries
-	// the MANGLED name — so the by-name scan above misses it.
+	// User-class operators carry the MANGLED name (ClassName__operatorX) in the
+	// methods vector, so the unmangled-name scan above misses them. Scan the
+	// mangled family and prefer the BINARY (parameterized, params > 1) overload
+	// — this is the binary dispatch. A same-name unary peer (params == 1, the
+	// `_un`-suffixed nullary) is skipped here; select_unary_operator_overload
+	// owns it. (P2.1b gaps 3 & 4.)
+	std::string mangled_canon = cls->name + "__" + mname;
+	std::string mangled_un = mangled_canon + "_un";
+	FuncDef *any = NULL;
+	for (Variable *mv : cls->methods) {
+		if (!mv || (mv->name != mangled_canon && mv->name != mangled_un))
+			continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd) continue;
+		if (!any) any = fd;
+		if (fd->parameters.size() > 1) return fd;   // binary
+	}
+	if (any) return any;
+	// Fall back to the keyed lookup (method_map under the unmangled name).
 	std::string key = mname;
 	Variable *mv = cls->findMethod(key);
 	return mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
@@ -2958,7 +2974,10 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	else
 		this_arg = node1(N_ADDR, translate_expr(top->left), origin);
 
-	std::string sym = lcls->name + "__" + mname;   // ClassName__operator==
+	// ClassName__operator== by default; an arity-disambiguated same-name
+	// overload (P2.1b gaps 3 & 4) carries its real symbol in class_emit_name.
+	std::string sym = !callee->class_emit_name.empty()
+			  ? callee->class_emit_name : (lcls->name + "__" + mname);
 	node_t args = list();
 	append(args, this_arg);
 	// Single explicit RHS argument (operator parameter 1; param 0 = __this).
@@ -2998,8 +3017,21 @@ static FuncDef *select_unary_operator_overload(DataDefCLASS *cls,
 		if (!fd) continue;
 		if (fd->parameters.size() <= 1) return fd;   // __this only -> unary
 	}
-	// Fall back to the keyed lookup (a user-class operator registers under the
-	// unmangled name in method_map; its methods-vector entry is mangled).
+	// User-class operators carry the MANGLED name in the methods vector. Scan
+	// the mangled family (ClassName__operatorX and the `_un`-suffixed nullary
+	// variant) and return the NULLARY (params <= 1 == __this only) overload —
+	// the unary dispatch. This is how a unary `operator-()` is told apart from a
+	// same-name binary `operator-(const C&)`. (P2.1b gaps 3 & 4.)
+	std::string mangled_canon = cls->name + "__" + mname;
+	std::string mangled_un = mangled_canon + "_un";
+	for (Variable *mv : cls->methods) {
+		if (!mv || (mv->name != mangled_canon && mv->name != mangled_un))
+			continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd) continue;
+		if (fd->parameters.size() <= 1) return fd;   // nullary -> unary
+	}
+	// Fall back to the keyed lookup (method_map under the unmangled name).
 	std::string key = mname;
 	Variable *mv = cls->findMethod(key);
 	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
@@ -3031,9 +3063,13 @@ node_t CirBuilder::class_unary_operator_call(const char *opsym,
 
 	// A class-bound external operator names its real symbol via emit_symbol;
 	// otherwise the default ClassName__operator<sym> scheme + the
-	// referenced-funcs prototype pass (a madc-emitted method body).
+	// referenced-funcs prototype pass (a madc-emitted method body). An
+	// arity-disambiguated same-name overload (P2.1b gaps 3 & 4 — the unary peer
+	// of a binary of the same name) carries its real symbol in class_emit_name.
 	std::string sym = !callee->emit_symbol.empty()
-			  ? callee->emit_symbol : (cls->name + "__" + mname);
+			  ? callee->emit_symbol
+			  : (!callee->class_emit_name.empty()
+			     ? callee->class_emit_name : (cls->name + "__" + mname));
 	std::vector<ExternParam> eparams = { { {N_VOID}, true } };
 	node_t args = list();
 	if (!callee->emit_symbol.empty()) {
@@ -3884,11 +3920,46 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 			// Class operator++/operator-- dispatch (declared-only; falls
 			// through to the built-in inc/dec when the class has no such
-			// operator). The parser does NOT distinguish prefix from postfix
-			// (no dummy-int param), so both forms route to the single nullary
-			// operator++()/operator--() — prefix semantics. (Postfix-specific
-			// `operator++(int)` needs a parser change; noted, not built here.)
+			// operator). C++ distinguishes prefix `operator++()` from postfix
+			// `operator++(int)` (P2.1b gap 3): a postfix use (`c++`) prefers the
+			// PARAMETERIZED overload, called with a dummy `0`, whose body returns
+			// the OLD value. A prefix use (`++c`) routes to the nullary overload.
+			// When only one form is declared, fall back to it.
 			const char *uop = (tb->id() == TokenID::tkInc) ? "++" : "--";
+			std::string opmname = std::string("operator") + uop;
+			DataDefCLASS *icls = as_class_instance(operand_tb->datadef());
+			if (is_post && icls) {
+				// Prefer the parameterized (postfix) overload: scan the mangled
+				// family for a params>1 (int-taking) operator++/--.
+				std::string mc = icls->name + "__" + opmname;
+				std::string mu = mc + "_un";
+				FuncDef *post = NULL;
+				for (Variable *mv : icls->methods) {
+					if (!mv || (mv->name != mc && mv->name != mu)) continue;
+					FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+					if (fd && fd->parameters.size() > 1) { post = fd; break; }
+				}
+				if (post) {
+					node_t this_arg;
+					if (TokenVar *otv = dynamic_cast<TokenVar *>(operand_tb))
+						this_arg = object_var_addr(otv->var, tb);
+					else
+						this_arg = node1(N_ADDR, translate_expr(operand_tb), tb);
+					std::string sym = !post->class_emit_name.empty()
+							  ? post->class_emit_name
+							  : (icls->name + "__" + opmname);
+					referenced_funcs.insert(sym);
+					node_t pargs = list();
+					append(pargs, this_arg);
+					append(pargs, integer(0, tb));   // dummy int (postfix marker)
+					node_t pcall = node2(N_CALL, id(sym.c_str(), tb), pargs, tb);
+					CIR_NODE(pcall)->synth_from_origin = true;
+					if (post->returns_ref)
+						return node1(N_DEREF, pcall, tb);
+					return pcall;
+				}
+				// No postfix overload: fall through to the nullary form below.
+			}
 			if (node_t ov = class_unary_operator_call(uop, operand_tb, tb))
 				return ov;
 			node_t operand = translate_expr(operand_tb);

@@ -11394,6 +11394,7 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	// expect member name — may be an identifier or 'operator' keyword
 	tn = pgm.nextToken();
 	std::string mname;
+	bool is_operator_method = (tn->id() == TokenID::tkOPEROVER);
 	if ( tn->id() == TokenID::tkOPEROVER )
 	{
 	    // operator overload: consume the operator symbol(s) to form the name
@@ -11442,13 +11443,63 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    DBG(cout << "TokenCLASS::parse() parsing method " << mname << endl);
 	    // mangle method name to avoid collisions: ClassName__methodName
 	    std::string mangled = tag->str + "__" + mname;
+	    // P2.1b gaps 3 & 4 — same-name operator overloads of DIFFERENT arity
+	    // (unary `operator-()` + binary `operator-(const C&)`; prefix
+	    // `operator++()` + postfix `operator++(int)`) share the default
+	    // ClassName__operatorX name, which collides BOTH in funcdef_map (the
+	    // second body fails to register its params) AND in the emitted C (two
+	    // functions with one name). Detect the collision and give the NULLARY
+	    // (unary / prefix) overload a distinct `..._un` symbol, recorded in
+	    // FuncDef::class_emit_name so the CIR call sites reference the matching
+	    // name. The CIR already selects the right FuncDef by arity. Only
+	    // operators with a same-name peer collide; single overloads are
+	    // untouched (class_emit_name stays empty -> default scheme).
+	    // Nullary (unary / prefix) form: `(` immediately followed by `)`.
+	    bool this_is_nullary = pgm.peekToken()
+		&& pgm.peekToken()->id() == TokenID::tkClBrk;
+	    Variable *peer = is_operator_method ? ddc->findMethod(mname) : NULL;
+	    FuncDef *peer_fd = peer ? dynamic_cast<FuncDef *>(peer->type) : NULL;
+	    bool name_disambiguated = false;
+	    if ( peer_fd )
+	    {
+		// __this is param 0, so a nullary (unary/prefix) overload has
+		// parameters.size() == 1; a parameterized one has > 1.
+		bool peer_is_nullary = peer_fd->parameters.size() <= 1;
+		if ( peer_is_nullary != this_is_nullary )
+		{
+		    // Give the nullary overload the `_un` suffix; the parameterized
+		    // one keeps the canonical ClassName__operatorX name.
+		    if ( this_is_nullary )
+			mangled = tag->str + "__" + mname + "_un";
+		    else
+		    {
+			// Existing peer was the nullary one — retag IT to `_un`
+			// (rename its FuncDef body symbol + record class_emit_name).
+			// Move its funcdef_map entry to the new key so the canonical
+			// ClassName__operatorX name is FREE for this binary overload
+			// (otherwise parseFunction sees it as already-declared and
+			// skips this overload's parameter registration).
+			std::string peer_name = tag->str + "__" + mname + "_un";
+			std::string peer_old = tag->str + "__" + mname;
+			peer_fd->class_emit_name = peer_name;
+			peer->name = peer_name;
+			pgm.funcdef_map[peer_name] = peer_fd;
+			pgm.funcdef_map.erase(peer_old);
+		    }
+		    name_disambiguated = true;
+		}
+	    }
 	    pgm.parseFunction(*cmember_dd, mangled, ddc);
 	    // find the variable that parseFunction created and add to class methods
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 	    {
 		if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
+		{
 		    mfd->returns_ref = ret_is_ref;
+		    if ( name_disambiguated && this_is_nullary )
+			mfd->class_emit_name = mangled;
+		}
 		if ( access_flags )
 		    mvar->flags |= access_flags;
 		ddc->methods.push_back(mvar);
