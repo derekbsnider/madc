@@ -1,208 +1,112 @@
-# RESTART HANDOFF — 2026-05-31 (read this FIRST after restart)
+# RESTART HANDOFF — 2026-05-31 (session 2, late) — READ FIRST after restart/compaction
 
-This is the authoritative rehydration entry point for the next session. It supersedes
-the older `2026-05-30-SESSION-HANDOFF.md` (which predates the std::-types refactor).
+Authoritative rehydration entry. Supersedes all earlier handoffs. The C++23/C++ class
+model work of this session is essentially COMPLETE; the next phase is the **C-stability
+pivot**.
 
 ## Read order on restart
-0. **`docs/plans/cpp-support.md` — the authoritative C++23/C23 COMPLIANCE ROADMAP.**
-   This is the governing plan: honest current-status table + prioritized task list
-   (P0 correctness bugs → P1 core features → P2 completeness). Every language task
-   traces to a line there. North star: madc as C23/C++23-compliant as practical;
-   anything off that path is DRIFT (memory `project_north_star_c23_cpp23`).
+0. **`docs/plans/madc-vision-and-invariants.md`** — the north-star vision (madc as a
+   polyglot transpiler; cir_node the universal C/C++ IR) + the **invariants I1–I8** +
+   the "does this block the vision?" checklist. EVERY change must satisfy these.
 1. This file (top to bottom).
-2. `MEMORY.md` index + these memories (the WHY): `project_legacy_cpp_shortcuts`,
-   `feedback_dont_cling_to_legacy`, `project_string_as_class`, `project_cpp_mangled_direct`,
-   `project_template_instantiation`, `feedback_liberal_subagent_context`, `feedback_opus_subagents`.
-3. The plan: `docs/superpowers/plans/2026-05-31-stdtypes-as-real-classes.md` (full task
-   breakdown + EXECUTION COMPLETE section + the polish-followups list with statuses).
-4. Then verify live state (below) before doing anything.
-
-## ⚠️ RESTART CONSTRAINT (subagent continuity)
-**SendMessage availability varies by session** — when it IS enabled you can run a
-coordinated team (spawn a named subagent, then iterate with it via `SendMessage`),
-which is preferable for the multi-step parser work. When it is NOT enabled, dispatch
-FRESH subagents (Agent tool) each step. EITHER WAY you can NEVER resume a *prior
-session's* subagent by its old `agentId` — those processes are gone across a restart.
-So always construct the context a subagent needs from this doc + the plan; never assume
-it remembers anything. (Confirmed 2026-05-31: SendMessage IS enabled this session.)
+2. **`docs/plans/cpp-support.md`** — the authoritative C++23/C23 compliance roadmap
+   (honest status table + prioritized P0/P1/P2 + the std-subsystem P2.11–14).
+3. Memories (the WHY/lessons): `project_north_star_c23_cpp23`,
+   `feedback_correct_over_shortcuts`, `feedback_no_false_choice_menus`,
+   `project_std_enum_gatekeeping`, `project_sequencing_cpp_then_c`,
+   `project_mir_setjmp_returns_twice`, `project_recycle_old_transpiler_carefully`,
+   `project_string_as_class` (now grep-verified-complete), `feedback_remove_cruft_promptly`.
+4. Then verify live state (below).
 
 ## LIVE STATE (verify on restart)
-- Repo: `/workspace/madc`, branch **`feature/cir-stdstring-claude`** (off `develop`). HEAD at
-  handoff: **`c5eef3c`**. Tree clean (only pre-existing untracked files like `a.bmir`,
-  `tmp/`, `.claude/` scratch — none of this refactor's).
-- MIR fork: `/workspace/mir`, branch `feature/cleanup-attribute` @ `53cdb85` (the fork madc
-  links via `/workspace/mir/libmir.a`). Untouched this session.
-- Build: `make -C src` (binary `bin/madc`; ~1-2 min). Test: `make -C src fulltest`
-  (~3-5 min). Single test: `bin/madc tests/NAME.mad`. Emit C: `bin/madc --emit=c11 FILE.mad`.
-- **Baseline gate: `make -C src fulltest` = 376 passed** (55 stable pre-existing failures —
-  vla/complex/exception/fnptr/struct-init, unrelated; + 1 flaky `testfortypedcomma` that
-  flips fail↔timeout — IGNORE only that one). NEVER drop below 376.
-- VERIFY ON RESTART: `git rev-parse HEAD` == c5eef3c (or later); `make -C src` clean;
-  `make -C src fulltest` == 376; `git -C /workspace/mir rev-parse --short HEAD` == 53cdb85.
+- Repo `/workspace/madc`, branch **`feature/cir-stdstring-claude`** (off develop),
+  HEAD **`d5ab5a7`** (or later). MIR fork `/workspace/mir` @ `53cdb85`, untouched this session.
+- Build `make -C src`; test `make -C src fulltest`; single test `bin/madc tests/NAME.mad`;
+  emit C `bin/madc --emit=c11 FILE.mad`.
+- **Gate baseline: `make -C src fulltest` = ~410 passed** / ~47 failed (pre-existing
+  vla/struct/fnptr-array/complex/multiret — NOT this session's; verify the failset is the
+  same) / ~61 skipped. + flaky `testfortypedcomma` (fail↔timeout, IGNORE only that). NEVER
+  drop the pass count.
+- VERIFY: `git rev-parse --short HEAD` >= d5ab5a7; `make -C src` clean; `make -C src fulltest`
+  ~410; `grep -rn "dtSTRING\b\|dtSTRINGref" src/ include/` == **0** (the crutch stays dead).
+- ⚠️ **P2.10 (commit d5ab5a7) was reported by its subagent at 410 green but I had NOT yet
+  re-gated it myself when this handoff was written** (context filled). FIRST: re-run
+  `make -C src fulltest`, confirm ~410 + no new failures vs baseline. (Coordinator-verify
+  before trusting — see the dtSTRING lesson below.)
 
-## THE WHY (do not re-litigate; the user was emphatic across many turns)
-madc faked C++ niceties (std::string, vector/map/set) with **TEMPORARY SHORTCUTS** —
-a special `dtSTRING` DataType with bespoke "string-object" lowering, hardcoded `tkSTRING`
-token + `tkVECTOR/MAP/SET/LIST` keywords, and `ns_stl.cpp` wrappers — from before madc had
-a real C++ framework. That framework now EXISTS (class model, template instantiation,
-mangled-direct libstdc++ calls via the dlsym(_Z…) resolver, c2mir). The mandate: **RETIRE
-the shortcuts; model std::string/vector/map/set as the real `std::`-namespaced class/template
-types they are, DEFINED BY THEIR HEADERS (`#include <string>`/`<vector>`/…), not builtins.**
-User feedback that drove this (saved to memory): *"you really tend to get hung up on legacy
-artifacts and want to hold onto them like they're some sort of holy relic"* and *"these are
-LEGACY ARTIFACTS… temporary shortcuts to shoehorn some C++ niceties into madc."* → Lesson:
-when a special-case/legacy thing causes friction, MODEL THE REAL ABSTRACTION; delete the
-shortcut, don't patch around it.
+## HOW WORK IS DONE (the methodology that worked all session)
+- **Subagent-driven, ONE task at a time** (skill: superpowers:subagent-driven-development).
+  Fresh opus subagents (`Agent` tool, model:opus). Brief them LIBERALLY (the WHY +
+  architecture + exact file:line anchors + the relevant invariants + gcc-canon +
+  "gate fulltest, don't regress" + an escape hatch: "commit what's green / report
+  BLOCKED|DONE_WITH_CONCERNS, never force a shim"). Memory `feedback_liberal_subagent_context`.
+- **SERIALIZE builds** — never run two `make -C src` concurrently (object-file races). The
+  coordinator gate-runs `make -C src fulltest` AFTER a subagent finishes, then dispatches
+  the next. Parser/cir_builder edits especially can't be parallel.
+- **Coordinator VERIFIES every task before accepting**: read the diff, re-run the gate,
+  diff the failset vs baseline (must be empty), and for removals run the grep. Do NOT relay
+  a subagent's "done" — verify it. (This is the hard-won dtSTRING lesson.)
+- ⚠️ **SendMessage cannot resume a PRIOR session's subagent across a restart** — those
+  processes are gone. Dispatch FRESH subagents; reconstruct context from this doc + the
+  roadmap. (Within a live session SendMessage DOES resume a completed background agent by
+  its agentId.)
 
-## WHAT'S DONE (this session — the refactor IS COMPLETE; 376 green; commits d0a4a76..c5eef3c)
-std::string is a real C++ class; std::vector/map/set are real `#include`-defined `std::`
-templates; the dtSTRING special-casing, the tkSTRING/tkVECTOR/MAP/SET/LIST tokens/keywords,
-and ns_stl.cpp are GONE. Commit trail (chronological):
-- `ed21e3b` invariant test · `9e5eceaf` FuncDef::emit_symbol + string methods→mangled ·
-  `6101c3a` string ctor/dtor via class path · `d95503c`+`d8317c4` decl/construct/destruct via
-  class path (struct string) · `e5aca81` methods via class path · `1a9c024` operators =/+= ·
-  `3e78028` string members/pointers as `struct string` · `64c3d63` **string return-by-value**
-  (via __retbuf) · `1d0b6c0` string ELEMENT ops (v[i] assign/stream/placement) → vector<string>
-  works · `34c1e0e` `include/madc/vector` + **namespace{} block parsing** · `d45e72a` remove
-  vector keyword · `457cdaa` delete vector container lowering · `70e5932` `include/madc/map`+`set`
-  · `bcd428f` remove map/set/list keywords · `ef41596` delete ns_stl · `6390559` remove tkSTRING
-  (std::-only) · POLISH: `b0f408c`+`0806e0e` operator==/!= via string_equals + map/set use == ·
-  `4a06137`+`d281f6c` delete dead container lowering/types · `655b088` element destructors via
-  __destroy intrinsic.
+## WHAT'S DONE THIS SESSION (376 → 410 green, every fix gcc-compared + fulltest-gated + invariant-checked)
+- **P0 correctness-crash tier COMPLETE** (7): P0.1 class by-value return (generalized
+  `__retbuf`) · P0.2 class-ref param member access (+ a `ref_params`/`__this` align bug) ·
+  P0.3 virtual-dispatch SIGSEGV (vptr-init in ctor-less `new`) · P0.4 range-for over raw
+  array · P0.5 copy-assignment double-free (synthesized memberwise `operator=`) · P0.6
+  `arr[i]->method()` arrow-chain · P0.7 `vector<T*>` multi-element (double-ptr member render).
+  Plus the dead-code HYGIENE sweep.
+- **P1:** P1.1 exceptions try/catch/throw (SJLJ, scalar) + **P1.1c RAII dtor-unwind**
+  (front-end, gcc-verified) · P1.2 lambda return-type deduction · P1.3a class self-type
+  (user-class operators now work) · P1.3b `this`/`this->member`.
+- **P2 feature-completeness:** P2.1 + P2.1b full operator set (binary/compound/bitwise/
+  shift/logical/unary/`()`/`->`/postfix) · P2.2 `enum class` · P2.3 `auto` deduction · P2.4
+  `const` enforcement · P2.5+5b+5c access control (data+methods; **class defaults private**)
+  · P2.6 derived→base upcast · P2.7 range-for-by-ref · P2.8b `string&` operators · P2.10
+  object-returning lambda fn-ptr.
+- **★ P2.14 — the `dtSTRING`/`dtSTRINGref` crutch ELIMINATED (grep=0, verified).** std::string
+  is now a fully generic `dtRESERVED` class recognized by identity, like vector/map/set.
+  `typespec_t` (DataDef* registration) + `MadValueKind` + Variable-ctor/dtor-by-identity +
+  enum deletion + `canonical_string_class` shim removed. **P2.9 dissolved.** 219→0.
+- **★ Architecture crystallized:** `docs/plans/madc-vision-and-invariants.md` (I1–I8),
+  referenced from AGENTS.md. The `--std=`/`LanguageStd` enum is the dialect gatekeeper on
+  BOTH input (feature gating) and output (c2mir target) ends; one IR; no special-casing.
 
-## THE HOW (architecture you must understand before touching step 4)
-- **std::string is ALREADY a `DataDefCLASS`**: `typedef DataDefCLASS DDClass;` (include/datadef.h:659),
-  `class DataDefSTRING : public DDClass`. So are DataDefVECTOR/MAP (now inert). `ddSTRING`
-  (parser.cpp:3438) carries its methods/ctors/dtor.
-- **Mangled-direct binding**: `FuncDef::emit_symbol` (include/madc.h, in `class FuncDef`). When
-  non-empty, `CirBuilder::class_method_call` / `class_operator_call` (src/cir_builder.cpp) emit
-  THAT symbol as the C call (a mangled libstdc++ symbol or a runtime wrapper) instead of
-  `ClassName__method`; madc emits no body. `Program::add_string_methods()` (parser.cpp ~3695)
-  binds string methods/ctors/dtor/operators to mangled symbols (generated by `src/madc_mangle.*`:
-  `itanium_mangle_{member,ctor,dtor,operator}_sub`, `std_string_type()`), e.g. STR_CTOR0/_S/_CP,
-  STR_DTOR, STR_ASGN_*/STR_APP_* statics in cir_builder ~:472-500. NOTE string& mangled-arg uses
-  the substitution-compressed `RKS4_` form (verify exported symbols with `nm -D`/`c++filt`).
-- **`struct string`**: concrete opaque storage `long _w[object_class_words()]` (sized from
-  `sizeof(std::string)`, NEVER hard-coded), emitted once by `class_struct_def`. Strings in
-  member/pointer/element/return position use this (so `string*` strides correctly).
-- **Unified object addressing**: `object_var_addr` / `var_is_pointer_stored` / `string_obj_arg`
-  (cir_builder ~:945-2271) — one rule: value lvalue→`&name`, pointer-stored param/ref/`T*`→`name`,
-  member→`&obj.m`, subscript element `v[i]`→ the bare `class_subscript_addr` (the operator[] call).
-- **string return-by-value**: `__retbuf` lowering (func returns `void` + hidden `struct string*
-  __retbuf` first param; `return s` copy-constructs `*__retbuf`; caller passes a temp's address).
-  Gated to madc-compiled funcs (is_string_returning_call / m_user_func_names). Parser fix
-  `paren_group_is_function_def` disambiguates a string-returning fn-def from a ctor-call decl.
-- **Containers = real templates**: `include/madc/vector|map|set` are `namespace std {
-  template<...> class ... {...} }`, instantiated per use by the template engine
-  (`instantiate_template_use` parser.cpp ~:1536, `TokenTEMPLATE::parse` ~:12701) → a normal
-  DataDefCLASS → class-model lowering. Headers use `data + i` pointer arith (NOT `&data[i]` —
-  parser gap), `new (slot) T(v)` placement copy-construct, `T& operator[]`, range-for via
-  size()/operator[] (`translate_foreach_class`). `__destroy(data+i)` for element teardown.
-- **`operator==`/`!=`**: bound to the `string_equals` runtime extern-C wrapper (src/madc_mir_backend.cpp;
-  libstdc++'s == is an un-dlsym-able inlined template). `class_operator_call` handles int-returning
-  bound operators. map/set compare keys with `==`.
-- **`__destroy(ptr)` intrinsic**: registered as a core builtin (parser.cpp:5044), lowered in
-  `CirBuilder::translate_expr` (cir_builder.cpp:3498) — strips ptr to element type T, runs
-  `as_class_instance(T)`: object T → its class dtor (`class_dtor_symbol`), scalar T → no-op (`0`).
+## THE PIVOT — C-STABILITY PASS (next phase; user-agreed: core C++ done → now C)
+Per `project_sequencing_cpp_then_c`. Sequence/scope:
+1. **P1.1b — MIR `setjmp`-returns-twice fix (FORK, `/workspace/mir`).** ROOT-CAUSED
+   (`project_mir_setjmp_returns_twice`): c2mir doesn't model `setjmp` as returns-twice →
+   locals across `setjmp` not spilled → stale registers after `longjmp` → exception
+   rethrow loops + dtor-unwind SIGBUS (frame-size-scaled). The CORRECT fix is in the fork
+   (returns-twice modeling / spill); the `volatile`-locals trick is a SHIM to AVOID.
+   Confirm via a minimal C `setjmp`-reducer first. Unblocks the `.mir_skip`'d exception
+   tests (`testrethrow`, `testexcept_dtor_{rethrow,string,order,nested}`).
+2. **P2.11–13 std-dialect subsystem:** P2.11 build the keyword/feature→standard REGISTRY
+   (replaces the ad-hoc `is_c_mode()` gating) + close gaps (`operator` keyword ungated;
+   audit lambda/`auto`/`enum class`); P2.12 de-hardcode the c2mir target std (enum-driven,
+   `celC11`→`LanguageStd`); P2.13 standards conversion (input-std ≠ output-std).
+3. **P2.8** foreach VLA / MadArray catch-all (range-for over a VLA still crashes — tighten
+   `translate_foreach` to error on unrecognized containers instead of assuming MadArray).
+4. **The ~47 C-side integration failures** (Track 1.3: vla/struct-init/fnptr-array/complex/
+   multiret) — the develop→master parity gate (`feedback_promote_parity`).
+5. Smaller C++ follow-ups (opportunistic): P2.5b→ note class-default-private done; P2.10
+   leftovers (lambda in std::function-like wrapper); the `string("lit")` ctor-call-in-lambda
+   + no-paren-lambda parser gaps; `"lit" + string` (const-char*-LHS operator+).
 
-## ⏳ STEP 4 — REMAINING WORK
-
-### 4A — COMPLETE OPERATOR OVERLOADING (user priority: "all overloadable operators mapped to functions")
-The design is already the C++ way — every operator routes through `class_operator_call`
-(binary) / `class_subscript_call` (`[]`) → a real `operator` METHOD/function (via
-`FuncDef::emit_symbol` for bound libstdc++ ops, or `ClassName__operator<sym>` for user
-classes). NO special-casing.
-**INVARIANT (do not break): operators are overloaded ONLY when the operand's class/header
-explicitly DECLARES `operator X`** — dispatch is lookup-based (`as_class_instance` guard →
-`select_operator_overload`/`findMethod` → NULL falls through to built-in handling). Built-in
-types and classes lacking the operator use ordinary semantics. NEVER synthesize/overload an
-operator by default. Extending `binop_overload_symbol` only makes more operator TOKENS
-*eligible for the lookup*; a class still only has the operators its header declares. Binding
-std::string `[]`/`+` is registering operators the REAL libstdc++ std::string actually has.
-But COVERAGE of the eligible set is incomplete (audited 2026-05-31). Gaps:
-- **std::string `operator[]` NOT bound** → `s[1]` fails ("subscripted value is neither array
-  nor pointer"). Bind `char& operator[](size_t)` on ddSTRING (mangled libstdc++ member,
-  via the mangler) so string indexing routes through the operator[] method like vector/map.
-- **std::string `operator+` NOT bound** → `a + b` concat fails ("invalid operand types of +").
-  std::string `+` is a NON-MEMBER in libstdc++ (and may be an inlined template like `==` was →
-  if un-dlsym-able, use an extern-C runtime wrapper `string_concat`, like `string_equals`).
-- **`binop_overload_symbol` (src/cir_builder.cpp) is a PARTIAL table** — maps `== != < > <= >=
-  + - * / % = +=` only. MISSING dispatch for: compound assigns `-= *= /= %= &= |= ^= <<= >>=`,
-  bitwise `& | ^`, shifts `<< >>` (as arithmetic, distinct from the stream-chain `<<`),
-  logical `&& ||`, UNARY operators (`- ! ~ ++ --` prefix/postfix), `operator()`, `operator->`.
-  The class-member PARSER (parser.cpp ~11090) already ACCEPTS most of these (operator(),
-  operator[], multi-char + single-char) — so the gap is in the CIR DISPATCH, not the parse.
-- FIX: extend `binop_overload_symbol` to the full binary-operator table; add unary-operator
-  dispatch (find where unary ops are lowered and route to `operatorX` when the operand is a
-  class with that operator); route `operator()`/`operator->` similarly. Bind std::string's
-  built-in `[]`/`+` (+ any other common ones: `at`? `<` for ordered map keys later?) as
-  class operators with `emit_symbol`. ALL via the existing class-operator machinery — no
-  special-casing, gcc/clang as canon for the libstdc++ symbols (`nm -D`/`c++filt`).
-- TEST each: `s[i]`, `a + b`, user-class `operator-`/`operator*`/`operator()`/unary, etc.
-- This is higher-value than 4B (string indexing/concat are everyday ops) and is mostly
-  cir_builder dispatch + parser.cpp operator binding — LOWER risk than the 4B grammar changes.
-
-### 4B — three parser gaps (FEATURE work, parser-grammar RISK)
-They DO NOT FIX BUGS — the headers work today via workarounds. They improve elegance/usability
-and would retire the workarounds. A parser-grammar change touches ALL 376 tests → highest
-regression risk; do it DELIBERATELY, incrementally, subagent-driven, gating on 376 after every step.
-
-Sequence by leverage (per the element-dtor subagent's analysis):
-1. **KEYSTONE — method/operator on a subscript element** (`arr[i].method()`, `keys[i] == k`,
-   `keys[i].c_str()`). Today the postfix chain doesn't continue with `.`/`->`/operator after a
-   subscript primary. Anchors: `Program::parsePostfixChain` (src/parser.cpp:**6508**) builds
-   `TokenSubscript`/`TokenSubscriptExpr` (madc.h) but doesn't chain a member/method after them;
-   the CIR side ALREADY has `class_subscript_addr`/`is_string_subscript` (cir_builder.cpp) to get
-   an element's address. Fix: allow a postfix `.`/`->`/operator after a subscript node in
-   parsePostfixChain, producing a TokenMember/TokenCallMethod on the element. PAYOFF: removes the
-   `K cur = keys[i]; cur == k` workaround in `include/madc/map` (lines ~50/72/82/93) and
-   `include/madc/set` (~36/52) — they copy the element to a local because `keys[i] == k` won't
-   parse. Also enables user `vec[i].method()`.
-2. **pseudo-destructor syntax** (`(data+i)->~T()` / `obj.~T()`) — parse an explicit destructor
-   call, lower it to the type's class dtor (`class_dtor_symbol`) or no-op for scalar (the SAME
-   dispatch `__destroy` already does in cir_builder.cpp:3498). Once this lands, the `__destroy`
-   intrinsic (parser.cpp:5044 + cir_builder.cpp:3498) can be RETIRED and the headers use native
-   `(data+i)->~T()` teardown. Depends on (1) if using `data[i].~T()` form; `(data+i)->~T()`
-   needs pointer-deref-pseudo-destructor parsing.
-3. **unqualified sibling-method call inside a method** (`helper()` where helper is a method of the
-   same class → `this->helper()`). Orthogonal, lowest priority. Lets map/set factor their linear
-   search into a private `__find()` (currently inlined into each method). Also: `this.member`
-   inside methods doesn't parse either (related — bare member-name resolution in a method body).
-
-### HOW TO DO STEP 4 SAFELY (the method that worked all session)
-- **Subagent-driven** (skill: superpowers:subagent-driven-development), FRESH opus subagents,
-  ONE at a time (parser edits conflict — never parallel). Per task: implement → verify →
-  spec/quality check → commit; gate `make -C src fulltest` == 376 before EVERY commit.
-- **Be EXTRA liberal with subagent context** (the user's standing instruction — memory
-  `feedback_liberal_subagent_context`): paste the WHY + architecture + exact anchors + rules +
-  gotchas + build/test cmds + "don't regress 376". Subagents that understood the intent caught
-  real issues all session; stingy prompts would re-introduce the legacy shortcuts.
-- **gcc/clang is canon** (compare emitted C / `g++ -S`); deepest-layer fixes; NO shortcuts; NO
-  new string special-casing (we just removed it all). If a parser change cascades beyond control,
-  the subagent commits what's green (376) and reports DONE_WITH_CONCERNS — do NOT force it.
-- Invariant tests to keep green: teststringclass, teststringreturn, teststringeq,
-  testtemplatestring, testtemplatecontainer, testcontainerdtor, testvector, testmap, testset,
-  testsubscript. Add a test per parser gap (e.g. `arr[i].method()`).
-- **Risk note**: parser grammar is load-bearing for the whole suite. Each gap is its own
-  commit, fulltest-gated. Start with (1) the keystone; reassess before (2)/(3).
-
-## OTHER OPEN/CONTEXT (not blocking)
-- Inert leftovers (deliberately kept; removing ripples for zero gain): `DataDefVECTOR`/`MAP`
-  classes + `dtVECTOR/MAP/SET/LIST` enum tags (still referenced by enum-guarded branches in
-  madc.h TokenSubscript ctor + parser dt-tables). `TokenOSTREAM` class-only orphan.
-- `s == "lit"` (const char* RHS for string ==) falls through select_operator_overload (only the
-  `const string&` overload is bound) — out of scope, no test needs it.
-- User-class (non-string) return-by-value (`Pt makept()`) still "too many arguments" — the
-  __retbuf lowering is string-only; generalizing it would close that + could subsume multi-return.
-- Devbox: a transient `/tmp` ENOSPC was observed during one subagent's greps (commands succeeded
-  on retry) — glance at the `/tmp` mount if grep/build act up.
-- Bigger picture: this whole refactor serves Track 1.3 (CIR→master parity) and the SMAUG goal;
-  `claude_status.json`/`docs/plans/ROADMAP.md` are the mirrored status surfaces (sync when done).
+## KEY LESSONS LOCKED THIS SESSION (don't repeat)
+- **"Done" for a removal = `grep` returns 0 + gate green, COORDINATOR-VERIFIED.** Never
+  relay a claimed "DONE" (the dtSTRING crutch survived a week of partial-then-"done" passes
+  because the hard embedded 20% kept being deferred while the claim was made).
+- **Correct over shortcuts** (`feedback_correct_over_shortcuts`): fix at the deepest layer
+  even into the fork; a legacy artifact's mere EXISTENCE is a drift risk → eliminate, don't
+  route around. (MIR setjmp → fork fix, not the volatile shim.)
+- **No false-choice menus** (`feedback_no_false_choice_menus`): when the path is clear,
+  state it and proceed; reserve AskUserQuestion for genuine forks.
 
 ## ONE-LINE SUMMARY
-std::string/vector/map/set are now real `std::` header-defined class/template types (legacy
-dtSTRING/tkSTRING/tkVECTOR/ns_stl retired); 376 tests green. Remaining: 4A — COMPLETE operator
-overloading (all overloadable operators → functions; bind std::string `[]`/`+`; extend the
-binop dispatch table + unary/()/-> dispatch — user priority, lower risk); 4B — 3 optional
-parser-grammar features (keystone = method/operator on a subscript element). Everything stays
-method/function-based — no operator special-casing.
+C++ class model is complete + correct + fully de-special-cased (dtSTRING crutch eliminated,
+grep=0); 410 green; vision+invariants crystallized. NEXT = the C-stability pivot (MIR
+setjmp-returns-twice fork fix · std-dialect registry/gating/target/conversion · the ~47
+C-side fails → develop→master parity). Re-gate P2.10 (d5ab5a7) on restart first.
