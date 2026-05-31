@@ -10998,8 +10998,26 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 
     pgm.nextToken(); // consume '{'
 
+    // Redefinition guard: reject a second definition of an already-defined
+    // class before we create anything (was checked at registration time, now
+    // hoisted so the early self-registration below can't false-trip it).
+    if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
+	pgm.Throw(tag) << "Class '" << tag->str << "' already defined" << flush;
+
     DataDefCLASS *ddc = new DataDefCLASS(tag->str, 0, DataType::dtRESERVED);
     DBG(cout << "TokenCLASS::parse() defining class " << tag->str << endl);
+
+    // Register the class type EARLY — before the member/method body loop — so a
+    // method or operator can name its OWN class as a parameter or return type
+    // (e.g. `int operator+(const Counter& o)`, `V operator+(const V&)` returning
+    // V, `C add(C o)`). TokenDataType wraps *ddc by REFERENCE, so as members are
+    // appended the same object grows; method BODIES compile later (cir_builder),
+    // by which point ddc is complete, so by-value self params/returns pick up the
+    // final size. This is the standard incomplete-self-reference pattern, and is
+    // consistent with the inherited-base members being copied in early below.
+    pgm.struct_map[tag->str] = ddc;
+    tdt = new TokenDataType(tag->str.c_str(), *ddc);
+    pgm.datatype_map[tag->str] = tdt;
 
     // Copy base class members (at offset 0) and methods for inheritance
     if ( inherit_base )
@@ -11273,13 +11291,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	DBG(cout << "TokenCLASS::parse() allocated vtable with " << nslots << " slots" << endl);
     }
 
-    // register the class type
-    if ( pgm.struct_map.find(tag->str) != pgm.struct_map.end() )
-	pgm.Throw(tag) << "Class '" << tag->str << "' already defined" << flush;
-    pgm.struct_map[tag->str] = ddc;
-    // also register as a data type so "ClassName var;" works without "class" prefix
-    tdt = new TokenDataType(tag->str.c_str(), *ddc);
-    pgm.datatype_map[tag->str] = tdt;
+    // The class type was registered early (before the body loop) so methods
+    // could reference their own type; ddc is now complete with its final size.
     DBG(cout << "TokenCLASS::parse() registered class " << tag->str << " size=" << ddc->size << endl);
 
     // what follows?

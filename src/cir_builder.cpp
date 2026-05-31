@@ -2806,7 +2806,12 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	// as_class_instance(datadef) trigger above matches it spuriously. Defer to
 	// is_string_operator_plus (genuine string-OBJECT LHS + string-like RHS); a
 	// spurious match falls through to ordinary pointer/arithmetic +.
-	if (top->id() == TokenID::tkAdd && !is_string_operator_plus(top))
+	// This char*-arithmetic ambiguity is SPECIFIC to the string class; a real
+	// user class `operator+` (`Counter + Counter`) is an unambiguous object
+	// operand and proceeds to overload selection (which returns NULL — and thus
+	// falls through to generic + — when the class declares no operator+).
+	if (top->id() == TokenID::tkAdd && is_string_object(lcls)
+	    && !is_string_operator_plus(top))
 		return NULL;
 
 	std::string mname = std::string("operator") + opsym;
