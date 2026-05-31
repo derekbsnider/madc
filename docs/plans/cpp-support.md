@@ -279,6 +279,13 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   future c2mir C-standard upgrade is a one-constant bump. (Principle #6b; forward-
   looking; do alongside / after the C-stability pass.)
 
+- **P2.13 — standards CONVERSION (input-std ≠ output-std)**. A direct payoff of the
+  one-IR + dialect-enum-on-both-ends design: madc as a dialect transpiler — C++23→C11/
+  C89 (Cfront downlevel, partly the existing C++→C lowering), C23→C11 (downlevel),
+  C89→C23 (modernize), madc→portable C11 (`--emit=c11`, already first-class). "Convert"
+  = parse at one `--std=` level, emit at another. Depends on P2.11 (input gating) +
+  P2.12 (enum-driven output target). Forward-looking capability; `project_std_enum_gatekeeping`.
+
 ### P3 — broader standards surface (later)
 - C-side parity worklist → **ROADMAP Track 1.3** (the develop→master gate).
 - C23 surface (`_BitInt`, `#embed`, `constexpr` objects, attributes) per the
