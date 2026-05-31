@@ -2636,6 +2636,35 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	if (!mv) return NULL;
 	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
 
+	// A class-bound external operator[] (std::string's char& operator[](size_t))
+	// names its real libstdc++ symbol via emit_symbol and has no madc-emitted
+	// body. Emit the mangled symbol and declare it as an extern from its
+	// signature — mirroring class_operator_call's emit_symbol branch — instead
+	// of the default ClassName__operator[] + referenced-funcs scheme (which only
+	// works for a user-class method body). The libstdc++ operator returns char&
+	// (a char* pointer return); class_subscript_call derefs it (returns_ref) so
+	// `s[i]` is a proper char lvalue.
+	if (callee && !callee->emit_symbol.empty()) {
+		// __this: the std::string object's (void*) address. string_var_addr
+		// honours the unified pointer-stored-param rule (a string& param holds
+		// the address; a value var is addressed by &var).
+		node_t this_arg = string_var_addr(tsub->object, origin);
+		// Param 0 = this (void*); param 1 = size_t index (a 64-bit scalar).
+		std::vector<ExternParam> eparams = { { {N_VOID}, true },
+						     { {N_LONG}, false } };
+		node_t args = list();
+		append(args, this_arg);
+		append(args, translate_expr(tsub->index));
+		// char& -> a char* pointer return; class_subscript_call derefs it to
+		// the char lvalue (so `s[i]` reads and `s[i] = c` writes).
+		need_output_extern(callee->emit_symbol.c_str(), true, eparams,
+				   { N_CHAR });
+		node_t call = node2(N_CALL, id(callee->emit_symbol.c_str(), origin),
+				    args, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		return call;
+	}
+
 	std::string sym = cls->name + "__operator[]";   // ClassName__operator[]
 	// __this: value receiver -> &obj, pointer receiver -> obj.
 	bool recv_is_ptr = tsub->object.type && tsub->object.type->is_pointer();

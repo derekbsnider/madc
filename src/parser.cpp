@@ -3718,6 +3718,11 @@ void Program::add_string_methods()
     const std::string sym_op_asgn_cstr = itanium_mangle_operator_sub(T, "=",  {"const char*"}, false);
     const std::string sym_op_app_str   = itanium_mangle_operator_sub(T, "+=", {"const " + T + "&"}, false);
     const std::string sym_op_app_cstr  = itanium_mangle_operator_sub(T, "+=", {"const char*"}, false);
+    // Non-const char& basic_string::operator[](size_t) — the assignable overload
+    // (`_ZNSt...ixEm`, no `K`); returns char& so `s[i] = c` writes. Mangler-
+    // generated (the `false` = non-const); demangle-verifies to
+    // basic_string::operator[](unsigned long).
+    const std::string sym_op_idx       = itanium_mangle_operator_sub(T, "[]", {"size_t"}, false);
 
     scmc.c_str = (const char *(string::*)(void))&string::c_str;
     var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
@@ -3779,6 +3784,19 @@ void Program::add_string_methods()
     scmc.method_cstr = (string &(string::*)(const char *))&string::operator+=;
     var = addFunction("operator+=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_app_cstr;
+    ddSTRING.methods.push_back(var);
+
+    // operator[] bound to the non-const char& basic_string::operator[](size_t).
+    // Returns char& (a char* in C terms -> an lvalue), so `s[i]` reads and
+    // `s[i] = c` writes. returns_ref makes the subscript-dispatch path deref the
+    // returned address to the char lvalue (CirBuilder::class_subscript_call).
+    // The fn pointer is a legacy-backend placeholder only; emit_symbol is what
+    // the CIR backend dispatches through. Param 1 = size_t index.
+    var = addFunction("operator[]", datatype_vec_t{DataType::dtCHAR, rtPtr(DataType::dtSTRING), DataType::dtUINT64}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	fd->emit_symbol = sym_op_idx;
+	fd->returns_ref = true;
+    }
     ddSTRING.methods.push_back(var);
 
     // operator==/operator!= as class operators bound to the extern-C runtime
