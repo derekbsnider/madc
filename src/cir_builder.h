@@ -182,26 +182,6 @@ class CirBuilder {
 	node_t translate_sstream_chain(class TokenOperator *top, const char *ssname);
 
 	// ---- STL container (vector/map/set) object lowering ----
-	// Same opaque-object model as std::string / MadArray: an 8-aligned long[]
-	// buffer + a ctor call, destructed via the cleanup attribute. The runtime
-	// symbol family is selected by container kind + element/key/value types
-	// (e.g. dtVECTOR + string element -> "vector_str_*"). The container is
-	// always passed to its wrappers by address ((void*)&buffer).
-	static bool is_container_object(DataDef *dd);
-	// Fill ctor/dtor wrapper names + word count for a container value type.
-	// Returns false when `dd` is not a (non-pointer) container.
-	bool container_obj_info(DataDef *dd, const char *&ctor_sym,
-				const char *&dtor_sym, size_t &words);
-	node_t container_storage_decl(const char *name, DataDef *dd, TokenBase *origin);
-	node_t container_ctor_call(const char *name, DataDef *dd, TokenBase *origin);
-	// Lower a container method call (vector .push_back/.size/.at/...; map
-	// .put/.get/.contains/.size; set .insert/.contains/.size) on a container
-	// OBJECT receiver to its runtime wrapper. Returns NULL when not a
-	// recognized container-object method call (caller falls through).
-	node_t container_method_call(class TokenMember *tm, TokenBase *origin);
-	// Lower a container subscript READ `c[i]` to its runtime getter. Returns
-	// NULL when `tsub` is not a container subscript.
-	node_t container_subscript_read(class TokenSubscript *tsub, TokenBase *origin);
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
 	// deref'd (operator[] returns T& == a T*), so it is a read/write lvalue.
 	node_t class_subscript_call(class TokenSubscript *tsub, TokenBase *origin);
@@ -217,9 +197,6 @@ class CirBuilder {
 	// the address `&base[i]`. (Distinct from is_string_subscript, which is the
 	// operator[]-container case.)
 	static bool is_string_array_subscript(TokenBase *arg);
-	// Lower a container subscript WRITE `c[i] = rhs` to its runtime setter.
-	// Returns NULL when the assignment LHS is not a container subscript.
-	node_t container_subscript_assign(class TokenOperator *top, TokenBase *origin);
 
 	// Internal: set position on a node in c2mir's node_positions VARR
 	void set_pos(cir_node *cn, const char *file, int line, int col);

@@ -574,313 +574,6 @@ node_t CirBuilder::sstream_ctor_call(const char *name, TokenBase *origin)
 	return obj_default_ctor_call(name, "sstream_construct", origin);
 }
 
-// ---- STL container (vector/map/set) object lowering ----
-// A typed STL container (vector<T>/map<K,V>/set<T>) is a real C++ object, the
-// same opaque-buffer model as std::string / MadArray: an 8-aligned long[]
-// buffer + a placement-new ctor wrapper, destructed at every scope exit via
-// __attribute__((cleanup(dtor))). The runtime wrapper family is monomorphic per
-// (kind, element/value type): vector<int> -> vector_int_*, vector<string> ->
-// vector_str_*, map<string,int> -> map_str_int_*, map<string,string> ->
-// map_str_str_*, set<string> -> set_str_*, set<int> -> set_int_*. The container
-// is always passed to its wrappers by address ((void*)&buffer).
-bool CirBuilder::is_container_object(DataDef *dd)
-{
-	// No builtin container-object types remain: std::vector/map/set are all
-	// header-defined madc templates (include/madc/vector|map|set) lowered
-	// through the ordinary class model. The DataDefVECTOR/MAP/SET classes and
-	// their dt* enum tags are now inert (never instantiated — the keywords are
-	// gone). The container_* lowering helpers below are gated on this predicate,
-	// so returning false makes them all unreachable and routes every container
-	// through the class path. ns_stl.cpp (the runtime wrappers) is deleted.
-	(void)dd;
-	return false;
-}
-
-bool CirBuilder::container_obj_info(DataDef *dd, const char *&ctor_sym,
-				    const char *&dtor_sym, size_t &words)
-{
-	if (!is_container_object(dd))
-		return false;
-	if (DataDefMAP *m = dynamic_cast<DataDefMAP *>(dd)) {
-		bool str = m->val_type && m->val_type->is_string();
-		ctor_sym = str ? "map_str_str_construct" : "map_str_int_construct";
-		dtor_sym = str ? "map_str_str_destruct"  : "map_str_int_destruct";
-		words = (sizeof(std::map<std::string, int64_t>) + sizeof(long) - 1) / sizeof(long);
-		return true;
-	}
-	if (DataDefSET *s = dynamic_cast<DataDefSET *>(dd)) {
-		bool str = s->element_type && s->element_type->is_string();
-		ctor_sym = str ? "set_str_construct" : "set_int_construct";
-		dtor_sym = str ? "set_str_destruct"  : "set_int_destruct";
-		words = (sizeof(std::set<std::string>) + sizeof(long) - 1) / sizeof(long);
-		return true;
-	}
-	return false;
-}
-
-node_t CirBuilder::container_storage_decl(const char *name, DataDef *dd,
-					  TokenBase *origin)
-{
-	const char *ctor_sym, *dtor_sym;
-	size_t words;
-	if (!container_obj_info(dd, ctor_sym, dtor_sym, words))
-		return error_node("container_storage_decl on non-container type", origin);
-	return obj_storage_decl(name, words, dtor_sym, origin);
-}
-
-node_t CirBuilder::container_ctor_call(const char *name, DataDef *dd,
-				       TokenBase *origin)
-{
-	const char *ctor_sym, *dtor_sym;
-	size_t words;
-	if (!container_obj_info(dd, ctor_sym, dtor_sym, words))
-		return error_node("container_ctor_call on non-container type", origin);
-	return obj_default_ctor_call(name, ctor_sym, origin);
-}
-
-// Lower a container method call on a container OBJECT receiver to its runtime
-// wrapper. The receiver object's address is passed first as (void*). A string
-// key/value/element argument is materialized to a std::string OBJECT via
-// string_obj_arg (literal -> scope-temp, object -> by address); a string RESULT
-// (vector<string>::at, map<string,string>::get) is filled into a scope-temp
-// std::string and returned as a const char* via string_cstr (usable in cout /
-// string-assign contexts). Returns NULL for unrecognized receivers/methods so
-// the caller falls through to generic member/call handling.
-node_t CirBuilder::container_method_call(TokenMember *tm, TokenBase *origin)
-{
-	const Variable &obj = tm->object;
-	if (!is_container_object(obj.type))
-		return NULL;
-
-	const std::string &method = tm->var.name;
-	node_t self = string_obj_addr(obj.name.c_str(), origin);   // (void*)&container
-
-	// String result via a scope-temp std::string: the wrapper fills *result,
-	// then we read it as const char*. Used for vector<string>::at and
-	// map<string,string>::get.
-	auto str_result = [&](const char *sym,
-			      const std::vector<node_t> &tail_args,
-			      const std::vector<ExternParam> &tail_params) -> node_t {
-		char tname[40];
-		snprintf(tname, sizeof(tname), "__madc_cstrtmp_%d", m_strtmp_counter++);
-		m_pending_stmts.push_back(string_storage_decl(tname, origin));
-		m_pending_stmts.push_back(string_ctor_call(tname, NULL, origin));
-		// sym((void*)&tmp, (void*)&container, tail...)
-		std::vector<ExternParam> params;
-		params.push_back({ {N_VOID}, true });   // result
-		params.push_back({ {N_VOID}, true });   // container
-		for (auto &p : tail_params) params.push_back(p);
-		need_output_extern(sym, true, params);
-		node_t a = list();
-		append(a, string_obj_addr(tname, origin));
-		append(a, self);
-		for (node_t t : tail_args) append(a, t);
-		node_t call = node2(N_CALL, id(sym, origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		// read the temp as const char*
-		need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
-		// comma-sequence: (fill(...), string_cstr(&tmp))
-		node_t cargs = list();
-		append(cargs, string_obj_addr(tname, origin));
-		node_t cstr = node2(N_CALL, id(STR_CSTR, origin), cargs, origin);
-		CIR_NODE(cstr)->synth_from_origin = true;
-		node_t seq = node2(N_COMMA, call, cstr, origin);
-		CIR_NODE(seq)->synth_from_origin = true;
-		return seq;
-	};
-
-	// Helper: build `sym((void*)&container [, extra...])` returning long/void.
-	auto simple_call = [&](const char *sym, bool ret_long,
-			       const std::vector<node_t> &extra,
-			       const std::vector<ExternParam> &extra_params) -> node_t {
-		std::vector<ExternParam> params;
-		params.push_back({ {N_VOID}, true });
-		for (auto &p : extra_params) params.push_back(p);
-		need_output_extern(sym, false, params,
-				   ret_long ? std::vector<c2mir_node_code_t>{N_LONG}
-					    : std::vector<c2mir_node_code_t>());
-		node_t a = list();
-		append(a, self);
-		for (node_t e : extra) append(a, e);
-		node_t call = node2(N_CALL, id(sym, origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	};
-
-	if (DataDefMAP *md = dynamic_cast<DataDefMAP *>(obj.type)) {
-		bool vstr = md->val_type && md->val_type->is_string();
-		TokenBase *arg0 = tm->parameters.empty() ? NULL : tm->parameters[0];
-		TokenBase *arg1 = tm->parameters.size() < 2 ? NULL : tm->parameters[1];
-		if (method == "put" && arg0 && arg1) {
-			node_t k = string_obj_arg(arg0);   // key is always a string
-			if (vstr) {
-				node_t v = string_obj_arg(arg1);
-				return simple_call("map_str_str_set", false, { k, v },
-						   { { {N_VOID}, true }, { {N_VOID}, true } });
-			}
-			return simple_call("map_str_int_set", false,
-					   { k, translate_expr(arg1) },
-					   { { {N_VOID}, true }, { {N_LONG}, false } });
-		}
-		if (method == "get" && arg0) {
-			node_t k = string_obj_arg(arg0);
-			if (vstr)
-				return str_result("map_str_str_get", { k },
-						  { { {N_VOID}, true } });
-			return simple_call("map_str_int_get", true, { k },
-					   { { {N_VOID}, true } });
-		}
-		if (method == "contains" && arg0) {
-			node_t k = string_obj_arg(arg0);
-			return simple_call(vstr ? "map_str_str_contains" : "map_str_int_contains",
-					   true, { k }, { { {N_VOID}, true } });
-		}
-		if (method == "erase" && arg0 && !vstr) {
-			node_t k = string_obj_arg(arg0);
-			return simple_call("map_str_int_erase", false, { k },
-					   { { {N_VOID}, true } });
-		}
-		if (method == "size")
-			return simple_call(vstr ? "map_str_str_size" : "map_str_int_size",
-					   true, {}, {});
-		if (method == "clear" && !vstr)
-			return simple_call("map_str_int_clear", false, {}, {});
-		return NULL;
-	}
-
-	if (DataDefSET *sd = dynamic_cast<DataDefSET *>(obj.type)) {
-		bool str = sd->element_type && sd->element_type->is_string();
-		TokenBase *arg0 = tm->parameters.empty() ? NULL : tm->parameters[0];
-		if (method == "insert" && arg0) {
-			if (str) {
-				node_t a = string_obj_arg(arg0);
-				return simple_call("set_str_insert", false, { a },
-						   { { {N_VOID}, true } });
-			}
-			return simple_call("set_int_insert", false,
-					   { translate_expr(arg0) }, { { {N_LONG}, false } });
-		}
-		if (method == "contains" && arg0) {
-			if (str) {
-				node_t a = string_obj_arg(arg0);
-				return simple_call("set_str_contains", true, { a },
-						   { { {N_VOID}, true } });
-			}
-			return simple_call("set_int_contains", true,
-					   { translate_expr(arg0) }, { { {N_LONG}, false } });
-		}
-		if (method == "erase" && arg0 && str) {
-			node_t a = string_obj_arg(arg0);
-			return simple_call("set_str_erase", false, { a },
-					   { { {N_VOID}, true } });
-		}
-		if (method == "size")
-			return simple_call(str ? "set_str_size" : "set_int_size",
-					   true, {}, {});
-		if (method == "clear" && str)
-			return simple_call("set_str_clear", false, {}, {});
-		return NULL;
-	}
-	return NULL;
-}
-
-// Lower a container subscript READ `c[i]` to its runtime getter:
-//  vector<int>     nums[i]      -> vector_int_at((void*)&nums, i)            (long)
-//  vector<string>  names[i]     -> string_cstr fill from vector_str_at       (const char*)
-//  map<string,int> ages[k]      -> map_str_int_get((void*)&ages, (void*)&k)  (long)
-//  map<string,str> dict[k]      -> string_cstr fill from map_str_str_get     (const char*)
-// Returns NULL when the subscript object is not a container.
-node_t CirBuilder::container_subscript_read(TokenSubscript *tsub, TokenBase *origin)
-{
-	const Variable &obj = tsub->object;
-	if (!is_container_object(obj.type))
-		return NULL;
-	node_t self = string_obj_addr(obj.name.c_str(), origin);   // (void*)&container
-
-	// String-result subscript: fill a scope-temp std::string then read it as
-	// const char* (matches container_method_call's str_result).
-	auto str_result = [&](const char *sym, node_t key_or_index,
-			      ExternParam key_param) -> node_t {
-		char tname[40];
-		snprintf(tname, sizeof(tname), "__madc_cstrtmp_%d", m_strtmp_counter++);
-		m_pending_stmts.push_back(string_storage_decl(tname, origin));
-		m_pending_stmts.push_back(string_ctor_call(tname, NULL, origin));
-		need_output_extern(sym, true,
-				   { { {N_VOID}, true }, { {N_VOID}, true }, key_param });
-		node_t a = list();
-		append(a, string_obj_addr(tname, origin));
-		append(a, self);
-		append(a, key_or_index);
-		node_t call = node2(N_CALL, id(sym, origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
-		node_t cargs = list();
-		append(cargs, string_obj_addr(tname, origin));
-		node_t cstr = node2(N_CALL, id(STR_CSTR, origin), cargs, origin);
-		CIR_NODE(cstr)->synth_from_origin = true;
-		node_t seq = node2(N_COMMA, call, cstr, origin);
-		CIR_NODE(seq)->synth_from_origin = true;
-		return seq;
-	};
-
-	if (DataDefMAP *md = dynamic_cast<DataDefMAP *>(obj.type)) {
-		bool vstr = md->val_type && md->val_type->is_string();
-		node_t k = string_obj_arg(tsub->index);   // key is a string
-		if (vstr)
-			return str_result("map_str_str_get", k, { {N_VOID}, true });
-		need_output_extern("map_str_int_get", false,
-				   { { {N_VOID}, true }, { {N_VOID}, true } },
-				   std::vector<c2mir_node_code_t>{N_LONG});
-		node_t a = list();
-		append(a, self);
-		append(a, k);
-		node_t call = node2(N_CALL, id("map_str_int_get", origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	}
-	return NULL;
-}
-
-// Lower a container subscript WRITE `c[i] = rhs` to its runtime setter:
-//  vector<int>     nums[i] = v   -> vector_int_set((void*)&nums, i, v)
-//  vector<string>  names[i] = s  -> vector_str_set / _set_cstr
-//  map<string,int> ages[k] = v   -> map_str_int_set((void*)&ages, (void*)&k, v)
-//  map<string,str> dict[k] = s   -> map_str_str_set / _set_cstr
-// Returns NULL when the LHS is not a container subscript (caller falls through
-// to the generic assignment path).
-node_t CirBuilder::container_subscript_assign(TokenOperator *top, TokenBase *origin)
-{
-	TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(top->left);
-	if (!tsub || !is_container_object(tsub->object.type))
-		return NULL;
-	const Variable &obj = tsub->object;
-	node_t self = string_obj_addr(obj.name.c_str(), origin);
-	TokenBase *rhs = top->right;
-
-	if (DataDefMAP *md = dynamic_cast<DataDefMAP *>(obj.type)) {
-		bool vstr = md->val_type && md->val_type->is_string();
-		node_t k = string_obj_arg(tsub->index);
-		node_t a = list();
-		append(a, self);
-		append(a, k);
-		if (vstr) {
-			append(a, string_obj_arg(rhs));
-			need_output_extern("map_str_str_set", false,
-				{ { {N_VOID}, true }, { {N_VOID}, true }, { {N_VOID}, true } });
-			node_t call = node2(N_CALL, id("map_str_str_set", origin), a, origin);
-			CIR_NODE(call)->synth_from_origin = true;
-			return call;
-		}
-		append(a, translate_expr(rhs));
-		need_output_extern("map_str_int_set", false,
-			{ { {N_VOID}, true }, { {N_VOID}, true }, { {N_LONG}, false } });
-		node_t call = node2(N_CALL, id("map_str_int_set", origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	}
-	return NULL;
-}
-
 // `(void*)&<name>` — the string object's address as void*, so the mangled
 // libstdc++ members / runtime wrappers see a pointer to the object. A string
 // local/global is a `struct string` instance, so its address is `&name` (NOT
@@ -1729,12 +1422,6 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// the cleanup attribute on the storage handles scope-exit destruction.
 	if (is_array_object(v->type))
 		return array_storage_decl(v->name.c_str(), origin);
-
-	// STL container object (vector<T>/map<K,V>/set<T>): same opaque-storage
-	// model. The default ctor is emitted as a separate statement by
-	// translate_block; the cleanup attribute handles scope-exit destruction.
-	if (is_container_object(v->type))
-		return container_storage_decl(v->name.c_str(), v->type, origin);
 
 	// std::stringstream object: opaque storage + cleanup(sstream_destruct).
 	if (is_sstream_object(v->type))
@@ -3545,11 +3232,6 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// container and raw-array paths.
 			node_t ocall = class_subscript_call(tsub, tb);
 			if (ocall) return ocall;
-			// STL container subscript READ (`nums[i]`, `ages[k]`): lower to
-			// the runtime getter. A WRITE (`c[i] = v`) is intercepted earlier
-			// on the assignment path; this read path is the rvalue use.
-			node_t cread = container_subscript_read(tsub, tb);
-			if (cread) return cread;
 			// A subscript on a lifted string literal (`"X"[0]`) keeps the
 			// synthetic `__literal__X` variable as its object. Emit the string
 			// literal itself, not a reference to an undefined symbol.
@@ -3587,15 +3269,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttCallMethod) {
 		TokenMember *tcm = dynamic_cast<TokenMember *>(tb);
 		if (tcm) {
-			// STL container method call (vector/map/set) on a container
-			// object receiver. Returns NULL for non-container receivers.
-			node_t lowered = container_method_call(tcm, tb);
-			if (lowered) return lowered;
 			// Class method call (user class OR std::string via the
 			// object-class bridge): c.method(args) -> the emit_symbol /
 			// ClassName__method call. Returns NULL when the receiver is
 			// not a class instance.
-			lowered = class_method_call(tcm, tb);
+			node_t lowered = class_method_call(tcm, tb);
 			if (lowered) return lowered;
 		}
 	}
@@ -3744,16 +3422,6 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					if (sv && is_sstream_object(sv->var.type))
 						return translate_sstream_chain(top, sv->var.name.c_str());
 				}
-			}
-
-			// STL container subscript WRITE: `c[i] = rhs` lowers to the
-			// runtime setter (vector_int_set / map_str_int_set / ...).
-			// c2mir cannot assign through the long[] buffer; intercept the
-			// N_ASSIGN before the generic path. (`c[i] op= rhs` compound
-			// assignment is not yet supported — falls through.)
-			if (tb->id() == TokenID::tkAssign) {
-				node_t cw = container_subscript_assign(top, tb);
-				if (cw) return cw;
 			}
 
 			// Operator overloading on a class lvalue (user class OR
@@ -4408,10 +4076,6 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			// `array a;` — default-construct the MadArray object. Scope-exit
 			// destruction is handled by the cleanup attribute (array_storage_decl).
 			append(items, array_ctor_call(v->name.c_str(), tc));
-		} else if (is_container_object(v->type)) {
-			// `vector<T>/map<K,V>/set<T> c;` — default-construct the container.
-			// Scope-exit destruction is via the cleanup attribute.
-			append(items, container_ctor_call(v->name.c_str(), v->type, tc));
 		} else if (is_sstream_object(v->type)) {
 			// `stringstream ss;` — default-construct; cleanup attribute destructs.
 			append(items, sstream_ctor_call(v->name.c_str(), tc));
@@ -4462,20 +4126,6 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
 				append(items, array_ctor_call(sdcl->var.name.c_str(), sdcl));
-				continue;
-			}
-			// STL container object declaration: storage + default ctor.
-			if (sdcl && is_container_object(sdcl->var.type) && !file_global) {
-				if (!pending_labels.empty()) {
-					node_t ll = list();
-					for (auto &ln : pending_labels)
-						append(ll, node1(N_LABEL, id(ln.c_str())));
-					pending_labels.clear();
-					append(items, node2(N_EXPR, ll, integer(0)));
-				}
-				append(items, var_decl(&sdcl->var, sdcl));
-				append(items, container_ctor_call(sdcl->var.name.c_str(),
-								  sdcl->var.type, sdcl));
 				continue;
 			}
 			// std::stringstream object declaration.
