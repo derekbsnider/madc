@@ -317,6 +317,12 @@ public:
 	void fnptr_decl_pieces(class FuncDef *fd, bool emit_pointer,
 			       node_t spec_list, node_t decl_list,
 			       const std::vector<uint32_t> &lead_dims);
+	// When `fd` returns an object BY VALUE through the __retbuf ABI (void
+	// return + hidden `T* __retbuf` first param — std::string or a non-trivial
+	// class), report that returned type so the fn-ptr type renders the same
+	// ABI (`void (*)(T*, params)`) and indirect calls pass a retbuf temp.
+	// Returns NULL for the ordinary (scalar/pointer/trivial) return shape.
+	DataDef *fnptr_retbuf_type(class FuncDef *fd);
 	// Extra pointer stars an fn-ptr usage carries beyond its typedef alias:
 	// `DO_FUN *m` (alias is a function typedef) -> 1; `UNOP m` (alias already
 	// a pointer-to-function typedef) -> 0. Returns 1 when the alias is unknown.

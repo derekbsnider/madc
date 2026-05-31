@@ -435,15 +435,34 @@ bool CirBuilder::is_string_operator_plus(TokenBase *arg)
 // m_user_func_names: an external / native function with a std::string return (e.g.
 // __std_to_string, php::/perl:: helpers) keeps its own ABI and is NOT rewritten —
 // matching it here would inject a bogus __retbuf arg ("too many arguments").
+// The FuncDef behind a CALL token: either the called function directly, or the
+// TARGET signature of a function-pointer variable being called indirectly
+// (`auto f = [...]; f()`). Both use the same __retbuf ABI for object returns.
+static FuncDef *call_target_funcdef(TokenCallFunc *tcf)
+{
+	if (!tcf) return NULL;
+	if (FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type))
+		return fd;
+	if (DataDefFPTR *fp = dynamic_cast<DataDefFPTR *>(tcf->var.type))
+		return fp->target;
+	return NULL;
+}
+
 bool CirBuilder::is_string_returning_call(TokenBase *arg)
 {
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
 	if (!tcf) return false;
-	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
+	FuncDef *fd = call_target_funcdef(tcf);
 	if (!fd) return false;
 	if (!is_std_string(&fd->returns) || fd->returns.is_pointer())
 		return false;
-	// Only functions whose body madc emits (lowered via the __retbuf ABI).
+	// A direct call is gated on m_user_func_names (only madc-emitted bodies use
+	// the __retbuf ABI; external string-returning fns keep their own). A call
+	// THROUGH a fn-ptr whose target is itself a madc-emitted retbuf function
+	// (e.g. a hoisted lambda) carries that ABI in its rendered type, so the
+	// indirect call must materialize the temp regardless of the variable name.
+	if (dynamic_cast<DataDefFPTR *>(tcf->var.type))
+		return true;
 	return m_user_func_names && m_user_func_names->count(tcf->var.name) > 0;
 }
 
@@ -458,10 +477,14 @@ DataDefCLASS *CirBuilder::object_returning_call_class(TokenBase *arg)
 {
 	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
 	if (!tcf) return NULL;
-	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
+	FuncDef *fd = call_target_funcdef(tcf);
 	if (!fd) return NULL;
 	DataDefCLASS *cdd = class_return_via_retbuf(&fd->returns);
 	if (!cdd) return NULL;
+	// As in is_string_returning_call: a fn-ptr call inherits the retbuf ABI
+	// from its rendered target type; a direct call is gated on m_user_func_names.
+	if (dynamic_cast<DataDefFPTR *>(tcf->var.type))
+		return cdd;
 	if (!(m_user_func_names && m_user_func_names->count(tcf->var.name) > 0))
 		return NULL;
 	return cdd;
@@ -977,21 +1000,48 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 // synthetic trailing vararg slot and emits N_DOTS, renders an explicit
 // `(void)` only for is_void_params, leaves a bare `()` for K&R-unspecified,
 // and reuses param_decl per parameter.
+// Mirror func_proto's __retbuf decision for a fn-ptr TARGET signature: a
+// by-value std::string OR non-trivial class return (not pointer/ref/multi)
+// uses the __retbuf ABI. Returns the returned object type (ddSTRING or the
+// class) so the fn-ptr renders `void (*)(T*, params)`; NULL otherwise.
+DataDef *CirBuilder::fnptr_retbuf_type(FuncDef *fd)
+{
+	if (!fd) return NULL;
+	DataDef *ret_dd = &fd->returns;
+	if (ret_dd->is_pointer() || fd->returns_ref || fd->is_multi_return())
+		return NULL;
+	if (is_std_string(ret_dd))
+		return &ddSTRING;
+	if (DataDefCLASS *obj = class_return_via_retbuf(ret_dd))
+		return (DataDef *)obj;
+	return NULL;
+}
+
 node_t CirBuilder::fnptr_func_node(FuncDef *fd)
 {
 	node_t param_list = list();
 	if (!fd) return node1(N_FUNC, param_list);   // unknown signature -> ()
 
+	// A by-value object-returning target uses the __retbuf ABI: a hidden
+	// leading `T* __retbuf` param (abstract/unnamed in a fn-ptr type).
+	DataDef *retbuf_dd = fnptr_retbuf_type(fd);
+	if (retbuf_dd) {
+		node_t pspec = type_list(retbuf_dd);
+		node_t pdecl = list();
+		append(pdecl, pointer());
+		append(param_list, node2(N_TYPE, pspec, node2(N_DECL, ignore(), pdecl)));
+	}
+
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;  // drop the synthetic vararg slot
 
 	if (nparam == 0) {
-		if (fd->is_void_params) {
+		if (fd->is_void_params && !retbuf_dd) {
 			node_t void_spec = node1(N_LIST, simple(N_VOID));
 			node_t void_decl = node2(N_DECL, ignore(), list());
 			append(param_list, node2(N_TYPE, void_spec, void_decl));
 		}
-		// else: bare () — unspecified parameter list (K&R)
+		// else: bare () — unspecified parameter list (K&R), or retbuf-only
 	} else {
 		for (size_t i = 0; i < nparam; i++)
 			append(param_list, param_decl(fd->parameters[i], "", std::string()));
@@ -1013,6 +1063,20 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 				   node_t spec_list, node_t decl_list,
 				   const std::vector<uint32_t> &lead_dims)
 {
+	// A by-value object-returning target uses the __retbuf ABI: the C return
+	// type is `void` (the object travels through the hidden `T* __retbuf`
+	// param injected by fnptr_func_node), so render `void` here and skip the
+	// pointer-peel / struct-spec logic.
+	if (fnptr_retbuf_type(fd)) {
+		append_type_specs(spec_list, &ddVOID);
+		for (size_t d = 0; d < lead_dims.size(); d++)
+			append(decl_list, node3(N_ARR, ignore(), list(), integer(lead_dims[d])));
+		if (emit_pointer)
+			append(decl_list, pointer());
+		append(decl_list, fnptr_func_node(fd));
+		return;
+	}
+
 	// Return-type specs: peel pointer levels, recording the star count so the
 	// stars can be appended as the outermost declarator suffix.
 	DataDef *ret_dd = fd ? &fd->returns : NULL;
@@ -1029,6 +1093,13 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 			append(spec_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
 		else
 			append_type_specs(spec_list, ret_dd);
+	} else if (ret_dd && ret_dd->is_object()) {
+		// A TRIVIAL class returned BY VALUE (no dtor -> not the __retbuf ABI,
+		// handled above) is lowered as a native `struct <ClassName>` return;
+		// append_type_specs would mis-render the class's dtRESERVED rawtype as
+		// `int` (the bug that made `auto g = [](){ S s; ...; return s; }`
+		// produce `int (*g)()`).
+		append(spec_list, node2(N_STRUCT, id(ret_dd->name.c_str()), ignore()));
 	} else {
 		append_type_specs(spec_list, ret_dd);
 	}
@@ -1433,10 +1504,13 @@ node_t CirBuilder::translate_stream_chain(TokenOperator *top, StreamKind k, bool
 		}
 		node_t args = list();
 		append(args, result);
-		if (is_string_object_value(vals[i])) {
+		if (is_string_object_value(vals[i]) || is_string_returning_call(vals[i])) {
 			// operator<<(ostream&, const std::string&) — takes the object
 			// pointer, returns ostream& (chains). Literals are NOT objects and
-			// fall through to the char* overload below.
+			// fall through to the char* overload below. A by-value
+			// string-RETURNING call (direct `make()` or a fn-ptr/lambda `f()`)
+			// is a string-object rvalue: string_obj_arg materializes it into a
+			// __retbuf temp and yields the temp's address.
 			const char *SSYM = "_ZStlsIcSt11char_traitsIcESaIcEERSt13basic_ostreamIT_T0_ES7_RKNSt7__cxx1112basic_stringIS4_S5_T1_EE";
 			need_output_extern(SSYM, true, { { {N_VOID}, true }, { {N_VOID}, true } });
 			// string_obj_arg yields the object's (void*) address for both a

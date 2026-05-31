@@ -1,0 +1,43 @@
+#!/../bin/madc
+// P2.10: a fn-ptr (the `auto f` variable of a lambda) to a function that
+// returns an OBJECT BY VALUE must render the object-return ABI, and a call
+// through it must materialize + read the returned object.
+//   - std::string return  -> __retbuf ABI: `void (*)(struct string*)`
+//   - non-trivial class    -> __retbuf ABI: `void (*)(struct W*)`
+//   - trivial class        -> native struct return: `struct S (*)(void)`
+#include <iostream>
+#include <string>
+using namespace std;
+
+class S {
+public:
+    int x;
+};
+
+class W {
+public:
+    string name;
+    int n;
+};
+
+int main()
+{
+    // string-returning lambda via auto, called + printed
+    auto f = [](){ string s = "hello"; return s; };
+    string sr = f();
+    cout << sr << endl;        // hello
+    cout << f() << endl;       // hello (cout of the call directly)
+
+    // trivial-class-returning lambda, member read
+    auto g = [](){ S s; s.x = 42; return s; };
+    S gr = g();
+    cout << gr.x << endl;      // 42
+
+    // non-trivial (object-member) class-returning lambda via the __retbuf ABI
+    auto h = [](){ W w; w.name = "world"; w.n = 7; return w; };
+    W hr = h();
+    cout << hr.n << endl;      // 7
+    cout << hr.name << endl;   // world
+
+    return 0;
+}
