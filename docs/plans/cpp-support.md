@@ -172,14 +172,22 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 > `try/catch/throw` for scalar types (int/double/cstr) works via the SJLJ runtime
 > (`testexcept`, `testexcept_dtor_nothrow`, `testtrycatch` green). Remaining
 > exception follow-ups (the hard tail):
-> - **P1.1b — MIR JIT exception-backend bugs (fork-level; C-stability/MIR pass)**.
->   Two related faults, BOTH with gcc-correct lowering (emit-c11 → gcc runs clean) —
->   the bug is in the MIR JIT backend: (a) rethrow-to-an-outer-try infinite-loops
->   (outer `setjmp` re-returns 0 on longjmp re-entry); (b) RE-ENTRANT dtor calls
->   during unwind + longjmp crash (3+ try-body objects or a string object — found in
->   P1.1c). `.mir_skip`'d: `testrethrow`, `testexcept_dtor_rethrow`,
->   `testexcept_dtor_{string,order,nested}`. Fix is in the `/workspace/mir` fork
->   (nested-setjmp / re-entrancy frame safety) — design for upstream.
+> - **P1.1b — MIR JIT `setjmp`/`longjmp` frame bug (fork-level; C-stability/MIR pass)**.
+>   ROOT CAUSE (investigated 2026-05-31, intel below): the MIR JIT does NOT model
+>   `setjmp` as a **returns-twice** function, so locals live across the `setjmp`
+>   aren't forced to memory; after `longjmp` re-enters the frame, register-allocated
+>   locals are stale/clobbered → faults. Two surface symptoms, same root: (a) rethrow
+>   to an outer try infinite-loops (outer `setjmp` re-returns 0 on re-entry); (b)
+>   exception unwind SIGBUSes (null deref) in JIT'd `main` at a post-`longjmp` offset.
+>   EVIDENCE: scales with FRAME SIZE not object count — 1 `std::string` (≈32B) OR ≥3
+>   simple objects in a throwing try crash; 1–2 small objects work; plain scope-dtors
+>   (no `setjmp`) always work; crash is in JIT'd `main` (never a `__madc_*` runtime
+>   frame); identical at `-O0` and `-O1`. Lowering is gcc-correct (emit-c11 path).
+>   So it's NOT runtime-fixable. **FORK FIX** (`/workspace/mir`): make c2mir treat
+>   `setjmp`/`__builtin_setjmp` as returns-twice and spill affected locals to memory
+>   (or madc emits try-body locals `volatile` / uses `__builtin_setjmp`); design for
+>   upstream. `.mir_skip`'d: `testrethrow`, `testexcept_dtor_rethrow`,
+>   `testexcept_dtor_{string,order,nested}`.
 > - **P1.1c — Phase B: RAII dtor-unwind on the throw path** — DONE at the FRONT END
 >   (commit `b9c7829`, gcc-verified): cleanup-stack + discard-on-normal; objects in a
 >   try body register on the runtime cleanup stack, `__madc_throw_*` unwinds to
