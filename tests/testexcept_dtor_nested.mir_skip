@@ -1,0 +1,1 @@
+P1.1c lowering gcc-correct (emit-c11 runs clean, incl. nested unwind); MIR JIT crashes on re-entrant dtor calls during unwind + longjmp — fork-level MIR bug (sibling of P1.1b). Nested try also out of P1.1c scope.

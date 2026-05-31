@@ -1,0 +1,40 @@
+#!/usr/bin/env madc
+// P1.1c — RAII destructor-unwind on the THROW path. An object constructed in a
+// try body must run its destructor exactly once when an exception propagates out
+// of the body (c2mir cleanup attributes do NOT fire on longjmp, so the SJLJ
+// runtime cleanup stack runs it). A static counter proves the dtor ran exactly
+// once: two objects are constructed, both must be destructed before the catch.
+#include <stdio.h>
+
+int dtor_calls = 0;
+
+class Guard
+{
+	int id;
+
+	Guard(int v)
+	{
+		id = v;
+		printf("Guard(%d)\n", id);
+	}
+	~Guard()
+	{
+		dtor_calls = dtor_calls + 1;
+		printf("~Guard(%d)\n", id);
+	}
+};
+
+int main()
+{
+	try {
+		Guard a(1);
+		Guard b(2);
+		throw 7;
+	}
+	catch ( int e ) {
+		printf("caught %d\n", e);
+	}
+	// Both dtors must have run exactly once each on the throw unwind path.
+	printf("dtor_calls = %d\n", dtor_calls);
+	return 0;
+}

@@ -493,6 +493,19 @@ public:
 	node_t translate_try(class TokenTRY *tt);
 	node_t translate_throw(class TokenTHROW *th);
 	int m_try_ctx_counter = 0;
+	// >0 while lowering a try BODY (set around translate_stmt(tt->try_body) in
+	// translate_try). Objects constructed in a try body keep their normal
+	// cleanup-attribute (normal-path scope-exit teardown), but ALSO get a runtime
+	// __madc_cleanup_push so __madc_throw_* unwinds them on the longjmp path
+	// (cleanup attributes do NOT fire on longjmp — P1.1c). On normal try exit the
+	// runtime entries are discarded (cleanup-attribute already ran the dtors).
+	int m_try_body_depth = 0;
+	// When in a try body, append a runtime cleanup entry naming `cdd`'s destructor
+	// for the object `varname` (its dtor runs on the exception/longjmp unwind
+	// path). No-op outside a try body or for a class with no dtor. See P1.1c
+	// (docs/plans/refs/exceptions-sjlj.md).
+	void emit_try_body_cleanup_push(const char *varname, class DataDefCLASS *cdd,
+					node_t items, class TokenBase *origin);
 	// Range-based for over a MadArray: `for (T x : arr) body`. The loop
 	// variable is declared in the enclosing scope by the parser, so this only
 	// emits the index loop + per-iteration element fill (php_array_get /

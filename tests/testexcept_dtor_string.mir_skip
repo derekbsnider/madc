@@ -1,0 +1,1 @@
+P1.1c lowering gcc-correct (emit-c11 runs clean); MIR JIT crashes on re-entrant dtor calls during unwind + longjmp with a string object — fork-level MIR bug (sibling of P1.1b)

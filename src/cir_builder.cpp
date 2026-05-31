@@ -4547,6 +4547,50 @@ node_t CirBuilder::translate_throw(TokenTHROW *th)
 	return node2(N_EXPR, list(), call, th);
 }
 
+// Register a try-body object's destructor on the RUNTIME cleanup stack so it
+// runs when an exception (longjmp) unwinds out of the try body — c2mir cleanup
+// attributes do NOT fire on longjmp. The object keeps its cleanup attribute too;
+// that handles the NORMAL scope-exit path (the try lowering discards these
+// runtime entries on normal exit), so each dtor runs exactly once per path.
+//
+// Emits a SINGLE call with only immediate arguments — NO new stack locals in the
+// try body:
+//   __madc_cleanup_push_dtor((void*)Cls___dtor, (void*)&varname);
+// The runtime heap-allocates the entry. Adding stack arrays/locals inside a try
+// body perturbs the MIR JIT frame allocation and was observed to make the
+// try-context overlap an object (2026-05-31) — passing only immediates avoids it.
+// P1.1c.
+void CirBuilder::emit_try_body_cleanup_push(const char *varname,
+					    DataDefCLASS *cdd,
+					    node_t items, TokenBase *origin)
+{
+	if (m_try_body_depth <= 0 || !cdd || !class_needs_dtor(cdd))
+		return;
+	std::string dtor_sym = class_dtor_symbol(cdd);
+	// A user-class dtor is a madc-EMITTED function `void Cls___dtor(struct Cls*)`;
+	// referencing it (referenced_funcs) drives its emission and declaration with
+	// the real signature — re-declaring it here as `void f(void*)` would conflict.
+	// An externally-bound dtor (std::string's mangled libstdc++ ~basic_string,
+	// emit_symbol set) has NO madc body, so it must be declared extern here so
+	// `(void*)dtor_sym` is a well-typed function address (not "undeclared").
+	bool dtor_is_external = (dtor_sym != cdd->name + "___dtor");
+	if (dtor_is_external)
+		need_output_extern(dtor_sym.c_str(), false, { { {N_VOID}, true } });
+	referenced_funcs.insert(dtor_sym);
+
+	// __madc_cleanup_push_dtor((void*)dtor_sym, (void*)&varname);
+	need_output_extern("__madc_cleanup_push_dtor", false,
+			   { { {N_VOID}, true }, { {N_VOID}, true } });
+	node_t args = list();
+	append(args, node2(N_CAST, void_ptr_type(),
+			   id(dtor_sym.c_str(), origin), origin));
+	append(args, node2(N_CAST, void_ptr_type(),
+			   node1(N_ADDR, id(varname, origin), origin), origin));
+	node_t call = node2(N_CALL, id("__madc_cleanup_push_dtor", origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	append(items, node2(N_EXPR, list(), call, origin));
+}
+
 // SJLJ try/catch lowering. Emits, as a block of statements (NOT a statement-
 // expression — a cleanup-attribute temp inside `({...})` mis-scopes its dtor in
 // c2mir, per the P0.5 finding):
@@ -4595,10 +4639,45 @@ node_t CirBuilder::translate_try(TokenTRY *tt)
 	node_t sj_call = node2(N_CALL, id("setjmp", tt), sj_args, tt);
 	node_t cond = node2(N_EQ, sj_call, integer(0, tt), tt);
 
-	// THEN arm: the try body, then __madc_try_pop().
+	// THEN arm: capture the cleanup-stack mark (== ctx->cleanup_mark, set by
+	// __madc_try_push), lower the try body (object ctors inside it push runtime
+	// cleanup entries — see emit_try_body_cleanup_push), then on normal exit
+	// DISCARD those entries (their dtors already ran via the cleanup attribute at
+	// the body block's C scope exit) and __madc_try_pop(). On the exception path
+	// the body block is abandoned by longjmp (cleanup attribute does NOT fire),
+	// and __madc_throw_* has already unwound the runtime entries to this same mark
+	// — so each try-body dtor runs exactly once on either path. P1.1c.
+	char markname[40];
+	snprintf(markname, sizeof(markname), "__cleanup_mark_%d", n);
+	need_output_extern("__madc_cleanup_top", true, {});
+	node_t mark_spec = list();
+	append(mark_spec, simple(N_VOID, tt));
+	node_t mark_decl_list = list();
+	append(mark_decl_list, pointer());
+	node_t mark_init = node2(N_CALL, id("__madc_cleanup_top", tt), list(), tt);
+	node_t mark_sd = simple(N_SPEC_DECL, tt);
+	append(mark_sd, node1(N_SHARE, mark_spec));
+	append(mark_sd, node2(N_DECL, id(markname, tt), mark_decl_list));
+	append(mark_sd, ignore());
+	append(mark_sd, ignore());
+	append(mark_sd, mark_init);
+	CIR_NODE(mark_sd)->synth_from_origin = true;
+
 	node_t then_items = list();
+	append(then_items, mark_sd);
+	m_try_body_depth++;
 	node_t body = translate_stmt(tt->try_body);
+	m_try_body_depth--;
 	if (body) append(then_items, body);
+	// __madc_cleanup_discard_to(__cleanup_mark_N) — pop the try-body runtime
+	// entries WITHOUT calling dtors (the cleanup attribute ran them at scope exit).
+	need_output_extern("__madc_cleanup_discard_to", false, { { {N_VOID}, true } });
+	node_t disc_args = list();
+	append(disc_args, id(markname, tt));
+	node_t disc_call = node2(N_CALL, id("__madc_cleanup_discard_to", tt),
+				 disc_args, tt);
+	CIR_NODE(disc_call)->synth_from_origin = true;
+	append(then_items, node2(N_EXPR, list(), disc_call, tt));
 	need_output_extern("__madc_try_pop", false, {});
 	node_t pop_call = node2(N_CALL, id("__madc_try_pop", tt), list(), tt);
 	CIR_NODE(pop_call)->synth_from_origin = true;
@@ -5355,6 +5434,11 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 						append(items, node2(N_EXPR, list(), asg, sdcl));
 					}
 				}
+				// In a try body, also register this object's dtor on the runtime
+				// cleanup stack so it runs on the exception (longjmp) unwind path
+				// (the cleanup attribute alone does not — P1.1c). No-op otherwise.
+				emit_try_body_cleanup_push(sdcl->var.name.c_str(),
+							   cdcl, items, sdcl);
 				continue;
 			}
 		}
