@@ -184,10 +184,22 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   forward `gp_tree_node`/text-emission cruft. Old code is reference-ONLY.
 - **P1.2 — lambdas**. Hoist to free functions + capture struct; fix the 2 c2mir
   errors. Was working on the old backend — re-establish on CIR.
-- **P1.3 — user-class operator definitions**. Parser gaps block them: class-typed
-  params (esp. the operator's own class / `const T&`), and `this.member` qualified
-  access (bare member access already works). Once these parse, user-class operators
-  ride the existing dispatch with NO new operator code (principle 1).
+- **P1.3 — user-class methods/operators using the SELF type**. Root-caused
+  2026-05-31: the class registers as a type (`struct_map`/`datatype_map`) at
+  parser.cpp **~11280-81, AFTER** the member/method-parse loop (`parseFunction` at
+  11094/11120/11216). So a method whose param/return is the class being defined
+  can't resolve the self-type → "Failed to find type 'C' when parsing function
+  parameters" / "Expecting type in class definition". Blocks `int operator+(const
+  Counter& o)`, `V operator+(const V&)` returning V, `C add(C o)`.
+  - **P1.3a (high value):** register the class in `datatype_map`/`struct_map`
+    EARLY — right after `ddc` is created (~11001), before the body loop — so
+    self-references resolve (incomplete-type forward-self-reference; finalize size
+    at the existing ~11281 point). Then user operators ride the existing dispatch
+    with NO new operator code (principle 1). RISK: early registration affects name
+    resolution + by-value self-param sizing — gate carefully.
+  - **P1.3b (lower):** bind `this` in method bodies — `this.member`/`this->member`
+    → "use of undeclared identifier 'this'" (bare member access already works via
+    `__this`).
 
 ### P2 — completeness & polish
 - **P2.1 — operator dispatch completeness**. Extend `binop_overload_symbol`
