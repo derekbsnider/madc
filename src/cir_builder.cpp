@@ -2849,6 +2849,32 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	// emit_symbol and is declared from its signature; otherwise the default
 	// ClassName__operator<op> scheme + the referenced-funcs prototype pass.
 	if (!callee->emit_symbol.empty()) {
+		// Equality operators (==/!=) bind to the extern-C runtime wrapper
+		// string_equals, which RETURNS INT and takes BOTH operands as
+		// string-object addresses (two void*). This differs from =/+=
+		// (which return basic_string& / void* and take one rhs). Negate
+		// the int result for != (no second wrapper needed).
+		TokenID oid = top->id();
+		if (oid == TokenID::tkEquals || oid == TokenID::tkNotEq) {
+			node_t eqargs = list();
+			append(eqargs, string_obj_arg(top->left));
+			append(eqargs, string_obj_arg(top->right));
+			// int string_equals(void*, void*)
+			need_output_extern(callee->emit_symbol.c_str(), false,
+					   { { {N_VOID}, true }, { {N_VOID}, true } },
+					   { N_INT });
+			node_t eqcall = node2(N_CALL,
+					      id(callee->emit_symbol.c_str(), origin),
+					      eqargs, origin);
+			CIR_NODE(eqcall)->synth_from_origin = true;
+			if (oid == TokenID::tkNotEq) {
+				node_t neg = node1(N_NOT, eqcall, origin);
+				CIR_NODE(neg)->synth_from_origin = true;
+				return neg;
+			}
+			return eqcall;
+		}
+
 		DataDef *pt = (callee->parameters.size() > 1)
 				? callee->parameters[1] : NULL;
 		DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;

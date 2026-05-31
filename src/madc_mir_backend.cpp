@@ -77,6 +77,13 @@ void string_append_cstr(void *dst, const char *s)
     { if (s) *(std::string *)dst += s; }
 void string_clear(void *ptr)
     { ((std::string *)ptr)->clear(); }
+// String equality — libstdc++'s std::operator== for strings is an inlined weak
+// template symbol (not dlsym-exportable), so it cannot be bound the way the
+// real member operator=/operator+= are. This extern-C wrapper takes the two
+// string-object addresses and returns 1/0; CirBuilder binds operator== to it
+// and negates the result for operator!=.
+int string_equals(void *a, void *b)
+    { return *(std::string *)a == *(std::string *)b ? 1 : 0; }
 
 // Generic ostream wrappers — mirrors streamout_string/streamout_cstr/
 // streamout_numeric from compiler_operators.cpp.  Take ostream* as first

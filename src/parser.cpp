@@ -3781,6 +3781,29 @@ void Program::add_string_methods()
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_app_cstr;
     ddSTRING.methods.push_back(var);
 
+    // operator==/operator!= as class operators bound to the extern-C runtime
+    // wrapper string_equals (NOT a mangled libstdc++ symbol: std::operator==
+    // for strings is an inlined weak template symbol that is not dlsym-
+    // exportable). Both operands are string objects (param 1 is a string& ref
+    // param so its address is passed). CirBuilder::class_operator_call emits
+    // `string_equals(&lhs, &rhs)` and negates the int result for operator!=.
+    // The registered fn pointer is a legacy-backend placeholder only.
+    var = addFunction("operator==", datatype_vec_t{DataType::dtINT32, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	fd->emit_symbol = "string_equals";
+	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
+	fd->ref_params[1] = true;
+    }
+    ddSTRING.methods.push_back(var);
+
+    var = addFunction("operator!=", datatype_vec_t{DataType::dtINT32, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	fd->emit_symbol = "string_equals";
+	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
+	fd->ref_params[1] = true;
+    }
+    ddSTRING.methods.push_back(var);
+
     // length() and size() — wrap std::string::length via a free helper.
     // Signature: (int64_t, string*) matches madc method calling convention
     // where the object pointer is the hidden first argument.
