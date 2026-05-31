@@ -9282,11 +9282,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			var = ((DataDefCLASS *)base)->findMethod(id);
 			if ( var )
 			{
-			    // arrow method call: ptr->method(args)
-			    if ( lhs->type() != TokenType::ttVariable
-			      && lhs->type() != TokenType::ttMember )
+			    // arrow method call: ptr->method(args). The common LHS is a
+			    // pointer variable / member. A SUBSCRIPT element that is a
+			    // pointer-to-class (`v[i]` where v is vector<Base*>) is also a
+			    // valid receiver: build the TokenCallMethod with the subscript
+			    // as parent_expr so the CIR side (class_this_arg) passes the
+			    // element POINTER VALUE as __this (recv_is_ptr -> pass the
+			    // pointer directly, NOT its address — unlike the dot case where
+			    // the element is an object and __this = &element). Other chained
+			    // receivers (member-of-call, etc.) are not yet supported.
+			    TokenBase *recv_parent = NULL;
+			    if ( lhs->type() == TokenType::ttSubscript )
+				recv_parent = lhs;
+			    else if ( lhs->type() != TokenType::ttVariable
+				   && lhs->type() != TokenType::ttMember )
 				Throw(tb) << "chained arrow method call not yet supported" << flush;
 			    TokenCallMethod *tc = new TokenCallMethod(*obj_var, *var);
+			    if ( recv_parent )
+				tc->parent_expr = recv_parent;
 			    tb = nextToken();
 			    tc->line = tb->line;
 			    tc->column = tb->column;
