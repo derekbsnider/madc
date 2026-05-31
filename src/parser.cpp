@@ -1552,8 +1552,25 @@ static TokenDataType *instantiate_template_use(Program &pgm, const std::string &
 	TokenDataType *adt = resolve_declared_type_token(pgm, at, true, true);
 	if ( !adt )
 	    pgm.Throw(at) << "Expecting a type argument to " << tname << "<>" << flush;
+	// Fold trailing pointer stars into the argument's type, mirroring a
+	// pointer typedef (`Box<char*>`, `Vec<T**>`). A single pointer-typed
+	// TokenDataType substitutes cleanly into the body — the same shape the
+	// parser produces for `typedef char *charptr; charptr m;`.
+	while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkMul )
+	{
+	    pgm.nextToken();
+	    DataDefPTR *ptr = pgm.getPointerType(&adt->definition);
+	    TokenDataType *padt = new TokenDataType(ptr->name.c_str(), *ptr);
+	    padt->file = at->file; padt->line = at->line; padt->column = at->column;
+	    adt = padt;
+	}
 	args.push_back(adt);
-	mangled += "_" + adt->definition.name;
+	// Sanitize the type-name fragment into a valid C identifier piece — a
+	// pointer type's name carries '*' (e.g. "char*"), which is illegal in
+	// the generated struct tag / method symbols.
+	mangled += "_";
+	for ( char c : adt->definition.name )
+	    mangled += (c == '*') ? 'p' : c;
 	TokenBase *sep = pgm.nextToken();
 	if ( sep->id() == TokenID::tkComma ) continue;
 	if ( sep->id() == TokenID::tkGT ) break;

@@ -10,6 +10,14 @@ template<typename T> class Box {
     T fetch() { return value; }
 };
 
+// A template whose type argument is a pointer (`char*`) — the star is folded
+// into the argument type, mirroring a pointer typedef.
+template<typename T> class Holder {
+    T ptr;
+    void put(T p) { ptr = p; }
+    T get() { return ptr; }
+};
+
 int main()
 {
     Box<int> a;
@@ -22,5 +30,20 @@ int main()
 
     a.value = 7;
     printf("a.value: %d\n", a.value);
+
+    // 8-byte type parameters: long and double, both as a stored value and a
+    // T-returning method.
+    Box<long> l;
+    l.store(1234567890123);
+    printf("l: %ld\n", l.fetch());
+
+    Box<double> d;
+    d.store(3.5);
+    printf("d: %f\n", d.fetch());
+
+    // Pointer type argument.
+    Holder<char*> h;
+    h.put("hello");
+    printf("h: %s\n", h.get());
     return 0;
 }
