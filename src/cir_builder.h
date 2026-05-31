@@ -431,12 +431,6 @@ public:
 	// emits the index loop + per-iteration element fill (php_array_get /
 	// php_array_get_int) around the translated body.
 	node_t translate_foreach(class TokenFOREACH *fe);
-	// Range-for over a std::vector: `for (T x : vec) body`. Iterates by index
-	// using vector_int_size/at (int element) or vector_str_size/at (string
-	// element, filled into the enclosing-scope loop var). The loop variable is
-	// declared in the enclosing scope by the parser (same as translate_foreach).
-	node_t translate_foreach_vector(class TokenFOREACH *fe,
-					class DataDefVECTOR *vdd);
 	// Range-for over a user-defined class / template-instantiated container:
 	// `for (T x : c) body` -> index loop using c.size() and c[__i] (the
 	// class's size()/operator[] methods). The loop var is declared in the

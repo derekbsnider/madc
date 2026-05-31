@@ -585,9 +585,11 @@ bool CirBuilder::is_container_object(DataDef *dd)
 {
 	if (!dd || dd->is_pointer())
 		return false;
+	// vector is no longer a container-object builtin (std::vector is a
+	// header-defined madc template lowered through the class model). Only
+	// the remaining map/set keyword containers are object-lowered here.
 	DataType dt = dd->rawtype();
-	return dt == DataType::dtVECTOR || dt == DataType::dtMAP
-	    || dt == DataType::dtSET;
+	return dt == DataType::dtMAP || dt == DataType::dtSET;
 }
 
 bool CirBuilder::container_obj_info(DataDef *dd, const char *&ctor_sym,
@@ -595,13 +597,6 @@ bool CirBuilder::container_obj_info(DataDef *dd, const char *&ctor_sym,
 {
 	if (!is_container_object(dd))
 		return false;
-	if (DataDefVECTOR *v = dynamic_cast<DataDefVECTOR *>(dd)) {
-		bool str = v->element_type && v->element_type->is_string();
-		ctor_sym = str ? "vector_str_construct" : "vector_int_construct";
-		dtor_sym = str ? "vector_str_destruct"  : "vector_int_destruct";
-		words = (sizeof(std::vector<int64_t>) + sizeof(long) - 1) / sizeof(long);
-		return true;
-	}
 	if (DataDefMAP *m = dynamic_cast<DataDefMAP *>(dd)) {
 		bool str = m->val_type && m->val_type->is_string();
 		ctor_sym = str ? "map_str_str_construct" : "map_str_int_construct";
@@ -707,41 +702,6 @@ node_t CirBuilder::container_method_call(TokenMember *tm, TokenBase *origin)
 		CIR_NODE(call)->synth_from_origin = true;
 		return call;
 	};
-
-	if (DataDefVECTOR *vd = dynamic_cast<DataDefVECTOR *>(obj.type)) {
-		bool str = vd->element_type && vd->element_type->is_string();
-		TokenBase *arg0 = tm->parameters.empty() ? NULL : tm->parameters[0];
-		if (method == "push_back" && arg0) {
-			if (str) {
-				node_t a = string_obj_arg(arg0);  // (void*)&str
-				return simple_call("vector_str_push_back", false,
-						   { a }, { { {N_VOID}, true } });
-			}
-			return simple_call("vector_int_push_back", false,
-					   { translate_expr(arg0) }, { { {N_LONG}, false } });
-		}
-		if (method == "pop_back")
-			return simple_call(str ? "vector_str_pop_back" : "vector_int_pop_back",
-					   false, {}, {});
-		if (method == "size")
-			return simple_call(str ? "vector_str_size" : "vector_int_size",
-					   true, {}, {});
-		if (method == "empty")
-			return simple_call(str ? "vector_str_empty" : "vector_int_empty",
-					   true, {}, {});
-		if (method == "clear")
-			return simple_call(str ? "vector_str_clear" : "vector_int_clear",
-					   false, {}, {});
-		if (method == "at" && arg0) {
-			if (str)
-				return str_result("vector_str_at",
-						  { translate_expr(arg0) },
-						  { { {N_LONG}, false } });
-			return simple_call("vector_int_at", true,
-					   { translate_expr(arg0) }, { { {N_LONG}, false } });
-		}
-		return NULL;
-	}
 
 	if (DataDefMAP *md = dynamic_cast<DataDefMAP *>(obj.type)) {
 		bool vstr = md->val_type && md->val_type->is_string();
@@ -859,21 +819,6 @@ node_t CirBuilder::container_subscript_read(TokenSubscript *tsub, TokenBase *ori
 		return seq;
 	};
 
-	if (DataDefVECTOR *vd = dynamic_cast<DataDefVECTOR *>(obj.type)) {
-		bool str = vd->element_type && vd->element_type->is_string();
-		if (str)
-			return str_result("vector_str_at", translate_expr(tsub->index),
-					  { {N_LONG}, false });
-		need_output_extern("vector_int_at", false,
-				   { { {N_VOID}, true }, { {N_LONG}, false } },
-				   std::vector<c2mir_node_code_t>{N_LONG});
-		node_t a = list();
-		append(a, self);
-		append(a, translate_expr(tsub->index));
-		node_t call = node2(N_CALL, id("vector_int_at", origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	}
 	if (DataDefMAP *md = dynamic_cast<DataDefMAP *>(obj.type)) {
 		bool vstr = md->val_type && md->val_type->is_string();
 		node_t k = string_obj_arg(tsub->index);   // key is a string
@@ -908,26 +853,6 @@ node_t CirBuilder::container_subscript_assign(TokenOperator *top, TokenBase *ori
 	node_t self = string_obj_addr(obj.name.c_str(), origin);
 	TokenBase *rhs = top->right;
 
-	if (DataDefVECTOR *vd = dynamic_cast<DataDefVECTOR *>(obj.type)) {
-		bool str = vd->element_type && vd->element_type->is_string();
-		node_t a = list();
-		append(a, self);
-		append(a, translate_expr(tsub->index));
-		if (str) {
-			append(a, string_obj_arg(rhs));   // (void*)&str
-			need_output_extern("vector_str_set", false,
-				{ { {N_VOID}, true }, { {N_LONG}, false }, { {N_VOID}, true } });
-			node_t call = node2(N_CALL, id("vector_str_set", origin), a, origin);
-			CIR_NODE(call)->synth_from_origin = true;
-			return call;
-		}
-		append(a, translate_expr(rhs));
-		need_output_extern("vector_int_set", false,
-			{ { {N_VOID}, true }, { {N_LONG}, false }, { {N_LONG}, false } });
-		node_t call = node2(N_CALL, id("vector_int_set", origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	}
 	if (DataDefMAP *md = dynamic_cast<DataDefMAP *>(obj.type)) {
 		bool vstr = md->val_type && md->val_type->is_string();
 		node_t k = string_obj_arg(tsub->index);
@@ -4042,16 +3967,10 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 	if (!fe->container || !fe->elemtype)
 		return error_node("range-for missing container or element type", fe);
 
-	// A vector container iterates via vector_int_size/at or vector_str_size/at
-	// rather than the MadArray (php_array) helpers. Detect it from the
-	// container's declared type.
 	DataDef *cdd = fe->container->datadef();
-	DataDefVECTOR *vdd = dynamic_cast<DataDefVECTOR *>(cdd);
-	if (vdd && cdd && cdd->rawtype() == DataType::dtVECTOR)
-		return translate_foreach_vector(fe, vdd);
 
 	// A user-defined class / template-instantiated container (e.g.
-	// `vector<int>` once it becomes a real template) iterates by index using
+	// std::vector<int> from the header template) iterates by index using
 	// its size() and operator[] methods.
 	if (DataDefCLASS *ccls = class_behind(cdd)) {
 		std::string szname = "size", opname = "operator[]";
@@ -4114,72 +4033,6 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 		append(a, container_addr());
 		append(a, id(idx, fe));
 		node_t getcall = node2(N_CALL, id("__php_array_get_int", fe), a, fe);
-		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe), getcall, fe);
-		append(body_items, node2(N_EXPR, list(), assign, fe));
-	}
-
-	node_t user_body = translate_stmt_required(fe->statement);
-	if (user_body) append(body_items, user_body);
-	node_t body = node2(N_BLOCK, list(), body_items, fe);
-
-	return node5(N_FOR, list(), init, cond, incr, body, fe);
-}
-
-node_t CirBuilder::translate_foreach_vector(TokenFOREACH *fe, DataDefVECTOR *vdd)
-{
-	bool str = vdd->element_type && vdd->element_type->is_string();
-	const char *size_sym = str ? "vector_str_size" : "vector_int_size";
-
-	auto container_addr = [&]() -> node_t {
-		return node2(N_CAST, void_ptr_type(), translate_expr(fe->container), fe);
-	};
-
-	char idx[32];
-	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
-
-	// long __fe_i = 0;
-	node_t ispec = list();
-	append(ispec, simple(N_LONG, fe));
-	node_t init = simple(N_SPEC_DECL, fe);
-	append(init, node1(N_SHARE, ispec));
-	append(init, node2(N_DECL, id(idx, fe), list()));
-	append(init, ignore());
-	append(init, ignore());
-	append(init, integer(0, fe));
-
-	// __fe_i < vector_{int,str}_size((void*)container)
-	need_output_extern(size_sym, false, { { {N_VOID}, true } },
-			   std::vector<c2mir_node_code_t>{N_LONG});
-	node_t size_args = list();
-	append(size_args, container_addr());
-	node_t size_call = node2(N_CALL, id(size_sym, fe), size_args, fe);
-	node_t cond = node2(N_LT, id(idx, fe), size_call, fe);
-
-	// __fe_i += 1
-	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
-
-	// Body: element fill + user statement.
-	node_t body_items = list();
-	if (str) {
-		// vector_str_at((void*)&x, (void*)container, __fe_i) — x is the
-		// enclosing-scope string loop var, already constructed.
-		need_output_extern("vector_str_at", true,
-				   { { {N_VOID}, true }, { {N_VOID}, true }, { {N_LONG}, false } });
-		node_t a = list();
-		append(a, string_obj_addr(fe->elemname.c_str(), fe));
-		append(a, container_addr());
-		append(a, id(idx, fe));
-		node_t fill = node2(N_CALL, id("vector_str_at", fe), a, fe);
-		append(body_items, node2(N_EXPR, list(), fill, fe));
-	} else {
-		// x = vector_int_at((void*)container, __fe_i)
-		need_output_extern("vector_int_at", false,
-				   { { {N_VOID}, true }, { {N_LONG}, false } },
-				   std::vector<c2mir_node_code_t>{N_LONG});
-		node_t a = list();
-		append(a, container_addr());
-		append(a, id(idx, fe));
-		node_t getcall = node2(N_CALL, id("vector_int_at", fe), a, fe);
 		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe), getcall, fe);
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
