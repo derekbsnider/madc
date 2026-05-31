@@ -9367,7 +9367,40 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    DataDef *obj_type = NULL;
 		    bool expr_backed_lhs = false;
 		    bool fixed_array_arrow = false;
+		    bool arrow_via_op = false;
+		    // P2.1b gap 2 — operator->: when the LHS is a class OBJECT (not a
+		    // pointer) whose class declares operator->, C++ canon rewrites
+		    // `obj->m` as `(obj.operator->())->m`: call operator-> (which
+		    // returns a pointer), then apply the real `->` to that result.
+		    // Reuses the class-method dispatch — no parallel codegen (I6).
 		    if ( lhs->type() == TokenType::ttVariable )
+		    {
+			TokenVar *otv = dynamic_cast<TokenVar *>(lhs);
+			DataDefCLASS *ocls = (otv && otv->var.type && otv->var.type->is_object())
+			    ? dynamic_cast<DataDefCLASS *>(otv->var.type) : NULL;
+			std::string arrow_name("operator->");
+			Variable *arrow_m = ocls ? ocls->findMethod(arrow_name) : NULL;
+			if ( arrow_m && !otv->var.type->is_pointer() )
+			{
+			    TokenCallMethod *opcall = new TokenCallMethod(otv->var, *arrow_m);
+			    opcall->file = tb->file;
+			    opcall->line = tb->line;
+			    opcall->column = tb->column;
+			    DataDef *ret = opcall->datadef();
+			    if ( !ret || !ret->is_pointer() )
+				Throw(tb) << "operator-> must return a pointer" << flush;
+			    exStack.pop();
+			    exStack.push(opcall);
+			    lhs = opcall;
+			    obj_type = ret;
+			    obj_var = new Variable("__arrow_op", *obj_type, 1, NULL, false);
+			    expr_backed_lhs = true;
+			    arrow_via_op = true;
+			}
+		    }
+		    if ( arrow_via_op )
+			; // LHS already resolved to operator-> call result above
+		    else if ( lhs->type() == TokenType::ttVariable )
 		    {
 			TokenVar *tv_lhs = dynamic_cast<TokenVar *>(lhs);
 			obj_var = &tv_lhs->var;
@@ -9441,6 +9474,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    // receivers (member-of-call, etc.) are not yet supported.
 			    TokenBase *recv_parent = NULL;
 			    if ( lhs->type() == TokenType::ttSubscript )
+				recv_parent = lhs;
+			    else if ( arrow_via_op )
+				// operator-> result is a pointer VALUE; pass it as
+				// __this directly (recv_is_ptr), like a pointer element.
 				recv_parent = lhs;
 			    else if ( lhs->type() != TokenType::ttVariable
 				   && lhs->type() != TokenType::ttMember )
