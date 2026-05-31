@@ -549,8 +549,25 @@ typedef std::map<std::string, DataDef *>::iterator datadef_map_iter;
 typedef std::map<std::string, FuncDef *>::iterator funcdef_map_iter;
 typedef std::map<std::string, Variable *>::iterator variable_map_iter;
 
+// A builtin-registration type selector: names a parameter/return type for
+// addFunction() either by a DataType enum word OR directly by a DataDef* (P2.14
+// chunk 1). Both constructors are implicit so existing `datatype_vec_t{dtX,...}`
+// call sites are unchanged, while a class type that should NOT be named by an
+// enum word — std::string (&ddSTRING / &ddSTRINGref) — can be named by its real
+// DataDef. When `dd` is set it wins; otherwise `dt` is resolved by the existing
+// DataType_to_dd switch. This lets the registration ABI stop using dtSTRING as
+// a type-vocabulary word (the prerequisite to deleting the enum value).
+struct typespec_t
+{
+    DataType  dt;
+    DataDef  *dd;
+    typespec_t(DataType t) : dt(t), dd(nullptr) {}
+    typespec_t(DataDef *d) : dt(DataType::dtVOID), dd(d) {}
+    typespec_t(DataDef &d) : dt(DataType::dtVOID), dd(&d) {}
+};
+
 // vectors
-typedef std::vector<DataType> datatype_vec_t;
+typedef std::vector<typespec_t> datatype_vec_t;
 typedef std::vector<Variable *> variable_vec_t;
 
 // vector iterators

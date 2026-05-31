@@ -6127,8 +6127,13 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     Variable *var;
     DataDef *dd;
 
-    auto resolve_data_type = [this](DataType dt) -> DataDef *
+    auto resolve_data_type = [this](const typespec_t &spec) -> DataDef *
     {
+	// A type named directly by DataDef* (e.g. std::string as &ddSTRING) wins —
+	// no enum word involved (P2.14 chunk 1).
+	if ( spec.dd )
+	    return spec.dd;
+	DataType dt = spec.dt;
 	if ( DataDef::rawtype(dt) != dt )
 	{
 	    if ( dt == rtPtr(DataType::dtCHAR) )
