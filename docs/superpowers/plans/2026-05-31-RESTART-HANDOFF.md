@@ -102,7 +102,15 @@ and ns_stl.cpp are GONE. Commit trail (chronological):
 The design is already the C++ way — every operator routes through `class_operator_call`
 (binary) / `class_subscript_call` (`[]`) → a real `operator` METHOD/function (via
 `FuncDef::emit_symbol` for bound libstdc++ ops, or `ClassName__operator<sym>` for user
-classes). NO special-casing. But COVERAGE is incomplete (audited 2026-05-31). Gaps:
+classes). NO special-casing.
+**INVARIANT (do not break): operators are overloaded ONLY when the operand's class/header
+explicitly DECLARES `operator X`** — dispatch is lookup-based (`as_class_instance` guard →
+`select_operator_overload`/`findMethod` → NULL falls through to built-in handling). Built-in
+types and classes lacking the operator use ordinary semantics. NEVER synthesize/overload an
+operator by default. Extending `binop_overload_symbol` only makes more operator TOKENS
+*eligible for the lookup*; a class still only has the operators its header declares. Binding
+std::string `[]`/`+` is registering operators the REAL libstdc++ std::string actually has.
+But COVERAGE of the eligible set is incomplete (audited 2026-05-31). Gaps:
 - **std::string `operator[]` NOT bound** → `s[1]` fails ("subscripted value is neither array
   nor pointer"). Bind `char& operator[](size_t)` on ddSTRING (mangled libstdc++ member,
   via the mangler) so string indexing routes through the operator[] method like vector/map.
