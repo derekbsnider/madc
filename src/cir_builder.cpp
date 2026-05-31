@@ -1872,10 +1872,18 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	if (!mtypedef.empty()) {
 		mspec = type_list(mtype, mtypedef);
 	} else {
+		// Peel ALL pointer levels to the innermost base, so the type spec
+		// renders the real base (`struct A`, not the pointer's `int` rawtype)
+		// and the declarator carries one star per level. Peeling only ONE level
+		// left a pointer-to-pointer member (`A** data` — e.g. vector<A*>'s
+		// `T* data` with T=A*) rendering as `int *data` (base collapsed to int,
+		// and only one star — see the declarator below), so element stride was
+		// sizeof(int)=4 not sizeof(A*)=8 and reading element[1] crashed.
 		DataDef *mbase = mtype;
-		if (mbase && mbase->is_pointer()) {
+		while (mbase && mbase->is_pointer()) {
 			DataDefPTR *mptr = dynamic_cast<DataDefPTR *>(mbase);
-			if (mptr && mptr->base_type) mbase = mptr->base_type;
+			if (!mptr || !mptr->base_type) break;
+			mbase = mptr->base_type;
 		}
 		mspec = type_list(mbase);
 	}
@@ -1895,7 +1903,12 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		for (int s = 0; s < stars; s++)
 			append(mdecl_list, pointer());
 	} else if (mtype && mtype->is_pointer()) {
-		append(mdecl_list, pointer());
+		// One star per pointer level: `A** data` is depth 2. Emitting a single
+		// star (the old behaviour) under-declared a pointer-to-pointer member,
+		// halving its element stride.
+		int depth = dd_ptr_depth(mtype);
+		for (int s = 0; s < (depth > 0 ? depth : 1); s++)
+			append(mdecl_list, pointer());
 	}
 	node_t mdecl = node2(N_DECL, mid, mdecl_list);
 

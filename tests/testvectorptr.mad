@@ -1,0 +1,38 @@
+#!/../bin/madc
+// vector<T*> must store + read back N>=2 POINTER elements at the correct stride
+// (sizeof(T*)=8). Previously the instantiated `T* data` member (T=A*, i.e. A**)
+// rendered as `int *data`, so element[1] read at offset 4 not 8 -> garbage
+// pointer -> SIGSEGV. The classic container-of-base-pointers polymorphism case.
+#include <iostream>
+#include <vector>
+using namespace std;
+
+class A {
+public:
+	int v;
+	virtual int who() { return 1; }
+};
+class B : public A { public: int who() { return 2; } };
+class C : public A { public: int who() { return 3; } };
+
+int main() {
+	// store + read back multiple pointer elements (member values)
+	vector<A*> w;
+	A *p = new A(); p->v = 11;
+	A *q = new A(); q->v = 22;
+	A *r = new A(); r->v = 33;
+	w.push_back(p);
+	w.push_back(q);
+	w.push_back(r);
+	cout << "size " << w.size() << endl;                 // size 3
+	cout << "vals " << w[0]->v << " " << w[1]->v << " " << w[2]->v << endl;  // vals 11 22 33
+
+	// polymorphism through a vector<Base*> — virtual dispatch per element
+	vector<A*> poly;
+	poly.push_back(new B());
+	poly.push_back(new C());
+	poly.push_back(new B());
+	cout << "who " << poly[0]->who() << " " << poly[1]->who() << " " << poly[2]->who() << endl;  // who 2 3 2
+
+	return 0;
+}
