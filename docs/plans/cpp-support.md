@@ -349,6 +349,31 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   quick fix; supersedes/absorbs P2.9. Found 2026-05-31 (user: "I thought we got rid of
   dtSTRING?").
 
+- **P2.14 STATUS (2026-05-31): recognition-via-tag ELIMINATED; tag-VALUE removal is a
+  bigger ABI refactor (in progress).** Done (commits `bbaddce`/`66c91f1`/`9930af7`/
+  `c951efa`, 409 green): added `is_std_string*`/`is_string_class()` class-identity
+  recognizers and migrated ALL `rawtype()==dtSTRING` recognition to them — **0**
+  recognition sites remain in core files. But **219 `dtSTRING`/`dtSTRINGref`
+  occurrences remain** because the tag is also the **type-naming vocabulary of the
+  builtin-registration ABI** — THIS is why it's been resilient. Remaining work to reach
+  grep=0 (each independently committable, gated):
+  1. **Registration ABI (~160 sites: ns_php/perl/python/ruby/js/rust + parser string
+     method/operator/ctor regs):** `datatype_vec_t` (= `vector<DataType>`) names string
+     by the `dtSTRING` enum value (resolved to `&ddSTRING` by `DataType_to_dd`). Add a
+     `DataDef*`-based param spec so string is named by `&ddSTRING`, migrate the sites.
+  2. **MadValue union discriminator** (`datadef.h` ~837-926, `datatokens.h:142`): the
+     PHP mixed-array string variant uses `type==dtSTRING` — give it a non-dtSTRING
+     discriminator.
+  3. **char*/string routing paths** that key off `ddSTRING.rawtype()==dtSTRING` — the 3
+     that segfaulted on the trial repoint (testcaststringtolong / testternarystrcharptr
+     / testvariadicterstrtwice / testsystemcharbuf; likely cir_emit_c.cpp / char*-literal
+     coercion) — trace + fix.
+  4. **Then** repoint `DataDefSTRING`/`ref` → `dtRESERVED`/generic class tag, DELETE the
+     `dtSTRING`/`dtSTRINGref` enum values, remove the `canonical_string_class` shim.
+  5. **grep=0 verify** (`grep dtSTRING\|dtSTRINGref src/ include/` → 0) + 409+ green.
+  Absorbs P2.9. DEFINITION OF DONE = grep returns zero; recognition-migration alone is
+  NOT done (the tag still exists = drift risk).
+
 ### P3 — broader standards surface (later)
 - **Polyglot transpiler (far-future direction).** The endgame generalizes the
   std-dialect subsystem: madc supports features AND syntax from other languages, so
