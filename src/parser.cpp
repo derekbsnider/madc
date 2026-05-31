@@ -7073,10 +7073,7 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
 // declaring class AND any class derived from it.
 static bool class_is_or_derives(DataDefCLASS *cls, DataDefCLASS *target)
 {
-    for ( DataDefCLASS *c = cls; c; c = c->base_class )
-	if ( c == target )
-	    return true;
-    return false;
+    return cls && cls->is_or_derives_from(target);
 }
 
 // Access-control check (P2.5). Given the class that OWNS `member`, the member's

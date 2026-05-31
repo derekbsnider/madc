@@ -484,6 +484,58 @@ node_t CirBuilder::void_ptr_type()
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
 }
 
+// N_TYPE node for a `struct Cls *` cast target (matches class_struct_def's
+// `struct Cls` spec + one pointer level). Used for derived->base upcasts.
+node_t CirBuilder::class_ptr_type(DataDefCLASS *cdd)
+{
+	node_t spec = list();
+	append(spec, node2(N_STRUCT, id(cdd->name.c_str()), ignore()));
+	node_t decl_list = list();
+	append(decl_list, pointer());
+	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
+}
+
+// The single-level pointee user-class of `dd` when `dd` is a `Cls *` pointing
+// at a real (dtRESERVED) user class; NULL otherwise. std::string and the stream
+// classes are deliberately excluded (they never participate in inheritance).
+static DataDefCLASS *pointee_user_class(DataDef *dd)
+{
+	if (!dd || !dd->is_pointer()) return NULL;
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	if (!p) return NULL;
+	return as_user_class(p->base_type);
+}
+
+// The user-class a class-pointer-valued expression yields. `new B()` carries
+// its allocated class directly (TokenNEW::alloc_class, never reflected in
+// datadef()); any other expression is read through its `Cls *` datadef pointee.
+static DataDefCLASS *expr_pointee_class(TokenBase *tb)
+{
+	if (!tb) return NULL;
+	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb))
+		if (!tn->placement)
+			return as_user_class(tn->alloc_class);
+	return pointee_user_class(tb->datadef());
+}
+
+// Derived->base pointer conversion. When `lhs_dd` is `Base*` and the RHS
+// expression `rhs` yields a `Derived*` with Derived deriving from (but not
+// equal to) Base, wrap `value` in an explicit `(Base*)` cast so the emitted C
+// is clean. C++ permits the implicit upcast (single inheritance: base subobject
+// at offset 0, __vptr first), so the value is unchanged — this only makes the
+// conversion explicit and silences c2mir's "incompatible types in assignment to
+// a pointer". Returns `value` unchanged when no upcast applies. Downcasts and
+// multiple inheritance are out of scope (see P2.6).
+node_t CirBuilder::upcast_class_ptr(node_t value, DataDef *lhs_dd, TokenBase *rhs,
+				    TokenBase *origin)
+{
+	DataDefCLASS *base = pointee_user_class(lhs_dd);
+	DataDefCLASS *derived = expr_pointee_class(rhs);
+	if (!base || !derived || base == derived) return value;
+	if (!derived->is_or_derives_from(base)) return value;
+	return node2(N_CAST, class_ptr_type(base), value, origin);
+}
+
 // `long <name>[words];` — opaque, 8-aligned storage for a C++ runtime object,
 // tagged with __attribute__((cleanup(dtor_sym))). This is the shared mechanism
 // behind every monomorphic runtime object madc lowers to a buffer + ctor/dtor
@@ -773,7 +825,9 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 			// pointer, and &(*p) folds to p).
 			append(args, node1(N_ADDR, translate_expr(arg), arg));
 		else
-			append(args, translate_expr(arg));
+			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
+			// make the implicit upcast explicit so c2mir does not warn.
+			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
 	}
 }
 
@@ -1713,6 +1767,12 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (as && as->right)
 			init_expr = as->right;
 		init_node = translate_expr(init_expr);
+		// Derived->base pointer initializer (`A *p = new B();`, `A *p = bptr;`):
+		// emit an explicit `(A*)` cast so the conversion is explicit and c2mir
+		// does not warn. Single inheritance, base subobject at offset 0 — value
+		// unchanged.
+		init_node = upcast_class_ptr(init_node, v->type,
+					     init_expr, origin);
 	}
 
 	node_t spec_decl = simple(N_SPEC_DECL);
@@ -4146,6 +4206,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				DBG(std::cerr << "cir: unhandled binary op " << (int)tb->id() << std::endl);
 				code = N_ADD;
 			}
+			// Derived->base pointer reassignment (`A *a; B *b; a = b;`):
+			// make the implicit upcast explicit so c2mir does not warn.
+			if (code == N_ASSIGN)
+				right = upcast_class_ptr(right, top->left->datadef(),
+							 top->right, tb);
 			return node2(code, left, right, tb);
 		}
 	}
@@ -4385,6 +4450,15 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 	// derefs. The expression must be an lvalue (the parser/g++ enforce that).
 	if (m_cur_func_returns_ref && tr->returns)
 		expr = node1(N_ADDR, expr, tr);
+	// Derived->base pointer return (`A *f() { return bptr; }`): make the
+	// implicit upcast explicit so c2mir does not warn.
+	else if (m_cur_func_returns_class_ptr && tr->returns) {
+		DataDefCLASS *base = m_cur_func_returns_class_ptr;
+		DataDefCLASS *derived = expr_pointee_class(tr->returns);
+		if (base && derived && base != derived
+		    && derived->is_or_derives_from(base))
+			expr = node2(N_CAST, class_ptr_type(base), expr, tr);
+	}
 	return node2(N_RETURN, list(), expr, tr);
 }
 
@@ -5362,6 +5436,9 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 				  && !fd->is_multi_return();
 	// Track reference return so translate_return emits `return &<expr>`.
 	m_cur_func_returns_ref = ret_is_ref;
+	// Track a `Cls *` return so translate_return can emit a derived->base upcast.
+	m_cur_func_returns_class_ptr = ret_is_ptr ? pointee_user_class(&fd->returns)
+						  : NULL;
 
 	// Retbuf-returning fn: C return type is `void`.
 	node_t ret_type = ret_via_retbuf ? type_list(&ddVOID) : type_list(ret_dd);

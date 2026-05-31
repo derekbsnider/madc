@@ -1,0 +1,48 @@
+#!/../bin/madc
+// P2.6 — implicit derived->base pointer conversion. madc emits an explicit
+// (Base*) upcast so the conversion is explicit and c2mir does not warn
+// ("incompatible types in assignment to a pointer"). Single inheritance: the
+// base subobject (with __vptr first) lives at offset 0, so the value is
+// unchanged and virtual dispatch still resolves to the derived override.
+#include <iostream>
+using namespace std;
+
+class A {
+public:
+	virtual int who() { return 1; }
+	virtual int base_only() { return 10; }
+};
+class B : public A {
+public:
+	int who() { return 2; }   // override
+};
+
+int take_base(A *a) {        // B* argument -> A* parameter (upcast at the call)
+	return a->who();
+}
+
+A *make_base() {             // return a B* from an A*-returning function (upcast)
+	B *b = new B();
+	return b;
+}
+
+int main() {
+	// derived->base on a declaration initializer (`new B()`)
+	A *p = new B();
+	cout << "p " << p->who() << endl;            // p 2
+	cout << "base_only " << p->base_only() << endl;  // base_only 10
+
+	// derived->base on a plain reassignment (B* var -> A* var)
+	B *b = new B();
+	A *a = b;
+	cout << "a " << a->who() << endl;            // a 2
+
+	// derived->base across a call argument
+	cout << "arg " << take_base(b) << endl;      // arg 2
+
+	// derived->base on a return (B* returned from an A*-returning function)
+	A *r = make_base();
+	cout << "ret " << r->who() << endl;          // ret 2
+
+	return 0;
+}

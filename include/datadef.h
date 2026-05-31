@@ -660,6 +660,14 @@ public:
 	if ( base_class ) return base_class->is_virtual_method(name);
 	return false;
     }
+    // Is this class the same as `target`, or derived (single-inheritance chain)
+    // from it? Used for protected-member access and derived->base pointer
+    // upcasts. Single inheritance only — the base subobject lives at offset 0.
+    bool is_or_derives_from(const DataDefCLASS *target) const {
+	for ( const DataDefCLASS *c = this; c; c = c->base_class )
+	    if ( c == target ) return true;
+	return false;
+    }
 
     DataDefCLASS(std::string n, size_t s, DataType d)
 	: DataDefSTRUCT(n, s, d), has_user_ctor(false), has_user_dtor(false),

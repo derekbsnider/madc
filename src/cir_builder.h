@@ -78,6 +78,10 @@ class CirBuilder {
 	// double-free the shared string buffer at both scope exits). A TRIVIAL struct
 	// keeps c2mir's native struct return (no dtor -> bit-copy is safe).
 	DataDefCLASS *m_cur_func_returns_object = NULL;
+	// Pointee user-class while translating the body of a function returning a
+	// `Cls *` (a real user class pointer), else NULL. Lets translate_return emit
+	// an explicit derived->base upcast on `return <Derived*>;` (P2.6).
+	DataDefCLASS *m_cur_func_returns_class_ptr = NULL;
 	// Name of the hidden return-slot pointer parameter for a by-value class return.
 	static const char *RETBUF_NAME;
 	// Build the `struct <Cls> *__retbuf` named parameter node (N_SPEC_DECL), the
@@ -193,6 +197,15 @@ class CirBuilder {
 	// a concrete ABI size but no madc data members. 0 for an ordinary user class.
 	size_t object_class_words(DataDefCLASS *cdd) const;
 	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
+	node_t class_ptr_type(DataDefCLASS *cdd);    // N_TYPE node for a (struct Cls *) cast
+	// Derived->base pointer conversion (single inheritance, base subobject at
+	// offset 0): if `lhs_dd` is `Base*` and the RHS expression `rhs` yields a
+	// `Derived*` (Derived derives from Base, not equal), wrap `value` in an
+	// explicit `(Base*)` cast so the emitted C is clean (no c2mir "incompatible
+	// pointer" warning). Returns `value` unchanged otherwise. Single inheritance
+	// only — offset 0.
+	node_t upcast_class_ptr(node_t value, DataDef *lhs_dd, class TokenBase *rhs,
+				class TokenBase *origin);
 	node_t string_storage_decl(const char *name, TokenBase *origin); // long name[W];
 	node_t string_obj_addr(const char *name, TokenBase *origin);     // (void*)&name (struct local)
 	node_t string_var_addr(const Variable &v, TokenBase *origin);    // honours pointer-stored params
