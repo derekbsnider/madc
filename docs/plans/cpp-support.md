@@ -215,6 +215,12 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   and make any unrecognized container a clear compile ERROR, not a silent MadArray
   cast. (Found 2026-05-31 reviewing P0.4.)
 
+- **P2.10 — fn-ptr to an object-returning function (string-returning lambda)**.
+  A lambda `return "hi";` deduces a `std::string` (object) return, which routes the
+  hoisted fn through the `__retbuf` ABI — but `DataDefFPTR` can't render a fn-ptr to
+  a retbuf-returning function (emits `char (*)(int)`, segfaults). Scalar/pointer
+  lambda returns are fixed (P1.2); object returns need the fn-ptr-to-retbuf ABI.
+  Intersects P1.1c/the __retbuf machinery. (Found 2026-05-31 during P1.2.)
 - **P2.9 — `DataDefPTR` double-pointer vs reference type-code overlap (latent
   hazard)**. `DataDefPTR` stacks `rtPtr` twice for `T**`, so a double-pointer's raw
   `type()` code lands in the `rtRef` (20000+) range — i.e. `is_pointer()` returns
