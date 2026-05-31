@@ -6172,7 +6172,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 		case DataType::dtUINT32: base = &ddUINT32;	break;
 		case DataType::dtINT64:  base = &ddINT64;	break;
 		case DataType::dtUINT64: base = &ddUINT64;	break;
-		case DataType::dtSTRING: base = &ddSTRING;	break;
 		case DataType::dtARRAY:  base = &ddARRAY;	break;
 		case DataType::dtOSTREAM: base = &ddOSTREAM; break;
 		case DataType::dtISTREAM: base = &ddISTREAM; break;
@@ -6202,7 +6201,6 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
 	    case DataType::dtUINT32:  return &ddUINT32;
 	    case DataType::dtINT64:	  return &ddINT64;
 	    case DataType::dtUINT64:  return &ddUINT64;
-	    case DataType::dtSTRING:  return &ddSTRING;
 	    case DataType::dtARRAY:   return &ddARRAY;
 	    case DataType::dtOSTREAM: return &ddOSTREAM;
 	    case DataType::dtISTREAM: return &ddISTREAM;

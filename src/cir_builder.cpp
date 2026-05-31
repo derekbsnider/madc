@@ -352,13 +352,6 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 		break;
 	case DataType::dtFLOAT:  append(lst, simple(N_FLOAT)); break;
 	case DataType::dtDOUBLE: append(lst, simple(N_DOUBLE)); break;
-	case DataType::dtSTRING:
-		// A string OBJECT uses string_storage_decl, not this path. If a bare
-		// string spec still reaches here (e.g. a struct member — Phase 3),
-		// emit `char` so it degrades to a byte type, never a 32-bit-truncating
-		// `int`. (Struct-member string objects are not yet lowered.)
-		append(lst, simple(N_CHAR));
-		break;
 	default:
 		append(lst, simple(N_INT));
 	}

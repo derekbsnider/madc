@@ -26,8 +26,12 @@ enum class DataType : uint16_t {
 	dtLDOUBLE, dtDOUBLE80 = dtLDOUBLE, dtSIMD, dtRESERVED = 255,
 	// complex and valarray
 	// some Standard C++ classes
-	dtSTRING, dtISTREAM, dtOSTREAM, dtISSTREAM, dtOSSTREAM, dtSSTREAM,
-	dtIFSTREAM, dtOFSTREAM, dtFSTREAM, dtTCPSTREAM, 
+	// std::string is no longer here — it is a generic class tagged dtRESERVED,
+	// recognized by class identity (P2.14). dtISTREAM is now the first value
+	// after dtRESERVED; the ptr/ref lists below shift in lockstep, preserving
+	// the rtPtr(+10000)/rtRef(+20000) relationship.
+	dtISTREAM = 256, dtOSTREAM, dtISSTREAM, dtOSSTREAM, dtSSTREAM,
+	dtIFSTREAM, dtOFSTREAM, dtFSTREAM, dtTCPSTREAM,
 	dtMUTEX, dtTHREAD, dtTHISTHREAD,
 	dtARRAY,
 
@@ -37,8 +41,8 @@ enum class DataType : uint16_t {
 	dtUINT32ptr, dtINT32ptr, dtUINT64ptr, dtINT64ptr, dtINTptr=dtINT32ptr,
 	dtFLOATptr, dtFLOAT32ptr=dtFLOATptr, dtDOUBLEptr, dtDOUBLE64ptr=dtDOUBLEptr,
 	dtLDOUBLEptr, dtDOUBLE80ptr=dtLDOUBLEptr, dtRESERVEDptr = 10255,
-	dtSTRINGptr, dtISTREAMptr, dtOSTREAMptr, dtISSTREAMptr, dtOSSTREAMptr, dtSSTREAMptr,
-	dtIFSTREAMptr, dtOFSTREAMptr, dtFSTREAMptr, dtTCPSTREAMptr, 
+	dtISTREAMptr = 10256, dtOSTREAMptr, dtISSTREAMptr, dtOSSTREAMptr, dtSSTREAMptr,
+	dtIFSTREAMptr, dtOFSTREAMptr, dtFSTREAMptr, dtTCPSTREAMptr,
 	dtMUTEXptr, dtTHREADptr, dtTHISTHREADptr,
 	dtARRAYptr,
 
@@ -48,8 +52,8 @@ enum class DataType : uint16_t {
 	dtUINT32ref, dtINT32ref, dtUINT64ref, dtINT64ref, dtINTref=dtINT32ref,
 	dtFLOATref, dtFLOAT32ref=dtFLOATref, dtDOUBLEref, dtDOUBLE64ref=dtDOUBLEref,
 	dtLDOUBLEref, dtDOUBLE80ref=dtLDOUBLEref, dtRESERVEDref = 20255,
-	dtSTRINGref, dtISTREAMref, dtOSTREAMref, dtISSTREAMref, dtOSSTREAMref, dtSSTREAMref,
-	dtIFSTREAMref, dtOFSTREAMref, dtFSTREAMref, dtTCPSTREAMref, 
+	dtISTREAMref = 20256, dtOSTREAMref, dtISSTREAMref, dtOSSTREAMref, dtSSTREAMref,
+	dtIFSTREAMref, dtOFSTREAMref, dtFSTREAMref, dtTCPSTREAMref,
 	dtMUTEXref, dtTHREADref, dtTHISTHREADref,
 	dtARRAYref,
 };
@@ -108,9 +112,10 @@ public:
     // std::string is a real C++ class (like vector/map/set) and should be
     // recognized by its CLASS IDENTITY, not a reserved enum tag. The two
     // std::string DataDef classes (DataDefSTRING / DataDefSTRINGref) override
-    // this to return true; everything else inherits false. Survives the tag
-    // change in Phase 4 (when DataDefSTRING moves to the generic dtRESERVED
-    // class tag). Use the is_std_string()/is_std_string_ref() free recognizers
+    // this to return true; everything else inherits false. The dtSTRING tag is
+    // now gone — DataDefSTRING carries the generic dtRESERVED class tag — so this
+    // identity marker is the ONLY way string is recognized. Use the
+    // is_std_string()/is_std_string_ref() free recognizers
     // (below) at call sites — they layer reftype() on top of this marker.
     virtual bool is_string_class() const { return false; }
     virtual bool is_string() const { return is_string_class(); }
@@ -177,7 +182,6 @@ public:
 	    return true;
     	switch(rawtype())
     	{
-	    case DataType::dtSTRING:
 	    case DataType::dtOSTREAM:
 	    case DataType::dtSSTREAM:
 	    case DataType::dtOSSTREAM:
@@ -710,18 +714,16 @@ class DataDefUINT32:    public DataDef { public: DataDefUINT32():  DataDef("uint
 class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint64_t", 8, DataType::dtUINT64) {} };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
-// std::string is recognized by CLASS IDENTITY (the is_string_class() virtual /
-// the is_std_string* free recognizers), NOT by its raw type-code — that
-// de-special-casing is complete (P2.14 Phases 1-3). The DataDef still CARRIES a
-// dedicated dtSTRING / dtSTRINGref tag, but nothing RECOGNIZES string by it any
-// more. Repointing the tag to the generic dtRESERVED (so the DataDef is fully
-// generic like vector/map/set) is blocked: see the P2.14 Phase-4 blocker note
-// in docs/superpowers/plans — the dtSTRING enum VALUE is still load-bearing as
-// a symbolic type selector for the datatype_vec_t builtin-registration ABI
-// (~160 sites) and the MadValue tagged union, and several char*/string routing
-// paths still key off ddSTRING's dtSTRING rawtype.
-class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtSTRING) {} virtual bool is_string_class() const { return true; } };
-class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} virtual bool is_string_class() const { return true; } };
+// std::string is a GENERIC class (P2.14 complete): its DataDef carries the same
+// generic class tag as vector/map/set and user classes — dtRESERVED for the
+// value `string`, dtRESERVEDref for `string&` (so reftype()==rtReference still
+// holds). There is NO dedicated dtSTRING tag any more. std::string is recognized
+// purely by CLASS IDENTITY via the is_string_class() virtual / the is_std_string*
+// free recognizers, exactly like any other class. as_user_class excludes it (by
+// identity) so it routes through as_object_class to its opaque-buffer + mangled
+// libstdc++ ctor/dtor/method lowering rather than the plain-C-struct path.
+class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtRESERVED) {} virtual bool is_string_class() const { return true; } };
+class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtRESERVEDref) {} virtual bool is_string_class() const { return true; } };
 class DataDefISTREAM:   public DDClass { public: DataDefISTREAM(): DDClass("istream", sizeof(std::istream), DataType::dtISTREAM) {} };
 class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostream", sizeof(std::ostream), DataType::dtOSTREAM) {} };
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };

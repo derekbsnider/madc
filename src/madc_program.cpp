@@ -1907,19 +1907,6 @@ security_policy clamp_security_policy_for_authority_mode(const security_policy &
     return clamped;
 }
 
-DataType datatype_from_native_type(program::native_type type)
-{
-    switch ( type )
-    {
-	case program::native_type::void_type: return DataType::dtVOID;
-	case program::native_type::boolean:   return DataType::dtBOOL;
-	case program::native_type::integer:   return DataType::dtINT64;
-	case program::native_type::real:      return DataType::dtDOUBLE;
-	case program::native_type::c_string:  return rtPtr(DataType::dtCHAR);
-	case program::native_type::string_object: return DataType::dtSTRING;
-    }
-    return DataType::dtVOID;
-}
 
 bool native_type_from_datadef(DataDef *type, program::native_type &out)
 {

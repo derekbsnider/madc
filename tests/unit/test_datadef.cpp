@@ -38,12 +38,15 @@ TEST_SUITE("DataType enum") {
 
     TEST_CASE("pointer variants are base + 10000") {
         CHECK((uint32_t)DataType::dtINTptr == (uint32_t)DataType::dtINT + 10000);
-        CHECK((uint32_t)DataType::dtSTRINGptr == (uint32_t)DataType::dtSTRING + 10000);
+        // dtSTRING/dtSTRINGptr were retired in P2.14 — std::string is a generic
+        // dtRESERVED class recognized by identity. dtISTREAM is now the first
+        // class value after dtRESERVED; verify the +10000 relationship on it.
+        CHECK((uint32_t)DataType::dtISTREAMptr == (uint32_t)DataType::dtISTREAM + 10000);
     }
 
     TEST_CASE("reference variants are base + 20000") {
         CHECK((uint32_t)DataType::dtINTref == (uint32_t)DataType::dtINT + 20000);
-        CHECK((uint32_t)DataType::dtSTRINGref == (uint32_t)DataType::dtSTRING + 20000);
+        CHECK((uint32_t)DataType::dtISTREAMref == (uint32_t)DataType::dtISTREAM + 20000);
     }
 
     TEST_CASE("rtPtr/rtDePtr macros are inverses") {
