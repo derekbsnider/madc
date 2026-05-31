@@ -14110,10 +14110,105 @@ paramdecl:
     DBG(cout << "parseFunction(" << id << ") END" << endl);
 }
 
+// Deduce the static type of a parsed return expression for C++14 lambda
+// return-type deduction. Arithmetic operator tokens default `_datatype` to
+// `int` until compile-time numeric inference runs, so their parse-time
+// `datadef()` is unreliable. Apply the usual arithmetic conversions over the
+// operands instead (gcc is canon): if either side is floating, the result is
+// `double`; otherwise fall back to the expression's own `datadef()`. Pointer
+// and non-arithmetic expressions report their declared type directly.
+static DataDef *deduce_expr_type(TokenBase *expr)
+{
+    if ( !expr )
+	return NULL;
+
+    if ( TokenOperator *op = dynamic_cast<TokenOperator *>(expr) )
+    {
+	// Comparison / logical operators yield bool regardless of operands;
+	// their own datadef() already reflects that, so only fold the
+	// value-producing arithmetic operators here.
+	switch ( op->id() )
+	{
+	case TokenID::tkAdd: case TokenID::tkSub:
+	case TokenID::tkMul: case TokenID::tkDiv:
+	    {
+		DataDef *l = deduce_expr_type(op->left);
+		DataDef *r = deduce_expr_type(op->right);
+		if ( (l && l->is_real()) || (r && r->is_real()) )
+		    return &ddDOUBLE;
+		if ( l && l->is_pointer() ) return l;
+		if ( r && r->is_pointer() ) return r;
+		break;
+	    }
+	default:
+	    break;
+	}
+    }
+
+    return expr->datadef();
+}
+
 // parse a lambda expression: [](type arg, ...) { body }
 // Returns a TokenVar referencing the lambda's anonymous function variable.
 // The lambda is pushed onto ast as a top-level TokenFunc so it compiles
 // before the enclosing function (asmjit can't nest addFunc/endFunc).
+//
+// Find the first `return <expr>;` statement reachable from a parsed body and
+// report its expression's deduced type — the C++14 lambda return type.
+// Descends into the common nested-statement forms (compounds, if/else, loops).
+// Returns NULL when the body has no value-bearing return (e.g. only `return;`
+// or none), in which case the caller keeps void.
+static DataDef *deduce_return_type_from_stmt(TokenBase *stmt)
+{
+    if ( !stmt )
+	return NULL;
+
+    switch ( stmt->id() )
+    {
+    case TokenID::tkRETURN:
+	{
+	    TokenRETURN *ret = dynamic_cast<TokenRETURN *>(stmt);
+	    if ( ret && ret->returns )
+		return deduce_expr_type(ret->returns);
+	    return NULL;
+	}
+    case TokenID::tkIF:
+	{
+	    TokenIF *tif = dynamic_cast<TokenIF *>(stmt);
+	    if ( !tif )
+		return NULL;
+	    if ( DataDef *d = deduce_return_type_from_stmt(tif->statement) )
+		return d;
+	    return deduce_return_type_from_stmt(tif->elsestmt);
+	}
+    case TokenID::tkWHILE:
+	{
+	    TokenWHILE *tw = dynamic_cast<TokenWHILE *>(stmt);
+	    return tw ? deduce_return_type_from_stmt(tw->statement) : NULL;
+	}
+    case TokenID::tkFOR:
+	{
+	    TokenFOR *tf = dynamic_cast<TokenFOR *>(stmt);
+	    return tf ? deduce_return_type_from_stmt(tf->statement) : NULL;
+	}
+    case TokenID::tkDO:
+	{
+	    TokenDO *td = dynamic_cast<TokenDO *>(stmt);
+	    return td ? deduce_return_type_from_stmt(td->statement) : NULL;
+	}
+    default:
+	break;
+    }
+
+    // bare compound block: { ... }
+    if ( TokenCpnd *cpnd = dynamic_cast<TokenCpnd *>(stmt) )
+	for ( TokenStmt *s : cpnd->statements )
+	    if ( DataDef *d = deduce_return_type_from_stmt(s) )
+		return d;
+
+    return NULL;
+}
+
 TokenBase *Program::parseLambda()
 {
     static int lambda_counter = 0;
@@ -14130,6 +14225,7 @@ TokenBase *Program::parseLambda()
     // [&](params) { body }      — capture all outer vars by reference
     TokenBase *tn = nextToken();
     DataDef *rettype = &ddVOID;
+    bool explicit_rettype = false;
     bool is_capturing = false;
 
     // check for [&] capture syntax
@@ -14141,6 +14237,7 @@ TokenBase *Program::parseLambda()
     else if ( TokenDataType *ret_type = resolve_lambda_param_type(tn) )
     {
 	rettype = &ret_type->definition;
+	explicit_rettype = true;
 	DBG(cout << "parseLambda() return type: " << rettype->name << endl);
 	tn = nextToken();
     }
@@ -14256,6 +14353,41 @@ TokenBase *Program::parseLambda()
     tf->statements = tc->statements;
     tf->deferred = tc->deferred;
     tf->end_line = tc->end_line;
+
+    // C++14 lambda return-type deduction: with no explicit `[T](...)` return
+    // type, deduce it from the body's first value-bearing `return`. FuncDef
+    // returns is a C++ reference and cannot be reseated, so replace the
+    // FuncDef with a fresh one carrying the deduced type (same pattern as the
+    // return-type refresh in parseFunction). The Variable's `type` pointer and
+    // funcdef_map entry are rebound; Method holds a reference to the Variable
+    // so it picks up the new type automatically.
+    if ( !explicit_rettype )
+    {
+	DataDef *deduced = NULL;
+	for ( TokenStmt *s : tf->statements )
+	    if ( (deduced = deduce_return_type_from_stmt(s)) )
+		break;
+	if ( deduced && deduced != &func->returns )
+	{
+	    DBG(cout << "parseLambda() deduced return type: "
+		    << func->returns.name << " -> " << deduced->name << endl);
+	    FuncDef *fresh = new FuncDef(*deduced);
+	    fresh->parameters		 = func->parameters;
+	    fresh->has_captures		 = func->has_captures;
+	    fresh->potential_captures	 = func->potential_captures;
+	    fresh->captures		 = func->captures;
+	    fresh->return_types		 = func->return_types;
+	    fresh->ref_params		 = func->ref_params;
+	    fresh->const_params		 = func->const_params;
+	    fresh->is_varargs		 = func->is_varargs;
+	    fresh->is_void_params	 = func->is_void_params;
+	    fresh->no_instrument_function = func->no_instrument_function;
+	    fresh->explicit_alignment	 = func->explicit_alignment;
+	    funcdef_map[lambda_name] = fresh;
+	    var->type = fresh;
+	    func = fresh;
+	}
+    }
 
     // push the lambda as a top-level function in the AST
     // It will be compiled before the enclosing function since
