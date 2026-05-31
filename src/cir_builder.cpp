@@ -2007,22 +2007,22 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		return mmember;
 	}
 
-	// A std::string OBJECT member (not a pointer) embeds the opaque string
-	// buffer in the struct: `long name[W];`. Same lowering as a local string
-	// object (string_storage_decl) but as a struct member. Construction /
-	// destruction of an embedded string member is driven by the enclosing
-	// class's ctor/dtor, not the cleanup attribute (members have no
-	// independent scope). String member access then reads through
+	// A std::string OBJECT member (not a pointer) embeds the std::string object
+	// in the struct as a real `struct string` (the same class-struct tag that
+	// class_struct_def / type_list emit — sized by object_class_words from
+	// sizeof(std::string), never hard-coded). Routing through the class layout
+	// (rather than the legacy `long name[W];`) keeps members, pointers, and
+	// elements all at the correct ABI stride — needed for vector<string> etc.
+	// Construction / destruction of an embedded string member is driven by the
+	// enclosing class's ctor/dtor, not the cleanup attribute (members have no
+	// independent scope); those operate on &obj.name and are unaffected by the
+	// member's emitted type. String member access reads through
 	// string_cstr((void*)&obj.name) — handled at the use site.
 	if (is_string_object(mtype)) {
-		node_t mspec = list();
-		append(mspec, simple(N_LONG));
-		node_t mdl = list();
-		append(mdl, node3(N_ARR, ignore(), list(),
-				  integer((long)string_obj_words())));
+		node_t mspec = type_list(mtype);   // -> struct string
 		node_t mmember = simple(N_MEMBER, m.origin);
 		append(mmember, node1(N_SHARE, mspec));
-		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), mdl));
+		append(mmember, node2(N_DECL, id(m.first.c_str(), m.origin), list()));
 		append(mmember, ignore());
 		append(mmember, ignore());
 		return mmember;
