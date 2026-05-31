@@ -349,8 +349,14 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   quick fix; supersedes/absorbs P2.9. Found 2026-05-31 (user: "I thought we got rid of
   dtSTRING?").
 
-- **P2.14 STATUS (2026-05-31): recognition-via-tag ELIMINATED; tag-VALUE removal is a
-  bigger ABI refactor (in progress).** Done (commits `bbaddce`/`66c91f1`/`9930af7`/
+- **P2.14 — DONE (2026-05-31, grep-VERIFIED).** `grep dtSTRING\|dtSTRINGref src/ include/`
+  = **0** (coordinator-verified, not just claimed); `DataDefSTRING` carries the generic
+  `dtRESERVED` tag; std::string recognized purely by class identity like vector/map/set;
+  `canonical_string_class` shim removed; **P2.9 dissolved** (no more dtSTRINGref→dtSTRING
+  +20000 overlap). Commits ddcaa80→4c049cc (typespec_t DataDef* registration · MadValueKind
+  · Variable ctor/dtor by identity · enum deletion + repoint + shim removal). 409 green
+  throughout, 0 regressions. Running count 219→0. The resilient legacy crutch is eliminated.
+  Historical (the journey): Done (commits `bbaddce`/`66c91f1`/`9930af7`/
   `c951efa`, 409 green): added `is_std_string*`/`is_string_class()` class-identity
   recognizers and migrated ALL `rawtype()==dtSTRING` recognition to them — **0**
   recognition sites remain in core files. But **219 `dtSTRING`/`dtSTRINGref`
