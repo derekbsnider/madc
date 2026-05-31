@@ -2214,9 +2214,12 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	node_t this_arg = class_this_arg(tm, recv_class, origin);
 	if (!recv_class) return NULL;
 
-	// The method's mangled symbol (`ClassName__method`) and signature.
-	const std::string &sym = tm->var.name;
+	// The method's call symbol (`ClassName__method`) and signature. When the
+	// FuncDef carries an explicit emit_symbol (e.g. a mangled libstdc++
+	// std::string member), call through that instead of the default scheme.
 	FuncDef *callee = dynamic_cast<FuncDef *>(tm->var.type);
+	const std::string sym = (callee && !callee->emit_symbol.empty())
+				? callee->emit_symbol : tm->var.name;
 
 	// An inherited method's __this is typed `Base *`, but the receiver is a
 	// `Derived *`. Since base members are flattened at offset 0 (single

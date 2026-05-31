@@ -34,6 +34,7 @@
 #include "tokens.h"
 #include "datatokens.h"
 #include "madc.h"
+#include "madc_mangle.h"
 
 using namespace std;
 
@@ -3696,8 +3697,27 @@ void Program::add_string_methods()
     string_member_cast scmc;
     Variable *var;
 
+    // Mangled libstdc++ std::string member symbols. The CIR class-method path
+    // (CirBuilder::class_method_call) calls a method through FuncDef::emit_symbol
+    // when set, so `s.length()` etc. dispatch directly to real libstdc++. These
+    // MUST match the exact exported symbols (substitution-compressed template-id
+    // for string& params — `RKS4_`, not `RKSt6string`); demangle-verified with
+    // c++filt and checked against libstdc++.so. They mirror the STR_* statics in
+    // src/cir_builder.cpp.
+    const std::string T = std_string_type();
+    const std::string sym_cstr   = itanium_mangle_member_sub(T, "c_str",  {}, true);
+    const std::string sym_length = itanium_mangle_member_sub(T, "length", {}, true);
+    const std::string sym_size   = itanium_mangle_member_sub(T, "size",   {}, true);
+    const std::string sym_empty  = itanium_mangle_member_sub(T, "empty",  {}, true);
+    const std::string sym_clear  = itanium_mangle_member_sub(T, "clear",  {}, false);
+    const std::string sym_assign_str  = itanium_mangle_member_sub(T, "assign", {"const " + T + "&"}, false);
+    const std::string sym_assign_cstr = itanium_mangle_member_sub(T, "assign", {"const char*"}, false);
+    const std::string sym_append_str  = itanium_mangle_member_sub(T, "append", {"const " + T + "&"}, false);
+    const std::string sym_append_cstr = itanium_mangle_member_sub(T, "append", {"const char*"}, false);
+
     scmc.c_str = (const char *(string::*)(void))&string::c_str;
     var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_cstr;
     ddSTRING.methods.push_back(var);
 
     var = addFunction("c_str2", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)c_str2, true);
@@ -3705,26 +3725,32 @@ void Program::add_string_methods()
 
     scmc.method_str = (string &(string::*)(const string &))&string::assign;
     var = addFunction("assign", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_assign_str;
     ddSTRING.methods.push_back(var);
 
     scmc.method_cstr = (string &(string::*)(const char *))&string::assign;
     var = addFunction("assign", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_assign_cstr;
     ddSTRING.methods.push_back(var);
 
     scmc.method_str = (string &(string::*)(const string &))&string::append;
     var = addFunction("append", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_append_str;
     ddSTRING.methods.push_back(var);
 
     scmc.method_cstr = (string &(string::*)(const char *))&string::append;
     var = addFunction("append", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_append_cstr;
     ddSTRING.methods.push_back(var);
 
     // length() and size() — wrap std::string::length via a free helper.
     // Signature: (int64_t, string*) matches madc method calling convention
     // where the object pointer is the hidden first argument.
     var = addFunction("length", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_length;
     ddSTRING.methods.push_back(var);
     var = addFunction("size",   datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_size;
     ddSTRING.methods.push_back(var);
 
     // empty() -> int (0/1); clear() -> void. These are recognized by the
@@ -3732,8 +3758,10 @@ void Program::add_string_methods()
     // backend lowers them to runtime wrappers (string_length==0 / string_clear),
     // so the registered function pointer is only a legacy-backend placeholder.
     var = addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_empty;
     ddSTRING.methods.push_back(var);
     var = addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_clear;
     ddSTRING.methods.push_back(var);
 
     DBG(std::cout << "add_string_methods() ddSTRING.methods.size() = " << ddSTRING.methods.size() << std::endl);

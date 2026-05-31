@@ -64,7 +64,12 @@ public:
     // so the call site is an lvalue (assign stores through it; read derefs it),
     // matching g++. See cir_builder ref-return lowering.
     bool returns_ref;
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), returns_ref(false) {}
+    // When non-empty, the C symbol this function is CALLED as / DEFINED as,
+    // instead of the default ClassName__method scheme. Used to bind a class
+    // method directly to an externally-provided symbol (e.g. a mangled
+    // libstdc++ std::string member). madc emits no body for such methods.
+    std::string emit_symbol;
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), returns_ref(false), emit_symbol() {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }
