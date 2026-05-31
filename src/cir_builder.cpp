@@ -255,6 +255,11 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 	if (!dd) return NULL;
 	if (dd->basetype() != BaseType::btClass) return NULL;
 	if (dd->rawtype() != DataType::dtRESERVED) return NULL;
+	// std::string now ALSO carries the generic dtRESERVED class tag (P2.14), but
+	// it is NOT a plain user class: it lowers to an opaque runtime buffer with
+	// mangled libstdc++ ctor/dtor/method symbols, not a C struct. Route it via
+	// as_object_class instead. Recognized by identity, not by a special tag.
+	if (is_std_string(dd)) return NULL;
 	return dynamic_cast<DataDefCLASS *>(dd);
 }
 

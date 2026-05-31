@@ -710,6 +710,16 @@ class DataDefUINT32:    public DataDef { public: DataDefUINT32():  DataDef("uint
 class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint64_t", 8, DataType::dtUINT64) {} };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
+// std::string is recognized by CLASS IDENTITY (the is_string_class() virtual /
+// the is_std_string* free recognizers), NOT by its raw type-code — that
+// de-special-casing is complete (P2.14 Phases 1-3). The DataDef still CARRIES a
+// dedicated dtSTRING / dtSTRINGref tag, but nothing RECOGNIZES string by it any
+// more. Repointing the tag to the generic dtRESERVED (so the DataDef is fully
+// generic like vector/map/set) is blocked: see the P2.14 Phase-4 blocker note
+// in docs/superpowers/plans — the dtSTRING enum VALUE is still load-bearing as
+// a symbolic type selector for the datatype_vec_t builtin-registration ABI
+// (~160 sites) and the MadValue tagged union, and several char*/string routing
+// paths still key off ddSTRING's dtSTRING rawtype.
 class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtSTRING) {} virtual bool is_string_class() const { return true; } };
 class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} virtual bool is_string_class() const { return true; } };
 class DataDefISTREAM:   public DDClass { public: DataDefISTREAM(): DDClass("istream", sizeof(std::istream), DataType::dtISTREAM) {} };
