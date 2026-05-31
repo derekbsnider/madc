@@ -1,0 +1,39 @@
+#!/../bin/madc
+// Class-REFERENCE parameter member access: `A &a` (and `const A &a`) params
+// must resolve `a.member` (read + write) and `a.method()`. A reference param is
+// lowered to a pointer (vfREFERENCE), so member access is `a->member` in C.
+#include <iostream>
+using namespace std;
+
+class A { public: int v; int w; };
+
+// read a member through a class-reference param
+int getv(A &a) { return a.v; }
+
+// WRITE a member through a class-reference param (visible to the caller)
+void setv(A &a, int n) { a.v = n; a.w = n * 2; }
+
+// const reference param (read-only)
+int sumc(const A &a) { return a.v + a.w; }
+
+class Counter {
+public:
+	int count;
+	int get(A &a) { return a.v + count; }   // ref param inside a method
+};
+
+int main() {
+	A x; x.v = 5; x.w = 11;
+
+	cout << "getv " << getv(x) << endl;          // getv 5
+
+	setv(x, 9);
+	cout << "after set " << x.v << " " << x.w << endl;  // after set 9 18
+
+	cout << "sumc " << sumc(x) << endl;          // sumc 27
+
+	Counter c; c.count = 100;
+	cout << "method " << c.get(x) << endl;       // method 109
+
+	return 0;
+}

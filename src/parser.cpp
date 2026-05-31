@@ -9029,6 +9029,21 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			TokenVar *tv = dynamic_cast<TokenVar *>(lhs_dot);
 			tv_var      = &tv->var;
 			struct_type =  tv->var.type;
+			// A class-REFERENCE parameter (`A &a`) is lowered to a
+			// pointer (vfREFERENCE, type DataDefPTR(A)) — like a numeric
+			// `T&`. Member access `a.member` is therefore `a->member`:
+			// resolve struct_type to the pointed-to class so member /
+			// method lookup works, while tv_var keeps the pointer-typed
+			// reference var so the CIR member codegen emits N_DEREF_FIELD.
+			if ( (tv->var.flags & vfREFERENCE) && struct_type
+			  && struct_type->is_pointer() )
+			{
+			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
+			    if ( rp && rp->base_type
+			      && (rp->base_type->is_struct()
+			       || rp->base_type->is_object()) )
+				struct_type = rp->base_type;
+			}
 		    }
 		    else if ( lhs_dot->type() == TokenType::ttMember )
 		    {
@@ -13438,7 +13453,18 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     if ( owner_class )
     {
 	if ( !func_already_declared )
+	{
 	    func->parameters.push_back(getPointerType(owner_class));
+	    // Keep ref_params / const_params index-aligned with parameters:
+	    // __this occupies slot 0, so the first USER parameter's reference /
+	    // const flag lands at index 1 (matching every consumer — e.g. the
+	    // std::string operator registrations use ref_params[1] for the RHS).
+	    // Without this, a method with a `T&` param mis-flagged __this as the
+	    // reference and left the real param without vfREFERENCE, breaking
+	    // `a.member` member access on a class-reference param.
+	    func->ref_params.push_back(false);
+	    func->const_params.push_back(false);
+	}
 	ids.push_back("__this");
 	DBG(cout << "parseFunction() injected hidden __this parameter for class method" << endl);
     }
