@@ -689,9 +689,6 @@ TokenUSING	tkUSING;
 TokenNAMESPACE	tkNAMESPACE;
 TokenPREFER	tkPREFER;
 TokenDEFER	tkDEFER;
-TokenMAP	tkMAP;
-TokenSET	tkSET;
-TokenLIST	tkLIST;
 TokenTEMPLATE	tkTEMPLATE;
 TokenNEW	tkNEW;
 TokenDELETE	tkDELETE;
@@ -1338,8 +1335,6 @@ void Program::add_keywords()
 	keyword_map[tkUSING.str] = &tkUSING;
 	keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
 	keyword_map[tkPREFER.str] = &tkPREFER;
-	keyword_map[tkMAP.str] = &tkMAP;
-	keyword_map[tkSET.str] = &tkSET;
 	keyword_map[tkTEMPLATE.str] = &tkTEMPLATE;
 	keyword_map[tkNEW.str] = &tkNEW;
 	keyword_map[tkDELETE.str] = &tkDELETE;

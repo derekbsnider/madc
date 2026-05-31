@@ -1,5 +1,6 @@
 #include <iostream>
 #include <vector>
+#include <map>
 #include <string>
 using namespace std;
 // Test [] subscript operator for arrays and containers

@@ -11727,9 +11727,6 @@ static bool is_contextual_identifier_token(TokenBase *tb)
 	case TokenID::tkUSING:
 	case TokenID::tkPREFER:
 	case TokenID::tkDEFER:
-	case TokenID::tkMAP:
-	case TokenID::tkSET:
-	case TokenID::tkLIST:
 	// C++ keywords that are valid C identifiers — `int try;`, struct
 	// member named `new`, `void *catch_block`, etc.
 	case TokenID::tkTRY:
@@ -11761,9 +11758,6 @@ static std::string contextual_identifier_name(TokenBase *tb)
 	|| tb->id() == TokenID::tkUSING
 	|| tb->id() == TokenID::tkPREFER
 	|| tb->id() == TokenID::tkDEFER
-	|| tb->id() == TokenID::tkMAP
-	|| tb->id() == TokenID::tkSET
-	|| tb->id() == TokenID::tkLIST
 	|| tb->id() == TokenID::tkTRY
 	|| tb->id() == TokenID::tkCATCH
 	|| tb->id() == TokenID::tkTHROW
@@ -12988,154 +12982,10 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
     return NULL;   // a definition: produces no statement node
 }
 
-// STL container parse functions removed — ns_stl.cpp was a proof-of-concept.
-// Template instantiation will be generated on demand by the transpiler.
-// parse vector<type>
-// parse map<key_type, val_type>
-TokenBase *TokenMAP::parse(Program &pgm)
-{
-    DBG(std::cout << "TokenMAP::parse()" << std::endl);
-    TokenBase *tn = pgm.nextToken();
-    if ( tn->id() != TokenID::tkLT )
-	pgm.Throw(tn) << "Expecting < after map" << flush;
-
-    tn = pgm.nextToken();
-    TokenDataType *key_td = resolve_declared_type_token(pgm, tn, true, true);
-    if ( !key_td )
-	pgm.Throw(tn) << "Expecting key type inside map<>" << flush;
-    DataDef *key = &key_td->definition;
-
-    tn = pgm.nextToken();
-    if ( tn->id() != TokenID::tkComma )
-	pgm.Throw(tn) << "Expecting , between key and value types in map<k, v>" << flush;
-
-    tn = pgm.nextToken();
-    TokenDataType *val_td = resolve_declared_type_token(pgm, tn, true, true);
-    if ( !val_td )
-	pgm.Throw(tn) << "Expecting value type inside map<k, v>" << flush;
-    DataDef *val = &val_td->definition;
-
-    tn = pgm.nextToken();
-    if ( tn->id() != TokenID::tkGT )
-	pgm.Throw(tn) << "Expecting > after map<k, v" << flush;
-
-    std::string tname = "map<" + key->name + "," + val->name + ">";
-    datatype_map_iter dmi = pgm.datatype_map.find(tname);
-    TokenDataType *tdt;
-    if ( dmi != pgm.datatype_map.end() )
-    {
-	tdt = dmi->second;
-    }
-    else
-    {
-	DataDefMAP *dd = new DataDefMAP(key, val, tname, sizeof(std::map<std::string, int64_t>));
-	if ( val->is_string() )
-	    dd->register_extern_ctor_dtor((void *)map_str_str_construct, (void *)map_str_str_destruct);
-	else
-	    dd->register_extern_ctor_dtor((void *)map_str_int_construct, (void *)map_str_int_destruct);
-	tdt = new TokenDataType(tname.c_str(), *dd);
-	pgm.datatype_map[tname] = tdt;
-
-	// register methods
-	Variable *mv;
-	if ( val->is_string() )
-	{
-	    mv = pgm.addFunction("put", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)map_str_str_set, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("get", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_str_get, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_str_contains, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_str_size, true);
-	    dd->methods.push_back(mv);
-	}
-	else
-	{
-	    mv = pgm.addFunction("put", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)map_str_int_set, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("get", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_get, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_contains, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("erase", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP), DataType::dtSTRING}, (fVOIDFUNC)map_str_int_erase, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_int_size, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtMAP)}, (fVOIDFUNC)map_str_int_clear, true);
-	    dd->methods.push_back(mv);
-	}
-    }
-
-    return pgm.parseDeclaration(tdt);
-}
-
-// parse set<type>
-TokenBase *TokenSET::parse(Program &pgm)
-{
-    DBG(std::cout << "TokenSET::parse()" << std::endl);
-    TokenBase *tn = pgm.nextToken();
-    if ( tn->id() != TokenID::tkLT )
-	pgm.Throw(tn) << "Expecting < after set" << flush;
-
-    tn = pgm.nextToken();
-    TokenDataType *elem_td = resolve_declared_type_token(pgm, tn, true, true);
-    if ( !elem_td )
-	pgm.Throw(tn) << "Expecting type inside set<>" << flush;
-    DataDef *elem = &elem_td->definition;
-
-    tn = pgm.nextToken();
-    if ( tn->id() != TokenID::tkGT )
-	pgm.Throw(tn) << "Expecting > after set<type" << flush;
-
-    std::string tname = "set<" + elem->name + ">";
-    datatype_map_iter dmi = pgm.datatype_map.find(tname);
-    TokenDataType *tdt;
-    if ( dmi != pgm.datatype_map.end() )
-    {
-	tdt = dmi->second;
-    }
-    else
-    {
-	DataDefSET *dd = new DataDefSET(elem, tname, sizeof(std::set<std::string>));
-	if ( elem->is_string() )
-	    dd->register_extern_ctor_dtor((void *)set_str_construct, (void *)set_str_destruct);
-	else
-	    dd->register_extern_ctor_dtor((void *)set_int_construct, (void *)set_int_destruct);
-	tdt = new TokenDataType(tname.c_str(), *dd);
-	pgm.datatype_map[tname] = tdt;
-
-	Variable *mv;
-	if ( elem->is_string() )
-	{
-	    mv = pgm.addFunction("insert", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_insert, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_contains, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("erase", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtSTRING}, (fVOIDFUNC)set_str_erase, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_str_size, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_str_clear, true);
-	    dd->methods.push_back(mv);
-	}
-	else
-	{
-	    mv = pgm.addFunction("insert", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSET), DataType::dtINT64}, (fVOIDFUNC)set_int_insert, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("contains", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET), DataType::dtINT64}, (fVOIDFUNC)set_int_contains, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSET)}, (fVOIDFUNC)set_int_size, true);
-	    dd->methods.push_back(mv);
-	}
-    }
-
-    return pgm.parseDeclaration(tdt);
-}
-
-// list<T> is recognized but not yet lowered on the CIR backend; no failing
-// test requires it. Keep the parser stub until a vector/map/set parity pass.
-TokenBase *TokenLIST::parse(Program &pgm) { pgm.Throw(this) << "list<T> template instantiation is not yet implemented on the CIR backend" << flush; return this; }
-
+// STL container parse functions removed — std::vector/map/set are now real
+// madc templates (include/madc/vector, include/madc/map, include/madc/set),
+// instantiated on demand through the class model. The old keyword + ns_stl
+// wrapper path is gone.
 
 TokenBase *Program::parseKeyword(TokenKeyword *tk)
 {
@@ -16405,19 +16255,6 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    break;
 
 	case TokenType::ttKeyword:
-	    // Container-type keywords (map, set, list) are only types when
-	    // followed by '<'. Otherwise the user is using them as an identifier —
-	    // e.g. `MAP_DATA *map;` followed by `map->vnum = …;` — so route through
-	    // parseExpression which already accepts them as contextual identifiers.
-	    if ( (tb->id() == TokenID::tkMAP
-		|| tb->id() == TokenID::tkSET || tb->id() == TokenID::tkLIST)
-		&& peekToken() && peekToken()->id() != TokenID::tkLT )
-	    {
-		DBG(std::cout << "parseStatement() container keyword used as identifier: "
-		    << ((TokenKeyword *)tb)->str << std::endl);
-		resetPrevToken();
-		return parseExpression(tb);
-	    }
 	    // `class` is also a madc keyword (OOP class declaration), but C
 	    // codebases (notably SMAUG) use it as a plain identifier for
 	    // struct members / locals (`ch->class`, `int class;`). Treat as
