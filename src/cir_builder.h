@@ -375,6 +375,13 @@ public:
 	// declared in the enclosing scope by the parser (same as translate_foreach).
 	node_t translate_foreach_vector(class TokenFOREACH *fe,
 					class DataDefVECTOR *vdd);
+	// Range-for over a user-defined class / template-instantiated container:
+	// `for (T x : c) body` -> index loop using c.size() and c[__i] (the
+	// class's size()/operator[] methods). The loop var is declared in the
+	// enclosing scope by the parser.
+	node_t translate_foreach_class(class TokenFOREACH *fe,
+				       class DataDefCLASS *cls,
+				       class Variable *szmv, class Variable *opmv);
 	node_t translate_do(TokenDO *td);
 	node_t translate_switch(TokenSWITCH *ts);
 	// rust::match over integer patterns -> a switch: each arm's pattern(s)

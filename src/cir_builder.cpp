@@ -3481,6 +3481,17 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 	if (vdd && cdd && cdd->rawtype() == DataType::dtVECTOR)
 		return translate_foreach_vector(fe, vdd);
 
+	// A user-defined class / template-instantiated container (e.g.
+	// `vector<int>` once it becomes a real template) iterates by index using
+	// its size() and operator[] methods.
+	if (DataDefCLASS *ccls = class_behind(cdd)) {
+		std::string szname = "size", opname = "operator[]";
+		Variable *szmv = ccls->findMethod(szname);
+		Variable *opmv = ccls->findMethod(opname);
+		if (szmv && opmv)
+			return translate_foreach_class(fe, ccls, szmv, opmv);
+	}
+
 	// (void*)container — the MadArray object address (the var name decays to
 	// its long[] buffer, normalized to void*).
 	auto container_addr = [&]() -> node_t {
@@ -3601,6 +3612,80 @@ node_t CirBuilder::translate_foreach_vector(TokenFOREACH *fe, DataDefVECTOR *vdd
 		append(a, id(idx, fe));
 		node_t getcall = node2(N_CALL, id("vector_int_at", fe), a, fe);
 		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe), getcall, fe);
+		append(body_items, node2(N_EXPR, list(), assign, fe));
+	}
+
+	node_t user_body = translate_stmt_required(fe->statement);
+	if (user_body) append(body_items, user_body);
+	node_t body = node2(N_BLOCK, list(), body_items, fe);
+
+	return node5(N_FOR, list(), init, cond, incr, body, fe);
+}
+
+node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
+					   Variable *szmv, Variable *opmv)
+{
+	FuncDef *opfd = dynamic_cast<FuncDef *>(opmv->type);
+	bool recv_is_ptr = fe->container->datadef()
+			   && fe->container->datadef()->is_pointer();
+	// __this for each method call: value receiver -> &c, pointer -> c.
+	auto recv_addr = [&]() -> node_t {
+		node_t c = translate_expr(fe->container);
+		return recv_is_ptr ? c : node1(N_ADDR, c, fe);
+	};
+	std::string szsym = cls->name + "__size";
+	std::string opsym = cls->name + "__operator[]";
+
+	char idx[32];
+	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
+
+	// long __fe_i = 0;
+	node_t ispec = list();
+	append(ispec, simple(N_LONG, fe));
+	node_t init = simple(N_SPEC_DECL, fe);
+	append(init, node1(N_SHARE, ispec));
+	append(init, node2(N_DECL, id(idx, fe), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, fe));
+
+	// __fe_i < c.size()
+	referenced_funcs.insert(szsym);
+	node_t sz_args = list();
+	append(sz_args, recv_addr());
+	node_t sz_call = node2(N_CALL, id(szsym.c_str(), fe), sz_args, fe);
+	node_t cond = node2(N_LT, id(idx, fe), sz_call, fe);
+
+	// __fe_i += 1
+	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
+
+	// The element accessor `c[__fe_i]`. operator[] returns T& == a T*; the
+	// bare call is the element ADDRESS, the deref is the element lvalue.
+	referenced_funcs.insert(opsym);
+	auto op_addr = [&]() -> node_t {
+		node_t a = list();
+		append(a, recv_addr());
+		append(a, id(idx, fe));
+		return node2(N_CALL, id(opsym.c_str(), fe), a, fe);
+	};
+
+	node_t body_items = list();
+	if (fe->elemtype->rawtype() == DataType::dtSTRING) {
+		// String element: copy-assign the loop var (an enclosing-scope string
+		// object, already constructed) from the element reference:
+		// string_assign((void*)&x, (void*)&c[__fe_i]).
+		need_output_extern("string_assign", false,
+				   { { {N_VOID}, true }, { {N_VOID}, true } });
+		node_t a = list();
+		append(a, string_obj_addr(fe->elemname.c_str(), fe));
+		append(a, node2(N_CAST, void_ptr_type(), op_addr(), fe));
+		node_t fill = node2(N_CALL, id("string_assign", fe), a, fe);
+		append(body_items, node2(N_EXPR, list(), fill, fe));
+	} else {
+		// Scalar element: x = *(c[__fe_i])  (load through the reference).
+		node_t elem = opfd && opfd->returns_ref
+				? node1(N_DEREF, op_addr(), fe) : op_addr();
+		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe), elem, fe);
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
 
