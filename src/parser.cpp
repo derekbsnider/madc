@@ -3788,7 +3788,7 @@ void Program::add_string_methods()
     // basic_string::operator=/operator+= members. Two overloads each (const
     // string& / const char*); CirBuilder::class_operator_call selects by the
     // RHS type. `s = "x"`/`s = t`/`s += "x"`/`s += t` route through the class
-    // operator path (no legacy dtSTRING assign interception). Param 1 marks
+    // operator path (no legacy special-cased assign interception). Param 1 marks
     // the string& overload as a ref param so the address is passed.
     scmc.method_str = (string &(string::*)(const string &))&string::operator=;
     var = addFunction("operator=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
@@ -3825,7 +3825,7 @@ void Program::add_string_methods()
     // a cleanup-tagged temp, emits `string_concat(&tmp, &lhs, &rhs)`, and yields
     // the temp as the expression's string object. Two overloads (const string& /
     // const char*) so `a + b` and `a + "lit"` both resolve. The string& overload
-    // marks param 1 as a ref param so its address is passed. Return type dtSTRING
+    // marks param 1 as a ref param so its address is passed. Returns std::string
     // (by value, via the temp — NOT returns_ref). The registered fn pointer is a
     // legacy-backend placeholder only.
     var = addFunction("operator+", datatype_vec_t{&ddSTRING, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
@@ -6143,8 +6143,8 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     {
 	// A type named directly by DataDef* (e.g. std::string as &ddSTRING) wins —
 	// no enum word involved (P2.14 chunk 1). A T* / T& form (ptr_of/ref_of)
-	// is resolved the same way the DataType-offset path resolves dtSTRINGptr /
-	// dtSTRINGref: getPointerType for a pointer; the base DataDef for a ref.
+	// is resolved the same way the DataType-offset path resolves a pointer /
+	// reference: getPointerType for a pointer; the base DataDef for a ref.
 	if ( spec.dd )
 	{
 	    if ( spec.ref == RefType::rtPointer )  return getPointerType(spec.dd);
@@ -8245,17 +8245,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    TokenBase *fexpr = nextToken();
 		    ternary->false_expr = parseExpression(fexpr, conditional);
 		    // Propagate branch datadef up to the ternary so downstream
-		    // type-directed paths (e.g. TokenAssign's dtSTRING → char*
+		    // type-directed paths (e.g. TokenAssign's std::string → char*
 		    // coercion) can see a meaningful datadef(). Prefer the true
 		    // branch's type; fall back to the false branch if that's
 		    // richer (non-NULL / non-int).
 		    //
 		    // Mixed string-literal/pointer ternary: when one branch is
-		    // a string literal (dtSTRING) and the other is a real
+		    // a string literal (std::string) and the other is a real
 		    // char*-yielding expression (pointer type), prefer the
 		    // pointer type. The merge needs both branches to land as
 		    // raw char* in the merge slot — labeling the result
-		    // dtSTRING would force downstream `string_cstr` over the
+		    // std::string would force downstream `string_cstr` over the
 		    // function's char* return, dereferencing it as if it were
 		    // a std::string and crashing. Closes SMAUG boards.c:1615
 		    // `feof(fp) ? "End" : fread_word(fp)`.
@@ -8268,14 +8268,14 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // C ternary type unification for pointer-flavored
 		    // branches. Each branch has an *effective* type:
 		    //   - real pointer types stay as-is
-		    //   - dtSTRING (string literals) → char* equivalent
+		    //   - std::string (string literals) → char* equivalent
 		    //   - fixed-array variables / members → char* equivalent
 		    //     (their datadef reports the element type, but
 		    //     the value decays to pointer-to-element)
 		    // When both branches are pointer-flavored and their
 		    // raw datadefs disagree, unify on a real pointer if
 		    // available, else on `char *` (ddLPSTR). Without this,
-		    // the merge slot inherits a single-byte / dtSTRING /
+		    // the merge slot inherits a single-byte / std::string /
 		    // mixed type and the IR coerce step rejects the other
 		    // branch. Closes SMAUG boards.c:1615
 		    // `feof(fp) ? "End" : fread_word(fp)`, fight.c:4298

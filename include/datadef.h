@@ -107,12 +107,12 @@ public:
 
 	return false;
     }
-    // Class-identity marker for std::string. Recognizing std::string by the
-    // raw dtSTRING type-code is the residual special-casing P2.14 removes — a
+    // Class-identity marker for std::string. Recognizing std::string by a
+    // dedicated raw type-code was the residual special-casing P2.14 removed — a
     // std::string is a real C++ class (like vector/map/set) and should be
     // recognized by its CLASS IDENTITY, not a reserved enum tag. The two
     // std::string DataDef classes (DataDefSTRING / DataDefSTRINGref) override
-    // this to return true; everything else inherits false. The dtSTRING tag is
+    // this to return true; everything else inherits false. The std::string tag is
     // now gone — DataDefSTRING carries the generic dtRESERVED class tag — so this
     // identity marker is the ONLY way string is recognized. Use the
     // is_std_string()/is_std_string_ref() free recognizers
@@ -717,7 +717,7 @@ class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("doub
 // std::string is a GENERIC class (P2.14 complete): its DataDef carries the same
 // generic class tag as vector/map/set and user classes — dtRESERVED for the
 // value `string`, dtRESERVEDref for `string&` (so reftype()==rtReference still
-// holds). There is NO dedicated dtSTRING tag any more. std::string is recognized
+// holds). There is NO dedicated std::string tag any more. std::string is recognized
 // purely by CLASS IDENTITY via the is_string_class() virtual / the is_std_string*
 // free recognizers, exactly like any other class. as_user_class excludes it (by
 // identity) so it routes through as_object_class to its opaque-buffer + mangled
@@ -746,7 +746,7 @@ public:
     // A pointer/ref to a std::string (`string*`, and the `string&` loop-var
     // model getPointerType(ddSTRING)+vfREFERENCE) carries the string identity
     // through its base_type. Mirrors the legacy is_string() which decoded the
-    // dtSTRINGptr rawtype to dtSTRING. The value-vs-pointer distinction stays
+    // std::string* rawtype to std::string. The value-vs-pointer distinction stays
     // via is_pointer() / the vfREFERENCE Variable flag, exactly as before P2.14.
     virtual bool is_string_class() const { return base_type && base_type->is_string_class(); }
 };
@@ -815,10 +815,10 @@ class MadArray;
 
 // MadValue's own discriminator. The PHP/borrowed-language mixed-array union
 // holds exactly these five alternatives; it formerly borrowed DataType enum
-// values (dtVOID/dtINT64/dtDOUBLE/dtSTRING/dtARRAY) as the tag, which is a
+// values (dtVOID/dtINT64/dtDOUBLE/std::string/dtARRAY) as the tag, which is a
 // different concept from DataDef type identity. A self-owned kind makes the
 // union self-consistent and removes the last MadValue dependency on the
-// dtSTRING enum word (P2.14 chunk 2).
+// std::string enum word (P2.14 chunk 2).
 enum class MadValueKind : uint8_t { mvNONE, mvINT, mvDOUBLE, mvSTRING, mvARRAY };
 
 struct MadValue
@@ -993,9 +993,9 @@ extern DataDefLPSTR ddLPSTR;
 
 // ---- std::string class-identity recognizers (P2.14) -------------------------
 // Recognize a std::string by CLASS IDENTITY (the is_string_class() virtual)
-// rather than the raw dtSTRING / dtSTRINGref type-code, so the recognition is
+// rather than the raw std::string / std::string& type-code, so the recognition is
 // principled and survives retiring those enum tags. These are the canonical
-// replacements for the scattered `rawtype()==dtSTRING` / `==dtSTRINGref`
+// replacements for the scattered `rawtype()==std::string` / `==std::string&`
 // checks. A std::string DataDef may appear by value, by reference (T&), or by
 // pointer (T*) — these helpers distinguish those forms via reftype().
 
@@ -1008,7 +1008,7 @@ static inline bool is_std_string(const DataDef *dd)
 
 // True only for a std::string REFERENCE (string& — DataDefSTRINGref, or a
 // string DataDef whose reftype() is rtReference). Replaces the old
-// `rawtype()==dtSTRINGref` checks. Note that the dedicated DataDefSTRINGref
+// `rawtype()==std::string&` checks. Note that the dedicated DataDefSTRINGref
 // singleton answers rtReference via its tag today; after Phase 4 it carries
 // the same identity marker, so this stays correct.
 static inline bool is_std_string_ref(const DataDef *dd)
@@ -1018,7 +1018,7 @@ static inline bool is_std_string_ref(const DataDef *dd)
 }
 
 // True for a std::string VALUE object (not a reference, not a pointer) — the
-// receiver that owns the operators/methods. Replaces `rawtype()==dtSTRING`
+// receiver that owns the operators/methods. Replaces `rawtype()==std::string`
 // where the intent was specifically "a string value/object" (e.g. copy-ctor
 // param matching, by-value receiver dispatch).
 static inline bool is_std_string_value(const DataDef *dd)

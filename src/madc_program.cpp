@@ -1913,7 +1913,7 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
     if ( !type )
 	return false;
 
-    // std::string by class identity (not the dtSTRING tag) — checked first so
+    // std::string by class identity (not the std::string tag) — checked first so
     // it stays correct once the tag is retired (string becomes dtRESERVED).
     if ( is_std_string(type) && !type->is_pointer() )
     {

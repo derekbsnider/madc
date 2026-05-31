@@ -555,7 +555,7 @@ typedef std::map<std::string, Variable *>::iterator variable_map_iter;
 // call sites are unchanged, while a class type that should NOT be named by an
 // enum word — std::string (&ddSTRING / &ddSTRINGref) — can be named by its real
 // DataDef. When `dd` is set it wins; otherwise `dt` is resolved by the existing
-// DataType_to_dd switch. This lets the registration ABI stop using dtSTRING as
+// DataType_to_dd switch. This lets the registration ABI stop using std::string as
 // a type-vocabulary word (the prerequisite to deleting the enum value).
 struct typespec_t
 {
@@ -569,7 +569,7 @@ struct typespec_t
 };
 
 // Name a `T*` / `T&` parameter or return type by DataDef* in a datatype_vec_t,
-// e.g. ptr_of(ddSTRING) == the old rtPtr(DataType::dtSTRING). addFunction's
+// e.g. ptr_of(ddSTRING) == the old rtPtr(DataType::std::string). addFunction's
 // resolve_data_type applies getPointerType() / passes the ref through, matching
 // the old DataType-offset resolution exactly.
 inline typespec_t ptr_of(DataDef &d) { return typespec_t(&d, RefType::rtPointer); }

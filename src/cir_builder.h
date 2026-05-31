@@ -100,8 +100,8 @@ class CirBuilder {
 	// Names of the functions whose bodies madc COMPILES this module (the user's
 	// TokenFuncs). Set in translate_module while bodies are translated; NULL
 	// otherwise. Gates the by-value string-return (__retbuf) ABI to madc-compiled
-	// functions only — an external / native function with a dtSTRING return type
-	// (e.g. __std_to_string) keeps its own ABI and must NOT be rewritten.
+	// functions only — an external / native function with a std::string return
+	// type (e.g. __std_to_string) keeps its own ABI and must NOT be rewritten.
 	const std::set<std::string> *m_user_func_names = nullptr;
 
 	// Internal: allocate and initialize a cir_node
@@ -129,7 +129,7 @@ class CirBuilder {
 				     TokenBase *origin);
 
 	// ---- std::string object lowering ----
-	static bool is_string_object(DataDef *dd);   // dtSTRING value type, not a pointer
+	static bool is_string_object(DataDef *dd);   // std::string value type, not a pointer
 	// True only for a genuine string OBJECT value (declared string variable /
 	// string-returning expression) — EXCLUDES string literals (ttString tokens
 	// and lifted `__literal__` vars), which are already const char* values.
@@ -139,9 +139,9 @@ class CirBuilder {
 	// is a by-value string object materialized by class_operator_call.
 	static bool is_string_operator_plus(TokenBase *arg);
 	// A CALL to a madc-COMPILED function whose callee returns a std::string
-	// OBJECT by value (dtSTRING, non-pointer) — i.e. one lowered through the
+	// OBJECT by value (non-pointer) — i.e. one lowered through the
 	// __retbuf ABI by func_def. Excludes external / native functions with a
-	// dtSTRING return (they keep their own ABI). Such a call is a string-object
+	// std::string return (they keep their own ABI). Such a call is a string-object
 	// rvalue that must be materialized into a scope temp before use.
 	bool is_string_returning_call(TokenBase *arg);
 	// A CALL to a madc-COMPILED function returning a NON-TRIVIAL user class by
@@ -215,10 +215,10 @@ class CirBuilder {
 	node_t object_var_addr(const class Variable &v, TokenBase *origin);
 	node_t string_ctor_call(const char *name, TokenBase *initexpr, TokenBase *origin);
 	// string_cstr((void*)obj) — coerce a std::string object argument to a
-	// const char* (the dtSTRING->dtCHARptr coercion) for a char*-expecting call.
+	// const char* (the std::string->const char* coercion) for a char*-expecting call.
 	node_t string_cstr_arg(TokenBase *arg);
 	// Coerce an argument to a `std::string` OBJECT pointer for a call whose
-	// parameter is a string object (dtSTRING/dtSTRINGref). A genuine string
+	// parameter is a std::string object (value or reference). A genuine string
 	// object is passed by address directly; any const char* value (literal,
 	// char* var) is materialized into a scope-lived temporary std::string
 	// (storage + ctor pushed to m_pending_stmts, destructed via cleanup attr).

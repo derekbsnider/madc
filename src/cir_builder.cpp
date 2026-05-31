@@ -264,14 +264,14 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 }
 
 // A runtime-object class that flows through the class model but is NOT a
-// dtRESERVED user class: std::string (dtSTRING). It IS-A DataDefCLASS (opaque
+// dtRESERVED user class: std::string (std::string). It IS-A DataDefCLASS (opaque
 // storage sized by object_class_words, ctor/dtor/methods bound to mangled
 // libstdc++ symbols via emit_symbol). Used to route std::string declarations,
 // construction and destruction through the uniform class path, replacing the
-// legacy dtSTRING `long[]`+wrapper lowering.
+// legacy std::string `long[]`+wrapper lowering.
 //
-// NOTE: a `string&` reference (DataDefSTRINGref) ALSO satisfies the dtSTRING
-// rawtype test below — rawtype(dtSTRINGref) decodes to dtSTRING (the rtReference
+// NOTE: a `string&` reference (DataDefSTRINGref) ALSO satisfies the std::string
+// rawtype test below — rawtype(std::string&) decodes to std::string (the rtReference
 // 20000 offset, P2.9) — so this returns the ddSTRINGref type object for a ref.
 // That object carries no methods/operators; callers that need to DISPATCH a
 // std::string member/operator must canonicalize to ddSTRING (the one populated
@@ -368,15 +368,15 @@ void CirBuilder::append_type_specs(node_t lst, DataDef *dd)
 
 bool CirBuilder::is_string_object(DataDef *dd)
 {
-	// dtSTRING is the value type `string`; dtSTRINGref (`string&`) and
-	// dtSTRINGptr are separate and handled on the param/pointer paths.
+	// std::string is the value type `string`; std::string& (`string&`) and
+	// std::string* are separate and handled on the param/pointer paths.
 	return dd && dd->is_string() && !dd->is_pointer();
 }
 
 bool CirBuilder::is_string_object_value(TokenBase *arg)
 {
 	// A string OBJECT value is a DECLARED `string` variable — an lvalue with
-	// constructed storage. Many other expressions are typed dtSTRING but are
+	// constructed storage. Many other expressions are typed std::string but are
 	// const char* values, NOT objects: string literals, lifted `__literal__`
 	// vars, and char*-valued expressions like a ternary of literals
 	// (`cond ? "a" : "b"`). So require a genuine variable token; everything
@@ -396,16 +396,16 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
 	if (!tv)
 		return false;
-	// A declared `string` object (dtSTRING) OR a `string&` reference parameter
-	// (dtSTRINGref) — both denote a std::string object the front end can take
-	// the address of. (A by-value `string` param is also dtSTRING.)
+	// A declared `string` object (std::string) OR a `string&` reference parameter
+	// (std::string&) — both denote a std::string object the front end can take
+	// the address of. (A by-value `string` param is also std::string.)
 	if (!is_std_string(tv->var.type))
 		return false;
 	if (tv->var.name.compare(0, 11, "__literal__") == 0)
 		return false;
 	// A const-qualified compile-time char* constant (`const char* x = "lit"`,
-	// dtSTRING-typed) is a const char* VALUE, not an object — skip it. But a
-	// `const string&` reference parameter (dtSTRINGref, OR vfREFERENCE) is a real
+	// std::string-typed) is a const char* VALUE, not an object — skip it. But a
+	// `const string&` reference parameter (std::string&, OR vfREFERENCE) is a real
 	// std::string object passed by address; the const qualifies the binding, not
 	// the storage, so it stays an object (P2.8b). Only exclude a NON-reference
 	// constant.
@@ -419,7 +419,7 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 // Is `arg` a std::string `operator+` expression (`a + b`, `a + "lit"`, or a
 // chained `a + b + c`)? Recognized when it is a tkAdd whose LHS is a genuine
 // string OBJECT (not a literal/char*) AND whose RHS is string-like (a string
-// object or a const char* / dtSTRING value). Such an expression binds the
+// object or a const char* / std::string value). Such an expression binds the
 // std::string operator+ and yields a by-value string object. A chained
 // `(a+b)+c` recurses through the LHS (itself a string operator+). EXCLUDED:
 // `"lit" + n` / `label + i` (char* pointer arithmetic — LHS is not an object),
@@ -439,10 +439,10 @@ bool CirBuilder::is_string_operator_plus(TokenBase *arg)
 	return lhs_obj && rhs_strlike;
 }
 
-// A CALL to a madc-COMPILED function returning a std::string by value (dtSTRING,
+// A CALL to a madc-COMPILED function returning a std::string by value (std::string,
 // non-pointer). func_def lowers such a function through the __retbuf ABI, so the
 // call site must materialize the result into a temp it owns. Gated on
-// m_user_func_names: an external / native function with a dtSTRING return (e.g.
+// m_user_func_names: an external / native function with a std::string return (e.g.
 // __std_to_string, php::/perl:: helpers) keeps its own ABI and is NOT rewritten —
 // matching it here would inject a bogus __retbuf arg ("too many arguments").
 bool CirBuilder::is_string_returning_call(TokenBase *arg)
@@ -763,7 +763,7 @@ node_t CirBuilder::string_ctor_call(const char *name, TokenBase *initexpr,
 // Coerce a std::string OBJECT argument to const char*: string_cstr((void*)obj).
 // For a plain string variable the object address is string_obj_addr(name); for
 // any other string-object expression, cast its translated value to void*. This
-// is the dtSTRING->dtCHARptr coercion applied at char*-expecting call sites.
+// is the std::string->dtCHARptr coercion applied at char*-expecting call sites.
 node_t CirBuilder::string_cstr_arg(TokenBase *arg)
 {
 	need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
@@ -2702,7 +2702,7 @@ node_t CirBuilder::method_fnptr_type(FuncDef *callee, DataDefCLASS *owner)
 // Select the constructor overload of `cdd` that matches the initializer
 // arguments. Mirrors string_ctor_call's logic but on the class path:
 //   - no args            -> the receiver-only (default) ctor.
-//   - one string-OBJECT  -> the copy ctor (param is dtSTRING / dtSTRINGref).
+//   - one string-OBJECT  -> the copy ctor (param is std::string / std::string&).
 //   - any other args     -> the ctor whose (non-__this) param count matches,
 //                           preferring a non-string-typed first param.
 // `cdd->ctors` lists the overloads (one entry for a user class). Returns NULL
@@ -2956,7 +2956,7 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 
 	// operator+ on std::string is CONCATENATION, which differs from =/+=/==:
 	// its LHS may be a const char* used in POINTER ARITHMETIC (`"lit" + n`,
-	// `label + i`) — every char* literal/expr is dtSTRING-typed, so the
+	// `label + i`) — every char* literal/expr is std::string-typed, so the
 	// as_class_instance(datadef) trigger above matches it spuriously. Defer to
 	// is_string_operator_plus (genuine string-OBJECT LHS + string-like RHS); a
 	// spurious match falls through to ordinary pointer/arithmetic +.
@@ -4142,7 +4142,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// the mangled libstdc++ basic_string::operator=/operator+=
 			// (c2mir cannot assign through the long[] buffer, and g++ emits
 			// these operator calls). The overload is selected by RHS type.
-			// The legacy dtSTRING assign interception was deleted in A4b
+			// The legacy std::string assign interception was deleted in A4b
 			// Surface 3 — class_operator_call now owns it.
 			{
 				node_t ov = class_operator_call(top, tb);
@@ -5813,7 +5813,7 @@ node_t CirBuilder::translate_module(Program *prog)
 	// Collect user function names. Stored as a member too, so the body
 	// translation (below) can tell a madc-COMPILED function (whose by-value
 	// string return madc lowers via the __retbuf ABI) from an external / native
-	// function that merely has a dtSTRING return type but its own ABI.
+	// function that merely has a std::string return type but its own ABI.
 	std::set<std::string> user_func_names;
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
