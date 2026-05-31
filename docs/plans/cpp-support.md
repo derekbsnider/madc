@@ -126,6 +126,18 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   Blocks the classic `vector<Base*>` polymorphism pattern. Same parse location as
   the dot keystone — extend it to `->`. (Found 2026-05-31 during P0.3.)
 
+- **P0.7 — `vector<T*>` multi-element read SIGSEGV**. Reading 2+ POINTER elements
+  from a `vector<Base*>` crashes (`A* e=w[0]; A* f=w[1];` → SIGSEGV); a single
+  pointer element works, and `vector<int>` (2+ elems) works. With initial `cap=4`
+  no realloc occurs, so it's not the grow path — it's **pointer-element
+  monomorphization**: `vector<T*>` likely mis-sizes the element / strides
+  `operator[]`/`data+i` by the wrong width when `T` is itself a pointer, so
+  element[1] reads at a bad offset → garbage pointer → crash on deref. Diagnose via
+  `--emit=c11` of the instantiated `vector<A*>` (check `sizeof(T)`, the
+  `new(slot)T(v)` placement-construct, and `T& operator[]` stride). `vector<Base*>`
+  is the canonical polymorphism container, so this is high-value. (Found 2026-05-31
+  during P0.6.)
+
 ### P1 — core C++ features the language is incomplete without
 - **P1.1 — exceptions (try/catch/throw)**. Lower `TokenTRY` to SJLJ as `cir_node`
   in `CirBuilder` (CIR builder currently errors `unhandled expression: TokenTRY`;
