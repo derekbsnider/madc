@@ -41,21 +41,33 @@ through. No regression (371). Placement copy-construct (push_back) works via
 placement new.
 
 **IMMEDIATE NEXT TASK — the LAST gate for vector<string>: emit `string` as a
-CONCRETE 32-byte TYPE.** vector<string> still SIGSEGVs. Root cause PRECISELY
-diagnosed (see emitted C of a Vec<string>): the string-object model emits the
-`string` type-spec as `char` (the append_type_specs dtSTRING safety net,
-cir_builder.cpp ~290), so `string* data` lowers to `char* data` -> 1-BYTE stride
-(elements 32 bytes apart overlap/corrupt), and a `string&` return degrades to
-`char*`. The model assumes every string is a specially-declared `long[4]`
-VARIABLE (string_storage_decl), never a pointed-to/arrayed TYPE. FIX: give
-`string` a concrete struct type (e.g. `struct __madc_string { long _w[4]; }`, 32B/
-8-aligned) used wherever a string TYPE appears in specs/declarators (append_type_specs
-dtSTRING, type_list, param/member/return), so string* strides 32 and string[]/
-string members work, while keeping object semantics via the libstdc++ ctor/dtor/
-assign wrappers (which already take void* addresses). RISK: broad — touches every
-string-type emission; declared-string vars currently bypass this via
-string_storage_decl (long[4]), so reconcile the two representations. Validate with
-tmp Vec<string> first (push_back/operator[]/cout/range-for), don't regress 371.
+CONCRETE std::string-sized TYPE, SURGICALLY (not globally).**
+ATTEMPTED + STASHED (stash@{0} "WIP concrete __madc_string type"): defined
+`struct __madc_string { long _w[string_obj_words()]; }` (size from
+sizeof(std::string), NOT hard-coded — user requirement) emitted once at module
+top, and made append_type_specs(dtSTRING) emit it instead of `char`. RESULT: types
+become correct (`struct __madc_string *data` strides 32; operator[] returns
+`struct __madc_string *`; `slot = data + len` correct) BUT it **REGRESSED 7 tests**
+(371->364: testphp/perl/rust/regex/teststdstringconv/testmultiret/…). Reason: a
+GLOBAL append_type_specs(dtSTRING) change is too blunt — dtSTRING flows through that
+path in many contexts (string PARAMS, returns, extern protos) that are coordinated
+elsewhere to be char*/void* (param_decl emits string params as void*; the wrappers
+take void*). So emit the concrete struct ONLY where stride/layout matters — a
+string POINTER (string* member/local, e.g. container `data`) and a string ELEMENT/
+member — and KEEP the char*/void* behaviour for bare string params/values. Likely:
+gate on is_pointer-to-string in the declarator path, leave append_type_specs's
+dtSTRING scalar case alone. Reconcile with string_storage_decl (declared vars =
+long[W]); both must agree on size (string_obj_words()).
+ALSO blocking the header (separate pre-existing PARSER member-resolution gaps found
+this session — fix or avoid): (a) `&member[i]` address-of a member subscript doesn't
+resolve the member (parser.cpp ~6861) — use `data + i` pointer arith; (b)
+`(cast)member` (e.g. `(long)data`) doesn't resolve the member either; (c) the
+SECOND bug exposed even with correct types: `data = (T*)malloc(...)` in the ctor
+MISLOWERS as a std::string operator= (`aSEPKc` on `&data`) although data is a
+string* pointer — the string-assign interception (cir_builder.cpp ~3343,
+is_string_object_value(top->left)) misfires on a string* member; must exclude
+string-POINTER lvalues. Validate with tmp Vec<string> (push_back via placement new +
+`T* slot=data+len`; operator[]; cout; range-for), don't regress 371.
 THEN flip: write include/madc/vector (T* data; len/cap; realloc; push_back via
 `T* slot = data + len; new (slot) T(v);` — NOTE `&data[i]` source syntax hits a
 separate pre-existing parser bug: address-of a MEMBER subscript doesn't resolve
