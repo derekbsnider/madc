@@ -4,6 +4,11 @@ This is the authoritative rehydration entry point for the next session. It super
 the older `2026-05-30-SESSION-HANDOFF.md` (which predates the std::-types refactor).
 
 ## Read order on restart
+0. **`docs/plans/cpp-support.md` — the authoritative C++23/C23 COMPLIANCE ROADMAP.**
+   This is the governing plan: honest current-status table + prioritized task list
+   (P0 correctness bugs → P1 core features → P2 completeness). Every language task
+   traces to a line there. North star: madc as C23/C++23-compliant as practical;
+   anything off that path is DRIFT (memory `project_north_star_c23_cpp23`).
 1. This file (top to bottom).
 2. `MEMORY.md` index + these memories (the WHY): `project_legacy_cpp_shortcuts`,
    `feedback_dont_cling_to_legacy`, `project_string_as_class`, `project_cpp_mangled_direct`,
@@ -12,10 +17,14 @@ the older `2026-05-30-SESSION-HANDOFF.md` (which predates the std::-types refact
    breakdown + EXECUTION COMPLETE section + the polish-followups list with statuses).
 4. Then verify live state (below) before doing anything.
 
-## ⚠️ RESTART CONSTRAINT
-**SendMessage is NOT enabled** this session — you CANNOT continue any prior subagent by
-its `agentId`. Dispatch FRESH subagents (Agent tool). That's fine: subagents always start
-with isolated context; you construct exactly what they need from this doc + the plan.
+## ⚠️ RESTART CONSTRAINT (subagent continuity)
+**SendMessage availability varies by session** — when it IS enabled you can run a
+coordinated team (spawn a named subagent, then iterate with it via `SendMessage`),
+which is preferable for the multi-step parser work. When it is NOT enabled, dispatch
+FRESH subagents (Agent tool) each step. EITHER WAY you can NEVER resume a *prior
+session's* subagent by its old `agentId` — those processes are gone across a restart.
+So always construct the context a subagent needs from this doc + the plan; never assume
+it remembers anything. (Confirmed 2026-05-31: SendMessage IS enabled this session.)
 
 ## LIVE STATE (verify on restart)
 - Repo: `/workspace/madc`, branch **`feature/cir-stdstring-claude`** (off `develop`). HEAD at

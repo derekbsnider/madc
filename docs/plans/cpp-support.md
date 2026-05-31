@@ -1,224 +1,169 @@
-# C++ Support Plan
+# madc C++23 / C23 Compliance Roadmap
 
-Analysis performed 2026-05-24.
+**Authoritative plan for madc's language-standard compliance.** Every C/C++
+language task traces to a line in this document. Controller and subagents both
+anchor here: pick the next unchecked item in priority order; do not invent work
+that isn't on this roadmap, and do not re-solve something the Status table marks
+DONE.
 
-## Current State: ~30% of Useful C++ Features
+> Supersedes the 2026-05-24 "C++ Support Plan" (asmjit era), which declared
+> *"full C++ compliance is not the goal."* That premise is **retired**. With the
+> CIR → c2mir → MIR backend ("C all the way down", portable `--emit=c11`), the
+> governing goal is now:
 
-| Feature | Status | Detail |
-|---------|--------|--------|
-| Classes | Constructors | Members, methods, user-defined ctors/dtors with args. No inheritance/virtual/access control |
-| Templates | Hardcoded | vector/map/set/list for int64 and string only. No user-defined templates |
-| Operator overloading | Working | ==, !=, <, >, <=, >=, +, -, *, / dispatch to class methods |
-| References | Working | Explicit `T&` for numeric types. Non-numeric types pass by ref implicitly |
-| Exceptions | Tokens only | try/catch/throw parsed but zero compilation |
-| Lambdas | Working | `[]` and `[&]` capture. No selective `[x, &y]` |
-| Auto | Limited | Function pointers and lambdas only. No general type deduction |
-| Const | Parsed, ignored | Accepted everywhere, never enforced |
-| Namespaces | Built-in only | `using namespace std;` works. No user-defined namespaces |
-| Streams | Partial | `cout <<` chaining works. `cin >>` missing. No manipulators |
-| Enums | C-style | No `enum class` (scoped enums) |
-| new/delete | Working | Heap allocation with ctor/dtor. No new[]/delete[] yet |
+## North star
 
-## Industry Context
+**Make madc as C23- and C++23-compliant as practical on the CIR backend.**
+Anything that takes us off that path — no matter how locally tempting or easily
+testable — is **drift** and is rejected. (Memory: `project_north_star_c23_cpp23`.)
 
-No lightweight JIT compiler implements significant C++ natively. Every project
-needing full C++ JIT (Cling, ROOT, ClangJIT) builds on Clang/LLVM (~500MB).
-The C++ spec is too large for a custom frontend to cover completely.
+## Non-negotiable principles (read before any task)
 
-**madc's niche:** C scripting with C++ convenience features (classes, strings,
-streams, lambdas, containers). Full C++ compliance is not the goal — practical
-C++ features that real code needs are.
+1. **One unified class machinery.** User classes and libstdc++ classes use the
+   SAME path. The only difference: *precompiled* (a method's `FuncDef::emit_symbol`
+   names a real libstdc++ mangled symbol / runtime wrapper, no body emitted) vs
+   *needs-compiling* (madc emits `ClassName__method`). Never special-case a std::
+   type. (Memories: `project_cpp_mangled_direct`, `project_string_as_class`.)
+2. **No special-casing, no shortcuts, no shimming a symptom.** Fix at the deepest
+   layer. The legacy `dtSTRING`/`tkSTRING`/`ns_stl` shortcuts were retired for a
+   reason — do not reintroduce that pattern. (Memory: `feedback_dont_cling_to_legacy`.)
+3. **gcc/clang is canon.** `g++ -S -fverbose-asm -O0` (annotated) / `clang -S` is
+   the oracle for "what should this compile to." Reduce, compare, then fix.
+   Verify emitted C with `--emit=c11` against stock `c2m`/`gcc`.
+4. **Lowering vs raising.** Default Tier 1: lower/resolve in madc to ordinary C11.
+   Raise c2mir (Tier 2) only for genuine semantic primitives; raise MIR (Tier 3)
+   only for floor gaps (SIMD). See `.claude/rules/lowering-vs-raising.md`.
+5. **Gate every change:** `make -C src fulltest`. Never drop the passing count.
+   One concept per commit. Parser-grammar changes are load-bearing for the whole
+   suite — highest regression risk; go incrementally.
 
-## Phase 1: Complete the Class Model (2-3 weeks)
+## How to use this doc
 
-### 1a. User-defined constructors & destructors (3-5 days)
+- **Controller:** keep the Status table honest (re-probe before asserting), drive
+  the Prioritized roadmap top-down, brief subagents with the relevant section +
+  anchors + the principles above.
+- **Subagent:** you were given a specific task from the Prioritized roadmap. The
+  Status table tells you what already works (don't rebuild it) and what's broken
+  (don't assume it works). Build only your task; report DONE_WITH_CONCERNS if it
+  cascades.
 
-**Existing infrastructure (do not rebuild):**
-- Hidden `__this` pointer — fully working (parser injects, compiler binds)
-- Method parsing/compilation — name mangling, `method_map`, `findMethod()`
-- Stack allocation — `TokenCpnd::voperand()` handles btClass via `cc.newStack()`
-- Placement-new pattern — `string_construct()` / `string_destruct()` for members
-- Cleanup dispatch — `TokenCpnd::cleanup()` walks scope, calls dtors per type
-- Deferred statements — `defer` runs LIFO before destructors
+---
 
-**Implementation steps:**
+## Status (CIR backend — re-verified 2026-05-31, empirical probes)
 
-**Step 1 — Parse-time ctor/dtor recognition** (parser.cpp, datadef.h)
-- In `TokenCLASS::parse()`, when method name == class name: treat as
-  constructor. No return type required in source — internally `void`.
-- When method name is `~ClassName`: treat as destructor (also `void`).
-- Add `bool has_user_ctor` and `bool has_user_dtor` to `DataDefCLASS`.
-- Ctor/dtor are stored in `method_map` like any method. The flags are
-  just fast checks for `voperand()` / `cleanup()`.
-- Single mangled names: `ClassName__ClassName` (ctor),
-  `ClassName___dtor` (dtor). No Itanium C1/C2/D0/D1/D2 split needed
-  (no virtual inheritance).
+### C++ — working
+| Feature | Notes |
+|---|---|
+| Classes: members, methods | bare unqualified member access in methods (`x = 42`) via `__this` |
+| Constructors (default + args), destructors | `testctor*`; RAII via c2mir `cleanup` attribute |
+| Single inheritance | base members at offset 0; `class D : public B` |
+| `new` / `delete` | calloc + ctor / dtor + free |
+| **std::string — full real class** | decl/ctor/dtor/methods/members/pointers/streams; operators `[] + == != < > <= >= = +=`; **return-by-value** via `__retbuf`. DONE this session. |
+| **std::vector / map / set** | real `#include`-defined templates, monomorphized; element methods `v[i].method()` and `keys[i]==k` (keystone, DONE this session) |
+| Template instantiation | Borland monomorphize; scalar / pointer / string type args |
+| References — numeric `T&` | params lower to `T*` |
+| Streams | `cout <<` chains, `cin >>`, manipulators via wrappers |
+| `nullptr`, range-for over containers, user `namespace { }` blocks | namespace-block parsing added this session |
 
-**Step 2 — Destructor calls at scope exit** (compiler.cpp `cleanup`)
-- In `cleanup()`, btClass default case: if `has_user_dtor`, look up
-  dtor in `method_map`, emit `invoke` with `__this` = object address.
-- Call user dtor *before* member cleanup (string_destruct etc.) —
-  matches C++ semantics (body runs first, then members in reverse).
-- **LIFO ordering problem:** `operand_map` is `std::map<Variable*,
-  Operand>` — ordered by pointer address, not declaration order.
-  Add a `std::vector<Variable*> destruct_order` to `TokenCpnd` that
-  records class-typed variables in declaration order. Walk it in
-  reverse during cleanup.
+### C++ — broken or missing (the work)
+| Feature | Symptom (evidence) | Roadmap item |
+|---|---|---|
+| Class by-value **return** | compiles, returns GARBAGE (`makeA(9)`→312984464); `__retbuf` is string-only | **P0.1** (in progress) |
+| Class-**reference** param member access | `A& a; a.v` → "member reference is not a structure or union" | **P0.2** |
+| **Virtual dispatch / vtables** | `p->who()` via base ptr → SIGSEGV | **P0.3** |
+| Range-for over **raw array** | SIGSEGV (works for containers) | **P0.4** |
+| **try / catch / throw** | CIR builder: "unhandled expression: TokenTRY" | **P1.1** |
+| **Lambdas** | 2 c2mir check errors (regressed from old backend) | **P1.2** |
+| User-class operator overloading | class-typed/self-type params don't parse; `this.member` qualified access unsupported (bare works) | **P1.3** |
+| Operator dispatch completeness | `binop_overload_symbol` lacks compound/bitwise/shift/logical; no unary/`()`/`->` dispatch | **P2.1** |
+| **`enum class`** (scoped enums) | parse: "Expecting '{' after enum" | **P2.2** |
+| General `auto` deduction | "'auto' type deduction" unsupported (only fn-ptr/lambda) | **P2.3** |
+| `const` **enforcement** | silently allows `const int x; x = 6;` | **P2.4** |
+| Access control enforcement | uncertain — `private:`+accessor probe errored; verify | **P2.5** |
 
-**Step 3 — Constructor calls at object creation** (compiler.cpp `voperand`)
-- In `voperand()` btClass case, after stack alloc + member string init:
-  if `has_user_ctor`, look up ctor in `method_map`, emit `invoke` with
-  `__this` = LEA of stack slot.
-- Default ctor (no args) only in this step.
+### C side (C11 → C23)
+The CIR is a C11 AST consumed by c2mir. Broad C parity (toward `master`'s ~C89 +
+GCC-torture ~97.9%) is tracked as **ROADMAP Track 1.3** (the develop→master gate)
+— that worklist (~56 integration failures: vla / complex / struct-init / fnptr /
+bitfield) is the C-side priority and is **not duplicated here**. C23-specific
+surface (`typeof` [now standard], `_BitInt(N)`, `#embed`, `constexpr` objects,
+`nullptr`/`static_assert`/binary literals, attributes) is mostly future; route
+each per the lowering-vs-raising tiers. c2mir hard limits (no SIMD, no inline asm,
+no wide chars) per `.claude/rules/c11-transpiler.md`.
 
-**Step 4 — Constructor arguments at declaration** (parser.cpp `parseDeclaration`)
-- In `parseDeclaration()`, when a class-typed variable is followed by
-  `(`: parse as ctor arguments (not function-pointer syntax). No
-  most-vexing-parse ambiguity — madc forbids function declarations
-  inside function bodies.
-- Store parsed arg expressions on the declaration node (e.g., on
-  `TokenDecl` or a new `ctor_args` field).
-- In `voperand()`, pass the args when invoking the ctor.
+---
 
-**Step 5 — Early return cleanup**
-- Verify `TokenRETURN::compile()` calls `cleanup()` for all return
-  paths. It already does for single-return; confirm multi-return and
-  void-return paths.
-- Duplicate dtor calls at each return point — fine for JIT, matches
-  GCC `-O0` behavior. No shared cleanup block needed.
+## Prioritized roadmap
 
-**Step 6 — Tests**
-- `testctor.mad` — default ctor/dtor, verify call order via prints
-- `testctorargs.mad` — ctor with arguments
-- `testctornested.mad` — class with string members + user ctor/dtor
-- `testctororder.mad` — multiple objects, verify LIFO destruction
+### P0 — correctness bugs (silent miscompiles / crashes) — FIRST
+These produce wrong answers or crashes on valid C++. Highest priority.
 
-**Explicitly deferred (not in this phase):**
-- Copy constructors / copy assignment (`Foo a = b;`)
-- Move semantics
-- Temporary objects (`foo(Bar(1,2))`)
-- Member initializer lists (`: member(val)`)
-- `break` / `continue` / `goto` across scopes with dtors (loop exits)
-- Constructor overloading (multiple signatures)
-- Inheritance constructor chaining (Phase 2a)
+- **P0.1 — class by-value return** *(in progress)*. Generalize the `__retbuf`
+  struct-return ABI from std::string-only to any by-value class/struct (callee
+  hidden `T* __retbuf`, copy-ctor/bit-copy into `*__retbuf`; caller temp). Anchors:
+  `is_string_returning_call`, `string_call_temp_addr`/`string_temp_decl`,
+  `retbuf_param`, func_def/func_proto, `translate_return` (cir_builder.cpp).
+- **P0.2 — class-reference param member access**. `A& a; a.v` must resolve through
+  the ref→pointer model carrying the class type. Reuse the numeric `T&`→`T*`
+  machinery + class-reference handling.
+- **P0.3 — virtual dispatch / vtables**. `p->who()` via a base pointer SIGSEGVs —
+  the per-class vtable / `__vptr` indirect call (merged in `da4e1c5`) is broken on
+  CIR. Diagnose with `--emit=c11` + gcc; fix the vptr layout / indirect-call lowering.
+- **P0.4 — range-for over raw arrays**. SIGSEGV; `translate_foreach` must handle a
+  C array (iterate `&a[0]..&a[n]` by element size) as well as the container path.
 
-**Prerequisite for:** inheritance, new/delete, RAII, exception cleanup
+- **P0.5 — copy-assignment / `operator=` synthesis for classes with object
+  members**. `B z2; z2 = makeB();` (assign a class-with-string-member into an
+  EXISTING object) bit-copies and **double-frees** the shared string buffer. The
+  P0.1 by-value-return fix handled decl-init/temp-read forms; this is the distinct
+  copy-*assignment* path. Synthesize a memberwise `operator=` (destroy-old +
+  member copy-construct, or copy-and-swap) for non-trivial classes; gcc canon.
+  Found 2026-05-31 (DONE_WITH_CONCERNS on P0.1).
 
-### 1b. Operator overloading completion (2-3 days)
-- Compiler already has the TODO placeholder
-- When binary op encounters class-typed operand, check `method_map` for
-  `operator+` etc. and emit method call instead of built-in arithmetic
-- Stream `<<` already works this way (special-cased) — generalize it
-- Parser side already done
+### P1 — core C++ features the language is incomplete without
+- **P1.1 — exceptions (try/catch/throw)**. Lower `TokenTRY` to SJLJ as `cir_node`
+  in `CirBuilder` (CIR builder currently errors `unhandled expression: TokenTRY`;
+  parser already tokenizes/parses try/catch/throw). **The SJLJ runtime is ALREADY
+  LIVE** — `src/exception_runtime.cpp` survived the transpiler removal and is in the
+  Makefile (`__madc_try_push/pop`, `__madc_throw_int/double/cstr`, `__madc_rethrow`,
+  `__madc_exception_type/int/double/cstr`, `__madc_exception_clear`, cleanup stack).
+  So P1.1 recycles NO runtime — only writes the lowering that calls it.
+  **Read the curated, cruft-free reference: `docs/plans/refs/exceptions-sjlj.md`**
+  (the runtime contract + the distilled lowering shape + the ONE real design
+  decision: try-body dtor unwind on the longjmp path, since c2mir `cleanup`
+  attributes do NOT fire on longjmp — use the runtime cleanup stack). That doc
+  exists so the implementer NEVER opens the dead `madc_emit_c.cpp` and carries
+  forward `gp_tree_node`/text-emission cruft. Old code is reference-ONLY.
+- **P1.2 — lambdas**. Hoist to free functions + capture struct; fix the 2 c2mir
+  errors. Was working on the old backend — re-establish on CIR.
+- **P1.3 — user-class operator definitions**. Parser gaps block them: class-typed
+  params (esp. the operator's own class / `const T&`), and `this.member` qualified
+  access (bare member access already works). Once these parse, user-class operators
+  ride the existing dispatch with NO new operator code (principle 1).
 
-### 1c. Explicit reference parameters `T&` (2-3 days)
-- Parse `int &x` as reference parameter type
-- At call site: pass address (LEA) instead of value
-- Inside function: transparent dereference through pointer
-- `vfADDRTAKEN` and LEA machinery already exist
-- Type system has `rtReference` variants ready
+### P2 — completeness & polish
+- **P2.1 — operator dispatch completeness**. Extend `binop_overload_symbol`
+  (compound assign / bitwise / shift / logical) + add unary / `operator()` /
+  `operator->` dispatch + scope the `tkAdd` string-concat guard to the string class
+  (so user `operator+` isn't blocked). Becomes testable once P0.1/P0.2/P1.3 land.
+- **P2.2 — `enum class`** (scoped enums). Parse `enum class`, namespace the values.
+- **P2.3 — general `auto`** type deduction from an initializer expression.
+- **P2.4 — `const` enforcement**. Error on assignment to a const lvalue.
+- **P2.5 — access control** enforcement (verify current state first).
 
-### 1d. `new` / `delete` operators (1-2 weeks)
-- `new ClassName(args)` = malloc + constructor call, return pointer
-- `delete ptr` = destructor call + free
-- `new[]` / `delete[]` for arrays
-- malloc/free emission already exists
-- **Requires:** constructors (1a)
+### P3 — broader standards surface (later)
+- C-side parity worklist → **ROADMAP Track 1.3** (the develop→master gate).
+- C23 surface (`_BitInt`, `#embed`, `constexpr` objects, attributes) per the
+  lowering-vs-raising tiers; design Tier-3 (SIMD) for upstream MIR.
+- Deferred-indefinitely (cost ≫ value on this backend): multiple inheritance,
+  move semantics / rvalue refs, template metaprogramming (SFINAE/variadics),
+  coroutines/concepts. Revisit only if a target codebase demands them.
 
-## Phase 2: Inheritance & Polymorphism (1-2 months)
+---
 
-### 2a. Single inheritance (1-2 weeks)
-- Parse `class Derived : public Base { ... }`
-- Copy base members into derived at offset 0
-- Implicit upcasting (Derived* → Base*)
-- Method override via `method_map` shadowing
-- **Requires:** constructors (1a) for base class init
-
-### 2b. Virtual functions / vtables (2-3 weeks)
-- Hidden `__vptr` as first class member
-- vtable = array of function pointers, one per class
-- Virtual call: `call [obj + vptr_offset + slot * 8]` (indirect)
-- Override slots in derived vtables
-- asmjit `cc.invoke()` handles indirect calls via register
-- **Requires:** inheritance (2a)
-
-### 2c. RTTI — dynamic_cast, typeid (1-2 weeks)
-- Type metadata per class (name, hierarchy chain)
-- `dynamic_cast` checks vtable type info at runtime
-- **Requires:** vtables (2b)
-
-## Phase 3: Exception Handling (3-4 weeks)
-
-### 3a. try/catch/throw via SJLJ
-- Use setjmp/longjmp (madc already has setjmp support)
-- `try` = setjmp save point
-- `throw` = longjmp with exception object
-- `catch` = type-checked dispatch after longjmp
-- **Hard part:** stack unwinding — ensuring destructors run for all
-  objects between throw and catch. Requires cleanup chain.
-- **Requires:** constructors/destructors (1a)
-
-## Phase 4: Quality of Life (ongoing, as needed)
-
-### 4a. const enforcement (1-2 days)
-- Set `vfCONSTANT` on const-declared variables
-- Error on assignment to const in `TokenAssign::compile()`
-- Deep const (const methods, const propagation) is separate effort
-
-### 4b. Scoped enums `enum class` (1-2 days)
-- When `enum` followed by `class`, create scoped namespace for values
-
-### 4c. General `auto` type deduction (1 week)
-- `auto x = expr;` — evaluate expr type, assign to variable
-- Requires type inference from expressions (already partially in IR work)
-
-### 4d. More STL container types (1 day per combination)
-- `vector<double>`, `map<int,int>`, etc.
-- Each needs C++ helper functions in ns_stl.cpp
-- Long-term: automated via template instantiation
-
-### 4e. Selective lambda capture `[x, &y]` (2-3 days)
-- Parse capture list with per-variable by-value vs by-reference
-- Extend `FuncDef::captures` to track capture mode
-
-### 4f. User-defined namespaces (1 week)
-- Parse `namespace MyNS { ... }` declarations
-- Add to `namespace_map` dynamically
-
-### 4g. Stream input `cin >>` (3-5 days)
-- Parse `>>` operator for istream types
-- Emit calls to `streamin_string()`, `streamin_numeric()` helpers
-- Analogous to existing `streamout_*` pattern
-
-## Deferred Indefinitely
-
-| Feature | Reason |
-|---------|--------|
-| General templates | Architecturally invasive; requires deferred compilation (conflicts with single-pass). Consider monomorphization-on-demand as lighter alternative |
-| Template metaprogramming | SFINAE, enable_if, variadic templates — not practical without Clang |
-| Full STL | Depends on general templates; hand-wrap what's needed |
-| constexpr evaluation | Requires compile-time interpreter. Current constant folding sufficient |
-| Multiple inheritance | Diamond problem, thunks, virtual bases — extreme complexity |
-| Move semantics | Lvalue/rvalue distinction throughout expression compiler. Only if target code requires it |
-| C++20 concepts/coroutines | Too far ahead for madc's current architecture |
-
-## Effort Summary
-
-| Phase | Effort | What You Get |
-|-------|--------|-------------|
-| Phase 1 (class model) | 2-3 weeks | Constructors, destructors, operator overload, references, new/delete — usable OOP |
-| Phase 2 (inheritance) | 1-2 months | Single inheritance, virtual dispatch, RTTI — polymorphic OOP |
-| Phase 3 (exceptions) | 3-4 weeks | try/catch/throw — error handling |
-| Phase 4 (QoL) | Ongoing | const, enum class, auto, streams, namespaces — polish |
-
-## Strategic Note
-
-madc's C++ support serves **scripting convenience**, not standards compliance.
-The SMAUG port is C89. The C++ features (classes, strings, streams, lambdas)
-make madc pleasant to use as a scripting language. Deeper C++ (vtables,
-exceptions) is justified when porting C++ codebases or when user demand
-requires it.
-
-The code cleanup plan (builtin dispatch table, parser simplification) should
-be done BEFORE Phase 2 — a cleaner codebase makes adding inheritance and
-vtables far less error-prone.
+## Cross-references
+- `docs/plans/ROADMAP.md` — Track 1.3 (CIR coverage → master parity gate).
+- `docs/adr/0001-cir-c2mir-backend.md` — backend decision (settled).
+- `.claude/rules/lowering-vs-raising.md`, `.claude/rules/c11-transpiler.md`,
+  `.claude/rules/gcc-methodology.md` — the how.
+- `docs/superpowers/plans/2026-05-31-RESTART-HANDOFF.md` — session rehydration.
