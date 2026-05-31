@@ -270,33 +270,23 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 // construction and destruction through the uniform class path, replacing the
 // legacy std::string `long[]`+wrapper lowering.
 //
-// NOTE: a `string&` reference (DataDefSTRINGref) ALSO satisfies the std::string
-// rawtype test below — rawtype(std::string&) decodes to std::string (the rtReference
-// 20000 offset, P2.9) — so this returns the ddSTRINGref type object for a ref.
-// That object carries no methods/operators; callers that need to DISPATCH a
-// std::string member/operator must canonicalize to ddSTRING (the one populated
-// class) — see canonical_string_class / class_operator_call (P2.8b). Sizing /
-// declaration callers want the dd as-is, so this returns the matched object.
+// There is exactly ONE populated std::string class object: ddSTRING (it owns the
+// ctors, dtor, methods and operators, all bound to mangled libstdc++ symbols).
+// A `string&` parameter is typed by the separate ddSTRINGref singleton, which
+// carries NO methods — so for ANY std::string identity (value OR reference) this
+// canonicalizes to ddSTRING. That gives every caller (method/operator dispatch,
+// sizing, ctor/dtor) the one class that actually has the members; a string&
+// receiver dispatches std::string's operators exactly like a string value
+// (P2.8b). The value-vs-reference storage distinction is carried by is_pointer()
+// / the vfREFERENCE Variable flag, not by which class object is returned. This
+// folds in the former canonical_string_class shim — no separate canonicalize step.
 static DataDefCLASS *as_object_class(DataDef *dd)
 {
 	if (!dd) return NULL;
 	if (dd->basetype() != BaseType::btClass) return NULL;
 	if (dd->is_pointer()) return NULL;
 	if (!is_std_string(dd)) return NULL;
-	return dynamic_cast<DataDefCLASS *>(dd);
-}
-
-// The single populated std::string class (ddSTRING — owns the operators, methods
-// and ctors) when `cls` is ANY std::string object class, including the empty
-// ddSTRINGref type object that as_object_class hands back for a `string&`. Used
-// by the dispatch sites (operators, methods) so a string-REFERENCE receiver
-// resolves to the same operator/method set as a string VALUE (P2.8b). Returns
-// `cls` unchanged for a non-string (user) class — its own methods are correct.
-static DataDefCLASS *canonical_string_class(DataDefCLASS *cls)
-{
-	if (cls && cls != &ddSTRING && is_std_string(cls))
-		return &ddSTRING;
-	return cls;
+	return &ddSTRING;
 }
 
 // Either an ordinary user class or a runtime-object class (std::string) — both
@@ -2945,12 +2935,9 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 			lcls = class_behind(&ddSTRING);
 	}
 	if (!lcls) return NULL;
-	// A `string&` PARAMETER lhs IS resolved by as_class_instance, but to the
-	// ddSTRINGref type object — which carries no operators. Canonicalize to the
-	// one populated ddSTRING so the ref dispatches std::string's operators
-	// exactly like a string value (P2.8b). No-op for a string value or a user
-	// class (their own class already owns the operators).
-	lcls = canonical_string_class(lcls);
+	// A `string&` receiver is already canonicalized to the one populated ddSTRING
+	// by as_object_class (it returns ddSTRING for any std::string identity), so
+	// lcls owns std::string's operators here — no separate canonicalize step.
 	const char *opsym = binop_overload_symbol(top->id());
 	if (!opsym[0]) return NULL;
 
