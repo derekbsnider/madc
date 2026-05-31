@@ -1,0 +1,10 @@
+#!/../bin/madc
+#include <iostream>
+#include <string>
+using namespace std;
+int main() {
+    string a = "hello"; string b = "hello"; string c = "world";
+    printf("%d %d %d %d\n", a == b, a == c, a != b, a != c);  // 1 0 0 1
+    if (a == b) cout << "eq" << endl;
+    return 0;
+}

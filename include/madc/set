@@ -6,13 +6,15 @@
 // defined here and compiled through the class model.
 //
 // Implementation: a flat array with linear search (madc's own simple set, not
-// a balanced tree). insert() dedups. String elements compare via c_str()+strcmp
-// (std::string operator== is an inlined free template, not a dlsym-exported
-// symbol). The search loop is inlined into each method rather than factored
-// into a private __find(): madc does not yet support an unqualified sibling-
-// method call from inside a class method. A method call on a subscript element
-// (`data[i].c_str()`) is likewise not yet a supported parse form, so each
-// search copies the element into a local first.
+// a balanced tree). insert() dedups. String elements compare via std::string
+// operator== (bound to the extern-C runtime wrapper string_equals, since
+// libstdc++'s std::operator== for strings is an inlined weak template symbol
+// that is not dlsym-exportable). The search loop is inlined into each method
+// rather than factored into a private __find(): madc does not yet support an
+// unqualified sibling-method call from inside a class method. A method call on
+// a subscript element (`data[i] == v`) is likewise not yet a supported parse
+// form, so each search copies the element into a local first (`T cur =
+// data[i]; cur == v`).
 #include <stdlib.h>
 #include <string.h>
 namespace std {
@@ -26,7 +28,7 @@ template<typename T> class set {
 	long i = 0;
 	while ( i < len ) {
 	    T cur = data[i];
-	    if ( strcmp(cur.c_str(), v.c_str()) == 0 )
+	    if ( cur == v )
 		return;			// dedup: element already present
 	    i = i + 1;
 	}
@@ -42,7 +44,7 @@ template<typename T> class set {
 	long i = 0;
 	while ( i < len ) {
 	    T cur = data[i];
-	    if ( strcmp(cur.c_str(), v.c_str()) == 0 )
+	    if ( cur == v )
 		return 1;
 	    i = i + 1;
 	}

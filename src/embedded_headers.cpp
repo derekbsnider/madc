@@ -425,16 +425,18 @@ struct dirent {
 // container, defined here and compiled through the class model.
 //
 // Implementation: parallel arrays of keys/values with linear search (madc's
-// own simple map, not a balanced tree). String keys compare via c_str()+strcmp
-// (std::string operator== is an inlined free template, not a dlsym-exported
-// symbol, so it cannot be bound like operator=/+=). The header instantiates per
-// K, so only the matching code is compiled; no scalar-key test exists.
+// own simple map, not a balanced tree). String keys compare via std::string
+// operator== (bound to the extern-C runtime wrapper string_equals, since
+// libstdc++'s std::operator== for strings is an inlined weak template symbol
+// that is not dlsym-exportable). The header instantiates per K, so only the
+// matching code is compiled; no scalar-key test exists.
 //
 // The search loop is inlined into each method rather than factored into a
 // private __find(): madc does not yet support an unqualified sibling-method
 // call from inside a class method (`__find(k)` -> "undeclared identifier").
-// A method call on a subscript element (`keys[i].c_str()`) is likewise not yet
-// a supported parse form, so each search copies the element into a local first.
+// A method call on a subscript element (`keys[i] == k`) is likewise not yet a
+// supported parse form, so each search copies the element into a local first
+// (`K cur = keys[i]; cur == k`).
 #include <stdlib.h>
 #include <string.h>
 namespace std {
@@ -454,7 +456,7 @@ template<typename K, typename V> class map {
 	long i = 0;
 	while ( i < len ) {
 	    K cur = keys[i];
-	    if ( strcmp(cur.c_str(), k.c_str()) == 0 ) {
+	    if ( cur == k ) {
 		V* vslot = vals + i;	// pointer arith (NOT &vals[i] — parser gap)
 		new (vslot) V(v);	// overwrite value in place
 		return;
@@ -476,7 +478,7 @@ template<typename K, typename V> class map {
 	long i = 0;
 	while ( i < len ) {
 	    K cur = keys[i];
-	    if ( strcmp(cur.c_str(), k.c_str()) == 0 )
+	    if ( cur == k )
 		return vals[i];
 	    i = i + 1;
 	}
@@ -486,7 +488,7 @@ template<typename K, typename V> class map {
 	long i = 0;
 	while ( i < len ) {
 	    K cur = keys[i];
-	    if ( strcmp(cur.c_str(), k.c_str()) == 0 )
+	    if ( cur == k )
 		return 1;
 	    i = i + 1;
 	}
@@ -497,7 +499,7 @@ template<typename K, typename V> class map {
 	long i = 0;
 	while ( i < len ) {
 	    K cur = keys[i];
-	    if ( strcmp(cur.c_str(), k.c_str()) == 0 )
+	    if ( cur == k )
 		return vals[i];
 	    i = i + 1;
 	}
@@ -814,13 +816,15 @@ extern int b64_pton(const char *src, unsigned char *target, int targsize);
 // defined here and compiled through the class model.
 //
 // Implementation: a flat array with linear search (madc's own simple set, not
-// a balanced tree). insert() dedups. String elements compare via c_str()+strcmp
-// (std::string operator== is an inlined free template, not a dlsym-exported
-// symbol). The search loop is inlined into each method rather than factored
-// into a private __find(): madc does not yet support an unqualified sibling-
-// method call from inside a class method. A method call on a subscript element
-// (`data[i].c_str()`) is likewise not yet a supported parse form, so each
-// search copies the element into a local first.
+// a balanced tree). insert() dedups. String elements compare via std::string
+// operator== (bound to the extern-C runtime wrapper string_equals, since
+// libstdc++'s std::operator== for strings is an inlined weak template symbol
+// that is not dlsym-exportable). The search loop is inlined into each method
+// rather than factored into a private __find(): madc does not yet support an
+// unqualified sibling-method call from inside a class method. A method call on
+// a subscript element (`data[i] == v`) is likewise not yet a supported parse
+// form, so each search copies the element into a local first (`T cur =
+// data[i]; cur == v`).
 #include <stdlib.h>
 #include <string.h>
 namespace std {
@@ -834,7 +838,7 @@ template<typename T> class set {
 	long i = 0;
 	while ( i < len ) {
 	    T cur = data[i];
-	    if ( strcmp(cur.c_str(), v.c_str()) == 0 )
+	    if ( cur == v )
 		return;			// dedup: element already present
 	    i = i + 1;
 	}
@@ -850,7 +854,7 @@ template<typename T> class set {
 	long i = 0;
 	while ( i < len ) {
 	    T cur = data[i];
-	    if ( strcmp(cur.c_str(), v.c_str()) == 0 )
+	    if ( cur == v )
 		return 1;
 	    i = i + 1;
 	}
