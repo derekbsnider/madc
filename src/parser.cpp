@@ -3745,30 +3745,30 @@ void Program::add_string_methods()
     const std::string sym_op_idx       = itanium_mangle_operator_sub(T, "[]", {"size_t"}, false);
 
     scmc.c_str = (const char *(string::*)(void))&string::c_str;
-    var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
+    var = addFunction("c_str", datatype_vec_t{rtPtr(DataType::dtCHAR), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGcstr)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_cstr;
     ddSTRING.methods.push_back(var);
 
-    var = addFunction("c_str2", datatype_vec_t{rtPtr(DataType::dtCHAR), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)c_str2, true);
+    var = addFunction("c_str2", datatype_vec_t{rtPtr(DataType::dtCHAR), ptr_of(ddSTRING)}, (fVOIDFUNC)c_str2, true);
     ddSTRING.methods.push_back(var);
 
     scmc.method_str = (string &(string::*)(const string &))&string::assign;
-    var = addFunction("assign", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
+    var = addFunction("assign", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_assign_str;
     ddSTRING.methods.push_back(var);
 
     scmc.method_cstr = (string &(string::*)(const char *))&string::assign;
-    var = addFunction("assign", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    var = addFunction("assign", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_assign_cstr;
     ddSTRING.methods.push_back(var);
 
     scmc.method_str = (string &(string::*)(const string &))&string::append;
-    var = addFunction("append", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
+    var = addFunction("append", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_append_str;
     ddSTRING.methods.push_back(var);
 
     scmc.method_cstr = (string &(string::*)(const char *))&string::append;
-    var = addFunction("append", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    var = addFunction("append", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_append_cstr;
     ddSTRING.methods.push_back(var);
 
@@ -3779,7 +3779,7 @@ void Program::add_string_methods()
     // operator path (no legacy dtSTRING assign interception). Param 1 marks
     // the string& overload as a ref param so the address is passed.
     scmc.method_str = (string &(string::*)(const string &))&string::operator=;
-    var = addFunction("operator=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
+    var = addFunction("operator=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	fd->emit_symbol = sym_op_asgn_str;
 	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
@@ -3788,12 +3788,12 @@ void Program::add_string_methods()
     ddSTRING.methods.push_back(var);
 
     scmc.method_cstr = (string &(string::*)(const char *))&string::operator=;
-    var = addFunction("operator=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    var = addFunction("operator=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_asgn_cstr;
     ddSTRING.methods.push_back(var);
 
     scmc.method_str = (string &(string::*)(const string &))&string::operator+=;
-    var = addFunction("operator+=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
+    var = addFunction("operator+=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)(fnSTRINGmethodSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	fd->emit_symbol = sym_op_app_str;
 	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
@@ -3802,7 +3802,7 @@ void Program::add_string_methods()
     ddSTRING.methods.push_back(var);
 
     scmc.method_cstr = (string &(string::*)(const char *))&string::operator+=;
-    var = addFunction("operator+=", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
+    var = addFunction("operator+=", datatype_vec_t{ptr_of(ddSTRING), ptr_of(ddSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)(fnSTRINGmethodCSTR)scmc.void_pointer[0], true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_app_cstr;
     ddSTRING.methods.push_back(var);
 
@@ -3816,7 +3816,7 @@ void Program::add_string_methods()
     // marks param 1 as a ref param so its address is passed. Return type dtSTRING
     // (by value, via the temp — NOT returns_ref). The registered fn pointer is a
     // legacy-backend placeholder only.
-    var = addFunction("operator+", datatype_vec_t{DataType::dtSTRING, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("operator+", datatype_vec_t{&ddSTRING, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	fd->emit_symbol = "string_concat";
 	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
@@ -3824,7 +3824,7 @@ void Program::add_string_methods()
     }
     ddSTRING.methods.push_back(var);
 
-    var = addFunction("operator+", datatype_vec_t{DataType::dtSTRING, rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("operator+", datatype_vec_t{&ddSTRING, ptr_of(ddSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = "string_concat";
     ddSTRING.methods.push_back(var);
 
@@ -3834,7 +3834,7 @@ void Program::add_string_methods()
     // returned address to the char lvalue (CirBuilder::class_subscript_call).
     // The fn pointer is a legacy-backend placeholder only; emit_symbol is what
     // the CIR backend dispatches through. Param 1 = size_t index.
-    var = addFunction("operator[]", datatype_vec_t{DataType::dtCHAR, rtPtr(DataType::dtSTRING), DataType::dtUINT64}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("operator[]", datatype_vec_t{DataType::dtCHAR, ptr_of(ddSTRING), DataType::dtUINT64}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	fd->emit_symbol = sym_op_idx;
 	fd->returns_ref = true;
@@ -3848,7 +3848,7 @@ void Program::add_string_methods()
     // param so its address is passed). CirBuilder::class_operator_call emits
     // `string_equals(&lhs, &rhs)` and negates the int result for operator!=.
     // The registered fn pointer is a legacy-backend placeholder only.
-    var = addFunction("operator==", datatype_vec_t{DataType::dtINT32, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("operator==", datatype_vec_t{DataType::dtINT32, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	fd->emit_symbol = "string_equals";
 	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
@@ -3856,7 +3856,7 @@ void Program::add_string_methods()
     }
     ddSTRING.methods.push_back(var);
 
-    var = addFunction("operator!=", datatype_vec_t{DataType::dtINT32, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("operator!=", datatype_vec_t{DataType::dtINT32, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	fd->emit_symbol = "string_equals";
 	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
@@ -3877,7 +3877,7 @@ void Program::add_string_methods()
 	{ "operator<=", "string_le" }, { "operator>=", "string_ge" },
     };
     for ( auto &ro : rel_ops ) {
-	var = addFunction(ro.name, datatype_vec_t{DataType::dtINT32, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)madc_string_length, true);
+	var = addFunction(ro.name, datatype_vec_t{DataType::dtINT32, ptr_of(ddSTRING), ref_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
 	if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	    fd->emit_symbol = ro.sym;
 	    if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
@@ -3889,10 +3889,10 @@ void Program::add_string_methods()
     // length() and size() — wrap std::string::length via a free helper.
     // Signature: (int64_t, string*) matches madc method calling convention
     // where the object pointer is the hidden first argument.
-    var = addFunction("length", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("length", datatype_vec_t{DataType::dtINT64, ptr_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_length;
     ddSTRING.methods.push_back(var);
-    var = addFunction("size",   datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("size",   datatype_vec_t{DataType::dtINT64, ptr_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_size;
     ddSTRING.methods.push_back(var);
 
@@ -3900,10 +3900,10 @@ void Program::add_string_methods()
     // parser here so `s.empty()`/`s.clear()` parse as method calls; the CIR
     // backend lowers them to runtime wrappers (string_length==0 / string_clear),
     // so the registered function pointer is only a legacy-backend placeholder.
-    var = addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("empty", datatype_vec_t{DataType::dtINT64, ptr_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_empty;
     ddSTRING.methods.push_back(var);
-    var = addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)madc_string_length, true);
+    var = addFunction("clear", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING)}, (fVOIDFUNC)madc_string_length, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_clear;
     ddSTRING.methods.push_back(var);
 
@@ -3920,7 +3920,7 @@ void Program::add_string_methods()
     const std::string sym_dtor   = itanium_mangle_dtor_sub(T);
 
     // default ctor: string(). Receiver only (param 0 == hidden string*).
-    var = addFunction("string", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING)}, NULL, true);
+    var = addFunction("string", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING)}, NULL, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_ctor0;
     ddSTRING.methods.push_back(var);
     ddSTRING.ctors.push_back(var);
@@ -3928,7 +3928,7 @@ void Program::add_string_methods()
 
     // (const char*) ctor: string(const char*). Receiver + char*. (libstdc++ also
     // takes a trailing allocator&; class_ctor_call passes &this for it.)
-    var = addFunction("string", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, NULL, true);
+    var = addFunction("string", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING), rtPtr(DataType::dtCHAR)}, NULL, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	fd->emit_symbol = sym_ctor_s;
 	fd->ctor_trailing_self = true;   // trailing const allocator<char>& == &this
@@ -3937,7 +3937,7 @@ void Program::add_string_methods()
     ddSTRING.ctors.push_back(var);
 
     // copy ctor: string(const string&). Receiver + string (ref param).
-    var = addFunction("string", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, NULL, true);
+    var = addFunction("string", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING), ref_of(ddSTRING)}, NULL, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
 	fd->emit_symbol = sym_ctor_cp;
 	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
@@ -3948,7 +3948,7 @@ void Program::add_string_methods()
     ddSTRING.has_user_ctor = true;
 
     // dtor: ~string(). Receiver only; bound to the libstdc++ ~basic_string().
-    var = addFunction("~string", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtSTRING)}, NULL, true);
+    var = addFunction("~string", datatype_vec_t{DataType::dtVOID, ptr_of(ddSTRING)}, NULL, true);
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_dtor;
     ddSTRING.methods.push_back(var);
     ddSTRING.method_map["~string"] = var;
@@ -3964,7 +3964,7 @@ void Program::add_sstream_methods()
     Variable *var;
 
     ssmc.str = (string (stringstream::*)(void) const)&stringstream::str;
-    var = addFunction("str", datatype_vec_t{rtPtr(DataType::dtSTRING), rtPtr(DataType::dtSSTREAM)}, (fVOIDFUNC)(fnSSTREAMstr)ssmc.void_pointer[0], true);
+    var = addFunction("str", datatype_vec_t{ptr_of(ddSTRING), rtPtr(DataType::dtSSTREAM)}, (fVOIDFUNC)(fnSSTREAMstr)ssmc.void_pointer[0], true);
     ddSSTREAM.methods.push_back(var);
 }
 
@@ -5064,7 +5064,7 @@ void Program::add_fstream_methods()
     Variable *var;
 
     // ifstream methods — must use typed wrappers (ios is virtual base, pointer offset differs)
-    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)ifstream_open, true);
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM), &ddSTRING}, (fVOIDFUNC)ifstream_open, true);
     ddIFSTREAM.methods.push_back(var);
     var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtIFSTREAM)}, (fVOIDFUNC)ifstream_close, true);
     ddIFSTREAM.methods.push_back(var);
@@ -5076,7 +5076,7 @@ void Program::add_fstream_methods()
     ddIFSTREAM.methods.push_back(var);
 
     // ofstream methods
-    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)ofstream_open, true);
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM), &ddSTRING}, (fVOIDFUNC)ofstream_open, true);
     ddOFSTREAM.methods.push_back(var);
     var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtOFSTREAM)}, (fVOIDFUNC)ofstream_close, true);
     ddOFSTREAM.methods.push_back(var);
@@ -5084,7 +5084,7 @@ void Program::add_fstream_methods()
     ddOFSTREAM.methods.push_back(var);
 
     // fstream methods
-    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM), DataType::dtSTRING}, (fVOIDFUNC)fstream_open, true);
+    var = addFunction("open", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM), &ddSTRING}, (fVOIDFUNC)fstream_open, true);
     ddFSTREAM.methods.push_back(var);
     var = addFunction("close", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtFSTREAM)}, (fVOIDFUNC)fstream_close, true);
     ddFSTREAM.methods.push_back(var);
@@ -5099,8 +5099,8 @@ void Program::populate_builtin_registry()
     if ( builtin_registry.defaults_loaded )
 	return;
 
-    builtin_registry.add_core_function("printstarred", datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)printstarred);
-    builtin_registry.add_core_function("printstr",     datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)printstring);
+    builtin_registry.add_core_function("printstarred", datatype_vec_t{DataType::dtVOID, &ddSTRING}, (fVOIDFUNC)printstarred);
+    builtin_registry.add_core_function("printstr",     datatype_vec_t{DataType::dtVOID, &ddSTRING}, (fVOIDFUNC)printstring);
     builtin_registry.add_core_function("printstream",  datatype_vec_t{DataType::dtVOID, DataType::dtSSTREAM}, (fVOIDFUNC)printstream);
     builtin_registry.add_core_function("puts",	 datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)puts);
     builtin_registry.add_core_function("puti",	 datatype_vec_t{DataType::dtVOID, DataType::dtINT}, (fVOIDFUNC)printinteger);
@@ -5135,23 +5135,23 @@ void Program::populate_builtin_registry()
     // bare `getline` falls back to the user-defined function or libc
     // dlsym. Registered under `__std_getline` and aliased into
     // namespace_map["std"]["getline"] in add_namespaces().
-    builtin_registry.add_core_function("__std_getline", datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
+    builtin_registry.add_core_function("__std_getline", datatype_vec_t{rtPtr(DataType::dtISTREAM),rtPtr(DataType::dtISTREAM),ptr_of(ddSTRING)}, (fVOIDFUNC)(fnGETLINE)std::getline);
     builtin_registry.add_core_function("__std_endl", datatype_vec_t{rtPtr(DataType::dtOSTREAM),rtPtr(DataType::dtOSTREAM)}, (fVOIDFUNC)(fnENDL)std::endl);
-    builtin_registry.add_core_function("__std_to_string", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
-    builtin_registry.add_core_function("__std_stoi", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_stoi);
-    builtin_registry.add_core_function("__std_stod", datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING}, (fVOIDFUNC)madc_stod);
+    builtin_registry.add_core_function("__std_to_string", datatype_vec_t{&ddSTRING, &ddSTRING, DataType::dtINT64}, (fVOIDFUNC)madc_to_string);
+    builtin_registry.add_core_function("__std_stoi", datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)madc_stoi);
+    builtin_registry.add_core_function("__std_stod", datatype_vec_t{DataType::dtDOUBLE, &ddSTRING}, (fVOIDFUNC)madc_stod);
     // strlen is NOT pre-registered: it resolves via dlsym fallback to libc's
     // strlen(const char *). For std::string, use str.length() or str.size().
 
-    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_system);
-    builtin_registry.add_process_function("getenv", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_getenv);
+    builtin_registry.add_process_function("system", datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)madc_system);
+    builtin_registry.add_process_function("getenv", datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING}, (fVOIDFUNC)madc_getenv);
     builtin_registry.add_process_function("get_argv", datatype_vec_t{DataType::dtCHARptr, DataType::dtINT64, DataType::dtINT64}, (fVOIDFUNC)madc_get_argv);
-    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, DataType::dtSTRING, DataType::dtSTRING}, (fVOIDFUNC)madc_setenv);
-    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, DataType::dtSTRING}, (fVOIDFUNC)madc_unsetenv);
+    builtin_registry.add_process_function("setenv", datatype_vec_t{DataType::dtVOID, &ddSTRING, &ddSTRING}, (fVOIDFUNC)madc_setenv);
+    builtin_registry.add_process_function("unsetenv", datatype_vec_t{DataType::dtVOID, &ddSTRING}, (fVOIDFUNC)madc_unsetenv);
     builtin_registry.add_process_function("__errno_location", datatype_vec_t{rtPtr(DataType::dtINT32)}, (fVOIDFUNC)__errno_location);
 
-    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlopen);
-    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, DataType::dtSTRING}, (fVOIDFUNC)madc_dlsym);
+    builtin_registry.add_dlfcn_function("dlopen", datatype_vec_t{DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)madc_dlopen);
+    builtin_registry.add_dlfcn_function("dlsym", datatype_vec_t{DataType::dtINT64, DataType::dtINT64, &ddSTRING}, (fVOIDFUNC)madc_dlsym);
     builtin_registry.add_dlfcn_function("dlclose", datatype_vec_t{DataType::dtVOID, DataType::dtINT64}, (fVOIDFUNC)madc_dlclose);
     builtin_registry.add_dlfcn_function("dlcall", datatype_vec_t{DataType::dtINT64}, (fVOIDFUNC)NULL);
 
@@ -5393,27 +5393,27 @@ void Program::add_madc_namespace()
     extern void *madc_regex_replace(void *, void *, void *, void *);
 
     var = addFunction("__madc_regex_match",
-	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING},
+	datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING},
 	(fVOIDFUNC)madc_regex_match);
     if (var) madc_ns["regex_match"] = var;
 
     var = addFunction("__madc_regex_search",
-	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtSTRING},
+	datatype_vec_t{DataType::dtINT64, &ddSTRING, &ddSTRING},
 	(fVOIDFUNC)madc_regex_search);
     if (var) madc_ns["regex_search"] = var;
 
     var = addFunction("__madc_regex_replace",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING, &ddSTRING},
 	(fVOIDFUNC)madc_regex_replace);
     if (var) madc_ns["regex_replace"] = var;
 
     Variable *scope_var = NULL;
 
     var = addFunction("__madc_eval_runtime",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval);
     scope_var = addFunction("__madc_eval_ctx_runtime",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_ctx);
     if (var) madc_ns["eval"] =
 	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
@@ -5421,46 +5421,46 @@ void Program::add_madc_namespace()
 	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
 
     var = addFunction("__madc_eval_bool_runtime",
-	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING},
+	datatype_vec_t{DataType::dtBOOL, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_bool);
     scope_var = addFunction("__madc_eval_bool_ctx_runtime",
-	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{DataType::dtBOOL, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_bool_ctx);
     if (var) madc_ns["eval_bool"] =
 	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
 
     var = addFunction("__madc_eval_int_runtime",
-	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING},
+	datatype_vec_t{DataType::dtINT64, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_int);
     scope_var = addFunction("__madc_eval_int_ctx_runtime",
-	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_int_ctx);
     if (var) madc_ns["eval_int"] =
 	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
 
     var = addFunction("__madc_eval_double_runtime",
-	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING},
+	datatype_vec_t{DataType::dtDOUBLE, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_double);
     scope_var = addFunction("__madc_eval_double_ctx_runtime",
-	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{DataType::dtDOUBLE, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_double_ctx);
     if (var) madc_ns["eval_double"] =
 	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
 
     var = addFunction("__madc_eval_string_runtime",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_string);
     scope_var = addFunction("__madc_eval_string_ctx_runtime",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_string_ctx);
     if (var) madc_ns["eval_string"] =
 	registration_policy.enable_runtime_eval_source_scope_access && scope_var ? scope_var : var;
 
     var = addFunction("__madc_eval_expression_runtime",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_expression);
     scope_var = addFunction("__madc_eval_expression_ctx_runtime",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_expression_ctx);
     if (var) madc_ns["eval_expression"] =
 	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
@@ -5468,62 +5468,62 @@ void Program::add_madc_namespace()
     if (scope_var) madc_ns["eval_expression_ctx"] = scope_var;
 
     var = addFunction("__madc_eval_expression_bool_runtime",
-	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING},
+	datatype_vec_t{DataType::dtBOOL, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_expression_bool);
     scope_var = addFunction("__madc_eval_expression_bool_ctx_runtime",
-	datatype_vec_t{DataType::dtBOOL, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{DataType::dtBOOL, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_expression_bool_ctx);
     if (var) madc_ns["eval_expression_bool"] =
 	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
     if (scope_var) madc_ns["eval_expression_bool_ctx"] = scope_var;
 
     var = addFunction("__madc_eval_expression_int_runtime",
-	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING},
+	datatype_vec_t{DataType::dtINT64, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_expression_int);
     scope_var = addFunction("__madc_eval_expression_int_ctx_runtime",
-	datatype_vec_t{DataType::dtINT64, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{DataType::dtINT64, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_expression_int_ctx);
     if (var) madc_ns["eval_expression_int"] =
 	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
     if (scope_var) madc_ns["eval_expression_int_ctx"] = scope_var;
 
     var = addFunction("__madc_eval_expression_double_runtime",
-	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING},
+	datatype_vec_t{DataType::dtDOUBLE, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_expression_double);
     scope_var = addFunction("__madc_eval_expression_double_ctx_runtime",
-	datatype_vec_t{DataType::dtDOUBLE, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{DataType::dtDOUBLE, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_expression_double_ctx);
     if (var) madc_ns["eval_expression_double"] =
 	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
     if (scope_var) madc_ns["eval_expression_double_ctx"] = scope_var;
 
     var = addFunction("__madc_eval_expression_string_runtime",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING},
 	(fVOIDFUNC)madc_runtime_eval_expression_string);
     scope_var = addFunction("__madc_eval_expression_string_ctx_runtime",
-	datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{&ddSTRING, &ddSTRING, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_runtime_eval_expression_string_ctx);
     if (var) madc_ns["eval_expression_string"] =
 	registration_policy.enable_runtime_eval_expression_scope_access && scope_var ? scope_var : var;
     if (scope_var) madc_ns["eval_expression_string_ctx"] = scope_var;
 
     var = addFunction("__madc_context_set_int_runtime",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtINT64},
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, &ddSTRING, DataType::dtINT64},
 	(fVOIDFUNC)madc_context_set_int);
     if (var) madc_ns["context_set_int"] = var;
 
     var = addFunction("__madc_context_set_real_runtime",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtDOUBLE},
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, &ddSTRING, DataType::dtDOUBLE},
 	(fVOIDFUNC)madc_context_set_real);
     if (var) madc_ns["context_set_real"] = var;
 
     var = addFunction("__madc_context_set_string_runtime",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtCHARptr},
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, &ddSTRING, DataType::dtCHARptr},
 	(fVOIDFUNC)madc_context_set_string);
     if (var) madc_ns["context_set_string"] = var;
 
     var = addFunction("__madc_context_set_array_runtime",
-	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, DataType::dtSTRING, DataType::dtARRAY},
+	datatype_vec_t{DataType::dtVOID, DataType::dtARRAY, &ddSTRING, DataType::dtARRAY},
 	(fVOIDFUNC)madc_context_set_array);
     if (var) madc_ns["context_set_array"] = var;
 
@@ -6130,9 +6130,15 @@ Variable *Program::addFunction(std::string id, datatype_vec_t params, fVOIDFUNC 
     auto resolve_data_type = [this](const typespec_t &spec) -> DataDef *
     {
 	// A type named directly by DataDef* (e.g. std::string as &ddSTRING) wins —
-	// no enum word involved (P2.14 chunk 1).
+	// no enum word involved (P2.14 chunk 1). A T* / T& form (ptr_of/ref_of)
+	// is resolved the same way the DataType-offset path resolves dtSTRINGptr /
+	// dtSTRINGref: getPointerType for a pointer; the base DataDef for a ref.
 	if ( spec.dd )
+	{
+	    if ( spec.ref == RefType::rtPointer )  return getPointerType(spec.dd);
+	    if ( spec.ref == RefType::rtReference ) return spec.dd;
 	    return spec.dd;
+	}
 	DataType dt = spec.dt;
 	if ( DataDef::rawtype(dt) != dt )
 	{
@@ -14284,7 +14290,7 @@ paramdecl:
 		Variable *scope_param = new Variable(pid, *scope_param_type, 1, NULL, false);
 		scope_param->flags |= vfPARAM | vfLOCAL;
 		if ( rtype == RefType::rtReference
-		  && pb->definition.rawtype() != DataType::dtSTRING )
+		  && !is_std_string(&pb->definition) )
 		    scope_param->flags |= vfREFERENCE;
 		if ( param_has_const && rtype == RefType::rtReference )
 		    scope_param->flags |= vfCONSTANT;

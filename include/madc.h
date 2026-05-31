@@ -561,10 +561,19 @@ struct typespec_t
 {
     DataType  dt;
     DataDef  *dd;
-    typespec_t(DataType t) : dt(t), dd(nullptr) {}
-    typespec_t(DataDef *d) : dt(DataType::dtVOID), dd(d) {}
-    typespec_t(DataDef &d) : dt(DataType::dtVOID), dd(&d) {}
+    RefType   ref;   // when dd!=NULL: rtValue, rtPointer (T*), or rtReference (T&)
+    typespec_t(DataType t) : dt(t), dd(nullptr), ref(RefType::rtValue) {}
+    typespec_t(DataDef *d) : dt(DataType::dtVOID), dd(d), ref(RefType::rtValue) {}
+    typespec_t(DataDef &d) : dt(DataType::dtVOID), dd(&d), ref(RefType::rtValue) {}
+    typespec_t(DataDef *d, RefType r) : dt(DataType::dtVOID), dd(d), ref(r) {}
 };
+
+// Name a `T*` / `T&` parameter or return type by DataDef* in a datatype_vec_t,
+// e.g. ptr_of(ddSTRING) == the old rtPtr(DataType::dtSTRING). addFunction's
+// resolve_data_type applies getPointerType() / passes the ref through, matching
+// the old DataType-offset resolution exactly.
+inline typespec_t ptr_of(DataDef &d) { return typespec_t(&d, RefType::rtPointer); }
+inline typespec_t ref_of(DataDef &d) { return typespec_t(&d, RefType::rtReference); }
 
 // vectors
 typedef std::vector<typespec_t> datatype_vec_t;
