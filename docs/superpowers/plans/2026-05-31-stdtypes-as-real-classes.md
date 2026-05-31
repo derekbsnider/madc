@@ -8,7 +8,23 @@
 
 **Tech Stack:** C++11; madc parser (`src/parser.cpp`), lexer (`src/lexer.cpp`), cir_builder (`src/cir_builder.cpp/.h`), mangler (`src/madc_mangle.*`); c2mir node API; the madc MIR fork at `/workspace/mir`; doctest unit tests; `.mad` integration tests; `make -C src fulltest`; g++/clang as the parity reference (Rule #1).
 
-**Baseline:** 371 integration tests passing on `feature/cir-stdstring-claude`. Every task must keep that green (or raise it); never trade a passing test for a failing one.
+**Baseline:** **372** integration tests passing on `feature/cir-stdstring-claude` (the earlier "371" was off-by-one; the flaky `testfortypedcomma` flips fail↔timeout — ignore only that). Every task must keep 372 green; never trade a passing test for a failing one.
+
+---
+
+## EXECUTION PROGRESS (subagent-driven, 2026-05-31)
+
+- **A1 DONE** (commit `ed21e3b`): `tests/teststringclass.mad` invariant — REDUCED from the plan: string-by-value param+RETURN was removed because the legacy path never implemented string returns (segfaults today). The refactor should DELIVER string return; add a target test in A3/A4 once it works.
+- **A2 DONE** (commit `9e5eceaf`): `FuncDef::emit_symbol` (include/madc.h) + `class_method_call` honours it + `add_string_methods` binds std::string methods to mangled libstdc++ symbols. NOTE the string& overloads use the substitution-compressed `RKS4_` form (not `RKSt6string`) — match the exact exported symbol (`nm -D`/`c++filt`).
+- **A3 DONE** (commit `6101c3a`): generalized `class_ctor_call` with `select_ctor_overload` (default/copy/const-char* by initializer); added `DataDefCLASS::ctors` (overload set) + `FuncDef::ctor_trailing_self`; registered std::string default/(const char*)/copy ctors + `~string` dtor as class records bound to STR_CTOR0/_S/_CP/STR_DTOR; `class_dtor_symbol` returns emit_symbol when set. Validated via `--emit=c11`. The machinery EXISTS but strings don't flow through it yet (see A4 gate). 372 held.
+
+### ⏳ RESUME AT A4 (the high-risk pivot) — guidance from A3's investigation
+A4 flips strings ONTO the class path and deletes the legacy `dtSTRING` lowering. Key findings to act on:
+1. **`as_user_class` gate** (cir_builder.cpp:252) requires `rawtype()==dtRESERVED`, which EXCLUDES `dtSTRING`; and `is_string_object` intercepts string decls first. To route `string s;` through the class decl branches, A4 must teach `as_user_class`/the decl routing to treat `ddSTRING` as a class instance (or bridge). **Flipping it reroutes EVERY string decl at once — do it then fix the cascade iteratively, test-by-test, keeping 372.**
+2. **`new string` storage gap (pre-existing):** the `new ClassName` path emits `sizeof(struct string)` over an incomplete type; for ddSTRING the `new`/decl storage must use `string_obj_words()`/`sizeof(std::string)`. Fix when strings use the class path.
+3. `ctor_trailing_self` handles the libstdc++ `(const char*, allocator&)` quirk (passes `&this` as the allocator) — matches the legacy `string_ctor_call`.
+4. Member-string construct/destruct still uses runtime wrappers (`MEMBER_CTOR_SYM`/`MEMBER_DTOR_SYM`); A4 decides whether those also migrate to the mangled ctor/dtor.
+Call sites to migrate/retire: `class_ctor_call` no-arg (cir_builder.cpp:4044) + argful (:4142) + new (:2899,:2982); decl cleanup attr (:1894); the legacy `string_ctor_call`/`string_storage_decl`/`string_method_call`/`is_string_object*`/`string_obj_arg`/the dtSTRING `append_type_specs` case/the string-assign interception/the stream string branch — delete each only as the class path covers it, running the string-using suite after each.
 
 ---
 
