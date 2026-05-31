@@ -453,8 +453,31 @@ public:
             _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
         else if ( o.type->type() == DataType::dtMAP )
             _datatype = static_cast<DataDefMAP *>(o.type)->val_type;
+        else if ( DataDef *e = subscript_operator_element_type(o.type) )
+            // A class with `T& operator[](...)` (a real madc template container
+            // like vector<T>/map<K,V>/set<T>): the element type is the operator[]
+            // return type (the base T — FuncDef::returns strips the reference).
+            // This is what lets `v[i].method()` see a structured element.
+            _datatype = e;
         else
             _datatype = &ddINT64; // MadArray: default to int
+    }
+
+    // The element type produced by a class object's `operator[]`, or NULL when
+    // `dd` is not a class declaring operator[]. Static so the ctor can use it.
+    static DataDef *subscript_operator_element_type(DataDef *dd)
+    {
+        if ( !dd || !dd->is_object() )
+            return NULL;
+        DataDefCLASS *cls = dynamic_cast<DataDefCLASS *>(dd);
+        if ( !cls )
+            return NULL;
+        std::string opname = "operator[]";
+        Variable *mv = cls->findMethod(opname);
+        if ( !mv )
+            return NULL;
+        FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+        return fd ? &fd->returns : NULL;
     }
     virtual TokenType type() const { return TokenType::ttSubscript; }
     virtual bool is_real() const override { return _datatype->is_real(); }

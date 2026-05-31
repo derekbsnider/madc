@@ -9118,11 +9118,24 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    string id = ident_tb->str;
 		    if ( struct_type->is_object() && (var=((DataDefCLASS *)struct_type)->findMethod(id)) )
 		    {
-			if ( lhs_dot->type() != TokenType::ttVariable )
+			// Method call on a class-object receiver. The common case is a
+			// bare object variable (`s.length()`). A subscript element
+			// (`v[i].length()` where v's operator[] returns a class element)
+			// is also a valid receiver: build the TokenCallMethod with the
+			// subscript as parent_expr so the CIR side (class_this_arg)
+			// addresses the element via class_subscript_addr. Other chained
+			// receivers (member-of-member returning an object, etc.) are not
+			// yet supported.
+			// (Both TokenSubscript and TokenSubscriptExpr report
+			// ttSubscript.)
+			TokenBase *recv_parent = NULL;
+			if ( lhs_dot->type() == TokenType::ttSubscript )
+			    recv_parent = lhs_dot;
+			else if ( lhs_dot->type() != TokenType::ttVariable )
 			    Throw(tb) << "chained method call not yet supported" << flush;
-			TokenVar *tv = dynamic_cast<TokenVar *>(lhs_dot);
-			// cout << "Found " << tv->var.name << "::" << var->name << endl;
-			TokenCallMethod *tc = new TokenCallMethod(tv->var, *var);
+			TokenCallMethod *tc = new TokenCallMethod(*tv_var, *var);
+			if ( recv_parent )
+			    tc->parent_expr = recv_parent;
 			tb = nextToken();
 			tc->line = tb->line;
 			tc->column = tb->column;
