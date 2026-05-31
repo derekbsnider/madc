@@ -172,16 +172,25 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 > `try/catch/throw` for scalar types (int/double/cstr) works via the SJLJ runtime
 > (`testexcept`, `testexcept_dtor_nothrow`, `testtrycatch` green). Remaining
 > exception follow-ups (the hard tail):
-> - **P1.1b — MIR nested-setjmp safety**: rethrow-to-an-outer-try infinite-loops
->   (outer `setjmp` re-returns 0 on longjmp re-entry). Lowering is gcc-correct
->   (verified); the bug is in the MIR JIT backend — a **fork-level fix**, fits the
->   later C-stability/MIR pass. `testrethrow` + `testexcept_dtor_rethrow` `.mir_skip`'d.
-> - **P1.1c — Phase B: RAII dtor-unwind on the throw path**: try-body objects'
->   dtors must run when an exception propagates. Cross-cutting (changes how every
->   in-try object construction lowers): use the runtime cleanup stack
->   (`__madc_cleanup_push` at each ctor; `__madc_throw_*` unwinds to `cleanup_mark`)
->   and STOP relying on cleanup-attribute dtors across setjmp/longjmp.
->   `testexcept_dtor_string` bus-errors until this lands.
+> - **P1.1b — MIR JIT exception-backend bugs (fork-level; C-stability/MIR pass)**.
+>   Two related faults, BOTH with gcc-correct lowering (emit-c11 → gcc runs clean) —
+>   the bug is in the MIR JIT backend: (a) rethrow-to-an-outer-try infinite-loops
+>   (outer `setjmp` re-returns 0 on longjmp re-entry); (b) RE-ENTRANT dtor calls
+>   during unwind + longjmp crash (3+ try-body objects or a string object — found in
+>   P1.1c). `.mir_skip`'d: `testrethrow`, `testexcept_dtor_rethrow`,
+>   `testexcept_dtor_{string,order,nested}`. Fix is in the `/workspace/mir` fork
+>   (nested-setjmp / re-entrancy frame safety) — design for upstream.
+> - **P1.1c — Phase B: RAII dtor-unwind on the throw path** — DONE at the FRONT END
+>   (commit `b9c7829`, gcc-verified): cleanup-stack + discard-on-normal; objects in a
+>   try body register on the runtime cleanup stack, `__madc_throw_*` unwinds to
+>   `cleanup_mark`, normal exit discards (cleanup-attribute handles normal teardown);
+>   dtor runs exactly once per path. 3 exception tests flipped green (incl. a
+>   cross-function throw). REMAINING is a MIR-backend bug (folded into P1.1b below):
+>   `testexcept_dtor_{string,order,nested}` crash in the MIR JIT on RE-ENTRANT dtor
+>   calls during unwind + longjmp (3+ objects or a string object) — lowering is
+>   gcc-correct (emit-c11 → gcc runs clean), `.mir_skip`'d. Front-end edge: try-body
+>   objects declared with NO ctor args (`Foo f;`, the no-arg vars-loop path) don't yet
+>   get the cleanup-push — follow-up (no in-scope test exercises it).
 > - **P1.1d — catch-clause parser gaps**: `catch(char* m)` (pointer type) doesn't
 >   parse; typed cstr/string catch binding needs parser+binding work (used
 >   `catch(...)` as the interim).
