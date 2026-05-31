@@ -5033,6 +5033,15 @@ void Program::populate_builtin_registry()
     // call parses; cir_builder emits N_CALL(__builtin_va_start, ap) and c2mir
     // intrinsic-lowers it. The arg is the user's va_list (array -> pointer).
     builtin_registry.add_core_function("__builtin_va_start", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
+    // __destroy(ptr): compiler intrinsic that destructs the pointed-to object.
+    // No real symbol (NULL pointer, like __builtin_va_start) — the parser
+    // accepts the call and cir_builder lowers it to the element type's class
+    // destructor (mangled ~basic_string for std::string, Cls___dtor for a
+    // user class), or to nothing for a scalar/pointer element type. Used by
+    // the std:: container headers (<vector>/<map>/<set>) to destruct live
+    // elements before free(); generic, element-type-driven, never string-
+    // special-cased. See CirBuilder::translate_expr's __destroy handling.
+    builtin_registry.add_core_function("__destroy", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVOID)}, (fVOIDFUNC)NULL);
     // alloca() is a compiler intrinsic, not a real libc function.
     // Map to malloc for now (true stack alloca needs JIT intrinsic support).
     builtin_registry.add_core_function("alloca", datatype_vec_t{rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)malloc);

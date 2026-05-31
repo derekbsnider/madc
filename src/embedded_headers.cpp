@@ -451,7 +451,18 @@ template<typename K, typename V> class map {
 	len = 0;
 	cap = 4;
     }
-    ~map() { free(keys); free(vals); }
+    ~map() {
+	// Destruct each live key and value before releasing the buffers, as
+	// std::map does (destroy every node's key+value, then deallocate).
+	// __destroy is the element-type-driven destroy intrinsic: it calls the
+	// class dtor for an object key/value (string -> ~basic_string) and is a
+	// no-op for a scalar/pointer K/V. Pointer arith (keys + i / vals + i),
+	// NOT &keys[i] (member-subscript parser gap).
+	long i = 0;
+	while ( i < len ) { __destroy(keys + i); __destroy(vals + i); i = i + 1; }
+	free(keys);
+	free(vals);
+    }
     void put(K k, V v) {
 	long i = 0;
 	while ( i < len ) {
@@ -833,7 +844,13 @@ template<typename T> class set {
     long len;
     long cap;
     set() { data = (T*)malloc(4 * sizeof(T)); len = 0; cap = 4; }
-    ~set() { free(data); }
+    ~set() {
+	// Destruct each live element before releasing the buffer (see <vector>
+	// for the __destroy element-destroy intrinsic; no-op for scalar T).
+	long i = 0;
+	while ( i < len ) { __destroy(data + i); i = i + 1; }
+	free(data);
+    }
     void insert(T v) {
 	long i = 0;
 	while ( i < len ) {
@@ -1807,7 +1824,17 @@ template<typename T> class vector {
     long len;
     long cap;
     vector() { data = (T*)malloc(4 * sizeof(T)); len = 0; cap = 4; }
-    ~vector() { free(data); }
+    ~vector() {
+	// Destruct each live element before releasing the buffer, exactly as
+	// std::vector does (destroy data[0..len), then deallocate). __destroy
+	// is the element-type-driven destroy intrinsic: it calls T's class
+	// dtor for an object element (string -> ~basic_string) and is a no-op
+	// for a scalar/pointer T (vector<int> destructs nothing). Pointer arith
+	// (data + i), NOT &data[i] (member-subscript parser gap).
+	long i = 0;
+	while ( i < len ) { __destroy(data + i); i = i + 1; }
+	free(data);
+    }
     void push_back(T v) {
 	if (len >= cap) { cap = cap * 2; data = (T*)realloc(data, cap * sizeof(T)); }
 	T* slot = data + len;		// pointer arith (NOT &data[len] — parser gap)

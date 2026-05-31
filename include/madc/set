@@ -23,7 +23,13 @@ template<typename T> class set {
     long len;
     long cap;
     set() { data = (T*)malloc(4 * sizeof(T)); len = 0; cap = 4; }
-    ~set() { free(data); }
+    ~set() {
+	// Destruct each live element before releasing the buffer (see <vector>
+	// for the __destroy element-destroy intrinsic; no-op for scalar T).
+	long i = 0;
+	while ( i < len ) { __destroy(data + i); i = i + 1; }
+	free(data);
+    }
     void insert(T v) {
 	long i = 0;
 	while ( i < len ) {

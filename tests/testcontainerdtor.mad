@@ -1,0 +1,59 @@
+#!/../bin/madc
+// Container destructors must destruct their LIVE ELEMENTS before freeing the
+// backing buffer. For vector<string>/set<string>/map<string,*> each element's
+// std::string heap buffer must be released (no element leak); for a scalar
+// element type (vector<int>) element destruction is a no-op. This exercises
+// scope-exit destruction (the inner block) so the container dtor runs while
+// the program is still alive, and again at function return.
+#include <iostream>
+#include <vector>
+#include <set>
+#include <map>
+#include <string>
+using namespace std;
+
+int main()
+{
+    // Inner scope so the containers are destructed BEFORE main returns.
+    {
+        // vector<string>: each element owns a heap buffer; ~vector must
+        // destruct data[0..len) (mangled ~basic_string) then free(data).
+        vector<string> names;
+        names.push_back("Alice");
+        names.push_back("Bob");
+        names.push_back("Charlie");
+        names.push_back("a-much-longer-name-that-forces-heap-allocation-xxxxxx");
+        cout << "vec size: " << names.size() << endl;
+
+        // vector<int>: scalar element type — element destruction is a no-op,
+        // proving the same template body works for both T.
+        vector<int> nums;
+        nums.push_back(10);
+        nums.push_back(20);
+        nums.push_back(30);
+        cout << "ints size: " << nums.size() << endl;
+
+        // set<string>: each element is a std::string object too.
+        set<string> tags;
+        string t = "alpha";
+        tags.insert(t);
+        t = "beta";
+        tags.insert(t);
+        t = "alpha";
+        tags.insert(t);
+        cout << "set size: " << tags.size() << endl;
+
+        // map<string,string>: BOTH keys and values are objects to destruct.
+        map<string, string> dict;
+        string k = "one";
+        string v = "first-value-long-enough-to-heap-allocate-xxxxxxxxxxxxxxxxx";
+        dict.put(k, v);
+        k = "two";
+        v = "second-value-long-enough-to-heap-allocate-xxxxxxxxxxxxxxxxx";
+        dict.put(k, v);
+        cout << "map size: " << dict.size() << endl;
+    }
+
+    cout << "done" << endl;
+    return 0;
+}

@@ -3485,6 +3485,39 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttCallFunc) {
 		TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tb);
 		if (tcf) {
+			// __destroy(ptr): compiler intrinsic — destruct the pointed-to
+			// object element. Lowers to the ELEMENT TYPE's class destructor
+			// (mangled ~basic_string for std::string, Cls___dtor for a user
+			// class with a dtor), or to NOTHING for a scalar/pointer element
+			// type (no dtor). Generic and element-type-driven — never string-
+			// special-cased — so the std:: container headers (<vector>/<map>/
+			// <set>) can destruct live elements before free() for ANY T while
+			// the same template body is a no-op for vector<int>. The argument
+			// keeps its original (uncoerced) type, so `data + i` reports the
+			// real `T*`; the pointed-to T is base_type of that DataDefPTR.
+			if (tcf->var.name == "__destroy" && tcf->parameters.size() == 1) {
+				TokenBase *parg = tcf->parameters[0];
+				DataDef *argdd = parg ? parg->datadef() : NULL;
+				DataDef *elem = NULL;
+				if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(argdd))
+					elem = pdd->base_type;
+				DataDefCLASS *ecls = as_class_instance(elem);
+				// Scalar / pointer / dtor-less element: emit nothing.
+				// A bare `0` keeps the expression-statement valid and
+				// is discarded (the call is evaluated for effect only).
+				if (!ecls || !class_needs_dtor(ecls))
+					return integer(0, tb);
+				// dtor_sym((void*)(ptr)) — the dtor takes only `this`,
+				// matching its `void (*)(T*)` shape (delete uses the same).
+				std::string dsym = class_dtor_symbol(ecls);
+				referenced_funcs.insert(dsym);
+				need_output_extern(dsym.c_str(), false,
+						   { { {N_VOID}, true } });
+				node_t a = list();
+				append(a, node2(N_CAST, void_ptr_type(),
+						translate_expr(parg), tb));
+				return node2(N_CALL, id(dsym.c_str(), tb), a, tb);
+			}
 			const char *rt = builtin_output_runtime(tcf->var.name);
 			if (rt[0]) {
 				static const std::map<std::string, ExternParam> sigs = {

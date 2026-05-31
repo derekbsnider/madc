@@ -32,7 +32,18 @@ template<typename K, typename V> class map {
 	len = 0;
 	cap = 4;
     }
-    ~map() { free(keys); free(vals); }
+    ~map() {
+	// Destruct each live key and value before releasing the buffers, as
+	// std::map does (destroy every node's key+value, then deallocate).
+	// __destroy is the element-type-driven destroy intrinsic: it calls the
+	// class dtor for an object key/value (string -> ~basic_string) and is a
+	// no-op for a scalar/pointer K/V. Pointer arith (keys + i / vals + i),
+	// NOT &keys[i] (member-subscript parser gap).
+	long i = 0;
+	while ( i < len ) { __destroy(keys + i); __destroy(vals + i); i = i + 1; }
+	free(keys);
+	free(vals);
+    }
     void put(K k, V v) {
 	long i = 0;
 	while ( i < len ) {
