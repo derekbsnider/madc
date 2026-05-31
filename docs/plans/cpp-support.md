@@ -160,6 +160,10 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   cosmetic "incompatible types in assignment to a pointer" warning (layout is
   compatible — `__vptr` at offset 0; program runs correctly). Make derived→base
   pointer conversion implicit. (Found 2026-05-31 during P0.3.)
+- **P2.7 — range-for by reference** (`for (int& v : a) v *= 2;`). The loop var
+  currently COPIES each element (`x = a[i]`) in BOTH the array and class paths, so
+  a `T&` loop var can't mutate the source. Make the reference form alias the
+  element. Broad (both range-for paths), pre-existing. (Found 2026-05-31 during P0.4.)
 
 ### P3 — broader standards surface (later)
 - C-side parity worklist → **ROADMAP Track 1.3** (the develop→master gate).
