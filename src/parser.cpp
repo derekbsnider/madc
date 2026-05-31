@@ -8602,14 +8602,19 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    if ( !tb ) { done = true; break; }
 		    continue;
 		}
-		// new ClassName(args) in expression context. After `.` or `->`,
-		// C code can use `new` as a member name.
+		// new-expression in expression context. After `.` or `->`, C code
+		// can use `new` as a member name. The new-expression forms:
+		//   new ClassName(args)   -> next token is an identifier
+		//   new int(v)/string(v)  -> next token is a builtin type
+		//   new (addr) Type(args) -> next token is '(' (placement new)
 		if ( tb->id() == TokenID::tkNEW
 		  && (!prevToken()
 		   || (prevToken()->id() != TokenID::tkDot
 		    && prevToken()->id() != TokenID::tkDeRef))
 		  && peekToken()
-		  && peekToken()->type() == TokenType::ttIdentifier )
+		  && (peekToken()->type() == TokenType::ttIdentifier
+		   || peekToken()->type() == TokenType::ttDataType
+		   || peekToken()->id() == TokenID::tkOpBrk) )
 		{
 		    TokenBase *new_node = ((TokenKeyword *)tb)->parse(*this);
 		    if ( new_node )
@@ -12387,21 +12392,49 @@ TokenBase *TokenNEW::parse(Program &pgm)
 {
     DBG(std::cout << "TokenNEW::parse()" << std::endl);
 
+    // Placement new: `new (addr) Type(args)` constructs at `addr` instead of
+    // allocating. A leading '(' after `new` is the placement-argument list.
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpBrk )
+    {
+	pgm.nextToken(); // consume '('
+	placement = pgm.parseExpression(pgm.nextToken(), true);
+	if ( !placement )
+	    pgm.Throw(this) << "Failed to parse placement-new address expression" << flush;
+	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
+	    pgm.Throw(this) << "Expected ')' after placement-new address" << flush;
+	pgm.nextToken(); // consume ')'
+    }
+
     TokenBase *tn = pgm.nextToken();
-    if ( !tn || tn->type() != TokenType::ttIdentifier )
-	pgm.Throw(tn ? tn : this) << "Expected class name after 'new'" << flush;
+    if ( !tn )
+	pgm.Throw(this) << "Expected type after 'new'" << flush;
 
-    std::string class_name = ((TokenIdent *)tn)->str;
-
-    // Look up the class type
-    datadef_map_iter dmi = pgm.struct_map.find(class_name);
-    if ( dmi == pgm.struct_map.end() )
-	pgm.Throw(tn) << "Unknown class '" << class_name << "' in new expression" << flush;
-    DataDefCLASS *ddc = dynamic_cast<DataDefCLASS *>(dmi->second);
-    if ( !ddc )
-	pgm.Throw(tn) << "'" << class_name << "' is not a class type" << flush;
-
-    alloc_class = ddc;
+    // Resolve the constructed type. A class -> alloc_class (the real
+    // DataDefCLASS pointer); any other type (string, scalar) -> alloc_type.
+    // TokenDataType::definition is a reference, so &definition is the real
+    // object and dynamic_cast recovers a class.
+    TokenDataType *tdt = resolve_declared_type_token(pgm, tn, true, true);
+    if ( tdt )
+    {
+	if ( DataDefCLASS *c = dynamic_cast<DataDefCLASS *>(&tdt->definition) )
+	    alloc_class = c;
+	else
+	    alloc_type = &tdt->definition;
+    }
+    else
+    {
+	// Fall back to a direct class lookup (forward-referenced class names
+	// not yet in datatype_map).
+	if ( tn->type() != TokenType::ttIdentifier )
+	    pgm.Throw(tn) << "Expected type after 'new'" << flush;
+	std::string class_name = ((TokenIdent *)tn)->str;
+	datadef_map_iter dmi = pgm.struct_map.find(class_name);
+	if ( dmi == pgm.struct_map.end() )
+	    pgm.Throw(tn) << "Unknown type '" << class_name << "' in new expression" << flush;
+	alloc_class = dynamic_cast<DataDefCLASS *>(dmi->second);
+	if ( !alloc_class )
+	    pgm.Throw(tn) << "'" << class_name << "' is not a class type" << flush;
+    }
 
     // Parse constructor arguments: (arg1, arg2, ...)
     tn = pgm.peekToken();
@@ -12416,7 +12449,7 @@ TokenBase *TokenNEW::parse(Program &pgm)
 		pgm.nextToken(); // consume ','
 	}
 	if ( !pgm.peekToken() || pgm.peekToken()->id() != TokenID::tkClBrk )
-	    pgm.Throw(this) << "Expected ')' after new " << class_name << " arguments" << flush;
+	    pgm.Throw(this) << "Expected ')' after new-expression arguments" << flush;
 	pgm.nextToken(); // consume ')'
     }
 

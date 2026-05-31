@@ -1,0 +1,32 @@
+#!/../bin/madc
+// Placement new: `new (addr) T(args)` constructs at a given address instead of
+// allocating — the mechanism std::vector uses to build elements in raw buffer
+// memory. Scalar T stores; a class T runs its constructor at the address.
+#include <iostream>
+#include <stdlib.h>
+using namespace std;
+
+class Point {
+    int x;
+    int y;
+    Point(int a, int b) { x = a; y = b; }
+    int sum() { return x + y; }
+};
+
+int main()
+{
+    // scalar placement: construct ints in a raw buffer
+    int* a = (int*)malloc(4 * sizeof(int));
+    new (&a[0]) int(42);
+    new (&a[1]) int(99);
+    printf("ints: %d %d\n", a[0], a[1]);
+    free(a);
+
+    // class placement: run the constructor at a given address
+    void* mem = malloc(sizeof(Point));
+    Point* p = (Point*)mem;
+    new (p) Point(3, 4);
+    printf("point.sum=%d\n", p->sum());
+    free(mem);
+    return 0;
+}

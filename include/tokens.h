@@ -1194,7 +1194,13 @@ class TokenNEW: public TokenKeyword
 public:
     DataDefCLASS *alloc_class;
     std::vector<TokenBase *> ctor_args;
-    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; }
+    // Placement new: `new (placement) Type(args)` constructs at the given
+    // address instead of allocating. `placement` is the address expression
+    // (NULL for ordinary `new`); `alloc_type` is the constructed type when it
+    // is not a class (string / scalar), with alloc_class still used for classes.
+    TokenBase *placement;
+    DataDef *alloc_type;
+    TokenNEW() : TokenKeyword("new") { alloc_class = NULL; placement = NULL; alloc_type = NULL; }
     virtual TokenID id() const { return TokenID::tkNEW; }
     virtual TokenBase *clone() { return new TokenNEW(); }
     virtual TokenBase *parse(Program &);

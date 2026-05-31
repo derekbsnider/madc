@@ -2757,6 +2757,81 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// (No ctor call when the class has no user constructor — calloc already
 	// zero-initializes, matching value-init of a POD.)
 	if (TokenNEW *tn = dynamic_cast<TokenNEW *>(tb)) {
+		// -------- Placement new: `new (addr) T(args)` --------
+		// Construct at the given address, no allocation. The placement
+		// address is already T* (e.g. &data[len] where data is T*), so the
+		// element lvalue is *addr and the class __this / string-this is addr
+		// directly. Yields the address (a statement expression), like g++.
+		if (tn->placement) {
+			// A node must not appear twice in the tree; the placement
+			// address is a pure expression, so re-translate per use.
+			auto addr = [&]() -> node_t { return translate_expr(tn->placement); };
+			node_t construct = NULL;
+			if (tn->alloc_type && tn->alloc_type->is_string()) {
+				// Reuse the string ctor selection: copy / cstr / default.
+				node_t a = list();
+				append(a, node2(N_CAST, void_ptr_type(), addr(), tb));
+				const char *sym;
+				if (!tn->ctor_args.empty()
+				    && is_string_object_value(tn->ctor_args[0])) {
+					append(a, string_obj_arg(tn->ctor_args[0]));
+					sym = STR_CTOR_CP;
+					need_output_extern(sym, false,
+						{ { {N_VOID}, true }, { {N_VOID}, true } });
+				} else if (!tn->ctor_args.empty()) {
+					append(a, translate_expr(tn->ctor_args[0]));
+					append(a, node2(N_CAST, void_ptr_type(), addr(), tb)); // dummy alloc&
+					sym = STR_CTOR_S;
+					need_output_extern(sym, false,
+						{ { {N_VOID}, true }, { {N_CHAR}, true }, { {N_VOID}, true } });
+				} else {
+					sym = STR_CTOR0;
+					need_output_extern(sym, false, { { {N_VOID}, true } });
+				}
+				construct = node2(N_CALL, id(sym, tb), a, tb);
+			} else if (tn->alloc_class) {
+				DataDefCLASS *pc = tn->alloc_class;
+				if (pc->has_user_ctor) {
+					std::string csym = pc->name + "__" + pc->name;
+					FuncDef *ctor = NULL;
+					auto it = pc->method_map.find(pc->name);
+					if (it != pc->method_map.end() && it->second)
+						ctor = dynamic_cast<FuncDef *>(it->second->type);
+					referenced_funcs.insert(csym);
+					node_t a = list();
+					append(a, addr());   // __this (already Class*)
+					for (size_t i = 0; i < tn->ctor_args.size(); i++) {
+						TokenBase *arg = tn->ctor_args[i];
+						size_t pi = i + 1;
+						DataDef *pt = (ctor && pi < ctor->parameters.size())
+								? ctor->parameters[pi] : NULL;
+						DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+						bool refp = ctor && pi < ctor->ref_params.size()
+							    && ctor->ref_params[pi];
+						if (pt && (pdt == DataType::dtSTRING
+							   || pdt == DataType::dtSTRINGref))
+							append(a, string_obj_arg(arg));
+						else if (refp)
+							append(a, node1(N_ADDR, translate_expr(arg), arg));
+						else
+							append(a, translate_expr(arg));
+					}
+					construct = node2(N_CALL, id(csym.c_str(), tb), a, tb);
+				}
+			} else {
+				// Scalar T: *addr = arg (or zero-init when no args).
+				node_t rhs = tn->ctor_args.empty()
+						? integer(0, tb) : translate_expr(tn->ctor_args[0]);
+				construct = node2(N_ASSIGN, node1(N_DEREF, addr(), tb), rhs, tb);
+			}
+			// ({ <construct>; addr; }) — yields the placement address (T*).
+			node_t items = list();
+			if (construct)
+				append(items, node2(N_EXPR, list(), construct, tb));
+			append(items, node2(N_EXPR, list(), addr(), tb));
+			return node1(N_STMTEXPR, node2(N_BLOCK, list(), items, tb), tb);
+		}
+
 		DataDefCLASS *cdd = tn->alloc_class;
 		if (!cdd) return error_node("new without a class type", tb);
 		char tmp[32];
