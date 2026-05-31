@@ -157,25 +157,25 @@ bool value_from_madvalue_context(const MadValue &in,
 				 madc::value &out,
 				 std::string &reason)
 {
-    switch ( in.type )
+    switch ( in.kind )
     {
-	case DataType::dtINT64:
+	case MadValueKind::mvINT:
 	    out = madc::value(static_cast<int64_t>(in.as_int()));
 	    return true;
-	case DataType::dtDOUBLE:
+	case MadValueKind::mvDOUBLE:
 	    out = madc::value(in.as_double());
 	    return true;
-	case DataType::dtSTRING:
+	case MadValueKind::mvSTRING:
 	    out = madc::value(in.as_string());
 	    return true;
-	case DataType::dtARRAY:
+	case MadValueKind::mvARRAY:
 	    return value_from_madarray_context(in.as_array(), out, reason);
-	default:
+	case MadValueKind::mvNONE:
 	    break;
     }
 
     reason = std::string("unsupported context value kind '")
-	+ std::to_string((int)in.type) + "'";
+	+ std::to_string((int)in.kind) + "'";
     return false;
 }
 

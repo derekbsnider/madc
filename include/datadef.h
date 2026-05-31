@@ -811,9 +811,17 @@ class MadArray;
 
 // ---- MadValue: tagged union for PHP-style mixed-type arrays ----
 
+// MadValue's own discriminator. The PHP/borrowed-language mixed-array union
+// holds exactly these five alternatives; it formerly borrowed DataType enum
+// values (dtVOID/dtINT64/dtDOUBLE/dtSTRING/dtARRAY) as the tag, which is a
+// different concept from DataDef type identity. A self-owned kind makes the
+// union self-consistent and removes the last MadValue dependency on the
+// dtSTRING enum word (P2.14 chunk 2).
+enum class MadValueKind : uint8_t { mvNONE, mvINT, mvDOUBLE, mvSTRING, mvARRAY };
+
 struct MadValue
 {
-    DataType type;
+    MadValueKind kind;
     union {
 	int64_t     ival;
 	double      dval;
@@ -826,7 +834,7 @@ struct MadValue
     MadValue(const MadArray &a);
 
     // string constructor — copies the string
-    MadValue(const std::string &s) : type(DataType::dtSTRING)
+    MadValue(const std::string &s) : kind(MadValueKind::mvSTRING)
     {
 	ptr = new std::string(s);
     }
@@ -844,10 +852,10 @@ struct MadValue
     double       as_double() const { return dval; }
     std::string &as_string() const { return *(std::string *)ptr; }
     MadArray    &as_array()  const { return *(MadArray *)ptr; }
-    bool         is_string() const { return type == DataType::dtSTRING; }
-    bool         is_int()    const { return type == DataType::dtINT64; }
-    bool         is_double() const { return type == DataType::dtDOUBLE; }
-    bool         is_array()  const { return type == DataType::dtARRAY; }
+    bool         is_string() const { return kind == MadValueKind::mvSTRING; }
+    bool         is_int()    const { return kind == MadValueKind::mvINT; }
+    bool         is_double() const { return kind == MadValueKind::mvDOUBLE; }
+    bool         is_array()  const { return kind == MadValueKind::mvARRAY; }
 };
 
 // PHP-style array: ordered, mixed-type, supports both integer and string keys
@@ -891,22 +899,22 @@ public:
 
 class DataDefARRAY:    public DDClass { public: DataDefARRAY():   DDClass("array", sizeof(MadArray), DataType::dtARRAY) {} };
 
-inline MadValue::MadValue(const MadArray &a) : type(DataType::dtARRAY)
+inline MadValue::MadValue(const MadArray &a) : kind(MadValueKind::mvARRAY)
 {
     ptr = new MadArray(a);
 }
 
-inline MadValue::MadValue() : type(DataType::dtVOID), ival(0) {}
+inline MadValue::MadValue() : kind(MadValueKind::mvNONE), ival(0) {}
 
-inline MadValue::MadValue(int64_t v) : type(DataType::dtINT64), ival(v) {}
+inline MadValue::MadValue(int64_t v) : kind(MadValueKind::mvINT), ival(v) {}
 
-inline MadValue::MadValue(double v) : type(DataType::dtDOUBLE), dval(v) {}
+inline MadValue::MadValue(double v) : kind(MadValueKind::mvDOUBLE), dval(v) {}
 
-inline MadValue::MadValue(const MadValue &o) : type(o.type)
+inline MadValue::MadValue(const MadValue &o) : kind(o.kind)
 {
-    if ( type == DataType::dtSTRING && o.ptr )
+    if ( kind == MadValueKind::mvSTRING && o.ptr )
 	ptr = new std::string(*(std::string *)o.ptr);
-    else if ( type == DataType::dtARRAY && o.ptr )
+    else if ( kind == MadValueKind::mvARRAY && o.ptr )
 	ptr = new MadArray(*(MadArray *)o.ptr);
     else
 	ival = o.ival;
@@ -916,14 +924,14 @@ inline MadValue &MadValue::operator=(const MadValue &o)
 {
     if ( this != &o )
     {
-	if ( type == DataType::dtSTRING && ptr )
+	if ( kind == MadValueKind::mvSTRING && ptr )
 	    delete (std::string *)ptr;
-	else if ( type == DataType::dtARRAY && ptr )
+	else if ( kind == MadValueKind::mvARRAY && ptr )
 	    delete (MadArray *)ptr;
-	type = o.type;
-	if ( type == DataType::dtSTRING && o.ptr )
+	kind = o.kind;
+	if ( kind == MadValueKind::mvSTRING && o.ptr )
 	    ptr = new std::string(*(std::string *)o.ptr);
-	else if ( type == DataType::dtARRAY && o.ptr )
+	else if ( kind == MadValueKind::mvARRAY && o.ptr )
 	    ptr = new MadArray(*(MadArray *)o.ptr);
 	else
 	    ival = o.ival;
@@ -933,9 +941,9 @@ inline MadValue &MadValue::operator=(const MadValue &o)
 
 inline MadValue::~MadValue()
 {
-    if ( type == DataType::dtSTRING && ptr )
+    if ( kind == MadValueKind::mvSTRING && ptr )
 	delete (std::string *)ptr;
-    else if ( type == DataType::dtARRAY && ptr )
+    else if ( kind == MadValueKind::mvARRAY && ptr )
 	delete (MadArray *)ptr;
 }
 
