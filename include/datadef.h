@@ -103,7 +103,17 @@ public:
 
 	return false;
     }
-    virtual bool is_string() const { if (rawtype() == DataType::dtSTRING) return true; return false; }
+    // Class-identity marker for std::string. Recognizing std::string by the
+    // raw dtSTRING type-code is the residual special-casing P2.14 removes — a
+    // std::string is a real C++ class (like vector/map/set) and should be
+    // recognized by its CLASS IDENTITY, not a reserved enum tag. The two
+    // std::string DataDef classes (DataDefSTRING / DataDefSTRINGref) override
+    // this to return true; everything else inherits false. Survives the tag
+    // change in Phase 4 (when DataDefSTRING moves to the generic dtRESERVED
+    // class tag). Use the is_std_string()/is_std_string_ref() free recognizers
+    // (below) at call sites — they layer reftype() on top of this marker.
+    virtual bool is_string_class() const { return false; }
+    virtual bool is_string() const { return is_string_class(); }
     virtual bool is_complex() const { return false; }
     virtual bool is_numeric() const
     {
@@ -700,8 +710,8 @@ class DataDefUINT32:    public DataDef { public: DataDefUINT32():  DataDef("uint
 class DataDefUINT64:    public DataDef { public: DataDefUINT64():  DataDef("uint64_t", 8, DataType::dtUINT64) {} };
 class DataDefFLOAT:     public DataDef { public: DataDefFLOAT() :  DataDef("float", 4,    DataType::dtFLOAT) {} };
 class DataDefDOUBLE:    public DataDef { public: DataDefDOUBLE():  DataDef("double", 8,   DataType::dtDOUBLE) {} };
-class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtSTRING) {} };
-class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} };
+class DataDefSTRING:    public DDClass { public: DataDefSTRING():  DDClass("string", sizeof(std::string), DataType::dtSTRING) {} virtual bool is_string_class() const { return true; } };
+class DataDefSTRINGref: public DDClass { public: DataDefSTRINGref(): DDClass("string&", sizeof(std::string &), DataType::dtSTRINGref) {} virtual bool is_string_class() const { return true; } };
 class DataDefISTREAM:   public DDClass { public: DataDefISTREAM(): DDClass("istream", sizeof(std::istream), DataType::dtISTREAM) {} };
 class DataDefOSTREAM:   public DDClass { public: DataDefOSTREAM(): DDClass("ostream", sizeof(std::ostream), DataType::dtOSTREAM) {} };
 class DataDefSSTREAM:   public DDClass { public: DataDefSSTREAM(): DDClass("stringstream", sizeof(std::stringstream), DataType::dtSSTREAM) {} };
@@ -954,6 +964,43 @@ extern DataDefDOUBLE ddDOUBLE;
 extern DataDefSTRING ddSTRING;
 extern DataDefSTRINGref ddSTRINGref;
 extern DataDefLPSTR ddLPSTR;
+
+// ---- std::string class-identity recognizers (P2.14) -------------------------
+// Recognize a std::string by CLASS IDENTITY (the is_string_class() virtual)
+// rather than the raw dtSTRING / dtSTRINGref type-code, so the recognition is
+// principled and survives retiring those enum tags. These are the canonical
+// replacements for the scattered `rawtype()==dtSTRING` / `==dtSTRINGref`
+// checks. A std::string DataDef may appear by value, by reference (T&), or by
+// pointer (T*) — these helpers distinguish those forms via reftype().
+
+// True for ANY std::string DataDef regardless of ref/pointer form (value,
+// string&, string*). The broad "is this a string at all?" predicate.
+static inline bool is_std_string(const DataDef *dd)
+{
+	return dd && dd->is_string_class();
+}
+
+// True only for a std::string REFERENCE (string& — DataDefSTRINGref, or a
+// string DataDef whose reftype() is rtReference). Replaces the old
+// `rawtype()==dtSTRINGref` checks. Note that the dedicated DataDefSTRINGref
+// singleton answers rtReference via its tag today; after Phase 4 it carries
+// the same identity marker, so this stays correct.
+static inline bool is_std_string_ref(const DataDef *dd)
+{
+	return dd && dd->is_string_class()
+	    && dd->reftype() == RefType::rtReference;
+}
+
+// True for a std::string VALUE object (not a reference, not a pointer) — the
+// receiver that owns the operators/methods. Replaces `rawtype()==dtSTRING`
+// where the intent was specifically "a string value/object" (e.g. copy-ctor
+// param matching, by-value receiver dispatch).
+static inline bool is_std_string_value(const DataDef *dd)
+{
+	return dd && dd->is_string_class()
+	    && dd->reftype() == RefType::rtValue;
+}
+
 extern DataDefPTR ddVOIDptr, ddCHARptr, ddINTptr, ddINT32ptr;
 extern DataDefISTREAM ddISTREAM;
 extern DataDefOSTREAM ddOSTREAM;
