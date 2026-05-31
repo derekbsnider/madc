@@ -11183,9 +11183,13 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    << inherit_base->name << ", size now " << ddc->size << endl);
     }
 
-    // C++ defaults: struct=public, class=private. madc uses class for everything
-    // so default to public for backward compatibility with existing tests.
-    uint32_t access_flags = 0; // 0=public, vfPRIVATE, vfPROTECTED
+    // C++ defaults: `class` members are PRIVATE until a public:/protected:
+    // label, `struct` members are public. This is TokenCLASS::parse (the
+    // `class` keyword only — `struct`/`union` go through TokenSTRUCT::parse,
+    // which never marks members and so leaves them public), so the correct
+    // default here is private. (P2.5b: corrected from the legacy
+    // default-to-public artifact now that P2.5 enforces access.)
+    uint32_t access_flags = vfPRIVATE; // 0=public, vfPRIVATE, vfPROTECTED
 
     while ( (tn=pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
     {

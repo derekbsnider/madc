@@ -3,11 +3,13 @@
 using namespace std;
 
 class Point {
+public:
     int x;
     int y;
 };
 
 class Person {
+public:
     string name;
     int age;
 };
