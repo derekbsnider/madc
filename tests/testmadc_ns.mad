@@ -1,5 +1,6 @@
 #!/usr/bin/env madc
 #include <iostream>
+#include <vector>
 using namespace std;
 // Test madc:: and std:: namespace-qualified types
 

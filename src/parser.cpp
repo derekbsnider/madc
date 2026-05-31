@@ -11727,7 +11727,6 @@ static bool is_contextual_identifier_token(TokenBase *tb)
 	case TokenID::tkUSING:
 	case TokenID::tkPREFER:
 	case TokenID::tkDEFER:
-	case TokenID::tkVECTOR:
 	case TokenID::tkMAP:
 	case TokenID::tkSET:
 	case TokenID::tkLIST:
@@ -11762,7 +11761,6 @@ static std::string contextual_identifier_name(TokenBase *tb)
 	|| tb->id() == TokenID::tkUSING
 	|| tb->id() == TokenID::tkPREFER
 	|| tb->id() == TokenID::tkDEFER
-	|| tb->id() == TokenID::tkVECTOR
 	|| tb->id() == TokenID::tkMAP
 	|| tb->id() == TokenID::tkSET
 	|| tb->id() == TokenID::tkLIST
@@ -12993,80 +12991,6 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 // STL container parse functions removed — ns_stl.cpp was a proof-of-concept.
 // Template instantiation will be generated on demand by the transpiler.
 // parse vector<type>
-TokenBase *TokenVECTOR::parse(Program &pgm)
-{
-    DBG(std::cout << "TokenVECTOR::parse()" << std::endl);
-    TokenBase *tn = pgm.nextToken();
-    if ( tn->id() != TokenID::tkLT )
-	pgm.Throw(tn) << "Expecting < after vector" << flush;
-
-    tn = pgm.nextToken();
-    TokenDataType *elem_td = resolve_declared_type_token(pgm, tn, true, true);
-    if ( !elem_td )
-	pgm.Throw(tn) << "Expecting type inside vector<>" << flush;
-
-    DataDef *elem = &elem_td->definition;
-
-    tn = pgm.nextToken();
-    if ( tn->id() != TokenID::tkGT )
-	pgm.Throw(tn) << "Expecting > after vector<type" << flush;
-
-    // build composite name and look up or create
-    std::string tname = "vector<" + elem->name + ">";
-    datatype_map_iter dmi = pgm.datatype_map.find(tname);
-    TokenDataType *tdt;
-    if ( dmi != pgm.datatype_map.end() )
-    {
-	tdt = dmi->second;
-    }
-    else
-    {
-	// use sizeof of the underlying vector type — all std::vector are same size
-	DataDefVECTOR *dd = new DataDefVECTOR(elem, tname, sizeof(std::vector<int64_t>));
-	if ( elem->is_string() )
-	    dd->register_extern_ctor_dtor((void *)vector_str_construct, (void *)vector_str_destruct);
-	else
-	    dd->register_extern_ctor_dtor((void *)vector_int_construct, (void *)vector_int_destruct);
-	tdt = new TokenDataType(tname.c_str(), *dd);
-	pgm.datatype_map[tname] = tdt;
-
-	// register methods on this parameterization
-	Variable *mv;
-	if ( elem->is_string() )
-	{
-	    mv = pgm.addFunction("push_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR), DataType::dtSTRING}, (fVOIDFUNC)vector_str_push_back, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("pop_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_pop_back, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("at", datatype_vec_t{DataType::dtSTRING, DataType::dtSTRING, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_str_at, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_size, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_clear, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_str_empty, true);
-	    dd->methods.push_back(mv);
-	}
-	else
-	{
-	    mv = pgm.addFunction("push_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_int_push_back, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("pop_back", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_pop_back, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("at", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR), DataType::dtINT64}, (fVOIDFUNC)vector_int_at, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("size", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_size, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("clear", datatype_vec_t{DataType::dtVOID, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_clear, true);
-	    dd->methods.push_back(mv);
-	    mv = pgm.addFunction("empty", datatype_vec_t{DataType::dtINT64, rtPtr(DataType::dtVECTOR)}, (fVOIDFUNC)vector_int_empty, true);
-	    dd->methods.push_back(mv);
-	}
-    }
-
-    return pgm.parseDeclaration(tdt);
-}
-
 // parse map<key_type, val_type>
 TokenBase *TokenMAP::parse(Program &pgm)
 {
@@ -16481,11 +16405,11 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 	    break;
 
 	case TokenType::ttKeyword:
-	    // Container-type keywords (map, vector, set, list) are only types when
+	    // Container-type keywords (map, set, list) are only types when
 	    // followed by '<'. Otherwise the user is using them as an identifier —
 	    // e.g. `MAP_DATA *map;` followed by `map->vnum = …;` — so route through
 	    // parseExpression which already accepts them as contextual identifiers.
-	    if ( (tb->id() == TokenID::tkMAP || tb->id() == TokenID::tkVECTOR
+	    if ( (tb->id() == TokenID::tkMAP
 		|| tb->id() == TokenID::tkSET || tb->id() == TokenID::tkLIST)
 		&& peekToken() && peekToken()->id() != TokenID::tkLT )
 	    {

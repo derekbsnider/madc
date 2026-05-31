@@ -47,7 +47,7 @@ enum class TokenID {
 // 80		81	82	83	84		85	86
   tkSWITCH, tkWHILE, tkCLASS, tkSTRUCT, tkDEFAULT, tkTYPEDEF, tkOPEROVER, tkREGISTER,
   tkUSING, tkNAMESPACE, tkPREFER, tkDEFER, tkSTATIC, tkCONST, tkEXTERN, tkENUM, tkRESTRICT, tkVOLATILE,
-  tkVECTOR, tkMAP, tkSET, tkLIST, tkTEMPLATE,
+  tkMAP, tkSET, tkLIST, tkTEMPLATE,
   tkFatArrow, tkMATCH,    // => (rust::match arm) and the match statement itself
   tkUNION, tkNEW, tkDELETE
 };
@@ -1175,8 +1175,8 @@ public:
     virtual TokenBase *parse(Program &);
 };
 
-// STL container keywords — parse template syntax vector<type>, map<k,v>, etc.
-class TokenVECTOR: public TokenKeyword { public: TokenVECTOR() : TokenKeyword("vector") {} virtual TokenID id() const { return TokenID::tkVECTOR; } virtual TokenBase *clone() { return new TokenVECTOR(); } virtual TokenBase *parse(Program &); };
+// STL container keywords — parse template syntax map<k,v>, etc. (vector is
+// no longer a keyword: std::vector is a header-defined madc template.)
 class TokenMAP:    public TokenKeyword { public: TokenMAP()    : TokenKeyword("map") {}    virtual TokenID id() const { return TokenID::tkMAP; }    virtual TokenBase *clone() { return new TokenMAP(); }    virtual TokenBase *parse(Program &); };
 class TokenSET:    public TokenKeyword { public: TokenSET()    : TokenKeyword("set") {}    virtual TokenID id() const { return TokenID::tkSET; }    virtual TokenBase *clone() { return new TokenSET(); }    virtual TokenBase *parse(Program &); };
 class TokenLIST:   public TokenKeyword { public: TokenLIST()   : TokenKeyword("list") {}   virtual TokenID id() const { return TokenID::tkLIST; }   virtual TokenBase *clone() { return new TokenLIST(); }   virtual TokenBase *parse(Program &); };

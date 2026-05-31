@@ -689,7 +689,6 @@ TokenUSING	tkUSING;
 TokenNAMESPACE	tkNAMESPACE;
 TokenPREFER	tkPREFER;
 TokenDEFER	tkDEFER;
-TokenVECTOR	tkVECTOR;
 TokenMAP	tkMAP;
 TokenSET	tkSET;
 TokenLIST	tkLIST;
@@ -1339,7 +1338,6 @@ void Program::add_keywords()
 	keyword_map[tkUSING.str] = &tkUSING;
 	keyword_map[tkNAMESPACE.str] = &tkNAMESPACE;
 	keyword_map[tkPREFER.str] = &tkPREFER;
-	keyword_map[tkVECTOR.str] = &tkVECTOR;
 	keyword_map[tkMAP.str] = &tkMAP;
 	keyword_map[tkSET.str] = &tkSET;
 	keyword_map[tkTEMPLATE.str] = &tkTEMPLATE;
