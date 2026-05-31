@@ -333,6 +333,22 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   = parse at one `--std=` level, emit at another. Depends on P2.11 (input gating) +
   P2.12 (enum-driven output target). Forward-looking capability; `project_std_enum_gatekeeping`.
 
+- **P2.14 — RETIRE `dtSTRING`/`dtSTRINGref` tags; std::string fully generic class
+  (complete the string-as-real-class refactor).** The std::-types refactor removed the
+  dtSTRING *lowering* but std::string still carries the special `dtSTRING` DataType tag
+  (and `string&` = `dtSTRINGref`), and ~130 sites (50 cir_builder + 83 parser) key off
+  `dtSTRING` to RECOGNIZE the string class. INCONSISTENT: vector/map/set were fully
+  de-special-cased (their dt-tags removed in the hygiene sweep — generic DataDefCLASS),
+  but string kept its tag. This residual special-casing is the root that spawned the
+  type-code workarounds: `canonical_string_class` (P2.8b) and `dd_ptr_depth` (P0.7), and
+  it's most of P2.9 (the dtSTRINGref→dtSTRING rtReference-offset overlap). FIX (correct
+  completion, per `feedback_correct_over_shortcuts`): retire `dtSTRING`/`dtSTRINGref`,
+  make std::string a generic class type recognized by CLASS IDENTITY (`== ddSTRING` /
+  `as_class_instance`==the string class) like vector/map/set; this dissolves P2.9 + both
+  shims. SUBSTANTIAL (~130 sites → class-identity checks) — a deliberate refactor, not a
+  quick fix; supersedes/absorbs P2.9. Found 2026-05-31 (user: "I thought we got rid of
+  dtSTRING?").
+
 ### P3 — broader standards surface (later)
 - **Polyglot transpiler (far-future direction).** The endgame generalizes the
   std-dialect subsystem: madc supports features AND syntax from other languages, so
