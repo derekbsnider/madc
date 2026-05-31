@@ -1,0 +1,36 @@
+#!/../bin/madc
+// P2.3: general `auto x = <expr>;` type deduction (C++11+/C23+/madc).
+// Reuses the deduce_expr_type engine (the lambda return-type deducer) to
+// resolve x's CONCRETE type from the initializer — int/double/char/copy/bool.
+// The fn-name / lambda fn-ptr `auto` forms keep working unchanged.
+#include <iostream>
+using namespace std;
+
+int square(int n) { return n * n; }
+
+int main()
+{
+    auto r = square(6);      // function call -> deduce the RETURN type (int)
+    cout << r << endl;       // 36
+
+    auto i = 5 + 3;          // int
+    cout << i << endl;       // 8
+
+    auto d = 2.5 * i;        // double (usual arithmetic conversions)
+    cout << d << endl;       // 20
+
+    auto c = 'x';            // char
+    cout << c << endl;       // x
+
+    auto j = i;              // variable copy -> int
+    cout << j << endl;       // 8
+
+    auto b = 3 > 2;          // bool from comparison
+    cout << b << endl;       // 1
+
+    // existing lambda-auto path still works
+    auto twice = [](int n) { return n * 2; };
+    cout << twice(21) << endl;  // 42
+
+    return 0;
+}

@@ -15033,38 +15033,101 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	Variable *rhs_var = NULL;
 	TokenBase *rhs_node = NULL;
 
-	if ( rhs_tok && rhs_tok->id() == TokenID::tkOpSqr )
+	// General `auto x = <expr>;` deduction is C++11+ and C23+; in C89..C17
+	// `auto` is a STORAGE-CLASS specifier, not a deduced type. Gate per I4:
+	// allow deduction in C++/madc always, and in C only at C23. The fn-name /
+	// lambda fn-ptr forms below are unaffected (they are the original behaviour
+	// and remain available wherever this block runs).
+	bool auto_deduction_allowed = !is_c_mode() || language_std == STD_C23;
+
+	// Decide whether the initializer is a function name or lambda (the original
+	// fn-ptr path) or a general expression (P2.3 deduction). A bare function
+	// NAME (`auto fn = foo;`) takes the fn-ptr path; a function CALL
+	// (`auto r = foo(args);`) is a general expression whose deduced type is the
+	// call's RETURN type — distinguished by the token following the identifier
+	// (tokens[0] is the identifier itself, tokens[1] the next token).
+	bool rhs_is_lambda = rhs_tok && rhs_tok->id() == TokenID::tkOpSqr;
+	bool rhs_is_func_name = false;
+	if ( !rhs_is_lambda && rhs_tok && rhs_tok->type() == TokenType::ttIdentifier )
 	{
-	    // lambda: auto fn = [](params) { body };
-	    nextToken(); // consume '['
-	    rhs_node = parseLambda();
-	    rhs_var = &(dynamic_cast<TokenVar *>(rhs_node)->var);
+	    Variable *probe = findVariable(((TokenIdent *)rhs_tok)->str);
+	    bool followed_by_call = tokens.size() > 1 && tokens[1]
+				    && tokens[1]->id() == TokenID::tkOpBrk;
+	    rhs_is_func_name = probe && probe->type && probe->type->is_function()
+			       && !followed_by_call;
 	}
-	else if ( rhs_tok && rhs_tok->type() == TokenType::ttIdentifier )
+
+	if ( rhs_is_lambda || rhs_is_func_name )
 	{
-	    // named function: auto fn = func_name;
-	    nextToken(); // consume identifier
-	    rhs_var = findVariable(((TokenIdent *)rhs_tok)->str);
-	    if ( !rhs_var || !rhs_var->type->is_function() )
-		Throw(tb) << "'auto' type deduction requires a function name or lambda" << flush;
-	    rhs_node = new TokenVar(*rhs_var);
+	    if ( rhs_is_lambda )
+	    {
+		// lambda: auto fn = [](params) { body };
+		nextToken(); // consume '['
+		rhs_node = parseLambda();
+		rhs_var = &(dynamic_cast<TokenVar *>(rhs_node)->var);
+	    }
+	    else
+	    {
+		// named function: auto fn = func_name;
+		nextToken(); // consume identifier
+		rhs_var = findVariable(((TokenIdent *)rhs_tok)->str);
+		rhs_node = new TokenVar(*rhs_var);
+	    }
+
+	    // consume the semicolon
+	    TokenBase *semi = peekToken();
+	    if ( semi && semi->id() == TokenID::tkSemi )
+		nextToken();
+
+	    // create a DataDefFPTR wrapping the target function's FuncDef
+	    FuncDef *target_func = (FuncDef *)rhs_var->type;
+	    DataDefFPTR *fptr_type = new DataDefFPTR(target_func);
+
+	    bool alloc = (!code || gotstatic) ? true : false;
+	    var = addVariable(code, *fptr_type, id, 1, NULL, alloc);
+	    if ( !decl_typedef_alias.empty() )
+		var->typedef_name = decl_typedef_alias;
+	    TokenDecl *td = new TokenDecl(*var);
+	    td->file = tb->file;
+	    td->line = tb->line;
+	    td->column = tb->column;
+
+	    // build the assignment AST
+	    TokenAssign *assign = new TokenAssign();
+	    assign->file = tb->file;
+	    assign->line = tb->line;
+	    assign->column = tb->column;
+	    assign->left = new TokenVar(*var);
+	    assign->right = rhs_node;
+	    td->initialize = assign;
+
+	    DBG(std::cout << "parseDeclaration() auto: " << id << " = " << rhs_var->name << std::endl);
+	    return td;
 	}
-	else
-	{
-	    Throw(tb) << "'auto' type deduction requires a function name or lambda" << flush;
-	}
+
+	// General-expression `auto x = <expr>;` (P2.3) — only when std-gated on.
+	if ( !auto_deduction_allowed )
+	    Throw(tb) << "'auto' type deduction requires a function name or lambda"
+		      << " (general 'auto x = expr' is C++11+/C23+)" << flush;
+
+	// Parse the initializer expression, then deduce x's concrete type from it
+	// (I2 — a real type, never a bespoke "auto" type) via the same engine the
+	// lambda return-type deduction uses (I6 — one deduction path, no duplicate).
+	TokenBase *init_expr = parseExpression(nextToken(), true);
+	if ( !init_expr )
+	    Throw(tb) << "Failed to parse 'auto' initializer expression" << flush;
+
+	DataDef *deduced = deduce_expr_type(init_expr);
+	if ( !deduced || deduced == &ddVOID )
+	    Throw(tb) << "Cannot deduce 'auto' type from this initializer" << flush;
 
 	// consume the semicolon
 	TokenBase *semi = peekToken();
 	if ( semi && semi->id() == TokenID::tkSemi )
 	    nextToken();
 
-	// create a DataDefFPTR wrapping the target function's FuncDef
-	FuncDef *target_func = (FuncDef *)rhs_var->type;
-	DataDefFPTR *fptr_type = new DataDefFPTR(target_func);
-
 	bool alloc = (!code || gotstatic) ? true : false;
-	var = addVariable(code, *fptr_type, id, 1, NULL, alloc);
+	var = addVariable(code, *deduced, id, 1, NULL, alloc);
 	if ( !decl_typedef_alias.empty() )
 	    var->typedef_name = decl_typedef_alias;
 	TokenDecl *td = new TokenDecl(*var);
@@ -15072,16 +15135,16 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	td->line = tb->line;
 	td->column = tb->column;
 
-	// build the assignment AST
 	TokenAssign *assign = new TokenAssign();
 	assign->file = tb->file;
 	assign->line = tb->line;
 	assign->column = tb->column;
 	assign->left = new TokenVar(*var);
-	assign->right = rhs_node;
+	assign->right = init_expr;
 	td->initialize = assign;
 
-	DBG(std::cout << "parseDeclaration() auto: " << id << " = " << rhs_var->name << std::endl);
+	DBG(std::cout << "parseDeclaration() auto: " << id << " = <expr> deduced "
+		<< deduced->name << std::endl);
 	return td;
     }
 
