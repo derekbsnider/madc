@@ -43,7 +43,6 @@ class TokenLPSTR:     public TokenDataType { public: TokenLPSTR():  TokenDataTyp
 // namespace (std_types["string"], registered in _parser_init), reached as
 // `std::string` or via `using namespace std;`. It is NOT a global builtin
 // type token, exactly like C++. (Phase A5, stdtypes-as-real-classes.)
-class TokenOSTREAM:   public TokenDataType { public: TokenOSTREAM():TokenDataType("ostream", ddOSTREAM) {} };
 class TokenARRAY:     public TokenDataType { public: TokenARRAY():  TokenDataType("array", ddARRAY) {} };
 class TokenIFSTREAM:  public TokenDataType { public: TokenIFSTREAM(): TokenDataType("ifstream", ddIFSTREAM) {} };
 class TokenOFSTREAM:  public TokenDataType { public: TokenOFSTREAM(): TokenDataType("ofstream", ddOFSTREAM) {} };

@@ -449,10 +449,6 @@ public:
 	    _datatype = &ddCHAR;
         else if ( o.type->type() == DataType::dtSIMD )
             _datatype = static_cast<DataDefSIMD *>(o.type)->element_type;
-        else if ( o.type->type() == DataType::dtVECTOR )
-            _datatype = static_cast<DataDefVECTOR *>(o.type)->element_type;
-        else if ( o.type->type() == DataType::dtMAP )
-            _datatype = static_cast<DataDefMAP *>(o.type)->val_type;
         else if ( DataDef *e = subscript_operator_element_type(o.type) )
             // A class with `T& operator[](...)` (a real madc template container
             // like vector<T>/map<K,V>/set<T>): the element type is the operator[]

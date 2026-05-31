@@ -7136,7 +7136,6 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // if top of exStack is a variable, treat [ as subscript operator
 		    if ( !exStack.empty() && exStack.top()->type() == TokenType::ttVariable )
 		    {
-			static int sub_tmp_counter = 0;
 			TokenVar *tv = dynamic_cast<TokenVar *>(exStack.top());
 			exStack.pop();
 			// parse index expression (stops at ] via peek-stop below)
@@ -7161,23 +7160,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    exStack.push(new TokenSubscriptExpr(idx, new TokenVar(tv->var), elem_type));
 			    break;
 			}
-			// for string-returning containers, allocate a temp variable for the result
-			Variable *tmp = nullptr;
-			if ( tv->var.type->type() == DataType::dtVECTOR ) {
-			    DataDefVECTOR *vdd = static_cast<DataDefVECTOR *>(tv->var.type);
-			    if ( vdd->element_type->is_string() ) {
-				std::string tmpname = "__sub_tmp_" + std::to_string(sub_tmp_counter++);
-				tmp = addVariable(code, ddSTRING, tmpname, 1, NULL, true);
-			    }
-			} else if ( tv->var.type->type() == DataType::dtMAP ) {
-			    DataDefMAP *mdd = static_cast<DataDefMAP *>(tv->var.type);
-			    if ( mdd->val_type->is_string() ) {
-				std::string tmpname = "__sub_tmp_" + std::to_string(sub_tmp_counter++);
-				tmp = addVariable(code, ddSTRING, tmpname, 1, NULL, true);
-			    }
-			}
 			DBG(cout << "parseExpression: subscript on " << tv->var.name << endl);
-			exStack.push(new TokenSubscript(tv->var, idx, tmp));
+			exStack.push(new TokenSubscript(tv->var, idx));
 			break;
 		    }
 		    // Widened detection: complex value-producing expressions

@@ -1093,9 +1093,6 @@ node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
 		DataType pdt = ptype->rawtype();
 		if (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref
 		    || pdt == DataType::dtARRAY || pdt == DataType::dtARRAYref
-		    || pdt == DataType::dtVECTOR || pdt == DataType::dtVECTORref
-		    || pdt == DataType::dtMAP || pdt == DataType::dtMAPref
-		    || pdt == DataType::dtSET || pdt == DataType::dtSETref
 		    || pdt == DataType::dtSSTREAM || pdt == DataType::dtSSTREAMref) {
 			node_t pspec = list();
 			append(pspec, simple(N_VOID));
