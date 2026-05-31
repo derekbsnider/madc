@@ -368,6 +368,12 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 	// real string object.
 	if (is_string_subscript(arg) || is_string_array_subscript(arg))
 		return true;
+	// A string `operator+` expression (`a + b`, `a + "lit"`, chained `a+b+c`)
+	// is a by-value std::string RVALUE — a real object materialized into a
+	// cleanup-tagged temp by class_operator_call. It reads as a string object so
+	// `string c = a + b` copy-constructs and `cout << (a+b)` prints it.
+	if (is_string_operator_plus(arg))
+		return true;
 	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
 	if (!tv)
 		return false;
@@ -382,6 +388,29 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 	if (tv->var.is_constant())
 		return false;
 	return true;
+}
+
+// Is `arg` a std::string `operator+` expression (`a + b`, `a + "lit"`, or a
+// chained `a + b + c`)? Recognized when it is a tkAdd whose LHS is a genuine
+// string OBJECT (not a literal/char*) AND whose RHS is string-like (a string
+// object or a const char* / dtSTRING value). Such an expression binds the
+// std::string operator+ and yields a by-value string object. A chained
+// `(a+b)+c` recurses through the LHS (itself a string operator+). EXCLUDED:
+// `"lit" + n` / `label + i` (char* pointer arithmetic — LHS is not an object),
+// and `s + n` (string + numeric — RHS not string-like; no such operator+).
+// This MUST mirror the tkAdd guard in class_operator_call so the two agree.
+bool CirBuilder::is_string_operator_plus(TokenBase *arg)
+{
+	TokenOperator *top = dynamic_cast<TokenOperator *>(arg);
+	if (!top || top->id() != TokenID::tkAdd) return false;
+	if (!top->left || !top->right) return false;
+	bool lhs_obj = is_string_object_value(top->left);
+	DataDef *rdd = top->right->datadef();
+	bool rhs_strlike = is_string_object_value(top->right)
+			   || (rdd && (rdd->is_string()
+				       || (rdd->is_pointer()
+					   && rdd->rawtype() == DataType::dtCHARptr)));
+	return lhs_obj && rhs_strlike;
 }
 
 // A CALL to a madc-COMPILED function returning a std::string by value (dtSTRING,
@@ -733,16 +762,17 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 // copy-constructs the result into *__retbuf, and return the temp's (void*)
 // address. Pushes both the storage decl and the call to m_pending_stmts.
 // `call_tok` is the TokenCallFunc (so args can be retranslated with __retbuf).
-node_t CirBuilder::string_call_temp_addr(TokenBase *call_tok, TokenBase *origin)
+// `struct string <name> __attribute__((cleanup(STR_DTOR)));` — raw storage for a
+// string object filled by a return-slot/placement write (no ctor / initializer),
+// destructed via the cleanup attribute. Pushes the decl to m_pending_stmts and
+// returns the generated temp name. Shared by string_call_temp_addr (__retbuf ABI)
+// and the by-value operator+ path (string_concat out-slot).
+void CirBuilder::string_temp_decl(char *name_buf, size_t buf_sz, TokenBase *origin)
 {
-	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
-	char name[32];
-	snprintf(name, sizeof(name), "__madc_strtmp_%d", m_strtmp_counter++);
+	snprintf(name_buf, buf_sz, "__madc_strtmp_%d", m_strtmp_counter++);
 
-	// `struct string __t __attribute__((cleanup(STR_DTOR)));` — raw storage; the
-	// callee copy-constructs into it, so no default ctor / initializer.
 	node_t share = node1(N_SHARE, type_list(&ddSTRING));   // struct string
-	node_t decl = node2(N_DECL, id(name, origin), list());
+	node_t decl = node2(N_DECL, id(name_buf, origin), list());
 	need_output_extern(STR_DTOR, false, { { {N_VOID}, true } });
 	node_t attr_args = list();
 	append(attr_args, id(STR_DTOR, origin));
@@ -753,9 +783,18 @@ node_t CirBuilder::string_call_temp_addr(TokenBase *call_tok, TokenBase *origin)
 	append(sd, decl);
 	append(sd, attrs);   // __attribute__((cleanup(STR_DTOR)))
 	append(sd, ignore()); // asm
-	append(sd, ignore()); // initializer — none; the callee fills *__retbuf
+	append(sd, ignore()); // initializer — none; filled by the return-slot write
 	CIR_NODE(sd)->synth_from_origin = true;
 	m_pending_stmts.push_back(sd);
+}
+
+node_t CirBuilder::string_call_temp_addr(TokenBase *call_tok, TokenBase *origin)
+{
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
+	char name[32];
+	// `struct string __t __attribute__((cleanup(STR_DTOR)));` — raw storage; the
+	// callee copy-constructs into it, so no default ctor / initializer.
+	string_temp_decl(name, sizeof(name), origin);
 
 	// Void call: f((struct string*)&__t, <args>). The first arg is the return
 	// slot (__retbuf). string_obj_addr yields (void*)&__t — the param is a
@@ -2522,9 +2561,24 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 		FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
 		if (ofd) lcls = class_behind(&ofd->returns);
 	}
+	// A chained `(a + b) + c`: the LHS is itself a string operator+ RVALUE whose
+	// datadef() is the default scalar (TokenOperator carries no string type), so
+	// as_class_instance misses it. It is a std::string object — resolve its class
+	// directly so the outer + binds to std::string's operator+.
+	if (!lcls && is_string_operator_plus(top->left))
+		lcls = class_behind(&ddSTRING);
 	if (!lcls) return NULL;
 	const char *opsym = binop_overload_symbol(top->id());
 	if (!opsym[0]) return NULL;
+
+	// operator+ on std::string is CONCATENATION, which differs from =/+=/==:
+	// its LHS may be a const char* used in POINTER ARITHMETIC (`"lit" + n`,
+	// `label + i`) — every char* literal/expr is dtSTRING-typed, so the
+	// as_class_instance(datadef) trigger above matches it spuriously. Defer to
+	// is_string_operator_plus (genuine string-OBJECT LHS + string-like RHS); a
+	// spurious match falls through to ordinary pointer/arithmetic +.
+	if (top->id() == TokenID::tkAdd && !is_string_operator_plus(top))
+		return NULL;
 
 	std::string mname = std::string("operator") + opsym;
 	// Pick the overload matching the RHS (string& vs const char*). A class
@@ -2560,6 +2614,34 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 				return neg;
 			}
 			return eqcall;
+		}
+
+		// operator+ binds to the extern-C wrapper string_concat, which RETURNS
+		// A NEW string BY VALUE. Like a by-value string-returning call, allocate
+		// a cleanup-tagged `struct string` temp and have the wrapper construct
+		// the result into it: `string_concat((void*)&__t, &lhs, &rhs)` (three
+		// void* args — out-slot + both operand object addresses). The expression
+		// VALUE is the temp's (void*) address — a string-OBJECT lvalue, so
+		// `string c = a + b` copy-constructs from it and `cout << (a + b)` prints
+		// it. The const char* RHS overload still passes a string object (string_obj_arg
+		// materializes a literal into a temp), matching string_concat's `void*` b.
+		if (oid == TokenID::tkAdd) {
+			char name[32];
+			string_temp_decl(name, sizeof(name), origin);
+			node_t cargs = list();
+			append(cargs, string_obj_addr(name, origin));   // out-slot = &__t
+			append(cargs, string_obj_arg(top->left));        // const string& a
+			append(cargs, string_obj_arg(top->right));       // const string& b
+			// void string_concat(void*, void*, void*)
+			need_output_extern(callee->emit_symbol.c_str(), false,
+					   { { {N_VOID}, true }, { {N_VOID}, true },
+					     { {N_VOID}, true } });
+			node_t ccall = node2(N_CALL,
+					     id(callee->emit_symbol.c_str(), origin),
+					     cargs, origin);
+			CIR_NODE(ccall)->synth_from_origin = true;
+			m_pending_stmts.push_back(node2(N_EXPR, list(), ccall, origin));
+			return string_obj_addr(name, origin);   // (void*)&__t
 		}
 
 		DataDef *pt = (callee->parameters.size() > 1)

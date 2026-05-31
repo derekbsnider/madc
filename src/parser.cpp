@@ -3786,6 +3786,28 @@ void Program::add_string_methods()
     if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = sym_op_app_cstr;
     ddSTRING.methods.push_back(var);
 
+    // operator+ as a class operator bound to the extern-C runtime wrapper
+    // string_concat (NOT a mangled libstdc++ symbol: std::operator+ for strings
+    // is an inlined weak template, not dlsym-exportable — like operator==).
+    // It RETURNS A NEW string BY VALUE; CirBuilder::class_operator_call allocates
+    // a cleanup-tagged temp, emits `string_concat(&tmp, &lhs, &rhs)`, and yields
+    // the temp as the expression's string object. Two overloads (const string& /
+    // const char*) so `a + b` and `a + "lit"` both resolve. The string& overload
+    // marks param 1 as a ref param so its address is passed. Return type dtSTRING
+    // (by value, via the temp — NOT returns_ref). The registered fn pointer is a
+    // legacy-backend placeholder only.
+    var = addFunction("operator+", datatype_vec_t{DataType::dtSTRING, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	fd->emit_symbol = "string_concat";
+	if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
+	fd->ref_params[1] = true;
+    }
+    ddSTRING.methods.push_back(var);
+
+    var = addFunction("operator+", datatype_vec_t{DataType::dtSTRING, rtPtr(DataType::dtSTRING), rtPtr(DataType::dtCHAR)}, (fVOIDFUNC)madc_string_length, true);
+    if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) fd->emit_symbol = "string_concat";
+    ddSTRING.methods.push_back(var);
+
     // operator[] bound to the non-const char& basic_string::operator[](size_t).
     // Returns char& (a char* in C terms -> an lvalue), so `s[i]` reads and
     // `s[i] = c` writes. returns_ref makes the subscript-dispatch path deref the

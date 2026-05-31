@@ -14,6 +14,7 @@
 #include <sstream>
 #include <fstream>
 #include <string>
+#include <new>
 #include <map>
 #include <list>
 #include <vector>
@@ -84,6 +85,13 @@ void string_clear(void *ptr)
 // and negates the result for operator!=.
 int string_equals(void *a, void *b)
     { return *(std::string *)a == *(std::string *)b ? 1 : 0; }
+// std::string operator+ is a weak template instantiation (not dlsym-able) that
+// returns a new string BY VALUE, exactly like operator==. This extern-C wrapper
+// placement-constructs the concatenation into the caller's return-slot buffer
+// (`out`, a `struct string` temp the CIR side allocates with cleanup). CirBuilder
+// binds operator+ to it and treats the out-slot as the expression's string value.
+void string_concat(void *out, void *a, void *b)
+    { new (out) std::string(*(std::string *)a + *(std::string *)b); }
 
 // Generic ostream wrappers — mirrors streamout_string/streamout_cstr/
 // streamout_numeric from compiler_operators.cpp.  Take ostream* as first

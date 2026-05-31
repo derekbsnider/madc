@@ -120,6 +120,10 @@ class CirBuilder {
 	// string-returning expression) — EXCLUDES string literals (ttString tokens
 	// and lifted `__literal__` vars), which are already const char* values.
 	static bool is_string_object_value(TokenBase *arg);
+	// True for a std::string `operator+` expression (`a + b`, `a + "lit"`,
+	// chained `a+b+c`): a tkAdd whose LHS is a string object. Such an expression
+	// is a by-value string object materialized by class_operator_call.
+	static bool is_string_operator_plus(TokenBase *arg);
 	// A CALL to a madc-COMPILED function whose callee returns a std::string
 	// OBJECT by value (dtSTRING, non-pointer) — i.e. one lowered through the
 	// __retbuf ABI by func_def. Excludes external / native functions with a
@@ -131,6 +135,12 @@ class CirBuilder {
 	// matching g++ NRVO), and return the temp's (void*) address. Pushes the temp
 	// decl to m_pending_stmts. `call` is the already-translated N_CALL node.
 	node_t string_call_temp_addr(TokenBase *call_tok, TokenBase *origin);
+	// Allocate a cleanup-tagged `struct string` temp (raw storage, no ctor — the
+	// caller fills it via a return-slot/placement write) and push its decl to
+	// m_pending_stmts. Returns the temp's name (into name_buf, size buf_sz).
+	// Shared by string_call_temp_addr (__retbuf ABI) and the by-value operator+
+	// path (string_concat out-slot).
+	void string_temp_decl(char *name_buf, size_t buf_sz, TokenBase *origin);
 	// Translate a TokenCallFunc's explicit arguments into `args` (a LIST node),
 	// applying string-object / numeric-reference parameter coercion. Shared by
 	// the normal call path and the string-return-temp materialization.
