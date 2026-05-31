@@ -1,3 +1,5 @@
+> **SUPERSEDED — read `docs/superpowers/plans/2026-05-31-RESTART-HANDOFF.md` first.** That doc covers the completed std::-types-as-real-classes refactor (this file predates it).
+
 # Session Handoff / Rehydration — 2026-05-30 (std::string + c2mir cleanup)
 
 **Read this first after compaction.** Then: `MEMORY.md` index + the linked memories,
