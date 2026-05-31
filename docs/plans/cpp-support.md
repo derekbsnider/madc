@@ -235,12 +235,16 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 - **P2.3 — general `auto`** type deduction from an initializer expression.
 - **P2.4 — `const` enforcement**. Error on assignment to a const lvalue.
 - **P2.5 — access control** enforcement (verify current state first).
-- **P2.5b — `class` should default members to PRIVATE** (C++ divergence, found
-  during P2.5). madc defaults unlabeled `class` members to PUBLIC, so a real-C++
-  `class Q { int m; }; q.m` from outside is NOT rejected (g++ rejects it). Flipping
-  to default-private is higher-risk — the container template headers
-  (`include/madc/vector|map|set`) rely on the current unlabeled-public default — so
-  it needs those headers to add explicit `public:` first. Deferred from P2.5.
+- **P2.5b — `class` defaults members to PRIVATE (correct the legacy artifact).**
+  madc currently defaults unlabeled `class` members to PUBLIC — a LEGACY ARTIFACT,
+  not a constraint. C++'s model (which we are building toward) is `class`→private,
+  `struct`→public; `class Q { int m; }; q.m` from outside must be rejected. FIX:
+  initial `access_flags` = `vfPRIVATE` for `class`, `0` (public) for `struct`, in
+  `TokenCLASS::parse` (parser.cpp ~11104). The container template headers
+  (`include/madc/vector|map|set`) declare unlabeled members — add explicit `public:`
+  where external/class-model access needs them (most member access is internal via
+  methods, so verify what actually breaks). NOT deferred — part of finishing P2
+  correctly. (Invariants I6/I8; `feedback_dont_cling_to_legacy`.)
 - **P2.6 — implicit derived→base pointer conversion**. `A* p = new B();` emits a
   cosmetic "incompatible types in assignment to a pointer" warning (layout is
   compatible — `__vptr` at offset 0; program runs correctly). Make derived→base
