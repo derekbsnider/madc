@@ -101,6 +101,9 @@ class CirBuilder {
 	// and lifted `__literal__` vars), which are already const char* values.
 	static bool is_string_object_value(TokenBase *arg);
 	size_t string_obj_words() const;             // ceil(sizeof(std::string)/sizeof(long))
+	// Words of opaque storage for a runtime-object class (std::string) that has
+	// a concrete ABI size but no madc data members. 0 for an ordinary user class.
+	size_t object_class_words(DataDefCLASS *cdd) const;
 	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
 	node_t string_storage_decl(const char *name, TokenBase *origin); // long name[W];
 	node_t string_obj_addr(const char *name, TokenBase *origin);     // (void*)name

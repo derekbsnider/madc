@@ -367,6 +367,17 @@ size_t CirBuilder::string_obj_words() const
 	return (sizeof(std::string) + sizeof(long) - 1) / sizeof(long);
 }
 
+// Words of opaque storage for a runtime-object class — one with a concrete ABI
+// size (cdd->size) but no madc data members (std::string). cir_builder is itself
+// C++, so cdd->size already holds the real sizeof(std::string). Returns 0 for an
+// ordinary user class (its struct is built from its declared members).
+size_t CirBuilder::object_class_words(DataDefCLASS *cdd) const
+{
+	if (!cdd || !cdd->members.empty()) return 0;
+	if (cdd->size == 0) return 0;
+	return (cdd->size + sizeof(long) - 1) / sizeof(long);
+}
+
 // N_TYPE node for a (void*) cast: TYPE(LIST(VOID), DECL(IGNORE, LIST(POINTER))).
 // The spec is a plain LIST (NOT N_SHARE — that wraps SPEC_DECL specs only;
 // matches the cast at translate_expr and the param TYPE in need_output_extern).
@@ -2162,6 +2173,27 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 
 	for (size_t i = 0; i < cdd->members.size(); i++)
 		append(member_list, member_node(cdd->members[i], cdd));
+
+	// An opaque runtime-object class (std::string and friends) carries no madc
+	// data members but DOES have a concrete ABI size. Emit a `long _w[words];`
+	// filler so `struct string` is a complete type of the right size — the same
+	// 8-aligned storage obj_storage_decl uses, now expressed as a class struct so
+	// the uniform class machinery (decl, ctor/dtor, members, elements) applies.
+	// The size is COMPUTED from sizeof(std::string), never hard-coded.
+	size_t objwords = object_class_words(cdd);
+	if (cdd->members.empty() && objwords > 0) {
+		node_t mspec = list();
+		append(mspec, simple(N_LONG));
+		node_t mdecl_list = list();
+		append(mdecl_list, node3(N_ARR, ignore(), list(),
+					 integer((long)objwords)));
+		node_t member = simple(N_MEMBER);
+		append(member, node1(N_SHARE, mspec));
+		append(member, node2(N_DECL, id("_w"), mdecl_list));
+		append(member, ignore());
+		append(member, ignore());
+		append(member_list, member);
+	}
 
 	node_t struct_node = node2(N_STRUCT, struct_id, member_list);
 	node_t tl = node1(N_LIST, struct_node);
