@@ -2,6 +2,31 @@
 
 ## [Unreleased]
 
+### Changed — std:: types are real classes/templates; legacy C++ shortcuts retired (2026-05-31, branch feature/cir-stdstring-claude)
+
+The temporary shortcuts that faked C++ niceties (a special `dtSTRING` type with bespoke
+string-object lowering, the `tkSTRING` token, the `tkVECTOR`/`tkMAP`/`tkSET`/`tkLIST`
+keywords, and `ns_stl.cpp` wrappers) are **retired** in favor of madc's real C++ framework:
+
+- **`std::string` is a real C++ class** — declaration/construction/destruction, methods,
+  operators (`=`/`+=`/`==`/`!=`), `cout <<`, struct members, `string*` pointers, and
+  **return-by-value** all flow through the class model. Methods/ctors/dtor/operators bind
+  to mangled libstdc++ symbols via a new `FuncDef::emit_symbol`; storage is a real
+  `struct string` sized from `sizeof(std::string)`. `std::string` is now `std::`-only,
+  defined by `#include <string>` (the `tkSTRING` builtin token is gone).
+- **`std::vector`/`map`/`set` are real `#include`-defined `std::` templates**
+  (`include/madc/vector|map|set`), instantiated per use through the class model + template
+  engine. The `vector`/`map`/`set`/`list` keywords and `ns_stl.cpp` are removed. `vector<string>`
+  works; container element destructors run (general `__destroy` intrinsic, no element leak).
+  Added `namespace { }` block parsing.
+- 368 → **376** integration tests, zero regressions. New: `teststringclass`,
+  `teststringreturn`, `teststringeq`, `testtemplatestring`, `testtemplatecontainer`,
+  `testplacementnew`, `testrefreturn`, `testcontainerdtor`. Plan + restart guide:
+  `docs/superpowers/plans/2026-05-31-stdtypes-as-real-classes.md`,
+  `docs/superpowers/plans/2026-05-31-RESTART-HANDOFF.md`.
+- Remaining (step 4): complete operator-overloading coverage (bind `std::string operator[]`/`+`;
+  extend the dispatch table — overload only when a class declares the operator) + three parser gaps.
+
 ## [v0.25.0] — 2026-05-30
 
 CIR is now the sole backend, and SMAUG 1.8 boots, runs, and is playable.
