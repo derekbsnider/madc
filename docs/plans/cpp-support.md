@@ -262,13 +262,17 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   override), but this overlap is a soundness bug waiting to bite. Fix the type-code
   scheme so `T**` ≠ a reference code. (Found 2026-05-31 during P0.7.)
 
-- **P2.11 — close `--std=` gating gaps** (pairs with the C-stability pass). The
-  enum + `is_c_mode()` gating exists and is partially wired (lexer.cpp:1309-1339),
-  but: `operator` (`tkOPEROVER`, lexer.cpp:1322) is registered UNCONDITIONALLY (a C
-  identifier — should be `!is_c_mode()`); audit lambda `[...]`, `auto` (C23 added
-  deduction — not pure C++), `enum class`, and FEATURE dispatch for the right std
-  floor; `--std=c11/c17` must reject/ignore C++-only constructs. Verifying this is a
-  core part of the C-stability pivot. (Principle #6; `project_std_enum_gatekeeping`.)
+- **P2.11 — keyword/feature → standard REGISTRY (then table-driven gating)**. THE
+  keystone of the std-dialect subsystem. Build a DECLARATIVE table mapping each
+  keyword + language feature to `{introduced_in, removed/deprecated_in, dialect
+  family}`; then gating, conversion (P2.13), and target selection (P2.12) are all one
+  lookup. This replaces the current AD-HOC scattered `if (!is_c_mode())` checks
+  (lexer.cpp:1309-1339 — a binary C-vs-not-C split; the "hard-coded specifics"
+  anti-pattern). Then close the gaps it exposes: `operator` (`tkOPEROVER`,
+  lexer.cpp:1322) registered UNCONDITIONALLY (a C identifier); audit lambda `[...]`,
+  `auto` (C23 added deduction — not pure C++), `enum class`, and FEATURE dispatch;
+  `--std=c11/c17` must reject/ignore C++-only constructs. Core part of the
+  C-stability pivot. (Principle #6; `project_std_enum_gatekeeping`.)
 
 - **P2.12 — c2mir backend-target std as an enum (de-hardcode C11)**. Introduce a
   `LanguageStd c2mir_target_std` (default `STD_C11`); replace hardcoded C11 / the
