@@ -1,0 +1,99 @@
+// madc embedded <map> — std::map<K,V> as a real madc template.
+//
+// std::map is an ordinary std::-namespaced madc template, instantiated per
+// use by the template-instantiation engine (Borland monomorphization). It is
+// NOT a lexer keyword and NOT a libstdc++ wrapper — it is madc's own STL
+// container, defined here and compiled through the class model.
+//
+// Implementation: parallel arrays of keys/values with linear search (madc's
+// own simple map, not a balanced tree). String keys compare via c_str()+strcmp
+// (std::string operator== is an inlined free template, not a dlsym-exported
+// symbol, so it cannot be bound like operator=/+=). The header instantiates per
+// K, so only the matching code is compiled; no scalar-key test exists.
+//
+// The search loop is inlined into each method rather than factored into a
+// private __find(): madc does not yet support an unqualified sibling-method
+// call from inside a class method (`__find(k)` -> "undeclared identifier").
+// A method call on a subscript element (`keys[i].c_str()`) is likewise not yet
+// a supported parse form, so each search copies the element into a local first.
+#include <stdlib.h>
+#include <string.h>
+namespace std {
+template<typename K, typename V> class map {
+    K* keys;
+    V* vals;
+    long len;
+    long cap;
+    map() {
+	keys = (K*)malloc(4 * sizeof(K));
+	vals = (V*)malloc(4 * sizeof(V));
+	len = 0;
+	cap = 4;
+    }
+    ~map() { free(keys); free(vals); }
+    void put(K k, V v) {
+	long i = 0;
+	while ( i < len ) {
+	    K cur = keys[i];
+	    if ( strcmp(cur.c_str(), k.c_str()) == 0 ) {
+		V* vslot = vals + i;	// pointer arith (NOT &vals[i] — parser gap)
+		new (vslot) V(v);	// overwrite value in place
+		return;
+	    }
+	    i = i + 1;
+	}
+	if ( len >= cap ) {
+	    cap = cap * 2;
+	    keys = (K*)realloc(keys, cap * sizeof(K));
+	    vals = (V*)realloc(vals, cap * sizeof(V));
+	}
+	K* kslot = keys + len;
+	V* vslot = vals + len;
+	new (kslot) K(k);		// placement copy-construct (works for string)
+	new (vslot) V(v);
+	len = len + 1;
+    }
+    V get(K k) {
+	long i = 0;
+	while ( i < len ) {
+	    K cur = keys[i];
+	    if ( strcmp(cur.c_str(), k.c_str()) == 0 )
+		return vals[i];
+	    i = i + 1;
+	}
+	return vals[0];
+    }
+    int contains(K k) {
+	long i = 0;
+	while ( i < len ) {
+	    K cur = keys[i];
+	    if ( strcmp(cur.c_str(), k.c_str()) == 0 )
+		return 1;
+	    i = i + 1;
+	}
+	return 0;
+    }
+    long size() { return len; }
+    V& operator[](K k) {
+	long i = 0;
+	while ( i < len ) {
+	    K cur = keys[i];
+	    if ( strcmp(cur.c_str(), k.c_str()) == 0 )
+		return vals[i];
+	    i = i + 1;
+	}
+	if ( len >= cap ) {
+	    cap = cap * 2;
+	    keys = (K*)realloc(keys, cap * sizeof(K));
+	    vals = (V*)realloc(vals, cap * sizeof(V));
+	}
+	K* kslot = keys + len;
+	V* vslot = vals + len;
+	new (kslot) K(k);
+	new (vslot) V();		// default-construct the value slot
+	long at = len;
+	len = len + 1;
+	return vals[at];
+    }
+};
+}

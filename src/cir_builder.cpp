@@ -363,8 +363,10 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 	// (`cond ? "a" : "b"`). So require a genuine variable token; everything
 	// else flows through the const char* path (str()/char* operator<<).
 	// A string-OBJECT element of a container (`v[i]` where v's operator[]
-	// returns a string&) is a real string object reached by address.
-	if (is_string_subscript(arg))
+	// returns a string&) is a real string object reached by address. A string
+	// element of a raw `string*`/`string[]` array (`keys[i]`) is likewise a
+	// real string object.
+	if (is_string_subscript(arg) || is_string_array_subscript(arg))
 		return true;
 	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
 	if (!tv)
@@ -972,6 +974,12 @@ node_t CirBuilder::string_obj_arg(TokenBase *arg)
 			if (is_string_subscript(arg))
 				return node2(N_CAST, void_ptr_type(),
 					class_subscript_addr(tsub, arg), arg);
+		// A raw string-array element (`keys[i]`, keys is a string*/string[]
+		// local, param, or member array): translate_expr yields the element
+		// lvalue; its address is the string object pointer.
+		if (is_string_array_subscript(arg))
+			return node2(N_CAST, void_ptr_type(),
+				node1(N_ADDR, translate_expr(arg), arg), arg);
 		// A string-object MEMBER (`obj.name`) is an embedded `long[W]` buffer
 		// in the struct; its address is `(void*)&(obj.name)`. Translate the
 		// member access (yields the FIELD lvalue), take its address, cast.
@@ -2922,8 +2930,15 @@ node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 	node_t args = list();
 	append(args, this_arg);
 	// Index argument (operator[] parameter 1; parameter 0 = __this).
+	DataDef *idx_pt = (callee && callee->parameters.size() > 1)
+			  ? callee->parameters[1] : NULL;
+	DataType idx_pdt = idx_pt ? idx_pt->rawtype() : DataType::dtVOID;
 	bool refp = callee && callee->ref_params.size() > 1 && callee->ref_params[1];
-	if (refp)
+	if (idx_pdt == DataType::dtSTRING || idx_pdt == DataType::dtSTRINGref)
+		// A string-keyed operator[] (`map<string,V>`): the key parameter is a
+		// std::string object, passed by address (matching build_call_args).
+		append(args, string_obj_arg(tsub->index));
+	else if (refp)
 		append(args, node1(N_ADDR, translate_expr(tsub->index), tsub->index));
 	else
 		append(args, translate_expr(tsub->index));
@@ -2961,6 +2976,40 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 	if (!mv) return false;
 	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
 	return callee && is_string_object(&callee->returns);
+}
+
+// A raw string-array element `base[i]` where base is a `string*` pointer or a
+// `string[]` fixed array. Unlike is_string_subscript (an operator[] container),
+// here the subscript is a plain pointer/array index; its element datadef is a
+// string object reached by `&base[i]`. Used so `string cur = keys[i]` (copy
+// from a string element of a member array inside a template class) selects the
+// std::string copy ctor, not the const char* ctor.
+/*static*/ bool CirBuilder::is_string_array_subscript(TokenBase *arg)
+{
+	// Exclude the operator[]-container case (handled by is_string_subscript):
+	// there the base CLASS itself owns an operator[] returning string&.
+	if (is_string_subscript(arg)) return false;
+	// Form 1 — `var[i]` where var is a `string*`/`string[]` local/param.
+	if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg)) {
+		if (!is_string_object(tsub->datadef())) return false;
+		DataDef *bt = tsub->object.type;
+		if (!bt) return false;
+		if (tsub->object.is_fixed_array())
+			return bt->is_string();
+		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
+		return pdd && pdd->base_type && pdd->base_type->is_string();
+	}
+	// Form 2 — `expr[i]` where expr is a `string*`-valued expression (e.g. a
+	// member array `__this->keys` inside a class method). The element type the
+	// subscript computes must be a string object, and the base expression's
+	// type must be a pointer-to-string.
+	if (TokenSubscriptExpr *tse = dynamic_cast<TokenSubscriptExpr *>(arg)) {
+		if (!is_string_object(tse->datadef())) return false;
+		DataDef *bt = tse->base_expr ? tse->base_expr->datadef() : NULL;
+		DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(bt);
+		return pdd && pdd->base_type && pdd->base_type->is_string();
+	}
+	return false;
 }
 
 node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,

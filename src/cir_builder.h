@@ -211,6 +211,12 @@ class CirBuilder {
 	// True when `arg` is `obj[i]` on a class whose operator[] yields a string
 	// OBJECT element (so the element is a real std::string reached by address).
 	static bool is_string_subscript(TokenBase *arg);
+	// True when `arg` is `base[i]` where base is a raw `string*` pointer or a
+	// `string[]` fixed array — i.e. a string OBJECT element of a plain array,
+	// not an operator[] container. The element is a real std::string reached by
+	// the address `&base[i]`. (Distinct from is_string_subscript, which is the
+	// operator[]-container case.)
+	static bool is_string_array_subscript(TokenBase *arg);
 	// Lower a container subscript WRITE `c[i] = rhs` to its runtime setter.
 	// Returns NULL when the assignment LHS is not a container subscript.
 	node_t container_subscript_assign(class TokenOperator *top, TokenBase *origin);
