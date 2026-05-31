@@ -404,6 +404,16 @@ public:
 	// the left operand is not a user class or has no such operator (caller
 	// falls through to the built-in operator translation).
 	node_t class_operator_call(class TokenOperator *top, TokenBase *origin);
+	// Lower an overloaded UNARY operator on a user-defined class lvalue:
+	//   <op>c  ->  ClassName__operator<op>(&c)   (e.g. -c, !c, ~c, ++c, --c)
+	// `opsym` is the operator symbol text ("-", "!", "~", "++", "--"); `operand`
+	// is the class object the operator is applied to. Returns NULL when the
+	// operand is not a class declaring that unary operator (caller falls through
+	// to the built-in unary translation). The class declares the operator with
+	// NO explicit parameter (param 0 = __this only) — that arity distinguishes
+	// a unary operator- from the binary operator-(const C&).
+	node_t class_unary_operator_call(const char *opsym, TokenBase *operand,
+					 TokenBase *origin);
 	// Build a function-pointer cast type node for a method's signature:
 	// `RET (*)(struct Owner *, params...)`. Used to cast a type-erased vtable
 	// slot back to a callable function pointer for virtual dispatch. The

@@ -2964,6 +2964,78 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	return ocall;
 }
 
+// Among a class's operator overloads of name `mname`, select the UNARY one:
+// the overload with NO explicit parameter (only param 0 = __this). This is how
+// a unary `operator-()` is told apart from the binary `operator-(const C&)`
+// (which shares the same method name). NULL when the class declares no nullary
+// overload of that operator.
+static FuncDef *select_unary_operator_overload(DataDefCLASS *cls,
+					       const std::string &mname)
+{
+	if (!cls) return NULL;
+	// Scan the methods vector for a same-name overload taking only __this.
+	for (Variable *mv : cls->methods) {
+		if (!mv || mv->name != mname) continue;
+		FuncDef *fd = dynamic_cast<FuncDef *>(mv->type);
+		if (!fd) continue;
+		if (fd->parameters.size() <= 1) return fd;   // __this only -> unary
+	}
+	// Fall back to the keyed lookup (a user-class operator registers under the
+	// unmangled name in method_map; its methods-vector entry is mangled).
+	std::string key = mname;
+	Variable *mv = cls->findMethod(key);
+	FuncDef *fd = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
+	if (fd && fd->parameters.size() <= 1) return fd;
+	return NULL;
+}
+
+node_t CirBuilder::class_unary_operator_call(const char *opsym,
+					     TokenBase *operand, TokenBase *origin)
+{
+	if (!opsym || !opsym[0] || !operand) return NULL;
+	// The operand must be a class OBJECT lvalue. as_class_instance resolves an
+	// object class without unwrapping pointers (so `C* p; -p` stays a built-in
+	// pointer op and never mis-routes). NULL -> not an overloadable unary op.
+	DataDefCLASS *cls = as_class_instance(operand->datadef());
+	if (!cls) return NULL;
+
+	std::string mname = std::string("operator") + opsym;
+	FuncDef *callee = select_unary_operator_overload(cls, mname);
+	if (!callee) return NULL;   // class declares no unary operator<sym> -> built-in
+
+	// The `this` address: a NAMED object variable honours the unified
+	// pointer-stored rule; any other operand expression is addressed by &expr.
+	node_t this_arg;
+	if (TokenVar *otv = dynamic_cast<TokenVar *>(operand))
+		this_arg = object_var_addr(otv->var, origin);
+	else
+		this_arg = node1(N_ADDR, translate_expr(operand), origin);
+
+	// A class-bound external operator names its real symbol via emit_symbol;
+	// otherwise the default ClassName__operator<sym> scheme + the
+	// referenced-funcs prototype pass (a madc-emitted method body).
+	std::string sym = !callee->emit_symbol.empty()
+			  ? callee->emit_symbol : (cls->name + "__" + mname);
+	std::vector<ExternParam> eparams = { { {N_VOID}, true } };
+	node_t args = list();
+	if (!callee->emit_symbol.empty()) {
+		append(args, node2(N_CAST, void_ptr_type(), this_arg, origin));
+		bool ret_ptr = false;
+		std::vector<c2mir_node_code_t> ret_specs =
+			emit_symbol_ret_specs(callee, ret_ptr);
+		need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs);
+	} else {
+		append(args, this_arg);
+		referenced_funcs.insert(sym);
+	}
+	node_t ocall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	CIR_NODE(ocall)->synth_from_origin = true;
+	// A T&-returning unary operator returns an address; deref to the lvalue.
+	if (callee->returns_ref)
+		return node1(N_DEREF, ocall, origin);
+	return ocall;
+}
+
 // Build the bare `ClassName__operator[](&obj, i)` call — the raw method result.
 // For a T&-returning operator[] this is the element ADDRESS (a T*); callers that
 // want the element lvalue deref it (class_subscript_call). NULL when the object
@@ -3766,6 +3838,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (tb->id() == TokenID::tkInc || tb->id() == TokenID::tkDec) {
 			bool is_post = (top->left != NULL);
 			TokenBase *operand_tb = is_post ? top->left : top->right;
+			// Class operator++/operator-- dispatch (declared-only; falls
+			// through to the built-in inc/dec when the class has no such
+			// operator). The parser does NOT distinguish prefix from postfix
+			// (no dummy-int param), so both forms route to the single nullary
+			// operator++()/operator--() — prefix semantics. (Postfix-specific
+			// `operator++(int)` needs a parser change; noted, not built here.)
+			const char *uop = (tb->id() == TokenID::tkInc) ? "++" : "--";
+			if (node_t ov = class_unary_operator_call(uop, operand_tb, tb))
+				return ov;
 			node_t operand = translate_expr(operand_tb);
 			c2mir_node_code_t code;
 			if (tb->id() == TokenID::tkInc)
@@ -3777,6 +3858,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 		// Unary
 		if (top && top->argc() == 1 && top->right) {
+			// Class unary-operator dispatch (declared-only): `-c`/`!c`/`~c`
+			// on a class object whose class declares the matching nullary
+			// operator. NULL -> fall through to the built-in lowering, so a
+			// built-in `-x`/`!x`/`~x` and any class lacking the operator keep
+			// normal semantics (the invariant: overload only when declared).
+			const char *uop = NULL;
+			switch (tb->id()) {
+			case TokenID::tkNeg:  uop = "-"; break;
+			case TokenID::tkLnot: uop = "!"; break;
+			case TokenID::tkBnot: uop = "~"; break;
+			default: break;
+			}
+			if (uop) {
+				if (node_t ov = class_unary_operator_call(uop, top->right, tb))
+					return ov;
+			}
 			node_t operand = translate_expr(top->right);
 			if (tb->id() == TokenID::tkNeg)
 				return node2(N_SUB, integer(0, tb), operand, tb);
