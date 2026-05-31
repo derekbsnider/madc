@@ -1,0 +1,35 @@
+#!/../bin/madc
+// Range-for over a fixed-size C array: `for (T v : a)`. A raw C array has a
+// compile-time element count and direct subscript — no MadArray runtime helper.
+// (Previously this fell into the MadArray fallback and SIGSEGV'd.)
+#include <iostream>
+using namespace std;
+
+int main() {
+	// int array sum
+	int a[3] = {1, 2, 3};
+	int s = 0;
+	for (int v : a) s += v;
+	cout << "sum " << s << endl;                 // sum 6
+
+	// larger int array, count + max
+	int b[5] = {4, 8, 15, 16, 23};
+	int mx = 0;
+	int n = 0;
+	for (int v : b) { n += 1; if (v > mx) mx = v; }
+	cout << "n " << n << " max " << mx << endl;  // n 5 max 23
+
+	// char array: build a string-ish sum of codes
+	char c[4] = {'a', 'b', 'c', 'd'};
+	int codes = 0;
+	for (char ch : c) codes += ch;
+	cout << "codes " << codes << endl;           // 'a'+'b'+'c'+'d' = 97+98+99+100 = 394
+
+	// double array
+	double d[3] = {1.5, 2.5, 3.0};
+	double ds = 0.0;
+	for (double dv : d) ds += dv;
+	cout << "dsum " << ds << endl;               // dsum 7
+
+	return 0;
+}

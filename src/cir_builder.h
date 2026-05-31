@@ -458,6 +458,10 @@ public:
 	node_t translate_foreach_class(class TokenFOREACH *fe,
 				       class DataDefCLASS *cls,
 				       class Variable *szmv, class Variable *opmv);
+	// Range-for over a raw fixed-size C array: `for (T x : a) body` -> a plain
+	// indexed loop over the array's compile-time element count with a direct
+	// subscript `a[__i]`. (No MadArray runtime helper.)
+	node_t translate_foreach_carray(class TokenFOREACH *fe, class TokenVar *ctv);
 	node_t translate_do(TokenDO *td);
 	node_t translate_switch(TokenSWITCH *ts);
 	// rust::match over integer patterns -> a switch: each arm's pattern(s)

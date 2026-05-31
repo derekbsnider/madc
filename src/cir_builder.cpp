@@ -4039,6 +4039,19 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 			return translate_foreach_class(fe, ccls, szmv, opmv);
 	}
 
+	// A raw fixed-size C array (`int a[N]`): compile-time element count + direct
+	// subscript — no MadArray runtime helper. Emit an ordinary indexed for-loop
+	// `for (long i = 0; i < N; i += 1) { T x = a[i]; <body> }`, exactly what g++
+	// lowers a range-for over an array to. (A VLA / runtime-sized array has no
+	// compile-time bound and is NOT handled here — it falls through.) Without
+	// this a plain array hit the MadArray fallback below, reading its raw bytes
+	// as a MadArray header -> garbage length -> out-of-bounds get -> SIGSEGV.
+	if (TokenVar *ctv = dynamic_cast<TokenVar *>(fe->container)) {
+		if (ctv->var.is_fixed_array() && !ctv->var.is_vla()
+		    && ctv->var.total_elements() > 0)
+			return translate_foreach_carray(fe, ctv);
+	}
+
 	// (void*)container — the MadArray object address (the var name decays to
 	// its long[] buffer, normalized to void*).
 	auto container_addr = [&]() -> node_t {
@@ -4167,6 +4180,65 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 		node_t elem = opfd && opfd->returns_ref
 				? node1(N_DEREF, op_addr(), fe) : op_addr();
 		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe), elem, fe);
+		append(body_items, node2(N_EXPR, list(), assign, fe));
+	}
+
+	node_t user_body = translate_stmt_required(fe->statement);
+	if (user_body) append(body_items, user_body);
+	node_t body = node2(N_BLOCK, list(), body_items, fe);
+
+	return node5(N_FOR, list(), init, cond, incr, body, fe);
+}
+
+// Range-for over a raw fixed-size C array: `for (T x : a)` ->
+//   for (long i = 0; i < N; i += 1) { x = a[i]; <body> }
+// N is the array's compile-time element count; `a[i]` is a direct subscript
+// (N_IND), element stride sizeof(T) — c2mir handles it natively, exactly like
+// g++'s array range-for lowering. No MadArray runtime helper.
+node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
+{
+	const char *arrname = ctv->var.name.c_str();
+	long count = (long)ctv->var.total_elements();
+
+	char idx[32];
+	snprintf(idx, sizeof(idx), "__fe_i_%d", m_strtmp_counter++);
+
+	// long __fe_i = 0;
+	node_t ispec = list();
+	append(ispec, simple(N_LONG, fe));
+	node_t init = simple(N_SPEC_DECL, fe);
+	append(init, node1(N_SHARE, ispec));
+	append(init, node2(N_DECL, id(idx, fe), list()));
+	append(init, ignore());
+	append(init, ignore());
+	append(init, integer(0, fe));
+
+	// __fe_i < N   (compile-time element count)
+	node_t cond = node2(N_LT, id(idx, fe), integer(count, fe), fe);
+	// __fe_i += 1
+	node_t incr = node2(N_ADD_ASSIGN, id(idx, fe), integer(1, fe), fe);
+
+	// Element accessor: a[__fe_i] (direct subscript).
+	auto elem_lvalue = [&]() -> node_t {
+		return node2(N_IND, id(arrname, fe), id(idx, fe), fe);
+	};
+
+	node_t body_items = list();
+	if (fe->elemtype->rawtype() == DataType::dtSTRING) {
+		// String element: copy-assign the loop var (an enclosing-scope string
+		// object) from the element: string_assign((void*)&x, (void*)&a[i]).
+		need_output_extern("string_assign", false,
+				   { { {N_VOID}, true }, { {N_VOID}, true } });
+		node_t a = list();
+		append(a, string_obj_addr(fe->elemname.c_str(), fe));
+		append(a, node2(N_CAST, void_ptr_type(),
+				node1(N_ADDR, elem_lvalue(), fe), fe));
+		node_t fill = node2(N_CALL, id("string_assign", fe), a, fe);
+		append(body_items, node2(N_EXPR, list(), fill, fe));
+	} else {
+		// Scalar element: x = a[__fe_i].
+		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+				      elem_lvalue(), fe);
 		append(body_items, node2(N_EXPR, list(), assign, fe));
 	}
 
