@@ -257,6 +257,30 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 	return dynamic_cast<DataDefCLASS *>(dd);
 }
 
+// A runtime-object class that flows through the class model but is NOT a
+// dtRESERVED user class: std::string (dtSTRING). It IS-A DataDefCLASS (opaque
+// storage sized by object_class_words, ctor/dtor/methods bound to mangled
+// libstdc++ symbols via emit_symbol). Used to route std::string declarations,
+// construction and destruction through the uniform class path, replacing the
+// legacy dtSTRING `long[]`+wrapper lowering. EXCLUDES `string&` (dtSTRINGref) —
+// a reference is a pointer-to-object on the param path, not an owned instance.
+static DataDefCLASS *as_object_class(DataDef *dd)
+{
+	if (!dd) return NULL;
+	if (dd->basetype() != BaseType::btClass) return NULL;
+	if (dd->is_pointer()) return NULL;
+	if (dd->rawtype() != DataType::dtSTRING) return NULL;
+	return dynamic_cast<DataDefCLASS *>(dd);
+}
+
+// Either an ordinary user class or a runtime-object class (std::string) — both
+// lower to a real C struct and use the class ctor/dtor/cleanup machinery.
+static DataDefCLASS *as_class_instance(DataDef *dd)
+{
+	if (DataDefCLASS *c = as_user_class(dd)) return c;
+	return as_object_class(dd);
+}
+
 node_t CirBuilder::pointer()
 {
 	return node1(N_POINTER, list());
@@ -907,12 +931,31 @@ node_t CirBuilder::container_subscript_assign(TokenOperator *top, TokenBase *ori
 	return NULL;
 }
 
-// `(void*)<name>` — the buffer address as void*, so the runtime wrappers see
-// void* and c2mir emits no pointer/integer cast warning. The array name decays
-// to long*; the cast normalizes it to void*.
+// `(void*)&<name>` — the string object's address as void*, so the mangled
+// libstdc++ members / runtime wrappers see a pointer to the object. A string
+// local/global is a `struct string` instance, so its address is `&name` (NOT
+// array decay). Used for synthetic temporaries (struct locals) — for a named
+// program variable use string_var_addr, which honours pointer-stored params.
 node_t CirBuilder::string_obj_addr(const char *name, TokenBase *origin)
 {
-	node_t cast = node2(N_CAST, void_ptr_type(), id(name, origin), origin);
+	node_t cast = node2(N_CAST, void_ptr_type(),
+			    node1(N_ADDR, id(name, origin), origin), origin);
+	CIR_NODE(cast)->synth_from_origin = true;
+	return cast;
+}
+
+// The object address of a NAMED string variable as void*. A by-value `string`
+// parameter and a `string&` reference are lowered to a `void*` holding the
+// object's address (param_decl), so the variable's value IS the address —
+// `(void*)name`. A string local/global is a `struct string` instance whose
+// address is `(void*)&name`. (Mirrors the param vs instance storage split.)
+node_t CirBuilder::string_var_addr(const Variable &v, TokenBase *origin)
+{
+	bool pointer_stored = (v.flags & vfPARAM) || (v.flags & vfREFERENCE)
+			      || (v.type && v.type->rawtype() == DataType::dtSTRINGref);
+	node_t base = id(v.name.c_str(), origin);
+	node_t expr = pointer_stored ? base : node1(N_ADDR, base, origin);
+	node_t cast = node2(N_CAST, void_ptr_type(), expr, origin);
 	CIR_NODE(cast)->synth_from_origin = true;
 	return cast;
 }
@@ -994,7 +1037,7 @@ node_t CirBuilder::string_obj_arg(TokenBase *arg)
 			return node2(N_CAST, void_ptr_type(),
 				node1(N_ADDR, translate_expr(arg), arg), arg);
 		if (TokenVar *tv = dynamic_cast<TokenVar *>(arg))
-			return string_obj_addr(tv->var.name.c_str(), arg);
+			return string_var_addr(tv->var, arg);
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 	}
 	// const char* value -> temp std::string object.
@@ -1024,7 +1067,7 @@ node_t CirBuilder::string_method_call(TokenMember *tm, TokenBase *origin)
 		return NULL;
 
 	const std::string &method = tm->var.name;
-	node_t addr = string_obj_addr(obj.name.c_str(), origin);
+	node_t addr = string_var_addr(obj, origin);
 
 	if (method == "c_str") {
 		need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
@@ -1082,9 +1125,10 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 	}
 
 	// Struct types: LIST(STRUCT(ID("name"), IGNORE))
-	// A user-defined class lowers to `struct ClassName` too (same shape).
+	// A user-defined class lowers to `struct ClassName` too (same shape), as does
+	// a runtime-object class (std::string -> `struct string`).
 	// _Complex is a DataDefSTRUCT subclass but must use the native spec path.
-	if (dd && (dd->is_struct() || as_user_class(dd)) && !dd->is_complex()) {
+	if (dd && (dd->is_struct() || as_class_instance(dd)) && !dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
 		if (sdd) {
 			node_t sref = node2(N_STRUCT, id(sdd->name.c_str()), ignore());
@@ -1682,11 +1726,11 @@ node_t CirBuilder::init_value(TokenBase *elem)
 
 node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
-	// std::string object: emit ONLY the opaque storage (`long name[W]`) here.
-	// Construction and scope-exit destruction are emitted as separate statements
-	// by translate_block (the 1->N C++ lowering); see string_ctor_call/dtor.
-	if (is_string_object(v->type))
-		return string_storage_decl(v->name.c_str(), origin);
+	// std::string object: a runtime-object class. It flows through the general
+	// class-instance path below — emitted as `struct string name` (opaque storage
+	// via class_struct_def) with a cleanup attribute naming the mangled libstdc++
+	// dtor. Construction is injected as a separate class_ctor_call by
+	// translate_block (the 1->N C++ lowering).
 
 	// MadArray object (`array a;`): same opaque-storage model as std::string.
 	// madarray_construct is emitted as a separate statement by translate_block;
@@ -1856,7 +1900,14 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);
 	node_t init_node = ignore();
 	TokenDecl *tdecl = dynamic_cast<TokenDecl *>(origin);
-	if (tdecl && (tdecl->has_brace_init || !tdecl->init_list.empty())) {
+	// A class instance (user class or std::string) is initialized by a
+	// constructor call emitted separately (translate_block), never by a C
+	// initializer on the declaration — `struct string s = "x"` would be an
+	// incompatible aggregate init. Leave init_node empty for such instances.
+	bool class_instance = (!is_ptr) && as_class_instance(base_dd) != NULL;
+	if (class_instance) {
+		// fall through with init_node = ignore()
+	} else if (tdecl && (tdecl->has_brace_init || !tdecl->init_list.empty())) {
 		// Brace init: LIST(INIT(LIST(), val), ...)
 		// Also the string-literal char-array form (`char s[3] = "ab";`):
 		// the parser expands the literal into per-char init_list entries
@@ -1901,7 +1952,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// and the cleanup mechanism passes &v (a `struct Cls *`) — a type match.
 	node_t attr_node = ignore();
 	{
-		DataDefCLASS *cdd = (!is_ptr) ? as_user_class(base_dd) : NULL;
+		DataDefCLASS *cdd = (!is_ptr) ? as_class_instance(base_dd) : NULL;
 		if (cdd && class_needs_dtor(cdd)) {
 			std::string dtor_sym = class_dtor_symbol(cdd);
 			referenced_funcs.insert(dtor_sym);
@@ -4131,13 +4182,7 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		Variable *v = tc->variables[vi];
 		if (decl_vars.count(v->name)) continue;
 		append(items, var_decl(v));
-		if (is_string_object(v->type)) {
-			// `string b;` (no initializer) — default-construct the object.
-			// Destruction is handled by the cleanup attribute on the storage
-			// decl (string_storage_decl): c2mir calls string_destruct(&b) at
-			// every scope exit, so no manual dtor injection is needed.
-			append(items, string_ctor_call(v->name.c_str(), NULL, tc));
-		} else if (is_array_object(v->type)) {
+		if (is_array_object(v->type)) {
 			// `array a;` — default-construct the MadArray object. Scope-exit
 			// destruction is handled by the cleanup attribute (array_storage_decl).
 			append(items, array_ctor_call(v->name.c_str(), tc));
@@ -4148,11 +4193,11 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 		} else if (is_sstream_object(v->type)) {
 			// `stringstream ss;` — default-construct; cleanup attribute destructs.
 			append(items, sstream_ctor_call(v->name.c_str(), tc));
-		} else if (DataDefCLASS *cdd = as_user_class(v->type)) {
-			// `Foo f;` — a class instance declared without an explicit
-			// constructor-call (no ctor args). Default-construct it; scope-exit
-			// destruction is via the cleanup attribute (var_decl). The argful
-			// form `Foo f(a,b)` parses to a TokenDecl statement handled below.
+		} else if (DataDefCLASS *cdd = as_class_instance(v->type)) {
+			// `Foo f;` / `string s;` — a class instance declared without an
+			// explicit constructor-call (no ctor args). Default-construct it;
+			// scope-exit destruction is via the cleanup attribute (var_decl). The
+			// argful form `Foo f(a,b)` parses to a TokenDecl statement handled below.
 			node_t cc = class_ctor_call(v, cdd,
 						    std::vector<TokenBase *>(), tc);
 			if (cc) append(items, cc);
@@ -4176,32 +4221,14 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 			continue;
 		}
 
-		// std::string object declaration WITH initializer: 1->N lowering.
-		// Emit storage + ctor inline here (translate_stmt's var_decl emits only
-		// the storage), and track for scope-end destruction. A file-scope global
-		// reaching here is handled elsewhere (translate_stmt drops it).
+		// std::string object declaration WITH initializer (`string s = "x"`,
+		// `string b = a`) is handled by the generic class-instance path below:
+		// the initializer becomes the single ctor argument and select_ctor_overload
+		// picks the const-char*/copy/default ctor by its type.
 		{
 			TokenDecl *sdcl = dynamic_cast<TokenDecl *>(stb);
 			bool file_global = sdcl && !(sdcl->var.flags & vfLOCAL)
 					&& !(sdcl->var.flags & vfSTATIC);
-			if (sdcl && is_string_object(sdcl->var.type) && !file_global) {
-				if (!pending_labels.empty()) {
-					node_t ll = list();
-					for (auto &ln : pending_labels)
-						append(ll, node1(N_LABEL, id(ln.c_str())));
-					pending_labels.clear();
-					append(items, node2(N_EXPR, ll, integer(0)));
-				}
-				append(items, var_decl(&sdcl->var, sdcl));
-				TokenBase *initexpr = sdcl->initialize;
-				if (TokenAssign *as = dynamic_cast<TokenAssign *>(initexpr))
-					initexpr = as->right;
-				if (!initexpr && !sdcl->init_list.empty())
-					initexpr = sdcl->init_list[0];
-				append(items, string_ctor_call(sdcl->var.name.c_str(),
-							       initexpr, sdcl));
-				continue;
-			}
 			// MadArray object declaration: storage (via var_decl) + default ctor.
 			if (sdcl && is_array_object(sdcl->var.type) && !file_global) {
 				if (!pending_labels.empty()) {
@@ -4242,11 +4269,11 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				append(items, sstream_ctor_call(sdcl->var.name.c_str(), sdcl));
 				continue;
 			}
-			// Class instance declared with constructor args `Foo f(a,b)`:
-			// emit the struct storage (+ cleanup attr) then the ctor call
-			// threading the parsed ctor_args. The no-arg form `Foo f;` is
+			// Class instance declared with constructor args `Foo f(a,b)` or an
+			// initializer `string s = "x"`: emit the struct storage (+ cleanup
+			// attr) then the ctor call. The no-arg form `Foo f;` / `string s;` is
 			// handled in the variables loop above.
-			DataDefCLASS *cdcl = sdcl ? as_user_class(sdcl->var.type) : NULL;
+			DataDefCLASS *cdcl = sdcl ? as_class_instance(sdcl->var.type) : NULL;
 			if (cdcl && !file_global) {
 				if (!pending_labels.empty()) {
 					node_t ll = list();
@@ -4256,8 +4283,22 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 					append(items, node2(N_EXPR, ll, integer(0)));
 				}
 				append(items, var_decl(&sdcl->var, sdcl));
+				// An `=`-style initializer (`string s = "x"`) is not in ctor_args;
+				// thread it as the single ctor argument so select_ctor_overload
+				// chooses const-char*/copy by its type. (An explicit `Foo f(a,b)`
+				// already populated ctor_args.)
+				std::vector<TokenBase *> ctor_args = sdcl->ctor_args;
+				if (ctor_args.empty()) {
+					TokenBase *initexpr = sdcl->initialize;
+					if (TokenAssign *as =
+					    dynamic_cast<TokenAssign *>(initexpr))
+						initexpr = as->right;
+					if (!initexpr && !sdcl->init_list.empty())
+						initexpr = sdcl->init_list[0];
+					if (initexpr) ctor_args.push_back(initexpr);
+				}
 				node_t cc = class_ctor_call(&sdcl->var, cdcl,
-							    sdcl->ctor_args, sdcl);
+							    ctor_args, sdcl);
 				if (cc) append(items, cc);
 				// No user ctor but embedded object members: construct each
 				// member in place (string_construct(&inst.member)). With a
@@ -4457,6 +4498,15 @@ node_t CirBuilder::translate_module(Program *prog)
 
 	node_t module = simple(N_MODULE);
 	node_t top_list = list();
+
+	// std::string lowers to a real `struct string` (opaque object class). Emit
+	// its definition once, ahead of every use, whenever the string machinery is
+	// active (ddSTRING populated by add_string_methods). A program that never
+	// declares a string carries one harmless complete `struct string` type.
+	if (!ddSTRING.methods.empty()) {
+		node_t sd = class_struct_def(&ddSTRING);
+		if (sd) append(top_list, sd);
+	}
 
 	// Collect all TokenFunc entries
 	std::vector<TokenFunc *> funcs;

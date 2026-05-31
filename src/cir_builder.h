@@ -106,7 +106,8 @@ class CirBuilder {
 	size_t object_class_words(DataDefCLASS *cdd) const;
 	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
 	node_t string_storage_decl(const char *name, TokenBase *origin); // long name[W];
-	node_t string_obj_addr(const char *name, TokenBase *origin);     // (void*)name
+	node_t string_obj_addr(const char *name, TokenBase *origin);     // (void*)&name (struct local)
+	node_t string_var_addr(const Variable &v, TokenBase *origin);    // honours pointer-stored params
 	node_t string_ctor_call(const char *name, TokenBase *initexpr, TokenBase *origin);
 	// string_cstr((void*)obj) — coerce a std::string object argument to a
 	// const char* (the dtSTRING->dtCHARptr coercion) for a char*-expecting call.
