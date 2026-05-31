@@ -2057,6 +2057,26 @@ static bool resolve_integer_constant(Program &pgm, TokenBase *tb, int64_t &out)
 	name = contextual_identifier_name(tb);
     else
 	return false;
+    // Scoped-enum constant in a constant expression: `Tag::Value` (e.g. a
+    // `case Color::Green:` label). The enumerators live in the tag's
+    // pseudo-namespace (see TokenENUM::parse), so resolve through it.
+    if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkNS )
+    {
+	namespace_map_t::iterator nsi = pgm.namespace_map.find(name);
+	if ( nsi != pgm.namespace_map.end() )
+	{
+	    pgm.nextToken(); // consume '::'
+	    TokenBase *member_tb = pgm.nextToken();
+	    if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+		return false;
+	    std::string member = contextual_identifier_name(member_tb);
+	    variable_map_iter vmi = nsi->second.find(member);
+	    if ( vmi == nsi->second.end() )
+		return false;
+	    return read_constant_integer(vmi->second, out);
+	}
+	return false;
+    }
     Variable *var = pgm.findVariable(name);
     return read_constant_integer(var, out);
 }
@@ -6574,6 +6594,28 @@ TokenBase *Program::parsePostfixChain(TokenBase *head)
 	return NULL;
 
     std::string name = contextual_identifier_name(head);
+    // Scoped-enum value `Tag::Value` (e.g. inside a cast `(int)Size::Large`).
+    // The enumerators live in the tag's pseudo-namespace (see TokenENUM::parse).
+    if ( peekToken() && peekToken()->id() == TokenID::tkNS )
+    {
+	namespace_map_t::iterator nsi = namespace_map.find(name);
+	if ( nsi != namespace_map.end() )
+	{
+	    nextToken(); // consume '::'
+	    TokenBase *member_tb = nextToken();
+	    if ( !member_tb || !is_contextual_identifier_token(member_tb) )
+		Throw(head) << "Expecting identifier after '" << name << "::'" << flush;
+	    std::string member = contextual_identifier_name(member_tb);
+	    variable_map_iter vmi = nsi->second.find(member);
+	    if ( vmi == nsi->second.end() )
+		Throw(member_tb) << "'" << member << "' is not a member of '" << name << "'" << flush;
+	    TokenBase *r = new TokenVar(*vmi->second);
+	    r->file = head->file;
+	    r->line = head->line;
+	    r->column = head->column;
+	    return r;
+	}
+    }
     Variable *var = findVariable(name);
     TokenBase *result = NULL;
     if ( var )
@@ -12190,12 +12232,41 @@ TokenBase *TokenENUM::parse(Program &pgm)
     DBG(std::cout << "TokenENUM::parse()" << std::endl);
     TokenBase *tn = pgm.peekToken();
 
+    // C++11 scoped enum: `enum class Tag { ... }` / `enum struct Tag { ... }`.
+    // Gated to C++/madc modes (I4): in C mode `class` is not a keyword (it
+    // lexes as an identifier), so this branch never fires for C and the plain
+    // C enum behavior below is preserved unchanged. The scoped flag changes
+    // ONLY where enumerators are registered (scoped, not bare) and that the
+    // tag itself becomes a usable type name.
+    bool scoped = false;
+    if ( tn && !pgm.is_c_mode()
+      && (tn->id() == TokenID::tkCLASS || tn->id() == TokenID::tkSTRUCT) )
+    {
+	scoped = true;
+	pgm.nextToken(); // consume 'class' / 'struct'
+	tn = pgm.peekToken();
+    }
+
     // optional tag name: enum colors { ... }
     std::string enum_tag;
     if ( tn && tn->type() == TokenType::ttIdentifier )
     {
 	enum_tag = ((TokenIdent *)tn)->str;
 	pgm.nextToken(); // consume tag name
+    }
+
+    // optional underlying type: `enum class Tag : int { ... }`. We lower a
+    // scoped enum to a plain C enum / int (I2), so the underlying type only
+    // affects storage width; parse and discard the type tokens here.
+    tn = pgm.peekToken();
+    if ( tn && tn->id() == TokenID::tkTerC )
+    {
+	pgm.nextToken(); // consume ':'
+	// skip the underlying-type tokens up to '{'
+	while ( (tn = pgm.peekToken())
+	     && tn->id() != TokenID::tkOpBrc
+	     && tn->id() != TokenID::tkSemi )
+	    pgm.nextToken();
     }
 
     tn = pgm.peekToken();
@@ -12205,12 +12276,38 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	// Treat enum as int and let the caller parse the variable declaration
 	if ( !enum_tag.empty() )
 	{
+	    // Scoped enum used as a type name resolves to its registered
+	    // DataDefENUM; a plain enum forward-reference is just int.
+	    if ( scoped )
+	    {
+		datatype_map_iter dti = pgm.datatype_map.find(enum_tag);
+		if ( dti != pgm.datatype_map.end() )
+		{
+		    pgm.pushToken(dti->second);
+		    return NULL;
+		}
+	    }
 	    pgm.pushToken(new TokenDataType("int", ddINT));
 	    return NULL;
 	}
 	pgm.Throw(tn) << "Expecting '{' after enum" << flush;
     }
     pgm.nextToken(); // consume '{'
+
+    // A scoped enum's tag is itself a usable type name (no typedef needed):
+    // register `datatype_map[Tag]` as a DataDefENUM (int-backed, I2).
+    if ( scoped && !enum_tag.empty() )
+    {
+	DataDef *enum_dd = new DataDefENUM(enum_tag);
+	pgm.datatype_map[enum_tag] = new TokenDataType(enum_tag.c_str(), *enum_dd);
+	DBG(std::cout << "TokenENUM::parse() scoped enum type " << enum_tag << std::endl);
+    }
+
+    // Scoped enumerators are registered under a pseudo-namespace keyed by the
+    // tag (Tag::Value), reusing the existing namespace_map resolution path so
+    // `Tag::Value` resolves and the bare name does NOT leak (the C++ scoped
+    // semantic). I6: no parallel scoped-naming machinery.
+    variable_map_t *scope_ns = scoped ? &pgm.namespace_map[enum_tag] : NULL;
 
     int64_t val = 0;
     while ( (tn = pgm.peekToken()) && tn->id() != TokenID::tkClBrc )
@@ -12227,11 +12324,25 @@ TokenBase *TokenENUM::parse(Program &pgm)
 	    val = parse_constant_integer_expression(pgm);
 	}
 
-	// register as a global constant variable
-	Variable *evar = pgm.addVariable(NULL, ddINT, name, 1, NULL, true);
-	evar->set((int)val);
-	evar->makeconstant();
-	DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
+	if ( scoped )
+	{
+	    // Scoped: a standalone constant Variable kept ONLY in the tag's
+	    // pseudo-namespace, so bare `name` does not resolve globally.
+	    Variable *evar = new Variable(name, ddINT, 1, NULL, true);
+	    evar->set((int)val);
+	    evar->makeconstant();
+	    (*scope_ns)[name] = evar;
+	    DBG(std::cout << "TokenENUM::parse() " << enum_tag << "::" << name
+		<< " = " << val << std::endl);
+	}
+	else
+	{
+	    // register as a global constant variable (plain C enum)
+	    Variable *evar = pgm.addVariable(NULL, ddINT, name, 1, NULL, true);
+	    evar->set((int)val);
+	    evar->makeconstant();
+	    DBG(std::cout << "TokenENUM::parse() " << name << " = " << val << std::endl);
+	}
 	val++;
     }
 
