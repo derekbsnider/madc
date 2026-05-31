@@ -263,8 +263,15 @@ static DataDefCLASS *as_user_class(DataDef *dd)
 // storage sized by object_class_words, ctor/dtor/methods bound to mangled
 // libstdc++ symbols via emit_symbol). Used to route std::string declarations,
 // construction and destruction through the uniform class path, replacing the
-// legacy dtSTRING `long[]`+wrapper lowering. EXCLUDES `string&` (dtSTRINGref) —
-// a reference is a pointer-to-object on the param path, not an owned instance.
+// legacy dtSTRING `long[]`+wrapper lowering.
+//
+// NOTE: a `string&` reference (DataDefSTRINGref) ALSO satisfies the dtSTRING
+// rawtype test below — rawtype(dtSTRINGref) decodes to dtSTRING (the rtReference
+// 20000 offset, P2.9) — so this returns the ddSTRINGref type object for a ref.
+// That object carries no methods/operators; callers that need to DISPATCH a
+// std::string member/operator must canonicalize to ddSTRING (the one populated
+// class) — see canonical_string_class / class_operator_call (P2.8b). Sizing /
+// declaration callers want the dd as-is, so this returns the matched object.
 static DataDefCLASS *as_object_class(DataDef *dd)
 {
 	if (!dd) return NULL;
@@ -272,6 +279,19 @@ static DataDefCLASS *as_object_class(DataDef *dd)
 	if (dd->is_pointer()) return NULL;
 	if (dd->rawtype() != DataType::dtSTRING) return NULL;
 	return dynamic_cast<DataDefCLASS *>(dd);
+}
+
+// The single populated std::string class (ddSTRING — owns the operators, methods
+// and ctors) when `cls` is ANY std::string object class, including the empty
+// ddSTRINGref type object that as_object_class hands back for a `string&`. Used
+// by the dispatch sites (operators, methods) so a string-REFERENCE receiver
+// resolves to the same operator/method set as a string VALUE (P2.8b). Returns
+// `cls` unchanged for a non-string (user) class — its own methods are correct.
+static DataDefCLASS *canonical_string_class(DataDefCLASS *cls)
+{
+	if (cls && cls != &ddSTRING && cls->rawtype() == DataType::dtSTRING)
+		return &ddSTRING;
+	return cls;
 }
 
 // Either an ordinary user class or a runtime-object class (std::string) — both
@@ -386,7 +406,15 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 		return false;
 	if (tv->var.name.compare(0, 11, "__literal__") == 0)
 		return false;
-	if (tv->var.is_constant())
+	// A const-qualified compile-time char* constant (`const char* x = "lit"`,
+	// dtSTRING-typed) is a const char* VALUE, not an object — skip it. But a
+	// `const string&` reference parameter (dtSTRINGref, OR vfREFERENCE) is a real
+	// std::string object passed by address; the const qualifies the binding, not
+	// the storage, so it stays an object (P2.8b). Only exclude a NON-reference
+	// constant.
+	bool is_ref = (dt == DataType::dtSTRINGref)
+		      || (tv->var.flags & vfREFERENCE);
+	if (tv->var.is_constant() && !is_ref)
 		return false;
 	return true;
 }
@@ -2912,7 +2940,27 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	// directly so the outer + binds to std::string's operator+.
 	if (!lcls && is_string_operator_plus(top->left))
 		lcls = class_behind(&ddSTRING);
+	// A std::string REFERENCE lhs that as_class_instance missed: a `for (string&
+	// s : c)` loop var is a `string*`+vfREFERENCE pointer-to-object (P2.7), so its
+	// datadef() is pointer-typed and as_class_instance never unwraps it. Match
+	// ONLY a vfREFERENCE var whose pointee is a std::string — NOT a plain `string*`
+	// member/local (e.g. a vector<string>'s `data` member, where `data = malloc()`
+	// must stay a pointer assignment, never std::string::operator=). string_obj_arg
+	// addresses the ref via its pointer value, so the operator dispatches like a
+	// string value (P2.8b).
+	if (!lcls) {
+		TokenVar *rtv = dynamic_cast<TokenVar *>(top->left);
+		if (rtv && (rtv->var.flags & vfREFERENCE) && rtv->var.type
+		    && rtv->var.type->rawtype() == DataType::dtSTRING)
+			lcls = class_behind(&ddSTRING);
+	}
 	if (!lcls) return NULL;
+	// A `string&` PARAMETER lhs IS resolved by as_class_instance, but to the
+	// ddSTRINGref type object — which carries no operators. Canonicalize to the
+	// one populated ddSTRING so the ref dispatches std::string's operators
+	// exactly like a string value (P2.8b). No-op for a string value or a user
+	// class (their own class already owns the operators).
+	lcls = canonical_string_class(lcls);
 	const char *opsym = binop_overload_symbol(top->id());
 	if (!opsym[0]) return NULL;
 

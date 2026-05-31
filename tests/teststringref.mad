@@ -1,0 +1,31 @@
+// P2.8b — std::string REFERENCES routed through the string operator dispatch.
+// A `string&` parameter and a `for (string& s : c)` loop var can use string
+// operators (+= / == / ...) just like a string value/member. Verified vs g++.
+#include <string>
+#include <vector>
+#include <iostream>
+using namespace std;
+
+// Mutation through a `string&` parameter hits the caller's string.
+void append_bang(string& s) { s += "!"; }
+
+// Read-only comparison through `const string&` parameters.
+bool eq(const string& a, const string& b) { return a == b; }
+
+int main() {
+	string x = "hi";
+	append_bang(x);
+	cout << x << endl;            // hi!
+
+	// Mutation through a `for (string& s : v)` loop var hits the elements.
+	vector<string> v;
+	v.push_back("a");
+	v.push_back("b");
+	for (string& s : v) s += "x";
+	for (string& s : v) cout << s << endl;   // ax / bx
+
+	string p = "foo", q = "foo", r = "bar";
+	cout << (eq(p, q) ? "eq" : "ne") << endl;   // eq
+	cout << (eq(p, r) ? "eq" : "ne") << endl;   // ne
+	return 0;
+}
