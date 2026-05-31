@@ -291,6 +291,13 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   P2.12 (enum-driven output target). Forward-looking capability; `project_std_enum_gatekeeping`.
 
 ### P3 — broader standards surface (later)
+- **Polyglot transpiler (far-future direction).** The endgame generalizes the
+  std-dialect subsystem: madc supports features AND syntax from other languages, so
+  the input axis becomes "source LANGUAGE + version" and the P2.11 registry becomes
+  keyword/feature/syntax→{language, version}. madc then transpiles language X → target
+  Y through the one IR (standards-conversion P2.13 = the C/C++ instance of this). Keep
+  the std-dialect architecture general enough not to preclude it. See
+  `project_madc_vision`.
 - C-side parity worklist → **ROADMAP Track 1.3** (the develop→master gate).
 - C23 surface (`_BitInt`, `#embed`, `constexpr` objects, attributes) per the
   lowering-vs-raising tiers; design Tier-3 (SIMD) for upstream MIR.
