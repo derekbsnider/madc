@@ -1,0 +1,24 @@
+#!/../bin/madc
+// INVARIANT TEST for the "std::string as a real class" refactor
+// (docs/superpowers/plans/2026-05-31-stdtypes-as-real-classes.md). This pins the
+// std::string behaviour that already works today, so it stays correct while the
+// implementation is migrated from the legacy dtSTRING special-casing to the C++
+// class model. It must keep passing through every task of the refactor.
+//
+// NOTE: string-by-value PARAMETER + RETURN (`string f(string){ return ... }`) is
+// deliberately NOT here — the legacy path never implemented string returns (it
+// segfaults today). The refactor (string as a real class) is expected to DELIVER
+// that; a target test is added in Phase A once it works.
+#include <iostream>
+#include <string>
+using namespace std;
+
+int main() {
+    string a = "alpha";
+    string b = a;                   // copy-construct
+    cout << a << " " << b << endl;  // operator<<
+    cout << "len=" << a.length() << endl;
+    a = "beta";                     // operator=(const char*)
+    cout << a << endl;
+    return 0;
+}
