@@ -34,25 +34,39 @@ feature/cir-stdstring-claude) — the scalar container is fully proven end-to-en
   std::vector uses for elements), scalar+class+string. tests/testplacementnew.mad.
   Parser dispatch broadened (parser.cpp ~8607) to fire on `(` / builtin-type too.
 
-**IMMEDIATE NEXT TASK — the LAST gate for vector<string>: string element access
-through string*/string&.** `cout << *p`, `cout << v[i]`, `v[i] = "x"` where the
-string is reached via a pointer/reference/subscript (NOT a declared var). Root:
-`is_string_object_value` (cir_builder.cpp:333) only accepts a TokenVar, and callers
-use `string_obj_addr(name)`. Generalize: recognize string-lvalue EXPRESSIONS
-(subscript yielding string element; N_DEREF of string*; a returns_ref string
-method) AND compute their address from the expression NODE (the bare operator[]
-call IS the string* address) instead of a name — in the stream chain (cout),
-assignment, and arg-passing. Placement copy-construct (push_back) ALREADY works via
-placement new. Once string access lands, vector<int>/<string> works through the
-template path; THEN flip: write include/madc/vector (T* data; len/cap; realloc;
-push_back via placement new; T& operator[]; size; ~dtor frees + per-element
-destruct), remove the tkVECTOR lexer keyword, repoint testvector/testsubscript,
-delete ns_stl.cpp. Then map/set. NOTE: vector/map/set are LEXER KEYWORDS — prove the
-header under a NON-keyword name first (Vec/etc.), the flip removes the keyword.
-Pre-existing gap: array data members (int data[4]) unsupported in class bodies
-(containers use T*, deferrable). Plan: docs/plans/2026-05-30-template-instantiation.md.
-Memory: [[project_template_instantiation]]. Gotcha: method names that are madc
-keywords (set/map/list/vector) collide — use other names.
+String element ACCESS infra DONE (commit 8be26f2): class_subscript_addr (bare
+operator[] call = element address), is_string_subscript, is_string_object_value +
+string_obj_arg now handle string-element subscripts -> cout/assign/range-for wire
+through. No regression (371). Placement copy-construct (push_back) works via
+placement new.
+
+**IMMEDIATE NEXT TASK — the LAST gate for vector<string>: emit `string` as a
+CONCRETE 32-byte TYPE.** vector<string> still SIGSEGVs. Root cause PRECISELY
+diagnosed (see emitted C of a Vec<string>): the string-object model emits the
+`string` type-spec as `char` (the append_type_specs dtSTRING safety net,
+cir_builder.cpp ~290), so `string* data` lowers to `char* data` -> 1-BYTE stride
+(elements 32 bytes apart overlap/corrupt), and a `string&` return degrades to
+`char*`. The model assumes every string is a specially-declared `long[4]`
+VARIABLE (string_storage_decl), never a pointed-to/arrayed TYPE. FIX: give
+`string` a concrete struct type (e.g. `struct __madc_string { long _w[4]; }`, 32B/
+8-aligned) used wherever a string TYPE appears in specs/declarators (append_type_specs
+dtSTRING, type_list, param/member/return), so string* strides 32 and string[]/
+string members work, while keeping object semantics via the libstdc++ ctor/dtor/
+assign wrappers (which already take void* addresses). RISK: broad — touches every
+string-type emission; declared-string vars currently bypass this via
+string_storage_decl (long[4]), so reconcile the two representations. Validate with
+tmp Vec<string> first (push_back/operator[]/cout/range-for), don't regress 371.
+THEN flip: write include/madc/vector (T* data; len/cap; realloc; push_back via
+`T* slot = data + len; new (slot) T(v);` — NOTE `&data[i]` source syntax hits a
+separate pre-existing parser bug: address-of a MEMBER subscript doesn't resolve
+the member, parser.cpp ~6861; use `data + i` pointer arithmetic instead; T&
+operator[]; size; ~dtor), remove the tkVECTOR lexer keyword, repoint
+testvector/testsubscript, delete ns_stl.cpp. Then map/set.
+Pre-existing gaps: array data members (int data[4]) unsupported in class bodies;
+`&member[i]` address-of (use member+index). Plan:
+docs/plans/2026-05-30-template-instantiation.md. Memory:
+[[project_template_instantiation]]. Gotcha: method names that are madc keywords
+(set/map/list/vector) collide — use other names.
 
 ## CURRENT TEST STATE
 - madc integration: **368 passed / 55 failed / 1 flaky-timeout (testfortypedcomma; sometimes shows as a fail) / 56 skipped** (was 334/88 at the start of the 2026-05-30 session; **+34 net, 0 regressions**; unit tests green). Goal = drive failures→0 for develop→master parity (Track 1.3).
