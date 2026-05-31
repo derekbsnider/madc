@@ -5682,7 +5682,7 @@ bool is_runtime_eval_scope_supported_variable(Variable *var)
     return raw == DataType::dtBOOL
 	|| var->type->is_integer()
 	|| var->type->is_real()
-	|| raw == DataType::dtSTRING
+	|| is_std_string(var->type)
 	|| raw == DataType::dtARRAY;
 }
 
@@ -14223,13 +14223,13 @@ paramdecl:
 	    if ( func_already_declared )
 	    {
 		ids.push_back(pid);
-		scope_param_type = rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING
+		scope_param_type = rtype == RefType::rtReference && is_std_string(&pb->definition)
 		    ? &ddSTRINGref : param_dd;
 	    }
 	    else if ( !func->findParameter(pid) )
 	    {
 		ids.push_back(pid);
-		if ( rtype == RefType::rtReference && pb->definition.rawtype() == DataType::dtSTRING )
+		if ( rtype == RefType::rtReference && is_std_string(&pb->definition) )
 		{
 		    func->parameters.push_back(&ddSTRINGref);
 		    func->ref_params.push_back(true);

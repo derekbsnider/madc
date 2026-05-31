@@ -396,7 +396,7 @@ DataDef *expression_result_datadef_internal(DataDef *expr_type, bool have_result
 	return &ddVOID;
     if ( !expr_type )
 	return NULL;
-    if ( expr_type->rawtype() == DataType::dtSTRING )
+    if ( is_std_string(expr_type) )
 	return &ddCHARptr;
     program::native_type native;
     return native_type_from_datadef(expr_type, native) ? expr_type : NULL;
@@ -1926,6 +1926,14 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
     if ( !type )
 	return false;
 
+    // std::string by class identity (not the dtSTRING tag) — checked first so
+    // it stays correct once the tag is retired (string becomes dtRESERVED).
+    if ( is_std_string(type) && !type->is_pointer() )
+    {
+	out = program::native_type::string_object;
+	return true;
+    }
+
     switch ( type->type() )
     {
 	case DataType::dtVOID:
@@ -1936,9 +1944,6 @@ bool native_type_from_datadef(DataDef *type, program::native_type &out)
 	    return true;
 	case DataType::dtCHARptr:
 	    out = program::native_type::c_string;
-	    return true;
-	case DataType::dtSTRING:
-	    out = program::native_type::string_object;
 	    return true;
 	default:
 	    break;
@@ -2051,7 +2056,7 @@ bool value_from_variable(Variable *var, value &out)
 	out = value(static_cast<double>(var->get<double>()));
 	return true;
     }
-    if ( type->rawtype() == DataType::dtSTRING )
+    if ( is_std_string(type) )
     {
 	out = value(*static_cast<std::string *>(var->data));
 	return true;
@@ -2112,7 +2117,7 @@ bool set_variable_from_value(Variable *var, const value &in)
 	var->modified();
 	return true;
     }
-    if ( type->rawtype() == DataType::dtSTRING )
+    if ( is_std_string(type) )
     {
 	*static_cast<std::string *>(var->data) = in.as_string();
 	var->modified();
@@ -2897,7 +2902,7 @@ struct program::impl
 	    return &ddVOID;
 	if ( !expr_type )
 	    return NULL;
-	if ( expr_type->rawtype() == DataType::dtSTRING )
+	if ( is_std_string(expr_type) )
 	    return &ddCHARptr;
 	program::native_type native;
 	return native_type_from_datadef(expr_type, native) ? expr_type : NULL;
