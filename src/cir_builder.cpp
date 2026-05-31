@@ -4334,6 +4334,28 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				else if (class_has_object_members(cdcl))
 					class_instance_member_ctors(sdcl->var.name.c_str(),
 								    cdcl, items, sdcl);
+				// No ctor, no object members — a TRIVIAL class/struct with an
+				// initializer (`A z = makeA(9)`, `Point m = mid(a,b)`): emit the
+				// initialization `var = <init>` so the value is actually copied
+				// in. Without this the initializer was dropped and the object
+				// read garbage. A trivial struct has no dtor, so c2mir's native
+				// struct copy is correct (no double-free). (A class WITH object
+				// members needs copy-construction via the __retbuf ABI — handled
+				// by the object-returning-call path, not here.)
+				else if (!ctor_args.empty() && ctor_args[0]) {
+					DataDef *idd = ctor_args[0]->datadef();
+					if (idd && (idd->is_struct() || idd->is_object())
+					    && !idd->is_pointer()) {
+						node_t lhs = id(sdcl->var.name.c_str(), sdcl);
+						node_t rhs = translate_expr(ctor_args[0]);
+						// A sub-call may have queued pending temps; flush first.
+						for (node_t p : m_pending_stmts)
+							append(items, p);
+						m_pending_stmts.clear();
+						node_t asg = node2(N_ASSIGN, lhs, rhs, sdcl);
+						append(items, node2(N_EXPR, list(), asg, sdcl));
+					}
+				}
 				continue;
 			}
 		}

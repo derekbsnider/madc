@@ -1,0 +1,32 @@
+#!/../bin/madc
+// Returning a class/struct BY VALUE — value semantics, fundamental C++.
+// A trivial class (no object members) returns via c2mir's native struct-return
+// ABI; the caller's decl-init must actually perform the initialization (this
+// previously dropped the initializer and read garbage).
+#include <iostream>
+using namespace std;
+
+class A { public: int v; int w; };
+A makeA(int n) { A r; r.v = n; r.w = n * 2; return r; }
+
+class Point { public: int x; int y; };
+Point mid(Point a, Point b) { Point p; p.x = (a.x + b.x) / 2; p.y = (a.y + b.y) / 2; return p; }
+
+int main() {
+    // decl-init from a by-value return (the garbage case — must print 9 18)
+    A z = makeA(9);
+    cout << "z " << z.v << " " << z.w << endl;        // z 9 18
+
+    // assignment form (already worked — keep it green)
+    A z2;
+    z2 = makeA(4);
+    cout << "z2 " << z2.v << " " << z2.w << endl;     // z2 4 8
+
+    // by-value params + by-value return together
+    Point a; a.x = 0; a.y = 0;
+    Point b; b.x = 10; b.y = 20;
+    Point m = mid(a, b);
+    cout << "mid " << m.x << " " << m.y << endl;       // mid 5 10
+
+    return 0;
+}
