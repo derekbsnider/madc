@@ -731,6 +731,12 @@ public:
     virtual bool is_pointer() const { return true; }
     virtual bool is_numeric() const { return true; }
     virtual bool is_integer() const { return true; }
+    // A pointer/ref to a std::string (`string*`, and the `string&` loop-var
+    // model getPointerType(ddSTRING)+vfREFERENCE) carries the string identity
+    // through its base_type. Mirrors the legacy is_string() which decoded the
+    // dtSTRINGptr rawtype to dtSTRING. The value-vs-pointer distinction stays
+    // via is_pointer() / the vfREFERENCE Variable flag, exactly as before P2.14.
+    virtual bool is_string_class() const { return base_type && base_type->is_string_class(); }
 };
 
 class DataDefCArray : public DataDef
