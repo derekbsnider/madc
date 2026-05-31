@@ -96,11 +96,39 @@ and ns_stl.cpp are GONE. Commit trail (chronological):
   `CirBuilder::translate_expr` (cir_builder.cpp:3498) — strips ptr to element type T, runs
   `as_class_instance(T)`: object T → its class dtor (`class_dtor_symbol`), scalar T → no-op (`0`).
 
-## ⏳ STEP 4 — THE REMAINING WORK (3 parser gaps; FEATURE work, parser-grammar RISK)
-These are the ONLY remaining items. They DO NOT FIX BUGS — the headers work today via
-workarounds. They improve elegance/usability and would retire the workarounds. A parser-grammar
-change touches ALL 376 tests → highest regression risk of anything; do it DELIBERATELY,
-incrementally, subagent-driven, gating on 376 after every step.
+## ⏳ STEP 4 — REMAINING WORK
+
+### 4A — COMPLETE OPERATOR OVERLOADING (user priority: "all overloadable operators mapped to functions")
+The design is already the C++ way — every operator routes through `class_operator_call`
+(binary) / `class_subscript_call` (`[]`) → a real `operator` METHOD/function (via
+`FuncDef::emit_symbol` for bound libstdc++ ops, or `ClassName__operator<sym>` for user
+classes). NO special-casing. But COVERAGE is incomplete (audited 2026-05-31). Gaps:
+- **std::string `operator[]` NOT bound** → `s[1]` fails ("subscripted value is neither array
+  nor pointer"). Bind `char& operator[](size_t)` on ddSTRING (mangled libstdc++ member,
+  via the mangler) so string indexing routes through the operator[] method like vector/map.
+- **std::string `operator+` NOT bound** → `a + b` concat fails ("invalid operand types of +").
+  std::string `+` is a NON-MEMBER in libstdc++ (and may be an inlined template like `==` was →
+  if un-dlsym-able, use an extern-C runtime wrapper `string_concat`, like `string_equals`).
+- **`binop_overload_symbol` (src/cir_builder.cpp) is a PARTIAL table** — maps `== != < > <= >=
+  + - * / % = +=` only. MISSING dispatch for: compound assigns `-= *= /= %= &= |= ^= <<= >>=`,
+  bitwise `& | ^`, shifts `<< >>` (as arithmetic, distinct from the stream-chain `<<`),
+  logical `&& ||`, UNARY operators (`- ! ~ ++ --` prefix/postfix), `operator()`, `operator->`.
+  The class-member PARSER (parser.cpp ~11090) already ACCEPTS most of these (operator(),
+  operator[], multi-char + single-char) — so the gap is in the CIR DISPATCH, not the parse.
+- FIX: extend `binop_overload_symbol` to the full binary-operator table; add unary-operator
+  dispatch (find where unary ops are lowered and route to `operatorX` when the operand is a
+  class with that operator); route `operator()`/`operator->` similarly. Bind std::string's
+  built-in `[]`/`+` (+ any other common ones: `at`? `<` for ordered map keys later?) as
+  class operators with `emit_symbol`. ALL via the existing class-operator machinery — no
+  special-casing, gcc/clang as canon for the libstdc++ symbols (`nm -D`/`c++filt`).
+- TEST each: `s[i]`, `a + b`, user-class `operator-`/`operator*`/`operator()`/unary, etc.
+- This is higher-value than 4B (string indexing/concat are everyday ops) and is mostly
+  cir_builder dispatch + parser.cpp operator binding — LOWER risk than the 4B grammar changes.
+
+### 4B — three parser gaps (FEATURE work, parser-grammar RISK)
+They DO NOT FIX BUGS — the headers work today via workarounds. They improve elegance/usability
+and would retire the workarounds. A parser-grammar change touches ALL 376 tests → highest
+regression risk; do it DELIBERATELY, incrementally, subagent-driven, gating on 376 after every step.
 
 Sequence by leverage (per the element-dtor subagent's analysis):
 1. **KEYSTONE — method/operator on a subscript element** (`arr[i].method()`, `keys[i] == k`,
@@ -156,5 +184,8 @@ Sequence by leverage (per the element-dtor subagent's analysis):
 
 ## ONE-LINE SUMMARY
 std::string/vector/map/set are now real `std::` header-defined class/template types (legacy
-dtSTRING/tkSTRING/tkVECTOR/ns_stl retired); 376 tests green; only remaining work = 3 optional
-parser-grammar features (step 4), keystone = method/operator on a subscript element.
+dtSTRING/tkSTRING/tkVECTOR/ns_stl retired); 376 tests green. Remaining: 4A — COMPLETE operator
+overloading (all overloadable operators → functions; bind std::string `[]`/`+`; extend the
+binop dispatch table + unary/()/-> dispatch — user priority, lower risk); 4B — 3 optional
+parser-grammar features (keystone = method/operator on a subscript element). Everything stays
+method/function-based — no operator special-casing.
