@@ -338,6 +338,10 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 	// vars, and char*-valued expressions like a ternary of literals
 	// (`cond ? "a" : "b"`). So require a genuine variable token; everything
 	// else flows through the const char* path (str()/char* operator<<).
+	// A string-OBJECT element of a container (`v[i]` where v's operator[]
+	// returns a string&) is a real string object reached by address.
+	if (is_string_subscript(arg))
+		return true;
 	TokenVar *tv = dynamic_cast<TokenVar *>(arg);
 	if (!tv)
 		return false;
@@ -965,6 +969,13 @@ node_t CirBuilder::string_cstr_arg(TokenBase *arg)
 node_t CirBuilder::string_obj_arg(TokenBase *arg)
 {
 	if (is_string_object_value(arg)) {
+		// A string-OBJECT element (`v[i]`): the bare operator[] call IS the
+		// element's address (a string*); cast to void*. Must use the bare call,
+		// not translate_expr (which derefs to the 32-byte object lvalue).
+		if (TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg))
+			if (is_string_subscript(arg))
+				return node2(N_CAST, void_ptr_type(),
+					class_subscript_addr(tsub, arg), arg);
 		// A string-object MEMBER (`obj.name`) is an embedded `long[W]` buffer
 		// in the struct; its address is `(void*)&(obj.name)`. Translate the
 		// member access (yields the FIELD lvalue), take its address, cast.
@@ -2534,7 +2545,11 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	return ocall;
 }
 
-node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
+// Build the bare `ClassName__operator[](&obj, i)` call — the raw method result.
+// For a T&-returning operator[] this is the element ADDRESS (a T*); callers that
+// want the element lvalue deref it (class_subscript_call). NULL when the object
+// is not a class with an operator[].
+node_t CirBuilder::class_subscript_addr(TokenSubscript *tsub, TokenBase *origin)
 {
 	if (!tsub) return NULL;
 	DataDefCLASS *cls = class_behind(tsub->object.type);
@@ -2560,12 +2575,38 @@ node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
 		append(args, translate_expr(tsub->index));
 
 	referenced_funcs.insert(sym);
-	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+}
+
+node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
+{
+	node_t call = class_subscript_addr(tsub, origin);
+	if (!call) return NULL;
+	DataDefCLASS *cls = class_behind(tsub->object.type);
+	std::string opname = "operator[]";
+	Variable *mv = cls ? cls->findMethod(opname) : NULL;
+	FuncDef *callee = mv ? dynamic_cast<FuncDef *>(mv->type) : NULL;
 	// operator[] conventionally returns T& -> deref to the lvalue so the
 	// result is usable as both an rvalue (read) and an lvalue (`v[i] = x`).
 	if (callee && callee->returns_ref)
 		return node1(N_DEREF, call, origin);
 	return call;
+}
+
+// Is `tsub` a subscript yielding a std::string-OBJECT element — i.e. an
+// operator[] on a class whose element type is a string object? Such an element
+// is a real string object reached by address (the bare operator[] call).
+/*static*/ bool CirBuilder::is_string_subscript(TokenBase *arg)
+{
+	TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(arg);
+	if (!tsub) return false;
+	DataDefCLASS *cls = class_behind(tsub->object.type);
+	if (!cls) return false;
+	std::string opname = "operator[]";
+	Variable *mv = cls->findMethod(opname);
+	if (!mv) return false;
+	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+	return callee && is_string_object(&callee->returns);
 }
 
 node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,

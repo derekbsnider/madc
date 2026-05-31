@@ -167,6 +167,12 @@ class CirBuilder {
 	// `obj[i]` on a user class defining `operator[]` -> the method call,
 	// deref'd (operator[] returns T& == a T*), so it is a read/write lvalue.
 	node_t class_subscript_call(class TokenSubscript *tsub, TokenBase *origin);
+	// The BARE operator[] call (no deref) — for a T&-returning operator[] this
+	// is the element ADDRESS (a T*). Used to take a string element's address.
+	node_t class_subscript_addr(class TokenSubscript *tsub, TokenBase *origin);
+	// True when `arg` is `obj[i]` on a class whose operator[] yields a string
+	// OBJECT element (so the element is a real std::string reached by address).
+	static bool is_string_subscript(TokenBase *arg);
 	// Lower a container subscript WRITE `c[i] = rhs` to its runtime setter.
 	// Returns NULL when the assignment LHS is not a container subscript.
 	node_t container_subscript_assign(class TokenOperator *top, TokenBase *origin);
