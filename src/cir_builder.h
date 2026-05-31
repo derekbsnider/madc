@@ -61,6 +61,20 @@ class CirBuilder {
 	// the call site derefs it). Matches g++: a reference IS a pointer.
 	bool m_cur_func_returns_ref = false;
 
+	// True while translating the body of a function that returns std::string BY
+	// VALUE. Such a function is lowered to the struct-return (__retbuf) ABI: its
+	// C return type is `void`, a hidden `struct string *__retbuf` is its first
+	// parameter, and `return s;` becomes "copy-construct *__retbuf from s; return;".
+	// This avoids the double-free that a bitwise `return s;` would cause (the
+	// local's cleanup dtor would free a buffer already shallow-copied into the
+	// caller's return slot). Matches g++'s by-value class-return ABI.
+	bool m_cur_func_returns_string = false;
+	// Name of the hidden return-slot pointer parameter for a string-returning fn.
+	static const char *RETBUF_NAME;
+	// Build the `struct string *__retbuf` named parameter node (N_SPEC_DECL),
+	// the hidden first parameter of a by-value string-returning function.
+	node_t retbuf_param(TokenBase *origin);
+
 	// Statements that must be emitted in the enclosing block immediately
 	// BEFORE the statement currently being translated — used to materialize
 	// temporary runtime objects (e.g. a std::string built from a literal that
@@ -69,6 +83,12 @@ class CirBuilder {
 	// emit_ns_arg statement-level temp construction.
 	std::vector<node_t> m_pending_stmts;
 	int m_strtmp_counter = 0;
+	// Names of the functions whose bodies madc COMPILES this module (the user's
+	// TokenFuncs). Set in translate_module while bodies are translated; NULL
+	// otherwise. Gates the by-value string-return (__retbuf) ABI to madc-compiled
+	// functions only — an external / native function with a dtSTRING return type
+	// (e.g. __std_to_string) keeps its own ABI and must NOT be rewritten.
+	const std::set<std::string> *m_user_func_names = nullptr;
 
 	// Internal: allocate and initialize a cir_node
 	cir_node *make(c2mir_node_code_t code, TokenBase *origin = NULL);
@@ -100,6 +120,21 @@ class CirBuilder {
 	// string-returning expression) — EXCLUDES string literals (ttString tokens
 	// and lifted `__literal__` vars), which are already const char* values.
 	static bool is_string_object_value(TokenBase *arg);
+	// A CALL to a madc-COMPILED function whose callee returns a std::string
+	// OBJECT by value (dtSTRING, non-pointer) — i.e. one lowered through the
+	// __retbuf ABI by func_def. Excludes external / native functions with a
+	// dtSTRING return (they keep their own ABI). Such a call is a string-object
+	// rvalue that must be materialized into a scope temp before use.
+	bool is_string_returning_call(TokenBase *arg);
+	// Materialize a string-returning CALL into a cleanup-tagged `struct string`
+	// temp initialized directly by the call (the struct-return slot IS the temp,
+	// matching g++ NRVO), and return the temp's (void*) address. Pushes the temp
+	// decl to m_pending_stmts. `call` is the already-translated N_CALL node.
+	node_t string_call_temp_addr(TokenBase *call_tok, TokenBase *origin);
+	// Translate a TokenCallFunc's explicit arguments into `args` (a LIST node),
+	// applying string-object / numeric-reference parameter coercion. Shared by
+	// the normal call path and the string-return-temp materialization.
+	void build_call_args(class TokenCallFunc *tcf, node_t args);
 	size_t string_obj_words() const;             // ceil(sizeof(std::string)/sizeof(long))
 	// Words of opaque storage for a runtime-object class (std::string) that has
 	// a concrete ABI size but no madc data members. 0 for an ordinary user class.

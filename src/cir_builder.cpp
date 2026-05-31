@@ -382,6 +382,24 @@ bool CirBuilder::is_string_object_value(TokenBase *arg)
 	return true;
 }
 
+// A CALL to a madc-COMPILED function returning a std::string by value (dtSTRING,
+// non-pointer). func_def lowers such a function through the __retbuf ABI, so the
+// call site must materialize the result into a temp it owns. Gated on
+// m_user_func_names: an external / native function with a dtSTRING return (e.g.
+// __std_to_string, php::/perl:: helpers) keeps its own ABI and is NOT rewritten —
+// matching it here would inject a bogus __retbuf arg ("too many arguments").
+bool CirBuilder::is_string_returning_call(TokenBase *arg)
+{
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(arg);
+	if (!tcf) return false;
+	FuncDef *fd = dynamic_cast<FuncDef *>(tcf->var.type);
+	if (!fd) return false;
+	if (fd->returns.rawtype() != DataType::dtSTRING || fd->returns.is_pointer())
+		return false;
+	// Only functions whose body madc emits (lowered via the __retbuf ABI).
+	return m_user_func_names && m_user_func_names->count(tcf->var.name) > 0;
+}
+
 size_t CirBuilder::string_obj_words() const
 {
 	// cir_builder is itself C++, so it knows the real ABI size/alignment of
@@ -495,6 +513,9 @@ static const char *const STR_ASGN_S = STR_ASGN_S_s.c_str();
 static const char *const STR_ASGN_C = STR_ASGN_C_s.c_str();
 static const char *const STR_APP_S  = STR_APP_S_s.c_str();
 static const char *const STR_APP_C  = STR_APP_C_s.c_str();
+
+// Hidden return-slot pointer parameter for a by-value string-returning function.
+const char *CirBuilder::RETBUF_NAME = "__retbuf";
 
 // `long <name>[NWORDS];` — the opaque, 8-aligned storage for a string object.
 // The cleanup attribute names the REAL libstdc++ dtor (it takes only `this`),
@@ -1036,12 +1057,92 @@ node_t CirBuilder::string_obj_arg(TokenBase *arg)
 			return string_var_addr(tv->var, arg);
 		return node2(N_CAST, void_ptr_type(), translate_expr(arg), arg);
 	}
+	// A string-returning CALL is a string-object rvalue: materialize it into a
+	// scope temp (the callee copy-constructs the result into the temp via the
+	// __retbuf ABI) and pass the temp's address. Must precede the const char*
+	// path: the call result is a `struct string`, not a const char*.
+	if (is_string_returning_call(arg))
+		return string_call_temp_addr(arg, arg);
+
 	// const char* value -> temp std::string object.
 	char name[32];
 	snprintf(name, sizeof(name), "__madc_strtmp_%d", m_strtmp_counter++);
 	m_pending_stmts.push_back(string_storage_decl(name, arg));
 	m_pending_stmts.push_back(string_ctor_call(name, arg, arg));
 	return string_obj_addr(name, arg);
+}
+
+// Translate a call's explicit arguments into `args`, coercing string-object
+// parameters (passed by address, literals materialized to temps) and numeric
+// reference parameters (passed by address). Shared by the normal call path and
+// string_call_temp_addr. Does NOT inject hidden params (__this / __retbuf).
+void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
+{
+	FuncDef *callee = dynamic_cast<FuncDef *>(tcf->var.type);
+	for (size_t i = 0; i < tcf->parameters.size(); i++) {
+		TokenBase *arg = tcf->parameters[i];
+		DataDef *pt = (callee && i < callee->parameters.size())
+				? callee->parameters[i] : NULL;
+		DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+		bool is_ref_param = callee && i < callee->ref_params.size()
+				    && callee->ref_params[i];
+		if (pt && (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref))
+			append(args, string_obj_arg(arg));
+		else if (is_ref_param)
+			// Numeric reference parameter (`int &x`): the callee takes a
+			// pointer, so pass the argument's address. The argument lvalue
+			// translates normally (a vfREFERENCE arg re-derefs to its own
+			// pointer, and &(*p) folds to p).
+			append(args, node1(N_ADDR, translate_expr(arg), arg));
+		else
+			append(args, translate_expr(arg));
+	}
+}
+
+// Materialize a by-value string-returning CALL into a cleanup-tagged temp via
+// the __retbuf ABI: declare `struct string __t;` (raw storage, cleanup-tagged),
+// emit the call as a VOID call `f((struct string*)&__t, <args>)` whose callee
+// copy-constructs the result into *__retbuf, and return the temp's (void*)
+// address. Pushes both the storage decl and the call to m_pending_stmts.
+// `call_tok` is the TokenCallFunc (so args can be retranslated with __retbuf).
+node_t CirBuilder::string_call_temp_addr(TokenBase *call_tok, TokenBase *origin)
+{
+	TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(call_tok);
+	char name[32];
+	snprintf(name, sizeof(name), "__madc_strtmp_%d", m_strtmp_counter++);
+
+	// `struct string __t __attribute__((cleanup(STR_DTOR)));` — raw storage; the
+	// callee copy-constructs into it, so no default ctor / initializer.
+	node_t share = node1(N_SHARE, type_list(&ddSTRING));   // struct string
+	node_t decl = node2(N_DECL, id(name, origin), list());
+	need_output_extern(STR_DTOR, false, { { {N_VOID}, true } });
+	node_t attr_args = list();
+	append(attr_args, id(STR_DTOR, origin));
+	node_t attrs = list();
+	append(attrs, node2(N_ATTR, id("cleanup", origin), attr_args, origin));
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, share);
+	append(sd, decl);
+	append(sd, attrs);   // __attribute__((cleanup(STR_DTOR)))
+	append(sd, ignore()); // asm
+	append(sd, ignore()); // initializer — none; the callee fills *__retbuf
+	CIR_NODE(sd)->synth_from_origin = true;
+	m_pending_stmts.push_back(sd);
+
+	// Void call: f((struct string*)&__t, <args>). The first arg is the return
+	// slot (__retbuf). string_obj_addr yields (void*)&__t — the param is a
+	// `struct string *`, and a void* converts implicitly.
+	if (tcf) {
+		referenced_funcs.insert(tcf->var.name);
+		node_t cargs = list();
+		append(cargs, string_obj_addr(name, origin));   // __retbuf = &__t
+		build_call_args(tcf, cargs);
+		node_t call = node2(N_CALL, id(tcf->var.name.c_str(), origin), cargs, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		m_pending_stmts.push_back(node2(N_EXPR, list(), call, origin));
+	}
+
+	return string_obj_addr(name, origin);   // (void*)&__t
 }
 
 // (std::string method calls — s.c_str()/.length()/.size()/.empty()/.clear() —
@@ -1215,6 +1316,24 @@ static bool read_static_int_array_elem(Variable *var, size_t index, int64_t &out
 	case DataType::dtUINT64: out = (int64_t)*(const uint64_t *)src; return true;
 	default: return false;
 	}
+}
+
+// The hidden return-slot parameter `struct string *__retbuf` of a by-value
+// string-returning function. A named pointer parameter: N_SPEC_DECL with the
+// `struct string` spec (bare LIST, like param_decl's pspec) and a DECL carrying
+// the name plus one pointer suffix.
+node_t CirBuilder::retbuf_param(TokenBase *origin)
+{
+	node_t pspec = type_list(&ddSTRING);   // LIST(STRUCT(ID("string"), IGNORE))
+	node_t pdecl_list = list();
+	append(pdecl_list, pointer());
+	node_t sd = simple(N_SPEC_DECL, origin);
+	append(sd, pspec);
+	append(sd, node2(N_DECL, id(RETBUF_NAME, origin), pdecl_list));
+	append(sd, ignore());
+	append(sd, ignore());
+	append(sd, ignore());
+	return sd;
 }
 
 node_t CirBuilder::param_decl(DataDef *ptype, const char *pname,
@@ -2621,8 +2740,12 @@ FuncDef *CirBuilder::select_ctor_overload(DataDefCLASS *cdd,
 {
 	if (!cdd || cdd->ctors.empty()) return NULL;
 
+	// A single string-OBJECT argument (a declared string, a string& param, a
+	// string container element, OR a string-returning CALL rvalue) selects the
+	// copy ctor (const string&); a const char* value selects the char* ctor.
 	bool copy_init = ctor_args.size() == 1
-			 && is_string_object_value(ctor_args[0]);
+			 && (is_string_object_value(ctor_args[0])
+			     || is_string_returning_call(ctor_args[0]));
 	FuncDef *best = NULL;
 	for (Variable *cv : cdd->ctors) {
 		FuncDef *fd = cv ? dynamic_cast<FuncDef *>(cv->type) : NULL;
@@ -3005,16 +3128,25 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
-	node_t ret_type = type_list(ret_dd);
+	// A by-value std::string return uses the __retbuf ABI (void return + hidden
+	// `struct string *__retbuf` first param); keep the prototype in lock-step
+	// with func_def's lowering.
+	bool ret_is_string = !ret_is_ptr && !ret_is_ref && ret_dd
+			     && ret_dd->rawtype() == DataType::dtSTRING
+			     && !fd->is_multi_return();
+
+	node_t ret_type = ret_is_string ? type_list(&ddVOID) : type_list(ret_dd);
 	node_t share = node1(N_SHARE, ret_type);
 
 	// Parameters. A variadic function carries a trailing synthetic param
 	// (the parser pushes a ddINT64 placeholder when it sees `...`); drop it
 	// and emit N_DOTS instead so the prototype is truly variadic.
 	node_t param_list = list();
+	if (ret_is_string)
+		append(param_list, retbuf_param(tf));
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
-	if (nparam == 0 && !fd->is_varargs) {
+	if (nparam == 0 && !fd->is_varargs && !ret_is_string) {
 		node_t void_spec = node1(N_LIST, simple(N_VOID));
 		node_t void_decl = node2(N_DECL, ignore(), list());
 		node_t void_param = node2(N_TYPE, void_spec, void_decl);
@@ -3699,32 +3831,24 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					referenced_funcs.insert(tcf->var.name);
 				func_id = id(tcf->var.name.c_str(), tb);
 			}
-			node_t args = list();
-			// Coerce arguments to string-OBJECT parameters: a real object
-			// is passed by address, a const char* value is materialized into
-			// a temporary std::string (string_obj_arg). The callee's declared
-			// parameter types come from its FuncDef; varargs / unknown callees
-			// fall through to a plain translation.
-			FuncDef *callee = dynamic_cast<FuncDef *>(tcf->var.type);
-			for (size_t i = 0; i < tcf->parameters.size(); i++) {
-				TokenBase *arg = tcf->parameters[i];
-				DataDef *pt = (callee && i < callee->parameters.size())
-						? callee->parameters[i] : NULL;
-				DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
-				bool is_ref_param = callee && i < callee->ref_params.size()
-						    && callee->ref_params[i];
-				if (pt && (pdt == DataType::dtSTRING
-					   || pdt == DataType::dtSTRINGref))
-					append(args, string_obj_arg(arg));
-				else if (is_ref_param)
-					// Numeric reference parameter (`int &x`): the callee
-					// takes a pointer, so pass the argument's address. The
-					// argument lvalue translates normally (a vfREFERENCE arg
-					// re-derefs to its own pointer, and &(*p) folds to p).
-					append(args, node1(N_ADDR, translate_expr(arg), arg));
-				else
-					append(args, translate_expr(arg));
+			// A by-value string-returning call uses the __retbuf ABI: it is
+			// lowered to a void call writing into a caller temp, NOT an N_CALL
+			// expression. Materialize the temp here and yield its dereffed
+			// object value (`*(struct string*)&temp`) as the call's result.
+			if (is_string_returning_call(tcf)) {
+				node_t addr = string_call_temp_addr(tcf, tb);
+				// The temp's value as a `struct string` lvalue: cast (void*)addr
+				// back to `struct string *` and deref. (Most contexts then take
+				// its address again — string_obj_arg etc. — but a few read the
+				// object value directly.)
+				node_t sp_type = node2(N_TYPE,
+					node1(N_LIST, node2(N_STRUCT, id("string", tb), ignore())),
+					node2(N_DECL, ignore(), node1(N_LIST, pointer())));
+				node_t as_sp = node2(N_CAST, sp_type, addr, tb);
+				return node1(N_DEREF, as_sp, tb);
 			}
+			node_t args = list();
+			build_call_args(tcf, args);
 			return node2(N_CALL, func_id, args, tb);
 		}
 	}
@@ -3792,6 +3916,30 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 			append(items, node2(N_RETURN, list(), ignore(), tr));
 			return node2(N_BLOCK, list(), items);
 		}
+	}
+	// A by-value std::string return uses the __retbuf ABI: copy-construct the
+	// returned object into *__retbuf, then `return;`. The returned local keeps
+	// its own cleanup dtor (its lifetime ends at scope exit as usual); because we
+	// COPY into __retbuf rather than bit-copying, destructing the local is safe
+	// (no double-free of a shared heap buffer). Matches g++'s class-return ABI.
+	if (m_cur_func_returns_string && tr->returns) {
+		node_t items = list();
+		// basic_string(const string&): C1ERKS4_(__retbuf, &returned)
+		need_output_extern(STR_CTOR_CP, false,
+				   { { {N_VOID}, true }, { {N_VOID}, true } });
+		node_t args = list();
+		append(args, id(RETBUF_NAME, tr));            // struct string *__retbuf
+		append(args, string_obj_arg(tr->returns));    // const string& (by address)
+		node_t cc = node2(N_CALL, id(STR_CTOR_CP, tr), args, tr);
+		CIR_NODE(cc)->synth_from_origin = true;
+		// A ctor arg may have materialized a temp (string-returning sub-call):
+		// emit those before the copy-construct that references them.
+		for (node_t p : m_pending_stmts)
+			append(items, p);
+		m_pending_stmts.clear();
+		append(items, node2(N_EXPR, list(), cc, tr));
+		append(items, node2(N_RETURN, list(), ignore(), tr));
+		return node2(N_BLOCK, list(), items, tr);
 	}
 	node_t expr = tr->returns ? translate_expr(tr->returns) : ignore();
 	// A T&-returning function returns the ADDRESS of its (lvalue) result —
@@ -4411,6 +4559,14 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 				}
 				node_t cc = class_ctor_call(&sdcl->var, cdcl,
 							    ctor_args, sdcl);
+				// A ctor arg may have materialized a temporary (e.g. a
+				// string-returning call -> a `struct string` temp): emit those
+				// pending decls BEFORE the ctor call that references them. The
+				// normal statement loop flushes m_pending_stmts itself; this
+				// var-decl branch builds cc outside that loop, so flush here.
+				for (node_t p : m_pending_stmts)
+					append(items, p);
+				m_pending_stmts.clear();
 				if (cc) append(items, cc);
 				// No user ctor but embedded object members: construct each
 				// member in place (string_construct(&inst.member)). With a
@@ -4476,23 +4632,39 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
+	// A by-value std::string return uses the struct-return (__retbuf) ABI: the C
+	// return type is `void`, a hidden `struct string *__retbuf` is the first
+	// parameter, and `return s;` copy-constructs *__retbuf (see translate_return).
+	bool ret_is_string = !ret_is_ptr && !ret_is_ref && ret_dd
+			     && ret_dd->rawtype() == DataType::dtSTRING
+			     && !fd->is_multi_return();
+	m_cur_func_returns_string = ret_is_string;
+
 	// Track whether this function returns void, so translate_return can lower
 	// a gcc-accepted `return <expr>;` (void function) to `<expr>; return;`.
-	m_cur_func_returns_void = !ret_is_ptr && !ret_is_ref && ret_dd
+	// A string-returning fn also has a `void` C return type but goes through the
+	// __retbuf path, so keep it out of the plain-void lowering.
+	m_cur_func_returns_void = !ret_is_ptr && !ret_is_ref && !ret_is_string && ret_dd
 				  && ret_dd->rawtype() == DataType::dtVOID
 				  && !fd->is_multi_return();
 	// Track reference return so translate_return emits `return &<expr>`.
 	m_cur_func_returns_ref = ret_is_ref;
 
-	node_t ret_type = type_list(ret_dd);
+	// String-returning fn: C return type is `void`.
+	node_t ret_type = ret_is_string ? type_list(&ddVOID) : type_list(ret_dd);
 
 	// Parameters. A variadic function carries a trailing synthetic param
 	// (the parser pushes a ddINT64 placeholder when it sees `...`); drop it
 	// and emit N_DOTS instead so the definition is truly variadic.
 	node_t param_list = list();
+	// Hidden return-slot parameter `struct string *__retbuf` first. Named param
+	// => N_SPEC_DECL (specs, DECL(id, [POINTER]), asm, attr, init), matching
+	// param_decl's wrap() for a named pointer parameter.
+	if (ret_is_string)
+		append(param_list, retbuf_param(tf));
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
-	if (nparam == 0 && !fd->is_varargs) {
+	if (nparam == 0 && !fd->is_varargs && !ret_is_string) {
 		node_t void_spec = node1(N_LIST, simple(N_VOID));
 		node_t void_decl = node2(N_DECL, ignore(), list());
 		append(param_list, node2(N_TYPE, void_spec, void_decl));
@@ -4735,10 +4907,14 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (cd) append(top_list, cd);
 	}
 
-	// Collect user function names.
+	// Collect user function names. Stored as a member too, so the body
+	// translation (below) can tell a madc-COMPILED function (whose by-value
+	// string return madc lowers via the __retbuf ABI) from an external / native
+	// function that merely has a dtSTRING return type but its own ABI.
 	std::set<std::string> user_func_names;
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
+	m_user_func_names = &user_func_names;
 
 	// Translate function bodies first, into a temp list, so referenced_funcs
 	// (populated as N_CALL nodes are built) is complete before the prototype
@@ -4748,6 +4924,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		node_t fd = func_def(tf);
 		if (fd) func_def_nodes.push_back(fd);
 	}
+	m_user_func_names = NULL;   // the backing set is a local; don't dangle
 
 	// Pass 0.75: Extern function prototypes — referenced-only (matches c2m,
 	// which only declares what #include pulled in).

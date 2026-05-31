@@ -1,0 +1,16 @@
+#!/../bin/madc
+// std::string return-by-value (A4c Surface 5). A function returning `string`
+// uses the struct-return (__retbuf) ABI: the C return type is `void`, a hidden
+// `struct string *__retbuf` is the first parameter, and `return r;` copy-
+// constructs into *__retbuf. The legacy dtSTRING path never implemented this.
+#include <iostream>
+#include <string>
+using namespace std;
+
+string greet(string name) { string r = "Hello, "; r += name; return r; }
+
+int main() {
+    string g = greet("world");
+    cout << g << endl;
+    return 0;
+}

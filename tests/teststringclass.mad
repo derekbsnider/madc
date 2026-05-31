@@ -5,13 +5,15 @@
 // implementation is migrated from the legacy dtSTRING special-casing to the C++
 // class model. It must keep passing through every task of the refactor.
 //
-// NOTE: string-by-value PARAMETER + RETURN (`string f(string){ return ... }`) is
-// deliberately NOT here — the legacy path never implemented string returns (it
-// segfaults today). The refactor (string as a real class) is expected to DELIVER
-// that; a target test is added in Phase A once it works.
+// string-by-value PARAMETER + RETURN (`string f(string){ return ... }`) now
+// works via the class path (A4c Surface 5): the return uses the struct-return
+// (__retbuf) ABI. greet() below pins it. Dedicated coverage lives in
+// tests/teststringreturn.mad.
 #include <iostream>
 #include <string>
 using namespace std;
+
+string greet(string name) { string r = "Hello, "; r += name; return r; }
 
 int main() {
     string a = "alpha";
@@ -20,5 +22,7 @@ int main() {
     cout << "len=" << a.length() << endl;
     a = "beta";                     // operator=(const char*)
     cout << a << endl;
+    string g = greet("world");      // string param + string return-by-value
+    cout << g << endl;
     return 0;
 }

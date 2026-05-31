@@ -14626,6 +14626,39 @@ static DataDef *peel_carray_dimensions(DataDef *base_type,
     return decl_type;
 }
 
+// A parenthesized group at the front of the token queue is a function
+// PARAMETER list (not constructor arguments) when its matching `)` is
+// immediately followed by `{` — i.e. this is a function DEFINITION, not a
+// ctor-call variable declaration. Disambiguates `string greet(int n) { ... }`
+// (a function returning a class) from `string s(args);` (ctor call) now that
+// class types (std::string, user classes with ctors) reach the ctor-call
+// branch in parseDeclaration. tokens.front() is expected to be the `(`; it is
+// NOT consumed here. (A function PROTOTYPE `string f(int);` ends in `;`, which
+// is the most-vexing-parse case C++ also resolves as a declaration — out of
+// scope here; only the unambiguous `{`-body definition is detected.)
+static bool paren_group_is_function_def(Program &pgm)
+{
+    auto it = pgm.tokens.begin();
+    if ( it == pgm.tokens.end() || (*it)->id() != TokenID::tkOpBrk )
+	return false;
+    int depth = 0;
+    for ( ; it != pgm.tokens.end(); ++it )
+    {
+	TokenID id = (*it)->id();
+	if ( id == TokenID::tkOpBrk ) { ++depth; continue; }
+	if ( id == TokenID::tkClBrk )
+	{
+	    if ( --depth == 0 )
+	    {
+		++it; // token after the matching ')'
+		return it != pgm.tokens.end()
+		    && (*it)->id() == TokenID::tkOpBrc;
+	    }
+	}
+    }
+    return false;
+}
+
 // parse either a variable declaration, or a function declaration
 TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 {
@@ -14996,7 +15029,8 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
     // Constructor call syntax: ClassName var(arg1, arg2, ...);
     // Only for user-defined classes with a constructor.
     if ( nt->id() == TokenID::tkOpBrk && arr_dims.empty()
-      && decl_type->basetype() == BaseType::btClass )
+      && decl_type->basetype() == BaseType::btClass
+      && !paren_group_is_function_def(*this) )
     {
 	DataDefCLASS *ddc = static_cast<DataDefCLASS *>(decl_type);
 	if ( ddc->has_user_ctor )
