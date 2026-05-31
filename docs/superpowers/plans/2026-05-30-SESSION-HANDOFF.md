@@ -10,18 +10,23 @@
 - **MIR fork**: `/workspace/mir`, branch **`feature/cleanup-attribute`** (the one madc links via `/workspace/mir/libmir.a`).
   Build: `make -C /workspace/mir`. Test suite: `make -C /workspace/mir c2mir-test` (must stay green: 1075 tests/2150 success). c2m binary: `/workspace/mir/c2m`. Run a c2m test: `c2m FILE.c -ei` (file BEFORE -ei; args after -ei go to the program) or `-eg` (gen). gcc is canon: `gcc -std=gnu11 -O0 FILE.c && ./a.out`.
 
-## ⏩ RESUME HERE (next task) — template instantiation, the 8-byte bug
-Real template instantiation (Borland monomorphize) is BUILT + validated for 4-byte
-types (commits ba62e64 capture, 704eada members, 8229ae8 methods). `Name<T>` clones+
-substitutes the captured body tokens, injects to the parse deque, re-parses via
-TokenCLASS at top-level scope → normal DataDefCLASS (reuses class-model lowering).
-tests/testtemplate.mad passes. **IMMEDIATE NEXT BUG:** instantiated methods that
-RETURN an 8-byte type param (`Box<long>::fetch()`/`Box<double>`) drop the T-returning
-method → "no member named fetch" (4-byte int works fully; void-return store(T) works).
-Likely the 8-byte-by-value return hitting the multi-return/__retbuf path in the
-re-entrant parse — see parser.cpp parseFunction:~13366 (__retbuf) / :13383 (__this).
-THEN: container std-lib as madc-dialect include/madc/vector|map|set templates +
-delete ns_stl. Full plan + mechanics: docs/plans/2026-05-30-template-instantiation.md.
+## ⏩ RESUME HERE (next task) — container std-lib headers, then delete ns_stl
+Real template instantiation (Borland monomorphize) is BUILT + validated for 4-byte,
+8-byte (long/double), AND pointer type args (commits ba62e64 capture, 704eada
+members, 8229ae8 methods, 8652455 pointer args). `Name<T>` clones+substitutes the
+captured body tokens, injects to the parse deque, re-parses via TokenCLASS at
+top-level scope → normal DataDefCLASS (reuses class-model lowering).
+tests/testtemplate.mad covers int/long/double/char* and passes.
+**The 8-byte-return bug from the prior handoff DOES NOT REPRODUCE** on current code
+(verified 2026-05-31, int/long/double all store+fetch correctly) — it was resolved
+by the top-level-scope method-registration fix (8229ae8); the prior note was a stale
+intermediate observation.
+**IMMEDIATE NEXT TASK:** container std-lib as madc-dialect include/madc/vector|map|set
+templates (T* data; len/cap; realloc; calling exported leaves), instantiate
+vector<int>/<string> via the template path, make testvector/testmap/testset pass
+through it (parallel to ns_stl, behind a guard), THEN flip the hardcoded
+TokenVECTOR/MAP/SET keyword path off and delete ns_stl.cpp (the disallowed stdlib
+wrapper). Full plan + mechanics: docs/plans/2026-05-30-template-instantiation.md.
 Memory: [[project_template_instantiation]]. Gotcha: user method names that are madc
 keywords (set/map/list/vector) collide — use other names.
 
