@@ -9107,8 +9107,13 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			// resolve struct_type to the pointed-to class so member /
 			// method lookup works, while tv_var keeps the pointer-typed
 			// reference var so the CIR member codegen emits N_DEREF_FIELD.
-			if ( (tv->var.flags & vfREFERENCE) && struct_type
-			  && struct_type->is_pointer() )
+			// The hidden `__this` parameter is the same shape: a
+			// pointer-to-class. `this.member` (madc's dot form) is thus
+			// `this->member` — unwrap to the class for lookup, keep the
+			// pointer var for codegen. (`this->member` already takes the
+			// arrow path; this clause covers only the dot spelling.)
+			if ( ((tv->var.flags & vfREFERENCE) || tv->var.name == "__this")
+			  && struct_type && struct_type->is_pointer() )
 			{
 			    DataDefPTR *rp = dynamic_cast<DataDefPTR *>(struct_type);
 			    if ( rp && rp->base_type
@@ -9492,6 +9497,18 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		// arguments / subexpressions, lexical scope should win so locals
 		// can shadow same-named namespace members (`ruby::chars(chars, s)`).
 		var = resolve_preferred_identifier(ident_tb, expression_head);
+		// `this` keyword: inside a class method body it names the hidden
+		// __this parameter (a `ClassName*`). Resolving it here lets
+		// `this->member` / `this.member` / `this->method()` flow through the
+		// EXISTING pointer-member-access path, and `this` as a value (e.g.
+		// `return this;`) be the pointer itself. Outside a method it stays
+		// unresolved -> the usual "undeclared identifier" error.
+		if ( !var && ident_tb->str == "this"
+		     && code && code->method && code->method->owner_class )
+		{
+		    std::string thisid = "__this";
+		    var = code->method->findParameter(thisid);
+		}
 		// class method: resolve unqualified member name through __this
 		if ( !var && code && code->method && code->method->owner_class )
 		{

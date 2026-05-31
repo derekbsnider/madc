@@ -1,0 +1,37 @@
+#!/../bin/madc
+// P1.3b: the `this` keyword binds to the hidden __this parameter inside a
+// class method body. `this->member` / `this.member` / `this->method()` then
+// flow through the existing pointer-member-access path. Bare (unqualified)
+// member access still works. `return this;` falls out for free (this is the
+// __this pointer value).
+#include <iostream>
+using namespace std;
+
+class Box {
+public:
+    int w;
+    int h;
+
+    void setw(int x) { this->w = x; }           // this-> write
+    int getw() { return this->w; }               // this-> read
+    int geth() { return this.h; }                // this. dot read (madc form)
+    int doubleW() { return this->getw() * 2; }   // this->method()
+    int bare() { return w + h; }                 // bare member access
+    Box* self() { return this; }                 // this as a pointer value
+};
+
+int main()
+{
+    Box b;
+    b.setw(7);
+    b.h = 3;
+    cout << b.getw() << endl;      // 7
+    cout << b.geth() << endl;      // 3
+    cout << b.doubleW() << endl;   // 14
+    cout << b.bare() << endl;      // 10
+
+    Box* p = b.self();
+    cout << p->w << endl;          // 7
+
+    return 0;
+}
