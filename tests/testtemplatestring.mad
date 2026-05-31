@@ -1,0 +1,43 @@
+#!/../bin/madc
+// std::string as a template-instantiated container ELEMENT. Vec<string> is a
+// real template instantiation (Borland monomorphization -> a DataDefCLASS) with
+// a std::string element type. This exercises the string-element operations that
+// only work once string is a real class reached by address:
+//   - placement copy-construct `new (slot) string(v)` in push_back (T == string)
+//   - `cout << names[i]` (element passed by address to operator<<(ostream&,const string&))
+//   - `names[i] = "x"` element assignment routed to std::string operator=
+//   - range-for `for (string n : names)` (element copied via string_assign)
+// The element's address in every case is the bare `Class__operator[]` call (a
+// `struct string*`), not the dereffed object lvalue. Proof-of-concept for the
+// real include/madc/vector (gated on retiring the `vector` lexer keyword).
+#include <iostream>
+#include <stdlib.h>
+using namespace std;
+
+template<typename T> class Vec {
+    T* data;
+    long len;
+    long cap;
+    Vec() { data = (T*)malloc(4 * sizeof(T)); len = 0; cap = 4; }
+    void push_back(T v) {
+        if (len >= cap) { cap = cap * 2; data = (T*)realloc(data, cap * sizeof(T)); }
+        T* slot = data + len;
+        new (slot) T(v);
+        len = len + 1;
+    }
+    T& operator[](long i) { return data[i]; }
+    long size() { return len; }
+};
+
+int main() {
+    Vec<string> names;
+    names.push_back("hello");
+    names.push_back("world");
+    printf("size=%ld\n", names.size());
+    cout << names[0] << endl;
+    cout << names[1] << endl;
+    names[0] = "hi";
+    cout << names[0] << endl;
+    for (string n : names) { cout << "elem: " << n << endl; }
+    return 0;
+}

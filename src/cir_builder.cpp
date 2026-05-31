@@ -2879,7 +2879,27 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	// The lhs is either an ordinary user class or a runtime-object class
 	// (std::string, via the object-class bridge), both of which use the class
 	// operator path. NULL lhs class -> not an overloadable operator here.
-	DataDefCLASS *lcls = class_behind(top->left->datadef());
+	// A string-OBJECT subscript element (`v[i]` whose operator[] returns a
+	// string&) is itself a std::string object; its class is ddSTRING even
+	// though TokenSubscript::datadef() reports the element as a scalar. Resolve
+	// the element's class from the operator[] result so `v[i] = rhs` /
+	// `v[i] += rhs` route through std::string's operator=/operator+=.
+	//
+	// The operator LHS must be a class OBJECT lvalue, not a pointer to one:
+	// `string s; s = "x"` is operator=, but `string *p; p = malloc(...)` (a
+	// `T* data` member of a Vec<string>) is a plain pointer assignment.
+	// as_class_instance resolves an object class without unwrapping pointers;
+	// class_behind would treat `string*` as a string object and mis-route the
+	// pointer assignment through operator=.
+	DataDefCLASS *lcls = as_class_instance(top->left->datadef());
+	if (!lcls && is_string_subscript(top->left)) {
+		TokenSubscript *lsub = dynamic_cast<TokenSubscript *>(top->left);
+		DataDefCLASS *ccls = lsub ? class_behind(lsub->object.type) : NULL;
+		std::string opname = "operator[]";
+		Variable *omv = ccls ? ccls->findMethod(opname) : NULL;
+		FuncDef *ofd = omv ? dynamic_cast<FuncDef *>(omv->type) : NULL;
+		if (ofd) lcls = class_behind(&ofd->returns);
+	}
 	if (!lcls) return NULL;
 	const char *opsym = binop_overload_symbol(top->id());
 	if (!opsym[0]) return NULL;
@@ -3226,7 +3246,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// address is a pure expression, so re-translate per use.
 			auto addr = [&]() -> node_t { return translate_expr(tn->placement); };
 			node_t construct = NULL;
-			if (tn->alloc_type && tn->alloc_type->is_string()) {
+			// std::string element: `new (slot) string(v)` in a
+			// template-instantiated container (T == string). T resolves to
+			// the std::string object class, so it lands in `alloc_class`
+			// (DataDefSTRING IS-A DataDefCLASS) rather than `alloc_type`.
+			// Route both through the string ctor path so the placement
+			// copy/cstr/default ctor is the mangled libstdc++ symbol with a
+			// declared extern — the alloc_class path below would emit the
+			// copy ctor via referenced_funcs (no extern -> implicit decl ->
+			// "incompatible argument type" check error).
+			bool placement_string =
+				(tn->alloc_type && tn->alloc_type->is_string())
+				|| (tn->alloc_class && is_string_object(tn->alloc_class));
+			if (placement_string) {
 				// Reuse the string ctor selection: copy / cstr / default.
 				node_t a = list();
 				append(a, node2(N_CAST, void_ptr_type(), addr(), tb));
