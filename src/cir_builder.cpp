@@ -585,13 +585,15 @@ node_t CirBuilder::sstream_ctor_call(const char *name, TokenBase *origin)
 // is always passed to its wrappers by address ((void*)&buffer).
 bool CirBuilder::is_container_object(DataDef *dd)
 {
-	if (!dd || dd->is_pointer())
-		return false;
-	// vector is no longer a container-object builtin (std::vector is a
-	// header-defined madc template lowered through the class model). Only
-	// the remaining map/set keyword containers are object-lowered here.
-	DataType dt = dd->rawtype();
-	return dt == DataType::dtMAP || dt == DataType::dtSET;
+	// No builtin container-object types remain: std::vector/map/set are all
+	// header-defined madc templates (include/madc/vector|map|set) lowered
+	// through the ordinary class model. The DataDefVECTOR/MAP/SET classes and
+	// their dt* enum tags are now inert (never instantiated — the keywords are
+	// gone). The container_* lowering helpers below are gated on this predicate,
+	// so returning false makes them all unreachable and routes every container
+	// through the class path. ns_stl.cpp (the runtime wrappers) is deleted.
+	(void)dd;
+	return false;
 }
 
 bool CirBuilder::container_obj_info(DataDef *dd, const char *&ctor_sym,

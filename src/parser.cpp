@@ -3922,68 +3922,10 @@ extern int64_t fstream_eof(void *);
 extern int64_t fstream_good(void *);
 extern int64_t fstream_is_open(void *);
 
-// forward declarations for STL container construct/destruct (ns_stl.cpp).
-// ns_stl.cpp defines these as extern "C"; declare them the same way so the
-// linker resolves the unmangled symbols (the surrounding region is C++).
-extern "C" {
-extern void *vector_int_construct(void *);
-extern void vector_int_destruct(void *);
-extern void *vector_str_construct(void *);
-extern void vector_str_destruct(void *);
-extern void *map_str_int_construct(void *);
-extern void map_str_int_destruct(void *);
-extern void *map_str_str_construct(void *);
-extern void map_str_str_destruct(void *);
-extern void *set_int_construct(void *);
-extern void set_int_destruct(void *);
-extern void *set_str_construct(void *);
-extern void set_str_destruct(void *);
-extern void *list_int_construct(void *);
-extern void list_int_destruct(void *);
-extern void *list_str_construct(void *);
-extern void list_str_destruct(void *);
-
-// forward declarations for STL container methods (defined in ns_stl.cpp)
-extern void vector_int_push_back(void *, int64_t);
-extern void vector_int_pop_back(void *);
-extern int64_t vector_int_at(void *, int64_t);
-extern int64_t vector_int_size(void *);
-extern void vector_int_clear(void *);
-extern int64_t vector_int_empty(void *);
-extern void vector_int_set(void *, int64_t, int64_t);
-extern void vector_str_push_back(void *, void *);
-extern void vector_str_pop_back(void *);
-extern void *vector_str_at(void *, void *, int64_t);
-extern void vector_str_set(void *, int64_t, void *);
-extern int64_t vector_str_size(void *);
-extern void vector_str_clear(void *);
-extern int64_t vector_str_empty(void *);
-extern void map_str_int_set(void *, void *, int64_t);
-extern int64_t map_str_int_get(void *, void *);
-extern int64_t map_str_int_contains(void *, void *);
-extern void map_str_int_erase(void *, void *);
-extern int64_t map_str_int_size(void *);
-extern void map_str_int_clear(void *);
-extern void map_str_str_set(void *, void *, void *);
-extern void *map_str_str_get(void *, void *, void *);
-extern int64_t map_str_str_contains(void *, void *);
-extern int64_t map_str_str_size(void *);
-extern void set_str_insert(void *, void *);
-extern int64_t set_str_contains(void *, void *);
-extern void set_str_erase(void *, void *);
-extern int64_t set_str_size(void *);
-extern void set_str_clear(void *);
-extern void set_int_insert(void *, int64_t);
-extern int64_t set_int_contains(void *, int64_t);
-extern int64_t set_int_size(void *);
-extern void list_int_push_back(void *, int64_t);
-extern void list_int_push_front(void *, int64_t);
-extern int64_t list_int_size(void *);
-extern void list_int_clear(void *);
-extern void list_str_push_back(void *, void *);
-extern void list_str_push_front(void *, void *);
-extern int64_t list_str_size(void *);
-} // extern "C" — STL container helpers
+// The ns_stl.cpp STL container construct/destruct/method forward declarations
+// were removed: std::vector/map/set are now real madc templates
+// (include/madc/vector, include/madc/map, include/madc/set), instantiated
+// through the class model. ns_stl.cpp is deleted.
 
 // dlopen/dlsym wrappers that accept std::string* (madc strings)
 int64_t madc_dlopen(void *filename)
