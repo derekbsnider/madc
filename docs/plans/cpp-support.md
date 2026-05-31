@@ -36,6 +36,18 @@ testable — is **drift** and is rejected. (Memory: `project_north_star_c23_cpp2
 5. **Gate every change:** `make -C src fulltest`. Never drop the passing count.
    One concept per commit. Parser-grammar changes are load-bearing for the whole
    suite — highest regression risk; go incrementally.
+6. **Dialect gating via the `--std=` enum — TWO axes, one enum.** `LanguageStd`
+   (madc.h:1005; default `STD_MADC`, the permissive superset) drives both:
+   (a) **source-input dialect** — gatekeeps which keywords/features are active so C
+   and C++ don't clash (`class`/`new`/`operator` are C identifiers; `auto` =
+   storage-class in old C but deduction in C++/C23); the lexer already gates many
+   C++ keywords behind `!is_c_mode()` (lexer.cpp:1309-1339). **Every C++ feature
+   added MUST declare its `--std=` floor** (keyword AND feature dispatch).
+   (b) **c2mir backend-target std** — the C standard the lowering EMITS TO; currently
+   hardcoded C11 (`emit_lang` celC11, madc.cpp:448). Should be a `LanguageStd` value
+   (`c2mir_target_std`, default `STD_C11`) referenced by lowering + emit, BUMPABLE as
+   c2mir's C support advances — and feeding lowering-vs-raising (a C23 target can pass
+   through `typeof`/`_BitInt` instead of lowering). See `project_std_enum_gatekeeping`.
 
 ## Execution sequence (user-agreed 2026-05-31)
 1. **Core C++ features FIRST** — P0 (done) → P1 → P2, until the class model is
@@ -206,6 +218,14 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   (compound assign / bitwise / shift / logical) + add unary / `operator()` /
   `operator->` dispatch + scope the `tkAdd` string-concat guard to the string class
   (so user `operator+` isn't blocked). Becomes testable once P0.1/P0.2/P1.3 land.
+- **P2.1b — operator parser gaps** (P2.1 delivered binary-set + unary + prefix
+  inc/dec CIR dispatch; these need PARSER work, found 2026-05-31): `operator()`
+  (`obj(args)` isn't routed to `operator()` — the call site mis-parses; the method
+  body emits fine); `operator->` (`obj->m` errors "must be a pointer" — rewrite as
+  `(*obj.operator->()).m`); postfix `++/--` (parser encodes no dummy-int param, so
+  prefix/postfix collapse to one nullary `operator++` = prefix only); unary+binary
+  same-name on one class (`operator-()` AND `operator-(const C&)` — the binary param
+  fails to register, a same-name-overload parser gap).
 - **P2.2 — `enum class`** (scoped enums). Parse `enum class`, namespace the values.
 - **P2.3 — general `auto`** type deduction from an initializer expression.
 - **P2.4 — `const` enforcement**. Error on assignment to a const lvalue.
@@ -241,6 +261,23 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   misread a double-pointer as a reference. The P0.7 fix is robust (counts via the
   override), but this overlap is a soundness bug waiting to bite. Fix the type-code
   scheme so `T**` ≠ a reference code. (Found 2026-05-31 during P0.7.)
+
+- **P2.11 — close `--std=` gating gaps** (pairs with the C-stability pass). The
+  enum + `is_c_mode()` gating exists and is partially wired (lexer.cpp:1309-1339),
+  but: `operator` (`tkOPEROVER`, lexer.cpp:1322) is registered UNCONDITIONALLY (a C
+  identifier — should be `!is_c_mode()`); audit lambda `[...]`, `auto` (C23 added
+  deduction — not pure C++), `enum class`, and FEATURE dispatch for the right std
+  floor; `--std=c11/c17` must reject/ignore C++-only constructs. Verifying this is a
+  core part of the C-stability pivot. (Principle #6; `project_std_enum_gatekeeping`.)
+
+- **P2.12 — c2mir backend-target std as an enum (de-hardcode C11)**. Introduce a
+  `LanguageStd c2mir_target_std` (default `STD_C11`); replace hardcoded C11 / the
+  `celC11` emit assumption (madc.cpp:448) and any "c2mir is C11" lowering decisions
+  with references to it; unify the render-target language selection with the shared
+  `LanguageStd` enum (per `.claude/rules/mc11-ir.md`). Wire lowering-vs-raising to
+  query it (target ≥ C23 → pass `typeof`/`_BitInt` through instead of lowering). So a
+  future c2mir C-standard upgrade is a one-constant bump. (Principle #6b; forward-
+  looking; do alongside / after the C-stability pass.)
 
 ### P3 — broader standards surface (later)
 - C-side parity worklist → **ROADMAP Track 1.3** (the develop→master gate).
