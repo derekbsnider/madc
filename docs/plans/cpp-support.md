@@ -245,6 +245,10 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   where external/class-model access needs them (most member access is internal via
   methods, so verify what actually breaks). NOT deferred — part of finishing P2
   correctly. (Invariants I6/I8; `feedback_dont_cling_to_legacy`.)
+- **P2.5c — access control on METHODS**. P2.5/P2.5b enforce access on DATA members
+  only; a private method called externally is not yet rejected (methods resolve via
+  `findMethod`, not the `member_access`-checked path). Extend the access check to
+  methods. (Found during P2.5b; consistent gap with P2.5's data-only scope.)
 - **P2.6 — implicit derived→base pointer conversion**. `A* p = new B();` emits a
   cosmetic "incompatible types in assignment to a pointer" warning (layout is
   compatible — `__vptr` at offset 0; program runs correctly). Make derived→base
