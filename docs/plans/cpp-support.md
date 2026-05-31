@@ -120,6 +120,12 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   member copy-construct, or copy-and-swap) for non-trivial classes; gcc canon.
   Found 2026-05-31 (DONE_WITH_CONCERNS on P0.1).
 
+- **P0.6 — `arr[i]->method()` arrow-chain after subscript**. The dot-subscript
+  keystone (commit `be5b063`) handled `v[i].method()`; the `->` variant
+  (`ptrs[i]->who()`) still hits "chained arrow method call not yet supported".
+  Blocks the classic `vector<Base*>` polymorphism pattern. Same parse location as
+  the dot keystone — extend it to `->`. (Found 2026-05-31 during P0.3.)
+
 ### P1 — core C++ features the language is incomplete without
 - **P1.1 — exceptions (try/catch/throw)**. Lower `TokenTRY` to SJLJ as `cir_node`
   in `CirBuilder` (CIR builder currently errors `unhandled expression: TokenTRY`;
@@ -150,6 +156,10 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 - **P2.3 — general `auto`** type deduction from an initializer expression.
 - **P2.4 — `const` enforcement**. Error on assignment to a const lvalue.
 - **P2.5 — access control** enforcement (verify current state first).
+- **P2.6 — implicit derived→base pointer conversion**. `A* p = new B();` emits a
+  cosmetic "incompatible types in assignment to a pointer" warning (layout is
+  compatible — `__vptr` at offset 0; program runs correctly). Make derived→base
+  pointer conversion implicit. (Found 2026-05-31 during P0.3.)
 
 ### P3 — broader standards surface (later)
 - C-side parity worklist → **ROADMAP Track 1.3** (the develop→master gate).
