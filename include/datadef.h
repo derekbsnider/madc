@@ -895,15 +895,6 @@ inline MadValue::~MadValue()
 	delete (MadArray *)ptr;
 }
 
-// typed STL containers — parameterized types created lazily during parsing
-class DataDefVECTOR: public DDClass
-{
-public:
-    DataDef *element_type;
-    DataDefVECTOR(DataDef *elem, const std::string &name, size_t sz)
-	: DDClass(name, sz, DataType::dtVECTOR), element_type(elem) {}
-};
-
 class DataDefSIMD: public DataDef
 {
 public:
@@ -923,15 +914,6 @@ public:
 	if ( size >= 8 ) return 8;
 	return size ? size : 1;
     }
-};
-
-class DataDefMAP: public DDClass
-{
-public:
-    DataDef *key_type;
-    DataDef *val_type;
-    DataDefMAP(DataDef *k, DataDef *v, const std::string &name, size_t sz)
-	: DDClass(name, sz, DataType::dtMAP), key_type(k), val_type(v) {}
 };
 
 extern DataDefVOID ddVOID;
