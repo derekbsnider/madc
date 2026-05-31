@@ -164,6 +164,14 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   currently COPIES each element (`x = a[i]`) in BOTH the array and class paths, so
   a `T&` loop var can't mutate the source. Make the reference form alias the
   element. Broad (both range-for paths), pre-existing. (Found 2026-05-31 during P0.4.)
+- **P2.8 — tighten `translate_foreach` dispatch (kill the MadArray catch-all)**.
+  range-for dispatches class→`size()/op[]`, fixed-array→indexed (P0.4), **else
+  silently ASSUMES MadArray** (`madarray_size` on raw bytes). MadArray itself is a
+  live feature (php::/perl:: dynamic arrays, `dtARRAY`) — but the catch-all is a
+  fragile default: it's why a raw array crashed (P0.4), and a **VLA range-for STILL
+  hits it and crashes**. Fix: gate the MadArray path on the actual `dtARRAY` type
+  and make any unrecognized container a clear compile ERROR, not a silent MadArray
+  cast. (Found 2026-05-31 reviewing P0.4.)
 
 ### P3 — broader standards surface (later)
 - C-side parity worklist → **ROADMAP Track 1.3** (the develop→master gate).

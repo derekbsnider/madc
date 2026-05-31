@@ -54,6 +54,16 @@ The current CIR backend does RAII via the **c2mir `__attribute__((cleanup))`** a
 3. Ignore unwind (leak on exception path) — **unacceptable** for compliance.
 Decide between 1 and the cleanup-attribute interaction **before implementing**; verify with a `try { Obj o; throw 1; } catch(...) {}` test that `o`'s dtor runs exactly once. gcc/clang behavior is canon.
 
+## ⚠️ c2mir gotcha that DIRECTLY affects this work (found 2026-05-31, P0.5)
+A `__attribute__((cleanup))` variable declared INSIDE a statement-expression `({ ... })`
+does **not** get its destructor scoped correctly by c2mir — the dtor fires at the wrong
+time and can corrupt unrelated locals (observed: a stmt-expr-local cleanup temp clobbered
+a sibling object). **Implication for P1.1:** emit the try-context, any cleanup-tagged
+temps, and the catch handler as **block-scoped statements** (e.g. via `m_pending_stmts`
+/ a real `{ }` block), NOT inside a `({...})` statement-expression. This is also why the
+SJLJ unwind should lean on the runtime cleanup stack rather than relying on
+cleanup-attribute timing across the setjmp/longjmp boundary.
+
 ## ❌ Do NOT carry forward (this is the cruft / drift)
 - `gp_tree_node`, `child(node,i)`, `an_code`, `AN_CATCH`/`AN_CATCH_LIST`/`AN_BLOCK` node kinds — dead Gecko AST.
 - `O(...)` / `emit_indent()` / `indent_level` **string/text emission** — the CIR backend builds nodes, not text.
