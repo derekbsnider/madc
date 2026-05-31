@@ -7068,6 +7068,52 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
     return new TokenAddrOf(*avar, aptr);
 }
 
+// Is `cls` the same as `target`, or derived (single-inheritance chain) from it?
+// Used for protected-member access: a protected member is reachable from the
+// declaring class AND any class derived from it.
+static bool class_is_or_derives(DataDefCLASS *cls, DataDefCLASS *target)
+{
+    for ( DataDefCLASS *c = cls; c; c = c->base_class )
+	if ( c == target )
+	    return true;
+    return false;
+}
+
+// Access-control check (P2.5). Given the class that OWNS `member`, the member's
+// name, and the class whose method body we are currently parsing (NULL outside
+// any method), return a human-readable violation string, or empty when access
+// is allowed. Public members are always allowed; a private member only from the
+// SAME class's methods; a protected member from the declaring class or a
+// derived class's methods. `friend`, access-changing using-declarations, and
+// private inheritance are out of scope.
+static std::string member_access_violation(DataDef *owner_type,
+					    const std::string &name,
+					    DataDefCLASS *cur_class)
+{
+    // Only class objects carry access labels; a plain C struct never sets
+    // non-zero member_access entries, so m_access returns 0 (public) and this
+    // check is a no-op for C structs.
+    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(owner_type);
+    if ( !sdd )
+	return std::string();
+    uint32_t acc = sdd->m_access(name);
+    if ( acc == 0 )
+	return std::string();   // public — always allowed
+    DataDefCLASS *owner_cls = dynamic_cast<DataDefCLASS *>(owner_type);
+    if ( !owner_cls )
+	return std::string();   // access flag on a non-class: ignore
+    if ( acc == vfPRIVATE )
+    {
+	if ( cur_class == owner_cls )
+	    return std::string();
+	return "'" + name + "' is a private member of '" + owner_cls->name + "'";
+    }
+    // vfPROTECTED: reachable from the declaring class or any derived class.
+    if ( cur_class && class_is_or_derives(cur_class, owner_cls) )
+	return std::string();
+    return "'" + name + "' is a protected member of '" + owner_cls->name + "'";
+}
+
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
 				    bool stop_on_closing_paren, int initial_brackets,
 				    bool push_back_comma)
@@ -9206,6 +9252,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    ssize_t ofs = ((DataDefSTRUCT *)struct_type)->m_offset(id);
 		    if ( ofs == -1 )
 			Throw(tb) << "Unidentified member" << flush;
+		    // Access control (P2.5): reject private/protected member access
+		    // from outside the (derived) class. cur_class = the class whose
+		    // method body we are parsing (NULL outside any method).
+		    {
+			DataDefCLASS *cur_class =
+			    (code && code->method) ? code->method->owner_class : NULL;
+			std::string av =
+			    member_access_violation(struct_type, id, cur_class);
+			if ( !av.empty() )
+			    Throw(tb) << av << flush;
+		    }
 		    DataDef *mtype = ((DataDefSTRUCT *)struct_type)->m_type(id);
 		    // create new variable
 		    var = new Variable(id, *mtype, 1, NULL, false);
@@ -9357,6 +9414,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    }
 		    if ( ofs == -1 )
 			Throw(tb) << "no member named '" << id << "'" << flush;
+		    // Access control (P2.5): reject private/protected member access
+		    // via `->` from outside the (derived) class.
+		    {
+			DataDefCLASS *cur_class =
+			    (code && code->method) ? code->method->owner_class : NULL;
+			std::string av =
+			    member_access_violation(base, id, cur_class);
+			if ( !av.empty() )
+			    Throw(tb) << av << flush;
+		    }
 		    DataDef *mtype = ((DataDefSTRUCT *)base)->m_type(id);
 
 		    // create variable for the member

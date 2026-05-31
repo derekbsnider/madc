@@ -559,6 +559,16 @@ public:
 		return (i < member_counts.size()) ? member_counts[i] : 1;
 	return 1;
     }
+    // Per-member access flag (0=public, vfPRIVATE, vfPROTECTED). Returns 0
+    // (public) for an unknown member or a struct with no access info (a plain
+    // C struct never sets member_access entries past the default 0).
+    uint32_t m_access(const std::string &member) const
+    {
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+		return (i < member_access.size()) ? member_access[i] : 0;
+	return 0;
+    }
     TokenBase *m_count_expr(const std::string &member) const
     {
 	for ( size_t i = 0; i < members.size(); ++i )
