@@ -38,7 +38,11 @@ class TokenDOUBLE:    public TokenDataType { public: TokenDOUBLE(): TokenDataTyp
 class TokenLPSTR:     public TokenDataType { public: TokenLPSTR():  TokenDataType("LPSTR", ddLPSTR) {} };
 
 // some basic c++ types
-class TokenSTRING:    public TokenDataType { public: TokenSTRING(): TokenDataType("string", ddSTRING) {} };
+// NOTE: there is deliberately NO TokenSTRING here. `string` is std::string —
+// it comes into existence only via `#include <string>` under the `std`
+// namespace (std_types["string"], registered in _parser_init), reached as
+// `std::string` or via `using namespace std;`. It is NOT a global builtin
+// type token, exactly like C++. (Phase A5, stdtypes-as-real-classes.)
 class TokenOSTREAM:   public TokenDataType { public: TokenOSTREAM():TokenDataType("ostream", ddOSTREAM) {} };
 class TokenSSTREAM:   public TokenDataType { public: TokenSSTREAM():TokenDataType("stringstream", ddSSTREAM) {} };
 class TokenARRAY:     public TokenDataType { public: TokenARRAY():  TokenDataType("array", ddARRAY) {} };
