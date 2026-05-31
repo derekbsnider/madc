@@ -3844,6 +3844,28 @@ void Program::add_string_methods()
     }
     ddSTRING.methods.push_back(var);
 
+    // operator< / > / <= / >= as class operators bound to the extern-C runtime
+    // wrappers string_lt/gt/le/ge (NOT mangled libstdc++ symbols: the relational
+    // operators for strings are inlined weak templates, not dlsym-exportable —
+    // like operator==). Same int-returning, both-operands-by-address shape as
+    // operator==; CirBuilder::class_operator_call emits `string_XX(&lhs, &rhs)`
+    // with no negation (each wrapper computes its own comparison). Param 1 is a
+    // string& ref param so its address is passed. The fn pointer is a
+    // legacy-backend placeholder only.
+    struct { const char *name; const char *sym; } rel_ops[] = {
+	{ "operator<",  "string_lt" }, { "operator>",  "string_gt" },
+	{ "operator<=", "string_le" }, { "operator>=", "string_ge" },
+    };
+    for ( auto &ro : rel_ops ) {
+	var = addFunction(ro.name, datatype_vec_t{DataType::dtINT32, rtPtr(DataType::dtSTRING), DataType::dtSTRINGref}, (fVOIDFUNC)madc_string_length, true);
+	if (FuncDef *fd = dynamic_cast<FuncDef *>(var->type)) {
+	    fd->emit_symbol = ro.sym;
+	    if (fd->ref_params.size() < 2) fd->ref_params.resize(2, false);
+	    fd->ref_params[1] = true;
+	}
+	ddSTRING.methods.push_back(var);
+    }
+
     // length() and size() — wrap std::string::length via a free helper.
     // Signature: (int64_t, string*) matches madc method calling convention
     // where the object pointer is the hidden first argument.

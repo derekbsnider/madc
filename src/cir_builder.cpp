@@ -2590,30 +2590,34 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 	// emit_symbol and is declared from its signature; otherwise the default
 	// ClassName__operator<op> scheme + the referenced-funcs prototype pass.
 	if (!callee->emit_symbol.empty()) {
-		// Equality operators (==/!=) bind to the extern-C runtime wrapper
-		// string_equals, which RETURNS INT and takes BOTH operands as
-		// string-object addresses (two void*). This differs from =/+=
-		// (which return basic_string& / void* and take one rhs). Negate
-		// the int result for != (no second wrapper needed).
+		// Int-returning comparison operators (== != < > <= >=) bind to an
+		// extern-C runtime wrapper (string_equals / string_lt/gt/le/ge) that
+		// RETURNS INT and takes BOTH operands as string-object addresses (two
+		// void*). This differs from =/+= (which return basic_string& / void* and
+		// take one rhs) and from + (by-value string return). Each wrapper
+		// computes its own comparison, so NO negation — EXCEPT !=, which reuses
+		// string_equals and negates the int result (no separate wrapper needed).
 		TokenID oid = top->id();
-		if (oid == TokenID::tkEquals || oid == TokenID::tkNotEq) {
-			node_t eqargs = list();
-			append(eqargs, string_obj_arg(top->left));
-			append(eqargs, string_obj_arg(top->right));
-			// int string_equals(void*, void*)
+		if (oid == TokenID::tkEquals || oid == TokenID::tkNotEq
+		    || oid == TokenID::tkLT || oid == TokenID::tkGT
+		    || oid == TokenID::tkLE || oid == TokenID::tkGE) {
+			node_t cmpargs = list();
+			append(cmpargs, string_obj_arg(top->left));
+			append(cmpargs, string_obj_arg(top->right));
+			// int string_XX(void*, void*)
 			need_output_extern(callee->emit_symbol.c_str(), false,
 					   { { {N_VOID}, true }, { {N_VOID}, true } },
 					   { N_INT });
-			node_t eqcall = node2(N_CALL,
-					      id(callee->emit_symbol.c_str(), origin),
-					      eqargs, origin);
-			CIR_NODE(eqcall)->synth_from_origin = true;
+			node_t cmpcall = node2(N_CALL,
+					       id(callee->emit_symbol.c_str(), origin),
+					       cmpargs, origin);
+			CIR_NODE(cmpcall)->synth_from_origin = true;
 			if (oid == TokenID::tkNotEq) {
-				node_t neg = node1(N_NOT, eqcall, origin);
+				node_t neg = node1(N_NOT, cmpcall, origin);
 				CIR_NODE(neg)->synth_from_origin = true;
 				return neg;
 			}
-			return eqcall;
+			return cmpcall;
 		}
 
 		// operator+ binds to the extern-C wrapper string_concat, which RETURNS

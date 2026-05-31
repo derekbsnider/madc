@@ -85,6 +85,15 @@ void string_clear(void *ptr)
 // and negates the result for operator!=.
 int string_equals(void *a, void *b)
     { return *(std::string *)a == *(std::string *)b ? 1 : 0; }
+// Relational comparisons — libstdc++'s relational operators for strings are also
+// inlined weak template symbols (not dlsym-exportable), so each binds to its own
+// extern-C wrapper (no negation tricks — each computes its own comparison).
+// CirBuilder binds operator< / > / <= / >= to these via the same int-returning,
+// both-operands-by-address shape as string_equals.
+int string_lt(void *a, void *b) { return *(std::string *)a <  *(std::string *)b ? 1 : 0; }
+int string_gt(void *a, void *b) { return *(std::string *)a >  *(std::string *)b ? 1 : 0; }
+int string_le(void *a, void *b) { return *(std::string *)a <= *(std::string *)b ? 1 : 0; }
+int string_ge(void *a, void *b) { return *(std::string *)a >= *(std::string *)b ? 1 : 0; }
 // std::string operator+ is a weak template instantiation (not dlsym-able) that
 // returns a new string BY VALUE, exactly like operator==. This extern-C wrapper
 // placement-constructs the concatenation into the caller's return-slot buffer
