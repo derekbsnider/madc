@@ -3533,23 +3533,29 @@ Variable::Variable(std::string n, DataDef &d, uint32_t c, void *init, bool alloc
     param_vla_side_effect_expr = nullptr;
     if ( init ) { alloc = true; }
     if ( !alloc ) { flags |= vfSTACK; }
+    // std::string backing store: recognized by class IDENTITY (is_std_string),
+    // not the raw type-code, so it allocates a real std::string object (never a
+    // calloc'd raw buffer that string ops/`delete` would crash on) regardless of
+    // the DataDef's tag (P2.14). Handled before the type() switch.
+    if ( is_std_string(type) && !type->is_pointer() )
+    {
+	if ( init )
+	{
+	    data = new std::string((const char *)init);
+	    flags |= vfALLOC;
+	    DBG(std::cout << "Variable::Variable data = new string for " << n << " (" << *(std::string *)data << ')' << std::endl);
+	}
+	else
+	if ( alloc )
+	{
+	    data = new std::string;
+	    flags |= vfALLOC;
+	}
+	DBG(std::cout << "Variable " << n << " Data address: " << (uint64_t)data << std::endl);
+	return;
+    }
     switch(type->type())
     {
-	case DataType::dtSTRING:
-	    if ( init )
-	    {
-		data = new std::string((const char *)init);
-		flags |= vfALLOC;
-		DBG(std::cout << "Variable::Variable data = new string for " << n << " (" << *(std::string *)data << ')' << std::endl);
-	    }
-	    else
-	    if ( alloc )
-	    {
-		data = new std::string;
-		flags |= vfALLOC;
-	    }
-	    DBG(std::cout << "Variable " << n << " Data address: " << (uint64_t)data << std::endl);
-	    break;
 	case DataType::dtSSTREAM:
 	    if ( init )
 	    {
@@ -3607,9 +3613,15 @@ Variable::~Variable()
 
     DBG(std::cout << "Variable::~Variable(" << name << ") freeing data" << std::endl);
 
+    // Mirror the ctor: a std::string backing store (recognized by identity,
+    // P2.14) is `delete`d as a std::string, not free()d as raw memory.
+    if ( is_std_string(type) && !type->is_pointer() )
+    {
+	delete (std::string *)data;
+	return;
+    }
     switch(type->type())
     {
-	case DataType::dtSTRING:  delete (std::string *)data;		break;
 	case DataType::dtSSTREAM: delete (std::stringstream *)data;	break;
 	case DataType::dtOSTREAM: delete (std::ostream *)data;		break;
 	default:		  free(data);				break;
