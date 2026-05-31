@@ -15765,6 +15765,22 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	    is_shared_global_extern_reference(*this, code, var);
 	if ( gotstatic )
 	    var->flags |= vfSTATIC;
+	// Mark a SCALAR `const`-declared variable so the CIR backend can enforce
+	// read-only-ness (reject assignment to it — P2.4). The variable itself is
+	// const only when const qualifies the VALUE (`const int x`) or is the
+	// top-level const on a pointer (`int * const p`); `const int *p` makes the
+	// pointee const but leaves `p` reassignable, so it is excluded — matching
+	// td->is_const_decl. Aggregate consts (const arrays/structs) are NOT
+	// marked: their per-element write is a different (out-of-scope) enforcement,
+	// and marking them would mis-route an array read through the scalar
+	// constant-fold path (`const char a[N]` reading as 0). (This sets the
+	// marking that was previously absent; the const-fold read of a constant is
+	// also guarded on var->data + a scalar type so only a compile-time-valued
+	// scalar const folds, leaving runtime-init consts to read normally.)
+	bool decl_is_const = (gotconst && !saw_pointer_decl) || saw_const_after_star;
+	if ( decl_is_const && !(var->flags & vfFIXEDARRAY)
+	  && !(var->type && var->type->is_struct()) )
+	    var->flags |= vfCONSTANT | vfCONSTDECL;
 	// The extern flag is set at variable-CREATION time (addVariable), so it
 	// can only mark a freshly-created symbol and can never demote an
 	// already-defined (existing non-extern) one — a global with both a

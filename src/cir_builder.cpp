@@ -2752,6 +2752,24 @@ static const char *binop_overload_symbol(TokenID id)
 	}
 }
 
+// Does this operator WRITE its left operand? True for plain assignment and the
+// compound assignments (+= -= *= /= %= &= |= ^= <<= >>=). Used by the const-LHS
+// enforcement: writing through a const lvalue is an error. (The inc/dec write
+// path is handled separately in translate_expr's inc/dec branch.)
+static bool is_assign_op(TokenID id)
+{
+	switch (id) {
+	case TokenID::tkAssign:
+	case TokenID::tkAddEq: case TokenID::tkSubEq:
+	case TokenID::tkMulEq: case TokenID::tkDivEq: case TokenID::tkModEq:
+	case TokenID::tkBandEq: case TokenID::tkBorEq: case TokenID::tkXorEq:
+	case TokenID::tkBSLEq: case TokenID::tkBSREq:
+		return true;
+	default:
+		return false;
+	}
+}
+
 // Among a class's operator overloads of name `mname`, select the one whose
 // single explicit parameter (param 1; param 0 = __this) matches the RHS: a
 // string-OBJECT RHS picks the (const string&) overload, a const char* value
@@ -3602,8 +3620,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttVariable) {
 		TokenVar *tv = dynamic_cast<TokenVar *>(tb);
 		if (tv) {
-			if (tv->var.is_constant() && tv->var.type &&
-			    tv->var.type->is_integer() && !tv->var.type->is_pointer())
+			// Constant-fold a read of an integer constant to its value —
+			// but ONLY for a constant whose value was genuinely STORED into
+			// its own data buffer (enum values, set via set()). A plain
+			// `const`-DECLARED variable carries vfCONSTDECL: it has either no
+			// data (a local) or an allocated-but-uninitialized buffer (a
+			// global, whose initializer runs as an ordinary store), so folding
+			// it would read 0 — it must read as the variable instead. (P2.4
+			// added vfCONSTANT to const-declared scalars for WRITE enforcement;
+			// excluding vfCONSTDECL here keeps the READ fold limited to the
+			// set()-valued constants it always handled correctly.)
+			if (tv->var.is_constant() && tv->var.data
+			    && !(tv->var.flags & vfCONSTDECL) && tv->var.type
+			    && tv->var.type->is_integer() && !tv->var.type->is_pointer())
 				return integer(tv->var.get<int64_t>(), tb);
 			if (tv->var.name.compare(0, 11, "__literal__") == 0) {
 				const std::string &content = tv->var.name.substr(11);
@@ -3838,6 +3867,21 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		if (tb->id() == TokenID::tkInc || tb->id() == TokenID::tkDec) {
 			bool is_post = (top->left != NULL);
 			TokenBase *operand_tb = is_post ? top->left : top->right;
+			// const enforcement (P2.4): ++/-- writes its operand. A direct
+			// const variable operand is an error (g++: "increment of read-only
+			// variable 'x'"). Checked before the class-operator dispatch so a
+			// class operator++ on a const object is rejected too. Scoped to the
+			// direct const-var case (see the binary const check).
+			if (TokenVar *itv = dynamic_cast<TokenVar *>(operand_tb)) {
+				if (itv->var.is_constant()) {
+					std::string msg = std::string(
+						tb->id() == TokenID::tkInc ? "increment"
+									   : "decrement")
+						+ " of read-only variable '"
+						+ itv->var.name + "'";
+					return error_node(msg.c_str(), tb);
+				}
+			}
 			// Class operator++/operator-- dispatch (declared-only; falls
 			// through to the built-in inc/dec when the class has no such
 			// operator). The parser does NOT distinguish prefix from postfix
@@ -3890,6 +3934,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 
 		// Binary
 		if (top && top->left && top->right) {
+			// const enforcement (P2.4): writing through a const lvalue is an
+			// error in every C/C++ dialect. Scoped to the DIRECT case — the LHS
+			// is a `const`-declared variable (TokenVar with is_constant()) and
+			// the operator writes it (= or a compound assign). Deep/transitive
+			// const (members, `const T*`/`T* const`, const params/methods) is a
+			// larger effort and intentionally NOT enforced here. gcc canon:
+			// "assignment of read-only variable 'x'".
+			if (is_assign_op(tb->id())) {
+				if (TokenVar *ltv = dynamic_cast<TokenVar *>(top->left)) {
+					if (ltv->var.is_constant()) {
+						std::string msg = "assignment of read-only variable '"
+							+ ltv->var.name + "'";
+						return error_node(msg.c_str(), tb);
+					}
+				}
+			}
+
 			// Stream chain: cout << x [<< y ...] -> direct calls on the
 			// mangled libstdc++ stream object. Intercept BEFORE the
 			// tkBSL->N_LSH (shift) translation below.

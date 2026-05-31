@@ -72,6 +72,9 @@ typedef enum : uint32_t { vfLOCAL	=    1, // local vs global
 			  vfADDRTAKEN	=16384, // variable needs stable stack storage for &
 			  vfEXTERN	=32768, // extern declaration placeholder
 			  vfREFERENCE	=65536, // reference parameter (T&): auto-deref on access
+			  vfCONSTDECL  =131072, // `const`-DECLARED var (vfCONSTANT for write
+			                        // enforcement) whose value is NOT set() into
+			                        // data — so it must NOT be read-fold-substituted
 			} varflag_t;
 
 #define rtNone(x) 0
