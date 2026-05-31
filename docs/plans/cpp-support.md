@@ -185,6 +185,15 @@ These produce wrong answers or crashes on valid C++. Highest priority.
   and make any unrecognized container a clear compile ERROR, not a silent MadArray
   cast. (Found 2026-05-31 reviewing P0.4.)
 
+- **P2.9 — `DataDefPTR` double-pointer vs reference type-code overlap (latent
+  hazard)**. `DataDefPTR` stacks `rtPtr` twice for `T**`, so a double-pointer's raw
+  `type()` code lands in the `rtRef` (20000+) range — i.e. `is_pointer()` returns
+  FALSE on the raw code of an `A**`. Anything that classifies by raw `type()`
+  instead of the `DataDefPTR` dynamic type (`dd_ptr_depth` / `dynamic_cast`) can
+  misread a double-pointer as a reference. The P0.7 fix is robust (counts via the
+  override), but this overlap is a soundness bug waiting to bite. Fix the type-code
+  scheme so `T**` ≠ a reference code. (Found 2026-05-31 during P0.7.)
+
 ### P3 — broader standards surface (later)
 - C-side parity worklist → **ROADMAP Track 1.3** (the develop→master gate).
 - C23 surface (`_BitInt`, `#embed`, `constexpr` objects, attributes) per the
