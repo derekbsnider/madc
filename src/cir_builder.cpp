@@ -951,11 +951,7 @@ node_t CirBuilder::string_obj_addr(const char *name, TokenBase *origin)
 // address is `(void*)&name`. (Mirrors the param vs instance storage split.)
 node_t CirBuilder::string_var_addr(const Variable &v, TokenBase *origin)
 {
-	bool pointer_stored = (v.flags & vfPARAM) || (v.flags & vfREFERENCE)
-			      || (v.type && v.type->rawtype() == DataType::dtSTRINGref);
-	node_t base = id(v.name.c_str(), origin);
-	node_t expr = pointer_stored ? base : node1(N_ADDR, base, origin);
-	node_t cast = node2(N_CAST, void_ptr_type(), expr, origin);
+	node_t cast = node2(N_CAST, void_ptr_type(), object_var_addr(v, origin), origin);
 	CIR_NODE(cast)->synth_from_origin = true;
 	return cast;
 }
@@ -1048,69 +1044,11 @@ node_t CirBuilder::string_obj_arg(TokenBase *arg)
 	return string_obj_addr(name, arg);
 }
 
-// Lower a std::string method call (s.c_str()/.length()/.size()/.empty()/.clear())
-// on a string OBJECT receiver to the matching runtime wrapper, passing the object
-// address as (void*). Returns NULL when this is not a recognized string-object
-// method call (wrong receiver type, a string literal/lifted-literal receiver, or
-// an unknown method) so the caller falls through to generic handling.
-node_t CirBuilder::string_method_call(TokenMember *tm, TokenBase *origin)
-{
-	// Receiver must be a genuine string OBJECT, not a const char* value:
-	// exclude non-string types, lifted `__literal__` vars, and constants —
-	// the same exclusions is_string_object_value applies to a TokenVar.
-	const Variable &obj = tm->object;
-	if (!is_string_object(obj.type))
-		return NULL;
-	if (obj.name.compare(0, 11, "__literal__") == 0)
-		return NULL;
-	if (obj.is_constant())
-		return NULL;
-
-	const std::string &method = tm->var.name;
-	node_t addr = string_var_addr(obj, origin);
-
-	if (method == "c_str") {
-		need_output_extern(STR_CSTR, true, { { {N_VOID}, true } });
-		node_t a = list();
-		append(a, addr);
-		node_t call = node2(N_CALL, id(STR_CSTR, origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	}
-	// length()/size() — the real libstdc++ members (both return size_t). Declared
-	// returning `long` (NOT void) so the value reads correctly in arithmetic.
-	if (method == "length" || method == "size") {
-		const char *sym = (method == "size") ? STR_SIZE : STR_LENGTH;
-		need_output_extern(sym, false, { { {N_VOID}, true } }, { N_LONG });
-		node_t a = list();
-		append(a, addr);
-		node_t call = node2(N_CALL, id(sym, origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	}
-	// empty() -> (size() == 0). Use the real size() member (a clean size_t)
-	// rather than the bool empty() (whose al-only return is fiddly to read).
-	if (method == "empty") {
-		need_output_extern(STR_SIZE, false, { { {N_VOID}, true } }, { N_LONG });
-		node_t a = list();
-		append(a, addr);
-		node_t call = node2(N_CALL, id(STR_SIZE, origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		node_t eq = node2(N_EQ, call, integer(0, origin), origin);
-		CIR_NODE(eq)->synth_from_origin = true;
-		return eq;
-	}
-	// clear() -> string_clear((void*)s)  (a void statement-expression)
-	if (method == "clear") {
-		need_output_extern(STR_CLEAR, false, { { {N_VOID}, true } });
-		node_t a = list();
-		append(a, addr);
-		node_t call = node2(N_CALL, id(STR_CLEAR, origin), a, origin);
-		CIR_NODE(call)->synth_from_origin = true;
-		return call;
-	}
-	return NULL;
-}
+// (std::string method calls — s.c_str()/.length()/.size()/.empty()/.clear() —
+// now route through the uniform class path: CirBuilder::class_method_call ->
+// emit_symbol_method_call, which calls the mangled libstdc++ member bound via
+// FuncDef::emit_symbol. The legacy string_method_call interception was deleted
+// in A4b Surface 2; empty() is still lowered to size()==0 there.)
 
 // Build a type specifier LIST. If typedef_alias is set, emit ID("alias")
 // instead of raw type nodes — c2mir's checker resolves the typedef.
@@ -2258,14 +2196,38 @@ node_t CirBuilder::class_struct_def(DataDefCLASS *cdd)
 	return spec_decl;
 }
 
-// Resolve the class behind a (possibly pointer-wrapped) DataDef.
+// Resolve the class behind a (possibly pointer-wrapped) DataDef. Recognizes
+// ordinary user classes AND runtime-object classes (std::string) so a method
+// call on a `string` receiver routes through the class path.
 static DataDefCLASS *class_behind(DataDef *dd)
 {
 	if (!dd) return NULL;
-	if (DataDefCLASS *c = as_user_class(dd)) return c;
+	if (DataDefCLASS *c = as_class_instance(dd)) return c;
 	if (DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd))
-		return as_user_class(p->base_type);
+		return as_class_instance(p->base_type);
 	return NULL;
+}
+
+// True when a NAMED variable holds the OBJECT'S ADDRESS rather than the object
+// itself — a by-value `string` parameter and a `string&` reference are lowered
+// to a `void*` (param_decl), and an explicit pointer type (`string*`) is a
+// pointer. For these the object address is the variable's value (`name`); for a
+// value object lvalue it is `&name`. This is the single addressing rule shared
+// by every object-class receiver (methods, operators, stream, args).
+static bool var_is_pointer_stored(const Variable &v)
+{
+	if (v.type && v.type->is_pointer()) return true;
+	if ((v.flags & vfPARAM) || (v.flags & vfREFERENCE)) return true;
+	return v.type && v.type->rawtype() == DataType::dtSTRINGref;
+}
+
+// The raw object address of a NAMED variable (NOT cast to void*): the pointer
+// itself when pointer-stored, else `&name`. The single source of truth for
+// object-instance addressing; string_var_addr wraps this in a void* cast.
+node_t CirBuilder::object_var_addr(const Variable &v, TokenBase *origin)
+{
+	node_t base = id(v.name.c_str(), origin);
+	return var_is_pointer_stored(v) ? base : node1(N_ADDR, base, origin);
 }
 
 node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
@@ -2277,18 +2239,103 @@ node_t CirBuilder::class_this_arg(TokenMember *tm, DataDefCLASS *&recv_class,
 	// (`.`, needs &obj) from a pointer receiver (`->`, pass the pointer).
 	DataDef *recv_type;
 	node_t recv_node;
+	bool from_var = false;
 	if (tm->parent_expr) {
 		recv_type = tm->parent_expr->datadef();
 		recv_node = translate_expr(tm->parent_expr);
 	} else {
 		recv_type = tm->object.type;
 		recv_node = id(tm->object.name.c_str(), origin);
+		from_var = true;
 	}
 	recv_class = class_behind(recv_type);
 	if (!recv_class) return NULL;
+	// A NAMED object variable uses the unified addressing rule (a by-value /
+	// by-ref `string` param is stored AS the object address, so its `this` is
+	// the variable itself, NOT `&variable` — taking `&` would yield a double
+	// pointer and segfault). A chained sub-expression (parent_expr) is an
+	// rvalue/lvalue computed by translate_expr; address it by pointer-ness.
+	if (from_var)
+		return object_var_addr(tm->object, origin);
 	bool recv_is_ptr = recv_type && recv_type->is_pointer();
 	// Value receiver -> &obj; pointer receiver -> obj.
 	return recv_is_ptr ? recv_node : node1(N_ADDR, recv_node, origin);
+}
+
+// The extern return-spec for an emit_symbol-bound method/operator: a pointer
+// return (c_str()) is declared via ret_ptr; a `long` return (size()/length())
+// needs an explicit {N_LONG} base so the value reads correctly in arithmetic;
+// everything else (void / string& treated as void) defaults to a void base.
+// `ret_ptr` is set out-param.
+static std::vector<c2mir_node_code_t> emit_symbol_ret_specs(FuncDef *fd, bool &ret_ptr)
+{
+	ret_ptr = fd && fd->returns.is_pointer();
+	if (ret_ptr) return {};   // void* / char* — base is void, ret_ptr carries the star
+	DataType rt = fd ? fd->returns.rawtype() : DataType::dtVOID;
+	if (rt == DataType::dtINT64 || rt == DataType::dtINT32)
+		return { N_LONG };
+	return {};   // void (clear, assign/append return string& we ignore)
+}
+
+// Lower a call to a class method bound to an external symbol (emit_symbol — a
+// mangled libstdc++ std::string member). Declares the extern from the FuncDef's
+// real signature, passes the receiver address as void*, and coerces explicit
+// args (string params -> string_obj_arg). `empty()` is lowered to `size()==0`.
+node_t CirBuilder::emit_symbol_method_call(TokenMember *tm, FuncDef *callee,
+					   const std::string &sym, node_t this_arg,
+					   TokenBase *origin)
+{
+	const std::string &method = tm->var.name;
+
+	// empty() -> (size() == 0). The real size() member returns a clean size_t;
+	// the bool-returning empty() returns a 1-byte value (garbage upper bits as
+	// a 64-bit int). Same observable result, robust read. (g++ canon.)
+	if (method == "empty") {
+		need_output_extern(STR_SIZE, false, { { {N_VOID}, true } }, { N_LONG });
+		node_t a = list();
+		append(a, node2(N_CAST, void_ptr_type(), this_arg, origin));
+		node_t call = node2(N_CALL, id(STR_SIZE, origin), a, origin);
+		CIR_NODE(call)->synth_from_origin = true;
+		node_t eq = node2(N_EQ, call, integer(0, origin), origin);
+		CIR_NODE(eq)->synth_from_origin = true;
+		return eq;
+	}
+
+	// Build the parameter shapes for the extern declaration and the args.
+	// Param 0 is the hidden __this (a void* object pointer). Each subsequent
+	// param mirrors the method's declared parameter type.
+	std::vector<ExternParam> eparams;
+	eparams.push_back({ {N_VOID}, true });   // this (void*)
+	node_t args = list();
+	append(args, node2(N_CAST, void_ptr_type(), this_arg, origin));   // this (void*)
+	for (size_t i = 0; i < tm->parameters.size(); i++) {
+		TokenBase *arg = tm->parameters[i];
+		size_t pi = i + 1;   // +1 to skip __this
+		DataDef *pt = (pi < callee->parameters.size())
+				? callee->parameters[pi] : NULL;
+		DataType pdt = pt ? pt->rawtype() : DataType::dtVOID;
+		if (pt && (pdt == DataType::dtSTRING || pdt == DataType::dtSTRINGref)) {
+			// const string& -> object pointer (void*).
+			eparams.push_back({ {N_VOID}, true });
+			append(args, string_obj_arg(arg));
+		} else if (pt && pt->is_pointer()) {
+			// const char* etc.
+			eparams.push_back({ {N_CHAR}, true });
+			append(args, translate_expr(arg));
+		} else {
+			eparams.push_back({ {N_LONG}, false });
+			append(args, translate_expr(arg));
+		}
+	}
+
+	bool ret_ptr = false;
+	std::vector<c2mir_node_code_t> ret_specs = emit_symbol_ret_specs(callee, ret_ptr);
+	need_output_extern(sym.c_str(), ret_ptr, eparams, ret_specs);
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	CIR_NODE(call)->synth_from_origin = true;
+	// A T&-returning method (assign/append return string&) — we declared the
+	// return as void and ignore the result, so no deref.
+	return call;
 }
 
 node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
@@ -2303,6 +2350,18 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	FuncDef *callee = dynamic_cast<FuncDef *>(tm->var.type);
 	const std::string sym = (callee && !callee->emit_symbol.empty())
 				? callee->emit_symbol : tm->var.name;
+
+	// A method bound to an external symbol (emit_symbol — e.g. a mangled
+	// libstdc++ std::string member) has no madc-emitted body and is not in
+	// funcdef_map under its mangled name, so the referenced-funcs prototype
+	// pass won't declare it. Declare it here from its real signature (return
+	// type matters: length()/size() return `long`, c_str() returns char* —
+	// an implicit/void return would misread the value), and route the call
+	// directly. `empty()` is lowered to `size() == 0` (the bool-returning
+	// libstdc++ empty() returns a 1-byte value that reads as garbage upper
+	// bits when taken as a 64-bit int), matching g++'s observable result.
+	if (callee && !callee->emit_symbol.empty())
+		return emit_symbol_method_call(tm, callee, sym, this_arg, origin);
 
 	// An inherited method's __this is typed `Base *`, but the receiver is a
 	// `Derived *`. Since base members are flattened at offset 0 (single
@@ -3275,24 +3334,23 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				translate_expr(tse->index), tb);
 	}
 
-	// std::string method call on a string-object receiver
-	// (s.c_str()/.length()/.size()/.empty()/.clear()). A TokenCallMethod
-	// IS-A TokenMember, so this must run before the generic member-access
-	// handler below — otherwise `s.c_str()` mis-lowers to a bare field
-	// access `s.c_str`. string_method_call returns NULL for anything it
-	// doesn't recognize, so non-string method calls fall through.
+	// Method call on a class-object receiver. A TokenCallMethod IS-A
+	// TokenMember, so this must run before the generic member-access handler
+	// below — otherwise `s.c_str()` mis-lowers to a bare field access
+	// `s.c_str`. std::string methods route through class_method_call (their
+	// FuncDef carries the mangled libstdc++ emit_symbol); each lowering helper
+	// returns NULL for an unrecognized receiver so the others fall through.
 	if (tb->type() == TokenType::ttCallMethod) {
 		TokenMember *tcm = dynamic_cast<TokenMember *>(tb);
 		if (tcm) {
-			node_t lowered = string_method_call(tcm, tb);
-			if (lowered) return lowered;
 			// STL container method call (vector/map/set) on a container
 			// object receiver. Returns NULL for non-container receivers.
-			lowered = container_method_call(tcm, tb);
+			node_t lowered = container_method_call(tcm, tb);
 			if (lowered) return lowered;
-			// User-defined class method call: c.method(args) ->
-			// ClassName__method(&c, args). Returns NULL when the
-			// receiver is not a user class.
+			// Class method call (user class OR std::string via the
+			// object-class bridge): c.method(args) -> the emit_symbol /
+			// ClassName__method call. Returns NULL when the receiver is
+			// not a class instance.
 			lowered = class_method_call(tcm, tb);
 			if (lowered) return lowered;
 		}

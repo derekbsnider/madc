@@ -108,6 +108,10 @@ class CirBuilder {
 	node_t string_storage_decl(const char *name, TokenBase *origin); // long name[W];
 	node_t string_obj_addr(const char *name, TokenBase *origin);     // (void*)&name (struct local)
 	node_t string_var_addr(const Variable &v, TokenBase *origin);    // honours pointer-stored params
+	// Raw object-instance address of a NAMED variable (not void*-cast): the
+	// pointer itself when pointer-stored (by-value/by-ref param, `T*`), else
+	// `&name`. Shared addressing rule for every object-class receiver.
+	node_t object_var_addr(const class Variable &v, TokenBase *origin);
 	node_t string_ctor_call(const char *name, TokenBase *initexpr, TokenBase *origin);
 	// string_cstr((void*)obj) — coerce a std::string object argument to a
 	// const char* (the dtSTRING->dtCHARptr coercion) for a char*-expecting call.
@@ -118,11 +122,6 @@ class CirBuilder {
 	// char* var) is materialized into a scope-lived temporary std::string
 	// (storage + ctor pushed to m_pending_stmts, destructed via cleanup attr).
 	node_t string_obj_arg(TokenBase *arg);
-	// Lower a std::string method call on a string OBJECT receiver to the
-	// matching runtime wrapper: s.c_str()/.length()/.size()/.empty()/.clear().
-	// Returns NULL when `tm` is not a recognized string-object method call,
-	// so translate_expr falls through to its generic member/call handling.
-	node_t string_method_call(class TokenMember *tm, TokenBase *origin);
 
 	// ---- MadArray (`array`) object lowering ----
 	// Same opaque-object model as std::string, but an array argument needs no
@@ -299,6 +298,13 @@ public:
 	// naming the symbol directly. Returns NULL when the receiver is not a
 	// user-defined class (caller falls through to generic member access).
 	node_t class_method_call(class TokenMember *tm, TokenBase *origin);
+	// Lower a class method bound to an external symbol (FuncDef::emit_symbol —
+	// a mangled libstdc++ std::string member): declares the extern from the
+	// method's real signature and routes the call directly. `empty()` lowers
+	// to `size()==0`. `this_arg` is the receiver address (object_var_addr).
+	node_t emit_symbol_method_call(class TokenMember *tm, class FuncDef *callee,
+				       const std::string &sym, node_t this_arg,
+				       TokenBase *origin);
 	// Build the hidden `__this` argument for a class method/operator call:
 	// the receiver's address for a value receiver, or the pointer itself for
 	// a pointer receiver. `recv_class` is filled with the receiver's class.
