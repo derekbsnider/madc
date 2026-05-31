@@ -1,5 +1,10 @@
 # madc C++23 / C23 Compliance Roadmap
 
+> **GOVERNED BY** `docs/plans/madc-vision-and-invariants.md` — the north-star vision
+> (madc as a polyglot transpiler; cir_node as the universal C/C++ IR) + the **invariants
+> I1–I8** every change must satisfy. Run its "does this block the vision?" checklist
+> before any change. This roadmap is how we get there without blocking it.
+
 **Authoritative plan for madc's language-standard compliance.** Every C/C++
 language task traces to a line in this document. Controller and subagents both
 anchor here: pick the next unchecked item in priority order; do not invent work

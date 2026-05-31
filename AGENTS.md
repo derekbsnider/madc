@@ -39,6 +39,16 @@ The "Mad" in Mad-C: mix functions from multiple programming languages
 (PHP, Perl, Python, Ruby, JavaScript) in a single program via
 namespaces.
 
+**North-star vision & invariants — read `docs/plans/madc-vision-and-invariants.md`.**
+The long-term arc is madc as a *polyglot transpiler* (read source language/standard X,
+emit target Y, through the one `cir_node`/MC11-IR — chosen because most languages are
+themselves implemented in C/C++, so a faithful C/C++ AST is their common substrate).
+That doc holds the **invariants I1–I8** and a "does this block the vision?" checklist;
+every language change must satisfy them (no hardcoded standards/targets; every feature
+gated via the `--std=`/`LanguageStd` enum + the keyword/feature registry; one IR, one
+emitter; no special-casing). `docs/plans/cpp-support.md` is the compliance roadmap that
+serves this vision.
+
 Long-term goal: compile a realistic C89 codebase end-to-end. The
 concrete test case is SMAUG 1.8 (~158k LOC). The actual port lives
 in a separate repository, **[MadSMAUG](https://github.com/derekbsnider/MadSMAUG)**,
