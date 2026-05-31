@@ -462,6 +462,14 @@ public:
 	node_t translate_if(TokenIF *ti);
 	node_t translate_while(TokenBase *tw);
 	node_t translate_for(TokenFOR *tf);
+	// SJLJ exception lowering: try/catch -> setjmp on __madc_try_push(&ctx), the
+	// try body on the ==0 arm (then __madc_try_pop), the catch dispatch on the
+	// else arm (by __madc_exception_type, bind value, run handler, clear; no
+	// match -> __madc_rethrow). Emitted as block-scoped statements (NOT a stmt-
+	// expr — see the c2mir cleanup-scope gotcha). throw -> __madc_throw_*.
+	node_t translate_try(class TokenTRY *tt);
+	node_t translate_throw(class TokenTHROW *th);
+	int m_try_ctx_counter = 0;
 	// Range-based for over a MadArray: `for (T x : arr) body`. The loop
 	// variable is declared in the enclosing scope by the parser, so this only
 	// emits the index loop + per-iteration element fill (php_array_get /

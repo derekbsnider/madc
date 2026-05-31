@@ -19,6 +19,7 @@
 #include <sstream>
 #include <fstream>
 #include <stdint.h>
+#include <setjmp.h>
 #include <dlfcn.h>
 #include <cstdlib>
 #include <typeinfo>
@@ -4177,6 +4178,211 @@ node_t CirBuilder::translate_for(TokenFOR *tf)
 	return node5(N_FOR, list(), init, cond, incr, body, tf);
 }
 
+// throw lowering: `throw <expr>` -> __madc_throw_int/double/cstr(expr) by the
+// operand type; bare `throw;` -> __madc_rethrow(). The runtime sets the
+// exception, unwinds the cleanup stack to the active try's mark, and
+// longjmp's to the try's setjmp (or aborts if no try is active).
+node_t CirBuilder::translate_throw(TokenTHROW *th)
+{
+	if (!th->throw_expr) {
+		// bare `throw;` — rethrow the in-flight exception.
+		need_output_extern("__madc_rethrow", false, {});
+		node_t call = node2(N_CALL, id("__madc_rethrow", th), list(), th);
+		CIR_NODE(call)->synth_from_origin = true;
+		return node2(N_EXPR, list(), call, th);
+	}
+	DataDef *edd = th->throw_expr->datadef();
+	DataType dt = edd ? edd->rawtype() : DataType::dtINT64;
+	const char *sym;
+	ExternParam ep;
+	if (dt == DataType::dtDOUBLE || dt == DataType::dtFLOAT) {
+		sym = "__madc_throw_double";
+		ep = { {N_DOUBLE}, false };
+	} else if ((edd && edd->is_pointer()) || dt == DataType::dtSTRING) {
+		// const char* / string literal -> cstr throw. A std::string object
+		// throws its c_str() (string_obj_arg materializes literals; a real
+		// string object would need string_cstr — left as a follow-up, scalar/
+		// literal cstr is the common case).
+		sym = "__madc_throw_cstr";
+		ep = { {N_CHAR}, true };
+	} else {
+		sym = "__madc_throw_int";
+		ep = { {N_LONG}, false };
+	}
+	need_output_extern(sym, false, { ep });
+	node_t args = list();
+	append(args, translate_expr(th->throw_expr));
+	node_t call = node2(N_CALL, id(sym, th), args, th);
+	CIR_NODE(call)->synth_from_origin = true;
+	return node2(N_EXPR, list(), call, th);
+}
+
+// SJLJ try/catch lowering. Emits, as a block of statements (NOT a statement-
+// expression — a cleanup-attribute temp inside `({...})` mis-scopes its dtor in
+// c2mir, per the P0.5 finding):
+//   long __try_ctx_N[W];   // opaque MadcTryContext storage, W from sizeof
+//   if (setjmp(*(jmp_buf*)__madc_try_push(&__try_ctx_N)) == 0) {
+//       <try body>; __madc_try_pop();
+//   } else {
+//       int/double/cstr __t dispatch: bind the catch var, run the handler,
+//       __madc_exception_clear(); no matching catch -> __madc_rethrow();
+//   }
+node_t CirBuilder::translate_try(TokenTRY *tt)
+{
+	int n = m_try_ctx_counter++;
+	char ctxname[40];
+	snprintf(ctxname, sizeof(ctxname), "__try_ctx_%d", n);
+
+	// Opaque, 8-aligned storage sized to MadcTryContext (jmp_buf + 2 ptrs). The
+	// builder is C++ so it knows the real ABI size; round up to a long[] count.
+	size_t ctx_words = (sizeof(jmp_buf) + 2 * sizeof(void *) + sizeof(long) - 1)
+			   / sizeof(long);
+	node_t ctx_spec = list();
+	append(ctx_spec, simple(N_LONG, tt));
+	node_t ctx_decl_list = list();
+	append(ctx_decl_list, node3(N_ARR, ignore(), list(),
+				    integer((long)ctx_words, tt)));
+	node_t ctx_sd = simple(N_SPEC_DECL, tt);
+	append(ctx_sd, node1(N_SHARE, ctx_spec));
+	append(ctx_sd, node2(N_DECL, id(ctxname, tt), ctx_decl_list));
+	append(ctx_sd, ignore());
+	append(ctx_sd, ignore());
+	append(ctx_sd, ignore());
+	CIR_NODE(ctx_sd)->synth_from_origin = true;
+
+	// __madc_try_push((void*)&__try_ctx_N) -> (void*)jbuf
+	need_output_extern("__madc_try_push", true, { { {N_VOID}, true } });
+	node_t push_args = list();
+	append(push_args, node2(N_CAST, void_ptr_type(),
+				node1(N_ADDR, id(ctxname, tt), tt), tt));
+	node_t push_call = node2(N_CALL, id("__madc_try_push", tt), push_args, tt);
+	// setjmp(*(jmp_buf*)push_call) — declare setjmp returning int; the arg is the
+	// jbuf the runtime returned. c2mir takes the (void*) and treats it as the
+	// jmp_buf the libc setjmp expects (jmp_buf is an array -> a pointer in C).
+	need_output_extern("setjmp", false, { { {N_VOID}, true } }, { N_INT });
+	node_t sj_args = list();
+	append(sj_args, push_call);
+	node_t sj_call = node2(N_CALL, id("setjmp", tt), sj_args, tt);
+	node_t cond = node2(N_EQ, sj_call, integer(0, tt), tt);
+
+	// THEN arm: the try body, then __madc_try_pop().
+	node_t then_items = list();
+	node_t body = translate_stmt(tt->try_body);
+	if (body) append(then_items, body);
+	need_output_extern("__madc_try_pop", false, {});
+	node_t pop_call = node2(N_CALL, id("__madc_try_pop", tt), list(), tt);
+	CIR_NODE(pop_call)->synth_from_origin = true;
+	append(then_items, node2(N_EXPR, list(), pop_call, tt));
+	node_t then_blk = node2(N_BLOCK, list(), then_items, tt);
+
+	// ELSE arm: catch dispatch. __t = __madc_exception_type(); then a chain of
+	// if/else by type tag, falling through to __madc_rethrow() if no catch
+	// matches. Built inside-out so the rethrow is the innermost else.
+	need_output_extern("__madc_exception_type", false, {}, { N_INT });
+	need_output_extern("__madc_exception_clear", false, {});
+	need_output_extern("__madc_rethrow", false, {});
+
+	char tname[40];
+	snprintf(tname, sizeof(tname), "__exc_t_%d", n);
+	// int __exc_t_N = __madc_exception_type();
+	node_t t_spec = list();
+	append(t_spec, simple(N_INT, tt));
+	node_t t_init = node2(N_CALL, id("__madc_exception_type", tt), list(), tt);
+	node_t t_sd = simple(N_SPEC_DECL, tt);
+	append(t_sd, node1(N_SHARE, t_spec));
+	append(t_sd, node2(N_DECL, id(tname, tt), list()));
+	append(t_sd, ignore());
+	append(t_sd, ignore());
+	append(t_sd, t_init);
+	CIR_NODE(t_sd)->synth_from_origin = true;
+
+	// No-match tail: __madc_rethrow();
+	node_t rethrow_call = node2(N_CALL, id("__madc_rethrow", tt), list(), tt);
+	CIR_NODE(rethrow_call)->synth_from_origin = true;
+	node_t chain = node2(N_EXPR, list(), rethrow_call, tt);
+
+	// Walk catch clauses in REVERSE, wrapping each as an if whose else is the
+	// chain so far (so earlier clauses are tested first).
+	for (size_t ci = tt->catch_bodies.size(); ci-- > 0; ) {
+		int tag = tt->catch_types[ci];
+		const std::string &vname = tt->catch_varnames[ci];
+
+		node_t handler_items = list();
+		// Bind the catch variable from the exception value (when named + typed).
+		// The parser registered the catch var in the catch BODY's scope, so the
+		// body block would emit a bare `T e;`. Declare it WITH the exception
+		// value as initializer in the handler instead, and remove it from the
+		// body's variables so it isn't double-declared.
+		if (!vname.empty() && tag != 99) {
+			const char *valsym; std::vector<c2mir_node_code_t> rs;
+			if (tag == 2) { valsym = "__madc_exception_double"; rs = { N_DOUBLE }; }
+			else if (tag == 3) { valsym = "__madc_exception_cstr"; rs = {}; }
+			else { valsym = "__madc_exception_int"; rs = { N_LONG }; }
+			bool ret_ptr = (tag == 3);
+			need_output_extern(valsym, ret_ptr, {}, rs);
+			node_t vcall = node2(N_CALL, id(valsym, tt), list(), tt);
+			// Resolve the catch var's declared type from the body scope, then
+			// remove it so translate_block won't re-declare it.
+			TokenCpnd *cbody = dynamic_cast<TokenCpnd *>(tt->catch_bodies[ci]);
+			DataDef *cvtype = &ddINT64;
+			if (cbody) {
+				for (size_t vi = 0; vi < cbody->variables.size(); vi++) {
+					if (cbody->variables[vi]->name == vname) {
+						cvtype = cbody->variables[vi]->type;
+						cbody->variables.erase(cbody->variables.begin() + vi);
+						break;
+					}
+				}
+			}
+			// `T e = <exc value>;` — spec from the var's type, with initializer.
+			node_t cv_spec = list();
+			if (tag == 2) append(cv_spec, simple(N_DOUBLE, tt));
+			else if (tag == 3) { append(cv_spec, simple(N_CHAR, tt)); }
+			else append(cv_spec, simple(N_LONG, tt));
+			node_t cv_decl_list = list();
+			if (tag == 3) append(cv_decl_list, pointer());   // const char*
+			node_t cv_sd = simple(N_SPEC_DECL, tt);
+			append(cv_sd, node1(N_SHARE, cv_spec));
+			append(cv_sd, node2(N_DECL, id(vname.c_str(), tt), cv_decl_list));
+			append(cv_sd, ignore());
+			append(cv_sd, ignore());
+			append(cv_sd, vcall);
+			CIR_NODE(cv_sd)->synth_from_origin = true;
+			append(handler_items, cv_sd);
+			(void)cvtype;
+		}
+		node_t hbody = translate_stmt(tt->catch_bodies[ci]);
+		if (hbody) append(handler_items, hbody);
+		node_t clear_call = node2(N_CALL, id("__madc_exception_clear", tt),
+					  list(), tt);
+		CIR_NODE(clear_call)->synth_from_origin = true;
+		append(handler_items, node2(N_EXPR, list(), clear_call, tt));
+		node_t handler = node2(N_BLOCK, list(), handler_items, tt);
+
+		// catch(...) matches any type -> no guard, just the handler (but still
+		// wrapped so an earlier-tested clause's else reaches it).
+		node_t guard;
+		if (tag == 99)
+			guard = integer(1, tt);   // always true
+		else
+			guard = node2(N_EQ, id(tname, tt), integer(tag, tt), tt);
+		chain = node4(N_IF, list(), guard, handler, chain, tt);
+	}
+
+	node_t else_items = list();
+	append(else_items, t_sd);
+	append(else_items, chain);
+	node_t else_blk = node2(N_BLOCK, list(), else_items, tt);
+
+	node_t ifnode = node4(N_IF, list(), cond, then_blk, else_blk, tt);
+
+	// Whole try lowering: { ctx_decl; if (setjmp...) {body} else {dispatch} }
+	node_t items = list();
+	append(items, ctx_sd);
+	append(items, ifnode);
+	return node2(N_BLOCK, list(), items, tt);
+}
+
 // Range-based for over a MadArray: `for (T x : arr) body`.
 // The parser already declared `x` in the ENCLOSING scope (so translate_block
 // emits its storage + ctor once, and the cleanup attribute destructs it), so
@@ -4541,6 +4747,12 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 
 	{ TokenMatch *tm = dynamic_cast<TokenMatch *>(tb);
 	  if (tm) return translate_match(tm); }
+
+	// Exceptions: try/catch (SJLJ) and throw.
+	{ TokenTRY *tt = dynamic_cast<TokenTRY *>(tb);
+	  if (tt) return translate_try(tt); }
+	{ TokenTHROW *th = dynamic_cast<TokenTHROW *>(tb);
+	  if (th) return translate_throw(th); }
 
 	// Goto
 	{ TokenGOTO *tg = dynamic_cast<TokenGOTO *>(tb);

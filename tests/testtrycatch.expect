@@ -1,0 +1,9 @@
+caught int 100
+r0 -1
+caught double 25
+r1 -2
+caught any
+r2 -3
+r3 7
+msg caught
+done

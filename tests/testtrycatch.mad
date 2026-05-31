@@ -1,0 +1,41 @@
+#!/../bin/madc
+// Basic try / catch / throw (SJLJ lowering), scalar exception types.
+#include <stdio.h>
+
+int classify(int n) {
+	try {
+		if (n == 0) throw 100;          // int
+		if (n == 1) throw 2.5;          // double
+		if (n == 2) throw "boom";       // const char*
+		return n;                       // no throw
+	}
+	catch (int e) {
+		printf("caught int %d\n", e);
+		return -1;
+	}
+	catch (double d) {
+		printf("caught double %d\n", (int)(d * 10));
+		return -2;
+	}
+	catch (...) {
+		printf("caught any\n");
+		return -3;
+	}
+}
+
+int main() {
+	printf("r0 %d\n", classify(0));    // caught int 100 ; r0 -1
+	printf("r1 %d\n", classify(1));    // caught double 25 ; r1 -2
+	printf("r2 %d\n", classify(2));    // caught any ; r2 -3
+	printf("r3 %d\n", classify(7));    // (no throw) r3 7
+
+	// a throw of a non-int/double type caught by catch(...)
+	try {
+		throw "ouch";
+	}
+	catch (...) {
+		printf("msg caught\n");
+	}
+	printf("done\n");
+	return 0;
+}

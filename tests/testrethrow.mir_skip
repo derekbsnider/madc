@@ -1,0 +1,1 @@
+rethrow to an OUTER try: lowering is gcc-correct but MIR JIT mishandles nested setjmp in one frame (P1.1 Phase A; outer setjmp re-returns 0 -> loop)

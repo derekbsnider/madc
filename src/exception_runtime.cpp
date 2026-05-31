@@ -50,6 +50,14 @@ static thread_local MadcCleanupEntry *madc_cleanup_stack = nullptr;
 
 extern "C" {
 
+// Byte size of MadcTryContext, so the CIR lowering can allocate an opaque,
+// correctly-sized local for a try block without hard-coding jmp_buf internals
+// (the struct is private to this TU). The lowering rounds up to a long[] count.
+unsigned long __madc_try_context_size(void)
+{
+    return (unsigned long)sizeof(MadcTryContext);
+}
+
 // Push a try context onto the stack, return pointer to its jmp_buf
 void *__madc_try_push(MadcTryContext *ctx)
 {
