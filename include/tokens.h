@@ -1410,7 +1410,8 @@ public:
     Variable *elemvar;
     TokenBase *container;
     TokenBase *statement;
-    TokenFOREACH() : TokenKeyword("for") { elemtype = NULL; elemvar = NULL; container = statement = NULL; }
+    bool elem_is_ref;	// `for (T& v : c)` — loop var aliases the element (mutates source)
+    TokenFOREACH() : TokenKeyword("for") { elemtype = NULL; elemvar = NULL; container = statement = NULL; elem_is_ref = false; }
     virtual TokenID id() const { return TokenID::tkFOR; }
     virtual TokenBase *clone() { return new TokenFOREACH(); }
 };

@@ -11737,10 +11737,33 @@ TokenBase *TokenFOR::parse(Program &pgm)
 
     tn = pgm.nextToken();
 
+    // A leading `const` on the loop-var / init type: `for (const T& v : c)`
+    // (const reference — reads). Consume it so the type resolves; for a range-
+    // for reference this just marks the alias read-only (the alias machinery is
+    // the same). Restored on the traditional-for fall-through.
+    TokenBase *const_tok = NULL;
+    if ( tn && tn->id() == TokenID::tkCONST )
+    {
+	const_tok = tn;
+	tn = pgm.nextToken();
+    }
+
     // detect range-based for: for (type var : container)
     bool typed_for_init = false;
     if ( TokenDataType *dt = resolve_declared_type_token(pgm, tn, true, true) )
     {
+	// Optional `&` between the element type and the name: `for (T& v : c)`
+	// is a REFERENCE loop var that aliases (and may mutate) the source
+	// element. Consume the `&` here so the identifier follows; record it on
+	// the TokenFOREACH so the CIR lowering binds `v` to the element ADDRESS
+	// (vfREFERENCE pointer model) instead of copying the value.
+	bool range_elem_ref = false;
+	TokenBase *amp_tok = NULL;
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBand )
+	{
+	    amp_tok = pgm.nextToken(); // consume '&' (kept for push-back below)
+	    range_elem_ref = true;
+	}
 	TokenBase *tn2 = pgm.nextToken();
 	if ( tn2 && is_contextual_identifier_token(tn2) )
 	{
@@ -11755,12 +11778,24 @@ TokenBase *TokenFOR::parse(Program &pgm)
 		fe->column = this->column;
 		fe->elemtype = &dt->definition;
 		fe->elemname = contextual_identifier_name(tn2);
+		fe->elem_is_ref = range_elem_ref;
 
-		DBG(cout << "TokenFOR::parse() range-for detected: " << dt->definition.name << ' ' << fe->elemname << endl);
+		DBG(cout << "TokenFOR::parse() range-for detected: " << dt->definition.name << ' ' << fe->elemname
+		    << (range_elem_ref ? " (reference)" : "") << endl);
 
-		// add the loop variable to the current scope
+		// add the loop variable to the current scope. A reference loop
+		// var is a pointer-to-element with vfREFERENCE (auto-deref on
+		// read; writes hit the aliased source) — the same model as a
+		// numeric `T&` parameter.
 		TokenCpnd *code = pgm.compounds.empty() ? NULL : pgm.compounds.top();
-		fe->elemvar = pgm.addVariable(code, dt->definition, fe->elemname, 1, NULL, false);
+		if ( range_elem_ref )
+		{
+		    DataDef *ref_ptr = pgm.getPointerType(&dt->definition);
+		    fe->elemvar = pgm.addVariable(code, *ref_ptr, fe->elemname, 1, NULL, false);
+		    fe->elemvar->flags |= vfREFERENCE;
+		}
+		else
+		    fe->elemvar = pgm.addVariable(code, dt->definition, fe->elemname, 1, NULL, false);
 
 		// parse the container expression
 		TokenBase *tn4 = pgm.nextToken();
@@ -11782,14 +11817,25 @@ TokenBase *TokenFOR::parse(Program &pgm)
 	    }
 	}
 
-	// not range-for — traditional for with type declaration
+	// not range-for — traditional for with type declaration. Restore tn2
+	// and, if we speculatively consumed a `&`, restore it too (push in
+	// reverse order so the deque front reads `& tn2 ...` again). A consumed
+	// leading `const` is propagated to parseDeclaration via parsing_const_decl
+	// (same channel TokenCONST::parse uses), not pushed back.
 	DBG(cout << "TokenFOR::parse() traditional for with type declaration" << endl);
 	pgm.pushToken(tn2);
+	if ( amp_tok )
+	    pgm.pushToken(amp_tok);
+	if ( const_tok )
+	    pgm.parsing_const_decl = true;
 	initialize = pgm.parseDeclaration(dt);
 	typed_for_init = true;
     }
     else
     {
+	// `const` must qualify a type; `for (const <non-type> ...)` is malformed.
+	if ( const_tok )
+	    pgm.Throw(tn) << "expected a type after 'const' in for-init" << flush;
 	if ( tn->id() == TokenID::tkSemi )
 	{
 	    initialize = NULL;

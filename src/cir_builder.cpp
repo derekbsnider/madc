@@ -4679,6 +4679,18 @@ node_t CirBuilder::translate_foreach(TokenFOREACH *fe)
 			return translate_foreach_carray(fe, ctv);
 	}
 
+	// Reference loop var over a MadArray (php/perl dynamic array) is not
+	// supported: MadArray elements are tagged-union values fetched by
+	// __php_array_get_int (a value copy), with no stable element address to
+	// alias — so a `T&` can't faithfully mutate the source. Reject rather than
+	// silently copy (the reference contract would be violated). The aliasing
+	// `T&` forms ARE handled above for raw arrays and size()/operator[]
+	// containers (translate_foreach_carray / translate_foreach_class).
+	if (fe->elem_is_ref)
+		return error_node("range-for by reference (T&) is not supported over "
+				  "this container (only raw arrays and "
+				  "size()/operator[] containers)", fe);
+
 	// (void*)container — the MadArray object address (the var name decays to
 	// its long[] buffer, normalized to void*).
 	auto container_addr = [&]() -> node_t {
@@ -4791,7 +4803,16 @@ node_t CirBuilder::translate_foreach_class(TokenFOREACH *fe, DataDefCLASS *cls,
 	};
 
 	node_t body_items = list();
-	if (fe->elemtype->rawtype() == DataType::dtSTRING) {
+	if (fe->elem_is_ref) {
+		// Reference loop var (`for (T& v : c)`): bind `v` (a vfREFERENCE
+		// pointer) to the element ADDRESS returned by operator[] (which
+		// yields T& == a T*). op_addr() IS that address, so writes through
+		// `v` mutate the container element. No deref here (the reference
+		// holds the address; reads auto-deref via vfREFERENCE).
+		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+				      op_addr(), fe);
+		append(body_items, node2(N_EXPR, list(), assign, fe));
+	} else if (fe->elemtype->rawtype() == DataType::dtSTRING) {
 		// String element: copy-assign the loop var (an enclosing-scope string
 		// object, already constructed) from the element reference:
 		// string_assign((void*)&x, (void*)&c[__fe_i]).
@@ -4851,7 +4872,15 @@ node_t CirBuilder::translate_foreach_carray(TokenFOREACH *fe, TokenVar *ctv)
 	};
 
 	node_t body_items = list();
-	if (fe->elemtype->rawtype() == DataType::dtSTRING) {
+	if (fe->elem_is_ref) {
+		// Reference loop var (`for (T& v : a)`): bind `v` (a vfREFERENCE
+		// pointer) to the element ADDRESS — v = &a[__fe_i] — so reads
+		// auto-deref and writes mutate the source array. Works for any
+		// element type (string& aliases the object too).
+		node_t assign = node2(N_ASSIGN, id(fe->elemname.c_str(), fe),
+				      node1(N_ADDR, elem_lvalue(), fe), fe);
+		append(body_items, node2(N_EXPR, list(), assign, fe));
+	} else if (fe->elemtype->rawtype() == DataType::dtSTRING) {
 		// String element: copy-assign the loop var (an enclosing-scope string
 		// object) from the element: string_assign((void*)&x, (void*)&a[i]).
 		need_output_extern("string_assign", false,
