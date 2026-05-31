@@ -7076,29 +7076,22 @@ static bool class_is_or_derives(DataDefCLASS *cls, DataDefCLASS *target)
     return cls && cls->is_or_derives_from(target);
 }
 
-// Access-control check (P2.5). Given the class that OWNS `member`, the member's
-// name, and the class whose method body we are currently parsing (NULL outside
-// any method), return a human-readable violation string, or empty when access
-// is allowed. Public members are always allowed; a private member only from the
-// SAME class's methods; a protected member from the declaring class or a
-// derived class's methods. `friend`, access-changing using-declarations, and
-// private inheritance are out of scope.
-static std::string member_access_violation(DataDef *owner_type,
-					    const std::string &name,
-					    DataDefCLASS *cur_class)
+// Access-control core (P2.5 / P2.5c). Given a member's access flag `acc`
+// (0=public, vfPRIVATE, vfPROTECTED), the class that OWNS it, the member name,
+// and the class whose method body we are currently parsing (NULL outside any
+// method), return a human-readable violation string, or empty when access is
+// allowed. Public is always allowed; private only from the SAME class's
+// methods; protected from the declaring class or a derived class's methods.
+// Used by BOTH the data-member path (flag from member_access) and the
+// method-call path (flag from the method Variable's flags) — one rule, two
+// callers (I6). `friend`, access-changing using-declarations, and private
+// inheritance are out of scope.
+static std::string access_flag_violation(uint32_t acc, DataDefCLASS *owner_cls,
+					 const std::string &name,
+					 DataDefCLASS *cur_class)
 {
-    // Only class objects carry access labels; a plain C struct never sets
-    // non-zero member_access entries, so m_access returns 0 (public) and this
-    // check is a no-op for C structs.
-    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(owner_type);
-    if ( !sdd )
-	return std::string();
-    uint32_t acc = sdd->m_access(name);
-    if ( acc == 0 )
-	return std::string();   // public — always allowed
-    DataDefCLASS *owner_cls = dynamic_cast<DataDefCLASS *>(owner_type);
-    if ( !owner_cls )
-	return std::string();   // access flag on a non-class: ignore
+    if ( acc == 0 || !owner_cls )
+	return std::string();   // public, or no class owner -> always allowed
     if ( acc == vfPRIVATE )
     {
 	if ( cur_class == owner_cls )
@@ -7109,6 +7102,39 @@ static std::string member_access_violation(DataDef *owner_type,
     if ( cur_class && class_is_or_derives(cur_class, owner_cls) )
 	return std::string();
     return "'" + name + "' is a protected member of '" + owner_cls->name + "'";
+}
+
+// Data-member access check: the access flag comes from the owner struct's
+// per-member member_access vector. Only class objects carry non-zero flags (a
+// plain C struct leaves every entry 0=public), so this is a no-op for structs.
+static std::string member_access_violation(DataDef *owner_type,
+					    const std::string &name,
+					    DataDefCLASS *cur_class)
+{
+    DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(owner_type);
+    if ( !sdd )
+	return std::string();
+    return access_flag_violation(sdd->m_access(name),
+				 dynamic_cast<DataDefCLASS *>(owner_type),
+				 name, cur_class);
+}
+
+// Method-call access check (P2.5c): the access flag lives on the resolved
+// method Variable's flags (set in TokenCLASS::parse alongside data members).
+// `owner_type` is the static class the call is made on; `method` is the
+// Variable findMethod resolved; `display_name` is the UNMANGLED name the user
+// wrote (the method Variable carries a mangled name, which makes for a poor
+// diagnostic). Returns a violation string or empty.
+static std::string method_access_violation(DataDef *owner_type,
+					   const Variable *method,
+					   const std::string &display_name,
+					   DataDefCLASS *cur_class)
+{
+    if ( !method )
+	return std::string();
+    uint32_t acc = method->flags & (vfPRIVATE | vfPROTECTED);
+    return access_flag_violation(acc, dynamic_cast<DataDefCLASS *>(owner_type),
+				 display_name, cur_class);
 }
 
 TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternary_branch,
@@ -9251,6 +9277,17 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    string id = ident_tb->str;
 		    if ( struct_type->is_object() && (var=((DataDefCLASS *)struct_type)->findMethod(id)) )
 		    {
+			// Access control (P2.5c): reject a private/protected METHOD
+			// call from outside the (derived) class. Same context + rule
+			// as the data-member check.
+			{
+			    DataDefCLASS *cur_class =
+				(code && code->method) ? code->method->owner_class : NULL;
+			    std::string av =
+				method_access_violation(struct_type, var, id, cur_class);
+			    if ( !av.empty() )
+				Throw(tb) << av << flush;
+			}
 			// Method call on a class-object receiver. The common case is a
 			// bare object variable (`s.length()`). A subscript element
 			// (`v[i].length()` where v's operator[] returns a class element)
@@ -9460,6 +9497,16 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			var = ((DataDefCLASS *)base)->findMethod(id);
 			if ( var )
 			{
+			    // Access control (P2.5c): reject a private/protected
+			    // METHOD call via `->` from outside the (derived) class.
+			    {
+				DataDefCLASS *cur_class =
+				    (code && code->method) ? code->method->owner_class : NULL;
+				std::string av =
+				    method_access_violation(base, var, id, cur_class);
+				if ( !av.empty() )
+				    Throw(tb) << av << flush;
+			    }
 			    // arrow method call: ptr->method(args). The common LHS is a
 			    // pointer variable / member. A SUBSCRIPT element that is a
 			    // pointer-to-class (`v[i]` where v is vector<Base*>) is also a

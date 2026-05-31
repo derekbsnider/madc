@@ -444,6 +444,7 @@ template<typename K, typename V> class map {
     V* vals;
     long len;
     long cap;
+public:
     map() {
 	keys = (K*)malloc(4 * sizeof(K));
 	vals = (V*)malloc(4 * sizeof(V));
@@ -837,6 +838,7 @@ template<typename T> class set {
     T* data;
     long len;
     long cap;
+public:
     set() { data = (T*)malloc(4 * sizeof(T)); len = 0; cap = 4; }
     ~set() {
 	// Destruct each live element before releasing the buffer (see <vector>
@@ -1815,6 +1817,7 @@ template<typename T> class vector {
     T* data;
     long len;
     long cap;
+public:
     vector() { data = (T*)malloc(4 * sizeof(T)); len = 0; cap = 4; }
     ~vector() {
 	// Destruct each live element before releasing the buffer, exactly as

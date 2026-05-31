@@ -10,6 +10,7 @@ using namespace std;
 // Named reference-returning method, used as both lvalue and rvalue.
 class Arr {
     int* data;
+public:
     Arr() { data = (int*)malloc(4 * sizeof(int)); }
     ~Arr() { free(data); }
     int& at(long i) { return data[i]; }
@@ -21,6 +22,7 @@ template<typename T> class Vec {
     T* data;
     long len;
     long cap;
+public:
     Vec() { data = (T*)malloc(4 * sizeof(T)); len = 0; cap = 4; }
     ~Vec() { free(data); }
     void push(T v) {

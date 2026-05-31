@@ -25,6 +25,7 @@ template<typename K, typename V> class map {
     V* vals;
     long len;
     long cap;
+public:
     map() {
 	keys = (K*)malloc(4 * sizeof(K));
 	vals = (V*)malloc(4 * sizeof(V));

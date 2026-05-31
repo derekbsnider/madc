@@ -3,6 +3,7 @@
 using namespace std;
 
 class Foo {
+public:
 	int x;
 
 	Foo()
