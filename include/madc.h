@@ -59,7 +59,12 @@ public:
     std::vector<bool> ref_params;
     // const parameter tracking: const_params[i] == true when parameter i is const T&
     std::vector<bool> const_params;
-    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false) {}
+    // reference return: true when the function returns T& (e.g. T& operator[]).
+    // `returns` stays the base type T; the value is returned BY ADDRESS (a T*),
+    // so the call site is an lvalue (assign stores through it; read derefs it),
+    // matching g++. See cir_builder ref-return lowering.
+    bool returns_ref;
+    FuncDef(DataDef &d) : returns(d), explicit_alignment(0), has_captures(false), is_varargs(false), is_void_params(false), no_instrument_function(false), has_large_struct_retbuf(false), returns_ref(false) {}
     DataDef *findParameter(std::string &);
     virtual BaseType basetype() const { return BaseType::btFunct; }
     virtual size_t alignment() const { return explicit_alignment ? explicit_alignment : DataDef::alignment(); }

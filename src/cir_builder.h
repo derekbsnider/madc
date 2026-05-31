@@ -56,6 +56,11 @@ class CirBuilder {
 	// return;` (c2mir rejects a value in a void return).
 	bool m_cur_func_returns_void = false;
 
+	// True while translating the body of a T&-returning function, so
+	// translate_return emits `return &<expr>` (the reference is the address;
+	// the call site derefs it). Matches g++: a reference IS a pointer.
+	bool m_cur_func_returns_ref = false;
+
 	// Statements that must be emitted in the enclosing block immediately
 	// BEFORE the statement currently being translated — used to materialize
 	// temporary runtime objects (e.g. a std::string built from a literal that
@@ -159,6 +164,9 @@ class CirBuilder {
 	// Lower a container subscript READ `c[i]` to its runtime getter. Returns
 	// NULL when `tsub` is not a container subscript.
 	node_t container_subscript_read(class TokenSubscript *tsub, TokenBase *origin);
+	// `obj[i]` on a user class defining `operator[]` -> the method call,
+	// deref'd (operator[] returns T& == a T*), so it is a read/write lvalue.
+	node_t class_subscript_call(class TokenSubscript *tsub, TokenBase *origin);
 	// Lower a container subscript WRITE `c[i] = rhs` to its runtime setter.
 	// Returns NULL when the assignment LHS is not a container subscript.
 	node_t container_subscript_assign(class TokenOperator *top, TokenBase *origin);

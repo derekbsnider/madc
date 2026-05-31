@@ -2284,7 +2284,12 @@ node_t CirBuilder::class_method_call(TokenMember *tm, TokenBase *origin)
 	}
 
 	referenced_funcs.insert(sym);
-	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	node_t mcall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	// A T&-returning method returns the address of its result; deref so the
+	// call expression is the referenced lvalue (read: *p; write: *p = rhs).
+	if (callee && callee->returns_ref)
+		return node1(N_DEREF, mcall, origin);
+	return mcall;
 }
 
 bool CirBuilder::class_has_object_members(DataDefCLASS *cdd)
@@ -2522,7 +2527,45 @@ node_t CirBuilder::class_operator_call(TokenOperator *top, TokenBase *origin)
 			append(args, translate_expr(top->right));
 	}
 	referenced_funcs.insert(sym);
-	return node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	node_t ocall = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	// T&-returning operator returns an address; deref to the lvalue.
+	if (callee && callee->returns_ref)
+		return node1(N_DEREF, ocall, origin);
+	return ocall;
+}
+
+node_t CirBuilder::class_subscript_call(TokenSubscript *tsub, TokenBase *origin)
+{
+	if (!tsub) return NULL;
+	DataDefCLASS *cls = class_behind(tsub->object.type);
+	if (!cls) return NULL;
+	std::string opname = "operator[]";
+	Variable *mv = cls->findMethod(opname);
+	if (!mv) return NULL;
+	FuncDef *callee = dynamic_cast<FuncDef *>(mv->type);
+
+	std::string sym = cls->name + "__operator[]";   // ClassName__operator[]
+	// __this: value receiver -> &obj, pointer receiver -> obj.
+	bool recv_is_ptr = tsub->object.type && tsub->object.type->is_pointer();
+	node_t recv = id(tsub->object.name.c_str(), origin);
+	node_t this_arg = recv_is_ptr ? recv : node1(N_ADDR, recv, origin);
+
+	node_t args = list();
+	append(args, this_arg);
+	// Index argument (operator[] parameter 1; parameter 0 = __this).
+	bool refp = callee && callee->ref_params.size() > 1 && callee->ref_params[1];
+	if (refp)
+		append(args, node1(N_ADDR, translate_expr(tsub->index), tsub->index));
+	else
+		append(args, translate_expr(tsub->index));
+
+	referenced_funcs.insert(sym);
+	node_t call = node2(N_CALL, id(sym.c_str(), origin), args, origin);
+	// operator[] conventionally returns T& -> deref to the lvalue so the
+	// result is usable as both an rvalue (read) and an lvalue (`v[i] = x`).
+	if (callee && callee->returns_ref)
+		return node1(N_DEREF, call, origin);
+	return call;
 }
 
 node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
@@ -2631,6 +2674,7 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 
 	DataDef *ret_dd = &fd->returns;
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
+	bool ret_is_ref = fd->returns_ref;   // T& -> returned by address (one more *)
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
@@ -2669,6 +2713,10 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	node_t decl_list = list();
 	append(decl_list, func_inner);
 	if (ret_is_ptr)
+		append(decl_list, pointer());
+	// T&-returning method: returned by address (one extra pointer level), so
+	// the prototype matches the definition and call sites can deref.
+	if (ret_is_ref)
 		append(decl_list, pointer());
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
@@ -2910,6 +2958,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	{
 		TokenSubscript *tsub = dynamic_cast<TokenSubscript *>(tb);
 		if (tsub) {
+			// User-defined `operator[]` on a class object (`v[i]`): dispatch
+			// to the method. It returns T& (a deref'd address), so the result
+			// is a lvalue usable for both reads and `v[i] = x` (the generic
+			// N_ASSIGN path stores through the deref). Checked before the STL
+			// container and raw-array paths.
+			node_t ocall = class_subscript_call(tsub, tb);
+			if (ocall) return ocall;
 			// STL container subscript READ (`nums[i]`, `ages[k]`): lower to
 			// the runtime getter. A WRITE (`c[i] = v`) is intercepted earlier
 			// on the assignment path; this read path is the rvalue use.
@@ -3350,6 +3405,11 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		}
 	}
 	node_t expr = tr->returns ? translate_expr(tr->returns) : ignore();
+	// A T&-returning function returns the ADDRESS of its (lvalue) result —
+	// `return x;` becomes `return &x;`. g++ does exactly this; the call site
+	// derefs. The expression must be an lvalue (the parser/g++ enforce that).
+	if (m_cur_func_returns_ref && tr->returns)
+		expr = node1(N_ADDR, expr, tr);
 	return node2(N_RETURN, list(), expr, tr);
 }
 
@@ -3948,14 +4008,17 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 
 	DataDef *ret_dd = &fd->returns;
 	bool ret_is_ptr = ret_dd && ret_dd->is_pointer();
+	bool ret_is_ref = fd->returns_ref;   // T& -> returned by address (one more *)
 	DataDefPTR *ret_ptr = ret_is_ptr ? dynamic_cast<DataDefPTR *>(ret_dd) : NULL;
 	if (ret_ptr && ret_ptr->base_type) ret_dd = ret_ptr->base_type;
 
 	// Track whether this function returns void, so translate_return can lower
 	// a gcc-accepted `return <expr>;` (void function) to `<expr>; return;`.
-	m_cur_func_returns_void = !ret_is_ptr && ret_dd
+	m_cur_func_returns_void = !ret_is_ptr && !ret_is_ref && ret_dd
 				  && ret_dd->rawtype() == DataType::dtVOID
 				  && !fd->is_multi_return();
+	// Track reference return so translate_return emits `return &<expr>`.
+	m_cur_func_returns_ref = ret_is_ref;
 
 	node_t ret_type = type_list(ret_dd);
 
@@ -3989,6 +4052,10 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	node_t decl_list = list();
 	append(decl_list, func_inner);
 	if (ret_is_ptr)
+		append(decl_list, pointer());
+	// A T&-returning method returns by address: one extra pointer level (so
+	// `int&`->`int*`, `char*&`->`char**`). Matches g++'s reference ABI.
+	if (ret_is_ref)
 		append(decl_list, pointer());
 
 	node_t decl = node2(N_DECL, func_id, decl_list);

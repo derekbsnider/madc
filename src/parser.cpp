@@ -10929,6 +10929,17 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    cmember_dd = pgm.getPointerType(cmember_dd);
 	}
 
+	// Reference return type on a method: `T& method()` / `T& operator[]()`.
+	// Returned by address (a T*); recorded as returns_ref on the FuncDef below
+	// so the call site is an lvalue. Only valid before a method, not a data
+	// member (a `T&` data member is not supported — caught at member parse).
+	bool ret_is_ref = false;
+	if ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkBand )
+	{
+	    pgm.nextToken(); // consume '&'
+	    ret_is_ref = true;
+	}
+
 	// expect member name — may be an identifier or 'operator' keyword
 	tn = pgm.nextToken();
 	std::string mname;
@@ -10985,6 +10996,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	    Variable *mvar;
 	    if ( (mvar=pgm.tkProgram->findVariable(mangled)) )
 	    {
+		if ( FuncDef *mfd = dynamic_cast<FuncDef *>(mvar->type) )
+		    mfd->returns_ref = ret_is_ref;
 		if ( access_flags )
 		    mvar->flags |= access_flags;
 		ddc->methods.push_back(mvar);
@@ -11003,6 +11016,8 @@ TokenBase *TokenCLASS::parse(Program &pgm)
 	else
 	{
 	    // data member
+	    if ( ret_is_ref )
+		pgm.Throw(tn) << "Reference data members (T&) are not supported" << flush;
 	    ddc->addMember(mname, *cmember_dd, 1);
 	    if ( access_flags && !ddc->member_access.empty() )
 		ddc->member_access.back() = access_flags;
