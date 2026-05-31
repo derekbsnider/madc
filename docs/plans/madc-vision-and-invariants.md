@@ -36,13 +36,20 @@ output-std), and the far-future **polyglot transpile** (input axis generalized f
 
 ## Why `cir_node` (a C/C++ AST) is the RIGHT universal IR
 
-**Most languages' reference implementations are themselves written in C or C++** —
-CPython (C), Ruby MRI (C), PHP (C), Perl (C), Lua (C), V8/Node (C++), … So every such
-language's semantics are *already* expressed in C/C++ by its own implementation: a
-faithful C/C++ AST is the **common denominator / lingua-franca substrate** that all of
-them reduce to. cir_node-as-IR is therefore *principled*, not C-centric accident.
-Corollary — the **lowering canon**: to lower a construct from language L, do what L's
-own reference C/C++ implementation does (the polyglot analogue of "gcc is canon").
+**C/C++ is the universal *implementation* substrate.** Most languages' reference
+implementations are themselves written in C or C++ — CPython (C), Ruby MRI (C), PHP (C),
+Perl (C), Lua (C), V8/Node (C++), … which *proves* C/C++ is expressive enough to
+implement any language's semantics. Therefore a faithful C/C++ AST is a sufficient
+**lowering target** for any language — the common substrate everything reduces to.
+cir_node-as-IR is principled, not a C-centric accident.
+
+**This is about expressiveness, NOT reuse.** madc does NOT call/link those languages'
+runtimes. It LOWERS borrowed features to the C/C++ AST and implements them in **libmadc**
+(madc's own C++: `ns_php.cpp`, `ns_perl.cpp`, …) — independent of CPython/libperl/etc.
+Corollary — the **lowering canon**: to lower a construct from language L, *match the
+behavior of* L's reference implementation (the polyglot analogue of "gcc is canon") —
+implement it ourselves in libmadc / lowered C, not by linking L's runtime. (Linking real
+language libraries is a *possible future option*, explicitly not the current model.)
 
 ---
 
@@ -75,10 +82,12 @@ convenience.
   future blockers to generalization (the retired `dtSTRING`/`ns_stl` shortcuts are the
   cautionary tale). Model the real abstraction; one machinery, the only fork being
   precompiled (`emit_symbol`) vs madc-compiled.
-- **I7 — Borrowing lowers to the C/C++ AST.** Borrowed-language support (functions today
-  via `php::`/`perl::`/… namespaces calling those languages' C impls; syntax/features
-  tomorrow) lowers to the same C/C++ AST. Keep the borrowing/namespace mechanism general,
-  not per-language-special.
+- **I7 — Borrowing is native-in-libmadc, lowered to the C/C++ AST.** Borrowed-language
+  support is reimplemented in **libmadc** (`ns_php.cpp`/`ns_perl.cpp`/… — madc's own C++,
+  NOT calls into CPython/libperl/etc.) and lowered to the same C/C++ AST: functions today
+  via the `php::`/`perl::`/… namespaces, syntax/features tomorrow. Keep the borrowing
+  mechanism general (not per-language-special). Linking the real language libraries is a
+  possible FUTURE option, not the current model — don't assume or require it.
 - **I8 — Keep the standards model honest.** Gating must actually reject/ignore
   out-of-dialect constructs (`--std=c11` must not silently accept C++-only syntax). "C
   still works" = "C++ features correctly gated OFF in C mode."
