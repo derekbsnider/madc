@@ -183,10 +183,11 @@ These produce wrong answers or crashes on valid C++. Highest priority.
 >   simple objects in a throwing try crash; 1–2 small objects work; plain scope-dtors
 >   (no `setjmp`) always work; crash is in JIT'd `main` (never a `__madc_*` runtime
 >   frame); identical at `-O0` and `-O1`. Lowering is gcc-correct (emit-c11 path).
->   So it's NOT runtime-fixable. **FORK FIX** (`/workspace/mir`): make c2mir treat
->   `setjmp`/`__builtin_setjmp` as returns-twice and spill affected locals to memory
->   (or madc emits try-body locals `volatile` / uses `__builtin_setjmp`); design for
->   upstream. `.mir_skip`'d: `testrethrow`, `testexcept_dtor_rethrow`,
+>   So it's NOT runtime-fixable. **FIX IT CORRECTLY = FORK FIX** (`/workspace/mir`):
+>   make c2mir treat `setjmp`/`__builtin_setjmp` as returns-twice and spill locals live
+>   across it (what gcc/clang do); design for upstream. The madc-side `volatile`-the-
+>   try-locals trick is a SHIM (avoid — violates fix-at-deepest-layer; last resort only).
+>   Confirm via a minimal C `setjmp`-reducer before fixing. `.mir_skip`'d: `testrethrow`, `testexcept_dtor_rethrow`,
 >   `testexcept_dtor_{string,order,nested}`.
 > - **P1.1c — Phase B: RAII dtor-unwind on the throw path** — DONE at the FRONT END
 >   (commit `b9c7829`, gcc-verified): cleanup-stack + discard-on-normal; objects in a
