@@ -7892,6 +7892,50 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			 || prev_for_member->id() == TokenID::tkBorEq
 			 || prev_for_member->id() == TokenID::tkBSLEq
 			 || prev_for_member->id() == TokenID::tkBSREq);
+		    // P2.1b gap 1 — functor call `obj(args)`: when the exStack top
+		    // is a class OBJECT (a plain object variable) whose class declares
+		    // operator(), route the `(` to a method call on its operator().
+		    // C++ canon: `obj(args)` == `obj.operator()(args)`. The callee is a
+		    // class OBJECT, not a function — distinguished here from a normal
+		    // function call (those resolve the identifier to a FuncDef variable
+		    // up front and never push an object onto exStack before the `(`).
+		    // Reuses the existing class-method dispatch (TokenCallMethod →
+		    // ClassName__operator()); no parallel codegen (I6).
+		    {
+			TokenVar *obj_call_base = NULL;
+			DataDefCLASS *fcls = NULL;
+			Variable *fmethod = NULL;
+			std::string functor_name("operator()");
+			// The `(` must IMMEDIATELY follow the object (prevToken is the
+			// object identifier). Unlike member-fptr calls we do NOT gate on
+			// opstack_has_pending_op: in `cout << m(7)` the `<<` is pending but
+			// the `(` still binds to `m` (the just-pushed exStack object), a
+			// tighter call. Immediacy of prevToken is the discriminator.
+			bool paren_follows_object = prev_for_member
+			    && prev_for_member->type() == TokenType::ttIdentifier;
+			if ( !exStack.empty()
+			  && paren_follows_object
+			  && !member_is_assign_lhs
+			  && exStack.top()->type() == TokenType::ttVariable
+			  && (obj_call_base = dynamic_cast<TokenVar *>(exStack.top())) != NULL
+			  && obj_call_base->var.type
+			  && obj_call_base->var.type->is_object()
+			  && (fcls = dynamic_cast<DataDefCLASS *>(obj_call_base->var.type)) != NULL
+			  && (fmethod = fcls->findMethod(functor_name)) != NULL )
+			{
+			    TokenCallMethod *tc = new TokenCallMethod(obj_call_base->var, *fmethod);
+			    exStack.pop();
+			    tc->file = tb->file;
+			    tc->line = tb->line;
+			    tc->column = tb->column;
+			    tb = parseCallMethod(tc);
+			    DBG(cout << "functor call through " << fcls->name << "::operator()" << endl);
+			    opStack.push(tc);
+			    if ( tb && tb->id() == TokenID::tkSemi )
+				done = true;
+			    break;
+			}
+		    }
 		    if ( !exStack.empty()
 		      && !opstack_has_pending_op
 		      && !member_is_assign_lhs

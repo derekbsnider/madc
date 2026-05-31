@@ -1,0 +1,35 @@
+// P2.1b gap 1 — operator() (functor call).
+//
+// `obj(args)` where obj is a class object declaring operator() routes to
+// ClassName__operator() via the existing class-method dispatch.
+// C++ canon: `obj(args)` == `obj.operator()(args)`.
+#include <iostream>
+using namespace std;
+
+class Mul {
+public:
+    int f;
+    int operator()(int x) { return x * f; }
+};
+
+// A functor with two args + state.
+class Adder {
+public:
+    int base;
+    int operator()(int a, int b) { return base + a + b; }
+};
+
+int main()
+{
+    Mul m;
+    m.f = 3;
+    cout << m(7) << endl;        // 21  (inside a stream expr)
+    int r = m(10);
+    cout << r << endl;           // 30  (in an initializer)
+
+    Adder ad;
+    ad.base = 100;
+    cout << ad(2, 3) << endl;    // 105
+
+    return 0;
+}
