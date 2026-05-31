@@ -10,8 +10,23 @@
 - **MIR fork**: `/workspace/mir`, branch **`feature/cleanup-attribute`** (the one madc links via `/workspace/mir/libmir.a`).
   Build: `make -C /workspace/mir`. Test suite: `make -C /workspace/mir c2mir-test` (must stay green: 1075 tests/2150 success). c2m binary: `/workspace/mir/c2m`. Run a c2m test: `c2m FILE.c -ei` (file BEFORE -ei; args after -ei go to the program) or `-eg` (gen). gcc is canon: `gcc -std=gnu11 -O0 FILE.c && ./a.out`.
 
+## ⏩ RESUME HERE (next task) — template instantiation, the 8-byte bug
+Real template instantiation (Borland monomorphize) is BUILT + validated for 4-byte
+types (commits ba62e64 capture, 704eada members, 8229ae8 methods). `Name<T>` clones+
+substitutes the captured body tokens, injects to the parse deque, re-parses via
+TokenCLASS at top-level scope → normal DataDefCLASS (reuses class-model lowering).
+tests/testtemplate.mad passes. **IMMEDIATE NEXT BUG:** instantiated methods that
+RETURN an 8-byte type param (`Box<long>::fetch()`/`Box<double>`) drop the T-returning
+method → "no member named fetch" (4-byte int works fully; void-return store(T) works).
+Likely the 8-byte-by-value return hitting the multi-return/__retbuf path in the
+re-entrant parse — see parser.cpp parseFunction:~13366 (__retbuf) / :13383 (__this).
+THEN: container std-lib as madc-dialect include/madc/vector|map|set templates +
+delete ns_stl. Full plan + mechanics: docs/plans/2026-05-30-template-instantiation.md.
+Memory: [[project_template_instantiation]]. Gotcha: user method names that are madc
+keywords (set/map/list/vector) collide — use other names.
+
 ## CURRENT TEST STATE
-- madc integration: **367 passed / 55 failed / 1 flaky-timeout (testfortypedcomma) / 56 skipped** (was 334/88 at the start of the 2026-05-30 PM session; **+33 net, 0 regressions**; unit tests green). Goal = drive 55→0 for develop→master parity (Track 1.3).
+- madc integration: **368 passed / 55 failed / 1 flaky-timeout (testfortypedcomma; sometimes shows as a fail) / 56 skipped** (was 334/88 at the start of the 2026-05-30 session; **+34 net, 0 regressions**; unit tests green). Goal = drive failures→0 for develop→master parity (Track 1.3).
 
 ## ⚠️ ARCHITECTURE (user-confirmed — READ [[project_cpp_mangled_direct]] AND [[project_template_instantiation]])
 Split by whether libstdc++ EXPORTS the type (verified via `nm -D`):
