@@ -1117,7 +1117,7 @@ public:
     virtual TokenBase *parse(Program &pgm);
 };
 
-class TokenNAMESPACE:public TokenKeyword { public: TokenNAMESPACE() : TokenKeyword("namespace") {} virtual TokenID id() const { return TokenID::tkNAMESPACE; } virtual TokenBase *clone() { return (TokenBase*)new TokenNAMESPACE(); } };
+class TokenNAMESPACE:public TokenKeyword { public: TokenNAMESPACE() : TokenKeyword("namespace") {} virtual TokenID id() const { return TokenID::tkNAMESPACE; } virtual TokenBase *clone() { return (TokenBase*)new TokenNAMESPACE(); } virtual TokenBase *parse(Program &); };
 
 class TokenUSING: public TokenKeyword
 {

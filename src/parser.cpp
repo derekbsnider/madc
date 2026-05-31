@@ -9604,6 +9604,48 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 // typedef struct tag alias;
 // typedef struct tag { type member; } alias;
 // typedef struct { type member; } alias;
+// parse a `namespace NAME { ... }` definition block.
+//   namespace std { template<typename T> class vector { ... }; }
+// Sets pgm.current_namespace for the duration of the body so definitions
+// declared inside (templates, classes, functions) register under the
+// namespace, then restores the previous namespace. Body statements that
+// yield a node (e.g. a global initializer) are appended to the program.
+TokenBase *TokenNAMESPACE::parse(Program &pgm)
+{
+    DBG(std::cout << "TokenNAMESPACE::parse() top" << std::endl);
+
+    TokenBase *tn = pgm.nextToken();
+    if ( !tn || tn->type() != TokenType::ttIdentifier )
+	pgm.Throw(tn) << "Expecting namespace name after 'namespace'" << flush;
+    std::string ns_name = ((TokenIdent *)tn)->str;
+
+    tn = pgm.nextToken();
+    if ( !tn || tn->id() != TokenID::tkOpBrc )
+	pgm.Throw(tn) << "Expecting '{' after namespace name" << flush;
+
+    // Nested namespaces concatenate (`namespace a { namespace b { ... } }`
+    // → "a::b"); restore the outer namespace on exit.
+    std::string saved_namespace = pgm.current_namespace;
+    pgm.current_namespace = saved_namespace.empty()
+			  ? ns_name : (saved_namespace + "::" + ns_name);
+
+    while ( (tn = pgm.nextToken()) )
+    {
+	if ( tn->id() == TokenID::tkClBrc )
+	    break;
+	if ( tn->id() == TokenID::tkSemi )
+	    continue;
+	TokenBase *stmt = pgm.parseStatement(tn);
+	if ( stmt && pgm.tkProgram )
+	    pgm.tkProgram->statements.push_back((TokenStmt *)stmt);
+    }
+
+    pgm.current_namespace = saved_namespace;
+    DBG(std::cout << "TokenNAMESPACE::parse() end of namespace '" << ns_name
+	<< "'" << std::endl);
+    return NULL;
+}
+
 // parse 'using' statement
 // forms:
 // using namespace std;       — import all members of std into global scope

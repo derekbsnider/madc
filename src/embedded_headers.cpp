@@ -1636,6 +1636,31 @@ int nanosleep(const void *req, void *rem);
 #define intptr_t  int64_t
 #define uintptr_t uint64_t
 )EMBED"},
+    {"vector", R"EMBED(// madc embedded <vector> — std::vector<T> as a real madc template.
+//
+// std::vector is an ordinary std::-namespaced madc template, instantiated
+// per use by the template-instantiation engine (Borland monomorphization).
+// It is NOT a lexer keyword and NOT a libstdc++ wrapper — it is madc's own
+// STL container, defined here and compiled through the class model.
+#include <stdlib.h>
+namespace std {
+template<typename T> class vector {
+    T* data;
+    long len;
+    long cap;
+    vector() { data = (T*)malloc(4 * sizeof(T)); len = 0; cap = 4; }
+    ~vector() { free(data); }
+    void push_back(T v) {
+	if (len >= cap) { cap = cap * 2; data = (T*)realloc(data, cap * sizeof(T)); }
+	T* slot = data + len;		// pointer arith (NOT &data[len] — parser gap)
+	new (slot) T(v);		// placement copy-construct (works for string too)
+	len = len + 1;
+    }
+    T& operator[](long i) { return data[i]; }
+    long size() { return len; }
+};
+}
+)EMBED"},
     {"zlib.h", R"EMBED(// madc embedded zlib.h — minimal stub for z_stream pointer members.
 // Full zlib functionality requires linking against libz.
 
