@@ -866,15 +866,25 @@ static void target_machinize (gen_ctx_t gen_ctx) {
       for (uint32_t narg = 0; narg < func->nargs; narg++) {
         var = VARR_GET (MIR_var_t, func->vars, narg);
         if (var.type == MIR_T_F || var.type == MIR_T_D) {
-          fp_offset += 16;
-          if (gp_offset >= 176) mem_offset += 8;
+          /* An SSE-class named arg consumes one of the 8 XMM save-area slots
+             (fp_offset 48..160) only while a slot remains; once all 8 are
+             used (fp_offset == 176) it spilled to the overflow stack. Decide
+             this BEFORE consuming the slot — bumping fp_offset first and then
+             testing wrongly counts the 8th arg as a memory arg. */
+          if (fp_offset >= 176) mem_offset += 8;
+          else fp_offset += 16;
         } else if (var.type == MIR_T_LD) {
           mem_offset += 16;
         } else if (MIR_blk_type_p (var.type)) {
           mem_offset += var.size;
         } else { /* including RBLK */
-          gp_offset += 8;
+          /* Likewise for the 6 GP save-area slots (gp_offset 0..40): an arg
+             goes to the overflow stack only once all 6 are used
+             (gp_offset == 48). Test before consuming so the 6th GP arg —
+             which lands in r9 — is not miscounted as a memory arg, which
+             would push overflow_arg_area 8 bytes too far. */
           if (gp_offset >= 48) mem_offset += 8;
+          else gp_offset += 8;
         }
       }
       va_reg = va_op.u.var;

@@ -102,7 +102,12 @@ void va_block_arg_builtin (void *res, void *p, size_t s, uint64_t ncase) {
       u[0].d = *(double *) ((char *) va->reg_save_area + va->fp_offset);
       u[1].i = *(uint64_t *) ((char *) va->reg_save_area + va->gp_offset);
     }
-    va->fp_offset += 8;
+    /* An SSE eightbyte occupies a 16-byte slot in the register save area
+       (each XMM is stored in 16 bytes), so fp_offset must advance by 16 —
+       matching the SSE-only path (case 2) and va_arg_builtin. Advancing by
+       only 8 made the next mixed-class struct's SSE field read an
+       overlapping/stale slot. The INTEGER eightbyte is 8 bytes. */
+    va->fp_offset += 16;
     va->gp_offset += 8;
     if (res != NULL) memcpy (res, &u, s);
     return;
