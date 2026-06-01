@@ -1046,9 +1046,21 @@ class TokenLabel: public TokenBase
 {
 public:
     std::string name;
-    TokenLabel(const std::string &n) : name(n) {}
+    // The statement the label prefixes (C grammar: `label : statement`).
+    // A label is not a standalone statement — it names the statement that
+    // follows it. Carrying it here lets every statement context (compound
+    // block, switch case body, if/while/for body) emit the labeled statement
+    // uniformly, instead of only the compound-block path re-associating labels.
+    TokenBase *labeled;
+    TokenLabel(const std::string &n) : name(n), labeled(NULL) {}
     virtual TokenType type() const { return TokenType::ttBase; }
-    virtual TokenBase *clone() { return new TokenLabel(name); }
+    virtual TokenBase *clone()
+    {
+	TokenLabel *t = new TokenLabel(name);
+	if ( labeled )
+	    t->labeled = labeled->clone();
+	return t;
+    }
 };
 class TokenCASE: public TokenKeyword
 {

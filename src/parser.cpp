@@ -16366,6 +16366,13 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 	TokenDecl *td = new TokenDecl(*var);
 	td->has_brace_init = saw_brace_init;
 	td->is_const_decl = (gotconst && !saw_pointer_decl) || saw_const_after_star;
+	// A function-block-scope `extern T name;` referring to a file-scope global:
+	// mark it so the CIR backend emits a real `extern T name;` inside the block.
+	// c2mir then rebinds `name` to the file-scope object, so an enclosing local
+	// of the same name does not shadow the global (C scope rules). Without this
+	// the redeclaration was dropped and the inner reference bound to the local.
+	if ( shared_global_extern_ref && code && code != tkProgram )
+	    td->block_extern_redecl = true;
 
 	td->file = tb->file;
 	td->line = tb->line;
@@ -16673,7 +16680,17 @@ TokenBase *Program::parseStatement(TokenBase *tb)
 		std::string lname = ((TokenIdent *)tb)->str;
 		nextToken(); // consume ':'
 		DBG(std::cout << "parseStatement() label definition: " << lname << std::endl);
-		return new TokenLabel(lname);
+		TokenLabel *lbl = new TokenLabel(lname);
+		// C grammar: `label : statement`. A label names the statement
+		// that follows it, so parse and carry that statement. This makes
+		// the label self-contained, so it survives in EVERY statement
+		// context (compound block, switch case body, if/while/for body)
+		// — not only the compound-block path. A trailing `}` (label at
+		// block end, a GNU/C23 extension) leaves `labeled` NULL.
+		TokenBase *pk = peekToken();
+		if ( pk && pk->id() != TokenID::tkClBrc )
+		    lbl->labeled = parseStatement(nextToken());
+		return lbl;
 	    }
 	    if ( is_static_assert_identifier(((TokenIdent *)tb)->str) )
 		return parse_static_assert_statement(*this, tb);

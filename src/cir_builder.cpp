@@ -5975,13 +5975,60 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 		return node2(N_GOTO, list(), id(tg->target.c_str(), tb), tb);
 	  } }
 
-	// Label (handled in translate_block)
+	// Label: `L: stmt`. A label names the statement it prefixes (carried in
+	// tl->labeled by the parser). Emit the label as its own marker statement
+	// `L: 0;` (an N_EXPR whose label list holds the N_LABEL — the same shape
+	// translate_block uses) followed by the prefixed statement, wrapped in a
+	// compound block so the pair is one node. This makes the label survive in
+	// EVERY statement context — an if/while/for body or a switch case body,
+	// not only the compound-block path. C labels are function-scoped, so the
+	// extra block introduces no scope issue.
 	{ TokenLabel *tl = dynamic_cast<TokenLabel *>(tb);
-	  if (tl) return NULL; }
+	  if (tl) {
+		node_t items = list();
+		node_t ll = list();
+		append(ll, node1(N_LABEL, id(tl->name.c_str(), tb)));
+		append(items, node2(N_EXPR, ll, integer(0), tb));
+		if (tl->labeled) {
+			node_t s = translate_stmt(tl->labeled);
+			if (s) append(items, s);
+		}
+		return node2(N_BLOCK, list(), items, tb);
+	  } }
 
 	// Declaration
 	{ TokenDecl *td = dynamic_cast<TokenDecl *>((TokenBase *)tb);
 	  if (td) {
+		// A function-block-scope `extern T name;` that refers to a file-scope
+		// global: emit a REAL in-block `extern T name;` so c2mir's scope
+		// resolution rebinds `name` to the file-scope object (an enclosing local
+		// of the same name must not shadow it — C scope rules). Gated to a PLAIN
+		// SCALAR extern (no array shape, no typedef alias, not a struct/union,
+		// not a pointer):
+		//   - Array / typedef-aliased / aggregate / pointer externs were the
+		//     source of "incompatible types of <name> declarations" c2mir
+		//     conflicts in SMAUG — the in-block extern's computed type
+		//     (array-decay, typedef-alias divergence) did not match the
+		//     file-scope global's. Those fall through to the file-scope-global
+		//     path (return NULL), correct for SMAUG (the global is already
+		//     emitted + in scope; the local-shadow case is not exercised there).
+		//   - vfALLOC is cleared and data NULLed on the local view so ~Variable
+		//     does NOT free the global's shared `data` — an owning copy with
+		//     vfALLOC + shared pointer double-freed SMAUG's storage on boot
+		//     ("free(): double free detected" SIGABRT).
+		if (td->block_extern_redecl
+		    && td->var.dims.empty()
+		    && !(td->var.flags & vfFIXEDARRAY)
+		    && td->var.typedef_name.empty()
+		    && td->var.type
+		    && !td->var.type->is_struct()
+		    && !td->var.type->is_pointer()) {
+			Variable ev = td->var;
+			ev.flags |= vfEXTERN;
+			ev.flags &= ~(vfLOCAL | vfSTATIC | vfALLOC); // non-owning view
+			ev.data = NULL;
+			return var_decl(&ev, td);
+		}
 		// A function-local `extern T name;` that resolves to a file-scope
 		// global yields a TokenDecl whose var IS that global: file scope, so
 		// not vfLOCAL and not vfSTATIC. The parser clears vfEXTERN here, so
@@ -6102,9 +6149,28 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 	std::vector<std::string> pending_labels;
 	for (size_t si = 0; si < tc->statements.size(); si++) {
 		TokenBase *stb = (TokenBase *)tc->statements[si];
-		TokenLabel *tl = dynamic_cast<TokenLabel *>(stb);
-		if (tl) {
+		// A label names the statement it prefixes (`L: stmt`). The label
+		// carries that statement (parser), so peel labels off here — record
+		// the names in pending_labels (the marker `<labels>: 0;` is emitted
+		// before the prefixed statement below) and descend to the prefixed
+		// statement, which is then translated as if it were the list entry.
+		// Handles label chains (`L1: L2: stmt`) and a label as the final item
+		// of a block (`L:` with no statement -> just the marker). This keeps
+		// a label-before-declaration in the SAME block scope (correct RAII),
+		// rather than wrapping it in a nested block.
+		while (TokenLabel *tl = dynamic_cast<TokenLabel *>(stb)) {
 			pending_labels.push_back(tl->name);
+			stb = tl->labeled;
+		}
+		if (!stb) {
+			// Trailing label(s) with no statement (block-end label).
+			if (!pending_labels.empty()) {
+				node_t ll = list();
+				for (auto &ln : pending_labels)
+					append(ll, node1(N_LABEL, id(ln.c_str())));
+				pending_labels.clear();
+				append(items, node2(N_EXPR, ll, integer(0)));
+			}
 			continue;
 		}
 

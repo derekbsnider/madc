@@ -211,6 +211,13 @@ public:
     // (which never had an initializer), so the extern is not turned into a
     // second definition ("Repeated item declaration").
     bool baked_static_init = false;
+    // True when this is a FUNCTION-BLOCK-scope `extern T name;` that refers to a
+    // file-scope global of the same name. The CIR backend must emit an actual
+    // `extern T name;` inside that block so c2mir's scope resolution rebinds the
+    // name to the file-scope object — otherwise an enclosing local of the same
+    // name would shadow it (C: a block `extern` re-exposes the file-scope
+    // object). Distinct from baked_static_init: this NEVER defines storage.
+    bool block_extern_redecl = false;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; is_const_decl = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
 };
