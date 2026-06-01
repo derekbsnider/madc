@@ -192,7 +192,7 @@ make -C src fulltest
 scripts/build_then.sh bash scripts/run_tests.sh tests/testint.mad
 ```
 
-**Current status (v0.25.0): 376 integration tests pass (~55 failing — the CIR coverage worklist, 56 skipped). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
+**Current status (v0.25.0, develop): 450 integration tests pass (13 failing — the CIR coverage worklist, 55 skipped); gcc.c-torture parity 1547/1685 (91.8%) vs the old asmjit backend's 1645 (97.6%). `std::string` is a real C++ class and `std::vector`/`map`/`set` are real `#include`-defined `std::` templates (the legacy `dtSTRING`/`tkSTRING`/`tkVECTOR`/`ns_stl` shortcuts are retired). SMAUG 1.8 boots, runs as a live server, and is playable. `cir_node → c2mir → MIR → JIT` is the sole backend (built against the [madc MIR fork](https://github.com/derekbsnider/mir)). (`make -C src fulltest`)**
 
 (`testcin.mad` and `testargv.mad` are driven by `scripts/run_tests.sh` — it
 feeds them stdin and argv respectively and asserts on their output.)
@@ -243,8 +243,12 @@ JIT-symbolizing crash handler) took SMAUG from won't-link to gameplay. Builds
 against the [madc MIR fork](https://github.com/derekbsnider/mir). See
 [`docs/release-notes/v0.25.0.md`](docs/release-notes/v0.25.0.md).
 
-Honest CIR integration baseline: **325 pass / ~95 fail / 56 skip** — the
-failures are the active coverage worklist. In-process `eval`/exec + the REPL,
+Honest CIR baseline (2026-06-01, branch `feature/cir-stdstring-claude`):
+**450 integration pass / 13 fail / 55 skip**, unit suites green, and
+**gcc.c-torture 1547/1685 (91.8%)** vs the old asmjit backend's **1645 (97.6%)**
+on the same runner — the develop→master parity gate. The torture gap (98) is one
+remaining cheap front-end cluster (aggregate-init) plus floor/feature work (SIMD,
+VLA, inline asm, `scalar_storage_order`, …). In-process `eval`/exec + the REPL,
 and native AOT output, are deferred (stubbed) until the CIR path reaches parity.
 
 **Branch state:** `develop` carries v0.25.0 (CIR backend). `master` still holds

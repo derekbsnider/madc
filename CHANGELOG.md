@@ -2,6 +2,42 @@
 
 ## [Unreleased]
 
+### Fixed — CIR↔asmjit gcc-torture parity campaign 82.0%→91.8% (2026-06-01, branch feature/cir-stdstring-claude)
+
+Recovered the regression the CIR backend carried vs the old asmjit backend on the
+gcc.c-torture/execute suite (same runner): **CIR 1382 (82.0%) → 1547/1685 (91.8%)**,
+integration 432 → **450**, zero regressions throughout, SMAUG boots + playable. Each
+cluster gcc-compared, failset-diffed for zero regressions, and SMAUG-soaked.
+
+- ~20 root-cause clusters landed: bitfield load/store, struct/aggregate member-type
+  resolution, varargs (+ MIR-fork SysV ABI fixes), integer promotion, builtin/libm
+  return types, `_Complex` pass/return ABI, GNU nested functions, `__attribute__`
+  alias/aligned, statement-expressions, pointer-to-array, FAM, self-ref typedef, K&R
+  unprototyped, function-scoped labels + block-scope `extern`.
+- **Union support fixed** (`14fc16c`/`187b135`/`f9d7566`, +11): emit `N_UNION` at every
+  site (definition, type-spec reference, typedef'd-anonymous, function-return, var-decl,
+  extern) — previously all hardcoded `N_STRUCT`, which broke member aliasing/type-punning
+  and union-by-value parameter passing.
+- **Nested statement-expression last-value** `({ ({...}); })` (`069fb8b`, +3).
+- **Function used as a value** (address-of / fn-ptr decay) now emits a prototype (`9ac7a1b`, +3).
+- The MIR dependency is the **madc fork** (`feature/cleanup-attribute` @ `1fdf44d`), carrying
+  native `_Complex`, `__attribute__((cleanup))`, the scope-depth auto-local layout fix, and
+  the SysV varargs / `_Complex` / `_Alignas` ABI fixes.
+
+### Changed — dead-code removal + test/recovery hardening (2026-06-01)
+
+- **Removed the legacy `cir_translate` path** (`9af4e29`, `src/madc_cir.cpp` ~1800→275 lines).
+  It was reachable only via `MADC_CIR_OLD=1` and had **drifted** from the live `CirBuilder`
+  (the sole backend) — and a stale `test_cir` was exercising it, which hung `MIR_interp` and
+  pegged the host. `test_cir` now tests the live `CirBuilder` (`7d927d5`). One backend, no A/B drift.
+- **`make test` runs each unit binary under `ulimit -t` + `timeout`** (`bd1f5da`) — a hung test
+  fails the suite instead of pegging the machine.
+- New rule [`no-parallel-implementations.md`](.claude/rules/no-parallel-implementations.md):
+  one implementation per concern; tests use the production path; cap every test run.
+- New [`scripts/resume.sh`](scripts/resume.sh) rehydration preflight: live git/reflog state,
+  runaway-process detection (`--kill`), and a tiered ~120k-token rehydration corpus manifest
+  (self-checks the ≥100k floor) — recovers full context after an aggressive compaction.
+
 ### Changed — std:: types are real classes/templates; legacy C++ shortcuts retired (2026-05-31, branch feature/cir-stdstring-claude)
 
 The temporary shortcuts that faked C++ niceties (a special `dtSTRING` type with bespoke
