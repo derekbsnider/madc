@@ -130,6 +130,27 @@ node_t CirBuilder::id(const char *name, TokenBase *origin)
 	return cn->as_node();
 }
 
+std::string CirBuilder::var_emit_name(const Variable &v) const
+{
+	if (v.storage_alias_name.empty() || !m_prog)
+		return v.name;
+	// storage_alias_name is overloaded: an __attribute__((alias("data")))
+	// DATA alias names another DEFINED file-scope variable, while an asm-label
+	// on a function (`void f() asm("g")`) also lands here. Only the data-alias
+	// case is resolved at the cir layer (the symbol IS the target's storage);
+	// a function/asm-label keeps its own emitted name (its existing call/ptr
+	// path already handles the label), so rewrite ONLY when the alias resolves
+	// to a real, distinct, non-function Variable.
+	if (v.type && v.type->is_function())
+		return v.name;
+	Variable *target =
+		m_prog->resolve_global_storage_variable(const_cast<Variable *>(&v));
+	if (target && target != &v && !target->name.empty()
+	    && !(target->type && target->type->is_function()))
+		return target->name;
+	return v.name;
+}
+
 node_t CirBuilder::integer(long val, TokenBase *origin)
 {
 	// c2m types N_I as `int` (32-bit) and N_L as `long` (64-bit). A value
@@ -2354,6 +2375,37 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		}
 	}
 
+	// __attribute__((aligned(N))) on this member -> _Alignas(N) in its spec.
+	// c2mir lays the field out at the requested alignment (raising the struct's
+	// own alignment via its max-member-align rule), matching GCC and madc's own
+	// recorded offset/size. The alignment lives keyed by member index on the
+	// owning struct; `&m` is an element of owner->members, so recover the index.
+	// The struct TAG's own __attribute__((aligned(N))) is folded onto the first
+	// member here too (c2mir derives the aggregate's alignment from its
+	// strictest member): the tag attribute over-aligns the type without moving
+	// any member offset, matching GCC.
+	if (owner && !owner->members.empty() && &m >= &owner->members[0]
+	    && &m <= &owner->members[owner->members.size() - 1]) {
+		size_t midx = (size_t)(&m - &owner->members[0]);
+		size_t want_align = 0;
+		auto ai = owner->member_explicit_align.find(midx);
+		if (ai != owner->member_explicit_align.end())
+			want_align = ai->second;
+		if (midx == 0 && owner->tag_explicit_align > want_align)
+			want_align = owner->tag_explicit_align;
+		if (want_align > 1) {
+			node_t aligned_spec = list();
+			append(aligned_spec, node1(N_ALIGNAS,
+				integer((long)want_align, m.origin)));
+			for (int i = 0; ; i++) {
+				node_t sp = c2mir_node_op(mspec, i);
+				if (!sp) break;
+				append(aligned_spec, sp);
+			}
+			mspec = aligned_spec;
+		}
+	}
+
 	node_t mshare = node1(N_SHARE, mspec);
 	node_t mid = id(m.first.c_str(), m.origin);
 	node_t mdecl_list = list();
@@ -4263,8 +4315,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// translate_module can emit extern decls for libc globals
 			// (stderr/stdout/stdin) that were registered lazily and never
 			// reached top_decls. Locals/params already have in-scope decls.
-			if (!(tv->var.flags & vfLOCAL) && !(tv->var.flags & vfPARAM))
-				referenced_globals[tv->var.name] = &tv->var;
+			if (!(tv->var.flags & vfLOCAL) && !(tv->var.flags & vfPARAM)) {
+				// An aliased global (`b __attribute__((alias("a")))`) emits
+				// the TARGET's symbol, so record the target under its own name
+				// — recording `b` would re-introduce the undefined import.
+				std::string en = var_emit_name(tv->var);
+				if (en == tv->var.name)
+					referenced_globals[tv->var.name] = &tv->var;
+			}
 			// A numeric reference parameter (`int &x`) is lowered to a
 			// pointer parameter (`int *x`) by the parser, with vfREFERENCE
 			// set for auto-deref. Every value use of the reference reads
@@ -4278,7 +4336,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// pointer parameter `T *name`. The value read is `(*name)`.
 			if (note_capture(&tv->var))
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
-			return id(tv->var.name.c_str(), tb);
+			return id(var_emit_name(tv->var).c_str(), tb);
 		}
 	}
 
@@ -4306,7 +4364,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// `&capturedvar` inside a nested fn IS the capture pointer param.
 			if (note_capture(&ta->var))
 				return id(ta->var.name.c_str(), tb);
-			return node1(N_ADDR, id(ta->var.name.c_str(), tb), tb);
+			return node1(N_ADDR, id(var_emit_name(ta->var).c_str(), tb), tb);
 		}
 	}
 
@@ -4374,7 +4432,7 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// capture pointer param (`(*name)[i]`).
 				base = node1(N_DEREF, id(tsub->object.name.c_str(), tb), tb);
 			} else {
-				base = id(tsub->object.name.c_str(), tb);
+				base = id(var_emit_name(tsub->object).c_str(), tb);
 			}
 			node_t n = node2(N_IND, base,
 				translate_expr(tsub->index), tb);
@@ -6572,6 +6630,12 @@ node_t CirBuilder::translate_module(Program *prog)
 			break;
 		}
 		case Program::DeclKind::dkGlobalVar: {
+			// An aliased global (`b __attribute__((alias("a")))`) emits NO
+			// declaration of its own — references to it name the target symbol
+			// (var_emit_name). Emitting `extern int b` here would re-introduce
+			// the undefined import at MIR-link.
+			if (td.var && var_emit_name(*td.var) != td.var->name)
+				break;
 			if (td.var && !dynamic_cast<FuncDef *>(td.var->type)) {
 				// Pass the linked TokenDecl as origin so var_decl's
 				// existing initializer logic (scalar + brace) emits the

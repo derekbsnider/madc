@@ -310,6 +310,13 @@ public:
 
 	// ---- Leaf node builders ----
 	node_t id(const char *name, TokenBase *origin = NULL);
+	// Symbol name a (global) variable emits as. For a variable declared with
+	// __attribute__((alias("target"))), this resolves the alias chain to the
+	// target's name so every reference, and an &-of, names the real defined
+	// symbol — the C-level `#define b a` identity (c2mir/MIR has no symbol-alias
+	// primitive, so the alias is resolved here at the cir layer). Non-aliased
+	// variables return their own name.
+	std::string var_emit_name(const class Variable &v) const;
 	node_t integer(long val, TokenBase *origin = NULL);
 	// Type-aware integer literal: pick the c2mir literal node code
 	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed

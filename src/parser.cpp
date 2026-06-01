@@ -10473,6 +10473,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	dds->setReverseScalarStorage(reverse_scalar_storage);
     if ( explicit_align > dds->max_align )
 	dds->max_align = explicit_align;
+    if ( explicit_align > dds->tag_explicit_align )
+	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
     DBG(cout << "TokenSTRUCT::parse() defining struct " << dds->name << endl);
 
     auto parse_bitfield_width = [&](TokenBase *loc, DataDef *member_dd, bool named) -> size_t
@@ -11128,6 +11130,8 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     }
     if ( explicit_align > dds->max_align )
 	dds->max_align = explicit_align;
+    if ( explicit_align > dds->tag_explicit_align )
+	dds->tag_explicit_align = explicit_align;	// __attribute__((aligned(N))) on the tag
     dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
     dds->finalize(); // round up size to struct alignment
 
@@ -11158,12 +11162,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// array nor pointer").
 		existing->member_dims = dds->member_dims;
 		existing->member_access = dds->member_access;
+		existing->member_explicit_align = dds->member_explicit_align;
 		existing->member_offsets = dds->member_offsets;
 		existing->member_bitfields = dds->member_bitfields;
 		existing->size = dds->size;
 		existing->runtime_size_expr = dds->runtime_size_expr;
 		existing->pack = dds->pack;
 		existing->max_align = dds->max_align;
+		existing->tag_explicit_align = dds->tag_explicit_align;
 		existing->union_layout = dds->union_layout;
 		existing->is_complete = true;
 		DBG(cout << "TokenSTRUCT::parse() completed forward-declared struct " << tag->str << " size=" << existing->size << endl);

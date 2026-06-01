@@ -7,6 +7,7 @@
 #define __DATADEF_H 1
 
 #include <cstdint>
+#include <map>
 
 extern thread_local bool madc_verbose;
 // JIT/codegen optimization level (0-3), set by the `-O<n>` CLI flag. Drives
@@ -309,9 +310,11 @@ public:
     std::vector<std::vector<uint32_t>> member_dims;
     std::vector<TokenBase *> member_count_exprs;	// runtime-sized member count expr, or NULL
     std::vector<uint32_t> member_access;	// per-member access flags (0=public, vfPRIVATE, vfPROTECTED)
+    std::map<size_t,size_t> member_explicit_align; // member index -> __attribute__((aligned(N))); absent = natural
     TokenBase *runtime_size_expr;
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
+    size_t tag_explicit_align;	// __attribute__((aligned(N))) on the struct TAG (0 = none)
     bool union_layout;	// true: all members start at offset 0; size is max member size
     bool is_complete;	// true: a `{ ... }` body was parsed (even if empty) — distinguishes
 			// `struct X {}` (complete, zero members) from `struct X;` (forward decl)
@@ -339,12 +342,12 @@ public:
 
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
-	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), union_layout(false),
+	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0), union_layout(false),
 	  is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
-	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1),
+	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1), tag_explicit_align(0),
 	  union_layout(false), is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
@@ -548,6 +551,10 @@ public:
     {
 	if ( align == 0 || members.empty() ) return;
 	if ( align > max_align ) max_align = align;
+	// Record the requested per-member alignment so the CIR emitter can place
+	// an _Alignas(N) on this member's spec (c2mir lays the field out; this
+	// keeps madc's own offset/size table in agreement below).
+	member_explicit_align[members.size() - 1] = align;
 	if ( union_layout ) return; // unions don't have per-member offsets
 	size_t idx = member_offsets.size() - 1;
 	size_t old_ofs = member_offsets[idx];
