@@ -1730,6 +1730,15 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (!p || !p->base_type) break;
 		base_dd = p->base_type;
 	}
+	// Pointer-to-array `T (*p)[N]`: the parser builds the type as
+	// DataDefPTR(DataDefCArray(T, N)). After peeling the pointer level(s) above,
+	// base_dd is the CArray — peel its fixed dims so the spec renders the element
+	// type T (append_type_specs has no CArray case), and emit the dims as N_ARR
+	// suffixes AFTER the pointer(s) below (declarator order [POINTER, ARR],
+	// which c2m reads as "pointer to array", vs [ARR, POINTER] = array of ptr).
+	std::vector<uint32_t> ptr_array_dims;
+	if (is_ptr)
+		base_dd = peel_carray_dims(base_dd, ptr_array_dims);
 
 	// A variable whose type is an anonymous aggregate (`struct { ... } x;`)
 	// has no tag to forward-reference, so the body must be emitted inline in
@@ -1876,6 +1885,10 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		int depth = dd_ptr_depth(v->type);
 		for (int s = 0; s < depth; s++)
 			append(decl_list, pointer());
+		// Pointer-to-array: array dims follow the pointer(s) — `T (*p)[N]`.
+		for (size_t d = 0; d < ptr_array_dims.size(); d++)
+			append(decl_list, node3(N_ARR, ignore(), list(),
+						 integer(ptr_array_dims[d])));
 	}
 
 	node_t var_decl_node = node2(N_DECL, var_id, decl_list);

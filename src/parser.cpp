@@ -14147,26 +14147,39 @@ grabnt:
 		nt = nextToken();
 		if ( nt && nt->id() == TokenID::tkOpSqr )
 		{
-		    // Pointer-to-array parameter: `int (*a)[2]`. Approximate it
-		    // as `int *a` — the passed address is the same base address,
-		    // and existing `(*a)[i]` parsing already lowers compatibly.
-		    param_dd = getPointerType(param_dd);
-		    rtype = RefType::rtPointer;
+		    // Pointer-to-array parameter: `int (*a)[2]`. The `[N]` binds to
+		    // the parenthesized inner declarator, yielding a true
+		    // pointer-to-array `DataDefPTR(DataDefCArray(elem, N))` — NOT a
+		    // plain `int *a` (deref of which is scalar `int`, so `(*a)[i]`
+		    // would not be subscriptable). Build the nested CArray dims
+		    // (outermost first), then wrap in one pointer level.
+		    std::vector<uint32_t> pa_dims;
 		    while ( nt && nt->id() == TokenID::tkOpSqr )
 		    {
-			int sq_depth = 1;
-			while ( sq_depth > 0 )
+			TokenBase *dim_peek = peekToken();
+			if ( dim_peek && dim_peek->id() == TokenID::tkClSqr )
 			{
-			    nt = nextToken();
-			    if ( !nt )
-				Throw(inner) << "Unexpected end of input in array-pointer parameter" << flush;
-			    if ( nt->id() == TokenID::tkOpSqr )
-				++sq_depth;
-			    else if ( nt->id() == TokenID::tkClSqr )
-				--sq_depth;
+			    nextToken(); // consume ']' for unsized leading dim
+			    pa_dims.push_back(0);
+			}
+			else
+			{
+			    int64_t n = parse_constant_integer_expression(*this);
+			    if ( n < 0 )
+				Throw(inner) << "Pointer-to-array parameter dimension must be non-negative" << flush;
+			    pa_dims.push_back((uint32_t)n);
+			    TokenBase *cl = nextToken();
+			    if ( !cl || cl->id() != TokenID::tkClSqr )
+				Throw(cl ? cl : inner) << "Expected ']' in pointer-to-array parameter" << flush;
 			}
 			nt = nextToken();
 		    }
+		    DataDef *pa_elem = param_dd;
+		    for ( size_t i = pa_dims.size(); i-- > 0; )
+			pa_elem = new DataDefCArray(*pa_elem, pa_elem->name,
+						    pa_dims[i], NULL);
+		    param_dd = getPointerType(pa_elem);
+		    rtype = RefType::rtPointer;
 		    goto paramdecl;
 		}
 		if ( !nt || nt->id() != TokenID::tkOpBrk )
