@@ -1,5 +1,61 @@
 # RESTART HANDOFF — 2026-05-31 (session 2, late) — READ FIRST after restart/compaction
 
+> ## ⏩ 2026-06-01 UPDATE (read this first; appended after a container rebuild for the /tmp fix)
+>
+> **Why the rebuild:** the madc-dev container's `/tmp` (Claude Code's per-command
+> output-capture tmpfs at `/tmp/claude-1001/...`) hit a phantom-full accounting glitch
+> (reported `-6TB` free while the real fs had 92K used / 11T free), blocking heavy child
+> processes (the SMAUG server fork; eventually `make fulltest`). NOT a madc bug. The
+> container was rebuilt to set `/tmp` up differently. `/workspace` is the persistent NAS
+> volume — survived intact.
+>
+> **LIVE STATE NOW:** madc branch `feature/cir-stdstring-claude` **HEAD `794a51b`** (pushed,
+> clean tree). **MIR fork `/workspace/mir` branch `feature/cleanup-attribute` HEAD `01f999b`
+> (pushed)** — madc now DEPENDS on this fork commit; `make -C src` links `/workspace/mir/libmir.a`
+> (rebuild the fork with `make -C /workspace/mir` if libmir.a is stale after the container rebuild).
+> **Gate baseline is now `make -C src fulltest` = 428 passed / ~33 failed / 56 skipped**
+> (+ the flaky `testfortypedcomma` fail↔timeout — ignore only that).
+>
+> **DONE this session (410 → 428, zero regressions, each gcc-compared + fulltest-gated):**
+> 1. **Exceptions on MIR-JIT (P1.1b) — the headline fix.** Root cause was NOT "setjmp
+>    returns-twice" (that recorded theory was WRONG — crashed at -O0 too). REAL cause:
+>    cir_builder builds the tree bottom-up so a nested N_BLOCK gets a SMALLER c2mir uid than
+>    its parent; c2mir's `process_func_decls_for_allocation`/`decl_cmp` sorted auto-locals by
+>    `scope->uid` (assuming nested=bigger), overlapping a try-body `std::string` onto the live
+>    try-context jmp_buf → ctor clobbers saved regs → longjmp → SIGBUS. **Fix = fork `01f999b`:
+>    `decl_cmp` sorts by ACTUAL scope depth** (strict refinement; full c2mir suite stays green).
+>    Removed the 5 `.mir_skip`s; testrethrow + testexcept_dtor_{string,order,nested,rethrow}
+>    pass on MIR-JIT. See memory `project_mir_setjmp_returns_twice` (rewritten).
+> 2. CIR-coverage clusters (each = add a `translate_*` case in cir_builder.cpp): compound
+>    literals `(T){...}` (TokenStructLit, +empty-struct/anon-member fixes); block-scope
+>    typedefs (TokenTypedefDecl); `__real__`/`__imag__` (TokenComplexPart → N_REALPART/IMAGPART);
+>    computed goto (`&&label`→N_LABEL_ADDR, `goto *e`→N_INDIRECT_GOTO); **fn-ptr arrays**
+>    `T(*a[N])(args)` (var_decl passes v->dims as lead_dims; + globals now emitted AFTER
+>    function prototypes so a file-scope fn-ptr table `{f,...}` sees `f` declared).
+>
+> **LESSON (cost a real catch this session):** a subagent's typedef commit *also* rewrote
+> `typedef_decl`'s array peel "for VLA" — it regressed SMAUG (`get_color` SIGSEGV) while the
+> test suite stayed green. I bisected + reverted it (`0bcb446`). → After BROAD codegen/emission-
+> ordering changes, run a SMAUG check (boot-soak, or the serpent run for command-dispatch
+> changes); but do NOT soak per tiny additive change (user guidance). Coordinator VERIFIES every
+> subagent result (re-gate + failset diff + SMAUG when warranted) — never relay a claimed "done".
+>
+> **SMAUG STATUS:** boots end-to-end AND the **serpent-room combat run passes** (validated after
+> the exceptions/typedef work). Run it via `/workspace/madc/tmp/run_serpent2.sh` (server bg +
+> `tmp/serpent_full.py` client; ALL output to repo `tmp/` — never /tmp). Boot-soak pattern:
+> `cd /workspace/MadSMAUG/runtime/area; timeout 50 madc .../SMAUG.mad 4000 > /workspace/madc/tmp/x.log 2>&1`
+> (exit 124 = survived = good). Kill stray servers (`pkill -9 -f bin/madc`) — orphaned bg servers
+> were the original /tmp-fill trigger.
+>
+> **NEXT (C-stability pivot, unchanged priority):** remaining `make fulltest` fails split into
+> (a) a **VLA group** (testvla/testmultidimvla/testnestedvlaparam/… + testtypedefvlasizeof) =
+> genuine c2mir **floor gap** (no VLA support) → roadmapped Track 1.6 (raise MIR), NOT a quick
+> win, SKIP for now; (b) fixable c2mir-check-error groups (test4/testdefer/testversion/testloop/
+> testmultiret/teststruct2/testfstream/testcin/complex-arith/testlambda/teststaticlocalinit/…)
+> — triage by the actual check-error message, knock down clusters via the same subagent +
+> coordinator-verify pattern (~20-min scopes). Then P2.11–13 std-dialect registry/gating. The
+> ~33 fails → develop→master parity gate.
+
 Authoritative rehydration entry. Supersedes all earlier handoffs. The C++23/C++ class
 model work of this session is essentially COMPLETE; the next phase is the **C-stability
 pivot**.
