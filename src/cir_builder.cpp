@@ -1755,7 +1755,16 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		if (v->flags & vfSTATIC) append(tl, simple(N_STATIC));
 		if (v->flags & vfEXTERN) append(tl, simple(N_EXTERN));
 		fnptr_decl_list = list();
-		fnptr_decl_pieces(fnptr->target, true, tl, fnptr_decl_list, std::vector<uint32_t>());
+		// An array-of-fn-ptr variable (`int (*ops[N])(args)`) keeps a bare
+		// DataDefFPTR type with the array shape carried in v->dims. The C
+		// "spiral rule" declarator is `ARR(N) POINTER FUNC(params)` (array of
+		// pointer to function): the array dimension binds tighter than the
+		// fn-ptr `*`, so it must lead the declarator suffixes. Hand the dims to
+		// fnptr_decl_pieces as lead_dims — it emits the N_ARR nodes first.
+		std::vector<uint32_t> fnptr_dims;
+		if (v->is_fixed_array())
+			fnptr_dims = v->dims;
+		fnptr_decl_pieces(fnptr->target, true, tl, fnptr_decl_list, fnptr_dims);
 	} else if (anon_sdd) {
 		node_t ml = list();
 		for (size_t i = 0; i < anon_sdd->members.size(); i++)
@@ -5913,6 +5922,21 @@ node_t CirBuilder::translate_module(Program *prog)
 	};
 	std::set<std::string> emitted_structs;
 	std::set<std::string> emitted_globals;
+
+	// Global variable declarations are DEFERRED out of the Pass 0 loop into
+	// this list (kept in source order) and emitted after the function
+	// prototypes (Pass 1). A function used as an address constant in a global
+	// initializer (`void (*tbl[])(void) = { f };`, SMAUG command tables) must
+	// be DECLARED before that global — C rejects a forward reference in a
+	// non-auto initializer (verified: both gcc and c2m error on
+	// `void *(*p)(void)=one;` when `one` is defined later). The original
+	// source defines the function first; madc emits all globals before all
+	// function bodies (Pass 2), so the prototype is the declaration that
+	// restores definition-before-use. Globals follow the prototypes (and the
+	// struct/class defs below) so a by-value struct param in a prototype sees
+	// the complete type and the global's fn-name initializer sees the proto.
+	std::vector<node_t> deferred_globals;
+
 	for (auto &td : prog->top_decls) {
 		switch (td.kind) {
 		case Program::DeclKind::dkTypedef: {
@@ -5945,8 +5969,9 @@ node_t CirBuilder::translate_module(Program *prog)
 				// existing initializer logic (scalar + brace) emits the
 				// global's init in its SPEC_DECL — the single source for
 				// the CIR backend (tkProgram->statements is not walked here).
+				// Deferred until after the function prototypes (see above).
 				node_t gd = var_decl(td.var, td.decl);
-				if (gd) { stamp(gd, td); append(top_list, gd); }
+				if (gd) { stamp(gd, td); deferred_globals.push_back(gd); }
 				emitted_globals.insert(td.var->name);
 			}
 			break;
@@ -6113,12 +6138,22 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (node_t p : m_stream_object_protos)
 		append(top_list, p);
 
-	// Pass 1: Forward declarations
+	// Pass 1: forward prototypes for every user function. Emitted AFTER the
+	// struct/class definitions (Pass 0 / 0.5) — so a by-value struct param or
+	// return in a prototype sees the complete type — and BEFORE the deferred
+	// globals below, so a function used as an address constant in a global
+	// initializer is declared first (C requires definition-before-use in a
+	// non-auto initializer; see deferred_globals).
 	for (TokenFunc *tf : funcs) {
 		if (tf->var.name == "main") continue;
 		node_t proto = func_proto(tf);
 		if (proto) append(top_list, proto);
 	}
+
+	// Pass 1a: the deferred global variable declarations (collected in source
+	// order during Pass 0), now that every user function is prototyped above.
+	for (node_t gd : deferred_globals)
+		append(top_list, gd);
 
 	// Pass 1.5: per-class virtual dispatch tables. Emitted after the method
 	// prototypes they reference (Pass 1) and before the function definitions
