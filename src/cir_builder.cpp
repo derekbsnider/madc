@@ -610,6 +610,36 @@ node_t CirBuilder::void_ptr_type()
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
 }
 
+node_t CirBuilder::char_ptr_type()
+{
+	node_t spec = list();
+	append(spec, simple(N_CHAR));
+	node_t decl_list = list();
+	append(decl_list, pointer());
+	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
+}
+
+// N_TYPE cast node for an arbitrary pointer DataDef (e.g. `void *`, `T **`).
+// Peels the pointer levels to the ultimate pointee, then re-applies that many
+// `*` declarators atop the pointee's spec — the same idiom va_arg uses.
+node_t CirBuilder::ptr_type_node(DataDef *dd)
+{
+	int levels = 0;
+	DataDef *base = dd;
+	while (base && base->is_pointer()) {
+		DataDefPTR *p = dynamic_cast<DataDefPTR *>(base);
+		if (!p) break;
+		base = p->base_type;
+		levels++;
+	}
+	if (levels == 0)
+		return void_ptr_type();
+	node_t decl_list = list();
+	for (int i = 0; i < levels; i++) append(decl_list, pointer());
+	return node2(N_TYPE, type_list(base),
+		     node2(N_DECL, ignore(), decl_list));
+}
+
 // N_TYPE node for a `struct Cls *` cast target (matches class_struct_def's
 // `struct Cls` spec + one pointer level). Used for derived->base upcasts.
 node_t CirBuilder::class_ptr_type(DataDefCLASS *cdd)
@@ -619,6 +649,22 @@ node_t CirBuilder::class_ptr_type(DataDefCLASS *cdd)
 	node_t decl_list = list();
 	append(decl_list, pointer());
 	return node2(N_TYPE, spec, node2(N_DECL, ignore(), decl_list));
+}
+
+// GNU C allows pointer arithmetic on `void *`, treating the element size as 1
+// (i.e. as if the pointer were `char *`). c2mir rejects it ("pointer to
+// incomplete type as an operand of +/-"), so when madc emits `+`/`-` on a
+// `void *` operand it casts that operand to `char *` first — the size-1
+// semantics GCC uses. Scoped to `void *` only: madc represents many in-flight
+// container/forward-declared structs with is_complete==false even though they
+// have a real size, so widening this predicate to "any incomplete pointee"
+// wrongly rewrites legitimate sized-pointer arithmetic.
+static bool is_size1_pointer(DataDef *dd)
+{
+	if (!dd || !dd->is_pointer()) return false;
+	DataDefPTR *p = dynamic_cast<DataDefPTR *>(dd);
+	if (!p || !p->base_type) return false;
+	return p->base_type->rawtype() == DataType::dtVOID;
 }
 
 // The single-level pointee user-class of `dd` when `dd` is a `Cls *` pointing
@@ -4826,6 +4872,35 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (code == N_ASSIGN)
 				right = upcast_class_ptr(right, top->left->datadef(),
 							 top->right, tb);
+			// GNU void*/func-ptr/incomplete-ptr arithmetic (element size 1).
+			// c2mir rejects it, so cast the size-1 pointer operand(s) to
+			// `char *` — the exact size-1 semantics GCC uses — before the op.
+			if (code == N_ADD || code == N_SUB) {
+				DataDef *ldd = top->left  ? top->left->datadef()  : NULL;
+				DataDef *rdd = top->right ? top->right->datadef() : NULL;
+				if (is_size1_pointer(ldd))
+					left = node2(N_CAST, char_ptr_type(), left, tb);
+				if (is_size1_pointer(rdd))
+					right = node2(N_CAST, char_ptr_type(), right, tb);
+			}
+			// Compound `vp += n` / `vp -= n` on a size-1 pointer lvalue:
+			// the lvalue cannot be cast in place, so lower to
+			// `vp = (T*)((char*)vp <op> n)` — same size-1 semantics, and an
+			// assignment c2mir accepts.
+			if (code == N_ADD_ASSIGN || code == N_SUB_ASSIGN) {
+				DataDef *ldd = top->left ? top->left->datadef() : NULL;
+				if (is_size1_pointer(ldd)) {
+					c2mir_node_code_t bin =
+						(code == N_ADD_ASSIGN) ? N_ADD : N_SUB;
+					node_t lhs2 = translate_expr(top->left);
+					node_t arith = node2(bin,
+						node2(N_CAST, char_ptr_type(), lhs2, tb),
+						right, tb);
+					node_t back = node2(N_CAST,
+						ptr_type_node(ldd), arith, tb);
+					return node2(N_ASSIGN, left, back, tb);
+				}
+			}
 			return node2(code, left, right, tb);
 		}
 	}

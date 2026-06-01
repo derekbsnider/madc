@@ -230,6 +230,8 @@ class CirBuilder {
 	// a concrete ABI size but no madc data members. 0 for an ordinary user class.
 	size_t object_class_words(DataDefCLASS *cdd) const;
 	node_t void_ptr_type();                      // N_TYPE node for a (void*) cast
+	node_t char_ptr_type();                      // N_TYPE node for a (char*) cast
+	node_t ptr_type_node(DataDef *dd);           // N_TYPE node for an arbitrary pointer DataDef
 	node_t class_ptr_type(DataDefCLASS *cdd);    // N_TYPE node for a (struct Cls *) cast
 	// Derived->base pointer conversion (single inheritance, base subobject at
 	// offset 0): if `lhs_dd` is `Base*` and the RHS expression `rhs` yields a

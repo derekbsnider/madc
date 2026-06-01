@@ -5638,13 +5638,28 @@ bool Program::is_dynamic_symbol_allowed(const std::string &name) const
 // assigning the result to a pointer (a spurious int-to-pointer warning,
 // and a real truncation risk on any 32-bit-int return path). Map the
 // known string-returning ones to dtCHARptr so the prototype is accurate.
+//
+// Likewise, the void / noreturn libc functions (abort, exit, free, ...)
+// genuinely return `void`. Declaring them as dtINT64 makes the dlsym
+// prototype `long f()`, so a comma-expression / ternary branch ending in
+// such a call is typed `long` rather than `void` — e.g. the assert idiom
+// `(e) ? (void)0 : (printf(...), abort())` then trips c2mir's
+// "incompatible types in true and false parts of cond-expression". Map the
+// known void-returning ones to dtVOID so the prototype matches GCC/libc.
 static DataType dynamic_symbol_fallback_return_type(const std::string &name)
 {
     static const std::set<std::string> cstr_returners = {
 	"asctime", "ctime"
     };
+    static const std::set<std::string> void_returners = {
+	"abort", "exit", "_exit", "_Exit", "quick_exit",
+	"free", "perror", "srand", "srandom",
+	"__assert_fail", "__assert", "__assert_perror_fail"
+    };
     if ( cstr_returners.count(name) )
 	return DataType::dtCHARptr;
+    if ( void_returners.count(name) )
+	return DataType::dtVOID;
     return DataType::dtINT64;
 }
 
