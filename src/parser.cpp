@@ -10182,6 +10182,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     };
     auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr)
     {
+	pgm.user_typedef_names.insert(alias);
+	// A typedef inside a function body is block-scoped: the CIR builder emits
+	// it in-place from the TokenTypedefDecl in the statement stream (the only
+	// correct scope for a VLA typedef whose bound references locals). Only
+	// file-scope typedefs are recorded for top-level emission.
+	if ( !pgm.compounds.empty() )
+	    return;
 	Program::TopDecl td;
 	td.kind = Program::DeclKind::dkTypedef;
 	td.name = alias;
@@ -10191,7 +10198,6 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	td.line = TokenBase::_parse_line;
 	td.origin = otok;
 	pgm.top_decls.push_back(td);
-	pgm.user_typedef_names.insert(alias);
     };
 
     // check for __attribute__((packed)) before or after tag
@@ -12235,16 +12241,23 @@ TokenBase *TokenTYPEDEF::parse(Program &pgm)
     // paths ignore the node (compile() is a no-op; MIR re-parses tokens).
     auto record_typedef = [&](const std::string &alias, DataDef *dd,
 			      TokenDataType *tdt, TokenBase *otok = nullptr) -> TokenBase * {
-	Program::TopDecl td;
-	td.kind = Program::DeclKind::dkTypedef;
-	td.name = alias;
-	td.dd = dd;
-	td.tdt = tdt;
-	td.file = TokenBase::_parse_file;
-	td.line = TokenBase::_parse_line;
-	td.origin = otok;
-	pgm.top_decls.push_back(td);
 	pgm.user_typedef_names.insert(alias);
+	// A typedef inside a function body is block-scoped: the CIR builder emits
+	// it in-place from the returned TokenTypedefDecl in the statement stream
+	// (the only correct scope for a VLA typedef whose bound references locals).
+	// Only file-scope typedefs are recorded for top-level emission.
+	if ( pgm.compounds.empty() )
+	{
+	    Program::TopDecl td;
+	    td.kind = Program::DeclKind::dkTypedef;
+	    td.name = alias;
+	    td.dd = dd;
+	    td.tdt = tdt;
+	    td.file = TokenBase::_parse_file;
+	    td.line = TokenBase::_parse_line;
+	    td.origin = otok;
+	    pgm.top_decls.push_back(td);
+	}
 	return new TokenTypedefDecl(alias, dd);
     };
 
