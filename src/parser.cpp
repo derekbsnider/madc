@@ -6996,11 +6996,10 @@ TokenBase *Program::parseAddressOfExpression(TokenBase *ampersand)
       && next_parenthesized_type_is_compound_literal(*this) )
     {
 	TokenBase *compound = parseExpression(nextToken(), true, false, false);
-	// Plain struct compound literals already compile to their
-	// address. Only wrap derived expressions (subscript, cast)
-	// in TokenAddrExpr.
-	if ( dynamic_cast<TokenStructLit *>(compound) )
-	    return compound;
+	// `&(T){...}` is the address of the unnamed compound-literal object.
+	// The CIR backend emits the literal as an N_COMPOUND_LITERAL value (an
+	// addressable lvalue), so wrap it — like any other lvalue — in
+	// TokenAddrExpr to yield N_ADDR(compound), a pointer to the object.
 	DataDefPTR *aptr = getPointerType(compound->datadef());
 	return new TokenAddrExpr(compound, aptr);
     }
@@ -7471,6 +7470,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 		    // check for cast expression: (TYPE [*...]) expr
 		    TokenBase *peek1 = peekToken();
 		    DataDef *cast_dd = NULL;
+		    std::string cast_typedef_name;
 		    TokenBase *cast_qualifier = NULL;
 		    if ( peek1 )
 		    {
@@ -7532,7 +7532,10 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			    std::string tname = ((TokenIdent *)peek1)->str;
 			    datatype_map_iter tdmi = datatype_map.find(tname);
 			    if ( tdmi != datatype_map.end() )
+			    {
 				cast_dd = &tdmi->second->definition;
+				cast_typedef_name = tname;
+			    }
 			}
 		    }
 		    if ( !cast_dd && cast_qualifier )
@@ -7756,6 +7759,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					};
 					TokenStructLit *slit = read_compound_struct_lit(dynamic_cast<DataDefSTRUCT *>(cast_dd));
 					slit->setDataType(cast_dd);
+					if ( !array_elem_dd )
+					    slit->typedef_name = cast_typedef_name;
 					TokenBase *lit_expr = slit;
 					// Array compound literals decay to pointer.
 					// Wrap in a cast so the expression type is
@@ -11033,6 +11038,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     }
     if ( explicit_align > dds->max_align )
 	dds->max_align = explicit_align;
+    dds->is_complete = true; // a `{ ... }` body was parsed (even if it had no members)
     dds->finalize(); // round up size to struct alignment
 
     // register the struct type
@@ -11069,6 +11075,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		existing->pack = dds->pack;
 		existing->max_align = dds->max_align;
 		existing->union_layout = dds->union_layout;
+		existing->is_complete = true;
 		DBG(cout << "TokenSTRUCT::parse() completed forward-declared struct " << tag->str << " size=" << existing->size << endl);
 		delete dds;
 		dds = existing;

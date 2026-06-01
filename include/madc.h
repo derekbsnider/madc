@@ -227,6 +227,11 @@ class TokenStructLit: public TokenBase
 {
 public:
     std::vector<TokenBase *> inits;
+    // When the compound-literal type was named via a typedef (e.g. `(T){...}`),
+    // this holds the alias so the CIR builder can render the type-name spec as
+    // ID("T") instead of re-deriving an anonymous struct/union layout. Empty for
+    // a bare `struct Tag` / `union Tag` / builtin element type.
+    std::string typedef_name;
     TokenStructLit() {}
     virtual TokenType type() const { return TokenType::ttStructLit; }
 };

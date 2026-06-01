@@ -332,6 +332,8 @@ public:
 	// Recursively build an initializer value node: a scalar expression, or
 	// for a nested brace element (TokenStructLit) a LIST(INIT(LIST(), val), ...).
 	node_t init_value(TokenBase *elem);
+	// C99 compound literal `(T){ init... }` -> N_COMPOUND_LITERAL(type, list).
+	node_t translate_struct_lit(class TokenStructLit *slit);
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);
 	node_t param_decl(DataDef *ptype, const char *pname,
 			  const std::string &typedef_alias = std::string());

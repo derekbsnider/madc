@@ -1645,6 +1645,54 @@ node_t CirBuilder::init_value(TokenBase *elem)
 	return translate_expr(elem);
 }
 
+// C99 compound literal `(T){ field... }` -> an unnamed object of type T,
+// initialized in place. c2mir models this natively as
+// N_COMPOUND_LITERAL(N_TYPE(spec, N_DECL(IGNORE, decl)), N_LIST(N_INIT...)),
+// exactly the cast's type-name node plus the brace initializer (see c2mir.c
+// unary_expr / N_COMPOUND_LITERAL). The element list reuses init_value, the
+// same lowering an ordinary `T x = {...}` declaration uses.
+node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
+{
+	DataDef *dd = slit->datadef();
+	if (!dd)
+		return error_node("compound literal has no type", slit);
+
+	// ---- Build the N_TYPE type-name node (mirrors a cast / var_decl spec). ----
+	node_t spec = list();
+	DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
+	if (!slit->typedef_name.empty()) {
+		// Named via a typedef: emit ID("alias") so c2mir resolves the
+		// (possibly anonymous struct/union) layout from the typedef.
+		append(spec, id(slit->typedef_name.c_str()));
+	} else if (sdd && !dd->is_complex() && sdd->name != "anonymous") {
+		// A tagged struct/union: `struct Tag` / `union Tag`.
+		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
+				   id(sdd->name.c_str()), ignore()));
+	} else if (sdd && !dd->is_complex()) {
+		// Anonymous struct/union with no typedef alias: inline the full
+		// member definition, matching var_decl's anon_sdd path.
+		node_t ml = list();
+		for (size_t i = 0; i < sdd->members.size(); i++)
+			append(ml, member_node(sdd->members[i], sdd));
+		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
+				   ignore(), ml));
+	} else {
+		// Scalar / builtin element type (array compound literals reach
+		// here via their synthetic element struct, but the common case is
+		// covered above).
+		append_type_specs(spec, dd);
+	}
+	node_t type_node = node2(N_TYPE, spec, node2(N_DECL, ignore(), list()));
+
+	// ---- Build the initializer list: LIST( INIT(LIST(), value), ... ). ----
+	node_t inits = list();
+	for (size_t i = 0; i < slit->inits.size(); i++)
+		append(inits, node2(N_INIT, list(), init_value(slit->inits[i])));
+
+	node_t cl = node2(N_COMPOUND_LITERAL, type_node, inits, slit);
+	return cl;
+}
+
 node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 {
 	// std::string object: a runtime-object class. It flows through the general
@@ -2034,7 +2082,22 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 			if (!mptr || !mptr->base_type) break;
 			mbase = mptr->base_type;
 		}
-		mspec = type_list(mbase);
+		// An anonymous nested struct/union member (`struct { ... } f;` or
+		// `union { ... } u;` inside the enclosing aggregate) has no tag to
+		// forward-reference, so type_list would emit `struct anonymous` — an
+		// undefined tag, leaving the member incomplete. Inline the full member
+		// definition instead, matching var_decl's anon_sdd path. (member_node
+		// recurses, so anonymous aggregates may nest.)
+		DataDefSTRUCT *anon = dynamic_cast<DataDefSTRUCT *>(mbase);
+		if (anon && anon->name == "anonymous" && !mbase->is_complex()) {
+			node_t aml = list();
+			for (size_t i = 0; i < anon->members.size(); i++)
+				append(aml, member_node(anon->members[i], anon));
+			mspec = node1(N_LIST, node2(anon->union_layout ? N_UNION : N_STRUCT,
+						    ignore(), aml));
+		} else {
+			mspec = type_list(mbase);
+		}
 	}
 
 	node_t mshare = node1(N_SHARE, mspec);
@@ -3438,7 +3501,7 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	if (base_dd->is_struct() && !base_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 		if (sdd) {
-			if (force_incomplete_struct || emitted_structs.count(sdd->name) || sdd->members.empty()) {
+			if (force_incomplete_struct || emitted_structs.count(sdd->name) || !sdd->is_complete) {
 				// Forward reference / already-emitted / incomplete:
 				// STRUCT(tag, IGNORE). The full body is emitted at the
 				// struct's own definition point.
@@ -4045,6 +4108,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			return node2(N_CAST, type_node, translate_expr(tc->expr), tb);
 		}
 	}
+
+	// C99 compound literal: `(T){ init... }` as a value expression.
+	if (TokenStructLit *slit = dynamic_cast<TokenStructLit *>(tb))
+		return translate_struct_lit(slit);
 
 	// Operators
 	if (tb->is_operator()) {
@@ -5784,7 +5851,10 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (td.kind == Program::DeclKind::dkStruct ||
 		    td.kind == Program::DeclKind::dkUnion) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
-			if (sdd && !sdd->members.empty())
+			// A complete definition (`struct X { ... };`) is a def point even
+			// when it has no members (`struct X {};` is a valid empty struct);
+			// a bare forward declaration (`struct X;`) is not.
+			if (sdd && sdd->is_complete)
 				struct_def_points.insert(sdd->name);
 		}
 	}
@@ -5822,14 +5892,14 @@ node_t CirBuilder::translate_module(Program *prog)
 			if (n) { stamp(n, td); append(top_list, n); }
 			// A combined `typedef struct X {...} Y;` (no separate bare
 			// def) emits the body inline here -> mark it emitted.
-			if (sdd && !sdd->members.empty() && !struct_def_points.count(sdd->name))
+			if (sdd && sdd->is_complete && !struct_def_points.count(sdd->name))
 				emitted_structs.insert(sdd->name);
 			break;
 		}
 		case Program::DeclKind::dkStruct:
 		case Program::DeclKind::dkUnion: {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(td.dd);
-			if (sdd && !sdd->members.empty() && !emitted_structs.count(sdd->name)) {
+			if (sdd && sdd->is_complete && !emitted_structs.count(sdd->name)) {
 				emitted_structs.insert(sdd->name);
 				node_t sd = struct_def(sdd);
 				if (sd) { stamp(sd, td); append(top_list, sd); }

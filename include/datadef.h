@@ -313,6 +313,8 @@ public:
     size_t pack;	// 0 = natural C ABI alignment, 1 = packed, N = max alignment N
     size_t max_align;	// largest member alignment (for finalizing struct size)
     bool union_layout;	// true: all members start at offset 0; size is max member size
+    bool is_complete;	// true: a `{ ... }` body was parsed (even if empty) — distinguishes
+			// `struct X {}` (complete, zero members) from `struct X;` (forward decl)
     bool has_anon_aggregate;	// true: addAnonymousAggregate() was used to flatten members
     bool reverse_scalar_storage;
     bool bitfield_active;
@@ -334,12 +336,12 @@ public:
 //    DataDefSTRUCT(std::string n) : DataDef(n, 0, DataType::dtRESERVED) {}
     DataDefSTRUCT(std::string n, size_t s, DataType d=DataType::dtRESERVED)
 	: DataDef(n, s, d), runtime_size_expr(NULL), pack(0), max_align(1), union_layout(false),
-	  has_anon_aggregate(false),
+	  is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0) {}
     DataDefSTRUCT(std::string n, std::vector<memberpair_t> m)
 	: DataDef(n, 0, DataType::dtRESERVED), runtime_size_expr(NULL), pack(0), max_align(1),
-	  union_layout(false), has_anon_aggregate(false),
+	  union_layout(false), is_complete(false), has_anon_aggregate(false),
 	  reverse_scalar_storage(false), bitfield_active(false), bitfield_unit_offset(0),
 	  bitfield_unit_size(0), bitfield_next_bit(0)
     {
