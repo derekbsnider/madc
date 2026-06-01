@@ -439,3 +439,31 @@ The executable is "configurable" with environment variables:
   * Currently MIR works on x86_64, aarch64, ppc64le, s390x, riscv64 Linux and x86_64/aarch64 (Apple M1) MacOS
   * [HOW-TO-PORT-MIR.md](https://github.com/vnmakarov/mir/blob/master/HOW-TO-PORT-MIR.md) outlines process of porting MIR
     * On my estimation an experienced developer can port MIR (including `c2m`) to another target for 1-2 months
+
+# madc fork of MIR
+
+This is a **fork of [vnmakarov/mir](https://github.com/vnmakarov/mir)** maintained for the
+**[madc](https://github.com/derekbsnider/madc)** compiler ("My Advanced Dialect of C"), whose sole
+backend is `madc parser -> cir_node (an enhanced c2mir node_t tree) -> c2mir -> MIR -> JIT`. madc
+builds and feeds c2mir a **pre-constructed `node_t` AST** via `c2mir_compile_tree` (no source text),
+so this fork carries fixes and features upstream MIR/c2mir does not. Branch correspondence:
+**`develop` tracks madc's `develop`**, and **`master` tracks madc's `master`** once madc reaches
+feature parity; madc pins the exact verified commit in its repo-root `MIR_COMMIT` file.
+
+Changes relative to upstream (all designed to be upstreamable; on this fork's `develop`):
+
+  * **Native C99 `_Complex`** in c2mir — `float/double/long double _Complex` arithmetic and the
+    x86-64 SysV pass/return/init **ABI** (float-complex eightbyte classification, complex-return
+    frame reservation, scalar->complex local initialization, complex-constant node handling).
+  * **`__attribute__((cleanup(fn)))`** — the destructor `fn` runs on **every** scope exit
+    (fall-through, `return`, `break`, `continue`, and `goto` across the scope); madc uses it as its
+    single C11-level RAII primitive for C++ destructors / `std::string` lifetime.
+  * **Auto-locals laid out by actual scope DEPTH, not `scope->uid`** — c2mir's allocator assumed a
+    nested scope always has a larger uid (true only for its own recursive-descent parser). madc
+    builds the `node_t` tree **bottom-up**, inverting that; ordering by parent-chain depth makes
+    c2mir robust to **any externally-built AST** (a strict refinement — identical for parser-built
+    trees; full c2mir + bootstrap suites stay green).
+  * **x86-64 SysV ABI fixes** — `va_arg` register-save-area boundary (correct `gp_offset`/
+    `fp_offset` with >=6 GP / >=8 SSE named args) and mixed-class struct `va_arg` slot stride.
+  * **Member-level `_Alignas` / `__attribute__((aligned(N)))`** honored in `struct` layout
+    (`set_type_layout` now respects the member's declared alignment).
