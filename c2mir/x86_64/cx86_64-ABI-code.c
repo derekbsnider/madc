@@ -107,14 +107,23 @@ static int classify_arg (c2m_ctx_t c2m_ctx, struct type *type, MIR_type_t types[
   }
 
   if (complex_type_p (type)) {
-    /* _Complex: classify as two floats or two doubles */
+    /* _Complex (SysV AMD64): the two components occupy consecutive bytes.
+       - float _Complex   = 8 bytes  -> ONE SSE eightbyte holding both floats
+                            packed in the low 64 bits.  The qword's MIR type
+                            must be the full 8-byte SSE slot (MIR_T_D), NOT
+                            MIR_T_F: an MIR_T_F slot is only 4 bytes, so the
+                            imaginary half was dropped (return/pass corrupted).
+       - double _Complex  = 16 bytes -> TWO SSE eightbytes (MIR_T_D, MIR_T_D).
+       - long double _Complex is too big for registers (memory class). */
     MIR_type_t ct = type->u.basic_type == TP_CFLOAT ? MIR_T_F
                     : type->u.basic_type == TP_CDOUBLE ? MIR_T_D : MIR_T_LD;
     if (ct == MIR_T_LD) {
       return 0; /* _Complex long double is too big for registers */
     }
-    types[0] = ct == MIR_T_F ? MIR_T_F : MIR_T_D;
-    if (n_qwords >= 2) types[1] = types[0];
+    /* Each eightbyte is an SSE slot; an 8-byte eightbyte is MIR_T_D regardless
+       of whether it packs two floats (CFLOAT) or one double (CDOUBLE). */
+    types[0] = MIR_T_D;
+    if (n_qwords >= 2) types[1] = MIR_T_D;
     return n_qwords;
   }
   assert (scalar_type_p (type));

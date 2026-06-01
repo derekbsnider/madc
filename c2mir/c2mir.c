@@ -9786,7 +9786,14 @@ static void check (c2m_ctx_t c2m_ctx, node_t r, node_t context) {
         && incomplete_type_p (c2m_ctx, ret_type)) {
       error (c2m_ctx, POS (r), "function return type is incomplete");
     }
-    if (ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION) {
+    if (ret_type->mode == TM_STRUCT || ret_type->mode == TM_UNION
+        || complex_type_p (ret_type)) {
+      /* A struct/union OR _Complex call result that comes back in registers is
+         reconstructed into an fp-relative slot in the caller's call-arg area
+         (see the register-return path in gen N_CALL). Reserve that area here so
+         the function gets a frame (fp); without including _Complex, a function
+         whose only frame need was a complex call return left fp undeclared
+         ("undeclared func reg fp"). */
       set_type_layout (c2m_ctx, ret_type);
       if (!builtin_call_p && curr_scope != top_scope)
         update_call_arg_area_offset (c2m_ctx, ret_type, TRUE);
@@ -11547,6 +11554,8 @@ static op_t modify_for_block_move (c2m_ctx_t c2m_ctx, op_t mem, op_t index) {
 
 static void gen_memcpy (c2m_ctx_t c2m_ctx, MIR_disp_t disp, MIR_reg_t base, op_t val,
                         mir_size_t len);
+static op_t scalar_to_complex (c2m_ctx_t c2m_ctx, op_t scalar, MIR_type_t scalar_t,
+                               enum basic_type complex_bt);
 
 static void block_move (c2m_ctx_t c2m_ctx, op_t var, op_t val, mir_size_t size) {
   gen_ctx_t gen_ctx = c2m_ctx->gen_ctx;
@@ -12419,6 +12428,24 @@ static void gen_initializer (c2m_ctx_t c2m_ctx, size_t init_start, op_t var,
       if (rel_offset < init_el.offset) { /* fill the gap: */
         gen_memset (c2m_ctx, offset + rel_offset, base, init_el.offset - rel_offset);
         rel_offset = init_el.offset;
+      }
+      /* Complex local initialized from a SCALAR (`_Complex double a = 2.0;`):
+         the element type is complex but the initializer expression is a real
+         scalar.  Promote the scalar to a complex temp {value, 0} and block-move
+         it, mirroring the scalar->complex assignment path (case N_ASSIGN).
+         Without this the loop gen'd the scalar value, then memcpy'd 16 bytes
+         from that scalar-shaped operand (often a NULL/garbage source) into the
+         complex slot -> SIGSEGV. */
+      if (complex_type_p (init_el.el_type)
+          && !complex_type_p (((struct expr *) init_el.init->attr)->type)) {
+        struct type *src_type = ((struct expr *) init_el.init->attr)->type;
+        MIR_type_t src_t = get_mir_type (c2m_ctx, src_type);
+        val = gen (c2m_ctx, init_el.init, NULL, NULL, TRUE, NULL, NULL);
+        val = scalar_to_complex (c2m_ctx, val, src_t, init_el.el_type->u.basic_type);
+        gen_memcpy (c2m_ctx, offset + rel_offset, base, val,
+                    raw_type_size (c2m_ctx, init_el.el_type));
+        rel_offset = init_el.offset + raw_type_size (c2m_ctx, init_el.el_type);
+        continue;
       }
       if (t == MIR_T_UNDEF)
         val = new_op (NULL, MIR_new_mem_op (ctx, t, offset + rel_offset, base, 0, 1));
@@ -15290,8 +15317,15 @@ node_t c2mir_node_op (node_t n, int i) {
   node_t op;
   if (n == NULL || i < 0) return NULL;
   /* Leaf nodes (<= N_ID) carry a scalar in the union, not an op-list;
-     reading u.ops would alias that scalar.  Interior nodes (> N_ID) own ops. */
-  if (n->code <= N_ID) return NULL;
+     reading u.ops would alias that scalar.  Interior nodes (> N_ID) own ops.
+     The complex-constant nodes (N_CF/N_CD/N_CLD) are also leaves — they carry
+     the imaginary value in u.f/u.d/u.ld — but their code is numerically > N_ID
+     (they were appended after the declarator codes), so the plain `<= N_ID`
+     test misclassifies them as interior and reinterprets the stored double as
+     a DLIST head (a self-aliasing cycle / garbage pointer). Treat them as the
+     leaves they are. */
+  if (n->code <= N_ID || n->code == N_CF || n->code == N_CD || n->code == N_CLD)
+    return NULL;
   /* Bounds-safe walk: return NULL past the end rather than dereferencing
      NL_NEXT(NULL) (get_op() is unguarded and is for internal callers that
      know the operand count). */
