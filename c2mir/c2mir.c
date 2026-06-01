@@ -8710,12 +8710,40 @@ static void add__func__def (c2m_ctx_t c2m_ctx, node_t func_block, str_t func_nam
   NL_PREPEND (NL_EL (func_block->u.ops, 1)->u.ops, decl);
 }
 
-/* Sort by decl scope nesting (more nested scope has a bigger UID) and decl size. */
+/* Number of enclosing scopes from `scope` up to (excluding) top_scope. The
+   parent of a scope node N is ((struct node_scope *) N->attr)->scope. */
+static int scope_depth (node_t scope, node_t top) {
+  int d = 0;
+  while (scope != NULL && scope != top) {
+    d++;
+    scope = ((struct node_scope *) scope->attr)->scope;
+  }
+  return d;
+}
+
+/* Sort decls so an enclosing scope's decls precede a more-nested scope's, then
+   group decls of the same scope, then by size. process_func_decls_for_allocation
+   relies on ancestor scopes being laid out before their descendants so a nested
+   scope's frame offset stacks ON TOP of its enclosing scopes' storage.
+
+   The ordering key is ACTUAL scope nesting depth (walked via the scope parent
+   chain), NOT scope->uid. The recursive-descent parser happens to give a nested
+   scope a larger uid than its parent, but an externally-built tree (madc's
+   cir_node, fed via c2mir_compile_tree) may allocate a nested scope's node — and
+   thus its uid — BEFORE its parent's, inverting that relationship. Sorting by
+   uid then laid the nested decl out before the parent's size was known (treated
+   as 0), overlapping their storage. Depth ordering is correct for any valid tree
+   and is a strict refinement for parser-built trees (where uid order already
+   matches depth, so the resulting order — and emitted code — is unchanged). */
 static int decl_cmp (const void *v1, const void *v2) {
   const decl_t d1 = *(const decl_t *) v1, d2 = *(const decl_t *) v2;
   struct type *t1 = d1->decl_spec.type, *t2 = d2->decl_spec.type;
   mir_size_t s1 = raw_type_size (d1->c2m_ctx, t1), s2 = raw_type_size (d2->c2m_ctx, t2);
+  c2m_ctx_t c2m_ctx = d1->c2m_ctx;
+  node_t top = top_scope; /* macro -> c2m_ctx->top_scope */
+  int dep1 = scope_depth (d1->scope, top), dep2 = scope_depth (d2->scope, top);
 
+  if (dep1 != dep2) return dep1 < dep2 ? -1 : 1;
   if (d1->scope->uid < d2->scope->uid) return -1;
   if (d1->scope->uid > d2->scope->uid) return 1;
   if (s1 < s2) return -1;
