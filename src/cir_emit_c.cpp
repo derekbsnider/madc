@@ -1,5 +1,24 @@
 /* cir_emit_c.cpp — render a cir_node tree (MC11-IR) to C source.
  *
+ * ============================ READ THIS FIRST ============================
+ * THIS IS **NOT** THE c2mir / JIT PATH. It does NOT feed the backend.
+ *
+ * The live pipeline is:  madc parser -> cir_node tree (MC11-IR) -> c2mir
+ * via c2mir_compile_tree()  (the *in-memory tree*, NOT text) -> MIR_gen.
+ * See madc_cir.cpp (cir_compile / madc_cir_execute, the MIR_gen call).
+ *
+ * This file is a SEPARATE, OPTIONAL CONSUMER of that same tree: the
+ * `--emit=c11` text RENDERER. Its outputs are (a) portable C for any C
+ * toolchain and (b) the AOT / `--exe` path (emit C -> gcc/clang -> native).
+ * It is also the cir-fidelity gate's reference. c2mir NEVER sees this text.
+ *
+ * Consequence for debugging: a bug reproduced ONLY through this renderer
+ * (e.g. compiling the emitted C with gcc) tells you about the RENDER, not
+ * about what c2mir/MIR actually receive. If the renderer and the live tree
+ * disagree, THAT is the bug. To inspect the real backend input, dump the
+ * tree (--dump-cir / --dump-cir-checked) or the MIR, never the emitted C.
+ * =========================================================================
+ *
  * Mirrors the structure of cir_dump_node() (cir_builder.cpp) but emits
  * compilable C instead of the debug format. Operand layouts are those
  * produced by CirBuilder (verified against cir_builder.cpp):
