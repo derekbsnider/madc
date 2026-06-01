@@ -422,10 +422,14 @@ bool CirBuilder::is_string_operator_plus(TokenBase *arg)
 	if (!top->left || !top->right) return false;
 	bool lhs_obj = is_string_object_value(top->left);
 	DataDef *rdd = top->right->datadef();
+	// RHS char* test uses type() (unstripped), NOT rawtype(): rawtype() strips
+	// the pointer offset (dtCHARptr -= 10000 -> dtINT8), so `rawtype()==dtCHARptr`
+	// is always false. A bare string literal is now const char* (dtCHARptr), so
+	// `s + "lit"` reaches here as RHS char* and must bind string_concat.
 	bool rhs_strlike = is_string_object_value(top->right)
 			   || (rdd && (rdd->is_string()
 				       || (rdd->is_pointer()
-					   && rdd->rawtype() == DataType::dtCHARptr)));
+					   && rdd->type() == DataType::dtCHARptr)));
 	return lhs_obj && rhs_strlike;
 }
 
@@ -846,7 +850,12 @@ node_t CirBuilder::string_obj_arg(TokenBase *arg)
 // string_call_temp_addr. Does NOT inject hidden params (__this / __retbuf).
 void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 {
-	FuncDef *callee = dynamic_cast<FuncDef *>(tcf->var.type);
+	// Resolve the callee signature for both direct calls (FuncDef) AND indirect
+	// calls through a function pointer / lambda variable (DataDefFPTR -> target).
+	// Without the fptr fallback, a `string`-by-value parameter of a lambda is
+	// invisible here, so a const char* literal argument is passed raw instead of
+	// being materialized into a temp std::string -> the callee reads garbage.
+	FuncDef *callee = call_target_funcdef(tcf);
 	for (size_t i = 0; i < tcf->parameters.size(); i++) {
 		TokenBase *arg = tcf->parameters[i];
 		DataDef *pt = (callee && i < callee->parameters.size())

@@ -2,7 +2,7 @@
 
 int main()
 {
-    printstr(version);
+    puts(MADC_VERSION);
 
     return 0;
 }

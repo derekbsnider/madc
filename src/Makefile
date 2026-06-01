@@ -28,7 +28,10 @@ OPTIONAL_LIBS ?=
 MADC_STORAGE_DB_OFILES ?= madcdat_storage.o
 HAVE_MADCDAT ?= 1
 MIRDIR	= /workspace/mir
-DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS)
+# MADC_VERSION (computed below from ../VERSION) is threaded into the binary as a
+# string literal so the built-in MADC_VERSION macro tracks the release version —
+# single source of truth, no hardcoded copy in the lexer.
+DEFINES	= -I$(INCDIR) -I$(MIRDIR) -I$(MIRDIR)/c2mir $(FEATURE_DEFINES) $(OPTIONAL_CPPFLAGS) -DMADC_VERSION_STR='"$(MADC_VERSION)"'
 #LIBS	= -lreadline -lasmjit
 LIBS	= -rdynamic -ldl -lz -lm -lpthread $(OPTIONAL_LIBS)
 MIRLIB	= $(MIRDIR)/libmir.a

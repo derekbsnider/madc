@@ -5249,7 +5249,9 @@ void Program::add_functions()
 // define some global variables
 void Program::add_globals()
 {
-    addGlobal(ddSTRING,  "version", 1, (void *)"v0.0.1");
+    // The release version is exposed as the built-in MADC_VERSION macro (a
+    // const char* string literal substituted by the lexer's define_map), not a
+    // std::string global — see lexer.cpp. Nothing to register here yet.
 }
 
 enum { LAZY_STDIO = 2, LAZY_MATHH = 3 };
@@ -5969,10 +5971,18 @@ Variable *Program::addLiteral(std::string &s)
     if ( (var=tkProgram->findVariable(id)) )
 	return var;
 
-    var = new Variable(id, ddSTRING, 1, NULL, true);
+    // A bare string literal has type `const char *` (C/C++ canon: a `char[]`
+    // decaying to a pointer), NOT std::string. The std::string CLASS ingests a
+    // literal via its const-char* constructor / `operator=` where a `string`
+    // object is required (`string s = "x"` == `string("x")` == `s.assign("x")`)
+    // — that lowering lives in the class path, not in the literal's own type.
+    // The literal bytes live in the variable name suffix (`__literal__<text>`);
+    // the CIR builder emits them via str(). `data` holds a stable char* for any
+    // parse-time / AOT reader.
+    var = new Variable(id, ddCHARptr, 1, NULL, true);
     var->makeconstant();
-    std::string &str = *(std::string *)var->data;
-    str = s;
+    if ( var->data )
+	*(const char **)var->data = strdup(s.c_str());
     tkProgram->variables.push_back(var);
 
     return var;

@@ -800,6 +800,13 @@ void Program::_tokenizer_init()
     // GCC predefined macros for C compatibility
     define_map["__DATE__"] = "\"" __DATE__ "\"";
     define_map["__TIME__"] = "\"" __TIME__ "\"";
+    // Built-in release-version string literal. MADC_VERSION_STR is supplied by
+    // the build (-DMADC_VERSION_STR='"x.y.z"' from ../VERSION); the value stored
+    // here keeps its quotes so the macro substitutes as a const char* literal.
+#ifndef MADC_VERSION_STR
+#define MADC_VERSION_STR "0.0.0"
+#endif
+    define_map["MADC_VERSION"] = "\"" MADC_VERSION_STR "\"";
     define_map["__CHAR_BIT__"] = "8";
     define_map["__SIZEOF_SHORT__"] = "2";
     define_map["__SIZEOF_INT__"] = "4";
