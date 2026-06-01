@@ -3482,26 +3482,13 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	node_t tl = list();
 	append(tl, simple(N_TYPEDEF));
 
-	// Peel any array layers: `typedef T NAME[2][3]` carries the element type
-	// in DataDefCArray::element_type and the dims as nested CArrays. The element
-	// type drives the spec list; the dims become N_ARR declarator suffixes
-	// below. Without this the CArray's dtRESERVED rawtype defaults to `int` and
-	// the dimensions are dropped entirely.
-	//
-	// A runtime-sized dimension (`typedef int c[i + 2]`, count_expr != NULL) is
-	// a VLA typedef — block-scope only, where the size expression's operands are
-	// in scope. peel_carray_dims stops at the runtime layer, so peel the full
-	// chain here, recording each dim's bound node (constant or the translated
-	// size expression) outermost-first.
-	std::vector<node_t> arr_dim_nodes;
-	while (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd)) {
-		if (!ca->element_type) break;
-		if (ca->has_runtime_size())
-			arr_dim_nodes.push_back(translate_expr(ca->count_expr));
-		else
-			arr_dim_nodes.push_back(integer((uint32_t)ca->count));
-		dd = ca->element_type;
-	}
+	// Peel any fixed-array layers: `typedef T NAME[2][3]` carries the element
+	// type in DataDefCArray::element_type and the dims as nested CArrays. The
+	// element type drives the spec list; the dims become N_ARR declarator
+	// suffixes below. Without this the CArray's dtRESERVED rawtype defaults to
+	// `int` and the dimensions are dropped entirely.
+	std::vector<uint32_t> arr_dims;
+	dd = peel_carray_dims(dd, arr_dims);
 
 	// Unwrap pointer for base type
 	DataDef *base_dd = dd;
@@ -3540,10 +3527,9 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	node_t decl_list = list();
 	if (is_ptr)
 		append(decl_list, pointer());
-	// Array dimensions, outermost first: T NAME[2][3] -> ARR(2) ARR(3); a VLA
-	// dim carries the size expression node instead of a constant.
-	for (size_t d = 0; d < arr_dim_nodes.size(); d++)
-		append(decl_list, node3(N_ARR, ignore(), list(), arr_dim_nodes[d]));
+	// Fixed-array dimensions, outermost first: T NAME[2][3] -> ARR(2) ARR(3).
+	for (size_t d = 0; d < arr_dims.size(); d++)
+		append(decl_list, node3(N_ARR, ignore(), list(), integer(arr_dims[d])));
 
 	node_t decl = node2(N_DECL, alias_id, decl_list);
 
@@ -5389,12 +5375,11 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 		return var_decl(&td->var, td);
 	  } }
 
-	// Block-scope typedef (`typedef int c[i + 2];` inside a function). The
+	// Block-scope typedef (`typedef int (*BAZFN)(int);` inside a function). The
 	// parser records file-scope typedefs in Program::top_decls (emitted once at
 	// file scope by build()); a block-scope typedef instead reaches the
 	// statement stream as this node and is emitted in-place so c2mir registers
-	// the alias in this block's scope — the only correct scope for a VLA typedef
-	// whose bound references locals. Reuse the file-scope emitter (typedef_decl)
+	// the alias in this block's scope. Reuse the file-scope emitter (typedef_decl)
 	// for a single declaration shape.
 	{ TokenTypedefDecl *ttd = dynamic_cast<TokenTypedefDecl *>(tb);
 	  if (ttd) {
