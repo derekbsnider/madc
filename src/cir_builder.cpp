@@ -4525,6 +4525,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return node1(tcp->imag_part ? N_IMAGPART : N_REALPART,
 			     translate_expr(tcp->expr), tb);
 
+	// GNU label address `&&label` -> N_LABEL_ADDR(N_ID) — a void* usable as a
+	// computed-goto target (see the N_INDIRECT_GOTO statement form).
+	if (TokenLabelAddr *tla = dynamic_cast<TokenLabelAddr *>(tb))
+		return node1(N_LABEL_ADDR, id(tla->name.c_str(), tb), tb);
+
 	DBG(std::cerr << "cir: unhandled expr " << describe_token(tb)
 		      << " type=" << (int)tb->type()
 		      << " id=" << (int)tb->id() << std::endl);
@@ -5357,9 +5362,15 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 	{ TokenTHROW *th = dynamic_cast<TokenTHROW *>(tb);
 	  if (th) return translate_throw(th); }
 
-	// Goto
+	// Goto — label form `goto L` (N_GOTO) or GNU computed form `goto *expr`
+	// (N_INDIRECT_GOTO, the jump target is a void* label address).
 	{ TokenGOTO *tg = dynamic_cast<TokenGOTO *>(tb);
-	  if (tg) return node2(N_GOTO, list(), id(tg->target.c_str(), tb), tb); }
+	  if (tg) {
+		if (tg->indirect_target)
+			return node2(N_INDIRECT_GOTO, list(),
+				     translate_expr(tg->indirect_target), tb);
+		return node2(N_GOTO, list(), id(tg->target.c_str(), tb), tb);
+	  } }
 
 	// Label (handled in translate_block)
 	{ TokenLabel *tl = dynamic_cast<TokenLabel *>(tb);
