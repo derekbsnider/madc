@@ -1251,7 +1251,7 @@ void CirBuilder::fnptr_decl_pieces(FuncDef *fd, bool emit_pointer,
 	if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ret_dd);
 		if (sdd)
-			append(spec_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
+			append(spec_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
 		else
 			append_type_specs(spec_list, ret_dd);
 	} else if (ret_dd && ret_dd->is_object()) {
@@ -2022,7 +2022,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		} else if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 			if (sdd)
-				append(new_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
+				append(new_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
 			else
 				append_type_specs(new_list, base_dd);
 		} else {
@@ -2046,7 +2046,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		} else if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 			if (sdd)
-				append(new_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
+				append(new_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
 			else
 				append_type_specs(new_list, base_dd);
 		} else {
@@ -6936,7 +6936,7 @@ node_t CirBuilder::translate_module(Program *prog)
 		if (ret_dd && ret_dd->is_struct() && !ret_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(ret_dd);
 			if (sdd)
-				append(ext_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
+				append(ext_list, node2(sdd->union_layout ? N_UNION : N_STRUCT, id(sdd->name.c_str()), ignore()));
 			else
 				append_type_specs(ext_list, ret_dd);
 		} else {
