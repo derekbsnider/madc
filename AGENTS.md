@@ -269,6 +269,7 @@ no matter how small.
 | [pre-edit-checklist.md](.claude/rules/pre-edit-checklist.md) |  19 | Trace data flow, search for existing handling, identify write-back target — before every edit (Top 10 Rule #10) |
 | [cpp-first-api.md](.claude/rules/cpp-first-api.md) |  10 | Design embedding and `libmadc` APIs as C++ first; keep C shims thin and late |
 | [helper-methods.md](.claude/rules/helper-methods.md) |  12 | Extract ad-hoc checks into named helpers      |
+| [no-parallel-implementations.md](.claude/rules/no-parallel-implementations.md) | 22 | One implementation per concern; A/B scaffolding expires; tests use production entry points; cap every test run |
 | [code-style.md](.claude/rules/code-style.md)     |     9 | C++11, tabs, header guards, naming             |
 
 ### P3 — Build, test, and validation (gate "done")
@@ -305,10 +306,10 @@ editing — don't try to memorize all of them.
 
 ### Total rule footprint
 
-- **26 rules, 669 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
-- **This file (AGENTS.md): ~302 lines** — loaded by Claude via
+- **27 rules, 690 lines** in `.claude/rules/` (per `scripts/rule_stats.sh`).
+- **This file (AGENTS.md): ~303 lines** — loaded by Claude via
   `@AGENTS.md` in `CLAUDE.md`, read directly by Codex / Gemini / etc.
-- **Grand total loaded by Claude Code per turn: ~1023 lines.**
+- **Grand total loaded by Claude Code per turn: ~1056 lines.**
 
 Rule bloat ages: if any tier exceeds a few hundred lines, split the
 heaviest rule into a narrower sub-rule or move more content into the

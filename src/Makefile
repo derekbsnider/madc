@@ -125,8 +125,24 @@ clean:
 	rm -f $(LIBMADC_STATIC)
 	rm -f $(LIBMADC_SHARED)
 
+# Each unit binary runs under a CPU cap (ulimit -t, survives even if SIGTERM is
+# ignored) AND a wall-clock timeout. A hung unit test (e.g. an infinite loop in
+# generated/interpreted code) is then KILLED and fails the suite, instead of
+# spinning forever and pegging the host — see the 2026-06-01 test_cir incident.
+TEST_CPU_LIMIT ?= 120
+TEST_WALL_LIMIT ?= 180
 test: $(TESTBINS)
-	@for t in $(TESTBINS); do echo "Running $$t..."; LD_LIBRARY_PATH="$(LIBDIR):/usr/local/lib:$$LD_LIBRARY_PATH" $$t || exit $$?; done
+	@for t in $(TESTBINS); do \
+		echo "Running $$t..."; \
+		( ulimit -t $(TEST_CPU_LIMIT); LD_LIBRARY_PATH="$(LIBDIR):/usr/local/lib:$$LD_LIBRARY_PATH" timeout $(TEST_WALL_LIMIT) "$$t" ); \
+		rc=$$?; \
+		if [ $$rc -eq 124 ] || [ $$rc -eq 137 ]; then \
+			echo "*** $$t hit the time/CPU cap (rc=$$rc) — a hanging unit test was killed before it could peg the host. Failing the suite."; \
+			exit 1; \
+		elif [ $$rc -ne 0 ]; then \
+			exit $$rc; \
+		fi; \
+	done
 
 fulltest: ../bin/madc $(LIBMADC_SHARED) test
 	@cd .. && bash scripts/run_tests.sh
