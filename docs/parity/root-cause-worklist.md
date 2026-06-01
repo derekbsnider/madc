@@ -86,3 +86,37 @@ preflight, rule `no-parallel-implementations`.
 - ~45 deferred floor gaps (SIMD ~30 / VLA / inline asm / wchar / __int128 / aligned>16).
 Pick these as deliberate, individually-scoped efforts — each needs real
 investigation (not a one-liner) and most touch the MIR fork.
+
+## Refined triage of remaining fails 2026-06-01 (full sweep, not sampling)
+
+Bucketed ALL 75 "exit 1" torture fails by their REAL first error (tmp/exit1.list).
+KEY: the big raw buckets are ~70% SIMD floor-gap contamination — filter on
+`vector_size` before calling anything cheap.
+
+- "excess elements in scalar initializer" raw 21 = **18 SIMD (floor)** + 4 genuine
+  aggregate-init (pr109938, pr109986, pr98366, strlen-4).
+- "subscripted value is neither array nor pointer" raw ~25 = **17 SIMD (floor)** +
+  8 other, of which widechar-3 (wchar floor) + pr22061-1 (VLA floor) are also floor.
+- ~69 of 75 "exit 1" are COMPILE/CHECK errors (only 6 true runtime value mismatch).
+
+**Genuinely-cheap front-end remainder (~15-20 tests, NOT 40):**
+- aggregate-init / array compound-literal `(T[]){...}` sizing + designated/bitfield
+  init: pr98366 (`(S[]){{.b=3,..}}`), pr109938, pr109986, strlen-4 (multidim
+  typedef'd array-of-ptr declarator). ~4-7 tests.
+- statement-expression last-statement-as-value, NESTED form `*({ ({...}); })`:
+  20000917-1, 20001203-2, 20020206-1 (3). N_STMTEXPR exists; last-stmt extraction
+  incomplete when the last stmt is itself a stmt-expr/expr-stmt.
+- libc auto-declare: abort/exit/sprintf "undeclared identifier" (3) — embedded-header
+  / dlsym-declare gap.
+- braces-around-scalar (3, likely aggregate-init family); a few singletons
+  (cond-expr types, incomplete return type).
+
+**Floor (defer, ~floor count grew with this sweep):** SIMD vector_size ~35+ (the
+dominant remaining bucket), inline asm (4, "undeclared identifier asm"),
+aligned>16 (4 "unsupported alignmnent"), wchar/`L"..."` (`__wliteral__`), VLA,
+__builtin_setjmp/longjmp+alloca, scalar_storage_order, float->int saturate.
+
+CORRECTION to the earlier "cheap wins ran out": there are ~15-20 genuinely cheap
+front-end tests left (aggregate-init + stmt-expr + libc-declare the best targets),
+but most raw error buckets are SIMD-diluted, so the cheap YIELD is modest and each
+remaining cheap fix is a real declarator/initializer change, not a one-liner.
