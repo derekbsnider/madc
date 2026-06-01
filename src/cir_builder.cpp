@@ -3885,14 +3885,18 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 	if (base_dd->is_struct() && !base_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 		if (sdd) {
+			// Tag kind must match the aggregate's real kind (union vs
+			// struct) here too — `typedef union {..} U` else lowers to a
+			// struct and union aliasing/by-value passing breaks.
+			c2mir_node_code_t agg = sdd->union_layout ? N_UNION : N_STRUCT;
 			if (force_incomplete_struct || emitted_structs.count(sdd->name) || !sdd->is_complete) {
 				// Forward reference / already-emitted / incomplete:
-				// STRUCT(tag, IGNORE). The full body is emitted at the
-				// struct's own definition point.
-				append(tl, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
+				// STRUCT/UNION(tag, IGNORE). The full body is emitted at the
+				// aggregate's own definition point.
+				append(tl, node2(agg, id(sdd->name.c_str()), ignore()));
 			} else {
-				// Emit struct definition inline (typedef struct { ... } NAME)
-				append(tl, node2(N_STRUCT, id(sdd->name.c_str()),
+				// Emit definition inline (typedef struct/union { ... } NAME)
+				append(tl, node2(agg, id(sdd->name.c_str()),
 						 anon_members_list(sdd)));
 			}
 		}
