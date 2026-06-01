@@ -120,3 +120,21 @@ CORRECTION to the earlier "cheap wins ran out": there are ~15-20 genuinely cheap
 front-end tests left (aggregate-init + stmt-expr + libc-declare the best targets),
 but most raw error buckets are SIMD-diluted, so the cheap YIELD is modest and each
 remaining cheap fix is a real declarator/initializer change, not a one-liner.
+
+## Cleanup clusters cleared 2026-06-01 (session 2 cont'd) — 1538 -> 1547
+
+Cheap front-end clusters done (each gcc-diffed, failset-verified zero-regression,
+SMAUG-soaked, pushed):
+- union tag-kind (def/ref/typedef/return/var/extern) +11 [14fc16c/187b135/f9d7566]
+- nested statement-expression last-value `({ ({...}); })` +3 [069fb8b]
+- top-level function used as a VALUE (address-of / fn-ptr decay) +3 [9ac7a1b]
+
+REMAINING cheap front-end (the one left, more involved — good fresh-session item):
+- aggregate-init / array compound-literal `(T[]){...}` sizing + designated/bitfield
+  init: pr98366, pr109938, pr109986, strlen-4 (~4-7). Needs declarator/initializer
+  work (multidim typedef'd array-of-ptr; compound-literal array sizing from init).
+
+Everything else is FLOOR/feature-level (fresh session, likely fork work): SIMD
+vector_size (~35, dominant), inline asm, aligned>16, wchar/L"...", VLA,
+__builtin_setjmp/longjmp+alloca, scalar_storage_order, float->int saturate,
+reduced-precision bitfield arithmetic (bitfld-3/5).
