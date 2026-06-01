@@ -6243,6 +6243,9 @@ static void aux_set_type_align (c2m_ctx_t c2m_ctx, struct type *type) {
               && expr->c.u_val == 0)
             continue;
           member_align = type_align (decl->decl_spec.type);
+          /* member-level _Alignas/aligned over-aligns the field, which also
+             raises the aggregate's own alignment (max of member alignments). */
+          if (decl->decl_spec.align > member_align) member_align = decl->decl_spec.align;
           if (align < member_align) align = member_align;
         }
     }
@@ -6387,6 +6390,10 @@ static void set_type_layout (c2m_ctx_t c2m_ctx, struct type *type) {
           set_type_layout (c2m_ctx, decl->decl_spec.type);
           if ((member_size = type_size (c2m_ctx, decl->decl_spec.type)) == 0) continue;
           member_align = type_align (decl->decl_spec.type);
+          /* _Alignas(N) / __attribute__((aligned(N))) on the member over-aligns
+             it: the field's alignment is max(natural, requested).  Without this
+             a member-level alignment request was silently dropped at layout. */
+          if (decl->decl_spec.align > member_align) member_align = decl->decl_spec.align;
           bits
             = width->code == N_IGNORE || !(expr = width->attr)->const_p ? -1 : (int) expr->c.u_val;
           update_field_layout (&bf_p, &overall_size, &offset, &bound_bit, prev_size, member_size,
