@@ -174,6 +174,41 @@ node_t CirBuilder::real(double val, TokenBase *origin)
 	return cn->as_node();
 }
 
+// Single-precision real literal (`1.0f`) — c2mir's N_F constant node.
+node_t CirBuilder::real_float(float val, TokenBase *origin)
+{
+	cir_node *cn = make(N_F, origin);
+	cn->base.u.f = val;
+	return cn->as_node();
+}
+
+// An IMAGINARY literal (`1.0i`, `2.0iF`, `3i`) — the lexer types it as a
+// DataDefCOMPLEX whose element_type carries the float/double/long-double width.
+// c2mir models such a literal as an N_CF/N_CD/N_CLD node whose stored value is
+// the IMAGINARY part (real part = 0): the same nodes c2mir's own lexer emits for
+// an `i`-suffixed constant. Emitting a bare N_D here (dropping the `i`) made
+// `5.0 + 7.0i` fold to the real `12.0` — the imaginary part vanished.
+node_t CirBuilder::complex_literal(double val, DataDef *complex_dd, TokenBase *origin)
+{
+	DataDef *elem = NULL;
+	if (DataDefCOMPLEX *cdd = dynamic_cast<DataDefCOMPLEX *>(complex_dd))
+		elem = cdd->element_type;
+	DataType edt = elem ? elem->rawtype() : DataType::dtDOUBLE;
+	if (edt == DataType::dtFLOAT) {
+		cir_node *cn = make(N_CF, origin);
+		cn->base.u.f = (float)val;
+		return cn->as_node();
+	}
+	if (elem && elem->size > 8) {        // long double element
+		cir_node *cn = make(N_CLD, origin);
+		cn->base.u.ld = (long double)val;
+		return cn->as_node();
+	}
+	cir_node *cn = make(N_CD, origin);
+	cn->base.u.d = val;
+	return cn->as_node();
+}
+
 node_t CirBuilder::ch(long val, TokenBase *origin)
 {
 	cir_node *cn = make(N_CH, origin);
@@ -3891,6 +3926,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 {
 	if (!tb) return ignore();
 
+	// Imaginary literal (`1.0i`, `3i`, `2.0iF`) — the lexer types the constant
+	// as a DataDefCOMPLEX. It must lower to c2mir's imaginary-constant node
+	// (N_CF/N_CD/N_CLD), NOT a bare real/integer, or the imaginary part is lost
+	// (`5.0 + 7.0i` folds to the real `12.0`). Covers both integer- and
+	// real-spelled imaginary literals.
+	if ((tb->type() == TokenType::ttInteger || tb->type() == TokenType::ttReal)
+	    && tb->datadef() && tb->datadef()->is_complex())
+		return complex_literal(tb->dval(), tb->datadef(), tb);
+
 	// Integer literal — preserve the literal's declared type (the lexer
 	// records signedness/width from the u/l/ll suffix, e.g. `0xffffffffull`
 	// is unsigned long long). Emitting it as a bare signed N_I/N_L would
@@ -3898,9 +3942,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttInteger)
 		return integer_typed(tb->ival(), tb->datadef(), tb);
 
-	// Real literal
-	if (tb->type() == TokenType::ttReal)
+	// Real literal — emit single-precision (N_F) when the literal carries an
+	// `f`/`F` suffix (datadef == float), so its width drives c2mir's usual-
+	// arithmetic conversions; otherwise double (N_D).
+	if (tb->type() == TokenType::ttReal) {
+		DataDef *rdd = tb->datadef();
+		if (rdd && rdd->rawtype() == DataType::dtFLOAT && !rdd->is_complex())
+			return real_float((float)tb->dval(), tb);
 		return real(tb->dval(), tb);
+	}
 
 	// Char literal (C char constants emit N_CH; value via ival())
 	if (tb->type() == TokenType::ttChar)
@@ -6629,6 +6679,9 @@ static void cir_dump_node(FILE *f, node_t n, int indent)
 	case N_ULL:          fprintf(f, " %llu", (unsigned long long)n->u.ull); break;
 	case N_F:            fprintf(f, " %g", (double)n->u.f); break;
 	case N_D:            fprintf(f, " %g", n->u.d); break;
+	case N_CF:           fprintf(f, " %gi", (double)n->u.f); break;
+	case N_CD:           fprintf(f, " %gi", n->u.d); break;
+	case N_CLD:          fprintf(f, " %gi", (double)n->u.ld); break;
 	case N_CH: case N_CH16: case N_CH32: fprintf(f, " '%d'", (int)n->u.ch); break;
 	case N_STR: case N_STR16: case N_STR32:
 		fprintf(f, " \"%s\"", n->u.s.s ? n->u.s.s : ""); break;

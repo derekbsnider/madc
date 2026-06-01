@@ -103,7 +103,11 @@ FuncDef *make_implicit_complex_builtin_func(const std::string &fname)
     }
 
     FuncDef *func = new FuncDef(*ret_type);
-    func->is_varargs = true;
+    // Fixed single-argument signature — NOT varargs. The real libm symbols
+    // (conjf/crealf/…) take exactly one _Complex (or, for creal/cimag, return a
+    // scalar). Marking them varargs routed a _Complex argument through the
+    // variadic ABI, which mismatches the SysV register classification for a
+    // complex value and corrupted the call (wrong conjugate / return value).
     func->parameters.push_back(arg_type);
     return func;
 }
@@ -9735,6 +9739,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
 			Method *implicit_method = new Method(*var);
 			var->data = (void *)implicit_method;
+			// Register in funcdef_map so the CIR proto pass emits an
+			// extern prototype carrying the real (often _Complex) return
+			// type. Without a prototype c2mir defaults an undeclared call
+			// to `int (...)`, so a _Complex-returning builtin (conjf, …)
+			// returned through the wrong (scalar/variadic) ABI.
+			funcdef_map[fname] = implicit_func;
 			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
 		    }
 		    if ( is_dynamic_symbol_fallback_enabled()
@@ -9756,6 +9766,7 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			var = addVariable(NULL, *implicit_func, fname, 1, NULL, false);
 			Method *implicit_method = new Method(*var);
 			var->data = (void *)implicit_method;
+			funcdef_map[fname] = implicit_func;  /* emit a real prototype (see above) */
 			DBG(cout << "parseExpression() created builtin complex helper declaration for " << fname << endl);
 		    }
 		    if ( !var && token_origin_allows_c89_implicit_function(ident_tb) )

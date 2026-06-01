@@ -299,6 +299,8 @@ public:
 	// into c2mir's usual-arithmetic-conversion logic.
 	node_t integer_typed(int64_t val, DataDef *dd, TokenBase *origin = NULL);
 	node_t real(double val, TokenBase *origin = NULL);
+	node_t real_float(float val, TokenBase *origin = NULL);
+	node_t complex_literal(double val, DataDef *complex_dd, TokenBase *origin = NULL);
 	node_t ch(long val, TokenBase *origin = NULL);
 	node_t str(const char *s, size_t len, TokenBase *origin = NULL);
 	node_t ignore();

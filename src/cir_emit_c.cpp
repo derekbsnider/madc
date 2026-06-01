@@ -526,6 +526,12 @@ void emit(FILE *f, node_t n, CirEmitLang lang)
 	case N_F:    fprintf(f, "%af", (double)n->u.f); break;
 	case N_D:    fprintf(f, "%a", n->u.d); break;
 	case N_LD:   fprintf(f, "%LaL", n->u.ld); break;
+	// Imaginary constants (the i/I-suffixed literal c2mir lexes to N_CF/N_CD/N_CLD).
+	// Re-emit with the matching imaginary suffix so the portable-C output parses back
+	// to the same _Complex value.
+	case N_CF:   fprintf(f, "%afi", (double)n->u.f); break;
+	case N_CD:   fprintf(f, "%ai", n->u.d); break;
+	case N_CLD:  fprintf(f, "%aLi", (double)n->u.ld); break;
 	case N_CH: case N_CH16: case N_CH32: {
 		int c = (int)n->u.ch;
 		switch (c) {

@@ -2426,7 +2426,12 @@ TokenBase *Program::_getToken()
 			tr->source_text = full;
 			return tr;
 		    }
-		    return new TokenReal(strtod(lit_text.c_str(), NULL));
+		    {
+			TokenReal *tr = new TokenReal(strtod(lit_text.c_str(), NULL));
+			if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			    tr->setDataType(&ddFLOAT);
+			return tr;
+		    }
 		    }
 		    eat_int_suffix();
 		    {
@@ -2573,7 +2578,16 @@ TokenBase *Program::_getToken()
 		    tr->source_text = full;
 		    return tr;
 		}
-		return new TokenReal(num);
+		{
+		    TokenReal *tr = new TokenReal(num);
+		    // Record a single-precision type for an `f`/`F`-suffixed literal so
+		    // its width survives into c2mir (it self-determines arithmetic type).
+		    // Without this `1.0f` lowered as a double, which silently widened
+		    // mixed float/float-_Complex arithmetic to double precision.
+		    if ( real_type_suffix == 'f' || real_type_suffix == 'F' )
+			tr->setDataType(&ddFLOAT);
+		    return tr;
+		}
 	    }
 	    if ( ch == '_' || isalnum(ch) )
 	    {
