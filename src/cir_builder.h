@@ -346,7 +346,12 @@ public:
 	// ---- Declaration builders ----
 	// Recursively build an initializer value node: a scalar expression, or
 	// for a nested brace element (TokenStructLit) a LIST(INIT(LIST(), val), ...).
-	node_t init_value(TokenBase *elem);
+	node_t init_value(TokenBase *elem, bool target_is_aggregate = false);
+	// True when positional slot `idx` of a brace initializer for aggregate
+	// type `dd` targets a member/element that is itself an aggregate (a
+	// fixed array or nested struct/union) — used so a designated-init GAP on
+	// that slot emits a nested zero-init `{}` instead of a scalar 0.
+	bool init_slot_is_aggregate(DataDef *dd, size_t idx);
 	// C99 compound literal `(T){ init... }` -> N_COMPOUND_LITERAL(type, list).
 	node_t translate_struct_lit(class TokenStructLit *slit);
 	node_t var_decl(Variable *v, TokenBase *origin = NULL);

@@ -192,6 +192,14 @@ public:
     std::vector<TokenBase *> ctor_args; // constructor arguments for class-typed vars
     bool has_brace_init;               // true when `= { ... }` syntax was used
     bool is_const_decl;                // true when declared with `const` qualifier
+    // True when this declaration carried a constant initializer that the parser
+    // baked into Variable::data and then cleared init_list (a static/global
+    // fixed array — brace `{...}` OR string-literal `"..."` char array). The CIR
+    // builder uses this to reconstruct the INIT list from v->data. Crucially it
+    // distinguishes the DEFINING declaration from a shared `extern` placeholder
+    // (which never had an initializer), so the extern is not turned into a
+    // second definition ("Repeated item declaration").
+    bool baked_static_init = false;
     TokenDecl(Variable &v) : TokenVar(v) { initialize = NULL; has_brace_init = false; is_const_decl = false; }
     virtual TokenType type() const { return TokenType::ttDeclare; }
 };
@@ -232,6 +240,14 @@ public:
     // ID("T") instead of re-deriving an anonymous struct/union layout. Empty for
     // a bare `struct Tag` / `union Tag` / builtin element type.
     std::string typedef_name;
+    // Non-null for a C99 ARRAY compound literal `(T[]){...}` / `(T[N]){...}`.
+    // The parser models the literal's storage as a synthetic `__compound_array`
+    // struct (datadef()), but that loses array semantics: c2mir would see a
+    // forward-ref struct (incomplete type) that cannot be subscripted. When this
+    // is set the CIR builder instead emits a real array type-name
+    // `T name[]` so c2mir sizes the array from the initializer count — the
+    // faithful C99 lowering. Holds the ELEMENT type T.
+    DataDef *array_elem_dd = nullptr;
     TokenStructLit() {}
     virtual TokenType type() const { return TokenType::ttStructLit; }
 };

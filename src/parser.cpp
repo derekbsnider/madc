@@ -7771,6 +7771,8 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 					slit->setDataType(cast_dd);
 					if ( !array_elem_dd )
 					    slit->typedef_name = cast_typedef_name;
+					else
+					    slit->array_elem_dd = array_elem_dd;
 					TokenBase *lit_expr = slit;
 					// Array compound literals decay to pointer.
 					// Wrap in a cast so the expression type is
@@ -16315,7 +16317,10 @@ TokenBase *Program::parseDeclaration(TokenDataType *tb, bool is_static)
 
 	if ( gotstatic && code && !td->init_list.empty()
 	  && initialize_static_fixed_array_data(var, td->init_list) )
+	{
 	    td->init_list.clear();
+	    td->baked_static_init = true; // mark as the defining decl (vs extern)
+	}
 
 	// Global/static SIMD with constant init: write directly to heap storage.
 	if ( !code && var && var->data && var->type && var->type->is_simd()

@@ -1621,20 +1621,53 @@ node_t CirBuilder::translate_sstream_chain(TokenOperator *top, const char *ssnam
 	return result ? result : integer(0, top);
 }
 
-node_t CirBuilder::init_value(TokenBase *elem)
+bool CirBuilder::init_slot_is_aggregate(DataDef *dd, size_t idx)
+{
+	if (!dd)
+		return false;
+	// Array type `T x[N] = {...}`: every positional slot is an element of
+	// type T; it's an aggregate iff T is a fixed array or struct/union.
+	if (DataDefCArray *ca = dynamic_cast<DataDefCArray *>(dd)) {
+		DataDef *et = ca->element_type;
+		return et && (dynamic_cast<DataDefCArray *>(et)
+			      || (et->is_struct() && !et->is_complex()));
+	}
+	// Struct/union `struct S x = {...}`: slot `idx` targets member `idx`.
+	// A member is an aggregate when it is a fixed array (member_counts != 1)
+	// or its own type is a struct/union.
+	if (DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd)) {
+		if (sdd->is_complex())
+			return false;
+		if (idx >= sdd->members.size())
+			return false;
+		if (idx < sdd->member_counts.size() && sdd->member_counts[idx] != 1)
+			return true;
+		DataDef *mt = sdd->members[idx].second;
+		return mt && (dynamic_cast<DataDefCArray *>(mt)
+			      || (mt->is_struct() && !mt->is_complex()));
+	}
+	return false;
+}
+
+node_t CirBuilder::init_value(TokenBase *elem, bool target_is_aggregate)
 {
 	// A NULL element is a designated-initializer GAP: the parser normalizes
 	// `.field`/`[index]` designators into positional slots at parse time
 	// (parser.cpp: assign_initializer_range / field_index resolution),
 	// NULL-filling the slots between explicit values. C semantics zero-fill
-	// those gaps. We emit a dense `I 0` rather than N_IGNORE because c2mir
-	// rejects N_IGNORE as an initializer value (it crashes in
-	// c2mir_compile_tree). This keeps the init list positional+dense, which
-	// is semantically identical to C99 sparse designated init.
-	// LIMITATION: a gap whose element type is an aggregate (struct/array)
-	// would need a nested zero-init list, not a scalar 0; that case is not
-	// yet produced by the parser's normalization for the supported tests.
-	if (!elem) return integer(0);
+	// those gaps.
+	//
+	// The emitted gap value MUST match the target slot's shape so c2mir
+	// consumes exactly one slot and advances. For a scalar member a dense
+	// `I 0` is correct (N_IGNORE crashes c2mir_compile_tree). For an
+	// AGGREGATE member (a fixed-array or nested-struct slot, e.g. the `int
+	// a[3]` skipped by `struct s = { c: {1,2,3} }`) a scalar `0` is WRONG:
+	// c2mir reads it as `a[0]=0` and keeps consuming the next INIT for
+	// `a[1]`, swallowing the following member's value ("excess elements in
+	// scalar initializer"). The faithful gap for an aggregate is an empty
+	// brace `INIT(LIST(), LIST())`, which c2mir zero-fills and treats as one
+	// slot — exactly the C99 `= { [n] = ... }` zero-init of skipped members.
+	if (!elem) return target_is_aggregate ? list() : integer(0);
 	TokenStructLit *sl = dynamic_cast<TokenStructLit *>(elem);
 	if (sl) {
 		// DEFERRED (CirBuilder-only): an empty brace `{}` produces an empty
@@ -1665,6 +1698,30 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 	DataDef *dd = slit->datadef();
 	if (!dd)
 		return error_node("compound literal has no type", slit);
+
+	// C99 ARRAY compound literal `(T[]){...}` / `(T[N]){...}`. The parser
+	// models the literal's storage as a synthetic `__compound_array` struct
+	// (so the brace-init reuses struct-init machinery), but that struct is a
+	// forward-ref tag c2mir sees as an INCOMPLETE type — and a struct cannot
+	// be subscripted, which is why `&(int[]){...}[i]` failed with both
+	// "compound literal of incomplete type" and "subscripted value is neither
+	// array nor pointer". Emit the faithful C99 type-name instead: element
+	// type T with an UNSIZED array declarator `T[]`, so c2mir sizes the array
+	// from the initializer count (N_ARR size = N_IGNORE). The init list reuses
+	// the same INIT(LIST(), value) lowering as any aggregate.
+	if (slit->array_elem_dd) {
+		node_t aspec = list();
+		append_type_specs(aspec, slit->array_elem_dd);
+		node_t adecl_list = list();
+		append(adecl_list, node3(N_ARR, ignore(), list(), ignore()));
+		node_t atype = node2(N_TYPE, aspec,
+				     node2(N_DECL, ignore(), adecl_list));
+		node_t ainits = list();
+		for (size_t i = 0; i < slit->inits.size(); i++)
+			append(ainits,
+			       node2(N_INIT, list(), init_value(slit->inits[i])));
+		return node2(N_COMPOUND_LITERAL, atype, ainits, slit);
+	}
 
 	// ---- Build the N_TYPE type-name node (mirrors a cast / var_decl spec). ----
 	node_t spec = list();
@@ -1913,9 +1970,33 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// initializer on the declaration — `struct string s = "x"` would be an
 	// incompatible aggregate init. Leave init_node empty for such instances.
 	bool class_instance = (!is_ptr) && as_class_instance(base_dd) != NULL;
+	// A static/global fixed array whose constant initializer the parser baked
+	// into v->data and then cleared init_list (initialize_static_fixed_array_data
+	// in parser.cpp). For a brace `{...}` init has_brace_init stays set so the
+	// branch below still fires; but for the string-literal char-array form
+	// (`static char s[]="hi"`) has_brace_init is FALSE and init_list is now
+	// empty, so without this the whole branch is skipped and the initializer is
+	// dropped (s reads as zeroes). Detect the baked array directly so both forms
+	// reconstruct from v->data.
+	//
+	// EXCLUDE extern declarations: an `extern const T arr[N];` placeholder
+	// shares the same Variable (and its already-allocated, zero-filled v->data)
+	// as the later defining `const T arr[N] = {...};`. Reconstructing an
+	// initializer on the extern decl would turn it into a SECOND definition —
+	// MIR then rejects the pair with "Repeated item declaration". Only the
+	// actual definition (which carried a real source initializer) may
+	// reconstruct: require that THIS TokenDecl originally had one
+	// (has_brace_init for `{...}`, or `initialize` for the string-literal form).
+	bool baked_static_array = tdecl && (!is_ptr)
+				  && !(v->flags & vfEXTERN)
+				  && tdecl->baked_static_init
+				  && v->is_fixed_array()
+				  && v->data && tdecl->init_list.empty()
+				  && v->type && v->type->is_integer();
 	if (class_instance) {
 		// fall through with init_node = ignore()
-	} else if (tdecl && (tdecl->has_brace_init || !tdecl->init_list.empty())) {
+	} else if (tdecl && (tdecl->has_brace_init || !tdecl->init_list.empty()
+			     || baked_static_array)) {
 		// Brace init: LIST(INIT(LIST(), val), ...)
 		// Also the string-literal char-array form (`char s[3] = "ab";`):
 		// the parser expands the literal into per-char init_list entries
@@ -1935,7 +2016,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			}
 		} else {
 			for (size_t i = 0; i < tdecl->init_list.size(); i++)
-				append(lst, node2(N_INIT, list(), init_value(tdecl->init_list[i])));
+				append(lst, node2(N_INIT, list(),
+						  init_value(tdecl->init_list[i],
+							     init_slot_is_aggregate(base_dd, i))));
 		}
 		init_node = lst;
 	} else if (tdecl && tdecl->initialize) {
