@@ -34,9 +34,8 @@ class Program;
 // to message_file — same stage as `c2m -d`, for stage-matched diffing.
 c2m_ctx_t cir_init(MIR_context_t mir_ctx, bool debug_p = false);
 
-// Translate a parsed madc Program into a c2mir node_t tree (N_MODULE).
-// The Program must have been tokenized and parsed (prog->parse(tp) called).
-node_t cir_translate(c2m_ctx_t c2m, Program *prog);
+// (The legacy cir_translate() entry was removed — CirBuilder::translate_module
+// in cir_builder.cpp is the sole tree builder. See madc_cir_execute.)
 
 // Type-check the translated tree and generate MIR.
 // Returns 1 on success, 0 on error.
