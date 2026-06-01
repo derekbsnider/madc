@@ -79,7 +79,14 @@ static int64_t cir_run(const char *source) {
     c2m_ctx_t c2m = cir_init(mir_ctx);
     REQUIRE(c2m != nullptr);
 
-    node_t tree = cir_translate(c2m, prog.get());
+    // Build the tree with the LIVE backend (CirBuilder::translate_module) —
+    // exactly what bin/madc uses. The legacy static cir_translate() is retained
+    // only for MADC_CIR_OLD=1 A/B comparison and DIVERGES from the live backend
+    // (e.g. it mislowers backward `goto` loops into an unconditional infinite
+    // loop, which hung this harness under MIR_interp). The builder owns its node
+    // arena and must outlive cir_compile(), so it stays in scope until return.
+    CirBuilder builder(c2m);
+    node_t tree = builder.translate_module(prog.get());
     REQUIRE(tree != nullptr);
 
     int ok = cir_compile(mir_ctx, c2m, tree, "test_mod");
