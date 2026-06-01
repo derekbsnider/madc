@@ -293,6 +293,11 @@ public:
 	// ---- Leaf node builders ----
 	node_t id(const char *name, TokenBase *origin = NULL);
 	node_t integer(long val, TokenBase *origin = NULL);
+	// Type-aware integer literal: pick the c2mir literal node code
+	// (N_I/N_U/N_L/N_UL) from the literal's own DataDef so a suffixed
+	// constant (e.g. `0xffffffffull`) carries its real signedness/width
+	// into c2mir's usual-arithmetic-conversion logic.
+	node_t integer_typed(int64_t val, DataDef *dd, TokenBase *origin = NULL);
 	node_t real(double val, TokenBase *origin = NULL);
 	node_t ch(long val, TokenBase *origin = NULL);
 	node_t str(const char *s, size_t len, TokenBase *origin = NULL);

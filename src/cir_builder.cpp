@@ -140,6 +140,33 @@ node_t CirBuilder::integer(long val, TokenBase *origin)
 	return cn->as_node();
 }
 
+node_t CirBuilder::integer_typed(int64_t val, DataDef *dd, TokenBase *origin)
+{
+	// Choose the c2mir literal node code from the constant's own type so
+	// its signedness and width survive into c2mir's usual-arithmetic
+	// conversions. Without this every literal was N_I/N_L (always signed),
+	// so e.g. `0xffffffffull` lowered to a signed `long` and a comparison
+	// against a negative int chose the wrong (signed) result. Picking the
+	// code from is_unsigned()/size mirrors GCC's literal-typing: the
+	// operand self-determines its type, the operator/conversion follows.
+	if (!dd || !dd->is_integer())
+		return integer((long)val, origin);
+	bool uns = dd->is_unsigned();
+	bool wide = (dd->size > 4);   // 8-byte long / long long
+	c2mir_node_code_t code;
+	if (wide)
+		code = uns ? N_UL : N_L;
+	else
+		code = uns ? N_U  : N_I;
+	cir_node *cn = make(code, origin);
+	switch (code) {
+	case N_U:   cn->base.u.ul = (c2mir_ulong)(uint32_t)val; break;
+	case N_UL:  cn->base.u.ul = (c2mir_ulong)(uint64_t)val; break;
+	default:    cn->base.u.l  = (c2mir_long)val;            break;
+	}
+	return cn->as_node();
+}
+
 node_t CirBuilder::real(double val, TokenBase *origin)
 {
 	cir_node *cn = make(N_D, origin);
@@ -3806,9 +3833,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 {
 	if (!tb) return ignore();
 
-	// Integer literal
+	// Integer literal — preserve the literal's declared type (the lexer
+	// records signedness/width from the u/l/ll suffix, e.g. `0xffffffffull`
+	// is unsigned long long). Emitting it as a bare signed N_I/N_L would
+	// drop that and break usual-arithmetic-conversion signedness downstream.
 	if (tb->type() == TokenType::ttInteger)
-		return integer(tb->ival(), tb);
+		return integer_typed(tb->ival(), tb->datadef(), tb);
 
 	// Real literal
 	if (tb->type() == TokenType::ttReal)
