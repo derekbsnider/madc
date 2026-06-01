@@ -316,6 +316,10 @@ public:
     bool is_complete;	// true: a `{ ... }` body was parsed (even if empty) — distinguishes
 			// `struct X {}` (complete, zero members) from `struct X;` (forward decl)
     bool has_anon_aggregate;	// true: addAnonymousAggregate() was used to flatten members
+    bool is_anonymous = false;	// true: a tagless `struct {..}` / `union {..}` — `name` is a
+				// UNIQUE synthetic tag (`__anon_N`) so distinct anonymous
+				// aggregates don't collide in by-name dedup, while still
+				// being a real, emittable, referenceable C tag.
     bool reverse_scalar_storage;
     bool bitfield_active;
     size_t bitfield_unit_offset;

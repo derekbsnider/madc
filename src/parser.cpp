@@ -10140,6 +10140,23 @@ TokenBase *TokenPREFER::parse(Program &pgm)
 // typedef struct tag alias;
 // typedef struct tag { type member; } alias;
 // typedef struct { type member; } alias;
+// Create a tagless `struct {..}` / `union {..}` DataDefSTRUCT with a UNIQUE
+// synthetic tag. C anonymous aggregates have no tag, but the CIR/c2mir layer
+// needs a real, distinct, referenceable tag per aggregate: sharing the literal
+// name "anonymous" made every anonymous struct collide in the by-name dedup
+// (emitted_structs / struct_def_points), so the SECOND `typedef struct {...} Y`
+// degraded to an incomplete `struct anonymous` reference. A unique `__anon_N`
+// name keeps each distinct AND emittable; is_anonymous marks it for the inline
+// declarator paths that must NOT forward-reference it across translation.
+static DataDefSTRUCT *new_anon_struct(size_t size = 0)
+{
+    static size_t anon_tag_counter = 0;
+    DataDefSTRUCT *dds = new DataDefSTRUCT(
+	std::string("__anon_") + std::to_string(++anon_tag_counter), size);
+    dds->is_anonymous = true;
+    return dds;
+}
+
 TokenBase *TokenSTRUCT::parse(Program &pgm)
 {
     TokenIdent *tag = NULL;
@@ -10182,7 +10199,9 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
     auto record_struct = [&](DataDefSTRUCT *sdd, TokenBase *otok = nullptr)
     {
 	Program::TopDecl td;
-	td.kind = is_union ? Program::DeclKind::dkUnion : Program::DeclKind::dkStruct;
+	// Use the recorded struct's OWN layout — a nested union inside a struct
+	// (or vice versa) must record its own kind, not the enclosing aggregate's.
+	td.kind = sdd->union_layout ? Program::DeclKind::dkUnion : Program::DeclKind::dkStruct;
 	td.name = sdd->name;
 	td.dd = sdd;
 	td.file = TokenBase::_parse_file;
@@ -10331,7 +10350,15 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		fwd = static_cast<DataDefSTRUCT *>(dmi->second);
 	    pgm.nextToken(); // consume ';'
 	    DBG(cout << "TokenSTRUCT::parse() forward declaration of struct " << tag->str << endl);
-	    record_struct(fwd, tag);
+	    // Do NOT record a pure forward declaration into top_decls: an
+	    // incomplete struct emits nothing, but its position would anchor the
+	    // emission order at the FORWARD site (top_decls emits each tag at its
+	    // first occurrence). The full definition — which DOES record_struct at
+	    // its own, later position — must drive emission order so a member whose
+	    // type is defined between the forward decl and the definition is laid
+	    // out first (pr41463: `union tree_node;` ... `struct other_tree{}` ...
+	    // `union tree_node { struct other_tree othr; }`). An undefined-only tag
+	    // is a valid incomplete type for pointer use and needs no top_decl.
 	    return new TokenStructDef(fwd, is_union);
 	}
 
@@ -10396,7 +10423,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 
     pgm.nextToken(); // consume '{'
 
-    DataDefSTRUCT *dds = new DataDefSTRUCT(tag ? tag->str : "anonymous", 0);
+    DataDefSTRUCT *dds = tag ? new DataDefSTRUCT(tag->str, 0) : new_anon_struct();
     std::string tag_store_key = tag ? tag->str : "";
     if ( tag )
     {
@@ -10536,7 +10563,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			if ( inner_tag && inner_tag->id() == TokenID::tkOpBrc )
 			{
 			    pgm.nextToken();
-			    DataDefSTRUCT *nested = new DataDefSTRUCT("anonymous", 0);
+			    DataDefSTRUCT *nested = new_anon_struct();
 			    nested->union_layout = inner_union_kw;
 			    if ( inner_packed )
 				nested->pack = 1;
@@ -10571,6 +10598,11 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 				    nested->pack = 1;
 				pgm.nextToken();
 				parse_nested_aggregate_body(nested, inner_tag);
+				// Named inline-defined nested struct/union — visible at enclosing
+				// scope in C; record as a standalone top-level def (see outer
+				// member loop). Handles deeper nesting (`struct A{struct B{struct C
+				// {..}c;}b;}a;`).
+				record_struct(nested, inner_tag);
 				inner_type = new TokenDataType(sname.c_str(), *nested);
 			    }
 			    else
@@ -10735,6 +10767,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		if ( !tn || tn->id() != TokenID::tkClBrc )
 		    pgm.Throw(tn ? tn : loc) << "Unexpected end of input in anonymous struct definition" << flush;
 		pgm.nextToken(); // consume '}'
+		inner->is_complete = true; // a `{ ... }` body was parsed
 		inner->finalize();
 	    };
 	    if ( stag && stag->id() == TokenID::tkOpBrc )
@@ -10742,7 +10775,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		// Support anonymous nested struct members like:
 		//   struct { int x; char y[8]; } member;
 		pgm.nextToken(); // consume '{'
-		DataDefSTRUCT *inner = new DataDefSTRUCT("anonymous", 0);
+		DataDefSTRUCT *inner = new_anon_struct();
 		inner->union_layout = nested_union_kw;
 		if ( nested_packed )
 		    inner->pack = 1;
@@ -10774,6 +10807,14 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    }
 		    pgm.nextToken(); // consume '{'
 		    parse_nested_aggregate_body(inner, stag);
+		    // A named struct/union defined INLINE as a member type has C scope
+		    // at the ENCLOSING level (`struct T` in `struct S { struct T {} t; }`
+		    // is visible outside S). Record it as a standalone top-level def so
+		    // the CIR builder emits its body before the enclosing struct uses it;
+		    // otherwise the member's `struct T` tag stays incomplete. Pushed before
+		    // the enclosing struct's own record_struct (runs after the full body),
+		    // so it is emitted first.
+		    record_struct(inner, stag);
 		    mtype = new TokenDataType(sname.c_str(), *inner);
 		}
 		else
@@ -13857,6 +13898,13 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
     Variable *var;
 
     vector<std::string> ids;  // vector of variable names
+    // Per-parameter typedef alias, PARALLEL to `ids`. Empty when the parameter
+    // type was not a user typedef. Propagated to the param Variable's
+    // typedef_name so the CIR builder emits `Alias *p` (keeping the pointee
+    // complete) instead of `struct anonymous *p` for a pointer-to-typedef-of-
+    // anonymous-aggregate parameter ("struct has no member" otherwise).
+    vector<std::string> param_aliases;
+    std::string param_alias;  // alias for the parameter currently being parsed
     TokenDataType *pb;        // parameter basetype
     std::string pid;          // parameter id
     RefType rtype = RefType::rtNone;
@@ -13925,6 +13973,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	if ( !func_already_declared )
 	    func->parameters.push_back(&ddINT64); // void* as int64
 	ids.push_back("__retbuf");
+	param_aliases.push_back("");
 	DBG(cout << "parseFunction() injected hidden __retbuf for multi-return (" << multi_ret->size() << " types)" << endl);
     }
 
@@ -13948,6 +13997,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    func->const_params.push_back(false);
 	}
 	ids.push_back("__this");
+	param_aliases.push_back("");
 	DBG(cout << "parseFunction() injected hidden __this parameter for class method" << endl);
     }
 
@@ -13972,6 +14022,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		if ( old_style_param_name_exists(old_style_ids, pid) )
 		    Throw(nt) << "Duplicate K&R parameter name" << flush;
 		ids.push_back(pid);
+		param_aliases.push_back("");
 		old_style_ids.push_back(pid);
 
 		nt = nextToken();
@@ -13986,6 +14037,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 
 	// tolerate C qualifiers/storage hints in parameter lists such as
 	// `const char *s` and `register char *s`
+	param_alias.clear();  // reset per-parameter typedef alias
 	bool param_has_const = false;
 	while ( nt && (nt->id() == TokenID::tkCONST
 	            || nt->id() == TokenID::tkVOLATILE
@@ -14020,6 +14072,7 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 	    if ( !func_already_declared )
 		func->parameters.push_back(&ddINT64);
 	    ids.push_back("__va_args");
+	    param_aliases.push_back("");
 	    DBG(cout << "parseFunction() detected varargs, injected __va_args" << endl);
 	    // next token should be )
 	    nt = nextToken();
@@ -14072,6 +14125,11 @@ void Program::parseFunction(DataDef &dd, std::string &id, DataDefCLASS *owner_cl
 		if ( tdmi != datatype_map.end() )
 		{
 		    pb = tdmi->second;
+		    // Record the typedef alias for this parameter (matches the
+		    // var/member paths' user_typedef_names check) so the CIR
+		    // builder keeps `Alias` as the type spec.
+		    if ( user_typedef_names.count(tname) )
+			param_alias = tname;
 		}
 		else if ( TokenDataType *ns_type = resolve_namespaced_type_token(*this, nt, true) )
 		{
@@ -14287,12 +14345,14 @@ paramdecl:
 	    if ( func_already_declared )
 	    {
 		ids.push_back(pid);
+		param_aliases.push_back(param_alias);
 		scope_param_type = rtype == RefType::rtReference && is_std_string(&pb->definition)
 		    ? &ddSTRINGref : param_dd;
 	    }
 	    else if ( !func->findParameter(pid) )
 	    {
 		ids.push_back(pid);
+		param_aliases.push_back(param_alias);
 		if ( rtype == RefType::rtReference && is_std_string(&pb->definition) )
 		{
 		    func->parameters.push_back(&ddSTRINGref);
@@ -14531,6 +14591,11 @@ paramdecl:
 	DBG(cout << "parseFunction() adding parameter variable " << pname << endl);
 	v = new Variable(pname, *d, 1, NULL, false);
 	v->flags |= vfPARAM | vfLOCAL;
+	// Carry the parameter's typedef alias (parallel to `ids`) so the CIR
+	// builder emits `Alias *p` and the pointee resolves through the
+	// typedef's complete definition.
+	if ( (size_t)user_param_index < param_aliases.size() )
+	    v->typedef_name = param_aliases[user_param_index];
 	if ( (size_t)i < func->ref_params.size() && func->ref_params[i] )
 	    v->flags |= vfREFERENCE;
 	if ( (size_t)i < func->const_params.size() && func->const_params[i] )

@@ -122,6 +122,15 @@ class CirBuilder {
 	// and the inline-struct path in typedef_decl).
 	node_t member_node(const memberpair_t &m, DataDefSTRUCT *owner = NULL);
 
+	// Build the N_LIST of N_MEMBER nodes for an anonymous aggregate's body.
+	node_t anon_members_list(DataDefSTRUCT *anon);
+	// Build the inline type-spec for an anonymous aggregate: a one-element
+	// LIST holding STRUCT/UNION(IGNORE-tag, members). An anonymous aggregate
+	// has no tag to forward-reference, so its body must be emitted inline at
+	// every declarator that uses it. Shared by var_decl's value/pointer/
+	// static/extern paths.
+	node_t anon_inline_spec(DataDefSTRUCT *anon);
+
 	// ---- Opaque C++ runtime-object lowering (shared mechanism) ----
 	// A monomorphic C++ object (std::string, MadArray, …) lowers to an 8-aligned
 	// `long name[words]` buffer tagged with __attribute__((cleanup(dtor))) plus a

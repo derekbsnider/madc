@@ -1673,7 +1673,7 @@ node_t CirBuilder::translate_struct_lit(TokenStructLit *slit)
 		// Named via a typedef: emit ID("alias") so c2mir resolves the
 		// (possibly anonymous struct/union) layout from the typedef.
 		append(spec, id(slit->typedef_name.c_str()));
-	} else if (sdd && !dd->is_complex() && sdd->name != "anonymous") {
+	} else if (sdd && !dd->is_complex() && !sdd->is_anonymous) {
 		// A tagged struct/union: `struct Tag` / `union Tag`.
 		append(spec, node2(sdd->union_layout ? N_UNION : N_STRUCT,
 				   id(sdd->name.c_str()), ignore()));
@@ -1746,11 +1746,16 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	// builder emits `struct anonymous` (a forward ref to a never-defined tag),
 	// leaving the variable with an incomplete type. member_node carries the
 	// member array dims via the owning struct.
+	// An anonymous aggregate has no tag, so EVERY declarator that uses it
+	// (value, pointer, static, extern) must inline its body — a forward
+	// `struct anonymous` reference is never defined. The pointer case
+	// (`struct { int i; } *sp;`) and the static/extern overrides below all
+	// route through anon_inline_spec(), so drop the old `!is_ptr` guard.
 	DataDefSTRUCT *anon_sdd = NULL;
-	if (v->typedef_name.empty() && !is_ptr && base_dd && base_dd->is_struct()
+	if (v->typedef_name.empty() && base_dd && base_dd->is_struct()
 	    && !base_dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
-		if (sdd && sdd->name == "anonymous" && !sdd->members.empty())
+		if (sdd && sdd->is_anonymous && !sdd->members.empty())
 			anon_sdd = sdd;
 	}
 
@@ -1784,11 +1789,7 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 			fnptr_dims = v->dims;
 		fnptr_decl_pieces(fnptr->target, true, tl, fnptr_decl_list, fnptr_dims);
 	} else if (anon_sdd) {
-		node_t ml = list();
-		for (size_t i = 0; i < anon_sdd->members.size(); i++)
-			append(ml, member_node(anon_sdd->members[i], anon_sdd));
-		tl = node1(N_LIST, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
-					 ignore(), ml));
+		tl = anon_inline_spec(anon_sdd);
 	} else {
 		tl = !v->typedef_name.empty()
 				? type_list(v->type, v->typedef_name)
@@ -1799,7 +1800,17 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 	if (!fnptr && (v->flags & vfSTATIC)) {
 		node_t new_list = list();
 		append(new_list, simple(N_STATIC));
-		if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
+		if (!v->typedef_name.empty()) {
+			// A typedef'd type keeps its alias spec (`static io *gp`), so
+			// the pointee resolves through the typedef's own (complete)
+			// definition. Dropping the alias to a `struct anonymous` tag left
+			// the pointee incomplete ("struct has no member" through `gp->`).
+			append(new_list, id(v->typedef_name.c_str()));
+		} else if (anon_sdd) {
+			// Anonymous aggregate: inline the body (no tag to reference).
+			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
+					       ignore(), anon_members_list(anon_sdd)));
+		} else if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 			if (sdd)
 				append(new_list, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
@@ -1820,6 +1831,9 @@ node_t CirBuilder::var_decl(Variable *v, TokenBase *origin)
 		append(new_list, simple(N_EXTERN));
 		if (!v->typedef_name.empty()) {
 			append(new_list, id(v->typedef_name.c_str()));
+		} else if (anon_sdd) {
+			append(new_list, node2(anon_sdd->union_layout ? N_UNION : N_STRUCT,
+					       ignore(), anon_members_list(anon_sdd)));
 		} else if (base_dd && base_dd->is_struct() && !base_dd->is_complex()) {
 			DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(base_dd);
 			if (sdd)
@@ -2017,6 +2031,20 @@ int CirBuilder::explicit_star_count(DataDef *full_type, const std::string &alias
 	return stars;
 }
 
+node_t CirBuilder::anon_members_list(DataDefSTRUCT *anon)
+{
+	node_t ml = list();
+	for (size_t i = 0; i < anon->members.size(); i++)
+		append(ml, member_node(anon->members[i], anon));
+	return ml;
+}
+
+node_t CirBuilder::anon_inline_spec(DataDefSTRUCT *anon)
+{
+	return node1(N_LIST, node2(anon->union_layout ? N_UNION : N_STRUCT,
+				   ignore(), anon_members_list(anon)));
+}
+
 node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 {
 	DataDef *mtype = m.second;            // full member type, stars included
@@ -2120,12 +2148,8 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		// definition instead, matching var_decl's anon_sdd path. (member_node
 		// recurses, so anonymous aggregates may nest.)
 		DataDefSTRUCT *anon = dynamic_cast<DataDefSTRUCT *>(mbase);
-		if (anon && anon->name == "anonymous" && !mbase->is_complex()) {
-			node_t aml = list();
-			for (size_t i = 0; i < anon->members.size(); i++)
-				append(aml, member_node(anon->members[i], anon));
-			mspec = node1(N_LIST, node2(anon->union_layout ? N_UNION : N_STRUCT,
-						    ignore(), aml));
+		if (anon && anon->is_anonymous && !mbase->is_complex()) {
+			mspec = anon_inline_spec(anon);
 		} else {
 			mspec = type_list(mbase);
 		}
@@ -3585,12 +3609,8 @@ node_t CirBuilder::typedef_decl(const std::string &alias, DataDef *dd,
 				append(tl, node2(N_STRUCT, id(sdd->name.c_str()), ignore()));
 			} else {
 				// Emit struct definition inline (typedef struct { ... } NAME)
-				node_t struct_id_node = id(sdd->name.c_str());
-				node_t ml = list();
-				for (size_t i = 0; i < sdd->members.size(); i++) {
-					append(ml, member_node(sdd->members[i], sdd));
-				}
-				append(tl, node2(N_STRUCT, struct_id_node, ml));
+				append(tl, node2(N_STRUCT, id(sdd->name.c_str()),
+						 anon_members_list(sdd)));
 			}
 		}
 	} else {
