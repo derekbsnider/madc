@@ -1142,7 +1142,11 @@ node_t CirBuilder::type_list(DataDef *dd, const std::string &typedef_alias)
 	if (dd && (dd->is_struct() || as_class_instance(dd)) && !dd->is_complex()) {
 		DataDefSTRUCT *sdd = dynamic_cast<DataDefSTRUCT *>(dd);
 		if (sdd) {
-			node_t sref = node2(N_STRUCT, id(sdd->name.c_str()), ignore());
+			// Tag kind MUST match the definition (struct vs union), or
+			// c2mir rejects it ("kind of tag X unmatched"). A union-typed
+			// reference emits N_UNION.
+			node_t sref = node2(sdd->union_layout ? N_UNION : N_STRUCT,
+					    id(sdd->name.c_str()), ignore());
 			append(lst, sref);
 			return lst;
 		}
@@ -2515,7 +2519,13 @@ node_t CirBuilder::struct_def(DataDefSTRUCT *sdd)
 		append(member_list, member_node(sdd->members[i], sdd));
 	}
 
-	node_t struct_node = node2(N_STRUCT, struct_id, member_list);
+	// Emit N_UNION for a union so c2mir overlaps all members at offset 0
+	// (shared storage / type-punning); N_STRUCT otherwise. The reference and
+	// anonymous-inline paths already branch on union_layout — the DEFINITION
+	// emitter must too, else `union U {..}` is laid out as a struct (distinct
+	// offsets) and member aliasing silently breaks.
+	node_t struct_node = node2(sdd->union_layout ? N_UNION : N_STRUCT,
+				   struct_id, member_list);
 	node_t tl = node1(N_LIST, struct_node);
 
 	node_t spec_decl = simple(N_SPEC_DECL);
