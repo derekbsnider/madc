@@ -65,3 +65,24 @@ per-test whack-a-mole. Reducers for every cluster are in `tmp/` (regenerate via 
 
 Method per cluster: reduce → gcc/asmjit-diff → fix at deepest layer (parser type or cir_builder
 translate_*) → `make -C src fulltest` (no regressions) → re-run torture for the cluster → commit.
+
+## Progress update 2026-06-01 (session 2)
+
+CIR torture **1382 -> 1541 (91.5%)**, integration 450, SMAUG boots throughout. This
+session added: label+block-extern (+2, 5ca8492) and the **UNION cluster COMPLETE
+(+11)** — union members now overlap (N_UNION at definition, type-spec reference,
+typedef'd-anonymous, function-return, var-decl, and extern sites; previously all
+hardcoded N_STRUCT). Recovered pr86492, pr82524, 20180131-1, bitfld-6, bitfld-7,
++6 more. Also: legacy cir_translate path removed (one backend), test_cir repointed
+at the live CirBuilder, `make test` capped (ulimit+timeout), `scripts/resume.sh`
+preflight, rule `no-parallel-implementations`.
+
+**Remaining clusters are now deeper / floor-level (no more cheap coherent wins):**
+- reduced-precision bitfield ARITHMETIC (bitfld-3/5) — clang also fails; fork-level.
+- `scalar_storage_order` (20230630-2/4, pr87623) — unimplemented byte-swap feature.
+- out-of-range float->int conversion (20031003-1) — MIR conversion semantics.
+- `__builtin_setjmp`/`__builtin_longjmp` + `__builtin_alloca` (pr64242, built-in-setjmp)
+  — GCC stack intrinsics, c2mir/MIR floor.
+- ~45 deferred floor gaps (SIMD ~30 / VLA / inline asm / wchar / __int128 / aligned>16).
+Pick these as deliberate, individually-scoped efforts — each needs real
+investigation (not a one-liner) and most touch the MIR fork.
