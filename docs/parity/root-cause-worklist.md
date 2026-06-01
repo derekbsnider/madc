@@ -38,6 +38,10 @@ Ranked by leverage (tests recovered per fix). All are cir_builder/parser bugs, N
 | 14 | **void\* / incomplete-type ptr arithmetic** | ~2 | `void* + int` rejected. parser/cir_builder pointer-arith type check. | pr17133 |
 | 15 | **setjmp/longjmp**, misc singletons | ~10 | `__builtin_longjmp`+alloca; computed-goto label scope; union-by-value aliased members; `case` in dead `if(0){}`; block-scope `extern` resolves to local; float→int saturate-vs-wrap. | various |
 
+## Deferred — needs care (NOT floor gaps, but regress SMAUG / non-trivial)
+
+- **K&R / unprototyped functions (~5)** — ATTEMPTED 2026-06-01, REVERTED (not pushed; patch saved `tmp/knr-cluster-016eb2f.patch`). Emitting a bare `()` zero-param function as *unprototyped* (instead of `(void)`) makes the 5 torture tests pass BUT regresses SMAUG (`get_color` SIGSEGV [JIT], exit 139) — SMAUG's C89 code uses empty-parens `int foo()` ubiquitously for genuine zero-param functions, and the unprototyped emission corrupts their codegen *even when called with matching 0 args*, pointing to a c2mir/MIR unprototyped-call ABI issue (the caller-side AL/vararg convention for no-prototype calls). The `translate_return` half (typed-zero for bare `return;` in a non-void fn, recovers 920728-1) is likely SMAUG-safe and separable. NEXT: emit unprototyped only where safe (decls, not empty-parens definitions) OR fix the c2mir/MIR no-prototype call convention; re-verify with a coordinator-run SMAUG soak (the subagent's soak FALSELY reported a clean boot — always re-run it).
+
 ## Deferred clusters (floor gaps — NOT quick front-end fixes) — ~45 tests
 
 | cluster | ~tests | why deferred |
