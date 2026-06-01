@@ -6058,8 +6058,16 @@ Variable *Program::addVariable(TokenCpnd *code, DataDef &dd, std::string &id, in
 		return var;
 	    }
 	}
-	if ( (var=code->findVariable(id)) )
-	    return var;
+	// Reuse an existing symbol ONLY if it was declared in THIS block.
+	// code->findVariable recurses into parent scopes, so using it here
+	// would make an inner-block redeclaration (`{ long x; }` shadowing an
+	// outer `struct tiny x;`) silently reuse — and later mutate — the
+	// outer variable's type. A same-name decl in an inner scope must
+	// create a fresh shadowing local instead.
+	for ( variable_vec_iter vvi = code->variables.begin();
+	      vvi != code->variables.end(); ++vvi )
+	    if ( (*vvi)->name == id )
+		return *vvi;
 	var = new Variable(id, dd, c, init, alloc);
 	var->flags |= vfLOCAL;
 	// The extern flag may only be set on a freshly-created symbol (here), never
