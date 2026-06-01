@@ -90,6 +90,46 @@ else
 	echo "bin/madc missing -> run: make -C src"
 fi
 
+bar "REHYDRATION CORPUS (read these to recover full context — target >= 100k tokens)"
+# A compaction can leave only ~3% context. Re-ground by READING this curated,
+# prioritized set — it is ~100k+ tokens of genuinely-relevant material (not the
+# whole repo). Tiers are ordered so even a partial read covers the essentials.
+# Token estimate = bytes/4. Read top-to-bottom; stop when you have enough.
+mem="/home/dev/.claude/projects/-workspace-madc/memory"
+declare -a T1=(
+  "docs/superpowers/plans/2026-06-01-HANDOFF.md"
+  "claude_status.json"
+  "docs/parity/root-cause-worklist.md"
+  "docs/plans/madc-vision-and-invariants.md"
+  "AGENTS.md"
+  "docs/adr/0001-cir-c2mir-backend.md"
+)
+declare -a T2=( .claude/rules/*.md docs/rules/*.md )
+declare -a T3=( "$mem"/*.md )
+declare -a T4=(
+  "docs/plans/cpp-support.md" "docs/plans/ROADMAP.md"
+  "docs/plans/2026-05-30-template-instantiation.md"
+  "docs/parity/cir-vs-asmjit-regressions.txt"
+  "docs/superpowers/plans/2026-05-31-RESTART-HANDOFF.md"
+)
+total=0
+tier() { # $1=label  rest=files
+  local label="$1"; shift; local sum=0 c
+  for f in "$@"; do [ -f "$f" ] || continue; c=$(wc -c < "$f"); sum=$((sum + c/4)); done
+  printf "  %-26s ~%6d tok\n" "$label" "$sum"; total=$((total + sum))
+}
+tier "T1 live state (READ ALL)" "${T1[@]}"
+tier "T2 rules (how to work)"    "${T2[@]}"
+tier "T3 project memory"         "${T3[@]}"
+tier "T4 deep dives (as needed)" "${T4[@]}"
+printf "  %-26s ~%6d tok\n" "TOTAL curated corpus" "$total"
+if [ "$total" -lt 100000 ]; then
+  echo "  !! corpus < 100k tokens — handoff/status/memory have thinned; ENRICH before relying on it."
+else
+  echo "  OK: >= 100k tokens of relevant rehydration material available."
+fi
+echo "  (T1+T2+T3 alone is the must-read floor; T4 + key src/ files as the task needs.)"
+
 bar "NEXT"
 echo "Authoritative state + next tasks: docs/superpowers/plans/2026-06-01-HANDOFF.md (READ FIRST)"
 echo "Parity worklist: docs/parity/root-cause-worklist.md   |   canonical: claude_status.json"
