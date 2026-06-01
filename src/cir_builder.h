@@ -97,6 +97,12 @@ class CirBuilder {
 	// emit_ns_arg statement-level temp construction.
 	std::vector<node_t> m_pending_stmts;
 	int m_strtmp_counter = 0;
+	// File-scope class-instance globals (std::string etc.) lower to opaque
+	// struct storage at file scope plus a constructor call that must run before
+	// any user code. C++ does this via static-init; madc injects these ctor
+	// calls as the first statements of main's body (declaration order). Populated
+	// by collect_global_ctors (translate_module), consumed by func_def for main.
+	std::vector<node_t> m_global_ctor_stmts;
 	// Names of the functions whose bodies madc COMPILES this module (the user's
 	// TokenFuncs). Set in translate_module while bodies are translated; NULL
 	// otherwise. Gates the by-value string-return (__retbuf) ABI to madc-compiled
@@ -477,6 +483,19 @@ public:
 	node_t synth_dtor_def(DataDefCLASS *cdd);
 	node_t func_proto(TokenFunc *tf);
 	node_t func_def(TokenFunc *tf);
+	// Scan file-scope class-instance globals (std::string and friends) that are
+	// not source-declared via top_decls (built-ins like `version`, registered
+	// programmatically), emit their opaque struct storage into `top_list`, and
+	// queue each one's constructor call into m_global_ctor_stmts so func_def can
+	// run them before main's body. Also queues ctor calls for source-declared
+	// class globals (their storage already rode in via the dkGlobalVar pass).
+	void collect_global_ctors(Program *prog,
+				  std::vector<node_t> &deferred_globals,
+				  std::set<std::string> &emitted_globals);
+	// Build the constructor-call statement for a file-scope class global `v`
+	// (type `cdd`), sourcing its initializer from the linked TokenDecl when
+	// present (user source) or from v->data (a const char* literal, built-ins).
+	node_t global_ctor_call(class Variable *v, DataDefCLASS *cdd, TokenDecl *decl);
 
 	// ---- Expression translation ----
 	node_t translate_expr(TokenBase *tb);

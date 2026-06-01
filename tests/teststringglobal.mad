@@ -1,0 +1,16 @@
+#include <iostream>
+using namespace std;
+
+// File-scope std::string globals: a real `struct string` object constructed
+// before main runs (C++ static init; madc injects the ctor at main entry).
+string greeting = "Hello, global!";   // const char* ctor
+string empty;                         // default ctor
+
+int main()
+{
+    cout << greeting << endl;         // basic_string operator<<
+    printstr(greeting);               // char* coercion: string_cstr(&greeting)
+    cout << "len=" << greeting.size() << endl;
+    cout << "[" << empty << "]" << endl;
+    return 0;
+}

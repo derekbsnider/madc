@@ -5841,7 +5841,113 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// va_list struct copy mis-set reg_save_area in large frames (e.g. SMAUG's
 	// bug() with char buf[MAX_STRING_LENGTH]), corrupting the list.
 
+	// File-scope class globals (std::string etc.) construct before any user
+	// code runs (C++ static init). madc realizes this by prepending their ctor
+	// calls — collected in source/declaration order — to main's body. (Their
+	// scope-exit destruction is deferred: the cleanup attribute on a file-scope
+	// object never fires; program teardown reclaims the memory.)
+	if (tf->var.name == "main" && !m_global_ctor_stmts.empty()) {
+		node_t outer = list();
+		for (node_t s : m_global_ctor_stmts)
+			append(outer, s);
+		append(outer, body);
+		body = node2(N_BLOCK, list(), outer, tf);
+		// Re-emit with the wrapped body; the prologue runs once at main entry.
+		return node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
+	}
+
 	return node4(N_FUNC_DEF, ret_type, decl, list(), body, tf);
+}
+
+// Build the constructor-call statement for a file-scope class global `v` of
+// class `cdd`. The initializer comes from the linked TokenDecl (user source:
+// `string g = "hi";`) when present, else from the runtime backing object
+// (built-ins like `version`, registered via addGlobal with a const char*
+// initializer that Variable's ctor stored as a host std::string). A class with
+// no constructor (no has_user_ctor) yields NULL — nothing to run.
+node_t CirBuilder::global_ctor_call(Variable *v, DataDefCLASS *cdd, TokenDecl *decl)
+{
+	if (!v || !cdd) return NULL;
+
+	// Recover the initializer expression for a source-declared global. Mirrors
+	// translate_block's class-instance path: an `=`-style init is wrapped in a
+	// TokenAssign; a braced/list init rides in init_list/ctor_args.
+	std::vector<TokenBase *> ctor_args;
+	if (decl) {
+		ctor_args = decl->ctor_args;
+		if (ctor_args.empty()) {
+			TokenBase *initexpr = decl->initialize;
+			if (TokenAssign *as = dynamic_cast<TokenAssign *>(initexpr))
+				initexpr = as->right;
+			if (!initexpr && !decl->init_list.empty())
+				initexpr = decl->init_list[0];
+			if (initexpr) ctor_args.push_back(initexpr);
+		}
+		return class_ctor_call(v, cdd, ctor_args, decl);
+	}
+
+	// No source TokenDecl (built-in global): the initializer value lives in the
+	// runtime backing object. For a std::string that is `*(std::string*)v->data`;
+	// construct via the const-char* ctor with a literal synthesized from it. A
+	// class without a const-char* initializer falls back to the default ctor.
+	if (!is_std_string(v->type)) {
+		// Other built-in object classes: default-construct (no stored literal).
+		std::vector<TokenBase *> none;
+		return class_ctor_call(v, cdd, none, NULL);
+	}
+	const std::string init = (v->data ? *(std::string *)v->data : std::string());
+	node_t args = list();
+	append(args, node1(N_ADDR, id(v->name.c_str(), NULL), NULL)); // &v (this)
+	append(args, str(init.c_str(), init.size() + 1, NULL));       // const char*
+	append(args, node1(N_ADDR, id(v->name.c_str(), NULL), NULL)); // dummy alloc&
+	need_output_extern(STR_CTOR_S, false,
+			   { { {N_VOID}, true }, { {N_CHAR}, true }, { {N_VOID}, true } });
+	referenced_funcs.insert(STR_CTOR_S);
+	node_t call = node2(N_CALL, id(STR_CTOR_S, NULL), args, NULL);
+	CIR_NODE(call)->synth_from_origin = true;
+	return node2(N_EXPR, list(), call, NULL);
+}
+
+// Emit storage for, and queue construction of, every file-scope class-instance
+// global (std::string and friends). Source-declared globals already had their
+// struct storage emitted by the dkGlobalVar pass (recorded in emitted_globals);
+// built-ins registered via addGlobal (e.g. `version`) are NOT in top_decls, so
+// emit their storage here. Either way, queue the ctor into m_global_ctor_stmts
+// for func_def to run at main entry, in declaration order.
+void CirBuilder::collect_global_ctors(Program *prog,
+				      std::vector<node_t> &deferred_globals,
+				      std::set<std::string> &emitted_globals)
+{
+	m_global_ctor_stmts.clear();
+	if (!prog || !prog->tkProgram) return;
+	for (Variable *v : prog->tkProgram->variables) {
+		if (!v) continue;
+		// File-scope only (a global is non-LOCAL or a file-scope static).
+		if ((v->flags & vfLOCAL) && !(v->flags & vfSTATIC)) continue;
+		// An extern is a reference to a definition elsewhere — no storage, no ctor.
+		if (v->flags & vfEXTERN) continue;
+		DataDefCLASS *cdd = as_class_instance(v->type);
+		if (!cdd) continue;
+		bool already_emitted = emitted_globals.count(v->name) != 0;
+		TokenDecl *decl = NULL;
+		if (!already_emitted) {
+			// Built-in (not source-declared): emit its struct storage now —
+			// reuse var_decl (the same `struct string name __attribute__((cleanup
+			// (dtor)))` shape the deferred-global pass emits for source globals).
+			// Deferred with the source globals so it follows the function
+			// prototypes (definition-before-use; see deferred_globals).
+			node_t gd = var_decl(v, NULL);
+			if (gd) deferred_globals.push_back(gd);
+			emitted_globals.insert(v->name);
+		} else {
+			// Source-declared: locate the TokenDecl carrying the initializer.
+			for (auto &td : prog->top_decls)
+				if (td.kind == Program::DeclKind::dkGlobalVar
+				    && td.var == v) { decl = td.decl; break; }
+		}
+		node_t cc = global_ctor_call(v, cdd, decl);
+		if (cc) m_global_ctor_stmts.push_back(cc);
+	}
 }
 
 // -----------------------------------------------------------------------
@@ -6007,6 +6113,14 @@ node_t CirBuilder::translate_module(Program *prog)
 	for (TokenFunc *tf : funcs)
 		user_func_names.insert(tf->var.name);
 	m_user_func_names = &user_func_names;
+
+	// File-scope class-instance globals (std::string and friends): emit storage
+	// for any not already covered by the dkGlobalVar pass (built-ins like
+	// `version`) and queue their ctor calls for main's prologue. Done before the
+	// body loop so func_def(main) sees m_global_ctor_stmts; the storage rides in
+	// deferred_globals (emitted after the prototypes, Pass 1a). referenced_funcs
+	// it populates (the ctor symbol) is captured by the later proto pass.
+	collect_global_ctors(prog, deferred_globals, emitted_globals);
 
 	// Translate function bodies first, into a temp list, so referenced_funcs
 	// (populated as N_CALL nodes are built) is complete before the prototype
