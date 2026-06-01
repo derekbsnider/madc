@@ -4518,6 +4518,13 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 		return node2(N_CALL, id("__builtin_va_arg", tb), args, tb);
 	}
 
+	// __real__ / __imag__ <expr>  ->  c2mir N_REALPART / N_IMAGPART (native
+	// complex support in the madc MIR fork). Yields the scalar component and is
+	// an lvalue when the operand is, so `&(__real dc)` and `__real__ x = v` work.
+	if (TokenComplexPart *tcp = dynamic_cast<TokenComplexPart *>(tb))
+		return node1(tcp->imag_part ? N_IMAGPART : N_REALPART,
+			     translate_expr(tcp->expr), tb);
+
 	DBG(std::cerr << "cir: unhandled expr " << describe_token(tb)
 		      << " type=" << (int)tb->type()
 		      << " id=" << (int)tb->id() << std::endl);
