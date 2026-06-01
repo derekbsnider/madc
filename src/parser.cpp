@@ -11,6 +11,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <syslog.h>
 #include <time.h>
@@ -5140,6 +5141,16 @@ void Program::populate_builtin_registry()
     // Map to malloc for now (true stack alloca needs JIT intrinsic support).
     builtin_registry.add_core_function("alloca", datatype_vec_t{rtPtr(DataType::dtVOID), DataType::dtUINT64}, (fVOIDFUNC)malloc);
     builtin_registry.add_core_function("__builtin_memset", datatype_vec_t{rtPtr(DataType::dtVOID), rtPtr(DataType::dtVOID), DataType::dtINT, DataType::dtUINT64}, (fVOIDFUNC)memset);
+    // copysign family: GCC provides these as always-available builtins (no
+    // <math.h> required). The lexer maps __builtin_copysign* -> the bare libm
+    // name, but without an <math.h> include the bare name would resolve via the
+    // dlsym fallback with a long return — so a properly-signed double result
+    // (returned in xmm0) is read from the integer register as garbage. Register
+    // the real double/float/long-double signatures here so `__builtin_copysign`
+    // works without an explicit include, matching GCC.
+    builtin_registry.add_core_function("copysign",  datatype_vec_t{DataType::dtDOUBLE, DataType::dtDOUBLE, DataType::dtDOUBLE}, (fVOIDFUNC)(double(*)(double,double))copysign);
+    builtin_registry.add_core_function("copysignf", datatype_vec_t{DataType::dtFLOAT, DataType::dtFLOAT, DataType::dtFLOAT}, (fVOIDFUNC)(float(*)(float,float))copysignf);
+    builtin_registry.add_core_function("copysignl", datatype_vec_t{DataType::dtLDOUBLE, DataType::dtLDOUBLE, DataType::dtLDOUBLE}, (fVOIDFUNC)(long double(*)(long double,long double))copysignl);
     // istream `getline(istream&, string&)` lives in std:: — moved out of
     // the global symbol table so user code defining its own `getline`
     // (e.g. SMAUG IMC's `static const char *getline(char *buffer)`)

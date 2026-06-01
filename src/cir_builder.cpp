@@ -3825,6 +3825,64 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	return proto;
 }
 
+// __builtin_{add,sub,mul}_overflow[_p] dispatch.
+//
+// The lexer text-maps every type-generic overflow builtin to a single
+// long-width helper (__madc_add_overflow(long,long,long*)). That is wrong:
+// the overflow predicate AND the truncated store both depend on the
+// DESTINATION type's width and signedness, which the lexer can't see. GCC
+// computes in infinite precision and tests the fit against the destination
+// type. So the correct layer to choose the helper is here in the CIR builder,
+// where the argument types are resolved:
+//
+//   _overflow   : 3rd arg is `&dst` — use dst's pointee width + signedness.
+//   _overflow_p : 3rd arg is a typed zero — use that operand's width + signedness.
+//
+// va_helpers.cpp already defines the width/signedness-specific helpers
+// (__madc_add_overflow_s16/_u16/.../_s64/_u64 and the _p_* variants); they were
+// previously dead because nothing selected them. This routes to them.
+// c2mir's NATIVE overflow builtins are not usable here: they reject any
+// destination narrower than int, which these GCC-torture tests exercise.
+static std::string overflow_helper_name(const std::string &generic,
+					 TokenBase *third_arg)
+{
+	// generic is one of __madc_{add,sub,mul}_overflow[_p].
+	bool is_p = generic.size() > 2 && generic.compare(generic.size() - 2, 2, "_p") == 0;
+
+	// Resolve the destination integer type.
+	DataDef *dst = NULL;
+	if (third_arg) {
+		DataDef *dd = third_arg->datadef();
+		if (!is_p) {
+			// `&dst` — a pointer; the destination is its pointee.
+			if (DataDefPTR *pdd = dynamic_cast<DataDefPTR *>(dd))
+				dst = pdd->base_type;
+		} else {
+			// typed-zero — its own type is the destination type.
+			dst = dd;
+		}
+	}
+	if (!dst || !dst->is_integer())
+		return generic;   // unknown — keep the long-width generic helper.
+
+	size_t bytes = dst->size;
+	bool uns = dst->is_unsigned();
+
+	// Map byte width to the helper suffix. The helpers cover 8/16/32/64-bit.
+	int bits = bytes >= 8 ? 64 : bytes >= 4 ? 32 : bytes >= 2 ? 16 : 8;
+
+	// The _overflow_p helpers only provide 16/32/64-bit variants; an 8-bit
+	// destination uses the 16-bit signed/unsigned helper safely (the predicate
+	// tests the same infinite-precision fit — but to stay exact, widen 8->16
+	// only for _p, where no _p_*8 helper exists).
+	if (is_p && bits == 8)
+		bits = 16;
+
+	char suffix[16];
+	snprintf(suffix, sizeof(suffix), "_%c%d", uns ? 'u' : 's', bits);
+	return generic + suffix;
+}
+
 // -----------------------------------------------------------------------
 // Expression translation
 // -----------------------------------------------------------------------
@@ -4427,7 +4485,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			}
 			node_t operand = translate_expr(top->right);
 			if (tb->id() == TokenID::tkNeg)
-				return node2(N_SUB, integer(0, tb), operand, tb);
+				// Unary negation: c2mir represents `-x` as a SINGLE-operand
+				// N_SUB (grammar: `N_SUB (expr)`), lowered with float UNOP
+				// semantics. Emitting `0 - x` instead computes `+0.0` for
+				// `-0.0` — the IEEE sign bit is lost (signbit/copysign break).
+				return node1(N_SUB, operand, tb);
 			c2mir_node_code_t code;
 			switch (tb->id()) {
 			case TokenID::tkLnot: code = N_NOT; break;
@@ -4595,6 +4657,22 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttCallFunc) {
 		TokenCallFunc *tcf = dynamic_cast<TokenCallFunc *>(tb);
 		if (tcf) {
+			// __madc_{add,sub,mul}_overflow[_p]: choose the width/signedness-
+			// specific helper from the destination operand's type (the lexer
+			// only emitted the long-width generic, which mis-detects overflow
+			// and mis-truncates for narrow / signedness-differing destinations).
+			if (tcf->var.name.compare(0, 7, "__madc_") == 0
+			    && tcf->var.name.find("_overflow") != std::string::npos
+			    && tcf->parameters.size() == 3) {
+				std::string sel = overflow_helper_name(
+					tcf->var.name, tcf->parameters[2]);
+				if (sel != tcf->var.name) {
+					referenced_funcs.insert(sel);
+					node_t args = list();
+					build_call_args(tcf, args);
+					return node2(N_CALL, id(sel.c_str(), tb), args, tb);
+				}
+			}
 			// __destroy(ptr): compiler intrinsic — destruct the pointed-to
 			// object element. Lowers to the ELEMENT TYPE's class destructor
 			// (mangled ~basic_string for std::string, Cls___dtor for a user
@@ -4852,6 +4930,21 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 
 node_t CirBuilder::translate_if(TokenIF *ti)
 {
+	// Compile-time-constant condition: fold and prune the dead branch, like
+	// GCC. This is what makes `if (__builtin_constant_p(var)) link_error();`
+	// work: constant_p folds to a literal 0, so the dead `then` branch — and
+	// any reference to an undefined symbol inside it (link_error) — is never
+	// translated. Neither c2mir nor MIR eliminates a dead `if (0)` branch, so
+	// the undefined extern would otherwise fail at MIR-link. Restricted to
+	// literal integer/char conditions so no side-effecting expression is
+	// dropped; the taken branch is still emitted in full.
+	if (ti->condition &&
+	    (ti->condition->type() == TokenType::ttInteger ||
+	     ti->condition->type() == TokenType::ttChar)) {
+		bool taken = ti->condition->ival() != 0;
+		TokenBase *branch = taken ? ti->statement : ti->elsestmt;
+		return branch ? translate_stmt_required(branch) : ignore();
+	}
 	node_t cond = translate_expr(ti->condition);
 	node_t then_body = translate_stmt_required(ti->statement);
 	node_t else_body = ti->elsestmt ? translate_stmt_required(ti->elsestmt) : ignore();
