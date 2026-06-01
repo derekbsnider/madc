@@ -3669,6 +3669,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	if (tb->type() == TokenType::ttChar)
 		return ch(tb->ival(), tb);
 
+	// GNU statement expression `({ stmt...; expr; })` used as a VALUE. c2mir
+	// models it natively as N_STMTEXPR(compound_stmt); the block's last item
+	// must be an expression-statement (c2mir enforces this). A bare TokenCpnd
+	// only reaches translate_expr in value position — in statement position
+	// translate_stmt routes it to translate_block — so this is unambiguous.
+	if (TokenCpnd *tc = dynamic_cast<TokenCpnd *>(tb))
+		return node1(N_STMTEXPR, translate_block(tc), tb);
+
 	// new ClassName(args) -> a statement expression that allocates zeroed
 	// storage, constructs in place, and yields the typed pointer:
 	//   ({ struct C *__newN = (struct C*)calloc(1, sizeof(struct C));
