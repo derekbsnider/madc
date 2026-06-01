@@ -166,6 +166,7 @@ public:
     std::vector<TokenBase *> deferred;   // defer statements (compiled in LIFO at scope exit)
     std::vector<Variable *> destruct_order; // class-typed vars in declaration order (for LIFO dtor)
     int end_line;			// line of closing } (set by parseCompound)
+    bool is_stmt_expr = false;		// true: a GNU statement-expression `({...})`, not a plain `{...}` block
     TokenCpnd() : TokenBase() { method = NULL; parent = NULL; child = NULL; end_line = 0; }
     virtual TokenType type() const { return TokenType::ttCompound; }
     virtual DataDef *datadef() const override {

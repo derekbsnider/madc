@@ -7508,6 +7508,12 @@ TokenBase *Program::parseExpression(TokenBase *tb, bool conditional, bool ternar
 			nextToken(); // consume '{'
 			pushCompound();
 			TokenBase *stmt_expr = parseCompound();
+			// Mark it a statement-expression so translate_stmt emits it
+			// as an expression-statement (value-producing), not a plain
+			// block — required when it is the last item of an enclosing
+			// `({...})` (a nested stmt-expr `({ ({...}); })`).
+			if ( TokenCpnd *secp = dynamic_cast<TokenCpnd *>(stmt_expr) )
+			    secp->is_stmt_expr = true;
 			TokenBase *close = nextToken();
 			if ( !close || close->id() != TokenID::tkClBrk )
 			    Throw(close ? close : tb) << "Expected ')' after statement expression" << flush;

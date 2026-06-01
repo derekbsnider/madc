@@ -6082,7 +6082,37 @@ node_t CirBuilder::translate_stmt(TokenBase *tb)
 
 	// Compound statement (block)
 	TokenCpnd *tc = dynamic_cast<TokenCpnd *>(tb);
-	if (tc) return translate_block(tc);
+	if (tc) {
+		// A GNU statement-expression `({...})` appearing in STATEMENT position
+		// is an expression-statement whose value is the block's last
+		// expression — emit N_EXPR(N_STMTEXPR(block)), not a plain N_BLOCK.
+		// This makes its value flow when it is the last item of an enclosing
+		// stmt-expr (the nested `({ ({...}); })` form); c2mir otherwise rejects
+		// the outer with "last statement in statement expression is not an
+		// expression". A plain `{...}` block has is_stmt_expr==false -> N_BLOCK.
+		if (tc->is_stmt_expr) {
+			node_t blk = translate_block(tc);
+			// Wrap as a value-producing expression-statement ONLY when the
+			// block's last item is itself an expression-statement (the
+			// stmt-expr has a value). A VOID stmt-expr (last item is an
+			// if/loop/label/etc., e.g. `({ ...; goto L; });`) used in
+			// statement position stays a plain block — its value is
+			// discarded, and N_STMTEXPR would wrongly demand an expression
+			// last-item (regressing 930406-1).
+			node_t items = c2mir_node_op(blk, 1);
+			node_t last = NULL;
+			for (int i = 0; ; i++) {
+				node_t e = c2mir_node_op(items, i);
+				if (!e) break;
+				last = e;
+			}
+			if (last && last->code == N_EXPR)
+				return node2(N_EXPR, list(),
+					     node1(N_STMTEXPR, blk, tb), tb);
+			return blk;
+		}
+		return translate_block(tc);
+	}
 
 	// Empty statement (stray ';'): a no-op — skip it (translate_block drops
 	// NULLs). Handling it here keeps it from reaching the expression-statement
