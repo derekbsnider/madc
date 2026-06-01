@@ -2131,6 +2131,41 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 		}
 	}
 
+	// Bit-field signedness reconciliation. A bit-field's signedness is the
+	// field's resolved signedness (DataDefSTRUCT::BitFieldInfo::is_unsigned),
+	// not necessarily the base type's default. The common case is an
+	// enum-typed bit-field (`enum E e : 2;`): the enum lowers to a plain
+	// signed `int` spec, but with all-non-negative enumerators its bit-field
+	// is unsigned (GCC/Clang), so a 2-bit field holding 3 must read back 3,
+	// not -1. If the field is unsigned but the rendered spec has no explicit
+	// `unsigned`, prepend N_UNSIGNED so c2mir zero-extends on load. (Already
+	// unsigned base types — `unsigned`, `unsigned long long` — render
+	// N_UNSIGNED themselves and are skipped.)
+	{
+		const DataDefSTRUCT::BitFieldInfo *bfsign =
+			owner ? owner->m_bitfield(m.first) : NULL;
+		if (bfsign && bfsign->is_bitfield && bfsign->is_unsigned) {
+			bool has_sign_spec = false;
+			for (int i = 0; ; i++) {
+				node_t sp = c2mir_node_op(mspec, i);
+				if (!sp) break;
+				if (sp->code == N_UNSIGNED || sp->code == N_SIGNED)
+					has_sign_spec = true;
+			}
+			if (!has_sign_spec) {
+				// Rebuild as [N_UNSIGNED, <existing specs...>].
+				node_t fixed = list();
+				append(fixed, simple(N_UNSIGNED));
+				for (int i = 0; ; i++) {
+					node_t sp = c2mir_node_op(mspec, i);
+					if (!sp) break;
+					append(fixed, sp);
+				}
+				mspec = fixed;
+			}
+		}
+	}
+
 	node_t mshare = node1(N_SHARE, mspec);
 	node_t mid = id(m.first.c_str(), m.origin);
 	node_t mdecl_list = list();
@@ -2158,8 +2193,19 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	node_t member = simple(N_MEMBER, m.origin);
 	append(member, mshare);
 	append(member, mdecl);
-	append(member, ignore());
-	append(member, ignore());
+	append(member, ignore());	// attrs
+	// Bit-field width (c2mir N_MEMBER slot 3 = const_expr, or N_IGNORE for a
+	// plain member). The member's `:width` was parsed and recorded on the
+	// owning struct; carry it into the emitted node_t so c2mir lays the field
+	// out as a real bit-field and performs the standard mask-on-store /
+	// sign-or-zero-extend-on-load itself (matching GCC). Without this, madc
+	// emitted a full-width member and bit-field values were wrong.
+	const DataDefSTRUCT::BitFieldInfo *bf =
+		owner ? owner->m_bitfield(m.first) : NULL;
+	if (bf && bf->is_bitfield)
+		append(member, integer((long)bf->bit_width, m.origin));
+	else
+		append(member, ignore());
 	return member;
 }
 
