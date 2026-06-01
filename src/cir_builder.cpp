@@ -4388,6 +4388,16 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 					referenced_funcs.insert(nfd->nested_emit_name);
 					return id(nfd->nested_emit_name.c_str(), tb);
 				}
+				// A top-level function used as a VALUE (address-taken /
+				// function-pointer decay: `&abort`, `f = exit`, `{abort}`).
+				// Record it in referenced_funcs so translate_module emits its
+				// prototype — without it c2mir sees an "undeclared identifier"
+				// (call sites already record callees; a bare value-use must too).
+				if (nfd->nested_emit_name.empty()) {
+					std::string sym = var_emit_name(tv->var);
+					referenced_funcs.insert(sym);
+					return id(sym.c_str(), tb);
+				}
 			}
 			// Record file-scope (non-local, non-param) references so
 			// translate_module can emit extern decls for libc globals
