@@ -2287,9 +2287,17 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// 1-D array members. A runtime-sized member (member_count_exprs != NULL)
 	// is a flexible/VLA-ish member and contributes no constant dimension here.
 	std::vector<uint32_t> mdims;
+	// A trailing flexible array member (`T x[]` / `T x[0]`) gets an array
+	// declarator with an UNSPECIFIED size (N_ARR slot = N_IGNORE) so c2mir
+	// treats it as flexible and sizes the file-scope object from its
+	// initializer. Emitting a literal `[0]` instead makes c2mir reject the
+	// brace initializer ("zero array size" / "excess elements").
+	bool m_flexible = false;
 	if (owner) {
 		std::string mname = m.first;
-		if (owner->m_is_array_decl(mname) && !owner->m_count_expr(mname)) {
+		m_flexible = owner->m_is_flexible_array(mname);
+		if (!m_flexible && owner->m_is_array_decl(mname)
+		    && !owner->m_count_expr(mname)) {
 			const std::vector<uint32_t> *dv = owner->m_dims(mname);
 			if (dv && !dv->empty()) {
 				mdims = *dv;
@@ -2461,6 +2469,9 @@ node_t CirBuilder::member_node(const memberpair_t &m, DataDefSTRUCT *owner)
 	// first instead yields `T (*m)[N]` — a pointer to an array — which
 	// mistypes element assignments ("assignment of incompatible value").
 	// Array member dimensions: short learned[16] -> ARR(16).
+	// Flexible array member: ARR with N_IGNORE size (sized by initializer).
+	if (m_flexible)
+		append(mdecl_list, node3(N_ARR, ignore(), list(), ignore()));
 	for (size_t d = 0; d < mdims.size(); d++)
 		append(mdecl_list, node3(N_ARR, ignore(), list(), integer(mdims[d])));
 	if (!mtypedef.empty()) {

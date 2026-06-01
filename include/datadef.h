@@ -624,6 +624,31 @@ public:
 		return true;
 	return false;
     }
+    // A C99 flexible array member (`T x[]`) or GNU zero-length array (`T x[0]`)
+    // as the LAST struct member: an array declarator, not runtime-sized, whose
+    // sole/leading dimension is 0. Such a member contributes no fixed size and
+    // is sized by its initializer (file-scope object) — c2mir wants its array
+    // declarator emitted with an UNSPECIFIED size (N_IGNORE), not a literal 0.
+    bool m_is_flexible_array(const std::string &member) const
+    {
+	if ( members.empty() )
+	    return false;
+	for ( size_t i = 0; i < members.size(); ++i )
+	    if ( !member.compare(members[i].first) )
+	    {
+		if ( i + 1 != members.size() )
+		    return false; // only the trailing member can be flexible
+		if ( i >= member_array_flags.size() || !member_array_flags[i] )
+		    return false;
+		if ( i < member_count_exprs.size() && member_count_exprs[i] )
+		    return false; // runtime-sized, not flexible
+		if ( i < member_dims.size() && member_dims[i].size() == 1
+		    && member_dims[i][0] == 0 )
+		    return true;
+		return false;
+	    }
+	return false;
+    }
     DataDef *m_type(std::string &member)
     {
 	std::vector<memberpair_t>::iterator dvpi;
