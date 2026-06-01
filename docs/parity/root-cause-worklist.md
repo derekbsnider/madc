@@ -1,0 +1,62 @@
+# CIR-vs-asmjit parity recovery — root-cause worklist (2026-06-01)
+
+Measured with `scripts/run_gcc_testsuite.py --root /workspace/gcc/gcc/testsuite`
+(1685 gcc.c-torture/execute tests, same runner for both backends):
+
+| backend | passed | % |
+|---|---|---|
+| **master (asmjit)** | 1645 | **97.6%** |
+| **CIR (feature/cir-stdstring-claude)** | 1384 | 82.1% |
+
+**Recovery target = 265 tests** asmjit passes but CIR fails (`docs/parity/cir-vs-asmjit-regressions.txt`):
+4 compile-fail (VLA/varargs) + 260 runtime mislowering + 1 timeout. 6 tests fail on
+*both* backends (never chase); CIR is *ahead* on 4.
+
+The 260 runtime mislowerings were triaged (5 parallel agents, each reducing representatives
+vs gcc). They collapse to **~16 root-cause clusters** — fixing one cluster recovers many
+tests, exactly like the pointer-to-array (+2), statement-expression (+2) fixes already landed.
+
+## Fixable clusters (front-end: cir_builder / parser) — ~180 tests, ~15 root causes
+
+Ranked by leverage (tests recovered per fix). All are cir_builder/parser bugs, NOT MIR/ABI floor gaps.
+
+| # | cluster | ~tests | root cause / where | repro |
+|---|---|---:|---|---|
+| 1 | **struct/aggregate member-type resolution** | ~35 | anonymous/inline/nested struct or union members, comma-declared bitfield members, `[constexpr]`/`sizeof` array-dim members, flexible/zero-length array members, forward/incomplete struct array members — the member type isn't completed so the whole struct's member table is dropped ("struct has no member" / "field has incomplete type"). parser struct-member type resolution + cir_builder struct-decl lowering. | `tmp/m506.c`, `tmp/r_sizeofdim.c`, `tmp/r_nestedstruct.c` |
+| 2 | **bitfield load/store** | ~30 | store not masked to field width; signed field not sign-extended on read; unsigned field not zero-extended (returns sign-extended); wide (>32-bit) fields mis-extracted; by-value struct-arg bitfields. cir_builder bitfield member-access lowering (missing `& mask` on store, shift-left/arith-shift-right on signed load). | `tmp/bf.c`, `tmp/sbv.c`, `tmp/b16.c` |
+| 3 | **varargs** | ~21 | (a) `va_arg(ap, struct)` emits a non-struct result type; (b) register-save-area boundary: with ≥6 GP / ≥8 SSE *named* args, `va_arg`'s initial `gp_offset`/`fp_offset` is wrong → reads register-save-area instead of overflow stack; (c) `long double` param slot. cir_builder `va_start`/`va_arg` lowering. | `tmp/931004-2.c`, `tmp/vatest3.c`, `tmp/va.c` |
+| 4 | **aggregate initializer nesting** | ~17 | nested-brace / GNU `field:`-designator initializers flattened into one positional scalar list ("excess elements in scalar initializer" at inner brace); `static char[N]="lit"` drops the string data (auto arrays OK); array compound literals `(T[]){...}` not sized from initializer. cir_builder `translate_init`/N_LIST + static-initializer path. | `tmp/struct-ret-1`, `tmp/r_clit.c`, `tmp/stat.c` |
+| 5 | **nested functions (GNU)** | ~10 | local function definitions + access to enclosing locals ("called object is not a function" / "undeclared identifier"). Needs hoisting + static-chain/trampoline lowering in cir_builder. | `tmp/r_nest.c` |
+| 6 | **integer promotion / extension** | ~10 | usual-arithmetic-conversion doesn't promote signed→unsigned/wider before compare/xor; unsigned→float sign-extends instead of zero-extends; u64→u32 narrowing not truncated; unary `~0U` const-folds as signed. cir_builder `infer_numeric_type` / cast lowering (operator self-determination rules). | `tmp/r_ucmp.c`, `tmp/r_conv.c`, `tmp/sh4.c` |
+| 7 | **`__builtin_*` mislowered** | ~10 | `__builtin_{add,mul}_overflow[_p]` overflow flag wrong (ignores destination width); `copysign`/`signbit`/`-0.0` sign bit lost; `__builtin_constant_p` not folded; libm `double`-return fns (pow/floor) read as int/long (embedded-header return-type bug). cir_builder builtin table + `include/madc/math.h`. | `tmp/ovf.c`, `tmp/lm.c` |
+| 8 | **`_Complex` pass/return ABI** | ~7 | scalar complex arith works; passing/returning `_Complex` by value crashes (SIGSEGV) + packed-member/array/global-init gaps. cir_builder complex arg/return ABI (fork has native `_Complex`). | `tmp/r_cplx.c` |
+| 9 | **K&R / untyped functions** | ~5 | K&R-defined fn called with more args than listed, and implicit-int fn `return;` rejected by c2mir strict check. parser K&R function-type handling. | `tmp/knr.c` |
+| 10 | **static-local / static-array initializer dropped** | ~5 | `static int u=11;` reads 0; static arrays zeroed. cir_builder static-storage initializer emission. | `tmp/r_static.c` |
+| 11 | **`__attribute__((aligned(N)))`** | ~3 | ignored on struct/member → wrong size/offset. parser parses-and-drops; layout never applies it. | `tmp/r_align.c` |
+| 12 | **`__attribute__((alias))`** | ~3 | not lowered to a symbol alias → "import of undefined item". cir_builder attribute + MIR symbol emission. | `tmp/alias-2` |
+| 13 | **void/comma-expr ternary type** | ~3 | `cond ? (void)0 : (printf(...),abort())` — a void/comma branch not typed `void` → "incompatible types in cond-expression". cir_builder ternary type-merge / comma-result type. | strlen-2 |
+| 14 | **void\* / incomplete-type ptr arithmetic** | ~2 | `void* + int` rejected. parser/cir_builder pointer-arith type check. | pr17133 |
+| 15 | **setjmp/longjmp**, misc singletons | ~10 | `__builtin_longjmp`+alloca; computed-goto label scope; union-by-value aliased members; `case` in dead `if(0){}`; block-scope `extern` resolves to local; float→int saturate-vs-wrap. | various |
+
+## Deferred clusters (floor gaps — NOT quick front-end fixes) — ~45 tests
+
+| cluster | ~tests | why deferred |
+|---|---:|---|
+| **SIMD `vector_size`** | ~30 | MIR floor gap (locals i64/f/d/ld only). Tier-3 raise-MIR, separately roadmapped. asmjit passed these via direct x86. |
+| inline `asm` | ~5 | c2mir has no inline asm; lower/skip. |
+| wide-string / `wchar_t` | ~3 | c2mir floor gap (`L"..."`). |
+| `__int128` | ~3 | likely MIR width gap — verify against fork. |
+| VLA (`sizeof`, in-struct, in-loop) | ~4 | Tier-3 MIR; user-deferred with SIMD. |
+
+## Effort read
+
+~260 runtime fails = **~16 root causes**, not 260 bugs. The top 4 fixable clusters
+(struct-member-resolution, bitfield, varargs, aggregate-init) alone ≈ **~103 tests**.
+Fixing the ~15 fixable clusters recovers ~180 tests → CIR ~82% → ~93-95%, at/near asmjit's
+97.6% modulo the ~45 deferred floor-gap tests (SIMD/VLA/asm/wchar/int128). That is a bounded
+campaign of cluster-fixes (each gcc-compared + gate-verified + SMAUG-soaked), **not** weeks of
+per-test whack-a-mole. Reducers for every cluster are in `tmp/` (regenerate via the batch lists
+`tmp/rtbatch_0[0-4]`).
+
+Method per cluster: reduce → gcc/asmjit-diff → fix at deepest layer (parser type or cir_builder
+translate_*) → `make -C src fulltest` (no regressions) → re-run torture for the cluster → commit.
