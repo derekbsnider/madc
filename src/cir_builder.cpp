@@ -6650,6 +6650,16 @@ node_t CirBuilder::translate_module(Program *prog)
 			// a bare forward declaration (`struct X;`) is not.
 			if (sdd && sdd->is_complete)
 				struct_def_points.insert(sdd->name);
+		} else if (td.kind == Program::DeclKind::dkTypedef && td.struct_body) {
+			// A combined `typedef struct Tag {...} Tag;` is ALSO a body
+			// definition point: the tag's full body rides inline in this
+			// typedef's SPEC_DECL. Recording it lets an EARLIER typedef that
+			// only references the tag (`typedef struct Tag *p;`, written before
+			// the body) emit STRUCT(tag, IGNORE) instead of hoisting the body
+			// above types its members name (self-referential typedef cluster).
+			DataDefSTRUCT *sdd = struct_behind(td.dd);
+			if (sdd && sdd->is_complete)
+				struct_def_points.insert(sdd->name);
 		}
 	}
 
@@ -6693,15 +6703,24 @@ node_t CirBuilder::translate_module(Program *prog)
 		switch (td.kind) {
 		case Program::DeclKind::dkTypedef: {
 			DataDefSTRUCT *sdd = struct_behind(td.dd);
-			// Forward ref iff the struct is defined by a separate bare
-			// dkStruct and hasn't been emitted yet -> STRUCT(tag, IGNORE).
+			// This typedef IS the tag's body-definition point when it carries
+			// the inline body (`typedef struct Tag {...} Tag;`, td.struct_body).
+			bool is_def_point = td.struct_body && sdd;
+			// Forward ref iff the struct's body is defined elsewhere (a separate
+			// bare dkStruct OR a later combined typedef) and hasn't been emitted
+			// yet -> STRUCT(tag, IGNORE). The def-point typedef itself never
+			// forward-refs; it emits the body.
 			bool forward = sdd && struct_def_points.count(sdd->name)
-					   && !emitted_structs.count(sdd->name);
+					   && !emitted_structs.count(sdd->name)
+					   && !is_def_point;
 			node_t n = typedef_decl(td.name, td.dd, emitted_structs, forward);
 			if (n) { stamp(n, td); append(top_list, n); }
-			// A combined `typedef struct X {...} Y;` (no separate bare
-			// def) emits the body inline here -> mark it emitted.
-			if (sdd && sdd->is_complete && !struct_def_points.count(sdd->name))
+			// Mark the tag emitted once its body actually went out here: either
+			// this is its recorded def point, or a combined `typedef struct X
+			// {...} Y;` with no separate def point (anonymous-tag / pure-pointer
+			// alias) that renders its body inline.
+			if (sdd && sdd->is_complete &&
+			    (is_def_point || !struct_def_points.count(sdd->name)))
 				emitted_structs.insert(sdd->name);
 			break;
 		}

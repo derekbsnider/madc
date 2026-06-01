@@ -10257,7 +10257,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	td.origin = otok;
 	pgm.top_decls.push_back(td);
     };
-    auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr)
+    auto record_typedef = [&](const std::string &alias, DataDef *dd, TokenDataType *tdt_, TokenBase *otok = nullptr, bool defines_body = false)
     {
 	pgm.user_typedef_names.insert(alias);
 	// A typedef inside a function body is block-scoped: the CIR builder emits
@@ -10274,6 +10274,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	td.file = TokenBase::_parse_file;
 	td.line = TokenBase::_parse_line;
 	td.origin = otok;
+	td.struct_body = defines_body;
 	pgm.top_decls.push_back(td);
     };
 
@@ -11234,7 +11235,13 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 	    pgm.datatype_map[alias->str] = tdt;
 	    if ( alias_dd == dds )
 		pgm.struct_map[alias->str] = dds;
-	    record_typedef(alias->str, alias_dd, tdt, alias);
+	    // The non-pointer alias of a combined `typedef struct Tag {...} Tag;` is
+	    // the tag's body-definition point: its SPEC_DECL carries the full struct
+	    // body. Recording this lets the CIR backend treat an EARLIER typedef that
+	    // merely references the tag (`typedef struct Tag *p;`, before the body) as
+	    // a forward reference — STRUCT(tag, IGNORE) — so the body emits here,
+	    // after any types its members name are defined.
+	    record_typedef(alias->str, alias_dd, tdt, alias, alias_dd == dds);
 	    DBG(cout << "TokenSTRUCT::parse() typedef alias " << alias->str << endl);
 	    tn = pgm.nextToken();
 	    if ( !tn )
@@ -12315,7 +12322,13 @@ static std::string contextual_identifier_name(TokenBase *tb)
     if ( tb->type() == TokenType::ttDataType )
     {
 	TokenDataType *td = static_cast<TokenDataType *>(tb);
-	if ( &td->definition == &ddSTRING )
+	// Mirror is_contextual_identifier_token: the madc-dialect builtin type
+	// keywords `string` and `array` are valid C identifiers (e.g. a parameter
+	// or variable named `array`). Return the spelled name so it is captured
+	// as the declarator name, not dropped (which yields an unnamed/abstract
+	// parameter that c2mir rejects: "parameter type without a name").
+	if ( &td->definition == &ddSTRING
+	  || &td->definition == &ddARRAY )
 	    return td->str;
     }
     if ( tb->id() == TokenID::tkCLASS
