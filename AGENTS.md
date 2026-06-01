@@ -140,8 +140,12 @@ Source lives in `src/`, headers in `include/`, output in `bin/` and
 Build requires `clang++` (or `g++`) with C++11 support and the **madc MIR
 fork** (libmir + c2mir) at `/workspace/mir` —
 [github.com/derekbsnider/mir](https://github.com/derekbsnider/mir), branch
-`feature/complex-support`, **not** upstream MIR (it carries native C99
-`_Complex` support and the c2mir fixes the CIR backend depends on).
+**`develop`** (pinned at commit `1fdf44d` — see `MIR_COMMIT`), **not** upstream
+MIR (it carries native C99 `_Complex`, `__attribute__((cleanup))`, the
+scope-depth auto-local layout fix, and the SysV-varargs / `_Complex` / `_Alignas`
+ABI fixes the CIR backend depends on). The fork's `develop` tracks madc's
+`develop`; once madc reaches master parity, the fork's `master` tracks madc's
+`master`.
 
 ## Architecture
 

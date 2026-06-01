@@ -166,13 +166,17 @@ Plus `#load` for any shared library via dlopen.
 Requires:
 - `clang++` (or `g++`) with C++11 support
 - The **madc MIR fork** — [github.com/derekbsnider/mir](https://github.com/derekbsnider/mir)
-  (branch `feature/complex-support`), built at `/workspace/mir`. madc links
-  `libmir.a` + c2mir from there. This is **not** upstream MIR: the fork carries
-  native C99 `_Complex` support and the c2mir fixes the CIR backend depends on.
+  (branch **`develop`**, pinned at commit `1fdf44d` — see [`MIR_COMMIT`](MIR_COMMIT)),
+  built at `/workspace/mir`. madc links `libmir.a` + c2mir from there. This is
+  **not** upstream MIR: the fork carries native C99 `_Complex`,
+  `__attribute__((cleanup))`, and the ABI/codegen fixes the CIR backend depends
+  on. The fork's `develop` tracks madc's `develop` (and `master`↔`master` once
+  madc reaches parity).
 
 ```bash
 # Build the MIR fork first (libmir + c2mir):
-git clone -b feature/complex-support https://github.com/derekbsnider/mir /workspace/mir
+git clone -b develop https://github.com/derekbsnider/mir /workspace/mir
+git -C /workspace/mir checkout "$(cat MIR_COMMIT)"   # pin to the verified commit
 make -C /workspace/mir
 
 make -C src           # build bin/madc

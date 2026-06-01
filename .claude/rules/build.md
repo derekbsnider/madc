@@ -11,7 +11,14 @@
 
 - The backend is CIR → c2mir → MIR. asmjit was removed.
 - The MIR library (libmir + c2mir) lives at `/workspace/mir` and is the
-  **madc MIR fork** (github.com/derekbsnider/mir, branch
-  `feature/complex-support`) — NOT upstream MIR. It carries native C99
-  `_Complex` support and c2mir fixes the CIR backend depends on. Push fork
-  changes there before relying on them in a madc release.
+  **madc MIR fork** (github.com/derekbsnider/mir, branch **`develop`**, pinned at
+  the commit in the repo-root `MIR_COMMIT` file — currently `1fdf44d`) — NOT
+  upstream MIR. It carries native C99 `_Complex`, `__attribute__((cleanup))`, and
+  ABI/codegen fixes the CIR backend depends on.
+- **Branch correspondence:** the fork's `develop` tracks madc's `develop`; once
+  madc reaches master parity, the fork's `master` tracks madc's `master`. A MIR
+  *feature* branch is cut only when a madc feature actually needs new MIR work,
+  and merges to MIR `develop` in lockstep with the madc feature merging to develop.
+- **Pin discipline:** when madc starts depending on new fork commits, merge them
+  to MIR `develop`, push, and bump `MIR_COMMIT` in the SAME madc commit. Never let
+  madc depend on un-pushed or unpinned fork work.
