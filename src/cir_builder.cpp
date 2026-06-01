@@ -15,6 +15,7 @@
 #include <stack>
 #include <list>
 #include <queue>
+#include <algorithm>
 #include <iostream>
 #include <sstream>
 #include <fstream>
@@ -936,6 +937,24 @@ void CirBuilder::build_call_args(TokenCallFunc *tcf, node_t args)
 			// Derived->base pointer argument (`B*` arg -> `A*` parameter):
 			// make the implicit upcast explicit so c2mir does not warn.
 			append(args, upcast_class_ptr(translate_expr(arg), pt, arg, arg));
+	}
+	// GNU nested-function / [&]-lambda capture forwarding: a call to a capturing
+	// callee passes the address of each captured enclosing variable as a hidden
+	// trailing argument, matching the `T *name` capture parameters func_def
+	// appended. The captured Variable is in scope at this call site (the call
+	// lives in the defining function). If THIS function also captured that same
+	// variable (nested-in-nested), forward its capture pointer param directly
+	// (it already holds &var); otherwise take its address here.
+	if (callee && !callee->captured_vars.empty()) {
+		for (Variable *cv : callee->captured_vars) {
+			if (!cv) continue;
+			if (m_cur_captured_fd && m_cur_capture_set.count(cv)) {
+				note_capture(cv);
+				append(args, id(cv->name.c_str(), tcf));
+			} else {
+				append(args, node1(N_ADDR, id(cv->name.c_str(), tcf), tcf));
+			}
+		}
 	}
 }
 
@@ -3817,7 +3836,13 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 		append(param_list, retbuf_param(retbuf_dd, tf));
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
-	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf) {
+	// A capturing nested fn / [&] lambda gains hidden `T *name` capture params
+	// (FuncDef::captured_vars, populated by func_def in Pass 2 — which runs
+	// BEFORE this proto pass). A zero-user-param capturing fn that actually
+	// captured at least one var is therefore NOT `(void)`. Keep the prototype's
+	// parameter list in lock-step with func_def's.
+	bool has_capture_params = fd->has_captures && !fd->captured_vars.empty();
+	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !has_capture_params) {
 		node_t void_spec = node1(N_LIST, simple(N_VOID));
 		node_t void_decl = node2(N_DECL, ignore(), list());
 		node_t void_param = node2(N_TYPE, void_spec, void_decl);
@@ -3834,6 +3859,13 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 			append(param_list, param_decl(ptype, pname, ptypedef));
 		}
 	}
+	if (fd->has_captures)
+		for (Variable *cv : fd->captured_vars) {
+			if (!cv) continue;
+			DataDef *capt_ptr = new DataDefPTR(*cv->type);
+			append(param_list, param_decl(capt_ptr, cv->name.c_str(),
+						      std::string()));
+		}
 	if (fd->is_varargs)
 		append(param_list, simple(N_DOTS));
 
@@ -4214,6 +4246,19 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				const std::string &content = tv->var.name.substr(11);
 				return str(content.c_str(), content.size() + 1, tb);
 			}
+			// Value-use of a GNU nested function's in-scope alias (taking its
+			// address / passing it as a callback) names the HOISTED symbol. Only
+			// for a capture-free nested fn: a capturing one cannot be a plain
+			// function pointer (no slot for the captures — GCC uses a trampoline),
+			// so leaving the short name there yields a clean c2mir error rather
+			// than a callback that reads garbage captures.
+			if (FuncDef *nfd = dynamic_cast<FuncDef *>(tv->var.type)) {
+				if (!nfd->nested_emit_name.empty()
+				    && nfd->captured_vars.empty()) {
+					referenced_funcs.insert(nfd->nested_emit_name);
+					return id(nfd->nested_emit_name.c_str(), tb);
+				}
+			}
 			// Record file-scope (non-local, non-param) references so
 			// translate_module can emit extern decls for libc globals
 			// (stderr/stdout/stdin) that were registered lazily and never
@@ -4227,6 +4272,11 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			// separate object-pointer path handled elsewhere.)
 			if ((tv->var.flags & vfREFERENCE) && tv->var.type
 			    && tv->var.type->is_pointer())
+				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
+			// GNU nested-function / [&]-lambda capture: an enclosing local/param
+			// the body reads is captured by reference, lowered to a hidden
+			// pointer parameter `T *name`. The value read is `(*name)`.
+			if (note_capture(&tv->var))
 				return node1(N_DEREF, id(tv->var.name.c_str(), tb), tb);
 			return id(tv->var.name.c_str(), tb);
 		}
@@ -4252,8 +4302,12 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// Address-of variable
 	{
 		TokenAddrOf *ta = dynamic_cast<TokenAddrOf *>(tb);
-		if (ta)
+		if (ta) {
+			// `&capturedvar` inside a nested fn IS the capture pointer param.
+			if (note_capture(&ta->var))
+				return id(ta->var.name.c_str(), tb);
 			return node1(N_ADDR, id(ta->var.name.c_str(), tb), tb);
+		}
 	}
 
 	// Address-of expression
@@ -4266,8 +4320,15 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 	// Dereference variable
 	{
 		TokenDeref *td = dynamic_cast<TokenDeref *>(tb);
-		if (td)
+		if (td) {
+			// `*p` where p is a captured pointer var: the capture param is
+			// `T **p` (&enclosing-p), so the enclosing p's value is `(*p)` and
+			// the user deref is `(*(*p))`.
+			if (note_capture(&td->var))
+				return node1(N_DEREF,
+					node1(N_DEREF, id(td->var.name.c_str(), tb), tb), tb);
 			return node1(N_DEREF, id(td->var.name.c_str(), tb), tb);
+		}
 	}
 
 	// Dereference expression
@@ -4308,6 +4369,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (tsub->object.name.compare(0, 11, "__literal__") == 0) {
 				const std::string &content = tsub->object.name.substr(11);
 				base = str(content.c_str(), content.size() + 1, tb);
+			} else if (note_capture(&tsub->object)) {
+				// Captured container: subscript through the deref of the
+				// capture pointer param (`(*name)[i]`).
+				base = node1(N_DEREF, id(tsub->object.name.c_str(), tb), tb);
 			} else {
 				base = id(tsub->object.name.c_str(), tb);
 			}
@@ -4354,6 +4419,10 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			node_t obj;
 			if (tm->parent_expr)
 				obj = translate_expr(tm->parent_expr);
+			else if (note_capture(&tm->object))
+				// Captured struct object: `(*name).field` (the `.`/`->`
+				// selection below is unchanged — `(*name)` is the struct lvalue).
+				obj = node1(N_DEREF, id(tm->object.name.c_str(), tb), tb);
 			else
 				obj = id(tm->object.name.c_str(), tb);
 			node_t member = id(tm->var.name.c_str(), tb);
@@ -4794,6 +4863,14 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 			if (tcf->src_node) {
 				func_id = translate_expr(tcf->src_node);
 			} else {
+				// A call to a GNU nested function resolves the in-scope
+				// source-named alias, but the function is HOISTED to a unique
+				// top-level symbol — emit that hoisted name (FuncDef::
+				// nested_emit_name), not the source name.
+				FuncDef *cdf = call_target_funcdef(tcf);
+				const char *callee_name = (cdf && !cdf->nested_emit_name.empty())
+					? cdf->nested_emit_name.c_str()
+					: tcf->var.name.c_str();
 				// c2mir intrinsics (e.g. __builtin_va_start) are
 				// recognized by name and lowered in-place; emitting an
 				// extern prototype for one shadows the intrinsic and
@@ -4801,8 +4878,8 @@ node_t CirBuilder::translate_expr(TokenBase *tb)
 				// So skip the proto for them. (__builtin_va_arg has its
 				// own translation path above.)
 				if (tcf->var.name.compare(0, 13, "__builtin_va_") != 0)
-					referenced_funcs.insert(tcf->var.name);
-				func_id = id(tcf->var.name.c_str(), tb);
+					referenced_funcs.insert(callee_name);
+				func_id = id(callee_name, tb);
 			}
 			// A by-value string-returning call uses the __retbuf ABI: it is
 			// lowered to a void call writing into a caller temp, NOT an N_CALL
@@ -5824,6 +5901,12 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 	for (size_t vi = skip; vi < tc->variables.size(); vi++) {
 		Variable *v = tc->variables[vi];
 		if (decl_vars.count(v->name)) continue;
+		// A GNU nested function's in-scope alias is a Variable whose type is a
+		// FuncDef — it names the hoisted function, it is not storage. Emit no
+		// local declaration for it (calls resolve to the hoisted symbol). Without
+		// this it rendered as `void Foo;`, which c2mir tolerates but gcc rejects,
+		// breaking the portable `--emit=c11` output.
+		if (dynamic_cast<FuncDef *>(v->type)) continue;
 		append(items, var_decl(v));
 		if (is_array_object(v->type)) {
 			// `array a;` — default-construct the MadArray object. Scope-exit
@@ -6034,6 +6117,23 @@ node_t CirBuilder::translate_block(TokenCpnd *tc)
 	return node2(N_BLOCK, empty_list, items, tc);
 }
 
+// GNU nested-function / [&]-lambda capture detection. While translating a
+// capturing function's body, every variable reference funnels through
+// translate_expr; this records an enclosing variable the body uses (one of the
+// FuncDef's potential_captures, by pointer identity) as a real capture, in
+// first-reference order. Returns true when `v` is a captured variable of the
+// current nested function (so the caller emits a deref of the same-named
+// pointer parameter instead of a bare identifier).
+bool CirBuilder::note_capture(Variable *v)
+{
+	if (!m_cur_captured_fd || !v) return false;
+	if (!m_cur_capture_set.count(v)) return false;
+	std::vector<Variable *> &cv = m_cur_captured_fd->captured_vars;
+	if (std::find(cv.begin(), cv.end(), v) == cv.end())
+		cv.push_back(v);
+	return true;
+}
+
 // -----------------------------------------------------------------------
 // Function definition
 // -----------------------------------------------------------------------
@@ -6078,6 +6178,26 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// Retbuf-returning fn: C return type is `void`.
 	node_t ret_type = ret_via_retbuf ? type_list(&ddVOID) : type_list(ret_dd);
 
+	// GNU nested-function / [&]-lambda capture context. A capturing function
+	// (has_captures) implicitly captures by reference whatever enclosing
+	// vars/params its body uses (its potential_captures). We translate the body
+	// FIRST, recording the actually-used captures (FuncDef::captured_vars) via
+	// note_capture at every variable-reference chokepoint, then synthesize one
+	// hidden `T *name` pointer parameter per used capture. So the body is
+	// translated before the parameter list is finalized below. Reentrancy:
+	// save/restore the enclosing context (a nested fn can itself be nested).
+	FuncDef *saved_captured_fd = m_cur_captured_fd;
+	std::set<Variable *> saved_capture_set;
+	saved_capture_set.swap(m_cur_capture_set);
+	if (fd->has_captures) {
+		m_cur_captured_fd = fd;
+		fd->captured_vars.clear();
+		for (Variable *pv : fd->potential_captures)
+			if (pv) m_cur_capture_set.insert(pv);
+	} else {
+		m_cur_captured_fd = nullptr;
+	}
+
 	// Parameters. A variadic function carries a trailing synthetic param
 	// (the parser pushes a ddINT64 placeholder when it sees `...`); drop it
 	// and emit N_DOTS instead so the definition is truly variadic.
@@ -6089,7 +6209,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 		append(param_list, retbuf_param(retbuf_dd, tf));
 	size_t nparam = fd->parameters.size();
 	if (fd->is_varargs && nparam > 0) nparam--;
-	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf) {
+	// A capturing function with zero user params must NOT emit `(void)`: its
+	// capture params (appended after the body translates) make it non-void.
+	// Defer the empty-param `(void)` to after body translation in that case.
+	bool defer_void_params = (nparam == 0 && !fd->is_varargs && !ret_via_retbuf
+				  && fd->has_captures);
+	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !defer_void_params) {
 		node_t void_spec = node1(N_LIST, simple(N_VOID));
 		node_t void_decl = node2(N_DECL, ignore(), list());
 		append(param_list, node2(N_TYPE, void_spec, void_decl));
@@ -6121,6 +6246,31 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 
 	node_t decl = node2(N_DECL, func_id, decl_list);
 	node_t body = translate_block((TokenCpnd *)tf);
+
+	// Capture lowering (post-body): the body translation recorded which
+	// enclosing variables this nested fn/[&]-lambda actually uses
+	// (fd->captured_vars, in first-reference order). Append one hidden pointer
+	// parameter `T *name` per used capture (param_list is the live N_FUNC
+	// operand, so appending here extends the emitted signature). Call sites
+	// forward `&var` for each (see the TokenCallFunc path / build_call_args).
+	if (fd->has_captures) {
+		for (Variable *cv : fd->captured_vars) {
+			if (!cv) continue;
+			DataDef *capt_ptr = new DataDefPTR(*cv->type);
+			append(param_list, param_decl(capt_ptr, cv->name.c_str(),
+						      std::string()));
+		}
+		// Deferred `(void)` for a zero-user-param fn that turned out to
+		// capture nothing: emit it now so the signature is `(void)`.
+		if (defer_void_params && fd->captured_vars.empty()) {
+			node_t void_spec = node1(N_LIST, simple(N_VOID));
+			node_t void_decl = node2(N_DECL, ignore(), list());
+			append(param_list, node2(N_TYPE, void_spec, void_decl));
+		}
+	}
+	// Restore the enclosing capture context.
+	m_cur_captured_fd = saved_captured_fd;
+	m_cur_capture_set.swap(saved_capture_set);
 
 	// C++ base-class ctor/dtor chaining (single inheritance). The derived
 	// ctor implicitly runs the base ctor BEFORE its own body; the derived

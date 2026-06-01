@@ -6517,8 +6517,9 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	if ( fd && !fd->is_varargs
 	  && !(fd->parameters.empty() && md && (md->x86code || tc->var.name == "dlcall")) )
 	{
+	    // capture params (nested fn / [&] lambda) are NOT in fd->parameters —
+	    // the CIR builder appends them; the user-visible arity is the full count.
 	    size_t expected = fd->parameters.size()
-		- (fd->has_captures ? 1 : 0)
 		- (md && md->owner_class ? 1 : 0);
 	    needs_runtime_scope_context = (tc->argc() + 1 == expected);
 	}
@@ -6549,9 +6550,9 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    // K&R: empty param list (not void) accepts any number of args
 	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
 	    {
-		// don't count hidden env param for [&] lambdas
+		// Capture params (nested fn / [&] lambda) live only in the CIR
+		// lowering, not fd->parameters — user arity is the full count.
 		size_t expected = fd->parameters.size()
-		    - (fd->has_captures ? 1 : 0)
 		    - (fd->is_varargs ? 1 : 0);
 		if ( fd->is_varargs ? (tc->argc() < expected) : (tc->argc() != expected) )
 		    Throw(tc) << "Incorrect number of parameters for '" << tc->var.name << "': expected " << expected << " got " << tc->argc() << flush;
@@ -6565,7 +6566,7 @@ TokenBase *Program::parseCallFunc(TokenCallFunc *tc)
 	    // Only f(void) means exactly zero. Skip the check for empty-param functions.
 	    if ( !(fd->parameters.empty() && !fd->is_void_params) )
 	    {
-		size_t expected = fd->parameters.size() - (fd->has_captures ? 1 : 0)
+		size_t expected = fd->parameters.size()
 			- (md && md->owner_class ? 1 : 0)
 			- (fd->is_varargs ? 1 : 0);
 		// varargs functions accept expected or more args; fixed functions require exact match
@@ -14565,7 +14566,13 @@ paramdecl:
     // paths (notably SMAUG macro expansions) leave a non-null var->data that
     // is not a valid Method object, so reusing it corrupts method->parameters.
     if ( is_nested_function )
+    {
 	configure_nested_function_captures(*this, func);
+	// The nested fn is hoisted to the unique symbol `id`; every call site
+	// (which resolves the in-scope source-named alias below) must emit this
+	// hoisted name. The CIR builder reads it via FuncDef::nested_emit_name.
+	func->nested_emit_name = id;
+    }
 
     method = new Method(*var);
     var->data = (void *)method;
@@ -14591,14 +14598,11 @@ paramdecl:
     int i = 0;
     int user_param_index = 0;
 
-    if ( is_nested_function )
-    {
-	std::string env_name = "__env";
-	Variable *env_pv = new Variable(env_name, ddINT64, 1, NULL, false);
-	env_pv->flags |= vfPARAM | vfLOCAL;
-	method->env_param = env_pv;
-	method->parameters.push_back(env_pv);
-    }
+    // A GNU nested function captures the enclosing locals/params it references
+    // BY REFERENCE. That lowering is done in the CIR builder (each used
+    // enclosing variable becomes a hidden `T *name` pointer parameter appended
+    // after the user params, and every call site forwards `&var`), so no env
+    // placeholder is injected into method->parameters here.
 
     DBG(cout << "parseFunction() param loop: func->parameters.size()=" << func->parameters.size()
 	<< " ids.size()=" << ids.size() << " method=" << (void*)method << endl);
@@ -14615,8 +14619,6 @@ paramdecl:
     for ( dvi = func->parameters.begin(); dvi != func->parameters.end(); ++dvi, ++i )
     {
 	d = *dvi;
-	if ( is_nested_function && i == 0 )
-	    continue;
 	std::string pname = (size_t)user_param_index < ids.size()
 	    ? ids[user_param_index]
 	    : std::string("__synthetic_p") + std::to_string(user_param_index);
@@ -14870,8 +14872,11 @@ TokenBase *Program::parseLambda()
 		    func->potential_captures.push_back(p);
 	    outer = outer->parent;
 	}
-	// Pre-register env as first parameter in FuncDef (user params appended after)
-	func->parameters.push_back(&ddINT64);
+	// Capture-by-reference is lowered in the CIR builder: each enclosing
+	// variable the body actually uses becomes a hidden `T *name` pointer
+	// parameter (FuncDef::captured_vars), appended AFTER the user params, and
+	// every call site forwards `&var`. So func->parameters carries ONLY the
+	// user-declared params here — no synthetic env placeholder.
 	DBG(cout << "parseLambda() [&] capturing " << func->potential_captures.size() << " outer vars" << endl);
     }
 
@@ -14907,22 +14912,11 @@ TokenBase *Program::parseLambda()
     Method *method = new Method(*var);
     var->data = (void *)method;
 
-    // if capturing: create hidden env_param at position 0 in method->parameters
-    if ( is_capturing )
-    {
-	std::string env_name = "__env";
-	Variable *env_pv = new Variable(env_name, ddINT64, 1, NULL, false);
-	env_pv->flags |= vfPARAM | vfLOCAL;
-	method->env_param = env_pv;
-	method->parameters.push_back(env_pv); // will be moved to front below
-    }
-
-    // add user parameters to method
+    // Capture params are synthesized in the CIR builder (see parseLambda's
+    // capture comment above) — method->parameters holds only the user params.
     for ( size_t i = 0; i < param_ids.size(); ++i )
     {
-	// user params start at index 1 in func->parameters when capturing (0 is env)
-	size_t fi = is_capturing ? i + 1 : i;
-	Variable *pv = new Variable(param_ids[i], *func->parameters[fi], 1, NULL, false);
+	Variable *pv = new Variable(param_ids[i], *func->parameters[i], 1, NULL, false);
 	pv->flags |= vfPARAM | vfLOCAL;
 	method->parameters.push_back(pv);
     }
@@ -15016,9 +15010,8 @@ static void configure_nested_function_captures(Program &pgm, FuncDef *func)
 		func->potential_captures.push_back(p);
 	outer = outer->parent;
     }
-
-    if ( func->parameters.empty() || func->parameters.front() != &ddINT64 )
-	func->parameters.insert(func->parameters.begin(), &ddINT64);
+    // No synthetic env parameter: capture-by-reference params are synthesized
+    // per used variable in the CIR builder (FuncDef::captured_vars).
 }
 
 static bool literal_integer_value(TokenBase *tb, int64_t &out)

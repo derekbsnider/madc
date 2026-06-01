@@ -110,6 +110,24 @@ class CirBuilder {
 	// type (e.g. __std_to_string) keeps its own ABI and must NOT be rewritten.
 	const std::set<std::string> *m_user_func_names = nullptr;
 
+	// GNU nested-function capture lowering. A nested function (`T inner(args){...}`
+	// defined inside another function) that references an enclosing local/param
+	// implicitly captures it BY REFERENCE — modelled exactly like a [&] lambda
+	// capture: each used enclosing variable becomes a hidden pointer parameter
+	// `T *name`, every body reference reads/writes through it (`(*name)`), and
+	// every call site forwards `&var`. While translating a nested function's
+	// body, m_cur_capture_set holds the enclosing Variables it MAY capture (its
+	// FuncDef::potential_captures, by pointer identity); m_cur_captured_fd is the
+	// FuncDef being filled. A var reference that hits the set is recorded in
+	// FuncDef::captured_vars (deterministic first-use order) and emitted as a
+	// deref of the same-named pointer parameter. NULL/empty outside a nested body.
+	FuncDef *m_cur_captured_fd = nullptr;
+	std::set<Variable *> m_cur_capture_set;
+	// Record `v` as a capture of the current nested function (idempotent) and
+	// return true when `v` is a captured variable of it. False when not nested
+	// or `v` is local/param to the nested function itself.
+	bool note_capture(Variable *v);
+
 	// Internal: allocate and initialize a cir_node
 	cir_node *make(c2mir_node_code_t code, TokenBase *origin = NULL);
 

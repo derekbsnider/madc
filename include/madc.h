@@ -53,6 +53,17 @@ public:
     struct CaptureEntry { std::string name; DataDef *type; };
     std::vector<Variable *> potential_captures; // outer-scope vars at lambda creation time
     std::vector<CaptureEntry> captures;         // populated during lambda body compilation
+    // GNU nested-function / [&]-lambda capture-by-reference lowering: the
+    // enclosing variables the body actually USES, in first-reference order.
+    // Filled by the CIR builder while translating the body (pointer identity
+    // against potential_captures). Each becomes a hidden `T *name` parameter and
+    // every call site forwards `&var`. Empty for a non-capturing function.
+    std::vector<Variable *> captured_vars;
+    // A GNU nested function is hoisted to a unique top-level C symbol
+    // (`enclosing__name__N`); its in-scope local alias keeps the source name
+    // (`name`). This is the hoisted symbol every call site must reference.
+    // Empty for a non-nested function (call sites use the plain name).
+    std::string nested_emit_name;
     // multiple return values (empty = single return via `returns`)
     std::vector<DataDef *> return_types;
     // reference parameter tracking: ref_params[i] == true when parameter i is T&
