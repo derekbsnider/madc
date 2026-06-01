@@ -3951,11 +3951,18 @@ node_t CirBuilder::func_proto(TokenFunc *tf)
 	// captured at least one var is therefore NOT `(void)`. Keep the prototype's
 	// parameter list in lock-step with func_def's.
 	bool has_capture_params = fd->has_captures && !fd->captured_vars.empty();
+	// A zero-param function emits `(void)` ONLY when it was declared `(void)`
+	// (is_void_params). A bare K&R `()` is unprototyped: leave the param list
+	// empty so c2mir imposes no arg-count check at call sites, matching gcc's
+	// gnu89 behavior. Kept in lock-step with func_def and fnptr_func_node.
 	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !has_capture_params) {
-		node_t void_spec = node1(N_LIST, simple(N_VOID));
-		node_t void_decl = node2(N_DECL, ignore(), list());
-		node_t void_param = node2(N_TYPE, void_spec, void_decl);
-		append(param_list, void_param);
+		if (fd->is_void_params) {
+			node_t void_spec = node1(N_LIST, simple(N_VOID));
+			node_t void_decl = node2(N_DECL, ignore(), list());
+			node_t void_param = node2(N_TYPE, void_spec, void_decl);
+			append(param_list, void_param);
+		}
+		// else: bare () — unprototyped (K&R) parameter list
 	} else {
 		for (size_t i = 0; i < nparam; i++) {
 			DataDef *ptype = fd->parameters[i];
@@ -5182,6 +5189,20 @@ node_t CirBuilder::translate_return(TokenRETURN *tr)
 		return node2(N_BLOCK, list(), items, tr);
 	}
 	node_t expr = tr->returns ? translate_expr(tr->returns) : ignore();
+	// A bare `return;` in a non-void function: gcc (gnu89/c11) warns but accepts
+	// it, returning an indeterminate value. c2mir requires a value, so emit a
+	// typed zero of the function's scalar C return type — a conformant lowering
+	// (the value is indeterminate anyway). This matches gcc's lenient handling
+	// of implicit-int K&R functions and `-Wreturn-type` non-void fall-through.
+	if (!tr->returns && m_cur_func_scalar_ret) {
+		DataDef *rdd = m_cur_func_scalar_ret;
+		if (rdd->is_pointer())
+			expr = node2(N_CAST, type_list(rdd), integer(0), tr);
+		else
+			// integer 0 implicitly converts to the scalar return type
+			// (int/long/float/double) — the value is indeterminate anyway.
+			expr = integer(0);
+	}
 	// A T&-returning function returns the ADDRESS of its (lvalue) result —
 	// `return x;` becomes `return &x;`. g++ does exactly this; the call site
 	// derefs. The expression must be an lvalue (the parser/g++ enforce that).
@@ -6318,6 +6339,12 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// Track a `Cls *` return so translate_return can emit a derived->base upcast.
 	m_cur_func_returns_class_ptr = ret_is_ptr ? pointee_user_class(&fd->returns)
 						  : NULL;
+	// Track the scalar C return type so a gcc-accepted bare `return;` in a
+	// non-void function gets a typed zero (the returned value is indeterminate
+	// per gnu89/c11, so zero is a conformant lowering). Skip ref (returns by
+	// address) — a bare return there is already nonsensical and rare.
+	m_cur_func_scalar_ret = (!ret_via_retbuf && !ret_is_ref && !m_cur_func_returns_void)
+				? &fd->returns : NULL;
 
 	// Retbuf-returning fn: C return type is `void`.
 	node_t ret_type = ret_via_retbuf ? type_list(&ddVOID) : type_list(ret_dd);
@@ -6358,10 +6385,17 @@ node_t CirBuilder::func_def(TokenFunc *tf)
 	// Defer the empty-param `(void)` to after body translation in that case.
 	bool defer_void_params = (nparam == 0 && !fd->is_varargs && !ret_via_retbuf
 				  && fd->has_captures);
+	// `(void)` ONLY for an explicit `(void)` declaration (is_void_params); a
+	// bare K&R `()` stays unprototyped (empty param list) so c2mir accepts any
+	// call-site arg count, matching gcc's gnu89 behavior. Kept in lock-step
+	// with func_proto and fnptr_func_node.
 	if (nparam == 0 && !fd->is_varargs && !ret_via_retbuf && !defer_void_params) {
-		node_t void_spec = node1(N_LIST, simple(N_VOID));
-		node_t void_decl = node2(N_DECL, ignore(), list());
-		append(param_list, node2(N_TYPE, void_spec, void_decl));
+		if (fd->is_void_params) {
+			node_t void_spec = node1(N_LIST, simple(N_VOID));
+			node_t void_decl = node2(N_DECL, ignore(), list());
+			append(param_list, node2(N_TYPE, void_spec, void_decl));
+		}
+		// else: bare () — unprototyped (K&R) parameter list
 	} else {
 		for (size_t i = 0; i < nparam; i++) {
 			const char *pname = "p";

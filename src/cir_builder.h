@@ -82,6 +82,13 @@ class CirBuilder {
 	// `Cls *` (a real user class pointer), else NULL. Lets translate_return emit
 	// an explicit derived->base upcast on `return <Derived*>;` (P2.6).
 	DataDefCLASS *m_cur_func_returns_class_ptr = NULL;
+	// Scalar C return type of the current function (non-NULL while translating a
+	// body whose C return type is a plain scalar — int/long/pointer/double — not
+	// void and not a __retbuf/string/object return). Lets translate_return supply
+	// a typed zero for a gcc-accepted bare `return;` in a non-void function
+	// (gnu89/c11 warn but accept it; the returned value is indeterminate, so a
+	// zero of the right type is a conformant lowering c2mir will compile).
+	DataDef *m_cur_func_scalar_ret = NULL;
 	// Name of the hidden return-slot pointer parameter for a by-value class return.
 	static const char *RETBUF_NAME;
 	// Build the `struct <Cls> *__retbuf` named parameter node (N_SPEC_DECL), the
