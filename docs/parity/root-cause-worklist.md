@@ -59,6 +59,12 @@ c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
   expansions (`__real r = …` lvalue on `_Complex int`), float/double/ldouble pass. `complex-6` has
   `TEST(int)`/`TEST(long int)`. `pr38151` has a `_Complex int b;` struct member. All three flip
   together once integer-complex lands; until then, scoped/deferred.
+  **SCOPED 2026-06-02 (effort/risk):** large Tier-2 c2mir feature — ~132 sites branch on
+  `TP_CFLOAT`/`complex_component_type`/`complex_type_p`; needs ~10 new basic-type enum entries
+  (`TP_C{CHAR,SHORT,INT,LONG,LLONG}` ± unsigned), integer-component storage (the `cbt==TP_FLOAT?
+  MIR_T_F:...` sites all assume floating components), integer arithmetic in `gen_complex_bin_op`
+  (FADD→ADD etc.), ABI pass/return, conversions, real/imag lvalues. High regression risk to the
+  WORKING float-complex path, for 3 tests → **poor ROI; defer** unless a conformance push needs it.
 - union / type-punning: `960416-1`, `pr23324` (union+bitfields), `zerolen-1` (union+zero-len-array).
   **ATTRIBUTED 2026-06-02 (gcc✓ clang✓ c2m✗):** `960416-1` = **cast-to-union** `(union_t)x` (GNU
   ext; c2m "conversion to non-scalar type requested"). Tier-1 lowerable to a compound literal
