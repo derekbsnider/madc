@@ -1,4 +1,4 @@
-# gcc.c-torture CIR failset as of develop (MIR fork 74adb6a), 1551/1685 pass. FAIL+TIMEOUT basenames; diff next run for regressions.
+# gcc.c-torture CIR failset as of develop (MIR fork 772efeb), 1552/1685 pass. FAIL+TIMEOUT basenames; diff next run for regressions.
 20010325-1.c
 20010904-1.c
 20010904-2.c
@@ -102,4 +102,3 @@ struct-ret-1.c
 va-arg-pack-1.c
 vla-dealloc-1.c
 widechar-3.c
-zerolen-1.c

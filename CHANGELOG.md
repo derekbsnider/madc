@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+### Fixed — zero-length array members (`T x[0]`) (2026-06-02, MIR fork `772efeb`)
+
+Third c2mir bug, a two-part fix. **gcc.c-torture 1551 → 1552 (92.1%)**, zero regressions,
+SMAUG boots, fulltest 450.
+
+- **madc parser:** the nested/anonymous-struct member path didn't record per-dimension
+  shape and dropped a trailing `[0]`/`[]` member to a *scalar* (`char name[0]` →
+  `char name`), so `name[0]` read the wrong storage. Now it records `inner_dims` and passes
+  them to `addMember`, exactly like the top-level member path — the member becomes a proper
+  (flexible/zero-length) array.
+- **c2mir (fork `772efeb`):** `set_type_layout` skipped any zero-size member (`continue`),
+  leaving a GNU zero-length array at offset 0 instead of its running offset (it aliased the
+  first member). Now a zero-size member gets the current aligned offset without growing the
+  type. C99 flexible-array members (`[]`) are unchanged. (Confirmed independently via stock
+  `c2m`; an upstream candidate.)
+
+Recovers `gcc.c-torture/execute/zerolen-1.c`. `MIR_COMMIT` `74adb6a` → `772efeb`.
+
 ### Fixed — c2mir: statement-expression ending in post-increment/decrement (2026-06-02, MIR fork `74adb6a`)
 
 Second "bugs before features" c2mir fix. **gcc.c-torture 1550 → 1551 (92.0%)**, zero

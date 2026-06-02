@@ -10730,6 +10730,12 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    size_t inner_count = 1;
 		    TokenBase *inner_count_expr = NULL;
 		    bool inner_is_array_decl = false;
+		    // Per-dimension shape, mirroring the top-level struct-member path's
+		    // member_dims: needed so a trailing flexible (`T x[]`) or GNU
+		    // zero-length (`T x[0]`) array member keeps its 0 dimension
+		    // (m_is_flexible_array keys on member_dims) instead of collapsing
+		    // to a scalar.
+		    std::vector<uint32_t> inner_dims;
 		    while ( pgm.peekToken() && pgm.peekToken()->id() == TokenID::tkOpSqr )
 		    {
 			inner_is_array_decl = true;
@@ -10737,6 +10743,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			TokenBase *cl = pgm.nextToken();
 			if ( cl && cl->id() == TokenID::tkClSqr )
 			{
+			    inner_dims.push_back(0);
 			    inner_count = 0;
 			    break;
 			}
@@ -10755,6 +10762,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 			cl = pgm.nextToken();
 			if ( !cl || cl->id() != TokenID::tkClSqr )
 			    pgm.Throw(cl ? cl : tn) << "Expected ']' in anonymous struct member array declaration" << flush;
+			inner_dims.push_back((uint32_t)n);
 			if ( n == 0 ) { inner_count = 0; break; }
 			inner_count *= (size_t)n;
 		    }
@@ -10771,7 +10779,7 @@ TokenBase *TokenSTRUCT::parse(Program &pgm)
 		    else
 		    {
 			inner->addMember(inner_name, *inner_member_dd, inner_count,
-			    inner_count_expr, inner_is_array_decl);
+			    inner_count_expr, inner_is_array_decl, &inner_dims);
 		    }
 		    tn = pgm.nextToken();
 		    // Handle comma-separated members: `int f1, f2, f3;`
