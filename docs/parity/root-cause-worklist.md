@@ -1,5 +1,35 @@
 # CIR-vs-asmjit parity recovery — root-cause worklist (2026-06-01)
 
+## 2026-06-02 c2mir-BUG SWEEP (method: gcc + clang + stock c2m on every fail). User directive: BUGS before features; MIR-machine work last.
+
+For each failing torture test, ran gcc, clang, and stock `c2m -eg`. The clean
+"genuine c2mir/MIR bug" signal = **gcc passes AND clang passes AND c2m fails**
+(two canonical compilers agree, c2mir diverges — independent of madc). Found
+**32** such bugs; **17** are clang-also-fails (gcc-specific or UB — e.g. bitfld-3
+reduced-precision-bitfield ARITHMETIC, which clang also aborts → defer, it's a
+GCC-ism not a bug). `bitfld-5` = inline-asm floor.
+
+**Method to attribute any fail:** `/workspace/mir/c2m FILE -ei` / `-eg` / `-S -o`
+(reads the emitted MIR). If stock c2m miscompiles independently of madc → it's a
+c2mir (front-end) or MIR (machine) bug, NOT madc. c2mir = C→MIR front-end
+(tractable, upstreamable); MIR = the IR machine (libmir gen/interp/regalloc).
+
+**FIXED so far (2 of the 32):**
+- statement-expression struct/union value copy-out (`20020320-1`) — fork `caa6ff9`.
+- statement-expression ending in post-`++`/`--` value context (`950906-1`) — fork `74adb6a`.
+
+**Remaining 30 c2mir/MIR bugs — rough clusters (next targets, c2mir-front-end first):**
+- _Complex arithmetic/ABI: `20020411-1` (`__builtin_conjf`), `20050121-1` (`_Complex long double`),
+  `complex-6` (SIGSEGV), `pr38151` (`_Complex`+`va_arg`). Fork owns `_Complex`; these are corners.
+- union / type-punning: `960416-1`, `pr23324` (union+bitfields), `zerolen-1` (union+zero-len-array).
+- varargs+struct: `20041214-1` (`va_arg`/`va_start`), `pr38151`.
+- value-mismatch optimizer PRs (need per-test reduce): `pr40657 pr43220 pr46309 pr53084 pr71626-2
+  pr85095 (__builtin_add_overflow) pr88904 pr124358 20050929-1 20221006-1 970217-1 20021127-1
+  (builtin llabs fold) 920929-1 pr77767/970217-1 (param array-bound side effects = VM-type, VLA-adjacent)`.
+- FLOOR (defer, not c2mir-front-end): `20010904-1/2` (`aligned(32)`>16), `vla-dealloc-1` (VLA),
+  `frame-address` (`__builtin_frame_address`), `20020227-1` (unaligned), `strlen-4` (ptr-to-array
+  arith runtime), `pr109938/pr109986` (need recheck — earlier seen as v4si SIMD).
+
 ## 2026-06-02 FULL FAILING-SET TRIAGE (attribution: front-end vs fork). User directive: MIR/fork work LAST.
 
 Triaged all 106 current fails (develop @ 195c9b9). After the aggregate-init cluster, the
