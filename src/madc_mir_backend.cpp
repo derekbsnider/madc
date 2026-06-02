@@ -313,10 +313,6 @@ void madarray_destruct(void *ptr)
 long madarray_size(void *ptr)
     { return (long)((MadArray *)ptr)->data.size(); }
 
-// STL container wrappers removed — ns_stl.cpp was a proof-of-concept.
-// Template instantiation will be generated on demand by the transpiler
-// (Cfront-style: per-translation-unit, driven by user declarations).
-
 
 } // extern "C"
 

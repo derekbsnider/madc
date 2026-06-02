@@ -4055,11 +4055,6 @@ extern int64_t fstream_eof(void *);
 extern int64_t fstream_good(void *);
 extern int64_t fstream_is_open(void *);
 
-// The ns_stl.cpp STL container construct/destruct/method forward declarations
-// were removed: std::vector/map/set are now real madc templates
-// (include/madc/vector, include/madc/map, include/madc/set), instantiated
-// through the class model. ns_stl.cpp is deleted.
-
 // dlopen/dlsym wrappers that accept std::string* (madc strings)
 int64_t madc_dlopen(void *filename)
 {
@@ -13694,11 +13689,6 @@ TokenBase *TokenTEMPLATE::parse(Program &pgm)
 
     return NULL;   // a definition: produces no statement node
 }
-
-// STL container parse functions removed — std::vector/map/set are now real
-// madc templates (include/madc/vector, include/madc/map, include/madc/set),
-// instantiated on demand through the class model. The old keyword + ns_stl
-// wrapper path is gone.
 
 TokenBase *Program::parseKeyword(TokenKeyword *tk)
 {
