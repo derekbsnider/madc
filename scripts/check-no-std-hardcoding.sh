@@ -1,0 +1,26 @@
+#!/bin/bash
+# FINISH-LINE GATE — retire-std-hardcoding campaign.
+#
+# Fails (non-zero) while ANY per-type std:: hardcoding remains, INCLUDING
+# tombstone comments referencing deleted machinery ("gone without a trace —
+# we have git for a reason"). "Done" means THIS prints GREEN; it cannot be
+# faked by a behavioral claim.
+#
+# The ONLY permitted homes for std:: symbol knowledge:
+#   - the mangler          src/madc_mangle.{cpp,h}   (single symbol source)
+#   - the auto-include map  (symbol -> header trigger; the one config table)
+# Everything else (builtin DataDef, wrapper/shim, dt*/dd* tag, hardcoded
+# literal, OR a comment naming a deleted thing) must be gone.
+set -u
+cd "$(dirname "$0")/.."
+PAT='ddSTRING|DataDefSTRING|add_string_methods|add_fstream_methods|dt[A-Z]*STREAM|dd[A-Z]*STREAM|DataDef[A-Z]*STREAM|streamout_|streamin_|ifstream_open|ofstream_good|ofstream_open|fstream_open|string_concat|string_obj_words|sizeof\(std::|__std_|SK_COUT|ostream_insert_symbol|ns_stl|tkSTRING|tkVECTOR|\bdtSTRING'
+hits=$(grep -rnE "$PAT" src/ include/ \
+  | grep -vE '^src/madc_mangle\.(cpp|h):' )
+n=$(printf '%s' "$hits" | grep -c . )
+echo "retire-std-hardcoding finish-line: $n offending lines remain (target 0)"
+if [ "$n" -ne 0 ]; then
+  printf '%s\n' "$hits" | sed 's/^/  /' | head -25
+  [ "$n" -gt 25 ] && echo "  … and $((n-25)) more"
+  exit 1
+fi
+echo "GREEN — no per-type std:: hardcoding remains (not even a comment)."
